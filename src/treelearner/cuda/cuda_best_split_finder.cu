@@ -53,6 +53,52 @@ __device__ __forceinline__ const hist_t* FeatureHistPtr(const hist_t* hist_in_le
     hist_in_leaf + (hist_offset << 1);
 }
 
+// Per-type machine epsilon used to size the gain-tie tolerance. Spelled out as
+// device-safe constants (rather than std::numeric_limits, which is awkward in
+// device code) so the reductions can run in either fp64 (default) or fp32
+// (EXABOOST_FP32_GAIN) gain arithmetic.
+template <typename GAIN_T>
+__device__ __forceinline__ constexpr GAIN_T GainTieEpsilon();
+template <>
+__device__ __forceinline__ constexpr double GainTieEpsilon<double>() { return 2.2204460492503131e-16; }
+template <>
+__device__ __forceinline__ constexpr float GainTieEpsilon<float>() { return 1.19209290e-07f; }
+
+// Relative tolerance for gain-tie detection in the best-split reductions.
+// Two gains within this relative band are treated as a plateau; the reduction
+// tie-breaks to the lower thread index, which corresponds to the lower bin index
+// (for REVERSE tasks, lower thread index is earlier in CPU's reverse scan) --
+// matching CPU's "first candidate in scan order wins" on a strict-'>' scan.
+// Sized at ~5000x the GAIN type's epsilon, well above the reduction-order FP
+// noise (~1e-15 fp64 / ~1e-7 fp32) but well below any genuine gain difference
+// seen in practice. Type-dependent so that under EXABOOST_FP32_GAIN the band is
+// float-appropriate (~6e-4) instead of the fixed 1e-12, which is below float
+// epsilon and would degenerate to exact equality, re-exposing the plateau bug.
+// Note the comparison is intentionally non-transitive: a chain of near-ties
+// spanning more than one tolerance band can still be pairing-dependent in a tree
+// reduction. With this ~5000x-epsilon band that is theoretical, not observed.
+//
+// The same helper flows through ReduceBestGain (warp + block reductions) into
+// every path -- the classic per-leaf kernels, the batched level kernels, the
+// graph-captured level bodies, and the cross-task SyncBestSplitForLeaf/Level
+// reductions -- so one definition fixes all of them. In the cross-task reduction
+// "lower thread index" is the lower TASK index; tasks are built feature-major /
+// direction-minor (InitCUDAFeatureMetaInfo), so a cross-feature plateau
+// tie-breaks to the lower feature index, matching the order CPU scans features.
+template <typename GAIN_T>
+__device__ __forceinline__ bool OtherIsBetterWithTieBreak(
+    GAIN_T other_gain, GAIN_T gain, uint32_t other_thread_index, uint32_t thread_index) {
+  constexpr GAIN_T kRelTol = static_cast<GAIN_T>(5.0e3) * GainTieEpsilon<GAIN_T>();
+  const GAIN_T tol = fmax(fabs(gain), fabs(other_gain)) * kRelTol;
+  if (other_gain > gain + tol) {
+    return true;
+  }
+  if (fabs(other_gain - gain) <= tol && other_thread_index < thread_index) {
+    return true;
+  }
+  return false;
+}
+
 template <typename GAIN_T>
 __device__ void ReduceBestGainWarp(GAIN_T gain, bool found, uint32_t thread_index, GAIN_T* out_gain, bool* out_found, uint32_t* out_thread_index) {
   const uint32_t mask = 0xffffffff;
@@ -61,7 +107,8 @@ __device__ void ReduceBestGainWarp(GAIN_T gain, bool found, uint32_t thread_inde
     const bool other_found = __shfl_down_sync(mask, found, offset);
     const GAIN_T other_gain = __shfl_down_sync(mask, gain, offset);
     const uint32_t other_thread_index = __shfl_down_sync(mask, thread_index, offset);
-    if ((other_found && found && other_gain > gain) || (!found && other_found)) {
+    const bool other_better = OtherIsBetterWithTieBreak(other_gain, gain, other_thread_index, thread_index);
+    if ((other_found && found && other_better) || (!found && other_found)) {
       found = other_found;
       gain = other_gain;
       thread_index = other_thread_index;
@@ -81,7 +128,8 @@ __device__ uint32_t ReduceBestGainBlock(GAIN_T gain, bool found, uint32_t thread
     const bool other_found = __shfl_down_sync(mask, found, offset);
     const GAIN_T other_gain = __shfl_down_sync(mask, gain, offset);
     const uint32_t other_thread_index = __shfl_down_sync(mask, thread_index, offset);
-    if ((other_found && found && other_gain > gain) || (!found && other_found)) {
+    const bool other_better = OtherIsBetterWithTieBreak(other_gain, gain, other_thread_index, thread_index);
+    if ((other_found && found && other_better) || (!found && other_found)) {
       found = other_found;
       gain = other_gain;
       thread_index = other_thread_index;
