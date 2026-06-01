@@ -37,7 +37,7 @@ void CUDALeafSplits::InitValues() {
 }
 
 void CUDALeafSplits::InitValues(
-  const double lambda_l1, const double lambda_l2,
+  const double lambda_l1, const double lambda_l2, const double max_delta_step,
   const score_t* cuda_gradients, const score_t* cuda_hessians,
   const data_size_t* cuda_bagging_data_indices, const data_size_t* cuda_data_indices_in_leaf,
   const data_size_t num_used_indices, hist_t* cuda_hist_in_leaf,
@@ -52,7 +52,7 @@ void CUDALeafSplits::InitValues(
     cuda_sum_of_gradients_buffer_.Size() * sizeof(double)));
   CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_sum_of_hessians_buffer_.RawData()), 0,
     cuda_sum_of_hessians_buffer_.Size() * sizeof(double)));
-  LaunchInitValuesKernel(lambda_l1, lambda_l2, cuda_bagging_data_indices, cuda_data_indices_in_leaf, num_used_indices, cuda_hist_in_leaf);
+  LaunchInitValuesKernel(lambda_l1, lambda_l2, max_delta_step, cuda_bagging_data_indices, cuda_data_indices_in_leaf, num_used_indices, cuda_hist_in_leaf);
   if (!defer_root_sum_readback) {
     // synchronous D2H: blocks on everything enqueued so far, including the
     // (large) per-tree histogram-buffer zeroing on the legacy stream. Flows that
@@ -70,7 +70,7 @@ void CUDALeafSplits::CopyRootSumsToHost(double* root_sum_gradients, double* root
 }
 
 void CUDALeafSplits::InitValues(
-  const double lambda_l1, const double lambda_l2,
+  const double lambda_l1, const double lambda_l2, const double max_delta_step,
   const int16_t* cuda_gradients_and_hessians,
   const data_size_t* cuda_bagging_data_indices,
   const data_size_t* cuda_data_indices_in_leaf, const data_size_t num_used_indices,
@@ -78,7 +78,7 @@ void CUDALeafSplits::InitValues(
   const score_t* grad_scale, const score_t* hess_scale) {
   cuda_gradients_ = reinterpret_cast<const score_t*>(cuda_gradients_and_hessians);
   cuda_hessians_ = nullptr;
-  LaunchInitValuesKernel(lambda_l1, lambda_l2, cuda_bagging_data_indices, cuda_data_indices_in_leaf, num_used_indices, cuda_hist_in_leaf, grad_scale, hess_scale);
+  LaunchInitValuesKernel(lambda_l1, lambda_l2, max_delta_step, cuda_bagging_data_indices, cuda_data_indices_in_leaf, num_used_indices, cuda_hist_in_leaf, grad_scale, hess_scale);
   // the synchronous D2H copies block until the kernels above complete; no
   // extra device sync is needed
   CopyFromCUDADeviceToHost<double>(root_sum_gradients, cuda_sum_of_gradients_buffer_.RawData(), 1, __FILE__, __LINE__);
