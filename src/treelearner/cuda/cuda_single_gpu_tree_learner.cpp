@@ -29,6 +29,7 @@
 #include <utility>
 #include <vector>
 
+#include "../cost_effective_gradient_boosting.hpp"
 #include "../linear_leaf_solver.h"
 
 namespace LightGBM {
@@ -138,6 +139,16 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   if (!config_->monotone_constraints.empty()) {
     use_hybrid_growth_ = false;
   }
+  // CEGB is order-dependent: cegb_penalty_feature_coupled is charged the first
+  // time a feature is used, so a split's gain depends on which splits were
+  // already applied. Level-batched growth scores a whole level before applying
+  // any of it, so the coupled penalty would be charged to every leaf in the
+  // level instead of just the first -- CPU (leaf-wise, best-first) and CUDA then
+  // grow different trees. Fall back to the classic leaf-wise loop, the same way
+  // the batched path is gated off for categorical features.
+  if (CostEfficientGradientBoosting::IsEnable(config_)) {
+    use_hybrid_growth_ = false;
+  }
   // batched per-level kernels for the hybrid prefix (one construct/fix/subtract/
   // find/sync launch per level instead of per pair); "0" keeps the per-pair path
   const char* batch_env = std::getenv("EXABOOST_HYBRID_BATCH_KERNELS");
@@ -167,6 +178,10 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     cuda_histogram_constructor_->construct_done_events(),
     cuda_histogram_constructor_->subtract_done_events());
   SyncHistFP32();
+  cuda_best_split_finder_->SetCEGB(config_->cegb_penalty_feature_coupled,
+                                   config_->cegb_tradeoff,
+                                   config_->cegb_penalty_split,
+                                   train_data_);
 
   leaf_best_split_feature_.resize(config_->num_leaves, -1);
   leaf_best_split_threshold_.resize(config_->num_leaves, 0);
@@ -1019,6 +1034,13 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
     const int right_leaf_index = base_num_leaves + static_cast<int>(applied->size());
     const CUDASplitInfo* best_split_info = cuda_best_split_finder_->leaf_best_split_info_ptr(leaf);
     const int inner_feature_index = leaf_best_split_feature_[leaf];
+    // The batched apply path does not go through ApplySplit(), so it marks the
+    // feature itself -- otherwise CEGB would charge cegb_penalty_feature_coupled
+    // again for a feature this tree already used. This is currently DEAD CODE:
+    // CEGB forces use_hybrid_growth_ = false in Init(), so ApplyLevelBatched never
+    // runs while CEGB is active. Kept as a defensive guard in case that gating is
+    // ever relaxed. No-op unless CEGB is configured.
+    cuda_best_split_finder_->MarkFeatureUsedInSplit(inner_feature_index);
     host_tree_batch_splits_.push_back({
       leaf,
       right_leaf_index,  // == tree num_leaves at the time of this split
@@ -2456,6 +2478,10 @@ int CUDASingleGPUTreeLearner::ApplySplit(CUDATree* tree, const CUDASplitInfo* be
   // classic per-split path: needs the plain per-column view (only the batched
   // apply kernels understand the packed compact source)
   EnsureClassicColumnView();
+  // CEGB charges cegb_penalty_feature_coupled the first time a feature is used in
+  // the tree, so every path that commits a split has to mark it. No-op unless
+  // CEGB is configured.
+  cuda_best_split_finder_->MarkFeatureUsedInSplit(leaf_best_split_feature_[leaf_index]);
   int right_leaf_index = 0;
   if (train_data_->FeatureBinMapper(leaf_best_split_feature_[leaf_index])->bin_type() == BinType::CategoricalBin) {
     right_leaf_index = tree->SplitCategorical(leaf_index,

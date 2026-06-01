@@ -1011,7 +1011,10 @@ __global__ void FindBestSplitsForLeafKernel(
   // global num data in leaf
   const data_size_t global_num_data_in_smaller_leaf,
   const data_size_t global_num_data_in_larger_leaf,
-  // monotone leaf constraints
+  // CEGB (passed via FindBestSplitsForLeafKernel_ARGS, before CONSTRAINT_ARGS)
+  const double* cuda_task_cegb_penalty,
+  const double cegb_tradeoff_times_penalty_split,
+  // monotone leaf constraints (passed via FindBestSplitsForLeafKernel_CONSTRAINT_ARGS)
   const double smaller_leaf_constraint_min,
   const double smaller_leaf_constraint_max,
   const double larger_leaf_constraint_min,
@@ -1118,6 +1121,20 @@ __global__ void FindBestSplitsForLeafKernel(
           out);
       }
     }
+    // CEGB: subtract the cost penalty from this task's gain (block-leader only).
+    // Matches the CPU path: new_split.gain -= DeltaGain(...). is_valid is NOT
+    // modified, so a split made negative by the penalty stays "valid" and simply
+    // loses the cross-feature / cross-leaf gain comparison, exactly as on CPU.
+    // The inner kernel finalizes `out` from a single (not necessarily thread 0)
+    // thread and does not sync afterwards, so sync before reading it here.
+    __syncthreads();
+    if (threadIdx.x == 0 && out->is_valid) {
+      double delta = cegb_tradeoff_times_penalty_split * static_cast<double>(num_data);
+      if (cuda_task_cegb_penalty != nullptr) {
+        delta += cuda_task_cegb_penalty[task_index];
+      }
+      out->gain -= delta;
+    }
   } else {
     out->is_valid = false;
   }
@@ -1157,7 +1174,10 @@ __global__ void FindBestSplitsDiscretizedForLeafKernel(
   CUDASplitInfo* cuda_best_split_info,
   // global num data in leaf
   const data_size_t global_num_data_in_smaller_leaf,
-  const data_size_t global_num_data_in_larger_leaf) {
+  const data_size_t global_num_data_in_larger_leaf,
+  // CEGB
+  const double* cuda_task_cegb_penalty,
+  const double cegb_tradeoff_times_penalty_split) {
   const unsigned int task_index = blockIdx.x;
   const SplitFindTask* task = tasks + task_index;
   const int inner_feature_index = task->inner_feature_index;
@@ -1297,6 +1317,15 @@ __global__ void FindBestSplitsDiscretizedForLeafKernel(
             out);
         }
       }
+    }
+    // CEGB: subtract cost penalty (see numerical kernel for rationale).
+    __syncthreads();
+    if (threadIdx.x == 0 && out->is_valid) {
+      double delta = cegb_tradeoff_times_penalty_split * static_cast<double>(num_data);
+      if (cuda_task_cegb_penalty != nullptr) {
+        delta += cuda_task_cegb_penalty[task_index];
+      }
+      out->gain -= delta;
     }
   } else {
     out->is_valid = false;
@@ -1934,7 +1963,10 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
   // global num data in leaf
   const data_size_t global_num_data_in_smaller_leaf,
   const data_size_t global_num_data_in_larger_leaf,
-  // monotone leaf constraints
+  // CEGB (passed via FindBestSplitsForLeafKernel_ARGS, before CONSTRAINT_ARGS)
+  const double* cuda_task_cegb_penalty,
+  const double cegb_tradeoff_times_penalty_split,
+  // monotone leaf constraints (passed via FindBestSplitsForLeafKernel_CONSTRAINT_ARGS)
   const double smaller_leaf_constraint_min,
   const double smaller_leaf_constraint_max,
   const double larger_leaf_constraint_min,
@@ -2064,6 +2096,15 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
           hist_hess_buffer_ptr);
       }
     }
+    // CEGB: subtract cost penalty (see numerical kernel for rationale).
+    __syncthreads();
+    if (threadIdx.x == 0 && out->is_valid) {
+      double delta = cegb_tradeoff_times_penalty_split * static_cast<double>(num_data);
+      if (cuda_task_cegb_penalty != nullptr) {
+        delta += cuda_task_cegb_penalty[task_index];
+      }
+      out->gain -= delta;
+    }
   } else {
     out->is_valid = false;
   }
@@ -2116,7 +2157,9 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
     min_data_per_group_, \
     cuda_best_split_info_.RawData(), \
     global_num_data_in_smaller_leaf, \
-    global_num_data_in_larger_leaf
+    global_num_data_in_larger_leaf, \
+    cegb_use_ ? cuda_task_cegb_penalty_.RawData() : nullptr, \
+    cegb_tradeoff_times_penalty_split_
 
 #define FindBestSplitsForLeafKernel_CONSTRAINT_ARGS \
     smaller_leaf_constraint_min, \
@@ -2305,7 +2348,9 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelInner3(LaunchFindBest
     hess_scale, \
     cuda_best_split_info_.RawData(), \
     global_num_data_in_smaller_leaf, \
-    global_num_data_in_larger_leaf
+    global_num_data_in_larger_leaf, \
+    cegb_use_ ? cuda_task_cegb_penalty_.RawData() : nullptr, \
+    cegb_tradeoff_times_penalty_split_
 
 void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLeafKernel(LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS) {
   if (!is_smaller_leaf_valid && !is_larger_leaf_valid) {
@@ -3221,7 +3266,11 @@ __global__ void FindBestFromAllSplitsKernel(const int cur_num_leaves,
   const int threadIdx_x = static_cast<int>(threadIdx.x);
   for (int leaf_index = threadIdx_x; leaf_index < cur_num_leaves; leaf_index += static_cast<int>(blockDim.x)) {
     const double leaf_best_gain = cuda_leaf_best_split_info[leaf_index].gain;
-    if (cuda_leaf_best_split_info[leaf_index].is_valid && leaf_best_gain > thread_best_gain) {
+    // leaf_best_gain > 0.0 mirrors the CPU stop condition (serial_tree_learner.cpp:
+    // "if (best_leaf_SplitInfo.gain <= 0.0) break"). Without CEGB this is a no-op
+    // (valid splits always have positive gain); with CEGB the cost penalty can push
+    // gains negative and such splits must not be taken.
+    if (cuda_leaf_best_split_info[leaf_index].is_valid && leaf_best_gain > 0.0 && leaf_best_gain > thread_best_gain) {
       thread_best_gain = leaf_best_gain;
       thread_best_leaf_index = leaf_index;
     }
