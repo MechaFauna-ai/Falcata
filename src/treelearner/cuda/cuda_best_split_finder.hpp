@@ -408,6 +408,7 @@ class CUDABestSplitFinder {
   int extra_seed_;
   bool use_smoothing_;
   double path_smooth_;
+  double max_delta_step_;
   std::vector<cudaStream_t> cuda_streams_;
   /*! \brief histogram constructor completion events (not owned); used to order the
    *  per-leaf FindBestSplits kernels after histogram construction/subtraction. */

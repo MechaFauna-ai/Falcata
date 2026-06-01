@@ -81,7 +81,7 @@ class CUDALeafSplits: public NCCLInfo {
   void Init(const bool use_quantized_grad);
 
   void InitValues(
-    const double lambda_l1, const double lambda_l2,
+    const double lambda_l1, const double lambda_l2, const double max_delta_step,
     const score_t* cuda_gradients, const score_t* cuda_hessians,
     const data_size_t* cuda_bagging_data_indices,
     const data_size_t* cuda_data_indices_in_leaf, const data_size_t num_used_indices,
@@ -92,7 +92,7 @@ class CUDALeafSplits: public NCCLInfo {
   void CopyRootSumsToHost(double* root_sum_gradients, double* root_sum_hessians) const;
 
   void InitValues(
-    const double lambda_l1, const double lambda_l2,
+    const double lambda_l1, const double lambda_l2, const double max_delta_step,
     const int16_t* cuda_gradients_and_hessians,
     const data_size_t* cuda_bagging_data_indices,
     const data_size_t* cuda_data_indices_in_leaf, const data_size_t num_used_indices,
@@ -111,6 +111,15 @@ class CUDALeafSplits: public NCCLInfo {
   // so the CUDA and CPU paths use identical formulas. Names/signatures are kept
   // for the existing device call sites; T = float only in the fp32 gain mode
   // (EXABOOST_FP32_GAIN), always spelled out explicitly at those call sites.
+  //
+  // CPU selects the USE_MAX_OUTPUT specialisation at compile time. Doing the
+  // same here would add another template dimension to every split-finder
+  // kernel, so instead the specialisation is selected at runtime from the value
+  // of max_delta_step. The two branches must not be collapsed into one: with the
+  // cap enabled the leaf gain is measured at the (possibly capped) output, which
+  // is algebraically but *not* bitwise equal to the closed-form g^2/(h+l2) that
+  // CPU uses when max_delta_step is unset. Keeping both preserves CPU/CUDA
+  // bit-parity for the (overwhelmingly common) max_delta_step == 0 case.
   __device__ static double ThresholdL1(double s, double l1) {
     return SplitGainMath::ThresholdL1(s, l1);
   }
@@ -118,10 +127,16 @@ class CUDALeafSplits: public NCCLInfo {
   template <bool USE_L1, bool USE_SMOOTHING, typename T = double>
   __device__ static T CalculateSplittedLeafOutput(T sum_gradients,
                                           T sum_hessians, T l1, T l2,
-                                          T path_smooth, data_size_t num_data,
+                                          T path_smooth, T max_delta_step,
+                                          data_size_t num_data,
                                           T parent_output) {
-    return SplitGainMath::CalculateLeafOutput<USE_L1, false, USE_SMOOTHING, T>(
-        sum_gradients, sum_hessians, l1, l2, static_cast<T>(0), path_smooth, num_data, parent_output);
+    return max_delta_step > static_cast<T>(0)
+      ? SplitGainMath::CalculateLeafOutput<USE_L1, true, USE_SMOOTHING, T>(
+            sum_gradients, sum_hessians, l1, l2, max_delta_step, path_smooth,
+            num_data, parent_output)
+      : SplitGainMath::CalculateLeafOutput<USE_L1, false, USE_SMOOTHING, T>(
+            sum_gradients, sum_hessians, l1, l2, static_cast<T>(0), path_smooth,
+            num_data, parent_output);
   }
 
   template <bool USE_L1, typename T = double>
@@ -135,10 +150,16 @@ class CUDALeafSplits: public NCCLInfo {
   template <bool USE_L1, bool USE_SMOOTHING, typename T = double>
   __device__ static T GetLeafGain(T sum_gradients, T sum_hessians,
                           T l1, T l2,
-                          T path_smooth, data_size_t num_data,
+                          T path_smooth, T max_delta_step,
+                          data_size_t num_data,
                           T parent_output) {
-    return SplitGainMath::LeafGain<USE_L1, USE_SMOOTHING, T>(
-        sum_gradients, sum_hessians, l1, l2, path_smooth, num_data, parent_output);
+    return max_delta_step > static_cast<T>(0)
+      ? SplitGainMath::LeafGain<USE_L1, true, USE_SMOOTHING, T>(
+            sum_gradients, sum_hessians, l1, l2, max_delta_step, path_smooth,
+            num_data, parent_output)
+      : SplitGainMath::LeafGain<USE_L1, false, USE_SMOOTHING, T>(
+            sum_gradients, sum_hessians, l1, l2, static_cast<T>(0), path_smooth,
+            num_data, parent_output);
   }
 
   template <bool USE_L1, bool USE_SMOOTHING, typename T = double>
@@ -148,29 +169,30 @@ class CUDALeafSplits: public NCCLInfo {
                             T sum_right_hessians,
                             T l1, T l2,
                             T path_smooth,
+                            T max_delta_step,
                             data_size_t left_count,
                             data_size_t right_count,
                             T parent_output) {
     return GetLeafGain<USE_L1, USE_SMOOTHING, T>(sum_left_gradients,
                       sum_left_hessians,
-                      l1, l2, path_smooth, left_count, parent_output) +
+                      l1, l2, path_smooth, max_delta_step, left_count, parent_output) +
           GetLeafGain<USE_L1, USE_SMOOTHING, T>(sum_right_gradients,
                       sum_right_hessians,
-                      l1, l2, path_smooth, right_count, parent_output);
+                      l1, l2, path_smooth, max_delta_step, right_count, parent_output);
   }
 
  private:
   void LaunchInitValuesEmptyKernel();
 
   void LaunchInitValuesKernel(
-    const double lambda_l1, const double lambda_l2,
+    const double lambda_l1, const double lambda_l2, const double max_delta_step,
     const data_size_t* cuda_bagging_data_indices,
     const data_size_t* cuda_data_indices_in_leaf,
     const data_size_t num_used_indices,
     hist_t* cuda_hist_in_leaf);
 
   void LaunchInitValuesKernel(
-    const double lambda_l1, const double lambda_l2,
+    const double lambda_l1, const double lambda_l2, const double max_delta_step,
     const data_size_t* cuda_bagging_data_indices,
     const data_size_t* cuda_data_indices_in_leaf,
     const data_size_t num_used_indices,
