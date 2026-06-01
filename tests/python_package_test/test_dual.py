@@ -1762,3 +1762,129 @@ def test_cuda_max_delta_step_loss_matches_cpu_when_saturated(objective):
             losses[device_type] = float(np.mean((y - pred) ** 2))
     rel_diff = abs(losses["cpu"] - losses["cuda"]) / abs(losses["cpu"])
     assert rel_diff < 0.02, f"training loss diverged: cpu={losses['cpu']} cuda={losses['cuda']}"
+
+
+def _train_monotone(device_type, constraints, num_boost_round, seed=0):
+    rng = np.random.RandomState(seed)
+    X = rng.rand(600, 3)
+    y = 5 * X[:, 0] - 5 * X[:, 1] + 0.7 * X[:, 2] + 0.5 * rng.rand(600)
+    params = {
+        "objective": "regression",
+        "monotone_constraints": constraints,
+        "monotone_constraints_method": "basic",
+        "num_leaves": 31,
+        "min_data_in_leaf": 5,
+        "learning_rate": 0.1,
+        "verbose": -1,
+        "deterministic": True,
+        "num_threads": 1,
+        "seed": 0,
+        "gpu_use_dp": True,
+        "force_col_wise": True,
+        "feature_pre_filter": False,
+        "device_type": device_type,
+    }
+    ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False})
+    return lgb.train(params, ds, num_boost_round=num_boost_round), X, y
+
+
+def _monotonicity_violations(bst, constraints, n_grid=500):
+    """Count monotonicity violations of bst on grid sweeps of each constrained feature."""
+    count = 0
+    worst = 0.0
+    grid = np.linspace(0, 1, n_grid)
+    for j, c in enumerate(constraints):
+        if c == 0:
+            continue
+        for base_value in (0.2, 0.5, 0.8):
+            base = np.full(3, base_value)
+            G = np.tile(base, (n_grid, 1))
+            G[:, j] = grid
+            diffs = np.diff(bst.predict(G))
+            bad = -diffs if c > 0 else diffs
+            violations = bad[bad > 1e-12]
+            count += len(violations)
+            if len(violations):
+                worst = max(worst, float(violations.max()))
+    return count, worst
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("constraints", [[1, -1, 0], [1, 1, 1], [-1, 0, 1], [1, 0, 0]])
+@pytest.mark.parametrize("num_boost_round", [1, 30, 100])
+def test_cuda_monotone_constraints_are_enforced(constraints, num_boost_round):
+    """CUDA must enforce basic-method monotone constraints: zero violations.
+
+    Regression test for monotone_constraints being silently ignored on CUDA: the
+    best-split kernels had no constraint plumbing, so CUDA produced models that
+    violated the requested monotonic relationships (up to 57 violations of
+    magnitude 0.68 on this data before the fix).
+    """
+    bst, _, _ = _train_monotone("cuda", constraints, num_boost_round)
+    count, worst = _monotonicity_violations(bst, constraints)
+    assert count == 0, f"CUDA model violates monotone constraints {constraints}: {count} violations, worst={worst:.3e}"
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("constraints", [[1, -1, 0], [1, 1, 1], [-1, 0, 1]])
+def test_cuda_monotone_constraints_match_cpu_quality(constraints):
+    """CUDA monotone training quality must match CPU.
+
+    CPU and CUDA may build different (both valid) constrained trees because CPU
+    additionally prunes features via its is_splittable cache, so exact tree
+    equality is not required. But both must (a) enforce the constraints and
+    (b) reach equivalent training loss (within 5%).
+    """
+    num_boost_round = 50
+    bst_cpu, X, y = _train_monotone("cpu", constraints, num_boost_round)
+    bst_cuda, _, _ = _train_monotone("cuda", constraints, num_boost_round)
+
+    # both enforce
+    for bst, name in ((bst_cpu, "cpu"), (bst_cuda, "cuda")):
+        count, worst = _monotonicity_violations(bst, constraints)
+        assert count == 0, f"{name} violates constraints: {count} violations, worst={worst:.3e}"
+
+    # equivalent quality
+    mse_cpu = float(np.mean((y - bst_cpu.predict(X)) ** 2))
+    mse_cuda = float(np.mean((y - bst_cuda.predict(X)) ** 2))
+    assert mse_cuda <= mse_cpu * 1.05, f"CUDA mse {mse_cuda} much worse than CPU mse {mse_cpu}"
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("num_boost_round", [1, 30])
+def test_cuda_monotone_noop_constraints_match_cpu_exactly(num_boost_round):
+    """With all-zero constraints the MC code path must be a no-op:
+    predictions must match CPU bit-for-bit."""
+    bst_cpu, X, _ = _train_monotone("cpu", [0, 0, 0], num_boost_round)
+    bst_cuda, _, _ = _train_monotone("cuda", [0, 0, 0], num_boost_round)
+    np.testing.assert_allclose(
+        bst_cpu.predict(X),
+        bst_cuda.predict(X),
+        rtol=0,
+        atol=1e-10,
+        err_msg="all-zero monotone constraints must not change CUDA results",
+    )
+
+
+@_REQUIRES_CUDA
+def test_cuda_monotone_unsupported_configs_raise():
+    """Only the basic method, monotone_penalty=0, and full-precision training are
+    supported on CUDA; other monotone configurations must be rejected loudly."""
+    rng = np.random.RandomState(0)
+    X = rng.rand(200, 3)
+    y = X[:, 0] - X[:, 1]
+    base = {
+        "objective": "regression",
+        "monotone_constraints": [1, -1, 0],
+        "device_type": "cuda",
+        "num_leaves": 7,
+        "verbose": -1,
+    }
+    for bad, expected in (
+        ({"monotone_constraints_method": "intermediate"}, r'only supports the "basic" monotone_constraints_method'),
+        ({"monotone_constraints_method": "advanced"}, r'only supports the "basic" monotone_constraints_method'),
+        ({"monotone_penalty": 1.0}, r"monotone_penalty is not supported with device_type=cuda"),
+        ({"use_quantized_grad": True}, r"monotone_constraints is not supported with use_quantized_grad"),
+    ):
+        with pytest.raises(lgb.basic.LightGBMError, match=expected):
+            lgb.train({**base, **bad}, lgb.Dataset(X, label=y, params={"verbose": -1}), num_boost_round=1)
