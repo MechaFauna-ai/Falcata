@@ -12,12 +12,39 @@
 
 #if defined(USE_ROCM)
 #include <LightGBM/cuda/cuda_rocm_interop.h>
-#include <rccl/rccl.h>
 #else
 #include <cuda.h>
 #include <cuda_runtime.h>
+#endif
+
+#ifdef USE_NCCL
+#if defined(USE_ROCM)
+#include <rccl/rccl.h>
+#else
 #include <nccl.h>
 #endif
+#else  // USE_NCCL
+// NCCL has no official distribution for Windows, so single-GPU builds
+// (USE_CUDA=ON, USE_NCCL=OFF) stand in minimal types/functions instead of
+// including nccl.h. Multi-GPU training (NCCLGBDT, NCCLTopology) is excluded
+// from the build in this configuration, so these are never actually invoked;
+// they exist only so that the NCCL-typed members and helpers shared with the
+// single-GPU tree learner still compile. NCCLCHECK (below) reports a clear
+// fatal error if one is ever reached at runtime.
+typedef void* ncclComm_t;
+enum ncclResult_t { ncclSuccess = 0, ncclNoNCCLSupport = 1 };
+enum ncclDataType_t { ncclFloat32, ncclFloat64, ncclInt32, ncclInt64 };
+enum ncclRedOp_t { ncclSum, ncclMin, ncclMax };
+inline const char* ncclGetErrorString(ncclResult_t) {
+  return "NCCL support was not compiled in; rebuild with -DUSE_NCCL=ON to use multi-GPU training";
+}
+inline ncclResult_t ncclGroupStart() { return ncclNoNCCLSupport; }
+inline ncclResult_t ncclGroupEnd() { return ncclNoNCCLSupport; }
+inline ncclResult_t ncclAllReduce(const void*, void*, size_t, ncclDataType_t, ncclRedOp_t, ncclComm_t, cudaStream_t) {
+  return ncclNoNCCLSupport;
+}
+#endif  // USE_NCCL
+
 #include <stdio.h>
 
 #include <LightGBM/utils/log.h>

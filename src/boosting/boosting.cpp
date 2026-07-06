@@ -12,9 +12,9 @@
 #include "gbdt.h"
 #include "rf.hpp"
 
-#ifdef USE_CUDA
+#ifdef USE_NCCL
 #include "cuda/nccl_gbdt.hpp"
-#endif  // USE_CUDA
+#endif  // USE_NCCL
 
 namespace LightGBM {
 
@@ -53,7 +53,12 @@ Boosting* Boosting::CreateBoosting(const std::string& type, const char* filename
     if (type == std::string("gbdt")) {
       #ifdef USE_CUDA
       if (device_type == std::string("cuda") && num_gpu > 1) {
+      #ifdef USE_NCCL
         return new NCCLGBDT<GBDT>();
+      #else
+        Log::Warning("num_gpu > 1 requires NCCL, which was not compiled in (USE_NCCL=OFF). Falling back to a single GPU.");
+        return new GBDT();
+      #endif  // USE_NCCL
       } else {
       #endif  // USE_CUDA
         return new GBDT();
@@ -75,7 +80,12 @@ Boosting* Boosting::CreateBoosting(const std::string& type, const char* filename
       if (type == std::string("gbdt")) {
         #ifdef USE_CUDA
         if (device_type == std::string("cuda") && num_gpu > 1) {
+        #ifdef USE_NCCL
           ret.reset(new NCCLGBDT<GBDT>());
+        #else
+          Log::Warning("num_gpu > 1 requires NCCL, which was not compiled in (USE_NCCL=OFF). Falling back to a single GPU.");
+          ret.reset(new GBDT());
+        #endif  // USE_NCCL
         } else {
         #endif  // USE_CUDA
           ret.reset(new GBDT());
