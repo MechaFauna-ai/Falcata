@@ -396,6 +396,16 @@ endif()
 if(MSVC)
     # compiling 'fmt' on MSVC: "Unicode support requires compiling with /utf-8"
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4 /MP /utf-8")
+    if(USE_CUDA)
+        # -Xcompiler=/utf-8 reaches cl.exe for nvcc's host-side compilation,
+        # but fmt's use_utf8 check (fmt/base.h) detects /utf-8 by checking how
+        # the compiler itself encodes a "§" literal, and nvcc's own
+        # front-end parse of .cu files (separate from the host cl.exe it
+        # shells out to) doesn't pick up that flag. Disabling FMT_UNICODE
+        # skips that compile-time assertion; it only guards an unused
+        # Windows-console UTF-8 print codepath, not core formatting.
+        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=/utf-8 -DFMT_UNICODE=0")
+    endif()
     if(__BUILD_FOR_R)
         # MSVC does not like this commit:
         # https://github.com/wch/r-source/commit/fb52ac1a610571fcb8ac92d886b9fefcffaa7d48
