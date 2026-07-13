@@ -590,10 +590,12 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
     if (splittable.empty()) {
       break;
     }
-    // stop level batching as soon as the leaf budget could bind or applying the level
-    // would leave no headroom for ranking its children; the leaf-wise tail then
-    // selects among the cached candidates in exact best-gain order
-    if (tree->num_leaves() + 2 * static_cast<int>(splittable.size()) > config_->num_leaves) {
+    // batch the level whenever it fits in the leaf budget. If the finished tree
+    // never exhausts num_leaves the result is exactly the leaf-wise tree (split
+    // decisions are node-local); only when the budget binds does the final level
+    // defer to the leaf-wise tail, which selects among the cached candidates in
+    // exact best-gain order.
+    if (tree->num_leaves() + static_cast<int>(splittable.size()) > config_->num_leaves) {
       break;
     }
     // debug: cap splits per level to isolate multi-pair interactions
