@@ -62,10 +62,14 @@ class CUDABestSplitFinder {
    *  FindBestSplits kernels can be ordered after histogram construction/subtraction
    *  via cudaStreamWaitEvent instead of a per-split device sync. Called once after
    *  both objects are initialized. */
-  void SetHistogramEvents(cudaEvent_t construct_done_event, cudaEvent_t subtract_done_event) {
-    hist_construct_done_event_ = construct_done_event;
-    hist_subtract_done_event_ = subtract_done_event;
+  void SetHistogramEvents(const cudaEvent_t* construct_done_events, const cudaEvent_t* subtract_done_events) {
+    hist_construct_done_events_ = construct_done_events;
+    hist_subtract_done_events_ = subtract_done_events;
   }
+
+  /*! \brief select which histogram pipeline's completion events the next
+   *  FindBestSplitsForLeaf call waits on (hybrid level-batched growth) */
+  void SetActiveHistPipeline(const int pipeline) { active_hist_pipeline_ = pipeline; }
 
   void BeforeTrain(const std::vector<int8_t>& is_feature_used_bytree);
 
@@ -85,6 +89,29 @@ class CUDABestSplitFinder {
     const bool smaller_leaf_below_max_depth,
     const bool larger_leaf_below_max_depth,
     const bool synchronize = true);
+
+  /*! \brief whether the batched per-level find+sync path supports the current
+   *  configuration (only the template combination the benchmarks exercise:
+   *  no extra_trees / L1 / path smoothing, shared-memory histograms, one sync
+   *  block per leaf, no per-node feature selection, no categorical features) */
+  bool SupportsBatchedLevel() const {
+    return !extra_trees_ && lambda_l1_ <= 0.0f && !use_smoothing_ &&
+           !use_global_memory_ && !select_features_by_node_ &&
+           !has_categorical_feature_ && num_tasks_ <= NUM_TASKS_PER_SYNC_BLOCK;
+  }
+
+  /*! \brief Batched per-level best-split search for hybrid growth: one find launch
+   *  and one sync launch cover every sibling pair of a level. Each pair writes its
+   *  own region of the task output buffer and its own (disjoint) per-leaf slots of
+   *  the best-split cache. Waits on the histogram constructor's batched
+   *  subtract-done event before reading any histogram; grad_scale/hess_scale are
+   *  null for non-quantized training. The caller is expected to synchronize via
+   *  SyncAllLeafBestSplitsToHost afterwards. */
+  void FindBestSplitsForLevel(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    const score_t* grad_scale,
+    const score_t* hess_scale);
 
   const CUDASplitInfo* FindBestFromAllSplits(
     const int cur_num_leaves,
@@ -219,6 +246,25 @@ class CUDABestSplitFinder {
     const bool is_smaller_leaf_valid,
     const bool is_larger_leaf_valid);
 
+  // ---- batched per-level launchers (hybrid growth) ----
+  // Grow the task output buffer so every pair of a level has its own region of
+  // 2 * num_tasks_ CUDASplitInfo slots. No-op once capacity is reached.
+  void EnsureHybridLevelCapacity(const int num_pairs);
+
+  void LaunchFindBestSplitsForLevelKernel(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs);
+
+  void LaunchFindBestSplitsDiscretizedForLevelKernel(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    const score_t* grad_scale,
+    const score_t* hess_scale);
+
+  void LaunchSyncBestSplitForLevelKernel(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs);
+
   void LaunchFindBestFromAllSplitsKernel(
     const int cur_num_leaves,
     const int smaller_leaf_index,
@@ -264,8 +310,9 @@ class CUDABestSplitFinder {
   std::vector<cudaStream_t> cuda_streams_;
   /*! \brief histogram constructor completion events (not owned); used to order the
    *  per-leaf FindBestSplits kernels after histogram construction/subtraction. */
-  cudaEvent_t hist_construct_done_event_ = nullptr;
-  cudaEvent_t hist_subtract_done_event_ = nullptr;
+  const cudaEvent_t* hist_construct_done_events_ = nullptr;
+  const cudaEvent_t* hist_subtract_done_events_ = nullptr;
+  int active_hist_pipeline_ = 0;
   // for best split find tasks
   std::vector<SplitFindTask> split_find_tasks_;
   int num_tasks_;

@@ -349,6 +349,37 @@ void CUDABestSplitFinder::FindBestSplitsForLeaf(
   global_timer.Stop("CUDABestSplitFinder::LaunchSyncBestSplitForLeafKernel");
 }
 
+void CUDABestSplitFinder::EnsureHybridLevelCapacity(const int num_pairs) {
+  const size_t needed = 2 * static_cast<size_t>(num_tasks_) * static_cast<size_t>(num_pairs);
+  if (cuda_best_split_info_.Size() < needed) {
+    cuda_best_split_info_.Resize(needed);
+    // (re)initialize the categorical-threshold pointers of every slot; the batched
+    // path never runs with categorical features, so this just nulls them so the
+    // sync kernel's wholesale struct copies stay safe
+    AllocateCatVectors(cuda_best_split_info_.RawData(), cuda_cat_threshold_feature_.RawData(),
+                       cuda_cat_threshold_real_feature_.RawData(), needed);
+  }
+}
+
+void CUDABestSplitFinder::FindBestSplitsForLevel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const int num_pairs,
+  const score_t* grad_scale,
+  const score_t* hess_scale) {
+  if (num_pairs <= 0) {
+    return;
+  }
+  EnsureHybridLevelCapacity(num_pairs);
+  // order the batched find after the whole batched histogram phase of this level
+  CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], hist_subtract_done_events_[0], 0));
+  if (grad_scale != nullptr && hess_scale != nullptr) {
+    LaunchFindBestSplitsDiscretizedForLevelKernel(pair_descs, num_pairs, grad_scale, hess_scale);
+  } else {
+    LaunchFindBestSplitsForLevelKernel(pair_descs, num_pairs);
+  }
+  LaunchSyncBestSplitForLevelKernel(pair_descs, num_pairs);
+}
+
 const CUDASplitInfo* CUDABestSplitFinder::FindBestFromAllSplits(
     const int cur_num_leaves,
     const int smaller_leaf_index,

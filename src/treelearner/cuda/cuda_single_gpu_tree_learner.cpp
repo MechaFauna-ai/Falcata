@@ -70,6 +70,10 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // it (falls back to the classic one-split-at-a-time leaf-wise loop everywhere)
   const char* hybrid_env = std::getenv("EXABOOST_HYBRID_GROWTH");
   use_hybrid_growth_ = (hybrid_env == nullptr || std::string(hybrid_env) != std::string("0"));
+  // batched per-level kernels for the hybrid prefix (one construct/fix/subtract/
+  // find/sync launch per level instead of per pair); "0" keeps the per-pair path
+  const char* batch_env = std::getenv("EXABOOST_HYBRID_BATCH_KERNELS");
+  use_hybrid_batch_kernels_ = (batch_env == nullptr || std::string(batch_env) != std::string("0"));
   cuda_best_split_finder_.reset(new CUDABestSplitFinder(cuda_histogram_constructor_->cuda_hist(),
     train_data_, this->share_state_->feature_hist_offsets(), select_features_by_node_, config_));
   cuda_best_split_finder_->Init();
@@ -77,8 +81,8 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // per-leaf FindBestSplits kernels are ordered after histogram construction/subtraction
   // via cudaStreamWaitEvent instead of per-split device syncs.
   cuda_best_split_finder_->SetHistogramEvents(
-    cuda_histogram_constructor_->construct_done_event(),
-    cuda_histogram_constructor_->subtract_done_event());
+    cuda_histogram_constructor_->construct_done_events(),
+    cuda_histogram_constructor_->subtract_done_events());
 
   leaf_best_split_feature_.resize(config_->num_leaves, -1);
   leaf_best_split_threshold_.resize(config_->num_leaves, 0);
@@ -321,7 +325,10 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
 
 void CUDASingleGPUTreeLearner::EnqueuePairBestSplitSearch(const CUDATree* tree,
     const CUDALeafSplitsStruct* smaller_struct, const CUDALeafSplitsStruct* larger_struct,
-    const int smaller_leaf_index, const int larger_leaf_index, const bool synchronize) {
+    const int smaller_leaf_index, const int larger_leaf_index, const bool synchronize,
+    const int pipeline) {
+  cuda_histogram_constructor_->SetActivePipeline(pipeline);
+  cuda_best_split_finder_->SetActiveHistPipeline(pipeline);
   global_timer.Start("CUDASingleGPUTreeLearner::ConstructHistogramForLeaf");
   const data_size_t global_num_data_in_smaller_leaf = nccl_communicator_ != nullptr ?
     global_num_data_in_leaf_[smaller_leaf_index] :
@@ -427,6 +434,92 @@ void CUDASingleGPUTreeLearner::EnqueuePairBestSplitSearch(const CUDATree* tree,
       synchronize);
   }
   global_timer.Stop("CUDASingleGPUTreeLearner::FindBestSplitsForLeaf");
+  cuda_histogram_constructor_->SetActivePipeline(0);
+  cuda_best_split_finder_->SetActiveHistPipeline(0);
+}
+
+void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
+    const std::vector<HybridPendingPair>& pairs) {
+  const int num_pairs = static_cast<int>(pairs.size());
+  if (num_pairs <= 0) {
+    return;
+  }
+  global_timer.Start("CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch");
+  host_hybrid_pair_descs_.resize(static_cast<size_t>(num_pairs));
+  data_size_t max_num_data_in_smaller_leaf = 0;
+  bool any_bit_change_copy = false;
+  for (int i = 0; i < num_pairs; ++i) {
+    const HybridPendingPair& pair = pairs[i];
+    CUDAHybridPairDescriptor& desc = host_hybrid_pair_descs_[i];
+    desc.smaller_struct = pair.smaller_struct;
+    desc.larger_struct = pair.larger_struct;
+    desc.smaller_leaf_index = pair.smaller;
+    desc.larger_leaf_index = pair.larger;
+    const data_size_t num_data_in_smaller_leaf = leaf_num_data_[pair.smaller];
+    const data_size_t num_data_in_larger_leaf = pair.larger < 0 ? 0 : leaf_num_data_[pair.larger];
+    const double sum_hessians_in_smaller_leaf = leaf_sum_hessians_[pair.smaller];
+    const double sum_hessians_in_larger_leaf = pair.larger < 0 ? 0.0 : leaf_sum_hessians_[pair.larger];
+    desc.num_data_in_smaller_leaf = num_data_in_smaller_leaf;
+    desc.num_data_in_larger_leaf = num_data_in_larger_leaf;
+    // mirror of ConstructHistogramForLeaf's min_data/min_hessian early return
+    desc.construct_valid =
+      ((num_data_in_smaller_leaf <= config_->min_data_in_leaf ||
+        sum_hessians_in_smaller_leaf <= config_->min_sum_hessian_in_leaf) &&
+       (num_data_in_larger_leaf <= config_->min_data_in_leaf ||
+        sum_hessians_in_larger_leaf <= config_->min_sum_hessian_in_leaf)) ? 0 : 1;
+    // mirror of CUDABestSplitFinder::FindBestSplitsForLeaf's leaf validity checks
+    const bool smaller_below_max_depth =
+      config_->max_depth <= 0 || tree->leaf_depth(pair.smaller) < config_->max_depth;
+    const bool larger_below_max_depth = pair.larger < 0 ||
+      config_->max_depth <= 0 || tree->leaf_depth(pair.larger) < config_->max_depth;
+    desc.smaller_valid = (num_data_in_smaller_leaf > config_->min_data_in_leaf &&
+                          sum_hessians_in_smaller_leaf > config_->min_sum_hessian_in_leaf &&
+                          smaller_below_max_depth) ? 1 : 0;
+    desc.larger_valid = (pair.larger >= 0 &&
+                         num_data_in_larger_leaf > config_->min_data_in_leaf &&
+                         sum_hessians_in_larger_leaf > config_->min_sum_hessian_in_leaf &&
+                         larger_below_max_depth) ? 1 : 0;
+    if (config_->use_quantized_grad) {
+      if (pair.larger >= 0) {
+        const int parent_leaf_index = std::min(pair.smaller, pair.larger);
+        desc.parent_num_bits = cuda_gradient_discretizer_->GetHistBitsInNode<false>(parent_leaf_index);
+        desc.smaller_num_bits = cuda_gradient_discretizer_->GetHistBitsInLeaf<false>(pair.smaller);
+        desc.larger_num_bits = cuda_gradient_discretizer_->GetHistBitsInLeaf<false>(pair.larger);
+        if (desc.parent_num_bits > 16 && desc.larger_num_bits <= 16) {
+          any_bit_change_copy = true;
+        }
+      } else {
+        desc.parent_num_bits = cuda_gradient_discretizer_->GetHistBitsInLeaf<false>(0);
+        desc.smaller_num_bits = desc.parent_num_bits;
+        desc.larger_num_bits = desc.parent_num_bits;
+      }
+    } else {
+      desc.parent_num_bits = 0;
+      desc.smaller_num_bits = 0;
+      desc.larger_num_bits = 0;
+    }
+    if (num_data_in_smaller_leaf > max_num_data_in_smaller_leaf) {
+      max_num_data_in_smaller_leaf = num_data_in_smaller_leaf;
+    }
+  }
+  if (cuda_hybrid_pair_descs_.Size() < static_cast<size_t>(num_pairs)) {
+    // preallocate for the deepest possible level so this resizes at most once
+    cuda_hybrid_pair_descs_.Resize(static_cast<size_t>(
+      std::max(num_pairs, config_->num_leaves / 2 + 2)));
+  }
+  // single synchronous H2D per level; the histogram/find kernels launch on
+  // blocking streams afterwards, so no extra ordering is needed
+  CopyFromHostToCUDADevice<CUDAHybridPairDescriptor>(
+    cuda_hybrid_pair_descs_.RawData(), host_hybrid_pair_descs_.data(),
+    static_cast<size_t>(num_pairs), __FILE__, __LINE__);
+  cuda_histogram_constructor_->ConstructHistogramsForLevel(
+    cuda_hybrid_pair_descs_.RawDataReadOnly(), num_pairs,
+    max_num_data_in_smaller_leaf, any_bit_change_copy);
+  cuda_best_split_finder_->FindBestSplitsForLevel(
+    cuda_hybrid_pair_descs_.RawDataReadOnly(), num_pairs,
+    config_->use_quantized_grad ? cuda_gradient_discretizer_->grad_scale_ptr() : nullptr,
+    config_->use_quantized_grad ? cuda_gradient_discretizer_->hess_scale_ptr() : nullptr);
+  global_timer.Stop("CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch");
 }
 
 int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
@@ -440,25 +533,32 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
       hybrid_pair_slots_[s]->Init(config_->use_quantized_grad);
     }
   }
-  struct PendingPair {
-    int smaller;
-    int larger;
-    const CUDALeafSplitsStruct* smaller_struct;
-    const CUDALeafSplitsStruct* larger_struct;
-  };
   // the root "pair" lives in the fixed pair structs, initialized by BeforeTrain
-  std::vector<PendingPair> pairs;
+  std::vector<HybridPendingPair> pairs;
   pairs.push_back({smaller_leaf_index_, larger_leaf_index_,
                    cuda_smaller_leaf_splits_->GetCUDAStruct(),
                    cuda_larger_leaf_splits_->GetCUDAStruct()});
+  // batched per-level kernels: one construct/fix/subtract/find/sync launch covers
+  // all pairs of a level. Falls back to the per-pair loop when the data layout or
+  // config is outside the batched kernels' support, or when disabled via env.
+  const bool use_batched_level_kernels = use_hybrid_batch_kernels_ &&
+    cuda_histogram_constructor_->SupportsBatchedLevel() &&
+    cuda_best_split_finder_->SupportsBatchedLevel();
   int num_splits = 0;
   while (true) {
     // enqueue histogram + best-split search for every pair of this level; device
     // work only, ordered per pair by the histogram-completion events
-    for (const PendingPair& pair : pairs) {
-      static const bool sync_pairs = std::getenv("EXABOOST_HYBRID_SYNCPAIRS") != nullptr;
-      EnqueuePairBestSplitSearch(tree, pair.smaller_struct, pair.larger_struct,
-                                 pair.smaller, pair.larger, /*synchronize=*/sync_pairs);
+    if (use_batched_level_kernels) {
+      EnqueueLevelBestSplitSearch(tree, pairs);
+    } else {
+      int pair_counter = 0;
+      for (const HybridPendingPair& pair : pairs) {
+        static const bool sync_pairs = std::getenv("EXABOOST_HYBRID_SYNCPAIRS") != nullptr;
+        EnqueuePairBestSplitSearch(tree, pair.smaller_struct, pair.larger_struct,
+                                   pair.smaller, pair.larger, /*synchronize=*/sync_pairs,
+                                   pair_counter % CUDAHistogramConstructor::kNumHistPipelines);
+        ++pair_counter;
+      }
     }
     // one device synchronization + one transfer for the whole level
     cuda_best_split_finder_->SyncAllLeafBestSplitsToHost(tree->num_leaves(), &host_leaf_best_splits_);

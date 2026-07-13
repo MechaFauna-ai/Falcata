@@ -123,7 +123,23 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // (device work only; no host synchronization).
   void EnqueuePairBestSplitSearch(const CUDATree* tree,
     const CUDALeafSplitsStruct* smaller_struct, const CUDALeafSplitsStruct* larger_struct,
-    int smaller_leaf_index, int larger_leaf_index, bool synchronize = true);
+    int smaller_leaf_index, int larger_leaf_index, bool synchronize = true,
+    int pipeline = 0);
+  // One sibling pair of a level awaiting its best-split search.
+  struct HybridPendingPair {
+    int smaller;
+    int larger;
+    const CUDALeafSplitsStruct* smaller_struct;
+    const CUDALeafSplitsStruct* larger_struct;
+  };
+  // Batched replacement for the per-pair EnqueuePairBestSplitSearch loop of one
+  // level: builds per-pair descriptors (validity flags, leaf sizes, quantized
+  // histogram bit widths), uploads them in a single H2D copy, then runs ONE
+  // batched construct/fix/subtract launch (histogram constructor) and ONE batched
+  // find + sync launch (best split finder) covering every pair. Device work only;
+  // the caller synchronizes via SyncAllLeafBestSplitsToHost.
+  void EnqueueLevelBestSplitSearch(const CUDATree* tree,
+    const std::vector<HybridPendingPair>& pairs);
   // Grow full levels until the next level could exceed num_leaves. Returns the
   // number of splits applied; afterwards every current leaf has a valid cached
   // best-split candidate and smaller_/larger_leaf_index_ name the last applied pair.
@@ -175,6 +191,11 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool use_hybrid_growth_ = false;
   std::vector<std::unique_ptr<CUDALeafSplits>> hybrid_pair_slots_;
   std::vector<CUDASplitInfo> host_leaf_best_splits_;
+  // hybrid growth: batched per-level kernels (EXABOOST_HYBRID_BATCH_KERNELS,
+  // default on; "0" falls back to the per-pair kernel launches)
+  bool use_hybrid_batch_kernels_ = false;
+  std::vector<CUDAHybridPairDescriptor> host_hybrid_pair_descs_;
+  CUDAVector<CUDAHybridPairDescriptor> cuda_hybrid_pair_descs_;
   // data partition that partitions data indices into different leaves
   std::unique_ptr<CUDADataPartition> cuda_data_partition_;
   // for histogram construction

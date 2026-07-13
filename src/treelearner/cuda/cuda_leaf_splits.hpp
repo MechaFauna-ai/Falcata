@@ -33,6 +33,31 @@ struct CUDALeafSplitsStruct {
   hist_t* hist_in_leaf;
 };
 
+/*! \brief Per-sibling-pair metadata for the hybrid level-batched growth phase.
+ *  One entry per pair of a level; uploaded to the device in a single H2D copy so
+ *  the batched construct/fix/subtract/find/sync kernels can cover all pairs of a
+ *  level with one launch each (indexed by a grid dimension). All fields are
+ *  host-known at level start (single-GPU only, so global == local leaf counts). */
+struct CUDAHybridPairDescriptor {
+  const CUDALeafSplitsStruct* smaller_struct;
+  const CUDALeafSplitsStruct* larger_struct;
+  int smaller_leaf_index;
+  int larger_leaf_index;
+  data_size_t num_data_in_smaller_leaf;
+  data_size_t num_data_in_larger_leaf;
+  /*! \brief histogram construction needed (mirror of ConstructHistogramForLeaf's
+   *  min_data/min_hessian early-return) */
+  uint8_t construct_valid;
+  /*! \brief smaller/larger leaf pass the best-split-search validity checks
+   *  (min_data_in_leaf, min_sum_hessian_in_leaf, below max_depth) */
+  uint8_t smaller_valid;
+  uint8_t larger_valid;
+  /*! \brief per-pair histogram bit widths for quantized training (0 when unused) */
+  uint8_t parent_num_bits;
+  uint8_t smaller_num_bits;
+  uint8_t larger_num_bits;
+};
+
 class CUDALeafSplits: public NCCLInfo {
  public:
   explicit CUDALeafSplits(const data_size_t num_data);

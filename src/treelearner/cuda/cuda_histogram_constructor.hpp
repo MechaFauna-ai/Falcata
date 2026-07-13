@@ -50,11 +50,20 @@ class CUDAHistogramConstructor {
   /*! \brief Event recorded on cuda_stream_ after the smaller-leaf histogram is
    *  constructed. The best split finder waits on it (cudaStreamWaitEvent) before
    *  reading the smaller-leaf histogram, replacing a per-split device sync. */
-  cudaEvent_t construct_done_event() const { return construct_done_event_; }
+  cudaEvent_t construct_done_event() const { return construct_done_events_[0]; }
+
+  /*! \brief number of independent (stream, event-pair) pipelines for hybrid
+   *  level-batched growth; pairs of one level round-robin across them so their
+   *  small histogram kernels can execute concurrently */
+  static constexpr int kNumHistPipelines = 4;
+  void SetActivePipeline(const int pipeline) { active_pipeline_ = pipeline; }
+  cudaStream_t current_stream() const { return pipeline_streams_[active_pipeline_]; }
+  const cudaEvent_t* construct_done_events() const { return construct_done_events_; }
+  const cudaEvent_t* subtract_done_events() const { return subtract_done_events_; }
   /*! \brief Event recorded on cuda_stream_ after the larger-leaf histogram is
    *  produced by subtraction. The best split finder waits on it before reading
    *  the larger-leaf histogram. */
-  cudaEvent_t subtract_done_event() const { return subtract_done_event_; }
+  cudaEvent_t subtract_done_event() const { return subtract_done_events_[0]; }
 
   void ZeroHistForLeaf(int leaf_index);
 
@@ -76,6 +85,26 @@ class CUDAHistogramConstructor {
     const uint8_t parent_num_bits_in_histogram_bins,
     const uint8_t smaller_num_bits_in_histogram_bins,
     const uint8_t larger_num_bits_in_histogram_bins);
+
+  /*! \brief whether the batched per-level construct/fix/subtract path supports the
+   *  current data layout (dense, shared-memory histograms, no compact view) */
+  bool SupportsBatchedLevel() const {
+    return cuda_row_data_ != nullptr &&
+           !cuda_row_data_->is_sparse() &&
+           cuda_row_data_->NumLargeBinPartition() == 0 &&
+           !use_compact_view_;
+  }
+
+  /*! \brief Batched per-level histogram phase for hybrid growth: one construct, one
+   *  fix and one subtract launch cover every sibling pair of a level (pairs indexed
+   *  by a grid dimension). All kernels run on pipeline_streams_[0] (cuda_stream_) in
+   *  order; subtract_done_events_[0] is recorded at the end so the best split finder
+   *  can order its batched find kernel after the whole histogram phase. */
+  void ConstructHistogramsForLevel(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    const data_size_t max_num_data_in_smaller_leaf,
+    const bool any_pair_needs_bit_change_copy);
 
   void ResetTrainingData(const Dataset* train_data, TrainingShareStates* share_states);
 
@@ -151,6 +180,30 @@ class CUDAHistogramConstructor {
     const uint8_t smaller_num_bits_in_histogram_bins,
     const uint8_t larger_num_bits_in_histogram_bins);
 
+  // ---- batched per-level launchers (hybrid growth) ----
+
+  template <typename HIST_TYPE, size_t SHARED_HIST_SIZE>
+  void LaunchConstructHistogramBatchedKernelInner(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    const data_size_t max_num_data_in_smaller_leaf);
+
+  template <typename HIST_TYPE, size_t SHARED_HIST_SIZE, typename BIN_TYPE>
+  void LaunchConstructHistogramBatchedKernelInner0(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    const data_size_t max_num_data_in_smaller_leaf);
+
+  void LaunchConstructHistogramBatchedKernel(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    const data_size_t max_num_data_in_smaller_leaf);
+
+  void LaunchSubtractHistogramBatchedKernel(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    const bool any_pair_needs_bit_change_copy);
+
   // Host memory
 
   /*! \brief size of training data */
@@ -175,6 +228,10 @@ class CUDAHistogramConstructor {
   double min_sum_hessian_in_leaf_;
   /*! \brief cuda stream for histogram construction */
   cudaStream_t cuda_stream_;
+  cudaStream_t pipeline_streams_[kNumHistPipelines];
+  cudaEvent_t construct_done_events_[kNumHistPipelines];
+  cudaEvent_t subtract_done_events_[kNumHistPipelines];
+  int active_pipeline_ = 0;
   /*! \brief recorded on cuda_stream_ after smaller-leaf histogram construction */
   cudaEvent_t construct_done_event_ = nullptr;
   /*! \brief recorded on cuda_stream_ after larger-leaf histogram subtraction */
