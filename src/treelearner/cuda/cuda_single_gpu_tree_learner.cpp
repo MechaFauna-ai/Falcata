@@ -96,8 +96,10 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   if (config_->use_quantized_grad) {
     cuda_leaf_gradient_stat_buffer_.Resize(config_->num_leaves);
     cuda_leaf_hessian_stat_buffer_.Resize(config_->num_leaves);
+    // one random-offset slot per TREE: multiclass trains num_class trees per
+    // iteration, and the discretizer's iter_ counter advances once per tree
     cuda_gradient_discretizer_.reset(new CUDAGradientDiscretizer(
-      config_->num_grad_quant_bins, config_->num_iterations, config_->seed, is_constant_hessian, config_->stochastic_rounding));
+      config_->num_grad_quant_bins, config_->num_iterations * std::max(config_->num_class, 1), config_->seed, is_constant_hessian, config_->stochastic_rounding));
     cuda_gradient_discretizer_->SetNCCLInfo(nccl_communicator_, nccl_gpu_rank_, local_gpu_rank_, gpu_device_id_, global_num_data_);
     cuda_gradient_discretizer_->Init(num_data_, config_->num_leaves, train_data_->num_features(), train_data_);
   } else {
