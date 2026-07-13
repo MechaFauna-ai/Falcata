@@ -273,8 +273,15 @@ def run_xgboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
         bst = xgb.train(params, dtrain, num_boost_round=reg["rounds"])
     train_s = time.perf_counter() - t0
 
-    bst.set_param({"device": "cuda"})
-    preds = bst.predict(xgb.DMatrix(np.asarray(x_te)))
+    # chunked inplace_predict: a full GPU DMatrix of a wide test set can OOM
+    # the device while the trained booster is still resident
+    step = 200_000
+    preds = np.concatenate(
+        [
+            bst.inplace_predict(np.ascontiguousarray(x_te[i : i + step]))
+            for i in range(0, x_te.shape[0], step)
+        ]
+    )
     return {
         "construct_s": construct_s,
         "train_s": train_s,
