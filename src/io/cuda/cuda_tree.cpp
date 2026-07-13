@@ -62,9 +62,11 @@ void CUDATree::InitCUDAMemory() {
   cuda_leaf_count_.Resize(static_cast<size_t>(max_leaves_));
   cuda_internal_count_.Resize(static_cast<size_t>(max_leaves_));
   cuda_split_gain_.Resize(static_cast<size_t>(max_leaves_));
-  SetCUDAMemory<double>(cuda_leaf_value_.RawData(), 0.0f, 1, __FILE__, __LINE__);
-  SetCUDAMemory<double>(cuda_leaf_weight_.RawData(), 0.0f, 1, __FILE__, __LINE__);
-  SetCUDAMemory<int>(cuda_leaf_parent_.RawData(), -1, 1, __FILE__, __LINE__);
+  // async memsets on the default stream; the single sync below covers them
+  // (SetCUDAMemory would pay one full device sync each)
+  CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_leaf_value_.RawData()), 0, sizeof(double)));
+  CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_leaf_weight_.RawData()), 0, sizeof(double)));
+  CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_leaf_parent_.RawData()), -1, sizeof(int)));
   CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_stream_));
   SynchronizeCUDADevice(__FILE__, __LINE__);
 }
@@ -114,11 +116,12 @@ void CUDATree::SplitBatch(const std::vector<CUDATreeBatchSplit>& splits) {
     cuda_batch_splits_.Resize(std::max(splits.size(),
       static_cast<size_t>(max_leaves_ / 2 + 2)));
   }
-  // synchronous H2D on the legacy default stream: ordered before the subsequent
-  // launch on cuda_stream_ (a blocking stream), and after any prior kernel that
-  // still reads the buffer
-  CopyFromHostToCUDADevice<CUDATreeBatchSplit>(cuda_batch_splits_.RawData(),
-    splits.data(), splits.size(), __FILE__, __LINE__);
+  // async H2D on cuda_stream_: ordered after any prior SplitBatchKernel still
+  // reading the buffer and before the launch below (same stream). The host
+  // vector is only rewritten after the caller's per-level full sync, and a
+  // pageable async H2D returns only once the data is staged, so reuse is safe.
+  CopyFromHostToCUDADeviceAsync<CUDATreeBatchSplit>(cuda_batch_splits_.RawData(),
+    splits.data(), splits.size(), cuda_stream_, __FILE__, __LINE__);
   LaunchSplitBatchKernel(static_cast<int>(splits.size()));
   // host mirrors, in the exact order the per-split Split() loop would apply them
   for (const CUDATreeBatchSplit& split : splits) {

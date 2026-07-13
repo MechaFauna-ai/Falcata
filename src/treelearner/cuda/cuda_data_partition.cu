@@ -1512,25 +1512,31 @@ __global__ void HybridSplitTreeStructureBatchKernel(
   }
 }
 
+// region copy at identical offsets (src and dst share the main array layout);
+// used to carry terminal (non-split) leaves' regions from the old main index
+// array into the out buffer before it is swapped in as the new main array
 __global__ void HybridCopyDataIndicesBatchKernel(
   const CUDAHybridApplyDescriptor* descs,
-  const data_size_t* out_data_indices_in_leaf,
-  data_size_t* cuda_data_indices) {
+  const data_size_t* src_data_indices,
+  data_size_t* dst_data_indices) {
   const CUDAHybridApplyDescriptor d = descs[blockIdx.y];
   if (static_cast<int>(blockIdx.x) >= d.num_blocks) {
     return;
   }
   const data_size_t local_data_index = static_cast<data_size_t>(blockIdx.x * blockDim.x + threadIdx.x);
   if (local_data_index < d.num_data_in_leaf) {
-    cuda_data_indices[d.leaf_data_start + local_data_index] =
-      out_data_indices_in_leaf[d.leaf_data_start + local_data_index];
+    dst_data_indices[d.leaf_data_start + local_data_index] =
+      src_data_indices[d.leaf_data_start + local_data_index];
   }
 }
 
-void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, const int max_num_blocks) {
+void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, const int max_num_blocks,
+                                                       const int num_gaps, const int max_gap_blocks) {
   const CUDAHybridApplyDescriptor* descs = cuda_apply_descs_.RawDataReadOnly();
   const dim3 data_grid(static_cast<unsigned int>(max_num_blocks), static_cast<unsigned int>(num_splits));
   constexpr int block_dim = SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+  // out buffer of this level == new main array after the caller's swap
+  data_size_t* new_main_indices = cuda_out_data_indices_in_leaf_.RawData();
   // the level is bracketed by device synchronizations (best-split readback before,
   // FinishSplitBatch after), but wait on the last recorded copy event anyway so a
   // still-in-flight per-split CopyDataIndicesKernel can never race the scratch
@@ -1547,20 +1553,24 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
   HybridSplitInnerBatchKernel<<<data_grid, block_dim, 0, cuda_streams_[0]>>>(
     descs, cuda_data_indices_.RawData(), cuda_block_data_to_left_offset_.RawData(),
     cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
-    cuda_out_data_indices_in_leaf_.RawData());
+    new_main_indices);
   if (use_quantized_grad_) {
     HybridSplitTreeStructureBatchKernel<true><<<num_splits, 32, 0, cuda_streams_[0]>>>(
       descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
-      cuda_data_indices_.RawData(), num_total_bin_, cuda_hist_, cuda_hist_pool_.RawData(),
+      new_main_indices, num_total_bin_, cuda_hist_, cuda_hist_pool_.RawData(),
       cuda_leaf_output_.RawData(), cuda_split_info_buffer_.RawData());
   } else {
     HybridSplitTreeStructureBatchKernel<false><<<num_splits, 32, 0, cuda_streams_[0]>>>(
       descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
-      cuda_data_indices_.RawData(), num_total_bin_, cuda_hist_, cuda_hist_pool_.RawData(),
+      new_main_indices, num_total_bin_, cuda_hist_, cuda_hist_pool_.RawData(),
       cuda_leaf_output_.RawData(), cuda_split_info_buffer_.RawData());
   }
-  HybridCopyDataIndicesBatchKernel<<<data_grid, block_dim, 0, cuda_streams_[0]>>>(
-    descs, cuda_out_data_indices_in_leaf_.RawData(), cuda_data_indices_.RawData());
+  if (num_gaps > 0) {
+    // gap descriptors follow the split descriptors in cuda_apply_descs_
+    const dim3 gap_grid(static_cast<unsigned int>(max_gap_blocks), static_cast<unsigned int>(num_gaps));
+    HybridCopyDataIndicesBatchKernel<<<gap_grid, block_dim, 0, cuda_streams_[0]>>>(
+      descs + num_splits, cuda_data_indices_.RawData(), new_main_indices);
+  }
   CUDASUCCESS_OR_FATAL(cudaEventRecord(indices_copy_done_event_, cuda_streams_[0]));
 }
 

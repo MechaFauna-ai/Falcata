@@ -1574,7 +1574,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
   int grid_dim_y = 0;
   int block_dim_x = 0;
   int block_dim_y = 0;
-  CalcConstructHistogramKernelDim(&grid_dim_x, &grid_dim_y, &block_dim_x, &block_dim_y, max_num_data_in_smaller_leaf);
+  CalcConstructHistogramBatchedKernelDim(&grid_dim_x, &grid_dim_y, &block_dim_x, &block_dim_y, max_num_data_in_smaller_leaf, num_pairs);
   dim3 grid_dim(grid_dim_x, grid_dim_y, num_pairs);
   dim3 block_dim(block_dim_x, block_dim_y);
   if (use_quantized_grad_) {

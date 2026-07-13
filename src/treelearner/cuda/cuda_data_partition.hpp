@@ -187,11 +187,14 @@ class CUDADataPartition: public NCCLInfo {
  private:
   void CalcBlockDim(const data_size_t num_data_in_leaf);
 
-  /*! \brief launch the five batched apply kernels of one level, in dependency
-   *  order on cuda_streams_[0] (fused gen-bit-vector+update-leaf-index, aggregate
-   *  block offsets, split inner, split tree structure, copy indices);
-   *  descriptors already uploaded */
-  void LaunchSplitLevelBatchedKernels(const int num_splits, const int max_num_blocks);
+  /*! \brief launch the batched apply kernels of one level, in dependency order
+   *  on cuda_streams_[0] (fused gen-bit-vector+update-leaf-index, aggregate
+   *  block offsets, split inner into the out buffer, split tree structure, and
+   *  a sparse gap copy carrying terminal leaves' regions into the out buffer);
+   *  descriptors (splits first, then gaps) already uploaded. The caller swaps
+   *  the out buffer in as the new main index array afterwards. */
+  void LaunchSplitLevelBatchedKernels(const int num_splits, const int max_num_blocks,
+                                      const int num_gaps, const int max_gap_blocks);
 
   void GenDataToLeftBitVector(
     const data_size_t num_data_in_leaf,

@@ -31,8 +31,9 @@ void CUDALeafSplits::Init(const bool use_quantized_grad) {
 }
 
 void CUDALeafSplits::InitValues() {
+  // legacy default stream: later consumers on blocking streams implicitly
+  // order after this kernel, so no device sync is needed
   LaunchInitValuesEmptyKernel();
-  SynchronizeCUDADevice(__FILE__, __LINE__);
 }
 
 void CUDALeafSplits::InitValues(
@@ -43,12 +44,16 @@ void CUDALeafSplits::InitValues(
   double* root_sum_gradients, double* root_sum_hessians) {
   cuda_gradients_ = cuda_gradients;
   cuda_hessians_ = cuda_hessians;
-  cuda_sum_of_gradients_buffer_.SetValue(0);
-  cuda_sum_of_hessians_buffer_.SetValue(0);
+  // async memsets on the legacy default stream: the init kernels follow on the
+  // same stream and the synchronous D2H copies below block until completion
+  // (SetValue would pay one full device sync each, plus one at the end)
+  CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_sum_of_gradients_buffer_.RawData()), 0,
+    cuda_sum_of_gradients_buffer_.Size() * sizeof(double)));
+  CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_sum_of_hessians_buffer_.RawData()), 0,
+    cuda_sum_of_hessians_buffer_.Size() * sizeof(double)));
   LaunchInitValuesKernel(lambda_l1, lambda_l2, cuda_bagging_data_indices, cuda_data_indices_in_leaf, num_used_indices, cuda_hist_in_leaf);
   CopyFromCUDADeviceToHost<double>(root_sum_gradients, cuda_sum_of_gradients_buffer_.RawData(), 1, __FILE__, __LINE__);
   CopyFromCUDADeviceToHost<double>(root_sum_hessians, cuda_sum_of_hessians_buffer_.RawData(), 1, __FILE__, __LINE__);
-  SynchronizeCUDADevice(__FILE__, __LINE__);
 }
 
 void CUDALeafSplits::InitValues(
@@ -61,9 +66,10 @@ void CUDALeafSplits::InitValues(
   cuda_gradients_ = reinterpret_cast<const score_t*>(cuda_gradients_and_hessians);
   cuda_hessians_ = nullptr;
   LaunchInitValuesKernel(lambda_l1, lambda_l2, cuda_bagging_data_indices, cuda_data_indices_in_leaf, num_used_indices, cuda_hist_in_leaf, grad_scale, hess_scale);
+  // the synchronous D2H copies block until the kernels above complete; no
+  // extra device sync is needed
   CopyFromCUDADeviceToHost<double>(root_sum_gradients, cuda_sum_of_gradients_buffer_.RawData(), 1, __FILE__, __LINE__);
   CopyFromCUDADeviceToHost<double>(root_sum_hessians, cuda_sum_of_hessians_buffer_.RawData(), 1, __FILE__, __LINE__);
-  SynchronizeCUDADevice(__FILE__, __LINE__);
 }
 
 void CUDALeafSplits::Resize(const data_size_t num_data) {

@@ -10,6 +10,7 @@
 #include "cuda_histogram_constructor.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <vector>
 
 namespace LightGBM {
@@ -87,7 +88,11 @@ void CUDAHistogramConstructor::InitFeatureMetaInfo(const Dataset* train_data, co
 void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score_t* hessians) {
   cuda_gradients_ = gradients;
   cuda_hessians_ = hessians;
-  cuda_hist_.SetValue(0);
+  // async memset on the legacy default stream: the construct kernels on the
+  // (blocking) histogram streams implicitly order after it, so no device sync
+  // is needed (SetValue would pay a full device sync on every tree)
+  CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_hist_.RawData()), 0,
+    cuda_hist_.Size() * sizeof(hist_t)));
 }
 
 void CUDAHistogramConstructor::ZeroHistForLeaf(int /*leaf_index*/) {
@@ -470,6 +475,42 @@ void CUDAHistogramConstructor::CalcConstructHistogramKernelDim(
   *grid_dim_x = cuda_row_data_->num_feature_partitions();
   *grid_dim_y = std::max(min_grid_dim_y_,
     ((num_data_in_smaller_leaf + NUM_DATA_PER_THREAD - 1) / NUM_DATA_PER_THREAD + (*block_dim_y) - 1) / (*block_dim_y));
+}
+
+void CUDAHistogramConstructor::CalcConstructHistogramBatchedKernelDim(
+  int* grid_dim_x,
+  int* grid_dim_y,
+  int* block_dim_x,
+  int* block_dim_y,
+  const data_size_t max_num_data_in_smaller_leaf,
+  const int num_pairs) {
+  *block_dim_x = cuda_row_data_->max_num_column_per_partition();
+  *block_dim_y = NUM_THREADS_PER_BLOCK / cuda_row_data_->max_num_column_per_partition();
+  *grid_dim_x = cuda_row_data_->num_feature_partitions();
+  // rows-per-thread target of the per-leaf sizing
+  const int y_full_rate = ((max_num_data_in_smaller_leaf + NUM_DATA_PER_THREAD - 1) / NUM_DATA_PER_THREAD +
+    (*block_dim_y) - 1) / (*block_dim_y);
+  // The per-leaf sizing forces min_grid_dim_y_ y-blocks to saturate the device
+  // for a SINGLE leaf; every active block, however, pays a fixed shared-hist
+  // zero + global-merge cost, which dominates small leaves. In the batched
+  // kernel the pair grid dimension already provides parallelism, so share the
+  // saturation floor across pairs and otherwise cap the y-grid at
+  // min_rows_per_thread rows per thread (identical to the per-leaf sizing for
+  // single-pair levels and for leaves large enough that the cap is inactive).
+  static const int min_rows_per_thread = []() {
+    const char* env = std::getenv("EXABOOST_BATCH_CONSTRUCT_MINROWS");
+    return env != nullptr ? std::atoi(env) : 64;
+  }();
+  if (min_rows_per_thread <= 0) {
+    // disabled: fall back to the per-leaf sizing
+    *grid_dim_y = std::max(min_grid_dim_y_, y_full_rate);
+    return;
+  }
+  const int y_min_rate = ((max_num_data_in_smaller_leaf + min_rows_per_thread - 1) / min_rows_per_thread +
+    (*block_dim_y) - 1) / (*block_dim_y);
+  const int saturation_floor = (min_grid_dim_y_ + num_pairs - 1) / num_pairs;
+  *grid_dim_y = std::max(y_full_rate,
+    std::min(min_grid_dim_y_, std::max(std::max(1, y_min_rate), saturation_floor)));
 }
 
 void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, TrainingShareStates* share_states) {

@@ -2635,7 +2635,8 @@ void CUDABestSplitFinder::SyncLeafBestSplitToHost(
 
 void CUDABestSplitFinder::SyncAllLeafBestSplitsToHost(const int num_leaves, std::vector<CUDASplitInfo>* out) const {
   out->resize(static_cast<size_t>(num_leaves));
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  // synchronous D2H on the legacy default stream: implicitly waits for all
+  // preceding work on the (blocking) streams, so no explicit device sync needed
   CopyFromCUDADeviceToHost<CUDASplitInfo>(out->data(), cuda_leaf_best_split_info_.RawDataReadOnly(),
     static_cast<size_t>(num_leaves), __FILE__, __LINE__);
   // the raw copy brings over device categorical-threshold pointers; scrub them so the

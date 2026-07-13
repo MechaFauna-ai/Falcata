@@ -8,7 +8,9 @@
 #ifdef USE_CUDA
 
 #include <algorithm>
+#include <cstring>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "cuda_data_partition.hpp"
@@ -104,10 +106,11 @@ void CUDADataPartition::BeforeTrain() {
   if (!use_bagging_) {
     LaunchFillDataIndicesBeforeTrain();
   }
-  SetCUDAMemory<data_size_t>(cuda_leaf_num_data_.RawData(), 0, static_cast<size_t>(num_leaves_), __FILE__, __LINE__);
-  SetCUDAMemory<data_size_t>(cuda_leaf_data_start_.RawData(), 0, static_cast<size_t>(num_leaves_), __FILE__, __LINE__);
-  SetCUDAMemory<data_size_t>(cuda_leaf_data_end_.RawData(), 0, static_cast<size_t>(num_leaves_), __FILE__, __LINE__);
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  // async memsets on the default stream (SetCUDAMemory would pay one full
+  // device sync each); the synchronous copies below order after them
+  CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_leaf_num_data_.RawData()), 0, sizeof(data_size_t) * static_cast<size_t>(num_leaves_)));
+  CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_leaf_data_start_.RawData()), 0, sizeof(data_size_t) * static_cast<size_t>(num_leaves_)));
+  CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_leaf_data_end_.RawData()), 0, sizeof(data_size_t) * static_cast<size_t>(num_leaves_)));
   if (!use_bagging_) {
     CopyFromCUDADeviceToCUDADevice<data_size_t>(cuda_leaf_num_data_.RawData(), cuda_num_data_.RawData(), 1, __FILE__, __LINE__);
     CopyFromCUDADeviceToCUDADevice<data_size_t>(cuda_leaf_data_end_.RawData(), cuda_num_data_.RawData(), 1, __FILE__, __LINE__);
@@ -115,7 +118,6 @@ void CUDADataPartition::BeforeTrain() {
     CopyFromHostToCUDADevice<data_size_t>(cuda_leaf_num_data_.RawData(), &num_used_indices_, 1, __FILE__, __LINE__);
     CopyFromHostToCUDADevice<data_size_t>(cuda_leaf_data_end_.RawData(), &num_used_indices_, 1, __FILE__, __LINE__);
   }
-  SynchronizeCUDADevice(__FILE__, __LINE__);
   CopyFromHostToCUDADevice<hist_t*>(cuda_hist_pool_.RawData(), &cuda_hist_, 1, __FILE__, __LINE__);
 }
 
@@ -248,7 +250,8 @@ void CUDADataPartition::GenDataToLeftBitVector(
 
 void CUDADataPartition::FinishSplitBatch(const int num_splits, std::vector<int>* out) {
   out->resize(static_cast<size_t>(num_splits) * 18);
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  // synchronous D2H on the legacy default stream: implicitly waits for all
+  // preceding work on the (blocking) streams, so no explicit device sync needed
   CopyFromCUDADeviceToHost<int>(out->data(), cuda_split_info_buffer_.RawData(),
     static_cast<size_t>(num_splits) * 18, __FILE__, __LINE__);
 }
@@ -331,6 +334,48 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
       max_num_blocks = desc.num_blocks;
     }
   }
+  // The split kernels write each split leaf's partitioned indices into the leaf's
+  // own window of cuda_out_data_indices_in_leaf_ (mirroring the main array
+  // layout); instead of copying every window back we SWAP the two buffers after
+  // the launches, making the out buffer the new main index array. Regions owned
+  // by leaves that are NOT split this level (terminal leaves) must be carried
+  // over explicitly: append one copy descriptor per gap in the split regions'
+  // coverage of [0, root_num_data()). Terminal regions are typically a small
+  // fraction of the data, so this replaces a full-size copy with a sparse one.
+  int num_gaps = 0;
+  int max_gap_blocks = 0;
+  {
+    std::vector<std::pair<data_size_t, data_size_t>> regions;  // (start, num)
+    regions.reserve(splits.size());
+    for (const CUDAHybridApplySplitInput& in : splits) {
+      regions.emplace_back(in.leaf_data_start, in.num_data_in_leaf);
+    }
+    std::sort(regions.begin(), regions.end());
+    data_size_t cursor = 0;
+    const data_size_t num_data_total = root_num_data();
+    auto append_gap = [this, &num_gaps, &max_gap_blocks](const data_size_t start, const data_size_t num) {
+      CUDAHybridApplyDescriptor desc;
+      std::memset(&desc, 0, sizeof(desc));
+      desc.leaf_data_start = start;
+      desc.num_data_in_leaf = num;
+      desc.num_blocks = (num + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) /
+        SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+      if (desc.num_blocks > max_gap_blocks) {
+        max_gap_blocks = desc.num_blocks;
+      }
+      host_apply_descs_.push_back(desc);
+      ++num_gaps;
+    };
+    for (const std::pair<data_size_t, data_size_t>& region : regions) {
+      if (region.first > cursor) {
+        append_gap(cursor, region.first - cursor);
+      }
+      cursor = region.first + region.second;
+    }
+    if (cursor < num_data_total) {
+      append_gap(cursor, num_data_total - cursor);
+    }
+  }
   // per-split regions of the level-sized block offset buffers
   if (cuda_block_data_to_left_offset_.Size() < static_cast<size_t>(total_block_offset_slots)) {
     cuda_block_data_to_left_offset_.Resize(static_cast<size_t>(total_block_offset_slots));
@@ -338,16 +383,24 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
     SetCUDAMemory<data_size_t>(cuda_block_data_to_left_offset_.RawData(), 0, cuda_block_data_to_left_offset_.Size(), __FILE__, __LINE__);
     SetCUDAMemory<data_size_t>(cuda_block_data_to_right_offset_.RawData(), 0, cuda_block_data_to_right_offset_.Size(), __FILE__, __LINE__);
   }
-  if (cuda_apply_descs_.Size() < static_cast<size_t>(num_splits)) {
-    // preallocate for the deepest possible level so this resizes at most once
-    cuda_apply_descs_.Resize(static_cast<size_t>(std::max(num_splits, num_leaves_ / 2 + 2)));
+  const int num_descs = num_splits + num_gaps;
+  if (cuda_apply_descs_.Size() < static_cast<size_t>(num_descs)) {
+    // preallocate for the deepest possible level (splits + as many gaps) so
+    // this resizes at most once
+    cuda_apply_descs_.Resize(static_cast<size_t>(std::max(num_descs, num_leaves_ + 4)));
   }
-  // single synchronous H2D per level: ordered after any kernel still reading the
-  // descriptor buffer and before the (blocking-stream) launches below
-  CopyFromHostToCUDADevice<CUDAHybridApplyDescriptor>(
+  // single async H2D per level on cuda_streams_[0]: ordered after any batched
+  // apply kernel of a previous level still reading the descriptor buffer (same
+  // stream) and before the launches below. The host staging buffer is only
+  // rewritten after the next FinishSplitBatch full sync, and a pageable async
+  // H2D returns only once the data is staged, so reuse is safe.
+  CopyFromHostToCUDADeviceAsync<CUDAHybridApplyDescriptor>(
     cuda_apply_descs_.RawData(), host_apply_descs_.data(),
-    static_cast<size_t>(num_splits), __FILE__, __LINE__);
-  LaunchSplitLevelBatchedKernels(num_splits, max_num_blocks);
+    static_cast<size_t>(num_descs), cuda_streams_[0], __FILE__, __LINE__);
+  LaunchSplitLevelBatchedKernels(num_splits, max_num_blocks, num_gaps, max_gap_blocks);
+  // the out buffer now holds every leaf's indices at the main layout positions:
+  // promote it to the main index array (the old main becomes the next scratch)
+  cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);
   cur_num_leaves_ += num_splits;
   global_timer.Stop("CUDADataPartition::SplitLevelBatched");
 }

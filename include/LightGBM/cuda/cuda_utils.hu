@@ -70,6 +70,14 @@ void CopyFromHostToCUDADevice(T* dst_ptr, const T* src_ptr, size_t size, const c
 }
 
 template <typename T>
+void CopyFromHostToCUDADeviceAsync(T* dst_ptr, const T* src_ptr, size_t size, cudaStream_t stream, const char* file, const int line) {
+  void* void_dst_ptr = reinterpret_cast<void*>(dst_ptr);
+  const void* void_src_ptr = reinterpret_cast<const void*>(src_ptr);
+  size_t size_in_bytes = size * sizeof(T);
+  CUDASUCCESS_OR_FATAL_OUTER(cudaMemcpyAsync(void_dst_ptr, void_src_ptr, size_in_bytes, cudaMemcpyHostToDevice, stream));
+}
+
+template <typename T>
 void InitCUDAMemoryFromHostMemory(T** dst_ptr, const T* src_ptr, size_t size, const char* file, const int line) {
   AllocateCUDAMemory<T>(dst_ptr, size, file, line);
   CopyFromHostToCUDADevice<T>(*dst_ptr, src_ptr, size, file, line);
@@ -190,6 +198,12 @@ class CUDAVector {
 
   size_t Size() const {
     return size_;
+  }
+
+  /*! \brief O(1) exchange of the underlying device buffers (double-buffering) */
+  void Swap(CUDAVector<T>* other) {
+    std::swap(data_, other->data_);
+    std::swap(size_, other->size_);
   }
 
   ~CUDAVector() {

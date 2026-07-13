@@ -512,11 +512,15 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
     cuda_hybrid_pair_descs_.Resize(static_cast<size_t>(
       std::max(num_pairs, config_->num_leaves / 2 + 2)));
   }
-  // single synchronous H2D per level; the histogram/find kernels launch on
-  // blocking streams afterwards, so no extra ordering is needed
-  CopyFromHostToCUDADevice<CUDAHybridPairDescriptor>(
+  // single async H2D per level on the histogram stream: ordered before the
+  // construct kernel on the same stream, and before the find/sync kernels via
+  // subtract_done_events_[0]. The host staging buffer is only rewritten after
+  // the next FinishSplitBatch/SyncAllLeafBestSplitsToHost full sync, and a
+  // pageable async H2D returns only once the data is staged, so reuse is safe.
+  CopyFromHostToCUDADeviceAsync<CUDAHybridPairDescriptor>(
     cuda_hybrid_pair_descs_.RawData(), host_hybrid_pair_descs_.data(),
-    static_cast<size_t>(num_pairs), __FILE__, __LINE__);
+    static_cast<size_t>(num_pairs), cuda_histogram_constructor_->hist_stream(),
+    __FILE__, __LINE__);
   cuda_histogram_constructor_->ConstructHistogramsForLevel(
     cuda_hybrid_pair_descs_.RawDataReadOnly(), num_pairs,
     max_num_data_in_smaller_leaf, any_bit_change_copy);
@@ -605,8 +609,40 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
     // decisions are node-local); only when the budget binds does the final level
     // defer to the leaf-wise tail, which selects among the cached candidates in
     // exact best-gain order.
+    bool final_partial_level = false;
     if (tree->num_leaves() + static_cast<int>(splittable.size()) > config_->num_leaves) {
-      break;
+      // The budget binds. In general the leaf-wise tail must arbitrate between
+      // this level's candidates and their future children, so defer to it. But
+      // when every child this level could create would sit at max_depth, no
+      // child can ever become a candidate itself (FindBestSplitsForLeaf marks
+      // leaves at max_depth invalid) and splitting one frontier leaf leaves the
+      // cached best splits of the other candidates untouched: the tail would
+      // simply apply the top-(remaining budget) candidates in descending gain
+      // order, one full search-partition-sync round trip per split. Reproduce
+      // exactly that as one final batched partial level.
+      const int remaining_budget = config_->num_leaves - tree->num_leaves();
+      bool children_depth_capped = config_->max_depth > 0;
+      if (children_depth_capped) {
+        for (const int leaf : splittable) {
+          if (tree->leaf_depth(leaf) + 1 < config_->max_depth) {
+            children_depth_capped = false;
+            break;
+          }
+        }
+      }
+      if (!children_depth_capped || remaining_budget <= 0) {
+        break;
+      }
+      // descending gain; ties go to the lower leaf index (splittable is leaf-
+      // ascending and the sort is stable), matching FindBestFromAllSplitsKernel's
+      // strict-greater selection. Applying in this order below reassigns
+      // right-child leaf indices exactly as the tail's sequential splits would.
+      std::stable_sort(splittable.begin(), splittable.end(),
+        [this](const int a, const int b) {
+          return host_leaf_best_splits_[a].gain > host_leaf_best_splits_[b].gain;
+        });
+      splittable.resize(static_cast<size_t>(remaining_budget));
+      final_partial_level = true;
     }
     // debug: cap splits per level to isolate multi-pair interactions
     static const char* max_splits_env = std::getenv("EXABOOST_HYBRID_MAXSPLITS");
@@ -702,6 +738,11 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
       smaller_leaf_index_ = smaller;
       larger_leaf_index_ = larger;
       ++num_splits;
+    }
+    if (final_partial_level) {
+      // the tree is full and every child sits at max_depth: nothing is left
+      // for the leaf-wise tail to search or split
+      break;
     }
   }
   return num_splits;

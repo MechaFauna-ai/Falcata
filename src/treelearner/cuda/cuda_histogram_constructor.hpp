@@ -86,6 +86,11 @@ class CUDAHistogramConstructor {
     const uint8_t smaller_num_bits_in_histogram_bins,
     const uint8_t larger_num_bits_in_histogram_bins);
 
+  /*! \brief stream the batched per-level histogram kernels run on; the hybrid
+   *  learner uploads the per-level pair descriptors asynchronously on this
+   *  stream so the copy is ordered before the construct kernel that reads them */
+  cudaStream_t hist_stream() const { return cuda_stream_; }
+
   /*! \brief whether the batched per-level construct/fix/subtract path supports the
    *  current data layout (dense, shared-memory histograms, no compact view) */
   bool SupportsBatchedLevel() const {
@@ -142,6 +147,20 @@ class CUDAHistogramConstructor {
     int* block_dim_x,
     int* block_dim_y,
     const data_size_t num_data_in_smaller_leaf);
+
+  /*! \brief Grid sizing for the batched per-level construct kernel. Shares the
+   *  min_grid_dim_y_ device-saturation floor across the level's pairs and caps
+   *  the y-grid at a minimum rows-per-thread: every active block pays a fixed
+   *  shared-histogram zero + global-merge cost, which dominates small leaves.
+   *  Identical to the per-leaf sizing for single-pair levels and for leaves
+   *  large enough that the cap is inactive. */
+  void CalcConstructHistogramBatchedKernelDim(
+    int* grid_dim_x,
+    int* grid_dim_y,
+    int* block_dim_x,
+    int* block_dim_y,
+    const data_size_t max_num_data_in_smaller_leaf,
+    const int num_pairs);
 
   template <typename HIST_TYPE, size_t SHARED_HIST_SIZE>
   void LaunchConstructHistogramKernelInner(
