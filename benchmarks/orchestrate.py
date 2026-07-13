@@ -50,7 +50,7 @@ def load_done():
     return done
 
 
-def record(status, lib, ds, reg, kind):
+def record(status, lib, ds, reg, kind, **extra):
     with open(RUNS_JSONL, "a") as f:
         f.write(
             json.dumps(
@@ -60,6 +60,7 @@ def record(status, lib, ds, reg, kind):
                     "regime": reg,
                     "kind": kind,
                     "status": status,
+                    **extra,
                 }
             )
             + "\n"
@@ -133,6 +134,17 @@ def main():
                 text=True,
             )
             status = "ok" if p.returncode == 0 else "failed"
+            if p.returncode != 0 and (lib, ds, reg, kind) not in load_done():
+                # the child died before writing its record (e.g. segfault);
+                # record the failure so resume doesn't retry it forever
+                record(
+                    "failed",
+                    lib,
+                    ds,
+                    reg,
+                    kind,
+                    error=f"exit code {p.returncode}: {p.stderr[-500:]}",
+                )
             if p.returncode != 0:
                 sys.stderr.write(p.stdout[-2000:] + p.stderr[-2000:] + "\n")
         except subprocess.TimeoutExpired:
