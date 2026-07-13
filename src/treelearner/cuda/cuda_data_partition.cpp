@@ -60,6 +60,9 @@ CUDADataPartition::~CUDADataPartition() {
   CUDASUCCESS_OR_FATAL(cudaStreamDestroy(cuda_streams_[3]));
   cuda_streams_.clear();
   cuda_streams_.shrink_to_fit();
+  if (indices_copy_done_event_ != nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaEventDestroy(indices_copy_done_event_));
+  }
 }
 
 void CUDADataPartition::Init() {
@@ -160,10 +163,14 @@ void CUDADataPartition::Split(
   // here, mirroring the resize logic in ResetTrainingData.
   if (grid_dim_ > max_num_split_indices_blocks_) {
     max_num_split_indices_blocks_ = grid_dim_;
-    cuda_block_data_to_left_offset_.Resize(static_cast<size_t>(max_num_split_indices_blocks_) + 1);
-    cuda_block_data_to_right_offset_.Resize(static_cast<size_t>(max_num_split_indices_blocks_) + 1);
-    SetCUDAMemory<data_size_t>(cuda_block_data_to_left_offset_.RawData(), 0, static_cast<size_t>(max_num_split_indices_blocks_) + 1, __FILE__, __LINE__);
-    SetCUDAMemory<data_size_t>(cuda_block_data_to_right_offset_.RawData(), 0, static_cast<size_t>(max_num_split_indices_blocks_) + 1, __FILE__, __LINE__);
+    // the batched level apply (SplitLevelBatched) may already have grown the
+    // buffers past this size; never shrink them back
+    if (cuda_block_data_to_left_offset_.Size() < static_cast<size_t>(max_num_split_indices_blocks_) + 1) {
+      cuda_block_data_to_left_offset_.Resize(static_cast<size_t>(max_num_split_indices_blocks_) + 1);
+      cuda_block_data_to_right_offset_.Resize(static_cast<size_t>(max_num_split_indices_blocks_) + 1);
+      SetCUDAMemory<data_size_t>(cuda_block_data_to_left_offset_.RawData(), 0, cuda_block_data_to_left_offset_.Size(), __FILE__, __LINE__);
+      SetCUDAMemory<data_size_t>(cuda_block_data_to_right_offset_.RawData(), 0, cuda_block_data_to_right_offset_.Size(), __FILE__, __LINE__);
+    }
   }
   // the previous split's CopyDataIndicesKernel (stream 2) may still be reading the
   // shared scratch this split's kernels overwrite; order after it
@@ -244,6 +251,105 @@ void CUDADataPartition::FinishSplitBatch(const int num_splits, std::vector<int>*
   SynchronizeCUDADevice(__FILE__, __LINE__);
   CopyFromCUDADeviceToHost<int>(out->data(), cuda_split_info_buffer_.RawData(),
     static_cast<size_t>(num_splits) * 18, __FILE__, __LINE__);
+}
+
+void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplitInput>& splits) {
+  const int num_splits = static_cast<int>(splits.size());
+  if (num_splits <= 0) {
+    return;
+  }
+  CHECK_LE(num_splits, 65535);  // grid y-dimension limit
+  global_timer.Start("CUDADataPartition::SplitLevelBatched");
+  host_apply_descs_.resize(splits.size());
+  data_size_t total_block_offset_slots = 0;
+  int max_num_blocks = 0;
+  for (int k = 0; k < num_splits; ++k) {
+    const CUDAHybridApplySplitInput& in = splits[k];
+    CUDAHybridApplyDescriptor& desc = host_apply_descs_[k];
+    const int split_feature_index = in.split_feature;
+    CHECK(!is_categorical_feature_[split_feature_index]);
+    // host-side split metadata math, mirroring LaunchGenDataToLeftBitVectorKernel
+    const bool missing_is_zero = static_cast<bool>(cuda_column_data_->feature_missing_is_zero(split_feature_index));
+    const bool missing_is_na = static_cast<bool>(cuda_column_data_->feature_missing_is_na(split_feature_index));
+    const bool mfb_is_zero = static_cast<bool>(cuda_column_data_->feature_mfb_is_zero(split_feature_index));
+    const bool mfb_is_na = static_cast<bool>(cuda_column_data_->feature_mfb_is_na(split_feature_index));
+    const bool is_single_feature_in_column = is_single_feature_in_column_[split_feature_index];
+    const uint32_t default_bin = cuda_column_data_->feature_default_bin(split_feature_index);
+    const uint32_t most_freq_bin = cuda_column_data_->feature_most_freq_bin(split_feature_index);
+    const uint32_t min_bin = is_single_feature_in_column ? 1 : cuda_column_data_->feature_min_bin(split_feature_index);
+    const uint32_t max_bin = cuda_column_data_->feature_max_bin(split_feature_index);
+    uint32_t th = in.split_threshold + min_bin;
+    uint32_t t_zero_bin = min_bin + default_bin;
+    if (most_freq_bin == 0) {
+      --th;
+      --t_zero_bin;
+    }
+    uint8_t split_default_to_left = 0;
+    uint8_t split_missing_default_to_left = 0;
+    int default_leaf_index = in.right_leaf_index;
+    int missing_default_leaf_index = in.right_leaf_index;
+    if (most_freq_bin <= in.split_threshold) {
+      split_default_to_left = 1;
+      default_leaf_index = in.left_leaf_index;
+    }
+    if (missing_is_zero || missing_is_na) {
+      if (in.split_default_left) {
+        split_missing_default_to_left = 1;
+        missing_default_leaf_index = in.left_leaf_index;
+      }
+    }
+    const int column_index = cuda_column_data_->feature_to_column(split_feature_index);
+    desc.column_data = cuda_column_data_->GetColumnData(column_index);
+    desc.best_split_info = in.best_split_info;
+    desc.smaller_leaf_splits = in.smaller_leaf_splits;
+    desc.larger_leaf_splits = in.larger_leaf_splits;
+    desc.leaf_data_start = in.leaf_data_start;
+    desc.num_data_in_leaf = in.num_data_in_leaf;
+    desc.block_offset_start = total_block_offset_slots;
+    desc.num_blocks = (in.num_data_in_leaf + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) /
+      SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+    desc.left_leaf_index = in.left_leaf_index;
+    desc.right_leaf_index = in.right_leaf_index;
+    desc.th = th;
+    desc.t_zero_bin = t_zero_bin;
+    desc.max_bin = max_bin;
+    desc.min_bin = min_bin;
+    desc.default_leaf_index = default_leaf_index;
+    desc.missing_default_leaf_index = missing_default_leaf_index;
+    desc.split_default_to_left = split_default_to_left;
+    desc.split_missing_default_to_left = split_missing_default_to_left;
+    desc.bit_type = cuda_column_data_->column_bit_type(column_index);
+    desc.min_is_max = (min_bin < max_bin) ? 0 : 1;
+    desc.missing_is_zero = missing_is_zero ? 1 : 0;
+    desc.missing_is_na = missing_is_na ? 1 : 0;
+    desc.mfb_is_zero = mfb_is_zero ? 1 : 0;
+    desc.mfb_is_na = mfb_is_na ? 1 : 0;
+    desc.max_bin_to_left = (max_bin <= th) ? 1 : 0;
+    desc.use_min_bin = is_single_feature_in_column ? 0 : 1;
+    total_block_offset_slots += desc.num_blocks + 1;
+    if (desc.num_blocks > max_num_blocks) {
+      max_num_blocks = desc.num_blocks;
+    }
+  }
+  // per-split regions of the level-sized block offset buffers
+  if (cuda_block_data_to_left_offset_.Size() < static_cast<size_t>(total_block_offset_slots)) {
+    cuda_block_data_to_left_offset_.Resize(static_cast<size_t>(total_block_offset_slots));
+    cuda_block_data_to_right_offset_.Resize(static_cast<size_t>(total_block_offset_slots));
+    SetCUDAMemory<data_size_t>(cuda_block_data_to_left_offset_.RawData(), 0, cuda_block_data_to_left_offset_.Size(), __FILE__, __LINE__);
+    SetCUDAMemory<data_size_t>(cuda_block_data_to_right_offset_.RawData(), 0, cuda_block_data_to_right_offset_.Size(), __FILE__, __LINE__);
+  }
+  if (cuda_apply_descs_.Size() < static_cast<size_t>(num_splits)) {
+    // preallocate for the deepest possible level so this resizes at most once
+    cuda_apply_descs_.Resize(static_cast<size_t>(std::max(num_splits, num_leaves_ / 2 + 2)));
+  }
+  // single synchronous H2D per level: ordered after any kernel still reading the
+  // descriptor buffer and before the (blocking-stream) launches below
+  CopyFromHostToCUDADevice<CUDAHybridApplyDescriptor>(
+    cuda_apply_descs_.RawData(), host_apply_descs_.data(),
+    static_cast<size_t>(num_splits), __FILE__, __LINE__);
+  LaunchSplitLevelBatchedKernels(num_splits, max_num_blocks);
+  cur_num_leaves_ += num_splits;
+  global_timer.Stop("CUDADataPartition::SplitLevelBatched");
 }
 
 void CUDADataPartition::SplitInner(
@@ -342,11 +448,12 @@ void CUDADataPartition::ResetTrainingData(const Dataset* train_data, const int n
     CalcBlockDim(num_data_);
     const int old_max_num_split_indices_blocks = max_num_split_indices_blocks_;
     max_num_split_indices_blocks_ = grid_dim_;
-    if (max_num_split_indices_blocks_ > old_max_num_split_indices_blocks) {
+    if (max_num_split_indices_blocks_ > old_max_num_split_indices_blocks &&
+        cuda_block_data_to_left_offset_.Size() < static_cast<size_t>(max_num_split_indices_blocks_) + 1) {
       cuda_block_data_to_left_offset_.Resize(static_cast<size_t>(max_num_split_indices_blocks_) + 1);
       cuda_block_data_to_right_offset_.Resize(static_cast<size_t>(max_num_split_indices_blocks_) + 1);
-      SetCUDAMemory<data_size_t>(cuda_block_data_to_left_offset_.RawData(), 0, static_cast<size_t>(max_num_split_indices_blocks_) + 1, __FILE__, __LINE__);
-      SetCUDAMemory<data_size_t>(cuda_block_data_to_right_offset_.RawData(), 0, static_cast<size_t>(max_num_split_indices_blocks_) + 1, __FILE__, __LINE__);
+      SetCUDAMemory<data_size_t>(cuda_block_data_to_left_offset_.RawData(), 0, cuda_block_data_to_left_offset_.Size(), __FILE__, __LINE__);
+      SetCUDAMemory<data_size_t>(cuda_block_data_to_right_offset_.RawData(), 0, cuda_block_data_to_right_offset_.Size(), __FILE__, __LINE__);
     }
     cuda_data_indices_.Resize(static_cast<size_t>(num_data_));
     cuda_block_to_left_offset_.Resize(static_cast<size_t>(num_data_));

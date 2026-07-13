@@ -8,6 +8,9 @@
 
 #include <LightGBM/cuda/cuda_tree.hpp>
 
+#include <algorithm>
+#include <vector>
+
 namespace LightGBM {
 
 CUDATree::CUDATree(int max_leaves, bool track_branch_features, bool is_linear,
@@ -100,6 +103,31 @@ int CUDATree::Split(const int leaf_index,
   leaf_depth_[leaf_index]++;
   ++num_leaves_;
   return num_leaves_ - 1;
+}
+
+void CUDATree::SplitBatch(const std::vector<CUDATreeBatchSplit>& splits) {
+  if (splits.empty()) {
+    return;
+  }
+  if (cuda_batch_splits_.Size() < splits.size()) {
+    // preallocate for the deepest possible level so this resizes at most once
+    cuda_batch_splits_.Resize(std::max(splits.size(),
+      static_cast<size_t>(max_leaves_ / 2 + 2)));
+  }
+  // synchronous H2D on the legacy default stream: ordered before the subsequent
+  // launch on cuda_stream_ (a blocking stream), and after any prior kernel that
+  // still reads the buffer
+  CopyFromHostToCUDADevice<CUDATreeBatchSplit>(cuda_batch_splits_.RawData(),
+    splits.data(), splits.size(), __FILE__, __LINE__);
+  LaunchSplitBatchKernel(static_cast<int>(splits.size()));
+  // host mirrors, in the exact order the per-split Split() loop would apply them
+  for (const CUDATreeBatchSplit& split : splits) {
+    CHECK_EQ(split.num_leaves_at_split, num_leaves_);
+    RecordBranchFeatures(split.leaf_index, num_leaves_, split.real_feature_index);
+    leaf_depth_[num_leaves_] = leaf_depth_[split.leaf_index] + 1;
+    leaf_depth_[split.leaf_index]++;
+    ++num_leaves_;
+  }
 }
 
 int CUDATree::SplitCategorical(const int leaf_index,

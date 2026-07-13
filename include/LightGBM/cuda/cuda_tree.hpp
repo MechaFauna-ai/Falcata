@@ -26,6 +26,24 @@ __device__ int8_t GetMissingTypeCUDA(int8_t decision_type);
 
 __device__ bool IsZeroCUDA(double fval);
 
+/*! \brief Per-split descriptor for the batched tree-structure update of the hybrid
+ *  level-batched growth phase: one SplitBatchKernel launch applies all numerical
+ *  splits of a level (splits indexed by blockIdx.x). All fields are host-known
+ *  before the level is applied; split VALUES (sums, gains, leaf outputs) come from
+ *  the per-leaf device CUDASplitInfo pointer. */
+struct CUDATreeBatchSplit {
+  /*! \brief the leaf being split (left child keeps this index) */
+  int leaf_index;
+  /*! \brief tree num_leaves at the time of this split (== the right child's leaf
+   *  index; the new internal node index is num_leaves_at_split - 1) */
+  int num_leaves_at_split;
+  int real_feature_index;
+  double real_threshold;
+  /*! \brief MissingType of the split feature, stored as int for POD-ness */
+  int missing_type;
+  const CUDASplitInfo* split_info;
+};
+
 class CUDATree : public Tree {
  public:
   /*!
@@ -46,6 +64,15 @@ class CUDATree : public Tree {
             const double real_threshold,
             const MissingType missing_type,
             const CUDASplitInfo* cuda_split_info);
+
+  /*! \brief Apply all numerical splits of one level in a single kernel launch
+   *  (device tree-structure updates) plus the usual host-side mirror updates
+   *  (num_leaves_, leaf_depth_, branch features). Equivalent to calling Split()
+   *  once per entry in order: splits[k].num_leaves_at_split must equal the tree's
+   *  num_leaves before split k is applied (right children take consecutive
+   *  indices). The level's splits touch disjoint leaves, so the device updates
+   *  are safe to run concurrently. */
+  void SplitBatch(const std::vector<CUDATreeBatchSplit>& splits);
 
   int SplitCategorical(
     const int leaf_index,
@@ -121,6 +148,8 @@ class CUDATree : public Tree {
                          const MissingType missing_type,
                          const CUDASplitInfo* cuda_split_info);
 
+  void LaunchSplitBatchKernel(const int num_splits);
+
   void LaunchSplitCategoricalKernel(
     const int leaf_index,
     const int real_feature_index,
@@ -161,6 +190,8 @@ class CUDATree : public Tree {
   CUDAVector<uint32_t> cuda_bitset_inner_;
   CUDAVector<int> cuda_cat_boundaries_;
   CUDAVector<int> cuda_cat_boundaries_inner_;
+  /*! \brief device copy of one level's batched split descriptors (SplitBatch) */
+  CUDAVector<CUDATreeBatchSplit> cuda_batch_splits_;
 
   cudaStream_t cuda_stream_;
 

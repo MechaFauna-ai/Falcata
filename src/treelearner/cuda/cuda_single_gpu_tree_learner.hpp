@@ -196,6 +196,11 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool use_hybrid_batch_kernels_ = false;
   std::vector<CUDAHybridPairDescriptor> host_hybrid_pair_descs_;
   CUDAVector<CUDAHybridPairDescriptor> cuda_hybrid_pair_descs_;
+  // hybrid growth: batched per-level APPLY phase (EXABOOST_HYBRID_BATCH_APPLY,
+  // default on; "0" falls back to the per-split deferred ApplySplit loop)
+  bool use_hybrid_batch_apply_ = false;
+  std::vector<CUDATreeBatchSplit> host_tree_batch_splits_;
+  std::vector<CUDAHybridApplySplitInput> host_apply_split_inputs_;
   // data partition that partitions data indices into different leaves
   std::unique_ptr<CUDADataPartition> cuda_data_partition_;
   // for histogram construction

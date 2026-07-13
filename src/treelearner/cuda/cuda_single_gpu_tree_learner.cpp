@@ -74,6 +74,11 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // find/sync launch per level instead of per pair); "0" keeps the per-pair path
   const char* batch_env = std::getenv("EXABOOST_HYBRID_BATCH_KERNELS");
   use_hybrid_batch_kernels_ = (batch_env == nullptr || std::string(batch_env) != std::string("0"));
+  // batched per-level APPLY phase for the hybrid prefix (one launch per kernel
+  // family per level and zero per-split host syncs, instead of ~7 launches and
+  // 2 device syncs per split); "0" keeps the per-split deferred loop
+  const char* batch_apply_env = std::getenv("EXABOOST_HYBRID_BATCH_APPLY");
+  use_hybrid_batch_apply_ = (batch_apply_env == nullptr || std::string(batch_apply_env) != std::string("0"));
   cuda_best_split_finder_.reset(new CUDABestSplitFinder(cuda_histogram_constructor_->cuda_hist(),
     train_data_, this->share_state_->feature_hist_offsets(), select_features_by_node_, config_));
   cuda_best_split_finder_->Init();
@@ -544,6 +549,11 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   const bool use_batched_level_kernels = use_hybrid_batch_kernels_ &&
     cuda_histogram_constructor_->SupportsBatchedLevel() &&
     cuda_best_split_finder_->SupportsBatchedLevel();
+  // batched apply: all tree-structure + partition updates of a level in one
+  // launch per kernel family with zero per-split host syncs. The hybrid prefix
+  // guarantees the preconditions (single GPU, no categorical splits; bagging
+  // shares the same index array), so this only falls back when disabled by env.
+  const bool use_batched_level_apply = use_hybrid_batch_apply_;
   int num_splits = 0;
   while (true) {
     // enqueue histogram + best-split search for every pair of this level; device
@@ -616,15 +626,57 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
     };
     std::vector<AppliedSplit> applied;
     applied.reserve(splittable.size());
-    size_t slot_id = 0;
-    for (const int leaf : splittable) {
-      CUDALeafSplitsStruct* smaller_slot = hybrid_pair_slots_[slot_id]->GetCUDAStructRef();
-      CUDALeafSplitsStruct* larger_slot = hybrid_pair_slots_[slot_id + 1]->GetCUDAStructRef();
-      const int right_leaf_index = ApplySplit(
-        tree, cuda_best_split_finder_->leaf_best_split_info_ptr(leaf), leaf,
-        smaller_slot, larger_slot, static_cast<int>(applied.size()));
-      applied.push_back({leaf, right_leaf_index, smaller_slot, larger_slot});
-      slot_id += 2;
+    if (use_batched_level_apply) {
+      // one launch per kernel family for the whole level: batched tree-structure
+      // update (CUDATree::SplitBatch) + batched partition (SplitLevelBatched);
+      // right children take consecutive leaf indices exactly as the per-split
+      // loop would assign them
+      const int base_num_leaves = tree->num_leaves();
+      host_tree_batch_splits_.clear();
+      host_apply_split_inputs_.clear();
+      size_t slot_id = 0;
+      for (const int leaf : splittable) {
+        CUDALeafSplitsStruct* smaller_slot = hybrid_pair_slots_[slot_id]->GetCUDAStructRef();
+        CUDALeafSplitsStruct* larger_slot = hybrid_pair_slots_[slot_id + 1]->GetCUDAStructRef();
+        const int right_leaf_index = base_num_leaves + static_cast<int>(applied.size());
+        const CUDASplitInfo* best_split_info = cuda_best_split_finder_->leaf_best_split_info_ptr(leaf);
+        const int inner_feature_index = leaf_best_split_feature_[leaf];
+        host_tree_batch_splits_.push_back({
+          leaf,
+          right_leaf_index,  // == tree num_leaves at the time of this split
+          train_data_->RealFeatureIndex(inner_feature_index),
+          train_data_->RealThreshold(inner_feature_index, leaf_best_split_threshold_[leaf]),
+          static_cast<int>(train_data_->FeatureBinMapper(inner_feature_index)->missing_type()),
+          best_split_info});
+        host_apply_split_inputs_.push_back({
+          best_split_info,
+          leaf,
+          right_leaf_index,
+          inner_feature_index,
+          leaf_best_split_threshold_[leaf],
+          leaf_best_split_default_left_[leaf],
+          leaf_num_data_[leaf],
+          leaf_data_start_[leaf],
+          smaller_slot,
+          larger_slot});
+        applied.push_back({leaf, right_leaf_index, smaller_slot, larger_slot});
+        slot_id += 2;
+      }
+      // ZeroHistForLeaf is a no-op (BeforeTrain zeroes the full histogram
+      // buffer), so the batched path skips the per-split calls entirely
+      tree->SplitBatch(host_tree_batch_splits_);
+      cuda_data_partition_->SplitLevelBatched(host_apply_split_inputs_);
+    } else {
+      size_t slot_id = 0;
+      for (const int leaf : splittable) {
+        CUDALeafSplitsStruct* smaller_slot = hybrid_pair_slots_[slot_id]->GetCUDAStructRef();
+        CUDALeafSplitsStruct* larger_slot = hybrid_pair_slots_[slot_id + 1]->GetCUDAStructRef();
+        const int right_leaf_index = ApplySplit(
+          tree, cuda_best_split_finder_->leaf_best_split_info_ptr(leaf), leaf,
+          smaller_slot, larger_slot, static_cast<int>(applied.size()));
+        applied.push_back({leaf, right_leaf_index, smaller_slot, larger_slot});
+        slot_id += 2;
+      }
     }
     std::vector<int> batch_info;
     cuda_data_partition_->FinishSplitBatch(static_cast<int>(applied.size()), &batch_info);
