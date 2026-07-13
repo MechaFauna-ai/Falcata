@@ -2363,6 +2363,20 @@ void CUDABestSplitFinder::SyncLeafBestSplitToHost(
   }
 }
 
+void CUDABestSplitFinder::SyncAllLeafBestSplitsToHost(const int num_leaves, std::vector<CUDASplitInfo>* out) const {
+  out->resize(static_cast<size_t>(num_leaves));
+  SynchronizeCUDADevice(__FILE__, __LINE__);
+  CopyFromCUDADeviceToHost<CUDASplitInfo>(out->data(), cuda_leaf_best_split_info_.RawDataReadOnly(),
+    static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+  // the raw copy brings over device categorical-threshold pointers; scrub them so the
+  // host-side destructor never frees device memory (hybrid growth is numerical-only)
+  for (CUDASplitInfo& info : *out) {
+    info.num_cat_threshold = 0;
+    info.cat_threshold = nullptr;
+    info.cat_threshold_real = nullptr;
+  }
+}
+
 void CUDABestSplitFinder::LaunchFindBestFromAllSplitsKernel(
   const int cur_num_leaves,
   const int smaller_leaf_index, const int larger_leaf_index,

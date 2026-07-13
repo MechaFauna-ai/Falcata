@@ -83,7 +83,8 @@ class CUDABestSplitFinder {
     const uint8_t smaller_num_bits_in_histogram_bins,
     const uint8_t larger_num_bits_in_histogram_bins,
     const bool smaller_leaf_below_max_depth,
-    const bool larger_leaf_below_max_depth);
+    const bool larger_leaf_below_max_depth,
+    const bool synchronize = true);
 
   const CUDASplitInfo* FindBestFromAllSplits(
     const int cur_num_leaves,
@@ -139,6 +140,18 @@ class CUDABestSplitFinder {
     int* larger_leaf_best_split_feature,
     uint32_t* larger_leaf_best_split_threshold,
     uint8_t* larger_leaf_best_split_default_left);
+
+  // Copy the whole device per-leaf best-split cache for leaves [0, num_leaves) to the
+  // host in a single transfer (synchronizes the device). Used by the hybrid
+  // level-batched growth phase, which needs every frontier leaf's candidate at once.
+  // The categorical-threshold pointers inside the copied structs are device pointers
+  // and must not be dereferenced on the host.
+  void SyncAllLeafBestSplitsToHost(const int num_leaves, std::vector<CUDASplitInfo>* out) const;
+
+  // Device pointer to a leaf's cached best split, for passing to CUDATree::Split.
+  const CUDASplitInfo* leaf_best_split_info_ptr(const int leaf_index) const {
+    return cuda_leaf_best_split_info_.RawDataReadOnly() + leaf_index;
+  }
 
  private:
   void LaunchComputeForcedSplitKernel(

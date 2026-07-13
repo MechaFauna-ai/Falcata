@@ -103,8 +103,31 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
 
   // Apply a split (device CUDASplitInfo + host-known feature/threshold) to the tree
   // and the data partition. Shared by the main loop and the forced-split pre-pass.
-  // Returns the new (right) leaf index.
-  int ApplySplit(CUDATree* tree, const CUDASplitInfo* best_split_info, const int leaf_index);
+  // Returns the new (right) leaf index. When smaller_slot/larger_slot are given the
+  // data partition writes the children's leaf-splits structs into them instead of the
+  // fixed pair structs (used by the hybrid level-batched growth phase).
+  int ApplySplit(CUDATree* tree, const CUDASplitInfo* best_split_info, const int leaf_index,
+                 CUDALeafSplitsStruct* smaller_slot = nullptr,
+                 CUDALeafSplitsStruct* larger_slot = nullptr,
+                 int deferred_slot = -1);
+
+  // ---- hybrid growth: depth-wise (level-batched) prefix + leaf-wise tail ----
+  // While the leaf budget cannot bind, every positive-gain frontier leaf will be
+  // split by leaf-wise growth eventually, so whole levels are grown with one
+  // device synchronization instead of one full pipeline sync per split. Split
+  // decisions are node-local, hence the resulting tree equals the leaf-wise tree
+  // whenever the budget does not bind; the tail preserves exact leaf-wise
+  // semantics once it might.
+  bool HybridGrowthUsable() const;
+  // Enqueue histogram construction + best-split search for one sibling pair
+  // (device work only; no host synchronization).
+  void EnqueuePairBestSplitSearch(const CUDATree* tree,
+    const CUDALeafSplitsStruct* smaller_struct, const CUDALeafSplitsStruct* larger_struct,
+    int smaller_leaf_index, int larger_leaf_index, bool synchronize = true);
+  // Grow full levels until the next level could exceed num_leaves. Returns the
+  // number of splits applied; afterwards every current leaf has a valid cached
+  // best-split candidate and smaller_/larger_leaf_index_ name the last applied pair.
+  int TrainLevelWisePrefix(CUDATree* tree);
 
   // Apply forcedsplits_filename before the main split loop, mirroring
   // SerialTreeLearner::ForceSplits (numerical features, single-GPU, non-quantized).
@@ -146,6 +169,12 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // leaf splits information for smaller and larger leaves
   std::unique_ptr<CUDALeafSplits> cuda_smaller_leaf_splits_;
   std::unique_ptr<CUDALeafSplits> cuda_larger_leaf_splits_;
+  // hybrid growth phase-1 state: per-split (smaller, larger) struct slots for the
+  // pairs of one level (2 slots per applied split, reused across levels), and the
+  // host copy of the device per-leaf best-split cache
+  bool use_hybrid_growth_ = false;
+  std::vector<std::unique_ptr<CUDALeafSplits>> hybrid_pair_slots_;
+  std::vector<CUDASplitInfo> host_leaf_best_splits_;
   // data partition that partitions data indices into different leaves
   std::unique_ptr<CUDADataPartition> cuda_data_partition_;
   // for histogram construction

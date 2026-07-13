@@ -68,7 +68,17 @@ class CUDADataPartition: public NCCLInfo {
     double* left_leaf_sum_of_gradients,
     double* right_leaf_sum_of_gradients,
     data_size_t* global_left_leaf_num_data,
-    data_size_t* global_right_leaf_num_data);
+    data_size_t* global_right_leaf_num_data,
+    const bool point_structs_at_main = false,
+    const int deferred_slot = -1);
+
+  // Deferred split-info readback for the hybrid level-batched growth: one device
+  // synchronization + one transfer for all of a level's splits (18 ints per split,
+  // laid out by the deferred_slot passed to Split). Layout per slot: [0] left leaf,
+  // [1] left count, [2] left start, [4] right count, [5] right start, [6] right leaf,
+  // ints [8..15] reinterpreted as 4 doubles: left/right sum_hessians, left/right
+  // sum_gradients.
+  void FinishSplitBatch(const int num_splits, std::vector<int>* out);
 
   void UpdateTrainScore(const Tree* tree, double* cuda_scores);
 
@@ -137,7 +147,10 @@ class CUDADataPartition: public NCCLInfo {
     double* left_leaf_sum_of_gradients,
     double* right_leaf_sum_of_gradients,
     data_size_t* global_left_leaf_num_data,
-    data_size_t* global_right_leaf_num_data);
+    data_size_t* global_right_leaf_num_data,
+    const bool point_structs_at_main,
+    const int deferred_slot,
+    const data_size_t leaf_data_start_for_copy);
 
   // kernel launch functions
   void LaunchFillDataIndicesBeforeTrain();
@@ -161,7 +174,10 @@ class CUDADataPartition: public NCCLInfo {
     double* left_leaf_sum_of_gradients,
     double* right_leaf_sum_of_gradients,
     data_size_t* global_left_leaf_num_data,
-    data_size_t* global_right_leaf_num_data);
+    data_size_t* global_right_leaf_num_data,
+    const bool point_structs_at_main,
+    const int deferred_slot,
+    const data_size_t leaf_data_start_for_copy);
 
   void LaunchGenDataToLeftBitVectorKernel(
     const data_size_t num_data_in_leaf,
@@ -355,6 +371,10 @@ class CUDADataPartition: public NCCLInfo {
   // CUDA streams
   /*! \brief cuda streams used for asynchronizing kernel computing and memory copy */
   std::vector<cudaStream_t> cuda_streams_;
+  // recorded on cuda_streams_[2] after CopyDataIndicesKernel; consumed at the next
+  // Split() so back-to-back splits (hybrid level growth) don't race on the shared
+  // cuda_out_data_indices_in_leaf_ scratch while the copy is still in flight
+  cudaEvent_t indices_copy_done_event_ = nullptr;
 
 
   // CUDA memory, held by this object

@@ -791,6 +791,8 @@ __global__ void SplitTreeStructureKernel(const int left_leaf_index,
   data_size_t* block_to_left_offset_buffer,
   data_size_t* block_to_right_offset_buffer, data_size_t* cuda_leaf_data_start,
   data_size_t* cuda_leaf_data_end, data_size_t* cuda_leaf_num_data, const data_size_t* cuda_data_indices,
+  const data_size_t* cuda_data_indices_main,
+  const bool point_structs_at_main,
   const CUDASplitInfo* best_split_info,
   // for leaf splits information update
   CUDALeafSplitsStruct* smaller_leaf_splits,
@@ -862,7 +864,8 @@ __global__ void SplitTreeStructureKernel(const int left_leaf_index,
     } else if (global_thread_index == 5) {
       smaller_leaf_splits->leaf_value = best_split_info->left_value;
     } else if (global_thread_index == 6) {
-      smaller_leaf_splits->data_indices_in_leaf = cuda_data_indices;
+      smaller_leaf_splits->data_indices_in_leaf = point_structs_at_main ?
+        cuda_data_indices_main + cuda_leaf_data_start[left_leaf_index] : cuda_data_indices;
     } else if (global_thread_index == 7) {
       larger_leaf_splits->leaf_index = right_leaf_index;
     } else if (global_thread_index == 8) {
@@ -879,7 +882,8 @@ __global__ void SplitTreeStructureKernel(const int left_leaf_index,
     } else if (global_thread_index == 12) {
       larger_leaf_splits->leaf_value = best_split_info->right_value;
     } else if (global_thread_index == 13) {
-      larger_leaf_splits->data_indices_in_leaf = cuda_data_indices + cuda_leaf_num_data[left_leaf_index];
+      larger_leaf_splits->data_indices_in_leaf = point_structs_at_main ?
+        cuda_data_indices_main + cuda_leaf_data_start[right_leaf_index] : cuda_data_indices + cuda_leaf_num_data[left_leaf_index];
     } else if (global_thread_index == 14) {
       cuda_split_info_buffer[6] = left_leaf_index;
     } else if (global_thread_index == 15) {
@@ -904,7 +908,8 @@ __global__ void SplitTreeStructureKernel(const int left_leaf_index,
     } else if (global_thread_index == 5) {
       larger_leaf_splits->leaf_value = best_split_info->left_value;
     } else if (global_thread_index == 6) {
-      larger_leaf_splits->data_indices_in_leaf = cuda_data_indices;
+      larger_leaf_splits->data_indices_in_leaf = point_structs_at_main ?
+        cuda_data_indices_main + cuda_leaf_data_start[left_leaf_index] : cuda_data_indices;
     } else if (global_thread_index == 7) {
       smaller_leaf_splits->leaf_index = right_leaf_index;
     } else if (global_thread_index == 8) {
@@ -921,7 +926,8 @@ __global__ void SplitTreeStructureKernel(const int left_leaf_index,
     } else if (global_thread_index == 12) {
       smaller_leaf_splits->leaf_value = best_split_info->right_value;
     } else if (global_thread_index == 13) {
-      smaller_leaf_splits->data_indices_in_leaf = cuda_data_indices + cuda_leaf_num_data[left_leaf_index];
+      smaller_leaf_splits->data_indices_in_leaf = point_structs_at_main ?
+        cuda_data_indices_main + cuda_leaf_data_start[right_leaf_index] : cuda_data_indices + cuda_leaf_num_data[left_leaf_index];
     } else if (global_thread_index == 14) {
       cuda_hist_pool[right_leaf_index] = cuda_hist + 2 * right_leaf_index * num_total_bin;
       smaller_leaf_splits->hist_in_leaf = cuda_hist_pool[right_leaf_index];
@@ -991,7 +997,10 @@ void CUDADataPartition::LaunchSplitInnerKernel(
   double* left_leaf_sum_of_gradients_ref,
   double* right_leaf_sum_of_gradients_ref,
   data_size_t* global_left_leaf_num_data,
-  data_size_t* global_right_leaf_num_data) {
+  data_size_t* global_right_leaf_num_data,
+  const bool point_structs_at_main,
+  const int deferred_slot,
+  const data_size_t leaf_data_start_for_copy) {
   int num_blocks_final_ref = grid_dim_ - 1;
   int num_blocks_final_aligned = 1;
   while (num_blocks_final_ref > 0) {
@@ -1043,18 +1052,22 @@ void CUDADataPartition::LaunchSplitInnerKernel(
 
   global_timer.Start("CUDADataPartition::SplitTreeStructureKernel");
 
+  int* split_info_ptr = cuda_split_info_buffer_.RawData() +
+    (deferred_slot >= 0 ? 18 * static_cast<size_t>(deferred_slot) : 0);
 #define SPLIT_TREE_ARGS \
   left_leaf_index, right_leaf_index, \
   cuda_block_data_to_left_offset_.RawData(), \
   cuda_block_data_to_right_offset_.RawData(), cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), \
   cuda_leaf_num_data_.RawData(), cuda_out_data_indices_in_leaf_.RawData(), \
+  cuda_data_indices_.RawData(), \
+  point_structs_at_main, \
   best_split_info, \
   smaller_leaf_splits, \
   larger_leaf_splits, \
   num_total_bin_, \
   cuda_hist_, \
   cuda_hist_pool_.RawData(), \
-  cuda_leaf_output_.RawData(), cuda_split_info_buffer_.RawData()
+  cuda_leaf_output_.RawData(), split_info_ptr
 
   if (nccl_communicator_ != nullptr) {
     if (use_quantized_grad_) {
@@ -1072,6 +1085,16 @@ void CUDADataPartition::LaunchSplitInnerKernel(
 
 #undef SPLIT_TREE_ARGS
   global_timer.Stop("CUDADataPartition::SplitTreeStructureKernel");
+  if (deferred_slot >= 0) {
+    // deferred (level-batched) mode: no per-split synchronization. The copy's
+    // destination and size are host-known (the split leaf's region); split info
+    // is read back once per level via FinishSplitBatch.
+    CopyDataIndicesKernel<<<grid_dim_, block_dim_, 0, cuda_streams_[2]>>>(
+      num_data_in_leaf, cuda_out_data_indices_in_leaf_.RawData(),
+      cuda_data_indices_.RawData() + leaf_data_start_for_copy);
+    CUDASUCCESS_OR_FATAL(cudaEventRecord(indices_copy_done_event_, cuda_streams_[2]));
+    return;
+  }
   std::vector<int> cpu_split_info_buffer(18);
   const double* cpu_sum_hessians_info = reinterpret_cast<const double*>(cpu_split_info_buffer.data() + 8);
   global_timer.Start("CUDADataPartition::CopyFromCUDADeviceToHostAsync");
@@ -1084,6 +1107,7 @@ void CUDADataPartition::LaunchSplitInnerKernel(
   global_timer.Start("CUDADataPartition::CopyDataIndicesKernel");
   CopyDataIndicesKernel<<<grid_dim_, block_dim_, 0, cuda_streams_[2]>>>(
     left_leaf_num_data + right_leaf_num_data, cuda_out_data_indices_in_leaf_.RawData(), cuda_data_indices_.RawData() + left_leaf_data_start);
+  CUDASUCCESS_OR_FATAL(cudaEventRecord(indices_copy_done_event_, cuda_streams_[2]));
   global_timer.Stop("CUDADataPartition::CopyDataIndicesKernel");
   const data_size_t right_leaf_data_start = cpu_split_info_buffer[5];
   *left_leaf_num_data_ref = left_leaf_num_data;

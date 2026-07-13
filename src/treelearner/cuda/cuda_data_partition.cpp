@@ -79,7 +79,9 @@ void CUDADataPartition::Init() {
   cuda_hist_pool_.Resize(static_cast<size_t>(num_leaves_));
   CopyFromHostToCUDADevice<hist_t*>(cuda_hist_pool_.RawData(), &cuda_hist_, 1, __FILE__, __LINE__);
 
-  cuda_split_info_buffer_.Resize(18);
+  // 18 ints per split; slot 0 serves the classic immediate mode, slots [0, num_leaves)
+  // serve the hybrid level-batched mode's deferred readback
+  cuda_split_info_buffer_.Resize(18 * static_cast<size_t>(num_leaves_) + 18);
 
   cuda_leaf_output_.Resize(static_cast<size_t>(num_leaves_));
 
@@ -88,6 +90,7 @@ void CUDADataPartition::Init() {
   gpuAssert(cudaStreamCreate(&cuda_streams_[1]), __FILE__, __LINE__);
   gpuAssert(cudaStreamCreate(&cuda_streams_[2]), __FILE__, __LINE__);
   gpuAssert(cudaStreamCreate(&cuda_streams_[3]), __FILE__, __LINE__);
+  CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&indices_copy_done_event_, cudaEventDisableTiming));
 
   cuda_num_data_.InitFromHostVector(std::vector<data_size_t>{num_data_});
   use_bagging_ = false;
@@ -138,7 +141,9 @@ void CUDADataPartition::Split(
   double* left_leaf_sum_of_gradients,
   double* right_leaf_sum_of_gradients,
   data_size_t* global_left_leaf_num_data,
-  data_size_t* global_right_leaf_num_data) {
+  data_size_t* global_right_leaf_num_data,
+  const bool point_structs_at_main,
+  const int deferred_slot) {
   CalcBlockDim(num_data_in_leaf);
   // CalcBlockDim is non-monotonic in num_data_in_leaf: the per-block data count is
   // rounded up to a power of two, so a *smaller* leaf can require *more* blocks than
@@ -159,6 +164,13 @@ void CUDADataPartition::Split(
     cuda_block_data_to_right_offset_.Resize(static_cast<size_t>(max_num_split_indices_blocks_) + 1);
     SetCUDAMemory<data_size_t>(cuda_block_data_to_left_offset_.RawData(), 0, static_cast<size_t>(max_num_split_indices_blocks_) + 1, __FILE__, __LINE__);
     SetCUDAMemory<data_size_t>(cuda_block_data_to_right_offset_.RawData(), 0, static_cast<size_t>(max_num_split_indices_blocks_) + 1, __FILE__, __LINE__);
+  }
+  // the previous split's CopyDataIndicesKernel (stream 2) may still be reading the
+  // shared scratch this split's kernels overwrite; order after it
+  if (indices_copy_done_event_ != nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], indices_copy_done_event_, 0));
+    CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[1], indices_copy_done_event_, 0));
+    CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[3], indices_copy_done_event_, 0));
   }
   global_timer.Start("GenDataToLeftBitVector");
   GenDataToLeftBitVector(num_data_in_leaf,
@@ -188,7 +200,10 @@ void CUDADataPartition::Split(
              left_leaf_sum_of_gradients,
              right_leaf_sum_of_gradients,
              global_left_leaf_num_data,
-             global_right_leaf_num_data);
+             global_right_leaf_num_data,
+             point_structs_at_main,
+             deferred_slot,
+             leaf_data_start);
   global_timer.Stop("SplitInner");
 }
 
@@ -224,6 +239,13 @@ void CUDADataPartition::GenDataToLeftBitVector(
   }
 }
 
+void CUDADataPartition::FinishSplitBatch(const int num_splits, std::vector<int>* out) {
+  out->resize(static_cast<size_t>(num_splits) * 18);
+  SynchronizeCUDADevice(__FILE__, __LINE__);
+  CopyFromCUDADeviceToHost<int>(out->data(), cuda_split_info_buffer_.RawData(),
+    static_cast<size_t>(num_splits) * 18, __FILE__, __LINE__);
+}
+
 void CUDADataPartition::SplitInner(
   const data_size_t num_data_in_leaf,
   const CUDASplitInfo* best_split_info,
@@ -241,7 +263,10 @@ void CUDADataPartition::SplitInner(
   double* left_leaf_sum_of_gradients,
   double* right_leaf_sum_of_gradients,
   data_size_t* global_left_leaf_num_data,
-  data_size_t* global_right_leaf_num_data) {
+  data_size_t* global_right_leaf_num_data,
+  const bool point_structs_at_main,
+  const int deferred_slot,
+  const data_size_t leaf_data_start_for_copy) {
   LaunchSplitInnerKernel(
     num_data_in_leaf,
     best_split_info,
@@ -258,7 +283,10 @@ void CUDADataPartition::SplitInner(
     left_leaf_sum_of_gradients,
     right_leaf_sum_of_gradients,
     global_left_leaf_num_data,
-    global_right_leaf_num_data);
+    global_right_leaf_num_data,
+    point_structs_at_main,
+    deferred_slot,
+    leaf_data_start_for_copy);
   ++cur_num_leaves_;
 }
 

@@ -325,7 +325,8 @@ void CUDABestSplitFinder::FindBestSplitsForLeaf(
   const uint8_t smaller_num_bits_in_histogram_bins,
   const uint8_t larger_num_bits_in_histogram_bins,
   const bool smaller_leaf_below_max_depth,
-  const bool larger_leaf_below_max_depth) {
+  const bool larger_leaf_below_max_depth,
+  const bool synchronize) {
   const bool is_smaller_leaf_valid = (num_data_in_smaller_leaf > min_data_in_leaf_ &&
     sum_hessians_in_smaller_leaf > min_sum_hessian_in_leaf_ &&
     smaller_leaf_below_max_depth);
@@ -342,7 +343,9 @@ void CUDABestSplitFinder::FindBestSplitsForLeaf(
   }
   global_timer.Start("CUDABestSplitFinder::LaunchSyncBestSplitForLeafKernel");
   LaunchSyncBestSplitForLeafKernel(smaller_leaf_index, larger_leaf_index, is_smaller_leaf_valid, is_larger_leaf_valid);
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  if (synchronize) {
+    SynchronizeCUDADevice(__FILE__, __LINE__);
+  }
   global_timer.Stop("CUDABestSplitFinder::LaunchSyncBestSplitForLeafKernel");
 }
 
