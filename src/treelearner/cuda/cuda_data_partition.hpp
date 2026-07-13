@@ -184,6 +184,17 @@ class CUDADataPartition: public NCCLInfo {
 
   bool use_bagging() const { return use_bagging_; }
 
+  /*! \brief recorded on the apply stream after the last batched apply kernel of a
+   *  level; the speculative single-sync search phase waits on it before reading
+   *  the child leaf-splits structs the apply kernels write */
+  cudaEvent_t apply_done_event() const { return indices_copy_done_event_; }
+
+  /*! \brief device array of the current level's actual smaller-child sizes
+   *  (min(left, right) count of split k), written by the batched aggregate
+   *  kernel; consumed by the speculative batched construct kernel to derive its
+   *  exact row grouping before the sizes are host-known */
+  const data_size_t* level_smaller_leaf_counts() const { return cuda_level_smaller_counts_.RawDataReadOnly(); }
+
  private:
   void CalcBlockDim(const data_size_t num_data_in_leaf);
 
@@ -490,6 +501,9 @@ class CUDADataPartition: public NCCLInfo {
   // split tree structure algorithm related
   /*! \brief buffer to store split information, prepared to be copied to cpu */
   CUDAVector<int> cuda_split_info_buffer_;
+  /*! \brief per-split smaller-child size of the current level's batched apply
+   *  (see level_smaller_leaf_counts()) */
+  CUDAVector<data_size_t> cuda_level_smaller_counts_;
 
   // dataset information
   /*! \brief number of data in training set, for initialization of cuda_leaf_num_data_ and cuda_leaf_data_end_ */

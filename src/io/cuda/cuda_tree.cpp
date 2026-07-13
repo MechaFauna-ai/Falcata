@@ -9,12 +9,14 @@
 #include <LightGBM/cuda/cuda_tree.hpp>
 
 #include <algorithm>
+#include <cstring>
 #include <vector>
 
 namespace LightGBM {
 
 CUDATree::CUDATree(int max_leaves, bool track_branch_features, bool is_linear,
-  const int gpu_device_id, const bool has_categorical_feature):
+  const int gpu_device_id, const bool has_categorical_feature,
+  uint8_t* pooled_device_buffer):
 Tree(max_leaves, track_branch_features, is_linear),
 num_threads_per_block_add_prediction_to_score_(1024) {
   is_cuda_tree_ = true;
@@ -27,7 +29,7 @@ num_threads_per_block_add_prediction_to_score_(1024) {
     cuda_cat_boundaries_.Resize(max_leaves);
     cuda_cat_boundaries_inner_.Resize(max_leaves);
   }
-  InitCUDAMemory();
+  InitCUDAMemory(pooled_device_buffer);
 }
 
 CUDATree::CUDATree(const Tree* host_tree):
@@ -45,30 +47,65 @@ CUDATree::~CUDATree() {
   }
 }
 
-void CUDATree::InitCUDAMemory() {
-  cuda_left_child_.Resize(static_cast<size_t>(max_leaves_));
-  cuda_right_child_.Resize(static_cast<size_t>(max_leaves_));
-  cuda_split_feature_inner_.Resize(static_cast<size_t>(max_leaves_));
-  cuda_split_feature_.Resize(static_cast<size_t>(max_leaves_));
-  cuda_leaf_depth_.Resize(static_cast<size_t>(max_leaves_));
-  cuda_leaf_parent_.Resize(static_cast<size_t>(max_leaves_));
-  cuda_threshold_in_bin_.Resize(static_cast<size_t>(max_leaves_));
-  cuda_threshold_.Resize(static_cast<size_t>(max_leaves_));
-  cuda_decision_type_.Resize(static_cast<size_t>(max_leaves_));
-  cuda_leaf_value_.Resize(static_cast<size_t>(max_leaves_));
-  cuda_internal_weight_.Resize(static_cast<size_t>(max_leaves_));
-  cuda_internal_value_.Resize(static_cast<size_t>(max_leaves_));
-  cuda_leaf_weight_.Resize(static_cast<size_t>(max_leaves_));
-  cuda_leaf_count_.Resize(static_cast<size_t>(max_leaves_));
-  cuda_internal_count_.Resize(static_cast<size_t>(max_leaves_));
-  cuda_split_gain_.Resize(static_cast<size_t>(max_leaves_));
-  // async memsets on the default stream; the single sync below covers them
+void CUDATree::InitCUDAMemory(uint8_t* pooled_device_buffer) {
+  if (pooled_device_buffer != nullptr) {
+    // carve every per-tree array from the caller-owned slab as non-owning views:
+    // no per-tree cudaMalloc, and the whole set reads back with one D2H copy in
+    // ToHost(). Layout must match PooledDeviceBufferSize() and the fused ToHost
+    // readback: 8-byte types first, then 4-byte, then decision_type (int8).
+    // Fresh cudaMalloc'd memory was never zeroed either, so reusing a slab with
+    // stale content across trees is equivalent (every read is write-first,
+    // except the three first-element memsets below).
+    pooled_ = true;
+    const size_t L = static_cast<size_t>(max_leaves_);
+    uint8_t* ptr = pooled_device_buffer;
+    const auto take = [&ptr](size_t bytes) { uint8_t* p = ptr; ptr += bytes; return p; };
+    cuda_threshold_.SetView(reinterpret_cast<double*>(take(sizeof(double) * L)), L);
+    cuda_internal_weight_.SetView(reinterpret_cast<double*>(take(sizeof(double) * L)), L);
+    cuda_internal_value_.SetView(reinterpret_cast<double*>(take(sizeof(double) * L)), L);
+    cuda_leaf_value_.SetView(reinterpret_cast<double*>(take(sizeof(double) * L)), L);
+    cuda_leaf_weight_.SetView(reinterpret_cast<double*>(take(sizeof(double) * L)), L);
+    const size_t num_batch_splits = L / 2 + 2;
+    cuda_batch_splits_.SetView(reinterpret_cast<CUDATreeBatchSplit*>(
+      take(sizeof(CUDATreeBatchSplit) * num_batch_splits)), num_batch_splits);
+    cuda_left_child_.SetView(reinterpret_cast<int*>(take(sizeof(int) * L)), L);
+    cuda_right_child_.SetView(reinterpret_cast<int*>(take(sizeof(int) * L)), L);
+    cuda_split_feature_inner_.SetView(reinterpret_cast<int*>(take(sizeof(int) * L)), L);
+    cuda_split_feature_.SetView(reinterpret_cast<int*>(take(sizeof(int) * L)), L);
+    cuda_leaf_depth_.SetView(reinterpret_cast<int*>(take(sizeof(int) * L)), L);
+    cuda_leaf_parent_.SetView(reinterpret_cast<int*>(take(sizeof(int) * L)), L);
+    cuda_threshold_in_bin_.SetView(reinterpret_cast<uint32_t*>(take(sizeof(uint32_t) * L)), L);
+    cuda_leaf_count_.SetView(reinterpret_cast<data_size_t*>(take(sizeof(data_size_t) * L)), L);
+    cuda_internal_count_.SetView(reinterpret_cast<data_size_t*>(take(sizeof(data_size_t) * L)), L);
+    cuda_split_gain_.SetView(reinterpret_cast<float*>(take(sizeof(float) * L)), L);
+    cuda_decision_type_.SetView(reinterpret_cast<int8_t*>(take(sizeof(int8_t) * L)), L);
+  } else {
+    cuda_left_child_.Resize(static_cast<size_t>(max_leaves_));
+    cuda_right_child_.Resize(static_cast<size_t>(max_leaves_));
+    cuda_split_feature_inner_.Resize(static_cast<size_t>(max_leaves_));
+    cuda_split_feature_.Resize(static_cast<size_t>(max_leaves_));
+    cuda_leaf_depth_.Resize(static_cast<size_t>(max_leaves_));
+    cuda_leaf_parent_.Resize(static_cast<size_t>(max_leaves_));
+    cuda_threshold_in_bin_.Resize(static_cast<size_t>(max_leaves_));
+    cuda_threshold_.Resize(static_cast<size_t>(max_leaves_));
+    cuda_decision_type_.Resize(static_cast<size_t>(max_leaves_));
+    cuda_leaf_value_.Resize(static_cast<size_t>(max_leaves_));
+    cuda_internal_weight_.Resize(static_cast<size_t>(max_leaves_));
+    cuda_internal_value_.Resize(static_cast<size_t>(max_leaves_));
+    cuda_leaf_weight_.Resize(static_cast<size_t>(max_leaves_));
+    cuda_leaf_count_.Resize(static_cast<size_t>(max_leaves_));
+    cuda_internal_count_.Resize(static_cast<size_t>(max_leaves_));
+    cuda_split_gain_.Resize(static_cast<size_t>(max_leaves_));
+  }
+  // async memsets on the default stream, stream-ordered before every consumer
   // (SetCUDAMemory would pay one full device sync each)
   CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_leaf_value_.RawData()), 0, sizeof(double)));
   CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_leaf_weight_.RawData()), 0, sizeof(double)));
   CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_leaf_parent_.RawData()), -1, sizeof(int)));
   CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_stream_));
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  if (!pooled_) {
+    SynchronizeCUDADevice(__FILE__, __LINE__);
+  }
 }
 
 void CUDATree::InitCUDA() {
@@ -208,6 +245,39 @@ void CUDATree::ToHost() {
   leaf_depth_.resize(max_leaves_);
 
   const size_t num_leaves_size = static_cast<size_t>(num_leaves_);
+  if (pooled_) {
+    // all per-tree arrays live in one contiguous slab: ONE D2H copy replaces the
+    // 16 individual synchronous copies below (each pays a full launch+sync
+    // round trip). The scatter into the host vectors is plain host memcpy.
+    const size_t L = static_cast<size_t>(max_leaves_);
+    const size_t slab_bytes = PooledDeviceBufferSize(max_leaves_);
+    std::vector<uint8_t> staging(slab_bytes);
+    // cuda_threshold_ is the first view carved from the slab (see InitCUDAMemory)
+    CopyFromCUDADeviceToHost<uint8_t>(staging.data(),
+      reinterpret_cast<const uint8_t*>(cuda_threshold_.RawData()), slab_bytes, __FILE__, __LINE__);
+    const uint8_t* p = staging.data();
+    const auto scatter = [&p](void* dst, const size_t bytes, const size_t stride) {
+      if (bytes > 0) std::memcpy(dst, p, bytes);
+      p += stride;
+    };
+    scatter(threshold_.data(), (num_leaves_size - 1) * sizeof(double), L * sizeof(double));
+    scatter(internal_weight_.data(), (num_leaves_size - 1) * sizeof(double), L * sizeof(double));
+    scatter(internal_value_.data(), (num_leaves_size - 1) * sizeof(double), L * sizeof(double));
+    scatter(leaf_value_.data(), num_leaves_size * sizeof(double), L * sizeof(double));
+    scatter(leaf_weight_.data(), num_leaves_size * sizeof(double), L * sizeof(double));
+    p += sizeof(CUDATreeBatchSplit) * (L / 2 + 2);  // skip the batched split descriptors
+    scatter(left_child_.data(), (num_leaves_size - 1) * sizeof(int), L * sizeof(int));
+    scatter(right_child_.data(), (num_leaves_size - 1) * sizeof(int), L * sizeof(int));
+    scatter(split_feature_inner_.data(), (num_leaves_size - 1) * sizeof(int), L * sizeof(int));
+    scatter(split_feature_.data(), (num_leaves_size - 1) * sizeof(int), L * sizeof(int));
+    scatter(leaf_depth_.data(), num_leaves_size * sizeof(int), L * sizeof(int));
+    scatter(leaf_parent_.data(), (num_leaves_size - 1) * sizeof(int), L * sizeof(int));
+    scatter(threshold_in_bin_.data(), (num_leaves_size - 1) * sizeof(uint32_t), L * sizeof(uint32_t));
+    scatter(leaf_count_.data(), num_leaves_size * sizeof(data_size_t), L * sizeof(data_size_t));
+    scatter(internal_count_.data(), (num_leaves_size - 1) * sizeof(data_size_t), L * sizeof(data_size_t));
+    scatter(split_gain_.data(), (num_leaves_size - 1) * sizeof(float), L * sizeof(float));
+    scatter(decision_type_.data(), (num_leaves_size - 1) * sizeof(int8_t), L * sizeof(int8_t));
+  } else {
   CopyFromCUDADeviceToHost<int>(left_child_.data(), cuda_left_child_.RawData(), num_leaves_size - 1, __FILE__, __LINE__);
   CopyFromCUDADeviceToHost<int>(right_child_.data(), cuda_right_child_.RawData(), num_leaves_size - 1, __FILE__, __LINE__);
   CopyFromCUDADeviceToHost<int>(split_feature_inner_.data(), cuda_split_feature_inner_.RawData(), num_leaves_size - 1, __FILE__, __LINE__);
@@ -224,6 +294,7 @@ void CUDATree::ToHost() {
   CopyFromCUDADeviceToHost<double>(internal_weight_.data(), cuda_internal_weight_.RawData(), num_leaves_size - 1, __FILE__, __LINE__);
   CopyFromCUDADeviceToHost<data_size_t>(internal_count_.data(), cuda_internal_count_.RawData(), num_leaves_size - 1, __FILE__, __LINE__);
   CopyFromCUDADeviceToHost<int>(leaf_depth_.data(), cuda_leaf_depth_.RawData(), num_leaves_size, __FILE__, __LINE__);
+  }
 
   if (num_cat_ > 0) {
     cuda_cat_boundaries_inner_.Resize(num_cat_ + 1);
@@ -264,9 +335,13 @@ void CUDATree::ToHost() {
   // accumulated per-tree GPU memory OOMs a 32GB device after ~6k trees on
   // the Numerai prod config. cuda_leaf_value_ is the only field needed
   // post-train (AddPredictionToScore reads it); shrink to actual num_leaves_.
+  // For pooled trees the slab is reused by the next tree, so the retained leaf
+  // values must be materialized into owned memory in every case (Resize on a
+  // view copies-then-owns; Materialize covers num_leaves_ == max_leaves_).
   if (num_leaves_ > 0 && num_leaves_ < max_leaves_ && cuda_leaf_value_.Size() > 0) {
     cuda_leaf_value_.Resize(static_cast<size_t>(num_leaves_));
   }
+  cuda_leaf_value_.Materialize();
   cuda_left_child_.Clear();
   cuda_right_child_.Clear();
   cuda_split_feature_inner_.Clear();
@@ -282,6 +357,7 @@ void CUDATree::ToHost() {
   cuda_leaf_weight_.Clear();
   cuda_internal_count_.Clear();
   cuda_split_gain_.Clear();
+  cuda_batch_splits_.Clear();
 
   // Destroy the per-tree CUDA stream — only used during construction.
   if (cuda_stream_ != nullptr) {

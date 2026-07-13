@@ -1270,7 +1270,8 @@ __global__ void HybridAggregateBlockOffsetBatchKernel(
   data_size_t* block_to_right_offset_buffer_base,
   data_size_t* cuda_leaf_data_start,
   data_size_t* cuda_leaf_data_end,
-  data_size_t* cuda_leaf_num_data) {
+  data_size_t* cuda_leaf_num_data,
+  data_size_t* level_smaller_counts) {
   __shared__ uint32_t shared_mem_buffer[WARPSIZE];
   __shared__ uint32_t to_left_total_count;
   const CUDAHybridApplyDescriptor d = descs[blockIdx.x];
@@ -1327,11 +1328,16 @@ __global__ void HybridAggregateBlockOffsetBatchKernel(
     const int left_leaf_index = d.left_leaf_index;
     const int right_leaf_index = d.right_leaf_index;
     const data_size_t old_leaf_data_end = cuda_leaf_data_end[left_leaf_index];
-    cuda_leaf_data_end[left_leaf_index] = cuda_leaf_data_start[left_leaf_index] + static_cast<data_size_t>(to_left_total_count);
-    cuda_leaf_num_data[left_leaf_index] = static_cast<data_size_t>(to_left_total_count);
+    const data_size_t left_count = static_cast<data_size_t>(to_left_total_count);
+    const data_size_t right_count = num_data_in_leaf - left_count;
+    cuda_leaf_data_end[left_leaf_index] = cuda_leaf_data_start[left_leaf_index] + left_count;
+    cuda_leaf_num_data[left_leaf_index] = left_count;
     cuda_leaf_data_start[right_leaf_index] = cuda_leaf_data_end[left_leaf_index];
     cuda_leaf_data_end[right_leaf_index] = old_leaf_data_end;
-    cuda_leaf_num_data[right_leaf_index] = num_data_in_leaf - static_cast<data_size_t>(to_left_total_count);
+    cuda_leaf_num_data[right_leaf_index] = right_count;
+    // actual smaller-child size of this split, consumed by the speculative
+    // batched construct kernel's device row-grouping (single-sync flow)
+    level_smaller_counts[blockIdx.x] = left_count < right_count ? left_count : right_count;
   }
 }
 
@@ -1549,7 +1555,8 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
     cuda_data_index_to_leaf_index_.RawData());
   HybridAggregateBlockOffsetBatchKernel<<<num_splits, AGGREGATE_BLOCK_SIZE_DATA_PARTITION, 0, cuda_streams_[0]>>>(
     descs, cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
-    cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData());
+    cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
+    cuda_level_smaller_counts_.RawData());
   HybridSplitInnerBatchKernel<<<data_grid, block_dim, 0, cuda_streams_[0]>>>(
     descs, cuda_data_indices_.RawData(), cuda_block_data_to_left_offset_.RawData(),
     cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),

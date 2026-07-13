@@ -296,7 +296,10 @@ __global__ void CUDAConstructHistogramDenseColMajorKernel(
 // instantiates the helper more than once does not duplicate the allocation.
 // Blocks whose row range lies beyond this leaf's data exit before touching
 // shared/global memory (they would only add zeros); this keeps over-provisioned
-// batched grids (sized for the level's largest pair) cheap.
+// batched grids (sized for the level's largest pair) cheap. dim_y is the row
+// grouping extent: gridDim.y * blockDim.y in the classic flow, or the
+// device-computed effective value in the speculative single-sync flow (whose
+// launch grid is only an upper bound).
 template <typename BIN_TYPE, typename HIST_TYPE>
 __device__ __forceinline__ void ConstructHistogramDenseInner(
   const CUDALeafSplitsStruct* smaller_leaf_splits,
@@ -308,8 +311,8 @@ __device__ __forceinline__ void ConstructHistogramDenseInner(
   const uint32_t* column_hist_offsets_full,
   const int* feature_partition_column_index_offsets,
   const int8_t* is_feature_used_bytree,
-  const data_size_t num_data) {
-  const int dim_y = static_cast<int>(gridDim.y * blockDim.y);
+  const data_size_t num_data,
+  const int dim_y) {
   const data_size_t num_data_in_smaller_leaf = smaller_leaf_splits->num_data_in_leaf;
   const data_size_t num_data_per_thread = (num_data_in_smaller_leaf + dim_y - 1) / dim_y;
   const unsigned int blockIdx_y = blockIdx.y;
@@ -373,12 +376,76 @@ __global__ void CUDAConstructHistogramDenseKernel(
   ConstructHistogramDenseInner<BIN_TYPE, HIST_TYPE>(
     smaller_leaf_splits, shared_hist, cuda_gradients, cuda_hessians, data,
     column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
-    is_feature_used_bytree, num_data);
+    is_feature_used_bytree, num_data, static_cast<int>(gridDim.y * blockDim.y));
+}
+
+// Computes the effective row-grouping extent (dim_y) of the speculative batched
+// construct launch: the exact host sizing formula applied to the level's ACTUAL
+// smaller-child sizes (written by the batched apply's aggregate kernel), so the
+// row grouping -- and hence the float histograms -- are bit-identical to the
+// classic host sizing. One tiny single-block launch per level; the construct
+// blocks then read a single int.
+__global__ void ComputeBatchedConstructDimYKernel(
+  const data_size_t* level_smaller_num_data,
+  const int num_pairs,
+  const int block_dim_y,
+  const int min_grid_dim_y,
+  const int min_rows_per_thread,
+  int* out_dim_y) {
+  __shared__ data_size_t shared_max[32];
+  data_size_t thread_max = 0;
+  for (int i = static_cast<int>(threadIdx.x); i < num_pairs; i += static_cast<int>(blockDim.x)) {
+    const data_size_t n = level_smaller_num_data[i];
+    if (n > thread_max) {
+      thread_max = n;
+    }
+  }
+  const uint32_t warp_id = threadIdx.x / warpSize;
+  const uint32_t lane = threadIdx.x % warpSize;
+  for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
+    const data_size_t other = __shfl_down_sync(0xffffffffu, thread_max, offset);
+    if (other > thread_max) {
+      thread_max = other;
+    }
+  }
+  if (lane == 0) {
+    shared_max[warp_id] = thread_max;
+  }
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    data_size_t max_num_data_in_smaller_leaf = 0;
+    const uint32_t num_warps = (blockDim.x + warpSize - 1) / warpSize;
+    for (uint32_t w = 0; w < num_warps; ++w) {
+      if (shared_max[w] > max_num_data_in_smaller_leaf) {
+        max_num_data_in_smaller_leaf = shared_max[w];
+      }
+    }
+    out_dim_y[0] = HybridBatchedConstructGridDimY(
+      max_num_data_in_smaller_leaf, num_pairs, block_dim_y,
+      min_grid_dim_y, min_rows_per_thread) * block_dim_y;
+  }
+}
+
+void CUDAHistogramConstructor::LaunchComputeBatchedConstructDimYKernel(
+  const data_size_t* level_smaller_num_data,
+  const int num_pairs,
+  const int block_dim_y) {
+  ComputeBatchedConstructDimYKernel<<<1, 128, 0, cuda_stream_>>>(
+    level_smaller_num_data, num_pairs, block_dim_y, min_grid_dim_y_,
+    BatchConstructMinRowsPerThread(), cuda_hybrid_construct_dim_y_.RawData());
 }
 
 // Batched per-level variant (hybrid growth): one launch covers all sibling pairs
 // of a level; blockIdx.z selects the pair. The x/y grid is sized for the pair with
 // the most data; blocks beyond a pair's own data exit early inside the helper.
+// The construct gating (host-mirrored min_data/min_hessian early return) is
+// evaluated on-device from the pair structs, so the speculative single-sync flow
+// can enqueue the level before the child statistics are read back; in the classic
+// flow desc->construct_valid carries the identical host decision and the device
+// check is a no-op. When level_dim_y is non-null (speculative flow), the launch
+// grid is only an upper bound and the row-grouping extent comes from the scalar
+// precomputed by ComputeBatchedConstructDimYKernel (bit-identical to the classic
+// host sizing).
 template <typename BIN_TYPE, typename HIST_TYPE, size_t SHARED_HIST_SIZE>
 __global__ void CUDAConstructHistogramDenseBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
@@ -389,16 +456,34 @@ __global__ void CUDAConstructHistogramDenseBatchedKernel(
   const uint32_t* column_hist_offsets_full,
   const int* feature_partition_column_index_offsets,
   const int8_t* is_feature_used_bytree,
-  const data_size_t num_data) {
+  const data_size_t num_data,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf,
+  const int* level_dim_y) {
   __shared__ HIST_TYPE shared_hist[SHARED_HIST_SIZE];
   const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.z;
   if (!desc->construct_valid) {
     return;
   }
+  // device mirror of ConstructHistogramForLeaf's min_data/min_hessian early
+  // return (block-uniform, so the early return is divergence-free)
+  const CUDALeafSplitsStruct* smaller_struct = desc->smaller_struct;
+  const CUDALeafSplitsStruct* larger_struct = desc->larger_struct;
+  const data_size_t num_data_smaller = smaller_struct->num_data_in_leaf;
+  const double sum_hessians_smaller = smaller_struct->sum_of_hessians;
+  const bool has_larger = larger_struct->leaf_index >= 0;
+  const data_size_t num_data_larger = has_larger ? larger_struct->num_data_in_leaf : 0;
+  const double sum_hessians_larger = has_larger ? larger_struct->sum_of_hessians : 0.0;
+  if ((num_data_smaller <= min_data_in_leaf || sum_hessians_smaller <= min_sum_hessian_in_leaf) &&
+      (num_data_larger <= min_data_in_leaf || sum_hessians_larger <= min_sum_hessian_in_leaf)) {
+    return;
+  }
+  const int dim_y = level_dim_y == nullptr ?
+    static_cast<int>(gridDim.y * blockDim.y) : level_dim_y[0];
   ConstructHistogramDenseInner<BIN_TYPE, HIST_TYPE>(
-    desc->smaller_struct, shared_hist, cuda_gradients, cuda_hessians, data,
+    smaller_struct, shared_hist, cuda_gradients, cuda_hessians, data,
     column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
-    is_feature_used_bytree, num_data);
+    is_feature_used_bytree, num_data, dim_y);
 }
 
 template <typename BIN_TYPE, typename DATA_PTR_TYPE, typename HIST_TYPE, size_t SHARED_HIST_SIZE>
@@ -1538,11 +1623,12 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramKernel(
 void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,
-  const data_size_t max_num_data_in_smaller_leaf) {
+  const data_size_t max_num_data_in_smaller_leaf,
+  const data_size_t* level_smaller_num_data) {
   if (cuda_row_data_->shared_hist_size() == DP_SHARED_HIST_SIZE && gpu_use_dp_) {
-    LaunchConstructHistogramBatchedKernelInner<double, DP_SHARED_HIST_SIZE>(pair_descs, num_pairs, max_num_data_in_smaller_leaf);
+    LaunchConstructHistogramBatchedKernelInner<double, DP_SHARED_HIST_SIZE>(pair_descs, num_pairs, max_num_data_in_smaller_leaf, level_smaller_num_data);
   } else if (cuda_row_data_->shared_hist_size() == SP_SHARED_HIST_SIZE && !gpu_use_dp_) {
-    LaunchConstructHistogramBatchedKernelInner<float, SP_SHARED_HIST_SIZE>(pair_descs, num_pairs, max_num_data_in_smaller_leaf);
+    LaunchConstructHistogramBatchedKernelInner<float, SP_SHARED_HIST_SIZE>(pair_descs, num_pairs, max_num_data_in_smaller_leaf, level_smaller_num_data);
   } else {
     Log::Fatal("Unknown shared histogram size %d", cuda_row_data_->shared_hist_size());
   }
@@ -1552,13 +1638,14 @@ template <typename HIST_TYPE, size_t SHARED_HIST_SIZE>
 void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,
-  const data_size_t max_num_data_in_smaller_leaf) {
+  const data_size_t max_num_data_in_smaller_leaf,
+  const data_size_t* level_smaller_num_data) {
   if (cuda_row_data_->bit_type() == 8) {
-    LaunchConstructHistogramBatchedKernelInner0<HIST_TYPE, SHARED_HIST_SIZE, uint8_t>(pair_descs, num_pairs, max_num_data_in_smaller_leaf);
+    LaunchConstructHistogramBatchedKernelInner0<HIST_TYPE, SHARED_HIST_SIZE, uint8_t>(pair_descs, num_pairs, max_num_data_in_smaller_leaf, level_smaller_num_data);
   } else if (cuda_row_data_->bit_type() == 16) {
-    LaunchConstructHistogramBatchedKernelInner0<HIST_TYPE, SHARED_HIST_SIZE, uint16_t>(pair_descs, num_pairs, max_num_data_in_smaller_leaf);
+    LaunchConstructHistogramBatchedKernelInner0<HIST_TYPE, SHARED_HIST_SIZE, uint16_t>(pair_descs, num_pairs, max_num_data_in_smaller_leaf, level_smaller_num_data);
   } else if (cuda_row_data_->bit_type() == 32) {
-    LaunchConstructHistogramBatchedKernelInner0<HIST_TYPE, SHARED_HIST_SIZE, uint32_t>(pair_descs, num_pairs, max_num_data_in_smaller_leaf);
+    LaunchConstructHistogramBatchedKernelInner0<HIST_TYPE, SHARED_HIST_SIZE, uint32_t>(pair_descs, num_pairs, max_num_data_in_smaller_leaf, level_smaller_num_data);
   } else {
     Log::Fatal("Unknown bit_type = %d", cuda_row_data_->bit_type());
   }
@@ -1568,7 +1655,8 @@ template <typename HIST_TYPE, size_t SHARED_HIST_SIZE, typename BIN_TYPE>
 void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,
-  const data_size_t max_num_data_in_smaller_leaf) {
+  const data_size_t max_num_data_in_smaller_leaf,
+  const data_size_t* level_smaller_num_data) {
   // dense shared-memory path only (SupportsBatchedLevel() gates the rest)
   int grid_dim_x = 0;
   int grid_dim_y = 0;
@@ -1577,7 +1665,16 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
   CalcConstructHistogramBatchedKernelDim(&grid_dim_x, &grid_dim_y, &block_dim_x, &block_dim_y, max_num_data_in_smaller_leaf, num_pairs);
   dim3 grid_dim(grid_dim_x, grid_dim_y, num_pairs);
   dim3 block_dim(block_dim_x, block_dim_y);
+  const int* level_dim_y = nullptr;
+  if (level_smaller_num_data != nullptr) {
+    // speculative flow: the grid above was sized from an upper BOUND; derive the
+    // exact row-grouping extent on-device from the level's actual sizes
+    LaunchComputeBatchedConstructDimYKernel(level_smaller_num_data, num_pairs, block_dim_y);
+    level_dim_y = cuda_hybrid_construct_dim_y_.RawDataReadOnly();
+  }
   if (use_quantized_grad_) {
+    // quantized training always uses the classic (two-sync) flow, so the exact
+    // level sizes are host-known and no device grouping override is needed
     CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE><<<grid_dim, block_dim, 0, cuda_stream_>>>(
       pair_descs,
       reinterpret_cast<const int32_t*>(cuda_gradients_),
@@ -1595,7 +1692,10 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       cuda_row_data_->cuda_partition_hist_offsets(),
       cuda_row_data_->cuda_feature_partition_column_index_offsets(),
       cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr,
-      num_data_);
+      num_data_,
+      static_cast<data_size_t>(min_data_in_leaf_),
+      min_sum_hessian_in_leaf_,
+      level_dim_y);
   }
 }
 

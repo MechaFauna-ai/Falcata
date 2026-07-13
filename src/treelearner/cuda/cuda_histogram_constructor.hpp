@@ -14,6 +14,7 @@
 #include <LightGBM/feature_group.h>
 #include <LightGBM/tree.h>
 
+#include <cstdlib>
 #include <memory>
 #include <vector>
 
@@ -28,6 +29,34 @@
 #define USED_HISTOGRAM_BUFFER_NUM (8)
 
 namespace LightGBM {
+
+/*! \brief y-grid sizing formula of the batched per-level construct kernel,
+ *  shared verbatim by the host launch sizing (CalcConstructHistogramBatchedKernelDim)
+ *  and the device row-grouping replica used by the speculative single-sync flow
+ *  (which launches an upper-bound grid but must group rows exactly as the classic
+ *  host sizing would, so histograms stay bit-identical). See the .cpp comment for
+ *  the rationale of the cap/floor structure. */
+__host__ __device__ inline int HybridBatchedConstructGridDimY(
+    const data_size_t max_num_data_in_smaller_leaf,
+    const int num_pairs,
+    const int block_dim_y,
+    const int min_grid_dim_y,
+    const int min_rows_per_thread) {
+  // rows-per-thread target of the per-leaf sizing
+  const int y_full_rate = ((max_num_data_in_smaller_leaf + NUM_DATA_PER_THREAD - 1) / NUM_DATA_PER_THREAD +
+    block_dim_y - 1) / block_dim_y;
+  if (min_rows_per_thread <= 0) {
+    // disabled: fall back to the per-leaf sizing
+    return min_grid_dim_y > y_full_rate ? min_grid_dim_y : y_full_rate;
+  }
+  const int y_min_rate = ((max_num_data_in_smaller_leaf + min_rows_per_thread - 1) / min_rows_per_thread +
+    block_dim_y - 1) / block_dim_y;
+  const int saturation_floor = (min_grid_dim_y + num_pairs - 1) / num_pairs;
+  int inner = y_min_rate > 1 ? y_min_rate : 1;
+  inner = inner > saturation_floor ? inner : saturation_floor;
+  inner = inner < min_grid_dim_y ? inner : min_grid_dim_y;
+  return y_full_rate > inner ? y_full_rate : inner;
+}
 
 class CUDAHistogramConstructor {
  public:
@@ -104,12 +133,32 @@ class CUDAHistogramConstructor {
    *  fix and one subtract launch cover every sibling pair of a level (pairs indexed
    *  by a grid dimension). All kernels run on pipeline_streams_[0] (cuda_stream_) in
    *  order; subtract_done_events_[0] is recorded at the end so the best split finder
-   *  can order its batched find kernel after the whole histogram phase. */
+   *  can order its batched find kernel after the whole histogram phase.
+   *  level_smaller_num_data is null in the classic (two-sync) flow, where
+   *  max_num_data_in_smaller_leaf is the level's exact maximum smaller-leaf size.
+   *  In the speculative (single-sync) flow it points at the device array of this
+   *  level's actual smaller-child sizes (written by the batched apply kernels);
+   *  max_num_data_in_smaller_leaf is then only an upper BOUND used to size the
+   *  launch grid, and the construct kernel derives the exact per-thread row
+   *  grouping on-device from the array so histograms are bit-identical to the
+   *  classic sizing (non-quantized dense path only). */
   void ConstructHistogramsForLevel(
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
     const data_size_t max_num_data_in_smaller_leaf,
-    const bool any_pair_needs_bit_change_copy);
+    const bool any_pair_needs_bit_change_copy,
+    const data_size_t* level_smaller_num_data = nullptr);
+
+  /*! \brief minimum rows-per-thread cap of the batched construct grid sizing
+   *  (EXABOOST_BATCH_CONSTRUCT_MINROWS; 0 = per-leaf sizing). Shared by the host
+   *  grid sizing and the device row-grouping replica. */
+  static int BatchConstructMinRowsPerThread() {
+    static const int min_rows_per_thread = []() {
+      const char* env = std::getenv("EXABOOST_BATCH_CONSTRUCT_MINROWS");
+      return env != nullptr ? std::atoi(env) : 64;
+    }();
+    return min_rows_per_thread;
+  }
 
   void ResetTrainingData(const Dataset* train_data, TrainingShareStates* share_states);
 
@@ -205,23 +254,34 @@ class CUDAHistogramConstructor {
   void LaunchConstructHistogramBatchedKernelInner(
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
-    const data_size_t max_num_data_in_smaller_leaf);
+    const data_size_t max_num_data_in_smaller_leaf,
+    const data_size_t* level_smaller_num_data);
 
   template <typename HIST_TYPE, size_t SHARED_HIST_SIZE, typename BIN_TYPE>
   void LaunchConstructHistogramBatchedKernelInner0(
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
-    const data_size_t max_num_data_in_smaller_leaf);
+    const data_size_t max_num_data_in_smaller_leaf,
+    const data_size_t* level_smaller_num_data);
 
   void LaunchConstructHistogramBatchedKernel(
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
-    const data_size_t max_num_data_in_smaller_leaf);
+    const data_size_t max_num_data_in_smaller_leaf,
+    const data_size_t* level_smaller_num_data);
 
   void LaunchSubtractHistogramBatchedKernel(
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
     const bool any_pair_needs_bit_change_copy);
+
+  /*! \brief one tiny launch per speculative level: reduce the level's actual
+   *  smaller-child sizes and apply the exact host grid-sizing formula, writing
+   *  the effective row-grouping extent to cuda_hybrid_construct_dim_y_ */
+  void LaunchComputeBatchedConstructDimYKernel(
+    const data_size_t* level_smaller_num_data,
+    const int num_pairs,
+    const int block_dim_y);
 
   // Host memory
 
@@ -280,6 +340,9 @@ class CUDAHistogramConstructor {
   /*! \brief Per-tree feature mask (1 = feature in this tree's sample, 0 = skip).
    *  Indexed by column_index (== inner_feature_index for dense single-feature groups). */
   CUDAVector<int8_t> cuda_is_feature_used_bytree_;
+  /*! \brief effective row-grouping extent of the speculative batched construct
+   *  launch (see LaunchComputeBatchedConstructDimYKernel) */
+  CUDAVector<int> cuda_hybrid_construct_dim_y_;
 
   // ========================================================================
   // Compact-view buffers: when feature_fraction < 1.0, build a contiguous

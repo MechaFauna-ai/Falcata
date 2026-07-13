@@ -374,6 +374,7 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
 
   cuda_need_fix_histogram_features_.InitFromHostVector(need_fix_histogram_features_);
   cuda_need_fix_histogram_features_num_bin_aligned_.InitFromHostVector(need_fix_histogram_features_num_bin_aligend_);
+  cuda_hybrid_construct_dim_y_.Resize(1);
 
   if (cuda_row_data_->NumLargeBinPartition() > 0) {
     int grid_dim_x = 0, grid_dim_y = 0, block_dim_x = 0, block_dim_y = 0;
@@ -424,7 +425,8 @@ void CUDAHistogramConstructor::ConstructHistogramsForLevel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,
   const data_size_t max_num_data_in_smaller_leaf,
-  const bool any_pair_needs_bit_change_copy) {
+  const bool any_pair_needs_bit_change_copy,
+  const data_size_t* level_smaller_num_data) {
   if (num_pairs <= 0) {
     return;
   }
@@ -438,8 +440,10 @@ void CUDAHistogramConstructor::ConstructHistogramsForLevel(
     }
   }
   global_timer.Start("CUDAHistogramConstructor::ConstructHistogramsForLevel");
-  LaunchConstructHistogramBatchedKernel(pair_descs, num_pairs, max_num_data_in_smaller_leaf);
-  CUDASUCCESS_OR_FATAL(cudaEventRecord(construct_done_events_[0], cuda_stream_));
+  LaunchConstructHistogramBatchedKernel(pair_descs, num_pairs, max_num_data_in_smaller_leaf,
+                                        level_smaller_num_data);
+  // (no construct_done event here: the batched find kernel only waits on the
+  // subtract event below, and the per-pair path re-records its own events)
   LaunchSubtractHistogramBatchedKernel(pair_descs, num_pairs, any_pair_needs_bit_change_copy);
   // the best split finder's batched find kernel waits on this event before reading
   // any of this level's histograms (construct/fix/subtract are stream-ordered here)
@@ -487,9 +491,6 @@ void CUDAHistogramConstructor::CalcConstructHistogramBatchedKernelDim(
   *block_dim_x = cuda_row_data_->max_num_column_per_partition();
   *block_dim_y = NUM_THREADS_PER_BLOCK / cuda_row_data_->max_num_column_per_partition();
   *grid_dim_x = cuda_row_data_->num_feature_partitions();
-  // rows-per-thread target of the per-leaf sizing
-  const int y_full_rate = ((max_num_data_in_smaller_leaf + NUM_DATA_PER_THREAD - 1) / NUM_DATA_PER_THREAD +
-    (*block_dim_y) - 1) / (*block_dim_y);
   // The per-leaf sizing forces min_grid_dim_y_ y-blocks to saturate the device
   // for a SINGLE leaf; every active block, however, pays a fixed shared-hist
   // zero + global-merge cost, which dominates small leaves. In the batched
@@ -497,20 +498,11 @@ void CUDAHistogramConstructor::CalcConstructHistogramBatchedKernelDim(
   // saturation floor across pairs and otherwise cap the y-grid at
   // min_rows_per_thread rows per thread (identical to the per-leaf sizing for
   // single-pair levels and for leaves large enough that the cap is inactive).
-  static const int min_rows_per_thread = []() {
-    const char* env = std::getenv("EXABOOST_BATCH_CONSTRUCT_MINROWS");
-    return env != nullptr ? std::atoi(env) : 64;
-  }();
-  if (min_rows_per_thread <= 0) {
-    // disabled: fall back to the per-leaf sizing
-    *grid_dim_y = std::max(min_grid_dim_y_, y_full_rate);
-    return;
-  }
-  const int y_min_rate = ((max_num_data_in_smaller_leaf + min_rows_per_thread - 1) / min_rows_per_thread +
-    (*block_dim_y) - 1) / (*block_dim_y);
-  const int saturation_floor = (min_grid_dim_y_ + num_pairs - 1) / num_pairs;
-  *grid_dim_y = std::max(y_full_rate,
-    std::min(min_grid_dim_y_, std::max(std::max(1, y_min_rate), saturation_floor)));
+  // The formula lives in HybridBatchedConstructGridDimY so the device replica
+  // used by the speculative single-sync flow computes the identical value.
+  *grid_dim_y = HybridBatchedConstructGridDimY(
+    max_num_data_in_smaller_leaf, num_pairs, *block_dim_y, min_grid_dim_y_,
+    BatchConstructMinRowsPerThread());
 }
 
 void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, TrainingShareStates* share_states) {

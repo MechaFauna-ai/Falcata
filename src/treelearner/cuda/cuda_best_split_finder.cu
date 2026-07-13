@@ -1998,16 +1998,26 @@ __global__ void FindBestSplitsForLevelKernel(
   const unsigned int pair_index = blockIdx.y;
   const bool is_larger = (blockIdx.z == 1);
   const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
+  // desc->{smaller,larger}_valid carries the HOST-known gates (max_depth); the
+  // min_data/min_hessian gates are evaluated on-device from the leaf struct so
+  // the speculative single-sync flow can enqueue this kernel before the child
+  // statistics are read back. In the classic flow the host flags already include
+  // the identical data/hessian conditions, so the device check is a no-op.
   if (is_larger ? !desc->larger_valid : !desc->smaller_valid) {
     return;
   }
   const CUDALeafSplitsStruct* leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
+  const data_size_t num_data = leaf_splits->num_data_in_leaf;
+  const double leaf_sum_hessians = leaf_splits->sum_of_hessians;
+  if (leaf_splits->leaf_index < 0 || num_data <= min_data_in_leaf ||
+      leaf_sum_hessians <= min_sum_hessian_in_leaf) {
+    return;
+  }
   const unsigned int task_index = blockIdx.x;
   const SplitFindTask* task = tasks + task_index;
   const double parent_gain = leaf_splits->gain;
   const double sum_gradients = leaf_splits->sum_of_gradients;
-  const double sum_hessians = leaf_splits->sum_of_hessians + 2 * kEpsilon;
-  const data_size_t num_data = is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf;
+  const double sum_hessians = leaf_sum_hessians + 2 * kEpsilon;
   const double parent_output = leaf_splits->leaf_value;
   const unsigned int output_offset = pair_index * (2 * static_cast<unsigned int>(num_tasks)) +
     (is_larger ? task_index + num_tasks : task_index);
@@ -2131,18 +2141,28 @@ __global__ void SyncBestSplitForLevelKernel(
   CUDASplitInfo* cuda_leaf_best_split_info,
   const SplitFindTask* tasks,
   const CUDASplitInfo* cuda_best_split_info,
-  const int num_tasks) {
+  const int num_tasks,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf) {
   __shared__ double shared_gain_buffer[WARPSIZE];
   __shared__ bool shared_found_buffer[WARPSIZE];
   __shared__ uint32_t shared_thread_index_buffer[WARPSIZE];
   const unsigned int pair_index = blockIdx.y;
   const bool is_larger = (blockIdx.x == 1);
   const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
-  const int leaf_index = is_larger ? desc->larger_leaf_index : desc->smaller_leaf_index;
+  // leaf index and validity mirror the find kernel: the leaf index comes from
+  // the struct (written by the batched apply kernels; equal to the host value in
+  // the classic flow) and the host validity flags are ANDed with the on-device
+  // min_data/min_hessian gates so the speculative single-sync flow needs no
+  // host-side child statistics.
+  const CUDALeafSplitsStruct* leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
+  const int leaf_index = leaf_splits->leaf_index;
   if (leaf_index < 0) {
     return;
   }
-  const bool leaf_valid = is_larger ? (desc->larger_valid != 0) : (desc->smaller_valid != 0);
+  bool leaf_valid = is_larger ? (desc->larger_valid != 0) : (desc->smaller_valid != 0);
+  leaf_valid = leaf_valid && leaf_splits->num_data_in_leaf > min_data_in_leaf &&
+    leaf_splits->sum_of_hessians > min_sum_hessian_in_leaf;
   if (!leaf_valid) {
     // mirror SetInvalidLeafSplitInfoKernel of the per-pair path
     if (threadIdx.x == 0) {
@@ -2235,7 +2255,9 @@ void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
     cuda_leaf_best_split_info_.RawData(),
     cuda_split_find_tasks_.RawData(),
     cuda_best_split_info_.RawData(),
-    num_tasks_);
+    num_tasks_,
+    min_data_in_leaf_,
+    min_sum_hessian_in_leaf_);
 }
 
 

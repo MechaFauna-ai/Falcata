@@ -79,6 +79,11 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // 2 device syncs per split); "0" keeps the per-split deferred loop
   const char* batch_apply_env = std::getenv("EXABOOST_HYBRID_BATCH_APPLY");
   use_hybrid_batch_apply_ = (batch_apply_env == nullptr || std::string(batch_apply_env) != std::string("0"));
+  // single-sync (speculative) level pipeline for the hybrid prefix: each level's
+  // apply and the children's search are enqueued back to back and read back with
+  // ONE device synchronization per level; "0" keeps the classic two-sync flow
+  const char* one_sync_env = std::getenv("EXABOOST_HYBRID_ONE_SYNC");
+  use_hybrid_one_sync_ = (one_sync_env == nullptr || std::string(one_sync_env) != std::string("0"));
   cuda_best_split_finder_.reset(new CUDABestSplitFinder(cuda_histogram_constructor_->cuda_hist(),
     train_data_, this->share_state_->feature_hist_offsets(), select_features_by_node_, config_));
   cuda_best_split_finder_->Init();
@@ -168,6 +173,13 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
       }
   } else {
     cuda_histogram_constructor_->BeforeTrain(gradients_, hessians_);
+    // The single-sync hybrid prefix derives every root gate on-device, so the
+    // synchronous root-sum readback (which would block on the histogram-buffer
+    // zeroing above) is deferred; EnsureRootSumsReadBack performs it lazily on
+    // the paths that do need host root sums. Optimistic: SupportsBatchedLevel
+    // may flip once BuildCompactView below runs, which the classic prefix
+    // handles by reading the sums back at its start.
+    root_sums_deferred_ = HybridGrowthUsable() && UseOneSyncPrefix();
     cuda_smaller_leaf_splits_->InitValues(
       config_->lambda_l1,
       config_->lambda_l2,
@@ -178,7 +190,8 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
       root_num_data,
       cuda_histogram_constructor_->cuda_hist_pointer(),
       &leaf_sum_gradients_[0],
-      &leaf_sum_hessians_[0]);
+      &leaf_sum_hessians_[0],
+      root_sums_deferred_);
   }
   leaf_num_data_[0] = root_num_data;
   cuda_larger_leaf_splits_->InitValues();
@@ -326,6 +339,29 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
          !select_features_by_node_ &&
          (forced_split_json_ == nullptr || forced_split_json_->is_null()) &&
          config_->num_leaves > 2;
+}
+
+bool CUDASingleGPUTreeLearner::UseOneSyncPrefix() const {
+  return use_hybrid_one_sync_ &&
+         !config_->use_quantized_grad &&
+         use_hybrid_batch_kernels_ &&
+         use_hybrid_batch_apply_ &&
+         cuda_histogram_constructor_->SupportsBatchedLevel() &&
+         cuda_best_split_finder_->SupportsBatchedLevel();
+}
+
+void CUDASingleGPUTreeLearner::EnsureRootSumsReadBack(CUDATree* tree) {
+  if (!root_sums_deferred_) {
+    return;
+  }
+  root_sums_deferred_ = false;
+  cuda_smaller_leaf_splits_->CopyRootSumsToHost(&leaf_sum_gradients_[0], &leaf_sum_hessians_[0]);
+  // the deferred half of Train()'s root initialization (see there)
+  tree->SetLeafOutput(0, CUDALeafSplits::CalculateSplittedLeafOutput<true, false>(
+    leaf_sum_gradients_[0], leaf_sum_hessians_[0],
+    config_->lambda_l1, config_->lambda_l2, config_->path_smooth,
+    static_cast<data_size_t>(num_data_), 0));
+  tree->SyncLeafOutputFromHostToCUDA();
 }
 
 void CUDASingleGPUTreeLearner::EnqueuePairBestSplitSearch(const CUDATree* tree,
@@ -531,6 +567,227 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
   global_timer.Stop("CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch");
 }
 
+void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearchSpeculative(const CUDATree* tree,
+    const std::vector<HybridAppliedSplit>& applied) {
+  const int num_pairs = static_cast<int>(applied.size());
+  if (num_pairs <= 0) {
+    return;
+  }
+  global_timer.Start("CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch");
+  host_hybrid_pair_descs_.resize(static_cast<size_t>(num_pairs));
+  // the level's exact smaller-child sizes are not host-known yet (the apply's
+  // readback is deferred); bound the construct grid by the parents' sizes
+  // (smaller child <= floor(parent / 2)) -- the kernel restores the exact row
+  // grouping from the device-side actual sizes written by the apply kernels
+  data_size_t max_smaller_leaf_bound = 0;
+  for (int i = 0; i < num_pairs; ++i) {
+    const HybridAppliedSplit& a = applied[i];
+    CUDAHybridPairDescriptor& desc = host_hybrid_pair_descs_[i];
+    desc.smaller_struct = a.smaller_slot;
+    desc.larger_struct = a.larger_slot;
+    // informational only: the batched kernels read the leaf indices from the
+    // structs (the smaller/larger designation is decided on-device)
+    desc.smaller_leaf_index = a.left;
+    desc.larger_leaf_index = a.right;
+    // derived on-device from the child structs
+    desc.num_data_in_smaller_leaf = 0;
+    desc.num_data_in_larger_leaf = 0;
+    desc.construct_valid = 1;
+    // both children of a split are siblings at the same (host-known) depth; the
+    // min_data/min_hessian gates are evaluated on-device
+    const uint8_t below_max_depth = (config_->max_depth <= 0 ||
+      tree->leaf_depth(a.left) < config_->max_depth) ? 1 : 0;
+    desc.smaller_valid = below_max_depth;
+    desc.larger_valid = below_max_depth;
+    // single-sync flow is non-quantized only
+    desc.parent_num_bits = 0;
+    desc.smaller_num_bits = 0;
+    desc.larger_num_bits = 0;
+    // leaf_num_data_[a.left] still holds the PARENT's size (its readback-based
+    // update is deferred to the next level's combined readback)
+    const data_size_t smaller_child_bound = leaf_num_data_[a.left] / 2;
+    if (smaller_child_bound > max_smaller_leaf_bound) {
+      max_smaller_leaf_bound = smaller_child_bound;
+    }
+  }
+  if (cuda_hybrid_pair_descs_.Size() < static_cast<size_t>(num_pairs)) {
+    cuda_hybrid_pair_descs_.Resize(static_cast<size_t>(
+      std::max(num_pairs, config_->num_leaves / 2 + 2)));
+  }
+  CopyFromHostToCUDADeviceAsync<CUDAHybridPairDescriptor>(
+    cuda_hybrid_pair_descs_.RawData(), host_hybrid_pair_descs_.data(),
+    static_cast<size_t>(num_pairs), cuda_histogram_constructor_->hist_stream(),
+    __FILE__, __LINE__);
+  // order the whole speculative search phase after this level's batched apply
+  // kernels: they write the child structs (and the smaller-count array) the
+  // construct/fix/subtract/find/sync kernels read. Everything enqueued before
+  // the previous level's combined readback has already completed.
+  CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(
+    cuda_histogram_constructor_->hist_stream(),
+    cuda_data_partition_->apply_done_event(), 0));
+  cuda_histogram_constructor_->ConstructHistogramsForLevel(
+    cuda_hybrid_pair_descs_.RawDataReadOnly(), num_pairs,
+    max_smaller_leaf_bound, /*any_pair_needs_bit_change_copy=*/false,
+    cuda_data_partition_->level_smaller_leaf_counts());
+  cuda_best_split_finder_->FindBestSplitsForLevel(
+    cuda_hybrid_pair_descs_.RawDataReadOnly(), num_pairs, nullptr, nullptr);
+  global_timer.Stop("CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch");
+}
+
+void CUDASingleGPUTreeLearner::CollectSplittableLeaves(const CUDATree* tree,
+    std::vector<int>* splittable) {
+  splittable->clear();
+  for (int leaf = 0; leaf < tree->num_leaves(); ++leaf) {
+    const CUDASplitInfo& info = host_leaf_best_splits_[leaf];
+    if (info.is_valid) {
+      // keep the host-side split arrays consistent with the device cache for
+      // every candidate leaf: the leaf-wise tail may apply any of them later
+      leaf_best_split_feature_[leaf] = info.inner_feature_index;
+      leaf_best_split_threshold_[leaf] = info.threshold;
+      leaf_best_split_default_left_[leaf] = static_cast<uint8_t>(info.default_left);
+      splittable->push_back(leaf);
+    }
+  }
+  static const bool hybrid_debug = std::getenv("EXABOOST_HYBRID_DEBUG") != nullptr;
+  if (hybrid_debug) {
+    double max_gain = -1e300, min_gain = 1e300;
+    for (const int leaf : *splittable) {
+      max_gain = std::max(max_gain, host_leaf_best_splits_[leaf].gain);
+      min_gain = std::min(min_gain, host_leaf_best_splits_[leaf].gain);
+    }
+    Log::Warning("[hybrid] leaves=%d splittable=%d gain=[%g, %g]",
+                 tree->num_leaves(), static_cast<int>(splittable->size()), min_gain, max_gain);
+  }
+}
+
+bool CUDASingleGPUTreeLearner::ArbitrateLevelBudget(const CUDATree* tree,
+    std::vector<int>* splittable, bool* final_partial_level) {
+  // batch the level whenever it fits in the leaf budget. If the finished tree
+  // never exhausts num_leaves the result is exactly the leaf-wise tree (split
+  // decisions are node-local); only when the budget binds does the final level
+  // defer to the leaf-wise tail, which selects among the cached candidates in
+  // exact best-gain order.
+  *final_partial_level = false;
+  if (tree->num_leaves() + static_cast<int>(splittable->size()) > config_->num_leaves) {
+    // The budget binds. In general the leaf-wise tail must arbitrate between
+    // this level's candidates and their future children, so defer to it. But
+    // when every child this level could create would sit at max_depth, no
+    // child can ever become a candidate itself (FindBestSplitsForLeaf marks
+    // leaves at max_depth invalid) and splitting one frontier leaf leaves the
+    // cached best splits of the other candidates untouched: the tail would
+    // simply apply the top-(remaining budget) candidates in descending gain
+    // order, one full search-partition-sync round trip per split. Reproduce
+    // exactly that as one final batched partial level.
+    const int remaining_budget = config_->num_leaves - tree->num_leaves();
+    bool children_depth_capped = config_->max_depth > 0;
+    if (children_depth_capped) {
+      for (const int leaf : *splittable) {
+        if (tree->leaf_depth(leaf) + 1 < config_->max_depth) {
+          children_depth_capped = false;
+          break;
+        }
+      }
+    }
+    if (!children_depth_capped || remaining_budget <= 0) {
+      return false;
+    }
+    // descending gain; ties go to the lower leaf index (splittable is leaf-
+    // ascending and the sort is stable), matching FindBestFromAllSplitsKernel's
+    // strict-greater selection. Applying in this order reassigns right-child
+    // leaf indices exactly as the tail's sequential splits would.
+    std::stable_sort(splittable->begin(), splittable->end(),
+      [this](const int a, const int b) {
+        return host_leaf_best_splits_[a].gain > host_leaf_best_splits_[b].gain;
+      });
+    splittable->resize(static_cast<size_t>(remaining_budget));
+    *final_partial_level = true;
+  }
+  // debug: cap splits per level to isolate multi-pair interactions
+  static const char* max_splits_env = std::getenv("EXABOOST_HYBRID_MAXSPLITS");
+  if (max_splits_env != nullptr) {
+    const size_t cap = static_cast<size_t>(std::atoi(max_splits_env));
+    if (splittable->size() > cap) splittable->resize(cap);
+  }
+  return true;
+}
+
+void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
+    const std::vector<int>& splittable, std::vector<HybridAppliedSplit>* applied) {
+  // one launch per kernel family for the whole level: batched tree-structure
+  // update (CUDATree::SplitBatch) + batched partition (SplitLevelBatched);
+  // right children take consecutive leaf indices exactly as the per-split
+  // loop would assign them
+  applied->clear();
+  applied->reserve(splittable.size());
+  const int base_num_leaves = tree->num_leaves();
+  host_tree_batch_splits_.clear();
+  host_apply_split_inputs_.clear();
+  size_t slot_id = 0;
+  for (const int leaf : splittable) {
+    CUDALeafSplitsStruct* smaller_slot = hybrid_pair_slots_[slot_id]->GetCUDAStructRef();
+    CUDALeafSplitsStruct* larger_slot = hybrid_pair_slots_[slot_id + 1]->GetCUDAStructRef();
+    const int right_leaf_index = base_num_leaves + static_cast<int>(applied->size());
+    const CUDASplitInfo* best_split_info = cuda_best_split_finder_->leaf_best_split_info_ptr(leaf);
+    const int inner_feature_index = leaf_best_split_feature_[leaf];
+    host_tree_batch_splits_.push_back({
+      leaf,
+      right_leaf_index,  // == tree num_leaves at the time of this split
+      train_data_->RealFeatureIndex(inner_feature_index),
+      train_data_->RealThreshold(inner_feature_index, leaf_best_split_threshold_[leaf]),
+      static_cast<int>(train_data_->FeatureBinMapper(inner_feature_index)->missing_type()),
+      best_split_info});
+    host_apply_split_inputs_.push_back({
+      best_split_info,
+      leaf,
+      right_leaf_index,
+      inner_feature_index,
+      leaf_best_split_threshold_[leaf],
+      leaf_best_split_default_left_[leaf],
+      leaf_num_data_[leaf],
+      leaf_data_start_[leaf],
+      smaller_slot,
+      larger_slot});
+    applied->push_back({leaf, right_leaf_index, smaller_slot, larger_slot});
+    slot_id += 2;
+  }
+  // ZeroHistForLeaf is a no-op (BeforeTrain zeroes the full histogram
+  // buffer), so the batched path skips the per-split calls entirely
+  tree->SplitBatch(host_tree_batch_splits_);
+  cuda_data_partition_->SplitLevelBatched(host_apply_split_inputs_);
+}
+
+void CUDASingleGPUTreeLearner::FinishLevelBookkeeping(
+    const std::vector<HybridAppliedSplit>& applied,
+    const std::vector<int>& batch_info,
+    std::vector<HybridPendingPair>* next_pairs,
+    int* num_splits) {
+  for (size_t k = 0; k < applied.size(); ++k) {
+    const HybridAppliedSplit& a = applied[k];
+    const int* info = batch_info.data() + 18 * k;
+    const double* dinfo = reinterpret_cast<const double*>(info + 8);
+    leaf_num_data_[a.left] = info[1];
+    leaf_data_start_[a.left] = info[2];
+    leaf_num_data_[a.right] = info[4];
+    leaf_data_start_[a.right] = info[5];
+    leaf_sum_hessians_[a.left] = dinfo[0];
+    leaf_sum_hessians_[a.right] = dinfo[1];
+    leaf_sum_gradients_[a.left] = dinfo[2];
+    leaf_sum_gradients_[a.right] = dinfo[3];
+    const int smaller = leaf_num_data_[a.left] < leaf_num_data_[a.right] ? a.left : a.right;
+    const int larger = smaller == a.left ? a.right : a.left;
+    if (config_->use_quantized_grad) {
+      cuda_gradient_discretizer_->SetNumBitsInHistogramBin<false>(
+        a.left, a.right, leaf_num_data_[a.left], leaf_num_data_[a.right]);
+    }
+    if (next_pairs != nullptr) {
+      next_pairs->push_back({smaller, larger, a.smaller_slot, a.larger_slot});
+    }
+    smaller_leaf_index_ = smaller;
+    larger_leaf_index_ = larger;
+    ++(*num_splits);
+  }
+}
+
 int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   // two struct slots per split of a level, reused across levels
   const size_t max_slots = static_cast<size_t>(config_->num_leaves) + 2;
@@ -542,11 +799,6 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
       hybrid_pair_slots_[s]->Init(config_->use_quantized_grad);
     }
   }
-  // the root "pair" lives in the fixed pair structs, initialized by BeforeTrain
-  std::vector<HybridPendingPair> pairs;
-  pairs.push_back({smaller_leaf_index_, larger_leaf_index_,
-                   cuda_smaller_leaf_splits_->GetCUDAStruct(),
-                   cuda_larger_leaf_splits_->GetCUDAStruct()});
   // batched per-level kernels: one construct/fix/subtract/find/sync launch covers
   // all pairs of a level. Falls back to the per-pair loop when the data layout or
   // config is outside the batched kernels' support, or when disabled via env.
@@ -558,6 +810,20 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   // guarantees the preconditions (single GPU, no categorical splits; bagging
   // shares the same index array), so this only falls back when disabled by env.
   const bool use_batched_level_apply = use_hybrid_batch_apply_;
+  // single-sync (speculative) level pipeline: requires both batched phases and
+  // non-quantized training (the quantized path selects histogram kernels host-
+  // side from per-leaf bit widths, which needs the classic readback ordering).
+  if (UseOneSyncPrefix()) {
+    return TrainLevelWisePrefixOneSync(tree);
+  }
+  // the classic flow needs the host root sums up front (root descriptor
+  // validity); a no-op unless BeforeTrain optimistically deferred the readback
+  EnsureRootSumsReadBack(tree);
+  // the root "pair" lives in the fixed pair structs, initialized by BeforeTrain
+  std::vector<HybridPendingPair> pairs;
+  pairs.push_back({smaller_leaf_index_, larger_leaf_index_,
+                   cuda_smaller_leaf_splits_->GetCUDAStruct(),
+                   cuda_larger_leaf_splits_->GetCUDAStruct()});
   int num_splits = 0;
   while (true) {
     // enqueue histogram + best-split search for every pair of this level; device
@@ -577,132 +843,23 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
     // one device synchronization + one transfer for the whole level
     cuda_best_split_finder_->SyncAllLeafBestSplitsToHost(tree->num_leaves(), &host_leaf_best_splits_);
     std::vector<int> splittable;
-    for (int leaf = 0; leaf < tree->num_leaves(); ++leaf) {
-      const CUDASplitInfo& info = host_leaf_best_splits_[leaf];
-      if (info.is_valid) {
-        // keep the host-side split arrays consistent with the device cache for
-        // every candidate leaf: the leaf-wise tail may apply any of them later
-        leaf_best_split_feature_[leaf] = info.inner_feature_index;
-        leaf_best_split_threshold_[leaf] = info.threshold;
-        leaf_best_split_default_left_[leaf] = static_cast<uint8_t>(info.default_left);
-        splittable.push_back(leaf);
-      }
-    }
-    static const bool hybrid_debug = std::getenv("EXABOOST_HYBRID_DEBUG") != nullptr;
-    if (hybrid_debug) {
-      // (heavy per-pair diagnostics removed; see git history of the branch)
-  }
-    if (hybrid_debug) {
-      double max_gain = -1e300, min_gain = 1e300;
-      for (const int leaf : splittable) {
-        max_gain = std::max(max_gain, host_leaf_best_splits_[leaf].gain);
-        min_gain = std::min(min_gain, host_leaf_best_splits_[leaf].gain);
-      }
-      Log::Warning("[hybrid] leaves=%d splittable=%d gain=[%g, %g]",
-                   tree->num_leaves(), static_cast<int>(splittable.size()), min_gain, max_gain);
-    }
+    CollectSplittableLeaves(tree, &splittable);
     if (splittable.empty()) {
       break;
     }
-    // batch the level whenever it fits in the leaf budget. If the finished tree
-    // never exhausts num_leaves the result is exactly the leaf-wise tree (split
-    // decisions are node-local); only when the budget binds does the final level
-    // defer to the leaf-wise tail, which selects among the cached candidates in
-    // exact best-gain order.
     bool final_partial_level = false;
-    if (tree->num_leaves() + static_cast<int>(splittable.size()) > config_->num_leaves) {
-      // The budget binds. In general the leaf-wise tail must arbitrate between
-      // this level's candidates and their future children, so defer to it. But
-      // when every child this level could create would sit at max_depth, no
-      // child can ever become a candidate itself (FindBestSplitsForLeaf marks
-      // leaves at max_depth invalid) and splitting one frontier leaf leaves the
-      // cached best splits of the other candidates untouched: the tail would
-      // simply apply the top-(remaining budget) candidates in descending gain
-      // order, one full search-partition-sync round trip per split. Reproduce
-      // exactly that as one final batched partial level.
-      const int remaining_budget = config_->num_leaves - tree->num_leaves();
-      bool children_depth_capped = config_->max_depth > 0;
-      if (children_depth_capped) {
-        for (const int leaf : splittable) {
-          if (tree->leaf_depth(leaf) + 1 < config_->max_depth) {
-            children_depth_capped = false;
-            break;
-          }
-        }
-      }
-      if (!children_depth_capped || remaining_budget <= 0) {
-        break;
-      }
-      // descending gain; ties go to the lower leaf index (splittable is leaf-
-      // ascending and the sort is stable), matching FindBestFromAllSplitsKernel's
-      // strict-greater selection. Applying in this order below reassigns
-      // right-child leaf indices exactly as the tail's sequential splits would.
-      std::stable_sort(splittable.begin(), splittable.end(),
-        [this](const int a, const int b) {
-          return host_leaf_best_splits_[a].gain > host_leaf_best_splits_[b].gain;
-        });
-      splittable.resize(static_cast<size_t>(remaining_budget));
-      final_partial_level = true;
-    }
-    // debug: cap splits per level to isolate multi-pair interactions
-    static const char* max_splits_env = std::getenv("EXABOOST_HYBRID_MAXSPLITS");
-    if (max_splits_env != nullptr) {
-      const size_t cap = static_cast<size_t>(std::atoi(max_splits_env));
-      if (splittable.size() > cap) splittable.resize(cap);
+    if (!ArbitrateLevelBudget(tree, &splittable, &final_partial_level)) {
+      break;
     }
     pairs.clear();
     // apply the whole level without any device synchronization: every launch
     // parameter is host-known from the previous level, and split info is read
     // back once for the whole level below (FinishSplitBatch synchronizes)
-    struct AppliedSplit {
-      int left;
-      int right;
-      CUDALeafSplitsStruct* smaller_slot;
-      CUDALeafSplitsStruct* larger_slot;
-    };
-    std::vector<AppliedSplit> applied;
-    applied.reserve(splittable.size());
+    std::vector<HybridAppliedSplit> applied;
     if (use_batched_level_apply) {
-      // one launch per kernel family for the whole level: batched tree-structure
-      // update (CUDATree::SplitBatch) + batched partition (SplitLevelBatched);
-      // right children take consecutive leaf indices exactly as the per-split
-      // loop would assign them
-      const int base_num_leaves = tree->num_leaves();
-      host_tree_batch_splits_.clear();
-      host_apply_split_inputs_.clear();
-      size_t slot_id = 0;
-      for (const int leaf : splittable) {
-        CUDALeafSplitsStruct* smaller_slot = hybrid_pair_slots_[slot_id]->GetCUDAStructRef();
-        CUDALeafSplitsStruct* larger_slot = hybrid_pair_slots_[slot_id + 1]->GetCUDAStructRef();
-        const int right_leaf_index = base_num_leaves + static_cast<int>(applied.size());
-        const CUDASplitInfo* best_split_info = cuda_best_split_finder_->leaf_best_split_info_ptr(leaf);
-        const int inner_feature_index = leaf_best_split_feature_[leaf];
-        host_tree_batch_splits_.push_back({
-          leaf,
-          right_leaf_index,  // == tree num_leaves at the time of this split
-          train_data_->RealFeatureIndex(inner_feature_index),
-          train_data_->RealThreshold(inner_feature_index, leaf_best_split_threshold_[leaf]),
-          static_cast<int>(train_data_->FeatureBinMapper(inner_feature_index)->missing_type()),
-          best_split_info});
-        host_apply_split_inputs_.push_back({
-          best_split_info,
-          leaf,
-          right_leaf_index,
-          inner_feature_index,
-          leaf_best_split_threshold_[leaf],
-          leaf_best_split_default_left_[leaf],
-          leaf_num_data_[leaf],
-          leaf_data_start_[leaf],
-          smaller_slot,
-          larger_slot});
-        applied.push_back({leaf, right_leaf_index, smaller_slot, larger_slot});
-        slot_id += 2;
-      }
-      // ZeroHistForLeaf is a no-op (BeforeTrain zeroes the full histogram
-      // buffer), so the batched path skips the per-split calls entirely
-      tree->SplitBatch(host_tree_batch_splits_);
-      cuda_data_partition_->SplitLevelBatched(host_apply_split_inputs_);
+      ApplyLevelBatched(tree, splittable, &applied);
     } else {
+      applied.reserve(splittable.size());
       size_t slot_id = 0;
       for (const int leaf : splittable) {
         CUDALeafSplitsStruct* smaller_slot = hybrid_pair_slots_[slot_id]->GetCUDAStructRef();
@@ -716,34 +873,96 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
     }
     std::vector<int> batch_info;
     cuda_data_partition_->FinishSplitBatch(static_cast<int>(applied.size()), &batch_info);
-    for (size_t k = 0; k < applied.size(); ++k) {
-      const AppliedSplit& a = applied[k];
-      const int* info = batch_info.data() + 18 * k;
-      const double* dinfo = reinterpret_cast<const double*>(info + 8);
-      leaf_num_data_[a.left] = info[1];
-      leaf_data_start_[a.left] = info[2];
-      leaf_num_data_[a.right] = info[4];
-      leaf_data_start_[a.right] = info[5];
-      leaf_sum_hessians_[a.left] = dinfo[0];
-      leaf_sum_hessians_[a.right] = dinfo[1];
-      leaf_sum_gradients_[a.left] = dinfo[2];
-      leaf_sum_gradients_[a.right] = dinfo[3];
-      const int smaller = leaf_num_data_[a.left] < leaf_num_data_[a.right] ? a.left : a.right;
-      const int larger = smaller == a.left ? a.right : a.left;
-      if (config_->use_quantized_grad) {
-        cuda_gradient_discretizer_->SetNumBitsInHistogramBin<false>(
-          a.left, a.right, leaf_num_data_[a.left], leaf_num_data_[a.right]);
-      }
-      pairs.push_back({smaller, larger, a.smaller_slot, a.larger_slot});
-      smaller_leaf_index_ = smaller;
-      larger_leaf_index_ = larger;
-      ++num_splits;
-    }
+    FinishLevelBookkeeping(applied, batch_info, &pairs, &num_splits);
     if (final_partial_level) {
       // the tree is full and every child sits at max_depth: nothing is left
       // for the leaf-wise tail to search or split
       break;
     }
+  }
+  return num_splits;
+}
+
+int CUDASingleGPUTreeLearner::TrainLevelWisePrefixOneSync(CUDATree* tree) {
+  // Single-sync level pipeline: the level's APPLY and the children's SEARCH are
+  // enqueued back to back; the search kernels derive per-child validity, sizes
+  // and hessian sums from the child structs the apply kernels write, so no host
+  // value is needed in between. Each iteration then reads back the level's
+  // deferred split info AND the children's best splits with ONE device
+  // synchronization (the second, deferred-info copy finds the device idle).
+  // Root level: device-derived gating like every later level, so the root-sum
+  // readback of InitValues stays deferred and the level-0 search enqueue
+  // overlaps the per-tree histogram-buffer zeroing. The construct grid is exact
+  // (the root size is host-known), matching the classic sizing bit-for-bit.
+  {
+    host_hybrid_pair_descs_.resize(1);
+    CUDAHybridPairDescriptor& desc = host_hybrid_pair_descs_[0];
+    desc.smaller_struct = cuda_smaller_leaf_splits_->GetCUDAStruct();
+    desc.larger_struct = cuda_larger_leaf_splits_->GetCUDAStruct();
+    desc.smaller_leaf_index = 0;
+    desc.larger_leaf_index = -1;
+    desc.num_data_in_smaller_leaf = leaf_num_data_[0];
+    desc.num_data_in_larger_leaf = 0;
+    desc.construct_valid = 1;  // min_data/min_hessian evaluated on-device
+    desc.smaller_valid = (config_->max_depth <= 0 ||
+      tree->leaf_depth(0) < config_->max_depth) ? 1 : 0;
+    desc.larger_valid = 0;
+    desc.parent_num_bits = 0;
+    desc.smaller_num_bits = 0;
+    desc.larger_num_bits = 0;
+    if (cuda_hybrid_pair_descs_.Size() < 1) {
+      cuda_hybrid_pair_descs_.Resize(static_cast<size_t>(config_->num_leaves / 2 + 2));
+    }
+    CopyFromHostToCUDADeviceAsync<CUDAHybridPairDescriptor>(
+      cuda_hybrid_pair_descs_.RawData(), host_hybrid_pair_descs_.data(), 1,
+      cuda_histogram_constructor_->hist_stream(), __FILE__, __LINE__);
+    cuda_histogram_constructor_->ConstructHistogramsForLevel(
+      cuda_hybrid_pair_descs_.RawDataReadOnly(), 1, leaf_num_data_[0],
+      /*any_pair_needs_bit_change_copy=*/false);
+    cuda_best_split_finder_->FindBestSplitsForLevel(
+      cuda_hybrid_pair_descs_.RawDataReadOnly(), 1, nullptr, nullptr);
+  }
+  int num_splits = 0;
+  std::vector<HybridAppliedSplit> pending;  // applied splits awaiting readback
+  std::vector<HybridAppliedSplit> applied;
+  std::vector<int> batch_info;
+  std::vector<int> splittable;
+  while (true) {
+    // the ONE device synchronization of the level: the synchronous best-split
+    // readback drains the previous apply and its children's search
+    cuda_best_split_finder_->SyncAllLeafBestSplitsToHost(tree->num_leaves(), &host_leaf_best_splits_);
+    if (!pending.empty()) {
+      cuda_data_partition_->FinishSplitBatch(static_cast<int>(pending.size()), &batch_info);
+      FinishLevelBookkeeping(pending, batch_info, nullptr, &num_splits);
+      pending.clear();
+    }
+    CollectSplittableLeaves(tree, &splittable);
+    if (splittable.empty()) {
+      break;
+    }
+    bool final_partial_level = false;
+    if (!ArbitrateLevelBudget(tree, &splittable, &final_partial_level)) {
+      // leave the budget-bound level to the leaf-wise tail; every current leaf
+      // already has a valid cached best-split candidate
+      break;
+    }
+    ApplyLevelBatched(tree, splittable, &applied);
+    if (final_partial_level) {
+      // the tree is full and every child sits at max_depth: nothing is left to
+      // search, so read the apply info back immediately and stop
+      cuda_data_partition_->FinishSplitBatch(static_cast<int>(applied.size()), &batch_info);
+      FinishLevelBookkeeping(applied, batch_info, nullptr, &num_splits);
+      break;
+    }
+    // speculative: the children's search goes out before their statistics are
+    // host-known; the next iteration's readback collects both
+    EnqueueLevelBestSplitSearchSpeculative(tree, applied);
+    pending.swap(applied);
+  }
+  if (num_splits == 0) {
+    // the root has no valid split: the leaf-wise tail (and a possible stump)
+    // needs the host root sums after all
+    EnsureRootSumsReadBack(tree);
   }
   return num_splits;
 }
@@ -758,14 +977,28 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   // linear trees need per-leaf branch features to know which features each leaf's
   // linear model uses (mirrors the CPU LinearTreeLearner using new Tree(.., true, true)).
   const bool track_branch_features = !(config_->interaction_constraints_vector.empty()) || config_->linear_tree;
+  // reusable slab for the per-tree device arrays: one allocation for the whole
+  // training run instead of ~17 cudaMallocs + ~16 cudaFrees per tree (trees are
+  // trained one at a time and release the slab in ToHost()); lazily (re)sized so
+  // ResetConfig num_leaves changes are honored
+  const size_t tree_pool_bytes = CUDATree::PooledDeviceBufferSize(config_->num_leaves);
+  if (cuda_tree_pool_buffer_.Size() < tree_pool_bytes) {
+    cuda_tree_pool_buffer_.Resize(tree_pool_bytes);
+  }
   std::unique_ptr<CUDATree> tree(new CUDATree(config_->num_leaves, track_branch_features,
-    config_->linear_tree, gpu_device_id_, has_categorical_feature_));
-  // set the root value by hand, as it is not handled by splits
-  tree->SetLeafOutput(0, CUDALeafSplits::CalculateSplittedLeafOutput<true, false>(
-    leaf_sum_gradients_[smaller_leaf_index_], leaf_sum_hessians_[smaller_leaf_index_],
-    config_->lambda_l1, config_->lambda_l2,  config_->path_smooth,
-    static_cast<data_size_t>(num_data_), 0));
-  tree->SyncLeafOutputFromHostToCUDA();
+    config_->linear_tree, gpu_device_id_, has_categorical_feature_,
+    cuda_tree_pool_buffer_.RawData()));
+  // set the root value by hand, as it is not handled by splits. When the root
+  // sums were deferred (single-sync hybrid growth), this happens lazily in
+  // EnsureRootSumsReadBack -- the root value only survives when the tree ends
+  // up a stump (any split overwrites leaf 0's output on device).
+  if (!root_sums_deferred_) {
+    tree->SetLeafOutput(0, CUDALeafSplits::CalculateSplittedLeafOutput<true, false>(
+      leaf_sum_gradients_[smaller_leaf_index_], leaf_sum_hessians_[smaller_leaf_index_],
+      config_->lambda_l1, config_->lambda_l2,  config_->path_smooth,
+      static_cast<data_size_t>(num_data_), 0));
+    tree->SyncLeafOutputFromHostToCUDA();
+  }
   int num_splits_done = 0;
   ForceSplitsCUDA(tree.get(), &num_splits_done);
   bool pair_search_cached = false;

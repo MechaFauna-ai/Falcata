@@ -87,6 +87,8 @@ void CUDADataPartition::Init() {
   // 18 ints per split; slot 0 serves the classic immediate mode, slots [0, num_leaves)
   // serve the hybrid level-batched mode's deferred readback
   cuda_split_info_buffer_.Resize(18 * static_cast<size_t>(num_leaves_) + 18);
+  // one smaller-child count per split of a level (a level has < num_leaves splits)
+  cuda_level_smaller_counts_.Resize(static_cast<size_t>(num_leaves_) + 1);
 
   cuda_leaf_output_.Resize(static_cast<size_t>(num_leaves_));
 
@@ -528,6 +530,8 @@ void CUDADataPartition::ResetConfig(const Config* config, hist_t* cuda_hist) {
   cuda_leaf_num_data_.Resize(static_cast<size_t>(num_leaves_));
   cuda_hist_pool_.Resize(static_cast<size_t>(num_leaves_));
   cuda_leaf_output_.Resize(static_cast<size_t>(num_leaves_));
+  cuda_split_info_buffer_.Resize(18 * static_cast<size_t>(num_leaves_) + 18);
+  cuda_level_smaller_counts_.Resize(static_cast<size_t>(num_leaves_) + 1);
 }
 
 void CUDADataPartition::SetBaggingSubset(const Dataset* subset) {

@@ -119,6 +119,13 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // whenever the budget does not bind; the tail preserves exact leaf-wise
   // semantics once it might.
   bool HybridGrowthUsable() const;
+  // Whether the hybrid prefix will run the single-sync (speculative) level
+  // pipeline (see TrainLevelWisePrefixOneSync); requires both batched phases
+  // and non-quantized training.
+  bool UseOneSyncPrefix() const;
+  // Lazily perform the root-sum readback (and the root leaf-output init) that
+  // BeforeTrain deferred for the single-sync flow. No-op when not deferred.
+  void EnsureRootSumsReadBack(CUDATree* tree);
   // Enqueue histogram construction + best-split search for one sibling pair
   // (device work only; no host synchronization).
   void EnqueuePairBestSplitSearch(const CUDATree* tree,
@@ -140,10 +147,57 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // the caller synchronizes via SyncAllLeafBestSplitsToHost.
   void EnqueueLevelBestSplitSearch(const CUDATree* tree,
     const std::vector<HybridPendingPair>& pairs);
+  // One applied split of a level: host-assigned child leaf indices plus the pair
+  // struct slots the batched apply kernels fill (smaller/larger designation is
+  // decided on-device; the host learns it from the deferred readback).
+  struct HybridAppliedSplit {
+    int left;
+    int right;
+    CUDALeafSplitsStruct* smaller_slot;
+    CUDALeafSplitsStruct* larger_slot;
+  };
+  // Speculative variant of EnqueueLevelBestSplitSearch used by the single-sync
+  // flow: enqueued right after the level's batched apply, BEFORE the child
+  // statistics are read back. Descriptors carry only host-known data (struct slot
+  // pointers, the max_depth gate); the batched kernels derive leaf indices,
+  // sizes, hessian sums and the min_data/min_hessian gates from the child structs
+  // the apply kernels write (ordered via the partition's apply-done event). The
+  // construct grid is sized by the parents' sizes (smaller child <= parent / 2)
+  // and the kernel restores the exact row grouping from the device-side actual
+  // sizes, so results are bit-identical to the classic two-sync flow.
+  void EnqueueLevelBestSplitSearchSpeculative(const CUDATree* tree,
+    const std::vector<HybridAppliedSplit>& applied);
+  // Collect all leaves with a valid cached best-split candidate, mirroring the
+  // device cache into the host split arrays (the leaf-wise tail may apply any of
+  // them later).
+  void CollectSplittableLeaves(const CUDATree* tree, std::vector<int>* splittable);
+  // Leaf-budget arbitration of one level: returns false when the budget binds
+  // and the level must defer to the leaf-wise tail; truncates splittable to a
+  // final partial level (*final_partial_level = true) when every child would sit
+  // at max_depth. Also applies the EXABOOST_HYBRID_MAXSPLITS debug cap.
+  bool ArbitrateLevelBudget(const CUDATree* tree, std::vector<int>* splittable,
+    bool* final_partial_level);
+  // Batched apply of one level's splits: tree-structure update (SplitBatch) +
+  // partition (SplitLevelBatched), zero host synchronization; fills *applied.
+  void ApplyLevelBatched(CUDATree* tree, const std::vector<int>& splittable,
+    std::vector<HybridAppliedSplit>* applied);
+  // Shared per-level readback bookkeeping: consume the deferred split info of one
+  // level's applied splits (child counts/starts/sums), update the host leaf
+  // arrays, quantized histogram bit widths and smaller/larger designation, count
+  // the splits, and (when next_pairs is non-null) emit the next level's pairs.
+  void FinishLevelBookkeeping(const std::vector<HybridAppliedSplit>& applied,
+    const std::vector<int>& batch_info,
+    std::vector<HybridPendingPair>* next_pairs,
+    int* num_splits);
   // Grow full levels until the next level could exceed num_leaves. Returns the
   // number of splits applied; afterwards every current leaf has a valid cached
   // best-split candidate and smaller_/larger_leaf_index_ name the last applied pair.
   int TrainLevelWisePrefix(CUDATree* tree);
+  // Single-sync variant of TrainLevelWisePrefix: enqueues each level's APPLY and
+  // the children's SEARCH back to back, then reads best splits + deferred split
+  // info back with ONE device synchronization per level (the classic flow pays
+  // two). Non-quantized batched-kernels + batched-apply configurations only.
+  int TrainLevelWisePrefixOneSync(CUDATree* tree);
 
   // Apply forcedsplits_filename before the main split loop, mirroring
   // SerialTreeLearner::ForceSplits (numerical features, single-GPU, non-quantized).
@@ -201,6 +255,15 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool use_hybrid_batch_apply_ = false;
   std::vector<CUDATreeBatchSplit> host_tree_batch_splits_;
   std::vector<CUDAHybridApplySplitInput> host_apply_split_inputs_;
+  // hybrid growth: single-sync (speculative) level pipeline
+  // (EXABOOST_HYBRID_ONE_SYNC, default on; "0" keeps the classic two-sync flow)
+  bool use_hybrid_one_sync_ = false;
+  // reusable device slab for CUDATree's per-tree arrays (see CUDATree ctor)
+  CUDAVector<uint8_t> cuda_tree_pool_buffer_;
+  // whether BeforeTrain deferred the root-sum readback (single-sync flow); the
+  // readback (plus the root leaf-output init) then happens lazily in
+  // EnsureRootSumsReadBack on the paths that need host root sums
+  bool root_sums_deferred_ = false;
   // data partition that partitions data indices into different leaves
   std::unique_ptr<CUDADataPartition> cuda_data_partition_;
   // for histogram construction

@@ -51,9 +51,29 @@ class CUDATree : public Tree {
   * \param max_leaves The number of max leaves
   * \param track_branch_features Whether to keep track of ancestors of leaf nodes
   * \param is_linear Whether the tree has linear models at each leaf
+  * \param pooled_device_buffer Optional externally owned device slab of at least
+  *        PooledDeviceBufferSize(max_leaves) bytes. When given, all per-tree
+  *        device arrays are carved from it as non-owning views instead of ~17
+  *        individual cudaMallocs, and ToHost() reads them back with ONE fused
+  *        D2H copy. The caller must guarantee exclusive use of the slab until
+  *        ToHost() has been called (the tree learner trains one tree at a time
+  *        and calls ToHost() before returning it). Only cuda_leaf_value_ is
+  *        needed after ToHost(); it is materialized into owned memory there.
   */
   explicit CUDATree(int max_leaves, bool track_branch_features, bool is_linear,
-    const int gpu_device_id, const bool has_categorical_feature);
+    const int gpu_device_id, const bool has_categorical_feature,
+    uint8_t* pooled_device_buffer = nullptr);
+
+  /*! \brief bytes needed by the pooled per-tree device arrays (16 arrays of
+   *  max_leaves entries + the batched split descriptors), 8-byte aligned */
+  static size_t PooledDeviceBufferSize(const int max_leaves) {
+    const size_t L = static_cast<size_t>(max_leaves);
+    const size_t num_batch_splits = L / 2 + 2;
+    return 5 * sizeof(double) * L +                       // threshold, internal_weight/value, leaf_value/weight
+           sizeof(CUDATreeBatchSplit) * num_batch_splits +  // batched split descriptors (8-byte aligned)
+           10 * 4 * L +                                    // int / uint32_t / data_size_t / float arrays
+           ((sizeof(int8_t) * L + 7) / 8) * 8;             // decision_type, padded
+  }
 
   explicit CUDATree(const Tree* host_tree);
 
@@ -138,7 +158,7 @@ class CUDATree : public Tree {
   void SyncLeafOutputFromCUDAToHost();
 
  private:
-  void InitCUDAMemory();
+  void InitCUDAMemory(uint8_t* pooled_device_buffer);
 
   void InitCUDA();
 
@@ -192,6 +212,8 @@ class CUDATree : public Tree {
   CUDAVector<int> cuda_cat_boundaries_inner_;
   /*! \brief device copy of one level's batched split descriptors (SplitBatch) */
   CUDAVector<CUDATreeBatchSplit> cuda_batch_splits_;
+  /*! \brief whether the per-tree arrays are views into a pooled slab */
+  bool pooled_ = false;
 
   cudaStream_t cuda_stream_;
 

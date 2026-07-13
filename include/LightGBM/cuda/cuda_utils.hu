@@ -141,10 +141,12 @@ class CUDAVector {
   CUDAVector() {
     size_ = 0;
     data_ = nullptr;
+    owns_ = true;
   }
 
   explicit CUDAVector(size_t size) {
     size_ = size;
+    owns_ = true;
     AllocateCUDAMemory<T>(&data_, size_, __FILE__, __LINE__);
   }
 
@@ -162,9 +164,10 @@ class CUDAVector {
       const size_t size_for_old_content = std::min<size_t>(size_, size);
       CopyFromCUDADeviceToCUDADevice<T>(new_data, data_, size_for_old_content, __FILE__, __LINE__);
     }
-    DeallocateCUDAMemory<T>(&data_, __FILE__, __LINE__);
+    ReleaseStorage();
     data_ = new_data;
     size_ = size;
+    owns_ = true;
   }
 
   void InitFromHostVector(const std::vector<T>& host_vector) {
@@ -178,11 +181,36 @@ class CUDAVector {
   }
 
   void Clear() {
-    if (size_ > 0 && data_ != nullptr) {
-      DeallocateCUDAMemory<T>(&data_, __FILE__, __LINE__);
-    }
+    ReleaseStorage();
     size_ = 0;
+    owns_ = true;
   }
+
+  /*! \brief Point this vector at externally owned device memory (e.g. a pooled
+   *  slab shared by short-lived objects). A view is never freed by this class;
+   *  any mutating reallocation (Resize/PushBack) copies the view's content into
+   *  fresh owned memory first, and Materialize() does so explicitly. */
+  void SetView(T* data, size_t size) {
+    ReleaseStorage();
+    data_ = data;
+    size_ = size;
+    owns_ = false;
+  }
+
+  /*! \brief Convert a view into owned storage (copying the content); no-op on
+   *  already-owned storage. */
+  void Materialize() {
+    if (owns_ || data_ == nullptr || size_ == 0) {
+      return;
+    }
+    T* new_data = nullptr;
+    AllocateCUDAMemory<T>(&new_data, size_, __FILE__, __LINE__);
+    CopyFromCUDADeviceToCUDADevice<T>(new_data, data_, size_, __FILE__, __LINE__);
+    data_ = new_data;
+    owns_ = true;
+  }
+
+  bool IsView() const { return !owns_; }
 
   void PushBack(const T* values, size_t len) {
     T* new_data = nullptr;
@@ -191,9 +219,10 @@ class CUDAVector {
       CopyFromCUDADeviceToCUDADevice<T>(new_data, data_, size_, __FILE__, __LINE__);
     }
     CopyFromCUDADeviceToCUDADevice<T>(new_data + size_, values, len, __FILE__, __LINE__);
-    DeallocateCUDAMemory<T>(&data_, __FILE__, __LINE__);
+    ReleaseStorage();
     size_ += len;
     data_ = new_data;
+    owns_ = true;
   }
 
   size_t Size() const {
@@ -204,10 +233,11 @@ class CUDAVector {
   void Swap(CUDAVector<T>* other) {
     std::swap(data_, other->data_);
     std::swap(size_, other->size_);
+    std::swap(owns_, other->owns_);
   }
 
   ~CUDAVector() {
-    DeallocateCUDAMemory<T>(&data_, __FILE__, __LINE__);
+    ReleaseStorage();
   }
 
   std::vector<T> ToHost() {
@@ -244,8 +274,19 @@ class CUDAVector {
   }
 
  private:
+  /*! \brief free owned storage; views are simply detached */
+  void ReleaseStorage() {
+    if (owns_) {
+      DeallocateCUDAMemory<T>(&data_, __FILE__, __LINE__);
+    } else {
+      data_ = nullptr;
+    }
+  }
+
   T* data_;
   size_t size_;
+  /*! \brief false when data_ is a view into externally owned memory */
+  bool owns_;
 };
 
 template <typename T>
