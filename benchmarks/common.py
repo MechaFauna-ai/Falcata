@@ -35,8 +35,25 @@ DATASETS = {
 #: LightGBM-family maps depth/leaves to (max_depth, num_leaves), XGBoost uses
 #: max_depth (native depth-wise growth), CatBoost uses symmetric depth.
 REGIMES = {
-    "shallow": {"rounds": 500, "lr": 0.1, "depth": 6, "leaves": 63, "eval_every": 25},
-    "deep": {"rounds": 500, "lr": 0.1, "depth": 10, "leaves": 1023, "eval_every": 25},
+    # l2=1 aligns L2 leaf regularization across engines (defaults differ:
+    # xgboost lambda=1, lightgbm lambda_l2=0, catboost l2_leaf_reg=3); at
+    # lr 0.1 an unregularized leaf-wise model degenerates on imbalanced data
+    "shallow": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "l2": 1.0,
+        "eval_every": 25,
+    },
+    "deep": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "l2": 1.0,
+        "eval_every": 25,
+    },
     # official Numerai example-model parameters
     "numerai": {
         "rounds": 2000,

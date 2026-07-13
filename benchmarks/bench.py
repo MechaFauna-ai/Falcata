@@ -184,6 +184,8 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, quantized, curve):
         params["num_class"] = DATASETS["covtype"]["num_class"]
     if "colsample" in reg:
         params["feature_fraction"] = reg["colsample"]
+    if "l2" in reg:
+        params["lambda_l2"] = reg["l2"]
     if quantized:
         params["use_quantized_grad"] = True
 
@@ -242,6 +244,8 @@ def run_xgboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
         params["num_class"] = DATASETS["covtype"]["num_class"]
     if "colsample" in reg:
         params["colsample_bytree"] = reg["colsample"]
+    if "l2" in reg:
+        params["lambda"] = reg["l2"]  # xgboost default is already 1
 
     t0 = time.perf_counter()
     dtrain = xgb.QuantileDMatrix(np.asarray(x_tr), label=y_tr, max_bin=255)
@@ -304,6 +308,8 @@ def run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
     rsm_dropped = False
     if "colsample" in reg:
         kw["rsm"] = reg["colsample"]
+    if "l2" in reg:
+        kw["l2_leaf_reg"] = reg["l2"]  # catboost default is 3
 
     t0 = time.perf_counter()
     train_pool = cb.Pool(np.asarray(x_tr), label=y_tr)

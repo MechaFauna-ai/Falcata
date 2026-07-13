@@ -29,10 +29,16 @@ per-era mean/std/Sharpe and max drawdown.
 
 Six library configs — `exaboost`, `exaboost-quant` (`use_quantized_grad`),
 `lightgbm`, `lightgbm-quant`, `xgboost`, `catboost` — across two aligned
-hyperparameter regimes (gbm-bench convention: 500 rounds, lr 0.1, 255 bins):
+hyperparameter regimes (gbm-bench convention: 500 rounds, lr 0.1, 255 bins,
+L2 leaf regularization 1.0):
 
 - **shallow**: depth 6 / 63 leaves
 - **deep**: depth 10 / 1023 leaves
+
+L2 is aligned explicitly because engine defaults differ (XGBoost `lambda=1`,
+LightGBM `lambda_l2=0`, CatBoost `l2_leaf_reg=3`) and at lr 0.1 an
+unregularized leaf-wise model degenerates on imbalanced data (fraud drops to
+~0.5 AUC), which would measure default choices rather than the engines.
 
 plus the official Numerai example-model config (2000 trees, lr 0.01, depth 5,
 32 leaves, colsample 0.1). Structural caveat: LightGBM-family grows leaf-wise
