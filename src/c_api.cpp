@@ -2985,13 +2985,14 @@ void SampleDenseSmallInt(const void** data, const std::vector<int32_t>& sample_i
     mat_of[i] = j;
     row_of[i] = idx - offset;
   }
-  // contiguous column stripes per thread, sample-index outer loop for locality
-  #pragma omp parallel num_threads(OMP_NUM_THREADS())
-  {
-    const int num_threads = omp_get_num_threads();
-    const int tid = omp_get_thread_num();
-    const int col_lo = static_cast<int>(static_cast<int64_t>(ncol) * tid / num_threads);
-    const int col_hi = static_cast<int>(static_cast<int64_t>(ncol) * (tid + 1) / num_threads);
+  // contiguous column stripes per block, sample-index outer loop for locality;
+  // block-indexed (not omp_get_num_threads()-based) so no-OpenMP builds and
+  // smaller-than-requested teams stay correct
+  const int num_col_blocks = OMP_NUM_THREADS();
+  #pragma omp parallel for num_threads(num_col_blocks) schedule(static, 1)
+  for (int block = 0; block < num_col_blocks; ++block) {
+    const int col_lo = static_cast<int>(static_cast<int64_t>(ncol) * block / num_col_blocks);
+    const int col_hi = static_cast<int>(static_cast<int64_t>(ncol) * (block + 1) / num_col_blocks);
     for (size_t i = 0; i < n; ++i) {
       const T* mat = reinterpret_cast<const T*>(data[mat_of[i]]);
       const size_t r = static_cast<size_t>(row_of[i]);
