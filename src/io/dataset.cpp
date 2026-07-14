@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -586,13 +587,16 @@ void Dataset::Construct(std::vector<std::unique_ptr<BinMapper>>* bin_mappers,
   group_bin_boundaries_.push_back(num_total_bin);
   group_feature_start_.resize(num_groups_);
   group_feature_cnt_.resize(num_groups_);
+  std::vector<std::vector<std::unique_ptr<BinMapper>>> group_bin_mappers(
+      num_groups_);
   for (int i = 0; i < num_groups_; ++i) {
     auto cur_features = features_in_group[i];
     int cur_cnt_features = static_cast<int>(cur_features.size());
     group_feature_start_[i] = cur_fidx;
     group_feature_cnt_[i] = cur_cnt_features;
     // get bin_mappers
-    std::vector<std::unique_ptr<BinMapper>> cur_bin_mappers;
+    std::vector<std::unique_ptr<BinMapper>>& cur_bin_mappers =
+        group_bin_mappers[i];
     for (int j = 0; j < cur_cnt_features; ++j) {
       int real_fidx = cur_features[j];
       used_feature_map_[real_fidx] = cur_fidx;
@@ -606,8 +610,21 @@ void Dataset::Construct(std::vector<std::unique_ptr<BinMapper>>* bin_mappers,
       }
       ++cur_fidx;
     }
-    feature_groups_.emplace_back(std::unique_ptr<FeatureGroup>(
-      new FeatureGroup(cur_cnt_features, group_is_multi_val[i], &cur_bin_mappers, num_data_, i)));
+  }
+  // creating the groups zero-fills (and on CUDA page-locks) the full bin
+  // storage; do it in parallel, the groups are independent
+  feature_groups_ = std::vector<std::unique_ptr<FeatureGroup>>(num_groups_);
+  OMP_INIT_EX();
+  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(dynamic)
+  for (int i = 0; i < num_groups_; ++i) {
+    OMP_LOOP_EX_BEGIN();
+    feature_groups_[i].reset(new FeatureGroup(
+        static_cast<int>(group_bin_mappers[i].size()), group_is_multi_val[i],
+        &group_bin_mappers[i], num_data_, i));
+    OMP_LOOP_EX_END();
+  }
+  OMP_THROW_EX();
+  for (int i = 0; i < num_groups_; ++i) {
     num_total_bin += feature_groups_[i]->num_total_bin_;
     group_bin_boundaries_.push_back(num_total_bin);
   }
@@ -744,6 +761,37 @@ void Dataset::FinishLoad() {
     }
   }
   metadata_.FinishLoad();
+
+  #ifdef USE_CUDA
+  if (!gpu_bin_verify_data_.empty()) {
+    // EXABOOST_GPU_CONSTRUCT_VERIFY=1: the GPU binner captured its result and
+    // the host path ran as usual; the final storage must be byte-identical
+    int num_bad_groups = 0;
+    for (int i = 0; i < num_groups_; ++i) {
+      const std::vector<uint8_t>& expected = gpu_bin_verify_data_[i];
+      if (expected.empty()) {
+        continue;
+      }
+      const void* actual = feature_groups_[i]->bin_data_->get_data();
+      if (std::memcmp(expected.data(), actual, expected.size()) != 0) {
+        ++num_bad_groups;
+        if (num_bad_groups <= 5) {
+          Log::Warning("GPU construct verify: group %d bins differ from the "
+                       "host path", i);
+        }
+      }
+    }
+    const int num_verified = static_cast<int>(gpu_bin_verify_data_.size());
+    gpu_bin_verify_data_.clear();
+    gpu_bin_verify_data_.shrink_to_fit();
+    if (num_bad_groups > 0) {
+      Log::Fatal("GPU construct verify: %d of %d groups differ from the host "
+                 "path", num_bad_groups, num_verified);
+    }
+    Log::Info("GPU construct verify: %d groups byte-identical to the host "
+              "path", num_verified);
+  }
+  #endif  // USE_CUDA
 
   #ifdef USE_CUDA
   if (device_type_ == std::string("cuda")) {
