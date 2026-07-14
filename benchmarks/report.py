@@ -134,10 +134,11 @@ def main():
         x = np.arange(len(datasets))
         w = 0.13
         fig, ax = plt.subplots(figsize=(11, 5))
+        crash_marks = []
         for i, lib in enumerate(LIBRARIES):
             offs = x + (i - 2.5) * w
             vals, hatches = [], []
-            for d in datasets:
+            for j, d in enumerate(datasets):
                 gl = sub[(sub.dataset == d) & (sub.library == lib)]
                 if gl.empty:
                     vals.append(np.nan)
@@ -151,27 +152,42 @@ def main():
                         & (df.status != "ok")
                     ]
                     if not crashed.empty:
-                        xi = offs[datasets.index(d)]
-                        ax.annotate(
-                            "✗",
-                            (xi, ax.get_ylim()[0]),
-                            xytext=(xi, 0.05),
-                            ha="center",
-                            fontsize=11,
-                            color=COLORS[lib],
-                            fontweight="bold",
-                            annotation_clip=False,
-                        )
+                        crash_marks.append((offs[j], COLORS[lib]))
                     continue
                 vals.append(gl["train_s"].median())
-                # degenerate models (sane=false): fast timings are meaningless
-                sane = all((m or {}).get("sane", True) for m in gl["metrics"])
-                hatches.append(None if sane else "///")
+                met = gl["metrics"].iloc[0] or {}
+                # degenerate models: sane=false, or a regression fit no better
+                # than 99% of the target's std (the year quant case squeaks past
+                # the sane threshold while still being useless)
+                degenerate = not all((m or {}).get("sane", True) for m in gl["metrics"])
+                if not degenerate and "rmse" in met and d != "numerai":
+                    ok_rmses = [
+                        (m or {}).get("rmse")
+                        for m in sub[(sub.dataset == d) & (sub.library == "xgboost")][
+                            "metrics"
+                        ]
+                    ]
+                    if ok_rmses and ok_rmses[0] and met["rmse"] > 1.15 * ok_rmses[0]:
+                        degenerate = True
+                hatches.append("///" if degenerate else None)
             bars = ax.bar(offs, vals, w, label=lib, color=COLORS[lib])
             for b, h in zip(bars, hatches):
                 if h:
                     b.set_hatch(h)
                     b.set_alpha(0.35)
+        # crash markers: x in data coords, y just above the axis baseline
+        for xi, color in crash_marks:
+            ax.text(
+                xi,
+                0.02,
+                "✗",
+                transform=ax.get_xaxis_transform(),
+                ha="center",
+                va="bottom",
+                fontsize=12,
+                color=color,
+                fontweight="bold",
+            )
         ax.set_yscale("log")
         ax.set_xticks(x, datasets)
         ax.set_ylabel("train time (s, log)")
