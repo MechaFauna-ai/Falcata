@@ -79,12 +79,33 @@ figures from the profiles in the PR discussions.
   kernels unpack via IS_4BIT variants. numerai: 2000-tree train 87.6 -> 66.3s (-24%),
   device memory 19.3 -> 11.5 GB, Booster create 2.25 -> 1.44s, gather source at 1.47
   TB/s. Kill switch EXABOOST_ROWDATA_4BIT=0; verify env checks unpacked equality.
-  Follow-ups: (a) the construct kernel (~21 ms/tree) is latency-bound on scattered
-  per-row grad/hess reads, not bin bytes -- interleave grad/hess as float2 or
-  cache-tile rows across partitions; (b) the row-to-col compact gather is now
-  write-bound producing a 1.5 GB col-major buffer the split kernels read only ~170
-  MB/tree of -- teach the split kernels to read the packed compact matrix directly
-  and drop the buffer (~4 ms/tree).
+  Both follow-ups landed in 45eea4c6 (numerai per-tree 34.4 -> 30.7 ms, -10.6%;
+  2000-tree ~60s): (a) float2 grad/hess interleave (EXABOOST_GH_INTERLEAVE,
+  compile-time-template dispatch -- a runtime branch cost ~1 ms in both modes),
+  modest (-0.5..1 ms) since grad/hess was the smaller half of scattered traffic;
+  (b) split kernels read the packed compact matrix directly
+  (EXABOOST_SPLIT_PACKED_READ), dropping the per-tree 1.5 GB row-to-col gather
+  (-4.2 ms/tree); classic per-split consumers lazily materialize the old view once
+  per tree. Next on this path: CUDAFillCompactData4BitKernel is now the #2 kernel
+  (5.3 ms/tree); the construct kernel (22.7 ms, ~74% of tree time) remains
+  latency-bound on the packed-bin row gathers themselves. Measurement hygiene:
+  desktop wall clocks drift up to ~15% between sessions -- trust same-session A/B
+  per-tree medians (or lock clocks) for future numerai perf work.
+- [ ] **GPU-native dataset construction, default for CUDA (CuPy/cuDF ingestion,
+  QuantileDMatrix parity and beyond).** Whenever device_type=cuda and the input is
+  dense: sample -> host GreedyFindBin (identical boundaries, md5-comparable), then
+  stream row chunks through a pinned staging ring and bin ON DEVICE (LUT for small
+  ints, boundary search for floats) directly into the packed 4-bit partitioned
+  structures -- raw data never fully resident (numerai f32 is 60 GB vs 32 GB VRAM).
+  Accept __cuda_array_interface__ (CuPy; cuDF rides along) to skip the upload
+  entirely. Est. numerai construct: ~1s (CuPy int8), ~2-3s (numpy int8), ~5-6s
+  (numpy f32) vs 15.8/37.4s today; frees ~40 GB host RSS. Host bins become lazy
+  (linear_trees, save_binary, refit fall back). 22331b18/354ceef3 already removed
+  the host multi-val-bin dependency, so CUDARowData/compact are the only consumers.
+- [ ] **EFB density precheck.** FindGroups spends ~9s on numerai's 2748 dense
+  features and (almost certainly) bundles nothing -- bundling exploits sparse
+  mutual exclusivity. Detect dense/no-op cases cheaply and skip; the GPU-native
+  constructor skips it by design.
 - [ ] **Latency-bound construct on tiny-bin wide data**: post-161fe88b numerai construct
   is scattered-read latency-bound (19ms/tree) -- candidate for NVRTC shape
   specialization (auto-tuner tier 2) or layout changes.
