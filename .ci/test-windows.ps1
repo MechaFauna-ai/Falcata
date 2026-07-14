@@ -36,9 +36,10 @@ if ($env:TASK -eq "swig") {
     # pinned version: the 'files/latest/download' redirect intermittently serves an HTML
     # rate-limit page instead of the archive, which then fails zip extraction
     $SwigVersion = "4.2.1"
+    $SwigDir = "https://sourceforge.net/projects/swig/files/swigwin/swigwin-$SwigVersion"
     $SwigZip = "$env:BUILD_SOURCESDIRECTORY/swig/swigwin.zip"
     $params = @{
-        Uri = "https://sourceforge.net/projects/swig/files/swigwin/swigwin-$SwigVersion/swigwin-$SwigVersion.zip/download"
+        Uri = "$SwigDir/swigwin-$SwigVersion.zip/download"
         OutFile = $SwigZip
         UserAgent = "curl"
     }
