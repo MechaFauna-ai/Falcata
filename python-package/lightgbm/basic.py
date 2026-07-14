@@ -816,11 +816,15 @@ def _data_from_pandas(
     # frames of plain numpy-backed small ints skip the float conversion: the C
     # ingestion bins int8/int16/uint8/uint16 natively (such columns have no NA);
     # nullable/categorical/object columns must keep going through floats
-    if not cat_cols and df_dtypes and all(isinstance(dtype, np.dtype) for dtype in data.dtypes):
+    small_int_frame = (
+        not cat_cols
+        and bool(df_dtypes)
+        and all(isinstance(dtype, np.dtype) for dtype in data.dtypes)
+        and np.result_type(*df_dtypes) in (np.int8, np.int16, np.uint8, np.uint16)
+    )
+    if small_int_frame:
         target_dtype = np.result_type(*df_dtypes)
     else:
-        target_dtype = None
-    if target_dtype not in (np.int8, np.int16, np.uint8, np.uint16):
         # so that the target dtype considers floats
         df_dtypes.append(np.float32)
         target_dtype = np.result_type(*df_dtypes)
