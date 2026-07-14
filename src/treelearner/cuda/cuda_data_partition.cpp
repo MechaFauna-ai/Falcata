@@ -338,7 +338,19 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
       }
     }
     const int column_index = cuda_column_data_->feature_to_column(split_feature_index);
-    desc.column_data = cuda_column_data_->GetColumnData(column_index);
+    if (cuda_column_data_->packed_column_view_active()) {
+      // 4-bit packed compact source (EXABOOST_SPLIT_PACKED_READ): read the
+      // split column's nibbles straight from the histogram constructor's packed
+      // compact matrix instead of a per-tree column-major gather
+      desc.column_data = cuda_column_data_->packed_column_data(column_index);
+      desc.packed_row_stride = cuda_column_data_->packed_column_stride(column_index);
+      desc.packed_shift = cuda_column_data_->packed_column_shift(column_index);
+      CHECK(desc.column_data != nullptr);
+    } else {
+      desc.column_data = cuda_column_data_->GetColumnData(column_index);
+      desc.packed_row_stride = 0;
+      desc.packed_shift = 0;
+    }
     desc.best_split_info = in.best_split_info;
     desc.smaller_leaf_splits = in.smaller_leaf_splits;
     desc.larger_leaf_splits = in.larger_leaf_splits;
@@ -357,7 +369,8 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
     desc.missing_default_leaf_index = missing_default_leaf_index;
     desc.split_default_to_left = split_default_to_left;
     desc.split_missing_default_to_left = split_missing_default_to_left;
-    desc.bit_type = cuda_column_data_->column_bit_type(column_index);
+    desc.bit_type = cuda_column_data_->packed_column_view_active() ?
+      4 : cuda_column_data_->column_bit_type(column_index);
     desc.min_is_max = (min_bin < max_bin) ? 0 : 1;
     desc.missing_is_zero = missing_is_zero ? 1 : 0;
     desc.missing_is_na = missing_is_na ? 1 : 0;

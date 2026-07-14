@@ -1136,13 +1136,20 @@ void CUDADataPartition::LaunchSplitInnerKernel(
 // block offset buffers use [block_offset_start, +num_blocks+1).
 
 __device__ __forceinline__ uint32_t HybridLoadBin(
-  const void* column_data, const uint8_t bit_type, const data_size_t global_data_index) {
-  if (bit_type == 8) {
-    return static_cast<uint32_t>(static_cast<const uint8_t*>(column_data)[global_data_index]);
-  } else if (bit_type == 16) {
-    return static_cast<uint32_t>(static_cast<const uint16_t*>(column_data)[global_data_index]);
+  const CUDAHybridApplyDescriptor& d, const data_size_t global_data_index) {
+  if (d.bit_type == 8) {
+    return static_cast<uint32_t>(static_cast<const uint8_t*>(d.column_data)[global_data_index]);
+  } else if (d.bit_type == 4) {
+    // 4-bit packed compact source: column_data already points at this column's
+    // byte of row 0; rows are packed_row_stride bytes apart, the bin is the
+    // packed_shift nibble (see SetCompactPackedColumnView)
+    const uint8_t packed = static_cast<const uint8_t*>(d.column_data)[
+      static_cast<size_t>(global_data_index) * static_cast<size_t>(d.packed_row_stride)];
+    return static_cast<uint32_t>(packed >> d.packed_shift) & 0xfu;
+  } else if (d.bit_type == 16) {
+    return static_cast<uint32_t>(static_cast<const uint16_t*>(d.column_data)[global_data_index]);
   } else {
-    return static_cast<const uint32_t*>(column_data)[global_data_index];
+    return static_cast<const uint32_t*>(d.column_data)[global_data_index];
   }
 }
 
@@ -1248,7 +1255,7 @@ __global__ void HybridGenBitVectorUpdateLeafIndexBatchKernel(
   const data_size_t local_data_index = static_cast<data_size_t>(blockIdx.x * blockDim.x + threadIdx.x);
   if (local_data_index < d.num_data_in_leaf) {
     const data_size_t global_data_index = cuda_data_indices[d.leaf_data_start + local_data_index];
-    const uint32_t bin = HybridLoadBin(d.column_data, d.bit_type, global_data_index);
+    const uint32_t bin = HybridLoadBin(d, global_data_index);
     thread_to_left_offset_cnt = HybridGenBitVectorDecision(d, bin);
     cuda_data_index_to_leaf_index[global_data_index] = HybridUpdateLeafIndexDecision(d, bin);
   }

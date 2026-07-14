@@ -244,6 +244,29 @@ void CUDAColumnData::SetCompactColumnView(const std::vector<int>& column_to_comp
   // Keep a host-readable mirror so GetColumnData() can return the split column's
   // device pointer in the skip-allocation path (data_by_column_ stays null there).
   compact_column_host_view_ = view;
+  packed_column_view_active_ = false;
+}
+
+void CUDAColumnData::SetCompactPackedColumnView(const std::vector<int>& column_to_compact_slot,
+                                                const uint8_t* packed_buf,
+                                                const std::vector<size_t>& slot_base_byte,
+                                                const std::vector<int>& slot_row_stride,
+                                                const std::vector<uint8_t>& slot_shift) {
+  packed_column_ptr_.assign(num_columns_, nullptr);
+  packed_column_stride_.assign(num_columns_, 0);
+  packed_column_shift_.assign(num_columns_, 0);
+  for (int c = 0; c < num_columns_; ++c) {
+    if (c < static_cast<int>(column_to_compact_slot.size()) && column_to_compact_slot[c] >= 0) {
+      const int slot = column_to_compact_slot[c];
+      packed_column_ptr_[c] = packed_buf + slot_base_byte[slot];
+      packed_column_stride_[c] = slot_row_stride[slot];
+      packed_column_shift_[c] = slot_shift[slot];
+    }
+  }
+  // no per-column plain buffer exists this tree: null the host view so any
+  // GetColumnData consumer fails loudly instead of reading last tree's bytes
+  compact_column_host_view_.assign(num_columns_, nullptr);
+  packed_column_view_active_ = true;
 }
 
 void CUDAColumnData::RestoreOriginalColumnView() {

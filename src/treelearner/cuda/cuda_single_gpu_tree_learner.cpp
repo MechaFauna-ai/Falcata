@@ -219,6 +219,23 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
   }
 }
 
+namespace {
+
+// Split kernels read the 4-bit packed compact matrix directly (bit_type 4
+// descriptors) instead of materializing the per-tree column-major buffer
+// (~1.5GB write per tree on numerai-shaped data); the scattered packed reads
+// cost one 32B sector per row but only the split columns are ever touched.
+// EXABOOST_SPLIT_PACKED_READ=0 restores the column-major gather.
+bool SplitPackedReadEnabled() {
+  static const bool enabled = []() {
+    const char* env = std::getenv("EXABOOST_SPLIT_PACKED_READ");
+    return env == nullptr || std::string(env) != "0";
+  }();
+  return enabled;
+}
+
+}  // anonymous namespace
+
 // Forward decl: defined in cuda_histogram_constructor.cu.
 extern void LaunchRowToColCompactKernel(
     cudaStream_t stream,
@@ -337,6 +354,28 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   CopyFromHostToCUDADevice<int>(cuda_slot_col_in_p_.RawData(), slot_col_in_p_h.data(),
                                 num_compact_cols, __FILE__, __LINE__);
 
+  compact_packed_view_active_ = false;
+  if (SplitPackedReadEnabled() && gather_src_is_4bit && HybridGrowthUsable()) {
+    // packed split read: skip the column-major gather entirely; the batched
+    // apply descriptors address the packed source per column (byte of row 0,
+    // per-row byte stride, nibble shift). The slot metadata just uploaded stays
+    // valid for the lazy classic fallback (EnsureClassicColumnView), which any
+    // classic per-split Split() triggers via ApplySplit.
+    std::vector<size_t> col_base_byte_h(num_compact_cols);
+    std::vector<uint8_t> col_shift_h(num_compact_cols);
+    for (int s = 0; s < num_compact_cols; ++s) {
+      col_base_byte_h[s] = slot_p_byte_h[s] + static_cast<size_t>(slot_col_in_p_h[s] >> 1);
+      col_shift_h[s] = static_cast<uint8_t>((slot_col_in_p_h[s] & 1) << 2);
+    }
+    col_data->SetCompactPackedColumnView(orig_column_to_compact_slot_, gather_src,
+                                         col_base_byte_h, slot_p_stride_h, col_shift_h);
+    compact_packed_view_active_ = true;
+    compact_gather_src_ = gather_src;
+    compact_gather_src_is_4bit_ = gather_src_is_4bit;
+    compact_col_signature_ = sig;
+    return;
+  }
+
   LaunchRowToColCompactKernel(
       0,
       gather_src,
@@ -354,6 +393,36 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
                                  compact_column_buffer_.RawData(),
                                  static_cast<size_t>(num_data));
   compact_col_signature_ = sig;
+}
+
+void CUDASingleGPUTreeLearner::EnsureClassicColumnView() {
+  if (!compact_packed_view_active_) {
+    return;
+  }
+  // run the gather that BuildCompactColumnView skipped for the packed split
+  // read; once per tree at most (the classic view stays registered after)
+  const data_size_t num_data = cuda_histogram_constructor_->cuda_row_data_internal()->num_data();
+  const int num_compact_cols = static_cast<int>(compact_column_to_orig_.size());
+  const size_t needed_bytes = static_cast<size_t>(num_compact_cols) * static_cast<size_t>(num_data);
+  if (compact_column_buffer_.Size() < needed_bytes) {
+    compact_column_buffer_.Resize(needed_bytes);
+  }
+  LaunchRowToColCompactKernel(
+      0,
+      compact_gather_src_,
+      compact_column_buffer_.RawData(),
+      cuda_slot_p_byte_.RawData(),
+      cuda_slot_p_stride_.RawData(),
+      cuda_slot_col_in_p_.RawData(),
+      num_compact_cols,
+      num_data,
+      compact_gather_src_is_4bit_);
+  CUDASUCCESS_OR_FATAL(cudaDeviceSynchronize());
+  CUDAColumnData* col_data = const_cast<CUDAColumnData*>(train_data_->cuda_column_data());
+  col_data->SetCompactColumnView(orig_column_to_compact_slot_,
+                                 compact_column_buffer_.RawData(),
+                                 static_cast<size_t>(num_data));
+  compact_packed_view_active_ = false;
 }
 
 void CUDASingleGPUTreeLearner::AddPredictionToScore(const Tree* tree, double* out_score) const {
@@ -1745,6 +1814,9 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
 int CUDASingleGPUTreeLearner::ApplySplit(CUDATree* tree, const CUDASplitInfo* best_split_info, const int leaf_index,
                                          CUDALeafSplitsStruct* smaller_slot, CUDALeafSplitsStruct* larger_slot,
                                          int deferred_slot) {
+  // classic per-split path: needs the plain per-column view (only the batched
+  // apply kernels understand the packed compact source)
+  EnsureClassicColumnView();
   int right_leaf_index = 0;
   if (train_data_->FeatureBinMapper(leaf_best_split_feature_[leaf_index])->bin_type() == BinType::CategoricalBin) {
     right_leaf_index = tree->SplitCategorical(leaf_index,

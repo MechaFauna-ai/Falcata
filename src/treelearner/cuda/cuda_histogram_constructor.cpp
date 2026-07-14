@@ -99,9 +99,29 @@ void CUDAHistogramConstructor::InitFeatureMetaInfo(const Dataset* train_data, co
   construct_reg_bins_ = reg_hist_enabled && max_num_bin <= 8 && !feature_num_bins_.empty();
 }
 
+void LaunchInterleaveGradHessKernel(
+  const score_t* gradients,
+  const score_t* hessians,
+  float2* gradients_hessians,
+  data_size_t num_data);
+
 void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score_t* hessians) {
   cuda_gradients_ = gradients;
   cuda_hessians_ = hessians;
+  // interleave (gradient, hessian) into float2 pairs for the dense construct
+  // kernels (one scattered 32B sector per row instead of two). Launched on the
+  // legacy default stream, so it orders before the construct kernels on the
+  // (blocking) histogram streams; a trivial streaming kernel (~0.05ms at 5M rows).
+  gh_interleave_valid_ = false;
+  if (!use_quantized_grad_ && GHInterleaveEnabled() &&
+      gradients != nullptr && hessians != nullptr) {
+    if (cuda_gradients_hessians_.Size() < static_cast<size_t>(num_data_)) {
+      cuda_gradients_hessians_.Resize(static_cast<size_t>(num_data_));
+    }
+    LaunchInterleaveGradHessKernel(gradients, hessians,
+                                   cuda_gradients_hessians_.RawData(), num_data_);
+    gh_interleave_valid_ = true;
+  }
   // async memset on the legacy default stream: the construct kernels on the
   // (blocking) histogram streams implicitly order after it, so no device sync
   // is needed (SetValue would pay a full device sync on every tree).

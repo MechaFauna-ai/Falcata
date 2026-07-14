@@ -74,8 +74,14 @@ struct CUDAHybridApplyDescriptor {
   int missing_default_leaf_index;
   uint8_t split_default_to_left;
   uint8_t split_missing_default_to_left;
-  /*! \brief column storage width: 8, 16 or 32 bits */
+  /*! \brief per-row byte stride of the 4-bit packed compact source (bit_type 4) */
+  int packed_row_stride;
+  /*! \brief column storage width: 8, 16 or 32 bits, or 4 = 4-bit packed compact
+   *  source (column_data points at the column's byte within the packed compact
+   *  matrix; the bin is (byte >> packed_shift) & 0xf) */
   uint8_t bit_type;
+  /*! \brief nibble shift (0 or 4) of the 4-bit packed compact source */
+  uint8_t packed_shift;
   /*! \brief runtime versions of the GenDataToLeftBitVectorKernel template flags */
   uint8_t min_is_max;
   uint8_t missing_is_zero;

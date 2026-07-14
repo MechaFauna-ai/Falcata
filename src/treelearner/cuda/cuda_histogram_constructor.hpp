@@ -222,6 +222,19 @@ class CUDAHistogramConstructor {
     return floor_total;
   }
 
+  /*! \brief interleaved float2 gradient/hessian copy for the non-quantized
+   *  dense construct kernels: their scattered per-row reads then touch ONE
+   *  32B sector per row instead of two (gradients and hessians live in two
+   *  separate arrays). Values are bit-identical to the separate reads.
+   *  EXABOOST_GH_INTERLEAVE=0 disables; float score_t only. */
+  static bool GHInterleaveEnabled() {
+    static const bool enabled = []() {
+      const char* env = std::getenv("EXABOOST_GH_INTERLEAVE");
+      return env == nullptr || std::string(env) != "0";
+    }();
+    return enabled && sizeof(score_t) == sizeof(float);
+  }
+
   /*! \brief kill-switch of the small-leaf construct path
    *  (EXABOOST_SMALL_LEAF_CONSTRUCT=0 restores the shared-memory batched
    *  kernels for every level) */
@@ -355,7 +368,10 @@ class CUDAHistogramConstructor {
     const data_size_t max_num_data_in_smaller_leaf,
     const data_size_t* level_smaller_num_data);
 
-  template <typename HIST_TYPE, size_t SHARED_HIST_SIZE, typename BIN_TYPE>
+  /*! \brief USE_GH2: feed the construct kernel the interleaved float2
+   *  gradient/hessian copy (see GHInterleaveEnabled); compile-time so the
+   *  non-interleaved instantiation stays identical to the historical kernel */
+  template <typename HIST_TYPE, size_t SHARED_HIST_SIZE, typename BIN_TYPE, bool USE_GH2>
   void LaunchConstructHistogramBatchedKernelInner0(
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
@@ -551,6 +567,11 @@ class CUDAHistogramConstructor {
   CUDAVector<uint32_t> cuda_need_fix_histogram_features_num_bin_aligned_;
   /*! \brief histogram buffer used in histogram subtraction with different number of bits for histogram bins */
   CUDAVector<hist_t> hist_buffer_for_num_bit_change_;
+  /*! \brief per-tree interleaved (gradient, hessian) pairs (see GHInterleaveEnabled);
+   *  filled by BeforeTrain, consumed by the non-quantized dense construct kernels */
+  CUDAVector<float2> cuda_gradients_hessians_;
+  /*! \brief whether cuda_gradients_hessians_ holds this tree's gradients */
+  bool gh_interleave_valid_ = false;
 
   // CUDA memory, held by other object
 

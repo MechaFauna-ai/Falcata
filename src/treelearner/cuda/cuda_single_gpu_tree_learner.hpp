@@ -314,6 +314,13 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // a column-major buffer for partition kernels, avoiding the 17 GB per-column
   // allocation in CUDAColumnData.
   void BuildCompactColumnView();
+  // Lazy fallback of the packed split read (EXABOOST_SPLIT_PACKED_READ): the
+  // batched apply path reads the packed compact matrix directly, so the
+  // column-major gather is skipped in BuildCompactColumnView; any classic
+  // per-split Split() (leaf-wise tail, forced splits, batched-apply fallback
+  // env) still needs the plain per-column buffer, so ApplySplit calls this
+  // first to run the deferred gather once for the tree.
+  void EnsureClassicColumnView();
   CUDAVector<uint8_t> compact_column_buffer_;
   std::vector<int> compact_column_to_orig_;        // [slot] -> original column index
   std::vector<int> orig_column_to_compact_slot_;   // [col] -> slot, or -1
@@ -325,6 +332,12 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   CUDAVector<int> cuda_slot_p_stride_;
   CUDAVector<int> cuda_slot_col_in_p_;
   uint64_t compact_col_signature_ = 0;
+  // packed split read: this tree's column view is the packed compact matrix
+  // (no column-major gather ran yet; see EnsureClassicColumnView)
+  bool compact_packed_view_active_ = false;
+  // gather inputs stashed for the lazy fallback (device pointer + 4-bit flag)
+  const uint8_t* compact_gather_src_ = nullptr;
+  bool compact_gather_src_is_4bit_ = false;
 
   // number of threads on CPU
   int num_threads_;
