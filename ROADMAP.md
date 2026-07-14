@@ -93,21 +93,20 @@ figures from the profiles in the PR discussions.
   latency-bound on the packed-bin row gathers themselves. Measurement hygiene:
   desktop wall clocks drift up to ~15% between sessions -- trust same-session A/B
   per-tree medians (or lock clocks) for future numerai perf work.
-- [ ] **GPU-native dataset construction, default for CUDA (CuPy/cuDF ingestion,
-  QuantileDMatrix parity and beyond).** Whenever device_type=cuda and the input is
-  dense: sample -> host GreedyFindBin (identical boundaries, md5-comparable), then
-  stream row chunks through a pinned staging ring and bin ON DEVICE (LUT for small
-  ints, boundary search for floats) directly into the packed 4-bit partitioned
-  structures -- raw data never fully resident (numerai f32 is 60 GB vs 32 GB VRAM).
-  Accept __cuda_array_interface__ (CuPy; cuDF rides along) to skip the upload
-  entirely. Est. numerai construct: ~1s (CuPy int8), ~2-3s (numpy int8), ~5-6s
-  (numpy f32) vs 15.8/37.4s today; frees ~40 GB host RSS. Host bins become lazy
-  (linear_trees, save_binary, refit fall back). 22331b18/354ceef3 already removed
-  the host multi-val-bin dependency, so CUDARowData/compact are the only consumers.
-- [ ] **EFB density precheck.** FindGroups spends ~9s on numerai's 2748 dense
-  features and (almost certainly) bundles nothing -- bundling exploits sparse
-  mutual exclusivity. Detect dense/no-op cases cheaply and skip; the GPU-native
-  constructor skips it by design.
+- [x] **GPU-native dataset construction for device_type=cuda + CuPy ingestion**
+  (ca5bca30 GPU dense binning, 633bba9e __cuda_array_interface__). Sampling + host
+  GreedyFindBin kept (identical boundaries); dense push binned ON DEVICE via pinned
+  staging ring (raw never fully resident), packed bins copied back so all host
+  consumers work unchanged; byte-identity verify env; cupy-cuda12x works on sm_120.
+  numerai construct: f32 37.5 -> 7.2-7.8s, int8 15.2 -> 4.5-4.9s, cupy int8 3.4-3.8s;
+  higgs 0.65s, epsilon ~3s. Kill switch EXABOOST_GPU_CONSTRUCT=0 (that path is also
+  ~7s faster now: md5-safe parallel FeatureGroup creation + column-parallel sampling
+  are unconditional). Follow-ups: device-side bin finding (~0.9s), single pinned bin
+  slab (~0.5s), stage 3 = device-resident-only bins without host copy-back (pairs
+  with removing CreateCUDAColumnData's re-upload); cuDF users pass .values.
+- [x] **EFB density precheck** (c9b00820): skips the ~7.7s no-op FindGroups on dense
+  data (numerai/higgs/epsilon/fraud), provably refuses where bundling exists
+  (covtype, sparse); group-structure verify env; EXABOOST_EFB_PRECHECK=0.
 - [ ] **Latency-bound construct on tiny-bin wide data**: post-161fe88b numerai construct
   is scattered-read latency-bound (19ms/tree) -- candidate for NVRTC shape
   specialization (auto-tuner tier 2) or layout changes.
