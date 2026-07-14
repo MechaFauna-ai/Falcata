@@ -122,13 +122,26 @@ def main():
         lines.append("")
 
     # ---- train-time bar charts ------------------------------------------
-    for reg in ("shallow", "deep"):
+    REG_TITLES = {
+        "shallow": "regime shallow (500 trees)",
+        "deep": "regime deep (500 trees)",
+        "numerai": "numerai example config (2000 trees)",
+    }
+    for reg in ("shallow", "deep", "numerai"):
         sub = timed[timed["regime"] == reg]
         if sub.empty:
             continue
         datasets = [
             d
-            for d in ["fraud", "covtype", "year", "higgs", "epsilon", "airline"]
+            for d in [
+                "fraud",
+                "covtype",
+                "year",
+                "higgs",
+                "epsilon",
+                "airline",
+                "numerai",
+            ]
             if d in set(sub["dataset"])
         ]
         x = np.arange(len(datasets))
@@ -192,13 +205,107 @@ def main():
         ax.set_xticks(x, datasets)
         ax.set_ylabel("train time (s, log)")
         ax.set_title(
-            f"GPU training time — regime {reg} (500 trees)\n"
+            f"GPU training time — {REG_TITLES[reg]}\n"
             "✗ = crashed; hatched = degenerate model (timing not meaningful)"
         )
         ax.legend(ncol=3, fontsize=8)
         fig.tight_layout()
         fig.savefig(os.path.join(REPORT_DIR, f"train_time_{reg}.png"), dpi=120)
         lines.append(f"![train time {reg}](train_time_{reg}.png)\n")
+
+    # ---- speed vs quality scatter ----------------------------------------
+    panels = []
+    for ds in ["fraud", "covtype", "year", "higgs", "epsilon", "airline", "numerai"]:
+        for reg in ["numerai"] if ds == "numerai" else ["shallow", "deep"]:
+            if not timed[(timed.dataset == ds) & (timed.regime == reg)].empty:
+                panels.append((ds, reg))
+    if panels:
+        ncols = 3
+        nrows = (len(panels) + ncols - 1) // ncols
+        fig, axes = plt.subplots(nrows, ncols, figsize=(14, 3.4 * nrows))
+        axes = np.atleast_1d(axes).ravel()
+        for ax_i, (ds, reg) in zip(axes, panels):
+            mkey = METRIC_KEY.get(ds, "auc")
+            lower_better = mkey == "rmse"
+            for lib in LIBRARIES:
+                gl = timed[
+                    (timed.dataset == ds)
+                    & (timed.regime == reg)
+                    & (timed.library == lib)
+                ]
+                if gl.empty:
+                    continue
+                met = gl["metrics"].iloc[0] or {}
+                q = met.get(mkey)
+                if q is None:
+                    continue
+                degenerate = not all((m or {}).get("sane", True) for m in gl["metrics"])
+                ax_i.scatter(
+                    [gl["train_s"].median()],
+                    [q],
+                    s=110 if degenerate else 80,
+                    color=COLORS[lib],
+                    marker="X" if degenerate else "o",
+                    edgecolor="black",
+                    linewidth=0.6,
+                    zorder=3,
+                )
+            present = set(
+                timed[(timed.dataset == ds) & (timed.regime == reg)]["library"]
+            )
+            crashed = sorted(
+                set(
+                    df[(df.dataset == ds) & (df.regime == reg) & (df.status != "ok")][
+                        "library"
+                    ]
+                )
+                - present
+            )
+            title = f"{ds} / {reg}"
+            if crashed:
+                title += "\n(crashed: " + ", ".join(crashed) + ")"
+            ax_i.set_xscale("log")
+            ax_i.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+            if lower_better:
+                ax_i.invert_yaxis()
+            ax_i.set_title(title, fontsize=10)
+            ax_i.set_xlabel("train time (s, log)", fontsize=8)
+            ax_i.set_ylabel(
+                mkey + (" (lower = better)" if lower_better else ""), fontsize=8
+            )
+            ax_i.tick_params(labelsize=7)
+            ax_i.grid(True, alpha=0.25)
+        for ax_i in axes[len(panels) :]:
+            ax_i.axis("off")
+        handles = [
+            plt.Line2D(
+                [],
+                [],
+                marker="o",
+                linestyle="",
+                color=COLORS[lib],
+                label=lib,
+                markeredgecolor="black",
+                markeredgewidth=0.6,
+            )
+            for lib in LIBRARIES
+        ]
+        handles.append(
+            plt.Line2D(
+                [],
+                [],
+                marker="X",
+                linestyle="",
+                color="gray",
+                label="degenerate model",
+                markeredgecolor="black",
+            )
+        )
+        fig.legend(handles=handles, ncol=7, loc="lower center", fontsize=9)
+        fig.suptitle("Speed vs quality — up and to the left is better", fontsize=12)
+        fig.tight_layout(rect=[0, 0.05, 1, 0.96])
+        fig.savefig(os.path.join(REPORT_DIR, "speed_vs_quality.png"), dpi=120)
+        lines.append("![speed vs quality](speed_vs_quality.png)\n")
 
     # ---- time-to-quality curves -----------------------------------------
     curves = df[(df["kind"] == "curve") & (df["status"] == "ok")]
