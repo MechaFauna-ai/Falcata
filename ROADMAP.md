@@ -1,0 +1,67 @@
+# ExaBoost CUDA roadmap
+
+Ideas from the hybrid-growth + benchmark session (2026-07-13/14, PRs #32/#33), roughly
+priority-ordered within groups. Measurements refer to an RTX 5090, per-tree/per-100-tree
+figures from the profiles in the PR discussions.
+
+## Performance
+
+- [ ] **Graphs L1 — device-driven level loop.** Wrap the per-level pipeline in a CUDA
+  conditional-WHILE graph node; a level-controller kernel builds the next level's pair
+  descriptors on-device, updates grid dims via device-updatable node params, and sets the
+  loop condition; ONE host sync per tree. Est. ~1.6-1.7x on small-tree workloads
+  (fraud-class: ~344 us/tree turnaround idle + ~234 us launch API measured), ~1.3x mid
+  (covtype/year), ~nil on roofline-bound data (higgs/epsilon). Depth-limited exact regime
+  first; the budget-limited selective mode keeps its host loop until the selection +
+  tie-break replication is ported to device and re-verified against the quant md5 gates.
+- [ ] **Graphs L2 — per-parent dependency chaining.** A child pair only depends on *its
+  parent's* partition + histogram, not on its level. Launch each pair's chain from the
+  device (fire-and-forget device graph launch) when its parent finishes — a
+  self-scheduling tree that removes phase-boundary tail effects on unbalanced trees.
+  Needs: device-atomic budget reservation + a global final-level top-K join, per-node
+  (not per-level) task/scratch regions, and an order-independent split log (the host
+  rebuild already renumbers canonically, absorbing completion-order nondeterminism).
+  Est. +10-20% over L1 on unbalanced small trees.
+- [ ] **Selective-growth churn reduction.** covtype 64/12 applies 2.09x the final split
+  count (52% displaced-then-pruned). Smarter speculation — e.g. only apply candidates
+  with a selection margin / hysteresis — to cut wasted search+apply.
+- [ ] **Wide-shape batched search** *(in flight)*: batched find/sync for
+  num_tasks > 1024 and the numerai compact-view shape; currently caps numerai gains.
+- [ ] **Quant one-sync parity.** The quantized path still uses the two-sync level flow;
+  extend the one-sync speculative pipeline to it. Also investigate the per-tree gradient
+  discretization cost on many-tree/small-tree configs (numerai-quant is slower than
+  non-quant today).
+- [ ] **FP32 gain math in the find kernels.** find ~= 136 us/tree, FP64-bound and
+  leaf-size-independent; evaluate FP32/mixed gains behind a flag.
+- [ ] **FP32/fixed-point histogram option for wide data.** Non-quant histogram entries
+  are FP64 pairs (16 B/bin); epsilon non-quant loses to XGBoost (8 B/bin fixed point)
+  for exactly this reason.
+
+## Correctness / determinism
+
+- [ ] **Deterministic non-quant CUDA mode.** Fixed-point integer histogram accumulation
+  (XGBoost-style) to eliminate float-atomic run-to-run jitter (measured +-2.6pp on
+  covtype multiclass); alternatively bless quant as the deterministic mode. Related:
+  `deterministic=true` silently no-ops on CUDA — make it work or warn.
+
+## Upstream (lightgbm-org/LightGBM) bug reports to file
+
+- [ ] Quantized CUDA int32 histogram-index overflow on wide data (fixed here in
+  6f8402f5; upstream segfaults at scale and silently corrupts below it).
+- [ ] Quantized multiclass per-tree random-offset buffer overrun (fixed here in
+  1b28ba03).
+- [ ] CUDA-vs-CPU growth parity: upstream CUDA over-grows trees ~3.5x vs its own CPU at
+  identical params (854 vs 237 leaves/tree on covtype; lambda_l2 sweep shows it is
+  systematic).
+- [ ] Latent race in the classic loop: child leaf-splits structs point into per-split
+  scratch that the next split overwrites; masked only by per-split syncs (fixed here
+  via point_structs_at_main + copy-event ordering).
+
+## Benchmark
+
+- [ ] Airline (115M rows): kt.ijs.si down; retry, find a mirror, or substitute the
+  benchm-ml 10M-row variant.
+- [ ] Optional: xgboost-lossguide as a seventh benchmark config (leaf-wise
+  apples-to-apples column).
+- [ ] Harness: host-memory guard for runs near RAM limits (xgboost/numerai peaked at
+  102 GB and OOM-killed the host session; its curve cell is skipped).
