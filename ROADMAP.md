@@ -81,16 +81,17 @@ figures from the profiles in the PR discussions.
   covtype multiclass); alternatively bless quant as the deterministic mode. Related:
   `deterministic=true` silently no-ops on CUDA — make it work or warn.
 
-## Upstream (lightgbm-org/LightGBM) bug reports to file
+## Upstream (lightgbm-org/LightGBM) bugs found (documented here for reference;
+## we do not contribute upstream)
 
-- [ ] Quantized CUDA int32 histogram-index overflow on wide data (fixed here in
+- Quantized CUDA int32 histogram-index overflow on wide data (fixed here in
   6f8402f5; upstream segfaults at scale and silently corrupts below it).
-- [ ] Quantized multiclass per-tree random-offset buffer overrun (fixed here in
+- Quantized multiclass per-tree random-offset buffer overrun (fixed here in
   1b28ba03).
-- [ ] CUDA-vs-CPU growth parity: upstream CUDA over-grows trees ~3.5x vs its own CPU at
+- CUDA-vs-CPU growth parity: upstream CUDA over-grows trees ~3.5x vs its own CPU at
   identical params (854 vs 237 leaves/tree on covtype; lambda_l2 sweep shows it is
   systematic).
-- [ ] Latent race in the classic loop: child leaf-splits structs point into per-split
+- Latent race in the classic loop: child leaf-splits structs point into per-split
   scratch that the next split overwrites; masked only by per-split syncs (fixed here
   via point_structs_at_main + copy-event ordering).
 
