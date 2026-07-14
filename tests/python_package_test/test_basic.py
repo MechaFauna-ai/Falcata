@@ -1074,11 +1074,27 @@ def test_no_copy_in_dataset_from_numpy_2d(rng, order, dtype):
         assert not np.shares_memory(X, X1d)
 
 
+def test_c_float_array_accepts_int8():
+    data = np.array([0, 1, 2, 3, 4], dtype=np.int8)
+    _, type_data, holder = lgb.basic._c_float_array(data)
+    assert type_data == lgb.basic._C_API_DTYPE_INT8
+    # int8 input is forwarded without a float conversion
+    assert holder.dtype == np.int8
+    assert np.shares_memory(data, holder)
+
+
+@pytest.mark.parametrize("dtype", [np.int16])
+def test_c_float_array_accepts_int16(dtype):
+    data = np.array([0, 1, 2], dtype=dtype)
+    ptr_data, type_data, holder = lgb.basic._c_float_array(data)
+    assert type_data == lgb.basic._C_API_DTYPE_INT16
+    assert holder.dtype == np.int16
+    assert np.shares_memory(data, holder)
+
+
 @pytest.mark.parametrize(
     ("dtype", "expected_type_data"),
     [
-        (np.int8, "_C_API_DTYPE_INT8"),
-        (np.int16, "_C_API_DTYPE_INT16"),
         (np.uint8, "_C_API_DTYPE_UINT8"),
         (np.uint16, "_C_API_DTYPE_UINT16"),
         (np.float16, "_C_API_DTYPE_FLOAT16"),
@@ -1096,7 +1112,8 @@ def test_c_float_array_accepts_small_dtypes(dtype, expected_type_data):
 @pytest.mark.parametrize("dtype", [np.int32, np.int64, np.uint32, np.uint64])
 def test_c_float_array_rejects_unsupported_int_dtypes(dtype):
     data = np.array([0, 1, 2], dtype=dtype)
-    with pytest.raises(TypeError, match=r"Expected np\.float32, np\.float64, np\.float16 or a small int"):
+    # keep the match loose: the supported-dtype list in the message grows
+    with pytest.raises(TypeError, match=r"Expected np\.float32, np\.float64"):
         lgb.basic._c_float_array(data)
 
 
