@@ -333,7 +333,19 @@ void CUDASingleGPUTreeLearner::AddPredictionToScore(const Tree* tree, double* ou
 }
 
 bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
+  // Level batching is exactly leaf-wise-equivalent only in the depth-limited
+  // regime (2^max_depth <= num_leaves + 1): there the budget can only bind at
+  // the final (max-depth) level, where the batched top-K-by-gain selection is
+  // optimal because no deeper candidates can exist. In budget-limited configs
+  // (num_leaves << 2^max_depth) applying whole levels can spend budget on
+  // shallow low-gain splits that best-first growth would instead invest in
+  // deeper, higher-gain splits of richer subtrees -- measured up to ~1pp
+  // accuracy on covtype at num_leaves=64/max_depth=12 -- so fall back to the
+  // classic loop there until exact grow-then-prune selection is implemented.
+  const bool depth_limited = config_->max_depth > 0 && config_->max_depth < 31 &&
+      (1LL << config_->max_depth) <= static_cast<int64_t>(config_->num_leaves) + 1;
   return use_hybrid_growth_ &&
+         depth_limited &&
          nccl_communicator_ == nullptr &&
          !has_categorical_feature_ &&
          !select_features_by_node_ &&
