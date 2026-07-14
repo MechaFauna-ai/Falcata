@@ -89,6 +89,24 @@ class CUDARowData {
  private:
   void DivideCUDAFeatureGroups(const Dataset* train_data, TrainingShareStates* share_state);
 
+  /*! \brief Initialize the dense row-wise data. Prefers the fast build directly from
+   *  the Dataset's column bins (EXABOOST_FAST_ROWDATA, default on); host_data (the
+   *  row-wise multi-val bin) may be nullptr when Dataset::GetShareStates skipped its build. */
+  template <typename BIN_TYPE>
+  void InitDenseData(const Dataset* train_data, const BIN_TYPE* host_data, CUDAVector<BIN_TYPE>* cuda_data);
+
+  /*! \brief Collect the raw per-column bin data in multi-val column order.
+   *  Returns false (fast build not applicable) on multi-val or sparse groups. */
+  bool CollectDenseColumnData(const Dataset* train_data,
+    std::vector<const void*>* column_data,
+    std::vector<uint8_t>* column_bit_types) const;
+
+  /*! \brief Build the partitioned row-major buffer directly from column bins
+   *  with a cache-tiled parallel transpose, bypassing the host multi-val bin. */
+  template <typename BIN_TYPE>
+  void BuildDensePartitionedFromColumns(const std::vector<const void*>& column_data,
+    const std::vector<uint8_t>& column_bit_types, BIN_TYPE* out_data) const;
+
   template <typename BIN_TYPE>
   void GetDenseDataPartitioned(const BIN_TYPE* row_wise_data, std::vector<BIN_TYPE>* partitioned_data);
 

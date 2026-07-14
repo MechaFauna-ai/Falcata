@@ -8,9 +8,50 @@
 
 #include <LightGBM/cuda/cuda_row_data.hpp>
 
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <string>
 #include <vector>
 
 namespace LightGBM {
+
+namespace {
+
+bool FastRowDataEnabled() {
+  const char* env = std::getenv("EXABOOST_FAST_ROWDATA");
+  return env == nullptr || std::string(env) != std::string("0");
+}
+
+bool FastRowDataVerifyEnabled() {
+  const char* env = std::getenv("EXABOOST_FAST_ROWDATA_VERIFY");
+  return env != nullptr && std::string(env) == std::string("1");
+}
+
+// Scatter one column's rows [start, end) into its slot of a row-major partition:
+// out_data points at (partition base + local column index), row_stride is the
+// number of columns in the partition.
+template <typename BIN_TYPE, typename COLUMN_TYPE>
+void TransposeColumnTile(const void* column_data, data_size_t start, data_size_t end,
+                         int row_stride, BIN_TYPE* out_data) {
+  const COLUMN_TYPE* in_data = reinterpret_cast<const COLUMN_TYPE*>(column_data);
+  for (data_size_t row = start; row < end; ++row) {
+    out_data[static_cast<size_t>(row) * row_stride] = static_cast<BIN_TYPE>(in_data[row]);
+  }
+}
+
+template <typename BIN_TYPE>
+void TransposeColumnTile4Bit(const void* column_data, data_size_t start, data_size_t end,
+                             int row_stride, BIN_TYPE* out_data) {
+  const uint8_t* in_data = reinterpret_cast<const uint8_t*>(column_data);
+  for (data_size_t row = start; row < end; ++row) {
+    out_data[static_cast<size_t>(row) * row_stride] =
+      static_cast<BIN_TYPE>((in_data[row >> 1] >> ((row & 1) << 2)) & 0xf);
+  }
+}
+
+}  // anonymous namespace
 
 CUDARowData::CUDARowData(const Dataset* train_data,
                          const TrainingShareStates* train_share_state,
@@ -52,98 +93,102 @@ void CUDARowData::Init(const Dataset* train_data, TrainingShareStates* train_sha
   const void* host_row_ptr = nullptr;
   row_ptr_bit_type_ = 0;
   const void* host_data = train_share_state->GetRowWiseData(&bit_type_, &total_size, &is_sparse_, &host_row_ptr, &row_ptr_bit_type_);
-  if (bit_type_ == 8) {
-    if (!is_sparse_) {
-      std::vector<uint8_t> partitioned_data;
-      GetDenseDataPartitioned<uint8_t>(reinterpret_cast<const uint8_t*>(host_data), &partitioned_data);
-      cuda_data_uint8_t_.InitFromHostVector(partitioned_data);
+  if (host_data == nullptr) {
+    // Dataset::GetShareStates skipped the host multi-val bin build (EXABOOST_FAST_ROWDATA):
+    // the row-wise data is known to be dense; recover the bin bit width from the
+    // per-column bin counts, exactly as MultiValBin::CreateMultiValDenseBin would.
+    const std::vector<uint32_t>& column_hist_offsets = train_share_state->column_hist_offsets();
+    uint32_t max_bin_per_column = 0;
+    for (size_t i = 0; i + 1 < column_hist_offsets.size(); ++i) {
+      max_bin_per_column = std::max(max_bin_per_column, column_hist_offsets[i + 1] - column_hist_offsets[i]);
+    }
+    is_sparse_ = false;
+    bit_type_ = max_bin_per_column <= 256 ? 8 : (max_bin_per_column <= 65536 ? 16 : 32);
+  }
+  if (!is_sparse_) {
+    if (bit_type_ == 8) {
+      InitDenseData<uint8_t>(train_data, reinterpret_cast<const uint8_t*>(host_data), &cuda_data_uint8_t_);
+    } else if (bit_type_ == 16) {
+      InitDenseData<uint16_t>(train_data, reinterpret_cast<const uint16_t*>(host_data), &cuda_data_uint16_t_);
+    } else if (bit_type_ == 32) {
+      InitDenseData<uint32_t>(train_data, reinterpret_cast<const uint32_t*>(host_data), &cuda_data_uint32_t_);
     } else {
-      if (row_ptr_bit_type_ == 16) {
-        InitSparseData<uint8_t, uint16_t>(
-          reinterpret_cast<const uint8_t*>(host_data),
-          reinterpret_cast<const uint16_t*>(host_row_ptr),
-          &cuda_data_uint8_t_,
-          &cuda_row_ptr_uint16_t_,
-          &cuda_partition_ptr_uint16_t_);
-      } else if (row_ptr_bit_type_ == 32) {
-        InitSparseData<uint8_t, uint32_t>(
-          reinterpret_cast<const uint8_t*>(host_data),
-          reinterpret_cast<const uint32_t*>(host_row_ptr),
-          &cuda_data_uint8_t_,
-          &cuda_row_ptr_uint32_t_,
-          &cuda_partition_ptr_uint32_t_);
-      } else if (row_ptr_bit_type_ == 64) {
-        InitSparseData<uint8_t, uint64_t>(
-          reinterpret_cast<const uint8_t*>(host_data),
-          reinterpret_cast<const uint64_t*>(host_row_ptr),
-          &cuda_data_uint8_t_,
-          &cuda_row_ptr_uint64_t_,
-          &cuda_partition_ptr_uint64_t_);
-      } else {
-        Log::Fatal("Unknown data ptr bit type %d", row_ptr_bit_type_);
-      }
+      Log::Fatal("Unknown bit type = %d", bit_type_);
+    }
+  } else if (bit_type_ == 8) {
+    if (row_ptr_bit_type_ == 16) {
+      InitSparseData<uint8_t, uint16_t>(
+        reinterpret_cast<const uint8_t*>(host_data),
+        reinterpret_cast<const uint16_t*>(host_row_ptr),
+        &cuda_data_uint8_t_,
+        &cuda_row_ptr_uint16_t_,
+        &cuda_partition_ptr_uint16_t_);
+    } else if (row_ptr_bit_type_ == 32) {
+      InitSparseData<uint8_t, uint32_t>(
+        reinterpret_cast<const uint8_t*>(host_data),
+        reinterpret_cast<const uint32_t*>(host_row_ptr),
+        &cuda_data_uint8_t_,
+        &cuda_row_ptr_uint32_t_,
+        &cuda_partition_ptr_uint32_t_);
+    } else if (row_ptr_bit_type_ == 64) {
+      InitSparseData<uint8_t, uint64_t>(
+        reinterpret_cast<const uint8_t*>(host_data),
+        reinterpret_cast<const uint64_t*>(host_row_ptr),
+        &cuda_data_uint8_t_,
+        &cuda_row_ptr_uint64_t_,
+        &cuda_partition_ptr_uint64_t_);
+    } else {
+      Log::Fatal("Unknown data ptr bit type %d", row_ptr_bit_type_);
     }
   } else if (bit_type_ == 16) {
-    if (!is_sparse_) {
-      std::vector<uint16_t> partitioned_data;
-      GetDenseDataPartitioned<uint16_t>(reinterpret_cast<const uint16_t*>(host_data), &partitioned_data);
-      cuda_data_uint16_t_.InitFromHostVector(partitioned_data);
+    if (row_ptr_bit_type_ == 16) {
+      InitSparseData<uint16_t, uint16_t>(
+        reinterpret_cast<const uint16_t*>(host_data),
+        reinterpret_cast<const uint16_t*>(host_row_ptr),
+        &cuda_data_uint16_t_,
+        &cuda_row_ptr_uint16_t_,
+        &cuda_partition_ptr_uint16_t_);
+    } else if (row_ptr_bit_type_ == 32) {
+      InitSparseData<uint16_t, uint32_t>(
+        reinterpret_cast<const uint16_t*>(host_data),
+        reinterpret_cast<const uint32_t*>(host_row_ptr),
+        &cuda_data_uint16_t_,
+        &cuda_row_ptr_uint32_t_,
+        &cuda_partition_ptr_uint32_t_);
+    } else if (row_ptr_bit_type_ == 64) {
+      InitSparseData<uint16_t, uint64_t>(
+        reinterpret_cast<const uint16_t*>(host_data),
+        reinterpret_cast<const uint64_t*>(host_row_ptr),
+        &cuda_data_uint16_t_,
+        &cuda_row_ptr_uint64_t_,
+        &cuda_partition_ptr_uint64_t_);
     } else {
-      if (row_ptr_bit_type_ == 16) {
-        InitSparseData<uint16_t, uint16_t>(
-          reinterpret_cast<const uint16_t*>(host_data),
-          reinterpret_cast<const uint16_t*>(host_row_ptr),
-          &cuda_data_uint16_t_,
-          &cuda_row_ptr_uint16_t_,
-          &cuda_partition_ptr_uint16_t_);
-      } else if (row_ptr_bit_type_ == 32) {
-        InitSparseData<uint16_t, uint32_t>(
-          reinterpret_cast<const uint16_t*>(host_data),
-          reinterpret_cast<const uint32_t*>(host_row_ptr),
-          &cuda_data_uint16_t_,
-          &cuda_row_ptr_uint32_t_,
-          &cuda_partition_ptr_uint32_t_);
-      } else if (row_ptr_bit_type_ == 64) {
-        InitSparseData<uint16_t, uint64_t>(
-          reinterpret_cast<const uint16_t*>(host_data),
-          reinterpret_cast<const uint64_t*>(host_row_ptr),
-          &cuda_data_uint16_t_,
-          &cuda_row_ptr_uint64_t_,
-          &cuda_partition_ptr_uint64_t_);
-      } else {
-        Log::Fatal("Unknown data ptr bit type %d", row_ptr_bit_type_);
-      }
+      Log::Fatal("Unknown data ptr bit type %d", row_ptr_bit_type_);
     }
   } else if (bit_type_ == 32) {
-    if (!is_sparse_) {
-      std::vector<uint32_t> partitioned_data;
-      GetDenseDataPartitioned<uint32_t>(reinterpret_cast<const uint32_t*>(host_data), &partitioned_data);
-      cuda_data_uint32_t_.InitFromHostVector(partitioned_data);
+    if (row_ptr_bit_type_ == 16) {
+      InitSparseData<uint32_t, uint16_t>(
+        reinterpret_cast<const uint32_t*>(host_data),
+        reinterpret_cast<const uint16_t*>(host_row_ptr),
+        &cuda_data_uint32_t_,
+        &cuda_row_ptr_uint16_t_,
+        &cuda_partition_ptr_uint16_t_);
+    } else if (row_ptr_bit_type_ == 32) {
+      InitSparseData<uint32_t, uint32_t>(
+        reinterpret_cast<const uint32_t*>(host_data),
+        reinterpret_cast<const uint32_t*>(host_row_ptr),
+        &cuda_data_uint32_t_,
+        &cuda_row_ptr_uint32_t_,
+        &cuda_partition_ptr_uint32_t_);
+    } else if (row_ptr_bit_type_ == 64) {
+      InitSparseData<uint32_t, uint64_t>(
+        reinterpret_cast<const uint32_t*>(host_data),
+        reinterpret_cast<const uint64_t*>(host_row_ptr),
+        &cuda_data_uint32_t_,
+        &cuda_row_ptr_uint64_t_,
+        &cuda_partition_ptr_uint64_t_);
     } else {
-      if (row_ptr_bit_type_ == 16) {
-        InitSparseData<uint32_t, uint16_t>(
-          reinterpret_cast<const uint32_t*>(host_data),
-          reinterpret_cast<const uint16_t*>(host_row_ptr),
-          &cuda_data_uint32_t_,
-          &cuda_row_ptr_uint16_t_,
-          &cuda_partition_ptr_uint16_t_);
-      } else if (row_ptr_bit_type_ == 32) {
-        InitSparseData<uint32_t, uint32_t>(
-          reinterpret_cast<const uint32_t*>(host_data),
-          reinterpret_cast<const uint32_t*>(host_row_ptr),
-          &cuda_data_uint32_t_,
-          &cuda_row_ptr_uint32_t_,
-          &cuda_partition_ptr_uint32_t_);
-      } else if (row_ptr_bit_type_ == 64) {
-        InitSparseData<uint32_t, uint64_t>(
-          reinterpret_cast<const uint32_t*>(host_data),
-          reinterpret_cast<const uint64_t*>(host_row_ptr),
-          &cuda_data_uint32_t_,
-          &cuda_row_ptr_uint64_t_,
-          &cuda_partition_ptr_uint64_t_);
-      } else {
-        Log::Fatal("Unknown data ptr bit type %d", row_ptr_bit_type_);
-      }
+      Log::Fatal("Unknown data ptr bit type %d", row_ptr_bit_type_);
     }
   } else {
     Log::Fatal("Unknown bit type = %d", bit_type_);
@@ -325,6 +370,117 @@ void CUDARowData::GetDenseDataPartitioned(const BIN_TYPE* row_wise_data, std::ve
         }
       }
     });
+}
+
+bool CUDARowData::CollectDenseColumnData(const Dataset* train_data,
+                                         std::vector<const void*>* column_data,
+                                         std::vector<uint8_t>* column_bit_types) const {
+  const int num_feature_groups = train_data->num_feature_groups();
+  for (int group_index = 0; group_index < num_feature_groups; ++group_index) {
+    if (train_data->IsMultiGroup(group_index)) {
+      // multi-val group columns need per-feature most_freq_bin remapping,
+      // which only the multi-val bin path implements
+      return false;
+    }
+    uint8_t bit_type = 0;
+    bool is_sparse = false;
+    BinIterator* bin_iterator = nullptr;
+    const void* one_column_data = train_data->GetColWiseData(group_index, -1, &bit_type, &is_sparse, &bin_iterator);
+    if (bin_iterator != nullptr) {
+      delete bin_iterator;
+    }
+    if (is_sparse || one_column_data == nullptr) {
+      return false;
+    }
+    column_data->push_back(one_column_data);
+    column_bit_types->push_back(bit_type);
+  }
+  CHECK_EQ(static_cast<int>(column_data->size()), feature_partition_column_index_offsets_.back());
+  return true;
+}
+
+template <typename BIN_TYPE>
+void CUDARowData::BuildDensePartitionedFromColumns(
+    const std::vector<const void*>& column_data,
+    const std::vector<uint8_t>& column_bit_types,
+    BIN_TYPE* out_data) const {
+  // For a non-multi-val dense group the multi-val bin stores the raw group bin
+  // value unchanged (FeatureGroupIterator: min_bin == 1, most_freq_bin == 0, so
+  // Get() is the identity), so the columns can be transposed directly.
+  // Cache-tiled: per 512-row tile, each source column is read sequentially and
+  // scattered into the row-major partition tile, which stays L2-resident.
+  constexpr data_size_t kRowTileSize = 512;
+  Threading::For<data_size_t>(0, num_data_, kRowTileSize,
+    [this, &column_data, &column_bit_types, out_data] (int /*thread_index*/, data_size_t start, data_size_t end) {
+      for (data_size_t tile_start = start; tile_start < end; tile_start += kRowTileSize) {
+        const data_size_t tile_end = std::min<data_size_t>(tile_start + kRowTileSize, end);
+        for (size_t i = 0; i + 1 < feature_partition_column_index_offsets_.size(); ++i) {
+          const int partition_column_start = feature_partition_column_index_offsets_[i];
+          const int partition_column_end = feature_partition_column_index_offsets_[i + 1];
+          const int num_columns_in_cur_partition = partition_column_end - partition_column_start;
+          BIN_TYPE* partition_out_data = out_data + static_cast<size_t>(num_data_) * static_cast<size_t>(partition_column_start);
+          for (int column_index = partition_column_start; column_index < partition_column_end; ++column_index) {
+            BIN_TYPE* column_out_data = partition_out_data + (column_index - partition_column_start);
+            const void* one_column_data = column_data[column_index];
+            const uint8_t column_bit_type = column_bit_types[column_index];
+            if (column_bit_type == 4) {
+              TransposeColumnTile4Bit<BIN_TYPE>(one_column_data, tile_start, tile_end, num_columns_in_cur_partition, column_out_data);
+            } else if (column_bit_type == 8) {
+              TransposeColumnTile<BIN_TYPE, uint8_t>(one_column_data, tile_start, tile_end, num_columns_in_cur_partition, column_out_data);
+            } else if (column_bit_type == 16) {
+              TransposeColumnTile<BIN_TYPE, uint16_t>(one_column_data, tile_start, tile_end, num_columns_in_cur_partition, column_out_data);
+            } else if (column_bit_type == 32) {
+              TransposeColumnTile<BIN_TYPE, uint32_t>(one_column_data, tile_start, tile_end, num_columns_in_cur_partition, column_out_data);
+            } else {
+              Log::Fatal("Unknown column bit type %d", static_cast<int>(column_bit_type));
+            }
+          }
+        }
+      }
+    });
+}
+
+template <typename BIN_TYPE>
+void CUDARowData::InitDenseData(const Dataset* train_data, const BIN_TYPE* host_data, CUDAVector<BIN_TYPE>* cuda_data) {
+  const bool fast_enabled = FastRowDataEnabled();
+  std::vector<const void*> column_data;
+  std::vector<uint8_t> column_bit_types;
+  const bool use_fast_build = fast_enabled && CollectDenseColumnData(train_data, &column_data, &column_bit_types);
+  const size_t total_size = static_cast<size_t>(feature_partition_column_index_offsets_.back()) * static_cast<size_t>(num_data_);
+  if (use_fast_build) {
+    Log::Debug("CUDARowData: fast dense row data build from column bins (disable with EXABOOST_FAST_ROWDATA=0)");
+    // new[] leaves the staging buffer uninitialized on purpose; the transpose writes every element
+    std::unique_ptr<BIN_TYPE[]> buffer(new BIN_TYPE[total_size]);
+    BuildDensePartitionedFromColumns<BIN_TYPE>(column_data, column_bit_types, buffer.get());
+    if (FastRowDataVerifyEnabled()) {
+      if (host_data == nullptr) {
+        Log::Fatal("EXABOOST_FAST_ROWDATA_VERIFY=1 requires the host multi-val bin, but its build was skipped.");
+      }
+      std::vector<BIN_TYPE> reference;
+      GetDenseDataPartitioned<BIN_TYPE>(host_data, &reference);
+      CHECK_EQ(reference.size(), total_size);
+      if (std::memcmp(reference.data(), buffer.get(), total_size * sizeof(BIN_TYPE)) != 0) {
+        Log::Fatal("EXABOOST_FAST_ROWDATA_VERIFY: fast dense row data differs from the multi-val bin path.");
+      }
+      Log::Info("EXABOOST_FAST_ROWDATA_VERIFY: fast dense row data matches the multi-val bin path (%d columns, %d rows).",
+                feature_partition_column_index_offsets_.back(), num_data_);
+    }
+    cuda_data->InitFromHostMemory(buffer.get(), total_size);
+    return;
+  }
+  if (host_data == nullptr) {
+    Log::Fatal("The host multi-val bin build was skipped but the fast dense row data build is not applicable.");
+  }
+  if (fast_enabled) {
+    // fallback repack from the host multi-val bin, but without the redundant zero-fill
+    std::unique_ptr<BIN_TYPE[]> buffer(new BIN_TYPE[total_size]);
+    GetDenseDataPartitionedToBuffer<BIN_TYPE>(host_data, buffer.get());
+    cuda_data->InitFromHostMemory(buffer.get(), total_size);
+  } else {
+    std::vector<BIN_TYPE> partitioned_data;
+    GetDenseDataPartitioned<BIN_TYPE>(host_data, &partitioned_data);
+    cuda_data->InitFromHostVector(partitioned_data);
+  }
 }
 
 template <typename BIN_TYPE, typename DATA_PTR_TYPE>

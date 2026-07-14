@@ -61,6 +61,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     data_size_t global_num_data) override;
 
  protected:
+  bool IsCUDATreeLearner() const override { return true; }
+
   void BeforeTrain() override;
 
   // ---- linear tree support ----

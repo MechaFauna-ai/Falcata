@@ -131,6 +131,10 @@ class SerialTreeLearner: public TreeLearner {
 
   void GetShareStates(const Dataset* dataset, bool is_constant_hessian, bool is_first_time);
 
+  /*! \brief Whether this learner constructs histograms on the CUDA device
+   *  (lets Dataset::GetShareStates skip the host multi-val bin build). */
+  virtual bool IsCUDATreeLearner() const { return false; }
+
   void RecomputeBestSplitForLeaf(Tree* tree, int leaf, SplitInfo* split);
 
   /*!

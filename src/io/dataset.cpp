@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -613,12 +614,52 @@ MultiValBin* Dataset::GetMultiBinFromAllFeatures(const std::vector<uint32_t>& of
   return ret.release();
 }
 
+#ifdef USE_CUDA
+bool Dataset::CanSkipHostMultiValBinForCUDA() const {
+  const char* fast_env = std::getenv("EXABOOST_FAST_ROWDATA");
+  if (fast_env != nullptr && std::string(fast_env) == std::string("0")) {
+    return false;
+  }
+  const char* verify_env = std::getenv("EXABOOST_FAST_ROWDATA_VERIFY");
+  if (verify_env != nullptr && std::string(verify_env) == std::string("1")) {
+    // verification needs the multi-val bin path as the reference
+    return false;
+  }
+  // CUDARowData's fast build handles dense non-multi-val groups only, and the
+  // skip is valid only when GetMultiBinFromAllFeatures would produce a dense
+  // multi-val bin; replicate its sparsity decision exactly
+  double sum_dense_ratio = 0;
+  int ncol = 0;
+  for (int gid = 0; gid < num_groups_; ++gid) {
+    if (feature_groups_[gid]->is_multi_val_) {
+      return false;
+    }
+    ++ncol;
+    for (int fid = 0; fid < feature_groups_[gid]->num_feature_; ++fid) {
+      sum_dense_ratio += 1.0f - feature_groups_[gid]->bin_mappers_[fid]->sparse_rate();
+    }
+    uint8_t bit_type = 0;
+    bool is_sparse = false;
+    BinIterator* bin_iterator = nullptr;
+    GetColWiseData(gid, -1, &bit_type, &is_sparse, &bin_iterator);
+    if (bin_iterator != nullptr) {
+      delete bin_iterator;
+    }
+    if (is_sparse) {
+      return false;
+    }
+  }
+  sum_dense_ratio /= ncol;
+  return (1.0 - sum_dense_ratio) < MultiValBin::multi_val_bin_sparse_threshold;
+}
+#endif  // USE_CUDA
+
 template <bool USE_QUANT_GRAD, int HIST_BITS>
 TrainingShareStates* Dataset::GetShareStates(
     score_t* gradients, score_t* hessians,
     const std::vector<int8_t>& is_feature_used, bool is_constant_hessian,
     bool force_col_wise, bool force_row_wise,
-    const int num_grad_quant_bins) const {
+    const int num_grad_quant_bins, bool is_cuda_tree_learner) const {
   Common::FunctionTimer fun_timer("Dataset::TestMultiThreadingMethod",
                                   global_timer);
   if (force_col_wise && force_row_wise) {
@@ -647,8 +688,22 @@ TrainingShareStates* Dataset::GetShareStates(
     std::vector<uint32_t> offsets;
     share_state->CalcBinOffsets(
       feature_groups_, &offsets, false);
+    #ifdef USE_CUDA
+    // On the CUDA path the host multi-val bin exists only to feed
+    // CUDARowData::Init, which can build the row-wise data directly from the
+    // column bins; skip the expensive (and memory-hungry) host build then.
+    const bool skip_multi_val_bin = is_cuda_tree_learner &&
+      device_type_ == std::string("cuda") && CanSkipHostMultiValBinForCUDA();
+    if (skip_multi_val_bin) {
+      Log::Debug("Dataset::GetShareStates: skipping host multi-val bin build for CUDA (disable with EXABOOST_FAST_ROWDATA=0)");
+    } else {
+      share_state->SetMultiValBin(GetMultiBinFromAllFeatures(offsets), num_data_,
+        feature_groups_, false, false, num_grad_quant_bins);
+    }
+    #else
     share_state->SetMultiValBin(GetMultiBinFromAllFeatures(offsets), num_data_,
       feature_groups_, false, false, num_grad_quant_bins);
+    #endif  // USE_CUDA
     share_state->is_col_wise = false;
     share_state->is_constant_hessian = is_constant_hessian;
     return share_state;
@@ -732,19 +787,19 @@ template TrainingShareStates* Dataset::GetShareStates<false, 0>(
     score_t* gradients, score_t* hessians,
     const std::vector<int8_t>& is_feature_used, bool is_constant_hessian,
     bool force_col_wise, bool force_row_wise,
-    const int num_grad_quant_bins) const;
+    const int num_grad_quant_bins, bool is_cuda_tree_learner) const;
 
 template TrainingShareStates* Dataset::GetShareStates<true, 16>(
     score_t* gradients, score_t* hessians,
     const std::vector<int8_t>& is_feature_used, bool is_constant_hessian,
     bool force_col_wise, bool force_row_wise,
-    const int num_grad_quant_bins) const;
+    const int num_grad_quant_bins, bool is_cuda_tree_learner) const;
 
 template TrainingShareStates* Dataset::GetShareStates<true, 32>(
     score_t* gradients, score_t* hessians,
     const std::vector<int8_t>& is_feature_used, bool is_constant_hessian,
     bool force_col_wise, bool force_row_wise,
-    const int num_grad_quant_bins) const;
+    const int num_grad_quant_bins, bool is_cuda_tree_learner) const;
 
 void Dataset::CopyFeatureMapperFrom(const Dataset* dataset) {
   feature_groups_.clear();
