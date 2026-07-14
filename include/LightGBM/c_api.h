@@ -430,6 +430,31 @@ LIGHTGBM_C_EXPORT int LGBM_DatasetCreateFromMat(const void* data,
                                                 DatasetHandle* out);
 
 /*!
+ * \brief Create dataset from a dense matrix that lives in CUDA device memory
+ *        (e.g. a CuPy array or any ``__cuda_array_interface__`` producer).
+ *        Requires a CUDA build and ``device_type=cuda``; bin boundaries are
+ *        found from a sampled copy of the rows and the matrix is binned on
+ *        the device without ever being fully materialized on the host.
+ * \param data Device pointer to the data space
+ * \param data_type Type of ``data`` pointer, can be ``C_API_DTYPE_FLOAT32``, ``C_API_DTYPE_FLOAT64``, ``C_API_DTYPE_INT8``, ``C_API_DTYPE_INT16``, ``C_API_DTYPE_UINT8``, ``C_API_DTYPE_UINT16`` or ``C_API_DTYPE_FLOAT16``
+ * \param nrow Number of rows
+ * \param ncol Number of columns
+ * \param is_row_major 1 for row-major, 0 for column-major
+ * \param parameters Additional parameters
+ * \param reference Used to align bin mapper with other dataset, nullptr means isn't used
+ * \param[out] out Created dataset
+ * \return 0 when succeed, -1 when failure happens
+ */
+LIGHTGBM_C_EXPORT int LGBM_DatasetCreateFromMatDevice(const void* data,
+                                                      int data_type,
+                                                      int32_t nrow,
+                                                      int32_t ncol,
+                                                      int is_row_major,
+                                                      const char* parameters,
+                                                      const DatasetHandle reference,
+                                                      DatasetHandle* out);
+
+/*!
  * \brief Create dataset from array of dense matrices.
  * \param nmat Number of dense matrices
  * \param data Pointer to the data space

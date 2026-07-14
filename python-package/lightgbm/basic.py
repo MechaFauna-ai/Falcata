@@ -2164,6 +2164,8 @@ class Dataset:
             self.__init_from_csc(csc=data, params_str=params_str, ref_dataset=ref_dataset)
         elif isinstance(data, np.ndarray):
             self.__init_from_np2d(mat=data, params_str=params_str, ref_dataset=ref_dataset)
+        elif hasattr(data, "__cuda_array_interface__"):
+            self.__init_from_cuda_array_interface(data=data, params_str=params_str, ref_dataset=ref_dataset)
         elif nwd.is_into_dataframe(data):
             self.__init_from_narwhals(data=nw.from_native(data), params_str=params_str, ref_dataset=ref_dataset)
         elif isinstance(data, list) and len(data) > 0:
@@ -2299,6 +2301,65 @@ class Dataset:
                 ctypes.c_int(type_ptr_data),
                 ctypes.c_int32(mat.shape[0]),
                 ctypes.c_int32(mat.shape[1]),
+                ctypes.c_int(layout),
+                _c_str(params_str),
+                ref_dataset,
+                ctypes.byref(self._handle),
+            )
+        )
+        return self
+
+    def __init_from_cuda_array_interface(
+        self,
+        *,
+        data: Any,
+        params_str: str,
+        ref_dataset: Optional[_DatasetHandle],
+    ) -> "Dataset":
+        """Initialize data from an object exposing ``__cuda_array_interface__`` (e.g. a CuPy array).
+
+        The matrix stays in device memory: bin boundaries are found from a sampled
+        copy of the rows and the data is binned on the GPU (requires a CUDA build
+        and ``device_type="cuda"``). For cuDF DataFrames pass ``df.values``.
+        """
+        cai = data.__cuda_array_interface__
+        shape = tuple(cai["shape"])
+        if len(shape) != 2:
+            raise ValueError("CUDA array must be 2 dimensional")
+        nrow, ncol = shape
+        typestr = cai["typestr"]
+        dtype_map = {
+            "<f4": _C_API_DTYPE_FLOAT32,
+            "<f8": _C_API_DTYPE_FLOAT64,
+            "|i1": _C_API_DTYPE_INT8,
+            "<i2": _C_API_DTYPE_INT16,
+            "|u1": _C_API_DTYPE_UINT8,
+            "<u2": _C_API_DTYPE_UINT16,
+            "<f2": _C_API_DTYPE_FLOAT16,
+        }
+        if typestr not in dtype_map:
+            raise ValueError(
+                f"CUDA array dtype {typestr} is not supported; "
+                "use float32, float64, float16, int8, int16, uint8 or uint16"
+            )
+        itemsize = int(typestr[2:])
+        strides = cai.get("strides")
+        if strides is None or tuple(strides) == (ncol * itemsize, itemsize):
+            layout = 1  # C order (row-major)
+        elif tuple(strides) == (itemsize, nrow * itemsize):
+            layout = 0  # Fortran order (column-major)
+        else:
+            raise ValueError("CUDA array must be C- or Fortran-contiguous")
+        ptr = cai["data"][0]
+        if not ptr:
+            raise ValueError("CUDA array has no data pointer")
+        self._handle = ctypes.c_void_p()
+        _safe_call(
+            _LIB.LGBM_DatasetCreateFromMatDevice(
+                ctypes.c_void_p(ptr),
+                ctypes.c_int(dtype_map[typestr]),
+                ctypes.c_int32(nrow),
+                ctypes.c_int32(ncol),
                 ctypes.c_int(layout),
                 _c_str(params_str),
                 ref_dataset,

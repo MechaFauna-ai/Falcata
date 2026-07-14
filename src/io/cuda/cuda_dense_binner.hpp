@@ -48,6 +48,13 @@ void LaunchCUDADenseBinChunkKernel(const void* in, int dtype_code,
                                    const CUDADenseBinnerTables& tables,
                                    uint8_t* out, cudaStream_t stream);
 
+// gathers the given rows of a device-resident dense matrix into a row-major
+// host block (bitwise copies); used to sample device inputs for bin finding
+void CUDAGatherSampleRowsToHost(const void* device_data, int64_t elem_size,
+                                bool is_row_major, data_size_t nrow, int ncol,
+                                const int32_t* sample_row_ids, int num_samples,
+                                void* host_out);
+
 }  // namespace LightGBM
 
 #endif  // USE_CUDA

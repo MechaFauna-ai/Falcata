@@ -163,7 +163,85 @@ void LaunchTyped(const void* in, bool is_row_major, int64_t in_stride,
   CUDASUCCESS_OR_FATAL(cudaGetLastError());
 }
 
+template <typename T>
+__global__ void CUDAGatherRowsKernel(const T* __restrict__ in,
+                                     bool is_row_major, data_size_t nrow,
+                                     int ncol,
+                                     const int32_t* __restrict__ row_ids,
+                                     int num_samples, T* __restrict__ out) {
+  const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x +
+                      threadIdx.x;
+  if (idx >= static_cast<int64_t>(num_samples) * ncol) {
+    return;
+  }
+  const int64_t sample = idx / ncol;
+  const int col = static_cast<int>(idx - sample * ncol);
+  const int64_t row = row_ids[sample];
+  out[sample * ncol + col] = is_row_major
+      ? in[row * ncol + col]
+      : in[static_cast<int64_t>(col) * nrow + row];
+}
+
+template <typename T>
+void GatherSampleRowsToHostTyped(const void* device_data, bool is_row_major,
+                                 data_size_t nrow, int ncol,
+                                 const int32_t* sample_row_ids,
+                                 int num_samples, void* host_out) {
+  int32_t* d_row_ids = nullptr;
+  T* d_out = nullptr;
+  const size_t out_elems = static_cast<size_t>(num_samples) * ncol;
+  InitCUDAMemoryFromHostMemory<int32_t>(&d_row_ids, sample_row_ids,
+                                        static_cast<size_t>(num_samples),
+                                        __FILE__, __LINE__);
+  AllocateCUDAMemory<T>(&d_out, out_elems, __FILE__, __LINE__);
+  const int block_dim = 256;
+  const int64_t total = static_cast<int64_t>(num_samples) * ncol;
+  const int64_t num_blocks = (total + block_dim - 1) / block_dim;
+  CUDAGatherRowsKernel<T><<<static_cast<unsigned int>(num_blocks), block_dim>>>(
+      reinterpret_cast<const T*>(device_data), is_row_major, nrow, ncol,
+      d_row_ids, num_samples, d_out);
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+  CopyFromCUDADeviceToHost<T>(reinterpret_cast<T*>(host_out), d_out,
+                              out_elems, __FILE__, __LINE__);
+  DeallocateCUDAMemory<T>(&d_out, __FILE__, __LINE__);
+  DeallocateCUDAMemory<int32_t>(&d_row_ids, __FILE__, __LINE__);
+}
+
 }  // anonymous namespace
+
+void CUDAGatherSampleRowsToHost(const void* device_data, int64_t elem_size,
+                                bool is_row_major, data_size_t nrow, int ncol,
+                                const int32_t* sample_row_ids, int num_samples,
+                                void* host_out) {
+  if (num_samples <= 0) {
+    return;
+  }
+  switch (elem_size) {
+    case 1:
+      GatherSampleRowsToHostTyped<uint8_t>(device_data, is_row_major, nrow,
+                                           ncol, sample_row_ids, num_samples,
+                                           host_out);
+      break;
+    case 2:
+      GatherSampleRowsToHostTyped<uint16_t>(device_data, is_row_major, nrow,
+                                            ncol, sample_row_ids, num_samples,
+                                            host_out);
+      break;
+    case 4:
+      GatherSampleRowsToHostTyped<uint32_t>(device_data, is_row_major, nrow,
+                                            ncol, sample_row_ids, num_samples,
+                                            host_out);
+      break;
+    case 8:
+      GatherSampleRowsToHostTyped<uint64_t>(device_data, is_row_major, nrow,
+                                            ncol, sample_row_ids, num_samples,
+                                            host_out);
+      break;
+    default:
+      Log::Fatal("CUDADenseBinner: unsupported element size %d",
+                 static_cast<int>(elem_size));
+  }
+}
 
 void LaunchCUDADenseBinChunkKernel(const void* in, int dtype_code,
                                    bool is_row_major, int64_t in_stride,

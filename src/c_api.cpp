@@ -33,6 +33,12 @@
 #include <utility>
 #include <vector>
 
+#ifdef USE_CUDA
+#include <LightGBM/cuda/cuda_utils.hu>
+
+#include "io/cuda/cuda_dense_binner.hpp"
+#endif  // USE_CUDA
+
 #include "application/predictor.hpp"
 #ifndef LGB_R_BUILD
 #include "arrow/array.hpp"
@@ -937,6 +943,10 @@ using LightGBM::Network;
 using LightGBM::Random;
 using LightGBM::ReduceScatterFunction;
 using LightGBM::SingleRowPredictor;
+#ifdef USE_CUDA
+using LightGBM::CUDAGatherSampleRowsToHost;
+using LightGBM::gpuAssert;
+#endif  // USE_CUDA
 
 // some help functions used to convert data
 
@@ -1496,6 +1506,197 @@ int LGBM_DatasetCreateFromMats(int32_t nmat,
   }
   ret->FinishLoad();
   *out = ret.release();
+  API_END();
+}
+
+#ifdef USE_CUDA
+namespace {
+
+// element size of a dense-matrix C API dtype (0 = unsupported)
+int64_t DenseMatDTypeSize(int data_type) {
+  switch (data_type) {
+    case C_API_DTYPE_FLOAT32:
+      return 4;
+    case C_API_DTYPE_FLOAT64:
+      return 8;
+    case C_API_DTYPE_INT8:
+    case C_API_DTYPE_UINT8:
+      return 1;
+    case C_API_DTYPE_INT16:
+    case C_API_DTYPE_UINT16:
+    case C_API_DTYPE_FLOAT16:
+      return 2;
+    default:
+      return 0;
+  }
+}
+
+// fallback for device matrices the GPU binner cannot handle: stream row
+// chunks to the host and feed them through the normal host push loops
+void PushDeviceMatrixViaHost(Dataset* ret, const void* data, int data_type,
+                             int64_t elem_size, int32_t nrow, int32_t ncol,
+                             int is_row_major) {
+  const int64_t row_bytes = static_cast<int64_t>(ncol) * elem_size;
+  const int32_t chunk_rows = static_cast<int32_t>(std::max<int64_t>(
+      1, std::min<int64_t>(nrow, (256LL << 20) / std::max<int64_t>(row_bytes, 1))));
+  std::vector<uint8_t> host_chunk(static_cast<size_t>(chunk_rows) * row_bytes);
+  const uint8_t* base = static_cast<const uint8_t*>(data);
+  for (int32_t start_row = 0; start_row < nrow; start_row += chunk_rows) {
+    const int32_t rows = std::min(chunk_rows, nrow - start_row);
+    if (is_row_major) {
+      CUDASUCCESS_OR_FATAL(cudaMemcpy(
+          host_chunk.data(), base + static_cast<int64_t>(start_row) * row_bytes,
+          static_cast<size_t>(rows) * row_bytes, cudaMemcpyDeviceToHost));
+    } else {
+      CUDASUCCESS_OR_FATAL(cudaMemcpy2D(
+          host_chunk.data(), static_cast<size_t>(rows) * elem_size,
+          base + static_cast<int64_t>(start_row) * elem_size,
+          static_cast<size_t>(nrow) * elem_size,
+          static_cast<size_t>(rows) * elem_size, static_cast<size_t>(ncol),
+          cudaMemcpyDeviceToHost));
+    }
+    const void* chunk = host_chunk.data();
+    if (data_type == C_API_DTYPE_INT8) {
+      ret->PushDenseSmallIntRows(reinterpret_cast<const int8_t*>(chunk), rows, ncol, is_row_major, start_row);
+    } else if (data_type == C_API_DTYPE_INT16) {
+      ret->PushDenseSmallIntRows(reinterpret_cast<const int16_t*>(chunk), rows, ncol, is_row_major, start_row);
+    } else if (data_type == C_API_DTYPE_UINT8) {
+      ret->PushDenseSmallIntRows(reinterpret_cast<const uint8_t*>(chunk), rows, ncol, is_row_major, start_row);
+    } else if (data_type == C_API_DTYPE_UINT16) {
+      ret->PushDenseSmallIntRows(reinterpret_cast<const uint16_t*>(chunk), rows, ncol, is_row_major, start_row);
+    } else if (data_type == C_API_DTYPE_FLOAT16) {
+      ret->PushDenseSmallIntRows<uint16_t, true>(reinterpret_cast<const uint16_t*>(chunk), rows, ncol, is_row_major, start_row);
+    } else {
+      auto get_row_fun = RowFunctionFromDenseMatrix(chunk, rows, ncol, data_type, is_row_major);
+      OMP_INIT_EX();
+      #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+      for (int i = 0; i < rows; ++i) {
+        OMP_LOOP_EX_BEGIN();
+        const int tid = omp_get_thread_num();
+        auto one_row = get_row_fun(i);
+        ret->PushOneRow(tid, start_row + i, one_row);
+        OMP_LOOP_EX_END();
+      }
+      OMP_THROW_EX();
+    }
+  }
+}
+
+}  // anonymous namespace
+#endif  // USE_CUDA
+
+int LGBM_DatasetCreateFromMatDevice(const void* data,
+                                    int data_type,
+                                    int32_t nrow,
+                                    int32_t ncol,
+                                    int is_row_major,
+                                    const char* parameters,
+                                    const DatasetHandle reference,
+                                    DatasetHandle* out) {
+  API_BEGIN();
+#ifndef USE_CUDA
+  (void)data;
+  (void)data_type;
+  (void)nrow;
+  (void)ncol;
+  (void)is_row_major;
+  (void)parameters;
+  (void)reference;
+  (void)out;
+  Log::Fatal("LGBM_DatasetCreateFromMatDevice requires a CUDA build of LightGBM");
+#else
+  auto param = Config::Str2Map(parameters);
+  Config config;
+  config.Set(param);
+  OMP_SET_NUM_THREADS(config.num_threads);
+  if (config.device_type != std::string("cuda")) {
+    Log::Fatal("LGBM_DatasetCreateFromMatDevice requires device_type=cuda");
+  }
+  const int64_t elem_size = DenseMatDTypeSize(data_type);
+  if (elem_size == 0) {
+    Log::Fatal("Unsupported data type %d for LGBM_DatasetCreateFromMatDevice", data_type);
+  }
+  if (nrow <= 0 || ncol <= 0) {
+    Log::Fatal("LGBM_DatasetCreateFromMatDevice needs a non-empty matrix");
+  }
+  // the array interface producer may have pending work on another stream;
+  // a one-off device-wide sync is cheap at dataset construction scale
+  CUDASUCCESS_OR_FATAL(cudaDeviceSynchronize());
+  std::unique_ptr<Dataset> ret;
+  if (reference == nullptr) {
+    // sample on device, copy only the sampled rows to the host, and feed
+    // them through the regular samplers with identity indices: this yields
+    // exactly the sample the host path draws from an equal host matrix
+    auto sample_indices = CreateSampleIndices(nrow, config);
+    const int sample_cnt = static_cast<int>(sample_indices.size());
+    std::vector<uint8_t> sample_block(
+        static_cast<size_t>(sample_cnt) * ncol * elem_size);
+    CUDAGatherSampleRowsToHost(data, elem_size, is_row_major != 0, nrow, ncol,
+                               sample_indices.data(), sample_cnt,
+                               sample_block.data());
+    std::vector<std::vector<double>> sample_values(ncol);
+    std::vector<std::vector<int>> sample_idx(ncol);
+    const void* block = sample_block.data();
+    int32_t block_nrow = sample_cnt;
+    int block_row_major = 1;
+    std::vector<int32_t> identity(sample_cnt);
+    for (int i = 0; i < sample_cnt; ++i) {
+      identity[i] = i;
+    }
+    if (data_type == C_API_DTYPE_INT8) {
+      SampleDenseSmallInt<int8_t>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
+    } else if (data_type == C_API_DTYPE_INT16) {
+      SampleDenseSmallInt<int16_t>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
+    } else if (data_type == C_API_DTYPE_UINT8) {
+      SampleDenseSmallInt<uint8_t>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
+    } else if (data_type == C_API_DTYPE_UINT16) {
+      SampleDenseSmallInt<uint16_t>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
+    } else if (data_type == C_API_DTYPE_FLOAT16) {
+      SampleDenseSmallInt<uint16_t, true>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
+    } else if (data_type == C_API_DTYPE_FLOAT32) {
+      SampleDenseFloat<float>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
+    } else {
+      SampleDenseFloat<double>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
+    }
+    DatasetLoader loader(config, nullptr, 1, nullptr);
+    ret.reset(loader.ConstructFromSampleData(Vector2Ptr<double>(&sample_values).data(),
+                                             Vector2Ptr<int>(&sample_idx).data(),
+                                             ncol,
+                                             VectorSize<double>(sample_values).data(),
+                                             sample_cnt,
+                                             nrow,
+                                             nrow));
+  } else {
+    ret.reset(new Dataset(nrow));
+    ret->CreateValid(reinterpret_cast<const Dataset*>(reference));
+    if (ret->has_raw()) {
+      ret->ResizeRaw(nrow);
+    }
+  }
+  Dataset::DenseBinnerDType binner_dtype;
+  if (data_type == C_API_DTYPE_FLOAT32) {
+    binner_dtype = Dataset::DenseBinnerDType::kFloat32;
+  } else if (data_type == C_API_DTYPE_FLOAT64) {
+    binner_dtype = Dataset::DenseBinnerDType::kFloat64;
+  } else if (data_type == C_API_DTYPE_INT8) {
+    binner_dtype = Dataset::DenseBinnerDType::kInt8;
+  } else if (data_type == C_API_DTYPE_INT16) {
+    binner_dtype = Dataset::DenseBinnerDType::kInt16;
+  } else if (data_type == C_API_DTYPE_UINT8) {
+    binner_dtype = Dataset::DenseBinnerDType::kUInt8;
+  } else if (data_type == C_API_DTYPE_UINT16) {
+    binner_dtype = Dataset::DenseBinnerDType::kUInt16;
+  } else {
+    binner_dtype = Dataset::DenseBinnerDType::kFloat16Bits;
+  }
+  if (!ret->GPUBinDenseRows(data, binner_dtype, nrow, ncol, is_row_major != 0,
+                            /*data_is_device=*/true)) {
+    PushDeviceMatrixViaHost(ret.get(), data, data_type, elem_size, nrow, ncol,
+                            is_row_major);
+  }
+  ret->FinishLoad();
+  *out = ret.release();
+#endif  // USE_CUDA
   API_END();
 }
 
@@ -3083,6 +3284,25 @@ void SampleDenseSmallInt(const void** data, const std::vector<int32_t>& sample_i
   for (int block = 0; block < num_col_blocks; ++block) {
     const int col_lo = static_cast<int>(static_cast<int64_t>(ncol) * block / num_col_blocks);
     const int col_hi = static_cast<int>(static_cast<int64_t>(ncol) * (block + 1) / num_col_blocks);
+    // count first and reserve: the appends below dominate without it
+    std::vector<int> counts(col_hi - col_lo, 0);
+    for (size_t i = 0; i < n; ++i) {
+      const T* mat = all_row_major ? gathered.data()
+                                   : reinterpret_cast<const T*>(data[mat_of[i]]);
+      const size_t r = all_row_major ? i : static_cast<size_t>(row_of[i]);
+      for (int col = col_lo; col < col_hi; ++col) {
+        const T value = (all_row_major || is_row_major[mat_of[i]])
+                            ? mat[r * ncol + col]
+                            : mat[static_cast<size_t>(nrow[mat_of[i]]) * col + r];
+        if (IS_FLOAT16 ? ((static_cast<uint16_t>(value) & 0x7FFF) != 0) : (value != 0)) {
+          ++counts[col - col_lo];
+        }
+      }
+    }
+    for (int col = col_lo; col < col_hi; ++col) {
+      (*sample_values)[col].reserve(counts[col - col_lo]);
+      (*sample_idx)[col].reserve(counts[col - col_lo]);
+    }
     for (size_t i = 0; i < n; ++i) {
       const T* mat = all_row_major ? gathered.data()
                                    : reinterpret_cast<const T*>(data[mat_of[i]]);
@@ -3152,6 +3372,26 @@ void SampleDenseFloat(const void** data, const std::vector<int32_t>& sample_indi
   for (int block = 0; block < num_col_blocks; ++block) {
     const int col_lo = static_cast<int>(static_cast<int64_t>(ncol) * block / num_col_blocks);
     const int col_hi = static_cast<int>(static_cast<int64_t>(ncol) * (block + 1) / num_col_blocks);
+    // count first and reserve: the appends below dominate without it
+    std::vector<int> counts(col_hi - col_lo, 0);
+    for (size_t i = 0; i < n; ++i) {
+      const T* mat = all_row_major ? gathered.data()
+                                   : reinterpret_cast<const T*>(data[mat_of[i]]);
+      const size_t r = all_row_major ? i : static_cast<size_t>(row_of[i]);
+      for (int col = col_lo; col < col_hi; ++col) {
+        const double value = static_cast<double>(
+            (all_row_major || is_row_major[mat_of[i]])
+                ? mat[r * ncol + col]
+                : mat[static_cast<size_t>(nrow[mat_of[i]]) * col + r]);
+        if (std::fabs(value) > kZeroThreshold || std::isnan(value)) {
+          ++counts[col - col_lo];
+        }
+      }
+    }
+    for (int col = col_lo; col < col_hi; ++col) {
+      (*sample_values)[col].reserve(counts[col - col_lo]);
+      (*sample_idx)[col].reserve(counts[col - col_lo]);
+    }
     for (size_t i = 0; i < n; ++i) {
       const T* mat = all_row_major ? gathered.data()
                                    : reinterpret_cast<const T*>(data[mat_of[i]]);
