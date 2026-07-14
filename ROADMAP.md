@@ -58,9 +58,19 @@ figures from the profiles in the PR discussions.
   num_tasks > 1024 (bit-identical reduction), compact-view batched construct,
   bin-used-mask skipping of dead histogram entries, learner gather from the compact
   matrix. numerai 4096/13: 39.4 -> 27.2s; example shape per-tree 41.6 -> 34.8ms.
-- [ ] **Numerai first-train setup (~14s)**: dataset->CUDA init dominates short runs on
-  the example shape; outside the search path. Profile and trim (row-data upload,
-  compact gather warmup).
+- [x] **Numerai first-train setup** (22331b18): Booster create 13.9s -> 2.3s. Dense CUDA
+  row data now builds directly from column bins (tiled transpose, no zero-fills) and the
+  host multi-val bin is skipped for dense non-multi-val datasets (-14.6 GB peak RSS).
+  Remaining: ~0.8s pageable 15 GB H2D (pinned staging ring / transpose into pinned) and
+  ~1.2s host transpose (device-side transpose candidate); sparse row-wise CUDA datasets
+  still build the host multi-val bin. Kill switch EXABOOST_FAST_ROWDATA=0.
+- [ ] **Native small-int ingestion (int8/int16)**: accept int matrices in
+  LGBM_DatasetCreateFromMat(s) + python zero-copy (today int8 input silently astype()s
+  to a 4x float copy); bin the push loop via a per-feature 256-entry LUT built from
+  BinMapper::ValueToBin so bins are identical by construction. numerai construct is
+  ~37s CPU-bound on per-value double binary-search binning (+ ~7s EFB FindGroups on
+  2748 features, a separate follow-up); target ~12-15s. Measured separately from the
+  cross-library matrix (which stays float32-fed for fairness).
 - [ ] **Latency-bound construct on tiny-bin wide data**: post-161fe88b numerai construct
   is scattered-read latency-bound (19ms/tree) -- candidate for NVRTC shape
   specialization (auto-tuner tier 2) or layout changes.
