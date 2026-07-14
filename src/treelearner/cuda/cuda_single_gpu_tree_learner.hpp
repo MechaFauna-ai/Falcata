@@ -241,9 +241,13 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::unique_ptr<CUDALeafSplits> cuda_larger_leaf_splits_;
   // hybrid growth phase-1 state: per-split (smaller, larger) struct slots for the
   // pairs of one level (2 slots per applied split, reused across levels), and the
-  // host copy of the device per-leaf best-split cache
+  // host copy of the device per-leaf best-split cache. The slots are one device
+  // slab of bare CUDALeafSplitsStructs (they are only ever written/read by the
+  // split kernels through their struct pointers); allocating num_leaves + 2
+  // CUDALeafSplits objects instead costs ~3 cudaMallocs each (~3000 calls,
+  // ~3.7 ms) inside the first Train() call.
   bool use_hybrid_growth_ = false;
-  std::vector<std::unique_ptr<CUDALeafSplits>> hybrid_pair_slots_;
+  CUDAVector<CUDALeafSplitsStruct> hybrid_pair_slots_;
   std::vector<CUDASplitInfo> host_leaf_best_splits_;
   // hybrid growth: batched per-level kernels (EXABOOST_HYBRID_BATCH_KERNELS,
   // default on; "0" falls back to the per-pair kernel launches)

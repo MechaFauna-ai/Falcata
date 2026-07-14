@@ -724,8 +724,8 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
   host_apply_split_inputs_.clear();
   size_t slot_id = 0;
   for (const int leaf : splittable) {
-    CUDALeafSplitsStruct* smaller_slot = hybrid_pair_slots_[slot_id]->GetCUDAStructRef();
-    CUDALeafSplitsStruct* larger_slot = hybrid_pair_slots_[slot_id + 1]->GetCUDAStructRef();
+    CUDALeafSplitsStruct* smaller_slot = hybrid_pair_slots_.RawData() + slot_id;
+    CUDALeafSplitsStruct* larger_slot = hybrid_pair_slots_.RawData() + slot_id + 1;
     const int right_leaf_index = base_num_leaves + static_cast<int>(applied->size());
     const CUDASplitInfo* best_split_info = cuda_best_split_finder_->leaf_best_split_info_ptr(leaf);
     const int inner_feature_index = leaf_best_split_feature_[leaf];
@@ -789,15 +789,12 @@ void CUDASingleGPUTreeLearner::FinishLevelBookkeeping(
 }
 
 int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
-  // two struct slots per split of a level, reused across levels
+  // two struct slots per split of a level, reused across levels; one device
+  // slab, sized once (the kernels initialize every slot they use before any
+  // read, exactly as with the previous individually-allocated structs)
   const size_t max_slots = static_cast<size_t>(config_->num_leaves) + 2;
-  if (hybrid_pair_slots_.size() < max_slots) {
-    const size_t old_size = hybrid_pair_slots_.size();
-    hybrid_pair_slots_.resize(max_slots);
-    for (size_t s = old_size; s < max_slots; ++s) {
-      hybrid_pair_slots_[s].reset(new CUDALeafSplits(1));
-      hybrid_pair_slots_[s]->Init(config_->use_quantized_grad);
-    }
+  if (hybrid_pair_slots_.Size() < max_slots) {
+    hybrid_pair_slots_.Resize(max_slots);
   }
   // batched per-level kernels: one construct/fix/subtract/find/sync launch covers
   // all pairs of a level. Falls back to the per-pair loop when the data layout or
@@ -862,8 +859,8 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
       applied.reserve(splittable.size());
       size_t slot_id = 0;
       for (const int leaf : splittable) {
-        CUDALeafSplitsStruct* smaller_slot = hybrid_pair_slots_[slot_id]->GetCUDAStructRef();
-        CUDALeafSplitsStruct* larger_slot = hybrid_pair_slots_[slot_id + 1]->GetCUDAStructRef();
+        CUDALeafSplitsStruct* smaller_slot = hybrid_pair_slots_.RawData() + slot_id;
+        CUDALeafSplitsStruct* larger_slot = hybrid_pair_slots_.RawData() + slot_id + 1;
         const int right_leaf_index = ApplySplit(
           tree, cuda_best_split_finder_->leaf_best_split_info_ptr(leaf), leaf,
           smaller_slot, larger_slot, static_cast<int>(applied.size()));

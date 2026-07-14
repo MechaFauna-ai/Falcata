@@ -13,6 +13,10 @@
 
 namespace LightGBM {
 
+// Defined in cuda_column_data.cu: warms the lazy CUDA module load during
+// Dataset construction so the first Train() call doesn't pay it (see there).
+extern void WarmupCUDAKernelModule();
+
 CUDAColumnData::CUDAColumnData(const data_size_t num_data, const int gpu_device_id) {
   num_threads_ = OMP_NUM_THREADS();
   num_data_ = num_data;
@@ -62,6 +66,7 @@ void CUDAColumnData::Init(const int num_columns,
                           const std::vector<uint8_t>& feature_mfb_is_zero,
                           const std::vector<uint8_t>& feature_mfb_is_na,
                           const std::vector<int>& feature_to_column) {
+  WarmupCUDAKernelModule();
   num_columns_ = num_columns;
   column_bit_type_ = column_bit_type;
   feature_max_bin_ = feature_max_bin;
