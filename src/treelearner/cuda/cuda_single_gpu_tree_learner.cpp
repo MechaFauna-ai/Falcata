@@ -344,8 +344,15 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
   // classic loop there until exact grow-then-prune selection is implemented.
   const bool depth_limited = config_->max_depth > 0 && config_->max_depth < 31 &&
       (1LL << config_->max_depth) <= static_cast<int64_t>(config_->num_leaves) + 1;
+  // EXABOOST_HYBRID_AGGRESSIVE=1 opts into level batching in budget-limited
+  // configs too, accepting the approximate (breadth-biased) growth policy in
+  // exchange for hybrid speed. Off by default; exact for depth-limited configs
+  // either way.
+  static const bool aggressive =
+      std::getenv("EXABOOST_HYBRID_AGGRESSIVE") != nullptr &&
+      std::string(std::getenv("EXABOOST_HYBRID_AGGRESSIVE")) == std::string("1");
   return use_hybrid_growth_ &&
-         depth_limited &&
+         (depth_limited || aggressive) &&
          nccl_communicator_ == nullptr &&
          !has_categorical_feature_ &&
          !select_features_by_node_ &&
