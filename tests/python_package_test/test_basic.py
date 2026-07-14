@@ -1083,10 +1083,20 @@ def test_c_float_array_accepts_int8():
     assert np.shares_memory(data, holder)
 
 
-@pytest.mark.parametrize("dtype", [np.int16, np.int32, np.int64, np.uint8])
+@pytest.mark.parametrize("dtype", [np.int16])
+def test_c_float_array_accepts_int16(dtype):
+    data = np.array([0, 1, 2], dtype=dtype)
+    ptr_data, type_data, holder = lgb.basic._c_float_array(data)
+    assert type_data == lgb.basic._C_API_DTYPE_INT16
+    assert holder.dtype == np.int16
+    assert np.shares_memory(data, holder)
+
+
+@pytest.mark.parametrize("dtype", [np.int32, np.int64, np.uint8])
 def test_c_float_array_rejects_unsupported_int_dtypes(dtype):
     data = np.array([0, 1, 2], dtype=dtype)
-    with pytest.raises(TypeError, match=r"Expected np\.float32, np\.float64 or np\.int8"):
+    # keep the match loose: the supported-dtype list in the message grows
+    with pytest.raises(TypeError, match=r"Expected np\.float32, np\.float64"):
         lgb.basic._c_float_array(data)
 
 
