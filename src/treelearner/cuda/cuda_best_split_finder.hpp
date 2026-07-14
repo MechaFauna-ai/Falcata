@@ -13,6 +13,7 @@
 #include <LightGBM/bin.h>
 #include <LightGBM/dataset.h>
 
+#include <string>
 #include <vector>
 
 #include <LightGBM/cuda/cuda_random.hpp>
@@ -62,10 +63,14 @@ class CUDABestSplitFinder {
    *  FindBestSplits kernels can be ordered after histogram construction/subtraction
    *  via cudaStreamWaitEvent instead of a per-split device sync. Called once after
    *  both objects are initialized. */
-  void SetHistogramEvents(cudaEvent_t construct_done_event, cudaEvent_t subtract_done_event) {
-    hist_construct_done_event_ = construct_done_event;
-    hist_subtract_done_event_ = subtract_done_event;
+  void SetHistogramEvents(const cudaEvent_t* construct_done_events, const cudaEvent_t* subtract_done_events) {
+    hist_construct_done_events_ = construct_done_events;
+    hist_subtract_done_events_ = subtract_done_events;
   }
+
+  /*! \brief select which histogram pipeline's completion events the next
+   *  FindBestSplitsForLeaf call waits on (hybrid level-batched growth) */
+  void SetActiveHistPipeline(const int pipeline) { active_hist_pipeline_ = pipeline; }
 
   void BeforeTrain(const std::vector<int8_t>& is_feature_used_bytree);
 
@@ -83,7 +88,48 @@ class CUDABestSplitFinder {
     const uint8_t smaller_num_bits_in_histogram_bins,
     const uint8_t larger_num_bits_in_histogram_bins,
     const bool smaller_leaf_below_max_depth,
-    const bool larger_leaf_below_max_depth);
+    const bool larger_leaf_below_max_depth,
+    const bool synchronize = true);
+
+  /*! \brief whether the batched per-level find+sync path supports the current
+   *  configuration (only the template combination the benchmarks exercise:
+   *  no extra_trees / L1 / path smoothing, shared-memory histograms, no
+   *  per-node feature selection, no categorical features). Wide shapes
+   *  (num_tasks > one sync block) use the multi-block batched sync mirroring
+   *  the per-pair two-stage reduction; EXABOOST_BATCH_WIDE=0 disables that. */
+  bool SupportsBatchedLevel() const {
+    return !extra_trees_ && lambda_l1_ <= 0.0f && !use_smoothing_ &&
+           !use_global_memory_ && !select_features_by_node_ &&
+           !has_categorical_feature_ &&
+           (num_tasks_ <= NUM_TASKS_PER_SYNC_BLOCK || ExaboostBatchWideEnabled());
+  }
+
+  /*! \brief one-line gate dump for EXABOOST_HYBRID_DIAG */
+  std::string BatchedLevelGateDiag() const {
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "finder: extra_trees=%d l1=%f smoothing=%d global_mem=%d "
+             "by_node=%d categorical=%d num_tasks=%d (cap %d, batch_wide=%d)",
+             static_cast<int>(extra_trees_), lambda_l1_,
+             static_cast<int>(use_smoothing_), static_cast<int>(use_global_memory_),
+             static_cast<int>(select_features_by_node_),
+             static_cast<int>(has_categorical_feature_), num_tasks_,
+             NUM_TASKS_PER_SYNC_BLOCK, static_cast<int>(ExaboostBatchWideEnabled()));
+    return std::string(buf);
+  }
+
+  /*! \brief Batched per-level best-split search for hybrid growth: one find launch
+   *  and one sync launch cover every sibling pair of a level. Each pair writes its
+   *  own region of the task output buffer and its own (disjoint) per-leaf slots of
+   *  the best-split cache. Waits on the histogram constructor's batched
+   *  subtract-done event before reading any histogram; grad_scale/hess_scale are
+   *  null for non-quantized training. The caller is expected to synchronize via
+   *  SyncAllLeafBestSplitsToHost afterwards. */
+  void FindBestSplitsForLevel(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    const score_t* grad_scale,
+    const score_t* hess_scale);
 
   const CUDASplitInfo* FindBestFromAllSplits(
     const int cur_num_leaves,
@@ -139,6 +185,18 @@ class CUDABestSplitFinder {
     int* larger_leaf_best_split_feature,
     uint32_t* larger_leaf_best_split_threshold,
     uint8_t* larger_leaf_best_split_default_left);
+
+  // Copy the whole device per-leaf best-split cache for leaves [0, num_leaves) to the
+  // host in a single transfer (synchronizes the device). Used by the hybrid
+  // level-batched growth phase, which needs every frontier leaf's candidate at once.
+  // The categorical-threshold pointers inside the copied structs are device pointers
+  // and must not be dereferenced on the host.
+  void SyncAllLeafBestSplitsToHost(const int num_leaves, std::vector<CUDASplitInfo>* out) const;
+
+  // Device pointer to a leaf's cached best split, for passing to CUDATree::Split.
+  const CUDASplitInfo* leaf_best_split_info_ptr(const int leaf_index) const {
+    return cuda_leaf_best_split_info_.RawDataReadOnly() + leaf_index;
+  }
 
  private:
   void LaunchComputeForcedSplitKernel(
@@ -206,6 +264,25 @@ class CUDABestSplitFinder {
     const bool is_smaller_leaf_valid,
     const bool is_larger_leaf_valid);
 
+  // ---- batched per-level launchers (hybrid growth) ----
+  // Grow the task output buffer so every pair of a level has its own region of
+  // 2 * num_tasks_ CUDASplitInfo slots. No-op once capacity is reached.
+  void EnsureHybridLevelCapacity(const int num_pairs);
+
+  void LaunchFindBestSplitsForLevelKernel(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs);
+
+  void LaunchFindBestSplitsDiscretizedForLevelKernel(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    const score_t* grad_scale,
+    const score_t* hess_scale);
+
+  void LaunchSyncBestSplitForLevelKernel(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs);
+
   void LaunchFindBestFromAllSplitsKernel(
     const int cur_num_leaves,
     const int smaller_leaf_index,
@@ -228,6 +305,10 @@ class CUDABestSplitFinder {
   // Host memory
   int num_features_;
   int num_leaves_;
+  /*! \brief pinned staging buffer of SyncAllLeafBestSplitsToHost (raw bytes;
+   *  CUDASplitInfo is never constructed/destructed in it) */
+  mutable CUDASplitInfo* pinned_leaf_best_split_info_ = nullptr;
+  mutable size_t pinned_leaf_best_split_info_size_ = 0;
   int max_num_bin_in_feature_;
   std::vector<uint32_t> feature_hist_offsets_;
   std::vector<uint8_t> feature_mfb_offsets_;
@@ -251,11 +332,22 @@ class CUDABestSplitFinder {
   std::vector<cudaStream_t> cuda_streams_;
   /*! \brief histogram constructor completion events (not owned); used to order the
    *  per-leaf FindBestSplits kernels after histogram construction/subtraction. */
-  cudaEvent_t hist_construct_done_event_ = nullptr;
-  cudaEvent_t hist_subtract_done_event_ = nullptr;
+  const cudaEvent_t* hist_construct_done_events_ = nullptr;
+  const cudaEvent_t* hist_subtract_done_events_ = nullptr;
+  int active_hist_pipeline_ = 0;
   // for best split find tasks
   std::vector<SplitFindTask> split_find_tasks_;
   int num_tasks_;
+  /*! \brief hybrid batched find: per-tree list of the task indices whose feature
+   *  is in this tree's feature_fraction sample. The batched find launches one
+   *  block per USED task only (a 10x saving for wide sampled datasets); output
+   *  slots keep the ORIGINAL task index so the batched sync reduces the exact
+   *  same lanes as the per-pair kernels (unused lanes masked not-found, exactly
+   *  as if the find had written is_valid=false there). Empty/full -> nullptr
+   *  passed to the kernels (zero overhead without sampling). */
+  std::vector<int> host_used_task_indices_;
+  CUDAVector<int> cuda_used_task_indices_;
+  int num_used_tasks_ = 0;
   // use global memory
   bool use_global_memory_;
   // number of total bins in the dataset

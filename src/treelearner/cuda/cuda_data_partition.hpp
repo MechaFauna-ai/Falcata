@@ -27,6 +27,82 @@
 
 namespace LightGBM {
 
+/*! \brief Host-side per-split input for the batched (per-level) apply phase of the
+ *  hybrid growth: everything the per-split Split() call would receive, restricted
+ *  to numerical splits in deferred mode with point_structs_at_main semantics. The
+ *  deferred split-info slot of split k is k (18 ints each, see FinishSplitBatch). */
+struct CUDAHybridApplySplitInput {
+  const CUDASplitInfo* best_split_info;
+  int left_leaf_index;
+  int right_leaf_index;
+  int split_feature;
+  uint32_t split_threshold;
+  uint8_t split_default_left;
+  data_size_t num_data_in_leaf;
+  data_size_t leaf_data_start;
+  CUDALeafSplitsStruct* smaller_leaf_splits;
+  CUDALeafSplitsStruct* larger_leaf_splits;
+};
+
+/*! \brief Device-side per-split descriptor for the batched apply kernels. One
+ *  entry per split of a level; built host-side by SplitLevelBatched (mirroring the
+ *  host metadata math of LaunchGenDataToLeftBitVectorKernel) and uploaded in a
+ *  single H2D copy. Data-parallel kernels index splits via a grid dimension and
+ *  size themselves by the level's largest split region; blocks beyond a split's
+ *  own num_blocks exit early. Per-split scratch lives in per-split regions:
+ *  the bit vector and out-indices scratch use the split leaf's own
+ *  [leaf_data_start, +num_data_in_leaf) window (mirroring the main index array
+ *  layout), the block offset buffers use [block_offset_start, +num_blocks+1). */
+struct CUDAHybridApplyDescriptor {
+  const void* column_data;
+  const CUDASplitInfo* best_split_info;
+  CUDALeafSplitsStruct* smaller_leaf_splits;
+  CUDALeafSplitsStruct* larger_leaf_splits;
+  data_size_t leaf_data_start;
+  data_size_t num_data_in_leaf;
+  data_size_t block_offset_start;
+  /*! \brief per-split grid size: ceil(num_data_in_leaf / 1024) (host-computed) */
+  int num_blocks;
+  int left_leaf_index;
+  int right_leaf_index;
+  /*! \brief split decision parameters (see LaunchGenDataToLeftBitVectorKernel) */
+  uint32_t th;
+  uint32_t t_zero_bin;
+  uint32_t max_bin;
+  uint32_t min_bin;
+  int default_leaf_index;
+  int missing_default_leaf_index;
+  uint8_t split_default_to_left;
+  uint8_t split_missing_default_to_left;
+  /*! \brief per-row byte stride of the 4-bit packed compact source (bit_type 4) */
+  int packed_row_stride;
+  /*! \brief column storage width: 8, 16 or 32 bits, or 4 = 4-bit packed compact
+   *  source (column_data points at the column's byte within the packed compact
+   *  matrix; the bin is (byte >> packed_shift) & 0xf) */
+  uint8_t bit_type;
+  /*! \brief nibble shift (0 or 4) of the 4-bit packed compact source */
+  uint8_t packed_shift;
+  /*! \brief runtime versions of the GenDataToLeftBitVectorKernel template flags */
+  uint8_t min_is_max;
+  uint8_t missing_is_zero;
+  uint8_t missing_is_na;
+  uint8_t mfb_is_zero;
+  uint8_t mfb_is_na;
+  uint8_t max_bin_to_left;
+  uint8_t use_min_bin;
+};
+
+/*! \brief One collapsed (pruned) subtree of the selective grow-then-prune hybrid
+ *  growth: the window [start, start + count) of the main data index array holds
+ *  exactly the subtree's rows (child regions nest inside the parent region), and
+ *  every row's data-index-to-leaf-index entry is rewritten to target_leaf (the
+ *  leaf index the collapsed node reverts to). */
+struct CUDACollapseWindow {
+  data_size_t start;
+  data_size_t count;
+  int target_leaf;
+};
+
 class CUDADataPartition: public NCCLInfo {
  public:
   CUDADataPartition(
@@ -68,7 +144,50 @@ class CUDADataPartition: public NCCLInfo {
     double* left_leaf_sum_of_gradients,
     double* right_leaf_sum_of_gradients,
     data_size_t* global_left_leaf_num_data,
-    data_size_t* global_right_leaf_num_data);
+    data_size_t* global_right_leaf_num_data,
+    const bool point_structs_at_main = false,
+    const int deferred_slot = -1);
+
+  // Deferred split-info readback for the hybrid level-batched growth: one device
+  // synchronization + one transfer for all of a level's splits (18 ints per split,
+  // laid out by the deferred_slot passed to Split). Layout per slot: [0] left leaf,
+  // [1] left count, [2] left start, [4] right count, [5] right start, [6] right leaf,
+  // ints [8..15] reinterpreted as 4 doubles: left/right sum_hessians, left/right
+  // sum_gradients.
+  void FinishSplitBatch(const int num_splits, std::vector<int>* out);
+
+  /*! \brief Batched apply phase for the hybrid level-batched growth: applies ALL
+   *  numerical splits of a level with one launch per kernel family (gen bit
+   *  vector, update data-index-to-leaf-index, aggregate block offsets, split
+   *  inner, split tree structure, copy indices) and ZERO host synchronization.
+   *  Equivalent to calling Split(..., point_structs_at_main=true, deferred_slot=k)
+   *  for k = 0..n-1: split k writes deferred split-info slot k, read back by the
+   *  caller via FinishSplitBatch(n). Requires the level's splits to partition
+   *  disjoint index regions (host-known leaf_data_start/num_data from the
+   *  previous level's readback). */
+  void SplitLevelBatched(const std::vector<CUDAHybridApplySplitInput>& splits);
+
+  /*! \brief Selective grow-then-prune: rewrite the data-index-to-leaf-index
+   *  entries of the given collapsed subtree windows to their target leaves.
+   *  Enqueued on cuda_streams_[0] (ordered before the next batched apply and,
+   *  via the legacy-stream semantics, before subsequent histogram work); the
+   *  caller guarantees the device is otherwise idle (post-readback). */
+  void CollapseLeafWindows(const std::vector<CUDACollapseWindow>& windows);
+
+  /*! \brief Selective grow-then-prune finalize: remap the data-index-to-leaf-
+   *  index entries of all rows of this tree (via the main index array, which
+   *  covers exactly root_num_data() rows) through leaf_map (hybrid leaf index ->
+   *  final classic leaf index). Async on the default stream; the caller
+   *  synchronizes. */
+  void RemapDataIndexToLeafIndex(const std::vector<int>& leaf_map);
+
+  /*! \brief Selective grow-then-prune finalize: upload the final per-leaf data
+   *  layout (num_data / data_start / data_end) for the first num_leaves leaves,
+   *  so post-training consumers (objective renewal, quantized leaf renewal)
+   *  see the final classic numbering. */
+  void SetLeafDataLayout(const std::vector<data_size_t>& leaf_num_data,
+                         const std::vector<data_size_t>& leaf_data_start,
+                         int num_leaves);
 
   void UpdateTrainScore(const Tree* tree, double* cuda_scores);
 
@@ -104,8 +223,28 @@ class CUDADataPartition: public NCCLInfo {
 
   bool use_bagging() const { return use_bagging_; }
 
+  /*! \brief recorded on the apply stream after the last batched apply kernel of a
+   *  level; the speculative single-sync search phase waits on it before reading
+   *  the child leaf-splits structs the apply kernels write */
+  cudaEvent_t apply_done_event() const { return indices_copy_done_event_; }
+
+  /*! \brief device array of the current level's actual smaller-child sizes
+   *  (min(left, right) count of split k), written by the batched aggregate
+   *  kernel; consumed by the speculative batched construct kernel to derive its
+   *  exact row grouping before the sizes are host-known */
+  const data_size_t* level_smaller_leaf_counts() const { return cuda_level_smaller_counts_.RawDataReadOnly(); }
+
  private:
   void CalcBlockDim(const data_size_t num_data_in_leaf);
+
+  /*! \brief launch the batched apply kernels of one level, in dependency order
+   *  on cuda_streams_[0] (fused gen-bit-vector+update-leaf-index, aggregate
+   *  block offsets, split inner into the out buffer, split tree structure, and
+   *  a sparse gap copy carrying terminal leaves' regions into the out buffer);
+   *  descriptors (splits first, then gaps) already uploaded. The caller swaps
+   *  the out buffer in as the new main index array afterwards. */
+  void LaunchSplitLevelBatchedKernels(const int num_splits, const int max_num_blocks,
+                                      const int num_gaps, const int max_gap_blocks);
 
   void GenDataToLeftBitVector(
     const data_size_t num_data_in_leaf,
@@ -137,7 +276,10 @@ class CUDADataPartition: public NCCLInfo {
     double* left_leaf_sum_of_gradients,
     double* right_leaf_sum_of_gradients,
     data_size_t* global_left_leaf_num_data,
-    data_size_t* global_right_leaf_num_data);
+    data_size_t* global_right_leaf_num_data,
+    const bool point_structs_at_main,
+    const int deferred_slot,
+    const data_size_t leaf_data_start_for_copy);
 
   // kernel launch functions
   void LaunchFillDataIndicesBeforeTrain();
@@ -161,7 +303,10 @@ class CUDADataPartition: public NCCLInfo {
     double* left_leaf_sum_of_gradients,
     double* right_leaf_sum_of_gradients,
     data_size_t* global_left_leaf_num_data,
-    data_size_t* global_right_leaf_num_data);
+    data_size_t* global_right_leaf_num_data,
+    const bool point_structs_at_main,
+    const int deferred_slot,
+    const data_size_t leaf_data_start_for_copy);
 
   void LaunchGenDataToLeftBitVectorKernel(
     const data_size_t num_data_in_leaf,
@@ -355,6 +500,12 @@ class CUDADataPartition: public NCCLInfo {
   // CUDA streams
   /*! \brief cuda streams used for asynchronizing kernel computing and memory copy */
   std::vector<cudaStream_t> cuda_streams_;
+  // recorded on cuda_streams_[2] after CopyDataIndicesKernel; consumed at the next
+  // Split() so back-to-back splits (hybrid level growth) don't race on the shared
+  // cuda_out_data_indices_in_leaf_ scratch while the copy is still in flight
+  cudaEvent_t indices_copy_done_event_ = nullptr;
+  // host staging for the batched apply descriptors (one entry per split of a level)
+  std::vector<CUDAHybridApplyDescriptor> host_apply_descs_;
 
 
   // CUDA memory, held by this object
@@ -383,10 +534,25 @@ class CUDADataPartition: public NCCLInfo {
   CUDAVector<data_size_t> cuda_block_data_to_right_offset_;
   /*! \brief buffer for splitting data indices, will be copied back to cuda_data_indices_ after split */
   CUDAVector<data_size_t> cuda_out_data_indices_in_leaf_;
+  /*! \brief device copy of one level's batched apply descriptors */
+  CUDAVector<CUDAHybridApplyDescriptor> cuda_apply_descs_;
+  /*! \brief selective grow-then-prune: device copy of one level's collapsed
+   *  subtree windows and host staging (see CollapseLeafWindows) */
+  CUDAVector<CUDACollapseWindow> cuda_collapse_windows_;
+  std::vector<CUDACollapseWindow> host_collapse_windows_;
+  /*! \brief selective grow-then-prune: device copy of the hybrid-to-final leaf
+   *  index map (see RemapDataIndexToLeafIndex) */
+  CUDAVector<int> cuda_leaf_index_remap_;
 
   // split tree structure algorithm related
   /*! \brief buffer to store split information, prepared to be copied to cpu */
   CUDAVector<int> cuda_split_info_buffer_;
+  /*! \brief pinned staging buffer of FinishSplitBatch */
+  int* pinned_split_info_ = nullptr;
+  size_t pinned_split_info_size_ = 0;
+  /*! \brief per-split smaller-child size of the current level's batched apply
+   *  (see level_smaller_leaf_counts()) */
+  CUDAVector<data_size_t> cuda_level_smaller_counts_;
 
   // dataset information
   /*! \brief number of data in training set, for initialization of cuda_leaf_num_data_ and cuda_leaf_data_end_ */

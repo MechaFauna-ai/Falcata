@@ -15,10 +15,24 @@
 #include <LightGBM/utils/log.h>
 #include <LightGBM/meta.h>
 
+#include <cstdlib>
+#include <string>
+
 #define NUM_THREADS_PER_BLOCK_LEAF_SPLITS (1024)
 #define NUM_DATA_THREAD_ADD_LEAF_SPLITS (6)
 
 namespace LightGBM {
+
+/*! \brief kill switch for the wide-shape batched level support (many split-find
+ *  tasks and/or compact-column-view histogram data): EXABOOST_BATCH_WIDE=0
+ *  restores the previous fallback to the per-pair kernels for those shapes */
+inline bool ExaboostBatchWideEnabled() {
+  static const bool enabled = []() {
+    const char* env = std::getenv("EXABOOST_BATCH_WIDE");
+    return env == nullptr || std::string(env) != "0";
+  }();
+  return enabled;
+}
 
 struct CUDALeafSplitsStruct {
  public:
@@ -31,6 +45,31 @@ struct CUDALeafSplitsStruct {
   double leaf_value;
   const data_size_t* data_indices_in_leaf;
   hist_t* hist_in_leaf;
+};
+
+/*! \brief Per-sibling-pair metadata for the hybrid level-batched growth phase.
+ *  One entry per pair of a level; uploaded to the device in a single H2D copy so
+ *  the batched construct/fix/subtract/find/sync kernels can cover all pairs of a
+ *  level with one launch each (indexed by a grid dimension). All fields are
+ *  host-known at level start (single-GPU only, so global == local leaf counts). */
+struct CUDAHybridPairDescriptor {
+  const CUDALeafSplitsStruct* smaller_struct;
+  const CUDALeafSplitsStruct* larger_struct;
+  int smaller_leaf_index;
+  int larger_leaf_index;
+  data_size_t num_data_in_smaller_leaf;
+  data_size_t num_data_in_larger_leaf;
+  /*! \brief histogram construction needed (mirror of ConstructHistogramForLeaf's
+   *  min_data/min_hessian early-return) */
+  uint8_t construct_valid;
+  /*! \brief smaller/larger leaf pass the best-split-search validity checks
+   *  (min_data_in_leaf, min_sum_hessian_in_leaf, below max_depth) */
+  uint8_t smaller_valid;
+  uint8_t larger_valid;
+  /*! \brief per-pair histogram bit widths for quantized training (0 when unused) */
+  uint8_t parent_num_bits;
+  uint8_t smaller_num_bits;
+  uint8_t larger_num_bits;
 };
 
 class CUDALeafSplits: public NCCLInfo {
@@ -46,7 +85,11 @@ class CUDALeafSplits: public NCCLInfo {
     const score_t* cuda_gradients, const score_t* cuda_hessians,
     const data_size_t* cuda_bagging_data_indices,
     const data_size_t* cuda_data_indices_in_leaf, const data_size_t num_used_indices,
-    hist_t* cuda_hist_in_leaf, double* root_sum_gradients, double* root_sum_hessians);
+    hist_t* cuda_hist_in_leaf, double* root_sum_gradients, double* root_sum_hessians,
+    const bool defer_root_sum_readback = false);
+
+  /*! \brief deferred counterpart of InitValues' root-sum readback (see there) */
+  void CopyRootSumsToHost(double* root_sum_gradients, double* root_sum_hessians) const;
 
   void InitValues(
     const double lambda_l1, const double lambda_l2,

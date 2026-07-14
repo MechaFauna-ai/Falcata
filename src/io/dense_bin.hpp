@@ -82,6 +82,15 @@ class DenseBin : public Bin {
     }
   }
 
+  void PushBlock(int tid, data_size_t start_idx, data_size_t count, const uint32_t* bins) override {
+    for (data_size_t i = 0; i < count; ++i) {
+      if (bins[i] != kSkipBin) {
+        // qualified call devirtualizes and inlines the per-record push
+        DenseBin<VAL_T, IS_4BIT>::Push(tid, start_idx + i, bins[i]);
+      }
+    }
+  }
+
   void ReSize(data_size_t num_data) override {
     if (num_data_ != num_data) {
       num_data_ = num_data;

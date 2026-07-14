@@ -589,6 +589,21 @@ class Dataset {
     }
   }
 
+  /*!
+   * \brief Push a dense block of rows of a small integer type via per-column
+   *        value->bin lookup tables, bypassing the per-value double conversion
+   *        and bin binary search. Bit-identical to pushing every value through
+   *        PushOneRow.
+   * \param data Pointer to the block's values
+   * \param nrow Number of rows in the block
+   * \param ncol Number of columns
+   * \param is_row_major 1 for row-major data, 0 for column-major
+   * \param start_row Dataset row index of the block's first row
+   */
+  template <typename T>
+  void PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
+                             int is_row_major, data_size_t start_row);
+
   inline void PushOneRow(int tid, data_size_t row_idx, const std::vector<double>& feature_values) {
     for (size_t i = 0; i < feature_values.size() && i < static_cast<size_t>(num_total_features_); ++i) {
       this->PushOneValue(tid, row_idx, i, feature_values[i]);
@@ -683,7 +698,8 @@ class Dataset {
   TrainingShareStates* GetShareStates(
       score_t* gradients, score_t* hessians,
       const std::vector<int8_t>& is_feature_used, bool is_constant_hessian,
-      bool force_col_wise, bool force_row_wise, const int num_grad_quant_bins) const;
+      bool force_col_wise, bool force_row_wise, const int num_grad_quant_bins,
+      bool is_cuda_tree_learner = false) const;
 
   LIGHTGBM_EXPORT void FinishLoad();
 
@@ -1021,6 +1037,13 @@ class Dataset {
   size_t GetSerializedHeaderSize();
 
   void CreateCUDAColumnData();
+
+  #ifdef USE_CUDA
+  /*! \brief Whether the CUDA row data can be built directly from column bins,
+   *  making the host multi-val bin build in GetShareStates unnecessary
+   *  (EXABOOST_FAST_ROWDATA). */
+  bool CanSkipHostMultiValBinForCUDA() const;
+  #endif  // USE_CUDA
 
   void CopySubrowHostPart(const Dataset* fullset, const data_size_t* used_indices, data_size_t num_used_indices, bool need_meta_data);
 
