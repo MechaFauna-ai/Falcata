@@ -38,6 +38,7 @@ typedef void* ByteBufferHandle; /*!< \brief Handle of ByteBuffer. */
 #define C_API_DTYPE_INT32   (2)  /*!< \brief int32. */
 #define C_API_DTYPE_INT64   (3)  /*!< \brief int64. */
 #define C_API_DTYPE_INT8    (4)  /*!< \brief int8. */
+#define C_API_DTYPE_INT16   (5)  /*!< \brief int16. */
 
 #define C_API_PREDICT_NORMAL     (0)  /*!< \brief Normal prediction, with transform (if needed). */
 #define C_API_PREDICT_RAW_SCORE  (1)  /*!< \brief Predict raw score. */
@@ -407,7 +408,7 @@ LIGHTGBM_C_EXPORT int LGBM_DatasetCreateFromCSC(const void* col_ptr,
 /*!
  * \brief Create dataset from dense matrix.
  * \param data Pointer to the data space
- * \param data_type Type of ``data`` pointer, can be ``C_API_DTYPE_FLOAT32`` or ``C_API_DTYPE_FLOAT64``
+ * \param data_type Type of ``data`` pointer, can be ``C_API_DTYPE_FLOAT32``, ``C_API_DTYPE_FLOAT64``, ``C_API_DTYPE_INT8`` or ``C_API_DTYPE_INT16``
  * \param nrow Number of rows
  * \param ncol Number of columns
  * \param is_row_major 1 for row-major, 0 for column-major
@@ -429,7 +430,7 @@ LIGHTGBM_C_EXPORT int LGBM_DatasetCreateFromMat(const void* data,
  * \brief Create dataset from array of dense matrices.
  * \param nmat Number of dense matrices
  * \param data Pointer to the data space
- * \param data_type Type of ``data`` pointer, can be ``C_API_DTYPE_FLOAT32`` or ``C_API_DTYPE_FLOAT64``
+ * \param data_type Type of ``data`` pointer, can be ``C_API_DTYPE_FLOAT32``, ``C_API_DTYPE_FLOAT64``, ``C_API_DTYPE_INT8`` or ``C_API_DTYPE_INT16``
  * \param nrow Number of rows
  * \param ncol Number of columns
  * \param is_row_major Pointer to the data layouts. 1 for row-major, 0 for column-major

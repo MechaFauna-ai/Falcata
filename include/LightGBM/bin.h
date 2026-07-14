@@ -297,6 +297,25 @@ class Bin {
   */
   virtual void Push(int tid, data_size_t idx, uint32_t value) = 0;
 
+  /*! \brief Sentinel for pre-encoded bins that must not be pushed (most frequent bin) */
+  static constexpr uint32_t kSkipBin = std::numeric_limits<uint32_t>::max();
+
+  /*!
+  * \brief Push a block of pre-encoded bins for consecutive records, skipping ``kSkipBin`` entries.
+  *        Values must already be encoded exactly as FeatureGroup::PushData would push them.
+  * \param tid Thread id
+  * \param start_idx Index of the first record
+  * \param count Number of records
+  * \param bins Encoded bin values of the records
+  */
+  virtual void PushBlock(int tid, data_size_t start_idx, data_size_t count, const uint32_t* bins) {
+    for (data_size_t i = 0; i < count; ++i) {
+      if (bins[i] != kSkipBin) {
+        Push(tid, start_idx + i, bins[i]);
+      }
+    }
+  }
+
   virtual void CopySubrow(const Bin* full_bin, const data_size_t* used_indices, data_size_t num_used_indices) = 0;
   /*!
   * \brief Get bin iterator of this bin for specific feature

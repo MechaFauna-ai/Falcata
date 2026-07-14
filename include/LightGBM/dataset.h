@@ -589,6 +589,21 @@ class Dataset {
     }
   }
 
+  /*!
+   * \brief Push a dense block of rows of a small integer type via per-column
+   *        value->bin lookup tables, bypassing the per-value double conversion
+   *        and bin binary search. Bit-identical to pushing every value through
+   *        PushOneRow.
+   * \param data Pointer to the block's values
+   * \param nrow Number of rows in the block
+   * \param ncol Number of columns
+   * \param is_row_major 1 for row-major data, 0 for column-major
+   * \param start_row Dataset row index of the block's first row
+   */
+  template <typename T>
+  void PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
+                             int is_row_major, data_size_t start_row);
+
   inline void PushOneRow(int tid, data_size_t row_idx, const std::vector<double>& feature_values) {
     for (size_t i = 0; i < feature_values.size() && i < static_cast<size_t>(num_total_features_); ++i) {
       this->PushOneValue(tid, row_idx, i, feature_values[i]);

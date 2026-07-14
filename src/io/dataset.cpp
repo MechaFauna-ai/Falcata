@@ -446,6 +446,88 @@ void Dataset::Construct(std::vector<std::unique_ptr<BinMapper>>* bin_mappers,
   gpu_device_id_ = io_config.gpu_device_id;
 }
 
+template <typename T>
+void Dataset::PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
+                                    int is_row_major, data_size_t start_row) {
+  if (is_finish_load_) {
+    return;
+  }
+  const int num_cols = std::min(ncol, num_total_features_);
+  // per column: the Bin to push into and a fully encoded value->bin table
+  // (most-freq skip, offset and multi-val adjustment folded in)
+  constexpr int64_t kLutSize = int64_t(1) << (8 * sizeof(T));
+  constexpr int64_t kLutOffset = kLutSize / 2;
+  std::vector<uint32_t> lut(static_cast<size_t>(num_cols) * kLutSize, Bin::kSkipBin);
+  std::vector<Bin*> targets(num_cols, nullptr);
+  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+  for (int col = 0; col < num_cols; ++col) {
+    const int feature_idx = used_feature_map_[col];
+    if (feature_idx < 0) {
+      continue;
+    }
+    const int sub_feature = feature2subfeature_[feature_idx];
+    FeatureGroup* fg = feature_groups_[feature2group_[feature_idx]].get();
+    targets[col] = fg->PushTargetBin(sub_feature);
+    const BinMapper* mapper = FeatureBinMapper(feature_idx);
+    uint32_t* col_lut = lut.data() + static_cast<size_t>(col) * kLutSize;
+    for (int64_t v = 0; v < kLutSize; ++v) {
+      col_lut[v] = fg->EncodeBinForPush(
+          sub_feature, mapper->ValueToBin(static_cast<double>(static_cast<T>(v - kLutOffset))));
+    }
+  }
+  // tiles keep the strided per-column reads of row-major data cache-resident
+  constexpr int32_t kTileRows = 512;
+  const int32_t num_tiles = (nrow + kTileRows - 1) / kTileRows;
+  OMP_INIT_EX();
+  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+  for (int32_t tile = 0; tile < num_tiles; ++tile) {
+    OMP_LOOP_EX_BEGIN();
+    const int tid = omp_get_thread_num();
+    const int32_t r0 = tile * kTileRows;
+    const int32_t r1 = std::min(nrow, r0 + kTileRows);
+    uint32_t bins[kTileRows];
+    for (int col = 0; col < num_cols; ++col) {
+      Bin* bin_data = targets[col];
+      if (bin_data == nullptr) {
+        continue;
+      }
+      const uint32_t* col_lut = lut.data() + static_cast<size_t>(col) * kLutSize + kLutOffset;
+      if (is_row_major) {
+        for (int32_t r = r0; r < r1; ++r) {
+          bins[r - r0] = col_lut[data[static_cast<size_t>(r) * ncol + col]];
+        }
+      } else {
+        const T* col_ptr = data + static_cast<size_t>(nrow) * col;
+        for (int32_t r = r0; r < r1; ++r) {
+          bins[r - r0] = col_lut[col_ptr[r]];
+        }
+      }
+      bin_data->PushBlock(tid, start_row + r0, r1 - r0, bins);
+    }
+    if (has_raw_) {
+      for (int col = 0; col < num_cols; ++col) {
+        const int feature_idx = used_feature_map_[col];
+        if (feature_idx < 0 || numeric_feature_map_[feature_idx] < 0) {
+          continue;
+        }
+        float* raw = raw_data_[numeric_feature_map_[feature_idx]].data();
+        for (int32_t r = r0; r < r1; ++r) {
+          const T value = is_row_major ? data[static_cast<size_t>(r) * ncol + col]
+                                       : data[static_cast<size_t>(nrow) * col + r];
+          raw[start_row + r] = static_cast<float>(value);
+        }
+      }
+    }
+    OMP_LOOP_EX_END();
+  }
+  OMP_THROW_EX();
+}
+
+template void Dataset::PushDenseSmallIntRows<int8_t>(const int8_t* data, int32_t nrow, int32_t ncol,
+                                                     int is_row_major, data_size_t start_row);
+template void Dataset::PushDenseSmallIntRows<int16_t>(const int16_t* data, int32_t nrow, int32_t ncol,
+                                                      int is_row_major, data_size_t start_row);
+
 void Dataset::FinishLoad() {
   if (is_finish_load_) {
     return;

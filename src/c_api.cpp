@@ -945,6 +945,12 @@ RowFunctionFromDenseMatrix(const void* data, int num_row, int num_col, int data_
 std::function<std::vector<std::pair<int, double>>(int row_idx)>
 RowPairFunctionFromDenseMatrix(const void* data, int num_row, int num_col, int data_type, int is_row_major);
 
+template <typename T>
+void SampleDenseSmallInt(const void** data, const std::vector<int32_t>& sample_indices,
+                         const int32_t* nrow, int32_t ncol, const int* is_row_major,
+                         std::vector<std::vector<double>>* sample_values,
+                         std::vector<std::vector<int>>* sample_idx);
+
 std::function<std::vector<std::pair<int, double>>(int row_idx)>
 RowPairFunctionFromDenseRows(const void** data, int num_col, int data_type);
 
@@ -1372,20 +1378,26 @@ int LGBM_DatasetCreateFromMats(int32_t nmat,
     std::vector<std::vector<double>> sample_values(ncol);
     std::vector<std::vector<int>> sample_idx(ncol);
 
-    int offset = 0;
-    int j = 0;
-    for (size_t i = 0; i < sample_indices.size(); ++i) {
-      auto idx = sample_indices[i];
-      while ((idx - offset) >= nrow[j]) {
-        offset += nrow[j];
-        ++j;
-      }
+    if (data_type == C_API_DTYPE_INT8) {
+      SampleDenseSmallInt<int8_t>(data, sample_indices, nrow, ncol, is_row_major, &sample_values, &sample_idx);
+    } else if (data_type == C_API_DTYPE_INT16) {
+      SampleDenseSmallInt<int16_t>(data, sample_indices, nrow, ncol, is_row_major, &sample_values, &sample_idx);
+    } else {
+      int offset = 0;
+      int j = 0;
+      for (size_t i = 0; i < sample_indices.size(); ++i) {
+        auto idx = sample_indices[i];
+        while ((idx - offset) >= nrow[j]) {
+          offset += nrow[j];
+          ++j;
+        }
 
-      auto row = get_row_fun[j](static_cast<int>(idx - offset));
-      for (size_t k = 0; k < row.size(); ++k) {
-        if (std::fabs(row[k]) > kZeroThreshold || std::isnan(row[k])) {
-          sample_values[k].emplace_back(row[k]);
-          sample_idx[k].emplace_back(static_cast<int>(i));
+        auto row = get_row_fun[j](static_cast<int>(idx - offset));
+        for (size_t k = 0; k < row.size(); ++k) {
+          if (std::fabs(row[k]) > kZeroThreshold || std::isnan(row[k])) {
+            sample_values[k].emplace_back(row[k]);
+            sample_idx[k].emplace_back(static_cast<int>(i));
+          }
         }
       }
     }
@@ -1407,17 +1419,22 @@ int LGBM_DatasetCreateFromMats(int32_t nmat,
   }
   int32_t start_row = 0;
   for (int j = 0; j < nmat; ++j) {
-    OMP_INIT_EX();
-    #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
-    for (int i = 0; i < nrow[j]; ++i) {
-      OMP_LOOP_EX_BEGIN();
-      const int tid = omp_get_thread_num();
-      auto one_row = get_row_fun[j](i);
-      ret->PushOneRow(tid, start_row + i, one_row);
-      OMP_LOOP_EX_END();
+    if (data_type == C_API_DTYPE_INT8) {
+      ret->PushDenseSmallIntRows(reinterpret_cast<const int8_t*>(data[j]), nrow[j], ncol, is_row_major[j], start_row);
+    } else if (data_type == C_API_DTYPE_INT16) {
+      ret->PushDenseSmallIntRows(reinterpret_cast<const int16_t*>(data[j]), nrow[j], ncol, is_row_major[j], start_row);
+    } else {
+      OMP_INIT_EX();
+      #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+      for (int i = 0; i < nrow[j]; ++i) {
+        OMP_LOOP_EX_BEGIN();
+        const int tid = omp_get_thread_num();
+        auto one_row = get_row_fun[j](i);
+        ret->PushOneRow(tid, start_row + i, one_row);
+        OMP_LOOP_EX_END();
+      }
+      OMP_THROW_EX();
     }
-    OMP_THROW_EX();
-
     start_row += nrow[j];
   }
   ret->FinishLoad();
@@ -2939,9 +2956,55 @@ RowFunctionFromDenseMatrix(const void* data, int num_row, int num_col, int data_
     return RowFunctionFromDenseMatrix_helper<double>(data, num_row, num_col, is_row_major);
   } else if (data_type == C_API_DTYPE_INT8) {
     return RowFunctionFromDenseMatrix_helper<int8_t>(data, num_row, num_col, is_row_major);
+  } else if (data_type == C_API_DTYPE_INT16) {
+    return RowFunctionFromDenseMatrix_helper<int16_t>(data, num_row, num_col, is_row_major);
   }
   Log::Fatal("Unknown data type in RowFunctionFromDenseMatrix");
   return nullptr;
+}
+
+// Column-parallel bin-mapper sampler for dense small-int matrices. Produces exactly
+// what the row-function sampling loop would: ints are never NaN and pass the
+// kZeroThreshold check iff nonzero, and per-column appends stay in sample order.
+template <typename T>
+void SampleDenseSmallInt(const void** data, const std::vector<int32_t>& sample_indices,
+                         const int32_t* nrow, int32_t ncol, const int* is_row_major,
+                         std::vector<std::vector<double>>* sample_values,
+                         std::vector<std::vector<int>>* sample_idx) {
+  const size_t n = sample_indices.size();
+  std::vector<int> mat_of(n);
+  std::vector<int32_t> row_of(n);
+  int offset = 0;
+  int j = 0;
+  for (size_t i = 0; i < n; ++i) {
+    auto idx = sample_indices[i];
+    while ((idx - offset) >= nrow[j]) {
+      offset += nrow[j];
+      ++j;
+    }
+    mat_of[i] = j;
+    row_of[i] = idx - offset;
+  }
+  // contiguous column stripes per thread, sample-index outer loop for locality
+  #pragma omp parallel num_threads(OMP_NUM_THREADS())
+  {
+    const int num_threads = omp_get_num_threads();
+    const int tid = omp_get_thread_num();
+    const int col_lo = static_cast<int>(static_cast<int64_t>(ncol) * tid / num_threads);
+    const int col_hi = static_cast<int>(static_cast<int64_t>(ncol) * (tid + 1) / num_threads);
+    for (size_t i = 0; i < n; ++i) {
+      const T* mat = reinterpret_cast<const T*>(data[mat_of[i]]);
+      const size_t r = static_cast<size_t>(row_of[i]);
+      for (int col = col_lo; col < col_hi; ++col) {
+        const T value = is_row_major[mat_of[i]] ? mat[r * ncol + col]
+                                                : mat[static_cast<size_t>(nrow[mat_of[i]]) * col + r];
+        if (value != 0) {
+          (*sample_values)[col].emplace_back(static_cast<double>(value));
+          (*sample_idx)[col].emplace_back(static_cast<int>(i));
+        }
+      }
+    }
+  }
 }
 
 std::function<std::vector<std::pair<int, double>>(int row_idx)>
