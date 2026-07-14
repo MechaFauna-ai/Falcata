@@ -45,8 +45,9 @@ figures from the profiles in the PR discussions.
 - [ ] **Runtime auto-tuner tier 2 -- NVRTC shape-specialized kernels.** JIT-compile
   construct/find kernels at Dataset construction with columns / per-feature bin counts
   baked in (precedent: LightGBM's OpenCL backend JIT-compiled with #defined bin counts).
-  Star case: numerai's ~7-bin features waste >90% of the fixed 12288-entry shared
-  histogram; a specialized kernel packs ~10x more features per partition -> fewer
+  Star case: numerai's ~5.5-bin features (5 quintiles + a missing-marker bin on ~half
+  of them) waste >90% of the fixed 12288-entry shared histogram; a specialized kernel
+  packs ~10x more features per partition -> fewer
   partitions, less shared->global merge traffic. One-time ~0.5s compile amortized over
   thousands of trees; needs AOT fallback.
 - [ ] **Runtime auto-tuner tier 3 -- persisted tuning cache**: store best-found configs
@@ -64,13 +65,21 @@ figures from the profiles in the PR discussions.
   Remaining: ~0.8s pageable 15 GB H2D (pinned staging ring / transpose into pinned) and
   ~1.2s host transpose (device-side transpose candidate); sparse row-wise CUDA datasets
   still build the host multi-val bin. Kill switch EXABOOST_FAST_ROWDATA=0.
-- [ ] **Native small-int ingestion (int8/int16)**: accept int matrices in
-  LGBM_DatasetCreateFromMat(s) + python zero-copy (today int8 input silently astype()s
-  to a 4x float copy); bin the push loop via a per-feature 256-entry LUT built from
-  BinMapper::ValueToBin so bins are identical by construction. numerai construct is
-  ~37s CPU-bound on per-value double binary-search binning (+ ~7s EFB FindGroups on
-  2748 features, a separate follow-up); target ~12-15s. Measured separately from the
-  cross-library matrix (which stays float32-fed for fairness).
+- [x] **Native small-int ingestion (int8/int16)** (9c0f5ffa): int8/int16 numpy
+  matrices (row- or col-major) pass zero-copy through the C API and are binned by
+  per-column LUTs via Bin::PushBlock; bins identical to the float path by construction
+  (md5-verified CUDA quant + CPU deterministic). numerai fed int8: construct 38.9 ->
+  15.8s, peak RSS 86.4 -> 43.9 GB. Measured separately from the cross-library matrix
+  (which stays float32-fed for fairness). Follow-ups: EFB FindGroups is now the
+  dominant construct cost (~9s of 15.8s on 2748 features); pandas int frames still
+  convert to float32 (only raw numpy passes through); CSR/CSC + streaming push and
+  uint8 still use the double path.
+- [ ] **4-bit packed CUDA row/compact data for <=16-bin datasets.** Row-wise cells have
+  an 8-bit minimum today while numerai needs ~3 bits (5.5 bins avg, max 6): pack two
+  cells/byte in the structures feeding the per-tree compact gather + level construct
+  (~19 ms/tree, scattered-read bound) -> ~halved VRAM footprint and construct traffic.
+  Watch nibble alignment at partition/column boundaries; classic 255-bin data
+  unaffected.
 - [ ] **Latency-bound construct on tiny-bin wide data**: post-161fe88b numerai construct
   is scattered-read latency-bound (19ms/tree) -- candidate for NVRTC shape
   specialization (auto-tuner tier 2) or layout changes.
@@ -78,18 +87,26 @@ figures from the profiles in the PR discussions.
   extend the one-sync speculative pipeline to it. Also investigate the per-tree gradient
   discretization cost on many-tree/small-tree configs (numerai-quant is slower than
   non-quant today).
-- [ ] **FP32 gain math in the find kernels.** find ~= 136 us/tree, FP64-bound and
-  leaf-size-independent; evaluate FP32/mixed gains behind a flag.
-- [ ] **FP32/fixed-point histogram option for wide data.** Non-quant histogram entries
-  are FP64 pairs (16 B/bin); epsilon non-quant loses to XGBoost (8 B/bin fixed point)
-  for exactly this reason.
+- [ ] **FP32 gain math in the find kernels** (priority up: Felix accepts
+  nondeterminism for speed). find ~= 136 us/tree, FP64-bound and leaf-size-independent;
+  consumer Blackwell runs FP64 at 1/64 the FP32 rate, so this is the one genuinely
+  FLOPs-bound kernel. FP32/mixed gains behind a flag; verify quality via the benchmark
+  harness, not md5.
+- [ ] **FP32-atomic histogram mode** (priority up, same rationale). Non-quant entries
+  are FP64 pairs (16 B/bin); an fp32 pair (8 B/bin) matches quant bandwidth with ZERO
+  per-tree discretization overhead -- candidate fastest mode for many-tree configs
+  (numerai-quant regressed to 155s vs 86s non-quant partly on discretizer cost).
+  Nondeterministic and cancellation-bias risk: judge by measured quality per dataset.
 
 ## Correctness / determinism
 
-- [ ] **Deterministic non-quant CUDA mode.** Fixed-point integer histogram accumulation
-  (XGBoost-style) to eliminate float-atomic run-to-run jitter (measured +-2.6pp on
-  covtype multiclass); alternatively bless quant as the deterministic mode. Related:
-  `deterministic=true` silently no-ops on CUDA — make it work or warn.
+- [ ] **Deterministic non-quant CUDA mode** (deprioritized: determinism is a
+  verification tool here, not a production requirement -- quant mode already provides
+  it for md5 gates). Fixed-point integer histogram accumulation (XGBoost-style) would
+  eliminate float-atomic run-to-run jitter (measured +-2.6pp on covtype multiclass).
+  Related: `deterministic=true` silently no-ops on CUDA — make it work or warn; it also
+  doesn't pin the timing-based col/row-wise auto-choice on CPU (bimodal md5s; pin
+  force_col_wise in gates).
 
 ## Upstream (lightgbm-org/LightGBM) bugs found (documented here for reference;
 ## we do not contribute upstream)
