@@ -16,6 +16,7 @@
 
 #include <cstdlib>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "cuda_leaf_splits.hpp"
@@ -41,7 +42,8 @@ __host__ __device__ inline int HybridBatchedConstructGridDimY(
     const int num_pairs,
     const int block_dim_y,
     const int min_grid_dim_y,
-    const int min_rows_per_thread) {
+    const int min_rows_per_thread,
+    const int saturation_floor_total) {
   // rows-per-thread target of the per-leaf sizing
   const int y_full_rate = ((max_num_data_in_smaller_leaf + NUM_DATA_PER_THREAD - 1) / NUM_DATA_PER_THREAD +
     block_dim_y - 1) / block_dim_y;
@@ -51,7 +53,8 @@ __host__ __device__ inline int HybridBatchedConstructGridDimY(
   }
   const int y_min_rate = ((max_num_data_in_smaller_leaf + min_rows_per_thread - 1) / min_rows_per_thread +
     block_dim_y - 1) / block_dim_y;
-  const int saturation_floor = (min_grid_dim_y + num_pairs - 1) / num_pairs;
+  const int saturation_floor = num_pairs > 0 ?
+    (saturation_floor_total + num_pairs - 1) / num_pairs : saturation_floor_total;
   int inner = y_min_rate > 1 ? y_min_rate : 1;
   inner = inner > saturation_floor ? inner : saturation_floor;
   inner = inner < min_grid_dim_y ? inner : min_grid_dim_y;
@@ -160,11 +163,55 @@ class CUDAHistogramConstructor {
     return min_rows_per_thread;
   }
 
+  /*! \brief device-saturation floor (total y-blocks shared across the level's
+   *  pairs) of the batched construct grid sizing
+   *  (EXABOOST_BATCH_CONSTRUCT_FLOOR; default 160 = historical behavior) */
+  static int BatchConstructSaturationFloor() {
+    static const int floor_total = []() {
+      const char* env = std::getenv("EXABOOST_BATCH_CONSTRUCT_FLOOR");
+      return env != nullptr ? std::atoi(env) : 160;
+    }();
+    return floor_total;
+  }
+
+  /*! \brief kill-switch of the small-leaf construct path
+   *  (EXABOOST_SMALL_LEAF_CONSTRUCT=0 restores the shared-memory batched
+   *  kernels for every level) */
+  static bool SmallLeafConstructEnabled() {
+    static const bool enabled = []() {
+      const char* env = std::getenv("EXABOOST_SMALL_LEAF_CONSTRUCT");
+      return env == nullptr || std::string(env) != "0";
+    }();
+    return enabled;
+  }
+
+  /*! \brief leaf-size threshold of the DIRECT small-leaf construct body: a pair
+   *  whose actual smaller-leaf size (device-side check) is at most this many
+   *  rows skips the shared-memory histogram accumulation and adds straight to
+   *  the global histogram (non-quantized training only). Default 0 = disabled:
+   *  the direct body changes the float accumulation (per-row double adds vs
+   *  per-block float partial sums), which trades the fraud 63/6 exact-quality
+   *  reproduction for a measured ~1-2% fraud-deep gain -- not worth it by
+   *  default. Set EXABOOST_SMALL_LEAF_ROWS=8192 to enable. */
+  static data_size_t SmallLeafRowThreshold() {
+    static const data_size_t threshold = []() {
+      const char* env = std::getenv("EXABOOST_SMALL_LEAF_ROWS");
+      return env != nullptr ? static_cast<data_size_t>(std::atoi(env)) : 0;
+    }();
+    return threshold;
+  }
+
   void ResetTrainingData(const Dataset* train_data, TrainingShareStates* share_states);
 
   void ResetConfig(const Config* config);
 
   void BeforeTrain(const score_t* gradients, const score_t* hessians);
+
+  /*! \brief number of leaf histogram slots the finished tree dirtied (== its
+   *  final leaf count; leaf k's histogram is slot k). BeforeTrain only zeroes
+   *  that prefix of cuda_hist_ instead of all num_leaves slots. -1 (initial /
+   *  after resets, and kept on the NCCL path) zeroes everything. */
+  void SetNumDirtyLeaves(const int num_dirty_leaves) { num_dirty_leaves_ = num_dirty_leaves; }
 
   // Per-tree feature sampling mask (host-side vector, length == num_features_).
   // Copied to cuda_is_feature_used_bytree_ so the histogram kernel can skip
@@ -189,6 +236,9 @@ class CUDAHistogramConstructor {
 
  private:
   void InitFeatureMetaInfo(const Dataset* train_data, const std::vector<uint32_t>& feature_hist_offsets);
+
+  /*! \brief (re)build cuda_fix_mfb_mask_ from the need-fix feature metadata */
+  void InitFixMFBMask();
 
   void CalcConstructHistogramKernelDim(
     int* grid_dim_x,
@@ -275,6 +325,18 @@ class CUDAHistogramConstructor {
     const int num_pairs,
     const bool any_pair_needs_bit_change_copy);
 
+  // ---- small-leaf level launchers (hybrid growth, non-quantized only) ----
+
+  /*! \brief fused fix + subtract of the small-leaf path: one launch does both
+   *  the most-frequent-bin fix of the smaller leaf and the parent-minus-smaller
+   *  subtraction of the larger leaf. Subtract blocks skip the fix features'
+   *  most-frequent-bin entries (cuda_fix_mfb_mask_); the fix blocks write those
+   *  for both leaves with the identical arithmetic, so the result is
+   *  bit-identical to the sequential fix -> subtract launches. */
+  void LaunchFixSubtractHistogramSmallLeafBatchedKernel(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs);
+
   /*! \brief one tiny launch per speculative level: reduce the level's actual
    *  smaller-child sizes and apply the exact host grid-sizing formula, writing
    *  the effective row-grouping extent to cuda_hybrid_construct_dim_y_ */
@@ -321,6 +383,8 @@ class CUDAHistogramConstructor {
   std::vector<uint32_t> need_fix_histogram_features_num_bin_aligend_;
   /*! \brief minimum number of blocks allowed in the y dimension */
   const int min_grid_dim_y_ = 160;
+  /*! \brief leaf histogram slots dirtied by the previous tree (-1 = all) */
+  int num_dirty_leaves_ = -1;
 
 
   // CUDA memory, held by this object
@@ -343,6 +407,11 @@ class CUDAHistogramConstructor {
   /*! \brief effective row-grouping extent of the speculative batched construct
    *  launch (see LaunchComputeBatchedConstructDimYKernel) */
   CUDAVector<int> cuda_hybrid_construct_dim_y_;
+  /*! \brief mask over the 2 * num_total_bin_ histogram entries marking the
+   *  most-frequent-bin gradient/hessian slots of the need-fix features; the
+   *  fused small-leaf fix+subtract kernel's subtract blocks skip these (the fix
+   *  blocks own them) */
+  CUDAVector<uint8_t> cuda_fix_mfb_mask_;
 
   // ========================================================================
   // Compact-view buffers: when feature_fraction < 1.0, build a contiguous

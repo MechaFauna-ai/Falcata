@@ -65,6 +65,9 @@ CUDADataPartition::~CUDADataPartition() {
   if (indices_copy_done_event_ != nullptr) {
     CUDASUCCESS_OR_FATAL(cudaEventDestroy(indices_copy_done_event_));
   }
+  if (pinned_split_info_ != nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaFreeHost(pinned_split_info_));
+  }
 }
 
 void CUDADataPartition::Init() {
@@ -253,9 +256,22 @@ void CUDADataPartition::GenDataToLeftBitVector(
 void CUDADataPartition::FinishSplitBatch(const int num_splits, std::vector<int>* out) {
   out->resize(static_cast<size_t>(num_splits) * 18);
   // synchronous D2H on the legacy default stream: implicitly waits for all
-  // preceding work on the (blocking) streams, so no explicit device sync needed
-  CopyFromCUDADeviceToHost<int>(out->data(), cuda_split_info_buffer_.RawData(),
-    static_cast<size_t>(num_splits) * 18, __FILE__, __LINE__);
+  // preceding work on the (blocking) streams, so no explicit device sync
+  // needed. Staged through a PINNED buffer (once-per-level critical path; a
+  // pageable sync D2H pays an extra driver staging round trip).
+  const size_t num_ints = static_cast<size_t>(num_splits) * 18;
+  if (pinned_split_info_size_ < num_ints) {
+    if (pinned_split_info_ != nullptr) {
+      CUDASUCCESS_OR_FATAL(cudaFreeHost(pinned_split_info_));
+    }
+    const size_t capacity = std::max(num_ints, static_cast<size_t>(num_leaves_ / 2 + 2) * 18);
+    CUDASUCCESS_OR_FATAL(cudaHostAlloc(reinterpret_cast<void**>(&pinned_split_info_),
+      capacity * sizeof(int), cudaHostAllocDefault));
+    pinned_split_info_size_ = capacity;
+  }
+  CopyFromCUDADeviceToHost<int>(pinned_split_info_, cuda_split_info_buffer_.RawData(),
+    num_ints, __FILE__, __LINE__);
+  std::memcpy(out->data(), pinned_split_info_, num_ints * sizeof(int));
 }
 
 void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplitInput>& splits) {

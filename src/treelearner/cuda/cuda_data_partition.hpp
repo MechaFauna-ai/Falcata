@@ -501,6 +501,9 @@ class CUDADataPartition: public NCCLInfo {
   // split tree structure algorithm related
   /*! \brief buffer to store split information, prepared to be copied to cpu */
   CUDAVector<int> cuda_split_info_buffer_;
+  /*! \brief pinned staging buffer of FinishSplitBatch */
+  int* pinned_split_info_ = nullptr;
+  size_t pinned_split_info_size_ = 0;
   /*! \brief per-split smaller-child size of the current level's batched apply
    *  (see level_smaller_leaf_counts()) */
   CUDAVector<data_size_t> cuda_level_smaller_counts_;

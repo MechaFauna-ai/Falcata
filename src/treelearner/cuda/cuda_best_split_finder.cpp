@@ -51,6 +51,9 @@ CUDABestSplitFinder::~CUDABestSplitFinder() {
   gpuAssert(cudaStreamDestroy(cuda_streams_[1]), __FILE__, __LINE__);
   cuda_streams_.clear();
   cuda_streams_.shrink_to_fit();
+  if (pinned_leaf_best_split_info_ != nullptr) {
+    gpuAssert(cudaFreeHost(pinned_leaf_best_split_info_), __FILE__, __LINE__);
+  }
 }
 
 void CUDABestSplitFinder::InitFeatureMetaInfo(const Dataset* train_data) {

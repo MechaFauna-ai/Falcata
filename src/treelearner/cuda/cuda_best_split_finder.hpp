@@ -287,6 +287,10 @@ class CUDABestSplitFinder {
   // Host memory
   int num_features_;
   int num_leaves_;
+  /*! \brief pinned staging buffer of SyncAllLeafBestSplitsToHost (raw bytes;
+   *  CUDASplitInfo is never constructed/destructed in it) */
+  mutable CUDASplitInfo* pinned_leaf_best_split_info_ = nullptr;
+  mutable size_t pinned_leaf_best_split_info_size_ = 0;
   int max_num_bin_in_feature_;
   std::vector<uint32_t> feature_hist_offsets_;
   std::vector<uint8_t> feature_mfb_offsets_;

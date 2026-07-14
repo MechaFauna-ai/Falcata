@@ -90,9 +90,16 @@ void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score
   cuda_hessians_ = hessians;
   // async memset on the legacy default stream: the construct kernels on the
   // (blocking) histogram streams implicitly order after it, so no device sync
-  // is needed (SetValue would pay a full device sync on every tree)
+  // is needed (SetValue would pay a full device sync on every tree).
+  // Only the leaf slots the previous tree actually used can be dirty (leaf k's
+  // histogram lives at slot k, and every tree assigns slots [0, num_leaves)
+  // consecutively), so zero just those: with num_leaves=1023 buffers trees of
+  // ~100 leaves this cuts >100MB (~65us of GPU memset) per tree.
+  const size_t num_slots_to_zero = num_dirty_leaves_ < 0 ?
+    static_cast<size_t>(num_leaves_) :
+    std::min(static_cast<size_t>(num_dirty_leaves_), static_cast<size_t>(num_leaves_));
   CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_hist_.RawData()), 0,
-    cuda_hist_.Size() * sizeof(hist_t)));
+    num_slots_to_zero * static_cast<size_t>(2 * num_total_bin_) * sizeof(hist_t)));
 }
 
 void CUDAHistogramConstructor::ZeroHistForLeaf(int /*leaf_index*/) {
@@ -375,6 +382,7 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   cuda_need_fix_histogram_features_.InitFromHostVector(need_fix_histogram_features_);
   cuda_need_fix_histogram_features_num_bin_aligned_.InitFromHostVector(need_fix_histogram_features_num_bin_aligend_);
   cuda_hybrid_construct_dim_y_.Resize(1);
+  InitFixMFBMask();
 
   if (cuda_row_data_->NumLargeBinPartition() > 0) {
     int grid_dim_x = 0, grid_dim_y = 0, block_dim_x = 0, block_dim_y = 0;
@@ -440,15 +448,40 @@ void CUDAHistogramConstructor::ConstructHistogramsForLevel(
     }
   }
   global_timer.Start("CUDAHistogramConstructor::ConstructHistogramsForLevel");
+  // The batched construct kernel routes each pair whose ACTUAL smaller leaf is
+  // tiny (on-device check against SmallLeafRowThreshold(); non-quantized only)
+  // to a direct global-atomic body that skips the shared-histogram zero+merge
+  // dominating small leaves. The quantized path never takes it: its integer
+  // shared-then-merge accumulation (and the covtype quant md5 lock) stays
+  // byte-identical.
   LaunchConstructHistogramBatchedKernel(pair_descs, num_pairs, max_num_data_in_smaller_leaf,
                                         level_smaller_num_data);
   // (no construct_done event here: the batched find kernel only waits on the
   // subtract event below, and the per-pair path re-records its own events)
-  LaunchSubtractHistogramBatchedKernel(pair_descs, num_pairs, any_pair_needs_bit_change_copy);
+  if (!use_quantized_grad_ && SmallLeafConstructEnabled()) {
+    // fused fix + subtract: one launch, bit-identical to the sequential pair
+    LaunchFixSubtractHistogramSmallLeafBatchedKernel(pair_descs, num_pairs);
+  } else {
+    LaunchSubtractHistogramBatchedKernel(pair_descs, num_pairs, any_pair_needs_bit_change_copy);
+  }
   // the best split finder's batched find kernel waits on this event before reading
   // any of this level's histograms (construct/fix/subtract are stream-ordered here)
   CUDASUCCESS_OR_FATAL(cudaEventRecord(subtract_done_events_[0], cuda_stream_));
   global_timer.Stop("CUDAHistogramConstructor::ConstructHistogramsForLevel");
+}
+
+void CUDAHistogramConstructor::InitFixMFBMask() {
+  // mask over the 2 * num_total_bin_ histogram entries: 1 at the most-frequent-
+  // bin gradient/hessian slots of the need-fix features (owned by the fused
+  // small-leaf kernel's fix blocks), 0 everywhere else (subtract blocks)
+  std::vector<uint8_t> host_mask(static_cast<size_t>(2 * num_total_bin_), 0);
+  for (const int feature_index : need_fix_histogram_features_) {
+    const size_t pos = (static_cast<size_t>(feature_hist_offsets_[feature_index]) +
+                        static_cast<size_t>(feature_most_freq_bins_[feature_index])) << 1;
+    host_mask[pos] = 1;
+    host_mask[pos + 1] = 1;
+  }
+  cuda_fix_mfb_mask_.InitFromHostVector(host_mask);
 }
 
 void CUDAHistogramConstructor::SubtractHistogramForLeaf(
@@ -502,7 +535,7 @@ void CUDAHistogramConstructor::CalcConstructHistogramBatchedKernelDim(
   // used by the speculative single-sync flow computes the identical value.
   *grid_dim_y = HybridBatchedConstructGridDimY(
     max_num_data_in_smaller_leaf, num_pairs, *block_dim_y, min_grid_dim_y_,
-    BatchConstructMinRowsPerThread());
+    BatchConstructMinRowsPerThread(), BatchConstructSaturationFloor());
 }
 
 void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, TrainingShareStates* share_states) {
@@ -512,6 +545,7 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
 
   cuda_hist_.Resize(static_cast<size_t>(num_total_bin_ * 2 * num_leaves_));
   cuda_hist_.SetValue(0);
+  num_dirty_leaves_ = -1;
   cuda_feature_num_bins_.InitFromHostVector(feature_num_bins_);
   cuda_feature_hist_offsets_.InitFromHostVector(feature_hist_offsets_);
   cuda_feature_most_freq_bins_.InitFromHostVector(feature_most_freq_bins_);
@@ -521,6 +555,7 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
 
   cuda_need_fix_histogram_features_.InitFromHostVector(need_fix_histogram_features_);
   cuda_need_fix_histogram_features_num_bin_aligned_.InitFromHostVector(need_fix_histogram_features_num_bin_aligend_);
+  InitFixMFBMask();
 }
 
 void CUDAHistogramConstructor::ResetConfig(const Config* config) {
@@ -530,6 +565,7 @@ void CUDAHistogramConstructor::ResetConfig(const Config* config) {
   min_sum_hessian_in_leaf_ = config->min_sum_hessian_in_leaf;
   cuda_hist_.Resize(static_cast<size_t>(num_total_bin_ * 2 * num_leaves_));
   cuda_hist_.SetValue(0);
+  num_dirty_leaves_ = -1;
 }
 
 }  // namespace LightGBM

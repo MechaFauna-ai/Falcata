@@ -1089,6 +1089,12 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     global_timer.Stop("CUDASingleGPUTreeLearner::RenewDiscretizedTreeLeaves");
   }
   tree->ToHost();
+  // only the leaf histogram slots this tree used can be dirty; the next
+  // BeforeTrain zeroes just that prefix (single-GPU only: the NCCL path keeps
+  // the conservative full zeroing)
+  if (nccl_communicator_ == nullptr) {
+    cuda_histogram_constructor_->SetNumDirtyLeaves(tree->num_leaves());
+  }
   last_tree_is_linear_ = false;
   if (config_->linear_tree) {
     // gradients_/hessians_ are device pointers after BeforeTrain (the Train args stay on host)

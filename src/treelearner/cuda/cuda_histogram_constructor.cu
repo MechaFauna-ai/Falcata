@@ -391,6 +391,7 @@ __global__ void ComputeBatchedConstructDimYKernel(
   const int block_dim_y,
   const int min_grid_dim_y,
   const int min_rows_per_thread,
+  const int saturation_floor_total,
   int* out_dim_y) {
   __shared__ data_size_t shared_max[32];
   data_size_t thread_max = 0;
@@ -422,7 +423,7 @@ __global__ void ComputeBatchedConstructDimYKernel(
     }
     out_dim_y[0] = HybridBatchedConstructGridDimY(
       max_num_data_in_smaller_leaf, num_pairs, block_dim_y,
-      min_grid_dim_y, min_rows_per_thread) * block_dim_y;
+      min_grid_dim_y, min_rows_per_thread, saturation_floor_total) * block_dim_y;
   }
 }
 
@@ -432,7 +433,61 @@ void CUDAHistogramConstructor::LaunchComputeBatchedConstructDimYKernel(
   const int block_dim_y) {
   ComputeBatchedConstructDimYKernel<<<1, 128, 0, cuda_stream_>>>(
     level_smaller_num_data, num_pairs, block_dim_y, min_grid_dim_y_,
-    BatchConstructMinRowsPerThread(), cuda_hybrid_construct_dim_y_.RawData());
+    BatchConstructMinRowsPerThread(), BatchConstructSaturationFloor(),
+    cuda_hybrid_construct_dim_y_.RawData());
+}
+
+// Small-leaf direct body (hybrid growth, non-quantized only): adds each row's
+// gradient/hessian pair straight to the leaf's global histogram with plain
+// device-scope atomicAdd, skipping the shared-memory accumulation entirely.
+// The shared-memory body pays a fixed per-block cost (zero + merge of up to
+// 2 * num_bins_per_partition shared entries) that dwarfs the row work when a
+// pair's leaves are tiny; at <= SmallLeafRowThreshold() rows per leaf global
+// atomic contention is negligible. Rows are covered by a grid-stride loop, so
+// any launch grid works: blocks whose row range lies beyond the leaf exit
+// after one comparison (no shared zero, no merge), which is what makes the
+// over-provisioned batched grids (sized for the level's LARGEST pair) cheap
+// for the tiny pairs of the same level.
+template <typename BIN_TYPE>
+__device__ __forceinline__ void ConstructHistogramDenseDirectInner(
+  const CUDALeafSplitsStruct* smaller_leaf_splits,
+  const score_t* cuda_gradients,
+  const score_t* cuda_hessians,
+  const BIN_TYPE* data,
+  const uint32_t* column_hist_offsets,
+  const uint32_t* column_hist_offsets_full,
+  const int* feature_partition_column_index_offsets,
+  const int8_t* is_feature_used_bytree,
+  const data_size_t num_data) {
+  const int partition_column_start = feature_partition_column_index_offsets[blockIdx.x];
+  const int partition_column_end = feature_partition_column_index_offsets[blockIdx.x + 1];
+  const int num_columns_in_partition = partition_column_end - partition_column_start;
+  const int column_index = static_cast<int>(threadIdx.x) + partition_column_start;
+  const bool feat_used = (threadIdx.x < static_cast<unsigned int>(num_columns_in_partition)) &&
+      (is_feature_used_bytree == nullptr || is_feature_used_bytree[column_index]);
+  if (!feat_used) {
+    return;
+  }
+  const data_size_t num_data_in_smaller_leaf = smaller_leaf_splits->num_data_in_leaf;
+  const BIN_TYPE* data_ptr = data + static_cast<size_t>(partition_column_start) * num_data;
+  const data_size_t* data_indices_ref = smaller_leaf_splits->data_indices_in_leaf;
+  // column_hist_offsets is PARTITION-RELATIVE (it indexes the per-partition
+  // shared histogram in the shared-memory body); the global histogram position
+  // additionally needs the partition's own start offset
+  const uint32_t partition_hist_start = column_hist_offsets_full[blockIdx.x];
+  hist_t* hist_ptr = smaller_leaf_splits->hist_in_leaf +
+    ((partition_hist_start + column_hist_offsets[column_index]) << 1);
+  const data_size_t row_stride = static_cast<data_size_t>(gridDim.y) * static_cast<data_size_t>(blockDim.y);
+  for (data_size_t row = static_cast<data_size_t>(blockIdx.y) * blockDim.y + threadIdx.y;
+       row < num_data_in_smaller_leaf; row += row_stride) {
+    const data_size_t data_index = data_indices_ref[row];
+    const score_t grad = cuda_gradients[data_index];
+    const score_t hess = cuda_hessians[data_index];
+    const uint32_t pos = static_cast<uint32_t>(
+      data_ptr[static_cast<size_t>(data_index) * num_columns_in_partition + threadIdx.x]) << 1;
+    atomicAdd(hist_ptr + pos, static_cast<hist_t>(grad));
+    atomicAdd(hist_ptr + pos + 1, static_cast<hist_t>(hess));
+  }
 }
 
 // Batched per-level variant (hybrid growth): one launch covers all sibling pairs
@@ -459,7 +514,12 @@ __global__ void CUDAConstructHistogramDenseBatchedKernel(
   const data_size_t num_data,
   const data_size_t min_data_in_leaf,
   const double min_sum_hessian_in_leaf,
-  const int* level_dim_y) {
+  const int* level_dim_y,
+  const data_size_t* level_smaller_num_data,
+  const int min_grid_dim_y,
+  const int min_rows_per_thread,
+  const int saturation_floor_total,
+  const data_size_t small_leaf_threshold) {
   __shared__ HIST_TYPE shared_hist[SHARED_HIST_SIZE];
   const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.z;
   if (!desc->construct_valid) {
@@ -478,8 +538,40 @@ __global__ void CUDAConstructHistogramDenseBatchedKernel(
       (num_data_larger <= min_data_in_leaf || sum_hessians_larger <= min_sum_hessian_in_leaf)) {
     return;
   }
-  const int dim_y = level_dim_y == nullptr ?
-    static_cast<int>(gridDim.y * blockDim.y) : level_dim_y[0];
+  // small-leaf pairs (decided on-device from the ACTUAL smaller-leaf size, so
+  // the speculative flow's host-side upper bounds never mask a tiny pair) skip
+  // the shared-memory accumulation entirely; see ConstructHistogramDenseDirectInner
+  if (num_data_smaller <= small_leaf_threshold) {
+    ConstructHistogramDenseDirectInner<BIN_TYPE>(
+      smaller_struct, cuda_gradients, cuda_hessians, data,
+      column_hist_offsets, column_hist_offsets_full,
+      feature_partition_column_index_offsets,
+      is_feature_used_bytree, num_data);
+    return;
+  }
+  // effective row-grouping extent: the launch grid in the classic flow; the
+  // precomputed scalar (ComputeBatchedConstructDimYKernel) for many-pair
+  // speculative levels; or -- for few-pair speculative levels -- the identical
+  // formula evaluated right here from the level's actual smaller-child sizes,
+  // saving that kernel launch (block-uniform, <= 32 loads)
+  int dim_y;
+  if (level_dim_y != nullptr) {
+    dim_y = level_dim_y[0];
+  } else if (level_smaller_num_data == nullptr) {
+    dim_y = static_cast<int>(gridDim.y * blockDim.y);
+  } else {
+    data_size_t max_num_data = 0;
+    const int num_pairs = static_cast<int>(gridDim.z);
+    for (int i = 0; i < num_pairs; ++i) {
+      const data_size_t n = level_smaller_num_data[i];
+      if (n > max_num_data) {
+        max_num_data = n;
+      }
+    }
+    dim_y = HybridBatchedConstructGridDimY(
+      max_num_data, num_pairs, static_cast<int>(blockDim.y),
+      min_grid_dim_y, min_rows_per_thread, saturation_floor_total) * static_cast<int>(blockDim.y);
+  }
   ConstructHistogramDenseInner<BIN_TYPE, HIST_TYPE>(
     smaller_struct, shared_hist, cuda_gradients, cuda_hessians, data,
     column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
@@ -1259,6 +1351,13 @@ __global__ void SubtractHistogramBatchedKernel(
   SubtractHistogramInner(num_total_bin, desc->smaller_struct, desc->larger_struct);
 }
 
+// When fix_feature_index (the index into the need-fix feature list) is -1 it
+// comes from blockIdx.x (the standalone fix kernels); the fused small-leaf
+// fix+subtract kernel passes it explicitly because its fix blocks start after
+// the subtract blocks. When larger_for_subtract is non-null, thread 0 also
+// applies the histogram subtraction at the fixed most-frequent-bin entries
+// (larger = parent - fixed smaller, the exact arithmetic the standalone
+// subtract kernel would perform after the fix kernel).
 __device__ __forceinline__ void FixHistogramInner(
   const uint32_t* cuda_feature_num_bins,
   const uint32_t* cuda_feature_hist_offsets,
@@ -1266,8 +1365,11 @@ __device__ __forceinline__ void FixHistogramInner(
   const int* cuda_need_fix_histogram_features,
   const uint32_t* cuda_need_fix_histogram_features_num_bin_aligned,
   const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,
-  hist_t* shared_mem_buffer) {
-  const unsigned int blockIdx_x = blockIdx.x;
+  hist_t* shared_mem_buffer,
+  const int fix_feature_index = -1,
+  const CUDALeafSplitsStruct* larger_for_subtract = nullptr) {
+  const unsigned int blockIdx_x = fix_feature_index >= 0 ?
+    static_cast<unsigned int>(fix_feature_index) : blockIdx.x;
   const int feature_index = cuda_need_fix_histogram_features[blockIdx_x];
   const uint32_t num_bin_aligned = cuda_need_fix_histogram_features_num_bin_aligned[blockIdx_x];
   const uint32_t feature_hist_offset = cuda_feature_hist_offsets[feature_index];
@@ -1283,8 +1385,15 @@ __device__ __forceinline__ void FixHistogramInner(
   const hist_t sum_gradient = ShuffleReduceSum<hist_t>(bin_gradient, shared_mem_buffer, num_bin_aligned);
   const hist_t sum_hessian = ShuffleReduceSum<hist_t>(bin_hessian, shared_mem_buffer, num_bin_aligned);
   if (threadIdx_x == 0) {
-    feature_hist[most_freq_bin << 1] = leaf_sum_gradients - sum_gradient;
-    feature_hist[(most_freq_bin << 1) + 1] = leaf_sum_hessians - sum_hessian;
+    const hist_t fixed_gradient = leaf_sum_gradients - sum_gradient;
+    const hist_t fixed_hessian = leaf_sum_hessians - sum_hessian;
+    feature_hist[most_freq_bin << 1] = fixed_gradient;
+    feature_hist[(most_freq_bin << 1) + 1] = fixed_hessian;
+    if (larger_for_subtract != nullptr && larger_for_subtract->leaf_index >= 0) {
+      hist_t* larger_feature_hist = larger_for_subtract->hist_in_leaf + feature_hist_offset * 2;
+      larger_feature_hist[most_freq_bin << 1] -= fixed_gradient;
+      larger_feature_hist[(most_freq_bin << 1) + 1] -= fixed_hessian;
+    }
   }
 }
 
@@ -1316,6 +1425,47 @@ __global__ void FixHistogramBatchedKernel(
     cuda_feature_most_freq_bins, cuda_need_fix_histogram_features,
     cuda_need_fix_histogram_features_num_bin_aligned, desc->smaller_struct,
     shared_mem_buffer);
+}
+
+// Fused fix + subtract of the small-leaf level path (hybrid growth,
+// non-quantized only): one launch replaces the sequential FixHistogramBatched +
+// SubtractHistogramBatched pair. blockIdx.y selects the pair. Blocks with
+// blockIdx.x < num_subtract_blocks perform the elementwise larger -= smaller
+// subtraction but SKIP the entries flagged in fix_mfb_mask (the most-frequent-
+// bin gradient/hessian slots of the need-fix features); the remaining blocks
+// (one per need-fix feature) run the most-frequent-bin fix of the smaller leaf
+// and apply the subtraction at exactly those skipped entries from the fixed
+// values. Every histogram entry is therefore written by exactly one block with
+// the identical arithmetic of the sequential launches (bit-identical result);
+// the subtraction reads no entry the fix writes and vice versa, so no
+// cross-block ordering is needed.
+__global__ void FixSubtractHistogramSmallLeafBatchedKernel(
+  const int num_total_bin,
+  const int num_subtract_blocks,
+  const uint32_t* cuda_feature_num_bins,
+  const uint32_t* cuda_feature_hist_offsets,
+  const uint32_t* cuda_feature_most_freq_bins,
+  const int* cuda_need_fix_histogram_features,
+  const uint32_t* cuda_need_fix_histogram_features_num_bin_aligned,
+  const uint8_t* fix_mfb_mask,
+  const CUDAHybridPairDescriptor* pair_descs) {
+  const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.y;
+  if (static_cast<int>(blockIdx.x) < num_subtract_blocks) {
+    const CUDALeafSplitsStruct* larger_leaf = desc->larger_struct;
+    if (larger_leaf->leaf_index >= 0) {
+      const unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+      if (i < static_cast<unsigned int>(2 * num_total_bin) && !fix_mfb_mask[i]) {
+        larger_leaf->hist_in_leaf[i] -= desc->smaller_struct->hist_in_leaf[i];
+      }
+    }
+  } else {
+    __shared__ hist_t shared_mem_buffer[WARPSIZE];
+    FixHistogramInner(cuda_feature_num_bins, cuda_feature_hist_offsets,
+      cuda_feature_most_freq_bins, cuda_need_fix_histogram_features,
+      cuda_need_fix_histogram_features_num_bin_aligned, desc->smaller_struct,
+      shared_mem_buffer, static_cast<int>(blockIdx.x) - num_subtract_blocks,
+      desc->larger_struct);
+  }
 }
 
 template <bool SMALLER_USE_16BIT_HIST, bool LARGER_USE_16BIT_HIST, bool PARENT_USE_16BIT_HIST>
@@ -1666,11 +1816,19 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
   dim3 grid_dim(grid_dim_x, grid_dim_y, num_pairs);
   dim3 block_dim(block_dim_x, block_dim_y);
   const int* level_dim_y = nullptr;
+  const data_size_t* level_sizes_for_kernel = nullptr;
   if (level_smaller_num_data != nullptr) {
-    // speculative flow: the grid above was sized from an upper BOUND; derive the
-    // exact row-grouping extent on-device from the level's actual sizes
-    LaunchComputeBatchedConstructDimYKernel(level_smaller_num_data, num_pairs, block_dim_y);
-    level_dim_y = cuda_hybrid_construct_dim_y_.RawDataReadOnly();
+    // speculative flow: the grid above was sized from an upper BOUND; the exact
+    // row-grouping extent comes from the level's actual sizes. Few-pair levels
+    // evaluate the formula inside the construct kernel itself (saves a launch
+    // on the per-level critical path); many-pair levels keep the single-block
+    // reduction kernel so construct blocks read one precomputed scalar.
+    if (num_pairs <= 32) {
+      level_sizes_for_kernel = level_smaller_num_data;
+    } else {
+      LaunchComputeBatchedConstructDimYKernel(level_smaller_num_data, num_pairs, block_dim_y);
+      level_dim_y = cuda_hybrid_construct_dim_y_.RawDataReadOnly();
+    }
   }
   if (use_quantized_grad_) {
     // quantized training always uses the classic (two-sync) flow, so the exact
@@ -1695,8 +1853,36 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       num_data_,
       static_cast<data_size_t>(min_data_in_leaf_),
       min_sum_hessian_in_leaf_,
-      level_dim_y);
+      level_dim_y,
+      level_sizes_for_kernel,
+      min_grid_dim_y_,
+      BatchConstructMinRowsPerThread(),
+      BatchConstructSaturationFloor(),
+      SmallLeafConstructEnabled() ? SmallLeafRowThreshold() : 0);
   }
+}
+
+void CUDAHistogramConstructor::LaunchFixSubtractHistogramSmallLeafBatchedKernel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const int num_pairs) {
+  // block size FIX_HISTOGRAM_BLOCK_SIZE so the fix blocks reduce exactly like
+  // the standalone fix kernel (bit-identical); the subtract role is elementwise
+  // and block-size invariant
+  const int num_subtract_threads = 2 * num_total_bin_;
+  const int num_subtract_blocks =
+    (num_subtract_threads + FIX_HISTOGRAM_BLOCK_SIZE - 1) / FIX_HISTOGRAM_BLOCK_SIZE;
+  const int num_fix_blocks = static_cast<int>(need_fix_histogram_features_.size());
+  dim3 grid_dim(num_subtract_blocks + num_fix_blocks, num_pairs);
+  FixSubtractHistogramSmallLeafBatchedKernel<<<grid_dim, FIX_HISTOGRAM_BLOCK_SIZE, 0, cuda_stream_>>>(
+    num_total_bin_,
+    num_subtract_blocks,
+    cuda_feature_num_bins_.RawData(),
+    cuda_feature_hist_offsets_.RawData(),
+    cuda_feature_most_freq_bins_.RawData(),
+    cuda_need_fix_histogram_features_.RawData(),
+    cuda_need_fix_histogram_features_num_bin_aligned_.RawData(),
+    cuda_fix_mfb_mask_.RawDataReadOnly(),
+    pair_descs);
 }
 
 void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
