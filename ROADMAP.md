@@ -70,10 +70,12 @@ figures from the profiles in the PR discussions.
   per-column LUTs via Bin::PushBlock; bins identical to the float path by construction
   (md5-verified CUDA quant + CPU deterministic). numerai fed int8: construct 38.9 ->
   15.8s, peak RSS 86.4 -> 43.9 GB. Measured separately from the cross-library matrix
-  (which stays float32-fed for fairness). Follow-ups: EFB FindGroups is now the
-  dominant construct cost (~9s of 15.8s on 2748 features); pandas int frames still
-  convert to float32 (only raw numpy passes through); CSR/CSC + streaming push and
-  uint8 still use the double path.
+  (which stays float32-fed for fairness). Completed in ff77c701: uint8/uint16
+  dtypes, pandas plain-small-int frame passthrough (nullable/float/categorical keep
+  the float path), and float16 via a 65536-entry bit-pattern LUT (exhaustive
+  all-pattern md5 gate). Remaining: EFB FindGroups is now the dominant construct cost
+  (~9s of 15.8s on 2748 features; see EFB density precheck below); CSR/CSC +
+  streaming push still use the double path.
 - [x] **4-bit packed CUDA row/compact data for <=16-bin datasets** (354ceef3): row
   matrix AND per-tree compact matrix packed two cells/byte; all construct/fill/gather
   kernels unpack via IS_4BIT variants. numerai: 2000-tree train 87.6 -> 66.3s (-24%),
@@ -113,16 +115,15 @@ figures from the profiles in the PR discussions.
   extend the one-sync speculative pipeline to it. Also investigate the per-tree gradient
   discretization cost on many-tree/small-tree configs (numerai-quant is slower than
   non-quant today).
-- [ ] **FP32 gain math in the find kernels** (priority up: Felix accepts
-  nondeterminism for speed). find ~= 136 us/tree, FP64-bound and leaf-size-independent;
-  consumer Blackwell runs FP64 at 1/64 the FP32 rate, so this is the one genuinely
-  FLOPs-bound kernel. FP32/mixed gains behind a flag; verify quality via the benchmark
-  harness, not md5.
-- [ ] **FP32-atomic histogram mode** (priority up, same rationale). Non-quant entries
-  are FP64 pairs (16 B/bin); an fp32 pair (8 B/bin) matches quant bandwidth with ZERO
-  per-tree discretization overhead -- candidate fastest mode for many-tree configs
-  (numerai-quant regressed to 155s vs 86s non-quant partly on discretizer cost).
-  Nondeterministic and cancellation-bias risk: judge by measured quality per dataset.
+- [x] **FP32 gain (EXABOOST_FP32_GAIN) + FP32-atomic histogram (EXABOOST_FP32_HIST)
+  modes** (161dc901). Measured per-tree wins at equal-or-better quality on dense
+  hist/find-bound data: epsilon deep -36% (both flags), year -18%, covtype -16%,
+  fraud deep -14%, higgs deep -12%; numerai flat (feature_fraction-dominated).
+  Defaults OFF: covtype shows a seed-noise-scale accuracy dip and numerai gains
+  nothing -- the auto-tuner should own per-shape enablement. fp32-hist auto-falls
+  back to fp64 for quant/sparse/large-bin/categorical/forced-splits/NCCL/global-mem
+  finder. Follow-up: fp32 hists still occupy fp64-sized slots (bandwidth halved,
+  memory unchanged) -- shrink the pool arithmetic to also halve hist memory.
 
 ## Correctness / determinism
 
