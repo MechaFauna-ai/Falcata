@@ -14,6 +14,7 @@
 #include <LightGBM/feature_group.h>
 #include <LightGBM/tree.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <string>

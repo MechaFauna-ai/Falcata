@@ -456,7 +456,7 @@ void Dataset::PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
   // per column: the Bin to push into and a fully encoded value->bin table
   // (most-freq skip, offset and multi-val adjustment folded in);
   // unsigned values (incl. half bit patterns) index the table directly
-  constexpr int64_t kLutSize = int64_t(1) << (8 * sizeof(T));
+  constexpr int64_t kLutSize = static_cast<int64_t>(1) << (8 * sizeof(T));
   constexpr int64_t kLutOffset = std::is_signed<T>::value ? kLutSize / 2 : 0;
   std::vector<uint32_t> lut(static_cast<size_t>(num_cols) * kLutSize, Bin::kSkipBin);
   std::vector<Bin*> targets(num_cols, nullptr);

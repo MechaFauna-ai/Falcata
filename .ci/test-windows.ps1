@@ -33,15 +33,34 @@ if ($env:TASK -eq "cpp-tests") {
 if ($env:TASK -eq "swig") {
     $env:JAVA_HOME = $env:JAVA_HOME_8_X64  # there is pre-installed Eclipse Temurin 8 somewhere
     $ProgressPreference = "SilentlyContinue"  # progress bar bug extremely slows down download speed
+    # pinned version: the 'files/latest/download' redirect intermittently serves an HTML
+    # rate-limit page instead of the archive, which then fails zip extraction
+    $SwigVersion = "4.2.1"
+    $SwigDir = "https://sourceforge.net/projects/swig/files/swigwin/swigwin-$SwigVersion"
+    $SwigZip = "$env:BUILD_SOURCESDIRECTORY/swig/swigwin.zip"
     $params = @{
-        Uri = "https://sourceforge.net/projects/swig/files/latest/download"
-        OutFile = "$env:BUILD_SOURCESDIRECTORY/swig/swigwin.zip"
+        Uri = "$SwigDir/swigwin-$SwigVersion.zip/download"
+        OutFile = $SwigZip
         UserAgent = "curl"
     }
-    Invoke-WebRequest @params
     Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $swig_downloaded = $False
+    foreach ($attempt in 1..5) {
+        try {
+            Invoke-WebRequest @params
+            # validate before extracting: a rate-limited response is an HTML page, not a zip
+            [System.IO.Compression.ZipFile]::OpenRead($SwigZip).Dispose()
+            $swig_downloaded = $True
+            break
+        } catch {
+            Write-Output "SWIG download attempt ${attempt} failed: $($_.Exception.Message)"
+            Remove-Item -Force -ErrorAction Ignore $SwigZip
+            Start-Sleep -Seconds (30 * $attempt)
+        }
+    }
+    Assert-Output $swig_downloaded
     [System.IO.Compression.ZipFile]::ExtractToDirectory(
-        "$env:BUILD_SOURCESDIRECTORY/swig/swigwin.zip",
+        $SwigZip,
         "$env:BUILD_SOURCESDIRECTORY/swig"
     ) ; Assert-Output $?
     $SwigFolder = Get-ChildItem -Name -Path "$env:BUILD_SOURCESDIRECTORY/swig" -Attributes Directory

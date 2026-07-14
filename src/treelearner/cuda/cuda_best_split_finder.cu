@@ -9,13 +9,13 @@
 
 #include "cuda_best_split_finder.hpp"
 
-#include <cstring>
-
-#include <LightGBM/cuda/cuda_algorithms.hpp>
 #include <LightGBM/cuda/cuda_rocm_interop.h>
 
 #include <algorithm>
+#include <cstring>
 #include <vector>
+
+#include <LightGBM/cuda/cuda_algorithms.hpp>
 
 namespace LightGBM {
 
@@ -2242,7 +2242,7 @@ __global__ void SyncBestSplitForLevelKernel(
   const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
   // leaf index and validity mirror the find kernel: the leaf index comes from
   // the struct (written by the batched apply kernels; equal to the host value in
-  // the classic flow) and the host validity flags are ANDed with the on-device
+  // the classic flow) and the host validity flags are combined (bitwise AND) with the on-device
   // min_data/min_hessian gates so the speculative single-sync flow needs no
   // host-side child statistics.
   const CUDALeafSplitsStruct* leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;

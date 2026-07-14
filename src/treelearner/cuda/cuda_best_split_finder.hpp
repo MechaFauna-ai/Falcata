@@ -13,6 +13,7 @@
 #include <LightGBM/bin.h>
 #include <LightGBM/dataset.h>
 
+#include <cstdio>
 #include <string>
 #include <vector>
 
