@@ -74,12 +74,17 @@ figures from the profiles in the PR discussions.
   dominant construct cost (~9s of 15.8s on 2748 features); pandas int frames still
   convert to float32 (only raw numpy passes through); CSR/CSC + streaming push and
   uint8 still use the double path.
-- [ ] **4-bit packed CUDA row/compact data for <=16-bin datasets.** Row-wise cells have
-  an 8-bit minimum today while numerai needs ~3 bits (5.5 bins avg, max 6): pack two
-  cells/byte in the structures feeding the per-tree compact gather + level construct
-  (~19 ms/tree, scattered-read bound) -> ~halved VRAM footprint and construct traffic.
-  Watch nibble alignment at partition/column boundaries; classic 255-bin data
-  unaffected.
+- [x] **4-bit packed CUDA row/compact data for <=16-bin datasets** (354ceef3): row
+  matrix AND per-tree compact matrix packed two cells/byte; all construct/fill/gather
+  kernels unpack via IS_4BIT variants. numerai: 2000-tree train 87.6 -> 66.3s (-24%),
+  device memory 19.3 -> 11.5 GB, Booster create 2.25 -> 1.44s, gather source at 1.47
+  TB/s. Kill switch EXABOOST_ROWDATA_4BIT=0; verify env checks unpacked equality.
+  Follow-ups: (a) the construct kernel (~21 ms/tree) is latency-bound on scattered
+  per-row grad/hess reads, not bin bytes -- interleave grad/hess as float2 or
+  cache-tile rows across partitions; (b) the row-to-col compact gather is now
+  write-bound producing a 1.5 GB col-major buffer the split kernels read only ~170
+  MB/tree of -- teach the split kernels to read the packed compact matrix directly
+  and drop the buffer (~4 ms/tree).
 - [ ] **Latency-bound construct on tiny-bin wide data**: post-161fe88b numerai construct
   is scattered-read latency-bound (19ms/tree) -- candidate for NVRTC shape
   specialization (auto-tuner tier 2) or layout changes.
