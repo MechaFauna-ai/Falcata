@@ -22,6 +22,25 @@ figures from the profiles in the PR discussions.
   (not per-level) task/scratch regions, and an order-independent split log (the host
   rebuild already renumbers canonically, absorbing completion-order nondeterminism).
   Est. +10-20% over L1 on unbalanced small trees.
+- [ ] **Runtime auto-tuner ("JIT optimizer") tier 1 — online policy tuning.** Boosting
+  runs thousands of near-identical trees: measure per-tree wall time (CUDA events) +
+  feedback stats (churn, level widths, imbalance) and bandit-tune the existing
+  dataset-dependent knobs: batched-construct grid sizing (EXABOOST_BATCH_CONSTRUCT_FLOOR
+  -- covtype is latency-bound, year/higgs merge-bound), small-leaf construct threshold
+  (EXABOOST_SMALL_LEAF_ROWS), hist pipeline count, and the selective-growth speculation
+  policy (e.g. gain-margin gating for unbalanced trees). Speculation is model-invariant
+  by monotonicity, and quant-mode integer histograms keep md5 locks valid under any
+  schedule retuning -- the tuner cannot break exactness gates. Hysteresis vs noise;
+  decision logging.
+- [ ] **Runtime auto-tuner tier 2 -- NVRTC shape-specialized kernels.** JIT-compile
+  construct/find kernels at Dataset construction with columns / per-feature bin counts
+  baked in (precedent: LightGBM's OpenCL backend JIT-compiled with #defined bin counts).
+  Star case: numerai's ~7-bin features waste >90% of the fixed 12288-entry shared
+  histogram; a specialized kernel packs ~10x more features per partition -> fewer
+  partitions, less shared->global merge traffic. One-time ~0.5s compile amortized over
+  thousands of trees; needs AOT fallback.
+- [ ] **Runtime auto-tuner tier 3 -- persisted tuning cache**: store best-found configs
+  keyed by dataset-shape signature (FFTW-wisdom style) so retrains skip exploration.
 - [ ] **Selective-growth churn reduction.** covtype 64/12 applies 2.09x the final split
   count (52% displaced-then-pruned). Smarter speculation — e.g. only apply candidates
   with a selection margin / hysteresis — to cut wasted search+apply.
