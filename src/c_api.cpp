@@ -922,6 +922,7 @@ using LightGBM::ArrowChunkedArray;
 #endif  // LGB_R_BUILD
 using LightGBM::Booster;
 using LightGBM::Common::CheckElementsIntervalClosed;
+using LightGBM::Common::HalfBitsToFloat;
 using LightGBM::Common::RemoveQuotationSymbol;
 using LightGBM::Common::Vector2Ptr;
 using LightGBM::Common::VectorSize;
@@ -945,7 +946,7 @@ RowFunctionFromDenseMatrix(const void* data, int num_row, int num_col, int data_
 std::function<std::vector<std::pair<int, double>>(int row_idx)>
 RowPairFunctionFromDenseMatrix(const void* data, int num_row, int num_col, int data_type, int is_row_major);
 
-template <typename T>
+template <typename T, bool IS_FLOAT16 = false>
 void SampleDenseSmallInt(const void** data, const std::vector<int32_t>& sample_indices,
                          const int32_t* nrow, int32_t ncol, const int* is_row_major,
                          std::vector<std::vector<double>>* sample_values,
@@ -1382,6 +1383,12 @@ int LGBM_DatasetCreateFromMats(int32_t nmat,
       SampleDenseSmallInt<int8_t>(data, sample_indices, nrow, ncol, is_row_major, &sample_values, &sample_idx);
     } else if (data_type == C_API_DTYPE_INT16) {
       SampleDenseSmallInt<int16_t>(data, sample_indices, nrow, ncol, is_row_major, &sample_values, &sample_idx);
+    } else if (data_type == C_API_DTYPE_UINT8) {
+      SampleDenseSmallInt<uint8_t>(data, sample_indices, nrow, ncol, is_row_major, &sample_values, &sample_idx);
+    } else if (data_type == C_API_DTYPE_UINT16) {
+      SampleDenseSmallInt<uint16_t>(data, sample_indices, nrow, ncol, is_row_major, &sample_values, &sample_idx);
+    } else if (data_type == C_API_DTYPE_FLOAT16) {
+      SampleDenseSmallInt<uint16_t, true>(data, sample_indices, nrow, ncol, is_row_major, &sample_values, &sample_idx);
     } else {
       int offset = 0;
       int j = 0;
@@ -1423,6 +1430,12 @@ int LGBM_DatasetCreateFromMats(int32_t nmat,
       ret->PushDenseSmallIntRows(reinterpret_cast<const int8_t*>(data[j]), nrow[j], ncol, is_row_major[j], start_row);
     } else if (data_type == C_API_DTYPE_INT16) {
       ret->PushDenseSmallIntRows(reinterpret_cast<const int16_t*>(data[j]), nrow[j], ncol, is_row_major[j], start_row);
+    } else if (data_type == C_API_DTYPE_UINT8) {
+      ret->PushDenseSmallIntRows(reinterpret_cast<const uint8_t*>(data[j]), nrow[j], ncol, is_row_major[j], start_row);
+    } else if (data_type == C_API_DTYPE_UINT16) {
+      ret->PushDenseSmallIntRows(reinterpret_cast<const uint16_t*>(data[j]), nrow[j], ncol, is_row_major[j], start_row);
+    } else if (data_type == C_API_DTYPE_FLOAT16) {
+      ret->PushDenseSmallIntRows<uint16_t, true>(reinterpret_cast<const uint16_t*>(data[j]), nrow[j], ncol, is_row_major[j], start_row);
     } else {
       OMP_INIT_EX();
       #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
@@ -2924,7 +2937,7 @@ int LGBM_GetMaxThreads(int* out) {
 // ---- start of some help functions
 
 
-template<typename T>
+template<typename T, bool IS_FLOAT16 = false>
 std::function<std::vector<double>(int row_idx)>
 RowFunctionFromDenseMatrix_helper(const void* data, int num_row, int num_col, int is_row_major) {
   const T* data_ptr = reinterpret_cast<const T*>(data);
@@ -2933,7 +2946,8 @@ RowFunctionFromDenseMatrix_helper(const void* data, int num_row, int num_col, in
       std::vector<double> ret(num_col);
       auto tmp_ptr = data_ptr + static_cast<size_t>(num_col) * row_idx;
       for (int i = 0; i < num_col; ++i) {
-        ret[i] = static_cast<double>(*(tmp_ptr + i));
+        ret[i] = IS_FLOAT16 ? static_cast<double>(HalfBitsToFloat(static_cast<uint16_t>(*(tmp_ptr + i))))
+                            : static_cast<double>(*(tmp_ptr + i));
       }
       return ret;
     };
@@ -2941,7 +2955,9 @@ RowFunctionFromDenseMatrix_helper(const void* data, int num_row, int num_col, in
     return [=] (int row_idx) {
       std::vector<double> ret(num_col);
       for (int i = 0; i < num_col; ++i) {
-        ret[i] = static_cast<double>(*(data_ptr + static_cast<size_t>(num_row) * i + row_idx));
+        const T value = *(data_ptr + static_cast<size_t>(num_row) * i + row_idx);
+        ret[i] = IS_FLOAT16 ? static_cast<double>(HalfBitsToFloat(static_cast<uint16_t>(value)))
+                            : static_cast<double>(value);
       }
       return ret;
     };
@@ -2958,6 +2974,12 @@ RowFunctionFromDenseMatrix(const void* data, int num_row, int num_col, int data_
     return RowFunctionFromDenseMatrix_helper<int8_t>(data, num_row, num_col, is_row_major);
   } else if (data_type == C_API_DTYPE_INT16) {
     return RowFunctionFromDenseMatrix_helper<int16_t>(data, num_row, num_col, is_row_major);
+  } else if (data_type == C_API_DTYPE_UINT8) {
+    return RowFunctionFromDenseMatrix_helper<uint8_t>(data, num_row, num_col, is_row_major);
+  } else if (data_type == C_API_DTYPE_UINT16) {
+    return RowFunctionFromDenseMatrix_helper<uint16_t>(data, num_row, num_col, is_row_major);
+  } else if (data_type == C_API_DTYPE_FLOAT16) {
+    return RowFunctionFromDenseMatrix_helper<uint16_t, true>(data, num_row, num_col, is_row_major);
   }
   Log::Fatal("Unknown data type in RowFunctionFromDenseMatrix");
   return nullptr;
@@ -2966,7 +2988,9 @@ RowFunctionFromDenseMatrix(const void* data, int num_row, int num_col, int data_
 // Column-parallel bin-mapper sampler for dense small-int matrices. Produces exactly
 // what the row-function sampling loop would: ints are never NaN and pass the
 // kZeroThreshold check iff nonzero, and per-column appends stay in sample order.
-template <typename T>
+// For halves every value except +-0 passes: NaNs via isnan and the rest via the
+// kZeroThreshold check (the smallest half subnormal is ~6e-8 >> kZeroThreshold).
+template <typename T, bool IS_FLOAT16>
 void SampleDenseSmallInt(const void** data, const std::vector<int32_t>& sample_indices,
                          const int32_t* nrow, int32_t ncol, const int* is_row_major,
                          std::vector<std::vector<double>>* sample_values,
@@ -2998,7 +3022,13 @@ void SampleDenseSmallInt(const void** data, const std::vector<int32_t>& sample_i
       for (int col = col_lo; col < col_hi; ++col) {
         const T value = is_row_major[mat_of[i]] ? mat[r * ncol + col]
                                                 : mat[static_cast<size_t>(nrow[mat_of[i]]) * col + r];
-        if (value != 0) {
+        if (IS_FLOAT16) {
+          if ((static_cast<uint16_t>(value) & 0x7FFF) != 0) {  // not +-0
+            (*sample_values)[col].emplace_back(
+                static_cast<double>(HalfBitsToFloat(static_cast<uint16_t>(value))));
+            (*sample_idx)[col].emplace_back(static_cast<int>(i));
+          }
+        } else if (value != 0) {
           (*sample_values)[col].emplace_back(static_cast<double>(value));
           (*sample_idx)[col].emplace_back(static_cast<int>(i));
         }

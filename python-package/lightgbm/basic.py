@@ -59,6 +59,8 @@ _ctypes_float_ptr = Union[
     "ctypes._Pointer[ctypes.c_double]",
     "ctypes._Pointer[ctypes.c_int8]",
     "ctypes._Pointer[ctypes.c_int16]",
+    "ctypes._Pointer[ctypes.c_uint8]",
+    "ctypes._Pointer[ctypes.c_uint16]",
 ]
 _ctypes_float_array = Union[
     "ctypes.Array[ctypes._Pointer[ctypes.c_float]]",
@@ -174,7 +176,7 @@ def _get_sample_count(total_nrow: int, params: str) -> int:
 
 def _np2d_to_np1d(mat: np.ndarray) -> Tuple[np.ndarray, int]:
     dtype: "np.typing.DTypeLike"
-    if mat.dtype in (np.float32, np.float64, np.int8, np.int16):
+    if mat.dtype in (np.float32, np.float64, np.int8, np.int16, np.uint8, np.uint16, np.float16):
         dtype = mat.dtype
     else:
         dtype = np.float32
@@ -629,6 +631,9 @@ _C_API_DTYPE_INT32 = 2
 _C_API_DTYPE_INT64 = 3
 _C_API_DTYPE_INT8 = 4
 _C_API_DTYPE_INT16 = 5
+_C_API_DTYPE_UINT8 = 6
+_C_API_DTYPE_UINT16 = 7
+_C_API_DTYPE_FLOAT16 = 8
 
 """Macro definition of data order in matrix"""
 _C_API_IS_COL_MAJOR = 0
@@ -696,8 +701,20 @@ def _c_float_array(data: np.ndarray) -> Tuple[_ctypes_float_ptr, int, np.ndarray
         elif data.dtype == np.int16:
             ptr_data = data.ctypes.data_as(ctypes.POINTER(ctypes.c_int16))
             type_data = _C_API_DTYPE_INT16
+        elif data.dtype == np.uint8:
+            ptr_data = data.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
+            type_data = _C_API_DTYPE_UINT8
+        elif data.dtype == np.uint16:
+            ptr_data = data.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16))
+            type_data = _C_API_DTYPE_UINT16
+        elif data.dtype == np.float16:
+            # the C side bins halves through their raw IEEE 754 bit patterns
+            ptr_data = data.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16))
+            type_data = _C_API_DTYPE_FLOAT16
         else:
-            raise TypeError(f"Expected np.float32, np.float64, np.int8 or np.int16, met type({data.dtype})")
+            raise TypeError(
+                f"Expected np.float32, np.float64, np.float16 or a small int (np.int8/np.int16/np.uint8/np.uint16), met type({data.dtype})"
+            )
     else:
         raise TypeError(f"Unknown type({type(data).__name__})")
     return (ptr_data, type_data, data)  # return `data` to avoid the temporary copy is freed
@@ -796,9 +813,17 @@ def _data_from_pandas(
         categorical_feature = cat_cols_not_ordered
 
     df_dtypes = [dtype.type for dtype in data.dtypes]
-    # so that the target dtype considers floats
-    df_dtypes.append(np.float32)
-    target_dtype = np.result_type(*df_dtypes)
+    # frames of plain numpy-backed small ints skip the float conversion: the C
+    # ingestion bins int8/int16/uint8/uint16 natively (such columns have no NA);
+    # nullable/categorical/object columns must keep going through floats
+    if not cat_cols and df_dtypes and all(isinstance(dtype, np.dtype) for dtype in data.dtypes):
+        target_dtype = np.result_type(*df_dtypes)
+    else:
+        target_dtype = None
+    if target_dtype not in (np.int8, np.int16, np.uint8, np.uint16):
+        # so that the target dtype considers floats
+        df_dtypes.append(np.float32)
+        target_dtype = np.result_type(*df_dtypes)
 
     return (
         _pandas_to_numpy(data, target_dtype=target_dtype),

@@ -593,14 +593,16 @@ class Dataset {
    * \brief Push a dense block of rows of a small integer type via per-column
    *        value->bin lookup tables, bypassing the per-value double conversion
    *        and bin binary search. Bit-identical to pushing every value through
-   *        PushOneRow.
+   *        PushOneRow. With ``IS_FLOAT16`` the values are the raw IEEE 754 half
+   *        bit patterns (``T`` must be ``uint16_t``) and the tables are built
+   *        over the halves they represent.
    * \param data Pointer to the block's values
    * \param nrow Number of rows in the block
    * \param ncol Number of columns
    * \param is_row_major 1 for row-major data, 0 for column-major
    * \param start_row Dataset row index of the block's first row
    */
-  template <typename T>
+  template <typename T, bool IS_FLOAT16 = false>
   void PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
                              int is_row_major, data_size_t start_row);
 

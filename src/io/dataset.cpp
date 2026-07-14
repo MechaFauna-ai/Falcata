@@ -446,7 +446,7 @@ void Dataset::Construct(std::vector<std::unique_ptr<BinMapper>>* bin_mappers,
   gpu_device_id_ = io_config.gpu_device_id;
 }
 
-template <typename T>
+template <typename T, bool IS_FLOAT16>
 void Dataset::PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
                                     int is_row_major, data_size_t start_row) {
   if (is_finish_load_) {
@@ -454,9 +454,10 @@ void Dataset::PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
   }
   const int num_cols = std::min(ncol, num_total_features_);
   // per column: the Bin to push into and a fully encoded value->bin table
-  // (most-freq skip, offset and multi-val adjustment folded in)
+  // (most-freq skip, offset and multi-val adjustment folded in);
+  // unsigned values (incl. half bit patterns) index the table directly
   constexpr int64_t kLutSize = int64_t(1) << (8 * sizeof(T));
-  constexpr int64_t kLutOffset = kLutSize / 2;
+  constexpr int64_t kLutOffset = std::is_signed<T>::value ? kLutSize / 2 : 0;
   std::vector<uint32_t> lut(static_cast<size_t>(num_cols) * kLutSize, Bin::kSkipBin);
   std::vector<Bin*> targets(num_cols, nullptr);
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
@@ -471,8 +472,10 @@ void Dataset::PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
     const BinMapper* mapper = FeatureBinMapper(feature_idx);
     uint32_t* col_lut = lut.data() + static_cast<size_t>(col) * kLutSize;
     for (int64_t v = 0; v < kLutSize; ++v) {
-      col_lut[v] = fg->EncodeBinForPush(
-          sub_feature, mapper->ValueToBin(static_cast<double>(static_cast<T>(v - kLutOffset))));
+      const double value = IS_FLOAT16
+          ? static_cast<double>(Common::HalfBitsToFloat(static_cast<uint16_t>(v)))
+          : static_cast<double>(static_cast<T>(v - kLutOffset));
+      col_lut[v] = fg->EncodeBinForPush(sub_feature, mapper->ValueToBin(value));
     }
   }
   // tiles keep the strided per-column reads of row-major data cache-resident
@@ -514,7 +517,8 @@ void Dataset::PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
         for (int32_t r = r0; r < r1; ++r) {
           const T value = is_row_major ? data[static_cast<size_t>(r) * ncol + col]
                                        : data[static_cast<size_t>(nrow) * col + r];
-          raw[start_row + r] = static_cast<float>(value);
+          raw[start_row + r] = IS_FLOAT16 ? Common::HalfBitsToFloat(static_cast<uint16_t>(value))
+                                          : static_cast<float>(value);
         }
       }
     }
@@ -527,6 +531,12 @@ template void Dataset::PushDenseSmallIntRows<int8_t>(const int8_t* data, int32_t
                                                      int is_row_major, data_size_t start_row);
 template void Dataset::PushDenseSmallIntRows<int16_t>(const int16_t* data, int32_t nrow, int32_t ncol,
                                                       int is_row_major, data_size_t start_row);
+template void Dataset::PushDenseSmallIntRows<uint8_t>(const uint8_t* data, int32_t nrow, int32_t ncol,
+                                                      int is_row_major, data_size_t start_row);
+template void Dataset::PushDenseSmallIntRows<uint16_t>(const uint16_t* data, int32_t nrow, int32_t ncol,
+                                                       int is_row_major, data_size_t start_row);
+template void Dataset::PushDenseSmallIntRows<uint16_t, true>(const uint16_t* data, int32_t nrow, int32_t ncol,
+                                                             int is_row_major, data_size_t start_row);
 
 void Dataset::FinishLoad() {
   if (is_finish_load_) {
