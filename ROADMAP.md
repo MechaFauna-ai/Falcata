@@ -22,6 +22,16 @@ figures from the profiles in the PR discussions.
   (not per-level) task/scratch regions, and an order-independent split log (the host
   rebuild already renumbers canonically, absorbing completion-order nondeterminism).
   Est. +10-20% over L1 on unbalanced small trees.
+- [ ] **Static planner (auto-tuner tier 0).** At Init the dataset shape (rows,
+  features, actual bins/feature) and config (num_leaves, max_depth, num_class,
+  iterations) determine: expected level geometry (leaf sizes ~ rows/2^level) -> grid
+  configs, small-leaf threshold, speculative bounds; histogram partition packing and
+  quant bit thresholds from the real bin histogram; pipeline selection; and a compact
+  per-tree histogram layout for feature_fraction runs (static version of the 161fe88b
+  dead-entry mask). Precedent: CPU LightGBM's row/col-wise chooser, EFB, multi-val bin
+  packing. Decides only provable shape functions; supplies priors for the ambiguous
+  constants below (GPU cost models are brittle: the construct-floor cap gained
+  year/higgs 35% and regressed covtype 45% -- only measurement caught it).
 - [ ] **Runtime auto-tuner ("JIT optimizer") tier 1 — online policy tuning.** Boosting
   runs thousands of near-identical trees: measure per-tree wall time (CUDA events) +
   feedback stats (churn, level widths, imbalance) and bandit-tune the existing
