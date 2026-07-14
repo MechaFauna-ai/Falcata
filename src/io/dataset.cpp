@@ -13,6 +13,7 @@
 #include <LightGBM/utils/threading.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -249,6 +250,156 @@ std::vector<std::vector<int>> FindGroups(
   return features_in_group;
 }
 
+inline int PopCount64(uint64_t v) {
+#if defined(_MSC_VER)
+  v = v - ((v >> 1) & 0x5555555555555555ULL);
+  v = (v & 0x3333333333333333ULL) + ((v >> 2) & 0x3333333333333333ULL);
+  v = (v + (v >> 4)) & 0x0F0F0F0F0F0F0F0FULL;
+  return static_cast<int>((v * 0x0101010101010101ULL) >> 56);
+#else
+  return __builtin_popcountll(v);
+#endif
+}
+
+// Cheap certificate (from the already-collected sample) that FindGroups would
+// put every used feature into its own group, i.e. EFB cannot bundle anything.
+// When it holds, the expensive conflict-count group search can be skipped
+// while preserving EXACTLY the resulting single-feature-per-group structure.
+//
+// Proof sketch: by induction all groups stay singletons, so a feature f could
+// only ever merge with a singleton group {g}. The merge is accepted only if
+//   (gate1)  cnt_g + cnt_f <= total_sample_cnt + max_conflict, and
+//   (gate2)  conflict(f, g) <= rest_max_cnt(== max_conflict for singletons)
+//            && conflict(f, g) <= cnt_f / 2.
+// We compute the exact fixed per-feature non-default sample index sets (the
+// same sets FixSampleIndices feeds to FindGroups) as bitmaps and reject the
+// certificate as soon as any pair could merge in either processing order.
+// The max-bin-per-group gate on GPU only further restricts merges, so it can
+// be ignored conservatively. For the is_sparse second round we additionally
+// require every singleton's dense rate >= 0.4 so the round is a no-op.
+bool EFBPrecheckProvesNoBundling(
+    const std::vector<std::unique_ptr<BinMapper>>& bin_mappers,
+    int** sample_indices, double** sample_values, const int* num_per_col,
+    int num_sample_col, data_size_t total_sample_cnt,
+    const std::vector<int>& used_features, bool is_sparse) {
+  const int num_features = static_cast<int>(used_features.size());
+  if (num_features <= 1) {
+    return true;
+  }
+  for (int fidx : used_features) {
+    if (fidx >= num_sample_col) {
+      // filtered features have zero conflicts and would always bundle
+      return false;
+    }
+  }
+  const size_t words_per_feature = (static_cast<size_t>(total_sample_cnt) + 63) / 64;
+  const size_t bitmap_bytes = static_cast<size_t>(num_features) * words_per_feature * 8;
+  if (bitmap_bytes > (static_cast<size_t>(1) << 31)) {
+    return false;
+  }
+  std::vector<uint64_t> bitmaps(static_cast<size_t>(num_features) * words_per_feature, 0);
+  std::vector<data_size_t> cnt(num_features, 0);
+  const data_size_t max_conflict =
+      static_cast<data_size_t>(total_sample_cnt / 10000);
+  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+  for (int i = 0; i < num_features; ++i) {
+    const int fidx = used_features[i];
+    uint64_t* bm = bitmaps.data() + static_cast<size_t>(i) * words_per_feature;
+    const BinMapper* mapper = bin_mappers[fidx].get();
+    const int n = num_per_col[fidx];
+    const int* indices = sample_indices[fidx];
+    if (mapper->GetDefaultBin() == mapper->GetMostFreqBin()) {
+      // FixSampleIndices is a no-op: the original indices are used
+      for (int j = 0; j < n; ++j) {
+        bm[indices[j] >> 6] |= (1ULL << (indices[j] & 63));
+      }
+      cnt[i] = n;
+    } else {
+      // FixSampleIndices marks every row except sampled rows binned to the
+      // most frequent bin
+      std::fill(bm, bm + words_per_feature, ~0ULL);
+      if ((total_sample_cnt & 63) != 0) {
+        bm[words_per_feature - 1] = (1ULL << (total_sample_cnt & 63)) - 1;
+      }
+      const uint32_t most_freq_bin = mapper->GetMostFreqBin();
+      const double* values = sample_values[fidx];
+      data_size_t c = total_sample_cnt;
+      for (int j = 0; j < n; ++j) {
+        if (mapper->ValueToBin(values[j]) == most_freq_bin) {
+          bm[indices[j] >> 6] &= ~(1ULL << (indices[j] & 63));
+          --c;
+        }
+      }
+      if (c == 0) {
+        // FixSampleIndices returns an empty vector then, and FindGroups falls
+        // back to the original indices and count
+        std::fill(bm, bm + words_per_feature, 0);
+        for (int j = 0; j < n; ++j) {
+          bm[indices[j] >> 6] |= (1ULL << (indices[j] & 63));
+        }
+        cnt[i] = n;
+      } else {
+        cnt[i] = c;
+      }
+    }
+  }
+  if (is_sparse) {
+    // second round of FindGroups must be a no-op: it regroups (and merges)
+    // groups whose dense rate is below the 0.4 threshold
+    for (int i = 0; i < num_features; ++i) {
+      const double dense_rate =
+          static_cast<double>(cnt[i]) / total_sample_cnt;
+      if (dense_rate < 0.4) {
+        return false;
+      }
+    }
+  }
+  std::atomic<bool> no_merge_possible(true);
+  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(dynamic)
+  for (int i = 0; i < num_features; ++i) {
+    if (!no_merge_possible.load(std::memory_order_relaxed)) {
+      continue;
+    }
+    const uint64_t* bm_i = bitmaps.data() + static_cast<size_t>(i) * words_per_feature;
+    for (int j = i + 1; j < num_features; ++j) {
+      if (static_cast<int64_t>(cnt[i]) + cnt[j] >
+          static_cast<int64_t>(total_sample_cnt) + max_conflict) {
+        continue;  // gate1 blocks this pair in both orders
+      }
+      const uint64_t* bm_j = bitmaps.data() + static_cast<size_t>(j) * words_per_feature;
+      int64_t conflict = 0;
+      for (size_t w = 0; w < words_per_feature; ++w) {
+        conflict += PopCount64(bm_i[w] & bm_j[w]);
+      }
+      // accepted in at least one processing order?
+      if (conflict <= max_conflict && conflict <= std::max(cnt[i], cnt[j]) / 2) {
+        no_merge_possible.store(false, std::memory_order_relaxed);
+        break;
+      }
+    }
+  }
+  return no_merge_possible.load();
+}
+
+// the exact structure FindGroups+FastFeatureBundling produce when nothing
+// bundles: one feature per group in used_features order, then the same
+// deterministic shuffle FastFeatureBundling applies
+std::vector<std::vector<int>> SingleFeatureGroupsShuffled(
+    const std::vector<int>& used_features, data_size_t num_data,
+    std::vector<int8_t>* multi_val_group) {
+  auto features_in_group = OneFeaturePerGroup(used_features);
+  std::vector<int8_t> group_is_multi_val(used_features.size(), 0);
+  const int num_group = static_cast<int>(features_in_group.size());
+  Random tmp_rand(num_data);
+  for (int i = 0; i < num_group - 1; ++i) {
+    int j = tmp_rand.NextShort(i + 1, num_group);
+    std::swap(features_in_group[i], features_in_group[j]);
+    std::swap(group_is_multi_val[i], group_is_multi_val[j]);
+  }
+  *multi_val_group = group_is_multi_val;
+  return features_in_group;
+}
+
 std::vector<std::vector<int>> FastFeatureBundling(
     const std::vector<std::unique_ptr<BinMapper>>& bin_mappers,
     int** sample_indices, double** sample_values, const int* num_per_col,
@@ -256,6 +407,24 @@ std::vector<std::vector<int>> FastFeatureBundling(
     const std::vector<int>& used_features, data_size_t num_data,
     bool is_use_gpu, bool is_sparse, std::vector<int8_t>* multi_val_group) {
   Common::FunctionTimer fun_timer("Dataset::FastFeatureBundling", global_timer);
+  const char* precheck_env = std::getenv("EXABOOST_EFB_PRECHECK");
+  const bool precheck_enabled =
+      !(precheck_env != nullptr && std::string(precheck_env) == std::string("0"));
+  const char* precheck_verify_env = std::getenv("EXABOOST_EFB_PRECHECK_VERIFY");
+  const bool precheck_verify =
+      precheck_verify_env != nullptr &&
+      std::string(precheck_verify_env) == std::string("1");
+  const bool precheck_fired =
+      precheck_enabled &&
+      EFBPrecheckProvesNoBundling(bin_mappers, sample_indices, sample_values,
+                                  num_per_col, num_sample_col,
+                                  total_sample_cnt, used_features, is_sparse);
+  if (precheck_fired && !precheck_verify) {
+    Log::Debug("EFB precheck: no bundling possible, skipping group search "
+               "(disable with EXABOOST_EFB_PRECHECK=0)");
+    return SingleFeatureGroupsShuffled(used_features, num_data,
+                                       multi_val_group);
+  }
   std::vector<size_t> feature_non_zero_cnt;
   feature_non_zero_cnt.reserve(used_features.size());
   // put dense feature first
@@ -323,6 +492,33 @@ std::vector<std::vector<int>> FastFeatureBundling(
     std::swap(features_in_group[i], features_in_group[j]);
     // Using std::swap for vector<bool> will cause the wrong result.
     std::swap(group_is_multi_val[i], group_is_multi_val[j]);
+  }
+  if (precheck_verify) {
+    if (precheck_fired) {
+      std::vector<int8_t> precheck_multi_val;
+      auto precheck_groups = SingleFeatureGroupsShuffled(
+          used_features, num_data, &precheck_multi_val);
+      bool identical = precheck_groups == features_in_group &&
+                       precheck_multi_val.size() == group_is_multi_val.size();
+      if (identical) {
+        for (size_t i = 0; i < precheck_multi_val.size(); ++i) {
+          if (precheck_multi_val[i] != group_is_multi_val[i]) {
+            identical = false;
+            break;
+          }
+        }
+      }
+      if (!identical) {
+        Log::Fatal("EFB precheck verify: precheck fired but group structure "
+                   "differs from the full group search");
+      }
+      Log::Info("EFB precheck verify: fired, structure identical (%d groups)",
+                num_group);
+    } else {
+      Log::Info("EFB precheck verify: did not fire (%d groups from full "
+                "search, precheck enabled=%d)",
+                num_group, static_cast<int>(precheck_enabled));
+    }
   }
   *multi_val_group = group_is_multi_val;
   return features_in_group;
