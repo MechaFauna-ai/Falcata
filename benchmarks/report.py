@@ -188,6 +188,19 @@ def main():
                 if h:
                     b.set_hatch(h)
                     b.set_alpha(0.35)
+            # single-dataset charts (numerai) have room for quality labels
+            if reg == "numerai" and len(datasets) == 1 and not np.isnan(vals[0]):
+                gl = sub[(sub.dataset == datasets[0]) & (sub.library == lib)]
+                met = gl["metrics"].iloc[0] or {}
+                if met.get("corr_mean") is not None:
+                    ax.text(
+                        offs[0],
+                        vals[0] * 1.03,
+                        f"corr {met['corr_mean']:.4f}\nsharpe {met['corr_sharpe']:.2f}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=8,
+                    )
         # crash markers: x in data coords, y just above the axis baseline
         for xi, color in crash_marks:
             ax.text(
@@ -202,6 +215,9 @@ def main():
                 fontweight="bold",
             )
         ax.set_yscale("log")
+        if reg == "numerai":
+            ymin, ymax = ax.get_ylim()
+            ax.set_ylim(ymin, ymax * 1.4)  # headroom for the quality labels
         ax.set_xticks(x, datasets)
         ax.set_ylabel("train time (s, log)")
         ax.set_title(
