@@ -74,3 +74,19 @@ Everything lands under `benchmarks/workspace/` (override with
 Blackwell). Expect ~25GB of downloads and, with all datasets, a day-plus of
 GPU time for the full matrix; `--only fraud,covtype,year` gives a quick
 signal in under an hour.
+
+## Native int8 ingestion (optional, ExaBoost-only)
+
+The matrix feeds every library identical float32 bits, so ExaBoost's native
+small-int path (int8/int16 matrices pass zero-copy through the C API and are
+binned via per-column LUTs — bins byte-identical to the float path) is
+measured separately:
+
+```bash
+./benchmarks/workspace/env-competitors/bin/python benchmarks/datasets.py numerai-int8
+./benchmarks/workspace/env-exaboost/bin/python benchmarks/ingest_bench.py
+```
+
+Reference (RTX 5090, commit 9c0f5ffa, medians of 3): construct 38.9s (f32-fed)
+vs **15.8s** (int8-fed), peak host RSS 86.4GB vs **43.9GB**; Booster create and
+per-tree times identical, models md5-identical.

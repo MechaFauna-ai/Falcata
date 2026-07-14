@@ -10,6 +10,7 @@ Run inside the competitors venv (needs sklearn, pandas, pyarrow)::
     python benchmarks/datasets.py all          # everything except numerai
     python benchmarks/datasets.py higgs airline
     NUMERAI_PARQUET=/path/to/v5_all_data.parquet python benchmarks/datasets.py numerai
+    python benchmarks/datasets.py numerai-int8  # optional int8 twin (ingest_bench.py)
 
 The Numerai parquet must contain ``feature*`` columns (int8), a ``target``
 column, and a string ``era`` column, sorted by era — the "all data" training
@@ -201,20 +202,14 @@ def prep_fraud():
     save("fraud", x_tr, y_tr, x_te, y_te)
 
 
-def prep_numerai():
-    """Era-ordered float32 memmap; last N eras held out with an embargo gap.
+def _numerai_roles(f):
+    """Row filter shared by the f32 and int8 numerai caches.
 
-    Rows without a target are dropped. Train rows are ``X[:train_end]`` and
-    test rows ``X[test_start:]`` so both are zero-copy views of the memmap.
+    Drops rows without a target, embargoes the eras before the test block,
+    and splits era-ordered. Returns ``(feat_cols, keep_all, n_rows,
+    train_end, era_int, targets)`` where ``keep_all`` is the absolute row
+    mask over the parquet.
     """
-    import pyarrow.parquet as pq
-
-    src = os.environ.get("NUMERAI_PARQUET")
-    if not src:
-        sys.exit("numerai: set NUMERAI_PARQUET to the v5 'all data' training parquet")
-    d = os.path.join(CACHE_DIR, "numerai")
-    os.makedirs(d, exist_ok=True)
-    f = pq.ParquetFile(src)
     feat_cols = [c for c in f.schema_arrow.names if c.startswith("feature")]
 
     # pass 1: era + target only, to build the row filter and split boundaries
@@ -237,8 +232,29 @@ def prep_numerai():
     role[np.isin(kept_eras, test_eras)] = 2
 
     keep_within = role != 0
+    keep_all = keep.copy()
+    keep_all[keep] = keep_within  # absolute row filter
     n_rows = int(keep_within.sum())
     train_end = int((role == 1).sum())
+    targets = et["target"].to_numpy(dtype=np.float32)
+    return feat_cols, keep_all, n_rows, train_end, era_int, targets
+
+
+def prep_numerai():
+    """Era-ordered float32 memmap; last N eras held out with an embargo gap.
+
+    Rows without a target are dropped. Train rows are ``X[:train_end]`` and
+    test rows ``X[test_start:]`` so both are zero-copy views of the memmap.
+    """
+    import pyarrow.parquet as pq
+
+    src = os.environ.get("NUMERAI_PARQUET")
+    if not src:
+        sys.exit("numerai: set NUMERAI_PARQUET to the v5 'all data' training parquet")
+    d = os.path.join(CACHE_DIR, "numerai")
+    os.makedirs(d, exist_ok=True)
+    f = pq.ParquetFile(src)
+    feat_cols, keep_all, n_rows, train_end, era_int, tgt_all = _numerai_roles(f)
     p = len(feat_cols)
     print(f"numerai: {n_rows} rows x {p} features, train_end={train_end}", flush=True)
 
@@ -249,9 +265,6 @@ def prep_numerai():
     era_out = np.empty(n_rows, dtype=np.int32)
 
     # pass 2: stream feature batches into the memmap
-    keep_all = keep.copy()
-    keep_all[keep] = keep_within  # absolute row filter
-    tgt_all = et["target"].to_numpy(dtype=np.float32)
     row_abs = row_out = 0
     for batch in f.iter_batches(batch_size=200_000, columns=feat_cols):
         nb = batch.num_rows
@@ -284,6 +297,53 @@ def prep_numerai():
     print(f"numerai done: {n_rows} x {p}", flush=True)
 
 
+def prep_numerai_int8():
+    """Optional int8 twin of the numerai cache (``X.i8.mem``), same rows/order.
+
+    Feeds ExaBoost's native int8 ingestion path (see ingest_bench.py). The
+    main cross-library matrix stays float32-fed for fairness. Requires the
+    f32 cache to exist; sampled rows are verified against it so the two
+    caches cannot drift.
+    """
+    import pyarrow.parquet as pq
+
+    d = os.path.join(CACHE_DIR, "numerai")
+    meta_path = os.path.join(d, "meta.json")
+    if not os.path.exists(meta_path):
+        sys.exit("numerai-int8: build the numerai cache first")
+    meta = json.load(open(meta_path))
+    src = os.environ.get("NUMERAI_PARQUET", meta["source"])
+    f = pq.ParquetFile(src)
+    feat_cols, keep_all, n_rows, train_end, _, _ = _numerai_roles(f)
+    if n_rows != meta["n_rows"] or train_end != meta["train_end"]:
+        sys.exit("numerai-int8: row filter disagrees with the existing f32 cache")
+    p = len(feat_cols)
+
+    x = np.memmap(
+        os.path.join(d, "X.i8.mem"), dtype=np.int8, mode="w+", shape=(n_rows, p)
+    )
+    row_abs = row_out = 0
+    for batch in f.iter_batches(batch_size=200_000, columns=feat_cols):
+        nb = batch.num_rows
+        mask = keep_all[row_abs : row_abs + nb]
+        if mask.any():
+            sel = batch.to_pandas().to_numpy(dtype=np.int8)[mask]
+            x[row_out : row_out + len(sel)] = sel
+            row_out += len(sel)
+        row_abs += nb
+    assert row_out == n_rows, (row_out, n_rows)
+    x.flush()
+
+    xf = np.memmap(
+        os.path.join(d, "X.f32.mem"), dtype=np.float32, mode="r", shape=(n_rows, p)
+    )
+    rng = np.random.default_rng(SEED)
+    for r in rng.integers(0, n_rows, 50):
+        if not (x[r].astype(np.float32) == xf[r]).all():
+            sys.exit(f"numerai-int8: row {r} mismatches the f32 cache")
+    print(f"numerai-int8 done: {n_rows} x {p}, sampled rows verified", flush=True)
+
+
 PREPS = {
     "higgs": prep_higgs,
     "epsilon": prep_epsilon,
@@ -292,11 +352,14 @@ PREPS = {
     "year": prep_year,
     "fraud": prep_fraud,
     "numerai": prep_numerai,
+    "numerai-int8": prep_numerai_int8,
 }
 
 if __name__ == "__main__":
     names = sys.argv[1:]
-    targets = [n for n in PREPS if n != "numerai"] if names == ["all"] else names
+    targets = (
+        [n for n in PREPS if not n.startswith("numerai")] if names == ["all"] else names
+    )
     for t in targets:
         if dataset_ready(t):
             print(f"{t}: cached, skipping", flush=True)
