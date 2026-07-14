@@ -183,7 +183,8 @@ def main():
     if not fails.empty:
         lines.append("## Failed / skipped runs\n")
         for _, r in fails.iterrows():
-            err = (r.get("error") or "").strip().splitlines()
+            err_raw = r.get("error")
+            err = err_raw.strip().splitlines() if isinstance(err_raw, str) else []
             lines.append(
                 f"- {r['library']}/{r['dataset']}/{r['regime']}/{r['kind']}: {r['status']}"
                 + (f" — `{err[-1][:160]}`" if err else "")
