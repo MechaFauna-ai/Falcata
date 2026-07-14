@@ -305,6 +305,10 @@ void CUDATree::ToHost() {
     cat_threshold_inner_ = cuda_bitset_inner_.ToHost();
   }
 
+  ShrinkHostVectorsAndReleaseDevice();
+}
+
+void CUDATree::ShrinkHostVectorsAndReleaseDevice() {
   // Shrink host vectors to actual size before they're kept long-term in the
   // Booster's model list. With max_leaves_=8192 but actual num_leaves_~125 on
   // Numerai prod, this drops per-tree CPU memory from ~650 KB to ~10 KB.
@@ -364,6 +368,62 @@ void CUDATree::ToHost() {
     gpuAssert(cudaStreamDestroy(cuda_stream_), __FILE__, __LINE__);
     cuda_stream_ = nullptr;
   }
+}
+
+void CUDATree::RebuildFromHostSplits(const std::vector<CUDATreeHostSplit>& splits) {
+  // Host replay of SplitKernel, one split at a time in classic (greedy) order.
+  // The host mirrors are in their constructor state (the selective growth phase
+  // never calls Split/SplitBatch), so leaf_parent_[0] == -1 and leaf_depth_[0]
+  // == 0 hold; leaf_value_[0] holds the root output (set via SetLeafOutput).
+  num_leaves_ = 1;
+  for (const CUDATreeHostSplit& s : splits) {
+    const int new_node_index = num_leaves_ - 1;
+    const int leaf_index = s.leaf_index;
+    CHECK_LT(leaf_index, num_leaves_);
+    const int parent_index = leaf_parent_[leaf_index];
+    if (parent_index >= 0) {
+      // if cur node is left child
+      if (left_child_[parent_index] == ~leaf_index) {
+        left_child_[parent_index] = new_node_index;
+      } else {
+        right_child_[parent_index] = new_node_index;
+      }
+    }
+    left_child_[new_node_index] = ~leaf_index;
+    right_child_[new_node_index] = ~num_leaves_;
+    leaf_parent_[leaf_index] = new_node_index;
+    leaf_parent_[num_leaves_] = new_node_index;
+    split_feature_inner_[new_node_index] = s.inner_feature_index;
+    split_feature_[new_node_index] = s.real_feature_index;
+    split_gain_[new_node_index] = static_cast<float>(s.gain);
+    internal_weight_[new_node_index] = s.left_sum_hessians + s.right_sum_hessians;
+    leaf_weight_[leaf_index] = s.left_sum_hessians;
+    // save current leaf value to internal node before change (SplitKernel order)
+    internal_value_[new_node_index] = leaf_value_[leaf_index];
+    leaf_value_[leaf_index] = std::isnan(s.left_value) ? 0.0f : s.left_value;
+    internal_count_[new_node_index] = s.left_count + s.right_count;
+    leaf_count_[leaf_index] = s.left_count;
+    leaf_value_[num_leaves_] = std::isnan(s.right_value) ? 0.0f : s.right_value;
+    leaf_weight_[num_leaves_] = s.right_sum_hessians;
+    leaf_count_[num_leaves_] = s.right_count;
+    leaf_depth_[num_leaves_] = leaf_depth_[leaf_index] + 1;
+    ++leaf_depth_[leaf_index];
+    int8_t decision_type = 0;
+    SetDecisionType(&decision_type, false, kCategoricalMask);
+    SetDecisionType(&decision_type, s.default_left != 0, kDefaultLeftMask);
+    SetMissingType(&decision_type, static_cast<int8_t>(s.missing_type));
+    decision_type_[new_node_index] = decision_type;
+    threshold_in_bin_[new_node_index] = s.threshold_in_bin;
+    threshold_[new_node_index] = s.real_threshold;
+    RecordBranchFeatures(leaf_index, num_leaves_, s.real_feature_index);
+    ++num_leaves_;
+  }
+  // upload the final leaf values into the (still max_leaves_-sized, possibly
+  // pooled-view) device array: AddPredictionToScore, Shrinkage and the leaf
+  // renewal kernels read them
+  CopyFromHostToCUDADevice<double>(cuda_leaf_value_.RawData(), leaf_value_.data(),
+    static_cast<size_t>(num_leaves_), __FILE__, __LINE__);
+  ShrinkHostVectorsAndReleaseDevice();
 }
 
 void CUDATree::SyncLeafOutputFromHostToCUDA() {

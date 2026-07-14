@@ -99,6 +99,13 @@ class CUDAHistogramConstructor {
 
   void ZeroHistForLeaf(int leaf_index);
 
+  /*! \brief Selective grow-then-prune: zero the histogram slots freed by
+   *  collapsed subtrees so they can be reallocated to later right children
+   *  (the construct kernels accumulate into assumed-zero slots). Async memsets
+   *  on the legacy default stream: ordered before any subsequently enqueued
+   *  construct kernel on the (blocking) histogram streams. */
+  void ZeroHistSlots(const std::vector<int>& slots);
+
   void ConstructHistogramForLeaf(
     const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,
     const CUDALeafSplitsStruct* cuda_larger_leaf_splits,

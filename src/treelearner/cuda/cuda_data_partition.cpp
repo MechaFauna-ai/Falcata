@@ -274,6 +274,24 @@ void CUDADataPartition::FinishSplitBatch(const int num_splits, std::vector<int>*
   std::memcpy(out->data(), pinned_split_info_, num_ints * sizeof(int));
 }
 
+void CUDADataPartition::SetLeafDataLayout(const std::vector<data_size_t>& leaf_num_data,
+                                          const std::vector<data_size_t>& leaf_data_start,
+                                          int num_leaves) {
+  if (num_leaves <= 0) {
+    return;
+  }
+  std::vector<data_size_t> leaf_data_end(num_leaves);
+  for (int i = 0; i < num_leaves; ++i) {
+    leaf_data_end[i] = leaf_data_start[i] + leaf_num_data[i];
+  }
+  CopyFromHostToCUDADevice<data_size_t>(cuda_leaf_num_data_.RawData(), leaf_num_data.data(),
+    static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+  CopyFromHostToCUDADevice<data_size_t>(cuda_leaf_data_start_.RawData(), leaf_data_start.data(),
+    static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+  CopyFromHostToCUDADevice<data_size_t>(cuda_leaf_data_end_.RawData(), leaf_data_end.data(),
+    static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+}
+
 void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplitInput>& splits) {
   const int num_splits = static_cast<int>(splits.size());
   if (num_splits <= 0) {

@@ -131,11 +131,17 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   void EnqueuePairBestSplitSearch(const CUDATree* tree,
     const CUDALeafSplitsStruct* smaller_struct, const CUDALeafSplitsStruct* larger_struct,
     int smaller_leaf_index, int larger_leaf_index, bool synchronize = true,
-    int pipeline = 0);
-  // One sibling pair of a level awaiting its best-split search.
+    int pipeline = 0, int parent_leaf_index = -1);
+  // One sibling pair of a level awaiting its best-split search. parent is the
+  // pair's parent leaf index (== the split's left leaf; -1 for the root pair):
+  // the quantized path stores the parent's histogram bit width at that index.
+  // Without selective growth right > left always holds, so parent ==
+  // min(smaller, larger); with selective growth right-child indices are
+  // recycled and the explicit field is required.
   struct HybridPendingPair {
     int smaller;
     int larger;
+    int parent;
     const CUDALeafSplitsStruct* smaller_struct;
     const CUDALeafSplitsStruct* larger_struct;
   };
@@ -198,6 +204,93 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // info back with ONE device synchronization per level (the classic flow pays
   // two). Non-quantized batched-kernels + batched-apply configurations only.
   int TrainLevelWisePrefixOneSync(CUDATree* tree);
+
+  // ---- selective (grow-then-prune) hybrid growth: exact leaf-wise equivalence
+  // in budget-limited configs (num_leaves << 2^max_depth) ----
+  //
+  // Leaf-wise growth is greedy selection: repeatedly apply the max-gain
+  // candidate among AVAILABLE candidates (available = parent split already
+  // applied) until num_leaves - 1 splits or no positive gain. Key monotonicity
+  // property: newly discovered (deeper) candidates can only DISPLACE currently
+  // selected candidates from the greedy selection, never promote unselected
+  // ones (a new candidate inserts into the greedy sequence right after its
+  // parent's selection and consumes budget earlier, shifting the tail out).
+  // Hence, per level: run the greedy selection over all live applied splits +
+  // the newly discovered frontier candidates, apply ONLY the selected frontier
+  // candidates (unselected ones are permanently dormant), and eagerly collapse
+  // applied splits displaced from the selection (their whole subtree is
+  // displaced by availability closure). At termination the live applied splits
+  // equal the classic leaf-wise selection, in the classic greedy order given by
+  // the final simulation; the tree is then rebuilt host-side in that order
+  // (classic node/leaf numbering => bit-identical model files in deterministic
+  // configs). Eager collapse recycles hybrid leaf indices (and their histogram
+  // slots), so live leaves never exceed num_leaves and no device buffer grows.
+
+  // One applied split record of the selective growth phase.
+  struct SelectiveApplied {
+    int parent;             // id of the parent applied record (-1 for the root split)
+    int left_leaf;          // hybrid leaf that was split (left child keeps it)
+    int right_leaf;         // hybrid right child leaf (recycled index possible)
+    int kid_left;           // applied child record at left_leaf (-1 none)
+    int kid_right;          // applied child record at right_leaf (-1 none)
+    bool dead;              // collapsed (pruned) -- never selectable again
+    bool selected;          // in the current greedy selection (scratch)
+    double gain;
+    data_size_t data_start;  // the split node's window in the main index array
+    data_size_t num_data;
+    // captured host copy of the device CUDASplitInfo at apply time (categorical
+    // pointers scrubbed by SyncAllLeafBestSplitsToHost)
+    CUDASplitInfo info;
+  };
+  // One frontier candidate (discovered this level, not yet applied).
+  struct SelectiveFrontier {
+    int parent;             // applied record that created this leaf (-1 root)
+    int leaf;               // hybrid leaf index
+    double gain;
+  };
+
+  // Whether the budget-limited selective mode governs this tree's growth.
+  bool UseSelectiveGrowth() const;
+  // Exact host replica of FindBestFromAllSplitsKernel's equal-gain tie-break:
+  // the winner among equal-gain candidates is decided by the kernel's
+  // strided per-thread scan + shuffle-down reductions (keep-current-on-tie),
+  // NOT by the smallest leaf index. Returns the winning classic leaf index.
+  int SelectiveTieBreak(const std::vector<int>& tied_classic_leaves) const;
+  // Enqueue the root level's batched search of the single-sync flow (descriptor
+  // with device-derived gating, exact host-known construct grid). Shared by the
+  // exact-fit one-sync prefix and the selective one-sync loop.
+  void EnqueueRootLevelSearchOneSync();
+  // Reset the per-tree selective growth state.
+  void SelectiveReset();
+  // Collect the new frontier candidates from the given child leaves (children of
+  // last level's applied splits; the root leaf on the first level).
+  void SelectiveDiscoverFrontier(const std::vector<int>& child_leaves);
+  // One level's host-side selection step: greedy simulation over live applied
+  // splits + the current frontier (budget num_leaves - 1, gains descending,
+  // ties to the smaller classic leaf index, matching FindBestFromAllSplits),
+  // then eager collapse of displaced applied splits (device window rewrite +
+  // histogram slot recycling) and creation of the applied records for the
+  // selected frontier candidates (right-child indices from the free list).
+  // Returns the number of frontier candidates to apply this level.
+  int RunSelectiveLevel();
+  // Batched partition-only apply of the selected frontier splits (the CUDA tree
+  // object is not touched during selective growth; the final tree is rebuilt
+  // host-side after pruning). Fills *applied for the readback bookkeeping.
+  void ApplyLevelBatchedSelective(std::vector<HybridAppliedSplit>* applied);
+  // The two growth loops (same level pipelines as the exact-fit prefix).
+  void TrainSelectiveOneSync(CUDATree* tree);
+  void TrainSelectiveTwoSync(CUDATree* tree);
+  // Rebuild the final (pruned) tree host-side in classic greedy order, remap the
+  // partition's data-index-to-leaf-index to final numbering and upload the final
+  // per-leaf data layout.
+  void SelectiveFinalize(CUDATree* tree);
+  // Full selective training of one tree (grow + prune + finalize).
+  void TrainSelective(CUDATree* tree);
+  // Leaf depth during hybrid growth: the CUDA tree's host mirror on the exact-fit
+  // paths, the selective host array when selective growth is active.
+  int GrowthLeafDepth(const CUDATree* tree, const int leaf) const {
+    return selective_active_ ? sel_leaf_depth_[leaf] : tree->leaf_depth(leaf);
+  }
 
   // Apply forcedsplits_filename before the main split loop, mirroring
   // SerialTreeLearner::ForceSplits (numerical features, single-GPU, non-quantized).
@@ -262,6 +355,31 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // hybrid growth: single-sync (speculative) level pipeline
   // (EXABOOST_HYBRID_ONE_SYNC, default on; "0" keeps the classic two-sync flow)
   bool use_hybrid_one_sync_ = false;
+  // selective (grow-then-prune) hybrid growth for budget-limited configs
+  // (EXABOOST_HYBRID_SELECTIVE, default on; "0" falls back to the classic loop)
+  bool use_hybrid_selective_ = false;
+  bool selective_active_ = false;
+  std::vector<SelectiveApplied> sel_applied_;
+  std::vector<SelectiveFrontier> sel_frontier_;
+  std::vector<int> sel_leaf_parent_;    // hybrid leaf -> applied record id (-1 root)
+  std::vector<int> sel_leaf_depth_;
+  std::vector<int> sel_leaf_classic_;   // classic leaf index (last simulation)
+  std::vector<int> sel_leaf_frontier_;  // hybrid leaf -> frontier idx (per level)
+  std::vector<char> sel_leaf_live_;
+  std::vector<int> sel_free_leaves_;    // recycled hybrid leaf indices (LIFO)
+  std::vector<int> sel_order_;          // last simulation: greedy order (applied ids, ~frontier idx)
+  std::vector<int> sel_order_classic_leaf_;
+  std::vector<int> sel_level_apply_;    // applied record ids to apply this level
+  std::vector<CUDACollapseWindow> sel_collapse_windows_;
+  std::vector<int> sel_freed_hist_slots_;
+  int sel_num_allocated_ = 0;           // peak hybrid leaf count (dirty hist slots)
+  int sel_num_splits_ = 0;              // applied splits surviving readback bookkeeping
+  int sel_last_peak_ = 0;               // sel_num_allocated_ of the finished tree
+  // churn statistics (EXABOOST_HYBRID_DEBUG): applied / displaced split totals
+  int64_t sel_stat_applied_ = 0;
+  int64_t sel_stat_displaced_ = 0;
+  int64_t sel_stat_levels_ = 0;
+  int64_t sel_stat_trees_ = 0;
   // reusable device slab for CUDATree's per-tree arrays (see CUDATree ctor)
   CUDAVector<uint8_t> cuda_tree_pool_buffer_;
   // whether BeforeTrain deferred the root-sum readback (single-sync flow); the

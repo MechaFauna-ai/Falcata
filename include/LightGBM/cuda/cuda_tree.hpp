@@ -44,6 +44,29 @@ struct CUDATreeBatchSplit {
   const CUDASplitInfo* split_info;
 };
 
+/*! \brief One split of a host-side tree rebuild (RebuildFromHostSplits): all the
+ *  values SplitKernel would read from the device CUDASplitInfo, captured on the
+ *  host. Used by the selective (grow-then-prune) hybrid growth, which replays the
+ *  final greedy split sequence host-side after pruning displaced splits. */
+struct CUDATreeHostSplit {
+  /*! \brief the leaf being split, in FINAL (classic leaf-wise) numbering */
+  int leaf_index;
+  int real_feature_index;
+  double real_threshold;
+  /*! \brief MissingType of the split feature, stored as int for POD-ness */
+  int missing_type;
+  int inner_feature_index;
+  uint32_t threshold_in_bin;
+  double gain;
+  uint8_t default_left;
+  double left_sum_hessians;
+  double right_sum_hessians;
+  data_size_t left_count;
+  data_size_t right_count;
+  double left_value;
+  double right_value;
+};
+
 class CUDATree : public Tree {
  public:
   /*!
@@ -93,6 +116,18 @@ class CUDATree : public Tree {
    *  indices). The level's splits touch disjoint leaves, so the device updates
    *  are safe to run concurrently. */
   void SplitBatch(const std::vector<CUDATreeBatchSplit>& splits);
+
+  /*! \brief Build the final tree structure host-side from a replayed split
+   *  sequence (selective grow-then-prune hybrid growth). The device tree arrays
+   *  were never written during growth; this replays SplitKernel's per-field
+   *  arithmetic on the host mirrors (bit-identical: same IEEE double operations
+   *  on the same captured CUDASplitInfo values), uploads the final leaf values
+   *  to the device (AddPredictionToScore / Shrinkage / renewal kernels read
+   *  them), and then performs ToHost()'s cleanup (host vector shrink, leaf
+   *  value materialization, device array release, stream destroy). The caller
+   *  must NOT call ToHost() afterwards. leaf_value_[0] must hold the root
+   *  output before the call (it seeds the internal_value_ chain). */
+  void RebuildFromHostSplits(const std::vector<CUDATreeHostSplit>& splits);
 
   int SplitCategorical(
     const int leaf_index,
@@ -158,6 +193,11 @@ class CUDATree : public Tree {
   void SyncLeafOutputFromCUDAToHost();
 
  private:
+  /*! \brief shared tail of ToHost() and RebuildFromHostSplits(): shrink the host
+   *  vectors to num_leaves_, materialize the retained device leaf values and
+   *  release every other per-tree device array + the per-tree stream */
+  void ShrinkHostVectorsAndReleaseDevice();
+
   void InitCUDAMemory(uint8_t* pooled_device_buffer);
 
   void InitCUDA();

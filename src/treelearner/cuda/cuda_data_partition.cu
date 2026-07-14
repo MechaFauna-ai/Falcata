@@ -1518,6 +1518,82 @@ __global__ void HybridSplitTreeStructureBatchKernel(
   }
 }
 
+// selective grow-then-prune: rewrite the data-index-to-leaf-index entries of the
+// collapsed subtree windows (blockIdx.y indexes windows; blocks beyond a window's
+// own row count exit early). The window rows in the main index array are exactly
+// the subtree's rows (child regions nest inside the parent region).
+__global__ void CollapseLeafWindowsKernel(
+  const CUDACollapseWindow* windows,
+  const data_size_t* cuda_data_indices,
+  int* cuda_data_index_to_leaf_index) {
+  const CUDACollapseWindow w = windows[blockIdx.y];
+  const data_size_t local_index = static_cast<data_size_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (local_index < w.count) {
+    cuda_data_index_to_leaf_index[cuda_data_indices[w.start + local_index]] = w.target_leaf;
+  }
+}
+
+void CUDADataPartition::CollapseLeafWindows(const std::vector<CUDACollapseWindow>& windows) {
+  const int num_windows = static_cast<int>(windows.size());
+  if (num_windows <= 0) {
+    return;
+  }
+  host_collapse_windows_ = windows;
+  if (cuda_collapse_windows_.Size() < windows.size()) {
+    cuda_collapse_windows_.Resize(std::max(windows.size(),
+      static_cast<size_t>(num_leaves_ / 2 + 2)));
+  }
+  // async H2D on the apply stream: ordered before the kernel below and any later
+  // batched apply of the same level (same stream). The host staging buffer is
+  // only rewritten after the next full sync, and a pageable async H2D returns
+  // only once the data is staged, so reuse is safe.
+  CopyFromHostToCUDADeviceAsync<CUDACollapseWindow>(
+    cuda_collapse_windows_.RawData(), host_collapse_windows_.data(),
+    windows.size(), cuda_streams_[0], __FILE__, __LINE__);
+  data_size_t max_count = 0;
+  for (const CUDACollapseWindow& w : windows) {
+    max_count = std::max(max_count, w.count);
+  }
+  const int max_blocks = (max_count + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) /
+    SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+  const dim3 grid(static_cast<unsigned int>(max_blocks), static_cast<unsigned int>(num_windows));
+  CollapseLeafWindowsKernel<<<grid, SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION, 0, cuda_streams_[0]>>>(
+    cuda_collapse_windows_.RawDataReadOnly(), cuda_data_indices_.RawData(),
+    cuda_data_index_to_leaf_index_.RawData());
+}
+
+// selective grow-then-prune finalize: map every used row's leaf index from the
+// hybrid numbering to the final classic numbering (pruned leaves map to their
+// surviving ancestor's final leaf)
+__global__ void RemapDataIndexToLeafIndexKernel(
+  const data_size_t num_data,
+  const data_size_t* cuda_data_indices,
+  const int* leaf_map,
+  int* cuda_data_index_to_leaf_index) {
+  const data_size_t i = static_cast<data_size_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (i < num_data) {
+    const data_size_t data_index = cuda_data_indices[i];
+    cuda_data_index_to_leaf_index[data_index] = leaf_map[cuda_data_index_to_leaf_index[data_index]];
+  }
+}
+
+void CUDADataPartition::RemapDataIndexToLeafIndex(const std::vector<int>& leaf_map) {
+  const data_size_t num_data_in_root = root_num_data();
+  if (num_data_in_root <= 0 || leaf_map.empty()) {
+    return;
+  }
+  if (cuda_leaf_index_remap_.Size() < leaf_map.size()) {
+    cuda_leaf_index_remap_.Resize(std::max(leaf_map.size(), static_cast<size_t>(num_leaves_)));
+  }
+  CopyFromHostToCUDADevice<int>(cuda_leaf_index_remap_.RawData(), leaf_map.data(),
+    leaf_map.size(), __FILE__, __LINE__);
+  const int num_blocks = (num_data_in_root + FILL_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) /
+    FILL_INDICES_BLOCK_SIZE_DATA_PARTITION;
+  RemapDataIndexToLeafIndexKernel<<<num_blocks, FILL_INDICES_BLOCK_SIZE_DATA_PARTITION>>>(
+    num_data_in_root, cuda_data_indices_.RawData(), cuda_leaf_index_remap_.RawDataReadOnly(),
+    cuda_data_index_to_leaf_index_.RawData());
+}
+
 // region copy at identical offsets (src and dst share the main array layout);
 // used to carry terminal (non-split) leaves' regions from the old main index
 // array into the out buffer before it is swapped in as the new main array

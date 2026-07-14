@@ -106,6 +106,15 @@ void CUDAHistogramConstructor::ZeroHistForLeaf(int /*leaf_index*/) {
   // No-op: BeforeTrain zeroes the entire cuda_hist_ buffer.
 }
 
+void CUDAHistogramConstructor::ZeroHistSlots(const std::vector<int>& slots) {
+  const size_t slot_size = static_cast<size_t>(2 * num_total_bin_);
+  for (const int slot : slots) {
+    CUDASUCCESS_OR_FATAL(cudaMemsetAsync(
+      reinterpret_cast<void*>(cuda_hist_.RawData() + static_cast<size_t>(slot) * slot_size), 0,
+      slot_size * sizeof(hist_t)));
+  }
+}
+
 void CUDAHistogramConstructor::SetFeatureUsedBytree(const std::vector<int8_t>& is_feature_used_bytree) {
   if (cuda_is_feature_used_bytree_.Size() != is_feature_used_bytree.size()) {
     cuda_is_feature_used_bytree_.Resize(is_feature_used_bytree.size());
