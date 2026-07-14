@@ -228,7 +228,8 @@ extern void LaunchRowToColCompactKernel(
     const int* slot_p_stride,
     const int* slot_col_in_p,
     int num_compact_cols,
-    data_size_t num_data);
+    data_size_t num_data,
+    bool src_is_4bit);
 
 void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   const auto* row_data = cuda_histogram_constructor_->cuda_row_data_internal();
@@ -293,15 +294,20 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
     return;
   }
   const uint8_t* gather_src = compact_src ? cuda_histogram_constructor_->compact_data_device() : src;
+  const bool gather_src_is_4bit = compact_src ?
+    cuda_histogram_constructor_->compact_src_is_4bit() : row_data->is_4bit_packed();
   std::vector<size_t> slot_p_byte_h(num_compact_cols);
   std::vector<int> slot_p_stride_h(num_compact_cols);
   std::vector<int> slot_col_in_p_h(num_compact_cols);
   if (compact_src) {
-    // slot byte offsets already include the column-in-partition offset
+    // 8-bit: slot byte offsets already include the column-in-partition offset
+    // (col entries are 0); 4-bit: byte offsets are the packed partition bases
+    // and the logical column-in-partition rides in compact_slot_cols()
     slot_p_byte_h = cuda_histogram_constructor_->compact_slot_bytes();
     slot_p_stride_h = cuda_histogram_constructor_->compact_slot_strides();
-    std::fill(slot_col_in_p_h.begin(), slot_col_in_p_h.end(), 0);
+    slot_col_in_p_h = cuda_histogram_constructor_->compact_slot_cols();
   } else {
+    const std::vector<int>& packed_offsets_h = row_data->host_packed_partition_byte_offsets();
     for (int s = 0; s < num_compact_cols; ++s) {
       const int orig_col = compact_column_to_orig_[s];
       int p = 0;
@@ -309,8 +315,13 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
              orig_col >= src_part_col_offsets_h[p + 1]) ++p;
       const int p_start = src_part_col_offsets_h[p];
       const int p_end = src_part_col_offsets_h[p + 1];
-      slot_p_byte_h[s] = static_cast<size_t>(p_start) * static_cast<size_t>(num_data);
-      slot_p_stride_h[s] = p_end - p_start;
+      if (gather_src_is_4bit) {
+        slot_p_byte_h[s] = static_cast<size_t>(packed_offsets_h[p]) * static_cast<size_t>(num_data);
+        slot_p_stride_h[s] = packed_offsets_h[p + 1] - packed_offsets_h[p];
+      } else {
+        slot_p_byte_h[s] = static_cast<size_t>(p_start) * static_cast<size_t>(num_data);
+        slot_p_stride_h[s] = p_end - p_start;
+      }
       slot_col_in_p_h[s] = orig_col - p_start;
     }
   }
@@ -334,7 +345,8 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
       cuda_slot_p_stride_.RawData(),
       cuda_slot_col_in_p_.RawData(),
       num_compact_cols,
-      num_data);
+      num_data,
+      gather_src_is_4bit);
   CUDASUCCESS_OR_FATAL(cudaDeviceSynchronize());
 
   // Update CUDAColumnData's data_by_column_ pointers to slots in compact buffer.

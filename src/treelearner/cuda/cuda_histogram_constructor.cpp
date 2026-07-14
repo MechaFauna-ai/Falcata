@@ -194,6 +194,20 @@ void LaunchFillCompactDataKernel(
   data_size_t num_data,
   uint8_t* colmajor_out);
 
+// Implemented in cuda_histogram_constructor.cu — 4-bit packed source AND
+// destination variant (one thread per destination byte = compact column pair).
+void LaunchFillCompactData4BitKernel(
+  cudaStream_t stream,
+  const uint8_t* src_data,
+  uint8_t* compact_data,
+  const size_t* bs_src_nib0,
+  const size_t* bs_src_nib1,
+  const int* bs_src_stride_nib,
+  const size_t* bs_dst_byte,
+  const int* bs_dst_stride,
+  int total_byte_slots,
+  data_size_t num_data);
+
 bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_feature_used_bytree) {
   use_compact_view_ = false;
   compact_col_major_filled_ = false;
@@ -247,26 +261,59 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
 
   const data_size_t num_data = cuda_row_data_->num_data();
 
+  // 4-bit mode: when the row matrix is packed, the compact matrix is packed the
+  // same way (per-partition packed row width = ceil(used_columns / 2) bytes,
+  // column j of a partition in byte (j >> 1), nibble (j & 1)).
+  compact_is_4bit_ = cuda_row_data_->is_4bit_packed() && !cuda_row_data_->is_data_host_mapped();
+  std::vector<int> compact_packed_part_offsets;  // [P+1] prefix of packed compact row widths
+  compact_packed_part_offsets.push_back(0);
+  for (int p = 0; p < num_partitions; ++p) {
+    const int used_in_p = compact_part_col_offsets[p + 1] - compact_part_col_offsets[p];
+    compact_packed_part_offsets.push_back(compact_packed_part_offsets.back() + ((used_in_p + 1) >> 1));
+  }
+
   // Host copies of the compact layout for the tree learner's column-view build
   // (source column per slot + row-major-in-partition placement of each slot).
+  // 8-bit: slot byte includes the column-in-partition offset (col entry 0);
+  // 4-bit: slot byte is the partition's packed base and the logical
+  // column-in-partition travels separately (the gather kernel derives
+  // byte (col >> 1) / nibble (col & 1) from it).
   compact_src_cols_host_.resize(total_compact);
   compact_slot_byte_host_.resize(total_compact);
   compact_slot_stride_host_.resize(total_compact);
+  compact_slot_col_host_.resize(total_compact);
   for (int s = 0; s < total_compact; ++s) {
     const int p = partition_for_compact_h[s];
     compact_src_cols_host_[s] = src_part_col_offsets[p] + src_local_col_for_compact_h[s];
     const int compact_part_start = compact_part_col_offsets[p];
-    const int compact_stride = compact_part_col_offsets[p + 1] - compact_part_start;
     const int compact_col_in_p = s - compact_part_start;
-    compact_slot_byte_host_[s] = static_cast<size_t>(compact_part_start) * static_cast<size_t>(num_data) +
-      static_cast<size_t>(compact_col_in_p);
-    compact_slot_stride_host_[s] = compact_stride;
+    if (compact_is_4bit_) {
+      compact_slot_byte_host_[s] = static_cast<size_t>(compact_packed_part_offsets[p]) * static_cast<size_t>(num_data);
+      compact_slot_stride_host_[s] = compact_packed_part_offsets[p + 1] - compact_packed_part_offsets[p];
+      compact_slot_col_host_[s] = compact_col_in_p;
+    } else {
+      const int compact_stride = compact_part_col_offsets[p + 1] - compact_part_start;
+      compact_slot_byte_host_[s] = static_cast<size_t>(compact_part_start) * static_cast<size_t>(num_data) +
+        static_cast<size_t>(compact_col_in_p);
+      compact_slot_stride_host_[s] = compact_stride;
+      compact_slot_col_host_[s] = 0;
+    }
   }
 
   // Allocate / resize compact buffers.
-  const size_t compact_data_bytes = static_cast<size_t>(total_compact) * static_cast<size_t>(num_data);
+  const size_t compact_data_bytes = compact_is_4bit_ ?
+    static_cast<size_t>(compact_packed_part_offsets.back()) * static_cast<size_t>(num_data) :
+    static_cast<size_t>(total_compact) * static_cast<size_t>(num_data);
   if (compact_data_uint8_t_.Size() < compact_data_bytes) {
     compact_data_uint8_t_.Resize(compact_data_bytes);
+  }
+  if (compact_is_4bit_) {
+    if (compact_packed_partition_byte_offsets_.Size() < compact_packed_part_offsets.size()) {
+      compact_packed_partition_byte_offsets_.Resize(compact_packed_part_offsets.size());
+    }
+    CopyFromHostToCUDADevice<int>(compact_packed_partition_byte_offsets_.RawData(),
+                                  compact_packed_part_offsets.data(),
+                                  compact_packed_part_offsets.size(), __FILE__, __LINE__);
   }
 
   // Upload metadata.
@@ -370,6 +417,68 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
     CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
     compact_is_col_major_ = false;  // compact_data is now row-major-in-partition
     compact_col_major_filled_ = true;  // the col-major staging holds the same slots
+  } else if (compact_is_4bit_) {
+    // 4-bit fill: one thread per DESTINATION byte (a pair of adjacent compact
+    // slots), so no two threads share an output byte. Source positions are
+    // nibble indices: column c of a packed partition with byte base B and row
+    // width W sits at nibble 2*B + c + row * (2*W).
+    const std::vector<int>& src_packed_offsets = cuda_row_data_->host_packed_partition_byte_offsets();
+    int total_byte_slots = 0;
+    for (int p = 0; p < num_partitions; ++p) {
+      const int used_in_p = compact_part_col_offsets[p + 1] - compact_part_col_offsets[p];
+      total_byte_slots += (used_in_p + 1) >> 1;
+    }
+    std::vector<size_t> bs_src_nib0_h(total_byte_slots);
+    std::vector<size_t> bs_src_nib1_h(total_byte_slots);
+    std::vector<int> bs_src_stride_nib_h(total_byte_slots);
+    std::vector<size_t> bs_dst_byte_h(total_byte_slots);
+    std::vector<int> bs_dst_stride_h(total_byte_slots);
+    int byte_slot = 0;
+    for (int p = 0; p < num_partitions; ++p) {
+      const int compact_part_start = compact_part_col_offsets[p];
+      const int used_in_p = compact_part_col_offsets[p + 1] - compact_part_start;
+      const int dst_packed_width = compact_packed_part_offsets[p + 1] - compact_packed_part_offsets[p];
+      const size_t dst_part_byte = static_cast<size_t>(compact_packed_part_offsets[p]) * static_cast<size_t>(num_data);
+      const size_t src_part_nib = static_cast<size_t>(src_packed_offsets[p]) * static_cast<size_t>(num_data) * 2;
+      const int src_stride_nib = (src_packed_offsets[p + 1] - src_packed_offsets[p]) * 2;
+      for (int m = 0; m < ((used_in_p + 1) >> 1); ++m) {
+        const int s0 = compact_part_start + 2 * m;
+        bs_src_nib0_h[byte_slot] = src_part_nib + static_cast<size_t>(src_local_col_for_compact_h[s0]);
+        bs_src_nib1_h[byte_slot] = (2 * m + 1) < used_in_p ?
+          src_part_nib + static_cast<size_t>(src_local_col_for_compact_h[s0 + 1]) :
+          ~static_cast<size_t>(0);
+        bs_src_stride_nib_h[byte_slot] = src_stride_nib;
+        bs_dst_byte_h[byte_slot] = dst_part_byte + static_cast<size_t>(m);
+        bs_dst_stride_h[byte_slot] = dst_packed_width;
+        ++byte_slot;
+      }
+    }
+    CHECK_EQ(byte_slot, total_byte_slots);
+    if (cuda_bs_src_nib0_.Size() < static_cast<size_t>(total_byte_slots)) {
+      cuda_bs_src_nib0_.Resize(total_byte_slots);
+      cuda_bs_src_nib1_.Resize(total_byte_slots);
+      cuda_bs_src_stride_nib_.Resize(total_byte_slots);
+      cuda_bs_dst_byte_.Resize(total_byte_slots);
+      cuda_bs_dst_stride_.Resize(total_byte_slots);
+    }
+    CopyFromHostToCUDADevice<size_t>(cuda_bs_src_nib0_.RawData(), bs_src_nib0_h.data(), total_byte_slots, __FILE__, __LINE__);
+    CopyFromHostToCUDADevice<size_t>(cuda_bs_src_nib1_.RawData(), bs_src_nib1_h.data(), total_byte_slots, __FILE__, __LINE__);
+    CopyFromHostToCUDADevice<int>(cuda_bs_src_stride_nib_.RawData(), bs_src_stride_nib_h.data(), total_byte_slots, __FILE__, __LINE__);
+    CopyFromHostToCUDADevice<size_t>(cuda_bs_dst_byte_.RawData(), bs_dst_byte_h.data(), total_byte_slots, __FILE__, __LINE__);
+    CopyFromHostToCUDADevice<int>(cuda_bs_dst_stride_.RawData(), bs_dst_stride_h.data(), total_byte_slots, __FILE__, __LINE__);
+    LaunchFillCompactData4BitKernel(
+      cuda_stream_,
+      cuda_row_data_->GetBin<uint8_t>(),
+      compact_data_uint8_t_.RawData(),
+      cuda_bs_src_nib0_.RawData(),
+      cuda_bs_src_nib1_.RawData(),
+      cuda_bs_src_stride_nib_.RawData(),
+      cuda_bs_dst_byte_.RawData(),
+      cuda_bs_dst_stride_.RawData(),
+      total_byte_slots,
+      num_data);
+    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
+    compact_is_col_major_ = false;
   } else {
     // Build per-slot src/dst metadata host-side. Each compact slot has a fully
     // computed source byte offset and destination byte offset, so the kernel

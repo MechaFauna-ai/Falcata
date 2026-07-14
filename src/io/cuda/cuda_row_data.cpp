@@ -29,6 +29,30 @@ bool FastRowDataVerifyEnabled() {
   return env != nullptr && std::string(env) == std::string("1");
 }
 
+bool RowData4BitEnabled() {
+  const char* env = std::getenv("EXABOOST_ROWDATA_4BIT");
+  return env == nullptr || std::string(env) != std::string("0");
+}
+
+bool RowData4BitVerifyEnabled() {
+  const char* env = std::getenv("EXABOOST_ROWDATA_4BIT_VERIFY");
+  return env != nullptr && std::string(env) == std::string("1");
+}
+
+// Read one bin value out of a raw host column (bit type 4/8/16/32).
+inline uint8_t FetchColumnBin(const void* column_data, uint8_t column_bit_type, data_size_t row) {
+  if (column_bit_type == 4) {
+    const uint8_t* in = reinterpret_cast<const uint8_t*>(column_data);
+    return (in[row >> 1] >> ((row & 1) << 2)) & 0xf;
+  } else if (column_bit_type == 8) {
+    return reinterpret_cast<const uint8_t*>(column_data)[row];
+  } else if (column_bit_type == 16) {
+    return static_cast<uint8_t>(reinterpret_cast<const uint16_t*>(column_data)[row]);
+  } else {
+    return static_cast<uint8_t>(reinterpret_cast<const uint32_t*>(column_data)[row]);
+  }
+}
+
 // Scatter one column's rows [start, end) into its slot of a row-major partition:
 // out_data points at (partition base + local column index), row_stride is the
 // number of columns in the partition.
@@ -105,8 +129,25 @@ void CUDARowData::Init(const Dataset* train_data, TrainingShareStates* train_sha
     is_sparse_ = false;
     bit_type_ = max_bin_per_column <= 256 ? 8 : (max_bin_per_column <= 65536 ? 16 : 32);
   }
+  // 4-bit packed row data: eligible when the data is dense uint8 and EVERY
+  // column fits in <= 16 bins (bin values index the per-column histogram span,
+  // so they are < the column's hist-offset delta <= 16, i.e. nibble-sized).
+  // Large-bin partitions are impossible under that cap, so the global-memory
+  // histogram kernels (which do not unpack) are unreachable.
+  is_4bit_packed_ = false;
+  if (!is_sparse_ && bit_type_ == 8 && large_bin_partitions_.empty() &&
+      num_feature_partitions_ > 0 && RowData4BitEnabled()) {
+    const std::vector<uint32_t>& column_hist_offsets = train_share_state->column_hist_offsets();
+    uint32_t max_bin_per_column = 0;
+    for (size_t i = 0; i + 1 < column_hist_offsets.size(); ++i) {
+      max_bin_per_column = std::max(max_bin_per_column, column_hist_offsets[i + 1] - column_hist_offsets[i]);
+    }
+    is_4bit_packed_ = max_bin_per_column <= 16;
+  }
   if (!is_sparse_) {
-    if (bit_type_ == 8) {
+    if (is_4bit_packed_) {
+      InitDense4BitData(train_data, reinterpret_cast<const uint8_t*>(host_data));
+    } else if (bit_type_ == 8) {
       InitDenseData<uint8_t>(train_data, reinterpret_cast<const uint8_t*>(host_data), &cuda_data_uint8_t_);
     } else if (bit_type_ == 16) {
       InitDenseData<uint16_t>(train_data, reinterpret_cast<const uint16_t*>(host_data), &cuda_data_uint16_t_);
@@ -481,6 +522,147 @@ void CUDARowData::InitDenseData(const Dataset* train_data, const BIN_TYPE* host_
     GetDenseDataPartitioned<BIN_TYPE>(host_data, &partitioned_data);
     cuda_data->InitFromHostVector(partitioned_data);
   }
+}
+
+void CUDARowData::BuildDensePacked4BitFromColumns(
+    const std::vector<const void*>& column_data,
+    const std::vector<uint8_t>& column_bit_types,
+    uint8_t* out_data) const {
+  // Same cache-tiled transpose as BuildDensePartitionedFromColumns, but the
+  // output is the packed layout. Columns of a partition are processed in order
+  // by the same thread, so the even column assigns its byte (initializing it)
+  // and the odd column ORs its high nibble in -- no read-modify-write hazard.
+  constexpr data_size_t kRowTileSize = 512;
+  Threading::For<data_size_t>(0, num_data_, kRowTileSize,
+    [this, &column_data, &column_bit_types, out_data] (int /*thread_index*/, data_size_t start, data_size_t end) {
+      for (data_size_t tile_start = start; tile_start < end; tile_start += kRowTileSize) {
+        const data_size_t tile_end = std::min<data_size_t>(tile_start + kRowTileSize, end);
+        for (size_t i = 0; i + 1 < feature_partition_column_index_offsets_.size(); ++i) {
+          const int partition_column_start = feature_partition_column_index_offsets_[i];
+          const int partition_column_end = feature_partition_column_index_offsets_[i + 1];
+          const int packed_width = packed_partition_byte_offsets_[i + 1] - packed_partition_byte_offsets_[i];
+          uint8_t* partition_out_data = out_data +
+            static_cast<size_t>(num_data_) * static_cast<size_t>(packed_partition_byte_offsets_[i]);
+          for (int column_index = partition_column_start; column_index < partition_column_end; ++column_index) {
+            const int local_column = column_index - partition_column_start;
+            uint8_t* column_out_data = partition_out_data + (local_column >> 1);
+            const void* one_column_data = column_data[column_index];
+            const uint8_t column_bit_type = column_bit_types[column_index];
+            if ((local_column & 1) == 0) {
+              // even column initializes the byte (high nibble 0 covers odd-width padding)
+              for (data_size_t row = tile_start; row < tile_end; ++row) {
+                column_out_data[static_cast<size_t>(row) * packed_width] =
+                  FetchColumnBin(one_column_data, column_bit_type, row);
+              }
+            } else {
+              for (data_size_t row = tile_start; row < tile_end; ++row) {
+                column_out_data[static_cast<size_t>(row) * packed_width] |=
+                  static_cast<uint8_t>(FetchColumnBin(one_column_data, column_bit_type, row) << 4);
+              }
+            }
+          }
+        }
+      }
+    });
+}
+
+void CUDARowData::Pack4BitFromPartitioned(const uint8_t* unpacked, uint8_t* packed) const {
+  Threading::For<data_size_t>(0, num_data_, 512,
+    [this, unpacked, packed] (int /*thread_index*/, data_size_t start, data_size_t end) {
+      for (size_t i = 0; i + 1 < feature_partition_column_index_offsets_.size(); ++i) {
+        const int partition_column_start = feature_partition_column_index_offsets_[i];
+        const int num_columns = feature_partition_column_index_offsets_[i + 1] - partition_column_start;
+        const int packed_width = packed_partition_byte_offsets_[i + 1] - packed_partition_byte_offsets_[i];
+        const uint8_t* in_partition = unpacked +
+          static_cast<size_t>(num_data_) * static_cast<size_t>(partition_column_start);
+        uint8_t* out_partition = packed +
+          static_cast<size_t>(num_data_) * static_cast<size_t>(packed_partition_byte_offsets_[i]);
+        for (data_size_t row = start; row < end; ++row) {
+          const uint8_t* in_row = in_partition + static_cast<size_t>(row) * num_columns;
+          uint8_t* out_row = out_partition + static_cast<size_t>(row) * packed_width;
+          for (int j = 0; j < num_columns; j += 2) {
+            const uint8_t lo = in_row[j];
+            const uint8_t hi = j + 1 < num_columns ? in_row[j + 1] : 0;
+            out_row[j >> 1] = static_cast<uint8_t>(lo | (hi << 4));
+          }
+        }
+      }
+    });
+}
+
+void CUDARowData::InitDense4BitData(const Dataset* train_data, const uint8_t* host_data) {
+  // Packed layout invariant: each partition's packed row width is
+  // ceil(num_columns_in_partition / 2) bytes, i.e. the column count is padded
+  // to an even number PER PARTITION, so every (row, partition) segment starts
+  // byte-aligned even when partitions start at odd global column offsets.
+  // Within a partition, column j lives in byte (j >> 1), nibble (j & 1)
+  // (low nibble = even column, matching DenseBin<uint8_t, IS_4BIT=true>).
+  packed_partition_byte_offsets_.clear();
+  packed_partition_byte_offsets_.emplace_back(0);
+  for (size_t i = 0; i + 1 < feature_partition_column_index_offsets_.size(); ++i) {
+    const int num_columns = feature_partition_column_index_offsets_[i + 1] - feature_partition_column_index_offsets_[i];
+    packed_partition_byte_offsets_.emplace_back(packed_partition_byte_offsets_.back() + ((num_columns + 1) >> 1));
+  }
+  const size_t packed_total = static_cast<size_t>(packed_partition_byte_offsets_.back()) * static_cast<size_t>(num_data_);
+  const size_t unpacked_total = static_cast<size_t>(feature_partition_column_index_offsets_.back()) * static_cast<size_t>(num_data_);
+  std::vector<const void*> column_data;
+  std::vector<uint8_t> column_bit_types;
+  const bool use_fast_build = FastRowDataEnabled() && CollectDenseColumnData(train_data, &column_data, &column_bit_types);
+  std::unique_ptr<uint8_t[]> packed(new uint8_t[packed_total]);
+  if (use_fast_build) {
+    BuildDensePacked4BitFromColumns(column_data, column_bit_types, packed.get());
+  } else {
+    if (host_data == nullptr) {
+      Log::Fatal("The host multi-val bin build was skipped but the fast dense row data build is not applicable.");
+    }
+    std::unique_ptr<uint8_t[]> staging(new uint8_t[unpacked_total]);
+    GetDenseDataPartitionedToBuffer<uint8_t>(host_data, staging.get());
+    Pack4BitFromPartitioned(staging.get(), packed.get());
+  }
+  if (RowData4BitVerifyEnabled()) {
+    // build the exact 8-bit representation the non-packed path would produce and
+    // compare element-wise after unpacking (the layouts differ by design)
+    std::unique_ptr<uint8_t[]> reference(new uint8_t[unpacked_total]);
+    if (use_fast_build) {
+      BuildDensePartitionedFromColumns<uint8_t>(column_data, column_bit_types, reference.get());
+    } else {
+      GetDenseDataPartitionedToBuffer<uint8_t>(host_data, reference.get());
+    }
+    std::vector<int> thread_mismatch(num_threads_, 0);
+    Threading::For<data_size_t>(0, num_data_, 512,
+      [this, &reference, &packed, &thread_mismatch] (int thread_index, data_size_t start, data_size_t end) {
+        for (size_t i = 0; i + 1 < feature_partition_column_index_offsets_.size(); ++i) {
+          const int partition_column_start = feature_partition_column_index_offsets_[i];
+          const int num_columns = feature_partition_column_index_offsets_[i + 1] - partition_column_start;
+          const int packed_width = packed_partition_byte_offsets_[i + 1] - packed_partition_byte_offsets_[i];
+          const uint8_t* ref_partition = reference.get() +
+            static_cast<size_t>(num_data_) * static_cast<size_t>(partition_column_start);
+          const uint8_t* packed_partition = packed.get() +
+            static_cast<size_t>(num_data_) * static_cast<size_t>(packed_partition_byte_offsets_[i]);
+          for (data_size_t row = start; row < end; ++row) {
+            const uint8_t* ref_row = ref_partition + static_cast<size_t>(row) * num_columns;
+            const uint8_t* packed_row = packed_partition + static_cast<size_t>(row) * packed_width;
+            for (int j = 0; j < num_columns; ++j) {
+              const uint8_t unpacked_value = (packed_row[j >> 1] >> ((j & 1) << 2)) & 0xf;
+              if (unpacked_value != ref_row[j]) {
+                thread_mismatch[thread_index] = 1;
+              }
+            }
+          }
+        }
+      });
+    for (int t = 0; t < num_threads_; ++t) {
+      if (thread_mismatch[t] != 0) {
+        Log::Fatal("EXABOOST_ROWDATA_4BIT_VERIFY: packed row data differs from the 8-bit representation.");
+      }
+    }
+    Log::Info("EXABOOST_ROWDATA_4BIT_VERIFY: 4-bit packed row data matches the 8-bit representation (%d columns, %d rows).",
+              feature_partition_column_index_offsets_.back(), num_data_);
+  }
+  Log::Debug("CUDARowData: 4-bit packed dense row data engaged (%d partitions, %d -> %d bytes per row; disable with EXABOOST_ROWDATA_4BIT=0)",
+             num_feature_partitions_, feature_partition_column_index_offsets_.back(), packed_partition_byte_offsets_.back());
+  cuda_data_uint8_t_.InitFromHostMemory(packed.get(), packed_total);
+  cuda_packed_partition_byte_offsets_.InitFromHostVector(packed_partition_byte_offsets_);
 }
 
 template <typename BIN_TYPE, typename DATA_PTR_TYPE>

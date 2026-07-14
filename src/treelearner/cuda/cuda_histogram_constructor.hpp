@@ -153,6 +153,10 @@ class CUDAHistogramConstructor {
   const std::vector<int>& compact_src_cols() const { return compact_src_cols_host_; }
   const std::vector<size_t>& compact_slot_bytes() const { return compact_slot_byte_host_; }
   const std::vector<int>& compact_slot_strides() const { return compact_slot_stride_host_; }
+  const std::vector<int>& compact_slot_cols() const { return compact_slot_col_host_; }
+  /*! \brief whether the compact matrix is 4-bit packed (two columns per byte,
+   *  per-partition even-column padding; mirrors CUDARowData::is_4bit_packed) */
+  bool compact_src_is_4bit() const { return compact_is_4bit_; }
   const uint8_t* compact_data_device() const { return compact_data_uint8_t_.RawDataReadOnly(); }
   /*! \brief whether this tree's compact build also produced the column-major
    *  view (compact_col_major_device()[slot * num_data + row]); the tree learner
@@ -499,6 +503,19 @@ class CUDAHistogramConstructor {
   std::vector<int> compact_src_cols_host_;
   std::vector<size_t> compact_slot_byte_host_;
   std::vector<int> compact_slot_stride_host_;
+  std::vector<int> compact_slot_col_host_;
+  /*! \brief compact matrix is 4-bit packed (set iff the row data is packed) */
+  bool compact_is_4bit_ = false;
+  /*! \brief prefix over partitions of packed compact per-row byte widths (4-bit mode) */
+  CUDAVector<int> compact_packed_partition_byte_offsets_;
+  /*! \brief per destination-byte-slot metadata of the 4-bit compact fill kernel
+   *  (source nibble bases of the byte's two columns, per-row nibble stride,
+   *  destination byte base/stride) */
+  CUDAVector<size_t> cuda_bs_src_nib0_;
+  CUDAVector<size_t> cuda_bs_src_nib1_;
+  CUDAVector<int> cuda_bs_src_stride_nib_;
+  CUDAVector<size_t> cuda_bs_dst_byte_;
+  CUDAVector<int> cuda_bs_dst_stride_;
   /*! \brief whether compact_staging_col_major_ holds this tree's column-major
    *  compact view (fused second output of the compact fill) */
   bool compact_col_major_filled_ = false;

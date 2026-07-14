@@ -68,6 +68,16 @@ class CUDARowData {
 
   uint8_t bit_type() const { return bit_type_; }
 
+  /*! \brief whether cuda_data_uint8_t_ stores two bin values per byte (see
+   *  InitDense4BitData for the layout invariant); bit_type() stays 8 */
+  bool is_4bit_packed() const { return is_4bit_packed_; }
+
+  /*! \brief prefix over partitions of the packed per-row byte widths
+   *  (ceil(num_columns_in_partition / 2)); only valid when is_4bit_packed() */
+  const int* cuda_packed_partition_byte_offsets() const { return cuda_packed_partition_byte_offsets_.RawData(); }
+
+  const std::vector<int>& host_packed_partition_byte_offsets() const { return packed_partition_byte_offsets_; }
+
   uint8_t row_ptr_bit_type() const { return row_ptr_bit_type_; }
 
   const int* cuda_feature_partition_column_index_offsets() const { return cuda_feature_partition_column_index_offsets_.RawData(); }
@@ -94,6 +104,18 @@ class CUDARowData {
    *  row-wise multi-val bin) may be nullptr when Dataset::GetShareStates skipped its build. */
   template <typename BIN_TYPE>
   void InitDenseData(const Dataset* train_data, const BIN_TYPE* host_data, CUDAVector<BIN_TYPE>* cuda_data);
+
+  /*! \brief Initialize the dense row-wise data in 4-bit packed form (two bin
+   *  values per byte; every column has <= 16 bins). See the implementation for
+   *  the per-partition alignment invariant. */
+  void InitDense4BitData(const Dataset* train_data, const uint8_t* host_data);
+
+  /*! \brief Packed variant of BuildDensePartitionedFromColumns: writes nibbles. */
+  void BuildDensePacked4BitFromColumns(const std::vector<const void*>& column_data,
+    const std::vector<uint8_t>& column_bit_types, uint8_t* out_data) const;
+
+  /*! \brief Pack an 8-bit partitioned row-major buffer into the 4-bit layout. */
+  void Pack4BitFromPartitioned(const uint8_t* unpacked, uint8_t* packed) const;
 
   /*! \brief Collect the raw per-column bin data in multi-val column order.
    *  Returns false (fast build not applicable) on multi-val or sparse groups. */
@@ -144,6 +166,10 @@ class CUDARowData {
   uint8_t row_ptr_bit_type_;
   /*! \brief is sparse row wise data */
   bool is_sparse_;
+  /*! \brief cuda_data_uint8_t_ stores two bin values per byte (all columns <= 16 bins) */
+  bool is_4bit_packed_ = false;
+  /*! \brief prefix over partitions of packed per-row byte widths (size P+1) */
+  std::vector<int> packed_partition_byte_offsets_;
   /*! \brief start column index of each feature partition */
   std::vector<int> feature_partition_column_index_offsets_;
   /*! \brief histogram offset of each column */
@@ -200,6 +226,8 @@ class CUDARowData {
   CUDAVector<uint64_t> cuda_partition_ptr_uint64_t_;
   /*! \brief start column index of each feature partition */
   CUDAVector<int> cuda_feature_partition_column_index_offsets_;
+  /*! \brief prefix over partitions of packed per-row byte widths (4-bit mode) */
+  CUDAVector<int> cuda_packed_partition_byte_offsets_;
   /*! \brief histogram offset of each column */
   CUDAVector<uint32_t> cuda_column_hist_offsets_;
   /*! \brief hisotgram offset of each partition */
