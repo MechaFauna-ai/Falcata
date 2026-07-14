@@ -44,8 +44,16 @@ figures from the profiles in the PR discussions.
 - [ ] **Selective-growth churn reduction.** covtype 64/12 applies 2.09x the final split
   count (52% displaced-then-pruned). Smarter speculation — e.g. only apply candidates
   with a selection margin / hysteresis — to cut wasted search+apply.
-- [ ] **Wide-shape batched search** *(in flight)*: batched find/sync for
-  num_tasks > 1024 and the numerai compact-view shape; currently caps numerai gains.
+- [x] **Wide-shape batched search** (161fe88b): multi-block batched find/sync for
+  num_tasks > 1024 (bit-identical reduction), compact-view batched construct,
+  bin-used-mask skipping of dead histogram entries, learner gather from the compact
+  matrix. numerai 4096/13: 39.4 -> 27.2s; example shape per-tree 41.6 -> 34.8ms.
+- [ ] **Numerai first-train setup (~14s)**: dataset->CUDA init dominates short runs on
+  the example shape; outside the search path. Profile and trim (row-data upload,
+  compact gather warmup).
+- [ ] **Latency-bound construct on tiny-bin wide data**: post-161fe88b numerai construct
+  is scattered-read latency-bound (19ms/tree) -- candidate for NVRTC shape
+  specialization (auto-tuner tier 2) or layout changes.
 - [ ] **Quant one-sync parity.** The quantized path still uses the two-sync level flow;
   extend the one-sync speculative pipeline to it. Also investigate the per-tree gradient
   discretization cost on many-tree/small-tree configs (numerai-quant is slower than
