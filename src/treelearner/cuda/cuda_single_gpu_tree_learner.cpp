@@ -18,6 +18,8 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cinttypes>
+#include <string>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -1626,11 +1628,11 @@ void CUDASingleGPUTreeLearner::SelectiveFinalize(CUDATree* tree) {
   static const bool hybrid_debug = std::getenv("EXABOOST_HYBRID_DEBUG") != nullptr;
   if (hybrid_debug) {
     // stderr (not the logger): churn statistics must be visible under verbose=-1
-    fprintf(stderr, "[selective] trees=%lld leaves=%d cumulative: applied=%lld displaced=%lld levels=%lld\n",
-            static_cast<long long>(sel_stat_trees_), final_num_leaves,
-            static_cast<long long>(sel_stat_applied_),
-            static_cast<long long>(sel_stat_displaced_),
-            static_cast<long long>(sel_stat_levels_));
+    fprintf(stderr, "[selective] trees=%" PRId64 " leaves=%d cumulative: applied=%" PRId64 " displaced=%" PRId64 " levels=%" PRId64 "\n",
+            static_cast<int64_t>(sel_stat_trees_), final_num_leaves,
+            static_cast<int64_t>(sel_stat_applied_),
+            static_cast<int64_t>(sel_stat_displaced_),
+            static_cast<int64_t>(sel_stat_levels_));
   }
 }
 

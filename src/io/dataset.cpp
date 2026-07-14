@@ -455,7 +455,7 @@ void Dataset::PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
   const int num_cols = std::min(ncol, num_total_features_);
   // per column: the Bin to push into and a fully encoded value->bin table
   // (most-freq skip, offset and multi-val adjustment folded in)
-  constexpr int64_t kLutSize = int64_t(1) << (8 * sizeof(T));
+  constexpr int64_t kLutSize = static_cast<int64_t>(1) << (8 * sizeof(T));
   constexpr int64_t kLutOffset = kLutSize / 2;
   std::vector<uint32_t> lut(static_cast<size_t>(num_cols) * kLutSize, Bin::kSkipBin);
   std::vector<Bin*> targets(num_cols, nullptr);

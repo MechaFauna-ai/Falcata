@@ -9,10 +9,13 @@
 
 #ifdef USE_CUDA
 
+#include <LightGBM/bin.h>
+#include <LightGBM/tree.h>
+
+#include <vector>
+
 #include <LightGBM/cuda/cuda_column_data.hpp>
 #include <LightGBM/cuda/cuda_split_info.hpp>
-#include <LightGBM/tree.h>
-#include <LightGBM/bin.h>
 
 namespace LightGBM {
 

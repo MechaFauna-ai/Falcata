@@ -35,6 +35,7 @@ def measure_one(kind):
     import time
 
     import numpy as np
+
     import lightgbm as lgb
 
     d = os.path.join(CACHE_DIR, "numerai")
@@ -86,9 +87,7 @@ def measure_one(kind):
                 "construct_s": round(construct_s, 2),
                 "create_s": round(create_s, 2),
                 f"trees{WARMUP_TREES}_s": round(trees_s, 2),
-                "peak_rss_gb": round(
-                    resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024**2, 1
-                ),
+                "peak_rss_gb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024**2, 1),
                 "version": lgb.__version__,
             }
         )

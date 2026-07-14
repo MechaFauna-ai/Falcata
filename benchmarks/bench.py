@@ -27,7 +27,6 @@ import time
 import traceback
 
 import numpy as np
-
 from common import CACHE_DIR, DATASETS, REGIMES, RUNS_JSONL, SEED
 
 
@@ -53,6 +52,7 @@ class ResourceMonitor:
                         "--query-gpu=memory.used",
                         "--format=csv,noheader,nounits",
                     ],
+                    check=False,
                     capture_output=True,
                     text=True,
                     timeout=5,
@@ -123,9 +123,7 @@ def numerai_corr_np(preds, targets):
 
 
 def numerai_metrics(preds, y, era):
-    corrs = np.array(
-        [numerai_corr_np(preds[era == e], y[era == e]) for e in np.unique(era)]
-    )
+    corrs = np.array([numerai_corr_np(preds[era == e], y[era == e]) for e in np.unique(era)])
     mean, std = corrs.mean(), corrs.std(ddof=0)
     cumulative = np.cumprod(1 + corrs)
     rolling_max = np.maximum.accumulate(cumulative)
@@ -205,9 +203,7 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, quantized, curve):
             bst.update()
             if (i + 1) % reg["eval_every"] == 0 or i + 1 == reg["rounds"]:
                 res = bst.eval_valid()
-                curve_pts.append(
-                    [i + 1, time.perf_counter() - t0, res[0][2] if res else None]
-                )
+                curve_pts.append([i + 1, time.perf_counter() - t0, res[0][2] if res else None])
     else:
         bst = lgb.train(params, dtrain, num_boost_round=reg["rounds"])
     train_s = time.perf_counter() - t0
@@ -266,9 +262,7 @@ def run_xgboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
             bst.update(dtrain, i)
             if (i + 1) % reg["eval_every"] == 0 or i + 1 == reg["rounds"]:
                 res = bst.eval_set([(dtest, "test")], i)
-                curve_pts.append(
-                    [i + 1, time.perf_counter() - t0, float(res.split(":")[-1])]
-                )
+                curve_pts.append([i + 1, time.perf_counter() - t0, float(res.split(":")[-1])])
     else:
         bst = xgb.train(params, dtrain, num_boost_round=reg["rounds"])
     train_s = time.perf_counter() - t0
@@ -277,10 +271,7 @@ def run_xgboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
     # the device while the trained booster is still resident
     step = 200_000
     preds = np.concatenate(
-        [
-            bst.inplace_predict(np.ascontiguousarray(x_te[i : i + step]))
-            for i in range(0, x_te.shape[0], step)
-        ]
+        [bst.inplace_predict(np.ascontiguousarray(x_te[i : i + step])) for i in range(0, x_te.shape[0], step)]
     )
     return {
         "construct_s": construct_s,
@@ -322,11 +313,7 @@ def run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
     train_pool = cb.Pool(np.asarray(x_tr), label=y_tr)
     construct_s = time.perf_counter() - t0
 
-    cls = (
-        cb.CatBoostClassifier
-        if task in ("binary", "multiclass")
-        else cb.CatBoostRegressor
-    )
+    cls = cb.CatBoostClassifier if task in ("binary", "multiclass") else cb.CatBoostRegressor
 
     def fit(kw):
         model = cls(**kw)
@@ -359,10 +346,7 @@ def run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
             series = vals[next(iter(vals))]
             n = len(series)
             # no per-iteration wall clock exposed; approximate linearly
-            curve_pts = [
-                [i + 1, train_s * (i + 1) / n, series[i]]
-                for i in range(0, n, reg["eval_every"])
-            ]
+            curve_pts = [[i + 1, train_s * (i + 1) / n, series[i]] for i in range(0, n, reg["eval_every"])]
 
     if task == "binary":
         preds = model.predict_proba(np.asarray(x_te))[:, 1]
