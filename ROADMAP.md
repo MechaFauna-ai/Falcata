@@ -124,6 +124,26 @@ figures from the profiles in the PR discussions.
   finder. Follow-up: fp32 hists still occupy fp64-sized slots (bandwidth halved,
   memory unchanged) -- shrink the pool arithmetic to also halve hist memory.
 
+## Inference
+
+- [x] **FIL soft-integration for Booster.predict** (013c77ed): with cuml-cu12
+  installed and device_type=cuda, predict() routes through cuML FIL/nvforest via a
+  fully in-memory treelite handoff (no temp files); numpy/CuPy in -> matching
+  residency out; cache invalidated on model change; opt-outs use_fil=False /
+  EXABOOST_FIL=0; graceful CPU fallback (pred_contrib/pred_leaf/exotic postprocessors
+  stay CPU). numerai predict 0.90s (CPU 32T) -> 0.046s (cupy-in), higgs 0.37 ->
+  0.004s; host-in loses only on very wide inputs with small models (PCIe-bound).
+  Default fp32 (EXABOOST_FIL_PRECISION=double is bit-exact; fp32 flips ~0.01% of
+  rows one leaf at split-threshold rounding gaps, AUC unchanged). Follow-ups:
+  directed-rounding of thresholds in the treelite handoff would eliminate the fp32
+  leaf-flip class; width-based host-input heuristic to auto-skip FIL on
+  numerai-shaped host inputs.
+- [x] **In-training validation eval: already device-side** (verified, no work
+  needed): CUDAScoreUpdater covers valid sets, CUDATree applies trees to device
+  valid scores each iteration, rmse/l2/binary metrics reduce on device (auc/multi
+  fall back to CPU at eval points). Measured 0.22 ms/iter (~2.6%) at numerai
+  curve-flow scale.
+
 ## Correctness / determinism
 
 - [ ] **Deterministic non-quant CUDA mode** (deprioritized: determinism is a
