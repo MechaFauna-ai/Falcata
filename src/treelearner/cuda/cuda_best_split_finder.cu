@@ -1988,6 +1988,7 @@ __global__ void FindBestSplitsForLevelKernel(
   const int8_t* is_feature_used_bytree,
   const int num_tasks,
   const SplitFindTask* tasks,
+  const int* used_task_indices,
   CUDARandom* cuda_randoms,
   const CUDAHybridPairDescriptor* pair_descs,
   const data_size_t min_data_in_leaf,
@@ -2015,7 +2016,10 @@ __global__ void FindBestSplitsForLevelKernel(
       leaf_sum_hessians <= min_sum_hessian_in_leaf) {
     return;
   }
-  const unsigned int task_index = blockIdx.x;
+  // feature-sampled trees launch one block per USED task only; the output slot
+  // keeps the ORIGINAL task index (unused slots are masked out by the sync)
+  const unsigned int task_index = used_task_indices == nullptr ?
+    blockIdx.x : static_cast<unsigned int>(used_task_indices[blockIdx.x]);
   const SplitFindTask* task = tasks + task_index;
   const double parent_gain = leaf_splits->gain;
   const double sum_gradients = leaf_splits->sum_of_gradients;
@@ -2054,6 +2058,7 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
   const int8_t* is_feature_used_bytree,
   const int num_tasks,
   const SplitFindTask* tasks,
+  const int* used_task_indices,
   CUDARandom* cuda_randoms,
   const CUDAHybridPairDescriptor* pair_descs,
   const data_size_t min_data_in_leaf,
@@ -2072,7 +2077,8 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
     return;
   }
   const CUDALeafSplitsStruct* leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
-  const unsigned int task_index = blockIdx.x;
+  const unsigned int task_index = used_task_indices == nullptr ?
+    blockIdx.x : static_cast<unsigned int>(used_task_indices[blockIdx.x]);
   const SplitFindTask* task = tasks + task_index;
   const double parent_gain = leaf_splits->gain;
   const int64_t sum_gradients_hessians = leaf_splits->sum_of_gradients_hessians;
@@ -2134,16 +2140,22 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
 }
 
 // Batched reduction over the per-pair task regions: blockIdx.x = 0 (smaller) / 1
-// (larger), blockIdx.y = pair. Each block reduces one leaf's 2 * num_tasks region
-// slice exactly like SyncBestSplitForLeafKernel (same block size, same reduction
-// order, hence bit-identical results) and writes that leaf's slot of the per-leaf
-// best-split cache; leaves of different pairs are disjoint, so no conflicts.
+// (larger), blockIdx.y = pair, blockIdx.z = task block (num_tasks may exceed one
+// sync block for wide datasets). Each block reduces its slice of one leaf's
+// 2 * num_tasks region exactly like SyncBestSplitForLeafKernel (same block size,
+// same task slicing, same reduction order, hence bit-identical results) and
+// writes that leaf's slot of the per-leaf best-split cache (block z writes slot
+// leaf + z * num_leaves, exactly like the per-pair kernel); leaves of different
+// pairs are disjoint, so no conflicts. Multi-block leaves are merged afterwards
+// by SyncBestSplitForLevelKernelAllBlocks (the per-pair AllBlocks replica).
 __global__ void SyncBestSplitForLevelKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   CUDASplitInfo* cuda_leaf_best_split_info,
   const SplitFindTask* tasks,
+  const int8_t* is_feature_used_bytree,
   const CUDASplitInfo* cuda_best_split_info,
   const int num_tasks,
+  const int num_leaves,
   const data_size_t min_data_in_leaf,
   const double min_sum_hessian_in_leaf) {
   __shared__ double shared_gain_buffer[WARPSIZE];
@@ -2151,6 +2163,7 @@ __global__ void SyncBestSplitForLevelKernel(
   __shared__ uint32_t shared_thread_index_buffer[WARPSIZE];
   const unsigned int pair_index = blockIdx.y;
   const bool is_larger = (blockIdx.x == 1);
+  const unsigned int leaf_block_index = blockIdx.z;
   const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
   // leaf index and validity mirror the find kernel: the leaf index comes from
   // the struct (written by the batched apply kernels; equal to the host value in
@@ -2166,8 +2179,9 @@ __global__ void SyncBestSplitForLevelKernel(
   leaf_valid = leaf_valid && leaf_splits->num_data_in_leaf > min_data_in_leaf &&
     leaf_splits->sum_of_hessians > min_sum_hessian_in_leaf;
   if (!leaf_valid) {
-    // mirror SetInvalidLeafSplitInfoKernel of the per-pair path
-    if (threadIdx.x == 0) {
+    // mirror SetInvalidLeafSplitInfoKernel of the per-pair path (block-slot
+    // copies for z >= 1 stay stale, so the AllBlocks merge skips invalid leaves)
+    if (threadIdx.x == 0 && leaf_block_index == 0) {
       cuda_leaf_best_split_info[leaf_index].is_valid = false;
     }
     return;
@@ -2178,9 +2192,16 @@ __global__ void SyncBestSplitForLevelKernel(
   bool best_found = false;
   double best_gain = kMinScore;
   uint32_t shared_read_index = 0;
-  const int task_index = static_cast<int>(threadIdx_x);
+  const int task_index = static_cast<int>(leaf_block_index * blockDim.x + threadIdx_x);
   const uint32_t read_index = is_larger ? static_cast<uint32_t>(task_index + num_tasks) : static_cast<uint32_t>(task_index);
-  if (task_index < num_tasks) {
+  // Feature-sampled trees launch the batched find over USED tasks only, leaving
+  // unused tasks' output slots stale; mask them to not-found here. This is
+  // bit-identical to the per-pair reduction, where those lanes hold the
+  // is_valid=false slots the (full-grid) find would have written: a not-found
+  // lane never propagates its gain/read-index through ReduceBestGain.
+  if (task_index < num_tasks &&
+      (is_feature_used_bytree == nullptr ||
+       is_feature_used_bytree[tasks[task_index].inner_feature_index])) {
     best_found = pair_split_info[read_index].is_valid;
     best_gain = pair_split_info[read_index].gain;
     shared_read_index = read_index;
@@ -2189,13 +2210,18 @@ __global__ void SyncBestSplitForLevelKernel(
   const uint32_t best_read_index = ReduceBestGain(best_gain, best_found, shared_read_index,
       shared_gain_buffer, shared_found_buffer, shared_thread_index_buffer);
   if (threadIdx.x == 0) {
-    CUDASplitInfo* cuda_split_info = cuda_leaf_best_split_info + leaf_index;
+    CUDASplitInfo* cuda_split_info = cuda_leaf_best_split_info +
+      static_cast<unsigned int>(leaf_index) + leaf_block_index * static_cast<unsigned int>(num_leaves);
+    const int best_task_index = best_read_index >= static_cast<uint32_t>(num_tasks) ?
+      static_cast<int>(best_read_index) - num_tasks : static_cast<int>(best_read_index);
+    // when nothing was found the reduction returns thread 0's own lane, whose
+    // slot may be stale under task compaction: re-apply the mask before reading
+    const bool best_task_used = is_feature_used_bytree == nullptr ||
+      is_feature_used_bytree[tasks[best_task_index].inner_feature_index];
     const CUDASplitInfo* best_split_info = pair_split_info + best_read_index;
-    if (best_split_info->is_valid) {
+    if (best_task_used && best_split_info->is_valid) {
       *cuda_split_info = *best_split_info;
-      cuda_split_info->inner_feature_index = best_read_index >= static_cast<uint32_t>(num_tasks) ?
-        tasks[best_read_index - static_cast<uint32_t>(num_tasks)].inner_feature_index :
-        tasks[best_read_index].inner_feature_index;
+      cuda_split_info->inner_feature_index = tasks[best_task_index].inner_feature_index;
       cuda_split_info->is_valid = true;
     } else {
       cuda_split_info->gain = kMinScore;
@@ -2204,15 +2230,59 @@ __global__ void SyncBestSplitForLevelKernel(
   }
 }
 
+// Cross-block merge for wide datasets (num_tasks > one sync block): one block per
+// (leaf role, pair) sequentially folds block slots 1..num_blocks_per_leaf-1 into
+// slot 0 with the exact comparison (and hence tie-break order: the LOWEST task
+// block wins ties) of the per-pair SyncBestSplitForLeafKernelAllBlocks.
+__global__ void SyncBestSplitForLevelKernelAllBlocks(
+  const CUDAHybridPairDescriptor* pair_descs,
+  CUDASplitInfo* cuda_leaf_best_split_info,
+  const unsigned int num_blocks_per_leaf,
+  const int num_leaves,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf) {
+  const unsigned int pair_index = blockIdx.y;
+  const bool is_larger = (blockIdx.x == 1);
+  const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
+  const CUDALeafSplitsStruct* leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
+  const int leaf_index = leaf_splits->leaf_index;
+  if (leaf_index < 0) {
+    return;
+  }
+  bool leaf_valid = is_larger ? (desc->larger_valid != 0) : (desc->smaller_valid != 0);
+  leaf_valid = leaf_valid && leaf_splits->num_data_in_leaf > min_data_in_leaf &&
+    leaf_splits->sum_of_hessians > min_sum_hessian_in_leaf;
+  if (!leaf_valid) {
+    // the sync kernel's block-slot copies were skipped for this leaf
+    return;
+  }
+  CUDASplitInfo* leaf_split_info = cuda_leaf_best_split_info + leaf_index;
+  for (unsigned int block_index = 1; block_index < num_blocks_per_leaf; ++block_index) {
+    const unsigned int leaf_read_pos = static_cast<unsigned int>(leaf_index) +
+      block_index * static_cast<unsigned int>(num_leaves);
+    const CUDASplitInfo* other_split_info = cuda_leaf_best_split_info + leaf_read_pos;
+    if ((other_split_info->is_valid && leaf_split_info->is_valid &&
+      other_split_info->gain > leaf_split_info->gain) ||
+        (!leaf_split_info->is_valid && other_split_info->is_valid)) {
+      *leaf_split_info = *other_split_info;
+    }
+  }
+}
+
 void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs) {
-  dim3 grid_dim(num_tasks_, num_pairs, 2);
+  const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
+  if (num_used_tasks_ == 0) {
+    return;  // no usable feature this tree; the sync masks every lane not-found
+  }
+  dim3 grid_dim(compact_tasks ? num_used_tasks_ : num_tasks_, num_pairs, 2);
   FindBestSplitsForLevelKernel<false, false, false>
     <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
       cuda_is_feature_used_bytree_.RawData(),
       num_tasks_,
       cuda_split_find_tasks_.RawData(),
+      compact_tasks ? cuda_used_task_indices_.RawDataReadOnly() : nullptr,
       cuda_randoms_.RawData(),
       pair_descs,
       min_data_in_leaf_,
@@ -2229,12 +2299,17 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
   const int num_pairs,
   const score_t* grad_scale,
   const score_t* hess_scale) {
-  dim3 grid_dim(num_tasks_, num_pairs, 2);
+  const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
+  if (num_used_tasks_ == 0) {
+    return;  // no usable feature this tree; the sync masks every lane not-found
+  }
+  dim3 grid_dim(compact_tasks ? num_used_tasks_ : num_tasks_, num_pairs, 2);
   FindBestSplitsDiscretizedForLevelKernel<false, false, false>
     <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
       cuda_is_feature_used_bytree_.RawData(),
       num_tasks_,
       cuda_split_find_tasks_.RawData(),
+      compact_tasks ? cuda_used_task_indices_.RawDataReadOnly() : nullptr,
       cuda_randoms_.RawData(),
       pair_descs,
       min_data_in_leaf_,
@@ -2251,15 +2326,31 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
 void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs) {
-  dim3 grid_dim(2, num_pairs);
+  const int num_blocks_per_leaf = (num_tasks_ + NUM_TASKS_PER_SYNC_BLOCK - 1) / NUM_TASKS_PER_SYNC_BLOCK;
+  const bool compact_tasks = num_used_tasks_ < num_tasks_;
+  dim3 grid_dim(2, num_pairs, num_blocks_per_leaf);
   SyncBestSplitForLevelKernel<<<grid_dim, NUM_TASKS_PER_SYNC_BLOCK, 0, cuda_streams_[0]>>>(
     pair_descs,
     cuda_leaf_best_split_info_.RawData(),
     cuda_split_find_tasks_.RawData(),
+    compact_tasks ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
     cuda_best_split_info_.RawData(),
     num_tasks_,
+    num_leaves_,
     min_data_in_leaf_,
     min_sum_hessian_in_leaf_);
+  if (num_blocks_per_leaf > 1) {
+    // stream-ordered after the sync kernel above; same stream as the batched
+    // find, so no extra synchronization is needed
+    dim3 merge_grid_dim(2, num_pairs);
+    SyncBestSplitForLevelKernelAllBlocks<<<merge_grid_dim, 1, 0, cuda_streams_[0]>>>(
+      pair_descs,
+      cuda_leaf_best_split_info_.RawData(),
+      static_cast<unsigned int>(num_blocks_per_leaf),
+      num_leaves_,
+      min_data_in_leaf_,
+      min_sum_hessian_in_leaf_);
+  }
 }
 
 

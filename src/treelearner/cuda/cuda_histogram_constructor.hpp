@@ -131,12 +131,49 @@ class CUDAHistogramConstructor {
   cudaStream_t hist_stream() const { return cuda_stream_; }
 
   /*! \brief whether the batched per-level construct/fix/subtract path supports the
-   *  current data layout (dense, shared-memory histograms, no compact view) */
+   *  current data layout (dense, shared-memory histograms). The compact column
+   *  view (feature_fraction sampling gathered into a dense per-tree copy) is
+   *  supported through the same batched dense kernel fed with the compact
+   *  pointers/dims; EXABOOST_BATCH_WIDE=0 restores the per-pair fallback for it. */
   bool SupportsBatchedLevel() const {
     return cuda_row_data_ != nullptr &&
            !cuda_row_data_->is_sparse() &&
            cuda_row_data_->NumLargeBinPartition() == 0 &&
-           !use_compact_view_;
+           (!use_compact_view_ ||
+            (ExaboostBatchWideEnabled() && !compact_is_col_major_ &&
+             cuda_row_data_->bit_type() == 8));
+  }
+
+  /*! \brief whether the tree learner's per-tree column-view build can source its
+   *  gather from this constructor's compact matrix (row-major-in-partition over
+   *  the tree's sampled columns) instead of the full bin matrix */
+  bool CompactViewSourceAvailable() const {
+    return use_compact_view_ && !compact_is_col_major_;
+  }
+  const std::vector<int>& compact_src_cols() const { return compact_src_cols_host_; }
+  const std::vector<size_t>& compact_slot_bytes() const { return compact_slot_byte_host_; }
+  const std::vector<int>& compact_slot_strides() const { return compact_slot_stride_host_; }
+  const uint8_t* compact_data_device() const { return compact_data_uint8_t_.RawDataReadOnly(); }
+  /*! \brief whether this tree's compact build also produced the column-major
+   *  view (compact_col_major_device()[slot * num_data + row]); the tree learner
+   *  then uses it directly instead of gathering its own copy */
+  bool CompactColMajorFilled() const { return compact_col_major_filled_; }
+  const uint8_t* compact_col_major_device() const { return compact_staging_col_major_.RawDataReadOnly(); }
+
+  /*! \brief one-line gate dump for EXABOOST_HYBRID_DIAG */
+  std::string BatchedLevelGateDiag() const {
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "hist: row_data=%d sparse=%d large_bin_parts=%d compact_view=%d "
+             "col_major=%d bit_type=%d batch_wide=%d",
+             static_cast<int>(cuda_row_data_ != nullptr),
+             cuda_row_data_ != nullptr ? static_cast<int>(cuda_row_data_->is_sparse()) : -1,
+             cuda_row_data_ != nullptr ? cuda_row_data_->NumLargeBinPartition() : -1,
+             static_cast<int>(use_compact_view_),
+             static_cast<int>(compact_is_col_major_),
+             cuda_row_data_ != nullptr ? cuda_row_data_->bit_type() : -1,
+             static_cast<int>(ExaboostBatchWideEnabled()));
+    return std::string(buf);
   }
 
   /*! \brief Batched per-level histogram phase for hybrid growth: one construct, one
@@ -419,6 +456,18 @@ class CUDAHistogramConstructor {
    *  fused small-leaf fix+subtract kernel's subtract blocks skip these (the fix
    *  blocks own them) */
   CUDAVector<uint8_t> cuda_fix_mfb_mask_;
+  /*! \brief per-tree bin-level used mask (1 = bin belongs to a feature in this
+   *  tree's feature_fraction sample). The batched fix/subtract kernels and the
+   *  batched construct's shared-histogram zero/merge skip unused bins: nothing
+   *  of this tree ever reads them (the find kernels are feature-masked), so
+   *  their content is dead storage. Only active when sampling is on. */
+  std::vector<uint8_t> host_bin_used_bytree_;
+  CUDAVector<uint8_t> cuda_bin_used_bytree_;
+  bool any_feature_unused_bytree_ = false;
+  /*! \brief every feature fits the register-accumulation bin cap (<= 8 bins);
+   *  selects the contention-free construct body on the batched compact path
+   *  (non-quantized only; EXABOOST_BATCH_REGHIST=0 disables) */
+  bool construct_reg_bins_ = false;
 
   // ========================================================================
   // Compact-view buffers: when feature_fraction < 1.0, build a contiguous
@@ -443,6 +492,16 @@ class CUDAHistogramConstructor {
   bool use_compact_view_;
   /*! \brief if true, compact_data_uint8_t_ is column-major-in-partition (used when source is host) */
   bool compact_is_col_major_ = false;
+  /*! \brief host copies of the compact layout (source column per slot and the
+   *  row-major-in-partition placement), kept so the tree learner's per-tree
+   *  column-view build can gather from the ~10x smaller compact matrix instead
+   *  of re-reading the full bin matrix (see CompactViewSource*) */
+  std::vector<int> compact_src_cols_host_;
+  std::vector<size_t> compact_slot_byte_host_;
+  std::vector<int> compact_slot_stride_host_;
+  /*! \brief whether compact_staging_col_major_ holds this tree's column-major
+   *  compact view (fused second output of the compact fill) */
+  bool compact_col_major_filled_ = false;
   /*! \brief column_hist_offsets for compact view (length num_compact_columns+1) */
   CUDAVector<uint32_t> compact_column_hist_offsets_;
   /*! \brief partition_hist_offsets for compact view: [0, total_compact_bins] */

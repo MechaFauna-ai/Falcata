@@ -15,10 +15,24 @@
 #include <LightGBM/utils/log.h>
 #include <LightGBM/meta.h>
 
+#include <cstdlib>
+#include <string>
+
 #define NUM_THREADS_PER_BLOCK_LEAF_SPLITS (1024)
 #define NUM_DATA_THREAD_ADD_LEAF_SPLITS (6)
 
 namespace LightGBM {
+
+/*! \brief kill switch for the wide-shape batched level support (many split-find
+ *  tasks and/or compact-column-view histogram data): EXABOOST_BATCH_WIDE=0
+ *  restores the previous fallback to the per-pair kernels for those shapes */
+inline bool ExaboostBatchWideEnabled() {
+  static const bool enabled = []() {
+    const char* env = std::getenv("EXABOOST_BATCH_WIDE");
+    return env == nullptr || std::string(env) != "0";
+  }();
+  return enabled;
+}
 
 struct CUDALeafSplitsStruct {
  public:

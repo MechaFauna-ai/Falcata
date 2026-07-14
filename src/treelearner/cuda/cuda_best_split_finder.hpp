@@ -13,6 +13,7 @@
 #include <LightGBM/bin.h>
 #include <LightGBM/dataset.h>
 
+#include <string>
 #include <vector>
 
 #include <LightGBM/cuda/cuda_random.hpp>
@@ -92,12 +93,29 @@ class CUDABestSplitFinder {
 
   /*! \brief whether the batched per-level find+sync path supports the current
    *  configuration (only the template combination the benchmarks exercise:
-   *  no extra_trees / L1 / path smoothing, shared-memory histograms, one sync
-   *  block per leaf, no per-node feature selection, no categorical features) */
+   *  no extra_trees / L1 / path smoothing, shared-memory histograms, no
+   *  per-node feature selection, no categorical features). Wide shapes
+   *  (num_tasks > one sync block) use the multi-block batched sync mirroring
+   *  the per-pair two-stage reduction; EXABOOST_BATCH_WIDE=0 disables that. */
   bool SupportsBatchedLevel() const {
     return !extra_trees_ && lambda_l1_ <= 0.0f && !use_smoothing_ &&
            !use_global_memory_ && !select_features_by_node_ &&
-           !has_categorical_feature_ && num_tasks_ <= NUM_TASKS_PER_SYNC_BLOCK;
+           !has_categorical_feature_ &&
+           (num_tasks_ <= NUM_TASKS_PER_SYNC_BLOCK || ExaboostBatchWideEnabled());
+  }
+
+  /*! \brief one-line gate dump for EXABOOST_HYBRID_DIAG */
+  std::string BatchedLevelGateDiag() const {
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "finder: extra_trees=%d l1=%f smoothing=%d global_mem=%d "
+             "by_node=%d categorical=%d num_tasks=%d (cap %d, batch_wide=%d)",
+             static_cast<int>(extra_trees_), lambda_l1_,
+             static_cast<int>(use_smoothing_), static_cast<int>(use_global_memory_),
+             static_cast<int>(select_features_by_node_),
+             static_cast<int>(has_categorical_feature_), num_tasks_,
+             NUM_TASKS_PER_SYNC_BLOCK, static_cast<int>(ExaboostBatchWideEnabled()));
+    return std::string(buf);
   }
 
   /*! \brief Batched per-level best-split search for hybrid growth: one find launch
@@ -320,6 +338,16 @@ class CUDABestSplitFinder {
   // for best split find tasks
   std::vector<SplitFindTask> split_find_tasks_;
   int num_tasks_;
+  /*! \brief hybrid batched find: per-tree list of the task indices whose feature
+   *  is in this tree's feature_fraction sample. The batched find launches one
+   *  block per USED task only (a 10x saving for wide sampled datasets); output
+   *  slots keep the ORIGINAL task index so the batched sync reduces the exact
+   *  same lanes as the per-pair kernels (unused lanes masked not-found, exactly
+   *  as if the find had written is_valid=false there). Empty/full -> nullptr
+   *  passed to the kernels (zero overhead without sampling). */
+  std::vector<int> host_used_task_indices_;
+  CUDAVector<int> cuda_used_task_indices_;
+  int num_used_tasks_ = 0;
   // use global memory
   bool use_global_memory_;
   // number of total bins in the dataset

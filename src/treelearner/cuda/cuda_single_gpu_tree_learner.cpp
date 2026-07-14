@@ -274,20 +274,45 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   }
 
   // Build per-slot source-frame metadata host-side (one entry per compact slot).
+  // When the histogram constructor already gathered this tree's sampled columns
+  // into its compact matrix (same column set, row-major-in-partition), gather
+  // from THAT instead of the full bin matrix: the transpose then reads
+  // ~fraction of the bytes (the full-matrix gather effectively streams the
+  // whole dataset through L2 once per tree).
   const auto& src_part_col_offsets_h = row_data->host_feature_partition_column_index_offsets();
+  const bool compact_src = cuda_histogram_constructor_->CompactViewSourceAvailable() &&
+    cuda_histogram_constructor_->compact_src_cols() == compact_column_to_orig_;
+  if (compact_src && cuda_histogram_constructor_->CompactColMajorFilled()) {
+    // the histogram constructor's compact fill already produced the column-major
+    // view as a fused second output (same slot order, verified above): point the
+    // column data at it directly, no gather kernel at all
+    col_data->SetCompactColumnView(orig_column_to_compact_slot_,
+                                   const_cast<uint8_t*>(cuda_histogram_constructor_->compact_col_major_device()),
+                                   static_cast<size_t>(num_data));
+    compact_col_signature_ = sig;
+    return;
+  }
+  const uint8_t* gather_src = compact_src ? cuda_histogram_constructor_->compact_data_device() : src;
   std::vector<size_t> slot_p_byte_h(num_compact_cols);
   std::vector<int> slot_p_stride_h(num_compact_cols);
   std::vector<int> slot_col_in_p_h(num_compact_cols);
-  for (int s = 0; s < num_compact_cols; ++s) {
-    const int orig_col = compact_column_to_orig_[s];
-    int p = 0;
-    while (p + 1 < static_cast<int>(src_part_col_offsets_h.size()) &&
-           orig_col >= src_part_col_offsets_h[p + 1]) ++p;
-    const int p_start = src_part_col_offsets_h[p];
-    const int p_end = src_part_col_offsets_h[p + 1];
-    slot_p_byte_h[s] = static_cast<size_t>(p_start) * static_cast<size_t>(num_data);
-    slot_p_stride_h[s] = p_end - p_start;
-    slot_col_in_p_h[s] = orig_col - p_start;
+  if (compact_src) {
+    // slot byte offsets already include the column-in-partition offset
+    slot_p_byte_h = cuda_histogram_constructor_->compact_slot_bytes();
+    slot_p_stride_h = cuda_histogram_constructor_->compact_slot_strides();
+    std::fill(slot_col_in_p_h.begin(), slot_col_in_p_h.end(), 0);
+  } else {
+    for (int s = 0; s < num_compact_cols; ++s) {
+      const int orig_col = compact_column_to_orig_[s];
+      int p = 0;
+      while (p + 1 < static_cast<int>(src_part_col_offsets_h.size()) &&
+             orig_col >= src_part_col_offsets_h[p + 1]) ++p;
+      const int p_start = src_part_col_offsets_h[p];
+      const int p_end = src_part_col_offsets_h[p + 1];
+      slot_p_byte_h[s] = static_cast<size_t>(p_start) * static_cast<size_t>(num_data);
+      slot_p_stride_h[s] = p_end - p_start;
+      slot_col_in_p_h[s] = orig_col - p_start;
+    }
   }
   if (cuda_slot_p_byte_.Size() < static_cast<size_t>(num_compact_cols)) {
     cuda_slot_p_byte_.Resize(num_compact_cols);
@@ -303,7 +328,7 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
 
   LaunchRowToColCompactKernel(
       0,
-      src,
+      gather_src,
       compact_column_buffer_.RawData(),
       cuda_slot_p_byte_.RawData(),
       cuda_slot_p_stride_.RawData(),
@@ -866,6 +891,19 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   const bool use_batched_level_kernels = use_hybrid_batch_kernels_ &&
     cuda_histogram_constructor_->SupportsBatchedLevel() &&
     cuda_best_split_finder_->SupportsBatchedLevel();
+  static const bool hybrid_diag = std::getenv("EXABOOST_HYBRID_DIAG") != nullptr;
+  if (hybrid_diag) {
+    static bool diag_logged = false;
+    if (!diag_logged) {
+      diag_logged = true;
+      fprintf(stderr, "[hybrid-diag] prefix: batched_level_kernels=%d batch_kernels_env=%d one_sync=%d\n",
+                   static_cast<int>(use_batched_level_kernels),
+                   static_cast<int>(use_hybrid_batch_kernels_),
+                   static_cast<int>(UseOneSyncPrefix()));
+      fprintf(stderr, "[hybrid-diag] %s\n", cuda_histogram_constructor_->BatchedLevelGateDiag().c_str());
+      fprintf(stderr, "[hybrid-diag] %s\n", cuda_best_split_finder_->BatchedLevelGateDiag().c_str());
+    }
+  }
   // batched apply: all tree-structure + partition updates of a level in one
   // launch per kernel family with zero per-split host syncs. The hybrid prefix
   // guarantees the preconditions (single GPU, no categorical splits; bagging
@@ -1393,6 +1431,18 @@ void CUDASingleGPUTreeLearner::TrainSelectiveTwoSync(CUDATree* tree) {
   const bool use_batched_level_kernels = use_hybrid_batch_kernels_ &&
     cuda_histogram_constructor_->SupportsBatchedLevel() &&
     cuda_best_split_finder_->SupportsBatchedLevel();
+  static const bool hybrid_diag = std::getenv("EXABOOST_HYBRID_DIAG") != nullptr;
+  if (hybrid_diag) {
+    static bool diag_logged = false;
+    if (!diag_logged) {
+      diag_logged = true;
+      fprintf(stderr, "[hybrid-diag] selective-two-sync: batched_level_kernels=%d batch_kernels_env=%d\n",
+                   static_cast<int>(use_batched_level_kernels),
+                   static_cast<int>(use_hybrid_batch_kernels_));
+      fprintf(stderr, "[hybrid-diag] %s\n", cuda_histogram_constructor_->BatchedLevelGateDiag().c_str());
+      fprintf(stderr, "[hybrid-diag] %s\n", cuda_best_split_finder_->BatchedLevelGateDiag().c_str());
+    }
+  }
   std::vector<HybridAppliedSplit> applied;
   std::vector<int> batch_info;
   std::vector<int> child_leaves;

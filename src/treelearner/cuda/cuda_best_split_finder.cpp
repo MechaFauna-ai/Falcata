@@ -312,6 +312,23 @@ void CUDABestSplitFinder::BeforeTrain(const std::vector<int8_t>& is_feature_used
   CopyFromHostToCUDADevice<int8_t>(cuda_is_feature_used_bytree_.RawData(),
                                    is_feature_used_bytree.data(),
                                    is_feature_used_bytree.size(), __FILE__, __LINE__);
+  // hybrid batched find: compact the task grid to this tree's feature sample
+  // (see host_used_task_indices_); only rebuilt/uploaded when sampling is active
+  host_used_task_indices_.clear();
+  for (int task_index = 0; task_index < num_tasks_; ++task_index) {
+    if (is_feature_used_bytree[split_find_tasks_[task_index].inner_feature_index]) {
+      host_used_task_indices_.push_back(task_index);
+    }
+  }
+  num_used_tasks_ = static_cast<int>(host_used_task_indices_.size());
+  if (num_used_tasks_ < num_tasks_ && num_used_tasks_ > 0) {
+    if (cuda_used_task_indices_.Size() < static_cast<size_t>(num_tasks_)) {
+      cuda_used_task_indices_.Resize(static_cast<size_t>(num_tasks_));
+    }
+    CopyFromHostToCUDADevice<int>(cuda_used_task_indices_.RawData(),
+                                  host_used_task_indices_.data(),
+                                  host_used_task_indices_.size(), __FILE__, __LINE__);
+  }
 }
 
 void CUDABestSplitFinder::FindBestSplitsForLeaf(
