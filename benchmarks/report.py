@@ -135,15 +135,50 @@ def main():
         w = 0.13
         fig, ax = plt.subplots(figsize=(11, 5))
         for i, lib in enumerate(LIBRARIES):
-            vals = [
-                sub[(sub.dataset == d) & (sub.library == lib)]["train_s"].median()
-                for d in datasets
-            ]
-            ax.bar(x + (i - 2.5) * w, vals, w, label=lib, color=COLORS[lib])
+            offs = x + (i - 2.5) * w
+            vals, hatches = [], []
+            for d in datasets:
+                gl = sub[(sub.dataset == d) & (sub.library == lib)]
+                if gl.empty:
+                    vals.append(np.nan)
+                    hatches.append(None)
+                    # crashed/failed configs get an explicit marker instead of
+                    # silently-absent bars (e.g. upstream quantized on higgs)
+                    crashed = df[
+                        (df.dataset == d)
+                        & (df.regime == reg)
+                        & (df.library == lib)
+                        & (df.status != "ok")
+                    ]
+                    if not crashed.empty:
+                        xi = offs[datasets.index(d)]
+                        ax.annotate(
+                            "✗",
+                            (xi, ax.get_ylim()[0]),
+                            xytext=(xi, 0.05),
+                            ha="center",
+                            fontsize=11,
+                            color=COLORS[lib],
+                            fontweight="bold",
+                            annotation_clip=False,
+                        )
+                    continue
+                vals.append(gl["train_s"].median())
+                # degenerate models (sane=false): fast timings are meaningless
+                sane = all((m or {}).get("sane", True) for m in gl["metrics"])
+                hatches.append(None if sane else "///")
+            bars = ax.bar(offs, vals, w, label=lib, color=COLORS[lib])
+            for b, h in zip(bars, hatches):
+                if h:
+                    b.set_hatch(h)
+                    b.set_alpha(0.35)
         ax.set_yscale("log")
         ax.set_xticks(x, datasets)
         ax.set_ylabel("train time (s, log)")
-        ax.set_title(f"GPU training time — regime {reg} (500 trees)")
+        ax.set_title(
+            f"GPU training time — regime {reg} (500 trees)\n"
+            "✗ = crashed; hatched = degenerate model (timing not meaningful)"
+        )
         ax.legend(ncol=3, fontsize=8)
         fig.tight_layout()
         fig.savefig(os.path.join(REPORT_DIR, f"train_time_{reg}.png"), dpi=120)
