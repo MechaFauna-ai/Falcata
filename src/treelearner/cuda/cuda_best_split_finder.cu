@@ -53,6 +53,82 @@ __device__ __forceinline__ const hist_t* FeatureHistPtr(const hist_t* hist_in_le
     hist_in_leaf + (hist_offset << 1);
 }
 
+// Definition of CPU's sequential categorical-threshold acceptance rule. The
+// reference implementation is FeatureHistogram::FindBestThresholdCategoricalInner
+// in src/treelearner/feature_histogram.cpp; this replays it for a single
+// threshold index `i` and returns whether CPU would evaluate a split there.
+//
+// Rule. Categories are sorted by their gradient/hessian ratio and scanned in
+// that fixed order. Groups form *sequentially* over the scan: a running counter
+// accumulates category counts, a threshold is a candidate iff its accumulated
+// group has reached `min_data_per_group`, and the counter resets to zero at
+// every accepted candidate. Acceptance therefore depends on which earlier
+// thresholds were accepted, so it cannot be expressed as an independent
+// per-thread predicate -- hence the O(i) replay (i < max_cat_threshold, default
+// 32, so this is cheaper than materialising a mask in shared memory).
+//
+// This rule *is* the specification: min_data_per_group has no external canon
+// (the sorted-category scan is Fisher-1958-canonical, but the per-group minimum
+// is LightGBM's own regularization heuristic), so the CPU routine above is the
+// reference, not merely "whatever CPU happens to do". The previous CUDA
+// approximation `left_count >= min_data_per_group && right_count >=
+// min_data_per_group` is a different rule and picked a different categorical
+// split than CPU whenever min_data_per_group landed near the per-category counts.
+//
+// Preconditions, each matching the CPU scan exactly:
+//  * `sum_left_hessian_prefix` is the inclusive prefix sum of the sorted
+//    per-category hessians with kEpsilon folded into element 0 -- CPU starts
+//    `sum_left_hessian = kEpsilon`. Both call sites satisfy this by construction:
+//    they add kEpsilon to the first entry before the prefix scan and hand this
+//    routine the very same prefix buffer the gain computation reads.
+//  * Residual count-rounding caveat: CPU accumulates left_count as the sum of
+//    per-category roundings (`left_count += RoundInt(hess * cnt_factor)`), while
+//    here -- as everywhere else in the CUDA finder -- left_count is the rounding
+//    of the summed hessian (`RoundInt(sum_left_hessian * cnt_factor)`). The two
+//    agree for unit-hessian objectives and can differ by a category otherwise.
+//    This is pre-existing CUDA behaviour, not introduced by the group check.
+template <typename PREFIX_PTR_T>
+__device__ __forceinline__ bool SequentialCategoricalGroupAccepted(
+  const PREFIX_PTR_T sum_left_hessian_prefix,
+  const int i,
+  const int num_thresholds,
+  const double cnt_factor,
+  const data_size_t num_data,
+  const double sum_hessians,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf,
+  const int min_data_per_group) {
+  data_size_t last_accepted_left_count = 0;
+  for (int j = 0; j < num_thresholds; ++j) {
+    const double sum_left_hessian = sum_left_hessian_prefix[j];
+    const data_size_t left_count =
+      static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
+    // CPU: `continue` -- the group counter keeps accumulating across skipped
+    // thresholds, which the left_count difference below accounts for.
+    if (left_count < min_data_in_leaf || sum_left_hessian < min_sum_hessian_in_leaf) {
+      continue;
+    }
+    const data_size_t right_count = num_data - left_count;
+    // CPU: `break` -- every threshold from here on is rejected, including i.
+    if (right_count < min_data_in_leaf || right_count < min_data_per_group) {
+      return false;
+    }
+    const double sum_right_hessian = sum_hessians - sum_left_hessian;
+    if (sum_right_hessian < min_sum_hessian_in_leaf) {
+      return false;
+    }
+    // CPU: cnt_cur_group == left_count - (left_count at last accepted threshold).
+    if (left_count - last_accepted_left_count < min_data_per_group) {
+      continue;
+    }
+    last_accepted_left_count = left_count;
+    if (j == i) {
+      return true;
+    }
+  }
+  return false;
+}
+
 template <typename GAIN_T>
 __device__ void ReduceBestGainWarp(GAIN_T gain, bool found, uint32_t thread_index, GAIN_T* out_gain, bool* out_found, uint32_t* out_thread_index) {
   const uint32_t mask = 0xffffffff;
@@ -704,6 +780,10 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
     BitonicArgSort_1024<double, int16_t, true>(shared_value_buffer, shared_index_buffer, bin_end);
     __syncthreads();
     const int max_num_cat = min(max_cat_threshold, (used_bin + 1) / 2);
+    // Number of candidate thresholds CPU would walk in each direction.
+    const int num_cat_thresholds = min(used_bin, max_num_cat);
+    // shared_value_buffer held the sort keys; the sort is done with it, so both
+    // passes below reuse it to publish their prefix-hessian scan.
 
     if (USE_RAND) {
       rand_threshold = 0;
@@ -728,14 +808,19 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
     double sum_left_gradient = ShufflePrefixSum<double>(grad, shared_mem_buffer_double);
     __syncthreads();
     double sum_left_hessian = ShufflePrefixSum<double>(hess, shared_mem_buffer_double);
-    if (threadIdx_x < used_bin && threadIdx_x < max_num_cat) {
+    __syncthreads();
+    if (threadIdx_x < num_cat_thresholds) {
+      shared_value_buffer[threadIdx_x] = sum_left_hessian;
+    }
+    __syncthreads();
+    if (threadIdx_x < num_cat_thresholds) {
       const data_size_t left_count = static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
       const data_size_t right_count = num_data - left_count;
-      if (sum_left_hessian >= min_sum_hessian_in_leaf && left_count >= min_data_in_leaf &&
-        sum_right_hessian >= min_sum_hessian_in_leaf && right_count >= min_data_in_leaf &&
-        left_count >= min_data_per_group && right_count >= min_data_per_group &&
+      if (SequentialCategoricalGroupAccepted(shared_value_buffer, threadIdx_x, num_cat_thresholds,
+          cnt_factor, num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
+          min_data_per_group) &&
         (!USE_RAND || threadIdx_x == static_cast<int>(rand_threshold))) {
         double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
@@ -768,14 +853,19 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
     sum_left_gradient = ShufflePrefixSum<double>(grad, shared_mem_buffer_double);
     __syncthreads();
     sum_left_hessian = ShufflePrefixSum<double>(hess, shared_mem_buffer_double);
-    if (threadIdx_x < used_bin && threadIdx_x < max_num_cat) {
+    __syncthreads();
+    if (threadIdx_x < num_cat_thresholds) {
+      shared_value_buffer[threadIdx_x] = sum_left_hessian;
+    }
+    __syncthreads();
+    if (threadIdx_x < num_cat_thresholds) {
       const data_size_t left_count = static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
       const data_size_t right_count = num_data - left_count;
-      if (sum_left_hessian >= min_sum_hessian_in_leaf && left_count >= min_data_in_leaf &&
-        sum_right_hessian >= min_sum_hessian_in_leaf && right_count >= min_data_in_leaf &&
-        left_count >= min_data_per_group && right_count >= min_data_per_group &&
+      if (SequentialCategoricalGroupAccepted(shared_value_buffer, threadIdx_x, num_cat_thresholds,
+          cnt_factor, num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
+          min_data_per_group) &&
         (!USE_RAND || threadIdx_x == static_cast<int>(rand_threshold))) {
         double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
@@ -1511,6 +1601,10 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
     BitonicArgSortDevice<double, data_size_t, true, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 11>(
       hist_stat_buffer_ptr, hist_index_buffer_ptr, task->num_bin - task->mfb_offset);
     const int max_num_cat = min(max_cat_threshold, (used_bin + 1) / 2);
+    // Number of candidate thresholds CPU would walk in each direction. The
+    // prefix-hessian scan the group check needs is already materialised in
+    // hist_hess_buffer_ptr, so each thread can replay it directly.
+    const int num_cat_thresholds = min(used_bin, max_num_cat);
     if (USE_RAND) {
       rand_threshold = 0;
       const int max_threshold = max(min(max_num_cat, used_bin) - 1, 0);
@@ -1540,9 +1634,9 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
       const data_size_t right_count = num_data - left_count;
-      if (sum_left_hessian >= min_sum_hessian_in_leaf && left_count >= min_data_in_leaf &&
-        sum_right_hessian >= min_sum_hessian_in_leaf && right_count >= min_data_in_leaf &&
-        left_count >= min_data_per_group && right_count >= min_data_per_group) {
+      if (SequentialCategoricalGroupAccepted(hist_hess_buffer_ptr, bin, num_cat_thresholds,
+          cnt_factor, num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
+          min_data_per_group)) {
         double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
           sum_right_hessian, lambda_l1,
@@ -1580,9 +1674,9 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
       const data_size_t right_count = num_data - left_count;
-      if (sum_left_hessian >= min_sum_hessian_in_leaf && left_count >= min_data_in_leaf &&
-        sum_right_hessian >= min_sum_hessian_in_leaf && right_count >= min_data_in_leaf &&
-        left_count >= min_data_per_group && right_count >= min_data_per_group) {
+      if (SequentialCategoricalGroupAccepted(hist_hess_buffer_ptr, bin, num_cat_thresholds,
+          cnt_factor, num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
+          min_data_per_group)) {
         double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
           sum_right_hessian, lambda_l1,
