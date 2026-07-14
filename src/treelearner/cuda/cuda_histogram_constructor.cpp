@@ -58,8 +58,12 @@ void CUDAHistogramConstructor::InitFeatureMetaInfo(const Dataset* train_data, co
   need_fix_histogram_features_num_bin_aligend_.clear();
   feature_num_bins_.clear();
   feature_most_freq_bins_.clear();
+  has_categorical_feature_ = false;
   for (int feature_index = 0; feature_index < train_data->num_features(); ++feature_index) {
     const BinMapper* bin_mapper = train_data->FeatureBinMapper(feature_index);
+    if (bin_mapper->bin_type() == BinType::CategoricalBin) {
+      has_categorical_feature_ = true;
+    }
     const uint32_t most_freq_bin = bin_mapper->GetMostFreqBin();
     if (most_freq_bin != 0) {
       need_fix_histogram_features_.emplace_back(feature_index);
@@ -575,6 +579,16 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   cuda_row_data_.reset(new CUDARowData(train_data, share_state, gpu_device_id_, gpu_use_dp_));
   cuda_row_data_->Init(train_data, share_state);
 
+  // fp32-pair global histograms: dense shared-memory non-quantized layout only
+  // (sparse / large-bin construct kernels and the categorical find path stay
+  // hist_t and are excluded)
+  hist_fp32_ = ExaboostFP32HistRequested() && !use_quantized_grad_ && !gpu_use_dp_ &&
+    !cuda_row_data_->is_sparse() && cuda_row_data_->NumLargeBinPartition() == 0 &&
+    !has_categorical_feature_;
+  if (ExaboostFP32HistRequested() && !use_quantized_grad_) {
+    Log::Debug("CUDAHistogramConstructor: fp32 histogram mode %s", hist_fp32_ ? "engaged" : "unsupported for this dataset, using fp64");
+  }
+
   CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_stream_));
   // Lightweight (timing-disabled) events used to order the best split finder's
   // per-leaf kernels after histogram construction/subtraction without a device sync.
@@ -761,6 +775,10 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
 
   cuda_row_data_.reset(new CUDARowData(train_data, share_states, gpu_device_id_, gpu_use_dp_));
   cuda_row_data_->Init(train_data, share_states);
+
+  hist_fp32_ = ExaboostFP32HistRequested() && !use_quantized_grad_ && !gpu_use_dp_ &&
+    !cuda_row_data_->is_sparse() && cuda_row_data_->NumLargeBinPartition() == 0 &&
+    !has_categorical_feature_;
 
   cuda_need_fix_histogram_features_.InitFromHostVector(need_fix_histogram_features_);
   cuda_need_fix_histogram_features_num_bin_aligned_.InitFromHostVector(need_fix_histogram_features_num_bin_aligend_);

@@ -251,6 +251,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     double gain;
   };
 
+  // Resolve the fp32 histogram mode (EXABOOST_FP32_HIST) against the consumers
+  // its layout does not cover and hand the result to the best split finder.
+  void SyncHistFP32();
   // Whether the budget-limited selective mode governs this tree's growth.
   bool UseSelectiveGrowth() const;
   // Exact host replica of FindBestFromAllSplitsKernel's equal-gain tie-break:

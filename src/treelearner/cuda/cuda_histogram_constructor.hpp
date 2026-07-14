@@ -31,6 +31,20 @@
 
 namespace LightGBM {
 
+/*! \brief fp32-pair global histogram storage for the non-quantized CUDA path
+ *  (EXABOOST_FP32_HIST=1 requests; default off = hist_t/double pairs, the
+ *  historical behavior). The actual engagement additionally requires the dense
+ *  shared-memory layout (see CUDAHistogramConstructor::Init) and is exposed via
+ *  hist_fp32(). Halves global histogram bandwidth (construct merge, fix,
+ *  subtract, find reads); results are quality-gated, not bit-identical. */
+inline bool ExaboostFP32HistRequested() {
+  static const bool requested = []() {
+    const char* env = std::getenv("EXABOOST_FP32_HIST");
+    return env != nullptr && std::string(env) == "1";
+  }();
+  return requested;
+}
+
 /*! \brief y-grid sizing formula of the batched per-level construct kernel,
  *  shared verbatim by the host launch sizing (CalcConstructHistogramBatchedKernelDim)
  *  and the device row-grouping replica used by the speculative single-sync flow
@@ -295,6 +309,15 @@ class CUDAHistogramConstructor {
 
   hist_t* cuda_hist_pointer() { return cuda_hist_.RawData(); }
 
+  /*! \brief non-quantized global histograms are stored as float pairs in the
+   *  leading half of each leaf's hist_t slot (EXABOOST_FP32_HIST; slot strides
+   *  and the leaf histogram pool arithmetic are unchanged) */
+  bool hist_fp32() const { return hist_fp32_; }
+
+  /*! \brief consumers the fp32 layout does not cover (large-bin global-memory
+   *  find, forced splits, NCCL) make the tree learner fall back to fp64 */
+  void DisableHistFP32() { hist_fp32_ = false; }
+
  private:
   void InitFeatureMetaInfo(const Dataset* train_data, const std::vector<uint32_t>& feature_hist_offsets);
 
@@ -449,6 +472,11 @@ class CUDAHistogramConstructor {
   const int min_grid_dim_y_ = 160;
   /*! \brief leaf histogram slots dirtied by the previous tree (-1 = all) */
   int num_dirty_leaves_ = -1;
+  /*! \brief dataset has categorical features (their find kernel reads hist_t;
+   *  disables the fp32 histogram mode) */
+  bool has_categorical_feature_ = false;
+  /*! \brief non-quantized global histograms stored as float pairs (see hist_fp32()) */
+  bool hist_fp32_ = false;
 
 
   // CUDA memory, held by this object

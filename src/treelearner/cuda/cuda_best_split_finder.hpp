@@ -27,6 +27,18 @@
 
 namespace LightGBM {
 
+/*! \brief fp32 per-bin gain arithmetic in the best-split find kernels
+ *  (EXABOOST_FP32_GAIN=1 enables; default off = fp64, the historical behavior).
+ *  Leaf-level sums stay double and are converted once per task; results are
+ *  quality-gated, not bit-identical. */
+inline bool ExaboostFP32GainEnabled() {
+  static const bool enabled = []() {
+    const char* env = std::getenv("EXABOOST_FP32_GAIN");
+    return env != nullptr && std::string(env) == "1";
+  }();
+  return enabled;
+}
+
 struct SplitFindTask {
   int inner_feature_index;
   bool reverse;
@@ -71,6 +83,14 @@ class CUDABestSplitFinder {
   /*! \brief select which histogram pipeline's completion events the next
    *  FindBestSplitsForLeaf call waits on (hybrid level-batched growth) */
   void SetActiveHistPipeline(const int pipeline) { active_hist_pipeline_ = pipeline; }
+
+  /*! \brief non-quantized histogram storage is float pairs (EXABOOST_FP32_HIST);
+   *  decided by the histogram constructor, wired in by the tree learner */
+  void SetHistFP32(const bool hist_fp32) { hist_fp32_ = hist_fp32; }
+
+  /*! \brief large-bin fallback stays fp64: the tree learner disables the fp32
+   *  histogram mode when this is set */
+  bool use_global_memory() const { return use_global_memory_; }
 
   void BeforeTrain(const std::vector<int8_t>& is_feature_used_bytree);
 
@@ -229,6 +249,9 @@ class CUDABestSplitFinder {
   template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING>
   void LaunchFindBestSplitsForLeafKernelInner2(LaunchFindBestSplitsForLeafKernel_PARAMS);
 
+  template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, typename GAIN_T>
+  void LaunchFindBestSplitsForLeafKernelInner3(LaunchFindBestSplitsForLeafKernel_PARAMS);
+
   #undef LaunchFindBestSplitsForLeafKernel_PARAMS
 
   #define LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS \
@@ -255,6 +278,9 @@ class CUDABestSplitFinder {
 
   template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING>
   void LaunchFindBestSplitsDiscretizedForLeafKernelInner2(LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS);
+
+  template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, typename GAIN_T>
+  void LaunchFindBestSplitsDiscretizedForLeafKernelInner3(LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS);
 
   #undef LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS
 
@@ -350,6 +376,8 @@ class CUDABestSplitFinder {
   int num_used_tasks_ = 0;
   // use global memory
   bool use_global_memory_;
+  // non-quantized histograms stored as float pairs (EXABOOST_FP32_HIST)
+  bool hist_fp32_ = false;
   // number of total bins in the dataset
   const int num_total_bin_;
   // has categorical feature

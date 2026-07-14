@@ -100,6 +100,7 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   cuda_best_split_finder_->SetHistogramEvents(
     cuda_histogram_constructor_->construct_done_events(),
     cuda_histogram_constructor_->subtract_done_events());
+  SyncHistFP32();
 
   leaf_best_split_feature_.resize(config_->num_leaves, -1);
   leaf_best_split_threshold_.resize(config_->num_leaves, 0);
@@ -139,6 +140,20 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   if (config_->linear_tree) {
     InitLinearTreeCUDA(train_data_);
   }
+}
+
+// The fp32 histogram layout does not cover the large-bin global-memory find
+// path, forced splits (their gather kernel reads hist_t) or NCCL histogram
+// reduction: fall back to fp64 there, then hand the resolved mode to the best
+// split finder (whose kernels read the entries).
+void CUDASingleGPUTreeLearner::SyncHistFP32() {
+  if (cuda_histogram_constructor_->hist_fp32() &&
+      (cuda_best_split_finder_->use_global_memory() ||
+       !config_->forcedsplits_filename.empty() ||
+       nccl_communicator_ != nullptr)) {
+    cuda_histogram_constructor_->DisableHistFP32();
+  }
+  cuda_best_split_finder_->SetHistFP32(cuda_histogram_constructor_->hist_fp32());
 }
 
 void CUDASingleGPUTreeLearner::BeforeTrain() {
@@ -526,7 +541,7 @@ void CUDASingleGPUTreeLearner::EnsureRootSumsReadBack(CUDATree* tree) {
   tree->SetLeafOutput(0, CUDALeafSplits::CalculateSplittedLeafOutput<true, false>(
     leaf_sum_gradients_[0], leaf_sum_hessians_[0],
     config_->lambda_l1, config_->lambda_l2, config_->path_smooth,
-    static_cast<data_size_t>(num_data_), 0));
+    static_cast<data_size_t>(num_data_), 0.0));
   tree->SyncLeafOutputFromHostToCUDA();
 }
 
@@ -1683,7 +1698,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     tree->SetLeafOutput(0, CUDALeafSplits::CalculateSplittedLeafOutput<true, false>(
       leaf_sum_gradients_[smaller_leaf_index_], leaf_sum_hessians_[smaller_leaf_index_],
       config_->lambda_l1, config_->lambda_l2,  config_->path_smooth,
-      static_cast<data_size_t>(num_data_), 0));
+      static_cast<data_size_t>(num_data_), 0.0));
     tree->SyncLeafOutputFromHostToCUDA();
   }
   int num_splits_done = 0;
@@ -2042,6 +2057,7 @@ void CUDASingleGPUTreeLearner::ResetTrainingData(
     cuda_histogram_constructor_->cuda_hist(),
     train_data,
     share_state_->feature_hist_offsets());
+  SyncHistFP32();
   cuda_smaller_leaf_splits_->Resize(num_data_);
   cuda_larger_leaf_splits_->Resize(num_data_);
   CHECK_EQ(is_constant_hessian, share_state_->is_constant_hessian);
@@ -2070,6 +2086,7 @@ void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
   cuda_histogram_constructor_->ResetConfig(config);
   cuda_best_split_finder_->ResetConfig(config, cuda_histogram_constructor_->cuda_hist());
   cuda_data_partition_->ResetConfig(config, cuda_histogram_constructor_->cuda_hist_pointer());
+  SyncHistFP32();
 }
 
 void CUDASingleGPUTreeLearner::SetBaggingData(const Dataset* /*subset*/,
