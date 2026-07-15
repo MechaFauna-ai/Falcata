@@ -374,6 +374,10 @@ class CUDAHistogramConstructor {
   /*! \brief (re)build cuda_fix_mfb_mask_ from the need-fix feature metadata */
   void InitFixMFBMask();
 
+  /*! \brief maximum safe rows-per-thread of the quantized construct kernels'
+   *  packed 16+16-bit shared-memory accumulation (see the .cpp comment) */
+  int QuantConstructMaxRowsPerThread(const int block_dim_y) const;
+
   void CalcConstructHistogramKernelDim(
     int* grid_dim_x,
     int* grid_dim_y,
