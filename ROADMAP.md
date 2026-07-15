@@ -145,19 +145,6 @@ figures from the profiles in the PR discussions.
   want (MultiRMSE-style). Modeling change: validate per-era, don't assume. FIL
   predict falls back to CPU for vector-leaf models initially (treelite support).
 
-- [ ] **Persistent small-level executor (Felix's persistent-kernels-per-task idea,
-  pragmatic variant).** Full persistent-worker dataflow (per-stage resident kernels +
-  device queues) avoids the megakernel's register/shmem-union problem and gets
-  work-item-granular dependencies, but pays resident-set partitioning (each stage
-  permanently owns only a GPU slice while the per-level work mix swings), watchdog
-  limits on display GPUs (needs relaunch bursts), co-scheduling/forward-progress
-  proofs, and spin-wait clock/power cost. Quant stays bit-exact under work stealing
-  (integer hists are order-independent). Bounded experiment instead: ONE persistent-
-  style kernel that executes levels 0-4 entirely internally (<=16 pairs, shmem-fit
-  histograms, queue-style stage hops) while the graph keeps the wide levels --
-  removes ~half the per-tree kernel boundaries with no partitioning pain. Attackable
-  pool on fraud-class: ~100-150us of a ~590us tree.
-
 - [ ] **Hybrid coverage extensions.** The hybrid/graph fast paths currently fall
   back to the classic loop for: categorical features (variable-length bitset
   payloads vs the fixed 18-int split slabs -- first one worth lifting), NCCL
