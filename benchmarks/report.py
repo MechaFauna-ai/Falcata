@@ -119,8 +119,9 @@ def main():
         "shallow": "regime shallow (500 trees)",
         "deep": "regime deep (500 trees)",
         "numerai": "numerai example config (2000 trees)",
+        "numerai-deep": "numerai v5 benchmark deep params (30k trees)",
     }
-    for reg in ("shallow", "deep", "numerai"):
+    for reg in ("shallow", "deep", "numerai-deep", "numerai"):
         sub = timed[timed["regime"] == reg]
         if sub.empty:
             continue
@@ -174,7 +175,11 @@ def main():
                     b.set_hatch(h)
                     b.set_alpha(0.35)
             # single-dataset charts (numerai) have room for quality labels
-            if reg == "numerai" and len(datasets) == 1 and not np.isnan(vals[0]):
+            if (
+                reg.startswith("numerai")
+                and len(datasets) == 1
+                and not np.isnan(vals[0])
+            ):
                 gl = sub[(sub.dataset == datasets[0]) & (sub.library == lib)]
                 met = gl["metrics"].iloc[0] or {}
                 if met.get("corr_mean") is not None:
@@ -200,7 +205,7 @@ def main():
                 fontweight="bold",
             )
         ax.set_yscale("log")
-        if reg == "numerai":
+        if reg.startswith("numerai"):
             ymin, ymax = ax.get_ylim()
             ax.set_ylim(ymin, ymax * 1.4)  # headroom for the quality labels
         ax.set_xticks(x, datasets)
