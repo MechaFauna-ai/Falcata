@@ -19,7 +19,14 @@ import subprocess
 import sys
 import time
 
-from common import LIBRARIES, RUNS_JSONL, dataset_ready, regimes_for, venv_python
+from common import (
+    LIBRARIES,
+    RUNS_JSONL,
+    dataset_ready,
+    library_runs_cell,
+    regimes_for,
+    venv_python,
+)
 
 BENCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench.py")
 
@@ -84,6 +91,8 @@ def main():
             continue
         for reg in regimes_for(ds):
             for lib in LIBRARIES:
+                if not library_runs_cell(lib, ds, reg):
+                    continue
                 for kind in KINDS:
                     cells.append((lib, ds, reg, kind))
 

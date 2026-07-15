@@ -11,13 +11,20 @@ import pandas as pd
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-from common import LIBRARIES, REPORT_DIR, RESULTS_DIR, RUNS_JSONL  # noqa: E402
+from common import (  # noqa: E402
+    LIBRARIES,
+    REPORT_DIR,
+    RESULTS_DIR,
+    RUNS_JSONL,
+    library_runs_cell,
+)
 
 COLORS = {
     "exaboost": "#d62728",
     "exaboost-quant": "#ff9896",
     "lightgbm": "#1f77b4",
     "lightgbm-quant": "#aec7e8",
+    "lightgbm-ocl": "#17becf",
     "xgboost": "#2ca02c",
     "catboost": "#9467bd",
 }
@@ -42,6 +49,9 @@ NOTES = """
   (dashed) because it exposes no per-iteration wall clock.
 - `xx-quant` = `use_quantized_grad=true`. Runs flagged `sane=false` produced
   degenerate models and their timings should be ignored.
+- `lightgbm-ocl` = upstream LightGBM's OpenCL backend (`device_type=gpu`),
+  benchmarked only on the numerai cells where the upstream CUDA build crashes;
+  that backend has no quantized-gradient support, so there is no `-ocl-quant`.
 """
 
 
@@ -92,6 +102,8 @@ def main():
         lines.append("|---|---|---|---|---|---|---|")
         base = g[g["library"] == "exaboost"]["train_s"].median()
         for lib in LIBRARIES:
+            if not library_runs_cell(lib, ds, reg):
+                continue  # cell excluded by design, not missing
             gl = g[g["library"] == lib]
             if gl.empty:
                 fails = df[
@@ -149,8 +161,13 @@ def main():
         w = 0.13
         fig, ax = plt.subplots(figsize=(11, 5))
         crash_marks = []
-        for i, lib in enumerate(LIBRARIES):
-            offs = x + (i - 2.5) * w
+        libs = [
+            lib
+            for lib in LIBRARIES
+            if any(library_runs_cell(lib, d, reg) for d in datasets)
+        ]
+        for i, lib in enumerate(libs):
+            offs = x + (i - (len(libs) - 1) / 2) * w
             vals, hatches = [], []
             for j, d in enumerate(datasets):
                 gl = sub[(sub.dataset == d) & (sub.library == lib)]

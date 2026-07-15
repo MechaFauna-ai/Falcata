@@ -160,7 +160,7 @@ def quality_metrics(task, preds, y, extra):
     raise ValueError(task)
 
 
-def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, quantized, curve):
+def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, quantized, curve, opencl=False):
     import lightgbm as lgb
 
     params = {
@@ -174,7 +174,9 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, quantized, curve):
         "num_leaves": reg["leaves"],
         "max_depth": reg["depth"],
         "max_bin": 255,
-        "device_type": "cuda",
+        # OpenCL backend ("gpu"): platform 0 is the only ICD on the bench box
+        # (NVIDIA); used only where the upstream CUDA build crashes
+        "device_type": "gpu" if opencl else "cuda",
         "num_threads": os.cpu_count(),
         "seed": SEED,
         "verbose": -1,
@@ -190,6 +192,9 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, quantized, curve):
         if curve
         else "None",
     }
+    if opencl:
+        params["gpu_platform_id"] = 0
+        params["gpu_device_id"] = 0
     if task == "multiclass":
         params["num_class"] = DATASETS["covtype"]["num_class"]
     if "colsample" in reg:
@@ -409,6 +414,7 @@ def main():
             "exaboost-quant",
             "lightgbm",
             "lightgbm-quant",
+            "lightgbm-ocl",
             "xgboost",
             "catboost",
         ],
@@ -445,6 +451,7 @@ def main():
                     reg,
                     quantized=args.library.endswith("-quant"),
                     curve=curve,
+                    opencl=args.library == "lightgbm-ocl",
                 )
             elif args.library == "xgboost":
                 r = run_xgboost(task, x_tr, y_tr, x_te, y_te, reg, curve)
