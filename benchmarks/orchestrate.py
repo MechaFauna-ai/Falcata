@@ -33,6 +33,9 @@ BENCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench.py")
 #: small/fast first for early signal; the huge ones last
 DATASET_ORDER = ["fraud", "covtype", "year", "higgs", "epsilon", "numerai", "airline"]
 KINDS = ["warmup", "timed1", "timed2", "timed3", "curve"]
+#: multi-hour 30k-tree runs measure ±1% across repeats — one timed run suffices
+#: (warmup stays as the page-cache/sanity run; fast cells keep the full protocol)
+REGIME_KINDS = {"numerai-deep": ["warmup", "timed1"]}
 TIMEOUT_S = {
     "fraud": 1800,
     "covtype": 1800,
@@ -93,7 +96,7 @@ def main():
             for lib in LIBRARIES:
                 if not library_runs_cell(lib, ds, reg):
                     continue
-                for kind in KINDS:
+                for kind in REGIME_KINDS.get(reg, KINDS):
                     cells.append((lib, ds, reg, kind))
 
     done = load_done()
