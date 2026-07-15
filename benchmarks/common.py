@@ -64,6 +64,10 @@ REGIMES = {
         "leaves": 1024,
         "colsample": 0.1,
         "min_data": 10000,
+        # cache/JIT warming completes within the first minutes; a full 30k-tree
+        # discarded run is ~3h of nothing (late-run failures burn a timed run
+        # instead of the warmup -- acceptable, still recorded)
+        "warmup_rounds": 1000,
         "eval_every": 3000,
     },
     # official Numerai example-model parameters
