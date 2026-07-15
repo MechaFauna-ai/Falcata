@@ -549,13 +549,16 @@ __global__ void HybridGraphLevelControllerKernel(CUDAHybridGraphLoopState* st,
         // pow2 bucket like the rest: the kernel computes its exact row
         // grouping from the level's actual sizes (using the loop state's live
         // pair count instead of gridDim.z) and idle y/z blocks exit before any
-        // write, so the frozen grid only needs to be an upper bound
+        // write, so the frozen grid only needs to be an upper bound. Quantized
+        // training (num_grad_quant_bins > 0) includes the packed int32
+        // shared-histogram overflow guard, so the bucket always covers the
+        // kernel's device-computed (guarded) row grouping.
         enabled = !final_partial;
         grid = dim3(static_cast<unsigned int>(st->construct_grid_x),
-                    static_cast<unsigned int>(NextPow2(HybridBatchedConstructGridDimY(
+                    static_cast<unsigned int>(NextPow2(HybridBatchedConstructGridDimYQuant(
                       max_smaller_leaf_bound, n, st->construct_block_dim_y,
                       st->construct_min_grid_dim_y, st->construct_min_rows_per_thread,
-                      st->construct_saturation_floor))), qn);
+                      st->construct_saturation_floor, st->num_grad_quant_bins))), qn);
         break;
       case kHybridGraphNodeSearchPairY:
         enabled = !final_partial;

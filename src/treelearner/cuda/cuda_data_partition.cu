@@ -1739,12 +1739,21 @@ void CUDADataPartition::CaptureHybridGraphApplyKernels(
     cuda_out_data_indices_in_leaf_.RawData(), gstate);
   if (!AppendCapturedNode(stream, nodes)) return;
   roles->push_back(kHybridGraphNodeSplitInner);
-  // the graph loop is gated to non-quantized training
-  HybridSplitTreeStructureBatchKernel<false><<<1, 32, 0, stream>>>(
-    descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
-    cuda_out_data_indices_in_leaf_.RawData(), num_total_bin_, cuda_hist_,
-    cuda_hist_pool_.RawData(), cuda_leaf_output_.RawData(),
-    cuda_split_info_buffer_.RawData(), gstate);
+  // template selection mirrors LaunchSplitLevelBatchedKernels (the quantized
+  // variant also writes the child structs' packed int64 gradient/hessian sums)
+  if (use_quantized_grad_) {
+    HybridSplitTreeStructureBatchKernel<true><<<1, 32, 0, stream>>>(
+      descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
+      cuda_out_data_indices_in_leaf_.RawData(), num_total_bin_, cuda_hist_,
+      cuda_hist_pool_.RawData(), cuda_leaf_output_.RawData(),
+      cuda_split_info_buffer_.RawData(), gstate);
+  } else {
+    HybridSplitTreeStructureBatchKernel<false><<<1, 32, 0, stream>>>(
+      descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
+      cuda_out_data_indices_in_leaf_.RawData(), num_total_bin_, cuda_hist_,
+      cuda_hist_pool_.RawData(), cuda_leaf_output_.RawData(),
+      cuda_split_info_buffer_.RawData(), gstate);
+  }
   if (!AppendCapturedNode(stream, nodes)) return;
   roles->push_back(kHybridGraphNodeTreeStructure);
   HybridCopyDataIndicesBatchKernel<<<dim3(1, 1), block_dim, 0, stream>>>(

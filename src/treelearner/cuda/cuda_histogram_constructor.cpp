@@ -739,8 +739,9 @@ void CUDAHistogramConstructor::SubtractHistogramForLeaf(
 // catastrophic, scale-dependent AUC collapse on higgs at >= 2.2M rows).
 // Returns the maximum safe rows-per-thread for the quantized path.
 int CUDAHistogramConstructor::QuantConstructMaxRowsPerThread(const int block_dim_y) const {
-  const int max_rows_per_block = 65534 / std::max(1, num_grad_quant_bins_);
-  return std::max(1, max_rows_per_block / std::max(1, block_dim_y));
+  // single source shared with the graph controller and the device row-grouping
+  // replica (cuda_histogram_constructor.hpp)
+  return HybridQuantConstructMaxRowsPerThread(num_grad_quant_bins_, block_dim_y);
 }
 
 void CUDAHistogramConstructor::CalcConstructHistogramKernelDim(
@@ -777,18 +778,14 @@ void CUDAHistogramConstructor::CalcConstructHistogramBatchedKernelDim(
   // saturation floor across pairs and otherwise cap the y-grid at
   // min_rows_per_thread rows per thread (identical to the per-leaf sizing for
   // single-pair levels and for leaves large enough that the cap is inactive).
-  // The formula lives in HybridBatchedConstructGridDimY so the device replica
-  // used by the speculative single-sync flow computes the identical value.
-  *grid_dim_y = HybridBatchedConstructGridDimY(
+  // The formula lives in HybridBatchedConstructGridDimY(Quant) so the device
+  // replicas (speculative single-sync flow, quantized graph loop) and the graph
+  // controller compute the identical value; the quantized variant includes the
+  // packed int32 shared-histogram overflow guard (QuantConstructMaxRowsPerThread).
+  *grid_dim_y = HybridBatchedConstructGridDimYQuant(
     max_num_data_in_smaller_leaf, num_pairs, *block_dim_y, min_grid_dim_y_,
-    BatchConstructMinRowsPerThread(), BatchConstructSaturationFloor());
-  if (use_quantized_grad_) {
-    // packed int32 shared-histogram overflow guard; see QuantConstructMaxRowsPerThread
-    const int max_rows_per_thread = QuantConstructMaxRowsPerThread(*block_dim_y);
-    const int y_overflow_guard =
-      ((max_num_data_in_smaller_leaf + max_rows_per_thread - 1) / max_rows_per_thread + (*block_dim_y) - 1) / (*block_dim_y);
-    *grid_dim_y = std::max(*grid_dim_y, y_overflow_guard);
-  }
+    BatchConstructMinRowsPerThread(), BatchConstructSaturationFloor(),
+    use_quantized_grad_ ? num_grad_quant_bins_ : 0);
 }
 
 void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, TrainingShareStates* share_states) {

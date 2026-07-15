@@ -2150,7 +2150,13 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
   const double path_smooth,
   const score_t* grad_scale,
   const score_t* hess_scale,
-  CUDASplitInfo* cuda_best_split_info) {
+  CUDASplitInfo* cuda_best_split_info,
+  const CUDAHybridGraphLoopStateOpt gstate) {
+  // graphs A2: the graph-frozen grid is a pow2 bucket of the live pair count;
+  // blocks beyond the live range exit before any read (stale descriptors)
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
+    return;
+  }
   const unsigned int pair_index = blockIdx.y;
   const bool is_larger = (blockIdx.z == 1);
   const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
@@ -2158,19 +2164,37 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
     return;
   }
   const CUDALeafSplitsStruct* leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
+  // host-launched (two-sync) path: the host-written descriptor carries the
+  // exact leaf size and the validity flags already include the min_data /
+  // min_hessian gates (bit-for-bit the previous behavior). Graph loop: the
+  // controller-written flags carry only the max_depth gate, so the size comes
+  // from the child struct the batched apply kernels wrote and the data /
+  // hessian gates are evaluated here (mirror of the non-quantized level kernel)
+  const data_size_t num_data = HybridGraphActive(gstate) ?
+    leaf_splits->num_data_in_leaf :
+    (is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf);
+  if (HybridGraphActive(gstate) &&
+      (leaf_splits->leaf_index < 0 || num_data <= min_data_in_leaf ||
+       leaf_splits->sum_of_hessians <= min_sum_hessian_in_leaf)) {
+    return;
+  }
   const unsigned int task_index = used_task_indices == nullptr ?
     blockIdx.x : static_cast<unsigned int>(used_task_indices[blockIdx.x]);
   const SplitFindTask* task = tasks + task_index;
   const double parent_gain = leaf_splits->gain;
   const int64_t sum_gradients_hessians = leaf_splits->sum_of_gradients_hessians;
-  const data_size_t num_data = is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf;
   const double parent_output = leaf_splits->leaf_value;
   const unsigned int output_offset = pair_index * (2 * static_cast<unsigned int>(num_tasks)) +
     (is_larger ? task_index + num_tasks : task_index);
   CUDASplitInfo* out = cuda_best_split_info + output_offset;
   CUDARandom* cuda_random = USE_RAND ?
     (is_larger ? cuda_randoms + task_index * 2 + 1 : cuda_randoms + task_index * 2) : nullptr;
-  const bool use_16bit_bin = is_larger ? (desc->larger_num_bits <= 16) : (desc->smaller_num_bits <= 16);
+  // per-leaf histogram bit width: host descriptor on the host-launched path,
+  // device-derived from the exact leaf count (host thresholds) inside the graph
+  const uint8_t leaf_num_bits = HybridGraphActive(gstate) ?
+    HybridGraphQuantHistBits(gstate, num_data) :
+    (is_larger ? desc->larger_num_bits : desc->smaller_num_bits);
+  const bool use_16bit_bin = leaf_num_bits <= 16;
   if (is_feature_used_bytree[task->inner_feature_index]) {
     // no categorical branch: quantized training rejects categorical features
     if (!task->reverse) {
@@ -2401,7 +2425,8 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,
   const score_t* grad_scale,
-  const score_t* hess_scale) {
+  const score_t* hess_scale,
+  const CUDAHybridGraphLoopStateOpt gstate) {
   const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
   if (num_used_tasks_ == 0) {
     return;  // no usable feature this tree; the sync masks every lane not-found
@@ -2422,7 +2447,8 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
       path_smooth_, \
       grad_scale, \
       hess_scale, \
-      cuda_best_split_info_.RawData()
+      cuda_best_split_info_.RawData(), \
+      gstate
   if (ExaboostFP32GainEnabled()) {
     FindBestSplitsDiscretizedForLevelKernel<false, false, false, float>
       <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
@@ -2438,15 +2464,23 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
 #ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
 void CUDABestSplitFinder::CaptureHybridGraphFindKernels(
     const CUDAHybridPairDescriptor* pair_descs,
+    const score_t* grad_scale,
+    const score_t* hess_scale,
     const CUDAHybridGraphLoopState* gstate,
     std::vector<cudaGraphNode_t>* nodes,
     std::vector<int>* roles,
     std::vector<int>* role_static_x) {
-  // graphs L1 body capture (non-quantized): find + sync with placeholder pair
-  // counts; the wait on the histogram phase's subtract event becomes a graph
-  // edge, exactly mirroring the host flow's ordering
+  // graphs L1 body capture: find + sync with placeholder pair counts; the wait
+  // on the histogram phase's subtract event becomes a graph edge, exactly
+  // mirroring the host flow's ordering. Quantized training (grad_scale !=
+  // nullptr) captures the discretized find variant, mirroring
+  // FindBestSplitsForLevel's host dispatch.
   CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], hist_subtract_done_events_[0], 0));
-  LaunchFindBestSplitsForLevelKernel(pair_descs, 1, gstate);
+  if (grad_scale != nullptr && hess_scale != nullptr) {
+    LaunchFindBestSplitsDiscretizedForLevelKernel(pair_descs, 1, grad_scale, hess_scale, gstate);
+  } else {
+    LaunchFindBestSplitsForLevelKernel(pair_descs, 1, gstate);
+  }
   if (!AppendCapturedNode(cuda_streams_[0], nodes)) return;
   roles->push_back(kHybridGraphNodeFind);
   role_static_x->push_back(0);

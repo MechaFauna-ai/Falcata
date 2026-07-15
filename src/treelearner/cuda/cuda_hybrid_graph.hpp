@@ -177,6 +177,13 @@ struct CUDAHybridGraphLoopState {
   int construct_min_grid_dim_y;
   int construct_min_rows_per_thread;
   int construct_saturation_floor;
+  /*! \brief quantized training only (0 otherwise): the controller and the
+   *  quantized construct kernel's device row-grouping replica apply the packed
+   *  int32 shared-histogram overflow guard (QuantConstructMaxRowsPerThread)
+   *  with this bin count, and the quantized body kernels derive the per-leaf
+   *  histogram bit widths from the device-resident leaf counts with it
+   *  (exactly the host's SetNumBitsInHistogramBin thresholds) */
+  int num_grad_quant_bins;
 
   // ---- fixed device buffers ----
   const CUDASplitInfo* leaf_best_split_info;
@@ -318,6 +325,30 @@ __device__ __forceinline__ int HybridGraphLivePairCount(
   return gstate != nullptr ? gstate->cur_num_splits : host_value;
 #else
   return host_value;
+#endif
+}
+
+/*! \brief whether this launch runs inside the graph loop (the quantized body
+ *  kernels then derive descriptor-independent values on-device) */
+__device__ __forceinline__ bool HybridGraphActive(CUDAHybridGraphLoopStateOpt gstate) {
+  return gstate != nullptr;
+}
+
+/*! \brief per-leaf histogram bit width of quantized training, derived from the
+ *  (device-resident, exact) leaf row count: EXACTLY the host's
+ *  GradientDiscretizer::SetNumBitsInHistogramBin thresholds, so the decision
+ *  is bit-identical to the host bookkeeping. Only meaningful inside the graph
+ *  loop (gstate != nullptr). */
+__device__ __forceinline__ uint8_t HybridGraphQuantHistBits(
+    CUDAHybridGraphLoopStateOpt gstate, const data_size_t num_data_in_leaf) {
+#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+  const uint64_t max_stat_per_bin = static_cast<uint64_t>(num_data_in_leaf) *
+    static_cast<uint64_t>(gstate->num_grad_quant_bins);
+  return max_stat_per_bin < 256 ? 8 : (max_stat_per_bin < 65536 ? 16 : 32);
+#else
+  (void)gstate;
+  (void)num_data_in_leaf;
+  return 0;
 #endif
 }
 
