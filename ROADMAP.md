@@ -145,6 +145,19 @@ figures from the profiles in the PR discussions.
   want (MultiRMSE-style). Modeling change: validate per-era, don't assume. FIL
   predict falls back to CPU for vector-leaf models initially (treelite support).
 
+- [ ] **Skip bin-finding when bins are knowable/known (Felix).** (a) Exact
+  small-int bin finding: for int8/uint8 input, one GPU pass of 256-value counts per
+  column replaces sampling + host GreedyFindBin entirely -- deterministic, exact
+  (fixes the 108-feature rare-(-1)-merged-by-sampling quirk), saves ~1.6s of the
+  3.4s cupy construct (-> ~2s). Ships as a mode; sampled path stays the
+  compatibility default until quality-checked (bins differ slightly, defensibly).
+  (b) Explicit bin_boundaries API: lgb.Dataset(X, bin_boundaries=per-feature
+  arrays) -> inject serialized BinMappers via a new C API channel; validation +
+  documented semantics (missing bin, zero_as_missing, categoricals, bypasses
+  min_data_in_bin). Value: construct time + bin stability across walk-forward
+  retrains. Existing partial answers: reference=, save_binary, forcedbins_filename
+  (file-based, constrains rather than replaces).
+
 - [ ] **Hybrid coverage extensions.** The hybrid/graph fast paths currently fall
   back to the classic loop for: categorical features (variable-length bitset
   payloads vs the fixed 18-int split slabs -- first one worth lifting), NCCL
