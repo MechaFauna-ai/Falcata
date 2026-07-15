@@ -6,19 +6,22 @@ figures from the profiles in the PR discussions.
 
 ## Performance
 
-- [x] **Graphs L1 — device-driven level loop** (99734bae). Shipped the preferred
-  design in full: conditional WHILE node + device-updatable kernel nodes (grid dims
-  set by an on-device level controller; per-tree shape keys with a 64-entry LRU of
-  instantiated graphs keep results bit-identical), ONE cudaGraphLaunch + one readback
-  per depth-limited prefix. Non-quant only (quant keeps the host loop: per-leaf
-  hist-bit selection needs the classic readback); selective/budget-limited unchanged;
-  EXABOOST_GRAPH_LEVEL_LOOP=0 kill switch. Honest verdict: launch API 132 -> 27
-  us/tree, but end-to-end wins are modest (fraud -4.5%, covtype -3.5%, year -2.6%,
-  numerai parity) because the one-sync host loop had already removed most per-level
-  overhead. Remaining floor = controller 7.2 us/level (device graph-update calls
-  dominate) + conditional-body relaunch -> that is the Graphs L2 lever. Driver
-  quirk documented in-code: devNode handle returns through the zeroed SetAttribute
-  value struct. Bagging supported via loop state but not gate-exercised.
+- [x] **Graphs L1/L1.5/L2 arc — device-driven level loop** (99734bae -> a1d4aa43
+  unroll -> 2e047b0d grid-update cache -> c6628cdf per-body controller sizing ->
+  2f37bd37 single-sync post-graph readback). Conditional-graph design shipped in
+  full, then iterated: cumulative same-session A/B vs host loop: fraud 63/6 -11.9%,
+  fraud 1023/10 -10.9%, covtype 63/6 -8.8%, year -5.8%, numerai parity
+  (construct-bound). Launch API 132 -> ~30 us/tree; controller ~42 us/tree; sync
+  D2H 3 -> 1 per tree. Non-quant depth-limited only; EXABOOST_GRAPH_LEVEL_LOOP=0.
+  MULTICLASS IS GATED OFF pending a root cause: pre-existing intermittent
+  cudaErrorIllegalAddress (~7/30 runs, machine-state dependent, present at
+  baseline; repro scratchpad/mc_crash_repro.py; sanitizers can't attach to
+  device-side graph updates) -- TOP graph follow-up. Perf follow-ups: (A2) fix
+  grids for the ~8 n-only roles at body bounds + device cur_n early-exit
+  (device SetGridDim calls ~4.5us/body dominate the controller); cross-tree
+  overlap needs a GBDT-contract change (host tree mirror feeds
+  CUDATree::Shrinkage sizing + the leaf-wise tail arbitration -- call chain
+  documented); per-parent chaining (original L2 idea) still open.
 - [ ] **Graphs L2 — per-parent dependency chaining.** A child pair only depends on *its
   parent's* partition + histogram, not on its level. Launch each pair's chain from the
   device (fire-and-forget device graph launch) when its parent finishes — a
@@ -128,6 +131,19 @@ figures from the profiles in the PR discussions.
   back to fp64 for quant/sparse/large-bin/categorical/forced-splits/NCCL/global-mem
   finder. Follow-up: fp32 hists still occupy fp64-sized slots (bandwidth halved,
   memory unchanged) -- shrink the pool arithmetic to also halve hist memory.
+
+- [ ] **Multi-target training (not urgent, per Felix).** Two variants: (1)
+  round-robin one-tree-per-target (multiclass machinery minus softmax) -- identical
+  models to sequential training, but only ~1.1x/target now that construct is cheap;
+  API-convenience tier. (2) Vector-leaf trees (the differentiator: nobody ships
+  this CUDA-supported on asymmetric trees -- XGBoost's multi_output_tree is
+  experimental/hist-CPU-mostly, CatBoost MultiRMSE is symmetric-only): shared
+  structure, gain = sum of per-target gains, leaf outputs vectors; RMSE-family
+  hessians are identical across targets so hist entries are T grads + 1 shared
+  hess -- est. per-tree cost ~1.3-1.6x single-target at T=5 => ~3.6x per-target
+  speedup vs sequential, plus the shared-structure regularization numerai folks
+  want (MultiRMSE-style). Modeling change: validate per-era, don't assume. FIL
+  predict falls back to CPU for vector-leaf models initially (treelite support).
 
 ## Inference
 
