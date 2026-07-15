@@ -165,6 +165,18 @@ figures from the profiles in the PR discussions.
   deep trees on top of the bandwidth one (subtraction re-reads parent hists). Few
   lines each, cleanly A/B-able.
 
+- [ ] **Quant quality follow-ups** (from the quality investigation + 3afe7c62).
+  Root cause of quant-deep degradation confirmed: stochastic-rounding noise in
+  small deep leaves; bins=16(+renew) restores parity (year/deep 9.344->8.984,
+  epsilon/deep .9377->.9435, fraud/deep .9652->.9686) but quant_train_renew_leaf
+  costs +65% on higgs-class shallow (per-tree leaf renewal) so defaults stayed at
+  bins=4/renew=false. Follow-ups: optimize renew-leaf on CUDA (would unlock the
+  16+renew defaults); bins=8 default as untested middle ground (never grid-capped
+  at typical shapes); CUDA hess quantization lacks the CPU's constant-hessian
+  special case (regression wastes hess-field range); benign double-reduce at
+  cuda_gradient_discretizer.cu:75. Ties into the fixed-point/mixed-precision
+  redesign (task queue).
+
 - [ ] **Hybrid coverage extensions.** The hybrid/graph fast paths currently fall
   back to the classic loop for: categorical features (variable-length bitset
   payloads vs the fixed 18-int split slabs -- first one worth lifting), NCCL
@@ -209,6 +221,11 @@ figures from the profiles in the PR discussions.
 ## Upstream (lightgbm-org/LightGBM) bugs found (documented here for reference;
 ## we do not contribute upstream)
 
+- Packed 16+16-bit quantized histogram overflow (fixed here in 3afe7c62): with
+  num_grad_quant_bins >= 16, blocks accumulating > 65534/bins rows into one shared
+  bin carry the hessian field into the gradient field (signature dg=+K,
+  dh=-K*65536) -- silent binary-objective collapse at >~2.2M rows; upstream shares
+  the kernels.
 - Quantized CUDA int32 histogram-index overflow on wide data (fixed here in
   6f8402f5; upstream segfaults at scale and silently corrupts below it).
 - Quantized multiclass per-tree random-offset buffer overrun (fixed here in
