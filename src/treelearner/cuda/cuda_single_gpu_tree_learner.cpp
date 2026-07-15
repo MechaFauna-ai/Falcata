@@ -1230,13 +1230,6 @@ bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
       hybrid_graph_disabled_) {
     return false;
   }
-  // multiclass hits an intermittent cudaErrorIllegalAddress with the graph
-  // loop (pre-existing at 2e047b0d, ~7/30 runs, machine-state dependent;
-  // repro: scratchpad mc_crash_repro.py) -- keep it on the host loop until
-  // root-caused
-  if (config_->num_class > 1) {
-    return false;
-  }
   // depth-limited exact regime only (mirrors HybridGrowthUsable): the
   // controller replays ArbitrateLevelBudget under the level == depth
   // invariant that only holds there
@@ -1453,6 +1446,14 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
   HYBRID_GRAPH_SOFT_CHECK(cudaGraphInstantiate(&instance->exec, instance->graph, 0));
   HYBRID_GRAPH_SOFT_CHECK(cudaMemcpy(instance->state_dev, &state,
     sizeof(CUDAHybridGraphLoopState), cudaMemcpyHostToDevice));
+  // a graph that updates its own device-updatable nodes from the device MUST
+  // be uploaded before it is launched (CUDA launch-attribute docs); without
+  // this the controller's first-launch updates race the lazy upload:
+  // intermittent cudaErrorInvalidValue device-side updates or
+  // cudaErrorIllegalAddress at the post-graph sync, ~20%/run on multiclass
+  // (7 first launches per run) at machine-state-dependent rates
+  HYBRID_GRAPH_SOFT_CHECK(cudaGraphUpload(instance->exec,
+    cuda_best_split_finder_->find_stream()));
   ComputeHybridGraphKey(tree, &instance->key);
   static const bool hybrid_diag = std::getenv("EXABOOST_HYBRID_DIAG") != nullptr;
   if (hybrid_diag) {
