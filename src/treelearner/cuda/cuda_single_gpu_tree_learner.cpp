@@ -1230,6 +1230,13 @@ bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
       hybrid_graph_disabled_) {
     return false;
   }
+  // multiclass hits an intermittent cudaErrorIllegalAddress with the graph
+  // loop (pre-existing at 2e047b0d, ~7/30 runs, machine-state dependent;
+  // repro: scratchpad mc_crash_repro.py) -- keep it on the host loop until
+  // root-caused
+  if (config_->num_class > 1) {
+    return false;
+  }
   // depth-limited exact regime only (mirrors HybridGrowthUsable): the
   // controller replays ArbitrateLevelBudget under the level == depth
   // invariant that only holds there
