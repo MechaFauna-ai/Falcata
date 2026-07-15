@@ -4,16 +4,22 @@
  *
  * \brief Device-driven level loop ("graphs L1") for the hybrid depth-wise
  *  prefix: the whole depth-limited prefix of a tree runs as ONE host graph
- *  launch + ONE readback. A CUDA conditional WHILE node repeats the per-level
- *  pipeline (apply level L, search level L+1); a device-side controller kernel
- *  at the start of each iteration replays the host loop's decisions (which
- *  leaves split, right-child index assignment, budget arbitration incl. the
- *  final partial level's gain sort, apply/pair descriptor building, gap
- *  regions) and resizes the body kernels through device-updatable graph node
- *  handles (cudaGraphKernelNodeSetGridDim / SetEnabled), so no host round trip
- *  separates the levels.
+ *  launch + ONE readback. The per-level pipeline (apply level L, search level
+ *  L+1) is UNROLLED into max_depth straight-line level bodies plus one
+ *  epilogue controller (L1.5; the depth-limited gate bounds the level count,
+ *  so no conditional-WHILE relaunch separates the levels). A device-side
+ *  controller kernel at the start of each level body replays the host loop's
+ *  decisions (which leaves split, right-child index assignment, budget
+ *  arbitration incl. the final partial level's gain sort, apply/pair
+ *  descriptor building, gap regions) and resizes ITS level's body kernels
+ *  through device-updatable graph node handles
+ *  (cudaGraphKernelNodeSetGridDim / SetEnabled), so no host round trip
+ *  separates the levels. Early tree completion sets a device-side done flag:
+ *  the remaining levels' controllers exit immediately and keep their body
+ *  nodes disabled (enabled state is cached per node, so steady-state
+ *  same-shape trees issue no redundant device graph updates).
  *
- *  Requires CUDA >= 12.4 (conditional nodes + device-updatable kernel nodes);
+ *  Requires CUDA >= 12.4 (device-updatable kernel nodes);
  *  the learner probes support at runtime and falls back to the host level loop
  *  (bit-for-bit the previous behavior) when unsupported or when
  *  EXABOOST_GRAPH_LEVEL_LOOP=0.
@@ -108,6 +114,10 @@ struct CUDAHybridGraphNodeSlot {
 constexpr int kHybridGraphMaxLevels = 32;
 constexpr int kHybridGraphJournalHeader = 3 + kHybridGraphMaxLevels;
 constexpr int kHybridGraphMaxNodes = 16;
+/*! \brief unrolled level bodies per graph: the depth-limited gate bounds
+ *  max_depth by 11 (2^max_depth <= num_leaves + 1 <= 2048), plus one
+ *  epilogue-controller body that only stops the loop */
+constexpr int kHybridGraphMaxBodies = 12;
 /*! \brief max splits of one level the controller's shared-memory staging
  *  supports; the learner gates the graph path on num_leaves <= 2 * this */
 constexpr int kHybridGraphMaxSplitsPerLevel = 1024;
@@ -132,6 +142,9 @@ struct CUDAHybridGraphLoopState {
   int journal_split_cursor;
   data_size_t root_num_data;
   int find_grid_x;          // num_used_tasks of this tree (or num_tasks)
+  /*! \brief set by the controller that stops the level loop; later bodies'
+   *  controllers exit immediately (host resets it to 0 before every launch) */
+  int done;
 
   // ---- static config (host-written once at graph build) ----
   int max_depth;
@@ -157,11 +170,15 @@ struct CUDAHybridGraphLoopState {
   int* journal;
 
   // ---- device-updatable node handles (host-written after instantiate) ----
-  CUDAHybridGraphNodeSlot nodes[kHybridGraphMaxNodes];
+  /*! \brief per-body node slices at stride kHybridGraphMaxNodes: level L's
+   *  body nodes live at [L * kHybridGraphMaxNodes, ... + num_nodes) (the
+   *  epilogue body has none) */
+  CUDAHybridGraphNodeSlot nodes[kHybridGraphMaxNodes * kHybridGraphMaxBodies];
   /*! \brief controller-side cache of each node's enabled state (captured
    *  nodes start enabled); lets the controller skip redundant SetEnabled
    *  device graph updates */
-  int node_enabled[kHybridGraphMaxNodes];
+  int node_enabled[kHybridGraphMaxNodes * kHybridGraphMaxBodies];
+  /*! \brief body nodes per level (uniform across the unrolled level bodies) */
   int num_nodes;
 };
 
@@ -189,11 +206,13 @@ inline bool AppendCapturedNode(cudaStream_t stream, std::vector<cudaGraphNode_t>
   return true;
 }
 
-/*! \brief launches the level-controller kernel on \p stream (used inside the
- *  WHILE-body capture; defined in cuda_hybrid_graph.cu) */
+/*! \brief launches the level-controller kernel of unrolled body \p body_index
+ *  on \p stream (used inside the level-body capture; body_index == max_depth
+ *  is the epilogue controller that only stops the loop; defined in
+ *  cuda_hybrid_graph.cu) */
 void CaptureHybridGraphControllerKernel(cudaStream_t stream,
-                                        cudaGraphConditionalHandle cond_handle,
-                                        CUDAHybridGraphLoopState* state);
+                                        CUDAHybridGraphLoopState* state,
+                                        int body_index);
 
 }  // namespace LightGBM
 

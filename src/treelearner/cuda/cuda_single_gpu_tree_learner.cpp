@@ -1237,7 +1237,10 @@ bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
       (1LL << config_->max_depth) <= static_cast<int64_t>(config_->num_leaves) + 1;
   return depth_limited &&
          config_->num_leaves <= 2 * kHybridGraphMaxSplitsPerLevel - 1 &&
-         config_->max_depth < kHybridGraphMaxLevels;
+         config_->max_depth < kHybridGraphMaxLevels &&
+         // unrolled graph: max_depth level bodies + the epilogue controller
+         // (implied by the gates above, but keep the bound explicit)
+         config_->max_depth < kHybridGraphMaxBodies;
 }
 
 bool CUDASingleGPUTreeLearner::SetupHybridGraphStatics() {
@@ -1344,23 +1347,11 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
     return false;
   }
   HYBRID_GRAPH_SOFT_CHECK(cudaGraphCreate(&instance->graph, 0));
-  cudaGraphConditionalHandle cond_handle;
-  HYBRID_GRAPH_SOFT_CHECK(cudaGraphConditionalHandleCreate(
-    &cond_handle, instance->graph, 1, cudaGraphCondAssignDefault));
-  // cudaGraphNodeParams has a deleted default constructor (union member);
-  // value-initialized heap storage sidesteps it
-  std::unique_ptr<char[]> params_storage(new char[sizeof(cudaGraphNodeParams)]());
-  cudaGraphNodeParams* cond_params = reinterpret_cast<cudaGraphNodeParams*>(params_storage.get());
-  cond_params->type = cudaGraphNodeTypeConditional;
-  cond_params->conditional.handle = cond_handle;
-  cond_params->conditional.type = cudaGraphCondTypeWhile;
-  cond_params->conditional.size = 1;
-  cudaGraphNode_t cond_node = nullptr;
-  HYBRID_GRAPH_SOFT_CHECK(cudaGraphAddNode(&cond_node, instance->graph, nullptr, 0, cond_params));
-  cudaGraph_t body_graph = cond_params->conditional.phGraph_out[0];
 
-  // ---- capture the WHILE body: controller -> apply chain -> search chain,
-  // mirroring the host flow's stream/event wiring ----
+  // ---- capture the UNROLLED level bodies (L1.5): max_depth straight-line
+  // repetitions of controller -> apply chain -> search chain plus one final
+  // epilogue controller, mirroring the host flow's stream/event wiring; each
+  // record/wait pair becomes a graph edge, chaining the bodies ----
   cudaStream_t hist_stream = cuda_histogram_constructor_->hist_stream();
   cudaStream_t apply_stream = cuda_data_partition_->apply_stream();
   cudaStream_t find_stream = cuda_best_split_finder_->find_stream();
@@ -1374,28 +1365,42 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
   std::vector<int> roles;
   std::vector<int> role_static_x;
   bool capture_ok = true;
+  size_t nodes_per_level = 0;
+  const int num_level_bodies = config_->max_depth;  // gated to < kHybridGraphMaxBodies
   HYBRID_GRAPH_SOFT_CHECK(cudaStreamBeginCaptureToGraph(
-    hist_stream, body_graph, nullptr, nullptr, 0, cudaStreamCaptureModeThreadLocal));
-  CaptureHybridGraphControllerKernel(hist_stream, cond_handle, instance->state_dev);
-  capture_ok = capture_ok && cudaEventRecord(fork_event, hist_stream) == cudaSuccess;
-  capture_ok = capture_ok && cudaStreamWaitEvent(apply_stream, fork_event, 0) == cudaSuccess;
-  tree->CaptureHybridGraphSplitBatchKernel(apply_stream);
-  capture_ok = capture_ok && AppendCapturedNode(apply_stream, &nodes);
-  roles.push_back(kHybridGraphNodeTreeSplit);
-  cuda_data_partition_->CaptureHybridGraphApplyKernels(instance->state_dev, &nodes, &roles);
-  while (role_static_x.size() < roles.size()) {
-    role_static_x.push_back(0);
+    hist_stream, instance->graph, nullptr, nullptr, 0, cudaStreamCaptureModeThreadLocal));
+  for (int body = 0; body < num_level_bodies; ++body) {
+    const size_t body_node_start = nodes.size();
+    CaptureHybridGraphControllerKernel(hist_stream, instance->state_dev, body);
+    capture_ok = capture_ok && cudaEventRecord(fork_event, hist_stream) == cudaSuccess;
+    capture_ok = capture_ok && cudaStreamWaitEvent(apply_stream, fork_event, 0) == cudaSuccess;
+    tree->CaptureHybridGraphSplitBatchKernel(apply_stream);
+    capture_ok = capture_ok && AppendCapturedNode(apply_stream, &nodes);
+    roles.push_back(kHybridGraphNodeTreeSplit);
+    cuda_data_partition_->CaptureHybridGraphApplyKernels(instance->state_dev, &nodes, &roles);
+    while (role_static_x.size() < roles.size()) {
+      role_static_x.push_back(0);
+    }
+    capture_ok = capture_ok && cudaEventRecord(apply_event, apply_stream) == cudaSuccess;
+    capture_ok = capture_ok && cudaStreamWaitEvent(hist_stream, apply_event, 0) == cudaSuccess;
+    cuda_histogram_constructor_->CaptureHybridGraphSearchKernels(
+      cuda_hybrid_pair_descs_.RawDataReadOnly(),
+      cuda_data_partition_->level_smaller_leaf_counts(),
+      &nodes, &roles, &role_static_x);
+    cuda_best_split_finder_->CaptureHybridGraphFindKernels(
+      cuda_hybrid_pair_descs_.RawDataReadOnly(), &nodes, &roles, &role_static_x);
+    capture_ok = capture_ok && cudaEventRecord(join_event, find_stream) == cudaSuccess;
+    capture_ok = capture_ok && cudaStreamWaitEvent(hist_stream, join_event, 0) == cudaSuccess;
+    const size_t body_nodes = nodes.size() - body_node_start;
+    if (body == 0) {
+      nodes_per_level = body_nodes;
+    } else if (body_nodes != nodes_per_level) {
+      capture_ok = false;  // non-uniform body capture; bail out below
+    }
   }
-  capture_ok = capture_ok && cudaEventRecord(apply_event, apply_stream) == cudaSuccess;
-  capture_ok = capture_ok && cudaStreamWaitEvent(hist_stream, apply_event, 0) == cudaSuccess;
-  cuda_histogram_constructor_->CaptureHybridGraphSearchKernels(
-    cuda_hybrid_pair_descs_.RawDataReadOnly(),
-    cuda_data_partition_->level_smaller_leaf_counts(),
-    &nodes, &roles, &role_static_x);
-  cuda_best_split_finder_->CaptureHybridGraphFindKernels(
-    cuda_hybrid_pair_descs_.RawDataReadOnly(), &nodes, &roles, &role_static_x);
-  capture_ok = capture_ok && cudaEventRecord(join_event, find_stream) == cudaSuccess;
-  capture_ok = capture_ok && cudaStreamWaitEvent(hist_stream, join_event, 0) == cudaSuccess;
+  // epilogue controller: stops the loop (journal header + done flag) after
+  // the last level body's speculative search
+  CaptureHybridGraphControllerKernel(hist_stream, instance->state_dev, num_level_bodies);
   cudaGraph_t captured = nullptr;
   const cudaError_t end_err = cudaStreamEndCapture(hist_stream, &captured);
   cudaEventDestroy(fork_event);
@@ -1403,13 +1408,14 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
   cudaEventDestroy(join_event);
   if (end_err != cudaSuccess || !capture_ok ||
       nodes.size() != roles.size() || roles.size() != role_static_x.size() ||
-      nodes.size() > static_cast<size_t>(kHybridGraphMaxNodes) || nodes.size() < 10) {
+      nodes_per_level > static_cast<size_t>(kHybridGraphMaxNodes) || nodes_per_level < 10) {
     Log::Warning("graphs L1: body capture failed (%s); falling back to the host level loop",
                  cudaGetErrorString(end_err));
     return false;
   }
 
-  // ---- device-updatable node handles ----
+  // ---- device-updatable node handles (per-body slices at stride
+  // kHybridGraphMaxNodes, matching the controller's node_base) ----
   CUDAHybridGraphLoopState state = hybrid_graph_state_template_;
   state.tree_batch_splits = tree->hybrid_graph_batch_splits();
   // per-instance construct extents: block dims follow this tree's (compact)
@@ -1419,18 +1425,20 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
   cuda_histogram_constructor_->HybridGraphConstructDims(&construct_grid_x, &construct_block_dim_y);
   state.construct_grid_x = construct_grid_x;
   state.construct_block_dim_y = construct_block_dim_y;
-  state.num_nodes = static_cast<int>(nodes.size());
+  state.num_nodes = static_cast<int>(nodes_per_level);
   for (size_t i = 0; i < nodes.size(); ++i) {
+    const size_t slot = (i / nodes_per_level) * static_cast<size_t>(kHybridGraphMaxNodes) +
+      (i % nodes_per_level);
     cudaLaunchAttributeValue attr_value;
     std::memset(&attr_value, 0, sizeof(attr_value));
     attr_value.deviceUpdatableKernelNode.deviceUpdatable = 1;
     HYBRID_GRAPH_SOFT_CHECK(cudaGraphKernelNodeSetAttribute(
       nodes[i], cudaLaunchAttributeDeviceUpdatableKernelNode, &attr_value));
-    state.nodes[i].node = attr_value.deviceUpdatableKernelNode.devNode;
-    state.nodes[i].role = roles[i];
-    state.nodes[i].static_x = role_static_x[i];
-    state.node_enabled[i] = 1;  // captured nodes start enabled
-    if (state.nodes[i].node == nullptr) {
+    state.nodes[slot].node = attr_value.deviceUpdatableKernelNode.devNode;
+    state.nodes[slot].role = roles[i];
+    state.nodes[slot].static_x = role_static_x[i];
+    state.node_enabled[slot] = 1;  // captured nodes start enabled
+    if (state.nodes[slot].node == nullptr) {
       Log::Warning("graphs L1: null device node handle; falling back to the host level loop");
       return false;
     }
@@ -1442,8 +1450,9 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
   static const bool hybrid_diag = std::getenv("EXABOOST_HYBRID_DIAG") != nullptr;
   if (hybrid_diag) {
     // fprintf like the other hybrid-diag lines: visible under verbose=-1
-    fprintf(stderr, "[hybrid-diag] graphs L1: instantiated device level loop (%d body nodes, %d cached)\n",
-            state.num_nodes, static_cast<int>(hybrid_graph_cache_.size()) + 1);
+    fprintf(stderr, "[hybrid-diag] graphs L1.5: instantiated unrolled device level loop "
+            "(%d bodies x %d nodes, %d cached)\n",
+            num_level_bodies, state.num_nodes, static_cast<int>(hybrid_graph_cache_.size()) + 1);
   }
   return true;
 #undef HYBRID_GRAPH_SOFT_CHECK
@@ -1526,6 +1535,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefixGraph(CUDATree* tree) {
   staged->journal_split_cursor = 0;
   staged->root_num_data = cuda_data_partition_->root_num_data();
   staged->find_grid_x = cuda_best_split_finder_->hybrid_graph_find_grid_x();
+  staged->done = 0;
   CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(instance->state_dev, staged,
     offsetof(CUDAHybridGraphLoopState, max_depth), cudaMemcpyHostToDevice, find_stream));
   // ---- the ONE host launch of the whole prefix ----

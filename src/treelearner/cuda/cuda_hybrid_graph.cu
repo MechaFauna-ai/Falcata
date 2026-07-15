@@ -2,15 +2,16 @@
  * Copyright (c) 2026 ExaBoost contributors. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  *
- * \brief device-side level controller of the graphs-L1 hybrid prefix (see
+ * \brief device-side level controller of the graphs-L1.5 hybrid prefix (see
  *  cuda_hybrid_graph.hpp). One controller run replays exactly the host level
  *  loop's decisions between two levels: CollectSplittableLeaves (leaf-ascending
  *  is_valid scan), ArbitrateLevelBudget (incl. the final partial level's
  *  stable gain sort), ApplyLevelBatched's descriptor building (tree batch
  *  splits + partition apply descriptors + terminal-region gap copies), and
  *  EnqueueLevelBestSplitSearchSpeculative's pair descriptors -- then resizes
- *  the body kernels through device-updatable node handles and sets the WHILE
- *  condition.
+ *  ITS unrolled level body's kernels through device-updatable node handles.
+ *  Stopping sets the loop state's done flag; later bodies' controllers exit
+ *  immediately and keep their body nodes disabled.
  */
 
 #ifdef USE_CUDA
@@ -78,12 +79,16 @@ __device__ int BlockExclusiveScan(const int val, int* s_warp, int* s_total) {
   return s_warp[warp] + incl - val;
 }
 
-/*! \brief block-wide max of \p val (warp shuffles, 2 block syncs); result in
- *  *s_out on every thread's next read after the final sync */
+/*! \brief block-wide max of \p val (warp shuffles, 3 block syncs); result in
+ *  *s_out on every thread's next read after the final sync. The entry sync
+ *  protects s_warp: a preceding BlockExclusiveScan's tail read of s_warp may
+ *  otherwise race this function's first write under independent thread
+ *  scheduling (racecheck-verified). */
 __device__ void BlockMax(const int val, int* s_warp, int* s_out) {
   const int lane = static_cast<int>(threadIdx.x) & 31;
   const int warp = static_cast<int>(threadIdx.x) >> 5;
   const int num_warps = static_cast<int>(blockDim.x) >> 5;
+  __syncthreads();
   int v = val;
   for (int offset = 16; offset > 0; offset >>= 1) {
     const int other = __shfl_down_sync(0xffffffffu, v, offset);
@@ -187,8 +192,8 @@ __device__ __forceinline__ void SetNodeGrid(CUDAHybridGraphLoopState* st,
   }
 }
 
-__global__ void HybridGraphLevelControllerKernel(cudaGraphConditionalHandle cond_handle,
-                                                 CUDAHybridGraphLoopState* st) {
+__global__ void HybridGraphLevelControllerKernel(CUDAHybridGraphLoopState* st,
+                                                 const int body_index) {
   constexpr int kMax = kHybridGraphMaxSplitsPerLevel;
   __shared__ int s_leaves[kMax];
   __shared__ double s_gains[kMax];
@@ -202,6 +207,17 @@ __global__ void HybridGraphLevelControllerKernel(cudaGraphConditionalHandle cond
 
   const int tid = static_cast<int>(threadIdx.x);
   const int nt = static_cast<int>(blockDim.x);
+  // this body's device-updatable node slice (the epilogue body has none)
+  const int node_base = body_index * kHybridGraphMaxNodes;
+  const int own_nodes = body_index < st->max_depth ? st->num_nodes : 0;
+  if (st->done) {
+    // an earlier body stopped the level loop: keep this body's nodes disabled
+    // (cached: steady-state same-shape trees issue no device graph updates)
+    if (tid < own_nodes) {
+      SetNodeEnabledCached(st, node_base + tid, false);
+    }
+    return;
+  }
   const int level = st->level;
   const int cur_leaves = st->num_leaves;
   const int split_cursor = st->journal_split_cursor;
@@ -238,10 +254,10 @@ __global__ void HybridGraphLevelControllerKernel(cudaGraphConditionalHandle cond
       atomicOr(reinterpret_cast<unsigned int*>(&st->journal[2]), 0x80000000u);
       st->journal[0] = level;
       st->journal[1] = split_cursor;
-      cudaGraphSetConditional(cond_handle, 0);
+      st->done = 1;
     }
-    if (tid < st->num_nodes) {
-      SetNodeEnabledCached(st, tid, false);
+    if (tid < own_nodes) {
+      SetNodeEnabledCached(st, node_base + tid, false);
     }
     return;
   }
@@ -260,6 +276,15 @@ __global__ void HybridGraphLevelControllerKernel(cudaGraphConditionalHandle cond
   // ---- 2. ArbitrateLevelBudget ----
   bool apply_level = n > 0;
   bool final_partial = false;
+  if (body_index >= st->max_depth) {
+    // epilogue body: the loop must already be over (the last level's children
+    // sit at max_depth, so their speculative searches were invalid); n > 0
+    // here would break the unroll's level bound -- flag it for the host
+    if (n > 0 && tid == 0) {
+      atomicOr(reinterpret_cast<unsigned int*>(&st->journal[2]), 0x40000000u);
+    }
+    apply_level = false;
+  }
   if (n > 0 && cur_leaves + n > st->num_leaves_budget) {
     const int remaining = st->num_leaves_budget - cur_leaves;
     // every splittable leaf of the prefix sits at depth == level (valid leaves
@@ -281,15 +306,16 @@ __global__ void HybridGraphLevelControllerKernel(cudaGraphConditionalHandle cond
   }
 
   if (!apply_level) {
-    // stop: journal header, all body nodes off, condition 0 (each thread
-    // disables one node; SetNodeEnabledCached skips already-disabled ones)
+    // stop: journal header, this body's nodes off, done flag set (each thread
+    // disables one node; SetNodeEnabledCached skips already-disabled ones;
+    // later bodies' controllers disable their own nodes on the done path)
     if (tid == 0) {
       st->journal[0] = level;
       st->journal[1] = split_cursor;
-      cudaGraphSetConditional(cond_handle, 0);
+      st->done = 1;
     }
-    if (tid < st->num_nodes) {
-      SetNodeEnabledCached(st, tid, false);
+    if (tid < own_nodes) {
+      SetNodeEnabledCached(st, node_base + tid, false);
     }
     return;
   }
@@ -460,8 +486,8 @@ __global__ void HybridGraphLevelControllerKernel(cudaGraphConditionalHandle cond
 
   // ---- 5. resize + arm the body nodes (one thread per node; the device
   // graph updates dominate the controller's cost when serialized) ----
-  if (tid < st->num_nodes) {
-    const CUDAHybridGraphNodeSlot slot = st->nodes[tid];
+  if (tid < own_nodes) {
+    const CUDAHybridGraphNodeSlot slot = st->nodes[node_base + tid];
     const unsigned int un = static_cast<unsigned int>(n);
     bool enabled = true;
     dim3 grid(1, 1, 1);
@@ -508,7 +534,7 @@ __global__ void HybridGraphLevelControllerKernel(cudaGraphConditionalHandle cond
       default:
         break;
     }
-    SetNodeEnabledCached(st, tid, enabled);
+    SetNodeEnabledCached(st, node_base + tid, enabled);
     if (enabled) {
       SetNodeGrid(st, slot, grid);
     }
@@ -523,17 +549,17 @@ __global__ void HybridGraphLevelControllerKernel(cudaGraphConditionalHandle cond
     if (final_partial) {
       st->journal[0] = level + 1;
       st->journal[1] = split_cursor + n;
+      st->done = 1;
     }
-    cudaGraphSetConditional(cond_handle, final_partial ? 0u : 1u);
   }
 }
 
 }  // anonymous namespace
 
 void CaptureHybridGraphControllerKernel(cudaStream_t stream,
-                                        cudaGraphConditionalHandle cond_handle,
-                                        CUDAHybridGraphLoopState* state) {
-  HybridGraphLevelControllerKernel<<<1, kControllerThreads, 0, stream>>>(cond_handle, state);
+                                        CUDAHybridGraphLoopState* state,
+                                        const int body_index) {
+  HybridGraphLevelControllerKernel<<<1, kControllerThreads, 0, stream>>>(state, body_index);
 }
 
 }  // namespace LightGBM
