@@ -6,14 +6,19 @@ figures from the profiles in the PR discussions.
 
 ## Performance
 
-- [ ] **Graphs L1 — device-driven level loop.** Wrap the per-level pipeline in a CUDA
-  conditional-WHILE graph node; a level-controller kernel builds the next level's pair
-  descriptors on-device, updates grid dims via device-updatable node params, and sets the
-  loop condition; ONE host sync per tree. Est. ~1.6-1.7x on small-tree workloads
-  (fraud-class: ~344 us/tree turnaround idle + ~234 us launch API measured), ~1.3x mid
-  (covtype/year), ~nil on roofline-bound data (higgs/epsilon). Depth-limited exact regime
-  first; the budget-limited selective mode keeps its host loop until the selection +
-  tie-break replication is ported to device and re-verified against the quant md5 gates.
+- [x] **Graphs L1 — device-driven level loop** (99734bae). Shipped the preferred
+  design in full: conditional WHILE node + device-updatable kernel nodes (grid dims
+  set by an on-device level controller; per-tree shape keys with a 64-entry LRU of
+  instantiated graphs keep results bit-identical), ONE cudaGraphLaunch + one readback
+  per depth-limited prefix. Non-quant only (quant keeps the host loop: per-leaf
+  hist-bit selection needs the classic readback); selective/budget-limited unchanged;
+  EXABOOST_GRAPH_LEVEL_LOOP=0 kill switch. Honest verdict: launch API 132 -> 27
+  us/tree, but end-to-end wins are modest (fraud -4.5%, covtype -3.5%, year -2.6%,
+  numerai parity) because the one-sync host loop had already removed most per-level
+  overhead. Remaining floor = controller 7.2 us/level (device graph-update calls
+  dominate) + conditional-body relaunch -> that is the Graphs L2 lever. Driver
+  quirk documented in-code: devNode handle returns through the zeroed SetAttribute
+  value struct. Bagging supported via loop state but not gate-exercised.
 - [ ] **Graphs L2 — per-parent dependency chaining.** A child pair only depends on *its
   parent's* partition + histogram, not on its level. Launch each pair's chain from the
   device (fire-and-forget device graph launch) when its parent finishes — a
