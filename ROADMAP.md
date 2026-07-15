@@ -13,10 +13,10 @@ figures from the profiles in the PR discussions.
   fraud 1023/10 -10.9%, covtype 63/6 -8.8%, year -5.8%, numerai parity
   (construct-bound). Launch API 132 -> ~30 us/tree; controller ~42 us/tree; sync
   D2H 3 -> 1 per tree. Non-quant depth-limited only; EXABOOST_GRAPH_LEVEL_LOOP=0.
-  MULTICLASS IS GATED OFF pending a root cause: pre-existing intermittent
-  cudaErrorIllegalAddress (~7/30 runs, machine-state dependent, present at
-  baseline; repro scratchpad/mc_crash_repro.py; sanitizers can't attach to
-  device-side graph updates) -- TOP graph follow-up. Perf follow-ups: (A2) fix
+  Multiclass crash ROOT-CAUSED AND FIXED (84db39cd): device-updatable graphs
+  must be cudaGraphUpload-ed before first launch (the controller's first device
+  update raced the lazy upload; multiclass's per-class instances multiplied
+  exposure). 40/40 soak, gate lifted, multiclass graph ON ~4% faster. Perf follow-ups: (A2) fix
   grids for the ~8 n-only roles at body bounds + device cur_n early-exit
   (device SetGridDim calls ~4.5us/body dominate the controller); cross-tree
   overlap needs a GBDT-contract change (host tree mirror feeds
