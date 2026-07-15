@@ -270,6 +270,17 @@ class CUDADataPartition: public NCCLInfo {
    *  applied splits and realigns the host index-buffer wrappers with the
    *  device loop's per-level buffer swaps */
   void FinishHybridGraphLevels(const int num_levels, const int total_splits);
+
+  /*! \brief graphs L2: stream-ordered async prefetch of the deferred
+   *  split-info slab (up to \p max_splits slots) into the pinned staging
+   *  buffer, so the learner's single post-graph stream sync covers it;
+   *  consume with ReadPrefetchedSplitBatch after synchronizing \p stream */
+  void PrefetchSplitBatchAsync(const int max_splits, cudaStream_t stream);
+
+  /*! \brief consume \p num_splits slots of a prefetched slab (host memcpy
+   *  only; the caller already synchronized the prefetch stream). Values match
+   *  FinishSplitBatch(num_splits) bit-for-bit */
+  void ReadPrefetchedSplitBatch(const int num_splits, std::vector<int>* out) const;
 #endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
 
   /*! \brief the stream the batched apply kernels run on (graphs L1 captures
@@ -589,9 +600,12 @@ class CUDADataPartition: public NCCLInfo {
   // split tree structure algorithm related
   /*! \brief buffer to store split information, prepared to be copied to cpu */
   CUDAVector<int> cuda_split_info_buffer_;
-  /*! \brief pinned staging buffer of FinishSplitBatch */
+  /*! \brief pinned staging buffer of FinishSplitBatch /
+   *  PrefetchSplitBatchAsync */
   int* pinned_split_info_ = nullptr;
   size_t pinned_split_info_size_ = 0;
+  /*! \brief grow the pinned split-info staging buffer to >= num_ints ints */
+  void EnsurePinnedSplitInfoCapacity(const size_t num_ints);
   /*! \brief per-split smaller-child size of the current level's batched apply
    *  (see level_smaller_leaf_counts()) */
   CUDAVector<data_size_t> cuda_level_smaller_counts_;

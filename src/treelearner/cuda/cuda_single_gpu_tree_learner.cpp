@@ -1540,10 +1540,21 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefixGraph(CUDATree* tree) {
     offsetof(CUDAHybridGraphLoopState, max_depth), cudaMemcpyHostToDevice, find_stream));
   // ---- the ONE host launch of the whole prefix ----
   CUDASUCCESS_OR_FATAL(cudaGraphLaunch(instance->exec, find_stream));
-  // ---- the ONE synchronization: journal readback (sync D2H on the legacy
-  // stream drains every blocking stream, including the graph) ----
-  CopyFromCUDADeviceToHost<int>(pinned_hybrid_graph_journal_,
-    cuda_hybrid_graph_journal_.RawData(), hybrid_graph_journal_size_, __FILE__, __LINE__);
+  // ---- the ONE synchronization: EVERY post-graph readback (journal,
+  // deferred split-info slab, per-leaf best splits for the tail's collect) is
+  // prefetched stream-ordered behind the graph at a host-known upper-bound
+  // size (journal[1] <= num_leaves - 1 splits; the collect reads
+  // <= num_leaves leaves), then one stream sync covers all three. Nothing
+  // mutates these device buffers between graph completion and the previous
+  // in-place synchronous copies (FinishHybridGraphLevels is host-only
+  // bookkeeping, FinishSplitBatch/SyncAllLeafBestSplitsToHost are pure
+  // reads), so the prefetched values are bit-for-bit identical ----
+  CopyFromCUDADeviceToHostAsync<int>(pinned_hybrid_graph_journal_,
+    cuda_hybrid_graph_journal_.RawData(), hybrid_graph_journal_size_, find_stream,
+    __FILE__, __LINE__);
+  cuda_data_partition_->PrefetchSplitBatchAsync(config_->num_leaves - 1, find_stream);
+  cuda_best_split_finder_->PrefetchLeafBestSplitsAsync(config_->num_leaves, find_stream);
+  CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(find_stream));
   const int* journal = pinned_hybrid_graph_journal_;
   if (journal[2] != 0) {
     Log::Fatal("graphs L1: device-side graph update failed (flags 0x%x)", journal[2]);
@@ -1557,8 +1568,9 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefixGraph(CUDATree* tree) {
   int num_splits = 0;
   if (total_splits > 0) {
     cuda_data_partition_->FinishHybridGraphLevels(num_levels, total_splits);
-    // deferred split info of the WHOLE prefix (cumulative slab slots)
-    cuda_data_partition_->FinishSplitBatch(total_splits, &hybrid_graph_batch_info_);
+    // deferred split info of the WHOLE prefix (cumulative slab slots),
+    // already staged by the prefetch above
+    cuda_data_partition_->ReadPrefetchedSplitBatch(total_splits, &hybrid_graph_batch_info_);
     std::vector<HybridAppliedSplit>& applied = hybrid_graph_applied_scratch_;
     applied.clear();
     int cursor = 0;
@@ -1583,8 +1595,9 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefixGraph(CUDATree* tree) {
   if (tree->num_leaves() < config_->num_leaves) {
     // mirror the host loop's exit state: the final level's readback + collect
     // (skipped when the budget is exhausted -- the host loop breaks without
-    // re-reading after a final partial level, and the tail never runs)
-    cuda_best_split_finder_->SyncAllLeafBestSplitsToHost(tree->num_leaves(), &host_leaf_best_splits_);
+    // re-reading after a final partial level, and the tail never runs);
+    // already staged by the prefetch above
+    cuda_best_split_finder_->ReadPrefetchedLeafBestSplits(tree->num_leaves(), &host_leaf_best_splits_);
     CollectSplittableLeaves(tree, &hybrid_graph_splittable_scratch_);
   }
   if (num_splits == 0) {

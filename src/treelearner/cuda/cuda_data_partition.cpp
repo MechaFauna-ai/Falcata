@@ -253,6 +253,19 @@ void CUDADataPartition::GenDataToLeftBitVector(
   }
 }
 
+void CUDADataPartition::EnsurePinnedSplitInfoCapacity(const size_t num_ints) {
+  if (pinned_split_info_size_ >= num_ints) {
+    return;
+  }
+  if (pinned_split_info_ != nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaFreeHost(pinned_split_info_));
+  }
+  const size_t capacity = std::max(num_ints, static_cast<size_t>(num_leaves_ / 2 + 2) * 18);
+  CUDASUCCESS_OR_FATAL(cudaHostAlloc(reinterpret_cast<void**>(&pinned_split_info_),
+    capacity * sizeof(int), cudaHostAllocDefault));
+  pinned_split_info_size_ = capacity;
+}
+
 void CUDADataPartition::FinishSplitBatch(const int num_splits, std::vector<int>* out) {
   out->resize(static_cast<size_t>(num_splits) * 18);
   // synchronous D2H on the legacy default stream: implicitly waits for all
@@ -260,19 +273,26 @@ void CUDADataPartition::FinishSplitBatch(const int num_splits, std::vector<int>*
   // needed. Staged through a PINNED buffer (once-per-level critical path; a
   // pageable sync D2H pays an extra driver staging round trip).
   const size_t num_ints = static_cast<size_t>(num_splits) * 18;
-  if (pinned_split_info_size_ < num_ints) {
-    if (pinned_split_info_ != nullptr) {
-      CUDASUCCESS_OR_FATAL(cudaFreeHost(pinned_split_info_));
-    }
-    const size_t capacity = std::max(num_ints, static_cast<size_t>(num_leaves_ / 2 + 2) * 18);
-    CUDASUCCESS_OR_FATAL(cudaHostAlloc(reinterpret_cast<void**>(&pinned_split_info_),
-      capacity * sizeof(int), cudaHostAllocDefault));
-    pinned_split_info_size_ = capacity;
-  }
+  EnsurePinnedSplitInfoCapacity(num_ints);
   CopyFromCUDADeviceToHost<int>(pinned_split_info_, cuda_split_info_buffer_.RawData(),
     num_ints, __FILE__, __LINE__);
   std::memcpy(out->data(), pinned_split_info_, num_ints * sizeof(int));
 }
+
+#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+void CUDADataPartition::PrefetchSplitBatchAsync(const int max_splits, cudaStream_t stream) {
+  const size_t num_ints = static_cast<size_t>(max_splits) * 18;
+  EnsurePinnedSplitInfoCapacity(num_ints);
+  CopyFromCUDADeviceToHostAsync<int>(pinned_split_info_, cuda_split_info_buffer_.RawData(),
+    num_ints, stream, __FILE__, __LINE__);
+}
+
+void CUDADataPartition::ReadPrefetchedSplitBatch(const int num_splits, std::vector<int>* out) const {
+  const size_t num_ints = static_cast<size_t>(num_splits) * 18;
+  out->resize(num_ints);
+  std::memcpy(out->data(), pinned_split_info_, num_ints * sizeof(int));
+}
+#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
 
 void CUDADataPartition::SetLeafDataLayout(const std::vector<data_size_t>& leaf_num_data,
                                           const std::vector<data_size_t>& leaf_data_start,

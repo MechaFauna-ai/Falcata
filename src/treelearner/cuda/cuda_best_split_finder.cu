@@ -2889,23 +2889,20 @@ void CUDABestSplitFinder::SyncLeafBestSplitToHost(
   }
 }
 
-void CUDABestSplitFinder::SyncAllLeafBestSplitsToHost(const int num_leaves, std::vector<CUDASplitInfo>* out) const {
-  out->resize(static_cast<size_t>(num_leaves));
-  // synchronous D2H on the legacy default stream: implicitly waits for all
-  // preceding work on the (blocking) streams, so no explicit device sync needed.
-  // Staged through a PINNED buffer: this copy runs once per level on the
-  // hybrid critical path, and a pageable sync D2H pays an extra driver staging
-  // round trip; the host-to-host memcpy of a few KB afterwards is negligible.
-  if (pinned_leaf_best_split_info_size_ < static_cast<size_t>(num_leaves)) {
-    if (pinned_leaf_best_split_info_ != nullptr) {
-      CUDASUCCESS_OR_FATAL(cudaFreeHost(pinned_leaf_best_split_info_));
-    }
-    pinned_leaf_best_split_info_size_ = static_cast<size_t>(num_leaves_ > num_leaves ? num_leaves_ : num_leaves);
-    CUDASUCCESS_OR_FATAL(cudaHostAlloc(reinterpret_cast<void**>(&pinned_leaf_best_split_info_),
-      pinned_leaf_best_split_info_size_ * sizeof(CUDASplitInfo), cudaHostAllocDefault));
+void CUDABestSplitFinder::EnsurePinnedLeafBestSplitCapacity(const int num_leaves) const {
+  if (pinned_leaf_best_split_info_size_ >= static_cast<size_t>(num_leaves)) {
+    return;
   }
-  CopyFromCUDADeviceToHost<CUDASplitInfo>(pinned_leaf_best_split_info_, cuda_leaf_best_split_info_.RawDataReadOnly(),
-    static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+  if (pinned_leaf_best_split_info_ != nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaFreeHost(pinned_leaf_best_split_info_));
+  }
+  pinned_leaf_best_split_info_size_ = static_cast<size_t>(num_leaves_ > num_leaves ? num_leaves_ : num_leaves);
+  CUDASUCCESS_OR_FATAL(cudaHostAlloc(reinterpret_cast<void**>(&pinned_leaf_best_split_info_),
+    pinned_leaf_best_split_info_size_ * sizeof(CUDASplitInfo), cudaHostAllocDefault));
+}
+
+void CUDABestSplitFinder::ReadPrefetchedLeafBestSplits(const int num_leaves, std::vector<CUDASplitInfo>* out) const {
+  out->resize(static_cast<size_t>(num_leaves));
   std::memcpy(reinterpret_cast<void*>(out->data()), pinned_leaf_best_split_info_,
     static_cast<size_t>(num_leaves) * sizeof(CUDASplitInfo));
   // the raw copy brings over device categorical-threshold pointers; scrub them so the
@@ -2915,6 +2912,25 @@ void CUDABestSplitFinder::SyncAllLeafBestSplitsToHost(const int num_leaves, std:
     info.cat_threshold = nullptr;
     info.cat_threshold_real = nullptr;
   }
+}
+
+void CUDABestSplitFinder::PrefetchLeafBestSplitsAsync(const int num_leaves, cudaStream_t stream) const {
+  EnsurePinnedLeafBestSplitCapacity(num_leaves);
+  CopyFromCUDADeviceToHostAsync<CUDASplitInfo>(pinned_leaf_best_split_info_,
+    cuda_leaf_best_split_info_.RawDataReadOnly(), static_cast<size_t>(num_leaves),
+    stream, __FILE__, __LINE__);
+}
+
+void CUDABestSplitFinder::SyncAllLeafBestSplitsToHost(const int num_leaves, std::vector<CUDASplitInfo>* out) const {
+  // synchronous D2H on the legacy default stream: implicitly waits for all
+  // preceding work on the (blocking) streams, so no explicit device sync needed.
+  // Staged through a PINNED buffer: this copy runs once per level on the
+  // hybrid critical path, and a pageable sync D2H pays an extra driver staging
+  // round trip; the host-to-host memcpy of a few KB afterwards is negligible.
+  EnsurePinnedLeafBestSplitCapacity(num_leaves);
+  CopyFromCUDADeviceToHost<CUDASplitInfo>(pinned_leaf_best_split_info_, cuda_leaf_best_split_info_.RawDataReadOnly(),
+    static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+  ReadPrefetchedLeafBestSplits(num_leaves, out);
 }
 
 void CUDABestSplitFinder::LaunchFindBestFromAllSplitsKernel(

@@ -215,6 +215,17 @@ class CUDABestSplitFinder {
   // and must not be dereferenced on the host.
   void SyncAllLeafBestSplitsToHost(const int num_leaves, std::vector<CUDASplitInfo>* out) const;
 
+  /*! \brief graphs L2: stream-ordered async prefetch of leaves
+   *  [0, num_leaves) of the device per-leaf best-split cache into the pinned
+   *  staging buffer, so the learner's single post-graph stream sync covers
+   *  it; consume with ReadPrefetchedLeafBestSplits after synchronizing */
+  void PrefetchLeafBestSplitsAsync(const int num_leaves, cudaStream_t stream) const;
+
+  /*! \brief consume a prefetched per-leaf best-split cache (host memcpy +
+   *  device-pointer scrub only; the caller already synchronized the prefetch
+   *  stream). Values match SyncAllLeafBestSplitsToHost bit-for-bit */
+  void ReadPrefetchedLeafBestSplits(const int num_leaves, std::vector<CUDASplitInfo>* out) const;
+
 #ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
   /*! \brief graphs L1 body capture: find + sync kernels with placeholder pair
    *  counts on cuda_streams_[0]; node handles + roles collected for the device
@@ -370,6 +381,8 @@ class CUDABestSplitFinder {
    *  CUDASplitInfo is never constructed/destructed in it) */
   mutable CUDASplitInfo* pinned_leaf_best_split_info_ = nullptr;
   mutable size_t pinned_leaf_best_split_info_size_ = 0;
+  /*! \brief grow the pinned best-split staging buffer to >= num_leaves slots */
+  void EnsurePinnedLeafBestSplitCapacity(const int num_leaves) const;
   int max_num_bin_in_feature_;
   std::vector<uint32_t> feature_hist_offsets_;
   std::vector<uint8_t> feature_mfb_offsets_;
