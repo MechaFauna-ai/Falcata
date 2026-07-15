@@ -61,7 +61,11 @@ NOTES = """
 
 
 def fmt(x, digits=1):
-    return "—" if x is None or (isinstance(x, float) and np.isnan(x)) else f"{x:.{digits}f}"
+    return (
+        "—"
+        if x is None or (isinstance(x, float) and np.isnan(x))
+        else f"{x:.{digits}f}"
+    )
 
 
 def main():
@@ -102,7 +106,9 @@ def main():
     for (ds, reg), g in timed.groupby(["dataset", "regime"], sort=False):
         mkey = METRIC_KEY.get(ds, "auc")
         lines.append(f"## {ds} — regime `{reg}`\n")
-        lines.append(f"| library | construct (s) | train (s) | total (s) | {mkey} | GPU peak (MB) | RSS peak (MB) |")
+        lines.append(
+            f"| library | construct (s) | train (s) | total (s) | {mkey} | GPU peak (MB) | RSS peak (MB) |"
+        )
         lines.append("|---|---|---|---|---|---|---|")
         base = g[g["library"] == "exaboost"]["train_s"].median()
         for lib in LIBRARIES:
@@ -110,7 +116,12 @@ def main():
                 continue  # cell excluded by design, not missing
             gl = g[g["library"] == lib]
             if gl.empty:
-                fails = df[(df.dataset == ds) & (df.regime == reg) & (df.library == lib) & (df.status != "ok")]
+                fails = df[
+                    (df.dataset == ds)
+                    & (df.regime == reg)
+                    & (df.library == lib)
+                    & (df.status != "ok")
+                ]
                 note = fails["status"].iloc[0] if not fails.empty else "missing"
                 lines.append(f"| {lib} | {note} | | | | | |")
                 continue
@@ -184,7 +195,12 @@ def main():
                     hatches.append(None)
                     # crashed/failed configs get an explicit marker instead of
                     # silently-absent bars (e.g. upstream quantized on higgs)
-                    crashed = df[(df.dataset == d) & (df.regime == reg) & (df.library == lib) & (df.status != "ok")]
+                    crashed = df[
+                        (df.dataset == d)
+                        & (df.regime == reg)
+                        & (df.library == lib)
+                        & (df.status != "ok")
+                    ]
                     if not crashed.empty:
                         crash_marks.append((offs[j], COLORS[lib]))
                     continue
@@ -196,7 +212,10 @@ def main():
                 degenerate = not all((m or {}).get("sane", True) for m in gl["metrics"])
                 if not degenerate and "rmse" in met and d != "numerai":
                     ok_rmses = [
-                        (m or {}).get("rmse") for m in sub[(sub.dataset == d) & (sub.library == "xgboost")]["metrics"]
+                        (m or {}).get("rmse")
+                        for m in sub[(sub.dataset == d) & (sub.library == "xgboost")][
+                            "metrics"
+                        ]
                     ]
                     if ok_rmses and ok_rmses[0] and met["rmse"] > 1.15 * ok_rmses[0]:
                         degenerate = True
@@ -286,7 +305,11 @@ def main():
             mkey = METRIC_KEY.get(ds, "auc")
             lower_better = mkey == "rmse"
             for lib in LIBRARIES:
-                gl = timed[(timed.dataset == ds) & (timed.regime == reg) & (timed.library == lib)]
+                gl = timed[
+                    (timed.dataset == ds)
+                    & (timed.regime == reg)
+                    & (timed.library == lib)
+                ]
                 if gl.empty:
                     continue
                 met = gl["metrics"].iloc[0] or {}
@@ -304,9 +327,16 @@ def main():
                     linewidth=0.6,
                     zorder=3,
                 )
-            present = set(timed[(timed.dataset == ds) & (timed.regime == reg)]["library"])
+            present = set(
+                timed[(timed.dataset == ds) & (timed.regime == reg)]["library"]
+            )
             crashed = sorted(
-                set(df[(df.dataset == ds) & (df.regime == reg) & (df.status != "ok")]["library"]) - present
+                set(
+                    df[(df.dataset == ds) & (df.regime == reg) & (df.status != "ok")][
+                        "library"
+                    ]
+                )
+                - present
             )
             title = f"{ds} / {reg}"
             if crashed:
@@ -317,7 +347,9 @@ def main():
                 ax_i.invert_yaxis()
             ax_i.set_title(title, fontsize=10)
             ax_i.set_xlabel("train time (s, log)", fontsize=8)
-            ax_i.set_ylabel(mkey + (" (lower = better)" if lower_better else ""), fontsize=8)
+            ax_i.set_ylabel(
+                mkey + (" (lower = better)" if lower_better else ""), fontsize=8
+            )
             ax_i.tick_params(labelsize=7)
             ax_i.grid(True, alpha=0.25)
         for ax_i in axes[len(panels) :]:
