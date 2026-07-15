@@ -178,7 +178,17 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, quantized, curve):
         "num_threads": os.cpu_count(),
         "seed": SEED,
         "verbose": -1,
-        "metric": "None",
+        # plain runs never evaluate, so metric stays "None" there; curve runs
+        # need a real eval metric or eval_valid() returns no results and the
+        # curve records null quality (matching the metrics xgboost curves use)
+        "metric": {
+            "binary": "auc",
+            "multiclass": "multi_logloss",
+            "regression": "rmse",
+            "numerai": "rmse",
+        }[task]
+        if curve
+        else "None",
     }
     if task == "multiclass":
         params["num_class"] = DATASETS["covtype"]["num_class"]
