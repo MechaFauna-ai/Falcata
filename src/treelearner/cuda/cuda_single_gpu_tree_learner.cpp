@@ -1258,6 +1258,19 @@ bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
       hybrid_graph_disabled_) {
     return false;
   }
+  // quant graph support is bit-exact (a2279763) but a net loss on large/cheap-level
+  // shapes (covtype 1023/10 -10.8%, year 63/6 -7%: quant levels are cheap, so the
+  // controller's fixed serial latency dominates) -- opt-in until that frontier
+  // shrinks. EXABOOST_GRAPH_QUANT=1 enables.
+  if (config_->use_quantized_grad) {
+    static const bool quant_graph_opt_in = []() {
+      const char* env = std::getenv("EXABOOST_GRAPH_QUANT");
+      return env != nullptr && std::string(env) == std::string("1");
+    }();
+    if (!quant_graph_opt_in) {
+      return false;
+    }
+  }
   // depth-limited exact regime only (mirrors HybridGrowthUsable): the
   // controller replays ArbitrateLevelBudget under the level == depth
   // invariant that only holds there
