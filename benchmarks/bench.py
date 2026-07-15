@@ -186,6 +186,8 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, quantized, curve):
         params["feature_fraction"] = reg["colsample"]
     if "l2" in reg:
         params["lambda_l2"] = reg["l2"]
+    if "min_data" in reg:
+        params["min_data_in_leaf"] = reg["min_data"]
     if quantized:
         params["use_quantized_grad"] = True
 
@@ -246,6 +248,10 @@ def run_xgboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
         params["colsample_bytree"] = reg["colsample"]
     if "l2" in reg:
         params["lambda"] = reg["l2"]  # xgboost default is already 1
+    if "min_data" in reg:
+        # for squared error the hessian is 1 per row, so min_child_weight
+        # is exactly a row count -- equivalent to min_data_in_leaf
+        params["min_child_weight"] = reg["min_data"]
 
     t0 = time.perf_counter()
     dtrain = xgb.QuantileDMatrix(np.asarray(x_tr), label=y_tr, max_bin=255)
@@ -313,6 +319,7 @@ def run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
         "loss_function": loss,
     }
     rsm_dropped = False
+    min_data_dropped = "min_data" in reg  # symmetric trees don't support it
     if "colsample" in reg:
         kw["rsm"] = reg["colsample"]
     if "l2" in reg:
@@ -377,6 +384,7 @@ def run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
         "version": cb.__version__,
         "curve": curve_pts,
         "rsm_dropped": rsm_dropped,
+        "min_data_dropped": min_data_dropped,
         "curve_time_approx": bool(curve),
     }
 

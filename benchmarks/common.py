@@ -54,6 +54,18 @@ REGIMES = {
         "l2": 1.0,
         "eval_every": 25,
     },
+    # official Numerai v5 benchmark-model "deep" parameters
+    # (docs.numer.ai/numerai-tournament/models#deep-lgbm-params) -- the config
+    # most Numerai users care about; the example config stays for completeness
+    "numerai-deep": {
+        "rounds": 30000,
+        "lr": 0.001,
+        "depth": 10,
+        "leaves": 1024,
+        "colsample": 0.1,
+        "min_data": 10000,
+        "eval_every": 3000,
+    },
     # official Numerai example-model parameters
     "numerai": {
         "rounds": 2000,
@@ -87,7 +99,7 @@ def venv_python(library: str) -> str:
 
 def regimes_for(dataset: str):
     """Regimes to benchmark for a dataset."""
-    return ["numerai"] if dataset == "numerai" else ["shallow", "deep"]
+    return ["numerai-deep", "numerai"] if dataset == "numerai" else ["shallow", "deep"]
 
 
 def dataset_ready(dataset: str) -> bool:

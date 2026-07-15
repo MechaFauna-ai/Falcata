@@ -32,7 +32,7 @@ TIMEOUT_S = {
     "year": 1800,
     "higgs": 7200,
     "epsilon": 7200,
-    "numerai": 14400,
+    "numerai": 43200,
     "airline": 14400,
 }
 
