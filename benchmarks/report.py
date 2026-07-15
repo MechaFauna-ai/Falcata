@@ -228,7 +228,7 @@ def main():
                         ha="center",
                         va="top",
                         fontsize=7,
-                        color="white",
+                        color="#08306b",
                         fontweight="bold",
                         zorder=5,
                     )
