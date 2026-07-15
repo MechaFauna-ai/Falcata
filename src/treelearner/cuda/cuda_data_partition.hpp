@@ -20,6 +20,7 @@
 #include <LightGBM/cuda/cuda_tree.hpp>
 
 #include "cuda_leaf_splits.hpp"
+#include "cuda_hybrid_graph.hpp"
 
 #define FILL_INDICES_BLOCK_SIZE_DATA_PARTITION (1024)
 #define SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION (1024)
@@ -233,6 +234,47 @@ class CUDADataPartition: public NCCLInfo {
    *  kernel; consumed by the speculative batched construct kernel to derive its
    *  exact row grouping before the sizes are host-known */
   const data_size_t* level_smaller_leaf_counts() const { return cuda_level_smaller_counts_.RawDataReadOnly(); }
+
+#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+  /*! \brief graphs L1 body capture: launches the five batched apply kernels
+   *  with placeholder grids on the capture stream (cuda_streams_[0]) and
+   *  collects their graph nodes + roles; the device controller resizes them
+   *  per level */
+  void CaptureHybridGraphApplyKernels(const CUDAHybridGraphLoopState* gstate,
+                                      std::vector<cudaGraphNode_t>* nodes,
+                                      std::vector<int>* roles);
+
+  /*! \brief preallocates the apply-descriptor and block-offset buffers for the
+   *  graph loop's worst case, so no captured buffer pointer ever reallocates */
+  void EnsureHybridGraphCapacity(const data_size_t max_root_num_data);
+
+  /*! \brief graphs L1: static per-feature split metadata of the batched apply
+   *  descriptors (everything of SplitLevelBatched's host math that does not
+   *  depend on the per-tree column view; real feature/threshold/missing-type
+   *  fields are filled by the learner) */
+  void BuildHybridGraphFeatureMeta(std::vector<CUDAHybridGraphFeatureMeta>* meta) const;
+
+  /*! \brief graphs L1: per-tree column source of every inner feature (the
+   *  packed compact view is per-tree and double-buffered) */
+  void BuildHybridGraphFeatureSource(std::vector<CUDAHybridGraphFeatureSource>* source) const;
+
+  /*! \brief device apply-descriptor buffer the graph controller writes */
+  CUDAHybridApplyDescriptor* hybrid_graph_apply_descs() { return cuda_apply_descs_.RawData(); }
+
+  /*! \brief current main / out index buffers, written into the loop state
+   *  before every graph launch (the controller swaps them per level) */
+  data_size_t* hybrid_graph_main_indices() { return cuda_data_indices_.RawData(); }
+  data_size_t* hybrid_graph_out_indices() { return cuda_out_data_indices_in_leaf_.RawData(); }
+
+  /*! \brief graphs L1 host bookkeeping after a graph prefix: accounts the
+   *  applied splits and realigns the host index-buffer wrappers with the
+   *  device loop's per-level buffer swaps */
+  void FinishHybridGraphLevels(const int num_levels, const int total_splits);
+#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+
+  /*! \brief the stream the batched apply kernels run on (graphs L1 captures
+   *  the body on it) */
+  cudaStream_t apply_stream() const { return cuda_streams_[0]; }
 
  private:
   void CalcBlockDim(const data_size_t num_data_in_leaf);

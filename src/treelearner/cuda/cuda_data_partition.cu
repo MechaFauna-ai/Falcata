@@ -1241,12 +1241,18 @@ __device__ __forceinline__ int HybridUpdateLeafIndexDecision(
 // to the two per-split kernels'.
 __global__ void HybridGenBitVectorUpdateLeafIndexBatchKernel(
   const CUDAHybridApplyDescriptor* descs,
-  const data_size_t* cuda_data_indices,
+  const data_size_t* cuda_data_indices_param,
   uint16_t* block_to_left_offset,
   data_size_t* block_to_left_offset_buffer,
   data_size_t* block_to_right_offset_buffer,
-  int* cuda_data_index_to_leaf_index) {
+  int* cuda_data_index_to_leaf_index,
+  const CUDAHybridGraphLoopStateOpt gstate) {
   __shared__ uint16_t shared_mem_buffer[WARPSIZE];
+  // graphs L1: the main index buffer swaps per level inside the device loop,
+  // so the graph-captured launch reads it from the loop state instead of the
+  // (frozen) kernel parameter
+  const data_size_t* cuda_data_indices =
+    HybridGraphMainIndices(gstate, cuda_data_indices_param);
   const CUDAHybridApplyDescriptor d = descs[blockIdx.y];
   if (static_cast<int>(blockIdx.x) >= d.num_blocks) {
     return;
@@ -1350,11 +1356,16 @@ __global__ void HybridAggregateBlockOffsetBatchKernel(
 
 __global__ void HybridSplitInnerBatchKernel(
   const CUDAHybridApplyDescriptor* descs,
-  const data_size_t* cuda_data_indices,
+  const data_size_t* cuda_data_indices_param,
   const data_size_t* block_to_left_offset_buffer_base,
   const data_size_t* block_to_right_offset_buffer_base,
   const uint16_t* block_to_left_offset,
-  data_size_t* out_data_indices_in_leaf) {
+  data_size_t* out_data_indices_param,
+  const CUDAHybridGraphLoopStateOpt gstate) {
+  const data_size_t* cuda_data_indices =
+    HybridGraphMainIndices(gstate, cuda_data_indices_param);
+  data_size_t* out_data_indices_in_leaf =
+    HybridGraphOutIndices(gstate, out_data_indices_param);
   const CUDAHybridApplyDescriptor d = descs[blockIdx.y];
   if (static_cast<int>(blockIdx.x) >= d.num_blocks) {
     return;
@@ -1390,18 +1401,24 @@ __global__ void HybridSplitTreeStructureBatchKernel(
   const CUDAHybridApplyDescriptor* descs,
   data_size_t* cuda_leaf_data_start,
   data_size_t* cuda_leaf_num_data,
-  const data_size_t* cuda_data_indices_main,
+  const data_size_t* cuda_data_indices_main_param,
   const int num_total_bin,
   hist_t* cuda_hist, hist_t** cuda_hist_pool,
   double* cuda_leaf_output,
-  int* cuda_split_info_buffer_base) {
+  int* cuda_split_info_buffer_base,
+  const CUDAHybridGraphLoopStateOpt gstate) {
   const CUDAHybridApplyDescriptor d = descs[blockIdx.x];
   const int left_leaf_index = d.left_leaf_index;
   const int right_leaf_index = d.right_leaf_index;
   const CUDASplitInfo* best_split_info = d.best_split_info;
   CUDALeafSplitsStruct* smaller_leaf_splits = d.smaller_leaf_splits;
   CUDALeafSplitsStruct* larger_leaf_splits = d.larger_leaf_splits;
-  int* cuda_split_info_buffer = cuda_split_info_buffer_base + 18 * blockIdx.x;
+  // graphs L1: the level's new main array is the loop's out buffer, and the
+  // deferred split info lands in the level's own slab region
+  const data_size_t* cuda_data_indices_main =
+    HybridGraphOutIndices(gstate, const_cast<data_size_t*>(cuda_data_indices_main_param));
+  int* cuda_split_info_buffer = cuda_split_info_buffer_base +
+    18 * (HybridGraphSplitInfoBase(gstate) + blockIdx.x);
   const unsigned int to_left_total_cnt = cuda_leaf_num_data[left_leaf_index];
   double* cuda_split_info_buffer_for_hessians = reinterpret_cast<double*>(cuda_split_info_buffer + 8);
   const unsigned int global_thread_index = threadIdx.x;
@@ -1606,8 +1623,13 @@ void CUDADataPartition::RemapDataIndexToLeafIndex(const std::vector<int>& leaf_m
 // array into the out buffer before it is swapped in as the new main array
 __global__ void HybridCopyDataIndicesBatchKernel(
   const CUDAHybridApplyDescriptor* descs,
-  const data_size_t* src_data_indices,
-  data_size_t* dst_data_indices) {
+  const data_size_t* src_data_indices_param,
+  data_size_t* dst_data_indices_param,
+  const CUDAHybridGraphLoopStateOpt gstate) {
+  const data_size_t* src_data_indices =
+    HybridGraphMainIndices(gstate, src_data_indices_param);
+  data_size_t* dst_data_indices =
+    HybridGraphOutIndices(gstate, dst_data_indices_param);
   const CUDAHybridApplyDescriptor d = descs[blockIdx.y];
   if (static_cast<int>(blockIdx.x) >= d.num_blocks) {
     return;
@@ -1635,7 +1657,7 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
   HybridGenBitVectorUpdateLeafIndexBatchKernel<<<data_grid, block_dim, 0, cuda_streams_[0]>>>(
     descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
     cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
-    cuda_data_index_to_leaf_index_.RawData());
+    cuda_data_index_to_leaf_index_.RawData(), nullptr);
   HybridAggregateBlockOffsetBatchKernel<<<num_splits, AGGREGATE_BLOCK_SIZE_DATA_PARTITION, 0, cuda_streams_[0]>>>(
     descs, cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
     cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
@@ -1643,26 +1665,103 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
   HybridSplitInnerBatchKernel<<<data_grid, block_dim, 0, cuda_streams_[0]>>>(
     descs, cuda_data_indices_.RawData(), cuda_block_data_to_left_offset_.RawData(),
     cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
-    new_main_indices);
+    new_main_indices, nullptr);
   if (use_quantized_grad_) {
     HybridSplitTreeStructureBatchKernel<true><<<num_splits, 32, 0, cuda_streams_[0]>>>(
       descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
       new_main_indices, num_total_bin_, cuda_hist_, cuda_hist_pool_.RawData(),
-      cuda_leaf_output_.RawData(), cuda_split_info_buffer_.RawData());
+      cuda_leaf_output_.RawData(), cuda_split_info_buffer_.RawData(), nullptr);
   } else {
     HybridSplitTreeStructureBatchKernel<false><<<num_splits, 32, 0, cuda_streams_[0]>>>(
       descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
       new_main_indices, num_total_bin_, cuda_hist_, cuda_hist_pool_.RawData(),
-      cuda_leaf_output_.RawData(), cuda_split_info_buffer_.RawData());
+      cuda_leaf_output_.RawData(), cuda_split_info_buffer_.RawData(), nullptr);
   }
   if (num_gaps > 0) {
     // gap descriptors follow the split descriptors in cuda_apply_descs_
     const dim3 gap_grid(static_cast<unsigned int>(max_gap_blocks), static_cast<unsigned int>(num_gaps));
     HybridCopyDataIndicesBatchKernel<<<gap_grid, block_dim, 0, cuda_streams_[0]>>>(
-      descs + num_splits, cuda_data_indices_.RawData(), new_main_indices);
+      descs + num_splits, cuda_data_indices_.RawData(), new_main_indices, nullptr);
   }
   CUDASUCCESS_OR_FATAL(cudaEventRecord(indices_copy_done_event_, cuda_streams_[0]));
 }
+
+#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+void CUDADataPartition::CaptureHybridGraphApplyKernels(
+    const CUDAHybridGraphLoopState* gstate,
+    std::vector<cudaGraphNode_t>* nodes,
+    std::vector<int>* roles) {
+  // graphs L1 body capture: the five batched apply kernels with PLACEHOLDER
+  // grids (the controller resizes them per level through the device-updatable
+  // node handles collected here). Parameters are the same persistent buffers
+  // the host launcher uses; the level-swapping index pointers and the split
+  // info slab base come from the loop state instead.
+  const CUDAHybridApplyDescriptor* descs = cuda_apply_descs_.RawDataReadOnly();
+  constexpr int block_dim = SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+  cudaStream_t stream = cuda_streams_[0];
+  HybridGenBitVectorUpdateLeafIndexBatchKernel<<<dim3(1, 1), block_dim, 0, stream>>>(
+    descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
+    cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
+    cuda_data_index_to_leaf_index_.RawData(), gstate);
+  if (!AppendCapturedNode(stream, nodes)) return;
+  roles->push_back(kHybridGraphNodeGenBitVector);
+  HybridAggregateBlockOffsetBatchKernel<<<1, AGGREGATE_BLOCK_SIZE_DATA_PARTITION, 0, stream>>>(
+    descs, cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
+    cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
+    cuda_level_smaller_counts_.RawData());
+  if (!AppendCapturedNode(stream, nodes)) return;
+  roles->push_back(kHybridGraphNodeAggregate);
+  HybridSplitInnerBatchKernel<<<dim3(1, 1), block_dim, 0, stream>>>(
+    descs, cuda_data_indices_.RawData(), cuda_block_data_to_left_offset_.RawData(),
+    cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
+    cuda_out_data_indices_in_leaf_.RawData(), gstate);
+  if (!AppendCapturedNode(stream, nodes)) return;
+  roles->push_back(kHybridGraphNodeSplitInner);
+  // the graph loop is gated to non-quantized training
+  HybridSplitTreeStructureBatchKernel<false><<<1, 32, 0, stream>>>(
+    descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
+    cuda_out_data_indices_in_leaf_.RawData(), num_total_bin_, cuda_hist_,
+    cuda_hist_pool_.RawData(), cuda_leaf_output_.RawData(),
+    cuda_split_info_buffer_.RawData(), gstate);
+  if (!AppendCapturedNode(stream, nodes)) return;
+  roles->push_back(kHybridGraphNodeTreeStructure);
+  HybridCopyDataIndicesBatchKernel<<<dim3(1, 1), block_dim, 0, stream>>>(
+    descs + kHybridGraphGapDescBase, cuda_data_indices_.RawData(),
+    cuda_out_data_indices_in_leaf_.RawData(), gstate);
+  if (!AppendCapturedNode(stream, nodes)) return;
+  roles->push_back(kHybridGraphNodeCopyGaps);
+}
+
+void CUDADataPartition::EnsureHybridGraphCapacity(const data_size_t max_root_num_data) {
+  // apply descriptors: split slots [0, kGapDescBase) + gap slots after
+  const size_t desc_capacity = static_cast<size_t>(kHybridGraphGapDescBase) +
+    static_cast<size_t>(kHybridGraphMaxSplitsPerLevel) + 2;
+  if (cuda_apply_descs_.Size() < desc_capacity) {
+    cuda_apply_descs_.Resize(desc_capacity);
+  }
+  // worst-case per-level block-offset slots: the split regions partition at
+  // most the whole root window, plus one sentinel slot per split
+  const data_size_t worst_blocks =
+    (max_root_num_data + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) /
+      SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION +
+    static_cast<data_size_t>(num_leaves_) + 4;
+  if (cuda_block_data_to_left_offset_.Size() < static_cast<size_t>(worst_blocks)) {
+    cuda_block_data_to_left_offset_.Resize(static_cast<size_t>(worst_blocks));
+    cuda_block_data_to_right_offset_.Resize(static_cast<size_t>(worst_blocks));
+    SetCUDAMemory<data_size_t>(cuda_block_data_to_left_offset_.RawData(), 0, cuda_block_data_to_left_offset_.Size(), __FILE__, __LINE__);
+    SetCUDAMemory<data_size_t>(cuda_block_data_to_right_offset_.RawData(), 0, cuda_block_data_to_right_offset_.Size(), __FILE__, __LINE__);
+  }
+}
+
+void CUDADataPartition::FinishHybridGraphLevels(const int num_levels, const int total_splits) {
+  cur_num_leaves_ += total_splits;
+  // the graph loop swapped the device roles of the two index buffers once per
+  // applied level; realign the host wrappers
+  if ((num_levels & 1) != 0) {
+    cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);
+  }
+}
+#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
 
 template <bool USE_BAGGING>
 __global__ void AddPredictionToScoreKernel(

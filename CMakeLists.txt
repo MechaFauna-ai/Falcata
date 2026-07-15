@@ -491,6 +491,7 @@ set(
       src/treelearner/cuda/cuda_data_partition.cu
       src/treelearner/cuda/cuda_gradient_discretizer.cu
       src/treelearner/cuda/cuda_histogram_constructor.cu
+      src/treelearner/cuda/cuda_hybrid_graph.cu
       src/treelearner/cuda/cuda_leaf_splits.cu
       src/treelearner/cuda/cuda_single_gpu_tree_learner.cu
       src/io/cuda/cuda_column_data.cu

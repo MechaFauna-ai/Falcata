@@ -120,6 +120,26 @@ class CUDATree : public Tree {
    *  are safe to run concurrently. */
   void SplitBatch(const std::vector<CUDATreeBatchSplit>& splits);
 
+  /*! \brief graphs L1 body capture: launch SplitBatchKernel with a placeholder
+   *  grid on \p stream (the graph controller resizes it per level); the batch
+   *  split descriptors are read from the pooled device buffer the controller
+   *  writes (hybrid_graph_batch_splits()) */
+  void CaptureHybridGraphSplitBatchKernel(cudaStream_t stream);
+
+  /*! \brief pooled device buffer of the batched split descriptors (written by
+   *  the graphs L1 device controller; stable across pooled trees) */
+  CUDATreeBatchSplit* hybrid_graph_batch_splits() { return cuda_batch_splits_.RawData(); }
+
+  /*! \brief graphs L1 post-prefix replay: the host-mirror half of SplitBatch
+   *  (branch features, leaf depth, num_leaves_) for ONE split whose device
+   *  updates already ran inside the graph */
+  void ReplaySplitHostMirrors(const int leaf_index, const int real_feature_index) {
+    RecordBranchFeatures(leaf_index, num_leaves_, real_feature_index);
+    leaf_depth_[num_leaves_] = leaf_depth_[leaf_index] + 1;
+    leaf_depth_[leaf_index]++;
+    ++num_leaves_;
+  }
+
   /*! \brief Build the final tree structure host-side from a replayed split
    *  sequence (selective grow-then-prune hybrid growth). The device tree arrays
    *  were never written during growth; this replays SplitKernel's per-field

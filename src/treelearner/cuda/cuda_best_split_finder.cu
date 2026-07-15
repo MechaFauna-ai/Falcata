@@ -2417,6 +2417,53 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
   #undef FindBestSplitsDiscretizedForLevelKernel_ARGS
 }
 
+#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+void CUDABestSplitFinder::CaptureHybridGraphFindKernels(
+    const CUDAHybridPairDescriptor* pair_descs,
+    std::vector<cudaGraphNode_t>* nodes,
+    std::vector<int>* roles,
+    std::vector<int>* role_static_x) {
+  // graphs L1 body capture (non-quantized): find + sync with placeholder pair
+  // counts; the wait on the histogram phase's subtract event becomes a graph
+  // edge, exactly mirroring the host flow's ordering
+  CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], hist_subtract_done_events_[0], 0));
+  LaunchFindBestSplitsForLevelKernel(pair_descs, 1);
+  if (!AppendCapturedNode(cuda_streams_[0], nodes)) return;
+  roles->push_back(kHybridGraphNodeFind);
+  role_static_x->push_back(0);
+  // mirror of LaunchSyncBestSplitForLevelKernel, one collected node per launch
+  const int num_blocks_per_leaf = (num_tasks_ + NUM_TASKS_PER_SYNC_BLOCK - 1) / NUM_TASKS_PER_SYNC_BLOCK;
+  const bool compact_tasks = num_used_tasks_ < num_tasks_;
+  dim3 grid_dim(2, 1, num_blocks_per_leaf);
+  SyncBestSplitForLevelKernel<<<grid_dim, NUM_TASKS_PER_SYNC_BLOCK, 0, cuda_streams_[0]>>>(
+    pair_descs,
+    cuda_leaf_best_split_info_.RawData(),
+    cuda_split_find_tasks_.RawData(),
+    compact_tasks ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
+    cuda_best_split_info_.RawData(),
+    num_tasks_,
+    num_leaves_,
+    min_data_in_leaf_,
+    min_sum_hessian_in_leaf_);
+  if (!AppendCapturedNode(cuda_streams_[0], nodes)) return;
+  roles->push_back(kHybridGraphNodeSyncLevel);
+  role_static_x->push_back(num_blocks_per_leaf);
+  if (num_blocks_per_leaf > 1) {
+    dim3 merge_grid_dim(2, 1);
+    SyncBestSplitForLevelKernelAllBlocks<<<merge_grid_dim, 1, 0, cuda_streams_[0]>>>(
+      pair_descs,
+      cuda_leaf_best_split_info_.RawData(),
+      static_cast<unsigned int>(num_blocks_per_leaf),
+      num_leaves_,
+      min_data_in_leaf_,
+      min_sum_hessian_in_leaf_);
+    if (!AppendCapturedNode(cuda_streams_[0], nodes)) return;
+    roles->push_back(kHybridGraphNodeSyncAllBlocks);
+    role_static_x->push_back(0);
+  }
+}
+#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+
 void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs) {

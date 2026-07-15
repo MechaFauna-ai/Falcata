@@ -2471,6 +2471,78 @@ void CUDAHistogramConstructor::LaunchFixSubtractHistogramSmallLeafBatchedKernel(
     hist_fp32_);
 }
 
+#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+void CUDAHistogramConstructor::CaptureHybridGraphSearchKernels(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const data_size_t* level_smaller_num_data,
+    std::vector<cudaGraphNode_t>* nodes,
+    std::vector<int>* roles,
+    std::vector<int>* role_static_x) {
+  // graphs L1 body capture (non-quantized only): construct + fix/subtract with
+  // PLACEHOLDER grids; the controller resizes them per level. num_pairs == 1
+  // freezes the construct kernel's inline row-grouping path (level sizes read
+  // on-device, extent from gridDim.z == num_pairs), which computes bit-
+  // identical grouping to the host's per-level sizing.
+  LaunchConstructHistogramBatchedKernel(pair_descs, 1, 1, level_smaller_num_data);
+  if (!AppendCapturedNode(cuda_stream_, nodes)) return;
+  roles->push_back(kHybridGraphNodeConstruct);
+  role_static_x->push_back(0);
+  if (SmallLeafConstructEnabled()) {
+    LaunchFixSubtractHistogramSmallLeafBatchedKernel(pair_descs, 1);
+    if (!AppendCapturedNode(cuda_stream_, nodes)) return;
+    roles->push_back(kHybridGraphNodeSearchPairY);
+    const int num_subtract_threads = 2 * num_total_bin_;
+    const int num_subtract_blocks =
+      (num_subtract_threads + FIX_HISTOGRAM_BLOCK_SIZE - 1) / FIX_HISTOGRAM_BLOCK_SIZE;
+    role_static_x->push_back(num_subtract_blocks + static_cast<int>(need_fix_histogram_features_.size()));
+  } else {
+    // mirror of LaunchSubtractHistogramBatchedKernel's non-quantized branch,
+    // one collected node per launch
+    const int num_subtract_threads = 2 * num_total_bin_;
+    const int num_subtract_blocks = (num_subtract_threads + SUBTRACT_BLOCK_SIZE - 1) / SUBTRACT_BLOCK_SIZE;
+    if (need_fix_histogram_features_.size() > 0) {
+      dim3 fix_grid(static_cast<unsigned int>(need_fix_histogram_features_.size()), 1);
+      FixHistogramBatchedKernel<<<fix_grid, FIX_HISTOGRAM_BLOCK_SIZE, 0, cuda_stream_>>>(
+        cuda_feature_num_bins_.RawData(),
+        cuda_feature_hist_offsets_.RawData(),
+        cuda_feature_most_freq_bins_.RawData(),
+        cuda_need_fix_histogram_features_.RawData(),
+        cuda_need_fix_histogram_features_num_bin_aligned_.RawData(),
+        pair_descs,
+        any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
+        hist_fp32_);
+      if (!AppendCapturedNode(cuda_stream_, nodes)) return;
+      roles->push_back(kHybridGraphNodeSearchPairY);
+      role_static_x->push_back(static_cast<int>(need_fix_histogram_features_.size()));
+    }
+    dim3 subtract_grid(num_subtract_blocks, 1);
+    SubtractHistogramBatchedKernel<<<subtract_grid, SUBTRACT_BLOCK_SIZE, 0, cuda_stream_>>>(
+      num_total_bin_,
+      pair_descs,
+      any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
+      hist_fp32_);
+    if (!AppendCapturedNode(cuda_stream_, nodes)) return;
+    roles->push_back(kHybridGraphNodeSearchPairY);
+    role_static_x->push_back(num_subtract_blocks);
+  }
+  CUDASUCCESS_OR_FATAL(cudaEventRecord(subtract_done_events_[0], cuda_stream_));
+}
+
+void CUDAHistogramConstructor::HybridGraphConstructDims(int* grid_x, int* block_dim_y) const {
+  int grid_dim_x = 0, grid_dim_y = 0, block_dim_x = 0, block_dim_y_local = 0;
+  const_cast<CUDAHistogramConstructor*>(this)->CalcConstructHistogramBatchedKernelDim(
+    &grid_dim_x, &grid_dim_y, &block_dim_x, &block_dim_y_local, 1, 1);
+  if (use_compact_view_) {
+    // mirror of LaunchConstructHistogramBatchedKernelInner0's compact override
+    // (per-tree shape: the graph key includes it, one instance per shape)
+    block_dim_x = std::max(1, max_num_compact_cols_per_partition_);
+    block_dim_y_local = std::max(1, NUM_THREADS_PER_BLOCK / block_dim_x);
+  }
+  *grid_x = grid_dim_x;
+  *block_dim_y = block_dim_y_local;
+}
+#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+
 void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,

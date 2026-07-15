@@ -21,6 +21,7 @@
 #include <LightGBM/cuda/cuda_split_info.hpp>
 
 #include "cuda_leaf_splits.hpp"
+#include "cuda_hybrid_graph.hpp"
 
 #define NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER (256)
 #define NUM_THREADS_FIND_BEST_LEAF (256)
@@ -213,6 +214,39 @@ class CUDABestSplitFinder {
   // The categorical-threshold pointers inside the copied structs are device pointers
   // and must not be dereferenced on the host.
   void SyncAllLeafBestSplitsToHost(const int num_leaves, std::vector<CUDASplitInfo>* out) const;
+
+#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+  /*! \brief graphs L1 body capture: find + sync kernels with placeholder pair
+   *  counts on cuda_streams_[0]; node handles + roles collected for the device
+   *  controller (which sets the find grid x per tree from num_used_tasks) */
+  void CaptureHybridGraphFindKernels(const CUDAHybridPairDescriptor* pair_descs,
+                                     std::vector<cudaGraphNode_t>* nodes,
+                                     std::vector<int>* roles,
+                                     std::vector<int>* role_static_x);
+
+  /*! \brief preallocates the per-pair best-split scratch for the graph loop's
+   *  worst case, so the captured buffer pointer never reallocates */
+  void EnsureHybridGraphCapacity(const int max_pairs) { EnsureHybridLevelCapacity(max_pairs); }
+
+  /*! \brief the batched find kernel's x-grid extent of the current tree */
+  int hybrid_graph_find_grid_x() const {
+    const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
+    return compact_tasks ? num_used_tasks_ : num_tasks_;
+  }
+
+  int num_used_tasks() const { return num_used_tasks_; }
+
+  /*! \brief per-tree pointer/flag choices baked into captured find/sync kernel
+   *  params: a graph instance is only valid for trees whose key matches */
+  void HybridGraphKeyPointers(std::vector<const void*>* key) const {
+    const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
+    key->push_back(compact_tasks ?
+      static_cast<const void*>(cuda_used_task_indices_.RawDataReadOnly()) : nullptr);
+    key->push_back(static_cast<const void*>(cuda_is_feature_used_bytree_.RawDataReadOnly()));
+  }
+
+  cudaStream_t find_stream() const { return cuda_streams_[0]; }
+#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
 
   // Device pointer to a leaf's cached best split, for passing to CUDATree::Split.
   const CUDASplitInfo* leaf_best_split_info_ptr(const int leaf_index) const {

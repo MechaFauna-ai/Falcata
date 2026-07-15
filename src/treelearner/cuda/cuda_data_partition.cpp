@@ -292,6 +292,54 @@ void CUDADataPartition::SetLeafDataLayout(const std::vector<data_size_t>& leaf_n
     static_cast<size_t>(num_leaves), __FILE__, __LINE__);
 }
 
+#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+void CUDADataPartition::BuildHybridGraphFeatureMeta(
+    std::vector<CUDAHybridGraphFeatureMeta>* meta) const {
+  // static half of SplitLevelBatched's per-split host metadata math; the graph
+  // controller replays the arithmetic on-device from these fields
+  meta->resize(static_cast<size_t>(num_features_));
+  for (int feature_index = 0; feature_index < num_features_; ++feature_index) {
+    CUDAHybridGraphFeatureMeta& m = (*meta)[feature_index];
+    const bool is_single_feature_in_column = is_single_feature_in_column_[feature_index];
+    m.default_bin = cuda_column_data_->feature_default_bin(feature_index);
+    m.most_freq_bin = cuda_column_data_->feature_most_freq_bin(feature_index);
+    m.min_bin = is_single_feature_in_column ? 1 : cuda_column_data_->feature_min_bin(feature_index);
+    m.max_bin = cuda_column_data_->feature_max_bin(feature_index);
+    m.real_feature_index = 0;      // filled by the learner (train data view)
+    m.missing_type = 0;            // filled by the learner
+    m.real_threshold_offset = 0;   // filled by the learner
+    m.missing_is_zero = cuda_column_data_->feature_missing_is_zero(feature_index);
+    m.missing_is_na = cuda_column_data_->feature_missing_is_na(feature_index);
+    m.mfb_is_zero = cuda_column_data_->feature_mfb_is_zero(feature_index);
+    m.mfb_is_na = cuda_column_data_->feature_mfb_is_na(feature_index);
+    m.use_min_bin = is_single_feature_in_column ? 0 : 1;
+  }
+}
+
+void CUDADataPartition::BuildHybridGraphFeatureSource(
+    std::vector<CUDAHybridGraphFeatureSource>* source) const {
+  // per-tree half: the column data source (the packed compact view is a
+  // per-tree, double-buffered gather); mirrors SplitLevelBatched exactly
+  source->resize(static_cast<size_t>(num_features_));
+  const bool packed_view = cuda_column_data_->packed_column_view_active();
+  for (int feature_index = 0; feature_index < num_features_; ++feature_index) {
+    CUDAHybridGraphFeatureSource& s = (*source)[feature_index];
+    const int column_index = cuda_column_data_->feature_to_column(feature_index);
+    if (packed_view) {
+      s.column_data = cuda_column_data_->packed_column_data(column_index);
+      s.packed_row_stride = cuda_column_data_->packed_column_stride(column_index);
+      s.packed_shift = cuda_column_data_->packed_column_shift(column_index);
+      s.bit_type = 4;
+    } else {
+      s.column_data = cuda_column_data_->GetColumnData(column_index);
+      s.packed_row_stride = 0;
+      s.packed_shift = 0;
+      s.bit_type = cuda_column_data_->column_bit_type(column_index);
+    }
+  }
+}
+#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+
 void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplitInput>& splits) {
   const int num_splits = static_cast<int>(splits.size());
   if (num_splits <= 0) {

@@ -207,6 +207,37 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // two). Non-quantized batched-kernels + batched-apply configurations only.
   int TrainLevelWisePrefixOneSync(CUDATree* tree);
 
+#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+  // ---- graphs L1: device-driven level loop (see cuda_hybrid_graph.hpp) ----
+  // One cached instantiated graph per per-tree pointer key (the compact column
+  // view is double-buffered, so two keys alternate in the steady state).
+  struct HybridGraphInstance {
+    std::vector<const void*> key;
+    cudaGraph_t graph = nullptr;
+    cudaGraphExec_t exec = nullptr;
+    CUDAHybridGraphLoopState* state_dev = nullptr;  // raw cudaMalloc
+    ~HybridGraphInstance();
+  };
+  // Static config gate of the graph loop (depth-limited one-sync prefix only,
+  // controller capacity limits, no debug envs, EXABOOST_GRAPH_LEVEL_LOOP).
+  bool HybridGraphPrefixUsable() const;
+  // Lazy one-time setup: static feature tables, journal/staging buffers, and
+  // worst-case capacity preallocation of every captured device buffer.
+  bool SetupHybridGraphStatics();
+  // Build (capture + instantiate) one graph instance for the current per-tree
+  // pointer key. Returns false (and rolls back) on any failure.
+  bool BuildHybridGraphInstance(CUDATree* tree, HybridGraphInstance* instance);
+  // The per-tree pointer/flag key a graph instance is valid for.
+  void ComputeHybridGraphKey(CUDATree* tree, std::vector<const void*>* key) const;
+  // Cached-or-new instance for this tree; nullptr -> host loop fallback.
+  HybridGraphInstance* GetOrBuildHybridGraph(CUDATree* tree);
+  // The graph-driven prefix: root search (host, as usual), ONE graph launch,
+  // ONE readback + host bookkeeping replay. Returns the number of splits, or
+  // -1 when no instance is available (caller falls back to the host loop).
+  int TrainLevelWisePrefixGraph(CUDATree* tree);
+  void ReleaseHybridGraphs();
+#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+
   // ---- selective (grow-then-prune) hybrid growth: exact leaf-wise equivalence
   // in budget-limited configs (num_leaves << 2^max_depth) ----
   //
@@ -377,6 +408,27 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // (EXABOOST_HYBRID_SELECTIVE, default on; "0" falls back to the classic loop)
   bool use_hybrid_selective_ = false;
   bool selective_active_ = false;
+#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+  // ---- graphs L1 state ----
+  bool hybrid_graph_statics_ready_ = false;
+  bool hybrid_graph_disabled_ = false;   // sticky off after build failures
+  int hybrid_graph_build_failures_ = 0;
+  std::vector<std::unique_ptr<HybridGraphInstance>> hybrid_graph_cache_;
+  CUDAVector<CUDAHybridGraphFeatureMeta> cuda_hybrid_graph_feature_meta_;
+  CUDAVector<CUDAHybridGraphFeatureSource> cuda_hybrid_graph_feature_source_;
+  CUDAVector<double> cuda_hybrid_graph_real_thresholds_;
+  CUDAVector<int> cuda_hybrid_graph_journal_;
+  std::vector<CUDAHybridGraphFeatureSource> host_hybrid_graph_feature_source_;
+  // pinned staging: per-tree state prefix + journal readback
+  CUDAHybridGraphLoopState* pinned_hybrid_graph_state_ = nullptr;
+  int* pinned_hybrid_graph_journal_ = nullptr;
+  size_t hybrid_graph_journal_size_ = 0;
+  // static config mirror written into every instance's device state
+  CUDAHybridGraphLoopState hybrid_graph_state_template_;
+  std::vector<int> hybrid_graph_splittable_scratch_;
+  std::vector<int> hybrid_graph_batch_info_;
+  std::vector<HybridAppliedSplit> hybrid_graph_applied_scratch_;
+#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
   std::vector<SelectiveApplied> sel_applied_;
   std::vector<SelectiveFrontier> sel_frontier_;
   std::vector<int> sel_leaf_parent_;    // hybrid leaf -> applied record id (-1 root)
