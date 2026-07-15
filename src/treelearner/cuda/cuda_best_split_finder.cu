@@ -1528,7 +1528,7 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
     // phase. NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER is 256, so the correct depth is
     // 9, not 11. Passing 11 (the value for a 1024-wide block) let the in-block phase
     // run two levels too deep -- reading shared memory out of bounds and skipping the
-    // cross-block merge -- which mis-sorted categoricals with more than 256 bins
+    // cross-block merge -- which produced a wrong order for categoricals above 256 bins
     // (wrong split vs CPU) and read past the sort buffers (illegal memory access at
     // larger category counts).
     // STABLE = true: CPU sorts the categories with std::stable_sort
