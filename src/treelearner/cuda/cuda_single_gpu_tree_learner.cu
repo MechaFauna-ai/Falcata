@@ -98,7 +98,7 @@ __global__ void CalcRefitLeafOutputKernel(
     const double old_leaf_value = leaf_value[leaf_index];
     double new_leaf_value = 0.0f;
     if (!USE_SMOOTHING) {
-      new_leaf_value = CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(sum_gradients, sum_hessians, lambda_l1, lambda_l2, 0.0f, 0, 0.0f);
+      new_leaf_value = CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(sum_gradients, sum_hessians, lambda_l1, lambda_l2, 0.0, 0, 0.0);
     } else {
       const int parent = leaf_parent[leaf_index];
       if (parent >= 0) {
@@ -108,11 +108,11 @@ __global__ void CalcRefitLeafOutputKernel(
         const data_size_t num_data_in_parent = num_data + num_data_in_leaf[sibliing];
         const double parent_output =
           CUDALeafSplits::CalculateSplittedLeafOutput<false, true>(
-            sum_gradients_of_parent, sum_hessians_of_parent, lambda_l1, lambda_l2, 0.0f, 0, 0.0f);
+            sum_gradients_of_parent, sum_hessians_of_parent, lambda_l1, lambda_l2, 0.0, 0, 0.0);
           new_leaf_value = CUDALeafSplits::CalculateSplittedLeafOutput<false, true>(
           sum_gradients, sum_hessians, lambda_l1, lambda_l2, path_smooth, num_data_in_parent, parent_output);
       } else {
-        new_leaf_value = CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(sum_gradients, sum_hessians, lambda_l1, lambda_l2, 0.0f, 0, 0.0f);
+        new_leaf_value = CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(sum_gradients, sum_hessians, lambda_l1, lambda_l2, 0.0, 0, 0.0);
       }
     }
     if (isnan(new_leaf_value)) {

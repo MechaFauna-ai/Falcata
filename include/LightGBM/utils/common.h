@@ -684,6 +684,34 @@ inline static float AvoidInf(float x) {
   }
 }
 
+/*! \brief Convert an IEEE 754 half-precision bit pattern to the float it represents. */
+inline static float HalfBitsToFloat(uint16_t h) {
+  const uint32_t sign = static_cast<uint32_t>(h & 0x8000) << 16;
+  uint32_t exponent = (h >> 10) & 0x1F;
+  uint32_t mantissa = h & 0x3FF;
+  uint32_t bits;
+  if (exponent == 0x1F) {  // inf / NaN
+    bits = sign | 0x7F800000 | (mantissa << 13);
+  } else if (exponent == 0) {
+    if (mantissa == 0) {  // +-0
+      bits = sign;
+    } else {  // subnormal: normalize into the float exponent range
+      exponent = 127 - 15 + 1;
+      while ((mantissa & 0x400) == 0) {
+        mantissa <<= 1;
+        --exponent;
+      }
+      mantissa &= 0x3FF;
+      bits = sign | (exponent << 23) | (mantissa << 13);
+    }
+  } else {
+    bits = sign | ((exponent + (127 - 15)) << 23) | (mantissa << 13);
+  }
+  float ret;
+  std::memcpy(&ret, &bits, sizeof(ret));
+  return ret;
+}
+
 template<typename _Iter> inline
 static typename std::iterator_traits<_Iter>::value_type* IteratorValType(_Iter) {
   return (0);

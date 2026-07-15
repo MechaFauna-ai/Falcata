@@ -21,12 +21,25 @@
 #include <LightGBM/cuda/cuda_split_info.hpp>
 
 #include "cuda_leaf_splits.hpp"
+#include "cuda_hybrid_graph.hpp"
 
 #define NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER (256)
 #define NUM_THREADS_FIND_BEST_LEAF (256)
 #define NUM_TASKS_PER_SYNC_BLOCK (1024)
 
 namespace LightGBM {
+
+/*! \brief fp32 per-bin gain arithmetic in the best-split find kernels
+ *  (EXABOOST_FP32_GAIN=1 enables; default off = fp64, the historical behavior).
+ *  Leaf-level sums stay double and are converted once per task; results are
+ *  quality-gated, not bit-identical. */
+inline bool ExaboostFP32GainEnabled() {
+  static const bool enabled = []() {
+    const char* env = std::getenv("EXABOOST_FP32_GAIN");
+    return env != nullptr && std::string(env) == "1";
+  }();
+  return enabled;
+}
 
 struct SplitFindTask {
   int inner_feature_index;
@@ -72,6 +85,14 @@ class CUDABestSplitFinder {
   /*! \brief select which histogram pipeline's completion events the next
    *  FindBestSplitsForLeaf call waits on (hybrid level-batched growth) */
   void SetActiveHistPipeline(const int pipeline) { active_hist_pipeline_ = pipeline; }
+
+  /*! \brief non-quantized histogram storage is float pairs (EXABOOST_FP32_HIST);
+   *  decided by the histogram constructor, wired in by the tree learner */
+  void SetHistFP32(const bool hist_fp32) { hist_fp32_ = hist_fp32; }
+
+  /*! \brief large-bin fallback stays fp64: the tree learner disables the fp32
+   *  histogram mode when this is set */
+  bool use_global_memory() const { return use_global_memory_; }
 
   void BeforeTrain(const std::vector<int8_t>& is_feature_used_bytree);
 
@@ -194,6 +215,50 @@ class CUDABestSplitFinder {
   // and must not be dereferenced on the host.
   void SyncAllLeafBestSplitsToHost(const int num_leaves, std::vector<CUDASplitInfo>* out) const;
 
+  /*! \brief graphs L2: stream-ordered async prefetch of leaves
+   *  [0, num_leaves) of the device per-leaf best-split cache into the pinned
+   *  staging buffer, so the learner's single post-graph stream sync covers
+   *  it; consume with ReadPrefetchedLeafBestSplits after synchronizing */
+  void PrefetchLeafBestSplitsAsync(const int num_leaves, cudaStream_t stream) const;
+
+  /*! \brief consume a prefetched per-leaf best-split cache (host memcpy +
+   *  device-pointer scrub only; the caller already synchronized the prefetch
+   *  stream). Values match SyncAllLeafBestSplitsToHost bit-for-bit */
+  void ReadPrefetchedLeafBestSplits(const int num_leaves, std::vector<CUDASplitInfo>* out) const;
+
+#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+  /*! \brief graphs L1 body capture: find + sync kernels with placeholder pair
+   *  counts on cuda_streams_[0]; node handles + roles collected for the device
+   *  controller (which sets the find grid x per tree from num_used_tasks) */
+  void CaptureHybridGraphFindKernels(const CUDAHybridPairDescriptor* pair_descs,
+                                     std::vector<cudaGraphNode_t>* nodes,
+                                     std::vector<int>* roles,
+                                     std::vector<int>* role_static_x);
+
+  /*! \brief preallocates the per-pair best-split scratch for the graph loop's
+   *  worst case, so the captured buffer pointer never reallocates */
+  void EnsureHybridGraphCapacity(const int max_pairs) { EnsureHybridLevelCapacity(max_pairs); }
+
+  /*! \brief the batched find kernel's x-grid extent of the current tree */
+  int hybrid_graph_find_grid_x() const {
+    const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
+    return compact_tasks ? num_used_tasks_ : num_tasks_;
+  }
+
+  int num_used_tasks() const { return num_used_tasks_; }
+
+  /*! \brief per-tree pointer/flag choices baked into captured find/sync kernel
+   *  params: a graph instance is only valid for trees whose key matches */
+  void HybridGraphKeyPointers(std::vector<const void*>* key) const {
+    const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
+    key->push_back(compact_tasks ?
+      static_cast<const void*>(cuda_used_task_indices_.RawDataReadOnly()) : nullptr);
+    key->push_back(static_cast<const void*>(cuda_is_feature_used_bytree_.RawDataReadOnly()));
+  }
+
+  cudaStream_t find_stream() const { return cuda_streams_[0]; }
+#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+
   // Device pointer to a leaf's cached best split, for passing to CUDATree::Split.
   const CUDASplitInfo* leaf_best_split_info_ptr(const int leaf_index) const {
     return cuda_leaf_best_split_info_.RawDataReadOnly() + leaf_index;
@@ -230,6 +295,9 @@ class CUDABestSplitFinder {
   template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING>
   void LaunchFindBestSplitsForLeafKernelInner2(LaunchFindBestSplitsForLeafKernel_PARAMS);
 
+  template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, typename GAIN_T>
+  void LaunchFindBestSplitsForLeafKernelInner3(LaunchFindBestSplitsForLeafKernel_PARAMS);
+
   #undef LaunchFindBestSplitsForLeafKernel_PARAMS
 
   #define LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS \
@@ -256,6 +324,9 @@ class CUDABestSplitFinder {
 
   template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING>
   void LaunchFindBestSplitsDiscretizedForLeafKernelInner2(LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS);
+
+  template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, typename GAIN_T>
+  void LaunchFindBestSplitsDiscretizedForLeafKernelInner3(LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS);
 
   #undef LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS
 
@@ -310,6 +381,8 @@ class CUDABestSplitFinder {
    *  CUDASplitInfo is never constructed/destructed in it) */
   mutable CUDASplitInfo* pinned_leaf_best_split_info_ = nullptr;
   mutable size_t pinned_leaf_best_split_info_size_ = 0;
+  /*! \brief grow the pinned best-split staging buffer to >= num_leaves slots */
+  void EnsurePinnedLeafBestSplitCapacity(const int num_leaves) const;
   int max_num_bin_in_feature_;
   std::vector<uint32_t> feature_hist_offsets_;
   std::vector<uint8_t> feature_mfb_offsets_;
@@ -351,6 +424,8 @@ class CUDABestSplitFinder {
   int num_used_tasks_ = 0;
   // use global memory
   bool use_global_memory_;
+  // non-quantized histograms stored as float pairs (EXABOOST_FP32_HIST)
+  bool hist_fp32_ = false;
   // number of total bins in the dataset
   const int num_total_bin_;
   // has categorical feature

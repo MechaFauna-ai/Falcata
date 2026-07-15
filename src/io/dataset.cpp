@@ -13,9 +13,11 @@
 #include <LightGBM/utils/threading.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -249,6 +251,156 @@ std::vector<std::vector<int>> FindGroups(
   return features_in_group;
 }
 
+inline int PopCount64(uint64_t v) {
+#if defined(_MSC_VER)
+  v = v - ((v >> 1) & 0x5555555555555555ULL);
+  v = (v & 0x3333333333333333ULL) + ((v >> 2) & 0x3333333333333333ULL);
+  v = (v + (v >> 4)) & 0x0F0F0F0F0F0F0F0FULL;
+  return static_cast<int>((v * 0x0101010101010101ULL) >> 56);
+#else
+  return __builtin_popcountll(v);
+#endif
+}
+
+// Cheap certificate (from the already-collected sample) that FindGroups would
+// put every used feature into its own group, i.e. EFB cannot bundle anything.
+// When it holds, the expensive conflict-count group search can be skipped
+// while preserving EXACTLY the resulting single-feature-per-group structure.
+//
+// Proof sketch: by induction all groups stay singletons, so a feature f could
+// only ever merge with a singleton group {g}. The merge is accepted only if
+//   (gate1)  cnt_g + cnt_f <= total_sample_cnt + max_conflict, and
+//   (gate2)  conflict(f, g) <= rest_max_cnt(== max_conflict for singletons)
+//            && conflict(f, g) <= cnt_f / 2.
+// We compute the exact fixed per-feature non-default sample index sets (the
+// same sets FixSampleIndices feeds to FindGroups) as bitmaps and reject the
+// certificate as soon as any pair could merge in either processing order.
+// The max-bin-per-group gate on GPU only further restricts merges, so it can
+// be ignored conservatively. For the is_sparse second round we additionally
+// require every singleton's dense rate >= 0.4 so the round is a no-op.
+bool EFBPrecheckProvesNoBundling(
+    const std::vector<std::unique_ptr<BinMapper>>& bin_mappers,
+    int** sample_indices, double** sample_values, const int* num_per_col,
+    int num_sample_col, data_size_t total_sample_cnt,
+    const std::vector<int>& used_features, bool is_sparse) {
+  const int num_features = static_cast<int>(used_features.size());
+  if (num_features <= 1) {
+    return true;
+  }
+  for (int fidx : used_features) {
+    if (fidx >= num_sample_col) {
+      // filtered features have zero conflicts and would always bundle
+      return false;
+    }
+  }
+  const size_t words_per_feature = (static_cast<size_t>(total_sample_cnt) + 63) / 64;
+  const size_t bitmap_bytes = static_cast<size_t>(num_features) * words_per_feature * 8;
+  if (bitmap_bytes > (static_cast<size_t>(1) << 31)) {
+    return false;
+  }
+  std::vector<uint64_t> bitmaps(static_cast<size_t>(num_features) * words_per_feature, 0);
+  std::vector<data_size_t> cnt(num_features, 0);
+  const data_size_t max_conflict =
+      static_cast<data_size_t>(total_sample_cnt / 10000);
+  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+  for (int i = 0; i < num_features; ++i) {
+    const int fidx = used_features[i];
+    uint64_t* bm = bitmaps.data() + static_cast<size_t>(i) * words_per_feature;
+    const BinMapper* mapper = bin_mappers[fidx].get();
+    const int n = num_per_col[fidx];
+    const int* indices = sample_indices[fidx];
+    if (mapper->GetDefaultBin() == mapper->GetMostFreqBin()) {
+      // FixSampleIndices is a no-op: the original indices are used
+      for (int j = 0; j < n; ++j) {
+        bm[indices[j] >> 6] |= (1ULL << (indices[j] & 63));
+      }
+      cnt[i] = n;
+    } else {
+      // FixSampleIndices marks every row except sampled rows binned to the
+      // most frequent bin
+      std::fill(bm, bm + words_per_feature, ~0ULL);
+      if ((total_sample_cnt & 63) != 0) {
+        bm[words_per_feature - 1] = (1ULL << (total_sample_cnt & 63)) - 1;
+      }
+      const uint32_t most_freq_bin = mapper->GetMostFreqBin();
+      const double* values = sample_values[fidx];
+      data_size_t c = total_sample_cnt;
+      for (int j = 0; j < n; ++j) {
+        if (mapper->ValueToBin(values[j]) == most_freq_bin) {
+          bm[indices[j] >> 6] &= ~(1ULL << (indices[j] & 63));
+          --c;
+        }
+      }
+      if (c == 0) {
+        // FixSampleIndices returns an empty vector then, and FindGroups falls
+        // back to the original indices and count
+        std::fill(bm, bm + words_per_feature, 0);
+        for (int j = 0; j < n; ++j) {
+          bm[indices[j] >> 6] |= (1ULL << (indices[j] & 63));
+        }
+        cnt[i] = n;
+      } else {
+        cnt[i] = c;
+      }
+    }
+  }
+  if (is_sparse) {
+    // second round of FindGroups must be a no-op: it regroups (and merges)
+    // groups whose dense rate is below the 0.4 threshold
+    for (int i = 0; i < num_features; ++i) {
+      const double dense_rate =
+          static_cast<double>(cnt[i]) / total_sample_cnt;
+      if (dense_rate < 0.4) {
+        return false;
+      }
+    }
+  }
+  std::atomic<bool> no_merge_possible(true);
+  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(dynamic)
+  for (int i = 0; i < num_features; ++i) {
+    if (!no_merge_possible.load(std::memory_order_relaxed)) {
+      continue;
+    }
+    const uint64_t* bm_i = bitmaps.data() + static_cast<size_t>(i) * words_per_feature;
+    for (int j = i + 1; j < num_features; ++j) {
+      if (static_cast<int64_t>(cnt[i]) + cnt[j] >
+          static_cast<int64_t>(total_sample_cnt) + max_conflict) {
+        continue;  // gate1 blocks this pair in both orders
+      }
+      const uint64_t* bm_j = bitmaps.data() + static_cast<size_t>(j) * words_per_feature;
+      int64_t conflict = 0;
+      for (size_t w = 0; w < words_per_feature; ++w) {
+        conflict += PopCount64(bm_i[w] & bm_j[w]);
+      }
+      // accepted in at least one processing order?
+      if (conflict <= max_conflict && conflict <= std::max(cnt[i], cnt[j]) / 2) {
+        no_merge_possible.store(false, std::memory_order_relaxed);
+        break;
+      }
+    }
+  }
+  return no_merge_possible.load();
+}
+
+// the exact structure FindGroups+FastFeatureBundling produce when nothing
+// bundles: one feature per group in used_features order, then the same
+// deterministic shuffle FastFeatureBundling applies
+std::vector<std::vector<int>> SingleFeatureGroupsShuffled(
+    const std::vector<int>& used_features, data_size_t num_data,
+    std::vector<int8_t>* multi_val_group) {
+  auto features_in_group = OneFeaturePerGroup(used_features);
+  std::vector<int8_t> group_is_multi_val(used_features.size(), 0);
+  const int num_group = static_cast<int>(features_in_group.size());
+  Random tmp_rand(num_data);
+  for (int i = 0; i < num_group - 1; ++i) {
+    int j = tmp_rand.NextShort(i + 1, num_group);
+    std::swap(features_in_group[i], features_in_group[j]);
+    std::swap(group_is_multi_val[i], group_is_multi_val[j]);
+  }
+  *multi_val_group = group_is_multi_val;
+  return features_in_group;
+}
+
 std::vector<std::vector<int>> FastFeatureBundling(
     const std::vector<std::unique_ptr<BinMapper>>& bin_mappers,
     int** sample_indices, double** sample_values, const int* num_per_col,
@@ -256,6 +408,24 @@ std::vector<std::vector<int>> FastFeatureBundling(
     const std::vector<int>& used_features, data_size_t num_data,
     bool is_use_gpu, bool is_sparse, std::vector<int8_t>* multi_val_group) {
   Common::FunctionTimer fun_timer("Dataset::FastFeatureBundling", global_timer);
+  const char* precheck_env = std::getenv("EXABOOST_EFB_PRECHECK");
+  const bool precheck_enabled =
+      !(precheck_env != nullptr && std::string(precheck_env) == std::string("0"));
+  const char* precheck_verify_env = std::getenv("EXABOOST_EFB_PRECHECK_VERIFY");
+  const bool precheck_verify =
+      precheck_verify_env != nullptr &&
+      std::string(precheck_verify_env) == std::string("1");
+  const bool precheck_fired =
+      precheck_enabled &&
+      EFBPrecheckProvesNoBundling(bin_mappers, sample_indices, sample_values,
+                                  num_per_col, num_sample_col,
+                                  total_sample_cnt, used_features, is_sparse);
+  if (precheck_fired && !precheck_verify) {
+    Log::Debug("EFB precheck: no bundling possible, skipping group search "
+               "(disable with EXABOOST_EFB_PRECHECK=0)");
+    return SingleFeatureGroupsShuffled(used_features, num_data,
+                                       multi_val_group);
+  }
   std::vector<size_t> feature_non_zero_cnt;
   feature_non_zero_cnt.reserve(used_features.size());
   // put dense feature first
@@ -324,6 +494,33 @@ std::vector<std::vector<int>> FastFeatureBundling(
     // Using std::swap for vector<bool> will cause the wrong result.
     std::swap(group_is_multi_val[i], group_is_multi_val[j]);
   }
+  if (precheck_verify) {
+    if (precheck_fired) {
+      std::vector<int8_t> precheck_multi_val;
+      auto precheck_groups = SingleFeatureGroupsShuffled(
+          used_features, num_data, &precheck_multi_val);
+      bool identical = precheck_groups == features_in_group &&
+                       precheck_multi_val.size() == group_is_multi_val.size();
+      if (identical) {
+        for (size_t i = 0; i < precheck_multi_val.size(); ++i) {
+          if (precheck_multi_val[i] != group_is_multi_val[i]) {
+            identical = false;
+            break;
+          }
+        }
+      }
+      if (!identical) {
+        Log::Fatal("EFB precheck verify: precheck fired but group structure "
+                   "differs from the full group search");
+      }
+      Log::Info("EFB precheck verify: fired, structure identical (%d groups)",
+                num_group);
+    } else {
+      Log::Info("EFB precheck verify: did not fire (%d groups from full "
+                "search, precheck enabled=%d)",
+                num_group, static_cast<int>(precheck_enabled));
+    }
+  }
   *multi_val_group = group_is_multi_val;
   return features_in_group;
 }
@@ -390,13 +587,16 @@ void Dataset::Construct(std::vector<std::unique_ptr<BinMapper>>* bin_mappers,
   group_bin_boundaries_.push_back(num_total_bin);
   group_feature_start_.resize(num_groups_);
   group_feature_cnt_.resize(num_groups_);
+  std::vector<std::vector<std::unique_ptr<BinMapper>>> group_bin_mappers(
+      num_groups_);
   for (int i = 0; i < num_groups_; ++i) {
     auto cur_features = features_in_group[i];
     int cur_cnt_features = static_cast<int>(cur_features.size());
     group_feature_start_[i] = cur_fidx;
     group_feature_cnt_[i] = cur_cnt_features;
     // get bin_mappers
-    std::vector<std::unique_ptr<BinMapper>> cur_bin_mappers;
+    std::vector<std::unique_ptr<BinMapper>>& cur_bin_mappers =
+        group_bin_mappers[i];
     for (int j = 0; j < cur_cnt_features; ++j) {
       int real_fidx = cur_features[j];
       used_feature_map_[real_fidx] = cur_fidx;
@@ -410,8 +610,21 @@ void Dataset::Construct(std::vector<std::unique_ptr<BinMapper>>* bin_mappers,
       }
       ++cur_fidx;
     }
-    feature_groups_.emplace_back(std::unique_ptr<FeatureGroup>(
-      new FeatureGroup(cur_cnt_features, group_is_multi_val[i], &cur_bin_mappers, num_data_, i)));
+  }
+  // creating the groups zero-fills (and on CUDA page-locks) the full bin
+  // storage; do it in parallel, the groups are independent
+  feature_groups_ = std::vector<std::unique_ptr<FeatureGroup>>(num_groups_);
+  OMP_INIT_EX();
+  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(dynamic)
+  for (int i = 0; i < num_groups_; ++i) {
+    OMP_LOOP_EX_BEGIN();
+    feature_groups_[i].reset(new FeatureGroup(
+        static_cast<int>(group_bin_mappers[i].size()), group_is_multi_val[i],
+        &group_bin_mappers[i], num_data_, i));
+    OMP_LOOP_EX_END();
+  }
+  OMP_THROW_EX();
+  for (int i = 0; i < num_groups_; ++i) {
     num_total_bin += feature_groups_[i]->num_total_bin_;
     group_bin_boundaries_.push_back(num_total_bin);
   }
@@ -446,7 +659,7 @@ void Dataset::Construct(std::vector<std::unique_ptr<BinMapper>>* bin_mappers,
   gpu_device_id_ = io_config.gpu_device_id;
 }
 
-template <typename T>
+template <typename T, bool IS_FLOAT16>
 void Dataset::PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
                                     int is_row_major, data_size_t start_row) {
   if (is_finish_load_) {
@@ -454,9 +667,10 @@ void Dataset::PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
   }
   const int num_cols = std::min(ncol, num_total_features_);
   // per column: the Bin to push into and a fully encoded value->bin table
-  // (most-freq skip, offset and multi-val adjustment folded in)
+  // (most-freq skip, offset and multi-val adjustment folded in);
+  // unsigned values (incl. half bit patterns) index the table directly
   constexpr int64_t kLutSize = static_cast<int64_t>(1) << (8 * sizeof(T));
-  constexpr int64_t kLutOffset = kLutSize / 2;
+  constexpr int64_t kLutOffset = std::is_signed<T>::value ? kLutSize / 2 : 0;
   std::vector<uint32_t> lut(static_cast<size_t>(num_cols) * kLutSize, Bin::kSkipBin);
   std::vector<Bin*> targets(num_cols, nullptr);
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
@@ -471,8 +685,10 @@ void Dataset::PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
     const BinMapper* mapper = FeatureBinMapper(feature_idx);
     uint32_t* col_lut = lut.data() + static_cast<size_t>(col) * kLutSize;
     for (int64_t v = 0; v < kLutSize; ++v) {
-      col_lut[v] = fg->EncodeBinForPush(
-          sub_feature, mapper->ValueToBin(static_cast<double>(static_cast<T>(v - kLutOffset))));
+      const double value = IS_FLOAT16
+          ? static_cast<double>(Common::HalfBitsToFloat(static_cast<uint16_t>(v)))
+          : static_cast<double>(static_cast<T>(v - kLutOffset));
+      col_lut[v] = fg->EncodeBinForPush(sub_feature, mapper->ValueToBin(value));
     }
   }
   // tiles keep the strided per-column reads of row-major data cache-resident
@@ -514,7 +730,8 @@ void Dataset::PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
         for (int32_t r = r0; r < r1; ++r) {
           const T value = is_row_major ? data[static_cast<size_t>(r) * ncol + col]
                                        : data[static_cast<size_t>(nrow) * col + r];
-          raw[start_row + r] = static_cast<float>(value);
+          raw[start_row + r] = IS_FLOAT16 ? Common::HalfBitsToFloat(static_cast<uint16_t>(value))
+                                          : static_cast<float>(value);
         }
       }
     }
@@ -527,6 +744,12 @@ template void Dataset::PushDenseSmallIntRows<int8_t>(const int8_t* data, int32_t
                                                      int is_row_major, data_size_t start_row);
 template void Dataset::PushDenseSmallIntRows<int16_t>(const int16_t* data, int32_t nrow, int32_t ncol,
                                                       int is_row_major, data_size_t start_row);
+template void Dataset::PushDenseSmallIntRows<uint8_t>(const uint8_t* data, int32_t nrow, int32_t ncol,
+                                                      int is_row_major, data_size_t start_row);
+template void Dataset::PushDenseSmallIntRows<uint16_t>(const uint16_t* data, int32_t nrow, int32_t ncol,
+                                                       int is_row_major, data_size_t start_row);
+template void Dataset::PushDenseSmallIntRows<uint16_t, true>(const uint16_t* data, int32_t nrow, int32_t ncol,
+                                                             int is_row_major, data_size_t start_row);
 
 void Dataset::FinishLoad() {
   if (is_finish_load_) {
@@ -538,6 +761,37 @@ void Dataset::FinishLoad() {
     }
   }
   metadata_.FinishLoad();
+
+  #ifdef USE_CUDA
+  if (!gpu_bin_verify_data_.empty()) {
+    // EXABOOST_GPU_CONSTRUCT_VERIFY=1: the GPU binner captured its result and
+    // the host path ran as usual; the final storage must be byte-identical
+    int num_bad_groups = 0;
+    for (int i = 0; i < num_groups_; ++i) {
+      const std::vector<uint8_t>& expected = gpu_bin_verify_data_[i];
+      if (expected.empty()) {
+        continue;
+      }
+      const void* actual = feature_groups_[i]->bin_data_->get_data();
+      if (std::memcmp(expected.data(), actual, expected.size()) != 0) {
+        ++num_bad_groups;
+        if (num_bad_groups <= 5) {
+          Log::Warning("GPU construct verify: group %d bins differ from the "
+                       "host path", i);
+        }
+      }
+    }
+    const int num_verified = static_cast<int>(gpu_bin_verify_data_.size());
+    gpu_bin_verify_data_.clear();
+    gpu_bin_verify_data_.shrink_to_fit();
+    if (num_bad_groups > 0) {
+      Log::Fatal("GPU construct verify: %d of %d groups differ from the host "
+                 "path", num_bad_groups, num_verified);
+    }
+    Log::Info("GPU construct verify: %d groups byte-identical to the host "
+              "path", num_verified);
+  }
+  #endif  // USE_CUDA
 
   #ifdef USE_CUDA
   if (device_type_ == std::string("cuda")) {

@@ -102,6 +102,15 @@ class DenseBin : public Bin {
     }
   }
 
+  void SetLoadedFromRawData() override {
+    if (IS_4BIT) {
+      // both nibbles were written directly into data_; drop the odd-nibble
+      // accumulation buffer so FinishLoad skips the merge
+      buf_.clear();
+      buf_.shrink_to_fit();
+    }
+  }
+
   BinIterator* GetIterator(uint32_t min_bin, uint32_t max_bin,
                            uint32_t most_freq_bin) const override;
 

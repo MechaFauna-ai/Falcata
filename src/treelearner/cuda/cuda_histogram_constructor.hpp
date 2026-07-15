@@ -14,6 +14,7 @@
 #include <LightGBM/feature_group.h>
 #include <LightGBM/tree.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -21,6 +22,7 @@
 #include <vector>
 
 #include "cuda_leaf_splits.hpp"
+#include "cuda_hybrid_graph.hpp"
 
 #define NUM_DATA_PER_THREAD (400)
 #define NUM_THREADS_PER_BLOCK (504)
@@ -31,6 +33,20 @@
 #define USED_HISTOGRAM_BUFFER_NUM (8)
 
 namespace LightGBM {
+
+/*! \brief fp32-pair global histogram storage for the non-quantized CUDA path
+ *  (EXABOOST_FP32_HIST=1 requests; default off = hist_t/double pairs, the
+ *  historical behavior). The actual engagement additionally requires the dense
+ *  shared-memory layout (see CUDAHistogramConstructor::Init) and is exposed via
+ *  hist_fp32(). Halves global histogram bandwidth (construct merge, fix,
+ *  subtract, find reads); results are quality-gated, not bit-identical. */
+inline bool ExaboostFP32HistRequested() {
+  static const bool requested = []() {
+    const char* env = std::getenv("EXABOOST_FP32_HIST");
+    return env != nullptr && std::string(env) == "1";
+  }();
+  return requested;
+}
 
 /*! \brief y-grid sizing formula of the batched per-level construct kernel,
  *  shared verbatim by the host launch sizing (CalcConstructHistogramBatchedKernelDim)
@@ -263,6 +279,53 @@ class CUDAHistogramConstructor {
     return threshold;
   }
 
+#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+  /*! \brief graphs L1 body capture: construct + fix/subtract kernels with
+   *  placeholder grids on the hist stream, node handles + roles collected for
+   *  the device controller; records subtract_done_events_[0] (the find phase
+   *  waits on it inside the graph exactly like the host flow) */
+  void CaptureHybridGraphSearchKernels(const CUDAHybridPairDescriptor* pair_descs,
+                                       const data_size_t* level_smaller_num_data,
+                                       std::vector<cudaGraphNode_t>* nodes,
+                                       std::vector<int>* roles,
+                                       std::vector<int>* role_static_x);
+
+  /*! \brief static launch extents of the batched construct kernel (grid x and
+   *  block dim y), for the controller's per-level grid-y formula */
+  void HybridGraphConstructDims(int* grid_x, int* block_dim_y) const;
+
+  int hybrid_graph_min_grid_dim_y() const { return min_grid_dim_y_; }
+
+  /*! \brief per-tree pointers/flags baked into captured construct kernel
+   *  params: a graph instance is only valid for trees whose key matches (the
+   *  compact metadata buffers grow to the running-max sampled column count,
+   *  so their pointers stabilize after the first few trees) */
+  void HybridGraphKeyPointers(std::vector<const void*>* key) const {
+    key->push_back(use_compact_view_ ?
+      static_cast<const void*>(compact_data_uint8_t_.RawDataReadOnly()) : nullptr);
+    key->push_back(use_compact_view_ ?
+      static_cast<const void*>(compact_column_hist_offsets_.RawDataReadOnly()) : nullptr);
+    key->push_back(use_compact_view_ ?
+      static_cast<const void*>(compact_feature_partition_column_index_offsets_.RawDataReadOnly()) : nullptr);
+    key->push_back(use_compact_view_ ?
+      static_cast<const void*>(compact_packed_partition_byte_offsets_.RawDataReadOnly()) : nullptr);
+    key->push_back(static_cast<const void*>(cuda_gradients_));
+    key->push_back(static_cast<const void*>(cuda_hessians_));
+    key->push_back(static_cast<const void*>(cuda_gradients_hessians_.RawDataReadOnly()));
+    key->push_back(static_cast<const void*>(cuda_is_feature_used_bytree_.RawDataReadOnly()));
+    key->push_back(any_feature_unused_bytree_ ? this : nullptr);
+  }
+
+  /*! \brief graphs L1 + compact view: the batched construct BLOCK dims follow
+   *  the per-tree sampled column count and cannot be updated inside a graph
+   *  (only grids are device-updatable), so the construct shape is part of the
+   *  graph key: one instance per distinct shape, each captured with the exact
+   *  host block dims (keeps results bit-identical to the host loop) */
+  int HybridGraphCompactShapeKey() const {
+    return use_compact_view_ ? std::max(1, max_num_compact_cols_per_partition_) : 0;
+  }
+#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+
   void ResetTrainingData(const Dataset* train_data, TrainingShareStates* share_states);
 
   void ResetConfig(const Config* config);
@@ -295,6 +358,15 @@ class CUDAHistogramConstructor {
   const hist_t* cuda_hist() const { return cuda_hist_.RawData(); }
 
   hist_t* cuda_hist_pointer() { return cuda_hist_.RawData(); }
+
+  /*! \brief non-quantized global histograms are stored as float pairs in the
+   *  leading half of each leaf's hist_t slot (EXABOOST_FP32_HIST; slot strides
+   *  and the leaf histogram pool arithmetic are unchanged) */
+  bool hist_fp32() const { return hist_fp32_; }
+
+  /*! \brief consumers the fp32 layout does not cover (large-bin global-memory
+   *  find, forced splits, NCCL) make the tree learner fall back to fp64 */
+  void DisableHistFP32() { hist_fp32_ = false; }
 
  private:
   void InitFeatureMetaInfo(const Dataset* train_data, const std::vector<uint32_t>& feature_hist_offsets);
@@ -450,6 +522,11 @@ class CUDAHistogramConstructor {
   const int min_grid_dim_y_ = 160;
   /*! \brief leaf histogram slots dirtied by the previous tree (-1 = all) */
   int num_dirty_leaves_ = -1;
+  /*! \brief dataset has categorical features (their find kernel reads hist_t;
+   *  disables the fp32 histogram mode) */
+  bool has_categorical_feature_ = false;
+  /*! \brief non-quantized global histograms stored as float pairs (see hist_fp32()) */
+  bool hist_fp32_ = false;
 
 
   // CUDA memory, held by this object
@@ -509,6 +586,7 @@ class CUDAHistogramConstructor {
   int num_compact_columns_;
   /*! \brief max compact cols per partition (sets block_dim_x for compact launches) */
   int max_num_compact_cols_per_partition_;
+
   /*! \brief whether compact view is active for current tree */
   bool use_compact_view_;
   /*! \brief if true, compact_data_uint8_t_ is column-major-in-partition (used when source is host) */

@@ -593,16 +593,52 @@ class Dataset {
    * \brief Push a dense block of rows of a small integer type via per-column
    *        value->bin lookup tables, bypassing the per-value double conversion
    *        and bin binary search. Bit-identical to pushing every value through
-   *        PushOneRow.
+   *        PushOneRow. With ``IS_FLOAT16`` the values are the raw IEEE 754 half
+   *        bit patterns (``T`` must be ``uint16_t``) and the tables are built
+   *        over the halves they represent.
    * \param data Pointer to the block's values
    * \param nrow Number of rows in the block
    * \param ncol Number of columns
    * \param is_row_major 1 for row-major data, 0 for column-major
    * \param start_row Dataset row index of the block's first row
    */
-  template <typename T>
+  template <typename T, bool IS_FLOAT16 = false>
   void PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
                              int is_row_major, data_size_t start_row);
+
+  #ifdef USE_CUDA
+  /*! \brief Element type of a dense matrix handed to GPUBinDenseRows */
+  enum class DenseBinnerDType : int {
+    kFloat32 = 0,
+    kFloat64 = 1,
+    kInt8 = 2,
+    kInt16 = 3,
+    kUInt8 = 4,
+    kUInt16 = 5,
+    kFloat16Bits = 6,
+  };
+
+  /*!
+   * \brief Bin a whole dense matrix on the CUDA device instead of the host
+   *        push loops, writing byte-identical final values into the feature
+   *        groups' dense bin storage. Streams row chunks through a pinned
+   *        staging ring (host input) or reads the device matrix directly.
+   *        Falls back (returns false) whenever the host path is required:
+   *        non-CUDA dataset, EXABOOST_GPU_CONSTRUCT=0, multi-val or sparse
+   *        bins, linear-tree raw data, categorical features on the
+   *        float/double path, or insufficient device memory.
+   * \param data Pointer to the matrix values (host or device)
+   * \param dtype Element type of the matrix
+   * \param nrow Number of rows; must equal num_data()
+   * \param ncol Number of columns
+   * \param is_row_major true for row-major (C order) data
+   * \param data_is_device true if ``data`` is a device pointer
+   * \return true if the matrix was fully binned on the device
+   */
+  bool GPUBinDenseRows(const void* data, DenseBinnerDType dtype,
+                       data_size_t nrow, int ncol, bool is_row_major,
+                       bool data_is_device);
+  #endif  // USE_CUDA
 
   inline void PushOneRow(int tid, data_size_t row_idx, const std::vector<double>& feature_values) {
     for (size_t i = 0; i < feature_values.size() && i < static_cast<size_t>(num_total_features_); ++i) {
@@ -1099,6 +1135,10 @@ class Dataset {
 
   #ifdef USE_CUDA
   std::unique_ptr<CUDAColumnData> cuda_column_data_;
+  /*! \brief per-group expected bin bytes captured by GPUBinDenseRows under
+   *  EXABOOST_GPU_CONSTRUCT_VERIFY=1; compared against the host-binned
+   *  storage in FinishLoad */
+  std::vector<std::vector<uint8_t>> gpu_bin_verify_data_;
   #endif  // USE_CUDA
 
   std::string parser_config_str_;

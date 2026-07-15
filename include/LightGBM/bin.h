@@ -144,6 +144,11 @@ class BinMapper {
     }
   }
 
+  /*! \brief Numerical bin upper bounds (empty for categorical bins) */
+  inline const std::vector<double>& bin_upper_bound() const {
+    return bin_upper_bound_;
+  }
+
   /*!
   * \brief Maximum categorical value
   * \return Maximum categorical value for categorical features, 0 for numerical features
@@ -470,6 +475,13 @@ class Bin {
   * \brief After pushed all feature data, call this could have better refactor for bin data
   */
   virtual void FinishLoad() = 0;
+
+  /*!
+  * \brief Notify the bin that its raw storage (``get_data()``) was filled
+  *        directly with final values (e.g. by device-side binning), so any
+  *        pending merge state of the incremental Push protocol can be dropped.
+  */
+  virtual void SetLoadedFromRawData() {}
 
   /*!
   * \brief Create object for bin data of one feature, used for dense feature

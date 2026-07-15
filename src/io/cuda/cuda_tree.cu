@@ -243,6 +243,30 @@ __global__ void SplitBatchKernel(  // split information
   }
 }
 
+void CUDATree::CaptureHybridGraphSplitBatchKernel(cudaStream_t stream) {
+  // graphs L1 body capture: placeholder grid (the device controller resizes it
+  // per level), descriptors from the pooled batch-split buffer the controller
+  // writes; parameter set identical to LaunchSplitBatchKernel
+  SplitBatchKernel<<<1, 32, 0, stream>>>(
+    cuda_batch_splits_.RawDataReadOnly(),
+    cuda_leaf_parent_.RawData(),
+    cuda_leaf_depth_.RawData(),
+    cuda_left_child_.RawData(),
+    cuda_right_child_.RawData(),
+    cuda_split_feature_inner_.RawData(),
+    cuda_split_feature_.RawData(),
+    cuda_split_gain_.RawData(),
+    cuda_internal_weight_.RawData(),
+    cuda_internal_value_.RawData(),
+    cuda_internal_count_.RawData(),
+    cuda_leaf_weight_.RawData(),
+    cuda_leaf_value_.RawData(),
+    cuda_leaf_count_.RawData(),
+    cuda_decision_type_.RawData(),
+    cuda_threshold_in_bin_.RawData(),
+    cuda_threshold_.RawData());
+}
+
 void CUDATree::LaunchSplitBatchKernel(const int num_splits) {
   SplitBatchKernel<<<num_splits, 32, 0, cuda_stream_>>>(
     cuda_batch_splits_.RawDataReadOnly(),

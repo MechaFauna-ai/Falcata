@@ -109,51 +109,52 @@ class CUDALeafSplits: public NCCLInfo {
 
   // These delegate to the single shared SplitGainMath core (tree_split_math.h)
   // so the CUDA and CPU paths use identical formulas. Names/signatures are kept
-  // for the existing device call sites.
+  // for the existing device call sites; T = float only in the fp32 gain mode
+  // (EXABOOST_FP32_GAIN), always spelled out explicitly at those call sites.
   __device__ static double ThresholdL1(double s, double l1) {
     return SplitGainMath::ThresholdL1(s, l1);
   }
 
-  template <bool USE_L1, bool USE_SMOOTHING>
-  __device__ static double CalculateSplittedLeafOutput(double sum_gradients,
-                                          double sum_hessians, double l1, double l2,
-                                          double path_smooth, data_size_t num_data,
-                                          double parent_output) {
-    return SplitGainMath::CalculateLeafOutput<USE_L1, false, USE_SMOOTHING>(
-        sum_gradients, sum_hessians, l1, l2, 0.0, path_smooth, num_data, parent_output);
+  template <bool USE_L1, bool USE_SMOOTHING, typename T = double>
+  __device__ static T CalculateSplittedLeafOutput(T sum_gradients,
+                                          T sum_hessians, T l1, T l2,
+                                          T path_smooth, data_size_t num_data,
+                                          T parent_output) {
+    return SplitGainMath::CalculateLeafOutput<USE_L1, false, USE_SMOOTHING, T>(
+        sum_gradients, sum_hessians, l1, l2, static_cast<T>(0), path_smooth, num_data, parent_output);
   }
 
-  template <bool USE_L1>
-  __device__ static double GetLeafGainGivenOutput(double sum_gradients,
-                                      double sum_hessians, double l1,
-                                      double l2, double output) {
-    return SplitGainMath::LeafGainGivenOutput<USE_L1>(
+  template <bool USE_L1, typename T = double>
+  __device__ static T GetLeafGainGivenOutput(T sum_gradients,
+                                      T sum_hessians, T l1,
+                                      T l2, T output) {
+    return SplitGainMath::LeafGainGivenOutput<USE_L1, T>(
         sum_gradients, sum_hessians, l1, l2, output);
   }
 
-  template <bool USE_L1, bool USE_SMOOTHING>
-  __device__ static double GetLeafGain(double sum_gradients, double sum_hessians,
-                          double l1, double l2,
-                          double path_smooth, data_size_t num_data,
-                          double parent_output) {
-    return SplitGainMath::LeafGain<USE_L1, USE_SMOOTHING>(
+  template <bool USE_L1, bool USE_SMOOTHING, typename T = double>
+  __device__ static T GetLeafGain(T sum_gradients, T sum_hessians,
+                          T l1, T l2,
+                          T path_smooth, data_size_t num_data,
+                          T parent_output) {
+    return SplitGainMath::LeafGain<USE_L1, USE_SMOOTHING, T>(
         sum_gradients, sum_hessians, l1, l2, path_smooth, num_data, parent_output);
   }
 
-  template <bool USE_L1, bool USE_SMOOTHING>
-  __device__ static double GetSplitGains(double sum_left_gradients,
-                            double sum_left_hessians,
-                            double sum_right_gradients,
-                            double sum_right_hessians,
-                            double l1, double l2,
-                            double path_smooth,
+  template <bool USE_L1, bool USE_SMOOTHING, typename T = double>
+  __device__ static T GetSplitGains(T sum_left_gradients,
+                            T sum_left_hessians,
+                            T sum_right_gradients,
+                            T sum_right_hessians,
+                            T l1, T l2,
+                            T path_smooth,
                             data_size_t left_count,
                             data_size_t right_count,
-                            double parent_output) {
-    return GetLeafGain<USE_L1, USE_SMOOTHING>(sum_left_gradients,
+                            T parent_output) {
+    return GetLeafGain<USE_L1, USE_SMOOTHING, T>(sum_left_gradients,
                       sum_left_hessians,
                       l1, l2, path_smooth, left_count, parent_output) +
-          GetLeafGain<USE_L1, USE_SMOOTHING>(sum_right_gradients,
+          GetLeafGain<USE_L1, USE_SMOOTHING, T>(sum_right_gradients,
                       sum_right_hessians,
                       l1, l2, path_smooth, right_count, parent_output);
   }

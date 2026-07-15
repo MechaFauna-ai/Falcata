@@ -59,6 +59,8 @@ _ctypes_float_ptr = Union[
     "ctypes._Pointer[ctypes.c_double]",
     "ctypes._Pointer[ctypes.c_int8]",
     "ctypes._Pointer[ctypes.c_int16]",
+    "ctypes._Pointer[ctypes.c_uint8]",
+    "ctypes._Pointer[ctypes.c_uint16]",
 ]
 _ctypes_float_array = Union[
     "ctypes.Array[ctypes._Pointer[ctypes.c_float]]",
@@ -174,7 +176,7 @@ def _get_sample_count(total_nrow: int, params: str) -> int:
 
 def _np2d_to_np1d(mat: np.ndarray) -> Tuple[np.ndarray, int]:
     dtype: "np.typing.DTypeLike"
-    if mat.dtype in (np.float32, np.float64, np.int8, np.int16):
+    if mat.dtype in (np.float32, np.float64, np.int8, np.int16, np.uint8, np.uint16, np.float16):
         dtype = mat.dtype
     else:
         dtype = np.float32
@@ -629,6 +631,9 @@ _C_API_DTYPE_INT32 = 2
 _C_API_DTYPE_INT64 = 3
 _C_API_DTYPE_INT8 = 4
 _C_API_DTYPE_INT16 = 5
+_C_API_DTYPE_UINT8 = 6
+_C_API_DTYPE_UINT16 = 7
+_C_API_DTYPE_FLOAT16 = 8
 
 """Macro definition of data order in matrix"""
 _C_API_IS_COL_MAJOR = 0
@@ -696,8 +701,20 @@ def _c_float_array(data: np.ndarray) -> Tuple[_ctypes_float_ptr, int, np.ndarray
         elif data.dtype == np.int16:
             ptr_data = data.ctypes.data_as(ctypes.POINTER(ctypes.c_int16))
             type_data = _C_API_DTYPE_INT16
+        elif data.dtype == np.uint8:
+            ptr_data = data.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
+            type_data = _C_API_DTYPE_UINT8
+        elif data.dtype == np.uint16:
+            ptr_data = data.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16))
+            type_data = _C_API_DTYPE_UINT16
+        elif data.dtype == np.float16:
+            # the C side bins halves through their raw IEEE 754 bit patterns
+            ptr_data = data.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16))
+            type_data = _C_API_DTYPE_FLOAT16
         else:
-            raise TypeError(f"Expected np.float32, np.float64, np.int8 or np.int16, met type({data.dtype})")
+            raise TypeError(
+                f"Expected np.float32, np.float64, np.float16 or a small int (np.int8/np.int16/np.uint8/np.uint16), met type({data.dtype})"
+            )
     else:
         raise TypeError(f"Unknown type({type(data).__name__})")
     return (ptr_data, type_data, data)  # return `data` to avoid the temporary copy is freed
@@ -796,9 +813,21 @@ def _data_from_pandas(
         categorical_feature = cat_cols_not_ordered
 
     df_dtypes = [dtype.type for dtype in data.dtypes]
-    # so that the target dtype considers floats
-    df_dtypes.append(np.float32)
-    target_dtype = np.result_type(*df_dtypes)
+    # frames of plain numpy-backed small ints skip the float conversion: the C
+    # ingestion bins int8/int16/uint8/uint16 natively (such columns have no NA);
+    # nullable/categorical/object columns must keep going through floats
+    small_int_frame = (
+        not cat_cols
+        and bool(df_dtypes)
+        and all(isinstance(dtype, np.dtype) for dtype in data.dtypes)
+        and np.result_type(*df_dtypes) in (np.int8, np.int16, np.uint8, np.uint16)
+    )
+    if small_int_frame:
+        target_dtype = np.result_type(*df_dtypes)
+    else:
+        # so that the target dtype considers floats
+        df_dtypes.append(np.float32)
+        target_dtype = np.result_type(*df_dtypes)
 
     return (
         _pandas_to_numpy(data, target_dtype=target_dtype),
@@ -2135,6 +2164,8 @@ class Dataset:
             self.__init_from_csc(csc=data, params_str=params_str, ref_dataset=ref_dataset)
         elif isinstance(data, np.ndarray):
             self.__init_from_np2d(mat=data, params_str=params_str, ref_dataset=ref_dataset)
+        elif hasattr(data, "__cuda_array_interface__"):
+            self.__init_from_cuda_array_interface(data=data, params_str=params_str, ref_dataset=ref_dataset)
         elif nwd.is_into_dataframe(data):
             self.__init_from_narwhals(data=nw.from_native(data), params_str=params_str, ref_dataset=ref_dataset)
         elif isinstance(data, list) and len(data) > 0:
@@ -2270,6 +2301,65 @@ class Dataset:
                 ctypes.c_int(type_ptr_data),
                 ctypes.c_int32(mat.shape[0]),
                 ctypes.c_int32(mat.shape[1]),
+                ctypes.c_int(layout),
+                _c_str(params_str),
+                ref_dataset,
+                ctypes.byref(self._handle),
+            )
+        )
+        return self
+
+    def __init_from_cuda_array_interface(
+        self,
+        *,
+        data: Any,
+        params_str: str,
+        ref_dataset: Optional[_DatasetHandle],
+    ) -> "Dataset":
+        """Initialize data from an object exposing ``__cuda_array_interface__`` (e.g. a CuPy array).
+
+        The matrix stays in device memory: bin boundaries are found from a sampled
+        copy of the rows and the data is binned on the GPU (requires a CUDA build
+        and ``device_type="cuda"``). For cuDF DataFrames pass ``df.values``.
+        """
+        cai = data.__cuda_array_interface__
+        shape = tuple(cai["shape"])
+        if len(shape) != 2:
+            raise ValueError("CUDA array must be 2 dimensional")
+        nrow, ncol = shape
+        typestr = cai["typestr"]
+        dtype_map = {
+            "<f4": _C_API_DTYPE_FLOAT32,
+            "<f8": _C_API_DTYPE_FLOAT64,
+            "|i1": _C_API_DTYPE_INT8,
+            "<i2": _C_API_DTYPE_INT16,
+            "|u1": _C_API_DTYPE_UINT8,
+            "<u2": _C_API_DTYPE_UINT16,
+            "<f2": _C_API_DTYPE_FLOAT16,
+        }
+        if typestr not in dtype_map:
+            raise ValueError(
+                f"CUDA array dtype {typestr} is not supported; "
+                "use float32, float64, float16, int8, int16, uint8 or uint16"
+            )
+        itemsize = int(typestr[2:])
+        strides = cai.get("strides")
+        if strides is None or tuple(strides) == (ncol * itemsize, itemsize):
+            layout = 1  # C order (row-major)
+        elif tuple(strides) == (itemsize, nrow * itemsize):
+            layout = 0  # Fortran order (column-major)
+        else:
+            raise ValueError("CUDA array must be C- or Fortran-contiguous")
+        ptr = cai["data"][0]
+        if not ptr:
+            raise ValueError("CUDA array has no data pointer")
+        self._handle = ctypes.c_void_p()
+        _safe_call(
+            _LIB.LGBM_DatasetCreateFromMatDevice(
+                ctypes.c_void_p(ptr),
+                ctypes.c_int(dtype_map[typestr]),
+                ctypes.c_int32(nrow),
+                ctypes.c_int32(ncol),
                 ctypes.c_int(layout),
                 _c_str(params_str),
                 ref_dataset,
@@ -3486,6 +3576,28 @@ class Dataset:
         return self
 
 
+_FIL_IMPORT_FAILED = False
+
+
+def _load_fil_modules() -> Optional[Tuple[Any, Any]]:
+    """Lazily import the GPU forest-inference stack.
+
+    Returns ``(treelite.frontend, nvforest)`` when cuML's Forest Inference
+    Library is available, or ``None`` (remembering the failure so the import
+    is not retried) when the optional dependencies are not installed.
+    """
+    global _FIL_IMPORT_FAILED
+    if _FIL_IMPORT_FAILED:
+        return None
+    try:
+        import nvforest  # noqa: PLC0415 (provided by the cuml-cu1x wheels)
+        import treelite.frontend  # noqa: PLC0415
+    except ImportError:
+        _FIL_IMPORT_FAILED = True
+        return None
+    return treelite.frontend, nvforest
+
+
 _LGBM_CustomObjectiveFunction = Callable[
     [np.ndarray, Dataset],
     Tuple[np.ndarray, np.ndarray],
@@ -3667,6 +3779,7 @@ class Booster:
         handle = this["_handle"]
         this.pop("train_set", None)
         this.pop("valid_sets", None)
+        this.pop("_fil_models", None)
         if handle is not None:
             this["_handle"] = self.model_to_string(num_iteration=-1)
         return this
@@ -4055,6 +4168,7 @@ class Booster:
             setting ``feature_fraction_bynode < 1.0``), it is possible that another call
             to ``update()`` would produce a non-empty tree.
         """
+        self._invalidate_fil_cache()
         # need reset training data
         if train_set is None and self.train_set_version != self.train_set.version:
             train_set = self.train_set
@@ -4136,6 +4250,7 @@ class Booster:
         assert hess.flags.c_contiguous
         if len(grad) != len(hess):
             raise ValueError(f"Lengths of gradient ({len(grad)}) and Hessian ({len(hess)}) don't match")
+        self._invalidate_fil_cache()
         num_train_data = self.train_set.num_data()
         if len(grad) != num_train_data * self.__num_class:
             raise ValueError(
@@ -4164,6 +4279,7 @@ class Booster:
             Booster with rolled back one iteration.
         """
         _safe_call(_LIB.LGBM_BoosterRollbackOneIter(self._handle))
+        self._invalidate_fil_cache()
         self.__is_predicted_cur_iter = [False for _ in range(self.__num_dataset)]
         return self
 
@@ -4450,6 +4566,7 @@ class Booster:
                 ctypes.c_int(end_iteration),
             )
         )
+        self._invalidate_fil_cache()
         return self
 
     def model_from_string(self, model_str: str) -> "Booster":
@@ -4487,6 +4604,7 @@ class Booster:
         )
         self.__num_class = out_num_class.value
         self.pandas_categorical = _load_pandas_categorical(model_str=model_str)
+        self._invalidate_fil_cache()
         return self
 
     def model_to_string(
@@ -4632,6 +4750,127 @@ class Booster:
         )
         return ret
 
+    def _invalidate_fil_cache(self) -> None:
+        """Drop cached FIL models after the underlying model changed."""
+        self.__dict__.pop("_fil_models", None)
+
+    def _fil_model(self, start_iteration: int, num_iteration: int, raw_score: bool) -> Optional[Any]:
+        """Get (or build and cache) a FIL model matching the requested iteration slice.
+
+        Returns ``None`` when the model cannot be served by FIL; the failure is
+        cached until the model changes so conversion is not retried per call.
+        """
+        modules = _load_fil_modules()
+        if modules is None:
+            return None
+        precision = environ.get("EXABOOST_FIL_PRECISION", "single")
+        if precision not in ("single", "double", "native"):
+            precision = "single"
+        cache: Dict[Tuple[int, int, bool, str], Any] = self.__dict__.setdefault("_fil_models", {})
+        key = (start_iteration, num_iteration, raw_score, precision)
+        if key not in cache:
+            cache[key] = self._build_fil_model(
+                treelite_frontend=modules[0],
+                nvforest=modules[1],
+                start_iteration=start_iteration,
+                num_iteration=num_iteration,
+                raw_score=raw_score,
+                precision=precision,
+            )
+        return cache[key]
+
+    def _build_fil_model(
+        self,
+        *,
+        treelite_frontend: Any,
+        nvforest: Any,
+        start_iteration: int,
+        num_iteration: int,
+        raw_score: bool,
+        precision: str,
+    ) -> Optional[Any]:
+        """Convert this model to a GPU FIL model via an in-memory Treelite handoff."""
+        try:
+            if start_iteration == 0 and num_iteration == self.best_iteration:
+                # from_lightgbm() serializes with model_to_string(), whose defaults
+                # resolve to exactly this slice
+                source: "Booster" = self
+            else:
+                source = Booster(
+                    model_str=self.model_to_string(num_iteration=num_iteration, start_iteration=start_iteration)
+                )
+            tl_model = treelite_frontend.from_lightgbm(source)
+            header = tl_model.get_header_accessor()
+            postprocessor = str(header.get_field("postprocessor"))
+            # only routes with verified parity against the CPU predictor:
+            # regression (identity), binary (sigmoid), multiclass (softmax)
+            if postprocessor not in ("identity", "sigmoid", "softmax"):
+                return None
+            if raw_score and postprocessor != "identity":
+                header.set_field("postprocessor", "identity")
+            # default fp32: fp64 doubles device memory (the input matrix is
+            # converted on-device) and is ~5x slower for wide host inputs.
+            # fp32 parity vs the CPU predictor: ~1e-6 relative error in bulk,
+            # but ~0.01% of rows can route to a different leaf where a feature
+            # value falls between a split threshold and its fp32 rounding
+            # (EXABOOST_FIL_PRECISION=double restores exact routing, ~1e-13)
+            return nvforest.load_from_treelite_model(
+                tl_model,
+                device="gpu",
+                precision=None if precision == "native" else precision,
+            )
+        except Exception:
+            return None
+
+    def _fil_predict(
+        self,
+        data: Any,
+        start_iteration: int,
+        num_iteration: int,
+        raw_score: bool,
+    ) -> Optional[Any]:
+        """Predict with cuML's Forest Inference Library on the GPU.
+
+        Returns ``None`` whenever the request cannot be served by FIL, in which
+        case the caller falls back to the regular (CPU) predictor. Accepts 2-D
+        numpy arrays and device arrays (e.g. CuPy); the result matches the
+        input's residency (numpy in -> numpy out).
+        """
+        is_host = isinstance(data, np.ndarray)
+        params = getattr(self, "params", None) or {}
+        devices = {str(params[alias]).lower() for alias in _ConfigAliases.get("device_type") if alias in params}
+        if (
+            environ.get("EXABOOST_FIL", "1") == "0"
+            or (not is_host and not hasattr(data, "__cuda_array_interface__"))
+            or getattr(data, "ndim", 0) != 2
+            or not devices & {"cuda", "gpu"}
+        ):
+            return None
+        model = self._fil_model(max(start_iteration, 0), num_iteration, raw_score)
+        if model is None:
+            return None
+        if not is_host:
+            import cupy  # noqa: PLC0415
+
+            data = cupy.asarray(data)
+        if data.dtype not in (np.float32, np.float64):
+            data = data.astype(np.float32)
+        try:
+            preds = model.predict_proba(data) if model.is_classifier else model.predict(data)
+        except Exception:
+            return None
+        if preds.ndim == 2 and preds.shape[1] == 1:
+            preds = preds.reshape(-1)
+        if is_host and not isinstance(preds, np.ndarray):
+            import cupy  # noqa: PLC0415
+
+            preds = cupy.asnumpy(preds)
+            # FIL staged the host input in the CuPy pool (input-sized, i.e.
+            # potentially many GB); hand the free blocks back to the driver so
+            # they do not starve non-pool CUDA allocations (e.g. training)
+            cupy.get_default_memory_pool().free_all_blocks()
+        return preds.astype(np.float64, copy=False)
+
     def predict(
         self,
         data: _LGBM_PredictDataType,
@@ -4642,6 +4881,7 @@ class Booster:
         pred_contrib: bool = False,
         data_has_header: bool = False,
         validate_features: bool = False,
+        use_fil: bool = True,
         **kwargs: Any,
     ) -> _LGBM_PredictReturnType:
         """Make a prediction.
@@ -4680,6 +4920,21 @@ class Booster:
         validate_features : bool, optional (default=False)
             If True, ensure that the features used to predict match the ones used to train.
             Used only if data is pandas DataFrame.
+        use_fil : bool, optional (default=True)
+            Whether to route the prediction through cuML's Forest Inference Library (GPU)
+            when it is installed, the model was trained with ``device_type="cuda"`` and
+            ``data`` is a 2-D numpy or CuPy array. Falls back silently to the regular
+            predictor whenever FIL cannot serve the request. Set the environment variable
+            ``EXABOOST_FIL=0`` to disable globally. The result matches the input's
+            residency: numpy in -> numpy out, CuPy in -> CuPy out.
+            FIL runs in fp32 by default: expect ~1e-6 relative error vs the regular
+            predictor in bulk, and a small fraction of rows (~0.01% observed) may route
+            to a different leaf where a feature value falls inside a split threshold's
+            fp32 rounding gap. Set ``EXABOOST_FIL_PRECISION=double`` for exact routing
+            (~1e-13 parity) at the cost of doubled device memory and slower wide-input
+            transfers. For host (numpy) inputs the whole matrix is copied to the GPU, so
+            very wide inputs with small models can be slower than the CPU predictor;
+            device-resident (CuPy) inputs avoid the copy entirely.
         **kwargs
             Other parameters for the prediction.
 
@@ -4689,15 +4944,24 @@ class Booster:
             Prediction result.
             Can be sparse or a list of sparse objects (each element represents predictions for one class) for feature contributions (when ``pred_contrib=True``).
         """
-        predictor = _InnerPredictor.from_booster(
-            booster=self,
-            pred_parameter=deepcopy(kwargs),
-        )
         if num_iteration is None:
             if start_iteration <= 0:
                 num_iteration = self.best_iteration
             else:
                 num_iteration = -1
+        if use_fil and not pred_leaf and not pred_contrib and not kwargs:
+            fil_preds = self._fil_predict(
+                data=data,
+                start_iteration=start_iteration,
+                num_iteration=num_iteration,
+                raw_score=raw_score,
+            )
+            if fil_preds is not None:
+                return fil_preds
+        predictor = _InnerPredictor.from_booster(
+            booster=self,
+            pred_parameter=deepcopy(kwargs),
+        )
         return predictor.predict(
             data=data,
             start_iteration=start_iteration,
@@ -4948,6 +5212,7 @@ class Booster:
                 ctypes.c_double(value),
             )
         )
+        self._invalidate_fil_cache()
         return self
 
     def num_feature(self) -> int:
