@@ -26,6 +26,11 @@ figures from the profiles in the PR discussions.
   overlap needs a GBDT-contract change (host tree mirror feeds
   CUDATree::Shrinkage sizing + the leaf-wise tail arbitration -- call chain
   documented); per-parent chaining (original L2 idea) still open.
+  Quant graph support landed bit-exact (a2279763: device hist-bits, guarded quant
+  construct grids, full lock matrix incl. multiclass-quant) but is OPT-IN
+  (EXABOOST_GRAPH_QUANT=1, 5c61a0ed): quant levels are cheap so the controller's
+  fixed serial latency nets -10.8% covtype 1023/10 / -7% year; wins only
+  fraud-class (+4%). Fixing the controller-latency frontier flips the default.
 - [ ] **Graphs L2 — per-parent dependency chaining.** A child pair only depends on *its
   parent's* partition + histogram, not on its level. Launch each pair's chain from the
   device (fire-and-forget device graph launch) when its parent finishes — a
