@@ -2072,7 +2072,13 @@ __global__ void FindBestSplitsForLevelKernel(
   const double lambda_l1,
   const double lambda_l2,
   const double path_smooth,
-  CUDASplitInfo* cuda_best_split_info) {
+  CUDASplitInfo* cuda_best_split_info,
+  const CUDAHybridGraphLoopStateOpt gstate) {
+  // graphs A2: the graph-frozen grid is a pow2 bucket of the live pair count;
+  // blocks beyond the live range exit before any read (stale descriptors)
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
+    return;
+  }
   const unsigned int pair_index = blockIdx.y;
   const bool is_larger = (blockIdx.z == 1);
   const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
@@ -2232,7 +2238,12 @@ __global__ void SyncBestSplitForLevelKernel(
   const int num_tasks,
   const int num_leaves,
   const data_size_t min_data_in_leaf,
-  const double min_sum_hessian_in_leaf) {
+  const double min_sum_hessian_in_leaf,
+  const CUDAHybridGraphLoopStateOpt gstate) {
+  // graphs A2 idle-block guard (pow2-frozen grid; see the find kernel)
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
+    return;
+  }
   __shared__ double shared_gain_buffer[WARPSIZE];
   __shared__ bool shared_found_buffer[WARPSIZE];
   __shared__ uint32_t shared_thread_index_buffer[WARPSIZE];
@@ -2315,7 +2326,12 @@ __global__ void SyncBestSplitForLevelKernelAllBlocks(
   const unsigned int num_blocks_per_leaf,
   const int num_leaves,
   const data_size_t min_data_in_leaf,
-  const double min_sum_hessian_in_leaf) {
+  const double min_sum_hessian_in_leaf,
+  const CUDAHybridGraphLoopStateOpt gstate) {
+  // graphs A2 idle-block guard (pow2-frozen grid; see the find kernel)
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
+    return;
+  }
   const unsigned int pair_index = blockIdx.y;
   const bool is_larger = (blockIdx.x == 1);
   const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
@@ -2346,7 +2362,8 @@ __global__ void SyncBestSplitForLevelKernelAllBlocks(
 
 void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
   const CUDAHybridPairDescriptor* pair_descs,
-  const int num_pairs) {
+  const int num_pairs,
+  const CUDAHybridGraphLoopStateOpt gstate) {
   const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
   if (num_used_tasks_ == 0) {
     return;  // no usable feature this tree; the sync masks every lane not-found
@@ -2366,7 +2383,8 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
       lambda_l1_, \
       lambda_l2_, \
       path_smooth_, \
-      cuda_best_split_info_.RawData()
+      cuda_best_split_info_.RawData(), \
+      gstate
   if (ExaboostFP32GainEnabled()) {
     FindBestSplitsForLevelKernel<false, false, false, float>
       <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
@@ -2420,6 +2438,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
 #ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
 void CUDABestSplitFinder::CaptureHybridGraphFindKernels(
     const CUDAHybridPairDescriptor* pair_descs,
+    const CUDAHybridGraphLoopState* gstate,
     std::vector<cudaGraphNode_t>* nodes,
     std::vector<int>* roles,
     std::vector<int>* role_static_x) {
@@ -2427,7 +2446,7 @@ void CUDABestSplitFinder::CaptureHybridGraphFindKernels(
   // counts; the wait on the histogram phase's subtract event becomes a graph
   // edge, exactly mirroring the host flow's ordering
   CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], hist_subtract_done_events_[0], 0));
-  LaunchFindBestSplitsForLevelKernel(pair_descs, 1);
+  LaunchFindBestSplitsForLevelKernel(pair_descs, 1, gstate);
   if (!AppendCapturedNode(cuda_streams_[0], nodes)) return;
   roles->push_back(kHybridGraphNodeFind);
   role_static_x->push_back(0);
@@ -2444,7 +2463,8 @@ void CUDABestSplitFinder::CaptureHybridGraphFindKernels(
     num_tasks_,
     num_leaves_,
     min_data_in_leaf_,
-    min_sum_hessian_in_leaf_);
+    min_sum_hessian_in_leaf_,
+    gstate);
   if (!AppendCapturedNode(cuda_streams_[0], nodes)) return;
   roles->push_back(kHybridGraphNodeSyncLevel);
   role_static_x->push_back(num_blocks_per_leaf);
@@ -2456,7 +2476,8 @@ void CUDABestSplitFinder::CaptureHybridGraphFindKernels(
       static_cast<unsigned int>(num_blocks_per_leaf),
       num_leaves_,
       min_data_in_leaf_,
-      min_sum_hessian_in_leaf_);
+      min_sum_hessian_in_leaf_,
+      gstate);
     if (!AppendCapturedNode(cuda_streams_[0], nodes)) return;
     roles->push_back(kHybridGraphNodeSyncAllBlocks);
     role_static_x->push_back(0);
@@ -2479,7 +2500,8 @@ void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
     num_tasks_,
     num_leaves_,
     min_data_in_leaf_,
-    min_sum_hessian_in_leaf_);
+    min_sum_hessian_in_leaf_,
+    nullptr);
   if (num_blocks_per_leaf > 1) {
     // stream-ordered after the sync kernel above; same stream as the batched
     // find, so no extra synchronization is needed
@@ -2490,7 +2512,8 @@ void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
       static_cast<unsigned int>(num_blocks_per_leaf),
       num_leaves_,
       min_data_in_leaf_,
-      min_sum_hessian_in_leaf_);
+      min_sum_hessian_in_leaf_,
+      nullptr);
   }
 }
 

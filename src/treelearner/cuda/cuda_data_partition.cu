@@ -1247,6 +1247,11 @@ __global__ void HybridGenBitVectorUpdateLeafIndexBatchKernel(
   data_size_t* block_to_right_offset_buffer,
   int* cuda_data_index_to_leaf_index,
   const CUDAHybridGraphLoopStateOpt gstate) {
+  // graphs A2: the graph-frozen grid is a pow2 bucket of the live level shape;
+  // blocks beyond the live split range exit before any read
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
+    return;
+  }
   __shared__ uint16_t shared_mem_buffer[WARPSIZE];
   // graphs L1: the main index buffer swaps per level inside the device loop,
   // so the graph-captured launch reads it from the loop state instead of the
@@ -1284,7 +1289,12 @@ __global__ void HybridAggregateBlockOffsetBatchKernel(
   data_size_t* cuda_leaf_data_start,
   data_size_t* cuda_leaf_data_end,
   data_size_t* cuda_leaf_num_data,
-  data_size_t* level_smaller_counts) {
+  data_size_t* level_smaller_counts,
+  const CUDAHybridGraphLoopStateOpt gstate) {
+  // graphs A2 idle-block guard (pow2-frozen grid; see the gen-bit-vector kernel)
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.x)) {
+    return;
+  }
   __shared__ uint32_t shared_mem_buffer[WARPSIZE];
   __shared__ uint32_t to_left_total_count;
   const CUDAHybridApplyDescriptor d = descs[blockIdx.x];
@@ -1362,6 +1372,10 @@ __global__ void HybridSplitInnerBatchKernel(
   const uint16_t* block_to_left_offset,
   data_size_t* out_data_indices_param,
   const CUDAHybridGraphLoopStateOpt gstate) {
+  // graphs A2 idle-block guard (pow2-frozen grid; see the gen-bit-vector kernel)
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
+    return;
+  }
   const data_size_t* cuda_data_indices =
     HybridGraphMainIndices(gstate, cuda_data_indices_param);
   data_size_t* out_data_indices_in_leaf =
@@ -1407,6 +1421,10 @@ __global__ void HybridSplitTreeStructureBatchKernel(
   double* cuda_leaf_output,
   int* cuda_split_info_buffer_base,
   const CUDAHybridGraphLoopStateOpt gstate) {
+  // graphs A2 idle-block guard (pow2-frozen grid; see the gen-bit-vector kernel)
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.x)) {
+    return;
+  }
   const CUDAHybridApplyDescriptor d = descs[blockIdx.x];
   const int left_leaf_index = d.left_leaf_index;
   const int right_leaf_index = d.right_leaf_index;
@@ -1626,6 +1644,10 @@ __global__ void HybridCopyDataIndicesBatchKernel(
   const data_size_t* src_data_indices_param,
   data_size_t* dst_data_indices_param,
   const CUDAHybridGraphLoopStateOpt gstate) {
+  // graphs A2 idle-block guard (pow2-frozen grid, live GAP count)
+  if (HybridGraphBeyondLiveGaps(gstate, blockIdx.y)) {
+    return;
+  }
   const data_size_t* src_data_indices =
     HybridGraphMainIndices(gstate, src_data_indices_param);
   data_size_t* dst_data_indices =
@@ -1661,7 +1683,7 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
   HybridAggregateBlockOffsetBatchKernel<<<num_splits, AGGREGATE_BLOCK_SIZE_DATA_PARTITION, 0, cuda_streams_[0]>>>(
     descs, cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
     cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
-    cuda_level_smaller_counts_.RawData());
+    cuda_level_smaller_counts_.RawData(), nullptr);
   HybridSplitInnerBatchKernel<<<data_grid, block_dim, 0, cuda_streams_[0]>>>(
     descs, cuda_data_indices_.RawData(), cuda_block_data_to_left_offset_.RawData(),
     cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
@@ -1708,7 +1730,7 @@ void CUDADataPartition::CaptureHybridGraphApplyKernels(
   HybridAggregateBlockOffsetBatchKernel<<<1, AGGREGATE_BLOCK_SIZE_DATA_PARTITION, 0, stream>>>(
     descs, cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
     cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
-    cuda_level_smaller_counts_.RawData());
+    cuda_level_smaller_counts_.RawData(), gstate);
   if (!AppendCapturedNode(stream, nodes)) return;
   roles->push_back(kHybridGraphNodeAggregate);
   HybridSplitInnerBatchKernel<<<dim3(1, 1), block_dim, 0, stream>>>(

@@ -231,6 +231,7 @@ class CUDABestSplitFinder {
    *  counts on cuda_streams_[0]; node handles + roles collected for the device
    *  controller (which sets the find grid x per tree from num_used_tasks) */
   void CaptureHybridGraphFindKernels(const CUDAHybridPairDescriptor* pair_descs,
+                                     const CUDAHybridGraphLoopState* gstate,
                                      std::vector<cudaGraphNode_t>* nodes,
                                      std::vector<int>* roles,
                                      std::vector<int>* role_static_x);
@@ -343,7 +344,8 @@ class CUDABestSplitFinder {
 
   void LaunchFindBestSplitsForLevelKernel(
     const CUDAHybridPairDescriptor* pair_descs,
-    const int num_pairs);
+    const int num_pairs,
+    const CUDAHybridGraphLoopStateOpt gstate = nullptr);
 
   void LaunchFindBestSplitsDiscretizedForLevelKernel(
     const CUDAHybridPairDescriptor* pair_descs,

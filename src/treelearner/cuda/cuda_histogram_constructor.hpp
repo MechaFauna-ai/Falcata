@@ -286,6 +286,7 @@ class CUDAHistogramConstructor {
    *  waits on it inside the graph exactly like the host flow) */
   void CaptureHybridGraphSearchKernels(const CUDAHybridPairDescriptor* pair_descs,
                                        const data_size_t* level_smaller_num_data,
+                                       const CUDAHybridGraphLoopState* gstate,
                                        std::vector<cudaGraphNode_t>* nodes,
                                        std::vector<int>* roles,
                                        std::vector<int>* role_static_x);
@@ -476,7 +477,8 @@ class CUDAHistogramConstructor {
    *  bit-identical to the sequential fix -> subtract launches. */
   void LaunchFixSubtractHistogramSmallLeafBatchedKernel(
     const CUDAHybridPairDescriptor* pair_descs,
-    const int num_pairs);
+    const int num_pairs,
+    const CUDAHybridGraphLoopStateOpt gstate = nullptr);
 
   /*! \brief one tiny launch per speculative level: reduce the level's actual
    *  smaller-child sizes and apply the exact host grid-sizing formula, writing
@@ -531,6 +533,11 @@ class CUDAHistogramConstructor {
   bool has_categorical_feature_ = false;
   /*! \brief non-quantized global histograms stored as float pairs (see hist_fp32()) */
   bool hist_fp32_ = false;
+  /*! \brief graphs A2: loop-state pointer passed to the batched construct
+   *  kernel while capturing a graph body (set only inside
+   *  CaptureHybridGraphSearchKernels); nullptr on every host launch, so the
+   *  host path keeps its exact-grid arithmetic bit-for-bit */
+  CUDAHybridGraphLoopStateOpt hybrid_graph_capture_gstate_ = nullptr;
 
 
   // CUDA memory, held by this object

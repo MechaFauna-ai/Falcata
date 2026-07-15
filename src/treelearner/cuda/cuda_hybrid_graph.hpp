@@ -87,19 +87,24 @@ struct CUDAHybridGraphFeatureSource {
   uint8_t padding_[2];
 };
 
-/*! \brief roles of the WHILE-body kernel nodes the controller resizes */
+/*! \brief roles of the WHILE-body kernel nodes the controller resizes.
+ *  graphs A2: every dynamic extent below is frozen at its power-of-two bucket
+ *  (NextPow2), so the SetGridDim device graph update fires only on bucket
+ *  flips; the kernels guard on the loop state's live counts (cur_num_splits /
+ *  cur_num_gaps) or on their descriptor's own num_blocks and exit idle blocks
+ *  before any read or write */
 enum CUDAHybridGraphNodeRole : int {
-  kHybridGraphNodeTreeSplit = 0,   // grid (n, 1, 1)
-  kHybridGraphNodeGenBitVector,    // grid (max_blocks, n)
-  kHybridGraphNodeAggregate,       // grid (n, 1, 1)
-  kHybridGraphNodeSplitInner,      // grid (max_blocks, n)
-  kHybridGraphNodeTreeStructure,   // grid (n, 1, 1)
-  kHybridGraphNodeCopyGaps,        // grid (max_gap_blocks, num_gaps); disabled when no gaps
-  kHybridGraphNodeConstruct,       // grid (static_x, formula_y, n)
-  kHybridGraphNodeSearchPairY,     // grid (static_x, n): fix/subtract family
-  kHybridGraphNodeFind,            // grid (find_grid_x, n, 2)
-  kHybridGraphNodeSyncLevel,       // grid (2, n, static_x /* blocks per leaf */)
-  kHybridGraphNodeSyncAllBlocks,   // grid (2, n)
+  kHybridGraphNodeTreeSplit = 0,   // grid (p2(n), 1, 1)
+  kHybridGraphNodeGenBitVector,    // grid (p2(max_blocks), p2(n))
+  kHybridGraphNodeAggregate,       // grid (p2(n), 1, 1)
+  kHybridGraphNodeSplitInner,      // grid (p2(max_blocks), p2(n))
+  kHybridGraphNodeTreeStructure,   // grid (p2(n), 1, 1)
+  kHybridGraphNodeCopyGaps,        // grid (p2(max_gap_blocks), p2(num_gaps)); disabled when no gaps
+  kHybridGraphNodeConstruct,       // grid (static_x, p2(formula_y), p2(n))
+  kHybridGraphNodeSearchPairY,     // grid (static_x, p2(n)): fix/subtract family
+  kHybridGraphNodeFind,            // grid (find_grid_x, p2(n), 2)
+  kHybridGraphNodeSyncLevel,       // grid (2, p2(n), static_x /* blocks per leaf */)
+  kHybridGraphNodeSyncAllBlocks,   // grid (2, p2(n))
 };
 
 struct CUDAHybridGraphNodeSlot {
@@ -155,6 +160,13 @@ struct CUDAHybridGraphLoopState {
   /*! \brief set by the controller that stops the level loop; later bodies'
    *  controllers exit immediately (host resets it to 0 before every launch) */
   int done;
+  /*! \brief graphs A2: live split count of the CURRENT level body, written by
+   *  the controller before its body kernels run. Most body kernels' grids are
+   *  frozen at a power-of-two bucket of n instead of being device-updated per
+   *  level; blocks beyond the live range read this and exit immediately. */
+  int cur_num_splits;
+  /*! \brief live gap-copy count of the current level body (same scheme) */
+  int cur_num_gaps;
 
   // ---- static config (host-written once at graph build) ----
   int max_depth;
@@ -268,6 +280,44 @@ __device__ __forceinline__ int HybridGraphSplitInfoBase(
   return gstate != nullptr ? gstate->split_info_base : 0;
 #else
   return 0;
+#endif
+}
+
+/*! \brief graphs A2 idle-block guard: true when this block sits beyond the
+ *  current level's live split count (grids are frozen at a power-of-two
+ *  bucket of n inside the graph loop; the excess blocks must exit before any
+ *  other read or write). Always false on the host-launched exact-grid path. */
+__device__ __forceinline__ bool HybridGraphBeyondLiveSplits(
+    CUDAHybridGraphLoopStateOpt gstate, const unsigned int n_index) {
+#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+  return gstate != nullptr && n_index >= static_cast<unsigned int>(gstate->cur_num_splits);
+#else
+  (void)n_index;
+  return false;
+#endif
+}
+
+/*! \brief graphs A2 idle-block guard of the gap-copy kernel (live gap count) */
+__device__ __forceinline__ bool HybridGraphBeyondLiveGaps(
+    CUDAHybridGraphLoopStateOpt gstate, const unsigned int gap_index) {
+#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+  return gstate != nullptr && gap_index >= static_cast<unsigned int>(gstate->cur_num_gaps);
+#else
+  (void)gap_index;
+  return false;
+#endif
+}
+
+/*! \brief live pair count of the current graph level body (the batched
+ *  construct kernel's device row-grouping must use it instead of gridDim.z
+ *  once the grid is frozen at a pow2 bucket); the host-launched exact-grid
+ *  path keeps its grid-derived value */
+__device__ __forceinline__ int HybridGraphLivePairCount(
+    CUDAHybridGraphLoopStateOpt gstate, const int host_value) {
+#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+  return gstate != nullptr ? gstate->cur_num_splits : host_value;
+#else
+  return host_value;
 #endif
 }
 

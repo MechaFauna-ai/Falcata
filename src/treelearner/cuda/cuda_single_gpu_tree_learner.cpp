@@ -1369,12 +1369,16 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
   const int num_level_bodies = config_->max_depth;  // gated to < kHybridGraphMaxBodies
   HYBRID_GRAPH_SOFT_CHECK(cudaStreamBeginCaptureToGraph(
     hist_stream, instance->graph, nullptr, nullptr, 0, cudaStreamCaptureModeThreadLocal));
+  // graphs A2: device address of the loop state's live split count -- the
+  // pow2-frozen tree-split grid's idle blocks guard on it (plain int pointer
+  // so the tree's public header stays free of the loop-state type)
+  const int* graph_live_split_count = &instance->state_dev->cur_num_splits;
   for (int body = 0; body < num_level_bodies; ++body) {
     const size_t body_node_start = nodes.size();
     CaptureHybridGraphControllerKernel(hist_stream, instance->state_dev, body);
     capture_ok = capture_ok && cudaEventRecord(fork_event, hist_stream) == cudaSuccess;
     capture_ok = capture_ok && cudaStreamWaitEvent(apply_stream, fork_event, 0) == cudaSuccess;
-    tree->CaptureHybridGraphSplitBatchKernel(apply_stream);
+    tree->CaptureHybridGraphSplitBatchKernel(apply_stream, graph_live_split_count);
     capture_ok = capture_ok && AppendCapturedNode(apply_stream, &nodes);
     roles.push_back(kHybridGraphNodeTreeSplit);
     cuda_data_partition_->CaptureHybridGraphApplyKernels(instance->state_dev, &nodes, &roles);
@@ -1386,9 +1390,11 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
     cuda_histogram_constructor_->CaptureHybridGraphSearchKernels(
       cuda_hybrid_pair_descs_.RawDataReadOnly(),
       cuda_data_partition_->level_smaller_leaf_counts(),
+      instance->state_dev,
       &nodes, &roles, &role_static_x);
     cuda_best_split_finder_->CaptureHybridGraphFindKernels(
-      cuda_hybrid_pair_descs_.RawDataReadOnly(), &nodes, &roles, &role_static_x);
+      cuda_hybrid_pair_descs_.RawDataReadOnly(), instance->state_dev,
+      &nodes, &roles, &role_static_x);
     capture_ok = capture_ok && cudaEventRecord(join_event, find_stream) == cudaSuccess;
     capture_ok = capture_ok && cudaStreamWaitEvent(hist_stream, join_event, 0) == cudaSuccess;
     const size_t body_nodes = nodes.size() - body_node_start;
@@ -1544,6 +1550,10 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefixGraph(CUDATree* tree) {
   staged->root_num_data = cuda_data_partition_->root_num_data();
   staged->find_grid_x = cuda_best_split_finder_->hybrid_graph_find_grid_x();
   staged->done = 0;
+  // live counts are controller-owned (written before each body's kernels run);
+  // reset them with the prefix so a stale value can never leak across trees
+  staged->cur_num_splits = 0;
+  staged->cur_num_gaps = 0;
   CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(instance->state_dev, staged,
     offsetof(CUDAHybridGraphLoopState, max_depth), cudaMemcpyHostToDevice, find_stream));
   // ---- the ONE host launch of the whole prefix ----

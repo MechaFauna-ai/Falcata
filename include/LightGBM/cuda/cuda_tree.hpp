@@ -123,8 +123,11 @@ class CUDATree : public Tree {
   /*! \brief graphs L1 body capture: launch SplitBatchKernel with a placeholder
    *  grid on \p stream (the graph controller resizes it per level); the batch
    *  split descriptors are read from the pooled device buffer the controller
-   *  writes (hybrid_graph_batch_splits()) */
-  void CaptureHybridGraphSplitBatchKernel(cudaStream_t stream);
+   *  writes (hybrid_graph_batch_splits()). \p graph_live_split_count is the
+   *  device address of the loop state's live split count: the controller
+   *  freezes the grid at a pow2 bucket and idle blocks guard on it (A2) */
+  void CaptureHybridGraphSplitBatchKernel(cudaStream_t stream,
+                                          const int* graph_live_split_count);
 
   /*! \brief pooled device buffer of the batched split descriptors (written by
    *  the graphs L1 device controller; stable across pooled trees) */
