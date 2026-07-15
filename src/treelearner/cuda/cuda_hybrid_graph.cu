@@ -183,9 +183,21 @@ __device__ __forceinline__ void SetNodeEnabledCached(CUDAHybridGraphLoopState* s
   }
 }
 
-__device__ __forceinline__ void SetNodeGrid(CUDAHybridGraphLoopState* st,
-                                            const CUDAHybridGraphNodeSlot& slot,
-                                            const dim3 grid) {
+/*! \brief set a node's grid, skipping the (relatively expensive) device graph
+ *  update when the last-set grid already matches: each unrolled level body
+ *  owns its nodes, so n-stable roles hit the cache across trees */
+__device__ __forceinline__ void SetNodeGridCached(CUDAHybridGraphLoopState* st,
+                                                  const int node_index,
+                                                  const dim3 grid) {
+  CUDAHybridGraphNodeSlot& slot = st->nodes[node_index];
+  if (slot.grid_x == static_cast<int>(grid.x) &&
+      slot.grid_y == static_cast<int>(grid.y) &&
+      slot.grid_z == static_cast<int>(grid.z)) {
+    return;
+  }
+  slot.grid_x = static_cast<int>(grid.x);
+  slot.grid_y = static_cast<int>(grid.y);
+  slot.grid_z = static_cast<int>(grid.z);
   const cudaError_t e = cudaGraphKernelNodeSetGridDim(slot.node, grid);
   if (e != cudaSuccess) {
     atomicOr(reinterpret_cast<unsigned int*>(&st->journal[2]), 1u << (slot.role + 16));
@@ -536,7 +548,7 @@ __global__ void HybridGraphLevelControllerKernel(CUDAHybridGraphLoopState* st,
     }
     SetNodeEnabledCached(st, node_base + tid, enabled);
     if (enabled) {
-      SetNodeGrid(st, slot, grid);
+      SetNodeGridCached(st, node_base + tid, grid);
     }
   }
   if (tid == 0) {

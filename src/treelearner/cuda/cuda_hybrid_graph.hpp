@@ -105,6 +105,14 @@ struct CUDAHybridGraphNodeSlot {
   int role;
   /*! \brief role-dependent static grid extent (see role comments) */
   int static_x;
+  /*! \brief controller-side cache of the node's last-set grid (0 == not set
+   *  yet): each unrolled level body owns its nodes, so a level whose grid
+   *  does not change across trees (7 of ~10 roles only depend on the level's
+   *  split count) skips the SetGridDim device graph update entirely */
+  int grid_x;
+  int grid_y;
+  int grid_z;
+  int padding_;
 };
 
 /*! \brief journal layout (ints): [0] applied levels, [1] total splits,
