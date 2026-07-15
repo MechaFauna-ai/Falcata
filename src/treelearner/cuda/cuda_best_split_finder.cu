@@ -1487,19 +1487,33 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
     int best_dir = 0;
     double best_sum_left_gradient = 0.0f;
     double best_sum_left_hessian = 0.0f;
-    for (int bin = 0; bin < bin_end; bin += static_cast<int>(blockDim.x)) {
+    // Grid-stride over every bin: thread t owns bins t, t + blockDim, ... The
+    // original loop started at bin = 0 for every thread, so it only ever touched
+    // bins that are multiples of blockDim and raced on the writes -- leaving most
+    // of hist_stat_buffer_ptr unfilled. Two further consequences of that bug:
+    //  * hist_index_buffer_ptr[bin] must record each bin's own index (it is read
+    //    back after the sort to map a sorted position to its histogram bin);
+    //    storing threadIdx_x was only correct for the first block.
+    //  * is_valid_bin must accumulate across the stride so used_bin counts every
+    //    valid category, not one-per-thread.
+    // Bins below bin_start are written with the kMaxScore sentinel so they sort to
+    // the end, matching the shared-memory categorical kernel.
+    for (int bin = static_cast<int>(threadIdx_x); bin < bin_end; bin += static_cast<int>(blockDim.x)) {
       if (bin >= bin_start) {
         const int bin_offset = (bin << 1);
         const double hess = feature_hist_ptr[bin_offset + 1];
         if (CUDARoundInt(hess * cnt_factor) >= cat_smooth) {
           const double grad = feature_hist_ptr[bin_offset];
           hist_stat_buffer_ptr[bin] = grad / (hess + cat_smooth);
-          hist_index_buffer_ptr[bin] = threadIdx_x;
-          is_valid_bin = 1;
+          hist_index_buffer_ptr[bin] = bin;
+          ++is_valid_bin;
         } else {
           hist_stat_buffer_ptr[bin] = kMaxScore;
           hist_index_buffer_ptr[bin] = -1;
         }
+      } else {
+        hist_stat_buffer_ptr[bin] = kMaxScore;
+        hist_index_buffer_ptr[bin] = -1;
       }
     }
     __syncthreads();
@@ -1508,7 +1522,21 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
       used_bin = local_used_bin;
     }
     __syncthreads();
-    BitonicArgSortDevice<double, data_size_t, true, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 11>(
+    // BitonicArgSortDevice's MAX_DEPTH must be log2(BLOCK_DIM) + 1 (see the
+    // BITONIC_SORT_NUM_ELEMENTS/2 -> 10 and /4 -> 9 dispatch in cuda_algorithms.hpp):
+    // it selects the boundary between the in-block phase and the cross-block merge
+    // phase. NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER is 256, so the correct depth is
+    // 9, not 11. Passing 11 (the value for a 1024-wide block) let the in-block phase
+    // run two levels too deep -- reading shared memory out of bounds and skipping the
+    // cross-block merge -- which mis-sorted categoricals with more than 256 bins
+    // (wrong split vs CPU) and read past the sort buffers (illegal memory access at
+    // larger category counts).
+    // STABLE = true: CPU sorts the categories with std::stable_sort
+    // (feature_histogram.cpp), so tied gradient/hessian ratios keep ascending
+    // category order. Without a stable device sort the tied categories get an
+    // arbitrary order, which selects a different categorical threshold set than
+    // CPU whenever ratios tie (a data-dependent divergence at > 256 categories).
+    BitonicArgSortDevice<double, data_size_t, true, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 9, /*STABLE=*/true>(
       hist_stat_buffer_ptr, hist_index_buffer_ptr, task->num_bin - task->mfb_offset);
     const int max_num_cat = min(max_cat_threshold, (used_bin + 1) / 2);
     if (USE_RAND) {
@@ -1692,10 +1720,17 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
   if (is_feature_used_bytree[task->inner_feature_index]) {
     const uint32_t hist_offset = task->hist_offset;
     const hist_t* hist_ptr = (IS_LARGER ? larger_leaf_splits->hist_in_leaf : smaller_leaf_splits->hist_in_leaf) + hist_offset * 2;
-    hist_t* hist_grad_buffer_ptr = feature_hist_grad_buffer + hist_offset * 2;
-    hist_t* hist_hess_buffer_ptr = feature_hist_hess_buffer + hist_offset * 2;
-    hist_t* hist_stat_buffer_ptr = feature_hist_stat_buffer + hist_offset * 2;
-    data_size_t* hist_index_buffer_ptr = feature_hist_index_buffer + hist_offset * 2;
+    // The scratch buffers below hold one element per histogram bin and are sized
+    // num_total_bin_ (= feature_hist_offsets.back()), so a feature's region begins
+    // at its bin offset hist_offset -- NOT hist_offset * 2. The * 2 is correct only
+    // for hist_ptr above, whose entries are (grad, hess) pairs. With * 2 the sort and
+    // the prefix scans ran off the end of these buffers for any feature with
+    // hist_offset >= 1, reading adjacent (stale) memory and producing data-dependent
+    // wrong splits.
+    hist_t* hist_grad_buffer_ptr = feature_hist_grad_buffer + hist_offset;
+    hist_t* hist_hess_buffer_ptr = feature_hist_hess_buffer + hist_offset;
+    hist_t* hist_stat_buffer_ptr = feature_hist_stat_buffer + hist_offset;
+    data_size_t* hist_index_buffer_ptr = feature_hist_index_buffer + hist_offset;
     if (task->is_categorical) {
       FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory<USE_RAND, USE_L1, USE_SMOOTHING>(
         // input feature information
