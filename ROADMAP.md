@@ -16,9 +16,13 @@ figures from the profiles in the PR discussions.
   Multiclass crash ROOT-CAUSED AND FIXED (84db39cd): device-updatable graphs
   must be cudaGraphUpload-ed before first launch (the controller's first device
   update raced the lazy upload; multiclass's per-class instances multiplied
-  exposure). 40/40 soak, gate lifted, multiclass graph ON ~4% faster. Perf follow-ups: (A2) fix
-  grids for the ~8 n-only roles at body bounds + device cur_n early-exit
-  (device SetGridDim calls ~4.5us/body dominate the controller); cross-tree
+  exposure). 40/40 soak, gate lifted, multiclass graph ON ~4% faster. A2 done (199dc6fa): all 10 roles
+  pow2-bucketed with device cur_n guards -- but the SetGridDim hypothesis was
+  FALSIFIED (the 2e047b0d cache already absorbed them; a zero-update body still
+  costs 5.2us vs the 2.0us epilogue). Controller cost is intrinsic serial latency:
+  dependent descriptor-chain reads + ~20 block barriers. Next lever: prefetch the
+  read chains + single-warp fast path for bodies <=32 splits (~20us/tree bound);
+  bucket-shrink hysteresis if flipping shows up. cross-tree
   overlap needs a GBDT-contract change (host tree mirror feeds
   CUDATree::Shrinkage sizing + the leaf-wise tail arbitration -- call chain
   documented); per-parent chaining (original L2 idea) still open.
