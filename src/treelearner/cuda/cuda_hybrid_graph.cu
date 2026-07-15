@@ -31,7 +31,20 @@ namespace LightGBM {
 
 namespace {
 
-constexpr int kControllerThreads = kHybridGraphMaxSplitsPerLevel;  // 1024
+/*! \brief level body B applies at most min(2^B, kMax) splits (each level at
+ *  most doubles the leaf count from 1), so its controller block only needs to
+ *  cover that bound: one thread per split for the descriptor build, one per
+ *  gap slot (splits + 1), one per bitonic-sort lane (NextPow2(splits)), and
+ *  one per device-updatable node. 2x the split bound covers all four (the
+ *  1024-thread top body relies on the learner's num_leaves <= 2047 gate for
+ *  the splits + 1 gap slots, as before); the 64 floor covers the node slice
+ *  and keeps two full warps for the scan/max reductions. Small-level bodies
+ *  drop from 32 warps to 2 through the ~20 block-wide barriers, which is most
+ *  of the controller's fixed cost. */
+__host__ __device__ constexpr int ControllerThreadsForBody(const int body_index) {
+  return body_index >= 10 ? kHybridGraphMaxSplitsPerLevel :
+    (body_index <= 4 ? 64 : 2 * (1 << body_index));
+}
 
 __device__ __forceinline__ int NextPow2(int n) {
   int p = 1;
@@ -259,9 +272,10 @@ __global__ void HybridGraphLevelControllerKernel(CUDAHybridGraphLoopState* st,
     }
   }
   const int my_offset = BlockExclusiveScan(my_count, s_warp, &s_total);
-  if (s_total > kMax) {
-    // cannot happen inside the gated regime (splittable <= 2^(max_depth-1)
-    // <= kMax); guard the shared staging anyway
+  if (s_total > kMax || (nt < kMax && s_total >= nt)) {
+    // cannot happen inside the gated regime (body B's splittable count is
+    // structurally <= 2^B < ControllerThreadsForBody(B), and <= kMax); guard
+    // the shared staging and the one-thread-per-split phases anyway
     if (tid == 0) {
       atomicOr(reinterpret_cast<unsigned int*>(&st->journal[2]), 0x80000000u);
       st->journal[0] = level;
@@ -571,7 +585,12 @@ __global__ void HybridGraphLevelControllerKernel(CUDAHybridGraphLoopState* st,
 void CaptureHybridGraphControllerKernel(cudaStream_t stream,
                                         CUDAHybridGraphLoopState* state,
                                         const int body_index) {
-  HybridGraphLevelControllerKernel<<<1, kControllerThreads, 0, stream>>>(state, body_index);
+  // block dims are per-node-instantiation constants of the unrolled graph, so
+  // each body's bound is baked at capture (the epilogue controller at
+  // body_index == max_depth never applies splits; its body-sized block is
+  // just an upper bound)
+  HybridGraphLevelControllerKernel<<<1, ControllerThreadsForBody(body_index), 0, stream>>>(
+    state, body_index);
 }
 
 }  // namespace LightGBM

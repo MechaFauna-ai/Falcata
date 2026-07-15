@@ -32,17 +32,19 @@
 
 #include <cuda_runtime.h>
 
+#include <LightGBM/meta.h>
+
 #if CUDART_VERSION >= 12040
 #define EXABOOST_HYBRID_GRAPH_SUPPORTED 1
 #endif  // CUDART_VERSION >= 12040
 
 #ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
 
+#include <LightGBM/cuda/cuda_utils.hu>
+
 #include <cstdint>
 #include <vector>
 
-#include <LightGBM/meta.h>
-#include <LightGBM/cuda/cuda_utils.hu>
 #include <LightGBM/cuda/cuda_split_info.hpp>
 #include <LightGBM/cuda/cuda_tree.hpp>
 
@@ -224,10 +226,6 @@ void CaptureHybridGraphControllerKernel(cudaStream_t stream,
 
 }  // namespace LightGBM
 
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
-
-#ifndef EXABOOST_HYBRID_GRAPH_SUPPORTED
-#include <LightGBM/meta.h>
 #endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
 
 namespace LightGBM {
