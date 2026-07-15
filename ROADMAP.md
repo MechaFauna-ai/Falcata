@@ -154,6 +154,17 @@ figures from the profiles in the PR discussions.
   defensibly better). Explicit user-provided-boundaries API considered and
   rejected: exact counting subsumes it for the data we care about.
 
+- [ ] **L2 residency tuning (5090: 96 MB L2).** (a) cudaAccessPolicyWindow
+  persistence on grad/hess float2 (43 MB) + data indices (22 MB): each level's
+  compact-matrix stream (~375 MB) currently evicts them, and the construct kernel is
+  latency-bound on exactly those scattered re-reads; (b) evict-first/__ldcs hints on
+  bin-matrix loads (zero reuse within a level -- stop polluting L2); (c) note:
+  fraud/covtype/year datasets (4/31/46 MB) are already fully L2-resident (why they
+  profile latency-bound); (d) deep configs: fp32-hist halves the hist pool 248 ->
+  124 MB = from doesn't-fit to mostly-fits L2 -- a cache argument for fp32-hist on
+  deep trees on top of the bandwidth one (subtraction re-reads parent hists). Few
+  lines each, cleanly A/B-able.
+
 - [ ] **Hybrid coverage extensions.** The hybrid/graph fast paths currently fall
   back to the classic loop for: categorical features (variable-length bitset
   payloads vs the fixed 18-int split slabs -- first one worth lifting), NCCL
