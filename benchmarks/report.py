@@ -10,7 +10,6 @@ import pandas as pd
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
-
 from common import (  # noqa: E402
     LIBRARIES,
     REPORT_DIR,
@@ -27,6 +26,12 @@ COLORS = {
     "lightgbm-ocl": "#17becf",
     "xgboost": "#2ca02c",
     "catboost": "#9467bd",
+}
+
+#: when a library has no valid result for a cell, render its slot with the
+#: fallback backend's measurement (dotted hatch + tag) instead of an empty bar
+FALLBACK_LIBS = {
+    "lightgbm": "lightgbm-ocl",
 }
 METRIC_KEY = {
     "higgs": "auc",
@@ -161,16 +166,25 @@ def main():
         w = 0.13
         fig, ax = plt.subplots(figsize=(11, 5))
         crash_marks = []
+        fallback_sources = set(FALLBACK_LIBS.values())
         libs = [
             lib
             for lib in LIBRARIES
-            if any(library_runs_cell(lib, d, reg) for d in datasets)
+            if lib not in fallback_sources
+            and any(library_runs_cell(lib, d, reg) for d in datasets)
         ]
         for i, lib in enumerate(libs):
             offs = x + (i - (len(libs) - 1) / 2) * w
             vals, hatches = [], []
             for j, d in enumerate(datasets):
                 gl = sub[(sub.dataset == d) & (sub.library == lib)]
+                fallback = False
+                fb_lib = FALLBACK_LIBS.get(lib)
+                if gl.empty and fb_lib is not None:
+                    fbl = sub[(sub.dataset == d) & (sub.library == fb_lib)]
+                    if not fbl.empty:
+                        gl = fbl
+                        fallback = True
                 if gl.empty:
                     vals.append(np.nan)
                     hatches.append(None)
@@ -200,7 +214,19 @@ def main():
                     ]
                     if ok_rmses and ok_rmses[0] and met["rmse"] > 1.15 * ok_rmses[0]:
                         degenerate = True
-                hatches.append("///" if degenerate else None)
+                hatches.append("///" if degenerate else ("..." if fallback else None))
+                if fallback:
+                    ax.text(
+                        offs[j],
+                        vals[-1] * 0.93,
+                        "OCL",
+                        ha="center",
+                        va="top",
+                        fontsize=7,
+                        color="white",
+                        fontweight="bold",
+                        zorder=5,
+                    )
             bars = ax.bar(offs, vals, w, label=lib, color=COLORS[lib])
             for b, h in zip(bars, hatches):
                 if h:
@@ -213,6 +239,13 @@ def main():
                 and not np.isnan(vals[0])
             ):
                 gl = sub[(sub.dataset == datasets[0]) & (sub.library == lib)]
+                if gl.empty and FALLBACK_LIBS.get(lib):
+                    gl = sub[
+                        (sub.dataset == datasets[0])
+                        & (sub.library == FALLBACK_LIBS[lib])
+                    ]
+                if gl.empty:
+                    continue
                 met = gl["metrics"].iloc[0] or {}
                 if met.get("corr_mean") is not None:
                     ax.text(
@@ -244,7 +277,8 @@ def main():
         ax.set_ylabel("train time (s, log)")
         ax.set_title(
             f"GPU training time — {REG_TITLES[reg]}\n"
-            "✗ = crashed; hatched = degenerate model (timing not meaningful)"
+            "✗ = crashed (no fallback); dotted+OCL = OpenCL fallback; "
+            "/// = degenerate model (timing not meaningful)"
         )
         ax.legend(ncol=3, fontsize=8)
         fig.tight_layout()
