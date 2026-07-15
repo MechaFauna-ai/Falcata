@@ -145,6 +145,17 @@ figures from the profiles in the PR discussions.
   want (MultiRMSE-style). Modeling change: validate per-era, don't assume. FIL
   predict falls back to CPU for vector-leaf models initially (treelite support).
 
+- [ ] **Hybrid coverage extensions.** The hybrid/graph fast paths currently fall
+  back to the classic loop for: categorical features (variable-length bitset
+  payloads vs the fixed 18-int split slabs -- first one worth lifting), NCCL
+  multi-GPU (level batching would mean ONE all-reduce per level instead of one per
+  split -- promising but unverifiable on a single-GPU box), interaction
+  constraints/select_features_by_node (per-node masks; the 161fe88b bin-used-mask
+  machinery is the natural vehicle), forced splits (a depth-wise prescription that
+  bypasses gain selection), linear trees (leaf renumbering vs per-leaf model
+  bookkeeping). Each lift needs its own verification gates; fallbacks are the
+  md5-reference classic loop, so correctness is never at risk.
+
 ## Inference
 
 - [x] **FIL soft-integration for Booster.predict** (013c77ed): with cuml-cu12
