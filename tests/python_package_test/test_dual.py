@@ -968,3 +968,55 @@ def test_cuda_linear_tree_handles_nan_like_cpu():
         preds[device_type] = lgb.train(params, ds, num_boost_round=30).predict(X)
     max_diff = float(np.max(np.abs(preds["cpu"] - preds["cuda"])))
     assert max_diff < 1e-6, f"CUDA linear tree (NaN) diverges from CPU: max|diff|={max_diff:.3e}"
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("n_categories", [300, 1200, 3000])
+def test_cuda_large_categorical_global_memory_does_not_crash(n_categories):
+    """Training on a categorical feature with > 256 histogram bins must not crash.
+
+    A feature whose histogram exceeds NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER (256)
+    bins routes categorical split finding through the global-memory kernel and its
+    device-wide BitonicArgSortDevice. That path used to raise
+    "[CUDA] an illegal memory access was encountered" for large category counts,
+    because the sort was instantiated with MAX_DEPTH=11 (the value for a 1024-wide
+    block) instead of 9 for the 256-thread block, and because the per-feature
+    scratch-buffer pointers were offset by hist_offset*2 instead of hist_offset,
+    running the sort off the end of the buffers.
+
+    This test guards the crash. (Full CPU/CUDA split-parity on the global-memory
+    categorical path is tracked separately: a residual data-dependent divergence
+    remains for > 256-category features.)
+    """
+    rng = np.random.default_rng(7)
+    n = n_categories * 40
+    cats = rng.integers(0, n_categories, size=n).astype(np.float64)
+    category_means = rng.standard_normal(n_categories) * 0.7
+    y = (category_means[cats.astype(int)] + rng.standard_normal(n) * 0.05).astype(np.float64)
+    X = cats.reshape(-1, 1)
+    params = {
+        "objective": "regression",
+        "verbose": -1,
+        "deterministic": True,
+        "num_threads": 1,
+        "seed": 0,
+        "feature_pre_filter": False,
+        "gpu_use_dp": True,
+        "num_leaves": 8,
+        "min_data_in_leaf": 5,
+        "min_data_in_bin": 1,
+        "max_bin": 8192,
+        "cat_smooth": 1,
+        "learning_rate": 0.1,
+        "device_type": "cuda",
+    }
+    ds = lgb.Dataset(
+        X,
+        label=y,
+        categorical_feature=[0],
+        params={"verbose": -1, "feature_pre_filter": False, "min_data_in_bin": 1, "max_bin": 8192},
+    )
+    # Regression: this raised a CUDA illegal-memory-access error before the fix.
+    bst = lgb.train(params, ds, num_boost_round=5)
+    preds = bst.predict(X, raw_score=True)
+    assert np.all(np.isfinite(preds)), "global-memory categorical training produced non-finite predictions"
