@@ -134,6 +134,7 @@ def main():
         try:
             p = subprocess.run(
                 cmd,
+                check=False,
                 timeout=TIMEOUT_S.get(ds, 7200),
                 env={
                     **os.environ,

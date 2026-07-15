@@ -9,11 +9,13 @@
 
 #include "cuda_best_split_finder.hpp"
 
-#include <LightGBM/cuda/cuda_algorithms.hpp>
 #include <LightGBM/cuda/cuda_rocm_interop.h>
 
 #include <algorithm>
+#include <cstring>
 #include <vector>
+
+#include <LightGBM/cuda/cuda_algorithms.hpp>
 
 namespace LightGBM {
 
@@ -28,12 +30,36 @@ __device__ __forceinline__ int CUDARoundInt(double x) {
   return static_cast<int>(x + 0.5);
 }
 
-__device__ void ReduceBestGainWarp(double gain, bool found, uint32_t thread_index, double* out_gain, bool* out_found, uint32_t* out_thread_index) {
+__device__ __forceinline__ int CUDARoundInt(float x) {
+  return static_cast<int>(x + 0.5f);
+}
+
+/*! \brief histogram entry read of the non-quantized find kernels: the storage
+ *  is float pairs in the fp32 histogram mode (EXABOOST_FP32_HIST) and hist_t
+ *  (double) pairs otherwise; the pointer is pre-offset in the right units by
+ *  the caller. */
+template <typename GAIN_T>
+__device__ __forceinline__ GAIN_T ReadHistEntry(const hist_t* ptr, const unsigned int index, const bool fp32_hist) {
+  return fp32_hist ? static_cast<GAIN_T>(reinterpret_cast<const float*>(ptr)[index]) :
+    static_cast<GAIN_T>(ptr[index]);
+}
+
+/*! \brief per-task feature histogram pointer: hist_in_leaf is the leaf slot
+ *  base in either layout; the task offset advances in the storage's own
+ *  element width. */
+__device__ __forceinline__ const hist_t* FeatureHistPtr(const hist_t* hist_in_leaf, const uint32_t hist_offset, const bool fp32_hist) {
+  return fp32_hist ?
+    reinterpret_cast<const hist_t*>(reinterpret_cast<const float*>(hist_in_leaf) + (hist_offset << 1)) :
+    hist_in_leaf + (hist_offset << 1);
+}
+
+template <typename GAIN_T>
+__device__ void ReduceBestGainWarp(GAIN_T gain, bool found, uint32_t thread_index, GAIN_T* out_gain, bool* out_found, uint32_t* out_thread_index) {
   const uint32_t mask = 0xffffffff;
   const uint32_t warpLane = threadIdx.x % warpSize;
   for (uint32_t offset = warpSize / 2; offset > 0; offset >>= 1) {
     const bool other_found = __shfl_down_sync(mask, found, offset);
-    const double other_gain = __shfl_down_sync(mask, gain, offset);
+    const GAIN_T other_gain = __shfl_down_sync(mask, gain, offset);
     const uint32_t other_thread_index = __shfl_down_sync(mask, thread_index, offset);
     if ((other_found && found && other_gain > gain) || (!found && other_found)) {
       found = other_found;
@@ -48,11 +74,12 @@ __device__ void ReduceBestGainWarp(double gain, bool found, uint32_t thread_inde
   }
 }
 
-__device__ uint32_t ReduceBestGainBlock(double gain, bool found, uint32_t thread_index) {
+template <typename GAIN_T>
+__device__ uint32_t ReduceBestGainBlock(GAIN_T gain, bool found, uint32_t thread_index) {
   const uint32_t mask = 0xffffffff;
   for (uint32_t offset = warpSize / 2; offset > 0; offset >>= 1) {
     const bool other_found = __shfl_down_sync(mask, found, offset);
-    const double other_gain = __shfl_down_sync(mask, gain, offset);
+    const GAIN_T other_gain = __shfl_down_sync(mask, gain, offset);
     const uint32_t other_thread_index = __shfl_down_sync(mask, thread_index, offset);
     if ((other_found && found && other_gain > gain) || (!found && other_found)) {
       found = other_found;
@@ -63,15 +90,16 @@ __device__ uint32_t ReduceBestGainBlock(double gain, bool found, uint32_t thread
   return thread_index;
 }
 
-__device__ uint32_t ReduceBestGain(double gain, bool found, uint32_t thread_index,
-    double* shared_gain_buffer, bool* shared_found_buffer, uint32_t* shared_thread_index_buffer) {
+template <typename GAIN_T>
+__device__ uint32_t ReduceBestGain(GAIN_T gain, bool found, uint32_t thread_index,
+    GAIN_T* shared_gain_buffer, bool* shared_found_buffer, uint32_t* shared_thread_index_buffer) {
   const uint32_t warpID = threadIdx.x / warpSize;
   const uint32_t warpLane = threadIdx.x % warpSize;
   const uint32_t num_warp = blockDim.x / warpSize;
   ReduceBestGainWarp(gain, found, thread_index, shared_gain_buffer + warpID, shared_found_buffer + warpID, shared_thread_index_buffer + warpID);
   __syncthreads();
   if (warpID == 0) {
-    gain = warpLane < num_warp ? shared_gain_buffer[warpLane] : kMinScore;
+    gain = warpLane < num_warp ? shared_gain_buffer[warpLane] : static_cast<GAIN_T>(kMinScore);
     found = warpLane < num_warp ? shared_found_buffer[warpLane] : false;
     thread_index = warpLane < num_warp ? shared_thread_index_buffer[warpLane] : 0;
     thread_index = ReduceBestGainBlock(gain, found, thread_index);
@@ -137,10 +165,11 @@ __device__ int ReduceBestGainForLeaves(double gain, int leaf_index, double* shar
   return leaf_index;
 }
 
-template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, bool REVERSE>
+template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, bool REVERSE, typename GAIN_T>
 __device__ void FindBestSplitsForLeafKernelInner(
   // input feature information
   const hist_t* feature_hist_ptr,
+  const bool fp32_hist,
   // input task information
   const SplitFindTask* task,
   CUDARandom* cuda_random,
@@ -159,14 +188,23 @@ __device__ void FindBestSplitsForLeafKernelInner(
   const double parent_output,
   // output parameters
   CUDASplitInfo* cuda_best_split_info) {
-  const double cnt_factor = num_data / sum_hessians;
-  const double min_gain_shift = parent_gain + min_gain_to_split;
+  // leaf-level inputs stay double; GAIN_T = float (EXABOOST_FP32_GAIN) converts
+  // them ONCE per task here, so all per-bin arithmetic below runs in fp32
+  const GAIN_T cnt_factor = static_cast<GAIN_T>(num_data / sum_hessians);
+  const GAIN_T min_gain_shift = static_cast<GAIN_T>(parent_gain + min_gain_to_split);
+  const GAIN_T sum_gradients_acc = static_cast<GAIN_T>(sum_gradients);
+  const GAIN_T sum_hessians_acc = static_cast<GAIN_T>(sum_hessians);
+  const GAIN_T min_sum_hessian_acc = static_cast<GAIN_T>(min_sum_hessian_in_leaf);
+  const GAIN_T lambda_l1_acc = static_cast<GAIN_T>(lambda_l1);
+  const GAIN_T lambda_l2_acc = static_cast<GAIN_T>(lambda_l2);
+  const GAIN_T path_smooth_acc = static_cast<GAIN_T>(path_smooth);
+  const GAIN_T parent_output_acc = static_cast<GAIN_T>(parent_output);
 
   cuda_best_split_info->is_valid = false;
 
-  hist_t local_grad_hist = 0.0f;
-  hist_t local_hess_hist = 0.0f;
-  double local_gain = 0.0f;
+  GAIN_T local_grad_hist = 0.0f;
+  GAIN_T local_hess_hist = 0.0f;
+  GAIN_T local_gain = 0.0f;
   bool threshold_found = false;
   uint32_t threshold_value = 0;
   __shared__ int rand_threshold;
@@ -176,7 +214,7 @@ __device__ void FindBestSplitsForLeafKernelInner(
     }
   }
   __shared__ uint32_t best_thread_index;
-  __shared__ double shared_double_buffer[WARPSIZE];
+  __shared__ GAIN_T shared_gain_buffer[WARPSIZE];
   __shared__ bool shared_bool_buffer[WARPSIZE];
   __shared__ uint32_t shared_int_buffer[WARPSIZE];
   const unsigned int threadIdx_x = threadIdx.x;
@@ -188,14 +226,14 @@ __device__ void FindBestSplitsForLeafKernelInner(
     if (task->na_as_missing && task->mfb_offset == 1) {
       if (threadIdx_x < static_cast<uint32_t>(task->num_bin) && threadIdx_x > 0) {
         const unsigned int bin_offset = (threadIdx_x - 1) << 1;
-        local_grad_hist = feature_hist_ptr[bin_offset];
-        local_hess_hist = feature_hist_ptr[bin_offset + 1];
+        local_grad_hist = ReadHistEntry<GAIN_T>(feature_hist_ptr, bin_offset, fp32_hist);
+        local_hess_hist = ReadHistEntry<GAIN_T>(feature_hist_ptr, bin_offset + 1, fp32_hist);
       }
     } else {
       if (threadIdx_x < feature_num_bin_minus_offset && !skip_sum) {
         const unsigned int bin_offset = threadIdx_x << 1;
-        local_grad_hist = feature_hist_ptr[bin_offset];
-        local_hess_hist = feature_hist_ptr[bin_offset + 1];
+        local_grad_hist = ReadHistEntry<GAIN_T>(feature_hist_ptr, bin_offset, fp32_hist);
+        local_hess_hist = ReadHistEntry<GAIN_T>(feature_hist_ptr, bin_offset + 1, fp32_hist);
       }
     }
   } else {
@@ -203,42 +241,42 @@ __device__ void FindBestSplitsForLeafKernelInner(
       threadIdx_x < feature_num_bin_minus_offset && !skip_sum) {
       const unsigned int read_index = feature_num_bin_minus_offset - 1 - threadIdx_x;
       const unsigned int bin_offset = read_index << 1;
-      local_grad_hist = feature_hist_ptr[bin_offset];
-      local_hess_hist = feature_hist_ptr[bin_offset + 1];
+      local_grad_hist = ReadHistEntry<GAIN_T>(feature_hist_ptr, bin_offset, fp32_hist);
+      local_hess_hist = ReadHistEntry<GAIN_T>(feature_hist_ptr, bin_offset + 1, fp32_hist);
     }
   }
   __syncthreads();
   if (!REVERSE && task->na_as_missing && task->mfb_offset == 1) {
-    const hist_t sum_gradients_non_default = ShuffleReduceSum<hist_t>(local_grad_hist, shared_double_buffer, blockDim.x);
+    const GAIN_T sum_gradients_non_default = ShuffleReduceSum<GAIN_T>(local_grad_hist, shared_gain_buffer, blockDim.x);
     __syncthreads();
-    const hist_t sum_hessians_non_default = ShuffleReduceSum<hist_t>(local_hess_hist, shared_double_buffer, blockDim.x);
+    const GAIN_T sum_hessians_non_default = ShuffleReduceSum<GAIN_T>(local_hess_hist, shared_gain_buffer, blockDim.x);
     if (threadIdx_x == 0) {
-      local_grad_hist += (sum_gradients - sum_gradients_non_default);
-      local_hess_hist += (sum_hessians - sum_hessians_non_default);
+      local_grad_hist += (sum_gradients_acc - sum_gradients_non_default);
+      local_hess_hist += (sum_hessians_acc - sum_hessians_non_default);
     }
   }
   if (threadIdx_x == 0) {
     local_hess_hist += kEpsilon;
   }
   local_gain = kMinScore;
-  local_grad_hist = ShufflePrefixSum(local_grad_hist, shared_double_buffer);
+  local_grad_hist = ShufflePrefixSum(local_grad_hist, shared_gain_buffer);
   __syncthreads();
-  local_hess_hist = ShufflePrefixSum(local_hess_hist, shared_double_buffer);
+  local_hess_hist = ShufflePrefixSum(local_hess_hist, shared_gain_buffer);
   if (REVERSE) {
     if (threadIdx_x >= static_cast<unsigned int>(task->na_as_missing) && threadIdx_x <= task->num_bin - 2 && !skip_sum) {
-      const double sum_right_gradient = local_grad_hist;
-      const double sum_right_hessian = local_hess_hist;
+      const GAIN_T sum_right_gradient = local_grad_hist;
+      const GAIN_T sum_right_hessian = local_hess_hist;
       const data_size_t right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
-      const double sum_left_gradient = sum_gradients - sum_right_gradient;
-      const double sum_left_hessian = sum_hessians - sum_right_hessian;
+      const GAIN_T sum_left_gradient = sum_gradients_acc - sum_right_gradient;
+      const GAIN_T sum_left_hessian = sum_hessians_acc - sum_right_hessian;
       const data_size_t left_count = num_data - right_count;
-      if (sum_left_hessian >= min_sum_hessian_in_leaf && left_count >= min_data_in_leaf &&
-        sum_right_hessian >= min_sum_hessian_in_leaf && right_count >= min_data_in_leaf &&
+      if (sum_left_hessian >= min_sum_hessian_acc && left_count >= min_data_in_leaf &&
+        sum_right_hessian >= min_sum_hessian_acc && right_count >= min_data_in_leaf &&
         (!USE_RAND || static_cast<int>(task->num_bin - 2 - threadIdx_x) == rand_threshold)) {
-        double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
+        GAIN_T current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING, GAIN_T>(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
-          sum_right_hessian, lambda_l1,
-          lambda_l2, path_smooth, left_count, right_count, parent_output);
+          sum_right_hessian, lambda_l1_acc,
+          lambda_l2_acc, path_smooth_acc, left_count, right_count, parent_output_acc);
         // gain with split is worse than without split
         if (current_gain > min_gain_shift) {
           local_gain = current_gain - min_gain_shift;
@@ -250,19 +288,19 @@ __device__ void FindBestSplitsForLeafKernelInner(
   } else {
     const uint32_t end = (task->na_as_missing && task->mfb_offset == 1) ? static_cast<uint32_t>(task->num_bin - 2) : feature_num_bin_minus_offset - 2;
     if (threadIdx_x <= end && !skip_sum) {
-      const double sum_left_gradient = local_grad_hist;
-      const double sum_left_hessian = local_hess_hist;
+      const GAIN_T sum_left_gradient = local_grad_hist;
+      const GAIN_T sum_left_hessian = local_hess_hist;
       const data_size_t left_count = static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
-      const double sum_right_gradient = sum_gradients - sum_left_gradient;
-      const double sum_right_hessian = sum_hessians - sum_left_hessian;
+      const GAIN_T sum_right_gradient = sum_gradients_acc - sum_left_gradient;
+      const GAIN_T sum_right_hessian = sum_hessians_acc - sum_left_hessian;
       const data_size_t right_count = num_data - left_count;
-      if (sum_left_hessian >= min_sum_hessian_in_leaf && left_count >= min_data_in_leaf &&
-        sum_right_hessian >= min_sum_hessian_in_leaf && right_count >= min_data_in_leaf &&
+      if (sum_left_hessian >= min_sum_hessian_acc && left_count >= min_data_in_leaf &&
+        sum_right_hessian >= min_sum_hessian_acc && right_count >= min_data_in_leaf &&
         (!USE_RAND || static_cast<int>(threadIdx_x + task->mfb_offset) == rand_threshold)) {
-        double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
+        GAIN_T current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING, GAIN_T>(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
-          sum_right_hessian, lambda_l1,
-          lambda_l2, path_smooth, left_count, right_count, parent_output);
+          sum_right_hessian, lambda_l1_acc,
+          lambda_l2_acc, path_smooth_acc, left_count, right_count, parent_output_acc);
         // gain with split is worse than without split
         if (current_gain > min_gain_shift) {
           local_gain = current_gain - min_gain_shift;
@@ -275,7 +313,7 @@ __device__ void FindBestSplitsForLeafKernelInner(
     }
   }
   __syncthreads();
-  const uint32_t result = ReduceBestGain(local_gain, threshold_found, threadIdx_x, shared_double_buffer, shared_bool_buffer, shared_int_buffer);
+  const uint32_t result = ReduceBestGain(local_gain, threshold_found, threadIdx_x, shared_gain_buffer, shared_bool_buffer, shared_int_buffer);
   if (threadIdx_x == 0) {
     best_thread_index = result;
   }
@@ -285,10 +323,11 @@ __device__ void FindBestSplitsForLeafKernelInner(
     cuda_best_split_info->threshold = threshold_value;
     cuda_best_split_info->gain = local_gain;
     cuda_best_split_info->default_left = task->assume_out_default_left;
+    // the once-per-task output block stays in double (negligible cost)
     if (REVERSE) {
-      const double sum_right_gradient = local_grad_hist;
-      const double sum_right_hessian = local_hess_hist - kEpsilon;
-      const data_size_t right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
+      const double sum_right_gradient = static_cast<double>(local_grad_hist);
+      const double sum_right_hessian = static_cast<double>(local_hess_hist) - kEpsilon;
+      const data_size_t right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * static_cast<double>(cnt_factor)));
       const double sum_left_gradient = sum_gradients - sum_right_gradient;
       const double sum_left_hessian = sum_hessians - sum_right_hessian - kEpsilon;
       const data_size_t left_count = num_data - right_count;
@@ -309,9 +348,9 @@ __device__ void FindBestSplitsForLeafKernelInner(
       cuda_best_split_info->right_gain = CUDALeafSplits::GetLeafGainGivenOutput<USE_L1>(sum_right_gradient,
         sum_right_hessian, lambda_l1, lambda_l2, right_output);
     } else {
-      const double sum_left_gradient = local_grad_hist;
-      const double sum_left_hessian = local_hess_hist - kEpsilon;
-      const data_size_t left_count = static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
+      const double sum_left_gradient = static_cast<double>(local_grad_hist);
+      const double sum_left_hessian = static_cast<double>(local_hess_hist) - kEpsilon;
+      const data_size_t left_count = static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * static_cast<double>(cnt_factor)));
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian - kEpsilon;
       const data_size_t right_count = num_data - left_count;
@@ -335,7 +374,7 @@ __device__ void FindBestSplitsForLeafKernelInner(
   }
 }
 
-template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, bool REVERSE, typename BIN_HIST_TYPE, typename ACC_HIST_TYPE, bool USE_16BIT_BIN_HIST, bool USE_16BIT_ACC_HIST>
+template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, bool REVERSE, typename BIN_HIST_TYPE, typename ACC_HIST_TYPE, bool USE_16BIT_BIN_HIST, bool USE_16BIT_ACC_HIST, typename GAIN_T>
 __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
   // input feature information
   const BIN_HIST_TYPE* feature_hist_ptr,
@@ -360,13 +399,22 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
   // output parameters
   CUDASplitInfo* cuda_best_split_info) {
   const double sum_hessians = static_cast<double>(sum_gradients_hessians & 0x00000000ffffffff) * hess_scale;
-  const double cnt_factor = num_data / sum_hessians;
-  const double min_gain_shift = parent_gain + min_gain_to_split;
+  // leaf-level inputs converted once per task; per-bin math below runs in
+  // GAIN_T (float under EXABOOST_FP32_GAIN, double otherwise)
+  const GAIN_T cnt_factor = static_cast<GAIN_T>(num_data / sum_hessians);
+  const GAIN_T min_gain_shift = static_cast<GAIN_T>(parent_gain + min_gain_to_split);
+  const GAIN_T grad_scale_acc = static_cast<GAIN_T>(grad_scale);
+  const GAIN_T hess_scale_acc = static_cast<GAIN_T>(hess_scale);
+  const GAIN_T min_sum_hessian_acc = static_cast<GAIN_T>(min_sum_hessian_in_leaf);
+  const GAIN_T lambda_l1_acc = static_cast<GAIN_T>(lambda_l1);
+  const GAIN_T lambda_l2_acc = static_cast<GAIN_T>(lambda_l2);
+  const GAIN_T path_smooth_acc = static_cast<GAIN_T>(path_smooth);
+  const GAIN_T parent_output_acc = static_cast<GAIN_T>(parent_output);
 
   cuda_best_split_info->is_valid = false;
 
   ACC_HIST_TYPE local_grad_hess_hist = 0;
-  double local_gain = 0.0f;
+  GAIN_T local_gain = 0.0f;
   bool threshold_found = false;
   uint32_t threshold_value = 0;
   __shared__ int rand_threshold;
@@ -376,7 +424,7 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
     }
   }
   __shared__ uint32_t best_thread_index;
-  __shared__ double shared_double_buffer[WARPSIZE];
+  __shared__ GAIN_T shared_gain_buffer[WARPSIZE];
   __shared__ bool shared_bool_buffer[WARPSIZE];
   __shared__ uint32_t shared_int_buffer[2 * WARPSIZE];  // need 2 * WARPSIZE since the actual ACC_HIST_TYPE could be long int
   const unsigned int threadIdx_x = threadIdx.x;
@@ -409,10 +457,10 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
   __syncthreads();
   local_gain = kMinScore;
   local_grad_hess_hist = ShufflePrefixSum<ACC_HIST_TYPE>(local_grad_hess_hist, reinterpret_cast<ACC_HIST_TYPE*>(shared_int_buffer));
-  double sum_left_gradient = 0.0f;
-  double sum_left_hessian = 0.0f;
-  double sum_right_gradient = 0.0f;
-  double sum_right_hessian = 0.0f;
+  GAIN_T sum_left_gradient = 0.0f;
+  GAIN_T sum_left_hessian = 0.0f;
+  GAIN_T sum_right_gradient = 0.0f;
+  GAIN_T sum_right_hessian = 0.0f;
   data_size_t left_count = 0;
   data_size_t right_count = 0;
   int64_t sum_left_gradient_hessian = 0;
@@ -422,20 +470,20 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
       sum_right_gradient_hessian = USE_16BIT_ACC_HIST ?
         (static_cast<int64_t>(static_cast<int16_t>(local_grad_hess_hist >> 16)) << 32) | static_cast<int64_t>(local_grad_hess_hist & 0x0000ffff) :
         local_grad_hess_hist;
-      sum_right_gradient = static_cast<double>(static_cast<int32_t>((sum_right_gradient_hessian & 0xffffffff00000000) >> 32)) * grad_scale;
-      sum_right_hessian = static_cast<double>(static_cast<int32_t>(sum_right_gradient_hessian & 0x00000000ffffffff)) * hess_scale;
+      sum_right_gradient = static_cast<GAIN_T>(static_cast<int32_t>((sum_right_gradient_hessian & 0xffffffff00000000) >> 32)) * grad_scale_acc;
+      sum_right_hessian = static_cast<GAIN_T>(static_cast<int32_t>(sum_right_gradient_hessian & 0x00000000ffffffff)) * hess_scale_acc;
       right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
       sum_left_gradient_hessian = sum_gradients_hessians - sum_right_gradient_hessian;
-      sum_left_gradient = static_cast<double>(static_cast<int32_t>((sum_left_gradient_hessian & 0xffffffff00000000)>> 32)) * grad_scale;
-      sum_left_hessian = static_cast<double>(static_cast<int32_t>(sum_left_gradient_hessian & 0x00000000ffffffff)) * hess_scale;
+      sum_left_gradient = static_cast<GAIN_T>(static_cast<int32_t>((sum_left_gradient_hessian & 0xffffffff00000000)>> 32)) * grad_scale_acc;
+      sum_left_hessian = static_cast<GAIN_T>(static_cast<int32_t>(sum_left_gradient_hessian & 0x00000000ffffffff)) * hess_scale_acc;
       left_count = num_data - right_count;
-      if (sum_left_hessian >= min_sum_hessian_in_leaf && left_count >= min_data_in_leaf &&
-        sum_right_hessian >= min_sum_hessian_in_leaf && right_count >= min_data_in_leaf &&
+      if (sum_left_hessian >= min_sum_hessian_acc && left_count >= min_data_in_leaf &&
+        sum_right_hessian >= min_sum_hessian_acc && right_count >= min_data_in_leaf &&
         (!USE_RAND || static_cast<int>(task->num_bin - 2 - threadIdx_x) == rand_threshold)) {
-        double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
+        GAIN_T current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING, GAIN_T>(
           sum_left_gradient, sum_left_hessian + kEpsilon, sum_right_gradient,
-          sum_right_hessian + kEpsilon, lambda_l1,
-          lambda_l2, path_smooth, left_count, right_count, parent_output);
+          sum_right_hessian + kEpsilon, lambda_l1_acc,
+          lambda_l2_acc, path_smooth_acc, left_count, right_count, parent_output_acc);
         // gain with split is worse than without split
         if (current_gain > min_gain_shift) {
           local_gain = current_gain - min_gain_shift;
@@ -449,20 +497,20 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
       sum_left_gradient_hessian = USE_16BIT_ACC_HIST ?
         (static_cast<int64_t>(static_cast<int16_t>(local_grad_hess_hist >> 16)) << 32) | static_cast<int64_t>(local_grad_hess_hist & 0x0000ffff) :
         local_grad_hess_hist;
-      sum_left_gradient = static_cast<double>(static_cast<int32_t>((sum_left_gradient_hessian & 0xffffffff00000000) >> 32)) * grad_scale;
-      sum_left_hessian = static_cast<double>(static_cast<int32_t>(sum_left_gradient_hessian & 0x00000000ffffffff)) * hess_scale;
+      sum_left_gradient = static_cast<GAIN_T>(static_cast<int32_t>((sum_left_gradient_hessian & 0xffffffff00000000) >> 32)) * grad_scale_acc;
+      sum_left_hessian = static_cast<GAIN_T>(static_cast<int32_t>(sum_left_gradient_hessian & 0x00000000ffffffff)) * hess_scale_acc;
       left_count = static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
       sum_right_gradient_hessian = sum_gradients_hessians - sum_left_gradient_hessian;
-      sum_right_gradient = static_cast<double>(static_cast<int32_t>((sum_right_gradient_hessian & 0xffffffff00000000) >> 32)) * grad_scale;
-      sum_right_hessian = static_cast<double>(static_cast<int32_t>(sum_right_gradient_hessian & 0x00000000ffffffff)) * hess_scale;
+      sum_right_gradient = static_cast<GAIN_T>(static_cast<int32_t>((sum_right_gradient_hessian & 0xffffffff00000000) >> 32)) * grad_scale_acc;
+      sum_right_hessian = static_cast<GAIN_T>(static_cast<int32_t>(sum_right_gradient_hessian & 0x00000000ffffffff)) * hess_scale_acc;
       right_count = num_data - left_count;
-      if (sum_left_hessian >= min_sum_hessian_in_leaf && left_count >= min_data_in_leaf &&
-        sum_right_hessian >= min_sum_hessian_in_leaf && right_count >= min_data_in_leaf &&
+      if (sum_left_hessian >= min_sum_hessian_acc && left_count >= min_data_in_leaf &&
+        sum_right_hessian >= min_sum_hessian_acc && right_count >= min_data_in_leaf &&
         (!USE_RAND || static_cast<int>(threadIdx_x + task->mfb_offset) == rand_threshold)) {
-        double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
+        GAIN_T current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING, GAIN_T>(
           sum_left_gradient, sum_left_hessian + kEpsilon, sum_right_gradient,
-          sum_right_hessian + kEpsilon, lambda_l1,
-          lambda_l2, path_smooth, left_count, right_count, parent_output);
+          sum_right_hessian + kEpsilon, lambda_l1_acc,
+          lambda_l2_acc, path_smooth_acc, left_count, right_count, parent_output_acc);
         // gain with split is worse than without split
         if (current_gain > min_gain_shift) {
           local_gain = current_gain - min_gain_shift;
@@ -473,7 +521,7 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
     }
   }
   __syncthreads();
-  const uint32_t result = ReduceBestGain(local_gain, threshold_found, threadIdx_x, shared_double_buffer, shared_bool_buffer, shared_int_buffer);
+  const uint32_t result = ReduceBestGain(local_gain, threshold_found, threadIdx_x, shared_gain_buffer, shared_bool_buffer, shared_int_buffer);
   if (threadIdx_x == 0) {
     best_thread_index = result;
   }
@@ -483,24 +531,29 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
     cuda_best_split_info->threshold = threshold_value;
     cuda_best_split_info->gain = local_gain;
     cuda_best_split_info->default_left = task->assume_out_default_left;
-    const double left_output = CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_left_gradient,
-      sum_left_hessian, lambda_l1, lambda_l2, path_smooth, left_count, parent_output);
-    const double right_output = CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_right_gradient,
-      sum_right_hessian, lambda_l1, lambda_l2, path_smooth, right_count, parent_output);
-    cuda_best_split_info->left_sum_gradients = sum_left_gradient;
-    cuda_best_split_info->left_sum_hessians = sum_left_hessian;
+    // the once-per-task output block stays in double (negligible cost)
+    const double sum_left_gradient_dbl = static_cast<double>(sum_left_gradient);
+    const double sum_left_hessian_dbl = static_cast<double>(sum_left_hessian);
+    const double sum_right_gradient_dbl = static_cast<double>(sum_right_gradient);
+    const double sum_right_hessian_dbl = static_cast<double>(sum_right_hessian);
+    const double left_output = CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_left_gradient_dbl,
+      sum_left_hessian_dbl, lambda_l1, lambda_l2, path_smooth, left_count, parent_output);
+    const double right_output = CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_right_gradient_dbl,
+      sum_right_hessian_dbl, lambda_l1, lambda_l2, path_smooth, right_count, parent_output);
+    cuda_best_split_info->left_sum_gradients = sum_left_gradient_dbl;
+    cuda_best_split_info->left_sum_hessians = sum_left_hessian_dbl;
     cuda_best_split_info->left_sum_of_gradients_hessians = sum_left_gradient_hessian;
     cuda_best_split_info->left_count = left_count;
-    cuda_best_split_info->right_sum_gradients = sum_right_gradient;
-    cuda_best_split_info->right_sum_hessians = sum_right_hessian;
+    cuda_best_split_info->right_sum_gradients = sum_right_gradient_dbl;
+    cuda_best_split_info->right_sum_hessians = sum_right_hessian_dbl;
     cuda_best_split_info->right_sum_of_gradients_hessians = sum_right_gradient_hessian;
     cuda_best_split_info->right_count = right_count;
     cuda_best_split_info->left_value = left_output;
-    cuda_best_split_info->left_gain = CUDALeafSplits::GetLeafGainGivenOutput<USE_L1>(sum_left_gradient,
-      sum_left_hessian, lambda_l1, lambda_l2, left_output);
+    cuda_best_split_info->left_gain = CUDALeafSplits::GetLeafGainGivenOutput<USE_L1>(sum_left_gradient_dbl,
+      sum_left_hessian_dbl, lambda_l1, lambda_l2, left_output);
     cuda_best_split_info->right_value = right_output;
-    cuda_best_split_info->right_gain = CUDALeafSplits::GetLeafGainGivenOutput<USE_L1>(sum_right_gradient,
-      sum_right_hessian, lambda_l1, lambda_l2, right_output);
+    cuda_best_split_info->right_gain = CUDALeafSplits::GetLeafGainGivenOutput<USE_L1>(sum_right_gradient_dbl,
+      sum_right_hessian_dbl, lambda_l1, lambda_l2, right_output);
   }
 }
 
@@ -785,10 +838,11 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
   }
 }
 
-template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, bool IS_LARGER>
+template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, bool IS_LARGER, typename GAIN_T>
 __global__ void FindBestSplitsForLeafKernel(
   // input feature information
   const int8_t* is_feature_used_bytree,
+  const bool fp32_hist,
   // input task information
   const int num_tasks,
   const SplitFindTask* tasks,
@@ -825,8 +879,10 @@ __global__ void FindBestSplitsForLeafKernel(
   CUDARandom* cuda_random = USE_RAND ?
     (IS_LARGER ? cuda_randoms + task_index * 2 + 1 : cuda_randoms + task_index * 2) : nullptr;
   if (is_feature_used_bytree[inner_feature_index]) {
-    const hist_t* hist_ptr = (IS_LARGER ? larger_leaf_splits->hist_in_leaf : smaller_leaf_splits->hist_in_leaf) + task->hist_offset * 2;
+    const hist_t* hist_ptr = FeatureHistPtr(
+      IS_LARGER ? larger_leaf_splits->hist_in_leaf : smaller_leaf_splits->hist_in_leaf, task->hist_offset, fp32_hist);
     if (task->is_categorical) {
+      // fp32_hist is globally disabled for datasets with categorical features
       FindBestSplitsForLeafKernelCategoricalInner<USE_RAND, USE_L1, USE_SMOOTHING>(
         // input feature information
         hist_ptr,
@@ -854,9 +910,10 @@ __global__ void FindBestSplitsForLeafKernel(
         out);
     } else {
       if (!task->reverse) {
-        FindBestSplitsForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, false>(
+        FindBestSplitsForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, false, GAIN_T>(
           // input feature information
           hist_ptr,
+          fp32_hist,
           // input task information
           task,
           cuda_random,
@@ -876,9 +933,10 @@ __global__ void FindBestSplitsForLeafKernel(
           // output parameters
           out);
       } else {
-        FindBestSplitsForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, true>(
+        FindBestSplitsForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, true, GAIN_T>(
           // input feature information
           hist_ptr,
+          fp32_hist,
           // input task information
           task,
           cuda_random,
@@ -905,7 +963,7 @@ __global__ void FindBestSplitsForLeafKernel(
 }
 
 
-template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, bool IS_LARGER>
+template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, bool IS_LARGER, typename GAIN_T>
 __global__ void FindBestSplitsDiscretizedForLeafKernel(
   // input feature information
   const int8_t* is_feature_used_bytree,
@@ -963,7 +1021,7 @@ __global__ void FindBestSplitsDiscretizedForLeafKernel(
         if (use_16bit_bin) {
           const int32_t* hist_ptr =
             reinterpret_cast<const int32_t*>(IS_LARGER ? larger_leaf_splits->hist_in_leaf : smaller_leaf_splits->hist_in_leaf) + task->hist_offset;
-          FindBestSplitsDiscretizedForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, false, int32_t, int32_t, true, true>(
+          FindBestSplitsDiscretizedForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, false, int32_t, int32_t, true, true, GAIN_T>(
             // input feature information
             hist_ptr,
             // input task information
@@ -993,7 +1051,7 @@ __global__ void FindBestSplitsDiscretizedForLeafKernel(
           // produced garbage splits whenever a leaf needed 32-bit bins (large leaves).
           const int64_t* hist_ptr =
             reinterpret_cast<const int64_t*>(IS_LARGER ? larger_leaf_splits->hist_in_leaf : smaller_leaf_splits->hist_in_leaf) + task->hist_offset;
-          FindBestSplitsDiscretizedForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, false, int64_t, int64_t, false, false>(
+          FindBestSplitsDiscretizedForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, false, int64_t, int64_t, false, false, GAIN_T>(
             // input feature information
             hist_ptr,
             // input task information
@@ -1021,7 +1079,7 @@ __global__ void FindBestSplitsDiscretizedForLeafKernel(
         if (use_16bit_bin) {
           const int32_t* hist_ptr =
             reinterpret_cast<const int32_t*>(IS_LARGER ? larger_leaf_splits->hist_in_leaf : smaller_leaf_splits->hist_in_leaf) + task->hist_offset;
-          FindBestSplitsDiscretizedForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, true, int32_t, int32_t, true, true>(
+          FindBestSplitsDiscretizedForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, true, int32_t, int32_t, true, true, GAIN_T>(
             // input feature information
             hist_ptr,
             // input task information
@@ -1048,7 +1106,7 @@ __global__ void FindBestSplitsDiscretizedForLeafKernel(
           // 32-bit histogram is int64-per-bin; read as int64 (see forward branch above).
           const int64_t* hist_ptr =
             reinterpret_cast<const int64_t*>(IS_LARGER ? larger_leaf_splits->hist_in_leaf : smaller_leaf_splits->hist_in_leaf) + task->hist_offset;
-          FindBestSplitsDiscretizedForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, true, int64_t, int64_t, false, false>(
+          FindBestSplitsDiscretizedForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, true, int64_t, int64_t, false, false, GAIN_T>(
             // input feature information
             hist_ptr,
             // input task information
@@ -1804,6 +1862,15 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelInner1(LaunchFindBest
 
 template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING>
 void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelInner2(LaunchFindBestSplitsForLeafKernel_PARAMS) {
+  if (ExaboostFP32GainEnabled()) {
+    LaunchFindBestSplitsForLeafKernelInner3<USE_RAND, USE_L1, USE_SMOOTHING, float>(LaunchFindBestSplitsForLeafKernel_ARGS);
+  } else {
+    LaunchFindBestSplitsForLeafKernelInner3<USE_RAND, USE_L1, USE_SMOOTHING, double>(LaunchFindBestSplitsForLeafKernel_ARGS);
+  }
+}
+
+template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, typename GAIN_T>
+void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelInner3(LaunchFindBestSplitsForLeafKernel_PARAMS) {
   const int8_t* is_feature_used_by_smaller_node = cuda_is_feature_used_bytree_.RawData();
   const int8_t* is_feature_used_by_larger_node = cuda_is_feature_used_bytree_.RawData();
   if (select_features_by_node_) {
@@ -1811,29 +1878,31 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelInner2(LaunchFindBest
     is_feature_used_by_larger_node = is_feature_used_by_larger_node_.RawData();
   }
   // Order each leaf's FindBestSplits after the histogram it reads, on its own stream,
-  // instead of a device-wide sync: the smaller leaf reads the constructed histogram and
-  // the larger leaf reads the subtracted histogram (both produced on the histogram
-  // constructor's cuda_stream_). cudaStreamWaitEvent keeps the host from stalling and lets
-  // the two leaves run concurrently. construct_done is recorded whenever either leaf is
-  // valid, and subtract every split, so the events are current here.
+  // instead of a device-wide sync: cudaStreamWaitEvent keeps the host from stalling and
+  // lets the two leaves run concurrently. BOTH leaves wait on the subtract-done event
+  // (recorded after fix + subtract on the constructor's stream): the smaller leaf's
+  // histogram is only complete after FixHistogramKernel writes its most-frequent bin,
+  // and that runs AFTER the construct-done event is recorded, so waiting on
+  // construct_done alone raced with the fix kernel (nondeterministic splits when the
+  // per-pair pipelines overlap).
   if (is_smaller_leaf_valid) {
-    CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], hist_construct_done_event_, 0));
+    CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], hist_subtract_done_events_[active_hist_pipeline_], 0));
   }
   if (is_larger_leaf_valid) {
-    CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[1], hist_subtract_done_event_, 0));
+    CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[1], hist_subtract_done_events_[active_hist_pipeline_], 0));
   }
   if (!use_global_memory_) {
     if (is_smaller_leaf_valid) {
-      FindBestSplitsForLeafKernel<USE_RAND, USE_L1, USE_SMOOTHING, false>
+      FindBestSplitsForLeafKernel<USE_RAND, USE_L1, USE_SMOOTHING, false, GAIN_T>
         <<<num_tasks_, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>
-        (is_feature_used_by_smaller_node, FindBestSplitsForLeafKernel_ARGS);
+        (is_feature_used_by_smaller_node, hist_fp32_, FindBestSplitsForLeafKernel_ARGS);
     }
     // No device sync here: the larger-leaf launch below waits on subtract_done_event via
     // its stream, and the smaller/larger leaves write disjoint cuda_best_split_info_ slots.
     if (is_larger_leaf_valid) {
-      FindBestSplitsForLeafKernel<USE_RAND, USE_L1, USE_SMOOTHING, true>
+      FindBestSplitsForLeafKernel<USE_RAND, USE_L1, USE_SMOOTHING, true, GAIN_T>
         <<<num_tasks_, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[1]>>>
-        (is_feature_used_by_larger_node, FindBestSplitsForLeafKernel_ARGS);
+        (is_feature_used_by_larger_node, hist_fp32_, FindBestSplitsForLeafKernel_ARGS);
     }
   } else {
     // Global-memory path (large-dataset fallback, not covered by the shared-memory
@@ -1944,18 +2013,29 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLeafKernelInner1(Lau
 
 template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING>
 void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLeafKernelInner2(LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS) {
+  if (ExaboostFP32GainEnabled()) {
+    LaunchFindBestSplitsDiscretizedForLeafKernelInner3<USE_RAND, USE_L1, USE_SMOOTHING, float>(LaunchFindBestSplitsDiscretizedForLeafKernel_ARGS);
+  } else {
+    LaunchFindBestSplitsDiscretizedForLeafKernelInner3<USE_RAND, USE_L1, USE_SMOOTHING, double>(LaunchFindBestSplitsDiscretizedForLeafKernel_ARGS);
+  }
+}
+
+template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, typename GAIN_T>
+void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLeafKernelInner3(LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS) {
   if (!use_global_memory_) {
     // Order each leaf after the histogram it reads via its own stream (see the
-    // non-discretized path for the rationale); no device sync between the two leaves.
+    // non-discretized path for the rationale — both leaves wait on subtract_done,
+    // which is recorded after the fix kernel completes the smaller histogram);
+    // no device sync between the two leaves.
     if (is_smaller_leaf_valid) {
-      CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], hist_construct_done_event_, 0));
-      FindBestSplitsDiscretizedForLeafKernel<USE_RAND, USE_L1, USE_SMOOTHING, false>
+      CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], hist_subtract_done_events_[active_hist_pipeline_], 0));
+      FindBestSplitsDiscretizedForLeafKernel<USE_RAND, USE_L1, USE_SMOOTHING, false, GAIN_T>
         <<<num_tasks_, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>
         (FindBestSplitsDiscretizedForLeafKernel_ARGS);
     }
     if (is_larger_leaf_valid) {
-      CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[1], hist_subtract_done_event_, 0));
-      FindBestSplitsDiscretizedForLeafKernel<USE_RAND, USE_L1, USE_SMOOTHING, true>
+      CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[1], hist_subtract_done_events_[active_hist_pipeline_], 0));
+      FindBestSplitsDiscretizedForLeafKernel<USE_RAND, USE_L1, USE_SMOOTHING, true, GAIN_T>
         <<<num_tasks_, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[1]>>>
         (FindBestSplitsDiscretizedForLeafKernel_ARGS);
     }
@@ -1967,6 +2047,452 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLeafKernelInner2(Lau
 #undef LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS
 #undef LaunchFindBestSplitsDiscretizedForLeafKernel_ARGS
 #undef FindBestSplitsDiscretizedForLeafKernel_ARGS
+
+
+// ----- Batched per-level find + sync (hybrid growth) -------------------------------
+// One find launch covers every (pair, leaf, task) of a level: blockIdx.x = task,
+// blockIdx.y = pair, blockIdx.z = 0 (smaller leaf) / 1 (larger leaf). Each pair
+// writes its own region of cuda_best_split_info (2 * num_tasks slots at offset
+// pair * 2 * num_tasks) so pairs never conflict. Only the template combination the
+// benchmarks exercise is instantiated (no rand / L1 / smoothing); other configs
+// fall back to the per-pair path (see SupportsBatchedLevel).
+
+template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, typename GAIN_T>
+__global__ void FindBestSplitsForLevelKernel(
+  const int8_t* is_feature_used_bytree,
+  const bool fp32_hist,
+  const int num_tasks,
+  const SplitFindTask* tasks,
+  const int* used_task_indices,
+  CUDARandom* cuda_randoms,
+  const CUDAHybridPairDescriptor* pair_descs,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf,
+  const double min_gain_to_split,
+  const double lambda_l1,
+  const double lambda_l2,
+  const double path_smooth,
+  CUDASplitInfo* cuda_best_split_info) {
+  const unsigned int pair_index = blockIdx.y;
+  const bool is_larger = (blockIdx.z == 1);
+  const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
+  // desc->{smaller,larger}_valid carries the HOST-known gates (max_depth); the
+  // min_data/min_hessian gates are evaluated on-device from the leaf struct so
+  // the speculative single-sync flow can enqueue this kernel before the child
+  // statistics are read back. In the classic flow the host flags already include
+  // the identical data/hessian conditions, so the device check is a no-op.
+  if (is_larger ? !desc->larger_valid : !desc->smaller_valid) {
+    return;
+  }
+  const CUDALeafSplitsStruct* leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
+  const data_size_t num_data = leaf_splits->num_data_in_leaf;
+  const double leaf_sum_hessians = leaf_splits->sum_of_hessians;
+  if (leaf_splits->leaf_index < 0 || num_data <= min_data_in_leaf ||
+      leaf_sum_hessians <= min_sum_hessian_in_leaf) {
+    return;
+  }
+  // feature-sampled trees launch one block per USED task only; the output slot
+  // keeps the ORIGINAL task index (unused slots are masked out by the sync)
+  const unsigned int task_index = used_task_indices == nullptr ?
+    blockIdx.x : static_cast<unsigned int>(used_task_indices[blockIdx.x]);
+  const SplitFindTask* task = tasks + task_index;
+  const double parent_gain = leaf_splits->gain;
+  const double sum_gradients = leaf_splits->sum_of_gradients;
+  const double sum_hessians = leaf_sum_hessians + 2 * kEpsilon;
+  const double parent_output = leaf_splits->leaf_value;
+  const unsigned int output_offset = pair_index * (2 * static_cast<unsigned int>(num_tasks)) +
+    (is_larger ? task_index + num_tasks : task_index);
+  CUDASplitInfo* out = cuda_best_split_info + output_offset;
+  CUDARandom* cuda_random = USE_RAND ?
+    (is_larger ? cuda_randoms + task_index * 2 + 1 : cuda_randoms + task_index * 2) : nullptr;
+  if (is_feature_used_bytree[task->inner_feature_index]) {
+    // no categorical branch: the batched path is gated on !has_categorical_feature_
+    const hist_t* hist_ptr = FeatureHistPtr(leaf_splits->hist_in_leaf, task->hist_offset, fp32_hist);
+    if (!task->reverse) {
+      FindBestSplitsForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, false, GAIN_T>(
+        hist_ptr, fp32_hist, task, cuda_random,
+        lambda_l1, lambda_l2, path_smooth,
+        min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
+        parent_gain, sum_gradients, sum_hessians, num_data, parent_output,
+        out);
+    } else {
+      FindBestSplitsForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, true, GAIN_T>(
+        hist_ptr, fp32_hist, task, cuda_random,
+        lambda_l1, lambda_l2, path_smooth,
+        min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
+        parent_gain, sum_gradients, sum_hessians, num_data, parent_output,
+        out);
+    }
+  } else {
+    out->is_valid = false;
+  }
+}
+
+template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, typename GAIN_T>
+__global__ void FindBestSplitsDiscretizedForLevelKernel(
+  const int8_t* is_feature_used_bytree,
+  const int num_tasks,
+  const SplitFindTask* tasks,
+  const int* used_task_indices,
+  CUDARandom* cuda_randoms,
+  const CUDAHybridPairDescriptor* pair_descs,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf,
+  const double min_gain_to_split,
+  const double lambda_l1,
+  const double lambda_l2,
+  const double path_smooth,
+  const score_t* grad_scale,
+  const score_t* hess_scale,
+  CUDASplitInfo* cuda_best_split_info) {
+  const unsigned int pair_index = blockIdx.y;
+  const bool is_larger = (blockIdx.z == 1);
+  const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
+  if (is_larger ? !desc->larger_valid : !desc->smaller_valid) {
+    return;
+  }
+  const CUDALeafSplitsStruct* leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
+  const unsigned int task_index = used_task_indices == nullptr ?
+    blockIdx.x : static_cast<unsigned int>(used_task_indices[blockIdx.x]);
+  const SplitFindTask* task = tasks + task_index;
+  const double parent_gain = leaf_splits->gain;
+  const int64_t sum_gradients_hessians = leaf_splits->sum_of_gradients_hessians;
+  const data_size_t num_data = is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf;
+  const double parent_output = leaf_splits->leaf_value;
+  const unsigned int output_offset = pair_index * (2 * static_cast<unsigned int>(num_tasks)) +
+    (is_larger ? task_index + num_tasks : task_index);
+  CUDASplitInfo* out = cuda_best_split_info + output_offset;
+  CUDARandom* cuda_random = USE_RAND ?
+    (is_larger ? cuda_randoms + task_index * 2 + 1 : cuda_randoms + task_index * 2) : nullptr;
+  const bool use_16bit_bin = is_larger ? (desc->larger_num_bits <= 16) : (desc->smaller_num_bits <= 16);
+  if (is_feature_used_bytree[task->inner_feature_index]) {
+    // no categorical branch: quantized training rejects categorical features
+    if (!task->reverse) {
+      if (use_16bit_bin) {
+        const int32_t* hist_ptr =
+          reinterpret_cast<const int32_t*>(leaf_splits->hist_in_leaf) + task->hist_offset;
+        FindBestSplitsDiscretizedForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, false, int32_t, int32_t, true, true, GAIN_T>(
+          hist_ptr, task, cuda_random,
+          lambda_l1, lambda_l2, path_smooth,
+          min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
+          parent_gain, sum_gradients_hessians, num_data, parent_output,
+          *grad_scale, *hess_scale, out);
+      } else {
+        // 32-bit histogram is int64-per-bin; read as int64 (see the per-pair kernel)
+        const int64_t* hist_ptr =
+          reinterpret_cast<const int64_t*>(leaf_splits->hist_in_leaf) + task->hist_offset;
+        FindBestSplitsDiscretizedForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, false, int64_t, int64_t, false, false, GAIN_T>(
+          hist_ptr, task, cuda_random,
+          lambda_l1, lambda_l2, path_smooth,
+          min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
+          parent_gain, sum_gradients_hessians, num_data, parent_output,
+          *grad_scale, *hess_scale, out);
+      }
+    } else {
+      if (use_16bit_bin) {
+        const int32_t* hist_ptr =
+          reinterpret_cast<const int32_t*>(leaf_splits->hist_in_leaf) + task->hist_offset;
+        FindBestSplitsDiscretizedForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, true, int32_t, int32_t, true, true, GAIN_T>(
+          hist_ptr, task, cuda_random,
+          lambda_l1, lambda_l2, path_smooth,
+          min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
+          parent_gain, sum_gradients_hessians, num_data, parent_output,
+          *grad_scale, *hess_scale, out);
+      } else {
+        const int64_t* hist_ptr =
+          reinterpret_cast<const int64_t*>(leaf_splits->hist_in_leaf) + task->hist_offset;
+        FindBestSplitsDiscretizedForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, true, int64_t, int64_t, false, false, GAIN_T>(
+          hist_ptr, task, cuda_random,
+          lambda_l1, lambda_l2, path_smooth,
+          min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
+          parent_gain, sum_gradients_hessians, num_data, parent_output,
+          *grad_scale, *hess_scale, out);
+      }
+    }
+  } else {
+    out->is_valid = false;
+  }
+}
+
+// Batched reduction over the per-pair task regions: blockIdx.x = 0 (smaller) / 1
+// (larger), blockIdx.y = pair, blockIdx.z = task block (num_tasks may exceed one
+// sync block for wide datasets). Each block reduces its slice of one leaf's
+// 2 * num_tasks region exactly like SyncBestSplitForLeafKernel (same block size,
+// same task slicing, same reduction order, hence bit-identical results) and
+// writes that leaf's slot of the per-leaf best-split cache (block z writes slot
+// leaf + z * num_leaves, exactly like the per-pair kernel); leaves of different
+// pairs are disjoint, so no conflicts. Multi-block leaves are merged afterwards
+// by SyncBestSplitForLevelKernelAllBlocks (the per-pair AllBlocks replica).
+__global__ void SyncBestSplitForLevelKernel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  CUDASplitInfo* cuda_leaf_best_split_info,
+  const SplitFindTask* tasks,
+  const int8_t* is_feature_used_bytree,
+  const CUDASplitInfo* cuda_best_split_info,
+  const int num_tasks,
+  const int num_leaves,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf) {
+  __shared__ double shared_gain_buffer[WARPSIZE];
+  __shared__ bool shared_found_buffer[WARPSIZE];
+  __shared__ uint32_t shared_thread_index_buffer[WARPSIZE];
+  const unsigned int pair_index = blockIdx.y;
+  const bool is_larger = (blockIdx.x == 1);
+  const unsigned int leaf_block_index = blockIdx.z;
+  const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
+  // leaf index and validity mirror the find kernel: the leaf index comes from
+  // the struct (written by the batched apply kernels; equal to the host value in
+  // the classic flow) and the host validity flags are combined (bitwise AND) with the on-device
+  // min_data/min_hessian gates so the speculative single-sync flow needs no
+  // host-side child statistics.
+  const CUDALeafSplitsStruct* leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
+  const int leaf_index = leaf_splits->leaf_index;
+  if (leaf_index < 0) {
+    return;
+  }
+  bool leaf_valid = is_larger ? (desc->larger_valid != 0) : (desc->smaller_valid != 0);
+  leaf_valid = leaf_valid && leaf_splits->num_data_in_leaf > min_data_in_leaf &&
+    leaf_splits->sum_of_hessians > min_sum_hessian_in_leaf;
+  if (!leaf_valid) {
+    // mirror SetInvalidLeafSplitInfoKernel of the per-pair path (block-slot
+    // copies for z >= 1 stay stale, so the AllBlocks merge skips invalid leaves)
+    if (threadIdx.x == 0 && leaf_block_index == 0) {
+      cuda_leaf_best_split_info[leaf_index].is_valid = false;
+    }
+    return;
+  }
+  const uint32_t threadIdx_x = threadIdx.x;
+  const CUDASplitInfo* pair_split_info = cuda_best_split_info +
+    static_cast<size_t>(pair_index) * (2 * static_cast<size_t>(num_tasks));
+  bool best_found = false;
+  double best_gain = kMinScore;
+  uint32_t shared_read_index = 0;
+  const int task_index = static_cast<int>(leaf_block_index * blockDim.x + threadIdx_x);
+  const uint32_t read_index = is_larger ? static_cast<uint32_t>(task_index + num_tasks) : static_cast<uint32_t>(task_index);
+  // Feature-sampled trees launch the batched find over USED tasks only, leaving
+  // unused tasks' output slots stale; mask them to not-found here. This is
+  // bit-identical to the per-pair reduction, where those lanes hold the
+  // is_valid=false slots the (full-grid) find would have written: a not-found
+  // lane never propagates its gain/read-index through ReduceBestGain.
+  if (task_index < num_tasks &&
+      (is_feature_used_bytree == nullptr ||
+       is_feature_used_bytree[tasks[task_index].inner_feature_index])) {
+    best_found = pair_split_info[read_index].is_valid;
+    best_gain = pair_split_info[read_index].gain;
+    shared_read_index = read_index;
+  }
+  __syncthreads();
+  const uint32_t best_read_index = ReduceBestGain(best_gain, best_found, shared_read_index,
+      shared_gain_buffer, shared_found_buffer, shared_thread_index_buffer);
+  if (threadIdx.x == 0) {
+    CUDASplitInfo* cuda_split_info = cuda_leaf_best_split_info +
+      static_cast<unsigned int>(leaf_index) + leaf_block_index * static_cast<unsigned int>(num_leaves);
+    const int best_task_index = best_read_index >= static_cast<uint32_t>(num_tasks) ?
+      static_cast<int>(best_read_index) - num_tasks : static_cast<int>(best_read_index);
+    // when nothing was found the reduction returns thread 0's own lane, whose
+    // slot may be stale under task compaction: re-apply the mask before reading
+    const bool best_task_used = is_feature_used_bytree == nullptr ||
+      is_feature_used_bytree[tasks[best_task_index].inner_feature_index];
+    const CUDASplitInfo* best_split_info = pair_split_info + best_read_index;
+    if (best_task_used && best_split_info->is_valid) {
+      *cuda_split_info = *best_split_info;
+      cuda_split_info->inner_feature_index = tasks[best_task_index].inner_feature_index;
+      cuda_split_info->is_valid = true;
+    } else {
+      cuda_split_info->gain = kMinScore;
+      cuda_split_info->is_valid = false;
+    }
+  }
+}
+
+// Cross-block merge for wide datasets (num_tasks > one sync block): one block per
+// (leaf role, pair) sequentially folds block slots 1..num_blocks_per_leaf-1 into
+// slot 0 with the exact comparison (and hence tie-break order: the LOWEST task
+// block wins ties) of the per-pair SyncBestSplitForLeafKernelAllBlocks.
+__global__ void SyncBestSplitForLevelKernelAllBlocks(
+  const CUDAHybridPairDescriptor* pair_descs,
+  CUDASplitInfo* cuda_leaf_best_split_info,
+  const unsigned int num_blocks_per_leaf,
+  const int num_leaves,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf) {
+  const unsigned int pair_index = blockIdx.y;
+  const bool is_larger = (blockIdx.x == 1);
+  const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
+  const CUDALeafSplitsStruct* leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
+  const int leaf_index = leaf_splits->leaf_index;
+  if (leaf_index < 0) {
+    return;
+  }
+  bool leaf_valid = is_larger ? (desc->larger_valid != 0) : (desc->smaller_valid != 0);
+  leaf_valid = leaf_valid && leaf_splits->num_data_in_leaf > min_data_in_leaf &&
+    leaf_splits->sum_of_hessians > min_sum_hessian_in_leaf;
+  if (!leaf_valid) {
+    // the sync kernel's block-slot copies were skipped for this leaf
+    return;
+  }
+  CUDASplitInfo* leaf_split_info = cuda_leaf_best_split_info + leaf_index;
+  for (unsigned int block_index = 1; block_index < num_blocks_per_leaf; ++block_index) {
+    const unsigned int leaf_read_pos = static_cast<unsigned int>(leaf_index) +
+      block_index * static_cast<unsigned int>(num_leaves);
+    const CUDASplitInfo* other_split_info = cuda_leaf_best_split_info + leaf_read_pos;
+    if ((other_split_info->is_valid && leaf_split_info->is_valid &&
+      other_split_info->gain > leaf_split_info->gain) ||
+        (!leaf_split_info->is_valid && other_split_info->is_valid)) {
+      *leaf_split_info = *other_split_info;
+    }
+  }
+}
+
+void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const int num_pairs) {
+  const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
+  if (num_used_tasks_ == 0) {
+    return;  // no usable feature this tree; the sync masks every lane not-found
+  }
+  dim3 grid_dim(compact_tasks ? num_used_tasks_ : num_tasks_, num_pairs, 2);
+  #define FindBestSplitsForLevelKernel_ARGS \
+      cuda_is_feature_used_bytree_.RawData(), \
+      hist_fp32_, \
+      num_tasks_, \
+      cuda_split_find_tasks_.RawData(), \
+      compact_tasks ? cuda_used_task_indices_.RawDataReadOnly() : nullptr, \
+      cuda_randoms_.RawData(), \
+      pair_descs, \
+      min_data_in_leaf_, \
+      min_sum_hessian_in_leaf_, \
+      min_gain_to_split_, \
+      lambda_l1_, \
+      lambda_l2_, \
+      path_smooth_, \
+      cuda_best_split_info_.RawData()
+  if (ExaboostFP32GainEnabled()) {
+    FindBestSplitsForLevelKernel<false, false, false, float>
+      <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
+        FindBestSplitsForLevelKernel_ARGS);
+  } else {
+    FindBestSplitsForLevelKernel<false, false, false, double>
+      <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
+        FindBestSplitsForLevelKernel_ARGS);
+  }
+  #undef FindBestSplitsForLevelKernel_ARGS
+}
+
+void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const int num_pairs,
+  const score_t* grad_scale,
+  const score_t* hess_scale) {
+  const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
+  if (num_used_tasks_ == 0) {
+    return;  // no usable feature this tree; the sync masks every lane not-found
+  }
+  dim3 grid_dim(compact_tasks ? num_used_tasks_ : num_tasks_, num_pairs, 2);
+  #define FindBestSplitsDiscretizedForLevelKernel_ARGS \
+      cuda_is_feature_used_bytree_.RawData(), \
+      num_tasks_, \
+      cuda_split_find_tasks_.RawData(), \
+      compact_tasks ? cuda_used_task_indices_.RawDataReadOnly() : nullptr, \
+      cuda_randoms_.RawData(), \
+      pair_descs, \
+      min_data_in_leaf_, \
+      min_sum_hessian_in_leaf_, \
+      min_gain_to_split_, \
+      lambda_l1_, \
+      lambda_l2_, \
+      path_smooth_, \
+      grad_scale, \
+      hess_scale, \
+      cuda_best_split_info_.RawData()
+  if (ExaboostFP32GainEnabled()) {
+    FindBestSplitsDiscretizedForLevelKernel<false, false, false, float>
+      <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
+        FindBestSplitsDiscretizedForLevelKernel_ARGS);
+  } else {
+    FindBestSplitsDiscretizedForLevelKernel<false, false, false, double>
+      <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
+        FindBestSplitsDiscretizedForLevelKernel_ARGS);
+  }
+  #undef FindBestSplitsDiscretizedForLevelKernel_ARGS
+}
+
+#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+void CUDABestSplitFinder::CaptureHybridGraphFindKernels(
+    const CUDAHybridPairDescriptor* pair_descs,
+    std::vector<cudaGraphNode_t>* nodes,
+    std::vector<int>* roles,
+    std::vector<int>* role_static_x) {
+  // graphs L1 body capture (non-quantized): find + sync with placeholder pair
+  // counts; the wait on the histogram phase's subtract event becomes a graph
+  // edge, exactly mirroring the host flow's ordering
+  CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], hist_subtract_done_events_[0], 0));
+  LaunchFindBestSplitsForLevelKernel(pair_descs, 1);
+  if (!AppendCapturedNode(cuda_streams_[0], nodes)) return;
+  roles->push_back(kHybridGraphNodeFind);
+  role_static_x->push_back(0);
+  // mirror of LaunchSyncBestSplitForLevelKernel, one collected node per launch
+  const int num_blocks_per_leaf = (num_tasks_ + NUM_TASKS_PER_SYNC_BLOCK - 1) / NUM_TASKS_PER_SYNC_BLOCK;
+  const bool compact_tasks = num_used_tasks_ < num_tasks_;
+  dim3 grid_dim(2, 1, num_blocks_per_leaf);
+  SyncBestSplitForLevelKernel<<<grid_dim, NUM_TASKS_PER_SYNC_BLOCK, 0, cuda_streams_[0]>>>(
+    pair_descs,
+    cuda_leaf_best_split_info_.RawData(),
+    cuda_split_find_tasks_.RawData(),
+    compact_tasks ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
+    cuda_best_split_info_.RawData(),
+    num_tasks_,
+    num_leaves_,
+    min_data_in_leaf_,
+    min_sum_hessian_in_leaf_);
+  if (!AppendCapturedNode(cuda_streams_[0], nodes)) return;
+  roles->push_back(kHybridGraphNodeSyncLevel);
+  role_static_x->push_back(num_blocks_per_leaf);
+  if (num_blocks_per_leaf > 1) {
+    dim3 merge_grid_dim(2, 1);
+    SyncBestSplitForLevelKernelAllBlocks<<<merge_grid_dim, 1, 0, cuda_streams_[0]>>>(
+      pair_descs,
+      cuda_leaf_best_split_info_.RawData(),
+      static_cast<unsigned int>(num_blocks_per_leaf),
+      num_leaves_,
+      min_data_in_leaf_,
+      min_sum_hessian_in_leaf_);
+    if (!AppendCapturedNode(cuda_streams_[0], nodes)) return;
+    roles->push_back(kHybridGraphNodeSyncAllBlocks);
+    role_static_x->push_back(0);
+  }
+}
+#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+
+void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const int num_pairs) {
+  const int num_blocks_per_leaf = (num_tasks_ + NUM_TASKS_PER_SYNC_BLOCK - 1) / NUM_TASKS_PER_SYNC_BLOCK;
+  const bool compact_tasks = num_used_tasks_ < num_tasks_;
+  dim3 grid_dim(2, num_pairs, num_blocks_per_leaf);
+  SyncBestSplitForLevelKernel<<<grid_dim, NUM_TASKS_PER_SYNC_BLOCK, 0, cuda_streams_[0]>>>(
+    pair_descs,
+    cuda_leaf_best_split_info_.RawData(),
+    cuda_split_find_tasks_.RawData(),
+    compact_tasks ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
+    cuda_best_split_info_.RawData(),
+    num_tasks_,
+    num_leaves_,
+    min_data_in_leaf_,
+    min_sum_hessian_in_leaf_);
+  if (num_blocks_per_leaf > 1) {
+    // stream-ordered after the sync kernel above; same stream as the batched
+    // find, so no extra synchronization is needed
+    dim3 merge_grid_dim(2, num_pairs);
+    SyncBestSplitForLevelKernelAllBlocks<<<merge_grid_dim, 1, 0, cuda_streams_[0]>>>(
+      pair_descs,
+      cuda_leaf_best_split_info_.RawData(),
+      static_cast<unsigned int>(num_blocks_per_leaf),
+      num_leaves_,
+      min_data_in_leaf_,
+      min_sum_hessian_in_leaf_);
+  }
+}
 
 
 // ----- Forced-split support -------------------------------------------------------
@@ -2361,6 +2887,50 @@ void CUDABestSplitFinder::SyncLeafBestSplitToHost(
     *larger_leaf_best_split_threshold = static_cast<uint32_t>(host_leaf_best_split_info_buffer[4]);
     *larger_leaf_best_split_default_left = static_cast<uint8_t>(host_leaf_best_split_info_buffer[5]);
   }
+}
+
+void CUDABestSplitFinder::EnsurePinnedLeafBestSplitCapacity(const int num_leaves) const {
+  if (pinned_leaf_best_split_info_size_ >= static_cast<size_t>(num_leaves)) {
+    return;
+  }
+  if (pinned_leaf_best_split_info_ != nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaFreeHost(pinned_leaf_best_split_info_));
+  }
+  pinned_leaf_best_split_info_size_ = static_cast<size_t>(num_leaves_ > num_leaves ? num_leaves_ : num_leaves);
+  CUDASUCCESS_OR_FATAL(cudaHostAlloc(reinterpret_cast<void**>(&pinned_leaf_best_split_info_),
+    pinned_leaf_best_split_info_size_ * sizeof(CUDASplitInfo), cudaHostAllocDefault));
+}
+
+void CUDABestSplitFinder::ReadPrefetchedLeafBestSplits(const int num_leaves, std::vector<CUDASplitInfo>* out) const {
+  out->resize(static_cast<size_t>(num_leaves));
+  std::memcpy(reinterpret_cast<void*>(out->data()), pinned_leaf_best_split_info_,
+    static_cast<size_t>(num_leaves) * sizeof(CUDASplitInfo));
+  // the raw copy brings over device categorical-threshold pointers; scrub them so the
+  // host-side destructor never frees device memory (hybrid growth is numerical-only)
+  for (CUDASplitInfo& info : *out) {
+    info.num_cat_threshold = 0;
+    info.cat_threshold = nullptr;
+    info.cat_threshold_real = nullptr;
+  }
+}
+
+void CUDABestSplitFinder::PrefetchLeafBestSplitsAsync(const int num_leaves, cudaStream_t stream) const {
+  EnsurePinnedLeafBestSplitCapacity(num_leaves);
+  CopyFromCUDADeviceToHostAsync<CUDASplitInfo>(pinned_leaf_best_split_info_,
+    cuda_leaf_best_split_info_.RawDataReadOnly(), static_cast<size_t>(num_leaves),
+    stream, __FILE__, __LINE__);
+}
+
+void CUDABestSplitFinder::SyncAllLeafBestSplitsToHost(const int num_leaves, std::vector<CUDASplitInfo>* out) const {
+  // synchronous D2H on the legacy default stream: implicitly waits for all
+  // preceding work on the (blocking) streams, so no explicit device sync needed.
+  // Staged through a PINNED buffer: this copy runs once per level on the
+  // hybrid critical path, and a pageable sync D2H pays an extra driver staging
+  // round trip; the host-to-host memcpy of a few KB afterwards is negligible.
+  EnsurePinnedLeafBestSplitCapacity(num_leaves);
+  CopyFromCUDADeviceToHost<CUDASplitInfo>(pinned_leaf_best_split_info_, cuda_leaf_best_split_info_.RawDataReadOnly(),
+    static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+  ReadPrefetchedLeafBestSplits(num_leaves, out);
 }
 
 void CUDABestSplitFinder::LaunchFindBestFromAllSplitsKernel(

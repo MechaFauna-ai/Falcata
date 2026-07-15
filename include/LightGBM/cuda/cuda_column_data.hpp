@@ -113,6 +113,35 @@ class CUDAColumnData {
   // Needed when feature_fraction = 1.0 / no compaction (rare path).
   void RestoreOriginalColumnView();
 
+  // ===== Per-tree packed compact column view (4-bit) =====
+  // Register the histogram constructor's 4-bit packed compact matrix as this
+  // tree's column source: column c's bin for row r is
+  //   (packed_column_data(c)[r * packed_column_stride(c)] >> packed_column_shift(c)) & 0xf.
+  // Only the batched apply path (CUDAHybridApplyDescriptor, bit_type 4) reads
+  // it; callers needing a plain per-column buffer must first re-register one
+  // via SetCompactColumnView (see the tree learner's lazy classic fallback).
+  // Also nulls compact_column_host_view_ so a stale GetColumnData pointer can
+  // never be consumed silently.
+  void SetCompactPackedColumnView(const std::vector<int>& column_to_compact_slot,
+                                  const uint8_t* packed_buf,
+                                  const std::vector<size_t>& slot_base_byte,
+                                  const std::vector<int>& slot_row_stride,
+                                  const std::vector<uint8_t>& slot_shift);
+
+  bool packed_column_view_active() const { return packed_column_view_active_; }
+
+  const uint8_t* packed_column_data(const int column_index) const {
+    return packed_column_ptr_[column_index];
+  }
+
+  int packed_column_stride(const int column_index) const {
+    return packed_column_stride_[column_index];
+  }
+
+  uint8_t packed_column_shift(const int column_index) const {
+    return packed_column_shift_[column_index];
+  }
+
   // Skip per-column allocation in Init? Used when caller will provide compact view.
   bool init_skipped_per_column_alloc_ = false;
 
@@ -160,6 +189,13 @@ class CUDAColumnData {
   // or nullptr for non-sampled columns. Populated by SetCompactColumnView so that
   // GetColumnData has a valid host-readable device pointer for the split column.
   std::vector<uint8_t*> compact_column_host_view_;
+  // Per-tree packed compact view (see SetCompactPackedColumnView): host-side
+  // per-column device base pointer / per-row byte stride / nibble shift. Only
+  // consumed host-side when building batched apply descriptors.
+  bool packed_column_view_active_ = false;
+  std::vector<const uint8_t*> packed_column_ptr_;
+  std::vector<int> packed_column_stride_;
+  std::vector<uint8_t> packed_column_shift_;
 
   CUDAVector<uint8_t> cuda_column_bit_type_;
   CUDAVector<uint32_t> cuda_feature_min_bin_;

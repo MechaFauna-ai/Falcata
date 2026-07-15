@@ -164,7 +164,7 @@ void CUDAGradientDiscretizer::DiscretizeGradients(
     input_hessians, \
     grad_min_block_buffer_.RawData(), \
     hess_min_block_buffer_.RawData(), \
-    iter_, \
+    iter_ % num_trees_, /* guard: never index past the per-tree offset buffer */ \
     random_values_use_start_.RawData(), \
     gradient_random_values_.RawData(), \
     hessian_random_values_.RawData(), \

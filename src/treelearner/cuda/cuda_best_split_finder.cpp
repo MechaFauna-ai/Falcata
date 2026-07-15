@@ -51,6 +51,9 @@ CUDABestSplitFinder::~CUDABestSplitFinder() {
   gpuAssert(cudaStreamDestroy(cuda_streams_[1]), __FILE__, __LINE__);
   cuda_streams_.clear();
   cuda_streams_.shrink_to_fit();
+  if (pinned_leaf_best_split_info_ != nullptr) {
+    gpuAssert(cudaFreeHost(pinned_leaf_best_split_info_), __FILE__, __LINE__);
+  }
 }
 
 void CUDABestSplitFinder::InitFeatureMetaInfo(const Dataset* train_data) {
@@ -309,6 +312,23 @@ void CUDABestSplitFinder::BeforeTrain(const std::vector<int8_t>& is_feature_used
   CopyFromHostToCUDADevice<int8_t>(cuda_is_feature_used_bytree_.RawData(),
                                    is_feature_used_bytree.data(),
                                    is_feature_used_bytree.size(), __FILE__, __LINE__);
+  // hybrid batched find: compact the task grid to this tree's feature sample
+  // (see host_used_task_indices_); only rebuilt/uploaded when sampling is active
+  host_used_task_indices_.clear();
+  for (int task_index = 0; task_index < num_tasks_; ++task_index) {
+    if (is_feature_used_bytree[split_find_tasks_[task_index].inner_feature_index]) {
+      host_used_task_indices_.push_back(task_index);
+    }
+  }
+  num_used_tasks_ = static_cast<int>(host_used_task_indices_.size());
+  if (num_used_tasks_ < num_tasks_ && num_used_tasks_ > 0) {
+    if (cuda_used_task_indices_.Size() < static_cast<size_t>(num_tasks_)) {
+      cuda_used_task_indices_.Resize(static_cast<size_t>(num_tasks_));
+    }
+    CopyFromHostToCUDADevice<int>(cuda_used_task_indices_.RawData(),
+                                  host_used_task_indices_.data(),
+                                  host_used_task_indices_.size(), __FILE__, __LINE__);
+  }
 }
 
 void CUDABestSplitFinder::FindBestSplitsForLeaf(
@@ -325,7 +345,8 @@ void CUDABestSplitFinder::FindBestSplitsForLeaf(
   const uint8_t smaller_num_bits_in_histogram_bins,
   const uint8_t larger_num_bits_in_histogram_bins,
   const bool smaller_leaf_below_max_depth,
-  const bool larger_leaf_below_max_depth) {
+  const bool larger_leaf_below_max_depth,
+  const bool synchronize) {
   const bool is_smaller_leaf_valid = (num_data_in_smaller_leaf > min_data_in_leaf_ &&
     sum_hessians_in_smaller_leaf > min_sum_hessian_in_leaf_ &&
     smaller_leaf_below_max_depth);
@@ -342,8 +363,41 @@ void CUDABestSplitFinder::FindBestSplitsForLeaf(
   }
   global_timer.Start("CUDABestSplitFinder::LaunchSyncBestSplitForLeafKernel");
   LaunchSyncBestSplitForLeafKernel(smaller_leaf_index, larger_leaf_index, is_smaller_leaf_valid, is_larger_leaf_valid);
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  if (synchronize) {
+    SynchronizeCUDADevice(__FILE__, __LINE__);
+  }
   global_timer.Stop("CUDABestSplitFinder::LaunchSyncBestSplitForLeafKernel");
+}
+
+void CUDABestSplitFinder::EnsureHybridLevelCapacity(const int num_pairs) {
+  const size_t needed = 2 * static_cast<size_t>(num_tasks_) * static_cast<size_t>(num_pairs);
+  if (cuda_best_split_info_.Size() < needed) {
+    cuda_best_split_info_.Resize(needed);
+    // (re)initialize the categorical-threshold pointers of every slot; the batched
+    // path never runs with categorical features, so this just nulls them so the
+    // sync kernel's wholesale struct copies stay safe
+    AllocateCatVectors(cuda_best_split_info_.RawData(), cuda_cat_threshold_feature_.RawData(),
+                       cuda_cat_threshold_real_feature_.RawData(), needed);
+  }
+}
+
+void CUDABestSplitFinder::FindBestSplitsForLevel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const int num_pairs,
+  const score_t* grad_scale,
+  const score_t* hess_scale) {
+  if (num_pairs <= 0) {
+    return;
+  }
+  EnsureHybridLevelCapacity(num_pairs);
+  // order the batched find after the whole batched histogram phase of this level
+  CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], hist_subtract_done_events_[0], 0));
+  if (grad_scale != nullptr && hess_scale != nullptr) {
+    LaunchFindBestSplitsDiscretizedForLevelKernel(pair_descs, num_pairs, grad_scale, hess_scale);
+  } else {
+    LaunchFindBestSplitsForLevelKernel(pair_descs, num_pairs);
+  }
+  LaunchSyncBestSplitForLevelKernel(pair_descs, num_pairs);
 }
 
 const CUDASplitInfo* CUDABestSplitFinder::FindBestFromAllSplits(

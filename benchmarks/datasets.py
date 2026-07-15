@@ -24,7 +24,6 @@ import sys
 import zipfile
 
 import numpy as np
-
 from common import CACHE_DIR, DATA_DIR, SEED, dataset_ready
 
 URLS = {
@@ -69,9 +68,7 @@ def fetch(filename: str) -> str:
 def save(name, x_tr, y_tr, x_te, y_te):
     d = os.path.join(CACHE_DIR, name)
     os.makedirs(d, exist_ok=True)
-    np.save(
-        os.path.join(d, "X_train.npy"), np.ascontiguousarray(x_tr, dtype=np.float32)
-    )
+    np.save(os.path.join(d, "X_train.npy"), np.ascontiguousarray(x_tr, dtype=np.float32))
     np.save(os.path.join(d, "y_train.npy"), np.asarray(y_tr, dtype=np.float32))
     np.save(os.path.join(d, "X_test.npy"), np.ascontiguousarray(x_te, dtype=np.float32))
     np.save(os.path.join(d, "y_test.npy"), np.asarray(y_te, dtype=np.float32))
@@ -81,9 +78,7 @@ def save(name, x_tr, y_tr, x_te, y_te):
 def random_split(x, y, frac=0.2, stratify=False):
     from sklearn.model_selection import train_test_split
 
-    return train_test_split(
-        x, y, test_size=frac, random_state=SEED, stratify=y if stratify else None
-    )
+    return train_test_split(x, y, test_size=frac, random_state=SEED, stratify=y if stratify else None)
 
 
 def prep_higgs():
@@ -140,9 +135,7 @@ def prep_airline():
     cat_cols = ["UniqueCarrier", "Origin", "Dest"]
     cat_maps = {c: {} for c in cat_cols}
     chunks = []
-    reader = pd.read_csv(
-        fetch("airline.data.bz2"), header=None, names=cols, chunksize=5_000_000
-    )
+    reader = pd.read_csv(fetch("airline.data.bz2"), header=None, names=cols, chunksize=5_000_000)
     for i, ch in enumerate(reader):
         for c in cat_cols:  # ordinal-encode string categoricals
             m = cat_maps[c]
@@ -222,12 +215,8 @@ def _numerai_roles(f):
     kept_eras = era_int[keep]
     uniq = np.unique(kept_eras)
     test_eras = uniq[-NUMERAI_TEST_ERAS:]
-    embargo_eras = uniq[
-        -(NUMERAI_TEST_ERAS + NUMERAI_EMBARGO_ERAS) : -NUMERAI_TEST_ERAS
-    ]
-    role = np.full(
-        len(kept_eras), 1, dtype=np.int8
-    )  # 1 train, 0 embargo (drop), 2 test
+    embargo_eras = uniq[-(NUMERAI_TEST_ERAS + NUMERAI_EMBARGO_ERAS) : -NUMERAI_TEST_ERAS]
+    role = np.full(len(kept_eras), 1, dtype=np.int8)  # 1 train, 0 embargo (drop), 2 test
     role[np.isin(kept_eras, embargo_eras)] = 0
     role[np.isin(kept_eras, test_eras)] = 2
 
@@ -258,9 +247,7 @@ def prep_numerai():
     p = len(feat_cols)
     print(f"numerai: {n_rows} rows x {p} features, train_end={train_end}", flush=True)
 
-    x = np.memmap(
-        os.path.join(d, "X.f32.mem"), dtype=np.float32, mode="w+", shape=(n_rows, p)
-    )
+    x = np.memmap(os.path.join(d, "X.f32.mem"), dtype=np.float32, mode="w+", shape=(n_rows, p))
     y = np.empty(n_rows, dtype=np.float32)
     era_out = np.empty(n_rows, dtype=np.int32)
 
@@ -274,9 +261,7 @@ def prep_numerai():
             sel = arr[mask]
             x[row_out : row_out + len(sel)] = sel
             y[row_out : row_out + len(sel)] = tgt_all[row_abs : row_abs + nb][mask]
-            era_out[row_out : row_out + len(sel)] = era_int[row_abs : row_abs + nb][
-                mask
-            ]
+            era_out[row_out : row_out + len(sel)] = era_int[row_abs : row_abs + nb][mask]
             row_out += len(sel)
         row_abs += nb
     assert row_out == n_rows, (row_out, n_rows)
@@ -298,7 +283,7 @@ def prep_numerai():
 
 
 def prep_numerai_int8():
-    """Optional int8 twin of the numerai cache (``X.i8.mem``), same rows/order.
+    """Write the optional int8 twin of the numerai cache (``X.i8.mem``), same rows/order.
 
     Feeds ExaBoost's native int8 ingestion path (see ingest_bench.py). The
     main cross-library matrix stays float32-fed for fairness. Requires the
@@ -319,9 +304,7 @@ def prep_numerai_int8():
         sys.exit("numerai-int8: row filter disagrees with the existing f32 cache")
     p = len(feat_cols)
 
-    x = np.memmap(
-        os.path.join(d, "X.i8.mem"), dtype=np.int8, mode="w+", shape=(n_rows, p)
-    )
+    x = np.memmap(os.path.join(d, "X.i8.mem"), dtype=np.int8, mode="w+", shape=(n_rows, p))
     row_abs = row_out = 0
     for batch in f.iter_batches(batch_size=200_000, columns=feat_cols):
         nb = batch.num_rows
@@ -334,9 +317,7 @@ def prep_numerai_int8():
     assert row_out == n_rows, (row_out, n_rows)
     x.flush()
 
-    xf = np.memmap(
-        os.path.join(d, "X.f32.mem"), dtype=np.float32, mode="r", shape=(n_rows, p)
-    )
+    xf = np.memmap(os.path.join(d, "X.f32.mem"), dtype=np.float32, mode="r", shape=(n_rows, p))
     rng = np.random.default_rng(SEED)
     for r in rng.integers(0, n_rows, 50):
         if not (x[r].astype(np.float32) == xf[r]).all():
@@ -357,9 +338,7 @@ PREPS = {
 
 if __name__ == "__main__":
     names = sys.argv[1:]
-    targets = (
-        [n for n in PREPS if not n.startswith("numerai")] if names == ["all"] else names
-    )
+    targets = [n for n in PREPS if not n.startswith("numerai")] if names == ["all"] else names
     for t in targets:
         if dataset_ready(t):
             print(f"{t}: cached, skipping", flush=True)

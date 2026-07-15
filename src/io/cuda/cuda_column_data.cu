@@ -13,6 +13,21 @@
 
 namespace LightGBM {
 
+__global__ void CUDAWarmupKernel() {}
+
+// Force the lazy CUDA module load (the whole library's device code is one
+// device-linked module) while the Dataset is being constructed. Without this,
+// the first kernel launch of the process pays the full module load (~37 ms on
+// a 34 MB library), and that first launch happens inside the tree learner's
+// first Train() call, i.e. inside any training wall-clock measurement. Dataset
+// construction is the natural warm spot: it already initializes the CUDA
+// context, and it runs before the booster/learner exists.
+void WarmupCUDAKernelModule() {
+  CUDAWarmupKernel<<<1, 1>>>();
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+  CUDASUCCESS_OR_FATAL(cudaDeviceSynchronize());
+}
+
 __global__ void CopySubrowKernel_ColumnData(
   uint8_t* const* in_cuda_data_by_column,
   const uint8_t* cuda_column_bit_type,

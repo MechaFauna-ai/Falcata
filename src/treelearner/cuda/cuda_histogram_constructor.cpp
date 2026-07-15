@@ -10,6 +10,8 @@
 #include "cuda_histogram_constructor.hpp"
 
 #include <algorithm>
+#include <cstdlib>
+#include <string>
 #include <vector>
 
 namespace LightGBM {
@@ -57,8 +59,12 @@ void CUDAHistogramConstructor::InitFeatureMetaInfo(const Dataset* train_data, co
   need_fix_histogram_features_num_bin_aligend_.clear();
   feature_num_bins_.clear();
   feature_most_freq_bins_.clear();
+  has_categorical_feature_ = false;
   for (int feature_index = 0; feature_index < train_data->num_features(); ++feature_index) {
     const BinMapper* bin_mapper = train_data->FeatureBinMapper(feature_index);
+    if (bin_mapper->bin_type() == BinType::CategoricalBin) {
+      has_categorical_feature_ = true;
+    }
     const uint32_t most_freq_bin = bin_mapper->GetMostFreqBin();
     if (most_freq_bin != 0) {
       need_fix_histogram_features_.emplace_back(feature_index);
@@ -82,16 +88,70 @@ void CUDAHistogramConstructor::InitFeatureMetaInfo(const Dataset* train_data, co
   } else {
     num_total_bin_ = static_cast<int>(feature_hist_offsets.back());
   }
+  // register-accumulation construct body (batched compact path only): usable
+  // when EVERY feature fits the register bin cap (see kRegHistMaxBins == 8);
+  // EXABOOST_BATCH_REGHIST=0 disables it
+  static const bool reg_hist_enabled = []() {
+    const char* env = std::getenv("EXABOOST_BATCH_REGHIST");
+    return env == nullptr || std::string(env) != "0";
+  }();
+  uint32_t max_num_bin = 0;
+  for (const uint32_t num_bin : feature_num_bins_) {
+    if (num_bin > max_num_bin) {
+      max_num_bin = num_bin;
+    }
+  }
+  construct_reg_bins_ = reg_hist_enabled && max_num_bin <= 8 && !feature_num_bins_.empty();
 }
+
+void LaunchInterleaveGradHessKernel(
+  const score_t* gradients,
+  const score_t* hessians,
+  float2* gradients_hessians,
+  data_size_t num_data);
 
 void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score_t* hessians) {
   cuda_gradients_ = gradients;
   cuda_hessians_ = hessians;
-  cuda_hist_.SetValue(0);
+  // interleave (gradient, hessian) into float2 pairs for the dense construct
+  // kernels (one scattered 32B sector per row instead of two). Launched on the
+  // legacy default stream, so it orders before the construct kernels on the
+  // (blocking) histogram streams; a trivial streaming kernel (~0.05ms at 5M rows).
+  gh_interleave_valid_ = false;
+  if (!use_quantized_grad_ && GHInterleaveEnabled() &&
+      gradients != nullptr && hessians != nullptr) {
+    if (cuda_gradients_hessians_.Size() < static_cast<size_t>(num_data_)) {
+      cuda_gradients_hessians_.Resize(static_cast<size_t>(num_data_));
+    }
+    LaunchInterleaveGradHessKernel(gradients, hessians,
+                                   cuda_gradients_hessians_.RawData(), num_data_);
+    gh_interleave_valid_ = true;
+  }
+  // async memset on the legacy default stream: the construct kernels on the
+  // (blocking) histogram streams implicitly order after it, so no device sync
+  // is needed (SetValue would pay a full device sync on every tree).
+  // Only the leaf slots the previous tree actually used can be dirty (leaf k's
+  // histogram lives at slot k, and every tree assigns slots [0, num_leaves)
+  // consecutively), so zero just those: with num_leaves=1023 buffers trees of
+  // ~100 leaves this cuts >100MB (~65us of GPU memset) per tree.
+  const size_t num_slots_to_zero = num_dirty_leaves_ < 0 ?
+    static_cast<size_t>(num_leaves_) :
+    std::min(static_cast<size_t>(num_dirty_leaves_), static_cast<size_t>(num_leaves_));
+  CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_hist_.RawData()), 0,
+    num_slots_to_zero * static_cast<size_t>(2 * num_total_bin_) * sizeof(hist_t)));
 }
 
 void CUDAHistogramConstructor::ZeroHistForLeaf(int /*leaf_index*/) {
   // No-op: BeforeTrain zeroes the entire cuda_hist_ buffer.
+}
+
+void CUDAHistogramConstructor::ZeroHistSlots(const std::vector<int>& slots) {
+  const size_t slot_size = static_cast<size_t>(2 * num_total_bin_);
+  for (const int slot : slots) {
+    CUDASUCCESS_OR_FATAL(cudaMemsetAsync(
+      reinterpret_cast<void*>(cuda_hist_.RawData() + static_cast<size_t>(slot) * slot_size), 0,
+      slot_size * sizeof(hist_t)));
+  }
 }
 
 void CUDAHistogramConstructor::SetFeatureUsedBytree(const std::vector<int8_t>& is_feature_used_bytree) {
@@ -101,6 +161,39 @@ void CUDAHistogramConstructor::SetFeatureUsedBytree(const std::vector<int8_t>& i
   CopyFromHostToCUDADevice<int8_t>(cuda_is_feature_used_bytree_.RawData(),
                                    is_feature_used_bytree.data(),
                                    is_feature_used_bytree.size(), __FILE__, __LINE__);
+  // per-tree bin-level used mask for the batched fix/subtract/construct-merge
+  // kernels: with feature_fraction sampling, ~ (1 - fraction) of every leaf
+  // histogram belongs to features no kernel of this tree will ever read, so the
+  // elementwise batched kernels skip them. nullptr (no sampling) keeps every
+  // kernel byte-identical to the unmasked behavior.
+  any_feature_unused_bytree_ = false;
+  const int mask_features = std::min(num_features_, static_cast<int>(is_feature_used_bytree.size()));
+  for (int f = 0; f < mask_features; ++f) {
+    if (!is_feature_used_bytree[f]) {
+      any_feature_unused_bytree_ = true;
+      break;
+    }
+  }
+  if (any_feature_unused_bytree_) {
+    host_bin_used_bytree_.assign(static_cast<size_t>(num_total_bin_), 0);
+    for (int f = 0; f < mask_features; ++f) {
+      if (!is_feature_used_bytree[f]) {
+        continue;
+      }
+      const uint32_t bin_start = feature_hist_offsets_[f];
+      const uint32_t bin_end = f + 1 < static_cast<int>(feature_hist_offsets_.size()) ?
+        feature_hist_offsets_[f + 1] : static_cast<uint32_t>(num_total_bin_);
+      for (uint32_t bin = bin_start; bin < bin_end && bin < static_cast<uint32_t>(num_total_bin_); ++bin) {
+        host_bin_used_bytree_[bin] = 1;
+      }
+    }
+    if (cuda_bin_used_bytree_.Size() < static_cast<size_t>(num_total_bin_)) {
+      cuda_bin_used_bytree_.Resize(static_cast<size_t>(num_total_bin_));
+    }
+    CopyFromHostToCUDADevice<uint8_t>(cuda_bin_used_bytree_.RawData(),
+                                      host_bin_used_bytree_.data(),
+                                      host_bin_used_bytree_.size(), __FILE__, __LINE__);
+  }
 }
 
 void LaunchDiagRead(cudaStream_t stream, const uint8_t* src, uint8_t* dst, int n);
@@ -123,10 +216,26 @@ void LaunchFillCompactDataKernel(
   const size_t* slot_dst_byte,
   const int* slot_dst_stride,
   int total_compact_cols,
+  data_size_t num_data,
+  uint8_t* colmajor_out);
+
+// Implemented in cuda_histogram_constructor.cu — 4-bit packed source AND
+// destination variant (one thread per destination byte = compact column pair).
+void LaunchFillCompactData4BitKernel(
+  cudaStream_t stream,
+  const uint8_t* src_data,
+  uint8_t* compact_data,
+  const size_t* bs_src_nib0,
+  const size_t* bs_src_nib1,
+  const int* bs_src_stride_nib,
+  const size_t* bs_dst_byte,
+  const int* bs_dst_stride,
+  int total_byte_slots,
   data_size_t num_data);
 
 bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_feature_used_bytree) {
   use_compact_view_ = false;
+  compact_col_major_filled_ = false;
   // Gate: only support the standard dense path (uint8 bins, no large-bin partitions, no sparse).
   // This is what our Numerai workload uses; other paths fall back to the full kernel.
   if (cuda_row_data_->is_sparse() || cuda_row_data_->bit_type() != 8 ||
@@ -177,10 +286,59 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
 
   const data_size_t num_data = cuda_row_data_->num_data();
 
+  // 4-bit mode: when the row matrix is packed, the compact matrix is packed the
+  // same way (per-partition packed row width = ceil(used_columns / 2) bytes,
+  // column j of a partition in byte (j >> 1), nibble (j & 1)).
+  compact_is_4bit_ = cuda_row_data_->is_4bit_packed() && !cuda_row_data_->is_data_host_mapped();
+  std::vector<int> compact_packed_part_offsets;  // [P+1] prefix of packed compact row widths
+  compact_packed_part_offsets.push_back(0);
+  for (int p = 0; p < num_partitions; ++p) {
+    const int used_in_p = compact_part_col_offsets[p + 1] - compact_part_col_offsets[p];
+    compact_packed_part_offsets.push_back(compact_packed_part_offsets.back() + ((used_in_p + 1) >> 1));
+  }
+
+  // Host copies of the compact layout for the tree learner's column-view build
+  // (source column per slot + row-major-in-partition placement of each slot).
+  // 8-bit: slot byte includes the column-in-partition offset (col entry 0);
+  // 4-bit: slot byte is the partition's packed base and the logical
+  // column-in-partition travels separately (the gather kernel derives
+  // byte (col >> 1) / nibble (col & 1) from it).
+  compact_src_cols_host_.resize(total_compact);
+  compact_slot_byte_host_.resize(total_compact);
+  compact_slot_stride_host_.resize(total_compact);
+  compact_slot_col_host_.resize(total_compact);
+  for (int s = 0; s < total_compact; ++s) {
+    const int p = partition_for_compact_h[s];
+    compact_src_cols_host_[s] = src_part_col_offsets[p] + src_local_col_for_compact_h[s];
+    const int compact_part_start = compact_part_col_offsets[p];
+    const int compact_col_in_p = s - compact_part_start;
+    if (compact_is_4bit_) {
+      compact_slot_byte_host_[s] = static_cast<size_t>(compact_packed_part_offsets[p]) * static_cast<size_t>(num_data);
+      compact_slot_stride_host_[s] = compact_packed_part_offsets[p + 1] - compact_packed_part_offsets[p];
+      compact_slot_col_host_[s] = compact_col_in_p;
+    } else {
+      const int compact_stride = compact_part_col_offsets[p + 1] - compact_part_start;
+      compact_slot_byte_host_[s] = static_cast<size_t>(compact_part_start) * static_cast<size_t>(num_data) +
+        static_cast<size_t>(compact_col_in_p);
+      compact_slot_stride_host_[s] = compact_stride;
+      compact_slot_col_host_[s] = 0;
+    }
+  }
+
   // Allocate / resize compact buffers.
-  const size_t compact_data_bytes = static_cast<size_t>(total_compact) * static_cast<size_t>(num_data);
+  const size_t compact_data_bytes = compact_is_4bit_ ?
+    static_cast<size_t>(compact_packed_part_offsets.back()) * static_cast<size_t>(num_data) :
+    static_cast<size_t>(total_compact) * static_cast<size_t>(num_data);
   if (compact_data_uint8_t_.Size() < compact_data_bytes) {
     compact_data_uint8_t_.Resize(compact_data_bytes);
+  }
+  if (compact_is_4bit_) {
+    if (compact_packed_partition_byte_offsets_.Size() < compact_packed_part_offsets.size()) {
+      compact_packed_partition_byte_offsets_.Resize(compact_packed_part_offsets.size());
+    }
+    CopyFromHostToCUDADevice<int>(compact_packed_partition_byte_offsets_.RawData(),
+                                  compact_packed_part_offsets.data(),
+                                  compact_packed_part_offsets.size(), __FILE__, __LINE__);
   }
 
   // Upload metadata.
@@ -283,6 +441,69 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
         total_compact);
     CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
     compact_is_col_major_ = false;  // compact_data is now row-major-in-partition
+    compact_col_major_filled_ = true;  // the col-major staging holds the same slots
+  } else if (compact_is_4bit_) {
+    // 4-bit fill: one thread per DESTINATION byte (a pair of adjacent compact
+    // slots), so no two threads share an output byte. Source positions are
+    // nibble indices: column c of a packed partition with byte base B and row
+    // width W sits at nibble 2*B + c + row * (2*W).
+    const std::vector<int>& src_packed_offsets = cuda_row_data_->host_packed_partition_byte_offsets();
+    int total_byte_slots = 0;
+    for (int p = 0; p < num_partitions; ++p) {
+      const int used_in_p = compact_part_col_offsets[p + 1] - compact_part_col_offsets[p];
+      total_byte_slots += (used_in_p + 1) >> 1;
+    }
+    std::vector<size_t> bs_src_nib0_h(total_byte_slots);
+    std::vector<size_t> bs_src_nib1_h(total_byte_slots);
+    std::vector<int> bs_src_stride_nib_h(total_byte_slots);
+    std::vector<size_t> bs_dst_byte_h(total_byte_slots);
+    std::vector<int> bs_dst_stride_h(total_byte_slots);
+    int byte_slot = 0;
+    for (int p = 0; p < num_partitions; ++p) {
+      const int compact_part_start = compact_part_col_offsets[p];
+      const int used_in_p = compact_part_col_offsets[p + 1] - compact_part_start;
+      const int dst_packed_width = compact_packed_part_offsets[p + 1] - compact_packed_part_offsets[p];
+      const size_t dst_part_byte = static_cast<size_t>(compact_packed_part_offsets[p]) * static_cast<size_t>(num_data);
+      const size_t src_part_nib = static_cast<size_t>(src_packed_offsets[p]) * static_cast<size_t>(num_data) * 2;
+      const int src_stride_nib = (src_packed_offsets[p + 1] - src_packed_offsets[p]) * 2;
+      for (int m = 0; m < ((used_in_p + 1) >> 1); ++m) {
+        const int s0 = compact_part_start + 2 * m;
+        bs_src_nib0_h[byte_slot] = src_part_nib + static_cast<size_t>(src_local_col_for_compact_h[s0]);
+        bs_src_nib1_h[byte_slot] = (2 * m + 1) < used_in_p ?
+          src_part_nib + static_cast<size_t>(src_local_col_for_compact_h[s0 + 1]) :
+          ~static_cast<size_t>(0);
+        bs_src_stride_nib_h[byte_slot] = src_stride_nib;
+        bs_dst_byte_h[byte_slot] = dst_part_byte + static_cast<size_t>(m);
+        bs_dst_stride_h[byte_slot] = dst_packed_width;
+        ++byte_slot;
+      }
+    }
+    CHECK_EQ(byte_slot, total_byte_slots);
+    if (cuda_bs_src_nib0_.Size() < static_cast<size_t>(total_byte_slots)) {
+      cuda_bs_src_nib0_.Resize(total_byte_slots);
+      cuda_bs_src_nib1_.Resize(total_byte_slots);
+      cuda_bs_src_stride_nib_.Resize(total_byte_slots);
+      cuda_bs_dst_byte_.Resize(total_byte_slots);
+      cuda_bs_dst_stride_.Resize(total_byte_slots);
+    }
+    CopyFromHostToCUDADevice<size_t>(cuda_bs_src_nib0_.RawData(), bs_src_nib0_h.data(), total_byte_slots, __FILE__, __LINE__);
+    CopyFromHostToCUDADevice<size_t>(cuda_bs_src_nib1_.RawData(), bs_src_nib1_h.data(), total_byte_slots, __FILE__, __LINE__);
+    CopyFromHostToCUDADevice<int>(cuda_bs_src_stride_nib_.RawData(), bs_src_stride_nib_h.data(), total_byte_slots, __FILE__, __LINE__);
+    CopyFromHostToCUDADevice<size_t>(cuda_bs_dst_byte_.RawData(), bs_dst_byte_h.data(), total_byte_slots, __FILE__, __LINE__);
+    CopyFromHostToCUDADevice<int>(cuda_bs_dst_stride_.RawData(), bs_dst_stride_h.data(), total_byte_slots, __FILE__, __LINE__);
+    LaunchFillCompactData4BitKernel(
+      cuda_stream_,
+      cuda_row_data_->GetBin<uint8_t>(),
+      compact_data_uint8_t_.RawData(),
+      cuda_bs_src_nib0_.RawData(),
+      cuda_bs_src_nib1_.RawData(),
+      cuda_bs_src_stride_nib_.RawData(),
+      cuda_bs_dst_byte_.RawData(),
+      cuda_bs_dst_stride_.RawData(),
+      total_byte_slots,
+      num_data);
+    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
+    compact_is_col_major_ = false;
   } else {
     // Build per-slot src/dst metadata host-side. Each compact slot has a fully
     // computed source byte offset and destination byte offset, so the kernel
@@ -315,6 +536,10 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
     CopyFromHostToCUDADevice<int>(cuda_slot_src_stride_.RawData(), slot_src_stride_h.data(), total_compact, __FILE__, __LINE__);
     CopyFromHostToCUDADevice<size_t>(cuda_slot_dst_byte_.RawData(), slot_dst_byte_h.data(), total_compact, __FILE__, __LINE__);
     CopyFromHostToCUDADevice<int>(cuda_slot_dst_stride_.RawData(), slot_dst_stride_h.data(), total_compact, __FILE__, __LINE__);
+    // NOTE: a fused column-major second output here was measured SLOWER than
+    // the tree learner's separate tile-transposed gather from the compact
+    // matrix (the fill's slot-major warps write the column-major layout one
+    // 32-byte sector per byte); keep the fill single-output.
     LaunchFillCompactDataKernel(
       cuda_stream_,
       cuda_row_data_->GetBin<uint8_t>(),
@@ -324,7 +549,8 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
       cuda_slot_dst_byte_.RawData(),
       cuda_slot_dst_stride_.RawData(),
       total_compact,
-      num_data);
+      num_data,
+      nullptr);
     CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
     compact_is_col_major_ = false;
   }
@@ -354,14 +580,33 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   cuda_row_data_.reset(new CUDARowData(train_data, share_state, gpu_device_id_, gpu_use_dp_));
   cuda_row_data_->Init(train_data, share_state);
 
+  // fp32-pair global histograms: dense shared-memory non-quantized layout only
+  // (sparse / large-bin construct kernels and the categorical find path stay
+  // hist_t and are excluded)
+  hist_fp32_ = ExaboostFP32HistRequested() && !use_quantized_grad_ && !gpu_use_dp_ &&
+    !cuda_row_data_->is_sparse() && cuda_row_data_->NumLargeBinPartition() == 0 &&
+    !has_categorical_feature_;
+  if (ExaboostFP32HistRequested() && !use_quantized_grad_) {
+    Log::Debug("CUDAHistogramConstructor: fp32 histogram mode %s", hist_fp32_ ? "engaged" : "unsupported for this dataset, using fp64");
+  }
+
   CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_stream_));
   // Lightweight (timing-disabled) events used to order the best split finder's
   // per-leaf kernels after histogram construction/subtraction without a device sync.
-  CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&construct_done_event_, cudaEventDisableTiming));
-  CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&subtract_done_event_, cudaEventDisableTiming));
+  // One (stream, event-pair) pipeline per concurrently-processed sibling pair.
+  pipeline_streams_[0] = cuda_stream_;
+  for (int p = 1; p < kNumHistPipelines; ++p) {
+    CUDASUCCESS_OR_FATAL(cudaStreamCreate(&pipeline_streams_[p]));
+  }
+  for (int p = 0; p < kNumHistPipelines; ++p) {
+    CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&construct_done_events_[p], cudaEventDisableTiming));
+    CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&subtract_done_events_[p], cudaEventDisableTiming));
+  }
 
   cuda_need_fix_histogram_features_.InitFromHostVector(need_fix_histogram_features_);
   cuda_need_fix_histogram_features_num_bin_aligned_.InitFromHostVector(need_fix_histogram_features_num_bin_aligend_);
+  cuda_hybrid_construct_dim_y_.Resize(1);
+  InitFixMFBMask();
 
   if (cuda_row_data_->NumLargeBinPartition() > 0) {
     int grid_dim_x = 0, grid_dim_y = 0, block_dim_x = 0, block_dim_y = 0;
@@ -379,7 +624,12 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
       cuda_hist_buffer_.Resize(buffer_size);
     }
   }
-  hist_buffer_for_num_bit_change_.Resize(num_total_bin_ * 2);
+  // one int32 region of num_total_bin_ entries per histogram pipeline (the pairs
+  // of a level run concurrently on different pipeline streams and must not share
+  // the 64->32-bit compaction scratch space); sized in hist_t (8 byte) units
+  hist_buffer_for_num_bit_change_.Resize(
+    std::max<size_t>(static_cast<size_t>(num_total_bin_) * 2,
+                     (static_cast<size_t>(num_total_bin_) * kNumHistPipelines + 1) / 2));
 }
 
 void CUDAHistogramConstructor::ConstructHistogramForLeaf(
@@ -400,7 +650,62 @@ if ((global_num_data_in_smaller_leaf <= min_data_in_leaf_ || sum_hessians_in_sma
   // Record completion on cuda_stream_ instead of a device-wide sync. The best split
   // finder waits on this event before reading the smaller-leaf histogram, so the host
   // is not stalled here (see CUDABestSplitFinder::FindBestSplitsForLeaf).
-  CUDASUCCESS_OR_FATAL(cudaEventRecord(construct_done_event_, cuda_stream_));
+  CUDASUCCESS_OR_FATAL(cudaEventRecord(construct_done_events_[active_pipeline_], current_stream()));
+}
+
+void CUDAHistogramConstructor::ConstructHistogramsForLevel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const int num_pairs,
+  const data_size_t max_num_data_in_smaller_leaf,
+  const bool any_pair_needs_bit_change_copy,
+  const data_size_t* level_smaller_num_data) {
+  if (num_pairs <= 0) {
+    return;
+  }
+  if (use_quantized_grad_ && any_pair_needs_bit_change_copy) {
+    // one int32 region of num_total_bin_ entries per pair; sized in hist_t (8 byte)
+    // units so this allocates twice the strict need, but is only reached when a
+    // level actually contains a >16-bit parent with a <=16-bit larger child
+    const size_t needed = static_cast<size_t>(num_pairs) * static_cast<size_t>(num_total_bin_);
+    if (hist_buffer_for_num_bit_change_.Size() < needed) {
+      hist_buffer_for_num_bit_change_.Resize(needed);
+    }
+  }
+  global_timer.Start("CUDAHistogramConstructor::ConstructHistogramsForLevel");
+  // The batched construct kernel routes each pair whose ACTUAL smaller leaf is
+  // tiny (on-device check against SmallLeafRowThreshold(); non-quantized only)
+  // to a direct global-atomic body that skips the shared-histogram zero+merge
+  // dominating small leaves. The quantized path never takes it: its integer
+  // shared-then-merge accumulation (and the covtype quant md5 lock) stays
+  // byte-identical.
+  LaunchConstructHistogramBatchedKernel(pair_descs, num_pairs, max_num_data_in_smaller_leaf,
+                                        level_smaller_num_data);
+  // (no construct_done event here: the batched find kernel only waits on the
+  // subtract event below, and the per-pair path re-records its own events)
+  if (!use_quantized_grad_ && SmallLeafConstructEnabled()) {
+    // fused fix + subtract: one launch, bit-identical to the sequential pair
+    LaunchFixSubtractHistogramSmallLeafBatchedKernel(pair_descs, num_pairs);
+  } else {
+    LaunchSubtractHistogramBatchedKernel(pair_descs, num_pairs, any_pair_needs_bit_change_copy);
+  }
+  // the best split finder's batched find kernel waits on this event before reading
+  // any of this level's histograms (construct/fix/subtract are stream-ordered here)
+  CUDASUCCESS_OR_FATAL(cudaEventRecord(subtract_done_events_[0], cuda_stream_));
+  global_timer.Stop("CUDAHistogramConstructor::ConstructHistogramsForLevel");
+}
+
+void CUDAHistogramConstructor::InitFixMFBMask() {
+  // mask over the 2 * num_total_bin_ histogram entries: 1 at the most-frequent-
+  // bin gradient/hessian slots of the need-fix features (owned by the fused
+  // small-leaf kernel's fix blocks), 0 everywhere else (subtract blocks)
+  std::vector<uint8_t> host_mask(static_cast<size_t>(2 * num_total_bin_), 0);
+  for (const int feature_index : need_fix_histogram_features_) {
+    const size_t pos = (static_cast<size_t>(feature_hist_offsets_[feature_index]) +
+                        static_cast<size_t>(feature_most_freq_bins_[feature_index])) << 1;
+    host_mask[pos] = 1;
+    host_mask[pos + 1] = 1;
+  }
+  cuda_fix_mfb_mask_.InitFromHostVector(host_mask);
 }
 
 void CUDAHistogramConstructor::SubtractHistogramForLeaf(
@@ -416,7 +721,7 @@ void CUDAHistogramConstructor::SubtractHistogramForLeaf(
   // Record completion on cuda_stream_; the best split finder waits on this before
   // reading the larger-leaf (subtracted) histogram, replacing the per-split device sync
   // that previously separated the smaller- and larger-leaf FindBestSplits launches.
-  CUDASUCCESS_OR_FATAL(cudaEventRecord(subtract_done_event_, cuda_stream_));
+  CUDASUCCESS_OR_FATAL(cudaEventRecord(subtract_done_events_[active_pipeline_], current_stream()));
   global_timer.Stop("CUDAHistogramConstructor::ConstructHistogramForLeaf::LaunchSubtractHistogramKernel");
 }
 
@@ -433,6 +738,30 @@ void CUDAHistogramConstructor::CalcConstructHistogramKernelDim(
     ((num_data_in_smaller_leaf + NUM_DATA_PER_THREAD - 1) / NUM_DATA_PER_THREAD + (*block_dim_y) - 1) / (*block_dim_y));
 }
 
+void CUDAHistogramConstructor::CalcConstructHistogramBatchedKernelDim(
+  int* grid_dim_x,
+  int* grid_dim_y,
+  int* block_dim_x,
+  int* block_dim_y,
+  const data_size_t max_num_data_in_smaller_leaf,
+  const int num_pairs) {
+  *block_dim_x = cuda_row_data_->max_num_column_per_partition();
+  *block_dim_y = NUM_THREADS_PER_BLOCK / cuda_row_data_->max_num_column_per_partition();
+  *grid_dim_x = cuda_row_data_->num_feature_partitions();
+  // The per-leaf sizing forces min_grid_dim_y_ y-blocks to saturate the device
+  // for a SINGLE leaf; every active block, however, pays a fixed shared-hist
+  // zero + global-merge cost, which dominates small leaves. In the batched
+  // kernel the pair grid dimension already provides parallelism, so share the
+  // saturation floor across pairs and otherwise cap the y-grid at
+  // min_rows_per_thread rows per thread (identical to the per-leaf sizing for
+  // single-pair levels and for leaves large enough that the cap is inactive).
+  // The formula lives in HybridBatchedConstructGridDimY so the device replica
+  // used by the speculative single-sync flow computes the identical value.
+  *grid_dim_y = HybridBatchedConstructGridDimY(
+    max_num_data_in_smaller_leaf, num_pairs, *block_dim_y, min_grid_dim_y_,
+    BatchConstructMinRowsPerThread(), BatchConstructSaturationFloor());
+}
+
 void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, TrainingShareStates* share_states) {
   num_data_ = train_data->num_data();
   num_features_ = train_data->num_features();
@@ -440,6 +769,7 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
 
   cuda_hist_.Resize(static_cast<size_t>(num_total_bin_ * 2 * num_leaves_));
   cuda_hist_.SetValue(0);
+  num_dirty_leaves_ = -1;
   cuda_feature_num_bins_.InitFromHostVector(feature_num_bins_);
   cuda_feature_hist_offsets_.InitFromHostVector(feature_hist_offsets_);
   cuda_feature_most_freq_bins_.InitFromHostVector(feature_most_freq_bins_);
@@ -447,8 +777,13 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   cuda_row_data_.reset(new CUDARowData(train_data, share_states, gpu_device_id_, gpu_use_dp_));
   cuda_row_data_->Init(train_data, share_states);
 
+  hist_fp32_ = ExaboostFP32HistRequested() && !use_quantized_grad_ && !gpu_use_dp_ &&
+    !cuda_row_data_->is_sparse() && cuda_row_data_->NumLargeBinPartition() == 0 &&
+    !has_categorical_feature_;
+
   cuda_need_fix_histogram_features_.InitFromHostVector(need_fix_histogram_features_);
   cuda_need_fix_histogram_features_num_bin_aligned_.InitFromHostVector(need_fix_histogram_features_num_bin_aligend_);
+  InitFixMFBMask();
 }
 
 void CUDAHistogramConstructor::ResetConfig(const Config* config) {
@@ -458,6 +793,7 @@ void CUDAHistogramConstructor::ResetConfig(const Config* config) {
   min_sum_hessian_in_leaf_ = config->min_sum_hessian_in_leaf;
   cuda_hist_.Resize(static_cast<size_t>(num_total_bin_ * 2 * num_leaves_));
   cuda_hist_.SetValue(0);
+  num_dirty_leaves_ = -1;
 }
 
 }  // namespace LightGBM

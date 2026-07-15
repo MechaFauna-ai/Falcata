@@ -158,6 +158,136 @@ void CUDATree::LaunchSplitKernel(const int leaf_index,
     cuda_threshold_.RawData());
 }
 
+// Batched variant of SplitKernel for the hybrid level-batched growth phase: one
+// block per split (blockIdx.x indexes CUDATreeBatchSplit descriptors), threadIdx.x
+// plays the role of SplitKernel's global thread index. The level's splits act on
+// disjoint leaves; the only shared cells are a sibling pair's parent child-pointers,
+// where the compare-then-write is race-free because node indices (>= 0) can never
+// equal leaf codes (~leaf < 0).
+__global__ void SplitBatchKernel(  // split information
+                                 const CUDATreeBatchSplit* batch_splits,
+                                 // tree structure
+                                 int* leaf_parent,
+                                 int* leaf_depth,
+                                 int* left_child,
+                                 int* right_child,
+                                 int* split_feature_inner,
+                                 int* split_feature,
+                                 float* split_gain,
+                                 double* internal_weight,
+                                 double* internal_value,
+                                 data_size_t* internal_count,
+                                 double* leaf_weight,
+                                 double* leaf_value,
+                                 data_size_t* leaf_count,
+                                 int8_t* decision_type,
+                                 uint32_t* threshold_in_bin,
+                                 double* threshold) {
+  const CUDATreeBatchSplit batch_split = batch_splits[blockIdx.x];
+  const int leaf_index = batch_split.leaf_index;
+  const int num_leaves = batch_split.num_leaves_at_split;
+  const CUDASplitInfo* cuda_split_info = batch_split.split_info;
+  const int new_node_index = num_leaves - 1;
+  const int thread_index = static_cast<int>(threadIdx.x);
+  const int parent_index = leaf_parent[leaf_index];
+  if (thread_index == 0) {
+    if (parent_index >= 0) {
+      // if cur node is left child
+      if (left_child[parent_index] == ~leaf_index) {
+        left_child[parent_index] = new_node_index;
+      } else {
+        right_child[parent_index] = new_node_index;
+      }
+    }
+    left_child[new_node_index] = ~leaf_index;
+    right_child[new_node_index] = ~num_leaves;
+    leaf_parent[leaf_index] = new_node_index;
+    leaf_parent[num_leaves] = new_node_index;
+  } else if (thread_index == 1) {
+    // add new node
+    split_feature_inner[new_node_index] = cuda_split_info->inner_feature_index;
+  } else if (thread_index == 2) {
+    split_feature[new_node_index] = batch_split.real_feature_index;
+  } else if (thread_index == 3) {
+    split_gain[new_node_index] = static_cast<float>(cuda_split_info->gain);
+  } else if (thread_index == 4) {
+    // save current leaf value to internal node before change
+    internal_weight[new_node_index] = cuda_split_info->left_sum_hessians + cuda_split_info->right_sum_hessians;
+    leaf_weight[leaf_index] = cuda_split_info->left_sum_hessians;
+  } else if (thread_index == 5) {
+    internal_value[new_node_index] = leaf_value[leaf_index];
+    leaf_value[leaf_index] = isnan(cuda_split_info->left_value) ? 0.0f : cuda_split_info->left_value;
+  } else if (thread_index == 6) {
+    internal_count[new_node_index] = cuda_split_info->left_count + cuda_split_info->right_count;
+  } else if (thread_index == 7) {
+    leaf_count[leaf_index] = cuda_split_info->left_count;
+  } else if (thread_index == 8) {
+    leaf_value[num_leaves] = isnan(cuda_split_info->right_value) ? 0.0f : cuda_split_info->right_value;
+  } else if (thread_index == 9) {
+    leaf_weight[num_leaves] = cuda_split_info->right_sum_hessians;
+  } else if (thread_index == 10) {
+    leaf_count[num_leaves] = cuda_split_info->right_count;
+  } else if (thread_index == 11) {
+    // update leaf depth
+    leaf_depth[num_leaves] = leaf_depth[leaf_index] + 1;
+    leaf_depth[leaf_index]++;
+  } else if (thread_index == 12) {
+    decision_type[new_node_index] = 0;
+    SetDecisionTypeCUDA(&decision_type[new_node_index], false, kCategoricalMask);
+    SetDecisionTypeCUDA(&decision_type[new_node_index], cuda_split_info->default_left, kDefaultLeftMask);
+    SetMissingTypeCUDA(&decision_type[new_node_index], static_cast<int8_t>(batch_split.missing_type));
+  } else if (thread_index == 13) {
+    threshold_in_bin[new_node_index] = cuda_split_info->threshold;
+  } else if (thread_index == 14) {
+    threshold[new_node_index] = batch_split.real_threshold;
+  }
+}
+
+void CUDATree::CaptureHybridGraphSplitBatchKernel(cudaStream_t stream) {
+  // graphs L1 body capture: placeholder grid (the device controller resizes it
+  // per level), descriptors from the pooled batch-split buffer the controller
+  // writes; parameter set identical to LaunchSplitBatchKernel
+  SplitBatchKernel<<<1, 32, 0, stream>>>(
+    cuda_batch_splits_.RawDataReadOnly(),
+    cuda_leaf_parent_.RawData(),
+    cuda_leaf_depth_.RawData(),
+    cuda_left_child_.RawData(),
+    cuda_right_child_.RawData(),
+    cuda_split_feature_inner_.RawData(),
+    cuda_split_feature_.RawData(),
+    cuda_split_gain_.RawData(),
+    cuda_internal_weight_.RawData(),
+    cuda_internal_value_.RawData(),
+    cuda_internal_count_.RawData(),
+    cuda_leaf_weight_.RawData(),
+    cuda_leaf_value_.RawData(),
+    cuda_leaf_count_.RawData(),
+    cuda_decision_type_.RawData(),
+    cuda_threshold_in_bin_.RawData(),
+    cuda_threshold_.RawData());
+}
+
+void CUDATree::LaunchSplitBatchKernel(const int num_splits) {
+  SplitBatchKernel<<<num_splits, 32, 0, cuda_stream_>>>(
+    cuda_batch_splits_.RawDataReadOnly(),
+    cuda_leaf_parent_.RawData(),
+    cuda_leaf_depth_.RawData(),
+    cuda_left_child_.RawData(),
+    cuda_right_child_.RawData(),
+    cuda_split_feature_inner_.RawData(),
+    cuda_split_feature_.RawData(),
+    cuda_split_gain_.RawData(),
+    cuda_internal_weight_.RawData(),
+    cuda_internal_value_.RawData(),
+    cuda_internal_count_.RawData(),
+    cuda_leaf_weight_.RawData(),
+    cuda_leaf_value_.RawData(),
+    cuda_leaf_count_.RawData(),
+    cuda_decision_type_.RawData(),
+    cuda_threshold_in_bin_.RawData(),
+    cuda_threshold_.RawData());
+}
+
 __global__ void SplitCategoricalKernel(  // split information
   const int leaf_index,
   const int real_feature_index,

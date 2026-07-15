@@ -65,19 +65,19 @@ __global__ void CUDAInitValuesKernel2(
     const bool use_l1 = lambda_l1 > 0.0f;
     if (!use_l1) {
       // no smoothing on root node
-      cuda_struct->gain = CUDALeafSplits::GetLeafGain<false, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0f, 0, 0.0f);
+      cuda_struct->gain = CUDALeafSplits::GetLeafGain<false, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0, 0, 0.0);
     } else {
       // no smoothing on root node
-      cuda_struct->gain = CUDALeafSplits::GetLeafGain<true, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0f, 0, 0.0f);
+      cuda_struct->gain = CUDALeafSplits::GetLeafGain<true, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0, 0, 0.0);
     }
     if (!use_l1) {
       // no smoothing on root node
       cuda_struct->leaf_value =
-        CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0f, 0, 0.0f);
+        CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0, 0, 0.0);
     } else {
       // no smoothing on root node
       cuda_struct->leaf_value =
-        CUDALeafSplits::CalculateSplittedLeafOutput<true, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0f, 0, 0.0f);
+        CUDALeafSplits::CalculateSplittedLeafOutput<true, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0, 0, 0.0);
     }
     cuda_struct->data_indices_in_leaf = cuda_data_indices_in_leaf;
     cuda_struct->hist_in_leaf = cuda_hist_in_leaf;
@@ -149,19 +149,19 @@ __global__ void CUDAInitValuesKernel4(
     const bool use_l1 = lambda_l1 > 0.0f;
     if (!use_l1) {
       // no smoothing on root node
-      cuda_struct->gain = CUDALeafSplits::GetLeafGain<false, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0f, 0, 0.0f);
+      cuda_struct->gain = CUDALeafSplits::GetLeafGain<false, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0, 0, 0.0);
     } else {
       // no smoothing on root node
-      cuda_struct->gain = CUDALeafSplits::GetLeafGain<true, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0f, 0, 0.0f);
+      cuda_struct->gain = CUDALeafSplits::GetLeafGain<true, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0, 0, 0.0);
     }
     if (!use_l1) {
       // no smoothing on root node
       cuda_struct->leaf_value =
-        CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0f, 0, 0.0f);
+        CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0, 0, 0.0);
     } else {
       // no smoothing on root node
       cuda_struct->leaf_value =
-        CUDALeafSplits::CalculateSplittedLeafOutput<true, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0f, 0, 0.0f);
+        CUDALeafSplits::CalculateSplittedLeafOutput<true, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0, 0, 0.0);
     }
     cuda_struct->data_indices_in_leaf = cuda_data_indices_in_leaf;
     cuda_struct->hist_in_leaf = cuda_hist_in_leaf;
@@ -249,19 +249,19 @@ __global__ void CUDAInitSetValuesKernel(
     const bool use_l1 = lambda_l1 > 0.0f;
     if (!use_l1) {
       // no smoothing on root node
-      cuda_struct->gain = CUDALeafSplits::GetLeafGain<false, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0f, 0, 0.0f);
+      cuda_struct->gain = CUDALeafSplits::GetLeafGain<false, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0, 0, 0.0);
     } else {
       // no smoothing on root node
-      cuda_struct->gain = CUDALeafSplits::GetLeafGain<true, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0f, 0, 0.0f);
+      cuda_struct->gain = CUDALeafSplits::GetLeafGain<true, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0, 0, 0.0);
     }
     if (!use_l1) {
       // no smoothing on root node
       cuda_struct->leaf_value =
-        CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0f, 0, 0.0f);
+        CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0, 0, 0.0);
     } else {
       // no smoothing on root node
       cuda_struct->leaf_value =
-        CUDALeafSplits::CalculateSplittedLeafOutput<true, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0f, 0, 0.0f);
+        CUDALeafSplits::CalculateSplittedLeafOutput<true, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0, 0, 0.0);
     }
     cuda_struct->data_indices_in_leaf = cuda_data_indices_in_leaf;
     cuda_struct->hist_in_leaf = cuda_hist_in_leaf;
@@ -290,19 +290,19 @@ __global__ void CUDAInitSetValuesKernel(
     const bool use_l1 = lambda_l1 > 0.0f;
     if (!use_l1) {
       // no smoothing on root node
-      cuda_struct->gain = CUDALeafSplits::GetLeafGain<false, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0f, 0, 0.0f);
+      cuda_struct->gain = CUDALeafSplits::GetLeafGain<false, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0, 0, 0.0);
     } else {
       // no smoothing on root node
-      cuda_struct->gain = CUDALeafSplits::GetLeafGain<true, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0f, 0, 0.0f);
+      cuda_struct->gain = CUDALeafSplits::GetLeafGain<true, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0, 0, 0.0);
     }
     if (!use_l1) {
       // no smoothing on root node
       cuda_struct->leaf_value =
-        CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0f, 0, 0.0f);
+        CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0, 0, 0.0);
     } else {
       // no smoothing on root node
       cuda_struct->leaf_value =
-        CUDALeafSplits::CalculateSplittedLeafOutput<true, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0f, 0, 0.0f);
+        CUDALeafSplits::CalculateSplittedLeafOutput<true, false>(sum_of_gradients, sum_of_hessians, lambda_l1, lambda_l2, 0.0, 0, 0.0);
     }
     cuda_struct->data_indices_in_leaf = cuda_data_indices_in_leaf;
     cuda_struct->hist_in_leaf = cuda_hist_in_leaf;
@@ -328,9 +328,9 @@ void CUDALeafSplits::LaunchInitValuesKernel(
       cuda_gradients_, cuda_hessians_, num_used_indices, cuda_bagging_data_indices, cuda_sum_of_gradients_buffer_.RawData(),
       cuda_sum_of_hessians_buffer_.RawData());
   }
-  SynchronizeCUDADevice(__FILE__, __LINE__);
 
   if (nccl_communicator_ != nullptr) {
+    SynchronizeCUDADevice(__FILE__, __LINE__);
     ReduceGradKernel<<<1, NUM_THREADS_PER_BLOCK_LEAF_SPLITS>>>(num_blocks_init_from_gradients_, cuda_sum_of_gradients_buffer_.RawData(),
       cuda_sum_of_hessians_buffer_.RawData(), num_used_indices);
     SynchronizeCUDADevice(__FILE__, __LINE__);
@@ -355,7 +355,8 @@ void CUDALeafSplits::LaunchInitValuesKernel(
       cuda_hist_in_leaf,
       cuda_struct_.RawData());
   }
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  // callers read the root sums back with a synchronous D2H copy that blocks
+  // until these legacy-default-stream kernels complete; no device sync needed
 }
 
 void CUDALeafSplits::LaunchInitValuesKernel(
@@ -376,9 +377,8 @@ void CUDALeafSplits::LaunchInitValuesKernel(
       cuda_sum_of_hessians_buffer_.RawData(), cuda_sum_of_gradients_hessians_buffer_.RawData(), grad_scale, hess_scale);
   }
 
-  SynchronizeCUDADevice(__FILE__, __LINE__);
-
   if (nccl_communicator_ != nullptr) {
+    SynchronizeCUDADevice(__FILE__, __LINE__);
     ReduceGradKernel<<<1, NUM_THREADS_PER_BLOCK_LEAF_SPLITS>>>(num_blocks_init_from_gradients_,
       cuda_sum_of_gradients_buffer_.RawData(), cuda_sum_of_hessians_buffer_.RawData(), cuda_sum_of_gradients_hessians_buffer_.RawData(),
       num_used_indices);
@@ -407,7 +407,8 @@ void CUDALeafSplits::LaunchInitValuesKernel(
       cuda_hist_in_leaf,
       cuda_struct_.RawData());
   }
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  // callers read the root sums back with a synchronous D2H copy that blocks
+  // until these legacy-default-stream kernels complete; no device sync needed
 }
 
 }  // namespace LightGBM

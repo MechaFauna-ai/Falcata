@@ -29,24 +29,26 @@ namespace LightGBM {
 namespace SplitGainMath {
 
 // Soft-threshold used for L1 regularization: sign(s) * max(0, |s| - l1).
-LGBM_HOSTDEV inline double ThresholdL1(double s, double l1) {
-  const double reg_s = fmax(0.0, fabs(s) - l1);
-  return s >= 0.0 ? reg_s : -reg_s;
+// T = double everywhere except the CUDA fp32 gain mode (EXABOOST_FP32_GAIN).
+template <typename T = double>
+LGBM_HOSTDEV inline T ThresholdL1(T s, T l1) {
+  const T reg_s = fmax(static_cast<T>(0), fabs(s) - l1);
+  return s >= static_cast<T>(0) ? reg_s : -reg_s;
 }
 
 // Newton leaf output -g/(h+l2) with optional L1 shrink, max_delta_step cap, and
 // path smoothing -- applied in that order (matching the CPU formula). Monotone
 // clamping is applied by the caller (it depends on per-leaf constraints).
-template <bool USE_L1, bool USE_MAX_OUTPUT, bool USE_SMOOTHING>
-LGBM_HOSTDEV inline double CalculateLeafOutput(double sum_gradients, double sum_hessians,
-                                               double l1, double l2, double max_delta_step,
-                                               double path_smooth, data_size_t num_data,
-                                               double parent_output) {
-  double ret = USE_L1 ? (-ThresholdL1(sum_gradients, l1) / (sum_hessians + l2))
-                      : (-sum_gradients / (sum_hessians + l2));
+template <bool USE_L1, bool USE_MAX_OUTPUT, bool USE_SMOOTHING, typename T = double>
+LGBM_HOSTDEV inline T CalculateLeafOutput(T sum_gradients, T sum_hessians,
+                                          T l1, T l2, T max_delta_step,
+                                          T path_smooth, data_size_t num_data,
+                                          T parent_output) {
+  T ret = USE_L1 ? (-ThresholdL1(sum_gradients, l1) / (sum_hessians + l2))
+                 : (-sum_gradients / (sum_hessians + l2));
   if (USE_MAX_OUTPUT) {
-    if (max_delta_step > 0 && fabs(ret) > max_delta_step) {
-      ret = ret >= 0.0 ? max_delta_step : -max_delta_step;
+    if (max_delta_step > static_cast<T>(0) && fabs(ret) > max_delta_step) {
+      ret = ret >= static_cast<T>(0) ? max_delta_step : -max_delta_step;
     }
   }
   if (USE_SMOOTHING) {
@@ -57,26 +59,26 @@ LGBM_HOSTDEV inline double CalculateLeafOutput(double sum_gradients, double sum_
 }
 
 // Gain contributed by a leaf given a already-computed output value.
-template <bool USE_L1>
-LGBM_HOSTDEV inline double LeafGainGivenOutput(double sum_gradients, double sum_hessians,
-                                               double l1, double l2, double output) {
-  const double g = USE_L1 ? ThresholdL1(sum_gradients, l1) : sum_gradients;
-  return -(2.0 * g * output + (sum_hessians + l2) * output * output);
+template <bool USE_L1, typename T = double>
+LGBM_HOSTDEV inline T LeafGainGivenOutput(T sum_gradients, T sum_hessians,
+                                          T l1, T l2, T output) {
+  const T g = USE_L1 ? ThresholdL1(sum_gradients, l1) : sum_gradients;
+  return -(2 * g * output + (sum_hessians + l2) * output * output);
 }
 
 // Gain of a leaf (no max_delta_step). With smoothing, gain is measured at the
 // smoothed output; without, it collapses to the closed-form g^2/(h+l2).
-template <bool USE_L1, bool USE_SMOOTHING>
-LGBM_HOSTDEV inline double LeafGain(double sum_gradients, double sum_hessians, double l1,
-                                    double l2, double path_smooth, data_size_t num_data,
-                                    double parent_output) {
+template <bool USE_L1, bool USE_SMOOTHING, typename T = double>
+LGBM_HOSTDEV inline T LeafGain(T sum_gradients, T sum_hessians, T l1,
+                               T l2, T path_smooth, data_size_t num_data,
+                               T parent_output) {
   if (!USE_SMOOTHING) {
-    const double g = USE_L1 ? ThresholdL1(sum_gradients, l1) : sum_gradients;
+    const T g = USE_L1 ? ThresholdL1(sum_gradients, l1) : sum_gradients;
     return (g * g) / (sum_hessians + l2);
   }
-  const double output = CalculateLeafOutput<USE_L1, false, USE_SMOOTHING>(
-      sum_gradients, sum_hessians, l1, l2, 0.0, path_smooth, num_data, parent_output);
-  return LeafGainGivenOutput<USE_L1>(sum_gradients, sum_hessians, l1, l2, output);
+  const T output = CalculateLeafOutput<USE_L1, false, USE_SMOOTHING, T>(
+      sum_gradients, sum_hessians, l1, l2, static_cast<T>(0), path_smooth, num_data, parent_output);
+  return LeafGainGivenOutput<USE_L1, T>(sum_gradients, sum_hessians, l1, l2, output);
 }
 
 }  // namespace SplitGainMath

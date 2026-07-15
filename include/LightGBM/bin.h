@@ -144,6 +144,11 @@ class BinMapper {
     }
   }
 
+  /*! \brief Numerical bin upper bounds (empty for categorical bins) */
+  inline const std::vector<double>& bin_upper_bound() const {
+    return bin_upper_bound_;
+  }
+
   /*!
   * \brief Maximum categorical value
   * \return Maximum categorical value for categorical features, 0 for numerical features
@@ -296,6 +301,25 @@ class Bin {
   * \param value bin value of record
   */
   virtual void Push(int tid, data_size_t idx, uint32_t value) = 0;
+
+  /*! \brief Sentinel for pre-encoded bins that must not be pushed (most frequent bin) */
+  static constexpr uint32_t kSkipBin = std::numeric_limits<uint32_t>::max();
+
+  /*!
+  * \brief Push a block of pre-encoded bins for consecutive records, skipping ``kSkipBin`` entries.
+  *        Values must already be encoded exactly as FeatureGroup::PushData would push them.
+  * \param tid Thread id
+  * \param start_idx Index of the first record
+  * \param count Number of records
+  * \param bins Encoded bin values of the records
+  */
+  virtual void PushBlock(int tid, data_size_t start_idx, data_size_t count, const uint32_t* bins) {
+    for (data_size_t i = 0; i < count; ++i) {
+      if (bins[i] != kSkipBin) {
+        Push(tid, start_idx + i, bins[i]);
+      }
+    }
+  }
 
   virtual void CopySubrow(const Bin* full_bin, const data_size_t* used_indices, data_size_t num_used_indices) = 0;
   /*!
@@ -451,6 +475,13 @@ class Bin {
   * \brief After pushed all feature data, call this could have better refactor for bin data
   */
   virtual void FinishLoad() = 0;
+
+  /*!
+  * \brief Notify the bin that its raw storage (``get_data()``) was filled
+  *        directly with final values (e.g. by device-side binning), so any
+  *        pending merge state of the incremental Push protocol can be dropped.
+  */
+  virtual void SetLoadedFromRawData() {}
 
   /*!
   * \brief Create object for bin data of one feature, used for dense feature

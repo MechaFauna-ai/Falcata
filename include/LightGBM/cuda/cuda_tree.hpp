@@ -9,10 +9,13 @@
 
 #ifdef USE_CUDA
 
+#include <LightGBM/bin.h>
+#include <LightGBM/tree.h>
+
+#include <vector>
+
 #include <LightGBM/cuda/cuda_column_data.hpp>
 #include <LightGBM/cuda/cuda_split_info.hpp>
-#include <LightGBM/tree.h>
-#include <LightGBM/bin.h>
 
 namespace LightGBM {
 
@@ -26,6 +29,47 @@ __device__ int8_t GetMissingTypeCUDA(int8_t decision_type);
 
 __device__ bool IsZeroCUDA(double fval);
 
+/*! \brief Per-split descriptor for the batched tree-structure update of the hybrid
+ *  level-batched growth phase: one SplitBatchKernel launch applies all numerical
+ *  splits of a level (splits indexed by blockIdx.x). All fields are host-known
+ *  before the level is applied; split VALUES (sums, gains, leaf outputs) come from
+ *  the per-leaf device CUDASplitInfo pointer. */
+struct CUDATreeBatchSplit {
+  /*! \brief the leaf being split (left child keeps this index) */
+  int leaf_index;
+  /*! \brief tree num_leaves at the time of this split (== the right child's leaf
+   *  index; the new internal node index is num_leaves_at_split - 1) */
+  int num_leaves_at_split;
+  int real_feature_index;
+  double real_threshold;
+  /*! \brief MissingType of the split feature, stored as int for POD-ness */
+  int missing_type;
+  const CUDASplitInfo* split_info;
+};
+
+/*! \brief One split of a host-side tree rebuild (RebuildFromHostSplits): all the
+ *  values SplitKernel would read from the device CUDASplitInfo, captured on the
+ *  host. Used by the selective (grow-then-prune) hybrid growth, which replays the
+ *  final greedy split sequence host-side after pruning displaced splits. */
+struct CUDATreeHostSplit {
+  /*! \brief the leaf being split, in FINAL (classic leaf-wise) numbering */
+  int leaf_index;
+  int real_feature_index;
+  double real_threshold;
+  /*! \brief MissingType of the split feature, stored as int for POD-ness */
+  int missing_type;
+  int inner_feature_index;
+  uint32_t threshold_in_bin;
+  double gain;
+  uint8_t default_left;
+  double left_sum_hessians;
+  double right_sum_hessians;
+  data_size_t left_count;
+  data_size_t right_count;
+  double left_value;
+  double right_value;
+};
+
 class CUDATree : public Tree {
  public:
   /*!
@@ -33,9 +77,29 @@ class CUDATree : public Tree {
   * \param max_leaves The number of max leaves
   * \param track_branch_features Whether to keep track of ancestors of leaf nodes
   * \param is_linear Whether the tree has linear models at each leaf
+  * \param pooled_device_buffer Optional externally owned device slab of at least
+  *        PooledDeviceBufferSize(max_leaves) bytes. When given, all per-tree
+  *        device arrays are carved from it as non-owning views instead of ~17
+  *        individual cudaMallocs, and ToHost() reads them back with ONE fused
+  *        D2H copy. The caller must guarantee exclusive use of the slab until
+  *        ToHost() has been called (the tree learner trains one tree at a time
+  *        and calls ToHost() before returning it). Only cuda_leaf_value_ is
+  *        needed after ToHost(); it is materialized into owned memory there.
   */
   explicit CUDATree(int max_leaves, bool track_branch_features, bool is_linear,
-    const int gpu_device_id, const bool has_categorical_feature);
+    const int gpu_device_id, const bool has_categorical_feature,
+    uint8_t* pooled_device_buffer = nullptr);
+
+  /*! \brief bytes needed by the pooled per-tree device arrays (16 arrays of
+   *  max_leaves entries + the batched split descriptors), 8-byte aligned */
+  static size_t PooledDeviceBufferSize(const int max_leaves) {
+    const size_t L = static_cast<size_t>(max_leaves);
+    const size_t num_batch_splits = L / 2 + 2;
+    return 5 * sizeof(double) * L +                       // threshold, internal_weight/value, leaf_value/weight
+           sizeof(CUDATreeBatchSplit) * num_batch_splits +  // batched split descriptors (8-byte aligned)
+           10 * 4 * L +                                    // int / uint32_t / data_size_t / float arrays
+           ((sizeof(int8_t) * L + 7) / 8) * 8;             // decision_type, padded
+  }
 
   explicit CUDATree(const Tree* host_tree);
 
@@ -46,6 +110,47 @@ class CUDATree : public Tree {
             const double real_threshold,
             const MissingType missing_type,
             const CUDASplitInfo* cuda_split_info);
+
+  /*! \brief Apply all numerical splits of one level in a single kernel launch
+   *  (device tree-structure updates) plus the usual host-side mirror updates
+   *  (num_leaves_, leaf_depth_, branch features). Equivalent to calling Split()
+   *  once per entry in order: splits[k].num_leaves_at_split must equal the tree's
+   *  num_leaves before split k is applied (right children take consecutive
+   *  indices). The level's splits touch disjoint leaves, so the device updates
+   *  are safe to run concurrently. */
+  void SplitBatch(const std::vector<CUDATreeBatchSplit>& splits);
+
+  /*! \brief graphs L1 body capture: launch SplitBatchKernel with a placeholder
+   *  grid on \p stream (the graph controller resizes it per level); the batch
+   *  split descriptors are read from the pooled device buffer the controller
+   *  writes (hybrid_graph_batch_splits()) */
+  void CaptureHybridGraphSplitBatchKernel(cudaStream_t stream);
+
+  /*! \brief pooled device buffer of the batched split descriptors (written by
+   *  the graphs L1 device controller; stable across pooled trees) */
+  CUDATreeBatchSplit* hybrid_graph_batch_splits() { return cuda_batch_splits_.RawData(); }
+
+  /*! \brief graphs L1 post-prefix replay: the host-mirror half of SplitBatch
+   *  (branch features, leaf depth, num_leaves_) for ONE split whose device
+   *  updates already ran inside the graph */
+  void ReplaySplitHostMirrors(const int leaf_index, const int real_feature_index) {
+    RecordBranchFeatures(leaf_index, num_leaves_, real_feature_index);
+    leaf_depth_[num_leaves_] = leaf_depth_[leaf_index] + 1;
+    leaf_depth_[leaf_index]++;
+    ++num_leaves_;
+  }
+
+  /*! \brief Build the final tree structure host-side from a replayed split
+   *  sequence (selective grow-then-prune hybrid growth). The device tree arrays
+   *  were never written during growth; this replays SplitKernel's per-field
+   *  arithmetic on the host mirrors (bit-identical: same IEEE double operations
+   *  on the same captured CUDASplitInfo values), uploads the final leaf values
+   *  to the device (AddPredictionToScore / Shrinkage / renewal kernels read
+   *  them), and then performs ToHost()'s cleanup (host vector shrink, leaf
+   *  value materialization, device array release, stream destroy). The caller
+   *  must NOT call ToHost() afterwards. leaf_value_[0] must hold the root
+   *  output before the call (it seeds the internal_value_ chain). */
+  void RebuildFromHostSplits(const std::vector<CUDATreeHostSplit>& splits);
 
   int SplitCategorical(
     const int leaf_index,
@@ -111,7 +216,12 @@ class CUDATree : public Tree {
   void SyncLeafOutputFromCUDAToHost();
 
  private:
-  void InitCUDAMemory();
+  /*! \brief shared tail of ToHost() and RebuildFromHostSplits(): shrink the host
+   *  vectors to num_leaves_, materialize the retained device leaf values and
+   *  release every other per-tree device array + the per-tree stream */
+  void ShrinkHostVectorsAndReleaseDevice();
+
+  void InitCUDAMemory(uint8_t* pooled_device_buffer);
 
   void InitCUDA();
 
@@ -120,6 +230,8 @@ class CUDATree : public Tree {
                          const double real_threshold,
                          const MissingType missing_type,
                          const CUDASplitInfo* cuda_split_info);
+
+  void LaunchSplitBatchKernel(const int num_splits);
 
   void LaunchSplitCategoricalKernel(
     const int leaf_index,
@@ -161,6 +273,10 @@ class CUDATree : public Tree {
   CUDAVector<uint32_t> cuda_bitset_inner_;
   CUDAVector<int> cuda_cat_boundaries_;
   CUDAVector<int> cuda_cat_boundaries_inner_;
+  /*! \brief device copy of one level's batched split descriptors (SplitBatch) */
+  CUDAVector<CUDATreeBatchSplit> cuda_batch_splits_;
+  /*! \brief whether the per-tree arrays are views into a pooled slab */
+  bool pooled_ = false;
 
   cudaStream_t cuda_stream_;
 

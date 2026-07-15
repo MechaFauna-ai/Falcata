@@ -1083,10 +1083,37 @@ def test_c_float_array_accepts_int8():
     assert np.shares_memory(data, holder)
 
 
-@pytest.mark.parametrize("dtype", [np.int16, np.int32, np.int64, np.uint8])
+@pytest.mark.parametrize("dtype", [np.int16])
+def test_c_float_array_accepts_int16(dtype):
+    data = np.array([0, 1, 2], dtype=dtype)
+    ptr_data, type_data, holder = lgb.basic._c_float_array(data)
+    assert type_data == lgb.basic._C_API_DTYPE_INT16
+    assert holder.dtype == np.int16
+    assert np.shares_memory(data, holder)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "expected_type_data"),
+    [
+        (np.uint8, "_C_API_DTYPE_UINT8"),
+        (np.uint16, "_C_API_DTYPE_UINT16"),
+        (np.float16, "_C_API_DTYPE_FLOAT16"),
+    ],
+)
+def test_c_float_array_accepts_small_dtypes(dtype, expected_type_data):
+    data = np.array([0, 1, 2, 3, 4], dtype=dtype)
+    _, type_data, holder = lgb.basic._c_float_array(data)
+    assert type_data == getattr(lgb.basic, expected_type_data)
+    # small dtypes are forwarded without a float conversion
+    assert holder.dtype == dtype
+    assert np.shares_memory(data, holder)
+
+
+@pytest.mark.parametrize("dtype", [np.int32, np.int64, np.uint32, np.uint64])
 def test_c_float_array_rejects_unsupported_int_dtypes(dtype):
     data = np.array([0, 1, 2], dtype=dtype)
-    with pytest.raises(TypeError, match=r"Expected np\.float32, np\.float64 or np\.int8"):
+    # keep the match loose: the supported-dtype list in the message grows
+    with pytest.raises(TypeError, match=r"Expected np\.float32, np\.float64"):
         lgb.basic._c_float_array(data)
 
 
@@ -1317,3 +1344,78 @@ def test_public_api_symbols_are_exposed():
             f"lightgbm.{name} is missing -- a submodule import likely failed "
             f"(check lightgbm/__init__.py's try/except ImportError blocks)"
         )
+
+
+# ---------------------------------------------------------------------------
+# FIL (cuML Forest Inference Library) predict routing
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def fil_cuda_booster():
+    """A tiny CUDA binary model, or skip when the stack cannot serve FIL."""
+    pytest.importorskip("nvforest")
+    pytest.importorskip("treelite")
+    rng = np.random.default_rng(42)
+    X = rng.random((1000, 10)).astype(np.float32)
+    y = (X[:, 0] + X[:, 1] > 1).astype(np.float64)
+    try:
+        booster = lgb.train(
+            {"objective": "binary", "device_type": "cuda", "verbose": -1, "seed": 42},
+            lgb.Dataset(X, y),
+            num_boost_round=10,
+        )
+    except lgb.basic.LightGBMError:
+        pytest.skip("no CUDA device / CUDA build available")
+    return booster, X
+
+
+def _fil_was_used(booster):
+    return any(v is not None for v in booster.__dict__.get("_fil_models", {}).values())
+
+
+def test_fil_predict_parity_and_residency(fil_cuda_booster):
+    booster, X = fil_cuda_booster
+    booster._invalidate_fil_cache()
+    p_fil = booster.predict(X)
+    if not _fil_was_used(booster):
+        pytest.skip("FIL could not serve this model on this machine")
+    p_cpu = booster.predict(X, use_fil=False)
+    assert isinstance(p_fil, np.ndarray)  # numpy in -> numpy out
+    np.testing.assert_allclose(p_fil, p_cpu, rtol=1e-4, atol=1e-6)
+    r_fil = booster.predict(X, raw_score=True)
+    r_cpu = booster.predict(X, raw_score=True, use_fil=False)
+    np.testing.assert_allclose(r_fil, r_cpu, rtol=1e-4, atol=1e-5)
+
+
+def test_fil_opt_outs(fil_cuda_booster, monkeypatch):
+    booster, X = fil_cuda_booster
+    booster._invalidate_fil_cache()
+    booster.predict(X, use_fil=False)
+    assert not booster.__dict__.get("_fil_models")
+    monkeypatch.setenv("EXABOOST_FIL", "0")
+    booster.predict(X)
+    assert not booster.__dict__.get("_fil_models")
+
+
+def test_fil_cache_invalidated_on_model_change(fil_cuda_booster):
+    booster, X = fil_cuda_booster
+    booster._invalidate_fil_cache()
+    baseline = booster.predict(X)
+    if not _fil_was_used(booster):
+        pytest.skip("FIL could not serve this model on this machine")
+    booster.set_leaf_output(0, 0, 1234.5)
+    changed = booster.predict(X)
+    changed_cpu = booster.predict(X, use_fil=False)
+    assert not np.allclose(baseline, changed)
+    np.testing.assert_allclose(changed, changed_cpu, rtol=1e-4, atol=1e-6)
+
+
+def test_fil_leaf_and_contrib_stay_on_cpu(fil_cuda_booster):
+    booster, X = fil_cuda_booster
+    booster._invalidate_fil_cache()
+    leaves = booster.predict(X, pred_leaf=True)
+    contrib = booster.predict(X, pred_contrib=True)
+    assert not booster.__dict__.get("_fil_models")
+    assert leaves.shape[0] == X.shape[0]
+    assert contrib.shape == (X.shape[0], X.shape[1] + 1)

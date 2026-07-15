@@ -267,6 +267,32 @@ class FeatureGroup {
     }
   }
 
+  /*!
+   * \brief Encode a BinMapper::ValueToBin result of the subfeature the way PushData
+   *        would push it, or ``Bin::kSkipBin`` if it would not be pushed. Together
+   *        with PushTargetBin this lets callers push precomputed bins in blocks;
+   *        must stay in sync with PushData.
+   * \param sub_feature_idx Index of the subfeature
+   * \param bin bin value of record
+   */
+  inline uint32_t EncodeBinForPush(int sub_feature_idx, uint32_t bin) const {
+    if (bin == bin_mappers_[sub_feature_idx]->GetMostFreqBin()) {
+      return Bin::kSkipBin;
+    }
+    if (bin_mappers_[sub_feature_idx]->GetMostFreqBin() == 0) {
+      bin -= 1;
+    }
+    if (is_multi_val_) {
+      return bin + 1;
+    }
+    return bin + bin_offsets_[sub_feature_idx];
+  }
+
+  /*! \brief The Bin that PushData writes the subfeature's records into */
+  inline Bin* PushTargetBin(int sub_feature_idx) {
+    return is_multi_val_ ? multi_bin_data_[sub_feature_idx].get() : bin_data_.get();
+  }
+
   void ReSize(int num_data) {
     if (!is_multi_val_) {
       bin_data_->ReSize(num_data);
