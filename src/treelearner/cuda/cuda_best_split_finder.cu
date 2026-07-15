@@ -1434,7 +1434,7 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
               sum_other_gradient, sum_other_hessian, grad,
               hess + kEpsilon, lambda_l1,
               l2, path_smooth, other_count, cnt, parent_output);
-            if (current_gain > min_gain_shift) {
+            if (current_gain > min_gain_shift && current_gain - min_gain_shift > local_gain) {
               best_threshold = bin;
               local_gain = current_gain - min_gain_shift;
               threshold_found = true;
@@ -1575,8 +1575,13 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
           sum_right_hessian, lambda_l1,
           l2, path_smooth, left_count, right_count, parent_output);
-        // gain with split is worse than without split
-        if (current_gain > min_gain_shift) {
+        // Keep the best gain across BOTH the left-to-right and right-to-left
+        // passes (and, above 256 bins, across the grid-stride bins a thread owns).
+        // The old `current_gain > min_gain_shift` test overwrote local_gain on
+        // every qualifying threshold, so the right-to-left pass clobbered a better
+        // left-to-right split -- CUDA then reported a lower-gain split over a
+        // disjoint category set than CPU. Track the running maximum instead.
+        if (current_gain > min_gain_shift && current_gain - min_gain_shift > local_gain) {
           local_gain = current_gain - min_gain_shift;
           threshold_found = true;
           best_dir = 1;
@@ -1615,8 +1620,13 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
           sum_right_hessian, lambda_l1,
           l2, path_smooth, left_count, right_count, parent_output);
-        // gain with split is worse than without split
-        if (current_gain > min_gain_shift) {
+        // Keep the best gain across BOTH the left-to-right and right-to-left
+        // passes (and, above 256 bins, across the grid-stride bins a thread owns).
+        // The old `current_gain > min_gain_shift` test overwrote local_gain on
+        // every qualifying threshold, so the right-to-left pass clobbered a better
+        // left-to-right split -- CUDA then reported a lower-gain split over a
+        // disjoint category set than CPU. Track the running maximum instead.
+        if (current_gain > min_gain_shift && current_gain - min_gain_shift > local_gain) {
           local_gain = current_gain - min_gain_shift;
           threshold_found = true;
           best_dir = -1;
