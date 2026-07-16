@@ -169,15 +169,17 @@ figures from the profiles in the PR discussions.
   want (MultiRMSE-style). Modeling change: validate per-era, don't assume. FIL
   predict falls back to CPU for vector-leaf models initially (treelite support).
 
-- [ ] **Exact small-int bin finding (Felix; replaces sampling for int8/uint8).**
-  One GPU pass of 256-value counts per column replaces sampling + host GreedyFindBin:
-  deterministic, exact distribution (fixes the 108-feature rare-(-1)-merged-by-
-  sampling quirk), min_data_in_bin applied to TRUE counts, saves ~1.6s of the 3.4s
-  cupy construct (-> ~2s; int8 numpy 4.5 -> ~3s). Ships as a mode with the sampled
-  path as compatibility default until quality-checked (bins differ slightly,
-  defensibly better). Explicit user-provided-boundaries API considered and
-  rejected: exact counting subsumes it for the data we care about.
-
+- [~] **Exact small-int bin finding (EXABOOST_EXACT_INT_BINS) — IMPLEMENTED, parked on
+  branch `exact-int-bins-wip` (07c70a72), not on the merge branch.** Works: exact
+  per-column counts -> exact bins, deterministic, min_data_in_bin on TRUE counts,
+  rare-value-gets-own-bin mechanism proven on synthetic (sampled 3 bins -> exact 4).
+  Default path byte-identical (covtype 5f4e7bdfff1e verified). BUT no value on numerai:
+  (a) construct 4.5 -> 7.9s (EFB still needs the per-row sample gather, so the exact
+  count is pure extra scan -- the ~1.6s saving premise was wrong); (b) numerai has NO
+  sample-invisible rare values (rarest -1 has >2000 rows), so 0 features gain a bin,
+  quality flat/marginally lower. Revive only if: a construct win is found (fuse the
+  count into the GPU construct pass, or make EFB consume exact counts), OR a dataset
+  with genuinely rare (<min_data, sample-missable) small-int values appears.
 - [ ] **L2 residency tuning (5090: 96 MB L2).** (a) cudaAccessPolicyWindow
   persistence on grad/hess float2 (43 MB) + data indices (22 MB): each level's
   compact-matrix stream (~375 MB) currently evicts them, and the construct kernel is
