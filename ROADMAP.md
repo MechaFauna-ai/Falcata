@@ -216,13 +216,21 @@ figures from the profiles in the PR discussions.
   GROWTH=0 = fcb9f6c2ab87 (unchanged since 3afe7c62; the fix's row-cap never triggers on
   covtype). Do NOT propagate 22c0ff5e95de anywhere.
   fixed-point outlier-robust scale LANDED (d24ab00b, EXABOOST_FIXEDPOINT_ROBUST, default-on within fixedpoint): gap-gated bulk re-anchoring recovers fraud/deep 0.940->0.973 (near non-quant 0.975), balanced cases bit-identical, speed-neutral, deterministic -- the fixed-point mode is now complete for both balanced and imbalanced data.
-  Constant-hessian regression special case INVESTIGATED -> structural negative: the
-  per-bin hessian field is the sole carrier of per-bin COUNT on CUDA (no separate count
-  array; count load-bearing for min_data_in_leaf), so it can't be dropped; count needs
-  only log2(bins)=2 fewer bits than hess at bins=4 -> 0% construct win on numerai (grad
-  alone needs 32-bit cells). The ONLY lever that narrows the quant construct cell is
-  FEWER bins (bins=2 -> 32-bit cells on numerai = real speedup) -- a potential future
-  max-aggressive mode, consistent with keep-bins-4-as-extreme.
+  Quant one-sync parity INVESTIGATED -> honest-negative (parked on branch
+  one-sync-quant-wip, EXABOOST_HYBRID_ONE_SYNC_QUANT opt-in): bit-correct but 1-4%
+  slower -- the quant per-level sync is already cheap/overlapped and the speculative
+  construct's parent-bounded grid costs more than the sync saves. Real lever (shared
+  with graph-quant): a tighter device-side CHILD-size construct grid (parent-bounded
+  is ~2x the smaller child).
+  Constant-hessian regression special case RE-ATTEMPT (first pass wrongly concluded 0%
+  from the shallow numerai-example config). The cell is tiered on max_stat =
+  num_data*num_grad_quant_bins = the HESSIAN sum (gradient_discretizer.cpp:173) -- the
+  LARGER stat (grad magnitude is half). Dropping hess + carrying COUNT (needs
+  log2(bins)=2 fewer bits) + tiering grad/count INDEPENDENTLY drops the cell tier for
+  nd in [16384,65536): 64->32 bit (halved) at 16K-32K rows, 48-bit at 32K-64K. Win is
+  on DEEP configs (numerai-deep depths ~7-8, year/deep) where mid-levels process all
+  rows and construct is 92.5% of GPU time -> est ~10-15% construct speedup. Re-attempt
+  in progress. (Also: bins=2 max-aggressive mode remains a separate future lever.)
   num_grad_quant_bins default DECIDED: keep 4. With fixed-point mode covering the
   near-lossless (XGBoost ~30-bit) end, the two quant modes are deliberate EXTREMES
   (aggressive bins=4 stochastic vs fixed-point near-lossless); bumping to 16 was only
