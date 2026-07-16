@@ -216,6 +216,13 @@ figures from the profiles in the PR discussions.
   GROWTH=0 = fcb9f6c2ab87 (unchanged since 3afe7c62; the fix's row-cap never triggers on
   covtype). Do NOT propagate 22c0ff5e95de anywhere.
   fixed-point outlier-robust scale LANDED (d24ab00b, EXABOOST_FIXEDPOINT_ROBUST, default-on within fixedpoint): gap-gated bulk re-anchoring recovers fraud/deep 0.940->0.973 (near non-quant 0.975), balanced cases bit-identical, speed-neutral, deterministic -- the fixed-point mode is now complete for both balanced and imbalanced data.
+  Constant-hessian regression special case INVESTIGATED -> structural negative: the
+  per-bin hessian field is the sole carrier of per-bin COUNT on CUDA (no separate count
+  array; count load-bearing for min_data_in_leaf), so it can't be dropped; count needs
+  only log2(bins)=2 fewer bits than hess at bins=4 -> 0% construct win on numerai (grad
+  alone needs 32-bit cells). The ONLY lever that narrows the quant construct cell is
+  FEWER bins (bins=2 -> 32-bit cells on numerai = real speedup) -- a potential future
+  max-aggressive mode, consistent with keep-bins-4-as-extreme.
   num_grad_quant_bins default DECIDED: keep 4. With fixed-point mode covering the
   near-lossless (XGBoost ~30-bit) end, the two quant modes are deliberate EXTREMES
   (aggressive bins=4 stochastic vs fixed-point near-lossless); bumping to 16 was only
