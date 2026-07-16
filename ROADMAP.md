@@ -216,8 +216,12 @@ figures from the profiles in the PR discussions.
   GROWTH=0 = fcb9f6c2ab87 (unchanged since 3afe7c62; the fix's row-cap never triggers on
   covtype). Do NOT propagate 22c0ff5e95de anywhere.
   fixed-point outlier-robust scale LANDED (d24ab00b, EXABOOST_FIXEDPOINT_ROBUST, default-on within fixedpoint): gap-gated bulk re-anchoring recovers fraud/deep 0.940->0.973 (near non-quant 0.975), balanced cases bit-identical, speed-neutral, deterministic -- the fixed-point mode is now complete for both balanced and imbalanced data.
-  Still open: bins-default proposal (16 restores deep quality at ~0 cost but is an
-  upstream-parity/model-change decision -- NOT flipped); fixed-point outlier-robust scale;
+  num_grad_quant_bins default DECIDED: keep 4. With fixed-point mode covering the
+  near-lossless (XGBoost ~30-bit) end, the two quant modes are deliberate EXTREMES
+  (aggressive bins=4 stochastic vs fixed-point near-lossless); bumping to 16 was only
+  a patch for the aggressive mode's quality, now served by switching mode. Keeps modes
+  distinct + upstream-compatible. Deep/small-leaf quality is a documented characteristic
+  of the extreme mode -> point users to fixed-point/non-quant. fixed-point outlier-robust scale;
   constant-hessian special case for regression quant; quant one-sync parity.
 - [ ] **Hybrid coverage extensions.** The hybrid/graph fast paths currently fall
   back to the classic loop for: categorical features (variable-length bitset
