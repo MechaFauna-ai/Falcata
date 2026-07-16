@@ -2329,8 +2329,21 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernel(
   const data_size_t max_num_data_in_smaller_leaf,
   const data_size_t* level_smaller_num_data) {
   // One-time NVRTC JIT self-check (no-op unless EXABOOST_CONSTRUCT_JIT=1). Runs
-  // off the first construct; never affects the trained model.
-  if (!construct_jit_selftest_done_) {
+  // off the first construct; never affects the trained model. The self-test
+  // compiles + launches + copies on the stream, which is illegal mid graph
+  // capture ("operation not permitted when stream is capturing"); if the first
+  // construct is captured (multiclass graph loop with JIT force-enabled), defer
+  // the self-test to the first NON-capturing construct. The JIT declines under
+  // graph capture anyway, so deferring never loses a live launch.
+  if (!construct_jit_selftest_done_ && CUDAConstructJIT::Enabled()) {
+    cudaStreamCaptureStatus cap = cudaStreamCaptureStatusNone;
+    if (cudaStreamIsCapturing(cuda_stream_, &cap) == cudaSuccess &&
+        cap == cudaStreamCaptureStatusNone) {
+      RunConstructJITSelfTest();
+    }
+  } else if (!construct_jit_selftest_done_) {
+    // JIT disabled: mark done so the check is a one-time no-op (matches prior
+    // behavior; RunConstructJITSelfTest short-circuits on !Enabled()).
     RunConstructJITSelfTest();
   }
   if (cuda_row_data_->shared_hist_size() == DP_SHARED_HIST_SIZE && gpu_use_dp_) {
