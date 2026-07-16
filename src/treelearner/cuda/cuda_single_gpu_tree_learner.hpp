@@ -376,6 +376,12 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // number of threads on CPU
   int num_threads_;
 
+  // EXABOOST_FIXEDPOINT_QUANT: non-stochastic near-lossless quant mode.
+  // Resolved once in Init so the histogram constructor and the gradient
+  // discretizer share the same effective quant bin count.
+  bool fixedpoint_quant_ = false;
+  int effective_quant_bins_ = 0;
+
   // CUDA components for tree training
 
   // leaf splits information for smaller and larger leaves

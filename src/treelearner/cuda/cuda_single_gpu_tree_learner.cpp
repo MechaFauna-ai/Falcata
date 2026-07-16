@@ -57,6 +57,34 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     gpu_device_id_ = config_->gpu_device_id >= 0 ? config_->gpu_device_id : 0;
     SetCUDADevice(gpu_device_id_, __FILE__, __LINE__);
   }
+  // Fixed-point quant mode (EXABOOST_FIXEDPOINT_QUANT=1): xgboost-inspired
+  // near-lossless deterministic quantization. Non-stochastic round-to-nearest
+  // over a high bin count fills the int16 gradient range, and the existing
+  // packed-histogram path already auto-promotes to exact int32/int64
+  // accumulation as num_data*bins grows -- so no rounding noise accumulates and
+  // results are run-to-run identical. When enabled it raises the effective
+  // num_grad_quant_bins (tunable via EXABOOST_FIXEDPOINT_BINS, default 64) and
+  // forces non-stochastic rounding. The same effective bin count must reach BOTH
+  // the histogram constructor (its 65534/bins per-block row cap guards packed-
+  // hist overflow) and the discretizer (dequant scale), so compute it once here.
+  fixedpoint_quant_ = false;
+  effective_quant_bins_ = config_->num_grad_quant_bins;
+  if (config_->use_quantized_grad) {
+    const char* fp_env = std::getenv("EXABOOST_FIXEDPOINT_QUANT");
+    if (fp_env != nullptr && std::atoi(fp_env) != 0) {
+      fixedpoint_quant_ = true;
+      effective_quant_bins_ = 64;
+      const char* fp_bins_env = std::getenv("EXABOOST_FIXEDPOINT_BINS");
+      if (fp_bins_env != nullptr) {
+        const int b = std::atoi(fp_bins_env);
+        // int16 discretized gradient holds +/-(bins/2); cap well inside range
+        if (b >= 2 && b <= 65534) {
+          effective_quant_bins_ = b;
+        }
+      }
+      Log::Info("EXABOOST_FIXEDPOINT_QUANT: non-stochastic quant with %d bins", effective_quant_bins_);
+    }
+  }
   cuda_smaller_leaf_splits_.reset(new CUDALeafSplits(num_data_));
   cuda_smaller_leaf_splits_->SetNCCLInfo(nccl_communicator_, nccl_gpu_rank_, local_gpu_rank_, gpu_device_id_, global_num_data_);
   cuda_smaller_leaf_splits_->Init(config_->use_quantized_grad);
@@ -67,7 +95,7 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   cuda_histogram_constructor_.reset(new CUDAHistogramConstructor(train_data_, config_->num_leaves, num_threads_,
     share_state_->feature_hist_offsets(),
     config_->min_data_in_leaf, config_->min_sum_hessian_in_leaf, gpu_device_id_, config_->gpu_use_dp,
-    config_->use_quantized_grad, config_->num_grad_quant_bins));
+    config_->use_quantized_grad, effective_quant_bins_));
   cuda_histogram_constructor_->Init(train_data_, share_state_.get());
 
   const auto& feature_hist_offsets = share_state_->feature_hist_offsets();
@@ -133,10 +161,13 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   if (config_->use_quantized_grad) {
     cuda_leaf_gradient_stat_buffer_.Resize(config_->num_leaves);
     cuda_leaf_hessian_stat_buffer_.Resize(config_->num_leaves);
+    // effective_quant_bins_ / fixedpoint_quant_ were resolved at the top of Init
+    // so the histogram constructor and the discretizer agree on the bin count.
+    const bool fp_stochastic = fixedpoint_quant_ ? false : config_->stochastic_rounding;
     // one random-offset slot per TREE: multiclass trains num_class trees per
     // iteration, and the discretizer's iter_ counter advances once per tree
     cuda_gradient_discretizer_.reset(new CUDAGradientDiscretizer(
-      config_->num_grad_quant_bins, config_->num_iterations * std::max(config_->num_class, 1), config_->seed, is_constant_hessian, config_->stochastic_rounding));
+      effective_quant_bins_, config_->num_iterations * std::max(config_->num_class, 1), config_->seed, is_constant_hessian, fp_stochastic));
     cuda_gradient_discretizer_->SetNCCLInfo(nccl_communicator_, nccl_gpu_rank_, local_gpu_rank_, gpu_device_id_, global_num_data_);
     cuda_gradient_discretizer_->Init(num_data_, config_->num_leaves, train_data_->num_features(), train_data_);
   } else {
