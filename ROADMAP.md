@@ -212,9 +212,13 @@ figures from the profiles in the PR discussions.
   a percentile-clipped/per-class scale would fix it (follow-up). CAVEAT ON THE COMMIT
   MESSAGES: the #28 agent worked from a contaminated baseline build and mis-recorded the
   covtype quant lock as 22c0ff5e95de in both commit bodies + follow-ups -- that is WRONG.
-  The real, re-confirmed lock is covtype 1023/10 quant GROWTH=1 = 5f4e7bdfff1e /
-  GROWTH=0 = fcb9f6c2ab87 (unchanged since 3afe7c62; the fix's row-cap never triggers on
-  covtype). Do NOT propagate 22c0ff5e95de anywhere.
+  The lock WAS covtype 1023/10 quant GROWTH=1 = 5f4e7bdfff1e / GROWTH=0 = fcb9f6c2ab87
+  (do NOT propagate the bogus 22c0ff5e95de). RE-BASELINED by #13 (tolerance gain tie-break,
+  2026-07-16): its CPU-parity plateau tie-break makes CUDA pick CPU's lowest-index bin on a
+  gain plateau instead of the FP-noise bin, moving covtype to GROWTH=1 = 1bfd2d7aed5f /
+  GROWTH=0 = 26852449fbac, quality 0.91952->0.91800 (plateau-choice delta, not a regression;
+  numerai unchanged at 763c75c0d9cb; TreeSHAP 0.048->1e-16, OOS 0.45->1e-17). These
+  (1bfd2d7aed5f / 26852449fbac) are now the canonical covtype locks.
   fixed-point outlier-robust scale LANDED (d24ab00b, EXABOOST_FIXEDPOINT_ROBUST, default-on within fixedpoint): gap-gated bulk re-anchoring recovers fraud/deep 0.940->0.973 (near non-quant 0.975), balanced cases bit-identical, speed-neutral, deterministic -- the fixed-point mode is now complete for both balanced and imbalanced data.
   Still open: bins-default proposal (16 restores deep quality at ~0 cost but is an
   upstream-parity/model-change decision -- NOT flipped); fixed-point outlier-robust scale;
