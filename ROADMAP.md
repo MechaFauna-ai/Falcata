@@ -222,15 +222,18 @@ figures from the profiles in the PR discussions.
   construct's parent-bounded grid costs more than the sync saves. Real lever (shared
   with graph-quant): a tighter device-side CHILD-size construct grid (parent-bounded
   is ~2x the smaller child).
-  Constant-hessian regression special case RE-ATTEMPT (first pass wrongly concluded 0%
-  from the shallow numerai-example config). The cell is tiered on max_stat =
-  num_data*num_grad_quant_bins = the HESSIAN sum (gradient_discretizer.cpp:173) -- the
-  LARGER stat (grad magnitude is half). Dropping hess + carrying COUNT (needs
-  log2(bins)=2 fewer bits) + tiering grad/count INDEPENDENTLY drops the cell tier for
-  nd in [16384,65536): 64->32 bit (halved) at 16K-32K rows, 48-bit at 32K-64K. Win is
-  on DEEP configs (numerai-deep depths ~7-8, year/deep) where mid-levels process all
-  rows and construct is 92.5% of GPU time -> est ~10-15% construct speedup. Re-attempt
-  in progress. (Also: bins=2 max-aggressive mode remains a separate future lever.)
+  Constant-hessian regression special case: CONFIRMED STRUCTURAL NEGATIVE (two
+  agents; second one built a working prototype + measured deep configs). Can't drop a
+  histogram tier: the gradient field is SIGNED int16 (histogram_constructor.cu:1122,
+  static_cast<int16_t>(packed>>16)), so signed grad ±(bins/2)*nd needs the SAME width
+  as unsigned hess bins*nd -- the /2 and the sign bit cancel. Even FORCING tier drops
+  (numerai-deep: 564 leaves 64->16-bit) yields <0.2% construct delta because construct
+  is bound by the per-row BIN READ + shared-hist update, NOT accumulation width, and
+  the batched launch is gated by the largest leaf. Count-mode is a bit-identical no-op.
+  Broader lesson: construct (92.5% of GPU) is bin-read-bound -- accumulation-width and
+  sync ideas are tapped; real construct levers are bin-byte reduction (4-bit packing +
+  int8 ingestion, both DONE) and partition efficiency (NVRTC shape-specialization,
+  tier-2). bins=2 max-aggressive mode remains a separate future lever.)
   num_grad_quant_bins default DECIDED: keep 4. With fixed-point mode covering the
   near-lossless (XGBoost ~30-bit) end, the two quant modes are deliberate EXTREMES
   (aggressive bins=4 stochastic vs fixed-point near-lossless); bumping to 16 was only
