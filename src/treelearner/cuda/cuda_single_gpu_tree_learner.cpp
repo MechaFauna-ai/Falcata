@@ -2668,9 +2668,12 @@ void CUDASingleGPUTreeLearner::AllocateBitset() {
         max_cat_num_bin = std::max(bin_mapper->num_bin(), max_cat_num_bin);
       }
     }
-    // std::max(..., 1UL) to avoid error in the case when there are NaN's in the categorical values
-    const size_t cuda_bitset_max_size = std::max(static_cast<size_t>((max_cat_value + 31) / 32), 1UL);
-    const size_t cuda_bitset_inner_max_size = std::max(static_cast<size_t>((max_cat_num_bin + 31) / 32), 1UL);
+    // std::max(..., 1) to avoid error in the case when there are NaN's in the categorical values.
+    // The second argument must be size_t (not the 1UL literal used previously): unsigned long is
+    // 32-bit on LLP64 platforms (MSVC/Windows) while size_t is 64-bit there, so std::max's matching
+    // template argument deduction failed to compile on Windows even though it worked on Linux.
+    const size_t cuda_bitset_max_size = std::max(static_cast<size_t>((max_cat_value + 31) / 32), static_cast<size_t>(1));
+    const size_t cuda_bitset_inner_max_size = std::max(static_cast<size_t>((max_cat_num_bin + 31) / 32), static_cast<size_t>(1));
     AllocateCUDAMemory<uint32_t>(&cuda_bitset_, cuda_bitset_max_size, __FILE__, __LINE__);
     AllocateCUDAMemory<uint32_t>(&cuda_bitset_inner_, cuda_bitset_inner_max_size, __FILE__, __LINE__);
     const int max_cat_in_split = std::min(config_->max_cat_threshold, max_cat_num_bin / 2);
