@@ -18,7 +18,7 @@ concurrency:
 # default to 0 permissions
 # (job-level overrides add the minimal permissions needed)
 permissions:
-  contents: none
+  contents: read
 
 env:
   # tell scripts where to put artifacts
