@@ -1470,6 +1470,45 @@ def test_cuda_large_categorical_global_memory_does_not_crash(n_categories):
     """
     rng = np.random.default_rng(7)
     n = n_categories * 40
+    cats = rng.integers(0, n_categories, size=n).astype(np.float64)
+    category_means = rng.standard_normal(n_categories) * 0.7
+    y = (category_means[cats.astype(int)] + rng.standard_normal(n) * 0.05).astype(
+        np.float64
+    )
+    X = cats.reshape(-1, 1)
+    params = {
+        "objective": "regression",
+        "verbose": -1,
+        "deterministic": True,
+        "num_threads": 1,
+        "seed": 0,
+        "feature_pre_filter": False,
+        "gpu_use_dp": True,
+        "num_leaves": 8,
+        "min_data_in_leaf": 5,
+        "min_data_in_bin": 1,
+        "max_bin": 8192,
+        "cat_smooth": 1,
+        "learning_rate": 0.1,
+        "device_type": "cuda",
+    }
+    ds = lgb.Dataset(
+        X,
+        label=y,
+        categorical_feature=[0],
+        params={
+            "verbose": -1,
+            "feature_pre_filter": False,
+            "min_data_in_bin": 1,
+            "max_bin": 8192,
+        },
+    )
+    # Regression: this raised a CUDA illegal-memory-access error before the fix.
+    bst = lgb.train(params, ds, num_boost_round=5)
+    preds = bst.predict(X, raw_score=True)
+    assert np.all(np.isfinite(preds)), (
+        "global-memory categorical training produced non-finite predictions"
+    )
 
 
 @_REQUIRES_CUDA
