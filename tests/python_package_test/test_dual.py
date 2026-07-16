@@ -1099,11 +1099,20 @@ _KILL_SWITCH_CASES = [
     # sampled columns and feeds the same discretized kernel); ff<1 engages it, so
     # the model must be bit-identical to the full-column path.
     ("sampled", {}, {"EXABOOST_CONSTRUCT_COMPACT_QUANT": "0"}, "EXABOOST_CONSTRUCT_COMPACT_QUANT"),
-    # NVRTC construct JIT self-test path: EXABOOST_CONSTRUCT_JIT=1 runs a one-time
-    # compile+launch+validate self-check but never feeds the trained model, so the
-    # model must be bit-identical to the JIT-off default (proves the JIT is a
-    # perf-only fast path that cannot alter results).
+    # NVRTC construct JIT LIVE path: EXABOOST_CONSTRUCT_JIT=1 self-tests then
+    # runs the JIT-compiled construct_jit_batched kernel as the live construct on
+    # the compact-quant path (the "sampled" profile is ff<1 low-bin -> 4-bit
+    # compact -> JIT engages). The trained model must be BIT-IDENTICAL to the
+    # AOT-off default (integer atomics order-invariant): the JIT is a perf-only
+    # fast path that cannot alter results.
     ("sampled", {}, {"EXABOOST_CONSTRUCT_JIT": "1"}, "EXABOOST_CONSTRUCT_JIT"),
+    # same, forcing the 8-bit (non-4bit) compact JIT kernel via ROWDATA_4BIT=0.
+    (
+        "sampled",
+        {"EXABOOST_ROWDATA_4BIT": "0"},
+        {"EXABOOST_CONSTRUCT_JIT": "1", "EXABOOST_ROWDATA_4BIT": "0"},
+        "EXABOOST_CONSTRUCT_JIT_8BIT",
+    ),
 ]
 
 

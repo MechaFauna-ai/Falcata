@@ -24,8 +24,8 @@ namespace LightGBM {
 std::string ConstructJITShapeKey::Signature() const {
   return "b" + std::to_string(bins) + "_p" + std::to_string(num_partitions) +
          "_c" + std::to_string(cols_per_partition) + "_s" + std::to_string(shared_hist_size) +
-         "_h" + std::to_string(use_16bit_hist) + "_a" + std::to_string(sm_major) +
-         std::to_string(sm_minor);
+         "_h" + std::to_string(use_16bit_hist) + "_q" + std::to_string(is_4bit) +
+         "_a" + std::to_string(sm_major) + std::to_string(sm_minor);
 }
 
 CUDAConstructJIT::~CUDAConstructJIT() {
@@ -76,15 +76,16 @@ bool CUDAConstructJIT::Available() {
 std::string CUDAConstructJIT::BuildKernelSource(const ConstructJITShapeKey& key) const {
   const std::string bins = std::to_string(key.bins);
   const std::string cols = std::to_string(key.cols_per_partition);
-  const std::string shs = std::to_string(key.shared_hist_size);
+  const std::string shist = std::to_string(key.shared_hist_size);
   std::string src;
   src += "typedef int int32_t; typedef long long int64_t; typedef short int16_t;\n";
   src += "typedef unsigned int uint32_t; typedef unsigned char uint8_t;\n";
   src += "typedef int data_size_t;\n";
   src += "#define BINS " + bins + "\n";
   src += "#define COLS_PER_PARTITION " + cols + "\n";
-  src += "#define SHARED_HIST_SIZE " + shs + "\n";
+  src += "#define SHARED_HIST_SIZE " + shist + "\n";
   src += "#define USE_16BIT_HIST " + std::to_string(key.use_16bit_hist) + "\n";
+  src += "#define IS_4BIT " + std::to_string(key.is_4bit) + "\n";
   src += R"CUDA(
 struct LeafSplits {
   int leaf_index;
@@ -174,6 +175,169 @@ extern "C" __global__ void construct_jit(
   }
 #endif
 }
+
+// -----------------------------------------------------------------------------
+// The LIVE batched construct kernel. This is the one the dispatch launches with
+// EXABOOST_CONSTRUCT_JIT=1 on the (non-graph, host-launched, non-4bit) dense
+// compact-quant path -- exactly numerai's shape. It replicates, bit-for-bit, the
+// (bin, gradient) accumulation of the AOT
+// CUDAConstructDiscretizedHistogramDenseBatchedKernel for that case:
+//   - one block per (partition = blockIdx.x, row-group = blockIdx.y, pair = blockIdx.z)
+//   - the per-pair validity / min_data / min_hessian construct gate from the
+//     descriptor (host-launched: level_smaller_num_data == null, gstate inactive,
+//     is_feature_used == null, bin_used == null -> the simple offsets-array body)
+//   - dim_y = gridDim.y * blockDim.y (the host's exact launch grid)
+//   - per-pair 16-/32-bit histogram flush (block-uniform from smaller_num_bits)
+// Because the shared-hist SIZE and the hist bit width are the only shape facts the
+// body needs (the per-tree column/partition counts are read from the offset arrays
+// at runtime), one compile serves every tree of a run -- the compact column set
+// resamples per tree but the kernel reads the resampled offsets, unchanged.
+// Integer atomics are order-invariant -> identical sums to the AOT kernel.
+//
+// The CUDAHybridPairDescriptor / CUDALeafSplitsStruct layouts below MUST match
+// src/treelearner/cuda/cuda_leaf_splits.hpp exactly (asserted host-side).
+struct HybridPairDescriptor {
+  const LeafSplits* smaller_struct;
+  const LeafSplits* larger_struct;
+  int smaller_leaf_index;
+  int larger_leaf_index;
+  data_size_t num_data_in_smaller_leaf;
+  data_size_t num_data_in_larger_leaf;
+  uint8_t construct_valid;
+  uint8_t smaller_valid;
+  uint8_t larger_valid;
+  uint8_t parent_num_bits;
+  uint8_t smaller_num_bits;
+  uint8_t larger_num_bits;
+};
+
+// The accumulation body, templated on the flush bit width (matches
+// ConstructDiscretizedHistogramDenseInner). Reads the same offset arrays the AOT
+// kernel does; dim_y passed in (host-launched grid).
+template <bool USE_16BIT>
+__device__ __forceinline__ void construct_jit_inner(
+    const LeafSplits* smaller_leaf,
+    int16_t* shared_hist,
+    const int32_t* grad_and_hess,
+    const uint8_t* data,
+    const uint32_t* column_hist_offsets,
+    const uint32_t* partition_hist_offsets,
+    const int* feature_partition_column_index_offsets,
+    const int* packed_partition_byte_offsets,
+    const data_size_t num_data,
+    const int dim_y) {
+  int32_t* shared_hist_packed = (int32_t*)shared_hist;
+  const data_size_t num_data_in_smaller_leaf = smaller_leaf->num_data_in_leaf;
+  const data_size_t num_data_per_thread = (num_data_in_smaller_leaf + dim_y - 1) / dim_y;
+  const unsigned int blockIdx_y = blockIdx.y;
+  const data_size_t block_start = ((size_t)blockIdx_y * blockDim.y) * num_data_per_thread;
+  if (block_start >= num_data_in_smaller_leaf) return;
+
+  const data_size_t* data_indices_ref = smaller_leaf->data_indices_in_leaf;
+  const unsigned int num_threads_per_block = blockDim.x * blockDim.y;
+  const int partition_column_start = feature_partition_column_index_offsets[blockIdx.x];
+  const int partition_column_end = feature_partition_column_index_offsets[blockIdx.x + 1];
+  const int num_columns_in_partition = partition_column_end - partition_column_start;
+#if IS_4BIT
+  const int row_stride = packed_partition_byte_offsets[blockIdx.x + 1] -
+                         packed_partition_byte_offsets[blockIdx.x];
+  const uint8_t* data_ptr = data + (size_t)packed_partition_byte_offsets[blockIdx.x] * num_data;
+#else
+  const int row_stride = num_columns_in_partition;
+  const uint8_t* data_ptr = data + (size_t)partition_column_start * num_data;
+#endif
+  const uint32_t partition_hist_start = partition_hist_offsets[blockIdx.x];
+  const uint32_t partition_hist_end = partition_hist_offsets[blockIdx.x + 1];
+  const uint32_t num_items_in_partition = partition_hist_end - partition_hist_start;
+  const unsigned int thread_idx = threadIdx.x + threadIdx.y * blockDim.x;
+
+  for (unsigned int i = thread_idx; i < num_items_in_partition; i += num_threads_per_block) {
+    shared_hist_packed[i] = 0;
+  }
+  __syncthreads();
+
+  const unsigned int threadIdx_y = threadIdx.y;
+  const data_size_t* data_indices_ref_this_block = data_indices_ref + block_start;
+  data_size_t block_num_data = max(0, min(num_data_in_smaller_leaf - block_start,
+      num_data_per_thread * (data_size_t)blockDim.y));
+  const data_size_t num_iteration_total = (block_num_data + blockDim.y - 1) / blockDim.y;
+  const data_size_t remainder = block_num_data % blockDim.y;
+  const data_size_t num_iteration_this = remainder == 0 ? num_iteration_total :
+      num_iteration_total - (data_size_t)(threadIdx_y >= remainder);
+  data_size_t inner_data_index = (data_size_t)threadIdx_y;
+  const int column_index = (int)threadIdx.x + partition_column_start;
+  if (threadIdx.x < (unsigned int)num_columns_in_partition) {
+    int32_t* shared_hist_ptr = shared_hist_packed + column_hist_offsets[column_index];
+    for (data_size_t i = 0; i < num_iteration_this; ++i) {
+      const data_size_t data_index = data_indices_ref_this_block[inner_data_index];
+      const int32_t gh = grad_and_hess[data_index];
+      const uint8_t* row_ptr = data_ptr + (size_t)data_index * row_stride;
+#if IS_4BIT
+      const uint32_t packed = (uint32_t)row_ptr[threadIdx.x >> 1];
+      const uint32_t bin = (packed >> ((threadIdx.x & 1) << 2)) & 0xfu;
+#else
+      const uint32_t bin = (uint32_t)row_ptr[threadIdx.x];
+#endif
+      atomicAdd_block(shared_hist_ptr + bin, gh);
+      inner_data_index += blockDim.y;
+    }
+  }
+  __syncthreads();
+
+  if (USE_16BIT) {
+    int32_t* feature_histogram_ptr = (int32_t*)smaller_leaf->hist_in_leaf + partition_hist_start;
+    for (unsigned int i = thread_idx; i < num_items_in_partition; i += num_threads_per_block) {
+      atomicAdd((int*)(feature_histogram_ptr + i), (int)shared_hist_packed[i]);
+    }
+  } else {
+    long long* feature_histogram_ptr = (long long*)smaller_leaf->hist_in_leaf + partition_hist_start;
+    for (unsigned int i = thread_idx; i < num_items_in_partition; i += num_threads_per_block) {
+      const int32_t p = shared_hist_packed[i];
+      const int64_t v = ((int64_t)((int16_t)(p >> 16)) << 32) | (int64_t)(p & 0x0000ffff);
+      atomicAdd((unsigned long long*)(feature_histogram_ptr + i), (unsigned long long)v);
+    }
+  }
+}
+
+extern "C" __global__ void construct_jit_batched(
+    const HybridPairDescriptor* pair_descs,
+    const int32_t* grad_and_hess,
+    const uint8_t* data,
+    const uint32_t* column_hist_offsets,
+    const uint32_t* partition_hist_offsets,
+    const int* feature_partition_column_index_offsets,
+    const int* packed_partition_byte_offsets,
+    const data_size_t num_data,
+    const data_size_t min_data_in_leaf,
+    const double min_sum_hessian_in_leaf) {
+  __shared__ int16_t shared_hist[SHARED_HIST_SIZE];
+  const HybridPairDescriptor* desc = pair_descs + blockIdx.z;
+  if (!desc->construct_valid) return;
+  const LeafSplits* smaller_struct = desc->smaller_struct;
+  const data_size_t num_data_smaller = smaller_struct->num_data_in_leaf;
+  const double sum_hessians_smaller = smaller_struct->sum_of_hessians;
+  const LeafSplits* larger_struct = desc->larger_struct;
+  const bool has_larger = larger_struct->leaf_index >= 0;
+  const data_size_t num_data_larger = has_larger ? larger_struct->num_data_in_leaf : 0;
+  const double sum_hessians_larger = has_larger ? larger_struct->sum_of_hessians : 0.0;
+  if ((num_data_smaller <= min_data_in_leaf || sum_hessians_smaller <= min_sum_hessian_in_leaf) &&
+      (num_data_larger <= min_data_in_leaf || sum_hessians_larger <= min_sum_hessian_in_leaf)) {
+    return;
+  }
+  const int dim_y = (int)(gridDim.y * blockDim.y);
+  const uint8_t smaller_num_bits = desc->smaller_num_bits;
+  if (smaller_num_bits <= 16) {
+    construct_jit_inner<true>(smaller_struct, shared_hist, grad_and_hess, data,
+        column_hist_offsets, partition_hist_offsets,
+        feature_partition_column_index_offsets, packed_partition_byte_offsets,
+        num_data, dim_y);
+  } else {
+    construct_jit_inner<false>(smaller_struct, shared_hist, grad_and_hess, data,
+        column_hist_offsets, partition_hist_offsets,
+        feature_partition_column_index_offsets, packed_partition_byte_offsets,
+        num_data, dim_y);
+  }
+}
 )CUDA";
   return src;
 }
@@ -237,14 +401,34 @@ void* CUDAConstructJIT::GetOrCompile(const ConstructJITShapeKey& key, double* co
     cache_[sig] = entry;
     return nullptr;
   }
+  CUfunction func_batched = nullptr;
+  if (cuModuleGetFunction(&func_batched, module, "construct_jit_batched") != CUDA_SUCCESS) {
+    Log::Warning("CUDAConstructJIT: cuModuleGetFunction(batched) failed for %s, using AOT", sig.c_str());
+    cuModuleUnload(module);
+    cache_[sig] = entry;
+    return nullptr;
+  }
   const auto t1 = std::chrono::steady_clock::now();
   entry.compile_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
   entry.module = module;
   entry.func = func;
+  entry.func_batched = func_batched;
   cache_[sig] = entry;
   Log::Info("CUDAConstructJIT: compiled construct kernel %s in %.1f ms", sig.c_str(), entry.compile_ms);
   if (compile_ms_out != nullptr) *compile_ms_out = entry.compile_ms;
   return func;
+}
+
+void* CUDAConstructJIT::GetBatchedFunc(const ConstructJITShapeKey& key) const {
+  auto it = cache_.find(key.Signature());
+  if (it == cache_.end()) return nullptr;
+  return it->second.func_batched;
+}
+
+void* CUDAConstructJIT::GetBatchedIfValidated(const ConstructJITShapeKey& key) const {
+  auto it = cache_.find(key.Signature());
+  if (it == cache_.end() || !it->second.validated) return nullptr;
+  return it->second.func_batched;
 }
 
 bool CUDAConstructJIT::IsValidated(const ConstructJITShapeKey& key) const {

@@ -2425,7 +2425,15 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     // shared partition hist offsets preserve every used bin's global position ->
     // bit-identical histograms (integer atomics are order-invariant).
     if (use_compact_view_) {
-      if (compact_is_4bit_) {
+      // JIT live fast path (EXABOOST_CONSTRUCT_JIT=1): a validated shape-
+      // specialized construct_jit_batched replaces the AOT kernel for BOTH the
+      // 8-bit and 4-bit-packed compact-quant shapes. Declines (default OFF /
+      // unavailable / unvalidated / graph capture / speculative flow) -> AOT.
+      if (TryLaunchConstructJITBatchedCompactQuant(
+              grid_dim, block_dim, pair_descs, level_smaller_num_data,
+              static_cast<int>(SHARED_HIST_SIZE), sizeof(BIN_TYPE))) {
+        // launched the JIT kernel
+      } else if (compact_is_4bit_) {
         CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE, true><<<grid_dim, block_dim, 0, cuda_stream_>>>(
           pair_descs,
           reinterpret_cast<const int32_t*>(cuda_gradients_),
@@ -2869,10 +2877,25 @@ bool CUDAHistogramConstructor::RunConstructJITSelfTest() {
   if (construct_jit_selftest_done_) return true;
   construct_jit_selftest_done_ = true;
   if (!CUDAConstructJIT::Enabled() || !CUDAConstructJIT::Available()) return false;
+  int dev = 0;
+  cudaGetDevice(&dev);
+  cudaDeviceProp prop;
+  cudaGetDeviceProperties(&prop, dev);
+  // Validate the LIVE batched kernel (the one the dispatch launches) for each
+  // packing separately -- the 4-bit and 8-bit bin reads are different code.
+  bool any = false;
+  any |= RunConstructJITSelfTestShape(false, prop.major, prop.minor);
+  any |= RunConstructJITSelfTestShape(true, prop.major, prop.minor);
+  return any;
+}
 
-  // Synthetic shape: 1 partition, COLS columns, BINS bins/col, 16-bit hist.
+// One self-test shape: compile + launch construct_jit_batched on a synthetic
+// single-partition single-pair histogram and confirm bit-identity vs a host
+// reference. Arms the live path for this packing on success.
+bool CUDAHistogramConstructor::RunConstructJITSelfTestShape(bool is_4bit, int sm_major, int sm_minor) {
+  const int slot = is_4bit ? 1 : 0;
   const int kCols = 8;
-  const int kBins = 6;
+  const int kBins = is_4bit ? 4 : 6;  // 4-bit values live in [0,15]; keep < 16
   const int kRows = 1024;
   ConstructJITShapeKey key;
   key.bins = kBins;
@@ -2880,93 +2903,121 @@ bool CUDAHistogramConstructor::RunConstructJITSelfTest() {
   key.cols_per_partition = kCols;
   key.shared_hist_size = static_cast<int>(SP_SHARED_HIST_SIZE);
   key.use_16bit_hist = 1;
-  int dev = 0;
-  cudaGetDevice(&dev);
-  cudaDeviceProp prop;
-  cudaGetDeviceProperties(&prop, dev);
-  key.sm_major = prop.major;
-  key.sm_minor = prop.minor;
+  key.is_4bit = is_4bit ? 1 : 0;
+  key.sm_major = sm_major;
+  key.sm_minor = sm_minor;
 
   double compile_ms = 0.0;
   void* fn = construct_jit_.GetOrCompile(key, &compile_ms);
   if (fn == nullptr) return false;
-  CUfunction func = reinterpret_cast<CUfunction>(fn);
+  void* fn_batched = construct_jit_.GetBatchedFunc(key);
+  if (fn_batched == nullptr) return false;
+  CUfunction func = reinterpret_cast<CUfunction>(fn_batched);
 
-  // Host synthetic data (row-major-in-partition uint8 bins) + packed grad/hess.
-  std::vector<uint8_t> h_data(static_cast<size_t>(kRows) * kCols);
+  // 8-bit: row byte layout data[row*kCols + col]; 4-bit: packed nibbles,
+  // row byte layout data[row*packed_width + (col>>1)] nibble (col&1).
+  const int packed_width = (kCols + 1) >> 1;
+  const int row_width = is_4bit ? packed_width : kCols;
+  std::vector<uint8_t> h_data(static_cast<size_t>(kRows) * row_width, 0);
   std::vector<int32_t> h_gh(kRows);
   std::vector<data_size_t> h_indices(kRows);
   std::vector<uint32_t> h_col_off(kCols);
   std::vector<uint32_t> h_part_hist_off(2);
   std::vector<int> h_part_col_off(2);
+  std::vector<int> h_packed_off(2);
   for (int c = 0; c < kCols; ++c) h_col_off[c] = static_cast<uint32_t>(c * kBins);
   h_part_hist_off[0] = 0;
   h_part_hist_off[1] = static_cast<uint32_t>(kCols * kBins);
   h_part_col_off[0] = 0;
   h_part_col_off[1] = kCols;
+  h_packed_off[0] = 0;
+  h_packed_off[1] = packed_width;
+  std::vector<uint8_t> h_bins(static_cast<size_t>(kRows) * kCols);
   for (int r = 0; r < kRows; ++r) {
     h_indices[r] = r;
-    // packed (grad<<16 | hess); use small values so the 16-bit sum can't overflow.
     const int16_t g = static_cast<int16_t>((r % 7) - 3);
     const int16_t h = static_cast<int16_t>(1);
     h_gh[r] = (static_cast<int32_t>(g) << 16) | (static_cast<int32_t>(h) & 0xffff);
     for (int c = 0; c < kCols; ++c) {
-      h_data[static_cast<size_t>(r) * kCols + c] = static_cast<uint8_t>((r + c) % kBins);
+      const uint8_t bin = static_cast<uint8_t>((r + c) % kBins);
+      h_bins[static_cast<size_t>(r) * kCols + c] = bin;
+      if (is_4bit) {
+        uint8_t& byte = h_data[static_cast<size_t>(r) * row_width + (c >> 1)];
+        byte = static_cast<uint8_t>((byte & ~(0xf << ((c & 1) << 2))) | (bin << ((c & 1) << 2)));
+      } else {
+        h_data[static_cast<size_t>(r) * row_width + c] = bin;
+      }
     }
   }
 
-  // Host reference histogram (packed int32 per bin, same accumulation).
   const int total_bins = kCols * kBins;
   std::vector<int32_t> ref(total_bins, 0);
   for (int r = 0; r < kRows; ++r) {
     for (int c = 0; c < kCols; ++c) {
-      const uint8_t bin = h_data[static_cast<size_t>(r) * kCols + c];
-      ref[c * kBins + bin] += h_gh[r];
+      ref[c * kBins + h_bins[static_cast<size_t>(r) * kCols + c]] += h_gh[r];
     }
   }
 
-  // Device buffers.
   CUDAVector<uint8_t> d_data(h_data.size());
   CUDAVector<int32_t> d_gh(kRows);
   CUDAVector<data_size_t> d_indices(kRows);
   CUDAVector<uint32_t> d_col_off(kCols);
   CUDAVector<uint32_t> d_part_hist_off(2);
   CUDAVector<int> d_part_col_off(2);
-  CUDAVector<int32_t> d_hist(total_bins);  // 16-bit hist stored as int32 packed
+  CUDAVector<int> d_packed_off(2);
+  CUDAVector<int32_t> d_hist(total_bins);
   CopyFromHostToCUDADevice<uint8_t>(d_data.RawData(), h_data.data(), h_data.size(), __FILE__, __LINE__);
   CopyFromHostToCUDADevice<int32_t>(d_gh.RawData(), h_gh.data(), kRows, __FILE__, __LINE__);
   CopyFromHostToCUDADevice<data_size_t>(d_indices.RawData(), h_indices.data(), kRows, __FILE__, __LINE__);
   CopyFromHostToCUDADevice<uint32_t>(d_col_off.RawData(), h_col_off.data(), kCols, __FILE__, __LINE__);
   CopyFromHostToCUDADevice<uint32_t>(d_part_hist_off.RawData(), h_part_hist_off.data(), 2, __FILE__, __LINE__);
   CopyFromHostToCUDADevice<int>(d_part_col_off.RawData(), h_part_col_off.data(), 2, __FILE__, __LINE__);
+  CopyFromHostToCUDADevice<int>(d_packed_off.RawData(), h_packed_off.data(), 2, __FILE__, __LINE__);
   cudaMemset(d_hist.RawData(), 0, total_bins * sizeof(int32_t));
 
-  // Device LeafSplits struct (only num_data_in_leaf, data_indices_in_leaf,
-  // hist_in_leaf are read by the kernel). Layout matches CUDALeafSplitsStruct.
-  CUDALeafSplitsStruct h_leaf;
-  memset(&h_leaf, 0, sizeof(h_leaf));
-  h_leaf.num_data_in_leaf = kRows;
-  h_leaf.data_indices_in_leaf = d_indices.RawData();
-  h_leaf.hist_in_leaf = reinterpret_cast<hist_t*>(d_hist.RawData());
-  CUDAVector<CUDALeafSplitsStruct> d_leaf(1);
-  CopyFromHostToCUDADevice<CUDALeafSplitsStruct>(d_leaf.RawData(), &h_leaf, 1, __FILE__, __LINE__);
+  CUDALeafSplitsStruct h_smaller;
+  memset(&h_smaller, 0, sizeof(h_smaller));
+  h_smaller.leaf_index = 0;
+  h_smaller.num_data_in_leaf = kRows;
+  h_smaller.sum_of_hessians = static_cast<double>(kRows);
+  h_smaller.data_indices_in_leaf = d_indices.RawData();
+  h_smaller.hist_in_leaf = reinterpret_cast<hist_t*>(d_hist.RawData());
+  CUDALeafSplitsStruct h_larger;
+  memset(&h_larger, 0, sizeof(h_larger));
+  h_larger.leaf_index = -1;  // no larger sibling
+  CUDAVector<CUDALeafSplitsStruct> d_structs(2);
+  CopyFromHostToCUDADevice<CUDALeafSplitsStruct>(d_structs.RawData(), &h_smaller, 1, __FILE__, __LINE__);
+  CopyFromHostToCUDADevice<CUDALeafSplitsStruct>(d_structs.RawData() + 1, &h_larger, 1, __FILE__, __LINE__);
 
-  // Launch the JIT kernel: grid (num_partitions, grid_y), block (cols, dim_y).
+  CUDAHybridPairDescriptor h_desc;
+  memset(&h_desc, 0, sizeof(h_desc));
+  h_desc.smaller_struct = d_structs.RawData();
+  h_desc.larger_struct = d_structs.RawData() + 1;
+  h_desc.construct_valid = 1;
+  h_desc.smaller_num_bits = 16;  // 16-bit hist path
+  CUDAVector<CUDAHybridPairDescriptor> d_desc(1);
+  CopyFromHostToCUDADevice<CUDAHybridPairDescriptor>(d_desc.RawData(), &h_desc, 1, __FILE__, __LINE__);
+
   const int block_x = kCols;
-  const int block_y = NUM_THREADS_PER_BLOCK / block_x;  // 63
+  const int block_y = NUM_THREADS_PER_BLOCK / block_x;
   const int grid_y = 4;
-  const CUDALeafSplitsStruct* leaf_ptr = d_leaf.RawData();
+  const CUDAHybridPairDescriptor* desc_ptr = d_desc.RawData();
   const int32_t* gh_ptr = d_gh.RawData();
   const uint8_t* data_ptr = d_data.RawData();
   const uint32_t* col_off_ptr = d_col_off.RawData();
   const uint32_t* part_hist_ptr = d_part_hist_off.RawData();
   const int* part_col_ptr = d_part_col_off.RawData();
+  const int* packed_off_ptr = d_packed_off.RawData();
   data_size_t num_data_arg = kRows;
-  void* args[] = {&leaf_ptr, &gh_ptr, &data_ptr, &col_off_ptr, &part_hist_ptr, &part_col_ptr, &num_data_arg};
+  data_size_t min_data_arg = 0;
+  double min_hess_arg = 0.0;
+  void* args[] = {&desc_ptr, &gh_ptr, &data_ptr, &col_off_ptr, &part_hist_ptr,
+                  &part_col_ptr, &packed_off_ptr, &num_data_arg, &min_data_arg, &min_hess_arg};
   const CUresult lr = cuLaunchKernel(func, key.num_partitions, grid_y, 1,
                                      block_x, block_y, 1, 0, nullptr, args, nullptr);
   if (lr != CUDA_SUCCESS) {
-    Log::Warning("CUDAConstructJIT self-test: cuLaunchKernel failed (%d)", static_cast<int>(lr));
+    Log::Warning("CUDAConstructJIT self-test (%s): cuLaunchKernel failed (%d)",
+                 is_4bit ? "4bit" : "8bit", static_cast<int>(lr));
     construct_jit_.SetValidated(key, false);
     return false;
   }
@@ -2980,12 +3031,82 @@ bool CUDAHistogramConstructor::RunConstructJITSelfTest() {
   }
   construct_jit_.SetValidated(key, ok);
   if (ok) {
-    Log::Info("CUDAConstructJIT self-test PASSED (compile %.1f ms): specialized kernel "
-              "bit-identical to reference", compile_ms);
+    construct_jit_live_key_[slot] = key;
+    construct_jit_live_ready_[slot] = (construct_jit_.GetBatchedIfValidated(key) != nullptr);
+    Log::Info("CUDAConstructJIT self-test PASSED %s (compile %.1f ms): batched kernel "
+              "bit-identical to reference; live path %s", is_4bit ? "4bit" : "8bit", compile_ms,
+              construct_jit_live_ready_[slot] ? "ARMED" : "unavailable");
   } else {
-    Log::Warning("CUDAConstructJIT self-test FAILED bit-identity; JIT stays disabled");
+    Log::Warning("CUDAConstructJIT self-test FAILED %s bit-identity; that packing stays AOT",
+                 is_4bit ? "4bit" : "8bit");
   }
   return ok;
+}
+
+// Live JIT batched construct launch (see the header). Bit-identical to the AOT
+// compact-quant kernel; a thin cuLaunchKernel with the same argument pack.
+bool CUDAHistogramConstructor::TryLaunchConstructJITBatchedCompactQuant(
+    const dim3& grid_dim, const dim3& block_dim,
+    const CUDAHybridPairDescriptor* pair_descs,
+    const data_size_t* level_smaller_num_data,
+    int shared_hist_size, size_t bin_type_bytes) {
+  // The JIT kernel's HybridPairDescriptor / LeafSplits mirror these host structs
+  // field-for-field; guard the offsets the kernel reads via cuLaunchKernel. The
+  // JIT struct uses the same member order + default C++ alignment, so matching
+  // offsets here guarantees the padding matches too.
+  static_assert(offsetof(CUDAHybridPairDescriptor, smaller_struct) == 0,
+                "JIT pair-descriptor ABI drift: smaller_struct must be first");
+  static_assert(offsetof(CUDAHybridPairDescriptor, larger_struct) == sizeof(void*),
+                "JIT pair-descriptor ABI drift: larger_struct offset changed");
+  static_assert(offsetof(CUDAHybridPairDescriptor, construct_valid) ==
+                    2 * sizeof(void*) + 4 * sizeof(int32_t),
+                "JIT pair-descriptor ABI drift: construct_valid offset changed");
+  // construct_valid, smaller_valid, larger_valid, parent_num_bits then smaller_num_bits.
+  static_assert(offsetof(CUDAHybridPairDescriptor, smaller_num_bits) ==
+                    2 * sizeof(void*) + 4 * sizeof(int32_t) + 4,
+                "JIT pair-descriptor ABI drift: smaller_num_bits offset changed");
+  // int leaf_index (+4 pad to 8) then 2 doubles + int64 before num_data_in_leaf.
+  static_assert(offsetof(CUDALeafSplitsStruct, num_data_in_leaf) ==
+                    2 * sizeof(double) + sizeof(int64_t) + sizeof(int64_t),
+                "JIT LeafSplits ABI drift: num_data_in_leaf offset changed");
+  static_assert(offsetof(CUDALeafSplitsStruct, sum_of_hessians) == 2 * sizeof(int64_t),
+                "JIT LeafSplits ABI drift: sum_of_hessians offset changed");
+  // Scope guard: only the non-graph, host-launched, uint8, SP shared-hist path
+  // was validated. Graph capture derives dim_y / bit widths on-device (different
+  // ABI); speculative flow passes level sizes; both fall to AOT.
+  const int slot = compact_is_4bit_ ? 1 : 0;
+  if (!construct_jit_live_ready_[slot]) return false;
+  if (hybrid_graph_capture_gstate_ != nullptr) return false;
+  if (level_smaller_num_data != nullptr) return false;
+  if (bin_type_bytes != 1) return false;
+  if (shared_hist_size != construct_jit_live_key_[slot].shared_hist_size) return false;
+  void* fn = construct_jit_.GetBatchedIfValidated(construct_jit_live_key_[slot]);
+  if (fn == nullptr) return false;
+  CUfunction func = reinterpret_cast<CUfunction>(fn);
+
+  const int32_t* gh_ptr = reinterpret_cast<const int32_t*>(cuda_gradients_);
+  const uint8_t* data_ptr = reinterpret_cast<const uint8_t*>(compact_data_uint8_t_.RawData());
+  const uint32_t* col_off_ptr = compact_column_hist_offsets_.RawData();
+  const uint32_t* part_hist_ptr = cuda_row_data_->cuda_partition_hist_offsets();
+  const int* part_col_ptr = compact_feature_partition_column_index_offsets_.RawData();
+  // packed byte offsets only read by the 4-bit kernel; the 8-bit kernel ignores it.
+  const int* packed_off_ptr = compact_is_4bit_ ?
+      compact_packed_partition_byte_offsets_.RawData() : nullptr;
+  data_size_t num_data_arg = num_data_;
+  data_size_t min_data_arg = static_cast<data_size_t>(min_data_in_leaf_);
+  double min_hess_arg = min_sum_hessian_in_leaf_;
+  void* args[] = {&pair_descs, &gh_ptr, &data_ptr, &col_off_ptr, &part_hist_ptr,
+                  &part_col_ptr, &packed_off_ptr, &num_data_arg, &min_data_arg, &min_hess_arg};
+  const CUresult lr = cuLaunchKernel(
+      func, grid_dim.x, grid_dim.y, grid_dim.z,
+      block_dim.x, block_dim.y, block_dim.z, 0, cuda_stream_, args, nullptr);
+  if (lr != CUDA_SUCCESS) {
+    Log::Warning("CUDAConstructJIT live launch failed (%d); disabling live JIT, using AOT",
+                 static_cast<int>(lr));
+    construct_jit_live_ready_[slot] = false;
+    return false;
+  }
+  return true;
 }
 
 }  // namespace LightGBM

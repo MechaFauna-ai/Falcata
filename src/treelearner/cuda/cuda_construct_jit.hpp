@@ -44,6 +44,7 @@ struct ConstructJITShapeKey {
   int cols_per_partition = 0;   // uniform compact columns per partition
   int shared_hist_size = 0;
   int use_16bit_hist = 0;
+  int is_4bit = 0;              // compact bin matrix is 4-bit nibble-packed
   int sm_major = 0;
   int sm_minor = 0;
 
@@ -51,7 +52,7 @@ struct ConstructJITShapeKey {
     return bins == o.bins && num_partitions == o.num_partitions &&
            cols_per_partition == o.cols_per_partition &&
            shared_hist_size == o.shared_hist_size &&
-           use_16bit_hist == o.use_16bit_hist &&
+           use_16bit_hist == o.use_16bit_hist && is_4bit == o.is_4bit &&
            sm_major == o.sm_major && sm_minor == o.sm_minor;
   }
   std::string Signature() const;
@@ -60,11 +61,12 @@ struct ConstructJITShapeKey {
 // A compiled + cached module. func == nullptr means "compiled/validated failed;
 // permanently fall back to AOT for this signature".
 struct ConstructJITEntry {
-  void* module = nullptr;   // CUmodule
-  void* func = nullptr;     // CUfunction (nullptr => fall back)
-  bool attempted = false;   // compile has been attempted (success or fail)
-  bool validated = false;   // bit-identity vs AOT confirmed
-  double compile_ms = 0.0;  // one-time NVRTC compile wall (for reporting)
+  void* module = nullptr;        // CUmodule
+  void* func = nullptr;          // CUfunction: single-pair self-test kernel (nullptr => fall back)
+  void* func_batched = nullptr;  // CUfunction: live batched kernel (nullptr => fall back)
+  bool attempted = false;        // compile has been attempted (success or fail)
+  bool validated = false;        // bit-identity vs AOT confirmed
+  double compile_ms = 0.0;       // one-time NVRTC compile wall (for reporting)
 };
 
 class CUDAConstructJIT {
@@ -84,6 +86,16 @@ class CUDAConstructJIT {
   // or compilation failed -- the caller then uses the AOT kernel. Not yet marked
   // validated: the caller must Validate() before trusting it.
   void* GetOrCompile(const ConstructJITShapeKey& key, double* compile_ms_out);
+
+  // The compiled batched CUfunction for a shape, regardless of validation (used
+  // by the self-test to launch it before recording the verdict). nullptr if not
+  // compiled. Prefer GetBatchedIfValidated on the live path.
+  void* GetBatchedFunc(const ConstructJITShapeKey& key) const;
+
+  // The live batched CUfunction for a shape (compiled together with the
+  // single-pair kernel by GetOrCompile). Returns nullptr unless the signature's
+  // module compiled AND the shape was validated bit-identical to the AOT kernel.
+  void* GetBatchedIfValidated(const ConstructJITShapeKey& key) const;
 
   // Has this signature's kernel been confirmed bit-identical to the AOT kernel?
   bool IsValidated(const ConstructJITShapeKey& key) const;
