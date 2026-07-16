@@ -175,11 +175,7 @@ def main():
                     b.set_hatch(h)
                     b.set_alpha(0.35)
             # single-dataset charts (numerai) have room for quality labels
-            if (
-                reg.startswith("numerai")
-                and len(datasets) == 1
-                and not np.isnan(vals[0])
-            ):
+            if reg.startswith("numerai") and len(datasets) == 1 and not np.isnan(vals[0]):
                 gl = sub[(sub.dataset == datasets[0]) & (sub.library == lib)]
                 met = gl["metrics"].iloc[0] or {}
                 if met.get("corr_mean") is not None:

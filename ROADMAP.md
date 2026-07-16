@@ -187,7 +187,7 @@ figures from the profiles in the PR discussions.
   sample-invisible rare values (rarest -1 has >2000 rows), so 0 features gain a bin,
   quality flat/marginally lower. Revive only if: a construct win is found (fuse the
   count into the GPU construct pass, or make EFB consume exact counts), OR a dataset
-  with genuinely rare (<min_data, sample-missable) small-int values appears.
+  with genuinely rare (<min_data, missed by sampling) small-int values appears.
 - [ ] **L2 residency tuning (5090: 96 MB L2).** (a) cudaAccessPolicyWindow
   persistence on grad/hess float2 (43 MB) + data indices (22 MB): each level's
   compact-matrix stream (~375 MB) currently evicts them, and the construct kernel is
