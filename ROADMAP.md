@@ -41,11 +41,19 @@ figures from the profiles in the PR discussions.
   + ~21% apply-INTERNAL idle) and that is intra-apply grid serialization / launch
   bubbles across batched pairs -- a DIFFERENT lever (better grid packing / fewer
   batched-kernel launches per apply), not per-parent barriers. See new item below.
-- [ ] **Intra-apply grid serialization on deep trees.** covtype deep-tree apply stage
-  shows ~21% internal idle from grid serialization / launch bubbles across batched
-  pairs (found during the L2-chaining investigation). Higher-value than per-parent
-  chaining for deep unbalanced trees; needs its own characterization pass. Pairs with
-  the controller-latency frontier as the two remaining graph-perf levers.
+- [~] **Intra-apply grid serialization — INVESTIGATED, honest negative; graph-perf
+  frontier now fully mapped.** The batched apply is already a single grid-strided launch
+  per stage over all pairs (no per-pair launch loop); measured intra-apply idle is
+  covtype-deep 2.88% / numerai-deep 0.10% of tree time -- below the 5% bar, and it's
+  dependency-chained kernels (Gen->Aggregate->Inner->TreeStructure) that can't overlap
+  without breaking bit-identity, not reclaimable slack. Combined with #25 (per-parent
+  <1%) and #32 (compact-layout cliff-doesn't-occur), the graph-perf frontier is MAPPED:
+  the only remaining idle is inter-stage + controller SERIAL LATENCY, already
+  characterized and rejected (needs the descriptor-prefetch / single-warp-small-body
+  work, a launch refactor of uncertain payoff). Graph-perf cheap+medium wins are
+  exhausted. (The investigating agent also raised a FALSE 'covtype data drift' alarm from
+  a non-canonical gate invocation -- DISPROVEN: canonical gate reproduces 5f4e7bdfff1e /
+  0.91952 / 291.6 exactly, data intact. See memory canonical-md5-gates.)
 - [ ] **Static planner (auto-tuner tier 0).** At Init the dataset shape (rows,
   features, actual bins/feature) and config (num_leaves, max_depth, num_class,
   iterations) determine: expected level geometry (leaf sizes ~ rows/2^level) -> grid
