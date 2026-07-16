@@ -182,7 +182,15 @@ __global__ void SplitBatchKernel(  // split information
                                  data_size_t* leaf_count,
                                  int8_t* decision_type,
                                  uint32_t* threshold_in_bin,
-                                 double* threshold) {
+                                 double* threshold,
+                                 // graphs A2: live split count of the current graph level body
+                                 // (nullptr on the exact-grid host launches); the graph-frozen
+                                 // grid is a pow2 bucket of it, so excess blocks exit here
+                                 const int* graph_live_split_count) {
+  if (graph_live_split_count != nullptr &&
+      blockIdx.x >= static_cast<unsigned int>(*graph_live_split_count)) {
+    return;
+  }
   const CUDATreeBatchSplit batch_split = batch_splits[blockIdx.x];
   const int leaf_index = batch_split.leaf_index;
   const int num_leaves = batch_split.num_leaves_at_split;
@@ -243,10 +251,12 @@ __global__ void SplitBatchKernel(  // split information
   }
 }
 
-void CUDATree::CaptureHybridGraphSplitBatchKernel(cudaStream_t stream) {
+void CUDATree::CaptureHybridGraphSplitBatchKernel(cudaStream_t stream,
+                                                  const int* graph_live_split_count) {
   // graphs L1 body capture: placeholder grid (the device controller resizes it
   // per level), descriptors from the pooled batch-split buffer the controller
-  // writes; parameter set identical to LaunchSplitBatchKernel
+  // writes; parameter set identical to LaunchSplitBatchKernel plus the live
+  // split count the pow2-frozen grid's idle blocks guard on (graphs A2)
   SplitBatchKernel<<<1, 32, 0, stream>>>(
     cuda_batch_splits_.RawDataReadOnly(),
     cuda_leaf_parent_.RawData(),
@@ -264,7 +274,8 @@ void CUDATree::CaptureHybridGraphSplitBatchKernel(cudaStream_t stream) {
     cuda_leaf_count_.RawData(),
     cuda_decision_type_.RawData(),
     cuda_threshold_in_bin_.RawData(),
-    cuda_threshold_.RawData());
+    cuda_threshold_.RawData(),
+    graph_live_split_count);
 }
 
 void CUDATree::LaunchSplitBatchKernel(const int num_splits) {
@@ -285,7 +296,8 @@ void CUDATree::LaunchSplitBatchKernel(const int num_splits) {
     cuda_leaf_count_.RawData(),
     cuda_decision_type_.RawData(),
     cuda_threshold_in_bin_.RawData(),
-    cuda_threshold_.RawData());
+    cuda_threshold_.RawData(),
+    nullptr);
 }
 
 __global__ void SplitCategoricalKernel(  // split information

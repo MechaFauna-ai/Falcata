@@ -512,50 +512,69 @@ __global__ void HybridGraphLevelControllerKernel(CUDAHybridGraphLoopState* st,
 
   // ---- 5. resize + arm the body nodes (one thread per node; the device
   // graph updates dominate the controller's cost when serialized) ----
+  // graphs A2: every role except the construct kernel is bit-invariant under
+  // grid ENLARGEMENT along its n-sized (and per-descriptor-guarded blocks-)
+  // axes -- the kernels guard on the loop state's live counts (cur_num_splits
+  // / cur_num_gaps, written below) or on the descriptor's own num_blocks and
+  // exit before any other read or write. Rounding those extents up to their
+  // power-of-two bucket makes the cached grid stable across levels/trees whose
+  // counts share a bucket, so the (expensive, ~4.5us) SetGridDim device graph
+  // updates fire only on bucket flips while idle blocks stay < 2x the live
+  // range. The construct kernel derives its row grouping from its exact grid
+  // (gridDim.z pairs, formula-sized y), so it keeps exact device updates.
   if (tid < own_nodes) {
     const CUDAHybridGraphNodeSlot slot = st->nodes[node_base + tid];
     const unsigned int un = static_cast<unsigned int>(n);
+    const unsigned int qn = static_cast<unsigned int>(NextPow2(n));
     bool enabled = true;
     dim3 grid(1, 1, 1);
     switch (slot.role) {
       case kHybridGraphNodeTreeSplit:
       case kHybridGraphNodeAggregate:
       case kHybridGraphNodeTreeStructure:
-        grid = dim3(un, 1, 1);
+        grid = dim3(qn, 1, 1);
         break;
       case kHybridGraphNodeGenBitVector:
       case kHybridGraphNodeSplitInner:
-        grid = dim3(static_cast<unsigned int>(max_num_blocks), un, 1);
+        grid = dim3(static_cast<unsigned int>(NextPow2(max_num_blocks)), qn, 1);
         break;
       case kHybridGraphNodeCopyGaps:
         enabled = num_gaps > 0;
         grid = enabled ?
-          dim3(static_cast<unsigned int>(max_gap_blocks), static_cast<unsigned int>(num_gaps), 1) :
+          dim3(static_cast<unsigned int>(NextPow2(max_gap_blocks)),
+               static_cast<unsigned int>(NextPow2(num_gaps)), 1) :
           dim3(1, 1, 1);
         break;
       case kHybridGraphNodeConstruct:
+        // pow2 bucket like the rest: the kernel computes its exact row
+        // grouping from the level's actual sizes (using the loop state's live
+        // pair count instead of gridDim.z) and idle y/z blocks exit before any
+        // write, so the frozen grid only needs to be an upper bound. Quantized
+        // training (num_grad_quant_bins > 0) includes the packed int32
+        // shared-histogram overflow guard, so the bucket always covers the
+        // kernel's device-computed (guarded) row grouping.
         enabled = !final_partial;
         grid = dim3(static_cast<unsigned int>(st->construct_grid_x),
-                    static_cast<unsigned int>(HybridBatchedConstructGridDimY(
+                    static_cast<unsigned int>(NextPow2(HybridBatchedConstructGridDimYQuant(
                       max_smaller_leaf_bound, n, st->construct_block_dim_y,
                       st->construct_min_grid_dim_y, st->construct_min_rows_per_thread,
-                      st->construct_saturation_floor)), un);
+                      st->construct_saturation_floor, st->num_grad_quant_bins))), qn);
         break;
       case kHybridGraphNodeSearchPairY:
         enabled = !final_partial;
-        grid = dim3(static_cast<unsigned int>(slot.static_x), un, 1);
+        grid = dim3(static_cast<unsigned int>(slot.static_x), qn, 1);
         break;
       case kHybridGraphNodeFind:
         enabled = !final_partial;
-        grid = dim3(static_cast<unsigned int>(st->find_grid_x), un, 2);
+        grid = dim3(static_cast<unsigned int>(st->find_grid_x), qn, 2);
         break;
       case kHybridGraphNodeSyncLevel:
         enabled = !final_partial;
-        grid = dim3(2, un, static_cast<unsigned int>(slot.static_x));
+        grid = dim3(2, qn, static_cast<unsigned int>(slot.static_x));
         break;
       case kHybridGraphNodeSyncAllBlocks:
         enabled = !final_partial;
-        grid = dim3(2, un, 1);
+        grid = dim3(2, qn, 1);
         break;
       default:
         break;
@@ -566,6 +585,11 @@ __global__ void HybridGraphLevelControllerKernel(CUDAHybridGraphLoopState* st,
     }
   }
   if (tid == 0) {
+    // live counts of THIS body's kernels (the pow2-bucketed grids' idle blocks
+    // guard on these; visible to the body kernels because they are ordered
+    // after this controller by the graph's event edges)
+    st->cur_num_splits = n;
+    st->cur_num_gaps = num_gaps;
     // deferred split-info slab base of THIS level's tree-structure kernel
     st->split_info_base = split_cursor;
     st->journal[3 + level] = n;

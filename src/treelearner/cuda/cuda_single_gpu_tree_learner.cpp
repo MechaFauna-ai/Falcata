@@ -57,6 +57,51 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     gpu_device_id_ = config_->gpu_device_id >= 0 ? config_->gpu_device_id : 0;
     SetCUDADevice(gpu_device_id_, __FILE__, __LINE__);
   }
+  // Fixed-point quant mode (EXABOOST_FIXEDPOINT_QUANT=1): xgboost-inspired
+  // near-lossless deterministic quantization. Non-stochastic round-to-nearest
+  // over a high bin count fills the int16 gradient range, and the existing
+  // packed-histogram path already auto-promotes to exact int32/int64
+  // accumulation as num_data*bins grows -- so no rounding noise accumulates and
+  // results are run-to-run identical. When enabled it raises the effective
+  // num_grad_quant_bins (tunable via EXABOOST_FIXEDPOINT_BINS, default 64) and
+  // forces non-stochastic rounding. The same effective bin count must reach BOTH
+  // the histogram constructor (its 65534/bins per-block row cap guards packed-
+  // hist overflow) and the discretizer (dequant scale), so compute it once here.
+  fixedpoint_quant_ = false;
+  fixedpoint_robust_scale_ = false;
+  effective_quant_bins_ = config_->num_grad_quant_bins;
+  if (config_->use_quantized_grad) {
+    const char* fp_env = std::getenv("EXABOOST_FIXEDPOINT_QUANT");
+    if (fp_env != nullptr && std::atoi(fp_env) != 0) {
+      fixedpoint_quant_ = true;
+      effective_quant_bins_ = 64;
+      const char* fp_bins_env = std::getenv("EXABOOST_FIXEDPOINT_BINS");
+      if (fp_bins_env != nullptr) {
+        const int b = std::atoi(fp_bins_env);
+        // int16 discretized gradient holds +/-(bins/2); cap well inside range
+        if (b >= 2 && b <= 65534) {
+          effective_quant_bins_ = b;
+        }
+      }
+      // Outlier-robust gradient scale (default ON within fixed-point mode;
+      // EXABOOST_FIXEDPOINT_ROBUST=0 restores the plain global-max scale). On
+      // heavily-imbalanced data (fraud) the rare-positive gradients are huge
+      // outliers that dominate a global max|grad| scale, crushing the bulk of
+      // gradients to near-zero quant resolution. The robust scale instead maps a
+      // high percentile of |grad| to the max quant magnitude and clamps the rare
+      // outliers to +/-(bins/2), giving the common gradients full resolution. The
+      // clamp keeps every quantized magnitude <= bins/2, exactly as the global-max
+      // path guarantees, so the histogram bit-width promotion (num_data*bins bound
+      // in SetNumBitsInHistogramBin) stays valid with no overflow risk.
+      fixedpoint_robust_scale_ = true;
+      const char* fp_robust_env = std::getenv("EXABOOST_FIXEDPOINT_ROBUST");
+      if (fp_robust_env != nullptr && std::atoi(fp_robust_env) == 0) {
+        fixedpoint_robust_scale_ = false;
+      }
+      Log::Info("EXABOOST_FIXEDPOINT_QUANT: non-stochastic quant with %d bins (robust_scale=%d)",
+        effective_quant_bins_, fixedpoint_robust_scale_ ? 1 : 0);
+    }
+  }
   cuda_smaller_leaf_splits_.reset(new CUDALeafSplits(num_data_));
   cuda_smaller_leaf_splits_->SetNCCLInfo(nccl_communicator_, nccl_gpu_rank_, local_gpu_rank_, gpu_device_id_, global_num_data_);
   cuda_smaller_leaf_splits_->Init(config_->use_quantized_grad);
@@ -67,7 +112,7 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   cuda_histogram_constructor_.reset(new CUDAHistogramConstructor(train_data_, config_->num_leaves, num_threads_,
     share_state_->feature_hist_offsets(),
     config_->min_data_in_leaf, config_->min_sum_hessian_in_leaf, gpu_device_id_, config_->gpu_use_dp,
-    config_->use_quantized_grad, config_->num_grad_quant_bins));
+    config_->use_quantized_grad, effective_quant_bins_));
   cuda_histogram_constructor_->Init(train_data_, share_state_.get());
 
   const auto& feature_hist_offsets = share_state_->feature_hist_offsets();
@@ -133,10 +178,14 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   if (config_->use_quantized_grad) {
     cuda_leaf_gradient_stat_buffer_.Resize(config_->num_leaves);
     cuda_leaf_hessian_stat_buffer_.Resize(config_->num_leaves);
+    // effective_quant_bins_ / fixedpoint_quant_ were resolved at the top of Init
+    // so the histogram constructor and the discretizer agree on the bin count.
+    const bool fp_stochastic = fixedpoint_quant_ ? false : config_->stochastic_rounding;
     // one random-offset slot per TREE: multiclass trains num_class trees per
     // iteration, and the discretizer's iter_ counter advances once per tree
     cuda_gradient_discretizer_.reset(new CUDAGradientDiscretizer(
-      config_->num_grad_quant_bins, config_->num_iterations * std::max(config_->num_class, 1), config_->seed, is_constant_hessian, config_->stochastic_rounding));
+      effective_quant_bins_, config_->num_iterations * std::max(config_->num_class, 1), config_->seed, is_constant_hessian, fp_stochastic));
+    cuda_gradient_discretizer_->SetRobustScale(fixedpoint_robust_scale_);
     cuda_gradient_discretizer_->SetNCCLInfo(nccl_communicator_, nccl_gpu_rank_, local_gpu_rank_, gpu_device_id_, global_num_data_);
     cuda_gradient_discretizer_->Init(num_data_, config_->num_leaves, train_data_->num_features(), train_data_);
   } else {
@@ -1017,8 +1066,9 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   // shares the same index array), so this only falls back when disabled by env.
   const bool use_batched_level_apply = use_hybrid_batch_apply_;
   // single-sync (speculative) level pipeline: requires both batched phases and
-  // non-quantized training (the quantized path selects histogram kernels host-
-  // side from per-leaf bit widths, which needs the classic readback ordering).
+  // non-quantized training (the quantized HOST path selects histogram kernels
+  // host-side from per-leaf bit widths, which needs the classic readback
+  // ordering).
   if (UseOneSyncPrefix()) {
 #ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
     // graphs L1: run the whole depth-limited prefix as one device-driven
@@ -1032,6 +1082,22 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
 #endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
     return TrainLevelWisePrefixOneSync(tree);
   }
+#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+  // quantized graph prefix: the graph body derives the per-leaf histogram bit
+  // widths on-device from the exact leaf counts (bit-identical to the host's
+  // SetNumBitsInHistogramBin thresholds), so the classic readback ordering is
+  // not needed inside the graph. Any fallback (env off, unsupported driver,
+  // capture failure, no usable feature) reverts to the classic (two-sync)
+  // host loop below, bit-for-bit the previous behavior.
+  if (config_->use_quantized_grad && use_hybrid_one_sync_ &&
+      use_batched_level_kernels && use_batched_level_apply &&
+      HybridGraphPrefixUsable()) {
+    const int graph_splits = TrainLevelWisePrefixGraph(tree);
+    if (graph_splits >= 0) {
+      return graph_splits;
+    }
+  }
+#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
   // the classic flow needs the host root sums up front (root descriptor
   // validity); a no-op unless BeforeTrain optimistically deferred the readback
   EnsureRootSumsReadBack(tree);
@@ -1117,9 +1183,18 @@ void CUDASingleGPUTreeLearner::EnqueueRootLevelSearchOneSync() {
   // the root sits at depth 0
   desc.smaller_valid = (config_->max_depth <= 0 || 0 < config_->max_depth) ? 1 : 0;
   desc.larger_valid = 0;
-  desc.parent_num_bits = 0;
-  desc.smaller_num_bits = 0;
-  desc.larger_num_bits = 0;
+  if (config_->use_quantized_grad) {
+    // mirror of EnqueueLevelBestSplitSearch's root (larger < 0) branch: the
+    // root's bit width is host-known (BeforeTrain's SetNumBitsInHistogramBin)
+    const uint8_t root_num_bits = cuda_gradient_discretizer_->GetHistBitsInLeaf<false>(0);
+    desc.parent_num_bits = root_num_bits;
+    desc.smaller_num_bits = root_num_bits;
+    desc.larger_num_bits = root_num_bits;
+  } else {
+    desc.parent_num_bits = 0;
+    desc.smaller_num_bits = 0;
+    desc.larger_num_bits = 0;
+  }
   if (cuda_hybrid_pair_descs_.Size() < 1) {
     cuda_hybrid_pair_descs_.Resize(static_cast<size_t>(config_->num_leaves / 2 + 2));
   }
@@ -1130,7 +1205,9 @@ void CUDASingleGPUTreeLearner::EnqueueRootLevelSearchOneSync() {
     cuda_hybrid_pair_descs_.RawDataReadOnly(), 1, leaf_num_data_[0],
     /*any_pair_needs_bit_change_copy=*/false);
   cuda_best_split_finder_->FindBestSplitsForLevel(
-    cuda_hybrid_pair_descs_.RawDataReadOnly(), 1, nullptr, nullptr);
+    cuda_hybrid_pair_descs_.RawDataReadOnly(), 1,
+    config_->use_quantized_grad ? cuda_gradient_discretizer_->grad_scale_ptr() : nullptr,
+    config_->use_quantized_grad ? cuda_gradient_discretizer_->hess_scale_ptr() : nullptr);
 }
 
 int CUDASingleGPUTreeLearner::TrainLevelWisePrefixOneSync(CUDATree* tree) {
@@ -1230,12 +1307,18 @@ bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
       hybrid_graph_disabled_) {
     return false;
   }
-  // multiclass hits an intermittent cudaErrorIllegalAddress with the graph
-  // loop (pre-existing at 2e047b0d, ~7/30 runs, machine-state dependent;
-  // repro: scratchpad mc_crash_repro.py) -- keep it on the host loop until
-  // root-caused
-  if (config_->num_class > 1) {
-    return false;
+  // quant graph support is bit-exact (a2279763) but a net loss on large/cheap-level
+  // shapes (covtype 1023/10 -10.8%, year 63/6 -7%: quant levels are cheap, so the
+  // controller's fixed serial latency dominates) -- opt-in until that frontier
+  // shrinks. EXABOOST_GRAPH_QUANT=1 enables.
+  if (config_->use_quantized_grad) {
+    static const bool quant_graph_opt_in = []() {
+      const char* env = std::getenv("EXABOOST_GRAPH_QUANT");
+      return env != nullptr && std::string(env) == std::string("1");
+    }();
+    if (!quant_graph_opt_in) {
+      return false;
+    }
   }
   // depth-limited exact regime only (mirrors HybridGrowthUsable): the
   // controller replays ArbitrateLevelBudget under the level == depth
@@ -1311,6 +1394,12 @@ bool CUDASingleGPUTreeLearner::SetupHybridGraphStatics() {
   st.construct_min_grid_dim_y = cuda_histogram_constructor_->hybrid_graph_min_grid_dim_y();
   st.construct_min_rows_per_thread = CUDAHistogramConstructor::BatchConstructMinRowsPerThread();
   st.construct_saturation_floor = CUDAHistogramConstructor::BatchConstructSaturationFloor();
+  // quantized training: enables the construct overflow guard and the device
+  // hist-bits derivation in the graph body kernels (0 = non-quantized)
+  st.num_grad_quant_bins = cuda_histogram_constructor_->hybrid_graph_num_grad_quant_bins();
+  // the 64->32-bit compaction scratch pointer is baked into the captured
+  // subtract/copy kernels: presize it for the worst-case pair count
+  cuda_histogram_constructor_->EnsureHybridGraphBitChangeCapacity(max_pairs);
   st.leaf_best_split_info = cuda_best_split_finder_->leaf_best_split_info_ptr(0);
   st.leaf_num_data = cuda_data_partition_->cuda_leaf_num_data();
   st.leaf_data_start = cuda_data_partition_->cuda_leaf_data_start();
@@ -1376,12 +1465,16 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
   const int num_level_bodies = config_->max_depth;  // gated to < kHybridGraphMaxBodies
   HYBRID_GRAPH_SOFT_CHECK(cudaStreamBeginCaptureToGraph(
     hist_stream, instance->graph, nullptr, nullptr, 0, cudaStreamCaptureModeThreadLocal));
+  // graphs A2: device address of the loop state's live split count -- the
+  // pow2-frozen tree-split grid's idle blocks guard on it (plain int pointer
+  // so the tree's public header stays free of the loop-state type)
+  const int* graph_live_split_count = &instance->state_dev->cur_num_splits;
   for (int body = 0; body < num_level_bodies; ++body) {
     const size_t body_node_start = nodes.size();
     CaptureHybridGraphControllerKernel(hist_stream, instance->state_dev, body);
     capture_ok = capture_ok && cudaEventRecord(fork_event, hist_stream) == cudaSuccess;
     capture_ok = capture_ok && cudaStreamWaitEvent(apply_stream, fork_event, 0) == cudaSuccess;
-    tree->CaptureHybridGraphSplitBatchKernel(apply_stream);
+    tree->CaptureHybridGraphSplitBatchKernel(apply_stream, graph_live_split_count);
     capture_ok = capture_ok && AppendCapturedNode(apply_stream, &nodes);
     roles.push_back(kHybridGraphNodeTreeSplit);
     cuda_data_partition_->CaptureHybridGraphApplyKernels(instance->state_dev, &nodes, &roles);
@@ -1393,9 +1486,14 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
     cuda_histogram_constructor_->CaptureHybridGraphSearchKernels(
       cuda_hybrid_pair_descs_.RawDataReadOnly(),
       cuda_data_partition_->level_smaller_leaf_counts(),
+      instance->state_dev,
       &nodes, &roles, &role_static_x);
     cuda_best_split_finder_->CaptureHybridGraphFindKernels(
-      cuda_hybrid_pair_descs_.RawDataReadOnly(), &nodes, &roles, &role_static_x);
+      cuda_hybrid_pair_descs_.RawDataReadOnly(),
+      config_->use_quantized_grad ? cuda_gradient_discretizer_->grad_scale_ptr() : nullptr,
+      config_->use_quantized_grad ? cuda_gradient_discretizer_->hess_scale_ptr() : nullptr,
+      instance->state_dev,
+      &nodes, &roles, &role_static_x);
     capture_ok = capture_ok && cudaEventRecord(join_event, find_stream) == cudaSuccess;
     capture_ok = capture_ok && cudaStreamWaitEvent(hist_stream, join_event, 0) == cudaSuccess;
     const size_t body_nodes = nodes.size() - body_node_start;
@@ -1453,6 +1551,14 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
   HYBRID_GRAPH_SOFT_CHECK(cudaGraphInstantiate(&instance->exec, instance->graph, 0));
   HYBRID_GRAPH_SOFT_CHECK(cudaMemcpy(instance->state_dev, &state,
     sizeof(CUDAHybridGraphLoopState), cudaMemcpyHostToDevice));
+  // a graph that updates its own device-updatable nodes from the device MUST
+  // be uploaded before it is launched (CUDA launch-attribute docs); without
+  // this the controller's first-launch updates race the lazy upload:
+  // intermittent cudaErrorInvalidValue device-side updates or
+  // cudaErrorIllegalAddress at the post-graph sync, ~20%/run on multiclass
+  // (7 first launches per run) at machine-state-dependent rates
+  HYBRID_GRAPH_SOFT_CHECK(cudaGraphUpload(instance->exec,
+    cuda_best_split_finder_->find_stream()));
   ComputeHybridGraphKey(tree, &instance->key);
   static const bool hybrid_diag = std::getenv("EXABOOST_HYBRID_DIAG") != nullptr;
   if (hybrid_diag) {
@@ -1543,6 +1649,10 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefixGraph(CUDATree* tree) {
   staged->root_num_data = cuda_data_partition_->root_num_data();
   staged->find_grid_x = cuda_best_split_finder_->hybrid_graph_find_grid_x();
   staged->done = 0;
+  // live counts are controller-owned (written before each body's kernels run);
+  // reset them with the prefix so a stale value can never leak across trees
+  staged->cur_num_splits = 0;
+  staged->cur_num_gaps = 0;
   CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(instance->state_dev, staged,
     offsetof(CUDAHybridGraphLoopState, max_depth), cudaMemcpyHostToDevice, find_stream));
   // ---- the ONE host launch of the whole prefix ----

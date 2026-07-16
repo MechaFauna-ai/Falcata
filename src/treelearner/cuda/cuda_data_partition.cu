@@ -19,6 +19,12 @@
 
 namespace LightGBM {
 
+// Number of thread blocks assigned to each leaf in RenewDiscretizedTreeLeavesKernel.
+// Shallow trees have few leaves; with 1 block/leaf the reduction launches too few
+// blocks to fill the GPU. 16 blocks/leaf saturates a large SM count while keeping
+// per-leaf atomic contention bounded.
+#define RENEW_BLOCKS_PER_LEAF (16)
+
 __global__ void FillDataIndicesBeforeTrainKernel(const data_size_t num_data,
   data_size_t* data_indices, int* cuda_data_index_to_leaf_index) {
   const unsigned int data_index = threadIdx.x + blockIdx.x * blockDim.x;
@@ -1247,6 +1253,11 @@ __global__ void HybridGenBitVectorUpdateLeafIndexBatchKernel(
   data_size_t* block_to_right_offset_buffer,
   int* cuda_data_index_to_leaf_index,
   const CUDAHybridGraphLoopStateOpt gstate) {
+  // graphs A2: the graph-frozen grid is a pow2 bucket of the live level shape;
+  // blocks beyond the live split range exit before any read
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
+    return;
+  }
   __shared__ uint16_t shared_mem_buffer[WARPSIZE];
   // graphs L1: the main index buffer swaps per level inside the device loop,
   // so the graph-captured launch reads it from the loop state instead of the
@@ -1284,7 +1295,12 @@ __global__ void HybridAggregateBlockOffsetBatchKernel(
   data_size_t* cuda_leaf_data_start,
   data_size_t* cuda_leaf_data_end,
   data_size_t* cuda_leaf_num_data,
-  data_size_t* level_smaller_counts) {
+  data_size_t* level_smaller_counts,
+  const CUDAHybridGraphLoopStateOpt gstate) {
+  // graphs A2 idle-block guard (pow2-frozen grid; see the gen-bit-vector kernel)
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.x)) {
+    return;
+  }
   __shared__ uint32_t shared_mem_buffer[WARPSIZE];
   __shared__ uint32_t to_left_total_count;
   const CUDAHybridApplyDescriptor d = descs[blockIdx.x];
@@ -1362,6 +1378,10 @@ __global__ void HybridSplitInnerBatchKernel(
   const uint16_t* block_to_left_offset,
   data_size_t* out_data_indices_param,
   const CUDAHybridGraphLoopStateOpt gstate) {
+  // graphs A2 idle-block guard (pow2-frozen grid; see the gen-bit-vector kernel)
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
+    return;
+  }
   const data_size_t* cuda_data_indices =
     HybridGraphMainIndices(gstate, cuda_data_indices_param);
   data_size_t* out_data_indices_in_leaf =
@@ -1407,6 +1427,10 @@ __global__ void HybridSplitTreeStructureBatchKernel(
   double* cuda_leaf_output,
   int* cuda_split_info_buffer_base,
   const CUDAHybridGraphLoopStateOpt gstate) {
+  // graphs A2 idle-block guard (pow2-frozen grid; see the gen-bit-vector kernel)
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.x)) {
+    return;
+  }
   const CUDAHybridApplyDescriptor d = descs[blockIdx.x];
   const int left_leaf_index = d.left_leaf_index;
   const int right_leaf_index = d.right_leaf_index;
@@ -1626,6 +1650,10 @@ __global__ void HybridCopyDataIndicesBatchKernel(
   const data_size_t* src_data_indices_param,
   data_size_t* dst_data_indices_param,
   const CUDAHybridGraphLoopStateOpt gstate) {
+  // graphs A2 idle-block guard (pow2-frozen grid, live GAP count)
+  if (HybridGraphBeyondLiveGaps(gstate, blockIdx.y)) {
+    return;
+  }
   const data_size_t* src_data_indices =
     HybridGraphMainIndices(gstate, src_data_indices_param);
   data_size_t* dst_data_indices =
@@ -1661,7 +1689,7 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
   HybridAggregateBlockOffsetBatchKernel<<<num_splits, AGGREGATE_BLOCK_SIZE_DATA_PARTITION, 0, cuda_streams_[0]>>>(
     descs, cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
     cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
-    cuda_level_smaller_counts_.RawData());
+    cuda_level_smaller_counts_.RawData(), nullptr);
   HybridSplitInnerBatchKernel<<<data_grid, block_dim, 0, cuda_streams_[0]>>>(
     descs, cuda_data_indices_.RawData(), cuda_block_data_to_left_offset_.RawData(),
     cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
@@ -1708,7 +1736,7 @@ void CUDADataPartition::CaptureHybridGraphApplyKernels(
   HybridAggregateBlockOffsetBatchKernel<<<1, AGGREGATE_BLOCK_SIZE_DATA_PARTITION, 0, stream>>>(
     descs, cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
     cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
-    cuda_level_smaller_counts_.RawData());
+    cuda_level_smaller_counts_.RawData(), gstate);
   if (!AppendCapturedNode(stream, nodes)) return;
   roles->push_back(kHybridGraphNodeAggregate);
   HybridSplitInnerBatchKernel<<<dim3(1, 1), block_dim, 0, stream>>>(
@@ -1717,12 +1745,21 @@ void CUDADataPartition::CaptureHybridGraphApplyKernels(
     cuda_out_data_indices_in_leaf_.RawData(), gstate);
   if (!AppendCapturedNode(stream, nodes)) return;
   roles->push_back(kHybridGraphNodeSplitInner);
-  // the graph loop is gated to non-quantized training
-  HybridSplitTreeStructureBatchKernel<false><<<1, 32, 0, stream>>>(
-    descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
-    cuda_out_data_indices_in_leaf_.RawData(), num_total_bin_, cuda_hist_,
-    cuda_hist_pool_.RawData(), cuda_leaf_output_.RawData(),
-    cuda_split_info_buffer_.RawData(), gstate);
+  // template selection mirrors LaunchSplitLevelBatchedKernels (the quantized
+  // variant also writes the child structs' packed int64 gradient/hessian sums)
+  if (use_quantized_grad_) {
+    HybridSplitTreeStructureBatchKernel<true><<<1, 32, 0, stream>>>(
+      descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
+      cuda_out_data_indices_in_leaf_.RawData(), num_total_bin_, cuda_hist_,
+      cuda_hist_pool_.RawData(), cuda_leaf_output_.RawData(),
+      cuda_split_info_buffer_.RawData(), gstate);
+  } else {
+    HybridSplitTreeStructureBatchKernel<false><<<1, 32, 0, stream>>>(
+      descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
+      cuda_out_data_indices_in_leaf_.RawData(), num_total_bin_, cuda_hist_,
+      cuda_hist_pool_.RawData(), cuda_leaf_output_.RawData(),
+      cuda_split_info_buffer_.RawData(), gstate);
+  }
   if (!AppendCapturedNode(stream, nodes)) return;
   roles->push_back(kHybridGraphNodeTreeStructure);
   HybridCopyDataIndicesBatchKernel<<<dim3(1, 1), block_dim, 0, stream>>>(
@@ -1801,6 +1838,12 @@ void CUDADataPartition::LaunchAddPredictionToScoreKernel(const double* leaf_valu
   global_timer.Stop("CUDADataPartition::AddPredictionToScoreKernel");
 }
 
+// Multi-block-per-leaf reduction: each leaf is covered by RENEW_BLOCKS_PER_LEAF
+// blocks so that shallow trees (few leaves) still saturate the GPU. Blocks
+// grid-stride over their leaf's data slice and atomicAdd their partial sum
+// into the (pre-zeroed) leaf buffers. Double summation is not associative, so
+// the reduced value can differ in the last ULPs from the single-block version;
+// this only affects quant_train_renew_leaf runs, which carry no md5 lock.
 __global__ void RenewDiscretizedTreeLeavesKernel(
   const score_t* gradients,
   const score_t* hessians,
@@ -1809,34 +1852,39 @@ __global__ void RenewDiscretizedTreeLeavesKernel(
   const data_size_t* leaf_num_data,
   double* leaf_grad_stat_buffer,
   double* leaf_hess_stat_buffer,
-  double* leaf_values) {
+  double* /*leaf_values*/) {
   __shared__ double shared_mem_buffer[WARPSIZE];
-  const int leaf_index = static_cast<int>(blockIdx.x);
+  const int leaf_index = static_cast<int>(blockIdx.x) / RENEW_BLOCKS_PER_LEAF;
+  const int block_in_leaf = static_cast<int>(blockIdx.x) % RENEW_BLOCKS_PER_LEAF;
   const data_size_t* data_indices_in_leaf = data_indices + leaf_data_start[leaf_index];
   const data_size_t num_data_in_leaf = leaf_num_data[leaf_index];
-  double sum_gradients = 0.0f;
-  double sum_hessians = 0.0f;
-  for (data_size_t inner_data_index = static_cast<int>(threadIdx.x);
-    inner_data_index < num_data_in_leaf; inner_data_index += static_cast<int>(blockDim.x)) {
+  double sum_gradients = 0.0;
+  double sum_hessians = 0.0;
+  const data_size_t stride = static_cast<data_size_t>(blockDim.x) * RENEW_BLOCKS_PER_LEAF;
+  for (data_size_t inner_data_index = static_cast<data_size_t>(threadIdx.x) +
+         static_cast<data_size_t>(block_in_leaf) * static_cast<data_size_t>(blockDim.x);
+       inner_data_index < num_data_in_leaf; inner_data_index += stride) {
     const data_size_t data_index = data_indices_in_leaf[inner_data_index];
-    const score_t gradient = gradients[data_index];
-    const score_t hessian = hessians[data_index];
-    sum_gradients += static_cast<double>(gradient);
-    sum_hessians += static_cast<double>(hessian);
+    sum_gradients += static_cast<double>(gradients[data_index]);
+    sum_hessians += static_cast<double>(hessians[data_index]);
   }
   sum_gradients = ShuffleReduceSum<double>(sum_gradients, shared_mem_buffer, blockDim.x);
   __syncthreads();
   sum_hessians = ShuffleReduceSum<double>(sum_hessians, shared_mem_buffer, blockDim.x);
   if (threadIdx.x == 0) {
-    leaf_grad_stat_buffer[leaf_index] = sum_gradients;
-    leaf_hess_stat_buffer[leaf_index] = sum_hessians;
+    atomicAdd(leaf_grad_stat_buffer + leaf_index, sum_gradients);
+    atomicAdd(leaf_hess_stat_buffer + leaf_index, sum_hessians);
   }
 }
 
 void CUDADataPartition::LaunchReduceLeafGradStat(
   const score_t* gradients, const score_t* hessians,
   CUDATree* tree, double* leaf_grad_stat_buffer, double* leaf_hess_state_buffer) const {
-  const int num_blocks = tree->num_leaves();
+  const int num_leaves = tree->num_leaves();
+  // atomicAdd accumulation requires zeroed buffers
+  SetCUDAMemory<double>(leaf_grad_stat_buffer, 0, static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+  SetCUDAMemory<double>(leaf_hess_state_buffer, 0, static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+  const int num_blocks = num_leaves * RENEW_BLOCKS_PER_LEAF;
   RenewDiscretizedTreeLeavesKernel<<<num_blocks, FILL_INDICES_BLOCK_SIZE_DATA_PARTITION>>>(
     gradients,
     hessians,

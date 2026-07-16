@@ -725,6 +725,25 @@ void CUDAHistogramConstructor::SubtractHistogramForLeaf(
   global_timer.Stop("CUDAHistogramConstructor::ConstructHistogramForLeaf::LaunchSubtractHistogramKernel");
 }
 
+// Quantized construct kernels accumulate a block's rows into PACKED int32
+// shared-memory cells (hessian in the low 16 bits, gradient in the high 16;
+// see ConstructDiscretizedHistogramDenseInner). A single bin of one block must
+// therefore never receive more than 65534 / num_grad_quant_bins rows: the
+// per-row quantized hessian is at most num_grad_quant_bins, so beyond that the
+// hessian field overflows and carries into the gradient field (and the signed
+// gradient field, at most num_grad_quant_bins / 2 per row, would overflow at
+// the same row count). The historical sizing (NUM_DATA_PER_THREAD = 400 rows
+// per thread) admits up to 400 * block_dim_y rows per block-bin, which is safe
+// for the default 4 (and 8) gradient quantization bins but silently corrupts
+// histograms at num_grad_quant_bins >= 16 on skewed features (observed as a
+// catastrophic, scale-dependent AUC collapse on higgs at >= 2.2M rows).
+// Returns the maximum safe rows-per-thread for the quantized path.
+int CUDAHistogramConstructor::QuantConstructMaxRowsPerThread(const int block_dim_y) const {
+  // single source shared with the graph controller and the device row-grouping
+  // replica (cuda_histogram_constructor.hpp)
+  return HybridQuantConstructMaxRowsPerThread(num_grad_quant_bins_, block_dim_y);
+}
+
 void CUDAHistogramConstructor::CalcConstructHistogramKernelDim(
   int* grid_dim_x,
   int* grid_dim_y,
@@ -734,8 +753,12 @@ void CUDAHistogramConstructor::CalcConstructHistogramKernelDim(
   *block_dim_x = cuda_row_data_->max_num_column_per_partition();
   *block_dim_y = NUM_THREADS_PER_BLOCK / cuda_row_data_->max_num_column_per_partition();
   *grid_dim_x = cuda_row_data_->num_feature_partitions();
+  int rows_per_thread = NUM_DATA_PER_THREAD;
+  if (use_quantized_grad_) {
+    rows_per_thread = std::min(rows_per_thread, QuantConstructMaxRowsPerThread(*block_dim_y));
+  }
   *grid_dim_y = std::max(min_grid_dim_y_,
-    ((num_data_in_smaller_leaf + NUM_DATA_PER_THREAD - 1) / NUM_DATA_PER_THREAD + (*block_dim_y) - 1) / (*block_dim_y));
+    ((num_data_in_smaller_leaf + rows_per_thread - 1) / rows_per_thread + (*block_dim_y) - 1) / (*block_dim_y));
 }
 
 void CUDAHistogramConstructor::CalcConstructHistogramBatchedKernelDim(
@@ -755,11 +778,14 @@ void CUDAHistogramConstructor::CalcConstructHistogramBatchedKernelDim(
   // saturation floor across pairs and otherwise cap the y-grid at
   // min_rows_per_thread rows per thread (identical to the per-leaf sizing for
   // single-pair levels and for leaves large enough that the cap is inactive).
-  // The formula lives in HybridBatchedConstructGridDimY so the device replica
-  // used by the speculative single-sync flow computes the identical value.
-  *grid_dim_y = HybridBatchedConstructGridDimY(
+  // The formula lives in HybridBatchedConstructGridDimY(Quant) so the device
+  // replicas (speculative single-sync flow, quantized graph loop) and the graph
+  // controller compute the identical value; the quantized variant includes the
+  // packed int32 shared-histogram overflow guard (QuantConstructMaxRowsPerThread).
+  *grid_dim_y = HybridBatchedConstructGridDimYQuant(
     max_num_data_in_smaller_leaf, num_pairs, *block_dim_y, min_grid_dim_y_,
-    BatchConstructMinRowsPerThread(), BatchConstructSaturationFloor());
+    BatchConstructMinRowsPerThread(), BatchConstructSaturationFloor(),
+    use_quantized_grad_ ? num_grad_quant_bins_ : 0);
 }
 
 void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, TrainingShareStates* share_states) {

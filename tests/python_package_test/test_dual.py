@@ -2,10 +2,14 @@
 """Tests for dual GPU+CPU support."""
 
 import contextlib
+import hashlib
 import io
 import json
 import os
 import platform
+import subprocess
+import sys
+import textwrap
 
 import numpy as np
 import pytest
@@ -1034,3 +1038,327 @@ def test_cuda_linear_tree_handles_nan_like_cpu():
         preds[device_type] = lgb.train(params, ds, num_boost_round=30).predict(X)
     max_diff = float(np.max(np.abs(preds["cpu"] - preds["cuda"])))
     assert max_diff < 1e-6, f"CUDA linear tree (NaN) diverges from CPU: max|diff|={max_diff:.3e}"
+
+
+_REQUIRES_CUDA = pytest.mark.skipif(
+    os.environ.get("TASK", "") != "cuda",
+    reason="requires CUDA-enabled LightGBM build (set TASK=cuda)",
+)
+
+# --------------------------------------------------------------------------- #
+# ExaBoost env kill-switch / feature-flag / ingestion / determinism gates.
+#
+# These encode the out-of-tree scratchpad md5 gates (hybrid_verify.py,
+# int8_md5_gates.py, the graph/quant sweeps) as CI-enforced pytest, closing the
+# coverage gap where the whole hybrid/graph/quant/ingestion surface rested only
+# on ad-hoc md5 scripts + racecheck.
+#
+# WHY QUANT MODE EVERYWHERE: non-quant CUDA training accumulates histograms with
+# float atomicAdd, so it is run-to-run NONdeterministic -- the same config trained
+# twice does not produce a bit-identical model. Quantized-gradient training
+# (use_quantized_grad=True) uses integer histograms and IS bit-deterministic, so
+# it is the only mode in which a model md5 is a stable fingerprint. Every gate
+# below that asserts bit-identity therefore trains in quant mode.
+#
+# WHY SUBPROCESSES for the kill-switches: several switches are read exactly once
+# per process into a `static const bool` (EXABOOST_GRAPH_LEVEL_LOOP,
+# EXABOOST_GRAPH_QUANT, EXABOOST_FAST_ROWDATA, EXABOOST_ROWDATA_4BIT,
+# EXABOOST_FP32_HIST, EXABOOST_FP32_GAIN). Mutating os.environ between two
+# in-process trains would NOT flip them. Each variant is trained in a fresh
+# interpreter with the env set at launch so the switch is genuinely exercised.
+# --------------------------------------------------------------------------- #
+
+# Worker executed in a fresh interpreter: trains a small quantized CUDA model and
+# prints its model md5. The profile selects a param/data shape that routes through
+# the code path the switch under test guards.
+_QUANT_MD5_WORKER = textwrap.dedent(
+    """
+    import hashlib, sys
+    import numpy as np
+    import lightgbm as lgb
+
+    profile = sys.argv[1]
+    rng = np.random.default_rng(0)
+    n = 8000
+    if profile == "graph":
+        # depth-limited multiclass quant -> CUDA graph level-loop path
+        m = 20
+        X = rng.standard_normal((n, m)).astype(np.float64)
+        y = (X @ rng.standard_normal((m, 5))).argmax(axis=1).astype(np.float64)
+        p = {"objective": "multiclass", "num_class": 5, "num_leaves": 63,
+             "max_depth": 6, "max_bin": 255, "learning_rate": 0.1,
+             "use_quantized_grad": True}
+    elif profile == "fewbin":
+        # <=16 bins -> 4-bit packed row-data path
+        m = 12
+        X = rng.integers(0, 12, size=(n, m)).astype(np.float64)
+        y = (X @ rng.standard_normal(m) + rng.standard_normal(n)).astype(np.float64)
+        p = {"objective": "regression", "num_leaves": 31, "max_depth": 6,
+             "max_bin": 15, "learning_rate": 0.1, "use_quantized_grad": True}
+    else:  # "dense": full-width dense quant (fast-rowdata / gpu-construct / efb)
+        m = 20
+        X = rng.standard_normal((n, m)).astype(np.float64)
+        y = (X @ rng.standard_normal(m) + 0.3 * rng.standard_normal(n)).astype(np.float64)
+        p = {"objective": "regression", "num_leaves": 31, "max_depth": 6,
+             "max_bin": 255, "learning_rate": 0.1, "use_quantized_grad": True}
+    p.update({"device_type": "cuda", "seed": 42, "verbose": -1, "metric": "None",
+              "num_threads": 8})
+    ds = lgb.Dataset(X, label=y, params=p)
+    ds.construct()
+    bst = lgb.train(p, ds, num_boost_round=25)
+    print(hashlib.md5(bst.model_to_string().encode()).hexdigest())
+    """
+)
+
+
+def _quant_model_md5(profile, extra_env=None):
+    """Train the quant worker for `profile` in a fresh interpreter with `extra_env`
+    layered on top of the current environment; return the printed model md5.
+
+    A fresh process is required because the kill-switches under test are cached in
+    `static const bool` on first read, so they can only be flipped at process start.
+    """
+    env = dict(os.environ)
+    env["TASK"] = "cuda"
+    if extra_env:
+        env.update(extra_env)
+    proc = subprocess.run(
+        [sys.executable, "-c", _QUANT_MD5_WORKER, profile],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, f"quant worker failed (profile={profile}, env={extra_env}):\n{proc.stderr}"
+    md5 = proc.stdout.strip().splitlines()[-1].strip()
+    assert len(md5) == 32, f"unexpected worker output for profile={profile}: {proc.stdout!r}\n{proc.stderr}"
+    return md5
+
+
+# (profile, extra_env-for-the-DISABLED-variant, human name). The default (env unset)
+# must produce a model bit-identical to the switch explicitly disabled: the switch is
+# an optimization that must be behavior-preserving. GRAPH tests opt into the quant
+# graph path with EXABOOST_GRAPH_QUANT=1 (quant needs the explicit opt-in), then
+# compare graph level-loop on (default) vs EXABOOST_GRAPH_LEVEL_LOOP=0.
+_KILL_SWITCH_CASES = [
+    (
+        "graph",
+        {"EXABOOST_GRAPH_QUANT": "1"},
+        {"EXABOOST_GRAPH_QUANT": "1", "EXABOOST_GRAPH_LEVEL_LOOP": "0"},
+        "EXABOOST_GRAPH_LEVEL_LOOP",
+    ),
+    ("fewbin", {}, {"EXABOOST_ROWDATA_4BIT": "0"}, "EXABOOST_ROWDATA_4BIT"),
+    ("dense", {}, {"EXABOOST_FAST_ROWDATA": "0"}, "EXABOOST_FAST_ROWDATA"),
+    ("dense", {}, {"EXABOOST_GPU_CONSTRUCT": "0"}, "EXABOOST_GPU_CONSTRUCT"),
+    ("dense", {}, {"EXABOOST_EFB_PRECHECK": "0"}, "EXABOOST_EFB_PRECHECK"),
+]
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(
+    ("profile", "default_env", "disabled_env", "switch"),
+    _KILL_SWITCH_CASES,
+    ids=[c[3] for c in _KILL_SWITCH_CASES],
+)
+def test_cuda_kill_switch_is_bit_identical(profile, default_env, disabled_env, switch):
+    """An ExaBoost optimization kill-switch must be behavior-preserving.
+
+    For each switch that defaults ON as a pure optimization, the model trained with
+    the switch at its default must be BIT-IDENTICAL (identical model_to_string md5)
+    to the model trained with the switch forced to ``0``. A mismatch means the
+    optimized path diverges from the reference path -- a real correctness bug, not a
+    test-tuning issue. Quant mode makes the md5 a stable fingerprint (see module
+    note); each variant runs in its own interpreter because the switches are cached
+    per-process.
+    """
+    default_md5 = _quant_model_md5(profile, default_env)
+    disabled_md5 = _quant_model_md5(profile, disabled_env)
+    assert default_md5 == disabled_md5, (
+        f"{switch}: default path md5={default_md5} != disabled(=0) path md5={disabled_md5}; "
+        f"the '{switch}' fast path is NOT behavior-preserving on profile={profile}"
+    )
+
+
+# Feature flags that must be no-ops when off/unset: setting them to 0 (or leaving
+# unset) must reproduce the plain quant model exactly. (EXABOOST_FIXEDPOINT_QUANT=1
+# deliberately changes the model -- it is a different, near-lossless quant mode -- so
+# only its OFF state is a no-op and is what we pin here.)
+_NOOP_FLAGS = ["EXABOOST_FP32_GAIN", "EXABOOST_FP32_HIST", "EXABOOST_FIXEDPOINT_QUANT"]
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("flag", _NOOP_FLAGS)
+def test_cuda_feature_flag_off_reproduces_plain_quant(flag):
+    """A feature flag set to 0 must reproduce the plain quant model bit-for-bit.
+
+    Guards that FP32_GAIN / FP32_HIST / FIXEDPOINT_QUANT are opt-IN: with the flag
+    absent (plain quant) or explicitly 0, training must yield the identical model.
+    A divergence would mean the "off" state silently activates the alternate path.
+    """
+    plain = _quant_model_md5("dense")
+    off = _quant_model_md5("dense", {flag: "0"})
+    assert plain == off, f"{flag}=0 changed the model (plain={plain}, off={off}); the flag is not a clean no-op"
+
+
+@_REQUIRES_CUDA
+def test_cuda_quant_training_is_deterministic():
+    """The same quant config trained twice must produce an identical model.
+
+    Documents that quantized-gradient CUDA training is the deterministic mode
+    (integer histograms, no float-atomic nondeterminism). This is the invariant the
+    whole md5-gate suite relies on; if it ever fails, every bit-identity gate is
+    meaningless.
+    """
+    md5_a = _quant_model_md5("dense")
+    md5_b = _quant_model_md5("dense")
+    assert md5_a == md5_b, f"plain quant is nondeterministic: {md5_a} != {md5_b}"
+
+
+@_REQUIRES_CUDA
+def test_cuda_fixedpoint_quant_is_deterministic():
+    """EXABOOST_FIXEDPOINT_QUANT=1 (near-lossless quant mode) must also be
+    run-to-run deterministic. It produces a DIFFERENT model from plain quant (a
+    distinct integer scheme), but that model must be reproducible."""
+    md5_a = _quant_model_md5("dense", {"EXABOOST_FIXEDPOINT_QUANT": "1"})
+    md5_b = _quant_model_md5("dense", {"EXABOOST_FIXEDPOINT_QUANT": "1"})
+    assert md5_a == md5_b, f"fixedpoint quant is nondeterministic: {md5_a} != {md5_b}"
+    # sanity: it really is a distinct mode, not silently the plain path
+    assert md5_a != _quant_model_md5("dense"), "EXABOOST_FIXEDPOINT_QUANT=1 did not change the model"
+
+
+def _ingestion_model_string(X, y, base):
+    ds = lgb.Dataset(X, label=y, params=base)
+    return lgb.train(base, ds, num_boost_round=20).model_to_string()
+
+
+def _strip_nonsubstantive(model_str):
+    # feature_names differ (numpy default "Column_i" vs pandas column labels) and the
+    # trailing pandas_categorical marker serializes as "null" for ndarray vs "[]" for
+    # a DataFrame; neither reflects the binned data or the learned trees.
+    return "\n".join(
+        line for line in model_str.split("\n") if not line.startswith(("feature_names=", "pandas_categorical"))
+    )
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("dtype", [np.int8, np.uint8, np.int16, np.uint16, np.int32])
+def test_cuda_integer_ingestion_matches_float32(dtype):
+    """Integer numpy input must produce the same Dataset -- and thus the same model
+    -- as the equivalent float32 input, when the integer values fit both dtypes.
+
+    Mirrors the int8_md5_gates.py identity gate: feeding the same values as int8 /
+    uint8 / int16 / uint16 / int32 vs float32 must bin identically and train to a
+    bit-identical model. A mismatch would mean the integer ingestion path bins wrong.
+    """
+    info = np.iinfo(dtype)
+    rng = np.random.default_rng(3)
+    n, m = 6000, 8
+    lo = max(0, info.min)
+    hi = min(50, info.max)
+    Xi = rng.integers(lo, hi, size=(n, m))
+    y = (Xi @ rng.standard_normal(m) + rng.standard_normal(n)).astype(np.float64)
+    base = {
+        "objective": "regression",
+        "num_leaves": 31,
+        "max_depth": 6,
+        "max_bin": 255,
+        "learning_rate": 0.05,
+        "use_quantized_grad": True,
+        "device_type": "cuda",
+        "seed": 42,
+        "verbose": -1,
+        "metric": "None",
+        "num_threads": 8,
+    }
+    ref = _ingestion_model_string(Xi.astype(np.float32), y, base)
+    got = _ingestion_model_string(Xi.astype(dtype), y, base)
+    assert (
+        hashlib.md5(_strip_nonsubstantive(got).encode()).hexdigest()
+        == hashlib.md5(_strip_nonsubstantive(ref).encode()).hexdigest()
+    ), f"{np.dtype(dtype).name} ingestion diverges from float32"
+
+
+@_REQUIRES_CUDA
+def test_cuda_pandas_int_frame_matches_numpy():
+    """A small-integer pandas DataFrame must ingest identically to the equivalent
+    numpy array (same binning, same model up to the cosmetic feature_names /
+    pandas_categorical serialization lines)."""
+    pd = pytest.importorskip("pandas")
+    rng = np.random.default_rng(3)
+    n, m = 6000, 8
+    Xi = rng.integers(0, 50, size=(n, m))
+    y = (Xi @ rng.standard_normal(m) + rng.standard_normal(n)).astype(np.float64)
+    base = {
+        "objective": "regression",
+        "num_leaves": 31,
+        "max_depth": 6,
+        "max_bin": 255,
+        "learning_rate": 0.05,
+        "use_quantized_grad": True,
+        "device_type": "cuda",
+        "seed": 42,
+        "verbose": -1,
+        "metric": "None",
+        "num_threads": 8,
+    }
+    ref = _ingestion_model_string(Xi.astype(np.float32), y, base)
+    frame = pd.DataFrame(Xi.astype(np.int16), columns=[f"Column_{i}" for i in range(m)])
+    got = _ingestion_model_string(frame, y, base)
+    assert (
+        hashlib.md5(_strip_nonsubstantive(got).encode()).hexdigest()
+        == hashlib.md5(_strip_nonsubstantive(ref).encode()).hexdigest()
+    ), "pandas int frame diverges from numpy ingestion"
+
+
+_COVTYPE_DIR = "/home/felixjk/Documents/exaboost-bench/data/cache/covtype/"
+_HAS_COVTYPE = os.path.isdir(_COVTYPE_DIR) and os.path.isfile(_COVTYPE_DIR + "X_train.npy")
+
+
+@_REQUIRES_CUDA
+@pytest.mark.skipif(not _HAS_COVTYPE, reason="covtype data cache not present")
+@pytest.mark.parametrize(
+    ("num_leaves", "max_depth", "quant"),
+    [(63, 6, True), (63, 6, False), (127, 8, True), (31, 5, True)],
+)
+def test_cuda_multiclass_graph_loop_trains_and_is_accurate(num_leaves, max_depth, quant):
+    """Multiclass training with the CUDA graph level-loop active (default ON since
+    84db39cd) must not raise and must reach a sane accuracy.
+
+    Regression guard for the 84db39cd upload-race fix: the depth-limited multiclass
+    graph loop is now the default path. This trains several covtype configs through
+    it and asserts (a) no exception / no crash and (b) accuracy in a sane band, so a
+    future change that reintroduces the upload race (garbage histograms -> near-random
+    trees) or breaks the multiclass graph path is caught.
+    """
+    Xtr = np.load(_COVTYPE_DIR + "X_train.npy")
+    ytr = np.load(_COVTYPE_DIR + "y_train.npy")
+    Xte = np.load(_COVTYPE_DIR + "X_test.npy")
+    yte = np.load(_COVTYPE_DIR + "y_test.npy")
+    Xs, ys = Xtr[:60000], ytr[:60000]
+    params = {
+        "objective": "multiclass",
+        "num_class": 7,
+        "num_leaves": num_leaves,
+        "max_depth": max_depth,
+        "max_bin": 255,
+        "learning_rate": 0.1,
+        "device_type": "cuda",
+        "seed": 42,
+        "verbose": -1,
+        "metric": "None",
+        "num_threads": 8,
+    }
+    if quant:
+        params["use_quantized_grad"] = True
+    ds = lgb.Dataset(Xs, label=ys, params=params)
+    ds.construct()
+    bst = lgb.train(params, ds, num_boost_round=40)
+    preds = bst.predict(Xte)
+    assert np.all(np.isfinite(preds)), "multiclass graph-loop produced non-finite predictions"
+    acc = float((preds.argmax(axis=1) == yte).mean())
+    # covtype 40-tree models here score ~0.78-0.83; a graph-loop regression to garbage
+    # trees would collapse well below the 1/7 class balance. 0.70 is a safe floor.
+    assert acc > 0.70, (
+        f"multiclass graph loop (num_leaves={num_leaves}, max_depth={max_depth}, quant={quant}) "
+        f"accuracy {acc:.4f} below sane band -- possible graph/upload-race regression"
+    )

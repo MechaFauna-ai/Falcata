@@ -78,6 +78,47 @@ __host__ __device__ inline int HybridBatchedConstructGridDimY(
   return y_full_rate > inner ? y_full_rate : inner;
 }
 
+/*! \brief maximum safe rows-per-thread of the quantized construct kernels'
+ *  packed 16+16-bit shared-memory accumulation (see the .cpp comment above
+ *  CUDAHistogramConstructor::QuantConstructMaxRowsPerThread, the single host
+ *  caller). Shared verbatim by the host grid sizing, the graph controller's
+ *  frozen-bucket computation and the quantized construct kernel's device
+ *  row-grouping replica. */
+__host__ __device__ inline int HybridQuantConstructMaxRowsPerThread(
+    const int num_grad_quant_bins, const int block_dim_y) {
+  const int max_rows_per_block = 65534 / (num_grad_quant_bins > 1 ? num_grad_quant_bins : 1);
+  const int cap = max_rows_per_block / (block_dim_y > 1 ? block_dim_y : 1);
+  return cap > 1 ? cap : 1;
+}
+
+/*! \brief quantized-training y-grid sizing of the batched construct kernel:
+ *  the shared formula plus the packed int32 shared-histogram overflow guard,
+ *  mirroring CalcConstructHistogramBatchedKernelDim's host math verbatim.
+ *  num_grad_quant_bins == 0 (non-quantized) reduces to the plain formula. */
+__host__ __device__ inline int HybridBatchedConstructGridDimYQuant(
+    const data_size_t max_num_data_in_smaller_leaf,
+    const int num_pairs,
+    const int block_dim_y,
+    const int min_grid_dim_y,
+    const int min_rows_per_thread,
+    const int saturation_floor_total,
+    const int num_grad_quant_bins) {
+  int grid_dim_y = HybridBatchedConstructGridDimY(
+    max_num_data_in_smaller_leaf, num_pairs, block_dim_y, min_grid_dim_y,
+    min_rows_per_thread, saturation_floor_total);
+  if (num_grad_quant_bins > 0) {
+    const int max_rows_per_thread =
+      HybridQuantConstructMaxRowsPerThread(num_grad_quant_bins, block_dim_y);
+    const int y_overflow_guard =
+      ((max_num_data_in_smaller_leaf + max_rows_per_thread - 1) / max_rows_per_thread +
+       block_dim_y - 1) / block_dim_y;
+    if (y_overflow_guard > grid_dim_y) {
+      grid_dim_y = y_overflow_guard;
+    }
+  }
+  return grid_dim_y;
+}
+
 class CUDAHistogramConstructor {
  public:
   CUDAHistogramConstructor(
@@ -286,6 +327,7 @@ class CUDAHistogramConstructor {
    *  waits on it inside the graph exactly like the host flow) */
   void CaptureHybridGraphSearchKernels(const CUDAHybridPairDescriptor* pair_descs,
                                        const data_size_t* level_smaller_num_data,
+                                       const CUDAHybridGraphLoopState* gstate,
                                        std::vector<cudaGraphNode_t>* nodes,
                                        std::vector<int>* roles,
                                        std::vector<int>* role_static_x);
@@ -295,6 +337,26 @@ class CUDAHistogramConstructor {
   void HybridGraphConstructDims(int* grid_x, int* block_dim_y) const;
 
   int hybrid_graph_min_grid_dim_y() const { return min_grid_dim_y_; }
+
+  /*! \brief gradient quantization bin count for the graph loop state (0 for
+   *  non-quantized training: disables the controller's overflow guard and the
+   *  device hist-bits derivation) */
+  int hybrid_graph_num_grad_quant_bins() const {
+    return use_quantized_grad_ ? num_grad_quant_bins_ : 0;
+  }
+
+  /*! \brief quantized graph loop: preallocate the 64->32-bit histogram
+   *  compaction scratch for the worst-case pair count, so the captured buffer
+   *  pointer never reallocates (the host path resizes it lazily) */
+  void EnsureHybridGraphBitChangeCapacity(const int max_pairs) {
+    if (!use_quantized_grad_) {
+      return;
+    }
+    const size_t needed = static_cast<size_t>(max_pairs) * static_cast<size_t>(num_total_bin_);
+    if (hist_buffer_for_num_bit_change_.Size() < needed) {
+      hist_buffer_for_num_bit_change_.Resize(needed);
+    }
+  }
 
   /*! \brief per-tree pointers/flags baked into captured construct kernel
    *  params: a graph instance is only valid for trees whose key matches (the
@@ -314,6 +376,10 @@ class CUDAHistogramConstructor {
     key->push_back(static_cast<const void*>(cuda_gradients_hessians_.RawDataReadOnly()));
     key->push_back(static_cast<const void*>(cuda_is_feature_used_bytree_.RawDataReadOnly()));
     key->push_back(any_feature_unused_bytree_ ? this : nullptr);
+    // quantized subtract scratch, baked into the captured subtract/copy params
+    // (presized by EnsureHybridGraphBitChangeCapacity; defensive)
+    key->push_back(use_quantized_grad_ ?
+      static_cast<const void*>(hist_buffer_for_num_bit_change_.RawDataReadOnly()) : nullptr);
   }
 
   /*! \brief graphs L1 + compact view: the batched construct BLOCK dims follow
@@ -373,6 +439,10 @@ class CUDAHistogramConstructor {
 
   /*! \brief (re)build cuda_fix_mfb_mask_ from the need-fix feature metadata */
   void InitFixMFBMask();
+
+  /*! \brief maximum safe rows-per-thread of the quantized construct kernels'
+   *  packed 16+16-bit shared-memory accumulation (see the .cpp comment) */
+  int QuantConstructMaxRowsPerThread(const int block_dim_y) const;
 
   void CalcConstructHistogramKernelDim(
     int* grid_dim_x,
@@ -460,7 +530,8 @@ class CUDAHistogramConstructor {
   void LaunchSubtractHistogramBatchedKernel(
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
-    const bool any_pair_needs_bit_change_copy);
+    const bool any_pair_needs_bit_change_copy,
+    const CUDAHybridGraphLoopStateOpt gstate = nullptr);
 
   // ---- small-leaf level launchers (hybrid growth, non-quantized only) ----
 
@@ -472,7 +543,8 @@ class CUDAHistogramConstructor {
    *  bit-identical to the sequential fix -> subtract launches. */
   void LaunchFixSubtractHistogramSmallLeafBatchedKernel(
     const CUDAHybridPairDescriptor* pair_descs,
-    const int num_pairs);
+    const int num_pairs,
+    const CUDAHybridGraphLoopStateOpt gstate = nullptr);
 
   /*! \brief one tiny launch per speculative level: reduce the level's actual
    *  smaller-child sizes and apply the exact host grid-sizing formula, writing
@@ -527,6 +599,11 @@ class CUDAHistogramConstructor {
   bool has_categorical_feature_ = false;
   /*! \brief non-quantized global histograms stored as float pairs (see hist_fp32()) */
   bool hist_fp32_ = false;
+  /*! \brief graphs A2: loop-state pointer passed to the batched construct
+   *  kernel while capturing a graph body (set only inside
+   *  CaptureHybridGraphSearchKernels); nullptr on every host launch, so the
+   *  host path keeps its exact-grid arithmetic bit-for-bit */
+  CUDAHybridGraphLoopStateOpt hybrid_graph_capture_gstate_ = nullptr;
 
 
   // CUDA memory, held by this object

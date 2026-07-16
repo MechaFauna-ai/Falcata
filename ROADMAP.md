@@ -13,23 +13,47 @@ figures from the profiles in the PR discussions.
   fraud 1023/10 -10.9%, covtype 63/6 -8.8%, year -5.8%, numerai parity
   (construct-bound). Launch API 132 -> ~30 us/tree; controller ~42 us/tree; sync
   D2H 3 -> 1 per tree. Non-quant depth-limited only; EXABOOST_GRAPH_LEVEL_LOOP=0.
-  MULTICLASS IS GATED OFF pending a root cause: pre-existing intermittent
-  cudaErrorIllegalAddress (~7/30 runs, machine-state dependent, present at
-  baseline; repro scratchpad/mc_crash_repro.py; sanitizers can't attach to
-  device-side graph updates) -- TOP graph follow-up. Perf follow-ups: (A2) fix
-  grids for the ~8 n-only roles at body bounds + device cur_n early-exit
-  (device SetGridDim calls ~4.5us/body dominate the controller); cross-tree
+  Multiclass crash ROOT-CAUSED AND FIXED (84db39cd): device-updatable graphs
+  must be cudaGraphUpload-ed before first launch (the controller's first device
+  update raced the lazy upload; multiclass's per-class instances multiplied
+  exposure). 40/40 soak, gate lifted, multiclass graph ON ~4% faster. A2 done (199dc6fa): all 10 roles
+  pow2-bucketed with device cur_n guards -- but the SetGridDim hypothesis was
+  FALSIFIED (the 2e047b0d cache already absorbed them; a zero-update body still
+  costs 5.2us vs the 2.0us epilogue). Controller cost is intrinsic serial latency:
+  dependent descriptor-chain reads + ~20 block barriers. Next lever: prefetch the
+  read chains + single-warp fast path for bodies <=32 splits (~20us/tree bound);
+  bucket-shrink hysteresis if flipping shows up. cross-tree
   overlap needs a GBDT-contract change (host tree mirror feeds
   CUDATree::Shrinkage sizing + the leaf-wise tail arbitration -- call chain
   documented); per-parent chaining (original L2 idea) still open.
-- [ ] **Graphs L2 — per-parent dependency chaining.** A child pair only depends on *its
-  parent's* partition + histogram, not on its level. Launch each pair's chain from the
-  device (fire-and-forget device graph launch) when its parent finishes — a
-  self-scheduling tree that removes phase-boundary tail effects on unbalanced trees.
-  Needs: device-atomic budget reservation + a global final-level top-K join, per-node
-  (not per-level) task/scratch regions, and an order-independent split log (the host
-  rebuild already renumbers canonically, absorbing completion-order nondeterminism).
-  Est. +10-20% over L1 on unbalanced small trees.
+  Quant graph support landed bit-exact (a2279763: device hist-bits, guarded quant
+  construct grids, full lock matrix incl. multiclass-quant) but is OPT-IN
+  (EXABOOST_GRAPH_QUANT=1, 5c61a0ed): quant levels are cheap so the controller's
+  fixed serial latency nets -10.8% covtype 1023/10 / -7% year; wins only
+  fraud-class (+4%). Fixing the controller-latency frontier flips the default.
+- [~] **Graphs L2 — per-parent dependency chaining — INVESTIGATED, honest negative.**
+  The reclaimable barrier-induced tail idle (apply-end -> first-construct-start gap a
+  chained first pair could skip) measures **<1% of tree span** (fraud 0.59%, covtype
+  0.77%), far under the 5% bar. The earlier "18-33% potential" was a misread of
+  min(apply,search) = apply/search PIPELINING, which per-parent chaining does NOT
+  deliver (within a body every pair shares the same apply->construct dependency).
+  Not pursued. The one real gap is on covtype full/deep trees (~2.7% apply->construct
+  + ~21% apply-INTERNAL idle) and that is intra-apply grid serialization / launch
+  bubbles across batched pairs -- a DIFFERENT lever (better grid packing / fewer
+  batched-kernel launches per apply), not per-parent barriers. See new item below.
+- [~] **Intra-apply grid serialization — INVESTIGATED, honest negative; graph-perf
+  frontier now fully mapped.** The batched apply is already a single grid-strided launch
+  per stage over all pairs (no per-pair launch loop); measured intra-apply idle is
+  covtype-deep 2.88% / numerai-deep 0.10% of tree time -- below the 5% bar, and it's
+  dependency-chained kernels (Gen->Aggregate->Inner->TreeStructure) that can't overlap
+  without breaking bit-identity, not reclaimable slack. Combined with #25 (per-parent
+  <1%) and #32 (compact-layout cliff-doesn't-occur), the graph-perf frontier is MAPPED:
+  the only remaining idle is inter-stage + controller SERIAL LATENCY, already
+  characterized and rejected (needs the descriptor-prefetch / single-warp-small-body
+  work, a launch refactor of uncertain payoff). Graph-perf cheap+medium wins are
+  exhausted. (The investigating agent also raised a FALSE 'covtype data drift' alarm from
+  a non-canonical gate invocation -- DISPROVEN: canonical gate reproduces 5f4e7bdfff1e /
+  0.91952 / 291.6 exactly, data intact. See memory canonical-md5-gates.)
 - [ ] **Static planner (auto-tuner tier 0).** At Init the dataset shape (rows,
   features, actual bins/feature) and config (num_leaves, max_depth, num_class,
   iterations) determine: expected level geometry (leaf sizes ~ rows/2^level) -> grid
@@ -40,6 +64,14 @@ figures from the profiles in the PR discussions.
   packing. Decides only provable shape functions; supplies priors for the ambiguous
   constants below (GPU cost models are brittle: the construct-floor cap gained
   year/higgs 35% and regressed covtype 45% -- only measurement caught it).
+  UPDATE (investigated the spec's flagged §4 "highest-value win", compact-layout
+  pre-sizing): NOT pursued -- (a) the LRU-eviction cliff it targets does not occur on
+  realistic shapes (numerai 1000 trees: 23 instantiations vs 64 cache limit, 0 evictions,
+  0 disables; feature_fraction 0.05-0.5 all <64); (b) pre-sizing max_num_compact_cols
+  changes block_dim_y -> reorders non-quant float atomicAdds -> NOT bit-identical
+  (verified md5 flip). The other 12 tier-0 knobs remain valid. A bit-neutral variant
+  needs decoupling block_dim_y from block_dim_x (a launch refactor), only if a future
+  very-low-fraction/high-feature workload ever pushes distinct shape keys past 64.
 - [ ] **Runtime auto-tuner ("JIT optimizer") tier 1 — online policy tuning.** Boosting
   runs thousands of near-identical trees: measure per-tree wall time (CUDA events) +
   feedback stats (churn, level widths, imbalance) and bandit-tune the existing
@@ -145,6 +177,48 @@ figures from the profiles in the PR discussions.
   want (MultiRMSE-style). Modeling change: validate per-era, don't assume. FIL
   predict falls back to CPU for vector-leaf models initially (treelite support).
 
+- [~] **Exact small-int bin finding (EXABOOST_EXACT_INT_BINS) — IMPLEMENTED, parked on
+  branch `exact-int-bins-wip` (07c70a72), not on the merge branch.** Works: exact
+  per-column counts -> exact bins, deterministic, min_data_in_bin on TRUE counts,
+  rare-value-gets-own-bin mechanism proven on synthetic (sampled 3 bins -> exact 4).
+  Default path byte-identical (covtype 5f4e7bdfff1e verified). BUT no value on numerai:
+  (a) construct 4.5 -> 7.9s (EFB still needs the per-row sample gather, so the exact
+  count is pure extra scan -- the ~1.6s saving premise was wrong); (b) numerai has NO
+  sample-invisible rare values (rarest -1 has >2000 rows), so 0 features gain a bin,
+  quality flat/marginally lower. Revive only if: a construct win is found (fuse the
+  count into the GPU construct pass, or make EFB consume exact counts), OR a dataset
+  with genuinely rare (<min_data, sample-missable) small-int values appears.
+- [ ] **L2 residency tuning (5090: 96 MB L2).** (a) cudaAccessPolicyWindow
+  persistence on grad/hess float2 (43 MB) + data indices (22 MB): each level's
+  compact-matrix stream (~375 MB) currently evicts them, and the construct kernel is
+  latency-bound on exactly those scattered re-reads; (b) evict-first/__ldcs hints on
+  bin-matrix loads (zero reuse within a level -- stop polluting L2); (c) note:
+  fraud/covtype/year datasets (4/31/46 MB) are already fully L2-resident (why they
+  profile latency-bound); (d) deep configs: fp32-hist halves the hist pool 248 ->
+  124 MB = from doesn't-fit to mostly-fits L2 -- a cache argument for fp32-hist on
+  deep trees on top of the bandwidth one (subtraction re-reads parent hists). Few
+  lines each, cleanly A/B-able.
+
+- [~] **Quant quality — PARTIALLY LANDED (3fbe9050 renew fix, 438d8e9e fixed-point mode).**
+  (1) renew_leaf multi-block reduction (3fbe9050): RenewDiscretizedTreeLeavesKernel was
+  1 block/leaf (SMs idle) -> 16 blocks/leaf grid-strided; kernel 500->67us/tree, renew
+  overhead 38%->4% on higgs-shallow. Default-off path (quant_train_renew_leaf) unchanged.
+  (2) **fixed-point quant mode (438d8e9e, EXABOOST_FIXEDPOINT_QUANT=1, default OFF)**:
+  round-to-nearest at high bins (64) via the exact-int-accumulation packed path --
+  near-lossless at any depth, DETERMINISTIC, no per-tree stochastic buffer. VERIFIED
+  (independent clean-build A/B): year/deep rmse fp 8.970 == non-quant 8.977 vs default
+  quant 9.344, at quant speed (1.81 vs 1.80s). Known limitation: heavily-imbalanced
+  fraud/deep regresses (global max|grad| scale is outlier-sensitive) -- hence opt-in;
+  a percentile-clipped/per-class scale would fix it (follow-up). CAVEAT ON THE COMMIT
+  MESSAGES: the #28 agent worked from a contaminated baseline build and mis-recorded the
+  covtype quant lock as 22c0ff5e95de in both commit bodies + follow-ups -- that is WRONG.
+  The real, re-confirmed lock is covtype 1023/10 quant GROWTH=1 = 5f4e7bdfff1e /
+  GROWTH=0 = fcb9f6c2ab87 (unchanged since 3afe7c62; the fix's row-cap never triggers on
+  covtype). Do NOT propagate 22c0ff5e95de anywhere.
+  fixed-point outlier-robust scale LANDED (d24ab00b, EXABOOST_FIXEDPOINT_ROBUST, default-on within fixedpoint): gap-gated bulk re-anchoring recovers fraud/deep 0.940->0.973 (near non-quant 0.975), balanced cases bit-identical, speed-neutral, deterministic -- the fixed-point mode is now complete for both balanced and imbalanced data.
+  Still open: bins-default proposal (16 restores deep quality at ~0 cost but is an
+  upstream-parity/model-change decision -- NOT flipped); fixed-point outlier-robust scale;
+  constant-hessian special case for regression quant; quant one-sync parity.
 - [ ] **Hybrid coverage extensions.** The hybrid/graph fast paths currently fall
   back to the classic loop for: categorical features (variable-length bitset
   payloads vs the fixed 18-int split slabs -- first one worth lifting), NCCL
@@ -189,6 +263,11 @@ figures from the profiles in the PR discussions.
 ## Upstream (lightgbm-org/LightGBM) bugs found (documented here for reference;
 ## we do not contribute upstream)
 
+- Packed 16+16-bit quantized histogram overflow (fixed here in 3afe7c62): with
+  num_grad_quant_bins >= 16, blocks accumulating > 65534/bins rows into one shared
+  bin carry the hessian field into the gradient field (signature dg=+K,
+  dh=-K*65536) -- silent binary-objective collapse at >~2.2M rows; upstream shares
+  the kernels.
 - Quantized CUDA int32 histogram-index overflow on wide data (fixed here in
   6f8402f5; upstream segfaults at scale and silently corrupts below it).
 - Quantized multiclass per-tree random-offset buffer overrun (fixed here in
