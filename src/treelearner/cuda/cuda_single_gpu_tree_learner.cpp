@@ -68,6 +68,7 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // the histogram constructor (its 65534/bins per-block row cap guards packed-
   // hist overflow) and the discretizer (dequant scale), so compute it once here.
   fixedpoint_quant_ = false;
+  fixedpoint_robust_scale_ = false;
   effective_quant_bins_ = config_->num_grad_quant_bins;
   if (config_->use_quantized_grad) {
     const char* fp_env = std::getenv("EXABOOST_FIXEDPOINT_QUANT");
@@ -82,7 +83,23 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
           effective_quant_bins_ = b;
         }
       }
-      Log::Info("EXABOOST_FIXEDPOINT_QUANT: non-stochastic quant with %d bins", effective_quant_bins_);
+      // Outlier-robust gradient scale (default ON within fixed-point mode;
+      // EXABOOST_FIXEDPOINT_ROBUST=0 restores the plain global-max scale). On
+      // heavily-imbalanced data (fraud) the rare-positive gradients are huge
+      // outliers that dominate a global max|grad| scale, crushing the bulk of
+      // gradients to near-zero quant resolution. The robust scale instead maps a
+      // high percentile of |grad| to the max quant magnitude and clamps the rare
+      // outliers to +/-(bins/2), giving the common gradients full resolution. The
+      // clamp keeps every quantized magnitude <= bins/2, exactly as the global-max
+      // path guarantees, so the histogram bit-width promotion (num_data*bins bound
+      // in SetNumBitsInHistogramBin) stays valid with no overflow risk.
+      fixedpoint_robust_scale_ = true;
+      const char* fp_robust_env = std::getenv("EXABOOST_FIXEDPOINT_ROBUST");
+      if (fp_robust_env != nullptr && std::atoi(fp_robust_env) == 0) {
+        fixedpoint_robust_scale_ = false;
+      }
+      Log::Info("EXABOOST_FIXEDPOINT_QUANT: non-stochastic quant with %d bins (robust_scale=%d)",
+        effective_quant_bins_, fixedpoint_robust_scale_ ? 1 : 0);
     }
   }
   cuda_smaller_leaf_splits_.reset(new CUDALeafSplits(num_data_));
@@ -168,6 +185,7 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     // iteration, and the discretizer's iter_ counter advances once per tree
     cuda_gradient_discretizer_.reset(new CUDAGradientDiscretizer(
       effective_quant_bins_, config_->num_iterations * std::max(config_->num_class, 1), config_->seed, is_constant_hessian, fp_stochastic));
+    cuda_gradient_discretizer_->SetRobustScale(fixedpoint_robust_scale_);
     cuda_gradient_discretizer_->SetNCCLInfo(nccl_communicator_, nccl_gpu_rank_, local_gpu_rank_, gpu_device_id_, global_num_data_);
     cuda_gradient_discretizer_->Init(num_data_, config_->num_leaves, train_data_->num_features(), train_data_);
   } else {
