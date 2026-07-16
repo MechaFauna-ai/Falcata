@@ -39,6 +39,33 @@ bool RowData4BitVerifyEnabled() {
   return env != nullptr && std::string(env) == std::string("1");
 }
 
+// Shape-specialized construct prototype (JIT phase 1): for low-bin, many-feature
+// data (e.g. numerai ~6 bins/feature) the 504-column-per-partition cap forces
+// block_dim_y = NUM_THREADS_PER_BLOCK / max_col_per_part = 1, i.e. every column
+// thread walks one row at a time with no row-level ILP to hide the scattered bin
+// read. Lowering the cap regroups columns into more, narrower partitions so
+// block_dim_y rises (504/cap) -- each thread walks that many rows, overlapping
+// the dependent bin-read latencies. Integer-atomic accumulation is order-
+// invariant, so the histogram sums are BIT-IDENTICAL regardless of the column
+// grouping (verified: covtype/numerai/RMSE md5 locks unchanged). Measured ~5-6%
+// numerai-example wall / ~8% construct-kernel win; other benchmarks are bin-cap
+// bound (few columns per partition already), so the auto-trigger is a no-op there.
+//
+// EXABOOST_CONSTRUCT_COLCAP: unset -> auto (252 when the low-bin shape is
+// column-capped, else upstream 504); "0" -> force upstream 504 (kill switch);
+// "N" (0<N<504) -> force cap N. Returns -1 for "auto".
+int ConstructColumnCapEnv() {
+  const char* env = std::getenv("EXABOOST_CONSTRUCT_COLCAP");
+  if (env == nullptr) {
+    return -1;  // auto
+  }
+  const int v = std::atoi(env);
+  if (v <= 0 || v >= 504) {
+    return 504;  // "0" / out-of-range -> upstream behavior (kill switch)
+  }
+  return v;
+}
+
 // Read one bin value out of a raw host column (bit type 4/8/16/32).
 inline uint8_t FetchColumnBin(const void* column_data, uint8_t column_bit_type, data_size_t row) {
   if (column_bit_type == 4) {
@@ -239,6 +266,28 @@ void CUDARowData::Init(const Dataset* train_data, TrainingShareStates* train_sha
 
 void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingShareStates* share_state) {
   const uint32_t max_num_bin_per_partition = shared_hist_size_ / 2;
+  // Shape-specialized column cap (see ConstructColumnCapEnv): 504 upstream, lower
+  // for low-bin many-feature data to raise construct block_dim_y. Auto-trigger:
+  // per-column bins are small (<= kLowBinPerCol) AND there are enough columns that
+  // the 504 cap would bind (forcing block_dim_y=1). Bit-identical either way.
+  const int column_cap = [&]() {
+    const int env = ConstructColumnCapEnv();
+    if (env >= 0) {
+      return env;  // explicit override or kill switch
+    }
+    constexpr uint32_t kLowBinPerCol = 32;  // low-bin regime (numerai ~6)
+    constexpr int kAutoCap = 252;           // block_dim_y=2; measured sweet spot
+    const std::vector<uint32_t>& cho = share_state->column_hist_offsets();
+    uint32_t max_bin_per_col = 0;
+    for (size_t i = 0; i + 1 < cho.size(); ++i) {
+      max_bin_per_col = std::max(max_bin_per_col, cho[i + 1] - cho[i]);
+    }
+    // Would the 504 cap bind? Only if a partition could hold >504 columns without
+    // hitting the bin cap first, i.e. 504 * max_bin_per_col <= shared bin cap.
+    const bool col_cap_binds = num_feature_ > 504 &&
+      static_cast<uint32_t>(504) * max_bin_per_col <= max_num_bin_per_partition;
+    return (max_bin_per_col <= kLowBinPerCol && col_cap_binds) ? kAutoCap : 504;
+  }();
   const std::vector<uint32_t>& column_hist_offsets = share_state->column_hist_offsets();
   std::vector<int> feature_group_num_feature_offsets;
   int offsets = 0;
@@ -287,7 +336,7 @@ void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingSha
       const uint32_t cur_hist_num_bin = column_feature_hist_end - start_hist_offset;
       const int cur_partition_columns = column_index - feature_partition_column_index_offsets_.back();
       if (cur_hist_num_bin > max_num_bin_per_partition ||
-          cur_partition_columns >= 504) {  // half of NUM_THREADS_PER_BLOCK to enable block_dim_y=2
+          cur_partition_columns >= column_cap) {  // 504 upstream; column_cap tunable for low-bin shape-specialized construct
         feature_partition_column_index_offsets_.emplace_back(column_index);
         start_hist_offset = column_feature_hist_start;
         partition_hist_offsets_.emplace_back(start_hist_offset);
@@ -327,7 +376,7 @@ void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingSha
         const uint32_t cur_hist_num_bin = column_feature_hist_end - start_hist_offset;
         const int cur_partition_columns = column_index - feature_partition_column_index_offsets_.back();
         if (cur_hist_num_bin > max_num_bin_per_partition ||
-            cur_partition_columns >= 504) {  // half of NUM_THREADS_PER_BLOCK to enable block_dim_y=2
+            cur_partition_columns >= column_cap) {  // 504 upstream; column_cap tunable for low-bin shape-specialized construct
           feature_partition_column_index_offsets_.emplace_back(column_index);
           start_hist_offset = column_feature_hist_start;
           partition_hist_offsets_.emplace_back(start_hist_offset);
@@ -361,6 +410,30 @@ void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingSha
   cuda_feature_partition_column_index_offsets_.InitFromHostVector(feature_partition_column_index_offsets_);
   cuda_column_hist_offsets_.InitFromHostVector(column_hist_offsets_);
   cuda_partition_hist_offsets_.InitFromHostVector(partition_hist_offsets_);
+
+  // Diagnostic-only (perf characterization; behind EXABOOST_DUMP_PARTITIONS, no
+  // behavior change): report the partitioning + binding constraint per benchmark.
+  if (std::getenv("EXABOOST_DUMP_PARTITIONS") != nullptr) {
+    uint32_t max_partition_bins = 0, min_partition_bins = 0xffffffffu;
+    int col_capped = 0, bin_capped = 0;
+    for (size_t i = 0; i + 1 < partition_hist_offsets_.size(); ++i) {
+      const uint32_t pb = partition_hist_offsets_[i + 1] - partition_hist_offsets_[i];
+      max_partition_bins = std::max(max_partition_bins, pb);
+      min_partition_bins = std::min(min_partition_bins, pb);
+      const int ncol = feature_partition_column_index_offsets_[i + 1] - feature_partition_column_index_offsets_[i];
+      if (ncol >= column_cap) ++col_capped;
+      if (pb + 8 > max_num_bin_per_partition) ++bin_capped;  // near the bin cap
+    }
+    fprintf(stderr, "[DUMP_PARTITIONS] num_feature=%d num_feature_group=%d num_partitions=%d "
+      "max_col_per_part=%d column_cap=%d shared_hist_size=%d(bins=%u) max_part_bins=%u min_part_bins=%u "
+      "col_capped_parts=%d bin_capped_parts=%d bit_type=%d is_4bit_packed=%d small_parts=%zu large_parts=%zu\n",
+      num_feature_, num_feature_group_, num_feature_partitions_, max_num_column_per_partition_,
+      column_cap, shared_hist_size_, max_num_bin_per_partition, max_partition_bins,
+      min_partition_bins == 0xffffffffu ? 0 : min_partition_bins,
+      col_capped, bin_capped, static_cast<int>(bit_type_), is_4bit_packed_ ? 1 : 0,
+      small_bin_partitions_.size(), large_bin_partitions_.size());
+    fflush(stderr);
+  }
 }
 
 template <typename BIN_TYPE>
