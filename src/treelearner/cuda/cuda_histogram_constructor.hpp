@@ -23,6 +23,7 @@
 
 #include "cuda_leaf_splits.hpp"
 #include "cuda_hybrid_graph.hpp"
+#include "cuda_construct_jit.hpp"
 
 #define NUM_DATA_PER_THREAD (400)
 #define NUM_THREADS_PER_BLOCK (504)
@@ -643,6 +644,21 @@ class CUDAHistogramConstructor {
    *  selects the contention-free construct body on the batched compact path
    *  (non-quantized only; EXABOOST_BATCH_REGHIST=0 disables) */
   bool construct_reg_bins_ = false;
+
+  // Runtime NVRTC JIT of the shape-specialized quantized construct kernel
+  // (EXABOOST_CONSTRUCT_JIT=1; default OFF -> AOT compact-quant fast path). The
+  // JIT is validated bit-identical vs AOT before any use; see cuda_construct_jit.
+  CUDAConstructJIT construct_jit_;
+  bool construct_jit_selftest_done_ = false;
+
+ public:
+  // One-time NVRTC pipeline self-check (compile + module load + launch +
+  // bit-identity vs a reference histogram). Proves the JIT path works
+  // end-to-end without touching the trained model. No-op unless
+  // EXABOOST_CONSTRUCT_JIT=1. Returns true if the JIT produced identical bins.
+  bool RunConstructJITSelfTest();
+
+ private:
 
   // ========================================================================
   // Compact-view buffers: when feature_fraction < 1.0, build a contiguous

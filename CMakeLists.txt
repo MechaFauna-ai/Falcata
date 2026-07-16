@@ -485,6 +485,7 @@ set(
       src/treelearner/cuda/cuda_best_split_finder.cpp
       src/treelearner/cuda/cuda_data_partition.cpp
       src/treelearner/cuda/cuda_histogram_constructor.cpp
+      src/treelearner/cuda/cuda_construct_jit.cpp
       src/treelearner/cuda/cuda_leaf_splits.cpp
       src/treelearner/cuda/cuda_single_gpu_tree_learner.cpp
       src/treelearner/cuda/cuda_best_split_finder.cu
@@ -642,6 +643,10 @@ endif()
 
 if(USE_CUDA)
   target_link_libraries(lightgbm_objs PUBLIC NCCL::NCCL)
+  # NVRTC + CUDA driver API for the runtime construct-kernel JIT
+  # (src/treelearner/cuda/cuda_construct_jit.cpp). Both are optional at runtime:
+  # if NVRTC compile fails the construct dispatch falls back to the AOT kernel.
+  target_link_libraries(lightgbm_objs PUBLIC CUDA::nvrtc CUDA::cuda_driver)
 endif()
 
 if(USE_ROCM)

@@ -13,6 +13,8 @@
 #include <LightGBM/cuda/cuda_algorithms.hpp>
 #include <LightGBM/cuda/cuda_rocm_interop.h>
 
+#include <cuda.h>
+
 #include <algorithm>
 #include <vector>
 
@@ -2326,6 +2328,11 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernel(
   const int num_pairs,
   const data_size_t max_num_data_in_smaller_leaf,
   const data_size_t* level_smaller_num_data) {
+  // One-time NVRTC JIT self-check (no-op unless EXABOOST_CONSTRUCT_JIT=1). Runs
+  // off the first construct; never affects the trained model.
+  if (!construct_jit_selftest_done_) {
+    RunConstructJITSelfTest();
+  }
   if (cuda_row_data_->shared_hist_size() == DP_SHARED_HIST_SIZE && gpu_use_dp_) {
     LaunchConstructHistogramBatchedKernelInner<double, DP_SHARED_HIST_SIZE>(pair_descs, num_pairs, max_num_data_in_smaller_leaf, level_smaller_num_data);
   } else if (cuda_row_data_->shared_hist_size() == SP_SHARED_HIST_SIZE && !gpu_use_dp_) {
@@ -2409,7 +2416,49 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     // graph loop both are derived on-device (see the kernel comment); the
     // level-dim-y precompute kernel is never used here (the graph body always
     // takes the inline formula path, captured with num_pairs == 1).
-    if (cuda_row_data_->is_4bit_packed()) {
+    //
+    // compact quant view (EXABOOST_CONSTRUCT_COMPACT_QUANT): feed the SAME
+    // discretized kernel the per-tree compact bin matrix + compact metadata so
+    // only the sampled columns are gathered/accumulated. The compact matrix
+    // holds only used columns, so no per-column feature mask (is_feature_used /
+    // bin_used) is needed; the compact per-column absolute hist offsets and the
+    // shared partition hist offsets preserve every used bin's global position ->
+    // bit-identical histograms (integer atomics are order-invariant).
+    if (use_compact_view_) {
+      if (compact_is_4bit_) {
+        CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE, true><<<grid_dim, block_dim, 0, cuda_stream_>>>(
+          pair_descs,
+          reinterpret_cast<const int32_t*>(cuda_gradients_),
+          reinterpret_cast<const BIN_TYPE*>(compact_data_uint8_t_.RawData()),
+          compact_column_hist_offsets_.RawData(),
+          cuda_row_data_->cuda_partition_hist_offsets(),
+          compact_feature_partition_column_index_offsets_.RawData(),
+          compact_packed_partition_byte_offsets_.RawData(),
+          num_data_,
+          nullptr,
+          nullptr,
+          static_cast<data_size_t>(min_data_in_leaf_),
+          min_sum_hessian_in_leaf_,
+          level_smaller_num_data,
+          hybrid_graph_capture_gstate_);
+      } else {
+        CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE><<<grid_dim, block_dim, 0, cuda_stream_>>>(
+          pair_descs,
+          reinterpret_cast<const int32_t*>(cuda_gradients_),
+          reinterpret_cast<const BIN_TYPE*>(compact_data_uint8_t_.RawData()),
+          compact_column_hist_offsets_.RawData(),
+          cuda_row_data_->cuda_partition_hist_offsets(),
+          compact_feature_partition_column_index_offsets_.RawData(),
+          nullptr,
+          num_data_,
+          nullptr,
+          nullptr,
+          static_cast<data_size_t>(min_data_in_leaf_),
+          min_sum_hessian_in_leaf_,
+          level_smaller_num_data,
+          hybrid_graph_capture_gstate_);
+      }
+    } else if (cuda_row_data_->is_4bit_packed()) {
       CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE, true><<<grid_dim, block_dim, 0, cuda_stream_>>>(
         pair_descs,
         reinterpret_cast<const int32_t*>(cuda_gradients_),
@@ -2805,6 +2854,138 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
         gstate);
     }
   }
+}
+
+// ============================================================================
+// NVRTC construct-JIT one-time self-test. Proves the JIT pipeline end-to-end:
+// NVRTC compile -> cuModuleLoadData -> cuLaunchKernel -> bit-identical histogram
+// vs a host reference, on a tiny synthetic single-partition low-bin shape (the
+// numerai regime). No-op unless EXABOOST_CONSTRUCT_JIT=1. It never touches the
+// trained model -- it only validates that the specialized kernel this build would
+// JIT reproduces the reference bins exactly (integer atomics order-invariant), so
+// the JIT can be trusted as a perf-only fast path.
+// ============================================================================
+bool CUDAHistogramConstructor::RunConstructJITSelfTest() {
+  if (construct_jit_selftest_done_) return true;
+  construct_jit_selftest_done_ = true;
+  if (!CUDAConstructJIT::Enabled() || !CUDAConstructJIT::Available()) return false;
+
+  // Synthetic shape: 1 partition, COLS columns, BINS bins/col, 16-bit hist.
+  const int kCols = 8;
+  const int kBins = 6;
+  const int kRows = 1024;
+  ConstructJITShapeKey key;
+  key.bins = kBins;
+  key.num_partitions = 1;
+  key.cols_per_partition = kCols;
+  key.shared_hist_size = static_cast<int>(SP_SHARED_HIST_SIZE);
+  key.use_16bit_hist = 1;
+  int dev = 0;
+  cudaGetDevice(&dev);
+  cudaDeviceProp prop;
+  cudaGetDeviceProperties(&prop, dev);
+  key.sm_major = prop.major;
+  key.sm_minor = prop.minor;
+
+  double compile_ms = 0.0;
+  void* fn = construct_jit_.GetOrCompile(key, &compile_ms);
+  if (fn == nullptr) return false;
+  CUfunction func = reinterpret_cast<CUfunction>(fn);
+
+  // Host synthetic data (row-major-in-partition uint8 bins) + packed grad/hess.
+  std::vector<uint8_t> h_data(static_cast<size_t>(kRows) * kCols);
+  std::vector<int32_t> h_gh(kRows);
+  std::vector<data_size_t> h_indices(kRows);
+  std::vector<uint32_t> h_col_off(kCols);
+  std::vector<uint32_t> h_part_hist_off(2);
+  std::vector<int> h_part_col_off(2);
+  for (int c = 0; c < kCols; ++c) h_col_off[c] = static_cast<uint32_t>(c * kBins);
+  h_part_hist_off[0] = 0;
+  h_part_hist_off[1] = static_cast<uint32_t>(kCols * kBins);
+  h_part_col_off[0] = 0;
+  h_part_col_off[1] = kCols;
+  for (int r = 0; r < kRows; ++r) {
+    h_indices[r] = r;
+    // packed (grad<<16 | hess); use small values so the 16-bit sum can't overflow.
+    const int16_t g = static_cast<int16_t>((r % 7) - 3);
+    const int16_t h = static_cast<int16_t>(1);
+    h_gh[r] = (static_cast<int32_t>(g) << 16) | (static_cast<int32_t>(h) & 0xffff);
+    for (int c = 0; c < kCols; ++c) {
+      h_data[static_cast<size_t>(r) * kCols + c] = static_cast<uint8_t>((r + c) % kBins);
+    }
+  }
+
+  // Host reference histogram (packed int32 per bin, same accumulation).
+  const int total_bins = kCols * kBins;
+  std::vector<int32_t> ref(total_bins, 0);
+  for (int r = 0; r < kRows; ++r) {
+    for (int c = 0; c < kCols; ++c) {
+      const uint8_t bin = h_data[static_cast<size_t>(r) * kCols + c];
+      ref[c * kBins + bin] += h_gh[r];
+    }
+  }
+
+  // Device buffers.
+  CUDAVector<uint8_t> d_data(h_data.size());
+  CUDAVector<int32_t> d_gh(kRows);
+  CUDAVector<data_size_t> d_indices(kRows);
+  CUDAVector<uint32_t> d_col_off(kCols);
+  CUDAVector<uint32_t> d_part_hist_off(2);
+  CUDAVector<int> d_part_col_off(2);
+  CUDAVector<int32_t> d_hist(total_bins);  // 16-bit hist stored as int32 packed
+  CopyFromHostToCUDADevice<uint8_t>(d_data.RawData(), h_data.data(), h_data.size(), __FILE__, __LINE__);
+  CopyFromHostToCUDADevice<int32_t>(d_gh.RawData(), h_gh.data(), kRows, __FILE__, __LINE__);
+  CopyFromHostToCUDADevice<data_size_t>(d_indices.RawData(), h_indices.data(), kRows, __FILE__, __LINE__);
+  CopyFromHostToCUDADevice<uint32_t>(d_col_off.RawData(), h_col_off.data(), kCols, __FILE__, __LINE__);
+  CopyFromHostToCUDADevice<uint32_t>(d_part_hist_off.RawData(), h_part_hist_off.data(), 2, __FILE__, __LINE__);
+  CopyFromHostToCUDADevice<int>(d_part_col_off.RawData(), h_part_col_off.data(), 2, __FILE__, __LINE__);
+  cudaMemset(d_hist.RawData(), 0, total_bins * sizeof(int32_t));
+
+  // Device LeafSplits struct (only num_data_in_leaf, data_indices_in_leaf,
+  // hist_in_leaf are read by the kernel). Layout matches CUDALeafSplitsStruct.
+  CUDALeafSplitsStruct h_leaf;
+  memset(&h_leaf, 0, sizeof(h_leaf));
+  h_leaf.num_data_in_leaf = kRows;
+  h_leaf.data_indices_in_leaf = d_indices.RawData();
+  h_leaf.hist_in_leaf = reinterpret_cast<hist_t*>(d_hist.RawData());
+  CUDAVector<CUDALeafSplitsStruct> d_leaf(1);
+  CopyFromHostToCUDADevice<CUDALeafSplitsStruct>(d_leaf.RawData(), &h_leaf, 1, __FILE__, __LINE__);
+
+  // Launch the JIT kernel: grid (num_partitions, grid_y), block (cols, dim_y).
+  const int block_x = kCols;
+  const int block_y = NUM_THREADS_PER_BLOCK / block_x;  // 63
+  const int grid_y = 4;
+  const CUDALeafSplitsStruct* leaf_ptr = d_leaf.RawData();
+  const int32_t* gh_ptr = d_gh.RawData();
+  const uint8_t* data_ptr = d_data.RawData();
+  const uint32_t* col_off_ptr = d_col_off.RawData();
+  const uint32_t* part_hist_ptr = d_part_hist_off.RawData();
+  const int* part_col_ptr = d_part_col_off.RawData();
+  data_size_t num_data_arg = kRows;
+  void* args[] = {&leaf_ptr, &gh_ptr, &data_ptr, &col_off_ptr, &part_hist_ptr, &part_col_ptr, &num_data_arg};
+  const CUresult lr = cuLaunchKernel(func, key.num_partitions, grid_y, 1,
+                                     block_x, block_y, 1, 0, nullptr, args, nullptr);
+  if (lr != CUDA_SUCCESS) {
+    Log::Warning("CUDAConstructJIT self-test: cuLaunchKernel failed (%d)", static_cast<int>(lr));
+    construct_jit_.SetValidated(key, false);
+    return false;
+  }
+  cudaDeviceSynchronize();
+
+  std::vector<int32_t> got(total_bins, 0);
+  CopyFromCUDADeviceToHost<int32_t>(got.data(), d_hist.RawData(), total_bins, __FILE__, __LINE__);
+  bool ok = true;
+  for (int i = 0; i < total_bins && ok; ++i) {
+    if (got[i] != ref[i]) ok = false;
+  }
+  construct_jit_.SetValidated(key, ok);
+  if (ok) {
+    Log::Info("CUDAConstructJIT self-test PASSED (compile %.1f ms): specialized kernel "
+              "bit-identical to reference", compile_ms);
+  } else {
+    Log::Warning("CUDAConstructJIT self-test FAILED bit-identity; JIT stays disabled");
+  }
+  return ok;
 }
 
 }  // namespace LightGBM
