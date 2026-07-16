@@ -56,6 +56,14 @@ figures from the profiles in the PR discussions.
   packing. Decides only provable shape functions; supplies priors for the ambiguous
   constants below (GPU cost models are brittle: the construct-floor cap gained
   year/higgs 35% and regressed covtype 45% -- only measurement caught it).
+  UPDATE (investigated the spec's flagged §4 "highest-value win", compact-layout
+  pre-sizing): NOT pursued -- (a) the LRU-eviction cliff it targets does not occur on
+  realistic shapes (numerai 1000 trees: 23 instantiations vs 64 cache limit, 0 evictions,
+  0 disables; feature_fraction 0.05-0.5 all <64); (b) pre-sizing max_num_compact_cols
+  changes block_dim_y -> reorders non-quant float atomicAdds -> NOT bit-identical
+  (verified md5 flip). The other 12 tier-0 knobs remain valid. A bit-neutral variant
+  needs decoupling block_dim_y from block_dim_x (a launch refactor), only if a future
+  very-low-fraction/high-feature workload ever pushes distinct shape keys past 64.
 - [ ] **Runtime auto-tuner ("JIT optimizer") tier 1 — online policy tuning.** Boosting
   runs thousands of near-identical trees: measure per-tree wall time (CUDA events) +
   feedback stats (churn, level widths, imbalance) and bandit-tune the existing
