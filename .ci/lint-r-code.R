@@ -31,7 +31,7 @@ LINTERS_TO_USE <- list(
     "absolute_path"          = lintr::absolute_path_linter()
     , "any_duplicated"       = lintr::any_duplicated_linter()
     , "any_is_na"            = lintr::any_is_na_linter()
-    , "assignment"           = lintr::assignment_linter()
+    , "assignment"           = lintr::assignment_linter(operator = c("<-", "<<-"))
     , "backport"             = lintr::backport_linter()
     , "boolean_arithmetic"   = lintr::boolean_arithmetic_linter()
     , "braces"               = lintr::brace_linter()
