@@ -181,18 +181,25 @@ figures from the profiles in the PR discussions.
   deep trees on top of the bandwidth one (subtraction re-reads parent hists). Few
   lines each, cleanly A/B-able.
 
-- [ ] **Quant quality follow-ups** (from the quality investigation + 3afe7c62).
-  Root cause of quant-deep degradation confirmed: stochastic-rounding noise in
-  small deep leaves; bins=16(+renew) restores parity (year/deep 9.344->8.984,
-  epsilon/deep .9377->.9435, fraud/deep .9652->.9686) but quant_train_renew_leaf
-  costs +65% on higgs-class shallow (per-tree leaf renewal) so defaults stayed at
-  bins=4/renew=false. Follow-ups: optimize renew-leaf on CUDA (would unlock the
-  16+renew defaults); bins=8 default as untested middle ground (never grid-capped
-  at typical shapes); CUDA hess quantization lacks the CPU's constant-hessian
-  special case (regression wastes hess-field range); benign double-reduce at
-  cuda_gradient_discretizer.cu:75. Ties into the fixed-point/mixed-precision
-  redesign (task queue).
-
+- [~] **Quant quality — PARTIALLY LANDED (3fbe9050 renew fix, 438d8e9e fixed-point mode).**
+  (1) renew_leaf multi-block reduction (3fbe9050): RenewDiscretizedTreeLeavesKernel was
+  1 block/leaf (SMs idle) -> 16 blocks/leaf grid-strided; kernel 500->67us/tree, renew
+  overhead 38%->4% on higgs-shallow. Default-off path (quant_train_renew_leaf) unchanged.
+  (2) **fixed-point quant mode (438d8e9e, EXABOOST_FIXEDPOINT_QUANT=1, default OFF)**:
+  round-to-nearest at high bins (64) via the exact-int-accumulation packed path --
+  near-lossless at any depth, DETERMINISTIC, no per-tree stochastic buffer. VERIFIED
+  (independent clean-build A/B): year/deep rmse fp 8.970 == non-quant 8.977 vs default
+  quant 9.344, at quant speed (1.81 vs 1.80s). Known limitation: heavily-imbalanced
+  fraud/deep regresses (global max|grad| scale is outlier-sensitive) -- hence opt-in;
+  a percentile-clipped/per-class scale would fix it (follow-up). CAVEAT ON THE COMMIT
+  MESSAGES: the #28 agent worked from a contaminated baseline build and mis-recorded the
+  covtype quant lock as 22c0ff5e95de in both commit bodies + follow-ups -- that is WRONG.
+  The real, re-confirmed lock is covtype 1023/10 quant GROWTH=1 = 5f4e7bdfff1e /
+  GROWTH=0 = fcb9f6c2ab87 (unchanged since 3afe7c62; the fix's row-cap never triggers on
+  covtype). Do NOT propagate 22c0ff5e95de anywhere.
+  Still open: bins-default proposal (16 restores deep quality at ~0 cost but is an
+  upstream-parity/model-change decision -- NOT flipped); fixed-point outlier-robust scale;
+  constant-hessian special case for regression quant; quant one-sync parity.
 - [ ] **Hybrid coverage extensions.** The hybrid/graph fast paths currently fall
   back to the classic loop for: categorical features (variable-length bitset
   payloads vs the fixed 18-int split slabs -- first one worth lifting), NCCL
