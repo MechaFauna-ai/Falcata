@@ -31,14 +31,21 @@ figures from the profiles in the PR discussions.
   (EXABOOST_GRAPH_QUANT=1, 5c61a0ed): quant levels are cheap so the controller's
   fixed serial latency nets -10.8% covtype 1023/10 / -7% year; wins only
   fraud-class (+4%). Fixing the controller-latency frontier flips the default.
-- [ ] **Graphs L2 — per-parent dependency chaining.** A child pair only depends on *its
-  parent's* partition + histogram, not on its level. Launch each pair's chain from the
-  device (fire-and-forget device graph launch) when its parent finishes — a
-  self-scheduling tree that removes phase-boundary tail effects on unbalanced trees.
-  Needs: device-atomic budget reservation + a global final-level top-K join, per-node
-  (not per-level) task/scratch regions, and an order-independent split log (the host
-  rebuild already renumbers canonically, absorbing completion-order nondeterminism).
-  Est. +10-20% over L1 on unbalanced small trees.
+- [~] **Graphs L2 — per-parent dependency chaining — INVESTIGATED, honest negative.**
+  The reclaimable barrier-induced tail idle (apply-end -> first-construct-start gap a
+  chained first pair could skip) measures **<1% of tree span** (fraud 0.59%, covtype
+  0.77%), far under the 5% bar. The earlier "18-33% potential" was a misread of
+  min(apply,search) = apply/search PIPELINING, which per-parent chaining does NOT
+  deliver (within a body every pair shares the same apply->construct dependency).
+  Not pursued. The one real gap is on covtype full/deep trees (~2.7% apply->construct
+  + ~21% apply-INTERNAL idle) and that is intra-apply grid serialization / launch
+  bubbles across batched pairs -- a DIFFERENT lever (better grid packing / fewer
+  batched-kernel launches per apply), not per-parent barriers. See new item below.
+- [ ] **Intra-apply grid serialization on deep trees.** covtype deep-tree apply stage
+  shows ~21% internal idle from grid serialization / launch bubbles across batched
+  pairs (found during the L2-chaining investigation). Higher-value than per-parent
+  chaining for deep unbalanced trees; needs its own characterization pass. Pairs with
+  the controller-latency frontier as the two remaining graph-perf levers.
 - [ ] **Static planner (auto-tuner tier 0).** At Init the dataset shape (rows,
   features, actual bins/feature) and config (num_leaves, max_depth, num_class,
   iterations) determine: expected level geometry (leaf sizes ~ rows/2^level) -> grid
