@@ -43,6 +43,9 @@ inline bool ExaboostFP32GainEnabled() {
 
 struct SplitFindTask {
   int inner_feature_index;
+  // monotone constraint for the (real) feature underlying this task:
+  // -1 decreasing, +1 increasing, 0 none. Always 0 for categorical tasks.
+  int8_t monotone_type;
   bool reverse;
   bool skip_default_bin;
   bool na_as_missing;
@@ -54,6 +57,8 @@ struct SplitFindTask {
   uint32_t num_bin;
   uint32_t default_bin;
   int rand_threshold;
+  // per-feature split-gain scaling (config->feature_contri); 1.0 when unset
+  double penalty;
 };
 
 class CUDABestSplitFinder {
@@ -94,6 +99,13 @@ class CUDABestSplitFinder {
    *  histogram mode when this is set */
   bool use_global_memory() const { return use_global_memory_; }
 
+  // host-side penalty (feature_contri) for the given inner feature index
+  double GetFeaturePenalty(int inner_feature_index) const;
+
+  // recompute every task's penalty from feature_contri_ (host side)
+  void SetTaskFeaturePenalties();
+
+
   void BeforeTrain(const std::vector<int8_t>& is_feature_used_bytree);
 
   void FindBestSplitsForLeaf(
@@ -111,6 +123,10 @@ class CUDABestSplitFinder {
     const uint8_t larger_num_bits_in_histogram_bins,
     const bool smaller_leaf_below_max_depth,
     const bool larger_leaf_below_max_depth,
+    const double smaller_leaf_constraint_min,
+    const double smaller_leaf_constraint_max,
+    const double larger_leaf_constraint_min,
+    const double larger_leaf_constraint_max,
     const bool synchronize = true);
 
   /*! \brief whether the batched per-level find+sync path supports the current
@@ -267,6 +283,25 @@ class CUDABestSplitFinder {
     return cuda_leaf_best_split_info_.RawDataReadOnly() + leaf_index;
   }
 
+  // Cost-effective gradient boosting (CEGB) support. Mirrors
+  // CostEfficientGradientBoosting on the CPU path. Called once per training
+  // session (after Init / ResetConfig) with the *real-feature-indexed*
+  // cegb_penalty_feature_coupled vector. tradeoff/penalty_split are the scalar
+  // config values. When all CEGB knobs are at their defaults this is a no-op.
+  void SetCEGB(const std::vector<double>& cegb_penalty_feature_coupled,
+               const double cegb_tradeoff,
+               const double cegb_penalty_split,
+               const Dataset* train_data);
+
+  // Called by the tree learner right after a split is committed, with the inner
+  // feature index that was used. If the coupled penalty is active and this is the
+  // first time the feature is used in the model, the per-task coupled penalty for
+  // all tasks of this feature is zeroed and the device copy is refreshed. Mirrors
+  // CostEfficientGradientBoosting::UpdateLeafBestSplits' is_feature_used_in_split_
+  // bookkeeping (the per-task split-finding penalty), but NOT the retroactive
+  // promotion of cached splits in already-existing leaves (see risk notes).
+  void MarkFeatureUsedInSplit(const int inner_feature_index);
+
  private:
   void LaunchComputeForcedSplitKernel(
     const CUDALeafSplitsStruct* leaf_splits,
@@ -285,7 +320,11 @@ class CUDABestSplitFinder {
     const bool is_smaller_leaf_valid, \
     const bool is_larger_leaf_valid, \
     const data_size_t global_num_data_in_smaller_leaf, \
-    const data_size_t global_num_data_in_larger_leaf
+    const data_size_t global_num_data_in_larger_leaf, \
+    const double smaller_leaf_constraint_min, \
+    const double smaller_leaf_constraint_max, \
+    const double larger_leaf_constraint_min, \
+    const double larger_leaf_constraint_max
 
   void LaunchFindBestSplitsForLeafKernel(LaunchFindBestSplitsForLeafKernel_PARAMS);
 
@@ -408,6 +447,7 @@ class CUDABestSplitFinder {
   int extra_seed_;
   bool use_smoothing_;
   double path_smooth_;
+  double max_delta_step_;
   std::vector<cudaStream_t> cuda_streams_;
   /*! \brief histogram constructor completion events (not owned); used to order the
    *  per-leaf FindBestSplits kernels after histogram construction/subtraction. */
@@ -441,6 +481,15 @@ class CUDABestSplitFinder {
   std::vector<int8_t> is_categorical_;
   // whether need to select features by node
   bool select_features_by_node_;
+  // whether monotone constraints are active (basic method, host-tracked)
+  bool use_monotone_constraints_;
+  // per-inner-feature monotone constraint (indexed by inner feature index),
+  // value taken from config->monotone_constraints[RealFeatureIndex(inner)]
+  std::vector<int8_t> monotone_constraints_;
+  // inner feature index -> real feature index (feature_contri is indexed by real index)
+  std::vector<int> real_feature_index_;
+  // copy of config->feature_contri (indexed by real feature index); empty means all 1.0
+  std::vector<double> feature_contri_;
 
   // CUDA memory, held by this object
   // for per leaf best split information
@@ -474,6 +523,28 @@ class CUDABestSplitFinder {
 
   // CUDA memory, held by other object
   const hist_t* cuda_hist_;
+  // Kept so ResetConfig can re-run SetCEGB (CPU re-inits CEGB on a config reset).
+  const Dataset* train_data_ = nullptr;
+
+  // ---- CEGB (cost-effective gradient boosting) state ----
+  // Whether any CEGB penalty (split or coupled) is active. cegb_tradeoff alone
+  // (with no split/coupled penalty) has no effect on split selection, so it does
+  // not by itself enable the penalty path.
+  bool cegb_use_ = false;
+  double cegb_tradeoff_ = 1.0;
+  // tradeoff * penalty_split, multiplied by num_data_in_leaf inside the kernel.
+  double cegb_tradeoff_times_penalty_split_ = 0.0;
+  // real_fidx for each split-find task (parallel to split_find_tasks_).
+  std::vector<int> cegb_task_real_fidx_;
+  // coupled penalty per *real* feature index (config value, size num_total_features).
+  std::vector<double> cegb_penalty_feature_coupled_;
+  // is_feature_used_in_split_[inner_feature_index] (parallel to CPU bitset).
+  std::vector<int8_t> cegb_is_feature_used_in_split_;
+  // host mirror of the per-task coupled penalty currently uploaded to device.
+  std::vector<double> cegb_host_task_penalty_;
+  // device per-task coupled penalty (length num_tasks_); nullptr-equivalent when
+  // cegb_use_ is false.
+  CUDAVector<double> cuda_task_cegb_penalty_;
 };
 
 }  // namespace LightGBM

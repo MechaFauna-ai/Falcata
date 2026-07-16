@@ -66,18 +66,25 @@ LGBM_HOSTDEV inline T LeafGainGivenOutput(T sum_gradients, T sum_hessians,
   return -(2 * g * output + (sum_hessians + l2) * output * output);
 }
 
-// Gain of a leaf (no max_delta_step). With smoothing, gain is measured at the
-// smoothed output; without, it collapses to the closed-form g^2/(h+l2).
-template <bool USE_L1, bool USE_SMOOTHING, typename T = double>
+// Gain of a leaf. The closed-form g^2/(h+l2) is only valid when the output is
+// the unconstrained Newton step, so it is used only when neither the
+// max_delta_step cap nor smoothing can move the output; otherwise the gain is
+// measured at the output actually used. Mirrors CPU's
+// FeatureHistogram::GetLeafGain.
+//
+// Note the two branches are algebraically equal but NOT bitwise equal, so the
+// USE_MAX_OUTPUT switch must track CPU's exactly to keep CPU/CUDA bit-identical
+// when max_delta_step is unset.
+template <bool USE_L1, bool USE_MAX_OUTPUT, bool USE_SMOOTHING, typename T = double>
 LGBM_HOSTDEV inline T LeafGain(T sum_gradients, T sum_hessians, T l1,
-                               T l2, T path_smooth, data_size_t num_data,
-                               T parent_output) {
-  if (!USE_SMOOTHING) {
+                               T l2, T max_delta_step, T path_smooth,
+                               data_size_t num_data, T parent_output) {
+  if (!USE_MAX_OUTPUT && !USE_SMOOTHING) {
     const T g = USE_L1 ? ThresholdL1(sum_gradients, l1) : sum_gradients;
     return (g * g) / (sum_hessians + l2);
   }
-  const T output = CalculateLeafOutput<USE_L1, false, USE_SMOOTHING, T>(
-      sum_gradients, sum_hessians, l1, l2, static_cast<T>(0), path_smooth, num_data, parent_output);
+  const T output = CalculateLeafOutput<USE_L1, USE_MAX_OUTPUT, USE_SMOOTHING, T>(
+      sum_gradients, sum_hessians, l1, l2, max_delta_step, path_smooth, num_data, parent_output);
   return LeafGainGivenOutput<USE_L1, T>(sum_gradients, sum_hessians, l1, l2, output);
 }
 

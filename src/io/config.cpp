@@ -421,6 +421,10 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
     if (deterministic) {
       Log::Warning("Although \"deterministic\" is set, the results ran by GPU may be non-deterministic.");
     }
+    if (!cegb_penalty_feature_lazy.empty()) {
+      Log::Fatal("cegb_penalty_feature_lazy is not supported with device_type=\"cuda\". "
+                 "Use device_type=\"cpu\", or use cegb_penalty_feature_coupled / cegb_penalty_split instead.");
+    }
   }
   // linear tree learner must be serial type and run on CPU, GPU or CUDA device
   if (linear_tree) {
@@ -460,6 +464,21 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
   }
   if (max_depth > 0 && monotone_penalty >= max_depth) {
     Log::Warning("Monotone penalty greater than tree depth. Monotone features won't be used.");
+  }
+  if (device_type == std::string("cuda") && !monotone_constraints.empty()) {
+    if (monotone_constraints_method != std::string("basic")) {
+      Log::Fatal("CUDA only supports the \"basic\" monotone_constraints_method. "
+                 "Got \"%s\". Use device_type=cpu for intermediate/advanced methods.",
+                 monotone_constraints_method.c_str());
+    }
+    if (monotone_penalty > 0.0) {
+      Log::Fatal("monotone_penalty is not supported with device_type=cuda. "
+                 "Set monotone_penalty=0 or use device_type=cpu.");
+    }
+    if (use_quantized_grad) {
+      Log::Fatal("monotone_constraints is not supported with use_quantized_grad on "
+                 "device_type=cuda. Disable one of them or use device_type=cpu.");
+    }
   }
   if (min_data_in_leaf <= 0 && min_sum_hessian_in_leaf <= kEpsilon) {
     Log::Warning(

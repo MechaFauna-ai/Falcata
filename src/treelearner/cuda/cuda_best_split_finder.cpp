@@ -37,12 +37,27 @@ CUDABestSplitFinder::CUDABestSplitFinder(
   extra_seed_(config->extra_seed),
   use_smoothing_(config->path_smooth > 0),
   path_smooth_(config->path_smooth),
+  max_delta_step_(config->max_delta_step),
   num_total_bin_(feature_hist_offsets.empty() ? 0 : static_cast<int>(feature_hist_offsets.back())),
   select_features_by_node_(select_features_by_node),
-  cuda_hist_(cuda_hist) {
+  cuda_hist_(cuda_hist),
+  train_data_(train_data) {
+  feature_contri_ = config->feature_contri;
   InitFeatureMetaInfo(train_data);
   if (has_categorical_feature_ && config->use_quantized_grad) {
     Log::Fatal("Quantized training on GPU with categorical features is not supported yet.");
+  }
+  // Build a per-inner-feature monotone constraint vector. config->monotone_constraints
+  // is indexed by REAL feature index (see FeatureHistogram feature-meta init), so map
+  // each inner feature through RealFeatureIndex.
+  use_monotone_constraints_ = !config->monotone_constraints.empty();
+  monotone_constraints_.resize(num_features_, 0);
+  if (use_monotone_constraints_) {
+    for (int inner_feature_index = 0; inner_feature_index < num_features_; ++inner_feature_index) {
+      const int real_feature_index = train_data->RealFeatureIndex(inner_feature_index);
+      monotone_constraints_[inner_feature_index] =
+        config->monotone_constraints[real_feature_index];
+    }
   }
 }
 
@@ -61,6 +76,7 @@ void CUDABestSplitFinder::InitFeatureMetaInfo(const Dataset* train_data) {
   feature_mfb_offsets_.resize(num_features_);
   feature_default_bins_.resize(num_features_);
   feature_num_bins_.resize(num_features_);
+  real_feature_index_.resize(num_features_);
   max_num_bin_in_feature_ = 0;
   has_categorical_feature_ = false;
   max_num_categorical_bin_ = 0;
@@ -79,6 +95,7 @@ void CUDABestSplitFinder::InitFeatureMetaInfo(const Dataset* train_data) {
     feature_mfb_offsets_[inner_feature_index] = static_cast<int8_t>(bin_mapper->GetMostFreqBin() == 0);
     feature_default_bins_[inner_feature_index] = bin_mapper->GetDefaultBin();
     feature_num_bins_[inner_feature_index] = static_cast<uint32_t>(bin_mapper->num_bin());
+    real_feature_index_[inner_feature_index] = train_data->RealFeatureIndex(inner_feature_index);
     const int num_bin_hist = bin_mapper->num_bin() - feature_mfb_offsets_[inner_feature_index];
     if (num_bin_hist > max_num_bin_in_feature_) {
       max_num_bin_in_feature_ = num_bin_hist;
@@ -109,6 +126,25 @@ void CUDABestSplitFinder::Init() {
   if (select_features_by_node_) {
     is_feature_used_by_smaller_node_.Resize(num_features_);
     is_feature_used_by_larger_node_.Resize(num_features_);
+  }
+}
+
+double CUDABestSplitFinder::GetFeaturePenalty(int inner_feature_index) const {
+  // Mirror CPU FeatureMetainfo::penalty (feature_histogram.hpp): the
+  // penalty defaults to 1.0 and otherwise equals config->feature_contri
+  // indexed by the REAL feature index. The CPU code at this commit uses
+  // the raw value (no max(0, .)), so we mirror that exactly.
+  if (feature_contri_.empty()) {
+    return 1.0;
+  }
+  const int real_feature_index = real_feature_index_[inner_feature_index];
+  return feature_contri_[real_feature_index];
+}
+
+void CUDABestSplitFinder::SetTaskFeaturePenalties() {
+  for (size_t task_index = 0; task_index < split_find_tasks_.size(); ++task_index) {
+    split_find_tasks_[task_index].penalty =
+        GetFeaturePenalty(split_find_tasks_[task_index].inner_feature_index);
   }
 }
 
@@ -147,6 +183,8 @@ void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
         new_task->mfb_offset = feature_mfb_offsets_[inner_feature_index];
         new_task->default_bin = feature_default_bins_[inner_feature_index];
         new_task->num_bin = num_bin;
+        new_task->monotone_type = use_monotone_constraints_ ?
+          monotone_constraints_[inner_feature_index] : 0;
         ++cur_task_index;
 
         new_task = &split_find_tasks_[cur_task_index];
@@ -162,6 +200,8 @@ void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
         new_task->default_bin = feature_default_bins_[inner_feature_index];
         new_task->mfb_offset = feature_mfb_offsets_[inner_feature_index];
         new_task->num_bin = num_bin;
+        new_task->monotone_type = use_monotone_constraints_ ?
+          monotone_constraints_[inner_feature_index] : 0;
         ++cur_task_index;
       } else {
         SplitFindTask* new_task = &split_find_tasks_[cur_task_index];
@@ -177,6 +217,8 @@ void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
         new_task->mfb_offset = feature_mfb_offsets_[inner_feature_index];
         new_task->default_bin = feature_default_bins_[inner_feature_index];
         new_task->num_bin = num_bin;
+        new_task->monotone_type = use_monotone_constraints_ ?
+          monotone_constraints_[inner_feature_index] : 0;
         ++cur_task_index;
 
         new_task = &split_find_tasks_[cur_task_index];
@@ -192,6 +234,8 @@ void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
         new_task->mfb_offset = feature_mfb_offsets_[inner_feature_index];
         new_task->default_bin = feature_default_bins_[inner_feature_index];
         new_task->num_bin = num_bin;
+        new_task->monotone_type = use_monotone_constraints_ ?
+          monotone_constraints_[inner_feature_index] : 0;
         ++cur_task_index;
       }
     } else {
@@ -218,10 +262,16 @@ void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
       new_task.mfb_offset = feature_mfb_offsets_[inner_feature_index];
       new_task.default_bin = feature_default_bins_[inner_feature_index];
       new_task.num_bin = num_bin;
+      // categorical features carry no monotone semantics (matching the CPU path,
+      // where monotone constraints only affect numerical splits)
+      new_task.monotone_type = (use_monotone_constraints_ && !new_task.is_categorical) ?
+        monotone_constraints_[inner_feature_index] : 0;
       ++cur_task_index;
     }
   }
   CHECK_EQ(cur_task_index, static_cast<int>(split_find_tasks_.size()));
+
+  SetTaskFeaturePenalties();
 
   if (extra_trees_) {
     cuda_randoms_.Resize(num_tasks_ * 2);
@@ -266,6 +316,7 @@ void CUDABestSplitFinder::ResetTrainingData(
   const Dataset* train_data,
   const std::vector<uint32_t>& feature_hist_offsets) {
   cuda_hist_ = cuda_hist;
+  train_data_ = train_data;
   num_features_ = train_data->num_features();
   feature_hist_offsets_ = feature_hist_offsets;
   InitFeatureMetaInfo(train_data);
@@ -290,7 +341,16 @@ void CUDABestSplitFinder::ResetConfig(const Config* config, const hist_t* cuda_h
   extra_seed_ = config->extra_seed;
   use_smoothing_ = (config->path_smooth > 0.0f);
   path_smooth_ = config->path_smooth;
+  max_delta_step_ = config->max_delta_step;
   cuda_hist_ = cuda_hist;
+
+  feature_contri_ = config->feature_contri;
+  SetTaskFeaturePenalties();
+  CopyFromHostToCUDADevice<SplitFindTask>(cuda_split_find_tasks_.RawData(),
+                                          split_find_tasks_.data(),
+                                          split_find_tasks_.size(),
+                                          __FILE__,
+                                          __LINE__);
 
   const int num_task_blocks = (num_tasks_ + NUM_TASKS_PER_SYNC_BLOCK - 1) / NUM_TASKS_PER_SYNC_BLOCK;
   size_t cuda_best_leaf_split_info_buffer_size = static_cast<size_t>(num_task_blocks) * static_cast<size_t>(num_leaves_);
@@ -306,9 +366,99 @@ void CUDABestSplitFinder::ResetConfig(const Config* config, const hist_t* cuda_h
   cuda_cat_threshold_feature_.Resize(total_cat_threshold_size);
   cuda_cat_threshold_real_feature_.Resize(total_cat_threshold_size);
   AllocateCatVectors(cuda_best_split_info_.RawData(), cuda_cat_threshold_feature_.RawData(), cuda_cat_threshold_real_feature_.RawData(), cuda_best_leaf_split_info_buffer_size);
+
+  // Re-init CEGB from the (possibly reset) config. CPU re-creates the CEGB object
+  // on a parameter reset (serial_tree_learner.cpp), so the per-model "used
+  // feature" accumulation and the device penalties must be re-derived here rather
+  // than carried over from the previous training.
+  SetCEGB(config->cegb_penalty_feature_coupled, config->cegb_tradeoff,
+          config->cegb_penalty_split, train_data_);
+}
+
+void CUDABestSplitFinder::SetCEGB(
+  const std::vector<double>& cegb_penalty_feature_coupled,
+  const double cegb_tradeoff,
+  const double cegb_penalty_split,
+  const Dataset* train_data) {
+  cegb_tradeoff_ = cegb_tradeoff;
+  cegb_tradeoff_times_penalty_split_ = cegb_tradeoff * cegb_penalty_split;
+  cegb_penalty_feature_coupled_ = cegb_penalty_feature_coupled;
+  // Active iff there is a split penalty or a (non-empty) coupled penalty.
+  // cegb_tradeoff by itself only rescales penalties, so with both penalties zero
+  // there is nothing to subtract.
+  cegb_use_ = (cegb_tradeoff_times_penalty_split_ != 0.0) ||
+              !cegb_penalty_feature_coupled_.empty();
+  if (!cegb_use_) {
+    return;
+  }
+  // real_fidx for each task (parallel to split_find_tasks_).
+  cegb_task_real_fidx_.resize(num_tasks_);
+  for (int task_index = 0; task_index < num_tasks_; ++task_index) {
+    const int inner_feature_index = split_find_tasks_[task_index].inner_feature_index;
+    cegb_task_real_fidx_[task_index] = train_data->RealFeatureIndex(inner_feature_index);
+  }
+  // is_feature_used_in_split_ accumulates over the WHOLE model (it is reset only
+  // here, at session init, never per tree -- mirroring the CPU path where
+  // CostEfficientGradientBoosting::Init() guards the clear with `if (!init_)` and
+  // BeforeTrain() only resets splits_per_leaf_). A feature pays its coupled penalty
+  // once, the first time it is used in any tree.
+  cegb_is_feature_used_in_split_.assign(num_features_, 0);
+  cegb_host_task_penalty_.assign(num_tasks_, 0.0);
+  for (int task_index = 0; task_index < num_tasks_; ++task_index) {
+    if (!cegb_penalty_feature_coupled_.empty()) {
+      const int real_fidx = cegb_task_real_fidx_[task_index];
+      cegb_host_task_penalty_[task_index] =
+        cegb_tradeoff_ * cegb_penalty_feature_coupled_[real_fidx];
+    }
+  }
+  cuda_task_cegb_penalty_.Resize(static_cast<size_t>(num_tasks_));
+  CopyFromHostToCUDADevice<double>(cuda_task_cegb_penalty_.RawData(),
+                                   cegb_host_task_penalty_.data(),
+                                   cegb_host_task_penalty_.size(), __FILE__, __LINE__);
+}
+
+void CUDABestSplitFinder::MarkFeatureUsedInSplit(const int inner_feature_index) {
+  if (!cegb_use_ || cegb_penalty_feature_coupled_.empty()) {
+    return;
+  }
+  if (inner_feature_index < 0 ||
+      inner_feature_index >= static_cast<int>(cegb_is_feature_used_in_split_.size())) {
+    return;
+  }
+  if (cegb_is_feature_used_in_split_[inner_feature_index]) {
+    return;
+  }
+  cegb_is_feature_used_in_split_[inner_feature_index] = 1;
+  // Zero the coupled penalty for every task belonging to this feature. The tasks
+  // of one feature are contiguous in split_find_tasks_ (built in feature order),
+  // so refresh them with a SINGLE H2D copy of the [first, last] span instead of
+  // one 1-double copy per task. Any non-matching task that happens to fall inside
+  // the span is copied with its unchanged host value, so the span copy is safe
+  // even if the contiguity assumption is ever weakened.
+  int first_task = -1;
+  int last_task = -1;
+  for (int task_index = 0; task_index < num_tasks_; ++task_index) {
+    if (split_find_tasks_[task_index].inner_feature_index == inner_feature_index) {
+      if (first_task < 0) {
+        first_task = task_index;
+      }
+      last_task = task_index;
+      cegb_host_task_penalty_[task_index] = 0.0;
+    }
+  }
+  if (first_task >= 0) {
+    CopyFromHostToCUDADevice<double>(cuda_task_cegb_penalty_.RawData() + first_task,
+                                     cegb_host_task_penalty_.data() + first_task,
+                                     static_cast<size_t>(last_task - first_task + 1),
+                                     __FILE__, __LINE__);
+  }
 }
 
 void CUDABestSplitFinder::BeforeTrain(const std::vector<int8_t>& is_feature_used_bytree) {
+  // NOTE: CEGB's is_feature_used_in_split_ is intentionally NOT reset here. On the
+  // CPU path it accumulates across the whole model (cleared only once, at session
+  // init), so the coupled penalty for a feature is paid once for the entire model.
+
   CopyFromHostToCUDADevice<int8_t>(cuda_is_feature_used_bytree_.RawData(),
                                    is_feature_used_bytree.data(),
                                    is_feature_used_bytree.size(), __FILE__, __LINE__);
@@ -346,6 +496,10 @@ void CUDABestSplitFinder::FindBestSplitsForLeaf(
   const uint8_t larger_num_bits_in_histogram_bins,
   const bool smaller_leaf_below_max_depth,
   const bool larger_leaf_below_max_depth,
+  const double smaller_leaf_constraint_min,
+  const double smaller_leaf_constraint_max,
+  const double larger_leaf_constraint_min,
+  const double larger_leaf_constraint_max,
   const bool synchronize) {
   const bool is_smaller_leaf_valid = (num_data_in_smaller_leaf > min_data_in_leaf_ &&
     sum_hessians_in_smaller_leaf > min_sum_hessian_in_leaf_ &&
@@ -359,7 +513,8 @@ void CUDABestSplitFinder::FindBestSplitsForLeaf(
       grad_scale, hess_scale, smaller_num_bits_in_histogram_bins, larger_num_bits_in_histogram_bins, num_data_in_smaller_leaf, num_data_in_larger_leaf);
   } else {
     LaunchFindBestSplitsForLeafKernel(smaller_leaf_splits, larger_leaf_splits,
-      smaller_leaf_index, larger_leaf_index, is_smaller_leaf_valid, is_larger_leaf_valid, num_data_in_smaller_leaf, num_data_in_larger_leaf);
+      smaller_leaf_index, larger_leaf_index, is_smaller_leaf_valid, is_larger_leaf_valid, num_data_in_smaller_leaf, num_data_in_larger_leaf,
+      smaller_leaf_constraint_min, smaller_leaf_constraint_max, larger_leaf_constraint_min, larger_leaf_constraint_max);
   }
   global_timer.Start("CUDABestSplitFinder::LaunchSyncBestSplitForLeafKernel");
   LaunchSyncBestSplitForLeafKernel(smaller_leaf_index, larger_leaf_index, is_smaller_leaf_valid, is_larger_leaf_valid);

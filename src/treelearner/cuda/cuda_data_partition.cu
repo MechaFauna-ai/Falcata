@@ -791,7 +791,11 @@ __global__ void AggregateBlockOffsetKernel1(
   }
 }
 
-template <bool USE_NCCL, bool USE_GRAD_DISCRETIZED>
+// NOTE: this template parameter selects the multi-GPU (NCCL) partition path at
+// compile time. It is deliberately NOT named `USE_NCCL`: the build macro of that
+// name (added by the USE_NCCL cmake option) would be preprocessor-substituted
+// into the parameter, breaking compilation on NCCL-enabled builds.
+template <bool USE_NCCL_REDUCE, bool USE_GRAD_DISCRETIZED>
 __global__ void SplitTreeStructureKernel(const int left_leaf_index,
   const int right_leaf_index,
   data_size_t* block_to_left_offset_buffer,
@@ -834,7 +838,7 @@ __global__ void SplitTreeStructureKernel(const int left_leaf_index,
     cuda_split_info_buffer_for_hessians[3] = best_split_info->right_sum_gradients;
   }
 
-  bool left_is_smaller = USE_NCCL ?
+  bool left_is_smaller = USE_NCCL_REDUCE ?
     cuda_split_info_buffer[16] < cuda_split_info_buffer[17] :
     cuda_leaf_num_data[left_leaf_index] < cuda_leaf_num_data[right_leaf_index];
 

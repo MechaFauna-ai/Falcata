@@ -304,7 +304,12 @@ __device__ __forceinline__ void BitonicArgSort_2048(const VAL_T* scores, INDEX_T
   }
 }
 
-template <typename VAL_T, typename INDEX_T, bool ASCENDING, uint32_t BLOCK_DIM, uint32_t MAX_DEPTH>
+// STABLE: when true, ties (equal values) are broken by ascending original data
+// index, reproducing std::stable_sort. Callers that must match a CPU stable_sort
+// (e.g. the categorical split finder, which sorts categories by gradient/hessian
+// ratio and where tied ratios otherwise get an arbitrary, non-CPU order) pass true.
+// It is compile-time, so non-stable callers are unaffected.
+template <typename VAL_T, typename INDEX_T, bool ASCENDING, uint32_t BLOCK_DIM, uint32_t MAX_DEPTH, bool STABLE = false>
 __device__ void BitonicArgSortDevice(const VAL_T* values, INDEX_T* indices, const int len) {
   __shared__ VAL_T shared_values[BLOCK_DIM];
   __shared__ INDEX_T shared_indices[BLOCK_DIM];
@@ -342,7 +347,7 @@ __device__ void BitonicArgSortDevice(const VAL_T* values, INDEX_T* indices, cons
             const INDEX_T other_data_index = shared_indices[other_index];
             const VAL_T this_value = shared_values[threadIdx.x];
             const VAL_T other_value = shared_values[other_index];
-            if (other_data_index < len && (this_value > other_value) == ascending) {
+            if (other_data_index < len && (this_value > other_value || (STABLE && this_value == other_value && this_data_index > other_data_index)) == ascending) {
               shared_indices[threadIdx.x] = other_data_index;
               shared_indices[other_index] = this_data_index;
               shared_values[threadIdx.x] = other_value;
@@ -361,7 +366,7 @@ __device__ void BitonicArgSortDevice(const VAL_T* values, INDEX_T* indices, cons
           const INDEX_T other_data_index = shared_indices[other_index];
           const VAL_T this_value = shared_values[threadIdx.x];
           const VAL_T other_value = shared_values[other_index];
-          if (other_data_index < len && (this_value > other_value) == ascending) {
+          if (other_data_index < len && (this_value > other_value || (STABLE && this_value == other_value && this_data_index > other_data_index)) == ascending) {
             shared_indices[threadIdx.x] = other_data_index;
             shared_indices[other_index] = this_data_index;
             shared_values[threadIdx.x] = other_value;
@@ -392,12 +397,19 @@ __device__ void BitonicArgSortDevice(const VAL_T* values, INDEX_T* indices, cons
           const int segment_start = segment_index * segment_length;
           if (this_index >= offset + segment_start) {
             const int other_index = this_index + half_segment_length - offset;
-            if (other_index < len) {
+            // Both endpoints must be real data positions. With a non-zero offset
+            // (the last, partial segment) other_index can be smaller than
+            // this_index, so other_index < len does NOT imply this_index < len.
+            // Without the this_index < len guard, padding lanes (this_index >= len)
+            // read indices[this_index], which was never written back in the load
+            // phase (only this_index < len is stored), yielding a garbage data index
+            // that both corrupts the merge and can index values[] out of bounds.
+            if (this_index < len && other_index < len) {
               const INDEX_T this_data_index = indices[this_index];
               const INDEX_T other_data_index = indices[other_index];
               const VAL_T this_value = values[this_data_index];
               const VAL_T other_value = values[other_data_index];
-              if ((this_value > other_value) == ascending) {
+              if ((this_value > other_value || (STABLE && this_value == other_value && this_data_index > other_data_index)) == ascending) {
                 indices[this_index] = other_data_index;
                 indices[other_index] = this_data_index;
               }
@@ -421,7 +433,7 @@ __device__ void BitonicArgSortDevice(const VAL_T* values, INDEX_T* indices, cons
             const INDEX_T other_data_index = indices[other_index];
             const VAL_T this_value = values[this_data_index];
             const VAL_T other_value = values[other_data_index];
-            if ((this_value > other_value) == ascending) {
+            if ((this_value > other_value || (STABLE && this_value == other_value && this_data_index > other_data_index)) == ascending) {
               indices[this_index] = other_data_index;
               indices[other_index] = this_data_index;
             }
@@ -451,7 +463,7 @@ __device__ void BitonicArgSortDevice(const VAL_T* values, INDEX_T* indices, cons
           const INDEX_T other_data_index = shared_indices[other_index];
           const VAL_T this_value = shared_values[threadIdx.x];
           const VAL_T other_value = shared_values[other_index];
-          if (other_data_index < len && (this_value > other_value) == ascending) {
+          if (other_data_index < len && (this_value > other_value || (STABLE && this_value == other_value && this_data_index > other_data_index)) == ascending) {
             shared_indices[threadIdx.x] = other_data_index;
             shared_indices[other_index] = this_data_index;
             shared_values[threadIdx.x] = other_value;

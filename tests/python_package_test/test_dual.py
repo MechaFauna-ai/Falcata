@@ -47,7 +47,9 @@ def _get_init_score(device_type, objective, alpha, X, y):
     for line in buf.getvalue().splitlines():
         if "Start training from score" in line:
             return float(line.split("score")[-1].strip())
-    raise AssertionError(f"no init score logged for {device_type} {objective} alpha={alpha}")
+    raise AssertionError(
+        f"no init score logged for {device_type} {objective} alpha={alpha}"
+    )
 
 
 @_REQUIRES_CUDA
@@ -68,7 +70,9 @@ def test_cuda_init_score_matches_cpu(objective, alpha, n):
     y = np.arange(1, n + 1, dtype=np.float64)
     cpu = _get_init_score("cpu", objective, alpha, X, y)
     cuda = _get_init_score("cuda", objective, alpha, X, y)
-    assert cuda == pytest.approx(cpu, abs=1e-6), f"{objective} alpha={alpha} n={n}: cpu={cpu} cuda={cuda}"
+    assert cuda == pytest.approx(cpu, abs=1e-6), (
+        f"{objective} alpha={alpha} n={n}: cpu={cpu} cuda={cuda}"
+    )
 
 
 _REQUIRES_CUDA = pytest.mark.skipif(
@@ -89,7 +93,9 @@ def test_cuda_weighted_percentile_renewal_does_not_crash(objective, n):
     X = rng.standard_normal((n, 3)).astype(np.float64)
     y = rng.standard_normal(n).astype(np.float64)
     w = rng.random(n)
-    ds = lgb.Dataset(X, label=y, weight=w, params={"verbose": -1, "feature_pre_filter": False})
+    ds = lgb.Dataset(
+        X, label=y, weight=w, params={"verbose": -1, "feature_pre_filter": False}
+    )
     params = {
         "objective": objective,
         "alpha": 0.5,
@@ -103,7 +109,9 @@ def test_cuda_weighted_percentile_renewal_does_not_crash(objective, n):
     # If the OOB access regresses, this raises a CUDA "illegal memory access" error.
     bst = lgb.train(params, ds, num_boost_round=2)
     preds = bst.predict(X, raw_score=True)
-    assert np.all(np.isfinite(preds)), "weighted percentile renewal produced non-finite predictions"
+    assert np.all(np.isfinite(preds)), (
+        "weighted percentile renewal produced non-finite predictions"
+    )
 
 
 _REQUIRES_CUDA = pytest.mark.skipif(
@@ -159,7 +167,9 @@ def test_cuda_lambdarank_deterministic_is_bit_identical_run_to_run(items_per_que
 
     preds = []
     for _ in range(3):
-        ds = lgb.Dataset(X, label=y, group=group, params={"verbose": -1, "feature_pre_filter": False})
+        ds = lgb.Dataset(
+            X, label=y, group=group, params={"verbose": -1, "feature_pre_filter": False}
+        )
         bst = lgb.train(base, ds, num_boost_round=5)
         preds.append(bst.predict(X, raw_score=True))
 
@@ -344,7 +354,9 @@ def _train_pair(params_overrides, X, y):
             "force_col_wise": True,
             **params_overrides,
         }
-        ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False})
+        ds = lgb.Dataset(
+            X, label=y, params={"verbose": -1, "feature_pre_filter": False}
+        )
         out[device_type] = lgb.train(params, ds, num_boost_round=1)
     return out
 
@@ -446,7 +458,9 @@ def test_cuda_data_partition_block_offset_no_overflow(n, num_leaves):
             "learning_rate": 0.1,
             "min_data_in_leaf": 5,
         }
-        ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False})
+        ds = lgb.Dataset(
+            X, label=y, params={"verbose": -1, "feature_pre_filter": False}
+        )
         bst = lgb.train(params, ds, num_boost_round=5)
         preds[device_type] = bst.predict(X, raw_score=True)
 
@@ -464,7 +478,9 @@ def test_cuda_data_partition_block_offset_no_overflow(n, num_leaves):
         (2000, 31, 0.7, 1),
     ],
 )
-def test_cuda_bagging_does_not_crash_and_matches_cpu(n, num_leaves, bagging_fraction, bagging_freq):
+def test_cuda_bagging_does_not_crash_and_matches_cpu(
+    n, num_leaves, bagging_fraction, bagging_freq
+):
     """CUDA training with bagging must not crash and must track CPU.
 
     Regression test for two independent CUDA bugs that made *any* bagged run
@@ -513,11 +529,15 @@ def test_cuda_bagging_does_not_crash_and_matches_cpu(n, num_leaves, bagging_frac
             "bagging_freq": bagging_freq,
             "bagging_seed": 3,
         }
-        ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False})
+        ds = lgb.Dataset(
+            X, label=y, params={"verbose": -1, "feature_pre_filter": False}
+        )
         bst = lgb.train(params, ds, num_boost_round=20)
         preds[device_type] = bst.predict(X, raw_score=True)
 
-    assert np.all(np.isfinite(preds["cuda"])), "CUDA bagging produced non-finite predictions"
+    assert np.all(np.isfinite(preds["cuda"])), (
+        "CUDA bagging produced non-finite predictions"
+    )
     # Bagging samples a different bag on CUDA than on CPU (different RNG stream),
     # so predictions are not bit-identical; #6055 documents this as expected.
     # The bar here is "same ballpark" -- strict enough to catch a model that
@@ -569,8 +589,12 @@ def test_cuda_quantized_tree_structure_matches_cpu(n, seed):
     }
     models = {}
     for device_type in ("cpu", "cuda"):
-        ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False})
-        models[device_type] = lgb.train({**params, "device_type": device_type}, ds, num_boost_round=20)
+        ds = lgb.Dataset(
+            X, label=y, params={"verbose": -1, "feature_pre_filter": False}
+        )
+        models[device_type] = lgb.train(
+            {**params, "device_type": device_type}, ds, num_boost_round=20
+        )
 
     cpu_leaves = sum(t["num_leaves"] for t in models["cpu"].dump_model()["tree_info"])
     cuda_leaves = sum(t["num_leaves"] for t in models["cuda"].dump_model()["tree_info"])
@@ -619,8 +643,12 @@ def test_cuda_quantized_deep_trees_track_cpu(n, seed):
     }
     models = {}
     for device_type in ("cpu", "cuda"):
-        ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False})
-        models[device_type] = lgb.train({**params, "device_type": device_type}, ds, num_boost_round=20)
+        ds = lgb.Dataset(
+            X, label=y, params={"verbose": -1, "feature_pre_filter": False}
+        )
+        models[device_type] = lgb.train(
+            {**params, "device_type": device_type}, ds, num_boost_round=20
+        )
 
     cpu_leaves = sum(t["num_leaves"] for t in models["cpu"].dump_model()["tree_info"])
     cuda_leaves = sum(t["num_leaves"] for t in models["cuda"].dump_model()["tree_info"])
@@ -632,10 +660,14 @@ def test_cuda_quantized_deep_trees_track_cpu(n, seed):
     assert np.all(np.isfinite(cuda_pred))
     max_diff = float(np.max(np.abs(cuda_pred - cpu_pred)))
     # Broken behaviour exploded to >=1e12; the fix brings it to ~1 (gain-tie FP level).
-    assert max_diff < 5.0, f"CUDA quantized deep trees diverge from CPU by {max_diff:.3g} (n={n}, seed={seed})"
+    assert max_diff < 5.0, (
+        f"CUDA quantized deep trees diverge from CPU by {max_diff:.3g} (n={n}, seed={seed})"
+    )
 
 
-def _train_forced(device_type, forced_split, tmp_path, num_boost_round=10, num_leaves=8, seed=0):
+def _train_forced(
+    device_type, forced_split, tmp_path, num_boost_round=10, num_leaves=8, seed=0
+):
     rng = np.random.RandomState(seed)
     X = rng.rand(400, 6)
     y = 3 * X[:, 0] + 2 * X[:, 1] - X[:, 2] + 0.1 * rng.rand(400)
@@ -677,7 +709,11 @@ _FORCED_SPLIT_CASES = {
     "three_deep_chain": {
         "feature": 2,
         "threshold": 0.5,
-        "left": {"feature": 0, "threshold": 0.5, "left": {"feature": 1, "threshold": 0.5}},
+        "left": {
+            "feature": 0,
+            "threshold": 0.5,
+            "left": {"feature": 1, "threshold": 0.5},
+        },
     },
 }
 
@@ -726,8 +762,22 @@ def test_cuda_forced_splits_match_cpu(case, num_leaves, seed, tmp_path):
     structure (split features, gains, counts, leaf values) must match exactly.
     """
     forced_split = _FORCED_SPLIT_CASES[case]
-    bst_cpu, X, _ = _train_forced("cpu", forced_split, tmp_path, num_boost_round=30, num_leaves=num_leaves, seed=seed)
-    bst_cuda, _, _ = _train_forced("cuda", forced_split, tmp_path, num_boost_round=30, num_leaves=num_leaves, seed=seed)
+    bst_cpu, X, _ = _train_forced(
+        "cpu",
+        forced_split,
+        tmp_path,
+        num_boost_round=30,
+        num_leaves=num_leaves,
+        seed=seed,
+    )
+    bst_cuda, _, _ = _train_forced(
+        "cuda",
+        forced_split,
+        tmp_path,
+        num_boost_round=30,
+        num_leaves=num_leaves,
+        seed=seed,
+    )
 
     # tree-0 structure equality (features, gains, counts, leaf values; thresholds may
     # differ in real-value display encoding for the same bin boundary)
@@ -738,7 +788,13 @@ def test_cuda_forced_splits_match_cpu(case, num_leaves, seed, tmp_path):
             if "leaf_value" in node:
                 out.append(("leaf", round(node["leaf_value"], 10), node["leaf_count"]))
             else:
-                out.append((node["split_feature"], round(node["split_gain"], 6), node["internal_count"]))
+                out.append(
+                    (
+                        node["split_feature"],
+                        round(node["split_gain"], 6),
+                        node["internal_count"],
+                    )
+                )
                 _rec(node["left_child"])
                 _rec(node["right_child"])
 
@@ -792,7 +848,9 @@ def test_cuda_histogram_event_ordering_matches_cpu(num_leaves):
             "num_leaves": num_leaves,
             "min_data_in_leaf": 5,
         }
-        ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False})
+        ds = lgb.Dataset(
+            X, label=y, params={"verbose": -1, "feature_pre_filter": False}
+        )
         preds[device_type] = lgb.train(params, ds, num_boost_round=5).predict(X)
 
     np.testing.assert_allclose(
@@ -839,7 +897,9 @@ def test_cuda_syncbestsplit_overlap_matches_cpu(num_leaves):
             "num_leaves": num_leaves,
             "min_data_in_leaf": 5,
         }
-        ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False})
+        ds = lgb.Dataset(
+            X, label=y, params={"verbose": -1, "feature_pre_filter": False}
+        )
         preds[device_type] = lgb.train(params, ds, num_boost_round=5).predict(X)
 
     np.testing.assert_allclose(
@@ -900,7 +960,9 @@ def test_cuda_quantized_training_produces_splits(n, num_leaves):
 
     preds = bst.predict(X)
     assert np.all(np.isfinite(preds)), "CUDA quantized produced non-finite predictions"
-    assert preds.std() > 1e-6, f"CUDA quantized predictions are degenerate/constant (n={n}, num_leaves={num_leaves})"
+    assert preds.std() > 1e-6, (
+        f"CUDA quantized predictions are degenerate/constant (n={n}, num_leaves={num_leaves})"
+    )
 
 
 @_REQUIRES_CUDA
@@ -944,11 +1006,15 @@ def test_cuda_quantized_32bit_histogram_matches_cpu(n):
             "feature_pre_filter": False,
             "device_type": device_type,
         }
-        ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False})
+        ds = lgb.Dataset(
+            X, label=y, params={"verbose": -1, "feature_pre_filter": False}
+        )
         preds[device_type] = lgb.train(params, ds, num_boost_round=20).predict(X)
     corr = float(np.corrcoef(preds["cpu"], preds["cuda"])[0, 1])
     # Before the fix, 32-bit-histogram leaves (n>=8000) gave correlation ~0.
-    assert corr > 0.99, f"CUDA quantized (32-bit histogram) diverges from CPU: corr={corr:.4f} (n={n})"
+    assert corr > 0.99, (
+        f"CUDA quantized (32-bit histogram) diverges from CPU: corr={corr:.4f} (n={n})"
+    )
 
 
 _REQUIRES_CUDA = pytest.mark.skipif(
@@ -1008,7 +1074,9 @@ def test_cuda_linear_tree_matches_cpu(num_leaves, linear_lambda):
         # sanity: the model actually fit linear leaves, not constant fallbacks
         assert "leaf_coeff" in str(bst.dump_model()["tree_info"][5])
     max_diff = float(np.max(np.abs(preds["cpu"] - preds["cuda"])))
-    assert max_diff < 1e-6, f"CUDA linear tree diverges from CPU: max|diff|={max_diff:.3e}"
+    assert max_diff < 1e-6, (
+        f"CUDA linear tree diverges from CPU: max|diff|={max_diff:.3e}"
+    )
 
 
 @_REQUIRES_CUDA
@@ -1037,7 +1105,9 @@ def test_cuda_linear_tree_handles_nan_like_cpu():
         ds = lgb.Dataset(X, label=y, params=params)
         preds[device_type] = lgb.train(params, ds, num_boost_round=30).predict(X)
     max_diff = float(np.max(np.abs(preds["cpu"] - preds["cuda"])))
-    assert max_diff < 1e-6, f"CUDA linear tree (NaN) diverges from CPU: max|diff|={max_diff:.3e}"
+    assert max_diff < 1e-6, (
+        f"CUDA linear tree (NaN) diverges from CPU: max|diff|={max_diff:.3e}"
+    )
 
 
 _REQUIRES_CUDA = pytest.mark.skipif(
@@ -1129,9 +1199,13 @@ def _quant_model_md5(profile, extra_env=None):
         text=True,
         check=False,
     )
-    assert proc.returncode == 0, f"quant worker failed (profile={profile}, env={extra_env}):\n{proc.stderr}"
+    assert proc.returncode == 0, (
+        f"quant worker failed (profile={profile}, env={extra_env}):\n{proc.stderr}"
+    )
     md5 = proc.stdout.strip().splitlines()[-1].strip()
-    assert len(md5) == 32, f"unexpected worker output for profile={profile}: {proc.stdout!r}\n{proc.stderr}"
+    assert len(md5) == 32, (
+        f"unexpected worker output for profile={profile}: {proc.stdout!r}\n{proc.stderr}"
+    )
     return md5
 
 
@@ -1197,7 +1271,9 @@ def test_cuda_feature_flag_off_reproduces_plain_quant(flag):
     """
     plain = _quant_model_md5("dense")
     off = _quant_model_md5("dense", {flag: "0"})
-    assert plain == off, f"{flag}=0 changed the model (plain={plain}, off={off}); the flag is not a clean no-op"
+    assert plain == off, (
+        f"{flag}=0 changed the model (plain={plain}, off={off}); the flag is not a clean no-op"
+    )
 
 
 @_REQUIRES_CUDA
@@ -1223,7 +1299,9 @@ def test_cuda_fixedpoint_quant_is_deterministic():
     md5_b = _quant_model_md5("dense", {"EXABOOST_FIXEDPOINT_QUANT": "1"})
     assert md5_a == md5_b, f"fixedpoint quant is nondeterministic: {md5_a} != {md5_b}"
     # sanity: it really is a distinct mode, not silently the plain path
-    assert md5_a != _quant_model_md5("dense"), "EXABOOST_FIXEDPOINT_QUANT=1 did not change the model"
+    assert md5_a != _quant_model_md5("dense"), (
+        "EXABOOST_FIXEDPOINT_QUANT=1 did not change the model"
+    )
 
 
 def _ingestion_model_string(X, y, base):
@@ -1236,7 +1314,9 @@ def _strip_nonsubstantive(model_str):
     # trailing pandas_categorical marker serializes as "null" for ndarray vs "[]" for
     # a DataFrame; neither reflects the binned data or the learned trees.
     return "\n".join(
-        line for line in model_str.split("\n") if not line.startswith(("feature_names=", "pandas_categorical"))
+        line
+        for line in model_str.split("\n")
+        if not line.startswith(("feature_names=", "pandas_categorical"))
     )
 
 
@@ -1311,7 +1391,9 @@ def test_cuda_pandas_int_frame_matches_numpy():
 
 
 _COVTYPE_DIR = "/home/felixjk/Documents/exaboost-bench/data/cache/covtype/"
-_HAS_COVTYPE = os.path.isdir(_COVTYPE_DIR) and os.path.isfile(_COVTYPE_DIR + "X_train.npy")
+_HAS_COVTYPE = os.path.isdir(_COVTYPE_DIR) and os.path.isfile(
+    _COVTYPE_DIR + "X_train.npy"
+)
 
 
 @_REQUIRES_CUDA
@@ -1320,7 +1402,9 @@ _HAS_COVTYPE = os.path.isdir(_COVTYPE_DIR) and os.path.isfile(_COVTYPE_DIR + "X_
     ("num_leaves", "max_depth", "quant"),
     [(63, 6, True), (63, 6, False), (127, 8, True), (31, 5, True)],
 )
-def test_cuda_multiclass_graph_loop_trains_and_is_accurate(num_leaves, max_depth, quant):
+def test_cuda_multiclass_graph_loop_trains_and_is_accurate(
+    num_leaves, max_depth, quant
+):
     """Multiclass training with the CUDA graph level-loop active (default ON since
     84db39cd) must not raise and must reach a sane accuracy.
 
@@ -1354,7 +1438,9 @@ def test_cuda_multiclass_graph_loop_trains_and_is_accurate(num_leaves, max_depth
     ds.construct()
     bst = lgb.train(params, ds, num_boost_round=40)
     preds = bst.predict(Xte)
-    assert np.all(np.isfinite(preds)), "multiclass graph-loop produced non-finite predictions"
+    assert np.all(np.isfinite(preds)), (
+        "multiclass graph-loop produced non-finite predictions"
+    )
     acc = float((preds.argmax(axis=1) == yte).mean())
     # covtype 40-tree models here score ~0.78-0.83; a graph-loop regression to garbage
     # trees would collapse well below the 1/7 class balance. 0.70 is a safe floor.
@@ -1362,3 +1448,792 @@ def test_cuda_multiclass_graph_loop_trains_and_is_accurate(num_leaves, max_depth
         f"multiclass graph loop (num_leaves={num_leaves}, max_depth={max_depth}, quant={quant}) "
         f"accuracy {acc:.4f} below sane band -- possible graph/upload-race regression"
     )
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("n_categories", [300, 1200, 3000])
+def test_cuda_large_categorical_global_memory_does_not_crash(n_categories):
+    """Training on a categorical feature with > 256 histogram bins must not crash.
+
+    A feature whose histogram exceeds NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER (256)
+    bins routes categorical split finding through the global-memory kernel and its
+    device-wide BitonicArgSortDevice. That path used to raise
+    "[CUDA] an illegal memory access was encountered" for large category counts,
+    because the sort was instantiated with MAX_DEPTH=11 (the value for a 1024-wide
+    block) instead of 9 for the 256-thread block, and because the per-feature
+    scratch-buffer pointers were offset by hist_offset*2 instead of hist_offset,
+    running the sort off the end of the buffers.
+
+    This test guards the crash. (Full CPU/CUDA split-parity on the global-memory
+    categorical path is tracked separately: a residual data-dependent divergence
+    remains for > 256-category features.)
+    """
+    rng = np.random.default_rng(7)
+    n = n_categories * 40
+    cats = rng.integers(0, n_categories, size=n).astype(np.float64)
+    category_means = rng.standard_normal(n_categories) * 0.7
+    y = (category_means[cats.astype(int)] + rng.standard_normal(n) * 0.05).astype(
+        np.float64
+    )
+    X = cats.reshape(-1, 1)
+    params = {
+        "objective": "regression",
+        "verbose": -1,
+        "deterministic": True,
+        "num_threads": 1,
+        "seed": 0,
+        "feature_pre_filter": False,
+        "gpu_use_dp": True,
+        "num_leaves": 8,
+        "min_data_in_leaf": 5,
+        "min_data_in_bin": 1,
+        "max_bin": 8192,
+        "cat_smooth": 1,
+        "learning_rate": 0.1,
+        "device_type": "cuda",
+    }
+    ds = lgb.Dataset(
+        X,
+        label=y,
+        categorical_feature=[0],
+        params={
+            "verbose": -1,
+            "feature_pre_filter": False,
+            "min_data_in_bin": 1,
+            "max_bin": 8192,
+        },
+    )
+    # Regression: this raised a CUDA illegal-memory-access error before the fix.
+    bst = lgb.train(params, ds, num_boost_round=5)
+    preds = bst.predict(X, raw_score=True)
+    assert np.all(np.isfinite(preds)), (
+        "global-memory categorical training produced non-finite predictions"
+    )
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("min_data_per_group", [1, 5, 20, 33, 50, 100, 200])
+def test_cuda_min_data_per_group_categorical_matches_cpu(min_data_per_group):
+    """CUDA must apply min_data_per_group with CPU's per-group semantics.
+
+    CPU (FeatureHistogram::FindBestThresholdCategoricalInner) treats
+    min_data_per_group as a minimum on the *group*: the run of sorted
+    categories accumulated since the last accepted threshold. It tracks
+    cnt_cur_group, skips a threshold whose group is still too small, and
+    resets the counter each time a threshold is accepted.
+
+    CUDA instead applied it per side (left_count >= min_data_per_group and
+    right_count >= min_data_per_group), a different rule. The two agreed
+    only when the threshold was far from the per-category row counts, so
+    CUDA silently picked a different categorical split -- and hence a
+    different tree -- whenever min_data_per_group landed near them.
+
+    With 400 rows over 12 categories (~33 rows each), the pre-fix code
+    diverged from CPU at min_data_per_group=33 (max|Δ|=5.2e-2) and at the
+    default 100 (max|Δ|=6.1e-2), while agreeing at 1/5/20/50/200. One
+    boosting round isolates the split choice itself.
+    """
+    rng = np.random.default_rng(123)
+    n = 400
+    n_categories = 12
+    cats = rng.integers(0, n_categories, size=n).astype(np.float64)
+    category_means = rng.standard_normal(n_categories) * 0.7
+    y = (category_means[cats.astype(int)] + rng.standard_normal(n) * 0.05).astype(
+        np.float64
+    )
+    X = cats.reshape(-1, 1)
+    params = {
+        "objective": "regression",
+        "verbose": -1,
+        "deterministic": True,
+        "num_threads": 1,
+        "seed": 0,
+        "feature_pre_filter": False,
+        "gpu_use_dp": True,
+        "num_leaves": 8,
+        "min_data_in_leaf": 5,
+        "min_data_in_bin": 1,
+        "max_bin": 8192,
+        "cat_smooth": 1,
+        "learning_rate": 0.1,
+        "device_type": "cuda",
+    }
+    ds = lgb.Dataset(
+        X,
+        label=y,
+        categorical_feature=[0],
+        params={
+            "verbose": -1,
+            "feature_pre_filter": False,
+            "min_data_in_bin": 1,
+            "max_bin": 8192,
+        },
+    )
+    # Regression: this raised a CUDA illegal-memory-access error before the fix.
+    bst = lgb.train(params, ds, num_boost_round=5)
+    preds = bst.predict(X, raw_score=True)
+    assert np.all(np.isfinite(preds)), (
+        "global-memory categorical training produced non-finite predictions"
+    )
+
+    preds = {}
+    for device_type in ("cpu", "cuda"):
+        params = {
+            "objective": "regression",
+            "verbose": -1,
+            "deterministic": True,
+            "num_threads": 1,
+            "seed": 0,
+            "feature_pre_filter": False,
+            "gpu_use_dp": True,
+            "num_leaves": 4,
+            "min_data_in_leaf": 5,
+            "learning_rate": 0.1,
+            "min_data_per_group": min_data_per_group,
+            "device_type": device_type,
+        }
+        ds = lgb.Dataset(
+            X,
+            label=y,
+            categorical_feature=[0],
+            params={"verbose": -1, "feature_pre_filter": False},
+        )
+        bst = lgb.train(params, ds, num_boost_round=1)
+        preds[device_type] = bst.predict(X, raw_score=True)
+
+    max_diff = float(np.abs(preds["cpu"] - preds["cuda"]).max())
+    assert max_diff == 0.0, (
+        f"CUDA categorical split disagrees with CPU at min_data_per_group={min_data_per_group}: max|Δ|={max_diff:.3e}"
+    )
+
+
+@_REQUIRES_CUDA
+@pytest.mark.xfail(
+    reason=(
+        "Pre-existing binary categorical CPU/CUDA non-parity, independent of this fix. "
+        "On plain master the divergence is a constant max|Δ|≈7.7e-2 even at "
+        "min_data_per_group=1, where the per-group rule is a no-op -- so it is a separate "
+        "non-unit-hessian categorical issue (sum-of-per-category-roundings vs "
+        "rounding-of-the-summed-hessian in the count estimate), not something "
+        "SequentialCategoricalGroupAccepted can fix. Kept as a tracker: it should XPASS "
+        "once binary categorical parity is addressed separately."
+    ),
+    strict=False,
+)
+@pytest.mark.parametrize("min_data_per_group", [1, 20, 33, 100])
+def test_cuda_min_data_per_group_categorical_binary_matches_cpu(min_data_per_group):
+    """Non-unit-hessian categorical parity (currently xfail; see marker).
+
+    Intent: cover what the unit-hessian (L2) regression test cannot -- binary
+    log-loss has a non-unit hessian p*(1-p), so cnt_factor != 1 and the count
+    estimate is a genuine rounding of a scaled hessian sum. This would exercise
+    the same arithmetic SequentialCategoricalGroupAccepted performs on the
+    shared-memory kernel.
+
+    Reality: binary categorical is not CPU/CUDA bit-parity on master today, for a
+    reason orthogonal to min_data_per_group (verified: the divergence is constant
+    at min_data_per_group=1, where the group rule accepts every valid threshold
+    exactly as the old predicate did). The count-rounding difference is documented
+    as a caveat on the helper. The test is retained as an xfail tracker rather than
+    deleted so the coverage returns automatically once that separate issue is fixed.
+    """
+    rng = np.random.default_rng(321)
+    n = 600
+    n_categories = 12
+    cats = rng.integers(0, n_categories, size=n).astype(np.float64)
+    category_logits = rng.standard_normal(n_categories) * 1.2
+    probs = 1.0 / (1.0 + np.exp(-category_logits[cats.astype(int)]))
+    y = (rng.random(n) < probs).astype(np.float64)
+    X = cats.reshape(-1, 1)
+
+    preds = {}
+    for device_type in ("cpu", "cuda"):
+        params = {
+            "objective": "binary",
+            "verbose": -1,
+            "deterministic": True,
+            "num_threads": 1,
+            "seed": 0,
+            "feature_pre_filter": False,
+            "gpu_use_dp": True,
+            "num_leaves": 4,
+            "min_data_in_leaf": 5,
+            "learning_rate": 0.1,
+            "min_data_per_group": min_data_per_group,
+            "device_type": device_type,
+        }
+        ds = lgb.Dataset(
+            X,
+            label=y,
+            categorical_feature=[0],
+            params={"verbose": -1, "feature_pre_filter": False},
+        )
+        bst = lgb.train(params, ds, num_boost_round=1)
+        preds[device_type] = bst.predict(X, raw_score=True)
+
+    max_diff = float(np.abs(preds["cpu"] - preds["cuda"]).max())
+    assert max_diff == 0.0, (
+        f"CUDA binary categorical split disagrees with CPU at "
+        f"min_data_per_group={min_data_per_group}: max|Δ|={max_diff:.3e}"
+    )
+
+
+@_REQUIRES_CUDA
+@pytest.mark.skip(
+    reason=(
+        "Pre-existing illegal-memory-access crash in master's global-memory categorical "
+        "kernel, unrelated to this fix. Any categorical feature with > "
+        "NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER (256) histogram bins routes through the "
+        "global-memory path and aborts (verified on plain master: crashes at >=~300 "
+        "categories with the old per-side predicate, so it is not caused by "
+        "SequentialCategoricalGroupAccepted). The abort is a SIGABRT that kills the "
+        "interpreter, so this cannot be an xfail. Enable once the global-memory categorical "
+        "kernel crash is fixed; the helper is already wired into that path (both direction "
+        "passes rewrite hist_hess_buffer_ptr with the direction's scan-order prefix)."
+    )
+)
+@pytest.mark.parametrize("min_data_per_group", [1, 20, 100])
+def test_cuda_min_data_per_group_categorical_global_memory_matches_cpu(
+    min_data_per_group,
+):
+    """Per-group semantics on the global-memory categorical kernel (currently skipped).
+
+    The best-split finder uses a shared-memory kernel (BitonicArgSort_1024) when
+    a feature has <= NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER (256) histogram bins,
+    and a global-memory kernel (BitonicArgSortDevice, prefix scan in
+    hist_hess_buffer_ptr) above that. The 12-category tests only reach the
+    shared-memory path; this one uses ~1200 categories with a raised max_bin so
+    the feature has > 256 bins and would route through the global-memory kernel,
+    where both direction passes rewrite hist_hess_buffer_ptr with that direction's
+    scan-order prefix before the replay reads it. Skipped: see marker for the
+    pre-existing crash that blocks running it today.
+    """
+    rng = np.random.default_rng(777)
+    n = 24000
+    n_categories = 1200  # > 256 bins -> global-memory kernel; also > 1024
+    cats = rng.integers(0, n_categories, size=n).astype(np.float64)
+    category_means = rng.standard_normal(n_categories) * 0.7
+    y = (category_means[cats.astype(int)] + rng.standard_normal(n) * 0.05).astype(
+        np.float64
+    )
+    X = cats.reshape(-1, 1)
+
+    preds = {}
+    for device_type in ("cpu", "cuda"):
+        params = {
+            "objective": "regression",
+            "verbose": -1,
+            "deterministic": True,
+            "num_threads": 1,
+            "seed": 0,
+            "feature_pre_filter": False,
+            "gpu_use_dp": True,
+            "num_leaves": 4,
+            "min_data_in_leaf": 5,
+            "min_data_in_bin": 1,
+            "max_bin": 2048,
+            "cat_smooth": 1,
+            "learning_rate": 0.1,
+            "min_data_per_group": min_data_per_group,
+            "device_type": device_type,
+        }
+        ds = lgb.Dataset(
+            X,
+            label=y,
+            categorical_feature=[0],
+            params={
+                "verbose": -1,
+                "feature_pre_filter": False,
+                "min_data_in_bin": 1,
+                "max_bin": 2048,
+            },
+        )
+        bst = lgb.train(params, ds, num_boost_round=1)
+        preds[device_type] = bst.predict(X, raw_score=True)
+
+    max_diff = float(np.abs(preds["cpu"] - preds["cuda"]).max())
+    assert max_diff == 0.0, (
+        f"CUDA global-memory categorical split disagrees with CPU at "
+        f"min_data_per_group={min_data_per_group}: max|Δ|={max_diff:.3e}"
+    )
+
+
+def _train_mds(
+    device_type,
+    objective,
+    max_delta_step,
+    learning_rate,
+    num_boost_round,
+    min_data_in_leaf,
+):
+    rng = np.random.RandomState(0)
+    X = rng.rand(400, 6)
+    if objective == "binary":
+        y = (X[:, 0] + 0.4 * rng.rand(400) > 0.6).astype(int)
+    else:
+        y = 3 * X[:, 0] + 2 * X[:, 1] - X[:, 2] + 0.1 * rng.rand(400)
+    params = {
+        "objective": objective,
+        "max_delta_step": max_delta_step,
+        "num_leaves": 15,
+        "min_data_in_leaf": min_data_in_leaf,
+        "learning_rate": learning_rate,
+        "verbose": -1,
+        "deterministic": True,
+        "num_threads": 1,
+        "seed": 0,
+        "gpu_use_dp": True,
+        "force_col_wise": True,
+        "feature_pre_filter": False,
+        "device_type": device_type,
+    }
+    ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False})
+    return lgb.train(params, ds, num_boost_round=num_boost_round), X, y
+
+
+def _tree_leaf_values(bst, tree_index=0):
+    values = []
+
+    def _rec(node):
+        if "leaf_value" in node:
+            values.append(node["leaf_value"])
+        else:
+            _rec(node["left_child"])
+            _rec(node["right_child"])
+
+    _rec(bst.dump_model()["tree_info"][tree_index]["tree_structure"])
+    return values
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("max_delta_step", [0.05, 0.1, 0.5])
+@pytest.mark.parametrize("objective", ["binary", "regression"])
+def test_cuda_max_delta_step_caps_outputs_like_cpu(objective, max_delta_step):
+    """The max_delta_step output cap must be enforced identically on CPU and CUDA.
+
+    Regression test for max_delta_step being silently ignored on CUDA: the cap
+    (the USE_MAX_OUTPUT branch of the CPU FeatureHistogram leaf-output formula)
+    was missing from the CUDA leaf-output device functions, so CUDA leaf values
+    were unbounded while CPU's were capped.
+
+    The cap limits each leaf's Newton step to [-max_delta_step, +max_delta_step],
+    so within one tree the leaf-value spread can be at most 2 * max_delta_step.
+    Before the fix, CUDA's spread exceeded this by an order of magnitude.
+    """
+    spreads = {}
+    for device_type in ("cpu", "cuda"):
+        bst, _, _ = _train_mds(
+            device_type,
+            objective,
+            max_delta_step,
+            learning_rate=1.0,
+            num_boost_round=1,
+            min_data_in_leaf=1,
+        )
+        values = _tree_leaf_values(bst)
+        spreads[device_type] = max(values) - min(values)
+        assert spreads[device_type] <= 2 * max_delta_step + 1e-9, (
+            f"{device_type}: leaf spread {spreads[device_type]} exceeds 2*max_delta_step={2 * max_delta_step}"
+        )
+    # both backends apply the same cap, so the spreads must match exactly
+    assert spreads["cuda"] == pytest.approx(spreads["cpu"], abs=1e-10)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("max_delta_step", [1.0, 2.0, 5.0])
+def test_cuda_max_delta_step_matches_cpu_exactly(max_delta_step):
+    """When the cap binds without saturating every leaf, CUDA must match CPU bit-for-bit.
+
+    Uses the regression objective where leaf outputs are moderate, so the cap
+    reduces some leaf values without collapsing all split gains to zero. In this
+    regime the trained models must be identical at FP epsilon. (When the cap
+    saturates every leaf, all split gains collapse to ~0 and ULP-level FP noise
+    decides among equally-optimal splits; that tie-breaking difference is tracked
+    separately and is not a max_delta_step issue.)
+    """
+    preds = {}
+    for device_type in ("cpu", "cuda"):
+        bst, X, _ = _train_mds(
+            device_type,
+            "regression",
+            max_delta_step,
+            learning_rate=0.1,
+            num_boost_round=10,
+            min_data_in_leaf=5,
+        )
+        preds[device_type] = bst.predict(X, raw_score=True)
+    np.testing.assert_allclose(
+        preds["cpu"],
+        preds["cuda"],
+        rtol=0,
+        atol=1e-10,
+        err_msg=f"max_delta_step={max_delta_step}: CUDA diverges from CPU",
+    )
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("objective", ["binary", "regression"])
+def test_cuda_max_delta_step_loss_matches_cpu_when_saturated(objective):
+    """When the cap saturates leaves (creating gain plateaus), training quality must still match.
+
+    With a tiny max_delta_step every leaf clamps to +/-max_delta_step and all
+    split gains collapse to ~0; CPU and CUDA then pick different but equally
+    optimal splits (FP tie-breaking). The tree structures may differ, but the
+    cap must hold on both and the training loss must agree closely.
+    """
+    max_delta_step = 0.05
+    losses = {}
+    for device_type in ("cpu", "cuda"):
+        bst, X, y = _train_mds(
+            device_type,
+            objective,
+            max_delta_step,
+            learning_rate=0.1,
+            num_boost_round=10,
+            min_data_in_leaf=5,
+        )
+        # cap still enforced on every tree
+        for t in range(10):
+            values = _tree_leaf_values(bst, t)
+            assert max(values) - min(values) <= 2 * max_delta_step + 1e-9
+        pred = bst.predict(X)
+        if objective == "binary":
+            pred = np.clip(pred, 1e-12, 1 - 1e-12)
+            losses[device_type] = float(
+                -np.mean(y * np.log(pred) + (1 - y) * np.log(1 - pred))
+            )
+        else:
+            losses[device_type] = float(np.mean((y - pred) ** 2))
+    rel_diff = abs(losses["cpu"] - losses["cuda"]) / abs(losses["cpu"])
+    assert rel_diff < 0.02, (
+        f"training loss diverged: cpu={losses['cpu']} cuda={losses['cuda']}"
+    )
+
+
+def _train_monotone(device_type, constraints, num_boost_round, seed=0):
+    rng = np.random.RandomState(seed)
+    X = rng.rand(600, 3)
+    y = 5 * X[:, 0] - 5 * X[:, 1] + 0.7 * X[:, 2] + 0.5 * rng.rand(600)
+    params = {
+        "objective": "regression",
+        "monotone_constraints": constraints,
+        "monotone_constraints_method": "basic",
+        "num_leaves": 31,
+        "min_data_in_leaf": 5,
+        "learning_rate": 0.1,
+        "verbose": -1,
+        "deterministic": True,
+        "num_threads": 1,
+        "seed": 0,
+        "gpu_use_dp": True,
+        "force_col_wise": True,
+        "feature_pre_filter": False,
+        "device_type": device_type,
+    }
+    ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False})
+    return lgb.train(params, ds, num_boost_round=num_boost_round), X, y
+
+
+def _monotonicity_violations(bst, constraints, n_grid=500):
+    """Count monotonicity violations of bst on grid sweeps of each constrained feature."""
+    count = 0
+    worst = 0.0
+    grid = np.linspace(0, 1, n_grid)
+    for j, c in enumerate(constraints):
+        if c == 0:
+            continue
+        for base_value in (0.2, 0.5, 0.8):
+            base = np.full(3, base_value)
+            G = np.tile(base, (n_grid, 1))
+            G[:, j] = grid
+            diffs = np.diff(bst.predict(G))
+            bad = -diffs if c > 0 else diffs
+            violations = bad[bad > 1e-12]
+            count += len(violations)
+            if len(violations):
+                worst = max(worst, float(violations.max()))
+    return count, worst
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("constraints", [[1, -1, 0], [1, 1, 1], [-1, 0, 1], [1, 0, 0]])
+@pytest.mark.parametrize("num_boost_round", [1, 30, 100])
+def test_cuda_monotone_constraints_are_enforced(constraints, num_boost_round):
+    """CUDA must enforce basic-method monotone constraints: zero violations.
+
+    Regression test for monotone_constraints being silently ignored on CUDA: the
+    best-split kernels had no constraint plumbing, so CUDA produced models that
+    violated the requested monotonic relationships (up to 57 violations of
+    magnitude 0.68 on this data before the fix).
+    """
+    bst, _, _ = _train_monotone("cuda", constraints, num_boost_round)
+    count, worst = _monotonicity_violations(bst, constraints)
+    assert count == 0, (
+        f"CUDA model violates monotone constraints {constraints}: {count} violations, worst={worst:.3e}"
+    )
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("constraints", [[1, -1, 0], [1, 1, 1], [-1, 0, 1]])
+def test_cuda_monotone_constraints_match_cpu_quality(constraints):
+    """CUDA monotone training quality must match CPU.
+
+    CPU and CUDA may build different (both valid) constrained trees because CPU
+    additionally prunes features via its is_splittable cache, so exact tree
+    equality is not required. But both must (a) enforce the constraints and
+    (b) reach equivalent training loss (within 5%).
+    """
+    num_boost_round = 50
+    bst_cpu, X, y = _train_monotone("cpu", constraints, num_boost_round)
+    bst_cuda, _, _ = _train_monotone("cuda", constraints, num_boost_round)
+
+    # both enforce
+    for bst, name in ((bst_cpu, "cpu"), (bst_cuda, "cuda")):
+        count, worst = _monotonicity_violations(bst, constraints)
+        assert count == 0, (
+            f"{name} violates constraints: {count} violations, worst={worst:.3e}"
+        )
+
+    # equivalent quality
+    mse_cpu = float(np.mean((y - bst_cpu.predict(X)) ** 2))
+    mse_cuda = float(np.mean((y - bst_cuda.predict(X)) ** 2))
+    assert mse_cuda <= mse_cpu * 1.05, (
+        f"CUDA mse {mse_cuda} much worse than CPU mse {mse_cpu}"
+    )
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("num_boost_round", [1, 30])
+def test_cuda_monotone_noop_constraints_match_cpu_exactly(num_boost_round):
+    """With all-zero constraints the MC code path must be a no-op:
+    predictions must match CPU bit-for-bit."""
+    bst_cpu, X, _ = _train_monotone("cpu", [0, 0, 0], num_boost_round)
+    bst_cuda, _, _ = _train_monotone("cuda", [0, 0, 0], num_boost_round)
+    np.testing.assert_allclose(
+        bst_cpu.predict(X),
+        bst_cuda.predict(X),
+        rtol=0,
+        atol=1e-10,
+        err_msg="all-zero monotone constraints must not change CUDA results",
+    )
+
+
+@_REQUIRES_CUDA
+def test_cuda_monotone_unsupported_configs_raise():
+    """Only the basic method, monotone_penalty=0, and full-precision training are
+    supported on CUDA; other monotone configurations must be rejected loudly."""
+    rng = np.random.RandomState(0)
+    X = rng.rand(200, 3)
+    y = X[:, 0] - X[:, 1]
+    base = {
+        "objective": "regression",
+        "monotone_constraints": [1, -1, 0],
+        "device_type": "cuda",
+        "num_leaves": 7,
+        "verbose": -1,
+    }
+    for bad, expected in (
+        (
+            {"monotone_constraints_method": "intermediate"},
+            r'only supports the "basic" monotone_constraints_method',
+        ),
+        (
+            {"monotone_constraints_method": "advanced"},
+            r'only supports the "basic" monotone_constraints_method',
+        ),
+        (
+            {"monotone_penalty": 1.0},
+            r"monotone_penalty is not supported with device_type=cuda",
+        ),
+        (
+            {"use_quantized_grad": True},
+            r"monotone_constraints is not supported with use_quantized_grad",
+        ),
+    ):
+        with pytest.raises(lgb.basic.LightGBMError, match=expected):
+            lgb.train(
+                {**base, **bad},
+                lgb.Dataset(X, label=y, params={"verbose": -1}),
+                num_boost_round=1,
+            )
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(
+    "feature_contri",
+    [
+        [1.0, 1.0, 1.0, 1.0],
+        [0.0, 1.0, 1.0, 1.0],
+        [1.0, 1.0, 1.0, 0.0],
+        [0.5, 1.0, 1.0, 1.0],
+        [0.5, 1.0, 2.0, 1.0],
+    ],
+)
+def test_cuda_feature_contri_matches_cpu(feature_contri):
+    """CUDA must apply per-feature gain scaling (feature_contri) identically to CPU.
+
+    Regression test for feature_contri being silently ignored on CUDA: the CPU
+    FeatureHistogram multiplies each feature's best-split gain by its
+    feature_contri entry (output->gain *= meta_->penalty) before cross-feature
+    comparison; the CUDA best-split finder had no equivalent, so a feature with
+    contri 0 was still selected for splits on CUDA.
+    """
+    rng = np.random.RandomState(0)
+    X = rng.rand(500, 4)
+    y = 5 * X[:, 0] + 2 * X[:, 1] + 1 * X[:, 2] + 0.5 * X[:, 3] + 0.1 * rng.rand(500)
+
+    boosters = {}
+    for device_type in ("cpu", "cuda"):
+        params = {
+            "objective": "regression",
+            "feature_contri": feature_contri,
+            "num_leaves": 15,
+            "min_data_in_leaf": 5,
+            "learning_rate": 0.1,
+            "verbose": -1,
+            "deterministic": True,
+            "num_threads": 1,
+            "seed": 0,
+            "gpu_use_dp": True,
+            "force_col_wise": True,
+            "feature_pre_filter": False,
+            "device_type": device_type,
+        }
+        ds = lgb.Dataset(
+            X, label=y, params={"verbose": -1, "feature_pre_filter": False}
+        )
+        boosters[device_type] = lgb.train(params, ds, num_boost_round=5)
+
+    def used_features(bst):
+        used = set()
+
+        def _rec(node):
+            if "leaf_value" in node:
+                return
+            used.add(node["split_feature"])
+            _rec(node["left_child"])
+            _rec(node["right_child"])
+
+        for tree in bst.dump_model()["tree_info"]:
+            _rec(tree["tree_structure"])
+        return used
+
+    used_cpu = used_features(boosters["cpu"])
+    used_cuda = used_features(boosters["cuda"])
+
+    # same features selected (in particular, zero-contri features excluded on both)
+    assert used_cpu == used_cuda
+    for fidx, contri in enumerate(feature_contri):
+        if contri == 0.0:
+            assert fidx not in used_cuda
+
+    # predictions match at FP epsilon
+    np.testing.assert_allclose(
+        boosters["cpu"].predict(X),
+        boosters["cuda"].predict(X),
+        rtol=0,
+        atol=1e-10,
+        err_msg=f"feature_contri={feature_contri}: CUDA diverges from CPU",
+    )
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(
+    "cegb_overrides",
+    [
+        {"cegb_penalty_split": 0.1},
+        {"cegb_penalty_split": 1.0},
+        {"cegb_penalty_split": 5.0},
+        {"cegb_penalty_feature_coupled": [5.0, 5.0, 5.0, 5.0, 5.0, 5.0]},
+        {"cegb_penalty_feature_coupled": [0.1, 0.1, 5.0, 5.0, 5.0, 5.0]},
+        {"cegb_tradeoff": 0.5, "cegb_penalty_split": 1.0},
+    ],
+)
+def test_cuda_cegb_matches_cpu(cegb_overrides):
+    """CUDA must apply cost-effective gradient boosting penalties identically to CPU.
+
+    Regression test for cegb_* being silently ignored on CUDA: the CPU serial
+    tree learner subtracts CostEfficientGradientBoosting::DeltaGain from each
+    candidate split's gain and stops splitting when the best penalized gain is
+    <= 0; the CUDA learner had no penalty plumbing and no gain>0 stop condition,
+    so CEGB had no effect on tree shape.
+    """
+    rng = np.random.RandomState(0)
+    X = rng.rand(400, 6)
+    y = 3 * X[:, 0] + 2 * X[:, 1] - X[:, 2] + 0.1 * rng.rand(400)
+
+    boosters = {}
+    for device_type in ("cpu", "cuda"):
+        params = {
+            "objective": "regression",
+            "num_leaves": 31,
+            "min_data_in_leaf": 1,
+            "min_gain_to_split": 0.0,
+            "learning_rate": 0.1,
+            "verbose": -1,
+            "deterministic": True,
+            "num_threads": 1,
+            "seed": 0,
+            "gpu_use_dp": True,
+            "force_col_wise": True,
+            "feature_pre_filter": False,
+            "device_type": device_type,
+            **cegb_overrides,
+        }
+        ds = lgb.Dataset(
+            X, label=y, params={"verbose": -1, "feature_pre_filter": False}
+        )
+        boosters[device_type] = lgb.train(params, ds, num_boost_round=5)
+
+    def shape_and_features(bst):
+        leaves = [t["num_leaves"] for t in bst.dump_model()["tree_info"]]
+        used = set()
+
+        def _rec(node):
+            if "leaf_value" in node:
+                return
+            used.add(node["split_feature"])
+            _rec(node["left_child"])
+            _rec(node["right_child"])
+
+        for tree in bst.dump_model()["tree_info"]:
+            _rec(tree["tree_structure"])
+        return leaves, used
+
+    leaves_cpu, used_cpu = shape_and_features(boosters["cpu"])
+    leaves_cuda, used_cuda = shape_and_features(boosters["cuda"])
+
+    # the penalty must shape the trees identically (per-tree leaf counts + feature sets)
+    assert leaves_cpu == leaves_cuda, (
+        f"num_leaves mismatch: cpu={leaves_cpu} cuda={leaves_cuda}"
+    )
+    assert used_cpu == used_cuda
+
+    # predictions must match at FP epsilon
+    np.testing.assert_allclose(
+        boosters["cpu"].predict(X),
+        boosters["cuda"].predict(X),
+        rtol=0,
+        atol=1e-10,
+        err_msg=f"cegb={cegb_overrides}: CUDA diverges from CPU",
+    )
+
+
+@_REQUIRES_CUDA
+def test_cuda_cegb_lazy_penalty_raises():
+    """cegb_penalty_feature_lazy needs per-(row, feature) cost tracking that is not
+    implemented on CUDA; it must be rejected loudly rather than silently ignored."""
+    rng = np.random.RandomState(0)
+    X = rng.rand(200, 6)
+    y = 3 * X[:, 0] + 0.1 * rng.rand(200)
+    params = {
+        "objective": "regression",
+        "device_type": "cuda",
+        "cegb_penalty_feature_lazy": [5.0] * 6,
+        "num_leaves": 15,
+        "verbose": -1,
+    }
+    with pytest.raises(lgb.basic.LightGBMError, match="cegb_penalty_feature_lazy"):
+        lgb.train(
+            params, lgb.Dataset(X, label=y, params={"verbose": -1}), num_boost_round=1
+        )

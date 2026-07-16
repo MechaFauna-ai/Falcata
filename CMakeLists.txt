@@ -6,6 +6,7 @@ option(USE_GPU "Enable GPU-accelerated training" OFF)
 option(USE_SWIG "Enable SWIG to generate Java API" OFF)
 option(USE_TIMETAG "Set to ON to output time costs" OFF)
 option(USE_CUDA "Enable CUDA-accelerated training " OFF)
+option(USE_NCCL "Enable NCCL for multi-GPU CUDA training (requires USE_CUDA). NCCL has no official Windows distribution, so Windows single-GPU builds should set this OFF." ON)
 option(USE_ROCM "Enable ROCm-accelerated training " OFF)
 option(USE_DEBUG "Set to ON for Debug mode" OFF)
 option(USE_SANITIZER "Use sanitizer flags" OFF)
@@ -231,7 +232,11 @@ endif()
 
 if(USE_CUDA)
     find_package(CUDAToolkit 11.0 REQUIRED)
-    find_package(NCCL REQUIRED)
+    if(USE_NCCL)
+        find_package(NCCL REQUIRED)
+    else()
+        message(STATUS "USE_NCCL is OFF: building single-GPU only, without the NCCL dependency.")
+    endif()
     include_directories(${CUDAToolkit_INCLUDE_DIRS})
     set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=${OpenMP_CXX_FLAGS} -Xcompiler=-fPIC -Xcompiler=-Wall")
 
@@ -281,6 +286,9 @@ if(USE_CUDA)
     message(STATUS "CMAKE_CUDA_FLAGS: ${CMAKE_CUDA_FLAGS}")
 
     add_definitions(-DUSE_CUDA)
+    if(USE_NCCL)
+        add_definitions(-DUSE_NCCL)
+    endif()
 
     if(NOT DEFINED CMAKE_CUDA_STANDARD)
       set(CMAKE_CUDA_STANDARD 17)
@@ -479,7 +487,6 @@ set(
     LGBM_CUDA_SOURCES
       src/boosting/cuda/cuda_score_updater.cpp
       src/boosting/cuda/cuda_score_updater.cu
-      src/boosting/cuda/nccl_gbdt.cpp
       src/metric/cuda/cuda_binary_metric.cpp
       src/metric/cuda/cuda_pointwise_metric.cpp
       src/metric/cuda/cuda_regression_metric.cpp
@@ -515,6 +522,10 @@ set(
       src/cuda/cuda_utils.cpp
       src/cuda/cuda_algorithms.cu
 )
+
+if(USE_NCCL)
+  list(APPEND LGBM_CUDA_SOURCES src/boosting/cuda/nccl_gbdt.cpp)
+endif()
 
 if(USE_CUDA OR USE_ROCM)
   list(APPEND LGBM_SOURCES ${LGBM_CUDA_SOURCES})
@@ -650,7 +661,7 @@ if(USE_GPU)
   target_link_libraries(lightgbm_objs PUBLIC ${OpenCL_LIBRARY} ${Boost_LIBRARIES})
 endif()
 
-if(USE_CUDA)
+if(USE_CUDA AND USE_NCCL)
   target_link_libraries(lightgbm_objs PUBLIC NCCL::NCCL)
 endif()
 
