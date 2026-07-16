@@ -207,6 +207,7 @@ figures from the profiles in the PR discussions.
   The real, re-confirmed lock is covtype 1023/10 quant GROWTH=1 = 5f4e7bdfff1e /
   GROWTH=0 = fcb9f6c2ab87 (unchanged since 3afe7c62; the fix's row-cap never triggers on
   covtype). Do NOT propagate 22c0ff5e95de anywhere.
+  fixed-point outlier-robust scale LANDED (d24ab00b, EXABOOST_FIXEDPOINT_ROBUST, default-on within fixedpoint): gap-gated bulk re-anchoring recovers fraud/deep 0.940->0.973 (near non-quant 0.975), balanced cases bit-identical, speed-neutral, deterministic -- the fixed-point mode is now complete for both balanced and imbalanced data.
   Still open: bins-default proposal (16 restores deep quality at ~0 cost but is an
   upstream-parity/model-change decision -- NOT flipped); fixed-point outlier-robust scale;
   constant-hessian special case for regression quant; quant one-sync parity.
