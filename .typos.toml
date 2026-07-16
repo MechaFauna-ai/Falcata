@@ -4,6 +4,8 @@ default.extend-ignore-re = [
   "mis-alignment",
   "mis-spelled",
   "posix-seh-rt",
+  # CUDA driver/runtime attribute enum (spelled "Optin" by NVIDIA):
+  "cudaDevAttrMaxSharedMemoryPerBlockOptin",
 ]
 
 [default.extend-words]
