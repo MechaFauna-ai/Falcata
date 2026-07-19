@@ -90,6 +90,16 @@ figures from the profiles in the PR discussions.
   packs ~10x more features per partition -> fewer
   partitions, less shared->global merge traffic. One-time ~0.5s compile amortized over
   thousands of trees; needs AOT fallback.
+  IN PROGRESS (session goal): NVRTC JIT construct infra WORKING (60cfa129:
+  cuda_construct_jit.{hpp,cpp}, compile shape-consts->PTX->module, shape-keyed cache,
+  AOT fallback, self-tests bit-identity, ~160ms one-time compile; EXABOOST_CONSTRUCT_JIT=1,
+  not yet the live batched path). The big win landed via the compact-view-for-quant lever
+  (was hard-disabled): numerai-quant construct 2.46x (32/5) / 1.96x (1024/10),
+  BIT-IDENTICAL (independently verified ff=0.1 compact on/off both = 8f0f9f915449),
+  default-on, EXABOOST_CONSTRUCT_COMPACT_QUANT=0 kill-switch. Phase 3: wire JIT as live
+  construct path + score all benchmarks + test whether the bin-cap benches (higgs/epsilon/
+  year) have REAL headroom (phase-1 NO-GO was on upper-bound roofline estimates) or are
+  genuinely at roofline (then bit-identical no-regression is the honest outcome there).
 - [ ] **Runtime auto-tuner tier 3 -- persisted tuning cache**: store best-found configs
   keyed by dataset-shape signature (FFTW-wisdom style) so retrains skip exploration.
 - [ ] **Selective-growth churn reduction.** covtype 64/12 applies 2.09x the final split
@@ -220,8 +230,30 @@ figures from the profiles in the PR discussions.
   numerai unchanged at 763c75c0d9cb; TreeSHAP 0.048->1e-16, OOS 0.45->1e-17). These
   (1bfd2d7aed5f / 26852449fbac) are now the canonical covtype locks.
   fixed-point outlier-robust scale LANDED (d24ab00b, EXABOOST_FIXEDPOINT_ROBUST, default-on within fixedpoint): gap-gated bulk re-anchoring recovers fraud/deep 0.940->0.973 (near non-quant 0.975), balanced cases bit-identical, speed-neutral, deterministic -- the fixed-point mode is now complete for both balanced and imbalanced data.
-  Still open: bins-default proposal (16 restores deep quality at ~0 cost but is an
-  upstream-parity/model-change decision -- NOT flipped); fixed-point outlier-robust scale;
+  Quant one-sync parity INVESTIGATED -> honest-negative (parked on branch
+  one-sync-quant-wip, EXABOOST_HYBRID_ONE_SYNC_QUANT opt-in): bit-correct but 1-4%
+  slower -- the quant per-level sync is already cheap/overlapped and the speculative
+  construct's parent-bounded grid costs more than the sync saves. Real lever (shared
+  with graph-quant): a tighter device-side CHILD-size construct grid (parent-bounded
+  is ~2x the smaller child).
+  Constant-hessian regression special case: CONFIRMED STRUCTURAL NEGATIVE (two
+  agents; second one built a working prototype + measured deep configs). Can't drop a
+  histogram tier: the gradient field is SIGNED int16 (histogram_constructor.cu:1122,
+  static_cast<int16_t>(packed>>16)), so signed grad ±(bins/2)*nd needs the SAME width
+  as unsigned hess bins*nd -- the /2 and the sign bit cancel. Even FORCING tier drops
+  (numerai-deep: 564 leaves 64->16-bit) yields <0.2% construct delta because construct
+  is bound by the per-row BIN READ + shared-hist update, NOT accumulation width, and
+  the batched launch is gated by the largest leaf. Count-mode is a bit-identical no-op.
+  Broader lesson: construct (92.5% of GPU) is bin-read-bound -- accumulation-width and
+  sync ideas are tapped; real construct levers are bin-byte reduction (4-bit packing +
+  int8 ingestion, both DONE) and partition efficiency (NVRTC shape-specialization,
+  tier-2). bins=2 max-aggressive mode remains a separate future lever.)
+  num_grad_quant_bins default DECIDED: keep 4. With fixed-point mode covering the
+  near-lossless (XGBoost ~30-bit) end, the two quant modes are deliberate EXTREMES
+  (aggressive bins=4 stochastic vs fixed-point near-lossless); bumping to 16 was only
+  a patch for the aggressive mode's quality, now served by switching mode. Keeps modes
+  distinct + upstream-compatible. Deep/small-leaf quality is a documented characteristic
+  of the extreme mode -> point users to fixed-point/non-quant. fixed-point outlier-robust scale;
   constant-hessian special case for regression quant; quant one-sync parity.
 - [ ] **Hybrid coverage extensions.** The hybrid/graph fast paths currently fall
   back to the classic loop for: categorical features (variable-length bitset

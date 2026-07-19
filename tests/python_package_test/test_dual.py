@@ -1119,6 +1119,16 @@ _QUANT_MD5_WORKER = textwrap.dedent(
         y = (X @ rng.standard_normal(m) + rng.standard_normal(n)).astype(np.float64)
         p = {"objective": "regression", "num_leaves": 31, "max_depth": 6,
              "max_bin": 15, "learning_rate": 0.1, "use_quantized_grad": True}
+    elif profile == "sampled":
+        # many low-bin features + feature_fraction < 1 -> the compact column view
+        # engages (only the sampled columns are materialized/gathered). Low bin
+        # count keeps the quant construct kernel on the dense (non-sparse) path.
+        m = 600
+        X = rng.integers(0, 6, size=(n, m)).astype(np.float64)
+        y = (X @ rng.standard_normal(m) + rng.standard_normal(n)).astype(np.float64)
+        p = {"objective": "regression", "num_leaves": 31, "max_depth": 6,
+             "max_bin": 15, "learning_rate": 0.1, "use_quantized_grad": True,
+             "feature_fraction": 0.2}
     else:  # "dense": full-width dense quant (fast-rowdata / gpu-construct / efb)
         m = 20
         X = rng.standard_normal((n, m)).astype(np.float64)
@@ -1175,6 +1185,24 @@ _KILL_SWITCH_CASES = [
     ("dense", {}, {"EXABOOST_FAST_ROWDATA": "0"}, "EXABOOST_FAST_ROWDATA"),
     ("dense", {}, {"EXABOOST_GPU_CONSTRUCT": "0"}, "EXABOOST_GPU_CONSTRUCT"),
     ("dense", {}, {"EXABOOST_EFB_PRECHECK": "0"}, "EXABOOST_EFB_PRECHECK"),
+    # compact column view for QUANT construct: default ON (materializes only the
+    # sampled columns and feeds the same discretized kernel); ff<1 engages it, so
+    # the model must be bit-identical to the full-column path.
+    ("sampled", {}, {"EXABOOST_CONSTRUCT_COMPACT_QUANT": "0"}, "EXABOOST_CONSTRUCT_COMPACT_QUANT"),
+    # NVRTC construct JIT LIVE path: EXABOOST_CONSTRUCT_JIT=1 self-tests then
+    # runs the JIT-compiled construct_jit_batched kernel as the live construct on
+    # the compact-quant path (the "sampled" profile is ff<1 low-bin -> 4-bit
+    # compact -> JIT engages). The trained model must be BIT-IDENTICAL to the
+    # AOT-off default (integer atomics order-invariant): the JIT is a perf-only
+    # fast path that cannot alter results.
+    ("sampled", {}, {"EXABOOST_CONSTRUCT_JIT": "1"}, "EXABOOST_CONSTRUCT_JIT"),
+    # same, forcing the 8-bit (non-4bit) compact JIT kernel via ROWDATA_4BIT=0.
+    (
+        "sampled",
+        {"EXABOOST_ROWDATA_4BIT": "0"},
+        {"EXABOOST_CONSTRUCT_JIT": "1", "EXABOOST_ROWDATA_4BIT": "0"},
+        "EXABOOST_CONSTRUCT_JIT_8BIT",
+    ),
 ]
 
 

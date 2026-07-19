@@ -23,6 +23,7 @@
 
 #include "cuda_leaf_splits.hpp"
 #include "cuda_hybrid_graph.hpp"
+#include "cuda_construct_jit.hpp"
 
 #define NUM_DATA_PER_THREAD (400)
 #define NUM_THREADS_PER_BLOCK (504)
@@ -643,6 +644,40 @@ class CUDAHistogramConstructor {
    *  selects the contention-free construct body on the batched compact path
    *  (non-quantized only; EXABOOST_BATCH_REGHIST=0 disables) */
   bool construct_reg_bins_ = false;
+
+  // Runtime NVRTC JIT of the shape-specialized quantized construct kernel
+  // (EXABOOST_CONSTRUCT_JIT=1; default OFF -> AOT compact-quant fast path). The
+  // JIT is validated bit-identical vs AOT before any use; see cuda_construct_jit.
+  CUDAConstructJIT construct_jit_;
+  bool construct_jit_selftest_done_ = false;
+  // Canonical live shape keys (must match the self-test keys so validation
+  // transfers). Populated by RunConstructJITSelfTest; used by the live dispatch.
+  // One per packing (8-bit dense / 4-bit nibble-packed), armed independently.
+  ConstructJITShapeKey construct_jit_live_key_[2];      // [0]=8-bit, [1]=4-bit
+  bool construct_jit_live_ready_[2] = {false, false};   // self-test validated -> live launch allowed
+
+ public:
+  // One-time NVRTC pipeline self-check (compile + module load + launch +
+  // bit-identity vs a reference histogram). Proves the JIT path works
+  // end-to-end without touching the trained model. No-op unless
+  // EXABOOST_CONSTRUCT_JIT=1. Returns true if the JIT produced identical bins.
+  bool RunConstructJITSelfTest();
+
+ private:
+  // One-shape self-test: compile + launch construct_jit_batched for a given
+  // packing and confirm bit-identity vs a host reference (arms the live path).
+  bool RunConstructJITSelfTestShape(bool is_4bit, int sm_major, int sm_minor);
+
+  // Live JIT batched construct launch for the non-graph, host-launched, non-4bit
+  // dense compact-quant path. Returns true iff it launched the validated JIT
+  // kernel (bit-identical to the AOT kernel); false => caller runs AOT. Declines
+  // for graph capture, non-uint8 bins, mismatched shared-hist size, speculative
+  // (level_smaller_num_data != null) flow, or an unvalidated shape.
+  bool TryLaunchConstructJITBatchedCompactQuant(
+    const dim3& grid_dim, const dim3& block_dim,
+    const CUDAHybridPairDescriptor* pair_descs,
+    const data_size_t* level_smaller_num_data,
+    int shared_hist_size, size_t bin_type_bytes);
 
   // ========================================================================
   // Compact-view buffers: when feature_fraction < 1.0, build a contiguous

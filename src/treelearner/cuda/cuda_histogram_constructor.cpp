@@ -16,6 +16,26 @@
 
 namespace LightGBM {
 
+namespace {
+
+// EXABOOST_CONSTRUCT_COMPACT_QUANT: enable the compact column view for quantized
+// training (default ON). The compact view materializes ONLY the tree's sampled
+// columns into a row-major-in-partition bin matrix and feeds the SAME discretized
+// construct kernel with the compact metadata, so unused columns' zero/gather/merge
+// work is skipped (numerai ff=0.1 -> ~90% of columns skipped). Integer-atomic
+// accumulation is order-invariant and the per-used-column absolute hist offsets are
+// preserved, so the histograms are BIT-IDENTICAL to the full-data path. Kill switch:
+// EXABOOST_CONSTRUCT_COMPACT_QUANT=0 -> quant falls back to the full-data kernel.
+bool CompactQuantEnabled() {
+  static const bool enabled = []() {
+    const char* env = std::getenv("EXABOOST_CONSTRUCT_COMPACT_QUANT");
+    return env == nullptr || std::string(env) != std::string("0");
+  }();
+  return enabled;
+}
+
+}  // namespace
+
 CUDAHistogramConstructor::CUDAHistogramConstructor(
   const Dataset* train_data,
   const int num_leaves,
@@ -239,7 +259,8 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
   // Gate: only support the standard dense path (uint8 bins, no large-bin partitions, no sparse).
   // This is what our Numerai workload uses; other paths fall back to the full kernel.
   if (cuda_row_data_->is_sparse() || cuda_row_data_->bit_type() != 8 ||
-      cuda_row_data_->NumLargeBinPartition() > 0 || use_quantized_grad_) {
+      cuda_row_data_->NumLargeBinPartition() > 0 ||
+      (use_quantized_grad_ && !CompactQuantEnabled())) {
     return false;
   }
   if (is_feature_used_bytree.empty()) return false;
