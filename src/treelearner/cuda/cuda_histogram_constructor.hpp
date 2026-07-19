@@ -36,18 +36,19 @@
 namespace LightGBM {
 
 /*! \brief fp32-pair global histogram storage for the non-quantized CUDA path
- *  (EXABOOST_FP32_HIST=1 requests; default off = hist_t/double pairs, the
- *  historical behavior). The actual engagement additionally requires the dense
- *  shared-memory layout (see CUDAHistogramConstructor::Init) and is exposed via
- *  hist_fp32(). Halves global histogram bandwidth (construct merge, fix,
- *  subtract, find reads); results are quality-gated, not bit-identical. */
-inline bool ExaboostFP32HistRequested() {
-  static const bool requested = []() {
-    const char* env = std::getenv("EXABOOST_FP32_HIST");
-    return env != nullptr && std::string(env) == "1";
-  }();
+ *  (config cuda_precision=fp32 requests; default fp64 = hist_t/double pairs,
+ *  the historical behavior). The actual engagement additionally requires the
+ *  dense shared-memory layout (see CUDAHistogramConstructor::Init) and is
+ *  exposed via hist_fp32(). Halves global histogram bandwidth (construct
+ *  merge, fix, subtract, find reads); results are quality-gated, not
+ *  bit-identical. Process-global, set from Config by the tree learner's Init
+ *  before any consumer reads it (concurrent in-process boosters with
+ *  different precisions are unsupported, same as the env var this replaced). */
+inline bool& ExaboostFP32HistRequestedFlag() {
+  static bool requested = false;
   return requested;
 }
+inline bool ExaboostFP32HistRequested() { return ExaboostFP32HistRequestedFlag(); }
 
 /*! \brief y-grid sizing formula of the batched per-level construct kernel,
  *  shared verbatim by the host launch sizing (CalcConstructHistogramBatchedKernelDim)

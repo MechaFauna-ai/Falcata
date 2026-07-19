@@ -30,16 +30,17 @@
 namespace LightGBM {
 
 /*! \brief fp32 per-bin gain arithmetic in the best-split find kernels
- *  (EXABOOST_FP32_GAIN=1 enables; default off = fp64, the historical behavior).
+ *  (config cuda_precision=fp32 enables; default fp64, the historical behavior).
  *  Leaf-level sums stay double and are converted once per task; results are
- *  quality-gated, not bit-identical. */
-inline bool ExaboostFP32GainEnabled() {
-  static const bool enabled = []() {
-    const char* env = std::getenv("EXABOOST_FP32_GAIN");
-    return env != nullptr && std::string(env) == "1";
-  }();
+ *  quality-gated, not bit-identical. Process-global, set from Config by the
+ *  tree learner's Init before any consumer reads it (concurrent in-process
+ *  boosters with different precisions are unsupported, same as the env var
+ *  this replaced). */
+inline bool& ExaboostFP32GainEnabledFlag() {
+  static bool enabled = false;
   return enabled;
 }
+inline bool ExaboostFP32GainEnabled() { return ExaboostFP32GainEnabledFlag(); }
 
 struct SplitFindTask {
   int inner_feature_index;

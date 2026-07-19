@@ -59,51 +59,39 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     gpu_device_id_ = config_->gpu_device_id >= 0 ? config_->gpu_device_id : 0;
     SetCUDADevice(gpu_device_id_, __FILE__, __LINE__);
   }
-  // Fixed-point quant mode (EXABOOST_FIXEDPOINT_QUANT=1): xgboost-inspired
-  // near-lossless deterministic quantization. Non-stochastic round-to-nearest
-  // over a high bin count fills the int16 gradient range, and the existing
-  // packed-histogram path already auto-promotes to exact int32/int64
-  // accumulation as num_data*bins grows -- so no rounding noise accumulates and
-  // results are run-to-run identical. When enabled it raises the effective
-  // num_grad_quant_bins (tunable via EXABOOST_FIXEDPOINT_BINS, default 64) and
-  // forces non-stochastic rounding. The same effective bin count must reach BOTH
-  // the histogram constructor (its 65534/bins per-block row cap guards packed-
-  // hist overflow) and the discretizer (dequant scale), so compute it once here.
-  fixedpoint_quant_ = false;
-  fixedpoint_robust_scale_ = false;
+  // quant_mode=fixedpoint: xgboost-inspired near-lossless deterministic
+  // quantization. Non-stochastic round-to-nearest over a high bin count fills
+  // the int16 gradient range, and the existing packed-histogram path already
+  // auto-promotes to exact int32/int64 accumulation as num_data*bins grows --
+  // so no rounding noise accumulates and results are run-to-run identical.
+  // The same bin count (config quant_bins, auto=64 for fixedpoint) must reach
+  // BOTH the histogram constructor (its 65534/bins per-block row cap guards
+  // packed-hist overflow) and the discretizer (dequant scale), so it is
+  // resolved once in Config::ResolveExaBoostParams.
+  //
+  // The outlier-robust gradient scale is an unconditional part of fixedpoint
+  // mode: it is gap-gated (see ComputeRobustGradScaleKernel), so balanced
+  // gradient distributions keep the exact global-max scale bit-for-bit, and
+  // only a genuinely imbalanced distribution (rare-class outliers separated
+  // from the bulk by an empty magnitude gap) gets the bulk re-anchored while
+  // the outliers clamp to +/-(bins/2) -- exactly the magnitude bound the
+  // global-max path guarantees, so SetNumBitsInHistogramBin's num_data*bins
+  // promotion stays valid. Users unhappy with fixedpoint quality should step
+  // down to quant_mode=stochastic or none, not tune the scale.
+  const QuantMode quant_mode = config_->ResolvedQuantMode();
+  fixedpoint_quant_ = (quant_mode == QuantMode::kFixedPoint);
+  fixedpoint_robust_scale_ = fixedpoint_quant_;
   effective_quant_bins_ = config_->num_grad_quant_bins;
-  if (config_->use_quantized_grad) {
-    const char* fp_env = std::getenv("EXABOOST_FIXEDPOINT_QUANT");
-    if (fp_env != nullptr && std::atoi(fp_env) != 0) {
-      fixedpoint_quant_ = true;
-      effective_quant_bins_ = 64;
-      const char* fp_bins_env = std::getenv("EXABOOST_FIXEDPOINT_BINS");
-      if (fp_bins_env != nullptr) {
-        const int b = std::atoi(fp_bins_env);
-        // int16 discretized gradient holds +/-(bins/2); cap well inside range
-        if (b >= 2 && b <= 65534) {
-          effective_quant_bins_ = b;
-        }
-      }
-      // Outlier-robust gradient scale (default ON within fixed-point mode;
-      // EXABOOST_FIXEDPOINT_ROBUST=0 restores the plain global-max scale). On
-      // heavily-imbalanced data (fraud) the rare-positive gradients are huge
-      // outliers that dominate a global max|grad| scale, crushing the bulk of
-      // gradients to near-zero quant resolution. The robust scale instead maps a
-      // high percentile of |grad| to the max quant magnitude and clamps the rare
-      // outliers to +/-(bins/2), giving the common gradients full resolution. The
-      // clamp keeps every quantized magnitude <= bins/2, exactly as the global-max
-      // path guarantees, so the histogram bit-width promotion (num_data*bins bound
-      // in SetNumBitsInHistogramBin) stays valid with no overflow risk.
-      fixedpoint_robust_scale_ = true;
-      const char* fp_robust_env = std::getenv("EXABOOST_FIXEDPOINT_ROBUST");
-      if (fp_robust_env != nullptr && std::atoi(fp_robust_env) == 0) {
-        fixedpoint_robust_scale_ = false;
-      }
-      Log::Info("EXABOOST_FIXEDPOINT_QUANT: non-stochastic quant with %d bins (robust_scale=%d)",
-        effective_quant_bins_, fixedpoint_robust_scale_ ? 1 : 0);
-    }
+  if (fixedpoint_quant_) {
+    Log::Info("quant_mode=fixedpoint: non-stochastic quant with %d bins", effective_quant_bins_);
   }
+  // cuda_precision=fp32 engages both fp32 switches (histogram storage + gain
+  // math). They were only ever measured -- and only ever win -- together, so
+  // one knob. Must be set before the histogram constructor / best split finder
+  // below read the process-global flags.
+  const bool fp32 = (config_->ResolvedCudaPrecision() == CudaPrecision::kFP32);
+  ExaboostFP32HistRequestedFlag() = fp32;
+  ExaboostFP32GainEnabledFlag() = fp32;
   cuda_smaller_leaf_splits_.reset(new CUDALeafSplits(num_data_));
   cuda_smaller_leaf_splits_->SetNCCLInfo(nccl_communicator_, nccl_gpu_rank_, local_gpu_rank_, gpu_device_id_, global_num_data_);
   cuda_smaller_leaf_splits_->Init(config_->use_quantized_grad);
