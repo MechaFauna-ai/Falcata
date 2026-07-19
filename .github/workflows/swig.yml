@@ -91,6 +91,7 @@ jobs:
           name: ${{ matrix.artifact-name }}
           path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/*.jar
           if-no-files-found: error
+          retention-days: 3
   all-swig-jobs-successful:
     if: always()
     runs-on: ubuntu-latest

@@ -83,6 +83,7 @@ jobs:
           name: linux-aarch64-wheel
           path: artifacts/*.whl
           if-no-files-found: error
+          retention-days: 3
   test:
     # yamllint disable-line rule:line-length
     name: ${{ matrix.task }} ${{ matrix.method }} (${{ matrix.os-display-name || matrix.os }}, ${{ matrix.compiler }}, Python ${{ matrix.python_version }})
@@ -364,6 +365,7 @@ jobs:
             artifacts/*.tar.gz
             artifacts/*.whl
           if-no-files-found: error
+          retention-days: 3
   create-nuget:
     name: NuGet package
     runs-on: ubuntu-latest
@@ -406,6 +408,7 @@ jobs:
           name: nuget-package
           path: artifacts/*.nupkg
           if-no-files-found: error
+          retention-days: 3
 
   test-latest-versions:
     name: Python - latest versions (manylinux_2_28)

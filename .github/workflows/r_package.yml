@@ -217,6 +217,7 @@ jobs:
           name: ${{ matrix.artifact-name }}
           path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/*.tar.gz
           if-no-files-found: error
+          retention-days: 3
   test-r-sanitizers:
     name: r-sanitizers (ubuntu-latest, R-devel, ${{ matrix.compiler }} ASAN/UBSAN)
     timeout-minutes: 60

@@ -66,6 +66,7 @@ jobs:
             ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/commit.txt
             ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/LightGBM-complete_source_code_tar_gz.tar.gz
           if-no-files-found: error
+          retention-days: 3
   all-build-jobs-successful:
     if: always()
     runs-on: ubuntu-latest
