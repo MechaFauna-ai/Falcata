@@ -79,20 +79,40 @@ REGIMES = {
     "smoke": {"rounds": 10, "lr": 0.1, "depth": 6, "leaves": 63, "eval_every": 5},
 }
 
-#: exaboost/lightgbm both install as package "lightgbm", hence two venvs
+#: exaboost/lightgbm both install as package "lightgbm", hence separate venvs
 LIBRARIES = [
     "exaboost",
     "exaboost-quant",
     "lightgbm",
     "lightgbm-quant",
+    "lightgbm-ocl",
     "xgboost",
     "catboost",
 ]
 
+#: cells a library participates in ((dataset, regime) pairs); libraries not
+#: listed run the full matrix. lightgbm-ocl (upstream's OpenCL backend) exists
+#: only to fill the numerai holes left by upstream CUDA crashes -- we don't
+#: want OpenCL rows for cells the CUDA build already covers.
+LIBRARY_CELLS = {
+    "lightgbm-ocl": {("numerai", "numerai"), ("numerai", "numerai-deep")},
+}
+
+
+def library_runs_cell(library: str, dataset: str, regime: str) -> bool:
+    """Whether ``library`` participates in the (dataset, regime) cell."""
+    cells = LIBRARY_CELLS.get(library)
+    return cells is None or (dataset, regime) in cells
+
 
 def venv_python(library: str) -> str:
     """Path of the venv python that owns ``library`` (see setup_envs.sh)."""
-    env = "env-exaboost" if library.startswith("exaboost") else "env-competitors"
+    if library.startswith("exaboost"):
+        env = "env-exaboost"
+    elif library == "lightgbm-ocl":
+        env = "env-lightgbm-ocl"
+    else:
+        env = "env-competitors"
     override = os.environ.get(f"EXABOOST_BENCH_PY_{env.replace('-', '_').upper()}")
     return override or os.path.join(ROOT, env, "bin", "python")
 

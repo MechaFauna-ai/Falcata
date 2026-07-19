@@ -123,7 +123,9 @@ def numerai_corr_np(preds, targets):
 
 
 def numerai_metrics(preds, y, era):
-    corrs = np.array([numerai_corr_np(preds[era == e], y[era == e]) for e in np.unique(era)])
+    corrs = np.array(
+        [numerai_corr_np(preds[era == e], y[era == e]) for e in np.unique(era)]
+    )
     mean, std = corrs.mean(), corrs.std(ddof=0)
     cumulative = np.cumprod(1 + corrs)
     rolling_max = np.maximum.accumulate(cumulative)
@@ -158,7 +160,7 @@ def quality_metrics(task, preds, y, extra):
     raise ValueError(task)
 
 
-def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, quantized, curve):
+def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, quantized, curve, opencl=False):
     import lightgbm as lgb
 
     params = {
@@ -172,12 +174,27 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, quantized, curve):
         "num_leaves": reg["leaves"],
         "max_depth": reg["depth"],
         "max_bin": 255,
-        "device_type": "cuda",
+        # OpenCL backend ("gpu"): platform 0 is the only ICD on the bench box
+        # (NVIDIA); used only where the upstream CUDA build crashes
+        "device_type": "gpu" if opencl else "cuda",
         "num_threads": os.cpu_count(),
         "seed": SEED,
         "verbose": -1,
-        "metric": "None",
+        # plain runs never evaluate, so metric stays "None" there; curve runs
+        # need a real eval metric or eval_valid() returns no results and the
+        # curve records null quality (matching the metrics xgboost curves use)
+        "metric": {
+            "binary": "auc",
+            "multiclass": "multi_logloss",
+            "regression": "rmse",
+            "numerai": "rmse",
+        }[task]
+        if curve
+        else "None",
     }
+    if opencl:
+        params["gpu_platform_id"] = 0
+        params["gpu_device_id"] = 0
     if task == "multiclass":
         params["num_class"] = DATASETS["covtype"]["num_class"]
     if "colsample" in reg:
@@ -205,7 +222,9 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, quantized, curve):
             bst.update()
             if (i + 1) % reg["eval_every"] == 0 or i + 1 == reg["rounds"]:
                 res = bst.eval_valid()
-                curve_pts.append([i + 1, time.perf_counter() - t0, res[0][2] if res else None])
+                curve_pts.append(
+                    [i + 1, time.perf_counter() - t0, res[0][2] if res else None]
+                )
     else:
         bst = lgb.train(params, dtrain, num_boost_round=reg["rounds"])
     train_s = time.perf_counter() - t0
@@ -268,7 +287,9 @@ def run_xgboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
             bst.update(dtrain, i)
             if (i + 1) % reg["eval_every"] == 0 or i + 1 == reg["rounds"]:
                 res = bst.eval_set([(dtest, "test")], i)
-                curve_pts.append([i + 1, time.perf_counter() - t0, float(res.split(":")[-1])])
+                curve_pts.append(
+                    [i + 1, time.perf_counter() - t0, float(res.split(":")[-1])]
+                )
     else:
         bst = xgb.train(params, dtrain, num_boost_round=reg["rounds"])
     train_s = time.perf_counter() - t0
@@ -277,7 +298,10 @@ def run_xgboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
     # the device while the trained booster is still resident
     step = 200_000
     preds = np.concatenate(
-        [bst.inplace_predict(np.ascontiguousarray(x_te[i : i + step])) for i in range(0, x_te.shape[0], step)]
+        [
+            bst.inplace_predict(np.ascontiguousarray(x_te[i : i + step]))
+            for i in range(0, x_te.shape[0], step)
+        ]
     )
     return {
         "construct_s": construct_s,
@@ -320,7 +344,11 @@ def run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
     train_pool = cb.Pool(np.asarray(x_tr), label=y_tr)
     construct_s = time.perf_counter() - t0
 
-    cls = cb.CatBoostClassifier if task in ("binary", "multiclass") else cb.CatBoostRegressor
+    cls = (
+        cb.CatBoostClassifier
+        if task in ("binary", "multiclass")
+        else cb.CatBoostRegressor
+    )
 
     def fit(kw):
         model = cls(**kw)
@@ -353,7 +381,10 @@ def run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
             series = vals[next(iter(vals))]
             n = len(series)
             # no per-iteration wall clock exposed; approximate linearly
-            curve_pts = [[i + 1, train_s * (i + 1) / n, series[i]] for i in range(0, n, reg["eval_every"])]
+            curve_pts = [
+                [i + 1, train_s * (i + 1) / n, series[i]]
+                for i in range(0, n, reg["eval_every"])
+            ]
 
     if task == "binary":
         preds = model.predict_proba(np.asarray(x_te))[:, 1]
@@ -383,6 +414,7 @@ def main():
             "exaboost-quant",
             "lightgbm",
             "lightgbm-quant",
+            "lightgbm-ocl",
             "xgboost",
             "catboost",
         ],
@@ -395,6 +427,8 @@ def main():
 
     task = DATASETS[args.dataset]["task"]
     reg = REGIMES[args.regime]
+    if args.kind == "warmup" and "warmup_rounds" in reg:
+        reg = {**reg, "rounds": reg["warmup_rounds"]}
     curve = args.kind == "curve"
 
     rec = {
@@ -419,6 +453,7 @@ def main():
                     reg,
                     quantized=args.library.endswith("-quant"),
                     curve=curve,
+                    opencl=args.library == "lightgbm-ocl",
                 )
             elif args.library == "xgboost":
                 r = run_xgboost(task, x_tr, y_tr, x_te, y_te, reg, curve)

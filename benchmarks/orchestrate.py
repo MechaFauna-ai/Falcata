@@ -19,13 +19,24 @@ import subprocess
 import sys
 import time
 
-from common import LIBRARIES, RUNS_JSONL, dataset_ready, regimes_for, venv_python
+from common import (
+    LIBRARIES,
+    RUNS_JSONL,
+    dataset_ready,
+    library_runs_cell,
+    regimes_for,
+    venv_python,
+)
 
 BENCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench.py")
 
 #: small/fast first for early signal; the huge ones last
 DATASET_ORDER = ["fraud", "covtype", "year", "higgs", "epsilon", "numerai", "airline"]
 KINDS = ["warmup", "timed1", "timed2", "timed3", "curve"]
+#: multi-hour 30k-tree runs measure ±1% across repeats and warm their own
+#: caches during construct — ONE timed run per library, no warmup, no curve
+#: (fast cells keep the full warmup+3+curve protocol)
+REGIME_KINDS = {"numerai-deep": ["timed1"]}
 TIMEOUT_S = {
     "fraud": 1800,
     "covtype": 1800,
@@ -84,7 +95,9 @@ def main():
             continue
         for reg in regimes_for(ds):
             for lib in LIBRARIES:
-                for kind in KINDS:
+                if not library_runs_cell(lib, ds, reg):
+                    continue
+                for kind in REGIME_KINDS.get(reg, KINDS):
                     cells.append((lib, ds, reg, kind))
 
     done = load_done()
