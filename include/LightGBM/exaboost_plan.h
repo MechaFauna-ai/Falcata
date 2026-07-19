@@ -79,6 +79,13 @@ struct ExaBoostPlan {
   int batch_construct_saturation_floor = 160;
   int construct_column_cap = -1;    // -1 = auto sizing
 
+  // --- resolved facts from Config (no keys; inputs to auto decisions) -------
+  // Quantized training active. Shape auto-decisions that only win under the
+  // quantized construct kernel (e.g. the low-bin column-cap lowering) gate on
+  // this: the 252-column auto-cap measured +7% construct on quant numerai but
+  // -2% wall on the non-quant numerai config (4-bit packed + compact view).
+  bool quant_training = false;
+
   /*! \brief The process-global plan (mutable form, for the resolve points). */
   static ExaBoostPlan& Mutable() {
     static ExaBoostPlan plan;
@@ -94,6 +101,7 @@ struct ExaBoostPlan {
    */
   static void ResolveFromConfig(const Config& config) {
     ExaBoostPlan plan;  // defaults = the auto plan
+    plan.quant_training = config.ResolvedQuantMode() != QuantMode::kNone;
     std::string spec = Common::Trim(config.cuda_plan);
     std::transform(spec.begin(), spec.end(), spec.begin(),
                    [](unsigned char c) { return std::tolower(c); });

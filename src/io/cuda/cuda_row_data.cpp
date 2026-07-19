@@ -267,12 +267,21 @@ void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingSha
   const uint32_t max_num_bin_per_partition = shared_hist_size_ / 2;
   // Shape-specialized column cap (see ConstructColumnCapEnv): 504 upstream, lower
   // for low-bin many-feature data to raise construct block_dim_y. Auto-trigger:
-  // per-column bins are small (<= kLowBinPerCol) AND there are enough columns that
-  // the 504 cap would bind (forcing block_dim_y=1). Bit-identical either way.
+  // QUANT training AND per-column bins are small (<= kLowBinPerCol) AND there are
+  // enough columns that the 504 cap would bind (forcing block_dim_y=1).
+  // Bit-identical either way. Quant-only because the win is specific to the
+  // quantized construct kernel (integer shared atomics over all columns):
+  // measured +7% construct on quant numerai, but -2% wall on the NON-quant
+  // numerai config, whose 4-bit compact view already skips unused columns and
+  // pays for the doubled partition count instead. Explicit construct_column_cap
+  // still forces the cap in either mode.
   const int column_cap = [&]() {
     const int env = ConstructColumnCapEnv();
     if (env >= 0) {
       return env;  // explicit override or kill switch
+    }
+    if (!ExaBoostPlan::Get().quant_training) {
+      return 504;  // upstream cap: the lowered cap only wins under quant
     }
     constexpr uint32_t kLowBinPerCol = 32;  // low-bin regime (numerai ~6)
     constexpr int kAutoCap = 252;           // block_dim_y=2; measured sweet spot
