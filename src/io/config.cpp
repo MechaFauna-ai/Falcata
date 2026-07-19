@@ -287,6 +287,8 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
 
   GetMembersFromString(params);
 
+  ResolveExaBoostParams();
+
   GetAucMuWeights();
 
   GetInteractionConstraints();
@@ -312,6 +314,42 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
 
   // check for conflicts
   CheckParamConflict(params);
+}
+
+void Config::ResolveExaBoostParams() {
+  // quant_mode: "auto" defers to use_quantized_grad for backward compatibility;
+  // an explicit mode is authoritative and drives use_quantized_grad.
+  std::string mode = Common::Trim(quant_mode);
+  std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c){ return std::tolower(c); });
+  if (mode == std::string("auto")) {
+    mode = use_quantized_grad ? "stochastic" : "none";
+  } else if (mode == std::string("none") || mode == std::string("stochastic") ||
+             mode == std::string("fixedpoint")) {
+    use_quantized_grad = (mode != std::string("none"));
+  } else {
+    Log::Fatal("Unknown quant_mode \"%s\": must be one of auto, none, stochastic, fixedpoint",
+               quant_mode.c_str());
+  }
+  quant_mode = mode;
+  if (mode == std::string("fixedpoint") && device_type != std::string("cuda")) {
+    Log::Fatal("quant_mode=fixedpoint works only with device_type=cuda");
+  }
+  // quant_bins: 0 means auto (the LightGBM-historical 4 for stochastic; 64 for
+  // fixedpoint, whose deterministic rounding needs the finer scale). The int16
+  // discretized gradient holds +/-(bins/2), so cap well inside that range.
+  if (num_grad_quant_bins == 0) {
+    num_grad_quant_bins = (mode == std::string("fixedpoint")) ? 64 : 4;
+  } else if (num_grad_quant_bins < 2 || num_grad_quant_bins > 65534) {
+    Log::Fatal("quant_bins=%d is out of range: must be 0 (auto) or in [2, 65534]",
+               num_grad_quant_bins);
+  }
+  // cuda_precision
+  std::string precision = Common::Trim(cuda_precision);
+  std::transform(precision.begin(), precision.end(), precision.begin(), [](unsigned char c){ return std::tolower(c); });
+  if (precision != std::string("fp64") && precision != std::string("fp32")) {
+    Log::Fatal("Unknown cuda_precision \"%s\": must be fp64 or fp32", cuda_precision.c_str());
+  }
+  cuda_precision = precision;
 }
 
 bool CheckMultiClassObjective(const std::string& objective) {

@@ -741,13 +741,29 @@ Learning Control Parameters
 
    -  *New in version 4.0.0*
 
--  ``num_grad_quant_bins`` :raw-html:`<a id="num_grad_quant_bins" title="Permalink to this parameter" href="#num_grad_quant_bins">&#x1F517;&#xFE0E;</a>`, default = ``4``, type = int
+-  ``quant_mode`` :raw-html:`<a id="quant_mode" title="Permalink to this parameter" href="#quant_mode">&#x1F517;&#xFE0E;</a>`, default = ``auto``, type = string
 
-   -  used only if ``use_quantized_grad=true``
+   -  quantization mode for gradients and hessians (ExaBoost)
+
+   -  ``auto``: resolves to ``stochastic`` if ``use_quantized_grad=true``, otherwise ``none``
+
+   -  ``none``: full-precision (fp64) gradient/hessian accumulation
+
+   -  ``stochastic``: LightGBM-native quantized training (same as ``use_quantized_grad=true``): stochastic rounding into ``quant_bins`` bins; aggressive speed end of the trade-off
+
+   -  ``fixedpoint``: XGBoost-style deterministic fixed-point quantization with an outlier-robust, gap-gated gradient scale; near-lossless at the default 64 bins
+
+   -  **Note**: ``fixedpoint`` works only with ``cuda`` device type
+
+-  ``num_grad_quant_bins`` :raw-html:`<a id="num_grad_quant_bins" title="Permalink to this parameter" href="#num_grad_quant_bins">&#x1F517;&#xFE0E;</a>`, default = ``0``, type = int, aliases: ``quant_bins``, constraints: ``num_grad_quant_bins >= 0``
+
+   -  used only when quantized training is active (``quant_mode`` = ``stochastic`` or ``fixedpoint``)
 
    -  number of bins to quantization gradients and hessians
 
    -  with more bins, the quantized training will be closer to full precision training
+
+   -  ``0`` means auto: ``4`` for ``stochastic`` (LightGBM default), ``64`` for ``fixedpoint``
 
    -  **Note**: works only with ``cpu`` and ``cuda`` device type
 
@@ -1402,6 +1418,28 @@ GPU Parameters
    -  used in both single-machine and distributed learning applications
 
    -  in distributed learning application, each machine can use different number of GPUs
+
+-  ``cuda_precision`` :raw-html:`<a id="cuda_precision" title="Permalink to this parameter" href="#cuda_precision">&#x1F517;&#xFE0E;</a>`, default = ``fp64``, type = string
+
+   -  floating-point precision of CUDA histogram accumulation and split-gain math (ExaBoost)
+
+   -  ``fp64``: double-precision accumulation (bit-stable reference)
+
+   -  ``fp32``: single-precision histogram atomics and gain math; measurably faster on high-bin workloads at <=0.1pp quality cost, results are non-deterministic across runs
+
+   -  **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
+
+-  ``cuda_plan`` :raw-html:`<a id="cuda_plan" title="Permalink to this parameter" href="#cuda_plan">&#x1F517;&#xFE0E;</a>`, default = ``auto``, type = string
+
+   -  CUDA execution-plan override string (ExaBoost)
+
+   -  ``auto`` resolves every shape-conditional kernel choice from the data/params via the built-in planner; the resolved plan is logged at startup
+
+   -  experts can pin individual decisions with comma-separated overrides after ``auto``, e.g. ``auto,graph_loop=off,construct_jit=on``
+
+   -  plan decisions are perf-only and bit-identical: they never change the trained model, only how fast it is produced
+
+   -  **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
 
 .. end params list
 

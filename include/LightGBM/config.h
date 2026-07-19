@@ -38,6 +38,19 @@ enum TaskType {
 };
 const int kDefaultNumLeaves = 31;
 
+// Gradient/hessian quantization mode (resolved from the ``quant_mode`` param).
+enum class QuantMode : int {
+  kNone = 0,        // full-precision fp64 accumulation
+  kStochastic = 1,  // LightGBM-native quantized training (stochastic rounding)
+  kFixedPoint = 2,  // deterministic fixed-point quant with gap-gated robust scale
+};
+
+// CUDA histogram/gain math precision (resolved from the ``cuda_precision`` param).
+enum class CudaPrecision : int {
+  kFP64 = 0,
+  kFP32 = 1,
+};
+
 struct Config {
  public:
   Config() {}
@@ -631,12 +644,23 @@ struct Config {
   // desc = *New in version 4.0.0*
   bool use_quantized_grad = false;
 
-  // desc = used only if ``use_quantized_grad=true``
+  // desc = quantization mode for gradients and hessians (ExaBoost)
+  // desc = ``auto``: resolves to ``stochastic`` if ``use_quantized_grad=true``, otherwise ``none``
+  // desc = ``none``: full-precision (fp64) gradient/hessian accumulation
+  // desc = ``stochastic``: LightGBM-native quantized training (same as ``use_quantized_grad=true``): stochastic rounding into ``quant_bins`` bins; aggressive speed end of the trade-off
+  // desc = ``fixedpoint``: XGBoost-style deterministic fixed-point quantization with an outlier-robust, gap-gated gradient scale; near-lossless at the default 64 bins
+  // desc = **Note**: ``fixedpoint`` works only with ``cuda`` device type
+  std::string quant_mode = "auto";
+
+  // alias = quant_bins
+  // check = >=0
+  // desc = used only when quantized training is active (``quant_mode`` = ``stochastic`` or ``fixedpoint``)
   // desc = number of bins to quantization gradients and hessians
   // desc = with more bins, the quantized training will be closer to full precision training
+  // desc = ``0`` means auto: ``4`` for ``stochastic`` (LightGBM default), ``64`` for ``fixedpoint``
   // desc = **Note**: works only with ``cpu`` and ``cuda`` device type
   // desc = *New in version 4.0.0*
-  int num_grad_quant_bins = 4;
+  int num_grad_quant_bins = 0;
 
   // desc = used only if ``use_quantized_grad=true``
   // desc = whether to renew the leaf values with original gradients when quantized training
@@ -1147,6 +1171,19 @@ struct Config {
   // desc = in distributed learning application, each machine can use different number of GPUs
   int num_gpu = 1;
 
+  // desc = floating-point precision of CUDA histogram accumulation and split-gain math (ExaBoost)
+  // desc = ``fp64``: double-precision accumulation (bit-stable reference)
+  // desc = ``fp32``: single-precision histogram atomics and gain math; measurably faster on high-bin workloads at <=0.1pp quality cost, results are non-deterministic across runs
+  // desc = **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
+  std::string cuda_precision = "fp64";
+
+  // desc = CUDA execution-plan override string (ExaBoost)
+  // desc = ``auto`` resolves every shape-conditional kernel choice from the data/params via the built-in planner; the resolved plan is logged at startup
+  // desc = experts can pin individual decisions with comma-separated overrides after ``auto``, e.g. ``auto,graph_loop=off,construct_jit=on``
+  // desc = plan decisions are perf-only and bit-identical: they never change the trained model, only how fast it is produced
+  // desc = **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
+  std::string cuda_plan = "auto";
+
   #ifndef __NVCC__
   #pragma endregion
 
@@ -1160,6 +1197,17 @@ struct Config {
   LIGHTGBM_EXPORT void Set(const std::unordered_map<std::string, std::string>& params);
   static const std::unordered_map<std::string, std::string>& alias_table();
   static const std::unordered_map<std::string, std::vector<std::string>>& parameter2aliases();
+
+  // ExaBoost typed accessors. Valid only after Set() has run (quant_mode "auto"
+  // and num_grad_quant_bins 0 are resolved to concrete values there).
+  QuantMode ResolvedQuantMode() const {
+    if (quant_mode == "fixedpoint") return QuantMode::kFixedPoint;
+    if (quant_mode == "stochastic") return QuantMode::kStochastic;
+    return QuantMode::kNone;
+  }
+  CudaPrecision ResolvedCudaPrecision() const {
+    return cuda_precision == "fp32" ? CudaPrecision::kFP32 : CudaPrecision::kFP64;
+  }
   static const std::unordered_set<std::string>& parameter_set();
   std::vector<std::vector<double>> auc_mu_weights_matrix;
   std::vector<std::vector<int>> interaction_constraints_vector;
@@ -1168,6 +1216,7 @@ struct Config {
 
  private:
   void CheckParamConflict(const std::unordered_map<std::string, std::string>& params);
+  void ResolveExaBoostParams();
   void GetMembersFromString(const std::unordered_map<std::string, std::string>& params);
   std::string SaveMembersToString() const;
   void GetAucMuWeights();

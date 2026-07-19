@@ -120,6 +120,7 @@ const std::unordered_map<std::string, std::string>& Config::alias_table() {
   {"model_output", "output_model"},
   {"model_out", "output_model"},
   {"save_period", "snapshot_freq"},
+  {"quant_bins", "num_grad_quant_bins"},
   {"linear_trees", "linear_tree"},
   {"max_bins", "max_bin"},
   {"subsample_for_bin", "bin_construct_sample_cnt"},
@@ -261,6 +262,7 @@ const std::unordered_set<std::string>& Config::parameter_set() {
   "saved_feature_importance_type",
   "snapshot_freq",
   "use_quantized_grad",
+  "quant_mode",
   "num_grad_quant_bins",
   "quant_train_renew_leaf",
   "stochastic_rounding",
@@ -330,6 +332,8 @@ const std::unordered_set<std::string>& Config::parameter_set() {
   "gpu_device_id_list",
   "gpu_use_dp",
   "num_gpu",
+  "cuda_precision",
+  "cuda_plan",
   });
   return params;
 }
@@ -515,7 +519,10 @@ void Config::GetMembersFromString(const std::unordered_map<std::string, std::str
 
   GetBool(params, "use_quantized_grad", &use_quantized_grad);
 
+  GetString(params, "quant_mode", &quant_mode);
+
   GetInt(params, "num_grad_quant_bins", &num_grad_quant_bins);
+  CHECK_GE(num_grad_quant_bins, 0);
 
   GetBool(params, "quant_train_renew_leaf", &quant_train_renew_leaf);
 
@@ -677,6 +684,10 @@ void Config::GetMembersFromString(const std::unordered_map<std::string, std::str
 
   GetInt(params, "num_gpu", &num_gpu);
   CHECK_GT(num_gpu, 0);
+
+  GetString(params, "cuda_precision", &cuda_precision);
+
+  GetString(params, "cuda_plan", &cuda_plan);
 }
 
 std::string Config::SaveMembersToString() const {
@@ -744,6 +755,7 @@ std::string Config::SaveMembersToString() const {
   str_buf << "[verbosity: " << verbosity << "]\n";
   str_buf << "[saved_feature_importance_type: " << saved_feature_importance_type << "]\n";
   str_buf << "[use_quantized_grad: " << use_quantized_grad << "]\n";
+  str_buf << "[quant_mode: " << quant_mode << "]\n";
   str_buf << "[num_grad_quant_bins: " << num_grad_quant_bins << "]\n";
   str_buf << "[quant_train_renew_leaf: " << quant_train_renew_leaf << "]\n";
   str_buf << "[stochastic_rounding: " << stochastic_rounding << "]\n";
@@ -797,6 +809,8 @@ std::string Config::SaveMembersToString() const {
   str_buf << "[gpu_device_id_list: " << gpu_device_id_list << "]\n";
   str_buf << "[gpu_use_dp: " << gpu_use_dp << "]\n";
   str_buf << "[num_gpu: " << num_gpu << "]\n";
+  str_buf << "[cuda_precision: " << cuda_precision << "]\n";
+  str_buf << "[cuda_plan: " << cuda_plan << "]\n";
   return str_buf.str();
 }
 
@@ -874,7 +888,8 @@ const std::unordered_map<std::string, std::vector<std::string>>& Config::paramet
     {"saved_feature_importance_type", {}},
     {"snapshot_freq", {"save_period"}},
     {"use_quantized_grad", {}},
-    {"num_grad_quant_bins", {}},
+    {"quant_mode", {}},
+    {"num_grad_quant_bins", {"quant_bins"}},
     {"quant_train_renew_leaf", {}},
     {"stochastic_rounding", {}},
     {"linear_tree", {"linear_trees"}},
@@ -943,6 +958,8 @@ const std::unordered_map<std::string, std::vector<std::string>>& Config::paramet
     {"gpu_device_id_list", {}},
     {"gpu_use_dp", {}},
     {"num_gpu", {}},
+    {"cuda_precision", {}},
+    {"cuda_plan", {}},
   });
   return map;
 }
@@ -1020,6 +1037,7 @@ const std::unordered_map<std::string, std::string>& Config::ParameterTypes() {
     {"saved_feature_importance_type", "int"},
     {"snapshot_freq", "int"},
     {"use_quantized_grad", "bool"},
+    {"quant_mode", "string"},
     {"num_grad_quant_bins", "int"},
     {"quant_train_renew_leaf", "bool"},
     {"stochastic_rounding", "bool"},
@@ -1089,6 +1107,8 @@ const std::unordered_map<std::string, std::string>& Config::ParameterTypes() {
     {"gpu_device_id_list", "string"},
     {"gpu_use_dp", "bool"},
     {"num_gpu", "int"},
+    {"cuda_precision", "string"},
+    {"cuda_plan", "string"},
   });
   return map;
 }
