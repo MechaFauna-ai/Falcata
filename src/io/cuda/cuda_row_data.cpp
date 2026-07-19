@@ -7,6 +7,9 @@
 #ifdef USE_CUDA
 
 #include <LightGBM/cuda/cuda_row_data.hpp>
+#include <LightGBM/exaboost_plan.h>
+
+#include <cstdio>
 
 #include <algorithm>
 #include <cstdlib>
@@ -20,23 +23,19 @@ namespace LightGBM {
 namespace {
 
 bool FastRowDataEnabled() {
-  const char* env = std::getenv("EXABOOST_FAST_ROWDATA");
-  return env == nullptr || std::string(env) != std::string("0");
+  return ExaBoostPlan::Get().fast_rowdata;
 }
 
 bool FastRowDataVerifyEnabled() {
-  const char* env = std::getenv("EXABOOST_FAST_ROWDATA_VERIFY");
-  return env != nullptr && std::string(env) == std::string("1");
+  return ExaboostVerifyEnabled();
 }
 
 bool RowData4BitEnabled() {
-  const char* env = std::getenv("EXABOOST_ROWDATA_4BIT");
-  return env == nullptr || std::string(env) != std::string("0");
+  return ExaBoostPlan::Get().rowdata_4bit;
 }
 
 bool RowData4BitVerifyEnabled() {
-  const char* env = std::getenv("EXABOOST_ROWDATA_4BIT_VERIFY");
-  return env != nullptr && std::string(env) == std::string("1");
+  return ExaboostVerifyEnabled();
 }
 
 // Shape-specialized construct prototype (JIT phase 1): for low-bin, many-feature
@@ -53,15 +52,15 @@ bool RowData4BitVerifyEnabled() {
 //
 // EXABOOST_CONSTRUCT_COLCAP: unset -> auto (252 when the low-bin shape is
 // column-capped, else upstream 504); "0" -> force upstream 504 (kill switch);
-// "N" (0<N<504) -> force cap N. Returns -1 for "auto".
+// Plan constant (-1 = auto sizing; 0<N<504 forces cap N; anything else = 504,
+// the upstream behavior).
 int ConstructColumnCapEnv() {
-  const char* env = std::getenv("EXABOOST_CONSTRUCT_COLCAP");
-  if (env == nullptr) {
+  const int v = ExaBoostPlan::Get().construct_column_cap;
+  if (v == -1) {
     return -1;  // auto
   }
-  const int v = std::atoi(env);
   if (v <= 0 || v >= 504) {
-    return 504;  // "0" / out-of-range -> upstream behavior (kill switch)
+    return 504;  // out-of-range -> upstream behavior (kill switch)
   }
   return v;
 }
@@ -411,9 +410,9 @@ void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingSha
   cuda_column_hist_offsets_.InitFromHostVector(column_hist_offsets_);
   cuda_partition_hist_offsets_.InitFromHostVector(partition_hist_offsets_);
 
-  // Diagnostic-only (perf characterization; behind EXABOOST_DUMP_PARTITIONS, no
+  // Diagnostic-only (perf characterization; behind EXABOOST_DEBUG=dump, no
   // behavior change): report the partitioning + binding constraint per benchmark.
-  if (std::getenv("EXABOOST_DUMP_PARTITIONS") != nullptr) {
+  if (ExaboostDebug().dump) {
     uint32_t max_partition_bins = 0, min_partition_bins = 0xffffffffu;
     int col_capped = 0, bin_capped = 0;
     for (size_t i = 0; i + 1 < partition_hist_offsets_.size(); ++i) {

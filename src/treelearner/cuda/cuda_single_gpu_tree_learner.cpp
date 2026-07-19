@@ -10,6 +10,7 @@
 #include "cuda_single_gpu_tree_learner.hpp"
 
 #include <LightGBM/cuda/cuda_tree.hpp>
+#include <LightGBM/exaboost_plan.h>
 #include <LightGBM/cuda/cuda_utils.hu>
 #include <LightGBM/feature_group.h>
 #include <LightGBM/network.h>
@@ -52,6 +53,9 @@ CUDASingleGPUTreeLearner::~CUDASingleGPUTreeLearner() {
 }
 
 void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_hessian) {
+  // Resolve the CUDA execution plan for the training phase before any
+  // component reads it (ingestion resolved the same string earlier).
+  ExaBoostPlan::ResolveFromConfig(*config_);
   SerialTreeLearner::Init(train_data, is_constant_hessian);
   num_threads_ = OMP_NUM_THREADS();
   // use the first gpu by default
@@ -114,10 +118,9 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   cuda_data_partition_->Init();
 
   select_features_by_node_ = !config_->interaction_constraints_vector.empty() || config_->feature_fraction_bynode < 1.0;
-  // hybrid level-batched growth is on by default; EXABOOST_HYBRID_GROWTH=0 disables
-  // it (falls back to the classic one-split-at-a-time leaf-wise loop everywhere)
-  const char* hybrid_env = std::getenv("EXABOOST_HYBRID_GROWTH");
-  use_hybrid_growth_ = (hybrid_env == nullptr || std::string(hybrid_env) != std::string("0"));
+  // hybrid level-batched growth is on by default; cuda_plan=auto,hybrid:off
+  // falls back to the classic one-split-at-a-time leaf-wise loop everywhere
+  use_hybrid_growth_ = ExaBoostPlan::Get().hybrid;
   // Monotone constraints are inherited down the tree: a leaf's [min, max] bounds
   // come from the splits already applied above it. Level-batched growth scores a
   // whole level before applying any of it, so the children of a level's splits
@@ -139,23 +142,19 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   }
   // batched per-level kernels for the hybrid prefix (one construct/fix/subtract/
   // find/sync launch per level instead of per pair); "0" keeps the per-pair path
-  const char* batch_env = std::getenv("EXABOOST_HYBRID_BATCH_KERNELS");
-  use_hybrid_batch_kernels_ = (batch_env == nullptr || std::string(batch_env) != std::string("0"));
+  use_hybrid_batch_kernels_ = ExaBoostPlan::Get().batch_kernels;
   // batched per-level APPLY phase for the hybrid prefix (one launch per kernel
   // family per level and zero per-split host syncs, instead of ~7 launches and
   // 2 device syncs per split); "0" keeps the per-split deferred loop
-  const char* batch_apply_env = std::getenv("EXABOOST_HYBRID_BATCH_APPLY");
-  use_hybrid_batch_apply_ = (batch_apply_env == nullptr || std::string(batch_apply_env) != std::string("0"));
+  use_hybrid_batch_apply_ = ExaBoostPlan::Get().batch_apply;
   // single-sync (speculative) level pipeline for the hybrid prefix: each level's
   // apply and the children's search are enqueued back to back and read back with
   // ONE device synchronization per level; "0" keeps the classic two-sync flow
-  const char* one_sync_env = std::getenv("EXABOOST_HYBRID_ONE_SYNC");
-  use_hybrid_one_sync_ = (one_sync_env == nullptr || std::string(one_sync_env) != std::string("0"));
+  use_hybrid_one_sync_ = ExaBoostPlan::Get().one_sync;
   // selective (grow-then-prune) growth for budget-limited configs
   // (num_leaves << 2^max_depth): exactly leaf-wise-equivalent level batching
   // with end-of-selection pruning; "0" falls back to the classic loop there
-  const char* selective_env = std::getenv("EXABOOST_HYBRID_SELECTIVE");
-  use_hybrid_selective_ = (selective_env == nullptr || std::string(selective_env) != std::string("0"));
+  use_hybrid_selective_ = ExaBoostPlan::Get().selective;
   cuda_best_split_finder_.reset(new CUDABestSplitFinder(cuda_histogram_constructor_->cuda_hist(),
     train_data_, this->share_state_->feature_hist_offsets(), select_features_by_node_, config_));
   cuda_best_split_finder_->Init();
@@ -335,13 +334,9 @@ namespace {
 // descriptors) instead of materializing the per-tree column-major buffer
 // (~1.5GB write per tree on numerai-shaped data); the scattered packed reads
 // cost one 32B sector per row but only the split columns are ever touched.
-// EXABOOST_SPLIT_PACKED_READ=0 restores the column-major gather.
+// ExaBoostPlan::split_packed_read=false restores the column-major gather.
 bool SplitPackedReadEnabled() {
-  static const bool enabled = []() {
-    const char* env = std::getenv("EXABOOST_SPLIT_PACKED_READ");
-    return env == nullptr || std::string(env) != "0";
-  }();
-  return enabled;
+  return ExaBoostPlan::Get().split_packed_read;
 }
 
 }  // anonymous namespace
@@ -557,14 +552,11 @@ void CUDASingleGPUTreeLearner::AddPredictionToScore(const Tree* tree, double* ou
 
 namespace {
 
-// EXABOOST_HYBRID_AGGRESSIVE=1 opts into plain level batching in budget-limited
+// EXABOOST_DEBUG=aggressive opts into plain level batching in budget-limited
 // configs, accepting the approximate (breadth-biased) growth policy in exchange
 // for hybrid speed. Off by default; exact for depth-limited configs either way.
 bool HybridAggressiveEnv() {
-  static const bool aggressive =
-      std::getenv("EXABOOST_HYBRID_AGGRESSIVE") != nullptr &&
-      std::string(std::getenv("EXABOOST_HYBRID_AGGRESSIVE")) == std::string("1");
-  return aggressive;
+  return ExaboostDebug().aggressive;
 }
 
 }  // anonymous namespace
@@ -941,7 +933,7 @@ void CUDASingleGPUTreeLearner::CollectSplittableLeaves(const CUDATree* tree,
       splittable->push_back(leaf);
     }
   }
-  static const bool hybrid_debug = std::getenv("EXABOOST_HYBRID_DEBUG") != nullptr;
+  const bool hybrid_debug = ExaboostDebug().debug;
   if (hybrid_debug) {
     double max_gain = -1e300, min_gain = 1e300;
     for (const int leaf : *splittable) {
@@ -995,10 +987,10 @@ bool CUDASingleGPUTreeLearner::ArbitrateLevelBudget(const CUDATree* tree,
     splittable->resize(static_cast<size_t>(remaining_budget));
     *final_partial_level = true;
   }
-  // debug: cap splits per level to isolate multi-pair interactions
-  static const char* max_splits_env = std::getenv("EXABOOST_HYBRID_MAXSPLITS");
-  if (max_splits_env != nullptr) {
-    const size_t cap = static_cast<size_t>(std::atoi(max_splits_env));
+  // debug (EXABOOST_DEBUG=maxsplits=N): cap splits per level to isolate
+  // multi-pair interactions
+  if (ExaboostDebug().maxsplits >= 0) {
+    const size_t cap = static_cast<size_t>(ExaboostDebug().maxsplits);
     if (splittable->size() > cap) splittable->resize(cap);
   }
   return true;
@@ -1102,7 +1094,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   const bool use_batched_level_kernels = use_hybrid_batch_kernels_ &&
     cuda_histogram_constructor_->SupportsBatchedLevel() &&
     cuda_best_split_finder_->SupportsBatchedLevel();
-  static const bool hybrid_diag = std::getenv("EXABOOST_HYBRID_DIAG") != nullptr;
+  const bool hybrid_diag = ExaboostDebug().diag;
   if (hybrid_diag) {
     static bool diag_logged = false;
     if (!diag_logged) {
@@ -1170,7 +1162,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
     } else {
       int pair_counter = 0;
       for (const HybridPendingPair& pair : pairs) {
-        static const bool sync_pairs = std::getenv("EXABOOST_HYBRID_SYNCPAIRS") != nullptr;
+        const bool sync_pairs = ExaboostDebug().syncpairs;
         EnqueuePairBestSplitSearch(tree, pair.smaller_struct, pair.larger_struct,
                                    pair.smaller, pair.larger, /*synchronize=*/sync_pairs,
                                    pair_counter % CUDAHistogramConstructor::kNumHistPipelines);
@@ -1324,11 +1316,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefixOneSync(CUDATree* tree) {
 namespace {
 
 bool HybridGraphEnvEnabled() {
-  static const bool enabled = []() {
-    const char* env = std::getenv("EXABOOST_GRAPH_LEVEL_LOOP");
-    return env == nullptr || std::string(env) != std::string("0");
-  }();
-  return enabled;
+  return ExaBoostPlan::Get().graph_loop;
 }
 
 bool HybridGraphDriverSupported() {
@@ -1356,8 +1344,7 @@ CUDASingleGPUTreeLearner::HybridGraphInstance::~HybridGraphInstance() {
 bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
   // the per-level debug envs steer the host loop's decisions in ways the
   // device controller does not replicate
-  static const bool debug_envs = std::getenv("EXABOOST_HYBRID_MAXSPLITS") != nullptr ||
-                                 std::getenv("EXABOOST_HYBRID_DEBUG") != nullptr;
+  const bool debug_envs = ExaboostDebug().any_growth_hook();
   if (!HybridGraphEnvEnabled() || debug_envs || !HybridGraphDriverSupported() ||
       hybrid_graph_disabled_) {
     return false;
@@ -1365,15 +1352,9 @@ bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
   // quant graph support is bit-exact (a2279763) but a net loss on large/cheap-level
   // shapes (covtype 1023/10 -10.8%, year 63/6 -7%: quant levels are cheap, so the
   // controller's fixed serial latency dominates) -- opt-in until that frontier
-  // shrinks. EXABOOST_GRAPH_QUANT=1 enables.
-  if (config_->use_quantized_grad) {
-    static const bool quant_graph_opt_in = []() {
-      const char* env = std::getenv("EXABOOST_GRAPH_QUANT");
-      return env != nullptr && std::string(env) == std::string("1");
-    }();
-    if (!quant_graph_opt_in) {
-      return false;
-    }
+  // shrinks. cuda_plan=auto,graph_quant:on enables.
+  if (config_->use_quantized_grad && !ExaBoostPlan::Get().graph_quant) {
+    return false;
   }
   // depth-limited exact regime only (mirrors HybridGrowthUsable): the
   // controller replays ArbitrateLevelBudget under the level == depth
@@ -1615,7 +1596,7 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
   HYBRID_GRAPH_SOFT_CHECK(cudaGraphUpload(instance->exec,
     cuda_best_split_finder_->find_stream()));
   ComputeHybridGraphKey(tree, &instance->key);
-  static const bool hybrid_diag = std::getenv("EXABOOST_HYBRID_DIAG") != nullptr;
+  const bool hybrid_diag = ExaboostDebug().diag;
   if (hybrid_diag) {
     // fprintf like the other hybrid-diag lines: visible under verbose=-1
     fprintf(stderr, "[hybrid-diag] graphs L1.5: instantiated unrolled device level loop "
@@ -2149,7 +2130,7 @@ void CUDASingleGPUTreeLearner::TrainSelectiveTwoSync(CUDATree* tree) {
   const bool use_batched_level_kernels = use_hybrid_batch_kernels_ &&
     cuda_histogram_constructor_->SupportsBatchedLevel() &&
     cuda_best_split_finder_->SupportsBatchedLevel();
-  static const bool hybrid_diag = std::getenv("EXABOOST_HYBRID_DIAG") != nullptr;
+  const bool hybrid_diag = ExaboostDebug().diag;
   if (hybrid_diag) {
     static bool diag_logged = false;
     if (!diag_logged) {
@@ -2260,7 +2241,7 @@ void CUDASingleGPUTreeLearner::SelectiveFinalize(CUDATree* tree) {
   }
   sel_last_peak_ = sel_num_allocated_;
   ++sel_stat_trees_;
-  static const bool hybrid_debug = std::getenv("EXABOOST_HYBRID_DEBUG") != nullptr;
+  const bool hybrid_debug = ExaboostDebug().debug;
   if (hybrid_debug) {
     // stderr (not the logger): churn statistics must be visible under verbose=-1
     fprintf(stderr, "[selective] trees=%" PRId64 " leaves=%d cumulative: applied=%" PRId64 " displaced=%" PRId64 " levels=%" PRId64 "\n",

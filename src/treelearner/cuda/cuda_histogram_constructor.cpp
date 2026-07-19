@@ -27,11 +27,7 @@ namespace {
 // preserved, so the histograms are BIT-IDENTICAL to the full-data path. Kill switch:
 // EXABOOST_CONSTRUCT_COMPACT_QUANT=0 -> quant falls back to the full-data kernel.
 bool CompactQuantEnabled() {
-  static const bool enabled = []() {
-    const char* env = std::getenv("EXABOOST_CONSTRUCT_COMPACT_QUANT");
-    return env == nullptr || std::string(env) != std::string("0");
-  }();
-  return enabled;
+  return ExaBoostPlan::Get().compact_quant;
 }
 
 }  // namespace
@@ -111,10 +107,7 @@ void CUDAHistogramConstructor::InitFeatureMetaInfo(const Dataset* train_data, co
   // register-accumulation construct body (batched compact path only): usable
   // when EVERY feature fits the register bin cap (see kRegHistMaxBins == 8);
   // EXABOOST_BATCH_REGHIST=0 disables it
-  static const bool reg_hist_enabled = []() {
-    const char* env = std::getenv("EXABOOST_BATCH_REGHIST");
-    return env == nullptr || std::string(env) != "0";
-  }();
+  const bool reg_hist_enabled = ExaBoostPlan::Get().batch_reghist;
   uint32_t max_num_bin = 0;
   for (const uint32_t num_bin : feature_num_bins_) {
     if (num_bin > max_num_bin) {

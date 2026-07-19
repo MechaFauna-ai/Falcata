@@ -10,6 +10,7 @@
 #include "cuda_construct_jit.hpp"
 
 #include <LightGBM/utils/log.h>
+#include <LightGBM/exaboost_plan.h>
 
 #include <cuda.h>
 #include <nvrtc.h>
@@ -38,13 +39,9 @@ CUDAConstructJIT::~CUDAConstructJIT() {
 }
 
 bool CUDAConstructJIT::Enabled() {
-  static const bool enabled = []() {
-    const char* env = std::getenv("EXABOOST_CONSTRUCT_JIT");
-    // opt-in for now: default OFF so the AOT compact-quant fast path is the
-    // shipped behavior. EXABOOST_CONSTRUCT_JIT=1 requests the JIT.
-    return env != nullptr && std::string(env) == std::string("1");
-  }();
-  return enabled;
+  // opt-in for now: plan default OFF so the AOT compact-quant fast path is the
+  // shipped behavior. cuda_plan=auto,construct_jit:on requests the JIT.
+  return ExaBoostPlan::Get().construct_jit;
 }
 
 bool CUDAConstructJIT::Available() {

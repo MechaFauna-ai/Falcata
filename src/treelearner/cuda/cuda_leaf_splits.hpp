@@ -13,6 +13,7 @@
 #include <LightGBM/bin.h>
 #include <LightGBM/tree_split_math.h>
 #include <LightGBM/utils/log.h>
+#include <LightGBM/exaboost_plan.h>
 #include <LightGBM/meta.h>
 
 #include <cstdlib>
@@ -27,11 +28,7 @@ namespace LightGBM {
  *  tasks and/or compact-column-view histogram data): EXABOOST_BATCH_WIDE=0
  *  restores the previous fallback to the per-pair kernels for those shapes */
 inline bool ExaboostBatchWideEnabled() {
-  static const bool enabled = []() {
-    const char* env = std::getenv("EXABOOST_BATCH_WIDE");
-    return env == nullptr || std::string(env) != "0";
-  }();
-  return enabled;
+  return ExaBoostPlan::Get().batch_wide;
 }
 
 struct CUDALeafSplitsStruct {

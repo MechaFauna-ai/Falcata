@@ -10,6 +10,7 @@
 #ifdef USE_CUDA
 
 #include <LightGBM/cuda/cuda_row_data.hpp>
+#include <LightGBM/exaboost_plan.h>
 #include <LightGBM/cuda/cuda_utils.hu>
 #include <LightGBM/feature_group.h>
 #include <LightGBM/tree.h>
@@ -264,22 +265,14 @@ class CUDAHistogramConstructor {
    *  (EXABOOST_BATCH_CONSTRUCT_MINROWS; 0 = per-leaf sizing). Shared by the host
    *  grid sizing and the device row-grouping replica. */
   static int BatchConstructMinRowsPerThread() {
-    static const int min_rows_per_thread = []() {
-      const char* env = std::getenv("EXABOOST_BATCH_CONSTRUCT_MINROWS");
-      return env != nullptr ? std::atoi(env) : 64;
-    }();
-    return min_rows_per_thread;
+    return ExaBoostPlan::Get().batch_construct_min_rows_per_thread;
   }
 
   /*! \brief device-saturation floor (total y-blocks shared across the level's
    *  pairs) of the batched construct grid sizing
    *  (EXABOOST_BATCH_CONSTRUCT_FLOOR; default 160 = historical behavior) */
   static int BatchConstructSaturationFloor() {
-    static const int floor_total = []() {
-      const char* env = std::getenv("EXABOOST_BATCH_CONSTRUCT_FLOOR");
-      return env != nullptr ? std::atoi(env) : 160;
-    }();
-    return floor_total;
+    return ExaBoostPlan::Get().batch_construct_saturation_floor;
   }
 
   /*! \brief interleaved float2 gradient/hessian copy for the non-quantized
@@ -288,22 +281,14 @@ class CUDAHistogramConstructor {
    *  separate arrays). Values are bit-identical to the separate reads.
    *  EXABOOST_GH_INTERLEAVE=0 disables; float score_t only. */
   static bool GHInterleaveEnabled() {
-    static const bool enabled = []() {
-      const char* env = std::getenv("EXABOOST_GH_INTERLEAVE");
-      return env == nullptr || std::string(env) != "0";
-    }();
-    return enabled && sizeof(score_t) == sizeof(float);
+    return ExaBoostPlan::Get().gh_interleave && sizeof(score_t) == sizeof(float);
   }
 
   /*! \brief kill-switch of the small-leaf construct path
    *  (EXABOOST_SMALL_LEAF_CONSTRUCT=0 restores the shared-memory batched
    *  kernels for every level) */
   static bool SmallLeafConstructEnabled() {
-    static const bool enabled = []() {
-      const char* env = std::getenv("EXABOOST_SMALL_LEAF_CONSTRUCT");
-      return env == nullptr || std::string(env) != "0";
-    }();
-    return enabled;
+    return ExaBoostPlan::Get().small_leaf_construct;
   }
 
   /*! \brief leaf-size threshold of the DIRECT small-leaf construct body: a pair
@@ -315,11 +300,12 @@ class CUDAHistogramConstructor {
    *  reproduction for a measured ~1-2% fraud-deep gain -- not worth it by
    *  default. Set EXABOOST_SMALL_LEAF_ROWS=8192 to enable. */
   static data_size_t SmallLeafRowThreshold() {
-    static const data_size_t threshold = []() {
-      const char* env = std::getenv("EXABOOST_SMALL_LEAF_ROWS");
-      return env != nullptr ? static_cast<data_size_t>(std::atoi(env)) : 0;
-    }();
-    return threshold;
+    // Permanently 0 (disabled): the direct-add body is not bit-identical
+    // (per-row double adds vs per-block float partial sums) for a measured
+    // ~1-2% fraud-deep gain -- a results-affecting lever this marginal earns
+    // neither a plan key (bit-identical only) nor a config param. Flip here
+    // with fresh measurements if that changes.
+    return 0;
   }
 
 #ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED

@@ -5,6 +5,7 @@
  * license information.
  */
 #include <LightGBM/dataset.h>
+#include <LightGBM/exaboost_plan.h>
 
 #include <LightGBM/feature_group.h>
 #include <LightGBM/cuda/vector_cudahost.h>
@@ -408,13 +409,8 @@ std::vector<std::vector<int>> FastFeatureBundling(
     const std::vector<int>& used_features, data_size_t num_data,
     bool is_use_gpu, bool is_sparse, std::vector<int8_t>* multi_val_group) {
   Common::FunctionTimer fun_timer("Dataset::FastFeatureBundling", global_timer);
-  const char* precheck_env = std::getenv("EXABOOST_EFB_PRECHECK");
-  const bool precheck_enabled =
-      !(precheck_env != nullptr && std::string(precheck_env) == std::string("0"));
-  const char* precheck_verify_env = std::getenv("EXABOOST_EFB_PRECHECK_VERIFY");
-  const bool precheck_verify =
-      precheck_verify_env != nullptr &&
-      std::string(precheck_verify_env) == std::string("1");
+  const bool precheck_enabled = ExaBoostPlan::Get().efb_precheck;
+  const bool precheck_verify = ExaboostVerifyEnabled();
   const bool precheck_fired =
       precheck_enabled &&
       EFBPrecheckProvesNoBundling(bin_mappers, sample_indices, sample_values,
@@ -952,12 +948,10 @@ MultiValBin* Dataset::GetMultiBinFromAllFeatures(const std::vector<uint32_t>& of
 
 #ifdef USE_CUDA
 bool Dataset::CanSkipHostMultiValBinForCUDA() const {
-  const char* fast_env = std::getenv("EXABOOST_FAST_ROWDATA");
-  if (fast_env != nullptr && std::string(fast_env) == std::string("0")) {
+  if (!ExaBoostPlan::Get().fast_rowdata) {
     return false;
   }
-  const char* verify_env = std::getenv("EXABOOST_FAST_ROWDATA_VERIFY");
-  if (verify_env != nullptr && std::string(verify_env) == std::string("1")) {
+  if (ExaboostVerifyEnabled()) {
     // verification needs the multi-val bin path as the reference
     return false;
   }

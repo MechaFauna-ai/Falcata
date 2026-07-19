@@ -1435,7 +1435,7 @@ GPU Parameters
 
    -  ``auto`` resolves every shape-conditional kernel choice from the data/params via the built-in planner; the resolved plan is logged at startup
 
-   -  experts can pin individual decisions with comma-separated overrides after ``auto``, e.g. ``auto,graph_loop=off,construct_jit=on``
+   -  experts can pin individual decisions with comma-separated ``key:on|off`` overrides after ``auto``, e.g. ``auto,graph_loop:off,construct_jit:on``
 
    -  plan decisions are perf-only and bit-identical: they never change the trained model, only how fast it is produced
 

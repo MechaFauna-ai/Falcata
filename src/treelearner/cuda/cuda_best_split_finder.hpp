@@ -12,6 +12,7 @@
 
 #include <LightGBM/bin.h>
 #include <LightGBM/dataset.h>
+#include <LightGBM/exaboost_plan.h>
 
 #include <cstdio>
 #include <string>

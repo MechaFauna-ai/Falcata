@@ -4,6 +4,7 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 #include <LightGBM/dataset_loader.h>
+#include <LightGBM/exaboost_plan.h>
 
 #include <LightGBM/network.h>
 #include <LightGBM/utils/array_args.h>
@@ -27,6 +28,10 @@ using json11_internal_lightgbm::Json;
 
 DatasetLoader::DatasetLoader(const Config& io_config, const PredictFunction& predict_fun, int num_class, const char* filename)
   :config_(io_config), random_(config_.data_random_seed), predict_fun_(predict_fun), num_class_(num_class) {
+  // Resolve the CUDA execution plan for the ingestion phase (EFB precheck,
+  // fast row data, GPU construct, ...). Training re-resolves the same string
+  // in the CUDA tree learner Init, so both phases see one consistent plan.
+  ExaBoostPlan::ResolveFromConfig(io_config);
   label_idx_ = 0;
   weight_idx_ = NO_SPECIFIC;
   group_idx_ = NO_SPECIFIC;

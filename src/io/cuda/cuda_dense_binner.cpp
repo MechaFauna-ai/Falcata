@@ -14,6 +14,7 @@
 #ifdef USE_CUDA
 
 #include <LightGBM/dataset.h>
+#include <LightGBM/exaboost_plan.h>
 
 #include <LightGBM/bin.h>
 #include <LightGBM/cuda/cuda_utils.hu>
@@ -160,13 +161,10 @@ bool Dataset::GPUBinDenseRows(const void* data, DenseBinnerDType dtype,
   if (device_type_ != std::string("cuda")) {
     return false;
   }
-  const char* enable_env = std::getenv("EXABOOST_GPU_CONSTRUCT");
-  if (enable_env != nullptr && std::string(enable_env) == std::string("0")) {
+  if (!ExaBoostPlan::Get().gpu_construct) {
     return false;
   }
-  const char* verify_env = std::getenv("EXABOOST_GPU_CONSTRUCT_VERIFY");
-  const bool verify =
-      verify_env != nullptr && std::string(verify_env) == std::string("1");
+  const bool verify = ExaboostVerifyEnabled();
   const auto fallback = [verify](const char* reason) {
     if (verify) {
       Log::Warning("GPU construct: ineligible (%s), using the host path",
