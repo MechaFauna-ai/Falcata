@@ -1,0 +1,39 @@
+name: GPU Gates
+# Per-commit regression lattice on the self-hosted GPU runner: md5
+# fingerprints (bit-identity), plan-flip equality, metric floors, perf gate.
+# The runner box's GPU is SHARED with training jobs -- the gpu_guard step
+# waits for a sustained idle window and fails distinctly ("GPU busy") if none
+# appears within its timeout; rerun the workflow later in that case.
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: gpu-gates
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    name: regression-lattice
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Wait for GPU (shared with training jobs)
+        run: python3 tests/gates/gpu_guard.py --require-free-mb 8000 --max-util 20 --timeout-min 45
+      - name: Build CUDA wheel (ccache)
+        run: bash tests/gates/ci_build.sh
+      - name: Re-check GPU before running cells
+        run: python3 tests/gates/gpu_guard.py --require-free-mb 8000 --max-util 20 --timeout-min 30
+      - name: Lattice (md5 + equality + validity + metric gates)
+        run: .gates-venv/bin/python tests/gates/lattice.py --check
+      - name: Perf gate (vs machine-local rolling baseline)
+        run: .gates-venv/bin/python tests/gates/perf_gate.py --record
