@@ -165,6 +165,15 @@ def build_cells():
         equal_to="sampled/flipbase-jit8",
     )
 
+    # --- tiny-gradient regime: leaf-collapse / quant-underflow class -------- #
+    # 150 rounds gives gradient decay room; tree-count + nonconstant-pred
+    # asserts are the detectors. NOTE: the 2026-07 fixedpoint 44-trees bug does
+    # NOT reproduce at this scale (verified empirically, probes up to 550k
+    # rows) -- the full-scale nightly twin in canonical.py is the gate that
+    # catches it; these cells guard the class at per-commit cost.
+    cell("tinygrad/quant", "tinygrad", rounds=150)
+    cell("tinygrad/fixedpoint", "tinygrad", {"quant_mode": "fixedpoint"}, rounds=150)
+
     # --- nondeterministic tiers: validity + metric floor only --------------- #
     # non-quant float-atomic path and the fp32 opt-in (cuda_precision) --
     # exactly the paths md5 cannot cover.
@@ -221,7 +230,8 @@ def _split(X, y, frac=0.2):
     return X[:k], y[:k], X[k:], y[k:]
 
 def build_profile(name):
-    rng = np.random.default_rng(hash(name) % (2**32))
+    # stable seed: builtin hash() is per-process randomized (PYTHONHASHSEED)
+    rng = np.random.default_rng(int(hashlib.md5(name.encode()).hexdigest()[:8], 16))
     base = {"objective": "regression", "num_leaves": 63, "max_depth": 6,
             "learning_rate": 0.1, "max_bin": 255, "use_quantized_grad": True,
             "device_type": "cuda", "seed": 42, "verbose": -1, "metric": "None",
@@ -270,6 +280,17 @@ def build_profile(name):
         y = X @ rng.standard_normal(m) + 0.3 * rng.standard_normal(n)
         X[rng.random((n, m)) < 0.3] = np.nan
         y[np.isnan(y)] = 0.0
+    elif name == "tinygrad":
+        # numerai-production regime shrunk to lattice scale: near-constant
+        # [0,1] target, tiny learning rate, max_bin=5 -- the leaf-collapse /
+        # quant-scale-underflow class (2026-07 fixedpoint 44-trees bug lived
+        # here at FULL scale; the full-scale twin is canonical.py numerai-treecount)
+        m = 100
+        X = rng.integers(0, 5, size=(n, m)).astype(np.float64)
+        w = rng.standard_normal(m) * (rng.random(m) < 0.1)
+        y = 0.5 + 0.02 * ((X - 2.0) @ w) / max(1.0, np.abs(w).sum() ** 0.5) + 0.05 * rng.standard_normal(n)
+        base.update({"max_bin": 5, "learning_rate": 0.0015, "feature_fraction": 0.1,
+                     "min_data_in_leaf": 500})
     elif name == "categorical":
         m = 10
         X = rng.standard_normal((n, m))
@@ -309,6 +330,7 @@ def run_cell(cell):
     assert bst.num_trees() == expected_trees, f"tree count {bst.num_trees()} != {expected_trees}"
     pred = bst.predict(X_te)
     assert np.all(np.isfinite(pred)), "non-finite predictions"
+    assert float(np.std(pred)) > 0.0, "constant predictions (garbage model)"
     reloaded = lgb.Booster(model_str=model_str)
     pred2 = reloaded.predict(X_te)
     assert np.array_equal(pred, pred2), "reloaded model predicts differently"

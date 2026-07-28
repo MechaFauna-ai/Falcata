@@ -108,9 +108,82 @@ def run_numerai():
     return "numerai", md5, f"train={t:.2f}s"
 
 
+NUMERAI_V53_DATASET = Path(
+    os.environ.get(
+        "EXABOOST_NUMERAI_V53",
+        "/home/felixjk/Documents/numerai/data/1224_int8nan.dataset",
+    )
+)
+
+
+def run_numerai_treecount():
+    """Full-scale fixedpoint tree-emission gate (nightly; needs ~20GB free VRAM).
+
+    Encodes the 2026-07 production bug: quant_mode=fixedpoint on the real v5.3
+    dataset (6.8M x 3555, max_bin=5, h60 hyperparameters) stopped emitting
+    trees after ~44 of 40000 and produced a near-constant model. The trigger is
+    scale/data-dependent -- probes up to 550k rows with identical
+    hyperparameters do NOT reproduce it, so only this full-scale cell catches
+    the class. Detectors: exact tree count + non-collapsed late-tree leaves.
+    """
+    import lightgbm as lgb
+
+    if not NUMERAI_V53_DATASET.exists():
+        return "numerai-treecount", "SKIP", f"dataset missing: {NUMERAI_V53_DATASET}"
+    rounds = 200
+    p = {
+        "objective": "regression",
+        "learning_rate": 0.0015,
+        "max_depth": 11,
+        "num_leaves": 8192,
+        "min_data_in_leaf": 40000,
+        "feature_fraction": 0.1,
+        "max_bin": 5,
+        "quant_mode": "fixedpoint",
+        "cuda_precision": "fp32",
+        "device_type": "cuda",
+        "seed": 42,
+        "verbose": -1,
+        "metric": "None",
+        "num_threads": 16,
+    }
+    ds = lgb.Dataset(str(NUMERAI_V53_DATASET), params=p)
+    t0 = time.time()
+    bst = lgb.train(p, ds, num_boost_round=rounds)
+    t = time.time() - t0
+    n = bst.num_trees()
+    if n != rounds:
+        return (
+            "numerai-treecount",
+            "FAIL",
+            f"num_trees={n} != {rounds} (early emission stop) train={t:.1f}s",
+        )
+    late_leaf_max = 0.0
+    for tree in range(rounds - 20, rounds):
+        txt = bst.model_to_string(start_iteration=tree, num_iteration=1)
+        for ln in txt.splitlines():
+            if ln.startswith("leaf_value="):
+                late_leaf_max = max(
+                    late_leaf_max,
+                    max(abs(float(v)) for v in ln.split("=", 1)[1].split()),
+                )
+                break
+    if late_leaf_max == 0.0:
+        return (
+            "numerai-treecount",
+            "FAIL",
+            f"late trees have all-zero leaves (collapsed model) train={t:.1f}s",
+        )
+    return (
+        "numerai-treecount",
+        "PASS",
+        f"{rounds} trees, late max|leaf|={late_leaf_max:.3e}, train={t:.1f}s",
+    )
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("gate", choices=["covtype", "numerai", "all"])
+    ap.add_argument("gate", choices=["covtype", "numerai", "numerai-treecount", "all"])
     ap.add_argument(
         "--classic", action="store_true", help="covtype with cuda_plan=auto,hybrid:off"
     )
@@ -132,6 +205,10 @@ def main():
         print(
             f"{'PASS' if ok else 'FAIL'} {name}: model_md5={md5} (lock {want}) {info}"
         )
+    if args.gate == "numerai-treecount":
+        name, verdict, info = run_numerai_treecount()
+        print(f"{verdict} {name}: {info}")
+        failed |= verdict == "FAIL"
     return 1 if failed else 0
 
 

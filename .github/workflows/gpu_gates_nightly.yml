@@ -35,3 +35,7 @@ jobs:
         run: EXABOOST_VERIFY=1 .gates-venv/bin/python tests/gates/lattice.py --check
       - name: Fuzz (seeded by date; corpus reruns first)
         run: .gates-venv/bin/python tests/gates/fuzz.py --minutes 45
+      - name: Full-scale fixedpoint tree-emission gate (needs ~20GB free VRAM)
+        run: |
+          python3 tests/gates/gpu_guard.py --require-free-mb 20000 --max-util 10 --timeout-min 30
+          .gates-venv/bin/python tests/gates/canonical.py numerai-treecount

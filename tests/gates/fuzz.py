@@ -60,6 +60,7 @@ def sample_spec(rng):
     spec = {
         "n": n,
         "m": m,
+        "learning_rate": float(rng.choice([0.1, 0.1, 0.01, 0.0015])),
         "dtype": str(rng.choice(["float64", "int8", "int16"])),
         "nan_frac": float(rng.choice([0.0, 0.0, 0.1, 0.4])),
         "sparsity": float(rng.choice([0.0, 0.0, 0.8])),
@@ -74,9 +75,9 @@ def sample_spec(rng):
         "min_data_in_leaf": int(rng.choice([1, 5, 20, 100])),
         "feature_fraction": float(rng.choice([1.0, 1.0, 0.2, 0.6])),
         "bagging_fraction": float(rng.choice([1.0, 1.0, 0.7])),
-        "max_bin": int(rng.choice([15, 63, 255])),
+        "max_bin": int(rng.choice([5, 15, 63, 255])),
         "cuda_plan": ",".join(plan),
-        "rounds": int(rng.choice([10, 25])),
+        "rounds": int(rng.choice([10, 25, 25, 150])),
         "data_seed": int(rng.integers(0, 2**31)),
     }
     if spec["bagging_fraction"] < 1.0:
@@ -117,9 +118,15 @@ if spec["dtype"] == "float64" and spec["nan_frac"] > 0:
 p = {"objective": spec["objective"], "num_leaves": spec["num_leaves"],
      "max_depth": spec["max_depth"], "min_data_in_leaf": spec["min_data_in_leaf"],
      "feature_fraction": spec["feature_fraction"], "bagging_fraction": spec["bagging_fraction"],
-     "max_bin": spec["max_bin"], "learning_rate": 0.1, "quant_mode": spec["quant_mode"],
-     "quant_bins": spec["quant_bins"], "cuda_plan": spec["cuda_plan"],
+     "max_bin": spec["max_bin"], "learning_rate": spec.get("learning_rate", 0.1),
+     "quant_mode": spec["quant_mode"], "quant_bins": spec["quant_bins"],
+     "cuda_plan": spec["cuda_plan"],
      "device_type": device, "seed": 42, "verbose": -1, "metric": "None", "num_threads": 8}
+# fixedpoint is CUDA-only; the CPU reference run maps it to stochastic quant
+# (same quant family, well-defined on CPU) -- the parity check is tolerant.
+if device == "cpu" and p["quant_mode"] == "fixedpoint":
+    p["quant_mode"] = "stochastic"
+    p["quant_bins"] = 0
 if spec.get("bagging_freq"):
     p["bagging_freq"] = spec["bagging_freq"]
 if spec["objective"] == "multiclass":
@@ -133,6 +140,7 @@ expected = spec["rounds"] * (spec["num_class"] or 1)
 assert bst.num_trees() == expected, f"tree count {bst.num_trees()} != {expected}"
 pred = bst.predict(X[k:])
 assert np.all(np.isfinite(pred)), "non-finite predictions"
+assert float(np.std(pred)) > 0.0, "constant predictions (garbage model)"
 pred2 = lgb.Booster(model_str=model_str).predict(X[k:])
 assert np.array_equal(pred, pred2), "reloaded model predicts differently"
 yt = y[k:]
