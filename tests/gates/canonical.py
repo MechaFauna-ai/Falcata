@@ -5,14 +5,22 @@ discipline is built on (see also tests/gates/lattice.py for the per-commit
 small-cell lattice). They need the bench data cache (machine-local; override
 with EXABOOST_BENCH_CACHE) and an idle GPU.
 
-Expected values (post-#13 tie-break baseline, re-baselined 2026-07-16):
-  covtype 1023/10 quant hybrid      -> 1bfd2d7aed5f   (quality 0.91800)
-  covtype 1023/10 quant hybrid:off  -> 26852449fbac
-  numerai int8 quant example-shape  -> 763c75c0d9cb
+Locks are md5[:12] over the TREE section of model_to_string() only (up to the
+"parameters:" block): the parameters dump moves whenever a config param is
+added/renamed -- it did in the 2026-07 planner refactor with zero behavior
+change (all 700 covtype trees bit-identical, full-string md5 moved) -- so tree
+bytes are the behavior signature. Historical full-string locks: covtype
+1bfd2d7aed5f / classic 26852449fbac (pre-refactor builds only).
+
+Expected values (post-#13 tie-break baseline; tree-only since 2026-07-28):
+  covtype 1023/10 quant hybrid      -> 20cb576f6758   (quality 0.91800)
+  covtype 1023/10 quant hybrid:off  -> cross-build-verified then recorded
+  numerai int8 quant example-shape  -> cross-build-verified then recorded
 
 If a value differs: FIRST distrust the build/invocation, not the lock --
 rebuild from the exact commit and rerun this exact script. Only re-baseline
-with an understood, approved behavior change.
+with an understood, approved behavior change. A lock of None means
+"not yet baselined": the script prints BASELINE <md5> for it and fails.
 
 Usage:
   python tests/gates/canonical.py covtype [--classic]
@@ -35,10 +43,14 @@ CACHE = Path(
 )
 
 LOCKS = {
-    "covtype": "1bfd2d7aed5f",
-    "covtype-classic": "26852449fbac",
-    "numerai": "763c75c0d9cb",
+    "covtype": "20cb576f6758",
+    "covtype-classic": None,  # pending cross-build verification (task #44)
+    "numerai": None,  # pending cross-build verification (task #44)
 }
+
+
+def _tree_md5(model_str):
+    return hashlib.md5(model_str.split("\nparameters:")[0].encode()).hexdigest()[:12]
 
 
 def run_covtype(classic=False):
@@ -70,7 +82,7 @@ def run_covtype(classic=False):
     t0 = time.time()
     bst = lgb.train(p, ds, num_boost_round=100)
     t = time.time() - t0
-    md5 = hashlib.md5(bst.model_to_string().encode()).hexdigest()[:12]
+    md5 = _tree_md5(bst.model_to_string())
     pred = bst.predict(X_te).argmax(axis=1)
     quality = float((pred == y_te).mean())
     name = "covtype-classic" if classic else "covtype"
@@ -104,7 +116,7 @@ def run_numerai():
     t0 = time.time()
     bst = lgb.train(p, ds, num_boost_round=20)
     t = time.time() - t0
-    md5 = hashlib.md5(bst.model_to_string().encode()).hexdigest()[:12]
+    md5 = _tree_md5(bst.model_to_string())
     return "numerai", md5, f"train={t:.2f}s"
 
 
@@ -200,11 +212,15 @@ def main():
     failed = False
     for name, md5, info in runs:
         want = LOCKS[name]
+        if want is None:
+            print(
+                f"BASELINE {name}: tree_md5={md5} {info} -- record in LOCKS after cross-build verification"
+            )
+            failed = True
+            continue
         ok = md5 == want
         failed |= not ok
-        print(
-            f"{'PASS' if ok else 'FAIL'} {name}: model_md5={md5} (lock {want}) {info}"
-        )
+        print(f"{'PASS' if ok else 'FAIL'} {name}: tree_md5={md5} (lock {want}) {info}")
     if args.gate == "numerai-treecount":
         name, verdict, info = run_numerai_treecount()
         print(f"{verdict} {name}: {info}")

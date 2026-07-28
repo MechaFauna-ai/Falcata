@@ -154,7 +154,8 @@ elif spec["objective"] == "binary":
 else:
     eps = 1e-12
     metric = float(-np.log(np.clip(pred[np.arange(len(yt)), yt.astype(int)], eps, 1)).mean()); higher = False
-print("OUT " + json.dumps({"md5": hashlib.md5(model_str.encode()).hexdigest(),
+tree_str = model_str.split("\nparameters:")[0]
+print("OUT " + json.dumps({"md5": hashlib.md5(tree_str.encode()).hexdigest(),
                            "metric": metric, "higher_better": higher}))
 """
 

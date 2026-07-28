@@ -324,7 +324,10 @@ def run_cell(cell):
     bst = lgb.train(params, ds, num_boost_round=cell["rounds"])
     t_train = time.monotonic() - t1
     model_str = bst.model_to_string()
-    md5 = hashlib.md5(model_str.encode()).hexdigest()
+    # fingerprint ONLY the trees: the trailing "parameters:" dump moves whenever
+    # a config param is added/renamed (it did in the 2026-07 planner refactor
+    # with zero behavior change) -- tree bytes are the actual behavior signature
+    md5 = hashlib.md5(model_str.split("\nparameters:")[0].encode()).hexdigest()
     # validity: round-trip + finite predictions + tree count
     expected_trees = cell["rounds"] * params.get("num_class", 1)
     assert bst.num_trees() == expected_trees, f"tree count {bst.num_trees()} != {expected_trees}"
