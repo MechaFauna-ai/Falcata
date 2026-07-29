@@ -918,7 +918,7 @@ install(
 
 if(INSTALL_HEADERS)
     install(
-      DIRECTORY ${Falcata_HEADER_DIR}/LightGBM
+      DIRECTORY ${Falcata_HEADER_DIR}/Falcata
       DESTINATION ${CMAKE_INSTALL_PREFIX}/include
     )
     install(
