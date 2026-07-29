@@ -64,7 +64,7 @@
 
 set -e -u
 
-echo "[INFO] building lightgbm"
+echo "[INFO] building falcata"
 
 # Default values of arguments
 INSTALL="false"
@@ -196,24 +196,24 @@ python -m pip install --prefer-binary 'build>=0.10.0'
 # to build the Python-package
 create_isolated_source_dir() {
     rm -rf \
-        ./lightgbm-python \
-        ./lightgbm \
+        ./falcata-python \
+        ./falcata \
         ./python-package/build \
         ./python-package/build_cpp \
         ./python-package/compile \
         ./python-package/dist \
-        ./python-package/lightgbm.egg-info
+        ./python-package/falcata.egg-info
 
-    cp -R ./python-package ./lightgbm-python
+    cp -R ./python-package ./falcata-python
 
-    cp LICENSE ./lightgbm-python/
-    cp VERSION.txt ./lightgbm-python/lightgbm/VERSION.txt
+    cp LICENSE ./falcata-python/
+    cp VERSION.txt ./falcata-python/falcata/VERSION.txt
 
-    cp -R ./cmake ./lightgbm-python
-    cp CMakeLists.txt ./lightgbm-python
-    cp -R ./include ./lightgbm-python
-    cp -R ./src ./lightgbm-python
-    cp -R ./swig ./lightgbm-python
+    cp -R ./cmake ./falcata-python
+    cp CMakeLists.txt ./falcata-python
+    cp -R ./include ./falcata-python
+    cp -R ./src ./falcata-python
+    cp -R ./swig ./falcata-python
 
     # include only specific files from external_libs, to keep the package
     # small and avoid redistributing code with licenses incompatible with
@@ -222,112 +222,112 @@ create_isolated_source_dir() {
     ######################
     # fast_double_parser #
     ######################
-    mkdir -p ./lightgbm-python/external_libs/fast_double_parser
+    mkdir -p ./falcata-python/external_libs/fast_double_parser
     cp \
         external_libs/fast_double_parser/CMakeLists.txt \
-        ./lightgbm-python/external_libs/fast_double_parser/CMakeLists.txt
+        ./falcata-python/external_libs/fast_double_parser/CMakeLists.txt
     cp \
         external_libs/fast_double_parser/LICENSE* \
-        ./lightgbm-python/external_libs/fast_double_parser/
+        ./falcata-python/external_libs/fast_double_parser/
 
-    mkdir -p ./lightgbm-python/external_libs/fast_double_parser/include/
+    mkdir -p ./falcata-python/external_libs/fast_double_parser/include/
     cp \
         external_libs/fast_double_parser/include/fast_double_parser.h \
-        ./lightgbm-python/external_libs/fast_double_parser/include/
+        ./falcata-python/external_libs/fast_double_parser/include/
 
     #######
     # fmt #
     #######
-    mkdir -p ./lightgbm-python/external_libs/fmt
+    mkdir -p ./falcata-python/external_libs/fmt
     cp \
         external_libs/fast_double_parser/CMakeLists.txt \
-        ./lightgbm-python/external_libs/fmt/CMakeLists.txt
+        ./falcata-python/external_libs/fmt/CMakeLists.txt
     cp \
         external_libs/fmt/LICENSE* \
-        ./lightgbm-python/external_libs/fmt/
+        ./falcata-python/external_libs/fmt/
 
-    mkdir -p ./lightgbm-python/external_libs/fmt/include/fmt
+    mkdir -p ./falcata-python/external_libs/fmt/include/fmt
     cp \
         external_libs/fmt/include/fmt/*.h \
-        ./lightgbm-python/external_libs/fmt/include/fmt/
+        ./falcata-python/external_libs/fmt/include/fmt/
 
     #########
     # Eigen #
     #########
-    mkdir -p ./lightgbm-python/external_libs/eigen/Eigen
+    mkdir -p ./falcata-python/external_libs/eigen/Eigen
     cp \
         external_libs/eigen/CMakeLists.txt \
-        ./lightgbm-python/external_libs/eigen/CMakeLists.txt
+        ./falcata-python/external_libs/eigen/CMakeLists.txt
 
     modules="Cholesky Core Dense Eigenvalues Geometry Householder Jacobi LU QR SVD"
     for eigen_module in ${modules}; do
         cp \
             "external_libs/eigen/Eigen/${eigen_module}" \
-            "./lightgbm-python/external_libs/eigen/Eigen/${eigen_module}"
+            "./falcata-python/external_libs/eigen/Eigen/${eigen_module}"
         if [ "${eigen_module}" != "Dense" ]; then
-            mkdir -p "./lightgbm-python/external_libs/eigen/Eigen/src/${eigen_module}/"
+            mkdir -p "./falcata-python/external_libs/eigen/Eigen/src/${eigen_module}/"
             cp \
                 -R \
                 "external_libs/eigen/Eigen/src/${eigen_module}"/* \
-                "./lightgbm-python/external_libs/eigen/Eigen/src/${eigen_module}/"
+                "./falcata-python/external_libs/eigen/Eigen/src/${eigen_module}/"
         fi
     done
 
-    mkdir -p ./lightgbm-python/external_libs/eigen/Eigen/misc
+    mkdir -p ./falcata-python/external_libs/eigen/Eigen/misc
     cp \
         -R \
         external_libs/eigen/Eigen/src/misc \
-        ./lightgbm-python/external_libs/eigen/Eigen/src/misc/
+        ./falcata-python/external_libs/eigen/Eigen/src/misc/
 
-    mkdir -p ./lightgbm-python/external_libs/eigen/Eigen/plugins
+    mkdir -p ./falcata-python/external_libs/eigen/Eigen/plugins
     cp \
         -R \
         external_libs/eigen/Eigen/src/plugins \
-        ./lightgbm-python/external_libs/eigen/Eigen/src/plugins/
+        ./falcata-python/external_libs/eigen/Eigen/src/plugins/
 
     ###################
     # compute (Boost) #
     ###################
-    mkdir -p ./lightgbm-python/external_libs/compute
+    mkdir -p ./falcata-python/external_libs/compute
     cp \
         -R \
         external_libs/compute/include \
-        ./lightgbm-python/external_libs/compute/include/
+        ./falcata-python/external_libs/compute/include/
 
     #############
     # nanoarrow #
     #############
-    mkdir -p ./lightgbm-python/external_libs/nanoarrow
+    mkdir -p ./falcata-python/external_libs/nanoarrow
     cp \
         external_libs/nanoarrow/CMakeLists.txt \
         external_libs/nanoarrow/LICENSE.txt \
         external_libs/nanoarrow/NOTICE.txt \
-        ./lightgbm-python/external_libs/nanoarrow/
+        ./falcata-python/external_libs/nanoarrow/
     cp -R \
         external_libs/nanoarrow/cmake \
-        ./lightgbm-python/external_libs/nanoarrow/cmake/
-    mkdir -p ./lightgbm-python/external_libs/nanoarrow/src/nanoarrow
+        ./falcata-python/external_libs/nanoarrow/cmake/
+    mkdir -p ./falcata-python/external_libs/nanoarrow/src/nanoarrow
     cp \
         external_libs/nanoarrow/src/nanoarrow/nanoarrow.h \
         external_libs/nanoarrow/src/nanoarrow/nanoarrow.hpp \
         external_libs/nanoarrow/src/nanoarrow/nanoarrow_config.h.in \
-        ./lightgbm-python/external_libs/nanoarrow/src/nanoarrow/
-    mkdir -p ./lightgbm-python/external_libs/nanoarrow/src/nanoarrow/common
+        ./falcata-python/external_libs/nanoarrow/src/nanoarrow/
+    mkdir -p ./falcata-python/external_libs/nanoarrow/src/nanoarrow/common
     cp -R \
         external_libs/nanoarrow/src/nanoarrow/common/*.h \
-        ./lightgbm-python/external_libs/nanoarrow/src/nanoarrow/common
+        ./falcata-python/external_libs/nanoarrow/src/nanoarrow/common
     cp -R \
         external_libs/nanoarrow/src/nanoarrow/common/*.c \
-        ./lightgbm-python/external_libs/nanoarrow/src/nanoarrow/common
-    mkdir -p ./lightgbm-python/external_libs/nanoarrow/src/nanoarrow/hpp
+        ./falcata-python/external_libs/nanoarrow/src/nanoarrow/common
+    mkdir -p ./falcata-python/external_libs/nanoarrow/src/nanoarrow/hpp
     cp -R \
         external_libs/nanoarrow/src/nanoarrow/hpp/*.hpp \
-        ./lightgbm-python/external_libs/nanoarrow/src/nanoarrow/hpp
+        ./falcata-python/external_libs/nanoarrow/src/nanoarrow/hpp
 }
 
 create_isolated_source_dir
 
-cd ./lightgbm-python
+cd ./falcata-python
 
 # if 'install' was passed, choose the type of package to build and install
 if test "${INSTALL}" = true; then
@@ -355,30 +355,30 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 # do not consider .gitignore when choosing files to include / exclude
 ignore-vcs = true
-packages = ["lightgbm"]
+packages = ["falcata"]
 
 EOF
-        mkdir -p ./lightgbm/lib
+        mkdir -p ./falcata/lib
         if test -f ../lib_falcata.so; then
             echo "[INFO] found pre-compiled lib_falcata.so"
-            cp ../lib_falcata.so ./lightgbm/lib/lib_falcata.so
+            cp ../lib_falcata.so ./falcata/lib/lib_falcata.so
         elif test -f ../lib_falcata.dylib; then
             echo "[INFO] found pre-compiled lib_falcata.dylib"
-            cp ../lib_falcata.dylib ./lightgbm/lib/lib_falcata.dylib
+            cp ../lib_falcata.dylib ./falcata/lib/lib_falcata.dylib
         elif test -f ../lib_falcata.dll; then
             echo "[INFO] found pre-compiled lib_falcata.dll"
-            cp ../lib_falcata.dll ./lightgbm/lib/lib_falcata.dll
+            cp ../lib_falcata.dll ./falcata/lib/lib_falcata.dll
         elif test -f ../Release/lib_falcata.dll; then
             echo "[INFO] found pre-compiled Release/lib_falcata.dll"
-            cp ../Release/lib_falcata.dll ./lightgbm/lib/lib_falcata.dll
+            cp ../Release/lib_falcata.dll ./falcata/lib/lib_falcata.dll
         elif test -f ../windows/x64/DLL/lib_falcata.dll; then
             echo "[INFO] found pre-compiled windows/x64/DLL/lib_falcata.dll"
-            cp ../windows/x64/DLL/lib_falcata.dll ./lightgbm/lib/lib_falcata.dll
-            cp ../windows/x64/DLL/lib_falcata.lib ./lightgbm/lib/lib_falcata.lib
+            cp ../windows/x64/DLL/lib_falcata.dll ./falcata/lib/lib_falcata.dll
+            cp ../windows/x64/DLL/lib_falcata.lib ./falcata/lib/lib_falcata.lib
         elif test -f ../windows/x64/Debug_DLL/lib_falcata.dll; then
             echo "[INFO] found pre-compiled windows/x64/Debug_DLL/lib_falcata.dll"
-            cp ../windows/x64/Debug_DLL/lib_falcata.dll ./lightgbm/lib/lib_falcata.dll
-            cp ../windows/x64/Debug_DLL/lib_falcata.lib ./lightgbm/lib/lib_falcata.lib
+            cp ../windows/x64/Debug_DLL/lib_falcata.dll ./falcata/lib/lib_falcata.dll
+            cp ../windows/x64/Debug_DLL/lib_falcata.lib ./falcata/lib/lib_falcata.lib
         else
             echo "[ERROR] cannot find pre-compiled library. Aborting"
             exit 1
@@ -415,12 +415,12 @@ if test "${BUILD_WHEEL}" = true; then
 fi
 
 if test "${INSTALL}" = true; then
-    echo "[INFO] --- installing lightgbm ---"
+    echo "[INFO] --- installing falcata ---"
     cd ..
     if test "${BUILD_WHEEL}" = true; then
-        PACKAGE_FILE="$(echo dist/lightgbm*.whl)"
+        PACKAGE_FILE="$(echo dist/falcata*.whl)"
     else
-        PACKAGE_FILE="$(echo dist/lightgbm*.tar.gz)"
+        PACKAGE_FILE="$(echo dist/falcata*.tar.gz)"
     fi
     # shellcheck disable=SC2086
     python -m pip install \
@@ -432,4 +432,4 @@ if test "${INSTALL}" = true; then
 fi
 
 echo "[INFO] cleaning up"
-rm -rf ./lightgbm-python
+rm -rf ./falcata-python

@@ -29,7 +29,7 @@ license-files = [
 maintainers = [
   {name = "Yu Shi", email = "yushi@microsoft.com"}
 ]
-name = "lightgbm"
+name = "falcata"
 readme = "README.rst"
 requires-python = ">=3.10"
 version = "4.6.0.99"
@@ -61,10 +61,10 @@ scikit-learn = [
 ]
 
 [project.urls]
-homepage = "https://github.com/lightgbm-org/LightGBM"
-documentation = "https://lightgbm.readthedocs.io/en/latest/"
-repository = "https://github.com/lightgbm-org/LightGBM.git"
-changelog = "https://github.com/lightgbm-org/LightGBM/releases"
+homepage = "https://github.com/falcata-org/LightGBM"
+documentation = "https://falcata.readthedocs.io/en/latest/"
+repository = "https://github.com/falcata-org/LightGBM.git"
+changelog = "https://github.com/falcata-org/LightGBM/releases"
 
 # start:build-system
 [build-system]
@@ -82,6 +82,8 @@ install.strip = true
 logging.level = "INFO"
 sdist.reproducible = true
 wheel.py-api = "py3"
+# ship the legacy `lightgbm` import shim alongside the real package
+wheel.packages = ["falcata", "lightgbm"]
 experimental = false
 strict-config = false
 minimum-version = "build-system.requires"
@@ -97,7 +99,7 @@ __BUILD_FOR_PYTHON = "ON"
 
 [tool.mypy]
 disallow_untyped_defs = true
-exclude = 'build/*|compile/*|docs/*|examples/*|external_libs/*|lightgbm-python/*|.pixi/*|tests/*'
+exclude = 'build/*|compile/*|docs/*|examples/*|external_libs/*|falcata-python/*|.pixi/*|tests/*'
 ignore_missing_imports = true
 
 [tool.rstcheck]
@@ -114,7 +116,7 @@ exclude = [
     "build",
     "compile",
     "external_libs",
-    "lightgbm-python",
+    "falcata-python",
 ]
 line-length = 120
 
@@ -127,7 +129,7 @@ exclude = [
     "build/*.py",
     "compile/*.py",
     "external_libs/*.py",
-    "lightgbm-python/*.py",
+    "falcata-python/*.py",
 ]
 indent-style = "space"
 quote-style = "double"
@@ -196,7 +198,7 @@ raises-extend-require-match-for = ["*Exception", "*Error"]
     "D103",
     # (flake8-print) print is the output channel of the benchmark scripts
     "T201",
-    # (pylint) heavy imports (lightgbm/xgboost/catboost) are deliberately
+    # (pylint) heavy imports (falcata/xgboost/catboost) are deliberately
     # deferred into per-library runners so each venv only imports its own
     "PLC0415"
 ]
@@ -216,7 +218,7 @@ raises-extend-require-match-for = ["*Exception", "*Error"]
     # flake8-print
     "T"
 ]
-"python-package/lightgbm/basic.py" = [
+"python-package/falcata/basic.py" = [
     # (pylint) Using the global statement is discouraged
     "PLW0603"
 ]
@@ -235,4 +237,4 @@ raises-extend-require-match-for = ["*Exception", "*Error"]
 convention = "numpy"
 
 [tool.ruff.lint.isort]
-known-first-party = ["lightgbm"]
+known-first-party = ["falcata"]

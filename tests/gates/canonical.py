@@ -56,7 +56,7 @@ def _tree_md5(model_str):
 
 def run_covtype(classic=False):
     import numpy as np
-    import lightgbm as lgb
+    import falcata as lgb
 
     d = CACHE / "covtype"
     X_tr, y_tr = np.load(d / "X_train.npy"), np.load(d / "y_train.npy")
@@ -92,7 +92,7 @@ def run_covtype(classic=False):
 
 def run_numerai():
     import numpy as np
-    import lightgbm as lgb
+    import falcata as lgb
 
     d = CACHE / "numerai"
     meta = json.load(open(d / "meta.json"))
@@ -140,7 +140,7 @@ def run_numerai_treecount():
     the class. Detectors: exact tree count + non-collapsed late-tree leaves.
     """
     import numpy as np
-    import lightgbm as lgb
+    import falcata as lgb
 
     if not NUMERAI_V53_DATASET.exists():
         return "numerai-treecount", "SKIP", f"dataset missing: {NUMERAI_V53_DATASET}"

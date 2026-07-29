@@ -88,7 +88,7 @@ def sample_spec(rng):
 _WORKER_SOURCE = r"""
 import hashlib, json, sys
 import numpy as np
-import lightgbm as lgb
+import falcata as lgb
 
 spec = json.loads(sys.argv[1])
 device = sys.argv[2]

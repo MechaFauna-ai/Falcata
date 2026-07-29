@@ -123,7 +123,7 @@ def load(dataset):
 
 
 def run_cell(cid, dataset, params, rounds):
-    import lightgbm as lgb
+    import falcata as lgb
 
     X, y = load(dataset)
     p = {**BASE, **params}
