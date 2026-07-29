@@ -63,16 +63,17 @@ struct FalcataPlan {
   // cheap host precheck that skips EFB bundling on provably-unbundlable data
   bool efb_precheck = true;         // key: efb_precheck
 
-  // --- baked invariant winners (no keys) -----------------------------------
-  bool split_packed_read = true;    // packed split reads in apply kernels
-  bool batch_kernels = true;        // one find/sync launch per level
-  bool batch_apply = true;          // batched per-level apply phase
-  bool one_sync = true;             // speculative single-sync level pipeline
-  bool selective = true;            // grow-then-prune for budget-limited configs
-  bool batch_reghist = true;        // register-tiled batched construct kernel
-  bool batch_wide = true;           // wide leaf-splits init batching
-  bool gh_interleave = true;        // packed grad/hess interleaved layout
-  bool small_leaf_construct = true;  // small-leaf construct specialization
+  // --- measured-invariant winners: default ON, but keyed so each one can be
+  // ablated (leave-one-out) to attribute its share of the speedup ----------
+  bool split_packed_read = true;    // key: split_packed_read
+  bool batch_kernels = true;        // key: batch_kernels -- one find/sync launch per level
+  bool batch_apply = true;          // key: batch_apply -- batched per-level apply phase
+  bool one_sync = true;             // key: one_sync -- SPECULATIVE single-sync level pipeline
+  bool selective = true;            // key: selective -- SPECULATIVE grow-then-prune
+  bool batch_reghist = true;        // key: batch_reghist -- register-tiled construct
+  bool batch_wide = true;           // key: batch_wide -- wide leaf-splits init batching
+  bool gh_interleave = true;        // key: gh_interleave -- packed grad/hess layout
+  bool small_leaf_construct = true;  // key: small_leaf_construct
 
   // --- baked tuning constants (no keys) ------------------------------------
   int batch_construct_min_rows_per_thread = 64;
@@ -85,6 +86,33 @@ struct FalcataPlan {
   // this: the 252-column auto-cap measured +7% construct on quant numerai but
   // -2% wall on the non-quant numerai config (4-bit packed + compact view).
   bool quant_training = false;
+
+  /*!
+   * \brief Address of the flag a ``cuda_plan`` key controls, or nullptr if the
+   * key is unknown. Every ablatable decision is reachable here, so the
+   * benchmark suite can leave-one-out each feature without new plumbing.
+   */
+  bool* KeySlot(const std::string& key) {
+    if (key == "hybrid") return &hybrid;
+    if (key == "graph_loop") return &graph_loop;
+    if (key == "graph_quant") return &graph_quant;
+    if (key == "compact_quant") return &compact_quant;
+    if (key == "construct_jit") return &construct_jit;
+    if (key == "fast_rowdata") return &fast_rowdata;
+    if (key == "rowdata_4bit") return &rowdata_4bit;
+    if (key == "gpu_construct") return &gpu_construct;
+    if (key == "efb_precheck") return &efb_precheck;
+    if (key == "split_packed_read") return &split_packed_read;
+    if (key == "batch_kernels") return &batch_kernels;
+    if (key == "batch_apply") return &batch_apply;
+    if (key == "one_sync") return &one_sync;
+    if (key == "selective") return &selective;
+    if (key == "batch_reghist") return &batch_reghist;
+    if (key == "batch_wide") return &batch_wide;
+    if (key == "gh_interleave") return &gh_interleave;
+    if (key == "small_leaf_construct") return &small_leaf_construct;
+    return nullptr;
+  }
 
   /*! \brief The process-global plan (mutable form, for the resolve points). */
   static FalcataPlan& Mutable() {
@@ -123,36 +151,25 @@ struct FalcataPlan {
                    kv[1].c_str(), kv[0].c_str());
         return;
       }
-      if (kv[0] == std::string("hybrid")) {
-        plan.hybrid = value;
-      } else if (kv[0] == std::string("graph_loop")) {
-        plan.graph_loop = value;
-      } else if (kv[0] == std::string("graph_quant")) {
-        plan.graph_quant = value;
-      } else if (kv[0] == std::string("compact_quant")) {
-        plan.compact_quant = value;
-      } else if (kv[0] == std::string("construct_jit")) {
-        plan.construct_jit = value;
-      } else if (kv[0] == std::string("fast_rowdata")) {
-        plan.fast_rowdata = value;
-      } else if (kv[0] == std::string("rowdata_4bit")) {
-        plan.rowdata_4bit = value;
-      } else if (kv[0] == std::string("gpu_construct")) {
-        plan.gpu_construct = value;
-      } else if (kv[0] == std::string("efb_precheck")) {
-        plan.efb_precheck = value;
-      } else {
+      bool* slot = plan.KeySlot(kv[0]);
+      if (slot == nullptr) {
         Log::Fatal("cuda_plan: unknown key \"%s\"", kv[0].c_str());
       }
+      *slot = value;
       overridden = true;
     }
     Mutable() = plan;
     if (overridden) {
-      Log::Info("cuda_plan: hybrid=%d graph_loop=%d graph_quant=%d compact_quant=%d "
-                "construct_jit=%d fast_rowdata=%d rowdata_4bit=%d gpu_construct=%d efb_precheck=%d",
-                plan.hybrid, plan.graph_loop, plan.graph_quant, plan.compact_quant,
-                plan.construct_jit, plan.fast_rowdata, plan.rowdata_4bit,
-                plan.gpu_construct, plan.efb_precheck);
+      Log::Info("cuda_plan: hybrid=%d selective=%d one_sync=%d graph_loop=%d graph_quant=%d "
+                "compact_quant=%d construct_jit=%d fast_rowdata=%d rowdata_4bit=%d "
+                "gpu_construct=%d efb_precheck=%d batch_kernels=%d batch_apply=%d "
+                "batch_reghist=%d batch_wide=%d gh_interleave=%d split_packed_read=%d "
+                "small_leaf_construct=%d",
+                plan.hybrid, plan.selective, plan.one_sync, plan.graph_loop, plan.graph_quant,
+                plan.compact_quant, plan.construct_jit, plan.fast_rowdata, plan.rowdata_4bit,
+                plan.gpu_construct, plan.efb_precheck, plan.batch_kernels, plan.batch_apply,
+                plan.batch_reghist, plan.batch_wide, plan.gh_interleave, plan.split_packed_read,
+                plan.small_leaf_construct);
     }
   }
 };
