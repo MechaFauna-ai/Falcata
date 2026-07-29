@@ -139,10 +139,14 @@ def run_numerai_treecount():
     hyperparameters do NOT reproduce it, so only this full-scale cell catches
     the class. Detectors: exact tree count + non-collapsed late-tree leaves.
     """
+    import numpy as np
     import lightgbm as lgb
 
     if not NUMERAI_V53_DATASET.exists():
         return "numerai-treecount", "SKIP", f"dataset missing: {NUMERAI_V53_DATASET}"
+    parquet = NUMERAI_V53_DATASET.with_suffix(".parquet")
+    if not parquet.exists():
+        return "numerai-treecount", "SKIP", f"parquet (for labels) missing: {parquet}"
     rounds = 200
     p = {
         "objective": "regression",
@@ -161,6 +165,13 @@ def run_numerai_treecount():
         "num_threads": 16,
     }
     ds = lgb.Dataset(str(NUMERAI_V53_DATASET), params=p)
+    # the binary dataset is label-less by design (production swaps labels per
+    # target via set_label); train the h60 benchmark target
+    import pyarrow.parquet as pq
+
+    y = pq.read_table(parquet, columns=["target_ender_60"]).column(0).to_numpy()
+    ds.construct()
+    ds.set_label(np.nan_to_num(y.astype(np.float64), nan=0.5))
     t0 = time.time()
     bst = lgb.train(p, ds, num_boost_round=rounds)
     t = time.time() - t0

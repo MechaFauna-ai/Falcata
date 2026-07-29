@@ -18,7 +18,7 @@ python3 -m venv "$VENV"
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
 pip install --quiet --upgrade pip
-pip install --quiet numpy scipy scikit-learn
+pip install --quiet numpy scipy scikit-learn pyarrow
 
 CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120-real;120-virtual -DBUILD_WITH_SHARED_NCCL=ON"
 if command -v ccache >/dev/null 2>&1; then

@@ -171,6 +171,19 @@ def build_cells():
     # rows) -- the full-scale nightly twin in canonical.py is the gate that
     # catches it; these cells guard the class at per-commit cost.
     cell("tinygrad/quant", "tinygrad", rounds=150)
+
+    # --- large-row overflow class: 2M rows x 64 bins, compact view ----------- #
+    # fingerprint + compact-flip equality at a scale where the packed-int16
+    # partials actually overflow if unguarded (~15s/cell; the priciest cells
+    # in the lattice, and worth every second)
+    cell("bigrow/quant64", "bigrow", rounds=40, perf=True)
+    cell(
+        "bigrow/flip-compact_quant",
+        "bigrow",
+        {"cuda_plan": "auto,compact_quant:off"},
+        rounds=40,
+        equal_to="bigrow/quant64",
+    )
     cell("tinygrad/fixedpoint", "tinygrad", {"quant_mode": "fixedpoint"}, rounds=150)
 
     # --- nondeterministic tiers: validity + metric floor only --------------- #
@@ -288,6 +301,21 @@ def build_profile(name):
         y = X @ rng.standard_normal(m) + 0.3 * rng.standard_normal(n)
         X[rng.random((n, m)) < 0.3] = np.nan
         y[np.isnan(y)] = 0.0
+    elif name == "bigrow":
+        # 2M rows x 64 quant bins x compact view: the packed-int16 shared-hist
+        # overflow class (2026-07 production corruption: the compact-view grid
+        # override dropped the 65534/bins rows-per-block guard; corruption
+        # grows with leaf size, invisible below ~1M rows)
+        n, m = 2_000_000, 20
+        X = rng.integers(0, 5, size=(n, m)).astype(np.int8)
+        w = rng.standard_normal(m) * (rng.random(m) < 0.5)
+        signal = (X.astype(np.float64) - 2.0) @ w
+        qs = np.quantile(signal, [0.05, 0.25, 0.75, 0.95])
+        y = np.select([signal < qs[0], signal < qs[1], signal < qs[2], signal < qs[3]],
+                      [0.0, 0.25, 0.5, 0.75], 1.0)
+        base.update({"max_bin": 5, "learning_rate": 0.0015, "feature_fraction": 0.5,
+                     "min_data_in_leaf": 40000, "num_leaves": 8192, "max_depth": 11,
+                     "num_grad_quant_bins": 64})
     elif name == "tinygrad":
         # numerai-production regime shrunk to lattice scale: near-constant
         # [0,1] target, tiny learning rate, max_bin=5 -- the leaf-collapse /

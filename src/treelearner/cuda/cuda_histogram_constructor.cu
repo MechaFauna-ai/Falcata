@@ -2399,12 +2399,21 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
   if (use_compact_view_) {
     // compact column view: same batched kernel, fed with the per-tree compact
     // data/metadata (mirrors the per-pair compact launch). Blocks span the
-    // USED columns of a partition; the y sizing formula is the batched one.
+    // USED columns of a partition; the y sizing formula is the batched one
+    // INCLUDING the quantized overflow guard: the compact block_dim_y is
+    // recomputed here (wider than the generic one when few columns are used),
+    // so the rows-per-block cap (65534/bins, guarding the packed 16+16-bit
+    // shared-histogram partials) must be re-applied for it. Sizing with the
+    // plain formula overflowed the int16 partials on large leaves at high
+    // quant_bins (the 2026-07 "fixedpoint stops after 44 trees" production
+    // corruption: quant_bins=64, 6.8M rows, feature_fraction 0.1);
+    // num_grad_quant_bins == 0 (non-quantized) reduces to the plain formula.
     block_dim_x = std::max(1, max_num_compact_cols_per_partition_);
     block_dim_y = std::max(1, NUM_THREADS_PER_BLOCK / block_dim_x);
-    grid_dim_y = HybridBatchedConstructGridDimY(
+    grid_dim_y = HybridBatchedConstructGridDimYQuant(
       max_num_data_in_smaller_leaf, num_pairs, block_dim_y, min_grid_dim_y_,
-      BatchConstructMinRowsPerThread(), BatchConstructSaturationFloor());
+      BatchConstructMinRowsPerThread(), BatchConstructSaturationFloor(),
+      use_quantized_grad_ ? num_grad_quant_bins_ : 0);
   }
   dim3 grid_dim(grid_dim_x, grid_dim_y, num_pairs);
   dim3 block_dim(block_dim_x, block_dim_y);

@@ -1,5 +1,10 @@
 {
  "cells": {
+  "bigrow/quant64": {
+   "md5": "0bec4617f4957f47ebdb8faaceea9b9c",
+   "metric": 0.218734,
+   "metric_name": "rmse"
+  },
   "categorical/nonquant": {
    "metric": 1.470123,
    "metric_name": "rmse"
