@@ -28,7 +28,7 @@ Since row names are irrelevant, it is recommended to use \code{colnames} directl
 }
 \examples{
 \donttest{
-\dontshow{setLGBMthreads(2L)}
+\dontshow{setFalcataThreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
 data(agaricus.train, package = "falcata")
 train <- agaricus.train

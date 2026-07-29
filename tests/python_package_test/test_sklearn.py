@@ -92,7 +92,7 @@ class UnpicklableCallback:
         env.model.attr_set_inside_callback = env.iteration * 10
 
 
-class ExtendedLGBMClassifier(lgb.FalcataClassifier):
+class ExtendedFalcataClassifier(lgb.FalcataClassifier):
     """Class for testing that inheriting from FalcataClassifier works"""
 
     def __init__(self, *, some_other_param: str = "lgbm-classifier", **kwargs):
@@ -108,7 +108,7 @@ class ExtendedLGBMRanker(lgb.FalcataRanker):
         super().__init__(**kwargs)
 
 
-class ExtendedLGBMRegressor(lgb.FalcataRegressor):
+class ExtendedFalcataRegressor(lgb.FalcataRegressor):
     """Class for testing that inheriting from FalcataRegressor works"""
 
     def __init__(self, *, some_other_param: str = "lgbm-regressor", **kwargs):
@@ -609,8 +609,8 @@ def test_subclassing_get_params_works():
             }
 
     # custom sub-classes
-    assert ExtendedLGBMClassifier().get_params() == {**expected_params, "some_other_param": "lgbm-classifier"}
-    assert ExtendedLGBMClassifier(**overrides).get_params() == {
+    assert ExtendedFalcataClassifier().get_params() == {**expected_params, "some_other_param": "lgbm-classifier"}
+    assert ExtendedFalcataClassifier(**overrides).get_params() == {
         **expected_params,
         "eta": 0.07,
         "n_estimators": 13,
@@ -628,11 +628,11 @@ def test_subclassing_get_params_works():
         "learning_rate": 0.1,
         "some_other_param": "lgbm-ranker",
     }
-    assert ExtendedLGBMRegressor().get_params() == {
+    assert ExtendedFalcataRegressor().get_params() == {
         **expected_params,
         "some_other_param": "lgbm-regressor",
     }
-    assert ExtendedLGBMRegressor(**overrides).get_params() == {
+    assert ExtendedFalcataRegressor(**overrides).get_params() == {
         **expected_params,
         "eta": 0.07,
         "n_estimators": 13,
@@ -660,10 +660,10 @@ def test_subclassing_works(task):
         est_sub = ExtendedLGBMRanker(**params).fit(X, y, group=g)
     elif task.endswith("classification"):
         est = lgb.FalcataClassifier(**params).fit(X, y)
-        est_sub = ExtendedLGBMClassifier(**params).fit(X, y)
+        est_sub = ExtendedFalcataClassifier(**params).fit(X, y)
     else:
         est = lgb.FalcataRegressor(**params).fit(X, y)
-        est_sub = ExtendedLGBMRegressor(**params).fit(X, y)
+        est_sub = ExtendedFalcataRegressor(**params).fit(X, y)
 
     np.testing.assert_allclose(est.predict(X), est_sub.predict(X))
 
@@ -672,11 +672,11 @@ def test_subclassing_works(task):
     "estimator_to_task",
     [
         (lgb.FalcataClassifier, "binary-classification"),
-        (ExtendedLGBMClassifier, "binary-classification"),
+        (ExtendedFalcataClassifier, "binary-classification"),
         (lgb.FalcataRanker, "ranking"),
         (ExtendedLGBMRanker, "ranking"),
         (lgb.FalcataRegressor, "regression"),
-        (ExtendedLGBMRegressor, "regression"),
+        (ExtendedFalcataRegressor, "regression"),
     ],
 )
 def test_parameter_aliases_are_handled_correctly(estimator_to_task):
@@ -1873,7 +1873,7 @@ def _get_expected_failed_tests(estimator):
 
 
 @parametrize_with_checks(
-    [ExtendedLGBMClassifier(), ExtendedLGBMRegressor(), lgb.FalcataClassifier(), lgb.FalcataRegressor()],
+    [ExtendedFalcataClassifier(), ExtendedFalcataRegressor(), lgb.FalcataClassifier(), lgb.FalcataRegressor()],
     expected_failed_checks=_get_expected_failed_tests,
 )
 def test_sklearn_integration(estimator, check):

@@ -168,8 +168,8 @@ if (($env:TASK -eq "sdist") -or (($env:APPVEYOR -eq "true") -and ($env:TASK -eq 
 }
 if ($env:TASK -eq "bdist") {
     # Make sure we can do both CPU and GPU; see tests/python_package_test/test_dual.py
-    # TODO: set LIGHTGBM_TEST_DUAL_CPU_GPU back to "1" as part of https://github.com/lightgbm-org/LightGBM/issues/6968
-    $env:LIGHTGBM_TEST_DUAL_CPU_GPU = "0"
+    # TODO: set FALCATA_TEST_DUAL_CPU_GPU back to "1" as part of https://github.com/lightgbm-org/LightGBM/issues/6968
+    $env:FALCATA_TEST_DUAL_CPU_GPU = "0"
 }
 
 pytest -ra $tests ; Assert-Output $?
