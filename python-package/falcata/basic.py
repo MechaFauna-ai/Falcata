@@ -3584,6 +3584,18 @@ class Dataset:
 _FIL_IMPORT_FAILED = False
 
 
+
+def _falcata_env(name: str, default: str) -> str:
+    """Read a FALCATA_* environment variable.
+
+    Falls back to the pre-rename ``EXABOOST_*`` spelling so setups written
+    against the old name keep working; drop the fallback once those are gone.
+    """
+    value = environ.get(f"FALCATA_{name}")
+    if value is None:
+        value = environ.get(f"EXABOOST_{name}", default)
+    return value
+
 def _load_fil_modules() -> Optional[Tuple[Any, Any]]:
     """Lazily import the GPU forest-inference stack.
 
@@ -4768,7 +4780,7 @@ class Booster:
         modules = _load_fil_modules()
         if modules is None:
             return None
-        precision = environ.get("EXABOOST_FIL_PRECISION", "single")
+        precision = _falcata_env("FIL_PRECISION", "single")
         if precision not in ("single", "double", "native"):
             precision = "single"
         cache: Dict[Tuple[int, int, bool, str], Any] = self.__dict__.setdefault("_fil_models", {})
@@ -4818,7 +4830,7 @@ class Booster:
             # fp32 parity vs the CPU predictor: ~1e-6 relative error in bulk,
             # but ~0.01% of rows can route to a different leaf where a feature
             # value falls between a split threshold and its fp32 rounding
-            # (EXABOOST_FIL_PRECISION=double restores exact routing, ~1e-13)
+            # (FALCATA_FIL_PRECISION=double restores exact routing, ~1e-13)
             return nvforest.load_from_treelite_model(
                 tl_model,
                 device="gpu",
@@ -4845,7 +4857,7 @@ class Booster:
         params = getattr(self, "params", None) or {}
         devices = {str(params[alias]).lower() for alias in _ConfigAliases.get("device_type") if alias in params}
         if (
-            environ.get("EXABOOST_FIL", "1") == "0"
+            _falcata_env("FIL", "1") == "0"
             or (not is_host and not hasattr(data, "__cuda_array_interface__"))
             or getattr(data, "ndim", 0) != 2
             or not devices & {"cuda", "gpu"}
@@ -4930,12 +4942,12 @@ class Booster:
             when it is installed, the model was trained with ``device_type="cuda"`` and
             ``data`` is a 2-D numpy or CuPy array. Falls back silently to the regular
             predictor whenever FIL cannot serve the request. Set the environment variable
-            ``EXABOOST_FIL=0`` to disable globally. The result matches the input's
+            ``FALCATA_FIL=0`` to disable globally. The result matches the input's
             residency: numpy in -> numpy out, CuPy in -> CuPy out.
             FIL runs in fp32 by default: expect ~1e-6 relative error vs the regular
             predictor in bulk, and a small fraction of rows (~0.01% observed) may route
             to a different leaf where a feature value falls inside a split threshold's
-            fp32 rounding gap. Set ``EXABOOST_FIL_PRECISION=double`` for exact routing
+            fp32 rounding gap. Set ``FALCATA_FIL_PRECISION=double`` for exact routing
             (~1e-13 parity) at the cost of doubled device memory and slower wide-input
             transfers. For host (numpy) inputs the whole matrix is copied to the GPU, so
             very wide inputs with small models can be slower than the CPU predictor;

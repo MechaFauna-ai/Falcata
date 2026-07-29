@@ -30,7 +30,7 @@ packed-histogram overflow fix.** See "This increment" below for the exact delta.
   self-guards idle blocks on device-read live counts.
 - **Quant graph support** *(this increment)* — quantized training reaches the device
   level loop with device-derived per-leaf histogram bit-widths and guarded quant body
-  kernels. Bit-exact vs the host loop; opt-in via `EXABOOST_GRAPH_QUANT=1` pending
+  kernels. Bit-exact vs the host loop; opt-in via `FALCATA_GRAPH_QUANT=1` pending
   controller-latency tuning.
 - **4-bit bin packing, fp32 gain / fp32-atomic histogram modes.**
 - **Ingestion** — int8 / uint8 / uint16 / fp16 / pandas small-int / CuPy paths;
@@ -59,16 +59,16 @@ and exact shapes):
 ## Kill switches (default-preserving)
 
 Every optimization is gated; unset = prior behavior. The only gate **new in this
-increment** is `EXABOOST_GRAPH_QUANT` (OFF by default).
+increment** is `FALCATA_GRAPH_QUANT` (OFF by default).
 
 | Env var | Default | Effect when unset |
 |---|---|---|
-| `EXABOOST_HYBRID_GROWTH` | ON | `=0` -> classic one-split-at-a-time leaf-wise loop |
-| `EXABOOST_GRAPH_LEVEL_LOOP` | ON | `=0` -> classic two-sync host loop (bit-exact) |
-| `EXABOOST_GRAPH_QUANT` | **OFF** | quant training stays on the host loop until opted in |
-| `EXABOOST_HYBRID_BATCH_KERNELS` / `_BATCH_APPLY` / `_ONE_SYNC` / `_SELECTIVE` | ON | `=0` -> per-pair / per-split / two-sync fallbacks |
-| `EXABOOST_FP32_GAIN` / `EXABOOST_FP32_HIST` | OFF | double-precision path (quality-gated, opt-in) |
-| `EXABOOST_ROWDATA_4BIT` / `_FAST_ROWDATA` / `_GPU_CONSTRUCT` / `_EFB_PRECHECK` | OFF | classic ingestion / construction; each has a `_VERIFY` twin |
+| `FALCATA_HYBRID_GROWTH` | ON | `=0` -> classic one-split-at-a-time leaf-wise loop |
+| `FALCATA_GRAPH_LEVEL_LOOP` | ON | `=0` -> classic two-sync host loop (bit-exact) |
+| `FALCATA_GRAPH_QUANT` | **OFF** | quant training stays on the host loop until opted in |
+| `FALCATA_HYBRID_BATCH_KERNELS` / `_BATCH_APPLY` / `_ONE_SYNC` / `_SELECTIVE` | ON | `=0` -> per-pair / per-split / two-sync fallbacks |
+| `FALCATA_FP32_GAIN` / `FALCATA_FP32_HIST` | OFF | double-precision path (quality-gated, opt-in) |
+| `FALCATA_ROWDATA_4BIT` / `_FAST_ROWDATA` / `_GPU_CONSTRUCT` / `_EFB_PRECHECK` | OFF | classic ingestion / construction; each has a `_VERIFY` twin |
 
 The graph loop is additionally guarded at runtime: CUDA driver >= 12040, depth-limited
 exact regime only, and per-level split bounds. Any fallback (env off, unsupported
@@ -93,7 +93,7 @@ graph ON. Non-quant float-atomic and fp32 modes are intentionally not bit-locked
 13 commits, 12 files, **+782 / -143** (`git diff --stat origin/master...hybrid-level-growth`).
 
 - **Quant graph support** (`a2279763`, `5c61a0ed`) — device hist-bits, guarded quant
-  body kernels; graph prefix reaches quant training, opt-in via `EXABOOST_GRAPH_QUANT`.
+  body kernels; graph prefix reaches quant training, opt-in via `FALCATA_GRAPH_QUANT`.
 - **Graph A2 frozen grids** (`199dc6fa`) — pow2 body-kernel grid buckets; idle-block
   guards on device-read live counts. Largest surface (+311 in the construct kernel).
 - **Multiclass graph re-enable** (`84db39cd`) — upload exec before first launch; lifts
@@ -113,7 +113,7 @@ graph ON. Non-quant float-atomic and fp32 modes are intentionally not bit-locked
 ## Reviewer notes
 
 - Focus on `cuda_histogram_constructor.cu` (+311) and the quant body kernels.
-- Confirm `EXABOOST_GRAPH_QUANT` stays OFF by default (quant users' default behavior
+- Confirm `FALCATA_GRAPH_QUANT` stays OFF by default (quant users' default behavior
   unchanged).
 - No automated tests are added by this increment; correctness rests on the out-of-tree
   md5 lock matrix above. A CI-wired md5 harness is a reasonable follow-up.

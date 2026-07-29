@@ -23,7 +23,7 @@ slower* on every benchmark where it applies; the two widest benches
 kernel is already occupancy/latency-bound near the memory wall; enlarging shared
 memory to fuse partitions collapses occupancy far faster than it saves traffic.
 
-## Characterization (per benchmark, `EXABOOST_DUMP_PARTITIONS=1`)
+## Characterization (per benchmark, `FALCATA_DUMP_PARTITIONS=1`)
 
 Shape-driven, identical across depth. `max_col_per_part = 24` on the
 multi-partition benches confirms they are **bin-capped** (24 × 255 ≈ 6144 cap),

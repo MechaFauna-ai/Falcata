@@ -2,8 +2,8 @@
  * Copyright (c) 2026 Falcata contributors. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef FALCATA_EXABOOST_PLAN_H_
-#define FALCATA_EXABOOST_PLAN_H_
+#ifndef FALCATA_PLAN_H_
+#define FALCATA_PLAN_H_
 
 #include <Falcata/config.h>
 #include <Falcata/utils/common.h>
@@ -222,4 +222,4 @@ inline const FalcataDebugOptions& FalcataDebug() {
 
 }  // namespace Falcata
 
-#endif  // FALCATA_EXABOOST_PLAN_H_
+#endif  // FALCATA_PLAN_H_

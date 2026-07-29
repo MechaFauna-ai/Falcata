@@ -410,8 +410,8 @@ def main():
         "--library",
         required=True,
         choices=[
-            "exaboost",
-            "exaboost-quant",
+            "falcata",
+            "falcata-quant",
             "lightgbm",
             "lightgbm-quant",
             "lightgbm-ocl",
@@ -443,7 +443,7 @@ def main():
         rec["n_train"], rec["n_features"] = int(x_tr.shape[0]), int(x_tr.shape[1])
         with ResourceMonitor() as mon:
             t_total = time.perf_counter()
-            if args.library.startswith(("exaboost", "lightgbm")):
+            if args.library.startswith(("falcata", "lightgbm")):
                 r = run_lightgbm(
                     task,
                     x_tr,

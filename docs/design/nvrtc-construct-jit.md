@@ -61,14 +61,14 @@ Key structural facts:
 
 ## 2. Phase-1 prototype (landed, no NVRTC)
 
-`EXABOOST_CONSTRUCT_COLCAP` + auto-trigger in `DivideCUDAFeatureGroups`
+`FALCATA_CONSTRUCT_COLCAP` + auto-trigger in `DivideCUDAFeatureGroups`
 (`cuda_row_data.cpp`): for low-bin (`max_bin_per_col ≤ 32`) many-feature data
 where the 504-column cap would bind, cap partitions at **252 columns**
 (`block_dim_y = 2`), regrouping columns into more, narrower partitions so each
 thread walks 2 rows and overlaps the two scattered reads. Integer-atomic sums are
 order-invariant → **bit-identical** (numerai `763c75c0d9cb`, covtype
 `5f4e7bdfff1e` locks unchanged). Auto-trigger is a no-op on all bin-cap-bound
-benchmarks. Kill switch: `EXABOOST_CONSTRUCT_COLCAP=0`. Measured ~7% construct
+benchmarks. Kill switch: `FALCATA_CONSTRUCT_COLCAP=0`. Measured ~7% construct
 kernel / ~2–5% wall on the numerai example. This is the compile-time-templated
 proof; the JIT generalizes it.
 
@@ -112,7 +112,7 @@ turning today's runtime lookups and loop bounds into compile-time constants:
 - **AOT fallback:** the current AOT-compiled general kernel
   (`CUDAConstructDiscretizedHistogramDenseBatchedKernel`). Used when NVRTC is
   unavailable, the shape is unsupported (sparse, large-bin partitions,
-  categorical), the compile fails, or `EXABOOST_CONSTRUCT_JIT=0`. The JIT is a
+  categorical), the compile fails, or `FALCATA_CONSTRUCT_JIT=0`. The JIT is a
   **perf-only fast path**; its histogram output must be bit-identical to the AOT
   kernel (same gate locks).
 
@@ -131,4 +131,4 @@ and feeds the JIT's baked partition plan.
 Every JIT variant must keep the md5 locks: covtype 1023/10 quant `5f4e7bdfff1e`,
 numerai int8 `763c75c0d9cb`, plus the RMSE/bagging/graph locks in the session gate
 suite. A JIT that changes any md5 is a **bug**, not a feature — the specialization
-is perf-only. Kill switch: `EXABOOST_CONSTRUCT_JIT=0` → AOT.
+is perf-only. Kill switch: `FALCATA_CONSTRUCT_JIT=0` → AOT.

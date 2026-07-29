@@ -35,7 +35,7 @@ graph crash fix, and a quant packed-histogram overflow fix, plus roadmap docs.
 
 | Group | Commits | Files | What it does |
 |---|---|---|---|
-| **Quant graph support** | `a2279763`, `5c61a0ed` | best_split_finder.{cu,hpp}, data_partition.cu, histogram_constructor.{cpp,cu,hpp}, hybrid_graph.{cu,hpp}, tree_learner.cpp | Extends the device-driven level loop (graphs L1.5/A2) to quantized training: device-derived per-leaf hist bit-widths, guarded quant body kernels, capture wiring. Graph prefix reaches quant training but is **opt-in** (`EXABOOST_GRAPH_QUANT=1`) pending controller-latency work. |
+| **Quant graph support** | `a2279763`, `5c61a0ed` | best_split_finder.{cu,hpp}, data_partition.cu, histogram_constructor.{cpp,cu,hpp}, hybrid_graph.{cu,hpp}, tree_learner.cpp | Extends the device-driven level loop (graphs L1.5/A2) to quantized training: device-derived per-leaf hist bit-widths, guarded quant body kernels, capture wiring. Graph prefix reaches quant training but is **opt-in** (`FALCATA_GRAPH_QUANT=1`) pending controller-latency work. |
 | **Graph A2 (frozen grids)** | `199dc6fa` | cuda_tree.{hpp,cu}, best_split_finder.{cu,hpp}, data_partition.cu, histogram_constructor.{cu,hpp}, hybrid_graph.{cu,hpp}, tree_learner.cpp | Freezes body-kernel grids at pow2 buckets so the captured graph's launch dims are stable; idle blocks self-guard on device-read live counts. Largest single-commit surface. |
 | **Multiclass graph fix** | `84db39cd` | tree_learner.cpp (15 lines) | Upload the graph exec before the first launch; re-enables multiclass on the graph path (root-causes and lifts the earlier `6bc8779e` gate that landed in #34). |
 | **Quant overflow fix** | `3afe7c62` | histogram_constructor.{cpp,hpp} | Fixes a packed shared-histogram overflow that collapsed quantized training at `num_grad_quant_bins >= 16`. Correctness fix. |
@@ -71,11 +71,11 @@ lacks, not a branch change — do not read it as a delete.)
 
 ### 3a. Default-behavior changes vs upstream/master
 
-The only runtime env gate *introduced by these 13 commits* is `EXABOOST_GRAPH_QUANT`,
-and it defaults **OFF**. The `#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED` token that also
+The only runtime env gate *introduced by these 13 commits* is `FALCATA_GRAPH_QUANT`,
+and it defaults **OFF**. The `#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED` token that also
 appears is a compile guard, not a runtime behavior switch.
 
-All the "on by default" gates (`EXABOOST_HYBRID_GROWTH`, `_GRAPH_LEVEL_LOOP`,
+All the "on by default" gates (`FALCATA_HYBRID_GROWTH`, `_GRAPH_LEVEL_LOOP`,
 `_HYBRID_BATCH_*`, `_ONE_SYNC`, `_SELECTIVE`) already shipped in master via PR #34 —
 this merge does **not** change their defaults. For completeness the full env-default
 table is below; the "New here?" column marks what this merge actually changes.
@@ -85,9 +85,9 @@ table is below; the "New here?" column marks what this merge actually changes.
 - **[LOW] Quant graph reaches training by default when `GRAPH_LEVEL_LOOP` is on, but
   quant path is guarded OFF.** `a2279763` wires quant training into
   `TrainLevelWisePrefixGraph`, but `HybridGraphPrefixUsable()` returns `false` for
-  `config_->use_quantized_grad` unless `EXABOOST_GRAPH_QUANT=1`. So default behavior
+  `config_->use_quantized_grad` unless `FALCATA_GRAPH_QUANT=1`. So default behavior
   for quant users is unchanged (classic two-sync loop). The commit body asserts "every
-  host-launched path is bit-for-bit unchanged" and "`EXABOOST_GRAPH_LEVEL_LOOP=0`
+  host-launched path is bit-for-bit unchanged" and "`FALCATA_GRAPH_LEVEL_LOOP=0`
   restores today's behavior exactly," backed by an extensive md5 A/B lock matrix.
   Residual risk is only for users who explicitly opt in.
 
@@ -110,7 +110,7 @@ table is below; the "New here?" column marks what this merge actually changes.
 
 **None in the branch-only delta.** Grep over `git diff origin/master...hybrid-level-growth`
 added lines for `TODO|FIXME|XXX|HACK|DEBUG|printf|std::cout|fprintf` returned zero
-hits. (The many `EXABOOST_HYBRID_DEBUG`/`_DIAG` diagnostic gates already exist on
+hits. (The many `FALCATA_HYBRID_DEBUG`/`_DIAG` diagnostic gates already exist on
 master and are untouched here.)
 
 ### 3c. Files with unusually large diffs (reviewer attention)
@@ -153,20 +153,20 @@ these 13 commits (vs already present on master from PR #34).
 
 | Env var | Default | Safe? | New here? | Notes |
 |---|---|---|---|---|
-| `EXABOOST_GRAPH_QUANT` | **OFF** | Yes | **NEW** | Opt-in quant graph loop; net loss on cheap/large-level quant shapes, so intentionally off pending controller-latency work. |
-| `EXABOOST_GRAPH_LEVEL_LOOP` | ON | Yes | changed reach | On master already. Heavily guarded: driver >= 12040, depth-limited exact regime, split bounds. Quant sub-path gated by `GRAPH_QUANT`. Multiclass sub-path newly ungated (`84db39cd`). `=0` restores classic loop bit-exactly. |
-| `EXABOOST_HYBRID_GROWTH` | ON | Yes | no (in #34) | Master default; `=0` falls back to classic leaf-wise. |
-| `EXABOOST_HYBRID_BATCH_KERNELS` | ON | Yes | no | Master default. |
-| `EXABOOST_HYBRID_BATCH_APPLY` | ON | Yes | no | Master default. |
-| `EXABOOST_HYBRID_ONE_SYNC` | ON | Yes | no | Master default. |
-| `EXABOOST_HYBRID_SELECTIVE` | ON | Yes | no | Master default. |
-| `EXABOOST_FP32_GAIN` | OFF | Yes | no | Quality-gated, opt-in. |
-| `EXABOOST_FP32_HIST` | OFF | Yes | no | Quality-gated, opt-in. |
-| `EXABOOST_ROWDATA_4BIT` | OFF | Yes | no | Opt-in; VERIFY variant. |
-| `EXABOOST_FAST_ROWDATA` | OFF | Yes | no | Opt-in; VERIFY variant. |
-| `EXABOOST_GPU_CONSTRUCT` | OFF | Yes | no | Opt-in; VERIFY variant. |
-| `EXABOOST_EFB_PRECHECK` | OFF | Yes | no | Opt-in; VERIFY variant. |
-| `EXABOOST_HYBRID_DEBUG` / `_DIAG` | OFF | Yes | no | Diagnostics; steer host path only. |
+| `FALCATA_GRAPH_QUANT` | **OFF** | Yes | **NEW** | Opt-in quant graph loop; net loss on cheap/large-level quant shapes, so intentionally off pending controller-latency work. |
+| `FALCATA_GRAPH_LEVEL_LOOP` | ON | Yes | changed reach | On master already. Heavily guarded: driver >= 12040, depth-limited exact regime, split bounds. Quant sub-path gated by `GRAPH_QUANT`. Multiclass sub-path newly ungated (`84db39cd`). `=0` restores classic loop bit-exactly. |
+| `FALCATA_HYBRID_GROWTH` | ON | Yes | no (in #34) | Master default; `=0` falls back to classic leaf-wise. |
+| `FALCATA_HYBRID_BATCH_KERNELS` | ON | Yes | no | Master default. |
+| `FALCATA_HYBRID_BATCH_APPLY` | ON | Yes | no | Master default. |
+| `FALCATA_HYBRID_ONE_SYNC` | ON | Yes | no | Master default. |
+| `FALCATA_HYBRID_SELECTIVE` | ON | Yes | no | Master default. |
+| `FALCATA_FP32_GAIN` | OFF | Yes | no | Quality-gated, opt-in. |
+| `FALCATA_FP32_HIST` | OFF | Yes | no | Quality-gated, opt-in. |
+| `FALCATA_ROWDATA_4BIT` | OFF | Yes | no | Opt-in; VERIFY variant. |
+| `FALCATA_FAST_ROWDATA` | OFF | Yes | no | Opt-in; VERIFY variant. |
+| `FALCATA_GPU_CONSTRUCT` | OFF | Yes | no | Opt-in; VERIFY variant. |
+| `FALCATA_EFB_PRECHECK` | OFF | Yes | no | Opt-in; VERIFY variant. |
+| `FALCATA_HYBRID_DEBUG` / `_DIAG` | OFF | Yes | no | Diagnostics; steer host path only. |
 
 The kill-switch discipline is intact: everything this merge newly introduces defaults
 to preserving prior behavior, and every optimization has an explicit off switch.
@@ -205,5 +205,5 @@ assuming it. This is listed as a GO condition below.
    lock harness into CI.
 3. Give `199dc6fa` (frozen grids, +311 in the construct kernel) a focused correctness
    read as the largest-surface change.
-4. Sanity-check that `EXABOOST_GRAPH_QUANT` remains OFF by default in the merged tree
+4. Sanity-check that `FALCATA_GRAPH_QUANT` remains OFF by default in the merged tree
    (it is on the branch) so quant users' default behavior is unchanged.

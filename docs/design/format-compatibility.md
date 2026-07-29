@@ -54,3 +54,16 @@ Parameter names (`num_leaves`, `use_quantized_grad`, …) are also unchanged and
 should stay that way: they appear in saved models, in user configs, and in
 every tuning artifact. Falcata-specific additions use their own names
 (`quant_mode`, `cuda_precision`, `cuda_plan`).
+
+## Versioning
+
+Falcata versions independently of LightGBM, starting at **1.0.0** (semver).
+The pre-rename `4.6.0.99` advertised the LightGBM release it forked from and is
+retired.
+
+Package version and *format* versions are unrelated and must not be conflated:
+
+- the model text format marker stays `version=v4` (LightGBM-compatible, see
+  above) regardless of Falcata's package version;
+- `Dataset::serialized_reference_version` tracks the binary dataset format;
+- neither moves just because the package version does.
