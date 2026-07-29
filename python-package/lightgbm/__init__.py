@@ -30,7 +30,7 @@ for _name in ("basic", "callback", "compat", "engine", "libpath", "plotting", "s
 del _name, _mod
 
 __version__ = _falcata.__version__
-__all__ = getattr(_falcata, "__all__", [])
+__all__ = list(getattr(_falcata, "__all__", []))
 
 if not _sys.warnoptions:
     _warnings.warn(
