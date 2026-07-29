@@ -18,10 +18,8 @@ import statistics
 import sys
 from pathlib import Path
 
-BASELINE_FILE = Path.home() / ".cache" / "exaboost-gates" / "perf_baseline.json"
+DEFAULT_BASELINE = Path.home() / ".cache" / "exaboost-gates" / "perf_baseline.json"
 HISTORY = 20
-WARN_PCT = 10.0
-FAIL_PCT = 25.0
 
 
 def main():
@@ -35,7 +33,13 @@ def main():
         action="store_true",
         help="append this run to the rolling baseline (green runs only)",
     )
+    ap.add_argument("--baseline-file", default=str(DEFAULT_BASELINE))
+    ap.add_argument("--warn-pct", type=float, default=10.0)
+    ap.add_argument("--fail-pct", type=float, default=25.0)
     args = ap.parse_args()
+    global BASELINE_FILE, WARN_PCT, FAIL_PCT
+    BASELINE_FILE = Path(args.baseline_file).expanduser()
+    WARN_PCT, FAIL_PCT = args.warn_pct, args.fail_pct
 
     results = json.loads(Path(args.results).read_text())["results"]
     times = {
