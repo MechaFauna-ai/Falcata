@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 import numpy as np
 import scipy.sparse as ss
 
-from .basic import LightGBMError, _choose_param_value, _ConfigAliases, _log_info, _log_warning
+from .basic import FalcataError, _choose_param_value, _ConfigAliases, _log_info, _log_warning
 from .compat import (
     PANDAS_INSTALLED,
     SKLEARN_INSTALLED,
@@ -554,7 +554,7 @@ def _train(
         from dask import delayed  # noqa: PLC0415
         from dask.distributed import wait  # noqa: PLC0415
     except _DaskImportErrorTypes as err:
-        raise LightGBMError("dask is required for falcata.dask") from err
+        raise FalcataError("dask is required for falcata.dask") from err
 
     params = deepcopy(params)
 
@@ -808,7 +808,7 @@ def _train(
                     "machine in the cluster has multiple Dask worker processes running on it. Please omit "
                     "'local_listen_port' or pass 'machines'."
                 )
-                raise LightGBMError(msg)
+                raise FalcataError(msg)
 
             worker_address_to_port = dict.fromkeys(worker_addresses, local_listen_port)
         else:
@@ -963,7 +963,7 @@ def _predict(
         If ``pred_contrib=True``, the feature contributions for each sample.
     """
     if not all((PANDAS_INSTALLED, SKLEARN_INSTALLED)):
-        raise LightGBMError("pandas and scikit-learn are required for falcata.dask")
+        raise FalcataError("pandas and scikit-learn are required for falcata.dask")
 
     try:
         import dask.array  # noqa: PLC0415
@@ -971,7 +971,7 @@ def _predict(
         import dask.dataframe  # noqa: PLC0415
         from dask import delayed  # noqa: PLC0415
     except _DaskImportErrorTypes as err:
-        raise LightGBMError("dask is required for falcata.dask") from err
+        raise FalcataError("dask is required for falcata.dask") from err
 
     if isinstance(data, dask.dataframe.DataFrame):
         return data.map_partitions(
@@ -1121,7 +1121,7 @@ class _DaskLGBMModel:
         **kwargs: Any,
     ) -> "_DaskLGBMModel":
         if not all((PANDAS_INSTALLED, SKLEARN_INSTALLED)):
-            raise LightGBMError("pandas and scikit-learn are required for falcata.dask")
+            raise FalcataError("pandas and scikit-learn are required for falcata.dask")
 
         params = self.get_params(True)  # type: ignore[attr-defined]
         params.pop("client", None)

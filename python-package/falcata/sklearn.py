@@ -17,8 +17,8 @@ from .basic import (
     _MULTICLASS_OBJECTIVES,
     Booster,
     Dataset,
+    FalcataError,
     LGBMDeprecationWarning,
-    LightGBMError,
     _choose_param_value,
     _ConfigAliases,
     _LGBM_BoosterBestScoreType,
@@ -678,7 +678,7 @@ class LGBMModel(_LGBMModelBase):
         and grad and hess should be returned in the same format.
         """
         if not SKLEARN_INSTALLED:
-            raise LightGBMError(
+            raise FalcataError(
                 "scikit-learn is required for falcata.sklearn. "
                 "You must install scikit-learn and restart your session to use this module."
             )

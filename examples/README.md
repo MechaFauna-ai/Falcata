@@ -1,14 +1,14 @@
 Examples
 ========
 
-You can learn how to use LightGBM by these examples.
+You can learn how to use Falcata by these examples.
 
-Comments in configuration files might be outdated. Actual information about parameters always can be found [here](https://github.com/lightgbm-org/LightGBM/blob/master/docs/Parameters.rst).
+Comments in configuration files might be outdated. Actual information about parameters always can be found [here](https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst).
 
 Machine Learning Challenge Winning Solutions
 ============================================
 
-**LightGBM is used in many winning solutions, but this table is updated very infrequently.**
+**Falcata is used in many winning solutions, but this table is updated very infrequently.**
 
 | Place         | Competition   | Solution  | Date |
 |---------|:------------- | --------- | -----|

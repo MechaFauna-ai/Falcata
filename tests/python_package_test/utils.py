@@ -271,7 +271,7 @@ def assert_all_trees_valid(model_dump):
 # until there is a more reliable way to detect which customizations
 # Falcata was built with.
 #
-# see https://github.com/BelixRogner/Falcata/issues/7273
+# see https://github.com/lightgbm-org/LightGBM/issues/7273
 #
 class BuildInfo:
     has_cuda = os.getenv("TASK", "") == "cuda"

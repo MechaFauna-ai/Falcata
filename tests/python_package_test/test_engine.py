@@ -868,7 +868,7 @@ def test_ranking_with_position_information_with_file(tmp_path):
         file.close()
     lgb_train = lgb.Dataset(str(tmp_path / "rank.train"), params=params)
     lgb_valid = [lgb_train.create_valid(str(tmp_path / "rank.test"))]
-    with pytest.raises(lgb.basic.LightGBMError, match=r"Positions size \(3006\) doesn't match data size"):
+    with pytest.raises(lgb.basic.FalcataError, match=r"Positions size \(3006\) doesn't match data size"):
         lgb.train(params, lgb_train, valid_sets=lgb_valid, num_boost_round=50)
 
 
@@ -2217,7 +2217,7 @@ def test_init_with_subset(tmp_path, rng):
     subset_data_3 = lgb_train_from_file.subset(subset_index_1)
     subset_data_4 = lgb_train_from_file.subset(subset_index_2)
     init_gbm_2 = lgb.train(params=params, train_set=subset_data_3, num_boost_round=10, keep_training_booster=True)
-    with np.testing.assert_raises_regex(lgb.basic.LightGBMError, "Unknown format of training data"):
+    with np.testing.assert_raises_regex(lgb.basic.FalcataError, "Unknown format of training data"):
         lgb.train(params=params, train_set=subset_data_4, num_boost_round=10, init_model=init_gbm_2)
     assert lgb_train_from_file.get_data() == lgb_train_data
     assert subset_data_3.get_data() == lgb_train_data
@@ -3012,11 +3012,11 @@ def test_metrics():
         assert len(res) == 2
         assert "valid error-mean" in res
         # multiclass metric alias with custom one with invalid class_num
-        with pytest.raises(lgb.basic.LightGBMError, match="Multiclass objective and metrics don't match"):
+        with pytest.raises(lgb.basic.FalcataError, match="Multiclass objective and metrics don't match"):
             get_cv_result(params_dummy_obj_class_1_verbose, metrics=obj_multi_alias, feval=constant_metric)
         # multiclass default metric without num_class
         with pytest.raises(
-            lgb.basic.LightGBMError,
+            lgb.basic.FalcataError,
             match="Number of classes should be specified and greater than 1 for multiclass training",
         ):
             get_cv_result(params_obj_verbose)
@@ -3030,11 +3030,11 @@ def test_metrics():
         assert len(res) == 2
         assert "valid multi_error-mean" in res
         # non-valid metric for multiclass objective
-        with pytest.raises(lgb.basic.LightGBMError, match="Multiclass objective and metrics don't match"):
+        with pytest.raises(lgb.basic.FalcataError, match="Multiclass objective and metrics don't match"):
             get_cv_result(params_obj_class_3_verbose, metrics="binary_logloss")
     params_class_3_verbose = {"num_class": 3, "verbose": -1}
     # non-default num_class for default objective
-    with pytest.raises(lgb.basic.LightGBMError, match="Number of classes must be 1 for non-multiclass training"):
+    with pytest.raises(lgb.basic.FalcataError, match="Number of classes must be 1 for non-multiclass training"):
         get_cv_result(params_class_3_verbose)
     # no metric with non-default num_class for custom objective
     res = get_cv_result(params_dummy_obj_class_3_verbose)
@@ -3049,7 +3049,7 @@ def test_metrics():
     assert len(res) == 2
     assert "valid multi_error-mean" in res
     # binary metric with non-default num_class for custom objective
-    with pytest.raises(lgb.basic.LightGBMError, match="Multiclass objective and metrics don't match"):
+    with pytest.raises(lgb.basic.FalcataError, match="Multiclass objective and metrics don't match"):
         get_cv_result(params_dummy_obj_class_3_verbose, metrics="binary_error")
 
 
@@ -3342,7 +3342,7 @@ def test_get_split_value_histogram(rng_fixed_seed):
         np.testing.assert_allclose(bin_edges[1:][mask], hist[:, 0])
     # test histogram is disabled for categorical features
     with pytest.raises(
-        lgb.basic.LightGBMError, match="Cannot compute split value histogram for the categorical feature"
+        lgb.basic.FalcataError, match="Cannot compute split value histogram for the categorical feature"
     ):
         gbm.get_split_value_histogram(2)
 
@@ -3530,7 +3530,7 @@ def test_forced_split_feature_indices(tmp_path):
         f.write(json.dumps(forced_split))
     lgb_train = lgb.Dataset(X, y)
     params = {"objective": "regression", "forcedsplits_filename": tmp_split_file}
-    with pytest.raises(lgb.basic.LightGBMError, match="Forced splits file includes feature index"):
+    with pytest.raises(lgb.basic.FalcataError, match="Forced splits file includes feature index"):
         lgb.train(params, lgb_train)
 
 
@@ -3538,7 +3538,7 @@ def test_forced_split_missing_file(tmp_path):
     X, y = make_synthetic_regression()
     lgb_train = lgb.Dataset(X, y)
     params = {"objective": "regression", "forcedsplits_filename": tmp_path / "does_not_exist.json"}
-    with pytest.raises(lgb.basic.LightGBMError, match="Could not open"):
+    with pytest.raises(lgb.basic.FalcataError, match="Could not open"):
         lgb.train(params, lgb_train)
 
 
@@ -3699,7 +3699,7 @@ def test_dataset_update_params(rng):
             if key == "min_data_in_leaf"
             else f"Cannot change {param_name} *"
         )
-        with np.testing.assert_raises_regex(lgb.basic.LightGBMError, err_msg):
+        with np.testing.assert_raises_regex(lgb.basic.FalcataError, err_msg):
             lgb.train(new_params, lgb_data, num_boost_round=3)
 
 
@@ -4000,13 +4000,13 @@ def test_linear_single_leaf():
 
 def test_linear_raises_informative_errors_on_unsupported_params():
     X, y = make_synthetic_regression()
-    with pytest.raises(lgb.basic.LightGBMError, match="Cannot use regression_l1 objective when fitting linear trees"):
+    with pytest.raises(lgb.basic.FalcataError, match="Cannot use regression_l1 objective when fitting linear trees"):
         lgb.train(
             train_set=lgb.Dataset(X, label=y),
             params={"linear_tree": True, "objective": "regression_l1"},
             num_boost_round=1,
         )
-    with pytest.raises(lgb.basic.LightGBMError, match="zero_as_missing must be false when fitting linear trees"):
+    with pytest.raises(lgb.basic.FalcataError, match="zero_as_missing must be false when fitting linear trees"):
         lgb.train(
             train_set=lgb.Dataset(X, label=y),
             params={"linear_tree": True, "zero_as_missing": True},
@@ -4872,14 +4872,14 @@ def test_validate_features():
 
     # try to predict with a different feature
     df2 = df.rename(columns={"x3": "z"})
-    with pytest.raises(lgb.basic.LightGBMError, match="Expected 'x3' at position 2 but found 'z'"):
+    with pytest.raises(lgb.basic.FalcataError, match="Expected 'x3' at position 2 but found 'z'"):
         bst.predict(df2, validate_features=True)
 
     # check that disabling the check doesn't raise the error
     bst.predict(df2, validate_features=False)
 
     # try to refit with a different feature
-    with pytest.raises(lgb.basic.LightGBMError, match="Expected 'x3' at position 2 but found 'z'"):
+    with pytest.raises(lgb.basic.FalcataError, match="Expected 'x3' at position 2 but found 'z'"):
         bst.refit(df2, y, validate_features=True)
 
     # check that disabling the check doesn't raise the error
@@ -4920,7 +4920,7 @@ def test_train_raises_informative_error_for_params_of_wrong_type():
     X, y = make_synthetic_regression()
     params = {"num_leaves": "too-many"}
     dtrain = lgb.Dataset(X, label=y)
-    with pytest.raises(lgb.basic.LightGBMError, match='Parameter num_leaves should be of type int, got "too-many"'):
+    with pytest.raises(lgb.basic.FalcataError, match='Parameter num_leaves should be of type int, got "too-many"'):
         lgb.train(params, dtrain)
 
 
@@ -4991,7 +4991,7 @@ def test_cuda_dataset_device_type_unchangeable_after_construct(rng):
     X = rng.uniform(size=(100, 5)).astype(np.float32)
     y = rng.uniform(size=100).astype(np.float32)
     ds = lgb.Dataset(X, label=y).construct()
-    with pytest.raises(lgb.basic.LightGBMError, match="Cannot change device_type"):
+    with pytest.raises(lgb.basic.FalcataError, match="Cannot change device_type"):
         lgb.train(
             {"device_type": "cuda", "objective": "regression", "verbose": -1},
             ds,

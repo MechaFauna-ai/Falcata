@@ -32,7 +32,7 @@ jobs:
           issue-inactive-days: '365'
           pr-inactive-days: '365'
           # do not close feature request issues...
-          # we close those but track them in https://github.com/BelixRogner/Falcata/issues/2302
+          # we close those but track them in https://github.com/lightgbm-org/LightGBM/issues/2302
           exclude-any-issue-labels: 'feature request'
           # what labels should be removed prior to locking?
           remove-issue-labels: 'awaiting response,awaiting review,blocking,in progress'

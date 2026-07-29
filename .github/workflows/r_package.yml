@@ -292,7 +292,7 @@ jobs:
       - name: Install system dependencies
         shell: bash
         run: |
-          # libuv is needed for {fs} (https://github.com/BelixRogner/Falcata/issues/7208)
+          # libuv is needed for {fs} (https://github.com/lightgbm-org/LightGBM/issues/7208)
           if type -f apt 2>&1 > /dev/null; then
             apt-get update
             apt-get install --no-install-recommends -y \

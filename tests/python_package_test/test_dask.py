@@ -1234,7 +1234,7 @@ def test_error_on_feature_parallel_tree_learner(cluster):
         dask_regressor = lgb.DaskLGBMRegressor(
             client=client, time_out=5, tree_learner="feature_parallel", n_estimators=1, num_leaves=2
         )
-        with pytest.raises(lgb.basic.LightGBMError, match="Do not support feature parallel in c api"):
+        with pytest.raises(lgb.basic.FalcataError, match="Do not support feature parallel in c api"):
             dask_regressor = dask_regressor.fit(X, y)
 
 
@@ -1350,7 +1350,7 @@ def test_network_params_not_required_but_respected_if_given(task, listen_port, c
         # port for multiple worker processes on the same machine
         dask_model3 = dask_model_factory(n_estimators=5, num_leaves=5, local_listen_port=listen_port)
         error_msg = "has multiple Dask worker processes running on it"
-        with pytest.raises(lgb.basic.LightGBMError, match=error_msg):
+        with pytest.raises(lgb.basic.FalcataError, match=error_msg):
             dask_model3.fit(dX, dy, group=dg)
 
 
@@ -1378,7 +1378,7 @@ def test_machines_should_be_used_if_provided(task, cluster):
         # test that "machines" is actually respected by creating a socket that uses
         # one of the ports mentioned in "machines"
         error_msg = f"Binding port {open_ports[0]} failed"
-        with pytest.raises(lgb.basic.LightGBMError, match=error_msg):  # noqa: PT012
+        with pytest.raises(lgb.basic.FalcataError, match=error_msg):  # noqa: PT012
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.bind((workers_hostname, open_ports[0]))
                 dask_model.fit(dX, dy, group=dg)

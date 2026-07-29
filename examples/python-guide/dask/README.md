@@ -1,9 +1,9 @@
 Dask Examples
 =============
 
-This directory contains examples of machine learning workflows with LightGBM and [Dask](https://dask.org/).
+This directory contains examples of machine learning workflows with Falcata and [Dask](https://dask.org/).
 
-Before running this code, see [the installation instructions for the Dask-package](https://github.com/lightgbm-org/LightGBM/tree/master/python-package#install-dask-package).
+Before running this code, see [the installation instructions for the Dask-package](https://github.com/BelixRogner/Falcata/tree/master/python-package#install-dask-package).
 
 After installing the package and its dependencies, any of the examples here can be run with a command like this:
 
@@ -11,7 +11,7 @@ After installing the package and its dependencies, any of the examples here can 
 python binary-classification.py
 ```
 
-The examples listed below contain minimal code showing how to train LightGBM models using Dask.
+The examples listed below contain minimal code showing how to train Falcata models using Dask.
 
 **Training**
 

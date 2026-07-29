@@ -21,7 +21,7 @@ dependencies = [
     "numpy>=1.21.3",
     "scipy"
 ]
-description = "LightGBM Python-package"
+description = "Falcata: GPU-first gradient boosted decision trees"
 license = "MIT"
 license-files = [
     "LICENSE"
@@ -61,10 +61,10 @@ scikit-learn = [
 ]
 
 [project.urls]
-homepage = "https://github.com/falcata-org/LightGBM"
+homepage = "https://github.com/BelixRogner/Falcata"
 documentation = "https://falcata.readthedocs.io/en/latest/"
-repository = "https://github.com/falcata-org/LightGBM.git"
-changelog = "https://github.com/falcata-org/LightGBM/releases"
+repository = "https://github.com/BelixRogner/Falcata.git"
+changelog = "https://github.com/BelixRogner/Falcata/releases"
 
 # start:build-system
 [build-system]
