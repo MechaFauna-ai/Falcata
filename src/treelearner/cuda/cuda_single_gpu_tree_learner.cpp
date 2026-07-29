@@ -86,6 +86,22 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   fixedpoint_quant_ = (quant_mode == QuantMode::kFixedPoint);
   fixedpoint_robust_scale_ = fixedpoint_quant_;
   effective_quant_bins_ = config_->num_grad_quant_bins;
+  if (config_->use_quantized_grad) {
+    // The packed histogram accumulates quantized gradients in (at most) 32-bit
+    // halves; the per-bin worst case is num_data * (bins/2). Beyond int32 that
+    // sum is unrepresentable and training silently emits garbage trees (found
+    // empirically: quant_bins=1024 at 5M rows -> constant predictions), so
+    // refuse loudly instead. Ceiling: bins < 2^32 / num_data.
+    const uint64_t worst_per_bin = static_cast<uint64_t>(num_data_) *
+        static_cast<uint64_t>(effective_quant_bins_ / 2);
+    if (worst_per_bin >= (1ULL << 31)) {
+      const int max_bins = static_cast<int>((1ULL << 32) / static_cast<uint64_t>(num_data_));
+      Log::Fatal(
+          "quant_bins=%d is too large for %d rows: the per-bin gradient sum can "
+          "exceed the 32-bit histogram range. Use quant_bins <= %d for this dataset.",
+          effective_quant_bins_, num_data_, max_bins);
+    }
+  }
   if (fixedpoint_quant_) {
     Log::Info("quant_mode=fixedpoint: non-stochastic quant with %d bins", effective_quant_bins_);
   }
