@@ -1,0 +1,129 @@
+{
+ "cells": {
+  "categorical/nonquant": {
+   "metric": 1.470123,
+   "metric_name": "rmse"
+  },
+  "dense/fixedpoint": {
+   "md5": "1d7ad5f297ee063cb50150a25bfdb10e",
+   "metric": 2.072014,
+   "metric_name": "rmse"
+  },
+  "dense/fixedpoint-256bins": {
+   "md5": "f3b7df6663080fbb81f4ac89bcdc08d1",
+   "metric": 2.07601,
+   "metric_name": "rmse"
+  },
+  "dense/fp32": {
+   "metric": 1.585247,
+   "metric_name": "rmse"
+  },
+  "dense/nonquant": {
+   "metric": 1.594167,
+   "metric_name": "rmse"
+  },
+  "dense/quant": {
+   "md5": "07ded9b7b9d861d1c20dff160f83489a",
+   "metric": 1.98389,
+   "metric_name": "rmse"
+  },
+  "dense/quant-classic": {
+   "md5": "9c2b0c5960c104e63682af0abe23f4f4",
+   "metric": 1.98389,
+   "metric_name": "rmse"
+  },
+  "dense/quant-deep": {
+   "md5": "b518ef40378fb52f5499dd61eefa7493",
+   "metric": 1.676217,
+   "metric_name": "rmse"
+  },
+  "dense/quant-deep-classic": {
+   "md5": "b518ef40378fb52f5499dd61eefa7493",
+   "metric": 1.676217,
+   "metric_name": "rmse"
+  },
+  "efb/quant": {
+   "md5": "83fc99c9ec4c9dd36c1b1e9b5fed059d",
+   "metric": 1.278073,
+   "metric_name": "rmse"
+  },
+  "fewbin/fixedpoint": {
+   "md5": "62d37bfa39571f4011083353de395540",
+   "metric": 4.281672,
+   "metric_name": "rmse"
+  },
+  "fewbin/quant": {
+   "md5": "05114bce4201ffc4215b3049b0f9ad42",
+   "metric": 3.978801,
+   "metric_name": "rmse"
+  },
+  "graph/flipbase-graph_loop": {
+   "md5": "3c05e3c87b49e6a04bd52bfc3da756a8",
+   "metric": 0.761053,
+   "metric_name": "mlogloss"
+  },
+  "graph/nonquant": {
+   "metric": 0.605165,
+   "metric_name": "mlogloss"
+  },
+  "graph/quant": {
+   "md5": "3c05e3c87b49e6a04bd52bfc3da756a8",
+   "metric": 0.761053,
+   "metric_name": "mlogloss"
+  },
+  "imbalanced/fixedpoint": {
+   "md5": "3a24f4c8c5691b034cee56f1bf37881e",
+   "metric": 0.936781,
+   "metric_name": "auc"
+  },
+  "imbalanced/nonquant": {
+   "metric": 0.990058,
+   "metric_name": "auc"
+  },
+  "imbalanced/quant": {
+   "md5": "2f05d8f750b866ec2a96f53ecb5060f9",
+   "metric": 0.929656,
+   "metric_name": "auc"
+  },
+  "int8wide/quant": {
+   "md5": "1c70b053d41cd13259acc3774866f911",
+   "metric": 69.723424,
+   "metric_name": "rmse"
+  },
+  "int8wide/quant-deep": {
+   "md5": "39d6463e4252520fb980006c98f448f2",
+   "metric": 71.267269,
+   "metric_name": "rmse"
+  },
+  "missing/quant": {
+   "md5": "032ee5357f2a7655a915c63a79670f0c",
+   "metric": 3.31775,
+   "metric_name": "rmse"
+  },
+  "sampled/flipbase-jit8": {
+   "md5": "a9edd7266290201ee3ed6ac58275f077",
+   "metric": 37.023796,
+   "metric_name": "rmse"
+  },
+  "sampled/quant": {
+   "md5": "a9edd7266290201ee3ed6ac58275f077",
+   "metric": 37.023796,
+   "metric_name": "rmse"
+  },
+  "sampled/quant-deep": {
+   "md5": "ab518c78fe760b18c8c48996efbbc145",
+   "metric": 38.673291,
+   "metric_name": "rmse"
+  },
+  "tinygrad/fixedpoint": {
+   "md5": "a006d246d93469700aa970fc3fb8397e",
+   "metric": 0.05966,
+   "metric_name": "rmse"
+  },
+  "tinygrad/quant": {
+   "md5": "d26eccdfb534cb6f05fd5284d43e9c23",
+   "metric": 0.059662,
+   "metric_name": "rmse"
+  }
+ }
+}

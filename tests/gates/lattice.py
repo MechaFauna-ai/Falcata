@@ -94,7 +94,6 @@ def build_cells():
         "efb",
         "imbalanced",
         "missing",
-        "categorical",
     ]:
         cell(f"{profile}/quant", profile, perf=profile in ("dense", "int8wide"))
 
@@ -199,6 +198,15 @@ def build_cells():
     cell(
         "imbalanced/nonquant",
         "imbalanced",
+        {"quant_mode": "none"},
+        rounds=50,
+        fingerprint=False,
+    )
+    # categorical: CUDA quantized training with categorical features is
+    # unsupported (library rejects it), so this path is guarded non-quant
+    cell(
+        "categorical/nonquant",
+        "categorical",
         {"quant_mode": "none"},
         rounds=50,
         fingerprint=False,
