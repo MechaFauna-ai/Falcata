@@ -1488,9 +1488,9 @@ static const R_CallMethodDef CallEntries[] = {
   {NULL, NULL, 0}
 };
 
-FALCATA_C_EXPORT void R_init_lightgbm(DllInfo *dll);
+FALCATA_C_EXPORT void R_init_falcata(DllInfo *dll);
 
-void R_init_lightgbm(DllInfo *dll) {
+void R_init_falcata(DllInfo *dll) {
   R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
   R_useDynamicSymbols(dll, FALSE);
 

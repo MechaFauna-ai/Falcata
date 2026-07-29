@@ -49,10 +49,10 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-echo "Building lightgbm with R executable: ${LGB_R_EXECUTABLE}"
+echo "Building falcata with R executable: ${LGB_R_EXECUTABLE}"
 
 ORIG_WD="$(pwd)"
-TEMP_R_DIR="$(pwd)/lightgbm_r"
+TEMP_R_DIR="$(pwd)/falcata_r"
 
 if test -d "${TEMP_R_DIR}"; then
     rm -r "${TEMP_R_DIR}"
@@ -76,16 +76,16 @@ fi
 
 cp \
     external_libs/fast_double_parser/include/fast_double_parser.h \
-    "${TEMP_R_DIR}/src/include/LightGBM/utils"
+    "${TEMP_R_DIR}/src/include/Falcata/utils"
 
-mkdir -p "${TEMP_R_DIR}/src/include/LightGBM/utils/fmt"
+mkdir -p "${TEMP_R_DIR}/src/include/Falcata/utils/fmt"
 cp \
     external_libs/fmt/include/fmt/*.h \
-    "${TEMP_R_DIR}/src/include/LightGBM/utils/fmt"
+    "${TEMP_R_DIR}/src/include/Falcata/utils/fmt"
 
 # including only specific files from Eigen, to keep the R-package
 # small and avoid redistributing code with licenses incompatible with
-# LightGBM's license
+# Falcata's license
 EIGEN_R_DIR="${TEMP_R_DIR}/src/include/Eigen"
 mkdir -p "${EIGEN_R_DIR}"
 
@@ -111,14 +111,14 @@ cd "${TEMP_R_DIR}"
     rm src/install.libs.R
     rm -r inst/
     rm -r pkgdown/
-    rm cran-comments.md
+    rm -f cran-comments.md
     rm AUTOCONF_UBUNTU_VERSION
     rm recreate-configure.sh
 
-    # files only used by the lightgbm CLI aren't needed for
+    # files only used by the falcata CLI aren't needed for
     # the R-package
     rm src/application/application.cpp
-    rm src/include/LightGBM/application.h
+    rm src/include/Falcata/application.h
     rm src/main.cpp
 
     # configure.ac and DESCRIPTION have placeholders for version
@@ -159,12 +159,12 @@ cd "${ORIG_WD}"
 if ${BUILD_VIGNETTES} ; then
     "${LGB_R_EXECUTABLE}" CMD build \
         --keep-empty-dirs \
-        lightgbm_r
+        falcata_r
 
     echo "removing object files created by vignettes"
     rm -rf ./_tmp
     mkdir _tmp
-    TARBALL_NAME="lightgbm_${LGB_VERSION}.tar.gz"
+    TARBALL_NAME="falcata_${LGB_VERSION}.tar.gz"
     mv "${TARBALL_NAME}" _tmp/
 
     echo "untarring ${TARBALL_NAME}"
@@ -180,14 +180,14 @@ if ${BUILD_VIGNETTES} ; then
         # Removing them manually here removes the need to use tar --exclude.
         #
         # For background, see https://github.com/lightgbm-org/LightGBM/pull/3946#pullrequestreview-799415812.
-        rm -f ./lightgbm/src/*.o
-        rm -f ./lightgbm/src/boosting/*.o
-        rm -f ./lightgbm/src/io/*.o
-        rm -f ./lightgbm/src/metric/*.o
-        rm -f ./lightgbm/src/network/*.o
-        rm -f ./lightgbm/src/objective/*.o
-        rm -f ./lightgbm/src/treelearner/*.o
-        rm -f ./lightgbm/src/utils/*.o
+        rm -f ./falcata/src/*.o
+        rm -f ./falcata/src/boosting/*.o
+        rm -f ./falcata/src/io/*.o
+        rm -f ./falcata/src/metric/*.o
+        rm -f ./falcata/src/network/*.o
+        rm -f ./falcata/src/objective/*.o
+        rm -f ./falcata/src/treelearner/*.o
+        rm -f ./falcata/src/utils/*.o
 
         echo "re-tarring ${TARBALL_NAME}"
         # --no-xattrs is the default in GNU tar but not some distributions of BSD tar.
@@ -197,7 +197,7 @@ if ${BUILD_VIGNETTES} ; then
             -cz \
             --no-xattrs \
             -f "${TARBALL_NAME}" \
-            lightgbm \
+            falcata \
         > /dev/null 2>&1
         mv "${TARBALL_NAME}" ../
     cd ..
@@ -208,7 +208,7 @@ else
     "${LGB_R_EXECUTABLE}" CMD build \
         --keep-empty-dirs \
         --no-build-vignettes \
-        lightgbm_r
+        falcata_r
 fi
 
 echo "Done building R-package"
