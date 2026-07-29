@@ -10,7 +10,7 @@ import numpy as np
 
 from .basic import Booster, _data_from_pandas, _is_zero, _log_warning, _MissingType
 from .compat import pd_DataFrame
-from .sklearn import LGBMModel
+from .sklearn import FalcataModel
 
 __all__ = [
     "create_tree_digraph",
@@ -35,7 +35,7 @@ def _float2str(value: float, precision: Optional[int]) -> str:
 
 
 def plot_importance(
-    booster: Union[Booster, LGBMModel],
+    booster: Union[Booster, FalcataModel],
     ax: "Optional[matplotlib.axes.Axes]" = None,
     height: float = 0.2,
     xlim: Optional[Tuple[float, float]] = None,
@@ -56,8 +56,8 @@ def plot_importance(
 
     Parameters
     ----------
-    booster : Booster or LGBMModel
-        Booster or LGBMModel instance which feature importance should be plotted.
+    booster : Booster or FalcataModel
+        Booster or FalcataModel instance which feature importance should be plotted.
     ax : matplotlib.axes.Axes or None, optional (default=None)
         Target axes instance.
         If None, new figure and axes will be created.
@@ -79,7 +79,7 @@ def plot_importance(
         If None, title is disabled.
     importance_type : str, optional (default="auto")
         How the importance is calculated.
-        If "auto", if ``booster`` parameter is LGBMModel, ``booster.importance_type`` attribute is used; "split" otherwise.
+        If "auto", if ``booster`` parameter is FalcataModel, ``booster.importance_type`` attribute is used; "split" otherwise.
         If "split", result contains numbers of times the feature is used in a model.
         If "gain", result contains total gains of splits which use the feature.
     max_num_features : int or None, optional (default=None)
@@ -108,7 +108,7 @@ def plot_importance(
     except ImportError as err:
         raise ImportError("You must install matplotlib and restart your session to plot importance.") from err
 
-    if isinstance(booster, LGBMModel):
+    if isinstance(booster, FalcataModel):
         if importance_type == "auto":
             importance_type = booster.importance_type
         booster = booster.booster_
@@ -116,7 +116,7 @@ def plot_importance(
         if importance_type == "auto":
             importance_type = "split"
     else:
-        raise TypeError("booster must be Booster or LGBMModel.")
+        raise TypeError("booster must be Booster or FalcataModel.")
 
     importance = booster.feature_importance(importance_type=importance_type)
     feature_name = booster.feature_name()
@@ -174,7 +174,7 @@ def plot_importance(
 
 
 def plot_split_value_histogram(
-    booster: Union[Booster, LGBMModel],
+    booster: Union[Booster, FalcataModel],
     feature: Union[int, str],
     bins: Union[int, str, None] = None,
     ax: "Optional[matplotlib.axes.Axes]" = None,
@@ -193,8 +193,8 @@ def plot_split_value_histogram(
 
     Parameters
     ----------
-    booster : Booster or LGBMModel
-        Booster or LGBMModel instance of which feature split value histogram should be plotted.
+    booster : Booster or FalcataModel
+        Booster or FalcataModel instance of which feature split value histogram should be plotted.
     feature : int or str
         The feature name or index the histogram is plotted for.
         If int, interpreted as index.
@@ -247,10 +247,10 @@ def plot_split_value_histogram(
             "You must install matplotlib and restart your session to plot split value histogram."
         ) from err
 
-    if isinstance(booster, LGBMModel):
+    if isinstance(booster, FalcataModel):
         booster = booster.booster_
     elif not isinstance(booster, Booster):
-        raise TypeError("booster must be Booster or LGBMModel.")
+        raise TypeError("booster must be Booster or FalcataModel.")
 
     hist, split_bins = booster.get_split_value_histogram(feature=feature, bins=bins, xgboost_style=False)
     if np.count_nonzero(hist) == 0:
@@ -292,7 +292,7 @@ def plot_split_value_histogram(
 
 
 def plot_metric(
-    booster: Union[Dict, LGBMModel],
+    booster: Union[Dict, FalcataModel],
     metric: Optional[str] = None,
     dataset_names: Optional[List[str]] = None,
     ax: "Optional[matplotlib.axes.Axes]" = None,
@@ -309,8 +309,8 @@ def plot_metric(
 
     Parameters
     ----------
-    booster : dict or LGBMModel
-        Dictionary returned from ``falcata.train()`` or LGBMModel instance.
+    booster : dict or FalcataModel
+        Dictionary returned from ``falcata.train()`` or FalcataModel instance.
     metric : str or None, optional (default=None)
         The metric name to plot.
         Only one metric supported because different metrics have various scales.
@@ -353,16 +353,16 @@ def plot_metric(
     except ImportError as err:
         raise ImportError("You must install matplotlib and restart your session to plot metric.") from err
 
-    if isinstance(booster, LGBMModel):
+    if isinstance(booster, FalcataModel):
         eval_results = deepcopy(booster.evals_result_)
     elif isinstance(booster, dict):
         eval_results = deepcopy(booster)
     elif isinstance(booster, Booster):
         raise TypeError(
-            "booster must be dict or LGBMModel. To use plot_metric with Booster type, first record the metrics using record_evaluation callback then pass that to plot_metric as argument `booster`"
+            "booster must be dict or FalcataModel. To use plot_metric with Booster type, first record the metrics using record_evaluation callback then pass that to plot_metric as argument `booster`"
         )
     else:
-        raise TypeError("booster must be dict or LGBMModel.")
+        raise TypeError("booster must be dict or FalcataModel.")
 
     num_data = len(eval_results)
 
@@ -621,7 +621,7 @@ def _to_graphviz(
 
 
 def create_tree_digraph(
-    booster: Union[Booster, LGBMModel],
+    booster: Union[Booster, FalcataModel],
     tree_index: int = 0,
     show_info: Optional[List[str]] = None,
     precision: Optional[int] = 3,
@@ -649,8 +649,8 @@ def create_tree_digraph(
 
     Parameters
     ----------
-    booster : Booster or LGBMModel
-        Booster or LGBMModel instance to be converted.
+    booster : Booster or FalcataModel
+        Booster or FalcataModel instance to be converted.
     tree_index : int, optional (default=0)
         The index of a target tree to convert.
     show_info : list of str, or None, optional (default=None)
@@ -701,10 +701,10 @@ def create_tree_digraph(
     graph : graphviz.Digraph
         The digraph representation of specified tree.
     """
-    if isinstance(booster, LGBMModel):
+    if isinstance(booster, FalcataModel):
         booster = booster.booster_
     elif not isinstance(booster, Booster):
-        raise TypeError("booster must be Booster or LGBMModel.")
+        raise TypeError("booster must be Booster or FalcataModel.")
 
     model = booster.dump_model()
     tree_infos = model["tree_info"]
@@ -747,7 +747,7 @@ def create_tree_digraph(
 
 
 def plot_tree(
-    booster: Union[Booster, LGBMModel],
+    booster: Union[Booster, FalcataModel],
     ax: "Optional[matplotlib.axes.Axes]" = None,
     tree_index: int = 0,
     figsize: Optional[Tuple[float, float]] = None,
@@ -777,8 +777,8 @@ def plot_tree(
 
     Parameters
     ----------
-    booster : Booster or LGBMModel
-        Booster or LGBMModel instance to be plotted.
+    booster : Booster or FalcataModel
+        Booster or FalcataModel instance to be plotted.
     ax : matplotlib.axes.Axes or None, optional (default=None)
         Target axes instance.
         If None, new figure and axes will be created.

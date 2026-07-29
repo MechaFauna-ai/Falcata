@@ -34,7 +34,7 @@ library(falcata)
 ```{r, include=FALSE}
 # limit number of threads used, to be respectful of CRAN's resources when it checks this vignette
 data.table::setDTthreads(1L)
-setLGBMthreads(2L)
+setFalcataThreads(2L)
 ```
 
 This vignette will guide you through its basic usage. It will show how to build a simple binary classification model based on a subset of the `bank` dataset (Moro, Cortez, and Rita 2014). You will use the two input features "age" and "balance" to predict whether a client has subscribed a term deposit.

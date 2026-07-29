@@ -1323,17 +1323,17 @@ def test_public_api_symbols_are_exposed():
     merge drops a symbol another module imports), those names are *silently*
     removed from the package. That previously surfaced only as a confusing
     ``test_sklearn`` collection error ("module 'falcata' has no attribute
-    'LGBMModel'"). This test fails loudly and clearly instead.
+    'FalcataModel'"). This test fails loudly and clearly instead.
 
     The sklearn estimators have compat shims and do not require scikit-learn,
     so they must be present regardless of which optional deps are installed.
     (Dask classes are intentionally excluded -- they legitimately require dask.)
     """
     for name in (
-        "LGBMModel",
-        "LGBMClassifier",
-        "LGBMRegressor",
-        "LGBMRanker",
+        "FalcataModel",
+        "FalcataClassifier",
+        "FalcataRegressor",
+        "FalcataRanker",
         "Booster",
         "Dataset",
         "train",

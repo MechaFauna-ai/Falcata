@@ -976,7 +976,7 @@ NULL
 #'         the factor levels not being present in the output.
 #' @examples
 #' \donttest{
-#' \dontshow{setLGBMthreads(2L)}
+#' \dontshow{setFalcataThreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
@@ -1143,7 +1143,7 @@ predict.lgb.Booster <- function(object,
 #'         \link{predict.lgb.Booster}.
 #' @examples
 #' \donttest{
-#' \dontshow{setLGBMthreads(2L)}
+#' \dontshow{setFalcataThreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' library(falcata)
 #' data(mtcars)
@@ -1290,7 +1290,7 @@ summary.lgb.Booster <- function(object, ...) {
 #'
 #' @examples
 #' \donttest{
-#' \dontshow{setLGBMthreads(2L)}
+#' \dontshow{setFalcataThreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
@@ -1362,7 +1362,7 @@ lgb.load <- function(filename = NULL, model_str = NULL) {
 #'
 #' @examples
 #' \donttest{
-#' \dontshow{setLGBMthreads(2L)}
+#' \dontshow{setFalcataThreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' library(falcata)
 #' data(agaricus.train, package = "falcata")
@@ -1429,7 +1429,7 @@ lgb.save <- function(
 #' @examples
 #' \donttest{
 #' library(falcata)
-#' \dontshow{setLGBMthreads(2L)}
+#' \dontshow{setFalcataThreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
@@ -1485,7 +1485,7 @@ lgb.dump <- function(booster, num_iteration = NULL, start_iteration = 1L) {
 #'
 #' @examples
 #' \donttest{
-#' \dontshow{setLGBMthreads(2L)}
+#' \dontshow{setFalcataThreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' # train a regression model
 #' data(agaricus.train, package = "falcata")

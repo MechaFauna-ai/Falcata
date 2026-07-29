@@ -24,7 +24,7 @@ if __name__ == "__main__":
 
     print("beginning training")
 
-    dask_model = lgb.DaskLGBMRegressor(n_estimators=10)
+    dask_model = lgb.DaskFalcataRegressor(n_estimators=10)
     dask_model.fit(dX, dy)
     assert dask_model.fitted_
 

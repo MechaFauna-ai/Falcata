@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Union
 from .basic import (
     Booster,
     _ConfigAliases,
-    _LGBM_BoosterEvalMethodResultType,
-    _LGBM_BoosterEvalMethodResultWithStandardDeviationType,
+    _FALCATA_BoosterEvalMethodResultType,
+    _FALCATA_BoosterEvalMethodResultWithStandardDeviationType,
     _log_info,
     _log_warning,
 )
@@ -28,12 +28,12 @@ __all__ = [
 
 _EvalResultDict = Dict[str, Dict[str, List[Any]]]
 _EvalResultTuple = Union[
-    _LGBM_BoosterEvalMethodResultType,
-    _LGBM_BoosterEvalMethodResultWithStandardDeviationType,
+    _FALCATA_BoosterEvalMethodResultType,
+    _FALCATA_BoosterEvalMethodResultWithStandardDeviationType,
 ]
 _ListOfEvalResultTuples = Union[
-    List[_LGBM_BoosterEvalMethodResultType],
-    List[_LGBM_BoosterEvalMethodResultWithStandardDeviationType],
+    List[_FALCATA_BoosterEvalMethodResultType],
+    List[_FALCATA_BoosterEvalMethodResultWithStandardDeviationType],
 ]
 
 

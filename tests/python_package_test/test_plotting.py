@@ -55,7 +55,7 @@ def test_plot_importance(params, breast_cancer_split, train_data, matplotlib):
     assert ax0.get_ylabel() == "Features"
     assert len(ax0.patches) <= 30
 
-    gbm1 = lgb.LGBMClassifier(n_estimators=10, num_leaves=3, verbose=-1)
+    gbm1 = lgb.FalcataClassifier(n_estimators=10, num_leaves=3, verbose=-1)
     gbm1.fit(X_train, y_train)
 
     ax1 = lgb.plot_importance(gbm1, color="r", title="t", xlabel="x", ylabel="y")
@@ -134,7 +134,7 @@ def test_plot_importance(params, breast_cancer_split, train_data, matplotlib):
     displayed_labels = [label.get_text() for label in ax7.get_yticklabels()]
     assert displayed_labels == top5_names
 
-    gbm2 = lgb.LGBMClassifier(n_estimators=10, num_leaves=3, verbose=-1, importance_type="gain")
+    gbm2 = lgb.FalcataClassifier(n_estimators=10, num_leaves=3, verbose=-1, importance_type="gain")
     gbm2.fit(X_train, y_train)
 
     def get_bounds_of_first_patch(axes):
@@ -184,7 +184,7 @@ def test_plot_split_value_histogram(params, breast_cancer_split, train_data, mat
     assert ax0.get_ylabel() == "Count"
     assert len(ax0.patches) <= 2
 
-    gbm1 = lgb.LGBMClassifier(n_estimators=10, num_leaves=3, verbose=-1)
+    gbm1 = lgb.FalcataClassifier(n_estimators=10, num_leaves=3, verbose=-1)
     gbm1.fit(X_train, y_train)
 
     ax1 = lgb.plot_split_value_histogram(
@@ -248,7 +248,7 @@ def test_plot_split_value_histogram(params, breast_cancer_split, train_data, mat
 def test_plot_tree(breast_cancer_split, matplotlib):
     pytest.importorskip("graphviz")
     X_train, _, y_train, _ = breast_cancer_split
-    gbm = lgb.LGBMClassifier(n_estimators=10, num_leaves=3, verbose=-1)
+    gbm = lgb.FalcataClassifier(n_estimators=10, num_leaves=3, verbose=-1)
     gbm.fit(X_train, y_train)
 
     with pytest.raises(IndexError, match="tree_index is out of range."):
@@ -266,7 +266,7 @@ def test_create_tree_digraph(tmp_path, breast_cancer_split):
     X_train, _, y_train, _ = breast_cancer_split
 
     constraints = [-1, 1] * int(X_train.shape[1] / 2)
-    gbm = lgb.LGBMClassifier(n_estimators=10, num_leaves=3, verbose=-1, monotone_constraints=constraints)
+    gbm = lgb.FalcataClassifier(n_estimators=10, num_leaves=3, verbose=-1, monotone_constraints=constraints)
     gbm.fit(X_train, y_train)
 
     with pytest.raises(IndexError, match="tree_index is out of range."):
@@ -311,7 +311,7 @@ def test_tree_with_categories_below_max_category_values(tmp_path):
         "seed": 708,
         "verbose": -1,
     }
-    gbm = lgb.LGBMClassifier(**params)
+    gbm = lgb.FalcataClassifier(**params)
     gbm.fit(X_train, y_train)
 
     with pytest.raises(IndexError, match="tree_index is out of range."):
@@ -356,7 +356,7 @@ def test_tree_with_categories_above_max_category_values(tmp_path):
         "seed": 708,
         "verbose": -1,
     }
-    gbm = lgb.LGBMClassifier(**params)
+    gbm = lgb.FalcataClassifier(**params)
     gbm.fit(X_train, y_train)
 
     with pytest.raises(IndexError, match="tree_index is out of range."):
@@ -598,7 +598,7 @@ def test_plot_metrics(params, breast_cancer_split, train_data, matplotlib):
     with pytest.raises(ValueError, match="eval results cannot be empty."):
         lgb.plot_metric(evals_result1)
 
-    gbm2 = lgb.LGBMClassifier(n_estimators=10, num_leaves=3, verbose=-1)
+    gbm2 = lgb.FalcataClassifier(n_estimators=10, num_leaves=3, verbose=-1)
     gbm2.fit(X_train, y_train, eval_set=[(X_test, y_test)])
     ax4 = lgb.plot_metric(gbm2, title=None, xlabel=None, ylabel=None)
     assert isinstance(ax4, matplotlib.axes.Axes)

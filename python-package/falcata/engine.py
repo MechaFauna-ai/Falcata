@@ -17,14 +17,14 @@ from .basic import (
     FalcataError,
     _choose_param_value,
     _ConfigAliases,
+    _FALCATA_BoosterEvalMethodResultType,
+    _FALCATA_BoosterEvalMethodResultWithStandardDeviationType,
+    _FALCATA_CustomObjectiveFunction,
+    _FALCATA_EvalFunctionResultType,
     _InnerPredictor,
-    _LGBM_BoosterEvalMethodResultType,
-    _LGBM_BoosterEvalMethodResultWithStandardDeviationType,
-    _LGBM_CustomObjectiveFunction,
-    _LGBM_EvalFunctionResultType,
     _log_warning,
 )
-from .compat import SKLEARN_INSTALLED, _LGBMBaseCrossValidator, _LGBMGroupKFold, _LGBMStratifiedKFold
+from .compat import SKLEARN_INSTALLED, _FalcataBaseCrossValidator, _FalcataGroupKFold, _FalcataStratifiedKFold
 
 __all__ = [
     "cv",
@@ -33,18 +33,18 @@ __all__ = [
 ]
 
 
-_LGBM_CustomMetricFunction = Union[
+_FALCATA_CustomMetricFunction = Union[
     Callable[
         [np.ndarray, Dataset],
-        _LGBM_EvalFunctionResultType,
+        _FALCATA_EvalFunctionResultType,
     ],
     Callable[
         [np.ndarray, Dataset],
-        List[_LGBM_EvalFunctionResultType],
+        List[_FALCATA_EvalFunctionResultType],
     ],
 ]
 
-_LGBM_PreprocFunction = Callable[
+_FALCATA_PreprocFunction = Callable[
     [Dataset, Dataset, Dict[str, Any]],
     Tuple[Dataset, Dataset, Dict[str, Any]],
 ]
@@ -112,7 +112,7 @@ def train(
     num_boost_round: int = 100,
     valid_sets: Optional[List[Dataset]] = None,
     valid_names: Optional[List[str]] = None,
-    feval: Optional[Union[_LGBM_CustomMetricFunction, List[_LGBM_CustomMetricFunction]]] = None,
+    feval: Optional[Union[_FALCATA_CustomMetricFunction, List[_FALCATA_CustomMetricFunction]]] = None,
     init_model: Optional[Union[str, Path, Booster]] = None,
     keep_training_booster: bool = False,
     callbacks: Optional[List[Callable]] = None,
@@ -210,7 +210,7 @@ def train(
         params=params,
         default_value=None,
     )
-    fobj: Optional[_LGBM_CustomObjectiveFunction] = None
+    fobj: Optional[_FALCATA_CustomObjectiveFunction] = None
     if callable(params["objective"]):
         fobj = params["objective"]
         params["objective"] = "none"
@@ -321,7 +321,7 @@ def train(
 
         booster.update(fobj=fobj)
 
-        evaluation_result_list: List[_LGBM_BoosterEvalMethodResultType] = []
+        evaluation_result_list: List[_FALCATA_BoosterEvalMethodResultType] = []
         # check evaluation result.
         if valid_sets is not None:
             if is_valid_contain_train:
@@ -522,11 +522,11 @@ class CVBooster:
 def _make_n_folds(
     *,
     full_data: Dataset,
-    folds: Optional[Union[Iterable[Tuple[np.ndarray, np.ndarray]], _LGBMBaseCrossValidator]],
+    folds: Optional[Union[Iterable[Tuple[np.ndarray, np.ndarray]], _FalcataBaseCrossValidator]],
     nfold: int,
     params: Dict[str, Any],
     seed: int,
-    fpreproc: Optional[_LGBM_PreprocFunction],
+    fpreproc: Optional[_FALCATA_PreprocFunction],
     stratified: bool,
     shuffle: bool,
     eval_train_metric: bool,
@@ -559,12 +559,12 @@ def _make_n_folds(
             # ranking task, split according to groups
             group_info = np.asarray(full_data.get_group(), dtype=np.int32)
             flatted_group = np.repeat(range(len(group_info)), repeats=group_info)
-            group_kfold = _LGBMGroupKFold(n_splits=nfold)
+            group_kfold = _FalcataGroupKFold(n_splits=nfold)
             folds = group_kfold.split(X=np.empty(num_data), groups=flatted_group)
         elif stratified:
             if not SKLEARN_INSTALLED:
                 raise FalcataError("scikit-learn is required for stratified cv")
-            skf = _LGBMStratifiedKFold(n_splits=nfold, shuffle=shuffle, random_state=seed)
+            skf = _FalcataStratifiedKFold(n_splits=nfold, shuffle=shuffle, random_state=seed)
             folds = skf.split(X=np.empty(num_data), y=full_data.get_label())
         else:
             if shuffle:
@@ -593,8 +593,8 @@ def _make_n_folds(
 
 
 def _agg_cv_result(
-    raw_results: List[List[_LGBM_BoosterEvalMethodResultType]],
-) -> List[_LGBM_BoosterEvalMethodResultWithStandardDeviationType]:
+    raw_results: List[List[_FALCATA_BoosterEvalMethodResultType]],
+) -> List[_FALCATA_BoosterEvalMethodResultWithStandardDeviationType]:
     """Aggregate cross-validation results."""
     # build up 2 maps, of the form:
     #
@@ -627,14 +627,14 @@ def cv(
     params: Dict[str, Any],
     train_set: Dataset,
     num_boost_round: int = 100,
-    folds: Optional[Union[Iterable[Tuple[np.ndarray, np.ndarray]], _LGBMBaseCrossValidator]] = None,
+    folds: Optional[Union[Iterable[Tuple[np.ndarray, np.ndarray]], _FalcataBaseCrossValidator]] = None,
     nfold: int = 5,
     stratified: bool = True,
     shuffle: bool = True,
     metrics: Optional[Union[str, List[str]]] = None,
-    feval: Optional[Union[_LGBM_CustomMetricFunction, List[_LGBM_CustomMetricFunction]]] = None,
+    feval: Optional[Union[_FALCATA_CustomMetricFunction, List[_FALCATA_CustomMetricFunction]]] = None,
     init_model: Optional[Union[str, Path, Booster]] = None,
-    fpreproc: Optional[_LGBM_PreprocFunction] = None,
+    fpreproc: Optional[_FALCATA_PreprocFunction] = None,
     seed: int = 0,
     callbacks: Optional[List[Callable]] = None,
     eval_train_metric: bool = False,
@@ -748,7 +748,7 @@ def cv(
         params=params,
         default_value=None,
     )
-    fobj: Optional[_LGBM_CustomObjectiveFunction] = None
+    fobj: Optional[_FALCATA_CustomObjectiveFunction] = None
     if callable(params["objective"]):
         fobj = params["objective"]
         params["objective"] = "none"

@@ -23,18 +23,18 @@ from .basic import FalcataError, _choose_param_value, _ConfigAliases, _log_info,
 from .compat import (
     PANDAS_INSTALLED,
     SKLEARN_INSTALLED,
-    LGBMNotFittedError,
+    FalcataNotFittedError,
     concat,
     pd_DataFrame,
     pd_Series,
 )
 from .sklearn import (
-    LGBMClassifier,
-    LGBMModel,
-    LGBMRanker,
-    LGBMRegressor,
-    _LGBM_ScikitCustomObjectiveFunction,
-    _LGBM_ScikitEvalMetricType,
+    FalcataClassifier,
+    FalcataModel,
+    FalcataRanker,
+    FalcataRegressor,
+    _FALCATA_ScikitCustomObjectiveFunction,
+    _FALCATA_ScikitEvalMetricType,
     _lgbmmodel_doc_custom_eval_note,
     _lgbmmodel_doc_fit,
     _lgbmmodel_doc_predict,
@@ -42,9 +42,9 @@ from .sklearn import (
 )
 
 __all__ = [
-    "DaskLGBMClassifier",
-    "DaskLGBMRanker",
-    "DaskLGBMRegressor",
+    "DaskFalcataClassifier",
+    "DaskFalcataRanker",
+    "DaskFalcataRegressor",
 ]
 
 if TYPE_CHECKING:
@@ -177,12 +177,12 @@ def _remove_list_padding(*args: Any) -> List[List[Any]]:
 
 def _pad_eval_names(
     *,
-    lgbm_model: LGBMModel,
+    lgbm_model: FalcataModel,
     required_names: List[str],
-) -> LGBMModel:
+) -> FalcataModel:
     """Append missing (key, value) pairs to a Falcata model's evals_result_ and best_score_ OrderedDict attrs based on a set of required eval_set names.
 
-    Allows users to rely on expected eval_set names being present when fitting DaskLGBM estimators with ``eval_set``.
+    Allows users to rely on expected eval_set names being present when fitting DaskFalcata estimators with ``eval_set``.
     """
     for eval_name in required_names:
         if eval_name not in lgbm_model.evals_result_:
@@ -196,7 +196,7 @@ def _pad_eval_names(
 def _train_part(
     *,
     params: Dict[str, Any],
-    model_factory: Type[LGBMModel],
+    model_factory: Type[FalcataModel],
     list_of_parts: List[Dict[str, _DaskPart]],
     machines: str,
     local_listen_port: int,
@@ -205,7 +205,7 @@ def _train_part(
     time_out: int,
     remote_socket: _RemoteSocket,
     **kwargs: Any,
-) -> Optional[LGBMModel]:
+) -> Optional[FalcataModel]:
     network_params = {
         "machines": machines,
         "local_listen_port": local_listen_port,
@@ -214,7 +214,7 @@ def _train_part(
     }
     params.update(network_params)
 
-    is_ranker = issubclass(model_factory, LGBMRanker)
+    is_ranker = issubclass(model_factory, FalcataRanker)
 
     # Concatenate many parts into one
     data = _concat([x["data"] for x in list_of_parts])
@@ -445,7 +445,7 @@ def _train(
     data: _DaskMatrixLike,
     label: _DaskCollection,
     params: Dict[str, Any],
-    model_factory: Type[LGBMModel],
+    model_factory: Type[FalcataModel],
     sample_weight: Optional[_DaskVectorLike] = None,
     init_score: Optional[_DaskCollection] = None,
     group: Optional[_DaskVectorLike] = None,
@@ -457,10 +457,10 @@ def _train(
     eval_class_weight: Optional[List[Union[dict, str]]] = None,
     eval_init_score: Optional[List[_DaskCollection]] = None,
     eval_group: Optional[List[_DaskVectorLike]] = None,
-    eval_metric: Optional[_LGBM_ScikitEvalMetricType] = None,
+    eval_metric: Optional[_FALCATA_ScikitEvalMetricType] = None,
     eval_at: Optional[Union[List[int], Tuple[int, ...]]] = None,
     **kwargs: Any,
-) -> LGBMModel:
+) -> FalcataModel:
     """Inner train routine.
 
     Parameters
@@ -473,7 +473,7 @@ def _train(
         The target values (class labels in classification, real numbers in regression).
     params : dict
         Parameters passed to constructor of the local underlying model.
-    model_factory : falcata.LGBMClassifier, falcata.LGBMRegressor, or falcata.LGBMRanker class
+    model_factory : falcata.FalcataClassifier, falcata.FalcataRegressor, or falcata.FalcataRanker class
         Class of the local underlying model.
     sample_weight : Dask Array or Dask Series of shape = [n_samples] or None, optional (default=None)
         Weights of training data. Weights should be non-negative.
@@ -510,7 +510,7 @@ def _train(
         If callable, it should be a custom evaluation metric, see note below for more details.
         If list, it can be a list of built-in metrics, a list of custom evaluation metrics, or a mix of both.
         In either case, the ``metric`` from the Dask model parameters (or inferred from the objective) will be evaluated and used as well.
-        Default: 'l2' for DaskLGBMRegressor, 'binary(multi)_logloss' for DaskLGBMClassifier, 'ndcg' for DaskLGBMRanker.
+        Default: 'l2' for DaskFalcataRegressor, 'binary(multi)_logloss' for DaskFalcataClassifier, 'ndcg' for DaskFalcataRanker.
     eval_at : list or tuple of int, optional (default=None)
         The evaluation positions of the specified ranking metric.
     **kwargs
@@ -518,7 +518,7 @@ def _train(
 
     Returns
     -------
-    model : falcata.LGBMClassifier, falcata.LGBMRegressor, or falcata.LGBMRanker class
+    model : falcata.FalcataClassifier, falcata.FalcataRegressor, or falcata.FalcataRanker class
         Returns fitted underlying model.
 
     Note
@@ -877,7 +877,7 @@ def _train(
 def _predict_part(
     part: _DaskPart,
     *,
-    model: LGBMModel,
+    model: FalcataModel,
     raw_score: bool,
     pred_proba: bool,
     pred_leaf: bool,
@@ -925,7 +925,7 @@ def _predict_part(
 
 def _predict(
     *,
-    model: LGBMModel,
+    model: FalcataModel,
     data: _DaskMatrixLike,
     client: "distributed.Client",
     raw_score: bool = False,
@@ -938,7 +938,7 @@ def _predict(
 
     Parameters
     ----------
-    model : falcata.LGBMClassifier, falcata.LGBMRegressor, or falcata.LGBMRanker class
+    model : falcata.FalcataClassifier, falcata.FalcataRegressor, or falcata.FalcataRanker class
         Fitted underlying model.
     data : Dask Array or Dask DataFrame of shape = [n_samples, n_features]
         Input feature matrix.
@@ -1077,7 +1077,7 @@ def _predict(
         raise TypeError(f"Data must be either Dask Array or Dask DataFrame. Got {type(data).__name__}.")
 
 
-class _DaskLGBMModel:
+class _DaskFalcataModel:
     @property
     def client_(self) -> "distributed.Client":
         """:obj:`distributed.Client`: Dask client.
@@ -1086,7 +1086,7 @@ class _DaskLGBMModel:
         with ``model.set_params(client=client)``.
         """
         if not getattr(self, "fitted_", False):
-            raise LGBMNotFittedError("Cannot access property client_ before calling fit().")
+            raise FalcataNotFittedError("Cannot access property client_ before calling fit().")
 
         return _get_dask_client(client=self.client)
 
@@ -1102,7 +1102,7 @@ class _DaskLGBMModel:
     def _lgb_dask_fit(
         self,
         *,
-        model_factory: Type[LGBMModel],
+        model_factory: Type[FalcataModel],
         X: _DaskMatrixLike,
         y: _DaskCollection,
         sample_weight: Optional[_DaskVectorLike] = None,
@@ -1116,10 +1116,10 @@ class _DaskLGBMModel:
         eval_class_weight: Optional[List[Union[dict, str]]] = None,
         eval_init_score: Optional[List[_DaskCollection]] = None,
         eval_group: Optional[List[_DaskVectorLike]] = None,
-        eval_metric: Optional[_LGBM_ScikitEvalMetricType] = None,
+        eval_metric: Optional[_FALCATA_ScikitEvalMetricType] = None,
         eval_at: Optional[Union[List[int], Tuple[int, ...]]] = None,
         **kwargs: Any,
-    ) -> "_DaskLGBMModel":
+    ) -> "_DaskFalcataModel":
         if not all((PANDAS_INSTALLED, SKLEARN_INSTALLED)):
             raise FalcataError("pandas and scikit-learn are required for falcata.dask")
 
@@ -1153,7 +1153,7 @@ class _DaskLGBMModel:
 
         return self
 
-    def _lgb_dask_to_local(self, model_factory: Type[LGBMModel]) -> LGBMModel:
+    def _lgb_dask_to_local(self, model_factory: Type[FalcataModel]) -> FalcataModel:
         params = self.get_params()  # type: ignore[attr-defined]
         params.pop("client", None)
         model = model_factory(**params)
@@ -1164,8 +1164,8 @@ class _DaskLGBMModel:
     @staticmethod
     def _lgb_dask_copy_extra_params(
         *,
-        source: Union["_DaskLGBMModel", LGBMModel],
-        dest: Union["_DaskLGBMModel", LGBMModel],
+        source: Union["_DaskFalcataModel", FalcataModel],
+        dest: Union["_DaskFalcataModel", FalcataModel],
     ) -> None:
         params = source.get_params()  # type: ignore[union-attr]
         attributes = source.__dict__
@@ -1174,8 +1174,8 @@ class _DaskLGBMModel:
             setattr(dest, name, attributes[name])
 
 
-class DaskLGBMClassifier(LGBMClassifier, _DaskLGBMModel):
-    """Distributed version of falcata.LGBMClassifier."""
+class DaskFalcataClassifier(FalcataClassifier, _DaskFalcataModel):
+    """Distributed version of falcata.FalcataClassifier."""
 
     def __init__(
         self,
@@ -1186,7 +1186,7 @@ class DaskLGBMClassifier(LGBMClassifier, _DaskLGBMModel):
         learning_rate: float = 0.1,
         n_estimators: int = 100,
         subsample_for_bin: int = 200000,
-        objective: Optional[Union[str, _LGBM_ScikitCustomObjectiveFunction]] = None,
+        objective: Optional[Union[str, _FALCATA_ScikitCustomObjectiveFunction]] = None,
         class_weight: Optional[Union[dict, str]] = None,
         min_split_gain: float = 0.0,
         min_child_weight: float = 1e-3,
@@ -1202,7 +1202,7 @@ class DaskLGBMClassifier(LGBMClassifier, _DaskLGBMModel):
         client: Optional["distributed.Client"] = None,
         **kwargs: Any,
     ):
-        """Docstring is inherited from the falcata.LGBMClassifier.__init__."""
+        """Docstring is inherited from the falcata.FalcataClassifier.__init__."""
         self.client = client
         super().__init__(
             boosting_type=boosting_type,
@@ -1227,7 +1227,7 @@ class DaskLGBMClassifier(LGBMClassifier, _DaskLGBMModel):
             **kwargs,
         )
 
-    _base_doc = LGBMClassifier.__init__.__doc__
+    _base_doc = FalcataClassifier.__init__.__doc__
     _before_kwargs, _, _after_kwargs = _base_doc.partition("**kwargs")  # type: ignore
     __init__.__doc__ = (
         _before_kwargs
@@ -1253,15 +1253,15 @@ class DaskLGBMClassifier(LGBMClassifier, _DaskLGBMModel):
         eval_sample_weight: Optional[List[_DaskVectorLike]] = None,
         eval_class_weight: Optional[List[Union[dict, str]]] = None,
         eval_init_score: Optional[List[_DaskCollection]] = None,
-        eval_metric: Optional[_LGBM_ScikitEvalMetricType] = None,
+        eval_metric: Optional[_FALCATA_ScikitEvalMetricType] = None,
         *,
         eval_X: Optional[Union[_DaskMatrixLike, Tuple[_DaskMatrixLike]]] = None,
         eval_y: Optional[Union[_DaskCollection, Tuple[_DaskCollection]]] = None,
         **kwargs: Any,
-    ) -> "DaskLGBMClassifier":
-        """Docstring is inherited from the falcata.LGBMClassifier.fit."""
+    ) -> "DaskFalcataClassifier":
+        """Docstring is inherited from the falcata.FalcataClassifier.fit."""
         self._lgb_dask_fit(
-            model_factory=LGBMClassifier,
+            model_factory=FalcataClassifier,
             X=X,
             y=y,
             sample_weight=sample_weight,
@@ -1289,18 +1289,18 @@ class DaskLGBMClassifier(LGBMClassifier, _DaskLGBMModel):
         eval_group_shape="list of Dask Array or Dask Series, or None, optional (default=None)",
     )
 
-    # DaskLGBMClassifier does not support group, eval_group.
+    # DaskFalcataClassifier does not support group, eval_group.
     _base_doc = _base_doc[: _base_doc.find("group :")] + _base_doc[_base_doc.find("eval_set :") :]
 
     _base_doc = _base_doc[: _base_doc.find("eval_group :")] + _base_doc[_base_doc.find("eval_metric :") :]
 
-    # DaskLGBMClassifier support for callbacks and init_model is not tested
+    # DaskFalcataClassifier support for callbacks and init_model is not tested
     fit.__doc__ = f"""{_base_doc[: _base_doc.find("callbacks :")]}**kwargs
-        Other parameters passed through to ``LGBMClassifier.fit()``.
+        Other parameters passed through to ``FalcataClassifier.fit()``.
 
     Returns
     -------
-    self : falcata.DaskLGBMClassifier
+    self : falcata.DaskFalcataClassifier
         Returns self.
 
     {_lgbmmodel_doc_custom_eval_note}
@@ -1317,7 +1317,7 @@ class DaskLGBMClassifier(LGBMClassifier, _DaskLGBMModel):
         validate_features: bool = False,
         **kwargs: Any,
     ) -> "dask.array.Array":
-        """Docstring is inherited from the falcata.LGBMClassifier.predict."""
+        """Docstring is inherited from the falcata.FalcataClassifier.predict."""
         return _predict(
             model=self.to_local(),
             data=X,
@@ -1351,7 +1351,7 @@ class DaskLGBMClassifier(LGBMClassifier, _DaskLGBMModel):
         validate_features: bool = False,
         **kwargs: Any,
     ) -> "dask.array.Array":
-        """Docstring is inherited from the falcata.LGBMClassifier.predict_proba."""
+        """Docstring is inherited from the falcata.FalcataClassifier.predict_proba."""
         return _predict(
             model=self.to_local(),
             data=X,
@@ -1375,19 +1375,19 @@ class DaskLGBMClassifier(LGBMClassifier, _DaskLGBMModel):
         X_SHAP_values_shape="Dask Array of shape = [n_samples, n_features + 1] or shape = [n_samples, (n_features + 1) * n_classes] or (if multi-class and using sparse inputs) a list of ``n_classes`` Dask Arrays of shape = [n_samples, n_features + 1]",
     )
 
-    def to_local(self) -> LGBMClassifier:
-        """Create regular version of falcata.LGBMClassifier from the distributed version.
+    def to_local(self) -> FalcataClassifier:
+        """Create regular version of falcata.FalcataClassifier from the distributed version.
 
         Returns
         -------
-        model : falcata.LGBMClassifier
+        model : falcata.FalcataClassifier
             Local underlying model.
         """
-        return self._lgb_dask_to_local(LGBMClassifier)
+        return self._lgb_dask_to_local(FalcataClassifier)
 
 
-class DaskLGBMRegressor(LGBMRegressor, _DaskLGBMModel):
-    """Distributed version of falcata.LGBMRegressor."""
+class DaskFalcataRegressor(FalcataRegressor, _DaskFalcataModel):
+    """Distributed version of falcata.FalcataRegressor."""
 
     def __init__(
         self,
@@ -1398,7 +1398,7 @@ class DaskLGBMRegressor(LGBMRegressor, _DaskLGBMModel):
         learning_rate: float = 0.1,
         n_estimators: int = 100,
         subsample_for_bin: int = 200000,
-        objective: Optional[Union[str, _LGBM_ScikitCustomObjectiveFunction]] = None,
+        objective: Optional[Union[str, _FALCATA_ScikitCustomObjectiveFunction]] = None,
         class_weight: Optional[Union[dict, str]] = None,
         min_split_gain: float = 0.0,
         min_child_weight: float = 1e-3,
@@ -1414,7 +1414,7 @@ class DaskLGBMRegressor(LGBMRegressor, _DaskLGBMModel):
         client: Optional["distributed.Client"] = None,
         **kwargs: Any,
     ):
-        """Docstring is inherited from the falcata.LGBMRegressor.__init__."""
+        """Docstring is inherited from the falcata.FalcataRegressor.__init__."""
         self.client = client
         super().__init__(
             boosting_type=boosting_type,
@@ -1439,7 +1439,7 @@ class DaskLGBMRegressor(LGBMRegressor, _DaskLGBMModel):
             **kwargs,
         )
 
-    _base_doc = LGBMRegressor.__init__.__doc__
+    _base_doc = FalcataRegressor.__init__.__doc__
     _before_kwargs, _kwargs, _after_kwargs = _base_doc.partition("**kwargs")  # type: ignore
     __init__.__doc__ = (
         _before_kwargs
@@ -1464,15 +1464,15 @@ class DaskLGBMRegressor(LGBMRegressor, _DaskLGBMModel):
         eval_names: Optional[List[str]] = None,
         eval_sample_weight: Optional[List[_DaskVectorLike]] = None,
         eval_init_score: Optional[List[_DaskVectorLike]] = None,
-        eval_metric: Optional[_LGBM_ScikitEvalMetricType] = None,
+        eval_metric: Optional[_FALCATA_ScikitEvalMetricType] = None,
         *,
         eval_X: Optional[Union[_DaskMatrixLike, Tuple[_DaskMatrixLike]]] = None,
         eval_y: Optional[Union[_DaskCollection, Tuple[_DaskCollection]]] = None,
         **kwargs: Any,
-    ) -> "DaskLGBMRegressor":
-        """Docstring is inherited from the falcata.LGBMRegressor.fit."""
+    ) -> "DaskFalcataRegressor":
+        """Docstring is inherited from the falcata.FalcataRegressor.fit."""
         self._lgb_dask_fit(
-            model_factory=LGBMRegressor,
+            model_factory=FalcataRegressor,
             X=X,
             y=y,
             sample_weight=sample_weight,
@@ -1499,20 +1499,20 @@ class DaskLGBMRegressor(LGBMRegressor, _DaskLGBMModel):
         eval_group_shape="list of Dask Array or Dask Series, or None, optional (default=None)",
     )
 
-    # DaskLGBMRegressor does not support group, eval_class_weight, eval_group.
+    # DaskFalcataRegressor does not support group, eval_class_weight, eval_group.
     _base_doc = _base_doc[: _base_doc.find("group :")] + _base_doc[_base_doc.find("eval_set :") :]
 
     _base_doc = _base_doc[: _base_doc.find("eval_class_weight :")] + _base_doc[_base_doc.find("eval_init_score :") :]
 
     _base_doc = _base_doc[: _base_doc.find("eval_group :")] + _base_doc[_base_doc.find("eval_metric :") :]
 
-    # DaskLGBMRegressor support for callbacks and init_model is not tested
+    # DaskFalcataRegressor support for callbacks and init_model is not tested
     fit.__doc__ = f"""{_base_doc[: _base_doc.find("callbacks :")]}**kwargs
-        Other parameters passed through to ``LGBMRegressor.fit()``.
+        Other parameters passed through to ``FalcataRegressor.fit()``.
 
     Returns
     -------
-    self : falcata.DaskLGBMRegressor
+    self : falcata.DaskFalcataRegressor
         Returns self.
 
     {_lgbmmodel_doc_custom_eval_note}
@@ -1529,7 +1529,7 @@ class DaskLGBMRegressor(LGBMRegressor, _DaskLGBMModel):
         validate_features: bool = False,
         **kwargs: Any,
     ) -> "dask.array.Array":
-        """Docstring is inherited from the falcata.LGBMRegressor.predict."""
+        """Docstring is inherited from the falcata.FalcataRegressor.predict."""
         return _predict(
             model=self.to_local(),
             data=X,
@@ -1552,19 +1552,19 @@ class DaskLGBMRegressor(LGBMRegressor, _DaskLGBMModel):
         X_SHAP_values_shape="Dask Array of shape = [n_samples, n_features + 1]",
     )
 
-    def to_local(self) -> LGBMRegressor:
-        """Create regular version of falcata.LGBMRegressor from the distributed version.
+    def to_local(self) -> FalcataRegressor:
+        """Create regular version of falcata.FalcataRegressor from the distributed version.
 
         Returns
         -------
-        model : falcata.LGBMRegressor
+        model : falcata.FalcataRegressor
             Local underlying model.
         """
-        return self._lgb_dask_to_local(LGBMRegressor)
+        return self._lgb_dask_to_local(FalcataRegressor)
 
 
-class DaskLGBMRanker(LGBMRanker, _DaskLGBMModel):
-    """Distributed version of falcata.LGBMRanker."""
+class DaskFalcataRanker(FalcataRanker, _DaskFalcataModel):
+    """Distributed version of falcata.FalcataRanker."""
 
     def __init__(
         self,
@@ -1575,7 +1575,7 @@ class DaskLGBMRanker(LGBMRanker, _DaskLGBMModel):
         learning_rate: float = 0.1,
         n_estimators: int = 100,
         subsample_for_bin: int = 200000,
-        objective: Optional[Union[str, _LGBM_ScikitCustomObjectiveFunction]] = None,
+        objective: Optional[Union[str, _FALCATA_ScikitCustomObjectiveFunction]] = None,
         class_weight: Optional[Union[dict, str]] = None,
         min_split_gain: float = 0.0,
         min_child_weight: float = 1e-3,
@@ -1591,7 +1591,7 @@ class DaskLGBMRanker(LGBMRanker, _DaskLGBMModel):
         client: Optional["distributed.Client"] = None,
         **kwargs: Any,
     ):
-        """Docstring is inherited from the falcata.LGBMRanker.__init__."""
+        """Docstring is inherited from the falcata.FalcataRanker.__init__."""
         self.client = client
         super().__init__(
             boosting_type=boosting_type,
@@ -1616,7 +1616,7 @@ class DaskLGBMRanker(LGBMRanker, _DaskLGBMModel):
             **kwargs,
         )
 
-    _base_doc = LGBMRanker.__init__.__doc__
+    _base_doc = FalcataRanker.__init__.__doc__
     _before_kwargs, _kwargs, _after_kwargs = _base_doc.partition("**kwargs")  # type: ignore
     __init__.__doc__ = (
         _before_kwargs
@@ -1643,16 +1643,16 @@ class DaskLGBMRanker(LGBMRanker, _DaskLGBMModel):
         eval_sample_weight: Optional[List[_DaskVectorLike]] = None,
         eval_init_score: Optional[List[_DaskVectorLike]] = None,
         eval_group: Optional[List[_DaskVectorLike]] = None,
-        eval_metric: Optional[_LGBM_ScikitEvalMetricType] = None,
+        eval_metric: Optional[_FALCATA_ScikitEvalMetricType] = None,
         eval_at: Union[List[int], Tuple[int, ...]] = (1, 2, 3, 4, 5),
         *,
         eval_X: Optional[Union[_DaskMatrixLike, Tuple[_DaskMatrixLike]]] = None,
         eval_y: Optional[Union[_DaskCollection, Tuple[_DaskCollection]]] = None,
         **kwargs: Any,
-    ) -> "DaskLGBMRanker":
-        """Docstring is inherited from the falcata.LGBMRanker.fit."""
+    ) -> "DaskFalcataRanker":
+        """Docstring is inherited from the falcata.FalcataRanker.fit."""
         self._lgb_dask_fit(
-            model_factory=LGBMRanker,
+            model_factory=FalcataRanker,
             X=X,
             y=y,
             sample_weight=sample_weight,
@@ -1682,7 +1682,7 @@ class DaskLGBMRanker(LGBMRanker, _DaskLGBMModel):
         eval_group_shape="list of Dask Array or Dask Series, or None, optional (default=None)",
     )
 
-    # DaskLGBMRanker does not support eval_class_weight or early stopping
+    # DaskFalcataRanker does not support eval_class_weight or early stopping
     _base_doc = _base_doc[: _base_doc.find("eval_class_weight :")] + _base_doc[_base_doc.find("eval_init_score :") :]
 
     _base_doc = (
@@ -1692,13 +1692,13 @@ class DaskLGBMRanker(LGBMRanker, _DaskLGBMModel):
         + f"{' ':4}{_base_doc[_base_doc.find('feature_name :') :]}"
     )
 
-    # DaskLGBMRanker support for callbacks and init_model is not tested
+    # DaskFalcataRanker support for callbacks and init_model is not tested
     fit.__doc__ = f"""{_base_doc[: _base_doc.find("callbacks :")]}**kwargs
-        Other parameters passed through to ``LGBMRanker.fit()``.
+        Other parameters passed through to ``FalcataRanker.fit()``.
 
     Returns
     -------
-    self : falcata.DaskLGBMRanker
+    self : falcata.DaskFalcataRanker
         Returns self.
 
     {_lgbmmodel_doc_custom_eval_note}
@@ -1715,7 +1715,7 @@ class DaskLGBMRanker(LGBMRanker, _DaskLGBMModel):
         validate_features: bool = False,
         **kwargs: Any,
     ) -> "dask.array.Array":
-        """Docstring is inherited from the falcata.LGBMRanker.predict."""
+        """Docstring is inherited from the falcata.FalcataRanker.predict."""
         return _predict(
             model=self.to_local(),
             data=X,
@@ -1738,12 +1738,12 @@ class DaskLGBMRanker(LGBMRanker, _DaskLGBMModel):
         X_SHAP_values_shape="Dask Array of shape = [n_samples, n_features + 1]",
     )
 
-    def to_local(self) -> LGBMRanker:
-        """Create regular version of falcata.LGBMRanker from the distributed version.
+    def to_local(self) -> FalcataRanker:
+        """Create regular version of falcata.FalcataRanker from the distributed version.
 
         Returns
         -------
-        model : falcata.LGBMRanker
+        model : falcata.FalcataRanker
             Local underlying model.
         """
-        return self._lgb_dask_to_local(LGBMRanker)
+        return self._lgb_dask_to_local(FalcataRanker)
