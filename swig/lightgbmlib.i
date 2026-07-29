@@ -5,9 +5,9 @@
  */
 /* lightgbmlib.i */
 %module lightgbmlib
-%ignore LGBM_BoosterSaveModelToString;
-%ignore LGBM_BoosterGetEvalNames;
-%ignore LGBM_BoosterGetFeatureNames;
+%ignore FLC_BoosterSaveModelToString;
+%ignore FLC_BoosterGetEvalNames;
+%ignore FLC_BoosterGetFeatureNames;
 %{
 /* Includes the header in the wrapper code */
 #include "../include/LightGBM/export.h"
@@ -34,24 +34,24 @@
   $1 = jenv;
 %}
 
-%newobject LGBM_BoosterSaveModelToStringSWIG;
-%newobject LGBM_BoosterDumpModelSWIG;
+%newobject FLC_BoosterSaveModelToStringSWIG;
+%newobject FLC_BoosterDumpModelSWIG;
 
 %inline %{
-  char * LGBM_BoosterSaveModelToStringSWIG(BoosterHandle handle,
+  char * FLC_BoosterSaveModelToStringSWIG(BoosterHandle handle,
                                            int start_iteration,
                                            int num_iteration,
                                            int feature_importance_type,
                                            int64_t buffer_len,
                                            int64_t* out_len) {
     char* dst = new char[buffer_len];
-    int result = LGBM_BoosterSaveModelToString(handle, start_iteration, num_iteration, feature_importance_type, buffer_len, out_len, dst);
+    int result = FLC_BoosterSaveModelToString(handle, start_iteration, num_iteration, feature_importance_type, buffer_len, out_len, dst);
     // Reallocate to use larger length
     if (*out_len > buffer_len) {
       delete [] dst;
       int64_t realloc_len = *out_len;
       dst = new char[realloc_len];
-      result = LGBM_BoosterSaveModelToString(handle, start_iteration, num_iteration, feature_importance_type, realloc_len, out_len, dst);
+      result = FLC_BoosterSaveModelToString(handle, start_iteration, num_iteration, feature_importance_type, realloc_len, out_len, dst);
     }
     if (result != 0) {
       return nullptr;
@@ -59,20 +59,20 @@
     return dst;
   }
 
-  char * LGBM_BoosterDumpModelSWIG(BoosterHandle handle,
+  char * FLC_BoosterDumpModelSWIG(BoosterHandle handle,
                                    int start_iteration,
                                    int num_iteration,
                                    int feature_importance_type,
                                    int64_t buffer_len,
                                    int64_t* out_len) {
     char* dst = new char[buffer_len];
-    int result = LGBM_BoosterDumpModel(handle, start_iteration, num_iteration, feature_importance_type, buffer_len, out_len, dst);
+    int result = FLC_BoosterDumpModel(handle, start_iteration, num_iteration, feature_importance_type, buffer_len, out_len, dst);
     // Reallocate to use larger length
     if (*out_len > buffer_len) {
       delete [] dst;
       int64_t realloc_len = *out_len;
       dst = new char[realloc_len];
-      result = LGBM_BoosterDumpModel(handle, start_iteration, num_iteration, feature_importance_type, realloc_len, out_len, dst);
+      result = FLC_BoosterDumpModel(handle, start_iteration, num_iteration, feature_importance_type, realloc_len, out_len, dst);
     }
     if (result != 0) {
       return nullptr;
@@ -80,7 +80,7 @@
     return dst;
   }
 
-  int LGBM_BoosterPredictForMatSingle(JNIEnv *jenv,
+  int FLC_BoosterPredictForMatSingle(JNIEnv *jenv,
                                       jdoubleArray data,
                                       BoosterHandle handle,
                                       int data_type,
@@ -94,7 +94,7 @@
                                       double* out_result) {
     double* data0 = (double*)jenv->GetPrimitiveArrayCritical(data, 0);
 
-    int ret = LGBM_BoosterPredictForMatSingleRow(handle, data0, data_type, ncol, is_row_major, predict_type, start_iteration,
+    int ret = FLC_BoosterPredictForMatSingleRow(handle, data0, data_type, ncol, is_row_major, predict_type, start_iteration,
                                                  num_iteration, parameter, out_len, out_result);
 
     jenv->ReleasePrimitiveArrayCritical(data, data0, JNI_ABORT);
@@ -102,30 +102,30 @@
     return ret;
   }
 
-  /*! \brief Even faster variant of `LGBM_BoosterPredictForMatSingle`.
+  /*! \brief Even faster variant of `FLC_BoosterPredictForMatSingle`.
    *
-   * Uses `LGBM_BoosterPredictForMatSingleRowFast` which is faster
-   * than `LGBM_BoosterPredictForMatSingleRow` and the trick of
-   * `LGBM_BoosterPredictForMatSingle` to capture the Java data array
+   * Uses `FLC_BoosterPredictForMatSingleRowFast` which is faster
+   * than `FLC_BoosterPredictForMatSingleRow` and the trick of
+   * `FLC_BoosterPredictForMatSingle` to capture the Java data array
    * using `GetPrimitiveArrayCritical`, which can yield faster access
    * to the array if the JVM passes the actual address to the C++ side
    * instead of performing a copy.
    */
-  int LGBM_BoosterPredictForMatSingleRowFastCriticalSWIG(JNIEnv *jenv,
+  int FLC_BoosterPredictForMatSingleRowFastCriticalSWIG(JNIEnv *jenv,
                                                          jdoubleArray data,
                                                          FastConfigHandle handle,
                                                          int64_t* out_len,
                                                          double* out_result) {
     double* data0 = (double*)jenv->GetPrimitiveArrayCritical(data, 0);
 
-    int ret = LGBM_BoosterPredictForMatSingleRowFast(handle, data0, out_len, out_result);
+    int ret = FLC_BoosterPredictForMatSingleRowFast(handle, data0, out_len, out_result);
 
     jenv->ReleasePrimitiveArrayCritical(data, data0, JNI_ABORT);
 
     return ret;
   }
 
-  int LGBM_BoosterPredictForCSRSingle(JNIEnv *jenv,
+  int FLC_BoosterPredictForCSRSingle(JNIEnv *jenv,
                                       jintArray indices,
                                       jdoubleArray values,
                                       int numNonZeros,
@@ -152,7 +152,7 @@
 
     int32_t ind[2] = { 0, numNonZeros };
 
-    int ret = LGBM_BoosterPredictForCSRSingleRow(handle, ind, indptr_type, indices0, values0, data_type, 2,
+    int ret = FLC_BoosterPredictForCSRSingleRow(handle, ind, indptr_type, indices0, values0, data_type, 2,
                                                  nelem, num_col, predict_type, start_iteration, num_iteration, parameter, out_len, out_result);
 
     jenv->ReleasePrimitiveArrayCritical(values, values0, JNI_ABORT);
@@ -161,16 +161,16 @@
     return ret;
   }
 
-  /*! \brief Even faster variant of `LGBM_BoosterPredictForCSRSingle`.
+  /*! \brief Even faster variant of `FLC_BoosterPredictForCSRSingle`.
    *
-   * Uses `LGBM_BoosterPredictForCSRSingleRowFast` which is faster
-   * than `LGBM_BoosterPredictForMatSingleRow` and the trick of
-   * `LGBM_BoosterPredictForCSRSingle` to capture the Java data array
+   * Uses `FLC_BoosterPredictForCSRSingleRowFast` which is faster
+   * than `FLC_BoosterPredictForMatSingleRow` and the trick of
+   * `FLC_BoosterPredictForCSRSingle` to capture the Java data array
    * using `GetPrimitiveArrayCritical`, which can yield faster access
    * to the array if the JVM passes the actual address to the C++ side
    * instead of performing a copy.
    */
-  int LGBM_BoosterPredictForCSRSingleRowFastCriticalSWIG(JNIEnv *jenv,
+  int FLC_BoosterPredictForCSRSingleRowFastCriticalSWIG(JNIEnv *jenv,
                                                          jintArray indices,
                                                          jdoubleArray values,
                                                          int numNonZeros,
@@ -191,7 +191,7 @@
 
     int32_t ind[2] = { 0, numNonZeros };
 
-    int ret = LGBM_BoosterPredictForCSRSingleRowFast(handle, ind, indptr_type, indices0, values0, 2,
+    int ret = FLC_BoosterPredictForCSRSingleRowFast(handle, ind, indptr_type, indices0, values0, 2,
                                                      nelem, out_len, out_result);
 
     jenv->ReleasePrimitiveArrayCritical(values, values0, JNI_ABORT);
@@ -211,7 +211,7 @@
           int size;
   };
 
-  int LGBM_DatasetCreateFromCSRSpark(JNIEnv *jenv,
+  int FLC_DatasetCreateFromCSRSpark(JNIEnv *jenv,
                                      jobjectArray arrayOfSparseVector,
                                      int num_rows,
                                      int64_t num_col,
@@ -270,7 +270,7 @@
         ret.emplace_back(*indices0p, *values0p);
     };
 
-    int ret = LGBM_DatasetCreateFromCSRFunc(&row_func, num_rows, num_col, parameters, reference, out);
+    int ret = FLC_DatasetCreateFromCSRFunc(&row_func, num_rows, num_col, parameters, reference, out);
 
     for (auto& jc : jniCache) {
       // jenv->ReleasePrimitiveArrayCritical(jc.values, jc.values0, JNI_ABORT);

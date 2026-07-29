@@ -24,35 +24,35 @@ void test_predict_type(int predict_type, int num_predicts) {
     EXPECT_EQ(0, result) << "LoadDatasetFromExamples train result code: " << result;
 
     BoosterHandle booster_handle;
-    result = LGBM_BoosterCreate(train_dataset, "app=binary metric=auc num_leaves=31 verbose=0", &booster_handle);
-    EXPECT_EQ(0, result) << "LGBM_BoosterCreate result code: " << result;
+    result = FLC_BoosterCreate(train_dataset, "app=binary metric=auc num_leaves=31 verbose=0", &booster_handle);
+    EXPECT_EQ(0, result) << "FLC_BoosterCreate result code: " << result;
 
     for (int i = 0; i < 51; i++) {
         int produced_empty_tree;
-        result = LGBM_BoosterUpdateOneIter(
+        result = FLC_BoosterUpdateOneIter(
             booster_handle,
             &produced_empty_tree);
-        EXPECT_EQ(0, result) << "LGBM_BoosterUpdateOneIter result code: " << result;
+        EXPECT_EQ(0, result) << "FLC_BoosterUpdateOneIter result code: " << result;
     }
 
     int n_features;
-    result = LGBM_BoosterGetNumFeature(
+    result = FLC_BoosterGetNumFeature(
         booster_handle,
         &n_features);
-    EXPECT_EQ(0, result) << "LGBM_BoosterGetNumFeature result code: " << result;
-    EXPECT_EQ(28, n_features) << "LGBM_BoosterGetNumFeature number of features: " << n_features;
+    EXPECT_EQ(0, result) << "FLC_BoosterGetNumFeature result code: " << result;
+    EXPECT_EQ(28, n_features) << "FLC_BoosterGetNumFeature number of features: " << n_features;
 
     // Run a single row prediction and compare with regular Mat prediction:
     int64_t output_size;
-    result = LGBM_BoosterCalcNumPredict(
+    result = FLC_BoosterCalcNumPredict(
         booster_handle,
         1,
         predict_type,          // predict_type
         0,                     // start_iteration
         -1,                    // num_iteration
         &output_size);
-    EXPECT_EQ(0, result) << "LGBM_BoosterCalcNumPredict result code: " << result;
-    EXPECT_EQ(num_predicts, output_size) << "LGBM_BoosterCalcNumPredict output size: " << output_size;
+    EXPECT_EQ(0, result) << "FLC_BoosterCalcNumPredict result code: " << result;
+    EXPECT_EQ(num_predicts, output_size) << "FLC_BoosterCalcNumPredict output size: " << output_size;
 
     std::ifstream test_file("examples/binary_classification/binary.test");
     std::vector<double> test;
@@ -75,7 +75,7 @@ void test_predict_type(int predict_type, int num_predicts) {
 
     std::vector<double> mat_output(output_size * test_set_size, -1);
     int64_t written;
-    result = LGBM_BoosterPredictForMat(
+    result = FLC_BoosterPredictForMat(
         booster_handle,
         &test[0],
         C_API_DTYPE_FLOAT64,
@@ -88,9 +88,9 @@ void test_predict_type(int predict_type, int num_predicts) {
         "",
         &written,
         &mat_output[0]);
-    EXPECT_EQ(0, result) << "LGBM_BoosterPredictForMat result code: " << result;
+    EXPECT_EQ(0, result) << "FLC_BoosterPredictForMat result code: " << result;
 
-    // Test LGBM_BoosterPredictForMat in multi-threaded mode
+    // Test FLC_BoosterPredictForMat in multi-threaded mode
     const int kNThreads = 10;
     const int numIterations = 5;
     std::vector<std::thread> predict_for_mat_threads(kNThreads);
@@ -104,7 +104,7 @@ void test_predict_type(int predict_type, int num_predicts) {
                     int result;
                     std::vector<double> mat_output(output_size * test_set_size, -1);
                     int64_t written;
-                    result = LGBM_BoosterPredictForMat(
+                    result = FLC_BoosterPredictForMat(
                         booster_handle,
                         &test[0],
                         C_API_DTYPE_FLOAT64,
@@ -117,7 +117,7 @@ void test_predict_type(int predict_type, int num_predicts) {
                         "",
                         &written,
                         &mat_output[0]);
-                    EXPECT_EQ(0, result) << "LGBM_BoosterPredictForMat result code: " << result;
+                    EXPECT_EQ(0, result) << "FLC_BoosterPredictForMat result code: " << result;
                 }
             });
     }
@@ -128,7 +128,7 @@ void test_predict_type(int predict_type, int num_predicts) {
     // Now let's run with the single row fast prediction API:
     FastConfigHandle fast_configs[kNThreads];
     for (int i = 0; i < kNThreads; i++) {
-        result = LGBM_BoosterPredictForMatSingleRowFastInit(
+        result = FLC_BoosterPredictForMatSingleRowFastInit(
             booster_handle,
             predict_type,          // predict_type
             0,                     // start_iteration
@@ -137,7 +137,7 @@ void test_predict_type(int predict_type, int num_predicts) {
             n_features,
             "",
             &fast_configs[i]);
-        EXPECT_EQ(0, result) << "LGBM_BoosterPredictForMatSingleRowFastInit result code: " << result;
+        EXPECT_EQ(0, result) << "FLC_BoosterPredictForMatSingleRowFastInit result code: " << result;
     }
 
     std::vector<double> single_row_output(output_size * test_set_size, -1);
@@ -152,13 +152,13 @@ void test_predict_type(int predict_type, int num_predicts) {
                 int result;
                 int64_t written;
                 for (int j = i * batch_size; j < std::min((i + 1) * batch_size, test_set_size); j++) {
-                    result = LGBM_BoosterPredictForMatSingleRowFast(
+                    result = FLC_BoosterPredictForMatSingleRowFast(
                         fast_configs[i],
                         &test[j * n_features],
                         &written,
                         &single_row_output[j * output_size]);
-                    EXPECT_EQ(0, result) << "LGBM_BoosterPredictForMatSingleRowFast result code: " << result;
-                    EXPECT_EQ(written, output_size) << "LGBM_BoosterPredictForMatSingleRowFast unexpected written output size";
+                    EXPECT_EQ(0, result) << "FLC_BoosterPredictForMatSingleRowFast result code: " << result;
+                    EXPECT_EQ(written, output_size) << "FLC_BoosterPredictForMatSingleRowFast unexpected written output size";
                 }
             });
       }
@@ -166,19 +166,19 @@ void test_predict_type(int predict_type, int num_predicts) {
         t.join();
     }
 
-    EXPECT_EQ(single_row_output, mat_output) << "LGBM_BoosterPredictForMatSingleRowFast output mismatch with LGBM_BoosterPredictForMat";
+    EXPECT_EQ(single_row_output, mat_output) << "FLC_BoosterPredictForMatSingleRowFast output mismatch with FLC_BoosterPredictForMat";
 
     // Free all:
     for (int i = 0; i < kNThreads; i++) {
-        result = LGBM_FastConfigFree(fast_configs[i]);
-        EXPECT_EQ(0, result) << "LGBM_FastConfigFree result code: " << result;
+        result = FLC_FastConfigFree(fast_configs[i]);
+        EXPECT_EQ(0, result) << "FLC_FastConfigFree result code: " << result;
     }
 
-    result = LGBM_BoosterFree(booster_handle);
-    EXPECT_EQ(0, result) << "LGBM_BoosterFree result code: " << result;
+    result = FLC_BoosterFree(booster_handle);
+    EXPECT_EQ(0, result) << "FLC_BoosterFree result code: " << result;
 
-    result = LGBM_DatasetFree(train_dataset);
-    EXPECT_EQ(0, result) << "LGBM_DatasetFree result code: " << result;
+    result = FLC_DatasetFree(train_dataset);
+    EXPECT_EQ(0, result) << "FLC_DatasetFree result code: " << result;
 }
 
 TEST(SingleRow, Normal) {
@@ -189,7 +189,7 @@ TEST(SingleRow, Contrib) {
     test_predict_type(C_API_PREDICT_CONTRIB, 29);
 }
 
-// Regression test for issue #7220: LGBM_BoosterPredictForMatSingleRow
+// Regression test for issue #7220: FLC_BoosterPredictForMatSingleRow
 // reused a cached single-row predictor without taking `start_iteration`
 // into account, so consecutive calls with different start_iteration values
 // but the same num_iteration returned stale (identical) predictions.
@@ -201,19 +201,19 @@ TEST(SingleRow, StartIterationChangesPrediction) {
     EXPECT_EQ(0, result) << "LoadDatasetFromExamples train result code: " << result;
 
     BoosterHandle booster_handle;
-    result = LGBM_BoosterCreate(train_dataset, "app=binary metric=auc num_leaves=31 verbose=0", &booster_handle);
-    EXPECT_EQ(0, result) << "LGBM_BoosterCreate result code: " << result;
+    result = FLC_BoosterCreate(train_dataset, "app=binary metric=auc num_leaves=31 verbose=0", &booster_handle);
+    EXPECT_EQ(0, result) << "FLC_BoosterCreate result code: " << result;
 
     const int kNumIterTrained = 30;
     for (int i = 0; i < kNumIterTrained; i++) {
         int produced_empty_tree;
-        result = LGBM_BoosterUpdateOneIter(booster_handle, &produced_empty_tree);
-        EXPECT_EQ(0, result) << "LGBM_BoosterUpdateOneIter result code: " << result;
+        result = FLC_BoosterUpdateOneIter(booster_handle, &produced_empty_tree);
+        EXPECT_EQ(0, result) << "FLC_BoosterUpdateOneIter result code: " << result;
     }
 
     int n_features;
-    result = LGBM_BoosterGetNumFeature(booster_handle, &n_features);
-    EXPECT_EQ(0, result) << "LGBM_BoosterGetNumFeature result code: " << result;
+    result = FLC_BoosterGetNumFeature(booster_handle, &n_features);
+    EXPECT_EQ(0, result) << "FLC_BoosterGetNumFeature result code: " << result;
 
     // Load a single test row.
     std::ifstream test_file("examples/binary_classification/binary.test");
@@ -235,23 +235,23 @@ TEST(SingleRow, StartIterationChangesPrediction) {
     EXPECT_EQ(static_cast<int>(single_row.size()), n_features) << "Failed to parse a single row from the test file";
 
     int64_t output_size;
-    result = LGBM_BoosterCalcNumPredict(
+    result = FLC_BoosterCalcNumPredict(
         booster_handle,
         1,
         C_API_PREDICT_NORMAL,
         0,
         10,
         &output_size);
-    EXPECT_EQ(0, result) << "LGBM_BoosterCalcNumPredict result code: " << result;
+    EXPECT_EQ(0, result) << "FLC_BoosterCalcNumPredict result code: " << result;
 
-    // Call LGBM_BoosterPredictForMatSingleRow twice with the same num_iteration
+    // Call FLC_BoosterPredictForMatSingleRow twice with the same num_iteration
     // but different start_iteration. The two boosting iteration windows are
     // disjoint, so the resulting scores must differ.
     std::vector<double> pred_early(output_size, -1);
     std::vector<double> pred_late(output_size, -1);
     int64_t written;
 
-    result = LGBM_BoosterPredictForMatSingleRow(
+    result = FLC_BoosterPredictForMatSingleRow(
         booster_handle,
         &single_row[0],
         C_API_DTYPE_FLOAT64,
@@ -263,9 +263,9 @@ TEST(SingleRow, StartIterationChangesPrediction) {
         "",
         &written,
         &pred_early[0]);
-    EXPECT_EQ(0, result) << "LGBM_BoosterPredictForMatSingleRow (start=0) result code: " << result;
+    EXPECT_EQ(0, result) << "FLC_BoosterPredictForMatSingleRow (start=0) result code: " << result;
 
-    result = LGBM_BoosterPredictForMatSingleRow(
+    result = FLC_BoosterPredictForMatSingleRow(
         booster_handle,
         &single_row[0],
         C_API_DTYPE_FLOAT64,
@@ -277,18 +277,18 @@ TEST(SingleRow, StartIterationChangesPrediction) {
         "",
         &written,
         &pred_late[0]);
-    EXPECT_EQ(0, result) << "LGBM_BoosterPredictForMatSingleRow (start=20) result code: " << result;
+    EXPECT_EQ(0, result) << "FLC_BoosterPredictForMatSingleRow (start=20) result code: " << result;
 
     EXPECT_NE(pred_early[0], pred_late[0])
-        << "LGBM_BoosterPredictForMatSingleRow returned identical predictions for "
+        << "FLC_BoosterPredictForMatSingleRow returned identical predictions for "
            "disjoint iteration windows [0,10) and [20,30); start_iteration is being "
            "ignored by the predictor cache key.";
 
-    // Cross-check against LGBM_BoosterPredictForMat (the non-single-row path),
+    // Cross-check against FLC_BoosterPredictForMat (the non-single-row path),
     // which does not use the buggy cache and is known to respect start_iteration.
     std::vector<double> ref_early(output_size, -1);
     std::vector<double> ref_late(output_size, -1);
-    result = LGBM_BoosterPredictForMat(
+    result = FLC_BoosterPredictForMat(
         booster_handle,
         &single_row[0],
         C_API_DTYPE_FLOAT64,
@@ -301,9 +301,9 @@ TEST(SingleRow, StartIterationChangesPrediction) {
         "",
         &written,
         &ref_early[0]);
-    EXPECT_EQ(0, result) << "LGBM_BoosterPredictForMat (start=0) result code: " << result;
+    EXPECT_EQ(0, result) << "FLC_BoosterPredictForMat (start=0) result code: " << result;
 
-    result = LGBM_BoosterPredictForMat(
+    result = FLC_BoosterPredictForMat(
         booster_handle,
         &single_row[0],
         C_API_DTYPE_FLOAT64,
@@ -316,16 +316,16 @@ TEST(SingleRow, StartIterationChangesPrediction) {
         "",
         &written,
         &ref_late[0]);
-    EXPECT_EQ(0, result) << "LGBM_BoosterPredictForMat (start=20) result code: " << result;
+    EXPECT_EQ(0, result) << "FLC_BoosterPredictForMat (start=20) result code: " << result;
 
     EXPECT_DOUBLE_EQ(pred_early[0], ref_early[0])
-        << "LGBM_BoosterPredictForMatSingleRow (start=0) disagrees with LGBM_BoosterPredictForMat";
+        << "FLC_BoosterPredictForMatSingleRow (start=0) disagrees with FLC_BoosterPredictForMat";
     EXPECT_DOUBLE_EQ(pred_late[0], ref_late[0])
-        << "LGBM_BoosterPredictForMatSingleRow (start=20) disagrees with LGBM_BoosterPredictForMat";
+        << "FLC_BoosterPredictForMatSingleRow (start=20) disagrees with FLC_BoosterPredictForMat";
 
-    result = LGBM_BoosterFree(booster_handle);
-    EXPECT_EQ(0, result) << "LGBM_BoosterFree result code: " << result;
+    result = FLC_BoosterFree(booster_handle);
+    EXPECT_EQ(0, result) << "FLC_BoosterFree result code: " << result;
 
-    result = LGBM_DatasetFree(train_dataset);
-    EXPECT_EQ(0, result) << "LGBM_DatasetFree result code: " << result;
+    result = FLC_DatasetFree(train_dataset);
+    EXPECT_EQ(0, result) << "FLC_DatasetFree result code: " << result;
 }

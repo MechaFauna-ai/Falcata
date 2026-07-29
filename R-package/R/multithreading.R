@@ -21,7 +21,7 @@
 #' @export
 setLGBMthreads <- function(num_threads) {
     .Call(
-        LGBM_SetMaxThreads_R,
+        FLC_SetMaxThreads_R,
         num_threads
     )
     return(invisible(NULL))
@@ -44,7 +44,7 @@ setLGBMthreads <- function(num_threads) {
 getLGBMthreads <- function() {
     out <- 0L
     .Call(
-        LGBM_GetMaxThreads_R,
+        FLC_GetMaxThreads_R,
         out
     )
     return(out)

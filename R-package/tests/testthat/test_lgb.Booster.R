@@ -309,7 +309,7 @@ test_that("Saving a large model to string should work", {
     model_string <- bst$save_model_to_string()
 
     # make sure this test is still producing a model bigger than the default
-    # buffer size used in LGBM_BoosterSaveModelToString_R
+    # buffer size used in FLC_BoosterSaveModelToString_R
     expect_gt(nchar(model_string), 1024L * 1024L)
 
     # finalize the booster and destroy it so you know we aren't cheating
@@ -350,7 +350,7 @@ test_that("Saving a large model to JSON should work", {
     model_json <- bst$dump_model()
 
     # make sure this test is still producing a model bigger than the default
-    # buffer size used in LGBM_BoosterDumpModel_R
+    # buffer size used in FLC_BoosterDumpModel_R
     expect_gt(nchar(model_json), 1024L * 1024L)
 
     # check that it is valid JSON that looks like a LightGBM model
@@ -1672,7 +1672,7 @@ test_that("Booster's print, show, and summary work correctly when objective is n
   .check_methods_work(model)
 })
 
-test_that("LGBM_BoosterGetNumFeature_R returns correct outputs", {
+test_that("FLC_BoosterGetNumFeature_R returns correct outputs", {
     data("mtcars")
     model <- lgb.train(
         params = list(
@@ -1690,7 +1690,7 @@ test_that("LGBM_BoosterGetNumFeature_R returns correct outputs", {
         , verbose = .LGB_VERBOSITY
         , nrounds = 5L
     )
-    ncols <- .Call(LGBM_BoosterGetNumFeature_R, model$.__enclos_env__$private$handle)
+    ncols <- .Call(FLC_BoosterGetNumFeature_R, model$.__enclos_env__$private$handle)
     expect_equal(ncols, ncol(mtcars) - 1L)
 
     data("iris")
@@ -1703,7 +1703,7 @@ test_that("LGBM_BoosterGetNumFeature_R returns correct outputs", {
         , verbose = .LGB_VERBOSITY
         , nrounds = 5L
     )
-    ncols <- .Call(LGBM_BoosterGetNumFeature_R, model$.__enclos_env__$private$handle)
+    ncols <- .Call(FLC_BoosterGetNumFeature_R, model$.__enclos_env__$private$handle)
     expect_equal(ncols, ncol(iris) - 1L)
 })
 

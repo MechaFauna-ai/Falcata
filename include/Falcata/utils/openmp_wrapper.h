@@ -8,12 +8,12 @@
 
 #include <Falcata/export.h>
 
-// this can only be changed by LGBM_SetMaxThreads()
-FALCATA_EXTERN_C int LGBM_MAX_NUM_THREADS;
+// this can only be changed by FLC_SetMaxThreads()
+FALCATA_EXTERN_C int FLC_MAX_NUM_THREADS;
 
 // this is modified by OMP_SET_NUM_THREADS(), for example
 // by passing num_thread through params
-FALCATA_EXTERN_C int LGBM_DEFAULT_NUM_THREADS;
+FALCATA_EXTERN_C int FLC_DEFAULT_NUM_THREADS;
 
 #ifdef _OPENMP
 

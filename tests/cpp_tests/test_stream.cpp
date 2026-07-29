@@ -45,7 +45,7 @@ void test_stream_dense(
     int result = 0;
     switch (creation_type) {
       case 0: {
-        Log::Info("Creating Dataset using LGBM_DatasetCreateFromSampledColumn, %d rows dense data with a batch size of %d", nrows, batch_count);
+        Log::Info("Creating Dataset using FLC_DatasetCreateFromSampledColumn, %d rows dense data with a batch size of %d", nrows, batch_count);
 
         // construct sample data first (use all data for convenience and since size is small)
         std::vector<std::vector<double>> sample_values(ncols);
@@ -70,7 +70,7 @@ void test_stream_dense(
           sample_sizes.push_back(static_cast<int>(sample_values[i].size()));
         }
 
-        result = LGBM_DatasetCreateFromSampledColumn(
+        result = FLC_DatasetCreateFromSampledColumn(
           sample_values_ptrs.data(),
           sample_idx_ptrs.data(),
           ncols,
@@ -80,17 +80,17 @@ void test_stream_dense(
           nrows,
           "max_bin=15",
           &dataset_handle);
-        EXPECT_EQ(0, result) << "LGBM_DatasetCreateFromSampledColumn result code: " << result;
+        EXPECT_EQ(0, result) << "FLC_DatasetCreateFromSampledColumn result code: " << result;
 
-        result = LGBM_DatasetInitStreaming(dataset_handle, has_weights, has_init_scores, has_queries, nclasses, 1, -1);
-        EXPECT_EQ(0, result) << "LGBM_DatasetInitStreaming result code: " << result;
+        result = FLC_DatasetInitStreaming(dataset_handle, has_weights, has_init_scores, has_queries, nclasses, 1, -1);
+        EXPECT_EQ(0, result) << "FLC_DatasetInitStreaming result code: " << result;
         break;
       }
 
       case 1:
-        Log::Info("Creating Dataset using LGBM_DatasetCreateByReference, %d rows dense data with a batch size of %d", nrows, batch_count);
-        result = LGBM_DatasetCreateByReference(ref_dataset_handle, nrows, &dataset_handle);
-        EXPECT_EQ(0, result) << "LGBM_DatasetCreateByReference result code: " << result;
+        Log::Info("Creating Dataset using FLC_DatasetCreateByReference, %d rows dense data with a batch size of %d", nrows, batch_count);
+        result = FLC_DatasetCreateByReference(ref_dataset_handle, nrows, &dataset_handle);
+        EXPECT_EQ(0, result) << "FLC_DatasetCreateByReference result code: " << result;
         break;
     }
 
@@ -123,8 +123,8 @@ void test_stream_dense(
   }
 
   if (dataset_handle) {
-    int result = LGBM_DatasetFree(dataset_handle);
-    EXPECT_EQ(0, result) << "LGBM_DatasetFree result code: " << result;
+    int result = FLC_DatasetFree(dataset_handle);
+    EXPECT_EQ(0, result) << "FLC_DatasetFree result code: " << result;
   }
 
   if (!succeeded) {
@@ -161,7 +161,7 @@ void test_stream_sparse(
     int result = 0;
     switch (creation_type) {
       case 0: {
-        Log::Info("Creating Dataset using LGBM_DatasetCreateFromSampledColumn, %d rows sparse data with a batch size of %d", nrows, batch_count);
+        Log::Info("Creating Dataset using FLC_DatasetCreateFromSampledColumn, %d rows sparse data with a batch size of %d", nrows, batch_count);
 
         std::vector<std::vector<double>> sample_values(ncols);
         std::vector<std::vector<int>> sample_idx(ncols);
@@ -187,7 +187,7 @@ void test_stream_sparse(
           sample_sizes.push_back(static_cast<int>(sample_values[i].size()));
         }
 
-        result = LGBM_DatasetCreateFromSampledColumn(
+        result = FLC_DatasetCreateFromSampledColumn(
           sample_values_ptrs.data(),
           sample_idx_ptrs.data(),
           ncols,
@@ -197,7 +197,7 @@ void test_stream_sparse(
           nrows,
           "max_bin=15",
           &dataset_handle);
-        EXPECT_EQ(0, result) << "LGBM_DatasetCreateFromSampledColumn result code: " << result;
+        EXPECT_EQ(0, result) << "FLC_DatasetCreateFromSampledColumn result code: " << result;
 
         dataset = static_cast<Dataset*>(dataset_handle);
         dataset->InitStreaming(nrows, has_weights, has_init_scores, has_queries, nclasses, 2, -1);
@@ -205,9 +205,9 @@ void test_stream_sparse(
       }
 
       case 1:
-        Log::Info("Creating Dataset using LGBM_DatasetCreateByReference, %d rows sparse data with a batch size of %d", nrows, batch_count);
-        result = LGBM_DatasetCreateByReference(ref_dataset_handle, nrows, &dataset_handle);
-        EXPECT_EQ(0, result) << "LGBM_DatasetCreateByReference result code: " << result;
+        Log::Info("Creating Dataset using FLC_DatasetCreateByReference, %d rows sparse data with a batch size of %d", nrows, batch_count);
+        result = FLC_DatasetCreateByReference(ref_dataset_handle, nrows, &dataset_handle);
+        EXPECT_EQ(0, result) << "FLC_DatasetCreateByReference result code: " << result;
         break;
     }
 
@@ -241,8 +241,8 @@ void test_stream_sparse(
   }
 
   if (dataset_handle) {
-    int result = LGBM_DatasetFree(dataset_handle);
-    EXPECT_EQ(0, result) << "LGBM_DatasetFree result code: " << result;
+    int result = FLC_DatasetFree(dataset_handle);
+    EXPECT_EQ(0, result) << "FLC_DatasetFree result code: " << result;
   }
 
   if (!succeeded) {
@@ -269,10 +269,10 @@ TEST(Stream, PushDenseRowsWithMetadata) {
   unused_init_scores.resize(noriginalrows * nclasses);
   std::vector<int32_t> unused_groups;
   unused_groups.assign(noriginalrows, 1);
-  result = LGBM_DatasetSetField(ref_dataset_handle, "init_score", unused_init_scores.data(), noriginalrows * nclasses, 1);
-  EXPECT_EQ(0, result) << "LGBM_DatasetSetField init_score result code: " << result;
-  result = LGBM_DatasetSetField(ref_dataset_handle, "group", unused_groups.data(), noriginalrows, 2);
-  EXPECT_EQ(0, result) << "LGBM_DatasetSetField group result code: " << result;
+  result = FLC_DatasetSetField(ref_dataset_handle, "init_score", unused_init_scores.data(), noriginalrows * nclasses, 1);
+  EXPECT_EQ(0, result) << "FLC_DatasetSetField init_score result code: " << result;
+  result = FLC_DatasetSetField(ref_dataset_handle, "group", unused_groups.data(), noriginalrows, 2);
+  EXPECT_EQ(0, result) << "FLC_DatasetSetField group result code: " << result;
 
   // Now use the reference dataset schema to make some testable Datasets with N rows each
   int32_t nrows = 1000;
@@ -297,8 +297,8 @@ TEST(Stream, PushDenseRowsWithMetadata) {
     }
   }
 
-  result = LGBM_DatasetFree(ref_dataset_handle);
-  EXPECT_EQ(0, result) << "LGBM_DatasetFree result code: " << result;
+  result = FLC_DatasetFree(ref_dataset_handle);
+  EXPECT_EQ(0, result) << "FLC_DatasetFree result code: " << result;
 }
 
 TEST(Stream, PushSparseRowsWithMetadata) {
@@ -320,10 +320,10 @@ TEST(Stream, PushSparseRowsWithMetadata) {
   unused_init_scores.resize(noriginalrows * nclasses);
   std::vector<int32_t> unused_groups;
   unused_groups.assign(noriginalrows, 1);
-  result = LGBM_DatasetSetField(ref_dataset_handle, "init_score", unused_init_scores.data(), noriginalrows * nclasses, 1);
-  EXPECT_EQ(0, result) << "LGBM_DatasetSetField init_score result code: " << result;
-  result = LGBM_DatasetSetField(ref_dataset_handle, "group", unused_groups.data(), noriginalrows, 2);
-  EXPECT_EQ(0, result) << "LGBM_DatasetSetField group result code: " << result;
+  result = FLC_DatasetSetField(ref_dataset_handle, "init_score", unused_init_scores.data(), noriginalrows * nclasses, 1);
+  EXPECT_EQ(0, result) << "FLC_DatasetSetField init_score result code: " << result;
+  result = FLC_DatasetSetField(ref_dataset_handle, "group", unused_groups.data(), noriginalrows, 2);
+  EXPECT_EQ(0, result) << "FLC_DatasetSetField group result code: " << result;
 
   // Now use the reference dataset schema to make some testable Datasets with N rows each
   int32_t nrows = 1000;
@@ -351,6 +351,6 @@ TEST(Stream, PushSparseRowsWithMetadata) {
     }
   }
 
-  result = LGBM_DatasetFree(ref_dataset_handle);
-  EXPECT_EQ(0, result) << "LGBM_DatasetFree result code: " << result;
+  result = FLC_DatasetFree(ref_dataset_handle);
+  EXPECT_EQ(0, result) << "FLC_DatasetFree result code: " << result;
 }

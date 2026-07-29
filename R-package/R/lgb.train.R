@@ -301,7 +301,7 @@ lgb.train <- function(params = list(),
       }
 
       # Calling booster$eval_valid() will get
-      # evaluation results with the metrics in params$metric by calling LGBM_BoosterGetEval_R",
+      # evaluation results with the metrics in params$metric by calling FLC_BoosterGetEval_R",
       # so need to be sure that gets called, which it wouldn't be above if no functions
       # were passed in
       if (length(eval_functions) == 0L) {

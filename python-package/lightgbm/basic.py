@@ -1,7 +1,7 @@
 # coding: utf-8
 """Wrapper for C API of LightGBM."""
 
-# This import causes lib_lightgbm.{dll,dylib,so} to be loaded.
+# This import causes lib_falcata.{dll,dylib,so} to be loaded.
 # It's intentionally done here, as early as possible, to avoid issues like
 # "libgomp.so.1: cannot allocate memory in static TLS block" on aarch64 Linux.
 #
@@ -165,7 +165,7 @@ def _is_zero(x: float) -> bool:
 def _get_sample_count(total_nrow: int, params: str) -> int:
     sample_cnt = ctypes.c_int(0)
     _safe_call(
-        _LIB.LGBM_GetSampleCount(
+        _LIB.FLC_GetSampleCount(
             ctypes.c_int32(total_nrow),
             _c_str(params),
             ctypes.byref(sample_cnt),
@@ -276,13 +276,13 @@ def _log_callback(msg: bytes) -> None:
     _log_native(str(msg.decode("utf-8")))
 
 
-# connect the Python logger to logging in lib_lightgbm
+# connect the Python logger to logging in lib_falcata
 if environ.get("LIGHTGBM_BUILD_DOC", "False") != "True":
-    _LIB.LGBM_GetLastError.restype = ctypes.c_char_p
+    _LIB.FLC_GetLastError.restype = ctypes.c_char_p
     callback = ctypes.CFUNCTYPE(None, ctypes.c_char_p)
     _LIB.callback = callback(_log_callback)  # type: ignore[attr-defined]
-    if _LIB.LGBM_RegisterLogCallback(_LIB.callback) != 0:
-        raise LightGBMError(_LIB.LGBM_GetLastError().decode("utf-8"))
+    if _LIB.FLC_RegisterLogCallback(_LIB.callback) != 0:
+        raise LightGBMError(_LIB.FLC_GetLastError().decode("utf-8"))
 
 
 _NUMERIC_TYPES = (int, float, bool)
@@ -297,7 +297,7 @@ def _safe_call(ret: int) -> None:
         The return value from C API calls.
     """
     if ret != 0:
-        raise LightGBMError(_LIB.LGBM_GetLastError().decode("utf-8"))
+        raise LightGBMError(_LIB.FLC_GetLastError().decode("utf-8"))
 
 
 def _is_numeric(obj: Any) -> bool:
@@ -525,7 +525,7 @@ class _ConfigAliases:
         string_buffer = ctypes.create_string_buffer(buffer_len)
         ptr_string_buffer = ctypes.c_char_p(ctypes.addressof(string_buffer))
         _safe_call(
-            _LIB.LGBM_DumpParamAliases(
+            _LIB.FLC_DumpParamAliases(
                 ctypes.c_int64(buffer_len),
                 ctypes.byref(tmp_out_len),
                 ptr_string_buffer,
@@ -537,7 +537,7 @@ class _ConfigAliases:
             string_buffer = ctypes.create_string_buffer(actual_len)
             ptr_string_buffer = ctypes.c_char_p(ctypes.addressof(string_buffer))
             _safe_call(
-                _LIB.LGBM_DumpParamAliases(
+                _LIB.FLC_DumpParamAliases(
                     ctypes.c_int64(actual_len),
                     ctypes.byref(tmp_out_len),
                     ptr_string_buffer,
@@ -982,7 +982,7 @@ class _InnerPredictor:
 
         out_num_class = ctypes.c_int(0)
         _safe_call(
-            _LIB.LGBM_BoosterGetNumClasses(
+            _LIB.FLC_BoosterGetNumClasses(
                 self._handle,
                 ctypes.byref(out_num_class),
             )
@@ -1006,7 +1006,7 @@ class _InnerPredictor:
         """
         out_cur_iter = ctypes.c_int(0)
         _safe_call(
-            _LIB.LGBM_BoosterGetCurrentIteration(
+            _LIB.FLC_BoosterGetCurrentIteration(
                 booster._handle,
                 ctypes.byref(out_cur_iter),
             )
@@ -1036,7 +1036,7 @@ class _InnerPredictor:
         booster_handle = ctypes.c_void_p()
         out_num_iterations = ctypes.c_int(0)
         _safe_call(
-            _LIB.LGBM_BoosterCreateFromModelfile(
+            _LIB.FLC_BoosterCreateFromModelfile(
                 _c_str(str(model_file)),
                 ctypes.byref(out_num_iterations),
                 ctypes.byref(booster_handle),
@@ -1052,7 +1052,7 @@ class _InnerPredictor:
     def __del__(self) -> None:
         try:
             if self.__is_manage_handle:
-                _safe_call(_LIB.LGBM_BoosterFree(self._handle))
+                _safe_call(_LIB.FLC_BoosterFree(self._handle))
         except AttributeError:
             pass
 
@@ -1112,7 +1112,7 @@ class _InnerPredictor:
             ptr_names = (ctypes.c_char_p * len(data_names))()
             ptr_names[:] = [x.encode("utf-8") for x in data_names]
             _safe_call(
-                _LIB.LGBM_BoosterValidateFeatureNames(
+                _LIB.FLC_BoosterValidateFeatureNames(
                     self._handle,
                     ptr_names,
                     ctypes.c_int(len(data_names)),
@@ -1138,7 +1138,7 @@ class _InnerPredictor:
         if isinstance(data, (str, Path)):
             with _TempFile() as f:
                 _safe_call(
-                    _LIB.LGBM_BoosterPredictForFile(
+                    _LIB.FLC_BoosterPredictForFile(
                         self._handle,
                         _c_str(str(data)),
                         ctypes.c_int(data_has_header),
@@ -1233,7 +1233,7 @@ class _InnerPredictor:
             )
         n_preds = ctypes.c_int64(0)
         _safe_call(
-            _LIB.LGBM_BoosterCalcNumPredict(
+            _LIB.FLC_BoosterCalcNumPredict(
                 self._handle,
                 ctypes.c_int(nrow),
                 ctypes.c_int(predict_type),
@@ -1266,7 +1266,7 @@ class _InnerPredictor:
             raise ValueError("Wrong length of pre-allocated predict array")
         out_num_preds = ctypes.c_int64(0)
         _safe_call(
-            _LIB.LGBM_BoosterPredictForMat(
+            _LIB.FLC_BoosterPredictForMat(
                 self._handle,
                 ptr_data,
                 ctypes.c_int(type_ptr_data),
@@ -1382,7 +1382,7 @@ class _InnerPredictor:
                 cs_output_matrices.append(scipy.sparse.csc_matrix((cs_data, cs_indices, cs_indptr), cs_shape))
         # free the temporary native indptr, indices, and data
         _safe_call(
-            _LIB.LGBM_BoosterFreePredictSparse(
+            _LIB.FLC_BoosterFreePredictSparse(
                 out_ptr_indptr,
                 out_ptr_indices,
                 out_ptr_data,
@@ -1422,7 +1422,7 @@ class _InnerPredictor:
         csr_indices = csr.indices.astype(np.int32, copy=False)
 
         _safe_call(
-            _LIB.LGBM_BoosterPredictForCSR(
+            _LIB.FLC_BoosterPredictForCSR(
                 self._handle,
                 ptr_indptr,
                 ctypes.c_int(type_ptr_indptr),
@@ -1468,7 +1468,7 @@ class _InnerPredictor:
             out_ptr_data = ctypes.POINTER(ctypes.c_double)()
         out_shape = np.empty(2, dtype=np.int64)
         _safe_call(
-            _LIB.LGBM_BoosterPredictSparseOutput(
+            _LIB.FLC_BoosterPredictSparseOutput(
                 self._handle,
                 ptr_indptr,
                 ctypes.c_int(type_ptr_indptr),
@@ -1579,7 +1579,7 @@ class _InnerPredictor:
             out_ptr_data = ctypes.POINTER(ctypes.c_double)()
         out_shape = np.empty(2, dtype=np.int64)
         _safe_call(
-            _LIB.LGBM_BoosterPredictSparseOutput(
+            _LIB.FLC_BoosterPredictSparseOutput(
                 self._handle,
                 ptr_indptr,
                 ctypes.c_int(type_ptr_indptr),
@@ -1652,7 +1652,7 @@ class _InnerPredictor:
         csc_indices = csc.indices.astype(np.int32, copy=False)
 
         _safe_call(
-            _LIB.LGBM_BoosterPredictForCSC(
+            _LIB.FLC_BoosterPredictForCSC(
                 self._handle,
                 ptr_indptr,
                 ctypes.c_int(type_ptr_indptr),
@@ -1695,7 +1695,7 @@ class _InnerPredictor:
         # Export narwhals DataFrame to Arrow and run prediction
         pycapsule = data.__arrow_c_stream__()
         _safe_call(
-            _LIB.LGBM_BoosterPredictForArrowStream(
+            _LIB.FLC_BoosterPredictForArrowStream(
                 self._handle,
                 _extract_arrow_stream_capsule_pointer(pycapsule),
                 ctypes.c_int(predict_type),
@@ -1720,7 +1720,7 @@ class _InnerPredictor:
         """
         out_cur_iter = ctypes.c_int(0)
         _safe_call(
-            _LIB.LGBM_BoosterGetCurrentIteration(
+            _LIB.FLC_BoosterGetCurrentIteration(
                 self._handle,
                 ctypes.byref(out_cur_iter),
             )
@@ -1851,7 +1851,7 @@ class Dataset:
         actual_sample_cnt = ctypes.c_int32(0)
 
         _safe_call(
-            _LIB.LGBM_SampleIndices(
+            _LIB.FLC_SampleIndices(
                 ctypes.c_int32(total_nrow),
                 _c_str(param_str),
                 ptr_data,
@@ -1882,7 +1882,7 @@ class Dataset:
         """
         self._handle = ctypes.c_void_p()
         _safe_call(
-            _LIB.LGBM_DatasetCreateByReference(
+            _LIB.FLC_DatasetCreateByReference(
                 ref_dataset,
                 ctypes.c_int64(total_nrow),
                 ctypes.byref(self._handle),
@@ -1940,7 +1940,7 @@ class Dataset:
         self._handle = ctypes.c_void_p()
         params_str = _param_dict_to_str(self.get_params())
         _safe_call(
-            _LIB.LGBM_DatasetCreateFromSampledColumn(
+            _LIB.FLC_DatasetCreateFromSampledColumn(
                 ctypes.cast(sample_col_ptr, ctypes.POINTER(ctypes.POINTER(ctypes.c_double))),
                 ctypes.cast(indices_col_ptr, ctypes.POINTER(ctypes.POINTER(ctypes.c_int32))),
                 ctypes.c_int32(ncol),
@@ -1972,7 +1972,7 @@ class Dataset:
         data_ptr, data_type, _ = _c_float_array(data)
 
         _safe_call(
-            _LIB.LGBM_DatasetPushRows(
+            _LIB.FLC_DatasetPushRows(
                 self._handle,
                 data_ptr,
                 data_type,
@@ -2023,7 +2023,7 @@ class Dataset:
 
     def _free_handle(self) -> "Dataset":
         if self._handle is not None:
-            _safe_call(_LIB.LGBM_DatasetFree(self._handle))
+            _safe_call(_LIB.FLC_DatasetFree(self._handle))
             self._handle = None
         self._need_slice = True
         if self.used_indices is not None:
@@ -2151,7 +2151,7 @@ class Dataset:
         if isinstance(data, (str, Path)):
             self._handle = ctypes.c_void_p()
             _safe_call(
-                _LIB.LGBM_DatasetCreateFromFile(
+                _LIB.FLC_DatasetCreateFromFile(
                     _c_str(str(data)),
                     _c_str(params_str),
                     ref_dataset,
@@ -2222,7 +2222,7 @@ class Dataset:
     def __sample(self, *, seqs: List[Sequence], total_nrow: int) -> Tuple[List[np.ndarray], List[np.ndarray]]:
         """Sample data from seqs.
 
-        Mimics behavior in c_api.cpp:LGBM_DatasetCreateFromMats()
+        Mimics behavior in c_api.cpp:FLC_DatasetCreateFromMats()
 
         Returns
         -------
@@ -2296,7 +2296,7 @@ class Dataset:
         data, layout = _np2d_to_np1d(mat)
         ptr_data, type_ptr_data, _ = _c_float_array(data)
         _safe_call(
-            _LIB.LGBM_DatasetCreateFromMat(
+            _LIB.FLC_DatasetCreateFromMat(
                 ptr_data,
                 ctypes.c_int(type_ptr_data),
                 ctypes.c_int32(mat.shape[0]),
@@ -2355,7 +2355,7 @@ class Dataset:
             raise ValueError("CUDA array has no data pointer")
         self._handle = ctypes.c_void_p()
         _safe_call(
-            _LIB.LGBM_DatasetCreateFromMatDevice(
+            _LIB.FLC_DatasetCreateFromMatDevice(
                 ctypes.c_void_p(ptr),
                 ctypes.c_int(dtype_map[typestr]),
                 ctypes.c_int32(nrow),
@@ -2409,7 +2409,7 @@ class Dataset:
 
         self._handle = ctypes.c_void_p()
         _safe_call(
-            _LIB.LGBM_DatasetCreateFromMats(
+            _LIB.FLC_DatasetCreateFromMats(
                 ctypes.c_int32(len(mats)),
                 ctypes.cast(ptr_data, ctypes.POINTER(ctypes.POINTER(ctypes.c_double))),
                 ctypes.c_int(type_ptr_data),
@@ -2442,7 +2442,7 @@ class Dataset:
         csr_indices = csr.indices.astype(np.int32, copy=False)
 
         _safe_call(
-            _LIB.LGBM_DatasetCreateFromCSR(
+            _LIB.FLC_DatasetCreateFromCSR(
                 ptr_indptr,
                 ctypes.c_int(type_ptr_indptr),
                 csr_indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
@@ -2477,7 +2477,7 @@ class Dataset:
         csc_indices = csc.indices.astype(np.int32, copy=False)
 
         _safe_call(
-            _LIB.LGBM_DatasetCreateFromCSC(
+            _LIB.FLC_DatasetCreateFromCSC(
                 ptr_indptr,
                 ctypes.c_int(type_ptr_indptr),
                 csc_indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
@@ -2507,7 +2507,7 @@ class Dataset:
         # Create dataset
         self._handle = ctypes.c_void_p()
         _safe_call(
-            _LIB.LGBM_DatasetCreateFromArrowStream(
+            _LIB.FLC_DatasetCreateFromArrowStream(
                 _extract_arrow_stream_capsule_pointer(pycapsule),
                 _c_str(params_str),
                 ref_dataset,
@@ -2602,7 +2602,7 @@ class Dataset:
                     self._handle = ctypes.c_void_p()
                     params_str = _param_dict_to_str(self.params)
                     _safe_call(
-                        _LIB.LGBM_DatasetGetSubset(
+                        _LIB.FLC_DatasetGetSubset(
                             self.reference.construct()._handle,
                             used_indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
                             ctypes.c_int32(used_indices.shape[0]),
@@ -2753,7 +2753,7 @@ class Dataset:
             Returns self.
         """
         _safe_call(
-            _LIB.LGBM_DatasetSaveBinary(
+            _LIB.FLC_DatasetSaveBinary(
                 self.construct()._handle,
                 _c_str(str(filename)),
             )
@@ -2775,7 +2775,7 @@ class Dataset:
         if self._handle is None:
             update()
         elif params is not None:
-            ret = _LIB.LGBM_DatasetUpdateParamChecking(
+            ret = _LIB.FLC_DatasetUpdateParamChecking(
                 _c_str(_param_dict_to_str(self.params)),
                 _c_str(_param_dict_to_str(params)),
             )
@@ -2785,7 +2785,7 @@ class Dataset:
                     update()
                     self._free_handle()
                 else:
-                    raise LightGBMError(_LIB.LGBM_GetLastError().decode("utf-8"))
+                    raise LightGBMError(_LIB.FLC_GetLastError().decode("utf-8"))
         return self
 
     def _reverse_update_params(self) -> "Dataset":
@@ -2818,7 +2818,7 @@ class Dataset:
         if data is None:
             # set to None
             _safe_call(
-                _LIB.LGBM_DatasetSetField(
+                _LIB.FLC_DatasetSetField(
                     self._handle,
                     _c_str(field_name),
                     None,
@@ -2834,7 +2834,7 @@ class Dataset:
         ):
             pycapsule = nw.from_native(data, allow_series=True).__arrow_c_stream__()
             _safe_call(
-                _LIB.LGBM_DatasetSetFieldFromArrowStream(
+                _LIB.FLC_DatasetSetFieldFromArrowStream(
                     self._handle,
                     _c_str(field_name),
                     _extract_arrow_stream_capsule_pointer(pycapsule),
@@ -2873,7 +2873,7 @@ class Dataset:
         if type_data != _FIELD_TYPE_MAPPER[field_name]:
             raise TypeError("Input type error for set_field")
         _safe_call(
-            _LIB.LGBM_DatasetSetField(
+            _LIB.FLC_DatasetSetField(
                 self._handle,
                 _c_str(field_name),
                 ptr_data,
@@ -2909,7 +2909,7 @@ class Dataset:
         out_type = ctypes.c_int(0)
         ret = ctypes.POINTER(ctypes.c_void_p)()
         _safe_call(
-            _LIB.LGBM_DatasetGetField(
+            _LIB.FLC_DatasetGetField(
                 self._handle,
                 _c_str(field_name),
                 ctypes.byref(tmp_out_len),
@@ -3073,7 +3073,7 @@ class Dataset:
                 )
             c_feature_name = [_c_str(name) for name in feature_name]
             _safe_call(
-                _LIB.LGBM_DatasetSetFeatureNames(
+                _LIB.FLC_DatasetSetFeatureNames(
                     self._handle,
                     _c_array(ctypes.c_char_p, c_feature_name),
                     ctypes.c_int(len(feature_name)),
@@ -3234,7 +3234,7 @@ class Dataset:
         string_buffers = [ctypes.create_string_buffer(reserved_string_buffer_size) for _ in range(num_feature)]
         ptr_string_buffers = (ctypes.c_char_p * num_feature)(*map(ctypes.addressof, string_buffers))  # type: ignore[misc]
         _safe_call(
-            _LIB.LGBM_DatasetGetFeatureNames(
+            _LIB.FLC_DatasetGetFeatureNames(
                 self._handle,
                 ctypes.c_int(num_feature),
                 ctypes.byref(tmp_out_len),
@@ -3251,7 +3251,7 @@ class Dataset:
             string_buffers = [ctypes.create_string_buffer(actual_string_buffer_size) for _ in range(num_feature)]
             ptr_string_buffers = (ctypes.c_char_p * num_feature)(*map(ctypes.addressof, string_buffers))  # type: ignore[misc]
             _safe_call(
-                _LIB.LGBM_DatasetGetFeatureNames(
+                _LIB.FLC_DatasetGetFeatureNames(
                     self._handle,
                     ctypes.c_int(num_feature),
                     ctypes.byref(tmp_out_len),
@@ -3381,7 +3381,7 @@ class Dataset:
         if self._handle is not None:
             ret = ctypes.c_int(0)
             _safe_call(
-                _LIB.LGBM_DatasetGetNumData(
+                _LIB.FLC_DatasetGetNumData(
                     self._handle,
                     ctypes.byref(ret),
                 )
@@ -3401,7 +3401,7 @@ class Dataset:
         if self._handle is not None:
             ret = ctypes.c_int(0)
             _safe_call(
-                _LIB.LGBM_DatasetGetNumFeature(
+                _LIB.FLC_DatasetGetNumFeature(
                     self._handle,
                     ctypes.byref(ret),
                 )
@@ -3432,7 +3432,7 @@ class Dataset:
                 feature_index = feature
             ret = ctypes.c_int(0)
             _safe_call(
-                _LIB.LGBM_DatasetGetFeatureNumBin(
+                _LIB.FLC_DatasetGetFeatureNumBin(
                     self._handle,
                     ctypes.c_int(feature_index),
                     ctypes.byref(ret),
@@ -3490,7 +3490,7 @@ class Dataset:
         if self._handle is None or other._handle is None:
             raise ValueError("Both source and target Datasets must be constructed before adding features")
         _safe_call(
-            _LIB.LGBM_DatasetAddFeaturesFrom(
+            _LIB.FLC_DatasetAddFeaturesFrom(
                 self._handle,
                 other._handle,
             )
@@ -3568,7 +3568,7 @@ class Dataset:
             Returns self.
         """
         _safe_call(
-            _LIB.LGBM_DatasetDumpText(
+            _LIB.FLC_DatasetDumpText(
                 self.construct()._handle,
                 _c_str(str(filename)),
             )
@@ -3689,7 +3689,7 @@ class Booster:
             params.update(train_set.get_params())
             params_str = _param_dict_to_str(params)
             _safe_call(
-                _LIB.LGBM_BoosterCreate(
+                _LIB.FLC_BoosterCreate(
                     train_set._handle,
                     _c_str(params_str),
                     ctypes.byref(self._handle),
@@ -3703,14 +3703,14 @@ class Booster:
             self.__init_predictor = train_set._predictor
             if self.__init_predictor is not None:
                 _safe_call(
-                    _LIB.LGBM_BoosterMerge(
+                    _LIB.FLC_BoosterMerge(
                         self._handle,
                         self.__init_predictor._handle,
                     )
                 )
             out_num_class = ctypes.c_int(0)
             _safe_call(
-                _LIB.LGBM_BoosterGetNumClasses(
+                _LIB.FLC_BoosterGetNumClasses(
                     self._handle,
                     ctypes.byref(out_num_class),
                 )
@@ -3726,7 +3726,7 @@ class Booster:
             # Prediction task
             out_num_iterations = ctypes.c_int(0)
             _safe_call(
-                _LIB.LGBM_BoosterCreateFromModelfile(
+                _LIB.FLC_BoosterCreateFromModelfile(
                     _c_str(str(model_file)),
                     ctypes.byref(out_num_iterations),
                     ctypes.byref(self._handle),
@@ -3734,7 +3734,7 @@ class Booster:
             )
             out_num_class = ctypes.c_int(0)
             _safe_call(
-                _LIB.LGBM_BoosterGetNumClasses(
+                _LIB.FLC_BoosterGetNumClasses(
                     self._handle,
                     ctypes.byref(out_num_class),
                 )
@@ -3763,7 +3763,7 @@ class Booster:
             pass
         try:
             if self._handle is not None:
-                _safe_call(_LIB.LGBM_BoosterFree(self._handle))
+                _safe_call(_LIB.FLC_BoosterFree(self._handle))
         except AttributeError:
             pass
 
@@ -3790,7 +3790,7 @@ class Booster:
             handle = ctypes.c_void_p()
             out_num_iterations = ctypes.c_int(0)
             _safe_call(
-                _LIB.LGBM_BoosterLoadModelFromString(
+                _LIB.FLC_BoosterLoadModelFromString(
                     _c_str(model_str),
                     ctypes.byref(out_num_iterations),
                     ctypes.byref(handle),
@@ -3805,7 +3805,7 @@ class Booster:
         string_buffer = ctypes.create_string_buffer(buffer_len)
         ptr_string_buffer = ctypes.c_char_p(ctypes.addressof(string_buffer))
         _safe_call(
-            _LIB.LGBM_BoosterGetLoadedParam(
+            _LIB.FLC_BoosterGetLoadedParam(
                 self._handle,
                 ctypes.c_int64(buffer_len),
                 ctypes.byref(tmp_out_len),
@@ -3818,7 +3818,7 @@ class Booster:
             string_buffer = ctypes.create_string_buffer(actual_len)
             ptr_string_buffer = ctypes.c_char_p(ctypes.addressof(string_buffer))
             _safe_call(
-                _LIB.LGBM_BoosterGetLoadedParam(
+                _LIB.FLC_BoosterGetLoadedParam(
                     self._handle,
                     ctypes.c_int64(actual_len),
                     ctypes.byref(tmp_out_len),
@@ -3873,7 +3873,7 @@ class Booster:
         if isinstance(machines, (list, set)):
             machines = ",".join(machines)
         _safe_call(
-            _LIB.LGBM_NetworkInit(
+            _LIB.FLC_NetworkInit(
                 _c_str(machines),
                 ctypes.c_int(local_listen_port),
                 ctypes.c_int(listen_time_out),
@@ -3891,7 +3891,7 @@ class Booster:
         self : Booster
             Booster with freed network.
         """
-        _safe_call(_LIB.LGBM_NetworkFree())
+        _safe_call(_LIB.FLC_NetworkFree())
         self._network = False
         return self
 
@@ -4089,7 +4089,7 @@ class Booster:
         if data._predictor is not self.__init_predictor:
             raise LightGBMError("Add validation data failed, you should use same predictor for these data")
         _safe_call(
-            _LIB.LGBM_BoosterAddValidData(
+            _LIB.FLC_BoosterAddValidData(
                 self._handle,
                 data.construct()._handle,
             )
@@ -4117,7 +4117,7 @@ class Booster:
         params_str = _param_dict_to_str(params)
         if params_str:
             _safe_call(
-                _LIB.LGBM_BoosterResetParameter(
+                _LIB.FLC_BoosterResetParameter(
                     self._handle,
                     _c_str(params_str),
                 )
@@ -4182,7 +4182,7 @@ class Booster:
                 raise LightGBMError("Replace training data failed, you should use same predictor for these data")
             self.train_set = train_set
             _safe_call(
-                _LIB.LGBM_BoosterResetTrainingData(
+                _LIB.FLC_BoosterResetTrainingData(
                     self._handle,
                     self.train_set.construct()._handle,
                 )
@@ -4194,7 +4194,7 @@ class Booster:
             if self.__set_objective_to_none:
                 raise LightGBMError("Cannot update due to null objective function.")
             _safe_call(
-                _LIB.LGBM_BoosterUpdateOneIter(
+                _LIB.FLC_BoosterUpdateOneIter(
                     self._handle,
                     ctypes.byref(produced_empty_tree),
                 )
@@ -4260,7 +4260,7 @@ class Booster:
             )
         produced_empty_tree = ctypes.c_int(0)
         _safe_call(
-            _LIB.LGBM_BoosterUpdateOneIterCustom(
+            _LIB.FLC_BoosterUpdateOneIterCustom(
                 self._handle,
                 grad.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
                 hess.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
@@ -4278,7 +4278,7 @@ class Booster:
         self : Booster
             Booster with rolled back one iteration.
         """
-        _safe_call(_LIB.LGBM_BoosterRollbackOneIter(self._handle))
+        _safe_call(_LIB.FLC_BoosterRollbackOneIter(self._handle))
         self._invalidate_fil_cache()
         self.__is_predicted_cur_iter = [False for _ in range(self.__num_dataset)]
         return self
@@ -4293,7 +4293,7 @@ class Booster:
         """
         out_cur_iter = ctypes.c_int(0)
         _safe_call(
-            _LIB.LGBM_BoosterGetCurrentIteration(
+            _LIB.FLC_BoosterGetCurrentIteration(
                 self._handle,
                 ctypes.byref(out_cur_iter),
             )
@@ -4310,7 +4310,7 @@ class Booster:
         """
         model_per_iter = ctypes.c_int(0)
         _safe_call(
-            _LIB.LGBM_BoosterNumModelPerIteration(
+            _LIB.FLC_BoosterNumModelPerIteration(
                 self._handle,
                 ctypes.byref(model_per_iter),
             )
@@ -4327,7 +4327,7 @@ class Booster:
         """
         num_trees = ctypes.c_int(0)
         _safe_call(
-            _LIB.LGBM_BoosterNumberOfTotalModel(
+            _LIB.FLC_BoosterNumberOfTotalModel(
                 self._handle,
                 ctypes.byref(num_trees),
             )
@@ -4344,7 +4344,7 @@ class Booster:
         """
         ret = ctypes.c_double(0)
         _safe_call(
-            _LIB.LGBM_BoosterGetUpperBoundValue(
+            _LIB.FLC_BoosterGetUpperBoundValue(
                 self._handle,
                 ctypes.byref(ret),
             )
@@ -4361,7 +4361,7 @@ class Booster:
         """
         ret = ctypes.c_double(0)
         _safe_call(
-            _LIB.LGBM_BoosterGetLowerBoundValue(
+            _LIB.FLC_BoosterGetLowerBoundValue(
                 self._handle,
                 ctypes.byref(ret),
             )
@@ -4528,7 +4528,7 @@ class Booster:
             num_iteration = self.best_iteration
         importance_type_int = _FEATURE_IMPORTANCE_TYPE_MAPPER[importance_type]
         _safe_call(
-            _LIB.LGBM_BoosterSaveModel(
+            _LIB.FLC_BoosterSaveModel(
                 self._handle,
                 ctypes.c_int(start_iteration),
                 ctypes.c_int(num_iteration),
@@ -4560,7 +4560,7 @@ class Booster:
             Booster with shuffled models.
         """
         _safe_call(
-            _LIB.LGBM_BoosterShuffleModels(
+            _LIB.FLC_BoosterShuffleModels(
                 self._handle,
                 ctypes.c_int(start_iteration),
                 ctypes.c_int(end_iteration),
@@ -4584,12 +4584,12 @@ class Booster:
         """
         # ensure that existing Booster is freed before replacing it
         # with a new one createdfrom file
-        _safe_call(_LIB.LGBM_BoosterFree(self._handle))
+        _safe_call(_LIB.FLC_BoosterFree(self._handle))
         self._free_buffer()
         self._handle = ctypes.c_void_p()
         out_num_iterations = ctypes.c_int(0)
         _safe_call(
-            _LIB.LGBM_BoosterLoadModelFromString(
+            _LIB.FLC_BoosterLoadModelFromString(
                 _c_str(model_str),
                 ctypes.byref(out_num_iterations),
                 ctypes.byref(self._handle),
@@ -4597,7 +4597,7 @@ class Booster:
         )
         out_num_class = ctypes.c_int(0)
         _safe_call(
-            _LIB.LGBM_BoosterGetNumClasses(
+            _LIB.FLC_BoosterGetNumClasses(
                 self._handle,
                 ctypes.byref(out_num_class),
             )
@@ -4641,7 +4641,7 @@ class Booster:
         string_buffer = ctypes.create_string_buffer(buffer_len)
         ptr_string_buffer = ctypes.c_char_p(ctypes.addressof(string_buffer))
         _safe_call(
-            _LIB.LGBM_BoosterSaveModelToString(
+            _LIB.FLC_BoosterSaveModelToString(
                 self._handle,
                 ctypes.c_int(start_iteration),
                 ctypes.c_int(num_iteration),
@@ -4657,7 +4657,7 @@ class Booster:
             string_buffer = ctypes.create_string_buffer(actual_len)
             ptr_string_buffer = ctypes.c_char_p(ctypes.addressof(string_buffer))
             _safe_call(
-                _LIB.LGBM_BoosterSaveModelToString(
+                _LIB.FLC_BoosterSaveModelToString(
                     self._handle,
                     ctypes.c_int(start_iteration),
                     ctypes.c_int(num_iteration),
@@ -4715,7 +4715,7 @@ class Booster:
         string_buffer = ctypes.create_string_buffer(buffer_len)
         ptr_string_buffer = ctypes.c_char_p(ctypes.addressof(string_buffer))
         _safe_call(
-            _LIB.LGBM_BoosterDumpModel(
+            _LIB.FLC_BoosterDumpModel(
                 self._handle,
                 ctypes.c_int(start_iteration),
                 ctypes.c_int(num_iteration),
@@ -4731,7 +4731,7 @@ class Booster:
             string_buffer = ctypes.create_string_buffer(actual_len)
             ptr_string_buffer = ctypes.c_char_p(ctypes.addressof(string_buffer))
             _safe_call(
-                _LIB.LGBM_BoosterDumpModel(
+                _LIB.FLC_BoosterDumpModel(
                     self._handle,
                     ctypes.c_int(start_iteration),
                     ctypes.c_int(num_iteration),
@@ -5083,7 +5083,7 @@ class Booster:
         nrow, ncol = leaf_preds.shape
         out_is_linear = ctypes.c_int(0)
         _safe_call(
-            _LIB.LGBM_BoosterGetLinear(
+            _LIB.FLC_BoosterGetLinear(
                 self._handle,
                 ctypes.byref(out_is_linear),
             )
@@ -5136,7 +5136,7 @@ class Booster:
         new_booster = Booster(new_params, train_set)
         # Copy models
         _safe_call(
-            _LIB.LGBM_BoosterMerge(
+            _LIB.FLC_BoosterMerge(
                 new_booster._handle,
                 predictor._handle,
             )
@@ -5144,7 +5144,7 @@ class Booster:
         leaf_preds = leaf_preds.reshape(-1)
         ptr_data, _, _ = _c_int_array(leaf_preds)
         _safe_call(
-            _LIB.LGBM_BoosterRefit(
+            _LIB.FLC_BoosterRefit(
                 new_booster._handle,
                 ptr_data,
                 ctypes.c_int32(nrow),
@@ -5171,7 +5171,7 @@ class Booster:
         """
         ret = ctypes.c_double(0)
         _safe_call(
-            _LIB.LGBM_BoosterGetLeafValue(
+            _LIB.FLC_BoosterGetLeafValue(
                 self._handle,
                 ctypes.c_int(tree_id),
                 ctypes.c_int(leaf_id),
@@ -5205,7 +5205,7 @@ class Booster:
             Booster with the leaf output set.
         """
         _safe_call(
-            _LIB.LGBM_BoosterSetLeafValue(
+            _LIB.FLC_BoosterSetLeafValue(
                 self._handle,
                 ctypes.c_int(tree_id),
                 ctypes.c_int(leaf_id),
@@ -5225,7 +5225,7 @@ class Booster:
         """
         out_num_feature = ctypes.c_int(0)
         _safe_call(
-            _LIB.LGBM_BoosterGetNumFeature(
+            _LIB.FLC_BoosterGetNumFeature(
                 self._handle,
                 ctypes.byref(out_num_feature),
             )
@@ -5248,7 +5248,7 @@ class Booster:
         string_buffers = [ctypes.create_string_buffer(reserved_string_buffer_size) for _ in range(num_feature)]
         ptr_string_buffers = (ctypes.c_char_p * num_feature)(*map(ctypes.addressof, string_buffers))  # type: ignore[misc]
         _safe_call(
-            _LIB.LGBM_BoosterGetFeatureNames(
+            _LIB.FLC_BoosterGetFeatureNames(
                 self._handle,
                 ctypes.c_int(num_feature),
                 ctypes.byref(tmp_out_len),
@@ -5265,7 +5265,7 @@ class Booster:
             string_buffers = [ctypes.create_string_buffer(actual_string_buffer_size) for _ in range(num_feature)]
             ptr_string_buffers = (ctypes.c_char_p * num_feature)(*map(ctypes.addressof, string_buffers))  # type: ignore[misc]
             _safe_call(
-                _LIB.LGBM_BoosterGetFeatureNames(
+                _LIB.FLC_BoosterGetFeatureNames(
                     self._handle,
                     ctypes.c_int(num_feature),
                     ctypes.byref(tmp_out_len),
@@ -5304,7 +5304,7 @@ class Booster:
         importance_type_int = _FEATURE_IMPORTANCE_TYPE_MAPPER[importance_type]
         result = np.empty(self.num_feature(), dtype=np.float64)
         _safe_call(
-            _LIB.LGBM_BoosterFeatureImportance(
+            _LIB.FLC_BoosterFeatureImportance(
                 self._handle,
                 ctypes.c_int(iteration),
                 ctypes.c_int(importance_type_int),
@@ -5406,7 +5406,7 @@ class Booster:
             result = np.empty(self.__num_inner_eval, dtype=np.float64)
             tmp_out_len = ctypes.c_int(0)
             _safe_call(
-                _LIB.LGBM_BoosterGetEval(
+                _LIB.FLC_BoosterGetEval(
                     self._handle,
                     ctypes.c_int(data_idx),
                     ctypes.byref(tmp_out_len),
@@ -5451,7 +5451,7 @@ class Booster:
             tmp_out_len = ctypes.c_int64(0)
             data_ptr = self.__inner_predict_buffer[data_idx].ctypes.data_as(ctypes.POINTER(ctypes.c_double))  # type: ignore[union-attr]
             _safe_call(
-                _LIB.LGBM_BoosterGetPredict(
+                _LIB.FLC_BoosterGetPredict(
                     self._handle,
                     ctypes.c_int(data_idx),
                     ctypes.byref(tmp_out_len),
@@ -5474,7 +5474,7 @@ class Booster:
             out_num_eval = ctypes.c_int(0)
             # Get num of inner evals
             _safe_call(
-                _LIB.LGBM_BoosterGetEvalCounts(
+                _LIB.FLC_BoosterGetEvalCounts(
                     self._handle,
                     ctypes.byref(out_num_eval),
                 )
@@ -5490,7 +5490,7 @@ class Booster:
                 ]
                 ptr_string_buffers = (ctypes.c_char_p * self.__num_inner_eval)(*map(ctypes.addressof, string_buffers))  # type: ignore[misc]
                 _safe_call(
-                    _LIB.LGBM_BoosterGetEvalNames(
+                    _LIB.FLC_BoosterGetEvalNames(
                         self._handle,
                         ctypes.c_int(self.__num_inner_eval),
                         ctypes.byref(tmp_out_len),
@@ -5511,7 +5511,7 @@ class Booster:
                         *map(ctypes.addressof, string_buffers)
                     )  # type: ignore[misc]
                     _safe_call(
-                        _LIB.LGBM_BoosterGetEvalNames(
+                        _LIB.FLC_BoosterGetEvalNames(
                             self._handle,
                             ctypes.c_int(self.__num_inner_eval),
                             ctypes.byref(tmp_out_len),

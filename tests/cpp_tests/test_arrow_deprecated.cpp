@@ -84,7 +84,7 @@ TEST(ArrowDeprecatedTest, DatasetCreateFromArrow) {
   array.move(&raw_chunks[0]);
 
   DatasetHandle handle = nullptr;
-  int result = LGBM_DatasetCreateFromArrow(
+  int result = FLC_DatasetCreateFromArrow(
       static_cast<int64_t>(raw_chunks.size()), raw_chunks.data(), &raw_schema,
       "max_bin=15", nullptr, &handle);
   ASSERT_EQ(result, 0);
@@ -92,12 +92,12 @@ TEST(ArrowDeprecatedTest, DatasetCreateFromArrow) {
 
   int num_data = 0;
   int num_feature = 0;
-  ASSERT_EQ(LGBM_DatasetGetNumData(handle, &num_data), 0);
-  ASSERT_EQ(LGBM_DatasetGetNumFeature(handle, &num_feature), 0);
+  ASSERT_EQ(FLC_DatasetGetNumData(handle, &num_data), 0);
+  ASSERT_EQ(FLC_DatasetGetNumFeature(handle, &num_feature), 0);
   EXPECT_EQ(num_data, 6);
   EXPECT_EQ(num_feature, 2);
 
-  ASSERT_EQ(LGBM_DatasetFree(handle), 0);
+  ASSERT_EQ(FLC_DatasetFree(handle), 0);
 }
 
 TEST(ArrowDeprecatedTest, DatasetSetFieldFromArrow) {
@@ -107,7 +107,7 @@ TEST(ArrowDeprecatedTest, DatasetSetFieldFromArrow) {
                               5.0, 6.0,
                               7.0, 8.0};
   DatasetHandle handle = nullptr;
-  ASSERT_EQ(LGBM_DatasetCreateFromMat(data.data(), C_API_DTYPE_FLOAT64, 4, 2, 1,
+  ASSERT_EQ(FLC_DatasetCreateFromMat(data.data(), C_API_DTYPE_FLOAT64, 4, 2, 1,
                                       "max_bin=15", nullptr, &handle),
             0);
 
@@ -121,7 +121,7 @@ TEST(ArrowDeprecatedTest, DatasetSetFieldFromArrow) {
   std::vector<ArrowArray> raw_chunks(1);
   label_array.move(&raw_chunks[0]);
 
-  ASSERT_EQ(LGBM_DatasetSetFieldFromArrow(
+  ASSERT_EQ(FLC_DatasetSetFieldFromArrow(
                 handle, "label", static_cast<int64_t>(raw_chunks.size()),
                 raw_chunks.data(), &raw_schema),
             0);
@@ -129,7 +129,7 @@ TEST(ArrowDeprecatedTest, DatasetSetFieldFromArrow) {
   int out_len = 0;
   const void* out_ptr = nullptr;
   int out_type = 0;
-  ASSERT_EQ(LGBM_DatasetGetField(handle, "label", &out_len, &out_ptr, &out_type), 0);
+  ASSERT_EQ(FLC_DatasetGetField(handle, "label", &out_len, &out_ptr, &out_type), 0);
   EXPECT_EQ(out_type, C_API_DTYPE_FLOAT32);
   ASSERT_EQ(out_len, static_cast<int>(label_values.size()));
   const float* read = static_cast<const float*>(out_ptr);
@@ -137,7 +137,7 @@ TEST(ArrowDeprecatedTest, DatasetSetFieldFromArrow) {
     EXPECT_FLOAT_EQ(read[i], label_values[i]);
   }
 
-  ASSERT_EQ(LGBM_DatasetFree(handle), 0);
+  ASSERT_EQ(FLC_DatasetFree(handle), 0);
 }
 
 TEST(ArrowDeprecatedTest, BoosterPredictForArrow) {
@@ -155,21 +155,21 @@ TEST(ArrowDeprecatedTest, BoosterPredictForArrow) {
   std::vector<float> labels = {0, 0, 0, 0, 1, 1, 1, 1};
 
   DatasetHandle dataset = nullptr;
-  ASSERT_EQ(LGBM_DatasetCreateFromMat(data.data(), C_API_DTYPE_FLOAT64, nrow, ncol, 1,
+  ASSERT_EQ(FLC_DatasetCreateFromMat(data.data(), C_API_DTYPE_FLOAT64, nrow, ncol, 1,
                                       "max_bin=15", nullptr, &dataset),
             0);
-  ASSERT_EQ(LGBM_DatasetSetField(dataset, "label", labels.data(),
+  ASSERT_EQ(FLC_DatasetSetField(dataset, "label", labels.data(),
                                  static_cast<int>(labels.size()), C_API_DTYPE_FLOAT32),
             0);
 
   BoosterHandle booster = nullptr;
-  ASSERT_EQ(LGBM_BoosterCreate(dataset,
+  ASSERT_EQ(FLC_BoosterCreate(dataset,
                                "objective=binary metric=auc num_leaves=3 verbose=-1",
                                &booster),
             0);
   for (int i = 0; i < 3; ++i) {
     int finished = 0;
-    ASSERT_EQ(LGBM_BoosterUpdateOneIter(booster, &finished), 0);
+    ASSERT_EQ(FLC_BoosterUpdateOneIter(booster, &finished), 0);
   }
 
   // Predict using the deprecated Arrow API.
@@ -187,20 +187,20 @@ TEST(ArrowDeprecatedTest, BoosterPredictForArrow) {
   const int n_predict_rows = static_cast<int>(columns[0].size());
   std::vector<double> arrow_out(n_predict_rows, 0.0);
   int64_t arrow_written = 0;
-  ASSERT_EQ(LGBM_BoosterPredictForArrow(
+  ASSERT_EQ(FLC_BoosterPredictForArrow(
                 booster, static_cast<int64_t>(raw_chunks.size()), raw_chunks.data(),
                 &raw_schema, C_API_PREDICT_NORMAL, 0, -1, "", &arrow_written,
                 arrow_out.data()),
             0);
   ASSERT_EQ(arrow_written, n_predict_rows);
 
-  // Compare against LGBM_BoosterPredictForMat with equivalent data.
+  // Compare against FLC_BoosterPredictForMat with equivalent data.
   std::vector<double> mat_data = {1.0, 1.0,
                                   4.0, 4.0,
                                   8.0, 8.0};
   std::vector<double> mat_out(n_predict_rows, 0.0);
   int64_t mat_written = 0;
-  ASSERT_EQ(LGBM_BoosterPredictForMat(booster, mat_data.data(), C_API_DTYPE_FLOAT64,
+  ASSERT_EQ(FLC_BoosterPredictForMat(booster, mat_data.data(), C_API_DTYPE_FLOAT64,
                                       n_predict_rows, ncol, 1, C_API_PREDICT_NORMAL, 0,
                                       -1, "", &mat_written, mat_out.data()),
             0);
@@ -209,8 +209,8 @@ TEST(ArrowDeprecatedTest, BoosterPredictForArrow) {
     EXPECT_DOUBLE_EQ(arrow_out[i], mat_out[i]);
   }
 
-  ASSERT_EQ(LGBM_BoosterFree(booster), 0);
-  ASSERT_EQ(LGBM_DatasetFree(dataset), 0);
+  ASSERT_EQ(FLC_BoosterFree(booster), 0);
+  ASSERT_EQ(FLC_DatasetFree(dataset), 0);
 }
 
 #if defined(_MSC_VER)

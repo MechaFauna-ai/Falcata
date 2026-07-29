@@ -211,7 +211,7 @@ Dataset <- R6::R6Class(
         if (is.character(private$raw_data)) {
 
           handle <- .Call(
-            LGBM_DatasetCreateFromFile_R
+            FLC_DatasetCreateFromFile_R
             , path.expand(private$raw_data)
             , params_str
             , ref_handle
@@ -221,7 +221,7 @@ Dataset <- R6::R6Class(
 
           # Are we using a matrix?
           handle <- .Call(
-            LGBM_DatasetCreateFromMat_R
+            FLC_DatasetCreateFromMat_R
             , private$raw_data
             , nrow(private$raw_data)
             , ncol(private$raw_data)
@@ -235,7 +235,7 @@ Dataset <- R6::R6Class(
           }
           # Are we using a dgCMatrix (sparse matrix column compressed)
           handle <- .Call(
-            LGBM_DatasetCreateFromCSC_R
+            FLC_DatasetCreateFromCSC_R
             , private$raw_data@p
             , private$raw_data@i
             , private$raw_data@x
@@ -265,7 +265,7 @@ Dataset <- R6::R6Class(
 
         # Construct subset
         handle <- .Call(
-          LGBM_DatasetGetSubset_R
+          FLC_DatasetGetSubset_R
           , ref_handle
           , c(private$used_indices)
           , length(private$used_indices)
@@ -288,7 +288,7 @@ Dataset <- R6::R6Class(
       # Ensure that private$colnames matches the feature names on the C++ side. This line is necessary
       # in cases like constructing from a file or from a matrix with no column names.
       private$colnames <- .Call(
-          LGBM_DatasetGetFeatureNames_R
+          FLC_DatasetGetFeatureNames_R
           , private$handle
       )
 
@@ -348,12 +348,12 @@ Dataset <- R6::R6Class(
 
         # Get numeric data and numeric features
         .Call(
-          LGBM_DatasetGetNumData_R
+          FLC_DatasetGetNumData_R
           , private$handle
           , num_row
         )
         .Call(
-          LGBM_DatasetGetNumFeature_R
+          FLC_DatasetGetNumFeature_R
           , private$handle
           , num_col
         )
@@ -393,7 +393,7 @@ Dataset <- R6::R6Class(
       }
       num_bin <- integer(1L)
       .Call(
-        LGBM_DatasetGetFeatureNumBin_R
+        FLC_DatasetGetFeatureNumBin_R
         , private$handle
         , feature - 1L
         , num_bin
@@ -407,7 +407,7 @@ Dataset <- R6::R6Class(
       # Check for handle
       if (!.is_null_handle(x = private$handle)) {
         private$colnames <- .Call(
-          LGBM_DatasetGetFeatureNames_R
+          FLC_DatasetGetFeatureNames_R
           , private$handle
         )
         return(private$colnames)
@@ -450,7 +450,7 @@ Dataset <- R6::R6Class(
         # Merge names with tab separation
         merged_name <- paste(as.list(private$colnames), collapse = "\t")
         .Call(
-          LGBM_DatasetSetFeatureNames_R
+          FLC_DatasetSetFeatureNames_R
           , private$handle
           , merged_name
         )
@@ -481,7 +481,7 @@ Dataset <- R6::R6Class(
         # Get field size of info
         info_len <- 0L
         .Call(
-          LGBM_DatasetGetFieldSize_R
+          FLC_DatasetGetFieldSize_R
           , private$handle
           , field_name
           , info_len
@@ -497,7 +497,7 @@ Dataset <- R6::R6Class(
           }
 
           .Call(
-            LGBM_DatasetGetField_R
+            FLC_DatasetGetField_R
             , private$handle
             , field_name
             , ret
@@ -537,7 +537,7 @@ Dataset <- R6::R6Class(
         if (length(data) > 0L) {
 
           .Call(
-            LGBM_DatasetSetField_R
+            FLC_DatasetSetField_R
             , private$handle
             , field_name
             , data
@@ -584,7 +584,7 @@ Dataset <- R6::R6Class(
       } else {
         tryCatch({
           .Call(
-            LGBM_DatasetUpdateParamChecking_R
+            FLC_DatasetUpdateParamChecking_R
             , .params2str(params = private$params)
             , .params2str(params = new_params)
           )
@@ -683,7 +683,7 @@ Dataset <- R6::R6Class(
       # Store binary data
       self$construct()
       .Call(
-        LGBM_DatasetSaveBinary_R
+        FLC_DatasetSaveBinary_R
         , private$handle
         , path.expand(fname)
       )
@@ -707,7 +707,7 @@ Dataset <- R6::R6Class(
     # finalize() will free up the handles
     finalize = function() {
       .Call(
-        LGBM_DatasetFree_R
+        FLC_DatasetFree_R
         , private$handle
       )
       private$handle <- NULL

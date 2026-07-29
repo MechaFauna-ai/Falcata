@@ -20,12 +20,12 @@ set(
 Supported sanitizers are address, leak, undefined and thread."
 )
 option(USE_HOMEBREW_FALLBACK "(macOS-only) also look in 'brew --prefix' for libraries (e.g. OpenMP)" ON)
-option(BUILD_CLI "Build the 'lightgbm' command-line interface in addition to lib_lightgbm" ON)
+option(BUILD_CLI "Build the 'falcata' command-line interface in addition to lib_falcata" ON)
 option(BUILD_CPP_TEST "Build C++ tests with Google Test" OFF)
 option(BUILD_STATIC_LIB "Build static library" OFF)
 option(INSTALL_HEADERS "Install headers to CMAKE_INSTALL_PREFIX (e.g. '/usr/local/include')" ON)
-option(__BUILD_FOR_PYTHON "Set to ON if building lib_lightgbm for use with the Python-package" OFF)
-option(__BUILD_FOR_R "Set to ON if building lib_lightgbm for use with the R-package" OFF)
+option(__BUILD_FOR_PYTHON "Set to ON if building lib_falcata for use with the Python-package" OFF)
+option(__BUILD_FOR_R "Set to ON if building lib_falcata for use with the R-package" OFF)
 option(__INTEGRATE_OPENCL "Set to ON if building LightGBM with the OpenCL ICD Loader and its dependencies included" OFF)
 
 # If using Visual Studio generators, always target v10.x of the Windows SDK.
@@ -36,7 +36,7 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
     set(CMAKE_SYSTEM_VERSION 10.0 CACHE INTERNAL "target Windows SDK version" FORCE)
 endif()
 
-project(lightgbm LANGUAGES C CXX)
+project(falcata LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -544,14 +544,14 @@ if(USE_ROCM)
   set_source_files_properties(${CU_FILES} PROPERTIES LANGUAGE HIP)
 endif()
 
-add_library(lightgbm_objs OBJECT ${LGBM_SOURCES})
+add_library(falcata_objs OBJECT ${LGBM_SOURCES})
 if(NOT __BUILD_FOR_R)
-  target_link_libraries(lightgbm_objs PRIVATE nanoarrow_static)
+  target_link_libraries(falcata_objs PRIVATE nanoarrow_static)
 endif()
 
 if(BUILD_CLI)
-    add_executable(lightgbm src/main.cpp src/application/application.cpp)
-    target_link_libraries(lightgbm PRIVATE lightgbm_objs)
+    add_executable(falcata src/main.cpp src/application/application.cpp)
+    target_link_libraries(falcata PRIVATE falcata_objs)
 endif()
 
 set(API_SOURCES "src/c_api.cpp")
@@ -561,21 +561,21 @@ if(__BUILD_FOR_R)
   list(APPEND API_SOURCES "src/lightgbm_R.cpp")
 endif()
 
-add_library(lightgbm_capi_objs OBJECT ${API_SOURCES})
+add_library(falcata_capi_objs OBJECT ${API_SOURCES})
 if(NOT __BUILD_FOR_R)
-  target_link_libraries(lightgbm_capi_objs PRIVATE nanoarrow_static)
+  target_link_libraries(falcata_capi_objs PRIVATE nanoarrow_static)
 endif()
 
 if(BUILD_STATIC_LIB)
-  add_library(_lightgbm STATIC)
+  add_library(_falcata STATIC)
 else()
-  add_library(_lightgbm SHARED)
+  add_library(_falcata SHARED)
 endif()
 
 # R expects libraries of the form <project>.{dll,dylib,so}, not lib_<project>.{dll,dylib,so}
 if(__BUILD_FOR_R)
   set_target_properties(
-    _lightgbm
+    _falcata
     PROPERTIES
       PREFIX ""
       OUTPUT_NAME "lightgbm"
@@ -583,47 +583,47 @@ if(__BUILD_FOR_R)
 endif()
 
 # LightGBM headers include openmp, cuda, R etc. headers,
-# thus PUBLIC is required for building _lightgbm_swig target.
-target_link_libraries(_lightgbm PUBLIC lightgbm_capi_objs lightgbm_objs)
+# thus PUBLIC is required for building _falcata_swig target.
+target_link_libraries(_falcata PUBLIC falcata_capi_objs falcata_objs)
 
 if(MSVC AND NOT __BUILD_FOR_R)
-  set_target_properties(_lightgbm PROPERTIES OUTPUT_NAME "lib_lightgbm")
+  set_target_properties(_falcata PROPERTIES OUTPUT_NAME "lib_falcata")
 endif()
 
 if(USE_SWIG)
   set_property(SOURCE swig/lightgbmlib.i PROPERTY CPLUSPLUS ON)
   list(APPEND swig_options -package com.microsoft.ml.lightgbm)
   set_property(SOURCE swig/lightgbmlib.i PROPERTY SWIG_FLAGS "${swig_options}")
-  swig_add_library(_lightgbm_swig LANGUAGE java SOURCES swig/lightgbmlib.i)
-  swig_link_libraries(_lightgbm_swig _lightgbm)
+  swig_add_library(_falcata_swig LANGUAGE java SOURCES swig/lightgbmlib.i)
+  swig_link_libraries(_falcata_swig _falcata)
   set_target_properties(
-    _lightgbm_swig
+    _falcata_swig
     PROPERTIES
-      # needed to ensure Linux build does not have lib prefix specified twice, e.g. liblib_lightgbm_swig
+      # needed to ensure Linux build does not have lib prefix specified twice, e.g. liblib_falcata_swig
       PREFIX ""
       # needed in some versions of CMake for VS and MinGW builds to ensure output dll has lib prefix
-      OUTPUT_NAME "lib_lightgbm_swig"
+      OUTPUT_NAME "lib_falcata_swig"
   )
   if(WIN32)
-    set(LGBM_SWIG_LIB_DESTINATION_PATH "${LGBM_SWIG_DESTINATION_DIR}/lib_lightgbm_swig.dll")
+    set(LGBM_SWIG_LIB_DESTINATION_PATH "${LGBM_SWIG_DESTINATION_DIR}/lib_falcata_swig.dll")
     if(MINGW OR CYGWIN)
-        set(LGBM_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_lightgbm.dll")
-        set(LGBM_SWIG_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_lightgbm_swig.dll")
+        set(LGBM_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata.dll")
+        set(LGBM_SWIG_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata_swig.dll")
     else()
-        set(LGBM_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/Release/lib_lightgbm.dll")
-        set(LGBM_SWIG_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/Release/lib_lightgbm_swig.dll")
+        set(LGBM_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/Release/lib_falcata.dll")
+        set(LGBM_SWIG_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/Release/lib_falcata_swig.dll")
     endif()
   elseif(APPLE)
-    set(LGBM_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_lightgbm.dylib")
-    set(LGBM_SWIG_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_lightgbm_swig.jnilib")
-    set(LGBM_SWIG_LIB_DESTINATION_PATH "${LGBM_SWIG_DESTINATION_DIR}/lib_lightgbm_swig.dylib")
+    set(LGBM_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata.dylib")
+    set(LGBM_SWIG_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata_swig.jnilib")
+    set(LGBM_SWIG_LIB_DESTINATION_PATH "${LGBM_SWIG_DESTINATION_DIR}/lib_falcata_swig.dylib")
   else()
-    set(LGBM_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_lightgbm.so")
-    set(LGBM_SWIG_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_lightgbm_swig.so")
-    set(LGBM_SWIG_LIB_DESTINATION_PATH "${LGBM_SWIG_DESTINATION_DIR}/lib_lightgbm_swig.so")
+    set(LGBM_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata.so")
+    set(LGBM_SWIG_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata_swig.so")
+    set(LGBM_SWIG_LIB_DESTINATION_PATH "${LGBM_SWIG_DESTINATION_DIR}/lib_falcata_swig.so")
   endif()
   add_custom_command(
-      TARGET _lightgbm_swig
+      TARGET _falcata_swig
       POST_BUILD
       COMMAND "${Java_JAVAC_EXECUTABLE}" -d . java/*.java
       COMMAND
@@ -643,62 +643,62 @@ if(USE_SWIG)
 endif()
 
 if(USE_MPI)
-  target_link_libraries(lightgbm_objs PUBLIC ${MPI_CXX_LIBRARIES})
+  target_link_libraries(falcata_objs PUBLIC ${MPI_CXX_LIBRARIES})
 endif()
 
 if(USE_OPENMP)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    target_link_libraries(lightgbm_objs PUBLIC OpenMP::OpenMP_CXX)
+    target_link_libraries(falcata_objs PUBLIC OpenMP::OpenMP_CXX)
     # c_api headers also includes OpenMP headers, thus compiling
-    # lightgbm_capi_objs needs include directory for OpenMP.
+    # falcata_capi_objs needs include directory for OpenMP.
     # Specifying OpenMP in target_link_libraries will get include directory
     # requirements for compilation.
     # This uses CMake's Transitive Usage Requirements. Refer to CMake doc:
     # https://cmake.org/cmake/help/v3.16/manual/cmake-buildsystem.7.html#transitive-usage-requirements
-    target_link_libraries(lightgbm_capi_objs PUBLIC OpenMP::OpenMP_CXX)
+    target_link_libraries(falcata_capi_objs PUBLIC OpenMP::OpenMP_CXX)
   endif()
 endif()
 
 if(USE_GPU)
-  target_link_libraries(lightgbm_objs PUBLIC ${OpenCL_LIBRARY} ${Boost_LIBRARIES})
+  target_link_libraries(falcata_objs PUBLIC ${OpenCL_LIBRARY} ${Boost_LIBRARIES})
 endif()
 
 if(USE_CUDA AND USE_NCCL)
-  target_link_libraries(lightgbm_objs PUBLIC NCCL::NCCL)
+  target_link_libraries(falcata_objs PUBLIC NCCL::NCCL)
 endif()
 
 if(USE_CUDA)
   # NVRTC + CUDA driver API for the runtime construct-kernel JIT
   # (src/treelearner/cuda/cuda_construct_jit.cpp). Both are optional at runtime:
   # if NVRTC compile fails the construct dispatch falls back to the AOT kernel.
-  target_link_libraries(lightgbm_objs PUBLIC CUDA::nvrtc CUDA::cuda_driver)
+  target_link_libraries(falcata_objs PUBLIC CUDA::nvrtc CUDA::cuda_driver)
 endif()
 
 if(USE_ROCM)
   find_package(rccl)
-  target_link_libraries(lightgbm_objs PUBLIC ${RCCL_LIBRARY})
+  target_link_libraries(falcata_objs PUBLIC ${RCCL_LIBRARY})
 endif()
 
 if(__INTEGRATE_OPENCL)
   # targets OpenCL and Boost are added in IntegratedOpenCL.cmake
-  add_dependencies(lightgbm_objs OpenCL Boost)
+  add_dependencies(falcata_objs OpenCL Boost)
   # variables INTEGRATED_OPENCL_* are set in IntegratedOpenCL.cmake
-  target_include_directories(lightgbm_objs PRIVATE ${INTEGRATED_OPENCL_INCLUDES})
-  target_compile_definitions(lightgbm_objs PRIVATE ${INTEGRATED_OPENCL_DEFINITIONS})
-  target_link_libraries(lightgbm_objs PUBLIC ${INTEGRATED_OPENCL_LIBRARIES} ${CMAKE_DL_LIBS})
+  target_include_directories(falcata_objs PRIVATE ${INTEGRATED_OPENCL_INCLUDES})
+  target_compile_definitions(falcata_objs PRIVATE ${INTEGRATED_OPENCL_DEFINITIONS})
+  target_link_libraries(falcata_objs PUBLIC ${INTEGRATED_OPENCL_LIBRARIES} ${CMAKE_DL_LIBS})
 endif()
 
 if(USE_CUDA)
 
   set_target_properties(
-    lightgbm_objs
+    falcata_objs
     PROPERTIES
       CUDA_ARCHITECTURES "${CUDA_ARCHS}"
       CUDA_SEPARABLE_COMPILATION ON
   )
 
   set_target_properties(
-    _lightgbm
+    _falcata
     PROPERTIES
       CUDA_ARCHITECTURES "${CUDA_ARCHS}"
       CUDA_RESOLVE_DEVICE_SYMBOLS ON
@@ -706,7 +706,7 @@ if(USE_CUDA)
 
   if(BUILD_CLI)
     set_target_properties(
-      lightgbm
+      falcata
       PROPERTIES
         CUDA_ARCHITECTURES "${CUDA_ARCHS}"
         CUDA_RESOLVE_DEVICE_SYMBOLS ON
@@ -715,12 +715,12 @@ if(USE_CUDA)
 endif()
 
 if(USE_ROCM)
-  target_link_libraries(lightgbm_objs PUBLIC hip::host)
+  target_link_libraries(falcata_objs PUBLIC hip::host)
 endif()
 
 if(WIN32)
     if(MINGW OR CYGWIN)
-      target_link_libraries(lightgbm_objs PUBLIC ws2_32 iphlpapi)
+      target_link_libraries(falcata_objs PUBLIC ws2_32 iphlpapi)
     endif()
 endif()
 
@@ -732,8 +732,8 @@ if(__BUILD_FOR_R)
   else()
     set(R_LIB ${LIBR_CORE_LIBRARY})
   endif()
-  target_link_libraries(lightgbm_objs PUBLIC ${R_LIB})
-  target_link_libraries(lightgbm_capi_objs PUBLIC ${R_LIB})
+  target_link_libraries(falcata_objs PUBLIC ${R_LIB})
+  target_link_libraries(falcata_capi_objs PUBLIC ${R_LIB})
 endif()
 
 #-- Google C++ tests
@@ -775,22 +775,24 @@ if(BUILD_CPP_TEST)
   if(MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /permissive-")
   endif()
-  add_executable(testlightgbm ${CPP_TEST_SOURCES})
-  target_link_libraries(testlightgbm PRIVATE lightgbm_objs lightgbm_capi_objs nanoarrow_static GTest::GTest)
+  add_executable(testfalcata ${CPP_TEST_SOURCES})
+  target_link_libraries(testfalcata PRIVATE falcata_objs falcata_capi_objs nanoarrow_static GTest::GTest)
 endif()
 
 if(BUILD_CLI)
     install(
-      TARGETS lightgbm
+      TARGETS falcata
       RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX}/bin
     )
 endif()
 
 if(__BUILD_FOR_PYTHON)
+    # must match the Python package directory name (python-package/<name>);
+    # becomes "falcata" when the Python package itself is renamed
     set(CMAKE_INSTALL_PREFIX "lightgbm")
 endif()
 
-# The macOS linker puts an absolute path to linked libraries in lib_lightgbm.dylib.
+# The macOS linker puts an absolute path to linked libraries in lib_falcata.dylib.
 # This block overrides that information for LightGBM's OpenMP dependency, to allow
 # finding that library in more places.
 #
@@ -819,11 +821,11 @@ if(APPLE AND USE_OPENMP AND NOT BUILD_STATIC_LIB)
   # get exact name of the library in a variable
   get_target_property(
     __LIB_LIGHTGBM_OUTPUT_NAME
-    _lightgbm
+    _falcata
     OUTPUT_NAME
   )
   if(NOT __LIB_LIGHTGBM_OUTPUT_NAME)
-    set(__LIB_LIGHTGBM_OUTPUT_NAME "lib_lightgbm")
+    set(__LIB_LIGHTGBM_OUTPUT_NAME "lib_falcata")
   endif()
 
   if(CMAKE_SHARED_LIBRARY_SUFFIX_CXX)
@@ -842,7 +844,7 @@ if(APPLE AND USE_OPENMP AND NOT BUILD_STATIC_LIB)
   #
   # This also ensures that if a {libgomp,libiomp,libomp}.dylib has already been loaded, it'll just use that.
   add_custom_command(
-    TARGET _lightgbm
+    TARGET _falcata
     POST_BUILD
       COMMAND
         install_name_tool
@@ -900,7 +902,7 @@ if(APPLE AND USE_OPENMP AND NOT BUILD_STATIC_LIB)
       endif()
   endif()
   set_target_properties(
-    _lightgbm
+    _falcata
     PROPERTIES
       BUILD_WITH_INSTALL_RPATH TRUE
       INSTALL_RPATH "${__omp_install_rpaths}"
@@ -909,7 +911,7 @@ if(APPLE AND USE_OPENMP AND NOT BUILD_STATIC_LIB)
 endif()
 
 install(
-  TARGETS _lightgbm
+  TARGETS _falcata
   RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX}/bin
   LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/lib
   ARCHIVE DESTINATION ${CMAKE_INSTALL_PREFIX}/lib

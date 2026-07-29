@@ -41,7 +41,7 @@ Application::Application(int argc, char** argv) {
   }
 
   if (config_.device_type == std::string("cuda")) {
-      LGBM_config_::current_device = lgbm_device_cuda;
+      FLC_config_::current_device = lgbm_device_cuda;
   }
 }
 

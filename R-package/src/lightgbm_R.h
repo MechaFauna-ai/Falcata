@@ -23,7 +23,7 @@
 * \param handle handle for a Booster, Dataset, or Predictor
 * \return R logical, TRUE if the handle is a null pointer
 */
-FALCATA_C_EXPORT SEXP LGBM_HandleIsNull_R(
+FALCATA_C_EXPORT SEXP FLC_HandleIsNull_R(
   SEXP handle
 );
 
@@ -31,7 +31,7 @@ FALCATA_C_EXPORT SEXP LGBM_HandleIsNull_R(
 * \brief Throw a standardized error message when encountering a null Booster handle
 * \return No return, will throw an error
 */
-FALCATA_C_EXPORT SEXP LGBM_NullBoosterHandleError_R();
+FALCATA_C_EXPORT SEXP FLC_NullBoosterHandleError_R();
 
 // --- start Dataset interface
 
@@ -42,7 +42,7 @@ FALCATA_C_EXPORT SEXP LGBM_NullBoosterHandleError_R();
 * \param reference used to align bin mapper with other Dataset, nullptr means not used
 * \return Dataset handle
 */
-FALCATA_C_EXPORT SEXP LGBM_DatasetCreateFromFile_R(
+FALCATA_C_EXPORT SEXP FLC_DatasetCreateFromFile_R(
   SEXP filename,
   SEXP parameters,
   SEXP reference
@@ -60,7 +60,7 @@ FALCATA_C_EXPORT SEXP LGBM_DatasetCreateFromFile_R(
 * \param reference used to align bin mapper with other Dataset, nullptr means not used
 * \return Dataset handle
 */
-FALCATA_C_EXPORT SEXP LGBM_DatasetCreateFromCSC_R(
+FALCATA_C_EXPORT SEXP FLC_DatasetCreateFromCSC_R(
   SEXP indptr,
   SEXP indices,
   SEXP data,
@@ -80,7 +80,7 @@ FALCATA_C_EXPORT SEXP LGBM_DatasetCreateFromCSC_R(
 * \param reference used to align bin mapper with other Dataset, nullptr means not used
 * \return Dataset handle
 */
-FALCATA_C_EXPORT SEXP LGBM_DatasetCreateFromMat_R(
+FALCATA_C_EXPORT SEXP FLC_DatasetCreateFromMat_R(
   SEXP data,
   SEXP num_row,
   SEXP num_col,
@@ -96,7 +96,7 @@ FALCATA_C_EXPORT SEXP LGBM_DatasetCreateFromMat_R(
 * \param parameters additional parameters
 * \return Dataset handle
 */
-FALCATA_C_EXPORT SEXP LGBM_DatasetGetSubset_R(
+FALCATA_C_EXPORT SEXP FLC_DatasetGetSubset_R(
   SEXP handle,
   SEXP used_row_indices,
   SEXP len_used_row_indices,
@@ -109,7 +109,7 @@ FALCATA_C_EXPORT SEXP LGBM_DatasetGetSubset_R(
 * \param feature_names feature names
 * \return R character vector of feature names
 */
-FALCATA_C_EXPORT SEXP LGBM_DatasetSetFeatureNames_R(
+FALCATA_C_EXPORT SEXP FLC_DatasetSetFeatureNames_R(
   SEXP handle,
   SEXP feature_names
 );
@@ -119,7 +119,7 @@ FALCATA_C_EXPORT SEXP LGBM_DatasetSetFeatureNames_R(
 * \param handle Dataset handle
 * \return an R character vector with feature names from the Dataset or NULL if no feature names
 */
-FALCATA_C_EXPORT SEXP LGBM_DatasetGetFeatureNames_R(
+FALCATA_C_EXPORT SEXP FLC_DatasetGetFeatureNames_R(
   SEXP handle
 );
 
@@ -129,7 +129,7 @@ FALCATA_C_EXPORT SEXP LGBM_DatasetGetFeatureNames_R(
 * \param filename file name
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_DatasetSaveBinary_R(
+FALCATA_C_EXPORT SEXP FLC_DatasetSaveBinary_R(
   SEXP handle,
   SEXP filename
 );
@@ -139,7 +139,7 @@ FALCATA_C_EXPORT SEXP LGBM_DatasetSaveBinary_R(
 * \param handle an instance of Dataset
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_DatasetFree_R(
+FALCATA_C_EXPORT SEXP FLC_DatasetFree_R(
   SEXP handle
 );
 
@@ -153,7 +153,7 @@ FALCATA_C_EXPORT SEXP LGBM_DatasetFree_R(
 * \param num_element number of element in field_data
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_DatasetSetField_R(
+FALCATA_C_EXPORT SEXP FLC_DatasetSetField_R(
   SEXP handle,
   SEXP field_name,
   SEXP field_data,
@@ -167,7 +167,7 @@ FALCATA_C_EXPORT SEXP LGBM_DatasetSetField_R(
 * \param out size of info vector from Dataset
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_DatasetGetFieldSize_R(
+FALCATA_C_EXPORT SEXP FLC_DatasetGetFieldSize_R(
   SEXP handle,
   SEXP field_name,
   SEXP out
@@ -180,7 +180,7 @@ FALCATA_C_EXPORT SEXP LGBM_DatasetGetFieldSize_R(
 * \param field_data pointer to vector
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_DatasetGetField_R(
+FALCATA_C_EXPORT SEXP FLC_DatasetGetField_R(
   SEXP handle,
   SEXP field_name,
   SEXP field_data
@@ -193,7 +193,7 @@ FALCATA_C_EXPORT SEXP LGBM_DatasetGetField_R(
  * \param new_params New Dataset parameters
  * \return R NULL value
  */
-FALCATA_C_EXPORT SEXP LGBM_DatasetUpdateParamChecking_R(
+FALCATA_C_EXPORT SEXP FLC_DatasetUpdateParamChecking_R(
   SEXP old_params,
   SEXP new_params
 );
@@ -204,7 +204,7 @@ FALCATA_C_EXPORT SEXP LGBM_DatasetUpdateParamChecking_R(
 * \param out The address to hold number of data
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_DatasetGetNumData_R(
+FALCATA_C_EXPORT SEXP FLC_DatasetGetNumData_R(
   SEXP handle,
   SEXP out
 );
@@ -215,7 +215,7 @@ FALCATA_C_EXPORT SEXP LGBM_DatasetGetNumData_R(
 * \param out The output of number of features
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_DatasetGetNumFeature_R(
+FALCATA_C_EXPORT SEXP FLC_DatasetGetNumFeature_R(
   SEXP handle,
   SEXP out
 );
@@ -227,7 +227,7 @@ FALCATA_C_EXPORT SEXP LGBM_DatasetGetNumFeature_R(
 * \param out The output of number of bins
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_DatasetGetFeatureNumBin_R(
+FALCATA_C_EXPORT SEXP FLC_DatasetGetFeatureNumBin_R(
   SEXP handle,
   SEXP feature,
   SEXP out
@@ -241,7 +241,7 @@ FALCATA_C_EXPORT SEXP LGBM_DatasetGetFeatureNumBin_R(
 * \param parameters format: 'key1=value1 key2=value2'
 * \return Booster handle
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterCreate_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterCreate_R(
   SEXP train_data,
   SEXP parameters
 );
@@ -251,7 +251,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterCreate_R(
 * \param handle handle to be freed
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterFree_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterFree_R(
   SEXP handle
 );
 
@@ -260,7 +260,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterFree_R(
 * \param filename filename of model
 * \return Booster handle
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterCreateFromModelfile_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterCreateFromModelfile_R(
   SEXP filename
 );
 
@@ -269,7 +269,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterCreateFromModelfile_R(
 * \param model_str string containing the model
 * \return Booster handle
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterLoadModelFromString_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterLoadModelFromString_R(
   SEXP model_str
 );
 
@@ -278,7 +278,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterLoadModelFromString_R(
 * \param handle Booster handle
 * \return R character vector (length=1) with parameters in JSON format
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterGetLoadedParam_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterGetLoadedParam_R(
   SEXP handle
 );
 
@@ -288,7 +288,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterGetLoadedParam_R(
 * \param other_handle secondary Booster handle
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterMerge_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterMerge_R(
   SEXP handle,
   SEXP other_handle
 );
@@ -299,7 +299,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterMerge_R(
 * \param valid_data validation Dataset
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterAddValidData_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterAddValidData_R(
   SEXP handle,
   SEXP valid_data
 );
@@ -310,7 +310,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterAddValidData_R(
 * \param train_data training Dataset
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterResetTrainingData_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterResetTrainingData_R(
   SEXP handle,
   SEXP train_data
 );
@@ -321,7 +321,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterResetTrainingData_R(
 * \param parameters format: 'key1=value1 key2=value2'
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterResetParameter_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterResetParameter_R(
   SEXP handle,
   SEXP parameters
 );
@@ -332,7 +332,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterResetParameter_R(
 * \param out number of classes
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterGetNumClasses_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterGetNumClasses_R(
   SEXP handle,
   SEXP out
 );
@@ -342,7 +342,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterGetNumClasses_R(
 * \param handle Booster handle
 * \return Total number of features, as R integer
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterGetNumFeature_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterGetNumFeature_R(
   SEXP handle
 );
 
@@ -351,7 +351,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterGetNumFeature_R(
 * \param handle Booster handle
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterUpdateOneIter_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterUpdateOneIter_R(
   SEXP handle
 );
 
@@ -364,7 +364,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterUpdateOneIter_R(
 * \param len length of grad/hess
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterUpdateOneIterCustom_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterUpdateOneIterCustom_R(
   SEXP handle,
   SEXP grad,
   SEXP hess,
@@ -376,7 +376,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterUpdateOneIterCustom_R(
 * \param handle Booster handle
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterRollbackOneIter_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterRollbackOneIter_R(
   SEXP handle
 );
 
@@ -386,7 +386,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterRollbackOneIter_R(
 * \param out iteration of boosting rounds
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterGetCurrentIteration_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterGetCurrentIteration_R(
   SEXP handle,
   SEXP out
 );
@@ -397,7 +397,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterGetCurrentIteration_R(
  * \param out Number of trees per iteration
  * \return R NULL value
  */
-FALCATA_C_EXPORT SEXP LGBM_BoosterNumModelPerIteration_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterNumModelPerIteration_R(
     SEXP handle,
     SEXP out
 );
@@ -408,7 +408,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterNumModelPerIteration_R(
  * \param out Total number of trees of Booster
  * \return R NULL value
  */
-FALCATA_C_EXPORT SEXP LGBM_BoosterNumberOfTotalModel_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterNumberOfTotalModel_R(
     SEXP handle,
     SEXP out
 );
@@ -419,7 +419,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterNumberOfTotalModel_R(
 * \param[out] out_results Result pointing to max value
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterGetUpperBoundValue_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterGetUpperBoundValue_R(
     SEXP handle,
     SEXP out_result
 );
@@ -430,7 +430,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterGetUpperBoundValue_R(
 * \param[out] out_results Result pointing to min value
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterGetLowerBoundValue_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterGetLowerBoundValue_R(
     SEXP handle,
     SEXP out_result
 );
@@ -440,7 +440,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterGetLowerBoundValue_R(
 * \param handle Handle of booster
 * \return R character vector with names of eval metrics
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterGetEvalNames_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterGetEvalNames_R(
   SEXP handle
 );
 
@@ -451,7 +451,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterGetEvalNames_R(
 * \param out_result float array containing result
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterGetEval_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterGetEval_R(
   SEXP handle,
   SEXP data_idx,
   SEXP out_result
@@ -464,7 +464,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterGetEval_R(
 * \param out size of predict
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterGetNumPredict_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterGetNumPredict_R(
   SEXP handle,
   SEXP data_idx,
   SEXP out
@@ -478,7 +478,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterGetNumPredict_R(
 * \param out_result, used to store predict result, should pre-allocate memory
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterGetPredict_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterGetPredict_R(
   SEXP handle,
   SEXP data_idx,
   SEXP out_result
@@ -500,7 +500,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterGetPredict_R(
 * \param result_filename filename of file to write predictions to
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForFile_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterPredictForFile_R(
   SEXP handle,
   SEXP data_filename,
   SEXP data_has_header,
@@ -527,7 +527,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForFile_R(
 * \param out_len length of prediction
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterCalcNumPredict_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterCalcNumPredict_R(
   SEXP handle,
   SEXP num_row,
   SEXP is_rawscore,
@@ -562,7 +562,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterCalcNumPredict_R(
 * \param out_result prediction result
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForCSC_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterPredictForCSC_R(
   SEXP handle,
   SEXP indptr,
   SEXP indices,
@@ -601,7 +601,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForCSC_R(
 * \param out_result prediction result
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForCSR_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterPredictForCSR_R(
   SEXP handle,
   SEXP indptr,
   SEXP indices,
@@ -637,7 +637,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForCSR_R(
 * \param out_result prediction result
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForCSRSingleRow_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterPredictForCSRSingleRow_R(
   SEXP handle,
   SEXP indices,
   SEXP data,
@@ -652,7 +652,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForCSRSingleRow_R(
 );
 
 /*!
-* \brief Initialize and return a fast configuration handle to use with ``LGBM_BoosterPredictForCSRSingleRowFast_R``.
+* \brief Initialize and return a fast configuration handle to use with ``FLC_BoosterPredictForCSRSingleRowFast_R``.
 * \param handle Booster handle
 * \param ncols number columns in the data
 * \param is_rawscore 1 to get raw predictions, before transformations like
@@ -665,7 +665,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForCSRSingleRow_R(
 * \param parameter additional parameters
 * \return Fast configuration handle
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForCSRSingleRowFastInit_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterPredictForCSRSingleRowFastInit_R(
   SEXP handle,
   SEXP ncols,
   SEXP is_rawscore,
@@ -688,7 +688,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForCSRSingleRowFastInit_R(
 * \param out_result prediction result
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForCSRSingleRowFast_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterPredictForCSRSingleRowFast_R(
   SEXP handle_fastConfig,
   SEXP indices,
   SEXP data,
@@ -711,7 +711,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForCSRSingleRowFast_R(
 *         feature contributions in sparse format, in the same storage order as
 *         the input data.
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterPredictSparseOutput_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterPredictSparseOutput_R(
   SEXP handle,
   SEXP indptr,
   SEXP indices,
@@ -745,7 +745,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterPredictSparseOutput_R(
 * \param out_result prediction result
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForMat_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterPredictForMat_R(
   SEXP handle,
   SEXP data,
   SEXP num_row,
@@ -778,7 +778,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForMat_R(
 * \param out_result prediction result
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForMatSingleRow_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterPredictForMatSingleRow_R(
   SEXP handle,
   SEXP data,
   SEXP is_rawscore,
@@ -791,7 +791,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForMatSingleRow_R(
 );
 
 /*!
-* \brief Initialize and return a fast configuration handle to use with ``LGBM_BoosterPredictForMatSingleRowFast_R``.
+* \brief Initialize and return a fast configuration handle to use with ``FLC_BoosterPredictForMatSingleRowFast_R``.
 * \param handle Booster handle
 * \param ncols number columns in the data
 * \param is_rawscore 1 to get raw predictions, before transformations like
@@ -804,7 +804,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForMatSingleRow_R(
 * \param parameter additional parameters
 * \return Fast configuration handle
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForMatSingleRowFastInit_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterPredictForMatSingleRowFastInit_R(
   SEXP handle,
   SEXP ncols,
   SEXP is_rawscore,
@@ -826,7 +826,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForMatSingleRowFastInit_R(
 * \param out_result prediction result
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForMatSingleRowFast_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterPredictForMatSingleRowFast_R(
   SEXP handle_fastConfig,
   SEXP data,
   SEXP out_result
@@ -841,7 +841,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterPredictForMatSingleRowFast_R(
 * \param start_iteration Starting iteration (0 based)
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterSaveModel_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterSaveModel_R(
   SEXP handle,
   SEXP num_iteration,
   SEXP feature_importance_type,
@@ -857,7 +857,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterSaveModel_R(
 * \param start_iteration Starting iteration (0 based)
 * \return R character vector (length=1) with model string
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterSaveModelToString_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterSaveModelToString_R(
   SEXP handle,
   SEXP num_iteration,
   SEXP feature_importance_type,
@@ -872,7 +872,7 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterSaveModelToString_R(
 * \param start_iteration Index of starting iteration (0 based)
 * \return R character vector (length=1) with model JSON
 */
-FALCATA_C_EXPORT SEXP LGBM_BoosterDumpModel_R(
+FALCATA_C_EXPORT SEXP FLC_BoosterDumpModel_R(
   SEXP handle,
   SEXP num_iteration,
   SEXP feature_importance_type,
@@ -883,14 +883,14 @@ FALCATA_C_EXPORT SEXP LGBM_BoosterDumpModel_R(
 * \brief Dump parameter aliases to JSON
 * \return R character vector (length=1) with aliases JSON
 */
-FALCATA_C_EXPORT SEXP LGBM_DumpParamAliases_R();
+FALCATA_C_EXPORT SEXP FLC_DumpParamAliases_R();
 
 /*!
 * \brief Get current maximum number of threads used by LightGBM routines in this process.
 * \param[out] out current maximum number of threads used by LightGBM. -1 means defaulting to omp_get_num_threads().
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_GetMaxThreads_R(
+FALCATA_C_EXPORT SEXP FLC_GetMaxThreads_R(
   SEXP out
 );
 
@@ -900,7 +900,7 @@ FALCATA_C_EXPORT SEXP LGBM_GetMaxThreads_R(
 * \param num_threads maximum number of threads used by LightGBM. -1 means defaulting to omp_get_num_threads().
 * \return R NULL value
 */
-FALCATA_C_EXPORT SEXP LGBM_SetMaxThreads_R(
+FALCATA_C_EXPORT SEXP FLC_SetMaxThreads_R(
   SEXP num_threads
 );
 

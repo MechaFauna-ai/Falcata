@@ -13,11 +13,11 @@
 #     # build wheel and put it in dist/
 #     sh ./build-python.sh bdist_wheel [OPTIONS]
 #
-#     # compile lib_lightgbm and install the Python-package wrapping it
+#     # compile lib_falcata and install the Python-package wrapping it
 #     sh ./build-python.sh install [OPTIONS]
 #
-#     # install the Python-package using a pre-compiled lib_lightgbm
-#     # (assumes lib_lightgbm.{dll,so} is located at the root of the repo)
+#     # install the Python-package using a pre-compiled lib_falcata
+#     # (assumes lib_falcata.{dll,so} is located at the root of the repo)
 #     sh ./build-python.sh install --precompile
 #
 # [options]
@@ -359,26 +359,26 @@ packages = ["lightgbm"]
 
 EOF
         mkdir -p ./lightgbm/lib
-        if test -f ../lib_lightgbm.so; then
-            echo "[INFO] found pre-compiled lib_lightgbm.so"
-            cp ../lib_lightgbm.so ./lightgbm/lib/lib_lightgbm.so
-        elif test -f ../lib_lightgbm.dylib; then
-            echo "[INFO] found pre-compiled lib_lightgbm.dylib"
-            cp ../lib_lightgbm.dylib ./lightgbm/lib/lib_lightgbm.dylib
-        elif test -f ../lib_lightgbm.dll; then
-            echo "[INFO] found pre-compiled lib_lightgbm.dll"
-            cp ../lib_lightgbm.dll ./lightgbm/lib/lib_lightgbm.dll
-        elif test -f ../Release/lib_lightgbm.dll; then
-            echo "[INFO] found pre-compiled Release/lib_lightgbm.dll"
-            cp ../Release/lib_lightgbm.dll ./lightgbm/lib/lib_lightgbm.dll
-        elif test -f ../windows/x64/DLL/lib_lightgbm.dll; then
-            echo "[INFO] found pre-compiled windows/x64/DLL/lib_lightgbm.dll"
-            cp ../windows/x64/DLL/lib_lightgbm.dll ./lightgbm/lib/lib_lightgbm.dll
-            cp ../windows/x64/DLL/lib_lightgbm.lib ./lightgbm/lib/lib_lightgbm.lib
-        elif test -f ../windows/x64/Debug_DLL/lib_lightgbm.dll; then
-            echo "[INFO] found pre-compiled windows/x64/Debug_DLL/lib_lightgbm.dll"
-            cp ../windows/x64/Debug_DLL/lib_lightgbm.dll ./lightgbm/lib/lib_lightgbm.dll
-            cp ../windows/x64/Debug_DLL/lib_lightgbm.lib ./lightgbm/lib/lib_lightgbm.lib
+        if test -f ../lib_falcata.so; then
+            echo "[INFO] found pre-compiled lib_falcata.so"
+            cp ../lib_falcata.so ./lightgbm/lib/lib_falcata.so
+        elif test -f ../lib_falcata.dylib; then
+            echo "[INFO] found pre-compiled lib_falcata.dylib"
+            cp ../lib_falcata.dylib ./lightgbm/lib/lib_falcata.dylib
+        elif test -f ../lib_falcata.dll; then
+            echo "[INFO] found pre-compiled lib_falcata.dll"
+            cp ../lib_falcata.dll ./lightgbm/lib/lib_falcata.dll
+        elif test -f ../Release/lib_falcata.dll; then
+            echo "[INFO] found pre-compiled Release/lib_falcata.dll"
+            cp ../Release/lib_falcata.dll ./lightgbm/lib/lib_falcata.dll
+        elif test -f ../windows/x64/DLL/lib_falcata.dll; then
+            echo "[INFO] found pre-compiled windows/x64/DLL/lib_falcata.dll"
+            cp ../windows/x64/DLL/lib_falcata.dll ./lightgbm/lib/lib_falcata.dll
+            cp ../windows/x64/DLL/lib_falcata.lib ./lightgbm/lib/lib_falcata.lib
+        elif test -f ../windows/x64/Debug_DLL/lib_falcata.dll; then
+            echo "[INFO] found pre-compiled windows/x64/Debug_DLL/lib_falcata.dll"
+            cp ../windows/x64/Debug_DLL/lib_falcata.dll ./lightgbm/lib/lib_falcata.dll
+            cp ../windows/x64/Debug_DLL/lib_falcata.lib ./lightgbm/lib/lib_falcata.lib
         else
             echo "[ERROR] cannot find pre-compiled library. Aborting"
             exit 1

@@ -77,7 +77,7 @@ build-backend = "scikit_build_core.build"
 ninja.version = ">=1.11"
 ninja.make-fallback = true
 build.verbose = false
-build.targets = ["_lightgbm"]
+build.targets = ["_falcata"]
 install.strip = true
 logging.level = "INFO"
 sdist.reproducible = true

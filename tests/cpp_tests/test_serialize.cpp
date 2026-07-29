@@ -35,8 +35,8 @@ TEST(Serialization, JustWorks) {
     // Serialize the reference
     ByteBufferHandle buffer_handle;
     int32_t buffer_len;
-    result = LGBM_DatasetSerializeReferenceToBinary(dataset_handle, &buffer_handle, &buffer_len);
-    EXPECT_EQ(0, result) << "LGBM_DatasetSerializeReferenceToBinary result code: " << result;
+    result = FLC_DatasetSerializeReferenceToBinary(dataset_handle, &buffer_handle, &buffer_len);
+    EXPECT_EQ(0, result) << "FLC_DatasetSerializeReferenceToBinary result code: " << result;
 
     ByteBuffer* buffer = nullptr;
     Dataset* deserialized_dataset = nullptr;
@@ -45,13 +45,13 @@ TEST(Serialization, JustWorks) {
 
       // Deserialize the reference
       DatasetHandle deserialized_dataset_handle;
-      result = LGBM_DatasetCreateFromSerializedReference(buffer->Data(),
+      result = FLC_DatasetCreateFromSerializedReference(buffer->Data(),
                                                          static_cast<int32_t>(buffer->GetSize()),
                                                          dataset->num_data(),
                                                          0,  // num_classes
                                                          params,
                                                          &deserialized_dataset_handle);
-      EXPECT_EQ(0, result) << "LGBM_DatasetCreateFromSerializedReference result code: " << result;
+      EXPECT_EQ(0, result) << "FLC_DatasetCreateFromSerializedReference result code: " << result;
 
       // Confirm 1 successful API call
       deserialized_dataset = static_cast<Dataset*>(deserialized_dataset_handle);
@@ -63,12 +63,12 @@ TEST(Serialization, JustWorks) {
 
     // Free memory
     if (buffer) {
-      result = LGBM_ByteBufferFree(buffer);
-      EXPECT_EQ(0, result) << "LGBM_ByteBufferFree result code: " << result;
+      result = FLC_ByteBufferFree(buffer);
+      EXPECT_EQ(0, result) << "FLC_ByteBufferFree result code: " << result;
     }
     if (deserialized_dataset) {
-      result = LGBM_DatasetFree(deserialized_dataset);
-      EXPECT_EQ(0, result) << "LGBM_DatasetFree result code: " << result;
+      result = FLC_DatasetFree(deserialized_dataset);
+      EXPECT_EQ(0, result) << "FLC_DatasetFree result code: " << result;
     }
   } catch (std::exception& ex) {
     succeeded = false;
@@ -76,8 +76,8 @@ TEST(Serialization, JustWorks) {
   }
 
   if (dataset) {
-    result = LGBM_DatasetFree(dataset);
-    EXPECT_EQ(0, result) << "LGBM_DatasetFree result code: " << result;
+    result = FLC_DatasetFree(dataset);
+    EXPECT_EQ(0, result) << "FLC_DatasetFree result code: " << result;
   }
 
   if (!succeeded) {

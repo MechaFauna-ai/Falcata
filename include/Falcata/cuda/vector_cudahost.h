@@ -19,7 +19,7 @@
 #endif  // USE_CUDA
 #include <stdio.h>
 
-enum LGBM_Device {
+enum FLC_Device {
   lgbm_device_cpu,
   lgbm_device_gpu,
   lgbm_device_cuda
@@ -33,7 +33,7 @@ enum Use_Learner {
 
 namespace Falcata {
 
-class LGBM_config_ {
+class FLC_config_ {
  public:
   static int current_device;  // Default: lgbm_device_cpu
   static int current_learner;  // Default: use_cpu_learner
@@ -50,7 +50,7 @@ struct CHAllocator {
     if (n == 0) return NULL;
     n = SIZE_ALIGNED(n);
     #ifdef USE_CUDA
-      if (LGBM_config_::current_device == lgbm_device_cuda) {
+      if (FLC_config_::current_device == lgbm_device_cuda) {
         cudaError_t ret = cudaHostAlloc(reinterpret_cast<void**>(&ptr), n*sizeof(T), cudaHostAllocPortable);
         if (ret != cudaSuccess) {
           Log::Warning("Defaulting to malloc in CHAllocator!!!");
@@ -69,7 +69,7 @@ struct CHAllocator {
     (void)n;  // UNUSED
     if (p == NULL) return;
     #ifdef USE_CUDA
-      if (LGBM_config_::current_device == lgbm_device_cuda) {
+      if (FLC_config_::current_device == lgbm_device_cuda) {
         cudaPointerAttributes attributes;
         CUDASUCCESS_OR_FATAL(cudaPointerGetAttributes(&attributes, p));
         #if CUDA_VERSION >= 10000 || defined(USE_ROCM)
