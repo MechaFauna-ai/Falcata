@@ -771,7 +771,7 @@ Dataset <- R6::R6Class(
 #'             a character representing a path to a text file (CSV, TSV, or LibSVM),
 #'             or a character representing a path to a binary \code{lgb.Dataset} file
 #' @param params a list of parameters. See
-#'               \href{https://falcata.readthedocs.io/en/latest/Parameters.html#dataset-parameters}{
+#'               \href{https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst#dataset-parameters}{
 #'               The "Dataset Parameters" section of the documentation} for a list of parameters
 #'               and valid values.
 #' @param reference reference dataset. When Falcata creates a Dataset, it does some preprocessing like binning
@@ -841,7 +841,7 @@ lgb.Dataset <- function(data,
 #'             a character representing a path to a text file (CSV, TSV, or LibSVM),
 #'             or a character representing a path to a binary \code{Dataset} file
 #' @param params a list of parameters. See
-#'               \href{https://falcata.readthedocs.io/en/latest/Parameters.html#dataset-parameters}{
+#'               \href{https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst#dataset-parameters}{
 #'               The "Dataset Parameters" section of the documentation} for a list of parameters
 #'               and valid values. If this is an empty list (the default), the validation Dataset
 #'               will have the same parameters as the Dataset passed to argument \code{dataset}.

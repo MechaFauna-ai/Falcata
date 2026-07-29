@@ -17,7 +17,7 @@
 #'                 \item{\bold{a. character vector}:
 #'                     If you provide a character vector to this argument, it should contain strings with valid
 #'                     evaluation metrics.
-#'                     See \href{https://falcata.readthedocs.io/en/latest/Parameters.html#metric}{
+#'                     See \href{https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst#metric}{
 #'                     The "metric" section of the documentation}
 #'                     for a list of valid metrics.
 #'                 }
@@ -49,7 +49,7 @@
 #' @param obj objective function, can be character or custom objective function. Examples include
 #'            \code{regression}, \code{regression_l1}, \code{huber},
 #'            \code{binary}, \code{lambdarank}, \code{multiclass}, \code{multiclass}
-#' @param params a list of parameters. See \href{https://falcata.readthedocs.io/en/latest/Parameters.html}{
+#' @param params a list of parameters. See \href{https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst}{
 #'               the "Parameters" section of the documentation} for a list of parameters and valid values.
 #' @param verbose verbosity for output, if <= 0 and \code{valids} has been provided, also will disable the
 #'                printing of evaluation during training
@@ -110,7 +110,7 @@ NULL
 #'
 #' @param objective Optimization objective (e.g. `"regression"`, `"binary"`, etc.).
 #'                  For a list of accepted objectives, see
-#'                  \href{https://falcata.readthedocs.io/en/latest/Parameters.html#objective}{
+#'                  \href{https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst#objective}{
 #'                  the "objective" item of the "Parameters" section of the documentation}.
 #'
 #'                  If passing \code{"auto"} and \code{data} is not of type \code{lgb.Dataset}, the objective will

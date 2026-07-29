@@ -23,7 +23,7 @@ set to the iteration number of the best iteration.}
                 \item{\bold{a. character vector}:
                     If you provide a character vector to this argument, it should contain strings with valid
                     evaluation metrics.
-                    See \href{https://falcata.readthedocs.io/en/latest/Parameters.html#metric}{
+                    See \href{https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst#metric}{
                     The "metric" section of the documentation}
                     for a list of valid metrics.
                 }
@@ -60,7 +60,7 @@ set to the iteration number of the best iteration.}
 \code{regression}, \code{regression_l1}, \code{huber},
 \code{binary}, \code{lambdarank}, \code{multiclass}, \code{multiclass}}
 
-\item{params}{a list of parameters. See \href{https://falcata.readthedocs.io/en/latest/Parameters.html}{
+\item{params}{a list of parameters. See \href{https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst}{
 the "Parameters" section of the documentation} for a list of parameters and valid values.}
 
 \item{verbose}{verbosity for output, if <= 0 and \code{valids} has been provided, also will disable the

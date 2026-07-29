@@ -2,7 +2,7 @@
 
 [![CRAN Version](https://www.r-pkg.org/badges/version/falcata)](https://cran.r-project.org/package=falcata)
 [![Downloads](https://cranlogs.r-pkg.org/badges/grand-total/falcata)](https://cran.r-project.org/package=falcata)
-[![API Docs](https://readthedocs.org/projects/falcata/badge/?version=latest)](https://falcata.readthedocs.io/en/latest/R/reference/)
+[![API Docs](https://readthedocs.org/projects/falcata/badge/?version=latest)](https://github.com/BelixRogner/Falcata/tree/master/docsR/reference/)
 
 <img src="man/figures/logo.svg" align="right" alt="" width="175" />
 
@@ -13,7 +13,7 @@
     - [Installing from Source with CMake](#install)
     - [Installing a GPU-enabled Build](#installing-a-gpu-enabled-build)
     - [Installing Precompiled Binaries](#installing-precompiled-binaries)
-    - [Installing from a Pre-compiled lib_lightgbm](#lib_lightgbm)
+    - [Installing from a Pre-compiled lib_falcata](#lib_falcata)
 * [Examples](#examples)
 * [Testing](#testing)
     - [Running the Tests](#running-the-tests)
@@ -161,7 +161,7 @@ cd Falcata
 Rscript build_r.R
 ```
 
-The `build_r.R` script builds the package in a temporary directory called `lightgbm_r`. It will destroy and recreate that directory each time you run the script. That script supports the following command-line options:
+The `build_r.R` script builds the package in a temporary directory called `falcata_r`. It will destroy and recreate that directory each time you run the script. That script supports the following command-line options:
 
 - `--no-build-vignettes`: Skip building vignettes.
 - `-j[jobs]`: Number of threads to use when compiling Falcata. E.g., `-j4` will try to compile 4 objects at a time.
@@ -221,9 +221,9 @@ These packages do not require compilation, so they will be faster and easier to 
 
 CRAN does not prepare precompiled binaries for Linux, and as of this writing neither does this project.
 
-### Installing from a Pre-compiled lib_lightgbm <a id="lib_lightgbm"></a>
+### Installing from a Pre-compiled lib_falcata <a id="lib_falcata"></a>
 
-Previous versions of Falcata offered the ability to first compile the C++ library (`lib_lightgbm.{dll,dylib,so}`) and then build an R-package that wraps it.
+Previous versions of Falcata offered the ability to first compile the C++ library (`lib_falcata.{dll,dylib,so}`) and then build an R-package that wraps it.
 
 As of version 3.0.0, this is no longer supported. If building from source is difficult for you, please [open an issue](https://github.com/BelixRogner/Falcata/issues).
 
@@ -258,10 +258,10 @@ cd R-package/tests
 Rscript testthat.R
 ```
 
-To run the tests with more verbose logs, set environment variable `LIGHTGBM_TEST_VERBOSITY` to a valid value for parameter [`verbosity`](https://falcata.readthedocs.io/en/latest/Parameters.html#verbosity).
+To run the tests with more verbose logs, set environment variable `FALCATA_TEST_VERBOSITY` to a valid value for parameter [`verbosity`](https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst#verbosity).
 
 ```shell
-export LIGHTGBM_TEST_VERBOSITY=1
+export FALCATA_TEST_VERBOSITY=1
 cd R-package/tests
 Rscript testthat.R
 ```
@@ -280,7 +280,7 @@ sh build-cran-package.sh \
 # Get coverage
 Rscript -e " \
     library(covr);
-    coverage <- covr::package_coverage('./lightgbm_r', type = 'tests', quiet = FALSE);
+    coverage <- covr::package_coverage('./falcata_r', type = 'tests', quiet = FALSE);
     print(coverage);
     covr::report(coverage, file = file.path(getwd(), 'coverage.html'), browse = TRUE);
     "
@@ -301,7 +301,7 @@ Rscript \
 sh build-cran-package.sh --no-build-vignettes
 R CMD INSTALL \
   --with-keep.source \
-  ./lightgbm_*.tar.gz
+  ./falcata_*.tar.gz
 
 cd R-package
 Rscript \
@@ -327,7 +327,7 @@ git submodule update --init --recursive
 sh build-cran-package.sh
 ```
 
-This will create a file `lightgbm_${VERSION}.tar.gz`, where `VERSION` is the version of `Falcata`.
+This will create a file `falcata_${VERSION}.tar.gz`, where `VERSION` is the version of `Falcata`.
 
 That script supports the following command-line options:
 
@@ -339,7 +339,7 @@ That script supports the following command-line options:
 After building the package, install it with a command like the following:
 
 ```shell
-R CMD install lightgbm_*.tar.gz
+R CMD install falcata_*.tar.gz
 ```
 
 ### Changing the CRAN Package
@@ -398,7 +398,7 @@ At build time, `configure.win` will be run and used to create a file `Makevars.w
 
 ```shell
 sh build-cran-package.sh
-R CMD check --as-cran lightgbm_*.tar.gz
+R CMD check --as-cran falcata_*.tar.gz
 ```
 
 #### <a id="UBSAN"></a>ASAN and UBSAN
@@ -436,7 +436,7 @@ RDscript${R_CUSTOMIZATION} \
 # install falcata
 sh build-cran-package.sh --r-executable=RD${R_CUSTOMIZATION}
 RD${R_CUSTOMIZATION} \
-  CMD INSTALL lightgbm_*.tar.gz
+  CMD INSTALL falcata_*.tar.gz
 
 # run tests
 cd R-package/tests
@@ -470,7 +470,7 @@ sh build-cran-package.sh \
 RDvalgrind CMD INSTALL \
     --preclean \
     --install-tests \
-        lightgbm_*.tar.gz
+        falcata_*.tar.gz
 
 cd R-package/tests
 
@@ -505,4 +505,4 @@ gh workflow run \
 Known Issues
 ------------
 
-For information about known issues with the R-package, see the [R-package section of Falcata's main FAQ page](https://falcata.readthedocs.io/en/latest/FAQ.html#r-package).
+For information about known issues with the R-package, see the [R-package section of Falcata's main FAQ page](https://github.com/BelixRogner/Falcata/blob/master/docs/FAQ.rst#r-package).

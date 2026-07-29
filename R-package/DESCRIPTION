@@ -6,27 +6,10 @@ Date: ~~DATE~~
 Authors@R: c(
     person("Felix Jonas", "Kroner", email = "felix@mechafauna.ai", role = c("aut", "cre")),
     person("Max", "", email = "max@mechafauna.ai", role = c("aut")),
-    person("Yu", "Shi", email = "yushi2@microsoft.com", role = c("aut")),
-    person("Guolin", "Ke", email = "guolin.ke@outlook.com", role = c("aut")),
-    person("Damien", "Soukhavong", email = "damien.soukhavong@skema.edu", role = c("aut")),
-    person("James", "Lamb", email="jaylamb20@gmail.com", role = c("aut", "cre")),
-    person("Qi", "Meng", role = c("aut")),
-    person("Thomas", "Finley", role = c("aut")),
-    person("Taifeng", "Wang", role = c("aut")),
-    person("Wei", "Chen", role = c("aut")),
-    person("Weidong", "Ma", role = c("aut")),
-    person("Qiwei", "Ye", role = c("aut")),
-    person("Tie-Yan", "Liu", role = c("aut")),
-    person("Nikita", "Titov", role = c("aut")),
-    person("Yachen", "Yan", role = c("ctb")),
     person("Microsoft Corporation", role = c("cph")),
+    person("The LightGBM developers", role = c("cph")),
     person("Dropbox, Inc.", role = c("cph")),
-    person("Alberto", "Ferreira", role = c("ctb")),
-    person("Daniel", "Lemire", role = c("ctb")),
-    person("Victor", "Zverovich", role = c("cph")),
-    person("IBM Corporation", role = c("ctb")),
-    person("David", "Cortes", role = c("aut")),
-    person("Michael", "Mayer", role = c("ctb"))
+    person("Victor", "Zverovich", role = c("cph"))
     )
 Description: Tree based algorithms can be improved by introducing boosting frameworks.
     'Falcata' is one such framework, based on Ke, Guolin et al. (2017) <https://proceedings.neurips.cc/paper/2017/hash/6449f44a102fde848669bdd9eb6b76fa-Abstract.html>.

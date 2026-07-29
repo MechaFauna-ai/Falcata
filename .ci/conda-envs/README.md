@@ -1,7 +1,7 @@
 # conda-envs
 
 This directory contains files used to create `conda` environments for development
-and testing of LightGBM.
+and testing of Falcata.
 
 The `.txt` files here are intended to be used with `conda create --file`.
 

@@ -639,7 +639,7 @@ class LGBMModel(_LGBMModelBase):
             If 'gain', result contains total gains of splits which use the feature.
         **kwargs
             Other parameters for the model.
-            Check http://falcata.readthedocs.io/en/latest/Parameters.html for more parameters.
+            Check https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst for more parameters.
 
             .. warning::
 

@@ -3,7 +3,7 @@ Binary Classification Example
 
 Here is an example for Falcata to run binary classification task.
 
-***You must follow the [installation instructions](https://falcata.readthedocs.io/en/latest/Installation-Guide.html)
+***You must follow the [installation instructions](https://github.com/BelixRogner/Falcata/blob/master/docs/Installation-Guide.rst)
 for the following commands to work. The `falcata` binary must be built and available at the root of this project.***
 
 Training

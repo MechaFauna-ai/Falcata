@@ -7,7 +7,7 @@
 
 args <- commandArgs(trailingOnly = TRUE)
 INSTALL_AFTER_BUILD <- !("--skip-install" %in% args)
-TEMP_R_DIR <- file.path(getwd(), "lightgbm_r")
+TEMP_R_DIR <- file.path(getwd(), "falcata_r")
 TEMP_SOURCE_DIR <- file.path(TEMP_R_DIR, "src")
 
 # [description]
@@ -348,7 +348,7 @@ result <- file.copy(
   , overwrite = TRUE
 )
 .handle_result(result)
-for (src_file in c("lightgbm_R.cpp", "lightgbm_R.h")) {
+for (src_file in c("falcata_R.cpp", "falcata_R.h")) {
   result <- file.copy(
     from = file.path(TEMP_SOURCE_DIR, src_file)
     , to = file.path(TEMP_SOURCE_DIR, "src", src_file)
@@ -417,7 +417,7 @@ version <- gsub(
   )
   , fixed = TRUE
 )
-tarball <- file.path(getwd(), sprintf("lightgbm_%s.tar.gz", version))
+tarball <- file.path(getwd(), sprintf("falcata_%s.tar.gz", version))
 
 install_cmd <- "R"
 install_args <- c("CMD", "INSTALL", "--no-multiarch", "--with-keep.source", tarball)
