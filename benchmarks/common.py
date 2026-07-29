@@ -79,10 +79,10 @@ REGIMES = {
     "smoke": {"rounds": 10, "lr": 0.1, "depth": 6, "leaves": 63, "eval_every": 5},
 }
 
-#: exaboost/lightgbm both install as package "lightgbm", hence separate venvs
+#: falcata/lightgbm both install as package "lightgbm", hence separate venvs
 LIBRARIES = [
-    "exaboost",
-    "exaboost-quant",
+    "falcata",
+    "falcata-quant",
     "lightgbm",
     "lightgbm-quant",
     "lightgbm-ocl",
@@ -107,8 +107,8 @@ def library_runs_cell(library: str, dataset: str, regime: str) -> bool:
 
 def venv_python(library: str) -> str:
     """Path of the venv python that owns ``library`` (see setup_envs.sh)."""
-    if library.startswith("exaboost"):
-        env = "env-exaboost"
+    if library.startswith("falcata"):
+        env = "env-falcata"
     elif library == "lightgbm-ocl":
         env = "env-lightgbm-ocl"
     else:

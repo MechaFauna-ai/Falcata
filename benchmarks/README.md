@@ -27,7 +27,7 @@ per-era mean/std/Sharpe and max drawdown.
 
 ## Run matrix
 
-Six library configs — `exaboost`, `exaboost-quant` (`use_quantized_grad`),
+Six library configs — `falcata`, `falcata-quant` (`use_quantized_grad`),
 `lightgbm`, `lightgbm-quant`, `xgboost`, `catboost` — across two aligned
 hyperparameter regimes (gbm-bench convention: 500 rounds, lr 0.1, 255 bins,
 L2 leaf regularization 1.0):
@@ -84,7 +84,7 @@ measured separately:
 
 ```bash
 ./benchmarks/workspace/env-competitors/bin/python benchmarks/datasets.py numerai-int8
-./benchmarks/workspace/env-exaboost/bin/python benchmarks/ingest_bench.py
+./benchmarks/workspace/env-falcata/bin/python benchmarks/ingest_bench.py
 ```
 
 Reference (RTX 5090, commit 9c0f5ffa, medians of 3): construct 38.9s (f32-fed)

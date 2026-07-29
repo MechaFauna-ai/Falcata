@@ -3,7 +3,7 @@
 Compares the perf-tracked cells' wall times from a lattice run against a
 machine-local rolling baseline (median of the last N green runs). Warns at
 +WARN_PCT, fails at +FAIL_PCT. The baseline lives OUTSIDE the repo (timings
-are machine-specific) in ~/.cache/exaboost-gates/perf_baseline.json and is
+are machine-specific) in ~/.cache/falcata-gates/perf_baseline.json and is
 appended to only on green runs, so a regression cannot poison its own
 baseline.
 
@@ -18,7 +18,7 @@ import statistics
 import sys
 from pathlib import Path
 
-DEFAULT_BASELINE = Path.home() / ".cache" / "exaboost-gates" / "perf_baseline.json"
+DEFAULT_BASELINE = Path.home() / ".cache" / "falcata-gates" / "perf_baseline.json"
 HISTORY = 20
 
 

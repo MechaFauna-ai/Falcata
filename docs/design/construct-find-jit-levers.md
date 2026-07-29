@@ -17,11 +17,11 @@ below.
 
 The one code change this investigation ships is unrelated to a perf win: a
 **stream-capture guard** on the JIT self-test (it crashed
-`EXABOOST_CONSTRUCT_JIT=1` + the multiclass graph loop). See the last section.
+`FALCATA_CONSTRUCT_JIT=1` + the multiclass graph loop). See the last section.
 
 ## Where train time actually goes (nsys, RTX 5090, per-kernel %)
 
-Quantized dense path, `EXABOOST_CONSTRUCT_JIT` off (default AOT):
+Quantized dense path, `FALCATA_CONSTRUCT_JIT` off (default AOT):
 
 | bench (regime) | construct | find | apply* | note |
 |---|---|---|---|---|
@@ -111,7 +111,7 @@ saturating the device — neither is helped by per-shape ISA.
 
 ## Lever 3 — full train A/B (JIT all-on vs off): no-op on bin-cap benches
 
-Because the JIT only ever launches on the compact path, `EXABOOST_CONSTRUCT_JIT`
+Because the JIT only ever launches on the compact path, `FALCATA_CONSTRUCT_JIT`
 on vs off is a **bit-identical no-op** on the bin-cap benches (same md5, same
 train time within noise): higgs 63/6 `ad3a467e47a7`, covtype 1023/10
 `c5107e1c48de`, epsilon 63/6 `191a53630c11` under both settings. There is no
@@ -138,7 +138,7 @@ no shape-specialized codegen changes.
 
 ## The one shipped change: JIT self-test stream-capture guard
 
-`EXABOOST_CONSTRUCT_JIT=1` combined with the multiclass CUDA graph loop aborted
+`FALCATA_CONSTRUCT_JIT=1` combined with the multiclass CUDA graph loop aborted
 with `operation not permitted when stream is capturing`. Cause: the one-time JIT
 self-test (NVRTC compile + `cuLaunchKernel` + `cudaMemcpy`) ran off the *first*
 construct, and when that first construct is captured into the graph, those
@@ -148,5 +148,5 @@ stream ops are illegal mid-capture. Fix
 non-capturing construct. The JIT declines under graph capture anyway
 (`hybrid_graph_capture_gstate_ != nullptr` → AOT), so deferring never loses a
 live launch. With the guard, all 23 non-`matches_cpu` dual tests pass with
-`EXABOOST_CONSTRUCT_JIT=1`, and every lock is unchanged (covtype
+`FALCATA_CONSTRUCT_JIT=1`, and every lock is unchanged (covtype
 `5f4e7bdfff1e` / `fcb9f6c2ab87`, numerai int8 `763c75c0d9cb`).

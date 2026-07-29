@@ -10,17 +10,20 @@ is the numerai-nonquant-fp32 cell here).
 Emits the lattice_results.json schema so perf_gate.py consumes it unchanged:
   python tests/gates/bench_tier.py --out bench_results.json
   python tests/gates/perf_gate.py --results bench_results.json \
-      --baseline-file ~/.cache/exaboost-gates/bench_baseline.json \
+      --baseline-file ~/.cache/falcata-gates/bench_baseline.json \
       --warn-pct 4 --fail-pct 8 --record
 """
 
 import argparse
 import json
+import os
 import statistics
 import time
 from pathlib import Path
 
-CACHE = Path("/home/felixjk/Documents/exaboost-bench/data/cache")
+# Machine-local bench data. The directory keeps its pre-rename name because it
+# holds ~105GB of cached datasets; override to point elsewhere.
+CACHE = Path(os.environ.get("FALCATA_BENCH_CACHE", "/home/felixjk/Documents/exaboost-bench/data/cache"))
 REPEATS = 3
 
 BASE = {

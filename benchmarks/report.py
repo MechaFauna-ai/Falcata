@@ -19,8 +19,8 @@ from common import (  # noqa: E402
 )
 
 COLORS = {
-    "exaboost": "#d62728",
-    "exaboost-quant": "#ff9896",
+    "falcata": "#d62728",
+    "falcata-quant": "#ff9896",
     "lightgbm": "#1f77b4",
     "lightgbm-quant": "#aec7e8",
     "lightgbm-ocl": "#17becf",
@@ -110,7 +110,7 @@ def main():
             f"| library | construct (s) | train (s) | total (s) | {mkey} | GPU peak (MB) | RSS peak (MB) |"
         )
         lines.append("|---|---|---|---|---|---|---|")
-        base = g[g["library"] == "exaboost"]["train_s"].median()
+        base = g[g["library"] == "falcata"]["train_s"].median()
         for lib in LIBRARIES:
             if not library_runs_cell(lib, ds, reg):
                 continue  # cell excluded by design, not missing
@@ -129,7 +129,7 @@ def main():
             spread = gl["train_s"].max() - gl["train_s"].min()
             rel = (
                 f" ({base / gl['train_s'].median():.2f}×)"
-                if lib != "exaboost" and base and gl["train_s"].median()
+                if lib != "falcata" and base and gl["train_s"].median()
                 else ""
             )
             flag = "" if met.get("sane", True) else " ⚠️insane"

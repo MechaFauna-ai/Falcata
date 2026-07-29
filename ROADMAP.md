@@ -1,6 +1,6 @@
 # Falcata CUDA roadmap
 
-> **Historical note:** entries below may reference `EXABOOST_*` environment
+> **Historical note:** entries below may reference `FALCATA_*` environment
 > variables. Those were replaced by typed config params (`quant_mode`,
 > `quant_bins`, `cuda_precision`) and `cuda_plan` keys; the names are kept
 > here as written at the time. See `include/Falcata/falcata_plan.h`.
@@ -16,7 +16,7 @@ figures from the profiles in the PR discussions.
   full, then iterated: cumulative same-session A/B vs host loop: fraud 63/6 -11.9%,
   fraud 1023/10 -10.9%, covtype 63/6 -8.8%, year -5.8%, numerai parity
   (construct-bound). Launch API 132 -> ~30 us/tree; controller ~42 us/tree; sync
-  D2H 3 -> 1 per tree. Non-quant depth-limited only; EXABOOST_GRAPH_LEVEL_LOOP=0.
+  D2H 3 -> 1 per tree. Non-quant depth-limited only; FALCATA_GRAPH_LEVEL_LOOP=0.
   Multiclass crash ROOT-CAUSED AND FIXED (84db39cd): device-updatable graphs
   must be cudaGraphUpload-ed before first launch (the controller's first device
   update raced the lazy upload; multiclass's per-class instances multiplied
@@ -32,7 +32,7 @@ figures from the profiles in the PR discussions.
   documented); per-parent chaining (original L2 idea) still open.
   Quant graph support landed bit-exact (a2279763: device hist-bits, guarded quant
   construct grids, full lock matrix incl. multiclass-quant) but is OPT-IN
-  (EXABOOST_GRAPH_QUANT=1, 5c61a0ed): quant levels are cheap so the controller's
+  (FALCATA_GRAPH_QUANT=1, 5c61a0ed): quant levels are cheap so the controller's
   fixed serial latency nets -10.8% covtype 1023/10 / -7% year; wins only
   fraud-class (+4%). Fixing the controller-latency frontier flips the default.
 - [~] **Graphs L2 — per-parent dependency chaining — INVESTIGATED, honest negative.**
@@ -79,9 +79,9 @@ figures from the profiles in the PR discussions.
 - [ ] **Runtime auto-tuner ("JIT optimizer") tier 1 — online policy tuning.** Boosting
   runs thousands of near-identical trees: measure per-tree wall time (CUDA events) +
   feedback stats (churn, level widths, imbalance) and bandit-tune the existing
-  dataset-dependent knobs: batched-construct grid sizing (EXABOOST_BATCH_CONSTRUCT_FLOOR
+  dataset-dependent knobs: batched-construct grid sizing (FALCATA_BATCH_CONSTRUCT_FLOOR
   -- covtype is latency-bound, year/higgs merge-bound), small-leaf construct threshold
-  (EXABOOST_SMALL_LEAF_ROWS), hist pipeline count, and the selective-growth speculation
+  (FALCATA_SMALL_LEAF_ROWS), hist pipeline count, and the selective-growth speculation
   policy (e.g. gain-margin gating for unbalanced trees). Speculation is model-invariant
   by monotonicity, and quant-mode integer histograms keep md5 locks valid under any
   schedule retuning -- the tuner cannot break exactness gates. Hysteresis vs noise;
@@ -96,11 +96,11 @@ figures from the profiles in the PR discussions.
   thousands of trees; needs AOT fallback.
   IN PROGRESS (session goal): NVRTC JIT construct infra WORKING (60cfa129:
   cuda_construct_jit.{hpp,cpp}, compile shape-consts->PTX->module, shape-keyed cache,
-  AOT fallback, self-tests bit-identity, ~160ms one-time compile; EXABOOST_CONSTRUCT_JIT=1,
+  AOT fallback, self-tests bit-identity, ~160ms one-time compile; FALCATA_CONSTRUCT_JIT=1,
   not yet the live batched path). The big win landed via the compact-view-for-quant lever
   (was hard-disabled): numerai-quant construct 2.46x (32/5) / 1.96x (1024/10),
   BIT-IDENTICAL (independently verified ff=0.1 compact on/off both = 8f0f9f915449),
-  default-on, EXABOOST_CONSTRUCT_COMPACT_QUANT=0 kill-switch. Phase 3: wire JIT as live
+  default-on, FALCATA_CONSTRUCT_COMPACT_QUANT=0 kill-switch. Phase 3: wire JIT as live
   construct path + score all benchmarks + test whether the bin-cap benches (higgs/epsilon/
   year) have REAL headroom (phase-1 NO-GO was on upper-bound roofline estimates) or are
   genuinely at roofline (then bit-identical no-regression is the honest outcome there).
@@ -118,7 +118,7 @@ figures from the profiles in the PR discussions.
   host multi-val bin is skipped for dense non-multi-val datasets (-14.6 GB peak RSS).
   Remaining: ~0.8s pageable 15 GB H2D (pinned staging ring / transpose into pinned) and
   ~1.2s host transpose (device-side transpose candidate); sparse row-wise CUDA datasets
-  still build the host multi-val bin. Kill switch EXABOOST_FAST_ROWDATA=0.
+  still build the host multi-val bin. Kill switch FALCATA_FAST_ROWDATA=0.
 - [x] **Native small-int ingestion (int8/int16)** (9c0f5ffa): int8/int16 numpy
   matrices (row- or col-major) pass zero-copy through the C API and are binned by
   per-column LUTs via Bin::PushBlock; bins identical to the float path by construction
@@ -134,13 +134,13 @@ figures from the profiles in the PR discussions.
   matrix AND per-tree compact matrix packed two cells/byte; all construct/fill/gather
   kernels unpack via IS_4BIT variants. numerai: 2000-tree train 87.6 -> 66.3s (-24%),
   device memory 19.3 -> 11.5 GB, Booster create 2.25 -> 1.44s, gather source at 1.47
-  TB/s. Kill switch EXABOOST_ROWDATA_4BIT=0; verify env checks unpacked equality.
+  TB/s. Kill switch FALCATA_ROWDATA_4BIT=0; verify env checks unpacked equality.
   Both follow-ups landed in 45eea4c6 (numerai per-tree 34.4 -> 30.7 ms, -10.6%;
-  2000-tree ~60s): (a) float2 grad/hess interleave (EXABOOST_GH_INTERLEAVE,
+  2000-tree ~60s): (a) float2 grad/hess interleave (FALCATA_GH_INTERLEAVE,
   compile-time-template dispatch -- a runtime branch cost ~1 ms in both modes),
   modest (-0.5..1 ms) since grad/hess was the smaller half of scattered traffic;
   (b) split kernels read the packed compact matrix directly
-  (EXABOOST_SPLIT_PACKED_READ), dropping the per-tree 1.5 GB row-to-col gather
+  (FALCATA_SPLIT_PACKED_READ), dropping the per-tree 1.5 GB row-to-col gather
   (-4.2 ms/tree); classic per-split consumers lazily materialize the old view once
   per tree. Next on this path: CUDAFillCompactData4BitKernel is now the #2 kernel
   (5.3 ms/tree); the construct kernel (22.7 ms, ~74% of tree time) remains
@@ -153,14 +153,14 @@ figures from the profiles in the PR discussions.
   staging ring (raw never fully resident), packed bins copied back so all host
   consumers work unchanged; byte-identity verify env; cupy-cuda12x works on sm_120.
   numerai construct: f32 37.5 -> 7.2-7.8s, int8 15.2 -> 4.5-4.9s, cupy int8 3.4-3.8s;
-  higgs 0.65s, epsilon ~3s. Kill switch EXABOOST_GPU_CONSTRUCT=0 (that path is also
+  higgs 0.65s, epsilon ~3s. Kill switch FALCATA_GPU_CONSTRUCT=0 (that path is also
   ~7s faster now: md5-safe parallel FeatureGroup creation + column-parallel sampling
   are unconditional). Follow-ups: device-side bin finding (~0.9s), single pinned bin
   slab (~0.5s), stage 3 = device-resident-only bins without host copy-back (pairs
   with removing CreateCUDAColumnData's re-upload); cuDF users pass .values.
 - [x] **EFB density precheck** (c9b00820): skips the ~7.7s no-op FindGroups on dense
   data (numerai/higgs/epsilon/fraud), provably refuses where bundling exists
-  (covtype, sparse); group-structure verify env; EXABOOST_EFB_PRECHECK=0.
+  (covtype, sparse); group-structure verify env; FALCATA_EFB_PRECHECK=0.
 - [ ] **Latency-bound construct on tiny-bin wide data**: post-161fe88b numerai construct
   is scattered-read latency-bound (19ms/tree) -- candidate for NVRTC shape
   specialization (auto-tuner tier 2) or layout changes.
@@ -168,7 +168,7 @@ figures from the profiles in the PR discussions.
   extend the one-sync speculative pipeline to it. Also investigate the per-tree gradient
   discretization cost on many-tree/small-tree configs (numerai-quant is slower than
   non-quant today).
-- [x] **FP32 gain (EXABOOST_FP32_GAIN) + FP32-atomic histogram (EXABOOST_FP32_HIST)
+- [x] **FP32 gain (FALCATA_FP32_GAIN) + FP32-atomic histogram (FALCATA_FP32_HIST)
   modes** (161dc901). Measured per-tree wins at equal-or-better quality on dense
   hist/find-bound data: epsilon deep -36% (both flags), year -18%, covtype -16%,
   fraud deep -14%, higgs deep -12%; numerai flat (feature_fraction-dominated).
@@ -191,7 +191,7 @@ figures from the profiles in the PR discussions.
   want (MultiRMSE-style). Modeling change: validate per-era, don't assume. FIL
   predict falls back to CPU for vector-leaf models initially (treelite support).
 
-- [~] **Exact small-int bin finding (EXABOOST_EXACT_INT_BINS) — IMPLEMENTED, parked on
+- [~] **Exact small-int bin finding (FALCATA_EXACT_INT_BINS) — IMPLEMENTED, parked on
   branch `exact-int-bins-wip` (07c70a72), not on the merge branch.** Works: exact
   per-column counts -> exact bins, deterministic, min_data_in_bin on TRUE counts,
   rare-value-gets-own-bin mechanism proven on synthetic (sampled 3 bins -> exact 4).
@@ -217,7 +217,7 @@ figures from the profiles in the PR discussions.
   (1) renew_leaf multi-block reduction (3fbe9050): RenewDiscretizedTreeLeavesKernel was
   1 block/leaf (SMs idle) -> 16 blocks/leaf grid-strided; kernel 500->67us/tree, renew
   overhead 38%->4% on higgs-shallow. Default-off path (quant_train_renew_leaf) unchanged.
-  (2) **fixed-point quant mode (438d8e9e, EXABOOST_FIXEDPOINT_QUANT=1, default OFF)**:
+  (2) **fixed-point quant mode (438d8e9e, FALCATA_FIXEDPOINT_QUANT=1, default OFF)**:
   round-to-nearest at high bins (64) via the exact-int-accumulation packed path --
   near-lossless at any depth, DETERMINISTIC, no per-tree stochastic buffer. VERIFIED
   (independent clean-build A/B): year/deep rmse fp 8.970 == non-quant 8.977 vs default
@@ -233,9 +233,9 @@ figures from the profiles in the PR discussions.
   GROWTH=0 = 26852449fbac, quality 0.91952->0.91800 (plateau-choice delta, not a regression;
   numerai unchanged at 763c75c0d9cb; TreeSHAP 0.048->1e-16, OOS 0.45->1e-17). These
   (1bfd2d7aed5f / 26852449fbac) are now the canonical covtype locks.
-  fixed-point outlier-robust scale LANDED (d24ab00b, EXABOOST_FIXEDPOINT_ROBUST, default-on within fixedpoint): gap-gated bulk re-anchoring recovers fraud/deep 0.940->0.973 (near non-quant 0.975), balanced cases bit-identical, speed-neutral, deterministic -- the fixed-point mode is now complete for both balanced and imbalanced data.
+  fixed-point outlier-robust scale LANDED (d24ab00b, FALCATA_FIXEDPOINT_ROBUST, default-on within fixedpoint): gap-gated bulk re-anchoring recovers fraud/deep 0.940->0.973 (near non-quant 0.975), balanced cases bit-identical, speed-neutral, deterministic -- the fixed-point mode is now complete for both balanced and imbalanced data.
   Quant one-sync parity INVESTIGATED -> honest-negative (parked on branch
-  one-sync-quant-wip, EXABOOST_HYBRID_ONE_SYNC_QUANT opt-in): bit-correct but 1-4%
+  one-sync-quant-wip, FALCATA_HYBRID_ONE_SYNC_QUANT opt-in): bit-correct but 1-4%
   slower -- the quant per-level sync is already cheap/overlapped and the speculative
   construct's parent-bounded grid costs more than the sync saves. Real lever (shared
   with graph-quant): a tighter device-side CHILD-size construct grid (parent-bounded
@@ -276,10 +276,10 @@ figures from the profiles in the PR discussions.
   installed and device_type=cuda, predict() routes through cuML FIL/nvforest via a
   fully in-memory treelite handoff (no temp files); numpy/CuPy in -> matching
   residency out; cache invalidated on model change; opt-outs use_fil=False /
-  EXABOOST_FIL=0; graceful CPU fallback (pred_contrib/pred_leaf/exotic postprocessors
+  FALCATA_FIL=0; graceful CPU fallback (pred_contrib/pred_leaf/exotic postprocessors
   stay CPU). numerai predict 0.90s (CPU 32T) -> 0.046s (cupy-in), higgs 0.37 ->
   0.004s; host-in loses only on very wide inputs with small models (PCIe-bound).
-  Default fp32 (EXABOOST_FIL_PRECISION=double is bit-exact; fp32 flips ~0.01% of
+  Default fp32 (FALCATA_FIL_PRECISION=double is bit-exact; fp32 flips ~0.01% of
   rows one leaf at split-threshold rounding gaps, AUC unchanged). Follow-ups:
   directed-rounding of thresholds in the treelite handoff would eliminate the fp32
   leaf-flip class; width-based host-input heuristic to auto-skip FIL on
