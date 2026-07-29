@@ -16,8 +16,8 @@ R CMD check "${PKG_TARBALL}" \
     --run-donttest \
 || check_succeeded="no"
 
-CHECK_LOG_FILE=lightgbm.Rcheck/00check.log
-BUILD_LOG_FILE=lightgbm.Rcheck/00install.out
+CHECK_LOG_FILE=falcata.Rcheck/00check.log
+BUILD_LOG_FILE=falcata.Rcheck/00install.out
 
 echo "R CMD check build logs:"
 cat "${BUILD_LOG_FILE}"

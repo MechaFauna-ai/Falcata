@@ -1,17 +1,17 @@
 .. role:: raw-html(raw)
     :format: html
 
-LightGBM FAQ
+Falcata FAQ
 ############
 
-.. contents:: LightGBM Frequently Asked Questions
+.. contents:: Falcata Frequently Asked Questions
     :depth: 1
     :local:
     :backlinks: none
 
 ------
 
-Please post questions, feature requests, and bug reports at https://github.com/lightgbm-org/LightGBM/issues.
+Please post questions, feature requests, and bug reports at https://github.com/BelixRogner/Falcata/issues.
 
 This project is mostly maintained by volunteers, so please be patient.
 If your request is time-sensitive or more than a month goes by without a response, please tag the maintainers below for help.
@@ -25,14 +25,14 @@ If your request is time-sensitive or more than a month goes by without a respons
 
 --------------
 
-General LightGBM Questions
+General Falcata Questions
 ==========================
 
 .. contents::
     :local:
     :backlinks: none
 
-1. Where do I find more details about LightGBM parameters?
+1. Where do I find more details about Falcata parameters?
 ----------------------------------------------------------
 
 Take a look at `Parameters <./Parameters.rst>`__.
@@ -42,62 +42,62 @@ Take a look at `Parameters <./Parameters.rst>`__.
 
 Use a smaller value for ``bin_construct_sample_cnt`` and a larger value for ``min_data``.
 
-3. When running LightGBM on a large dataset, my computer runs out of RAM.
+3. When running Falcata on a large dataset, my computer runs out of RAM.
 -------------------------------------------------------------------------
 
-**Multiple Solutions**: set the ``histogram_pool_size`` parameter to the MB you want to use for LightGBM (histogram\_pool\_size + dataset size = approximately RAM used),
-lower ``num_leaves`` or lower ``max_bin`` (see `lightgbm-org/LightGBM#562 <https://github.com/lightgbm-org/LightGBM/issues/562>`__).
+**Multiple Solutions**: set the ``histogram_pool_size`` parameter to the MB you want to use for Falcata (histogram\_pool\_size + dataset size = approximately RAM used),
+lower ``num_leaves`` or lower ``max_bin`` (see `BelixRogner/Falcata#562 <https://github.com/BelixRogner/Falcata/issues/562>`__).
 
-4. I am using Windows. Should I use Visual Studio or MinGW for compiling LightGBM?
+4. I am using Windows. Should I use Visual Studio or MinGW for compiling Falcata?
 ----------------------------------------------------------------------------------
 
-Visual Studio `performs best for LightGBM <https://github.com/lightgbm-org/LightGBM/issues/542>`__.
+Visual Studio `performs best for Falcata <https://github.com/BelixRogner/Falcata/issues/542>`__.
 
-5. When using LightGBM GPU, I cannot reproduce results over several runs.
+5. When using Falcata GPU, I cannot reproduce results over several runs.
 -------------------------------------------------------------------------
 
 This is normal and expected behaviour, but you may try to use ``gpu_use_dp = true`` for reproducibility
-(see `lightgbm-org/LightGBM#560 <https://github.com/lightgbm-org/LightGBM/pull/560#issuecomment-304561654>`__).
+(see `BelixRogner/Falcata#560 <https://github.com/BelixRogner/Falcata/pull/560#issuecomment-304561654>`__).
 You may also use the CPU version.
 
 6. Bagging is not reproducible when changing the number of threads.
 -------------------------------------------------------------------
 
 :raw-html:`<strike>`
-LightGBM bagging is multithreaded, so its output depends on the number of threads used.
-There is `no workaround currently <https://github.com/lightgbm-org/LightGBM/issues/632>`__.
+Falcata bagging is multithreaded, so its output depends on the number of threads used.
+There is `no workaround currently <https://github.com/BelixRogner/Falcata/issues/632>`__.
 :raw-html:`</strike>`
 
-Starting from `#2804 <https://github.com/lightgbm-org/LightGBM/pull/2804>`__ bagging result doesn't depend on the number of threads.
+Starting from `#2804 <https://github.com/BelixRogner/Falcata/pull/2804>`__ bagging result doesn't depend on the number of threads.
 So this issue should be solved in the latest version.
 
-7. I tried to use Random Forest mode, and LightGBM crashes!
+7. I tried to use Random Forest mode, and Falcata crashes!
 -----------------------------------------------------------
 
 This is expected behaviour for arbitrary parameters. To enable Random Forest,
 you must use ``bagging_fraction`` and ``feature_fraction`` different from 1, along with a ``bagging_freq``.
-`This thread <https://github.com/lightgbm-org/LightGBM/issues/691>`__ includes an example.
+`This thread <https://github.com/BelixRogner/Falcata/issues/691>`__ includes an example.
 
-8. CPU usage is low (like 10%) in Windows when using LightGBM on very large datasets with many-core systems.
+8. CPU usage is low (like 10%) in Windows when using Falcata on very large datasets with many-core systems.
 ------------------------------------------------------------------------------------------------------------
 
 Please use `Visual Studio <https://visualstudio.microsoft.com/downloads/>`__
-as it may be `10x faster than MinGW <https://github.com/lightgbm-org/LightGBM/issues/749>`__ especially for very large trees.
+as it may be `10x faster than MinGW <https://github.com/BelixRogner/Falcata/issues/749>`__ especially for very large trees.
 
 9. When I'm trying to specify a categorical column with the ``categorical_feature`` parameter, I get the following sequence of warnings, but there are no negative values in the column.
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 .. code-block:: console
 
-   [LightGBM] [Warning] Met negative value in categorical features, will convert it to NaN
-   [LightGBM] [Warning] There are no meaningful features, as all feature values are constant.
+   [Falcata] [Warning] Met negative value in categorical features, will convert it to NaN
+   [Falcata] [Warning] There are no meaningful features, as all feature values are constant.
 
 The column you're trying to pass via ``categorical_feature`` likely contains very large values.
-Categorical features in LightGBM are limited by int32 range,
-so you cannot pass values that are greater than ``Int32.MaxValue`` (2147483647) as categorical features (see `lightgbm-org/LightGBM#1359 <https://github.com/lightgbm-org/LightGBM/issues/1359>`__).
+Categorical features in Falcata are limited by int32 range,
+so you cannot pass values that are greater than ``Int32.MaxValue`` (2147483647) as categorical features (see `BelixRogner/Falcata#1359 <https://github.com/BelixRogner/Falcata/issues/1359>`__).
 You should convert them to integers ranging from zero to the number of categories first.
 
-10. LightGBM crashes randomly with the error like: ``Initializing libiomp5.dylib, but found libomp.dylib already initialized.``
+10. Falcata crashes randomly with the error like: ``Initializing libiomp5.dylib, but found libomp.dylib already initialized.``
 -------------------------------------------------------------------------------------------------------------------------------
 
 .. code-block:: console
@@ -133,41 +133,41 @@ Another workaround would be removing MKL optimizations from Conda's packages com
 
 If this is not your case, then you should find conflicting OpenMP library installations on your own and leave only one of them.
 
-11. LightGBM hangs when multithreading (OpenMP) and using forking in Linux at the same time.
+11. Falcata hangs when multithreading (OpenMP) and using forking in Linux at the same time.
 --------------------------------------------------------------------------------------------
 
-Use ``nthreads=1`` to disable multithreading of LightGBM. There is a bug with OpenMP which hangs forked sessions
+Use ``nthreads=1`` to disable multithreading of Falcata. There is a bug with OpenMP which hangs forked sessions
 with multithreading activated. A more expensive solution is to use new processes instead of using fork, however,
 keep in mind it is creating new processes where you have to copy memory and load libraries (example: if you want to
 fork 16 times your current process, then you will require to make 16 copies of your dataset in memory)
-(see `lightgbm-org/LightGBM#1789 <https://github.com/lightgbm-org/LightGBM/issues/1789#issuecomment-433713383>`__).
+(see `BelixRogner/Falcata#1789 <https://github.com/BelixRogner/Falcata/issues/1789#issuecomment-433713383>`__).
 
-An alternative, if multithreading is really necessary inside the forked sessions, would be to compile LightGBM with
+An alternative, if multithreading is really necessary inside the forked sessions, would be to compile Falcata with
 Intel toolchain. Intel compilers are unaffected by this bug.
 
 For C/C++ users, any OpenMP feature cannot be used before the fork happens. If an OpenMP feature is used before the
 fork happens (example: using OpenMP for forking), OpenMP will hang inside the forked sessions. Use new processes instead
 and copy memory as required by creating new processes instead of forking (or, use Intel compilers).
 
-Cloud platform container services may cause LightGBM to hang, if they use Linux fork to run multiple containers on a
-single instance. For example, LightGBM hangs in AWS Batch array jobs, which `use the ECS agent
+Cloud platform container services may cause Falcata to hang, if they use Linux fork to run multiple containers on a
+single instance. For example, Falcata hangs in AWS Batch array jobs, which `use the ECS agent
 <https://aws.amazon.com/batch/faqs>`__ to manage multiple running jobs. Setting ``nthreads=1`` mitigates the issue.
 
-12. Why is early stopping not enabled by default in LightGBM?
+12. Why is early stopping not enabled by default in Falcata?
 -------------------------------------------------------------
 
 Early stopping involves choosing a validation set, a special type of holdout which is used to evaluate the current state of the model after each iteration to see if training can stop.
 
-In ``LightGBM``, `we have decided to require that users specify this set directly <./Parameters.rst#valid>`_. Many options exist for splitting training data into training, test, and validation sets.
+In ``Falcata``, `we have decided to require that users specify this set directly <./Parameters.rst#valid>`_. Many options exist for splitting training data into training, test, and validation sets.
 
-The appropriate splitting strategy depends on the task and domain of the data, information that a modeler has but which ``LightGBM`` as a general-purpose tool does not.
+The appropriate splitting strategy depends on the task and domain of the data, information that a modeler has but which ``Falcata`` as a general-purpose tool does not.
 
-13. Does LightGBM support direct loading data from zero-based or one-based LibSVM format file?
+13. Does Falcata support direct loading data from zero-based or one-based LibSVM format file?
 ----------------------------------------------------------------------------------------------
 
-LightGBM supports loading data from zero-based LibSVM format file directly.
+Falcata supports loading data from zero-based LibSVM format file directly.
 
-14. Why CMake cannot find the compiler when compiling LightGBM with MinGW?
+14. Why CMake cannot find the compiler when compiling Falcata with MinGW?
 --------------------------------------------------------------------------
 
 .. code-block:: bash
@@ -177,14 +177,14 @@ LightGBM supports loading data from zero-based LibSVM format file directly.
 
 This is a known issue of CMake when using MinGW. The easiest solution is to run again your ``cmake`` command to bypass the one time stopper from CMake. Or you can upgrade your version of CMake to at least version 3.17.0.
 
-See `lightgbm-org/LightGBM#3060 <https://github.com/lightgbm-org/LightGBM/issues/3060#issuecomment-626338538>`__ for more details.
+See `BelixRogner/Falcata#3060 <https://github.com/BelixRogner/Falcata/issues/3060#issuecomment-626338538>`__ for more details.
 
-15. Where can I find LightGBM's logo to use it in my presentation?
+15. Where can I find Falcata's logo to use it in my presentation?
 ------------------------------------------------------------------
 
-You can find LightGBM's logo in different file formats and resolutions `here <https://github.com/lightgbm-org/LightGBM/tree/master/docs/logo>`__.
+You can find Falcata's logo in different file formats and resolutions `here <https://github.com/BelixRogner/Falcata/tree/master/docs/logo>`__.
 
-16. LightGBM crashes randomly or operating system hangs during or after running LightGBM.
+16. Falcata crashes randomly or operating system hangs during or after running Falcata.
 -----------------------------------------------------------------------------------------
 
 **Possible Cause**: This behavior may indicate that you have multiple OpenMP libraries installed on your machine and they conflict with each other, similarly to the ``FAQ #10``.
@@ -204,14 +204,14 @@ If you are using any Python-package that depends on ``threadpoolctl``, you also 
 
 Detailed description of conflicts between multiple OpenMP instances is provided in the `following document <https://github.com/joblib/threadpoolctl/blob/master/multiple_openmp.md>`__.
 
-**Solution**: Assuming you are using LightGBM Python-package and conda as a package manager, we strongly recommend using ``conda-forge`` channel as the only source of all your Python package installations because it contains built-in patches to workaround OpenMP conflicts. Some other workarounds are listed `here <https://github.com/joblib/threadpoolctl/blob/master/multiple_openmp.md>`__ under the "Workarounds for Intel OpenMP and LLVM OpenMP case" section.
+**Solution**: Assuming you are using Falcata Python-package and conda as a package manager, we strongly recommend using ``conda-forge`` channel as the only source of all your Python package installations because it contains built-in patches to workaround OpenMP conflicts. Some other workarounds are listed `here <https://github.com/joblib/threadpoolctl/blob/master/multiple_openmp.md>`__ under the "Workarounds for Intel OpenMP and LLVM OpenMP case" section.
 
 If this is not your case, then you should find conflicting OpenMP library installations on your own and leave only one of them.
 
-17. Loading LightGBM fails like: ``cannot allocate memory in static TLS block``
+17. Loading Falcata fails like: ``cannot allocate memory in static TLS block``
 -------------------------------------------------------------------------------
 
-When loading LightGBM, you may encounter errors like the following.
+When loading Falcata, you may encounter errors like the following.
 
 .. code-block:: console
 
@@ -230,10 +230,10 @@ which makes such failures more likely. See these discussions:
 * https://bugzilla.redhat.com/show_bug.cgi?id=1722181#c6
 * https://gcc.gcc.gnu.narkive.com/vOXMQqLA/failure-to-dlopen-libgomp-due-to-static-tls-data
 
-If you are experiencing this issue when using the ``lightgbm`` Python-package, try upgrading
+If you are experiencing this issue when using the ``falcata`` Python-package, try upgrading
 to at least ``v4.6.0``.
 
-For older versions of the Python-package, or for other LightGBM APIs, this issue can
+For older versions of the Python-package, or for other Falcata APIs, this issue can
 often be avoided by loading ``libgomp.so.1``. That can be done directly by setting environment
 variable ``LD_PRELOAD``, like this:
 
@@ -246,8 +246,8 @@ into processes, which varies by programming language and application type.
 
 For more details, see these discussions:
 
-* https://github.com/lightgbm-org/LightGBM/pull/6654#issuecomment-2352014275
-* https://github.com/lightgbm-org/LightGBM/issues/6509
+* https://github.com/BelixRogner/Falcata/pull/6654#issuecomment-2352014275
+* https://github.com/BelixRogner/Falcata/issues/6509
 * https://maskray.me/blog/2021-02-14-all-about-thread-local-storage
 * https://bugzilla.redhat.com/show_bug.cgi?id=1722181#c6
 
@@ -260,33 +260,33 @@ R-package
     :local:
     :backlinks: none
 
-1. Any training command using LightGBM does not work after an error occurred during the training of a previous LightGBM model.
+1. Any training command using Falcata does not work after an error occurred during the training of a previous Falcata model.
 ------------------------------------------------------------------------------------------------------------------------------
 
-In older versions of the R-package (prior to ``v3.3.0``), this could happen occasionally and the solution was to run ``lgb.unloader(wipe = TRUE)`` to remove all LightGBM-related objects. Some conversation about this could be found in `lightgbm-org/LightGBM#698 <https://github.com/lightgbm-org/LightGBM/issues/698>`__.
+In older versions of the R-package (prior to ``v3.3.0``), this could happen occasionally and the solution was to run ``lgb.unloader(wipe = TRUE)`` to remove all Falcata-related objects. Some conversation about this could be found in `BelixRogner/Falcata#698 <https://github.com/BelixRogner/Falcata/issues/698>`__.
 
 That is no longer necessary as of ``v3.3.0``, and function ``lgb.unloader()`` has since been removed from the R-package.
 
 2. I used ``setinfo()``, tried to print my ``lgb.Dataset``, and now the R console froze!
 ----------------------------------------------------------------------------------------
 
-As of at least LightGBM v3.3.0, this issue has been resolved and printing a ``Dataset`` object does not cause the console to freeze.
+As of at least Falcata v3.3.0, this issue has been resolved and printing a ``Dataset`` object does not cause the console to freeze.
 
 In older versions, avoid printing the ``Dataset`` after calling ``setinfo()``.
 
-As of LightGBM v4.0.0, ``setinfo()`` has been replaced by a new method, ``set_field()``.
+As of Falcata v4.0.0, ``setinfo()`` has been replaced by a new method, ``set_field()``.
 
 3. ``error in data.table::data.table()...argument 2 is NULL``.
 --------------------------------------------------------------
 
-If you are experiencing this error when running ``lightgbm``, you may be facing the same issue reported in `#2715 <https://github.com/lightgbm-org/LightGBM/issues/2715>`_ and later in `#2989 <https://github.com/lightgbm-org/LightGBM/pull/2989#issuecomment-614374151>`_. We have seen that in some situations, using ``data.table`` 1.11.x results in this error. To get around this, you can upgrade your version of ``data.table`` to at least version 1.12.0.
+If you are experiencing this error when running ``falcata``, you may be facing the same issue reported in `#2715 <https://github.com/BelixRogner/Falcata/issues/2715>`_ and later in `#2989 <https://github.com/BelixRogner/Falcata/pull/2989#issuecomment-614374151>`_. We have seen that in some situations, using ``data.table`` 1.11.x results in this error. To get around this, you can upgrade your version of ``data.table`` to at least version 1.12.0.
 
 4. ``package/dependency ‘Matrix’ is not available ...``
 -------------------------------------------------------
 
 In April 2024, ``Matrix==1.7-0`` was published to CRAN.
 That version had a floor of ``R (>=4.4.0)``.
-``{Matrix}`` is a hard runtime dependency of ``{lightgbm}``, so on any version of R older than ``4.4.0``, running ``install.packages("lightgbm")`` results in something like the following.
+``{Matrix}`` is a hard runtime dependency of ``{falcata}``, so on any version of R older than ``4.4.0``, running ``install.packages("falcata")`` results in something like the following.
 
 .. code-block:: text
 
@@ -311,17 +311,17 @@ Python-package
 --------------------------------------------------------------------------------------------------------------------
 
 .. note::
-    As of v4.0.0, ``lightgbm`` does not support directly invoking ``setup.py``.
-    This answer refers only to versions of ``lightgbm`` prior to v4.0.0.
+    As of v4.0.0, ``falcata`` does not support directly invoking ``setup.py``.
+    This answer refers only to versions of ``falcata`` prior to v4.0.0.
 
 .. code-block:: console
 
    error: Error: setup script specifies an absolute path:
-   /Users/Microsoft/LightGBM/python-package/lightgbm/../../lib_lightgbm.so
+   /Users/Microsoft/Falcata/python-package/falcata/../../lib_lightgbm.so
    setup() arguments must *always* be /-separated paths relative to the setup.py directory, *never* absolute paths.
 
 This error should be solved in latest version.
-If you still meet this error, try to remove ``lightgbm.egg-info`` folder in your Python-package and reinstall,
+If you still meet this error, try to remove ``falcata.egg-info`` folder in your Python-package and reinstall,
 or check `this thread on stackoverflow <https://stackoverflow.com/questions/18085571/pip-install-error-setup-script-specifies-an-absolute-path>`__.
 
 2. Error messages: ``Cannot ... before construct dataset``.
@@ -337,7 +337,7 @@ but I've already constructed a dataset by some code like:
 
 .. code-block:: python
 
-    train = lightgbm.Dataset(X_train, y_train)
+    train = falcata.Dataset(X_train, y_train)
 
 or error messages like
 
@@ -345,7 +345,7 @@ or error messages like
 
     Cannot set predictor/reference/categorical feature after freed raw data, set free_raw_data=False when construct Dataset to avoid this.
 
-**Solution**: Because LightGBM constructs bin mappers to build trees, and train and valid Datasets within one Booster share the same bin mappers,
+**Solution**: Because Falcata constructs bin mappers to build trees, and train and valid Datasets within one Booster share the same bin mappers,
 categorical features and feature names etc., the Dataset objects are constructed when constructing a Booster.
 If you set ``free_raw_data=True`` (default), the raw data (with Python data struct) will be freed.
 So, if you want to:
@@ -360,41 +360,41 @@ So, if you want to:
 -  set predictor (or reference/categorical feature) after constructing a dataset,
    you should set ``free_raw_data=False`` or init a Dataset object with the same raw data.
 
-3. I encounter segmentation faults (segfaults) randomly after installing LightGBM from PyPI using ``pip install lightgbm``.
+3. I encounter segmentation faults (segfaults) randomly after installing Falcata from PyPI using ``pip install falcata``.
 ---------------------------------------------------------------------------------------------------------------------------
 
 We are doing our best to provide universal wheels which have high running speed and are compatible with any hardware, OS, compiler, etc. at the same time.
-However, sometimes it's just impossible to guarantee the possibility of usage of LightGBM in any specific environment (see `lightgbm-org/LightGBM#1743 <https://github.com/lightgbm-org/LightGBM/issues/1743>`__).
+However, sometimes it's just impossible to guarantee the possibility of usage of Falcata in any specific environment (see `BelixRogner/Falcata#1743 <https://github.com/BelixRogner/Falcata/issues/1743>`__).
 
-Therefore, the first thing you should try in case of segfaults is **compiling from the source** using ``pip install --no-binary lightgbm lightgbm``.
-For the OS-specific prerequisites see https://github.com/lightgbm-org/LightGBM/blob/master/python-package/README.rst.
+Therefore, the first thing you should try in case of segfaults is **compiling from the source** using ``pip install --no-binary falcata falcata``.
+For the OS-specific prerequisites see https://github.com/BelixRogner/Falcata/blob/master/python-package/README.rst.
 
 Also, feel free to post a new issue in our GitHub repository. We always look at each case individually and try to find a root cause.
 
-4. I would like to install LightGBM from conda. What channel should I choose?
+4. I would like to install Falcata from conda. What channel should I choose?
 -----------------------------------------------------------------------------
 
 We strongly recommend installation from the ``conda-forge`` channel and not from the ``default`` one.
 
-For some specific examples, see `this comment <https://github.com/lightgbm-org/LightGBM/issues/4948#issuecomment-1013766397>`__.
+For some specific examples, see `this comment <https://github.com/BelixRogner/Falcata/issues/4948#issuecomment-1013766397>`__.
 
-In addition, as of ``lightgbm==4.4.0``, the ``conda-forge`` package automatically supports CUDA-based GPU acceleration.
+In addition, as of ``falcata==4.4.0``, the ``conda-forge`` package automatically supports CUDA-based GPU acceleration.
 
 5. How do I subclass ``scikit-learn`` estimators?
 -------------------------------------------------
 
-For ``lightgbm <= 4.5.0``, copy all of the constructor arguments from the corresponding
-``lightgbm`` class into the constructor of your custom estimator.
+For ``falcata <= 4.5.0``, copy all of the constructor arguments from the corresponding
+``falcata`` class into the constructor of your custom estimator.
 
 For later versions, just ensure that the constructor of your custom estimator calls ``super().__init__()``.
 
 Consider the example below, which implements a regressor that allows creation of truncated predictions.
-This pattern will work with ``lightgbm > 4.5.0``.
+This pattern will work with ``falcata > 4.5.0``.
 
 .. code-block:: python
 
     import numpy as np
-    from lightgbm import LGBMRegressor
+    from falcata import LGBMRegressor
     from sklearn.datasets import make_regression
 
     class TruncatedRegressor(LGBMRegressor):

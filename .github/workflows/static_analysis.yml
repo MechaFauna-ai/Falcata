@@ -74,7 +74,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Trust git cloning LightGBM
+      - name: Trust git cloning Falcata
         run: |
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
       - name: Checkout repository

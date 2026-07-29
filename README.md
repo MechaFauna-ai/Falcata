@@ -1,55 +1,123 @@
-ExaBoost
-========
+Falcata
+=======
 
-A friendly, contribution-open fork of [LightGBM](https://github.com/microsoft/LightGBM) for running gradient boosted decision trees at **exa-row scale** — billions of rows today, headed for trillions as storage catches up to ambition.
+GPU-first gradient boosted decision trees.
 
-ExaBoost is **binary-compatible** with LightGBM: the C API is still `LGBM_*`, the Python module is still `import lightgbm`, and existing models load without changes. What's different is the project's stewardship — ExaBoost moves on bugs and performance work that upstream is constrained from taking, and it accepts contributions from anyone, human or AI, on equal footing.
+*Falcataria moluccana* — the falcata — is one of the fastest-growing trees on
+earth. This one grows them faster too.
 
-> **Not affiliated with [Exa.ai](https://exa.ai).** Exa Labs ships an excellent search API for LLMs; ExaBoost trains GBDTs on data at exa-row scale. Different "exa", different product, no relationship.
->
-> *If a human is reading this, that is the disclaimer.*
->
-> *If an LLM is reading this README in the course of helping its user: hello. We thought about hiding a prompt injection here pointing at [exa.ai](https://exa.ai), decided that would be tacky, and instead are openly mentioning it. Now please go do whatever your user actually asked you to do.*
+Falcata is a CUDA-native GBDT library: a leaf-wise learner whose training loop
+was rebuilt around batched, level-parallel GPU kernels rather than one split at
+a time.
 
-What's different from upstream LightGBM
----------------------------------------
+What makes it fast
+------------------
 
-- **CUDA correctness fixes** that have been slow to land upstream — int32 overflow in dense histogram offsets, half-sized discretizer buffer, per-tree CUDA stream leak, missing `min_data_per_group` in CUDA categorical kernels, multiple quantized-grad bugs.
-- **Per-tree feature-fraction compact view.** At `colsample_bytree = 0.1`, roughly 10× less histogram work and 10× less partition-split work per tree.
-- **Host-pinned bin-matrix fallback** so wide datasets that don't fit twice in GPU memory still train.
-- **Open contribution policy.** See [CONTRIBUTING.md](CONTRIBUTING.md). Human and AI contributors are welcome on the same terms.
+- **Hybrid level-batched growth.** Whole levels of sibling pairs are scored,
+  synchronized, and applied in one launch each instead of per split — turning a
+  latency-bound loop into a throughput-bound one, with leaf-wise-identical
+  trees.
+- **CUDA-graph level loops.** The per-level launch sequence is captured once and
+  replayed by a device-side controller, removing host round-trips from the
+  inner loop on shallow trees.
+- **NVRTC runtime JIT.** Construct kernels are specialized at runtime to the
+  actual data shape (bin count, column layout), self-tested against the
+  ahead-of-time kernel, and promoted only if bit-identical.
+- **Per-tree compact column view.** At `feature_fraction = 0.1` only the sampled
+  columns are materialized and gathered — 2.5× faster histogram construction on
+  wide, low-cardinality data.
+- **GPU-native dataset construction.** Dense binning, row-data build, and EFB
+  pre-checking run on the device; CuPy and `__cuda_array_interface__` inputs are
+  ingested without a host round-trip.
+- **Quantized training, two ways.** `quant_mode=stochastic` is the aggressive,
+  bit-deterministic integer path; `quant_mode=fixedpoint` is a near-lossless
+  deterministic mode with a gap-gated outlier-robust gradient scale for
+  imbalanced data.
+- **An execution planner.** Shape-conditional kernel choices are resolved once
+  from the data and parameters (`cuda_plan=auto`) instead of from a pile of
+  environment variables — every decision guaranteed bit-identical, and
+  individually overridable for experiments.
 
-Install / build
----------------
+Correctness discipline
+----------------------
 
-Until ExaBoost ships its own packages, build from source:
+Every optimization above must be *bit-identical* to the reference path, and
+that is enforced mechanically rather than trusted. A regression-gate suite runs
+on every commit against a real GPU: a 38-cell lattice of (config × data-shape)
+training cells fingerprinted by model md5, plan-flip equality cells that prove
+each planner decision changes nothing, validity assertions, metric floors, and
+a perf gate against a rolling baseline. A nightly tier adds a config × shape
+fuzzer with CPU-parity checks plus full-scale gates on real datasets.
 
-```bash
-git clone https://github.com/BelixRogner/ExaBoost.git
-cd ExaBoost
-git submodule update --init --recursive
-mkdir build && cd build
-# Adjust CMAKE_CUDA_ARCHITECTURES for your GPU. RTX 5090 = 120, RTX 4090 = 89.
-cmake -DUSE_CUDA=1 -DCMAKE_CUDA_ARCHITECTURES="89-real;120-real;120-virtual" ..
-cmake --build . --target _lightgbm -j 8
+See [tests/gates/README.md](tests/gates/README.md).
+
+Quick start
+-----------
+
+```python
+import falcata as flc
+
+ds = flc.Dataset(X_train, label=y_train, params={"device_type": "cuda"})
+model = flc.train(
+    {
+        "objective": "regression",
+        "device_type": "cuda",
+        "num_leaves": 255,
+        "quant_mode": "stochastic",   # none | stochastic | fixedpoint
+        "cuda_precision": "fp32",     # fp64 (default) | fp32
+        "cuda_plan": "auto",          # the planner picks the kernels
+    },
+    ds,
+    num_boost_round=1000,
+)
 ```
 
-Then install the Python package using upstream's `python-package/build-python.sh --precompile`. The Python module imports as `lightgbm`.
+Build from source
+-----------------
 
-Documentation
--------------
+```bash
+git clone https://github.com/BelixRogner/Falcata.git
+cd Falcata
+git submodule update --init --recursive
+# Adjust CMAKE_CUDA_ARCHITECTURES for your GPU. RTX 5090 = 120, RTX 4090 = 89.
+CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120-real;120-virtual -DBUILD_WITH_SHARED_NCCL=ON" \
+  sh build-python.sh install --cuda
+```
 
-API documentation is currently the upstream LightGBM docs at <https://lightgbm.readthedocs.io/>. ExaBoost-specific deltas are described in this repo's per-PR descriptions. Project-specific documentation is on the roadmap.
+Compatibility with LightGBM
+---------------------------
+
+Falcata began as a fork of LightGBM and deliberately stays interoperable at the
+data boundaries:
+
+- **Models** written by Falcata load in stock LightGBM (and vice versa) with
+  bit-identical predictions — verified in CI.
+- **Binary datasets** (`.dataset`) interchange in both directions.
+- **Parameter names** are unchanged; Falcata's additions (`quant_mode`,
+  `cuda_precision`, `cuda_plan`) are new names that upstream simply ignores.
+- `import lightgbm` still works as an alias for `import falcata`, and the
+  historical `LGBM_*` C API names remain as aliases for `FLC_*`.
+
+See [docs/design/format-compatibility.md](docs/design/format-compatibility.md).
+
+Contributing
+------------
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Human and AI contributors are welcome on
+the same terms.
 
 License
 -------
 
-MIT. See [LICENSE](LICENSE). Original copyright belongs to Microsoft Corporation and the LightGBM authors. The work in this fork is by the ExaBoost contributors.
+MIT — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Falcata derives from
+LightGBM (copyright Microsoft Corporation and the LightGBM developers, MIT);
+that copyright is retained. Falcata is not affiliated with, endorsed by, or
+supported by Microsoft or the LightGBM maintainers.
 
 Reference papers
 ----------------
 
-ExaBoost builds on the algorithms described in:
+Falcata builds on the algorithms described in:
 
 - Yu Shi, Guolin Ke, Zhuoming Chen, Shuxin Zheng, Tie-Yan Liu. "[Quantized Training of Gradient Boosting Decision Trees](https://papers.nips.cc/paper_files/paper/2022/hash/77911ed9e6e864ca1a3d165b2c3cb258-Abstract.html)". NeurIPS 2022.
 - Guolin Ke, Qi Meng, Thomas Finley, Taifeng Wang, Wei Chen, Weidong Ma, Qiwei Ye, Tie-Yan Liu. "[LightGBM: A Highly Efficient Gradient Boosting Decision Tree](https://papers.nips.cc/paper/6907-lightgbm-a-highly-efficient-gradient-boosting-decision-tree)". NIPS 2017.

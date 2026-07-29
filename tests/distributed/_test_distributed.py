@@ -16,7 +16,7 @@ TESTS_DIR = Path(__file__).absolute().parent
 
 @pytest.fixture(scope="module")
 def executable(pytestconfig) -> str:
-    """Returns the path to the lightgbm executable."""
+    """Returns the path to the falcata executable."""
     return pytestconfig.getoption("execfile")
 
 
@@ -112,7 +112,7 @@ class DistributedMockup:
             1. The i-th partition is saved as train{i}.txt.
             2. A random port is assigned for training.
             3. A configuration file train{i}.conf is created.
-            4. The lightgbm binary is called with config=train{i}.conf in another thread.
+            4. The falcata binary is called with config=train{i}.conf in another thread.
             5. The trained model is saved as model{i}.txt. Each model file only differs in data and local_listen_port.
         The whole training set is saved as train.txt.
         """

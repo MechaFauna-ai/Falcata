@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the ExaBoost CUDA wheel into a fresh venv for the gates suite.
+# Build the Falcata CUDA wheel into a fresh venv for the gates suite.
 # Run from the repo root on the self-hosted GPU runner.
 # Uses ccache for CXX/CUDA when available (install it: sudo apt install ccache
 # -- cuts warm rebuilds from ~6 min to ~1-2 min).

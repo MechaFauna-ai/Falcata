@@ -5,7 +5,7 @@
 
 ## What & why
 
-ExaBoost's CUDA single-GPU tree learner grows trees one split at a time, so per-tree
+Falcata's CUDA single-GPU tree learner grows trees one split at a time, so per-tree
 time is dominated by kernel-launch and host-sync latency rather than GPU compute. This
 line of work replaces that with **hybrid level-batched growth** — a depth-wise prefix
 that batches every leaf on a level into one launch per kernel family, then falls back

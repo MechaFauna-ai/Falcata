@@ -4,7 +4,7 @@ Installation Guide
 Versioning
 ~~~~~~~~~~
 
-LightGBM releases use a 3-part version number, with this format:
+Falcata releases use a 3-part version number, with this format:
 
 .. code::
 
@@ -21,7 +21,7 @@ code using a previous version.
 This means that **new minor versions can contain breaking changes**, but these are typically
 small or limited to less-frequently-used parts of the project.
 
-For more details on why LightGBM uses EffVer instead of other schemes like semantic versioning,
+For more details on why Falcata uses EffVer instead of other schemes like semantic versioning,
 see https://jacobtomlinson.dev/effver/.
 
 Nightly Packages
@@ -53,7 +53,7 @@ See `the python-package documentation`_ for details.
 General Installation Notes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-All instructions below are aimed at compiling the 64-bit version of LightGBM.
+All instructions below are aimed at compiling the 64-bit version of Falcata.
 It is worth compiling the 32-bit version only in very rare special cases involving environmental limitations.
 The 32-bit version is slow and untested, so use it at your own risk and don't forget to adjust some of the commands below when installing.
 
@@ -72,15 +72,15 @@ You can add ``-DINSTALL_HEADERS=OFF`` to CMake flags to disable headers installa
 By default, on macOS, CMake is looking into Homebrew standard folders for finding dependencies (e.g. OpenMP).
 You can add ``-DUSE_HOMEBREW_FALLBACK=OFF`` to CMake flags to disable this behaviour.
 
-Users who want to perform benchmarking can make LightGBM output time costs for different internal routines by adding ``-DUSE_TIMETAG=ON`` to CMake flags.
+Users who want to perform benchmarking can make Falcata output time costs for different internal routines by adding ``-DUSE_TIMETAG=ON`` to CMake flags.
 
-It is possible to build LightGBM in debug mode.
-In this mode all compiler optimizations are disabled and LightGBM performs more checks internally.
-To enable debug mode you can add ``-DUSE_DEBUG=ON`` to CMake flags or choose ``Debug_*`` configuration (e.g. ``Debug_DLL``, ``Debug_mpi``) in Visual Studio depending on how you are building LightGBM.
+It is possible to build Falcata in debug mode.
+In this mode all compiler optimizations are disabled and Falcata performs more checks internally.
+To enable debug mode you can add ``-DUSE_DEBUG=ON`` to CMake flags or choose ``Debug_*`` configuration (e.g. ``Debug_DLL``, ``Debug_mpi``) in Visual Studio depending on how you are building Falcata.
 
 .. _sanitizers:
 
-In addition to the debug mode, LightGBM can be built with compiler sanitizers.
+In addition to the debug mode, Falcata can be built with compiler sanitizers.
 To enable them add ``-DUSE_SANITIZER=ON -DENABLED_SANITIZERS="address;leak;undefined"`` to CMake flags.
 These values refer to the following supported sanitizers:
 
@@ -101,7 +101,7 @@ It is very useful to build `C++ unit tests <#build-c-unit-tests>`__ with sanitiz
 Windows
 ~~~~~~~
 
-On Windows, LightGBM can be built using
+On Windows, Falcata can be built using
 
 - **Visual Studio**;
 - **CMake** and **VS Build Tools**;
@@ -115,18 +115,18 @@ With GUI
 
 1. Install `Visual Studio`_.
 
-2. Navigate to one of the releases at https://github.com/lightgbm-org/LightGBM/releases, download ``LightGBM-complete_source_code_zip.zip``, and unzip it.
+2. Navigate to one of the releases at https://github.com/BelixRogner/Falcata/releases, download ``Falcata-complete_source_code_zip.zip``, and unzip it.
 
-3. Go to ``LightGBM-complete_source_code_zip/windows`` folder.
+3. Go to ``Falcata-complete_source_code_zip/windows`` folder.
 
-4. Open ``LightGBM.sln`` file with **Visual Studio**, choose ``Release`` configuration if you need executable file or ``DLL`` configuration if you need shared library and click ``Build`` -> ``Build Solution (Ctrl+Shift+B)``.
+4. Open ``Falcata.sln`` file with **Visual Studio**, choose ``Release`` configuration if you need executable file or ``DLL`` configuration if you need shared library and click ``Build`` -> ``Build Solution (Ctrl+Shift+B)``.
 
    If you have errors about **Platform Toolset**, go to ``Project`` -> ``Properties`` -> ``Configuration Properties`` -> ``General`` and select the toolset installed on your machine.
 
    If you have errors about **Windows SDK Version**, go to ``Project`` -> ``Properties`` -> ``Configuration Properties`` -> ``General`` and select the SDK installed on your machine.
 
-The ``.exe`` file will be in ``LightGBM-complete_source_code_zip/windows/x64/Release`` folder.
-The ``.dll`` file will be in ``LightGBM-complete_source_code_zip/windows/x64/DLL`` folder.
+The ``.exe`` file will be in ``Falcata-complete_source_code_zip/windows/x64/Release`` folder.
+The ``.dll`` file will be in ``Falcata-complete_source_code_zip/windows/x64/DLL`` folder.
 
 From Command Line
 *****************
@@ -137,12 +137,12 @@ From Command Line
 
    .. code:: console
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -A x64
      cmake --build build --target ALL_BUILD --config Release
 
-The ``.exe`` and ``.dll`` files will be in ``LightGBM/Release`` folder.
+The ``.exe`` and ``.dll`` files will be in ``Falcata/Release`` folder.
 
 MinGW-w64
 ^^^^^^^^^
@@ -153,27 +153,27 @@ MinGW-w64
 
    .. code:: console
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -G "MinGW Makefiles"
      cmake --build build -j4
 
-The ``.exe`` and ``.dll`` files will be in ``LightGBM/`` folder.
+The ``.exe`` and ``.dll`` files will be in ``Falcata/`` folder.
 
 **Note**: You may need to run the ``cmake -B build -S . -G "MinGW Makefiles"`` one more time or add ``-DCMAKE_SH=CMAKE_SH-NOTFOUND`` to CMake flags if you encounter the ``sh.exe was found in your PATH`` error.
 
 It is recommended that you use **Visual Studio** since it has better multithreading efficiency in **Windows** for many-core systems
-(see `Question 4 <./FAQ.rst#i-am-using-windows-should-i-use-visual-studio-or-mingw-for-compiling-lightgbm>`__ and `Question 8 <./FAQ.rst#cpu-usage-is-low-like-10-in-windows-when-using-lightgbm-on-very-large-datasets-with-many-core-systems>`__).
+(see `Question 4 <./FAQ.rst#i-am-using-windows-should-i-use-visual-studio-or-mingw-for-compiling-falcata>`__ and `Question 8 <./FAQ.rst#cpu-usage-is-low-like-10-in-windows-when-using-falcata-on-very-large-datasets-with-many-core-systems>`__).
 
 Linux
 ~~~~~
 
-On Linux, LightGBM can be built using
+On Linux, Falcata can be built using
 
 - **CMake** and **gcc**;
 - **CMake** and **Clang**.
 
-After compilation the executable and ``.so`` files will be in ``LightGBM/`` folder.
+After compilation the executable and ``.so`` files will be in ``Falcata/`` folder.
 
 gcc
 ^^^
@@ -184,8 +184,8 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S .
      cmake --build build -j4
 
@@ -198,8 +198,8 @@ Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      export CXX=clang++-14 CC=clang-14  # replace "14" with version of Clang installed on your machine
      cmake -B build -S .
      cmake --build build -j4
@@ -207,7 +207,7 @@ Clang
 macOS
 ~~~~~
 
-On macOS, LightGBM can be installed using
+On macOS, Falcata can be installed using
 
 - **Homebrew**;
 - **MacPorts**;
@@ -222,25 +222,25 @@ Install Using ``Homebrew``
 
 .. code:: sh
 
-  brew install lightgbm
+  brew install falcata
 
-Refer to https://formulae.brew.sh/formula/lightgbm for more details.
+Refer to https://formulae.brew.sh/formula/falcata for more details.
 
 Install Using ``MacPorts``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code:: sh
 
-  sudo port install LightGBM
+  sudo port install Falcata
 
-Refer to https://ports.macports.org/port/LightGBM for more details.
+Refer to https://ports.macports.org/port/Falcata for more details.
 
-**Note**: Port for LightGBM is not maintained by LightGBM's maintainers.
+**Note**: Port for Falcata is not maintained by Falcata's maintainers.
 
 Build from GitHub
 ^^^^^^^^^^^^^^^^^
 
-After compilation the executable and ``.dylib`` files will be in ``LightGBM/`` folder.
+After compilation the executable and ``.dylib`` files will be in ``Falcata/`` folder.
 
 Apple Clang
 ***********
@@ -255,8 +255,8 @@ Apple Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S .
      cmake --build build -j4
 
@@ -273,8 +273,8 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      export CXX=g++-7 CC=gcc-7  # replace "7" with version of gcc installed on your machine
      cmake -B build -S .
      cmake --build build -j4
@@ -282,18 +282,18 @@ gcc
 Docker
 ~~~~~~
 
-Refer to `Docker folder <https://github.com/lightgbm-org/LightGBM/tree/master/docker>`__.
+Refer to `Docker folder <https://github.com/BelixRogner/Falcata/tree/master/docker>`__.
 
 Build Threadless Version (not Recommended)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The default build version of LightGBM is based on OpenMP.
-You can build LightGBM without OpenMP support but it is **strongly not recommended**.
+The default build version of Falcata is based on OpenMP.
+You can build Falcata without OpenMP support but it is **strongly not recommended**.
 
 Windows
 ^^^^^^^
 
-On Windows, a version of LightGBM without OpenMP support can be built using
+On Windows, a version of Falcata without OpenMP support can be built using
 
 - **Visual Studio**;
 - **CMake** and **VS Build Tools**;
@@ -307,11 +307,11 @@ With GUI
 
 1. Install `Visual Studio`_.
 
-2. Navigate to one of the releases at https://github.com/lightgbm-org/LightGBM/releases, download ``LightGBM-complete_source_code_zip.zip``, and unzip it.
+2. Navigate to one of the releases at https://github.com/BelixRogner/Falcata/releases, download ``Falcata-complete_source_code_zip.zip``, and unzip it.
 
-3. Go to ``LightGBM-complete_source_code_zip/windows`` folder.
+3. Go to ``Falcata-complete_source_code_zip/windows`` folder.
 
-4. Open ``LightGBM.sln`` file with **Visual Studio**, choose ``Release`` configuration if you need executable file or ``DLL`` configuration if you need shared library.
+4. Open ``Falcata.sln`` file with **Visual Studio**, choose ``Release`` configuration if you need executable file or ``DLL`` configuration if you need shared library.
 
 5. Go to ``Project`` -> ``Properties`` -> ``Configuration Properties`` -> ``C/C++`` -> ``Language`` and change the ``OpenMP Support`` property to ``No (/openmp-)``.
 
@@ -321,8 +321,8 @@ With GUI
 
    If you have errors about **Windows SDK Version**, go to ``Project`` -> ``Properties`` -> ``Configuration Properties`` -> ``General`` and select the SDK installed on your machine.
 
-The ``.exe`` file will be in ``LightGBM-complete_source_code_zip/windows/x64/Release`` folder.
-The ``.dll`` file will be in ``LightGBM-complete_source_code_zip/windows/x64/DLL`` folder.
+The ``.exe`` file will be in ``Falcata-complete_source_code_zip/windows/x64/Release`` folder.
+The ``.dll`` file will be in ``Falcata-complete_source_code_zip/windows/x64/DLL`` folder.
 
 From Command Line
 -----------------
@@ -333,12 +333,12 @@ From Command Line
 
    .. code:: console
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -A x64 -DUSE_OPENMP=OFF
      cmake --build build --target ALL_BUILD --config Release
 
-The ``.exe`` and ``.dll`` files will be in ``LightGBM/Release`` folder.
+The ``.exe`` and ``.dll`` files will be in ``Falcata/Release`` folder.
 
 MinGW-w64
 *********
@@ -349,24 +349,24 @@ MinGW-w64
 
    .. code:: console
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -G "MinGW Makefiles" -DUSE_OPENMP=OFF
      cmake --build build -j4
 
-The ``.exe`` and ``.dll`` files will be in ``LightGBM/`` folder.
+The ``.exe`` and ``.dll`` files will be in ``Falcata/`` folder.
 
 **Note**: You may need to run the ``cmake -B build -S . -G "MinGW Makefiles" -DUSE_OPENMP=OFF`` one more time or add ``-DCMAKE_SH=CMAKE_SH-NOTFOUND`` to CMake flags if you encounter the ``sh.exe was found in your PATH`` error.
 
 Linux
 ^^^^^
 
-On Linux, a version of LightGBM without OpenMP support can be built using
+On Linux, a version of Falcata without OpenMP support can be built using
 
 - **CMake** and **gcc**;
 - **CMake** and **Clang**.
 
-After compilation the executable and ``.so`` files will be in ``LightGBM/`` folder.
+After compilation the executable and ``.so`` files will be in ``Falcata/`` folder.
 
 gcc
 ***
@@ -377,8 +377,8 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -DUSE_OPENMP=OFF
      cmake --build build -j4
 
@@ -391,8 +391,8 @@ Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      export CXX=clang++-14 CC=clang-14  # replace "14" with version of Clang installed on your machine
      cmake -B build -S . -DUSE_OPENMP=OFF
      cmake --build build -j4
@@ -400,12 +400,12 @@ Clang
 macOS
 ^^^^^
 
-On macOS, a version of LightGBM without OpenMP support can be built using
+On macOS, a version of Falcata without OpenMP support can be built using
 
 - **CMake** and **Apple Clang**;
 - **CMake** and **gcc**.
 
-After compilation the executable and ``.dylib`` files will be in ``LightGBM/`` folder.
+After compilation the executable and ``.dylib`` files will be in ``Falcata/`` folder.
 
 Apple Clang
 ***********
@@ -420,8 +420,8 @@ Apple Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -DUSE_OPENMP=OFF
      cmake --build build -j4
 
@@ -438,8 +438,8 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      export CXX=g++-7 CC=gcc-7  # replace "7" with version of gcc installed on your machine
      cmake -B build -S . -DUSE_OPENMP=OFF
      cmake --build build -j4
@@ -447,15 +447,15 @@ gcc
 Build MPI Version
 ~~~~~~~~~~~~~~~~~
 
-The default build version of LightGBM is based on socket. LightGBM also supports MPI.
+The default build version of Falcata is based on socket. Falcata also supports MPI.
 `MPI`_ is a high performance communication approach with `RDMA`_ support.
 
-If you need to run a distributed learning application with high performance communication, you can build the LightGBM with MPI support.
+If you need to run a distributed learning application with high performance communication, you can build the Falcata with MPI support.
 
 Windows
 ^^^^^^^
 
-On Windows, an MPI version of LightGBM can be built using
+On Windows, an MPI version of Falcata can be built using
 
 - **MS MPI** and **Visual Studio**;
 - **MS MPI**, **CMake** and **VS Build Tools**.
@@ -469,17 +469,17 @@ With GUI
 
 2. Install `Visual Studio`_.
 
-3. Navigate to one of the releases at https://github.com/lightgbm-org/LightGBM/releases, download ``LightGBM-complete_source_code_zip.zip``, and unzip it.
+3. Navigate to one of the releases at https://github.com/BelixRogner/Falcata/releases, download ``Falcata-complete_source_code_zip.zip``, and unzip it.
 
-4. Go to ``LightGBM-complete_source_code_zip/windows`` folder.
+4. Go to ``Falcata-complete_source_code_zip/windows`` folder.
 
-5. Open ``LightGBM.sln`` file with **Visual Studio**, choose ``Release_mpi`` configuration and click ``Build`` -> ``Build Solution (Ctrl+Shift+B)``.
+5. Open ``Falcata.sln`` file with **Visual Studio**, choose ``Release_mpi`` configuration and click ``Build`` -> ``Build Solution (Ctrl+Shift+B)``.
 
    If you have errors about **Platform Toolset**, go to ``Project`` -> ``Properties`` -> ``Configuration Properties`` -> ``General`` and select the toolset installed on your machine.
 
    If you have errors about **Windows SDK Version**, go to ``Project`` -> ``Properties`` -> ``Configuration Properties`` -> ``General`` and select the SDK installed on your machine.
 
-The ``.exe`` file will be in ``LightGBM-complete_source_code_zip/windows/x64/Release_mpi`` folder.
+The ``.exe`` file will be in ``Falcata-complete_source_code_zip/windows/x64/Release_mpi`` folder.
 
 From Command Line
 *****************
@@ -492,22 +492,22 @@ From Command Line
 
    .. code:: console
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -A x64 -DUSE_MPI=ON
      cmake --build build --target ALL_BUILD --config Release
 
-The ``.exe`` and ``.dll`` files will be in ``LightGBM/Release`` folder.
+The ``.exe`` and ``.dll`` files will be in ``Falcata/Release`` folder.
 
 Linux
 ^^^^^
 
-On Linux, an MPI version of LightGBM can be built using
+On Linux, an MPI version of Falcata can be built using
 
 - **CMake**, **gcc** and **Open MPI**;
 - **CMake**, **Clang** and **Open MPI**.
 
-After compilation the executable and ``.so`` files will be in ``LightGBM/`` folder.
+After compilation the executable and ``.so`` files will be in ``Falcata/`` folder.
 
 gcc
 ***
@@ -518,8 +518,8 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -DUSE_MPI=ON
      cmake --build build -j4
 
@@ -532,8 +532,8 @@ Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      export CXX=clang++-14 CC=clang-14  # replace "14" with version of Clang installed on your machine
      cmake -B build -S . -DUSE_MPI=ON
      cmake --build build -j4
@@ -541,12 +541,12 @@ Clang
 macOS
 ^^^^^
 
-On macOS, an MPI version of LightGBM can be built using
+On macOS, an MPI version of Falcata can be built using
 
 - **CMake**, **Open MPI** and **Apple Clang**;
 - **CMake**, **Open MPI** and **gcc**.
 
-After compilation the executable and ``.dylib`` files will be in ``LightGBM/`` folder.
+After compilation the executable and ``.dylib`` files will be in ``Falcata/`` folder.
 
 Apple Clang
 ***********
@@ -561,8 +561,8 @@ Apple Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -DUSE_MPI=ON
      cmake --build build -j4
 
@@ -579,8 +579,8 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      export CXX=g++-7 CC=gcc-7  # replace "7" with version of gcc installed on your machine
      cmake -B build -S . -DUSE_MPI=ON
      cmake --build build -j4
@@ -591,7 +591,7 @@ Build GPU Version
 Windows
 ^^^^^^^
 
-On Windows, a GPU version of LightGBM (``device_type=gpu``) can be built using
+On Windows, a GPU version of Falcata (``device_type=gpu``) can be built using
 
 - **OpenCL**, **Boost**, **CMake** and **VS Build Tools**;
 - **OpenCL**, **Boost**, **CMake** and **MinGW**.
@@ -626,8 +626,8 @@ Following procedure is for the **MSVC** (Microsoft Visual C++) build.
 
    .. code:: console
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -A x64 -DUSE_GPU=ON -DBOOST_ROOT=C:/local/boost_1_63_0 -DBOOST_LIBRARYDIR=C:/local/boost_1_63_0/lib64-msvc-14.3
      # if you have installed NVIDIA CUDA to a customized location, you should specify paths to OpenCL headers and library like the following:
      # cmake -B build -S . -A x64 -DUSE_GPU=ON -DBOOST_ROOT=C:/local/boost_1_63_0 -DBOOST_LIBRARYDIR=C:/local/boost_1_63_0/lib64-msvc-14.3 -DOpenCL_LIBRARY="C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v10.0/lib/x64/OpenCL.lib" -DOpenCL_INCLUDE_DIR="C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v10.0/include"
@@ -635,12 +635,12 @@ Following procedure is for the **MSVC** (Microsoft Visual C++) build.
 
    **Note**: ``C:/local/boost_1_63_0`` and ``C:/local/boost_1_63_0/lib64-msvc-14.3`` are locations of your **Boost** binaries (assuming you've downloaded 1.63.0 version for Visual Studio 2022).
 
-The ``.exe`` and ``.dll`` files will be in ``LightGBM/Release`` folder.
+The ``.exe`` and ``.dll`` files will be in ``Falcata/Release`` folder.
 
 Linux
 ^^^^^
 
-On Linux, a GPU version of LightGBM (``device_type=gpu``) can be built using
+On Linux, a GPU version of Falcata (``device_type=gpu``) can be built using
 
 - **CMake**, **OpenCL**, **Boost** and **gcc**;
 - **CMake**, **OpenCL**, **Boost** and **Clang**.
@@ -650,7 +650,7 @@ The generic OpenCL ICD packages (for example, Debian packages ``ocl-icd-libopenc
 
 Required **Boost** libraries (Boost.Align, Boost.System, Boost.Filesystem, Boost.Chrono) should be provided by the following Debian packages: ``libboost-dev``, ``libboost-system-dev``, ``libboost-filesystem-dev``, ``libboost-chrono-dev``.
 
-After compilation the executable and ``.so`` files will be in ``LightGBM/`` folder.
+After compilation the executable and ``.so`` files will be in ``Falcata/`` folder.
 
 gcc
 ***
@@ -661,8 +661,8 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -DUSE_GPU=ON
      # if you have installed NVIDIA CUDA to a customized location, you should specify paths to OpenCL headers and library like the following:
      # cmake -B build -S . -DUSE_GPU=ON -DOpenCL_LIBRARY=/usr/local/cuda/lib64/libOpenCL.so -DOpenCL_INCLUDE_DIR=/usr/local/cuda/include/
@@ -677,8 +677,8 @@ Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      export CXX=clang++-14 CC=clang-14  # replace "14" with version of Clang installed on your machine
      cmake -B build -S . -DUSE_GPU=ON
      # if you have installed NVIDIA CUDA to a customized location, you should specify paths to OpenCL headers and library like the following:
@@ -693,12 +693,12 @@ The GPU version is not supported on macOS.
 Docker
 ^^^^^^
 
-Refer to `GPU Docker folder <https://github.com/lightgbm-org/LightGBM/tree/master/docker/gpu>`__.
+Refer to `GPU Docker folder <https://github.com/BelixRogner/Falcata/tree/master/docker/gpu>`__.
 
 Build CUDA Version
 ~~~~~~~~~~~~~~~~~~
 
-The `original GPU version <#build-gpu-version>`__ of LightGBM (``device_type=gpu``) is based on OpenCL, and only computes histograms on GPUs, with other parts of training in CPUs.
+The `original GPU version <#build-gpu-version>`__ of Falcata (``device_type=gpu``) is based on OpenCL, and only computes histograms on GPUs, with other parts of training in CPUs.
 
 The CUDA-based version (``device_type=cuda``) is a separate implementation that runs significantly faster by putting all the training process on GPUs. It also supports multi-GPU, and multi-node multi-GPU training.
 Use this version in Linux environments with an NVIDIA GPU with compute capability 6.0 or higher.
@@ -712,14 +712,14 @@ Use the `GPU version <#build-gpu-version>`__ (``device_type=gpu``) for GPU accel
 Linux
 ^^^^^
 
-On Linux, a CUDA version of LightGBM can be built using
+On Linux, a CUDA version of Falcata can be built using
 
 - **CMake**, **gcc** and **CUDA**;
 - **CMake**, **Clang** and **CUDA**.
 
 Please refer to `this detailed guide`_ for **CUDA** libraries installation.
 
-After compilation the executable and ``.so`` files will be in ``LightGBM/`` folder.
+After compilation the executable and ``.so`` files will be in ``Falcata/`` folder.
 
 gcc
 ***
@@ -730,8 +730,8 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -DUSE_CUDA=ON
      cmake --build build -j4
 
@@ -744,8 +744,8 @@ Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      export CXX=clang++-14 CC=clang-14  # replace "14" with version of Clang installed on your machine
      cmake -B build -S . -DUSE_CUDA=ON
      cmake --build build -j4
@@ -758,7 +758,7 @@ The CUDA version is not supported on macOS.
 Build ROCm Version
 ~~~~~~~~~~~~~~~~~~
 
-The `original GPU version <#build-gpu-version>`__ of LightGBM (``device_type=gpu``) is based on OpenCL.
+The `original GPU version <#build-gpu-version>`__ of Falcata (``device_type=gpu``) is based on OpenCL.
 
 The ROCm-based version (``device_type=cuda``) is a separate implementation. Yes, the ROCm version reuses the ``device_type=cuda`` as a convenience for users.  Use this version in Linux environments with an AMD GPU.
 
@@ -771,14 +771,14 @@ Use the `GPU version <#build-gpu-version>`__ (``device_type=gpu``) for GPU accel
 Linux
 ^^^^^
 
-On Linux, a ROCm version of LightGBM can be built using
+On Linux, a ROCm version of Falcata can be built using
 
 - **CMake**, **gcc** and **ROCm**;
 - **CMake**, **Clang** and **ROCm**.
 
 Please refer to `the ROCm docs`_ for **ROCm** libraries installation.
 
-After compilation the executable and ``.so`` files will be in ``LightGBM/`` folder.
+After compilation the executable and ``.so`` files will be in ``Falcata/`` folder.
 
 gcc
 ***
@@ -789,8 +789,8 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -DUSE_ROCM=ON
      cmake --build build -j4
 
@@ -803,8 +803,8 @@ Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      export CXX=clang++-14 CC=clang-14  # replace "14" with version of Clang installed on your machine
      cmake -B build -S . -DUSE_ROCM=ON
      cmake --build build -j4
@@ -817,14 +817,14 @@ The ROCm version is not supported on macOS.
 Build Java Wrapper
 ~~~~~~~~~~~~~~~~~~
 
-Using the following instructions you can generate a JAR file containing the LightGBM `C API <./Development-Guide.rst#c-api>`__ wrapped by **SWIG**.
+Using the following instructions you can generate a JAR file containing the Falcata `C API <./Development-Guide.rst#c-api>`__ wrapped by **SWIG**.
 
-After compilation the ``.jar`` file will be in ``LightGBM/build`` folder.
+After compilation the ``.jar`` file will be in ``Falcata/build`` folder.
 
 Windows
 ^^^^^^^
 
-On Windows, a Java wrapper of LightGBM can be built using
+On Windows, a Java wrapper of Falcata can be built using
 
 - **Java**, **SWIG**, **CMake** and **VS Build Tools**;
 - **Java**, **SWIG**, **CMake** and **MinGW**.
@@ -840,8 +840,8 @@ VS Build Tools
 
    .. code:: console
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -A x64 -DUSE_SWIG=ON
      cmake --build build --target ALL_BUILD --config Release
 
@@ -856,20 +856,20 @@ MinGW-w64
 
    .. code:: console
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -G "MinGW Makefiles" -DUSE_SWIG=ON
      cmake --build build -j4
 
 **Note**: You may need to run the ``cmake -B build -S . -G "MinGW Makefiles" -DUSE_SWIG=ON`` one more time or add ``-DCMAKE_SH=CMAKE_SH-NOTFOUND`` to CMake flags if you encounter the ``sh.exe was found in your PATH`` error.
 
 It is recommended to use **VS Build Tools (Visual Studio)** since it has better multithreading efficiency in **Windows** for many-core systems
-(see `Question 4 <./FAQ.rst#i-am-using-windows-should-i-use-visual-studio-or-mingw-for-compiling-lightgbm>`__ and `Question 8 <./FAQ.rst#cpu-usage-is-low-like-10-in-windows-when-using-lightgbm-on-very-large-datasets-with-many-core-systems>`__).
+(see `Question 4 <./FAQ.rst#i-am-using-windows-should-i-use-visual-studio-or-mingw-for-compiling-falcata>`__ and `Question 8 <./FAQ.rst#cpu-usage-is-low-like-10-in-windows-when-using-falcata-on-very-large-datasets-with-many-core-systems>`__).
 
 Linux
 ^^^^^
 
-On Linux, a Java wrapper of LightGBM can be built using
+On Linux, a Java wrapper of Falcata can be built using
 
 - **CMake**, **gcc**, **Java** and **SWIG**;
 - **CMake**, **Clang**, **Java** and **SWIG**.
@@ -883,8 +883,8 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -DUSE_SWIG=ON
      cmake --build build -j4
 
@@ -897,8 +897,8 @@ Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      export CXX=clang++-14 CC=clang-14  # replace "14" with version of Clang installed on your machine
      cmake -B build -S . -DUSE_SWIG=ON
      cmake --build build -j4
@@ -906,7 +906,7 @@ Clang
 macOS
 ^^^^^
 
-On macOS, a Java wrapper of LightGBM can be built using
+On macOS, a Java wrapper of Falcata can be built using
 
 - **CMake**, **Java**, **SWIG** and **Apple Clang**;
 - **CMake**, **Java**, **SWIG** and **gcc**.
@@ -925,8 +925,8 @@ Apple Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -DUSE_SWIG=ON
      cmake --build build -j4
 
@@ -944,8 +944,8 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      export CXX=g++-7 CC=gcc-7  # replace "7" with version of gcc installed on your machine
      cmake -B build -S . -DUSE_SWIG=ON
      cmake --build build -j4
@@ -958,7 +958,7 @@ Refer to `the python-package documentation`_.
 Build R-package
 ~~~~~~~~~~~~~~~
 
-Refer to `R-package folder <https://github.com/lightgbm-org/LightGBM/tree/master/R-package>`__.
+Refer to `R-package folder <https://github.com/BelixRogner/Falcata/tree/master/R-package>`__.
 
 Build C++ Unit Tests
 ~~~~~~~~~~~~~~~~~~~~
@@ -966,7 +966,7 @@ Build C++ Unit Tests
 Windows
 ^^^^^^^
 
-On Windows, C++ unit tests of LightGBM can be built using
+On Windows, C++ unit tests of Falcata can be built using
 
 - **CMake** and **VS Build Tools**;
 - **CMake** and **MinGW**.
@@ -980,12 +980,12 @@ VS Build Tools
 
    .. code:: console
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -A x64 -DBUILD_CPP_TEST=ON
      cmake --build build --target testlightgbm --config Debug
 
-The ``.exe`` file will be in ``LightGBM/Debug`` folder.
+The ``.exe`` file will be in ``Falcata/Debug`` folder.
 
 MinGW-w64
 *********
@@ -996,24 +996,24 @@ MinGW-w64
 
    .. code:: console
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -G "MinGW Makefiles" -DBUILD_CPP_TEST=ON
      cmake --build build --target testlightgbm -j4
 
-The ``.exe`` file will be in ``LightGBM/`` folder.
+The ``.exe`` file will be in ``Falcata/`` folder.
 
 **Note**: You may need to run the ``cmake -B build -S . -G "MinGW Makefiles" -DBUILD_CPP_TEST=ON`` one more time or add ``-DCMAKE_SH=CMAKE_SH-NOTFOUND`` to CMake flags if you encounter the ``sh.exe was found in your PATH`` error.
 
 Linux
 ^^^^^
 
-On Linux, a C++ unit tests of LightGBM can be built using
+On Linux, a C++ unit tests of Falcata can be built using
 
 - **CMake** and **gcc**;
 - **CMake** and **Clang**.
 
-After compilation the executable file will be in ``LightGBM/`` folder.
+After compilation the executable file will be in ``Falcata/`` folder.
 
 gcc
 ***
@@ -1024,8 +1024,8 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -DBUILD_CPP_TEST=ON
      cmake --build build --target testlightgbm -j4
 
@@ -1038,8 +1038,8 @@ Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      export CXX=clang++-14 CC=clang-14  # replace "14" with version of Clang installed on your machine
      cmake -B build -S . -DBUILD_CPP_TEST=ON
      cmake --build build --target testlightgbm -j4
@@ -1047,12 +1047,12 @@ Clang
 macOS
 ^^^^^
 
-On macOS, a C++ unit tests of LightGBM can be built using
+On macOS, a C++ unit tests of Falcata can be built using
 
 - **CMake** and **Apple Clang**;
 - **CMake** and **gcc**.
 
-After compilation the executable file will be in ``LightGBM/`` folder.
+After compilation the executable file will be in ``Falcata/`` folder.
 
 Apple Clang
 ***********
@@ -1067,8 +1067,8 @@ Apple Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      cmake -B build -S . -DBUILD_CPP_TEST=ON
      cmake --build build --target testlightgbm -j4
 
@@ -1085,8 +1085,8 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/lightgbm-org/LightGBM
-     cd LightGBM
+     git clone --recursive https://github.com/BelixRogner/Falcata
+     cd Falcata
      export CXX=g++-7 CC=gcc-7  # replace "7" with version of gcc installed on your machine
      cmake -B build -S . -DBUILD_CPP_TEST=ON
      cmake --build build --target testlightgbm -j4
@@ -1119,7 +1119,7 @@ gcc
 
 .. _this detailed guide: https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html
 
-.. _the python-package documentation: https://github.com/lightgbm-org/LightGBM/tree/master/python-package
+.. _the python-package documentation: https://github.com/BelixRogner/Falcata/tree/master/python-package
 
 .. _the ROCm docs: https://rocm.docs.amd.com/projects/install-on-linux/en/latest/
 

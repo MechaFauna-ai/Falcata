@@ -1,5 +1,5 @@
 # coding: utf-8
-"""Tests for lightgbm.dask module"""
+"""Tests for falcata.dask module"""
 
 import inspect
 import re
@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 import pytest
 from sklearn.metrics import accuracy_score, r2_score
 
-import lightgbm as lgb
+import falcata as lgb
 
 from .utils import (
     BuildInfo,
@@ -20,7 +20,7 @@ from .utils import (
 )
 
 if platform in {"cygwin", "win32"}:
-    pytest.skip("lightgbm.dask is not currently supported on Windows", allow_module_level=True)
+    pytest.skip("falcata.dask is not currently supported on Windows", allow_module_level=True)
 
 dask = pytest.importorskip("dask")
 
@@ -286,7 +286,7 @@ def test_classifier(output, task, boosting_type, tree_learner, cluster):
         s2 = local_classifier.score(X, y)
 
         if boosting_type == "rf":
-            # https://github.com/lightgbm-org/LightGBM/issues/4118
+            # https://github.com/lightgbm-org/Falcata/issues/4118
             assert_eq(s1, s2, atol=0.01)
             assert_eq(p1_proba, p2_proba, atol=0.8)
         else:
@@ -313,7 +313,7 @@ def test_classifier(output, task, boosting_type, tree_learner, cluster):
         assert np.min(pred_leaf_vals) >= 0
         assert len(np.unique(pred_leaf_vals)) <= params["num_leaves"]
 
-        # be sure LightGBM actually used at least one categorical column,
+        # be sure Falcata actually used at least one categorical column,
         # and that it was correctly treated as a categorical feature
         if output == "dataframe-with-categorical":
             cat_cols = [col for col in dX.columns if dX.dtypes[col].name == "category"]
@@ -380,7 +380,7 @@ def test_classifier_pred_contrib(output, task, cluster):
         if output.startswith("scipy"):
             preds_with_contrib = preds_with_contrib.toarray()
 
-        # be sure LightGBM actually used at least one categorical column,
+        # be sure Falcata actually used at least one categorical column,
         # and that it was correctly treated as a categorical feature
         if output == "dataframe-with-categorical":
             cat_cols = [col for col in dX.columns if dX.dtypes[col].name == "category"]
@@ -557,7 +557,7 @@ def test_regressor(output, boosting_type, tree_learner, cluster):
         with pytest.raises(AssertionError):  # noqa: PT011
             assert_eq(p1_raw, p1_first_iter_raw)
 
-        # be sure LightGBM actually used at least one categorical column,
+        # be sure Falcata actually used at least one categorical column,
         # and that it was correctly treated as a categorical feature
         if output == "dataframe-with-categorical":
             cat_cols = [col for col in dX.columns if dX.dtypes[col].name == "category"]
@@ -591,7 +591,7 @@ def test_regressor_pred_contrib(output, cluster):
         assert preds_with_contrib.shape[1] == num_features + 1
         assert preds_with_contrib.shape == local_preds_with_contrib.shape
 
-        # be sure LightGBM actually used at least one categorical column,
+        # be sure Falcata actually used at least one categorical column,
         # and that it was correctly treated as a categorical feature
         if output == "dataframe-with-categorical":
             cat_cols = [col for col in dX.columns if dX.dtypes[col].name == "category"]
@@ -623,7 +623,7 @@ def test_regressor_quantile(output, alpha, cluster):
         np.testing.assert_allclose(q1, alpha, atol=0.2)
         np.testing.assert_allclose(q2, alpha, atol=0.2)
 
-        # be sure LightGBM actually used at least one categorical column,
+        # be sure Falcata actually used at least one categorical column,
         # and that it was correctly treated as a categorical feature
         if output == "dataframe-with-categorical":
             cat_cols = [col for col in dX.columns if dX.dtypes[col].name == "category"]
@@ -675,7 +675,7 @@ def test_regressor_custom_objective(output, cluster):
     platform.lower().startswith("darwin"),
     reason=(
         "learning-to-rank Dask tests are unreliable on macOS. "
-        "See https://github.com/lightgbm-org/LightGBM/issues/4074#issuecomment-3124996317"
+        "See https://github.com/lightgbm-org/Falcata/issues/4074#issuecomment-3124996317"
     ),
 )
 @pytest.mark.parametrize("output", ["array", "dataframe", "dataframe-with-categorical"])
@@ -701,7 +701,7 @@ def test_ranker(output, group, boosting_type, tree_learner, cluster):
             client.rebalance()
 
         # use many trees + leaves to overfit, help ensure that Dask data-parallel strategy matches that of
-        # serial learner. See https://github.com/lightgbm-org/LightGBM/issues/3292#issuecomment-671288210.
+        # serial learner. See https://github.com/lightgbm-org/Falcata/issues/3292#issuecomment-671288210.
         params = {
             "boosting_type": boosting_type,
             "random_state": 42,
@@ -755,7 +755,7 @@ def test_ranker(output, group, boosting_type, tree_learner, cluster):
         assert np.min(pred_leaf_vals) >= 0
         assert len(np.unique(pred_leaf_vals)) <= params["num_leaves"]
 
-        # be sure LightGBM actually used at least one categorical column,
+        # be sure Falcata actually used at least one categorical column,
         # and that it was correctly treated as a categorical feature
         if output == "dataframe-with-categorical":
             cat_cols = [col for col in dX.columns if dX.dtypes[col].name == "category"]
@@ -1346,7 +1346,7 @@ def test_network_params_not_required_but_respected_if_given(task, listen_port, c
         assert "machines" in params
 
         # model 3 - local_listen_port given
-        # training should fail because LightGBM will try to use the same
+        # training should fail because Falcata will try to use the same
         # port for multiple worker processes on the same machine
         dask_model3 = dask_model_factory(n_estimators=5, num_leaves=5, local_listen_port=listen_port)
         error_msg = "has multiple Dask worker processes running on it"
@@ -1356,7 +1356,7 @@ def test_network_params_not_required_but_respected_if_given(task, listen_port, c
 
 @pytest.mark.parametrize("task", tasks)
 def test_machines_should_be_used_if_provided(task, cluster):
-    pytest.skip("skipping due to timeout issues discussed in https://github.com/lightgbm-org/LightGBM/issues/5390")
+    pytest.skip("skipping due to timeout issues discussed in https://github.com/lightgbm-org/Falcata/issues/5390")
     with Client(cluster) as client:
         _, _, _, _, dX, dy, _, dg = _create_data(objective=task, output="array", chunk_size=10, group=None)
 

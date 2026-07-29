@@ -42,10 +42,10 @@ jobs:
           mkdir -p "${BUILD_ARTIFACTSTAGINGDIRECTORY}"
           tar \
             -czvf \
-            /tmp/LightGBM-complete_source_code_tar_gz.tar.gz \
+            /tmp/Falcata-complete_source_code_tar_gz.tar.gz \
             .
           mv \
-            /tmp/LightGBM-complete_source_code_tar_gz.tar.gz \
+            /tmp/Falcata-complete_source_code_tar_gz.tar.gz \
             ${BUILD_ARTIFACTSTAGINGDIRECTORY}/
       - name: Create commit.txt
         shell: bash
@@ -64,7 +64,7 @@ jobs:
           name: source-archive
           path: |
             ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/commit.txt
-            ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/LightGBM-complete_source_code_tar_gz.tar.gz
+            ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}/Falcata-complete_source_code_tar_gz.tar.gz
           if-no-files-found: error
           retention-days: 3
   all-build-jobs-successful:

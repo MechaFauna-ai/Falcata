@@ -34,7 +34,7 @@ env:
   #     ‘dsymutil-63923a’ ‘dsymutil-9aa721’ ‘dsymutil-b7e1bb’
   #
   # These are unlikely to show up in CRAN's checks. They come from
-  # 'dsymutil ---gen-reproducer' being run (not something LightGBM explicitly does).
+  # 'dsymutil ---gen-reproducer' being run (not something Falcata explicitly does).
   #
   # ref:
   #   - https://github.com/llvm/llvm-project/issues/61920
@@ -161,7 +161,7 @@ jobs:
           apt-get update -y
           apt-get install --no-install-recommends -y \
             git
-      - name: Trust git cloning LightGBM
+      - name: Trust git cloning Falcata
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
@@ -234,7 +234,7 @@ jobs:
           - r_customization: csan
             compiler: clang
     steps:
-      - name: Trust git cloning LightGBM
+      - name: Trust git cloning Falcata
         run: |
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
       - name: Checkout repository
@@ -292,7 +292,7 @@ jobs:
       - name: Install system dependencies
         shell: bash
         run: |
-          # libuv is needed for {fs} (https://github.com/lightgbm-org/LightGBM/issues/7208)
+          # libuv is needed for {fs} (https://github.com/BelixRogner/Falcata/issues/7208)
           if type -f apt 2>&1 > /dev/null; then
             apt-get update
             apt-get install --no-install-recommends -y \
@@ -336,7 +336,7 @@ jobs:
             r-check "$(pwd)" \
             | tee ./rchk-logs.txt 2>&1
 
-            # the '-v' exceptions below are from R/rchk itself and not LightGBM:
+            # the '-v' exceptions below are from R/rchk itself and not Falcata:
             # https://github.com/kalibera/rchk/issues/22#issuecomment-656036156
             if grep -E '\[PB\]|ERROR' ./rchk-logs.txt \
                | grep -v 'too many states' \
@@ -352,7 +352,7 @@ jobs:
 
           # why these packages?
           #
-          #   - 'curl' is not a dependency of {lightgbm}, but it's needed for 'R CMD check' URL checks
+          #   - 'curl' is not a dependency of {falcata}, but it's needed for 'R CMD check' URL checks
           #   - 'testthat' is not needed by 'rchk', so avoid installing it until here
           #
           Rscript -e "

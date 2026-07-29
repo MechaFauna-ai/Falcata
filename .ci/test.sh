@@ -92,11 +92,11 @@ if [[ $TASK == "if-else" ]]; then
     # shellcheck disable=SC1091
     source activate "${CONDA_ENV}"
     cmake -B build -S . || exit 1
-    cmake --build build --target lightgbm -j4 || exit 1
+    cmake --build build --target falcata -j4 || exit 1
     cd "$BUILD_DIRECTORY/tests/cpp_tests"
-    ../../lightgbm config=train.conf convert_model_language=cpp convert_model=../../src/boosting/gbdt_prediction.cpp
-    ../../lightgbm config=predict.conf output_result=origin.pred
-    ../../lightgbm config=predict.conf output_result=ifelse.pred
+    ../../falcata config=train.conf convert_model_language=cpp convert_model=../../src/boosting/gbdt_prediction.cpp
+    ../../falcata config=predict.conf output_result=origin.pred
+    ../../falcata config=predict.conf output_result=ifelse.pred
     python test.py
     exit 0
 fi
@@ -132,9 +132,9 @@ cd "${BUILD_DIRECTORY}"
 if [[ $TASK == "sdist" ]]; then
     sh ./build-python.sh sdist || exit 1
     sh .ci/check-python-dists.sh ./dist || exit 1
-    pip install -v --no-deps "./dist/lightgbm-${LGB_VER}.tar.gz" || exit 1
+    pip install -v --no-deps "./dist/falcata-${LGB_VER}.tar.gz" || exit 1
     if [[ $PRODUCES_ARTIFACTS == "true" ]]; then
-        cp "./dist/lightgbm-${LGB_VER}.tar.gz" "${BUILD_ARTIFACTSTAGINGDIRECTORY}" || exit 1
+        cp "./dist/falcata-${LGB_VER}.tar.gz" "${BUILD_ARTIFACTSTAGINGDIRECTORY}" || exit 1
     fi
     pytest -ra ./tests/python_package_test || exit 1
     exit 0
@@ -143,14 +143,14 @@ elif [[ $TASK == "bdist" ]]; then
         sh ./build-python.sh bdist_wheel || exit 1
         sh .ci/check-python-dists.sh ./dist || exit 1
         if [[ $PRODUCES_ARTIFACTS == "true" ]]; then
-            cp "$(echo "dist/lightgbm-${LGB_VER}-py3-none-macosx"*.whl)" "${BUILD_ARTIFACTSTAGINGDIRECTORY}" || exit 1
+            cp "$(echo "dist/falcata-${LGB_VER}-py3-none-macosx"*.whl)" "${BUILD_ARTIFACTSTAGINGDIRECTORY}" || exit 1
         fi
     else
         sh ./build-python.sh bdist_wheel --integrated-opencl || exit 1
 
         # print some debugging logs about the wheel's GLIBC version and dependencies on shared libraries
         pip install 'auditwheel>=6.5.1'
-        auditwheel show ./dist/lightgbm*.whl
+        auditwheel show ./dist/falcata*.whl
 
         # pass through 'auditwheel repair' to set the appropriate wheel tags.
         #
@@ -160,11 +160,11 @@ elif [[ $TASK == "bdist" ]]; then
             --exclude 'libgomp.so*' \
             --lib-sdir '' \
             --wheel-dir dist-fixed/ \
-            ./dist/lightgbm*.whl
+            ./dist/falcata*.whl
 
         # overwrite the original wheel with the new one
-        rm ./dist/lightgbm*.whl
-        mv ./dist-fixed/lightgbm*.whl ./dist
+        rm ./dist/falcata*.whl
+        mv ./dist-fixed/falcata*.whl ./dist
 
         # check wheel properties
         sh .ci/check-python-dists.sh ./dist || exit 1
@@ -177,7 +177,7 @@ elif [[ $TASK == "bdist" ]]; then
             else
                 PLATFORM="manylinux2014_aarch64.manylinux_2_17_aarch64"
             fi
-            cp "dist/lightgbm-${LGB_VER}-py3-none-${PLATFORM}.whl" "${BUILD_ARTIFACTSTAGINGDIRECTORY}" || exit 1
+            cp "dist/falcata-${LGB_VER}-py3-none-${PLATFORM}.whl" "${BUILD_ARTIFACTSTAGINGDIRECTORY}" || exit 1
         fi
         # Make sure we can do both CPU and GPU; see tests/python_package_test/test_dual.py
         export LIGHTGBM_TEST_DUAL_CPU_GPU=1
@@ -188,8 +188,8 @@ elif [[ $TASK == "bdist" ]]; then
 fi
 
 if [[ $TASK == "gpu" ]]; then
-    sed -i'.bak' 's/std::string device_type = "cpu";/std::string device_type = "gpu";/' ./include/LightGBM/config.h
-    grep -q 'std::string device_type = "gpu"' ./include/LightGBM/config.h || exit 1  # make sure that changes were really done
+    sed -i'.bak' 's/std::string device_type = "cpu";/std::string device_type = "gpu";/' ./include/Falcata/config.h
+    grep -q 'std::string device_type = "gpu"' ./include/Falcata/config.h || exit 1  # make sure that changes were really done
     if [[ $METHOD == "pip" ]]; then
         sh ./build-python.sh sdist || exit 1
         sh .ci/check-python-dists.sh ./dist || exit 1
@@ -197,25 +197,25 @@ if [[ $TASK == "gpu" ]]; then
             -v \
             --no-deps \
             --config-settings=cmake.define.USE_GPU=ON \
-            "./dist/lightgbm-${LGB_VER}.tar.gz" \
+            "./dist/falcata-${LGB_VER}.tar.gz" \
         || exit 1
         pytest -ra ./tests/python_package_test || exit 1
         exit 0
     elif [[ $METHOD == "wheel" ]]; then
         sh ./build-python.sh bdist_wheel --gpu || exit 1
         sh ./.ci/check-python-dists.sh ./dist || exit 1
-        pip install -v --no-deps "$(echo "./dist/lightgbm-${LGB_VER}"*.whl)" || exit 1
+        pip install -v --no-deps "$(echo "./dist/falcata-${LGB_VER}"*.whl)" || exit 1
         pytest -ra ./tests || exit 1
         exit 0
     elif [[ $METHOD == "source" ]]; then
         cmake -B build -S . -DUSE_GPU=ON
     fi
 elif [[ $TASK == "cuda" ]]; then
-    sed -i'.bak' 's/std::string device_type = "cpu";/std::string device_type = "cuda";/' ./include/LightGBM/config.h
-    grep -q 'std::string device_type = "cuda"' ./include/LightGBM/config.h || exit 1  # make sure that changes were really done
+    sed -i'.bak' 's/std::string device_type = "cpu";/std::string device_type = "cuda";/' ./include/Falcata/config.h
+    grep -q 'std::string device_type = "cuda"' ./include/Falcata/config.h || exit 1  # make sure that changes were really done
     # by default ``gpu_use_dp=false`` for efficiency. change to ``true`` here for exact results in ci tests
-    sed -i'.bak' 's/gpu_use_dp = false;/gpu_use_dp = true;/' ./include/LightGBM/config.h
-    grep -q 'gpu_use_dp = true' ./include/LightGBM/config.h || exit 1  # make sure that changes were really done
+    sed -i'.bak' 's/gpu_use_dp = false;/gpu_use_dp = true;/' ./include/Falcata/config.h
+    grep -q 'gpu_use_dp = true' ./include/Falcata/config.h || exit 1  # make sure that changes were really done
     if [[ $METHOD == "pip" ]]; then
         sh ./build-python.sh sdist || exit 1
         sh ./.ci/check-python-dists.sh ./dist || exit 1
@@ -223,14 +223,14 @@ elif [[ $TASK == "cuda" ]]; then
             -v \
             --no-deps \
             --config-settings=cmake.define.USE_CUDA=ON \
-            "./dist/lightgbm-${LGB_VER}.tar.gz" \
+            "./dist/falcata-${LGB_VER}.tar.gz" \
         || exit 1
         pytest -ra ./tests/python_package_test || exit 1
         exit 0
     elif [[ $METHOD == "wheel" ]]; then
         sh ./build-python.sh bdist_wheel --cuda || exit 1
         sh ./.ci/check-python-dists.sh ./dist || exit 1
-        pip install -v --no-deps "$(echo "./dist/lightgbm-${LGB_VER}"*.whl)" || exit 1
+        pip install -v --no-deps "$(echo "./dist/falcata-${LGB_VER}"*.whl)" || exit 1
         pytest -ra ./tests || exit 1
         exit 0
     elif [[ $METHOD == "source" ]]; then
@@ -244,14 +244,14 @@ elif [[ $TASK == "mpi" ]]; then
             -v \
             --no-deps \
             --config-settings=cmake.define.USE_MPI=ON \
-            "./dist/lightgbm-${LGB_VER}.tar.gz" \
+            "./dist/falcata-${LGB_VER}.tar.gz" \
         || exit 1
         pytest -ra ./tests/python_package_test || exit 1
         exit 0
     elif [[ $METHOD == "wheel" ]]; then
         sh ./build-python.sh bdist_wheel --mpi || exit 1
         sh ./.ci/check-python-dists.sh ./dist || exit 1
-        pip install -v --no-deps "$(echo "./dist/lightgbm-${LGB_VER}"*.whl)" || exit 1
+        pip install -v --no-deps "$(echo "./dist/falcata-${LGB_VER}"*.whl)" || exit 1
         pytest -ra ./tests || exit 1
         exit 0
     elif [[ $METHOD == "source" ]]; then
@@ -279,7 +279,7 @@ if [[ $TASK == "regular" ]]; then
         fi
     fi
     cd "$BUILD_DIRECTORY/examples/python-guide"
-    sed -i'.bak' '/import lightgbm as lgb/a\
+    sed -i'.bak' '/import falcata as lgb/a\
 import matplotlib\
 matplotlib.use\(\"Agg\"\)\
 ' plot_example.py  # prevent interactive window mode
@@ -312,5 +312,5 @@ matplotlib.use\(\"Agg\"\)\
             python-graphviz \
             scikit-learn || exit 1
     fi
-    python -c "import lightgbm" || exit 1
+    python -c "import falcata" || exit 1
 fi

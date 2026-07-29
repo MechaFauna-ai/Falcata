@@ -23,9 +23,9 @@ from sklearn.multioutput import ClassifierChain, MultiOutputClassifier, MultiOut
 from sklearn.utils.estimator_checks import parametrize_with_checks as sklearn_parametrize_with_checks
 from sklearn.utils.validation import check_is_fitted
 
-import lightgbm as lgb
-from lightgbm.basic import LGBMDeprecationWarning
-from lightgbm.compat import (
+import falcata as lgb
+from falcata.basic import LGBMDeprecationWarning
+from falcata.compat import (
     PANDAS_INSTALLED,
     _sklearn_version,
     pd_DataFrame,
@@ -683,7 +683,7 @@ def test_parameter_aliases_are_handled_correctly(estimator_to_task):
     estimator, task = estimator_to_task
     # scikit-learn estimators should remember every parameter passed
     # via keyword arguments in the estimator constructor, but then
-    # only pass the correct value down to LightGBM's C++ side
+    # only pass the correct value down to Falcata's C++ side
     params = {
         "eta": 0.08,
         "num_iterations": 3,
@@ -706,7 +706,7 @@ def test_parameter_aliases_are_handled_correctly(estimator_to_task):
     assert p["eta"] == 0.08
     assert p["learning_rate"] == 0.1
 
-    # Config in the 'LightGBM::Booster' on the C++ side
+    # Config in the 'Falcata::Booster' on the C++ side
     p = mod.booster_._get_loaded_param()
     assert p["learning_rate"] == 0.1
     assert "eta" not in p
@@ -1464,7 +1464,7 @@ def test_first_metric_only():
         "verbose": -1,
         "seed": 123,
         "early_stopping_rounds": 5,
-    }  # early stop should be supported via global LightGBM parameter
+    }  # early stop should be supported via global Falcata parameter
     params_fit = {"X": X_train, "y": y_train}
 
     iter_valid1_l1 = 4
@@ -1653,7 +1653,7 @@ def test_verbosity_is_respected_when_using_custom_objective(capsys):
     lgb.LGBMRegressor(**params, verbosity=-1, n_estimators=1).fit(X, y)
     assert capsys.readouterr().out == ""
     lgb.LGBMRegressor(**params, verbosity=0, n_estimators=1).fit(X, y)
-    assert "[LightGBM] [Warning] Unknown parameter: nonsense" in capsys.readouterr().out
+    assert "[Falcata] [Warning] Unknown parameter: nonsense" in capsys.readouterr().out
 
 
 def test_fit_only_raises_num_rounds_warning_when_expected(capsys):
@@ -1694,14 +1694,14 @@ def test_fit_only_raises_num_rounds_warning_when_expected(capsys):
     assert_silent(capsys)
 
     # warning: 2 aliases (different values... "num_iterations" wins because it's the main param name)
-    with pytest.warns(UserWarning, match="LightGBM will perform up to 5 boosting rounds"):
+    with pytest.warns(UserWarning, match="Falcata will perform up to 5 boosting rounds"):
         reg = lgb.LGBMRegressor(**base_kwargs, num_iterations=5, n_iter=6).fit(X, y)
     assert reg.n_estimators_ == 5
     # should not be any other logs (except the warning, intercepted by pytest)
     assert_silent(capsys)
 
     # warning: 2 aliases (different values... first one in the order from Config::parameter2aliases() wins)
-    with pytest.warns(UserWarning, match="LightGBM will perform up to 4 boosting rounds"):
+    with pytest.warns(UserWarning, match="Falcata will perform up to 4 boosting rounds"):
         reg = lgb.LGBMRegressor(**base_kwargs, n_iter=4, max_iter=5).fit(X, y)
     assert reg.n_estimators_ == 4
     # should not be any other logs (except the warning, intercepted by pytest)
@@ -1747,7 +1747,7 @@ def test_feature_names_in_and_predict_warning(
     """Test feature_names_in_ behavior and predict()-time feature name warnings.
 
     Should cover all combinations of fit X type, feature_name argument, and predict X type.
-    Regression test for https://github.com/lightgbm-org/LightGBM/issues/6798.
+    Regression test for https://github.com/lightgbm-org/Falcata/issues/6798.
     """
     if fit_X_type.startswith("pa_") or predict_X_type.startswith("pa_"):
         pa = pytest.importorskip("pyarrow")
@@ -1788,7 +1788,7 @@ def test_feature_names_in_and_predict_warning(
         "message": ".*feature names.*",
     }
 
-    # input types where LightGBM supports 'feature_name="auto"'
+    # input types where Falcata supports 'feature_name="auto"'
     types_with_feat_names = {"pa_Table", "pd_DataFrame", "pl_DataFrame"}
 
     # case 1: no 'feature_names' passed to fit() and "feature_name='auto'" should have identical behavior
@@ -2035,7 +2035,7 @@ def test_validate_features(task):
     model.predict(df2, validate_features=False)
 
 
-# LightGBM's 'predict_disable_shape_check' mechanism is intentionally not respected by
+# Falcata's 'predict_disable_shape_check' mechanism is intentionally not respected by
 # its scikit-learn estimators, for consistency with scikit-learn's own behavior.
 @pytest.mark.parametrize("task", all_tasks)
 @pytest.mark.parametrize("predict_disable_shape_check", [True, False])

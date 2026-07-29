@@ -10,7 +10,7 @@ import numpy as np
 import sklearn.datasets
 from sklearn.utils import check_random_state
 
-import lightgbm as lgb
+import falcata as lgb
 
 SERIALIZERS = ["pickle", "joblib", "cloudpickle"]
 
@@ -269,9 +269,9 @@ def assert_all_trees_valid(model_dump):
 
 # This mapping from CI-time environment variables is a placeholder
 # until there is a more reliable way to detect which customizations
-# LightGBM was built with.
+# Falcata was built with.
 #
-# see https://github.com/lightgbm-org/LightGBM/issues/7273
+# see https://github.com/BelixRogner/Falcata/issues/7273
 #
 class BuildInfo:
     has_cuda = os.getenv("TASK", "") == "cuda"

@@ -1,13 +1,13 @@
-"""Native int8 ingestion benchmark (ExaBoost-only, separate from the matrix).
+"""Native int8 ingestion benchmark (Falcata-only, separate from the matrix).
 
 The cross-library matrix feeds every library the same float32 bits for
-fairness, so ExaBoost's native small-int path (int8/int16 zero-copy through
+fairness, so Falcata's native small-int path (int8/int16 zero-copy through
 the C API + LUT binning) is measured here instead: Dataset construct time,
 Booster create time, first-trees time, and peak host RSS on numerai, fed from
 the float32 memmap vs its int8 twin (``datasets.py numerai-int8``). The two
 flows produce identical models (bins are byte-identical by construction).
 
-Run inside the ExaBoost venv::
+Run inside the Falcata venv::
 
     python benchmarks/ingest_bench.py               # 3 repeats each, medians
     python benchmarks/ingest_bench.py --repeats 1
@@ -124,7 +124,7 @@ def main():
                 fh.write(json.dumps(rec) + "\n")
             print(f"{kind} repeat {rep}: {out}", flush=True)
 
-    print(f"\nmedians over {args.repeats} repeats (numerai, ExaBoost cuda):")
+    print(f"\nmedians over {args.repeats} repeats (numerai, Falcata cuda):")
     keys = ["construct_s", "create_s", f"trees{WARMUP_TREES}_s", "peak_rss_gb"]
     header = "flow      " + "".join(f"{k:>14}" for k in keys)
     print(header)

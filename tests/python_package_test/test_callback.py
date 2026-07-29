@@ -1,7 +1,7 @@
 # coding: utf-8
 import pytest
 
-import lightgbm as lgb
+import falcata as lgb
 
 from .utils import SERIALIZERS, pickle_and_unpickle_object
 

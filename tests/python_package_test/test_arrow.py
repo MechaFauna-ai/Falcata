@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pytest
 
-import lightgbm as lgb
+import falcata as lgb
 
 from .utils import np_assert_array_equal
 

@@ -26,7 +26,7 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import GroupKFold, TimeSeriesSplit, train_test_split
 
-import lightgbm as lgb
+import falcata as lgb
 
 from .utils import (
     SERIALIZERS,
@@ -1584,7 +1584,7 @@ def test_parameters_are_loaded_from_model_file(tmp_path, capsys, rng):
     with model_file.open("wt") as f:
         f.writelines(model_contents)
     bst = lgb.Booster(model_file=model_file)
-    expected_msg = "[LightGBM] [Warning] Ignoring unrecognized parameter 'max_conflict_rate' found in model string."
+    expected_msg = "[Falcata] [Warning] Ignoring unrecognized parameter 'max_conflict_rate' found in model string."
     stdout = capsys.readouterr().out
     assert expected_msg in stdout
     set_params = {k: bst.params[k] for k in params.keys()}
@@ -1829,7 +1829,7 @@ def test_all_expected_params_are_written_out_to_model_text(tmp_path):
     # add device-specific entries
     #
     # passed-in force_col_wise / force_row_wise parameters are ignored on CUDA and GPU builds...
-    # https://github.com/lightgbm-org/LightGBM/blob/1d7ee63686272bceffd522284127573b511df6be/src/io/config.cpp#L375-L377
+    # https://github.com/lightgbm-org/Falcata/blob/1d7ee63686272bceffd522284127573b511df6be/src/io/config.cpp#L375-L377
     if BuildInfo.has_cuda:
         device_entries = ["[force_col_wise: 0]", "[force_row_wise: 1]", "[device_type: cuda]", "[gpu_use_dp: 1]"]
     elif BuildInfo.has_gpu:
@@ -2536,7 +2536,7 @@ def test_refit_dataset_params(rng):
 
 
 def test_refit_linear_tree_single_class_no_segfault():
-    # Regression test for https://github.com/microsoft/LightGBM/issues/6792.
+    # Regression test for https://github.com/microsoft/Falcata/issues/6792.
     # Calling refit() with data that contains only one class on a linear_tree model
     # used to segfault because some features become constant (all-zero) in the
     # single-class subset.  InnerFeatureIndex() then returns -1 for those features,
@@ -2572,7 +2572,7 @@ def test_mape_for_specific_boosting_types(boosting_type):
     pred = gbm.predict(X)
     pred_mean = pred.mean()
     # the following checks that dart and rf with mape can predict outside the 0-1 range
-    # https://github.com/lightgbm-org/LightGBM/issues/1579
+    # https://github.com/lightgbm-org/Falcata/issues/1579
     # Threshold is intentionally loose (>5) because fixing the
     # WeightedPercentileFun segment bug (#7151) shifted the output of MAPE
     # training. The intent of this assertion is to guard against predictions
@@ -4627,7 +4627,7 @@ def test_pandas_nullable_dtypes(rng_fixed_seed):
 
 def test_boost_from_average_with_single_leaf_trees():
     # test data are taken from bug report
-    # https://github.com/lightgbm-org/LightGBM/issues/4708
+    # https://github.com/lightgbm-org/Falcata/issues/4708
     X = np.array(
         [
             [1021.0589, 1018.9578],
@@ -4658,8 +4658,8 @@ def test_boost_from_average_with_single_leaf_trees():
 
 
 def test_cegb_split_buffer_clean(rng_fixed_seed):
-    # modified from https://github.com/lightgbm-org/LightGBM/issues/3679#issuecomment-938652811
-    # and https://github.com/lightgbm-org/LightGBM/pull/5087
+    # modified from https://github.com/lightgbm-org/Falcata/issues/3679#issuecomment-938652811
+    # and https://github.com/lightgbm-org/Falcata/pull/5087
     # test that the ``splits_per_leaf_`` of CEGB is cleaned before training a new tree
     # which is done in the fix #5164
     # without the fix:
@@ -4709,7 +4709,7 @@ def test_verbosity_and_verbose(capsys):
         "verbosity": 0,
     }
     lgb.train(params, ds, num_boost_round=1)
-    expected_msg = "[LightGBM] [Warning] verbosity is set=0, verbose=1 will be ignored. Current value: verbosity=0"
+    expected_msg = "[Falcata] [Warning] verbosity is set=0, verbose=1 will be ignored. Current value: verbosity=0"
     stdout = capsys.readouterr().out
     assert expected_msg in stdout
 
@@ -4725,7 +4725,7 @@ def test_verbosity_is_respected_when_using_custom_objective(capsys):
     lgb.train({**params, "verbosity": -1}, ds, num_boost_round=1)
     assert_silent(capsys)
     lgb.train({**params, "verbosity": 0}, ds, num_boost_round=1)
-    assert "[LightGBM] [Warning] Unknown parameter: nonsense" in capsys.readouterr().out
+    assert "[Falcata] [Warning] Unknown parameter: nonsense" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("verbosity_param", lgb.basic._ConfigAliases.get("verbosity"))
@@ -4742,14 +4742,14 @@ def test_verbosity_can_suppress_alias_warnings(capsys, verbosity_param, verbosit
     }
     lgb.train(params, ds, num_boost_round=1)
     expected_msg = (
-        "[LightGBM] [Warning] bagging_fraction is set=0.8, subsample=0.75 will be ignored. "
+        "[Falcata] [Warning] bagging_fraction is set=0.8, subsample=0.75 will be ignored. "
         "Current value: bagging_fraction=0.8"
     )
     stdout = capsys.readouterr().out
     if verbosity >= 0:
         assert expected_msg in stdout
     else:
-        assert re.search(r"\[LightGBM\]", stdout) is None
+        assert re.search(r"\[Falcata\]", stdout) is None
 
 
 def test_cv_only_raises_num_rounds_warning_when_expected(capsys):
@@ -4793,14 +4793,14 @@ def test_cv_only_raises_num_rounds_warning_when_expected(capsys):
     assert_silent(capsys)
 
     # warning: 2 aliases (different values... "num_iterations" wins because it's the main param name)
-    with pytest.warns(UserWarning, match="LightGBM will perform up to 5 boosting rounds"):
+    with pytest.warns(UserWarning, match="Falcata will perform up to 5 boosting rounds"):
         cv_bst = lgb.cv({**base_params, "n_iter": 6, "num_iterations": 5}, ds, **additional_kwargs)
     assert all(t == 5 for t in cv_bst["cvbooster"].num_trees())
     # should not be any other logs (except the warning, intercepted by pytest)
     assert_silent(capsys)
 
     # warning: 2 aliases (different values... first one in the order from Config::parameter2aliases() wins)
-    with pytest.warns(UserWarning, match="LightGBM will perform up to 4 boosting rounds"):
+    with pytest.warns(UserWarning, match="Falcata will perform up to 4 boosting rounds"):
         cv_bst = lgb.cv({**base_params, "n_iter": 4, "max_iter": 5}, ds, **additional_kwargs)["cvbooster"]
     assert all(t == 4 for t in cv_bst.num_trees())
     # should not be any other logs (except the warning, intercepted by pytest)
@@ -4847,14 +4847,14 @@ def test_train_only_raises_num_rounds_warning_when_expected(capsys):
     assert_silent(capsys)
 
     # warning: 2 aliases (different values... "num_iterations" wins because it's the main param name)
-    with pytest.warns(UserWarning, match="LightGBM will perform up to 5 boosting rounds"):
+    with pytest.warns(UserWarning, match="Falcata will perform up to 5 boosting rounds"):
         bst = lgb.train({**base_params, "n_iter": 6, "num_iterations": 5}, ds)
     assert bst.num_trees() == 5
     # should not be any other logs (except the warning, intercepted by pytest)
     assert_silent(capsys)
 
     # warning: 2 aliases (different values... first one in the order from Config::parameter2aliases() wins)
-    with pytest.warns(UserWarning, match="LightGBM will perform up to 4 boosting rounds"):
+    with pytest.warns(UserWarning, match="Falcata will perform up to 4 boosting rounds"):
         bst = lgb.train({**base_params, "n_iter": 4, "max_iter": 5}, ds)
     assert bst.num_trees() == 4
     # should not be any other logs (except the warning, intercepted by pytest)

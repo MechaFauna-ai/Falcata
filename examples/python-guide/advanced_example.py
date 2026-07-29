@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
-import lightgbm as lgb
+import falcata as lgb
 
 print("Loading data...")
 # load or create your dataset
@@ -28,7 +28,7 @@ num_train, num_feature = X_train.shape
 # generate feature names
 feature_name = [f"feature_{col}" for col in range(num_feature)]
 
-# create dataset for lightgbm
+# create dataset for falcata
 # if you want to re-use data, remember to set free_raw_data=False
 lgb_train = lgb.Dataset(
     X_train, y_train, weight=W_train, feature_name=feature_name, categorical_feature=[21], free_raw_data=False

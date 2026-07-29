@@ -1,6 +1,6 @@
 # maintaining
 
-This document is for LightGBM maintainers.
+This document is for Falcata maintainers.
 
 ## Managing Dependencies
 
@@ -32,7 +32,7 @@ See https://pixi.prefix.dev/latest/ for more details.
 
 Create a pull request into `master` which prepares the source code for release.
 
-Copy the description and checklist from the previous release PR (for example: https://github.com/lightgbm-org/LightGBM/pull/6796).
+Copy the description and checklist from the previous release PR (for example: https://github.com/BelixRogner/Falcata/pull/6796).
 
 This should usually also include a checklist of other issues and PRs that should be completed for the release,
 and the PR should be used to discuss what makes it into the release.
@@ -51,11 +51,11 @@ These runs build and test the official artifacts that will be attached to the Gi
 
 ### Step 4: Create a Release
 
-Navigate to https://github.com/lightgbm-org/LightGBM/releases.
+Navigate to https://github.com/BelixRogner/Falcata/releases.
 
 Click "edit" on the draft release that `release-drafter` has created there.
 
-* update the tag and release title to match the version of LightGBM, in the format `v{major}.{minor}.{patch}`
+* update the tag and release title to match the version of Falcata, in the format `v{major}.{minor}.{patch}`
 * ensure that tag points at the commit on ``master`` created by merging the release PR
 
 When you're satisfied with the state of the release, click "Publish release".
@@ -70,7 +70,7 @@ After creating a release, run the following from the root of the repo to populat
 
 # attach them to the GitHub release
 gh release upload \
-    --repo lightgbm-org/LightGBM \
+    --repo BelixRogner/Falcata \
     "${TAG}" \
     ./release-artifacts/*
 ```
@@ -88,7 +88,7 @@ See the release checklist on the PR for details.
 
 ## Nightly Packages
 
-Nightly packages for the `lightgbm` Python package are uploaded to https://anaconda.org/lightgbm-packages on every merge to `master`.
+Nightly packages for the `falcata` Python package are uploaded to https://anaconda.org/falcata-packages on every merge to `master`.
 
 That's done using an upload token stored in a secret in CI.
 Those tokens expire after 1 year.
@@ -109,7 +109,7 @@ TOKEN=$(
     anaconda org auth \
         --create \
         --name nightly-uploads \
-        --org lightgbm-packages \
+        --org falcata-packages \
         --scopes 'api:read api:write pypi:upload'
 )
 ```
@@ -123,7 +123,7 @@ For example:
 
 # NOTE: set upload token in environment variable 'ANACONDA_API_TOKEN'
 anaconda upload \
-  --package lightgbm \
+  --package falcata \
   --force-metadata-update \
   -t pypi \
   ./release-artifacts/*.whl

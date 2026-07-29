@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 from sklearn.datasets import load_svmlight_file
 
-import lightgbm as lgb
+import falcata as lgb
 
 EXAMPLES_DIR = Path(__file__).absolute().parents[2] / "examples"
 

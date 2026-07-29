@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 from sklearn.model_selection import train_test_split
 
-import lightgbm as lgb
+import falcata as lgb
 
 from .utils import load_breast_cancer, make_synthetic_regression
 

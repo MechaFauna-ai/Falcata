@@ -1,7 +1,7 @@
-"""Shared configuration for the ExaBoost GPU benchmark suite.
+"""Shared configuration for the Falcata GPU benchmark suite.
 
 All artifacts (raw downloads, preprocessed caches, results, report) live under
-a single workspace directory, resolved from the ``EXABOOST_BENCH_ROOT``
+a single workspace directory, resolved from the ``FALCATA_BENCH_ROOT``
 environment variable and defaulting to ``benchmarks/workspace`` inside the
 repository checkout.
 """
@@ -9,7 +9,7 @@ repository checkout.
 import os
 
 ROOT = os.environ.get(
-    "EXABOOST_BENCH_ROOT",
+    "FALCATA_BENCH_ROOT",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace"),
 )
 DATA_DIR = os.path.join(ROOT, "data")
@@ -113,7 +113,7 @@ def venv_python(library: str) -> str:
         env = "env-lightgbm-ocl"
     else:
         env = "env-competitors"
-    override = os.environ.get(f"EXABOOST_BENCH_PY_{env.replace('-', '_').upper()}")
+    override = os.environ.get(f"FALCATA_BENCH_PY_{env.replace('-', '_').upper()}")
     return override or os.path.join(ROOT, env, "bin", "python")
 
 

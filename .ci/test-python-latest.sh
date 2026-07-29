@@ -2,7 +2,7 @@
 
 set -e -E -u -o pipefail
 
-echo "installing lightgbm and its dependencies"
+echo "installing falcata and its dependencies"
 pip install \
     --prefer-binary \
     --upgrade \

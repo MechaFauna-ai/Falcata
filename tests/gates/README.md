@@ -1,4 +1,4 @@
-# ExaBoost regression gates
+# Falcata regression gates
 
 Per-commit and nightly GPU regression testing for the three failure classes
 this project keeps hitting: silently invalid trees, quality regressions, and

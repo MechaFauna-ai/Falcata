@@ -4,7 +4,7 @@ import h5py
 import numpy as np
 import pandas as pd
 
-import lightgbm as lgb
+import falcata as lgb
 
 
 class HDFSequence(lgb.Sequence):
@@ -17,7 +17,7 @@ class HDFSequence(lgb.Sequence):
         hdf_dataset : h5py.Dataset
             Dataset in HDF5 file.
         batch_size : int
-            Size of a batch. When reading data to construct lightgbm Dataset, each read reads batch_size rows.
+            Size of a batch. When reading data to construct falcata Dataset, each read reads batch_size rows.
         """
         # We can also open HDF5 file once and get access to
         self.data = hdf_dataset
@@ -67,13 +67,13 @@ def save2hdf(input_data, fname, batch_size):
                 chunk = (nrow,)
                 data = data.values.flatten()
             else:
-                # We use random access for data sampling when creating LightGBM Dataset from Sequence.
+                # We use random access for data sampling when creating Falcata Dataset from Sequence.
                 # When accessing any element in a HDF5 chunk, it's read entirely.
                 # To save I/O for sampling, we should keep number of total chunks much larger than sample count.
                 # Here we are just creating a chunk size that matches with batch_size.
                 #
                 # Also note that the data is stored in row major order to avoid extra copy when passing to
-                # lightgbm Dataset.
+                # falcata Dataset.
                 chunk = (batch_size, ncol)
             f.create_dataset(name, data=data, chunks=chunk, compression="lzf")
 

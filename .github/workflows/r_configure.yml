@@ -6,7 +6,7 @@ on:
       pr-branch:
         type: string
         description: |
-          Branch in lightgbm-org/LightGBM to update.
+          Branch in BelixRogner/Falcata to update.
 
 # automatically cancel in-progress builds if another commit is pushed
 concurrency:
@@ -35,7 +35,7 @@ jobs:
           apt-get install --no-install-recommends -y \
             ca-certificates \
             git
-      - name: Trust git cloning LightGBM
+      - name: Trust git cloning Falcata
         run: |
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
       - name: Checkout repository
@@ -43,7 +43,7 @@ jobs:
         with:
           fetch-depth: 5
           submodules: false
-          repository: lightgbm-org/LightGBM
+          repository: BelixRogner/Falcata
           ref: "refs/heads/${{ inputs.pr-branch }}"
           token: ${{ github.token }}
           persist-credentials: true

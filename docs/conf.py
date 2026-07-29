@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# LightGBM documentation build configuration file, created by
+# Falcata documentation build configuration file, created by
 # sphinx-quickstart on Thu May  4 14:30:58 2017.
 #
 # This file is execfile()d with the current directory set to its
@@ -128,7 +128,7 @@ todo_include_todos = False
 master_doc = "index"
 
 # General information about the project.
-project = "LightGBM"
+project = "Falcata"
 copyright = f"{datetime.datetime.now().year}, Microsoft Corporation"
 author = "Microsoft Corporation"
 
@@ -172,8 +172,8 @@ if C_API:
             "breathe",
         ]
     )
-    breathe_projects = {"LightGBM": str(CURR_PATH / "doxyoutput" / "xml")}
-    breathe_default_project = "LightGBM"
+    breathe_projects = {"Falcata": str(CURR_PATH / "doxyoutput" / "xml")}
+    breathe_default_project = "Falcata"
     breathe_domain_by_extension = {
         "h": "c",
     }
@@ -225,7 +225,7 @@ def generate_doxygen_xml(app: Sphinx) -> None:
         The application object representing the Sphinx process.
     """
     doxygen_args = [
-        f"INPUT={CURR_PATH.parent / 'include' / 'LightGBM' / 'c_api.h'}",
+        f"INPUT={CURR_PATH.parent / 'include' / 'Falcata' / 'c_api.h'}",
         f"OUTPUT_DIRECTORY={CURR_PATH / 'doxyoutput'}",
         "GENERATE_HTML=NO",
         "GENERATE_LATEX=NO",
