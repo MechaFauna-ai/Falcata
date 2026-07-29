@@ -2091,7 +2091,7 @@ def test_cuda_monotone_unsupported_configs_raise():
             r"monotone_constraints is not supported with use_quantized_grad",
         ),
     ):
-        with pytest.raises(lgb.basic.LightGBMError, match=expected):
+        with pytest.raises(lgb.basic.FalcataError, match=expected):
             lgb.train(
                 {**base, **bad},
                 lgb.Dataset(X, label=y, params={"verbose": -1}),
@@ -2274,7 +2274,7 @@ def test_cuda_cegb_lazy_penalty_raises():
         "num_leaves": 15,
         "verbose": -1,
     }
-    with pytest.raises(lgb.basic.LightGBMError, match="cegb_penalty_feature_lazy"):
+    with pytest.raises(lgb.basic.FalcataError, match="cegb_penalty_feature_lazy"):
         lgb.train(
             params, lgb.Dataset(X, label=y, params={"verbose": -1}), num_boost_round=1
         )

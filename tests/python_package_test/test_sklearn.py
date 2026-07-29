@@ -2028,7 +2028,7 @@ def test_validate_features(task):
 
     # try to predict with a different feature
     df2 = df.rename(columns={"x2": "z"})
-    with pytest.raises(lgb.basic.LightGBMError, match="Expected 'x2' at position 1 but found 'z'"):
+    with pytest.raises(lgb.basic.FalcataError, match="Expected 'x2' at position 1 but found 'z'"):
         model.predict(df2, validate_features=True)
 
     # check that disabling the check doesn't raise the error

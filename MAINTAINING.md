@@ -32,7 +32,7 @@ See https://pixi.prefix.dev/latest/ for more details.
 
 Create a pull request into `master` which prepares the source code for release.
 
-Copy the description and checklist from the previous release PR (for example: https://github.com/BelixRogner/Falcata/pull/6796).
+Copy the description and checklist from the previous release PR (for example: https://github.com/lightgbm-org/LightGBM/pull/6796).
 
 This should usually also include a checklist of other issues and PRs that should be completed for the release,
 and the PR should be used to discuss what makes it into the release.

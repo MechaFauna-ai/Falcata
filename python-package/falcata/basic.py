@@ -39,6 +39,7 @@ __all__ = [
     "Booster",
     "Dataset",
     "LGBMDeprecationWarning",
+    "FalcataError",
     "LightGBMError",
     "register_logger",
     "Sequence",
@@ -152,10 +153,14 @@ ZERO_THRESHOLD = 1e-35
 _MULTICLASS_OBJECTIVES = {"multiclass", "multiclassova", "multiclass_ova", "ova", "ovr", "softmax"}
 
 
-class LightGBMError(Exception):
+class FalcataError(Exception):
     """Error thrown by Falcata."""
 
     pass
+
+
+#: Backwards-compatible alias for the pre-rename exception name.
+LightGBMError = FalcataError
 
 
 def _is_zero(x: float) -> bool:
@@ -282,7 +287,7 @@ if environ.get("LIGHTGBM_BUILD_DOC", "False") != "True":
     callback = ctypes.CFUNCTYPE(None, ctypes.c_char_p)
     _LIB.callback = callback(_log_callback)  # type: ignore[attr-defined]
     if _LIB.FLC_RegisterLogCallback(_LIB.callback) != 0:
-        raise LightGBMError(_LIB.FLC_GetLastError().decode("utf-8"))
+        raise FalcataError(_LIB.FLC_GetLastError().decode("utf-8"))
 
 
 _NUMERIC_TYPES = (int, float, bool)
@@ -297,7 +302,7 @@ def _safe_call(ret: int) -> None:
         The return value from C API calls.
     """
     if ret != 0:
-        raise LightGBMError(_LIB.FLC_GetLastError().decode("utf-8"))
+        raise FalcataError(_LIB.FLC_GetLastError().decode("utf-8"))
 
 
 def _is_numeric(obj: Any) -> bool:
@@ -1225,7 +1230,7 @@ class _InnerPredictor:
     ) -> int:
         """Get size of prediction result."""
         if nrow > _MAX_INT32:
-            raise LightGBMError(
+            raise FalcataError(
                 "Falcata cannot perform prediction for data "
                 f"with number of rows greater than MAX_INT32 ({_MAX_INT32}).\n"
                 "You can split your data into chunks "
@@ -2785,7 +2790,7 @@ class Dataset:
                     update()
                     self._free_handle()
                 else:
-                    raise LightGBMError(_LIB.FLC_GetLastError().decode("utf-8"))
+                    raise FalcataError(_LIB.FLC_GetLastError().decode("utf-8"))
         return self
 
     def _reverse_update_params(self) -> "Dataset":
@@ -2978,7 +2983,7 @@ class Dataset:
                 self.categorical_feature = categorical_feature
                 return self._free_handle()
         else:
-            raise LightGBMError(
+            raise FalcataError(
                 "Cannot set categorical feature after freed raw data, "
                 "set free_raw_data=False when construct Dataset to avoid this."
             )
@@ -3016,7 +3021,7 @@ class Dataset:
                 used_indices=self.used_indices,
             )
         else:
-            raise LightGBMError(
+            raise FalcataError(
                 "Cannot set predictor after freed raw data, "
                 "set free_raw_data=False when construct Dataset to avoid this."
             )
@@ -3045,7 +3050,7 @@ class Dataset:
             self.reference = reference
             return self._free_handle()
         else:
-            raise LightGBMError(
+            raise FalcataError(
                 "Cannot set reference after freed raw data, "
                 "set free_raw_data=False when construct Dataset to avoid this."
             )
@@ -3226,7 +3231,7 @@ class Dataset:
             The names of columns (features) in the Dataset.
         """
         if self._handle is None:
-            raise LightGBMError("Cannot get feature_name before construct dataset")
+            raise FalcataError("Cannot get feature_name before construct dataset")
         num_feature = self.num_feature()
         tmp_out_len = ctypes.c_int(0)
         reserved_string_buffer_size = 255
@@ -3331,7 +3336,7 @@ class Dataset:
                     )
             self._need_slice = False
         if self.data is None:
-            raise LightGBMError(
+            raise FalcataError(
                 "Cannot call `get_data` after freed raw data, "
                 "set free_raw_data=False when construct Dataset to avoid this."
             )
@@ -3388,7 +3393,7 @@ class Dataset:
             )
             return ret.value
         else:
-            raise LightGBMError("Cannot get num_data before construct dataset")
+            raise FalcataError("Cannot get num_data before construct dataset")
 
     def num_feature(self) -> int:
         """Get the number of columns (features) in the Dataset.
@@ -3408,7 +3413,7 @@ class Dataset:
             )
             return ret.value
         else:
-            raise LightGBMError("Cannot get num_feature before construct dataset")
+            raise FalcataError("Cannot get num_feature before construct dataset")
 
     def feature_num_bin(self, feature: Union[int, str]) -> int:
         """Get the number of bins for a feature.
@@ -3440,7 +3445,7 @@ class Dataset:
             )
             return ret.value
         else:
-            raise LightGBMError("Cannot get feature_num_bin before construct dataset")
+            raise FalcataError("Cannot get feature_num_bin before construct dataset")
 
     def get_ref_chain(self, ref_limit: int = 100) -> Set["Dataset"]:
         """Get a chain of Dataset objects.
@@ -3519,7 +3524,7 @@ class Dataset:
                     self.data = None
             elif isinstance(self.data, pd_DataFrame):
                 if not PANDAS_INSTALLED:
-                    raise LightGBMError(
+                    raise FalcataError(
                         "Cannot add features to DataFrame type of raw data "
                         "without pandas installed. "
                         "Install pandas and restart your session."
@@ -3924,13 +3929,13 @@ class Booster:
             Returns a pandas DataFrame of the parsed model.
         """
         if not PANDAS_INSTALLED:
-            raise LightGBMError(
+            raise FalcataError(
                 "This method cannot be run without pandas installed. "
                 "You must install pandas and restart your session to use this method."
             )
 
         if self.num_trees() == 0:
-            raise LightGBMError("There are no trees in this Booster and thus nothing to parse")
+            raise FalcataError("There are no trees in this Booster and thus nothing to parse")
 
         def _is_split_node(tree: Dict[str, Any]) -> bool:
             return "split_index" in tree.keys()
@@ -4087,7 +4092,7 @@ class Booster:
         if not isinstance(data, Dataset):
             raise TypeError(f"Validation data should be Dataset instance, met {type(data).__name__}")
         if data._predictor is not self.__init_predictor:
-            raise LightGBMError("Add validation data failed, you should use same predictor for these data")
+            raise FalcataError("Add validation data failed, you should use same predictor for these data")
         _safe_call(
             _LIB.FLC_BoosterAddValidData(
                 self._handle,
@@ -4179,7 +4184,7 @@ class Booster:
             if not isinstance(train_set, Dataset):
                 raise TypeError(f"Training data should be Dataset instance, met {type(train_set).__name__}")
             if train_set._predictor is not self.__init_predictor:
-                raise LightGBMError("Replace training data failed, you should use same predictor for these data")
+                raise FalcataError("Replace training data failed, you should use same predictor for these data")
             self.train_set = train_set
             _safe_call(
                 _LIB.FLC_BoosterResetTrainingData(
@@ -4192,7 +4197,7 @@ class Booster:
         produced_empty_tree = ctypes.c_int(0)
         if fobj is None:
             if self.__set_objective_to_none:
-                raise LightGBMError("Cannot update due to null objective function.")
+                raise FalcataError("Cannot update due to null objective function.")
             _safe_call(
                 _LIB.FLC_BoosterUpdateOneIter(
                     self._handle,
@@ -5070,7 +5075,7 @@ class Booster:
             Refitted Booster.
         """
         if self.__set_objective_to_none:
-            raise LightGBMError("Cannot refit due to null objective function.")
+            raise FalcataError("Cannot refit due to null objective function.")
         if dataset_params is None:
             dataset_params = {}
         predictor = _InnerPredictor.from_booster(booster=self, pred_parameter=deepcopy(kwargs))
@@ -5118,7 +5123,7 @@ class Booster:
                     "Using refit() to change which columns are treated as categorical is not supported. "
                     "If you have a valid use case for this, please open an issue at https://github.com/falcata-org/Falcata/issues."
                 )
-                raise LightGBMError(error_msg)
+                raise FalcataError(error_msg)
 
         train_set = Dataset(
             data=data,
@@ -5364,7 +5369,7 @@ class Booster:
                     split_feature = root["split_feature"]
                 if split_feature == feature:
                     if isinstance(root["threshold"], str):
-                        raise LightGBMError("Cannot compute split value histogram for the categorical feature")
+                        raise FalcataError("Cannot compute split value histogram for the categorical feature")
                     values.append(root["threshold"])
                 add(root["left_child"])
                 add(root["right_child"])

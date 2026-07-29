@@ -79,19 +79,19 @@ def test_basic(tmp_path):
     # test that shape is checked during prediction
     bad_X_test = X_test[:, 1:]
     bad_shape_error_msg = "The number of features in data*"
-    np.testing.assert_raises_regex(lgb.basic.LightGBMError, bad_shape_error_msg, bst.predict, bad_X_test)
+    np.testing.assert_raises_regex(lgb.basic.FalcataError, bad_shape_error_msg, bst.predict, bad_X_test)
     np.testing.assert_raises_regex(
-        lgb.basic.LightGBMError, bad_shape_error_msg, bst.predict, sparse.csr_matrix(bad_X_test)
+        lgb.basic.FalcataError, bad_shape_error_msg, bst.predict, sparse.csr_matrix(bad_X_test)
     )
     np.testing.assert_raises_regex(
-        lgb.basic.LightGBMError, bad_shape_error_msg, bst.predict, sparse.csc_matrix(bad_X_test)
+        lgb.basic.FalcataError, bad_shape_error_msg, bst.predict, sparse.csc_matrix(bad_X_test)
     )
     with open(tname, "w+b") as f:
         dump_svmlight_file(bad_X_test, y_test, f)
-    np.testing.assert_raises_regex(lgb.basic.LightGBMError, bad_shape_error_msg, bst.predict, tname)
+    np.testing.assert_raises_regex(lgb.basic.FalcataError, bad_shape_error_msg, bst.predict, tname)
     with open(tname, "w+b") as f:
         dump_svmlight_file(X_test, y_test, f, zero_based=False)
-    np.testing.assert_raises_regex(lgb.basic.LightGBMError, bad_shape_error_msg, bst.predict, tname)
+    np.testing.assert_raises_regex(lgb.basic.FalcataError, bad_shape_error_msg, bst.predict, tname)
 
 
 def test_booster_rollback_one_iter(rng):
@@ -314,7 +314,7 @@ def test_add_features_throws_if_num_data_unequal(rng):
     d1 = lgb.Dataset(X1).construct()
     d2 = lgb.Dataset(X2).construct()
     with pytest.raises(
-        lgb.basic.LightGBMError, match="Cannot add features from other Dataset with a different number of rows"
+        lgb.basic.FalcataError, match="Cannot add features from other Dataset with a different number of rows"
     ):
         d1.add_features_from(d2)
 
@@ -814,7 +814,7 @@ def test_smoke_custom_parser(tmp_path):
 
     data = lgb.Dataset(data_path, params={"parser_config_file": parser_config_file})
     with pytest.raises(
-        lgb.basic.LightGBMError, match="Cannot find parser class 'dummy', please register first or check config format"
+        lgb.basic.FalcataError, match="Cannot find parser class 'dummy', please register first or check config format"
     ):
         data.construct()
 
@@ -956,7 +956,7 @@ def test_feature_num_bin(min_data_in_bin, rng):
     # check for feature indices outside of range
     num_features = X.shape[1]
     with pytest.raises(
-        lgb.basic.LightGBMError,
+        lgb.basic.FalcataError,
         match=(
             f"Tried to retrieve number of bins for feature index {num_features}, "
             f"but the valid feature indices are \\[0, {num_features - 1}\\]."
@@ -1309,7 +1309,7 @@ def test_refit_correctly_handles_categorical_features_in_params(rng) -> None:
     # case 3: 'categorical_feature' keyword arg passed, different value
     # result: informative error
     with pytest.raises(
-        lgb.basic.LightGBMError,
+        lgb.basic.FalcataError,
         match=re.escape("Using refit() to change which columns are treated as categorical is not supported"),
     ):
         loaded_bst_new = loaded_bst.refit(X_new, y_new, categorical_feature=[0, 1])
@@ -1365,7 +1365,7 @@ def fil_cuda_booster():
             lgb.Dataset(X, y),
             num_boost_round=10,
         )
-    except lgb.basic.LightGBMError:
+    except lgb.basic.FalcataError:
         pytest.skip("no CUDA device / CUDA build available")
     return booster, X
 

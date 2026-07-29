@@ -14,7 +14,7 @@ from . import callback
 from .basic import (
     Booster,
     Dataset,
-    LightGBMError,
+    FalcataError,
     _choose_param_value,
     _ConfigAliases,
     _InnerPredictor,
@@ -555,7 +555,7 @@ def _make_n_folds(
             for obj_alias in _ConfigAliases.get("objective")
         ):
             if not SKLEARN_INSTALLED:
-                raise LightGBMError("scikit-learn is required for ranking cv")
+                raise FalcataError("scikit-learn is required for ranking cv")
             # ranking task, split according to groups
             group_info = np.asarray(full_data.get_group(), dtype=np.int32)
             flatted_group = np.repeat(range(len(group_info)), repeats=group_info)
@@ -563,7 +563,7 @@ def _make_n_folds(
             folds = group_kfold.split(X=np.empty(num_data), groups=flatted_group)
         elif stratified:
             if not SKLEARN_INSTALLED:
-                raise LightGBMError("scikit-learn is required for stratified cv")
+                raise FalcataError("scikit-learn is required for stratified cv")
             skf = _LGBMStratifiedKFold(n_splits=nfold, shuffle=shuffle, random_state=seed)
             folds = skf.split(X=np.empty(num_data), y=full_data.get_label())
         else:

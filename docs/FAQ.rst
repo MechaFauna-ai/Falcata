@@ -46,18 +46,18 @@ Use a smaller value for ``bin_construct_sample_cnt`` and a larger value for ``mi
 -------------------------------------------------------------------------
 
 **Multiple Solutions**: set the ``histogram_pool_size`` parameter to the MB you want to use for Falcata (histogram\_pool\_size + dataset size = approximately RAM used),
-lower ``num_leaves`` or lower ``max_bin`` (see `BelixRogner/Falcata#562 <https://github.com/BelixRogner/Falcata/issues/562>`__).
+lower ``num_leaves`` or lower ``max_bin`` (see `lightgbm-org/LightGBM#562 <https://github.com/lightgbm-org/LightGBM/issues/562>`__).
 
 4. I am using Windows. Should I use Visual Studio or MinGW for compiling Falcata?
 ----------------------------------------------------------------------------------
 
-Visual Studio `performs best for Falcata <https://github.com/BelixRogner/Falcata/issues/542>`__.
+Visual Studio `performs best for Falcata <https://github.com/lightgbm-org/LightGBM/issues/542>`__.
 
 5. When using Falcata GPU, I cannot reproduce results over several runs.
 -------------------------------------------------------------------------
 
 This is normal and expected behaviour, but you may try to use ``gpu_use_dp = true`` for reproducibility
-(see `BelixRogner/Falcata#560 <https://github.com/BelixRogner/Falcata/pull/560#issuecomment-304561654>`__).
+(see `lightgbm-org/LightGBM#560 <https://github.com/lightgbm-org/LightGBM/pull/560#issuecomment-304561654>`__).
 You may also use the CPU version.
 
 6. Bagging is not reproducible when changing the number of threads.
@@ -65,10 +65,10 @@ You may also use the CPU version.
 
 :raw-html:`<strike>`
 Falcata bagging is multithreaded, so its output depends on the number of threads used.
-There is `no workaround currently <https://github.com/BelixRogner/Falcata/issues/632>`__.
+There is `no workaround currently <https://github.com/lightgbm-org/LightGBM/issues/632>`__.
 :raw-html:`</strike>`
 
-Starting from `#2804 <https://github.com/BelixRogner/Falcata/pull/2804>`__ bagging result doesn't depend on the number of threads.
+Starting from `#2804 <https://github.com/lightgbm-org/LightGBM/pull/2804>`__ bagging result doesn't depend on the number of threads.
 So this issue should be solved in the latest version.
 
 7. I tried to use Random Forest mode, and Falcata crashes!
@@ -76,13 +76,13 @@ So this issue should be solved in the latest version.
 
 This is expected behaviour for arbitrary parameters. To enable Random Forest,
 you must use ``bagging_fraction`` and ``feature_fraction`` different from 1, along with a ``bagging_freq``.
-`This thread <https://github.com/BelixRogner/Falcata/issues/691>`__ includes an example.
+`This thread <https://github.com/lightgbm-org/LightGBM/issues/691>`__ includes an example.
 
 8. CPU usage is low (like 10%) in Windows when using Falcata on very large datasets with many-core systems.
 ------------------------------------------------------------------------------------------------------------
 
 Please use `Visual Studio <https://visualstudio.microsoft.com/downloads/>`__
-as it may be `10x faster than MinGW <https://github.com/BelixRogner/Falcata/issues/749>`__ especially for very large trees.
+as it may be `10x faster than MinGW <https://github.com/lightgbm-org/LightGBM/issues/749>`__ especially for very large trees.
 
 9. When I'm trying to specify a categorical column with the ``categorical_feature`` parameter, I get the following sequence of warnings, but there are no negative values in the column.
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -94,7 +94,7 @@ as it may be `10x faster than MinGW <https://github.com/BelixRogner/Falcata/issu
 
 The column you're trying to pass via ``categorical_feature`` likely contains very large values.
 Categorical features in Falcata are limited by int32 range,
-so you cannot pass values that are greater than ``Int32.MaxValue`` (2147483647) as categorical features (see `BelixRogner/Falcata#1359 <https://github.com/BelixRogner/Falcata/issues/1359>`__).
+so you cannot pass values that are greater than ``Int32.MaxValue`` (2147483647) as categorical features (see `lightgbm-org/LightGBM#1359 <https://github.com/lightgbm-org/LightGBM/issues/1359>`__).
 You should convert them to integers ranging from zero to the number of categories first.
 
 10. Falcata crashes randomly with the error like: ``Initializing libiomp5.dylib, but found libomp.dylib already initialized.``
@@ -140,7 +140,7 @@ Use ``nthreads=1`` to disable multithreading of Falcata. There is a bug with Ope
 with multithreading activated. A more expensive solution is to use new processes instead of using fork, however,
 keep in mind it is creating new processes where you have to copy memory and load libraries (example: if you want to
 fork 16 times your current process, then you will require to make 16 copies of your dataset in memory)
-(see `BelixRogner/Falcata#1789 <https://github.com/BelixRogner/Falcata/issues/1789#issuecomment-433713383>`__).
+(see `lightgbm-org/LightGBM#1789 <https://github.com/lightgbm-org/LightGBM/issues/1789#issuecomment-433713383>`__).
 
 An alternative, if multithreading is really necessary inside the forked sessions, would be to compile Falcata with
 Intel toolchain. Intel compilers are unaffected by this bug.
@@ -177,7 +177,7 @@ Falcata supports loading data from zero-based LibSVM format file directly.
 
 This is a known issue of CMake when using MinGW. The easiest solution is to run again your ``cmake`` command to bypass the one time stopper from CMake. Or you can upgrade your version of CMake to at least version 3.17.0.
 
-See `BelixRogner/Falcata#3060 <https://github.com/BelixRogner/Falcata/issues/3060#issuecomment-626338538>`__ for more details.
+See `lightgbm-org/LightGBM#3060 <https://github.com/lightgbm-org/LightGBM/issues/3060#issuecomment-626338538>`__ for more details.
 
 15. Where can I find Falcata's logo to use it in my presentation?
 ------------------------------------------------------------------
@@ -246,8 +246,8 @@ into processes, which varies by programming language and application type.
 
 For more details, see these discussions:
 
-* https://github.com/BelixRogner/Falcata/pull/6654#issuecomment-2352014275
-* https://github.com/BelixRogner/Falcata/issues/6509
+* https://github.com/lightgbm-org/LightGBM/pull/6654#issuecomment-2352014275
+* https://github.com/lightgbm-org/LightGBM/issues/6509
 * https://maskray.me/blog/2021-02-14-all-about-thread-local-storage
 * https://bugzilla.redhat.com/show_bug.cgi?id=1722181#c6
 
@@ -263,7 +263,7 @@ R-package
 1. Any training command using Falcata does not work after an error occurred during the training of a previous Falcata model.
 ------------------------------------------------------------------------------------------------------------------------------
 
-In older versions of the R-package (prior to ``v3.3.0``), this could happen occasionally and the solution was to run ``lgb.unloader(wipe = TRUE)`` to remove all Falcata-related objects. Some conversation about this could be found in `BelixRogner/Falcata#698 <https://github.com/BelixRogner/Falcata/issues/698>`__.
+In older versions of the R-package (prior to ``v3.3.0``), this could happen occasionally and the solution was to run ``lgb.unloader(wipe = TRUE)`` to remove all Falcata-related objects. Some conversation about this could be found in `lightgbm-org/LightGBM#698 <https://github.com/lightgbm-org/LightGBM/issues/698>`__.
 
 That is no longer necessary as of ``v3.3.0``, and function ``lgb.unloader()`` has since been removed from the R-package.
 
@@ -279,7 +279,7 @@ As of Falcata v4.0.0, ``setinfo()`` has been replaced by a new method, ``set_fie
 3. ``error in data.table::data.table()...argument 2 is NULL``.
 --------------------------------------------------------------
 
-If you are experiencing this error when running ``falcata``, you may be facing the same issue reported in `#2715 <https://github.com/BelixRogner/Falcata/issues/2715>`_ and later in `#2989 <https://github.com/BelixRogner/Falcata/pull/2989#issuecomment-614374151>`_. We have seen that in some situations, using ``data.table`` 1.11.x results in this error. To get around this, you can upgrade your version of ``data.table`` to at least version 1.12.0.
+If you are experiencing this error when running ``falcata``, you may be facing the same issue reported in `#2715 <https://github.com/lightgbm-org/LightGBM/issues/2715>`_ and later in `#2989 <https://github.com/lightgbm-org/LightGBM/pull/2989#issuecomment-614374151>`_. We have seen that in some situations, using ``data.table`` 1.11.x results in this error. To get around this, you can upgrade your version of ``data.table`` to at least version 1.12.0.
 
 4. ``package/dependency ‘Matrix’ is not available ...``
 -------------------------------------------------------
@@ -364,7 +364,7 @@ So, if you want to:
 ---------------------------------------------------------------------------------------------------------------------------
 
 We are doing our best to provide universal wheels which have high running speed and are compatible with any hardware, OS, compiler, etc. at the same time.
-However, sometimes it's just impossible to guarantee the possibility of usage of Falcata in any specific environment (see `BelixRogner/Falcata#1743 <https://github.com/BelixRogner/Falcata/issues/1743>`__).
+However, sometimes it's just impossible to guarantee the possibility of usage of Falcata in any specific environment (see `lightgbm-org/LightGBM#1743 <https://github.com/lightgbm-org/LightGBM/issues/1743>`__).
 
 Therefore, the first thing you should try in case of segfaults is **compiling from the source** using ``pip install --no-binary falcata falcata``.
 For the OS-specific prerequisites see https://github.com/BelixRogner/Falcata/blob/master/python-package/README.rst.
@@ -376,7 +376,7 @@ Also, feel free to post a new issue in our GitHub repository. We always look at 
 
 We strongly recommend installation from the ``conda-forge`` channel and not from the ``default`` one.
 
-For some specific examples, see `this comment <https://github.com/BelixRogner/Falcata/issues/4948#issuecomment-1013766397>`__.
+For some specific examples, see `this comment <https://github.com/lightgbm-org/LightGBM/issues/4948#issuecomment-1013766397>`__.
 
 In addition, as of ``falcata==4.4.0``, the ``conda-forge`` package automatically supports CUDA-based GPU acceleration.
 
