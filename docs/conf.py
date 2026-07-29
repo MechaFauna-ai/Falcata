@@ -134,7 +134,7 @@ author = "Microsoft Corporation"
 
 # The name of an image file (relative to this directory) to place at the top
 # of the sidebar.
-html_logo = str(CURR_PATH / "logo" / "LightGBM_logo_grey_text.svg")
+html_logo = str(CURR_PATH / "logo" / "falcata-mark.svg")
 
 # The name of an image file (relative to this directory) to use as a favicon of
 # the docs.  This file should be a Windows icon file (.ico) being 16x16 or 32x32
@@ -208,7 +208,7 @@ htmlhelp_basename = "LightGBMdoc"
 
 # The name of an image file (relative to this directory) to place at the top of
 # the title page.
-latex_logo = str(CURR_PATH / "logo" / "LightGBM_logo_black_text_small.png")
+latex_logo = str(CURR_PATH / "logo" / "falcata-mark-256.png")
 
 # intersphinx configuration
 intersphinx_mapping = {

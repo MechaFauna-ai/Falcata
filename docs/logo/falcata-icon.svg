@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" width="180" height="180" role="img" aria-label="Falcata">
+  <title>Falcata</title>
+  <desc>Simplified Falcata mark for small sizes: a two-level split structure under a flat, falcata-wide crown.</desc>
+
+  <rect width="180" height="180" fill="#FBFAF6"/>
+
+  <g fill="none" stroke="#A57057" stroke-width="7.5"
+     stroke-linecap="round" stroke-linejoin="round">
+    <!-- trunk -->
+    <path d="M90 162 L90 122"/>
+    <!-- level 1: splits wide -->
+    <path d="M90 118 C82 106, 68 96, 52 88"/>
+    <path d="M90 118 C98 106, 112 96, 128 88"/>
+    <!-- level 2: twigs rise to a level crown -->
+    <path d="M45 80 C40 71, 36 63, 33 55"/>
+    <path d="M59 80 C62 71, 64 63, 66 55"/>
+    <path d="M121 80 C118 71, 116 63, 114 55"/>
+    <path d="M135 80 C140 71, 144 63, 147 55"/>
+  </g>
+
+  <!-- leaf nodes -->
+  <g fill="#A57057" stroke="none">
+    <circle cx="32" cy="51" r="7"/>
+    <circle cx="66.5" cy="51" r="7"/>
+    <circle cx="113.5" cy="51" r="7"/>
+    <circle cx="148" cy="51" r="7"/>
+  </g>
+
+  <!-- split nodes -->
+  <g fill="#FBFAF6" stroke="#A57057" stroke-width="7.5">
+    <circle cx="90" cy="119" r="7.5"/>
+    <circle cx="51.5" cy="86.5" r="7"/>
+    <circle cx="128.5" cy="86.5" r="7"/>
+  </g>
+</svg>

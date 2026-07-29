@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" width="180" height="180" role="img" aria-label="Falcata">
+  <title>Falcata</title>
+  <desc>A falcata tree whose branching is a decision tree: every fork is a split, every twig a leaf.</desc>
+
+  <defs>
+    <!-- bipinnate frond: the feathery compound leaf of Falcataria moluccana -->
+    <g id="frond" fill="none" stroke="#A57057" stroke-width="1.3"
+       stroke-linecap="round" stroke-linejoin="round">
+      <path d="M0 0 C0.6 -5.5, 0.3 -10.5, 0 -16"/>
+      <path d="M0.4 -3 C-1.7 -4.5, -3.5 -5.6, -5.4 -6.5"/>
+      <path d="M0.4 -3 C2.5 -4.5, 4.3 -5.6, 6.2 -6.5"/>
+      <path d="M0.25 -7 C-1.7 -8.4, -3.3 -9.4, -5 -10.2"/>
+      <path d="M0.25 -7 C2.2 -8.4, 3.8 -9.4, 5.5 -10.2"/>
+      <path d="M0.1 -11 C-1.4 -12.2, -2.7 -13, -4 -13.7"/>
+      <path d="M0.1 -11 C1.6 -12.2, 2.9 -13, 4.2 -13.7"/>
+    </g>
+  </defs>
+
+  <rect width="180" height="180" fill="#FBFAF6"/>
+
+  <g fill="none" stroke="#A57057" stroke-width="1.75"
+     stroke-linecap="round" stroke-linejoin="round">
+
+    <!-- trunk -->
+    <path d="M85.8 152 C85.4 143, 86.5 132, 87.8 122.4"/>
+    <path d="M94.2 152 C94.6 143, 93.5 132, 92.2 122.4"/>
+    <path d="M85.8 152 C82.3 152.7, 78 153.6, 73 154"/>
+    <path d="M94.2 152 C97.7 152.7, 102 153.6, 107 154"/>
+
+    <!-- level 1: rises steeply before spreading, so the crown fills its centre -->
+    <path d="M87.6 118.4 C84.6 111, 79.4 103.6, 71.8 96.4"/>
+    <path d="M92.4 118.4 C95.4 111, 100.6 103.6, 108.2 96.4"/>
+
+    <!-- level 2 -->
+    <path d="M66.6 92.6 C60.4 88.8, 54.2 85.4, 49.4 82.6"/>
+    <path d="M70.8 90.8 C72 86.4, 73.4 81.6, 74.6 76.4"/>
+    <path d="M113.4 92.6 C119.6 88.8, 125.8 85.4, 130.6 82.6"/>
+    <path d="M109.2 90.8 C108 86.4, 106.6 81.6, 105.4 76.4"/>
+
+    <!-- level 3: eight twigs spreading into a broad, level canopy -->
+    <path d="M44.4 79.4 C40.2 76.6, 36 74.4, 32.6 72.8"/>
+    <path d="M48.6 78.2 C50.4 75, 52.4 71.8, 54.2 68.6"/>
+    <path d="M72.6 72.4 C70.6 68.8, 68.4 65.4, 66.4 62.4"/>
+    <path d="M76.2 72.2 C77.8 68.6, 79.6 65, 81.6 60.6"/>
+    <path d="M103.8 72.2 C102.2 68.6, 100.4 65, 98.4 60.6"/>
+    <path d="M107.4 72.4 C109.4 68.8, 111.6 65.4, 113.6 62.4"/>
+    <path d="M131.4 78.2 C129.6 75, 127.6 71.8, 125.8 68.6"/>
+    <path d="M135.6 79.4 C139.8 76.6, 144 74.4, 147.4 72.8"/>
+
+    <!-- split nodes: root, then every fork -->
+    <circle cx="90" cy="120.4" r="2.9"/>
+    <circle cx="69.2" cy="94.4" r="2.6"/>
+    <circle cx="110.8" cy="94.4" r="2.6"/>
+    <circle cx="46.6" cy="80.8" r="2.3"/>
+    <circle cx="74.4" cy="74.4" r="2.3"/>
+    <circle cx="105.6" cy="74.4" r="2.3"/>
+    <circle cx="133.4" cy="80.8" r="2.3"/>
+
+    <!-- ground -->
+    <path d="M54 155.4 C68 157.2, 112 157.2, 126 155.4" stroke-width="1.4"/>
+  </g>
+
+  <!-- foliage: fronds lean progressively outward, tips falling away at the rim -->
+  <use href="#frond" transform="translate(32.6 72.8) rotate(-54)"/>
+  <use href="#frond" transform="translate(54.2 68.6) rotate(-32)"/>
+  <use href="#frond" transform="translate(66.4 62.4) rotate(-16)"/>
+  <use href="#frond" transform="translate(81.6 60.6) rotate(-5)"/>
+  <use href="#frond" transform="translate(98.4 60.6) rotate(5)"/>
+  <use href="#frond" transform="translate(113.6 62.4) rotate(16)"/>
+  <use href="#frond" transform="translate(125.8 68.6) rotate(32)"/>
+  <use href="#frond" transform="translate(147.4 72.8) rotate(54)"/>
+  <!-- secondary fronds give the canopy mass -->
+  <use href="#frond" transform="translate(42.6 76.6) rotate(-44) scale(0.8)"/>
+  <use href="#frond" transform="translate(61.4 71.4) rotate(-24) scale(0.84)"/>
+  <use href="#frond" transform="translate(90 70.4) rotate(0) scale(0.86)"/>
+  <use href="#frond" transform="translate(118.6 71.4) rotate(24) scale(0.84)"/>
+  <use href="#frond" transform="translate(137.4 76.6) rotate(44) scale(0.8)"/>
+</svg>
