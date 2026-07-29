@@ -88,7 +88,7 @@ jobs:
         run: |
           Rscript ./.ci/install-r-deps.R --build --include=roxygen2
           sh build-cran-package.sh || exit 1
-          R CMD INSTALL --with-keep.source lightgbm_*.tar.gz || exit 1
+          R CMD INSTALL --with-keep.source falcata_*.tar.gz || exit 1
       - name: Test documentation
         shell: bash --noprofile --norc {0}
         run: |
@@ -100,7 +100,7 @@ jobs:
               echo "Some R documentation files have changed. Please re-generate them and commit those changes."
               echo ""
               echo "    sh build-cran-package.sh"
-              echo "    R CMD INSTALL --with-keep.source lightgbm_*.tar.gz"
+              echo "    R CMD INSTALL --with-keep.source falcata_*.tar.gz"
               echo "    Rscript -e \"roxygen2::roxygenize('R-package/', load = 'installed')\""
               echo ""
               exit 1

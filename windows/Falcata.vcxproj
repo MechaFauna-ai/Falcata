@@ -28,12 +28,12 @@
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{F31C0B5D-715E-4953-AA1B-8D2AEEE4344C}</ProjectGuid>
-    <RootNamespace>LightGBM</RootNamespace>
+    <RootNamespace>Falcata</RootNamespace>
     <SccProjectName>SAK</SccProjectName>
     <SccAuxPath>SAK</SccAuxPath>
     <SccLocalPath>SAK</SccLocalPath>
     <SccProvider>SAK</SccProvider>
-    <ProjectName>LightGBM</ProjectName>
+    <ProjectName>Falcata</ProjectName>
     <WindowsTargetPlatformVersion>10.0.19041.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -246,38 +246,38 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="..\include\LightGBM\application.h" />
-    <ClInclude Include="..\include\LightGBM\bin.h" />
-    <ClInclude Include="..\include\LightGBM\boosting.h" />
-    <ClInclude Include="..\include\LightGBM\config.h" />
-    <ClInclude Include="..\include\LightGBM\c_api.h" />
-    <ClInclude Include="..\include\LightGBM\dataset.h" />
-    <ClInclude Include="..\include\LightGBM\dataset_loader.h" />
-    <ClInclude Include="..\include\LightGBM\feature_group.h" />
-    <ClInclude Include="..\include\LightGBM\meta.h" />
-    <ClInclude Include="..\include\LightGBM\metric.h" />
-    <ClInclude Include="..\include\LightGBM\network.h" />
-    <ClInclude Include="..\include\LightGBM\objective_function.h" />
-    <ClInclude Include="..\include\LightGBM\prediction_early_stop.h" />
-    <ClInclude Include="..\include\LightGBM\sample_strategy.h" />
-    <ClInclude Include="..\include\LightGBM\tree.h" />
-    <ClInclude Include="..\include\LightGBM\tree_learner.h" />
-    <ClInclude Include="..\include\LightGBM\utils\yamc\alternate_shared_mutex.hpp" />
-    <ClInclude Include="..\include\LightGBM\utils\array_args.h" />
-    <ClInclude Include="..\include\LightGBM\utils\binary_writer.h" />
-    <ClInclude Include="..\include\LightGBM\utils\byte_buffer.h" />
-    <ClInclude Include="..\include\LightGBM\utils\common.h" />
-    <ClInclude Include="..\include\LightGBM\utils\file_io.h" />
-    <ClInclude Include="..\include\LightGBM\utils\json11.h" />
-    <ClInclude Include="..\include\LightGBM\utils\locale_context.h" />
-    <ClInclude Include="..\include\LightGBM\utils\log.h" />
-    <ClInclude Include="..\include\LightGBM\utils\openmp_wrapper.h" />
-    <ClInclude Include="..\include\LightGBM\utils\pipeline_reader.h" />
-    <ClInclude Include="..\include\LightGBM\utils\random.h" />
-    <ClInclude Include="..\include\LightGBM\utils\text_reader.h" />
-    <ClInclude Include="..\include\LightGBM\utils\threading.h" />
-    <ClInclude Include="..\include\LightGBM\utils\yamc\yamc_rwlock_sched.hpp" />
-    <ClInclude Include="..\include\LightGBM\utils\yamc\yamc_shared_lock.hpp" />
+    <ClInclude Include="..\include\Falcata\application.h" />
+    <ClInclude Include="..\include\Falcata\bin.h" />
+    <ClInclude Include="..\include\Falcata\boosting.h" />
+    <ClInclude Include="..\include\Falcata\config.h" />
+    <ClInclude Include="..\include\Falcata\c_api.h" />
+    <ClInclude Include="..\include\Falcata\dataset.h" />
+    <ClInclude Include="..\include\Falcata\dataset_loader.h" />
+    <ClInclude Include="..\include\Falcata\feature_group.h" />
+    <ClInclude Include="..\include\Falcata\meta.h" />
+    <ClInclude Include="..\include\Falcata\metric.h" />
+    <ClInclude Include="..\include\Falcata\network.h" />
+    <ClInclude Include="..\include\Falcata\objective_function.h" />
+    <ClInclude Include="..\include\Falcata\prediction_early_stop.h" />
+    <ClInclude Include="..\include\Falcata\sample_strategy.h" />
+    <ClInclude Include="..\include\Falcata\tree.h" />
+    <ClInclude Include="..\include\Falcata\tree_learner.h" />
+    <ClInclude Include="..\include\Falcata\utils\yamc\alternate_shared_mutex.hpp" />
+    <ClInclude Include="..\include\Falcata\utils\array_args.h" />
+    <ClInclude Include="..\include\Falcata\utils\binary_writer.h" />
+    <ClInclude Include="..\include\Falcata\utils\byte_buffer.h" />
+    <ClInclude Include="..\include\Falcata\utils\common.h" />
+    <ClInclude Include="..\include\Falcata\utils\file_io.h" />
+    <ClInclude Include="..\include\Falcata\utils\json11.h" />
+    <ClInclude Include="..\include\Falcata\utils\locale_context.h" />
+    <ClInclude Include="..\include\Falcata\utils\log.h" />
+    <ClInclude Include="..\include\Falcata\utils\openmp_wrapper.h" />
+    <ClInclude Include="..\include\Falcata\utils\pipeline_reader.h" />
+    <ClInclude Include="..\include\Falcata\utils\random.h" />
+    <ClInclude Include="..\include\Falcata\utils\text_reader.h" />
+    <ClInclude Include="..\include\Falcata\utils\threading.h" />
+    <ClInclude Include="..\include\Falcata\utils\yamc\yamc_rwlock_sched.hpp" />
+    <ClInclude Include="..\include\Falcata\utils\yamc\yamc_shared_lock.hpp" />
     <ClInclude Include="..\src\application\predictor.hpp" />
     <ClInclude Include="..\src\boosting\gbdt.h" />
     <ClInclude Include="..\src\boosting\dart.hpp" />

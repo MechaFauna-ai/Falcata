@@ -4,8 +4,8 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 
-#ifndef FALCATA_INCLUDE_LIGHTGBM_SAMPLE_STRATEGY_H_
-#define FALCATA_INCLUDE_LIGHTGBM_SAMPLE_STRATEGY_H_
+#ifndef FALCATA_INCLUDE_FALCATA_SAMPLE_STRATEGY_H_
+#define FALCATA_INCLUDE_FALCATA_SAMPLE_STRATEGY_H_
 
 #include <Falcata/cuda/cuda_utils.hu>
 #include <Falcata/utils/random.h>
@@ -85,4 +85,4 @@ class SampleStrategy {
 
 }  // namespace Falcata
 
-#endif  // FALCATA_INCLUDE_LIGHTGBM_SAMPLE_STRATEGY_H_
+#endif  // FALCATA_INCLUDE_FALCATA_SAMPLE_STRATEGY_H_

@@ -3,8 +3,8 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef FALCATA_INCLUDE_LIGHTGBM_UTILS_TEXT_READER_H_
-#define FALCATA_INCLUDE_LIGHTGBM_UTILS_TEXT_READER_H_
+#ifndef FALCATA_INCLUDE_FALCATA_UTILS_TEXT_READER_H_
+#define FALCATA_INCLUDE_FALCATA_UTILS_TEXT_READER_H_
 
 #include <Falcata/utils/log.h>
 #include <Falcata/utils/pipeline_reader.h>
@@ -357,4 +357,4 @@ class TextReader {
 
 }  // namespace Falcata
 
-#endif   // FALCATA_INCLUDE_LIGHTGBM_UTILS_TEXT_READER_H_
+#endif   // FALCATA_INCLUDE_FALCATA_UTILS_TEXT_READER_H_

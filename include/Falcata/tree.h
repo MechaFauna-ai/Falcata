@@ -3,8 +3,8 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef FALCATA_INCLUDE_LIGHTGBM_TREE_H_
-#define FALCATA_INCLUDE_LIGHTGBM_TREE_H_
+#ifndef FALCATA_INCLUDE_FALCATA_TREE_H_
+#define FALCATA_INCLUDE_FALCATA_TREE_H_
 
 #include <Falcata/dataset.h>
 #include <Falcata/meta.h>
@@ -729,4 +729,4 @@ inline int Tree::GetLeafByMap(const std::unordered_map<int, double>& feature_val
 
 }  // namespace Falcata
 
-#endif   // FALCATA_INCLUDE_LIGHTGBM_TREE_H_
+#endif   // FALCATA_INCLUDE_FALCATA_TREE_H_

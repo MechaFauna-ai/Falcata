@@ -3,8 +3,8 @@
  * Copyright (c) 2021-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef FALCATA_INCLUDE_LIGHTGBM_CUDA_CUDA_RANDOM_HPP_
-#define FALCATA_INCLUDE_LIGHTGBM_CUDA_CUDA_RANDOM_HPP_
+#ifndef FALCATA_INCLUDE_FALCATA_CUDA_CUDA_RANDOM_HPP_
+#define FALCATA_INCLUDE_FALCATA_CUDA_CUDA_RANDOM_HPP_
 
 #ifdef USE_CUDA
 
@@ -74,4 +74,4 @@ class CUDARandom {
 
 #endif  // USE_CUDA
 
-#endif  // FALCATA_INCLUDE_LIGHTGBM_CUDA_CUDA_RANDOM_HPP_
+#endif  // FALCATA_INCLUDE_FALCATA_CUDA_CUDA_RANDOM_HPP_

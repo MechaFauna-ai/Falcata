@@ -3,8 +3,8 @@
  * Copyright (c) 2017-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef FALCATA_INCLUDE_LIGHTGBM_EXPORT_H_
-#define FALCATA_INCLUDE_LIGHTGBM_EXPORT_H_
+#ifndef FALCATA_INCLUDE_FALCATA_EXPORT_H_
+#define FALCATA_INCLUDE_FALCATA_EXPORT_H_
 
 /** Macros for exporting symbols in MSVC/GCC/CLANG **/
 
@@ -23,4 +23,4 @@
 #define FALCATA_C_EXPORT FALCATA_EXTERN_C
 #endif
 
-#endif  // FALCATA_INCLUDE_LIGHTGBM_EXPORT_H_
+#endif  // FALCATA_INCLUDE_FALCATA_EXPORT_H_

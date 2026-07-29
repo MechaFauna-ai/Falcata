@@ -5,8 +5,8 @@
  * Author: Oliver Borchert
  */
 
-#ifndef FALCATA_INCLUDE_LIGHTGBM_ARROW_H_
-#define FALCATA_INCLUDE_LIGHTGBM_ARROW_H_
+#ifndef FALCATA_INCLUDE_FALCATA_ARROW_H_
+#define FALCATA_INCLUDE_FALCATA_ARROW_H_
 
 // The C data interface (ARROW_C_DATA_INTERFACE) is taken from
 // https://arrow.apache.org/docs/format/CDataInterface.html#structure-definitions
@@ -87,4 +87,4 @@ struct ArrowArrayStream {
 #ifdef __cplusplus
 }
 #endif
-#endif  // FALCATA_INCLUDE_LIGHTGBM_ARROW_H_
+#endif  // FALCATA_INCLUDE_FALCATA_ARROW_H_

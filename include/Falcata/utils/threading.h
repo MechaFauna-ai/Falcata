@@ -4,8 +4,8 @@
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  */
-#ifndef FALCATA_INCLUDE_LIGHTGBM_UTILS_THREADING_H_
-#define FALCATA_INCLUDE_LIGHTGBM_UTILS_THREADING_H_
+#ifndef FALCATA_INCLUDE_FALCATA_UTILS_THREADING_H_
+#define FALCATA_INCLUDE_FALCATA_UTILS_THREADING_H_
 
 #include <Falcata/meta.h>
 #include <Falcata/utils/common.h>
@@ -198,4 +198,4 @@ class ParallelPartitionRunner {
 
 }  // namespace Falcata
 
-#endif  // FALCATA_INCLUDE_LIGHTGBM_UTILS_THREADING_H_
+#endif  // FALCATA_INCLUDE_FALCATA_UTILS_THREADING_H_

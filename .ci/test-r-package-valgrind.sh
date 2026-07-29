@@ -8,7 +8,7 @@ sh build-cran-package.sh \
   --no-build-vignettes \
   || exit 1
 
-RDvalgrind CMD INSTALL --preclean --install-tests lightgbm_*.tar.gz || exit 1
+RDvalgrind CMD INSTALL --preclean --install-tests falcata_*.tar.gz || exit 1
 
 cd R-package/tests
 

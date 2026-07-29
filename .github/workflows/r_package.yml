@@ -248,7 +248,7 @@ jobs:
         run: |
           RDscript${{ matrix.r_customization }} ./.ci/install-r-deps.R --build --test
           sh build-cran-package.sh --r-executable=RD${{ matrix.r_customization }}
-          RD${{ matrix.r_customization }} CMD INSTALL lightgbm_*.tar.gz || exit 1
+          RD${{ matrix.r_customization }} CMD INSTALL falcata_*.tar.gz || exit 1
       - name: Run tests with sanitizers
         shell: bash
         run: |
@@ -377,7 +377,7 @@ jobs:
           fi
 
           bash .ci/run-r-cmd-check.sh \
-            "$(echo lightgbm_$(head -1 VERSION.txt).tar.gz)" \
+            "$(echo falcata_$(head -1 VERSION.txt).tar.gz)" \
             "${allowed_notes}"
   all-r-package-jobs-successful:
     if: always()

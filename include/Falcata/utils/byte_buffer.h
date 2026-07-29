@@ -3,8 +3,8 @@
  * Copyright (c) 2022-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef FALCATA_INCLUDE_LIGHTGBM_UTILS_BYTE_BUFFER_H_
-#define FALCATA_INCLUDE_LIGHTGBM_UTILS_BYTE_BUFFER_H_
+#ifndef FALCATA_INCLUDE_FALCATA_UTILS_BYTE_BUFFER_H_
+#define FALCATA_INCLUDE_FALCATA_UTILS_BYTE_BUFFER_H_
 
 #include <Falcata/export.h>
 #include <Falcata/utils/binary_writer.h>
@@ -60,4 +60,4 @@ struct ByteBuffer final : public BinaryWriter {
 
 }  // namespace Falcata
 
-#endif   // FALCATA_INCLUDE_LIGHTGBM_UTILS_BYTE_BUFFER_H_
+#endif   // FALCATA_INCLUDE_FALCATA_UTILS_BYTE_BUFFER_H_

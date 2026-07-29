@@ -4,8 +4,8 @@
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  */
-#ifndef FALCATA_INCLUDE_LIGHTGBM_UTILS_LOG_H_
-#define FALCATA_INCLUDE_LIGHTGBM_UTILS_LOG_H_
+#ifndef FALCATA_INCLUDE_FALCATA_UTILS_LOG_H_
+#define FALCATA_INCLUDE_FALCATA_UTILS_LOG_H_
 
 #include <cstdarg>
 #include <cstdio>
@@ -183,4 +183,4 @@ class Log {
 };
 
 }  // namespace Falcata
-#endif  // FALCATA_INCLUDE_LIGHTGBM_UTILS_LOG_H_
+#endif  // FALCATA_INCLUDE_FALCATA_UTILS_LOG_H_

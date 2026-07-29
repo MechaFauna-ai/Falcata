@@ -3,8 +3,8 @@
  * Copyright (c) 2018-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef FALCATA_INCLUDE_LIGHTGBM_UTILS_FILE_IO_H_
-#define FALCATA_INCLUDE_LIGHTGBM_UTILS_FILE_IO_H_
+#ifndef FALCATA_INCLUDE_FALCATA_UTILS_FILE_IO_H_
+#define FALCATA_INCLUDE_FALCATA_UTILS_FILE_IO_H_
 
 #include <Falcata/utils/binary_writer.h>
 
@@ -76,4 +76,4 @@ struct VirtualFileReader {
 
 }  // namespace Falcata
 
-#endif   // FALCATA_INCLUDE_LIGHTGBM_UTILS_FILE_IO_H_
+#endif   // FALCATA_INCLUDE_FALCATA_UTILS_FILE_IO_H_
