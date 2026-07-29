@@ -12,7 +12,7 @@ if (use_mingw && use_msys2) {
 }
 
 if (.Machine$sizeof.pointer != 8L) {
-  stop("LightGBM only supports 64-bit R, please check the version of R and Rtools.")
+  stop("Falcata only supports 64-bit R, please check the version of R and Rtools.")
 }
 
 # Get some paths
@@ -132,7 +132,7 @@ cmake_args <- c(
   , sprintf("-DCMAKE_SHARED_LIBRARY_SUFFIX_CXX='%s'", SHLIB_EXT)
 )
 build_cmd <- "make"
-build_args <- c("_lightgbm", make_args_from_build_script)
+build_args <- c("_falcata", make_args_from_build_script)
 lib_folder <- file.path(source_dir, fsep = "/")
 
 # add in command-line arguments
@@ -180,7 +180,7 @@ if (WINDOWS) {
     cmake_args <- c(cmake_args, "-G", shQuote(windows_makefile_generator))
     .run_shell_command("cmake", c(cmake_args, ".."), strict = FALSE)
     build_cmd <- windows_build_tool
-    build_args <- c("_lightgbm", make_args_from_build_script)
+    build_args <- c("_falcata", make_args_from_build_script)
   } else {
     visual_studio_succeeded <- .generate_vs_makefiles(cmake_args)
     if (!isTRUE(visual_studio_succeeded)) {
@@ -189,10 +189,10 @@ if (WINDOWS) {
       cmake_args <- c(cmake_args, "-G", shQuote(windows_makefile_generator))
       .run_shell_command("cmake", c(cmake_args, ".."), strict = FALSE)
       build_cmd <- windows_build_tool
-      build_args <- c("_lightgbm", make_args_from_build_script)
+      build_args <- c("_falcata", make_args_from_build_script)
     } else {
       build_cmd <- "cmake"
-      build_args <- c("--build", ".", "--target", "_lightgbm", "--config", "Release")
+      build_args <- c("--build", ".", "--target", "_falcata", "--config", "Release")
       lib_folder <- file.path(source_dir, "Release", fsep = "/")
       makefiles_already_generated <- TRUE
     }
@@ -208,9 +208,9 @@ if (!makefiles_already_generated) {
 }
 
 # build the library
-message(paste0("Building lightgbm", SHLIB_EXT))
+message(paste0("Building falcata", SHLIB_EXT))
 .run_shell_command(build_cmd, build_args)
-src <- file.path(lib_folder, paste0("lightgbm", SHLIB_EXT), fsep = "/")
+src <- file.path(lib_folder, paste0("falcata", SHLIB_EXT), fsep = "/")
 
 # Packages with install.libs.R need to copy some artifacts into the
 # expected places in the package structure.
@@ -228,7 +228,7 @@ if (file.exists(src)) {
   }
 
 } else {
-  stop(paste0("Cannot find lightgbm", SHLIB_EXT))
+  stop(paste0("Cannot find falcata", SHLIB_EXT))
 }
 
 # clean up the "build" directory

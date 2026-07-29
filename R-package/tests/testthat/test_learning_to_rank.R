@@ -1,6 +1,6 @@
 test_that("learning-to-rank with lgb.train() works as expected", {
     set.seed(708L)
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     # just keep a few features,to generate an model with imperfect fit
     train <- agaricus.train
     train_data <- train$data[1L:6000L, 1L:20L]
@@ -64,7 +64,7 @@ test_that("learning-to-rank with lgb.cv() works as expected", {
         , message = "Skipping on 32-bit Windows"
     )
     set.seed(708L)
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     # just keep a few features,to generate an model with imperfect fit
     train <- agaricus.train
     train_data <- train$data[1L:6000L, 1L:20L]

@@ -2,7 +2,7 @@
 % Please edit documentation in R/lgb.train.R
 \name{lgb.train}
 \alias{lgb.train}
-\title{Main training logic for LightGBM}
+\title{Main training logic for Falcata}
 \usage{
 lgb.train(
   params = list(),
@@ -22,7 +22,7 @@ lgb.train(
 )
 }
 \arguments{
-\item{params}{a list of parameters. See \href{https://lightgbm.readthedocs.io/en/latest/Parameters.html}{
+\item{params}{a list of parameters. See \href{https://falcata.readthedocs.io/en/latest/Parameters.html}{
 the "Parameters" section of the documentation} for a list of parameters and valid values.}
 
 \item{data}{a \code{lgb.Dataset} object, used for training. Some functions, such as \code{\link{lgb.cv}},
@@ -44,7 +44,7 @@ may allow you to pass other types of data like \code{matrix} and then separately
                 \item{\bold{a. character vector}:
                     If you provide a character vector to this argument, it should contain strings with valid
                     evaluation metrics.
-                    See \href{https://lightgbm.readthedocs.io/en/latest/Parameters.html#metric}{
+                    See \href{https://falcata.readthedocs.io/en/latest/Parameters.html#metric}{
                     The "metric" section of the documentation}
                     for a list of valid metrics.
                 }
@@ -99,9 +99,9 @@ original datasets}
 a trained booster model \code{lgb.Booster}.
 }
 \description{
-Low-level R interface to train a LightGBM model. Unlike \code{\link{lightgbm}},
+Low-level R interface to train a Falcata model. Unlike \code{\link{falcata}},
              this function is focused on performance (e.g. speed, memory efficiency). It is also
-             less likely to have breaking API changes in new releases than \code{\link{lightgbm}}.
+             less likely to have breaking API changes in new releases than \code{\link{falcata}}.
 }
 \section{Early Stopping}{
 
@@ -127,10 +127,10 @@ Low-level R interface to train a LightGBM model. Unlike \code{\link{lightgbm}},
 \donttest{
 \dontshow{setLGBMthreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
-data(agaricus.train, package = "lightgbm")
+data(agaricus.train, package = "falcata")
 train <- agaricus.train
 dtrain <- lgb.Dataset(train$data, label = train$label)
-data(agaricus.test, package = "lightgbm")
+data(agaricus.test, package = "falcata")
 test <- agaricus.test
 dtest <- lgb.Dataset.create.valid(dtrain, test$data, label = test$label)
 params <- list(

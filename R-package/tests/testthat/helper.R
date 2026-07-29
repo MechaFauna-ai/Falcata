@@ -3,7 +3,7 @@
 # * https://r-pkgs.org/testing-design.html#testthat-helper-files
 # * https://r-pkgs.org/testing-design.html#testthat-setup-files
 
-# LightGBM-internal fix to comply with CRAN policy of only using up to 2 threads in tests and example.
+# Falcata-internal fix to comply with CRAN policy of only using up to 2 threads in tests and example.
 #
 # per https://cran.r-project.org/web/packages/policies.html
 #
@@ -30,7 +30,7 @@ data.table::setDTthreads(1L)
   , "UTF-8"
 ))
 
-# control how many loud LightGBM's logger is in tests
+# control how many loud Falcata's logger is in tests
 .LGB_VERBOSITY <- as.integer(
   Sys.getenv("LIGHTGBM_TEST_VERBOSITY", "-1")
 )

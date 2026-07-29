@@ -2,7 +2,7 @@
 % Please edit documentation in R/lgb.cv.R
 \name{lgb.cv}
 \alias{lgb.cv}
-\title{Main CV logic for LightGBM}
+\title{Main CV logic for Falcata}
 \usage{
 lgb.cv(
   params = list(),
@@ -26,7 +26,7 @@ lgb.cv(
 )
 }
 \arguments{
-\item{params}{a list of parameters. See \href{https://lightgbm.readthedocs.io/en/latest/Parameters.html}{
+\item{params}{a list of parameters. See \href{https://falcata.readthedocs.io/en/latest/Parameters.html}{
 the "Parameters" section of the documentation} for a list of parameters and valid values.}
 
 \item{data}{a \code{lgb.Dataset} object, used for training. Some functions, such as \code{\link{lgb.cv}},
@@ -48,7 +48,7 @@ may allow you to pass other types of data like \code{matrix} and then separately
                 \item{\bold{a. character vector}:
                     If you provide a character vector to this argument, it should contain strings with valid
                     evaluation metrics.
-                    See \href{https://lightgbm.readthedocs.io/en/latest/Parameters.html#metric}{
+                    See \href{https://falcata.readthedocs.io/en/latest/Parameters.html#metric}{
                     The "metric" section of the documentation}
                     for a list of valid metrics.
                 }
@@ -117,7 +117,7 @@ will increase run time.}
 a trained model \code{lgb.CVBooster}.
 }
 \description{
-Cross validation logic used by LightGBM
+Cross validation logic used by Falcata
 }
 \section{Early Stopping}{
 
@@ -143,7 +143,7 @@ Cross validation logic used by LightGBM
 \donttest{
 \dontshow{setLGBMthreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
-data(agaricus.train, package = "lightgbm")
+data(agaricus.train, package = "falcata")
 train <- agaricus.train
 dtrain <- lgb.Dataset(train$data, label = train$label)
 params <- list(

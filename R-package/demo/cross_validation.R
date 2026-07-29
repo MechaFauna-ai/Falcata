@@ -1,8 +1,8 @@
-library(lightgbm)
+library(falcata)
 
 # load in the agaricus dataset
-data(agaricus.train, package = "lightgbm")
-data(agaricus.test, package = "lightgbm")
+data(agaricus.train, package = "falcata")
+data(agaricus.test, package = "falcata")
 dtrain <- lgb.Dataset(agaricus.train$data, label = agaricus.train$label)
 dtest <- lgb.Dataset.create.valid(dtrain, data = agaricus.test$data, label = agaricus.test$label)
 

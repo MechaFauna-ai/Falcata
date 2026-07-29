@@ -1,6 +1,6 @@
 #' @name lgb.model.dt.tree
-#' @title Parse a LightGBM model json dump
-#' @description Parse a LightGBM model json dump into a \code{data.table} structure.
+#' @title Parse a Falcata model json dump
+#' @description Parse a Falcata model json dump into a \code{data.table} structure.
 #' @param model object of class \code{lgb.Booster}.
 #' @param num_iteration Number of iterations to include. NULL or <= 0 means use best iteration.
 #' @param start_iteration Index (1-based) of the first boosting round to include in the output.
@@ -36,7 +36,7 @@
 #' \donttest{
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
-#' data(agaricus.train, package = "lightgbm")
+#' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
 #' dtrain <- lgb.Dataset(train$data, label = train$label)
 #'

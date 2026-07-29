@@ -3,7 +3,7 @@
 #' @description Parameter docs for fields used in \code{lgb.Dataset} construction
 #' @param label vector of labels to use as the target variable
 #' @param weight numeric vector of sample weights
-#' @param init_score initial score is the base prediction lightgbm will boost from
+#' @param init_score initial score is the base prediction falcata will boost from
 #' @param group used for learning-to-rank tasks. An integer vector describing how to
 #'              group rows together as ordered results from the same set of candidate results
 #'              to be ranked. For example, if you have a 100-document dataset with
@@ -203,7 +203,7 @@ Dataset <- R6::R6Class(
             "Attempting to create a Dataset without any raw data. "
             , "This can happen if the Dataset's finalizer was called or if this Dataset was saved with saveRDS(). "
             , "To avoid this error in the future, use lgb.Dataset.save() or "
-            , "Dataset$save_binary() to save lightgbm Datasets."
+            , "Dataset$save_binary() to save falcata Datasets."
           ))
         }
 
@@ -759,7 +759,7 @@ Dataset <- R6::R6Class(
 )
 
 #' @title Construct \code{lgb.Dataset} object
-#' @description LightGBM does not train on raw data.
+#' @description Falcata does not train on raw data.
 #'              It discretizes continuous features into histogram bins, tries to
 #'              combine categorical features, and automatically handles missing and
 #               infinite values.
@@ -771,19 +771,19 @@ Dataset <- R6::R6Class(
 #'             a character representing a path to a text file (CSV, TSV, or LibSVM),
 #'             or a character representing a path to a binary \code{lgb.Dataset} file
 #' @param params a list of parameters. See
-#'               \href{https://lightgbm.readthedocs.io/en/latest/Parameters.html#dataset-parameters}{
+#'               \href{https://falcata.readthedocs.io/en/latest/Parameters.html#dataset-parameters}{
 #'               The "Dataset Parameters" section of the documentation} for a list of parameters
 #'               and valid values.
-#' @param reference reference dataset. When LightGBM creates a Dataset, it does some preprocessing like binning
+#' @param reference reference dataset. When Falcata creates a Dataset, it does some preprocessing like binning
 #'                  continuous features into histograms. If you want to apply the same bin boundaries from an existing
 #'                  dataset to new \code{data}, pass that existing Dataset to this argument.
 #' @param colnames names of columns
 #' @param categorical_feature categorical features. This can either be a character vector of feature
 #'                            names or an integer vector with the indices of the features (e.g.
 #'                            \code{c(1L, 10L)} to say "the first and tenth columns").
-#' @param free_raw_data LightGBM constructs its data format, called a "Dataset", from tabular data.
+#' @param free_raw_data Falcata constructs its data format, called a "Dataset", from tabular data.
 #'                      By default, that Dataset object on the R side does not keep a copy of the raw data.
-#'                      This reduces LightGBM's memory consumption, but it means that the Dataset object
+#'                      This reduces Falcata's memory consumption, but it means that the Dataset object
 #'                      cannot be changed after it has been constructed. If you'd prefer to be able to
 #'                      change the Dataset object after construction, set \code{free_raw_data = FALSE}.
 #'
@@ -793,7 +793,7 @@ Dataset <- R6::R6Class(
 #' \donttest{
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
-#' data(agaricus.train, package = "lightgbm")
+#' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
 #' dtrain <- lgb.Dataset(train$data, label = train$label)
 #' data_file <- tempfile(fileext = ".data")
@@ -841,7 +841,7 @@ lgb.Dataset <- function(data,
 #'             a character representing a path to a text file (CSV, TSV, or LibSVM),
 #'             or a character representing a path to a binary \code{Dataset} file
 #' @param params a list of parameters. See
-#'               \href{https://lightgbm.readthedocs.io/en/latest/Parameters.html#dataset-parameters}{
+#'               \href{https://falcata.readthedocs.io/en/latest/Parameters.html#dataset-parameters}{
 #'               The "Dataset Parameters" section of the documentation} for a list of parameters
 #'               and valid values. If this is an empty list (the default), the validation Dataset
 #'               will have the same parameters as the Dataset passed to argument \code{dataset}.
@@ -852,10 +852,10 @@ lgb.Dataset <- function(data,
 #' \donttest{
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
-#' data(agaricus.train, package = "lightgbm")
+#' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
 #' dtrain <- lgb.Dataset(train$data, label = train$label)
-#' data(agaricus.test, package = "lightgbm")
+#' data(agaricus.test, package = "falcata")
 #' test <- agaricus.test
 #' dtest <- lgb.Dataset.create.valid(dtrain, test$data, label = test$label)
 #'
@@ -930,7 +930,7 @@ lgb.Dataset.create.valid <- function(dataset,
 #' \donttest{
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
-#' data(agaricus.train, package = "lightgbm")
+#' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
 #' dtrain <- lgb.Dataset(train$data, label = train$label)
 #' lgb.Dataset.construct(dtrain)
@@ -961,7 +961,7 @@ lgb.Dataset.construct <- function(dataset) {
 #' \donttest{
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
-#' data(agaricus.train, package = "lightgbm")
+#' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
 #' dtrain <- lgb.Dataset(train$data, label = train$label)
 #'
@@ -996,7 +996,7 @@ dim.lgb.Dataset <- function(x) {
 #' \donttest{
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
-#' data(agaricus.train, package = "lightgbm")
+#' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
 #' dtrain <- lgb.Dataset(train$data, label = train$label)
 #' lgb.Dataset.construct(dtrain)
@@ -1071,13 +1071,13 @@ dimnames.lgb.Dataset <- function(x) {
 #' \donttest{
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
-#' data(agaricus.train, package = "lightgbm")
+#' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
 #' dtrain <- lgb.Dataset(train$data, label = train$label)
 #'
 #' dsub <- lgb.slice.Dataset(dtrain, seq_len(42L))
 #' lgb.Dataset.construct(dsub)
-#' labels <- lightgbm::get_field(dsub, "label")
+#' labels <- falcata::get_field(dsub, "label")
 #' }
 #' @export
 lgb.slice.Dataset <- function(dataset, idxset) {
@@ -1096,14 +1096,14 @@ lgb.slice.Dataset <- function(dataset, idxset) {
 #' @param dataset Object of class \code{lgb.Dataset}
 #' @param field_name String with the name of the attribute to get. One of the following.
 #' \itemize{
-#'     \item \code{label}: label lightgbm learns from ;
+#'     \item \code{label}: label falcata learns from ;
 #'     \item \code{weight}: to do a weight rescale ;
 #'     \item{\code{group}: used for learning-to-rank tasks. An integer vector describing how to
 #'         group rows together as ordered results from the same set of candidate results to be ranked.
 #'         For example, if you have a 100-document dataset with \code{group = c(10, 20, 40, 10, 10, 10)},
 #'         that means that you have 6 groups, where the first 10 records are in the first group,
 #'         records 11-30 are in the second group, etc.}
-#'     \item \code{init_score}: initial score is the base prediction lightgbm will boost from.
+#'     \item \code{init_score}: initial score is the base prediction falcata will boost from.
 #' }
 #' @return requested attribute
 #'
@@ -1111,15 +1111,15 @@ lgb.slice.Dataset <- function(dataset, idxset) {
 #' \donttest{
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
-#' data(agaricus.train, package = "lightgbm")
+#' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
 #' dtrain <- lgb.Dataset(train$data, label = train$label)
 #' lgb.Dataset.construct(dtrain)
 #'
-#' labels <- lightgbm::get_field(dtrain, "label")
-#' lightgbm::set_field(dtrain, "label", 1 - labels)
+#' labels <- falcata::get_field(dtrain, "label")
+#' falcata::set_field(dtrain, "label", 1 - labels)
 #'
-#' labels2 <- lightgbm::get_field(dtrain, "label")
+#' labels2 <- falcata::get_field(dtrain, "label")
 #' stopifnot(all(labels2 == 1 - labels))
 #' }
 #' @export
@@ -1146,14 +1146,14 @@ get_field.lgb.Dataset <- function(dataset, field_name) {
 #' @param dataset Object of class \code{lgb.Dataset}
 #' @param field_name String with the name of the attribute to set. One of the following.
 #' \itemize{
-#'     \item \code{label}: label lightgbm learns from ;
+#'     \item \code{label}: label falcata learns from ;
 #'     \item \code{weight}: to do a weight rescale ;
 #'     \item{\code{group}: used for learning-to-rank tasks. An integer vector describing how to
 #'         group rows together as ordered results from the same set of candidate results to be ranked.
 #'         For example, if you have a 100-document dataset with \code{group = c(10, 20, 40, 10, 10, 10)},
 #'         that means that you have 6 groups, where the first 10 records are in the first group,
 #'         records 11-30 are in the second group, etc.}
-#'     \item \code{init_score}: initial score is the base prediction lightgbm will boost from.
+#'     \item \code{init_score}: initial score is the base prediction falcata will boost from.
 #' }
 #' @param data The data for the field. See examples.
 #' @return The \code{lgb.Dataset} you passed in.
@@ -1162,15 +1162,15 @@ get_field.lgb.Dataset <- function(dataset, field_name) {
 #' \donttest{
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
-#' data(agaricus.train, package = "lightgbm")
+#' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
 #' dtrain <- lgb.Dataset(train$data, label = train$label)
 #' lgb.Dataset.construct(dtrain)
 #'
-#' labels <- lightgbm::get_field(dtrain, "label")
-#' lightgbm::set_field(dtrain, "label", 1 - labels)
+#' labels <- falcata::get_field(dtrain, "label")
+#' falcata::set_field(dtrain, "label", 1 - labels)
 #'
-#' labels2 <- lightgbm::get_field(dtrain, "label")
+#' labels2 <- falcata::get_field(dtrain, "label")
 #' stopifnot(all.equal(labels2, 1 - labels))
 #' }
 #' @export
@@ -1192,7 +1192,7 @@ set_field.lgb.Dataset <- function(dataset, field_name, data) {
 #' @name lgb.Dataset.set.categorical
 #' @title Set categorical feature of \code{lgb.Dataset}
 #' @description Set the categorical features of an \code{lgb.Dataset} object. Use this function
-#'              to tell LightGBM which features should be treated as categorical.
+#'              to tell Falcata which features should be treated as categorical.
 #' @param dataset object of class \code{lgb.Dataset}
 #' @param categorical_feature categorical features. This can either be a character vector of feature
 #'                            names or an integer vector with the indices of the features (e.g.
@@ -1203,7 +1203,7 @@ set_field.lgb.Dataset <- function(dataset, field_name, data) {
 #' \donttest{
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
-#' data(agaricus.train, package = "lightgbm")
+#' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
 #' dtrain <- lgb.Dataset(train$data, label = train$label)
 #' data_file <- tempfile(fileext = ".data")
@@ -1236,12 +1236,12 @@ lgb.Dataset.set.categorical <- function(dataset, categorical_feature) {
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' # create training Dataset
-#' data(agaricus.train, package ="lightgbm")
+#' data(agaricus.train, package ="falcata")
 #' train <- agaricus.train
 #' dtrain <- lgb.Dataset(train$data, label = train$label)
 #'
 #' # create a validation Dataset, using dtrain as a reference
-#' data(agaricus.test, package = "lightgbm")
+#' data(agaricus.test, package = "falcata")
 #' test <- agaricus.test
 #' dtest <- lgb.Dataset(test$data, label = test$label)
 #' lgb.Dataset.set.reference(dtest, dtrain)
@@ -1270,7 +1270,7 @@ lgb.Dataset.set.reference <- function(dataset, reference) {
 #' \donttest{
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
-#' data(agaricus.train, package = "lightgbm")
+#' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
 #' dtrain <- lgb.Dataset(train$data, label = train$label)
 #' lgb.Dataset.save(dtrain, tempfile(fileext = ".bin"))

@@ -8,7 +8,7 @@
 
 \item{weight}{numeric vector of sample weights}
 
-\item{init_score}{initial score is the base prediction lightgbm will boost from}
+\item{init_score}{initial score is the base prediction falcata will boost from}
 
 \item{group}{used for learning-to-rank tasks. An integer vector describing how to
 group rows together as ordered results from the same set of candidate results

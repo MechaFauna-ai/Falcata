@@ -1,10 +1,10 @@
 /*!
  * Copyright (c) 2017-2026 Microsoft Corporation. All rights reserved.
- * Copyright (c) 2017-2026 The LightGBM developers. All rights reserved.
+ * Copyright (c) 2017-2026 The Falcata developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 
-#include "lightgbm_R.h"
+#include "falcata_R.h"
 
 #include <Falcata/utils/common.h>
 #include <Falcata/utils/log.h>
@@ -52,7 +52,7 @@ void delete_cpp_char_vec(SEXP R_ptr) {
 }
 
 // Note: MSVC has issues with Altrep classes, so they are disabled for it.
-// See: https://github.com/lightgbm-org/LightGBM/pull/6213#issuecomment-2111025768
+// See: https://github.com/falcata-org/Falcata/pull/6213#issuecomment-2111025768
 #ifdef _MSC_VER
 #  define LGB_NO_ALTREP
 #endif
@@ -287,7 +287,7 @@ void _AssertDatasetHandleNotNull(SEXP handle) {
     Rf_error(
       "Attempting to use a Dataset which no longer exists. "
       "This can happen if the Dataset's finalizer was called or if this Dataset was saved with saveRDS(). "
-      "To avoid this error in the future, use lgb.Dataset.save() or Dataset$save_binary() to save lightgbm Datasets.");
+      "To avoid this error in the future, use lgb.Dataset.save() or Dataset$save_binary() to save falcata Datasets.");
   }
 }
 
@@ -1495,17 +1495,17 @@ void R_init_lightgbm(DllInfo *dll) {
   R_useDynamicSymbols(dll, FALSE);
 
 #ifndef LGB_NO_ALTREP
-  lgb_altrepped_char_vec = R_make_altraw_class("lgb_altrepped_char_vec", "lightgbm", dll);
+  lgb_altrepped_char_vec = R_make_altraw_class("lgb_altrepped_char_vec", "falcata", dll);
   R_set_altrep_Length_method(lgb_altrepped_char_vec, get_altrepped_raw_len);
   R_set_altvec_Dataptr_method(lgb_altrepped_char_vec, get_altrepped_raw_dataptr);
   R_set_altvec_Dataptr_or_null_method(lgb_altrepped_char_vec, get_altrepped_raw_dataptr_or_null);
 
-  lgb_altrepped_int_arr = R_make_altinteger_class("lgb_altrepped_int_arr", "lightgbm", dll);
+  lgb_altrepped_int_arr = R_make_altinteger_class("lgb_altrepped_int_arr", "falcata", dll);
   R_set_altrep_Length_method(lgb_altrepped_int_arr, get_altrepped_vec_len);
   R_set_altvec_Dataptr_method(lgb_altrepped_int_arr, get_altrepped_vec_dataptr);
   R_set_altvec_Dataptr_or_null_method(lgb_altrepped_int_arr, get_altrepped_vec_dataptr_or_null);
 
-  lgb_altrepped_dbl_arr = R_make_altreal_class("lgb_altrepped_dbl_arr", "lightgbm", dll);
+  lgb_altrepped_dbl_arr = R_make_altreal_class("lgb_altrepped_dbl_arr", "falcata", dll);
   R_set_altrep_Length_method(lgb_altrepped_dbl_arr, get_altrepped_vec_len);
   R_set_altvec_Dataptr_method(lgb_altrepped_dbl_arr, get_altrepped_vec_dataptr);
   R_set_altvec_Dataptr_or_null_method(lgb_altrepped_dbl_arr, get_altrepped_vec_dataptr_or_null);

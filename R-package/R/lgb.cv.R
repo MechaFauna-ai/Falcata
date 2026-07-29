@@ -21,8 +21,8 @@ CVBooster <- R6::R6Class(
 )
 
 #' @name lgb.cv
-#' @title Main CV logic for LightGBM
-#' @description Cross validation logic used by LightGBM
+#' @title Main CV logic for Falcata
+#' @description Cross validation logic used by Falcata
 #' @inheritParams lgb_shared_params
 #' @param nfold the original dataset is randomly partitioned into \code{nfold} equal size subsamples.
 #' @param record Boolean, TRUE will record iteration message to \code{booster$record_evals}
@@ -47,7 +47,7 @@ CVBooster <- R6::R6Class(
 #' \donttest{
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
-#' data(agaricus.train, package = "lightgbm")
+#' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
 #' dtrain <- lgb.Dataset(train$data, label = train$label)
 #' params <- list(

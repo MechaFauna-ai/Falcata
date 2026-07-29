@@ -1,6 +1,6 @@
 /*!
  * Copyright (c) 2021-2026 Microsoft Corporation. All rights reserved.
- * Copyright (c) 2021-2026 The LightGBM developers. All rights reserved.
+ * Copyright (c) 2021-2026 The Falcata developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 /**
@@ -10,10 +10,10 @@
  */
 
 %{
-#include "../include/LightGBM/utils/chunked_array.hpp"
+#include "../include/Falcata/utils/chunked_array.hpp"
 %}
 
-%include "../include/LightGBM/utils/chunked_array.hpp"
+%include "../include/Falcata/utils/chunked_array.hpp"
 
 using Falcata::ChunkedArray;
 

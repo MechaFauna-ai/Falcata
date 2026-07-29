@@ -14,7 +14,7 @@ lgb.configure_fast_predict(
 )
 }
 \arguments{
-\item{model}{LightGBM model object (class \code{lgb.Booster}).
+\item{model}{Falcata model object (class \code{lgb.Booster}).
 
              \bold{The object will be modified in-place}.}
 
@@ -53,7 +53,7 @@ If <= 0, all iterations from start_iteration are used (no limits).}
             Note that, if using custom objectives, types "class" and "response" will not be available and will
             default towards using "raw" instead.
 
-            If the model was fit through function \link{lightgbm} and it was passed a factor as labels,
+            If the model was fit through function \link{falcata} and it was passed a factor as labels,
             passing the prediction type through \code{params} instead of through this argument might
             result in factor levels for classification objectives not being applied correctly to the
             resulting output.
@@ -61,7 +61,7 @@ If <= 0, all iterations from start_iteration are used (no limits).}
             \emph{New in version 4.0.0}}
 
 \item{params}{a list of additional named parameters. See
-\href{https://lightgbm.readthedocs.io/en/latest/Parameters.html#predict-parameters}{
+\href{https://falcata.readthedocs.io/en/latest/Parameters.html#predict-parameters}{
 the "Predict Parameters" section of the documentation} for a list of parameters and
 valid values. Where these conflict with the values of keyword arguments to this function,
 the values in \code{params} take precedence.}
@@ -72,7 +72,7 @@ The same \code{model} that was passed as input, invisibly, with the desired
         \link{predict.lgb.Booster}.
 }
 \description{
-Pre-configures a LightGBM model object to produce fast single-row predictions
+Pre-configures a Falcata model object to produce fast single-row predictions
              for a given input data type, prediction type, and parameters.
 }
 \details{
@@ -116,7 +116,7 @@ Calling this function multiple times with different parameters might not overrid
 \donttest{
 \dontshow{setLGBMthreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
-library(lightgbm)
+library(falcata)
 data(mtcars)
 X <- as.matrix(mtcars[, -1L])
 y <- mtcars[, 1L]

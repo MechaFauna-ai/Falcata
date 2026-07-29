@@ -2,7 +2,7 @@
 % Please edit documentation in R/lgb.Booster.R
 \name{lgb.load}
 \alias{lgb.load}
-\title{Load LightGBM model}
+\title{Load Falcata model}
 \usage{
 lgb.load(filename = NULL, model_str = NULL)
 }
@@ -15,17 +15,17 @@ lgb.load(filename = NULL, model_str = NULL)
 lgb.Booster
 }
 \description{
-Load LightGBM takes in either a file path or model string.
+Load Falcata takes in either a file path or model string.
              If both are provided, Load will default to loading from file
 }
 \examples{
 \donttest{
 \dontshow{setLGBMthreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
-data(agaricus.train, package = "lightgbm")
+data(agaricus.train, package = "falcata")
 train <- agaricus.train
 dtrain <- lgb.Dataset(train$data, label = train$label)
-data(agaricus.test, package = "lightgbm")
+data(agaricus.test, package = "falcata")
 test <- agaricus.test
 dtest <- lgb.Dataset.create.valid(dtrain, test$data, label = test$label)
 params <- list(

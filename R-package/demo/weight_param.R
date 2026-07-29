@@ -3,7 +3,7 @@
 # As with any optimizers, bad parameters can impair performance
 
 # Load library
-library(lightgbm)
+library(falcata)
 
 # We will train a model with the following scenarii:
 # - Run 1: sum of weights equal to 6513 (x 1e-5) without adjusted regularization (not learning)
@@ -15,10 +15,10 @@ weights1 <- rep(1e-5, 6513L)
 weights2 <- rep(1e-5, 1611L)
 
 # Load data and create datasets
-data(agaricus.train, package = "lightgbm")
+data(agaricus.train, package = "falcata")
 train <- agaricus.train
 dtrain <- lgb.Dataset(train$data, label = train$label, weight = weights1)
-data(agaricus.test, package = "lightgbm")
+data(agaricus.test, package = "falcata")
 test <- agaricus.test
 dtest <- lgb.Dataset.create.valid(dtrain, test$data, label = test$label, weight = weights2)
 valids <- list(test = dtest)

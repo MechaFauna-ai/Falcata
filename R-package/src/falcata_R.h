@@ -1,6 +1,6 @@
 /*!
  * Copyright (c) 2017-2026 Microsoft Corporation. All rights reserved.
- * Copyright (c) 2017-2026 The LightGBM developers. All rights reserved.
+ * Copyright (c) 2017-2026 The Falcata developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 #ifndef FALCATA_R_PACKAGE_SRC_LIGHTGBM_R_H_
@@ -36,7 +36,7 @@ FALCATA_C_EXPORT SEXP FLC_NullBoosterHandleError_R();
 // --- start Dataset interface
 
 /*!
-* \brief load Dataset from file like the command_line LightGBM does
+* \brief load Dataset from file like the command_line Falcata does
 * \param filename the name of the file
 * \param parameters additional parameters
 * \param reference used to align bin mapper with other Dataset, nullptr means not used
@@ -886,8 +886,8 @@ FALCATA_C_EXPORT SEXP FLC_BoosterDumpModel_R(
 FALCATA_C_EXPORT SEXP FLC_DumpParamAliases_R();
 
 /*!
-* \brief Get current maximum number of threads used by LightGBM routines in this process.
-* \param[out] out current maximum number of threads used by LightGBM. -1 means defaulting to omp_get_num_threads().
+* \brief Get current maximum number of threads used by Falcata routines in this process.
+* \param[out] out current maximum number of threads used by Falcata. -1 means defaulting to omp_get_num_threads().
 * \return R NULL value
 */
 FALCATA_C_EXPORT SEXP FLC_GetMaxThreads_R(
@@ -896,8 +896,8 @@ FALCATA_C_EXPORT SEXP FLC_GetMaxThreads_R(
 
 
 /*!
-* \brief Set maximum number of threads used by LightGBM routines in this process.
-* \param num_threads maximum number of threads used by LightGBM. -1 means defaulting to omp_get_num_threads().
+* \brief Set maximum number of threads used by Falcata routines in this process.
+* \param num_threads maximum number of threads used by Falcata. -1 means defaulting to omp_get_num_threads().
 * \return R NULL value
 */
 FALCATA_C_EXPORT SEXP FLC_SetMaxThreads_R(

@@ -159,9 +159,9 @@ for (model_name in names(models)) {
 
 test_that("num_iteration and start_iteration work as expected", {
   set.seed(1L)
-  data(agaricus.train, package = "lightgbm")
+  data(agaricus.train, package = "falcata")
   train <- agaricus.train
-  bst <- lightgbm(
+  bst <- falcata(
     data = as.matrix(train$data)
     , label = train$label
     , params = list(objective = "binary", num_threads = .LGB_MAX_THREADS)

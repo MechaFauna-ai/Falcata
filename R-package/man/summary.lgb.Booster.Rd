@@ -2,7 +2,7 @@
 % Please edit documentation in R/lgb.Booster.R
 \name{summary.lgb.Booster}
 \alias{summary.lgb.Booster}
-\title{Summary method for LightGBM model}
+\title{Summary method for Falcata model}
 \usage{
 \method{summary}{lgb.Booster}(object, ...)
 }
@@ -15,7 +15,7 @@
 The same input \code{object}, returned as invisible.
 }
 \description{
-Show summary information about a LightGBM model object (same as \code{print}).
+Show summary information about a Falcata model object (same as \code{print}).
 
              \emph{New in version 4.0.0}
 }

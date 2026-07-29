@@ -1,5 +1,5 @@
 # Central location for parameter aliases.
-# See https://lightgbm.readthedocs.io/en/latest/Parameters.html#core-parameters
+# See https://falcata.readthedocs.io/en/latest/Parameters.html#core-parameters
 
 # [description] List of respected parameter aliases specific to lgb.Dataset. Wrapped in a function to
 #               take advantage of lazy evaluation (so it doesn't matter what order
@@ -39,7 +39,7 @@
 
 # [description] List of respected parameter aliases. Wrapped in a function to take advantage of
 #               lazy evaluation (so it doesn't matter what order R sources files during installation).
-# [return] A named list, where each key is a main LightGBM parameter and each value is a character
+# [return] A named list, where each key is a main Falcata parameter and each value is a character
 #          vector of corresponding aliases.
 .PARAMETER_ALIASES <- function() {
     if (exists("PARAMETER_ALIASES", where = .lgb_session_cache_env)) {
@@ -64,7 +64,7 @@
 }
 
 # [description]
-#     Per https://github.com/lightgbm-org/LightGBM/blob/master/docs/Parameters.rst#metric,
+#     Per https://github.com/falcata-org/Falcata/blob/master/docs/Parameters.rst#metric,
 #     a few different strings can be used to indicate "no metrics".
 # [returns]
 #     A character vector

@@ -1,8 +1,8 @@
-# LightGBM R-package
+# Falcata R-package
 
-[![CRAN Version](https://www.r-pkg.org/badges/version/lightgbm)](https://cran.r-project.org/package=lightgbm)
-[![Downloads](https://cranlogs.r-pkg.org/badges/grand-total/lightgbm)](https://cran.r-project.org/package=lightgbm)
-[![API Docs](https://readthedocs.org/projects/lightgbm/badge/?version=latest)](https://lightgbm.readthedocs.io/en/latest/R/reference/)
+[![CRAN Version](https://www.r-pkg.org/badges/version/falcata)](https://cran.r-project.org/package=falcata)
+[![Downloads](https://cranlogs.r-pkg.org/badges/grand-total/falcata)](https://cran.r-project.org/package=falcata)
+[![API Docs](https://readthedocs.org/projects/falcata/badge/?version=latest)](https://falcata.readthedocs.io/en/latest/R/reference/)
 
 <img src="man/figures/logo.svg" align="right" alt="" width="175" />
 
@@ -31,13 +31,13 @@ If you experience any issues with that, try ["Installing from Source with CMake"
 
 To build a GPU-enabled version of the package, follow the steps in ["Installing a GPU-enabled Build"](#installing-a-gpu-enabled-build).
 
-If any of the above options do not work for you or do not meet your needs, please let the maintainers know by [opening an issue](https://github.com/lightgbm-org/LightGBM/issues).
+If any of the above options do not work for you or do not meet your needs, please let the maintainers know by [opening an issue](https://github.com/falcata-org/Falcata/issues).
 
-When your package installation is done, you can check quickly if your LightGBM R-package is working by running the following:
+When your package installation is done, you can check quickly if your Falcata R-package is working by running the following:
 
 ```r
-library(lightgbm)
-data(agaricus.train, package='lightgbm')
+library(falcata)
+data(agaricus.train, package='falcata')
 train <- agaricus.train
 dtrain <- lgb.Dataset(train$data, label = train$label)
 model <- lgb.cv(
@@ -51,15 +51,15 @@ model <- lgb.cv(
 
 ### Installing the CRAN package
 
-`{lightgbm}` is [available on CRAN](https://cran.r-project.org/package=lightgbm), and can be installed with the following R code.
+`{falcata}` is [available on CRAN](https://cran.r-project.org/package=falcata), and can be installed with the following R code.
 
 ```r
-install.packages("lightgbm", repos = "https://cran.r-project.org")
+install.packages("falcata", repos = "https://cran.r-project.org")
 ```
 
-This is the easiest way to install `{lightgbm}`. It does not require `CMake` or `Visual Studio`, and should work well on many different operating systems and compilers.
+This is the easiest way to install `{falcata}`. It does not require `CMake` or `Visual Studio`, and should work well on many different operating systems and compilers.
 
-Each CRAN package is also available on [LightGBM releases](https://github.com/lightgbm-org/LightGBM/releases), with a name like `lightgbm-{VERSION}-r-cran.tar.gz`.
+Each CRAN package is also available on [Falcata releases](https://github.com/falcata-org/Falcata/releases), with a name like `falcata-{VERSION}-r-cran.tar.gz`.
 
 #### Custom Installation (Linux, Mac)
 
@@ -87,7 +87,7 @@ R CMD config --all
 
 You need to install git and [CMake](https://cmake.org/) first.
 
-Note: this method is only supported on 64-bit systems. If you need to run LightGBM on 32-bit Windows (i386), follow the instructions in ["Installing the CRAN Package"](#installing-the-cran-package).
+Note: this method is only supported on 64-bit systems. If you need to run Falcata on 32-bit Windows (i386), follow the instructions in ["Installing the CRAN Package"](#installing-the-cran-package).
 
 #### Windows Preparation
 
@@ -126,9 +126,9 @@ By default, the package will be built with [Visual Studio Build Tools](https://v
 
 **MSYS2 (R 4.x)**
 
-If you are using R 4.x and installation fails with Visual Studio, `LightGBM` will fall back to using [MSYS2](https://www.msys2.org/). This should work with the tools already bundled in `Rtools` 4.0.
+If you are using R 4.x and installation fails with Visual Studio, `Falcata` will fall back to using [MSYS2](https://www.msys2.org/). This should work with the tools already bundled in `Rtools` 4.0.
 
-If you want to force `LightGBM` to use MSYS2 (for any R version), pass `--use-msys2` to the installation script.
+If you want to force `Falcata` to use MSYS2 (for any R version), pass `--use-msys2` to the installation script.
 
 ```shell
 Rscript build_r.R --use-msys2
@@ -136,7 +136,7 @@ Rscript build_r.R --use-msys2
 
 **MinGW**
 
-If you want to force `LightGBM` to use [MinGW](https://www.mingw-w64.org/) (for any R version), pass `--use-mingw` to the installation script.
+If you want to force `Falcata` to use [MinGW](https://www.mingw-w64.org/) (for any R version), pass `--use-mingw` to the installation script.
 
 ```shell
 Rscript build_r.R --use-mingw
@@ -144,7 +144,7 @@ Rscript build_r.R --use-mingw
 
 #### Mac OS Preparation
 
-You can perform installation either with **Apple Clang** or **gcc**. In case you prefer **Apple Clang**, you should install **OpenMP** (details for installation can be found in [Installation Guide](https://github.com/lightgbm-org/LightGBM/blob/master/docs/Installation-Guide.rst#apple-clang)) first. In case you prefer **gcc**, you need to install it (details for installation can be found in [Installation Guide](https://github.com/lightgbm-org/LightGBM/blob/master/docs/Installation-Guide.rst#gcc)) and set some environment variables to tell R to use `gcc` and `g++`. If you install these from Homebrew, your versions of `g++` and `gcc` are most likely in `/usr/local/bin`, as shown below.
+You can perform installation either with **Apple Clang** or **gcc**. In case you prefer **Apple Clang**, you should install **OpenMP** (details for installation can be found in [Installation Guide](https://github.com/falcata-org/Falcata/blob/master/docs/Installation-Guide.rst#apple-clang)) first. In case you prefer **gcc**, you need to install it (details for installation can be found in [Installation Guide](https://github.com/falcata-org/Falcata/blob/master/docs/Installation-Guide.rst#gcc)) and set some environment variables to tell R to use `gcc` and `g++`. If you install these from Homebrew, your versions of `g++` and `gcc` are most likely in `/usr/local/bin`, as shown below.
 
 ```
 # replace 8 with version of gcc installed on your machine
@@ -156,15 +156,15 @@ export CXX=/usr/local/bin/g++-8 CC=/usr/local/bin/gcc-8
 After following the "preparation" steps above for your operating system, build and install the R-package with the following commands:
 
 ```sh
-git clone --recursive https://github.com/lightgbm-org/LightGBM
-cd LightGBM
+git clone --recursive https://github.com/falcata-org/Falcata
+cd Falcata
 Rscript build_r.R
 ```
 
 The `build_r.R` script builds the package in a temporary directory called `lightgbm_r`. It will destroy and recreate that directory each time you run the script. That script supports the following command-line options:
 
 - `--no-build-vignettes`: Skip building vignettes.
-- `-j[jobs]`: Number of threads to use when compiling LightGBM. E.g., `-j4` will try to compile 4 objects at a time.
+- `-j[jobs]`: Number of threads to use when compiling Falcata. E.g., `-j4` will try to compile 4 objects at a time.
     - by default, this script uses single-thread compilation
     - for best results, set `-j` to the number of physical CPUs
 - `--skip-install`: Build the package tarball, but do not install it.
@@ -176,7 +176,7 @@ Note: for the build with Visual Studio/VS Build Tools in Windows, you should use
 
 ### Installing a GPU-enabled Build
 
-You will need to install Boost and OpenCL first: details for installation can be found in [Installation-Guide](https://github.com/lightgbm-org/LightGBM/blob/master/docs/Installation-Guide.rst#build-gpu-version).
+You will need to install Boost and OpenCL first: details for installation can be found in [Installation-Guide](https://github.com/falcata-org/Falcata/blob/master/docs/Installation-Guide.rst#build-gpu-version).
 
 After installing these other libraries, follow the steps in ["Installing from Source with CMake"](#install). When you reach the step that mentions `build_r.R`, pass the flag `--use-gpu`.
 
@@ -211,7 +211,7 @@ Precompiled binaries for Mac and Windows are prepared by CRAN a few days after e
 
 ```r
 install.packages(
-    "lightgbm"
+    "falcata"
     , type = "both"
     , repos = "https://cran.r-project.org"
 )
@@ -223,27 +223,27 @@ CRAN does not prepare precompiled binaries for Linux, and as of this writing nei
 
 ### Installing from a Pre-compiled lib_lightgbm <a id="lib_lightgbm"></a>
 
-Previous versions of LightGBM offered the ability to first compile the C++ library (`lib_lightgbm.{dll,dylib,so}`) and then build an R-package that wraps it.
+Previous versions of Falcata offered the ability to first compile the C++ library (`lib_lightgbm.{dll,dylib,so}`) and then build an R-package that wraps it.
 
-As of version 3.0.0, this is no longer supported. If building from source is difficult for you, please [open an issue](https://github.com/lightgbm-org/LightGBM/issues).
+As of version 3.0.0, this is no longer supported. If building from source is difficult for you, please [open an issue](https://github.com/falcata-org/Falcata/issues).
 
 Examples
 --------
 
-Please visit [demo](https://github.com/lightgbm-org/LightGBM/tree/master/R-package/demo):
+Please visit [demo](https://github.com/falcata-org/Falcata/tree/master/R-package/demo):
 
-* [Basic walkthrough of wrappers](https://github.com/lightgbm-org/LightGBM/blob/master/R-package/demo/basic_walkthrough.R)
-* [Boosting from existing prediction](https://github.com/lightgbm-org/LightGBM/blob/master/R-package/demo/boost_from_prediction.R)
-* [Early Stopping](https://github.com/lightgbm-org/LightGBM/blob/master/R-package/demo/early_stopping.R)
-* [Cross Validation](https://github.com/lightgbm-org/LightGBM/blob/master/R-package/demo/cross_validation.R)
-* [Multiclass Training/Prediction](https://github.com/lightgbm-org/LightGBM/blob/master/R-package/demo/multiclass.R)
-* [Leaf (in)Stability](https://github.com/lightgbm-org/LightGBM/blob/master/R-package/demo/leaf_stability.R)
-* [Weight-Parameter Adjustment Relationship](https://github.com/lightgbm-org/LightGBM/blob/master/R-package/demo/weight_param.R)
+* [Basic walkthrough of wrappers](https://github.com/falcata-org/Falcata/blob/master/R-package/demo/basic_walkthrough.R)
+* [Boosting from existing prediction](https://github.com/falcata-org/Falcata/blob/master/R-package/demo/boost_from_prediction.R)
+* [Early Stopping](https://github.com/falcata-org/Falcata/blob/master/R-package/demo/early_stopping.R)
+* [Cross Validation](https://github.com/falcata-org/Falcata/blob/master/R-package/demo/cross_validation.R)
+* [Multiclass Training/Prediction](https://github.com/falcata-org/Falcata/blob/master/R-package/demo/multiclass.R)
+* [Leaf (in)Stability](https://github.com/falcata-org/Falcata/blob/master/R-package/demo/leaf_stability.R)
+* [Weight-Parameter Adjustment Relationship](https://github.com/falcata-org/Falcata/blob/master/R-package/demo/weight_param.R)
 
 Testing
 -------
 
-The R-package's unit tests are run automatically on every commit, via integrations like [GitHub Actions](https://github.com/lightgbm-org/LightGBM/actions). Adding new tests in `R-package/tests/testthat` is a valuable way to improve the reliability of the R-package.
+The R-package's unit tests are run automatically on every commit, via integrations like [GitHub Actions](https://github.com/falcata-org/Falcata/actions). Adding new tests in `R-package/tests/testthat` is a valuable way to improve the reliability of the R-package.
 
 ### Running the Tests
 
@@ -253,12 +253,12 @@ While developing the R-package, run the code below to run the unit tests.
 sh build-cran-package.sh \
     --no-build-vignettes
 
-R CMD INSTALL --with-keep.source lightgbm*.tar.gz
+R CMD INSTALL --with-keep.source falcata*.tar.gz
 cd R-package/tests
 Rscript testthat.R
 ```
 
-To run the tests with more verbose logs, set environment variable `LIGHTGBM_TEST_VERBOSITY` to a valid value for parameter [`verbosity`](https://lightgbm.readthedocs.io/en/latest/Parameters.html#verbosity).
+To run the tests with more verbose logs, set environment variable `LIGHTGBM_TEST_VERBOSITY` to a valid value for parameter [`verbosity`](https://falcata.readthedocs.io/en/latest/Parameters.html#verbosity).
 
 ```shell
 export LIGHTGBM_TEST_VERBOSITY=1
@@ -314,7 +314,7 @@ Preparing a CRAN Package
 
 This section is primarily for maintainers, but may help users and contributors to understand the structure of the R-package.
 
-Most of `LightGBM` uses `CMake` to handle tasks like setting compiler and linker flags, including header file locations, and linking to other libraries. Because CRAN packages typically do not assume the presence of `CMake`, the R-package uses an alternative method that is in the CRAN-supported toolchain for building R packages with C++ code: `Autoconf`.
+Most of `Falcata` uses `CMake` to handle tasks like setting compiler and linker flags, including header file locations, and linking to other libraries. Because CRAN packages typically do not assume the presence of `CMake`, the R-package uses an alternative method that is in the CRAN-supported toolchain for building R packages with C++ code: `Autoconf`.
 
 For more information on this approach, see ["Writing R Extensions"](https://cran.r-project.org/doc/manuals/r-release/R-exts.html#Configure-and-cleanup).
 
@@ -327,7 +327,7 @@ git submodule update --init --recursive
 sh build-cran-package.sh
 ```
 
-This will create a file `lightgbm_${VERSION}.tar.gz`, where `VERSION` is the version of `LightGBM`.
+This will create a file `lightgbm_${VERSION}.tar.gz`, where `VERSION` is the version of `Falcata`.
 
 That script supports the following command-line options:
 
@@ -355,7 +355,7 @@ At build time, `configure` will be run and used to create a file `Makevars`, usi
 1. Edit `configure.ac`.
 2. Create `configure` with `autoconf`. Do not edit it by hand. This file must be generated on Ubuntu 22.04.
 
-    If you have an Ubuntu 22.04 environment available, run the provided script from the root of the `LightGBM` repository.
+    If you have an Ubuntu 22.04 environment available, run the provided script from the root of the `Falcata` repository.
 
     ```shell
     ./R-package/recreate-configure.sh
@@ -366,8 +366,8 @@ At build time, `configure` will be run and used to create a file `Makevars`, usi
     ```shell
     docker run \
         --rm \
-        -v $(pwd):/opt/LightGBM \
-        -w /opt/LightGBM \
+        -v $(pwd):/opt/Falcata \
+        -w /opt/Falcata \
         ubuntu:22.04 \
         ./R-package/recreate-configure.sh
     ```
@@ -378,7 +378,7 @@ At build time, `configure` will be run and used to create a file `Makevars`, usi
 
 Alternatively, GitHub Actions can re-generate this file for you.
 
-1. navigate to https://github.com/lightgbm-org/LightGBM/actions/workflows/r_configure.yml
+1. navigate to https://github.com/falcata-org/Falcata/actions/workflows/r_configure.yml
 2. click "Run workflow" (drop-down)
 3. enter the branch from the pull request for the `pr-branch` input
 4. click "Run workflow" (button)
@@ -392,7 +392,7 @@ At build time, `configure.win` will be run and used to create a file `Makevars.w
 
 ### Testing the CRAN Package
 
-`{lightgbm}` is tested automatically on every commit, across many combinations of operating system, R version, and compiler. This section describes how to test the package locally while you are developing.
+`{falcata}` is tested automatically on every commit, across many combinations of operating system, R version, and compiler. This section describes how to test the package locally while you are developing.
 
 #### Windows, Mac, and Linux
 
@@ -423,8 +423,8 @@ In the code below, environment variable `R_CUSTOMIZATION` should be set to one o
 docker run \
   --rm \
   -it \
-  -v $(pwd):/opt/LightGBM \
-  -w /opt/LightGBM \
+  -v $(pwd):/opt/Falcata \
+  -w /opt/Falcata \
   --env R_CUSTOMIZATION=san \
   wch1/r-debug:latest \
   /bin/bash
@@ -433,7 +433,7 @@ docker run \
 RDscript${R_CUSTOMIZATION} \
   -e "install.packages(c('R6', 'data.table', 'jsonlite', 'knitr', 'markdown', 'Matrix', 'RhpcBLASctl', 'testthat'), repos = 'https://cran.r-project.org', Ncpus = parallel::detectCores())"
 
-# install lightgbm
+# install falcata
 sh build-cran-package.sh --r-executable=RD${R_CUSTOMIZATION}
 RD${R_CUSTOMIZATION} \
   CMD INSTALL lightgbm_*.tar.gz
@@ -457,8 +457,8 @@ You can replicate these checks locally using Docker. Note that instrumented vers
 ```shell
 docker run \
     --rm \
-    -v $(pwd):/opt/LightGBM \
-    -w /opt/LightGBM \
+    -v $(pwd):/opt/Falcata \
+    -w /opt/Falcata \
     -it \
         wch1/r-debug
 
@@ -486,7 +486,7 @@ RDvalgrind \
 
 These tests can also be triggered on a pull request branch, using GitHub Actions.
 
-1. navigate to https://github.com/lightgbm-org/LightGBM/actions/workflows/r_valgrind.yml
+1. navigate to https://github.com/falcata-org/Falcata/actions/workflows/r_valgrind.yml
 2. click "Run workflow" (drop-down)
 3. enter the branch from the pull request for the `pr-branch` input
 4. enter the pull request ID for the `pr-number` input
@@ -496,7 +496,7 @@ Or by using the GitHub CLI, using a command similar to this:
 
 ```shell
 gh workflow run \
-    --repo lightgbm-org/LightGBM \
+    --repo falcata-org/Falcata \
     r_valgrind.yml \
     -f pr-branch=ci/fix-rerun-workflow \
     -f pr-number=7072
@@ -505,4 +505,4 @@ gh workflow run \
 Known Issues
 ------------
 
-For information about known issues with the R-package, see the [R-package section of LightGBM's main FAQ page](https://lightgbm.readthedocs.io/en/latest/FAQ.html#r-package).
+For information about known issues with the R-package, see the [R-package section of Falcata's main FAQ page](https://falcata.readthedocs.io/en/latest/FAQ.html#r-package).

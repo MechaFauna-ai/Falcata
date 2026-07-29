@@ -1,8 +1,8 @@
-data(agaricus.train, package = "lightgbm")
+data(agaricus.train, package = "falcata")
 train_data <- agaricus.train$data[seq_len(1000L), ]
 train_label <- agaricus.train$label[seq_len(1000L)]
 
-data(agaricus.test, package = "lightgbm")
+data(agaricus.test, package = "falcata")
 test_data <- agaricus.test$data[1L:100L, ]
 test_label <- agaricus.test$label[1L:100L]
 
@@ -210,7 +210,7 @@ test_that("lgb.Dataset: Dataset should be able to construct from matrix and retu
     , rawData
     , nrow(rawData)
     , ncol(rawData)
-    , lightgbm:::.params2str(params = list())
+    , falcata:::.params2str(params = list())
     , ref_handle
   )
   expect_true(methods::is(handle, "externalptr"))
@@ -224,7 +224,7 @@ test_that("cpp errors should be raised as proper R errors", {
     Sys.getenv("COMPILER", "") == "MSVC"
     , message = "Skipping on Visual Studio"
   )
-  data(agaricus.train, package = "lightgbm")
+  data(agaricus.train, package = "falcata")
   train <- agaricus.train
   dtrain <- lgb.Dataset(
     train$data
@@ -252,7 +252,7 @@ test_that("lgb.Dataset$set_field() should convert 'group' to integer", {
 })
 
 test_that("lgb.Dataset should throw an error if 'reference' is provided but of the wrong format", {
-  data(agaricus.test, package = "lightgbm")
+  data(agaricus.test, package = "falcata")
   test_data <- agaricus.test$data[1L:100L, ]
   test_label <- agaricus.test$label[1L:100L]
   # Try to trick lgb.Dataset() into accepting bad input
@@ -266,7 +266,7 @@ test_that("lgb.Dataset should throw an error if 'reference' is provided but of t
 })
 
 test_that("Dataset$new() should throw an error if 'predictor' is provided but of the wrong format", {
-  data(agaricus.test, package = "lightgbm")
+  data(agaricus.test, package = "falcata")
   test_data <- agaricus.test$data[1L:100L, ]
   test_label <- agaricus.test$label[1L:100L]
   expect_error({
@@ -540,7 +540,7 @@ test_that("lgb.Dataset: should be able to create a Dataset from a text file with
 })
 
 test_that("Dataset: method calls on a Dataset with a null handle should raise an informative error and not segfault", {
-  data(agaricus.train, package = "lightgbm")
+  data(agaricus.train, package = "falcata")
   train <- agaricus.train
   dtrain <- lgb.Dataset(train$data, label = train$label)
   dtrain$construct()

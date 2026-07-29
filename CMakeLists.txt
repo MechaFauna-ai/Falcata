@@ -100,16 +100,16 @@ if(USE_SWIG)
   include_directories(JNI_INCLUDE_DIRS)
   include_directories($ENV{JAVA_HOME}/include)
   if(WIN32)
-      set(LGBM_SWIG_DESTINATION_DIR "${CMAKE_CURRENT_BINARY_DIR}/com/microsoft/ml/lightgbm/windows/x86_64")
+      set(FLC_SWIG_DESTINATION_DIR "${CMAKE_CURRENT_BINARY_DIR}/ai/falcata/windows/x86_64")
       include_directories($ENV{JAVA_HOME}/include/win32)
   elseif(APPLE)
-      set(LGBM_SWIG_DESTINATION_DIR "${CMAKE_CURRENT_BINARY_DIR}/com/microsoft/ml/lightgbm/osx/x86_64")
+      set(FLC_SWIG_DESTINATION_DIR "${CMAKE_CURRENT_BINARY_DIR}/ai/falcata/osx/x86_64")
       include_directories($ENV{JAVA_HOME}/include/darwin)
   else()
-      set(LGBM_SWIG_DESTINATION_DIR "${CMAKE_CURRENT_BINARY_DIR}/com/microsoft/ml/lightgbm/linux/x86_64")
+      set(FLC_SWIG_DESTINATION_DIR "${CMAKE_CURRENT_BINARY_DIR}/ai/falcata/linux/x86_64")
       include_directories($ENV{JAVA_HOME}/include/linux)
   endif()
-  file(MAKE_DIRECTORY "${LGBM_SWIG_DESTINATION_DIR}")
+  file(MAKE_DIRECTORY "${FLC_SWIG_DESTINATION_DIR}")
 endif()
 
 set(EIGEN_DIR "${PROJECT_SOURCE_DIR}/external_libs/eigen")
@@ -558,7 +558,7 @@ set(API_SOURCES "src/c_api.cpp")
 # Only build the R part of the library if building for
 # use with the R-package
 if(__BUILD_FOR_R)
-  list(APPEND API_SOURCES "src/lightgbm_R.cpp")
+  list(APPEND API_SOURCES "src/falcata_R.cpp")
 endif()
 
 add_library(falcata_capi_objs OBJECT ${API_SOURCES})
@@ -578,7 +578,7 @@ if(__BUILD_FOR_R)
     _falcata
     PROPERTIES
       PREFIX ""
-      OUTPUT_NAME "lightgbm"
+      OUTPUT_NAME "falcata"
   )
 endif()
 
@@ -591,10 +591,10 @@ if(MSVC AND NOT __BUILD_FOR_R)
 endif()
 
 if(USE_SWIG)
-  set_property(SOURCE swig/lightgbmlib.i PROPERTY CPLUSPLUS ON)
-  list(APPEND swig_options -package com.microsoft.ml.lightgbm)
-  set_property(SOURCE swig/lightgbmlib.i PROPERTY SWIG_FLAGS "${swig_options}")
-  swig_add_library(_falcata_swig LANGUAGE java SOURCES swig/lightgbmlib.i)
+  set_property(SOURCE swig/falcatalib.i PROPERTY CPLUSPLUS ON)
+  list(APPEND swig_options -package ai.falcata)
+  set_property(SOURCE swig/falcatalib.i PROPERTY SWIG_FLAGS "${swig_options}")
+  swig_add_library(_falcata_swig LANGUAGE java SOURCES swig/falcatalib.i)
   swig_link_libraries(_falcata_swig _falcata)
   set_target_properties(
     _falcata_swig
@@ -605,7 +605,7 @@ if(USE_SWIG)
       OUTPUT_NAME "lib_falcata_swig"
   )
   if(WIN32)
-    set(LGBM_SWIG_LIB_DESTINATION_PATH "${LGBM_SWIG_DESTINATION_DIR}/lib_falcata_swig.dll")
+    set(LGBM_SWIG_LIB_DESTINATION_PATH "${FLC_SWIG_DESTINATION_DIR}/lib_falcata_swig.dll")
     if(MINGW OR CYGWIN)
         set(LGBM_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata.dll")
         set(LGBM_SWIG_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata_swig.dll")
@@ -616,11 +616,11 @@ if(USE_SWIG)
   elseif(APPLE)
     set(LGBM_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata.dylib")
     set(LGBM_SWIG_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata_swig.jnilib")
-    set(LGBM_SWIG_LIB_DESTINATION_PATH "${LGBM_SWIG_DESTINATION_DIR}/lib_falcata_swig.dylib")
+    set(LGBM_SWIG_LIB_DESTINATION_PATH "${FLC_SWIG_DESTINATION_DIR}/lib_falcata_swig.dylib")
   else()
     set(LGBM_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata.so")
     set(LGBM_SWIG_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata_swig.so")
-    set(LGBM_SWIG_LIB_DESTINATION_PATH "${LGBM_SWIG_DESTINATION_DIR}/lib_falcata_swig.so")
+    set(LGBM_SWIG_LIB_DESTINATION_PATH "${FLC_SWIG_DESTINATION_DIR}/lib_falcata_swig.so")
   endif()
   add_custom_command(
       TARGET _falcata_swig
@@ -631,14 +631,14 @@ if(USE_SWIG)
         -E
         copy_if_different
         "${LGBM_LIB_SOURCE_PATH}"
-        "${LGBM_SWIG_DESTINATION_DIR}"
+        "${FLC_SWIG_DESTINATION_DIR}"
       COMMAND
         "${CMAKE_COMMAND}"
         -E
         copy_if_different
         "${LGBM_SWIG_LIB_SOURCE_PATH}"
         "${LGBM_SWIG_LIB_DESTINATION_PATH}"
-      COMMAND "${Java_JAR_EXECUTABLE}" -cf lightgbmlib.jar com
+      COMMAND "${Java_JAR_EXECUTABLE}" -cf falcatalib.jar com
     )
 endif()
 
@@ -819,23 +819,23 @@ if(APPLE AND USE_OPENMP AND NOT BUILD_STATIC_LIB)
   )
   # get exact name of the library in a variable
   get_target_property(
-    __LIB_LIGHTGBM_OUTPUT_NAME
+    __LIB_FALCATA_OUTPUT_NAME
     _falcata
     OUTPUT_NAME
   )
-  if(NOT __LIB_LIGHTGBM_OUTPUT_NAME)
-    set(__LIB_LIGHTGBM_OUTPUT_NAME "lib_falcata")
+  if(NOT __LIB_FALCATA_OUTPUT_NAME)
+    set(__LIB_FALCATA_OUTPUT_NAME "lib_falcata")
   endif()
 
   if(CMAKE_SHARED_LIBRARY_SUFFIX_CXX)
     set(
-      __LIB_LIGHTGBM_FILENAME "${__LIB_LIGHTGBM_OUTPUT_NAME}${CMAKE_SHARED_LIBRARY_SUFFIX_CXX}"
-      CACHE INTERNAL "lightgbm shared library filename"
+      __LIB_FALCATA_FILENAME "${__LIB_FALCATA_OUTPUT_NAME}${CMAKE_SHARED_LIBRARY_SUFFIX_CXX}"
+      CACHE INTERNAL "falcata shared library filename"
     )
   else()
     set(
-      __LIB_LIGHTGBM_FILENAME "${__LIB_LIGHTGBM_OUTPUT_NAME}.dylib"
-      CACHE INTERNAL "lightgbm shared library filename"
+      __LIB_FALCATA_FILENAME "${__LIB_FALCATA_OUTPUT_NAME}.dylib"
+      CACHE INTERNAL "falcata shared library filename"
     )
   endif()
 
@@ -850,7 +850,7 @@ if(APPLE AND USE_OPENMP AND NOT BUILD_STATIC_LIB)
         -change
         ${OpenMP_LIBRARY_LOCATION}
         "@rpath/${OpenMP_LIBRARY_NAME}"
-        "${__LIB_LIGHTGBM_FILENAME}"
+        "${__LIB_FALCATA_FILENAME}"
       WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
       COMMENT "Replacing hard-coded OpenMP install_name with '@rpath/${OpenMP_LIBRARY_NAME}'..."
   )
@@ -882,7 +882,7 @@ if(APPLE AND USE_OPENMP AND NOT BUILD_STATIC_LIB)
       #
       # That absolute-path install name leads to that library being loaded unconditionally.
       #
-      # That can result in e.g. 'library(data.table)' loading R's libomp.dylib and 'library(lightgbm)' loading
+      # That can result in e.g. 'library(data.table)' loading R's libomp.dylib and 'library(falcata)' loading
       # Homebrew's. Having 2 loaded in the same process can lead to segfaults and unpredictable behavior.
       #
       # This can't be easily avoided by forcing R-package builds in LightGBM to use R's libomp.dylib

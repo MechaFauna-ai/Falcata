@@ -56,4 +56,4 @@ OBJECTS = \
     treelearner/voting_parallel_tree_learner.o \
     utils/openmp_wrapper.o \
     c_api.o \
-    lightgbm_R.o
+    falcata_R.o

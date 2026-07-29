@@ -2,7 +2,7 @@
 % Please edit documentation in R/lgb.convert_with_rules.R
 \name{lgb.convert_with_rules}
 \alias{lgb.convert_with_rules}
-\title{Data preparator for LightGBM datasets with rules (integer)}
+\title{Data preparator for Falcata datasets with rules (integer)}
 \usage{
 lgb.convert_with_rules(data, rules = NULL)
 }
@@ -31,7 +31,7 @@ Attempts to prepare a clean dataset to prepare to put in a \code{lgb.Dataset}.
              Columns that contain only NA values will be converted by this function but will
              not show up in the returned \code{rules}.
 
-             NOTE: In previous releases of LightGBM, this function was called \code{lgb.prepare_rules2}.
+             NOTE: In previous releases of Falcata, this function was called \code{lgb.prepare_rules2}.
 }
 \examples{
 \donttest{

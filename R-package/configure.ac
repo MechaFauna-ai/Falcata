@@ -4,7 +4,7 @@
 #   * https://cran.r-project.org/doc/manuals/r-release/R-exts.html#Configure-and-cleanup
 
 AC_PREREQ(2.69)
-AC_INIT([lightgbm], [~~VERSION~~], [], [lightgbm], [])
+AC_INIT([falcata], [~~VERSION~~], [], [falcata], [])
 
 ###########################
 # find compiler and flags #
@@ -28,7 +28,7 @@ CXXFLAGS=`"${R_HOME}/bin/R" CMD config CXX17FLAGS`
 LDFLAGS=`"${R_HOME}/bin/R" CMD config LDFLAGS`
 AC_LANG(C++)
 
-# LightGBM-specific flags
+# Falcata-specific flags
 LGB_CPPFLAGS=""
 
 #########
@@ -154,7 +154,7 @@ then
         OPENMP_CXXFLAGS=''
         OPENMP_LIB=''
         echo '***********************************************************************************************'
-        echo ' OpenMP is unavailable on this macOS system. LightGBM code will run single-threaded as a result.'
+        echo ' OpenMP is unavailable on this macOS system. Falcata code will run single-threaded as a result.'
         echo ' To use all CPU cores for training jobs, you should install OpenMP by running'
         echo ''
         echo '     brew install libomp'

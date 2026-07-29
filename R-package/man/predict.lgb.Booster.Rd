@@ -2,7 +2,7 @@
 % Please edit documentation in R/lgb.Booster.R
 \name{predict.lgb.Booster}
 \alias{predict.lgb.Booster}
-\title{Predict method for LightGBM model}
+\title{Predict method for Falcata model}
 \usage{
 \method{predict}{lgb.Booster}(
   object,
@@ -53,7 +53,7 @@
             Note that, if using custom objectives, types "class" and "response" will not be available and will
             default towards using "raw" instead.
 
-            If the model was fit through function \link{lightgbm} and it was passed a factor as labels,
+            If the model was fit through function \link{falcata} and it was passed a factor as labels,
             passing the prediction type through \code{params} instead of through this argument might
             result in factor levels for classification objectives not being applied correctly to the
             resulting output.
@@ -73,7 +73,7 @@ If <= 0, all iterations from start_iteration are used (no limits).}
 \item{header}{only used for prediction for text file. True if text file has header}
 
 \item{params}{a list of additional named parameters. See
-\href{https://lightgbm.readthedocs.io/en/latest/Parameters.html#predict-parameters}{
+\href{https://falcata.readthedocs.io/en/latest/Parameters.html#predict-parameters}{
 the "Predict Parameters" section of the documentation} for a list of parameters and
 valid values. Where these conflict with the values of keyword arguments to this function,
 the values in \code{params} take precedence.}
@@ -91,7 +91,7 @@ For prediction types that are meant to always return one output per observation 
         \code{newdata} and one column per output.
 
         For \code{type="leaf"} predictions, will return a matrix with one row per observation in \code{newdata}
-        and one column per tree. Note that for multiclass objectives, LightGBM trains one tree per class at each
+        and one column per tree. Note that for multiclass objectives, Falcata trains one tree per class at each
         boosting iteration. That means that, for example, for a multiclass model with 3 classes, the leaf
         predictions for the first class can be found in columns 1, 4, 7, 10, etc.
 
@@ -102,7 +102,7 @@ For prediction types that are meant to always return one output per observation 
         in the order "feature contributions for first class, feature contributions for second class, feature
         contributions for third class, etc.".
 
-        If the model was fit through function \link{lightgbm} and it was passed a factor as labels, predictions
+        If the model was fit through function \link{falcata} and it was passed a factor as labels, predictions
         returned from this function will retain the factor levels (either as values for \code{type="class"}, or
         as column names for \code{type="response"} and \code{type="raw"} for multi-class objectives). Note that
         passing the requested prediction type under \code{params} instead of through \code{type} might result in
@@ -123,10 +123,10 @@ If the model object has been configured for fast single-row predictions through
 \donttest{
 \dontshow{setLGBMthreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
-data(agaricus.train, package = "lightgbm")
+data(agaricus.train, package = "falcata")
 train <- agaricus.train
 dtrain <- lgb.Dataset(train$data, label = train$label)
-data(agaricus.test, package = "lightgbm")
+data(agaricus.test, package = "falcata")
 test <- agaricus.test
 dtest <- lgb.Dataset.create.valid(dtrain, test$data, label = test$label)
 params <- list(

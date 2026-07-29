@@ -13,7 +13,7 @@ CXX="${CXX17} ${CXX17STD}"
 CXXFLAGS=`"${R_EXE}" CMD config CXX17FLAGS`
 CPPFLAGS=`"${R_EXE}" CMD config CPPFLAGS`
 
-# LightGBM-specific flags
+# Falcata-specific flags
 LGB_CPPFLAGS=""
 
 #########

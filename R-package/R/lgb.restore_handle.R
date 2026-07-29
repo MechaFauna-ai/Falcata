@@ -1,6 +1,6 @@
 #' @name lgb.restore_handle
-#' @title Restore the C++ component of a de-serialized LightGBM model
-#' @description After a LightGBM model object is de-serialized through functions such as \code{save} or
+#' @title Restore the C++ component of a de-serialized Falcata model
+#' @description After a Falcata model object is de-serialized through functions such as \code{save} or
 #' \code{saveRDS}, its underlying C++ object will be blank and needs to be restored to able to use it. Such
 #' object is restored automatically when calling functions such as \code{predict}, but this function can be
 #' used to forcibly restore it beforehand. Note that the object will be modified in-place.
@@ -17,11 +17,11 @@
 #' @seealso \link{lgb.make_serializable}, \link{lgb.drop_serialized}.
 #' @examples
 #' \donttest{
-#' library(lightgbm)
+#' library(falcata)
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' data("agaricus.train")
-#' model <- lightgbm(
+#' model <- falcata(
 #'   agaricus.train$data
 #'   , agaricus.train$label
 #'   , params = list(objective = "binary")

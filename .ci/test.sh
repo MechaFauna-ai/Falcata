@@ -61,7 +61,7 @@ if [[ $TASK == "swig" ]]; then
         ./.ci/check-dynamic-dependencies.sh ./objdump.log || exit 1
     fi
     if [[ $PRODUCES_ARTIFACTS == "true" ]]; then
-        cp ./build/lightgbmlib.jar "${BUILD_ARTIFACTSTAGINGDIRECTORY}/lightgbmlib_${OS_NAME}.jar"
+        cp ./build/falcatalib.jar "${BUILD_ARTIFACTSTAGINGDIRECTORY}/falcatalib_${OS_NAME}.jar"
     fi
     exit 0
 fi

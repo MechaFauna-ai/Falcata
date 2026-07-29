@@ -21,7 +21,7 @@
 #' Logit <- function(x) {
 #'   log(x / (1.0 - x))
 #' }
-#' data(agaricus.train, package = "lightgbm")
+#' data(agaricus.train, package = "falcata")
 #' labels <- agaricus.train$label
 #' dtrain <- lgb.Dataset(
 #'   agaricus.train$data
@@ -33,7 +33,7 @@
 #'   , data = rep(Logit(mean(labels)), length(labels))
 #' )
 #'
-#' data(agaricus.test, package = "lightgbm")
+#' data(agaricus.test, package = "falcata")
 #'
 #' params <- list(
 #'   objective = "binary"

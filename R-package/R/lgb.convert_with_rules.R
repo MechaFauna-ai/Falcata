@@ -50,7 +50,7 @@
 
 
 #' @name lgb.convert_with_rules
-#' @title Data preparator for LightGBM datasets with rules (integer)
+#' @title Data preparator for Falcata datasets with rules (integer)
 #' @description Attempts to prepare a clean dataset to prepare to put in a \code{lgb.Dataset}.
 #'              Factor, character, and logical columns are converted to integer. Missing values
 #'              in factors and characters will be filled with 0L. Missing values in logicals
@@ -62,7 +62,7 @@
 #'              Columns that contain only NA values will be converted by this function but will
 #'              not show up in the returned \code{rules}.
 #'
-#'              NOTE: In previous releases of LightGBM, this function was called \code{lgb.prepare_rules2}.
+#'              NOTE: In previous releases of Falcata, this function was called \code{lgb.prepare_rules2}.
 #' @param data A data.frame or data.table to prepare.
 #' @param rules A set of rules from the data preparator, if already used. This should be an R list,
 #'              where names are column names in \code{data} and values are named character

@@ -25,7 +25,7 @@
             Note that, if using custom objectives, types "class" and "response" will not be available and will
             default towards using "raw" instead.
 
-            If the model was fit through function \link{lightgbm} and it was passed a factor as labels,
+            If the model was fit through function \link{falcata} and it was passed a factor as labels,
             passing the prediction type through \code{params} instead of through this argument might
             result in factor levels for classification objectives not being applied correctly to the
             resulting output.
@@ -43,7 +43,7 @@ best iteration is used; otherwise, all iterations from start_iteration are used.
 If <= 0, all iterations from start_iteration are used (no limits).}
 
 \item{params}{a list of additional named parameters. See
-\href{https://lightgbm.readthedocs.io/en/latest/Parameters.html#predict-parameters}{
+\href{https://falcata.readthedocs.io/en/latest/Parameters.html#predict-parameters}{
 the "Predict Parameters" section of the documentation} for a list of parameters and
 valid values. Where these conflict with the values of keyword arguments to this function,
 the values in \code{params} take precedence.}

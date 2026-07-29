@@ -33,7 +33,7 @@ Computes feature contribution components of rawscore prediction.
 \dontshow{setLGBMthreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
 Logit <- function(x) log(x / (1.0 - x))
-data(agaricus.train, package = "lightgbm")
+data(agaricus.train, package = "falcata")
 train <- agaricus.train
 dtrain <- lgb.Dataset(train$data, label = train$label)
 set_field(
@@ -41,7 +41,7 @@ set_field(
   , field_name = "init_score"
   , data = rep(Logit(mean(train$label)), length(train$label))
 )
-data(agaricus.test, package = "lightgbm")
+data(agaricus.test, package = "falcata")
 test <- agaricus.test
 
 params <- list(

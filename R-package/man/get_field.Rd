@@ -14,14 +14,14 @@ get_field(dataset, field_name)
 
 \item{field_name}{String with the name of the attribute to get. One of the following.
 \itemize{
-    \item \code{label}: label lightgbm learns from ;
+    \item \code{label}: label falcata learns from ;
     \item \code{weight}: to do a weight rescale ;
     \item{\code{group}: used for learning-to-rank tasks. An integer vector describing how to
         group rows together as ordered results from the same set of candidate results to be ranked.
         For example, if you have a 100-document dataset with \code{group = c(10, 20, 40, 10, 10, 10)},
         that means that you have 6 groups, where the first 10 records are in the first group,
         records 11-30 are in the second group, etc.}
-    \item \code{init_score}: initial score is the base prediction lightgbm will boost from.
+    \item \code{init_score}: initial score is the base prediction falcata will boost from.
 }}
 }
 \value{
@@ -34,15 +34,15 @@ Get one attribute of a \code{lgb.Dataset}
 \donttest{
 \dontshow{setLGBMthreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
-data(agaricus.train, package = "lightgbm")
+data(agaricus.train, package = "falcata")
 train <- agaricus.train
 dtrain <- lgb.Dataset(train$data, label = train$label)
 lgb.Dataset.construct(dtrain)
 
-labels <- lightgbm::get_field(dtrain, "label")
-lightgbm::set_field(dtrain, "label", 1 - labels)
+labels <- falcata::get_field(dtrain, "label")
+falcata::set_field(dtrain, "label", 1 - labels)
 
-labels2 <- lightgbm::get_field(dtrain, "label")
+labels2 <- falcata::get_field(dtrain, "label")
 stopifnot(all(labels2 == 1 - labels))
 }
 }

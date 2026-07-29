@@ -23,11 +23,11 @@ a character representing a path to a text file (CSV, TSV, or LibSVM),
 or a character representing a path to a binary \code{lgb.Dataset} file}
 
 \item{params}{a list of parameters. See
-\href{https://lightgbm.readthedocs.io/en/latest/Parameters.html#dataset-parameters}{
+\href{https://falcata.readthedocs.io/en/latest/Parameters.html#dataset-parameters}{
 The "Dataset Parameters" section of the documentation} for a list of parameters
 and valid values.}
 
-\item{reference}{reference dataset. When LightGBM creates a Dataset, it does some preprocessing like binning
+\item{reference}{reference dataset. When Falcata creates a Dataset, it does some preprocessing like binning
 continuous features into histograms. If you want to apply the same bin boundaries from an existing
 dataset to new \code{data}, pass that existing Dataset to this argument.}
 
@@ -37,9 +37,9 @@ dataset to new \code{data}, pass that existing Dataset to this argument.}
 names or an integer vector with the indices of the features (e.g.
 \code{c(1L, 10L)} to say "the first and tenth columns").}
 
-\item{free_raw_data}{LightGBM constructs its data format, called a "Dataset", from tabular data.
+\item{free_raw_data}{Falcata constructs its data format, called a "Dataset", from tabular data.
 By default, that Dataset object on the R side does not keep a copy of the raw data.
-This reduces LightGBM's memory consumption, but it means that the Dataset object
+This reduces Falcata's memory consumption, but it means that the Dataset object
 cannot be changed after it has been constructed. If you'd prefer to be able to
 change the Dataset object after construction, set \code{free_raw_data = FALSE}.}
 
@@ -54,13 +54,13 @@ to be ranked. For example, if you have a 100-document dataset with
 where the first 10 records are in the first group, records 11-30 are in the
 second group, etc.}
 
-\item{init_score}{initial score is the base prediction lightgbm will boost from}
+\item{init_score}{initial score is the base prediction falcata will boost from}
 }
 \value{
 constructed dataset
 }
 \description{
-LightGBM does not train on raw data.
+Falcata does not train on raw data.
              It discretizes continuous features into histogram bins, tries to
              combine categorical features, and automatically handles missing and
 
@@ -71,7 +71,7 @@ LightGBM does not train on raw data.
 \donttest{
 \dontshow{setLGBMthreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
-data(agaricus.train, package = "lightgbm")
+data(agaricus.train, package = "falcata")
 train <- agaricus.train
 dtrain <- lgb.Dataset(train$data, label = train$label)
 data_file <- tempfile(fileext = ".data")

@@ -59,7 +59,7 @@ fi
 # ==2063==    by 0x56D0DDA: ??? (in /usr/lib/x86_64-linux-gnu/libgomp.so.1.0.0)
 # ==2063==    by 0x56C88E0: GOMP_parallel (in /usr/lib/x86_64-linux-gnu/libgomp.so.1.0.0)
 # ==2063==    by 0x1544D29C: LGBM_DatasetCreateFromCSC (c_api.cpp:1286)
-# ==2063==    by 0x1546F980: LGBM_DatasetCreateFromCSC_R (lightgbm_R.cpp:91)
+# ==2063==    by 0x1546F980: LGBM_DatasetCreateFromCSC_R (falcata_R.cpp:91)
 # ==2063==    by 0x4941E2F: R_doDotCall (dotcode.c:634)
 # ==2063==    by 0x494CCC6: do_dotcall (dotcode.c:1281)
 # ==2063==    by 0x499FB01: bcEval (eval.c:7078)

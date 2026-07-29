@@ -1,5 +1,5 @@
-data(agaricus.train, package = "lightgbm")
-data(agaricus.test, package = "lightgbm")
+data(agaricus.train, package = "falcata")
+data(agaricus.test, package = "falcata")
 dtrain <- lgb.Dataset(agaricus.train$data, label = agaricus.train$label)
 dtest <- lgb.Dataset(agaricus.test$data, label = agaricus.test$label)
 watchlist <- list(eval = dtest, train = dtrain)
