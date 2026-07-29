@@ -25,7 +25,7 @@ knitr::opts_chunk$set(
 
 ## Introduction
 
-Welcome to the world of [Falcata](https://falcata.readthedocs.io/en/latest/), a highly efficient gradient boosting implementation (Ke et al. 2017).
+Welcome to the world of [Falcata](https://github.com/BelixRogner/Falcata), a highly efficient gradient boosting implementation (Ke et al. 2017).
 
 ```{r}
 library(falcata)
@@ -111,7 +111,7 @@ fit <- lgb.train(
 )
 ```
 
-Try it out! If stuck, visit Falcata's [documentation](https://falcata.readthedocs.io/en/latest/R/index.html) for more details.
+Try it out! If stuck, visit Falcata's [documentation](https://github.com/BelixRogner/Falcata/blob/master/docs/R/index.rst) for more details.
 
 ```{r, echo = FALSE, results = "hide"}
 # Cleanup
@@ -122,6 +122,6 @@ if (file.exists("falcata.model")) {
 
 ## References
 
-Ke, Guolin, Qi Meng, Thomas Finley, Taifeng Wang, Wei Chen, Weidong Ma, Qiwei Ye, and Tie-Yan Liu. 2017. "Falcata: A Highly Efficient Gradient Boosting Decision Tree." In Advances in Neural Information Processing Systems 30 (NIPS 2017).
+Ke, Guolin, Qi Meng, Thomas Finley, Taifeng Wang, Wei Chen, Weidong Ma, Qiwei Ye, and Tie-Yan Liu. 2017. "LightGBM: A Highly Efficient Gradient Boosting Decision Tree." In Advances in Neural Information Processing Systems 30 (NIPS 2017).
 
 Moro, Sérgio, Paulo Cortez, and Paulo Rita. 2014. "A Data-Driven Approach to Predict the Success of Bank Telemarketing." Decision Support Systems 62: 22–31.

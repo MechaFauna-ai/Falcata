@@ -403,7 +403,7 @@ lightgbm.model
 /cmake-build-debug/
 
 # Files from local Python install
-lightgbm-python/
+falcata-python/
 python-package/LICENSE
 python-package/build_cpp/
 python-package/compile/
@@ -425,7 +425,7 @@ R-package/src-x64
 R-package/src-i386
 R-package/**/VERSION.txt
 **/Makevars.win
-lightgbm_r/
+falcata_r/
 lightgbm*.tar.gz
 lightgbm*.tgz
 lightgbm.Rcheck/

@@ -32,7 +32,7 @@ data.table::setDTthreads(1L)
 
 # control how many loud Falcata's logger is in tests
 .LGB_VERBOSITY <- as.integer(
-  Sys.getenv("LIGHTGBM_TEST_VERBOSITY", "-1")
+  Sys.getenv("FALCATA_TEST_VERBOSITY", Sys.getenv("LIGHTGBM_TEST_VERBOSITY", "-1"))
 )
 
 

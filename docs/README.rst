@@ -8,7 +8,8 @@ List of parameters and their descriptions in `Parameters.rst <./Parameters.rst>`
 is generated automatically from comments in `config file <https://github.com/BelixRogner/Falcata/blob/master/include/Falcata/config.h>`__
 by `this script <https://github.com/BelixRogner/Falcata/blob/master/.ci/parameter-generator.py>`__.
 
-After each commit on ``master``, documentation is updated and published to `Read the Docs <https://falcata.readthedocs.io/>`__.
+Falcata does not publish hosted documentation yet; build it locally with the
+instructions below, or read the sources in this directory.
 
 Build
 -----

@@ -1,5 +1,5 @@
 # Central location for parameter aliases.
-# See https://falcata.readthedocs.io/en/latest/Parameters.html#core-parameters
+# See https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst#core-parameters
 
 # [description] List of respected parameter aliases specific to lgb.Dataset. Wrapped in a function to
 #               take advantage of lazy evaluation (so it doesn't matter what order
