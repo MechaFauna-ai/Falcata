@@ -71,7 +71,7 @@ cp -R include "${TEMP_R_DIR}/src/"
 cp -R src/* "${TEMP_R_DIR}/src/"
 
 if ${BUILD_VIGNETTES} ; then
-    cp docs/logo/LightGBM_logo_black_text.svg "${TEMP_R_DIR}/vignettes/"
+    cp docs/logo/falcata-mark.svg "${TEMP_R_DIR}/vignettes/"
 fi
 
 cp \

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo/falcata-mark.svg" alt="Falcata" width="180">
+</p>
+
 Falcata
 =======
 
