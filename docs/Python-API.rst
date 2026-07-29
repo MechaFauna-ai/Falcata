@@ -1,7 +1,7 @@
 Python API
 ==========
 
-.. currentmodule:: lightgbm
+.. currentmodule:: falcata
 
 Data Structure API
 ------------------

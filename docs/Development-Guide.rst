@@ -4,7 +4,7 @@ Development Guide
 Algorithms
 ----------
 
-Refer to `Features <./Features.rst>`__ for understanding of important algorithms used in LightGBM.
+Refer to `Features <./Features.rst>`__ for understanding of important algorithms used in Falcata.
 
 Classes and Code Structure
 --------------------------
@@ -73,7 +73,7 @@ Refer to `docs README <./README.rst>`__.
 C API
 -----
 
-Refer to `C API <./C-API.rst>`__ or the comments in `c\_api.h <https://github.com/lightgbm-org/LightGBM/blob/master/include/LightGBM/c_api.h>`__ file, from which the documentation is generated.
+Refer to `C API <./C-API.rst>`__ or the comments in `c\_api.h <https://github.com/BelixRogner/Falcata/blob/master/include/Falcata/c_api.h>`__ file, from which the documentation is generated.
 
 Tests
 -----
@@ -85,11 +85,11 @@ It is highly recommended to build tests with `sanitizers <./Installation-Guide.r
 High Level Language Package
 ---------------------------
 
-See the implementations at `Python-package <https://github.com/lightgbm-org/LightGBM/tree/master/python-package>`__ and `R-package <https://github.com/lightgbm-org/LightGBM/tree/master/R-package>`__.
+See the implementations at `Python-package <https://github.com/BelixRogner/Falcata/tree/master/python-package>`__ and `R-package <https://github.com/BelixRogner/Falcata/tree/master/R-package>`__.
 
 Questions
 ---------
 
 Refer to `FAQ <./FAQ.rst>`__.
 
-Also feel free to open `issues <https://github.com/lightgbm-org/LightGBM/issues>`__ if you met problems.
+Also feel free to open `issues <https://github.com/BelixRogner/Falcata/issues>`__ if you met problems.

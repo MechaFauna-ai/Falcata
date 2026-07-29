@@ -4,7 +4,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
-import lightgbm as lgb
+import falcata as lgb
 
 print("Loading data...")
 # load or create your dataset
@@ -17,7 +17,7 @@ y_test = df_test[0]
 X_train = df_train.drop(0, axis=1)
 X_test = df_test.drop(0, axis=1)
 
-# create dataset for lightgbm
+# create dataset for falcata
 lgb_train = lgb.Dataset(
     X_train,
     y_train,

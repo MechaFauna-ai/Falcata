@@ -13,7 +13,7 @@ This page contains parameters tuning guides for different scenarios.
 Tune Parameters for the Leaf-wise (Best-first) Tree
 ---------------------------------------------------
 
-LightGBM uses the `leaf-wise <./Features.rst#leaf-wise-best-first-tree-growth>`__ tree growth algorithm, while many other popular tools use depth-wise tree growth.
+Falcata uses the `leaf-wise <./Features.rst#leaf-wise-best-first-tree-growth>`__ tree growth algorithm, while many other popular tools use depth-wise tree growth.
 Compared with depth-wise growth, the leaf-wise algorithm can converge much faster.
 However, the leaf-wise growth may be over-fitting if not used with the appropriate parameters.
 
@@ -41,21 +41,21 @@ For Faster Speed
 Add More Computational Resources
 ''''''''''''''''''''''''''''''''
 
-On systems where it is available, LightGBM uses OpenMP to parallelize many operations. The maximum number of threads used by LightGBM is controlled by the parameter ``num_threads``. By default, this will defer to the default behavior of OpenMP (one thread per real CPU core or the value in environment variable ``OMP_NUM_THREADS``, if it is set). For best performance, set this to the number of **real** CPU cores available.
+On systems where it is available, Falcata uses OpenMP to parallelize many operations. The maximum number of threads used by Falcata is controlled by the parameter ``num_threads``. By default, this will defer to the default behavior of OpenMP (one thread per real CPU core or the value in environment variable ``OMP_NUM_THREADS``, if it is set). For best performance, set this to the number of **real** CPU cores available.
 
 You might be able to achieve faster training by moving to a machine with more available CPU cores.
 
 Using distributed (multi-machine) training might also reduce training time. See the `Distributed Learning Guide <./Parallel-Learning-Guide.rst>`_ for details.
 
-Use a GPU-enabled version of LightGBM
+Use a GPU-enabled version of Falcata
 '''''''''''''''''''''''''''''''''''''
 
-You might find that training is faster using a GPU-enabled build of LightGBM. See the `GPU Tutorial <./GPU-Tutorial.rst>`__ for details.
+You might find that training is faster using a GPU-enabled build of Falcata. See the `GPU Tutorial <./GPU-Tutorial.rst>`__ for details.
 
 Grow Shallower Trees
 ''''''''''''''''''''
 
-The total training time for LightGBM increases with the total number of tree nodes added. LightGBM comes with several parameters that can be used to control the number of nodes per tree.
+The total training time for Falcata increases with the total number of tree nodes added. Falcata comes with several parameters that can be used to control the number of nodes per tree.
 
 The suggestions below will speed up training, but might hurt training accuracy.
 
@@ -67,7 +67,7 @@ This parameter is an integer that controls the maximum distance between the root
 Decrease ``num_leaves``
 ***********************
 
-LightGBM adds nodes to trees based on the gain from adding that node, regardless of depth. This figure from `the feature documentation <./Features.rst#leaf-wise-best-first-tree-growth>`__ illustrates the process.
+Falcata adds nodes to trees based on the gain from adding that node, regardless of depth. This figure from `the feature documentation <./Features.rst#leaf-wise-best-first-tree-growth>`__ illustrates the process.
 
 .. image:: ./_static/images/leaf-wise.png
    :align: center
@@ -78,14 +78,14 @@ Because of this growth strategy, it isn't straightforward to use ``max_depth`` a
 Increase ``min_gain_to_split``
 ******************************
 
-When adding a new tree node, LightGBM chooses the split point that has the largest gain. Gain is basically the reduction in training loss that results from adding a split point. By default, LightGBM sets ``min_gain_to_split`` to 0.0, which means "there is no improvement that is too small". However, in practice you might find that very small improvements in the training loss don't have a meaningful impact on the generalization error of the model. Increase ``min_gain_to_split`` to reduce training time.
+When adding a new tree node, Falcata chooses the split point that has the largest gain. Gain is basically the reduction in training loss that results from adding a split point. By default, Falcata sets ``min_gain_to_split`` to 0.0, which means "there is no improvement that is too small". However, in practice you might find that very small improvements in the training loss don't have a meaningful impact on the generalization error of the model. Increase ``min_gain_to_split`` to reduce training time.
 
 Increase ``min_data_in_leaf`` and ``min_sum_hessian_in_leaf``
 *************************************************************
 
-Depending on the size of the training data and the distribution of features, it's possible for LightGBM to add tree nodes that only describe a small number of observations. In the most extreme case, consider the addition of a tree node that only a single observation from the training data falls into. This is very unlikely to generalize well, and probably is a sign of overfitting.
+Depending on the size of the training data and the distribution of features, it's possible for Falcata to add tree nodes that only describe a small number of observations. In the most extreme case, consider the addition of a tree node that only a single observation from the training data falls into. This is very unlikely to generalize well, and probably is a sign of overfitting.
 
-This can be prevented indirectly with parameters like ``max_depth`` and ``num_leaves``, but LightGBM also offers parameters to help you directly avoid adding these overly-specific tree nodes.
+This can be prevented indirectly with parameters like ``max_depth`` and ``num_leaves``, but Falcata also offers parameters to help you directly avoid adding these overly-specific tree nodes.
 
 - ``min_data_in_leaf``: Minimum number of observations that must fall into a tree node for it to be added.
 - ``min_sum_hessian_in_leaf``: Minimum sum of the Hessian (second derivative of the objective function evaluated for each observation) for observations in a leaf. For some regression objectives, this is just the minimum number of records that have to fall into each node. For classification objectives, it represents a sum over a distribution of probabilities. See `this Stack Overflow answer <https://stats.stackexchange.com/questions/317073/explanation-of-min-child-weight-in-xgboost-algorithm>`_ for a good description of how to reason about values of this parameter.
@@ -96,7 +96,7 @@ Grow Less Trees
 Decrease ``num_iterations``
 ***************************
 
-The ``num_iterations`` parameter controls the number of boosting rounds that will be performed. Since LightGBM uses decision trees as the learners, this can also be thought of as "number of trees".
+The ``num_iterations`` parameter controls the number of boosting rounds that will be performed. Since Falcata uses decision trees as the learners, this can also be thought of as "number of trees".
 
 If you try changing ``num_iterations``, change the ``learning_rate`` as well. ``learning_rate`` will not have any impact on training time, but it will impact the training accuracy. As a general rule, if you reduce ``num_iterations``, you should increase ``learning_rate``.
 
@@ -107,7 +107,7 @@ Decrease ``num_iterations`` to reduce training time.
 Use Early Stopping
 ******************
 
-If early stopping is enabled, after each boosting round the model's training accuracy is evaluated against a validation set that contains data not available to the training process. That accuracy is then compared to the accuracy as of the previous boosting round. If the model's accuracy fails to improve for some number of consecutive rounds, LightGBM stops the training process.
+If early stopping is enabled, after each boosting round the model's training accuracy is evaluated against a validation set that contains data not available to the training process. That accuracy is then compared to the accuracy as of the previous boosting round. If the model's accuracy fails to improve for some number of consecutive rounds, Falcata stops the training process.
 
 That "number of consecutive rounds" is controlled by the parameter ``early_stopping_round``. For example, ``early_stopping_round=1`` says "the first time accuracy on the validation set does not improve, stop training".
 
@@ -123,18 +123,18 @@ The suggestions below will speed up training, but might hurt training accuracy.
 Enable Feature Pre-Filtering When Creating Dataset
 **************************************************
 
-By default, when a LightGBM ``Dataset`` object is constructed, some features will be filtered out based on the value of ``min_data_in_leaf``.
+By default, when a Falcata ``Dataset`` object is constructed, some features will be filtered out based on the value of ``min_data_in_leaf``.
 
 For a simple example, consider a 1000-observation dataset with a feature called ``feature_1``. ``feature_1`` takes on only two values: 25.0 (995 observations) and 50.0 (5 observations). If ``min_data_in_leaf = 10``, there is no split for this feature which will result in a valid split at least one of the leaf nodes will only have 5 observations.
 
-Instead of reconsidering this feature and then ignoring it every iteration, LightGBM filters this feature out at before training, when the ``Dataset`` is constructed.
+Instead of reconsidering this feature and then ignoring it every iteration, Falcata filters this feature out at before training, when the ``Dataset`` is constructed.
 
 If this default behavior has been overridden by setting ``feature_pre_filter=False``, set ``feature_pre_filter=True`` to reduce training time.
 
 Decrease ``max_bin`` or ``max_bin_by_feature`` When Creating Dataset
 ********************************************************************
 
-LightGBM training `buckets continuous features into discrete bins <./Features.rst#optimization-in-speed-and-memory-usage>`_ to improve training speed and reduce memory requirements for training. This binning is done one time during ``Dataset`` construction. The number of splits considered when adding a node is ``O(#feature * #bin)``, so reducing the number of bins per feature can reduce the number of splits that need to be evaluated.
+Falcata training `buckets continuous features into discrete bins <./Features.rst#optimization-in-speed-and-memory-usage>`_ to improve training speed and reduce memory requirements for training. This binning is done one time during ``Dataset`` construction. The number of splits considered when adding a node is ``O(#feature * #bin)``, so reducing the number of bins per feature can reduce the number of splits that need to be evaluated.
 
 ``max_bin`` is controls the maximum number of bins that features will bucketed into. It is also possible to set this maximum feature-by-feature, by passing ``max_bin_by_feature``.
 
@@ -150,14 +150,14 @@ Increase ``min_data_in_bin`` to reduce training time.
 Decrease ``feature_fraction``
 *****************************
 
-By default, LightGBM considers all features in a ``Dataset`` during the training process. This behavior can be changed by setting ``feature_fraction`` to a value ``> 0`` and ``<= 1.0``. Setting ``feature_fraction`` to ``0.5``, for example, tells LightGBM to randomly select ``50%`` of features at the beginning of constructing each tree. This reduces the total number of splits that have to be evaluated to add each tree node.
+By default, Falcata considers all features in a ``Dataset`` during the training process. This behavior can be changed by setting ``feature_fraction`` to a value ``> 0`` and ``<= 1.0``. Setting ``feature_fraction`` to ``0.5``, for example, tells Falcata to randomly select ``50%`` of features at the beginning of constructing each tree. This reduces the total number of splits that have to be evaluated to add each tree node.
 
 Decrease ``feature_fraction`` to reduce training time.
 
 Decrease ``max_cat_threshold``
 ******************************
 
-LightGBM uses a `custom approach for finding optimal splits for categorical features <./Advanced-Topics.html#categorical-feature-support>`_. In this process, LightGBM explores splits that break a categorical feature into two groups. These are sometimes called "k-vs.-rest" splits. Higher ``max_cat_threshold`` values correspond to more split points and larger possible group sizes to search.
+Falcata uses a `custom approach for finding optimal splits for categorical features <./Advanced-Topics.html#categorical-feature-support>`_. In this process, Falcata explores splits that break a categorical feature into two groups. These are sometimes called "k-vs.-rest" splits. Higher ``max_cat_threshold`` values correspond to more split points and larger possible group sizes to search.
 
 Decrease ``max_cat_threshold`` to reduce training time.
 
@@ -167,9 +167,9 @@ Use Less Data
 Use Bagging
 ***********
 
-By default, LightGBM uses all observations in the training data for each iteration. It is possible to instead tell LightGBM to randomly sample the training data. This process of training over multiple random samples without replacement is called "bagging".
+By default, Falcata uses all observations in the training data for each iteration. It is possible to instead tell Falcata to randomly sample the training data. This process of training over multiple random samples without replacement is called "bagging".
 
-Set ``bagging_freq`` to an integer greater than 0 to control how often a new sample is drawn. Set ``bagging_fraction`` to a value ``> 0.0`` and ``< 1.0`` to control the size of the sample. For example, ``{"bagging_freq": 5, "bagging_fraction": 0.75}`` tells LightGBM "re-sample without replacement every 5 iterations, and draw samples of 75% of the training data".
+Set ``bagging_freq`` to an integer greater than 0 to control how often a new sample is drawn. Set ``bagging_fraction`` to a value ``> 0.0`` and ``< 1.0`` to control the size of the sample. For example, ``{"bagging_freq": 5, "bagging_fraction": 0.75}`` tells Falcata "re-sample without replacement every 5 iterations, and draw samples of 75% of the training data".
 
 Decrease ``bagging_fraction`` to reduce training time.
 
@@ -177,7 +177,7 @@ Decrease ``bagging_fraction`` to reduce training time.
 Save Constructed Datasets with ``save_binary``
 ''''''''''''''''''''''''''''''''''''''''''''''
 
-This only applies to the LightGBM CLI. If you pass parameter ``save_binary``, the training dataset and all validations sets will be saved in a binary format understood by LightGBM. This can speed up training next time, because binning and other work done when constructing a ``Dataset`` does not have to be re-done.
+This only applies to the Falcata CLI. If you pass parameter ``save_binary``, the training dataset and all validations sets will be saved in a binary format understood by Falcata. This can speed up training next time, because binning and other work done when constructing a ``Dataset`` does not have to be re-done.
 
 
 For Better Accuracy
@@ -216,6 +216,6 @@ Deal with Over-fitting
 
 -  Try increasing ``path_smooth``
 
-.. _Optuna: https://medium.com/optuna/lightgbm-tuner-new-optuna-integration-for-hyperparameter-optimization-8b7095e99258
+.. _Optuna: https://medium.com/optuna/falcata-tuner-new-optuna-integration-for-hyperparameter-optimization-8b7095e99258
 
 .. _FLAML: https://github.com/microsoft/FLAML

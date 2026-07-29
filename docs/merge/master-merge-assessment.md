@@ -173,7 +173,7 @@ to preserving prior behavior, and every optimization has an explicit off switch.
 
 ## 5. CI status
 
-CI runs on `BelixRogner/ExaBoost` for the branch (latest, 2026-07-15):
+CI runs on `BelixRogner/Falcata` for the branch (latest, 2026-07-15):
 
 - **Green:** C++, Build, R-package, SWIG, Static Analysis, Optional checks.
 - **Red:** Python-package. Failing legs are **windows-2022 (MSVC)** and

@@ -1,6 +1,6 @@
-# ExaBoost GPU benchmark suite
+# Falcata GPU benchmark suite
 
-Reproducible comparison of **ExaBoost** (this repo, `device_type=cuda`) against
+Reproducible comparison of **Falcata** (this repo, `device_type=cuda`) against
 **upstream LightGBM** (CUDA build), **XGBoost** (`device=cuda`,
 `tree_method=hist`) and **CatBoost** (`task_type=GPU`) — training speed *and*
 model quality on a single GPU.
@@ -69,15 +69,15 @@ python3 benchmarks/orchestrate.py
 ```
 
 Everything lands under `benchmarks/workspace/` (override with
-`EXABOOST_BENCH_ROOT`). `EXABOOST_CUDA_ARCHS` overrides
+`FALCATA_BENCH_ROOT`). `FALCATA_CUDA_ARCHS` overrides
 `CMAKE_CUDA_ARCHITECTURES` (default `native`; e.g. `120-real;120-virtual` for
 Blackwell). Expect ~25GB of downloads and, with all datasets, a day-plus of
 GPU time for the full matrix; `--only fraud,covtype,year` gives a quick
 signal in under an hour.
 
-## Native int8 ingestion (optional, ExaBoost-only)
+## Native int8 ingestion (optional, Falcata-only)
 
-The matrix feeds every library identical float32 bits, so ExaBoost's native
+The matrix feeds every library identical float32 bits, so Falcata's native
 small-int path (int8/int16 matrices pass zero-copy through the C API and are
 binned via per-column LUTs — bins byte-identical to the float path) is
 measured separately:

@@ -1,19 +1,19 @@
 Documentation
 =============
 
-Documentation for LightGBM is generated using `Sphinx <https://www.sphinx-doc.org/>`__
+Documentation for Falcata is generated using `Sphinx <https://www.sphinx-doc.org/>`__
 and `Breathe <https://breathe.readthedocs.io/>`__, which works on top of `Doxygen <https://www.doxygen.nl/index.html>`__ output.
 
 List of parameters and their descriptions in `Parameters.rst <./Parameters.rst>`__
-is generated automatically from comments in `config file <https://github.com/lightgbm-org/LightGBM/blob/master/include/LightGBM/config.h>`__
-by `this script <https://github.com/lightgbm-org/LightGBM/blob/master/.ci/parameter-generator.py>`__.
+is generated automatically from comments in `config file <https://github.com/BelixRogner/Falcata/blob/master/include/Falcata/config.h>`__
+by `this script <https://github.com/BelixRogner/Falcata/blob/master/.ci/parameter-generator.py>`__.
 
-After each commit on ``master``, documentation is updated and published to `Read the Docs <https://lightgbm.readthedocs.io/>`__.
+After each commit on ``master``, documentation is updated and published to `Read the Docs <https://falcata.readthedocs.io/>`__.
 
 Build
 -----
 
-It is not necessary to re-build this documentation while modifying LightGBM's source code.
+It is not necessary to re-build this documentation while modifying Falcata's source code.
 The HTML files generated using ``Sphinx`` are not checked into source control.
 However, you may want to build them locally during development to test changes.
 
@@ -29,11 +29,11 @@ Run the following from the root of this repository to pull the relevant image an
     docker run \
         --rm \
         --user=0 \
-        -v $(pwd):/opt/LightGBM \
+        -v $(pwd):/opt/Falcata \
         --env C_API=true \
         --env CONDA=/opt/miniforge \
         --env READTHEDOCS=true \
-        --workdir=/opt/LightGBM/docs \
+        --workdir=/opt/Falcata/docs \
         --entrypoint="" \
         readthedocs/build:ubuntu-24.04-2024.06.17 \
         /bin/bash build-docs.sh

@@ -285,7 +285,7 @@ def prep_numerai():
 def prep_numerai_int8():
     """Write the optional int8 twin of the numerai cache (``X.i8.mem``), same rows/order.
 
-    Feeds ExaBoost's native int8 ingestion path (see ingest_bench.py). The
+    Feeds Falcata's native int8 ingestion path (see ingest_bench.py). The
     main cross-library matrix stays float32-fed for fairness. Requires the
     f32 cache to exist; sampled rows are verified against it so the two
     caches cannot drift.

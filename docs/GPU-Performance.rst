@@ -4,7 +4,7 @@ GPU Tuning Guide and Performance Comparison
 How It Works?
 -------------
 
-In LightGBM, the main computation cost during training is building the feature histograms. We use an efficient algorithm on GPU to accelerate this process.
+In Falcata, the main computation cost during training is building the feature histograms. We use an efficient algorithm on GPU to accelerate this process.
 The implementation is highly modular, and works for all learning tasks (classification, ranking, regression, etc). GPU acceleration also works in distributed learning settings.
 GPU algorithm implementation is based on OpenCL and can work with a wide range of GPUs.
 
@@ -38,7 +38,7 @@ How to Achieve Good Speedup on GPU
     Also make sure your system is idle (especially when using a shared computer) to get accuracy performance measurements.
 
 #.  GPU works best on large scale and dense datasets. If dataset is too small, computing it on GPU is inefficient as the data transfer overhead can be significant.
-    If you have categorical features, use the ``categorical_column`` option and input them into LightGBM directly; do not convert them into one-hot variables.
+    If you have categorical features, use the ``categorical_column`` option and input them into Falcata directly; do not convert them into one-hot variables.
 
 #.  To get good speedup with GPU, it is suggested to use a smaller number of bins.
     Setting ``max_bin=63`` is recommended, as it usually does not noticeably affect training accuracy on large datasets, but GPU training can be significantly faster than using the default bin size of 255.
@@ -85,7 +85,7 @@ We evaluate the training performance of GPU acceleration on the following datase
 |           |                |          |            |           | set        |
 +-----------+----------------+----------+------------+-----------+------------+
 
-We used the following hardware to evaluate the performance of LightGBM GPU training.
+We used the following hardware to evaluate the performance of Falcata GPU training.
 Our CPU reference is **a high-end dual socket Haswell-EP Xeon server with 28 cores**;
 GPUs include a budget GPU (RX 480) and a mainstream (GTX 1080) GPU installed on the same server.
 It is worth mentioning that **the GPUs used are not the best GPUs in the market**;
@@ -124,7 +124,7 @@ The following shows the training configuration we used:
 
 We use the configuration shown above, except for the Bosch dataset, we use a smaller ``learning_rate=0.015`` and set ``min_sum_hessian_in_leaf=5``.
 For all GPU training we vary the max number of bins (255, 63 and 15).
-The GPU implementation is from commit `0bb4a82`_ of LightGBM, when the GPU support was just merged in.
+The GPU implementation is from commit `0bb4a82`_ of Falcata, when the GPU support was just merged in.
 
 The following table lists the accuracy on test set that CPU and GPU learner can achieve after 500 iterations.
 GPU with the same number of bins can achieve a similar level of accuracy as on the CPU, despite using single precision arithmetic.
@@ -206,6 +206,6 @@ Huan Zhang, Si Si and Cho-Jui Hsieh. `GPU Acceleration for Large-scale Tree Boos
 
 .. _link6: https://community.amstat.org/jointscsg-section/dataexpo/dataexpo2009
 
-.. _0bb4a82: https://github.com/lightgbm-org/LightGBM/commit/0bb4a82
+.. _0bb4a82: https://github.com/BelixRogner/Falcata/commit/0bb4a82
 
 .. _GPU Acceleration for Large-scale Tree Boosting: https://arxiv.org/abs/1706.08359

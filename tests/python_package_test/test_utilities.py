@@ -4,11 +4,11 @@ import logging
 import numpy as np
 import pytest
 
-import lightgbm as lgb
+import falcata as lgb
 
 
 def test_register_logger(tmp_path):
-    logger = logging.getLogger("LightGBM")
+    logger = logging.getLogger("Falcata")
     logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter("%(levelname)s | %(message)s")
     log_filename = tmp_path / "LightGBM_test_logger.log"
@@ -42,35 +42,35 @@ def test_register_logger(tmp_path):
     lgb.plot_metric(eval_records)
 
     expected_log = r"""
-INFO | [LightGBM] [Warning] There are no meaningful features which satisfy the provided configuration. Decreasing Dataset parameters min_data_in_bin or min_data_in_leaf and re-constructing Dataset might resolve this warning.
-INFO | [LightGBM] [Info] Number of positive: 2, number of negative: 2
-INFO | [LightGBM] [Info] Total Bins 0
-INFO | [LightGBM] [Info] Number of data points in the train set: 4, number of used features: 0
-INFO | [LightGBM] [Info] [binary:BoostFromScore]: pavg=0.500000 -> initscore=0.000000
-INFO | [LightGBM] [Warning] Stopped training because there are no more leaves that meet the split requirements
+INFO | [Falcata] [Warning] There are no meaningful features which satisfy the provided configuration. Decreasing Dataset parameters min_data_in_bin or min_data_in_leaf and re-constructing Dataset might resolve this warning.
+INFO | [Falcata] [Info] Number of positive: 2, number of negative: 2
+INFO | [Falcata] [Info] Total Bins 0
+INFO | [Falcata] [Info] Number of data points in the train set: 4, number of used features: 0
+INFO | [Falcata] [Info] [binary:BoostFromScore]: pavg=0.500000 -> initscore=0.000000
+INFO | [Falcata] [Warning] Stopped training because there are no more leaves that meet the split requirements
 DEBUG | In dummy_metric
 INFO | Training until validation scores don't improve for 10 rounds
-INFO | [LightGBM] [Warning] Stopped training because there are no more leaves that meet the split requirements
+INFO | [Falcata] [Warning] Stopped training because there are no more leaves that meet the split requirements
 DEBUG | In dummy_metric
 INFO | [2]	valid_0's auc: 0.5	valid_0's binary_error: 0.5	valid_0's dummy_metric: 1
-INFO | [LightGBM] [Warning] Stopped training because there are no more leaves that meet the split requirements
+INFO | [Falcata] [Warning] Stopped training because there are no more leaves that meet the split requirements
 DEBUG | In dummy_metric
-INFO | [LightGBM] [Warning] Stopped training because there are no more leaves that meet the split requirements
+INFO | [Falcata] [Warning] Stopped training because there are no more leaves that meet the split requirements
 DEBUG | In dummy_metric
 INFO | [4]	valid_0's auc: 0.5	valid_0's binary_error: 0.5	valid_0's dummy_metric: 1
-INFO | [LightGBM] [Warning] Stopped training because there are no more leaves that meet the split requirements
+INFO | [Falcata] [Warning] Stopped training because there are no more leaves that meet the split requirements
 DEBUG | In dummy_metric
-INFO | [LightGBM] [Warning] Stopped training because there are no more leaves that meet the split requirements
+INFO | [Falcata] [Warning] Stopped training because there are no more leaves that meet the split requirements
 DEBUG | In dummy_metric
 INFO | [6]	valid_0's auc: 0.5	valid_0's binary_error: 0.5	valid_0's dummy_metric: 1
-INFO | [LightGBM] [Warning] Stopped training because there are no more leaves that meet the split requirements
+INFO | [Falcata] [Warning] Stopped training because there are no more leaves that meet the split requirements
 DEBUG | In dummy_metric
-INFO | [LightGBM] [Warning] Stopped training because there are no more leaves that meet the split requirements
+INFO | [Falcata] [Warning] Stopped training because there are no more leaves that meet the split requirements
 DEBUG | In dummy_metric
 INFO | [8]	valid_0's auc: 0.5	valid_0's binary_error: 0.5	valid_0's dummy_metric: 1
-INFO | [LightGBM] [Warning] Stopped training because there are no more leaves that meet the split requirements
+INFO | [Falcata] [Warning] Stopped training because there are no more leaves that meet the split requirements
 DEBUG | In dummy_metric
-INFO | [LightGBM] [Warning] Stopped training because there are no more leaves that meet the split requirements
+INFO | [Falcata] [Warning] Stopped training because there are no more leaves that meet the split requirements
 DEBUG | In dummy_metric
 INFO | [10]	valid_0's auc: 0.5	valid_0's binary_error: 0.5	valid_0's dummy_metric: 1
 INFO | Did not meet early stopping. Best iteration is:
@@ -79,18 +79,18 @@ WARNING | More than one metric available, picking one to plot.
 """.strip()
 
     gpu_lines = [
-        "INFO | [LightGBM] [Info] This is the GPU trainer",
-        "INFO | [LightGBM] [Info] Using GPU Device:",
-        "INFO | [LightGBM] [Info] Compiling OpenCL Kernel with 16 bins...",
-        "INFO | [LightGBM] [Info] GPU programs have been built",
-        "INFO | [LightGBM] [Warning] GPU acceleration is disabled because no non-trivial dense features can be found",
-        "INFO | [LightGBM] [Warning] Using sparse features with CUDA is currently not supported.",
-        "INFO | [LightGBM] [Warning] CUDA currently requires double precision calculations.",
-        "INFO | [LightGBM] [Info] LightGBM using CUDA trainer with DP float!!",
+        "INFO | [Falcata] [Info] This is the GPU trainer",
+        "INFO | [Falcata] [Info] Using GPU Device:",
+        "INFO | [Falcata] [Info] Compiling OpenCL Kernel with 16 bins...",
+        "INFO | [Falcata] [Info] GPU programs have been built",
+        "INFO | [Falcata] [Warning] GPU acceleration is disabled because no non-trivial dense features can be found",
+        "INFO | [Falcata] [Warning] Using sparse features with CUDA is currently not supported.",
+        "INFO | [Falcata] [Warning] CUDA currently requires double precision calculations.",
+        "INFO | [Falcata] [Info] Falcata using CUDA trainer with DP float!!",
     ]
     cuda_lines = [
-        "INFO | [LightGBM] [Warning] Metric auc is not implemented in cuda version. Fall back to evaluation on CPU.",
-        "INFO | [LightGBM] [Warning] Metric binary_error is not implemented in cuda version. Fall back to evaluation on CPU.",
+        "INFO | [Falcata] [Warning] Metric auc is not implemented in cuda version. Fall back to evaluation on CPU.",
+        "INFO | [Falcata] [Warning] Metric binary_error is not implemented in cuda version. Fall back to evaluation on CPU.",
     ]
     with open(log_filename, "rt", encoding="utf-8") as f:
         actual_log = f.read().strip()

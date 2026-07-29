@@ -1,14 +1,14 @@
 Features
 ========
 
-This is a conceptual overview of how LightGBM works\ `[1] <#references>`__. We assume familiarity with decision tree boosting algorithms to focus instead on aspects of LightGBM that may differ from other boosting packages. For detailed algorithms, please refer to the citations or source code.
+This is a conceptual overview of how Falcata works\ `[1] <#references>`__. We assume familiarity with decision tree boosting algorithms to focus instead on aspects of Falcata that may differ from other boosting packages. For detailed algorithms, please refer to the citations or source code.
 
 Optimization in Speed and Memory Usage
 --------------------------------------
 
 Many boosting tools use pre-sort-based algorithms\ `[2, 3] <#references>`__ (e.g. default algorithm in xgboost) for decision tree learning. It is a simple solution, but not easy to optimize.
 
-LightGBM uses histogram-based algorithms\ `[4, 5, 6] <#references>`__, which bucket continuous feature (attribute) values into discrete bins. This speeds up training and reduces memory usage. Advantages of histogram-based algorithms include the following:
+Falcata uses histogram-based algorithms\ `[4, 5, 6] <#references>`__, which bucket continuous feature (attribute) values into discrete bins. This speeds up training and reduces memory usage. Advantages of histogram-based algorithms include the following:
 
 -  **Reduced cost of calculating the gain for each split**
 
@@ -47,10 +47,10 @@ Most decision tree learning algorithms grow trees by level (depth)-wise, like th
    :align: center
    :alt: A diagram depicting level wise tree growth in which the best possible node is split one level down. The strategy results in a symmetric tree, where every node in a level has child nodes resulting in an additional layer of depth.
 
-LightGBM grows trees leaf-wise (best-first)\ `[7] <#references>`__. It will choose the leaf with max delta loss to grow.
+Falcata grows trees leaf-wise (best-first)\ `[7] <#references>`__. It will choose the leaf with max delta loss to grow.
 Holding ``#leaf`` fixed, leaf-wise algorithms tend to achieve lower loss than level-wise algorithms.
 
-Leaf-wise may cause over-fitting when ``#data`` is small, so LightGBM includes the ``max_depth`` parameter to limit tree depth. However, trees still grow leaf-wise even when ``max_depth`` is specified.
+Leaf-wise may cause over-fitting when ``#data`` is small, so Falcata includes the ``max_depth`` parameter to limit tree depth. However, trees still grow leaf-wise even when ``max_depth`` is specified.
 
 .. image:: ./_static/images/leaf-wise.png
    :align: center
@@ -65,13 +65,13 @@ Instead of one-hot encoding, the optimal solution is to split on a categorical f
 But there is an efficient solution for regression trees\ `[8] <#references>`__. It needs about ``O(k * log(k))`` to find the optimal partition.
 
 The basic idea is to sort the categories according to the training objective at each split.
-More specifically, LightGBM sorts the histogram (for a categorical feature) according to its accumulated values (``sum_gradient / sum_hessian``) and then finds the best split on the sorted histogram.
+More specifically, Falcata sorts the histogram (for a categorical feature) according to its accumulated values (``sum_gradient / sum_hessian``) and then finds the best split on the sorted histogram.
 
 Optimization in Network Communication
 -------------------------------------
 
-It only needs to use some collective communication algorithms, like "All reduce", "All gather" and "Reduce scatter", in distributed learning of LightGBM.
-LightGBM implements state-of-the-art algorithms\ `[9] <#references>`__.
+It only needs to use some collective communication algorithms, like "All reduce", "All gather" and "Reduce scatter", in distributed learning of Falcata.
+Falcata implements state-of-the-art algorithms\ `[9] <#references>`__.
 These collective communication algorithms can provide much better performance than point-to-point communication.
 
 .. _Optimization in Parallel Learning:
@@ -79,7 +79,7 @@ These collective communication algorithms can provide much better performance th
 Optimization in Distributed Learning
 ------------------------------------
 
-LightGBM provides the following distributed learning algorithms.
+Falcata provides the following distributed learning algorithms.
 
 Feature Parallel
 ~~~~~~~~~~~~~~~~
@@ -106,14 +106,14 @@ The shortcomings of traditional feature parallel:
 
 -  Need communication of split result, which costs about ``O(#data / 8)`` (one bit for one data).
 
-Feature Parallel in LightGBM
+Feature Parallel in Falcata
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Since feature parallel cannot speed up well when ``#data`` is large, we make a little change: instead of partitioning data vertically, every worker holds the full data.
-Thus, LightGBM doesn't need to communicate for split result of data since every worker knows how to split data.
+Thus, Falcata doesn't need to communicate for split result of data since every worker knows how to split data.
 And ``#data`` won't be larger, so it is reasonable to hold the full data in every machine.
 
-The procedure of feature parallel in LightGBM:
+The procedure of feature parallel in Falcata:
 
 1. Workers find local best split point {feature, threshold} on local feature set.
 
@@ -146,18 +146,18 @@ The shortcomings of traditional data parallel:
    If using point-to-point communication algorithm, communication cost for one machine is about ``O(#machine * #feature * #bin)``.
    If using collective communication algorithm (e.g. "All Reduce"), communication cost is about ``O(2 * #feature * #bin)`` (check cost of "All Reduce" in chapter 4.5 at `[9] <#references>`__).
 
-Data Parallel in LightGBM
+Data Parallel in Falcata
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-We reduce communication cost of data parallel in LightGBM:
+We reduce communication cost of data parallel in Falcata:
 
-1. Instead of "Merge global histograms from all local histograms", LightGBM uses "Reduce Scatter" to merge histograms of different (non-overlapping) features for different workers.
+1. Instead of "Merge global histograms from all local histograms", Falcata uses "Reduce Scatter" to merge histograms of different (non-overlapping) features for different workers.
    Then workers find the local best split on local merged histograms and sync up the global best split.
 
-2. As aforementioned, LightGBM uses histogram subtraction to speed up training.
+2. As aforementioned, Falcata uses histogram subtraction to speed up training.
    Based on this, we can communicate histograms only for one leaf, and get its neighbor's histograms by subtraction as well.
 
-All things considered, data parallel in LightGBM has time complexity ``O(0.5 * #feature * #bin)``.
+All things considered, data parallel in Falcata has time complexity ``O(0.5 * #feature * #bin)``.
 
 Voting Parallel
 ~~~~~~~~~~~~~~~
@@ -177,7 +177,7 @@ Thanks `@huanzhang12 <https://github.com/huanzhang12>`__ for contributing this f
 Applications and Metrics
 ------------------------
 
-LightGBM supports the following applications:
+Falcata supports the following applications:
 
 -  regression, the objective function is L2 loss
 
@@ -189,7 +189,7 @@ LightGBM supports the following applications:
 
 -  LambdaRank, the objective function is LambdaRank with NDCG
 
-LightGBM supports the following metrics:
+Falcata supports the following metrics:
 
 -  L1 loss
 
@@ -265,7 +265,7 @@ For more details, please refer to `Parameters <./Parameters.rst>`__.
 References
 ----------
 
-[1] Guolin Ke, Qi Meng, Thomas Finley, Taifeng Wang, Wei Chen, Weidong Ma, Qiwei Ye, Tie-Yan Liu. "`LightGBM\: A Highly Efficient Gradient Boosting Decision Tree`_." Advances in Neural Information Processing Systems 30 (NIPS 2017), pp. 3149-3157.
+[1] Guolin Ke, Qi Meng, Thomas Finley, Taifeng Wang, Wei Chen, Weidong Ma, Qiwei Ye, Tie-Yan Liu. "`Falcata\: A Highly Efficient Gradient Boosting Decision Tree`_." Advances in Neural Information Processing Systems 30 (NIPS 2017), pp. 3149-3157.
 
 [2] Mehta, Manish, Rakesh Agrawal, and Jorma Rissanen. "SLIQ: A fast scalable classifier for data mining." International Conference on Extending Database Technology. Springer Berlin Heidelberg, 1996.
 

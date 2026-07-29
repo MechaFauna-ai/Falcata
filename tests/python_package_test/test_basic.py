@@ -12,7 +12,7 @@ from scipy import sparse
 from sklearn.datasets import dump_svmlight_file, load_svmlight_file, make_blobs
 from sklearn.model_selection import train_test_split
 
-import lightgbm as lgb
+import falcata as lgb
 
 from .utils import BuildInfo, dummy_obj, load_breast_cancer, mse_obj, np_assert_array_equal
 
@@ -430,7 +430,7 @@ def test_add_features_does_not_fail_if_initial_dataset_has_zero_informative_feat
 
     dataset_a = lgb.Dataset(arr_a, params={"verbose": 0}).construct()
     expected_msg = (
-        "[LightGBM] [Warning] There are no meaningful features which satisfy "
+        "[Falcata] [Warning] There are no meaningful features which satisfy "
         "the provided configuration. Decreasing Dataset parameters min_data_in_bin "
         "or min_data_in_leaf and re-constructing Dataset might resolve this warning.\n"
     )
@@ -1050,7 +1050,7 @@ def test_max_depth_warning_is_raised_if_max_depth_gte_5_and_num_leaves_omitted(c
         train_set=lgb.Dataset(X, label=y),
     )
     expected_warning = (
-        f"[LightGBM] [Warning] Provided parameters constrain tree depth (max_depth={max_depth}) without explicitly "
+        f"[Falcata] [Warning] Provided parameters constrain tree depth (max_depth={max_depth}) without explicitly "
         f"setting 'num_leaves'. This can lead to underfitting. To resolve this warning, pass 'num_leaves' (<={2**max_depth}) "
         "in params. Alternatively, pass (max_depth=-1) and just use 'num_leaves' to constrain model complexity."
     )
@@ -1318,11 +1318,11 @@ def test_refit_correctly_handles_categorical_features_in_params(rng) -> None:
 def test_public_api_symbols_are_exposed():
     """Smoke test: the core public API must always be importable.
 
-    lightgbm/__init__.py imports the sklearn and dask classes under
+    falcata/__init__.py imports the sklearn and dask classes under
     ``try/except ImportError``, so if a submodule fails to import (e.g. a
     merge drops a symbol another module imports), those names are *silently*
     removed from the package. That previously surfaced only as a confusing
-    ``test_sklearn`` collection error ("module 'lightgbm' has no attribute
+    ``test_sklearn`` collection error ("module 'falcata' has no attribute
     'LGBMModel'"). This test fails loudly and clearly instead.
 
     The sklearn estimators have compat shims and do not require scikit-learn,
@@ -1341,8 +1341,8 @@ def test_public_api_symbols_are_exposed():
         "register_logger",
     ):
         assert hasattr(lgb, name), (
-            f"lightgbm.{name} is missing -- a submodule import likely failed "
-            f"(check lightgbm/__init__.py's try/except ImportError blocks)"
+            f"falcata.{name} is missing -- a submodule import likely failed "
+            f"(check falcata/__init__.py's try/except ImportError blocks)"
         )
 
 

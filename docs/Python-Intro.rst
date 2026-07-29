@@ -1,11 +1,11 @@
 Python-package Introduction
 ===========================
 
-This document gives a basic walk-through of LightGBM Python-package.
+This document gives a basic walk-through of Falcata Python-package.
 
 **List of other helpful links**
 
--  `Python Examples <https://github.com/lightgbm-org/LightGBM/tree/master/examples/python-guide>`__
+-  `Python Examples <https://github.com/BelixRogner/Falcata/tree/master/examples/python-guide>`__
 
 -  `Python API <./Python-API.rst>`__
 
@@ -14,24 +14,24 @@ This document gives a basic walk-through of LightGBM Python-package.
 Install
 -------
 
-The preferred way to install LightGBM is via pip:
+The preferred way to install Falcata is via pip:
 
 ::
 
-    pip install lightgbm
+    pip install falcata
 
 Refer to `Python-package`_ folder for the detailed installation guide.
 
-To verify your installation, try to ``import lightgbm`` in Python:
+To verify your installation, try to ``import falcata`` in Python:
 
 ::
 
-    import lightgbm as lgb
+    import falcata as lgb
 
 Data Interface
 --------------
 
-The LightGBM Python module can load data from:
+The Falcata Python module can load data from:
 
 -  LibSVM (zero-based) / TSV / CSV format text file
 
@@ -39,9 +39,9 @@ The LightGBM Python module can load data from:
 
 -  pandas DataFrame, polars DataFrame, pyarrow Table
 
--  LightGBM binary file
+-  Falcata binary file
 
--  LightGBM ``Sequence`` object(s)
+-  Falcata ``Sequence`` object(s)
 
 The data is stored in a ``Dataset`` object.
 
@@ -51,7 +51,7 @@ Many of the examples in this page use functionality from ``numpy``. To run the e
 
     import numpy as np
 
-**To load a LibSVM (zero-based) text file or a LightGBM binary file into Dataset:**
+**To load a LibSVM (zero-based) text file or a Falcata binary file into Dataset:**
 
 .. code:: python
 
@@ -104,9 +104,9 @@ Features of using ``Sequence`` interface:
 
 Please refer to ``Sequence`` `API doc <./Python-API.rst#data-structure-api>`__.
 
-`dataset_from_multi_hdf5.py <https://github.com/lightgbm-org/LightGBM/blob/master/examples/python-guide/dataset_from_multi_hdf5.py>`__ is a detailed example.
+`dataset_from_multi_hdf5.py <https://github.com/BelixRogner/Falcata/blob/master/examples/python-guide/dataset_from_multi_hdf5.py>`__ is a detailed example.
 
-**Saving Dataset into a LightGBM binary file will make loading faster:**
+**Saving Dataset into a Falcata binary file will make loading faster:**
 
 .. code:: python
 
@@ -125,7 +125,7 @@ or
 
     validation_data = lgb.Dataset('validation.svm', reference=train_data)
 
-In LightGBM, the validation data should be aligned with training data.
+In Falcata, the validation data should be aligned with training data.
 
 **Specific feature names and categorical features:**
 
@@ -133,7 +133,7 @@ In LightGBM, the validation data should be aligned with training data.
 
     train_data = lgb.Dataset(data, label=label, feature_name=['c1', 'c2', 'c3'], categorical_feature=['c3'])
 
-LightGBM can use categorical features as input directly.
+Falcata can use categorical features as input directly.
 It doesn't need to convert to one-hot encoding, and is much faster than one-hot encoding (about 8x speed-up).
 
 **Note**: You should convert your categorical features to ``int`` type before you construct ``Dataset``.
@@ -159,7 +159,7 @@ And you can use ``Dataset.set_init_score()`` to set initial score, and ``Dataset
 
 **Memory efficient usage:**
 
-The ``Dataset`` object in LightGBM is very memory-efficient, it only needs to save discrete bins.
+The ``Dataset`` object in Falcata is very memory-efficient, it only needs to save discrete bins.
 However, Numpy/Array/Pandas object is memory expensive.
 If you are concerned about your memory consumption, you can save memory by:
 
@@ -172,7 +172,7 @@ If you are concerned about your memory consumption, you can save memory by:
 Setting Parameters
 ------------------
 
-LightGBM can use a dictionary to set `Parameters <./Parameters.rst>`__.
+Falcata can use a dictionary to set `Parameters <./Parameters.rst>`__.
 For instance:
 
 -  Booster parameters:
@@ -244,7 +244,7 @@ Note that ``train()`` will return a model from the best iteration.
 
 This works with both metrics to minimize (L2, log loss, etc.) and to maximize (NDCG, AUC, etc.).
 Note that if you specify more than one evaluation metric, all of them will be used for early stopping.
-However, you can change this behavior and make LightGBM check only the first metric for early stopping by passing ``first_metric_only=True`` in ``early_stopping`` callback constructor.
+However, you can change this behavior and make Falcata check only the first metric for early stopping by passing ``first_metric_only=True`` in ``early_stopping`` callback constructor.
 
 Prediction
 ----------
@@ -264,4 +264,4 @@ If early stopping is enabled during training, you can get predictions from the b
 
     ypred = bst.predict(data, num_iteration=bst.best_iteration)
 
-.. _Python-package: https://github.com/lightgbm-org/LightGBM/tree/master/python-package
+.. _Python-package: https://github.com/BelixRogner/Falcata/tree/master/python-package

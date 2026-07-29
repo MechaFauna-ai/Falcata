@@ -75,7 +75,7 @@ def main():
     for c in ("construct_s", "train_s", "total_s", "gpu_mem_peak_mb", "rss_peak_mb"):
         timed[c] = pd.to_numeric(timed[c], errors="coerce")
 
-    lines = ["# GPU GBDT benchmark: ExaBoost vs LightGBM vs XGBoost vs CatBoost\n"]
+    lines = ["# GPU GBDT benchmark: Falcata vs LightGBM vs XGBoost vs CatBoost\n"]
 
     sha_file = os.path.join(RESULTS_DIR, "exaboost_sha.txt")
     sha = open(sha_file).read().strip()[:12] if os.path.exists(sha_file) else "unknown"
@@ -97,7 +97,7 @@ def main():
     lines += [
         "## Environment\n",
         f"- GPU: {gpu}",
-        f"- ExaBoost: `{sha}`",
+        f"- Falcata: `{sha}`",
         *[f"- {lib}: {v}" for lib, v in vers.items()],
         NOTES,
     ]

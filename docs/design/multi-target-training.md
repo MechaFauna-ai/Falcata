@@ -1,4 +1,4 @@
-# Design Spec: Multi-Target Training in the ExaBoost CUDA Learner
+# Design Spec: Multi-Target Training in the Falcata CUDA Learner
 
 Status: **design only** (no code changes yet). Author: design agent.
 Scope: single-GPU CUDA learner (`CUDASingleGPUTreeLearner`). Two variants are
@@ -10,7 +10,7 @@ specified; **variant 2 (vector-leaf) is the differentiator** and gets the depth.
 
 Numerai (and multi-task tabular problems generally) ship **many correlated
 regression targets** — the classic Numerai target plus auxiliary targets, ~5–20
-per era. Today ExaBoost trains them the way stock LightGBM does: one full GBDT
+per era. Today Falcata trains them the way stock LightGBM does: one full GBDT
 per target, sequentially. With N targets that is N independent training runs.
 
 Two things changed that make multi-target worth building *now*:
@@ -72,10 +72,10 @@ There are two distinct products here, and they are *not* the same model:
   Symmetric trees make a vector leaf trivial (leaf = a level-path bitmask, values
   are just a table) but sacrifice the accuracy of asymmetric leaf-wise growth.
 
-### The gap ExaBoost can fill
+### The gap Falcata can fill
 Nobody ships a **CUDA-supported vector-leaf learner on asymmetric leaf-wise
 trees**: XGBoost's is experimental and its GPU path is only now landing;
-CatBoost's is symmetric-only. ExaBoost already has the fast asymmetric
+CatBoost's is symmetric-only. Falcata already has the fast asymmetric
 leaf-wise/hybrid CUDA growth engine. Adding a shared-hessian vector-leaf
 histogram is a small, well-contained delta on top of it — that is the
 differentiator.
@@ -116,7 +116,7 @@ change; verifiable by md5-identity against sequential runs.
 **Config / API surface:**
 - New objective alias, e.g. `objective=regression` + `num_target=T`, or a
   dedicated `multi_output_regression` objective wrapper. Add `num_target` to
-  `include/LightGBM/config.h` near `num_class` (`config.h:925–927`) — a separate
+  `include/Falcata/config.h` near `num_class` (`config.h:925–927`) — a separate
   field so it does not collide with multiclass semantics.
 - A thin `RegressionMultiTarget` objective (host + CUDA) whose
   `NumModelPerIteration()` returns `T`, and whose `GetGradients` fills the
@@ -125,7 +125,7 @@ change; verifiable by md5-identity against sequential runs.
   `CUDARegressionL2loss::LaunchGetGradientsKernel`
   (`src/objective/cuda/cuda_regression_objective.hpp:51`) into offset slices, or
   one fused kernel over `T * num_data` — either is trivial.
-- **Label ingestion.** LightGBM metadata carries a single `label_`. Multi-target
+- **Label ingestion.** Falcata metadata carries a single `label_`. Multi-target
   labels need an `init_score`-style multi-column path or a documented
   convention (T contiguous label columns). Smallest change: accept a
   `label` matrix via the C API `num_target` and store T label columns in
@@ -174,7 +174,7 @@ construct kernel ~lines 355–415): each bin is a **(grad, hess) pair**. In the
 kernel `pos = bin << 1`, `atomicAdd_block(pos_ptr, grad)` /
 `atomicAdd_block(pos_ptr+1, hess)`; global histogram is
 `hist_in_leaf + (partition_hist_start << 1)`. Types: `hist_t = double`
-(`include/LightGBM/bin.h:34`), `kHistEntrySize = 2*sizeof(hist_t)`,
+(`include/Falcata/bin.h:34`), `kHistEntrySize = 2*sizeof(hist_t)`,
 `kHistOffset = 2` (`bin.h:40,43`). The quantized path packs (grad16, hess16)
 into a 32-bit word.
 
@@ -274,7 +274,7 @@ per-era correlation change (§8). The honest pitch is "≈2× faster to a
   device slab, `hybrid_pair_slots_`); (b) a side buffer indexed by leaf. Prefer
   (a) with a modest `kMaxTargets` (e.g. 16) to keep the struct trivially
   copyable for the batched pair-descriptor H2D copy.
-- **`CUDASplitInfo`** (`include/LightGBM/cuda/cuda_split_info.hpp`) must carry the
+- **`CUDASplitInfo`** (`include/Falcata/cuda/cuda_split_info.hpp`) must carry the
   per-target left/right sums (or at least the per-target leaf outputs) so
   `ApplySplit` can write both children's vector values.
 
@@ -286,7 +286,7 @@ per-era correlation change (§8). The honest pitch is "≈2× faster to a
   vector-leaf is cheap on an existing asymmetric learner — the expensive
   partitioning machinery is reused verbatim.
 - **`CUDATree` leaf value becomes a vector.** Today `Tree::leaf_value_` is
-  `std::vector<double>` of length `num_leaves` (`include/LightGBM/tree.h:509`),
+  `std::vector<double>` of length `num_leaves` (`include/Falcata/tree.h:509`),
   `LeafOutput(leaf)` returns a scalar (`tree.h:92`). Vector-leaf makes it
   `num_leaves * T` (row-major `[leaf][t]`). The CUDA side
   `CUDATree::cuda_leaf_value_` (device array carved from the pooled slab,
@@ -343,7 +343,7 @@ vector-leaf **if** the histogram/gain kernels are made T-aware:
 - **⚠ FIL / Treelite fallback.** GPU-accelerated inference (Treelite/FIL, used by
   `bst.predict` fast paths) **does not support vector-leaf trees** — Treelite's
   model IR is scalar-leaf. Models trained vector-leaf will **fall back to the CPU
-  (native LightGBM) predictor**. This must be flagged loudly in docs and the
+  (native Falcata) predictor**. This must be flagged loudly in docs and the
   Numerai upload pickle path (predict must use the native traversal, not a FIL
   export). Round-robin (variant 1) models are ordinary scalar-leaf trees and
   keep full FIL support.
@@ -370,21 +370,21 @@ New `RegressionMultiTargetVector` objective (host + `src/objective/cuda/`):
 ## 6. Per-file change list (file : function/struct)
 
 **Variant 1 (round-robin):**
-- `include/LightGBM/config.h` — add `int num_target = 1;` near `num_class`
+- `include/Falcata/config.h` — add `int num_target = 1;` near `num_class`
   (`:925–927`).
 - `src/objective/regression_objective.hpp` + `src/objective/cuda/
   cuda_regression_objective.{hpp,cu}` — new `RegressionMultiTarget`:
   `NumModelPerIteration()→T`, `GetGradients` filling `[t][i]` slices
   (reuse `CUDARegressionL2loss::LaunchGetGradientsKernel`, `:51`).
-- `src/io/metadata.cpp` / `include/LightGBM/dataset.h` — T-column label ingestion
+- `src/io/metadata.cpp` / `include/Falcata/dataset.h` — T-column label ingestion
   (mirror `init_score`'s `num_class * num_data` storage).
 - No changes to `gbdt.cpp` per-tree loop, `ScoreUpdater`, tree learner.
 
 **Variant 2 (vector-leaf) — additive, T=1 stays byte-identical:**
-- `include/LightGBM/tree.h` — `leaf_value_` → length `num_leaves*T`; add
+- `include/Falcata/tree.h` — `leaf_value_` → length `num_leaves*T`; add
   `num_targets_`; vectorize `LeafOutput`/`SetLeafOutput`/`AddBias`/`Shrinkage`
   (`:92,95,190–237`); add `PredictVector`.
-- `include/LightGBM/cuda/cuda_tree.hpp` — `cuda_leaf_value_` ×T;
+- `include/Falcata/cuda/cuda_tree.hpp` — `cuda_leaf_value_` ×T;
   `PooledDeviceBufferSize` (+`(T-1)*sizeof(double)*L`); `Split`/`SplitBatch`/
   `ToHost` write/readback T values.
 - `src/treelearner/cuda/cuda_leaf_splits.hpp` — `CUDALeafSplitsStruct`: add
@@ -399,7 +399,7 @@ New `RegressionMultiTargetVector` objective (host + `src/objective/cuda/`):
 - `src/treelearner/cuda/cuda_best_split_finder.{cu,hpp}` — add `int NUM_TARGETS`
   template to `LaunchFindBestSplitsForLeafKernelInner3` (`:301`); gain loop over
   T reading the T-gradient cell; `CUDASplitInfo` carries per-target sums.
-- `include/LightGBM/cuda/cuda_split_info.hpp` — per-target left/right grad sums /
+- `include/Falcata/cuda/cuda_split_info.hpp` — per-target left/right grad sums /
   leaf outputs.
 - `src/treelearner/cuda/cuda_single_gpu_tree_learner.{cpp,cu}` — `ApplySplit` /
   `LaunchCalcLeafValuesGivenGradStat` (`.hpp:343`) write T leaf values;

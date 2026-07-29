@@ -34,7 +34,7 @@ repos:
         exclude: ^benchmarks/(construct_partition_probe|construct_find_jit_probe)/
         args:
           # --root=.. previously made cpplint derive the header-guard prefix
-          # from the parent directory name. After the repo rename to ExaBoost
+          # from the parent directory name. After the repo rename to Falcata
           # that prefix no longer matches the existing LIGHTGBM_INCLUDE_*_H_
           # guards, which we deliberately keep (the C/C++ symbols are not
           # renamed). Disable the header-guard check, matching .ci/lint-cpp.sh.

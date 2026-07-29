@@ -34,7 +34,7 @@ pr_branch_no_fork_prefix="${pr_branch/*:/}"
 
 RUN_ID=$(
   gh run list                              \
-    --repo 'lightgbm-org/LightGBM'            \
+    --repo 'BelixRogner/Falcata'            \
     --workflow "${workflow_id}"            \
     --event "pull_request"                 \
     --branch "${pr_branch_no_fork_prefix}" \
@@ -50,5 +50,5 @@ fi
 echo "Re-running workflow '${workflow_id}' (run ID ${RUN_ID})"
 
 gh run rerun                  \
-  --repo 'lightgbm-org/LightGBM' \
+  --repo 'BelixRogner/Falcata' \
   "${RUN_ID}"

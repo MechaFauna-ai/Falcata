@@ -41,4 +41,4 @@ curl -sL \
   -H "Accept: application/vnd.github.v3+json" \
   -H "Authorization: token ${GITHUB_TOKEN}" \
   -d "$data" \
-  "${GITHUB_API_URL}/repos/lightgbm-org/LightGBM/issues/${pr_id}/comments"
+  "${GITHUB_API_URL}/repos/BelixRogner/Falcata/issues/${pr_id}/comments"

@@ -22,18 +22,18 @@ if __name__ == "__main__":
     copyfile(source / "lib_falcata.so", linux_folder_path / "lib_falcata.so")
     copyfile(source / "lib_falcata.dylib", osx_folder_path / "lib_falcata.dylib")
     copyfile(source / "lib_falcata.dll", windows_folder_path / "lib_falcata.dll")
-    copyfile(source / "lightgbm.exe", windows_folder_path / "lightgbm.exe")
+    copyfile(source / "falcata.exe", windows_folder_path / "falcata.exe")
     version = (nuget_dir.parents[1] / "VERSION.txt").read_text(encoding="utf-8").strip().replace("rc", "-rc")
     print(f"Setting version to '{version}'")
     nuget_str = rf"""<?xml version="1.0"?>
     <package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
     <metadata>
-        <id>LightGBM</id>
+        <id>Falcata</id>
         <version>{version}</version>
         <authors>Guolin Ke</authors>
         <owners>Guolin Ke</owners>
         <license type="expression">MIT</license>
-        <projectUrl>https://github.com/lightgbm-org/LightGBM</projectUrl>
+        <projectUrl>https://github.com/BelixRogner/Falcata</projectUrl>
         <requireLicenseAcceptance>false</requireLicenseAcceptance>
         <description>A fast, distributed, high performance gradient boosting framework</description>
         <copyright>Copyright {datetime.datetime.now().year} @ Microsoft</copyright>
@@ -75,11 +75,11 @@ if __name__ == "__main__":
         <Error Condition="'$(PlatformTarget)' != 'x64' AND
                         ('$(OutputType)' == 'Exe' OR '$(OutputType)'=='WinExe') AND
                         !('$(TargetFrameworkIdentifier)' == '.NETCoreApp' AND '$(PlatformTarget)' == '')"
-            Text="LightGBM currently supports 'x64' processor architectures. Please ensure your application is targeting 'x64'." />
+            Text="Falcata currently supports 'x64' processor architectures. Please ensure your application is targeting 'x64'." />
     </Target>
     </Project>
     """
-    (nuget_dir / "LightGBM.nuspec").write_text(nuget_str, encoding="utf-8")
-    (nuget_dir / "build" / "LightGBM.props").write_text(prop_str, encoding="utf-8")
-    (nuget_dir / "build" / "LightGBM.targets").write_text(target_str, encoding="utf-8")
+    (nuget_dir / "Falcata.nuspec").write_text(nuget_str, encoding="utf-8")
+    (nuget_dir / "build" / "Falcata.props").write_text(prop_str, encoding="utf-8")
+    (nuget_dir / "build" / "Falcata.targets").write_text(target_str, encoding="utf-8")
     print("Done creating NuGet package")

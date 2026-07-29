@@ -3,19 +3,19 @@ Distributed Learning Guide
 
 .. _Parallel Learning Guide:
 
-This guide describes distributed learning in LightGBM. Distributed learning allows the use of multiple machines to produce a single model.
+This guide describes distributed learning in Falcata. Distributed learning allows the use of multiple machines to produce a single model.
 
-Follow the `Quick Start <./Quick-Start.rst>`__ to know how to use LightGBM first.
+Follow the `Quick Start <./Quick-Start.rst>`__ to know how to use Falcata first.
 
-How Distributed LightGBM Works
+How Distributed Falcata Works
 ------------------------------
 
-This section describes how distributed learning in LightGBM works. To learn how to do this in various programming languages and frameworks, please see `Integrations <#integrations>`__.
+This section describes how distributed learning in Falcata works. To learn how to do this in various programming languages and frameworks, please see `Integrations <#integrations>`__.
 
 Choose Appropriate Parallel Algorithm
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-LightGBM provides 3 distributed learning algorithms now.
+Falcata provides 3 distributed learning algorithms now.
 
 +--------------------+---------------------------+
 | Parallel Algorithm | How to Use                |
@@ -42,25 +42,25 @@ More details about these parallel algorithms can be found in `optimization in di
 Integrations
 ------------
 
-This section describes how to run distributed LightGBM training in various programming languages and frameworks. To learn how distributed learning in LightGBM works generally, please see `How Distributed LightGBM Works <#how-distributed-lightgbm-works>`__.
+This section describes how to run distributed Falcata training in various programming languages and frameworks. To learn how distributed learning in Falcata works generally, please see `How Distributed Falcata Works <#how-distributed-falcata-works>`__.
 
 Apache Spark
 ^^^^^^^^^^^^
 
-Apache Spark users can use `SynapseML`_ for machine learning workflows with LightGBM. This project is not maintained by LightGBM's maintainers.
+Apache Spark users can use `SynapseML`_ for machine learning workflows with Falcata. This project is not maintained by Falcata's maintainers.
 
-See `this SynapseML example`_ for additional information on using LightGBM on Spark.
+See `this SynapseML example`_ for additional information on using Falcata on Spark.
 
 .. note::
 
-  ``SynapseML`` is not maintained by LightGBM's maintainers. Bug reports or feature requests should be directed to https://github.com/microsoft/SynapseML/issues.
+  ``SynapseML`` is not maintained by Falcata's maintainers. Bug reports or feature requests should be directed to https://github.com/microsoft/SynapseML/issues.
 
 Dask
 ^^^^
 
 .. versionadded:: 3.2.0
 
-LightGBM's Python-package supports distributed learning via `Dask`_. This integration is maintained by LightGBM's maintainers.
+Falcata's Python-package supports distributed learning via `Dask`_. This integration is maintained by Falcata's maintainers.
 
 .. warning::
 
@@ -69,12 +69,12 @@ LightGBM's Python-package supports distributed learning via `Dask`_. This integr
 Dask Examples
 '''''''''''''
 
-For sample code using ``lightgbm.dask``, see `these Dask examples`_.
+For sample code using ``falcata.dask``, see `these Dask examples`_.
 
 Training with Dask
 ''''''''''''''''''
 
-This section contains detailed information on performing LightGBM distributed training using Dask.
+This section contains detailed information on performing Falcata distributed training using Dask.
 
 Configuring the Dask Cluster
 ****************************
@@ -107,7 +107,7 @@ To reduce the risk of hitting memory limits, consider restarting each worker pro
 Setting Up Training Data
 *************************
 
-The estimators in ``lightgbm.dask`` expect that matrix-like or array-like data are provided in Dask DataFrame, Dask Array, or (in some cases) Dask Series format. See `the Dask DataFrame documentation`_ and `the Dask Array documentation`_ for more information on how to create such data structures.
+The estimators in ``falcata.dask`` expect that matrix-like or array-like data are provided in Dask DataFrame, Dask Array, or (in some cases) Dask Series format. See `the Dask DataFrame documentation`_ and `the Dask Array documentation`_ for more information on how to create such data structures.
 
 .. image:: ./_static/images/dask-initial-setup.svg
   :align: center
@@ -115,7 +115,7 @@ The estimators in ``lightgbm.dask`` expect that matrix-like or array-like data a
   :alt: On the left, rectangles showing a 5 by 5 grid for a local dataset. On the right, two circles representing Dask workers, one with a 3 by 5 grid and one with a 2 by 5 grid.
   :target: ./_static/images/dask-initial-setup.svg
 
-While setting up for training, ``lightgbm`` will concatenate all of the partitions on a worker into a single dataset. Distributed training then proceeds with one LightGBM worker process per Dask worker.
+While setting up for training, ``falcata`` will concatenate all of the partitions on a worker into a single dataset. Distributed training then proceeds with one Falcata worker process per Dask worker.
 
 .. image:: ./_static/images/dask-concat.svg
   :align: center
@@ -123,7 +123,7 @@ While setting up for training, ``lightgbm`` will concatenate all of the partitio
   :alt: A section labeled "before" showing two grids and a section labeled "after" showing a single grid that looks like the two from "before" stacked one on top of the other.
   :target: ./_static/images/dask-concat.svg
 
-When setting up data partitioning for LightGBM training with Dask, try to follow these suggestions:
+When setting up data partitioning for Falcata training with Dask, try to follow these suggestions:
 
 * ensure that each worker in the cluster has some of the training data
 * try to give each worker roughly the same amount of data, especially if your dataset is small
@@ -132,15 +132,15 @@ When setting up data partitioning for LightGBM training with Dask, try to follow
 Using a Specific Dask Client
 ****************************
 
-In most situations, you should not need to tell ``lightgbm.dask`` to use a specific Dask client. By default, the client returned by ``distributed.default_client()`` will be used.
+In most situations, you should not need to tell ``falcata.dask`` to use a specific Dask client. By default, the client returned by ``distributed.default_client()`` will be used.
 
-However, you might want to explicitly control the Dask client used by LightGBM if you have multiple active clients in the same session. This is useful in more complex workflows like running multiple training jobs on different Dask clusters.
+However, you might want to explicitly control the Dask client used by Falcata if you have multiple active clients in the same session. This is useful in more complex workflows like running multiple training jobs on different Dask clusters.
 
-LightGBM's Dask estimators support setting an attribute ``client`` to control the client that is used.
+Falcata's Dask estimators support setting an attribute ``client`` to control the client that is used.
 
 .. code:: python
 
-  import lightgbm as lgb
+  import falcata as lgb
   from distributed import Client, LocalCluster
 
   cluster = LocalCluster()
@@ -156,13 +156,13 @@ LightGBM's Dask estimators support setting an attribute ``client`` to control th
 Using Specific Ports
 ********************
 
-At the beginning of training, ``lightgbm.dask`` sets up a LightGBM network where each Dask worker runs one long-running task that acts as a LightGBM worker. During training, LightGBM workers communicate with each other over TCP sockets. By default, random open ports are used when creating these sockets.
+At the beginning of training, ``falcata.dask`` sets up a Falcata network where each Dask worker runs one long-running task that acts as a Falcata worker. During training, Falcata workers communicate with each other over TCP sockets. By default, random open ports are used when creating these sockets.
 
-If the communication between Dask workers in the cluster used for training is restricted by firewall rules, you must tell LightGBM exactly what ports to use.
+If the communication between Dask workers in the cluster used for training is restricted by firewall rules, you must tell Falcata exactly what ports to use.
 
 **Option 1: provide a specific list of addresses and ports**
 
-LightGBM supports a parameter ``machines``, a comma-delimited string where each entry refers to one worker (host name or IP) and a port that that worker will accept connections on. If you provide this parameter to the estimators in ``lightgbm.dask``, LightGBM will not search randomly for ports.
+Falcata supports a parameter ``machines``, a comma-delimited string where each entry refers to one worker (host name or IP) and a port that that worker will accept connections on. If you provide this parameter to the estimators in ``falcata.dask``, Falcata will not search randomly for ports.
 
 For example, consider the case where you are running one Dask worker process on each of the following IP addresses:
 
@@ -176,7 +176,7 @@ You could edit your firewall rules to allow traffic on one additional port on ea
 
 .. code:: python
 
-  import lightgbm as lgb
+  import falcata as lgb
 
   machines = "10.0.1.0:12401,10.0.2.0:12402,10.0.3.0:15000"
   dask_model = lgb.DaskLGBMRegressor(machines=machines)
@@ -185,7 +185,7 @@ If you are running multiple Dask worker processes on physical host in the cluste
 
 .. code:: python
 
-  import lightgbm as lgb
+  import falcata as lgb
 
   machines = ",".join([
     "10.0.1.0:16000",
@@ -205,7 +205,7 @@ If you are running multiple Dask worker processes on physical host in the cluste
 
 **Option 2: specify one port to use on every worker**
 
-If you are only running one Dask worker process on each host, and if you can reliably identify a port that is open on every host, using ``machines`` is unnecessarily complicated. If ``local_listen_port`` is given and ``machines`` is not, LightGBM will not search for ports randomly, but it will limit the list of addresses in the LightGBM network to those Dask workers that have a piece of the training data.
+If you are only running one Dask worker process on each host, and if you can reliably identify a port that is open on every host, using ``machines`` is unnecessarily complicated. If ``local_listen_port`` is given and ``machines`` is not, Falcata will not search for ports randomly, but it will limit the list of addresses in the Falcata network to those Dask workers that have a piece of the training data.
 
 For example, consider the case where you are running one Dask worker process on each of the following IP addresses:
 
@@ -219,13 +219,13 @@ You could edit your firewall rules to allow communication between any of the wor
 
 .. code:: python
 
-  import lightgbm as lgb
+  import falcata as lgb
 
   dask_model = lgb.DaskLGBMRegressor(local_listen_port=12400)
 
 .. warning::
 
-  Providing ``local_listen_port`` is slightly less fragile than ``machines`` because LightGBM will automatically figure out which workers have pieces of the training data. However, using this method, training can fail if any of the following are true:
+  Providing ``local_listen_port`` is slightly less fragile than ``machines`` because Falcata will automatically figure out which workers have pieces of the training data. However, using this method, training can fail if any of the following are true:
 
   * the port ``local_listen_port`` is not open on any of the worker hosts
   * any machine has multiple Dask worker processes running on it
@@ -240,14 +240,14 @@ See the Dask API's documentation for details on how to implement such functions.
 
 .. warning::
 
-  Custom objective functions used with ``lightgbm.dask`` will be called by each worker process on only that worker's local data.
+  Custom objective functions used with ``falcata.dask`` will be called by each worker process on only that worker's local data.
 
 Follow the example below to use a custom implementation of the ``regression_l2`` objective.
 
 .. code:: python
 
   import dask.array as da
-  import lightgbm as lgb
+  import falcata as lgb
   import numpy as np
   from distributed import Client, LocalCluster
 
@@ -270,7 +270,7 @@ Follow the example below to use a custom implementation of the ``regression_l2``
 Prediction with Dask
 ''''''''''''''''''''
 
-The estimators from ``lightgbm.dask`` can be used to create predictions based on data stored in Dask collections. In that interface, ``.predict()`` expects a Dask Array or Dask DataFrame, and returns a Dask Array of predictions.
+The estimators from ``falcata.dask`` can be used to create predictions based on data stored in Dask collections. In that interface, ``.predict()`` expects a Dask Array or Dask DataFrame, and returns a Dask Array of predictions.
 
 See `the Dask prediction example`_ for some sample code that shows how to perform Dask-based prediction.
 
@@ -283,13 +283,13 @@ After training with Dask, you have several options for saving a fitted model.
 
 **Option 1: pickle the Dask estimator**
 
-LightGBM's Dask estimators can be pickled directly with ``cloudpickle``, ``joblib``, or ``pickle``.
+Falcata's Dask estimators can be pickled directly with ``cloudpickle``, ``joblib``, or ``pickle``.
 
 .. code:: python
 
   import dask.array as da
   import pickle
-  import lightgbm as lgb
+  import falcata as lgb
   from distributed import Client, LocalCluster
 
   cluster = LocalCluster(n_workers=2)
@@ -318,13 +318,13 @@ A model saved this way can then later be loaded with whichever serialization lib
 
 **Option 2: pickle the sklearn estimator**
 
-The estimators available from ``lightgbm.dask`` can be converted to an instance of the equivalent class from ``lightgbm.sklearn``. Choosing this option allows you to use Dask for training but avoid depending on any Dask libraries at scoring time.
+The estimators available from ``falcata.dask`` can be converted to an instance of the equivalent class from ``falcata.sklearn``. Choosing this option allows you to use Dask for training but avoid depending on any Dask libraries at scoring time.
 
 .. code:: python
 
   import dask.array as da
   import joblib
-  import lightgbm as lgb
+  import falcata as lgb
   from distributed import Client, LocalCluster
 
   cluster = LocalCluster(n_workers=2)
@@ -340,7 +340,7 @@ The estimators available from ``lightgbm.dask`` can be converted to an instance 
   sklearn_model = dask_model.to_local()
 
   print(type(sklearn_model))
-  #> lightgbm.sklearn.LGBMRegressor
+  #> falcata.sklearn.LGBMRegressor
 
   joblib.dump(sklearn_model, "sklearn-model.joblib")
 
@@ -352,14 +352,14 @@ A model saved this way can then later be loaded with whichever serialization lib
 
   sklearn_model = joblib.load("sklearn-model.joblib")
 
-**Option 3: save the LightGBM Booster**
+**Option 3: save the Falcata Booster**
 
-The lowest-level model object in LightGBM is the ``lightgbm.Booster``. After training, you can extract a Booster from the Dask estimator.
+The lowest-level model object in Falcata is the ``falcata.Booster``. After training, you can extract a Booster from the Dask estimator.
 
 .. code:: python
 
   import dask.array as da
-  import lightgbm as lgb
+  import falcata as lgb
   from distributed import Client, LocalCluster
 
   cluster = LocalCluster(n_workers=2)
@@ -384,15 +384,15 @@ From the point forward, you can use any of the following methods to save the Boo
 Kubeflow
 ^^^^^^^^
 
-Kubeflow users can also use the `Kubeflow XGBoost Operator`_ for machine learning workflows with LightGBM. You can see `this example`_ for more details.
+Kubeflow users can also use the `Kubeflow XGBoost Operator`_ for machine learning workflows with Falcata. You can see `this example`_ for more details.
 
-Kubeflow integrations for LightGBM are not maintained by LightGBM's maintainers.
+Kubeflow integrations for Falcata are not maintained by Falcata's maintainers.
 
 .. note::
 
-  The Kubeflow integrations for LightGBM are not maintained by LightGBM's maintainers. Bug reports or feature requests should be directed to https://github.com/kubeflow/fairing/issues or https://github.com/kubeflow/xgboost-operator/issues.
+  The Kubeflow integrations for Falcata are not maintained by Falcata's maintainers. Bug reports or feature requests should be directed to https://github.com/kubeflow/fairing/issues or https://github.com/kubeflow/xgboost-operator/issues.
 
-LightGBM CLI
+Falcata CLI
 ^^^^^^^^^^^^
 
 .. _Build Parallel Version:
@@ -400,7 +400,7 @@ LightGBM CLI
 Preparation
 '''''''''''
 
-By default, distributed learning with LightGBM uses socket-based communication.
+By default, distributed learning with Falcata uses socket-based communication.
 
 If you need to build distributed version with MPI support, please refer to `Installation Guide <./Installation-Guide.rst#build-mpi-version>`__.
 
@@ -450,9 +450,9 @@ Socket Version
 
 3. Run following command on all machines, you need to change ``your_config_file`` to real config file.
 
-   For Windows: ``lightgbm.exe config=your_config_file``
+   For Windows: ``falcata.exe config=your_config_file``
 
-   For Linux: ``./lightgbm config=your_config_file``
+   For Linux: ``./falcata config=your_config_file``
 
 MPI Version
 ***********
@@ -473,13 +473,13 @@ MPI Version
 
    .. code:: console
 
-       mpiexec.exe /machinefile mlist.txt lightgbm.exe config=your_config_file
+       mpiexec.exe /machinefile mlist.txt falcata.exe config=your_config_file
 
    For Linux:
 
    .. code:: console
 
-       mpiexec --machinefile mlist.txt ./lightgbm config=your_config_file
+       mpiexec --machinefile mlist.txt ./falcata config=your_config_file
 
 Example
 '''''''
@@ -489,7 +489,7 @@ Example
 Ray
 ^^^
 
-`Ray`_ is a Python-based framework for distributed computing. Ray provides LightGBM support through the Ray Train API with ``LightGBMTrainer`` and the `lightgbm_ray`_ project maintained within the official Ray GitHub organization.
+`Ray`_ is a Python-based framework for distributed computing. Ray provides Falcata support through the Ray Train API with ``LightGBMTrainer`` and the `lightgbm_ray`_ project maintained within the official Ray GitHub organization.
 
 For the Ray Train API, see `the Ray documentation`_ for usage examples.
 
@@ -497,53 +497,53 @@ For the lightgbm_ray project, see `the lightgbm_ray documentation`_ for usage ex
 
 .. note::
 
-  ``lightgbm_ray`` and ``ray`` are not maintained by LightGBM's maintainers. Bug reports or feature requests should be directed to https://github.com/ray-project/lightgbm_ray/issues and https://github.com/ray-project/ray/issues respectively.
+  ``lightgbm_ray`` and ``ray`` are not maintained by Falcata's maintainers. Bug reports or feature requests should be directed to https://github.com/ray-project/lightgbm_ray/issues and https://github.com/ray-project/ray/issues respectively.
 
 Mars
 ^^^^
 
-`Mars`_ is a tensor-based framework for large-scale data computation. LightGBM integration, maintained within the Mars GitHub repository, can be used to perform distributed LightGBM training using ``pymars``.
+`Mars`_ is a tensor-based framework for large-scale data computation. Falcata integration, maintained within the Mars GitHub repository, can be used to perform distributed Falcata training using ``pymars``.
 
 See `the mars documentation`_ for usage examples.
 
 .. note::
 
-  ``Mars`` is not maintained by LightGBM's maintainers. Bug reports or feature requests should be directed to https://github.com/mars-project/mars/issues.
+  ``Mars`` is not maintained by Falcata's maintainers. Bug reports or feature requests should be directed to https://github.com/mars-project/mars/issues.
 
 .. _Dask: https://docs.dask.org/en/latest/
 
 .. _SynapseML: https://aka.ms/spark
 
-.. _this SynapseML example: https://github.com/microsoft/SynapseML/tree/master/docs/Explore%20Algorithms/LightGBM
+.. _this SynapseML example: https://github.com/microsoft/SynapseML/tree/master/docs/Explore%20Algorithms/Falcata
 
 .. _the Dask Array documentation: https://docs.dask.org/en/latest/array.html
 
 .. _the Dask DataFrame documentation: https://docs.dask.org/en/latest/dataframe.html
 
-.. _the Dask prediction example: https://github.com/lightgbm-org/LightGBM/blob/master/examples/python-guide/dask/prediction.py
+.. _the Dask prediction example: https://github.com/BelixRogner/Falcata/blob/master/examples/python-guide/dask/prediction.py
 
 .. _the Dask worker documentation: https://distributed.dask.org/en/stable/worker-memory.html
 
 .. _the metrics functions from dask-ml: https://ml.dask.org/modules/api.html#dask-ml-metrics-metrics
 
-.. _these Dask examples: https://github.com/lightgbm-org/LightGBM/tree/master/examples/python-guide/dask
+.. _these Dask examples: https://github.com/BelixRogner/Falcata/tree/master/examples/python-guide/dask
 
 .. _Kubeflow XGBoost Operator: https://github.com/kubeflow/xgboost-operator
 
-.. _this example: https://github.com/kubeflow/xgboost-operator/tree/master/config/samples/lightgbm-dist
+.. _this example: https://github.com/kubeflow/xgboost-operator/tree/master/config/samples/falcata-dist
 
 .. _here: https://www.youtube.com/watch?v=iqzXhp5TxUY
 
-.. _A simple distributed learning example: https://github.com/lightgbm-org/LightGBM/tree/master/examples/parallel_learning
+.. _A simple distributed learning example: https://github.com/BelixRogner/Falcata/tree/master/examples/parallel_learning
 
 .. _lightgbm_ray: https://github.com/ray-project/lightgbm_ray
 
 .. _Ray: https://www.ray.io/
 
-.. _the lightgbm_ray documentation: https://docs.ray.io/en/latest/tune/api_docs/integration.html#lightgbm-tune-integration-lightgbm
+.. _the lightgbm_ray documentation: https://docs.ray.io/en/latest/tune/api_docs/integration.html#falcata-tune-integration-falcata
 
-.. _the Ray documentation: https://docs.ray.io/en/latest/train/api/api.html#lightgbm
+.. _the Ray documentation: https://docs.ray.io/en/latest/train/api/api.html#falcata
 
 .. _Mars: https://mars-project.readthedocs.io/en/latest/
 
-.. _the mars documentation: https://mars-project.readthedocs.io/en/latest/user_guide/learn/lightgbm.html
+.. _the mars documentation: https://mars-project.readthedocs.io/en/latest/user_guide/learn/falcata.html

@@ -5,7 +5,7 @@ import numpy as np
 from distributed import Client, LocalCluster
 from sklearn.datasets import load_svmlight_file
 
-import lightgbm as lgb
+import falcata as lgb
 
 if __name__ == "__main__":
     print("loading data")

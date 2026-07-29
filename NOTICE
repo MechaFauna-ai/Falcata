@@ -1,0 +1,41 @@
+Falcata
+=======
+
+Copyright (c) Falcata contributors.
+Licensed under the MIT License (see LICENSE).
+
+Origin
+------
+
+Falcata began as a fork of LightGBM (https://github.com/microsoft/LightGBM),
+copyright Microsoft Corporation and the LightGBM developers, also under the
+MIT License. That code remains present, and its copyright notice is retained
+in LICENSE and in the file headers it applies to, as the MIT License requires.
+
+Falcata has since diverged substantially — most visibly in a rewritten CUDA
+training path (hybrid level-batched growth, batched construct/find/apply
+kernels, CUDA-graph level loops, an NVRTC runtime JIT for construct kernels,
+GPU-native dataset construction and ingestion, fixed-point quantization with a
+gap-gated robust gradient scale, an execution planner, and a regression-gate
+suite). The project is developed independently and is not affiliated with,
+endorsed by, or supported by Microsoft or the LightGBM maintainers.
+
+Compatibility
+-------------
+
+Falcata deliberately retains interoperability with LightGBM at three data
+boundaries — the model text format, the binary dataset format, and parameter
+names — so models and datasets can move between the two. A compatibility
+header also keeps the historical `LGBM_*` C API names working as aliases for
+Falcata's `FLC_*` API, and `import lightgbm` continues to work as an alias for
+`import falcata`.
+
+See docs/design/format-compatibility.md for what is frozen and why.
+
+Third-party components
+----------------------
+
+This distribution bundles third-party libraries under external_libs/, each
+under its own license: Eigen (MPL2), fast_double_parser (Apache-2.0/BSL-1.0),
+fmt (MIT), and nanoarrow (Apache-2.0). Their license texts ship with their
+respective sources.

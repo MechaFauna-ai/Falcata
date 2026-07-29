@@ -34,7 +34,7 @@ jobs:
               If the issue has been locked for editing by the time you return to it,
               please open a new issue and reference this one.
 
-              Thank you for taking the time to improve LightGBM!
+              Thank you for taking the time to improve Falcata!
           daysUntilClose: 30
           responseRequiredLabel: awaiting response
           token: ${{ github.token }}

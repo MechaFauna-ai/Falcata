@@ -6,7 +6,7 @@ learner (`src/treelearner/cuda/*`) and its Dataset-side inputs
 
 ## 1. Motivation
 
-At Dataset construction and learner `Init`, ExaBoost already knows everything
+At Dataset construction and learner `Init`, Falcata already knows everything
 that fixes the *shape* of the work:
 
 - `num_data` (rows), `num_features`, `num_feature_groups`,
@@ -149,7 +149,7 @@ and then stabilize (comment at `cuda_histogram_constructor.hpp:361-364`,
 
 Proposed tier-0 move: at init, when `feature_fraction < 1`, **pre-size the
 compact layout to the provable worst-case `k`** (`ceil(feature_fraction ×
-num_features)`, rounded up by LightGBM's sampling rule) and pre-allocate the
+num_features)`, rounded up by Falcata's sampling rule) and pre-allocate the
 compact metadata / staging buffers to that size. Benefits, all bit-neutral:
 
 - the compact metadata pointers stabilize on tree 0 instead of after "the first

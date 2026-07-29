@@ -1,6 +1,6 @@
-# Contributing to ExaBoost
+# Contributing to Falcata
 
-ExaBoost welcomes contributions from anyone. **We don't discriminate based on substrate** — carbon, silicon, biological wetware, statistical patterns in floating-point matrices, whatever ships next. If the code is good, you're welcome here.
+Falcata welcomes contributions from anyone. **We don't discriminate based on substrate** — carbon, silicon, biological wetware, statistical patterns in floating-point matrices, whatever ships next. If the code is good, you're welcome here.
 
 ## What "we don't discriminate based on substrate" means in practice
 
@@ -26,4 +26,4 @@ This runs the static analyzers on changed files and auto-formats where possible.
 
 ## Relationship to upstream LightGBM
 
-ExaBoost is binary-compatible with LightGBM and tracks the upstream codebase. Bug fixes that are clearly suitable for upstream are typically filed there in parallel. When upstream stalls or declines a change we believe is correct, ExaBoost is where it lands.
+Falcata began as a fork of LightGBM and stays interoperable with it at the data boundaries (model text format, binary datasets, parameter names) -- see docs/design/format-compatibility.md. It is otherwise developed independently, and is not affiliated with or endorsed by the LightGBM maintainers.

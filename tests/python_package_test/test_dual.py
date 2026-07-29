@@ -15,13 +15,13 @@ import numpy as np
 import pytest
 from sklearn.metrics import log_loss
 
-import lightgbm as lgb
+import falcata as lgb
 
 from .utils import load_breast_cancer
 
 _REQUIRES_CUDA = pytest.mark.skipif(
     os.environ.get("TASK", "") != "cuda",
-    reason="requires CUDA-enabled LightGBM build (set TASK=cuda)",
+    reason="requires CUDA-enabled Falcata build (set TASK=cuda)",
 )
 
 
@@ -77,7 +77,7 @@ def test_cuda_init_score_matches_cpu(objective, alpha, n):
 
 _REQUIRES_CUDA = pytest.mark.skipif(
     os.environ.get("TASK", "") != "cuda",
-    reason="requires CUDA-enabled LightGBM build (set TASK=cuda)",
+    reason="requires CUDA-enabled Falcata build (set TASK=cuda)",
 )
 
 
@@ -116,7 +116,7 @@ def test_cuda_weighted_percentile_renewal_does_not_crash(objective, n):
 
 _REQUIRES_CUDA = pytest.mark.skipif(
     os.environ.get("TASK", "") != "cuda",
-    reason="requires CUDA-enabled LightGBM build (set TASK=cuda)",
+    reason="requires CUDA-enabled Falcata build (set TASK=cuda)",
 )
 
 
@@ -214,7 +214,7 @@ def test_cpu_and_gpu_work():
 
 _REQUIRES_CUDA = pytest.mark.skipif(
     os.environ.get("TASK", "") != "cuda",
-    reason="requires CUDA-enabled LightGBM build (set TASK=cuda)",
+    reason="requires CUDA-enabled Falcata build (set TASK=cuda)",
 )
 
 # Loose enough to absorb label_t float32 quantization in the renewal kernel,
@@ -1019,7 +1019,7 @@ def test_cuda_quantized_32bit_histogram_matches_cpu(n):
 
 _REQUIRES_CUDA = pytest.mark.skipif(
     os.environ.get("TASK", "") != "cuda",
-    reason="requires CUDA-enabled LightGBM build (set TASK=cuda)",
+    reason="requires CUDA-enabled Falcata build (set TASK=cuda)",
 )
 
 
@@ -1112,7 +1112,7 @@ def test_cuda_linear_tree_handles_nan_like_cpu():
 
 _REQUIRES_CUDA = pytest.mark.skipif(
     os.environ.get("TASK", "") != "cuda",
-    reason="requires CUDA-enabled LightGBM build (set TASK=cuda)",
+    reason="requires CUDA-enabled Falcata build (set TASK=cuda)",
 )
 
 # --------------------------------------------------------------------------- #
@@ -1143,7 +1143,7 @@ _QUANT_MD5_WORKER = textwrap.dedent(
     """
     import hashlib, json, sys
     import numpy as np
-    import lightgbm as lgb
+    import falcata as lgb
 
     profile = sys.argv[1]
     rng = np.random.default_rng(0)

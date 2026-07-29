@@ -2,7 +2,7 @@
 #
 # [description]
 #     Helper script for checking versions in the dynamic symbol table.
-#     This script checks that LightGBM library is linked to the appropriate symbol versions.
+#     This script checks that Falcata library is linked to the appropriate symbol versions.
 #     Linking to newer symbol versions at compile time is problematic because it could result
 #     in built artifacts being unusable on older platforms.
 #

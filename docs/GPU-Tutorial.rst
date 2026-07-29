@@ -1,4 +1,4 @@
-LightGBM GPU Tutorial
+Falcata GPU Tutorial
 =====================
 
 The purpose of this document is to give you a quick step-by-step tutorial on GPU training.
@@ -33,7 +33,7 @@ After about 30 seconds, the server should be up again.
 
 If you are using an AMD GPU, you should download and install the `AMDGPU-Pro`_ driver and also install packages ``ocl-icd-libopencl1`` and ``ocl-icd-opencl-dev``.
 
-Build LightGBM
+Build Falcata
 --------------
 
 Now install necessary building tools and dependencies:
@@ -51,25 +51,25 @@ Let's use it as our workspace (skip this if you are using your own machine):
     sudo chown $(whoami):$(whoami) /mnt/workspace
     cd /mnt/workspace
 
-Now we are ready to checkout LightGBM and compile it with GPU support:
+Now we are ready to checkout Falcata and compile it with GPU support:
 
 ::
 
-    git clone --recursive https://github.com/lightgbm-org/LightGBM
-    cd LightGBM
+    git clone --recursive https://github.com/BelixRogner/Falcata
+    cd Falcata
     cmake -B build -S . -DUSE_GPU=1
     # if you have installed NVIDIA CUDA to a customized location, you should specify paths to OpenCL headers and library like the following:
     # cmake -B build -S . -DUSE_GPU=1 -DOpenCL_LIBRARY=/usr/local/cuda/lib64/libOpenCL.so -DOpenCL_INCLUDE_DIR=/usr/local/cuda/include/
     cmake --build build -j$(nproc)
 
-You will see two binaries are generated, ``lightgbm`` and ``lib_lightgbm.so``.
+You will see two binaries are generated, ``falcata`` and ``lib_lightgbm.so``.
 
 If you are building on macOS, you probably need to remove macro ``BOOST_COMPUTE_USE_OFFLINE_CACHE`` in ``src/treelearner/gpu_tree_learner.h`` to avoid a known crash bug in Boost.Compute.
 
 Install Python Interface (optional)
 -----------------------------------
 
-If you want to use the Python interface of LightGBM, you can install it now (along with some necessary Python-package dependencies):
+If you want to use the Python interface of Falcata, you can install it now (along with some necessary Python-package dependencies):
 
 ::
 
@@ -97,7 +97,7 @@ Using the following commands to prepare the Higgs dataset:
     ln -s boosting_tree_benchmarks/data/higgs.train
     ln -s boosting_tree_benchmarks/data/higgs.test
 
-Now we create a configuration file for LightGBM by running the following commands (please copy the entire block and run it as a whole):
+Now we create a configuration file for Falcata by running the following commands (please copy the entire block and run it as a whole):
 
 ::
 
@@ -132,25 +132,25 @@ Run the following command to train on GPU, and take a note of the AUC after 50 i
 
 ::
 
-    ./lightgbm config=lightgbm_gpu.conf data=higgs.train valid=higgs.test objective=binary metric=auc
+    ./falcata config=lightgbm_gpu.conf data=higgs.train valid=higgs.test objective=binary metric=auc
 
 Now train the same dataset on CPU using the following command. You should observe a similar AUC:
 
 ::
 
-    ./lightgbm config=lightgbm_gpu.conf data=higgs.train valid=higgs.test objective=binary metric=auc device=cpu
+    ./falcata config=lightgbm_gpu.conf data=higgs.train valid=higgs.test objective=binary metric=auc device=cpu
 
 Now we can make a speed test on GPU without calculating AUC after each iteration.
 
 ::
 
-    ./lightgbm config=lightgbm_gpu.conf data=higgs.train objective=binary metric=auc
+    ./falcata config=lightgbm_gpu.conf data=higgs.train objective=binary metric=auc
 
 Speed test on CPU:
 
 ::
 
-    ./lightgbm config=lightgbm_gpu.conf data=higgs.train objective=binary metric=auc device=cpu
+    ./falcata config=lightgbm_gpu.conf data=higgs.train objective=binary metric=auc device=cpu
 
 You should observe over three times speedup on this GPU.
 
@@ -159,13 +159,13 @@ For example, we can train the Higgs dataset on GPU as a regression task:
 
 ::
 
-    ./lightgbm config=lightgbm_gpu.conf data=higgs.train objective=regression_l2 metric=l2
+    ./falcata config=lightgbm_gpu.conf data=higgs.train objective=regression_l2 metric=l2
 
 Also, you can compare the training speed with CPU:
 
 ::
 
-    ./lightgbm config=lightgbm_gpu.conf data=higgs.train objective=regression_l2 metric=l2 device=cpu
+    ./falcata config=lightgbm_gpu.conf data=higgs.train objective=regression_l2 metric=l2 device=cpu
 
 Further Reading
 ---------------
@@ -185,7 +185,7 @@ Huan Zhang, Si Si and Cho-Jui Hsieh. "`GPU Acceleration for Large-scale Tree Boo
 
 .. _AMDGPU-Pro: https://www.amd.com/en/support.html
 
-.. _Python-package Examples: https://github.com/lightgbm-org/LightGBM/tree/master/examples/python-guide
+.. _Python-package Examples: https://github.com/BelixRogner/Falcata/tree/master/examples/python-guide
 
 .. _GPU Acceleration for Large-scale Tree Boosting: https://arxiv.org/abs/1706.08359
 

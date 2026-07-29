@@ -9,7 +9,7 @@ For the detailed experiment scripts and output logs, please refer to this `repo`
 History
 ^^^^^^^
 
-08 Mar, 2020: update according to the latest master branch (`1b97eaf <https://github.com/dmlc/xgboost/commit/1b97eaf7a74315bfa2c132d59f937a35408bcfd1>`__ for XGBoost, `bcad692 <https://github.com/lightgbm-org/LightGBM/commit/bcad692e263e0317cab11032dd017c78f9e58e5f>`__ for LightGBM). (``xgboost_exact`` is not updated for it is too slow.)
+08 Mar, 2020: update according to the latest master branch (`1b97eaf <https://github.com/dmlc/xgboost/commit/1b97eaf7a74315bfa2c132d59f937a35408bcfd1>`__ for XGBoost, `bcad692 <https://github.com/BelixRogner/Falcata/commit/bcad692e263e0317cab11032dd017c78f9e58e5f>`__ for Falcata). (``xgboost_exact`` is not updated for it is too slow.)
 
 27 Feb, 2017: first version.
 
@@ -48,7 +48,7 @@ Baseline
 
 We used `xgboost`_ as a baseline.
 
-Both xgboost and LightGBM were built with OpenMP support.
+Both xgboost and Falcata were built with OpenMP support.
 
 Settings
 ^^^^^^^^
@@ -79,7 +79,7 @@ We set up total 3 settings for experiments. The parameters of these settings are
        max_depth = 0
        max_leaves = 255
 
-3. LightGBM:
+3. Falcata:
 
    .. code:: text
 
@@ -91,8 +91,8 @@ We set up total 3 settings for experiments. The parameters of these settings are
        min_sum_hessian_in_leaf = 100
 
 xgboost grows trees depth-wise and controls model complexity by ``max_depth``.
-LightGBM uses a leaf-wise algorithm instead and controls model complexity by ``num_leaves``.
-So we cannot compare them in the exact same model setting. For the tradeoff, we use xgboost with ``max_depth=8``, which will have max number leaves to 255, to compare with LightGBM with ``num_leaves=255``.
+Falcata uses a leaf-wise algorithm instead and controls model complexity by ``num_leaves``.
+So we cannot compare them in the exact same model setting. For the tradeoff, we use xgboost with ``max_depth=8``, which will have max number leaves to 255, to compare with Falcata with ``num_leaves=255``.
 
 Other parameters are default values.
 
@@ -103,12 +103,12 @@ Speed
 '''''
 
 We compared speed using only the training task without any test or metric output. We didn't count the time for IO.
-For the ranking tasks, since XGBoost and LightGBM implement different ranking objective functions, we used ``regression`` objective for speed benchmark, for the fair comparison.
+For the ranking tasks, since XGBoost and Falcata implement different ranking objective functions, we used ``regression`` objective for speed benchmark, for the fair comparison.
 
 The following table is the comparison of time cost:
 
 +-----------+-----------+---------------+---------------+
-| Data      | xgboost   | xgboost\_hist | LightGBM      |
+| Data      | xgboost   | xgboost\_hist | Falcata      |
 +===========+===========+===============+===============+
 | Higgs     | 3794.34 s | 165.575 s     | **130.094 s** |
 +-----------+-----------+---------------+---------------+
@@ -121,7 +121,7 @@ The following table is the comparison of time cost:
 | Allstate  | 2867.22 s | 315.256 s     | **148.231 s** |
 +-----------+-----------+---------------+---------------+
 
-LightGBM ran faster than xgboost on all experiment data sets.
+Falcata ran faster than xgboost on all experiment data sets.
 
 Accuracy
 ''''''''
@@ -129,7 +129,7 @@ Accuracy
 We computed all accuracy metrics only on the test data set.
 
 +-----------+-----------------+----------+-------------------+--------------+
-| Data      | Metric          | xgboost  | xgboost\_hist     | LightGBM     |
+| Data      | Metric          | xgboost  | xgboost\_hist     | Falcata     |
 +===========+=================+==========+===================+==============+
 | Higgs     | AUC             | 0.839593 | 0.845314          | **0.845724** |
 +-----------+-----------------+----------+-------------------+--------------+
@@ -158,10 +158,10 @@ Memory Consumption
 ''''''''''''''''''
 
 We monitored RES while running training task. And we set ``two_round=true`` (this will increase data-loading time and
-reduce peak memory usage but not affect training speed or accuracy) in LightGBM to reduce peak memory usage.
+reduce peak memory usage but not affect training speed or accuracy) in Falcata to reduce peak memory usage.
 
 +-----------+---------+---------------+--------------------+--------------------+
-| Data      | xgboost | xgboost\_hist | LightGBM (col-wise)|LightGBM (row-wise) |
+| Data      | xgboost | xgboost\_hist | Falcata (col-wise)|Falcata (row-wise) |
 +===========+=========+===============+====================+====================+
 | Higgs     | 4.853GB | 7.335GB       | **0.897GB**        |     1.401GB        |
 +-----------+---------+---------------+--------------------+--------------------+
@@ -239,7 +239,7 @@ Results
 | 16       | 42 s          | 11GB                      |
 +----------+---------------+---------------------------+
 
-The results show that LightGBM achieves a linear speedup with distributed learning.
+The results show that Falcata achieves a linear speedup with distributed learning.
 
 GPU Experiments
 ---------------

@@ -13,7 +13,7 @@ export R_LIBS=$R_LIB_PATH
 export PATH="$R_LIB_PATH/R/bin:$PATH"
 
 # don't fail builds for long-running examples unless they're very long.
-# See https://github.com/lightgbm-org/LightGBM/issues/4049#issuecomment-793412254.
+# See https://github.com/BelixRogner/Falcata/issues/4049#issuecomment-793412254.
 if [[ $R_BUILD_TYPE != "cran" ]]; then
     export _R_CHECK_EXAMPLE_TIMING_THRESHOLD_=30
 fi
@@ -106,11 +106,11 @@ fi
 
 # {Matrix} needs {lattice}, so this needs to run before manually installing {Matrix}.
 # This should be unnecessary on R >=4.4.0
-# ref: https://github.com/lightgbm-org/LightGBM/issues/6433
+# ref: https://github.com/BelixRogner/Falcata/issues/6433
 Rscript --vanilla -e "install.packages('lattice', repos = '${CRAN_MIRROR}', lib = '${R_LIB_PATH}')"
 
 # manually install {Matrix}, as {Matrix}=1.7-0 raised its R floor all the way to R 4.4.0
-# ref: https://github.com/lightgbm-org/LightGBM/issues/6433
+# ref: https://github.com/BelixRogner/Falcata/issues/6433
 Rscript --vanilla -e "install.packages('https://cran.r-project.org/src/contrib/Archive/Matrix/Matrix_1.6-5.tar.gz', repos = NULL, lib = '${R_LIB_PATH}')"
 
 # Manually install dependencies to avoid a CI-time dependency on devtools (for devtools::install_deps())
@@ -118,8 +118,8 @@ Rscript --vanilla ./.ci/install-r-deps.R --build --test --exclude=Matrix || exit
 
 cd "${BUILD_DIRECTORY}"
 PKG_TARBALL="lightgbm_$(head -1 VERSION.txt).tar.gz"
-BUILD_LOG_FILE="lightgbm.Rcheck/00install.out"
-LOG_FILE_NAME="lightgbm.Rcheck/00check.log"
+BUILD_LOG_FILE="falcata.Rcheck/00install.out"
+LOG_FILE_NAME="falcata.Rcheck/00check.log"
 if [[ $R_BUILD_TYPE == "cmake" ]]; then
     Rscript build_r.R -j4 --skip-install || exit 1
 elif [[ $R_BUILD_TYPE == "cran" ]]; then
@@ -145,7 +145,7 @@ elif [[ $R_BUILD_TYPE == "cran" ]]; then
     ./build-cran-package.sh || exit 1
 
     # Test CRAN source .tar.gz in a directory that is not this repo or below it.
-    # When people install.packages('lightgbm'), they won't have the LightGBM
+    # When people install.packages('falcata'), they won't have the Falcata
     # git repo around. This is to protect against the use of relative paths
     # like ../../CMakeLists.txt that would only work if you are in the repo
     R_CMD_CHECK_DIR="${HOME}/tmp-r-cmd-check/"
@@ -155,7 +155,7 @@ elif [[ $R_BUILD_TYPE == "cran" ]]; then
 fi
 
 if [[ $PRODUCES_ARTIFACTS == "true" ]]; then
-    cp "${PKG_TARBALL}" "${BUILD_ARTIFACTSTAGINGDIRECTORY}/lightgbm-${LGB_VER}-r-cran.tar.gz"
+    cp "${PKG_TARBALL}" "${BUILD_ARTIFACTSTAGINGDIRECTORY}/falcata-${LGB_VER}-r-cran.tar.gz"
 fi
 
 declare -i allowed_notes=0
@@ -209,7 +209,7 @@ fi
 # actually use MM_PREFETCH preprocessor definition
 #
 # _mm_prefetch will not work on arm64 architecture
-# ref: https://github.com/lightgbm-org/LightGBM/issues/4124
+# ref: https://github.com/BelixRogner/Falcata/issues/4124
 if [[ $ARCH != "arm64" ]]; then
     if [[ $R_BUILD_TYPE == "cran" ]]; then
         mm_prefetch_working=$(

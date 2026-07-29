@@ -1,5 +1,9 @@
-# ExaBoost CUDA roadmap
+# Falcata CUDA roadmap
 
+> **Historical note:** entries below may reference `EXABOOST_*` environment
+> variables. Those were replaced by typed config params (`quant_mode`,
+> `quant_bins`, `cuda_precision`) and `cuda_plan` keys; the names are kept
+> here as written at the time. See `include/Falcata/falcata_plan.h`.
 Ideas from the hybrid-growth + benchmark session (2026-07-13/14, PRs #32/#33), roughly
 priority-ordered within groups. Measurements refer to an RTX 5090, per-tree/per-100-tree
 figures from the profiles in the PR discussions.
@@ -60,7 +64,7 @@ figures from the profiles in the PR discussions.
   configs, small-leaf threshold, speculative bounds; histogram partition packing and
   quant bit thresholds from the real bin histogram; pipeline selection; and a compact
   per-tree histogram layout for feature_fraction runs (static version of the 161fe88b
-  dead-entry mask). Precedent: CPU LightGBM's row/col-wise chooser, EFB, multi-val bin
+  dead-entry mask). Precedent: CPU Falcata's row/col-wise chooser, EFB, multi-val bin
   packing. Decides only provable shape functions; supplies priors for the ambiguous
   constants below (GPU cost models are brittle: the construct-floor cap gained
   year/higgs 35% and regressed covtype 45% -- only measurement caught it).
@@ -84,7 +88,7 @@ figures from the profiles in the PR discussions.
   decision logging.
 - [ ] **Runtime auto-tuner tier 2 -- NVRTC shape-specialized kernels.** JIT-compile
   construct/find kernels at Dataset construction with columns / per-feature bin counts
-  baked in (precedent: LightGBM's OpenCL backend JIT-compiled with #defined bin counts).
+  baked in (precedent: Falcata's OpenCL backend JIT-compiled with #defined bin counts).
   Star case: numerai's ~5.5-bin features (5 quintiles + a missing-marker bin on ~half
   of them) waste >90% of the fixed 12288-entry shared histogram; a specialized kernel
   packs ~10x more features per partition -> fewer
@@ -296,7 +300,7 @@ figures from the profiles in the PR discussions.
   doesn't pin the timing-based col/row-wise auto-choice on CPU (bimodal md5s; pin
   force_col_wise in gates).
 
-## Upstream (lightgbm-org/LightGBM) bugs found (documented here for reference;
+## Upstream (BelixRogner/Falcata) bugs found (documented here for reference;
 ## we do not contribute upstream)
 
 - Packed 16+16-bit quantized histogram overflow (fixed here in 3afe7c62): with

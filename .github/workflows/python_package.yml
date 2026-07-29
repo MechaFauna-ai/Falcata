@@ -51,7 +51,7 @@ jobs:
         # because actions/checkout requires GLIBC 2.28 and that is too
         # new for manylinux2014
         env:
-          BUILD_DIRECTORY: /LightGBM
+          BUILD_DIRECTORY: /Falcata
         run: |
           cat > ./docker-script.sh <<EOF
           mkdir -p \$BUILD_ARTIFACTSTAGINGDIRECTORY
@@ -60,7 +60,7 @@ jobs:
           ${{ env.BUILD_DIRECTORY }}/.ci/setup.sh || exit 1
           ${{ env.BUILD_DIRECTORY }}/.ci/test.sh || exit 1
           EOF
-          IMAGE_URI="lightgbm/vsts-agent:manylinux2014_aarch64"
+          IMAGE_URI="falcata/vsts-agent:manylinux2014_aarch64"
           docker pull "${IMAGE_URI}" || exit 1
           docker run \
             --platform "${PLATFORM}" \
@@ -125,9 +125,9 @@ jobs:
           # the package built with that compiler toolchain can't target the
           # CPUs on GitHub's runners.
           #
-          # ref: https://github.com/lightgbm-org/LightGBM/pull/7096/files#r2590879590
+          # ref: https://github.com/BelixRogner/Falcata/pull/7096/files#r2590879590
           # TODO(jameslamb): restore these GPU jobs when we've clarified handling of GPU CI
-          #             ref: https://github.com/lightgbm-org/LightGBM/issues/7187
+          #             ref: https://github.com/BelixRogner/Falcata/issues/7187
           # - os: github-hosted-linux-gpu-amd64
           #   container: nvcr.io/nvidia/cuda:12.9.1-devel-ubuntu22.04
           #   os-display-name: ubuntu22.04-with-gpu
@@ -145,7 +145,7 @@ jobs:
           #   python_version: '3.12'
           #   in-ubuntu-base-container: 'true'
           - os: ubuntu-latest
-            container: &manylinux_amd64_image ghcr.io/lightgbm-org/lightgbm-vsts-agent:manylinux_2_28_x86_64
+            container: &manylinux_amd64_image ghcr.io/falcata-org/falcata-vsts-agent:manylinux_2_28_x86_64
             os-display-name: &manylinux_amd64_display_name 'manylinux_2_28'
             task: gpu
             method: source
@@ -286,7 +286,7 @@ jobs:
           apt-get update -y
           apt-get install --no-install-recommends -y \
             git
-      - name: Trust git cloning LightGBM
+      - name: Trust git cloning Falcata
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
@@ -398,7 +398,7 @@ jobs:
         run: |
           python .ci/create-nuget.py "${BUILD_ARTIFACTSTAGINGDIRECTORY}"
           nuget pack \
-            $(pwd)/.ci/nuget/LightGBM.nuspec \
+            $(pwd)/.ci/nuget/Falcata.nuspec \
             -NonInteractive \
             -Verbosity detailed \
             -OutputDirectory "${BUILD_ARTIFACTSTAGINGDIRECTORY}"
@@ -428,7 +428,7 @@ jobs:
             --env CMAKE_BUILD_PARALLEL_LEVEL=${{ env.CMAKE_BUILD_PARALLEL_LEVEL }} \
             -v $(pwd):/opt/lgb-build \
             -w /opt/lgb-build \
-            lightgbm/vsts-agent:manylinux_2_28_x86_64 \
+            falcata/vsts-agent:manylinux_2_28_x86_64 \
             /bin/bash -c 'PATH=/opt/miniforge/bin:$PATH sh ./build-python.sh bdist_wheel --nomp'
       - name: Test compatibility
         run: |
@@ -464,7 +464,7 @@ jobs:
             --env CMAKE_BUILD_PARALLEL_LEVEL=${{ env.CMAKE_BUILD_PARALLEL_LEVEL }} \
             -v $(pwd):/opt/lgb-build \
             -w /opt/lgb-build \
-            lightgbm/vsts-agent:manylinux_2_28_x86_64 \
+            falcata/vsts-agent:manylinux_2_28_x86_64 \
             /bin/bash -c 'PATH=/opt/miniforge/bin:$PATH sh ./build-python.sh bdist_wheel --nomp'
       - name: Test compatibility
         run: |
@@ -484,10 +484,10 @@ jobs:
     # (only on the upstream repo -- forks lack the ANACONDA_API_TOKEN secret)
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/master'
-      && github.repository == 'lightgbm-org/LightGBM'
+      && github.repository == 'BelixRogner/Falcata'
     environment:
       name: nightly-python-uploads
-      url: https://anaconda.org/lightgbm-packages/lightgbm
+      url: https://anaconda.org/falcata-packages/falcata
     permissions:
       contents: read
       id-token: write
@@ -516,10 +516,10 @@ jobs:
           ANACONDA_API_TOKEN: ${{ secrets.ANACONDA_API_TOKEN_LIGHTGBM_PACKAGES }}
         run: |
           anaconda upload \
-            --package lightgbm \
+            --package falcata \
             --force \
             -t pypi \
-            ${BUILD_ARTIFACTSTAGINGDIRECTORY}/lightgbm-*.tar.gz \
+            ${BUILD_ARTIFACTSTAGINGDIRECTORY}/falcata-*.tar.gz \
             ${BUILD_ARTIFACTSTAGINGDIRECTORY}/*.whl
 
   all-python-package-jobs-successful:
