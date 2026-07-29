@@ -3,19 +3,19 @@
  * Copyright (c) 2017-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_BOOSTING_SCORE_UPDATER_HPP_
-#define LIGHTGBM_SRC_BOOSTING_SCORE_UPDATER_HPP_
+#ifndef FALCATA_SRC_BOOSTING_SCORE_UPDATER_HPP_
+#define FALCATA_SRC_BOOSTING_SCORE_UPDATER_HPP_
 
-#include <LightGBM/dataset.h>
-#include <LightGBM/meta.h>
-#include <LightGBM/tree.h>
-#include <LightGBM/tree_learner.h>
-#include <LightGBM/utils/openmp_wrapper.h>
+#include <Falcata/dataset.h>
+#include <Falcata/meta.h>
+#include <Falcata/tree.h>
+#include <Falcata/tree_learner.h>
+#include <Falcata/utils/openmp_wrapper.h>
 
 #include <cstring>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 /*!
 * \brief Used to store and update score for data
 */
@@ -125,5 +125,5 @@ class ScoreUpdater {
   bool has_init_score_;
 };
 
-}  // namespace LightGBM
-#endif  // LIGHTGBM_SRC_BOOSTING_SCORE_UPDATER_HPP_
+}  // namespace Falcata
+#endif  // FALCATA_SRC_BOOSTING_SCORE_UPDATER_HPP_

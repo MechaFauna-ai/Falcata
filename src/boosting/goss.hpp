@@ -4,17 +4,17 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 
-#ifndef LIGHTGBM_SRC_BOOSTING_GOSS_HPP_
-#define LIGHTGBM_SRC_BOOSTING_GOSS_HPP_
+#ifndef FALCATA_SRC_BOOSTING_GOSS_HPP_
+#define FALCATA_SRC_BOOSTING_GOSS_HPP_
 
-#include <LightGBM/utils/array_args.h>
-#include <LightGBM/sample_strategy.h>
+#include <Falcata/utils/array_args.h>
+#include <Falcata/sample_strategy.h>
 
 #include <algorithm>
 #include <string>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 class GOSSStrategy : public SampleStrategy {
  public:
@@ -168,6 +168,6 @@ class GOSSStrategy : public SampleStrategy {
   }
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
-#endif  // LIGHTGBM_SRC_BOOSTING_GOSS_HPP_
+#endif  // FALCATA_SRC_BOOSTING_GOSS_HPP_

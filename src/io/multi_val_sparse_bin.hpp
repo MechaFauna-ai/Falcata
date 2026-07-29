@@ -3,19 +3,19 @@
  * Copyright (c) 2020-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_IO_MULTI_VAL_SPARSE_BIN_HPP_
-#define LIGHTGBM_SRC_IO_MULTI_VAL_SPARSE_BIN_HPP_
+#ifndef FALCATA_SRC_IO_MULTI_VAL_SPARSE_BIN_HPP_
+#define FALCATA_SRC_IO_MULTI_VAL_SPARSE_BIN_HPP_
 
-#include <LightGBM/bin.h>
-#include <LightGBM/utils/openmp_wrapper.h>
-#include <LightGBM/utils/threading.h>
+#include <Falcata/bin.h>
+#include <Falcata/utils/openmp_wrapper.h>
+#include <Falcata/utils/threading.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 template <typename INDEX_T, typename VAL_T>
 class MultiValSparseBin : public MultiValBin {
@@ -444,6 +444,6 @@ MultiValSparseBin<INDEX_T, VAL_T>* MultiValSparseBin<INDEX_T, VAL_T>::Clone() {
   return new MultiValSparseBin<INDEX_T, VAL_T>(*this);
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
-#endif  // LIGHTGBM_SRC_IO_MULTI_VAL_SPARSE_BIN_HPP_
+#endif  // FALCATA_SRC_IO_MULTI_VAL_SPARSE_BIN_HPP_

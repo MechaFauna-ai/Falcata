@@ -5,21 +5,21 @@
  * license information.
  */
 
-#ifndef LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_BEST_SPLIT_FINDER_HPP_
-#define LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_BEST_SPLIT_FINDER_HPP_
+#ifndef FALCATA_SRC_TREELEARNER_CUDA_CUDA_BEST_SPLIT_FINDER_HPP_
+#define FALCATA_SRC_TREELEARNER_CUDA_CUDA_BEST_SPLIT_FINDER_HPP_
 
 #ifdef USE_CUDA
 
-#include <LightGBM/bin.h>
-#include <LightGBM/dataset.h>
-#include <LightGBM/exaboost_plan.h>
+#include <Falcata/bin.h>
+#include <Falcata/dataset.h>
+#include <Falcata/falcata_plan.h>
 
 #include <cstdio>
 #include <string>
 #include <vector>
 
-#include <LightGBM/cuda/cuda_random.hpp>
-#include <LightGBM/cuda/cuda_split_info.hpp>
+#include <Falcata/cuda/cuda_random.hpp>
+#include <Falcata/cuda/cuda_split_info.hpp>
 
 #include "cuda_leaf_splits.hpp"
 #include "cuda_hybrid_graph.hpp"
@@ -28,7 +28,7 @@
 #define NUM_THREADS_FIND_BEST_LEAF (256)
 #define NUM_TASKS_PER_SYNC_BLOCK (1024)
 
-namespace LightGBM {
+namespace Falcata {
 
 /*! \brief fp32 per-bin gain arithmetic in the best-split find kernels
  *  (config cuda_precision=fp32 enables; default fp64, the historical behavior).
@@ -37,11 +37,11 @@ namespace LightGBM {
  *  tree learner's Init before any consumer reads it (concurrent in-process
  *  boosters with different precisions are unsupported, same as the env var
  *  this replaced). */
-inline bool& ExaboostFP32GainEnabledFlag() {
+inline bool& FalcataFP32GainEnabledFlag() {
   static bool enabled = false;
   return enabled;
 }
-inline bool ExaboostFP32GainEnabled() { return ExaboostFP32GainEnabledFlag(); }
+inline bool FalcataFP32GainEnabled() { return FalcataFP32GainEnabledFlag(); }
 
 struct SplitFindTask {
   int inner_feature_index;
@@ -93,7 +93,7 @@ class CUDABestSplitFinder {
    *  FindBestSplitsForLeaf call waits on (hybrid level-batched growth) */
   void SetActiveHistPipeline(const int pipeline) { active_hist_pipeline_ = pipeline; }
 
-  /*! \brief non-quantized histogram storage is float pairs (EXABOOST_FP32_HIST);
+  /*! \brief non-quantized histogram storage is float pairs (FALCATA_FP32_HIST);
    *  decided by the histogram constructor, wired in by the tree learner */
   void SetHistFP32(const bool hist_fp32) { hist_fp32_ = hist_fp32; }
 
@@ -136,15 +136,15 @@ class CUDABestSplitFinder {
    *  no extra_trees / L1 / path smoothing, shared-memory histograms, no
    *  per-node feature selection, no categorical features). Wide shapes
    *  (num_tasks > one sync block) use the multi-block batched sync mirroring
-   *  the per-pair two-stage reduction; EXABOOST_BATCH_WIDE=0 disables that. */
+   *  the per-pair two-stage reduction; FALCATA_BATCH_WIDE=0 disables that. */
   bool SupportsBatchedLevel() const {
     return !extra_trees_ && lambda_l1_ <= 0.0f && !use_smoothing_ &&
            !use_global_memory_ && !select_features_by_node_ &&
            !has_categorical_feature_ &&
-           (num_tasks_ <= NUM_TASKS_PER_SYNC_BLOCK || ExaboostBatchWideEnabled());
+           (num_tasks_ <= NUM_TASKS_PER_SYNC_BLOCK || FalcataBatchWideEnabled());
   }
 
-  /*! \brief one-line gate dump for EXABOOST_HYBRID_DIAG */
+  /*! \brief one-line gate dump for FALCATA_HYBRID_DIAG */
   std::string BatchedLevelGateDiag() const {
     char buf[256];
     snprintf(buf, sizeof(buf),
@@ -154,7 +154,7 @@ class CUDABestSplitFinder {
              static_cast<int>(use_smoothing_), static_cast<int>(use_global_memory_),
              static_cast<int>(select_features_by_node_),
              static_cast<int>(has_categorical_feature_), num_tasks_,
-             NUM_TASKS_PER_SYNC_BLOCK, static_cast<int>(ExaboostBatchWideEnabled()));
+             NUM_TASKS_PER_SYNC_BLOCK, static_cast<int>(FalcataBatchWideEnabled()));
     return std::string(buf);
   }
 
@@ -244,7 +244,7 @@ class CUDABestSplitFinder {
    *  stream). Values match SyncAllLeafBestSplitsToHost bit-for-bit */
   void ReadPrefetchedLeafBestSplits(const int num_leaves, std::vector<CUDASplitInfo>* out) const;
 
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   /*! \brief graphs L1 body capture: find + sync kernels with placeholder pair
    *  counts on cuda_streams_[0]; node handles + roles collected for the device
    *  controller (which sets the find grid x per tree from num_used_tasks) */
@@ -278,7 +278,7 @@ class CUDABestSplitFinder {
   }
 
   cudaStream_t find_stream() const { return cuda_streams_[0]; }
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
   // Device pointer to a leaf's cached best split, for passing to CUDATree::Split.
   const CUDASplitInfo* leaf_best_split_info_ptr(const int leaf_index) const {
@@ -471,7 +471,7 @@ class CUDABestSplitFinder {
   int num_used_tasks_ = 0;
   // use global memory
   bool use_global_memory_;
-  // non-quantized histograms stored as float pairs (EXABOOST_FP32_HIST)
+  // non-quantized histograms stored as float pairs (FALCATA_FP32_HIST)
   bool hist_fp32_ = false;
   // number of total bins in the dataset
   const int num_total_bin_;
@@ -549,7 +549,7 @@ class CUDABestSplitFinder {
   CUDAVector<double> cuda_task_cegb_penalty_;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA
-#endif  // LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_BEST_SPLIT_FINDER_HPP_
+#endif  // FALCATA_SRC_TREELEARNER_CUDA_CUDA_BEST_SPLIT_FINDER_HPP_

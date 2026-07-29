@@ -3,17 +3,17 @@
  * Copyright (c) 2022-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_TESTS_CPP_TESTS_TESTUTILS_H_
-#define LIGHTGBM_TESTS_CPP_TESTS_TESTUTILS_H_
+#ifndef FALCATA_TESTS_CPP_TESTS_TESTUTILS_H_
+#define FALCATA_TESTS_CPP_TESTS_TESTUTILS_H_
 
-#include <LightGBM/c_api.h>
-#include <LightGBM/dataset.h>
+#include <Falcata/c_api.h>
+#include <Falcata/dataset.h>
 
 #include <vector>
 
-using LightGBM::Metadata;
+using Falcata::Metadata;
 
-namespace LightGBM {
+namespace Falcata {
 
 class TestUtils {
  public:
@@ -121,5 +121,5 @@ class TestUtils {
     int32_t thread_count,
     int32_t thread_id);
 };
-}  // namespace LightGBM
-#endif  // LIGHTGBM_TESTS_CPP_TESTS_TESTUTILS_H_
+}  // namespace Falcata
+#endif  // FALCATA_TESTS_CPP_TESTS_TESTUTILS_H_

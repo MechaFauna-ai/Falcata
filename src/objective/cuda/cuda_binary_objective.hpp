@@ -5,22 +5,22 @@
  * license information.
  */
 
-#ifndef LIGHTGBM_SRC_OBJECTIVE_CUDA_CUDA_BINARY_OBJECTIVE_HPP_
-#define LIGHTGBM_SRC_OBJECTIVE_CUDA_CUDA_BINARY_OBJECTIVE_HPP_
+#ifndef FALCATA_SRC_OBJECTIVE_CUDA_CUDA_BINARY_OBJECTIVE_HPP_
+#define FALCATA_SRC_OBJECTIVE_CUDA_CUDA_BINARY_OBJECTIVE_HPP_
 
 #ifdef USE_CUDA
 
 #define GET_GRADIENTS_BLOCK_SIZE_BINARY (1024)
 #define CALC_INIT_SCORE_BLOCK_SIZE_BINARY (1024)
 
-#include <LightGBM/cuda/cuda_objective_function.hpp>
+#include <Falcata/cuda/cuda_objective_function.hpp>
 
 #include <string>
 #include <vector>
 
 #include "../binary_objective.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 class CUDABinaryLogloss : public CUDAObjectiveInterface<BinaryLogloss> {
  public:
@@ -57,8 +57,8 @@ class CUDABinaryLogloss : public CUDAObjectiveInterface<BinaryLogloss> {
   const int ova_class_id_ = -1;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA
 
-#endif  // LIGHTGBM_SRC_OBJECTIVE_CUDA_CUDA_BINARY_OBJECTIVE_HPP_
+#endif  // FALCATA_SRC_OBJECTIVE_CUDA_CUDA_BINARY_OBJECTIVE_HPP_

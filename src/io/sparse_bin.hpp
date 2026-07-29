@@ -4,12 +4,12 @@
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  */
-#ifndef LIGHTGBM_SRC_IO_SPARSE_BIN_HPP_
-#define LIGHTGBM_SRC_IO_SPARSE_BIN_HPP_
+#ifndef FALCATA_SRC_IO_SPARSE_BIN_HPP_
+#define FALCATA_SRC_IO_SPARSE_BIN_HPP_
 
-#include <LightGBM/bin.h>
-#include <LightGBM/utils/log.h>
-#include <LightGBM/utils/openmp_wrapper.h>
+#include <Falcata/bin.h>
+#include <Falcata/utils/log.h>
+#include <Falcata/utils/openmp_wrapper.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -18,7 +18,7 @@
 #include <utility>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 template <typename VAL_T>
 class SparseBin;
@@ -853,6 +853,6 @@ BinIterator* SparseBin<VAL_T>::GetIterator(uint32_t min_bin, uint32_t max_bin,
   return new SparseBinIterator<VAL_T>(this, min_bin, max_bin, most_freq_bin);
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
-#endif  // LIGHTGBM_SRC_IO_SPARSE_BIN_HPP_
+#endif  // FALCATA_SRC_IO_SPARSE_BIN_HPP_

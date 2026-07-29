@@ -3,15 +3,15 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#include <LightGBM/network.h>
-#include <LightGBM/utils/common.h>
-#include <LightGBM/utils/log.h>
+#include <Falcata/network.h>
+#include <Falcata/utils/common.h>
+#include <Falcata/utils/log.h>
 
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 
 BruckMap::BruckMap() {
@@ -179,4 +179,4 @@ RecursiveHalvingMap RecursiveHalvingMap::Construct(int rank, int num_machines) {
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

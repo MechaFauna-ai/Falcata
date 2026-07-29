@@ -3,18 +3,18 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_OBJECTIVE_REGRESSION_OBJECTIVE_HPP_
-#define LIGHTGBM_SRC_OBJECTIVE_REGRESSION_OBJECTIVE_HPP_
+#ifndef FALCATA_SRC_OBJECTIVE_REGRESSION_OBJECTIVE_HPP_
+#define FALCATA_SRC_OBJECTIVE_REGRESSION_OBJECTIVE_HPP_
 
-#include <LightGBM/meta.h>
-#include <LightGBM/objective_function.h>
-#include <LightGBM/utils/array_args.h>
+#include <Falcata/meta.h>
+#include <Falcata/objective_function.h>
+#include <Falcata/utils/array_args.h>
 
 #include <string>
 #include <algorithm>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 #define PercentileFun(T, data_reader, cnt_data, alpha)                    \
   {                                                                       \
@@ -593,7 +593,7 @@ class RegressionMAPELOSS : public RegressionL1loss {
       if (std::fabs(label_[i]) < 1) {
         Log::Warning(
           "Some label values are < 1 in absolute value. MAPE is unstable with such values, "
-          "so LightGBM rounds them to 1.0 when calculating MAPE.");
+          "so Falcata rounds them to 1.0 when calculating MAPE.");
         break;
       }
     }
@@ -760,5 +760,5 @@ class RegressionTweedieLoss: public RegressionPoissonLoss {
 #undef PercentileFun
 #undef WeightedPercentileFun
 
-}  // namespace LightGBM
-#endif   // LIGHTGBM_SRC_OBJECTIVE_REGRESSION_OBJECTIVE_HPP_
+}  // namespace Falcata
+#endif   // FALCATA_SRC_OBJECTIVE_REGRESSION_OBJECTIVE_HPP_

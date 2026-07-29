@@ -4,27 +4,27 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 
-#ifndef LIGHTGBM_SRC_BOOSTING_CUDA_NCCL_GBDT_HPP_
-#define LIGHTGBM_SRC_BOOSTING_CUDA_NCCL_GBDT_HPP_
+#ifndef FALCATA_SRC_BOOSTING_CUDA_NCCL_GBDT_HPP_
+#define FALCATA_SRC_BOOSTING_CUDA_NCCL_GBDT_HPP_
 
 #ifdef USE_CUDA
 
 #include <pthread.h>
 
-#include <LightGBM/objective_function.h>
-#include <LightGBM/network.h>
+#include <Falcata/objective_function.h>
+#include <Falcata/network.h>
 
 #include <memory>
 #include <vector>
 
-#include <LightGBM/cuda/cuda_nccl_topology.hpp>
+#include <Falcata/cuda/cuda_nccl_topology.hpp>
 
 #include "cuda_score_updater.hpp"
 #include "nccl_gbdt_component.hpp"
 
 #include "../gbdt.h"
 
-namespace LightGBM {
+namespace Falcata {
 
 template <typename GBDT_T>
 class NCCLGBDT: public GBDT_T {
@@ -140,7 +140,7 @@ class NCCLGBDT: public GBDT_T {
   std::vector<std::unique_ptr<NCCLGBDTComponent>> nccl_gbdt_components_;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA
-#endif  // LIGHTGBM_SRC_BOOSTING_CUDA_NCCL_GBDT_HPP_
+#endif  // FALCATA_SRC_BOOSTING_CUDA_NCCL_GBDT_HPP_

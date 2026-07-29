@@ -3,7 +3,7 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#include <LightGBM/boosting.h>
+#include <Falcata/boosting.h>
 
 #include <memory>
 #include <string>
@@ -16,7 +16,7 @@
 #include "cuda/nccl_gbdt.hpp"
 #endif  // USE_NCCL
 
-namespace LightGBM {
+namespace Falcata {
 
 std::string GetBoostingTypeFromModelFile(const char* filename) {
   TextReader<size_t> model_reader(filename, true);
@@ -109,4 +109,4 @@ Boosting* Boosting::CreateBoosting(const std::string& type, const char* filename
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

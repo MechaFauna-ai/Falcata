@@ -3,11 +3,11 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#include <LightGBM/tree.h>
+#include <Falcata/tree.h>
 
-#include <LightGBM/dataset.h>
-#include <LightGBM/utils/common.h>
-#include <LightGBM/utils/threading.h>
+#include <Falcata/dataset.h>
+#include <Falcata/utils/common.h>
+#include <Falcata/utils/threading.h>
 
 #include <algorithm>
 #include <functional>
@@ -17,7 +17,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 Tree::Tree(int max_leaves, bool track_branch_features, bool is_linear)
   :max_leaves_(max_leaves), track_branch_features_(track_branch_features) {
@@ -1057,4 +1057,4 @@ void Tree::RecomputeMaxDepth() {
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

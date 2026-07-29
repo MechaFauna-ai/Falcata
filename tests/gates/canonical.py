@@ -1,9 +1,9 @@
-"""The canonical ExaBoost md5 locks, as a permanent script.
+"""The canonical Falcata md5 locks, as a permanent script.
 
 These are the two full-scale bit-identity gates the project's verification
 discipline is built on (see also tests/gates/lattice.py for the per-commit
 small-cell lattice). They need the bench data cache (machine-local; override
-with EXABOOST_BENCH_CACHE) and an idle GPU.
+with FALCATA_BENCH_CACHE) and an idle GPU.
 
 Locks are md5[:12] over the TREE section of model_to_string() only (up to the
 "parameters:" block): the parameters dump moves whenever a config param is
@@ -39,7 +39,7 @@ from pathlib import Path
 
 CACHE = Path(
     os.environ.get(
-        "EXABOOST_BENCH_CACHE", "/home/felixjk/Documents/exaboost-bench/data/cache"
+        "FALCATA_BENCH_CACHE", "/home/felixjk/Documents/exaboost-bench/data/cache"
     )
 )
 
@@ -123,7 +123,7 @@ def run_numerai():
 
 NUMERAI_V53_DATASET = Path(
     os.environ.get(
-        "EXABOOST_NUMERAI_V53",
+        "FALCATA_NUMERAI_V53",
         "/home/felixjk/Documents/numerai/data/1224_int8nan.dataset",
     )
 )

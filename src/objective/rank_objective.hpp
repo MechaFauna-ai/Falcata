@@ -4,11 +4,11 @@
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  */
-#ifndef LIGHTGBM_SRC_OBJECTIVE_RANK_OBJECTIVE_HPP_
-#define LIGHTGBM_SRC_OBJECTIVE_RANK_OBJECTIVE_HPP_
+#ifndef FALCATA_SRC_OBJECTIVE_RANK_OBJECTIVE_HPP_
+#define FALCATA_SRC_OBJECTIVE_RANK_OBJECTIVE_HPP_
 
-#include <LightGBM/metric.h>
-#include <LightGBM/objective_function.h>
+#include <Falcata/metric.h>
+#include <Falcata/objective_function.h>
 
 #include <algorithm>
 #include <cmath>
@@ -18,7 +18,7 @@
 #include <string>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 /*!
  * \brief Objective function for Ranking
@@ -462,5 +462,5 @@ class RankXENDCG : public RankingObjective {
   mutable std::vector<Random> rands_;
 };
 
-}  // namespace LightGBM
-#endif  // LIGHTGBM_SRC_OBJECTIVE_RANK_OBJECTIVE_HPP_
+}  // namespace Falcata
+#endif  // FALCATA_SRC_OBJECTIVE_RANK_OBJECTIVE_HPP_

@@ -4,7 +4,7 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 
-#include <LightGBM/metric.h>
+#include <Falcata/metric.h>
 
 #include <set>
 #include <vector>
@@ -14,7 +14,7 @@
 
 #ifdef USE_CUDA
 
-namespace LightGBM {
+namespace Falcata {
 
 template <typename GBDT_T>
 NCCLGBDT<GBDT_T>::NCCLGBDT(): GBDT_T() {}
@@ -205,6 +205,6 @@ std::vector<double> NCCLGBDT<GBDT_T>::EvalOneMetric(const Metric* metric, const 
 
 template class NCCLGBDT<GBDT>;
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

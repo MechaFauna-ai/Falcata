@@ -10,11 +10,11 @@
 
 #include "cuda_binary_objective.hpp"
 
-#include <LightGBM/cuda/cuda_rocm_interop.h>
+#include <Falcata/cuda/cuda_rocm_interop.h>
 
 #include <algorithm>
 
-namespace LightGBM {
+namespace Falcata {
 
 template <bool USE_WEIGHT>
 __global__ void BoostFromScoreKernel_1_BinaryLogloss(const label_t* cuda_labels, const data_size_t num_data, double* out_cuda_sum_labels,
@@ -220,6 +220,6 @@ void CUDABinaryLogloss::LaunchResetOVACUDALabelKernel() const {
   ResetOVACUDALabelKernel<<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_BINARY>>>(ova_class_id_, num_data_, cuda_ova_label_.RawData());
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

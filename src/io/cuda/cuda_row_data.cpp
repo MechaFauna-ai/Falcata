@@ -6,8 +6,8 @@
 
 #ifdef USE_CUDA
 
-#include <LightGBM/cuda/cuda_row_data.hpp>
-#include <LightGBM/exaboost_plan.h>
+#include <Falcata/cuda/cuda_row_data.hpp>
+#include <Falcata/falcata_plan.h>
 
 #include <cstdio>
 
@@ -18,24 +18,24 @@
 #include <string>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 namespace {
 
 bool FastRowDataEnabled() {
-  return ExaBoostPlan::Get().fast_rowdata;
+  return FalcataPlan::Get().fast_rowdata;
 }
 
 bool FastRowDataVerifyEnabled() {
-  return ExaboostVerifyEnabled();
+  return FalcataVerifyEnabled();
 }
 
 bool RowData4BitEnabled() {
-  return ExaBoostPlan::Get().rowdata_4bit;
+  return FalcataPlan::Get().rowdata_4bit;
 }
 
 bool RowData4BitVerifyEnabled() {
-  return ExaboostVerifyEnabled();
+  return FalcataVerifyEnabled();
 }
 
 // Shape-specialized construct prototype (JIT phase 1): for low-bin, many-feature
@@ -50,12 +50,12 @@ bool RowData4BitVerifyEnabled() {
 // numerai-example wall / ~8% construct-kernel win; other benchmarks are bin-cap
 // bound (few columns per partition already), so the auto-trigger is a no-op there.
 //
-// EXABOOST_CONSTRUCT_COLCAP: unset -> auto (252 when the low-bin shape is
+// FALCATA_CONSTRUCT_COLCAP: unset -> auto (252 when the low-bin shape is
 // column-capped, else upstream 504); "0" -> force upstream 504 (kill switch);
 // Plan constant (-1 = auto sizing; 0<N<504 forces cap N; anything else = 504,
 // the upstream behavior).
 int ConstructColumnCapEnv() {
-  const int v = ExaBoostPlan::Get().construct_column_cap;
+  const int v = FalcataPlan::Get().construct_column_cap;
   if (v == -1) {
     return -1;  // auto
   }
@@ -144,7 +144,7 @@ void CUDARowData::Init(const Dataset* train_data, TrainingShareStates* train_sha
   row_ptr_bit_type_ = 0;
   const void* host_data = train_share_state->GetRowWiseData(&bit_type_, &total_size, &is_sparse_, &host_row_ptr, &row_ptr_bit_type_);
   if (host_data == nullptr) {
-    // Dataset::GetShareStates skipped the host multi-val bin build (EXABOOST_FAST_ROWDATA):
+    // Dataset::GetShareStates skipped the host multi-val bin build (FALCATA_FAST_ROWDATA):
     // the row-wise data is known to be dense; recover the bin bit width from the
     // per-column bin counts, exactly as MultiValBin::CreateMultiValDenseBin would.
     const std::vector<uint32_t>& column_hist_offsets = train_share_state->column_hist_offsets();
@@ -280,7 +280,7 @@ void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingSha
     if (env >= 0) {
       return env;  // explicit override or kill switch
     }
-    if (!ExaBoostPlan::Get().quant_training) {
+    if (!FalcataPlan::Get().quant_training) {
       return 504;  // upstream cap: the lowered cap only wins under quant
     }
     constexpr uint32_t kLowBinPerCol = 32;  // low-bin regime (numerai ~6)
@@ -419,9 +419,9 @@ void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingSha
   cuda_column_hist_offsets_.InitFromHostVector(column_hist_offsets_);
   cuda_partition_hist_offsets_.InitFromHostVector(partition_hist_offsets_);
 
-  // Diagnostic-only (perf characterization; behind EXABOOST_DEBUG=dump, no
+  // Diagnostic-only (perf characterization; behind FALCATA_DEBUG=dump, no
   // behavior change): report the partitioning + binding constraint per benchmark.
-  if (ExaboostDebug().dump) {
+  if (FalcataDebug().dump) {
     uint32_t max_partition_bins = 0, min_partition_bins = 0xffffffffu;
     int col_capped = 0, bin_capped = 0;
     for (size_t i = 0; i + 1 < partition_hist_offsets_.size(); ++i) {
@@ -570,21 +570,21 @@ void CUDARowData::InitDenseData(const Dataset* train_data, const BIN_TYPE* host_
   const bool use_fast_build = fast_enabled && CollectDenseColumnData(train_data, &column_data, &column_bit_types);
   const size_t total_size = static_cast<size_t>(feature_partition_column_index_offsets_.back()) * static_cast<size_t>(num_data_);
   if (use_fast_build) {
-    Log::Debug("CUDARowData: fast dense row data build from column bins (disable with EXABOOST_FAST_ROWDATA=0)");
+    Log::Debug("CUDARowData: fast dense row data build from column bins (disable with FALCATA_FAST_ROWDATA=0)");
     // new[] leaves the staging buffer uninitialized on purpose; the transpose writes every element
     std::unique_ptr<BIN_TYPE[]> buffer(new BIN_TYPE[total_size]);
     BuildDensePartitionedFromColumns<BIN_TYPE>(column_data, column_bit_types, buffer.get());
     if (FastRowDataVerifyEnabled()) {
       if (host_data == nullptr) {
-        Log::Fatal("EXABOOST_FAST_ROWDATA_VERIFY=1 requires the host multi-val bin, but its build was skipped.");
+        Log::Fatal("FALCATA_FAST_ROWDATA_VERIFY=1 requires the host multi-val bin, but its build was skipped.");
       }
       std::vector<BIN_TYPE> reference;
       GetDenseDataPartitioned<BIN_TYPE>(host_data, &reference);
       CHECK_EQ(reference.size(), total_size);
       if (std::memcmp(reference.data(), buffer.get(), total_size * sizeof(BIN_TYPE)) != 0) {
-        Log::Fatal("EXABOOST_FAST_ROWDATA_VERIFY: fast dense row data differs from the multi-val bin path.");
+        Log::Fatal("FALCATA_FAST_ROWDATA_VERIFY: fast dense row data differs from the multi-val bin path.");
       }
-      Log::Info("EXABOOST_FAST_ROWDATA_VERIFY: fast dense row data matches the multi-val bin path (%d columns, %d rows).",
+      Log::Info("FALCATA_FAST_ROWDATA_VERIFY: fast dense row data matches the multi-val bin path (%d columns, %d rows).",
                 feature_partition_column_index_offsets_.back(), num_data_);
     }
     cuda_data->InitFromHostMemory(buffer.get(), total_size);
@@ -734,13 +734,13 @@ void CUDARowData::InitDense4BitData(const Dataset* train_data, const uint8_t* ho
       });
     for (int t = 0; t < num_threads_; ++t) {
       if (thread_mismatch[t] != 0) {
-        Log::Fatal("EXABOOST_ROWDATA_4BIT_VERIFY: packed row data differs from the 8-bit representation.");
+        Log::Fatal("FALCATA_ROWDATA_4BIT_VERIFY: packed row data differs from the 8-bit representation.");
       }
     }
-    Log::Info("EXABOOST_ROWDATA_4BIT_VERIFY: 4-bit packed row data matches the 8-bit representation (%d columns, %d rows).",
+    Log::Info("FALCATA_ROWDATA_4BIT_VERIFY: 4-bit packed row data matches the 8-bit representation (%d columns, %d rows).",
               feature_partition_column_index_offsets_.back(), num_data_);
   }
-  Log::Debug("CUDARowData: 4-bit packed dense row data engaged (%d partitions, %d -> %d bytes per row; disable with EXABOOST_ROWDATA_4BIT=0)",
+  Log::Debug("CUDARowData: 4-bit packed dense row data engaged (%d partitions, %d -> %d bytes per row; disable with FALCATA_ROWDATA_4BIT=0)",
              num_feature_partitions_, feature_partition_column_index_offsets_.back(), packed_partition_byte_offsets_.back());
   cuda_data_uint8_t_.InitFromHostMemory(packed.get(), packed_total);
   cuda_packed_partition_byte_offsets_.InitFromHostVector(packed_partition_byte_offsets_);
@@ -886,6 +886,6 @@ template const uint32_t* CUDARowData::GetPartitionPtr<uint32_t>() const;
 
 template const uint64_t* CUDARowData::GetPartitionPtr<uint64_t>() const;
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

@@ -3,12 +3,12 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#include <LightGBM/config.h>
+#include <Falcata/config.h>
 
-#include <LightGBM/cuda/vector_cudahost.h>
-#include <LightGBM/utils/common.h>
-#include <LightGBM/utils/log.h>
-#include <LightGBM/utils/random.h>
+#include <Falcata/cuda/vector_cudahost.h>
+#include <Falcata/utils/common.h>
+#include <Falcata/utils/log.h>
+#include <Falcata/utils/random.h>
 
 #include <algorithm>
 #include <cctype>
@@ -18,7 +18,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 void Config::KV2Map(std::unordered_map<std::string, std::vector<std::string>>* params, const char* kv) {
   std::vector<std::string> tmp_strs = Common::Split(kv, '=');
@@ -59,20 +59,20 @@ void Config::SetVerbosity(const std::unordered_map<std::string, std::vector<std:
     if (verbose_iter != params.end()) {
       GetFirstValueAsInt(params, "verbose", &verbosity);
     } else {
-      // if "verbosity" and "verbose" were both missing from params, don't modify LightGBM's log level
+      // if "verbosity" and "verbose" were both missing from params, don't modify Falcata's log level
       return;
     }
   }
 
-  // otherwise, update LightGBM's log level based on the passed-in value
+  // otherwise, update Falcata's log level based on the passed-in value
   if (verbosity < 0) {
-    LightGBM::Log::ResetLogLevel(LightGBM::LogLevel::Fatal);
+    Falcata::Log::ResetLogLevel(Falcata::LogLevel::Fatal);
   } else if (verbosity == 0) {
-    LightGBM::Log::ResetLogLevel(LightGBM::LogLevel::Warning);
+    Falcata::Log::ResetLogLevel(Falcata::LogLevel::Warning);
   } else if (verbosity == 1) {
-    LightGBM::Log::ResetLogLevel(LightGBM::LogLevel::Info);
+    Falcata::Log::ResetLogLevel(Falcata::LogLevel::Info);
   } else {
-    LightGBM::Log::ResetLogLevel(LightGBM::LogLevel::Debug);
+    Falcata::Log::ResetLogLevel(Falcata::LogLevel::Debug);
   }
 }
 
@@ -287,7 +287,7 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
 
   GetMembersFromString(params);
 
-  ResolveExaBoostParams();
+  ResolveFalcataParams();
 
   GetAucMuWeights();
 
@@ -316,7 +316,7 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
   CheckParamConflict(params);
 }
 
-void Config::ResolveExaBoostParams() {
+void Config::ResolveFalcataParams() {
   // quant_mode: "auto" defers to use_quantized_grad for backward compatibility;
   // an explicit mode is authoritative and drives use_quantized_grad.
   std::string mode = Common::Trim(quant_mode);
@@ -334,7 +334,7 @@ void Config::ResolveExaBoostParams() {
   if (mode == std::string("fixedpoint") && device_type != std::string("cuda")) {
     Log::Fatal("quant_mode=fixedpoint works only with device_type=cuda");
   }
-  // quant_bins: 0 means auto (the LightGBM-historical 4 for stochastic; 64 for
+  // quant_bins: 0 means auto (the Falcata-historical 4 for stochastic; 64 for
   // fixedpoint, whose deterministic rounding needs the finer scale). The int16
   // discretized gradient holds +/-(bins/2), so cap well inside that range.
   if (num_grad_quant_bins == 0) {
@@ -425,7 +425,7 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
   //     - this block reduces num_leaves to 2^max_depth
   //   * (max_depth > 4) 31 leaves is less than a full depth-wise tree, which might lead to underfitting
   //     - this block warns about that
-  // ref: https://github.com/lightgbm-org/LightGBM/issues/2898#issuecomment-1002860601
+  // ref: https://github.com/lightgbm-org/Falcata/issues/2898#issuecomment-1002860601
   if (max_depth > 0 && (params.count("num_leaves") == 0 || params.at("num_leaves").empty())) {
     double full_num_leaves = std::pow(2, max_depth);
     if (full_num_leaves > num_leaves) {
@@ -527,7 +527,7 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
   if (boosting == std::string("goss")) {
     boosting = std::string("gbdt");
     data_sample_strategy = std::string("goss");
-    Log::Warning("Found boosting=goss. For backwards compatibility reasons, LightGBM interprets this as boosting=gbdt, data_sample_strategy=goss."
+    Log::Warning("Found boosting=goss. For backwards compatibility reasons, Falcata interprets this as boosting=gbdt, data_sample_strategy=goss."
                  "To suppress this warning, set data_sample_strategy=goss instead.");
   }
 
@@ -573,4 +573,4 @@ const std::string Config::DumpAliases() {
   return str_buf.str();
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

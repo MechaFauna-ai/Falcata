@@ -4,16 +4,16 @@
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  */
-#ifndef LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_HISTOGRAM_CONSTRUCTOR_HPP_
-#define LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_HISTOGRAM_CONSTRUCTOR_HPP_
+#ifndef FALCATA_SRC_TREELEARNER_CUDA_CUDA_HISTOGRAM_CONSTRUCTOR_HPP_
+#define FALCATA_SRC_TREELEARNER_CUDA_CUDA_HISTOGRAM_CONSTRUCTOR_HPP_
 
 #ifdef USE_CUDA
 
-#include <LightGBM/cuda/cuda_row_data.hpp>
-#include <LightGBM/exaboost_plan.h>
-#include <LightGBM/cuda/cuda_utils.hu>
-#include <LightGBM/feature_group.h>
-#include <LightGBM/tree.h>
+#include <Falcata/cuda/cuda_row_data.hpp>
+#include <Falcata/falcata_plan.h>
+#include <Falcata/cuda/cuda_utils.hu>
+#include <Falcata/feature_group.h>
+#include <Falcata/tree.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -34,7 +34,7 @@
 #define FIX_HISTOGRAM_BLOCK_SIZE (512)
 #define USED_HISTOGRAM_BUFFER_NUM (8)
 
-namespace LightGBM {
+namespace Falcata {
 
 /*! \brief fp32-pair global histogram storage for the non-quantized CUDA path
  *  (config cuda_precision=fp32 requests; default fp64 = hist_t/double pairs,
@@ -45,11 +45,11 @@ namespace LightGBM {
  *  bit-identical. Process-global, set from Config by the tree learner's Init
  *  before any consumer reads it (concurrent in-process boosters with
  *  different precisions are unsupported, same as the env var this replaced). */
-inline bool& ExaboostFP32HistRequestedFlag() {
+inline bool& FalcataFP32HistRequestedFlag() {
   static bool requested = false;
   return requested;
 }
-inline bool ExaboostFP32HistRequested() { return ExaboostFP32HistRequestedFlag(); }
+inline bool FalcataFP32HistRequested() { return FalcataFP32HistRequestedFlag(); }
 
 /*! \brief y-grid sizing formula of the batched per-level construct kernel,
  *  shared verbatim by the host launch sizing (CalcConstructHistogramBatchedKernelDim)
@@ -195,13 +195,13 @@ class CUDAHistogramConstructor {
    *  current data layout (dense, shared-memory histograms). The compact column
    *  view (feature_fraction sampling gathered into a dense per-tree copy) is
    *  supported through the same batched dense kernel fed with the compact
-   *  pointers/dims; EXABOOST_BATCH_WIDE=0 restores the per-pair fallback for it. */
+   *  pointers/dims; FALCATA_BATCH_WIDE=0 restores the per-pair fallback for it. */
   bool SupportsBatchedLevel() const {
     return cuda_row_data_ != nullptr &&
            !cuda_row_data_->is_sparse() &&
            cuda_row_data_->NumLargeBinPartition() == 0 &&
            (!use_compact_view_ ||
-            (ExaboostBatchWideEnabled() && !compact_is_col_major_ &&
+            (FalcataBatchWideEnabled() && !compact_is_col_major_ &&
              cuda_row_data_->bit_type() == 8));
   }
 
@@ -225,7 +225,7 @@ class CUDAHistogramConstructor {
   bool CompactColMajorFilled() const { return compact_col_major_filled_; }
   const uint8_t* compact_col_major_device() const { return compact_staging_col_major_.RawDataReadOnly(); }
 
-  /*! \brief one-line gate dump for EXABOOST_HYBRID_DIAG */
+  /*! \brief one-line gate dump for FALCATA_HYBRID_DIAG */
   std::string BatchedLevelGateDiag() const {
     char buf[256];
     snprintf(buf, sizeof(buf),
@@ -237,7 +237,7 @@ class CUDAHistogramConstructor {
              static_cast<int>(use_compact_view_),
              static_cast<int>(compact_is_col_major_),
              cuda_row_data_ != nullptr ? cuda_row_data_->bit_type() : -1,
-             static_cast<int>(ExaboostBatchWideEnabled()));
+             static_cast<int>(FalcataBatchWideEnabled()));
     return std::string(buf);
   }
 
@@ -262,33 +262,33 @@ class CUDAHistogramConstructor {
     const data_size_t* level_smaller_num_data = nullptr);
 
   /*! \brief minimum rows-per-thread cap of the batched construct grid sizing
-   *  (EXABOOST_BATCH_CONSTRUCT_MINROWS; 0 = per-leaf sizing). Shared by the host
+   *  (FALCATA_BATCH_CONSTRUCT_MINROWS; 0 = per-leaf sizing). Shared by the host
    *  grid sizing and the device row-grouping replica. */
   static int BatchConstructMinRowsPerThread() {
-    return ExaBoostPlan::Get().batch_construct_min_rows_per_thread;
+    return FalcataPlan::Get().batch_construct_min_rows_per_thread;
   }
 
   /*! \brief device-saturation floor (total y-blocks shared across the level's
    *  pairs) of the batched construct grid sizing
-   *  (EXABOOST_BATCH_CONSTRUCT_FLOOR; default 160 = historical behavior) */
+   *  (FALCATA_BATCH_CONSTRUCT_FLOOR; default 160 = historical behavior) */
   static int BatchConstructSaturationFloor() {
-    return ExaBoostPlan::Get().batch_construct_saturation_floor;
+    return FalcataPlan::Get().batch_construct_saturation_floor;
   }
 
   /*! \brief interleaved float2 gradient/hessian copy for the non-quantized
    *  dense construct kernels: their scattered per-row reads then touch ONE
    *  32B sector per row instead of two (gradients and hessians live in two
    *  separate arrays). Values are bit-identical to the separate reads.
-   *  EXABOOST_GH_INTERLEAVE=0 disables; float score_t only. */
+   *  FALCATA_GH_INTERLEAVE=0 disables; float score_t only. */
   static bool GHInterleaveEnabled() {
-    return ExaBoostPlan::Get().gh_interleave && sizeof(score_t) == sizeof(float);
+    return FalcataPlan::Get().gh_interleave && sizeof(score_t) == sizeof(float);
   }
 
   /*! \brief kill-switch of the small-leaf construct path
-   *  (EXABOOST_SMALL_LEAF_CONSTRUCT=0 restores the shared-memory batched
+   *  (FALCATA_SMALL_LEAF_CONSTRUCT=0 restores the shared-memory batched
    *  kernels for every level) */
   static bool SmallLeafConstructEnabled() {
-    return ExaBoostPlan::Get().small_leaf_construct;
+    return FalcataPlan::Get().small_leaf_construct;
   }
 
   /*! \brief leaf-size threshold of the DIRECT small-leaf construct body: a pair
@@ -298,7 +298,7 @@ class CUDAHistogramConstructor {
    *  the direct body changes the float accumulation (per-row double adds vs
    *  per-block float partial sums), which trades the fraud 63/6 exact-quality
    *  reproduction for a measured ~1-2% fraud-deep gain -- not worth it by
-   *  default. Set EXABOOST_SMALL_LEAF_ROWS=8192 to enable. */
+   *  default. Set FALCATA_SMALL_LEAF_ROWS=8192 to enable. */
   static data_size_t SmallLeafRowThreshold() {
     // Permanently 0 (disabled): the direct-add body is not bit-identical
     // (per-row double adds vs per-block float partial sums) for a measured
@@ -308,7 +308,7 @@ class CUDAHistogramConstructor {
     return 0;
   }
 
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   /*! \brief graphs L1 body capture: construct + fix/subtract kernels with
    *  placeholder grids on the hist stream, node handles + roles collected for
    *  the device controller; records subtract_done_events_[0] (the find phase
@@ -378,7 +378,7 @@ class CUDAHistogramConstructor {
   int HybridGraphCompactShapeKey() const {
     return use_compact_view_ ? std::max(1, max_num_compact_cols_per_partition_) : 0;
   }
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
   void ResetTrainingData(const Dataset* train_data, TrainingShareStates* share_states);
 
@@ -414,7 +414,7 @@ class CUDAHistogramConstructor {
   hist_t* cuda_hist_pointer() { return cuda_hist_.RawData(); }
 
   /*! \brief non-quantized global histograms are stored as float pairs in the
-   *  leading half of each leaf's hist_t slot (EXABOOST_FP32_HIST; slot strides
+   *  leading half of each leaf's hist_t slot (FALCATA_FP32_HIST; slot strides
    *  and the leaf histogram pool arithmetic are unchanged) */
   bool hist_fp32() const { return hist_fp32_; }
 
@@ -629,11 +629,11 @@ class CUDAHistogramConstructor {
   bool any_feature_unused_bytree_ = false;
   /*! \brief every feature fits the register-accumulation bin cap (<= 8 bins);
    *  selects the contention-free construct body on the batched compact path
-   *  (non-quantized only; EXABOOST_BATCH_REGHIST=0 disables) */
+   *  (non-quantized only; FALCATA_BATCH_REGHIST=0 disables) */
   bool construct_reg_bins_ = false;
 
   // Runtime NVRTC JIT of the shape-specialized quantized construct kernel
-  // (EXABOOST_CONSTRUCT_JIT=1; default OFF -> AOT compact-quant fast path). The
+  // (FALCATA_CONSTRUCT_JIT=1; default OFF -> AOT compact-quant fast path). The
   // JIT is validated bit-identical vs AOT before any use; see cuda_construct_jit.
   CUDAConstructJIT construct_jit_;
   bool construct_jit_selftest_done_ = false;
@@ -647,7 +647,7 @@ class CUDAHistogramConstructor {
   // One-time NVRTC pipeline self-check (compile + module load + launch +
   // bit-identity vs a reference histogram). Proves the JIT path works
   // end-to-end without touching the trained model. No-op unless
-  // EXABOOST_CONSTRUCT_JIT=1. Returns true if the JIT produced identical bins.
+  // FALCATA_CONSTRUCT_JIT=1. Returns true if the JIT produced identical bins.
   bool RunConstructJITSelfTest();
 
  private:
@@ -768,7 +768,7 @@ class CUDAHistogramConstructor {
   const int num_grad_quant_bins_;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA
-#endif  // LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_HISTOGRAM_CONSTRUCTOR_HPP_
+#endif  // FALCATA_SRC_TREELEARNER_CUDA_CUDA_HISTOGRAM_CONSTRUCTOR_HPP_

@@ -5,12 +5,12 @@
  */
 
 #include <gtest/gtest.h>
-#include <LightGBM/utils/byte_buffer.h>
+#include <Falcata/utils/byte_buffer.h>
 
 #include <memory>
 #include <random>
 
-using LightGBM::ByteBuffer;
+using Falcata::ByteBuffer;
 
 
 TEST(ByteBuffer, JustWorks) {

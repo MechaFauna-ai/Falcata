@@ -3,15 +3,15 @@
  * Copyright (c) 2017-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#include <LightGBM/objective_function.h>
-#include <LightGBM/prediction_early_stop.h>
-#include <LightGBM/utils/openmp_wrapper.h>
+#include <Falcata/objective_function.h>
+#include <Falcata/prediction_early_stop.h>
+#include <Falcata/utils/openmp_wrapper.h>
 
 #include <unordered_map>
 
 #include "gbdt.h"
 
-namespace LightGBM {
+namespace Falcata {
 
 void GBDT::PredictRaw(const double* features, double* output, const PredictionEarlyStopInstance* early_stop) const {
   int early_stop_round_counter = 0;
@@ -97,4 +97,4 @@ void GBDT::PredictLeafIndexByMap(const std::unordered_map<int, double>& features
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

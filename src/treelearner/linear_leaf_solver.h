@@ -9,18 +9,18 @@
  * and storage onto the Tree are identical, so they live here once and are
  * shared by LinearTreeLearner (CPU/OpenCL) and the CUDA tree learner.
  */
-#ifndef LIGHTGBM_TREELEARNER_LINEAR_LEAF_SOLVER_H_
-#define LIGHTGBM_TREELEARNER_LINEAR_LEAF_SOLVER_H_
+#ifndef FALCATA_TREELEARNER_LINEAR_LEAF_SOLVER_H_
+#define FALCATA_TREELEARNER_LINEAR_LEAF_SOLVER_H_
 
-#include <LightGBM/dataset.h>
-#include <LightGBM/meta.h>
-#include <LightGBM/tree.h>
+#include <Falcata/dataset.h>
+#include <Falcata/meta.h>
+#include <Falcata/tree.h>
 
 #include <Eigen/Dense>
 
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 namespace LinearLeafSolver {
 
@@ -87,6 +87,6 @@ inline void SolveAndStore(Tree* tree, int leaf, int num_feat,
 
 }  // namespace LinearLeafSolver
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
-#endif  // LIGHTGBM_TREELEARNER_LINEAR_LEAF_SOLVER_H_
+#endif  // FALCATA_TREELEARNER_LINEAR_LEAF_SOLVER_H_

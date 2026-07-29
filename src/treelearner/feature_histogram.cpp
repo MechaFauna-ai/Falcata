@@ -10,7 +10,7 @@
 #include <algorithm>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 void FeatureHistogram::FuncForCategorical() {
   if (meta_->config->extra_trees) {
@@ -743,4 +743,4 @@ void FeatureHistogram::FindBestThresholdCategoricalIntInner(int64_t int_sum_grad
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

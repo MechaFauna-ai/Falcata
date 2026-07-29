@@ -4,17 +4,17 @@
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  */
-#ifndef LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_LEAF_SPLITS_HPP_
-#define LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_LEAF_SPLITS_HPP_
+#ifndef FALCATA_SRC_TREELEARNER_CUDA_CUDA_LEAF_SPLITS_HPP_
+#define FALCATA_SRC_TREELEARNER_CUDA_CUDA_LEAF_SPLITS_HPP_
 
 #ifdef USE_CUDA
 
-#include <LightGBM/cuda/cuda_utils.hu>
-#include <LightGBM/bin.h>
-#include <LightGBM/tree_split_math.h>
-#include <LightGBM/utils/log.h>
-#include <LightGBM/exaboost_plan.h>
-#include <LightGBM/meta.h>
+#include <Falcata/cuda/cuda_utils.hu>
+#include <Falcata/bin.h>
+#include <Falcata/tree_split_math.h>
+#include <Falcata/utils/log.h>
+#include <Falcata/falcata_plan.h>
+#include <Falcata/meta.h>
 
 #include <cstdlib>
 #include <string>
@@ -22,13 +22,13 @@
 #define NUM_THREADS_PER_BLOCK_LEAF_SPLITS (1024)
 #define NUM_DATA_THREAD_ADD_LEAF_SPLITS (6)
 
-namespace LightGBM {
+namespace Falcata {
 
 /*! \brief kill switch for the wide-shape batched level support (many split-find
- *  tasks and/or compact-column-view histogram data): EXABOOST_BATCH_WIDE=0
+ *  tasks and/or compact-column-view histogram data): FALCATA_BATCH_WIDE=0
  *  restores the previous fallback to the per-pair kernels for those shapes */
-inline bool ExaboostBatchWideEnabled() {
-  return ExaBoostPlan::Get().batch_wide;
+inline bool FalcataBatchWideEnabled() {
+  return FalcataPlan::Get().batch_wide;
 }
 
 struct CUDALeafSplitsStruct {
@@ -107,7 +107,7 @@ class CUDALeafSplits: public NCCLInfo {
   // These delegate to the single shared SplitGainMath core (tree_split_math.h)
   // so the CUDA and CPU paths use identical formulas. Names/signatures are kept
   // for the existing device call sites; T = float only in the fp32 gain mode
-  // (EXABOOST_FP32_GAIN), always spelled out explicitly at those call sites.
+  // (FALCATA_FP32_GAIN), always spelled out explicitly at those call sites.
   //
   // CPU selects the USE_MAX_OUTPUT specialisation at compile time. Doing the
   // same here would add another template dimension to every split-finder
@@ -271,7 +271,7 @@ class CUDALeafSplits: public NCCLInfo {
   const score_t* cuda_hessians_;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA
-#endif  // LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_LEAF_SPLITS_HPP_
+#endif  // FALCATA_SRC_TREELEARNER_CUDA_CUDA_LEAF_SPLITS_HPP_

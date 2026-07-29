@@ -8,7 +8,7 @@
 
 #include "parallel_tree_learner.h"
 
-namespace LightGBM {
+namespace Falcata {
 
 
 template <typename TREELEARNER_T>
@@ -81,4 +81,4 @@ void FeatureParallelTreeLearner<TREELEARNER_T>::FindBestSplitsFromHistograms(
 // instantiate template classes, otherwise linker cannot find the code
 template class FeatureParallelTreeLearner<GPUTreeLearner>;
 template class FeatureParallelTreeLearner<SerialTreeLearner>;
-}  // namespace LightGBM
+}  // namespace Falcata

@@ -3,8 +3,8 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#include <LightGBM/dataset.h>
-#include <LightGBM/utils/common.h>
+#include <Falcata/dataset.h>
+#include <Falcata/utils/common.h>
 
 #include <set>
 #include <string>
@@ -15,7 +15,7 @@
 #include "../arrow/array.hpp"
 #endif  // LGB_R_BUILD
 
-namespace LightGBM {
+namespace Falcata {
 
 Metadata::Metadata() {
   num_weights_ = 0;
@@ -943,4 +943,4 @@ size_t Metadata::SizesInByte() const {
 }
 
 
-}  // namespace LightGBM
+}  // namespace Falcata

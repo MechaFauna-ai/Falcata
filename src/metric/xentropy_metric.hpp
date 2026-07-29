@@ -3,13 +3,13 @@
  * Copyright (c) 2017-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_METRIC_XENTROPY_METRIC_HPP_
-#define LIGHTGBM_SRC_METRIC_XENTROPY_METRIC_HPP_
+#ifndef FALCATA_SRC_METRIC_XENTROPY_METRIC_HPP_
+#define FALCATA_SRC_METRIC_XENTROPY_METRIC_HPP_
 
-#include <LightGBM/meta.h>
-#include <LightGBM/metric.h>
-#include <LightGBM/utils/common.h>
-#include <LightGBM/utils/log.h>
+#include <Falcata/meta.h>
+#include <Falcata/metric.h>
+#include <Falcata/utils/common.h>
+#include <Falcata/utils/log.h>
 
 #include <string>
 #include <algorithm>
@@ -29,7 +29,7 @@
  *
  */
 
-namespace LightGBM {
+namespace Falcata {
 
 // label should be in interval [0, 1];
 // prob should be in interval (0, 1); prob is clipped if needed
@@ -354,6 +354,6 @@ class KullbackLeiblerDivergence : public Metric {
   std::vector<std::string> name_;
 };
 
-}  // end namespace LightGBM
+}  // end namespace Falcata
 
-#endif  // LIGHTGBM_SRC_METRIC_XENTROPY_METRIC_HPP_
+#endif  // FALCATA_SRC_METRIC_XENTROPY_METRIC_HPP_

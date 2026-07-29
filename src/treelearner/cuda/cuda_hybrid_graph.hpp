@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) 2026 ExaBoost contributors. All rights reserved.
+ * Copyright (c) 2026 Falcata contributors. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  *
  * \brief Device-driven level loop ("graphs L1") for the hybrid depth-wise
@@ -22,33 +22,33 @@
  *  Requires CUDA >= 12.4 (device-updatable kernel nodes);
  *  the learner probes support at runtime and falls back to the host level loop
  *  (bit-for-bit the previous behavior) when unsupported or when
- *  EXABOOST_GRAPH_LEVEL_LOOP=0.
+ *  FALCATA_GRAPH_LEVEL_LOOP=0.
  */
 
-#ifndef LIGHTGBM_TREELEARNER_CUDA_CUDA_HYBRID_GRAPH_HPP_
-#define LIGHTGBM_TREELEARNER_CUDA_CUDA_HYBRID_GRAPH_HPP_
+#ifndef FALCATA_TREELEARNER_CUDA_CUDA_HYBRID_GRAPH_HPP_
+#define FALCATA_TREELEARNER_CUDA_CUDA_HYBRID_GRAPH_HPP_
 
 #ifdef USE_CUDA
 
 #include <cuda_runtime.h>
 
-#include <LightGBM/meta.h>
+#include <Falcata/meta.h>
 
 #if CUDART_VERSION >= 12040
-#define EXABOOST_HYBRID_GRAPH_SUPPORTED 1
+#define FALCATA_HYBRID_GRAPH_SUPPORTED 1
 #endif  // CUDART_VERSION >= 12040
 
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
 
-#include <LightGBM/cuda/cuda_utils.hu>
+#include <Falcata/cuda/cuda_utils.hu>
 
 #include <cstdint>
 #include <vector>
 
-#include <LightGBM/cuda/cuda_split_info.hpp>
-#include <LightGBM/cuda/cuda_tree.hpp>
+#include <Falcata/cuda/cuda_split_info.hpp>
+#include <Falcata/cuda/cuda_tree.hpp>
 
-namespace LightGBM {
+namespace Falcata {
 
 struct CUDAHybridApplyDescriptor;
 struct CUDAHybridPairDescriptor;
@@ -243,27 +243,27 @@ void CaptureHybridGraphControllerKernel(cudaStream_t stream,
                                         CUDAHybridGraphLoopState* state,
                                         int body_index);
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
-namespace LightGBM {
+namespace Falcata {
 
 /*! \brief optional graph loop-state parameter of the batched apply kernels:
  *  nullptr on every host-launched path (bit-for-bit the previous behavior),
  *  the loop state on the graph-captured launches. Collapses to an opaque,
  *  always-null pointer when built against CUDA < 12.4. */
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
 typedef const CUDAHybridGraphLoopState* CUDAHybridGraphLoopStateOpt;
 #else
 typedef const void* CUDAHybridGraphLoopStateOpt;
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
 #ifdef __CUDACC__
 
 __device__ __forceinline__ const data_size_t* HybridGraphMainIndices(
     CUDAHybridGraphLoopStateOpt gstate, const data_size_t* host_value) {
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   return gstate != nullptr ? gstate->main_indices : host_value;
 #else
   return host_value;
@@ -272,7 +272,7 @@ __device__ __forceinline__ const data_size_t* HybridGraphMainIndices(
 
 __device__ __forceinline__ data_size_t* HybridGraphOutIndices(
     CUDAHybridGraphLoopStateOpt gstate, data_size_t* host_value) {
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   return gstate != nullptr ? gstate->out_indices : host_value;
 #else
   return host_value;
@@ -283,7 +283,7 @@ __device__ __forceinline__ data_size_t* HybridGraphOutIndices(
  *  host-launched per-level path, cumulative inside the graph loop) */
 __device__ __forceinline__ int HybridGraphSplitInfoBase(
     CUDAHybridGraphLoopStateOpt gstate) {
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   return gstate != nullptr ? gstate->split_info_base : 0;
 #else
   return 0;
@@ -296,7 +296,7 @@ __device__ __forceinline__ int HybridGraphSplitInfoBase(
  *  other read or write). Always false on the host-launched exact-grid path. */
 __device__ __forceinline__ bool HybridGraphBeyondLiveSplits(
     CUDAHybridGraphLoopStateOpt gstate, const unsigned int n_index) {
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   return gstate != nullptr && n_index >= static_cast<unsigned int>(gstate->cur_num_splits);
 #else
   (void)n_index;
@@ -307,7 +307,7 @@ __device__ __forceinline__ bool HybridGraphBeyondLiveSplits(
 /*! \brief graphs A2 idle-block guard of the gap-copy kernel (live gap count) */
 __device__ __forceinline__ bool HybridGraphBeyondLiveGaps(
     CUDAHybridGraphLoopStateOpt gstate, const unsigned int gap_index) {
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   return gstate != nullptr && gap_index >= static_cast<unsigned int>(gstate->cur_num_gaps);
 #else
   (void)gap_index;
@@ -321,7 +321,7 @@ __device__ __forceinline__ bool HybridGraphBeyondLiveGaps(
  *  path keeps its grid-derived value */
 __device__ __forceinline__ int HybridGraphLivePairCount(
     CUDAHybridGraphLoopStateOpt gstate, const int host_value) {
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   return gstate != nullptr ? gstate->cur_num_splits : host_value;
 #else
   return host_value;
@@ -341,7 +341,7 @@ __device__ __forceinline__ bool HybridGraphActive(CUDAHybridGraphLoopStateOpt gs
  *  loop (gstate != nullptr). */
 __device__ __forceinline__ uint8_t HybridGraphQuantHistBits(
     CUDAHybridGraphLoopStateOpt gstate, const data_size_t num_data_in_leaf) {
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   const uint64_t max_stat_per_bin = static_cast<uint64_t>(num_data_in_leaf) *
     static_cast<uint64_t>(gstate->num_grad_quant_bins);
   return max_stat_per_bin < 256 ? 8 : (max_stat_per_bin < 65536 ? 16 : 32);
@@ -354,7 +354,7 @@ __device__ __forceinline__ uint8_t HybridGraphQuantHistBits(
 
 #endif  // __CUDACC__
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA
-#endif  // LIGHTGBM_TREELEARNER_CUDA_CUDA_HYBRID_GRAPH_HPP_
+#endif  // FALCATA_TREELEARNER_CUDA_CUDA_HYBRID_GRAPH_HPP_

@@ -9,16 +9,16 @@
 
 #include "cuda_best_split_finder.hpp"
 
-#include <LightGBM/cuda/cuda_rocm_interop.h>
+#include <Falcata/cuda/cuda_rocm_interop.h>
 
 #include <algorithm>
 #include <cfloat>
 #include <cstring>
 #include <vector>
 
-#include <LightGBM/cuda/cuda_algorithms.hpp>
+#include <Falcata/cuda/cuda_algorithms.hpp>
 
-namespace LightGBM {
+namespace Falcata {
 
 // Match CPU's Common::RoundInt(x) = static_cast<int>(x + 0.5f) (round half up) for
 // the histogram-count estimate count = round(hessian * cnt_factor). CUDA previously
@@ -36,7 +36,7 @@ __device__ __forceinline__ int CUDARoundInt(float x) {
 }
 
 /*! \brief histogram entry read of the non-quantized find kernels: the storage
- *  is float pairs in the fp32 histogram mode (EXABOOST_FP32_HIST) and hist_t
+ *  is float pairs in the fp32 histogram mode (FALCATA_FP32_HIST) and hist_t
  *  (double) pairs otherwise; the pointer is pre-offset in the right units by
  *  the caller. */
 template <typename GAIN_T>
@@ -70,7 +70,7 @@ __device__ __forceinline__ const hist_t* FeatureHistPtr(const hist_t* hist_in_le
 //
 // This rule *is* the specification: min_data_per_group has no external canon
 // (the sorted-category scan is Fisher-1958-canonical, but the per-group minimum
-// is LightGBM's own regularization heuristic), so the CPU routine above is the
+// is Falcata's own regularization heuristic), so the CPU routine above is the
 // reference, not merely "whatever CPU happens to do". The previous CUDA
 // approximation `left_count >= min_data_per_group && right_count >=
 // min_data_per_group` is a different rule and picked a different categorical
@@ -133,7 +133,7 @@ __device__ __forceinline__ bool SequentialCategoricalGroupAccepted(
 // Per-type machine epsilon used to size the gain-tie tolerance. Spelled out as
 // device-safe constants (rather than std::numeric_limits, which is awkward in
 // device code) so the reductions can run in either fp64 (default) or fp32
-// (EXABOOST_FP32_GAIN) gain arithmetic.
+// (FALCATA_FP32_GAIN) gain arithmetic.
 template <typename GAIN_T>
 __device__ __forceinline__ constexpr GAIN_T GainTieEpsilon();
 template <>
@@ -148,7 +148,7 @@ __device__ __forceinline__ constexpr float GainTieEpsilon<float>() { return 1.19
 // matching CPU's "first candidate in scan order wins" on a strict-'>' scan.
 // Sized at ~5000x the GAIN type's epsilon, well above the reduction-order FP
 // noise (~1e-15 fp64 / ~1e-7 fp32) but well below any genuine gain difference
-// seen in practice. Type-dependent so that under EXABOOST_FP32_GAIN the band is
+// seen in practice. Type-dependent so that under FALCATA_FP32_GAIN the band is
 // float-appropriate (~6e-4) instead of the fixed 1e-12, which is below float
 // epsilon and would degenerate to exact equality, re-exposing the plateau bug.
 // Note the comparison is intentionally non-transitive: a chain of near-ties
@@ -318,7 +318,7 @@ __device__ void FindBestSplitsForLeafKernelInner(
   const double leaf_constraint_max,
   // output parameters
   CUDASplitInfo* cuda_best_split_info) {
-  // leaf-level inputs stay double; GAIN_T = float (EXABOOST_FP32_GAIN) converts
+  // leaf-level inputs stay double; GAIN_T = float (FALCATA_FP32_GAIN) converts
   // them ONCE per task here, so all per-bin arithmetic below runs in fp32
   const int8_t monotone_constraint = task->monotone_type;
   const GAIN_T cnt_factor = static_cast<GAIN_T>(num_data / sum_hessians);
@@ -578,7 +578,7 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
   CUDASplitInfo* cuda_best_split_info) {
   const double sum_hessians = static_cast<double>(sum_gradients_hessians & 0x00000000ffffffff) * hess_scale;
   // leaf-level inputs converted once per task; per-bin math below runs in
-  // GAIN_T (float under EXABOOST_FP32_GAIN, double otherwise)
+  // GAIN_T (float under FALCATA_FP32_GAIN, double otherwise)
   const GAIN_T cnt_factor = static_cast<GAIN_T>(num_data / sum_hessians);
   const GAIN_T min_gain_shift = static_cast<GAIN_T>(parent_gain + min_gain_to_split);
   const GAIN_T grad_scale_acc = static_cast<GAIN_T>(grad_scale);
@@ -2253,7 +2253,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelInner1(LaunchFindBest
 
 template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING>
 void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelInner2(LaunchFindBestSplitsForLeafKernel_PARAMS) {
-  if (ExaboostFP32GainEnabled()) {
+  if (FalcataFP32GainEnabled()) {
     LaunchFindBestSplitsForLeafKernelInner3<USE_RAND, USE_L1, USE_SMOOTHING, float>(LaunchFindBestSplitsForLeafKernel_ARGS);
   } else {
     LaunchFindBestSplitsForLeafKernelInner3<USE_RAND, USE_L1, USE_SMOOTHING, double>(LaunchFindBestSplitsForLeafKernel_ARGS);
@@ -2432,7 +2432,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLeafKernelInner1(Lau
 
 template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING>
 void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLeafKernelInner2(LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS) {
-  if (ExaboostFP32GainEnabled()) {
+  if (FalcataFP32GainEnabled()) {
     LaunchFindBestSplitsDiscretizedForLeafKernelInner3<USE_RAND, USE_L1, USE_SMOOTHING, float>(LaunchFindBestSplitsDiscretizedForLeafKernel_ARGS);
   } else {
     LaunchFindBestSplitsDiscretizedForLeafKernelInner3<USE_RAND, USE_L1, USE_SMOOTHING, double>(LaunchFindBestSplitsDiscretizedForLeafKernel_ARGS);
@@ -2837,7 +2837,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
       max_delta_step_, \
       cuda_best_split_info_.RawData(), \
       gstate
-  if (ExaboostFP32GainEnabled()) {
+  if (FalcataFP32GainEnabled()) {
     FindBestSplitsForLevelKernel<false, false, false, float>
       <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
         FindBestSplitsForLevelKernel_ARGS);
@@ -2878,7 +2878,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
       hess_scale, \
       cuda_best_split_info_.RawData(), \
       gstate
-  if (ExaboostFP32GainEnabled()) {
+  if (FalcataFP32GainEnabled()) {
     FindBestSplitsDiscretizedForLevelKernel<false, false, false, float>
       <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
         FindBestSplitsDiscretizedForLevelKernel_ARGS);
@@ -2890,7 +2890,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
   #undef FindBestSplitsDiscretizedForLevelKernel_ARGS
 }
 
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
 void CUDABestSplitFinder::CaptureHybridGraphFindKernels(
     const CUDAHybridPairDescriptor* pair_descs,
     const score_t* grad_scale,
@@ -2946,7 +2946,7 @@ void CUDABestSplitFinder::CaptureHybridGraphFindKernels(
     role_static_x->push_back(0);
   }
 }
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
 void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
   const CUDAHybridPairDescriptor* pair_descs,
@@ -3502,6 +3502,6 @@ void CUDABestSplitFinder::LaunchInitCUDARandomKernel() {
     static_cast<int>(cuda_randoms_.Size()), cuda_randoms_.RawData());
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

@@ -4,8 +4,8 @@
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  */
-#ifndef LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_SINGLE_GPU_TREE_LEARNER_HPP_
-#define LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_SINGLE_GPU_TREE_LEARNER_HPP_
+#ifndef FALCATA_SRC_TREELEARNER_CUDA_CUDA_SINGLE_GPU_TREE_LEARNER_HPP_
+#define FALCATA_SRC_TREELEARNER_CUDA_CUDA_SINGLE_GPU_TREE_LEARNER_HPP_
 
 #include <memory>
 #include <vector>
@@ -20,7 +20,7 @@
 #include "cuda_gradient_discretizer.hpp"
 #include "../serial_tree_learner.h"
 
-namespace LightGBM {
+namespace Falcata {
 
 #define CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE (1024)
 
@@ -182,7 +182,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // Leaf-budget arbitration of one level: returns false when the budget binds
   // and the level must defer to the leaf-wise tail; truncates splittable to a
   // final partial level (*final_partial_level = true) when every child would sit
-  // at max_depth. Also applies the EXABOOST_HYBRID_MAXSPLITS debug cap.
+  // at max_depth. Also applies the FALCATA_HYBRID_MAXSPLITS debug cap.
   bool ArbitrateLevelBudget(const CUDATree* tree, std::vector<int>* splittable,
     bool* final_partial_level);
   // Batched apply of one level's splits: tree-structure update (SplitBatch) +
@@ -207,7 +207,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // two). Non-quantized batched-kernels + batched-apply configurations only.
   int TrainLevelWisePrefixOneSync(CUDATree* tree);
 
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   // ---- graphs L1: device-driven level loop (see cuda_hybrid_graph.hpp) ----
   // One cached instantiated graph per per-tree pointer key (the compact column
   // view is double-buffered, so two keys alternate in the steady state).
@@ -219,7 +219,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     ~HybridGraphInstance();
   };
   // Static config gate of the graph loop (depth-limited one-sync prefix only,
-  // controller capacity limits, no debug envs, EXABOOST_GRAPH_LEVEL_LOOP).
+  // controller capacity limits, no debug envs, FALCATA_GRAPH_LEVEL_LOOP).
   bool HybridGraphPrefixUsable() const;
   // Lazy one-time setup: static feature tables, journal/staging buffers, and
   // worst-case capacity preallocation of every captured device buffer.
@@ -236,7 +236,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // -1 when no instance is available (caller falls back to the host loop).
   int TrainLevelWisePrefixGraph(CUDATree* tree);
   void ReleaseHybridGraphs();
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
   // ---- selective (grow-then-prune) hybrid growth: exact leaf-wise equivalence
   // in budget-limited configs (num_leaves << 2^max_depth) ----
@@ -282,7 +282,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     double gain;
   };
 
-  // Resolve the fp32 histogram mode (EXABOOST_FP32_HIST) against the consumers
+  // Resolve the fp32 histogram mode (FALCATA_FP32_HIST) against the consumers
   // its layout does not cover and hand the result to the best split finder.
   void SyncHistFP32();
   // Whether the budget-limited selective mode governs this tree's growth.
@@ -348,7 +348,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // a column-major buffer for partition kernels, avoiding the 17 GB per-column
   // allocation in CUDAColumnData.
   void BuildCompactColumnView();
-  // Lazy fallback of the packed split read (EXABOOST_SPLIT_PACKED_READ): the
+  // Lazy fallback of the packed split read (FALCATA_SPLIT_PACKED_READ): the
   // batched apply path reads the packed compact matrix directly, so the
   // column-major gather is skipped in BuildCompactColumnView; any classic
   // per-split Split() (leaf-wise tail, forced splits, batched-apply fallback
@@ -384,12 +384,12 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // number of threads on CPU
   int num_threads_;
 
-  // EXABOOST_FIXEDPOINT_QUANT: non-stochastic near-lossless quant mode.
+  // FALCATA_FIXEDPOINT_QUANT: non-stochastic near-lossless quant mode.
   // Resolved once in Init so the histogram constructor and the gradient
   // discretizer share the same effective quant bin count.
   bool fixedpoint_quant_ = false;
   // Outlier-robust gradient scale within fixed-point mode (default ON when
-  // fixedpoint_quant_ is on; disabled by EXABOOST_FIXEDPOINT_ROBUST=0).
+  // fixedpoint_quant_ is on; disabled by FALCATA_FIXEDPOINT_ROBUST=0).
   bool fixedpoint_robust_scale_ = false;
   int effective_quant_bins_ = 0;
 
@@ -408,24 +408,24 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool use_hybrid_growth_ = false;
   CUDAVector<CUDALeafSplitsStruct> hybrid_pair_slots_;
   std::vector<CUDASplitInfo> host_leaf_best_splits_;
-  // hybrid growth: batched per-level kernels (EXABOOST_HYBRID_BATCH_KERNELS,
+  // hybrid growth: batched per-level kernels (FALCATA_HYBRID_BATCH_KERNELS,
   // default on; "0" falls back to the per-pair kernel launches)
   bool use_hybrid_batch_kernels_ = false;
   std::vector<CUDAHybridPairDescriptor> host_hybrid_pair_descs_;
   CUDAVector<CUDAHybridPairDescriptor> cuda_hybrid_pair_descs_;
-  // hybrid growth: batched per-level APPLY phase (EXABOOST_HYBRID_BATCH_APPLY,
+  // hybrid growth: batched per-level APPLY phase (FALCATA_HYBRID_BATCH_APPLY,
   // default on; "0" falls back to the per-split deferred ApplySplit loop)
   bool use_hybrid_batch_apply_ = false;
   std::vector<CUDATreeBatchSplit> host_tree_batch_splits_;
   std::vector<CUDAHybridApplySplitInput> host_apply_split_inputs_;
   // hybrid growth: single-sync (speculative) level pipeline
-  // (EXABOOST_HYBRID_ONE_SYNC, default on; "0" keeps the classic two-sync flow)
+  // (FALCATA_HYBRID_ONE_SYNC, default on; "0" keeps the classic two-sync flow)
   bool use_hybrid_one_sync_ = false;
   // selective (grow-then-prune) hybrid growth for budget-limited configs
-  // (EXABOOST_HYBRID_SELECTIVE, default on; "0" falls back to the classic loop)
+  // (FALCATA_HYBRID_SELECTIVE, default on; "0" falls back to the classic loop)
   bool use_hybrid_selective_ = false;
   bool selective_active_ = false;
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   // ---- graphs L1 state ----
   bool hybrid_graph_statics_ready_ = false;
   bool hybrid_graph_disabled_ = false;   // sticky off after build failures
@@ -445,7 +445,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::vector<int> hybrid_graph_splittable_scratch_;
   std::vector<int> hybrid_graph_batch_info_;
   std::vector<HybridAppliedSplit> hybrid_graph_applied_scratch_;
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   std::vector<SelectiveApplied> sel_applied_;
   std::vector<SelectiveFrontier> sel_frontier_;
   std::vector<int> sel_leaf_parent_;    // hybrid leaf -> applied record id (-1 root)
@@ -462,7 +462,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   int sel_num_allocated_ = 0;           // peak hybrid leaf count (dirty hist slots)
   int sel_num_splits_ = 0;              // applied splits surviving readback bookkeeping
   int sel_last_peak_ = 0;               // sel_num_allocated_ of the finished tree
-  // churn statistics (EXABOOST_HYBRID_DEBUG): applied / displaced split totals
+  // churn statistics (FALCATA_HYBRID_DEBUG): applied / displaced split totals
   int64_t sel_stat_applied_ = 0;
   int64_t sel_stat_displaced_ = 0;
   int64_t sel_stat_levels_ = 0;
@@ -572,13 +572,13 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   mutable bool last_tree_is_linear_ = false;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #else  // USE_CUDA
 
 // When GPU support is not compiled in, quit with an error message
 
-namespace LightGBM {
+namespace Falcata {
 
 class CUDASingleGPUTreeLearner: public SerialTreeLearner {
  public:
@@ -589,7 +589,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner {
     }
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA
-#endif  // LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_SINGLE_GPU_TREE_LEARNER_HPP_
+#endif  // FALCATA_SRC_TREELEARNER_CUDA_CUDA_SINGLE_GPU_TREE_LEARNER_HPP_

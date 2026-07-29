@@ -9,7 +9,7 @@
 
 #include "cuda_leaf_splits.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 CUDALeafSplits::CUDALeafSplits(const data_size_t num_data):
 num_data_(num_data) {}
@@ -93,6 +93,6 @@ void CUDALeafSplits::Resize(const data_size_t num_data) {
   cuda_sum_of_gradients_hessians_buffer_.Resize(static_cast<size_t>(num_blocks_init_from_gradients_));
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

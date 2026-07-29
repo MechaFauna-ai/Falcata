@@ -4,14 +4,14 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 
-#include <LightGBM/sample_strategy.h>
+#include <Falcata/sample_strategy.h>
 
 #include <string>
 
 #include "goss.hpp"
 #include "bagging.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 SampleStrategy* SampleStrategy::CreateSampleStrategy(
   const Config* config,
@@ -25,4 +25,4 @@ SampleStrategy* SampleStrategy::CreateSampleStrategy(
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

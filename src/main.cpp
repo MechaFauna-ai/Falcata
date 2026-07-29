@@ -3,7 +3,7 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#include <LightGBM/application.h>
+#include <Falcata/application.h>
 
 #include <iostream>
 #include <string>
@@ -15,11 +15,11 @@
 int main(int argc, char** argv) {
   bool success = false;
   try {
-    LightGBM::Application app(argc, argv);
+    Falcata::Application app(argc, argv);
     app.Run();
 
 #ifdef USE_MPI
-    LightGBM::Linkers::MpiFinalizeIfIsParallel();
+    Falcata::Linkers::MpiFinalizeIfIsParallel();
 #endif
 
     success = true;
@@ -38,7 +38,7 @@ int main(int argc, char** argv) {
 
   if (!success) {
 #ifdef USE_MPI
-    LightGBM::Linkers::MpiAbortIfIsParallel();
+    Falcata::Linkers::MpiAbortIfIsParallel();
 #endif
 
     exit(-1);

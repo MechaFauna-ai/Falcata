@@ -10,12 +10,12 @@
 
 #include "cuda_rank_objective.hpp"
 
-#include <LightGBM/cuda/cuda_algorithms.hpp>
+#include <Falcata/cuda/cuda_algorithms.hpp>
 #include <cub/block/block_reduce.cuh>
 #include <random>
 #include <algorithm>
 
-namespace LightGBM {
+namespace Falcata {
 
 // Block dimension used by the deterministic LambdaRank gradient kernels.
 // Always 1024 so that the per-slot work in Phase B scales with query size,
@@ -1135,6 +1135,6 @@ void CUDARankXENDCG::LaunchGetGradientsKernel(const double* score, score_t* grad
 }
 
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

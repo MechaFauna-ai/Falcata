@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 CUDAMulticlassSoftmax::CUDAMulticlassSoftmax(const Config& config): CUDAObjectiveInterface<MulticlassSoftmax>(config) {}
 
@@ -58,6 +58,6 @@ const double* CUDAMulticlassOVA::ConvertOutputCUDA(const data_size_t num_data, c
 }
 
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

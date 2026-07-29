@@ -5,15 +5,15 @@
  * license information.
  */
 
-#ifndef LIGHTGBM_SRC_OBJECTIVE_CUDA_CUDA_RANK_OBJECTIVE_HPP_
-#define LIGHTGBM_SRC_OBJECTIVE_CUDA_CUDA_RANK_OBJECTIVE_HPP_
+#ifndef FALCATA_SRC_OBJECTIVE_CUDA_CUDA_RANK_OBJECTIVE_HPP_
+#define FALCATA_SRC_OBJECTIVE_CUDA_CUDA_RANK_OBJECTIVE_HPP_
 
 #ifdef USE_CUDA
 
 #define NUM_QUERY_PER_BLOCK (10)
 
-#include <LightGBM/cuda/cuda_objective_function.hpp>
-#include <LightGBM/utils/threading.h>
+#include <Falcata/cuda/cuda_objective_function.hpp>
+#include <Falcata/utils/threading.h>
 
 #include <fstream>
 #include <string>
@@ -21,7 +21,7 @@
 
 #include "../rank_objective.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 template <typename HOST_OBJECTIVE>
 class CUDALambdaRankObjectiveInterface : public CUDAObjectiveInterface<HOST_OBJECTIVE> {
@@ -121,7 +121,7 @@ class CUDARankXENDCG : public CUDALambdaRankObjectiveInterface<RankXENDCG> {
 };
 
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA
-#endif  // LIGHTGBM_SRC_OBJECTIVE_CUDA_CUDA_RANK_OBJECTIVE_HPP_
+#endif  // FALCATA_SRC_OBJECTIVE_CUDA_CUDA_RANK_OBJECTIVE_HPP_

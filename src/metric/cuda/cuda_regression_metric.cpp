@@ -11,7 +11,7 @@
 
 #include "cuda_regression_metric.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 template <typename HOST_METRIC, typename CUDA_METRIC>
 std::vector<double> CUDARegressionMetricInterface<HOST_METRIC, CUDA_METRIC>::Eval(const double* score, const ObjectiveFunction* objective) const {
@@ -48,6 +48,6 @@ CUDAGammaDevianceMetric::CUDAGammaDevianceMetric(const Config& config): CUDARegr
 
 CUDATweedieMetric::CUDATweedieMetric(const Config& config): CUDARegressionMetricInterface<TweedieMetric, CUDATweedieMetric>(config) , tweedie_variance_power_(config.tweedie_variance_power) {}
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

@@ -2,7 +2,7 @@ name: GPU Gates Nightly
 # The tiers a 10-minute per-commit budget cannot cover:
 #   - seeded config x shape fuzzer (validity + quant determinism + CPU parity);
 #     failures print a repro spec to promote into tests/gates/fuzz_corpus.json
-#   - EXABOOST_VERIFY=1 sweep: every ingestion fast path self-verifies against
+#   - FALCATA_VERIFY=1 sweep: every ingestion fast path self-verifies against
 #     its reference implementation
 # Big-shape overflow cells (11M-row class) and full-bench canonical gates are
 # still run from the bench workspace; wiring them in here is a TODO.
@@ -33,8 +33,8 @@ jobs:
         run: python3 tests/gates/gpu_guard.py --require-free-mb 12000 --max-util 10 --timeout-min 120
       - name: Build CUDA wheel (ccache)
         run: bash tests/gates/ci_build.sh
-      - name: Lattice with runtime self-verification (EXABOOST_VERIFY=1)
-        run: EXABOOST_VERIFY=1 .gates-venv/bin/python tests/gates/lattice.py --check
+      - name: Lattice with runtime self-verification (FALCATA_VERIFY=1)
+        run: FALCATA_VERIFY=1 .gates-venv/bin/python tests/gates/lattice.py --check
       - name: Fuzz (seeded by date; corpus reruns first)
         run: .gates-venv/bin/python tests/gates/fuzz.py --minutes 45
       - name: Full-scale fixedpoint tree-emission gate (needs ~20GB free VRAM)

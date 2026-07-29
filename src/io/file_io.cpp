@@ -4,9 +4,9 @@
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  */
-#include <LightGBM/utils/file_io.h>
+#include <Falcata/utils/file_io.h>
 
-#include <LightGBM/utils/log.h>
+#include <Falcata/utils/log.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -15,7 +15,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace LightGBM {
+namespace Falcata {
 
 struct LocalFile : VirtualFileReader, VirtualFileWriter {
   LocalFile(const std::string& filename, const std::string& mode)
@@ -71,4 +71,4 @@ bool VirtualFileWriter::Exists(const std::string& filename) {
   return file.Exists();
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

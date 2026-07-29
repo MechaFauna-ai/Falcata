@@ -3,11 +3,11 @@
  * Copyright (c) 2017-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_BOOSTING_RF_HPP_
-#define LIGHTGBM_SRC_BOOSTING_RF_HPP_
+#ifndef FALCATA_SRC_BOOSTING_RF_HPP_
+#define FALCATA_SRC_BOOSTING_RF_HPP_
 
-#include <LightGBM/boosting.h>
-#include <LightGBM/metric.h>
+#include <Falcata/boosting.h>
+#include <Falcata/metric.h>
 
 #include <string>
 #include <cstdio>
@@ -19,7 +19,7 @@
 #include "gbdt.h"
 #include "score_updater.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 /*!
 * \brief Random Forest implementation
 */
@@ -233,5 +233,5 @@ class RF : public GBDT {
   std::vector<double> init_scores_;
 };
 
-}  // namespace LightGBM
-#endif  // LIGHTGBM_SRC_BOOSTING_RF_HPP_
+}  // namespace Falcata
+#endif  // FALCATA_SRC_BOOSTING_RF_HPP_

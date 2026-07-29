@@ -7,9 +7,9 @@
 
 #ifdef USE_CUDA
 
-#include <LightGBM/cuda/cuda_tree.hpp>
+#include <Falcata/cuda/cuda_tree.hpp>
 
-namespace LightGBM {
+namespace Falcata {
 
 __device__ void SetDecisionTypeCUDA(int8_t* decision_type, bool input, int8_t mask) {
   if (input) {
@@ -625,6 +625,6 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

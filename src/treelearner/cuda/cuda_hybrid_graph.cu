@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) 2026 ExaBoost contributors. All rights reserved.
+ * Copyright (c) 2026 Falcata contributors. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  *
  * \brief device-side level controller of the graphs-L1.5 hybrid prefix (see
@@ -18,7 +18,7 @@
 
 #include "cuda_hybrid_graph.hpp"
 
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
 
 #include <algorithm>
 #include <cfloat>
@@ -27,7 +27,7 @@
 #include "cuda_histogram_constructor.hpp"
 #include "cuda_leaf_splits.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 namespace {
 
@@ -617,7 +617,7 @@ void CaptureHybridGraphControllerKernel(cudaStream_t stream,
     state, body_index);
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 #endif  // USE_CUDA

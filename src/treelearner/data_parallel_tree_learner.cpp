@@ -10,7 +10,7 @@
 
 #include "parallel_tree_learner.h"
 
-namespace LightGBM {
+namespace Falcata {
 
 template <typename TREELEARNER_T>
 DataParallelTreeLearner<TREELEARNER_T>::DataParallelTreeLearner(const Config* config):TREELEARNER_T(config) {
@@ -467,4 +467,4 @@ void DataParallelTreeLearner<TREELEARNER_T>::Split(Tree* tree, int best_Leaf, in
 template class DataParallelTreeLearner<GPUTreeLearner>;
 template class DataParallelTreeLearner<SerialTreeLearner>;
 
-}  // namespace LightGBM
+}  // namespace Falcata

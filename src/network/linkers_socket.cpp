@@ -5,9 +5,9 @@
  */
 #ifdef USE_SOCKET
 
-#include <LightGBM/config.h>
-#include <LightGBM/utils/common.h>
-#include <LightGBM/utils/text_reader.h>
+#include <Falcata/config.h>
+#include <Falcata/utils/common.h>
+#include <Falcata/utils/text_reader.h>
 
 #include <algorithm>
 #include <chrono>
@@ -21,7 +21,7 @@
 
 #include "linkers.h"
 
-namespace LightGBM {
+namespace Falcata {
 
 Linkers::Linkers(Config config) {
   is_init_ = false;
@@ -236,6 +236,6 @@ void Linkers::PrintLinkers() {
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_SOCKET

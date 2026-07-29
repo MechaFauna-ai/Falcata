@@ -10,10 +10,10 @@
 #ifdef USE_CUDA
 
 #include "cuda_leaf_splits.hpp"
-#include <LightGBM/cuda/cuda_algorithms.hpp>
-#include <LightGBM/cuda/cuda_rocm_interop.h>
+#include <Falcata/cuda/cuda_algorithms.hpp>
+#include <Falcata/cuda/cuda_rocm_interop.h>
 
-namespace LightGBM {
+namespace Falcata {
 
 template <bool USE_INDICES>
 __global__ void CUDAInitValuesKernel1(const score_t* cuda_gradients, const score_t* cuda_hessians,
@@ -415,6 +415,6 @@ void CUDALeafSplits::LaunchInitValuesKernel(
   // until these legacy-default-stream kernels complete; no device sync needed
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

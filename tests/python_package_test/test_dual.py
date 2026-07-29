@@ -1116,7 +1116,7 @@ _REQUIRES_CUDA = pytest.mark.skipif(
 )
 
 # --------------------------------------------------------------------------- #
-# ExaBoost env kill-switch / feature-flag / ingestion / determinism gates.
+# Falcata env kill-switch / feature-flag / ingestion / determinism gates.
 #
 # These encode the out-of-tree scratchpad md5 gates (hybrid_verify.py,
 # int8_md5_gates.py, the graph/quant sweeps) as CI-enforced pytest, closing the

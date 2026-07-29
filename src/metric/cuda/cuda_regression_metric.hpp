@@ -5,20 +5,20 @@
  * license information.
  */
 
-#ifndef LIGHTGBM_SRC_METRIC_CUDA_CUDA_REGRESSION_METRIC_HPP_
-#define LIGHTGBM_SRC_METRIC_CUDA_CUDA_REGRESSION_METRIC_HPP_
+#ifndef FALCATA_SRC_METRIC_CUDA_CUDA_REGRESSION_METRIC_HPP_
+#define FALCATA_SRC_METRIC_CUDA_CUDA_REGRESSION_METRIC_HPP_
 
 #ifdef USE_CUDA
 
-#include <LightGBM/cuda/cuda_metric.hpp>
-#include <LightGBM/cuda/cuda_utils.hu>
+#include <Falcata/cuda/cuda_metric.hpp>
+#include <Falcata/cuda/cuda_utils.hu>
 
 #include <vector>
 
 #include "cuda_pointwise_metric.hpp"
 #include "../regression_metric.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 template <typename HOST_METRIC, typename CUDA_METRIC>
 class CUDARegressionMetricInterface: public CUDAPointwiseMetricInterface<HOST_METRIC, CUDA_METRIC> {
@@ -209,8 +209,8 @@ class CUDATweedieMetric : public CUDARegressionMetricInterface<TweedieMetric, CU
   const double tweedie_variance_power_;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA
 
-#endif  // LIGHTGBM_SRC_METRIC_CUDA_CUDA_REGRESSION_METRIC_HPP_
+#endif  // FALCATA_SRC_METRIC_CUDA_CUDA_REGRESSION_METRIC_HPP_

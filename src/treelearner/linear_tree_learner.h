@@ -3,8 +3,8 @@
  * Copyright (c) 2020-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_TREELEARNER_LINEAR_TREE_LEARNER_H_
-#define LIGHTGBM_SRC_TREELEARNER_LINEAR_TREE_LEARNER_H_
+#ifndef FALCATA_SRC_TREELEARNER_LINEAR_TREE_LEARNER_H_
+#define FALCATA_SRC_TREELEARNER_LINEAR_TREE_LEARNER_H_
 
 #include <cmath>
 #include <cstdio>
@@ -15,7 +15,7 @@
 #include "gpu_tree_learner.h"
 #include "serial_tree_learner.h"
 
-namespace LightGBM {
+namespace Falcata {
 
 template <typename TREE_LEARNER_TYPE>
 class LinearTreeLearner: public TREE_LEARNER_TYPE {
@@ -126,5 +126,5 @@ class LinearTreeLearner: public TREE_LEARNER_TYPE {
   mutable std::vector<std::vector<std::vector<double>>> XTg_by_thread_;
 };
 
-}  // namespace LightGBM
-#endif   // LIGHTGBM_SRC_TREELEARNER_LINEAR_TREE_LEARNER_H_
+}  // namespace Falcata
+#endif   // FALCATA_SRC_TREELEARNER_LINEAR_TREE_LEARNER_H_

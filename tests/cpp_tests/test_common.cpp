@@ -24,7 +24,7 @@ class AtofPreciseTest : public testing::Test {
   static double TestAtofPrecise(
       const char* data, double expected, bool test_eq = true) {
     double got = 0;
-    const char* end = LightGBM::Common::AtofPrecise(data, &got);
+    const char* end = Falcata::Common::AtofPrecise(data, &got);
     EXPECT_TRUE(end != data) << "fail to parse: " << data;
     EXPECT_EQ(*end, '\0') << "not parsing to end: " << data;
     if (test_eq) {
@@ -106,7 +106,7 @@ TEST_F(AtofPreciseTest, CornerCases) {
 
 TEST_F(AtofPreciseTest, ErrorInput) {
   double got = 0;
-  ASSERT_THROW(LightGBM::Common::AtofPrecise("x1", &got),  std::runtime_error);
+  ASSERT_THROW(Falcata::Common::AtofPrecise("x1", &got),  std::runtime_error);
 }
 
 TEST_F(AtofPreciseTest, NaN) {
@@ -146,7 +146,7 @@ TEST_F(AtofPreciseTest, Inf) {
   for (auto const& test : test_cases) {
     double got = TestAtofPrecise(test.data, test.expected, false);
 
-    EXPECT_EQ(LightGBM::Common::Sign(test.expected), LightGBM::Common::Sign(got)) << "sign differs parsing: " << test.data;
+    EXPECT_EQ(Falcata::Common::Sign(test.expected), Falcata::Common::Sign(got)) << "sign differs parsing: " << test.data;
     EXPECT_TRUE(std::isinf(got)) << "not parsed as infinite: " << test.data;
     EXPECT_EQ(memcmp(&got, &test.expected, sizeof(test.expected)), 0)
               << "parsed infinite is not the same for every bit: " << test.data;

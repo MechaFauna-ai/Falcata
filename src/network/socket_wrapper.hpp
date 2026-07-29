@@ -3,11 +3,11 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_NETWORK_SOCKET_WRAPPER_HPP_
-#define LIGHTGBM_SRC_NETWORK_SOCKET_WRAPPER_HPP_
+#ifndef FALCATA_SRC_NETWORK_SOCKET_WRAPPER_HPP_
+#define FALCATA_SRC_NETWORK_SOCKET_WRAPPER_HPP_
 #ifdef USE_SOCKET
 
-#include <LightGBM/utils/log.h>
+#include <Falcata/utils/log.h>
 
 #include <string>
 #include <cerrno>
@@ -46,7 +46,7 @@
 #pragma comment(lib, "IPHLPAPI.lib")
 #endif
 
-namespace LightGBM {
+namespace Falcata {
 
 #ifndef _WIN32
 
@@ -328,6 +328,6 @@ class TcpSocket {
   SOCKET sockfd_;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 #endif  // USE_SOCKET
-#endif   // LIGHTGBM_SRC_NETWORK_SOCKET_WRAPPER_HPP_
+#endif   // FALCATA_SRC_NETWORK_SOCKET_WRAPPER_HPP_

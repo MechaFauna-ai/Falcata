@@ -18,9 +18,9 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-#include <LightGBM/utils/json11.h>
+#include <Falcata/utils/json11.h>
 
-#include <LightGBM/utils/log.h>
+#include <Falcata/utils/log.h>
 
 #include <cmath>
 #include <cstdint>
@@ -42,7 +42,7 @@ using std::map;
 using std::string;
 using std::vector;
 
-using LightGBM::Log;
+using Falcata::Log;
 
 /* Helper for representing null - just a do-nothing struct, plus comparison
  * operators so the helpers in JsonValue work. We can't use nullptr_t because

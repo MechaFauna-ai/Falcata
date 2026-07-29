@@ -3,14 +3,14 @@
  * Copyright (c) 2017-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_TREELEARNER_GPU_TREE_LEARNER_H_
-#define LIGHTGBM_SRC_TREELEARNER_GPU_TREE_LEARNER_H_
+#ifndef FALCATA_SRC_TREELEARNER_GPU_TREE_LEARNER_H_
+#define FALCATA_SRC_TREELEARNER_GPU_TREE_LEARNER_H_
 
-#include <LightGBM/dataset.h>
-#include <LightGBM/feature_group.h>
-#include <LightGBM/tree.h>
-#include <LightGBM/utils/array_args.h>
-#include <LightGBM/utils/random.h>
+#include <Falcata/dataset.h>
+#include <Falcata/feature_group.h>
+#include <Falcata/tree.h>
+#include <Falcata/utils/array_args.h>
+#include <Falcata/utils/random.h>
 
 #include <string>
 #include <cmath>
@@ -35,7 +35,7 @@
 #include <boost/compute/container/vector.hpp>
 #include <boost/align/aligned_allocator.hpp>
 
-namespace LightGBM {
+namespace Falcata {
 
 using json11_internal_lightgbm::Json;
 
@@ -263,12 +263,12 @@ class GPUTreeLearner: public SerialTreeLearner {
   boost::compute::event hessians_future_;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 #else
 
 // When GPU support is not compiled in, quit with an error message
 
-namespace LightGBM {
+namespace Falcata {
 
 class GPUTreeLearner: public SerialTreeLearner {
  public:
@@ -281,8 +281,8 @@ class GPUTreeLearner: public SerialTreeLearner {
   }
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif   // USE_GPU
 
-#endif   // LIGHTGBM_SRC_TREELEARNER_GPU_TREE_LEARNER_H_
+#endif   // FALCATA_SRC_TREELEARNER_GPU_TREE_LEARNER_H_

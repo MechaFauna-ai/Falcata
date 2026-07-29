@@ -5,15 +5,15 @@
  */
 
 #include <gtest/gtest.h>
-#include <LightGBM/meta.h>
-#include <LightGBM/utils/array_args.h>
+#include <Falcata/meta.h>
+#include <Falcata/utils/array_args.h>
 
 #include <random>
 #include <vector>
 
-using LightGBM::data_size_t;
-using LightGBM::score_t;
-using LightGBM::ArrayArgs;
+using Falcata::data_size_t;
+using Falcata::score_t;
+using Falcata::ArrayArgs;
 
 
 TEST(Partition, JustWorks) {

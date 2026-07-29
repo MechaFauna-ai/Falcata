@@ -10,7 +10,7 @@
 
 #include "cuda_multiclass_objective.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 __device__ void SoftmaxCUDA(double* softmax_buffer, int len) {
   double wmax = softmax_buffer[0];
@@ -104,6 +104,6 @@ const double* CUDAMulticlassSoftmax::LaunchConvertOutputCUDAKernel(
   return output;
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

@@ -3,14 +3,14 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#include <LightGBM/metric.h>
-#include <LightGBM/utils/log.h>
+#include <Falcata/metric.h>
+#include <Falcata/utils/log.h>
 
 #include <algorithm>
 #include <cmath>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 /*! \brief Declaration for some static members */
 std::vector<double> DCGCalculator::label_gain_;
@@ -171,4 +171,4 @@ void DCGCalculator::CheckLabel(const label_t* label, data_size_t num_data) {
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

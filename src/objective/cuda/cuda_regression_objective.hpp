@@ -5,21 +5,21 @@
  * license information.
  */
 
-#ifndef LIGHTGBM_SRC_OBJECTIVE_CUDA_CUDA_REGRESSION_OBJECTIVE_HPP_
-#define LIGHTGBM_SRC_OBJECTIVE_CUDA_CUDA_REGRESSION_OBJECTIVE_HPP_
+#ifndef FALCATA_SRC_OBJECTIVE_CUDA_CUDA_REGRESSION_OBJECTIVE_HPP_
+#define FALCATA_SRC_OBJECTIVE_CUDA_CUDA_REGRESSION_OBJECTIVE_HPP_
 
 #ifdef USE_CUDA
 
 #define GET_GRADIENTS_BLOCK_SIZE_REGRESSION (1024)
 
-#include <LightGBM/cuda/cuda_objective_function.hpp>
+#include <Falcata/cuda/cuda_objective_function.hpp>
 
 #include <string>
 #include <vector>
 
 #include "../regression_objective.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 template <typename HOST_OBJECTIVE>
 class CUDARegressionObjectiveInterface: public CUDAObjectiveInterface<HOST_OBJECTIVE> {
@@ -162,7 +162,7 @@ class CUDARegressionQuantileloss : public CUDARegressionObjectiveInterface<Regre
 };
 
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA
-#endif  // LIGHTGBM_SRC_OBJECTIVE_CUDA_CUDA_REGRESSION_OBJECTIVE_HPP_
+#endif  // FALCATA_SRC_OBJECTIVE_CUDA_CUDA_REGRESSION_OBJECTIVE_HPP_

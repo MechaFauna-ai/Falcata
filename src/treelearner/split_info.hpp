@@ -2,10 +2,10 @@
  * Copyright (c) 2016 Microsoft Corporation. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_TREELEARNER_SPLIT_INFO_HPP_
-#define LIGHTGBM_SRC_TREELEARNER_SPLIT_INFO_HPP_
+#ifndef FALCATA_SRC_TREELEARNER_SPLIT_INFO_HPP_
+#define FALCATA_SRC_TREELEARNER_SPLIT_INFO_HPP_
 
-#include <LightGBM/meta.h>
+#include <Falcata/meta.h>
 
 #include <limits>
 #include <cmath>
@@ -14,7 +14,7 @@
 #include <functional>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 /*!
 * \brief Used to store some information for gain split point
@@ -290,5 +290,5 @@ struct LightSplitInfo {
   }
 };
 
-}  // namespace LightGBM
-#endif   // LIGHTGBM_SRC_TREELEARNER_SPLIT_INFO_HPP_
+}  // namespace Falcata
+#endif   // FALCATA_SRC_TREELEARNER_SPLIT_INFO_HPP_

@@ -3,18 +3,18 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_IO_PARSER_HPP_
-#define LIGHTGBM_SRC_IO_PARSER_HPP_
+#ifndef FALCATA_SRC_IO_PARSER_HPP_
+#define FALCATA_SRC_IO_PARSER_HPP_
 
-#include <LightGBM/dataset.h>
-#include <LightGBM/utils/common.h>
-#include <LightGBM/utils/log.h>
+#include <Falcata/dataset.h>
+#include <Falcata/utils/common.h>
+#include <Falcata/utils/log.h>
 
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 class CSVParser: public Parser {
  public:
@@ -132,5 +132,5 @@ class LibSVMParser: public Parser {
   AtofFunc atof_;
 };
 
-}  // namespace LightGBM
-#endif   // LIGHTGBM_SRC_IO_PARSER_HPP_
+}  // namespace Falcata
+#endif   // FALCATA_SRC_IO_PARSER_HPP_

@@ -11,7 +11,7 @@
 
 #include "../include/LightGBM/utils/chunked_array.hpp"
 
-using LightGBM::ChunkedArray;
+using Falcata::ChunkedArray;
 
 /*!
   Helper util to compare two vectors.

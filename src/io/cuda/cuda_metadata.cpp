@@ -6,11 +6,11 @@
 
 #ifdef USE_CUDA
 
-#include <LightGBM/cuda/cuda_metadata.hpp>
+#include <Falcata/cuda/cuda_metadata.hpp>
 
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 CUDAMetadata::CUDAMetadata(const int gpu_device_id) {
   if (gpu_device_id >= 0) {
@@ -74,6 +74,6 @@ void CUDAMetadata::SetInitScore(const double* init_score, data_size_t len) {
   cuda_init_score_.InitFromHostMemory(init_score, len);
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

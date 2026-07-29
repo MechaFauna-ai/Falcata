@@ -9,12 +9,12 @@
 
 #include "cuda_single_gpu_tree_learner.hpp"
 
-#include <LightGBM/cuda/cuda_tree.hpp>
-#include <LightGBM/exaboost_plan.h>
-#include <LightGBM/cuda/cuda_utils.hu>
-#include <LightGBM/feature_group.h>
-#include <LightGBM/network.h>
-#include <LightGBM/objective_function.h>
+#include <Falcata/cuda/cuda_tree.hpp>
+#include <Falcata/falcata_plan.h>
+#include <Falcata/cuda/cuda_utils.hu>
+#include <Falcata/feature_group.h>
+#include <Falcata/network.h>
+#include <Falcata/objective_function.h>
 
 #include <algorithm>
 #include <array>
@@ -33,7 +33,7 @@
 #include "../cost_effective_gradient_boosting.hpp"
 #include "../linear_leaf_solver.h"
 
-namespace LightGBM {
+namespace Falcata {
 
 CUDASingleGPUTreeLearner::CUDASingleGPUTreeLearner(const Config* config, const bool boosting_on_cuda): SerialTreeLearner(config), boosting_on_cuda_(boosting_on_cuda) {}
 
@@ -41,7 +41,7 @@ CUDASingleGPUTreeLearner::~CUDASingleGPUTreeLearner() {
   if (nccl_communicator_ != nullptr) {
     CUDAStreamDestroy(nccl_stream_);
   }
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   hybrid_graph_cache_.clear();
   if (pinned_hybrid_graph_state_ != nullptr) {
     cudaFreeHost(pinned_hybrid_graph_state_);
@@ -49,13 +49,13 @@ CUDASingleGPUTreeLearner::~CUDASingleGPUTreeLearner() {
   if (pinned_hybrid_graph_journal_ != nullptr) {
     cudaFreeHost(pinned_hybrid_graph_journal_);
   }
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 }
 
 void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_hessian) {
   // Resolve the CUDA execution plan for the training phase before any
   // component reads it (ingestion resolved the same string earlier).
-  ExaBoostPlan::ResolveFromConfig(*config_);
+  FalcataPlan::ResolveFromConfig(*config_);
   SerialTreeLearner::Init(train_data, is_constant_hessian);
   num_threads_ = OMP_NUM_THREADS();
   // use the first gpu by default
@@ -71,7 +71,7 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // The same bin count (config quant_bins, auto=64 for fixedpoint) must reach
   // BOTH the histogram constructor (its 65534/bins per-block row cap guards
   // packed-hist overflow) and the discretizer (dequant scale), so it is
-  // resolved once in Config::ResolveExaBoostParams.
+  // resolved once in Config::ResolveFalcataParams.
   //
   // The outlier-robust gradient scale is an unconditional part of fixedpoint
   // mode: it is gap-gated (see ComputeRobustGradScaleKernel), so balanced
@@ -94,8 +94,8 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // one knob. Must be set before the histogram constructor / best split finder
   // below read the process-global flags.
   const bool fp32 = (config_->ResolvedCudaPrecision() == CudaPrecision::kFP32);
-  ExaboostFP32HistRequestedFlag() = fp32;
-  ExaboostFP32GainEnabledFlag() = fp32;
+  FalcataFP32HistRequestedFlag() = fp32;
+  FalcataFP32GainEnabledFlag() = fp32;
   cuda_smaller_leaf_splits_.reset(new CUDALeafSplits(num_data_));
   cuda_smaller_leaf_splits_->SetNCCLInfo(nccl_communicator_, nccl_gpu_rank_, local_gpu_rank_, gpu_device_id_, global_num_data_);
   cuda_smaller_leaf_splits_->Init(config_->use_quantized_grad);
@@ -120,7 +120,7 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   select_features_by_node_ = !config_->interaction_constraints_vector.empty() || config_->feature_fraction_bynode < 1.0;
   // hybrid level-batched growth is on by default; cuda_plan=auto,hybrid:off
   // falls back to the classic one-split-at-a-time leaf-wise loop everywhere
-  use_hybrid_growth_ = ExaBoostPlan::Get().hybrid;
+  use_hybrid_growth_ = FalcataPlan::Get().hybrid;
   // Monotone constraints are inherited down the tree: a leaf's [min, max] bounds
   // come from the splits already applied above it. Level-batched growth scores a
   // whole level before applying any of it, so the children of a level's splits
@@ -142,19 +142,19 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   }
   // batched per-level kernels for the hybrid prefix (one construct/fix/subtract/
   // find/sync launch per level instead of per pair); "0" keeps the per-pair path
-  use_hybrid_batch_kernels_ = ExaBoostPlan::Get().batch_kernels;
+  use_hybrid_batch_kernels_ = FalcataPlan::Get().batch_kernels;
   // batched per-level APPLY phase for the hybrid prefix (one launch per kernel
   // family per level and zero per-split host syncs, instead of ~7 launches and
   // 2 device syncs per split); "0" keeps the per-split deferred loop
-  use_hybrid_batch_apply_ = ExaBoostPlan::Get().batch_apply;
+  use_hybrid_batch_apply_ = FalcataPlan::Get().batch_apply;
   // single-sync (speculative) level pipeline for the hybrid prefix: each level's
   // apply and the children's search are enqueued back to back and read back with
   // ONE device synchronization per level; "0" keeps the classic two-sync flow
-  use_hybrid_one_sync_ = ExaBoostPlan::Get().one_sync;
+  use_hybrid_one_sync_ = FalcataPlan::Get().one_sync;
   // selective (grow-then-prune) growth for budget-limited configs
   // (num_leaves << 2^max_depth): exactly leaf-wise-equivalent level batching
   // with end-of-selection pruning; "0" falls back to the classic loop there
-  use_hybrid_selective_ = ExaBoostPlan::Get().selective;
+  use_hybrid_selective_ = FalcataPlan::Get().selective;
   cuda_best_split_finder_.reset(new CUDABestSplitFinder(cuda_histogram_constructor_->cuda_hist(),
     train_data_, this->share_state_->feature_hist_offsets(), select_features_by_node_, config_));
   cuda_best_split_finder_->Init();
@@ -334,9 +334,9 @@ namespace {
 // descriptors) instead of materializing the per-tree column-major buffer
 // (~1.5GB write per tree on numerai-shaped data); the scattered packed reads
 // cost one 32B sector per row but only the split columns are ever touched.
-// ExaBoostPlan::split_packed_read=false restores the column-major gather.
+// FalcataPlan::split_packed_read=false restores the column-major gather.
 bool SplitPackedReadEnabled() {
-  return ExaBoostPlan::Get().split_packed_read;
+  return FalcataPlan::Get().split_packed_read;
 }
 
 }  // anonymous namespace
@@ -552,11 +552,11 @@ void CUDASingleGPUTreeLearner::AddPredictionToScore(const Tree* tree, double* ou
 
 namespace {
 
-// EXABOOST_DEBUG=aggressive opts into plain level batching in budget-limited
+// FALCATA_DEBUG=aggressive opts into plain level batching in budget-limited
 // configs, accepting the approximate (breadth-biased) growth policy in exchange
 // for hybrid speed. Off by default; exact for depth-limited configs either way.
 bool HybridAggressiveEnv() {
-  return ExaboostDebug().aggressive;
+  return FalcataDebug().aggressive;
 }
 
 }  // anonymous namespace
@@ -568,7 +568,7 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
   // selection is optimal because no deeper candidates can exist. In
   // budget-limited configs (num_leaves << 2^max_depth) the SELECTIVE
   // grow-then-prune mode (UseSelectiveGrowth) provides exact leaf-wise
-  // equivalence; where it does not apply, EXABOOST_HYBRID_AGGRESSIVE=1 opts
+  // equivalence; where it does not apply, FALCATA_HYBRID_AGGRESSIVE=1 opts
   // into the approximate (breadth-biased) plain batching, and otherwise the
   // classic one-split-at-a-time loop runs.
   const bool depth_limited = config_->max_depth > 0 && config_->max_depth < 31 &&
@@ -933,7 +933,7 @@ void CUDASingleGPUTreeLearner::CollectSplittableLeaves(const CUDATree* tree,
       splittable->push_back(leaf);
     }
   }
-  const bool hybrid_debug = ExaboostDebug().debug;
+  const bool hybrid_debug = FalcataDebug().debug;
   if (hybrid_debug) {
     double max_gain = -1e300, min_gain = 1e300;
     for (const int leaf : *splittable) {
@@ -987,10 +987,10 @@ bool CUDASingleGPUTreeLearner::ArbitrateLevelBudget(const CUDATree* tree,
     splittable->resize(static_cast<size_t>(remaining_budget));
     *final_partial_level = true;
   }
-  // debug (EXABOOST_DEBUG=maxsplits=N): cap splits per level to isolate
+  // debug (FALCATA_DEBUG=maxsplits=N): cap splits per level to isolate
   // multi-pair interactions
-  if (ExaboostDebug().maxsplits >= 0) {
-    const size_t cap = static_cast<size_t>(ExaboostDebug().maxsplits);
+  if (FalcataDebug().maxsplits >= 0) {
+    const size_t cap = static_cast<size_t>(FalcataDebug().maxsplits);
     if (splittable->size() > cap) splittable->resize(cap);
   }
   return true;
@@ -1094,7 +1094,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   const bool use_batched_level_kernels = use_hybrid_batch_kernels_ &&
     cuda_histogram_constructor_->SupportsBatchedLevel() &&
     cuda_best_split_finder_->SupportsBatchedLevel();
-  const bool hybrid_diag = ExaboostDebug().diag;
+  const bool hybrid_diag = FalcataDebug().diag;
   if (hybrid_diag) {
     static bool diag_logged = false;
     if (!diag_logged) {
@@ -1117,19 +1117,19 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   // host-side from per-leaf bit widths, which needs the classic readback
   // ordering).
   if (UseOneSyncPrefix()) {
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
     // graphs L1: run the whole depth-limited prefix as one device-driven
-    // graph launch where supported (EXABOOST_GRAPH_LEVEL_LOOP=0 disables)
+    // graph launch where supported (FALCATA_GRAPH_LEVEL_LOOP=0 disables)
     if (HybridGraphPrefixUsable()) {
       const int graph_splits = TrainLevelWisePrefixGraph(tree);
       if (graph_splits >= 0) {
         return graph_splits;
       }
     }
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
     return TrainLevelWisePrefixOneSync(tree);
   }
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   // quantized graph prefix: the graph body derives the per-leaf histogram bit
   // widths on-device from the exact leaf counts (bit-identical to the host's
   // SetNumBitsInHistogramBin thresholds), so the classic readback ordering is
@@ -1144,7 +1144,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
       return graph_splits;
     }
   }
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   // the classic flow needs the host root sums up front (root descriptor
   // validity); a no-op unless BeforeTrain optimistically deferred the readback
   EnsureRootSumsReadBack(tree);
@@ -1162,7 +1162,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
     } else {
       int pair_counter = 0;
       for (const HybridPendingPair& pair : pairs) {
-        const bool sync_pairs = ExaboostDebug().syncpairs;
+        const bool sync_pairs = FalcataDebug().syncpairs;
         EnqueuePairBestSplitSearch(tree, pair.smaller_struct, pair.larger_struct,
                                    pair.smaller, pair.larger, /*synchronize=*/sync_pairs,
                                    pair_counter % CUDAHistogramConstructor::kNumHistPipelines);
@@ -1311,12 +1311,12 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefixOneSync(CUDATree* tree) {
 }
 
 // ---- graphs L1: device-driven level loop (see cuda_hybrid_graph.hpp) ----
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
 
 namespace {
 
 bool HybridGraphEnvEnabled() {
-  return ExaBoostPlan::Get().graph_loop;
+  return FalcataPlan::Get().graph_loop;
 }
 
 bool HybridGraphDriverSupported() {
@@ -1344,7 +1344,7 @@ CUDASingleGPUTreeLearner::HybridGraphInstance::~HybridGraphInstance() {
 bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
   // the per-level debug envs steer the host loop's decisions in ways the
   // device controller does not replicate
-  const bool debug_envs = ExaboostDebug().any_growth_hook();
+  const bool debug_envs = FalcataDebug().any_growth_hook();
   if (!HybridGraphEnvEnabled() || debug_envs || !HybridGraphDriverSupported() ||
       hybrid_graph_disabled_) {
     return false;
@@ -1353,7 +1353,7 @@ bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
   // shapes (covtype 1023/10 -10.8%, year 63/6 -7%: quant levels are cheap, so the
   // controller's fixed serial latency dominates) -- opt-in until that frontier
   // shrinks. cuda_plan=auto,graph_quant:on enables.
-  if (config_->use_quantized_grad && !ExaBoostPlan::Get().graph_quant) {
+  if (config_->use_quantized_grad && !FalcataPlan::Get().graph_quant) {
     return false;
   }
   // depth-limited exact regime only (mirrors HybridGrowthUsable): the
@@ -1596,7 +1596,7 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
   HYBRID_GRAPH_SOFT_CHECK(cudaGraphUpload(instance->exec,
     cuda_best_split_finder_->find_stream()));
   ComputeHybridGraphKey(tree, &instance->key);
-  const bool hybrid_diag = ExaboostDebug().diag;
+  const bool hybrid_diag = FalcataDebug().diag;
   if (hybrid_diag) {
     // fprintf like the other hybrid-diag lines: visible under verbose=-1
     fprintf(stderr, "[hybrid-diag] graphs L1.5: instantiated unrolled device level loop "
@@ -1766,7 +1766,7 @@ void CUDASingleGPUTreeLearner::ReleaseHybridGraphs() {
   hybrid_graph_statics_ready_ = false;
 }
 
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
 // ---- selective (grow-then-prune) hybrid growth ----
 
@@ -2130,7 +2130,7 @@ void CUDASingleGPUTreeLearner::TrainSelectiveTwoSync(CUDATree* tree) {
   const bool use_batched_level_kernels = use_hybrid_batch_kernels_ &&
     cuda_histogram_constructor_->SupportsBatchedLevel() &&
     cuda_best_split_finder_->SupportsBatchedLevel();
-  const bool hybrid_diag = ExaboostDebug().diag;
+  const bool hybrid_diag = FalcataDebug().diag;
   if (hybrid_diag) {
     static bool diag_logged = false;
     if (!diag_logged) {
@@ -2241,7 +2241,7 @@ void CUDASingleGPUTreeLearner::SelectiveFinalize(CUDATree* tree) {
   }
   sel_last_peak_ = sel_num_allocated_;
   ++sel_stat_trees_;
-  const bool hybrid_debug = ExaboostDebug().debug;
+  const bool hybrid_debug = FalcataDebug().debug;
   if (hybrid_debug) {
     // stderr (not the logger): churn statistics must be visible under verbose=-1
     fprintf(stderr, "[selective] trees=%" PRId64 " leaves=%d cumulative: applied=%" PRId64 " displaced=%" PRId64 " levels=%" PRId64 "\n",
@@ -2724,9 +2724,9 @@ void CUDASingleGPUTreeLearner::ResetTrainingData(
     cuda_gradients_.Resize(static_cast<size_t>(num_data_));
     cuda_hessians_.Resize(static_cast<size_t>(num_data_));
   }
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   ReleaseHybridGraphs();  // captured buffer pointers may have changed
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 }
 
 void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
@@ -2749,9 +2749,9 @@ void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
   cuda_best_split_finder_->ResetConfig(config, cuda_histogram_constructor_->cuda_hist());
   cuda_data_partition_->ResetConfig(config, cuda_histogram_constructor_->cuda_hist_pointer());
   SyncHistFP32();
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   ReleaseHybridGraphs();  // captured buffer pointers / budgets may have changed
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 }
 
 void CUDASingleGPUTreeLearner::SetBaggingData(const Dataset* /*subset*/,
@@ -3188,6 +3188,6 @@ void CUDASingleGPUTreeLearner::BuildAndUploadLinearScoreModel(const Tree* tree) 
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

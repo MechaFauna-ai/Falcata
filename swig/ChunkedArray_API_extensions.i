@@ -15,7 +15,7 @@
 
 %include "../include/LightGBM/utils/chunked_array.hpp"
 
-using LightGBM::ChunkedArray;
+using Falcata::ChunkedArray;
 
 %template(int32ChunkedArray) ChunkedArray<int32_t>;
 /* Unfortunately, for the time being,

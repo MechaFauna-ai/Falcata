@@ -11,7 +11,7 @@
 #include "cuda_pointwise_metric.hpp"
 #include "cuda_regression_metric.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 template <typename HOST_METRIC, typename CUDA_METRIC>
 void CUDAPointwiseMetricInterface<HOST_METRIC, CUDA_METRIC>::Init(const Metadata& metadata, data_size_t num_data) {
@@ -47,6 +47,6 @@ template void CUDAPointwiseMetricInterface<TweedieMetric, CUDATweedieMetric>::In
 template void CUDAPointwiseMetricInterface<BinaryLoglossMetric, CUDABinaryLoglossMetric>::Init(const Metadata& metadata, data_size_t num_data);
 template void CUDAPointwiseMetricInterface<BinaryErrorMetric, CUDABinaryErrorMetric>::Init(const Metadata& metadata, data_size_t num_data);
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

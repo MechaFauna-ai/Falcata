@@ -3,19 +3,19 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_METRIC_BINARY_METRIC_HPP_
-#define LIGHTGBM_SRC_METRIC_BINARY_METRIC_HPP_
+#ifndef FALCATA_SRC_METRIC_BINARY_METRIC_HPP_
+#define FALCATA_SRC_METRIC_BINARY_METRIC_HPP_
 
-#include <LightGBM/metric.h>
-#include <LightGBM/utils/common.h>
-#include <LightGBM/utils/log.h>
+#include <Falcata/metric.h>
+#include <Falcata/utils/common.h>
+#include <Falcata/utils/log.h>
 
 #include <string>
 #include <algorithm>
 #include <sstream>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 /*!
 * \brief Metric for binary classification task.
@@ -385,5 +385,5 @@ class AveragePrecisionMetric: public Metric {
   std::vector<std::string> name_;
 };
 
-}  // namespace LightGBM
-#endif   // LIGHTGBM_SRC_METRIC_BINARY_METRIC_HPP_
+}  // namespace Falcata
+#endif   // FALCATA_SRC_METRIC_BINARY_METRIC_HPP_

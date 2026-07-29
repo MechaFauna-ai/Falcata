@@ -11,7 +11,7 @@
 
 #include "linear_leaf_solver.h"
 
-namespace LightGBM {
+namespace Falcata {
 
 template <typename TREE_LEARNER_TYPE>
 void LinearTreeLearner<TREE_LEARNER_TYPE>::Init(const Dataset* train_data, bool is_constant_hessian) {
@@ -372,4 +372,4 @@ template Tree* LinearTreeLearner<GPUTreeLearner>::FitByExistingTree(const Tree* 
 template Tree* LinearTreeLearner<GPUTreeLearner>::FitByExistingTree(const Tree* old_tree, const std::vector<int>& leaf_pred,
                                            const score_t* gradients, const score_t *hessians) const;
 
-}  // namespace LightGBM
+}  // namespace Falcata

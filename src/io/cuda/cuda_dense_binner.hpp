@@ -1,20 +1,20 @@
 /*!
- * Copyright (c) 2026 The ExaBoost developers. All rights reserved.
+ * Copyright (c) 2026 The Falcata developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  */
-#ifndef LIGHTGBM_IO_CUDA_CUDA_DENSE_BINNER_HPP_
-#define LIGHTGBM_IO_CUDA_CUDA_DENSE_BINNER_HPP_
+#ifndef FALCATA_IO_CUDA_CUDA_DENSE_BINNER_HPP_
+#define FALCATA_IO_CUDA_CUDA_DENSE_BINNER_HPP_
 
 #ifdef USE_CUDA
 
-#include <LightGBM/meta.h>
+#include <Falcata/meta.h>
 
 #include <cuda_runtime.h>
 
 #include <cstdint>
 
-namespace LightGBM {
+namespace Falcata {
 
 // per-column metadata for the on-device float/double binning
 // (replicates BinMapper::ValueToBin + FeatureGroup::EncodeBinForPush)
@@ -55,7 +55,7 @@ void CUDAGatherSampleRowsToHost(const void* device_data, int64_t elem_size,
                                 const int32_t* sample_row_ids, int num_samples,
                                 void* host_out);
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA
-#endif  // LIGHTGBM_IO_CUDA_CUDA_DENSE_BINNER_HPP_
+#endif  // FALCATA_IO_CUDA_CUDA_DENSE_BINNER_HPP_

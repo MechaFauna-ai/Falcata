@@ -8,14 +8,14 @@
 
 #ifdef USE_CUDA
 
-#include <LightGBM/cuda/cuda_algorithms.hpp>
-#include <LightGBM/cuda/cuda_rocm_interop.h>
+#include <Falcata/cuda/cuda_algorithms.hpp>
+#include <Falcata/cuda/cuda_rocm_interop.h>
 
 #include "cuda_binary_metric.hpp"
 #include "cuda_pointwise_metric.hpp"
 #include "cuda_regression_metric.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 template <typename CUDA_METRIC, bool USE_WEIGHTS>
 __global__ void EvalKernel(const data_size_t num_data, const label_t* labels, const label_t* weights,
@@ -80,6 +80,6 @@ template void CUDAPointwiseMetricInterface<TweedieMetric, CUDATweedieMetric>::La
 template void CUDAPointwiseMetricInterface<BinaryLoglossMetric, CUDABinaryLoglossMetric>::LaunchEvalKernel(const double* score, double* sum_loss, double* sum_weight) const;
 template void CUDAPointwiseMetricInterface<BinaryErrorMetric, CUDABinaryErrorMetric>::LaunchEvalKernel(const double* score, double* sum_loss, double* sum_weight) const;
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

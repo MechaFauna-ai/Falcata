@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) 2026 The ExaBoost developers. All rights reserved.
+ * Copyright (c) 2026 The Falcata developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  *
@@ -13,15 +13,15 @@
  */
 #ifdef USE_CUDA
 
-#include <LightGBM/dataset.h>
-#include <LightGBM/exaboost_plan.h>
+#include <Falcata/dataset.h>
+#include <Falcata/falcata_plan.h>
 
-#include <LightGBM/bin.h>
-#include <LightGBM/cuda/cuda_utils.hu>
-#include <LightGBM/feature_group.h>
-#include <LightGBM/utils/common.h>
-#include <LightGBM/utils/log.h>
-#include <LightGBM/utils/openmp_wrapper.h>
+#include <Falcata/bin.h>
+#include <Falcata/cuda/cuda_utils.hu>
+#include <Falcata/feature_group.h>
+#include <Falcata/utils/common.h>
+#include <Falcata/utils/log.h>
+#include <Falcata/utils/openmp_wrapper.h>
 
 #include <algorithm>
 #include <chrono>
@@ -34,12 +34,12 @@
 
 #if defined(__SSE2__) || (defined(_MSC_VER) && defined(_M_X64))
 #include <emmintrin.h>
-#define EXABOOST_DENSE_BINNER_SSE2 1
+#define FALCATA_DENSE_BINNER_SSE2 1
 #endif
 
 #include "cuda_dense_binner.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 namespace {
 
@@ -47,7 +47,7 @@ namespace {
 // consumed by the DMA engine (or much later), so bypassing the cache saves
 // the read-for-ownership traffic that dominates these multi-GB copies
 void StreamMemcpy(uint8_t* dst, const uint8_t* src, size_t len) {
-#ifdef EXABOOST_DENSE_BINNER_SSE2
+#ifdef FALCATA_DENSE_BINNER_SSE2
   while (len > 0 && (reinterpret_cast<uintptr_t>(dst) & 15) != 0) {
     *dst++ = *src++;
     --len;
@@ -161,10 +161,10 @@ bool Dataset::GPUBinDenseRows(const void* data, DenseBinnerDType dtype,
   if (device_type_ != std::string("cuda")) {
     return false;
   }
-  if (!ExaBoostPlan::Get().gpu_construct) {
+  if (!FalcataPlan::Get().gpu_construct) {
     return false;
   }
-  const bool verify = ExaboostVerifyEnabled();
+  const bool verify = FalcataVerifyEnabled();
   const auto fallback = [verify](const char* reason) {
     if (verify) {
       Log::Warning("GPU construct: ineligible (%s), using the host path",
@@ -567,7 +567,7 @@ bool Dataset::GPUBinDenseRows(const void* data, DenseBinnerDType dtype,
   }
   const auto time_end = std::chrono::steady_clock::now();
   Log::Debug("GPU construct: binned %d x %d dense matrix on device in %.3fs "
-             "(disable with EXABOOST_GPU_CONSTRUCT=0)",
+             "(disable with FALCATA_GPU_CONSTRUCT=0)",
              nrow, ncol,
              std::chrono::duration<double>(time_end - time_start).count());
   if (verify) {
@@ -580,6 +580,6 @@ bool Dataset::GPUBinDenseRows(const void* data, DenseBinnerDType dtype,
   return true;
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

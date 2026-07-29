@@ -3,11 +3,11 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_TREELEARNER_PARALLEL_TREE_LEARNER_H_
-#define LIGHTGBM_SRC_TREELEARNER_PARALLEL_TREE_LEARNER_H_
+#ifndef FALCATA_SRC_TREELEARNER_PARALLEL_TREE_LEARNER_H_
+#define FALCATA_SRC_TREELEARNER_PARALLEL_TREE_LEARNER_H_
 
-#include <LightGBM/network.h>
-#include <LightGBM/utils/array_args.h>
+#include <Falcata/network.h>
+#include <Falcata/utils/array_args.h>
 
 #include <cstring>
 #include <memory>
@@ -16,7 +16,7 @@
 #include "gpu_tree_learner.h"
 #include "serial_tree_learner.h"
 
-namespace LightGBM {
+namespace Falcata {
 
 /*!
 * \brief Feature parallel learning algorithm.
@@ -232,5 +232,5 @@ inline void SyncUpGlobalBestSplit(char* input_buffer_, char* output_buffer_, Spl
   larger_best_split->CopyFrom(output_buffer_ + size);
 }
 
-}  // namespace LightGBM
-#endif   // LIGHTGBM_SRC_TREELEARNER_PARALLEL_TREE_LEARNER_H_
+}  // namespace Falcata
+#endif   // FALCATA_SRC_TREELEARNER_PARALLEL_TREE_LEARNER_H_

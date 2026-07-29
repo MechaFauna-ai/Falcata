@@ -1393,7 +1393,7 @@ def test_fil_opt_outs(fil_cuda_booster, monkeypatch):
     booster._invalidate_fil_cache()
     booster.predict(X, use_fil=False)
     assert not booster.__dict__.get("_fil_models")
-    monkeypatch.setenv("EXABOOST_FIL", "0")
+    monkeypatch.setenv("FALCATA_FIL", "0")
     booster.predict(X)
     assert not booster.__dict__.get("_fil_models")
 

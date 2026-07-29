@@ -14,20 +14,20 @@
 #include <string>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 namespace {
 
-// EXABOOST_CONSTRUCT_COMPACT_QUANT: enable the compact column view for quantized
+// FALCATA_CONSTRUCT_COMPACT_QUANT: enable the compact column view for quantized
 // training (default ON). The compact view materializes ONLY the tree's sampled
 // columns into a row-major-in-partition bin matrix and feeds the SAME discretized
 // construct kernel with the compact metadata, so unused columns' zero/gather/merge
 // work is skipped (numerai ff=0.1 -> ~90% of columns skipped). Integer-atomic
 // accumulation is order-invariant and the per-used-column absolute hist offsets are
 // preserved, so the histograms are BIT-IDENTICAL to the full-data path. Kill switch:
-// EXABOOST_CONSTRUCT_COMPACT_QUANT=0 -> quant falls back to the full-data kernel.
+// FALCATA_CONSTRUCT_COMPACT_QUANT=0 -> quant falls back to the full-data kernel.
 bool CompactQuantEnabled() {
-  return ExaBoostPlan::Get().compact_quant;
+  return FalcataPlan::Get().compact_quant;
 }
 
 }  // namespace
@@ -106,8 +106,8 @@ void CUDAHistogramConstructor::InitFeatureMetaInfo(const Dataset* train_data, co
   }
   // register-accumulation construct body (batched compact path only): usable
   // when EVERY feature fits the register bin cap (see kRegHistMaxBins == 8);
-  // EXABOOST_BATCH_REGHIST=0 disables it
-  const bool reg_hist_enabled = ExaBoostPlan::Get().batch_reghist;
+  // FALCATA_BATCH_REGHIST=0 disables it
+  const bool reg_hist_enabled = FalcataPlan::Get().batch_reghist;
   uint32_t max_num_bin = 0;
   for (const uint32_t num_bin : feature_num_bins_) {
     if (num_bin > max_num_bin) {
@@ -597,10 +597,10 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   // fp32-pair global histograms: dense shared-memory non-quantized layout only
   // (sparse / large-bin construct kernels and the categorical find path stay
   // hist_t and are excluded)
-  hist_fp32_ = ExaboostFP32HistRequested() && !use_quantized_grad_ && !gpu_use_dp_ &&
+  hist_fp32_ = FalcataFP32HistRequested() && !use_quantized_grad_ && !gpu_use_dp_ &&
     !cuda_row_data_->is_sparse() && cuda_row_data_->NumLargeBinPartition() == 0 &&
     !has_categorical_feature_;
-  if (ExaboostFP32HistRequested() && !use_quantized_grad_) {
+  if (FalcataFP32HistRequested() && !use_quantized_grad_) {
     Log::Debug("CUDAHistogramConstructor: fp32 histogram mode %s", hist_fp32_ ? "engaged" : "unsupported for this dataset, using fp64");
   }
 
@@ -817,7 +817,7 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   cuda_row_data_.reset(new CUDARowData(train_data, share_states, gpu_device_id_, gpu_use_dp_));
   cuda_row_data_->Init(train_data, share_states);
 
-  hist_fp32_ = ExaboostFP32HistRequested() && !use_quantized_grad_ && !gpu_use_dp_ &&
+  hist_fp32_ = FalcataFP32HistRequested() && !use_quantized_grad_ && !gpu_use_dp_ &&
     !cuda_row_data_->is_sparse() && cuda_row_data_->NumLargeBinPartition() == 0 &&
     !has_categorical_feature_;
 
@@ -836,6 +836,6 @@ void CUDAHistogramConstructor::ResetConfig(const Config* config) {
   num_dirty_leaves_ = -1;
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

@@ -16,7 +16,7 @@
 
 #include <gtest/gtest.h>
 
-#include <LightGBM/c_api.h>
+#include <Falcata/c_api.h>
 
 #include <vector>
 

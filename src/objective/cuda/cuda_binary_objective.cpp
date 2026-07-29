@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 CUDABinaryLogloss::CUDABinaryLogloss(const Config& config):
 CUDAObjectiveInterface<BinaryLogloss>(config), ova_class_id_(-1) {
@@ -53,6 +53,6 @@ void CUDABinaryLogloss::Init(const Metadata& metadata, data_size_t num_data) {
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

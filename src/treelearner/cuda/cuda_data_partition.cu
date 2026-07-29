@@ -10,14 +10,14 @@
 
 #include "cuda_data_partition.hpp"
 
-#include <LightGBM/cuda/cuda_algorithms.hpp>
-#include <LightGBM/cuda/cuda_rocm_interop.h>
-#include <LightGBM/tree.h>
+#include <Falcata/cuda/cuda_algorithms.hpp>
+#include <Falcata/cuda/cuda_rocm_interop.h>
+#include <Falcata/tree.h>
 
 #include <algorithm>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 // Number of thread blocks assigned to each leaf in RenewDiscretizedTreeLeavesKernel.
 // Shallow trees have few leaves; with 1 block/leaf the reduction launches too few
@@ -1718,7 +1718,7 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
   CUDASUCCESS_OR_FATAL(cudaEventRecord(indices_copy_done_event_, cuda_streams_[0]));
 }
 
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
 void CUDADataPartition::CaptureHybridGraphApplyKernels(
     const CUDAHybridGraphLoopState* gstate,
     std::vector<cudaGraphNode_t>* nodes,
@@ -1802,7 +1802,7 @@ void CUDADataPartition::FinishHybridGraphLevels(const int num_levels, const int 
     cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);
   }
 }
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
 template <bool USE_BAGGING>
 __global__ void AddPredictionToScoreKernel(
@@ -1900,6 +1900,6 @@ void CUDADataPartition::LaunchReduceLeafGradStat(
     tree->cuda_leaf_value_ref());
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

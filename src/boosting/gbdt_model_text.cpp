@@ -3,11 +3,11 @@
  * Copyright (c) 2017-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#include <LightGBM/config.h>
-#include <LightGBM/metric.h>
-#include <LightGBM/objective_function.h>
-#include <LightGBM/utils/array_args.h>
-#include <LightGBM/utils/common.h>
+#include <Falcata/config.h>
+#include <Falcata/metric.h>
+#include <Falcata/objective_function.h>
+#include <Falcata/utils/array_args.h>
+#include <Falcata/utils/common.h>
 
 #include <algorithm>
 #include <string>
@@ -18,7 +18,7 @@
 
 #include "gbdt.h"
 
-namespace LightGBM {
+namespace Falcata {
 
 const char* kModelVersion = "v4";
 
@@ -130,17 +130,17 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
   Common::C_stringstream(str_buf);
 
   str_buf << "#include \"gbdt.h\"" << '\n';
-  str_buf << "#include <LightGBM/utils/common.h>" << '\n';
-  str_buf << "#include <LightGBM/objective_function.h>" << '\n';
-  str_buf << "#include <LightGBM/metric.h>" << '\n';
-  str_buf << "#include <LightGBM/prediction_early_stop.h>" << '\n';
+  str_buf << "#include <Falcata/utils/common.h>" << '\n';
+  str_buf << "#include <Falcata/objective_function.h>" << '\n';
+  str_buf << "#include <Falcata/metric.h>" << '\n';
+  str_buf << "#include <Falcata/prediction_early_stop.h>" << '\n';
   str_buf << "#include <ctime>" << '\n';
   str_buf << "#include <sstream>" << '\n';
   str_buf << "#include <chrono>" << '\n';
   str_buf << "#include <string>" << '\n';
   str_buf << "#include <vector>" << '\n';
   str_buf << "#include <utility>" << '\n';
-  str_buf << "namespace LightGBM {" << '\n';
+  str_buf << "namespace Falcata {" << '\n';
 
   int num_used_model = static_cast<int>(models_.size());
   if (num_iteration > 0) {
@@ -282,7 +282,7 @@ std::string GBDT::ModelToIfElse(int num_iteration) const {
   str_buf << "\t" << "}" << '\n';
   str_buf << "}" << '\n';
 
-  str_buf << "}  // namespace LightGBM" << '\n';
+  str_buf << "}  // namespace Falcata" << '\n';
 
   return str_buf.str();
 }
@@ -664,4 +664,4 @@ std::vector<double> GBDT::FeatureImportance(int num_iteration, int importance_ty
   return feature_importances;
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

@@ -4,17 +4,17 @@
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  */
-#ifndef LIGHTGBM_SRC_IO_DENSE_BIN_HPP_
-#define LIGHTGBM_SRC_IO_DENSE_BIN_HPP_
+#ifndef FALCATA_SRC_IO_DENSE_BIN_HPP_
+#define FALCATA_SRC_IO_DENSE_BIN_HPP_
 
-#include <LightGBM/bin.h>
-#include <LightGBM/cuda/vector_cudahost.h>
+#include <Falcata/bin.h>
+#include <Falcata/cuda/vector_cudahost.h>
 
 #include <cstdint>
 #include <cstring>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 template <typename VAL_T, bool IS_4BIT>
 class DenseBin;
@@ -664,5 +664,5 @@ BinIterator* DenseBin<VAL_T, IS_4BIT>::GetIterator(
                                               most_freq_bin);
 }
 
-}  // namespace LightGBM
-#endif  // LIGHTGBM_SRC_IO_DENSE_BIN_HPP_
+}  // namespace Falcata
+#endif  // FALCATA_SRC_IO_DENSE_BIN_HPP_

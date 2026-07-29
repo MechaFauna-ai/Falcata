@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 CUDARegressionL2loss::CUDARegressionL2loss(const Config& config):
 CUDARegressionObjectiveInterface<RegressionL2loss>(config) {}
@@ -105,6 +105,6 @@ void CUDARegressionQuantileloss::Init(const Metadata& metadata, data_size_t num_
   cuda_residual_buffer_.Resize(static_cast<size_t>(num_data));
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

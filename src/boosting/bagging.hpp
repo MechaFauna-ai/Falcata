@@ -4,13 +4,13 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 
-#ifndef LIGHTGBM_SRC_BOOSTING_BAGGING_HPP_
-#define LIGHTGBM_SRC_BOOSTING_BAGGING_HPP_
+#ifndef FALCATA_SRC_BOOSTING_BAGGING_HPP_
+#define FALCATA_SRC_BOOSTING_BAGGING_HPP_
 
 #include <string>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 class BaggingSampleStrategy : public SampleStrategy {
  public:
@@ -292,6 +292,6 @@ class BaggingSampleStrategy : public SampleStrategy {
   const data_size_t* query_boundaries_;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
-#endif  // LIGHTGBM_SRC_BOOSTING_BAGGING_HPP_
+#endif  // FALCATA_SRC_BOOSTING_BAGGING_HPP_

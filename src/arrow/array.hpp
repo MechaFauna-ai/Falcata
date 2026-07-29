@@ -5,11 +5,11 @@
  * Author: Oliver Borchert
  */
 
-#ifndef LIGHTGBM_SRC_ARROW_ARRAY_HPP_
-#define LIGHTGBM_SRC_ARROW_ARRAY_HPP_
+#ifndef FALCATA_SRC_ARROW_ARRAY_HPP_
+#define FALCATA_SRC_ARROW_ARRAY_HPP_
 
-#include <LightGBM/arrow.h>
-#include <LightGBM/utils/log.h>
+#include <Falcata/arrow.h>
+#include <Falcata/utils/log.h>
 
 #include <algorithm>
 #include <limits>
@@ -19,7 +19,7 @@
 
 #include <nanoarrow/nanoarrow.hpp>
 
-namespace LightGBM {
+namespace Falcata {
 
 /* ------------------------------------------- UTILS ------------------------------------------- */
 
@@ -408,6 +408,6 @@ class ArrowChunkedArray {
   };
 };
 
-};  // namespace LightGBM
+};  // namespace Falcata
 
-#endif  // LIGHTGBM_SRC_ARROW_ARRAY_HPP_
+#endif  // FALCATA_SRC_ARROW_ARRAY_HPP_

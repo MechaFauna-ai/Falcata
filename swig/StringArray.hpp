@@ -5,8 +5,8 @@
  *
  * Author: Alberto Ferreira
  */
-#ifndef LIGHTGBM_SWIG_STRINGARRAY_HPP_
-#define LIGHTGBM_SWIG_STRINGARRAY_HPP_
+#ifndef FALCATA_SWIG_STRINGARRAY_HPP_
+#define FALCATA_SWIG_STRINGARRAY_HPP_
 
 #include <algorithm>
 #include <new>
@@ -138,4 +138,4 @@ class StringArray {
     std::vector<char*> _array;
 };
 
-#endif  // LIGHTGBM_SWIG_STRINGARRAY_HPP_
+#endif  // FALCATA_SWIG_STRINGARRAY_HPP_

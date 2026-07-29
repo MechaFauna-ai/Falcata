@@ -6,10 +6,10 @@
 
 #ifdef USE_CUDA
 
-#include <LightGBM/cuda/cuda_rocm_interop.h>
-#include <LightGBM/cuda/cuda_utils.hu>
+#include <Falcata/cuda/cuda_rocm_interop.h>
+#include <Falcata/cuda/cuda_utils.hu>
 
-namespace LightGBM {
+namespace Falcata {
 
 void SynchronizeCUDADevice(const char* file, const int line) {
   gpuAssert(cudaDeviceSynchronize(), file, line);
@@ -56,6 +56,6 @@ void NCCLGroupEnd() {
   NCCLCHECK(ncclGroupEnd());
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

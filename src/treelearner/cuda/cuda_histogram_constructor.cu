@@ -10,15 +10,15 @@
 
 #include "cuda_histogram_constructor.hpp"
 
-#include <LightGBM/cuda/cuda_algorithms.hpp>
-#include <LightGBM/cuda/cuda_rocm_interop.h>
+#include <Falcata/cuda/cuda_algorithms.hpp>
+#include <Falcata/cuda/cuda_rocm_interop.h>
 
 #include <cuda.h>
 
 #include <algorithm>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 // =====================================================================
 // Compaction kernel: copies sampled (used) columns from the partitioned
@@ -1209,7 +1209,7 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
         max_num_data = n;
       }
     }
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
     dim_y = HybridBatchedConstructGridDimYQuant(
       max_num_data, num_pairs, static_cast<int>(blockDim.y),
       gstate->construct_min_grid_dim_y, gstate->construct_min_rows_per_thread,
@@ -1217,7 +1217,7 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
       static_cast<int>(blockDim.y);
 #else
     dim_y = static_cast<int>(gridDim.y * blockDim.y);
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   }
   const uint8_t smaller_num_bits = HybridGraphActive(gstate) ?
     HybridGraphQuantHistBits(gstate, num_data_smaller) : desc->smaller_num_bits;
@@ -2328,7 +2328,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernel(
   const int num_pairs,
   const data_size_t max_num_data_in_smaller_leaf,
   const data_size_t* level_smaller_num_data) {
-  // One-time NVRTC JIT self-check (no-op unless EXABOOST_CONSTRUCT_JIT=1). Runs
+  // One-time NVRTC JIT self-check (no-op unless FALCATA_CONSTRUCT_JIT=1). Runs
   // off the first construct; never affects the trained model. The self-test
   // compiles + launches + copies on the stream, which is illegal mid graph
   // capture ("operation not permitted when stream is capturing"); if the first
@@ -2439,7 +2439,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     // level-dim-y precompute kernel is never used here (the graph body always
     // takes the inline formula path, captured with num_pairs == 1).
     //
-    // compact quant view (EXABOOST_CONSTRUCT_COMPACT_QUANT): feed the SAME
+    // compact quant view (FALCATA_CONSTRUCT_COMPACT_QUANT): feed the SAME
     // discretized kernel the per-tree compact bin matrix + compact metadata so
     // only the sampled columns are gathered/accumulated. The compact matrix
     // holds only used columns, so no per-column feature mask (is_feature_used /
@@ -2447,7 +2447,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     // shared partition hist offsets preserve every used bin's global position ->
     // bit-identical histograms (integer atomics are order-invariant).
     if (use_compact_view_) {
-      // JIT live fast path (EXABOOST_CONSTRUCT_JIT=1): a validated shape-
+      // JIT live fast path (FALCATA_CONSTRUCT_JIT=1): a validated shape-
       // specialized construct_jit_batched replaces the AOT kernel for BOTH the
       // 8-bit and 4-bit-packed compact-quant shapes. Declines (default OFF /
       // unavailable / unvalidated / graph capture / speculative flow) -> AOT.
@@ -2699,7 +2699,7 @@ void CUDAHistogramConstructor::LaunchFixSubtractHistogramSmallLeafBatchedKernel(
     gstate);
 }
 
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
 void CUDAHistogramConstructor::CaptureHybridGraphSearchKernels(
     const CUDAHybridPairDescriptor* pair_descs,
     const data_size_t* level_smaller_num_data,
@@ -2821,7 +2821,7 @@ void CUDAHistogramConstructor::HybridGraphConstructDims(int* grid_x, int* block_
   *grid_x = grid_dim_x;
   *block_dim_y = block_dim_y_local;
 }
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
 void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
@@ -2890,7 +2890,7 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
 // NVRTC construct-JIT one-time self-test. Proves the JIT pipeline end-to-end:
 // NVRTC compile -> cuModuleLoadData -> cuLaunchKernel -> bit-identical histogram
 // vs a host reference, on a tiny synthetic single-partition low-bin shape (the
-// numerai regime). No-op unless EXABOOST_CONSTRUCT_JIT=1. It never touches the
+// numerai regime). No-op unless FALCATA_CONSTRUCT_JIT=1. It never touches the
 // trained model -- it only validates that the specialized kernel this build would
 // JIT reproduces the reference bins exactly (integer atomics order-invariant), so
 // the JIT can be trusted as a perf-only fast path.
@@ -3131,6 +3131,6 @@ bool CUDAHistogramConstructor::TryLaunchConstructJITBatchedCompactQuant(
   return true;
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

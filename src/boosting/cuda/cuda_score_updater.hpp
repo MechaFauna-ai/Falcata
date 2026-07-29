@@ -4,16 +4,16 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 
-#ifndef LIGHTGBM_SRC_BOOSTING_CUDA_CUDA_SCORE_UPDATER_HPP_
-#define LIGHTGBM_SRC_BOOSTING_CUDA_CUDA_SCORE_UPDATER_HPP_
+#ifndef FALCATA_SRC_BOOSTING_CUDA_CUDA_SCORE_UPDATER_HPP_
+#define FALCATA_SRC_BOOSTING_CUDA_CUDA_SCORE_UPDATER_HPP_
 
 #ifdef USE_CUDA
 
-#include <LightGBM/cuda/cuda_utils.hu>
+#include <Falcata/cuda/cuda_utils.hu>
 
 #include "../score_updater.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 class CUDAScoreUpdater: public ScoreUpdater {
  public:
@@ -59,8 +59,8 @@ class CUDAScoreUpdater: public ScoreUpdater {
   const bool boosting_on_cuda_;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA
 
-#endif  // LIGHTGBM_SRC_BOOSTING_CUDA_CUDA_SCORE_UPDATER_HPP_
+#endif  // FALCATA_SRC_BOOSTING_CUDA_CUDA_SCORE_UPDATER_HPP_

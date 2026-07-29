@@ -3,19 +3,19 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_TREELEARNER_LEAF_SPLITS_HPP_
-#define LIGHTGBM_SRC_TREELEARNER_LEAF_SPLITS_HPP_
+#ifndef FALCATA_SRC_TREELEARNER_LEAF_SPLITS_HPP_
+#define FALCATA_SRC_TREELEARNER_LEAF_SPLITS_HPP_
 
-#include <LightGBM/config.h>
-#include <LightGBM/meta.h>
-#include <LightGBM/utils/threading.h>
+#include <Falcata/config.h>
+#include <Falcata/meta.h>
+#include <Falcata/utils/threading.h>
 
 #include <limits>
 #include <vector>
 
 #include "data_partition.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 /*!
 * \brief used to find split candidates for a leaf
@@ -273,5 +273,5 @@ class LeafSplits {
   double weight_;
 };
 
-}  // namespace LightGBM
-#endif   // LIGHTGBM_SRC_TREELEARNER_LEAF_SPLITS_HPP_
+}  // namespace Falcata
+#endif   // FALCATA_SRC_TREELEARNER_LEAF_SPLITS_HPP_

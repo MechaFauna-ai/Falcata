@@ -7,9 +7,9 @@
 
 #include "gpu_tree_learner.h"
 
-#include <LightGBM/bin.h>
-#include <LightGBM/network.h>
-#include <LightGBM/utils/array_args.h>
+#include <Falcata/bin.h>
+#include <Falcata/network.h>
+#include <Falcata/utils/array_args.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -22,7 +22,7 @@
 
 #define GPU_DEBUG 0
 
-namespace LightGBM {
+namespace Falcata {
 
 GPUTreeLearner::GPUTreeLearner(const Config* config)
   :SerialTreeLearner(config) {
@@ -1128,5 +1128,5 @@ void GPUTreeLearner::Split(Tree* tree, int best_Leaf, int* left_leaf, int* right
   }
 }
 
-}   // namespace LightGBM
+}   // namespace Falcata
 #endif  // USE_GPU

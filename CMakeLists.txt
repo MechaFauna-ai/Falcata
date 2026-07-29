@@ -436,12 +436,12 @@ else()
     endif()
 endif()
 
-set(LightGBM_HEADER_DIR ${PROJECT_SOURCE_DIR}/include)
+set(Falcata_HEADER_DIR ${PROJECT_SOURCE_DIR}/include)
 
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR})
 set(LIBRARY_OUTPUT_PATH ${PROJECT_SOURCE_DIR})
 
-include_directories(${LightGBM_HEADER_DIR})
+include_directories(${Falcata_HEADER_DIR})
 
 if(USE_MPI)
   include_directories(${MPI_CXX_INCLUDE_PATH})
@@ -755,8 +755,8 @@ if(BUILD_CPP_TEST)
     add_library(GTest::GTest ALIAS gtest)
   endif()
 
-  set(LightGBM_TEST_HEADER_DIR ${PROJECT_SOURCE_DIR}/tests/cpp_tests)
-  include_directories(${LightGBM_TEST_HEADER_DIR})
+  set(Falcata_TEST_HEADER_DIR ${PROJECT_SOURCE_DIR}/tests/cpp_tests)
+  include_directories(${Falcata_TEST_HEADER_DIR})
 
   set(
     CPP_TEST_SOURCES
@@ -917,16 +917,16 @@ install(
 
 if(INSTALL_HEADERS)
     install(
-      DIRECTORY ${LightGBM_HEADER_DIR}/LightGBM
+      DIRECTORY ${Falcata_HEADER_DIR}/LightGBM
       DESTINATION ${CMAKE_INSTALL_PREFIX}/include
     )
     install(
       FILES ${FAST_DOUBLE_PARSER_INCLUDE_DIR}/fast_double_parser.h
-      DESTINATION ${CMAKE_INSTALL_PREFIX}/include/LightGBM/utils
+      DESTINATION ${CMAKE_INSTALL_PREFIX}/include/Falcata/utils
     )
     install(
       DIRECTORY ${FMT_INCLUDE_DIR}/
-      DESTINATION ${CMAKE_INSTALL_PREFIX}/include/LightGBM/utils
+      DESTINATION ${CMAKE_INSTALL_PREFIX}/include/Falcata/utils
       FILES_MATCHING PATTERN "*.h"
     )
 endif()

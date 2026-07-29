@@ -3,23 +3,23 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#include <LightGBM/c_api.h>
+#include <Falcata/c_api.h>
 
-#include <LightGBM/arrow.h>
-#include <LightGBM/boosting.h>
-#include <LightGBM/config.h>
-#include <LightGBM/dataset.h>
-#include <LightGBM/dataset_loader.h>
-#include <LightGBM/metric.h>
-#include <LightGBM/network.h>
-#include <LightGBM/objective_function.h>
-#include <LightGBM/prediction_early_stop.h>
-#include <LightGBM/utils/byte_buffer.h>
-#include <LightGBM/utils/common.h>
-#include <LightGBM/utils/log.h>
-#include <LightGBM/utils/openmp_wrapper.h>
-#include <LightGBM/utils/random.h>
-#include <LightGBM/utils/threading.h>
+#include <Falcata/arrow.h>
+#include <Falcata/boosting.h>
+#include <Falcata/config.h>
+#include <Falcata/dataset.h>
+#include <Falcata/dataset_loader.h>
+#include <Falcata/metric.h>
+#include <Falcata/network.h>
+#include <Falcata/objective_function.h>
+#include <Falcata/prediction_early_stop.h>
+#include <Falcata/utils/byte_buffer.h>
+#include <Falcata/utils/common.h>
+#include <Falcata/utils/log.h>
+#include <Falcata/utils/openmp_wrapper.h>
+#include <Falcata/utils/random.h>
+#include <Falcata/utils/threading.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -34,7 +34,7 @@
 #include <vector>
 
 #ifdef USE_CUDA
-#include <LightGBM/cuda/cuda_utils.hu>
+#include <Falcata/cuda/cuda_utils.hu>
 
 #include "io/cuda/cuda_dense_binner.hpp"
 #endif  // USE_CUDA
@@ -43,10 +43,10 @@
 #ifndef LGB_R_BUILD
 #include "arrow/array.hpp"
 #endif  // LGB_R_BUILD
-#include <LightGBM/utils/yamc/alternate_shared_mutex.hpp>
-#include <LightGBM/utils/yamc/yamc_shared_lock.hpp>
+#include <Falcata/utils/yamc/alternate_shared_mutex.hpp>
+#include <Falcata/utils/yamc/yamc_shared_lock.hpp>
 
-namespace LightGBM {
+namespace Falcata {
 
 inline int LGBM_APIHandleException(const std::exception& ex) {
   LGBM_SetLastError(ex.what());
@@ -463,7 +463,7 @@ class Booster {
   }
 
   std::unique_ptr<SingleRowPredictor> InitSingleRowPredictor(int predict_type, int start_iteration, int num_iteration, int data_type, int32_t num_cols, const char *parameters) {
-    // Workaround https://github.com/lightgbm-org/LightGBM/issues/6142 by locking here
+    // Workaround https://github.com/lightgbm-org/Falcata/issues/6142 by locking here
     // This is only a workaround because if predictors are initialized differently it may still behave incorrectly,
     // and because multiple racing Predictor initializations through LGBM_BoosterPredictForMat suffers from that same issue of Predictor init writing things in the booster.
     // Once #6142 is fixed (predictor doesn't write in the Booster as should have been the case since 1c35c3b9ede9adab8ccc5fd7b4b2b6af188a79f0), this line can be removed.
@@ -919,33 +919,33 @@ class Booster {
   mutable yamc::alternate::shared_mutex mutex_;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
-// explicitly declare symbols from LightGBM namespace
-using LightGBM::AllgatherFunction;
+// explicitly declare symbols from Falcata namespace
+using Falcata::AllgatherFunction;
 #ifndef LGB_R_BUILD
-using LightGBM::ArrowChunkedArray;
+using Falcata::ArrowChunkedArray;
 #endif  // LGB_R_BUILD
-using LightGBM::Booster;
-using LightGBM::Common::CheckElementsIntervalClosed;
-using LightGBM::Common::HalfBitsToFloat;
-using LightGBM::Common::RemoveQuotationSymbol;
-using LightGBM::Common::Vector2Ptr;
-using LightGBM::Common::VectorSize;
-using LightGBM::Config;
-using LightGBM::data_size_t;
-using LightGBM::Dataset;
-using LightGBM::DatasetLoader;
-using LightGBM::kZeroThreshold;
-using LightGBM::LGBM_APIHandleException;
-using LightGBM::Log;
-using LightGBM::Network;
-using LightGBM::Random;
-using LightGBM::ReduceScatterFunction;
-using LightGBM::SingleRowPredictor;
+using Falcata::Booster;
+using Falcata::Common::CheckElementsIntervalClosed;
+using Falcata::Common::HalfBitsToFloat;
+using Falcata::Common::RemoveQuotationSymbol;
+using Falcata::Common::Vector2Ptr;
+using Falcata::Common::VectorSize;
+using Falcata::Config;
+using Falcata::data_size_t;
+using Falcata::Dataset;
+using Falcata::DatasetLoader;
+using Falcata::kZeroThreshold;
+using Falcata::LGBM_APIHandleException;
+using Falcata::Log;
+using Falcata::Network;
+using Falcata::Random;
+using Falcata::ReduceScatterFunction;
+using Falcata::SingleRowPredictor;
 #ifdef USE_CUDA
-using LightGBM::CUDAGatherSampleRowsToHost;
-using LightGBM::gpuAssert;
+using Falcata::CUDAGatherSampleRowsToHost;
+using Falcata::gpuAssert;
 #endif  // USE_CUDA
 
 // some help functions used to convert data
@@ -1066,14 +1066,14 @@ int LGBM_SampleIndices(int32_t num_total_row,
 
 int LGBM_ByteBufferGetAt(ByteBufferHandle handle, int32_t index, uint8_t* out_val) {
   API_BEGIN();
-  LightGBM::ByteBuffer* byteBuffer = reinterpret_cast<LightGBM::ByteBuffer*>(handle);
+  Falcata::ByteBuffer* byteBuffer = reinterpret_cast<Falcata::ByteBuffer*>(handle);
   *out_val = byteBuffer->GetAt(index);
   API_END();
 }
 
 int LGBM_ByteBufferFree(ByteBufferHandle handle) {
   API_BEGIN();
-  delete reinterpret_cast<LightGBM::ByteBuffer*>(handle);
+  delete reinterpret_cast<Falcata::ByteBuffer*>(handle);
   API_END();
 }
 
@@ -1450,8 +1450,8 @@ int LGBM_DatasetCreateFromMats(int32_t nmat,
   if (nmat == 1) {
     // bin the whole dense matrix on the CUDA device when possible; the packed
     // bins are copied back into the host storage, so this is byte-identical
-    // to the host push loops below (EXABOOST_GPU_CONSTRUCT=0 disables,
-    // EXABOOST_GPU_CONSTRUCT_VERIFY=1 runs both paths and compares)
+    // to the host push loops below (FALCATA_GPU_CONSTRUCT=0 disables,
+    // FALCATA_GPU_CONSTRUCT_VERIFY=1 runs both paths and compares)
     Dataset::DenseBinnerDType binner_dtype;
     bool dtype_supported = true;
     if (data_type == C_API_DTYPE_FLOAT32) {
@@ -1603,7 +1603,7 @@ int LGBM_DatasetCreateFromMatDevice(const void* data,
   (void)parameters;
   (void)reference;
   (void)out;
-  Log::Fatal("LGBM_DatasetCreateFromMatDevice requires a CUDA build of LightGBM");
+  Log::Fatal("LGBM_DatasetCreateFromMatDevice requires a CUDA build of Falcata");
 #else
   auto param = Config::Str2Map(parameters);
   Config config;
@@ -2133,8 +2133,8 @@ int LGBM_DatasetSerializeReferenceToBinary(DatasetHandle handle,
                                            int32_t* out_len) {
   API_BEGIN();
   auto dataset = reinterpret_cast<Dataset*>(handle);
-  std::unique_ptr<LightGBM::ByteBuffer> ret;
-  ret.reset(new LightGBM::ByteBuffer());
+  std::unique_ptr<Falcata::ByteBuffer> ret;
+  ret.reset(new Falcata::ByteBuffer());
   dataset->SerializeReference(ret.get());
   *out_len = static_cast<int32_t>(ret->GetSize());
   *out = ret.release();
@@ -2571,7 +2571,7 @@ int LGBM_BoosterCalcNumPredict(BoosterHandle handle,
   API_END();
 }
 
-// Naming: In future versions of LightGBM, public API named around `FastConfig` should be made named around
+// Naming: In future versions of Falcata, public API named around `FastConfig` should be made named around
 // `SingleRowPredictor`, because it is specific to single row prediction, and doesn't actually hold only config.
 // For now this is kept as `FastConfig` for backwards compatibility.
 // At the same time, one should consider removing the old non-fast single row public API that stores its Predictor

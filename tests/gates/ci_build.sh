@@ -10,7 +10,7 @@ VENV="${GATES_VENV:-.gates-venv}"
 # Pin the validated CUDA toolchain (12.9): the box has several toolkits and
 # the runner's service environment has none of them on PATH. /usr/local/cuda
 # may point at a newer, unvalidated toolkit -- do not use it.
-CUDA_HOME="${EXABOOST_CUDA_HOME:-/usr/local/cuda-12.9}"
+CUDA_HOME="${FALCATA_CUDA_HOME:-/usr/local/cuda-12.9}"
 export PATH="$CUDA_HOME/bin:$PATH"
 export CUDACXX="$CUDA_HOME/bin/nvcc"
 

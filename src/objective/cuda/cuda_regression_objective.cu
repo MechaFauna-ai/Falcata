@@ -8,9 +8,9 @@
 #ifdef USE_CUDA
 
 #include "cuda_regression_objective.hpp"
-#include <LightGBM/cuda/cuda_algorithms.hpp>
+#include <Falcata/cuda/cuda_algorithms.hpp>
 
-namespace LightGBM {
+namespace Falcata {
 
 template <typename HOST_OBJECTIVE>
 void CUDARegressionObjectiveInterface<HOST_OBJECTIVE>::Init(const Metadata& metadata, data_size_t num_data) {
@@ -477,6 +477,6 @@ void CUDARegressionQuantileloss::LaunchGetGradientsKernel(const double* score, s
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

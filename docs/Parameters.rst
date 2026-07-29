@@ -170,7 +170,7 @@ Core Parameters
 
       -  label should be ``int`` type, and larger number represents the higher relevance (e.g. 0:bad, 1:fair, 2:good, 3:perfect)
 
-   -  custom objective function (gradients and hessians not computed directly by LightGBM)
+   -  custom objective function (gradients and hessians not computed directly by Falcata)
 
       -  ``custom``
 
@@ -186,7 +186,7 @@ Core Parameters
 
    -  ``dart``, `Dropouts meet Multiple Additive Regression Trees <https://arxiv.org/abs/1505.01866>`__
 
-      -  **Note**: internally, LightGBM uses ``gbdt`` mode for the first ``1 / learning_rate`` iterations
+      -  **Note**: internally, Falcata uses ``gbdt`` mode for the first ``1 / learning_rate`` iterations
 
 -  ``data_sample_strategy`` :raw-html:`<a id="data_sample_strategy" title="Permalink to this parameter" href="#data_sample_strategy">&#x1F517;&#xFE0E;</a>`, default = ``bagging``, type = enum, options: ``bagging``, ``goss``
 
@@ -200,13 +200,13 @@ Core Parameters
 
 -  ``data`` :raw-html:`<a id="data" title="Permalink to this parameter" href="#data">&#x1F517;&#xFE0E;</a>`, default = ``""``, type = string, aliases: ``train``, ``train_data``, ``train_data_file``, ``data_filename``
 
-   -  path of training data, LightGBM will train from this data
+   -  path of training data, Falcata will train from this data
 
    -  **Note**: can be used only in CLI version
 
 -  ``valid`` :raw-html:`<a id="valid" title="Permalink to this parameter" href="#valid">&#x1F517;&#xFE0E;</a>`, default = ``""``, type = string, aliases: ``test``, ``valid_data``, ``valid_data_file``, ``test_data``, ``test_data_file``, ``valid_filenames``
 
-   -  path(s) of validation/test data, LightGBM will output metrics for these data
+   -  path(s) of validation/test data, Falcata will output metrics for these data
 
    -  support multiple validation data, separated by ``,``
 
@@ -216,7 +216,7 @@ Core Parameters
 
    -  number of boosting iterations
 
-   -  **Note**: internally, LightGBM constructs ``num_class * num_iterations`` trees for multi-class classification problems
+   -  **Note**: internally, Falcata constructs ``num_class * num_iterations`` trees for multi-class classification problems
 
 -  ``learning_rate`` :raw-html:`<a id="learning_rate" title="Permalink to this parameter" href="#learning_rate">&#x1F517;&#xFE0E;</a>`, default = ``0.1``, type = double, aliases: ``shrinkage_rate``, ``eta``, constraints: ``learning_rate > 0.0``
 
@@ -244,7 +244,7 @@ Core Parameters
 
    -  used only in ``train``, ``prediction`` and ``refit`` tasks or in correspondent functions of language-specific packages
 
-   -  number of threads for LightGBM
+   -  number of threads for Falcata
 
    -  ``0`` means default number of threads in OpenMP
 
@@ -262,7 +262,7 @@ Core Parameters
 
    -  device for the tree learning
 
-   -  ``cpu`` supports all LightGBM functionality and is portable across the widest range of operating systems and hardware
+   -  ``cpu`` supports all Falcata functionality and is portable across the widest range of operating systems and hardware
 
    -  ``cuda`` offers faster training than ``gpu`` or ``cpu``, but only works on GPUs supporting CUDA or ROCm
 
@@ -272,7 +272,7 @@ Core Parameters
 
    -  **Note**: for the faster speed, GPU uses 32-bit float point to sum up by default, so this may affect the accuracy for some tasks. You can set ``gpu_use_dp=true`` to enable 64-bit float point, but it will slow down the training
 
-   -  **Note**: refer to `Installation Guide <./Installation-Guide.rst>`__ to build LightGBM with GPU, CUDA, or ROCm support
+   -  **Note**: refer to `Installation Guide <./Installation-Guide.rst>`__ to build Falcata with GPU, CUDA, or ROCm support
 
 -  ``seed`` :raw-html:`<a id="seed" title="Permalink to this parameter" href="#seed">&#x1F517;&#xFE0E;</a>`, default = ``None``, type = int, aliases: ``random_seed``, ``random_state``
 
@@ -288,9 +288,9 @@ Core Parameters
 
    -  setting this to ``true`` should ensure the stable results when using the same data and the same parameters (and different ``num_threads``)
 
-   -  when you use the different seeds, different LightGBM versions, the binaries compiled by different compilers, or in different systems, the results are expected to be different
+   -  when you use the different seeds, different Falcata versions, the binaries compiled by different compilers, or in different systems, the results are expected to be different
 
-   -  you can `raise issues <https://github.com/lightgbm-org/LightGBM/issues>`__ in LightGBM GitHub repo when you meet the unstable results
+   -  you can `raise issues <https://github.com/lightgbm-org/Falcata/issues>`__ in Falcata GitHub repo when you meet the unstable results
 
    -  **Note**: setting this to ``true`` may slow down the training
 
@@ -313,7 +313,7 @@ Learning Control Parameters
 
       -  you want to reduce memory cost
 
-   -  **Note**: when both ``force_col_wise`` and ``force_row_wise`` are ``false``, LightGBM will firstly try them both, and then use the faster one. To remove the overhead of testing set the faster one to ``true`` manually
+   -  **Note**: when both ``force_col_wise`` and ``force_row_wise`` are ``false``, Falcata will firstly try them both, and then use the faster one. To remove the overhead of testing set the faster one to ``true`` manually
 
    -  **Note**: this parameter cannot be used at the same time with ``force_row_wise``, choose only one of them
 
@@ -333,7 +333,7 @@ Learning Control Parameters
 
    -  **Note**: setting this to ``true`` will double the memory cost for Dataset object. If you have not enough memory, you can try setting ``force_col_wise=true``
 
-   -  **Note**: when both ``force_col_wise`` and ``force_row_wise`` are ``false``, LightGBM will firstly try them both, and then use the faster one. To remove the overhead of testing set the faster one to ``true`` manually
+   -  **Note**: when both ``force_col_wise`` and ``force_row_wise`` are ``false``, Falcata will firstly try them both, and then use the faster one. To remove the overhead of testing set the faster one to ``true`` manually
 
    -  **Note**: this parameter cannot be used at the same time with ``force_col_wise``, choose only one of them
 
@@ -405,7 +405,7 @@ Learning Control Parameters
 
    -  frequency for bagging
 
-   -  ``0`` means disable bagging; ``k`` means perform bagging at every ``k`` iteration. Every ``k``-th iteration, LightGBM will randomly select ``bagging_fraction * 100%`` of the data to use for the next ``k`` iterations
+   -  ``0`` means disable bagging; ``k`` means perform bagging at every ``k`` iteration. Every ``k``-th iteration, Falcata will randomly select ``bagging_fraction * 100%`` of the data to use for the next ``k`` iterations
 
    -  **Note**: bagging is only effective when ``0.0 < bagging_fraction < 1.0``
 
@@ -421,7 +421,7 @@ Learning Control Parameters
 
 -  ``feature_fraction`` :raw-html:`<a id="feature_fraction" title="Permalink to this parameter" href="#feature_fraction">&#x1F517;&#xFE0E;</a>`, default = ``1.0``, type = double, aliases: ``sub_feature``, ``colsample_bytree``, constraints: ``0.0 < feature_fraction <= 1.0``
 
-   -  LightGBM will randomly select a subset of features on each iteration (tree) if ``feature_fraction`` is smaller than ``1.0``. For example, if you set it to ``0.8``, LightGBM will select 80% of features before training each tree
+   -  Falcata will randomly select a subset of features on each iteration (tree) if ``feature_fraction`` is smaller than ``1.0``. For example, if you set it to ``0.8``, Falcata will select 80% of features before training each tree
 
    -  can be used to speed up training
 
@@ -429,7 +429,7 @@ Learning Control Parameters
 
 -  ``feature_fraction_bynode`` :raw-html:`<a id="feature_fraction_bynode" title="Permalink to this parameter" href="#feature_fraction_bynode">&#x1F517;&#xFE0E;</a>`, default = ``1.0``, type = double, aliases: ``sub_feature_bynode``, ``colsample_bynode``, constraints: ``0.0 < feature_fraction_bynode <= 1.0``
 
-   -  LightGBM will randomly select a subset of features on each tree node if ``feature_fraction_bynode`` is smaller than ``1.0``. For example, if you set it to ``0.8``, LightGBM will select 80% of features at each tree node
+   -  Falcata will randomly select a subset of features on each tree node if ``feature_fraction_bynode`` is smaller than ``1.0``. For example, if you set it to ``0.8``, Falcata will select 80% of features at each tree node
 
    -  can be used to deal with over-fitting
 
@@ -445,7 +445,7 @@ Learning Control Parameters
 
    -  use extremely randomized trees
 
-   -  if set to ``true``, when evaluating node splits LightGBM will check only one randomly-chosen threshold for each feature
+   -  if set to ``true``, when evaluating node splits Falcata will check only one randomly-chosen threshold for each feature
 
    -  can be used to speed up training
 
@@ -471,7 +471,7 @@ Learning Control Parameters
 
 -  ``first_metric_only`` :raw-html:`<a id="first_metric_only" title="Permalink to this parameter" href="#first_metric_only">&#x1F517;&#xFE0E;</a>`, default = ``false``, type = bool
 
-   -  LightGBM allows you to provide multiple evaluation metrics. Set this to ``true``, if you want to use only the first metric for early stopping
+   -  Falcata allows you to provide multiple evaluation metrics. Set this to ``true``, if you want to use only the first metric for early stopping
 
 -  ``max_delta_step`` :raw-html:`<a id="max_delta_step" title="Permalink to this parameter" href="#max_delta_step">&#x1F517;&#xFE0E;</a>`, default = ``0.0``, type = double, aliases: ``max_tree_output``, ``max_leaf_output``
 
@@ -559,7 +559,7 @@ Learning Control Parameters
 
    -  used for the categorical features
 
-   -  limit number of split points considered for categorical features. See `the documentation on how LightGBM finds optimal splits for categorical features <./Features.rst#optimal-split-for-categorical-features>`_ for more details
+   -  limit number of split points considered for categorical features. See `the documentation on how Falcata finds optimal splits for categorical features <./Features.rst#optimal-split-for-categorical-features>`_ for more details
 
    -  can be used to speed up training
 
@@ -631,7 +631,7 @@ Learning Control Parameters
 
    -  **Note**: the forced split logic will be ignored, if the split makes gain worse
 
-   -  see `this file <https://github.com/lightgbm-org/LightGBM/blob/master/examples/binary_classification/forced_splits.json>`__ as an example
+   -  see `this file <https://github.com/lightgbm-org/Falcata/blob/master/examples/binary_classification/forced_splits.json>`__ as an example
 
 -  ``refit_decay_rate`` :raw-html:`<a id="refit_decay_rate" title="Permalink to this parameter" href="#refit_decay_rate">&#x1F517;&#xFE0E;</a>`, default = ``0.9``, type = double, constraints: ``0.0 <= refit_decay_rate <= 1.0``
 
@@ -691,7 +691,7 @@ Learning Control Parameters
 
 -  ``verbosity`` :raw-html:`<a id="verbosity" title="Permalink to this parameter" href="#verbosity">&#x1F517;&#xFE0E;</a>`, default = ``1``, type = int, aliases: ``verbose``
 
-   -  controls the level of LightGBM's verbosity
+   -  controls the level of Falcata's verbosity
 
    -  ``< 0``: Fatal, ``= 0``: Error (Warning), ``= 1``: Info, ``> 1``: Debug
 
@@ -705,7 +705,7 @@ Learning Control Parameters
 
    -  **Note**: can be used only in CLI version
 
--  ``output_model`` :raw-html:`<a id="output_model" title="Permalink to this parameter" href="#output_model">&#x1F517;&#xFE0E;</a>`, default = ``LightGBM_model.txt``, type = string, aliases: ``model_output``, ``model_out``
+-  ``output_model`` :raw-html:`<a id="output_model" title="Permalink to this parameter" href="#output_model">&#x1F517;&#xFE0E;</a>`, default = ``Falcata_model.txt``, type = string, aliases: ``model_output``, ``model_out``
 
    -  filename of output model in training
 
@@ -743,13 +743,13 @@ Learning Control Parameters
 
 -  ``quant_mode`` :raw-html:`<a id="quant_mode" title="Permalink to this parameter" href="#quant_mode">&#x1F517;&#xFE0E;</a>`, default = ``auto``, type = string
 
-   -  quantization mode for gradients and hessians (ExaBoost)
+   -  quantization mode for gradients and hessians (Falcata)
 
    -  ``auto``: resolves to ``stochastic`` if ``use_quantized_grad=true``, otherwise ``none``
 
    -  ``none``: full-precision (fp64) gradient/hessian accumulation
 
-   -  ``stochastic``: LightGBM-native quantized training (same as ``use_quantized_grad=true``): stochastic rounding into ``quant_bins`` bins; aggressive speed end of the trade-off
+   -  ``stochastic``: Falcata-native quantized training (same as ``use_quantized_grad=true``): stochastic rounding into ``quant_bins`` bins; aggressive speed end of the trade-off
 
    -  ``fixedpoint``: XGBoost-style deterministic fixed-point quantization with an outlier-robust, gap-gated gradient scale; near-lossless at the default 64 bins
 
@@ -763,7 +763,7 @@ Learning Control Parameters
 
    -  with more bins, the quantized training will be closer to full precision training
 
-   -  ``0`` means auto: ``4`` for ``stochastic`` (LightGBM default), ``64`` for ``fixedpoint``
+   -  ``0`` means auto: ``4`` for ``stochastic`` (Falcata default), ``64`` for ``fixedpoint``
 
    -  **Note**: works only with ``cpu`` and ``cuda`` device type
 
@@ -817,7 +817,7 @@ Dataset Parameters
 
    -  **Note**: ``regression_l1`` objective is not supported with linear tree boosting
 
-   -  **Note**: setting ``linear_tree=true`` significantly increases the memory use of LightGBM
+   -  **Note**: setting ``linear_tree=true`` significantly increases the memory use of Falcata
 
    -  **Note**: if you specify ``monotone_constraints``, constraints will be enforced when choosing the split points, but not when fitting the linear models on leaves
 
@@ -827,7 +827,7 @@ Dataset Parameters
 
    -  small number of bins may reduce training accuracy but may increase general power (deal with over-fitting)
 
-   -  LightGBM will auto compress memory according to ``max_bin``. For example, LightGBM will use ``uint8_t`` for feature value if ``max_bin=255``
+   -  Falcata will auto compress memory according to ``max_bin``. For example, Falcata will use ``uint8_t`` for feature value if ``max_bin=255``
 
 -  ``max_bin_by_feature`` :raw-html:`<a id="max_bin_by_feature" title="Permalink to this parameter" href="#max_bin_by_feature">&#x1F517;&#xFE0E;</a>`, default = ``None``, type = multi-int
 
@@ -861,7 +861,7 @@ Dataset Parameters
 
 -  ``enable_bundle`` :raw-html:`<a id="enable_bundle" title="Permalink to this parameter" href="#enable_bundle">&#x1F517;&#xFE0E;</a>`, default = ``true``, type = bool, aliases: ``is_enable_bundle``, ``bundle``
 
-   -  set this to ``false`` to disable Exclusive Feature Bundling (EFB), which is described in `LightGBM: A Highly Efficient Gradient Boosting Decision Tree <https://proceedings.neurips.cc/paper/2017/hash/6449f44a102fde848669bdd9eb6b76fa-Abstract.html>`__
+   -  set this to ``false`` to disable Exclusive Feature Bundling (EFB), which is described in `Falcata: A Highly Efficient Gradient Boosting Decision Tree <https://proceedings.neurips.cc/paper/2017/hash/6449f44a102fde848669bdd9eb6b76fa-Abstract.html>`__
 
    -  **Note**: disabling this may cause the slow training speed for sparse datasets
 
@@ -877,7 +877,7 @@ Dataset Parameters
 
 -  ``feature_pre_filter`` :raw-html:`<a id="feature_pre_filter" title="Permalink to this parameter" href="#feature_pre_filter">&#x1F517;&#xFE0E;</a>`, default = ``true``, type = bool
 
-   -  set this to ``true`` (the default) to tell LightGBM to ignore the features that are unsplittable based on ``min_data_in_leaf``
+   -  set this to ``true`` (the default) to tell Falcata to ignore the features that are unsplittable based on ``min_data_in_leaf``
 
    -  as dataset object is initialized only once and cannot be changed after that, you may need to set this to ``false`` when searching parameters with ``min_data_in_leaf``, otherwise features are filtered by ``min_data_in_leaf`` firstly if you don't reconstruct dataset object
 
@@ -893,7 +893,7 @@ Dataset Parameters
 
    -  set this to ``true`` if data file is too big to fit in memory
 
-   -  by default, LightGBM will map data file to memory and load features from memory. This will provide faster data loading speed, but may cause run out of memory error when the data file is very big
+   -  by default, Falcata will map data file to memory and load features from memory. This will provide faster data loading speed, but may cause run out of memory error when the data file is very big
 
    -  **Note**: works only in case of loading data directly from text file
 
@@ -955,7 +955,7 @@ Dataset Parameters
 
    -  **Note**: index starts from ``0`` and it doesn't count the label column when passing type is ``int``
 
-   -  **Note**: despite the fact that specified columns will be completely ignored during the training, they still should have a valid format allowing LightGBM to load file successfully
+   -  **Note**: despite the fact that specified columns will be completely ignored during the training, they still should have a valid format allowing Falcata to load file successfully
 
 -  ``categorical_feature`` :raw-html:`<a id="categorical_feature" title="Permalink to this parameter" href="#categorical_feature">&#x1F517;&#xFE0E;</a>`, default = ``""``, type = multi-int or string, aliases: ``cat_feature``, ``categorical_column``, ``cat_column``, ``categorical_features``
 
@@ -985,11 +985,11 @@ Dataset Parameters
 
    -  ``.json`` file should contain an array of objects, each containing the word ``feature`` (integer feature index) and ``bin_upper_bound`` (array of thresholds for binning)
 
-   -  see `this file <https://github.com/lightgbm-org/LightGBM/blob/master/examples/regression/forced_bins.json>`__ as an example
+   -  see `this file <https://github.com/lightgbm-org/Falcata/blob/master/examples/regression/forced_bins.json>`__ as an example
 
 -  ``save_binary`` :raw-html:`<a id="save_binary" title="Permalink to this parameter" href="#save_binary">&#x1F517;&#xFE0E;</a>`, default = ``false``, type = bool, aliases: ``is_save_binary``, ``is_save_binary_file``
 
-   -  if ``true``, LightGBM will save the dataset (including validation data) to a binary file. This speed ups the data loading for the next time
+   -  if ``true``, Falcata will save the dataset (including validation data) to a binary file. This speed ups the data loading for the next time
 
    -  **Note**: ``init_score`` is not saved in binary file
 
@@ -1005,9 +1005,9 @@ Dataset Parameters
 
    -  path to a ``.json`` file that specifies customized parser initialized configuration
 
-   -  see `lightgbm-transform <https://github.com/lightgbm-org/LightGBM-transform>`__ for usage examples
+   -  see `lightgbm-transform <https://github.com/lightgbm-org/Falcata-transform>`__ for usage examples
 
-   -  **Note**: ``lightgbm-transform`` is not maintained by LightGBM's maintainers. Bug reports or feature requests should go to `issues page <https://github.com/lightgbm-org/LightGBM-transform/issues>`__
+   -  **Note**: ``lightgbm-transform`` is not maintained by Falcata's maintainers. Bug reports or feature requests should go to `issues page <https://github.com/lightgbm-org/Falcata-transform/issues>`__
 
    -  *New in version 4.0.0*
 
@@ -1062,11 +1062,11 @@ Predict Parameters
 
    -  used only in ``prediction`` task
 
-   -  control whether or not LightGBM raises an error when you try to predict on data with a different number of features than the training data
+   -  control whether or not Falcata raises an error when you try to predict on data with a different number of features than the training data
 
    -  if ``false`` (the default), a fatal error will be raised if the number of features in the dataset you predict on differs from the number seen during training
 
-   -  if ``true``, LightGBM will attempt to predict on whatever data you provide. This is dangerous because you might get incorrect predictions, but you could use it in situations where it is difficult or expensive to generate some features and you are very confident that they were never chosen for splits in the model
+   -  if ``true``, Falcata will attempt to predict on whatever data you provide. This is dangerous because you might get incorrect predictions, but you could use it in situations where it is difficult or expensive to generate some features and you are very confident that they were never chosen for splits in the model
 
    -  **Note**: be very careful setting this parameter to ``true``
 
@@ -1094,7 +1094,7 @@ Predict Parameters
 
    -  the threshold of margin in early-stopping prediction
 
--  ``output_result`` :raw-html:`<a id="output_result" title="Permalink to this parameter" href="#output_result">&#x1F517;&#xFE0E;</a>`, default = ``LightGBM_predict_result.txt``, type = string, aliases: ``predict_result``, ``prediction_result``, ``predict_name``, ``prediction_name``, ``pred_name``, ``name_pred``
+-  ``output_result`` :raw-html:`<a id="output_result" title="Permalink to this parameter" href="#output_result">&#x1F517;&#xFE0E;</a>`, default = ``Falcata_predict_result.txt``, type = string, aliases: ``predict_result``, ``prediction_result``, ``predict_name``, ``prediction_name``, ``pred_name``, ``name_pred``
 
    -  used only in ``prediction`` task
 
@@ -1421,7 +1421,7 @@ GPU Parameters
 
 -  ``cuda_precision`` :raw-html:`<a id="cuda_precision" title="Permalink to this parameter" href="#cuda_precision">&#x1F517;&#xFE0E;</a>`, default = ``fp64``, type = string
 
-   -  floating-point precision of CUDA histogram accumulation and split-gain math (ExaBoost)
+   -  floating-point precision of CUDA histogram accumulation and split-gain math (Falcata)
 
    -  ``fp64``: double-precision accumulation (bit-stable reference)
 
@@ -1431,7 +1431,7 @@ GPU Parameters
 
 -  ``cuda_plan`` :raw-html:`<a id="cuda_plan" title="Permalink to this parameter" href="#cuda_plan">&#x1F517;&#xFE0E;</a>`, default = ``auto``, type = string
 
-   -  CUDA execution-plan override string (ExaBoost)
+   -  CUDA execution-plan override string (Falcata)
 
    -  ``auto`` resolves every shape-conditional kernel choice from the data/params via the built-in planner; the resolved plan is logged at startup
 

@@ -1,4 +1,4 @@
-"""ExaBoost regression-gate lattice.
+"""Falcata regression-gate lattice.
 
 A matrix of small, deterministic (config x dataset-shape) training cells that
 runs after every commit (~minutes on an idle GPU) and catches the three
@@ -40,7 +40,7 @@ from pathlib import Path
 GATES_DIR = Path(__file__).resolve().parent
 FINGERPRINT_FILE = GATES_DIR / "md5_lattice.json"
 RESULTS_FILE = Path(
-    os.environ.get("EXABOOST_GATES_RESULTS", GATES_DIR / "lattice_results.json")
+    os.environ.get("FALCATA_GATES_RESULTS", GATES_DIR / "lattice_results.json")
 )
 WORKER_CHUNK = 30
 METRIC_TOLERANCE = (

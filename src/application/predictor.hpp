@@ -3,15 +3,15 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_APPLICATION_PREDICTOR_HPP_
-#define LIGHTGBM_SRC_APPLICATION_PREDICTOR_HPP_
+#ifndef FALCATA_SRC_APPLICATION_PREDICTOR_HPP_
+#define FALCATA_SRC_APPLICATION_PREDICTOR_HPP_
 
-#include <LightGBM/boosting.h>
-#include <LightGBM/dataset.h>
-#include <LightGBM/meta.h>
-#include <LightGBM/utils/common.h>
-#include <LightGBM/utils/openmp_wrapper.h>
-#include <LightGBM/utils/text_reader.h>
+#include <Falcata/boosting.h>
+#include <Falcata/dataset.h>
+#include <Falcata/meta.h>
+#include <Falcata/utils/common.h>
+#include <Falcata/utils/openmp_wrapper.h>
+#include <Falcata/utils/text_reader.h>
 
 #include <string>
 #include <cstdio>
@@ -23,7 +23,7 @@
 #include <utility>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 /*!
 * \brief Used to predict data with input model
@@ -43,7 +43,7 @@ class Predictor {
             bool predict_leaf_index, bool predict_contrib, bool early_stop,
             int early_stop_freq, double early_stop_margin) {
     early_stop_ = CreatePredictionEarlyStopInstance(
-        "none", LightGBM::PredictionEarlyStopConfig());
+        "none", Falcata::PredictionEarlyStopConfig());
     if (early_stop && !boosting->NeedAccuratePrediction()) {
       PredictionEarlyStopConfig pred_early_stop_config;
       CHECK_GT(early_stop_freq, 0);
@@ -298,6 +298,6 @@ class Predictor {
   std::vector<std::vector<double, Common::AlignmentAllocator<double, kAlignedSize>>> predict_buf_;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
-#endif  // LIGHTGBM_SRC_APPLICATION_PREDICTOR_HPP_
+#endif  // FALCATA_SRC_APPLICATION_PREDICTOR_HPP_

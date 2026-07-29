@@ -3,10 +3,10 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_BOOSTING_DART_HPP_
-#define LIGHTGBM_SRC_BOOSTING_DART_HPP_
+#ifndef FALCATA_SRC_BOOSTING_DART_HPP_
+#define FALCATA_SRC_BOOSTING_DART_HPP_
 
-#include <LightGBM/boosting.h>
+#include <Falcata/boosting.h>
 
 #include <string>
 #include <algorithm>
@@ -17,7 +17,7 @@
 #include "gbdt.h"
 #include "score_updater.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 /*!
 * \brief DART algorithm implementation. including Training, prediction, bagging.
 */
@@ -208,5 +208,5 @@ class DART: public GBDT {
   bool is_update_score_cur_iter_;
 };
 
-}  // namespace LightGBM
-#endif  // LIGHTGBM_SRC_BOOSTING_DART_HPP_
+}  // namespace Falcata
+#endif  // FALCATA_SRC_BOOSTING_DART_HPP_

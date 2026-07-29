@@ -12,7 +12,7 @@
 #include "cuda_best_split_finder.hpp"
 #include "cuda_leaf_splits.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 CUDABestSplitFinder::CUDABestSplitFinder(
   const hist_t* cuda_hist,
@@ -629,6 +629,6 @@ void CUDABestSplitFinder::SetUsedFeatureByNode(const std::vector<int8_t>& is_fea
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

@@ -4,8 +4,8 @@
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  */
-#ifndef LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_CONSTRUCT_JIT_HPP_
-#define LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_CONSTRUCT_JIT_HPP_
+#ifndef FALCATA_SRC_TREELEARNER_CUDA_CUDA_CONSTRUCT_JIT_HPP_
+#define FALCATA_SRC_TREELEARNER_CUDA_CUDA_CONSTRUCT_JIT_HPP_
 
 #ifdef USE_CUDA
 
@@ -13,7 +13,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace LightGBM {
+namespace Falcata {
 
 // Runtime NVRTC JIT of a shape-specialized quantized dense construct kernel.
 //
@@ -31,7 +31,7 @@ namespace LightGBM {
 // guarantee rather than a hope, the first launch is VALIDATED against the AOT
 // kernel's histogram; on any mismatch (or any NVRTC/driver failure, or an
 // unsupported shape) the module is discarded and the caller falls back to the AOT
-// kernel permanently for that signature. Kill switch: EXABOOST_CONSTRUCT_JIT=0.
+// kernel permanently for that signature. Kill switch: FALCATA_CONSTRUCT_JIT=0.
 //
 // Scope of the specialized kernel: the host-launched (two-sync), non-graph,
 // non-4bit, dense compact-quant path -- exactly numerai's shape. Every other
@@ -74,7 +74,7 @@ class CUDAConstructJIT {
   CUDAConstructJIT() = default;
   ~CUDAConstructJIT();
 
-  // Master enable (EXABOOST_CONSTRUCT_JIT != "0"). Cached.
+  // Master enable (FALCATA_CONSTRUCT_JIT != "0"). Cached.
   static bool Enabled();
 
   // NVRTC + driver actually usable on this host (lib present, context creatable).
@@ -107,7 +107,7 @@ class CUDAConstructJIT {
   std::unordered_map<std::string, ConstructJITEntry> cache_;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA
-#endif  // LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_CONSTRUCT_JIT_HPP_
+#endif  // FALCATA_SRC_TREELEARNER_CUDA_CUDA_CONSTRUCT_JIT_HPP_

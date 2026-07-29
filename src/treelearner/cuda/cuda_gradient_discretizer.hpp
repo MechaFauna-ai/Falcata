@@ -5,15 +5,15 @@
  * license information.
  */
 
-#ifndef LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_GRADIENT_DISCRETIZER_HPP_
-#define LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_GRADIENT_DISCRETIZER_HPP_
+#ifndef FALCATA_SRC_TREELEARNER_CUDA_CUDA_GRADIENT_DISCRETIZER_HPP_
+#define FALCATA_SRC_TREELEARNER_CUDA_CUDA_GRADIENT_DISCRETIZER_HPP_
 
 #ifdef USE_CUDA
 
-#include <LightGBM/bin.h>
-#include <LightGBM/meta.h>
-#include <LightGBM/cuda/cuda_utils.hu>
-#include <LightGBM/utils/threading.h>
+#include <Falcata/bin.h>
+#include <Falcata/meta.h>
+#include <Falcata/cuda/cuda_utils.hu>
+#include <Falcata/utils/threading.h>
 
 #include <algorithm>
 #include <random>
@@ -22,7 +22,7 @@
 #include "cuda_leaf_splits.hpp"
 #include "../gradient_discretizer.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 #define CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE (1024)
 
@@ -142,7 +142,7 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
   bool robust_scale_ = false;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA
-#endif  // LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_GRADIENT_DISCRETIZER_HPP_
+#endif  // FALCATA_SRC_TREELEARNER_CUDA_CUDA_GRADIENT_DISCRETIZER_HPP_

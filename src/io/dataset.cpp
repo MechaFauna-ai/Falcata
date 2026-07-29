@@ -4,14 +4,14 @@
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  */
-#include <LightGBM/dataset.h>
-#include <LightGBM/exaboost_plan.h>
+#include <Falcata/dataset.h>
+#include <Falcata/falcata_plan.h>
 
-#include <LightGBM/feature_group.h>
-#include <LightGBM/cuda/vector_cudahost.h>
-#include <LightGBM/utils/array_args.h>
-#include <LightGBM/utils/openmp_wrapper.h>
-#include <LightGBM/utils/threading.h>
+#include <Falcata/feature_group.h>
+#include <Falcata/cuda/vector_cudahost.h>
+#include <Falcata/utils/array_args.h>
+#include <Falcata/utils/openmp_wrapper.h>
+#include <Falcata/utils/threading.h>
 
 #include <algorithm>
 #include <atomic>
@@ -28,7 +28,7 @@
 #include <utility>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 const int Dataset::kSerializedReferenceVersionLength = 2;
 const char* Dataset::serialized_reference_version = "v1";
@@ -409,8 +409,8 @@ std::vector<std::vector<int>> FastFeatureBundling(
     const std::vector<int>& used_features, data_size_t num_data,
     bool is_use_gpu, bool is_sparse, std::vector<int8_t>* multi_val_group) {
   Common::FunctionTimer fun_timer("Dataset::FastFeatureBundling", global_timer);
-  const bool precheck_enabled = ExaBoostPlan::Get().efb_precheck;
-  const bool precheck_verify = ExaboostVerifyEnabled();
+  const bool precheck_enabled = FalcataPlan::Get().efb_precheck;
+  const bool precheck_verify = FalcataVerifyEnabled();
   const bool precheck_fired =
       precheck_enabled &&
       EFBPrecheckProvesNoBundling(bin_mappers, sample_indices, sample_values,
@@ -418,7 +418,7 @@ std::vector<std::vector<int>> FastFeatureBundling(
                                   total_sample_cnt, used_features, is_sparse);
   if (precheck_fired && !precheck_verify) {
     Log::Debug("EFB precheck: no bundling possible, skipping group search "
-               "(disable with EXABOOST_EFB_PRECHECK=0)");
+               "(disable with FALCATA_EFB_PRECHECK=0)");
     return SingleFeatureGroupsShuffled(used_features, num_data,
                                        multi_val_group);
   }
@@ -760,7 +760,7 @@ void Dataset::FinishLoad() {
 
   #ifdef USE_CUDA
   if (!gpu_bin_verify_data_.empty()) {
-    // EXABOOST_GPU_CONSTRUCT_VERIFY=1: the GPU binner captured its result and
+    // FALCATA_GPU_CONSTRUCT_VERIFY=1: the GPU binner captured its result and
     // the host path ran as usual; the final storage must be byte-identical
     int num_bad_groups = 0;
     for (int i = 0; i < num_groups_; ++i) {
@@ -948,10 +948,10 @@ MultiValBin* Dataset::GetMultiBinFromAllFeatures(const std::vector<uint32_t>& of
 
 #ifdef USE_CUDA
 bool Dataset::CanSkipHostMultiValBinForCUDA() const {
-  if (!ExaBoostPlan::Get().fast_rowdata) {
+  if (!FalcataPlan::Get().fast_rowdata) {
     return false;
   }
-  if (ExaboostVerifyEnabled()) {
+  if (FalcataVerifyEnabled()) {
     // verification needs the multi-val bin path as the reference
     return false;
   }
@@ -1025,7 +1025,7 @@ TrainingShareStates* Dataset::GetShareStates(
     const bool skip_multi_val_bin = is_cuda_tree_learner &&
       device_type_ == std::string("cuda") && CanSkipHostMultiValBinForCUDA();
     if (skip_multi_val_bin) {
-      Log::Debug("Dataset::GetShareStates: skipping host multi-val bin build for CUDA (disable with EXABOOST_FAST_ROWDATA=0)");
+      Log::Debug("Dataset::GetShareStates: skipping host multi-val bin build for CUDA (disable with FALCATA_FAST_ROWDATA=0)");
     } else {
       share_state->SetMultiValBin(GetMultiBinFromAllFeatures(offsets), num_data_,
         feature_groups_, false, false, num_grad_quant_bins);
@@ -2337,4 +2337,4 @@ void Dataset::CreateCUDAColumnData() {
 
 #endif  // USE_CUDA
 
-}  // namespace LightGBM
+}  // namespace Falcata

@@ -3,14 +3,14 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#include <LightGBM/dataset_loader.h>
-#include <LightGBM/exaboost_plan.h>
+#include <Falcata/dataset_loader.h>
+#include <Falcata/falcata_plan.h>
 
-#include <LightGBM/network.h>
-#include <LightGBM/utils/array_args.h>
-#include <LightGBM/utils/json11.h>
-#include <LightGBM/utils/log.h>
-#include <LightGBM/utils/openmp_wrapper.h>
+#include <Falcata/network.h>
+#include <Falcata/utils/array_args.h>
+#include <Falcata/utils/json11.h>
+#include <Falcata/utils/log.h>
+#include <Falcata/utils/openmp_wrapper.h>
 
 #include <algorithm>
 #include <chrono>
@@ -22,7 +22,7 @@
 #include <utility>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 using json11_internal_lightgbm::Json;
 
@@ -31,7 +31,7 @@ DatasetLoader::DatasetLoader(const Config& io_config, const PredictFunction& pre
   // Resolve the CUDA execution plan for the ingestion phase (EFB precheck,
   // fast row data, GPU construct, ...). Training re-resolves the same string
   // in the CUDA tree learner Init, so both phases see one consistent plan.
-  ExaBoostPlan::ResolveFromConfig(io_config);
+  FalcataPlan::ResolveFromConfig(io_config);
   label_idx_ = 0;
   weight_idx_ = NO_SPECIFIC;
   group_idx_ = NO_SPECIFIC;
@@ -378,7 +378,7 @@ Dataset* DatasetLoader::LoadFromSerializedReference(const char* binary_data, siz
     Log::Fatal("Binary definition file error: token has the wrong size");
   }
   if (std::string(mem_ptr, size_of_token) != std::string(Dataset::binary_serialized_reference_token)) {
-    Log::Fatal("Input file is not LightGBM binary reference file");
+    Log::Fatal("Input file is not Falcata binary reference file");
   }
   mem_ptr += size_of_token_in_input;
 
@@ -450,7 +450,7 @@ Dataset* DatasetLoader::LoadFromBinFile(const char* data_filename, const char* b
     Log::Fatal("Binary file error: token has the wrong size");
   }
   if (std::string(buffer.data()) != std::string(Dataset::binary_file_token)) {
-    Log::Fatal("Input file is not LightGBM binary file");
+    Log::Fatal("Input file is not Falcata binary file");
   }
 
   // read size of header
@@ -1589,4 +1589,4 @@ void DatasetLoader::CheckCategoricalFeatureNumBin(
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

@@ -10,12 +10,12 @@
 
 #include "cuda_single_gpu_tree_learner.hpp"
 
-#include <LightGBM/cuda/cuda_algorithms.hpp>
-#include <LightGBM/cuda/cuda_rocm_interop.h>
+#include <Falcata/cuda/cuda_algorithms.hpp>
+#include <Falcata/cuda/cuda_rocm_interop.h>
 
 #include <algorithm>
 
-namespace LightGBM {
+namespace Falcata {
 
 __global__ void ReduceLeafStatKernel_SharedMemory(
   const score_t* gradients,
@@ -425,6 +425,6 @@ void CUDASingleGPUTreeLearner::LaunchLinearAddScoreKernel(
   SynchronizeCUDADevice(__FILE__, __LINE__);
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

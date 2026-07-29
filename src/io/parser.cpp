@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 void GetStatistic(const char* str, int* comma_cnt, int* tab_cnt, int* colon_cnt) {
   *comma_cnt = 0;
@@ -316,4 +316,4 @@ std::string Parser::GenerateParserConfigStr(const char* filename, const char* pa
   }
   return parser_config_str;
 }
-}  // namespace LightGBM
+}  // namespace Falcata

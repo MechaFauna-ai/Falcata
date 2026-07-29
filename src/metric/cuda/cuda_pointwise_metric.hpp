@@ -5,19 +5,19 @@
  * license information.
  */
 
-#ifndef LIGHTGBM_SRC_METRIC_CUDA_CUDA_POINTWISE_METRIC_HPP_
-#define LIGHTGBM_SRC_METRIC_CUDA_CUDA_POINTWISE_METRIC_HPP_
+#ifndef FALCATA_SRC_METRIC_CUDA_CUDA_POINTWISE_METRIC_HPP_
+#define FALCATA_SRC_METRIC_CUDA_CUDA_POINTWISE_METRIC_HPP_
 
 #ifdef USE_CUDA
 
-#include <LightGBM/cuda/cuda_metric.hpp>
-#include <LightGBM/cuda/cuda_utils.hu>
+#include <Falcata/cuda/cuda_metric.hpp>
+#include <Falcata/cuda/cuda_utils.hu>
 
 #include <vector>
 
 #define NUM_DATA_PER_EVAL_THREAD (1024)
 
-namespace LightGBM {
+namespace Falcata {
 
 template <typename HOST_METRIC, typename CUDA_METRIC>
 class CUDAPointwiseMetricInterface: public CUDAMetricInterface<HOST_METRIC> {
@@ -39,8 +39,8 @@ class CUDAPointwiseMetricInterface: public CUDAMetricInterface<HOST_METRIC> {
   const int num_class_;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA
 
-#endif  // LIGHTGBM_SRC_METRIC_CUDA_CUDA_POINTWISE_METRIC_HPP_
+#endif  // FALCATA_SRC_METRIC_CUDA_CUDA_POINTWISE_METRIC_HPP_

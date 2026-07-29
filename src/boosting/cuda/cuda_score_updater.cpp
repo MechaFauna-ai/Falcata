@@ -8,7 +8,7 @@
 
 #ifdef USE_CUDA
 
-namespace LightGBM {
+namespace Falcata {
 
 CUDAScoreUpdater::CUDAScoreUpdater(const Dataset* data, int num_tree_per_iteration, const bool boosting_on_cuda):
   ScoreUpdater(data, num_tree_per_iteration), num_threads_per_block_(1024), boosting_on_cuda_(boosting_on_cuda) {
@@ -88,6 +88,6 @@ inline void CUDAScoreUpdater::MultiplyScore(double val, int cur_tree_id) {
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

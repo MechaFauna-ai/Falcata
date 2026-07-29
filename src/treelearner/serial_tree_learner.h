@@ -3,16 +3,16 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_TREELEARNER_SERIAL_TREE_LEARNER_H_
-#define LIGHTGBM_SRC_TREELEARNER_SERIAL_TREE_LEARNER_H_
+#ifndef FALCATA_SRC_TREELEARNER_SERIAL_TREE_LEARNER_H_
+#define FALCATA_SRC_TREELEARNER_SERIAL_TREE_LEARNER_H_
 
-#include <LightGBM/dataset.h>
-#include <LightGBM/tree.h>
-#include <LightGBM/tree_learner.h>
-#include <LightGBM/cuda/vector_cudahost.h>
-#include <LightGBM/utils/array_args.h>
-#include <LightGBM/utils/json11.h>
-#include <LightGBM/utils/random.h>
+#include <Falcata/dataset.h>
+#include <Falcata/tree.h>
+#include <Falcata/tree_learner.h>
+#include <Falcata/cuda/vector_cudahost.h>
+#include <Falcata/utils/array_args.h>
+#include <Falcata/utils/json11.h>
+#include <Falcata/utils/random.h>
 
 #include <string>
 #include <cmath>
@@ -36,7 +36,7 @@
 #include <boost/align/aligned_allocator.hpp>
 #endif
 
-namespace LightGBM {
+namespace Falcata {
 
 using json11_internal_lightgbm::Json;
 
@@ -251,5 +251,5 @@ inline data_size_t SerialTreeLearner::GetGlobalDataCountInLeaf(int leaf_idx) con
   }
 }
 
-}  // namespace LightGBM
-#endif   // LIGHTGBM_SRC_TREELEARNER_SERIAL_TREE_LEARNER_H_
+}  // namespace Falcata
+#endif   // FALCATA_SRC_TREELEARNER_SERIAL_TREE_LEARNER_H_

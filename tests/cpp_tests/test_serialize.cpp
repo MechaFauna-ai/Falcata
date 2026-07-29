@@ -6,18 +6,18 @@
 
 #include <gtest/gtest.h>
 #include <testutils.h>
-#include <LightGBM/utils/byte_buffer.h>
-#include <LightGBM/utils/log.h>
-#include <LightGBM/c_api.h>
-#include <LightGBM/dataset.h>
+#include <Falcata/utils/byte_buffer.h>
+#include <Falcata/utils/log.h>
+#include <Falcata/c_api.h>
+#include <Falcata/dataset.h>
 
 #include <iostream>
 #include <string>
 
-using LightGBM::ByteBuffer;
-using LightGBM::Dataset;
-using LightGBM::Log;
-using LightGBM::TestUtils;
+using Falcata::ByteBuffer;
+using Falcata::Dataset;
+using Falcata::Log;
+using Falcata::TestUtils;
 
 TEST(Serialization, JustWorks) {
   // Load some test data

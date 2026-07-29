@@ -3,12 +3,12 @@
  * Copyright (c) 2017-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_OBJECTIVE_XENTROPY_OBJECTIVE_HPP_
-#define LIGHTGBM_SRC_OBJECTIVE_XENTROPY_OBJECTIVE_HPP_
+#ifndef FALCATA_SRC_OBJECTIVE_XENTROPY_OBJECTIVE_HPP_
+#define FALCATA_SRC_OBJECTIVE_XENTROPY_OBJECTIVE_HPP_
 
-#include <LightGBM/meta.h>
-#include <LightGBM/objective_function.h>
-#include <LightGBM/utils/common.h>
+#include <Falcata/meta.h>
+#include <Falcata/objective_function.h>
+#include <Falcata/utils/common.h>
 
 #include <string>
 #include <algorithm>
@@ -38,7 +38,7 @@
  *
  */
 
-namespace LightGBM {
+namespace Falcata {
 /*!
 * \brief Objective function for cross-entropy (with optional linear weights)
 */
@@ -312,6 +312,6 @@ class CrossEntropyLambda: public ObjectiveFunction {
   const bool deterministic_;
 };
 
-}  // end namespace LightGBM
+}  // end namespace Falcata
 
-#endif  // LIGHTGBM_SRC_OBJECTIVE_XENTROPY_OBJECTIVE_HPP_
+#endif  // FALCATA_SRC_OBJECTIVE_XENTROPY_OBJECTIVE_HPP_

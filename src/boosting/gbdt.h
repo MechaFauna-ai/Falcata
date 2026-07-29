@@ -3,16 +3,16 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_BOOSTING_GBDT_H_
-#define LIGHTGBM_SRC_BOOSTING_GBDT_H_
+#ifndef FALCATA_SRC_BOOSTING_GBDT_H_
+#define FALCATA_SRC_BOOSTING_GBDT_H_
 
-#include <LightGBM/boosting.h>
-#include <LightGBM/objective_function.h>
-#include <LightGBM/prediction_early_stop.h>
-#include <LightGBM/cuda/vector_cudahost.h>
-#include <LightGBM/utils/json11.h>
-#include <LightGBM/utils/threading.h>
-#include <LightGBM/sample_strategy.h>
+#include <Falcata/boosting.h>
+#include <Falcata/objective_function.h>
+#include <Falcata/prediction_early_stop.h>
+#include <Falcata/cuda/vector_cudahost.h>
+#include <Falcata/utils/json11.h>
+#include <Falcata/utils/threading.h>
+#include <Falcata/sample_strategy.h>
 
 #include <string>
 #include <algorithm>
@@ -28,7 +28,7 @@
 #include "cuda/cuda_score_updater.hpp"
 #include "score_updater.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 using json11_internal_lightgbm::Json;
 
@@ -621,5 +621,5 @@ class GBDT : public GBDTBase {
   std::unique_ptr<SampleStrategy> data_sample_strategy_;
 };
 
-}  // namespace LightGBM
-#endif   // LIGHTGBM_SRC_BOOSTING_GBDT_H_
+}  // namespace Falcata
+#endif   // FALCATA_SRC_BOOSTING_GBDT_H_

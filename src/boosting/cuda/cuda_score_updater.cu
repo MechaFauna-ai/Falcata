@@ -8,7 +8,7 @@
 
 #ifdef USE_CUDA
 
-namespace LightGBM {
+namespace Falcata {
 
 __global__ void AddScoreConstantKernel(
   const double val,
@@ -41,6 +41,6 @@ void CUDAScoreUpdater::LaunchMultiplyScoreConstantKernel(const double val, const
   MultiplyScoreConstantKernel<<<num_blocks, num_threads_per_block_>>>(val, num_data_, cuda_score_.RawData() + offset);
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

@@ -15,7 +15,7 @@
 
 #include "cuda_data_partition.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 CUDADataPartition::CUDADataPartition(
   const Dataset* train_data,
@@ -279,7 +279,7 @@ void CUDADataPartition::FinishSplitBatch(const int num_splits, std::vector<int>*
   std::memcpy(out->data(), pinned_split_info_, num_ints * sizeof(int));
 }
 
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
 void CUDADataPartition::PrefetchSplitBatchAsync(const int max_splits, cudaStream_t stream) {
   const size_t num_ints = static_cast<size_t>(max_splits) * 18;
   EnsurePinnedSplitInfoCapacity(num_ints);
@@ -292,7 +292,7 @@ void CUDADataPartition::ReadPrefetchedSplitBatch(const int num_splits, std::vect
   out->resize(num_ints);
   std::memcpy(out->data(), pinned_split_info_, num_ints * sizeof(int));
 }
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
 void CUDADataPartition::SetLeafDataLayout(const std::vector<data_size_t>& leaf_num_data,
                                           const std::vector<data_size_t>& leaf_data_start,
@@ -312,7 +312,7 @@ void CUDADataPartition::SetLeafDataLayout(const std::vector<data_size_t>& leaf_n
     static_cast<size_t>(num_leaves), __FILE__, __LINE__);
 }
 
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
 void CUDADataPartition::BuildHybridGraphFeatureMeta(
     std::vector<CUDAHybridGraphFeatureMeta>* meta) const {
   // static half of SplitLevelBatched's per-split host metadata math; the graph
@@ -358,7 +358,7 @@ void CUDADataPartition::BuildHybridGraphFeatureSource(
     }
   }
 }
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
 void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplitInput>& splits) {
   const int num_splits = static_cast<int>(splits.size());
@@ -407,7 +407,7 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
     }
     const int column_index = cuda_column_data_->feature_to_column(split_feature_index);
     if (cuda_column_data_->packed_column_view_active()) {
-      // 4-bit packed compact source (EXABOOST_SPLIT_PACKED_READ): read the
+      // 4-bit packed compact source (FALCATA_SPLIT_PACKED_READ): read the
       // split column's nibbles straight from the histogram constructor's packed
       // compact matrix instead of a per-tree column-major gather
       desc.column_data = cuda_column_data_->packed_column_data(column_index);
@@ -674,6 +674,6 @@ void CUDADataPartition::ReduceLeafGradStat(
   LaunchReduceLeafGradStat(gradients, hessians, tree, leaf_grad_stat_buffer, leaf_hess_state_buffer);
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

@@ -6,14 +6,14 @@
 
 #include <gtest/gtest.h>
 #include <testutils.h>
-#include <LightGBM/c_api.h>
+#include <Falcata/c_api.h>
 
 #include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <vector>
 
-using LightGBM::TestUtils;
+using Falcata::TestUtils;
 
 void test_predict_type(int predict_type, int num_predicts) {
     // Load some test data

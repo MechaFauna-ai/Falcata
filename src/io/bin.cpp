@@ -3,11 +3,11 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#include <LightGBM/bin.h>
+#include <Falcata/bin.h>
 
-#include <LightGBM/utils/array_args.h>
-#include <LightGBM/utils/common.h>
-#include <LightGBM/utils/file_io.h>
+#include <Falcata/utils/array_args.h>
+#include <Falcata/utils/common.h>
+#include <Falcata/utils/file_io.h>
 
 #include <algorithm>
 #include <cmath>
@@ -21,7 +21,7 @@
 #include "multi_val_sparse_bin.hpp"
 #include "sparse_bin.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 BinMapper::BinMapper(): num_bin_(1), is_trivial_(true), bin_type_(BinType::NumericalBin) {
   bin_upper_bound_.clear();
@@ -1074,4 +1074,4 @@ const void* MultiValSparseBin<uint64_t, uint32_t>::GetRowWiseData(
 
 #endif  // USE_CUDA
 
-}  // namespace LightGBM
+}  // namespace Falcata

@@ -9,8 +9,8 @@
 
 #include "cuda_construct_jit.hpp"
 
-#include <LightGBM/utils/log.h>
-#include <LightGBM/exaboost_plan.h>
+#include <Falcata/utils/log.h>
+#include <Falcata/falcata_plan.h>
 
 #include <cuda.h>
 #include <nvrtc.h>
@@ -20,7 +20,7 @@
 #include <string>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 std::string ConstructJITShapeKey::Signature() const {
   return "b" + std::to_string(bins) + "_p" + std::to_string(num_partitions) +
@@ -41,7 +41,7 @@ CUDAConstructJIT::~CUDAConstructJIT() {
 bool CUDAConstructJIT::Enabled() {
   // opt-in for now: plan default OFF so the AOT compact-quant fast path is the
   // shipped behavior. cuda_plan=auto,construct_jit:on requests the JIT.
-  return ExaBoostPlan::Get().construct_jit;
+  return FalcataPlan::Get().construct_jit;
 }
 
 bool CUDAConstructJIT::Available() {
@@ -175,7 +175,7 @@ extern "C" __global__ void construct_jit(
 
 // -----------------------------------------------------------------------------
 // The LIVE batched construct kernel. This is the one the dispatch launches with
-// EXABOOST_CONSTRUCT_JIT=1 on the (non-graph, host-launched, non-4bit) dense
+// FALCATA_CONSTRUCT_JIT=1 on the (non-graph, host-launched, non-4bit) dense
 // compact-quant path -- exactly numerai's shape. It replicates, bit-for-bit, the
 // (bin, gradient) accumulation of the AOT
 // CUDAConstructDiscretizedHistogramDenseBatchedKernel for that case:
@@ -445,6 +445,6 @@ void CUDAConstructJIT::SetValidated(const ConstructJITShapeKey& key, bool ok) {
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

@@ -6,10 +6,10 @@
 
 #include "lightgbm_R.h"
 
-#include <LightGBM/utils/common.h>
-#include <LightGBM/utils/log.h>
-#include <LightGBM/utils/openmp_wrapper.h>
-#include <LightGBM/utils/text_reader.h>
+#include <Falcata/utils/common.h>
+#include <Falcata/utils/log.h>
+#include <Falcata/utils/openmp_wrapper.h>
+#include <Falcata/utils/text_reader.h>
 
 #include <R_ext/Rdynload.h>
 #include <R_ext/Altrep.h>
@@ -257,8 +257,8 @@ SEXP safe_R_mkChar(char *txt, SEXP *cont_token) {
   return R_UnwindProtect(wrapped_Rf_mkChar, reinterpret_cast<void*>(txt), throw_R_memerr, cont_token, *cont_token);
 }
 
-using LightGBM::Common::Split;
-using LightGBM::Log;
+using Falcata::Common::Split;
+using Falcata::Log;
 
 SEXP LGBM_HandleIsNull_R(SEXP handle) {
   return Rf_ScalarLogical(R_ExternalPtrAddr(handle) == NULL);
@@ -1488,7 +1488,7 @@ static const R_CallMethodDef CallEntries[] = {
   {NULL, NULL, 0}
 };
 
-LIGHTGBM_C_EXPORT void R_init_lightgbm(DllInfo *dll);
+FALCATA_C_EXPORT void R_init_lightgbm(DllInfo *dll);
 
 void R_init_lightgbm(DllInfo *dll) {
   R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);

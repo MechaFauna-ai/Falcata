@@ -3,9 +3,9 @@
  * Copyright (c) 2017-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#include <LightGBM/prediction_early_stop.h>
+#include <Falcata/prediction_early_stop.h>
 
-#include <LightGBM/utils/log.h>
+#include <Falcata/utils/log.h>
 
 #include <algorithm>
 #include <cmath>
@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 PredictionEarlyStopInstance CreateNone(const PredictionEarlyStopConfig&) {
   return PredictionEarlyStopInstance{
@@ -91,4 +91,4 @@ PredictionEarlyStopInstance CreatePredictionEarlyStopInstance(const std::string&
   return CreateNone(config);
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

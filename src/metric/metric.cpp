@@ -3,7 +3,7 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#include <LightGBM/metric.h>
+#include <Falcata/metric.h>
 
 #include <string>
 
@@ -17,7 +17,7 @@
 #include "cuda/cuda_binary_metric.hpp"
 #include "cuda/cuda_regression_metric.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 Metric* Metric::CreateMetric(const std::string& type, const Config& config) {
   #ifdef USE_CUDA
@@ -139,4 +139,4 @@ Metric* Metric::CreateMetric(const std::string& type, const Config& config) {
   return nullptr;
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

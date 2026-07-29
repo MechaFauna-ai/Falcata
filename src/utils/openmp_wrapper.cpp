@@ -3,7 +3,7 @@
  * Copyright (c) 2023-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#include <LightGBM/utils/openmp_wrapper.h>
+#include <Falcata/utils/openmp_wrapper.h>
 
 int LGBM_MAX_NUM_THREADS = -1;
 
@@ -17,14 +17,14 @@ int OMP_NUM_THREADS() {
   int default_num_threads = 1;
 
   if (LGBM_DEFAULT_NUM_THREADS > 0) {
-    // if LightGBM-specific default has been set, ignore OpenMP-global config
+    // if Falcata-specific default has been set, ignore OpenMP-global config
     default_num_threads = LGBM_DEFAULT_NUM_THREADS;
   } else {
     // otherwise, default to OpenMP-global config
     default_num_threads = omp_get_max_threads();
   }
 
-  // ensure that if LGBM_SetMaxThreads() was ever called, LightGBM doesn't
+  // ensure that if LGBM_SetMaxThreads() was ever called, Falcata doesn't
   // use more than that many threads
   if (LGBM_MAX_NUM_THREADS > 0 && default_num_threads > LGBM_MAX_NUM_THREADS) {
     return LGBM_MAX_NUM_THREADS;

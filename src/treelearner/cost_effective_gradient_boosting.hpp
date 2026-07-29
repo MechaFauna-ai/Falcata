@@ -4,14 +4,14 @@
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  */
-#ifndef LIGHTGBM_SRC_TREELEARNER_COST_EFFECTIVE_GRADIENT_BOOSTING_HPP_
-#define LIGHTGBM_SRC_TREELEARNER_COST_EFFECTIVE_GRADIENT_BOOSTING_HPP_
+#ifndef FALCATA_SRC_TREELEARNER_COST_EFFECTIVE_GRADIENT_BOOSTING_HPP_
+#define FALCATA_SRC_TREELEARNER_COST_EFFECTIVE_GRADIENT_BOOSTING_HPP_
 
-#include <LightGBM/config.h>
-#include <LightGBM/dataset.h>
-#include <LightGBM/utils/common.h>
-#include <LightGBM/utils/log.h>
-#include <LightGBM/utils/threading.h>
+#include <Falcata/config.h>
+#include <Falcata/dataset.h>
+#include <Falcata/utils/common.h>
+#include <Falcata/utils/log.h>
+#include <Falcata/utils/threading.h>
 
 #include <vector>
 
@@ -19,7 +19,7 @@
 #include "serial_tree_learner.h"
 #include "split_info.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 class CostEfficientGradientBoosting {
  public:
@@ -170,6 +170,6 @@ class CostEfficientGradientBoosting {
   std::vector<uint32_t> feature_used_in_data_;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
-#endif  // LIGHTGBM_SRC_TREELEARNER_COST_EFFECTIVE_GRADIENT_BOOSTING_HPP_
+#endif  // FALCATA_SRC_TREELEARNER_COST_EFFECTIVE_GRADIENT_BOOSTING_HPP_

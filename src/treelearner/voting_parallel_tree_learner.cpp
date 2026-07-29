@@ -2,7 +2,7 @@
  * Copyright (c) 2016 Microsoft Corporation. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#include <LightGBM/utils/common.h>
+#include <Falcata/utils/common.h>
 
 #include <algorithm>
 #include <cstring>
@@ -12,7 +12,7 @@
 
 #include "parallel_tree_learner.h"
 
-namespace LightGBM {
+namespace Falcata {
 
 template <typename TREELEARNER_T>
 VotingParallelTreeLearner<TREELEARNER_T>::VotingParallelTreeLearner(const Config* config):TREELEARNER_T(config) {
@@ -512,4 +512,4 @@ void VotingParallelTreeLearner<TREELEARNER_T>::Split(Tree* tree, int best_Leaf, 
 // instantiate template classes, otherwise linker cannot find the code
 template class VotingParallelTreeLearner<GPUTreeLearner>;
 template class VotingParallelTreeLearner<SerialTreeLearner>;
-}  // namespace LightGBM
+}  // namespace Falcata

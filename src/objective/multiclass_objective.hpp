@@ -3,11 +3,11 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_OBJECTIVE_MULTICLASS_OBJECTIVE_HPP_
-#define LIGHTGBM_SRC_OBJECTIVE_MULTICLASS_OBJECTIVE_HPP_
+#ifndef FALCATA_SRC_OBJECTIVE_MULTICLASS_OBJECTIVE_HPP_
+#define FALCATA_SRC_OBJECTIVE_MULTICLASS_OBJECTIVE_HPP_
 
-#include <LightGBM/network.h>
-#include <LightGBM/objective_function.h>
+#include <Falcata/network.h>
+#include <Falcata/objective_function.h>
 
 #include <string>
 #include <algorithm>
@@ -18,7 +18,7 @@
 
 #include "binary_objective.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 /*!
 * \brief Objective function for multiclass classification, use softmax as objective functions
 */
@@ -276,5 +276,5 @@ class MulticlassOVA: public ObjectiveFunction {
   double sigmoid_;
 };
 
-}  // namespace LightGBM
-#endif   // LIGHTGBM_SRC_OBJECTIVE_MULTICLASS_OBJECTIVE_HPP_
+}  // namespace Falcata
+#endif   // FALCATA_SRC_OBJECTIVE_MULTICLASS_OBJECTIVE_HPP_

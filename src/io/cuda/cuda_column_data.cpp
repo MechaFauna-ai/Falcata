@@ -6,12 +6,12 @@
 
 #ifdef USE_CUDA
 
-#include <LightGBM/cuda/cuda_column_data.hpp>
+#include <Falcata/cuda/cuda_column_data.hpp>
 
 #include <cstdint>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 // Defined in cuda_column_data.cu: warms the lazy CUDA module load during
 // Dataset construction so the first Train() call doesn't pay it (see there).
@@ -316,6 +316,6 @@ void CUDAColumnData::InitColumnMetaInfo() {
   cuda_feature_to_column_.InitFromHostVector(feature_to_column_);
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

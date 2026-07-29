@@ -4,23 +4,23 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 
-#ifndef LIGHTGBM_SRC_BOOSTING_CUDA_NCCL_GBDT_COMPONENT_HPP_
-#define LIGHTGBM_SRC_BOOSTING_CUDA_NCCL_GBDT_COMPONENT_HPP_
+#ifndef FALCATA_SRC_BOOSTING_CUDA_NCCL_GBDT_COMPONENT_HPP_
+#define FALCATA_SRC_BOOSTING_CUDA_NCCL_GBDT_COMPONENT_HPP_
 
 #ifdef USE_CUDA
 
-#include <LightGBM/objective_function.h>
-#include <LightGBM/tree.h>
+#include <Falcata/objective_function.h>
+#include <Falcata/tree.h>
 
 #include <algorithm>
 #include <vector>
 #include <memory>
 
-#include <LightGBM/cuda/cuda_objective_function.hpp>
+#include <Falcata/cuda/cuda_objective_function.hpp>
 #include "cuda_score_updater.hpp"
 #include "../../treelearner/cuda/cuda_single_gpu_tree_learner.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 class NCCLGBDTComponent: public NCCLInfo {
  public:
@@ -97,8 +97,8 @@ class NCCLGBDTComponent: public NCCLInfo {
   data_size_t num_data_in_gpu_;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA
 
-#endif  // LIGHTGBM_SRC_BOOSTING_CUDA_NCCL_GBDT_COMPONENT_HPP_
+#endif  // FALCATA_SRC_BOOSTING_CUDA_NCCL_GBDT_COMPONENT_HPP_

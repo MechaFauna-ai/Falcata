@@ -4,13 +4,13 @@
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  */
-#ifndef LIGHTGBM_SRC_TREELEARNER_FEATURE_HISTOGRAM_HPP_
-#define LIGHTGBM_SRC_TREELEARNER_FEATURE_HISTOGRAM_HPP_
+#ifndef FALCATA_SRC_TREELEARNER_FEATURE_HISTOGRAM_HPP_
+#define FALCATA_SRC_TREELEARNER_FEATURE_HISTOGRAM_HPP_
 
-#include <LightGBM/bin.h>
-#include <LightGBM/dataset.h>
-#include <LightGBM/tree_split_math.h>
-#include <LightGBM/utils/array_args.h>
+#include <Falcata/bin.h>
+#include <Falcata/dataset.h>
+#include <Falcata/tree_split_math.h>
+#include <Falcata/utils/array_args.h>
 
 #include <algorithm>
 #include <cmath>
@@ -22,7 +22,7 @@
 #include "monotone_constraints.hpp"
 #include "split_info.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 class FeatureMetainfo {
  public:
@@ -1577,5 +1577,5 @@ class HistogramPool {
   int cur_time_ = 0;
 };
 
-}  // namespace LightGBM
-#endif  // LIGHTGBM_SRC_TREELEARNER_FEATURE_HISTOGRAM_HPP_
+}  // namespace Falcata
+#endif  // FALCATA_SRC_TREELEARNER_FEATURE_HISTOGRAM_HPP_

@@ -3,9 +3,9 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#include <LightGBM/network.h>
+#include <Falcata/network.h>
 
-#include <LightGBM/utils/common.h>
+#include <Falcata/utils/common.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -15,7 +15,7 @@
 
 #include "linkers.h"
 
-namespace LightGBM {
+namespace Falcata {
 
 // static member definition
 THREAD_LOCAL int Network::num_machines_ = 1;
@@ -329,4 +329,4 @@ int Network::num_machines() {
   return num_machines_;
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

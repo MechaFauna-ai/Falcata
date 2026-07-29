@@ -16,7 +16,7 @@
 
 #include "../../src/arrow/array.hpp"
 
-using LightGBM::ArrowChunkedArray;
+using Falcata::ArrowChunkedArray;
 
 namespace {
 

@@ -6,17 +6,17 @@
 
 #include <gtest/gtest.h>
 #include <testutils.h>
-#include <LightGBM/utils/log.h>
-#include <LightGBM/c_api.h>
-#include <LightGBM/dataset.h>
+#include <Falcata/utils/log.h>
+#include <Falcata/c_api.h>
+#include <Falcata/dataset.h>
 
 #include <iostream>
 #include <string>
 #include <vector>
 
-using LightGBM::Dataset;
-using LightGBM::Log;
-using LightGBM::TestUtils;
+using Falcata::Dataset;
+using Falcata::Log;
+using Falcata::TestUtils;
 
 void test_stream_dense(
   int8_t creation_type,

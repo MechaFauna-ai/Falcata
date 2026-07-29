@@ -3,20 +3,20 @@
  * Copyright (c) 2017-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_METRIC_MAP_METRIC_HPP_
-#define LIGHTGBM_SRC_METRIC_MAP_METRIC_HPP_
+#ifndef FALCATA_SRC_METRIC_MAP_METRIC_HPP_
+#define FALCATA_SRC_METRIC_MAP_METRIC_HPP_
 
-#include <LightGBM/metric.h>
-#include <LightGBM/utils/common.h>
-#include <LightGBM/utils/log.h>
-#include <LightGBM/utils/openmp_wrapper.h>
+#include <Falcata/metric.h>
+#include <Falcata/utils/common.h>
+#include <Falcata/utils/log.h>
+#include <Falcata/utils/openmp_wrapper.h>
 
 #include <string>
 #include <algorithm>
 #include <sstream>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 class MapMetric:public Metric {
  public:
@@ -164,6 +164,6 @@ class MapMetric:public Metric {
   std::vector<data_size_t> npos_per_query_;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
-#endif   // LIGHTGBM_SRC_METRIC_MAP_METRIC_HPP_
+#endif   // FALCATA_SRC_METRIC_MAP_METRIC_HPP_

@@ -3,7 +3,7 @@
  * Copyright (c) 2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#include <LightGBM/tree_learner.h>
+#include <Falcata/tree_learner.h>
 
 #include <functional>
 #include <string>
@@ -15,7 +15,7 @@
 #include "serial_tree_learner.h"
 #include "cuda/cuda_single_gpu_tree_learner.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 namespace {
 
@@ -71,4 +71,4 @@ TreeLearner* TreeLearner::CreateTreeLearner(const std::string& learner_type, con
   return it->second(learner_type, config, boosting_on_cuda);
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

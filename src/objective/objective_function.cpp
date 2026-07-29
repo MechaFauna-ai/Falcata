@@ -4,7 +4,7 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 
-#include <LightGBM/objective_function.h>
+#include <Falcata/objective_function.h>
 
 #include <string>
 
@@ -14,14 +14,14 @@
 #include "regression_objective.hpp"
 #include "xentropy_objective.hpp"
 
-#include <LightGBM/cuda/cuda_objective_function.hpp>
+#include <Falcata/cuda/cuda_objective_function.hpp>
 
 #include "cuda/cuda_binary_objective.hpp"
 #include "cuda/cuda_multiclass_objective.hpp"
 #include "cuda/cuda_rank_objective.hpp"
 #include "cuda/cuda_regression_objective.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 #ifdef USE_CUDA
 ObjectiveFunction* ObjectiveFunction::CreateObjectiveFunctionCUDA(const std::string& type, const Config& config) {
@@ -161,4 +161,4 @@ ObjectiveFunction* ObjectiveFunction::CreateObjectiveFunction(const std::string&
   return nullptr;
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

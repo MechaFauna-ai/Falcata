@@ -3,19 +3,19 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#include <LightGBM/application.h>
+#include <Falcata/application.h>
 
-#include <LightGBM/boosting.h>
-#include <LightGBM/dataset.h>
-#include <LightGBM/dataset_loader.h>
-#include <LightGBM/metric.h>
-#include <LightGBM/network.h>
-#include <LightGBM/objective_function.h>
-#include <LightGBM/prediction_early_stop.h>
-#include <LightGBM/cuda/vector_cudahost.h>
-#include <LightGBM/utils/common.h>
-#include <LightGBM/utils/openmp_wrapper.h>
-#include <LightGBM/utils/text_reader.h>
+#include <Falcata/boosting.h>
+#include <Falcata/dataset.h>
+#include <Falcata/dataset_loader.h>
+#include <Falcata/metric.h>
+#include <Falcata/network.h>
+#include <Falcata/objective_function.h>
+#include <Falcata/prediction_early_stop.h>
+#include <Falcata/cuda/vector_cudahost.h>
+#include <Falcata/utils/common.h>
+#include <Falcata/utils/openmp_wrapper.h>
+#include <Falcata/utils/text_reader.h>
 
 #include <chrono>
 #include <cstdio>
@@ -30,7 +30,7 @@
 
 #include "predictor.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 Application::Application(int argc, char** argv) {
   LoadParameters(argc, argv);
@@ -293,4 +293,4 @@ void Application::ConvertModel() {
 }
 
 
-}  // namespace LightGBM
+}  // namespace Falcata

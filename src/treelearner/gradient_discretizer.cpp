@@ -6,13 +6,13 @@
  */
 
 #include "gradient_discretizer.hpp"
-#include <LightGBM/network.h>
+#include <Falcata/network.h>
 
 #include <algorithm>
 #include <string>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 void GradientDiscretizer::Init(
   const data_size_t num_data, const int num_leaves,
@@ -260,4 +260,4 @@ void GradientDiscretizer::RenewIntGradTreeOutput(
   global_timer.Stop("GradientDiscretizer::RenewIntGradTreeOutput");
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

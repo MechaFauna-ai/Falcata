@@ -11,7 +11,7 @@
 
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 template <typename HOST_METRIC, typename CUDA_METRIC>
 std::vector<double> CUDABinaryMetricInterface<HOST_METRIC, CUDA_METRIC>::Eval(const double* score, const ObjectiveFunction* objective) const {
@@ -30,6 +30,6 @@ CUDABinaryLoglossMetric::CUDABinaryLoglossMetric(const Config& config):CUDABinar
 
 CUDABinaryErrorMetric::CUDABinaryErrorMetric(const Config& config):CUDABinaryMetricInterface<BinaryErrorMetric, CUDABinaryErrorMetric>(config) {}
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

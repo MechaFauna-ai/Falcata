@@ -7,11 +7,11 @@
 
 #ifdef USE_CUDA
 
-#include <LightGBM/cuda/cuda_column_data.hpp>
+#include <Falcata/cuda/cuda_column_data.hpp>
 
 #define COPY_SUBROW_BLOCK_SIZE_COLUMN_DATA (1024)
 
-namespace LightGBM {
+namespace Falcata {
 
 __global__ void CUDAWarmupKernel() {}
 
@@ -72,6 +72,6 @@ void CUDAColumnData::LaunchCopySubrowKernel(uint8_t* const* in_cuda_data_by_colu
     cuda_data_by_column_.RawData());
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

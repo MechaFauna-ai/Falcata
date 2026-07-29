@@ -3,12 +3,12 @@
  * Copyright (c) 2021-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_OBJECTIVE_CUDA_CUDA_MULTICLASS_OBJECTIVE_HPP_
-#define LIGHTGBM_SRC_OBJECTIVE_CUDA_CUDA_MULTICLASS_OBJECTIVE_HPP_
+#ifndef FALCATA_SRC_OBJECTIVE_CUDA_CUDA_MULTICLASS_OBJECTIVE_HPP_
+#define FALCATA_SRC_OBJECTIVE_CUDA_CUDA_MULTICLASS_OBJECTIVE_HPP_
 
 #ifdef USE_CUDA
 
-#include <LightGBM/cuda/cuda_objective_function.hpp>
+#include <Falcata/cuda/cuda_objective_function.hpp>
 
 #include <memory>
 #include <string>
@@ -20,7 +20,7 @@
 
 #define GET_GRADIENTS_BLOCK_SIZE_MULTICLASS (1024)
 
-namespace LightGBM {
+namespace Falcata {
 
 class CUDAMulticlassSoftmax: public CUDAObjectiveInterface<MulticlassSoftmax> {
  public:
@@ -73,7 +73,7 @@ class CUDAMulticlassOVA: public CUDAObjectiveInterface<MulticlassOVA> {
 };
 
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA
-#endif  // LIGHTGBM_SRC_OBJECTIVE_CUDA_CUDA_MULTICLASS_OBJECTIVE_HPP_
+#endif  // FALCATA_SRC_OBJECTIVE_CUDA_CUDA_MULTICLASS_OBJECTIVE_HPP_

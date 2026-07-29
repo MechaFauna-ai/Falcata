@@ -6,18 +6,18 @@
 
 #include <gtest/gtest.h>
 #include <testutils.h>
-#include <LightGBM/c_api.h>
-#include <LightGBM/utils/random.h>
+#include <Falcata/c_api.h>
+#include <Falcata/utils/random.h>
 
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
-using LightGBM::Log;
-using LightGBM::Random;
+using Falcata::Log;
+using Falcata::Random;
 
-namespace LightGBM {
+namespace Falcata {
 
 /*!
 * Creates a Dataset from the internal repository examples.
@@ -438,4 +438,4 @@ const double* TestUtils::CreateInitScoreBatch(std::vector<double>* init_score_ba
   return init_score_batch->data();
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

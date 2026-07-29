@@ -5,10 +5,10 @@
  */
 #include "serial_tree_learner.h"
 
-#include <LightGBM/network.h>
-#include <LightGBM/objective_function.h>
-#include <LightGBM/utils/array_args.h>
-#include <LightGBM/utils/common.h>
+#include <Falcata/network.h>
+#include <Falcata/objective_function.h>
+#include <Falcata/utils/array_args.h>
+#include <Falcata/utils/common.h>
 
 #include <algorithm>
 #include <memory>
@@ -21,7 +21,7 @@
 
 #include "cost_effective_gradient_boosting.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 SerialTreeLearner::SerialTreeLearner(const Config* config)
     : config_(config), col_sampler_(config) {
@@ -1119,4 +1119,4 @@ void SerialTreeLearner::CheckSplit(const SplitInfo& best_split_info, const int l
 }
 #endif
 
-}  // namespace LightGBM
+}  // namespace Falcata

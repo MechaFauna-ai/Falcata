@@ -9,7 +9,7 @@
 
 #include <iostream>
 
-namespace LightGBM {
+namespace Falcata {
 
 Linkers::Linkers(Config) {
   is_init_ = false;
@@ -60,5 +60,5 @@ void Linkers::MpiAbortIfIsParallel() {
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 #endif  // USE_MPI

@@ -12,7 +12,7 @@
 
 #include "cuda_rank_objective.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 CUDALambdarankNDCG::CUDALambdarankNDCG(const Config& config)
     : CUDALambdaRankObjectiveInterface<LambdarankNDCG>(config), deterministic_(config.deterministic) {}
@@ -64,6 +64,6 @@ void CUDARankXENDCG::GenerateItemRands() const {
   OMP_THROW_EX();
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

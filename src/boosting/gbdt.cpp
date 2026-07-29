@@ -5,13 +5,13 @@
  */
 #include "gbdt.h"
 
-#include <LightGBM/metric.h>
-#include <LightGBM/network.h>
-#include <LightGBM/objective_function.h>
-#include <LightGBM/prediction_early_stop.h>
-#include <LightGBM/utils/common.h>
-#include <LightGBM/utils/openmp_wrapper.h>
-#include <LightGBM/sample_strategy.h>
+#include <Falcata/metric.h>
+#include <Falcata/network.h>
+#include <Falcata/objective_function.h>
+#include <Falcata/prediction_early_stop.h>
+#include <Falcata/utils/common.h>
+#include <Falcata/utils/openmp_wrapper.h>
+#include <Falcata/sample_strategy.h>
 
 #include <algorithm>
 #include <chrono>
@@ -24,7 +24,7 @@
 #include <utility>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 Common::Timer global_timer;
 
@@ -893,4 +893,4 @@ void GBDT::ResetGradientBuffers() {
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

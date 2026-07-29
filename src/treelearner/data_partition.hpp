@@ -3,19 +3,19 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef LIGHTGBM_SRC_TREELEARNER_DATA_PARTITION_HPP_
-#define LIGHTGBM_SRC_TREELEARNER_DATA_PARTITION_HPP_
+#ifndef FALCATA_SRC_TREELEARNER_DATA_PARTITION_HPP_
+#define FALCATA_SRC_TREELEARNER_DATA_PARTITION_HPP_
 
-#include <LightGBM/dataset.h>
-#include <LightGBM/meta.h>
-#include <LightGBM/utils/openmp_wrapper.h>
-#include <LightGBM/utils/threading.h>
+#include <Falcata/dataset.h>
+#include <Falcata/meta.h>
+#include <Falcata/utils/openmp_wrapper.h>
+#include <Falcata/utils/threading.h>
 
 #include <algorithm>
 #include <cstring>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 /*!
 * \brief DataPartition is used to store the the partition of data on tree.
 */
@@ -167,5 +167,5 @@ class DataPartition {
   ParallelPartitionRunner<data_size_t, true> runner_;
 };
 
-}  // namespace LightGBM
-#endif   // LIGHTGBM_SRC_TREELEARNER_DATA_PARTITION_HPP_
+}  // namespace Falcata
+#endif   // FALCATA_SRC_TREELEARNER_DATA_PARTITION_HPP_

@@ -6,13 +6,13 @@
 
 #ifdef USE_CUDA
 
-#include <LightGBM/cuda/cuda_tree.hpp>
+#include <Falcata/cuda/cuda_tree.hpp>
 
 #include <algorithm>
 #include <cstring>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 CUDATree::CUDATree(int max_leaves, bool track_branch_features, bool is_linear,
   const int gpu_device_id, const bool has_categorical_feature,
@@ -449,6 +449,6 @@ void CUDATree::AsConstantTree(double val, int count) {
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

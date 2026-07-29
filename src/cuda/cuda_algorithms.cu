@@ -7,12 +7,12 @@
 
 #ifdef USE_CUDA
 
-#include <LightGBM/cuda/cuda_algorithms.hpp>
-#include <LightGBM/cuda/cuda_rocm_interop.h>
+#include <Falcata/cuda/cuda_algorithms.hpp>
+#include <Falcata/cuda/cuda_rocm_interop.h>
 
 #include <algorithm>
 
-namespace LightGBM {
+namespace Falcata {
 
 template <typename T>
 __global__ void ShufflePrefixSumGlobalKernel(T* values, size_t len, T* block_prefix_sum_buffer) {
@@ -446,6 +446,6 @@ void BitonicArgSortGlobal<data_size_t, int, true>(const data_size_t* values, int
   BitonicArgSortGlobalHelper<data_size_t, int, true>(values, indices, len);
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

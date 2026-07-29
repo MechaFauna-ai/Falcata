@@ -9,11 +9,11 @@
 
 #include <algorithm>
 
-#include <LightGBM/cuda/cuda_algorithms.hpp>
+#include <Falcata/cuda/cuda_algorithms.hpp>
 
 #include "cuda_gradient_discretizer.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 __global__ void ReduceMinMaxKernel(
   const data_size_t num_data,
@@ -352,6 +352,6 @@ void CUDAGradientDiscretizer::DiscretizeGradients(
   ++iter_;
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA

@@ -4,10 +4,10 @@
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  */
-#ifndef LIGHTGBM_SRC_TREELEARNER_MONOTONE_CONSTRAINTS_HPP_
-#define LIGHTGBM_SRC_TREELEARNER_MONOTONE_CONSTRAINTS_HPP_
+#ifndef FALCATA_SRC_TREELEARNER_MONOTONE_CONSTRAINTS_HPP_
+#define FALCATA_SRC_TREELEARNER_MONOTONE_CONSTRAINTS_HPP_
 
-#include <LightGBM/tree.h>
+#include <Falcata/tree.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -18,7 +18,7 @@
 
 #include "split_info.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 class LeafConstraintsBase;
 
@@ -1183,5 +1183,5 @@ LeafConstraintsBase* LeafConstraintsBase::Create(const Config* config,
   return new BasicLeafConstraints(num_leaves);
 }
 
-}  // namespace LightGBM
-#endif  // LIGHTGBM_SRC_TREELEARNER_MONOTONE_CONSTRAINTS_HPP_
+}  // namespace Falcata
+#endif  // FALCATA_SRC_TREELEARNER_MONOTONE_CONSTRAINTS_HPP_

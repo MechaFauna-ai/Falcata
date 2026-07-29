@@ -5,13 +5,13 @@
  * license information.
  */
 
-#include <LightGBM/train_share_states.h>
+#include <Falcata/train_share_states.h>
 
 #include <algorithm>
 #include <memory>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 
 MultiValBinWrapper::MultiValBinWrapper(MultiValBin* bin, data_size_t num_data,
   const std::vector<int>& feature_groups_contained, const int num_grad_quant_bins):
@@ -537,4 +537,4 @@ void TrainingShareStates::SetMultiValBin(MultiValBin* bin, data_size_t num_data,
     bin, num_data, feature_groups_contained, num_grad_quant_bins));
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata

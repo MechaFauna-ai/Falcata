@@ -4,20 +4,20 @@
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  */
-#ifndef LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_DATA_PARTITION_HPP_
-#define LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_DATA_PARTITION_HPP_
+#ifndef FALCATA_SRC_TREELEARNER_CUDA_CUDA_DATA_PARTITION_HPP_
+#define FALCATA_SRC_TREELEARNER_CUDA_CUDA_DATA_PARTITION_HPP_
 
 #ifdef USE_CUDA
 
-#include <LightGBM/bin.h>
-#include <LightGBM/meta.h>
-#include <LightGBM/tree.h>
+#include <Falcata/bin.h>
+#include <Falcata/meta.h>
+#include <Falcata/tree.h>
 
 #include <vector>
 
-#include <LightGBM/cuda/cuda_column_data.hpp>
-#include <LightGBM/cuda/cuda_split_info.hpp>
-#include <LightGBM/cuda/cuda_tree.hpp>
+#include <Falcata/cuda/cuda_column_data.hpp>
+#include <Falcata/cuda/cuda_split_info.hpp>
+#include <Falcata/cuda/cuda_tree.hpp>
 
 #include "cuda_leaf_splits.hpp"
 #include "cuda_hybrid_graph.hpp"
@@ -26,7 +26,7 @@
 #define SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION (1024)
 #define AGGREGATE_BLOCK_SIZE_DATA_PARTITION (1024)
 
-namespace LightGBM {
+namespace Falcata {
 
 /*! \brief Host-side per-split input for the batched (per-level) apply phase of the
  *  hybrid growth: everything the per-split Split() call would receive, restricted
@@ -235,7 +235,7 @@ class CUDADataPartition: public NCCLInfo {
    *  exact row grouping before the sizes are host-known */
   const data_size_t* level_smaller_leaf_counts() const { return cuda_level_smaller_counts_.RawDataReadOnly(); }
 
-#ifdef EXABOOST_HYBRID_GRAPH_SUPPORTED
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   /*! \brief graphs L1 body capture: launches the five batched apply kernels
    *  with placeholder grids on the capture stream (cuda_streams_[0]) and
    *  collects their graph nodes + roles; the device controller resizes them
@@ -281,7 +281,7 @@ class CUDADataPartition: public NCCLInfo {
    *  only; the caller already synchronized the prefetch stream). Values match
    *  FinishSplitBatch(num_splits) bit-for-bit */
   void ReadPrefetchedSplitBatch(const int num_splits, std::vector<int>* out) const;
-#endif  // EXABOOST_HYBRID_GRAPH_SUPPORTED
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
   /*! \brief the stream the batched apply kernels run on (graphs L1 captures
    *  the body on it) */
@@ -622,7 +622,7 @@ class CUDADataPartition: public NCCLInfo {
   hist_t* cuda_hist_;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA
-#endif  // LIGHTGBM_SRC_TREELEARNER_CUDA_CUDA_DATA_PARTITION_HPP_
+#endif  // FALCATA_SRC_TREELEARNER_CUDA_CUDA_DATA_PARTITION_HPP_

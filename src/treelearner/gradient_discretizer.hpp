@@ -4,13 +4,13 @@
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  */
-#ifndef LIGHTGBM_SRC_TREELEARNER_GRADIENT_DISCRETIZER_HPP_
-#define LIGHTGBM_SRC_TREELEARNER_GRADIENT_DISCRETIZER_HPP_
+#ifndef FALCATA_SRC_TREELEARNER_GRADIENT_DISCRETIZER_HPP_
+#define FALCATA_SRC_TREELEARNER_GRADIENT_DISCRETIZER_HPP_
 
-#include <LightGBM/bin.h>
-#include <LightGBM/meta.h>
-#include <LightGBM/tree.h>
-#include <LightGBM/utils/threading.h>
+#include <Falcata/bin.h>
+#include <Falcata/meta.h>
+#include <Falcata/tree.h>
+#include <Falcata/utils/threading.h>
 
 #include <random>
 #include <vector>
@@ -18,7 +18,7 @@
 #include "data_partition.hpp"
 #include "feature_histogram.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 class GradientDiscretizer {
  public:
@@ -124,6 +124,6 @@ class GradientDiscretizer {
   std::vector<std::vector<int32_t>> change_hist_bits_buffer_;
 };
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
-#endif  // LIGHTGBM_SRC_TREELEARNER_GRADIENT_DISCRETIZER_HPP_
+#endif  // FALCATA_SRC_TREELEARNER_GRADIENT_DISCRETIZER_HPP_

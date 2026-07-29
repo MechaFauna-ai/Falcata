@@ -4,20 +4,20 @@
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  */
-#ifndef LIGHTGBM_SRC_TREELEARNER_COL_SAMPLER_HPP_
-#define LIGHTGBM_SRC_TREELEARNER_COL_SAMPLER_HPP_
+#ifndef FALCATA_SRC_TREELEARNER_COL_SAMPLER_HPP_
+#define FALCATA_SRC_TREELEARNER_COL_SAMPLER_HPP_
 
-#include <LightGBM/dataset.h>
-#include <LightGBM/meta.h>
-#include <LightGBM/utils/common.h>
-#include <LightGBM/utils/openmp_wrapper.h>
-#include <LightGBM/utils/random.h>
+#include <Falcata/dataset.h>
+#include <Falcata/meta.h>
+#include <Falcata/utils/common.h>
+#include <Falcata/utils/openmp_wrapper.h>
+#include <Falcata/utils/random.h>
 
 #include <algorithm>
 #include <unordered_set>
 #include <vector>
 
-namespace LightGBM {
+namespace Falcata {
 class ColSampler {
  public:
   explicit ColSampler(const Config* config)
@@ -204,5 +204,5 @@ class ColSampler {
   std::vector<std::unordered_set<int>> interaction_constraints_;
 };
 
-}  // namespace LightGBM
-#endif  // LIGHTGBM_SRC_TREELEARNER_COL_SAMPLER_HPP_
+}  // namespace Falcata
+#endif  // FALCATA_SRC_TREELEARNER_COL_SAMPLER_HPP_

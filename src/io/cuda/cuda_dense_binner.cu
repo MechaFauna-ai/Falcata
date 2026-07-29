@@ -1,17 +1,17 @@
 /*!
- * Copyright (c) 2026 The ExaBoost developers. All rights reserved.
+ * Copyright (c) 2026 The Falcata developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for
  * license information.
  */
 #ifdef USE_CUDA
 
-#include <LightGBM/cuda/cuda_utils.hu>
+#include <Falcata/cuda/cuda_utils.hu>
 
 #include <cstdint>
 
 #include "cuda_dense_binner.hpp"
 
-namespace LightGBM {
+namespace Falcata {
 
 namespace {
 
@@ -279,6 +279,6 @@ void LaunchCUDADenseBinChunkKernel(const void* in, int dtype_code,
   }
 }
 
-}  // namespace LightGBM
+}  // namespace Falcata
 
 #endif  // USE_CUDA
