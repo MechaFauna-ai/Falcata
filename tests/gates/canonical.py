@@ -14,8 +14,9 @@ bytes are the behavior signature. Historical full-string locks: covtype
 
 Expected values (post-#13 tie-break baseline; tree-only since 2026-07-28):
   covtype 1023/10 quant hybrid      -> 20cb576f6758   (quality 0.91800)
-  covtype 1023/10 quant hybrid:off  -> cross-build-verified then recorded
-  numerai int8 quant example-shape  -> cross-build-verified then recorded
+  covtype 1023/10 quant hybrid:off  -> b4ef7b24f170   (also proves env
+                                        GROWTH=0 == cuda_plan hybrid:off)
+  numerai int8 quant example-shape  -> 6a6837e72e7d
 
 If a value differs: FIRST distrust the build/invocation, not the lock --
 rebuild from the exact commit and rerun this exact script. Only re-baseline
@@ -44,8 +45,8 @@ CACHE = Path(
 
 LOCKS = {
     "covtype": "20cb576f6758",
-    "covtype-classic": None,  # pending cross-build verification (task #44)
-    "numerai": None,  # pending cross-build verification (task #44)
+    "covtype-classic": "b4ef7b24f170",  # cross-build verified 2026-07-29
+    "numerai": "6a6837e72e7d",  # cross-build verified 2026-07-29
 }
 
 
