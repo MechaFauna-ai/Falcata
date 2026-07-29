@@ -180,7 +180,7 @@ elif [[ $TASK == "bdist" ]]; then
             cp "dist/falcata-${LGB_VER}-py3-none-${PLATFORM}.whl" "${BUILD_ARTIFACTSTAGINGDIRECTORY}" || exit 1
         fi
         # Make sure we can do both CPU and GPU; see tests/python_package_test/test_dual.py
-        export LIGHTGBM_TEST_DUAL_CPU_GPU=1
+        export FALCATA_TEST_DUAL_CPU_GPU=1
     fi
     pip install -v --no-deps ./dist/*.whl || exit 1
     pytest -ra ./tests || exit 1

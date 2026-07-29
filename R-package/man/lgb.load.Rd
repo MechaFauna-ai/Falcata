@@ -20,7 +20,7 @@ Load Falcata takes in either a file path or model string.
 }
 \examples{
 \donttest{
-\dontshow{setLGBMthreads(2L)}
+\dontshow{setFalcataThreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
 data(agaricus.train, package = "falcata")
 train <- agaricus.train

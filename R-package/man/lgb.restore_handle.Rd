@@ -29,7 +29,7 @@ call \link{lgb.configure_fast_predict} on the loaded \code{lgb.Booster} object.
 \examples{
 \donttest{
 library(falcata)
-\dontshow{setLGBMthreads(2L)}
+\dontshow{setFalcataThreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
 data("agaricus.train")
 model <- falcata(

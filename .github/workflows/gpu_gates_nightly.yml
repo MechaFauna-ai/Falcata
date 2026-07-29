@@ -48,4 +48,4 @@ jobs:
           python3 tests/gates/gpu_guard.py --require-free-mb 12000 --max-util 10 --timeout-min 30
           .gates-venv/bin/python tests/gates/bench_tier.py --out tests/gates/bench_results.json
           .gates-venv/bin/python tests/gates/perf_gate.py --results tests/gates/bench_results.json \
-            --baseline-file ~/.cache/exaboost-gates/bench_baseline.json --warn-pct 4 --fail-pct 8 --record
+            --baseline-file ~/.cache/falcata-gates/bench_baseline.json --warn-pct 4 --fail-pct 8 --record

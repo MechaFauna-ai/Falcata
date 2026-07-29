@@ -282,7 +282,7 @@ def _log_callback(msg: bytes) -> None:
 
 
 # connect the Python logger to logging in lib_falcata
-if environ.get("LIGHTGBM_BUILD_DOC", "False") != "True":
+if environ.get("FALCATA_BUILD_DOC", "False") != "True":
     _LIB.FLC_GetLastError.restype = ctypes.c_char_p
     callback = ctypes.CFUNCTYPE(None, ctypes.c_char_p)
     _LIB.callback = callback(_log_callback)  # type: ignore[attr-defined]

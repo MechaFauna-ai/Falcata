@@ -38,7 +38,7 @@ Features are shown ranked in a decreasing importance order.
 }
 \examples{
 \donttest{
-\dontshow{setLGBMthreads(2L)}
+\dontshow{setFalcataThreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
 data(agaricus.train, package = "falcata")
 train <- agaricus.train

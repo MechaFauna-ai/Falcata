@@ -448,7 +448,7 @@ if(USE_MPI)
 endif()
 
 set(
-    LGBM_SOURCES
+    FLC_SOURCES
       src/boosting/boosting.cpp
       src/boosting/gbdt_model_text.cpp
       src/boosting/gbdt_prediction.cpp
@@ -485,7 +485,7 @@ set(
       src/utils/openmp_wrapper.cpp
 )
 set(
-    LGBM_CUDA_SOURCES
+    FLC_CUDA_SOURCES
       src/boosting/cuda/cuda_score_updater.cpp
       src/boosting/cuda/cuda_score_updater.cu
       src/metric/cuda/cuda_binary_metric.cpp
@@ -526,16 +526,16 @@ set(
 )
 
 if(USE_NCCL)
-  list(APPEND LGBM_CUDA_SOURCES src/boosting/cuda/nccl_gbdt.cpp)
+  list(APPEND FLC_CUDA_SOURCES src/boosting/cuda/nccl_gbdt.cpp)
 endif()
 
 if(USE_CUDA OR USE_ROCM)
-  list(APPEND LGBM_SOURCES ${LGBM_CUDA_SOURCES})
+  list(APPEND FLC_SOURCES ${FLC_CUDA_SOURCES})
 endif()
 
 if(USE_ROCM)
   set(CU_FILES "")
-  foreach(file IN LISTS LGBM_CUDA_SOURCES)
+  foreach(file IN LISTS FLC_CUDA_SOURCES)
       string(REGEX MATCH "\\.cu$" is_cu_file "${file}")
       if(is_cu_file)
           list(APPEND CU_FILES "${file}")
@@ -544,7 +544,7 @@ if(USE_ROCM)
   set_source_files_properties(${CU_FILES} PROPERTIES LANGUAGE HIP)
 endif()
 
-add_library(falcata_objs OBJECT ${LGBM_SOURCES})
+add_library(falcata_objs OBJECT ${FLC_SOURCES})
 if(NOT __BUILD_FOR_R)
   target_link_libraries(falcata_objs PRIVATE nanoarrow_static)
 endif()
@@ -605,22 +605,22 @@ if(USE_SWIG)
       OUTPUT_NAME "lib_falcata_swig"
   )
   if(WIN32)
-    set(LGBM_SWIG_LIB_DESTINATION_PATH "${FLC_SWIG_DESTINATION_DIR}/lib_falcata_swig.dll")
+    set(FLC_SWIG_LIB_DESTINATION_PATH "${FLC_SWIG_DESTINATION_DIR}/lib_falcata_swig.dll")
     if(MINGW OR CYGWIN)
-        set(LGBM_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata.dll")
-        set(LGBM_SWIG_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata_swig.dll")
+        set(FLC_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata.dll")
+        set(FLC_SWIG_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata_swig.dll")
     else()
-        set(LGBM_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/Release/lib_falcata.dll")
-        set(LGBM_SWIG_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/Release/lib_falcata_swig.dll")
+        set(FLC_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/Release/lib_falcata.dll")
+        set(FLC_SWIG_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/Release/lib_falcata_swig.dll")
     endif()
   elseif(APPLE)
-    set(LGBM_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata.dylib")
-    set(LGBM_SWIG_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata_swig.jnilib")
-    set(LGBM_SWIG_LIB_DESTINATION_PATH "${FLC_SWIG_DESTINATION_DIR}/lib_falcata_swig.dylib")
+    set(FLC_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata.dylib")
+    set(FLC_SWIG_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata_swig.jnilib")
+    set(FLC_SWIG_LIB_DESTINATION_PATH "${FLC_SWIG_DESTINATION_DIR}/lib_falcata_swig.dylib")
   else()
-    set(LGBM_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata.so")
-    set(LGBM_SWIG_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata_swig.so")
-    set(LGBM_SWIG_LIB_DESTINATION_PATH "${FLC_SWIG_DESTINATION_DIR}/lib_falcata_swig.so")
+    set(FLC_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata.so")
+    set(FLC_SWIG_LIB_SOURCE_PATH "${PROJECT_SOURCE_DIR}/lib_falcata_swig.so")
+    set(FLC_SWIG_LIB_DESTINATION_PATH "${FLC_SWIG_DESTINATION_DIR}/lib_falcata_swig.so")
   endif()
   add_custom_command(
       TARGET _falcata_swig
@@ -630,14 +630,14 @@ if(USE_SWIG)
         "${CMAKE_COMMAND}"
         -E
         copy_if_different
-        "${LGBM_LIB_SOURCE_PATH}"
+        "${FLC_LIB_SOURCE_PATH}"
         "${FLC_SWIG_DESTINATION_DIR}"
       COMMAND
         "${CMAKE_COMMAND}"
         -E
         copy_if_different
-        "${LGBM_SWIG_LIB_SOURCE_PATH}"
-        "${LGBM_SWIG_LIB_DESTINATION_PATH}"
+        "${FLC_SWIG_LIB_SOURCE_PATH}"
+        "${FLC_SWIG_LIB_DESTINATION_PATH}"
       COMMAND "${Java_JAR_EXECUTABLE}" -cf falcatalib.jar com
     )
 endif()

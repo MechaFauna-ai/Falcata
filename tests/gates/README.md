@@ -22,7 +22,7 @@ diff review shows exactly which cells moved and is itself the review artifact.
 
 ## Nightly (`gpu_gates_nightly.yml`)
 
-- `EXABOOST_VERIFY=1` lattice sweep: ingestion fast paths self-verify
+- `FALCATA_VERIFY=1` lattice sweep: ingestion fast paths self-verify
   byte-for-byte against their reference implementations.
 - `fuzz.py`: seeded random (shape, dtype, NaN/sparsity) x (tree shape, quant
   mode, plan flips, objective) specs; checks validity, quant-mode determinism

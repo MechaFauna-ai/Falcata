@@ -3,8 +3,8 @@
  * Copyright (c) 2017-2026 The Falcata developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef FALCATA_R_PACKAGE_SRC_LIGHTGBM_R_H_
-#define FALCATA_R_PACKAGE_SRC_LIGHTGBM_R_H_
+#ifndef FALCATA_R_PACKAGE_SRC_FALCATA_R_H_
+#define FALCATA_R_PACKAGE_SRC_FALCATA_R_H_
 
 #include <Falcata/c_api.h>
 
@@ -904,4 +904,4 @@ FALCATA_C_EXPORT SEXP FLC_SetMaxThreads_R(
   SEXP num_threads
 );
 
-#endif  // FALCATA_R_PACKAGE_SRC_LIGHTGBM_R_H_
+#endif  // FALCATA_R_PACKAGE_SRC_FALCATA_R_H_

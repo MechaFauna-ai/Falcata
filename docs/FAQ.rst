@@ -394,10 +394,10 @@ This pattern will work with ``falcata > 4.5.0``.
 .. code-block:: python
 
     import numpy as np
-    from falcata import LGBMRegressor
+    from falcata import FalcataRegressor
     from sklearn.datasets import make_regression
 
-    class TruncatedRegressor(LGBMRegressor):
+    class TruncatedRegressor(FalcataRegressor):
 
         def __init__(self, **kwargs):
             super().__init__(**kwargs)

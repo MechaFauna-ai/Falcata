@@ -77,7 +77,7 @@ def main():
 
     lines = ["# GPU GBDT benchmark: Falcata vs LightGBM vs XGBoost vs CatBoost\n"]
 
-    sha_file = os.path.join(RESULTS_DIR, "exaboost_sha.txt")
+    sha_file = os.path.join(RESULTS_DIR, "falcata_sha.txt")
     sha = open(sha_file).read().strip()[:12] if os.path.exists(sha_file) else "unknown"
     gpu = subprocess.run(
         [

@@ -183,8 +183,8 @@ def test_cuda_lambdarank_deterministic_is_bit_identical_run_to_run(items_per_que
 
 
 @pytest.mark.skipif(
-    os.environ.get("LIGHTGBM_TEST_DUAL_CPU_GPU", "0") != "1",
-    reason="Set LIGHTGBM_TEST_DUAL_CPU_GPU=1 to test using CPU and GPU training from the same package.",
+    os.environ.get("FALCATA_TEST_DUAL_CPU_GPU", "0") != "1",
+    reason="Set FALCATA_TEST_DUAL_CPU_GPU=1 to test using CPU and GPU training from the same package.",
 )
 def test_cpu_and_gpu_work():
     # If compiled appropriately, the same installation will support both GPU and CPU.

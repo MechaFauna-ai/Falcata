@@ -29,10 +29,10 @@ Scikit-learn API
 .. autosummary::
     :toctree: pythonapi/
 
-    LGBMModel
-    LGBMClassifier
-    LGBMRegressor
-    LGBMRanker
+    FalcataModel
+    FalcataClassifier
+    FalcataRegressor
+    FalcataRanker
 
 Dask API
 --------
@@ -42,9 +42,9 @@ Dask API
 .. autosummary::
     :toctree: pythonapi/
 
-    DaskLGBMClassifier
-    DaskLGBMRegressor
-    DaskLGBMRanker
+    DaskFalcataClassifier
+    DaskFalcataRegressor
+    DaskFalcataRanker
 
 Callbacks
 ---------

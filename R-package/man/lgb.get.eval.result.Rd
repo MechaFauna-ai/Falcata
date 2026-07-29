@@ -33,7 +33,7 @@ Given a \code{lgb.Booster}, return evaluation results for a
 }
 \examples{
 \donttest{
-\dontshow{setLGBMthreads(2L)}
+\dontshow{setFalcataThreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
 # train a regression model
 data(agaricus.train, package = "falcata")

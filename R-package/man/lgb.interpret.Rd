@@ -30,7 +30,7 @@ Computes feature contribution components of rawscore prediction.
 }
 \examples{
 \donttest{
-\dontshow{setLGBMthreads(2L)}
+\dontshow{setFalcataThreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
 Logit <- function(x) log(x / (1.0 - x))
 data(agaricus.train, package = "falcata")

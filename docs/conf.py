@@ -67,7 +67,7 @@ class IgnoredDirective(Directive):
 
 # -- General configuration ------------------------------------------------
 
-os.environ["LIGHTGBM_BUILD_DOC"] = "True"
+os.environ["FALCATA_BUILD_DOC"] = "True"
 C_API = os.environ.get("C_API", "").lower().strip() != "no"
 RTD = bool(os.environ.get("READTHEDOCS", ""))
 RTD_VERSION = os.environ.get("READTHEDOCS_VERSION", "stable")
@@ -178,7 +178,7 @@ if C_API:
         "h": "c",
     }
     breathe_show_define_initializer = True
-    c_id_attributes = ["LIGHTGBM_C_EXPORT"]
+    c_id_attributes = ["FALCATA_C_EXPORT"]
 
 # -- Options for HTML output ----------------------------------------------
 

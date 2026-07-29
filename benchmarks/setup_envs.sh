@@ -26,7 +26,7 @@ pip install -q -r "$HERE/requirements.txt"
 # BUILD_WITH_SHARED_NCCL avoids nvlink failures against the static NCCL on
 # arches it was not device-linked for (e.g. Blackwell)
 (cd "$REPO" && CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=$ARCHS -DBUILD_WITH_SHARED_NCCL=ON" sh build-python.sh install --cuda)
-git -C "$REPO" rev-parse HEAD > "$ROOT/results/exaboost_sha.txt"
+git -C "$REPO" rev-parse HEAD > "$ROOT/results/falcata_sha.txt"
 python -c "import lightgbm as l; print('falcata OK', l.__version__)"
 deactivate
 
