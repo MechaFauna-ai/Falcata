@@ -67,10 +67,10 @@ if __name__ == "__main__":
     target_str = r"""
     <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
     <PropertyGroup>
-        <EnableLightGBMUnsupportedPlatformTargetCheck Condition="'$(EnableLightGBMUnsupportedPlatformTargetCheck)' == ''">true</EnableLightGBMUnsupportedPlatformTargetCheck>
+        <EnableFalcataUnsupportedPlatformTargetCheck Condition="'$(EnableFalcataUnsupportedPlatformTargetCheck)' == ''">true</EnableFalcataUnsupportedPlatformTargetCheck>
     </PropertyGroup>
-    <Target Name="_LightGBMCheckForUnsupportedPlatformTarget"
-            Condition="'$(EnableLightGBMUnsupportedPlatformTargetCheck)' == 'true'"
+    <Target Name="_FalcataCheckForUnsupportedPlatformTarget"
+            Condition="'$(EnableFalcataUnsupportedPlatformTargetCheck)' == 'true'"
             AfterTargets="_CheckForInvalidConfigurationAndPlatform">
         <Error Condition="'$(PlatformTarget)' != 'x64' AND
                         ('$(OutputType)' == 'Exe' OR '$(OutputType)'=='WinExe') AND

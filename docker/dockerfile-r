@@ -7,10 +7,10 @@ RUN apt-get update && \
         libomp-dev && \
     git clone \
         --recursive \
-        --branch stable \
-        --depth 1 https://github.com/lightgbm-org/LightGBM && \
-    cd ./LightGBM && \
+        --branch master \
+        --depth 1 https://github.com/BelixRogner/Falcata && \
+    cd ./Falcata && \
     sh build-cran-package.sh --no-build-vignettes && \
-    R CMD INSTALL ./lightgbm_*.tar.gz && \
+    R CMD INSTALL ./falcata_*.tar.gz && \
     cd .. && \
-    rm -rf ./LightGBM
+    rm -rf ./Falcata

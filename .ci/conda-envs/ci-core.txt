@@ -1,11 +1,11 @@
 # [description]
 #
-#   Core dependencies used across most LightGBM continuous integration (CI) jobs.
+#   Core dependencies used across most Falcata continuous integration (CI) jobs.
 #
 #   'python' constraint is intentionally omitted, so this file can be reused across
 #   Python versions.
 #
-#   These floors are not the oldest versions LightGBM supports... they're here just to make conda
+#   These floors are not the oldest versions Falcata supports... they're here just to make conda
 #   solves faster, and should generally be the latest versions that work for all CI jobs using this.
 #
 # [usage]
