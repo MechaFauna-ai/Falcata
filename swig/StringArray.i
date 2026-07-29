@@ -8,7 +8,7 @@
 /**
  * This wraps the StringArray.hpp class for SWIG usage,
  * adding the basic C-style wrappers needed to make it
- * usable for the users of the low-level lightgbmJNI API.
+ * usable for the users of the low-level falcatalibJNI API.
  */
 
 %{

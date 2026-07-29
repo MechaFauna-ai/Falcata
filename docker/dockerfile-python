@@ -23,10 +23,10 @@ RUN apt-get update && \
     /bin/bash miniforge.sh -f -b -p $CONDA_DIR && \
     export PATH="$CONDA_DIR/bin:$PATH" && \
     conda config --set always_yes yes --set changeps1 no && \
-    # lightgbm
+    # falcata
     conda install -q -y numpy scipy scikit-learn pandas && \
-    git clone --recursive --branch stable --depth 1 https://github.com/lightgbm-org/LightGBM && \
-    cd ./LightGBM && \
+    git clone --recursive --branch master --depth 1 https://github.com/BelixRogner/Falcata && \
+    cd ./Falcata && \
     sh ./build-python.sh install && \
     # clean
     apt-get autoremove -y && apt-get clean && \

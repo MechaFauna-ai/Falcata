@@ -23,14 +23,14 @@ RUN curl -L -o cmake.sh https://github.com/Kitware/CMake/releases/download/v3.29
 
 RUN git clone \
         --recursive \
-        --branch stable \
+        --branch master \
         --depth 1 \
-        https://github.com/lightgbm-org/LightGBM && \
-    cd ./LightGBM && \
+        https://github.com/BelixRogner/Falcata && \
+    cd ./Falcata && \
     cmake -B build -S . && \
     cmake --build build -j4 && \
     cmake --install build && \
     cd "${HOME}" && \
-    rm -rf LightGBM
+    rm -rf Falcata
 
-ENTRYPOINT ["lightgbm"]
+ENTRYPOINT ["falcata"]
