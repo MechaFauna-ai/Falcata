@@ -27,6 +27,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          submodules: true
       - name: Wait for GPU (shared with training jobs)
         run: python3 tests/gates/gpu_guard.py --require-free-mb 8000 --max-util 20 --timeout-min 45
       - name: Build CUDA wheel (ccache)
