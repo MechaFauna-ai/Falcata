@@ -22,12 +22,12 @@ If you want to use validation data, you should set reference to training data
 \dontshow{setLGBMthreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
 # create training Dataset
-data(agaricus.train, package ="lightgbm")
+data(agaricus.train, package ="falcata")
 train <- agaricus.train
 dtrain <- lgb.Dataset(train$data, label = train$label)
 
 # create a validation Dataset, using dtrain as a reference
-data(agaricus.test, package = "lightgbm")
+data(agaricus.test, package = "falcata")
 test <- agaricus.test
 dtest <- lgb.Dataset(test$data, label = test$label)
 lgb.Dataset.set.reference(dtest, dtrain)

@@ -2,7 +2,7 @@
 # Obviously, we are in a controlled environment, without issues (real rules).
 # Do not do this in a real scenario.
 
-library(lightgbm)
+library(falcata)
 
 # define helper functions for creating plots
 
@@ -77,10 +77,10 @@ library(lightgbm)
 }
 
 # load some data
-data(agaricus.train, package = "lightgbm")
+data(agaricus.train, package = "falcata")
 train <- agaricus.train
 dtrain <- lgb.Dataset(train$data, label = train$label)
-data(agaricus.test, package = "lightgbm")
+data(agaricus.test, package = "falcata")
 test <- agaricus.test
 dtest <- lgb.Dataset.create.valid(dtrain, test$data, label = test$label)
 

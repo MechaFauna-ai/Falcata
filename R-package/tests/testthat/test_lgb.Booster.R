@@ -47,8 +47,8 @@ test_that("lgb.get.eval.result() should throw an informative error if booster is
 })
 
 test_that("lgb.get.eval.result() should throw an informative error for incorrect data_name", {
-    data(agaricus.train, package = "lightgbm")
-    data(agaricus.test, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
+    data(agaricus.test, package = "falcata")
     dtrain <- lgb.Dataset(
         agaricus.train$data
         , label = agaricus.train$label
@@ -82,8 +82,8 @@ test_that("lgb.get.eval.result() should throw an informative error for incorrect
 })
 
 test_that("lgb.get.eval.result() should throw an informative error for incorrect eval_name", {
-    data(agaricus.train, package = "lightgbm")
-    data(agaricus.test, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
+    data(agaricus.test, package = "falcata")
     dtrain <- lgb.Dataset(
         agaricus.train$data
         , label = agaricus.train$label
@@ -117,11 +117,11 @@ test_that("lgb.get.eval.result() should throw an informative error for incorrect
 
 test_that("lgb.load() gives the expected error messages given different incorrect inputs", {
     set.seed(708L)
-    data(agaricus.train, package = "lightgbm")
-    data(agaricus.test, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
+    data(agaricus.test, package = "falcata")
     train <- agaricus.train
     test <- agaricus.test
-    bst <- lightgbm(
+    bst <- falcata(
         data = as.matrix(train$data)
         , label = train$label
         , params = list(
@@ -163,8 +163,8 @@ test_that("lgb.load() gives the expected error messages given different incorrec
 
 test_that("Loading a Booster from a text file works", {
     set.seed(708L)
-    data(agaricus.train, package = "lightgbm")
-    data(agaricus.test, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
+    data(agaricus.test, package = "falcata")
     train <- agaricus.train
     test <- agaricus.test
     params <- list(
@@ -182,7 +182,7 @@ test_that("Loading a Booster from a text file works", {
         , verbosity = .LGB_VERBOSITY
         , num_threads = .LGB_MAX_THREADS
     )
-    bst <- lightgbm(
+    bst <- falcata(
         data = as.matrix(train$data)
         , label = train$label
         , params = params
@@ -253,11 +253,11 @@ test_that("boosters with linear models at leaves can be written to text file and
 
 test_that("Loading a Booster from a string works", {
     set.seed(708L)
-    data(agaricus.train, package = "lightgbm")
-    data(agaricus.test, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
+    data(agaricus.test, package = "falcata")
     train <- agaricus.train
     test <- agaricus.test
-    bst <- lightgbm(
+    bst <- falcata(
         data = as.matrix(train$data)
         , label = train$label
         , params = list(
@@ -288,9 +288,9 @@ test_that("Loading a Booster from a string works", {
 
 test_that("Saving a large model to string should work", {
     set.seed(708L)
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     train <- agaricus.train
-    bst <- lightgbm(
+    bst <- falcata(
         data = as.matrix(train$data)
         , label = train$label
         , params = list(
@@ -332,9 +332,9 @@ test_that("Saving a large model to string should work", {
 
 test_that("Saving a large model to JSON should work", {
     set.seed(708L)
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     train <- agaricus.train
-    bst <- lightgbm(
+    bst <- falcata(
         data = as.matrix(train$data)
         , label = train$label
         , params = list(
@@ -353,18 +353,18 @@ test_that("Saving a large model to JSON should work", {
     # buffer size used in FLC_BoosterDumpModel_R
     expect_gt(nchar(model_json), 1024L * 1024L)
 
-    # check that it is valid JSON that looks like a LightGBM model
+    # check that it is valid JSON that looks like a Falcata model
     model_list <- jsonlite::fromJSON(model_json)
     expect_equal(model_list[["objective"]], "binary sigmoid:1")
 })
 
 test_that("If a string and a file are both passed to lgb.load() the file is used model_str is totally ignored", {
     set.seed(708L)
-    data(agaricus.train, package = "lightgbm")
-    data(agaricus.test, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
+    data(agaricus.test, package = "falcata")
     train <- agaricus.train
     test <- agaricus.test
-    bst <- lightgbm(
+    bst <- falcata(
         data = as.matrix(train$data)
         , label = train$label
         , params = list(
@@ -397,8 +397,8 @@ test_that("If a string and a file are both passed to lgb.load() the file is used
 
 test_that("Creating a Booster from a Dataset should work", {
     set.seed(708L)
-    data(agaricus.train, package = "lightgbm")
-    data(agaricus.test, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
+    data(agaricus.test, package = "falcata")
     dtrain <- lgb.Dataset(
         agaricus.train$data
         , label = agaricus.train$label
@@ -419,9 +419,9 @@ test_that("Creating a Booster from a Dataset should work", {
 
 test_that("Creating a Booster from a Dataset with an existing predictor should work", {
     set.seed(708L)
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     nrounds <- 2L
-    bst <- lightgbm(
+    bst <- falcata(
         data = as.matrix(agaricus.train$data)
         , label = agaricus.train$label
         , params = list(
@@ -433,7 +433,7 @@ test_that("Creating a Booster from a Dataset with an existing predictor should w
         )
         , nrounds = nrounds
     )
-    data(agaricus.test, package = "lightgbm")
+    data(agaricus.test, package = "falcata")
     dtest <- Dataset$new(
         data = agaricus.test$data
         , label = agaricus.test$label
@@ -457,7 +457,7 @@ test_that("Creating a Booster from a Dataset with an existing predictor should w
 
 test_that("Booster$eval() should work on a Dataset stored in a binary file", {
     set.seed(708L)
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     train <- agaricus.train
     dtrain <- lgb.Dataset(train$data, label = train$label)
 
@@ -473,7 +473,7 @@ test_that("Booster$eval() should work on a Dataset stored in a binary file", {
         , nrounds = 2L
     )
 
-    data(agaricus.test, package = "lightgbm")
+    data(agaricus.test, package = "falcata")
     test <- agaricus.test
     dtest <- lgb.Dataset.create.valid(
         dataset = dtrain
@@ -503,7 +503,7 @@ test_that("Booster$eval() should work on a Dataset stored in a binary file", {
     )
 
     expect_true(abs(eval_in_mem[[1L]][["value"]] - 0.1744423) < .LGB_NUMERIC_TOLERANCE)
-    # refer to https://github.com/lightgbm-org/LightGBM/issues/4680
+    # refer to https://github.com/falcata-org/Falcata/issues/4680
     if (isTRUE(.LGB_ON_WINDOWS)) {
       expect_equal(eval_in_mem, eval_from_file)
     } else {
@@ -513,12 +513,12 @@ test_that("Booster$eval() should work on a Dataset stored in a binary file", {
 
 test_that("Booster$rollback_one_iter() should work as expected", {
     set.seed(708L)
-    data(agaricus.train, package = "lightgbm")
-    data(agaricus.test, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
+    data(agaricus.test, package = "falcata")
     train <- agaricus.train
     test <- agaricus.test
     nrounds <- 5L
-    bst <- lightgbm(
+    bst <- falcata(
         data = as.matrix(train$data)
         , label = train$label
         , params = list(
@@ -549,11 +549,11 @@ test_that("Booster$rollback_one_iter() should work as expected", {
 
 test_that("Booster$update() passing a train_set works as expected", {
     set.seed(708L)
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     nrounds <- 2L
 
     # train with 2 rounds and then update
-    bst <- lightgbm(
+    bst <- falcata(
         data = as.matrix(agaricus.train$data)
         , label = agaricus.train$label
         , params = list(
@@ -578,7 +578,7 @@ test_that("Booster$update() passing a train_set works as expected", {
     expect_equal(bst$current_iter(), nrounds + 1L)
 
     # train with 3 rounds directly
-    bst2 <- lightgbm(
+    bst2 <- falcata(
         data = as.matrix(agaricus.train$data)
         , label = agaricus.train$label
         , params = list(
@@ -600,11 +600,11 @@ test_that("Booster$update() passing a train_set works as expected", {
 
 test_that("Booster$update() throws an informative error if you provide a non-Dataset to update()", {
     set.seed(708L)
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     nrounds <- 2L
 
     # train with 2 rounds and then update
-    bst <- lightgbm(
+    bst <- falcata(
         data = as.matrix(agaricus.train$data)
         , label = agaricus.train$label
         , params = list(
@@ -792,7 +792,7 @@ test_that("Booster$num_trees() and $num_iter() work (with early stopping)", {
 })
 
 test_that("Booster should store parameters and Booster$reset_parameter() should update them", {
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     dtrain <- lgb.Dataset(
         agaricus.train$data
         , label = agaricus.train$label
@@ -823,7 +823,7 @@ test_that("Booster should store parameters and Booster$reset_parameter() should 
 })
 
 test_that("Booster$params should include dataset params, before and after Booster$reset_parameter()", {
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     dtrain <- lgb.Dataset(
         agaricus.train$data
         , label = agaricus.train$label
@@ -870,9 +870,9 @@ test_that("Booster$params should include dataset params, before and after Booste
 
 test_that("Saving a model with different feature importance types works", {
     set.seed(708L)
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     train <- agaricus.train
-    bst <- lightgbm(
+    bst <- falcata(
         data = as.matrix(train$data)
         , label = train$label
         , params = list(
@@ -926,9 +926,9 @@ test_that("Saving a model with different feature importance types works", {
 
 test_that("Saving a model with unknown importance type fails", {
     set.seed(708L)
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     train <- agaricus.train
-    bst <- lightgbm(
+    bst <- falcata(
         data = as.matrix(train$data)
         , label = train$label
         , params = list(
@@ -1191,7 +1191,7 @@ test_that("early_stopping, num_iterations are stored correctly in model string e
 })
 
 test_that("Booster: method calls Booster with a null handle should raise an informative error and not segfault", {
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     train <- agaricus.train
     dtrain <- lgb.Dataset(train$data, label = train$label)
     bst <- lgb.train(
@@ -1266,7 +1266,7 @@ test_that("Booster: method calls Booster with a null handle should raise an info
 })
 
 test_that("Booster$new() using a Dataset with a null handle should raise an informative error and not segfault", {
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     train <- agaricus.train
     dtrain <- lgb.Dataset(train$data, label = train$label)
     dtrain$construct()
@@ -1285,7 +1285,7 @@ test_that("Booster$new() using a Dataset with a null handle should raise an info
 })
 
 test_that("Booster$new() raises informative errors for malformed inputs", {
-  data(agaricus.train, package = "lightgbm")
+  data(agaricus.train, package = "falcata")
   train <- agaricus.train
   dtrain <- lgb.Dataset(train$data, label = train$label)
 
@@ -1328,7 +1328,7 @@ test_that("Booster$new() raises informative errors for malformed inputs", {
     }, type = "message")
   }, regexp = "Could not open file-that-does-not-exist.model")
 
-  # model file doesn't contain a valid LightGBM model
+  # model file doesn't contain a valid Falcata model
   model_file <- tempfile(fileext = ".model")
   writeLines(
     text = c("make", "good", "predictions")
@@ -1422,7 +1422,7 @@ test_that("lgb.cv() correctly handles passing through params to the model file",
 })
 
 test_that("params (including dataset params) should be stored in .rds file for Booster", {
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     dtrain <- lgb.Dataset(
         agaricus.train$data
         , label = agaricus.train$label
@@ -1459,8 +1459,8 @@ test_that("params (including dataset params) should be stored in .rds file for B
 })
 
 test_that("Handle is automatically restored when calling predict", {
-    data(agaricus.train, package = "lightgbm")
-    bst <- lightgbm(
+    data(agaricus.train, package = "falcata")
+    bst <- falcata(
         agaricus.train$data
         , agaricus.train$label
         , nrounds = 5L
@@ -1526,12 +1526,12 @@ test_that("boosters with linear models at leaves can be written to RDS and re-lo
 }
 
 .has_expected_content_for_fitted_model <- function(printed_txt) {
-  expect_true(any(startsWith(printed_txt, "LightGBM Model")))
+  expect_true(any(startsWith(printed_txt, "Falcata Model")))
   expect_true(any(startsWith(printed_txt, "Fitted to dataset")))
 }
 
 .has_expected_content_for_finalized_model <- function(printed_txt) {
-  expect_true(any(printed_txt == "LightGBM Model"))
+  expect_true(any(printed_txt == "Falcata Model"))
   expect_true(any(grepl("Booster handle is invalid", printed_txt, fixed = TRUE)))
 }
 
@@ -1710,9 +1710,9 @@ test_that("FLC_BoosterGetNumFeature_R returns correct outputs", {
 # Helper function that creates a fitted model with nrounds boosting rounds
 .get_test_model <- function(nrounds) {
     set.seed(1L)
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     train <- agaricus.train
-    bst <- lightgbm(
+    bst <- falcata(
         data = as.matrix(train$data)
         , label = train$label
         , params = list(objective = "binary", num_threads = .LGB_MAX_THREADS)

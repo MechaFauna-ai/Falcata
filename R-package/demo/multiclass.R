@@ -1,4 +1,4 @@
-library(lightgbm)
+library(falcata)
 
 # We load the default iris dataset shipped with R
 data(iris)

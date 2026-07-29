@@ -18,13 +18,13 @@ the dataset you passed in
 }
 \description{
 Set the categorical features of an \code{lgb.Dataset} object. Use this function
-             to tell LightGBM which features should be treated as categorical.
+             to tell Falcata which features should be treated as categorical.
 }
 \examples{
 \donttest{
 \dontshow{setLGBMthreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
-data(agaricus.train, package = "lightgbm")
+data(agaricus.train, package = "falcata")
 train <- agaricus.train
 dtrain <- lgb.Dataset(train$data, label = train$label)
 data_file <- tempfile(fileext = ".data")

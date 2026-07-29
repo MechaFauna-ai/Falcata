@@ -1,19 +1,19 @@
 /*!
  * Copyright (c) 2018-2026 Microsoft Corporation. All rights reserved.
- * Copyright (c) 2018-2026 The LightGBM developers. All rights reserved.
+ * Copyright (c) 2018-2026 The Falcata developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-/* lightgbmlib.i */
-%module lightgbmlib
+/* falcatalib.i */
+%module falcatalib
 %ignore FLC_BoosterSaveModelToString;
 %ignore FLC_BoosterGetEvalNames;
 %ignore FLC_BoosterGetFeatureNames;
 %{
 /* Includes the header in the wrapper code */
-#include "../include/LightGBM/export.h"
-#include "../include/LightGBM/utils/log.h"
-#include "../include/LightGBM/utils/common.h"
-#include "../include/LightGBM/c_api.h"
+#include "../include/Falcata/export.h"
+#include "../include/Falcata/utils/log.h"
+#include "../include/Falcata/utils/common.h"
+#include "../include/Falcata/c_api.h"
 %}
 
 %include "various.i"
@@ -27,8 +27,8 @@
 %apply char **STRING_ARRAY { char **feature_names, char **out_strs }
 
 /* header files */
-%include "../include/LightGBM/export.h"
-%include "../include/LightGBM/c_api.h"
+%include "../include/Falcata/export.h"
+%include "../include/Falcata/c_api.h"
 
 %typemap(in, numinputs = 0) JNIEnv *jenv %{
   $1 = jenv;

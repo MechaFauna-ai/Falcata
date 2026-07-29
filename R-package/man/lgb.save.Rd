@@ -2,7 +2,7 @@
 % Please edit documentation in R/lgb.Booster.R
 \name{lgb.save}
 \alias{lgb.save}
-\title{Save LightGBM model}
+\title{Save Falcata model}
 \usage{
 lgb.save(booster, filename, num_iteration = NULL, start_iteration = 1L)
 }
@@ -23,17 +23,17 @@ lgb.save(booster, filename, num_iteration = NULL, start_iteration = 1L)
 lgb.Booster
 }
 \description{
-Save LightGBM model
+Save Falcata model
 }
 \examples{
 \donttest{
 \dontshow{setLGBMthreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
-library(lightgbm)
-data(agaricus.train, package = "lightgbm")
+library(falcata)
+data(agaricus.train, package = "falcata")
 train <- agaricus.train
 dtrain <- lgb.Dataset(train$data, label = train$label)
-data(agaricus.test, package = "lightgbm")
+data(agaricus.test, package = "falcata")
 test <- agaricus.test
 dtest <- lgb.Dataset.create.valid(dtrain, test$data, label = test$label)
 params <- list(

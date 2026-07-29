@@ -2,7 +2,7 @@
 % Please edit documentation in R/lgb.Booster.R
 \name{lgb.dump}
 \alias{lgb.dump}
-\title{Dump LightGBM model to json}
+\title{Dump Falcata model to json}
 \usage{
 lgb.dump(booster, num_iteration = NULL, start_iteration = 1L)
 }
@@ -21,17 +21,17 @@ lgb.dump(booster, num_iteration = NULL, start_iteration = 1L)
 json format of model
 }
 \description{
-Dump LightGBM model to json
+Dump Falcata model to json
 }
 \examples{
 \donttest{
-library(lightgbm)
+library(falcata)
 \dontshow{setLGBMthreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
-data(agaricus.train, package = "lightgbm")
+data(agaricus.train, package = "falcata")
 train <- agaricus.train
 dtrain <- lgb.Dataset(train$data, label = train$label)
-data(agaricus.test, package = "lightgbm")
+data(agaricus.test, package = "falcata")
 test <- agaricus.test
 dtest <- lgb.Dataset.create.valid(dtrain, test$data, label = test$label)
 params <- list(

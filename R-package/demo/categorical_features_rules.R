@@ -2,7 +2,7 @@
 
 # Load libraries
 library(data.table)
-library(lightgbm)
+library(falcata)
 
 # Load data and look at the structure
 #
@@ -24,14 +24,14 @@ library(lightgbm)
 # $ previous : int  0 4 1 0 0 3 2 0 0 2 ...
 # $ poutcome : chr  "unknown" "failure" "failure" "unknown" ...
 # $ y        : chr  "no" "no" "no" "no" ...
-data(bank, package = "lightgbm")
+data(bank, package = "falcata")
 str(bank)
 
 # We are dividing the dataset into two: one train, one validation
 bank_train <- bank[1L:4000L, ]
 bank_test <- bank[4001L:4521L, ]
 
-# We must now transform the data to fit in LightGBM
+# We must now transform the data to fit in Falcata
 # For this task, we use lgb.convert_with_rules
 # The function transforms the data into a fittable data
 #
@@ -62,11 +62,11 @@ str(bank_test)
 bank_train$y <- bank_train$y - 1L
 bank_test$y <- bank_test$y - 1L
 
-# Data input to LightGBM must be a matrix, without the label
+# Data input to Falcata must be a matrix, without the label
 my_data_train <- as.matrix(bank_train[, 1L:16L, with = FALSE])
 my_data_test <- as.matrix(bank_test[, 1L:16L, with = FALSE])
 
-# Creating the LightGBM dataset with categorical features
+# Creating the Falcata dataset with categorical features
 # The categorical features can be passed to lgb.train to not copy and paste a lot
 dtrain <- lgb.Dataset(
     data = my_data_train

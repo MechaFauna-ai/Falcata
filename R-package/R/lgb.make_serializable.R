@@ -1,6 +1,6 @@
 #' @name lgb.make_serializable
-#' @title Make a LightGBM object serializable by keeping raw bytes
-#' @description If a LightGBM model object was produced with argument `serializable=FALSE`, the R object will not
+#' @title Make a Falcata object serializable by keeping raw bytes
+#' @description If a Falcata model object was produced with argument `serializable=FALSE`, the R object will not
 #' be serializable (e.g. cannot save and load with \code{saveRDS} and \code{readRDS}) as it will lack the raw bytes
 #' needed to reconstruct its underlying C++ object. This function can be used to forcibly produce those serialized
 #' raw bytes and make the object serializable. Note that the object will be modified in-place.

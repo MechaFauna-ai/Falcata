@@ -896,7 +896,7 @@ Booster <- R6::R6Class(
 #'             Note that, if using custom objectives, types "class" and "response" will not be available and will
 #'             default towards using "raw" instead.
 #'
-#'             If the model was fit through function \link{lightgbm} and it was passed a factor as labels,
+#'             If the model was fit through function \link{falcata} and it was passed a factor as labels,
 #'             passing the prediction type through \code{params} instead of through this argument might
 #'             result in factor levels for classification objectives not being applied correctly to the
 #'             resulting output.
@@ -912,7 +912,7 @@ Booster <- R6::R6Class(
 #'                      best iteration is used; otherwise, all iterations from start_iteration are used.
 #'                      If <= 0, all iterations from start_iteration are used (no limits).
 #' @param params a list of additional named parameters. See
-#'               \href{https://lightgbm.readthedocs.io/en/latest/Parameters.html#predict-parameters}{
+#'               \href{https://falcata.readthedocs.io/en/latest/Parameters.html#predict-parameters}{
 #'               the "Predict Parameters" section of the documentation} for a list of parameters and
 #'               valid values. Where these conflict with the values of keyword arguments to this function,
 #'               the values in \code{params} take precedence.
@@ -921,7 +921,7 @@ Booster <- R6::R6Class(
 NULL
 
 #' @name predict.lgb.Booster
-#' @title Predict method for LightGBM model
+#' @title Predict method for Falcata model
 #' @description Predicted values based on class \code{lgb.Booster}
 #'
 #'              \emph{New in version 4.0.0}
@@ -958,7 +958,7 @@ NULL
 #'         \code{newdata} and one column per output.
 #'
 #'         For \code{type="leaf"} predictions, will return a matrix with one row per observation in \code{newdata}
-#'         and one column per tree. Note that for multiclass objectives, LightGBM trains one tree per class at each
+#'         and one column per tree. Note that for multiclass objectives, Falcata trains one tree per class at each
 #'         boosting iteration. That means that, for example, for a multiclass model with 3 classes, the leaf
 #'         predictions for the first class can be found in columns 1, 4, 7, 10, etc.
 #'
@@ -969,7 +969,7 @@ NULL
 #'         in the order "feature contributions for first class, feature contributions for second class, feature
 #'         contributions for third class, etc.".
 #'
-#'         If the model was fit through function \link{lightgbm} and it was passed a factor as labels, predictions
+#'         If the model was fit through function \link{falcata} and it was passed a factor as labels, predictions
 #'         returned from this function will retain the factor levels (either as values for \code{type="class"}, or
 #'         as column names for \code{type="response"} and \code{type="raw"} for multi-class objectives). Note that
 #'         passing the requested prediction type under \code{params} instead of through \code{type} might result in
@@ -978,10 +978,10 @@ NULL
 #' \donttest{
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
-#' data(agaricus.train, package = "lightgbm")
+#' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
 #' dtrain <- lgb.Dataset(train$data, label = train$label)
-#' data(agaricus.test, package = "lightgbm")
+#' data(agaricus.test, package = "falcata")
 #' test <- agaricus.test
 #' dtest <- lgb.Dataset.create.valid(dtrain, test$data, label = test$label)
 #' params <- list(
@@ -1094,7 +1094,7 @@ predict.lgb.Booster <- function(object,
 }
 
 #' @title Configure Fast Single-Row Predictions
-#' @description Pre-configures a LightGBM model object to produce fast single-row predictions
+#' @description Pre-configures a Falcata model object to produce fast single-row predictions
 #'              for a given input data type, prediction type, and parameters.
 #' @details Calling this function multiple times with different parameters might not override
 #'          the previous configuration and might trigger undefined behavior.
@@ -1132,7 +1132,7 @@ predict.lgb.Booster <- function(object,
 #'          and as such, this function will produce an error if passing \code{csr=TRUE} and
 #'          \code{type = "contrib"} together.
 #' @inheritParams lgb_predict_shared_params
-#' @param model LightGBM model object (class \code{lgb.Booster}).
+#' @param model Falcata model object (class \code{lgb.Booster}).
 #'
 #'              \bold{The object will be modified in-place}.
 #' @param csr Whether the prediction function is going to be called on sparse CSR inputs.
@@ -1145,7 +1145,7 @@ predict.lgb.Booster <- function(object,
 #' \donttest{
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
-#' library(lightgbm)
+#' library(falcata)
 #' data(mtcars)
 #' X <- as.matrix(mtcars[, -1L])
 #' y <- mtcars[, 1L]
@@ -1211,8 +1211,8 @@ lgb.configure_fast_predict <- function(model,
 }
 
 #' @name print.lgb.Booster
-#' @title Print method for LightGBM model
-#' @description Show summary information about a LightGBM model object (same as \code{summary}).
+#' @title Print method for Falcata model
+#' @description Show summary information about a Falcata model object (same as \code{summary}).
 #'
 #'              \emph{New in version 4.0.0}
 #'
@@ -1228,12 +1228,12 @@ print.lgb.Booster <- function(x, ...) {
   if (!handle_is_null) {
     ntrees <- x$current_iter()
     if (ntrees == 1L) {
-      cat("LightGBM Model (1 tree)\n")
+      cat("Falcata Model (1 tree)\n")
     } else {
-      cat(sprintf("LightGBM Model (%d trees)\n", ntrees))
+      cat(sprintf("Falcata Model (%d trees)\n", ntrees))
     }
   } else {
-    cat("LightGBM Model\n")
+    cat("Falcata Model\n")
   }
 
   if (!handle_is_null) {
@@ -1266,8 +1266,8 @@ print.lgb.Booster <- function(x, ...) {
 }
 
 #' @name summary.lgb.Booster
-#' @title Summary method for LightGBM model
-#' @description Show summary information about a LightGBM model object (same as \code{print}).
+#' @title Summary method for Falcata model
+#' @description Show summary information about a Falcata model object (same as \code{print}).
 #'
 #'              \emph{New in version 4.0.0}
 #'
@@ -1280,8 +1280,8 @@ summary.lgb.Booster <- function(object, ...) {
 }
 
 #' @name lgb.load
-#' @title Load LightGBM model
-#' @description Load LightGBM takes in either a file path or model string.
+#' @title Load Falcata model
+#' @description Load Falcata takes in either a file path or model string.
 #'              If both are provided, Load will default to loading from file
 #' @param filename path of model file
 #' @param model_str a str containing the model (as a \code{character} or \code{raw} vector)
@@ -1292,10 +1292,10 @@ summary.lgb.Booster <- function(object, ...) {
 #' \donttest{
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
-#' data(agaricus.train, package = "lightgbm")
+#' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
 #' dtrain <- lgb.Dataset(train$data, label = train$label)
-#' data(agaricus.test, package = "lightgbm")
+#' data(agaricus.test, package = "falcata")
 #' test <- agaricus.test
 #' dtest <- lgb.Dataset.create.valid(dtrain, test$data, label = test$label)
 #' params <- list(
@@ -1347,8 +1347,8 @@ lgb.load <- function(filename = NULL, model_str = NULL) {
 }
 
 #' @name lgb.save
-#' @title Save LightGBM model
-#' @description Save LightGBM model
+#' @title Save Falcata model
+#' @description Save Falcata model
 #' @param booster Object of class \code{lgb.Booster}
 #' @param filename Saved filename
 #' @param num_iteration Number of iterations to save, NULL or <= 0 means use best iteration
@@ -1364,11 +1364,11 @@ lgb.load <- function(filename = NULL, model_str = NULL) {
 #' \donttest{
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
-#' library(lightgbm)
-#' data(agaricus.train, package = "lightgbm")
+#' library(falcata)
+#' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
 #' dtrain <- lgb.Dataset(train$data, label = train$label)
-#' data(agaricus.test, package = "lightgbm")
+#' data(agaricus.test, package = "falcata")
 #' test <- agaricus.test
 #' dtest <- lgb.Dataset.create.valid(dtrain, test$data, label = test$label)
 #' params <- list(
@@ -1414,8 +1414,8 @@ lgb.save <- function(
 }
 
 #' @name lgb.dump
-#' @title Dump LightGBM model to json
-#' @description Dump LightGBM model to json
+#' @title Dump Falcata model to json
+#' @description Dump Falcata model to json
 #' @param booster Object of class \code{lgb.Booster}
 #' @param num_iteration Number of iterations to be dumped. NULL or <= 0 means use best iteration
 #' @param start_iteration Index (1-based) of the first boosting round to dump.
@@ -1428,13 +1428,13 @@ lgb.save <- function(
 #'
 #' @examples
 #' \donttest{
-#' library(lightgbm)
+#' library(falcata)
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
-#' data(agaricus.train, package = "lightgbm")
+#' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
 #' dtrain <- lgb.Dataset(train$data, label = train$label)
-#' data(agaricus.test, package = "lightgbm")
+#' data(agaricus.test, package = "falcata")
 #' test <- agaricus.test
 #' dtest <- lgb.Dataset.create.valid(dtrain, test$data, label = test$label)
 #' params <- list(
@@ -1488,10 +1488,10 @@ lgb.dump <- function(booster, num_iteration = NULL, start_iteration = 1L) {
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' # train a regression model
-#' data(agaricus.train, package = "lightgbm")
+#' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
 #' dtrain <- lgb.Dataset(train$data, label = train$label)
-#' data(agaricus.test, package = "lightgbm")
+#' data(agaricus.test, package = "falcata")
 #' test <- agaricus.test
 #' dtest <- lgb.Dataset.create.valid(dtrain, test$data, label = test$label)
 #' params <- list(

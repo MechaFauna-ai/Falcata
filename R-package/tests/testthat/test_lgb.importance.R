@@ -27,7 +27,7 @@ test_that("lgb.importance() should reject bad inputs", {
             data = matrix(rnorm(100L), ncol = 2L)
             , label = matrix(sample(c(0L, 1L), 50L, replace = TRUE))
         )
-        , "lightgbm.model"
+        , "falcata.model"
     )
     for (input in bad_inputs) {
         expect_error({

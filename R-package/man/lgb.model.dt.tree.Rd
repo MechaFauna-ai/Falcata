@@ -2,7 +2,7 @@
 % Please edit documentation in R/lgb.model.dt.tree.R
 \name{lgb.model.dt.tree}
 \alias{lgb.model.dt.tree}
-\title{Parse a LightGBM model json dump}
+\title{Parse a Falcata model json dump}
 \usage{
 lgb.model.dt.tree(model, num_iteration = NULL, start_iteration = 1L)
 }
@@ -41,13 +41,13 @@ The columns of the \code{data.table} are:
 }
 }
 \description{
-Parse a LightGBM model json dump into a \code{data.table} structure.
+Parse a Falcata model json dump into a \code{data.table} structure.
 }
 \examples{
 \donttest{
 \dontshow{setLGBMthreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
-data(agaricus.train, package = "lightgbm")
+data(agaricus.train, package = "falcata")
 train <- agaricus.train
 dtrain <- lgb.Dataset(train$data, label = train$label)
 

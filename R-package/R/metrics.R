@@ -1,5 +1,5 @@
-# [description] List of metrics known to LightGBM. The most up to date list can be found
-#               at https://lightgbm.readthedocs.io/en/latest/Parameters.html#metric-parameters
+# [description] List of metrics known to Falcata. The most up to date list can be found
+#               at https://falcata.readthedocs.io/en/latest/Parameters.html#metric-parameters
 #
 # [return] A named logical vector, where each key is a metric name and each value is a boolean.
 #          TRUE if higher values of the metric are desirable, FALSE if lower values are desirable.

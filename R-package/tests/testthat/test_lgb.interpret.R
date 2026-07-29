@@ -6,7 +6,7 @@
 }
 
 test_that("lgb.interpret works as expected for binary classification", {
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     train <- agaricus.train
     dtrain <- lgb.Dataset(train$data, label = train$label)
     set_field(
@@ -17,7 +17,7 @@ test_that("lgb.interpret works as expected for binary classification", {
             , length(train$label)
         )
     )
-    data(agaricus.test, package = "lightgbm")
+    data(agaricus.test, package = "falcata")
     test <- agaricus.test
     params <- list(
         objective = "binary"

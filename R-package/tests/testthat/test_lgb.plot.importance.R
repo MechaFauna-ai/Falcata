@@ -1,5 +1,5 @@
 test_that("lgb.plot.importance() should run without error for well-formed inputs", {
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     train <- agaricus.train
     dtrain <- lgb.Dataset(train$data, label = train$label)
     params <- list(

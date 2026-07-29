@@ -40,7 +40,7 @@ contribution of a feature. Features are shown ranked in a decreasing contributio
 Logit <- function(x) {
   log(x / (1.0 - x))
 }
-data(agaricus.train, package = "lightgbm")
+data(agaricus.train, package = "falcata")
 labels <- agaricus.train$label
 dtrain <- lgb.Dataset(
   agaricus.train$data
@@ -52,7 +52,7 @@ set_field(
   , data = rep(Logit(mean(labels)), length(labels))
 )
 
-data(agaricus.test, package = "lightgbm")
+data(agaricus.test, package = "falcata")
 
 params <- list(
   objective = "binary"

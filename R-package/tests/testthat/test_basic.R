@@ -1,5 +1,5 @@
-data(agaricus.train, package = "lightgbm")
-data(agaricus.test, package = "lightgbm")
+data(agaricus.train, package = "falcata")
+data(agaricus.test, package = "falcata")
 train <- agaricus.train
 test <- agaricus.test
 
@@ -63,7 +63,7 @@ DVALID_RANDOM_CLASSIFICATION <- lgb.Dataset(
 
 test_that("train and predict binary classification", {
   nrounds <- 10L
-  bst <- lightgbm(
+  bst <- falcata(
     data = train$data
     , label = train$label
     , params = list(
@@ -101,7 +101,7 @@ test_that("train and predict softmax", {
   X_mat <- as.matrix(iris[, -5L])
   lb <- as.numeric(iris$Species) - 1L
 
-  bst <- lightgbm(
+  bst <- falcata(
     data = X_mat
     , label = lb
     , params = list(
@@ -135,7 +135,7 @@ test_that("train and predict softmax", {
 
 test_that("use of multiple eval metrics works", {
   metrics <- list("binary_error", "auc", "binary_logloss")
-  bst <- lightgbm(
+  bst <- falcata(
     data = train$data
     , label = train$label
     , params = list(
@@ -167,7 +167,7 @@ test_that("use of multiple eval metrics works", {
 test_that("lgb.Booster.upper_bound() and lgb.Booster.lower_bound() work as expected for binary classification", {
   set.seed(708L)
   nrounds <- 10L
-  bst <- lightgbm(
+  bst <- falcata(
     data = train$data
     , label = train$label
     , params = list(
@@ -186,7 +186,7 @@ test_that("lgb.Booster.upper_bound() and lgb.Booster.lower_bound() work as expec
 test_that("lgb.Booster.upper_bound() and lgb.Booster.lower_bound() work as expected for regression", {
   set.seed(708L)
   nrounds <- 10L
-  bst <- lightgbm(
+  bst <- falcata(
     data = train$data
     , label = train$label
     , params = list(
@@ -202,12 +202,12 @@ test_that("lgb.Booster.upper_bound() and lgb.Booster.lower_bound() work as expec
   expect_true(abs(bst$upper_bound() - 0.9080349) < .LGB_NUMERIC_TOLERANCE)
 })
 
-test_that("lightgbm() rejects negative or 0 value passed to nrounds", {
+test_that("falcata() rejects negative or 0 value passed to nrounds", {
   dtrain <- lgb.Dataset(train$data, label = train$label)
   params <- list(objective = "regression", metric = "l2,l1", num_threads = .LGB_MAX_THREADS)
   for (nround_value in c(-10L, 0L)) {
     expect_error({
-      bst <- lightgbm(
+      bst <- falcata(
         data = dtrain
         , params = params
         , nrounds = nround_value
@@ -216,11 +216,11 @@ test_that("lightgbm() rejects negative or 0 value passed to nrounds", {
   }
 })
 
-test_that("lightgbm() accepts nrounds as either a top-level argument or parameter", {
+test_that("falcata() accepts nrounds as either a top-level argument or parameter", {
   nrounds <- 15L
 
   set.seed(708L)
-  top_level_bst <- lightgbm(
+  top_level_bst <- falcata(
     data = train$data
     , label = train$label
     , nrounds = nrounds
@@ -234,7 +234,7 @@ test_that("lightgbm() accepts nrounds as either a top-level argument or paramete
   )
 
   set.seed(708L)
-  param_bst <- lightgbm(
+  param_bst <- falcata(
     data = train$data
     , label = train$label
     , params = list(
@@ -248,7 +248,7 @@ test_that("lightgbm() accepts nrounds as either a top-level argument or paramete
   )
 
   set.seed(708L)
-  both_customized <- lightgbm(
+  both_customized <- falcata(
     data = train$data
     , label = train$label
     , nrounds = 20L
@@ -281,7 +281,7 @@ test_that("lightgbm() accepts nrounds as either a top-level argument or paramete
 
 })
 
-test_that("lightgbm() performs evaluation on validation sets if they are provided", {
+test_that("falcata() performs evaluation on validation sets if they are provided", {
   set.seed(708L)
   dvalid1 <- lgb.Dataset(
     data = train$data
@@ -294,7 +294,7 @@ test_that("lightgbm() performs evaluation on validation sets if they are provide
     , params = list(num_threads = .LGB_MAX_THREADS)
   )
   nrounds <- 10L
-  bst <- lightgbm(
+  bst <- falcata(
     data = train$data
     , label = train$label
     , params = list(
@@ -458,7 +458,7 @@ test_that("lgb.cv() throws an informative error if 'data' is not an lgb.Dataset"
   }
 })
 
-test_that("lightgbm.cv() gives the correct best_score and best_iter for a metric where higher values are better", {
+test_that("falcata.cv() gives the correct best_score and best_iter for a metric where higher values are better", {
   set.seed(708L)
   dtrain <- lgb.Dataset(
     data = as.matrix(runif(n = 500L, min = 0.0, max = 15.0), drop = FALSE)
@@ -1843,7 +1843,7 @@ test_that("lgb.train() works with integer, double, and numeric data", {
   for (data_mode in c("numeric", "double", "integer")) {
     mode(X) <- data_mode
     nrounds <- 10L
-    bst <- lightgbm(
+    bst <- falcata(
       data = X
       , label = y
       , params = list(
@@ -2087,7 +2087,7 @@ test_that("when early stopping is not activated, best_iter and best_score come f
   expect_identical(bst$best_score, NA_real_)
 })
 
-test_that("lightgbm.train() gives the correct best_score and best_iter for a metric where higher values are better", {
+test_that("falcata.train() gives the correct best_score and best_iter for a metric where higher values are better", {
   set.seed(708L)
   trainDF <- data.frame(
     "feat1" = runif(n = 500L, min = 0.0, max = 15.0)
@@ -2138,7 +2138,7 @@ test_that("lightgbm.train() gives the correct best_score and best_iter for a met
   expect_identical(bst$best_score, auc_scores[which.max(auc_scores)])
 })
 
-test_that("using lightgbm() without early stopping, best_iter and best_score come from valids and not training data", {
+test_that("using falcata() without early stopping, best_iter and best_score come from valids and not training data", {
   set.seed(708L)
   # example: train second (called "something-random-we-would-not-hardcode"), two valids,
   #          and a metric where higher values are better ("auc")
@@ -2166,7 +2166,7 @@ test_that("using lightgbm() without early stopping, best_iter and best_score com
     , params = list(num_threads = .LGB_MAX_THREADS)
   )
   nrounds <- 10L
-  bst <- lightgbm(
+  bst <- falcata(
     data = dtrain
     , nrounds = nrounds
     , valids = list(
@@ -2183,7 +2183,7 @@ test_that("using lightgbm() without early stopping, best_iter and best_score com
     )
     , verbose = -7L
   )
-  # when verbose <= 0 is passed to lightgbm(), 'valids' is passed through to lgb.train()
+  # when verbose <= 0 is passed to falcata(), 'valids' is passed through to lgb.train()
   # untouched. If you set verbose to > 0, the training data will still be first but called "train"
   expect_named(
     bst$record_evals
@@ -2390,8 +2390,8 @@ test_that("lgb.cv() respects changes to logging verbosity", {
       , verbose = 1L
     )
   })
-  expect_true(any(grepl("[LightGBM] [Info]", lgb_cv_logs, fixed = TRUE)))
-  expect_true(any(grepl("[LightGBM] [Warning]", lgb_cv_logs, fixed = TRUE)))
+  expect_true(any(grepl("[Falcata] [Info]", lgb_cv_logs, fixed = TRUE)))
+  expect_true(any(grepl("[Falcata] [Warning]", lgb_cv_logs, fixed = TRUE)))
 
   # (verbose = 0) should be WARNING level logs only
   lgb_cv_logs <- capture.output({
@@ -2404,8 +2404,8 @@ test_that("lgb.cv() respects changes to logging verbosity", {
       , verbose = 0L
     )
   })
-  expect_false(any(grepl("[LightGBM] [Info]", lgb_cv_logs, fixed = TRUE)))
-  expect_true(any(grepl("[LightGBM] [Warning]", lgb_cv_logs, fixed = TRUE)))
+  expect_false(any(grepl("[Falcata] [Info]", lgb_cv_logs, fixed = TRUE)))
+  expect_true(any(grepl("[Falcata] [Warning]", lgb_cv_logs, fixed = TRUE)))
 
   # (verbose = -1) no logs
   lgb_cv_logs <- capture.output({
@@ -2418,10 +2418,10 @@ test_that("lgb.cv() respects changes to logging verbosity", {
       , verbose = -1L
     )
   })
-  # NOTE: this is not length(lgb_cv_logs) == 0 because lightgbm's
+  # NOTE: this is not length(lgb_cv_logs) == 0 because falcata's
   #       dependencies might print other messages
-  expect_false(any(grepl("[LightGBM] [Info]", lgb_cv_logs, fixed = TRUE)))
-  expect_false(any(grepl("[LightGBM] [Warning]", lgb_cv_logs, fixed = TRUE)))
+  expect_false(any(grepl("[Falcata] [Info]", lgb_cv_logs, fixed = TRUE)))
+  expect_false(any(grepl("[Falcata] [Warning]", lgb_cv_logs, fixed = TRUE)))
 })
 
 test_that("lgb.cv() updates params based on keyword arguments", {
@@ -2752,7 +2752,7 @@ test_that("lgb.train() throws an informative error if interaction_constraints is
   dtrain <- lgb.Dataset(train$data, label = train$label)
   params <- list(objective = "regression", interaction_constraints = "[1,2],[3]")
     expect_error({
-      bst <- lightgbm(
+      bst <- falcata(
         data = dtrain
         , params = params
         , nrounds = 2L
@@ -2765,7 +2765,7 @@ test_that(paste0("lgb.train() throws an informative error if the members of inte
   dtrain <- lgb.Dataset(train$data, label = train$label)
   params <- list(objective = "regression", interaction_constraints = list(list(1L, 2L), list(3L)))
     expect_error({
-      bst <- lightgbm(
+      bst <- falcata(
         data = dtrain
         , params = params
         , nrounds = 2L
@@ -2778,7 +2778,7 @@ test_that("lgb.train() throws an informative error if interaction_constraints co
   params <- list(objective = "regression",
                  interaction_constraints = list(c(1L, ncol(train$data) + 1L:2L), 3L))
     expect_error(
-      lightgbm(data = dtrain, params = params, nrounds = 2L)
+      falcata(data = dtrain, params = params, nrounds = 2L)
       , "unknown feature(s) in interaction_constraints: '127', '128'"
       , fixed = TRUE
     )
@@ -2795,7 +2795,7 @@ test_that(paste0("lgb.train() gives same result when interaction_constraints is 
     , verbose = .LGB_VERBOSITY
     , num_threads = .LGB_MAX_THREADS
   )
-  bst <- lightgbm(
+  bst <- falcata(
     data = dtrain
     , params = params
     , nrounds = 2L
@@ -2809,7 +2809,7 @@ test_that(paste0("lgb.train() gives same result when interaction_constraints is 
     , verbose = .LGB_VERBOSITY
     , num_threads = .LGB_MAX_THREADS
   )
-  bst <- lightgbm(
+  bst <- falcata(
     data = dtrain
     , params = params
     , nrounds = 2L
@@ -2822,7 +2822,7 @@ test_that(paste0("lgb.train() gives same result when interaction_constraints is 
     , verbose = .LGB_VERBOSITY
     , num_threads = .LGB_MAX_THREADS
   )
-  bst <- lightgbm(
+  bst <- falcata(
     data = dtrain
     , params = params
     , nrounds = 2L
@@ -2848,7 +2848,7 @@ test_that(paste0("lgb.train() gives same results when using interaction_constrai
     , verbose = .LGB_VERBOSITY
     , num_threads = .LGB_MAX_THREADS
   )
-  bst <- lightgbm(
+  bst <- falcata(
     data = dtrain
     , params = params
     , nrounds = 2L
@@ -2863,7 +2863,7 @@ test_that(paste0("lgb.train() gives same results when using interaction_constrai
     , verbose = .LGB_VERBOSITY
     , num_threads = .LGB_MAX_THREADS
   )
-  bst <- lightgbm(
+  bst <- falcata(
     data = dtrain
     , params = params
     , nrounds = 2L
@@ -2893,7 +2893,7 @@ test_that("Interaction constraints add missing features correctly as new group",
       , verbose = .LGB_VERBOSITY
       , num_threads = .LGB_MAX_THREADS
     )
-    bst <- lightgbm(data = dtrain, params = params, nrounds = 10L)
+    bst <- falcata(data = dtrain, params = params, nrounds = 10L)
 
     expected_list <- list("[2]", "[0,1]", "[3,4,5]")
     expect_equal(bst$params$interaction_constraints, expected_list)
@@ -3055,8 +3055,8 @@ for (x3_to_categorical in c(TRUE, FALSE)) {
   }
 }
 
-test_that("lightgbm() accepts objective as function argument and under params", {
-  bst1 <- lightgbm(
+test_that("falcata() accepts objective as function argument and under params", {
+  bst1 <- falcata(
     data = train$data
     , label = train$label
     , params = list(objective = "regression_l1", num_threads = .LGB_MAX_THREADS)
@@ -3072,7 +3072,7 @@ test_that("lightgbm() accepts objective as function argument and under params", 
   expect_true(any(model_txt_lines == "objective=regression_l1"))
   expect_false(any(model_txt_lines == "objective=regression_l2"))
 
-  bst2 <- lightgbm(
+  bst2 <- falcata(
     data = train$data
     , label = train$label
     , objective = "regression_l1"
@@ -3089,8 +3089,8 @@ test_that("lightgbm() accepts objective as function argument and under params", 
   expect_false(any(model_txt_lines == "objective=regression_l2"))
 })
 
-test_that("lightgbm() prioritizes objective under params over objective as function argument", {
-  bst1 <- lightgbm(
+test_that("falcata() prioritizes objective under params over objective as function argument", {
+  bst1 <- falcata(
     data = train$data
     , label = train$label
     , objective = "regression"
@@ -3107,7 +3107,7 @@ test_that("lightgbm() prioritizes objective under params over objective as funct
   expect_true(any(model_txt_lines == "objective=regression_l1"))
   expect_false(any(model_txt_lines == "objective=regression_l2"))
 
-  bst2 <- lightgbm(
+  bst2 <- falcata(
     data = train$data
     , label = train$label
     , objective = "regression"
@@ -3125,8 +3125,8 @@ test_that("lightgbm() prioritizes objective under params over objective as funct
   expect_false(any(model_txt_lines == "objective=regression_l2"))
 })
 
-test_that("lightgbm() accepts init_score as function argument", {
-  bst1 <- lightgbm(
+test_that("falcata() accepts init_score as function argument", {
+  bst1 <- falcata(
     data = train$data
     , label = train$label
     , objective = "binary"
@@ -3136,7 +3136,7 @@ test_that("lightgbm() accepts init_score as function argument", {
   )
   pred1 <- predict(bst1, train$data, type = "raw")
 
-  bst2 <- lightgbm(
+  bst2 <- falcata(
     data = train$data
     , label = train$label
     , init_score = pred1
@@ -3150,8 +3150,8 @@ test_that("lightgbm() accepts init_score as function argument", {
   expect_true(any(pred1 != pred2))
 })
 
-test_that("lightgbm() defaults to 'regression' objective if objective not otherwise provided", {
-  bst <- lightgbm(
+test_that("falcata() defaults to 'regression' objective if objective not otherwise provided", {
+  bst <- falcata(
     data = train$data
     , label = train$label
     , nrounds = 5L
@@ -3168,8 +3168,8 @@ test_that("lightgbm() defaults to 'regression' objective if objective not otherw
   expect_false(any(model_txt_lines == "objective=regression_l1"))
 })
 
-test_that("lightgbm() accepts 'num_threads' as either top-level argument or under params", {
-  bst <- lightgbm(
+test_that("falcata() accepts 'num_threads' as either top-level argument or under params", {
+  bst <- falcata(
     data = train$data
     , label = train$label
     , nrounds = 5L
@@ -3184,7 +3184,7 @@ test_that("lightgbm() accepts 'num_threads' as either top-level argument or unde
   )[[1L]]
   expect_true(any(grepl("[num_threads: 1]", model_txt_lines, fixed = TRUE)))
 
-  bst <- lightgbm(
+  bst <- falcata(
     data = train$data
     , label = train$label
     , nrounds = 5L
@@ -3199,7 +3199,7 @@ test_that("lightgbm() accepts 'num_threads' as either top-level argument or unde
   )[[1L]]
   expect_true(any(grepl("[num_threads: 1]", model_txt_lines, fixed = TRUE)))
 
-  bst <- lightgbm(
+  bst <- falcata(
     data = train$data
     , label = train$label
     , nrounds = 5L
@@ -3216,12 +3216,12 @@ test_that("lightgbm() accepts 'num_threads' as either top-level argument or unde
   expect_true(any(grepl("[num_threads: 1]", model_txt_lines, fixed = TRUE)))
 })
 
-test_that("lightgbm() accepts 'weight' and 'weights'", {
+test_that("falcata() accepts 'weight' and 'weights'", {
   data(mtcars)
   X <- as.matrix(mtcars[, -1L])
   y <- as.numeric(mtcars[, 1L])
   w <- rep(1.0, nrow(X))
-  model <- lightgbm(
+  model <- falcata(
     X
     , y
     , weights = w
@@ -3245,17 +3245,17 @@ test_that("lightgbm() accepts 'weight' and 'weights'", {
     , nrounds = 5L
     , verbose = -1L
   )
-  model <- do.call(lightgbm, lgb_args)
+  model <- do.call(falcata, lgb_args)
   expect_equal(model$.__enclos_env__$private$train_set$get_field("weight"), w)
 })
 
 .assert_has_expected_logs <- function(log_txt, lgb_info, lgb_warn, early_stopping, valid_eval_msg) {
   expect_identical(
-    object = any(grepl("[LightGBM] [Info]", log_txt, fixed = TRUE))
+    object = any(grepl("[Falcata] [Info]", log_txt, fixed = TRUE))
     , expected = lgb_info
   )
   expect_identical(
-    object = any(grepl("[LightGBM] [Warning]", log_txt, fixed = TRUE))
+    object = any(grepl("[Falcata] [Warning]", log_txt, fixed = TRUE))
     , expected = lgb_warn
   )
   expect_identical(
@@ -3321,7 +3321,7 @@ test_that("lightgbm() accepts 'weight' and 'weights'", {
     train_kwargs[["valids"]] <- list(
       "valid" = lgb.Dataset(data = test$data, label = test$label)
     )
-  } else if (function_name == "lightgbm") {
+  } else if (function_name == "falcata") {
     train_kwargs[["data"]] <- train$data
     train_kwargs[["label"]] <- train$label
     train_kwargs[["valids"]] <- list(
@@ -3367,7 +3367,7 @@ test_that("lgb.train() only prints eval metrics when expected to", {
       fitted_model = out[["booster"]]
     )
 
-    # (verbose = 0) should be only WARN-level LightGBM logs
+    # (verbose = 0) should be only WARN-level Falcata logs
     out <- .train_for_verbosity_test(
       train_function = lgb.train
       , verbose_kwarg = verbose_keyword_arg
@@ -3384,7 +3384,7 @@ test_that("lgb.train() only prints eval metrics when expected to", {
       fitted_model = out[["booster"]]
     )
 
-    # (verbose > 0) should be INFO- and WARN-level LightGBM logs, and record eval messages
+    # (verbose > 0) should be INFO- and WARN-level Falcata logs, and record eval messages
     out <- .train_for_verbosity_test(
       train_function = lgb.train
       , verbose_kwarg = verbose_keyword_arg
@@ -3422,7 +3422,7 @@ test_that("lgb.train() only prints eval metrics when expected to", {
     fitted_model = out[["booster"]]
   )
 
-  # (verbose = 0) should be only WARN-level LightGBM logs
+  # (verbose = 0) should be only WARN-level Falcata logs
   out <- .train_for_verbosity_test(
     train_function = lgb.train
     , verbose_kwarg = 0L
@@ -3439,7 +3439,7 @@ test_that("lgb.train() only prints eval metrics when expected to", {
     fitted_model = out[["booster"]]
   )
 
-  # (verbose > 0) should be INFO- and WARN-level LightGBM logs, and record eval messages
+  # (verbose > 0) should be INFO- and WARN-level Falcata logs, and record eval messages
   out <- .train_for_verbosity_test(
     train_function = lgb.train
     , verbose_kwarg = 1L
@@ -3457,7 +3457,7 @@ test_that("lgb.train() only prints eval metrics when expected to", {
   )
 })
 
-test_that("lightgbm() only prints eval metrics when expected to", {
+test_that("falcata() only prints eval metrics when expected to", {
 
   # regardless of value passed to keyword argument 'verbose', value in params
   # should take precedence
@@ -3465,7 +3465,7 @@ test_that("lightgbm() only prints eval metrics when expected to", {
 
     # (verbose = -1) should not be any logs, train should not be in valids
     out <- .train_for_verbosity_test(
-      train_function = lightgbm
+      train_function = falcata
       , verbose_kwarg = verbose_keyword_arg
       , verbose_param = -1L
     )
@@ -3480,9 +3480,9 @@ test_that("lightgbm() only prints eval metrics when expected to", {
       fitted_model = out[["booster"]]
     )
 
-    # (verbose = 0) should be only WARN-level LightGBM logs, train should not be in valids
+    # (verbose = 0) should be only WARN-level Falcata logs, train should not be in valids
     out <- .train_for_verbosity_test(
-      train_function = lightgbm
+      train_function = falcata
       , verbose_kwarg = verbose_keyword_arg
       , verbose_param = 0L
     )
@@ -3497,10 +3497,10 @@ test_that("lightgbm() only prints eval metrics when expected to", {
       fitted_model = out[["booster"]]
     )
 
-    # (verbose > 0) should be INFO- and WARN-level LightGBM logs, and record eval messages, and
+    # (verbose > 0) should be INFO- and WARN-level Falcata logs, and record eval messages, and
     #               train should be in valids
     out <- .train_for_verbosity_test(
-      train_function = lightgbm
+      train_function = falcata
       , verbose_kwarg = verbose_keyword_arg
       , verbose_param = 1L
     )
@@ -3521,7 +3521,7 @@ test_that("lightgbm() only prints eval metrics when expected to", {
 
   # (verbose = -1) should not be any logs, train should not be in valids
   out <- .train_for_verbosity_test(
-    train_function = lightgbm
+    train_function = falcata
     , verbose_kwarg = -1L
     , verbose_param = NULL
   )
@@ -3536,9 +3536,9 @@ test_that("lightgbm() only prints eval metrics when expected to", {
     fitted_model = out[["booster"]]
   )
 
-  # (verbose = 0) should be only WARN-level LightGBM logs, train should not be in valids
+  # (verbose = 0) should be only WARN-level Falcata logs, train should not be in valids
   out <- .train_for_verbosity_test(
-    train_function = lightgbm
+    train_function = falcata
     , verbose_kwarg = 0L
     , verbose_param = NULL
   )
@@ -3553,10 +3553,10 @@ test_that("lightgbm() only prints eval metrics when expected to", {
     fitted_model = out[["booster"]]
   )
 
-  # (verbose > 0) should be INFO- and WARN-level LightGBM logs, and record eval messages, and
+  # (verbose > 0) should be INFO- and WARN-level Falcata logs, and record eval messages, and
   #               train should be in valids
   out <- .train_for_verbosity_test(
-    train_function = lightgbm
+    train_function = falcata
     , verbose_kwarg = 1L
     , verbose_param = NULL
   )
@@ -3595,7 +3595,7 @@ test_that("lgb.cv() only prints eval metrics when expected to", {
       fitted_model = out[["booster"]]
     )
 
-    # (verbose = 0) should be only WARN-level LightGBM logs
+    # (verbose = 0) should be only WARN-level Falcata logs
     out <- .train_for_verbosity_test(
       verbose_kwarg = verbose_keyword_arg
       , verbose_param = 0L
@@ -3612,7 +3612,7 @@ test_that("lgb.cv() only prints eval metrics when expected to", {
       fitted_model = out[["booster"]]
     )
 
-    # (verbose > 0) should be INFO- and WARN-level LightGBM logs, and record eval messages
+    # (verbose > 0) should be INFO- and WARN-level Falcata logs, and record eval messages
     out <- .train_for_verbosity_test(
       verbose_kwarg = verbose_keyword_arg
       , verbose_param = 1L
@@ -3650,7 +3650,7 @@ test_that("lgb.cv() only prints eval metrics when expected to", {
     fitted_model = out[["booster"]]
   )
 
-  # (verbose = 0) should be only WARN-level LightGBM logs
+  # (verbose = 0) should be only WARN-level Falcata logs
   out <- .train_for_verbosity_test(
     verbose_kwarg = verbose_keyword_arg
     , verbose_param = 0L
@@ -3667,7 +3667,7 @@ test_that("lgb.cv() only prints eval metrics when expected to", {
     fitted_model = out[["booster"]]
   )
 
-  # (verbose > 0) should be INFO- and WARN-level LightGBM logs, and record eval messages
+  # (verbose > 0) should be INFO- and WARN-level Falcata logs, and record eval messages
   out <- .train_for_verbosity_test(
     verbose_kwarg = verbose_keyword_arg
     , verbose_param = 1L
@@ -3685,12 +3685,12 @@ test_that("lgb.cv() only prints eval metrics when expected to", {
   )
 })
 
-test_that("lightgbm() changes objective='auto' appropriately", {
+test_that("falcata() changes objective='auto' appropriately", {
   # Regression
   data("mtcars")
   y <- mtcars$mpg
   x <- as.matrix(mtcars[, -1L])
-  model <- lightgbm(x, y, objective = "auto", verbose = .LGB_VERBOSITY, nrounds = 5L, num_threads = .LGB_MAX_THREADS)
+  model <- falcata(x, y, objective = "auto", verbose = .LGB_VERBOSITY, nrounds = 5L, num_threads = .LGB_MAX_THREADS)
   expect_equal(model$params$objective, "regression")
   model_txt_lines <- strsplit(
     x = model$save_model_to_string()
@@ -3703,7 +3703,7 @@ test_that("lightgbm() changes objective='auto' appropriately", {
   # Binary classification
   x <- train$data
   y <- factor(train$label)
-  model <- lightgbm(x, y, objective = "auto", verbose = .LGB_VERBOSITY, nrounds = 5L, num_threads = .LGB_MAX_THREADS)
+  model <- falcata(x, y, objective = "auto", verbose = .LGB_VERBOSITY, nrounds = 5L, num_threads = .LGB_MAX_THREADS)
   expect_equal(model$params$objective, "binary")
   model_txt_lines <- strsplit(
     x = model$save_model_to_string()
@@ -3716,7 +3716,7 @@ test_that("lightgbm() changes objective='auto' appropriately", {
   data("iris")
   y <- factor(iris$Species)
   x <- as.matrix(iris[, -5L])
-  model <- lightgbm(x, y, objective = "auto", verbose = .LGB_VERBOSITY, nrounds = 5L, num_threads = .LGB_MAX_THREADS)
+  model <- falcata(x, y, objective = "auto", verbose = .LGB_VERBOSITY, nrounds = 5L, num_threads = .LGB_MAX_THREADS)
   expect_equal(model$params$objective, "multiclass")
   expect_equal(model$params$num_class, 3L)
   model_txt_lines <- strsplit(
@@ -3727,11 +3727,11 @@ test_that("lightgbm() changes objective='auto' appropriately", {
   expect_true(any(grepl("objective=multiclass", model_txt_lines, fixed = TRUE)))
 })
 
-test_that("lightgbm() determines number of classes for non-default multiclass objectives", {
+test_that("falcata() determines number of classes for non-default multiclass objectives", {
   data("iris")
   y <- factor(iris$Species)
   x <- as.matrix(iris[, -5L])
-  model <- lightgbm(
+  model <- falcata(
     x
     , y
     , objective = "multiclassova"
@@ -3749,31 +3749,31 @@ test_that("lightgbm() determines number of classes for non-default multiclass ob
   expect_true(any(grepl("objective=multiclassova", model_txt_lines, fixed = TRUE)))
 })
 
-test_that("lightgbm() doesn't accept binary classification with non-binary factors", {
+test_that("falcata() doesn't accept binary classification with non-binary factors", {
   data("iris")
   y <- factor(iris$Species)
   x <- as.matrix(iris[, -5L])
   expect_error({
-    lightgbm(x, y, objective = "binary", verbose = .LGB_VERBOSITY, nrounds = 5L, num_threads = .LGB_MAX_THREADS)
+    falcata(x, y, objective = "binary", verbose = .LGB_VERBOSITY, nrounds = 5L, num_threads = .LGB_MAX_THREADS)
   }, regexp = "Factors with >2 levels as labels only allowed for multi-class objectives")
 })
 
-test_that("lightgbm() doesn't accept multi-class classification with binary factors", {
+test_that("falcata() doesn't accept multi-class classification with binary factors", {
   data("iris")
   y <- as.character(iris$Species)
   y[y == "setosa"] <- "versicolor"
   y <- factor(y)
   x <- as.matrix(iris[, -5L])
   expect_error({
-    lightgbm(x, y, objective = "multiclass", verbose = .LGB_VERBOSITY, nrounds = 5L, num_threads = .LGB_MAX_THREADS)
+    falcata(x, y, objective = "multiclass", verbose = .LGB_VERBOSITY, nrounds = 5L, num_threads = .LGB_MAX_THREADS)
   }, regexp = "Two-level factors as labels only allowed for objective='binary'")
 })
 
-test_that("lightgbm() model predictions retain factor levels for multiclass classification", {
+test_that("falcata() model predictions retain factor levels for multiclass classification", {
   data("iris")
   y <- factor(iris$Species)
   x <- as.matrix(iris[, -5L])
-  model <- lightgbm(x, y, objective = "auto", verbose = .LGB_VERBOSITY, nrounds = 5L, num_threads = .LGB_MAX_THREADS)
+  model <- falcata(x, y, objective = "auto", verbose = .LGB_VERBOSITY, nrounds = 5L, num_threads = .LGB_MAX_THREADS)
 
   pred <- predict(model, x, type = "class")
   expect_true(is.factor(pred))
@@ -3786,13 +3786,13 @@ test_that("lightgbm() model predictions retain factor levels for multiclass clas
   expect_equal(colnames(pred), levels(y))
 })
 
-test_that("lightgbm() model predictions retain factor levels for binary classification", {
+test_that("falcata() model predictions retain factor levels for binary classification", {
   data("iris")
   y <- as.character(iris$Species)
   y[y == "setosa"] <- "versicolor"
   y <- factor(y)
   x <- as.matrix(iris[, -5L])
-  model <- lightgbm(x, y, objective = "auto", verbose = .LGB_VERBOSITY, nrounds = 5L, num_threads = .LGB_MAX_THREADS)
+  model <- falcata(x, y, objective = "auto", verbose = .LGB_VERBOSITY, nrounds = 5L, num_threads = .LGB_MAX_THREADS)
 
   pred <- predict(model, x, type = "class")
   expect_true(is.factor(pred))
@@ -3809,11 +3809,11 @@ test_that("lightgbm() model predictions retain factor levels for binary classifi
   expect_false(any(pred %in% y))
 })
 
-test_that("lightgbm() accepts named categorical_features", {
+test_that("falcata() accepts named categorical_features", {
   data(mtcars)
   y <- mtcars$mpg
   x <- as.matrix(mtcars[, -1L])
-  model <- lightgbm(
+  model <- falcata(
     x
     , y
     , categorical_feature = "cyl"
@@ -3824,12 +3824,12 @@ test_that("lightgbm() accepts named categorical_features", {
   expect_true(length(model$params$categorical_feature) > 0L)
 })
 
-test_that("lightgbm() correctly sets objective when passing lgb.Dataset as input", {
+test_that("falcata() correctly sets objective when passing lgb.Dataset as input", {
   data(mtcars)
   y <- mtcars$mpg
   x <- as.matrix(mtcars[, -1L])
   ds <- lgb.Dataset(x, label = y)
-  model <- lightgbm(
+  model <- falcata(
     ds
     , objective = "auto"
     , verbose = .LGB_VERBOSITY

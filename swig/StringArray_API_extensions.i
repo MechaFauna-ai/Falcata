@@ -1,6 +1,6 @@
 /*!
  * Copyright (c) 2020-2026 Microsoft Corporation. All rights reserved.
- * Copyright (c) 2020-2026 The LightGBM developers. All rights reserved.
+ * Copyright (c) 2020-2026 The Falcata developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 /**
@@ -36,7 +36,7 @@
      * which you're responsible for freeing,
      * @see StringArrayHandle_free().
      * In case of failure such resource is freed and nullptr is returned.
-     * Check for that case with null (lightgbmlib) or 0 (lightgbmlibJNI).
+     * Check for that case with null (falcatalib) or 0 (falcatalibJNI).
      *
      * @param handle Booster handle
      * @return StringArrayHandle with the eval names (or nullptr in case of error)
@@ -74,7 +74,7 @@
      * Allocates a new StringArray. You must free it yourself if it succeeds.
      * @see StringArrayHandle_free().
      * In case of failure such resource is freed and nullptr is returned.
-     * Check for that case with null (lightgbmlib) or 0 (lightgbmlibJNI).
+     * Check for that case with null (falcatalib) or 0 (falcatalibJNI).
      *
      * @param handle Booster handle
      * @return StringArrayHandle with the feature names (or nullptr in case of error)
@@ -114,7 +114,7 @@
      * Allocates a new StringArray. You must free it yourself if it succeeds.
      * @see StringArrayHandle_free().
      * In case of failure such resource is freed and nullptr is returned.
-     * Check for that case with null (lightgbmlib) or 0 (lightgbmlibJNI).
+     * Check for that case with null (falcatalib) or 0 (falcatalibJNI).
      *
      * @param handle Booster handle
      * @return StringArrayHandle with the feature names (or nullptr in case of error)

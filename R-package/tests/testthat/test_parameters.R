@@ -1,5 +1,5 @@
-data(agaricus.train, package = "lightgbm")
-data(agaricus.test, package = "lightgbm")
+data(agaricus.train, package = "falcata")
+data(agaricus.test, package = "falcata")
 train <- agaricus.train
 test <- agaricus.test
 
@@ -11,7 +11,7 @@ test_that("Feature penalties work properly", {
   bst <- lapply(seq(1.0, 0.0, by = -0.1), function(x) {
     feature_penalties <- rep(1.0, ncol(train$data))
     feature_penalties[var_index] <- x
-    lightgbm(
+    falcata(
       data = train$data
       , label = train$label
       , params = list(
@@ -104,7 +104,7 @@ test_that("training should warn if you use 'dart' boosting with early stopping",
 
     # warning: early stopping requested
     expect_warning({
-      result <- lightgbm(
+      result <- falcata(
         data = train$data
         , label = train$label
         , params = params
@@ -116,7 +116,7 @@ test_that("training should warn if you use 'dart' boosting with early stopping",
 
     # no warning: early stopping not requested
     expect_silent({
-      result <- lightgbm(
+      result <- falcata(
         data = train$data
         , label = train$label
         , params = params

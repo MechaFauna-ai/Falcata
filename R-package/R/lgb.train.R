@@ -1,8 +1,8 @@
 #' @name lgb.train
-#' @title Main training logic for LightGBM
-#' @description Low-level R interface to train a LightGBM model. Unlike \code{\link{lightgbm}},
+#' @title Main training logic for Falcata
+#' @description Low-level R interface to train a Falcata model. Unlike \code{\link{falcata}},
 #'              this function is focused on performance (e.g. speed, memory efficiency). It is also
-#'              less likely to have breaking API changes in new releases than \code{\link{lightgbm}}.
+#'              less likely to have breaking API changes in new releases than \code{\link{falcata}}.
 #' @inheritParams lgb_shared_params
 #' @param valids a list of \code{lgb.Dataset} objects, used for validation
 #' @param record Boolean, TRUE will record iteration message to \code{booster$record_evals}
@@ -17,10 +17,10 @@
 #' \donttest{
 #' \dontshow{setLGBMthreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
-#' data(agaricus.train, package = "lightgbm")
+#' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
 #' dtrain <- lgb.Dataset(train$data, label = train$label)
-#' data(agaricus.test, package = "lightgbm")
+#' data(agaricus.test, package = "falcata")
 #' test <- agaricus.test
 #' dtest <- lgb.Dataset.create.valid(dtrain, test$data, label = test$label)
 #' params <- list(

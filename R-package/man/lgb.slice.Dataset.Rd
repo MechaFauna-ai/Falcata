@@ -24,12 +24,12 @@ Get a new \code{lgb.Dataset} containing the specified rows of
 \donttest{
 \dontshow{setLGBMthreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
-data(agaricus.train, package = "lightgbm")
+data(agaricus.train, package = "falcata")
 train <- agaricus.train
 dtrain <- lgb.Dataset(train$data, label = train$label)
 
 dsub <- lgb.slice.Dataset(dtrain, seq_len(42L))
 lgb.Dataset.construct(dsub)
-labels <- lightgbm::get_field(dsub, "label")
+labels <- falcata::get_field(dsub, "label")
 }
 }

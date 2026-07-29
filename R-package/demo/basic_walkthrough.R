@@ -1,9 +1,9 @@
-library(lightgbm)
+library(falcata)
 
 # We load in the agaricus dataset
 # In this example, we are aiming to predict whether a mushroom is edible
-data(agaricus.train, package = "lightgbm")
-data(agaricus.test, package = "lightgbm")
+data(agaricus.train, package = "falcata")
+data(agaricus.test, package = "falcata")
 train <- agaricus.train
 test <- agaricus.test
 
@@ -19,12 +19,12 @@ train_params <- list(
     , nthread = 2L
 )
 
-#--------------------Basic Training using lightgbm----------------
-# This is the basic usage of lightgbm you can put matrix in data field
-# Note: we are putting in sparse matrix here, lightgbm naturally handles sparse input
+#--------------------Basic Training using falcata----------------
+# This is the basic usage of falcata you can put matrix in data field
+# Note: we are putting in sparse matrix here, falcata naturally handles sparse input
 # Use sparse matrix when your feature is sparse (e.g. when you are using one-hot encoding vector)
-print("Training lightgbm with sparseMatrix")
-bst <- lightgbm(
+print("Training falcata with sparseMatrix")
+bst <- falcata(
     data = train$data
     , params = train_params
     , label = train$label
@@ -32,8 +32,8 @@ bst <- lightgbm(
 )
 
 # Alternatively, you can put in dense matrix, i.e. basic R-matrix
-print("Training lightgbm with Matrix")
-bst <- lightgbm(
+print("Training falcata with Matrix")
+bst <- falcata(
     data = as.matrix(train$data)
     , params = train_params
     , label = train$label
@@ -41,36 +41,36 @@ bst <- lightgbm(
 )
 
 # You can also put in lgb.Dataset object, which stores label, data and other meta datas needed for advanced features
-print("Training lightgbm with lgb.Dataset")
+print("Training falcata with lgb.Dataset")
 dtrain <- lgb.Dataset(
     data = train$data
     , label = train$label
 )
-bst <- lightgbm(
+bst <- falcata(
     data = dtrain
     , params = train_params
     , nrounds = 2L
 )
 
 # Verbose = 0,1,2
-print("Train lightgbm with verbose 0, no message")
-bst <- lightgbm(
+print("Train falcata with verbose 0, no message")
+bst <- falcata(
     data = dtrain
     , params = train_params
     , nrounds = 2L
     , verbose = 0L
 )
 
-print("Train lightgbm with verbose 1, print evaluation metric")
-bst <- lightgbm(
+print("Train falcata with verbose 1, print evaluation metric")
+bst <- falcata(
     data = dtrain
     , params = train_params
     , nrounds = 2L
     , verbose = 1L
 )
 
-print("Train lightgbm with verbose 2, also print information about tree")
-bst <- lightgbm(
+print("Train falcata with verbose 2, also print information about tree")
+bst <- falcata(
     data = dtrain
     , params = train_params
     , nrounds = 2L
@@ -79,7 +79,7 @@ bst <- lightgbm(
 
 # You can also specify data as file path to a LibSVM/TCV/CSV format input
 # Since we do not have this file with us, the following line is just for illustration
-# bst <- lightgbm(
+# bst <- falcata(
 #     data = "agaricus.train.svm"
 #     , num_leaves = 4L
 #     , learning_rate = 1.0
@@ -87,7 +87,7 @@ bst <- lightgbm(
 #     , objective = "binary"
 # )
 
-#--------------------Basic prediction using lightgbm--------------
+#--------------------Basic prediction using falcata--------------
 # You can do prediction using the following line
 # You can put in Matrix, sparseMatrix, or lgb.Dataset
 pred <- predict(bst, test$data)
@@ -96,10 +96,10 @@ print(paste("test-error=", err))
 
 #--------------------Save and load models-------------------------
 # Save model to binary local file
-lgb.save(bst, "lightgbm.model")
+lgb.save(bst, "falcata.model")
 
 # Load binary model to R
-bst2 <- lgb.load("lightgbm.model")
+bst2 <- lgb.load("falcata.model")
 pred2 <- predict(bst2, test$data)
 
 # pred2 should be identical to pred
@@ -116,7 +116,7 @@ valids <- list(train = dtrain, test = dtest)
 
 # To train with valids, use lgb.train, which contains more advanced features
 # valids allows us to monitor the evaluation result on all data in the list
-print("Train lightgbm using lgb.train with valids")
+print("Train falcata using lgb.train with valids")
 bst <- lgb.train(
     data = dtrain
     , params = train_params
@@ -125,7 +125,7 @@ bst <- lgb.train(
 )
 
 # We can change evaluation metrics, or use multiple evaluation metrics
-print("Train lightgbm using lgb.train with valids, watch logloss and error")
+print("Train falcata using lgb.train with valids, watch logloss and error")
 bst <- lgb.train(
     data = dtrain
     , params = train_params

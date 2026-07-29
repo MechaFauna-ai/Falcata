@@ -1,8 +1,8 @@
 library(testthat)
-library(lightgbm)  # nolint: unused_import.
+library(falcata)  # nolint: unused_import.
 
 test_check(
-    package = "lightgbm"
+    package = "falcata"
     , stop_on_failure = TRUE
     , stop_on_warning = FALSE
     , reporter = testthat::SummaryReporter$new()

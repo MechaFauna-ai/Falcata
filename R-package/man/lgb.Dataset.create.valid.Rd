@@ -32,10 +32,10 @@ to be ranked. For example, if you have a 100-document dataset with
 where the first 10 records are in the first group, records 11-30 are in the
 second group, etc.}
 
-\item{init_score}{initial score is the base prediction lightgbm will boost from}
+\item{init_score}{initial score is the base prediction falcata will boost from}
 
 \item{params}{a list of parameters. See
-\href{https://lightgbm.readthedocs.io/en/latest/Parameters.html#dataset-parameters}{
+\href{https://falcata.readthedocs.io/en/latest/Parameters.html#dataset-parameters}{
 The "Dataset Parameters" section of the documentation} for a list of parameters
 and valid values. If this is an empty list (the default), the validation Dataset
 will have the same parameters as the Dataset passed to argument \code{dataset}.}
@@ -50,10 +50,10 @@ Construct validation data according to training data
 \donttest{
 \dontshow{setLGBMthreads(2L)}
 \dontshow{data.table::setDTthreads(1L)}
-data(agaricus.train, package = "lightgbm")
+data(agaricus.train, package = "falcata")
 train <- agaricus.train
 dtrain <- lgb.Dataset(train$data, label = train$label)
-data(agaricus.test, package = "lightgbm")
+data(agaricus.test, package = "falcata")
 test <- agaricus.test
 dtest <- lgb.Dataset.create.valid(dtrain, test$data, label = test$label)
 

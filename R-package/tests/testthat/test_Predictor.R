@@ -52,8 +52,8 @@ test_that("predictions do not fail for integer input", {
 
 test_that("start_iteration works correctly", {
     set.seed(708L)
-    data(agaricus.train, package = "lightgbm")
-    data(agaricus.test, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
+    data(agaricus.test, package = "falcata")
     train <- agaricus.train
     test <- agaricus.test
     dtrain <- lgb.Dataset(
@@ -65,7 +65,7 @@ test_that("start_iteration works correctly", {
         , agaricus.test$data
         , label = agaricus.test$label
     )
-    bst <- lightgbm(
+    bst <- falcata(
         data = as.matrix(train$data)
         , label = train$label
         , params = list(
@@ -198,7 +198,7 @@ test_that("Feature contribution predictions do not take non-general CSR or CSC i
 })
 
 test_that("predict() params should override keyword argument for raw-score predictions", {
-  data(agaricus.train, package = "lightgbm")
+  data(agaricus.train, package = "falcata")
   X <- agaricus.train$data
   y <- agaricus.train$label
   bst <- lgb.train(
@@ -438,7 +438,7 @@ test_that("predict() keeps row names from data (regression)", {
 })
 
 test_that("predict() keeps row names from data (binary classification)", {
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     X <- as.matrix(agaricus.train$data)
     y <- agaricus.train$label
     row.names(X) <- paste0("rname", seq(1L, nrow(X)))
@@ -495,7 +495,7 @@ test_that("predictions for regression and binary classification are returned as 
     expect_true(is.vector(pred))
     expect_equal(length(pred), nrow(X))
 
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     X <- agaricus.train$data
     y <- agaricus.train$label
     dtrain <- lgb.Dataset(X, label = y)
@@ -660,7 +660,7 @@ test_that("Fast-predict configuration does not block other prediction types", {
 })
 
 test_that("predict type='class' returns predicted class for classification objectives", {
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     X <- as.matrix(agaricus.train$data)
     y <- agaricus.train$label
     dtrain <- lgb.Dataset(X, label = y, params = list(max_bins = 5L))
@@ -690,7 +690,7 @@ test_that("predict type='class' returns predicted class for classification objec
 })
 
 test_that("predict type='class' returns values in the target's range for regression objectives", {
-    data(agaricus.train, package = "lightgbm")
+    data(agaricus.train, package = "falcata")
     X <- as.matrix(agaricus.train$data)
     y <- agaricus.train$label
     dtrain <- lgb.Dataset(X, label = y, params = list(max_bins = 5L))

@@ -3,26 +3,26 @@
 \name{setLGBMThreads}
 \alias{setLGBMThreads}
 \alias{setLGBMthreads}
-\title{Set maximum number of threads used by LightGBM}
+\title{Set maximum number of threads used by Falcata}
 \usage{
 setLGBMthreads(num_threads)
 }
 \arguments{
-\item{num_threads}{maximum number of threads to be used by LightGBM in multi-threaded operations}
+\item{num_threads}{maximum number of threads to be used by Falcata in multi-threaded operations}
 }
 \description{
-LightGBM attempts to speed up many operations by using multi-threading.
+Falcata attempts to speed up many operations by using multi-threading.
              The number of threads used in those operations can be controlled via the
              \code{num_threads} parameter passed through \code{params} to functions like
              \link{lgb.train} and \link{lgb.Dataset}. However, some operations (like materializing
              a model from a text file) are done via code paths that don't explicitly accept thread-control
              configuration.
 
-             Use this function to set the maximum number of threads LightGBM will use for such operations.
+             Use this function to set the maximum number of threads Falcata will use for such operations.
 
-             This function affects all LightGBM operations in the same process.
+             This function affects all Falcata operations in the same process.
 
-             So, for example, if you call \code{setLGBMthreads(4)}, no other multi-threaded LightGBM
+             So, for example, if you call \code{setLGBMthreads(4)}, no other multi-threaded Falcata
              operation in the same process will use more than 4 threads.
 
              Call \code{setLGBMthreads(-1)} to remove this limitation.
