@@ -3,8 +3,8 @@
  * Copyright (c) 2020-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef FALCATA_INCLUDE_LIGHTGBM_UTILS_ARRAY_ARGS_H_
-#define FALCATA_INCLUDE_LIGHTGBM_UTILS_ARRAY_ARGS_H_
+#ifndef FALCATA_INCLUDE_FALCATA_UTILS_ARRAY_ARGS_H_
+#define FALCATA_INCLUDE_FALCATA_UTILS_ARRAY_ARGS_H_
 
 #include <Falcata/utils/openmp_wrapper.h>
 #include <Falcata/utils/threading.h>
@@ -197,4 +197,4 @@ class ArrayArgs {
 
 }  // namespace Falcata
 
-#endif  // FALCATA_INCLUDE_LIGHTGBM_UTILS_ARRAY_ARGS_H_
+#endif  // FALCATA_INCLUDE_FALCATA_UTILS_ARRAY_ARGS_H_

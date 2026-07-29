@@ -14,8 +14,8 @@
  *           - param is only used by the CLI (especially the "predict" and "convert_model" tasks)
  *           - param is related to Falcata writing files (e.g. "output_model", "save_binary")
  */
-#ifndef FALCATA_INCLUDE_LIGHTGBM_CONFIG_H_
-#define FALCATA_INCLUDE_LIGHTGBM_CONFIG_H_
+#ifndef FALCATA_INCLUDE_FALCATA_CONFIG_H_
+#define FALCATA_INCLUDE_FALCATA_CONFIG_H_
 
 #include <Falcata/export.h>
 #include <Falcata/meta.h>
@@ -1380,4 +1380,4 @@ inline std::string ParseMetricAlias(const std::string& type) {
 
 }   // namespace Falcata
 
-#endif   // FALCATA_INCLUDE_LIGHTGBM_CONFIG_H_
+#endif   // FALCATA_INCLUDE_FALCATA_CONFIG_H_

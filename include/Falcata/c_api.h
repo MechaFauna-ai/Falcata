@@ -11,8 +11,8 @@
  * .
  * The reason is that they are called frequently, and the type conversion on them may be time-cost.
  */
-#ifndef FALCATA_INCLUDE_LIGHTGBM_C_API_H_
-#define FALCATA_INCLUDE_LIGHTGBM_C_API_H_
+#ifndef FALCATA_INCLUDE_FALCATA_C_API_H_
+#define FALCATA_INCLUDE_FALCATA_C_API_H_
 
 #include <Falcata/arrow.h>
 #include <Falcata/export.h>
@@ -1766,4 +1766,4 @@ INLINE_FUNCTION void FLC_SetLastError(const char* msg) {
 #endif
 }
 
-#endif  /* FALCATA_INCLUDE_LIGHTGBM_C_API_H_ */
+#endif  /* FALCATA_INCLUDE_FALCATA_C_API_H_ */

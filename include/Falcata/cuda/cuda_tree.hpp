@@ -4,8 +4,8 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 
-#ifndef FALCATA_INCLUDE_LIGHTGBM_CUDA_CUDA_TREE_HPP_
-#define FALCATA_INCLUDE_LIGHTGBM_CUDA_CUDA_TREE_HPP_
+#ifndef FALCATA_INCLUDE_FALCATA_CUDA_CUDA_TREE_HPP_
+#define FALCATA_INCLUDE_FALCATA_CUDA_CUDA_TREE_HPP_
 
 #ifdef USE_CUDA
 
@@ -290,4 +290,4 @@ class CUDATree : public Tree {
 
 #endif  // USE_CUDA
 
-#endif  // FALCATA_INCLUDE_LIGHTGBM_CUDA_CUDA_TREE_HPP_
+#endif  // FALCATA_INCLUDE_FALCATA_CUDA_CUDA_TREE_HPP_

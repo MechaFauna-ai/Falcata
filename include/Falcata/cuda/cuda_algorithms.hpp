@@ -5,8 +5,8 @@
  * Modifications Copyright(C) 2023 Advanced Micro Devices, Inc. All rights reserved.
  */
 
-#ifndef FALCATA_INCLUDE_LIGHTGBM_CUDA_CUDA_ALGORITHMS_HPP_
-#define FALCATA_INCLUDE_LIGHTGBM_CUDA_CUDA_ALGORITHMS_HPP_
+#ifndef FALCATA_INCLUDE_FALCATA_CUDA_CUDA_ALGORITHMS_HPP_
+#define FALCATA_INCLUDE_FALCATA_CUDA_CUDA_ALGORITHMS_HPP_
 
 #ifdef USE_CUDA
 
@@ -657,4 +657,4 @@ __device__ VAL_T PercentileDevice(const VAL_T* values,
 }  // namespace Falcata
 
 #endif  // USE_CUDA
-#endif  // FALCATA_INCLUDE_LIGHTGBM_CUDA_CUDA_ALGORITHMS_HPP_
+#endif  // FALCATA_INCLUDE_FALCATA_CUDA_CUDA_ALGORITHMS_HPP_

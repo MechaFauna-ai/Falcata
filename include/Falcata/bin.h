@@ -3,8 +3,8 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef FALCATA_INCLUDE_LIGHTGBM_BIN_H_
-#define FALCATA_INCLUDE_LIGHTGBM_BIN_H_
+#ifndef FALCATA_INCLUDE_FALCATA_BIN_H_
+#define FALCATA_INCLUDE_FALCATA_BIN_H_
 
 #include <Falcata/meta.h>
 #include <Falcata/utils/common.h>
@@ -683,4 +683,4 @@ inline uint32_t BinMapper::ValueToBin(double value) const {
 
 }  // namespace Falcata
 
-#endif   // FALCATA_INCLUDE_LIGHTGBM_BIN_H_
+#endif   // FALCATA_INCLUDE_FALCATA_BIN_H_

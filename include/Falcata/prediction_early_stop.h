@@ -3,8 +3,8 @@
  * Copyright (c) 2017-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef FALCATA_INCLUDE_LIGHTGBM_PREDICTION_EARLY_STOP_H_
-#define FALCATA_INCLUDE_LIGHTGBM_PREDICTION_EARLY_STOP_H_
+#ifndef FALCATA_INCLUDE_FALCATA_PREDICTION_EARLY_STOP_H_
+#define FALCATA_INCLUDE_FALCATA_PREDICTION_EARLY_STOP_H_
 
 #include <Falcata/export.h>
 
@@ -34,4 +34,4 @@ FALCATA_EXPORT PredictionEarlyStopInstance CreatePredictionEarlyStopInstance(con
 
 }   // namespace Falcata
 
-#endif  // FALCATA_INCLUDE_LIGHTGBM_PREDICTION_EARLY_STOP_H_
+#endif  // FALCATA_INCLUDE_FALCATA_PREDICTION_EARLY_STOP_H_

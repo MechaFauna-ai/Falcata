@@ -117,7 +117,7 @@ Rscript --vanilla -e "install.packages('https://cran.r-project.org/src/contrib/A
 Rscript --vanilla ./.ci/install-r-deps.R --build --test --exclude=Matrix || exit 1
 
 cd "${BUILD_DIRECTORY}"
-PKG_TARBALL="lightgbm_$(head -1 VERSION.txt).tar.gz"
+PKG_TARBALL="falcata_$(head -1 VERSION.txt).tar.gz"
 BUILD_LOG_FILE="falcata.Rcheck/00install.out"
 LOG_FILE_NAME="falcata.Rcheck/00check.log"
 if [[ $R_BUILD_TYPE == "cmake" ]]; then

@@ -5,8 +5,8 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  * Modifications Copyright(C) 2023 Advanced Micro Devices, Inc. All rights reserved.
  */
-#ifndef FALCATA_INCLUDE_LIGHTGBM_CUDA_VECTOR_CUDAHOST_H_
-#define FALCATA_INCLUDE_LIGHTGBM_CUDA_VECTOR_CUDAHOST_H_
+#ifndef FALCATA_INCLUDE_FALCATA_CUDA_VECTOR_CUDAHOST_H_
+#define FALCATA_INCLUDE_FALCATA_CUDA_VECTOR_CUDAHOST_H_
 
 #include <Falcata/utils/common.h>
 
@@ -96,4 +96,4 @@ bool operator!=(const CHAllocator<T>&, const CHAllocator<U>&);
 
 }  // namespace Falcata
 
-#endif  // FALCATA_INCLUDE_LIGHTGBM_CUDA_VECTOR_CUDAHOST_H_
+#endif  // FALCATA_INCLUDE_FALCATA_CUDA_VECTOR_CUDAHOST_H_

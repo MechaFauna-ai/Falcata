@@ -217,7 +217,7 @@ jobs:
             task: regular
             compiler: clang
             produces-artifacts: 'true'
-            artifact-name: 'macosx-amd64-liblightgbm'
+            artifact-name: 'macosx-amd64-libfalcata'
             python_version: '3.11'
           - os: ubuntu-latest
             container: *manylinux_amd64_image
@@ -228,7 +228,7 @@ jobs:
             in-ubuntu-base-container: 'false'
             setup-conda: 'false'
             produces-artifacts: 'true'
-            artifact-name: 'linux-amd64-liblightgbm'
+            artifact-name: 'linux-amd64-libfalcata'
           - os: ubuntu-latest
             container: *manylinux_amd64_image
             os-display-name: *manylinux_amd64_display_name
@@ -263,7 +263,7 @@ jobs:
             task: regular
             compiler: MSVC
             produces-artifacts: 'true'
-            artifact-name: 'windows-amd64-cli-and-liblightgbm'
+            artifact-name: 'windows-amd64-cli-and-libfalcata'
             python_version: '3.11'
     steps:
       - name: Install packages used by third-party actions
@@ -384,7 +384,7 @@ jobs:
         with:
           merge-multiple: true
           path: ${{ env.BUILD_ARTIFACTSTAGINGDIRECTORY }}
-          pattern: '*amd64*-liblightgbm'
+          pattern: '*amd64*-libfalcata'
           run-id: ${{ github.run_id }}
       - name: Setup NuGet CLI
         uses: NuGet/setup-nuget@fd55a6f3b34392fa83fde1454582407d8c714123  # v4.0

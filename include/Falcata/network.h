@@ -3,8 +3,8 @@
  * Copyright (c) 2016-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef FALCATA_INCLUDE_LIGHTGBM_NETWORK_H_
-#define FALCATA_INCLUDE_LIGHTGBM_NETWORK_H_
+#ifndef FALCATA_INCLUDE_FALCATA_NETWORK_H_
+#define FALCATA_INCLUDE_FALCATA_NETWORK_H_
 
 #include <Falcata/config.h>
 #include <Falcata/meta.h>
@@ -315,4 +315,4 @@ class Network {
 
 }  // namespace Falcata
 
-#endif   // FALCATA_INCLUDE_LIGHTGBM_NETWORK_H_
+#endif   // FALCATA_INCLUDE_FALCATA_NETWORK_H_

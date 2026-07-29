@@ -3,8 +3,8 @@
  * Copyright (c) 2017-2026 The LightGBM developers. All rights reserved.
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
-#ifndef FALCATA_INCLUDE_LIGHTGBM_UTILS_OPENMP_WRAPPER_H_
-#define FALCATA_INCLUDE_LIGHTGBM_UTILS_OPENMP_WRAPPER_H_
+#ifndef FALCATA_INCLUDE_FALCATA_UTILS_OPENMP_WRAPPER_H_
+#define FALCATA_INCLUDE_FALCATA_UTILS_OPENMP_WRAPPER_H_
 
 #include <Falcata/export.h>
 
@@ -133,4 +133,4 @@ class ThreadExceptionHelper {
 
 #endif
 
-#endif  // FALCATA_INCLUDE_LIGHTGBM_UTILS_OPENMP_WRAPPER_H_
+#endif  // FALCATA_INCLUDE_FALCATA_UTILS_OPENMP_WRAPPER_H_
