@@ -21,16 +21,13 @@ RUN curl -L -o cmake.sh https://github.com/Kitware/CMake/releases/download/v3.29
     sh ./cmake.sh --prefix=/usr/local --skip-license && \
     rm cmake.sh
 
-RUN git clone \
-        --recursive \
-        --branch master \
-        --depth 1 \
-        https://github.com/BelixRogner/Falcata && \
-    cd ./Falcata && \
+COPY . /src/Falcata
+
+RUN cd /src/Falcata && \
     cmake -B build -S . && \
     cmake --build build -j4 && \
     cmake --install build && \
-    cd "${HOME}" && \
-    rm -rf Falcata
+    cd / && \
+    rm -rf /src/Falcata
 
 ENTRYPOINT ["falcata"]

@@ -8,6 +8,8 @@ ENV \
     LC_ALL=C.UTF-8 \
     PATH=$CONDA_DIR/bin:$PATH
 
+COPY . /src/Falcata
+
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -25,8 +27,7 @@ RUN apt-get update && \
     conda config --set always_yes yes --set changeps1 no && \
     # falcata
     conda install -q -y numpy scipy scikit-learn pandas && \
-    git clone --recursive --branch master --depth 1 https://github.com/BelixRogner/Falcata && \
-    cd ./Falcata && \
+    cd /src/Falcata && \
     sh ./build-python.sh install && \
     # clean
     apt-get autoremove -y && apt-get clean && \

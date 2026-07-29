@@ -1,0 +1,16 @@
+# Build outputs and local environments must not enter the Docker context:
+# a stale build/CMakeCache.txt from the host makes the in-container cmake fail
+# ("source does not match the source used to generate cache").
+.git
+build
+dist
+*.so
+*.tar.gz
+.gates-venv
+falcata-python
+falcata_r
+falcata.Rcheck
+lightgbm_r
+__pycache__
+*.pyc
+.pixi

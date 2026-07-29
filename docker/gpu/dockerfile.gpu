@@ -80,9 +80,9 @@ RUN conda config --set always_yes yes --set changeps1 no && \
 #           Falcata
 #################################################################################################################
 
-RUN cd /usr/local/src && mkdir falcata && cd falcata && \
-    git clone --recursive --branch master --depth 1 https://github.com/BelixRogner/Falcata && \
-    cd Falcata && \
+COPY . /usr/local/src/falcata/Falcata
+
+RUN cd /usr/local/src/falcata/Falcata && \
     cmake -B build -S . -DUSE_GPU=1 -DOpenCL_LIBRARY=/usr/local/cuda/lib64/libOpenCL.so -DOpenCL_INCLUDE_DIR=/usr/local/cuda/include/ && \
     OPENCL_HEADERS=/usr/local/cuda-8.0/targets/x86_64-linux/include LIBOPENCL=/usr/local/cuda-8.0/targets/x86_64-linux/lib cmake --build build
 
