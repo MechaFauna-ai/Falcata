@@ -17,12 +17,11 @@ Follow the general installation instructions [on the Docker site](https://docs.d
 Build an image with the Falcata CLI.
 
 ```shell
-mkdir falcata-docker
-cd falcata-docker
-wget https://raw.githubusercontent.com/BelixRogner/Falcata/master/docker/dockerfile-cli
+# run from the root of a Falcata checkout: the image is built from the
+# working tree (COPY), not from a clone
 docker build \
     -t falcata-cli \
-    -f dockerfile-cli \
+    -f docker/dockerfile-cli \
     .
 ```
 
@@ -39,8 +38,8 @@ num_trees = 10
 output_model = Falcata-CLI-model.txt
 EOF
 
-# get training data
-curl -O https://raw.githubusercontent.com/BelixRogner/Falcata/master/examples/binary_classification/binary.train
+# training data ships in the checkout
+cp examples/binary_classification/binary.train .
 
 # train, and save model to a text file
 docker run \
@@ -60,12 +59,11 @@ For more details on how to configure and use the Falcata CLI, see https://github
 Build an image with the Falcata Python-package installed.
 
 ```shell
-mkdir falcata-docker
-cd falcata-docker
-wget https://raw.githubusercontent.com/BelixRogner/Falcata/master/docker/dockerfile-python
+# run from the root of a Falcata checkout: the image is built from the
+# working tree (COPY), not from a clone
 docker build \
     -t falcata-python \
-    -f dockerfile-python \
+    -f docker/dockerfile-python \
     .
 ```
 
@@ -73,8 +71,8 @@ Once that completes, the built image can be used to run Falcata's Python-package
 Run the following to produce a model using the Python-package.
 
 ```shell
-# get training data
-curl -O https://raw.githubusercontent.com/BelixRogner/Falcata/master/examples/binary_classification/binary.train
+# training data ships in the checkout
+cp examples/binary_classification/binary.train .
 
 # create training script
 cat << EOF > train.py
@@ -119,13 +117,11 @@ docker run \
 Build an image with the Falcata R-package installed.
 
 ```shell
-mkdir falcata-docker
-cd falcata-docker
-wget https://raw.githubusercontent.com/BelixRogner/Falcata/master/docker/dockerfile-r
-
+# run from the root of a Falcata checkout: the image is built from the
+# working tree (COPY), not from a clone
 docker build \
     -t falcata-r \
-    -f dockerfile-r \
+    -f docker/dockerfile-r \
     .
 ```
 
@@ -133,8 +129,8 @@ Once that completes, the built image can be used to run Falcata's R-package in a
 Run the following to produce a model using the R-package.
 
 ```shell
-# get training data
-curl -O https://raw.githubusercontent.com/BelixRogner/Falcata/master/examples/binary_classification/binary.train
+# training data ships in the checkout
+cp examples/binary_classification/binary.train .
 
 # create training script
 cat << EOF > train.R

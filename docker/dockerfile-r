@@ -1,16 +1,14 @@
 ARG R_VERSION=latest
 FROM rocker/verse:${R_VERSION}
 
+COPY . /src/Falcata
+
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         build-essential \
         libomp-dev && \
-    git clone \
-        --recursive \
-        --branch master \
-        --depth 1 https://github.com/BelixRogner/Falcata && \
-    cd ./Falcata && \
+    cd /src/Falcata && \
     sh build-cran-package.sh --no-build-vignettes && \
     R CMD INSTALL ./falcata_*.tar.gz && \
-    cd .. && \
-    rm -rf ./Falcata
+    cd / && \
+    rm -rf /src/Falcata
