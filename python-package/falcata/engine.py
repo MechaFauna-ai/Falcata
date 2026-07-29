@@ -1,5 +1,5 @@
 # coding: utf-8
-"""Library with training routines of LightGBM."""
+"""Library with training routines of Falcata."""
 
 import copy
 import json
@@ -95,12 +95,12 @@ def _choose_num_iterations(*, num_boost_round_kwarg: int, params: Dict[str, Any]
     if len(set(num_iteration_configs_provided.values())) <= 1:
         return params
 
-    # if this line is reached, lightgbm should warn
+    # if this line is reached, falcata should warn
     value_string = ", ".join(f"{alias}={val}" for alias, val in num_iteration_configs_provided.items())
     _log_warning(
         f"Found conflicting values for num_iterations provided via 'params': {value_string}. "
-        f"LightGBM will perform up to {params['num_iterations']} boosting rounds. "
-        "To be confident in the maximum number of boosting rounds LightGBM will perform and to "
+        f"Falcata will perform up to {params['num_iterations']} boosting rounds. "
+        "To be confident in the maximum number of boosting rounds Falcata will perform and to "
         "suppress this warning, modify 'params' so that only one of those is present."
     )
     return params
@@ -154,7 +154,7 @@ def train(
         To ignore the default metric corresponding to the used objective,
         set the ``metric`` parameter to the string ``"None"`` in ``params``.
     init_model : str, pathlib.Path, Booster or None, optional (default=None)
-        Filename of LightGBM model or Booster instance used for continue training.
+        Filename of Falcata model or Booster instance used for continue training.
     keep_training_booster : bool, optional (default=False)
         Whether the returned Booster will be used to keep training.
         If False, the returned value will be converted into _InnerPredictor before returning.
@@ -354,7 +354,7 @@ def train(
 
 
 class CVBooster:
-    """CVBooster in LightGBM.
+    """CVBooster in Falcata.
 
     Auxiliary data structure to hold and redirect all boosters of ``cv()`` function.
     This class has the same methods as Booster class.
@@ -688,7 +688,7 @@ def cv(
         To ignore the default metric corresponding to the used objective,
         set ``metrics`` to the string ``"None"``.
     init_model : str, pathlib.Path, Booster or None, optional (default=None)
-        Filename of LightGBM model or Booster instance used for continue training.
+        Filename of Falcata model or Booster instance used for continue training.
     fpreproc : callable or None, optional (default=None)
         Preprocessing function that takes (dtrain, dtest, params)
         and returns transformed versions of those.

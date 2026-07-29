@@ -1,5 +1,5 @@
 # coding: utf-8
-"""Wrapper for C API of LightGBM."""
+"""Wrapper for C API of Falcata."""
 
 # This import causes lib_falcata.{dll,dylib,so} to be loaded.
 # It's intentionally done here, as early as possible, to avoid issues like
@@ -153,7 +153,7 @@ _MULTICLASS_OBJECTIVES = {"multiclass", "multiclassova", "multiclass_ova", "ova"
 
 
 class LightGBMError(Exception):
-    """Error thrown by LightGBM."""
+    """Error thrown by Falcata."""
 
     pass
 
@@ -583,7 +583,7 @@ def _choose_param_value(main_param_name: str, params: Dict[str, Any], default_va
     main_param_name : str
         Name of the main parameter to get a value for. One of the keys of ``_ConfigAliases``.
     params : dict
-        Dictionary of LightGBM parameters.
+        Dictionary of Falcata parameters.
     default_value : Any
         Default value to use for the parameter, if none is found in ``params``.
 
@@ -624,7 +624,7 @@ def _choose_param_value(main_param_name: str, params: Dict[str, Any], default_va
 
 _MAX_INT32 = (1 << 31) - 1
 
-"""Macro definition of data type in C API of LightGBM"""
+"""Macro definition of data type in C API of Falcata"""
 _C_API_DTYPE_FLOAT32 = 0
 _C_API_DTYPE_FLOAT64 = 1
 _C_API_DTYPE_INT32 = 2
@@ -639,7 +639,7 @@ _C_API_DTYPE_FLOAT16 = 8
 _C_API_IS_COL_MAJOR = 0
 _C_API_IS_ROW_MAJOR = 1
 
-"""Macro definition of prediction type in C API of LightGBM"""
+"""Macro definition of prediction type in C API of Falcata"""
 _C_API_PREDICT_NORMAL = 0
 _C_API_PREDICT_RAW_SCORE = 1
 _C_API_PREDICT_LEAF_INDEX = 2
@@ -675,7 +675,7 @@ def _convert_from_sliced_object(data: np.ndarray) -> np.ndarray:
         if not data.flags.c_contiguous:
             _log_warning(
                 "Usage of np.ndarray subset (sliced data) is not recommended "
-                "due to it will double the peak memory cost in LightGBM."
+                "due to it will double the peak memory cost in Falcata."
             )
             return np.copy(data)
     return data
@@ -935,16 +935,16 @@ class Sequence(abc.ABC):
         result : numpy 1-D array or numpy 2-D array
             1-D array if idx is int, 2-D array if idx is slice or list.
         """
-        raise NotImplementedError("Sub-classes of lightgbm.Sequence must implement __getitem__()")
+        raise NotImplementedError("Sub-classes of falcata.Sequence must implement __getitem__()")
 
     @abc.abstractmethod
     def __len__(self) -> int:
         """Return row count of this sequence."""
-        raise NotImplementedError("Sub-classes of lightgbm.Sequence must implement __len__()")
+        raise NotImplementedError("Sub-classes of falcata.Sequence must implement __len__()")
 
 
 class _InnerPredictor:
-    """_InnerPredictor of LightGBM.
+    """_InnerPredictor of Falcata.
 
     Not exposed to user.
     Used only for prediction, usually used for continued training.
@@ -1024,7 +1024,7 @@ class _InnerPredictor:
         model_file: Union[str, Path],
         pred_parameter: Dict[str, Any],
     ) -> "_InnerPredictor":
-        """Initialize an ``_InnerPredictor`` from a text file containing a LightGBM model.
+        """Initialize an ``_InnerPredictor`` from a text file containing a Falcata model.
 
         Parameters
         ----------
@@ -1152,7 +1152,7 @@ class _InnerPredictor:
                 preds = np.loadtxt(f.name, dtype=np.float64)
                 nrow = preds.shape[0]
         elif isinstance(data, scipy.sparse.csr_matrix):
-            # TODO: remove 'type: ignore[assignment]' when https://github.com/lightgbm-org/LightGBM/pull/6348 is resolved.
+            # TODO: remove 'type: ignore[assignment]' when https://github.com/falcata-org/Falcata/pull/6348 is resolved.
             preds, nrow = self.__pred_for_csr(  # type: ignore[assignment]
                 csr=data,
                 start_iteration=start_iteration,
@@ -1160,7 +1160,7 @@ class _InnerPredictor:
                 predict_type=predict_type,
             )
         elif isinstance(data, scipy.sparse.csc_matrix):
-            # TODO: remove 'type: ignore[assignment]' when https://github.com/lightgbm-org/LightGBM/pull/6348 is resolved.
+            # TODO: remove 'type: ignore[assignment]' when https://github.com/falcata-org/Falcata/pull/6348 is resolved.
             preds, nrow = self.__pred_for_csc(  # type: ignore[assignment]
                 csc=data,
                 start_iteration=start_iteration,
@@ -1198,7 +1198,7 @@ class _InnerPredictor:
                 csr = scipy.sparse.csr_matrix(data)
             except BaseException as err:
                 raise TypeError(f"Cannot predict data for type {type(data).__name__}") from err
-            # TODO: remove 'type: ignore[assignment]' when https://github.com/lightgbm-org/LightGBM/pull/6348 is resolved.
+            # TODO: remove 'type: ignore[assignment]' when https://github.com/falcata-org/Falcata/pull/6348 is resolved.
             preds, nrow = self.__pred_for_csr(  # type: ignore[assignment]
                 csr=csr,
                 start_iteration=start_iteration,
@@ -1226,7 +1226,7 @@ class _InnerPredictor:
         """Get size of prediction result."""
         if nrow > _MAX_INT32:
             raise LightGBMError(
-                "LightGBM cannot perform prediction for data "
+                "Falcata cannot perform prediction for data "
                 f"with number of rows greater than MAX_INT32 ({_MAX_INT32}).\n"
                 "You can split your data into chunks "
                 "and then concatenate predictions for them"
@@ -1730,9 +1730,9 @@ class _InnerPredictor:
 
 class Dataset:
     """
-    Dataset in LightGBM.
+    Dataset in Falcata.
 
-    LightGBM does not train on raw data.
+    Falcata does not train on raw data.
     It discretizes continuous features into histogram bins, tries to combine categorical features,
     and automatically handles missing and infinite values.
 
@@ -1759,7 +1759,7 @@ class Dataset:
         ----------
         data : str, pathlib.Path, numpy array, pandas DataFrame, scipy.sparse, Sequence, list of Sequence, list of numpy array, pyarrow Table or polars DataFrame
             Data source of Dataset.
-            If str or pathlib.Path, it represents the path to a text file (CSV, TSV, or LibSVM) or a LightGBM Dataset binary file.
+            If str or pathlib.Path, it represents the path to a text file (CSV, TSV, or LibSVM) or a Falcata Dataset binary file.
         label : list, numpy 1-D array, pandas Series / one-column DataFrame, pyarrow ChunkedArray, polars Series or None, optional (default=None)
             Label of the data.
         reference : Dataset or None, optional (default=None)
@@ -1813,7 +1813,7 @@ class Dataset:
         self._params_back_up: Optional[Dict[str, Any]] = None
         self.version = 0
         self._start_row = 0  # Used when pushing rows one by one.
-        # By default, LightGBM assigns features names like Column_0, Column_1, etc.
+        # By default, Falcata assigns features names like Column_0, Column_1, etc.
         # These may be overridden during construction if that raw training data is in a format
         # that includes feature names (like a pandas DataFrame) or if the 'feature_name' keyword argument
         # is explicitly set.
@@ -2105,7 +2105,7 @@ class Dataset:
 
         # 'feature_name == "auto"' after the block above means no feature names were provided
         # by either the data type (DataFrame/pyarrow) or the user's 'feature_name' argument.
-        # LightGBM will assign auto-generated names like Column_0, Column_1, etc.
+        # Falcata will assign auto-generated names like Column_0, Column_1, etc.
         self._has_non_default_feature_names = feature_name != "auto"
 
         # process for args
@@ -2662,7 +2662,7 @@ class Dataset:
         ----------
         data : str, pathlib.Path, numpy array, pandas DataFrame, scipy.sparse, Sequence, list of Sequence, list of numpy array, pyarrow Table or polars DataFrame
             Data source of Dataset.
-            If str or pathlib.Path, it represents the path to a text file (CSV, TSV, or LibSVM) or a LightGBM Dataset binary file.
+            If str or pathlib.Path, it represents the path to a text file (CSV, TSV, or LibSVM) or a Falcata Dataset binary file.
         label : list, numpy 1-D array, pandas Series / one-column DataFrame, pyarrow ChunkedArray, polars Series or None, optional (default=None)
             Label of the data.
         weight : list, numpy 1-D array, pandas Series, pyarrow ChunkedArray, polars Series or None, optional (default=None)
@@ -3353,7 +3353,7 @@ class Dataset:
         if self.group is None:
             self.group = self.get_field("group")
             if self.group is not None:
-                # group data from LightGBM is boundaries data, need to convert to group size
+                # group data from Falcata is boundaries data, need to convert to group size
                 self.group = np.diff(self.group)
         return self.group
 
@@ -3555,7 +3555,7 @@ class Dataset:
     def _dump_text(self, filename: Union[str, Path]) -> "Dataset":
         """Save Dataset to a text file.
 
-        This format cannot be loaded back in by LightGBM, but is useful for debugging purposes.
+        This format cannot be loaded back in by Falcata, but is useful for debugging purposes.
 
         Parameters
         ----------
@@ -3615,7 +3615,7 @@ _LGBM_CustomEvalFunction = Union[
 
 
 class Booster:
-    """Booster in LightGBM."""
+    """Booster in Falcata."""
 
     def __init__(
         self,
@@ -5116,7 +5116,7 @@ class Booster:
                     "'categorical_feature' value found in Booster.params. "
                     "Preferring the value passed via keyword argument. "
                     "Using refit() to change which columns are treated as categorical is not supported. "
-                    "If you have a valid use case for this, please open an issue at https://github.com/lightgbm-org/LightGBM/issues."
+                    "If you have a valid use case for this, please open an issue at https://github.com/falcata-org/Falcata/issues."
                 )
                 raise LightGBMError(error_msg)
 

@@ -31,4 +31,4 @@ export CMAKE_ARGS
 
 sh build-python.sh install --cuda
 
-python -c "import lightgbm; print('lightgbm', lightgbm.__version__, '->', lightgbm.__file__)"
+python -c "import falcata; print('falcata', falcata.__version__, '->', falcata.__file__)"

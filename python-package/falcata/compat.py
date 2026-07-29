@@ -5,7 +5,7 @@ import inspect
 from typing import TYPE_CHECKING, Any, List
 
 # scikit-learn is intentionally imported first here,
-# see https://github.com/lightgbm-org/LightGBM/issues/6509
+# see https://github.com/falcata-org/Falcata/issues/6509
 """sklearn"""
 try:
     from sklearn import __version__ as _sklearn_version
@@ -47,7 +47,7 @@ try:
         from sklearn.utils.validation import validate_data
     except ImportError:
         # validate_data() was added in scikit-learn 1.6, this function roughly imitates it for older versions.
-        # It can be removed when lightgbm's minimum scikit-learn version is at least 1.6.
+        # It can be removed when falcata's minimum scikit-learn version is at least 1.6.
         def validate_data(
             _estimator: Any,
             X: Any,
@@ -62,7 +62,7 @@ try:
             # it's safe to import _num_features unconditionally because:
             #
             #  * it was first added in scikit-learn 0.24.2
-            #  * lightgbm cannot be used with scikit-learn versions older than that
+            #  * falcata cannot be used with scikit-learn versions older than that
             #  * this validate_data() re-implementation will not be called in scikit-learn>=1.6
             #
             from sklearn.utils.validation import _num_features  # noqa: PLC0415
@@ -71,7 +71,7 @@ try:
             # because scikit-learn's 'check_fit1d' estimator check sets that expectation that
             # estimators must raise a ValueError when a 1-dimensional input is passed to fit().
             #
-            # So here, lightgbm avoids calling _num_features() on 1-dimensional inputs.
+            # So here, falcata avoids calling _num_features() on 1-dimensional inputs.
             if hasattr(X, "shape") and len(X.shape) == 1:
                 n_features_in_ = 1
             else:
@@ -159,7 +159,7 @@ except ImportError:
 # additional scikit-learn imports only for type hints
 if TYPE_CHECKING:
     # sklearn.utils.Tags can be imported unconditionally once
-    # lightgbm's minimum scikit-learn version is 1.6 or higher
+    # falcata's minimum scikit-learn version is 1.6 or higher
     try:
         from sklearn.utils import Tags as _sklearn_Tags
     except ImportError:

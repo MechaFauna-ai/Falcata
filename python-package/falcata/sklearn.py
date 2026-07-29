@@ -1,5 +1,5 @@
 # coding: utf-8
-"""Scikit-learn wrapper interface for LightGBM."""
+"""Scikit-learn wrapper interface for Falcata."""
 
 import copy
 import warnings
@@ -127,8 +127,8 @@ _LGBM_ScikitValidSet = Tuple[_LGBM_ScikitMatrixLike, _LGBM_LabelType]
 def _get_group_from_constructed_dataset(dataset: Dataset) -> Optional[np.ndarray]:
     group = dataset.get_group()
     error_msg = (
-        "Estimators in lightgbm.sklearn should only retrieve query groups from a constructed Dataset. "
-        "If you're seeing this message, it's a bug in lightgbm. Please report it at https://github.com/lightgbm-org/LightGBM/issues."
+        "Estimators in falcata.sklearn should only retrieve query groups from a constructed Dataset. "
+        "If you're seeing this message, it's a bug in falcata. Please report it at https://github.com/falcata-org/Falcata/issues."
     )
     assert group is None or isinstance(group, np.ndarray), error_msg
     return group
@@ -137,8 +137,8 @@ def _get_group_from_constructed_dataset(dataset: Dataset) -> Optional[np.ndarray
 def _get_label_from_constructed_dataset(dataset: Dataset) -> np.ndarray:
     label = dataset.get_label()
     error_msg = (
-        "Estimators in lightgbm.sklearn should only retrieve labels from a constructed Dataset. "
-        "If you're seeing this message, it's a bug in lightgbm. Please report it at https://github.com/lightgbm-org/LightGBM/issues."
+        "Estimators in falcata.sklearn should only retrieve labels from a constructed Dataset. "
+        "If you're seeing this message, it's a bug in falcata. Please report it at https://github.com/falcata-org/Falcata/issues."
     )
     assert isinstance(label, np.ndarray), error_msg
     return label
@@ -147,8 +147,8 @@ def _get_label_from_constructed_dataset(dataset: Dataset) -> np.ndarray:
 def _get_weight_from_constructed_dataset(dataset: Dataset) -> Optional[np.ndarray]:
     weight = dataset.get_weight()
     error_msg = (
-        "Estimators in lightgbm.sklearn should only retrieve weights from a constructed Dataset. "
-        "If you're seeing this message, it's a bug in lightgbm. Please report it at https://github.com/lightgbm-org/LightGBM/issues."
+        "Estimators in falcata.sklearn should only retrieve weights from a constructed Dataset. "
+        "If you're seeing this message, it's a bug in falcata. Please report it at https://github.com/falcata-org/Falcata/issues."
     )
     assert weight is None or isinstance(weight, np.ndarray), error_msg
     return weight
@@ -161,7 +161,7 @@ class _ObjectiveFunctionWrapper:
         """Construct a proxy class.
 
         This class transforms objective function to match objective function with signature ``new_func(preds, dataset)``
-        as expected by ``lightgbm.engine.train``.
+        as expected by ``falcata.engine.train``.
 
         Parameters
         ----------
@@ -248,7 +248,7 @@ class _EvalFunctionWrapper:
         """Construct a proxy class.
 
         This class transforms evaluation function to match evaluation function with signature ``new_func(preds, dataset)``
-        as expected by ``lightgbm.engine.train``.
+        as expected by ``falcata.engine.train``.
 
         Parameters
         ----------
@@ -382,7 +382,7 @@ _lgbmmodel_doc_fit = """
         List of callback functions that are applied at each iteration.
         See Callbacks in Python API for more information.
     init_model : str, pathlib.Path, Booster, LGBMModel or None, optional (default=None)
-        Filename of LightGBM model, Booster instance or LGBMModel instance used for continue training.
+        Filename of Falcata model, Booster instance or LGBMModel instance used for continue training.
     eval_X : {X_shape}, or tuple of such inputs, or None, optional (default=None)
         Feature matrix or tuple thereof, e.g. ``(X_val0, X_val1)``, to use as validation sets.
     eval_y : {y_shape}, or tuple of such inputs, or None, optional (default=None)
@@ -533,7 +533,7 @@ def _validate_eval_set_Xy(
 
 
 class LGBMModel(_LGBMModelBase):
-    """Implementation of the scikit-learn API for LightGBM."""
+    """Implementation of the scikit-learn API for Falcata."""
 
     def __init__(
         self,
@@ -639,7 +639,7 @@ class LGBMModel(_LGBMModelBase):
             If 'gain', result contains total gains of splits which use the feature.
         **kwargs
             Other parameters for the model.
-            Check http://lightgbm.readthedocs.io/en/latest/Parameters.html for more parameters.
+            Check http://falcata.readthedocs.io/en/latest/Parameters.html for more parameters.
 
             .. warning::
 
@@ -679,7 +679,7 @@ class LGBMModel(_LGBMModelBase):
         """
         if not SKLEARN_INSTALLED:
             raise LightGBMError(
-                "scikit-learn is required for lightgbm.sklearn. "
+                "scikit-learn is required for falcata.sklearn. "
                 "You must install scikit-learn and restart your session to use this module."
             )
 
@@ -718,36 +718,36 @@ class LGBMModel(_LGBMModelBase):
         self.set_params(**kwargs)
 
     # scikit-learn 1.6 introduced an __sklearn__tags() method intended to replace _more_tags().
-    # _more_tags() can be removed whenever lightgbm's minimum supported scikit-learn version
+    # _more_tags() can be removed whenever falcata's minimum supported scikit-learn version
     # is >=1.6.
-    # ref: https://github.com/lightgbm-org/LightGBM/pull/6651
+    # ref: https://github.com/falcata-org/Falcata/pull/6651
     def _more_tags(self) -> Dict[str, Any]:
         check_sample_weight_str = (
-            "In LightGBM, setting a sample's weight to 0 can produce a different result than omitting the sample. "
+            "In Falcata, setting a sample's weight to 0 can produce a different result than omitting the sample. "
             "Such samples intentionally still affect count-based measures like 'min_data_in_leaf' "
-            "(https://github.com/lightgbm-org/LightGBM/issues/5626#issuecomment-1712706678) and the estimated distribution "
-            "of features for Dataset construction (see https://github.com/lightgbm-org/LightGBM/issues/5553)."
+            "(https://github.com/falcata-org/Falcata/issues/5626#issuecomment-1712706678) and the estimated distribution "
+            "of features for Dataset construction (see https://github.com/falcata-org/Falcata/issues/5553)."
         )
-        # "check_sample_weight_equivalence" can be removed when lightgbm's
+        # "check_sample_weight_equivalence" can be removed when falcata's
         # minimum supported scikit-learn version is at least 1.6
         # ref: https://github.com/scikit-learn/scikit-learn/pull/30137
         xfail_checks = {
             "check_no_attributes_set_in_init": (
                 "scikit-learn incorrectly asserts that private attributes "
                 "cannot be set in __init__: "
-                "(see https://github.com/lightgbm-org/LightGBM/issues/2628)"
+                "(see https://github.com/falcata-org/Falcata/issues/2628)"
             ),
             "check_all_zero_sample_weights_error": (
                 "Beginning in scikit-learn 1.9, by default estimators are expected to reject "
-                "sample weight arrays that are all-0. LightGBM intentionally accepts such arrays. "
-                "LightGBM supports some operations where training on an all-0-weight input could make sense, "
+                "sample weight arrays that are all-0. Falcata intentionally accepts such arrays. "
+                "Falcata supports some operations where training on an all-0-weight input could make sense, "
                 "like batch updates with training continuation or manual model creation with forced splits."
             ),
             "check_sample_weight_equivalence": check_sample_weight_str,
             "check_sample_weight_equivalence_on_dense_data": check_sample_weight_str,
             "check_sample_weight_equivalence_on_sparse_data": check_sample_weight_str,
         }
-        # "check_decision_proba_consistency" can be removed when lightgbm's
+        # "check_decision_proba_consistency" can be removed when falcata's
         # minimum supported scikit-learn version is at least 1.2
         sklearn_major, sklearn_minor, *_ = _sklearn_version.split(".")
         if (int(sklearn_major), int(sklearn_minor)) < (1, 2):
@@ -791,7 +791,7 @@ class LGBMModel(_LGBMModelBase):
             raise AttributeError(err_msg)
 
         # take whatever tags are provided by BaseEstimator, then modify
-        # them with LightGBM-specific values
+        # them with Falcata-specific values
         return self._update_sklearn_tags_from_dict(
             tags=super().__sklearn_tags__(),
             tags_dict=self._more_tags(),
@@ -998,7 +998,7 @@ class LGBMModel(_LGBMModelBase):
         params = self._process_params(stage="fit")
 
         # Do not modify original args in fit function
-        # Refer to https://github.com/lightgbm-org/LightGBM/pull/2619
+        # Refer to https://github.com/falcata-org/Falcata/pull/2619
         eval_metric_list: List[Union[str, _LGBM_ScikitCustomEvalFunction]]
         if eval_metric is None:
             eval_metric_list = []
@@ -1031,7 +1031,7 @@ class LGBMModel(_LGBMModelBase):
                 reset=True,
                 # allow any input type (this validation is done further down, in lgb.Dataset())
                 accept_sparse=True,
-                # do not raise an error if Inf of NaN values are found (LightGBM handles these internally)
+                # do not raise an error if Inf of NaN values are found (Falcata handles these internally)
                 ensure_all_finite=False,
                 # raise an error on 0-row and 1-row inputs
                 ensure_min_samples=2,
@@ -1201,7 +1201,7 @@ class LGBMModel(_LGBMModelBase):
                 reset=False,
                 # allow any input type (this validation is done further down, in lgb.Dataset())
                 accept_sparse=True,
-                # do not raise an error if Inf of NaN values are found (LightGBM handles these internally)
+                # do not raise an error if Inf of NaN values are found (Falcata handles these internally)
                 ensure_all_finite=False,
                 # raise an error on 0-row inputs
                 ensure_min_samples=1,
@@ -1272,7 +1272,7 @@ class LGBMModel(_LGBMModelBase):
 
             Do not call ``estimator.n_features_in_ = some_int`` or anything else that invokes
             this method. It is only here for compatibility with ``scikit-learn`` validation
-            functions used internally in ``lightgbm``.
+            functions used internally in ``falcata``.
         """
         self._n_features_in = value
 
@@ -1390,7 +1390,7 @@ class LGBMModel(_LGBMModelBase):
 
         Some code paths in ``scikit-learn`` try to delete the ``feature_names_in_`` attribute
         on estimators when a new training dataset that doesn't have features is passed.
-        LightGBM has custom handling of feature names and has chosen to opt out of this behavior.
+        Falcata has custom handling of feature names and has chosen to opt out of this behavior.
 
         However, that behavior is coupled to ``scikit-learn`` automatically updating
         ``n_features_in_`` in those same code paths, which is necessary for compliance
@@ -1401,13 +1401,13 @@ class LGBMModel(_LGBMModelBase):
 
             Do not call ``del estimator.feature_names_in_`` or anything else that invokes
             this method. It is only here for compatibility with ``scikit-learn`` validation
-            functions used internally in ``lightgbm``.
+            functions used internally in ``falcata``.
         """
         pass
 
 
 class LGBMRegressor(_LGBMRegressorBase, LGBMModel):
-    """LightGBM regressor."""
+    """Falcata regressor."""
 
     # NOTE: all args from LGBMModel.__init__() are intentionally repeated here for
     #       docs, help(), and tab completion.
@@ -1466,7 +1466,7 @@ class LGBMRegressor(_LGBMRegressorBase, LGBMModel):
             tags = _LGBMRegressorBase._more_tags(self)
         else:
             tags = {}
-        # override those with LightGBM-specific preferences
+        # override those with Falcata-specific preferences
         tags.update(LGBMModel._more_tags(self))
         return tags
 
@@ -1522,7 +1522,7 @@ class LGBMRegressor(_LGBMRegressorBase, LGBMModel):
 
 
 class LGBMClassifier(_LGBMClassifierBase, LGBMModel):
-    """LightGBM classifier."""
+    """Falcata classifier."""
 
     # NOTE: all args from LGBMModel.__init__() are intentionally repeated here for
     #       docs, help(), and tab completion.
@@ -1581,7 +1581,7 @@ class LGBMClassifier(_LGBMClassifierBase, LGBMModel):
             tags = _LGBMClassifierBase._more_tags(self)
         else:
             tags = {}
-        # override those with LightGBM-specific preferences
+        # override those with Falcata-specific preferences
         tags.update(LGBMModel._more_tags(self))
         return tags
 
@@ -1766,7 +1766,7 @@ class LGBMClassifier(_LGBMClassifierBase, LGBMModel):
         else:
             error_msg = (
                 "predict() should return np.ndarray when pred_contrib=False. "
-                "If you're seeing this message, it's a bug in lightgbm. Please report it at https://github.com/lightgbm-org/LightGBM/issues."
+                "If you're seeing this message, it's a bug in falcata. Please report it at https://github.com/falcata-org/Falcata/issues."
             )
             assert isinstance(result, np.ndarray), error_msg
             return np.vstack((1.0 - result, result)).transpose()
@@ -1844,7 +1844,7 @@ class LGBMClassifier(_LGBMClassifierBase, LGBMModel):
 
 
 class LGBMRanker(LGBMModel):
-    """LightGBM ranker.
+    """Falcata ranker.
 
     .. warning::
 

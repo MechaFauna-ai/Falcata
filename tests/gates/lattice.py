@@ -244,7 +244,7 @@ def build_cells():
 _WORKER_SOURCE = r"""
 import hashlib, json, sys, time
 import numpy as np
-import lightgbm as lgb
+import falcata as lgb
 
 def _split(X, y, frac=0.2):
     n = len(y); k = int(n * (1 - frac))

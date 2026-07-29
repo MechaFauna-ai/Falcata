@@ -787,9 +787,8 @@ if(BUILD_CLI)
 endif()
 
 if(__BUILD_FOR_PYTHON)
-    # must match the Python package directory name (python-package/<name>);
-    # becomes "falcata" when the Python package itself is renamed
-    set(CMAKE_INSTALL_PREFIX "lightgbm")
+    # must match the Python package directory name (python-package/<name>)
+    set(CMAKE_INSTALL_PREFIX "falcata")
 endif()
 
 # The macOS linker puts an absolute path to linked libraries in lib_falcata.dylib.

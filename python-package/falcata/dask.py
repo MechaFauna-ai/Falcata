@@ -1,10 +1,10 @@
 # coding: utf-8
-"""Distributed training with LightGBM and dask.distributed.
+"""Distributed training with Falcata and dask.distributed.
 
-This module enables you to perform distributed training with LightGBM on
+This module enables you to perform distributed training with Falcata on
 dask.Array and dask.DataFrame collections.
 
-It is based on dask-lightgbm, which was based on dask-xgboost.
+It is based on dask-falcata, which was based on dask-xgboost.
 """
 
 import operator
@@ -57,17 +57,17 @@ _DaskVectorLike = Union["dask.array.Array", "dask.dataframe.Series"]
 _DaskPart = Union[np.ndarray, pd_DataFrame, pd_Series, ss.spmatrix]
 
 # catching 'ValueError' here because of this:
-# https://github.com/lightgbm-org/LightGBM/issues/6365#issuecomment-2002330003
+# https://github.com/falcata-org/Falcata/issues/6365#issuecomment-2002330003
 #
 # That's potentially risky as dask does some significant import-time processing,
 # like loading configuration from environment variables and files, and catching
 # ValueError here might hide issues with that config-loading.
 #
-# But in exchange, it's less likely that 'import lightgbm' will fail for
+# But in exchange, it's less likely that 'import falcata' will fail for
 # dask-related reasons, which is beneficial for any workloads that are using
-# lightgbm but not its Dask functionality.
+# falcata but not its Dask functionality.
 #
-# 'ValueError' can be removed when LightGBM's Dask floor is '>=2024.4.0'.
+# 'ValueError' can be removed when Falcata's Dask floor is '>=2024.4.0'.
 _DaskImportErrorTypes = (ImportError, ValueError)
 
 
@@ -89,7 +89,7 @@ def _acquire_port() -> Tuple[_RemoteSocket, int]:
 
 
 class _DatasetNames(Enum):
-    """Placeholder names used by lightgbm.dask internals to say 'also evaluate the training data'.
+    """Placeholder names used by falcata.dask internals to say 'also evaluate the training data'.
 
     Avoid duplicating the training data when the validation set refers to elements of training data.
     """
@@ -180,7 +180,7 @@ def _pad_eval_names(
     lgbm_model: LGBMModel,
     required_names: List[str],
 ) -> LGBMModel:
-    """Append missing (key, value) pairs to a LightGBM model's evals_result_ and best_score_ OrderedDict attrs based on a set of required eval_set names.
+    """Append missing (key, value) pairs to a Falcata model's evals_result_ and best_score_ OrderedDict attrs based on a set of required eval_set names.
 
     Allows users to rely on expected eval_set names being present when fitting DaskLGBM estimators with ``eval_set``.
     """
@@ -415,7 +415,7 @@ def _machines_to_worker_map(
     Returns
     -------
     result : Dict[str, int]
-        Dictionary where keys are work addresses in the form expected by Dask and values are a port for LightGBM to use.
+        Dictionary where keys are work addresses in the form expected by Dask and values are a port for Falcata to use.
     """
     machine_addresses = machines.split(",")
 
@@ -473,7 +473,7 @@ def _train(
         The target values (class labels in classification, real numbers in regression).
     params : dict
         Parameters passed to constructor of the local underlying model.
-    model_factory : lightgbm.LGBMClassifier, lightgbm.LGBMRegressor, or lightgbm.LGBMRanker class
+    model_factory : falcata.LGBMClassifier, falcata.LGBMRegressor, or falcata.LGBMRanker class
         Class of the local underlying model.
     sample_weight : Dask Array or Dask Series of shape = [n_samples] or None, optional (default=None)
         Weights of training data. Weights should be non-negative.
@@ -488,7 +488,7 @@ def _train(
     eval_set : list of (X, y) tuples of Dask data collections, or None, optional (default=None)
         List of (X, y) tuple pairs to use as validation sets.
         Note, that not all workers may receive chunks of every eval set within ``eval_set``. When the returned
-        lightgbm estimator is not trained using any chunks of a particular eval set, its corresponding component
+        falcata estimator is not trained using any chunks of a particular eval set, its corresponding component
         of ``evals_result_`` and ``best_score_`` will be empty dictionaries.
     eval_names : list of str, or None, optional (default=None)
         Unique identifiers for each evaluation dataset.
@@ -518,7 +518,7 @@ def _train(
 
     Returns
     -------
-    model : lightgbm.LGBMClassifier, lightgbm.LGBMRegressor, or lightgbm.LGBMRanker class
+    model : falcata.LGBMClassifier, falcata.LGBMRegressor, or falcata.LGBMRanker class
         Returns fitted underlying model.
 
     Note
@@ -527,14 +527,14 @@ def _train(
     This method handles setting up the following network parameters based on information
     about the Dask cluster referenced by ``client``.
 
-    * ``local_listen_port``: port that each LightGBM worker opens a listening socket on,
-            to accept connections from other workers. This can differ from LightGBM worker
-            to LightGBM worker, but does not have to.
+    * ``local_listen_port``: port that each Falcata worker opens a listening socket on,
+            to accept connections from other workers. This can differ from Falcata worker
+            to Falcata worker, but does not have to.
     * ``machines``: a comma-delimited list of all workers in the cluster, in the
             form ``ip:port,ip:port``. If running multiple Dask workers on the same host, use different
             ports for each worker. For example, for ``LocalCluster(n_workers=3)``, you might
             pass ``"127.0.0.1:12400,127.0.0.1:12401,127.0.0.1:12402"``.
-    * ``num_machines``: number of LightGBM workers.
+    * ``num_machines``: number of Falcata workers.
     * ``timeout``: time in minutes to wait before closing unused sockets.
 
     The default behavior of this function is to generate ``machines`` from the list of
@@ -554,7 +554,7 @@ def _train(
         from dask import delayed  # noqa: PLC0415
         from dask.distributed import wait  # noqa: PLC0415
     except _DaskImportErrorTypes as err:
-        raise LightGBMError("dask is required for lightgbm.dask") from err
+        raise LightGBMError("dask is required for falcata.dask") from err
 
     params = deepcopy(params)
 
@@ -830,7 +830,7 @@ def _train(
     #     1. there is randomness in the training process unless parameters ``seed``
     #        and ``deterministic`` are set
     #     2. even with those parameters set, the output of one ``_train_part()`` call
-    #        relies on global state (it and all the other LightGBM training processes
+    #        relies on global state (it and all the other Falcata training processes
     #        coordinate with each other)
     futures_classifiers = [
         client.submit(
@@ -909,10 +909,10 @@ def _predict_part(
         # assert that 'result' is an array, only necessary because predict(..., pred_contrib=True) on
         # sparse matrices returns a list.
         #
-        # This can be removed when https://github.com/lightgbm-org/LightGBM/pull/6348 is resolved.
+        # This can be removed when https://github.com/falcata-org/Falcata/pull/6348 is resolved.
         error_msg = (
-            f"predict(X) for lightgbm.dask estimators should always return an array, not '{type(result)}', when X is a pandas Dataframe. "
-            "If you're seeing this message, it's a bug in lightgbm. Please report it at https://github.com/lightgbm-org/LightGBM/issues."
+            f"predict(X) for falcata.dask estimators should always return an array, not '{type(result)}', when X is a pandas Dataframe. "
+            "If you're seeing this message, it's a bug in falcata. Please report it at https://github.com/falcata-org/Falcata/issues."
         )
         assert hasattr(result, "shape"), error_msg
         if len(result.shape) == 2:
@@ -938,7 +938,7 @@ def _predict(
 
     Parameters
     ----------
-    model : lightgbm.LGBMClassifier, lightgbm.LGBMRegressor, or lightgbm.LGBMRanker class
+    model : falcata.LGBMClassifier, falcata.LGBMRegressor, or falcata.LGBMRanker class
         Fitted underlying model.
     data : Dask Array or Dask DataFrame of shape = [n_samples, n_features]
         Input feature matrix.
@@ -963,7 +963,7 @@ def _predict(
         If ``pred_contrib=True``, the feature contributions for each sample.
     """
     if not all((PANDAS_INSTALLED, SKLEARN_INSTALLED)):
-        raise LightGBMError("pandas and scikit-learn are required for lightgbm.dask")
+        raise LightGBMError("pandas and scikit-learn are required for falcata.dask")
 
     try:
         import dask.array  # noqa: PLC0415
@@ -971,7 +971,7 @@ def _predict(
         import dask.dataframe  # noqa: PLC0415
         from dask import delayed  # noqa: PLC0415
     except _DaskImportErrorTypes as err:
-        raise LightGBMError("dask is required for lightgbm.dask") from err
+        raise LightGBMError("dask is required for falcata.dask") from err
 
     if isinstance(data, dask.dataframe.DataFrame):
         return data.map_partitions(
@@ -1121,7 +1121,7 @@ class _DaskLGBMModel:
         **kwargs: Any,
     ) -> "_DaskLGBMModel":
         if not all((PANDAS_INSTALLED, SKLEARN_INSTALLED)):
-            raise LightGBMError("pandas and scikit-learn are required for lightgbm.dask")
+            raise LightGBMError("pandas and scikit-learn are required for falcata.dask")
 
         params = self.get_params(True)  # type: ignore[attr-defined]
         params.pop("client", None)
@@ -1175,7 +1175,7 @@ class _DaskLGBMModel:
 
 
 class DaskLGBMClassifier(LGBMClassifier, _DaskLGBMModel):
-    """Distributed version of lightgbm.LGBMClassifier."""
+    """Distributed version of falcata.LGBMClassifier."""
 
     def __init__(
         self,
@@ -1202,7 +1202,7 @@ class DaskLGBMClassifier(LGBMClassifier, _DaskLGBMModel):
         client: Optional["distributed.Client"] = None,
         **kwargs: Any,
     ):
-        """Docstring is inherited from the lightgbm.LGBMClassifier.__init__."""
+        """Docstring is inherited from the falcata.LGBMClassifier.__init__."""
         self.client = client
         super().__init__(
             boosting_type=boosting_type,
@@ -1259,7 +1259,7 @@ class DaskLGBMClassifier(LGBMClassifier, _DaskLGBMModel):
         eval_y: Optional[Union[_DaskCollection, Tuple[_DaskCollection]]] = None,
         **kwargs: Any,
     ) -> "DaskLGBMClassifier":
-        """Docstring is inherited from the lightgbm.LGBMClassifier.fit."""
+        """Docstring is inherited from the falcata.LGBMClassifier.fit."""
         self._lgb_dask_fit(
             model_factory=LGBMClassifier,
             X=X,
@@ -1300,7 +1300,7 @@ class DaskLGBMClassifier(LGBMClassifier, _DaskLGBMModel):
 
     Returns
     -------
-    self : lightgbm.DaskLGBMClassifier
+    self : falcata.DaskLGBMClassifier
         Returns self.
 
     {_lgbmmodel_doc_custom_eval_note}
@@ -1317,7 +1317,7 @@ class DaskLGBMClassifier(LGBMClassifier, _DaskLGBMModel):
         validate_features: bool = False,
         **kwargs: Any,
     ) -> "dask.array.Array":
-        """Docstring is inherited from the lightgbm.LGBMClassifier.predict."""
+        """Docstring is inherited from the falcata.LGBMClassifier.predict."""
         return _predict(
             model=self.to_local(),
             data=X,
@@ -1351,7 +1351,7 @@ class DaskLGBMClassifier(LGBMClassifier, _DaskLGBMModel):
         validate_features: bool = False,
         **kwargs: Any,
     ) -> "dask.array.Array":
-        """Docstring is inherited from the lightgbm.LGBMClassifier.predict_proba."""
+        """Docstring is inherited from the falcata.LGBMClassifier.predict_proba."""
         return _predict(
             model=self.to_local(),
             data=X,
@@ -1376,18 +1376,18 @@ class DaskLGBMClassifier(LGBMClassifier, _DaskLGBMModel):
     )
 
     def to_local(self) -> LGBMClassifier:
-        """Create regular version of lightgbm.LGBMClassifier from the distributed version.
+        """Create regular version of falcata.LGBMClassifier from the distributed version.
 
         Returns
         -------
-        model : lightgbm.LGBMClassifier
+        model : falcata.LGBMClassifier
             Local underlying model.
         """
         return self._lgb_dask_to_local(LGBMClassifier)
 
 
 class DaskLGBMRegressor(LGBMRegressor, _DaskLGBMModel):
-    """Distributed version of lightgbm.LGBMRegressor."""
+    """Distributed version of falcata.LGBMRegressor."""
 
     def __init__(
         self,
@@ -1414,7 +1414,7 @@ class DaskLGBMRegressor(LGBMRegressor, _DaskLGBMModel):
         client: Optional["distributed.Client"] = None,
         **kwargs: Any,
     ):
-        """Docstring is inherited from the lightgbm.LGBMRegressor.__init__."""
+        """Docstring is inherited from the falcata.LGBMRegressor.__init__."""
         self.client = client
         super().__init__(
             boosting_type=boosting_type,
@@ -1470,7 +1470,7 @@ class DaskLGBMRegressor(LGBMRegressor, _DaskLGBMModel):
         eval_y: Optional[Union[_DaskCollection, Tuple[_DaskCollection]]] = None,
         **kwargs: Any,
     ) -> "DaskLGBMRegressor":
-        """Docstring is inherited from the lightgbm.LGBMRegressor.fit."""
+        """Docstring is inherited from the falcata.LGBMRegressor.fit."""
         self._lgb_dask_fit(
             model_factory=LGBMRegressor,
             X=X,
@@ -1512,7 +1512,7 @@ class DaskLGBMRegressor(LGBMRegressor, _DaskLGBMModel):
 
     Returns
     -------
-    self : lightgbm.DaskLGBMRegressor
+    self : falcata.DaskLGBMRegressor
         Returns self.
 
     {_lgbmmodel_doc_custom_eval_note}
@@ -1529,7 +1529,7 @@ class DaskLGBMRegressor(LGBMRegressor, _DaskLGBMModel):
         validate_features: bool = False,
         **kwargs: Any,
     ) -> "dask.array.Array":
-        """Docstring is inherited from the lightgbm.LGBMRegressor.predict."""
+        """Docstring is inherited from the falcata.LGBMRegressor.predict."""
         return _predict(
             model=self.to_local(),
             data=X,
@@ -1553,18 +1553,18 @@ class DaskLGBMRegressor(LGBMRegressor, _DaskLGBMModel):
     )
 
     def to_local(self) -> LGBMRegressor:
-        """Create regular version of lightgbm.LGBMRegressor from the distributed version.
+        """Create regular version of falcata.LGBMRegressor from the distributed version.
 
         Returns
         -------
-        model : lightgbm.LGBMRegressor
+        model : falcata.LGBMRegressor
             Local underlying model.
         """
         return self._lgb_dask_to_local(LGBMRegressor)
 
 
 class DaskLGBMRanker(LGBMRanker, _DaskLGBMModel):
-    """Distributed version of lightgbm.LGBMRanker."""
+    """Distributed version of falcata.LGBMRanker."""
 
     def __init__(
         self,
@@ -1591,7 +1591,7 @@ class DaskLGBMRanker(LGBMRanker, _DaskLGBMModel):
         client: Optional["distributed.Client"] = None,
         **kwargs: Any,
     ):
-        """Docstring is inherited from the lightgbm.LGBMRanker.__init__."""
+        """Docstring is inherited from the falcata.LGBMRanker.__init__."""
         self.client = client
         super().__init__(
             boosting_type=boosting_type,
@@ -1650,7 +1650,7 @@ class DaskLGBMRanker(LGBMRanker, _DaskLGBMModel):
         eval_y: Optional[Union[_DaskCollection, Tuple[_DaskCollection]]] = None,
         **kwargs: Any,
     ) -> "DaskLGBMRanker":
-        """Docstring is inherited from the lightgbm.LGBMRanker.fit."""
+        """Docstring is inherited from the falcata.LGBMRanker.fit."""
         self._lgb_dask_fit(
             model_factory=LGBMRanker,
             X=X,
@@ -1698,7 +1698,7 @@ class DaskLGBMRanker(LGBMRanker, _DaskLGBMModel):
 
     Returns
     -------
-    self : lightgbm.DaskLGBMRanker
+    self : falcata.DaskLGBMRanker
         Returns self.
 
     {_lgbmmodel_doc_custom_eval_note}
@@ -1715,7 +1715,7 @@ class DaskLGBMRanker(LGBMRanker, _DaskLGBMModel):
         validate_features: bool = False,
         **kwargs: Any,
     ) -> "dask.array.Array":
-        """Docstring is inherited from the lightgbm.LGBMRanker.predict."""
+        """Docstring is inherited from the falcata.LGBMRanker.predict."""
         return _predict(
             model=self.to_local(),
             data=X,
@@ -1739,11 +1739,11 @@ class DaskLGBMRanker(LGBMRanker, _DaskLGBMModel):
     )
 
     def to_local(self) -> LGBMRanker:
-        """Create regular version of lightgbm.LGBMRanker from the distributed version.
+        """Create regular version of falcata.LGBMRanker from the distributed version.
 
         Returns
         -------
-        model : lightgbm.LGBMRanker
+        model : falcata.LGBMRanker
             Local underlying model.
         """
         return self._lgb_dask_to_local(LGBMRanker)

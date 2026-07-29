@@ -310,7 +310,7 @@ def plot_metric(
     Parameters
     ----------
     booster : dict or LGBMModel
-        Dictionary returned from ``lightgbm.train()`` or LGBMModel instance.
+        Dictionary returned from ``falcata.train()`` or LGBMModel instance.
     metric : str or None, optional (default=None)
         The metric name to plot.
         Only one metric supported because different metrics have various scales.

@@ -1,58 +1,41 @@
 # coding: utf-8
-"""LightGBM, Light Gradient Boosting Machine.
+"""Backwards-compatibility shim: ``import lightgbm`` -> Falcata.
 
-Contributors: https://github.com/lightgbm-org/LightGBM/graphs/contributors.
+Falcata's Python package is ``falcata``. This shim keeps code written
+against the pre-rename package name working unchanged::
+
+    import lightgbm as lgb          # still works, gives you Falcata
+    from lightgbm import Booster    # ditto
+
+Everything is re-exported from :mod:`falcata`, and the submodules are
+registered under both names so ``import lightgbm.basic`` also resolves.
+
+This exists purely for compatibility; new code should ``import falcata``.
 """
 
-from pathlib import Path
+import sys as _sys
+import warnings as _warnings
 
-# .basic is intentionally loaded as early as possible, to dlopen() lib_falcata.{dll,dylib,so}
-# and its dependencies as early as possible
-from .basic import Booster, Dataset, Sequence, register_logger
-from .callback import EarlyStopException, early_stopping, log_evaluation, record_evaluation, reset_parameter
-from .engine import CVBooster, cv, train
+import falcata as _falcata
+from falcata import *  # noqa: F401,F403
 
-try:
-    from .sklearn import LGBMClassifier, LGBMModel, LGBMRanker, LGBMRegressor
-except ImportError:
-    pass
-try:
-    from .plotting import create_tree_digraph, plot_importance, plot_metric, plot_split_value_histogram, plot_tree
-except ImportError:
-    pass
-try:
-    from .dask import DaskLGBMClassifier, DaskLGBMRanker, DaskLGBMRegressor
-except ImportError:
-    pass
+# submodules under the legacy name, so `import lightgbm.basic` etc. resolve
+for _name in ("basic", "callback", "compat", "engine", "libpath", "plotting", "sklearn", "dask"):
+    _mod = getattr(_falcata, _name, None)
+    if _mod is None:
+        _mod = _sys.modules.get(f"falcata.{_name}")
+    if _mod is not None:
+        _sys.modules[f"lightgbm.{_name}"] = _mod
+        globals()[_name] = _mod
+del _name, _mod
 
+__version__ = _falcata.__version__
+__all__ = getattr(_falcata, "__all__", [])
 
-_version_path = Path(__file__).resolve().parent / "VERSION.txt"
-if _version_path.is_file():
-    __version__ = _version_path.read_text(encoding="utf-8").strip()
-
-__all__ = [
-    "Dataset",
-    "Booster",
-    "CVBooster",
-    "Sequence",
-    "register_logger",
-    "train",
-    "cv",
-    "LGBMModel",
-    "LGBMRegressor",
-    "LGBMClassifier",
-    "LGBMRanker",
-    "DaskLGBMRegressor",
-    "DaskLGBMClassifier",
-    "DaskLGBMRanker",
-    "log_evaluation",
-    "record_evaluation",
-    "reset_parameter",
-    "early_stopping",
-    "EarlyStopException",
-    "plot_importance",
-    "plot_split_value_histogram",
-    "plot_metric",
-    "plot_tree",
-    "create_tree_digraph",
-]
+if not _sys.warnoptions:
+    _warnings.warn(
+        "The 'lightgbm' import name is a compatibility alias for Falcata and may be "
+        "removed in a future release; use 'import falcata' instead.",
+        FutureWarning,
+        stacklevel=2,
+    )

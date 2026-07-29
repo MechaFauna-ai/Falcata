@@ -146,8 +146,8 @@ class _RecordEvaluationCallback:
     def _init(self, env: CallbackEnv) -> None:
         if env.evaluation_result_list is None:
             raise RuntimeError(
-                "record_evaluation() callback enabled but no evaluation results found. This is a probably bug in LightGBM. "
-                "Please report it at https://github.com/lightgbm-org/LightGBM/issues"
+                "record_evaluation() callback enabled but no evaluation results found. This is a probably bug in Falcata. "
+                "Please report it at https://github.com/falcata-org/Falcata/issues"
             )
         self.eval_result.clear()
         for item in env.evaluation_result_list:
@@ -164,8 +164,8 @@ class _RecordEvaluationCallback:
             self._init(env)
         if env.evaluation_result_list is None:
             raise RuntimeError(
-                "record_evaluation() callback enabled but no evaluation results found. This is a probably bug in LightGBM. "
-                "Please report it at https://github.com/lightgbm-org/LightGBM/issues"
+                "record_evaluation() callback enabled but no evaluation results found. This is a probably bug in Falcata. "
+                "Please report it at https://github.com/falcata-org/Falcata/issues"
             )
         for item in env.evaluation_result_list:
             # for cv(), 'metric_value' is actually a mean of metric values over all CV folds
@@ -409,8 +409,8 @@ class _EarlyStoppingCallback:
             return
         if env.evaluation_result_list is None:
             raise RuntimeError(
-                "early_stopping() callback enabled but no evaluation results found. This is a probably bug in LightGBM. "
-                "Please report it at https://github.com/lightgbm-org/LightGBM/issues"
+                "early_stopping() callback enabled but no evaluation results found. This is a probably bug in Falcata. "
+                "Please report it at https://github.com/falcata-org/Falcata/issues"
             )
         # self.best_score_list is initialized to an empty list
         first_time_updating_best_score_list = self.best_score_list == []

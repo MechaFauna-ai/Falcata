@@ -1,5 +1,5 @@
 # coding: utf-8
-"""Find the path to LightGBM dynamic library files."""
+"""Find the path to Falcata dynamic library files."""
 
 import ctypes
 from os import environ
@@ -11,12 +11,12 @@ __all__: List[str] = []
 
 
 def _find_lib_path() -> List[str]:
-    """Find the path to LightGBM library files.
+    """Find the path to Falcata library files.
 
     Returns
     -------
     lib_path: list of str
-       List of all found library paths to LightGBM.
+       List of all found library paths to Falcata.
     """
     curr_path = Path(__file__).resolve()
     dll_path = [
@@ -35,7 +35,7 @@ def _find_lib_path() -> List[str]:
     lib_path = [str(p) for p in dll_path if p.is_file()]
     if not lib_path:
         dll_path_joined = "\n".join(map(str, dll_path))
-        raise Exception(f"Cannot find lightgbm library file in following paths:\n{dll_path_joined}")
+        raise Exception(f"Cannot find falcata library file in following paths:\n{dll_path_joined}")
     return lib_path
 
 
