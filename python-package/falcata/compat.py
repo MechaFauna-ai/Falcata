@@ -112,48 +112,48 @@ try:
                 return X, y
 
     SKLEARN_INSTALLED = True
-    _LGBMBaseCrossValidator = BaseCrossValidator
-    _LGBMModelBase = BaseEstimator
-    _LGBMRegressorBase = RegressorMixin
-    _LGBMClassifierBase = ClassifierMixin
-    _LGBMLabelEncoder = LabelEncoder
-    LGBMNotFittedError = NotFittedError
-    _LGBMStratifiedKFold = StratifiedKFold
-    _LGBMGroupKFold = GroupKFold
-    _LGBMCheckSampleWeight = _check_sample_weight
-    _LGBMAssertAllFinite = assert_all_finite
-    _LGBMCheckClassificationTargets = check_classification_targets
-    _LGBMComputeSampleWeight = compute_sample_weight
-    _LGBMValidateData = validate_data
+    _FalcataBaseCrossValidator = BaseCrossValidator
+    _FalcataModelBase = BaseEstimator
+    _FalcataRegressorBase = RegressorMixin
+    _FalcataClassifierBase = ClassifierMixin
+    _FalcataLabelEncoder = LabelEncoder
+    FalcataNotFittedError = NotFittedError
+    _FalcataStratifiedKFold = StratifiedKFold
+    _FalcataGroupKFold = GroupKFold
+    _FalcataCheckSampleWeight = _check_sample_weight
+    _FalcataAssertAllFinite = assert_all_finite
+    _FalcataCheckClassificationTargets = check_classification_targets
+    _FalcataComputeSampleWeight = compute_sample_weight
+    _FalcataValidateData = validate_data
 except ImportError:
     SKLEARN_INSTALLED = False
     SKLEARN_CHECK_SAMPLE_WEIGHT_HAS_ALLOW_ZERO_WEIGHTS_ARG = False
 
-    class _LGBMModelBase:  # type: ignore
+    class _FalcataModelBase:  # type: ignore
         """Dummy class for sklearn.base.BaseEstimator."""
 
         pass
 
-    class _LGBMClassifierBase:  # type: ignore
+    class _FalcataClassifierBase:  # type: ignore
         """Dummy class for sklearn.base.ClassifierMixin."""
 
         pass
 
-    class _LGBMRegressorBase:  # type: ignore
+    class _FalcataRegressorBase:  # type: ignore
         """Dummy class for sklearn.base.RegressorMixin."""
 
         pass
 
-    _LGBMBaseCrossValidator = None
-    _LGBMLabelEncoder = None
-    LGBMNotFittedError = ValueError
-    _LGBMStratifiedKFold = None
-    _LGBMGroupKFold = None
-    _LGBMCheckSampleWeight = None
-    _LGBMAssertAllFinite = None
-    _LGBMCheckClassificationTargets = None
-    _LGBMComputeSampleWeight = None
-    _LGBMValidateData = None
+    _FalcataBaseCrossValidator = None
+    _FalcataLabelEncoder = None
+    FalcataNotFittedError = ValueError
+    _FalcataStratifiedKFold = None
+    _FalcataGroupKFold = None
+    _FalcataCheckSampleWeight = None
+    _FalcataAssertAllFinite = None
+    _FalcataCheckClassificationTargets = None
+    _FalcataComputeSampleWeight = None
+    _FalcataValidateData = None
     _sklearn_version = None
 
 # additional scikit-learn imports only for type hints
@@ -202,7 +202,7 @@ except ImportError:
 """cpu_count()"""
 
 
-def _LGBMCpuCount(only_physical_cores: bool = True) -> int:
+def _FalcataCpuCount(only_physical_cores: bool = True) -> int:
     ret: int
     try:
         from joblib import cpu_count  # noqa: I001,PLC0415

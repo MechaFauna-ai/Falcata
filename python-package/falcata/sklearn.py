@@ -17,36 +17,36 @@ from .basic import (
     _MULTICLASS_OBJECTIVES,
     Booster,
     Dataset,
+    FalcataDeprecationWarning,
     FalcataError,
-    LGBMDeprecationWarning,
     _choose_param_value,
     _ConfigAliases,
-    _LGBM_BoosterBestScoreType,
-    _LGBM_CategoricalFeatureConfiguration,
-    _LGBM_EvalFunctionResultType,
-    _LGBM_FeatureNameConfiguration,
-    _LGBM_GroupType,
-    _LGBM_InitScoreType,
-    _LGBM_LabelType,
-    _LGBM_PredictReturnType,
-    _LGBM_WeightType,
+    _FALCATA_BoosterBestScoreType,
+    _FALCATA_CategoricalFeatureConfiguration,
+    _FALCATA_EvalFunctionResultType,
+    _FALCATA_FeatureNameConfiguration,
+    _FALCATA_GroupType,
+    _FALCATA_InitScoreType,
+    _FALCATA_LabelType,
+    _FALCATA_PredictReturnType,
+    _FALCATA_WeightType,
     _log_warning,
 )
 from .callback import _EvalResultDict, record_evaluation
 from .compat import (
     SKLEARN_CHECK_SAMPLE_WEIGHT_HAS_ALLOW_ZERO_WEIGHTS_ARG,
     SKLEARN_INSTALLED,
-    LGBMNotFittedError,
-    _LGBMAssertAllFinite,
-    _LGBMCheckClassificationTargets,
-    _LGBMCheckSampleWeight,
-    _LGBMClassifierBase,
-    _LGBMComputeSampleWeight,
-    _LGBMCpuCount,
-    _LGBMLabelEncoder,
-    _LGBMModelBase,
-    _LGBMRegressorBase,
-    _LGBMValidateData,
+    FalcataNotFittedError,
+    _FalcataAssertAllFinite,
+    _FalcataCheckClassificationTargets,
+    _FalcataCheckSampleWeight,
+    _FalcataClassifierBase,
+    _FalcataComputeSampleWeight,
+    _FalcataCpuCount,
+    _FalcataLabelEncoder,
+    _FalcataModelBase,
+    _FalcataRegressorBase,
+    _FalcataValidateData,
     _sklearn_version,
     pd_DataFrame,
 )
@@ -57,20 +57,20 @@ if TYPE_CHECKING:
 
 
 __all__ = [
-    "LGBMClassifier",
-    "LGBMModel",
-    "LGBMRanker",
-    "LGBMRegressor",
+    "FalcataClassifier",
+    "FalcataModel",
+    "FalcataRanker",
+    "FalcataRegressor",
 ]
 
-_LGBM_ScikitMatrixLike = Union[
+_FALCATA_ScikitMatrixLike = Union[
     List[Union[List[float], List[int]]],
     np.ndarray,
     pd_DataFrame,
     nwt.IntoDataFrame,
     scipy.sparse.spmatrix,
 ]
-_LGBM_ScikitCustomObjectiveFunction = Union[
+_FALCATA_ScikitCustomObjectiveFunction = Union[
     # f(labels, preds)
     Callable[
         [Optional[np.ndarray], np.ndarray],
@@ -87,41 +87,41 @@ _LGBM_ScikitCustomObjectiveFunction = Union[
         Tuple[np.ndarray, np.ndarray],
     ],
 ]
-_LGBM_ScikitCustomEvalFunction = Union[
+_FALCATA_ScikitCustomEvalFunction = Union[
     # f(labels, preds)
     Callable[
         [Optional[np.ndarray], np.ndarray],
-        _LGBM_EvalFunctionResultType,
+        _FALCATA_EvalFunctionResultType,
     ],
     Callable[
         [Optional[np.ndarray], np.ndarray],
-        List[_LGBM_EvalFunctionResultType],
+        List[_FALCATA_EvalFunctionResultType],
     ],
     # f(labels, preds, weights)
     Callable[
         [Optional[np.ndarray], np.ndarray, Optional[np.ndarray]],
-        _LGBM_EvalFunctionResultType,
+        _FALCATA_EvalFunctionResultType,
     ],
     Callable[
         [Optional[np.ndarray], np.ndarray, Optional[np.ndarray]],
-        List[_LGBM_EvalFunctionResultType],
+        List[_FALCATA_EvalFunctionResultType],
     ],
     # f(labels, preds, weights, group)
     Callable[
         [Optional[np.ndarray], np.ndarray, Optional[np.ndarray], Optional[np.ndarray]],
-        _LGBM_EvalFunctionResultType,
+        _FALCATA_EvalFunctionResultType,
     ],
     Callable[
         [Optional[np.ndarray], np.ndarray, Optional[np.ndarray], Optional[np.ndarray]],
-        List[_LGBM_EvalFunctionResultType],
+        List[_FALCATA_EvalFunctionResultType],
     ],
 ]
-_LGBM_ScikitEvalMetricType = Union[
+_FALCATA_ScikitEvalMetricType = Union[
     str,
-    _LGBM_ScikitCustomEvalFunction,
-    List[Union[str, _LGBM_ScikitCustomEvalFunction]],
+    _FALCATA_ScikitCustomEvalFunction,
+    List[Union[str, _FALCATA_ScikitCustomEvalFunction]],
 ]
-_LGBM_ScikitValidSet = Tuple[_LGBM_ScikitMatrixLike, _LGBM_LabelType]
+_FALCATA_ScikitValidSet = Tuple[_FALCATA_ScikitMatrixLike, _FALCATA_LabelType]
 
 
 def _get_group_from_constructed_dataset(dataset: Dataset) -> Optional[np.ndarray]:
@@ -157,7 +157,7 @@ def _get_weight_from_constructed_dataset(dataset: Dataset) -> Optional[np.ndarra
 class _ObjectiveFunctionWrapper:
     """Proxy class for objective function."""
 
-    def __init__(self, func: _LGBM_ScikitCustomObjectiveFunction):
+    def __init__(self, func: _FALCATA_ScikitCustomObjectiveFunction):
         """Construct a proxy class.
 
         This class transforms objective function to match objective function with signature ``new_func(preds, dataset)``
@@ -244,7 +244,7 @@ class _ObjectiveFunctionWrapper:
 class _EvalFunctionWrapper:
     """Proxy class for evaluation function."""
 
-    def __init__(self, func: _LGBM_ScikitCustomEvalFunction):
+    def __init__(self, func: _FALCATA_ScikitCustomEvalFunction):
         """Construct a proxy class.
 
         This class transforms evaluation function to match evaluation function with signature ``new_func(preds, dataset)``
@@ -287,7 +287,7 @@ class _EvalFunctionWrapper:
         self,
         preds: np.ndarray,
         dataset: Dataset,
-    ) -> Union[_LGBM_EvalFunctionResultType, List[_LGBM_EvalFunctionResultType]]:
+    ) -> Union[_FALCATA_EvalFunctionResultType, List[_FALCATA_EvalFunctionResultType]]:
         """Call passed function with appropriate arguments.
 
         Parameters
@@ -322,7 +322,7 @@ class _EvalFunctionWrapper:
         raise TypeError(f"Self-defined eval function should have 2, 3 or 4 arguments, got {argc}")
 
 
-# documentation templates for LGBMModel methods are shared between the classes in
+# documentation templates for FalcataModel methods are shared between the classes in
 # this module and those in the ``dask`` module
 
 _lgbmmodel_doc_fit = """
@@ -364,7 +364,7 @@ _lgbmmodel_doc_fit = """
         If callable, it should be a custom evaluation metric, see note below for more details.
         If list, it can be a list of built-in metrics, a list of custom evaluation metrics, or a mix of both.
         In either case, the ``metric`` from the model parameters will be evaluated and used as well.
-        Default: 'l2' for LGBMRegressor, 'logloss' for LGBMClassifier, 'ndcg' for LGBMRanker.
+        Default: 'l2' for FalcataRegressor, 'logloss' for FalcataClassifier, 'ndcg' for FalcataRanker.
     feature_name : list of str, or 'auto', optional (default='auto')
         Feature names.
         If 'auto' and data is pandas DataFrame, data columns names are used.
@@ -381,8 +381,8 @@ _lgbmmodel_doc_fit = """
     callbacks : list of callable, or None, optional (default=None)
         List of callback functions that are applied at each iteration.
         See Callbacks in Python API for more information.
-    init_model : str, pathlib.Path, Booster, LGBMModel or None, optional (default=None)
-        Filename of Falcata model, Booster instance or LGBMModel instance used for continue training.
+    init_model : str, pathlib.Path, Booster, FalcataModel or None, optional (default=None)
+        Filename of Falcata model, Booster instance or FalcataModel instance used for continue training.
     eval_X : {X_shape}, or tuple of such inputs, or None, optional (default=None)
         Feature matrix or tuple thereof, e.g. ``(X_val0, X_val1)``, to use as validation sets.
     eval_y : {y_shape}, or tuple of such inputs, or None, optional (default=None)
@@ -390,7 +390,7 @@ _lgbmmodel_doc_fit = """
 
     Returns
     -------
-    self : LGBMModel
+    self : FalcataModel
         Returns self.
     """
 
@@ -498,10 +498,10 @@ def _extract_evaluation_meta_data(
 
 def _validate_eval_set_Xy(
     *,
-    eval_set: Optional[List[_LGBM_ScikitValidSet]],
-    eval_X: Optional[Union[_LGBM_ScikitMatrixLike, Tuple[_LGBM_ScikitMatrixLike]]],
-    eval_y: Optional[Union[_LGBM_LabelType, Tuple[_LGBM_LabelType]]],
-) -> Optional[List[_LGBM_ScikitValidSet]]:
+    eval_set: Optional[List[_FALCATA_ScikitValidSet]],
+    eval_X: Optional[Union[_FALCATA_ScikitMatrixLike, Tuple[_FALCATA_ScikitMatrixLike]]],
+    eval_y: Optional[Union[_FALCATA_LabelType, Tuple[_FALCATA_LabelType]]],
+) -> Optional[List[_FALCATA_ScikitValidSet]]:
     """Validate eval args.
 
     Returns
@@ -510,7 +510,7 @@ def _validate_eval_set_Xy(
     """
     if eval_set is not None:
         msg = "The argument 'eval_set' is deprecated, use 'eval_X' and 'eval_y' instead."
-        warnings.warn(msg, category=LGBMDeprecationWarning, stacklevel=2)
+        warnings.warn(msg, category=FalcataDeprecationWarning, stacklevel=2)
         if eval_X is not None or eval_y is not None:
             raise ValueError("Specify either 'eval_set' or 'eval_X' and 'eval_y', but not both.")
         if isinstance(eval_set, tuple):
@@ -532,7 +532,7 @@ def _validate_eval_set_Xy(
     return eval_set
 
 
-class LGBMModel(_LGBMModelBase):
+class FalcataModel(_FalcataModelBase):
     """Implementation of the scikit-learn API for Falcata."""
 
     def __init__(
@@ -544,7 +544,7 @@ class LGBMModel(_LGBMModelBase):
         learning_rate: float = 0.1,
         n_estimators: int = 100,
         subsample_for_bin: int = 200000,
-        objective: Optional[Union[str, _LGBM_ScikitCustomObjectiveFunction]] = None,
+        objective: Optional[Union[str, _FALCATA_ScikitCustomObjectiveFunction]] = None,
         class_weight: Optional[Union[Dict, str]] = None,
         min_split_gain: float = 0.0,
         min_child_weight: float = 1e-3,
@@ -584,7 +584,7 @@ class LGBMModel(_LGBMModelBase):
         objective : str, callable or None, optional (default=None)
             Specify the learning task and the corresponding learning objective or
             a custom objective function to be used (see note below).
-            Default: 'regression' for LGBMRegressor, 'binary' or 'multiclass' for LGBMClassifier, 'lambdarank' for LGBMRanker.
+            Default: 'regression' for FalcataRegressor, 'binary' or 'multiclass' for FalcataClassifier, 'lambdarank' for FalcataRanker.
         class_weight : dict, 'balanced' or None, optional (default=None)
             Weights associated with classes in the form ``{class_label: weight}``.
             Use this parameter only for multi-class classification task;
@@ -703,7 +703,7 @@ class LGBMModel(_LGBMModelBase):
         self.importance_type = importance_type
         self._Booster: Optional[Booster] = None
         self._evals_result: _EvalResultDict = {}
-        self._best_score: _LGBM_BoosterBestScoreType = {}
+        self._best_score: _FALCATA_BoosterBestScoreType = {}
         self._best_iteration: int = -1
         self._other_params: Dict[str, Any] = {}
         self._objective = objective
@@ -781,9 +781,9 @@ class LGBMModel(_LGBMModelBase):
         return tags
 
     def __sklearn_tags__(self) -> Optional["_sklearn_Tags"]:
-        # _LGBMModelBase.__sklearn_tags__() cannot be called unconditionally,
+        # _FalcataModelBase.__sklearn_tags__() cannot be called unconditionally,
         # because that method isn't defined for scikit-learn<1.6
-        if not hasattr(_LGBMModelBase, "__sklearn_tags__"):
+        if not hasattr(_FalcataModelBase, "__sklearn_tags__"):
             err_msg = (
                 "__sklearn_tags__() should not be called when using scikit-learn<1.6. "
                 f"Detected version: {_sklearn_version}"
@@ -820,18 +820,18 @@ class LGBMModel(_LGBMModelBase):
         # `get_params()` flows like this:
         #
         # 0. Get parameters in subclass (self.__class__) first, by using inspect.
-        # 1. Get parameters in all parent classes (especially `LGBMModel`).
+        # 1. Get parameters in all parent classes (especially `FalcataModel`).
         # 2. Get whatever was passed via `**kwargs`.
         # 3. Merge them.
         #
         # This needs to accommodate being called recursively in the following
         # inheritance graphs (and similar for classification and ranking):
         #
-        #   DaskLGBMRegressor -> LGBMRegressor     -> LGBMModel -> BaseEstimator
-        #   (custom subclass) -> LGBMRegressor     -> LGBMModel -> BaseEstimator
-        #                        LGBMRegressor     -> LGBMModel -> BaseEstimator
-        #                        (custom subclass) -> LGBMModel -> BaseEstimator
-        #                                             LGBMModel -> BaseEstimator
+        #   DaskFalcataRegressor -> FalcataRegressor     -> FalcataModel -> BaseEstimator
+        #   (custom subclass) -> FalcataRegressor     -> FalcataModel -> BaseEstimator
+        #                        FalcataRegressor     -> FalcataModel -> BaseEstimator
+        #                        (custom subclass) -> FalcataModel -> BaseEstimator
+        #                                             FalcataModel -> BaseEstimator
         #
         params = super().get_params(deep=deep)
         cp = copy.copy(self)
@@ -846,7 +846,7 @@ class LGBMModel(_LGBMModelBase):
         params.update(self._other_params)
         return params
 
-    def set_params(self, **params: Any) -> "LGBMModel":
+    def set_params(self, **params: Any) -> "FalcataModel":
         """Set the parameters of this estimator.
 
         Parameters
@@ -891,17 +891,17 @@ class LGBMModel(_LGBMModelBase):
                     self._objective = obj
         if stage == "fit":
             if self._objective is None:
-                if isinstance(self, LGBMRegressor):
+                if isinstance(self, FalcataRegressor):
                     self._objective = "regression"
-                elif isinstance(self, LGBMClassifier):
+                elif isinstance(self, FalcataClassifier):
                     if self._n_classes > 2:
                         self._objective = "multiclass"
                     else:
                         self._objective = "binary"
-                elif isinstance(self, LGBMRanker):
+                elif isinstance(self, FalcataRanker):
                     self._objective = "lambdarank"
                 else:
-                    raise ValueError("Unknown LGBMModel type.")
+                    raise ValueError("Unknown FalcataModel type.")
         if callable(self._objective):
             if stage == "fit":
                 params["objective"] = _ObjectiveFunctionWrapper(self._objective)
@@ -934,11 +934,11 @@ class LGBMModel(_LGBMModelBase):
         original_metric = self._objective if isinstance(self._objective, str) else None
         if original_metric is None:
             # try to deduce from class instance
-            if isinstance(self, LGBMRegressor):
+            if isinstance(self, FalcataRegressor):
                 original_metric = "l2"
-            elif isinstance(self, LGBMClassifier):
+            elif isinstance(self, FalcataClassifier):
                 original_metric = "multi_logloss" if self._n_classes > 2 else "binary_logloss"
-            elif isinstance(self, LGBMRanker):
+            elif isinstance(self, FalcataRanker):
                 original_metric = "ndcg"
 
         # overwrite default metric by explicitly set metric
@@ -967,39 +967,39 @@ class LGBMModel(_LGBMModelBase):
             The value of n_jobs with special values converted to actual number of threads.
         """
         if n_jobs is None:
-            n_jobs = _LGBMCpuCount(only_physical_cores=True)
+            n_jobs = _FalcataCpuCount(only_physical_cores=True)
         elif n_jobs < 0:
-            n_jobs = max(_LGBMCpuCount(only_physical_cores=False) + 1 + n_jobs, 1)
+            n_jobs = max(_FalcataCpuCount(only_physical_cores=False) + 1 + n_jobs, 1)
         return n_jobs
 
     def fit(
         self,
-        X: _LGBM_ScikitMatrixLike,
-        y: _LGBM_LabelType,
-        sample_weight: Optional[_LGBM_WeightType] = None,
-        init_score: Optional[_LGBM_InitScoreType] = None,
-        group: Optional[_LGBM_GroupType] = None,
-        eval_set: Optional[List[_LGBM_ScikitValidSet]] = None,
+        X: _FALCATA_ScikitMatrixLike,
+        y: _FALCATA_LabelType,
+        sample_weight: Optional[_FALCATA_WeightType] = None,
+        init_score: Optional[_FALCATA_InitScoreType] = None,
+        group: Optional[_FALCATA_GroupType] = None,
+        eval_set: Optional[List[_FALCATA_ScikitValidSet]] = None,
         eval_names: Optional[List[str]] = None,
-        eval_sample_weight: Optional[List[_LGBM_WeightType]] = None,
+        eval_sample_weight: Optional[List[_FALCATA_WeightType]] = None,
         eval_class_weight: Optional[List[float]] = None,
-        eval_init_score: Optional[List[_LGBM_InitScoreType]] = None,
-        eval_group: Optional[List[_LGBM_GroupType]] = None,
-        eval_metric: Optional[_LGBM_ScikitEvalMetricType] = None,
-        feature_name: _LGBM_FeatureNameConfiguration = "auto",
-        categorical_feature: _LGBM_CategoricalFeatureConfiguration = "auto",
+        eval_init_score: Optional[List[_FALCATA_InitScoreType]] = None,
+        eval_group: Optional[List[_FALCATA_GroupType]] = None,
+        eval_metric: Optional[_FALCATA_ScikitEvalMetricType] = None,
+        feature_name: _FALCATA_FeatureNameConfiguration = "auto",
+        categorical_feature: _FALCATA_CategoricalFeatureConfiguration = "auto",
         callbacks: Optional[List[Callable]] = None,
-        init_model: Optional[Union[str, Path, Booster, "LGBMModel"]] = None,
+        init_model: Optional[Union[str, Path, Booster, "FalcataModel"]] = None,
         *,
-        eval_X: Optional[Union[_LGBM_ScikitMatrixLike, Tuple[_LGBM_ScikitMatrixLike]]] = None,
-        eval_y: Optional[Union[_LGBM_LabelType, Tuple[_LGBM_LabelType]]] = None,
-    ) -> "LGBMModel":
+        eval_X: Optional[Union[_FALCATA_ScikitMatrixLike, Tuple[_FALCATA_ScikitMatrixLike]]] = None,
+        eval_y: Optional[Union[_FALCATA_LabelType, Tuple[_FALCATA_LabelType]]] = None,
+    ) -> "FalcataModel":
         """Docstring is set after definition, using a template."""
         params = self._process_params(stage="fit")
 
         # Do not modify original args in fit function
         # Refer to https://github.com/lightgbm-org/LightGBM/pull/2619
-        eval_metric_list: List[Union[str, _LGBM_ScikitCustomEvalFunction]]
+        eval_metric_list: List[Union[str, _FALCATA_ScikitCustomEvalFunction]]
         if eval_metric is None:
             eval_metric_list = []
         elif isinstance(eval_metric, list):
@@ -1023,8 +1023,8 @@ class LGBMModel(_LGBMModelBase):
             _X, _y = X, y
             self.n_features_in_ = nw.from_native(X).shape[1]
         else:
-            # NOTE: _LGBMValidateData() is also responsible for setting n_features_in_
-            _X, _y = _LGBMValidateData(
+            # NOTE: _FalcataValidateData() is also responsible for setting n_features_in_
+            _X, _y = _FalcataValidateData(
                 self,
                 X,
                 y,
@@ -1038,14 +1038,14 @@ class LGBMModel(_LGBMModelBase):
             )
             if sample_weight is not None:
                 if SKLEARN_CHECK_SAMPLE_WEIGHT_HAS_ALLOW_ZERO_WEIGHTS_ARG:
-                    sample_weight = _LGBMCheckSampleWeight(sample_weight, _X, allow_all_zero_weights=True)
+                    sample_weight = _FalcataCheckSampleWeight(sample_weight, _X, allow_all_zero_weights=True)
                 else:
-                    sample_weight = _LGBMCheckSampleWeight(sample_weight, _X)
+                    sample_weight = _FalcataCheckSampleWeight(sample_weight, _X)
 
         if self._class_weight is None:
             self._class_weight = self.class_weight
         if self._class_weight is not None:
-            class_sample_weight = _LGBMComputeSampleWeight(self._class_weight, y)
+            class_sample_weight = _FalcataComputeSampleWeight(self._class_weight, y)
             if sample_weight is None or len(sample_weight) == 0:
                 sample_weight = class_sample_weight
             else:
@@ -1090,7 +1090,7 @@ class LGBMModel(_LGBMModelBase):
                     if valid_class_weight is not None:
                         if isinstance(valid_class_weight, dict) and self._class_map is not None:
                             valid_class_weight = {self._class_map[k]: v for k, v in valid_class_weight.items()}
-                        valid_class_sample_weight = _LGBMComputeSampleWeight(valid_class_weight, valid_data[1])
+                        valid_class_sample_weight = _FalcataComputeSampleWeight(valid_class_weight, valid_data[1])
                         if valid_weight is None or len(valid_weight) == 0:
                             valid_weight = valid_class_sample_weight
                         else:
@@ -1117,7 +1117,7 @@ class LGBMModel(_LGBMModelBase):
 
                 valid_sets.append(valid_set)
 
-        if isinstance(init_model, LGBMModel):
+        if isinstance(init_model, FalcataModel):
             init_model = init_model.booster_
 
         if callbacks is None:
@@ -1178,7 +1178,7 @@ class LGBMModel(_LGBMModelBase):
 
     def predict(
         self,
-        X: _LGBM_ScikitMatrixLike,
+        X: _FALCATA_ScikitMatrixLike,
         raw_score: bool = False,
         start_iteration: int = 0,
         num_iteration: Optional[int] = None,
@@ -1186,12 +1186,12 @@ class LGBMModel(_LGBMModelBase):
         pred_contrib: bool = False,
         validate_features: bool = False,
         **kwargs: Any,
-    ) -> _LGBM_PredictReturnType:
+    ) -> _FALCATA_PredictReturnType:
         """Docstring is set after definition, using a template."""
         if not self.__sklearn_is_fitted__():
-            raise LGBMNotFittedError("Estimator not fitted, call fit before exploiting the model.")
+            raise FalcataNotFittedError("Estimator not fitted, call fit before exploiting the model.")
         if not isinstance(X, pd_DataFrame) and not nwd.is_into_dataframe(X):
-            X = _LGBMValidateData(
+            X = _FalcataValidateData(
                 self,
                 X,
                 # 'y' being omitted = run scikit-learn's check_array() instead of check_X_y()
@@ -1251,14 +1251,14 @@ class LGBMModel(_LGBMModelBase):
     def n_features_(self) -> int:
         """:obj:`int`: The number of features of fitted model."""
         if not self.__sklearn_is_fitted__():
-            raise LGBMNotFittedError("No n_features found. Need to call fit beforehand.")
+            raise FalcataNotFittedError("No n_features found. Need to call fit beforehand.")
         return self._n_features
 
     @property
     def n_features_in_(self) -> int:
         """:obj:`int`: The number of features of fitted model."""
         if not self.__sklearn_is_fitted__():
-            raise LGBMNotFittedError("No n_features_in found. Need to call fit beforehand.")
+            raise FalcataNotFittedError("No n_features_in found. Need to call fit beforehand.")
         return self._n_features_in
 
     @n_features_in_.setter
@@ -1277,26 +1277,26 @@ class LGBMModel(_LGBMModelBase):
         self._n_features_in = value
 
     @property
-    def best_score_(self) -> _LGBM_BoosterBestScoreType:
+    def best_score_(self) -> _FALCATA_BoosterBestScoreType:
         """:obj:`dict`: The best score of fitted model."""
         if not self.__sklearn_is_fitted__():
-            raise LGBMNotFittedError("No best_score found. Need to call fit beforehand.")
+            raise FalcataNotFittedError("No best_score found. Need to call fit beforehand.")
         return self._best_score
 
     @property
     def best_iteration_(self) -> int:
         """:obj:`int`: The best iteration of fitted model if ``early_stopping()`` callback has been specified."""
         if not self.__sklearn_is_fitted__():
-            raise LGBMNotFittedError(
+            raise FalcataNotFittedError(
                 "No best_iteration found. Need to call fit with early_stopping callback beforehand."
             )
         return self._best_iteration
 
     @property
-    def objective_(self) -> Union[str, _LGBM_ScikitCustomObjectiveFunction]:
+    def objective_(self) -> Union[str, _FALCATA_ScikitCustomObjectiveFunction]:
         """:obj:`str` or :obj:`callable`: The concrete objective used while fitting this model."""
         if not self.__sklearn_is_fitted__():
-            raise LGBMNotFittedError("No objective found. Need to call fit beforehand.")
+            raise FalcataNotFittedError("No objective found. Need to call fit beforehand.")
         return self._objective  # type: ignore[return-value]
 
     @property
@@ -1309,7 +1309,7 @@ class LGBMModel(_LGBMModelBase):
         .. versionadded:: 4.0.0
         """
         if not self.__sklearn_is_fitted__():
-            raise LGBMNotFittedError("No n_estimators found. Need to call fit beforehand.")
+            raise FalcataNotFittedError("No n_estimators found. Need to call fit beforehand.")
         return self._Booster.current_iteration()  # type: ignore
 
     @property
@@ -1322,21 +1322,21 @@ class LGBMModel(_LGBMModelBase):
         .. versionadded:: 4.0.0
         """
         if not self.__sklearn_is_fitted__():
-            raise LGBMNotFittedError("No n_iter found. Need to call fit beforehand.")
+            raise FalcataNotFittedError("No n_iter found. Need to call fit beforehand.")
         return self._Booster.current_iteration()  # type: ignore
 
     @property
     def booster_(self) -> Booster:
         """Booster: The underlying Booster of this model."""
         if not self.__sklearn_is_fitted__():
-            raise LGBMNotFittedError("No booster found. Need to call fit beforehand.")
+            raise FalcataNotFittedError("No booster found. Need to call fit beforehand.")
         return self._Booster  # type: ignore[return-value]
 
     @property
     def evals_result_(self) -> _EvalResultDict:
         """:obj:`dict`: The evaluation results if validation sets have been specified."""
         if not self.__sklearn_is_fitted__():
-            raise LGBMNotFittedError("No results found. Need to call fit with eval_set beforehand.")
+            raise FalcataNotFittedError("No results found. Need to call fit with eval_set beforehand.")
         return self._evals_result
 
     @property
@@ -1349,7 +1349,7 @@ class LGBMModel(_LGBMModelBase):
             to configure the type of importance values to be extracted.
         """
         if not self.__sklearn_is_fitted__():
-            raise LGBMNotFittedError("No feature_importances found. Need to call fit beforehand.")
+            raise FalcataNotFittedError("No feature_importances found. Need to call fit beforehand.")
         return self._Booster.feature_importance(importance_type=self.importance_type)  # type: ignore[union-attr]
 
     @property
@@ -1361,7 +1361,7 @@ class LGBMModel(_LGBMModelBase):
             If input does not contain feature names, they will be added during fitting in the format ``Column_0``, ``Column_1``, ..., ``Column_N``.
         """
         if not self.__sklearn_is_fitted__():
-            raise LGBMNotFittedError("No feature_name found. Need to call fit beforehand.")
+            raise FalcataNotFittedError("No feature_name found. Need to call fit beforehand.")
         return self._Booster.feature_name()  # type: ignore[union-attr]
 
     @property
@@ -1375,7 +1375,7 @@ class LGBMModel(_LGBMModelBase):
         .. versionadded:: 4.5.0
         """
         if not self.__sklearn_is_fitted__():
-            raise LGBMNotFittedError("No feature_names_in_ found. Need to call fit beforehand.")
+            raise FalcataNotFittedError("No feature_names_in_ found. Need to call fit beforehand.")
         if not self._fitted_with_feature_names:
             raise AttributeError(
                 f"'{type(self).__name__}' object has no attribute 'feature_names_in_'. "
@@ -1406,10 +1406,10 @@ class LGBMModel(_LGBMModelBase):
         pass
 
 
-class LGBMRegressor(_LGBMRegressorBase, LGBMModel):
+class FalcataRegressor(_FalcataRegressorBase, FalcataModel):
     """Falcata regressor."""
 
-    # NOTE: all args from LGBMModel.__init__() are intentionally repeated here for
+    # NOTE: all args from FalcataModel.__init__() are intentionally repeated here for
     #       docs, help(), and tab completion.
     def __init__(
         self,
@@ -1420,7 +1420,7 @@ class LGBMRegressor(_LGBMRegressorBase, LGBMModel):
         learning_rate: float = 0.1,
         n_estimators: int = 100,
         subsample_for_bin: int = 200000,
-        objective: Optional[Union[str, _LGBM_ScikitCustomObjectiveFunction]] = None,
+        objective: Optional[Union[str, _FALCATA_ScikitCustomObjectiveFunction]] = None,
         class_weight: Optional[Union[Dict, str]] = None,
         min_split_gain: float = 0.0,
         min_child_weight: float = 1e-3,
@@ -1458,16 +1458,16 @@ class LGBMRegressor(_LGBMRegressorBase, LGBMModel):
             **kwargs,
         )
 
-    __init__.__doc__ = LGBMModel.__init__.__doc__
+    __init__.__doc__ = FalcataModel.__init__.__doc__
 
     def _more_tags(self) -> Dict[str, Any]:
         # handle the case where RegressorMixin possibly provides _more_tags()
-        if callable(getattr(_LGBMRegressorBase, "_more_tags", None)):
-            tags = _LGBMRegressorBase._more_tags(self)
+        if callable(getattr(_FalcataRegressorBase, "_more_tags", None)):
+            tags = _FalcataRegressorBase._more_tags(self)
         else:
             tags = {}
         # override those with Falcata-specific preferences
-        tags.update(LGBMModel._more_tags(self))
+        tags.update(FalcataModel._more_tags(self))
         return tags
 
     def __sklearn_tags__(self) -> "_sklearn_Tags":
@@ -1475,24 +1475,24 @@ class LGBMRegressor(_LGBMRegressorBase, LGBMModel):
 
     def fit(  # type: ignore[override]
         self,
-        X: _LGBM_ScikitMatrixLike,
-        y: _LGBM_LabelType,
-        sample_weight: Optional[_LGBM_WeightType] = None,
-        init_score: Optional[_LGBM_InitScoreType] = None,
-        eval_set: Optional[List[_LGBM_ScikitValidSet]] = None,
+        X: _FALCATA_ScikitMatrixLike,
+        y: _FALCATA_LabelType,
+        sample_weight: Optional[_FALCATA_WeightType] = None,
+        init_score: Optional[_FALCATA_InitScoreType] = None,
+        eval_set: Optional[List[_FALCATA_ScikitValidSet]] = None,
         eval_names: Optional[List[str]] = None,
-        eval_sample_weight: Optional[List[_LGBM_WeightType]] = None,
-        eval_init_score: Optional[List[_LGBM_InitScoreType]] = None,
-        eval_metric: Optional[_LGBM_ScikitEvalMetricType] = None,
-        feature_name: _LGBM_FeatureNameConfiguration = "auto",
-        categorical_feature: _LGBM_CategoricalFeatureConfiguration = "auto",
+        eval_sample_weight: Optional[List[_FALCATA_WeightType]] = None,
+        eval_init_score: Optional[List[_FALCATA_InitScoreType]] = None,
+        eval_metric: Optional[_FALCATA_ScikitEvalMetricType] = None,
+        feature_name: _FALCATA_FeatureNameConfiguration = "auto",
+        categorical_feature: _FALCATA_CategoricalFeatureConfiguration = "auto",
         callbacks: Optional[List[Callable]] = None,
-        init_model: Optional[Union[str, Path, Booster, LGBMModel]] = None,
+        init_model: Optional[Union[str, Path, Booster, FalcataModel]] = None,
         *,
-        eval_X: Optional[Union[_LGBM_ScikitMatrixLike, Tuple[_LGBM_ScikitMatrixLike]]] = None,
-        eval_y: Optional[Union[_LGBM_LabelType, Tuple[_LGBM_LabelType]]] = None,
-    ) -> "LGBMRegressor":
-        """Docstring is inherited from the LGBMModel."""
+        eval_X: Optional[Union[_FALCATA_ScikitMatrixLike, Tuple[_FALCATA_ScikitMatrixLike]]] = None,
+        eval_y: Optional[Union[_FALCATA_LabelType, Tuple[_FALCATA_LabelType]]] = None,
+    ) -> "FalcataRegressor":
+        """Docstring is inherited from the FalcataModel."""
         super().fit(
             X,
             y,
@@ -1512,7 +1512,7 @@ class LGBMRegressor(_LGBMRegressorBase, LGBMModel):
         )
         return self
 
-    _base_doc = LGBMModel.fit.__doc__.replace("self : LGBMModel", "self : LGBMRegressor")  # type: ignore
+    _base_doc = FalcataModel.fit.__doc__.replace("self : FalcataModel", "self : FalcataRegressor")  # type: ignore
     _base_doc = (
         _base_doc[: _base_doc.find("group :")]  # type: ignore
         + _base_doc[_base_doc.find("eval_set :") :]
@@ -1521,10 +1521,10 @@ class LGBMRegressor(_LGBMRegressorBase, LGBMModel):
     fit.__doc__ = _base_doc[: _base_doc.find("eval_group :")] + _base_doc[_base_doc.find("eval_metric :") :]
 
 
-class LGBMClassifier(_LGBMClassifierBase, LGBMModel):
+class FalcataClassifier(_FalcataClassifierBase, FalcataModel):
     """Falcata classifier."""
 
-    # NOTE: all args from LGBMModel.__init__() are intentionally repeated here for
+    # NOTE: all args from FalcataModel.__init__() are intentionally repeated here for
     #       docs, help(), and tab completion.
     def __init__(
         self,
@@ -1535,7 +1535,7 @@ class LGBMClassifier(_LGBMClassifierBase, LGBMModel):
         learning_rate: float = 0.1,
         n_estimators: int = 100,
         subsample_for_bin: int = 200000,
-        objective: Optional[Union[str, _LGBM_ScikitCustomObjectiveFunction]] = None,
+        objective: Optional[Union[str, _FALCATA_ScikitCustomObjectiveFunction]] = None,
         class_weight: Optional[Union[Dict, str]] = None,
         min_split_gain: float = 0.0,
         min_child_weight: float = 1e-3,
@@ -1573,16 +1573,16 @@ class LGBMClassifier(_LGBMClassifierBase, LGBMModel):
             **kwargs,
         )
 
-    __init__.__doc__ = LGBMModel.__init__.__doc__
+    __init__.__doc__ = FalcataModel.__init__.__doc__
 
     def _more_tags(self) -> Dict[str, Any]:
         # handle the case where ClassifierMixin possibly provides _more_tags()
-        if callable(getattr(_LGBMClassifierBase, "_more_tags", None)):
-            tags = _LGBMClassifierBase._more_tags(self)
+        if callable(getattr(_FalcataClassifierBase, "_more_tags", None)):
+            tags = _FalcataClassifierBase._more_tags(self)
         else:
             tags = {}
         # override those with Falcata-specific preferences
-        tags.update(LGBMModel._more_tags(self))
+        tags.update(FalcataModel._more_tags(self))
         return tags
 
     def __sklearn_tags__(self) -> "_sklearn_Tags":
@@ -1594,25 +1594,25 @@ class LGBMClassifier(_LGBMClassifierBase, LGBMModel):
 
     def fit(  # type: ignore[override]
         self,
-        X: _LGBM_ScikitMatrixLike,
-        y: _LGBM_LabelType,
-        sample_weight: Optional[_LGBM_WeightType] = None,
-        init_score: Optional[_LGBM_InitScoreType] = None,
-        eval_set: Optional[List[_LGBM_ScikitValidSet]] = None,
+        X: _FALCATA_ScikitMatrixLike,
+        y: _FALCATA_LabelType,
+        sample_weight: Optional[_FALCATA_WeightType] = None,
+        init_score: Optional[_FALCATA_InitScoreType] = None,
+        eval_set: Optional[List[_FALCATA_ScikitValidSet]] = None,
         eval_names: Optional[List[str]] = None,
-        eval_sample_weight: Optional[List[_LGBM_WeightType]] = None,
+        eval_sample_weight: Optional[List[_FALCATA_WeightType]] = None,
         eval_class_weight: Optional[List[float]] = None,
-        eval_init_score: Optional[List[_LGBM_InitScoreType]] = None,
-        eval_metric: Optional[_LGBM_ScikitEvalMetricType] = None,
-        feature_name: _LGBM_FeatureNameConfiguration = "auto",
-        categorical_feature: _LGBM_CategoricalFeatureConfiguration = "auto",
+        eval_init_score: Optional[List[_FALCATA_InitScoreType]] = None,
+        eval_metric: Optional[_FALCATA_ScikitEvalMetricType] = None,
+        feature_name: _FALCATA_FeatureNameConfiguration = "auto",
+        categorical_feature: _FALCATA_CategoricalFeatureConfiguration = "auto",
         callbacks: Optional[List[Callable]] = None,
-        init_model: Optional[Union[str, Path, Booster, LGBMModel]] = None,
+        init_model: Optional[Union[str, Path, Booster, FalcataModel]] = None,
         *,
-        eval_X: Optional[Union[_LGBM_ScikitMatrixLike, Tuple[_LGBM_ScikitMatrixLike]]] = None,
-        eval_y: Optional[Union[_LGBM_LabelType, Tuple[_LGBM_LabelType]]] = None,
-    ) -> "LGBMClassifier":
-        """Docstring is inherited from the LGBMModel."""
+        eval_X: Optional[Union[_FALCATA_ScikitMatrixLike, Tuple[_FALCATA_ScikitMatrixLike]]] = None,
+        eval_y: Optional[Union[_FALCATA_LabelType, Tuple[_FALCATA_LabelType]]] = None,
+    ) -> "FalcataClassifier":
+        """Docstring is inherited from the FalcataModel."""
         # sklearn's check_classification_targets / LabelEncoder route through
         # narwhals in recent versions and raise TypeError on a bare pyarrow
         # Array / ChunkedArray ("Please set `allow_series=True`...") because
@@ -1627,9 +1627,9 @@ class LGBMClassifier(_LGBMClassifierBase, LGBMModel):
             # version (ChunkedArray.to_numpy(zero_copy_only=...) is unavailable
             # on the oldest pyarrow we still test against).
             y = np.asarray(y)
-        _LGBMAssertAllFinite(y)
-        _LGBMCheckClassificationTargets(y)
-        self._le = _LGBMLabelEncoder().fit(y)
+        _FalcataAssertAllFinite(y)
+        _FalcataCheckClassificationTargets(y)
+        self._le = _FalcataLabelEncoder().fit(y)
         _y = self._le.transform(y)
         self._class_map = dict(zip(self._le.classes_, self._le.transform(self._le.classes_), strict=True))
         if isinstance(self.class_weight, dict):
@@ -1664,7 +1664,7 @@ class LGBMClassifier(_LGBMClassifierBase, LGBMModel):
             eval_metric = eval_metric_list
 
         # do not modify args, as it causes errors in model selection tools
-        valid_sets: Optional[List[_LGBM_ScikitValidSet]] = None
+        valid_sets: Optional[List[_FALCATA_ScikitValidSet]] = None
         if eval_set is not None:
             if isinstance(eval_set, tuple):
                 eval_set = [eval_set]
@@ -1695,7 +1695,7 @@ class LGBMClassifier(_LGBMClassifierBase, LGBMModel):
         )
         return self
 
-    _base_doc = LGBMModel.fit.__doc__.replace("self : LGBMModel", "self : LGBMClassifier")  # type: ignore
+    _base_doc = FalcataModel.fit.__doc__.replace("self : FalcataModel", "self : FalcataClassifier")  # type: ignore
     _base_doc = (
         _base_doc[: _base_doc.find("group :")]  # type: ignore
         + _base_doc[_base_doc.find("eval_set :") :]
@@ -1704,7 +1704,7 @@ class LGBMClassifier(_LGBMClassifierBase, LGBMModel):
 
     def predict(
         self,
-        X: _LGBM_ScikitMatrixLike,
+        X: _FALCATA_ScikitMatrixLike,
         raw_score: bool = False,
         start_iteration: int = 0,
         num_iteration: Optional[int] = None,
@@ -1712,8 +1712,8 @@ class LGBMClassifier(_LGBMClassifierBase, LGBMModel):
         pred_contrib: bool = False,
         validate_features: bool = False,
         **kwargs: Any,
-    ) -> _LGBM_PredictReturnType:
-        """Docstring is inherited from the LGBMModel."""
+    ) -> _FALCATA_PredictReturnType:
+        """Docstring is inherited from the FalcataModel."""
         result = self.predict_proba(
             X=X,
             raw_score=raw_score,
@@ -1730,11 +1730,11 @@ class LGBMClassifier(_LGBMClassifierBase, LGBMModel):
             class_index = np.argmax(result, axis=1)
             return self._le.inverse_transform(class_index)
 
-    predict.__doc__ = LGBMModel.predict.__doc__
+    predict.__doc__ = FalcataModel.predict.__doc__
 
     def predict_proba(
         self,
-        X: _LGBM_ScikitMatrixLike,
+        X: _FALCATA_ScikitMatrixLike,
         raw_score: bool = False,
         start_iteration: int = 0,
         num_iteration: Optional[int] = None,
@@ -1742,7 +1742,7 @@ class LGBMClassifier(_LGBMClassifierBase, LGBMModel):
         pred_contrib: bool = False,
         validate_features: bool = False,
         **kwargs: Any,
-    ) -> _LGBM_PredictReturnType:
+    ) -> _FALCATA_PredictReturnType:
         """Docstring is set after definition, using a template."""
         result = super().predict(
             X=X,
@@ -1782,13 +1782,13 @@ class LGBMClassifier(_LGBMClassifierBase, LGBMModel):
 
     def decision_function(
         self,
-        X: _LGBM_ScikitMatrixLike,
+        X: _FALCATA_ScikitMatrixLike,
         *,
         start_iteration: int = 0,
         num_iteration: Optional[int] = None,
         validate_features: bool = False,
         **kwargs: Any,
-    ) -> _LGBM_PredictReturnType:
+    ) -> _FALCATA_PredictReturnType:
         """Return the raw margin score for each sample.
 
         Parameters
@@ -1827,14 +1827,14 @@ class LGBMClassifier(_LGBMClassifierBase, LGBMModel):
     def classes_(self) -> np.ndarray:
         """:obj:`array` of shape = [n_classes]: The class label array."""
         if not self.__sklearn_is_fitted__():
-            raise LGBMNotFittedError("No classes found. Need to call fit beforehand.")
+            raise FalcataNotFittedError("No classes found. Need to call fit beforehand.")
         return self._classes  # type: ignore[return-value]
 
     @property
     def n_classes_(self) -> int:
         """:obj:`int`: The number of classes."""
         if not self.__sklearn_is_fitted__():
-            raise LGBMNotFittedError("No classes found. Need to call fit beforehand.")
+            raise FalcataNotFittedError("No classes found. Need to call fit beforehand.")
         return self._n_classes
 
     @property
@@ -1843,7 +1843,7 @@ class LGBMClassifier(_LGBMClassifierBase, LGBMModel):
         return self._n_classes > 2 or (isinstance(self._objective, str) and self._objective in _MULTICLASS_OBJECTIVES)
 
 
-class LGBMRanker(LGBMModel):
+class FalcataRanker(FalcataModel):
     """Falcata ranker.
 
     .. warning::
@@ -1853,7 +1853,7 @@ class LGBMRanker(LGBMModel):
         Please use this class mainly for training and applying ranking models in common sklearnish way.
     """
 
-    # NOTE: all args from LGBMModel.__init__() are intentionally repeated here for
+    # NOTE: all args from FalcataModel.__init__() are intentionally repeated here for
     #       docs, help(), and tab completion.
     def __init__(
         self,
@@ -1864,7 +1864,7 @@ class LGBMRanker(LGBMModel):
         learning_rate: float = 0.1,
         n_estimators: int = 100,
         subsample_for_bin: int = 200000,
-        objective: Optional[Union[str, _LGBM_ScikitCustomObjectiveFunction]] = None,
+        objective: Optional[Union[str, _FALCATA_ScikitCustomObjectiveFunction]] = None,
         class_weight: Optional[Union[Dict, str]] = None,
         min_split_gain: float = 0.0,
         min_child_weight: float = 1e-3,
@@ -1902,31 +1902,31 @@ class LGBMRanker(LGBMModel):
             **kwargs,
         )
 
-    __init__.__doc__ = LGBMModel.__init__.__doc__
+    __init__.__doc__ = FalcataModel.__init__.__doc__
 
     def fit(  # type: ignore[override]
         self,
-        X: _LGBM_ScikitMatrixLike,
-        y: _LGBM_LabelType,
-        sample_weight: Optional[_LGBM_WeightType] = None,
-        init_score: Optional[_LGBM_InitScoreType] = None,
-        group: Optional[_LGBM_GroupType] = None,
-        eval_set: Optional[List[_LGBM_ScikitValidSet]] = None,
+        X: _FALCATA_ScikitMatrixLike,
+        y: _FALCATA_LabelType,
+        sample_weight: Optional[_FALCATA_WeightType] = None,
+        init_score: Optional[_FALCATA_InitScoreType] = None,
+        group: Optional[_FALCATA_GroupType] = None,
+        eval_set: Optional[List[_FALCATA_ScikitValidSet]] = None,
         eval_names: Optional[List[str]] = None,
-        eval_sample_weight: Optional[List[_LGBM_WeightType]] = None,
-        eval_init_score: Optional[List[_LGBM_InitScoreType]] = None,
-        eval_group: Optional[List[_LGBM_GroupType]] = None,
-        eval_metric: Optional[_LGBM_ScikitEvalMetricType] = None,
+        eval_sample_weight: Optional[List[_FALCATA_WeightType]] = None,
+        eval_init_score: Optional[List[_FALCATA_InitScoreType]] = None,
+        eval_group: Optional[List[_FALCATA_GroupType]] = None,
+        eval_metric: Optional[_FALCATA_ScikitEvalMetricType] = None,
         eval_at: Union[List[int], Tuple[int, ...]] = (1, 2, 3, 4, 5),
-        feature_name: _LGBM_FeatureNameConfiguration = "auto",
-        categorical_feature: _LGBM_CategoricalFeatureConfiguration = "auto",
+        feature_name: _FALCATA_FeatureNameConfiguration = "auto",
+        categorical_feature: _FALCATA_CategoricalFeatureConfiguration = "auto",
         callbacks: Optional[List[Callable]] = None,
-        init_model: Optional[Union[str, Path, Booster, LGBMModel]] = None,
+        init_model: Optional[Union[str, Path, Booster, FalcataModel]] = None,
         *,
-        eval_X: Optional[Union[_LGBM_ScikitMatrixLike, Tuple[_LGBM_ScikitMatrixLike]]] = None,
-        eval_y: Optional[Union[_LGBM_LabelType, Tuple[_LGBM_LabelType]]] = None,
-    ) -> "LGBMRanker":
-        """Docstring is inherited from the LGBMModel."""
+        eval_X: Optional[Union[_FALCATA_ScikitMatrixLike, Tuple[_FALCATA_ScikitMatrixLike]]] = None,
+        eval_y: Optional[Union[_FALCATA_LabelType, Tuple[_FALCATA_LabelType]]] = None,
+    ) -> "FalcataRanker":
+        """Docstring is inherited from the FalcataModel."""
         # check group data
         if group is None:
             raise ValueError("Should set group for ranking task")
@@ -1956,7 +1956,7 @@ class LGBMRanker(LGBMModel):
         )
         return self
 
-    _base_doc = LGBMModel.fit.__doc__.replace("self : LGBMModel", "self : LGBMRanker")  # type: ignore
+    _base_doc = FalcataModel.fit.__doc__.replace("self : FalcataModel", "self : FalcataRanker")  # type: ignore
     fit.__doc__ = (
         _base_doc[: _base_doc.find("eval_class_weight :")]  # type: ignore
         + _base_doc[_base_doc.find("eval_init_score :") :]

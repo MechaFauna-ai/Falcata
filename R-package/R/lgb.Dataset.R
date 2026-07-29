@@ -791,7 +791,7 @@ Dataset <- R6::R6Class(
 #'
 #' @examples
 #' \donttest{
-#' \dontshow{setLGBMthreads(2L)}
+#' \dontshow{setFalcataThreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
@@ -850,7 +850,7 @@ lgb.Dataset <- function(data,
 #'
 #' @examples
 #' \donttest{
-#' \dontshow{setLGBMthreads(2L)}
+#' \dontshow{setFalcataThreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
@@ -928,7 +928,7 @@ lgb.Dataset.create.valid <- function(dataset,
 #'
 #' @examples
 #' \donttest{
-#' \dontshow{setLGBMthreads(2L)}
+#' \dontshow{setFalcataThreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
@@ -959,7 +959,7 @@ lgb.Dataset.construct <- function(dataset) {
 #'
 #' @examples
 #' \donttest{
-#' \dontshow{setLGBMthreads(2L)}
+#' \dontshow{setFalcataThreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
@@ -994,7 +994,7 @@ dim.lgb.Dataset <- function(x) {
 #'
 #' @examples
 #' \donttest{
-#' \dontshow{setLGBMthreads(2L)}
+#' \dontshow{setFalcataThreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
@@ -1069,7 +1069,7 @@ dimnames.lgb.Dataset <- function(x) {
 #'
 #' @examples
 #' \donttest{
-#' \dontshow{setLGBMthreads(2L)}
+#' \dontshow{setFalcataThreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
@@ -1109,7 +1109,7 @@ lgb.slice.Dataset <- function(dataset, idxset) {
 #'
 #' @examples
 #' \donttest{
-#' \dontshow{setLGBMthreads(2L)}
+#' \dontshow{setFalcataThreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
@@ -1160,7 +1160,7 @@ get_field.lgb.Dataset <- function(dataset, field_name) {
 #'
 #' @examples
 #' \donttest{
-#' \dontshow{setLGBMthreads(2L)}
+#' \dontshow{setFalcataThreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
@@ -1201,7 +1201,7 @@ set_field.lgb.Dataset <- function(dataset, field_name, data) {
 #'
 #' @examples
 #' \donttest{
-#' \dontshow{setLGBMthreads(2L)}
+#' \dontshow{setFalcataThreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train
@@ -1233,7 +1233,7 @@ lgb.Dataset.set.categorical <- function(dataset, categorical_feature) {
 #'
 #' @examples
 #' \donttest{
-#' \dontshow{setLGBMthreads(2L)}
+#' \dontshow{setFalcataThreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' # create training Dataset
 #' data(agaricus.train, package ="falcata")
@@ -1268,7 +1268,7 @@ lgb.Dataset.set.reference <- function(dataset, reference) {
 #'
 #' @examples
 #' \donttest{
-#' \dontshow{setLGBMthreads(2L)}
+#' \dontshow{setFalcataThreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' data(agaricus.train, package = "falcata")
 #' train <- agaricus.train

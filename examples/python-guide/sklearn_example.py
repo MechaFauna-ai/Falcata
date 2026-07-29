@@ -21,7 +21,7 @@ X_test = df_test.drop(0, axis=1)
 
 print("Starting training...")
 # train
-gbm = lgb.LGBMRegressor(num_leaves=31, learning_rate=0.05, n_estimators=20)
+gbm = lgb.FalcataRegressor(num_leaves=31, learning_rate=0.05, n_estimators=20)
 gbm.fit(X_train, y_train, eval_X=(X_test,), eval_y=(y_test,), eval_metric="l1", callbacks=[lgb.early_stopping(5)])
 
 print("Starting predicting...")
@@ -70,7 +70,7 @@ print(f"The RMSLE of prediction is: {rmsle_test}")
 print(f"The RAE of prediction is: {rae_test}")
 
 # other scikit-learn modules
-estimator = lgb.LGBMRegressor(num_leaves=31)
+estimator = lgb.FalcataRegressor(num_leaves=31)
 
 param_grid = {"learning_rate": [0.01, 0.1, 1], "n_estimators": [20, 40]}
 

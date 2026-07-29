@@ -18,7 +18,7 @@
 #' @examples
 #' \donttest{
 #' library(falcata)
-#' \dontshow{setLGBMthreads(2L)}
+#' \dontshow{setFalcataThreads(2L)}
 #' \dontshow{data.table::setDTthreads(1L)}
 #' data("agaricus.train")
 #' model <- falcata(

@@ -24,7 +24,7 @@ from sklearn.utils.estimator_checks import parametrize_with_checks as sklearn_pa
 from sklearn.utils.validation import check_is_fitted
 
 import falcata as lgb
-from falcata.basic import LGBMDeprecationWarning
+from falcata.basic import FalcataDeprecationWarning
 from falcata.compat import (
     PANDAS_INSTALLED,
     _sklearn_version,
@@ -52,12 +52,12 @@ SKLEARN_VERSION_GTE_1_6 = (int(SKLEARN_MAJOR), int(SKLEARN_MINOR)) >= (1, 6)
 SKLEARN_VERSION_GTE_1_7 = (int(SKLEARN_MAJOR), int(SKLEARN_MINOR)) >= (1, 7)
 
 decreasing_generator = itertools.count(0, -1)
-estimator_classes = (lgb.LGBMModel, lgb.LGBMClassifier, lgb.LGBMRegressor, lgb.LGBMRanker)
+estimator_classes = (lgb.FalcataModel, lgb.FalcataClassifier, lgb.FalcataRegressor, lgb.FalcataRanker)
 task_to_model_factory = {
-    "ranking": lgb.LGBMRanker,
-    "binary-classification": lgb.LGBMClassifier,
-    "multiclass-classification": lgb.LGBMClassifier,
-    "regression": lgb.LGBMRegressor,
+    "ranking": lgb.FalcataRanker,
+    "binary-classification": lgb.FalcataClassifier,
+    "multiclass-classification": lgb.FalcataClassifier,
+    "regression": lgb.FalcataRegressor,
 }
 all_tasks = tuple(task_to_model_factory.keys())
 all_x_types = ("list2d", "numpy", "pd_DataFrame", "pa_Table", "pl_DataFrame", "scipy_csc", "scipy_csr")
@@ -92,24 +92,24 @@ class UnpicklableCallback:
         env.model.attr_set_inside_callback = env.iteration * 10
 
 
-class ExtendedLGBMClassifier(lgb.LGBMClassifier):
-    """Class for testing that inheriting from LGBMClassifier works"""
+class ExtendedLGBMClassifier(lgb.FalcataClassifier):
+    """Class for testing that inheriting from FalcataClassifier works"""
 
     def __init__(self, *, some_other_param: str = "lgbm-classifier", **kwargs):
         self.some_other_param = some_other_param
         super().__init__(**kwargs)
 
 
-class ExtendedLGBMRanker(lgb.LGBMRanker):
-    """Class for testing that inheriting from LGBMRanker works"""
+class ExtendedLGBMRanker(lgb.FalcataRanker):
+    """Class for testing that inheriting from FalcataRanker works"""
 
     def __init__(self, *, some_other_param: str = "lgbm-ranker", **kwargs):
         self.some_other_param = some_other_param
         super().__init__(**kwargs)
 
 
-class ExtendedLGBMRegressor(lgb.LGBMRegressor):
-    """Class for testing that inheriting from LGBMRegressor works"""
+class ExtendedLGBMRegressor(lgb.FalcataRegressor):
+    """Class for testing that inheriting from FalcataRegressor works"""
 
     def __init__(self, *, some_other_param: str = "lgbm-regressor", **kwargs):
         self.some_other_param = some_other_param
@@ -167,7 +167,7 @@ def multi_logloss(y_true, y_pred):
 def test_binary():
     X, y = load_breast_cancer(return_X_y=True)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
-    gbm = lgb.LGBMClassifier(n_estimators=50, verbose=-1)
+    gbm = lgb.FalcataClassifier(n_estimators=50, verbose=-1)
     gbm.fit(X_train, y_train, eval_set=[(X_test, y_test)], callbacks=[lgb.early_stopping(5)])
     ret = log_loss(y_test, gbm.predict_proba(X_test))
     assert ret < 0.12
@@ -177,7 +177,7 @@ def test_binary():
 def test_regression():
     X, y = make_synthetic_regression()
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
-    gbm = lgb.LGBMRegressor(n_estimators=50, verbose=-1)
+    gbm = lgb.FalcataRegressor(n_estimators=50, verbose=-1)
     gbm.fit(X_train, y_train, eval_set=[(X_test, y_test)], callbacks=[lgb.early_stopping(5)])
     ret = mean_squared_error(y_test, gbm.predict(X_test))
     assert ret < 174
@@ -188,7 +188,7 @@ def test_regression():
 def test_multiclass():
     X, y = load_digits(n_class=10, return_X_y=True)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
-    gbm = lgb.LGBMClassifier(n_estimators=50, verbose=-1)
+    gbm = lgb.FalcataClassifier(n_estimators=50, verbose=-1)
     gbm.fit(X_train, y_train, eval_set=[(X_test, y_test)], callbacks=[lgb.early_stopping(5)])
     ret = multi_error(y_test, gbm.predict(X_test))
     assert ret < 0.05
@@ -204,7 +204,7 @@ def test_lambdarank():
     X_test, y_test = load_svmlight_file(str(rank_example_dir / "rank.test"))
     q_train = np.loadtxt(str(rank_example_dir / "rank.train.query"))
     q_test = np.loadtxt(str(rank_example_dir / "rank.test.query"))
-    gbm = lgb.LGBMRanker(n_estimators=50)
+    gbm = lgb.FalcataRanker(n_estimators=50)
     gbm.fit(
         X_train,
         y_train,
@@ -225,7 +225,7 @@ def test_xendcg():
     X_test, y_test = load_svmlight_file(str(xendcg_example_dir / "rank.test"))
     q_train = np.loadtxt(str(xendcg_example_dir / "rank.train.query"))
     q_test = np.loadtxt(str(xendcg_example_dir / "rank.test.query"))
-    gbm = lgb.LGBMRanker(n_estimators=50, objective="rank_xendcg", random_state=5, n_jobs=1)
+    gbm = lgb.FalcataRanker(n_estimators=50, objective="rank_xendcg", random_state=5, n_jobs=1)
     gbm.fit(
         X_train,
         y_train,
@@ -248,7 +248,7 @@ def test_eval_at_aliases():
     q_train = np.loadtxt(str(rank_example_dir / "rank.train.query"))
     q_test = np.loadtxt(str(rank_example_dir / "rank.test.query"))
     for alias in lgb.basic._ConfigAliases.get("eval_at"):
-        gbm = lgb.LGBMRanker(n_estimators=5, **{alias: [1, 2, 3, 9]})
+        gbm = lgb.FalcataRanker(n_estimators=5, **{alias: [1, 2, 3, 9]})
         with pytest.warns(UserWarning, match=f"Found '{alias}' in params. Will use it instead of 'eval_at' argument"):
             gbm.fit(X_train, y_train, group=q_train, eval_set=[(X_test, y_test)], eval_group=[q_test])
         assert list(gbm.evals_result_["valid_0"].keys()) == ["ndcg@1", "ndcg@2", "ndcg@3", "ndcg@9"]
@@ -266,7 +266,7 @@ def test_objective_aliases(custom_objective):
         metric_name = "mape"
     evals = []
     for alias in lgb.basic._ConfigAliases.get("objective"):
-        gbm = lgb.LGBMRegressor(n_estimators=5, **{alias: obj})
+        gbm = lgb.FalcataRegressor(n_estimators=5, **{alias: obj})
         if alias != "objective":
             with pytest.warns(
                 UserWarning, match=f"Found '{alias}' in params. Will use it instead of 'objective' argument"
@@ -287,7 +287,7 @@ def test_objective_aliases(custom_objective):
 def test_regression_with_custom_objective():
     X, y = make_synthetic_regression()
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
-    gbm = lgb.LGBMRegressor(n_estimators=50, verbose=-1, objective=objective_ls)
+    gbm = lgb.FalcataRegressor(n_estimators=50, verbose=-1, objective=objective_ls)
     gbm.fit(X_train, y_train, eval_set=[(X_test, y_test)], callbacks=[lgb.early_stopping(5)])
     ret = mean_squared_error(y_test, gbm.predict(X_test))
     assert ret < 174
@@ -297,7 +297,7 @@ def test_regression_with_custom_objective():
 def test_binary_classification_with_custom_objective():
     X, y = load_digits(n_class=2, return_X_y=True)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
-    gbm = lgb.LGBMClassifier(n_estimators=50, verbose=-1, objective=logregobj)
+    gbm = lgb.FalcataClassifier(n_estimators=50, verbose=-1, objective=logregobj)
     gbm.fit(X_train, y_train, eval_set=[(X_test, y_test)], callbacks=[lgb.early_stopping(5)])
     # prediction result is actually not transformed (is raw) due to custom objective
     y_pred_raw = gbm.predict_proba(X_test)
@@ -310,7 +310,7 @@ def test_binary_classification_with_custom_objective():
 def test_dart():
     X, y = make_synthetic_regression()
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
-    gbm = lgb.LGBMRegressor(boosting_type="dart", n_estimators=50)
+    gbm = lgb.FalcataRegressor(boosting_type="dart", n_estimators=50)
     gbm.fit(X_train, y_train)
     score = gbm.score(X_test, y_test)
     assert 0.8 <= score <= 1.0
@@ -319,9 +319,9 @@ def test_dart():
 def test_stacking_classifier():
     X, y = load_iris(return_X_y=True)
     X_train, X_test, y_train, y_test = train_test_split(X, y, random_state=42)
-    classifiers = [("gbm1", lgb.LGBMClassifier(n_estimators=3)), ("gbm2", lgb.LGBMClassifier(n_estimators=3))]
+    classifiers = [("gbm1", lgb.FalcataClassifier(n_estimators=3)), ("gbm2", lgb.FalcataClassifier(n_estimators=3))]
     clf = StackingClassifier(
-        estimators=classifiers, final_estimator=lgb.LGBMClassifier(n_estimators=3), passthrough=True
+        estimators=classifiers, final_estimator=lgb.FalcataClassifier(n_estimators=3), passthrough=True
     )
     clf.fit(X_train, y_train)
     score = clf.score(X_test, y_test)
@@ -341,8 +341,8 @@ def test_stacking_regressor():
     n_features = X.shape[1]
     n_input_models = 2
     X_train, X_test, y_train, y_test = train_test_split(X, y, random_state=42)
-    regressors = [("gbm1", lgb.LGBMRegressor(n_estimators=3)), ("gbm2", lgb.LGBMRegressor(n_estimators=3))]
-    reg = StackingRegressor(estimators=regressors, final_estimator=lgb.LGBMRegressor(n_estimators=3), passthrough=True)
+    regressors = [("gbm1", lgb.FalcataRegressor(n_estimators=3)), ("gbm2", lgb.FalcataRegressor(n_estimators=3))]
+    reg = StackingRegressor(estimators=regressors, final_estimator=lgb.FalcataRegressor(n_estimators=3), passthrough=True)
     reg.fit(X_train, y_train)
     score = reg.score(X_test, y_test)
     assert score >= 0.2
@@ -367,7 +367,7 @@ def test_grid_search():
         "eval_metric": constant_metric,
         "callbacks": [lgb.early_stopping(2), lgb.record_evaluation(evals_result)],
     }
-    grid = GridSearchCV(estimator=lgb.LGBMClassifier(**params), param_grid=grid_params, cv=2)
+    grid = GridSearchCV(estimator=lgb.FalcataClassifier(**params), param_grid=grid_params, cv=2)
     grid.fit(X_train, y_train, **fit_params)
     score = grid.score(X_test, y_test)  # utilizes GridSearchCV default refit=True
     assert grid.best_params_["boosting_type"] in ["rf", "gbdt"]
@@ -396,7 +396,7 @@ def test_random_search(rng):
     }
     fit_params = {"eval_set": [(X_val, y_val)], "eval_metric": constant_metric, "callbacks": [lgb.early_stopping(2)]}
     rand = RandomizedSearchCV(
-        estimator=lgb.LGBMClassifier(**params), param_distributions=param_dist, cv=2, n_iter=n_iter, random_state=42
+        estimator=lgb.FalcataClassifier(**params), param_distributions=param_dist, cv=2, n_iter=n_iter, random_state=42
     )
     rand.fit(X_train, y_train, **fit_params)
     score = rand.score(X_test, y_test)  # utilizes RandomizedSearchCV default refit=True
@@ -416,14 +416,14 @@ def test_multioutput_classifier():
     X, y = make_multilabel_classification(n_samples=100, n_features=20, n_classes=n_outputs, random_state=0)
     y = y.astype(str)  # utilize label encoder at it's max power
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
-    clf = MultiOutputClassifier(estimator=lgb.LGBMClassifier(n_estimators=10))
+    clf = MultiOutputClassifier(estimator=lgb.FalcataClassifier(n_estimators=10))
     clf.fit(X_train, y_train)
     score = clf.score(X_test, y_test)
     assert score >= 0.2
     assert score <= 1.0
     np_assert_array_equal(np.tile(np.unique(y_train), n_outputs), np.concatenate(clf.classes_), strict=True)
     for classifier in clf.estimators_:
-        assert isinstance(classifier, lgb.LGBMClassifier)
+        assert isinstance(classifier, lgb.FalcataClassifier)
         assert isinstance(classifier.booster_, lgb.Booster)
 
 
@@ -431,14 +431,14 @@ def test_multioutput_regressor():
     bunch = load_linnerud(as_frame=True)  # returns a Bunch instance
     X, y = bunch["data"], bunch["target"]
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
-    reg = MultiOutputRegressor(estimator=lgb.LGBMRegressor(n_estimators=10))
+    reg = MultiOutputRegressor(estimator=lgb.FalcataRegressor(n_estimators=10))
     reg.fit(X_train, y_train)
     y_pred = reg.predict(X_test)
     _, score, _ = mse(y_test, y_pred)
     assert score >= 0.2
     assert score <= 120.0
     for regressor in reg.estimators_:
-        assert isinstance(regressor, lgb.LGBMRegressor)
+        assert isinstance(regressor, lgb.FalcataRegressor)
         assert isinstance(regressor.booster_, lgb.Booster)
 
 
@@ -453,9 +453,9 @@ def test_classifier_chain():
     #  * https://github.com/scikit-learn/scikit-learn/pull/33750
     #
     if SKLEARN_VERSION_GTE_1_7:
-        clf = ClassifierChain(estimator=lgb.LGBMClassifier(n_estimators=10), order=order, random_state=42)
+        clf = ClassifierChain(estimator=lgb.FalcataClassifier(n_estimators=10), order=order, random_state=42)
     else:
-        clf = ClassifierChain(base_estimator=lgb.LGBMClassifier(n_estimators=10), order=order, random_state=42)
+        clf = ClassifierChain(base_estimator=lgb.FalcataClassifier(n_estimators=10), order=order, random_state=42)
     clf.fit(X_train, y_train)
     score = clf.score(X_test, y_test)
     assert score >= 0.2
@@ -463,7 +463,7 @@ def test_classifier_chain():
     np_assert_array_equal(np.tile(np.unique(y_train), n_outputs), np.concatenate(clf.classes_), strict=True)
     assert order == clf.order_
     for classifier in clf.estimators_:
-        assert isinstance(classifier, lgb.LGBMClassifier)
+        assert isinstance(classifier, lgb.FalcataClassifier)
         assert isinstance(classifier.booster_, lgb.Booster)
 
 
@@ -478,9 +478,9 @@ def test_regressor_chain():
     #  * https://github.com/scikit-learn/scikit-learn/pull/33750
     #
     if SKLEARN_VERSION_GTE_1_7:
-        reg = RegressorChain(estimator=lgb.LGBMRegressor(n_estimators=10), order=order, random_state=42)
+        reg = RegressorChain(estimator=lgb.FalcataRegressor(n_estimators=10), order=order, random_state=42)
     else:
-        reg = RegressorChain(base_estimator=lgb.LGBMRegressor(n_estimators=10), order=order, random_state=42)
+        reg = RegressorChain(base_estimator=lgb.FalcataRegressor(n_estimators=10), order=order, random_state=42)
     reg.fit(X_train, y_train)
     y_pred = reg.predict(X_test)
     _, score, _ = mse(y_test, y_pred)
@@ -488,13 +488,13 @@ def test_regressor_chain():
     assert score <= 120.0
     assert order == reg.order_
     for regressor in reg.estimators_:
-        assert isinstance(regressor, lgb.LGBMRegressor)
+        assert isinstance(regressor, lgb.FalcataRegressor)
         assert isinstance(regressor.booster_, lgb.Booster)
 
 
 def test_clone_and_property():
     X, y = make_synthetic_regression()
-    gbm = lgb.LGBMRegressor(n_estimators=10, verbose=-1)
+    gbm = lgb.FalcataRegressor(n_estimators=10, verbose=-1)
     gbm.fit(X, y)
 
     gbm_clone = clone(gbm)
@@ -512,7 +512,7 @@ def test_clone_and_property():
     assert gbm_clone.get_params() == gbm.get_params()
 
     X, y = load_digits(n_class=2, return_X_y=True)
-    clf = lgb.LGBMClassifier(n_estimators=10, verbose=-1)
+    clf = lgb.FalcataClassifier(n_estimators=10, verbose=-1)
     clf.fit(X, y)
     assert sorted(clf.classes_) == [0, 1]
     assert clf.n_classes_ == 2
@@ -520,9 +520,9 @@ def test_clone_and_property():
     assert isinstance(clf.feature_importances_, np.ndarray)
 
 
-@pytest.mark.parametrize("estimator", (lgb.LGBMClassifier, lgb.LGBMRegressor, lgb.LGBMRanker))  # noqa: PT007
+@pytest.mark.parametrize("estimator", (lgb.FalcataClassifier, lgb.FalcataRegressor, lgb.FalcataRanker))  # noqa: PT007
 def test_estimators_all_have_the_same_kwargs_and_defaults(estimator):
-    base_spec = inspect.getfullargspec(lgb.LGBMModel)
+    base_spec = inspect.getfullargspec(lgb.FalcataModel)
     subclass_spec = inspect.getfullargspec(estimator)
 
     # should not allow for any varargs
@@ -535,8 +535,8 @@ def test_estimators_all_have_the_same_kwargs_and_defaults(estimator):
 
     # default values for all constructor arguments should be identical
     #
-    # NOTE: if LGBMClassifier / LGBMRanker / LGBMRegressor ever override
-    #       any of LGBMModel's constructor arguments, this will need to be updated
+    # NOTE: if FalcataClassifier / FalcataRanker / FalcataRegressor ever override
+    #       any of FalcataModel's constructor arguments, this will need to be updated
     assert subclass_spec.kwonlydefaults == base_spec.kwonlydefaults
 
     # only positional argument should be 'self'
@@ -545,7 +545,7 @@ def test_estimators_all_have_the_same_kwargs_and_defaults(estimator):
     assert subclass_spec.defaults is None
 
     # get_params() should be identical
-    assert estimator().get_params() == lgb.LGBMModel().get_params()
+    assert estimator().get_params() == lgb.FalcataModel().get_params()
 
 
 def test_subclassing_get_params_works():
@@ -580,7 +580,7 @@ def test_subclassing_get_params_works():
     overrides = {"n_estimators": 13, "eta": 0.07}
 
     # lightgbm-official classes
-    for est in [lgb.LGBMModel, lgb.LGBMClassifier, lgb.LGBMRanker, lgb.LGBMRegressor]:
+    for est in [lgb.FalcataModel, lgb.FalcataClassifier, lgb.FalcataRanker, lgb.FalcataRegressor]:
         assert est().get_params() == expected_params
         assert est(**overrides).get_params() == {
             **expected_params,
@@ -595,7 +595,7 @@ def test_subclassing_get_params_works():
         pass
 
     if "dask" in sys.modules:
-        for est in [lgb.DaskLGBMClassifier, lgb.DaskLGBMRanker, lgb.DaskLGBMRegressor]:
+        for est in [lgb.DaskFalcataClassifier, lgb.DaskFalcataRanker, lgb.DaskFalcataRegressor]:
             assert est().get_params() == {
                 **expected_params,
                 "client": None,
@@ -656,13 +656,13 @@ def test_subclassing_works(task):
 
     X, y, g = _create_data(task=task)
     if task == "ranking":
-        est = lgb.LGBMRanker(**params).fit(X, y, group=g)
+        est = lgb.FalcataRanker(**params).fit(X, y, group=g)
         est_sub = ExtendedLGBMRanker(**params).fit(X, y, group=g)
     elif task.endswith("classification"):
-        est = lgb.LGBMClassifier(**params).fit(X, y)
+        est = lgb.FalcataClassifier(**params).fit(X, y)
         est_sub = ExtendedLGBMClassifier(**params).fit(X, y)
     else:
-        est = lgb.LGBMRegressor(**params).fit(X, y)
+        est = lgb.FalcataRegressor(**params).fit(X, y)
         est_sub = ExtendedLGBMRegressor(**params).fit(X, y)
 
     np.testing.assert_allclose(est.predict(X), est_sub.predict(X))
@@ -671,11 +671,11 @@ def test_subclassing_works(task):
 @pytest.mark.parametrize(
     "estimator_to_task",
     [
-        (lgb.LGBMClassifier, "binary-classification"),
+        (lgb.FalcataClassifier, "binary-classification"),
         (ExtendedLGBMClassifier, "binary-classification"),
-        (lgb.LGBMRanker, "ranking"),
+        (lgb.FalcataRanker, "ranking"),
         (ExtendedLGBMRanker, "ranking"),
-        (lgb.LGBMRegressor, "regression"),
+        (lgb.FalcataRegressor, "regression"),
         (ExtendedLGBMRegressor, "regression"),
     ],
 )
@@ -715,7 +715,7 @@ def test_parameter_aliases_are_handled_correctly(estimator_to_task):
 def test_joblib(tmp_path):
     X, y = make_synthetic_regression()
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
-    gbm = lgb.LGBMRegressor(n_estimators=10, objective=custom_asymmetric_obj, verbose=-1, importance_type="split")
+    gbm = lgb.FalcataRegressor(n_estimators=10, objective=custom_asymmetric_obj, verbose=-1, importance_type="split")
     gbm.fit(
         X_train,
         y_train,
@@ -747,7 +747,7 @@ def test_non_serializable_objects_in_callbacks(tmp_path):
         joblib.dump(unpicklable_callback, tmp_path / "tmp.joblib")
 
     X, y = make_synthetic_regression()
-    gbm = lgb.LGBMRegressor(n_estimators=5)
+    gbm = lgb.FalcataRegressor(n_estimators=5)
     gbm.fit(X, y, callbacks=[unpicklable_callback])
     assert gbm.booster_.attr_set_inside_callback == 40
 
@@ -758,8 +758,8 @@ def test_random_state_object(rng_constructor):
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
     state1 = rng_constructor(123)
     state2 = rng_constructor(123)
-    clf1 = lgb.LGBMClassifier(n_estimators=10, subsample=0.5, subsample_freq=1, random_state=state1)
-    clf2 = lgb.LGBMClassifier(n_estimators=10, subsample=0.5, subsample_freq=1, random_state=state2)
+    clf1 = lgb.FalcataClassifier(n_estimators=10, subsample=0.5, subsample_freq=1, random_state=state1)
+    clf2 = lgb.FalcataClassifier(n_estimators=10, subsample=0.5, subsample_freq=1, random_state=state2)
     # Test if random_state is properly stored
     assert clf1.random_state is state1
     assert clf2.random_state is state2
@@ -786,7 +786,7 @@ def test_random_state_object(rng_constructor):
 
 def test_feature_importances_single_leaf():
     data = load_iris(return_X_y=False)
-    clf = lgb.LGBMClassifier(n_estimators=10)
+    clf = lgb.FalcataClassifier(n_estimators=10)
     clf.fit(data.data, data.target)
     importances = clf.feature_importances_
     assert len(importances) == 4
@@ -794,7 +794,7 @@ def test_feature_importances_single_leaf():
 
 def test_feature_importances_type():
     data = load_iris(return_X_y=False)
-    clf = lgb.LGBMClassifier(n_estimators=10)
+    clf = lgb.FalcataClassifier(n_estimators=10)
     clf.fit(data.data, data.target)
     clf.set_params(importance_type="split")
     importances_split = clf.feature_importances_
@@ -834,22 +834,22 @@ def test_pandas_categorical(rng_fixed_seed, tmp_path):
     X[cat_cols_actual] = X[cat_cols_actual].astype("category")
     X_test[cat_cols_actual] = X_test[cat_cols_actual].astype("category")
     cat_values = [X[col].cat.categories.tolist() for col in cat_cols_to_store]
-    gbm0 = lgb.sklearn.LGBMClassifier(n_estimators=10).fit(X, y)
+    gbm0 = lgb.sklearn.FalcataClassifier(n_estimators=10).fit(X, y)
     pred0 = gbm0.predict(X_test, raw_score=True)
     pred_prob = gbm0.predict_proba(X_test)[:, 1]
-    gbm1 = lgb.sklearn.LGBMClassifier(n_estimators=10).fit(X, pd.Series(y), categorical_feature=[0])
+    gbm1 = lgb.sklearn.FalcataClassifier(n_estimators=10).fit(X, pd.Series(y), categorical_feature=[0])
     pred1 = gbm1.predict(X_test, raw_score=True)
-    gbm2 = lgb.sklearn.LGBMClassifier(n_estimators=10).fit(X, y, categorical_feature=["A"])
+    gbm2 = lgb.sklearn.FalcataClassifier(n_estimators=10).fit(X, y, categorical_feature=["A"])
     pred2 = gbm2.predict(X_test, raw_score=True)
-    gbm3 = lgb.sklearn.LGBMClassifier(n_estimators=10).fit(X, y, categorical_feature=["A", "B", "C", "D"])
+    gbm3 = lgb.sklearn.FalcataClassifier(n_estimators=10).fit(X, y, categorical_feature=["A", "B", "C", "D"])
     pred3 = gbm3.predict(X_test, raw_score=True)
     categorical_model_path = tmp_path / "categorical.model"
     gbm3.booster_.save_model(categorical_model_path)
     gbm4 = lgb.Booster(model_file=categorical_model_path)
     pred4 = gbm4.predict(X_test)
-    gbm5 = lgb.sklearn.LGBMClassifier(n_estimators=10).fit(X, y, categorical_feature=["A", "B", "C", "D", "E"])
+    gbm5 = lgb.sklearn.FalcataClassifier(n_estimators=10).fit(X, y, categorical_feature=["A", "B", "C", "D", "E"])
     pred5 = gbm5.predict(X_test, raw_score=True)
-    gbm6 = lgb.sklearn.LGBMClassifier(n_estimators=10).fit(X, y, categorical_feature=[])
+    gbm6 = lgb.sklearn.FalcataClassifier(n_estimators=10).fit(X, y, categorical_feature=[])
     pred6 = gbm6.predict(X_test, raw_score=True)
     with pytest.raises(AssertionError):  # noqa: PT011
         np.testing.assert_allclose(pred0, pred1)
@@ -890,7 +890,7 @@ def test_pandas_sparse(rng):
     )
     for dtype in pd.concat([X.dtypes, X_test.dtypes, pd.Series(y.dtypes)]):
         assert isinstance(dtype, pd.SparseDtype)
-    gbm = lgb.sklearn.LGBMClassifier(n_estimators=10).fit(X, y)
+    gbm = lgb.sklearn.FalcataClassifier(n_estimators=10).fit(X, y)
     pred_sparse = gbm.predict(X_test, raw_score=True)
     if hasattr(X_test, "sparse"):
         pred_dense = gbm.predict(X_test.sparse.to_dense(), raw_score=True)
@@ -905,7 +905,7 @@ def test_predict():
     X_train, X_test, y_train, _ = train_test_split(iris.data, iris.target, test_size=0.2, random_state=42)
 
     gbm = lgb.train({"objective": "multiclass", "num_class": 3, "verbose": -1}, lgb.Dataset(X_train, y_train))
-    clf = lgb.LGBMClassifier(verbose=-1).fit(X_train, y_train)
+    clf = lgb.FalcataClassifier(verbose=-1).fit(X_train, y_train)
 
     # Tests same probabilities
     res_engine = gbm.predict(X_test)
@@ -977,7 +977,7 @@ def test_predict():
     y_train = np.concatenate([np.zeros(int(num_samples / 2 - 10)), np.ones(int(num_samples / 2 + 10))])
 
     gbm = lgb.train({"objective": "multiclass", "num_class": num_classes, "verbose": -1}, lgb.Dataset(X_train, y_train))
-    clf = lgb.LGBMClassifier(objective="multiclass", num_classes=num_classes).fit(X_train, y_train)
+    clf = lgb.FalcataClassifier(objective="multiclass", num_classes=num_classes).fit(X_train, y_train)
 
     res_engine = gbm.predict(X_train)
     res_sklearn = clf.predict_proba(X_train)
@@ -994,7 +994,7 @@ def test_decision_function_and_predict_proba_consistency():
     # binary
     X, y = load_breast_cancer(return_X_y=True)
     X_train, X_test, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=42)
-    clf = lgb.LGBMClassifier(n_estimators=10, random_state=42, verbose=-1).fit(X_train, y_train)
+    clf = lgb.FalcataClassifier(n_estimators=10, random_state=42, verbose=-1).fit(X_train, y_train)
     preds_raw = clf.decision_function(X_test)
     np.testing.assert_allclose(preds_raw, clf.predict(X_test, raw_score=True))
     np.testing.assert_allclose(logistic_sigmoid(preds_raw), clf.predict_proba(X_test)[:, 1])
@@ -1002,7 +1002,7 @@ def test_decision_function_and_predict_proba_consistency():
     # multiclass
     X, y = load_iris(return_X_y=True)
     X_train, X_test, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=42)
-    clf = lgb.LGBMClassifier(n_estimators=10, random_state=42, verbose=-1).fit(X_train, y_train)
+    clf = lgb.FalcataClassifier(n_estimators=10, random_state=42, verbose=-1).fit(X_train, y_train)
     preds_raw = clf.decision_function(X_test)
     np.testing.assert_allclose(preds_raw, clf.predict(X_test, raw_score=True))
     np.testing.assert_allclose(softmax(preds_raw), clf.predict_proba(X_test))
@@ -1020,7 +1020,7 @@ def test_calibrated_classifier_cv(method):
         "seed": 312,
     }
     clf = CalibratedClassifierCV(
-        lgb.LGBMClassifier(n_estimators=10, verbose=-1, **deterministic_params),
+        lgb.FalcataClassifier(n_estimators=10, verbose=-1, **deterministic_params),
         method=method,
         cv=3,
     )
@@ -1037,7 +1037,7 @@ def test_calibrated_classifier_cv(method):
     X, y = load_iris(return_X_y=True)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     clf = CalibratedClassifierCV(
-        lgb.LGBMClassifier(n_estimators=10, verbose=-1, **deterministic_params),
+        lgb.FalcataClassifier(n_estimators=10, verbose=-1, **deterministic_params),
         method=method,
         cv=3,
     )
@@ -1057,16 +1057,16 @@ def test_predict_with_params_from_init():
 
     predict_params = {"pred_early_stop": True, "pred_early_stop_margin": 1.0}
 
-    y_preds_no_params = lgb.LGBMClassifier(verbose=-1).fit(X_train, y_train).predict(X_test, raw_score=True)
+    y_preds_no_params = lgb.FalcataClassifier(verbose=-1).fit(X_train, y_train).predict(X_test, raw_score=True)
 
     y_preds_params_in_predict = (
-        lgb.LGBMClassifier(verbose=-1).fit(X_train, y_train).predict(X_test, raw_score=True, **predict_params)
+        lgb.FalcataClassifier(verbose=-1).fit(X_train, y_train).predict(X_test, raw_score=True, **predict_params)
     )
     with pytest.raises(AssertionError):  # noqa: PT011
         np.testing.assert_allclose(y_preds_no_params, y_preds_params_in_predict)
 
     y_preds_params_in_set_params_before_fit = (
-        lgb.LGBMClassifier(verbose=-1)
+        lgb.FalcataClassifier(verbose=-1)
         .set_params(**predict_params)
         .fit(X_train, y_train)
         .predict(X_test, raw_score=True)
@@ -1074,7 +1074,7 @@ def test_predict_with_params_from_init():
     np.testing.assert_allclose(y_preds_params_in_predict, y_preds_params_in_set_params_before_fit)
 
     y_preds_params_in_set_params_after_fit = (
-        lgb.LGBMClassifier(verbose=-1)
+        lgb.FalcataClassifier(verbose=-1)
         .fit(X_train, y_train)
         .set_params(**predict_params)
         .predict(X_test, raw_score=True)
@@ -1082,13 +1082,13 @@ def test_predict_with_params_from_init():
     np.testing.assert_allclose(y_preds_params_in_predict, y_preds_params_in_set_params_after_fit)
 
     y_preds_params_in_init = (
-        lgb.LGBMClassifier(verbose=-1, **predict_params).fit(X_train, y_train).predict(X_test, raw_score=True)
+        lgb.FalcataClassifier(verbose=-1, **predict_params).fit(X_train, y_train).predict(X_test, raw_score=True)
     )
     np.testing.assert_allclose(y_preds_params_in_predict, y_preds_params_in_init)
 
     # test that params passed in predict have higher priority
     y_preds_params_overwritten = (
-        lgb.LGBMClassifier(verbose=-1, **predict_params)
+        lgb.FalcataClassifier(verbose=-1, **predict_params)
         .fit(X_train, y_train)
         .predict(X_test, raw_score=True, pred_early_stop=False)
     )
@@ -1098,7 +1098,7 @@ def test_predict_with_params_from_init():
 def test_evaluate_train_set():
     X, y = make_synthetic_regression()
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
-    gbm = lgb.LGBMRegressor(n_estimators=10, verbose=-1)
+    gbm = lgb.FalcataRegressor(n_estimators=10, verbose=-1)
     gbm.fit(X_train, y_train, eval_set=[(X_train, y_train), (X_test, y_test)])
     assert len(gbm.evals_result_) == 2
     assert "training" in gbm.evals_result_
@@ -1117,39 +1117,39 @@ def test_metrics():
 
     # no custom objective, no custom metric
     # default metric
-    gbm = lgb.LGBMRegressor(**params).fit(**params_fit)
+    gbm = lgb.FalcataRegressor(**params).fit(**params_fit)
     assert len(gbm.evals_result_["training"]) == 1
     assert "l2" in gbm.evals_result_["training"]
 
     # non-default metric
-    gbm = lgb.LGBMRegressor(metric="mape", **params).fit(**params_fit)
+    gbm = lgb.FalcataRegressor(metric="mape", **params).fit(**params_fit)
     assert len(gbm.evals_result_["training"]) == 1
     assert "mape" in gbm.evals_result_["training"]
 
     # no metric
-    gbm = lgb.LGBMRegressor(metric="None", **params).fit(**params_fit)
+    gbm = lgb.FalcataRegressor(metric="None", **params).fit(**params_fit)
     assert gbm.evals_result_ == {}
 
     # non-default metric in eval_metric
-    gbm = lgb.LGBMRegressor(**params).fit(eval_metric="mape", **params_fit)
+    gbm = lgb.FalcataRegressor(**params).fit(eval_metric="mape", **params_fit)
     assert len(gbm.evals_result_["training"]) == 2
     assert "l2" in gbm.evals_result_["training"]
     assert "mape" in gbm.evals_result_["training"]
 
     # non-default metric with non-default metric in eval_metric
-    gbm = lgb.LGBMRegressor(metric="gamma", **params).fit(eval_metric="mape", **params_fit)
+    gbm = lgb.FalcataRegressor(metric="gamma", **params).fit(eval_metric="mape", **params_fit)
     assert len(gbm.evals_result_["training"]) == 2
     assert "gamma" in gbm.evals_result_["training"]
     assert "mape" in gbm.evals_result_["training"]
 
     # non-default metric with multiple metrics in eval_metric
-    gbm = lgb.LGBMRegressor(metric="gamma", **params).fit(eval_metric=["l2", "mape"], **params_fit)
+    gbm = lgb.FalcataRegressor(metric="gamma", **params).fit(eval_metric=["l2", "mape"], **params_fit)
     assert len(gbm.evals_result_["training"]) == 3
     assert "gamma" in gbm.evals_result_["training"]
     assert "l2" in gbm.evals_result_["training"]
     assert "mape" in gbm.evals_result_["training"]
 
-    # non-default metric with multiple metrics in eval_metric for LGBMClassifier
+    # non-default metric with multiple metrics in eval_metric for FalcataClassifier
     X_classification, y_classification = load_breast_cancer(return_X_y=True)
     params_classification = {"n_estimators": 2, "verbose": -1, "objective": "binary", "metric": "binary_logloss"}
     params_fit_classification = {
@@ -1157,40 +1157,40 @@ def test_metrics():
         "y": y_classification,
         "eval_set": (X_classification, y_classification),
     }
-    gbm = lgb.LGBMClassifier(**params_classification).fit(eval_metric=["fair", "error"], **params_fit_classification)
+    gbm = lgb.FalcataClassifier(**params_classification).fit(eval_metric=["fair", "error"], **params_fit_classification)
     assert len(gbm.evals_result_["training"]) == 3
     assert "fair" in gbm.evals_result_["training"]
     assert "binary_error" in gbm.evals_result_["training"]
     assert "binary_logloss" in gbm.evals_result_["training"]
 
     # default metric for non-default objective
-    gbm = lgb.LGBMRegressor(objective="regression_l1", **params).fit(**params_fit)
+    gbm = lgb.FalcataRegressor(objective="regression_l1", **params).fit(**params_fit)
     assert len(gbm.evals_result_["training"]) == 1
     assert "l1" in gbm.evals_result_["training"]
 
     # non-default metric for non-default objective
-    gbm = lgb.LGBMRegressor(objective="regression_l1", metric="mape", **params).fit(**params_fit)
+    gbm = lgb.FalcataRegressor(objective="regression_l1", metric="mape", **params).fit(**params_fit)
     assert len(gbm.evals_result_["training"]) == 1
     assert "mape" in gbm.evals_result_["training"]
 
     # no metric
-    gbm = lgb.LGBMRegressor(objective="regression_l1", metric="None", **params).fit(**params_fit)
+    gbm = lgb.FalcataRegressor(objective="regression_l1", metric="None", **params).fit(**params_fit)
     assert gbm.evals_result_ == {}
 
     # non-default metric in eval_metric for non-default objective
-    gbm = lgb.LGBMRegressor(objective="regression_l1", **params).fit(eval_metric="mape", **params_fit)
+    gbm = lgb.FalcataRegressor(objective="regression_l1", **params).fit(eval_metric="mape", **params_fit)
     assert len(gbm.evals_result_["training"]) == 2
     assert "l1" in gbm.evals_result_["training"]
     assert "mape" in gbm.evals_result_["training"]
 
     # non-default metric with non-default metric in eval_metric for non-default objective
-    gbm = lgb.LGBMRegressor(objective="regression_l1", metric="gamma", **params).fit(eval_metric="mape", **params_fit)
+    gbm = lgb.FalcataRegressor(objective="regression_l1", metric="gamma", **params).fit(eval_metric="mape", **params_fit)
     assert len(gbm.evals_result_["training"]) == 2
     assert "gamma" in gbm.evals_result_["training"]
     assert "mape" in gbm.evals_result_["training"]
 
     # non-default metric with multiple metrics in eval_metric for non-default objective
-    gbm = lgb.LGBMRegressor(objective="regression_l1", metric="gamma", **params).fit(
+    gbm = lgb.FalcataRegressor(objective="regression_l1", metric="gamma", **params).fit(
         eval_metric=["l2", "mape"], **params_fit
     )
     assert len(gbm.evals_result_["training"]) == 3
@@ -1200,39 +1200,39 @@ def test_metrics():
 
     # custom objective, no custom metric
     # default regression metric for custom objective
-    gbm = lgb.LGBMRegressor(objective=custom_dummy_obj, **params).fit(**params_fit)
+    gbm = lgb.FalcataRegressor(objective=custom_dummy_obj, **params).fit(**params_fit)
     assert len(gbm.evals_result_["training"]) == 1
     assert "l2" in gbm.evals_result_["training"]
 
     # non-default regression metric for custom objective
-    gbm = lgb.LGBMRegressor(objective=custom_dummy_obj, metric="mape", **params).fit(**params_fit)
+    gbm = lgb.FalcataRegressor(objective=custom_dummy_obj, metric="mape", **params).fit(**params_fit)
     assert len(gbm.evals_result_["training"]) == 1
     assert "mape" in gbm.evals_result_["training"]
 
     # multiple regression metrics for custom objective
-    gbm = lgb.LGBMRegressor(objective=custom_dummy_obj, metric=["l1", "gamma"], **params).fit(**params_fit)
+    gbm = lgb.FalcataRegressor(objective=custom_dummy_obj, metric=["l1", "gamma"], **params).fit(**params_fit)
     assert len(gbm.evals_result_["training"]) == 2
     assert "l1" in gbm.evals_result_["training"]
     assert "gamma" in gbm.evals_result_["training"]
 
     # no metric
-    gbm = lgb.LGBMRegressor(objective=custom_dummy_obj, metric="None", **params).fit(**params_fit)
+    gbm = lgb.FalcataRegressor(objective=custom_dummy_obj, metric="None", **params).fit(**params_fit)
     assert gbm.evals_result_ == {}
 
     # default regression metric with non-default metric in eval_metric for custom objective
-    gbm = lgb.LGBMRegressor(objective=custom_dummy_obj, **params).fit(eval_metric="mape", **params_fit)
+    gbm = lgb.FalcataRegressor(objective=custom_dummy_obj, **params).fit(eval_metric="mape", **params_fit)
     assert len(gbm.evals_result_["training"]) == 2
     assert "l2" in gbm.evals_result_["training"]
     assert "mape" in gbm.evals_result_["training"]
 
     # non-default regression metric with metric in eval_metric for custom objective
-    gbm = lgb.LGBMRegressor(objective=custom_dummy_obj, metric="mape", **params).fit(eval_metric="gamma", **params_fit)
+    gbm = lgb.FalcataRegressor(objective=custom_dummy_obj, metric="mape", **params).fit(eval_metric="gamma", **params_fit)
     assert len(gbm.evals_result_["training"]) == 2
     assert "mape" in gbm.evals_result_["training"]
     assert "gamma" in gbm.evals_result_["training"]
 
     # multiple regression metrics with metric in eval_metric for custom objective
-    gbm = lgb.LGBMRegressor(objective=custom_dummy_obj, metric=["l1", "gamma"], **params).fit(
+    gbm = lgb.FalcataRegressor(objective=custom_dummy_obj, metric=["l1", "gamma"], **params).fit(
         eval_metric="l2", **params_fit
     )
     assert len(gbm.evals_result_["training"]) == 3
@@ -1241,7 +1241,7 @@ def test_metrics():
     assert "l2" in gbm.evals_result_["training"]
 
     # multiple regression metrics with multiple metrics in eval_metric for custom objective
-    gbm = lgb.LGBMRegressor(objective=custom_dummy_obj, metric=["l1", "gamma"], **params).fit(
+    gbm = lgb.FalcataRegressor(objective=custom_dummy_obj, metric=["l1", "gamma"], **params).fit(
         eval_metric=["l2", "mape"], **params_fit
     )
     assert len(gbm.evals_result_["training"]) == 4
@@ -1252,37 +1252,37 @@ def test_metrics():
 
     # no custom objective, custom metric
     # default metric with custom metric
-    gbm = lgb.LGBMRegressor(**params).fit(eval_metric=constant_metric, **params_fit)
+    gbm = lgb.FalcataRegressor(**params).fit(eval_metric=constant_metric, **params_fit)
     assert len(gbm.evals_result_["training"]) == 2
     assert "l2" in gbm.evals_result_["training"]
     assert "error" in gbm.evals_result_["training"]
 
     # non-default metric with custom metric
-    gbm = lgb.LGBMRegressor(metric="mape", **params).fit(eval_metric=constant_metric, **params_fit)
+    gbm = lgb.FalcataRegressor(metric="mape", **params).fit(eval_metric=constant_metric, **params_fit)
     assert len(gbm.evals_result_["training"]) == 2
     assert "mape" in gbm.evals_result_["training"]
     assert "error" in gbm.evals_result_["training"]
 
     # multiple metrics with custom metric
-    gbm = lgb.LGBMRegressor(metric=["l1", "gamma"], **params).fit(eval_metric=constant_metric, **params_fit)
+    gbm = lgb.FalcataRegressor(metric=["l1", "gamma"], **params).fit(eval_metric=constant_metric, **params_fit)
     assert len(gbm.evals_result_["training"]) == 3
     assert "l1" in gbm.evals_result_["training"]
     assert "gamma" in gbm.evals_result_["training"]
     assert "error" in gbm.evals_result_["training"]
 
     # custom metric (disable default metric)
-    gbm = lgb.LGBMRegressor(metric="None", **params).fit(eval_metric=constant_metric, **params_fit)
+    gbm = lgb.FalcataRegressor(metric="None", **params).fit(eval_metric=constant_metric, **params_fit)
     assert len(gbm.evals_result_["training"]) == 1
     assert "error" in gbm.evals_result_["training"]
 
     # default metric for non-default objective with custom metric
-    gbm = lgb.LGBMRegressor(objective="regression_l1", **params).fit(eval_metric=constant_metric, **params_fit)
+    gbm = lgb.FalcataRegressor(objective="regression_l1", **params).fit(eval_metric=constant_metric, **params_fit)
     assert len(gbm.evals_result_["training"]) == 2
     assert "l1" in gbm.evals_result_["training"]
     assert "error" in gbm.evals_result_["training"]
 
     # non-default metric for non-default objective with custom metric
-    gbm = lgb.LGBMRegressor(objective="regression_l1", metric="mape", **params).fit(
+    gbm = lgb.FalcataRegressor(objective="regression_l1", metric="mape", **params).fit(
         eval_metric=constant_metric, **params_fit
     )
     assert len(gbm.evals_result_["training"]) == 2
@@ -1290,7 +1290,7 @@ def test_metrics():
     assert "error" in gbm.evals_result_["training"]
 
     # multiple metrics for non-default objective with custom metric
-    gbm = lgb.LGBMRegressor(objective="regression_l1", metric=["l1", "gamma"], **params).fit(
+    gbm = lgb.FalcataRegressor(objective="regression_l1", metric=["l1", "gamma"], **params).fit(
         eval_metric=constant_metric, **params_fit
     )
     assert len(gbm.evals_result_["training"]) == 3
@@ -1299,7 +1299,7 @@ def test_metrics():
     assert "error" in gbm.evals_result_["training"]
 
     # custom metric (disable default metric for non-default objective)
-    gbm = lgb.LGBMRegressor(objective="regression_l1", metric="None", **params).fit(
+    gbm = lgb.FalcataRegressor(objective="regression_l1", metric="None", **params).fit(
         eval_metric=constant_metric, **params_fit
     )
     assert len(gbm.evals_result_["training"]) == 1
@@ -1307,12 +1307,12 @@ def test_metrics():
 
     # custom objective, custom metric
     # custom metric for custom objective
-    gbm = lgb.LGBMRegressor(objective=custom_dummy_obj, **params).fit(eval_metric=constant_metric, **params_fit)
+    gbm = lgb.FalcataRegressor(objective=custom_dummy_obj, **params).fit(eval_metric=constant_metric, **params_fit)
     assert len(gbm.evals_result_["training"]) == 2
     assert "error" in gbm.evals_result_["training"]
 
     # non-default regression metric with custom metric for custom objective
-    gbm = lgb.LGBMRegressor(objective=custom_dummy_obj, metric="mape", **params).fit(
+    gbm = lgb.FalcataRegressor(objective=custom_dummy_obj, metric="mape", **params).fit(
         eval_metric=constant_metric, **params_fit
     )
     assert len(gbm.evals_result_["training"]) == 2
@@ -1320,7 +1320,7 @@ def test_metrics():
     assert "error" in gbm.evals_result_["training"]
 
     # multiple regression metrics with custom metric for custom objective
-    gbm = lgb.LGBMRegressor(objective=custom_dummy_obj, metric=["l2", "mape"], **params).fit(
+    gbm = lgb.FalcataRegressor(objective=custom_dummy_obj, metric=["l2", "mape"], **params).fit(
         eval_metric=constant_metric, **params_fit
     )
     assert len(gbm.evals_result_["training"]) == 3
@@ -1332,13 +1332,13 @@ def test_metrics():
     params_fit = {"X": X, "y": y, "eval_set": (X, y)}
 
     # default metric and invalid binary metric is replaced with multiclass alternative
-    gbm = lgb.LGBMClassifier(**params).fit(eval_metric="binary_error", **params_fit)
+    gbm = lgb.FalcataClassifier(**params).fit(eval_metric="binary_error", **params_fit)
     assert len(gbm.evals_result_["training"]) == 2
     assert "multi_logloss" in gbm.evals_result_["training"]
     assert "multi_error" in gbm.evals_result_["training"]
 
     # invalid binary metric is replaced with multiclass alternative
-    gbm = lgb.LGBMClassifier(**params).fit(eval_metric="binary_error", **params_fit)
+    gbm = lgb.FalcataClassifier(**params).fit(eval_metric="binary_error", **params_fit)
     assert gbm.objective_ == "multiclass"
     assert len(gbm.evals_result_["training"]) == 2
     assert "multi_logloss" in gbm.evals_result_["training"]
@@ -1346,7 +1346,7 @@ def test_metrics():
 
     # default metric for non-default multiclass objective
     # and invalid binary metric is replaced with multiclass alternative
-    gbm = lgb.LGBMClassifier(objective="ovr", **params).fit(eval_metric="binary_error", **params_fit)
+    gbm = lgb.FalcataClassifier(objective="ovr", **params).fit(eval_metric="binary_error", **params_fit)
     assert gbm.objective_ == "ovr"
     assert len(gbm.evals_result_["training"]) == 2
     assert "multi_logloss" in gbm.evals_result_["training"]
@@ -1356,25 +1356,25 @@ def test_metrics():
     params_fit = {"X": X, "y": y, "eval_set": (X, y)}
 
     # default metric and invalid multiclass metric is replaced with binary alternative
-    gbm = lgb.LGBMClassifier(**params).fit(eval_metric="multi_error", **params_fit)
+    gbm = lgb.FalcataClassifier(**params).fit(eval_metric="multi_error", **params_fit)
     assert len(gbm.evals_result_["training"]) == 2
     assert "binary_logloss" in gbm.evals_result_["training"]
     assert "binary_error" in gbm.evals_result_["training"]
 
     # invalid multiclass metric is replaced with binary alternative for custom objective
-    gbm = lgb.LGBMClassifier(objective=custom_dummy_obj, **params).fit(eval_metric="multi_logloss", **params_fit)
+    gbm = lgb.FalcataClassifier(objective=custom_dummy_obj, **params).fit(eval_metric="multi_logloss", **params_fit)
     assert len(gbm.evals_result_["training"]) == 1
     assert "binary_logloss" in gbm.evals_result_["training"]
 
     # the evaluation metric changes to multiclass metric even num classes is 2 for multiclass objective
-    gbm = lgb.LGBMClassifier(objective="multiclass", num_classes=2, **params).fit(
+    gbm = lgb.FalcataClassifier(objective="multiclass", num_classes=2, **params).fit(
         eval_metric="binary_logloss", **params_fit
     )
     assert len(gbm._evals_result["training"]) == 1
     assert "multi_logloss" in gbm.evals_result_["training"]
 
     # the evaluation metric changes to multiclass metric even num classes is 2 for ovr objective
-    gbm = lgb.LGBMClassifier(objective="ovr", num_classes=2, **params).fit(eval_metric="binary_error", **params_fit)
+    gbm = lgb.FalcataClassifier(objective="ovr", num_classes=2, **params).fit(eval_metric="binary_error", **params_fit)
     assert gbm.objective_ == "ovr"
     assert len(gbm.evals_result_["training"]) == 2
     assert "multi_logloss" in gbm.evals_result_["training"]
@@ -1388,14 +1388,14 @@ def test_multiple_eval_metrics():
     params_fit = {"X": X, "y": y, "eval_set": (X, y)}
 
     # Verify that can receive a list of metrics, only callable
-    gbm = lgb.LGBMClassifier(**params).fit(eval_metric=[constant_metric, decreasing_metric], **params_fit)
+    gbm = lgb.FalcataClassifier(**params).fit(eval_metric=[constant_metric, decreasing_metric], **params_fit)
     assert len(gbm.evals_result_["training"]) == 3
     assert "error" in gbm.evals_result_["training"]
     assert "decreasing_metric" in gbm.evals_result_["training"]
     assert "binary_logloss" in gbm.evals_result_["training"]
 
     # Verify that can receive a list of custom and built-in metrics
-    gbm = lgb.LGBMClassifier(**params).fit(eval_metric=[constant_metric, decreasing_metric, "fair"], **params_fit)
+    gbm = lgb.FalcataClassifier(**params).fit(eval_metric=[constant_metric, decreasing_metric, "fair"], **params_fit)
     assert len(gbm.evals_result_["training"]) == 4
     assert "error" in gbm.evals_result_["training"]
     assert "decreasing_metric" in gbm.evals_result_["training"]
@@ -1403,17 +1403,17 @@ def test_multiple_eval_metrics():
     assert "fair" in gbm.evals_result_["training"]
 
     # Verify that works as expected when eval_metric is empty
-    gbm = lgb.LGBMClassifier(**params).fit(eval_metric=[], **params_fit)
+    gbm = lgb.FalcataClassifier(**params).fit(eval_metric=[], **params_fit)
     assert len(gbm.evals_result_["training"]) == 1
     assert "binary_logloss" in gbm.evals_result_["training"]
 
     # Verify that can receive a list of metrics, only built-in
-    gbm = lgb.LGBMClassifier(**params).fit(eval_metric=["fair", "error"], **params_fit)
+    gbm = lgb.FalcataClassifier(**params).fit(eval_metric=["fair", "error"], **params_fit)
     assert len(gbm.evals_result_["training"]) == 3
     assert "binary_logloss" in gbm.evals_result_["training"]
 
     # Verify that eval_metric is robust to receiving a list with None
-    gbm = lgb.LGBMClassifier(**params).fit(eval_metric=["fair", "error", None], **params_fit)
+    gbm = lgb.FalcataClassifier(**params).fit(eval_metric=["fair", "error", None], **params_fit)
     assert len(gbm.evals_result_["training"]) == 3
     assert "binary_logloss" in gbm.evals_result_["training"]
 
@@ -1426,7 +1426,7 @@ def test_nan_handle(rng):
     weight = np.zeros(nrows)
     params = {"n_estimators": 20, "verbose": -1}
     params_fit = {"X": X, "y": y, "sample_weight": weight, "eval_set": (X, y), "callbacks": [lgb.early_stopping(5)]}
-    gbm = lgb.LGBMRegressor(**params).fit(**params_fit)
+    gbm = lgb.FalcataRegressor(**params).fit(**params_fit)
     np.testing.assert_allclose(gbm.evals_result_["training"]["l2"], np.nan)
 
 
@@ -1434,7 +1434,7 @@ def test_nan_handle(rng):
 def test_first_metric_only():
     def fit_and_check(eval_set_names, metric_names, assumed_iteration, first_metric_only):
         params["first_metric_only"] = first_metric_only
-        gbm = lgb.LGBMRegressor(**params).fit(**params_fit)
+        gbm = lgb.FalcataRegressor(**params).fit(**params_fit)
         assert len(gbm.evals_result_) == len(eval_set_names)
         for eval_set_name in eval_set_names:
             assert eval_set_name in gbm.evals_result_
@@ -1539,7 +1539,7 @@ def test_class_weight():
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     y_train_str = y_train.astype("str")
     y_test_str = y_test.astype("str")
-    gbm = lgb.LGBMClassifier(n_estimators=10, class_weight="balanced", verbose=-1)
+    gbm = lgb.FalcataClassifier(n_estimators=10, class_weight="balanced", verbose=-1)
     gbm.fit(
         X_train,
         y_train,
@@ -1554,7 +1554,7 @@ def test_class_weight():
                 gbm.evals_result_[eval_set1][metric],
                 gbm.evals_result_[eval_set2][metric],
             )
-    gbm_str = lgb.LGBMClassifier(n_estimators=10, class_weight="balanced", verbose=-1)
+    gbm_str = lgb.FalcataClassifier(n_estimators=10, class_weight="balanced", verbose=-1)
     gbm_str.fit(
         X_train,
         y_train_str,
@@ -1583,8 +1583,8 @@ def test_class_weight():
 def test_continue_training_with_model():
     X, y = load_digits(n_class=3, return_X_y=True)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
-    init_gbm = lgb.LGBMClassifier(n_estimators=5).fit(X_train, y_train, eval_set=(X_test, y_test))
-    gbm = lgb.LGBMClassifier(n_estimators=5).fit(X_train, y_train, eval_set=(X_test, y_test), init_model=init_gbm)
+    init_gbm = lgb.FalcataClassifier(n_estimators=5).fit(X_train, y_train, eval_set=(X_test, y_test))
+    gbm = lgb.FalcataClassifier(n_estimators=5).fit(X_train, y_train, eval_set=(X_test, y_test), init_model=init_gbm)
     assert len(init_gbm.evals_result_["valid_0"]["multi_logloss"]) == len(gbm.evals_result_["valid_0"]["multi_logloss"])
     assert len(init_gbm.evals_result_["valid_0"]["multi_logloss"]) == 5
     assert gbm.evals_result_["valid_0"]["multi_logloss"][-1] < init_gbm.evals_result_["valid_0"]["multi_logloss"][-1]
@@ -1593,7 +1593,7 @@ def test_continue_training_with_model():
 def test_booster_does_not_hold_datasets():
     """fit() should clear the Dataset objects stored on the Booster"""
     data = load_iris(return_X_y=False)
-    clf = lgb.LGBMClassifier(n_estimators=2, max_depth=2)
+    clf = lgb.FalcataClassifier(n_estimators=2, max_depth=2)
     clf.fit(data.data, data.target)
     assert not hasattr(clf.booster_, "train_set")
     assert not hasattr(clf.booster_, "valid_sets")
@@ -1603,7 +1603,7 @@ def test_actual_number_of_trees():
     X = [[1, 2, 3], [1, 2, 3]]
     y = [1.0, 1.0]
     n_estimators = 5
-    gbm = lgb.LGBMRegressor(n_estimators=n_estimators).fit(X, y)
+    gbm = lgb.FalcataRegressor(n_estimators=n_estimators).fit(X, y)
     assert gbm.n_estimators == n_estimators
     assert gbm.n_estimators_ == 1
     assert gbm.n_iter_ == 1
@@ -1612,14 +1612,14 @@ def test_actual_number_of_trees():
 
 def test_check_is_fitted():
     X, y = load_digits(n_class=2, return_X_y=True)
-    est = lgb.LGBMModel(n_estimators=5, objective="binary")
-    clf = lgb.LGBMClassifier(n_estimators=5)
-    reg = lgb.LGBMRegressor(n_estimators=5)
-    rnk = lgb.LGBMRanker(n_estimators=5)
+    est = lgb.FalcataModel(n_estimators=5, objective="binary")
+    clf = lgb.FalcataClassifier(n_estimators=5)
+    reg = lgb.FalcataRegressor(n_estimators=5)
+    rnk = lgb.FalcataRanker(n_estimators=5)
     models = (est, clf, reg, rnk)
     for model in models:
         err_msg = f"This {type(model).__name__} instance is not fitted yet. Call 'fit' with appropriate arguments before using this estimator."
-        with pytest.raises(lgb.compat.LGBMNotFittedError, match=err_msg):
+        with pytest.raises(lgb.compat.FalcataNotFittedError, match=err_msg):
             check_is_fitted(model)
     est.fit(X, y)
     clf.fit(X, y)
@@ -1634,9 +1634,9 @@ def test_check_is_fitted():
 def test_max_depth_warning_is_never_raised(capsys, estimator_class, max_depth):
     X, y = make_blobs(n_samples=1_000, n_features=1, centers=2)
     params = {"n_estimators": 1, "max_depth": max_depth, "verbose": 0}
-    if estimator_class is lgb.LGBMModel:
+    if estimator_class is lgb.FalcataModel:
         estimator_class(**{**params, "objective": "binary"}).fit(X, y)
-    elif estimator_class is lgb.LGBMRanker:
+    elif estimator_class is lgb.FalcataRanker:
         estimator_class(**params).fit(X, y, group=np.ones(X.shape[0]))
     else:
         estimator_class(**params).fit(X, y)
@@ -1650,9 +1650,9 @@ def test_verbosity_is_respected_when_using_custom_objective(capsys):
         "nonsense": 123,
         "num_leaves": 3,
     }
-    lgb.LGBMRegressor(**params, verbosity=-1, n_estimators=1).fit(X, y)
+    lgb.FalcataRegressor(**params, verbosity=-1, n_estimators=1).fit(X, y)
     assert capsys.readouterr().out == ""
-    lgb.LGBMRegressor(**params, verbosity=0, n_estimators=1).fit(X, y)
+    lgb.FalcataRegressor(**params, verbosity=0, n_estimators=1).fit(X, y)
     assert "[Falcata] [Warning] Unknown parameter: nonsense" in capsys.readouterr().out
 
 
@@ -1664,45 +1664,45 @@ def test_fit_only_raises_num_rounds_warning_when_expected(capsys):
     }
 
     # no warning: no aliases, all defaults
-    reg = lgb.LGBMRegressor(**base_kwargs).fit(X, y)
+    reg = lgb.FalcataRegressor(**base_kwargs).fit(X, y)
     assert reg.n_estimators_ == 100
     assert_silent(capsys)
 
     # no warning: no aliases, just n_estimators
-    reg = lgb.LGBMRegressor(**base_kwargs, n_estimators=2).fit(X, y)
+    reg = lgb.FalcataRegressor(**base_kwargs, n_estimators=2).fit(X, y)
     assert reg.n_estimators_ == 2
     assert_silent(capsys)
 
     # no warning: 1 alias + n_estimators (both same value)
-    reg = lgb.LGBMRegressor(**base_kwargs, n_estimators=3, n_iter=3).fit(X, y)
+    reg = lgb.FalcataRegressor(**base_kwargs, n_estimators=3, n_iter=3).fit(X, y)
     assert reg.n_estimators_ == 3
     assert_silent(capsys)
 
     # no warning: 1 alias + n_estimators (different values... value from params should win)
-    reg = lgb.LGBMRegressor(**base_kwargs, n_estimators=3, n_iter=4).fit(X, y)
+    reg = lgb.FalcataRegressor(**base_kwargs, n_estimators=3, n_iter=4).fit(X, y)
     assert reg.n_estimators_ == 4
     assert_silent(capsys)
 
     # no warning: 2 aliases (both same value)
-    reg = lgb.LGBMRegressor(**base_kwargs, n_iter=3, num_iterations=3).fit(X, y)
+    reg = lgb.FalcataRegressor(**base_kwargs, n_iter=3, num_iterations=3).fit(X, y)
     assert reg.n_estimators_ == 3
     assert_silent(capsys)
 
     # no warning: 4 aliases (all same value)
-    reg = lgb.LGBMRegressor(**base_kwargs, n_iter=3, num_trees=3, nrounds=3, max_iter=3).fit(X, y)
+    reg = lgb.FalcataRegressor(**base_kwargs, n_iter=3, num_trees=3, nrounds=3, max_iter=3).fit(X, y)
     assert reg.n_estimators_ == 3
     assert_silent(capsys)
 
     # warning: 2 aliases (different values... "num_iterations" wins because it's the main param name)
     with pytest.warns(UserWarning, match="Falcata will perform up to 5 boosting rounds"):
-        reg = lgb.LGBMRegressor(**base_kwargs, num_iterations=5, n_iter=6).fit(X, y)
+        reg = lgb.FalcataRegressor(**base_kwargs, num_iterations=5, n_iter=6).fit(X, y)
     assert reg.n_estimators_ == 5
     # should not be any other logs (except the warning, intercepted by pytest)
     assert_silent(capsys)
 
     # warning: 2 aliases (different values... first one in the order from Config::parameter2aliases() wins)
     with pytest.warns(UserWarning, match="Falcata will perform up to 4 boosting rounds"):
-        reg = lgb.LGBMRegressor(**base_kwargs, n_iter=4, max_iter=5).fit(X, y)
+        reg = lgb.FalcataRegressor(**base_kwargs, n_iter=4, max_iter=5).fit(X, y)
     assert reg.n_estimators_ == 4
     # should not be any other logs (except the warning, intercepted by pytest)
     assert_silent(capsys)
@@ -1711,13 +1711,13 @@ def test_fit_only_raises_num_rounds_warning_when_expected(capsys):
 @pytest.mark.parametrize("estimator_class", estimator_classes)
 def test_cannot_access_feature_names_before_fitting(estimator_class):
     model = estimator_class()
-    with pytest.raises(lgb.compat.LGBMNotFittedError):  # noqa: PT011
+    with pytest.raises(lgb.compat.FalcataNotFittedError):  # noqa: PT011
         model.feature_name_
-    with pytest.raises(lgb.compat.LGBMNotFittedError):  # noqa: PT011
+    with pytest.raises(lgb.compat.FalcataNotFittedError):  # noqa: PT011
         model.feature_names_in_
-    with pytest.raises(lgb.compat.LGBMNotFittedError):  # noqa: PT011
+    with pytest.raises(lgb.compat.FalcataNotFittedError):  # noqa: PT011
         model.n_features_
-    with pytest.raises(lgb.compat.LGBMNotFittedError):  # noqa: PT011
+    with pytest.raises(lgb.compat.FalcataNotFittedError):  # noqa: PT011
         model.n_features_in_
 
 
@@ -1793,7 +1793,7 @@ def test_feature_names_in_and_predict_warning(
 
     # case 1: no 'feature_names' passed to fit() and "feature_name='auto'" should have identical behavior
     for fit_kwargs in ({}, {"feature_name": "auto"}):
-        model = lgb.LGBMClassifier(n_estimators=2, num_leaves=3).fit(X_fit, y, **fit_kwargs)
+        model = lgb.FalcataClassifier(n_estimators=2, num_leaves=3).fit(X_fit, y, **fit_kwargs)
 
         # n_features_in_: always set after fit
         assert model.n_features_in_ == n_features
@@ -1829,7 +1829,7 @@ def test_feature_names_in_and_predict_warning(
 
     # case 2: 'feature_names=custom_names' (different from column names) passed to fit()
     custom_names = ["custom_0", "custom_1"]
-    model = lgb.LGBMClassifier(n_estimators=2, num_leaves=3).fit(X_fit, y, feature_name=custom_names)
+    model = lgb.FalcataClassifier(n_estimators=2, num_leaves=3).fit(X_fit, y, feature_name=custom_names)
 
     # feature names from keyword arg should be used, not any from the input data
     np_assert_array_equal(model.feature_names_in_, np.array(custom_names), strict=True)
@@ -1873,7 +1873,7 @@ def _get_expected_failed_tests(estimator):
 
 
 @parametrize_with_checks(
-    [ExtendedLGBMClassifier(), ExtendedLGBMRegressor(), lgb.LGBMClassifier(), lgb.LGBMRegressor()],
+    [ExtendedLGBMClassifier(), ExtendedLGBMRegressor(), lgb.FalcataClassifier(), lgb.FalcataRegressor()],
     expected_failed_checks=_get_expected_failed_tests,
 )
 def test_sklearn_integration(estimator, check):
@@ -1885,7 +1885,7 @@ def test_sklearn_integration(estimator, check):
 def test_sklearn_tags_should_correctly_reflect_lightgbm_specific_values(estimator_class):
     est = estimator_class()
     more_tags = est._more_tags()
-    err_msg = "List of supported X_types has changed. Update LGBMModel.__sklearn_tags__() to match."
+    err_msg = "List of supported X_types has changed. Update FalcataModel.__sklearn_tags__() to match."
     assert more_tags["X_types"] == ["2darray", "sparse", "1dlabels"], err_msg
     # the try-except part of this should be removed once lightgbm's
     # minimum supported scikit-learn version is at least 1.6
@@ -1901,11 +1901,11 @@ def test_sklearn_tags_should_correctly_reflect_lightgbm_specific_values(estimato
         assert sklearn_tags.input_tags.allow_nan is True
         assert sklearn_tags.input_tags.sparse is True
         assert sklearn_tags.target_tags.one_d_labels is True
-        if estimator_class is lgb.LGBMClassifier:
+        if estimator_class is lgb.FalcataClassifier:
             assert sklearn_tags.estimator_type == "classifier"
             assert sklearn_tags.classifier_tags.multi_class is True
             assert sklearn_tags.classifier_tags.multi_label is False
-        elif estimator_class is lgb.LGBMRegressor:
+        elif estimator_class is lgb.FalcataRegressor:
             assert sklearn_tags.estimator_type == "regressor"
 
 
@@ -1937,11 +1937,11 @@ def test_multiclass_custom_objective(use_weight):
     X, y = make_blobs(n_samples=1_000, centers=centers, random_state=42)
     weight = np.full_like(y, 2) if use_weight else None
     params = {"n_estimators": 10, "num_leaves": 7}
-    builtin_obj_model = lgb.LGBMClassifier(**params)
+    builtin_obj_model = lgb.FalcataClassifier(**params)
     builtin_obj_model.fit(X, y, sample_weight=weight)
     builtin_obj_preds = builtin_obj_model.predict_proba(X)
 
-    custom_obj_model = lgb.LGBMClassifier(objective=sklearn_multiclass_custom_objective, **params)
+    custom_obj_model = lgb.FalcataClassifier(objective=sklearn_multiclass_custom_objective, **params)
     custom_obj_model.fit(X, y, sample_weight=weight)
     custom_obj_preds = softmax(custom_obj_model.predict(X, raw_score=True))
 
@@ -1967,7 +1967,7 @@ def test_multiclass_custom_eval(use_weight):
         weight_train = None
         weight_valid = None
     params = {"objective": "multiclass", "num_class": 3, "num_leaves": 7}
-    model = lgb.LGBMClassifier(**params)
+    model = lgb.FalcataClassifier(**params)
     model.fit(
         X_train,
         y_train,
@@ -1996,7 +1996,7 @@ def test_negative_n_jobs(tmp_path):
     X, y = load_breast_cancer(return_X_y=True)
     # Note: according to joblib's formula, a value of n_jobs=-2 means
     # "use all but one thread" (formula: n_cpus + 1 + n_jobs)
-    gbm = lgb.LGBMClassifier(n_estimators=2, verbose=-1, n_jobs=-2).fit(X, y)
+    gbm = lgb.FalcataClassifier(n_estimators=2, verbose=-1, n_jobs=-2).fit(X, y)
     gbm.booster_.save_model(tmp_path / "model.txt")
     with open(tmp_path / "model.txt", "r") as f:
         model_txt = f.read()
@@ -2006,7 +2006,7 @@ def test_negative_n_jobs(tmp_path):
 def test_default_n_jobs(tmp_path):
     n_cores = joblib.cpu_count(only_physical_cores=True)
     X, y = load_breast_cancer(return_X_y=True)
-    gbm = lgb.LGBMClassifier(n_estimators=2, verbose=-1, n_jobs=None).fit(X, y)
+    gbm = lgb.FalcataClassifier(n_estimators=2, verbose=-1, n_jobs=None).fit(X, y)
     gbm.booster_.save_model(tmp_path / "model.txt")
     with open(tmp_path / "model.txt", "r") as f:
         model_txt = f.read()
@@ -2044,12 +2044,12 @@ def test_predict_rejects_inputs_with_incorrect_number_of_features(predict_disabl
     model_factory = task_to_model_factory[task]
     fit_kwargs = {"X": X[:, :-1], "y": y}
     if task == "ranking":
-        estimator_name = "LGBMRanker"
+        estimator_name = "FalcataRanker"
         fit_kwargs.update({"group": g})
     elif task == "regression":
-        estimator_name = "LGBMRegressor"
+        estimator_name = "FalcataRegressor"
     else:
-        estimator_name = "LGBMClassifier"
+        estimator_name = "FalcataClassifier"
 
     # train on the first 3 features
     model = model_factory(n_estimators=5, num_leaves=7, verbose=-1).fit(**fit_kwargs)
@@ -2059,7 +2059,7 @@ def test_predict_rejects_inputs_with_incorrect_number_of_features(predict_disabl
     with pytest.raises(ValueError, match=err_msg):
         model.predict(X, predict_disable_shape_check=predict_disable_shape_check)
 
-    if estimator_name == "LGBMClassifier":
+    if estimator_name == "FalcataClassifier":
         with pytest.raises(ValueError, match=err_msg):
             model.predict_proba(X, predict_disable_shape_check=predict_disable_shape_check)
 
@@ -2068,7 +2068,7 @@ def test_predict_rejects_inputs_with_incorrect_number_of_features(predict_disabl
     with pytest.raises(ValueError, match=err_msg):
         model.predict(X[:, :-2], predict_disable_shape_check=predict_disable_shape_check)
 
-    if estimator_name == "LGBMClassifier":
+    if estimator_name == "FalcataClassifier":
         with pytest.raises(ValueError, match=err_msg):
             model.predict_proba(X[:, :-2], predict_disable_shape_check=predict_disable_shape_check)
 
@@ -2076,7 +2076,7 @@ def test_predict_rejects_inputs_with_incorrect_number_of_features(predict_disabl
     preds = model.predict(X[:, :-1], predict_disable_shape_check=predict_disable_shape_check)
     assert preds.shape == y.shape
 
-    if estimator_name == "LGBMClassifier":
+    if estimator_name == "FalcataClassifier":
         preds = model.predict_proba(X[:, :-1], predict_disable_shape_check=predict_disable_shape_check)
         assert preds.shape[0] == y.shape[0]
 
@@ -2261,7 +2261,7 @@ def test_classifier_fit_detects_classes_every_time():
     y_bin = (rng.random(size=nrows) <= 0.3).astype(np.float64)
     y_multi = rng.integers(4, size=nrows)
 
-    model = lgb.LGBMClassifier(verbose=-1)
+    model = lgb.FalcataClassifier(verbose=-1)
     for _ in range(2):
         model.fit(X, y_multi)
         assert model.objective_ == "multiclass"
@@ -2273,9 +2273,9 @@ def test_eval_set_deprecation():
     """Test use of eval_set raises deprecation warning."""
     X, y = make_synthetic_regression(n_samples=10)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=42)
-    gbm = lgb.LGBMRegressor()
+    gbm = lgb.FalcataRegressor()
     msg = "The argument 'eval_set' is deprecated.*"
-    with pytest.warns(LGBMDeprecationWarning, match=msg):
+    with pytest.warns(FalcataDeprecationWarning, match=msg):
         gbm.fit(X_train, y_train, eval_set=[(X_test, y_test)])
 
 
@@ -2283,7 +2283,7 @@ def test_eval_set_raises():
     """Test that eval_set and eval_X raise errors where appropriate."""
     X, y = make_synthetic_regression(n_samples=10)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=42)
-    gbm = lgb.LGBMRegressor()
+    gbm = lgb.FalcataRegressor()
 
     msg = "Specify either 'eval_set' or 'eval_X'.*"
     with pytest.raises(ValueError, match=msg):
@@ -2307,10 +2307,10 @@ def test_eval_set_raises():
 
 
 def test_ranker_eval_set_raises():
-    """Test that LGBMRanker raises expected errors from validating eval_group."""
+    """Test that FalcataRanker raises expected errors from validating eval_group."""
     X, y, g = _create_data(task="ranking", n_samples=1_000)
     X_test, y_test, g_test = _create_data(task="ranking", n_samples=100)
-    gbm = lgb.LGBMRanker()
+    gbm = lgb.FalcataRanker()
 
     msg = "eval_group cannot be None if any of eval_set, eval_X, or eval_y are provided"
     with pytest.raises(ValueError, match=msg):
@@ -2340,10 +2340,10 @@ def test_eval_X_eval_y_eval_set_equivalence():
         "seed": 708,
     }
     cbs = [lgb.early_stopping(2)]
-    gbm1 = lgb.LGBMRegressor(**params)
-    with pytest.warns(LGBMDeprecationWarning, match="The argument 'eval_set' is deprecated.*"):
+    gbm1 = lgb.FalcataRegressor(**params)
+    with pytest.warns(FalcataDeprecationWarning, match="The argument 'eval_set' is deprecated.*"):
         gbm1.fit(X_train, y_train, eval_set=[(X_test, y_test)], callbacks=cbs)
-    gbm2 = lgb.LGBMRegressor(**params)
+    gbm2 = lgb.FalcataRegressor(**params)
     gbm2.fit(X_train, y_train, eval_X=X_test, eval_y=y_test, callbacks=cbs)
     np.testing.assert_allclose(gbm1.predict(X), gbm2.predict(X))
     assert gbm1.evals_result_["valid_0"]["l2"][0] == pytest.approx(gbm2.evals_result_["valid_0"]["l2"][0])
@@ -2351,10 +2351,10 @@ def test_eval_X_eval_y_eval_set_equivalence():
     n = X_test.shape[0]
     X_test1, X_test2 = X_test[: n // 2], X_test[n // 2 :]
     y_test1, y_test2 = y_test[: n // 2], y_test[n // 2 :]
-    gbm1 = lgb.LGBMRegressor(**params)
-    with pytest.warns(LGBMDeprecationWarning, match="The argument 'eval_set' is deprecated.*"):
+    gbm1 = lgb.FalcataRegressor(**params)
+    with pytest.warns(FalcataDeprecationWarning, match="The argument 'eval_set' is deprecated.*"):
         gbm1.fit(X_train, y_train, eval_set=[(X_test1, y_test1), (X_test2, y_test2)], callbacks=cbs)
-    gbm2 = lgb.LGBMRegressor(**params)
+    gbm2 = lgb.FalcataRegressor(**params)
     gbm2.fit(X_train, y_train, eval_X=(X_test1, X_test2), eval_y=(y_test1, y_test2), callbacks=cbs)
     np.testing.assert_allclose(gbm1.predict(X), gbm2.predict(X))
     assert set(gbm2.evals_result_.keys()) == {"valid_0", "valid_1"}, (

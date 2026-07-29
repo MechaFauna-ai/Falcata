@@ -43,16 +43,16 @@ data_output = ["array", "scipy_csr_matrix", "dataframe", "dataframe-with-categor
 boosting_types = ["gbdt", "dart", "goss", "rf"]
 group_sizes = [5, 5, 5, 10, 10, 10, 20, 20, 20, 50, 50]
 task_to_dask_factory = {
-    "regression": lgb.DaskLGBMRegressor,
-    "binary-classification": lgb.DaskLGBMClassifier,
-    "multiclass-classification": lgb.DaskLGBMClassifier,
-    "ranking": lgb.DaskLGBMRanker,
+    "regression": lgb.DaskFalcataRegressor,
+    "binary-classification": lgb.DaskFalcataClassifier,
+    "multiclass-classification": lgb.DaskFalcataClassifier,
+    "ranking": lgb.DaskFalcataRanker,
 }
 task_to_local_factory = {
-    "regression": lgb.LGBMRegressor,
-    "binary-classification": lgb.LGBMClassifier,
-    "multiclass-classification": lgb.LGBMClassifier,
-    "ranking": lgb.LGBMRanker,
+    "regression": lgb.FalcataRegressor,
+    "binary-classification": lgb.FalcataClassifier,
+    "multiclass-classification": lgb.FalcataClassifier,
+    "ranking": lgb.FalcataRanker,
 }
 
 pytestmark = [
@@ -265,7 +265,7 @@ def test_classifier(output, task, boosting_type, tree_learner, cluster):
         elif boosting_type == "goss":
             params["top_rate"] = 0.5
 
-        dask_classifier = lgb.DaskLGBMClassifier(client=client, time_out=5, **params)
+        dask_classifier = lgb.DaskFalcataClassifier(client=client, time_out=5, **params)
         dask_classifier = dask_classifier.fit(dX, dy, sample_weight=dw)
         p1 = dask_classifier.predict(dX)
         p1_raw = dask_classifier.predict(dX, raw_score=True).compute()
@@ -279,7 +279,7 @@ def test_classifier(output, task, boosting_type, tree_learner, cluster):
         s1 = _accuracy_score(dy, p1)
         p1 = p1.compute()
 
-        local_classifier = lgb.LGBMClassifier(**params)
+        local_classifier = lgb.FalcataClassifier(**params)
         local_classifier.fit(X, y, sample_weight=w)
         p2 = local_classifier.predict(X)
         p2_proba = local_classifier.predict_proba(X)
@@ -331,11 +331,11 @@ def test_classifier_pred_contrib(output, task, cluster):
 
         params = {"n_estimators": 10, "num_leaves": 10}
 
-        dask_classifier = lgb.DaskLGBMClassifier(client=client, time_out=5, tree_learner="data", **params)
+        dask_classifier = lgb.DaskFalcataClassifier(client=client, time_out=5, tree_learner="data", **params)
         dask_classifier = dask_classifier.fit(dX, dy, sample_weight=dw)
         preds_with_contrib = dask_classifier.predict(dX, pred_contrib=True)
 
-        local_classifier = lgb.LGBMClassifier(**params)
+        local_classifier = lgb.FalcataClassifier(**params)
         local_classifier.fit(X, y, sample_weight=w)
         local_preds_with_contrib = local_classifier.predict(X, pred_contrib=True)
 
@@ -432,13 +432,13 @@ def test_classifier_custom_objective(output, task, cluster):
         elif task == "multiclass-classification":
             params.update({"objective": sklearn_multiclass_custom_objective, "num_classes": 3})
 
-        dask_classifier = lgb.DaskLGBMClassifier(client=client, time_out=5, tree_learner="data", **params)
+        dask_classifier = lgb.DaskFalcataClassifier(client=client, time_out=5, tree_learner="data", **params)
         dask_classifier = dask_classifier.fit(dX, dy, sample_weight=dw)
         dask_classifier_local = dask_classifier.to_local()
         p1_raw = dask_classifier.predict(dX, raw_score=True).compute()
         p1_raw_local = dask_classifier_local.predict(X, raw_score=True)
 
-        local_classifier = lgb.LGBMClassifier(**params)
+        local_classifier = lgb.FalcataClassifier(**params)
         local_classifier.fit(X, y, sample_weight=w)
         p2_raw = local_classifier.predict(X, raw_score=True)
 
@@ -487,7 +487,7 @@ def test_training_does_not_fail_on_port_conflicts(cluster):
         workers_hostname = _get_workers_hostname(cluster)
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind((workers_hostname, lightgbm_default_port))
-            dask_classifier = lgb.DaskLGBMClassifier(client=client, time_out=5, n_estimators=5, num_leaves=5)
+            dask_classifier = lgb.DaskFalcataClassifier(client=client, time_out=5, n_estimators=5, num_leaves=5)
             for _ in range(5):
                 dask_classifier.fit(
                     X=dX,
@@ -518,7 +518,7 @@ def test_regressor(output, boosting_type, tree_learner, cluster):
                 }
             )
 
-        dask_regressor = lgb.DaskLGBMRegressor(client=client, time_out=5, tree=tree_learner, **params)
+        dask_regressor = lgb.DaskFalcataRegressor(client=client, time_out=5, tree=tree_learner, **params)
         dask_regressor = dask_regressor.fit(dX, dy, sample_weight=dw)
         p1 = dask_regressor.predict(dX)
         p1_pred_leaf = dask_regressor.predict(dX, pred_leaf=True)
@@ -530,7 +530,7 @@ def test_regressor(output, boosting_type, tree_learner, cluster):
         p1_local = dask_regressor.to_local().predict(X)
         s1_local = dask_regressor.to_local().score(X, y)
 
-        local_regressor = lgb.LGBMRegressor(**params)
+        local_regressor = lgb.FalcataRegressor(**params)
         local_regressor.fit(X, y, sample_weight=w)
         s2 = local_regressor.score(X, y)
         p2 = local_regressor.predict(X)
@@ -574,11 +574,11 @@ def test_regressor_pred_contrib(output, cluster):
 
         params = {"n_estimators": 10, "num_leaves": 10}
 
-        dask_regressor = lgb.DaskLGBMRegressor(client=client, time_out=5, tree_learner="data", **params)
+        dask_regressor = lgb.DaskFalcataRegressor(client=client, time_out=5, tree_learner="data", **params)
         dask_regressor = dask_regressor.fit(dX, dy, sample_weight=dw)
         preds_with_contrib = dask_regressor.predict(dX, pred_contrib=True).compute()
 
-        local_regressor = lgb.LGBMRegressor(**params)
+        local_regressor = lgb.FalcataRegressor(**params)
         local_regressor.fit(X, y, sample_weight=w)
         local_preds_with_contrib = local_regressor.predict(X, pred_contrib=True)
 
@@ -609,12 +609,12 @@ def test_regressor_quantile(output, alpha, cluster):
 
         params = {"objective": "quantile", "alpha": alpha, "random_state": 42, "n_estimators": 10, "num_leaves": 10}
 
-        dask_regressor = lgb.DaskLGBMRegressor(client=client, tree_learner_type="data_parallel", **params)
+        dask_regressor = lgb.DaskFalcataRegressor(client=client, tree_learner_type="data_parallel", **params)
         dask_regressor = dask_regressor.fit(dX, dy, sample_weight=dw)
         p1 = dask_regressor.predict(dX).compute()
         q1 = np.count_nonzero(y < p1) / y.shape[0]
 
-        local_regressor = lgb.LGBMRegressor(**params)
+        local_regressor = lgb.FalcataRegressor(**params)
         local_regressor.fit(X, y, sample_weight=w)
         p2 = local_regressor.predict(X)
         q2 = np.count_nonzero(y < p2) / y.shape[0]
@@ -640,7 +640,7 @@ def test_regressor_custom_objective(output, cluster):
 
         params = {"n_estimators": 10, "num_leaves": 10, "objective": _objective_least_squares}
 
-        dask_regressor = lgb.DaskLGBMRegressor(client=client, time_out=5, tree_learner="data", **params)
+        dask_regressor = lgb.DaskFalcataRegressor(client=client, time_out=5, tree_learner="data", **params)
         dask_regressor = dask_regressor.fit(dX, dy, sample_weight=dw)
         dask_regressor_local = dask_regressor.to_local()
         p1 = dask_regressor.predict(dX)
@@ -649,7 +649,7 @@ def test_regressor_custom_objective(output, cluster):
         s1 = _r2_score(dy, p1)
         p1 = p1.compute()
 
-        local_regressor = lgb.LGBMRegressor(**params)
+        local_regressor = lgb.FalcataRegressor(**params)
         local_regressor.fit(X, y, sample_weight=w)
         p2 = local_regressor.predict(X)
         s2 = local_regressor.score(X, y)
@@ -717,7 +717,7 @@ def test_ranker(output, group, boosting_type, tree_learner, cluster):
                 }
             )
 
-        dask_ranker = lgb.DaskLGBMRanker(client=client, time_out=5, tree_learner_type=tree_learner, **params)
+        dask_ranker = lgb.DaskFalcataRanker(client=client, time_out=5, tree_learner_type=tree_learner, **params)
         dask_ranker = dask_ranker.fit(dX, dy, sample_weight=dw, group=dg)
         rnkvec_dask = dask_ranker.predict(dX)
         rnkvec_dask = rnkvec_dask.compute()
@@ -729,7 +729,7 @@ def test_ranker(output, group, boosting_type, tree_learner, cluster):
         ).compute()
         rnkvec_dask_local = dask_ranker.to_local().predict(X)
 
-        local_ranker = lgb.LGBMRanker(**params)
+        local_ranker = lgb.FalcataRanker(**params)
         local_ranker.fit(X, y, sample_weight=w, group=g)
         rnkvec_local = local_ranker.predict(X)
 
@@ -792,13 +792,13 @@ def test_ranker_custom_objective(output, cluster):
             "objective": _objective_least_squares,
         }
 
-        dask_ranker = lgb.DaskLGBMRanker(client=client, time_out=5, tree_learner_type="data", **params)
+        dask_ranker = lgb.DaskFalcataRanker(client=client, time_out=5, tree_learner_type="data", **params)
         dask_ranker = dask_ranker.fit(dX, dy, sample_weight=dw, group=dg)
         rnkvec_dask = dask_ranker.predict(dX).compute()
         dask_ranker_local = dask_ranker.to_local()
         rnkvec_dask_local = dask_ranker_local.predict(X)
 
-        local_ranker = lgb.LGBMRanker(**params)
+        local_ranker = lgb.FalcataRanker(**params)
         local_ranker.fit(X, y, sample_weight=w, group=g)
         rnkvec_local = local_ranker.predict(X)
 
@@ -819,7 +819,7 @@ def test_ranker_custom_objective(output, cluster):
 @pytest.mark.parametrize("eval_names_prefix", ["specified", None])
 def test_eval_set_no_early_stopping(task, output, eval_sizes, eval_names_prefix, cluster):
     if task == "ranking" and output == "scipy_csr_matrix":
-        pytest.skip("LGBMRanker is not currently tested on sparse matrices")
+        pytest.skip("FalcataRanker is not currently tested on sparse matrices")
 
     with Client(cluster) as client:
         # Use larger trainset to prevent premature stopping due to zero loss, causing num_trees() < n_estimators.
@@ -1012,7 +1012,7 @@ def test_training_works_if_client_not_provided_or_set_after_construction(task, c
         # should be able to use the class without specifying a client
         dask_model = model_factory(**params)
         assert dask_model.client is None
-        with pytest.raises(lgb.compat.LGBMNotFittedError, match="Cannot access property client_ before calling fit"):
+        with pytest.raises(lgb.compat.FalcataNotFittedError, match="Cannot access property client_ before calling fit"):
             dask_model.client_
 
         dask_model.fit(dX, dy, group=dg)
@@ -1041,7 +1041,7 @@ def test_training_works_if_client_not_provided_or_set_after_construction(task, c
         dask_model.set_params(client=client)
         assert dask_model.client == client
 
-        with pytest.raises(lgb.compat.LGBMNotFittedError, match="Cannot access property client_ before calling fit"):
+        with pytest.raises(lgb.compat.FalcataNotFittedError, match="Cannot access property client_ before calling fit"):
             dask_model.client_
 
         dask_model.fit(dX, dy, group=dg)
@@ -1096,7 +1096,7 @@ def test_model_and_local_version_are_picklable_whether_or_not_client_set_explici
                 assert dask_model.client is None
 
             with pytest.raises(
-                lgb.compat.LGBMNotFittedError, match="Cannot access property client_ before calling fit"
+                lgb.compat.FalcataNotFittedError, match="Cannot access property client_ before calling fit"
             ):
                 dask_model.client_
 
@@ -1119,7 +1119,7 @@ def test_model_and_local_version_are_picklable_whether_or_not_client_set_explici
                 assert dask_model.client is None
 
             with pytest.raises(
-                lgb.compat.LGBMNotFittedError, match="Cannot access property client_ before calling fit"
+                lgb.compat.FalcataNotFittedError, match="Cannot access property client_ before calling fit"
             ):
                 dask_model.client_
 
@@ -1202,7 +1202,7 @@ def test_warns_and_continues_on_unrecognized_tree_learner(cluster):
     with Client(cluster) as client:
         X = da.random.random((1e3, 10))
         y = da.random.random((1e3, 1))
-        dask_regressor = lgb.DaskLGBMRegressor(
+        dask_regressor = lgb.DaskFalcataRegressor(
             client=client, time_out=5, tree_learner="some-nonsense-value", n_estimators=1, num_leaves=2
         )
         with pytest.warns(UserWarning, match="Parameter tree_learner set to some-nonsense-value"):
@@ -1231,7 +1231,7 @@ def test_error_on_feature_parallel_tree_learner(cluster):
         X, y = client.persist([X, y])
         _ = wait([X, y])
         client.rebalance()
-        dask_regressor = lgb.DaskLGBMRegressor(
+        dask_regressor = lgb.DaskFalcataRegressor(
             client=client, time_out=5, tree_learner="feature_parallel", n_estimators=1, num_leaves=2
         )
         with pytest.raises(lgb.basic.FalcataError, match="Do not support feature parallel in c api"):
@@ -1247,7 +1247,7 @@ def test_errors(cluster):
         df = dd.demo.make_timeseries()
         df = df.map_partitions(f, meta=df._meta)
         with pytest.raises(Exception) as info:  # noqa: PT011, PT012 # error message needs to be coerced to a string
-            lgb.dask._train(client=client, data=df, label=df.x, params={}, model_factory=lgb.LGBMClassifier)
+            lgb.dask._train(client=client, data=df, label=df.x, params={}, model_factory=lgb.FalcataClassifier)
             assert "foo" in str(info.value)
 
 
@@ -1255,7 +1255,7 @@ def test_errors(cluster):
 @pytest.mark.parametrize("output", data_output)
 def test_training_succeeds_even_if_some_workers_do_not_have_any_data(task, output, cluster_three_workers):
     if task == "ranking" and output == "scipy_csr_matrix":
-        pytest.skip("LGBMRanker is not currently tested on sparse matrices")
+        pytest.skip("FalcataRanker is not currently tested on sparse matrices")
 
     with Client(cluster_three_workers) as client:
         _, y, _, _, dX, dy, dw, dg = _create_data(
@@ -1396,9 +1396,9 @@ def test_machines_should_be_used_if_provided(task, cluster):
 @pytest.mark.parametrize(
     ("dask_est", "sklearn_est"),
     [
-        (lgb.DaskLGBMClassifier, lgb.LGBMClassifier),
-        (lgb.DaskLGBMRegressor, lgb.LGBMRegressor),
-        (lgb.DaskLGBMRanker, lgb.LGBMRanker),
+        (lgb.DaskFalcataClassifier, lgb.FalcataClassifier),
+        (lgb.DaskFalcataRegressor, lgb.FalcataRegressor),
+        (lgb.DaskFalcataRanker, lgb.FalcataRanker),
     ],
 )
 def test_dask_classes_and_sklearn_equivalents_have_identical_constructors_except_client_arg(dask_est, sklearn_est):
@@ -1419,8 +1419,8 @@ def test_dask_classes_and_sklearn_equivalents_have_identical_constructors_except
 
     # default values for all constructor arguments should be identical
     #
-    # NOTE: if LGBMClassifier / LGBMRanker / LGBMRegressor ever override
-    #       any of LGBMModel's constructor arguments, this will need to be updated
+    # NOTE: if FalcataClassifier / FalcataRanker / FalcataRegressor ever override
+    #       any of FalcataModel's constructor arguments, this will need to be updated
     assert dask_spec.kwonlydefaults == {**sklearn_spec.kwonlydefaults, "client": None}
 
     # only positional argument should be 'self'
@@ -1435,13 +1435,13 @@ def test_dask_classes_and_sklearn_equivalents_have_identical_constructors_except
 @pytest.mark.parametrize(
     "methods",
     [
-        (lgb.DaskLGBMClassifier.fit, lgb.LGBMClassifier.fit),
-        (lgb.DaskLGBMClassifier.predict, lgb.LGBMClassifier.predict),
-        (lgb.DaskLGBMClassifier.predict_proba, lgb.LGBMClassifier.predict_proba),
-        (lgb.DaskLGBMRegressor.fit, lgb.LGBMRegressor.fit),
-        (lgb.DaskLGBMRegressor.predict, lgb.LGBMRegressor.predict),
-        (lgb.DaskLGBMRanker.fit, lgb.LGBMRanker.fit),
-        (lgb.DaskLGBMRanker.predict, lgb.LGBMRanker.predict),
+        (lgb.DaskFalcataClassifier.fit, lgb.FalcataClassifier.fit),
+        (lgb.DaskFalcataClassifier.predict, lgb.FalcataClassifier.predict),
+        (lgb.DaskFalcataClassifier.predict_proba, lgb.FalcataClassifier.predict_proba),
+        (lgb.DaskFalcataRegressor.fit, lgb.FalcataRegressor.fit),
+        (lgb.DaskFalcataRegressor.predict, lgb.FalcataRegressor.predict),
+        (lgb.DaskFalcataRanker.fit, lgb.FalcataRanker.fit),
+        (lgb.DaskFalcataRanker.predict, lgb.FalcataRanker.predict),
     ],
 )
 def test_dask_methods_and_sklearn_equivalents_have_similar_signatures(methods):
@@ -1482,7 +1482,7 @@ def test_training_succeeds_when_data_is_dataframe_and_label_is_column_array(task
 @pytest.mark.parametrize("output", data_output)
 def test_init_score(task, output, cluster, rng):
     if task == "ranking" and output == "scipy_csr_matrix":
-        pytest.skip("LGBMRanker is not currently tested on sparse matrices")
+        pytest.skip("FalcataRanker is not currently tested on sparse matrices")
 
     with Client(cluster) as client:
         _, _, _, _, dX, dy, dw, dg = _create_data(objective=task, output=output, group=None)
@@ -1529,7 +1529,7 @@ def sklearn_checks_to_run():
 
 
 def _tested_estimators():
-    for Estimator in [lgb.DaskLGBMClassifier, lgb.DaskLGBMRegressor]:
+    for Estimator in [lgb.DaskFalcataClassifier, lgb.DaskFalcataRegressor]:
         yield Estimator()
 
 
@@ -1554,7 +1554,7 @@ def test_parameters_default_constructible(estimator):
 @pytest.mark.parametrize("output", data_output)
 def test_predict_with_raw_score(task, output, cluster):
     if task == "ranking" and output == "scipy_csr_matrix":
-        pytest.skip("LGBMRanker is not currently tested on sparse matrices")
+        pytest.skip("FalcataRanker is not currently tested on sparse matrices")
 
     with Client(cluster) as client:
         _, _, _, _, dX, dy, _, dg = _create_data(objective=task, output=output, group=None)
@@ -1583,7 +1583,7 @@ def test_predict_with_raw_score(task, output, cluster):
 @pytest.mark.parametrize("task", tasks)
 def test_predict_returns_expected_dtypes(task, output, cluster):
     if task == "ranking" and output == "scipy_csr_matrix":
-        pytest.skip("LGBMRanker is not currently tested on sparse matrices")
+        pytest.skip("FalcataRanker is not currently tested on sparse matrices")
 
     with Client(cluster) as client:
         _, _, _, _, dX, dy, _, dg = _create_data(objective=task, output=output, group=None)
@@ -1654,7 +1654,7 @@ def test_predict_stump(output, use_init_score, cluster, rng):
         else:
             init_scores = dy.map_blocks(lambda x: rng.uniform(size=x.size))
 
-        model = lgb.DaskLGBMClassifier(client=client, **params)
+        model = lgb.DaskFalcataClassifier(client=client, **params)
         model.fit(dX, dy, init_score=init_scores)
         preds_1 = model.predict(dX, raw_score=True, num_iteration=1).compute()
         preds_all = model.predict(dX, raw_score=True).compute()
@@ -1688,13 +1688,13 @@ def test_distributed_quantized_training(tmp_path, cluster):
             "verbose": -1,
         }
 
-        quant_dask_classifier = lgb.DaskLGBMRegressor(client=client, time_out=5, **params)
+        quant_dask_classifier = lgb.DaskFalcataRegressor(client=client, time_out=5, **params)
         quant_dask_classifier = quant_dask_classifier.fit(dX, dy, sample_weight=dw)
         quant_p1 = quant_dask_classifier.predict(dX)
         quant_rmse = np.sqrt(np.mean((quant_p1.compute() - y) ** 2))
 
         params["use_quantized_grad"] = False
-        dask_classifier = lgb.DaskLGBMRegressor(client=client, time_out=5, **params)
+        dask_classifier = lgb.DaskFalcataRegressor(client=client, time_out=5, **params)
         dask_classifier = dask_classifier.fit(dX, dy, sample_weight=dw)
         p1 = dask_classifier.predict(dX)
         rmse = np.sqrt(np.mean((p1.compute() - y) ** 2))

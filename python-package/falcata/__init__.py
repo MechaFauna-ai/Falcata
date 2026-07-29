@@ -13,7 +13,7 @@ from .callback import EarlyStopException, early_stopping, log_evaluation, record
 from .engine import CVBooster, cv, train
 
 try:
-    from .sklearn import LGBMClassifier, LGBMModel, LGBMRanker, LGBMRegressor
+    from .sklearn import FalcataClassifier, FalcataModel, FalcataRanker, FalcataRegressor
 except ImportError:
     pass
 try:
@@ -21,7 +21,11 @@ try:
 except ImportError:
     pass
 try:
-    from .dask import DaskLGBMClassifier, DaskLGBMRanker, DaskLGBMRegressor
+    from .dask import DaskFalcataClassifier, DaskFalcataRanker, DaskFalcataRegressor
+
+    DaskLGBMRegressor = DaskFalcataRegressor
+    DaskLGBMClassifier = DaskFalcataClassifier
+    DaskLGBMRanker = DaskFalcataRanker
 except ImportError:
     pass
 
@@ -38,12 +42,19 @@ __all__ = [
     "register_logger",
     "train",
     "cv",
+    "FalcataModel",
     "LGBMModel",
+    "FalcataRegressor",
     "LGBMRegressor",
+    "FalcataClassifier",
     "LGBMClassifier",
+    "FalcataRanker",
     "LGBMRanker",
+    "DaskFalcataRegressor",
     "DaskLGBMRegressor",
+    "DaskFalcataClassifier",
     "DaskLGBMClassifier",
+    "DaskFalcataRanker",
     "DaskLGBMRanker",
     "log_evaluation",
     "record_evaluation",
@@ -56,3 +67,11 @@ __all__ = [
     "plot_tree",
     "create_tree_digraph",
 ]
+
+# Backwards-compatible aliases for the pre-rename class names. Falcata's
+# estimators are Falcata*; these keep code written against the LightGBM-era
+# spelling working. They are the same objects, not subclasses.
+LGBMModel = FalcataModel
+LGBMRegressor = FalcataRegressor
+LGBMClassifier = FalcataClassifier
+LGBMRanker = FalcataRanker

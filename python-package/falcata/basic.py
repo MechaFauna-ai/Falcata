@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 __all__ = [
     "Booster",
     "Dataset",
-    "LGBMDeprecationWarning",
+    "FalcataDeprecationWarning",
     "FalcataError",
     "LightGBMError",
     "register_logger",
@@ -67,24 +67,24 @@ _ctypes_float_array = Union[
     "ctypes.Array[ctypes._Pointer[ctypes.c_float]]",
     "ctypes.Array[ctypes._Pointer[ctypes.c_double]]",
 ]
-_LGBM_EvalFunctionResultType = Tuple[str, float, bool]
-_LGBM_BoosterBestScoreType = Dict[str, Dict[str, float]]
-_LGBM_BoosterEvalMethodResultType = Tuple[str, str, float, bool]
-_LGBM_BoosterEvalMethodResultWithStandardDeviationType = Tuple[str, str, float, bool, float]
-_LGBM_CategoricalFeatureConfiguration = Union[List[str], List[int], "Literal['auto']"]
-_LGBM_FeatureNameConfiguration = Union[List[str], "Literal['auto']"]
-_LGBM_GroupType = Union[
+_FALCATA_EvalFunctionResultType = Tuple[str, float, bool]
+_FALCATA_BoosterBestScoreType = Dict[str, Dict[str, float]]
+_FALCATA_BoosterEvalMethodResultType = Tuple[str, str, float, bool]
+_FALCATA_BoosterEvalMethodResultWithStandardDeviationType = Tuple[str, str, float, bool, float]
+_FALCATA_CategoricalFeatureConfiguration = Union[List[str], List[int], "Literal['auto']"]
+_FALCATA_FeatureNameConfiguration = Union[List[str], "Literal['auto']"]
+_FALCATA_GroupType = Union[
     List[float],
     List[int],
     np.ndarray,
     pd_Series,
     nwt.IntoSeries,
 ]
-_LGBM_PositionType = Union[
+_FALCATA_PositionType = Union[
     np.ndarray,
     pd_Series,
 ]
-_LGBM_InitScoreType = Union[
+_FALCATA_InitScoreType = Union[
     List[float],
     List[List[float]],
     np.ndarray,
@@ -93,7 +93,7 @@ _LGBM_InitScoreType = Union[
     nwt.IntoSeries,
     nwt.IntoDataFrame,
 ]
-_LGBM_TrainDataType = Union[
+_FALCATA_TrainDataType = Union[
     str,
     Path,
     np.ndarray,
@@ -104,7 +104,7 @@ _LGBM_TrainDataType = Union[
     List[np.ndarray],
     nwt.IntoDataFrame,
 ]
-_LGBM_LabelType = Union[
+_FALCATA_LabelType = Union[
     List[float],
     List[int],
     np.ndarray,
@@ -113,7 +113,7 @@ _LGBM_LabelType = Union[
     nwt.IntoSeries,
     nwt.IntoDataFrame,
 ]
-_LGBM_PredictDataType = Union[
+_FALCATA_PredictDataType = Union[
     str,
     Path,
     np.ndarray,
@@ -121,23 +121,23 @@ _LGBM_PredictDataType = Union[
     scipy.sparse.spmatrix,
     nwt.IntoDataFrame,
 ]
-_LGBM_PredictReturnType = Union[
+_FALCATA_PredictReturnType = Union[
     np.ndarray,
     scipy.sparse.spmatrix,
     List[scipy.sparse.spmatrix],
 ]
-_LGBM_PredictSparseReturnType = Union[
+_FALCATA_PredictSparseReturnType = Union[
     scipy.sparse.spmatrix,
     List[scipy.sparse.spmatrix],
 ]
-_LGBM_WeightType = Union[
+_FALCATA_WeightType = Union[
     List[float],
     List[int],
     np.ndarray,
     pd_Series,
     nwt.IntoSeries,
 ]
-_LGBM_SetFieldType = Union[
+_FALCATA_SetFieldType = Union[
     List[List[float]],
     List[List[int]],
     List[float],
@@ -513,7 +513,7 @@ class _TempFile:
 
 # DeprecationWarning is not shown by default, so let's create our own with higher level
 # ref: https://peps.python.org/pep-0565/#additional-use-case-for-futurewarning
-class LGBMDeprecationWarning(FutureWarning):
+class FalcataDeprecationWarning(FutureWarning):
     """Custom deprecation warning."""
 
     pass
@@ -782,8 +782,8 @@ def _pandas_to_numpy(
 
 def _data_from_pandas(
     data: pd_DataFrame,
-    feature_name: _LGBM_FeatureNameConfiguration,
-    categorical_feature: _LGBM_CategoricalFeatureConfiguration,
+    feature_name: _FALCATA_FeatureNameConfiguration,
+    categorical_feature: _FALCATA_CategoricalFeatureConfiguration,
     pandas_categorical: Optional[List[List]],
 ) -> Tuple[np.ndarray, List[str], Union[List[str], List[int]], List[List]]:
     if len(data.shape) != 2 or data.shape[0] < 1:
@@ -1069,7 +1069,7 @@ class _InnerPredictor:
 
     def predict(
         self,
-        data: _LGBM_PredictDataType,
+        data: _FALCATA_PredictDataType,
         start_iteration: int = 0,
         num_iteration: int = -1,
         raw_score: bool = False,
@@ -1077,7 +1077,7 @@ class _InnerPredictor:
         pred_contrib: bool = False,
         data_has_header: bool = False,
         validate_features: bool = False,
-    ) -> _LGBM_PredictReturnType:
+    ) -> _FALCATA_PredictReturnType:
         """Predict logic.
 
         Parameters
@@ -1347,7 +1347,7 @@ class _InnerPredictor:
         indptr_type: int,
         data_type: int,
         is_csr: bool,
-    ) -> _LGBM_PredictSparseReturnType:
+    ) -> _FALCATA_PredictSparseReturnType:
         # create numpy array from output arrays
         data_indices_len = out_shape[0]
         indptr_len = out_shape[1]
@@ -1455,7 +1455,7 @@ class _InnerPredictor:
         start_iteration: int,
         num_iteration: int,
         predict_type: int,
-    ) -> Tuple[_LGBM_PredictSparseReturnType, int]:
+    ) -> Tuple[_FALCATA_PredictSparseReturnType, int]:
         ptr_indptr, type_ptr_indptr, __ = _c_int_array(csr.indptr)
         ptr_data, type_ptr_data, _ = _c_float_array(csr.data)
         csr_indices = csr.indices.astype(np.int32, copy=False)
@@ -1513,7 +1513,7 @@ class _InnerPredictor:
         start_iteration: int,
         num_iteration: int,
         predict_type: int,
-    ) -> Tuple[_LGBM_PredictSparseReturnType, int]:
+    ) -> Tuple[_FALCATA_PredictSparseReturnType, int]:
         """Predict for a CSR data."""
         if predict_type == _C_API_PREDICT_CONTRIB:
             return self.__inner_predict_csr_sparse(
@@ -1566,7 +1566,7 @@ class _InnerPredictor:
         start_iteration: int,
         num_iteration: int,
         predict_type: int,
-    ) -> Tuple[_LGBM_PredictSparseReturnType, int]:
+    ) -> Tuple[_FALCATA_PredictSparseReturnType, int]:
         ptr_indptr, type_ptr_indptr, __ = _c_int_array(csc.indptr)
         ptr_data, type_ptr_data, _ = _c_float_array(csc.data)
         csc_indices = csc.indices.astype(np.int32, copy=False)
@@ -1624,7 +1624,7 @@ class _InnerPredictor:
         start_iteration: int,
         num_iteration: int,
         predict_type: int,
-    ) -> Tuple[_LGBM_PredictSparseReturnType, int]:
+    ) -> Tuple[_FALCATA_PredictSparseReturnType, int]:
         """Predict for a CSC data."""
         nrow = csc.shape[0]
         if nrow > _MAX_INT32:
@@ -1746,17 +1746,17 @@ class Dataset:
 
     def __init__(
         self,
-        data: _LGBM_TrainDataType,
-        label: Optional[_LGBM_LabelType] = None,
+        data: _FALCATA_TrainDataType,
+        label: Optional[_FALCATA_LabelType] = None,
         reference: Optional["Dataset"] = None,
-        weight: Optional[_LGBM_WeightType] = None,
-        group: Optional[_LGBM_GroupType] = None,
-        init_score: Optional[_LGBM_InitScoreType] = None,
-        feature_name: _LGBM_FeatureNameConfiguration = "auto",
-        categorical_feature: _LGBM_CategoricalFeatureConfiguration = "auto",
+        weight: Optional[_FALCATA_WeightType] = None,
+        group: Optional[_FALCATA_GroupType] = None,
+        init_score: Optional[_FALCATA_InitScoreType] = None,
+        feature_name: _FALCATA_FeatureNameConfiguration = "auto",
+        categorical_feature: _FALCATA_CategoricalFeatureConfiguration = "auto",
         params: Optional[Dict[str, Any]] = None,
         free_raw_data: bool = True,
-        position: Optional[_LGBM_PositionType] = None,
+        position: Optional[_FALCATA_PositionType] = None,
     ):
         """Initialize Dataset.
 
@@ -1807,8 +1807,8 @@ class Dataset:
         self.group = group
         self.position = position
         self.init_score = init_score
-        self.feature_name: _LGBM_FeatureNameConfiguration = feature_name
-        self.categorical_feature: _LGBM_CategoricalFeatureConfiguration = categorical_feature
+        self.feature_name: _FALCATA_FeatureNameConfiguration = feature_name
+        self.categorical_feature: _FALCATA_CategoricalFeatureConfiguration = categorical_feature
         self.params = deepcopy(params)
         self.free_raw_data = free_raw_data
         self.used_indices: Optional[List[int]] = None
@@ -2038,7 +2038,7 @@ class Dataset:
     def _set_init_score_by_predictor(
         self,
         predictor: Optional[_InnerPredictor],
-        data: _LGBM_TrainDataType,
+        data: _FALCATA_TrainDataType,
         used_indices: Optional[Union[List[int], np.ndarray]],
     ) -> "Dataset":
         data_has_header = False
@@ -2080,17 +2080,17 @@ class Dataset:
 
     def _lazy_init(
         self,
-        data: Optional[_LGBM_TrainDataType],
-        label: Optional[_LGBM_LabelType],
+        data: Optional[_FALCATA_TrainDataType],
+        label: Optional[_FALCATA_LabelType],
         reference: Optional["Dataset"],
-        weight: Optional[_LGBM_WeightType],
-        group: Optional[_LGBM_GroupType],
-        init_score: Optional[_LGBM_InitScoreType],
+        weight: Optional[_FALCATA_WeightType],
+        group: Optional[_FALCATA_GroupType],
+        init_score: Optional[_FALCATA_InitScoreType],
         predictor: Optional[_InnerPredictor],
-        feature_name: _LGBM_FeatureNameConfiguration,
-        categorical_feature: _LGBM_CategoricalFeatureConfiguration,
+        feature_name: _FALCATA_FeatureNameConfiguration,
+        categorical_feature: _FALCATA_CategoricalFeatureConfiguration,
         params: Optional[Dict[str, Any]],
-        position: Optional[_LGBM_PositionType],
+        position: Optional[_FALCATA_PositionType],
     ) -> "Dataset":
         if data is None:
             self._handle = None
@@ -2653,13 +2653,13 @@ class Dataset:
 
     def create_valid(
         self,
-        data: _LGBM_TrainDataType,
-        label: Optional[_LGBM_LabelType] = None,
-        weight: Optional[_LGBM_WeightType] = None,
-        group: Optional[_LGBM_GroupType] = None,
-        init_score: Optional[_LGBM_InitScoreType] = None,
+        data: _FALCATA_TrainDataType,
+        label: Optional[_FALCATA_LabelType] = None,
+        weight: Optional[_FALCATA_WeightType] = None,
+        group: Optional[_FALCATA_GroupType] = None,
+        init_score: Optional[_FALCATA_InitScoreType] = None,
         params: Optional[Dict[str, Any]] = None,
-        position: Optional[_LGBM_PositionType] = None,
+        position: Optional[_FALCATA_PositionType] = None,
     ) -> "Dataset":
         """Create validation data align with current Dataset.
 
@@ -2802,7 +2802,7 @@ class Dataset:
     def set_field(
         self,
         field_name: str,
-        data: Optional[_LGBM_SetFieldType],
+        data: Optional[_FALCATA_SetFieldType],
     ) -> "Dataset":
         """Set property into the Dataset.
 
@@ -2952,7 +2952,7 @@ class Dataset:
 
     def set_categorical_feature(
         self,
-        categorical_feature: _LGBM_CategoricalFeatureConfiguration,
+        categorical_feature: _FALCATA_CategoricalFeatureConfiguration,
     ) -> "Dataset":
         """Set categorical features.
 
@@ -3055,7 +3055,7 @@ class Dataset:
                 "set free_raw_data=False when construct Dataset to avoid this."
             )
 
-    def set_feature_name(self, feature_name: _LGBM_FeatureNameConfiguration) -> "Dataset":
+    def set_feature_name(self, feature_name: _FALCATA_FeatureNameConfiguration) -> "Dataset":
         """Set feature name.
 
         Parameters
@@ -3086,7 +3086,7 @@ class Dataset:
             )
         return self
 
-    def set_label(self, label: Optional[_LGBM_LabelType]) -> "Dataset":
+    def set_label(self, label: Optional[_FALCATA_LabelType]) -> "Dataset":
         """Set label of Dataset.
 
         Parameters
@@ -3115,7 +3115,7 @@ class Dataset:
 
     def set_weight(
         self,
-        weight: Optional[_LGBM_WeightType],
+        weight: Optional[_FALCATA_WeightType],
     ) -> "Dataset":
         """Set weight of each instance.
 
@@ -3148,7 +3148,7 @@ class Dataset:
 
     def set_init_score(
         self,
-        init_score: Optional[_LGBM_InitScoreType],
+        init_score: Optional[_FALCATA_InitScoreType],
     ) -> "Dataset":
         """Set init score of Booster to start from.
 
@@ -3170,7 +3170,7 @@ class Dataset:
 
     def set_group(
         self,
-        group: Optional[_LGBM_GroupType],
+        group: Optional[_FALCATA_GroupType],
     ) -> "Dataset":
         """Set group size of Dataset (used for ranking).
 
@@ -3201,7 +3201,7 @@ class Dataset:
 
     def set_position(
         self,
-        position: Optional[_LGBM_PositionType],
+        position: Optional[_FALCATA_PositionType],
     ) -> "Dataset":
         """Set position of Dataset (used for ranking).
 
@@ -3267,7 +3267,7 @@ class Dataset:
             )
         return [string_buffers[i].value.decode("utf-8") for i in range(num_feature)]
 
-    def get_label(self) -> Optional[_LGBM_LabelType]:
+    def get_label(self) -> Optional[_FALCATA_LabelType]:
         """Get the label of the Dataset.
 
         Returns
@@ -3280,7 +3280,7 @@ class Dataset:
             self.label = self.get_field("label")
         return self.label
 
-    def get_weight(self) -> Optional[_LGBM_WeightType]:
+    def get_weight(self) -> Optional[_FALCATA_WeightType]:
         """Get the weight of the Dataset.
 
         Returns
@@ -3293,7 +3293,7 @@ class Dataset:
             self.weight = self.get_field("weight")
         return self.weight
 
-    def get_init_score(self) -> Optional[_LGBM_InitScoreType]:
+    def get_init_score(self) -> Optional[_FALCATA_InitScoreType]:
         """Get the initial score of the Dataset.
 
         Returns
@@ -3306,7 +3306,7 @@ class Dataset:
             self.init_score = self.get_field("init_score")
         return self.init_score
 
-    def get_data(self) -> Optional[_LGBM_TrainDataType]:
+    def get_data(self) -> Optional[_FALCATA_TrainDataType]:
         """Get the raw data of the Dataset.
 
         Returns
@@ -3342,7 +3342,7 @@ class Dataset:
             )
         return self.data
 
-    def get_group(self) -> Optional[_LGBM_GroupType]:
+    def get_group(self) -> Optional[_FALCATA_GroupType]:
         """Get the group of the Dataset.
 
         Returns
@@ -3362,7 +3362,7 @@ class Dataset:
                 self.group = np.diff(self.group)
         return self.group
 
-    def get_position(self) -> Optional[_LGBM_PositionType]:
+    def get_position(self) -> Optional[_FALCATA_PositionType]:
         """Get the position of the Dataset.
 
         Returns
@@ -3615,18 +3615,18 @@ def _load_fil_modules() -> Optional[Tuple[Any, Any]]:
     return treelite.frontend, nvforest
 
 
-_LGBM_CustomObjectiveFunction = Callable[
+_FALCATA_CustomObjectiveFunction = Callable[
     [np.ndarray, Dataset],
     Tuple[np.ndarray, np.ndarray],
 ]
-_LGBM_CustomEvalFunction = Union[
+_FALCATA_CustomEvalFunction = Union[
     Callable[
         [np.ndarray, Dataset],
-        _LGBM_EvalFunctionResultType,
+        _FALCATA_EvalFunctionResultType,
     ],
     Callable[
         [np.ndarray, Dataset],
-        List[_LGBM_EvalFunctionResultType],
+        List[_FALCATA_EvalFunctionResultType],
     ],
 ]
 
@@ -3660,7 +3660,7 @@ class Booster:
         self._train_data_name = "training"
         self.__set_objective_to_none = False
         self.best_iteration = -1
-        self.best_score: _LGBM_BoosterBestScoreType = {}
+        self.best_score: _FALCATA_BoosterBestScoreType = {}
         params = {} if params is None else deepcopy(params)
         if train_set is not None:
             # Training task
@@ -4145,7 +4145,7 @@ class Booster:
     def update(
         self,
         train_set: Optional[Dataset] = None,
-        fobj: Optional[_LGBM_CustomObjectiveFunction] = None,
+        fobj: Optional[_FALCATA_CustomObjectiveFunction] = None,
     ) -> bool:
         """Update Booster for one iteration.
 
@@ -4389,8 +4389,8 @@ class Booster:
         self,
         data: Dataset,
         name: str,
-        feval: Optional[Union[_LGBM_CustomEvalFunction, List[_LGBM_CustomEvalFunction]]] = None,
-    ) -> List[_LGBM_BoosterEvalMethodResultType]:
+        feval: Optional[Union[_FALCATA_CustomEvalFunction, List[_FALCATA_CustomEvalFunction]]] = None,
+    ) -> List[_FALCATA_BoosterEvalMethodResultType]:
         """Evaluate for data.
 
         Parameters
@@ -4442,8 +4442,8 @@ class Booster:
 
     def eval_train(
         self,
-        feval: Optional[Union[_LGBM_CustomEvalFunction, List[_LGBM_CustomEvalFunction]]] = None,
-    ) -> List[_LGBM_BoosterEvalMethodResultType]:
+        feval: Optional[Union[_FALCATA_CustomEvalFunction, List[_FALCATA_CustomEvalFunction]]] = None,
+    ) -> List[_FALCATA_BoosterEvalMethodResultType]:
         """Evaluate for training data.
 
         Parameters
@@ -4476,8 +4476,8 @@ class Booster:
 
     def eval_valid(
         self,
-        feval: Optional[Union[_LGBM_CustomEvalFunction, List[_LGBM_CustomEvalFunction]]] = None,
-    ) -> List[_LGBM_BoosterEvalMethodResultType]:
+        feval: Optional[Union[_FALCATA_CustomEvalFunction, List[_FALCATA_CustomEvalFunction]]] = None,
+    ) -> List[_FALCATA_BoosterEvalMethodResultType]:
         """Evaluate for validation data.
 
         Parameters
@@ -4890,7 +4890,7 @@ class Booster:
 
     def predict(
         self,
-        data: _LGBM_PredictDataType,
+        data: _FALCATA_PredictDataType,
         start_iteration: int = 0,
         num_iteration: Optional[int] = None,
         raw_score: bool = False,
@@ -4900,7 +4900,7 @@ class Booster:
         validate_features: bool = False,
         use_fil: bool = True,
         **kwargs: Any,
-    ) -> _LGBM_PredictReturnType:
+    ) -> _FALCATA_PredictReturnType:
         """Make a prediction.
 
         Parameters
@@ -4992,15 +4992,15 @@ class Booster:
 
     def refit(
         self,
-        data: _LGBM_TrainDataType,
-        label: _LGBM_LabelType,
+        data: _FALCATA_TrainDataType,
+        label: _FALCATA_LabelType,
         decay_rate: float = 0.9,
         reference: Optional[Dataset] = None,
-        weight: Optional[_LGBM_WeightType] = None,
-        group: Optional[_LGBM_GroupType] = None,
-        init_score: Optional[_LGBM_InitScoreType] = None,
-        feature_name: _LGBM_FeatureNameConfiguration = "auto",
-        categorical_feature: _LGBM_CategoricalFeatureConfiguration = "auto",
+        weight: Optional[_FALCATA_WeightType] = None,
+        group: Optional[_FALCATA_GroupType] = None,
+        init_score: Optional[_FALCATA_InitScoreType] = None,
+        feature_name: _FALCATA_FeatureNameConfiguration = "auto",
+        categorical_feature: _FALCATA_CategoricalFeatureConfiguration = "auto",
         dataset_params: Optional[Dict[str, Any]] = None,
         free_raw_data: bool = True,
         validate_features: bool = False,
@@ -5412,8 +5412,8 @@ class Booster:
         *,
         data_name: str,
         data_idx: int,
-        feval: Optional[Union[_LGBM_CustomEvalFunction, List[_LGBM_CustomEvalFunction]]],
-    ) -> List[_LGBM_BoosterEvalMethodResultType]:
+        feval: Optional[Union[_FALCATA_CustomEvalFunction, List[_FALCATA_CustomEvalFunction]]],
+    ) -> List[_FALCATA_BoosterEvalMethodResultType]:
         """Evaluate training or validation data."""
         if data_idx >= self.__num_dataset:
             raise ValueError("Data_idx should be smaller than number of dataset")
