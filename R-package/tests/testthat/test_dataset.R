@@ -206,7 +206,7 @@ test_that("lgb.Dataset: Dataset should be able to construct from matrix and retu
   rawData <- matrix(runif(1000L), ncol = 10L)
   ref_handle <- NULL
   handle <- .Call(
-    LGBM_DatasetCreateFromMat_R
+    FLC_DatasetCreateFromMat_R
     , rawData
     , nrow(rawData)
     , ncol(rawData)
@@ -215,7 +215,7 @@ test_that("lgb.Dataset: Dataset should be able to construct from matrix and retu
   )
   expect_true(methods::is(handle, "externalptr"))
   expect_false(is.null(handle))
-  .Call(LGBM_DatasetFree_R, handle)
+  .Call(FLC_DatasetFree_R, handle)
   handle <- NULL
 })
 
@@ -475,7 +475,7 @@ test_that("lgb.Dataset: should be able to be used in lgb.cv() when constructed w
 
 test_that("lgb.Dataset: should be able to use and retrieve long feature names", {
   # set one feature to a value longer than the default buffer size used
-  # in LGBM_DatasetGetFeatureNames_R
+  # in FLC_DatasetGetFeatureNames_R
   feature_names <- names(iris)
   long_name <- strrep("a", 1000L)
   feature_names[1L] <- long_name

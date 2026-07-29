@@ -56,8 +56,8 @@ if [[ $TASK == "swig" ]]; then
     cmake -B build -S . -DUSE_SWIG=ON
     cmake --build build -j4 || exit 1
     if [[ $OS_NAME == "linux" ]] && [[ $COMPILER == "gcc" ]]; then
-        objdump -T ./lib_lightgbm.so > ./objdump.log || exit 1
-        objdump -T ./lib_lightgbm_swig.so >> ./objdump.log || exit 1
+        objdump -T ./lib_falcata.so > ./objdump.log || exit 1
+        objdump -T ./lib_falcata_swig.so >> ./objdump.log || exit 1
         ./.ci/check-dynamic-dependencies.sh ./objdump.log || exit 1
     fi
     if [[ $PRODUCES_ARTIFACTS == "true" ]]; then
@@ -269,13 +269,13 @@ pytest -ra ./tests || exit 1
 if [[ $TASK == "regular" ]]; then
     if [[ $PRODUCES_ARTIFACTS == "true" ]]; then
         if [[ $OS_NAME == "macos" ]]; then
-            cp ./lib_lightgbm.dylib "${BUILD_ARTIFACTSTAGINGDIRECTORY}/lib_lightgbm.dylib"
+            cp ./lib_falcata.dylib "${BUILD_ARTIFACTSTAGINGDIRECTORY}/lib_falcata.dylib"
         else
             if [[ $COMPILER == "gcc" ]]; then
-                objdump -T ./lib_lightgbm.so > ./objdump.log || exit 1
+                objdump -T ./lib_falcata.so > ./objdump.log || exit 1
                 ./.ci/check-dynamic-dependencies.sh ./objdump.log || exit 1
             fi
-            cp ./lib_lightgbm.so "${BUILD_ARTIFACTSTAGINGDIRECTORY}/lib_lightgbm.so"
+            cp ./lib_falcata.so "${BUILD_ARTIFACTSTAGINGDIRECTORY}/lib_falcata.so"
         fi
     fi
     cd "$BUILD_DIRECTORY/examples/python-guide"

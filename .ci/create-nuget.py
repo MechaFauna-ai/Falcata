@@ -19,9 +19,9 @@ if __name__ == "__main__":
     build_folder_path = nuget_dir / "build"
     build_folder_path.mkdir(parents=True, exist_ok=True)
     print(f"Looking for libraries in '{source}'")
-    copyfile(source / "lib_lightgbm.so", linux_folder_path / "lib_lightgbm.so")
-    copyfile(source / "lib_lightgbm.dylib", osx_folder_path / "lib_lightgbm.dylib")
-    copyfile(source / "lib_lightgbm.dll", windows_folder_path / "lib_lightgbm.dll")
+    copyfile(source / "lib_falcata.so", linux_folder_path / "lib_falcata.so")
+    copyfile(source / "lib_falcata.dylib", osx_folder_path / "lib_falcata.dylib")
+    copyfile(source / "lib_falcata.dll", windows_folder_path / "lib_falcata.dll")
     copyfile(source / "lightgbm.exe", windows_folder_path / "lightgbm.exe")
     version = (nuget_dir.parents[1] / "VERSION.txt").read_text(encoding="utf-8").strip().replace("rc", "-rc")
     print(f"Setting version to '{version}'")

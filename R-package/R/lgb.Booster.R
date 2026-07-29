@@ -29,7 +29,7 @@ Booster <- R6::R6Class(
         params_str <- .params2str(params = params)
         # Store booster handle
         handle <- .Call(
-          LGBM_BoosterCreate_R
+          FLC_BoosterCreate_R
           , train_set_handle
           , params_str
         )
@@ -44,7 +44,7 @@ Booster <- R6::R6Class(
 
           # Merge booster
           .Call(
-            LGBM_BoosterMerge_R
+            FLC_BoosterMerge_R
             , handle
             , private$init_predictor$.__enclos_env__$private$handle
           )
@@ -65,7 +65,7 @@ Booster <- R6::R6Class(
 
         # Create booster from model
         handle <- .Call(
-          LGBM_BoosterCreateFromModelfile_R
+          FLC_BoosterCreateFromModelfile_R
           , modelfile
         )
         params <- private$get_loaded_param(handle)
@@ -79,7 +79,7 @@ Booster <- R6::R6Class(
 
         # Create booster from model
         handle <- .Call(
-          LGBM_BoosterLoadModelFromString_R
+          FLC_BoosterLoadModelFromString_R
           , model_str
         )
 
@@ -97,7 +97,7 @@ Booster <- R6::R6Class(
       private$handle <- handle
       private$num_class <- 1L
       .Call(
-        LGBM_BoosterGetNumClasses_R
+        FLC_BoosterGetNumClasses_R
         , private$handle
         , private$num_class
       )
@@ -137,7 +137,7 @@ Booster <- R6::R6Class(
 
       # Add validation data to booster
       .Call(
-        LGBM_BoosterAddValidData_R
+        FLC_BoosterAddValidData_R
         , private$handle
         , data$.__enclos_env__$private$get_handle()
       )
@@ -162,7 +162,7 @@ Booster <- R6::R6Class(
       self$restore_handle()
 
       .Call(
-        LGBM_BoosterResetParameter_R
+        FLC_BoosterResetParameter_R
         , private$handle
         , params_str
       )
@@ -192,7 +192,7 @@ Booster <- R6::R6Class(
         }
 
         .Call(
-          LGBM_BoosterResetTrainingData_R
+          FLC_BoosterResetTrainingData_R
           , private$handle
           , train_set$.__enclos_env__$private$get_handle()
         )
@@ -209,7 +209,7 @@ Booster <- R6::R6Class(
         }
         # Boost iteration from known objective
         .Call(
-          LGBM_BoosterUpdateOneIter_R
+          FLC_BoosterUpdateOneIter_R
           , private$handle
         )
 
@@ -245,7 +245,7 @@ Booster <- R6::R6Class(
 
         # Return custom boosting gradient/hessian
         .Call(
-          LGBM_BoosterUpdateOneIterCustom_R
+          FLC_BoosterUpdateOneIterCustom_R
           , private$handle
           , gpair$grad
           , gpair$hess
@@ -269,7 +269,7 @@ Booster <- R6::R6Class(
       self$restore_handle()
 
       .Call(
-        LGBM_BoosterRollbackOneIter_R
+        FLC_BoosterRollbackOneIter_R
         , private$handle
       )
 
@@ -289,7 +289,7 @@ Booster <- R6::R6Class(
 
       cur_iter <- 0L
       .Call(
-        LGBM_BoosterGetCurrentIteration_R
+        FLC_BoosterGetCurrentIteration_R
         , private$handle
         , cur_iter
       )
@@ -304,7 +304,7 @@ Booster <- R6::R6Class(
 
       trees_per_iter <- 1L
       .Call(
-        LGBM_BoosterNumModelPerIteration_R
+        FLC_BoosterNumModelPerIteration_R
         , private$handle
         , trees_per_iter
       )
@@ -319,7 +319,7 @@ Booster <- R6::R6Class(
 
       ntrees <- 0L
       .Call(
-        LGBM_BoosterNumberOfTotalModel_R
+        FLC_BoosterNumberOfTotalModel_R
         , private$handle
         , ntrees
       )
@@ -344,7 +344,7 @@ Booster <- R6::R6Class(
 
       upper_bound <- 0.0
       .Call(
-        LGBM_BoosterGetUpperBoundValue_R
+        FLC_BoosterGetUpperBoundValue_R
         , private$handle
         , upper_bound
       )
@@ -359,7 +359,7 @@ Booster <- R6::R6Class(
 
       lower_bound <- 0.0
       .Call(
-        LGBM_BoosterGetLowerBoundValue_R
+        FLC_BoosterGetLowerBoundValue_R
         , private$handle
         , lower_bound
       )
@@ -462,7 +462,7 @@ Booster <- R6::R6Class(
       filename <- path.expand(filename)
 
       .Call(
-        LGBM_BoosterSaveModel_R
+        FLC_BoosterSaveModel_R
         , private$handle
         , as.integer(num_iteration)
         , as.integer(feature_importance_type)
@@ -487,7 +487,7 @@ Booster <- R6::R6Class(
       }
 
       model_str <- .Call(
-          LGBM_BoosterSaveModelToString_R
+          FLC_BoosterSaveModelToString_R
           , private$handle
           , as.integer(num_iteration)
           , as.integer(feature_importance_type)
@@ -514,7 +514,7 @@ Booster <- R6::R6Class(
       }
 
       model_str <- .Call(
-        LGBM_BoosterDumpModel_R
+        FLC_BoosterDumpModel_R
         , private$handle
         , as.integer(num_iteration)
         , as.integer(feature_importance_type)
@@ -607,7 +607,7 @@ Booster <- R6::R6Class(
                                       params = list()) {
 
       self$restore_handle()
-      ncols <- .Call(LGBM_BoosterGetNumFeature_R, private$handle)
+      ncols <- .Call(FLC_BoosterGetNumFeature_R, private$handle)
 
       if (is.null(num_iteration)) {
         num_iteration <- -1L
@@ -617,9 +617,9 @@ Booster <- R6::R6Class(
       }
 
       if (!csr) {
-        fun <- LGBM_BoosterPredictForMatSingleRowFastInit_R
+        fun <- FLC_BoosterPredictForMatSingleRowFastInit_R
       } else {
-        fun <- LGBM_BoosterPredictForCSRSingleRowFastInit_R
+        fun <- FLC_BoosterPredictForCSRSingleRowFastInit_R
       }
 
       fast_handle <- .Call(
@@ -673,9 +673,9 @@ Booster <- R6::R6Class(
     restore_handle = function() {
       if (self$check_null_handle()) {
         if (is.null(self$raw)) {
-          .Call(LGBM_NullBoosterHandleError_R)
+          .Call(FLC_NullBoosterHandleError_R)
         }
-        private$handle <- .Call(LGBM_BoosterLoadModelFromString_R, self$raw)
+        private$handle <- .Call(FLC_BoosterLoadModelFromString_R, self$raw)
       }
       return(invisible(NULL))
     },
@@ -705,7 +705,7 @@ Booster <- R6::R6Class(
     # finalize() will free up the handles
     finalize = function() {
       .Call(
-        LGBM_BoosterFree_R
+        FLC_BoosterFree_R
         , private$handle
       )
       private$handle <- NULL
@@ -733,7 +733,7 @@ Booster <- R6::R6Class(
         # Store predictions
         npred <- 0L
         .Call(
-          LGBM_BoosterGetNumPredict_R
+          FLC_BoosterGetNumPredict_R
           , private$handle
           , as.integer(idx - 1L)
           , npred
@@ -747,7 +747,7 @@ Booster <- R6::R6Class(
 
         # Use buffer
         .Call(
-          LGBM_BoosterGetPredict_R
+          FLC_BoosterGetPredict_R
           , private$handle
           , as.integer(idx - 1L)
           , private$predict_buffer[[data_name]]
@@ -763,7 +763,7 @@ Booster <- R6::R6Class(
 
       if (is.null(private$eval_names)) {
         eval_names <- .Call(
-          LGBM_BoosterGetEvalNames_R
+          FLC_BoosterGetEvalNames_R
           , private$handle
         )
 
@@ -787,7 +787,7 @@ Booster <- R6::R6Class(
 
     get_loaded_param = function(handle) {
       params_str <- .Call(
-        LGBM_BoosterGetLoadedParam_R
+        FLC_BoosterGetLoadedParam_R
         , handle
       )
       params <- jsonlite::fromJSON(params_str)
@@ -817,7 +817,7 @@ Booster <- R6::R6Class(
         # Create evaluation values
         tmp_vals <- numeric(length(private$eval_names))
         .Call(
-          LGBM_BoosterGetEval_R
+          FLC_BoosterGetEval_R
           , private$handle
           , as.integer(data_idx - 1L)
           , tmp_vals
@@ -1257,7 +1257,7 @@ print.lgb.Booster <- function(x, ...) {
   }
 
   if (!handle_is_null) {
-    ncols <- .Call(LGBM_BoosterGetNumFeature_R, handle)
+    ncols <- .Call(FLC_BoosterGetNumFeature_R, handle)
     cat(sprintf("Fitted to dataset with %d columns\n", ncols))
   }
   # nolint end

@@ -14,8 +14,8 @@
  * them.
  *
  * It also implements working wrappers to:
- *  - LGBM_BoosterGetEvalNames    (re-implemented with new API)
- *  - LGBM_BoosterGetFeatureNames (original non-wrapped version didn't work).
+ *  - FLC_BoosterGetEvalNames    (re-implemented with new API)
+ *  - FLC_BoosterGetFeatureNames (original non-wrapped version didn't work).
  * where the wrappers names end with "SWIG".
  */
 
@@ -30,7 +30,7 @@
     #define API_OK_OR_NULL(api_return) API_OK_OR_VALUE(api_return, nullptr)
 
     /**
-     * @brief Wraps LGBM_BoosterGetEvalNames.
+     * @brief Wraps FLC_BoosterGetEvalNames.
      *
      * In case of success a new StringArray is created and returned,
      * which you're responsible for freeing,
@@ -41,14 +41,14 @@
      * @param handle Booster handle
      * @return StringArrayHandle with the eval names (or nullptr in case of error)
      */
-    StringArrayHandle LGBM_BoosterGetEvalNamesSWIG(BoosterHandle handle)
+    StringArrayHandle FLC_BoosterGetEvalNamesSWIG(BoosterHandle handle)
     {
         int eval_counts;
         size_t string_size;
         std::unique_ptr<StringArray> strings(nullptr);
 
         // Retrieve required allocation space:
-        API_OK_OR_NULL(LGBM_BoosterGetEvalNames(handle,
+        API_OK_OR_NULL(FLC_BoosterGetEvalNames(handle,
                                                 0, &eval_counts,
                                                 0, &string_size,
                                                 nullptr));
@@ -56,11 +56,11 @@
         try {
             strings.reset(new StringArray(eval_counts, string_size));
         } catch (std::bad_alloc &/*e*/) {
-            LGBM_SetLastError("Failure to allocate memory.");
+            FLC_SetLastError("Failure to allocate memory.");
             return nullptr;
         }
 
-        API_OK_OR_NULL(LGBM_BoosterGetEvalNames(handle,
+        API_OK_OR_NULL(FLC_BoosterGetEvalNames(handle,
                                                 eval_counts, &eval_counts,
                                                 string_size, &string_size,
                                                 strings->data()));
@@ -69,7 +69,7 @@
     }
 
     /**
-     * @brief Wraps LGBM_BoosterGetFeatureNames.
+     * @brief Wraps FLC_BoosterGetFeatureNames.
      *
      * Allocates a new StringArray. You must free it yourself if it succeeds.
      * @see StringArrayHandle_free().
@@ -79,14 +79,14 @@
      * @param handle Booster handle
      * @return StringArrayHandle with the feature names (or nullptr in case of error)
      */
-    StringArrayHandle LGBM_BoosterGetFeatureNamesSWIG(BoosterHandle handle)
+    StringArrayHandle FLC_BoosterGetFeatureNamesSWIG(BoosterHandle handle)
     {
         int num_features;
         size_t max_feature_name_size;
         std::unique_ptr<StringArray> strings(nullptr);
 
         // Retrieve required allocation space:
-        API_OK_OR_NULL(LGBM_BoosterGetFeatureNames(handle,
+        API_OK_OR_NULL(FLC_BoosterGetFeatureNames(handle,
                                                    0, &num_features,
                                                    0, &max_feature_name_size,
                                                    nullptr));
@@ -94,11 +94,11 @@
         try {
             strings.reset(new StringArray(num_features, max_feature_name_size));
         } catch (std::bad_alloc &/*e*/) {
-            LGBM_SetLastError("Failure to allocate memory.");
+            FLC_SetLastError("Failure to allocate memory.");
             return nullptr;
         }
 
-        API_OK_OR_NULL(LGBM_BoosterGetFeatureNames(handle,
+        API_OK_OR_NULL(FLC_BoosterGetFeatureNames(handle,
                                                    num_features, &num_features,
                                                    max_feature_name_size, &max_feature_name_size,
                                                    strings->data()));
@@ -108,8 +108,8 @@
 
 
     /**
-     * @brief Wraps LGBM_DatasetGetFeatureNames. Has the same limitations as a
-     * LGBM_BoosterGetFeatureNames:
+     * @brief Wraps FLC_DatasetGetFeatureNames. Has the same limitations as a
+     * FLC_BoosterGetFeatureNames:
      *
      * Allocates a new StringArray. You must free it yourself if it succeeds.
      * @see StringArrayHandle_free().
@@ -119,25 +119,25 @@
      * @param handle Booster handle
      * @return StringArrayHandle with the feature names (or nullptr in case of error)
      */
-    StringArrayHandle LGBM_DatasetGetFeatureNamesSWIG(BoosterHandle handle)
+    StringArrayHandle FLC_DatasetGetFeatureNamesSWIG(BoosterHandle handle)
     {
         int num_features;
         size_t max_feature_name_size;
         std::unique_ptr<StringArray> strings(nullptr);
 
         // Retrieve required allocation space:
-        API_OK_OR_NULL(LGBM_DatasetGetFeatureNames(handle,
+        API_OK_OR_NULL(FLC_DatasetGetFeatureNames(handle,
                                                    0, &num_features,
                                                    0, &max_feature_name_size,
                                                    nullptr));
         try {
             strings.reset(new StringArray(num_features, max_feature_name_size));
         } catch (std::bad_alloc &/*e*/) {
-            LGBM_SetLastError("Failure to allocate memory.");
+            FLC_SetLastError("Failure to allocate memory.");
             return nullptr;
         }
 
-        API_OK_OR_NULL(LGBM_DatasetGetFeatureNames(handle,
+        API_OK_OR_NULL(FLC_DatasetGetFeatureNames(handle,
                                                    num_features, &num_features,
                                                    max_feature_name_size, &max_feature_name_size,
                                                    strings->data()));

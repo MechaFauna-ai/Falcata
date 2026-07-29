@@ -57,7 +57,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=build \
     /opt/LightGBM/lightgbm \
-    /opt/LightGBM/lib_lightgbm.so \
+    /opt/LightGBM/lib_falcata.so \
     /opt/LightGBM/
 
 ENV PATH /opt/LightGBM:${PATH}

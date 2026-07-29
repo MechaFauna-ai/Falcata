@@ -15,7 +15,7 @@
     return(TRUE)
   }
   return(
-    isTRUE(.Call(LGBM_HandleIsNull_R, x))
+    isTRUE(.Call(FLC_HandleIsNull_R, x))
   )
 }
 

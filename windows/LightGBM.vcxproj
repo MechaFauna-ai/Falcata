@@ -78,7 +78,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug_DLL|x64'">
     <IncludePath>..\include;$(VC_IncludePath);$(WindowsSDK_IncludePath);</IncludePath>
     <LibraryPath>$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);</LibraryPath>
-    <TargetName>lib_lightgbm</TargetName>
+    <TargetName>lib_falcata</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(configuration)|$(Platform)'=='Debug_mpi|x64'">
     <IncludePath>$(MSMPI_INC);..\include;$(VC_IncludePath);$(WindowsSDK_IncludePath);</IncludePath>
@@ -97,7 +97,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='DLL|x64'">
     <IncludePath>..\include;$(VC_IncludePath);$(WindowsSDK_IncludePath);</IncludePath>
-    <TargetName>lib_lightgbm</TargetName>
+    <TargetName>lib_falcata</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>

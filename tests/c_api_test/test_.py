@@ -9,14 +9,14 @@ from scipy import sparse
 try:
     from lightgbm.basic import _LIB as LIB
 except ModuleNotFoundError:
-    print("Could not import lightgbm Python-package, looking for lib_lightgbm at the repo root")
+    print("Could not import lightgbm Python-package, looking for lib_falcata at the repo root")
     if system() in ("Windows", "Microsoft"):
-        lib_file = Path(__file__).absolute().parents[2] / "Release" / "lib_lightgbm.dll"
+        lib_file = Path(__file__).absolute().parents[2] / "Release" / "lib_falcata.dll"
     else:
-        lib_file = Path(__file__).absolute().parents[2] / "lib_lightgbm.so"
+        lib_file = Path(__file__).absolute().parents[2] / "lib_falcata.so"
     LIB = ctypes.cdll.LoadLibrary(lib_file)
 
-LIB.LGBM_GetLastError.restype = ctypes.c_char_p
+LIB.FLC_GetLastError.restype = ctypes.c_char_p
 
 dtype_float32 = 0
 dtype_float64 = 1
@@ -33,18 +33,18 @@ def load_from_file(filename, reference):
     if reference is not None:
         ref = reference
     handle = ctypes.c_void_p()
-    LIB.LGBM_DatasetCreateFromFile(c_str(str(filename)), c_str("max_bin=15"), ref, ctypes.byref(handle))
-    print(LIB.LGBM_GetLastError())
+    LIB.FLC_DatasetCreateFromFile(c_str(str(filename)), c_str("max_bin=15"), ref, ctypes.byref(handle))
+    print(LIB.FLC_GetLastError())
     num_data = ctypes.c_int(0)
-    LIB.LGBM_DatasetGetNumData(handle, ctypes.byref(num_data))
+    LIB.FLC_DatasetGetNumData(handle, ctypes.byref(num_data))
     num_feature = ctypes.c_int(0)
-    LIB.LGBM_DatasetGetNumFeature(handle, ctypes.byref(num_feature))
+    LIB.FLC_DatasetGetNumFeature(handle, ctypes.byref(num_feature))
     print(f"#data: {num_data.value} #feature: {num_feature.value}")
     return handle
 
 
 def save_to_binary(handle, filename):
-    LIB.LGBM_DatasetSaveBinary(handle, c_str(filename))
+    LIB.FLC_DatasetSaveBinary(handle, c_str(filename))
 
 
 def load_from_csr(filename, reference):
@@ -56,7 +56,7 @@ def load_from_csr(filename, reference):
     if reference is not None:
         ref = reference
 
-    LIB.LGBM_DatasetCreateFromCSR(
+    LIB.FLC_DatasetCreateFromCSR(
         csr.indptr.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
         ctypes.c_int(dtype_int32),
         csr.indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
@@ -70,10 +70,10 @@ def load_from_csr(filename, reference):
         ctypes.byref(handle),
     )
     num_data = ctypes.c_int(0)
-    LIB.LGBM_DatasetGetNumData(handle, ctypes.byref(num_data))
+    LIB.FLC_DatasetGetNumData(handle, ctypes.byref(num_data))
     num_feature = ctypes.c_int(0)
-    LIB.LGBM_DatasetGetNumFeature(handle, ctypes.byref(num_feature))
-    LIB.LGBM_DatasetSetField(
+    LIB.FLC_DatasetGetNumFeature(handle, ctypes.byref(num_feature))
+    LIB.FLC_DatasetSetField(
         handle,
         c_str("label"),
         label.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
@@ -93,7 +93,7 @@ def load_from_csc(filename, reference):
     if reference is not None:
         ref = reference
 
-    LIB.LGBM_DatasetCreateFromCSC(
+    LIB.FLC_DatasetCreateFromCSC(
         csc.indptr.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
         ctypes.c_int(dtype_int32),
         csc.indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
@@ -107,10 +107,10 @@ def load_from_csc(filename, reference):
         ctypes.byref(handle),
     )
     num_data = ctypes.c_int(0)
-    LIB.LGBM_DatasetGetNumData(handle, ctypes.byref(num_data))
+    LIB.FLC_DatasetGetNumData(handle, ctypes.byref(num_data))
     num_feature = ctypes.c_int(0)
-    LIB.LGBM_DatasetGetNumFeature(handle, ctypes.byref(num_feature))
-    LIB.LGBM_DatasetSetField(
+    LIB.FLC_DatasetGetNumFeature(handle, ctypes.byref(num_feature))
+    LIB.FLC_DatasetSetField(
         handle,
         c_str("label"),
         label.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
@@ -131,7 +131,7 @@ def load_from_mat(filename, reference):
     if reference is not None:
         ref = reference
 
-    LIB.LGBM_DatasetCreateFromMat(
+    LIB.FLC_DatasetCreateFromMat(
         data.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
         ctypes.c_int(dtype_float64),
         ctypes.c_int32(mat.shape[0]),
@@ -142,10 +142,10 @@ def load_from_mat(filename, reference):
         ctypes.byref(handle),
     )
     num_data = ctypes.c_int(0)
-    LIB.LGBM_DatasetGetNumData(handle, ctypes.byref(num_data))
+    LIB.FLC_DatasetGetNumData(handle, ctypes.byref(num_data))
     num_feature = ctypes.c_int(0)
-    LIB.LGBM_DatasetGetNumFeature(handle, ctypes.byref(num_feature))
-    LIB.LGBM_DatasetSetField(
+    LIB.FLC_DatasetGetNumFeature(handle, ctypes.byref(num_feature))
+    LIB.FLC_DatasetSetField(
         handle,
         c_str("label"),
         label.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
@@ -157,7 +157,7 @@ def load_from_mat(filename, reference):
 
 
 def free_dataset(handle):
-    LIB.LGBM_DatasetFree(handle)
+    LIB.FLC_DatasetFree(handle)
 
 
 def test_dataset(tmp_path):
@@ -182,31 +182,31 @@ def test_booster(tmp_path):
     test = load_from_mat(binary_example_dir / "binary.test", train)
     booster = ctypes.c_void_p()
     model_path = tmp_path / "model.txt"
-    LIB.LGBM_BoosterCreate(train, c_str("app=binary metric=auc num_leaves=31 verbose=0"), ctypes.byref(booster))
-    LIB.LGBM_BoosterAddValidData(booster, test)
+    LIB.FLC_BoosterCreate(train, c_str("app=binary metric=auc num_leaves=31 verbose=0"), ctypes.byref(booster))
+    LIB.FLC_BoosterAddValidData(booster, test)
     produced_empty_tree = ctypes.c_int(0)
     for i in range(1, 51):
-        LIB.LGBM_BoosterUpdateOneIter(booster, ctypes.byref(produced_empty_tree))
+        LIB.FLC_BoosterUpdateOneIter(booster, ctypes.byref(produced_empty_tree))
         result = np.array([0.0], dtype=np.float64)
         out_len = ctypes.c_int(0)
-        LIB.LGBM_BoosterGetEval(
+        LIB.FLC_BoosterGetEval(
             booster, ctypes.c_int(0), ctypes.byref(out_len), result.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
         )
         if i % 10 == 0:
             print(f"{i} iteration test AUC {result[0]:.6f}")
-    LIB.LGBM_BoosterSaveModel(booster, ctypes.c_int(0), ctypes.c_int(-1), ctypes.c_int(0), c_str(str(model_path)))
-    LIB.LGBM_BoosterFree(booster)
+    LIB.FLC_BoosterSaveModel(booster, ctypes.c_int(0), ctypes.c_int(-1), ctypes.c_int(0), c_str(str(model_path)))
+    LIB.FLC_BoosterFree(booster)
     free_dataset(train)
     free_dataset(test)
     booster2 = ctypes.c_void_p()
     num_total_model = ctypes.c_int(0)
-    LIB.LGBM_BoosterCreateFromModelfile(c_str(str(model_path)), ctypes.byref(num_total_model), ctypes.byref(booster2))
+    LIB.FLC_BoosterCreateFromModelfile(c_str(str(model_path)), ctypes.byref(num_total_model), ctypes.byref(booster2))
     data = np.loadtxt(str(binary_example_dir / "binary.test"), dtype=np.float64)
     mat = data[:, 1:]
     preds = np.empty(mat.shape[0], dtype=np.float64)
     num_preds = ctypes.c_int64(0)
     data = np.asarray(mat.reshape(mat.size), dtype=np.float64)
-    LIB.LGBM_BoosterPredictForMat(
+    LIB.FLC_BoosterPredictForMat(
         booster2,
         data.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
         ctypes.c_int(dtype_float64),
@@ -220,7 +220,7 @@ def test_booster(tmp_path):
         ctypes.byref(num_preds),
         preds.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
     )
-    LIB.LGBM_BoosterPredictForFile(
+    LIB.FLC_BoosterPredictForFile(
         booster2,
         c_str(str(binary_example_dir / "binary.test")),
         ctypes.c_int(0),
@@ -230,7 +230,7 @@ def test_booster(tmp_path):
         c_str(""),
         c_str(tmp_path / "preds.txt"),
     )
-    LIB.LGBM_BoosterPredictForFile(
+    LIB.FLC_BoosterPredictForFile(
         booster2,
         c_str(str(binary_example_dir / "binary.test")),
         ctypes.c_int(0),
@@ -240,27 +240,27 @@ def test_booster(tmp_path):
         c_str(""),
         c_str(tmp_path / "preds.txt"),
     )
-    LIB.LGBM_BoosterFree(booster2)
+    LIB.FLC_BoosterFree(booster2)
 
 
 def test_max_thread_control():
     # at initialization, should be -1
     num_threads = ctypes.c_int(0)
-    ret = LIB.LGBM_GetMaxThreads(ctypes.byref(num_threads))
+    ret = LIB.FLC_GetMaxThreads(ctypes.byref(num_threads))
     assert ret == 0
     assert num_threads.value == -1
 
     # updating that value through the C API should work
-    ret = LIB.LGBM_SetMaxThreads(ctypes.c_int(6))
+    ret = LIB.FLC_SetMaxThreads(ctypes.c_int(6))
     assert ret == 0
 
-    ret = LIB.LGBM_GetMaxThreads(ctypes.byref(num_threads))
+    ret = LIB.FLC_GetMaxThreads(ctypes.byref(num_threads))
     assert ret == 0
     assert num_threads.value == 6
 
     # resetting to any negative number should set it to -1
-    ret = LIB.LGBM_SetMaxThreads(ctypes.c_int(-123))
+    ret = LIB.FLC_SetMaxThreads(ctypes.c_int(-123))
     assert ret == 0
-    ret = LIB.LGBM_GetMaxThreads(ctypes.byref(num_threads))
+    ret = LIB.FLC_GetMaxThreads(ctypes.byref(num_threads))
     assert ret == 0
     assert num_threads.value == -1

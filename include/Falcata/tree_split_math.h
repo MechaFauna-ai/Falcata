@@ -19,9 +19,9 @@
 #include <cmath>
 
 #if defined(__CUDACC__)
-#define LGBM_HOSTDEV __host__ __device__
+#define FLC_HOSTDEV __host__ __device__
 #else
-#define LGBM_HOSTDEV
+#define FLC_HOSTDEV
 #endif
 
 namespace Falcata {
@@ -31,7 +31,7 @@ namespace SplitGainMath {
 // Soft-threshold used for L1 regularization: sign(s) * max(0, |s| - l1).
 // T = double everywhere except the CUDA fp32 gain mode (FALCATA_FP32_GAIN).
 template <typename T = double>
-LGBM_HOSTDEV inline T ThresholdL1(T s, T l1) {
+FLC_HOSTDEV inline T ThresholdL1(T s, T l1) {
   const T reg_s = fmax(static_cast<T>(0), fabs(s) - l1);
   return s >= static_cast<T>(0) ? reg_s : -reg_s;
 }
@@ -40,7 +40,7 @@ LGBM_HOSTDEV inline T ThresholdL1(T s, T l1) {
 // path smoothing -- applied in that order (matching the CPU formula). Monotone
 // clamping is applied by the caller (it depends on per-leaf constraints).
 template <bool USE_L1, bool USE_MAX_OUTPUT, bool USE_SMOOTHING, typename T = double>
-LGBM_HOSTDEV inline T CalculateLeafOutput(T sum_gradients, T sum_hessians,
+FLC_HOSTDEV inline T CalculateLeafOutput(T sum_gradients, T sum_hessians,
                                           T l1, T l2, T max_delta_step,
                                           T path_smooth, data_size_t num_data,
                                           T parent_output) {
@@ -60,7 +60,7 @@ LGBM_HOSTDEV inline T CalculateLeafOutput(T sum_gradients, T sum_hessians,
 
 // Gain contributed by a leaf given a already-computed output value.
 template <bool USE_L1, typename T = double>
-LGBM_HOSTDEV inline T LeafGainGivenOutput(T sum_gradients, T sum_hessians,
+FLC_HOSTDEV inline T LeafGainGivenOutput(T sum_gradients, T sum_hessians,
                                           T l1, T l2, T output) {
   const T g = USE_L1 ? ThresholdL1(sum_gradients, l1) : sum_gradients;
   return -(2 * g * output + (sum_hessians + l2) * output * output);
@@ -76,7 +76,7 @@ LGBM_HOSTDEV inline T LeafGainGivenOutput(T sum_gradients, T sum_hessians,
 // USE_MAX_OUTPUT switch must track CPU's exactly to keep CPU/CUDA bit-identical
 // when max_delta_step is unset.
 template <bool USE_L1, bool USE_MAX_OUTPUT, bool USE_SMOOTHING, typename T = double>
-LGBM_HOSTDEV inline T LeafGain(T sum_gradients, T sum_hessians, T l1,
+FLC_HOSTDEV inline T LeafGain(T sum_gradients, T sum_hessians, T l1,
                                T l2, T max_delta_step, T path_smooth,
                                data_size_t num_data, T parent_output) {
   if (!USE_MAX_OUTPUT && !USE_SMOOTHING) {

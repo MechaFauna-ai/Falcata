@@ -48,20 +48,20 @@
 
 namespace Falcata {
 
-inline int LGBM_APIHandleException(const std::exception& ex) {
-  LGBM_SetLastError(ex.what());
+inline int FLC_APIHandleException(const std::exception& ex) {
+  FLC_SetLastError(ex.what());
   return -1;
 }
-inline int LGBM_APIHandleException(const std::string& ex) {
-  LGBM_SetLastError(ex.c_str());
+inline int FLC_APIHandleException(const std::string& ex) {
+  FLC_SetLastError(ex.c_str());
   return -1;
 }
 
 #define API_BEGIN() try {
 #define API_END() } \
-catch(std::exception& ex) { return LGBM_APIHandleException(ex); } \
-catch(std::string& ex) { return LGBM_APIHandleException(ex); } \
-catch(...) { return LGBM_APIHandleException("unknown exception"); } \
+catch(std::exception& ex) { return FLC_APIHandleException(ex); } \
+catch(std::string& ex) { return FLC_APIHandleException(ex); } \
+catch(...) { return FLC_APIHandleException("unknown exception"); } \
 return 0;
 
 #define UNIQUE_LOCK(mtx) \
@@ -465,7 +465,7 @@ class Booster {
   std::unique_ptr<SingleRowPredictor> InitSingleRowPredictor(int predict_type, int start_iteration, int num_iteration, int data_type, int32_t num_cols, const char *parameters) {
     // Workaround https://github.com/lightgbm-org/Falcata/issues/6142 by locking here
     // This is only a workaround because if predictors are initialized differently it may still behave incorrectly,
-    // and because multiple racing Predictor initializations through LGBM_BoosterPredictForMat suffers from that same issue of Predictor init writing things in the booster.
+    // and because multiple racing Predictor initializations through FLC_BoosterPredictForMat suffers from that same issue of Predictor init writing things in the booster.
     // Once #6142 is fixed (predictor doesn't write in the Booster as should have been the case since 1c35c3b9ede9adab8ccc5fd7b4b2b6af188a79f0), this line can be removed.
     UNIQUE_LOCK(mutex_)
 
@@ -937,7 +937,7 @@ using Falcata::data_size_t;
 using Falcata::Dataset;
 using Falcata::DatasetLoader;
 using Falcata::kZeroThreshold;
-using Falcata::LGBM_APIHandleException;
+using Falcata::FLC_APIHandleException;
 using Falcata::Log;
 using Falcata::Network;
 using Falcata::Random;
@@ -997,11 +997,11 @@ class CSC_RowIterator {
 
 // start of c_api functions
 
-const char* LGBM_GetLastError() {
+const char* FLC_GetLastError() {
   return LastErrorMsg();
 }
 
-int LGBM_DumpParamAliases(int64_t buffer_len,
+int FLC_DumpParamAliases(int64_t buffer_len,
                           int64_t* out_len,
                           char* out_str) {
   API_BEGIN();
@@ -1013,7 +1013,7 @@ int LGBM_DumpParamAliases(int64_t buffer_len,
   API_END();
 }
 
-int LGBM_RegisterLogCallback(void (*callback)(const char*)) {
+int FLC_RegisterLogCallback(void (*callback)(const char*)) {
   API_BEGIN();
   Log::ResetCallBack(callback);
   API_END();
@@ -1029,12 +1029,12 @@ static inline std::vector<int32_t> CreateSampleIndices(int32_t total_nrow, const
   return rand.Sample(total_nrow, sample_cnt);
 }
 
-int LGBM_GetSampleCount(int32_t num_total_row,
+int FLC_GetSampleCount(int32_t num_total_row,
                         const char* parameters,
                         int* out) {
   API_BEGIN();
   if (out == nullptr) {
-    Log::Fatal("LGBM_GetSampleCount output is nullptr");
+    Log::Fatal("FLC_GetSampleCount output is nullptr");
   }
   auto param = Config::Str2Map(parameters);
   Config config;
@@ -1044,7 +1044,7 @@ int LGBM_GetSampleCount(int32_t num_total_row,
   API_END();
 }
 
-int LGBM_SampleIndices(int32_t num_total_row,
+int FLC_SampleIndices(int32_t num_total_row,
                        const char* parameters,
                        void* out,
                        int32_t* out_len) {
@@ -1052,7 +1052,7 @@ int LGBM_SampleIndices(int32_t num_total_row,
   // Sample count, random seed etc. should be provided in parameters.
   API_BEGIN();
   if (out == nullptr) {
-    Log::Fatal("LGBM_SampleIndices output is nullptr");
+    Log::Fatal("FLC_SampleIndices output is nullptr");
   }
   auto param = Config::Str2Map(parameters);
   Config config;
@@ -1064,20 +1064,20 @@ int LGBM_SampleIndices(int32_t num_total_row,
   API_END();
 }
 
-int LGBM_ByteBufferGetAt(ByteBufferHandle handle, int32_t index, uint8_t* out_val) {
+int FLC_ByteBufferGetAt(ByteBufferHandle handle, int32_t index, uint8_t* out_val) {
   API_BEGIN();
   Falcata::ByteBuffer* byteBuffer = reinterpret_cast<Falcata::ByteBuffer*>(handle);
   *out_val = byteBuffer->GetAt(index);
   API_END();
 }
 
-int LGBM_ByteBufferFree(ByteBufferHandle handle) {
+int FLC_ByteBufferFree(ByteBufferHandle handle) {
   API_BEGIN();
   delete reinterpret_cast<Falcata::ByteBuffer*>(handle);
   API_END();
 }
 
-int LGBM_DatasetCreateFromFile(const char* filename,
+int FLC_DatasetCreateFromFile(const char* filename,
                                const char* parameters,
                                const DatasetHandle reference,
                                DatasetHandle* out) {
@@ -1100,7 +1100,7 @@ int LGBM_DatasetCreateFromFile(const char* filename,
   API_END();
 }
 
-int LGBM_DatasetCreateFromSampledColumn(double** sample_data,
+int FLC_DatasetCreateFromSampledColumn(double** sample_data,
                                         int** sample_indices,
                                         int32_t ncol,
                                         const int* num_per_col,
@@ -1125,7 +1125,7 @@ int LGBM_DatasetCreateFromSampledColumn(double** sample_data,
   API_END();
 }
 
-int LGBM_DatasetCreateByReference(const DatasetHandle reference,
+int FLC_DatasetCreateByReference(const DatasetHandle reference,
                                   int64_t num_total_row,
                                   DatasetHandle* out) {
   API_BEGIN();
@@ -1139,7 +1139,7 @@ int LGBM_DatasetCreateByReference(const DatasetHandle reference,
   API_END();
 }
 
-int LGBM_DatasetCreateFromSerializedReference(const void* ref_buffer,
+int FLC_DatasetCreateFromSerializedReference(const void* ref_buffer,
                                               int32_t ref_buffer_size,
                                               int64_t num_row,
                                               int32_t num_classes,
@@ -1158,7 +1158,7 @@ int LGBM_DatasetCreateFromSerializedReference(const void* ref_buffer,
   API_END();
 }
 
-int LGBM_DatasetInitStreaming(DatasetHandle dataset,
+int FLC_DatasetInitStreaming(DatasetHandle dataset,
                               int32_t has_weights,
                               int32_t has_init_scores,
                               int32_t has_queries,
@@ -1173,7 +1173,7 @@ int LGBM_DatasetInitStreaming(DatasetHandle dataset,
   API_END();
 }
 
-int LGBM_DatasetPushRows(DatasetHandle dataset,
+int FLC_DatasetPushRows(DatasetHandle dataset,
                          const void* data,
                          int data_type,
                          int32_t nrow,
@@ -1201,7 +1201,7 @@ int LGBM_DatasetPushRows(DatasetHandle dataset,
   API_END();
 }
 
-int LGBM_DatasetPushRowsWithMetadata(DatasetHandle dataset,
+int FLC_DatasetPushRowsWithMetadata(DatasetHandle dataset,
                                      const void* data,
                                      int data_type,
                                      int32_t nrow,
@@ -1247,7 +1247,7 @@ int LGBM_DatasetPushRowsWithMetadata(DatasetHandle dataset,
   API_END();
 }
 
-int LGBM_DatasetPushRowsByCSR(DatasetHandle dataset,
+int FLC_DatasetPushRowsByCSR(DatasetHandle dataset,
                               const void* indptr,
                               int indptr_type,
                               const int32_t* indices,
@@ -1280,7 +1280,7 @@ int LGBM_DatasetPushRowsByCSR(DatasetHandle dataset,
   API_END();
 }
 
-int LGBM_DatasetPushRowsByCSRWithMetadata(DatasetHandle dataset,
+int FLC_DatasetPushRowsByCSRWithMetadata(DatasetHandle dataset,
                                           const void* indptr,
                                           int indptr_type,
                                           const int32_t* indices,
@@ -1330,21 +1330,21 @@ int LGBM_DatasetPushRowsByCSRWithMetadata(DatasetHandle dataset,
   API_END();
 }
 
-int LGBM_DatasetSetWaitForManualFinish(DatasetHandle dataset, int wait) {
+int FLC_DatasetSetWaitForManualFinish(DatasetHandle dataset, int wait) {
   API_BEGIN();
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
   p_dataset->set_wait_for_manual_finish(wait);
   API_END();
 }
 
-int LGBM_DatasetMarkFinished(DatasetHandle dataset) {
+int FLC_DatasetMarkFinished(DatasetHandle dataset) {
   API_BEGIN();
   auto p_dataset = reinterpret_cast<Dataset*>(dataset);
   p_dataset->FinishLoad();
   API_END();
 }
 
-int LGBM_DatasetCreateFromMat(const void* data,
+int FLC_DatasetCreateFromMat(const void* data,
                               int data_type,
                               int32_t nrow,
                               int32_t ncol,
@@ -1352,7 +1352,7 @@ int LGBM_DatasetCreateFromMat(const void* data,
                               const char* parameters,
                               const DatasetHandle reference,
                               DatasetHandle* out) {
-  return LGBM_DatasetCreateFromMats(1,
+  return FLC_DatasetCreateFromMats(1,
                                     &data,
                                     data_type,
                                     &nrow,
@@ -1363,7 +1363,7 @@ int LGBM_DatasetCreateFromMat(const void* data,
                                     out);
 }
 
-int LGBM_DatasetCreateFromMats(int32_t nmat,
+int FLC_DatasetCreateFromMats(int32_t nmat,
                                const void** data,
                                int data_type,
                                int32_t* nrow,
@@ -1585,7 +1585,7 @@ void PushDeviceMatrixViaHost(Dataset* ret, const void* data, int data_type,
 }  // anonymous namespace
 #endif  // USE_CUDA
 
-int LGBM_DatasetCreateFromMatDevice(const void* data,
+int FLC_DatasetCreateFromMatDevice(const void* data,
                                     int data_type,
                                     int32_t nrow,
                                     int32_t ncol,
@@ -1603,21 +1603,21 @@ int LGBM_DatasetCreateFromMatDevice(const void* data,
   (void)parameters;
   (void)reference;
   (void)out;
-  Log::Fatal("LGBM_DatasetCreateFromMatDevice requires a CUDA build of Falcata");
+  Log::Fatal("FLC_DatasetCreateFromMatDevice requires a CUDA build of Falcata");
 #else
   auto param = Config::Str2Map(parameters);
   Config config;
   config.Set(param);
   OMP_SET_NUM_THREADS(config.num_threads);
   if (config.device_type != std::string("cuda")) {
-    Log::Fatal("LGBM_DatasetCreateFromMatDevice requires device_type=cuda");
+    Log::Fatal("FLC_DatasetCreateFromMatDevice requires device_type=cuda");
   }
   const int64_t elem_size = DenseMatDTypeSize(data_type);
   if (elem_size == 0) {
-    Log::Fatal("Unsupported data type %d for LGBM_DatasetCreateFromMatDevice", data_type);
+    Log::Fatal("Unsupported data type %d for FLC_DatasetCreateFromMatDevice", data_type);
   }
   if (nrow <= 0 || ncol <= 0) {
-    Log::Fatal("LGBM_DatasetCreateFromMatDevice needs a non-empty matrix");
+    Log::Fatal("FLC_DatasetCreateFromMatDevice needs a non-empty matrix");
   }
   // the array interface producer may have pending work on another stream;
   // a one-off device-wide sync is cheap at dataset construction scale
@@ -1700,7 +1700,7 @@ int LGBM_DatasetCreateFromMatDevice(const void* data,
   API_END();
 }
 
-int LGBM_DatasetCreateFromCSR(const void* indptr,
+int FLC_DatasetCreateFromCSR(const void* indptr,
                               int indptr_type,
                               const int32_t* indices,
                               const void* data,
@@ -1772,7 +1772,7 @@ int LGBM_DatasetCreateFromCSR(const void* indptr,
   API_END();
 }
 
-int LGBM_DatasetCreateFromCSRFunc(void* get_row_funptr,
+int FLC_DatasetCreateFromCSRFunc(void* get_row_funptr,
                                   int num_rows,
                                   int64_t num_col,
                                   const char* parameters,
@@ -1845,7 +1845,7 @@ int LGBM_DatasetCreateFromCSRFunc(void* get_row_funptr,
   API_END();
 }
 
-int LGBM_DatasetCreateFromCSC(const void* col_ptr,
+int FLC_DatasetCreateFromCSC(const void* col_ptr,
                               int col_ptr_type,
                               const int32_t* indices,
                               const void* data,
@@ -2024,21 +2024,21 @@ void DatasetCreateFromArrowChunkedArray(ArrowChunkedArray& chunked_array,
   *out = ret.release();
 }
 
-[[deprecated("Use LGBM_DatasetCreateFromArrowStream instead.")]]
-int LGBM_DatasetCreateFromArrow(int64_t n_chunks,
+[[deprecated("Use FLC_DatasetCreateFromArrowStream instead.")]]
+int FLC_DatasetCreateFromArrow(int64_t n_chunks,
                                 ArrowArray* chunks,
                                 ArrowSchema* schema,
                                 const char* parameters,
                                 const DatasetHandle reference,
                                 DatasetHandle *out) {
   API_BEGIN();
-  Log::Warning("LGBM_DatasetCreateFromArrow is deprecated. Please use LGBM_DatasetCreateFromArrowStream instead.");
+  Log::Warning("FLC_DatasetCreateFromArrow is deprecated. Please use FLC_DatasetCreateFromArrowStream instead.");
   ArrowChunkedArray chunked_array(n_chunks, chunks, schema);
   DatasetCreateFromArrowChunkedArray(chunked_array, parameters, reference, out);
   API_END();
 }
 
-int LGBM_DatasetCreateFromArrowStream(ArrowArrayStream* stream,
+int FLC_DatasetCreateFromArrowStream(ArrowArrayStream* stream,
                                       const char* parameters,
                                       const DatasetHandle reference,
                                       DatasetHandle *out) {
@@ -2049,7 +2049,7 @@ int LGBM_DatasetCreateFromArrowStream(ArrowArrayStream* stream,
 }
 #endif  // LGB_R_BUILD
 
-int LGBM_DatasetGetSubset(
+int FLC_DatasetGetSubset(
   const DatasetHandle handle,
   const int32_t* used_row_indices,
   int32_t num_used_row_indices,
@@ -2075,7 +2075,7 @@ int LGBM_DatasetGetSubset(
   API_END();
 }
 
-int LGBM_DatasetSetFeatureNames(
+int FLC_DatasetSetFeatureNames(
   DatasetHandle handle,
   const char** feature_names,
   int num_feature_names) {
@@ -2089,7 +2089,7 @@ int LGBM_DatasetSetFeatureNames(
   API_END();
 }
 
-int LGBM_DatasetGetFeatureNames(
+int FLC_DatasetGetFeatureNames(
     DatasetHandle handle,
     const int len,
     int* num_feature_names,
@@ -2114,13 +2114,13 @@ int LGBM_DatasetGetFeatureNames(
 #ifdef _MSC_VER
   #pragma warning(disable : 4702)
 #endif
-int LGBM_DatasetFree(DatasetHandle handle) {
+int FLC_DatasetFree(DatasetHandle handle) {
   API_BEGIN();
   delete reinterpret_cast<Dataset*>(handle);
   API_END();
 }
 
-int LGBM_DatasetSaveBinary(DatasetHandle handle,
+int FLC_DatasetSaveBinary(DatasetHandle handle,
                            const char* filename) {
   API_BEGIN();
   auto dataset = reinterpret_cast<Dataset*>(handle);
@@ -2128,7 +2128,7 @@ int LGBM_DatasetSaveBinary(DatasetHandle handle,
   API_END();
 }
 
-int LGBM_DatasetSerializeReferenceToBinary(DatasetHandle handle,
+int FLC_DatasetSerializeReferenceToBinary(DatasetHandle handle,
                                            ByteBufferHandle* out,
                                            int32_t* out_len) {
   API_BEGIN();
@@ -2141,7 +2141,7 @@ int LGBM_DatasetSerializeReferenceToBinary(DatasetHandle handle,
   API_END();
 }
 
-int LGBM_DatasetDumpText(DatasetHandle handle,
+int FLC_DatasetDumpText(DatasetHandle handle,
                          const char* filename) {
   API_BEGIN();
   auto dataset = reinterpret_cast<Dataset*>(handle);
@@ -2149,7 +2149,7 @@ int LGBM_DatasetDumpText(DatasetHandle handle,
   API_END();
 }
 
-int LGBM_DatasetSetField(DatasetHandle handle,
+int FLC_DatasetSetField(DatasetHandle handle,
                          const char* field_name,
                          const void* field_data,
                          int num_element,
@@ -2171,14 +2171,14 @@ int LGBM_DatasetSetField(DatasetHandle handle,
 }
 
 #ifndef LGB_R_BUILD
-[[deprecated("Use LGBM_DatasetSetFieldFromArrowStream instead.")]]
-int LGBM_DatasetSetFieldFromArrow(DatasetHandle handle,
+[[deprecated("Use FLC_DatasetSetFieldFromArrowStream instead.")]]
+int FLC_DatasetSetFieldFromArrow(DatasetHandle handle,
                                   const char* field_name,
                                   int64_t n_chunks,
                                   ArrowArray* chunks,
                                   ArrowSchema* schema) {
   API_BEGIN();
-  Log::Warning("LGBM_DatasetSetFieldFromArrow is deprecated. Please use LGBM_DatasetSetFieldFromArrowStream instead.");
+  Log::Warning("FLC_DatasetSetFieldFromArrow is deprecated. Please use FLC_DatasetSetFieldFromArrowStream instead.");
   auto dataset = reinterpret_cast<Dataset*>(handle);
   auto is_success = dataset->SetFieldFromArrow(field_name, n_chunks, chunks, schema);
   if (!is_success) {
@@ -2187,7 +2187,7 @@ int LGBM_DatasetSetFieldFromArrow(DatasetHandle handle,
   API_END();
 }
 
-int LGBM_DatasetSetFieldFromArrowStream(DatasetHandle handle,
+int FLC_DatasetSetFieldFromArrowStream(DatasetHandle handle,
                                         const char* field_name,
                                         ArrowArrayStream* stream) {
   API_BEGIN();
@@ -2200,7 +2200,7 @@ int LGBM_DatasetSetFieldFromArrowStream(DatasetHandle handle,
 }
 #endif  // LGB_R_BUILD
 
-int LGBM_DatasetGetField(DatasetHandle handle,
+int FLC_DatasetGetField(DatasetHandle handle,
                          const char* field_name,
                          int* out_len,
                          const void** out_ptr,
@@ -2227,7 +2227,7 @@ int LGBM_DatasetGetField(DatasetHandle handle,
   API_END();
 }
 
-int LGBM_DatasetUpdateParamChecking(const char* old_parameters, const char* new_parameters) {
+int FLC_DatasetUpdateParamChecking(const char* old_parameters, const char* new_parameters) {
   API_BEGIN();
   auto old_param = Config::Str2Map(old_parameters);
   Config old_config;
@@ -2237,7 +2237,7 @@ int LGBM_DatasetUpdateParamChecking(const char* old_parameters, const char* new_
   API_END();
 }
 
-int LGBM_DatasetGetNumData(DatasetHandle handle,
+int FLC_DatasetGetNumData(DatasetHandle handle,
                            int* out) {
   API_BEGIN();
   auto dataset = reinterpret_cast<Dataset*>(handle);
@@ -2245,7 +2245,7 @@ int LGBM_DatasetGetNumData(DatasetHandle handle,
   API_END();
 }
 
-int LGBM_DatasetGetNumFeature(DatasetHandle handle,
+int FLC_DatasetGetNumFeature(DatasetHandle handle,
                               int* out) {
   API_BEGIN();
   auto dataset = reinterpret_cast<Dataset*>(handle);
@@ -2253,7 +2253,7 @@ int LGBM_DatasetGetNumFeature(DatasetHandle handle,
   API_END();
 }
 
-int LGBM_DatasetGetFeatureNumBin(DatasetHandle handle,
+int FLC_DatasetGetFeatureNumBin(DatasetHandle handle,
                                  int feature,
                                  int* out) {
   API_BEGIN();
@@ -2272,7 +2272,7 @@ int LGBM_DatasetGetFeatureNumBin(DatasetHandle handle,
   API_END();
 }
 
-int LGBM_DatasetAddFeaturesFrom(DatasetHandle target,
+int FLC_DatasetAddFeaturesFrom(DatasetHandle target,
                                 DatasetHandle source) {
   API_BEGIN();
   auto target_d = reinterpret_cast<Dataset*>(target);
@@ -2283,7 +2283,7 @@ int LGBM_DatasetAddFeaturesFrom(DatasetHandle target,
 
 // ---- start of booster
 
-int LGBM_BoosterCreate(const DatasetHandle train_data,
+int FLC_BoosterCreate(const DatasetHandle train_data,
                        const char* parameters,
                        BoosterHandle* out) {
   API_BEGIN();
@@ -2293,7 +2293,7 @@ int LGBM_BoosterCreate(const DatasetHandle train_data,
   API_END();
 }
 
-int LGBM_BoosterCreateFromModelfile(
+int FLC_BoosterCreateFromModelfile(
   const char* filename,
   int* out_num_iterations,
   BoosterHandle* out) {
@@ -2304,7 +2304,7 @@ int LGBM_BoosterCreateFromModelfile(
   API_END();
 }
 
-int LGBM_BoosterLoadModelFromString(
+int FLC_BoosterLoadModelFromString(
   const char* model_str,
   int* out_num_iterations,
   BoosterHandle* out) {
@@ -2316,7 +2316,7 @@ int LGBM_BoosterLoadModelFromString(
   API_END();
 }
 
-int LGBM_BoosterGetLoadedParam(
+int FLC_BoosterGetLoadedParam(
   BoosterHandle handle,
   int64_t buffer_len,
   int64_t* out_len,
@@ -2334,20 +2334,20 @@ int LGBM_BoosterGetLoadedParam(
 #ifdef _MSC_VER
   #pragma warning(disable : 4702)
 #endif
-int LGBM_BoosterFree(BoosterHandle handle) {
+int FLC_BoosterFree(BoosterHandle handle) {
   API_BEGIN();
   delete reinterpret_cast<Booster*>(handle);
   API_END();
 }
 
-int LGBM_BoosterShuffleModels(BoosterHandle handle, int start_iter, int end_iter) {
+int FLC_BoosterShuffleModels(BoosterHandle handle, int start_iter, int end_iter) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   ref_booster->ShuffleModels(start_iter, end_iter);
   API_END();
 }
 
-int LGBM_BoosterMerge(BoosterHandle handle,
+int FLC_BoosterMerge(BoosterHandle handle,
                       BoosterHandle other_handle) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
@@ -2356,7 +2356,7 @@ int LGBM_BoosterMerge(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterAddValidData(BoosterHandle handle,
+int FLC_BoosterAddValidData(BoosterHandle handle,
                              const DatasetHandle valid_data) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
@@ -2365,7 +2365,7 @@ int LGBM_BoosterAddValidData(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterResetTrainingData(BoosterHandle handle,
+int FLC_BoosterResetTrainingData(BoosterHandle handle,
                                   const DatasetHandle train_data) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
@@ -2374,21 +2374,21 @@ int LGBM_BoosterResetTrainingData(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterResetParameter(BoosterHandle handle, const char* parameters) {
+int FLC_BoosterResetParameter(BoosterHandle handle, const char* parameters) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   ref_booster->ResetConfig(parameters);
   API_END();
 }
 
-int LGBM_BoosterGetNumClasses(BoosterHandle handle, int* out_len) {
+int FLC_BoosterGetNumClasses(BoosterHandle handle, int* out_len) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   *out_len = ref_booster->GetBoosting()->NumberOfClasses();
   API_END();
 }
 
-int LGBM_BoosterGetLinear(BoosterHandle handle, int* out) {
+int FLC_BoosterGetLinear(BoosterHandle handle, int* out) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   if (ref_booster->GetBoosting()->IsLinear()) {
@@ -2399,14 +2399,14 @@ int LGBM_BoosterGetLinear(BoosterHandle handle, int* out) {
   API_END();
 }
 
-int LGBM_BoosterRefit(BoosterHandle handle, const int32_t* leaf_preds, int32_t nrow, int32_t ncol) {
+int FLC_BoosterRefit(BoosterHandle handle, const int32_t* leaf_preds, int32_t nrow, int32_t ncol) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   ref_booster->Refit(leaf_preds, nrow, ncol);
   API_END();
 }
 
-int LGBM_BoosterUpdateOneIter(BoosterHandle handle, int* produced_empty_tree) {
+int FLC_BoosterUpdateOneIter(BoosterHandle handle, int* produced_empty_tree) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   if (ref_booster->TrainOneIter()) {
@@ -2417,7 +2417,7 @@ int LGBM_BoosterUpdateOneIter(BoosterHandle handle, int* produced_empty_tree) {
   API_END();
 }
 
-int LGBM_BoosterUpdateOneIterCustom(BoosterHandle handle,
+int FLC_BoosterUpdateOneIterCustom(BoosterHandle handle,
                                     const float* grad,
                                     const float* hess,
                                     int* produced_empty_tree) {
@@ -2439,42 +2439,42 @@ int LGBM_BoosterUpdateOneIterCustom(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterRollbackOneIter(BoosterHandle handle) {
+int FLC_BoosterRollbackOneIter(BoosterHandle handle) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   ref_booster->RollbackOneIter();
   API_END();
 }
 
-int LGBM_BoosterGetCurrentIteration(BoosterHandle handle, int* out_iteration) {
+int FLC_BoosterGetCurrentIteration(BoosterHandle handle, int* out_iteration) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   *out_iteration = ref_booster->GetBoosting()->GetCurrentIteration();
   API_END();
 }
 
-int LGBM_BoosterNumModelPerIteration(BoosterHandle handle, int* out_tree_per_iteration) {
+int FLC_BoosterNumModelPerIteration(BoosterHandle handle, int* out_tree_per_iteration) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   *out_tree_per_iteration = ref_booster->GetBoosting()->NumModelPerIteration();
   API_END();
 }
 
-int LGBM_BoosterNumberOfTotalModel(BoosterHandle handle, int* out_models) {
+int FLC_BoosterNumberOfTotalModel(BoosterHandle handle, int* out_models) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   *out_models = ref_booster->GetBoosting()->NumberOfTotalModel();
   API_END();
 }
 
-int LGBM_BoosterGetEvalCounts(BoosterHandle handle, int* out_len) {
+int FLC_BoosterGetEvalCounts(BoosterHandle handle, int* out_len) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   *out_len = ref_booster->GetEvalCounts();
   API_END();
 }
 
-int LGBM_BoosterGetEvalNames(BoosterHandle handle,
+int FLC_BoosterGetEvalNames(BoosterHandle handle,
                              const int len,
                              int* out_len,
                              const size_t buffer_len,
@@ -2486,7 +2486,7 @@ int LGBM_BoosterGetEvalNames(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterGetFeatureNames(BoosterHandle handle,
+int FLC_BoosterGetFeatureNames(BoosterHandle handle,
                                 const int len,
                                 int* out_len,
                                 const size_t buffer_len,
@@ -2498,14 +2498,14 @@ int LGBM_BoosterGetFeatureNames(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterGetNumFeature(BoosterHandle handle, int* out_len) {
+int FLC_BoosterGetNumFeature(BoosterHandle handle, int* out_len) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   *out_len = ref_booster->GetBoosting()->MaxFeatureIdx() + 1;
   API_END();
 }
 
-int LGBM_BoosterGetEval(BoosterHandle handle,
+int FLC_BoosterGetEval(BoosterHandle handle,
                         int data_idx,
                         int* out_len,
                         double* out_results) {
@@ -2520,7 +2520,7 @@ int LGBM_BoosterGetEval(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterGetNumPredict(BoosterHandle handle,
+int FLC_BoosterGetNumPredict(BoosterHandle handle,
                               int data_idx,
                               int64_t* out_len) {
   API_BEGIN();
@@ -2529,7 +2529,7 @@ int LGBM_BoosterGetNumPredict(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterGetPredict(BoosterHandle handle,
+int FLC_BoosterGetPredict(BoosterHandle handle,
                            int data_idx,
                            int64_t* out_len,
                            double* out_result) {
@@ -2539,7 +2539,7 @@ int LGBM_BoosterGetPredict(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterPredictForFile(BoosterHandle handle,
+int FLC_BoosterPredictForFile(BoosterHandle handle,
                                const char* data_filename,
                                int data_has_header,
                                int predict_type,
@@ -2558,7 +2558,7 @@ int LGBM_BoosterPredictForFile(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterCalcNumPredict(BoosterHandle handle,
+int FLC_BoosterCalcNumPredict(BoosterHandle handle,
                                int num_row,
                                int predict_type,
                                int start_iteration,
@@ -2577,13 +2577,13 @@ int LGBM_BoosterCalcNumPredict(BoosterHandle handle,
 // At the same time, one should consider removing the old non-fast single row public API that stores its Predictor
 // in the Booster, because that will enable removing these Predictors from the Booster, and associated initialization
 // code.
-int LGBM_FastConfigFree(FastConfigHandle fastConfig) {
+int FLC_FastConfigFree(FastConfigHandle fastConfig) {
   API_BEGIN();
   delete reinterpret_cast<SingleRowPredictor*>(fastConfig);
   API_END();
 }
 
-int LGBM_BoosterPredictForCSR(BoosterHandle handle,
+int FLC_BoosterPredictForCSR(BoosterHandle handle,
                               const void* indptr,
                               int indptr_type,
                               const int32_t* indices,
@@ -2616,7 +2616,7 @@ int LGBM_BoosterPredictForCSR(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterPredictSparseOutput(BoosterHandle handle,
+int FLC_BoosterPredictSparseOutput(BoosterHandle handle,
                                     const void* indptr,
                                     int indptr_type,
                                     const int32_t* indices,
@@ -2675,19 +2675,19 @@ int LGBM_BoosterPredictSparseOutput(BoosterHandle handle,
     ref_booster->PredictSparseCSC(start_iteration, num_iteration, predict_type, num_col_or_row, ncol, get_row_fun, config,
                                   out_len, out_indptr, indptr_type, out_indices, out_data, data_type);
   } else {
-    Log::Fatal("Unknown matrix type in LGBM_BoosterPredictSparseOutput");
+    Log::Fatal("Unknown matrix type in FLC_BoosterPredictSparseOutput");
   }
   API_END();
 }
 
-int LGBM_BoosterFreePredictSparse(void* indptr, int32_t* indices, void* data, int indptr_type, int data_type) {
+int FLC_BoosterFreePredictSparse(void* indptr, int32_t* indices, void* data, int indptr_type, int data_type) {
   API_BEGIN();
   if (indptr_type == C_API_DTYPE_INT32) {
     delete[] reinterpret_cast<int32_t*>(indptr);
   } else if (indptr_type == C_API_DTYPE_INT64) {
     delete[] reinterpret_cast<int64_t*>(indptr);
   } else {
-    Log::Fatal("Unknown indptr type in LGBM_BoosterFreePredictSparse");
+    Log::Fatal("Unknown indptr type in FLC_BoosterFreePredictSparse");
   }
   delete[] indices;
   if (data_type == C_API_DTYPE_FLOAT32) {
@@ -2695,12 +2695,12 @@ int LGBM_BoosterFreePredictSparse(void* indptr, int32_t* indices, void* data, in
   } else if (data_type == C_API_DTYPE_FLOAT64) {
     delete[] reinterpret_cast<double*>(data);
   } else {
-    Log::Fatal("Unknown data type in LGBM_BoosterFreePredictSparse");
+    Log::Fatal("Unknown data type in FLC_BoosterFreePredictSparse");
   }
   API_END();
 }
 
-int LGBM_BoosterPredictForCSRSingleRow(BoosterHandle handle,
+int FLC_BoosterPredictForCSRSingleRow(BoosterHandle handle,
                                        const void* indptr,
                                        int indptr_type,
                                        const int32_t* indices,
@@ -2732,7 +2732,7 @@ int LGBM_BoosterPredictForCSRSingleRow(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterPredictForCSRSingleRowFastInit(BoosterHandle handle,
+int FLC_BoosterPredictForCSRSingleRowFastInit(BoosterHandle handle,
                                                const int predict_type,
                                                const int start_iteration,
                                                const int num_iteration,
@@ -2758,7 +2758,7 @@ int LGBM_BoosterPredictForCSRSingleRowFastInit(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterPredictForCSRSingleRowFast(FastConfigHandle fastConfig_handle,
+int FLC_BoosterPredictForCSRSingleRowFast(FastConfigHandle fastConfig_handle,
                                            const void* indptr,
                                            const int indptr_type,
                                            const int32_t* indices,
@@ -2775,7 +2775,7 @@ int LGBM_BoosterPredictForCSRSingleRowFast(FastConfigHandle fastConfig_handle,
 }
 
 
-int LGBM_BoosterPredictForCSC(BoosterHandle handle,
+int FLC_BoosterPredictForCSC(BoosterHandle handle,
                               const void* col_ptr,
                               int col_ptr_type,
                               const int32_t* indices,
@@ -2822,19 +2822,19 @@ int LGBM_BoosterPredictForCSC(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterValidateFeatureNames(BoosterHandle handle,
+int FLC_BoosterValidateFeatureNames(BoosterHandle handle,
                                      const char** data_names,
                                      int data_num_features) {
   API_BEGIN();
   int booster_num_features;
   size_t out_buffer_len;
-  LGBM_BoosterGetFeatureNames(handle, 0, &booster_num_features, 0, &out_buffer_len, nullptr);
+  FLC_BoosterGetFeatureNames(handle, 0, &booster_num_features, 0, &out_buffer_len, nullptr);
   if (booster_num_features != data_num_features) {
     Log::Fatal("Model was trained on %d features, but got %d input features to predict.", booster_num_features, data_num_features);
   }
   std::vector<std::vector<char>> tmp_names(booster_num_features, std::vector<char>(out_buffer_len));
   std::vector<char*> booster_names = Vector2Ptr(&tmp_names);
-  LGBM_BoosterGetFeatureNames(handle, data_num_features, &booster_num_features, out_buffer_len, &out_buffer_len, booster_names.data());
+  FLC_BoosterGetFeatureNames(handle, data_num_features, &booster_num_features, out_buffer_len, &out_buffer_len, booster_names.data());
   for (int i = 0; i < booster_num_features; ++i) {
     if (strcmp(data_names[i], booster_names[i]) != 0) {
       Log::Fatal("Expected '%s' at position %d but found '%s'", booster_names[i], i, data_names[i]);
@@ -2843,7 +2843,7 @@ int LGBM_BoosterValidateFeatureNames(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterPredictForMat(BoosterHandle handle,
+int FLC_BoosterPredictForMat(BoosterHandle handle,
                               const void* data,
                               int data_type,
                               int32_t nrow,
@@ -2867,7 +2867,7 @@ int LGBM_BoosterPredictForMat(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterPredictForMatSingleRow(BoosterHandle handle,
+int FLC_BoosterPredictForMatSingleRow(BoosterHandle handle,
                                        const void* data,
                                        int data_type,
                                        int32_t ncol,
@@ -2890,7 +2890,7 @@ int LGBM_BoosterPredictForMatSingleRow(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterPredictForMatSingleRowFastInit(BoosterHandle handle,
+int FLC_BoosterPredictForMatSingleRowFastInit(BoosterHandle handle,
                                                const int predict_type,
                                                const int start_iteration,
                                                const int num_iteration,
@@ -2910,7 +2910,7 @@ int LGBM_BoosterPredictForMatSingleRowFastInit(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterPredictForMatSingleRowFast(FastConfigHandle fastConfig_handle,
+int FLC_BoosterPredictForMatSingleRowFast(FastConfigHandle fastConfig_handle,
                                            const void* data,
                                            int64_t* out_len,
                                            double* out_result) {
@@ -2923,7 +2923,7 @@ int LGBM_BoosterPredictForMatSingleRowFast(FastConfigHandle fastConfig_handle,
 }
 
 
-int LGBM_BoosterPredictForMats(BoosterHandle handle,
+int FLC_BoosterPredictForMats(BoosterHandle handle,
                                const void** data,
                                int data_type,
                                int32_t nrow,
@@ -2946,7 +2946,7 @@ int LGBM_BoosterPredictForMats(BoosterHandle handle,
 }
 
 #ifndef LGB_R_BUILD
-void LGBM_BoosterPredictForArrowChunkedArray(BoosterHandle handle,
+void FLC_BoosterPredictForArrowChunkedArray(BoosterHandle handle,
                                              ArrowChunkedArray& chunked_array,
                                              int predict_type,
                                              int start_iteration,
@@ -2996,8 +2996,8 @@ void LGBM_BoosterPredictForArrowChunkedArray(BoosterHandle handle,
                        out_len);
 }
 
-[[deprecated("Use LGBM_BoosterPredictForArrowStream instead.")]]
-int LGBM_BoosterPredictForArrow(BoosterHandle handle,
+[[deprecated("Use FLC_BoosterPredictForArrowStream instead.")]]
+int FLC_BoosterPredictForArrow(BoosterHandle handle,
                                 int64_t n_chunks,
                                 ArrowArray* chunks,
                                 ArrowSchema* schema,
@@ -3008,14 +3008,14 @@ int LGBM_BoosterPredictForArrow(BoosterHandle handle,
                                 int64_t* out_len,
                                 double* out_result) {
   API_BEGIN();
-  Log::Warning("LGBM_BoosterPredictForArrow is deprecated. Please use LGBM_BoosterPredictForArrowStream instead.");
+  Log::Warning("FLC_BoosterPredictForArrow is deprecated. Please use FLC_BoosterPredictForArrowStream instead.");
   ArrowChunkedArray chunked_array(n_chunks, chunks, schema);
-  LGBM_BoosterPredictForArrowChunkedArray(
+  FLC_BoosterPredictForArrowChunkedArray(
     handle, chunked_array, predict_type, start_iteration, num_iteration, parameter, out_len, out_result);
   API_END();
 }
 
-int LGBM_BoosterPredictForArrowStream(BoosterHandle handle,
+int FLC_BoosterPredictForArrowStream(BoosterHandle handle,
                                       ArrowArrayStream* stream,
                                       int predict_type,
                                       int start_iteration,
@@ -3025,13 +3025,13 @@ int LGBM_BoosterPredictForArrowStream(BoosterHandle handle,
                                       double* out_result) {
   API_BEGIN();
   ArrowChunkedArray chunked_array(stream);
-  LGBM_BoosterPredictForArrowChunkedArray(
+  FLC_BoosterPredictForArrowChunkedArray(
     handle, chunked_array, predict_type, start_iteration, num_iteration, parameter, out_len, out_result);
   API_END();
 }
 #endif  // LGB_R_BUILD
 
-int LGBM_BoosterSaveModel(BoosterHandle handle,
+int FLC_BoosterSaveModel(BoosterHandle handle,
                           int start_iteration,
                           int num_iteration,
                           int feature_importance_type,
@@ -3043,7 +3043,7 @@ int LGBM_BoosterSaveModel(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterSaveModelToString(BoosterHandle handle,
+int FLC_BoosterSaveModelToString(BoosterHandle handle,
                                   int start_iteration,
                                   int num_iteration,
                                   int feature_importance_type,
@@ -3061,7 +3061,7 @@ int LGBM_BoosterSaveModelToString(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterDumpModel(BoosterHandle handle,
+int FLC_BoosterDumpModel(BoosterHandle handle,
                           int start_iteration,
                           int num_iteration,
                           int feature_importance_type,
@@ -3079,7 +3079,7 @@ int LGBM_BoosterDumpModel(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterGetLeafValue(BoosterHandle handle,
+int FLC_BoosterGetLeafValue(BoosterHandle handle,
                              int tree_idx,
                              int leaf_idx,
                              double* out_val) {
@@ -3089,7 +3089,7 @@ int LGBM_BoosterGetLeafValue(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterSetLeafValue(BoosterHandle handle,
+int FLC_BoosterSetLeafValue(BoosterHandle handle,
                              int tree_idx,
                              int leaf_idx,
                              double val) {
@@ -3099,7 +3099,7 @@ int LGBM_BoosterSetLeafValue(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterFeatureImportance(BoosterHandle handle,
+int FLC_BoosterFeatureImportance(BoosterHandle handle,
                                   int num_iteration,
                                   int importance_type,
                                   double* out_results) {
@@ -3112,7 +3112,7 @@ int LGBM_BoosterFeatureImportance(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterGetUpperBoundValue(BoosterHandle handle,
+int FLC_BoosterGetUpperBoundValue(BoosterHandle handle,
                                    double* out_results) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
@@ -3121,7 +3121,7 @@ int LGBM_BoosterGetUpperBoundValue(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_BoosterGetLowerBoundValue(BoosterHandle handle,
+int FLC_BoosterGetLowerBoundValue(BoosterHandle handle,
                                    double* out_results) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
@@ -3130,7 +3130,7 @@ int LGBM_BoosterGetLowerBoundValue(BoosterHandle handle,
   API_END();
 }
 
-int LGBM_NetworkInit(const char* machines,
+int FLC_NetworkInit(const char* machines,
                      int local_listen_port,
                      int listen_time_out,
                      int num_machines) {
@@ -3146,13 +3146,13 @@ int LGBM_NetworkInit(const char* machines,
   API_END();
 }
 
-int LGBM_NetworkFree() {
+int FLC_NetworkFree() {
   API_BEGIN();
   Network::Dispose();
   API_END();
 }
 
-int LGBM_NetworkInitWithFunctions(int num_machines, int rank,
+int FLC_NetworkInitWithFunctions(int num_machines, int rank,
                                   void* reduce_scatter_ext_fun,
                                   void* allgather_ext_fun) {
   API_BEGIN();
@@ -3162,19 +3162,19 @@ int LGBM_NetworkInitWithFunctions(int num_machines, int rank,
   API_END();
 }
 
-int LGBM_SetMaxThreads(int num_threads) {
+int FLC_SetMaxThreads(int num_threads) {
   API_BEGIN();
   if (num_threads <= 0) {
-    LGBM_MAX_NUM_THREADS = -1;
+    FLC_MAX_NUM_THREADS = -1;
   } else {
-    LGBM_MAX_NUM_THREADS = num_threads;
+    FLC_MAX_NUM_THREADS = num_threads;
   }
   API_END();
 }
 
-int LGBM_GetMaxThreads(int* out) {
+int FLC_GetMaxThreads(int* out) {
   API_BEGIN();
-  *out = LGBM_MAX_NUM_THREADS;
+  *out = FLC_MAX_NUM_THREADS;
   API_END();
 }
 

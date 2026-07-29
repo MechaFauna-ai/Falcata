@@ -419,7 +419,7 @@ R-package/config.status
 R-package/docs
 R-package/src/CMakeLists.txt
 R-package/src/Makevars
-R-package/src/lib_lightgbm.so.dSYM/
+R-package/src/lib_falcata.so.dSYM/
 R-package/src/src/
 R-package/src-x64
 R-package/src-i386

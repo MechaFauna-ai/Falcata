@@ -47,7 +47,7 @@
     }
     params_to_aliases <- jsonlite::fromJSON(
         .Call(
-            LGBM_DumpParamAliases_R
+            FLC_DumpParamAliases_R
         )
     )
     for (main_name in names(params_to_aliases)) {

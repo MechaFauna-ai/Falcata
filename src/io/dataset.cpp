@@ -33,6 +33,15 @@ namespace Falcata {
 const int Dataset::kSerializedReferenceVersionLength = 2;
 const char* Dataset::serialized_reference_version = "v1";
 
+// DELIBERATE: these two magic tokens keep the historical LightGBM spelling
+// even though the project is now Falcata. They are the on-disk format markers
+// of .dataset binaries -- renaming them makes every previously written binary
+// dataset unreadable (and ours unreadable by stock LightGBM), for zero
+// user-visible benefit: nobody sees these strings without hexdumping a file.
+// Binary-dataset interchange with stock LightGBM is a feature we intend to
+// keep. Rename them ONLY together with a deliberate format-version bump, at
+// which point existing caches must be regenerated anyway.
+// See docs/design/format-compatibility.md.
 const char* Dataset::binary_file_token = "______LightGBM_Binary_File_Token______\n";
 const char* Dataset::binary_serialized_reference_token = "______LightGBM_Binary_Serialized_Token______\n";
 
@@ -550,7 +559,7 @@ void Dataset::Construct(std::vector<std::unique_ptr<BinMapper>>* bin_mappers,
 
   auto is_sparse = io_config.is_enable_sparse;
   if (io_config.device_type == std::string("cuda")) {
-      LGBM_config_::current_device = lgbm_device_cuda;
+      FLC_config_::current_device = lgbm_device_cuda;
       if ((io_config.device_type == std::string("cuda")) && is_sparse) {
         Log::Warning("Using sparse features with CUDA is currently not supported.");
         is_sparse = false;

@@ -28,8 +28,8 @@ namespace Falcata {
 
 Common::Timer global_timer;
 
-int LGBM_config_::current_device = lgbm_device_cpu;
-int LGBM_config_::current_learner = use_cpu_learner;
+int FLC_config_::current_device = lgbm_device_cpu;
+int FLC_config_::current_learner = use_cpu_learner;
 
 GBDT::GBDT()
     : iter_(0),
@@ -78,7 +78,7 @@ void GBDT::Init(const Config* config, const Dataset* train_data, const Objective
   shrinkage_rate_ = config_->learning_rate;
 
   if (config_->device_type == std::string("cuda")) {
-    LGBM_config_::current_learner = use_cuda_learner;
+    FLC_config_::current_learner = use_cuda_learner;
     #ifdef USE_CUDA
     if (config_->device_type == std::string("cuda")) {
       const int gpu_device_id = config_->gpu_device_id >= 0 ? config_->gpu_device_id : 0;

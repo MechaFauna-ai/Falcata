@@ -26,7 +26,7 @@ int TestUtils::LoadDatasetFromExamples(const char* filename, const char* config,
   std::string fullPath("examples/");
   fullPath += filename;
   Log::Info("Debug sample data path: %s", fullPath.c_str());
-  return LGBM_DatasetCreateFromFile(
+  return FLC_DatasetCreateFromFile(
     fullPath.c_str(),
     config,
     nullptr,
@@ -144,8 +144,8 @@ void TestUtils::StreamDenseDataset(DatasetHandle dataset_handle,
   const std::vector<float>* weights,
   const std::vector<double>* init_scores,
   const std::vector<int32_t>* groups) {
-  int result = LGBM_DatasetSetWaitForManualFinish(dataset_handle, 1);
-  EXPECT_EQ(0, result) << "LGBM_DatasetSetWaitForManualFinish result code: " << result;
+  int result = FLC_DatasetSetWaitForManualFinish(dataset_handle, 1);
+  EXPECT_EQ(0, result) << "FLC_DatasetSetWaitForManualFinish result code: " << result;
 
   Log::Info("     Begin StreamDenseDataset");
   if ((nrows % batch_count) != 0) {
@@ -179,7 +179,7 @@ void TestUtils::StreamDenseDataset(DatasetHandle dataset_handle,
       init_scores_ptr = CreateInitScoreBatch(&init_score_batch, i, nrows, nclasses, batch_count, init_scores);
     }
 
-    result = LGBM_DatasetPushRowsWithMetadata(dataset_handle,
+    result = FLC_DatasetPushRowsWithMetadata(dataset_handle,
                                               features_ptr,
                                               1,
                                               batch_count,
@@ -190,9 +190,9 @@ void TestUtils::StreamDenseDataset(DatasetHandle dataset_handle,
                                               init_scores_ptr,
                                               groups_ptr,
                                               0);
-    EXPECT_EQ(0, result) << "LGBM_DatasetPushRowsWithMetadata result code: " << result;
+    EXPECT_EQ(0, result) << "FLC_DatasetPushRowsWithMetadata result code: " << result;
     if (result != 0) {
-      FAIL() << "LGBM_DatasetPushRowsWithMetadata failed";  // This forces an immediate failure, which EXPECT_EQ does not
+      FAIL() << "FLC_DatasetPushRowsWithMetadata failed";  // This forces an immediate failure, which EXPECT_EQ does not
     }
 
     features_ptr += batch_count * ncols;
@@ -220,8 +220,8 @@ void TestUtils::StreamSparseDataset(DatasetHandle dataset_handle,
                                     const std::vector<float>* weights,
                                     const std::vector<double>* init_scores,
                                     const std::vector<int32_t>* groups) {
-  int result = LGBM_DatasetSetWaitForManualFinish(dataset_handle, 1);
-  EXPECT_EQ(0, result) << "LGBM_DatasetSetWaitForManualFinish result code: " << result;
+  int result = FLC_DatasetSetWaitForManualFinish(dataset_handle, 1);
+  EXPECT_EQ(0, result) << "FLC_DatasetSetWaitForManualFinish result code: " << result;
 
   Log::Info("     Begin StreamSparseDataset");
   if ((nrows % batch_count) != 0) {
@@ -319,7 +319,7 @@ void TestUtils::PushSparseBatch(DatasetHandle dataset_handle,
 
     int32_t nelem = indptr->at(i + batch_count - 1) - indptr->at(i);
 
-    int result = LGBM_DatasetPushRowsByCSRWithMetadata(dataset_handle,
+    int result = FLC_DatasetPushRowsByCSRWithMetadata(dataset_handle,
                                                         indptr_ptr,
                                                         2,
                                                         indices_ptr,
@@ -333,9 +333,9 @@ void TestUtils::PushSparseBatch(DatasetHandle dataset_handle,
                                                         init_scores_ptr,
                                                         groups_ptr,
                                                         thread_id);
-    EXPECT_EQ(0, result) << "LGBM_DatasetPushRowsByCSRWithMetadata result code: " << result;
+    EXPECT_EQ(0, result) << "FLC_DatasetPushRowsByCSRWithMetadata result code: " << result;
     if (result != 0) {
-      FAIL() << "LGBM_DatasetPushRowsByCSRWithMetadata failed";  // This forces an immediate failure, which EXPECT_EQ does not
+      FAIL() << "FLC_DatasetPushRowsByCSRWithMetadata failed";  // This forces an immediate failure, which EXPECT_EQ does not
     }
 
     indptr_ptr += batch_count;

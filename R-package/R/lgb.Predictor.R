@@ -17,7 +17,7 @@ Predictor <- R6::R6Class(
 
         # Create handle on it
         handle <- .Call(
-          LGBM_BoosterCreateFromModelfile_R
+          FLC_BoosterCreateFromModelfile_R
           , path.expand(modelfile)
         )
         private$need_free_handle <- TRUE
@@ -54,7 +54,7 @@ Predictor <- R6::R6Class(
 
       cur_iter <- 0L
       .Call(
-        LGBM_BoosterGetCurrentIteration_R
+        FLC_BoosterGetCurrentIteration_R
         , private$handle
         , cur_iter
       )
@@ -91,7 +91,7 @@ Predictor <- R6::R6Class(
 
         # Predict from temporary file
         .Call(
-          LGBM_BoosterPredictForFile_R
+          FLC_BoosterPredictForFile_R
           , private$handle
           , data
           , as.integer(header)
@@ -111,9 +111,9 @@ Predictor <- R6::R6Class(
 
       } else if (predcontrib && inherits(data, c("dsparseMatrix", "dsparseVector"))) {
 
-        ncols <- .Call(LGBM_BoosterGetNumFeature_R, private$handle)
+        ncols <- .Call(FLC_BoosterGetNumFeature_R, private$handle)
         ncols_out <- integer(1L)
-        .Call(LGBM_BoosterGetNumClasses_R, private$handle, ncols_out)
+        .Call(FLC_BoosterGetNumClasses_R, private$handle, ncols_out)
         ncols_out <- (ncols + 1L) * max(ncols_out, 1L)
         if (is.na(ncols_out)) {
           ncols_out <- as.numeric(ncols + 1L) * as.numeric(max(ncols_out, 1L))
@@ -130,7 +130,7 @@ Predictor <- R6::R6Class(
                          , length(data)))
           }
           res <- .Call(
-            LGBM_BoosterPredictSparseOutput_R
+            FLC_BoosterPredictSparseOutput_R
             , private$handle
             , c(0L, as.integer(length(data@x)))
             , data@i - 1L
@@ -156,7 +156,7 @@ Predictor <- R6::R6Class(
                          , ncol(data)))
           }
           res <- .Call(
-            LGBM_BoosterPredictSparseOutput_R
+            FLC_BoosterPredictSparseOutput_R
             , private$handle
             , data@p
             , data@j
@@ -182,7 +182,7 @@ Predictor <- R6::R6Class(
                          , ncol(data)))
           }
           res <- .Call(
-            LGBM_BoosterPredictSparseOutput_R
+            FLC_BoosterPredictSparseOutput_R
             , private$handle
             , data@p
             , data@i
@@ -226,7 +226,7 @@ Predictor <- R6::R6Class(
 
         # Check number of predictions to do
         .Call(
-          LGBM_BoosterCalcNumPredict_R
+          FLC_BoosterCalcNumPredict_R
           , private$handle
           , as.integer(num_row)
           , as.integer(rawscore)
@@ -261,14 +261,14 @@ Predictor <- R6::R6Class(
 
             if (use_fast_config) {
               .Call(
-                LGBM_BoosterPredictForMatSingleRowFast_R
+                FLC_BoosterPredictForMatSingleRowFast_R
                 , private$fast_predict_config$handle
                 , data
                 , preds
               )
             } else {
               .Call(
-                LGBM_BoosterPredictForMatSingleRow_R
+                FLC_BoosterPredictForMatSingleRow_R
                 , private$handle
                 , data
                 , rawscore
@@ -283,7 +283,7 @@ Predictor <- R6::R6Class(
 
           } else {
             .Call(
-              LGBM_BoosterPredictForMat_R
+              FLC_BoosterPredictForMat_R
               , private$handle
               , data
               , as.integer(nrow(data))
@@ -311,7 +311,7 @@ Predictor <- R6::R6Class(
                 , num_iteration = num_iteration
               )
           } else {
-            ncols <- .Call(LGBM_BoosterGetNumFeature_R, private$handle)
+            ncols <- .Call(FLC_BoosterGetNumFeature_R, private$handle)
             use_fast_config <- FALSE
           }
 
@@ -323,7 +323,7 @@ Predictor <- R6::R6Class(
 
           if (use_fast_config) {
             .Call(
-              LGBM_BoosterPredictForCSRSingleRowFast_R
+              FLC_BoosterPredictForCSRSingleRowFast_R
               , self$fast_predict_config$handle
               , data@i - 1L
               , data@x
@@ -331,7 +331,7 @@ Predictor <- R6::R6Class(
             )
           } else {
             .Call(
-              LGBM_BoosterPredictForCSRSingleRow_R
+              FLC_BoosterPredictForCSRSingleRow_R
               , private$handle
               , data@i - 1L
               , data@x
@@ -348,7 +348,7 @@ Predictor <- R6::R6Class(
 
         } else if (inherits(data, "dgRMatrix")) {
 
-          ncols <- .Call(LGBM_BoosterGetNumFeature_R, private$handle)
+          ncols <- .Call(FLC_BoosterGetNumFeature_R, private$handle)
           if (ncol(data) > ncols) {
             stop(sprintf("Model was fitted to data with %d columns, input data has %.0f columns."
                          , ncols
@@ -368,13 +368,13 @@ Predictor <- R6::R6Class(
                 , num_iteration = num_iteration
               )
             } else {
-              ncols <- .Call(LGBM_BoosterGetNumFeature_R, private$handle)
+              ncols <- .Call(FLC_BoosterGetNumFeature_R, private$handle)
               use_fast_config <- FALSE
             }
 
             if (use_fast_config) {
               .Call(
-                LGBM_BoosterPredictForCSRSingleRowFast_R
+                FLC_BoosterPredictForCSRSingleRowFast_R
                 , self$fast_predict_config$handle
                 , data@j
                 , data@x
@@ -382,7 +382,7 @@ Predictor <- R6::R6Class(
               )
             } else {
               .Call(
-                LGBM_BoosterPredictForCSRSingleRow_R
+                FLC_BoosterPredictForCSRSingleRow_R
                 , private$handle
                 , data@j
                 , data@x
@@ -400,7 +400,7 @@ Predictor <- R6::R6Class(
           } else {
 
             .Call(
-              LGBM_BoosterPredictForCSR_R
+              FLC_BoosterPredictForCSR_R
               , private$handle
               , data@p
               , data@j
@@ -423,7 +423,7 @@ Predictor <- R6::R6Class(
           }
           # Check if data is a dgCMatrix (sparse matrix, column compressed format)
           .Call(
-            LGBM_BoosterPredictForCSC_R
+            FLC_BoosterPredictForCSC_R
             , private$handle
             , data@p
             , data@i
@@ -518,7 +518,7 @@ Predictor <- R6::R6Class(
     , finalize = function() {
       if (private$need_free_handle) {
         .Call(
-          LGBM_BoosterFree_R
+          FLC_BoosterFree_R
           , private$handle
         )
         private$handle <- NULL

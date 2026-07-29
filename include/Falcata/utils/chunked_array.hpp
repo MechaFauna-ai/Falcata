@@ -29,7 +29,7 @@ namespace Falcata {
  * track of number of inserted elements, but is not thread-safe (this is ok as usually input is a streaming iterator).
  * For parallel input sources the low-level API must be used.
  *
- * Note: When using this for `LGBM_DatasetCreateFromMats` use a
+ * Note: When using this for `FLC_DatasetCreateFromMats` use a
  *       chunk_size multiple of #num_cols for your dataset, so each chunk
  *       contains "complete" instances.
  *
@@ -38,7 +38,7 @@ namespace Falcata {
  * The easiest way to use is:
  *  0. ChunkedArray(chunk_size)  # Choose appropriate size
  *  1. add(value)                # as many times as you want (will generate chunks as needed)
- *  2. data() or void_data()     # retrieves a T** or void** pointer (useful for `LGBM_DatasetCreateFromMats`).
+ *  2. data() or void_data()     # retrieves a T** or void** pointer (useful for `FLC_DatasetCreateFromMats`).
  *
  * Useful query methods (all O(1)):
  *  - get_add_count()   # total count of added elements.
@@ -131,7 +131,7 @@ class ChunkedArray {
 
     /**
      * Returns the pointer to the raw chunks data, but cast to void**.
-     * This is so ``LGBM_DatasetCreateFromMats`` accepts it.
+     * This is so ``FLC_DatasetCreateFromMats`` accepts it.
      *
      * @return void** pointer to raw data.
      */

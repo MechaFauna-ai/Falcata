@@ -5,9 +5,9 @@
  */
 #include <Falcata/utils/openmp_wrapper.h>
 
-int LGBM_MAX_NUM_THREADS = -1;
+int FLC_MAX_NUM_THREADS = -1;
 
-int LGBM_DEFAULT_NUM_THREADS = -1;
+int FLC_DEFAULT_NUM_THREADS = -1;
 
 #ifdef _OPENMP
 
@@ -16,18 +16,18 @@ int LGBM_DEFAULT_NUM_THREADS = -1;
 int OMP_NUM_THREADS() {
   int default_num_threads = 1;
 
-  if (LGBM_DEFAULT_NUM_THREADS > 0) {
+  if (FLC_DEFAULT_NUM_THREADS > 0) {
     // if Falcata-specific default has been set, ignore OpenMP-global config
-    default_num_threads = LGBM_DEFAULT_NUM_THREADS;
+    default_num_threads = FLC_DEFAULT_NUM_THREADS;
   } else {
     // otherwise, default to OpenMP-global config
     default_num_threads = omp_get_max_threads();
   }
 
-  // ensure that if LGBM_SetMaxThreads() was ever called, Falcata doesn't
+  // ensure that if FLC_SetMaxThreads() was ever called, Falcata doesn't
   // use more than that many threads
-  if (LGBM_MAX_NUM_THREADS > 0 && default_num_threads > LGBM_MAX_NUM_THREADS) {
-    return LGBM_MAX_NUM_THREADS;
+  if (FLC_MAX_NUM_THREADS > 0 && default_num_threads > FLC_MAX_NUM_THREADS) {
+    return FLC_MAX_NUM_THREADS;
   }
 
   return default_num_threads;
@@ -35,9 +35,9 @@ int OMP_NUM_THREADS() {
 
 void OMP_SET_NUM_THREADS(int num_threads) {
   if (num_threads <= 0) {
-    LGBM_DEFAULT_NUM_THREADS = -1;
+    FLC_DEFAULT_NUM_THREADS = -1;
   } else {
-    LGBM_DEFAULT_NUM_THREADS = num_threads;
+    FLC_DEFAULT_NUM_THREADS = num_threads;
   }
 }
 

@@ -66,7 +66,7 @@ typedef void* ByteBufferHandle; /*!< \brief Handle of ByteBuffer. */
  * \brief Get string message of the last error.
  * \return Error information
  */
-FALCATA_C_EXPORT const char* LGBM_GetLastError();
+FALCATA_C_EXPORT const char* FLC_GetLastError();
 
 /*!
  * \brief Dump all parameter names with their aliases to JSON.
@@ -75,7 +75,7 @@ FALCATA_C_EXPORT const char* LGBM_GetLastError();
  * \param[out] out_str JSON format string of parameters, should pre-allocate memory
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DumpParamAliases(int64_t buffer_len,
+FALCATA_C_EXPORT int FLC_DumpParamAliases(int64_t buffer_len,
                                             int64_t* out_len,
                                             char* out_str);
 
@@ -84,30 +84,30 @@ FALCATA_C_EXPORT int LGBM_DumpParamAliases(int64_t buffer_len,
  * \param callback The callback function to register
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_RegisterLogCallback(void (*callback)(const char*));
+FALCATA_C_EXPORT int FLC_RegisterLogCallback(void (*callback)(const char*));
 
 /*!
  * \brief Get number of samples based on parameters and total number of rows of data.
  * \param num_total_row Number of total rows
  * \param parameters Additional parameters, namely, ``bin_construct_sample_cnt`` is used to calculate returned value
- * \param[out] out Number of samples. This value is used to pre-allocate memory to hold sample indices when calling ``LGBM_SampleIndices``
+ * \param[out] out Number of samples. This value is used to pre-allocate memory to hold sample indices when calling ``FLC_SampleIndices``
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_GetSampleCount(int32_t num_total_row,
+FALCATA_C_EXPORT int FLC_GetSampleCount(int32_t num_total_row,
                                           const char* parameters,
                                           int* out);
 
 /*!
  * \brief Create sample indices for total number of rows.
  * \note
- * You should pre-allocate memory for ``out``, you can get its length by ``LGBM_GetSampleCount``.
+ * You should pre-allocate memory for ``out``, you can get its length by ``FLC_GetSampleCount``.
  * \param num_total_row Number of total rows
  * \param parameters Additional parameters, namely, ``bin_construct_sample_cnt`` and ``data_random_seed`` are used to produce the output
  * \param[out] out Created indices, type is int32_t
  * \param[out] out_len Number of indices
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_SampleIndices(int32_t num_total_row,
+FALCATA_C_EXPORT int FLC_SampleIndices(int32_t num_total_row,
                                          const char* parameters,
                                          void* out,
                                          int32_t* out_len);
@@ -119,14 +119,14 @@ FALCATA_C_EXPORT int LGBM_SampleIndices(int32_t num_total_row,
  * \param[out] out_val Byte value at index to return
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_ByteBufferGetAt(ByteBufferHandle handle, int32_t index, uint8_t* out_val);
+FALCATA_C_EXPORT int FLC_ByteBufferGetAt(ByteBufferHandle handle, int32_t index, uint8_t* out_val);
 
 /*!
  * \brief Free space for byte buffer.
  * \param handle Handle of byte buffer to be freed
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_ByteBufferFree(ByteBufferHandle handle);
+FALCATA_C_EXPORT int FLC_ByteBufferFree(ByteBufferHandle handle);
 
 /* --- start Dataset interface */
 
@@ -138,7 +138,7 @@ FALCATA_C_EXPORT int LGBM_ByteBufferFree(ByteBufferHandle handle);
  * \param[out] out A loaded dataset
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetCreateFromFile(const char* filename,
+FALCATA_C_EXPORT int FLC_DatasetCreateFromFile(const char* filename,
                                                  const char* parameters,
                                                  const DatasetHandle reference,
                                                  DatasetHandle* out);
@@ -156,7 +156,7 @@ FALCATA_C_EXPORT int LGBM_DatasetCreateFromFile(const char* filename,
  * \param[out] out Created dataset
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetCreateFromSampledColumn(double** sample_data,
+FALCATA_C_EXPORT int FLC_DatasetCreateFromSampledColumn(double** sample_data,
                                                           int** sample_indices,
                                                           int32_t ncol,
                                                           const int* num_per_col,
@@ -173,7 +173,7 @@ FALCATA_C_EXPORT int LGBM_DatasetCreateFromSampledColumn(double** sample_data,
  * \param[out] out Created dataset
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetCreateByReference(const DatasetHandle reference,
+FALCATA_C_EXPORT int FLC_DatasetCreateByReference(const DatasetHandle reference,
                                                     int64_t num_total_row,
                                                     DatasetHandle* out);
 
@@ -188,7 +188,7 @@ FALCATA_C_EXPORT int LGBM_DatasetCreateByReference(const DatasetHandle reference
  * \param omp_max_threads Maximum number of OpenMP threads (-1 for default)
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetInitStreaming(DatasetHandle dataset,
+FALCATA_C_EXPORT int FLC_DatasetInitStreaming(DatasetHandle dataset,
                                                 int32_t has_weights,
                                                 int32_t has_init_scores,
                                                 int32_t has_queries,
@@ -206,7 +206,7 @@ FALCATA_C_EXPORT int LGBM_DatasetInitStreaming(DatasetHandle dataset,
  * \param[out] out Created dataset
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetCreateFromSerializedReference(const void* ref_buffer,
+FALCATA_C_EXPORT int FLC_DatasetCreateFromSerializedReference(const void* ref_buffer,
                                                                 int32_t ref_buffer_size,
                                                                 int64_t num_row,
                                                                 int32_t num_classes,
@@ -223,7 +223,7 @@ FALCATA_C_EXPORT int LGBM_DatasetCreateFromSerializedReference(const void* ref_b
  * \param start_row Row start index
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetPushRows(DatasetHandle dataset,
+FALCATA_C_EXPORT int FLC_DatasetPushRows(DatasetHandle dataset,
                                            const void* data,
                                            int data_type,
                                            int32_t nrow,
@@ -233,10 +233,10 @@ FALCATA_C_EXPORT int LGBM_DatasetPushRows(DatasetHandle dataset,
 /*!
  * \brief Push data to existing dataset.
  *        The general flow for a streaming scenario is:
- *        1. create Dataset "schema" (e.g. ``LGBM_DatasetCreateFromSampledColumn``)
- *        2. init them for thread-safe streaming (``LGBM_DatasetInitStreaming``)
- *        3. push data (``LGBM_DatasetPushRowsWithMetadata`` or ``LGBM_DatasetPushRowsByCSRWithMetadata``)
- *        4. call ``LGBM_DatasetMarkFinished``
+ *        1. create Dataset "schema" (e.g. ``FLC_DatasetCreateFromSampledColumn``)
+ *        2. init them for thread-safe streaming (``FLC_DatasetInitStreaming``)
+ *        3. push data (``FLC_DatasetPushRowsWithMetadata`` or ``FLC_DatasetPushRowsByCSRWithMetadata``)
+ *        4. call ``FLC_DatasetMarkFinished``
  * \param dataset Handle of dataset
  * \param data Pointer to the data space
  * \param data_type Type of ``data`` pointer, can be ``C_API_DTYPE_FLOAT32`` or ``C_API_DTYPE_FLOAT64``
@@ -250,7 +250,7 @@ FALCATA_C_EXPORT int LGBM_DatasetPushRows(DatasetHandle dataset,
  * \param tid The id of the calling thread, from 0...N-1 threads
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetPushRowsWithMetadata(DatasetHandle dataset,
+FALCATA_C_EXPORT int FLC_DatasetPushRowsWithMetadata(DatasetHandle dataset,
                                                        const void* data,
                                                        int data_type,
                                                        int32_t nrow,
@@ -276,7 +276,7 @@ FALCATA_C_EXPORT int LGBM_DatasetPushRowsWithMetadata(DatasetHandle dataset,
  * \param start_row Row start index
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetPushRowsByCSR(DatasetHandle dataset,
+FALCATA_C_EXPORT int FLC_DatasetPushRowsByCSR(DatasetHandle dataset,
                                                 const void* indptr,
                                                 int indptr_type,
                                                 const int32_t* indices,
@@ -288,7 +288,7 @@ FALCATA_C_EXPORT int LGBM_DatasetPushRowsByCSR(DatasetHandle dataset,
                                                 int64_t start_row);
 
 /*!
- * \brief Push CSR data to existing dataset. (See ``LGBM_DatasetPushRowsWithMetadata`` for more details.)
+ * \brief Push CSR data to existing dataset. (See ``FLC_DatasetPushRowsWithMetadata`` for more details.)
  * \param dataset Handle of dataset
  * \param indptr Pointer to row headers
  * \param indptr_type Type of ``indptr``, can be ``C_API_DTYPE_INT32`` or ``C_API_DTYPE_INT64``
@@ -305,7 +305,7 @@ FALCATA_C_EXPORT int LGBM_DatasetPushRowsByCSR(DatasetHandle dataset,
  * \param tid The id of the calling thread, from 0...N-1 threads
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetPushRowsByCSRWithMetadata(DatasetHandle dataset,
+FALCATA_C_EXPORT int FLC_DatasetPushRowsByCSRWithMetadata(DatasetHandle dataset,
                                                             const void* indptr,
                                                             int indptr_type,
                                                             const int32_t* indices,
@@ -322,19 +322,19 @@ FALCATA_C_EXPORT int LGBM_DatasetPushRowsByCSRWithMetadata(DatasetHandle dataset
 
 /*!
  * \brief Set whether or not the Dataset waits for a manual MarkFinished call or calls FinishLoad on itself automatically.
- *        Set to 1 for streaming scenario, and use ``LGBM_DatasetMarkFinished`` to manually finish the Dataset.
+ *        Set to 1 for streaming scenario, and use ``FLC_DatasetMarkFinished`` to manually finish the Dataset.
  * \param dataset Handle of dataset
  * \param wait Whether to wait or not (1 or 0)
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetSetWaitForManualFinish(DatasetHandle dataset, int wait);
+FALCATA_C_EXPORT int FLC_DatasetSetWaitForManualFinish(DatasetHandle dataset, int wait);
 
 /*!
  * \brief Mark the Dataset as complete by calling ``dataset->FinishLoad``.
  * \param dataset Handle of dataset
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetMarkFinished(DatasetHandle dataset);
+FALCATA_C_EXPORT int FLC_DatasetMarkFinished(DatasetHandle dataset);
 
 /*!
  * \brief Create a dataset from CSR format.
@@ -351,7 +351,7 @@ FALCATA_C_EXPORT int LGBM_DatasetMarkFinished(DatasetHandle dataset);
  * \param[out] out Created dataset
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetCreateFromCSR(const void* indptr,
+FALCATA_C_EXPORT int FLC_DatasetCreateFromCSR(const void* indptr,
                                                 int indptr_type,
                                                 const int32_t* indices,
                                                 const void* data,
@@ -374,7 +374,7 @@ FALCATA_C_EXPORT int LGBM_DatasetCreateFromCSR(const void* indptr,
  * \param[out] out Created dataset
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetCreateFromCSRFunc(void* get_row_funptr,
+FALCATA_C_EXPORT int FLC_DatasetCreateFromCSRFunc(void* get_row_funptr,
                                                     int num_rows,
                                                     int64_t num_col,
                                                     const char* parameters,
@@ -396,7 +396,7 @@ FALCATA_C_EXPORT int LGBM_DatasetCreateFromCSRFunc(void* get_row_funptr,
  * \param[out] out Created dataset
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetCreateFromCSC(const void* col_ptr,
+FALCATA_C_EXPORT int FLC_DatasetCreateFromCSC(const void* col_ptr,
                                                 int col_ptr_type,
                                                 const int32_t* indices,
                                                 const void* data,
@@ -420,7 +420,7 @@ FALCATA_C_EXPORT int LGBM_DatasetCreateFromCSC(const void* col_ptr,
  * \param[out] out Created dataset
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetCreateFromMat(const void* data,
+FALCATA_C_EXPORT int FLC_DatasetCreateFromMat(const void* data,
                                                 int data_type,
                                                 int32_t nrow,
                                                 int32_t ncol,
@@ -445,7 +445,7 @@ FALCATA_C_EXPORT int LGBM_DatasetCreateFromMat(const void* data,
  * \param[out] out Created dataset
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetCreateFromMatDevice(const void* data,
+FALCATA_C_EXPORT int FLC_DatasetCreateFromMatDevice(const void* data,
                                                       int data_type,
                                                       int32_t nrow,
                                                       int32_t ncol,
@@ -467,7 +467,7 @@ FALCATA_C_EXPORT int LGBM_DatasetCreateFromMatDevice(const void* data,
  * \param[out] out Created dataset
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetCreateFromMats(int32_t nmat,
+FALCATA_C_EXPORT int FLC_DatasetCreateFromMats(int32_t nmat,
                                                  const void** data,
                                                  int data_type,
                                                  int32_t* nrow,
@@ -479,7 +479,7 @@ FALCATA_C_EXPORT int LGBM_DatasetCreateFromMats(int32_t nmat,
 
 /*!
  * \brief Create dataset from Arrow.
- * \deprecated This function is deprecated in favor of ``LGBM_DatasetCreateFromArrowStream``.
+ * \deprecated This function is deprecated in favor of ``FLC_DatasetCreateFromArrowStream``.
  * \param n_chunks The number of Arrow arrays passed to this function
  * \param chunks Pointer to the list of Arrow arrays
  * \param schema Pointer to the schema of all Arrow arrays
@@ -488,8 +488,8 @@ FALCATA_C_EXPORT int LGBM_DatasetCreateFromMats(int32_t nmat,
  * \param[out] out Created dataset
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT FALCATA_DEPRECATED("Use LGBM_DatasetCreateFromArrowStream instead.")
-int LGBM_DatasetCreateFromArrow(int64_t n_chunks,
+FALCATA_C_EXPORT FALCATA_DEPRECATED("Use FLC_DatasetCreateFromArrowStream instead.")
+int FLC_DatasetCreateFromArrow(int64_t n_chunks,
                                                   struct ArrowArray* chunks,
                                                   struct ArrowSchema* schema,
                                                   const char* parameters,
@@ -504,7 +504,7 @@ int LGBM_DatasetCreateFromArrow(int64_t n_chunks,
  * \param[out] out Created dataset
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetCreateFromArrowStream(struct ArrowArrayStream* stream,
+FALCATA_C_EXPORT int FLC_DatasetCreateFromArrowStream(struct ArrowArrayStream* stream,
                                                         const char* parameters,
                                                         const DatasetHandle reference,
                                                         DatasetHandle *out);
@@ -518,7 +518,7 @@ FALCATA_C_EXPORT int LGBM_DatasetCreateFromArrowStream(struct ArrowArrayStream* 
  * \param[out] out Subset of data
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetGetSubset(const DatasetHandle handle,
+FALCATA_C_EXPORT int FLC_DatasetGetSubset(const DatasetHandle handle,
                                             const int32_t* used_row_indices,
                                             int32_t num_used_row_indices,
                                             const char* parameters,
@@ -531,7 +531,7 @@ FALCATA_C_EXPORT int LGBM_DatasetGetSubset(const DatasetHandle handle,
  * \param num_feature_names Number of feature names
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetSetFeatureNames(DatasetHandle handle,
+FALCATA_C_EXPORT int FLC_DatasetSetFeatureNames(DatasetHandle handle,
                                                   const char** feature_names,
                                                   int num_feature_names);
 
@@ -547,7 +547,7 @@ FALCATA_C_EXPORT int LGBM_DatasetSetFeatureNames(DatasetHandle handle,
  * \param[out] feature_names Feature names, should pre-allocate memory
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetGetFeatureNames(DatasetHandle handle,
+FALCATA_C_EXPORT int FLC_DatasetGetFeatureNames(DatasetHandle handle,
                                                   const int len,
                                                   int* num_feature_names,
                                                   const size_t buffer_len,
@@ -559,7 +559,7 @@ FALCATA_C_EXPORT int LGBM_DatasetGetFeatureNames(DatasetHandle handle,
  * \param handle Handle of dataset to be freed
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetFree(DatasetHandle handle);
+FALCATA_C_EXPORT int FLC_DatasetFree(DatasetHandle handle);
 
 /*!
  * \brief Save dataset to binary file.
@@ -567,7 +567,7 @@ FALCATA_C_EXPORT int LGBM_DatasetFree(DatasetHandle handle);
  * \param filename The name of the file
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetSaveBinary(DatasetHandle handle,
+FALCATA_C_EXPORT int FLC_DatasetSaveBinary(DatasetHandle handle,
                                              const char* filename);
 
 /*!
@@ -577,7 +577,7 @@ FALCATA_C_EXPORT int LGBM_DatasetSaveBinary(DatasetHandle handle,
  * \param[out] out_len The length of the output byte array (returned for convenience)
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetSerializeReferenceToBinary(DatasetHandle handle,
+FALCATA_C_EXPORT int FLC_DatasetSerializeReferenceToBinary(DatasetHandle handle,
                                                              ByteBufferHandle* out,
                                                              int32_t* out_len);
 
@@ -587,7 +587,7 @@ FALCATA_C_EXPORT int LGBM_DatasetSerializeReferenceToBinary(DatasetHandle handle
  * \param filename The name of the file
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetDumpText(DatasetHandle handle,
+FALCATA_C_EXPORT int FLC_DatasetDumpText(DatasetHandle handle,
                                            const char* filename);
 
 /*!
@@ -603,7 +603,7 @@ FALCATA_C_EXPORT int LGBM_DatasetDumpText(DatasetHandle handle,
  * \param type Type of ``field_data`` pointer, can be ``C_API_DTYPE_INT32``, ``C_API_DTYPE_FLOAT32`` or ``C_API_DTYPE_FLOAT64``
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetSetField(DatasetHandle handle,
+FALCATA_C_EXPORT int FLC_DatasetSetField(DatasetHandle handle,
                                            const char* field_name,
                                            const void* field_data,
                                            int num_element,
@@ -611,7 +611,7 @@ FALCATA_C_EXPORT int LGBM_DatasetSetField(DatasetHandle handle,
 
 /*!
  * \brief Set vector to a content in info.
- * \deprecated This function is deprecated in favor of ``LGBM_DatasetSetFieldFromArrowStream``.
+ * \deprecated This function is deprecated in favor of ``FLC_DatasetSetFieldFromArrowStream``.
  * \note
  * - \a group converts input datatype into ``int32``;
  * - \a label and \a weight convert input datatype into ``float32``;
@@ -623,8 +623,8 @@ FALCATA_C_EXPORT int LGBM_DatasetSetField(DatasetHandle handle,
  * \param schema Pointer to the schema of all Arrow arrays
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT FALCATA_DEPRECATED("Use LGBM_DatasetSetFieldFromArrowStream instead.")
-int LGBM_DatasetSetFieldFromArrow(DatasetHandle handle,
+FALCATA_C_EXPORT FALCATA_DEPRECATED("Use FLC_DatasetSetFieldFromArrowStream instead.")
+int FLC_DatasetSetFieldFromArrow(DatasetHandle handle,
                                                     const char* field_name,
                                                     int64_t n_chunks,
                                                     struct ArrowArray* chunks,
@@ -641,7 +641,7 @@ int LGBM_DatasetSetFieldFromArrow(DatasetHandle handle,
  * \param stream Arrow stream pointer
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetSetFieldFromArrowStream(DatasetHandle handle,
+FALCATA_C_EXPORT int FLC_DatasetSetFieldFromArrowStream(DatasetHandle handle,
                                                           const char* field_name,
                                                           struct ArrowArrayStream* stream);
 
@@ -654,7 +654,7 @@ FALCATA_C_EXPORT int LGBM_DatasetSetFieldFromArrowStream(DatasetHandle handle,
  * \param[out] out_type Type of result pointer, can be ``C_API_DTYPE_INT32``, ``C_API_DTYPE_FLOAT32`` or ``C_API_DTYPE_FLOAT64``
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetGetField(DatasetHandle handle,
+FALCATA_C_EXPORT int FLC_DatasetGetField(DatasetHandle handle,
                                            const char* field_name,
                                            int* out_len,
                                            const void** out_ptr,
@@ -666,7 +666,7 @@ FALCATA_C_EXPORT int LGBM_DatasetGetField(DatasetHandle handle,
  * \param new_parameters New dataset parameters
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetUpdateParamChecking(const char* old_parameters,
+FALCATA_C_EXPORT int FLC_DatasetUpdateParamChecking(const char* old_parameters,
                                                       const char* new_parameters);
 
 /*!
@@ -675,7 +675,7 @@ FALCATA_C_EXPORT int LGBM_DatasetUpdateParamChecking(const char* old_parameters,
  * \param[out] out The address to hold number of data points
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetGetNumData(DatasetHandle handle,
+FALCATA_C_EXPORT int FLC_DatasetGetNumData(DatasetHandle handle,
                                              int* out);
 
 /*!
@@ -684,7 +684,7 @@ FALCATA_C_EXPORT int LGBM_DatasetGetNumData(DatasetHandle handle,
  * \param[out] out The address to hold number of features
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetGetNumFeature(DatasetHandle handle,
+FALCATA_C_EXPORT int FLC_DatasetGetNumFeature(DatasetHandle handle,
                                                 int* out);
 
 /*!
@@ -694,7 +694,7 @@ FALCATA_C_EXPORT int LGBM_DatasetGetNumFeature(DatasetHandle handle,
  * \param[out] out The address to hold number of bins
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetGetFeatureNumBin(DatasetHandle handle,
+FALCATA_C_EXPORT int FLC_DatasetGetFeatureNumBin(DatasetHandle handle,
                                                    int feature,
                                                    int* out);
 
@@ -704,7 +704,7 @@ FALCATA_C_EXPORT int LGBM_DatasetGetFeatureNumBin(DatasetHandle handle,
  * \param source The handle of the dataset to take features from
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_DatasetAddFeaturesFrom(DatasetHandle target,
+FALCATA_C_EXPORT int FLC_DatasetAddFeaturesFrom(DatasetHandle target,
                                                   DatasetHandle source);
 
 /* --- start Booster interfaces */
@@ -715,7 +715,7 @@ FALCATA_C_EXPORT int LGBM_DatasetAddFeaturesFrom(DatasetHandle target,
 * \param[out] out The address to hold linear trees indicator
 * \return 0 when succeed, -1 when failure happens
 */
-FALCATA_C_EXPORT int LGBM_BoosterGetLinear(BoosterHandle handle, int* out);
+FALCATA_C_EXPORT int FLC_BoosterGetLinear(BoosterHandle handle, int* out);
 
 /*!
  * \brief Create a new boosting learner.
@@ -724,7 +724,7 @@ FALCATA_C_EXPORT int LGBM_BoosterGetLinear(BoosterHandle handle, int* out);
  * \param[out] out Handle of created booster
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterCreate(const DatasetHandle train_data,
+FALCATA_C_EXPORT int FLC_BoosterCreate(const DatasetHandle train_data,
                                          const char* parameters,
                                          BoosterHandle* out);
 
@@ -735,7 +735,7 @@ FALCATA_C_EXPORT int LGBM_BoosterCreate(const DatasetHandle train_data,
  * \param[out] out Handle of created booster
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterCreateFromModelfile(const char* filename,
+FALCATA_C_EXPORT int FLC_BoosterCreateFromModelfile(const char* filename,
                                                       int* out_num_iterations,
                                                       BoosterHandle* out);
 
@@ -746,7 +746,7 @@ FALCATA_C_EXPORT int LGBM_BoosterCreateFromModelfile(const char* filename,
  * \param[out] out Handle of created booster
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterLoadModelFromString(const char* model_str,
+FALCATA_C_EXPORT int FLC_BoosterLoadModelFromString(const char* model_str,
                                                       int* out_num_iterations,
                                                       BoosterHandle* out);
 
@@ -758,7 +758,7 @@ FALCATA_C_EXPORT int LGBM_BoosterLoadModelFromString(const char* model_str,
  * \param[out] out_str JSON string containing parameters
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterGetLoadedParam(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterGetLoadedParam(BoosterHandle handle,
                                                  int64_t buffer_len,
                                                  int64_t* out_len,
                                                  char* out_str);
@@ -769,7 +769,7 @@ FALCATA_C_EXPORT int LGBM_BoosterGetLoadedParam(BoosterHandle handle,
  * \param handle Handle of booster to be freed
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterFree(BoosterHandle handle);
+FALCATA_C_EXPORT int FLC_BoosterFree(BoosterHandle handle);
 
 /*!
  * \brief Shuffle models.
@@ -778,7 +778,7 @@ FALCATA_C_EXPORT int LGBM_BoosterFree(BoosterHandle handle);
  * \param end_iter The last iteration that will be shuffled
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterShuffleModels(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterShuffleModels(BoosterHandle handle,
                                                 int start_iter,
                                                 int end_iter);
 
@@ -788,7 +788,7 @@ FALCATA_C_EXPORT int LGBM_BoosterShuffleModels(BoosterHandle handle,
  * \param other_handle Other handle of booster
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterMerge(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterMerge(BoosterHandle handle,
                                         BoosterHandle other_handle);
 
 /*!
@@ -797,7 +797,7 @@ FALCATA_C_EXPORT int LGBM_BoosterMerge(BoosterHandle handle,
  * \param valid_data Validation dataset
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterAddValidData(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterAddValidData(BoosterHandle handle,
                                                const DatasetHandle valid_data);
 
 /*!
@@ -806,7 +806,7 @@ FALCATA_C_EXPORT int LGBM_BoosterAddValidData(BoosterHandle handle,
  * \param train_data Training dataset
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterResetTrainingData(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterResetTrainingData(BoosterHandle handle,
                                                     const DatasetHandle train_data);
 
 /*!
@@ -815,7 +815,7 @@ FALCATA_C_EXPORT int LGBM_BoosterResetTrainingData(BoosterHandle handle,
  * \param parameters Parameters in format 'key1=value1 key2=value2'
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterResetParameter(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterResetParameter(BoosterHandle handle,
                                                  const char* parameters);
 
 /*!
@@ -824,7 +824,7 @@ FALCATA_C_EXPORT int LGBM_BoosterResetParameter(BoosterHandle handle,
  * \param[out] out_len Number of classes
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterGetNumClasses(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterGetNumClasses(BoosterHandle handle,
                                                 int* out_len);
 
 /*!
@@ -837,7 +837,7 @@ FALCATA_C_EXPORT int LGBM_BoosterGetNumClasses(BoosterHandle handle,
  *                         it is possible that another call to this function would produce a non-empty tree.
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterUpdateOneIter(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterUpdateOneIter(BoosterHandle handle,
                                                 int* produced_empty_tree);
 
 /*!
@@ -848,7 +848,7 @@ FALCATA_C_EXPORT int LGBM_BoosterUpdateOneIter(BoosterHandle handle,
  * \param ncol Number of columns of ``leaf_preds``
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterRefit(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterRefit(BoosterHandle handle,
                                         const int32_t* leaf_preds,
                                         int32_t nrow,
                                         int32_t ncol);
@@ -869,7 +869,7 @@ FALCATA_C_EXPORT int LGBM_BoosterRefit(BoosterHandle handle,
  *                         it is possible that another call to this function would produce a non-empty tree.
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterUpdateOneIterCustom(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterUpdateOneIterCustom(BoosterHandle handle,
                                                       const float* grad,
                                                       const float* hess,
                                                       int* produced_empty_tree);
@@ -879,7 +879,7 @@ FALCATA_C_EXPORT int LGBM_BoosterUpdateOneIterCustom(BoosterHandle handle,
  * \param handle Handle of booster
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterRollbackOneIter(BoosterHandle handle);
+FALCATA_C_EXPORT int FLC_BoosterRollbackOneIter(BoosterHandle handle);
 
 /*!
  * \brief Get index of the current boosting iteration.
@@ -887,7 +887,7 @@ FALCATA_C_EXPORT int LGBM_BoosterRollbackOneIter(BoosterHandle handle);
  * \param[out] out_iteration Index of the current boosting iteration
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterGetCurrentIteration(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterGetCurrentIteration(BoosterHandle handle,
                                                       int* out_iteration);
 
 /*!
@@ -896,7 +896,7 @@ FALCATA_C_EXPORT int LGBM_BoosterGetCurrentIteration(BoosterHandle handle,
  * \param[out] out_tree_per_iteration Number of trees per iteration
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterNumModelPerIteration(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterNumModelPerIteration(BoosterHandle handle,
                                                        int* out_tree_per_iteration);
 
 /*!
@@ -905,7 +905,7 @@ FALCATA_C_EXPORT int LGBM_BoosterNumModelPerIteration(BoosterHandle handle,
  * \param[out] out_models Number of weak sub-models
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterNumberOfTotalModel(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterNumberOfTotalModel(BoosterHandle handle,
                                                      int* out_models);
 
 /*!
@@ -914,7 +914,7 @@ FALCATA_C_EXPORT int LGBM_BoosterNumberOfTotalModel(BoosterHandle handle,
  * \param[out] out_len Total number of evaluation metrics
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterGetEvalCounts(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterGetEvalCounts(BoosterHandle handle,
                                                 int* out_len);
 
 /*!
@@ -929,7 +929,7 @@ FALCATA_C_EXPORT int LGBM_BoosterGetEvalCounts(BoosterHandle handle,
  * \param[out] out_strs Names of evaluation metrics, should pre-allocate memory
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterGetEvalNames(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterGetEvalNames(BoosterHandle handle,
                                                const int len,
                                                int* out_len,
                                                const size_t buffer_len,
@@ -948,7 +948,7 @@ FALCATA_C_EXPORT int LGBM_BoosterGetEvalNames(BoosterHandle handle,
  * \param[out] out_strs Names of features, should pre-allocate memory
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterGetFeatureNames(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterGetFeatureNames(BoosterHandle handle,
                                                   const int len,
                                                   int* out_len,
                                                   const size_t buffer_len,
@@ -962,7 +962,7 @@ FALCATA_C_EXPORT int LGBM_BoosterGetFeatureNames(BoosterHandle handle,
  * \param data_num_features Number of features in the data
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterValidateFeatureNames(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterValidateFeatureNames(BoosterHandle handle,
                                                        const char** data_names,
                                                        int data_num_features);
 
@@ -972,21 +972,21 @@ FALCATA_C_EXPORT int LGBM_BoosterValidateFeatureNames(BoosterHandle handle,
  * \param[out] out_len Total number of features
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterGetNumFeature(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterGetNumFeature(BoosterHandle handle,
                                                 int* out_len);
 
 /*!
  * \brief Get evaluation for training data and validation data.
  * \note
- *   1. You should call ``LGBM_BoosterGetEvalNames`` first to get the names of evaluation metrics.
- *   2. You should pre-allocate memory for ``out_results``, you can get its length by ``LGBM_BoosterGetEvalCounts``.
+ *   1. You should call ``FLC_BoosterGetEvalNames`` first to get the names of evaluation metrics.
+ *   2. You should pre-allocate memory for ``out_results``, you can get its length by ``FLC_BoosterGetEvalCounts``.
  * \param handle Handle of booster
  * \param data_idx Index of data, 0: training data, 1: 1st validation data, 2: 2nd validation data and so on
  * \param[out] out_len Length of output result
  * \param[out] out_results Array with evaluation results
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterGetEval(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterGetEval(BoosterHandle handle,
                                           int data_idx,
                                           int* out_len,
                                           double* out_results);
@@ -999,7 +999,7 @@ FALCATA_C_EXPORT int LGBM_BoosterGetEval(BoosterHandle handle,
  * \param[out] out_len Number of predictions
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterGetNumPredict(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterGetNumPredict(BoosterHandle handle,
                                                 int data_idx,
                                                 int64_t* out_len);
 
@@ -1013,7 +1013,7 @@ FALCATA_C_EXPORT int LGBM_BoosterGetNumPredict(BoosterHandle handle,
  * \param[out] out_result Pointer to array with predictions
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterGetPredict(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterGetPredict(BoosterHandle handle,
                                              int data_idx,
                                              int64_t* out_len,
                                              double* out_result);
@@ -1034,7 +1034,7 @@ FALCATA_C_EXPORT int LGBM_BoosterGetPredict(BoosterHandle handle,
  * \param result_filename Filename of result file in which predictions will be written
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterPredictForFile(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterPredictForFile(BoosterHandle handle,
                                                  const char* data_filename,
                                                  int data_has_header,
                                                  int predict_type,
@@ -1057,7 +1057,7 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictForFile(BoosterHandle handle,
  * \param[out] out_len Length of prediction
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterCalcNumPredict(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterCalcNumPredict(BoosterHandle handle,
                                                  int num_row,
                                                  int predict_type,
                                                  int start_iteration,
@@ -1070,7 +1070,7 @@ FALCATA_C_EXPORT int LGBM_BoosterCalcNumPredict(BoosterHandle handle,
  * \param fastConfig Handle to the FastConfig object acquired with a ``*FastInit()`` method.
  * \return 0 when it succeeds, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_FastConfigFree(FastConfigHandle fastConfig);
+FALCATA_C_EXPORT int FLC_FastConfigFree(FastConfigHandle fastConfig);
 
 /*!
  * \brief Make prediction for a new dataset in CSR format.
@@ -1100,7 +1100,7 @@ FALCATA_C_EXPORT int LGBM_FastConfigFree(FastConfigHandle fastConfig);
  * \param[out] out_result Pointer to array with predictions
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterPredictForCSR(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterPredictForCSR(BoosterHandle handle,
                                                 const void* indptr,
                                                 int indptr_type,
                                                 const int32_t* indices,
@@ -1122,7 +1122,7 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictForCSR(BoosterHandle handle,
  * The outputs are pre-allocated, as they can vary for each invocation, but the shape should be the same:
  *   - for feature contributions, the shape of sparse matrix will be ``num_class * num_data * (num_feature + 1)``.
  * The output indptr_type for the sparse matrix will be the same as the given input indptr_type.
- * Call ``LGBM_BoosterFreePredictSparse`` to deallocate resources.
+ * Call ``FLC_BoosterFreePredictSparse`` to deallocate resources.
  * \param handle Handle of booster
  * \param indptr Pointer to row headers for CSR or column headers for CSC
  * \param indptr_type Type of ``indptr``, can be ``C_API_DTYPE_INT32`` or ``C_API_DTYPE_INT64``
@@ -1144,7 +1144,7 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictForCSR(BoosterHandle handle,
  * \param[out] out_data Pointer to sparse data space
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterPredictSparseOutput(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterPredictSparseOutput(BoosterHandle handle,
                                                       const void* indptr,
                                                       int indptr_type,
                                                       const int32_t* indices,
@@ -1164,7 +1164,7 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictSparseOutput(BoosterHandle handle,
                                                       void** out_data);
 
 /*!
- * \brief Method corresponding to ``LGBM_BoosterPredictSparseOutput`` to free the allocated data.
+ * \brief Method corresponding to ``FLC_BoosterPredictSparseOutput`` to free the allocated data.
  * \param indptr Pointer to output row headers or column headers to be deallocated
  * \param indices Pointer to sparse indices to be deallocated
  * \param data Pointer to sparse data space to be deallocated
@@ -1172,7 +1172,7 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictSparseOutput(BoosterHandle handle,
  * \param data_type Type of ``data`` pointer, can be ``C_API_DTYPE_FLOAT32`` or ``C_API_DTYPE_FLOAT64``
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterFreePredictSparse(void* indptr, int32_t* indices, void* data, int indptr_type, int data_type);
+FALCATA_C_EXPORT int FLC_BoosterFreePredictSparse(void* indptr, int32_t* indices, void* data, int indptr_type, int data_type);
 
 /*!
  * \brief Make prediction for a new dataset in CSR format. This method re-uses the internal predictor structure
@@ -1203,7 +1203,7 @@ FALCATA_C_EXPORT int LGBM_BoosterFreePredictSparse(void* indptr, int32_t* indice
  * \param[out] out_result Pointer to array with predictions
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterPredictForCSRSingleRow(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterPredictForCSRSingleRow(BoosterHandle handle,
                                                          const void* indptr,
                                                          int indptr_type,
                                                          const int32_t* indices,
@@ -1220,9 +1220,9 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictForCSRSingleRow(BoosterHandle handle,
                                                          double* out_result);
 
 /*!
- * \brief Initialize and return a ``FastConfigHandle`` for use with ``LGBM_BoosterPredictForCSRSingleRowFast``.
+ * \brief Initialize and return a ``FastConfigHandle`` for use with ``FLC_BoosterPredictForCSRSingleRowFast``.
  *
- * Release the ``FastConfig`` by passing its handle to ``LGBM_FastConfigFree`` when no longer needed.
+ * Release the ``FastConfig`` by passing its handle to ``FLC_FastConfigFree`` when no longer needed.
  *
  * \param handle Booster handle
  * \param predict_type What should be predicted
@@ -1235,10 +1235,10 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictForCSRSingleRow(BoosterHandle handle,
  * \param data_type Type of ``data`` pointer, can be ``C_API_DTYPE_FLOAT32`` or ``C_API_DTYPE_FLOAT64``
  * \param num_col Number of columns
  * \param parameter Other parameters for prediction, e.g. early stopping for prediction
- * \param[out] out_fastConfig FastConfig object with which you can call ``LGBM_BoosterPredictForCSRSingleRowFast``
+ * \param[out] out_fastConfig FastConfig object with which you can call ``FLC_BoosterPredictForCSRSingleRowFast``
  * \return 0 when it succeeds, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterPredictForCSRSingleRowFastInit(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterPredictForCSRSingleRowFastInit(BoosterHandle handle,
                                                                  const int predict_type,
                                                                  const int start_iteration,
                                                                  const int num_iteration,
@@ -1248,15 +1248,15 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictForCSRSingleRowFastInit(BoosterHandle ha
                                                                  FastConfigHandle *out_fastConfig);
 
 /*!
- * \brief Faster variant of ``LGBM_BoosterPredictForCSRSingleRow``.
+ * \brief Faster variant of ``FLC_BoosterPredictForCSRSingleRow``.
  *
- * Score single rows after setup with ``LGBM_BoosterPredictForCSRSingleRowFastInit``.
+ * Score single rows after setup with ``FLC_BoosterPredictForCSRSingleRowFastInit``.
  *
  * By removing the setup steps from this call extra optimizations can be made like
  * initializing the config only once, instead of once per call.
  *
  * \note
- *   Setting up the number of threads is only done once at ``LGBM_BoosterPredictForCSRSingleRowFastInit``
+ *   Setting up the number of threads is only done once at ``FLC_BoosterPredictForCSRSingleRowFastInit``
  *   instead of at each prediction.
  *   If you use a different number of threads in other calls, you need to start the setup process over,
  *   or that number of threads will be used for these calls as well.
@@ -1267,7 +1267,7 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictForCSRSingleRowFastInit(BoosterHandle ha
  *   - for leaf index, its length is equal to ``num_class * num_data * num_iteration``;
  *   - for feature contributions, its length is equal to ``num_class * num_data * (num_feature + 1)``.
  *
- * \param fastConfig_handle FastConfig object handle returned by ``LGBM_BoosterPredictForCSRSingleRowFastInit``
+ * \param fastConfig_handle FastConfig object handle returned by ``FLC_BoosterPredictForCSRSingleRowFastInit``
  * \param indptr Pointer to row headers
  * \param indptr_type Type of ``indptr``, can be ``C_API_DTYPE_INT32`` or ``C_API_DTYPE_INT64``
  * \param indices Pointer to column indices
@@ -1278,7 +1278,7 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictForCSRSingleRowFastInit(BoosterHandle ha
  * \param[out] out_result Pointer to array with predictions
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterPredictForCSRSingleRowFast(FastConfigHandle fastConfig_handle,
+FALCATA_C_EXPORT int FLC_BoosterPredictForCSRSingleRowFast(FastConfigHandle fastConfig_handle,
                                                              const void* indptr,
                                                              const int indptr_type,
                                                              const int32_t* indices,
@@ -1316,7 +1316,7 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictForCSRSingleRowFast(FastConfigHandle fas
  * \param[out] out_result Pointer to array with predictions
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterPredictForCSC(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterPredictForCSC(BoosterHandle handle,
                                                 const void* col_ptr,
                                                 int col_ptr_type,
                                                 const int32_t* indices,
@@ -1357,7 +1357,7 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictForCSC(BoosterHandle handle,
  * \param[out] out_result Pointer to array with predictions
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterPredictForMat(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterPredictForMat(BoosterHandle handle,
                                                 const void* data,
                                                 int data_type,
                                                 int32_t nrow,
@@ -1395,7 +1395,7 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictForMat(BoosterHandle handle,
  * \param[out] out_result Pointer to array with predictions
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterPredictForMatSingleRow(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterPredictForMatSingleRow(BoosterHandle handle,
                                                          const void* data,
                                                          int data_type,
                                                          int ncol,
@@ -1408,9 +1408,9 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictForMatSingleRow(BoosterHandle handle,
                                                          double* out_result);
 
 /*!
- * \brief Initialize and return a ``FastConfigHandle`` for use with ``LGBM_BoosterPredictForMatSingleRowFast``.
+ * \brief Initialize and return a ``FastConfigHandle`` for use with ``FLC_BoosterPredictForMatSingleRowFast``.
  *
- * Release the ``FastConfig`` by passing its handle to ``LGBM_FastConfigFree`` when no longer needed.
+ * Release the ``FastConfig`` by passing its handle to ``FLC_FastConfigFree`` when no longer needed.
  *
  * \param handle Booster handle
  * \param predict_type What should be predicted
@@ -1423,10 +1423,10 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictForMatSingleRow(BoosterHandle handle,
  * \param data_type Type of ``data`` pointer, can be ``C_API_DTYPE_FLOAT32`` or ``C_API_DTYPE_FLOAT64``
  * \param ncol Number of columns
  * \param parameter Other parameters for prediction, e.g. early stopping for prediction
- * \param[out] out_fastConfig FastConfig object with which you can call ``LGBM_BoosterPredictForMatSingleRowFast``
+ * \param[out] out_fastConfig FastConfig object with which you can call ``FLC_BoosterPredictForMatSingleRowFast``
  * \return 0 when it succeeds, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterPredictForMatSingleRowFastInit(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterPredictForMatSingleRowFastInit(BoosterHandle handle,
                                                                  const int predict_type,
                                                                  const int start_iteration,
                                                                  const int num_iteration,
@@ -1436,26 +1436,26 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictForMatSingleRowFastInit(BoosterHandle ha
                                                                  FastConfigHandle *out_fastConfig);
 
 /*!
- * \brief Faster variant of ``LGBM_BoosterPredictForMatSingleRow``.
+ * \brief Faster variant of ``FLC_BoosterPredictForMatSingleRow``.
  *
- * Score a single row after setup with ``LGBM_BoosterPredictForMatSingleRowFastInit``.
+ * Score a single row after setup with ``FLC_BoosterPredictForMatSingleRowFastInit``.
  *
  * By removing the setup steps from this call extra optimizations can be made like
  * initializing the config only once, instead of once per call.
  *
  * \note
- *   Setting up the number of threads is only done once at ``LGBM_BoosterPredictForMatSingleRowFastInit``
+ *   Setting up the number of threads is only done once at ``FLC_BoosterPredictForMatSingleRowFastInit``
  *   instead of at each prediction.
  *   If you use a different number of threads in other calls, you need to start the setup process over,
  *   or that number of threads will be used for these calls as well.
  *
- * \param fastConfig_handle FastConfig object handle returned by ``LGBM_BoosterPredictForMatSingleRowFastInit``
+ * \param fastConfig_handle FastConfig object handle returned by ``FLC_BoosterPredictForMatSingleRowFastInit``
  * \param data Single-row array data (no other way than row-major form).
  * \param[out] out_len Length of output result
  * \param[out] out_result Pointer to array with predictions
  * \return 0 when it succeeds, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterPredictForMatSingleRowFast(FastConfigHandle fastConfig_handle,
+FALCATA_C_EXPORT int FLC_BoosterPredictForMatSingleRowFast(FastConfigHandle fastConfig_handle,
                                                              const void* data,
                                                              int64_t* out_len,
                                                              double* out_result);
@@ -1484,7 +1484,7 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictForMatSingleRowFast(FastConfigHandle fas
  * \param[out] out_result Pointer to array with predictions
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterPredictForMats(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterPredictForMats(BoosterHandle handle,
                                                  const void** data,
                                                  int data_type,
                                                  int32_t nrow,
@@ -1498,7 +1498,7 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictForMats(BoosterHandle handle,
 
 /*!
  * \brief Make prediction for a new dataset.
- * \deprecated This function is deprecated in favor of ``LGBM_BoosterPredictForArrowStream``.
+ * \deprecated This function is deprecated in favor of ``FLC_BoosterPredictForArrowStream``.
  * \note
  * You should pre-allocate memory for ``out_result``:
  *   - for normal and raw score, its length is equal to ``num_class * num_data``;
@@ -1520,8 +1520,8 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictForMats(BoosterHandle handle,
  * \param[out] out_result Pointer to array with predictions
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT FALCATA_DEPRECATED("Use LGBM_BoosterPredictForArrowStream instead.")
-int LGBM_BoosterPredictForArrow(BoosterHandle handle,
+FALCATA_C_EXPORT FALCATA_DEPRECATED("Use FLC_BoosterPredictForArrowStream instead.")
+int FLC_BoosterPredictForArrow(BoosterHandle handle,
                                                   int64_t n_chunks,
                                                   struct ArrowArray* chunks,
                                                   struct ArrowSchema* schema,
@@ -1553,7 +1553,7 @@ int LGBM_BoosterPredictForArrow(BoosterHandle handle,
  * \param[out] out_result Pointer to array with predictions
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterPredictForArrowStream(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterPredictForArrowStream(BoosterHandle handle,
                                                         struct ArrowArrayStream* stream,
                                                         int predict_type,
                                                         int start_iteration,
@@ -1571,7 +1571,7 @@ FALCATA_C_EXPORT int LGBM_BoosterPredictForArrowStream(BoosterHandle handle,
  * \param filename The name of the file
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterSaveModel(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterSaveModel(BoosterHandle handle,
                                             int start_iteration,
                                             int num_iteration,
                                             int feature_importance_type,
@@ -1588,7 +1588,7 @@ FALCATA_C_EXPORT int LGBM_BoosterSaveModel(BoosterHandle handle,
  * \param[out] out_str String of model, should pre-allocate memory
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterSaveModelToString(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterSaveModelToString(BoosterHandle handle,
                                                     int start_iteration,
                                                     int num_iteration,
                                                     int feature_importance_type,
@@ -1607,7 +1607,7 @@ FALCATA_C_EXPORT int LGBM_BoosterSaveModelToString(BoosterHandle handle,
  * \param[out] out_str JSON format string of model, should pre-allocate memory
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterDumpModel(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterDumpModel(BoosterHandle handle,
                                             int start_iteration,
                                             int num_iteration,
                                             int feature_importance_type,
@@ -1623,7 +1623,7 @@ FALCATA_C_EXPORT int LGBM_BoosterDumpModel(BoosterHandle handle,
  * \param[out] out_val Output result from the specified leaf
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterGetLeafValue(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterGetLeafValue(BoosterHandle handle,
                                                int tree_idx,
                                                int leaf_idx,
                                                double* out_val);
@@ -1636,7 +1636,7 @@ FALCATA_C_EXPORT int LGBM_BoosterGetLeafValue(BoosterHandle handle,
  * \param val Leaf value
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterSetLeafValue(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterSetLeafValue(BoosterHandle handle,
                                                int tree_idx,
                                                int leaf_idx,
                                                double val);
@@ -1651,7 +1651,7 @@ FALCATA_C_EXPORT int LGBM_BoosterSetLeafValue(BoosterHandle handle,
  * \param[out] out_results Result array with feature importance
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterFeatureImportance(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterFeatureImportance(BoosterHandle handle,
                                                     int num_iteration,
                                                     int importance_type,
                                                     double* out_results);
@@ -1662,7 +1662,7 @@ FALCATA_C_EXPORT int LGBM_BoosterFeatureImportance(BoosterHandle handle,
  * \param[out] out_results Result pointing to max value
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterGetUpperBoundValue(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterGetUpperBoundValue(BoosterHandle handle,
                                                      double* out_results);
 
 /*!
@@ -1671,7 +1671,7 @@ FALCATA_C_EXPORT int LGBM_BoosterGetUpperBoundValue(BoosterHandle handle,
  * \param[out] out_results Result pointing to min value
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_BoosterGetLowerBoundValue(BoosterHandle handle,
+FALCATA_C_EXPORT int FLC_BoosterGetLowerBoundValue(BoosterHandle handle,
                                                      double* out_results);
 
 /*!
@@ -1682,7 +1682,7 @@ FALCATA_C_EXPORT int LGBM_BoosterGetLowerBoundValue(BoosterHandle handle,
  * \param num_machines Total number of machines
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_NetworkInit(const char* machines,
+FALCATA_C_EXPORT int FLC_NetworkInit(const char* machines,
                                        int local_listen_port,
                                        int listen_time_out,
                                        int num_machines);
@@ -1691,7 +1691,7 @@ FALCATA_C_EXPORT int LGBM_NetworkInit(const char* machines,
  * \brief Finalize the network.
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_NetworkFree();
+FALCATA_C_EXPORT int FLC_NetworkFree();
 
 /*!
  * \brief Initialize the network with external collective functions.
@@ -1701,7 +1701,7 @@ FALCATA_C_EXPORT int LGBM_NetworkFree();
  * \param allgather_ext_fun The external allgather function
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_NetworkInitWithFunctions(int num_machines,
+FALCATA_C_EXPORT int FLC_NetworkInitWithFunctions(int num_machines,
                                                     int rank,
                                                     void* reduce_scatter_ext_fun,
                                                     void* allgather_ext_fun);
@@ -1711,14 +1711,14 @@ FALCATA_C_EXPORT int LGBM_NetworkInitWithFunctions(int num_machines,
  * \param num_threads maximum number of threads used by Falcata. -1 means defaulting to omp_get_num_threads().
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_SetMaxThreads(int num_threads);
+FALCATA_C_EXPORT int FLC_SetMaxThreads(int num_threads);
 
 /*!
  * \brief Get current maximum number of threads used by Falcata routines in this process.
  * \param[out] out current maximum number of threads used by Falcata. -1 means defaulting to omp_get_num_threads().
  * \return 0 when succeed, -1 when failure happens
  */
-FALCATA_C_EXPORT int LGBM_GetMaxThreads(int* out);
+FALCATA_C_EXPORT int FLC_GetMaxThreads(int* out);
 
 #if !defined(__cplusplus) && (!defined(__STDC__) || (__STDC_VERSION__ < 199901L))
 /*! \brief Inline specifier no-op in C using standards before C99. */
@@ -1757,7 +1757,7 @@ static char* LastErrorMsg() { static THREAD_LOCAL char err_msg[512] = "Everythin
  * This will call unsafe ``sprintf`` when compiled using C standards before C99.
  * \param msg Error message
  */
-INLINE_FUNCTION void LGBM_SetLastError(const char* msg) {
+INLINE_FUNCTION void FLC_SetLastError(const char* msg) {
 #if !defined(__cplusplus) && (!defined(__STDC__) || (__STDC_VERSION__ < 199901L))
   sprintf(LastErrorMsg(), "%s", msg);  /* NOLINT(runtime/printf) */
 #else

@@ -128,7 +128,7 @@ if ($env:TASK -eq "regular") {
     cmake -B build -S . -A x64 ; Assert-Output $?
     cmake --build build --target ALL_BUILD --config Release ; Assert-Output $?
     sh ./build-python.sh install --precompile ; Assert-Output $?
-    cp ./Release/lib_lightgbm.dll "$env:BUILD_ARTIFACTSTAGINGDIRECTORY"
+    cp ./Release/lib_falcata.dll "$env:BUILD_ARTIFACTSTAGINGDIRECTORY"
     cp ./Release/lightgbm.exe "$env:BUILD_ARTIFACTSTAGINGDIRECTORY"
 } elseif ($env:TASK -eq "sdist") {
     sh ./build-python.sh sdist ; Assert-Output $?

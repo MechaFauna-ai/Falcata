@@ -27,11 +27,11 @@ def _find_lib_path() -> List[str]:
     if system() in ("Windows", "Microsoft"):
         dll_path.append(curr_path.parents[1] / "Release")
         dll_path.append(curr_path.parents[1] / "windows" / "x64" / "DLL")
-        dll_path = [p / "lib_lightgbm.dll" for p in dll_path]
+        dll_path = [p / "lib_falcata.dll" for p in dll_path]
     elif system() == "Darwin":
-        dll_path = [p / "lib_lightgbm.dylib" for p in dll_path]
+        dll_path = [p / "lib_falcata.dylib" for p in dll_path]
     else:
-        dll_path = [p / "lib_lightgbm.so" for p in dll_path]
+        dll_path = [p / "lib_falcata.so" for p in dll_path]
     lib_path = [str(p) for p in dll_path if p.is_file()]
     if not lib_path:
         dll_path_joined = "\n".join(map(str, dll_path))
@@ -39,7 +39,7 @@ def _find_lib_path() -> List[str]:
     return lib_path
 
 
-# we don't need lib_lightgbm while building docs
+# we don't need lib_falcata while building docs
 _LIB: ctypes.CDLL
 if environ.get("LIGHTGBM_BUILD_DOC", "False") == "True":
     from unittest.mock import Mock  # isort: skip
