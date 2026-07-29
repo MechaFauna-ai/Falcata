@@ -52,7 +52,7 @@ void delete_cpp_char_vec(SEXP R_ptr) {
 }
 
 // Note: MSVC has issues with Altrep classes, so they are disabled for it.
-// See: https://github.com/falcata-org/Falcata/pull/6213#issuecomment-2111025768
+// See: https://github.com/lightgbm-org/LightGBM/pull/6213#issuecomment-2111025768
 #ifdef _MSC_VER
 #  define LGB_NO_ALTREP
 #endif
