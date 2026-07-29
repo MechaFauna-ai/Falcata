@@ -64,7 +64,7 @@
 }
 
 # [description]
-#     Per https://github.com/falcata-org/Falcata/blob/master/docs/Parameters.rst#metric,
+#     Per https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst#metric,
 #     a few different strings can be used to indicate "no metrics".
 # [returns]
 #     A character vector
