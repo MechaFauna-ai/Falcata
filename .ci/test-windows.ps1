@@ -25,8 +25,8 @@ if ($env:TASK -eq "r-package") {
 
 if ($env:TASK -eq "cpp-tests") {
     cmake -B build -S . -DBUILD_CPP_TEST=ON -DUSE_DEBUG=ON -A x64
-    cmake --build build --target testlightgbm --config Debug ; Assert-Output $?
-    .\Debug\testlightgbm.exe ; Assert-Output $?
+    cmake --build build --target testfalcata --config Debug ; Assert-Output $?
+    .\Debug\testfalcata.exe ; Assert-Output $?
     exit 0
 }
 
@@ -78,7 +78,7 @@ if ($env:TASK -eq "swig") {
     }
     cmake --build build --target ALL_BUILD --config Release ; Assert-Output $?
     if ($env:PRODUCES_ARTIFACTS -eq "true") {
-        cp ./build/lightgbmlib.jar $env:BUILD_ARTIFACTSTAGINGDIRECTORY/lightgbmlib_win.jar ; Assert-Output $?
+        cp ./build/falcatalib.jar $env:BUILD_ARTIFACTSTAGINGDIRECTORY/lightgbmlib_win.jar ; Assert-Output $?
     }
     exit 0
 }
@@ -129,7 +129,7 @@ if ($env:TASK -eq "regular") {
     cmake --build build --target ALL_BUILD --config Release ; Assert-Output $?
     sh ./build-python.sh install --precompile ; Assert-Output $?
     cp ./Release/lib_falcata.dll "$env:BUILD_ARTIFACTSTAGINGDIRECTORY"
-    cp ./Release/lightgbm.exe "$env:BUILD_ARTIFACTSTAGINGDIRECTORY"
+    cp ./Release/falcata.exe "$env:BUILD_ARTIFACTSTAGINGDIRECTORY"
 } elseif ($env:TASK -eq "sdist") {
     sh ./build-python.sh sdist ; Assert-Output $?
     sh ./.ci/check-python-dists.sh ./dist ; Assert-Output $?

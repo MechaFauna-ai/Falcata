@@ -62,7 +62,7 @@ Now we are ready to checkout Falcata and compile it with GPU support:
     # cmake -B build -S . -DUSE_GPU=1 -DOpenCL_LIBRARY=/usr/local/cuda/lib64/libOpenCL.so -DOpenCL_INCLUDE_DIR=/usr/local/cuda/include/
     cmake --build build -j$(nproc)
 
-You will see two binaries are generated, ``falcata`` and ``lib_lightgbm.so``.
+You will see two binaries are generated, ``falcata`` and ``lib_falcata.so``.
 
 If you are building on macOS, you probably need to remove macro ``BOOST_COMPUTE_USE_OFFLINE_CACHE`` in ``src/treelearner/gpu_tree_learner.h`` to avoid a known crash bug in Boost.Compute.
 

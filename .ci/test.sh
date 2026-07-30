@@ -78,8 +78,8 @@ if [[ "$TASK" == "cpp-tests" ]]; then
         fi
     fi
     cmake -B build -S . "${cmake_args[@]}"
-    cmake --build build --target testlightgbm -j4 || exit 1
-    ./testlightgbm || exit 1
+    cmake --build build --target testfalcata -j4 || exit 1
+    ./testfalcata || exit 1
     exit 0
 fi
 
@@ -261,7 +261,7 @@ else
     cmake -B build -S .
 fi
 
-cmake --build build --target _lightgbm -j4 || exit 1
+cmake --build build --target _falcata -j4 || exit 1
 
 sh ./build-python.sh install --precompile || exit 1
 pytest -ra ./tests || exit 1

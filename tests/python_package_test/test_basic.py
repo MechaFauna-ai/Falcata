@@ -49,7 +49,8 @@ def test_basic(tmp_path):
     assert bst.current_iteration() == 20
     assert bst.num_trees() == 20
     assert bst.num_model_per_iteration() == 1
-    if BuildInfo.has_cuda:
+    if not BuildInfo.has_cuda:
+        # CPU-derived reference bounds; CUDA trees differ slightly
         assert bst.lower_bound() == pytest.approx(-2.9040190126976606)
         assert bst.upper_bound() == pytest.approx(3.3182142872462883)
 

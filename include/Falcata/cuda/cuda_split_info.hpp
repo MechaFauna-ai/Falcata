@@ -63,6 +63,14 @@ class CUDASplitInfo {
 #endif
   }
 
+  // Copy construction must NOT shallow-copy the threshold pointers: the
+  // implicit memberwise copy would duplicate an owning pointer under two
+  // destructors (std::vector<CUDASplitInfo> reallocation would double-free).
+  // Delegate to operator=, whose pointer discipline is explicit.
+  __host__ __device__ CUDASplitInfo(const CUDASplitInfo& other) : CUDASplitInfo() {
+    *this = other;
+  }
+
   __host__ __device__ CUDASplitInfo& operator=(const CUDASplitInfo& other) {
     is_valid = other.is_valid;
     leaf_index = other.leaf_index;
@@ -85,20 +93,23 @@ class CUDASplitInfo {
     right_gain = other.right_gain;
     right_value = other.right_value;
 
+    // Threshold storage discipline: device instances use slab slots
+    // pre-assigned by AllocateCatVectorsKernel; host instances only ever see
+    // scrubbed copies (ReadPrefetchedLeafBestSplits). Assignment therefore
+    // NEVER allocates -- the old `new[]` here paired device-heap allocation
+    // with the destructor's cudaFree, an allocator mismatch that could never
+    // be freed correctly on either side. A destination without storage cannot
+    // hold thresholds: record zero rather than corrupt.
     num_cat_threshold = other.num_cat_threshold;
-    if (num_cat_threshold > 0 && cat_threshold == nullptr) {
-      cat_threshold = new uint32_t[num_cat_threshold];
-    }
-    if (num_cat_threshold > 0 && cat_threshold_real == nullptr) {
-      cat_threshold_real = new int[num_cat_threshold];
+    if (num_cat_threshold > 0 &&
+        (cat_threshold == nullptr || other.cat_threshold == nullptr)) {
+      num_cat_threshold = 0;
     }
     if (num_cat_threshold > 0) {
-      if (other.cat_threshold != nullptr) {
-        for (int i = 0; i < num_cat_threshold; ++i) {
-          cat_threshold[i] = other.cat_threshold[i];
-        }
+      for (int i = 0; i < num_cat_threshold; ++i) {
+        cat_threshold[i] = other.cat_threshold[i];
       }
-      if (other.cat_threshold_real != nullptr) {
+      if (cat_threshold_real != nullptr && other.cat_threshold_real != nullptr) {
         for (int i = 0; i < num_cat_threshold; ++i) {
           cat_threshold_real[i] = other.cat_threshold_real[i];
         }

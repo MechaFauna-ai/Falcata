@@ -273,7 +273,7 @@ def generate_r_docs(app: Sphinx) -> None:
     cd {CURR_PATH.parent}
     export R_LIBS="$CONDA_PREFIX/lib/R/library"
     sh build-cran-package.sh || exit 1
-    R CMD INSTALL --with-keep.source lightgbm_*.tar.gz || exit 1
+    R CMD INSTALL --with-keep.source falcata_*.tar.gz || exit 1
     Rscript .ci/build-docs.R || exit 1
     """
     try:

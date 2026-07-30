@@ -11,8 +11,8 @@
             "!**/lib",
             "!build",
             "!external_libs",
-            "!lightgbm-python",
-            "!lightgbm_r",
+            "!falcata-python",
+            "!falcata_r",
             "!.pixi",
             "!R-package/docs"
         ]

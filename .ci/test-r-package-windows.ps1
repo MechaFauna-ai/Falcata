@@ -175,8 +175,8 @@ Write-Output "Building R-package"
 # R CMD check is not used for MSVC builds
 if ($env:COMPILER -ne "MSVC") {
 
-    $PKG_FILE_NAME = "lightgbm_$env:LGB_VER.tar.gz"
-    $LOG_FILE_NAME = "lightgbm.Rcheck/00check.log"
+    $PKG_FILE_NAME = "falcata_$env:LGB_VER.tar.gz"
+    $LOG_FILE_NAME = "falcata.Rcheck/00check.log"
 
     if ($env:R_BUILD_TYPE -eq "cmake") {
         if ($env:TOOLCHAIN -eq "MINGW") {
@@ -224,7 +224,7 @@ if ($env:COMPILER -ne "MSVC") {
     Invoke-R-Code-Redirect-Stderr $params ; $check_succeeded = $?
 
     Write-Output "R CMD check build logs:"
-    $INSTALL_LOG_FILE_NAME = "lightgbm.Rcheck\00install.out"
+    $INSTALL_LOG_FILE_NAME = "falcata.Rcheck\00install.out"
     Get-Content -Path "$INSTALL_LOG_FILE_NAME"
 
     Assert-Output $check_succeeded

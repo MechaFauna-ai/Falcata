@@ -1002,7 +1002,7 @@ VS Build Tools
      git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -A x64 -DBUILD_CPP_TEST=ON
-     cmake --build build --target testlightgbm --config Debug
+     cmake --build build --target testfalcata --config Debug
 
 The ``.exe`` file will be in ``Falcata/Debug`` folder.
 
@@ -1018,7 +1018,7 @@ MinGW-w64
      git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -G "MinGW Makefiles" -DBUILD_CPP_TEST=ON
-     cmake --build build --target testlightgbm -j4
+     cmake --build build --target testfalcata -j4
 
 The ``.exe`` file will be in ``Falcata/`` folder.
 
@@ -1046,7 +1046,7 @@ gcc
      git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -DBUILD_CPP_TEST=ON
-     cmake --build build --target testlightgbm -j4
+     cmake --build build --target testfalcata -j4
 
 Clang
 *****
@@ -1061,7 +1061,7 @@ Clang
      cd Falcata
      export CXX=clang++-14 CC=clang-14  # replace "14" with version of Clang installed on your machine
      cmake -B build -S . -DBUILD_CPP_TEST=ON
-     cmake --build build --target testlightgbm -j4
+     cmake --build build --target testfalcata -j4
 
 macOS
 ^^^^^
@@ -1089,7 +1089,7 @@ Apple Clang
      git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -DBUILD_CPP_TEST=ON
-     cmake --build build --target testlightgbm -j4
+     cmake --build build --target testfalcata -j4
 
 gcc
 ***
@@ -1108,7 +1108,7 @@ gcc
      cd Falcata
      export CXX=g++-7 CC=gcc-7  # replace "7" with version of gcc installed on your machine
      cmake -B build -S . -DBUILD_CPP_TEST=ON
-     cmake --build build --target testlightgbm -j4
+     cmake --build build --target testfalcata -j4
 
 .. _Visual Studio: https://visualstudio.microsoft.com/downloads/
 

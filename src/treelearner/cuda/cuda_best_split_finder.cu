@@ -1748,7 +1748,9 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
     if (threshold_found && threadIdx_x == best_thread_index) {
       cuda_best_split_info->is_valid = true;
       cuda_best_split_info->num_cat_threshold = 1;
-      cuda_best_split_info->cat_threshold = new uint32_t[1];
+      // write into the slab slot pre-assigned by AllocateCatVectorsKernel
+      // (device-heap `new` here orphaned the slab and leaked per split; the
+      // shared-memory twin has always written the slab directly)
       *(cuda_best_split_info->cat_threshold) = static_cast<uint32_t>(best_threshold);
       cuda_best_split_info->default_left = false;
       const int bin_offset = (best_threshold << 1);
@@ -1946,7 +1948,9 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
     if (threshold_found && threadIdx_x == best_thread_index) {
       cuda_best_split_info->is_valid = true;
       cuda_best_split_info->num_cat_threshold = best_threshold + 1;
-      cuda_best_split_info->cat_threshold = new uint32_t[best_threshold + 1];
+      // slab slot pre-assigned by AllocateCatVectorsKernel; capacity is
+      // max_num_categories_in_split, which bounds best_threshold + 1 exactly
+      // as it bounds the shared-memory twin's threadIdx_x + 1
       cuda_best_split_info->gain = local_gain * task->penalty;
       if (best_dir == 1) {
         for (int i = 0; i < best_threshold + 1; ++i) {
