@@ -219,7 +219,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     ~HybridGraphInstance();
   };
   // Static config gate of the graph loop (depth-limited one-sync prefix only,
-  // controller capacity limits, no debug envs, FALCATA_GRAPH_LEVEL_LOOP).
+  // controller capacity limits, no debug modes, the graph_loop plan key).
   bool HybridGraphPrefixUsable() const;
   // Lazy one-time setup: static feature tables, journal/staging buffers, and
   // worst-case capacity preallocation of every captured device buffer.

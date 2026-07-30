@@ -322,7 +322,7 @@ vector-leaf **if** the histogram/gain kernels are made T-aware:
   per-run constant, so it becomes part of the compile-time kernel selection, not
   the runtime key — graphs capture and replay exactly as today. **Recommendation:
   land vector-leaf behind the classic (non-graph) hybrid path first**
-  (`FALCATA_GRAPH_LEVEL_LOOP=0`), then extend graph capture once the T-aware
+  (`cuda_plan=auto,graph_loop:off`), then extend graph capture once the T-aware
   kernels are proven.
 
 ### 5.8 Model format & prediction
@@ -425,11 +425,11 @@ New `RegressionMultiTargetVector` objective (host + `src/objective/cuda/`):
    matrix, `RegressionMultiTarget` objective. Ships a usable multi-target API and
    de-risks label/config plumbing. md5-identical to sequential ⇒ trivially
    verified.
-3. **Phase 2 — Variant 2 kernels behind an env flag, T=1 identity.** Add the
+3. **Phase 2 — Variant 2 kernels behind a cuda_plan key (or a Config param if it changes results), T=1 identity.** Add the
    `NUM_TARGETS` template + `[g..g,h]` cell but compile/run T=1 first; assert
    **bit-identical** histograms and models to the pre-change build (the whole
    fork's md5-gate discipline). This proves the refactor is inert at T=1.
-4. **Phase 3 — T>1 vector-leaf, classic hybrid path** (`FALCATA_GRAPH_LEVEL_LOOP=0`).
+4. **Phase 3 — T>1 vector-leaf, classic hybrid path** (`cuda_plan=auto,graph_loop:off`).
    Shared-hessian construct + summed-gain find + vector leaf output + vector
    serialization + `PredictVector`. Validate quality per-era (§8).
 5. **Phase 4 — graph capture for T>1**, shared-memory tiling for large T, and

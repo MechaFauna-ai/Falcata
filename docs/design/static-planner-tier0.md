@@ -26,7 +26,7 @@ tier 1 (the measured auto-tuner) a *prior*.
 
 ### The construct-floor cautionary tale (why tier 0 must be conservative)
 
-`FALCATA_BATCH_CONSTRUCT_FLOOR`
+The baked constant `FalcataPlan::batch_construct_saturation_floor`
 (`cuda_histogram_constructor.hpp:275`, default 160) is the device-saturation
 floor of the batched construct grid's total y-blocks. It is exactly the kind of
 knob that *looks* shape-derivable — "just set it to fill the SM count". An
@@ -42,9 +42,12 @@ Lesson encoded in this spec: **tier 0 only decides knobs that are bit-neutral
 AND provably optimal from shape (layout, packing, eligibility, capacity). Every
 performance-crossover constant stays a tier-1 job; tier 0 hands it a documented
 prior and nothing more.** The verification gate is bit-identity: the planner may
-only move layout/scheduling, never arithmetic. Every existing `FALCATA_*` env
-override must remain, so any tier-0 decision is A/B-testable against the
-historical constant.
+only move layout/scheduling, never arithmetic. Every existing `cuda_plan` key
+must remain, so any tier-0 decision is A/B-testable against the historical
+constant. (The keyless baked constants —
+`FalcataPlan::batch_construct_saturation_floor` and
+`FalcataPlan::batch_construct_min_rows_per_thread` — currently have NO override,
+so A/B on those requires a rebuild.)
 
 ## 2. Knob inventory
 
@@ -59,7 +62,7 @@ Legend for the "class" column:
 
 | # | Knob | Current value / heuristic (file:line) | Class | Tier-0 formula, or the prior handed to tier 1 |
 |---|------|----------------------------------------|:---:|-----------------------------------------------|
-| 1 | `construct_reg_bins_` (register-hist ≤8-bin body eligibility) | `reg_hist_enabled && max_num_bin <= 8 && !feature_num_bins_.empty()` — `cuda_histogram_constructor.cpp:98-104`, `kRegHistMaxBins == 8` at `cuda_histogram_constructor.cu:431` | **P** | Already shape-provable and already computed at init from `feature_num_bins_`. Systematize: planner owns `max_num_bin = max_f num_bin(f)` and the predicate `max_num_bin <= kRegHistMaxBins`. Bit-neutral (chooses a kernel body, not arithmetic). Keep `FALCATA_BATCH_REGHIST=0` override. |
+| 1 | `construct_reg_bins_` (register-hist ≤8-bin body eligibility) | `reg_hist_enabled && max_num_bin <= 8 && !feature_num_bins_.empty()` — `cuda_histogram_constructor.cpp:98-104`, `kRegHistMaxBins == 8` at `cuda_histogram_constructor.cu:431` | **P** | Already shape-provable and already computed at init from `feature_num_bins_`. Systematize: planner owns `max_num_bin = max_f num_bin(f)` and the predicate `max_num_bin <= kRegHistMaxBins`. Bit-neutral (chooses a kernel body, not arithmetic). Keep the `batch_reghist:off` cuda_plan override. |
 | 2 | `shared_hist_size_` → `max_num_bin_per_partition = shared_hist_size_/2` | `DP_SHARED_HIST_SIZE 5176/6144`, `SP_SHARED_HIST_SIZE = 2×` (`cuda_row_data.hpp:25-29`); used `cuda_row_data.cpp:241` | **P** | Pure function of `gpu_use_dp` and the target arch's shared-mem budget. Already a compile/arch constant; planner should read it, not re-derive. Provable, decides the partition packing below. |
 | 3 | DivideCUDAFeatureGroups partition packing (`feature_partition_column_index_offsets_`, `partition_hist_offsets_`, `max_num_column_per_partition_`) | greedy fill to `max_num_bin_per_partition` OR `cur_partition_columns >= 504` (half `NUM_THREADS_PER_BLOCK`) — `cuda_row_data.cpp:240-359` | **P** | Fully determined by per-feature bin counts + `shared_hist_size_` + the 504 column cap. Deterministic bin-packing over ACTUAL bins; output is a pure layout with no arithmetic effect. This is *already* a tier-0 decision made implicitly; the planner should own it and expose `max_num_column_per_partition_` / `num_feature_partitions_` as planned facts other knobs read. |
 | 4 | 504 column cap (`cur_partition_columns >= 504`) | literal `504` (= half `NUM_THREADS_PER_BLOCK`) — `cuda_row_data.cpp:290,330`; `NUM_THREADS_PER_BLOCK (504)` at `cuda_histogram_constructor.hpp:28` | **P** | Provable: it is `NUM_THREADS_PER_BLOCK/2` so `block_dim_y=2` is possible. Derive from `NUM_THREADS_PER_BLOCK`, do not hardcode `504` in two places. Bit-neutral. |
@@ -67,18 +70,18 @@ Legend for the "class" column:
 | 6 | `QuantConstructMaxRowsPerThread` / `HybridQuantConstructMaxRowsPerThread` (65534/bins overflow guard) | `65534 / num_grad_quant_bins` then `/ block_dim_y` — `cuda_histogram_constructor.hpp:87-92`, `.cpp:741-744` | **P** | Correctness bound: caps rows-per-thread so the packed 16+16-bit shared accumulator cannot overflow. Pure function of `num_grad_quant_bins` and `block_dim_y`. Already computed on demand; planner should cache the per-`block_dim_y` value at init (the inputs are fixed after init). Bit-neutral (only affects grid sizing / row grouping, results identical). |
 | 7 | `kNumHistPipelines` (# concurrent stream/event pipelines) | `static constexpr int = 4` — `cuda_histogram_constructor.hpp:148`; hist scratch sized `num_total_bin_ × 4` at `.cpp:630-632` | **A** (count) / **P** (scratch size given count) | The *number* 4 is measurement-ambiguous (concurrency benefit vs scratch memory vs SM contention) — hand tier 1 the prior "4, good across tested datasets". But once the count is fixed, the scratch sizing (`num_total_bin_ × pipelines`) is shape-provable and tier 0 owns it. Splitting the knob is the key move: capacity is P, the count is A. |
 | 8 | `hist_buffer_for_num_bit_change_` sizing | `max(num_total_bin_×2, (num_total_bin_×kNumHistPipelines+1)/2)` — `cuda_histogram_constructor.cpp:630-632` | **P** | Pure function of `num_total_bin_` and the (tier-0-owned) pipeline count. Capacity bound, bit-neutral. Planner owns. |
-| 9 | Batched-vs-per-pair level gate (`SupportsBatchedLevel`) | dense && `!is_sparse` && `NumLargeBinPartition()==0` && (compact ⇒ batch_wide && !col_major && bit_type==8) — `cuda_histogram_constructor.hpp:196-203` | **P** | Pure eligibility predicate over the built layout (sparsity, large-bin partitions from knob #3, bit_type). No perf crossover — it is "is this path even correct/supported here". Tier 0 computes it once at init (layout is fixed) and caches, instead of recomputing per tree. Keep `FALCATA_BATCH_WIDE=0`. |
-| 10 | `UseOneSyncPrefix` / hybrid-batch eligibility | `!use_quantized_grad && batch_kernels && batch_apply && SupportsBatchedLevel (hist & finder)` — `cuda_single_gpu_tree_learner.cpp:536-543` | **P** | Same character as #9: a shape/config eligibility conjunction, not a perf guess. Precompute at init. All the `FALCATA_HYBRID_*` overrides (`cuda_single_gpu_tree_learner.cpp:84-104`) must remain as the A/B path. |
+| 9 | Batched-vs-per-pair level gate (`SupportsBatchedLevel`) | dense && `!is_sparse` && `NumLargeBinPartition()==0` && (compact ⇒ batch_wide && !col_major && bit_type==8) — `cuda_histogram_constructor.hpp:196-203` | **P** | Pure eligibility predicate over the built layout (sparsity, large-bin partitions from knob #3, bit_type). No perf crossover — it is "is this path even correct/supported here". Tier 0 computes it once at init (layout is fixed) and caches, instead of recomputing per tree. Keep `batch_wide:off`. |
+| 10 | `UseOneSyncPrefix` / hybrid-batch eligibility | `!use_quantized_grad && batch_kernels && batch_apply && SupportsBatchedLevel (hist & finder)` — `cuda_single_gpu_tree_learner.cpp:536-543` | **P** | Same character as #9: a shape/config eligibility conjunction, not a perf guess. Precompute at init. The hybrid cuda_plan keys — `hybrid`/`batch_kernels`/`batch_apply`/`one_sync`/`selective` (read at `cuda_single_gpu_tree_learner.cpp:139-173`) — must remain as the A/B path. |
 | 11 | Hybrid-graph eligibility (depth-limited regime) | `max_depth>0 && max_depth<31 && 2^max_depth <= num_leaves+1 && num_leaves <= 2·kHybridGraphMaxSplitsPerLevel-1 && max_depth < kHybridGraphMaxLevels && max_depth < kHybridGraphMaxBodies` — `cuda_single_gpu_tree_learner.cpp:1277-1284` | **P** | Entirely a function of `max_depth` and `num_leaves` vs compile-time capacities (`kHybridGraphMaxLevels 32`, `kHybridGraphMaxNodes 16`, `kHybridGraphMaxBodies`). Tier 0 evaluates it once and stores an "eligible" flag + the reason if not. Bit-neutral (graph replays the host loop exactly). |
 | 12 | Graph LRU cache size | `const size_t cache_limit = 64` — `cuda_single_gpu_tree_learner.cpp:1557` | **P** (lower bound) / **A** (headroom) | The *necessary* key count is provable: steady state is `(#gradient buffers = max(num_class,1)) × (compact double-buffer = 2)` distinct keys (comment at `:1552-1554`). So the provable minimum is `2·num_class`. The literal 64 is padding above that. Tier 0 should size the cache to `max(2·num_class·small_pad, provable_min)` — turning a magic 64 into a shape function — and hand tier 1 the pad factor as a prior. Memory-only, bit-neutral. |
 | 13 | A2 pow2 grid buckets (`NextPow2` frozen grids) | `grid = NextPow2(blocks)` per role — `cuda_hybrid_graph.cu:528-569` | **A** (bucket policy) / **P** (bound correctness) | That the frozen grid must be an *upper bound* on live blocks is provable and already guaranteed (the kernel derives exact work on-device; idle blocks early-out via the A2 guard, `cuda_hybrid_graph.hpp:293-320`). The pow2 *bucketing* trades device-graph `SetGridDim` update frequency (~4.5µs) against idle-block waste (<2×). That crossover is measurement-ambiguous → tier-1 prior: "pow2, keeps idle < 2×, update on bucket flip only". Tier 0 can precompute the *max* bucket per level from the geometry model (§3) to pre-freeze grids. |
 | 14 | `ControllerThreadsForBody` (per-body controller block size) | `body>=10 ? kMaxSplits : (body<=4 ? 64 : 2·2^body)` — `cuda_hybrid_graph.cu:44-46` | **P** | Pure function of the body index (= level) and the per-level split bound (`≤2^level`). It is a provable cover of the four intra-block reductions (descriptors, gaps, sort lanes, nodes). Already closed-form; planner just confirms it against the tier-0 geometry model and the `num_leaves ≤ 2047` gate. Bit-neutral. |
-| 15 | `FALCATA_BATCH_CONSTRUCT_FLOOR` (device-saturation floor) | default `160` — `cuda_histogram_constructor.hpp:275-281` | **A** | The cautionary tale (§1). Launch-overhead vs tail-idle crossover, distribution-dependent. Tier-1 prior only: "160; do NOT scale from shape — regressed covtype 45% when tried". |
-| 16 | `FALCATA_BATCH_CONSTRUCT_MINROWS` (min rows/thread cap) | default `64` — `cuda_histogram_constructor.hpp:264-270` | **A** | Same family as #15. Perf crossover between per-thread work and parallelism. Prior "64" to tier 1. |
-| 17 | `FALCATA_SMALL_LEAF_ROWS` (direct small-leaf construct threshold) | default `0` (disabled); enable at `8192` — `cuda_histogram_constructor.hpp:315-321` | **A** | Explicitly perf-ambiguous AND arithmetic-sensitive (per-row double adds vs per-block float partials change the fp accumulation; ~1-2% fraud gain, breaks fraud 63/6 exact reproduction — see the comment). Tier 0 must NOT touch this: it is not bit-neutral. Leave OFF by default; tier-1 prior "0". Flagged as a bit-identity hazard. |
-| 18 | `SmallLeafConstructEnabled` kill switch | default on — `cuda_histogram_constructor.hpp:299-305` | **A** | Path selection with a perf crossover; keep as tier-1 prior "on". Bit-neutral (unlike #17). |
+| 15 | Baked constant `FalcataPlan::batch_construct_saturation_floor` (device-saturation floor) | default `160` — `cuda_histogram_constructor.hpp:275-281`; keyless, currently NO override (A/B requires a rebuild) | **A** | The cautionary tale (§1). Launch-overhead vs tail-idle crossover, distribution-dependent. Tier-1 prior only: "160; do NOT scale from shape — regressed covtype 45% when tried". |
+| 16 | Baked constant `FalcataPlan::batch_construct_min_rows_per_thread` (min rows/thread cap) | default `64` — `cuda_histogram_constructor.hpp:264-270`; keyless, currently NO override (A/B requires a rebuild) | **A** | Same family as #15. Perf crossover between per-thread work and parallelism. Prior "64" to tier 1. |
+| 17 | Direct small-leaf construct threshold (mechanism removed) | permanently disabled — `cuda_histogram_constructor.hpp` hardcodes `return 0`, with a comment that it earns neither a plan key nor a param | **A** | Explicitly perf-ambiguous AND arithmetic-sensitive (per-row double adds vs per-block float partials change the fp accumulation; ~1-2% fraud gain, breaks fraud 63/6 exact reproduction — see the comment). Tier 0 must NOT touch this: it is not bit-neutral. No runtime knob exists; tier-1 prior "0". Flagged as a bit-identity hazard. |
+| 18 | `small_leaf_construct` plan key (`SmallLeafConstructEnabled`) | default on — `cuda_histogram_constructor.hpp:299-305` | **A** | Path selection with a perf crossover; keep as tier-1 prior "on". Bit-neutral (unlike #17). |
 | 19 | Compact-view dead-entry mask vs static per-tree layout | runtime `host_bin_used_bytree_` mask built every `SetFeatureUsedBytree` — `cuda_histogram_constructor.cpp:164-189`; compact build `BuildCompactView` `:236` | **P** (opportunity) | See §4. Under low `feature_fraction`, the sampled-column layout is a shape-provable static per-tree layout, not a runtime mask recomputed per tree. Tier 0 owns the layout planning; the runtime mask stays as the fallback for the non-sampled path. |
-| 20 | `GHInterleaveEnabled` (float2 g/h interleave) | on iff `sizeof(score_t)==float` — `cuda_histogram_constructor.hpp:288-294` | **P** | Pure type predicate; bit-identical (the comment states values are identical). Already provable at init. Planner confirms; keep `FALCATA_GH_INTERLEAVE=0`. |
+| 20 | `GHInterleaveEnabled` (float2 g/h interleave) | on iff `sizeof(score_t)==float` — `cuda_histogram_constructor.hpp:288-294` | **P** | Pure type predicate; bit-identical (the comment states values are identical). Already provable at init. Planner confirms; keep `gh_interleave:off`. |
 
 **Tally: 20 candidate knobs. Provable (P, tier-0 decides): #1, #2, #3, #4, #5(root+level-bound), #6, #8, #9, #10, #11, #14, #19, #20 → 13. Measurement-ambiguous (A, prior to tier-1): #15, #16, #17, #18 → 4. Split knobs (capacity/eligibility provable, one embedded count/policy ambiguous): #7, #12, #13 → 3.** So the "clean provable" set is 13, the "clean ambiguous" set is 4, and the interesting 3 are the split-the-knob cases where tier 0 takes the capacity/bound half and hands tier 1 only the crossover half.
 
@@ -195,24 +198,30 @@ where the planner assembles the cross-cutting decisions (#5 level bounds, #7/#8
 capacities, #9/#10/#11 eligibility, #12 cache size, #13 pre-frozen buckets, #19
 compact pre-size).
 
-**Flow to kernels — env-override-compatible.** Every existing `FALCATA_*`
-override MUST remain the ground truth for A/B. The rule: **each planner field is
-computed as `env_override.value_or(planner_default)`**, i.e. the planner supplies
-the *default* that used to be the hardcoded literal, and the env still wins when
-set. Concretely:
+**Flow to kernels — plan-key-override-compatible.** Every existing `cuda_plan`
+key MUST remain the ground truth for A/B. The rule: **each planner field is
+computed as `plan_key_override.value_or(planner_default)`**, i.e. the planner
+supplies the *default* that used to be the hardcoded literal, and an explicit
+`cuda_plan` key still wins when set. (The keyless baked constants — #15 floor,
+#16 minrows — have no override today; A/B on them requires a rebuild.)
+Concretely:
 
-- knobs that are already `static` env-latched getters (#7 minrows, #15 floor,
-  #16, #17, #18, #20, `SupportsBatchedLevel`'s `FALCATA_BATCH_WIDE`) keep their
-  getter signature; the planner only *replaces the literal fallback* with a
-  planned value where the knob is P (#1, #6, #8, #9, #10, #11, #14), and leaves
-  the literal fallback untouched where the knob is A (#15-#18).
+- knobs that are already plan-latched getters (#18 `small_leaf_construct`,
+  #20 `gh_interleave`, `SupportsBatchedLevel`'s `batch_wide`) and the keyless
+  baked-constant getters (#15 floor, #16 minrows) keep their getter signature;
+  the planner only *replaces the literal fallback* with a planned value where
+  the knob is P (#1, #6, #8, #9, #10, #11, #14), and leaves the literal
+  fallback untouched where the knob is A (#15-#18).
 - the planner exposes a small struct of plain fields (`max_num_bin`,
   `root_hist_bits`, `level_hist_bits[]`, `pipeline_count`,
   `bit_change_scratch_bins`, `graph_cache_size`, `batched_level_eligible`,
   `graph_eligible`, `compact_worst_case_k`, per-level pre-frozen grid buckets).
   Constructors that currently read a literal read the field instead.
-- `FALCATA_PLANNER=0` (new, optional) restores every literal fallback wholesale,
-  giving one master A/B switch in addition to the per-knob envs.
+- a `planner:off` master switch (new, optional) restores every literal fallback
+  wholesale, giving one master A/B switch in addition to the per-knob keys.
+  Note: per `falcata_plan.h`'s policy, any new switch must be a `cuda_plan` key
+  (or a Config param if it changes results) — a new env var is not the
+  mechanism.
 
 No planner field may feed an *arithmetic* input (accumulator width beyond the
 correctness bound, rounding mode, add order). Fields only feed grid sizing,
@@ -222,7 +231,7 @@ buffer capacity, path eligibility and layout — the bit-neutral set.
 
 **Phase 0 — read-only planner (no behavior change).** Introduce
 `CUDAStaticPlanner`, populate it from the shape at `Init`, and have it *recompute*
-the current values of #1-#14, #19-#20 and log them under `FALCATA_HYBRID_DIAG`.
+the current values of #1-#14, #19-#20 and log them under `FALCATA_DEBUG=diag`.
 Assert each planned value equals the value the existing code computes. This is
 the safety net: it proves the formulas match before anything switches over.
 
@@ -235,7 +244,7 @@ elsewhere — this is consolidation, lowest risk.
 **Phase 2 — capacity precompute from the geometry model.** #5 level bit-width
 bounds, #6 cached row cap, #7-capacity/#8/#12 scratch and cache sizing, #13
 pre-frozen buckets. These change buffer sizes and graph capture, still
-bit-neutral. Gate each behind its env.
+bit-neutral. Gate each behind its cuda_plan key.
 
 **Phase 3 — compact-layout pre-sizing (§4, the high-value win).** Pre-size the
 compact metadata/staging to the worst-case `k` when `feature_fraction < 1`.
@@ -264,16 +273,18 @@ performance-neutral layout/scheduling/capacity — never arithmetic. Therefore:
 - **md5 locks must be UNCHANGED.** The existing per-dataset model md5 locks are
   the acceptance test. Any planner phase that moves an md5 is a bug in the
   planner (it leaked into arithmetic), not an accepted trade-off. Run the lock
-  suite after each phase, with `FALCATA_PLANNER=0` (must match baseline) and
-  with the planner on (must match the SAME md5).
+  suite after each phase, with the `planner:off` cuda_plan key (must match
+  baseline) and with the planner on (must match the SAME md5).
 - **Phase 0 assert harness**: the read-only planner asserting planned == current
   for every knob is the first line of defense and should run in CI-shape (small
   synthetic datasets covering: `max_num_bin ≤ 8` and `> 8` for #1; sparse and
   dense for #9; depth-limited and budget-limited for #11; `feature_fraction < 1`
   and `= 1` for #19; `num_class = 1` and multiclass for #12).
-- **A/B via envs**: for each P-knob, flip its existing env and confirm the md5 is
-  identical whether the value comes from the planner default or the env — proving
-  the planner only changed the *source* of a bit-neutral value.
+- **A/B via cuda_plan keys**: for each P-knob, flip its existing plan key and
+  confirm the md5 is identical whether the value comes from the planner default
+  or the key — proving the planner only changed the *source* of a bit-neutral
+  value. (The keyless baked constants #15/#16 are not A/B-able without a
+  rebuild.)
 - **#17 stays quarantined**: it is the one knob that is NOT bit-neutral; the
   spec forbids tier 0 from setting it, and the md5 suite would catch it if a
   future change wired it into the planner by mistake.

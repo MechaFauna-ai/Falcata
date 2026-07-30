@@ -22,7 +22,7 @@
  *  Requires CUDA >= 12.4 (device-updatable kernel nodes);
  *  the learner probes support at runtime and falls back to the host level loop
  *  (bit-for-bit the previous behavior) when unsupported or when
- *  FALCATA_GRAPH_LEVEL_LOOP=0.
+ *  cuda_plan=auto,graph_loop:off.
  */
 
 #ifndef FALCATA_TREELEARNER_CUDA_CUDA_HYBRID_GRAPH_HPP_

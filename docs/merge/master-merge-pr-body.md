@@ -1,5 +1,15 @@
 # hybrid-level-growth -> master
 
+> **Historical document.** This describes the pre-refactor interface as it
+> existed at merge time (2026). The env-var switches named below (later
+> mechanically renamed to FALCATA_*/EXABOOST_* forms) have since been replaced
+> by the `cuda_plan` config param (see `include/Falcata/falcata_plan.h`), and
+> several listed defaults have flipped — the ingestion fast paths
+> (rowdata_4bit / fast_rowdata / gpu_construct / efb_precheck) now default on,
+> FP32 is now the `cuda_precision` config param, and the per-path VERIFY twins
+> are now the single `FALCATA_VERIFY=1`. The tables below are kept as-is for
+> the historical record.
+
 > Draft PR description, prepared for review. Not yet opened. Merges cleanly into
 > current master (conflict-free trial merge; PRs #14/#31/#36 already absorbed).
 
