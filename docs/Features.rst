@@ -1,7 +1,122 @@
 Features
 ========
 
-This is a conceptual overview of how Falcata works\ `[1] <#references>`__. We assume familiarity with decision tree boosting algorithms to focus instead on aspects of Falcata that may differ from other boosting packages. For detailed algorithms, please refer to the citations or source code.
+This is a conceptual overview of how Falcata works. Falcata is a CUDA-native
+gradient boosted decision tree library: it inherits LightGBM's
+histogram-based, leaf-wise engine\ `[1] <#references>`__ and rebuilds the
+training loop around batched, level-parallel GPU kernels. The first half of
+this page covers what Falcata adds; the second half covers the shared engine
+fundamentals. For measured numbers see the
+`README <https://github.com/MechaFauna-ai/Falcata#what-makes-it-fast>`__; for
+internals see ``docs/design/``.
+
+The CUDA-Native Training Pipeline
+---------------------------------
+
+Everything below runs under ``device_type=cuda`` and is enabled by default;
+each decision can be toggled individually through the execution planner (see
+`The Execution Planner`_).
+
+Hybrid Level-Batched Growth
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A classic leaf-wise learner performs one split at a time: construct
+histograms, find the best split, synchronize with the host, apply, repeat.
+On a GPU that loop is latency-bound -- the device idles between small
+kernels. Falcata instead scores, synchronizes, and applies **whole levels of
+sibling pairs in one launch each**, turning the loop throughput-bound while
+producing **leaf-wise-identical trees**: while the leaf budget cannot bind,
+every positive-gain frontier leaf would be split by leaf-wise growth
+eventually, so batching a level changes the order of work, not the result.
+In depth-limited configurations (``2^max_depth <= num_leaves + 1``) the
+batched prefix is exact all the way down. In budget-limited configurations
+(``num_leaves`` well below ``2^max_depth``) the *selective* grow-then-prune
+mode preserves exact leaf-wise equivalence: levels are grown speculatively
+and splits that global greedy ordering would not have taken are collapsed
+again before they can influence the model.
+
+A speculative single-sync pipeline (``one_sync``) further removes per-level
+host synchronization for the non-quantized path, and a CUDA-graph level loop
+(``graph_loop``) captures the per-level launch sequence once and replays it
+through a device-side controller -- removing host round-trips entirely on
+shallow trees.
+
+NVRTC Runtime JIT
+~~~~~~~~~~~~~~~~~
+
+Histogram-construction kernels can be specialized at runtime (via NVRTC) to
+the actual data shape -- bin counts, column layout -- instead of relying on
+one generic kernel. A JIT kernel is self-tested against the ahead-of-time
+kernel on real data and promoted **only if bit-identical**; otherwise the AOT
+kernel keeps running. Opt-in via ``cuda_plan=auto,construct_jit:on``.
+
+Per-Tree Compact Column View
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+With any ``feature_fraction < 1``, each tree samples a column subset -- but a
+row-major bin matrix makes skipping unused columns free of nothing: unread
+columns still occupy the same memory sectors. Falcata gathers only the
+sampled columns into a dense per-tree compact matrix, so every level pass
+reads only what the tree can use. The win scales with the excluded fraction
+(measured ~3.4x end-to-end at ``feature_fraction=0.1`` on wide
+low-cardinality data, tapering to ~1.1x at 0.6).
+
+GPU-Native Dataset Construction
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Dense binning, row-data build, and exclusive-feature-bundling prechecks run
+on the device. CuPy arrays and anything exposing
+``__cuda_array_interface__`` are ingested without a host round-trip. Row
+data for low-cardinality features is packed 4-bit.
+
+Quantized Training, Two Ways
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Gradient quantization\ `[12] <#references>`__ shrinks histogram traffic by
+accumulating small integers instead of floating-point pairs. Falcata ships
+two modes:
+
+- ``quant_mode=stochastic`` -- the speed end: gradients packed into 4 bins
+  with seeded stochastic rounding (unbiased in expectation).
+- ``quant_mode=fixedpoint`` -- the near-lossless end: deterministic rounding
+  with an internal outlier-robust gradient scale, so rare huge gradients do
+  not crush the quantization range.
+
+Bin counts default to 4 and 64 respectively and can be overridden with
+``quant_bins``. Both modes are bit-reproducible run to run;
+``quant_mode=none`` is full precision. ``cuda_precision=fp32`` additionally
+halves global-histogram bandwidth for the non-quantized path (quality-gated,
+not bit-identical).
+
+.. _The Execution Planner:
+
+The Execution Planner
+~~~~~~~~~~~~~~~~~~~~~
+
+Every shape-conditional kernel choice above is resolved once from the data
+and parameters by ``cuda_plan=auto`` -- not from environment variables or
+hidden heuristics scattered through the code. Each decision is guaranteed
+bit-identical (enforced by per-commit regression gates that flip every key
+and require identical models) and individually overridable, e.g.
+``cuda_plan=auto,hybrid:off,construct_jit:on``, which also makes every
+feature's contribution measurable by leave-one-out ablation.
+
+GPU Inference
+~~~~~~~~~~~~~
+
+With cuML installed, ``Booster.predict()`` transparently runs on NVIDIA's
+Forest Inference Library; CuPy input stays on the device end to end. See the
+README's `GPU inference section
+<https://github.com/MechaFauna-ai/Falcata#gpu-inference-nvidia-fil>`__.
+
+A legacy OpenCL backend (``device_type=gpu``, from upstream
+LightGBM\ `[11] <#references>`__) still exists but is not developed here.
+
+Shared Engine Fundamentals
+--------------------------
+
+The sections below describe the engine Falcata inherits from the LightGBM
+lineage; they apply to CPU and CUDA training alike.
 
 Optimization in Speed and Memory Usage
 --------------------------------------
@@ -165,22 +280,6 @@ Voting Parallel
 Voting parallel further reduces the communication cost in `Data Parallel <#data-parallel>`__ to constant cost.
 It uses two-stage voting to reduce the communication cost of feature histograms\ `[10] <#references>`__.
 
-GPU Support
------------
-
-Falcata's primary backend is a CUDA-native tree learner (``device_type=cuda``):
-histogram construction, split finding, and tree building run as batched,
-level-parallel GPU kernels, with quantized-gradient training
-(``quant_mode``), an execution planner (``cuda_plan``), and GPU inference via
-NVIDIA FIL. See the `README <https://github.com/MechaFauna-ai/Falcata#what-makes-it-fast>`__
-for the feature overview and ``docs/design/`` for the internals.
-
-A legacy OpenCL backend (``device_type=gpu``, from upstream LightGBM\ `[11] <#references>`__)
-still exists but is not developed here.
-
-- `GPU Installation <./Installation-Guide.rst#build-gpu-version>`__
-
-
 Applications and Metrics
 ------------------------
 
@@ -293,6 +392,10 @@ References
 [10] Qi Meng, Guolin Ke, Taifeng Wang, Wei Chen, Qiwei Ye, Zhi-Ming Ma, Tie-Yan Liu. "`A Communication-Efficient Parallel Algorithm for Decision Tree`_." Advances in Neural Information Processing Systems 29 (NIPS 2016), pp. 1279-1287.
 
 [11] Huan Zhang, Si Si and Cho-Jui Hsieh. "`GPU Acceleration for Large-scale Tree Boosting`_." SysML Conference, 2018.
+
+[12] Yu Shi, Guolin Ke, Zhuoming Chen, Shuxin Zheng, Tie-Yan Liu. "`Quantized Training of Gradient Boosting Decision Trees`_." Advances in Neural Information Processing Systems 35 (NeurIPS 2022).
+
+.. _Quantized Training of Gradient Boosting Decision Trees: https://papers.nips.cc/paper_files/paper/2022/hash/77911ed9e6e864ca1a3d165b2c3cb258-Abstract-Conference.html
 
 .. _LightGBM\: A Highly Efficient Gradient Boosting Decision Tree: https://proceedings.neurips.cc/paper/2017/hash/6449f44a102fde848669bdd9eb6b76fa-Abstract.html
 

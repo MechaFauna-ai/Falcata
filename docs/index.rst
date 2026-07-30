@@ -1,8 +1,3 @@
-.. Falcata documentation master file, created by
-   sphinx-quickstart on Thu May  4 14:30:58 2017.
-   You can adapt this file completely to your liking, but it should at least
-   contain the root `toctree` directive.
-
 .. image:: ./logo/falcata-mark.svg
    :align: center
    :width: 600
@@ -10,18 +5,22 @@
 
 |
 
-Welcome to Falcata's documentation!
-====================================
+Falcata documentation
+=====================
 
-**Falcata** is a gradient boosting framework that uses tree based learning algorithms. It is designed to be distributed and efficient with the following advantages:
+**Falcata** is a CUDA-native gradient boosted decision tree library: a
+leaf-wise learner whose training loop was rebuilt around batched,
+level-parallel GPU kernels rather than one split at a time.
 
-- Faster training speed and higher efficiency.
-- Lower memory usage.
-- Better accuracy.
-- Support of parallel, distributed, and GPU learning.
-- Capable of handling large-scale data.
+- Hybrid level-batched growth with leaf-wise-identical trees.
+- Quantized training (``quant_mode``), an execution planner (``cuda_plan``),
+  and GPU inference via NVIDIA FIL.
+- Every optimization gated bit-identical against the reference path in CI.
+- Interoperable with LightGBM at the data boundaries: models, binary
+  datasets, and parameter names interchange in both directions.
 
-For more details, please refer to `Features <./Features.rst>`__.
+For details, see `Features <./Features.rst>`__ and the
+`README <https://github.com/MechaFauna-ai/Falcata#readme>`__.
 
 .. toctree::
    :maxdepth: 1
@@ -35,7 +34,7 @@ For more details, please refer to `Features <./Features.rst>`__.
    Parameters Tuning <Parameters-Tuning>
    C API <C-API>
    Python API <Python-API>
-   R API <https://github.com/MechaFauna-ai/Falcata/tree/master/docsR/reference/>
+   R API <https://github.com/MechaFauna-ai/Falcata/tree/master/R-package#readme>
    Distributed Learning Guide <Parallel-Learning-Guide>
    Advanced Topics <Advanced-Topics>
    Development Guide <Development-Guide>
