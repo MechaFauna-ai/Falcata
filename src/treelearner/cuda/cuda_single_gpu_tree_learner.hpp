@@ -389,7 +389,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // discretizer share the same effective quant bin count.
   bool fixedpoint_quant_ = false;
   // Outlier-robust gradient scale within fixed-point mode (default ON when
-  // fixedpoint_quant_ is on; disabled by FALCATA_FIXEDPOINT_ROBUST=0).
+  // fixedpoint_quant_ is on; disabled by cuda_plan=auto,robust_scale:off).
   bool fixedpoint_robust_scale_ = false;
   int effective_quant_bins_ = 0;
 

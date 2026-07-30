@@ -57,6 +57,8 @@ def sample_spec(rng):
         plan.append("construct_jit:on")
     if rng.random() < 0.10:
         plan.append("hybrid:off")
+    if quant_mode == "fixedpoint" and rng.random() < 0.20:
+        plan.append("robust_scale:off")
     spec = {
         "n": n,
         "m": m,
