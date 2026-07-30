@@ -74,6 +74,9 @@ You can add ``-DUSE_HOMEBREW_FALLBACK=OFF`` to CMake flags to disable this behav
 
 Users who want to perform benchmarking can make Falcata output time costs for different internal routines by adding ``-DUSE_TIMETAG=ON`` to CMake flags.
 
+Compiler warnings are treated as errors by default (``-Werror`` for gcc/Clang, plus nvcc's ``-Werror all-warnings`` on CUDA builds; the R-package build is always exempt).
+If an unfamiliar compiler version rejects code Falcata's supported compilers accept, you can add ``-DUSE_WERROR=OFF`` to CMake flags.
+
 It is possible to build Falcata in debug mode.
 In this mode all compiler optimizations are disabled and Falcata performs more checks internally.
 To enable debug mode you can add ``-DUSE_DEBUG=ON`` to CMake flags or choose ``Debug_*`` configuration (e.g. ``Debug_DLL``, ``Debug_mpi``) in Visual Studio depending on how you are building Falcata.
@@ -714,17 +717,31 @@ Linux
 
 On Linux, a CUDA version of Falcata can be built using
 
-- **CMake**, **gcc** and **CUDA**;
-- **CMake**, **Clang** and **CUDA**.
+- **CMake**, **gcc**, **CUDA** and **NCCL**;
+- **CMake**, **Clang**, **CUDA** and **NCCL**.
 
 Please refer to `this detailed guide`_ for **CUDA** libraries installation.
+
+**NCCL** is required by default, because ``USE_NCCL`` (multi-GPU and multi-node
+multi-GPU training) defaults to ``ON``. Its headers are needed at configure
+time, so install the development package (``libnccl-dev`` on Debian/Ubuntu,
+``libnccl-devel`` on Fedora/RHEL, or ``conda install -c conda-forge nccl``);
+otherwise configuration fails with
+``Could NOT find NCCL (missing: NCCL_INCLUDE_DIR)``. If NCCL is installed
+outside the standard locations, point ``NCCL_ROOT`` at it. Pass
+``-DBUILD_WITH_SHARED_NCCL=ON`` to link ``libnccl.so`` rather than
+``libnccl_static.a``, which avoids nvlink failures against some static NCCL
+builds.
+
+To build a **single-GPU** library without the NCCL dependency at all, add
+``-DUSE_NCCL=OFF``.
 
 After compilation the executable and ``.so`` files will be in ``Falcata/`` folder.
 
 gcc
 ***
 
-1. Install `CMake`_, **gcc** and **CUDA**.
+1. Install `CMake`_, **gcc**, **CUDA** and **NCCL** (see above).
 
 2. Run the following commands:
 
@@ -735,10 +752,12 @@ gcc
      cmake -B build -S . -DUSE_CUDA=ON
      cmake --build build -j4
 
+   For a single-GPU build without NCCL, use ``-DUSE_CUDA=ON -DUSE_NCCL=OFF``.
+
 Clang
 *****
 
-1. Install `CMake`_, **Clang**, **OpenMP** and **CUDA**.
+1. Install `CMake`_, **Clang**, **OpenMP**, **CUDA** and **NCCL** (see above).
 
 2. Run the following commands:
 
