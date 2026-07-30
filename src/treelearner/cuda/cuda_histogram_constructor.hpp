@@ -398,11 +398,15 @@ class CUDAHistogramConstructor {
   void SetFeatureUsedBytree(const std::vector<int8_t>& is_feature_used_bytree);
 
   // Build a compact view of the bin matrix that contains ONLY the columns
-  // selected by this tree's feature_fraction sample. When this returns true,
-  // subsequent ConstructHistogramForLeaf launches will use the compact
-  // buffers (smaller block_dim_x, fewer warps per block, ~10x speedup at
-  // feature_fraction=0.1). Falls back automatically to the full-data path
-  // when sampling is disabled or the data layout is not supported.
+  // selected by this tree's feature_fraction sample. Applies at ANY
+  // 0 < feature_fraction < 1 (the only gates are "no columns sampled out" and
+  // unsupported layouts); the win scales with the excluded fraction, since the
+  // hist kernels then skip (1 - ff) of the row bytes on every level pass at
+  // the cost of one per-tree repack: measured ~3.4x end-to-end at ff=0.1
+  // (numerai-deep), ~1.3x at ff=0.3, ~1.1x at ff=0.6. When this returns true,
+  // subsequent ConstructHistogramForLeaf launches use the compact buffers
+  // (smaller block_dim_x, fewer warps per block). Falls back automatically to
+  // the full-data path when sampling is disabled or the layout is unsupported.
   bool BuildCompactView(const std::vector<int8_t>& is_feature_used_bytree);
 
   // Expose internal CUDARowData so the tree learner can build a per-tree compact

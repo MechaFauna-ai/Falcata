@@ -136,8 +136,10 @@ Today two mechanisms handle `feature_fraction` sampling:
   the elementwise batched fix/subtract kernels to skip bins of unused features;
 - the **compact column view** (`BuildCompactView`,
   `cuda_histogram_constructor.cpp:236`) that gathers only the sampled columns
-  into a dense per-tree matrix (~10× at `feature_fraction=0.1`, per the header
-  comment at `:412-418`).
+  into a dense per-tree matrix. It applies at any `0 < feature_fraction < 1`;
+  the win scales with the excluded fraction — measured ~3.4× end-to-end at
+  `feature_fraction=0.1` (numerai-deep), ~1.3× at 0.3, ~1.1× at 0.6. The 0.1
+  numbers quoted elsewhere are numerai's operating point, not a gate.
 
 The tier-0 observation: the *number* of sampled columns per tree is a shape fact
 — `k = round(feature_fraction × num_features)` (or `feature_fraction_bynode`) —
