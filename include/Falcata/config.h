@@ -278,7 +278,7 @@ struct Config {
   // desc = used only with ``cpu`` device type
   // desc = setting this to ``true`` should ensure the stable results when using the same data and the same parameters (and different ``num_threads``)
   // desc = when you use the different seeds, different Falcata versions, the binaries compiled by different compilers, or in different systems, the results are expected to be different
-  // desc = you can `raise issues <https://github.com/BelixRogner/Falcata/issues>`__ in Falcata GitHub repo when you meet the unstable results
+  // desc = you can `raise issues <https://github.com/MechaFauna-ai/Falcata/issues>`__ in Falcata GitHub repo when you meet the unstable results
   // desc = **Note**: setting this to ``true`` may slow down the training
   // desc = **Note**: to avoid potential instability due to numerical issues, please set ``force_col_wise=true`` or ``force_row_wise=true`` when setting ``deterministic=true``
   bool deterministic = false;
@@ -558,7 +558,7 @@ struct Config {
   // desc = ``.json`` file can be arbitrarily nested, and each split contains ``feature``, ``threshold`` fields, as well as ``left`` and ``right`` fields representing subsplits
   // desc = categorical splits are forced in a one-hot fashion, with ``left`` representing the split containing the feature value and ``right`` representing other values
   // desc = **Note**: the forced split logic will be ignored, if the split makes gain worse
-  // desc = see `this file <https://github.com/BelixRogner/Falcata/blob/master/examples/binary_classification/forced_splits.json>`__ as an example
+  // desc = see `this file <https://github.com/MechaFauna-ai/Falcata/blob/master/examples/binary_classification/forced_splits.json>`__ as an example
   std::string forcedsplits_filename = "";
 
   // check = >=0.0
@@ -819,7 +819,7 @@ struct Config {
 
   // desc = path to a ``.json`` file that specifies bin upper bounds for some or all features
   // desc = ``.json`` file should contain an array of objects, each containing the word ``feature`` (integer feature index) and ``bin_upper_bound`` (array of thresholds for binning)
-  // desc = see `this file <https://github.com/BelixRogner/Falcata/blob/master/examples/regression/forced_bins.json>`__ as an example
+  // desc = see `this file <https://github.com/MechaFauna-ai/Falcata/blob/master/examples/regression/forced_bins.json>`__ as an example
   std::string forcedbins_filename = "";
 
   // [no-save]
