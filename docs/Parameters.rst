@@ -37,7 +37,7 @@ For example, in Python:
 
    # use learning rate of 0.07, because 'learning_rate'
    # is the primary parameter name
-   lgb.train(
+   flc.train(
       params={
          "learning_rate": 0.07,
          "shrinkage_rate": 0.12
@@ -55,7 +55,7 @@ For example, in Python:
 
    # use learning rate of 0.12, Falcata has a hard-coded preference for 'shrinkage_rate'
    # over any other aliases, and 'learning_rate' is not provided
-   lgb.train(
+   flc.train(
       params={
          "eta": 0.19,
          "shrinkage_rate": 0.12
@@ -262,17 +262,13 @@ Core Parameters
 
    -  device for the tree learning
 
+   -  ``cuda`` is Falcata's primary backend: the CUDA-native tree learner (also targets ROCm). This is where Falcata's speed lives -- see `Features <./Features.rst#the-cuda-native-training-pipeline>`__ and the related parameters ``quant_mode``, ``cuda_precision``, ``cuda_plan``
+
    -  ``cpu`` supports all Falcata functionality and is portable across the widest range of operating systems and hardware
 
-   -  ``cuda`` offers faster training than ``gpu`` or ``cpu``, but only works on GPUs supporting CUDA or ROCm
+   -  ``gpu`` is the legacy OpenCL backend inherited from LightGBM; it is not developed here. If you use it: smaller ``max_bin`` (e.g. 63) speeds it up, and it accumulates in 32-bit floats by default (``gpu_use_dp=true`` restores 64-bit at a speed cost)
 
-   -  ``gpu`` can be faster than ``cpu`` and works on a wider range of GPUs than CUDA
-
-   -  **Note**: it is recommended to use the smaller ``max_bin`` (e.g. 63) to get the better speed up
-
-   -  **Note**: for the faster speed, GPU uses 32-bit float point to sum up by default, so this may affect the accuracy for some tasks. You can set ``gpu_use_dp=true`` to enable 64-bit float point, but it will slow down the training
-
-   -  **Note**: refer to `Installation Guide <./Installation-Guide.rst>`__ to build Falcata with GPU, CUDA, or ROCm support
+   -  **Note**: refer to `Installation Guide <./Installation-Guide.rst>`__ to build Falcata with CUDA, ROCm, or OpenCL support
 
 -  ``seed`` :raw-html:`<a id="seed" title="Permalink to this parameter" href="#seed">&#x1F517;&#xFE0E;</a>`, default = ``None``, type = int, aliases: ``random_seed``, ``random_state``
 
@@ -813,7 +809,7 @@ Dataset Parameters
 
    -  it is recommended to rescale data before training so that features have similar mean and standard deviation
 
-   -  **Note**: works only with ``cpu``, ``gpu`` device type and ``serial`` tree learner
+   -  **Note**: works only with ``cpu``, ``gpu``, and ``cuda`` device type and ``serial`` tree learner
 
    -  **Note**: ``regression_l1`` objective is not supported with linear tree boosting
 
@@ -1387,7 +1383,7 @@ GPU Parameters
 
    -  in multi-GPU case (``num_gpu>1``) means ID of the master GPU
 
-   -  **Note**: applies to the legacy OpenCL backend (``device_type=gpu``) only; use ``clinfo`` to enumerate platforms/devices
+   -  **Note**: used by both the CUDA backend (``device_type=cuda``, where it is the CUDA device ID) and the legacy OpenCL backend (``device_type=gpu``, where it is the OpenCL device ID within ``gpu_platform_id``; use ``clinfo`` to enumerate platforms/devices)
 
 -  ``gpu_device_id_list`` :raw-html:`<a id="gpu_device_id_list" title="Permalink to this parameter" href="#gpu_device_id_list">&#x1F517;&#xFE0E;</a>`, default = ``""``, type = string
 
@@ -1399,9 +1395,9 @@ GPU Parameters
 
 -  ``gpu_use_dp`` :raw-html:`<a id="gpu_use_dp" title="Permalink to this parameter" href="#gpu_use_dp">&#x1F517;&#xFE0E;</a>`, default = ``false``, type = bool
 
-   -  set this to ``true`` to use double precision math on GPU (by default single precision is used)
+   -  set this to ``true`` to use double precision math on the legacy OpenCL backend (``device_type=gpu``), which accumulates in single precision by default
 
-   -  **Note**: can be used only in OpenCL implementation (``device_type="gpu"``), in CUDA implementation only double precision is currently supported
+   -  **Note**: with ``device_type=cuda``, histogram/gain precision is controlled by ``cuda_precision`` instead; setting ``gpu_use_dp=true`` there forces double-precision histograms even if ``cuda_precision=fp32``
 
 -  ``num_gpu`` :raw-html:`<a id="num_gpu" title="Permalink to this parameter" href="#num_gpu">&#x1F517;&#xFE0E;</a>`, default = ``1``, type = int, constraints: ``num_gpu > 0``
 

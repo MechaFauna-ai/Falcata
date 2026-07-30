@@ -259,12 +259,10 @@ struct Config {
   // options = cpu, gpu, cuda
   // alias = device
   // desc = device for the tree learning
+  // desc = ``cuda`` is Falcata's primary backend: the CUDA-native tree learner (also targets ROCm). This is where Falcata's speed lives -- see `Features <./Features.rst#the-cuda-native-training-pipeline>`__ and the related parameters ``quant_mode``, ``cuda_precision``, ``cuda_plan``
   // desc = ``cpu`` supports all Falcata functionality and is portable across the widest range of operating systems and hardware
-  // desc = ``cuda`` offers faster training than ``gpu`` or ``cpu``, but only works on GPUs supporting CUDA or ROCm
-  // desc = ``gpu`` can be faster than ``cpu`` and works on a wider range of GPUs than CUDA
-  // desc = **Note**: it is recommended to use the smaller ``max_bin`` (e.g. 63) to get the better speed up
-  // desc = **Note**: for the faster speed, GPU uses 32-bit float point to sum up by default, so this may affect the accuracy for some tasks. You can set ``gpu_use_dp=true`` to enable 64-bit float point, but it will slow down the training
-  // desc = **Note**: refer to `Installation Guide <./Installation-Guide.rst>`__ to build Falcata with GPU, CUDA, or ROCm support
+  // desc = ``gpu`` is the legacy OpenCL backend inherited from LightGBM; it is not developed here. If you use it: smaller ``max_bin`` (e.g. 63) speeds it up, and it accumulates in 32-bit floats by default (``gpu_use_dp=true`` restores 64-bit at a speed cost)
+  // desc = **Note**: refer to `Installation Guide <./Installation-Guide.rst>`__ to build Falcata with CUDA, ROCm, or OpenCL support
   std::string device_type = "cpu";
 
   // [no-automatically-extract]
@@ -691,7 +689,7 @@ struct Config {
   // desc = categorical features are used for splits as normal but are not used in the linear models
   // desc = missing values should not be encoded as ``0``. Use ``np.nan`` for Python, ``NA`` for the CLI, and ``NA``, ``NA_real_``, or ``NA_integer_`` for R
   // desc = it is recommended to rescale data before training so that features have similar mean and standard deviation
-  // desc = **Note**: works only with ``cpu``, ``gpu`` device type and ``serial`` tree learner
+  // desc = **Note**: works only with ``cpu``, ``gpu``, and ``cuda`` device type and ``serial`` tree learner
   // desc = **Note**: ``regression_l1`` objective is not supported with linear tree boosting
   // desc = **Note**: setting ``linear_tree=true`` significantly increases the memory use of Falcata
   // desc = **Note**: if you specify ``monotone_constraints``, constraints will be enforced when choosing the split points, but not when fitting the linear models on leaves
@@ -1149,7 +1147,7 @@ struct Config {
   // desc = OpenCL device ID in the specified platform or CUDA device ID. Each GPU in the selected platform has a unique device ID
   // desc = ``-1`` means the default device in the selected platform
   // desc = in multi-GPU case (``num_gpu>1``) means ID of the master GPU
-  // desc = **Note**: applies to the legacy OpenCL backend (``device_type=gpu``) only; use ``clinfo`` to enumerate platforms/devices
+  // desc = **Note**: used by both the CUDA backend (``device_type=cuda``, where it is the CUDA device ID) and the legacy OpenCL backend (``device_type=gpu``, where it is the OpenCL device ID within ``gpu_platform_id``; use ``clinfo`` to enumerate platforms/devices)
   int gpu_device_id = -1;
 
   // desc = list of CUDA device IDs
@@ -1157,8 +1155,8 @@ struct Config {
   // desc = if empty, the devices with the smallest IDs will be used
   std::string gpu_device_id_list = "";
 
-  // desc = set this to ``true`` to use double precision math on GPU (by default single precision is used)
-  // desc = **Note**: can be used only in OpenCL implementation (``device_type="gpu"``), in CUDA implementation only double precision is currently supported
+  // desc = set this to ``true`` to use double precision math on the legacy OpenCL backend (``device_type=gpu``), which accumulates in single precision by default
+  // desc = **Note**: with ``device_type=cuda``, histogram/gain precision is controlled by ``cuda_precision`` instead; setting ``gpu_use_dp=true`` there forces double-precision histograms even if ``cuda_precision=fp32``
   bool gpu_use_dp = false;
 
   // check = >0
