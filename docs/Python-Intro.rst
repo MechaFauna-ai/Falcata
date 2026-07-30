@@ -26,7 +26,7 @@ To verify your installation, try to ``import falcata`` in Python:
 
 ::
 
-    import falcata as lgb
+    import falcata as flc
 
 Data Interface
 --------------
@@ -55,7 +55,7 @@ Many of the examples in this page use functionality from ``numpy``. To run the e
 
 .. code:: python
 
-    train_data = lgb.Dataset('train.svm.bin')
+    train_data = flc.Dataset('train.svm.bin')
 
 **To load a numpy array into Dataset:**
 
@@ -64,7 +64,7 @@ Many of the examples in this page use functionality from ``numpy``. To run the e
     rng = np.random.default_rng()
     data = rng.uniform(size=(500, 10))  # 500 entities, each contains 10 features
     label = rng.integers(low=0, high=2, size=(500, ))  # binary target
-    train_data = lgb.Dataset(data, label=label)
+    train_data = flc.Dataset(data, label=label)
 
 **To load a scipy.sparse.csr\_matrix array into Dataset:**
 
@@ -72,7 +72,7 @@ Many of the examples in this page use functionality from ``numpy``. To run the e
 
     import scipy
     csr = scipy.sparse.csr_matrix((dat, (row, col)))
-    train_data = lgb.Dataset(csr)
+    train_data = flc.Dataset(csr)
 
 **Load from Sequence objects:**
 
@@ -82,7 +82,7 @@ We can implement ``Sequence`` interface to read binary files. The following exam
 
     import h5py
 
-    class HDFSequence(lgb.Sequence):
+    class HDFSequence(flc.Sequence):
         def __init__(self, hdf_dataset, batch_size):
             self.data = hdf_dataset
             self.batch_size = batch_size
@@ -94,7 +94,7 @@ We can implement ``Sequence`` interface to read binary files. The following exam
             return len(self.data)
 
     f = h5py.File('train.hdf5', 'r')
-    train_data = lgb.Dataset(HDFSequence(f['X'], 8192), label=f['Y'][:])
+    train_data = flc.Dataset(HDFSequence(f['X'], 8192), label=f['Y'][:])
 
 Features of using ``Sequence`` interface:
 
@@ -110,7 +110,7 @@ Please refer to ``Sequence`` `API doc <./Python-API.rst#data-structure-api>`__.
 
 .. code:: python
 
-    train_data = lgb.Dataset('train.svm.txt')
+    train_data = flc.Dataset('train.svm.txt')
     train_data.save_binary('train.bin')
 
 **Create validation data:**
@@ -123,7 +123,7 @@ or
 
 .. code:: python
 
-    validation_data = lgb.Dataset('validation.svm', reference=train_data)
+    validation_data = flc.Dataset('validation.svm', reference=train_data)
 
 In Falcata, the validation data should be aligned with training data.
 
@@ -131,7 +131,7 @@ In Falcata, the validation data should be aligned with training data.
 
 .. code:: python
 
-    train_data = lgb.Dataset(data, label=label, feature_name=['c1', 'c2', 'c3'], categorical_feature=['c3'])
+    train_data = flc.Dataset(data, label=label, feature_name=['c1', 'c2', 'c3'], categorical_feature=['c3'])
 
 Falcata can use categorical features as input directly.
 It doesn't need to convert to one-hot encoding, and is much faster than one-hot encoding (about 8x speed-up).
@@ -144,13 +144,13 @@ It doesn't need to convert to one-hot encoding, and is much faster than one-hot 
 
     rng = np.random.default_rng()
     w = rng.uniform(size=(500, ))
-    train_data = lgb.Dataset(data, label=label, weight=w)
+    train_data = flc.Dataset(data, label=label, weight=w)
 
 or
 
 .. code:: python
 
-    train_data = lgb.Dataset(data, label=label)
+    train_data = flc.Dataset(data, label=label)
     rng = np.random.default_rng()
     w = rng.uniform(size=(500, ))
     train_data.set_weight(w)
@@ -196,7 +196,7 @@ Training a model requires a parameter list and data set:
 .. code:: python
 
     num_round = 10
-    bst = lgb.train(param, train_data, num_round, valid_sets=[validation_data])
+    bst = flc.train(param, train_data, num_round, valid_sets=[validation_data])
 
 After training, the model can be saved:
 
@@ -214,7 +214,7 @@ A saved model can be loaded:
 
 .. code:: python
 
-    bst = lgb.Booster(model_file='model.txt')  # init model
+    bst = flc.Booster(model_file='model.txt')  # init model
 
 CV
 --
@@ -223,7 +223,7 @@ Training with 5-fold CV:
 
 .. code:: python
 
-    lgb.cv(param, train_data, num_round, nfold=5)
+    flc.cv(param, train_data, num_round, nfold=5)
 
 Early Stopping
 --------------
@@ -233,7 +233,7 @@ Early stopping requires at least one set in ``valid_sets``. If there is more tha
 
 .. code:: python
 
-    bst = lgb.train(param, train_data, num_round, valid_sets=valid_sets, callbacks=[lgb.early_stopping(stopping_rounds=5)])
+    bst = flc.train(param, train_data, num_round, valid_sets=valid_sets, callbacks=[flc.early_stopping(stopping_rounds=5)])
     bst.save_model('model.txt', num_iteration=bst.best_iteration)
 
 The model will train until the validation score stops improving.

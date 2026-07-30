@@ -140,17 +140,17 @@ Falcata's Dask estimators support setting an attribute ``client`` to control the
 
 .. code:: python
 
-  import falcata as lgb
+  import falcata as flc
   from distributed import Client, LocalCluster
 
   cluster = LocalCluster()
   client = Client(cluster)
 
   # option 1: keyword argument in constructor
-  dask_model = lgb.DaskFalcataClassifier(client=client)
+  dask_model = flc.DaskFalcataClassifier(client=client)
 
   # option 2: set_params() after construction
-  dask_model = lgb.DaskFalcataClassifier()
+  dask_model = flc.DaskFalcataClassifier()
   dask_model.set_params(client=client)
 
 Using Specific Ports
@@ -176,16 +176,16 @@ You could edit your firewall rules to allow traffic on one additional port on ea
 
 .. code:: python
 
-  import falcata as lgb
+  import falcata as flc
 
   machines = "10.0.1.0:12401,10.0.2.0:12402,10.0.3.0:15000"
-  dask_model = lgb.DaskFalcataRegressor(machines=machines)
+  dask_model = flc.DaskFalcataRegressor(machines=machines)
 
 If you are running multiple Dask worker processes on physical host in the cluster, be sure that there are multiple entries for that IP address, with different ports. For example, if you were running a cluster with ``nprocs=2`` (2 Dask worker processes per machine), you might open two additional ports on each of these hosts, then provide ``machines`` as follows.
 
 .. code:: python
 
-  import falcata as lgb
+  import falcata as flc
 
   machines = ",".join([
     "10.0.1.0:16000",
@@ -193,7 +193,7 @@ If you are running multiple Dask worker processes on physical host in the cluste
     "10.0.2.0:16000",
     "10.0.2.0:16001",
   ])
-  dask_model = lgb.DaskFalcataRegressor(machines=machines)
+  dask_model = flc.DaskFalcataRegressor(machines=machines)
 
 .. warning::
 
@@ -219,9 +219,9 @@ You could edit your firewall rules to allow communication between any of the wor
 
 .. code:: python
 
-  import falcata as lgb
+  import falcata as flc
 
-  dask_model = lgb.DaskFalcataRegressor(local_listen_port=12400)
+  dask_model = flc.DaskFalcataRegressor(local_listen_port=12400)
 
 .. warning::
 
@@ -247,7 +247,7 @@ Follow the example below to use a custom implementation of the ``regression_l2``
 .. code:: python
 
   import dask.array as da
-  import falcata as lgb
+  import falcata as flc
   import numpy as np
   from distributed import Client, LocalCluster
 
@@ -262,7 +262,7 @@ Follow the example below to use a custom implementation of the ``regression_l2``
       hess = np.ones(len(y_true))
       return grad, hess
 
-  dask_model = lgb.DaskFalcataRegressor(
+  dask_model = flc.DaskFalcataRegressor(
       objective=custom_l2_obj
   )
   dask_model.fit(X, y)
@@ -289,7 +289,7 @@ Falcata's Dask estimators can be pickled directly with ``cloudpickle``, ``joblib
 
   import dask.array as da
   import pickle
-  import falcata as lgb
+  import falcata as flc
   from distributed import Client, LocalCluster
 
   cluster = LocalCluster(n_workers=2)
@@ -298,7 +298,7 @@ Falcata's Dask estimators can be pickled directly with ``cloudpickle``, ``joblib
   X = da.random.random((1000, 10), (500, 10))
   y = da.random.random((1000,), (500,))
 
-  dask_model = lgb.DaskFalcataRegressor()
+  dask_model = flc.DaskFalcataRegressor()
   dask_model.fit(X, y)
 
   with open("dask-model.pkl", "wb") as f:
@@ -324,7 +324,7 @@ The estimators available from ``falcata.dask`` can be converted to an instance o
 
   import dask.array as da
   import joblib
-  import falcata as lgb
+  import falcata as flc
   from distributed import Client, LocalCluster
 
   cluster = LocalCluster(n_workers=2)
@@ -333,7 +333,7 @@ The estimators available from ``falcata.dask`` can be converted to an instance o
   X = da.random.random((1000, 10), (500, 10))
   y = da.random.random((1000,), (500,))
 
-  dask_model = lgb.DaskFalcataRegressor()
+  dask_model = flc.DaskFalcataRegressor()
   dask_model.fit(X, y)
 
   # convert to sklearn equivalent
@@ -359,7 +359,7 @@ The lowest-level model object in Falcata is the ``falcata.Booster``. After train
 .. code:: python
 
   import dask.array as da
-  import falcata as lgb
+  import falcata as flc
   from distributed import Client, LocalCluster
 
   cluster = LocalCluster(n_workers=2)
@@ -368,7 +368,7 @@ The lowest-level model object in Falcata is the ``falcata.Booster``. After train
   X = da.random.random((1000, 10), (500, 10))
   y = da.random.random((1000,), (500,))
 
-  dask_model = lgb.DaskFalcataRegressor()
+  dask_model = flc.DaskFalcataRegressor()
   dask_model.fit(X, y)
 
   # get underlying Booster object

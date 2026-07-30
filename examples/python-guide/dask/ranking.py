@@ -5,7 +5,7 @@ import numpy as np
 from distributed import Client, LocalCluster
 from sklearn.datasets import load_svmlight_file
 
-import falcata as lgb
+import falcata as flc
 
 if __name__ == "__main__":
     print("loading data")
@@ -43,7 +43,7 @@ if __name__ == "__main__":
 
     print("beginning training")
 
-    dask_model = lgb.DaskFalcataRanker(n_estimators=10)
+    dask_model = flc.DaskFalcataRanker(n_estimators=10)
     dask_model.fit(dX, dy, group=dg)
     assert dask_model.fitted_
 

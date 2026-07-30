@@ -2,7 +2,7 @@ import dask.array as da
 from distributed import Client, LocalCluster
 from sklearn.datasets import make_blobs
 
-import falcata as lgb
+import falcata as flc
 
 if __name__ == "__main__":
     print("loading data")
@@ -23,7 +23,7 @@ if __name__ == "__main__":
 
     print("beginning training")
 
-    dask_model = lgb.DaskFalcataClassifier(n_estimators=10)
+    dask_model = flc.DaskFalcataClassifier(n_estimators=10)
     dask_model.fit(dX, dy)
     assert dask_model.fitted_
 

@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 from sklearn.metrics import mean_squared_error
 
-import falcata as lgb
+import falcata as flc
 
 print("Loading data...")
 # load or create your dataset
@@ -18,8 +18,8 @@ X_train = df_train.drop(0, axis=1)
 X_test = df_test.drop(0, axis=1)
 
 # create dataset for falcata
-lgb_train = lgb.Dataset(X_train, y_train)
-lgb_eval = lgb.Dataset(X_test, y_test, reference=lgb_train)
+lgb_train = flc.Dataset(X_train, y_train)
+lgb_eval = flc.Dataset(X_test, y_test, reference=lgb_train)
 
 # specify your configurations as a dict
 params = {
@@ -36,8 +36,8 @@ params = {
 
 print("Starting training...")
 # train
-gbm = lgb.train(
-    params, lgb_train, num_boost_round=20, valid_sets=lgb_eval, callbacks=[lgb.early_stopping(stopping_rounds=5)]
+gbm = flc.train(
+    params, lgb_train, num_boost_round=20, valid_sets=lgb_eval, callbacks=[flc.early_stopping(stopping_rounds=5)]
 )
 
 print("Saving model...")

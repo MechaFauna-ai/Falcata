@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 from scipy.special import expit
 
-import falcata as lgb
+import falcata as flc
 
 #################
 # Simulate some binary data with a single categorical and
@@ -35,8 +35,8 @@ DATA = {
     "X": X,
     "probability_labels": TRUE_PROB,
     "binary_labels": Y,
-    "lgb_with_binary_labels": lgb.Dataset(X, Y),
-    "lgb_with_probability_labels": lgb.Dataset(X, TRUE_PROB),
+    "lgb_with_binary_labels": flc.Dataset(X, Y),
+    "lgb_with_probability_labels": flc.Dataset(X, TRUE_PROB),
 }
 
 
@@ -69,7 +69,7 @@ def experiment(objective, label_type, data):
     lgb_data = data[f"lgb_with_{label_type}_labels"]
     params = {"objective": objective, "feature_fraction": 1, "bagging_fraction": 1, "verbose": -1, "seed": 123}
     time_zero = time.time()
-    gbm = lgb.train(params, lgb_data, num_boost_round=nrounds)
+    gbm = flc.train(params, lgb_data, num_boost_round=nrounds)
     y_fitted = gbm.predict(data["X"])
     y_true = data[f"{label_type}_labels"]
     duration = time.time() - time_zero

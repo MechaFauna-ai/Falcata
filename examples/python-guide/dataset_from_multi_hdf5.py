@@ -4,10 +4,10 @@ import h5py
 import numpy as np
 import pandas as pd
 
-import falcata as lgb
+import falcata as flc
 
 
-class HDFSequence(lgb.Sequence):
+class HDFSequence(flc.Sequence):
     def __init__(self, hdf_dataset, batch_size):
         """
         Construct a sequence object from HDF5 with required interface.
@@ -43,7 +43,7 @@ def create_dataset_from_multiple_hdf(input_flist, batch_size):
         "max_bin": 255,
     }
     y = np.concatenate(ylist)
-    dataset = lgb.Dataset(data, label=y, params=params)
+    dataset = flc.Dataset(data, label=y, params=params)
     # With binary dataset created, we can use either Python API or cmdline version to train.
     #
     # Note: in order to create exactly the same dataset with the one created in simple_example.py, we need

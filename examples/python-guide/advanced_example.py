@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
-import falcata as lgb
+import falcata as flc
 
 print("Loading data...")
 # load or create your dataset
@@ -30,10 +30,10 @@ feature_name = [f"feature_{col}" for col in range(num_feature)]
 
 # create dataset for falcata
 # if you want to re-use data, remember to set free_raw_data=False
-lgb_train = lgb.Dataset(
+lgb_train = flc.Dataset(
     X_train, y_train, weight=W_train, feature_name=feature_name, categorical_feature=[21], free_raw_data=False
 )
-lgb_eval = lgb.Dataset(X_test, y_test, reference=lgb_train, weight=W_test, free_raw_data=False)
+lgb_eval = flc.Dataset(X_test, y_test, reference=lgb_train, weight=W_test, free_raw_data=False)
 
 # specify your configurations as a dict
 params = {
@@ -50,7 +50,7 @@ params = {
 
 print("Starting training...")
 # feature_name and categorical_feature
-gbm = lgb.train(
+gbm = flc.train(
     params,
     lgb_train,
     num_boost_round=10,
@@ -80,7 +80,7 @@ print(f"Feature importances: {list(gbm.feature_importance())}")
 
 print("Loading model to predict...")
 # load model to predict
-bst = lgb.Booster(model_file="model.txt")
+bst = flc.Booster(model_file="model.txt")
 # can only predict with the best iteration (or the saving iteration)
 y_pred = bst.predict(X_test)
 # eval with loaded model
@@ -104,7 +104,7 @@ print(f"The ROC AUC of pickled model's prediction is: {auc_pickled_model}")
 # init_model accepts:
 # 1. model file name
 # 2. Booster()
-gbm = lgb.train(params, lgb_train, num_boost_round=10, init_model="model.txt", valid_sets=lgb_eval)
+gbm = flc.train(params, lgb_train, num_boost_round=10, init_model="model.txt", valid_sets=lgb_eval)
 
 print("Finished 10 - 20 rounds with model file...")
 
@@ -112,25 +112,25 @@ print("Finished 10 - 20 rounds with model file...")
 # reset_parameter callback accepts:
 # 1. list with length = num_boost_round
 # 2. function(curr_iter)
-gbm = lgb.train(
+gbm = flc.train(
     params,
     lgb_train,
     num_boost_round=10,
     init_model=gbm,
     valid_sets=lgb_eval,
-    callbacks=[lgb.reset_parameter(learning_rate=lambda iter: 0.05 * (0.99**iter))],
+    callbacks=[flc.reset_parameter(learning_rate=lambda iter: 0.05 * (0.99**iter))],
 )
 
 print("Finished 20 - 30 rounds with decay learning rates...")
 
 # change other parameters during training
-gbm = lgb.train(
+gbm = flc.train(
     params,
     lgb_train,
     num_boost_round=10,
     init_model=gbm,
     valid_sets=lgb_eval,
-    callbacks=[lgb.reset_parameter(bagging_fraction=[0.7] * 5 + [0.6] * 5)],
+    callbacks=[flc.reset_parameter(bagging_fraction=[0.7] * 5 + [0.6] * 5)],
 )
 
 print("Finished 30 - 40 rounds with changing bagging_fraction...")
@@ -164,7 +164,7 @@ def binary_error(preds, train_data):
 params_custom_obj = copy.deepcopy(params)
 params_custom_obj["objective"] = loglikelihood
 
-gbm = lgb.train(
+gbm = flc.train(
     params_custom_obj, lgb_train, num_boost_round=10, init_model=gbm, feval=binary_error, valid_sets=lgb_eval
 )
 
@@ -188,7 +188,7 @@ def accuracy(preds, train_data):
 params_custom_obj = copy.deepcopy(params)
 params_custom_obj["objective"] = loglikelihood
 
-gbm = lgb.train(
+gbm = flc.train(
     params_custom_obj,
     lgb_train,
     num_boost_round=10,
@@ -205,7 +205,7 @@ print("Starting a new training job...")
 # callback
 def reset_metrics():
     def callback(env):
-        lgb_eval_new = lgb.Dataset(X_test, y_test, reference=lgb_train)
+        lgb_eval_new = flc.Dataset(X_test, y_test, reference=lgb_train)
         if env.iteration - env.begin_iteration == 5:
             print("Add a new valid dataset at iteration 5...")
             env.model.add_valid(lgb_eval_new, "new_valid")
@@ -215,6 +215,6 @@ def reset_metrics():
     return callback
 
 
-gbm = lgb.train(params, lgb_train, num_boost_round=10, valid_sets=lgb_train, callbacks=[reset_metrics()])
+gbm = flc.train(params, lgb_train, num_boost_round=10, valid_sets=lgb_train, callbacks=[reset_metrics()])
 
 print("Finished first 10 rounds with callback function...")

@@ -3,7 +3,7 @@ from distributed import Client, LocalCluster
 from sklearn.datasets import make_regression
 from sklearn.metrics import mean_squared_error
 
-import falcata as lgb
+import falcata as flc
 
 if __name__ == "__main__":
     print("loading data")
@@ -24,7 +24,7 @@ if __name__ == "__main__":
 
     print("beginning training")
 
-    dask_model = lgb.DaskFalcataRegressor(n_estimators=10)
+    dask_model = flc.DaskFalcataRegressor(n_estimators=10)
     dask_model.fit(dX, dy)
     assert dask_model.fitted_
 
