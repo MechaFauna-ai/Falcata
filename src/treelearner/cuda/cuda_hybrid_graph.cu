@@ -524,7 +524,6 @@ __global__ void HybridGraphLevelControllerKernel(CUDAHybridGraphLoopState* st,
   // (gridDim.z pairs, formula-sized y), so it keeps exact device updates.
   if (tid < own_nodes) {
     const CUDAHybridGraphNodeSlot slot = st->nodes[node_base + tid];
-    const unsigned int un = static_cast<unsigned int>(n);
     const unsigned int qn = static_cast<unsigned int>(NextPow2(n));
     bool enabled = true;
     dim3 grid(1, 1, 1);

@@ -432,7 +432,6 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
   // GPU fill kernel is fastest.
   // Per-tree fill: when source is host (column-major), do one cudaMemcpy per sampled column.
   // Each is a contiguous num_data byte transfer at ~20 GB/s → ~85 ms for f=0.1 / 6.7M rows.
-  auto t_build_start = std::chrono::steady_clock::now();
   if (cuda_row_data_->is_data_host_mapped()) {
     const uint8_t* src_col_major = cuda_row_data_->host_partitioned_data_uint8_t();
     // Compact GPU layout: row-major-in-partition (matches histogram kernel expectation).
