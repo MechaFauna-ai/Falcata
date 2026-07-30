@@ -11,6 +11,9 @@ option(USE_NCCL "Enable NCCL for multi-GPU CUDA training (requires USE_CUDA)" ON
 option(USE_ROCM "Enable ROCm-accelerated training " OFF)
 option(USE_DEBUG "Set to ON for Debug mode" OFF)
 option(USE_SANITIZER "Use sanitizer flags" OFF)
+# Applies to GNU/Clang and nvcc. Never applied to the R-package build: CRAN
+# rejects -Werror, and R's own headers warn under -Wextra.
+option(USE_WERROR "Treat compiler warnings as errors" ON)
 set(
   ENABLED_SANITIZERS
   "address" "leak" "undefined"
@@ -113,17 +116,18 @@ if(USE_SWIG)
 endif()
 
 set(EIGEN_DIR "${PROJECT_SOURCE_DIR}/external_libs/eigen")
-include_directories(${EIGEN_DIR})
+# SYSTEM: vendored headers must not produce warnings we then promote to errors.
+include_directories(SYSTEM ${EIGEN_DIR})
 
 # See https://gitlab.com/libeigen/eigen/-/blob/master/COPYING.README
 add_definitions(-DEIGEN_MPL2_ONLY)
 add_definitions(-DEIGEN_DONT_PARALLELIZE)
 
 set(FAST_DOUBLE_PARSER_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/external_libs/fast_double_parser/include")
-include_directories(${FAST_DOUBLE_PARSER_INCLUDE_DIR})
+include_directories(SYSTEM ${FAST_DOUBLE_PARSER_INCLUDE_DIR})
 
 set(FMT_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/external_libs/fmt/include")
-include_directories(${FMT_INCLUDE_DIR})
+include_directories(SYSTEM ${FMT_INCLUDE_DIR})
 
 if(BUILD_CPP_TEST AND MSVC)
   # Use /MT flag to statically link the C runtime. Must be set before
@@ -240,6 +244,16 @@ if(USE_CUDA)
     endif()
     include_directories(${CUDAToolkit_INCLUDE_DIRS})
     set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=${OpenMP_CXX_FLAGS} -Xcompiler=-fPIC -Xcompiler=-Wall")
+    if(USE_WERROR AND NOT __BUILD_FOR_R)
+        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=-Werror")
+        # nvcc's own device-side diagnostics (e.g. cross-execution-space-call) are
+        # separate from the host compiler's; "all-warnings" landed in CUDA 11.2.
+        if(CUDAToolkit_VERSION VERSION_GREATER_EQUAL "11.2")
+            set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Werror all-warnings")
+        else()
+            set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Werror cross-execution-space-call")
+        endif()
+    endif()
 
     # If the user passed -DCMAKE_CUDA_ARCHITECTURES (e.g. "120-real" for fast
     # local builds on a single GPU), honor it verbatim. Otherwise build for
@@ -383,6 +397,9 @@ if(UNIX OR MINGW OR CYGWIN)
   endif()
   if(__BUILD_FOR_R AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
       set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-cast-function-type")
+  endif()
+  if(USE_WERROR AND NOT __BUILD_FOR_R)
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror")
   endif()
 endif()
 

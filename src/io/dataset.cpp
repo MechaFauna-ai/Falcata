@@ -1040,6 +1040,7 @@ TrainingShareStates* Dataset::GetShareStates(
         feature_groups_, false, false, num_grad_quant_bins);
     }
     #else
+    (void)is_cuda_tree_learner;
     share_state->SetMultiValBin(GetMultiBinFromAllFeatures(offsets), num_data_,
       feature_groups_, false, false, num_grad_quant_bins);
     #endif  // USE_CUDA

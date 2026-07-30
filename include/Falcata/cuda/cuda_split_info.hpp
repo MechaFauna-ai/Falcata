@@ -49,6 +49,9 @@ class CUDASplitInfo {
   }
 
   __host__ __device__ ~CUDASplitInfo() {
+    // cudaFree is host-only; device instances live in device memory owned elsewhere
+    // and are never destroyed through this destructor.
+#ifndef __CUDA_ARCH__
     if (num_cat_threshold > 0) {
       if (cat_threshold != nullptr) {
         CUDASUCCESS_OR_FATAL(cudaFree(cat_threshold));
@@ -57,6 +60,7 @@ class CUDASplitInfo {
         CUDASUCCESS_OR_FATAL(cudaFree(cat_threshold_real));
       }
     }
+#endif
   }
 
   __host__ __device__ CUDASplitInfo& operator=(const CUDASplitInfo& other) {
