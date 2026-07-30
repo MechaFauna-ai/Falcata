@@ -505,4 +505,3 @@ gh workflow run \
 Known Issues
 ------------
 
-For information about known issues with the R-package, see the [R-package section of Falcata's main FAQ page](https://github.com/MechaFauna-ai/Falcata/blob/master/docs/FAQ.rst#r-package).

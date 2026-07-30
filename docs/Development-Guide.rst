@@ -90,6 +90,5 @@ See the implementations at `Python-package <https://github.com/MechaFauna-ai/Fal
 Questions
 ---------
 
-Refer to `FAQ <./FAQ.rst>`__.
 
 Also feel free to open `issues <https://github.com/MechaFauna-ai/Falcata/issues>`__ if you met problems.

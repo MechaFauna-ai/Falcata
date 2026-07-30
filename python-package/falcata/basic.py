@@ -5,7 +5,10 @@
 # It's intentionally done here, as early as possible, to avoid issues like
 # "libgomp.so.1: cannot allocate memory in static TLS block" on aarch64 Linux.
 #
-# For details, see the "cannot allocate memory in static TLS block" entry in docs/FAQ.rst.
+# (gcc's libgomp allocates static thread-local storage when dynamically
+# loaded; importing the native lib first, before anything else loads its own
+# TLS-hungry shared objects, keeps the loader's static TLS block from
+# running out.)
 from .libpath import _LIB  # isort: skip
 
 import abc

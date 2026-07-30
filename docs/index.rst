@@ -39,7 +39,6 @@ For more details, please refer to `Features <./Features.rst>`__.
    Distributed Learning Guide <Parallel-Learning-Guide>
    GPU Tutorial <GPU-Tutorial>
    Advanced Topics <Advanced-Topics>
-   FAQ <FAQ>
    Development Guide <Development-Guide>
 
 .. toctree::

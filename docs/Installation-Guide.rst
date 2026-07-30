@@ -166,7 +166,7 @@ The ``.exe`` and ``.dll`` files will be in ``Falcata/`` folder.
 **Note**: You may need to run the ``cmake -B build -S . -G "MinGW Makefiles"`` one more time or add ``-DCMAKE_SH=CMAKE_SH-NOTFOUND`` to CMake flags if you encounter the ``sh.exe was found in your PATH`` error.
 
 It is recommended that you use **Visual Studio** since it has better multithreading efficiency in **Windows** for many-core systems
-(see `Question 4 <./FAQ.rst#i-am-using-windows-should-i-use-visual-studio-or-mingw-for-compiling-falcata>`__ and `Question 8 <./FAQ.rst#cpu-usage-is-low-like-10-in-windows-when-using-falcata-on-very-large-datasets-with-many-core-systems>`__).
+(Visual Studio builds are generally faster on Windows; MinGW builds can suffer low CPU utilization on many-core systems.)
 
 Linux
 ~~~~~
@@ -883,7 +883,7 @@ MinGW-w64
 **Note**: You may need to run the ``cmake -B build -S . -G "MinGW Makefiles" -DUSE_SWIG=ON`` one more time or add ``-DCMAKE_SH=CMAKE_SH-NOTFOUND`` to CMake flags if you encounter the ``sh.exe was found in your PATH`` error.
 
 It is recommended to use **VS Build Tools (Visual Studio)** since it has better multithreading efficiency in **Windows** for many-core systems
-(see `Question 4 <./FAQ.rst#i-am-using-windows-should-i-use-visual-studio-or-mingw-for-compiling-falcata>`__ and `Question 8 <./FAQ.rst#cpu-usage-is-low-like-10-in-windows-when-using-falcata-on-very-large-datasets-with-many-core-systems>`__).
+(Visual Studio builds are generally faster on Windows; MinGW builds can suffer low CPU utilization on many-core systems.)
 
 Linux
 ^^^^^
