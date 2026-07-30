@@ -11,6 +11,7 @@
 
 #include <Falcata/cuda/cuda_row_data.hpp>
 #include <Falcata/falcata_plan.h>
+#include <Falcata/cuda/pack_codecs.hpp>
 #include <Falcata/cuda/cuda_utils.hu>
 #include <Falcata/feature_group.h>
 #include <Falcata/tree.h>
@@ -426,6 +427,11 @@ class CUDAHistogramConstructor {
 
   bool compact_view_active() const { return use_compact_view_; }
 
+  /*! \brief packing codec of the ACTIVE compact view (uniform per tree).
+   *  kNibble4 is the historical layout; anything else disables the packed
+   *  split readers (the learner falls back to the classic column view). */
+  PackCodecId compact_codec() const { return compact_codec_; }
+
   // Expose internal CUDARowData so the tree learner can build a per-tree compact
   // column view from the on-GPU row-major bin matrix.
   const CUDARowData* cuda_row_data_internal() const { return cuda_row_data_.get(); }
@@ -713,6 +719,7 @@ class CUDAHistogramConstructor {
     int num_partitions = 0;
     int total_compact = 0;
     bool is_4bit = false;
+    PackCodecId codec = PackCodecId::kNibble4;
     size_t data_bytes = 0;
   };
   bool ScanCompactLayout(const std::vector<int8_t>& is_feature_used_bytree,
@@ -738,6 +745,16 @@ class CUDAHistogramConstructor {
   bool use_compact_view_;
   /*! \brief if true, compact_data_uint8_t_ is column-major-in-partition (used when source is host) */
   bool compact_is_col_major_ = false;
+  /*! \brief packing codec of the active compact view (see pack_codecs.hpp) */
+  PackCodecId compact_codec_ = PackCodecId::kNibble4;
+  /*! \brief codec-fill metadata: per compact column source nibble base/stride,
+   *  per destination word slot placement (see CUDAFillCompactCodecKernel) */
+  CUDAVector<size_t> cuda_col_src_nib_base_;
+  CUDAVector<int> cuda_col_src_stride_nib_;
+  CUDAVector<size_t> cuda_ws_dst_byte_;
+  CUDAVector<int> cuda_ws_dst_stride_;
+  CUDAVector<int> cuda_ws_first_col_;
+  CUDAVector<uint8_t> cuda_ws_ndig_;
   /*! \brief host copies of the compact layout (source column per slot and the
    *  row-major-in-partition placement), kept so the tree learner's per-tree
    *  column-view build can gather from the ~10x smaller compact matrix instead

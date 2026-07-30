@@ -206,9 +206,6 @@ raises-extend-require-match-for = ["*Exception", "*Error"]
     # deferred into per-library runners so each venv only imports its own
     "PLC0415"
 ]
-    # (flake8-print) flake8-print
-    "T201"
-]
 "docs/conf.py" = [
     # (flake8-bugbear) raise exceptions with "raise ... from err"
     "B904",

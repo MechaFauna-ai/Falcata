@@ -79,6 +79,13 @@ struct FalcataPlan {
   // gap-gated outlier-robust gradient scale (fixedpoint quant only; no-op in
   // other modes). Changes the model when it fires -- NOT an equality key.
   bool robust_scale = true;         // key: robust_scale
+  // experimental compact-view packing codecs (uniform per tree; eligible only
+  // when every sampled feature's bin count fits the codec). Bit-identical by
+  // construction (lossless packing). Priority radix5 > radix6 > bit3.
+  bool pack_bit3 = false;           // key: pack_bit3 -- 2.5 values/byte, <=8 bins
+  bool pack_radix5 = false;         // key: pack_radix5 -- 3.25 values/byte, <=5 bins
+  bool pack_radix6 = false;         // key: pack_radix6 -- 3.0 values/byte, <=6 bins
+  bool pack_radix7 = false;         // key: pack_radix7 -- 2.75 values/byte, <=7 bins
   // prefill the next tree's compact column view on a side stream during the
   // current tree's training (bit-identical). Default OFF: measured no wall
   // win -- steady-state training is 97% device-busy and the ~41 synchronous
@@ -126,6 +133,10 @@ struct FalcataPlan {
     if (key == "small_leaf_construct") return &small_leaf_construct;
     if (key == "robust_scale") return &robust_scale;
     if (key == "compact_prefill") return &compact_prefill;
+    if (key == "pack_bit3") return &pack_bit3;
+    if (key == "pack_radix5") return &pack_radix5;
+    if (key == "pack_radix6") return &pack_radix6;
+    if (key == "pack_radix7") return &pack_radix7;
     return nullptr;
   }
 

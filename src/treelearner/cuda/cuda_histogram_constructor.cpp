@@ -243,6 +243,20 @@ void LaunchFillCompactDataKernel(
 
 // Implemented in cuda_histogram_constructor.cu — 4-bit packed source AND
 // destination variant (one thread per destination byte = compact column pair).
+void LaunchFillCompactCodecKernel(
+  cudaStream_t stream,
+  PackCodecId codec,
+  const uint8_t* src_data,
+  uint8_t* compact_data,
+  const size_t* col_src_nib_base,
+  const int* col_src_stride_nib,
+  const size_t* ws_dst_byte,
+  const int* ws_dst_stride,
+  const int* ws_first_col,
+  const uint8_t* ws_num_digits,
+  int total_word_slots,
+  data_size_t num_data);
+
 void LaunchFillCompactData4BitKernel(
   cudaStream_t stream,
   const uint8_t* src_data,
@@ -309,11 +323,54 @@ bool CUDAHistogramConstructor::ScanCompactLayout(
   // same way (per-partition packed row width = ceil(used_columns / 2) bytes,
   // column j of a partition in byte (j >> 1), nibble (j & 1)).
   layout->is_4bit = cuda_row_data_->is_4bit_packed() && !cuda_row_data_->is_data_host_mapped();
+
+  // Experimental packing codecs (pack_radix5/pack_radix6/pack_bit3 plan keys):
+  // a denser-than-nibble layout is eligible when the source is the 4-bit row
+  // matrix and EVERY used feature's bin count fits the codec (uniform codec
+  // per tree; mixed-codec partition grouping is future work). Bit-identical by
+  // construction -- packing is lossless.
+  layout->codec = PackCodecId::kNibble4;
+  // quant-only in this cut: the non-quantized batched kernels and the JIT read
+  // nibble layout; codec eligibility therefore requires the discretized path
+  if (layout->is_4bit && use_quantized_grad_) {
+    // The stored value bound of a COLUMN is its hist-offset delta (the same
+    // quantity the 4-bit row-data gate uses): with EFB, one column can carry
+    // a multi-feature bundle whose values exceed any single feature's bin
+    // count, so per-FEATURE bin counts are NOT a valid bound here (that
+    // mistake corrupted radix words on bundled columns).
+    const std::vector<uint32_t>& part_hist_offsets = cuda_row_data_->host_partition_hist_offsets();
+    int max_bins_used = 0;
+    for (int slot = 0; slot < total_compact; ++slot) {
+      const int p = layout->partition_for_slot[slot];
+      const int c = src_part_col_offsets[p] + layout->src_local_col[slot];
+      const int part_end_col = src_part_col_offsets[p + 1];
+      const uint32_t part_span = part_hist_offsets[p + 1] - part_hist_offsets[p];
+      const uint32_t col_end = (c + 1 < part_end_col) ? src_col_hist_offsets[c + 1] : part_span;
+      const int col_span = static_cast<int>(col_end - src_col_hist_offsets[c]);
+      max_bins_used = std::max(max_bins_used, col_span);
+    }
+    const FalcataPlan& plan = FalcataPlan::Get();
+    if (plan.pack_radix5 && max_bins_used <= PackRadix5x32::kMaxBins) {
+      layout->codec = PackCodecId::kRadix5x32;
+    } else if (plan.pack_radix6 && max_bins_used <= PackRadix6x32::kMaxBins) {
+      layout->codec = PackCodecId::kRadix6x32;
+    } else if (plan.pack_radix7 && max_bins_used <= PackRadix7x32::kMaxBins) {
+      layout->codec = PackCodecId::kRadix7x32;
+    } else if (plan.pack_bit3 && max_bins_used <= PackBit3x32::kMaxBins) {
+      layout->codec = PackCodecId::kBit3x32;
+    }
+    if ((plan.pack_radix5 || plan.pack_radix6 || plan.pack_radix7 || plan.pack_bit3) && FalcataDebug().diag) {
+      Log::Warning("[pack-codec] tree codec=%d (max column span among %d sampled columns = %d)",
+                   static_cast<int>(layout->codec), total_compact, max_bins_used);
+    }
+  }
+
   layout->packed_part_offsets.clear();
   layout->packed_part_offsets.push_back(0);
   for (int p = 0; p < num_partitions; ++p) {
     const int used_in_p = layout->part_col_offsets[p + 1] - layout->part_col_offsets[p];
-    layout->packed_part_offsets.push_back(layout->packed_part_offsets.back() + ((used_in_p + 1) >> 1));
+    layout->packed_part_offsets.push_back(
+      layout->packed_part_offsets.back() + PackRowBytes(layout->codec, used_in_p));
   }
   const data_size_t num_data = cuda_row_data_->num_data();
   layout->data_bytes = layout->is_4bit ?
@@ -348,6 +405,7 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
   const int total_compact = layout.total_compact;
   const data_size_t num_data = cuda_row_data_->num_data();
   compact_is_4bit_ = layout.is_4bit;
+  compact_codec_ = layout.codec;
 
   // Host copies of the compact layout for the tree learner's column-view build
   // (source column per slot + row-major-in-partition placement of each slot).
@@ -557,6 +615,77 @@ void CUDAHistogramConstructor::LaunchCompactFill(
     *pin_off += bytes;
   };
   size_t pin_off = 0;
+
+  if (layout.codec != PackCodecId::kNibble4) {
+    // Codec fill (pack_bit3/pack_radix5/pack_radix6): transcode the sampled
+    // columns from the 4-bit source into codec-packed uint32 words. One
+    // thread per (destination word slot, row group); per-column source
+    // nibble metadata plus per-word-slot placement metadata.
+    const std::vector<int>& src_packed_offsets = cuda_row_data_->host_packed_partition_byte_offsets();
+    const int D = PackValuesPerWord(layout.codec);
+    std::vector<size_t> col_nib_h(total_compact);
+    std::vector<int> col_stride_h(total_compact);
+    for (int s = 0; s < total_compact; ++s) {
+      const int p = partition_for_compact_h[s];
+      col_nib_h[s] = static_cast<size_t>(src_packed_offsets[p]) * static_cast<size_t>(num_data) * 2 +
+        static_cast<size_t>(src_local_col_for_compact_h[s]);
+      col_stride_h[s] = (src_packed_offsets[p + 1] - src_packed_offsets[p]) * 2;
+    }
+    int total_word_slots = 0;
+    for (int p = 0; p < num_partitions; ++p) {
+      const int used_in_p = compact_part_col_offsets[p + 1] - compact_part_col_offsets[p];
+      total_word_slots += (used_in_p + D - 1) / D;
+    }
+    std::vector<size_t> ws_dst_byte_h(total_word_slots);
+    std::vector<int> ws_dst_stride_h(total_word_slots);
+    std::vector<int> ws_first_col_h(total_word_slots);
+    std::vector<uint8_t> ws_ndig_h(total_word_slots);
+    int ws = 0;
+    for (int p = 0; p < num_partitions; ++p) {
+      const int part_start = compact_part_col_offsets[p];
+      const int used_in_p = compact_part_col_offsets[p + 1] - part_start;
+      const int width_p = compact_packed_part_offsets[p + 1] - compact_packed_part_offsets[p];
+      const size_t dst_part_byte = static_cast<size_t>(compact_packed_part_offsets[p]) * static_cast<size_t>(num_data);
+      const int num_words = (used_in_p + D - 1) / D;
+      for (int w = 0; w < num_words; ++w) {
+        ws_dst_byte_h[ws] = dst_part_byte + static_cast<size_t>(4 * w);
+        ws_dst_stride_h[ws] = width_p;
+        ws_first_col_h[ws] = part_start + w * D;
+        ws_ndig_h[ws] = static_cast<uint8_t>(std::min(D, used_in_p - w * D));
+        ++ws;
+      }
+    }
+    CHECK_EQ(ws, total_word_slots);
+    if (cuda_col_src_nib_base_.Size() < static_cast<size_t>(total_compact)) {
+      cuda_col_src_nib_base_.Resize(total_compact);
+      cuda_col_src_stride_nib_.Resize(total_compact);
+    }
+    if (cuda_ws_dst_byte_.Size() < static_cast<size_t>(total_word_slots)) {
+      cuda_ws_dst_byte_.Resize(total_word_slots);
+      cuda_ws_dst_stride_.Resize(total_word_slots);
+      cuda_ws_first_col_.Resize(total_word_slots);
+      cuda_ws_ndig_.Resize(total_word_slots);
+    }
+    upload(cuda_col_src_nib_base_.RawData(), col_nib_h.data(), sizeof(size_t) * total_compact, &pin_off);
+    upload(cuda_col_src_stride_nib_.RawData(), col_stride_h.data(), sizeof(int) * total_compact, &pin_off);
+    upload(cuda_ws_dst_byte_.RawData(), ws_dst_byte_h.data(), sizeof(size_t) * total_word_slots, &pin_off);
+    upload(cuda_ws_dst_stride_.RawData(), ws_dst_stride_h.data(), sizeof(int) * total_word_slots, &pin_off);
+    upload(cuda_ws_first_col_.RawData(), ws_first_col_h.data(), sizeof(int) * total_word_slots, &pin_off);
+    upload(cuda_ws_ndig_.RawData(), ws_ndig_h.data(), sizeof(uint8_t) * total_word_slots, &pin_off);
+    LaunchFillCompactCodecKernel(
+      stream, layout.codec,
+      cuda_row_data_->GetBin<uint8_t>(),
+      dst,
+      cuda_col_src_nib_base_.RawData(),
+      cuda_col_src_stride_nib_.RawData(),
+      cuda_ws_dst_byte_.RawData(),
+      cuda_ws_dst_stride_.RawData(),
+      cuda_ws_first_col_.RawData(),
+      cuda_ws_ndig_.RawData(),
+      total_word_slots,
+      num_data);
+    return;
+  }
 
   if (layout.is_4bit) {
     // 4-bit fill: one thread per DESTINATION byte (a pair of adjacent compact

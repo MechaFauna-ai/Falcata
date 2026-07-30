@@ -351,6 +351,97 @@ void LaunchFillCompactData4BitKernel(
     bs_dst_byte, bs_dst_stride, total_byte_slots, num_data);
 }
 
+// Codec fill (pack_bit3 / pack_radix5 / pack_radix6): transcode the tree's
+// sampled columns from the 4-bit source row matrix into CODEC-packed uint32
+// words. One thread per (destination word slot, row group): a word slot is a
+// (partition, word-within-row) pair covering up to CODEC::kValuesPerWord
+// consecutive compact columns; per-column source nibble bases/strides come in
+// via col_src_nib_base / col_src_stride_nib (indexed by compact column).
+template <class CODEC>
+__global__ void CUDAFillCompactCodecKernel(
+  const uint8_t* __restrict__ src_data,
+  uint8_t* __restrict__ compact_data,
+  const size_t* __restrict__ col_src_nib_base,
+  const int* __restrict__ col_src_stride_nib,
+  const size_t* __restrict__ ws_dst_byte,
+  const int* __restrict__ ws_dst_stride,
+  const int* __restrict__ ws_first_col,
+  const uint8_t* __restrict__ ws_num_digits,
+  const int total_word_slots,
+  const data_size_t num_data) {
+  const int slot = blockIdx.x * blockDim.x + threadIdx.x;
+  if (slot >= total_word_slots) return;
+  const size_t dst_byte = ws_dst_byte[slot];
+  const size_t dst_stride = static_cast<size_t>(ws_dst_stride[slot]);
+  const int first_col = ws_first_col[slot];
+  const int ndig = static_cast<int>(ws_num_digits[slot]);
+  const data_size_t row_stride = static_cast<data_size_t>(gridDim.y) * static_cast<data_size_t>(blockDim.y);
+  for (data_size_t row = blockIdx.y * blockDim.y + threadIdx.y; row < num_data; row += row_stride) {
+    uint32_t w = 0;
+    uint32_t place = 1;  // running R^d: keeps the radix multiplier in a register
+    #pragma unroll 4
+    for (int d = 0; d < ndig; ++d) {
+      const int col = first_col + d;
+      const size_t nib = col_src_nib_base[col] +
+        static_cast<size_t>(row) * static_cast<size_t>(col_src_stride_nib[col]);
+      const uint32_t v = (src_data[nib >> 1] >> ((nib & 1) << 2)) & 0xfu;
+      if constexpr (CODEC::kId == PackCodecId::kBit3x32) {
+        w |= v << (3 * d);
+      } else {
+        w += v * place;
+        place *= static_cast<uint32_t>(CODEC::kMaxBins);
+      }
+    }
+    *reinterpret_cast<uint32_t*>(compact_data + dst_byte + static_cast<size_t>(row) * dst_stride) = w;
+  }
+}
+
+// Host wrapper called from cuda_histogram_constructor.cpp.
+void LaunchFillCompactCodecKernel(
+  cudaStream_t stream,
+  PackCodecId codec,
+  const uint8_t* src_data,
+  uint8_t* compact_data,
+  const size_t* col_src_nib_base,
+  const int* col_src_stride_nib,
+  const size_t* ws_dst_byte,
+  const int* ws_dst_stride,
+  const int* ws_first_col,
+  const uint8_t* ws_num_digits,
+  int total_word_slots,
+  data_size_t num_data) {
+  const int TX = 32;
+  const int TY = 32;
+  int grid_y = (num_data + TY - 1) / TY;
+  if (grid_y > 32768) grid_y = 32768;
+  dim3 block_dim(TX, TY);
+  dim3 grid_dim((total_word_slots + TX - 1) / TX, grid_y);
+  switch (codec) {
+    case PackCodecId::kBit3x32:
+      CUDAFillCompactCodecKernel<PackBit3x32><<<grid_dim, block_dim, 0, stream>>>(
+        src_data, compact_data, col_src_nib_base, col_src_stride_nib,
+        ws_dst_byte, ws_dst_stride, ws_first_col, ws_num_digits, total_word_slots, num_data);
+      break;
+    case PackCodecId::kRadix5x32:
+      CUDAFillCompactCodecKernel<PackRadix5x32><<<grid_dim, block_dim, 0, stream>>>(
+        src_data, compact_data, col_src_nib_base, col_src_stride_nib,
+        ws_dst_byte, ws_dst_stride, ws_first_col, ws_num_digits, total_word_slots, num_data);
+      break;
+    case PackCodecId::kRadix6x32:
+      CUDAFillCompactCodecKernel<PackRadix6x32><<<grid_dim, block_dim, 0, stream>>>(
+        src_data, compact_data, col_src_nib_base, col_src_stride_nib,
+        ws_dst_byte, ws_dst_stride, ws_first_col, ws_num_digits, total_word_slots, num_data);
+      break;
+    case PackCodecId::kRadix7x32:
+      CUDAFillCompactCodecKernel<PackRadix7x32><<<grid_dim, block_dim, 0, stream>>>(
+        src_data, compact_data, col_src_nib_base, col_src_stride_nib,
+        ws_dst_byte, ws_dst_stride, ws_first_col, ws_num_digits, total_word_slots, num_data);
+      break;
+    default:
+      break;
+  }
+}
+
 // Column-major-in-partition variant of the dense histogram kernel.
 // Used by the CompactView host-mapped path on large datasets, where compact_data
 // is laid out column-major-per-partition for cheap per-column cudaMemcpy fill.
@@ -1038,7 +1129,7 @@ __global__ void CUDAConstructHistogramSparseKernel_GlobalMemory(
 // Shared body of the discretized dense histogram kernel (see
 // ConstructHistogramDenseInner for the shared-memory-passing and early-exit
 // rationale).
-template <typename BIN_TYPE, bool USE_16BIT_HIST, bool IS_4BIT = false>
+template <typename BIN_TYPE, bool USE_16BIT_HIST, class PACK = PackRaw8>
 __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
   const CUDALeafSplitsStruct* smaller_leaf_splits,
   int16_t* shared_hist,
@@ -1065,11 +1156,11 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
   const int partition_column_start = feature_partition_column_index_offsets[blockIdx.x];
   const int partition_column_end = feature_partition_column_index_offsets[blockIdx.x + 1];
   const int num_columns_in_partition = partition_column_end - partition_column_start;
-  const int row_stride = IS_4BIT ?
+  const int row_stride = PACK::kUsesPackedOffsets ?
     packed_partition_byte_offsets[blockIdx.x + 1] - packed_partition_byte_offsets[blockIdx.x] :
     num_columns_in_partition;
   const BIN_TYPE* data_ptr = data + static_cast<size_t>(
-    IS_4BIT ? packed_partition_byte_offsets[blockIdx.x] : partition_column_start) * num_data;
+    PACK::kUsesPackedOffsets ? packed_partition_byte_offsets[blockIdx.x] : partition_column_start) * num_data;
   const uint32_t partition_hist_start = column_hist_offsets_full[blockIdx.x];
   const uint32_t partition_hist_end = column_hist_offsets_full[blockIdx.x + 1];
   const uint32_t num_items_in_partition = (partition_hist_end - partition_hist_start);
@@ -1094,11 +1185,14 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
   const int column_index = static_cast<int>(threadIdx.x) + partition_column_start;
   if (threadIdx.x < static_cast<unsigned int>(num_columns_in_partition) &&
       (is_feature_used_bytree == nullptr || is_feature_used_bytree[column_index])) {
+    // per-column extraction constants resolved once (register-resident through
+    // the row loop; a per-row table lookup runs from thread-local memory)
+    const typename PACK::Cursor pack_cursor = PACK::Prepare(threadIdx.x);
     int32_t* shared_hist_ptr = shared_hist_packed + (column_hist_offsets[column_index]);
     for (data_size_t i = 0; i < num_iteration_this; ++i) {
       const data_size_t data_index = data_indices_ref_this_block[inner_data_index];
       const int32_t grad_and_hess = cuda_gradients_and_hessians[data_index];
-      const uint32_t bin = ReadDenseBin<IS_4BIT>(data_ptr + static_cast<size_t>(data_index) * row_stride, threadIdx.x);
+      const uint32_t bin = PACK::ExtractAt(data_ptr + static_cast<size_t>(data_index) * row_stride, pack_cursor);
       int32_t* pos_ptr = shared_hist_ptr + bin;
       atomicAdd_block(pos_ptr, grad_and_hess);
       inner_data_index += blockDim.y;
@@ -1127,7 +1221,7 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
   }
 }
 
-template <typename BIN_TYPE, int SHARED_HIST_SIZE, bool USE_16BIT_HIST, bool IS_4BIT = false>
+template <typename BIN_TYPE, int SHARED_HIST_SIZE, bool USE_16BIT_HIST, class PACK = PackRaw8>
 __global__ void CUDAConstructDiscretizedHistogramDenseKernel(
   const CUDALeafSplitsStruct* smaller_leaf_splits,
   const int32_t* cuda_gradients_and_hessians,
@@ -1138,7 +1232,7 @@ __global__ void CUDAConstructDiscretizedHistogramDenseKernel(
   const int* packed_partition_byte_offsets,
   const data_size_t num_data) {
   __shared__ int16_t shared_hist[SHARED_HIST_SIZE];
-  ConstructDiscretizedHistogramDenseInner<BIN_TYPE, USE_16BIT_HIST, IS_4BIT>(
+  ConstructDiscretizedHistogramDenseInner<BIN_TYPE, USE_16BIT_HIST, PACK>(
     smaller_leaf_splits, shared_hist, cuda_gradients_and_hessians, data,
     column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
     packed_partition_byte_offsets,
@@ -1153,7 +1247,7 @@ __global__ void CUDAConstructDiscretizedHistogramDenseKernel(
 // inside the graph loop (gstate != nullptr) both are derived on-device from the
 // child structs the batched apply kernels wrote (exact leaf counts, exact host
 // thresholds) and the frozen pow2 grid is only an upper bound.
-template <typename BIN_TYPE, int SHARED_HIST_SIZE, bool IS_4BIT = false>
+template <typename BIN_TYPE, int SHARED_HIST_SIZE, class PACK = PackRaw8>
 __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int32_t* cuda_gradients_and_hessians,
@@ -1222,13 +1316,13 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
   const uint8_t smaller_num_bits = HybridGraphActive(gstate) ?
     HybridGraphQuantHistBits(gstate, num_data_smaller) : desc->smaller_num_bits;
   if (smaller_num_bits <= 16) {
-    ConstructDiscretizedHistogramDenseInner<BIN_TYPE, true, IS_4BIT>(
+    ConstructDiscretizedHistogramDenseInner<BIN_TYPE, true, PACK>(
       smaller_struct, shared_hist, cuda_gradients_and_hessians, data,
       column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
       packed_partition_byte_offsets,
       num_data, dim_y, is_feature_used_bytree, bin_used);
   } else {
-    ConstructDiscretizedHistogramDenseInner<BIN_TYPE, false, IS_4BIT>(
+    ConstructDiscretizedHistogramDenseInner<BIN_TYPE, false, PACK>(
       smaller_struct, shared_hist, cuda_gradients_and_hessians, data,
       column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
       packed_partition_byte_offsets,
@@ -1578,7 +1672,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
       } else {
         if (cuda_row_data_->is_4bit_packed()) {
           if (num_bits_in_histogram_bins <= 16) {
-            CUDAConstructDiscretizedHistogramDenseKernel<BIN_TYPE, SHARED_HIST_SIZE, true, true><<<grid_dim, block_dim, 0, current_stream()>>>(
+            CUDAConstructDiscretizedHistogramDenseKernel<BIN_TYPE, SHARED_HIST_SIZE, true, PackNibble4><<<grid_dim, block_dim, 0, current_stream()>>>(
               cuda_smaller_leaf_splits,
               reinterpret_cast<const int32_t*>(cuda_gradients_),
               cuda_row_data_->GetBin<BIN_TYPE>(),
@@ -1588,7 +1682,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
               cuda_row_data_->cuda_packed_partition_byte_offsets(),
               num_data_);
           } else {
-            CUDAConstructDiscretizedHistogramDenseKernel<BIN_TYPE, SHARED_HIST_SIZE, false, true><<<grid_dim, block_dim, 0, current_stream()>>>(
+            CUDAConstructDiscretizedHistogramDenseKernel<BIN_TYPE, SHARED_HIST_SIZE, false, PackNibble4><<<grid_dim, block_dim, 0, current_stream()>>>(
               cuda_smaller_leaf_splits,
               reinterpret_cast<const int32_t*>(cuda_gradients_),
               cuda_row_data_->GetBin<BIN_TYPE>(),
@@ -2451,26 +2545,46 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       // specialized construct_jit_batched replaces the AOT kernel for BOTH the
       // 8-bit and 4-bit-packed compact-quant shapes. Declines (default OFF /
       // unavailable / unvalidated / graph capture / speculative flow) -> AOT.
-      if (TryLaunchConstructJITBatchedCompactQuant(
+      if (compact_codec_ == PackCodecId::kNibble4 &&
+          TryLaunchConstructJITBatchedCompactQuant(
               grid_dim, block_dim, pair_descs, level_smaller_num_data,
               static_cast<int>(SHARED_HIST_SIZE), sizeof(BIN_TYPE))) {
-        // launched the JIT kernel
+        // launched the JIT kernel (nibble layout only; codec views use AOT)
       } else if (compact_is_4bit_) {
-        CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE, true><<<grid_dim, block_dim, 0, cuda_stream_>>>(
-          pair_descs,
-          reinterpret_cast<const int32_t*>(cuda_gradients_),
-          reinterpret_cast<const BIN_TYPE*>(compact_data_uint8_t_.RawData()),
-          compact_column_hist_offsets_.RawData(),
-          cuda_row_data_->cuda_partition_hist_offsets(),
-          compact_feature_partition_column_index_offsets_.RawData(),
-          compact_packed_partition_byte_offsets_.RawData(),
-          num_data_,
-          nullptr,
-          nullptr,
-          static_cast<data_size_t>(min_data_in_leaf_),
-          min_sum_hessian_in_leaf_,
-          level_smaller_num_data,
-          hybrid_graph_capture_gstate_);
+#define FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PACKT) \
+        CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE, PACKT><<<grid_dim, block_dim, 0, cuda_stream_>>>( \
+          pair_descs, \
+          reinterpret_cast<const int32_t*>(cuda_gradients_), \
+          reinterpret_cast<const BIN_TYPE*>(compact_data_uint8_t_.RawData()), \
+          compact_column_hist_offsets_.RawData(), \
+          cuda_row_data_->cuda_partition_hist_offsets(), \
+          compact_feature_partition_column_index_offsets_.RawData(), \
+          compact_packed_partition_byte_offsets_.RawData(), \
+          num_data_, \
+          nullptr, \
+          nullptr, \
+          static_cast<data_size_t>(min_data_in_leaf_), \
+          min_sum_hessian_in_leaf_, \
+          level_smaller_num_data, \
+          hybrid_graph_capture_gstate_)
+        switch (compact_codec_) {
+          case PackCodecId::kBit3x32:
+            FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PackBit3x32);
+            break;
+          case PackCodecId::kRadix5x32:
+            FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PackRadix5x32);
+            break;
+          case PackCodecId::kRadix6x32:
+            FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PackRadix6x32);
+            break;
+          case PackCodecId::kRadix7x32:
+            FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PackRadix7x32);
+            break;
+          default:
+            FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PackNibble4);
+            break;
+        }
+#undef FALCATA_LAUNCH_BATCHED_COMPACT_QUANT
       } else {
         CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE><<<grid_dim, block_dim, 0, cuda_stream_>>>(
           pair_descs,
@@ -2489,7 +2603,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           hybrid_graph_capture_gstate_);
       }
     } else if (cuda_row_data_->is_4bit_packed()) {
-      CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE, true><<<grid_dim, block_dim, 0, cuda_stream_>>>(
+      CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE, PackNibble4><<<grid_dim, block_dim, 0, cuda_stream_>>>(
         pair_descs,
         reinterpret_cast<const int32_t*>(cuda_gradients_),
         cuda_row_data_->GetBin<BIN_TYPE>(),

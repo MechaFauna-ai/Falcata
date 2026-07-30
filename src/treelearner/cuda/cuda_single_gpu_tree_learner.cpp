@@ -442,6 +442,9 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   // whole dataset through L2 once per tree).
   const auto& src_part_col_offsets_h = row_data->host_feature_partition_column_index_offsets();
   const bool compact_src = cuda_histogram_constructor_->CompactViewSourceAvailable() &&
+    // codec-packed compact views (pack_bit3/pack_radix*) are unreadable by the
+    // split gather/packed readers; fall back to the original row data
+    cuda_histogram_constructor_->compact_codec() == PackCodecId::kNibble4 &&
     cuda_histogram_constructor_->compact_src_cols() == compact_column_to_orig_;
   if (compact_src && cuda_histogram_constructor_->CompactColMajorFilled()) {
     // the histogram constructor's compact fill already produced the column-major
