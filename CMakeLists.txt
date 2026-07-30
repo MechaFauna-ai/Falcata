@@ -613,6 +613,14 @@ if(USE_SWIG)
   set_property(SOURCE swig/falcatalib.i PROPERTY SWIG_FLAGS "${swig_options}")
   swig_add_library(_falcata_swig LANGUAGE java SOURCES swig/falcatalib.i)
   swig_link_libraries(_falcata_swig _falcata)
+  if(USE_WERROR AND (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
+    # The SWIG wrapper is GENERATED code: it legitimately wraps deprecated C API
+    # entry points (the deprecation is aimed at end users, not the binding) and
+    # inlines c_api.h helpers into JNI TUs where -Wformat-truncation fires.
+    # Same spirit as the vendored SYSTEM includes: -Werror gates our sources,
+    # not machine-produced ones.
+    target_compile_options(_falcata_swig PRIVATE -Wno-error)
+  endif()
   set_target_properties(
     _falcata_swig
     PROPERTIES
@@ -655,7 +663,7 @@ if(USE_SWIG)
         copy_if_different
         "${FLC_SWIG_LIB_SOURCE_PATH}"
         "${FLC_SWIG_LIB_DESTINATION_PATH}"
-      COMMAND "${Java_JAR_EXECUTABLE}" -cf falcatalib.jar com
+      COMMAND "${Java_JAR_EXECUTABLE}" -cf falcatalib.jar ai
     )
 endif()
 
