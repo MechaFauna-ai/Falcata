@@ -485,3 +485,4 @@ dmypy.json
 # files created by release tasks
 /release-artifacts
 benchmarks/workspace/
+.gates-venv/

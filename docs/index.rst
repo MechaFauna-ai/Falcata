@@ -31,7 +31,6 @@ For more details, please refer to `Features <./Features.rst>`__.
    Quick Start <Quick-Start>
    Python Quick Start <Python-Intro>
    Features <Features>
-   Experiments <Experiments>
    Parameters <Parameters>
    Parameters Tuning <Parameters-Tuning>
    C API <C-API>
@@ -46,10 +45,7 @@ For more details, please refer to `Features <./Features.rst>`__.
 .. toctree::
    :hidden:
 
-   GPU-Performance
    GPU-Targets
-   GPU-Windows
-   gcc-Tips
    README
 
 Indices and Tables

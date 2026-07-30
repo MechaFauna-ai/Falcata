@@ -90,3 +90,18 @@ measured separately:
 Reference (RTX 5090, commit 9c0f5ffa, medians of 3): construct 38.9s (f32-fed)
 vs **15.8s** (int8-fed), peak host RSS 86.4GB vs **43.9GB**; Booster create and
 per-tree times identical, models md5-identical.
+
+## Feature attribution (leave-one-out ablation)
+
+`ablation.py` measures what each `cuda_plan` key buys: for each (dataset,
+regime) cell it runs the full auto plan, then flips every key off (or on, for
+default-off keys) one at a time, reporting the throughput delta per key and
+verifying the bit-identity contract — identity-key flips must reproduce the
+baseline tree md5 exactly (a mismatch is flagged as a correctness bug);
+growth/tie-break keys are judged on quality delta instead.
+
+```bash
+benchmarks/ablation.py --list                 # show the cells
+benchmarks/ablation.py                        # full sweep (JSONL + tables)
+benchmarks/ablation.py --cells covtype-deep-quant numerai-deep-quant
+```

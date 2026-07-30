@@ -170,8 +170,6 @@ Also, you can compare the training speed with CPU:
 Further Reading
 ---------------
 
-- `GPU Tuning Guide and Performance Comparison <./GPU-Performance.rst>`__
-
 - `GPU SDK Correspondence and Device Targeting Table <./GPU-Targets.rst>`__
 
 Reference
