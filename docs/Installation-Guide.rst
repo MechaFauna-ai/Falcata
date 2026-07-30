@@ -703,13 +703,54 @@ Build CUDA Version
 The `original GPU version <#build-gpu-version>`__ of Falcata (``device_type=gpu``) is based on OpenCL, and only computes histograms on GPUs, with other parts of training in CPUs.
 
 The CUDA-based version (``device_type=cuda``) is a separate implementation that runs significantly faster by putting all the training process on GPUs. It also supports multi-GPU, and multi-node multi-GPU training.
-Use this version in Linux environments with an NVIDIA GPU with compute capability 6.0 or higher.
+Use this version on Linux or Windows with an NVIDIA GPU with compute capability 6.0 or higher (7.5+ with recent CUDA toolkits, which have dropped older architectures).
 
 Windows
 ^^^^^^^
 
-The CUDA version is not supported on Windows.
-Use the `GPU version <#build-gpu-version>`__ (``device_type=gpu``) for GPU acceleration on Windows.
+The CUDA version (``device_type=cuda``) builds and runs on Windows as a
+**single-GPU** library. (Multi-GPU needs NCCL, which has no official Windows
+distribution, so ``USE_NCCL`` stays ``OFF`` on Windows.)
+
+1. Install `Git for Windows`_, `CMake`_ (>= 3.28), `VS Build Tools`_ with the
+   **Desktop development with C++** workload (or full **Visual Studio**), and
+   the `CUDA Toolkit`_ (>= 11.0).
+
+2. Open the **x64 Native Tools Command Prompt for VS** (this puts ``cl.exe`` on
+   ``PATH`` so ``nvcc`` can find the host compiler), then run:
+
+   .. code:: console
+
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
+     cd Falcata
+     :: Adjust CMAKE_CUDA_ARCHITECTURES for your GPU. RTX 5090 = 120, RTX 4090 = 89.
+     cmake -B build -S . -G Ninja -DUSE_CUDA=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120-real
+     cmake --build build -j
+
+   The ``.dll`` and ``.exe`` files will be in the ``Falcata/`` folder.
+
+   **Use the Ninja generator, not the Visual Studio generator.** The VS
+   generator (``-A x64``) drives CUDA through MSBuild integration and fails with
+   ``No CUDA toolset found`` unless the CUDA Toolkit shipped integration for
+   your exact VS version. Ninja invokes ``nvcc`` directly and sidesteps that.
+
+   **Unsupported-compiler check.** ``nvcc`` refuses to run if your MSVC is newer
+   than the CUDA Toolkit officially supports, aborting with
+   ``unsupported Microsoft Visual Studio version!``. Either install a matching
+   MSVC toolset, or override the check by adding
+   ``-DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler`` to the first ``cmake``
+   command. (Overriding works in practice — CUDA training results are verified
+   bit-for-bit against the CPU path — but is unsupported by NVIDIA, so prefer a
+   matching toolset for production.)
+
+3. Build and install the Python-package against the compiled DLL:
+
+   .. code:: sh
+
+     sh ./build-python.sh install --precompile
+
+   The Python loader registers your CUDA ``bin`` directory (from ``CUDA_PATH``)
+   automatically, so ``import falcata`` finds the CUDA runtime DLLs.
 
 Linux
 ^^^^^
@@ -739,7 +780,7 @@ After compilation the executable and ``.so`` files will be in ``Falcata/`` folde
 gcc
 ***
 
-1. Install `CMake`_, **gcc**, **CUDA** and **NCCL** (see above).
+1. Install `CMake`_, **gcc** and **CUDA** (plus **NCCL** for multi-GPU; see above).
 
 2. Run the following commands:
 
@@ -750,12 +791,12 @@ gcc
      cmake -B build -S . -DUSE_CUDA=ON
      cmake --build build -j4
 
-   For a single-GPU build without NCCL, use ``-DUSE_CUDA=ON -DUSE_NCCL=OFF``.
+   This builds the single-GPU library. For multi-GPU, add NCCL and use ``-DUSE_CUDA=ON -DUSE_NCCL=ON``.
 
 Clang
 *****
 
-1. Install `CMake`_, **Clang**, **OpenMP**, **CUDA** and **NCCL** (see above).
+1. Install `CMake`_, **Clang**, **OpenMP** and **CUDA** (plus **NCCL** for multi-GPU; see above).
 
 2. Run the following commands:
 
