@@ -1,15 +1,11 @@
 # Falcata R-package
 
-[![CRAN Version](https://www.r-pkg.org/badges/version/falcata)](https://cran.r-project.org/package=falcata)
-[![Downloads](https://cranlogs.r-pkg.org/badges/grand-total/falcata)](https://cran.r-project.org/package=falcata)
-[![API Docs](https://readthedocs.org/projects/falcata/badge/?version=latest)](https://github.com/MechaFauna-ai/Falcata/tree/master/docsR/reference/)
-
 <img src="man/figures/logo.svg" align="right" alt="" width="175" />
 
 ### Contents
 
 * [Installation](#installation)
-    - [Installing the CRAN Package](#installing-the-cran-package)
+    - [Installing the CRAN-style Tarball](#installing-the-cran-package)
     - [Installing from Source with CMake](#install)
     - [Installing a GPU-enabled Build](#installing-a-gpu-enabled-build)
     - [Installing Precompiled Binaries](#installing-precompiled-binaries)
@@ -25,7 +21,7 @@
 Installation
 ------------
 
-For the easiest installation, go to ["Installing the CRAN package"](#installing-the-cran-package).
+Falcata is not published to CRAN; install by building the CRAN-style tarball locally (["Installing the CRAN-style tarball"](#installing-the-cran-package)) or ["Installing from Source with CMake"](#install).
 
 If you experience any issues with that, try ["Installing from Source with CMake"](#install). This can produce a more efficient version of the library on Windows systems with Visual Studio.
 
@@ -49,17 +45,16 @@ model <- lgb.cv(
 )
 ```
 
-### Installing the CRAN package
+### Installing the CRAN-style tarball <a id="installing-the-cran-package"></a>
 
-`{falcata}` is [available on CRAN](https://cran.r-project.org/package=falcata), and can be installed with the following R code.
+Falcata is not published to CRAN. Build the CRAN-style source tarball locally and install it:
 
-```r
-install.packages("falcata", repos = "https://cran.r-project.org")
+```shell
+sh build-cran-package.sh
+R CMD INSTALL falcata_*.tar.gz
 ```
 
-This is the easiest way to install `{falcata}`. It does not require `CMake` or `Visual Studio`, and should work well on many different operating systems and compilers.
-
-Each CRAN package is also available on [Falcata releases](https://github.com/MechaFauna-ai/Falcata/releases), with a name like `falcata-{VERSION}-r-cran.tar.gz`.
+This does not require `CMake` or `Visual Studio`, and should work well on many different operating systems and compilers.
 
 #### Custom Installation (Linux, Mac)
 
@@ -207,25 +202,13 @@ The following options correspond to the [CMake FindOpenCL options](https://cmake
 
 ### Installing Precompiled Binaries
 
-Precompiled binaries for Mac and Windows are prepared by CRAN a few days after each release to CRAN. They can be installed with the following R code.
-
-```r
-install.packages(
-    "falcata"
-    , type = "both"
-    , repos = "https://cran.r-project.org"
-)
-```
-
-These packages do not require compilation, so they will be faster and easier to install than packages that are built from source.
-
-CRAN does not prepare precompiled binaries for Linux, and as of this writing neither does this project.
+There are no precompiled binaries for the R package; install from the CRAN-style tarball or from source (see above).
 
 ### Installing from a Pre-compiled lib_falcata <a id="lib_falcata"></a>
 
 Previous versions of Falcata offered the ability to first compile the C++ library (`lib_falcata.{dll,dylib,so}`) and then build an R-package that wraps it.
 
-As of version 3.0.0, this is no longer supported. If building from source is difficult for you, please [open an issue](https://github.com/MechaFauna-ai/Falcata/issues).
+As of version 3.0.0, this is no longer supported. If building from source is difficult for you, reach out to the maintainers.
 
 Examples
 --------

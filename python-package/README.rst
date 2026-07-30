@@ -21,15 +21,21 @@ What makes it fast
 - **NVRTC runtime JIT** — construct kernels are specialized at runtime to the
   actual data shape, self-tested against the ahead-of-time kernel, and promoted
   only if bit-identical.
-- **Per-tree compact column view** — at ``feature_fraction = 0.1`` only the
-  sampled columns are materialized: 2.5× faster histogram construction on wide,
-  low-cardinality data.
+- **Per-tree compact column view** — with any ``feature_fraction < 1``, only
+  the sampled columns are materialized for histogram construction; the win
+  scales with the excluded fraction (~3.4× end-to-end at
+  ``feature_fraction = 0.1`` on wide, low-cardinality data).
 - **GPU-native dataset construction** — dense binning, row-data build and EFB
   pre-checking run on the device; CuPy and ``__cuda_array_interface__`` inputs
   are ingested without a host round-trip.
-- **Quantized training, two ways** — ``quant_mode=stochastic`` is the aggressive,
-  bit-deterministic integer path; ``quant_mode=fixedpoint`` is a near-lossless
-  deterministic mode with a gap-gated outlier-robust gradient scale.
+- **Quantized training, two ways** — ``quant_mode=stochastic`` is the speed
+  end: 4-bin gradients with seeded stochastic rounding; ``quant_mode=fixedpoint``
+  is the near-lossless end: deterministic rounding with an internal
+  outlier-robust gradient scale. Bin counts are overridable with
+  ``quant_bins``; both modes are bit-reproducible run to run.
+- **GPU inference via NVIDIA FIL** — with cuML installed,
+  ``Booster.predict()`` transparently runs on the Forest Inference Library;
+  CuPy arrays stay on the device end to end.
 - **An execution planner** — shape-conditional kernel choices are resolved once
   from the data and parameters (``cuda_plan=auto``), every decision guaranteed
   bit-identical and individually overridable.
