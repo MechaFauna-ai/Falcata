@@ -716,24 +716,23 @@ Linux
 
 On Linux, a CUDA version of Falcata can be built using
 
-- **CMake**, **gcc**, **CUDA** and **NCCL**;
-- **CMake**, **Clang**, **CUDA** and **NCCL**.
+- **CMake**, **gcc** and **CUDA**;
+- **CMake**, **Clang** and **CUDA**.
 
 Please refer to `this detailed guide`_ for **CUDA** libraries installation.
 
-**NCCL** is required by default, because ``USE_NCCL`` (multi-GPU and multi-node
-multi-GPU training) defaults to ``ON``. Its headers are needed at configure
-time, so install the development package (``libnccl-dev`` on Debian/Ubuntu,
-``libnccl-devel`` on Fedora/RHEL, or ``conda install -c conda-forge nccl``);
-otherwise configuration fails with
+The default build is **single-GPU** and has no NCCL dependency.
+
+For **multi-GPU** (and multi-node multi-GPU) training, add ``-DUSE_NCCL=ON``.
+NCCL's headers are then needed at configure time, so install the development
+package (``libnccl-dev`` on Debian/Ubuntu, ``libnccl-devel`` on Fedora/RHEL,
+or ``conda install -c conda-forge nccl``); otherwise configuration fails with
 ``Could NOT find NCCL (missing: NCCL_INCLUDE_DIR)``. If NCCL is installed
 outside the standard locations, point ``NCCL_ROOT`` at it. Pass
 ``-DBUILD_WITH_SHARED_NCCL=ON`` to link ``libnccl.so`` rather than
 ``libnccl_static.a``, which avoids nvlink failures against some static NCCL
-builds.
-
-To build a **single-GPU** library without the NCCL dependency at all, add
-``-DUSE_NCCL=OFF``.
+builds. NCCL has no official Windows distribution, so Windows builds stay
+single-GPU.
 
 After compilation the executable and ``.so`` files will be in ``Falcata/`` folder.
 

@@ -6,8 +6,10 @@ option(USE_GPU "Enable GPU-accelerated training" OFF)
 option(USE_SWIG "Enable SWIG to generate Java API" OFF)
 option(USE_TIMETAG "Set to ON to output time costs" OFF)
 option(USE_CUDA "Enable CUDA-accelerated training " OFF)
-# NCCL has no official Windows distribution, so Windows/single-GPU builds should set this OFF.
-option(USE_NCCL "Enable NCCL for multi-GPU CUDA training (requires USE_CUDA)" ON)
+# OFF by default: NCCL has no official Windows distribution and only multi-GPU
+# training needs it. Pass -DUSE_NCCL=ON (with BUILD_WITH_SHARED_NCCL=ON
+# recommended on newer archs) for multi-GPU builds.
+option(USE_NCCL "Enable NCCL for multi-GPU CUDA training (requires USE_CUDA)" OFF)
 option(USE_ROCM "Enable ROCm-accelerated training " OFF)
 option(USE_DEBUG "Set to ON for Debug mode" OFF)
 option(USE_SANITIZER "Use sanitizer flags" OFF)

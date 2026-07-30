@@ -20,7 +20,7 @@ source "$VENV/bin/activate"
 pip install --quiet --upgrade pip
 pip install --quiet numpy scipy scikit-learn pyarrow
 
-CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120-real;120-virtual -DBUILD_WITH_SHARED_NCCL=ON"
+CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120-real;120-virtual -DUSE_NCCL=ON -DBUILD_WITH_SHARED_NCCL=ON"
 if command -v ccache >/dev/null 2>&1; then
   CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache"
   echo "ci_build: ccache enabled"

@@ -57,15 +57,14 @@ Falcata builds from source against your CUDA toolkit:
     cd Falcata
     git submodule update --init --recursive
     # Adjust CMAKE_CUDA_ARCHITECTURES for your GPU. RTX 5090 = 120, RTX 4090 = 89.
-    CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120-real;120-virtual -DBUILD_WITH_SHARED_NCCL=ON" \
+    CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120-real;120-virtual" \
       sh build-python.sh install --cuda
 
-Requires Python >= 3.10, CMake >= 3.28, a CUDA toolkit >= 11.0, an NVIDIA GPU,
-and NCCL with its headers (``libnccl-dev`` on Debian/Ubuntu) because multi-GPU
-training is enabled by default. For a single-GPU build without the NCCL
-dependency, swap in ``-DUSE_NCCL=OFF``; without NCCL headers, configuration
-fails with ``Could NOT find NCCL (missing: NCCL_INCLUDE_DIR)``. Building without
-``--cuda`` produces a CPU-only library.
+Requires Python >= 3.10, CMake >= 3.28, a CUDA toolkit >= 11.0, and an NVIDIA
+GPU. The default build is single-GPU with no NCCL dependency; for multi-GPU
+training add ``-DUSE_NCCL=ON -DBUILD_WITH_SHARED_NCCL=ON`` to ``CMAKE_ARGS``
+and install NCCL with its headers (``libnccl-dev`` on Debian/Ubuntu). Building
+without ``--cuda`` produces a CPU-only library.
 
 Installing the wheel also installs a ``lightgbm`` import shim. If the target
 environment already has stock LightGBM, uninstall it first or use a fresh

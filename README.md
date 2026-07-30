@@ -115,33 +115,31 @@ Build from source
 -----------------
 
 Prerequisites: CMake >= 3.28, a C++17 compiler (gcc or clang), the CUDA
-toolkit >= 11.0, Python >= 3.10, and **NCCL** — including its headers, which on
-Debian/Ubuntu means the `-dev` package:
-
-```bash
-sudo apt-get install libnccl2 libnccl-dev   # or: conda install -c conda-forge nccl
-```
-
-NCCL is required because multi-GPU training is on by default. Building without
-it is supported — pass `-DUSE_NCCL=OFF` for a single-GPU library:
+toolkit >= 11.0, and Python >= 3.10. The default build is single-GPU and has
+no NCCL dependency (NCCL has no official Windows distribution):
 
 ```bash
 git clone https://github.com/MechaFauna-ai/Falcata.git
 cd Falcata
 git submodule update --init --recursive
 # Adjust CMAKE_CUDA_ARCHITECTURES for your GPU. RTX 5090 = 120, RTX 4090 = 89.
-# BUILD_WITH_SHARED_NCCL links libnccl.so instead of libnccl_static.a, which
-# avoids nvlink failures against some static NCCL builds.
-CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120-real;120-virtual -DBUILD_WITH_SHARED_NCCL=ON" \
-  sh build-python.sh install --cuda
-
-# single GPU / no NCCL installed:
-CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120-real;120-virtual -DUSE_NCCL=OFF" \
+CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120-real;120-virtual" \
   sh build-python.sh install --cuda
 ```
 
-Without NCCL headers on the include path, configuration fails with
-`Could NOT find NCCL (missing: NCCL_INCLUDE_DIR)`.
+For **multi-GPU training**, enable NCCL — including its headers, which on
+Debian/Ubuntu means `sudo apt-get install libnccl2 libnccl-dev` (or
+`conda install -c conda-forge nccl`):
+
+```bash
+# BUILD_WITH_SHARED_NCCL links libnccl.so instead of libnccl_static.a, which
+# avoids nvlink failures against some static NCCL builds on newer archs.
+CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120-real;120-virtual -DUSE_NCCL=ON -DBUILD_WITH_SHARED_NCCL=ON" \
+  sh build-python.sh install --cuda
+```
+
+With `USE_NCCL=ON` but no NCCL headers on the include path, configuration
+fails with `Could NOT find NCCL (missing: NCCL_INCLUDE_DIR)`.
 
 The wheel installs a `lightgbm` import shim (see below). If the target
 environment already has stock LightGBM installed, uninstall it first or install
