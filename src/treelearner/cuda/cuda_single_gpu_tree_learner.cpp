@@ -1135,7 +1135,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   if (UseOneSyncPrefix()) {
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
     // graphs L1: run the whole depth-limited prefix as one device-driven
-    // graph launch where supported (FALCATA_GRAPH_LEVEL_LOOP=0 disables)
+    // graph launch where supported (cuda_plan=auto,graph_loop:off disables)
     if (HybridGraphPrefixUsable()) {
       const int graph_splits = TrainLevelWisePrefixGraph(tree);
       if (graph_splits >= 0) {

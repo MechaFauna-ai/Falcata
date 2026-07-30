@@ -2328,7 +2328,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernel(
   const int num_pairs,
   const data_size_t max_num_data_in_smaller_leaf,
   const data_size_t* level_smaller_num_data) {
-  // One-time NVRTC JIT self-check (no-op unless FALCATA_CONSTRUCT_JIT=1). Runs
+  // One-time NVRTC JIT self-check (no-op unless cuda_plan=auto,construct_jit:on). Runs
   // off the first construct; never affects the trained model. The self-test
   // compiles + launches + copies on the stream, which is illegal mid graph
   // capture ("operation not permitted when stream is capturing"); if the first
@@ -2447,7 +2447,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     // shared partition hist offsets preserve every used bin's global position ->
     // bit-identical histograms (integer atomics are order-invariant).
     if (use_compact_view_) {
-      // JIT live fast path (FALCATA_CONSTRUCT_JIT=1): a validated shape-
+      // JIT live fast path (cuda_plan=auto,construct_jit:on): a validated shape-
       // specialized construct_jit_batched replaces the AOT kernel for BOTH the
       // 8-bit and 4-bit-packed compact-quant shapes. Declines (default OFF /
       // unavailable / unvalidated / graph capture / speculative flow) -> AOT.
@@ -2890,7 +2890,7 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
 // NVRTC construct-JIT one-time self-test. Proves the JIT pipeline end-to-end:
 // NVRTC compile -> cuModuleLoadData -> cuLaunchKernel -> bit-identical histogram
 // vs a host reference, on a tiny synthetic single-partition low-bin shape (the
-// numerai regime). No-op unless FALCATA_CONSTRUCT_JIT=1. It never touches the
+// numerai regime). No-op unless cuda_plan=auto,construct_jit:on. It never touches the
 // trained model -- it only validates that the specialized kernel this build would
 // JIT reproduces the reference bins exactly (integer atomics order-invariant), so
 // the JIT can be trusted as a perf-only fast path.

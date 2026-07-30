@@ -1,7 +1,10 @@
 # NVRTC JIT construct-kernel specialization — design (phase 2)
 
-Status: DESIGN (phase 1 characterization + a compile-time-templated prototype are
-landed; this doc specifies the runtime NVRTC JIT that phase 2 builds).
+Status: SHIPPED (phase 1 characterization + a compile-time-templated prototype
+landed first; the runtime NVRTC JIT this doc specified was then built in phase 2
+and is implemented in `src/treelearner/cuda/cuda_construct_jit.{hpp,cpp}` —
+NVRTC compile → `cuModuleLoadData` → `cuLaunchKernel`, with a
+self-test-then-promote step before the JIT kernel replaces the AOT path).
 
 ## 1. Motivation & phase-1 findings
 
@@ -40,11 +43,13 @@ Key structural facts:
   bit-identical quant register/regroup specialization is possible. A/B on non-quant
   numerai showed the register path is **not** faster there (8.94 vs 8.14 ms),
   confirming the bottleneck is the scattered read, not atomic contention.
-- Construct time is **flat** across feature_fraction 0.05→0.2 (~51 ms): the cost is
-  fixed per-row / per-block structure, not the active-feature reads. The compact
-  view (materializes only sampled columns, shrinking blocks) is **disabled for
-  quantized training** (`BuildCompactView` returns false on `use_quantized_grad_`),
-  so numerai quant pays for all 504 columns per block even at ff=0.1.
+- Construct time was **flat** across feature_fraction 0.05→0.2 (~51 ms) at the
+  time of this measurement — a historical, pre-`compact_quant` number: the compact
+  view (materializes only sampled columns, shrinking blocks) was then disabled for
+  quantized training, so numerai quant paid for all 504 columns per block even at
+  ff=0.1. Today the compact view **applies to quantized training by default**:
+  `BuildCompactView` only declines quant when the `compact_quant` cuda_plan key is
+  off, and it defaults on.
 - higgs / epsilon / year are bin-cap bound with healthy `block_dim_y` (18–21) and
   40–52% UB bandwidth → **little JIT headroom** (they are near their effective
   roofline once the real <UB row counts are accounted for).
@@ -61,14 +66,16 @@ Key structural facts:
 
 ## 2. Phase-1 prototype (landed, no NVRTC)
 
-`FALCATA_CONSTRUCT_COLCAP` + auto-trigger in `DivideCUDAFeatureGroups`
+The baked constant `FalcataPlan::construct_column_cap` (-1 = auto, no
+user-reachable override) + auto-trigger in `DivideCUDAFeatureGroups`
 (`cuda_row_data.cpp`): for low-bin (`max_bin_per_col ≤ 32`) many-feature data
 where the 504-column cap would bind, cap partitions at **252 columns**
 (`block_dim_y = 2`), regrouping columns into more, narrower partitions so each
 thread walks 2 rows and overlaps the two scattered reads. Integer-atomic sums are
 order-invariant → **bit-identical** (numerai `763c75c0d9cb`, covtype
 `5f4e7bdfff1e` locks unchanged). Auto-trigger is a no-op on all bin-cap-bound
-benchmarks. Kill switch: `FALCATA_CONSTRUCT_COLCAP=0`. Measured ~7% construct
+benchmarks. There is no kill switch: the cap is the baked constant
+`FalcataPlan::construct_column_cap`, changeable only by rebuild. Measured ~7% construct
 kernel / ~2–5% wall on the numerai example. This is the compile-time-templated
 proof; the JIT generalizes it.
 
@@ -112,7 +119,9 @@ turning today's runtime lookups and loop bounds into compile-time constants:
 - **AOT fallback:** the current AOT-compiled general kernel
   (`CUDAConstructDiscretizedHistogramDenseBatchedKernel`). Used when NVRTC is
   unavailable, the shape is unsupported (sparse, large-bin partitions,
-  categorical), the compile fails, or `FALCATA_CONSTRUCT_JIT=0`. The JIT is a
+  categorical), the compile fails, or `construct_jit` is not enabled (the
+  cuda_plan key defaults off; opt in with `cuda_plan=auto,construct_jit:on`).
+  The JIT is a
   **perf-only fast path**; its histogram output must be bit-identical to the AOT
   kernel (same gate locks).
 
@@ -131,4 +140,6 @@ and feeds the JIT's baked partition plan.
 Every JIT variant must keep the md5 locks: covtype 1023/10 quant `5f4e7bdfff1e`,
 numerai int8 `763c75c0d9cb`, plus the RMSE/bagging/graph locks in the session gate
 suite. A JIT that changes any md5 is a **bug**, not a feature — the specialization
-is perf-only. Kill switch: `FALCATA_CONSTRUCT_JIT=0` → AOT.
+is perf-only. The JIT is opt-in: the `construct_jit` cuda_plan key defaults off,
+so the AOT path is the default (`cuda_plan=auto,construct_jit:off` also forces
+AOT explicitly).

@@ -50,11 +50,11 @@ bool RowData4BitVerifyEnabled() {
 // numerai-example wall / ~8% construct-kernel win; other benchmarks are bin-cap
 // bound (few columns per partition already), so the auto-trigger is a no-op there.
 //
-// FALCATA_CONSTRUCT_COLCAP: unset -> auto (252 when the low-bin shape is
-// column-capped, else upstream 504); "0" -> force upstream 504 (kill switch);
-// Plan constant (-1 = auto sizing; 0<N<504 forces cap N; anything else = 504,
-// the upstream behavior).
-int ConstructColumnCapEnv() {
+// The cap comes from the baked plan constant FalcataPlan::construct_column_cap
+// (-1 = auto: 252 when the low-bin shape is column-capped, else upstream 504;
+// 0<N<504 forces cap N; anything else = 504, the upstream behavior). There is
+// no user-reachable override; changing it requires a rebuild.
+int ConstructColumnCap() {
   const int v = FalcataPlan::Get().construct_column_cap;
   if (v == -1) {
     return -1;  // auto
@@ -265,7 +265,7 @@ void CUDARowData::Init(const Dataset* train_data, TrainingShareStates* train_sha
 
 void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingShareStates* share_state) {
   const uint32_t max_num_bin_per_partition = shared_hist_size_ / 2;
-  // Shape-specialized column cap (see ConstructColumnCapEnv): 504 upstream, lower
+  // Shape-specialized column cap (see ConstructColumnCap): 504 upstream, lower
   // for low-bin many-feature data to raise construct block_dim_y. Auto-trigger:
   // QUANT training AND per-column bins are small (<= kLowBinPerCol) AND there are
   // enough columns that the 504 cap would bind (forcing block_dim_y=1).
@@ -276,9 +276,9 @@ void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingSha
   // pays for the doubled partition count instead. Explicit construct_column_cap
   // still forces the cap in either mode.
   const int column_cap = [&]() {
-    const int env = ConstructColumnCapEnv();
-    if (env >= 0) {
-      return env;  // explicit override or kill switch
+    const int cap = ConstructColumnCap();
+    if (cap >= 0) {
+      return cap;  // explicit plan-constant cap
     }
     if (!FalcataPlan::Get().quant_training) {
       return 504;  // upstream cap: the lowered cap only wins under quant

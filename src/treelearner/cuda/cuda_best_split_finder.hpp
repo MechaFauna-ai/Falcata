@@ -136,7 +136,7 @@ class CUDABestSplitFinder {
    *  no extra_trees / L1 / path smoothing, shared-memory histograms, no
    *  per-node feature selection, no categorical features). Wide shapes
    *  (num_tasks > one sync block) use the multi-block batched sync mirroring
-   *  the per-pair two-stage reduction; FALCATA_BATCH_WIDE=0 disables that. */
+   *  the per-pair two-stage reduction; cuda_plan=auto,batch_wide:off disables that. */
   bool SupportsBatchedLevel() const {
     return !extra_trees_ && lambda_l1_ <= 0.0f && !use_smoothing_ &&
            !use_global_memory_ && !select_features_by_node_ &&
@@ -144,7 +144,7 @@ class CUDABestSplitFinder {
            (num_tasks_ <= NUM_TASKS_PER_SYNC_BLOCK || FalcataBatchWideEnabled());
   }
 
-  /*! \brief one-line gate dump for FALCATA_HYBRID_DIAG */
+  /*! \brief one-line gate dump for FALCATA_DEBUG=diag */
   std::string BatchedLevelGateDiag() const {
     char buf[256];
     snprintf(buf, sizeof(buf),

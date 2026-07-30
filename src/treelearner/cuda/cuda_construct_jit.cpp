@@ -175,7 +175,7 @@ extern "C" __global__ void construct_jit(
 
 // -----------------------------------------------------------------------------
 // The LIVE batched construct kernel. This is the one the dispatch launches with
-// FALCATA_CONSTRUCT_JIT=1 on the (non-graph, host-launched, non-4bit) dense
+// cuda_plan=auto,construct_jit:on on the (non-graph, host-launched, non-4bit) dense
 // compact-quant path -- exactly numerai's shape. It replicates, bit-for-bit, the
 // (bin, gradient) accumulation of the AOT
 // CUDAConstructDiscretizedHistogramDenseBatchedKernel for that case:

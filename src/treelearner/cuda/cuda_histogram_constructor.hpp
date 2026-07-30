@@ -195,7 +195,7 @@ class CUDAHistogramConstructor {
    *  current data layout (dense, shared-memory histograms). The compact column
    *  view (feature_fraction sampling gathered into a dense per-tree copy) is
    *  supported through the same batched dense kernel fed with the compact
-   *  pointers/dims; FALCATA_BATCH_WIDE=0 restores the per-pair fallback for it. */
+   *  pointers/dims; cuda_plan=auto,batch_wide:off restores the per-pair fallback for it. */
   bool SupportsBatchedLevel() const {
     return cuda_row_data_ != nullptr &&
            !cuda_row_data_->is_sparse() &&
@@ -225,7 +225,7 @@ class CUDAHistogramConstructor {
   bool CompactColMajorFilled() const { return compact_col_major_filled_; }
   const uint8_t* compact_col_major_device() const { return compact_staging_col_major_.RawDataReadOnly(); }
 
-  /*! \brief one-line gate dump for FALCATA_HYBRID_DIAG */
+  /*! \brief one-line gate dump for FALCATA_DEBUG=diag */
   std::string BatchedLevelGateDiag() const {
     char buf[256];
     snprintf(buf, sizeof(buf),
@@ -262,7 +262,8 @@ class CUDAHistogramConstructor {
     const data_size_t* level_smaller_num_data = nullptr);
 
   /*! \brief minimum rows-per-thread cap of the batched construct grid sizing
-   *  (FALCATA_BATCH_CONSTRUCT_MINROWS; 0 = per-leaf sizing). Shared by the host
+   *  (baked constant FalcataPlan::batch_construct_min_rows_per_thread;
+   *  0 = per-leaf sizing). Shared by the host
    *  grid sizing and the device row-grouping replica. */
   static int BatchConstructMinRowsPerThread() {
     return FalcataPlan::Get().batch_construct_min_rows_per_thread;
@@ -270,7 +271,8 @@ class CUDAHistogramConstructor {
 
   /*! \brief device-saturation floor (total y-blocks shared across the level's
    *  pairs) of the batched construct grid sizing
-   *  (FALCATA_BATCH_CONSTRUCT_FLOOR; default 160 = historical behavior) */
+   *  (baked constant FalcataPlan::batch_construct_saturation_floor;
+   *  default 160 = historical behavior) */
   static int BatchConstructSaturationFloor() {
     return FalcataPlan::Get().batch_construct_saturation_floor;
   }
@@ -279,14 +281,14 @@ class CUDAHistogramConstructor {
    *  dense construct kernels: their scattered per-row reads then touch ONE
    *  32B sector per row instead of two (gradients and hessians live in two
    *  separate arrays). Values are bit-identical to the separate reads.
-   *  FALCATA_GH_INTERLEAVE=0 disables; float score_t only. */
+   *  cuda_plan=auto,gh_interleave:off disables; float score_t only. */
   static bool GHInterleaveEnabled() {
     return FalcataPlan::Get().gh_interleave && sizeof(score_t) == sizeof(float);
   }
 
   /*! \brief kill-switch of the small-leaf construct path
-   *  (FALCATA_SMALL_LEAF_CONSTRUCT=0 restores the shared-memory batched
-   *  kernels for every level) */
+   *  (cuda_plan=auto,small_leaf_construct:off restores the shared-memory
+   *  batched kernels for every level) */
   static bool SmallLeafConstructEnabled() {
     return FalcataPlan::Get().small_leaf_construct;
   }
@@ -297,8 +299,8 @@ class CUDAHistogramConstructor {
    *  the global histogram (non-quantized training only). Default 0 = disabled:
    *  the direct body changes the float accumulation (per-row double adds vs
    *  per-block float partial sums), which trades the fraud 63/6 exact-quality
-   *  reproduction for a measured ~1-2% fraud-deep gain -- not worth it by
-   *  default. Set FALCATA_SMALL_LEAF_ROWS=8192 to enable. */
+   *  reproduction for a measured ~1-2% fraud-deep gain -- not worth it.
+   *  Permanently disabled; see the return-0 comment below. */
   static data_size_t SmallLeafRowThreshold() {
     // Permanently 0 (disabled): the direct-add body is not bit-identical
     // (per-row double adds vs per-block float partial sums) for a measured
@@ -637,7 +639,7 @@ class CUDAHistogramConstructor {
   bool construct_reg_bins_ = false;
 
   // Runtime NVRTC JIT of the shape-specialized quantized construct kernel
-  // (FALCATA_CONSTRUCT_JIT=1; default OFF -> AOT compact-quant fast path). The
+  // (cuda_plan=auto,construct_jit:on; default OFF -> AOT compact-quant fast path). The
   // JIT is validated bit-identical vs AOT before any use; see cuda_construct_jit.
   CUDAConstructJIT construct_jit_;
   bool construct_jit_selftest_done_ = false;
@@ -651,7 +653,7 @@ class CUDAHistogramConstructor {
   // One-time NVRTC pipeline self-check (compile + module load + launch +
   // bit-identity vs a reference histogram). Proves the JIT path works
   // end-to-end without touching the trained model. No-op unless
-  // FALCATA_CONSTRUCT_JIT=1. Returns true if the JIT produced identical bins.
+  // cuda_plan=auto,construct_jit:on. Returns true if the JIT produced identical bins.
   bool RunConstructJITSelfTest();
 
  private:

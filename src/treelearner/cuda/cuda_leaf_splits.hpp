@@ -25,7 +25,7 @@
 namespace Falcata {
 
 /*! \brief kill switch for the wide-shape batched level support (many split-find
- *  tasks and/or compact-column-view histogram data): FALCATA_BATCH_WIDE=0
+ *  tasks and/or compact-column-view histogram data): cuda_plan=auto,batch_wide:off
  *  restores the previous fallback to the per-pair kernels for those shapes */
 inline bool FalcataBatchWideEnabled() {
   return FalcataPlan::Get().batch_wide;

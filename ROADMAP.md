@@ -16,7 +16,7 @@ figures from the profiles in the PR discussions.
   full, then iterated: cumulative same-session A/B vs host loop: fraud 63/6 -11.9%,
   fraud 1023/10 -10.9%, covtype 63/6 -8.8%, year -5.8%, numerai parity
   (construct-bound). Launch API 132 -> ~30 us/tree; controller ~42 us/tree; sync
-  D2H 3 -> 1 per tree. Non-quant depth-limited only; FALCATA_GRAPH_LEVEL_LOOP=0.
+  D2H 3 -> 1 per tree. Non-quant depth-limited only; cuda_plan=auto,graph_loop:off disables.
   Multiclass crash ROOT-CAUSED AND FIXED (84db39cd): device-updatable graphs
   must be cudaGraphUpload-ed before first launch (the controller's first device
   update raced the lazy upload; multiclass's per-class instances multiplied
@@ -79,9 +79,10 @@ figures from the profiles in the PR discussions.
 - [ ] **Runtime auto-tuner ("JIT optimizer") tier 1 — online policy tuning.** Boosting
   runs thousands of near-identical trees: measure per-tree wall time (CUDA events) +
   feedback stats (churn, level widths, imbalance) and bandit-tune the existing
-  dataset-dependent knobs: batched-construct grid sizing (FALCATA_BATCH_CONSTRUCT_FLOOR
-  -- covtype is latency-bound, year/higgs merge-bound), small-leaf construct threshold
-  (FALCATA_SMALL_LEAF_ROWS), hist pipeline count, and the selective-growth speculation
+  dataset-dependent knobs: batched-construct grid sizing (baked constant
+  FalcataPlan::batch_construct_saturation_floor -- covtype is latency-bound,
+  year/higgs merge-bound), small-leaf construct threshold
+  (mechanism currently hardcoded off), hist pipeline count, and the selective-growth speculation
   policy (e.g. gain-margin gating for unbalanced trees). Speculation is model-invariant
   by monotonicity, and quant-mode integer histograms keep md5 locks valid under any
   schedule retuning -- the tuner cannot break exactness gates. Hysteresis vs noise;
@@ -96,7 +97,7 @@ figures from the profiles in the PR discussions.
   thousands of trees; needs AOT fallback.
   IN PROGRESS (session goal): NVRTC JIT construct infra WORKING (60cfa129:
   cuda_construct_jit.{hpp,cpp}, compile shape-consts->PTX->module, shape-keyed cache,
-  AOT fallback, self-tests bit-identity, ~160ms one-time compile; FALCATA_CONSTRUCT_JIT=1,
+  AOT fallback, self-tests bit-identity, ~160ms one-time compile; cuda_plan=auto,construct_jit:on,
   not yet the live batched path). The big win landed via the compact-view-for-quant lever
   (was hard-disabled): numerai-quant construct 2.46x (32/5) / 1.96x (1024/10),
   BIT-IDENTICAL (independently verified ff=0.1 compact on/off both = 8f0f9f915449),
@@ -233,7 +234,7 @@ figures from the profiles in the PR discussions.
   GROWTH=0 = 26852449fbac, quality 0.91952->0.91800 (plateau-choice delta, not a regression;
   numerai unchanged at 763c75c0d9cb; TreeSHAP 0.048->1e-16, OOS 0.45->1e-17). These
   (1bfd2d7aed5f / 26852449fbac) are now the canonical covtype locks.
-  fixed-point outlier-robust scale LANDED (d24ab00b, FALCATA_FIXEDPOINT_ROBUST, default-on within fixedpoint): gap-gated bulk re-anchoring recovers fraud/deep 0.940->0.973 (near non-quant 0.975), balanced cases bit-identical, speed-neutral, deterministic -- the fixed-point mode is now complete for both balanced and imbalanced data.
+  fixed-point outlier-robust scale LANDED (d24ab00b, cuda_plan key robust_scale, default-on within fixedpoint): gap-gated bulk re-anchoring recovers fraud/deep 0.940->0.973 (near non-quant 0.975), balanced cases bit-identical, speed-neutral, deterministic -- the fixed-point mode is now complete for both balanced and imbalanced data.
   Quant one-sync parity INVESTIGATED -> honest-negative (parked on branch
   one-sync-quant-wip, FALCATA_HYBRID_ONE_SYNC_QUANT opt-in): bit-correct but 1-4%
   slower -- the quant per-level sync is already cheap/overlapped and the speculative
@@ -300,7 +301,7 @@ figures from the profiles in the PR discussions.
   doesn't pin the timing-based col/row-wise auto-choice on CPU (bimodal md5s; pin
   force_col_wise in gates).
 
-## Upstream (BelixRogner/Falcata) bugs found (documented here for reference;
+## Upstream (MechaFauna-ai/Falcata) bugs found (documented here for reference;
 ## we do not contribute upstream)
 
 - Packed 16+16-bit quantized histogram overflow (fixed here in 3afe7c62): with
