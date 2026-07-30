@@ -266,9 +266,9 @@ _Pvt_Extensions
 *.exe
 *.out
 *.app
-/windows/LightGBM.VC.db
-/lightgbm
-/testlightgbm
+/windows/Falcata.VC.db
+/falcata
+/testfalcata
 
 # Created by https://www.gitignore.io/api/python
 
