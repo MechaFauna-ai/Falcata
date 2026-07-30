@@ -84,7 +84,7 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // down to quant_mode=stochastic or none, not tune the scale.
   const QuantMode quant_mode = config_->ResolvedQuantMode();
   fixedpoint_quant_ = (quant_mode == QuantMode::kFixedPoint);
-  fixedpoint_robust_scale_ = fixedpoint_quant_;
+  fixedpoint_robust_scale_ = fixedpoint_quant_ && FalcataPlan::Get().robust_scale;
   effective_quant_bins_ = config_->num_grad_quant_bins;
   if (config_->use_quantized_grad) {
     // The packed histogram accumulates quantized gradients in (at most) 32-bit

@@ -76,6 +76,9 @@ struct FalcataPlan {
   bool batch_wide = true;           // key: batch_wide -- wide leaf-splits init batching
   bool gh_interleave = true;        // key: gh_interleave -- packed grad/hess layout
   bool small_leaf_construct = true;  // key: small_leaf_construct
+  // gap-gated outlier-robust gradient scale (fixedpoint quant only; no-op in
+  // other modes). Changes the model when it fires -- NOT an equality key.
+  bool robust_scale = true;         // key: robust_scale
 
   // --- baked tuning constants (no keys) ------------------------------------
   int batch_construct_min_rows_per_thread = 64;
@@ -113,6 +116,7 @@ struct FalcataPlan {
     if (key == "batch_wide") return &batch_wide;
     if (key == "gh_interleave") return &gh_interleave;
     if (key == "small_leaf_construct") return &small_leaf_construct;
+    if (key == "robust_scale") return &robust_scale;
     return nullptr;
   }
 
