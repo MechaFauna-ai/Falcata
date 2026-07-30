@@ -531,7 +531,10 @@ void CUDARowData::BuildDensePartitionedFromColumns(
   // Get() is the identity), so the columns can be transposed directly.
   // Cache-tiled: per 512-row tile, each source column is read sequentially and
   // scattered into the row-major partition tile, which stays L2-resident.
-  constexpr data_size_t kRowTileSize = 512;
+  // 'static' so the lambda below can use it without capturing: MSVC (C3493)
+  // requires a capture for a plain local constexpr, while GCC/Clang warn under
+  // -Werror if it is captured. A static constexpr needs no capture on either.
+  static constexpr data_size_t kRowTileSize = 512;
   Threading::For<data_size_t>(0, num_data_, kRowTileSize,
     [this, &column_data, &column_bit_types, out_data] (int /*thread_index*/, data_size_t start, data_size_t end) {
       for (data_size_t tile_start = start; tile_start < end; tile_start += kRowTileSize) {
@@ -613,7 +616,10 @@ void CUDARowData::BuildDensePacked4BitFromColumns(
   // output is the packed layout. Columns of a partition are processed in order
   // by the same thread, so the even column assigns its byte (initializing it)
   // and the odd column ORs its high nibble in -- no read-modify-write hazard.
-  constexpr data_size_t kRowTileSize = 512;
+  // 'static' so the lambda below can use it without capturing: MSVC (C3493)
+  // requires a capture for a plain local constexpr, while GCC/Clang warn under
+  // -Werror if it is captured. A static constexpr needs no capture on either.
+  static constexpr data_size_t kRowTileSize = 512;
   Threading::For<data_size_t>(0, num_data_, kRowTileSize,
     [this, &column_data, &column_bit_types, out_data] (int /*thread_index*/, data_size_t start, data_size_t end) {
       for (data_size_t tile_start = start; tile_start < end; tile_start += kRowTileSize) {

@@ -114,9 +114,10 @@ preds = model.predict(cupy_X)          # device in -> device out, no host round-
 Build from source
 -----------------
 
-Prerequisites: CMake >= 3.28, a C++17 compiler (gcc or clang), the CUDA
-toolkit >= 11.0, and Python >= 3.10. The default build is single-GPU and has
-no NCCL dependency (NCCL has no official Windows distribution):
+Prerequisites: CMake >= 3.28, a C++17 compiler (gcc or clang on Linux, MSVC /
+VS Build Tools on Windows), the CUDA toolkit >= 11.0, and Python >= 3.10. The
+default build is single-GPU and has no NCCL dependency (NCCL has no official
+Windows distribution):
 
 ```bash
 git clone https://github.com/MechaFauna-ai/Falcata.git
@@ -140,6 +141,21 @@ CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120-real;120-virtual -DUSE_NCCL=ON -DBUIL
 
 With `USE_NCCL=ON` but no NCCL headers on the include path, configuration
 fails with `Could NOT find NCCL (missing: NCCL_INCLUDE_DIR)`.
+
+**Windows.** CUDA builds and runs on Windows too (single-GPU). Use the Ninja
+generator from an *x64 Native Tools Command Prompt for VS* (so `nvcc` finds
+`cl.exe`), then install against the compiled DLL:
+
+```console
+cmake -B build -S . -G Ninja -DUSE_CUDA=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120-real
+cmake --build build -j
+sh ./build-python.sh install --precompile
+```
+
+See [docs/Installation-Guide.rst](docs/Installation-Guide.rst) for the details —
+notably, use Ninja (not the VS generator), and if `nvcc` rejects your MSVC as an
+"unsupported Microsoft Visual Studio version" add
+`-DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler`.
 
 The wheel installs a `lightgbm` import shim (see below). If the target
 environment already has stock LightGBM installed, uninstall it first or install

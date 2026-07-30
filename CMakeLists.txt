@@ -245,8 +245,22 @@ if(USE_CUDA)
         message(STATUS "USE_NCCL is OFF: building single-GPU only, without the NCCL dependency.")
     endif()
     include_directories(${CUDAToolkit_INCLUDE_DIRS})
-    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=${OpenMP_CXX_FLAGS} -Xcompiler=-fPIC -Xcompiler=-Wall")
-    if(USE_WERROR AND NOT __BUILD_FOR_R)
+    # These are forwarded (-Xcompiler=) to nvcc's host compiler. -fPIC and -Wall
+    # are GCC/Clang spellings; MSVC (the CUDA host compiler on Windows) rejects
+    # them (-fPIC is also meaningless there), so skip them under MSVC. The OpenMP
+    # flag is valid for both host compilers.
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=${OpenMP_CXX_FLAGS}")
+    if(NOT MSVC)
+        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=-fPIC -Xcompiler=-Wall")
+    endif()
+    # Warnings-as-errors gate our own sources on GCC/Clang. It is skipped under
+    # MSVC -- matching the CPU build, which never adds /WX -- both for the host
+    # -Xcompiler=-Werror and for nvcc's own device-side "-Werror all-warnings":
+    # on Windows, nvcc surfaces device-side diagnostics from vendored headers
+    # (fmt, fast_double_parser) that Linux's toolchain does not, and those are
+    # not our code. Device code is identical across platforms and is already
+    # gated by the Linux CUDA CI.
+    if(USE_WERROR AND NOT __BUILD_FOR_R AND NOT MSVC)
         set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=-Werror")
         # nvcc's own device-side diagnostics (e.g. cross-execution-space-call) are
         # separate from the host compiler's; "all-warnings" landed in CUDA 11.2.
