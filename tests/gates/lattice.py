@@ -147,6 +147,7 @@ def build_cells():
         ("efb", "efb_precheck", {}, {"cuda_plan": "auto,efb_precheck:off"}),
         ("sampled", "compact_quant", {}, {"cuda_plan": "auto,compact_quant:off"}),
         ("sampled", "construct_jit", {}, {"cuda_plan": "auto,construct_jit:on"}),
+        ("sampled", "compact_prefill", {}, {"cuda_plan": "auto,compact_prefill:on"}),
         ("int8wide", "rowdata_4bit", {}, {"cuda_plan": "auto,rowdata_4bit:off"}),
         ("int8wide", "fast_rowdata", {}, {"cuda_plan": "auto,fast_rowdata:off"}),
     ]

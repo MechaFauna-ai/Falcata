@@ -55,6 +55,7 @@ ALL_KEYS = {
     "gh_interleave": True,
     "split_packed_read": True,
     "small_leaf_construct": True,
+    "compact_prefill": False,
 }
 
 #: growth-strategy keys: changing them changes WHICH tree is built (legit),

@@ -391,6 +391,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // Outlier-robust gradient scale within fixed-point mode (default ON when
   // fixedpoint_quant_ is on; disabled by cuda_plan=auto,robust_scale:off).
   bool fixedpoint_robust_scale_ = false;
+  // Compact-view prefill: the previous Train() already drew this tree's
+  // column sample (BeforeTrain must not draw again; cuda_plan compact_prefill)
+  bool next_tree_col_sample_ready_ = false;
   int effective_quant_bins_ = 0;
 
   // CUDA components for tree training

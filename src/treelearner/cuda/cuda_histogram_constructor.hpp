@@ -411,6 +411,21 @@ class CUDAHistogramConstructor {
   // the full-data path when sampling is disabled or the layout is unsupported.
   bool BuildCompactView(const std::vector<int8_t>& is_feature_used_bytree);
 
+  /*! \brief Prefill the NEXT tree's compact column view into the inactive
+   *  (alt) buffer on prefetch_stream_, overlapping the current tree's
+   *  training (cuda_plan key compact_prefill). The fill only reads the static
+   *  row-major bin matrix plus next-tree slot tables, so the produced bytes
+   *  are identical to what BuildCompactView would fill synchronously —
+   *  BuildCompactView detects the matching bitmap, swaps buffers and skips
+   *  its fill. Device-resident fill paths only (host-mapped sources fall back
+   *  to the synchronous path). No-op when the compact view is ineligible. */
+  void PrefillNextCompactView(const std::vector<int8_t>& is_feature_used_bytree);
+
+  /*! \brief Drop any pending prefill (config/data/bagging reset). */
+  void InvalidateCompactPrefill();
+
+  bool compact_view_active() const { return use_compact_view_; }
+
   // Expose internal CUDARowData so the tree learner can build a per-tree compact
   // column view from the on-GPU row-major bin matrix.
   const CUDARowData* cuda_row_data_internal() const { return cuda_row_data_.get(); }
@@ -683,10 +698,37 @@ class CUDAHistogramConstructor {
    *  cuda_stream_ waits on prefetch_event_[current] before starting histograms. */
   CUDAVector<uint8_t> compact_data_uint8_t_;
   CUDAVector<uint8_t> compact_data_uint8_t_alt_;
-  bool active_buffer_is_alt_ = false;
-  cudaEvent_t fill_done_event_ = nullptr;
   cudaEvent_t fill_done_event_alt_ = nullptr;
   cudaStream_t prefetch_stream_ = nullptr;
+
+  // --- compact-view prefill (cuda_plan key compact_prefill) -----------------
+  /*! \brief Host layout scan shared by the sync fill and the prefill. */
+  struct CompactLayout {
+    std::vector<int> part_col_offsets;        // [P+1] cumulative compact cols
+    std::vector<int> src_part_stride;         // [P] src cols per partition
+    std::vector<int> src_local_col;           // [total] col idx within src partition
+    std::vector<int> partition_for_slot;      // [total]
+    std::vector<uint32_t> col_hist_offsets;   // [total]
+    std::vector<int> packed_part_offsets;     // [P+1] 4-bit packed row widths
+    int num_partitions = 0;
+    int total_compact = 0;
+    bool is_4bit = false;
+    size_t data_bytes = 0;
+  };
+  bool ScanCompactLayout(const std::vector<int8_t>& is_feature_used_bytree,
+                         CompactLayout* layout) const;
+  /*! \brief Build fill metadata from a layout and launch the device fill
+   *  kernel into dst on the given stream. async_meta=true stages the metadata
+   *  through pinned memory with cudaMemcpyAsync (prefill; must not touch the
+   *  synchronizing default stream while training kernels are in flight). */
+  void LaunchCompactFill(const CompactLayout& layout, uint8_t* dst,
+                         cudaStream_t stream, bool async_meta);
+  /*! \brief bitmap the pending prefill was built for; empty = no prefill */
+  std::vector<int8_t> prefill_bitmap_;
+  bool prefill_valid_ = false;
+  /*! \brief pinned staging for async metadata uploads (grown on demand) */
+  void* prefill_pinned_ = nullptr;
+  size_t prefill_pinned_bytes_ = 0;
   /*! \brief number of columns in the compact view (sum across partitions) */
   int num_compact_columns_;
   /*! \brief max compact cols per partition (sets block_dim_x for compact launches) */

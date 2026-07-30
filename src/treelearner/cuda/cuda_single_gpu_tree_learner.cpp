@@ -320,7 +320,12 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
   }
   leaf_num_data_[0] = root_num_data;
   cuda_larger_leaf_splits_->InitValues();
-  col_sampler_.ResetByTree();
+  if (next_tree_col_sample_ready_) {
+    // the previous Train() already drew this tree's column sample (prefill)
+    next_tree_col_sample_ready_ = false;
+  } else {
+    col_sampler_.ResetByTree();
+  }
   cuda_best_split_finder_->BeforeTrain(col_sampler_.is_feature_used_bytree());
   cuda_histogram_constructor_->SetFeatureUsedBytree(col_sampler_.is_feature_used_bytree());
   cuda_histogram_constructor_->BuildCompactView(col_sampler_.is_feature_used_bytree());
@@ -341,6 +346,23 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     leaf_to_hist_index_map_.resize(config_->num_leaves, -1);
     leaf_to_hist_index_map_[0] = 0;
     global_num_data_in_leaf_[0] = global_num_data_;
+  }
+
+  // Compact-view prefill (cuda_plan key compact_prefill): draw the NEXT tree's
+  // per-tree column sample now -- the same single Sample() call the next
+  // BeforeTrain would make, so the RNG sequence is unchanged -- and fill its
+  // compact view into the alt buffer on the side stream. Launched HERE, before
+  // this tree's training begins, so the ~5ms fill hides inside this tree's
+  // launch gaps rather than sitting on the critical path. Every consumer of
+  // THIS tree's mask above has already taken its copy. Gated off under by-node
+  // feature sampling (GetByNode draws from the same RNG per node; an early
+  // by-tree draw would reorder the stream and change models).
+  if (FalcataPlan::Get().compact_prefill && !select_features_by_node_ &&
+      nccl_communicator_ == nullptr &&
+      cuda_histogram_constructor_->compact_view_active()) {
+    col_sampler_.ResetByTree();
+    next_tree_col_sample_ready_ = true;
+    cuda_histogram_constructor_->PrefillNextCompactView(col_sampler_.is_feature_used_bytree());
   }
 }
 
@@ -2740,6 +2762,10 @@ void CUDASingleGPUTreeLearner::ResetTrainingData(
     cuda_gradients_.Resize(static_cast<size_t>(num_data_));
     cuda_hessians_.Resize(static_cast<size_t>(num_data_));
   }
+  // training data changed: the predrawn column sample and any prefilled
+  // compact view belong to the old data / re-seeded sampler
+  next_tree_col_sample_ready_ = false;
+  cuda_histogram_constructor_->InvalidateCompactPrefill();
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   ReleaseHybridGraphs();  // captured buffer pointers may have changed
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
@@ -2765,6 +2791,10 @@ void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
   cuda_best_split_finder_->ResetConfig(config, cuda_histogram_constructor_->cuda_hist());
   cuda_data_partition_->ResetConfig(config, cuda_histogram_constructor_->cuda_hist_pointer());
   SyncHistFP32();
+  // config changed: SerialTreeLearner::ResetConfig re-seeded the column
+  // sampler, so the predrawn sample / prefilled view are stale
+  next_tree_col_sample_ready_ = false;
+  cuda_histogram_constructor_->InvalidateCompactPrefill();
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   ReleaseHybridGraphs();  // captured buffer pointers / budgets may have changed
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED

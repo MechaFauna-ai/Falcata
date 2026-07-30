@@ -55,6 +55,8 @@ def sample_spec(rng):
             plan.append(f"{key}:off")
     if rng.random() < 0.15:
         plan.append("construct_jit:on")
+    if rng.random() < 0.15:
+        plan.append("compact_prefill:on")
     if rng.random() < 0.10:
         plan.append("hybrid:off")
     if quant_mode == "fixedpoint" and rng.random() < 0.20:

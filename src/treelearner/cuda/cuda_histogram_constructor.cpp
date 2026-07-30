@@ -62,6 +62,15 @@ CUDAHistogramConstructor::CUDAHistogramConstructor(
 
 CUDAHistogramConstructor::~CUDAHistogramConstructor() {
   gpuAssert(cudaStreamDestroy(cuda_stream_), __FILE__, __LINE__);
+  if (prefetch_stream_ != nullptr) {
+    gpuAssert(cudaStreamDestroy(prefetch_stream_), __FILE__, __LINE__);
+  }
+  if (fill_done_event_alt_ != nullptr) {
+    gpuAssert(cudaEventDestroy(fill_done_event_alt_), __FILE__, __LINE__);
+  }
+  if (prefill_pinned_ != nullptr) {
+    gpuAssert(cudaFreeHost(prefill_pinned_), __FILE__, __LINE__);
+  }
   if (construct_done_event_ != nullptr) {
     gpuAssert(cudaEventDestroy(construct_done_event_), __FILE__, __LINE__);
   }
@@ -246,9 +255,8 @@ void LaunchFillCompactData4BitKernel(
   int total_byte_slots,
   data_size_t num_data);
 
-bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_feature_used_bytree) {
-  use_compact_view_ = false;
-  compact_col_major_filled_ = false;
+bool CUDAHistogramConstructor::ScanCompactLayout(
+    const std::vector<int8_t>& is_feature_used_bytree, CompactLayout* layout) const {
   // Gate: only support the standard dense path (uint8 bins, no large-bin partitions, no sparse).
   // This is what our Numerai workload uses; other paths fall back to the full kernel.
   if (cuda_row_data_->is_sparse() || cuda_row_data_->bit_type() != 8 ||
@@ -263,53 +271,83 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
   const std::vector<uint32_t>& src_col_hist_offsets = cuda_row_data_->host_column_hist_offsets();
   const int num_partitions = static_cast<int>(src_part_col_offsets.size()) - 1;
   if (num_partitions <= 0) return false;
+  layout->num_partitions = num_partitions;
 
   // Per-partition: compute used columns and their local idx within source partition.
-  std::vector<int> compact_part_col_offsets;       // [P+1] cumulative compact cols
-  std::vector<int> src_part_stride_h;                // [P] src cols per partition
-  std::vector<int> src_local_col_for_compact_h;      // [total_compact_cols]
-  std::vector<int> partition_for_compact_h;          // [total_compact_cols]
-  std::vector<uint32_t> compact_col_hist_offsets_h;  // [total_compact_cols] -- relative-to-partition hist offsets
-
-  compact_part_col_offsets.push_back(0);
+  layout->part_col_offsets.clear();
+  layout->src_part_stride.clear();
+  layout->src_local_col.clear();
+  layout->partition_for_slot.clear();
+  layout->col_hist_offsets.clear();
+  layout->part_col_offsets.push_back(0);
   int total_compact = 0;
   for (int p = 0; p < num_partitions; ++p) {
     const int p_start = src_part_col_offsets[p];
     const int p_end = src_part_col_offsets[p + 1];
     const int p_num = p_end - p_start;
-    src_part_stride_h.push_back(p_num);
-    int used_in_p = 0;
+    layout->src_part_stride.push_back(p_num);
     for (int c = p_start; c < p_end; ++c) {
       // is_feature_used_bytree is indexed by inner_feature_index. For dense single-feature groups
       // (Numerai), inner_feature_index == column_index; the bounds-check guards us if not.
       if (c < static_cast<int>(is_feature_used_bytree.size()) && is_feature_used_bytree[c]) {
-        src_local_col_for_compact_h.push_back(c - p_start);
-        partition_for_compact_h.push_back(p);
-        compact_col_hist_offsets_h.push_back(src_col_hist_offsets[c]);
-        ++used_in_p;
+        layout->src_local_col.push_back(c - p_start);
+        layout->partition_for_slot.push_back(p);
+        layout->col_hist_offsets.push_back(src_col_hist_offsets[c]);
         ++total_compact;
       }
     }
-    compact_part_col_offsets.push_back(total_compact);
+    layout->part_col_offsets.push_back(total_compact);
   }
+  layout->total_compact = total_compact;
 
   if (total_compact == 0 || total_compact == src_part_col_offsets.back()) {
     // No win: either no features or all features used. Fall back to full path.
     return false;
   }
 
-  const data_size_t num_data = cuda_row_data_->num_data();
-
   // 4-bit mode: when the row matrix is packed, the compact matrix is packed the
   // same way (per-partition packed row width = ceil(used_columns / 2) bytes,
   // column j of a partition in byte (j >> 1), nibble (j & 1)).
-  compact_is_4bit_ = cuda_row_data_->is_4bit_packed() && !cuda_row_data_->is_data_host_mapped();
-  std::vector<int> compact_packed_part_offsets;  // [P+1] prefix of packed compact row widths
-  compact_packed_part_offsets.push_back(0);
+  layout->is_4bit = cuda_row_data_->is_4bit_packed() && !cuda_row_data_->is_data_host_mapped();
+  layout->packed_part_offsets.clear();
+  layout->packed_part_offsets.push_back(0);
   for (int p = 0; p < num_partitions; ++p) {
-    const int used_in_p = compact_part_col_offsets[p + 1] - compact_part_col_offsets[p];
-    compact_packed_part_offsets.push_back(compact_packed_part_offsets.back() + ((used_in_p + 1) >> 1));
+    const int used_in_p = layout->part_col_offsets[p + 1] - layout->part_col_offsets[p];
+    layout->packed_part_offsets.push_back(layout->packed_part_offsets.back() + ((used_in_p + 1) >> 1));
   }
+  const data_size_t num_data = cuda_row_data_->num_data();
+  layout->data_bytes = layout->is_4bit ?
+    static_cast<size_t>(layout->packed_part_offsets.back()) * static_cast<size_t>(num_data) :
+    static_cast<size_t>(total_compact) * static_cast<size_t>(num_data);
+  return true;
+}
+
+bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_feature_used_bytree) {
+  use_compact_view_ = false;
+  compact_col_major_filled_ = false;
+  CompactLayout layout;
+  const bool eligible = ScanCompactLayout(is_feature_used_bytree, &layout);
+  if (prefill_valid_) {
+    // A prefill launched during the previous tree may still be in flight on
+    // prefetch_stream_ and shares the fill-metadata device arrays with the
+    // synchronous path: order everything after it before touching them.
+    CUDASUCCESS_OR_FATAL(cudaEventSynchronize(fill_done_event_alt_));
+  }
+  if (!eligible) {
+    prefill_valid_ = false;
+    return false;
+  }
+
+  const std::vector<int>& src_part_col_offsets = cuda_row_data_->host_feature_partition_column_index_offsets();
+  const std::vector<int>& compact_part_col_offsets = layout.part_col_offsets;
+  const std::vector<int>& src_local_col_for_compact_h = layout.src_local_col;
+  const std::vector<int>& partition_for_compact_h = layout.partition_for_slot;
+  const std::vector<uint32_t>& compact_col_hist_offsets_h = layout.col_hist_offsets;
+  const std::vector<int>& compact_packed_part_offsets = layout.packed_part_offsets;
+  const int num_partitions = layout.num_partitions;
+  const int total_compact = layout.total_compact;
+  const data_size_t num_data = cuda_row_data_->num_data();
+  compact_is_4bit_ = layout.is_4bit;
 
   // Host copies of the compact layout for the tree learner's column-view build
   // (source column per slot + row-major-in-partition placement of each slot).
@@ -340,9 +378,7 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
   }
 
   // Allocate / resize compact buffers.
-  const size_t compact_data_bytes = compact_is_4bit_ ?
-    static_cast<size_t>(compact_packed_part_offsets.back()) * static_cast<size_t>(num_data) :
-    static_cast<size_t>(total_compact) * static_cast<size_t>(num_data);
+  const size_t compact_data_bytes = layout.data_bytes;
   if (compact_data_uint8_t_.Size() < compact_data_bytes) {
     compact_data_uint8_t_.Resize(compact_data_bytes);
   }
@@ -456,7 +492,74 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
     CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
     compact_is_col_major_ = false;  // compact_data is now row-major-in-partition
     compact_col_major_filled_ = true;  // the col-major staging holds the same slots
-  } else if (compact_is_4bit_) {
+  } else if (prefill_valid_ && prefill_bitmap_ == is_feature_used_bytree) {
+    // The prefill already produced exactly these bytes into the alt buffer
+    // during the previous tree's training (event-synced above): swap it in
+    // and skip the fill entirely.
+    prefill_valid_ = false;
+    compact_data_uint8_t_.Swap(&compact_data_uint8_t_alt_);
+    compact_is_col_major_ = false;
+  } else {
+    prefill_valid_ = false;
+    LaunchCompactFill(layout, compact_data_uint8_t_.RawData(), cuda_stream_, /*async_meta=*/false);
+    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
+    compact_is_col_major_ = false;
+  }
+
+
+  // Compute max compact cols per partition (sets block_dim_x for compact launches).
+  int max_compact_per_p = 0;
+  for (int p = 0; p < num_partitions; ++p) {
+    const int cnt = compact_part_col_offsets[p + 1] - compact_part_col_offsets[p];
+    if (cnt > max_compact_per_p) max_compact_per_p = cnt;
+  }
+  max_num_compact_cols_per_partition_ = max_compact_per_p;
+
+  num_compact_columns_ = total_compact;
+  use_compact_view_ = true;
+  return true;
+}
+
+void CUDAHistogramConstructor::LaunchCompactFill(
+    const CompactLayout& layout, uint8_t* dst, cudaStream_t stream, bool async_meta) {
+  const std::vector<int>& src_part_col_offsets = cuda_row_data_->host_feature_partition_column_index_offsets();
+  const std::vector<int>& compact_part_col_offsets = layout.part_col_offsets;
+  const std::vector<int>& src_local_col_for_compact_h = layout.src_local_col;
+  const std::vector<int>& partition_for_compact_h = layout.partition_for_slot;
+  const std::vector<int>& compact_packed_part_offsets = layout.packed_part_offsets;
+  const int num_partitions = layout.num_partitions;
+  const int total_compact = layout.total_compact;
+  const data_size_t num_data = cuda_row_data_->num_data();
+
+  // Async metadata upload path (prefill): stage through pinned memory and
+  // cudaMemcpyAsync on `stream`. A plain cudaMemcpy here would enqueue on the
+  // synchronizing default stream and stall behind the current tree's kernels.
+  auto upload = [&](void* device_dst, const void* host_src, size_t bytes, size_t* pin_off) {
+    if (!async_meta) {
+      CopyFromHostToCUDADevice<uint8_t>(static_cast<uint8_t*>(device_dst),
+                                        static_cast<const uint8_t*>(host_src), bytes,
+                                        __FILE__, __LINE__);
+      return;
+    }
+    if (*pin_off + bytes > prefill_pinned_bytes_) {
+      // grow pinned staging (rare; sizes are KB-scale)
+      const size_t need = ((*pin_off + bytes) * 2 + 4095) & ~static_cast<size_t>(4095);
+      void* fresh = nullptr;
+      CUDASUCCESS_OR_FATAL(cudaHostAlloc(&fresh, need, cudaHostAllocDefault));
+      if (prefill_pinned_ != nullptr) {
+        CUDASUCCESS_OR_FATAL(cudaFreeHost(prefill_pinned_));
+      }
+      prefill_pinned_ = fresh;
+      prefill_pinned_bytes_ = need;
+    }
+    uint8_t* pin = static_cast<uint8_t*>(prefill_pinned_) + *pin_off;
+    std::memcpy(pin, host_src, bytes);
+    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(device_dst, pin, bytes, cudaMemcpyHostToDevice, stream));
+    *pin_off += bytes;
+  };
+  size_t pin_off = 0;
+
+  if (layout.is_4bit) {
     // 4-bit fill: one thread per DESTINATION byte (a pair of adjacent compact
     // slots), so no two threads share an output byte. Source positions are
     // nibble indices: column c of a packed partition with byte base B and row
@@ -500,15 +603,15 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
       cuda_bs_dst_byte_.Resize(total_byte_slots);
       cuda_bs_dst_stride_.Resize(total_byte_slots);
     }
-    CopyFromHostToCUDADevice<size_t>(cuda_bs_src_nib0_.RawData(), bs_src_nib0_h.data(), total_byte_slots, __FILE__, __LINE__);
-    CopyFromHostToCUDADevice<size_t>(cuda_bs_src_nib1_.RawData(), bs_src_nib1_h.data(), total_byte_slots, __FILE__, __LINE__);
-    CopyFromHostToCUDADevice<int>(cuda_bs_src_stride_nib_.RawData(), bs_src_stride_nib_h.data(), total_byte_slots, __FILE__, __LINE__);
-    CopyFromHostToCUDADevice<size_t>(cuda_bs_dst_byte_.RawData(), bs_dst_byte_h.data(), total_byte_slots, __FILE__, __LINE__);
-    CopyFromHostToCUDADevice<int>(cuda_bs_dst_stride_.RawData(), bs_dst_stride_h.data(), total_byte_slots, __FILE__, __LINE__);
+    upload(cuda_bs_src_nib0_.RawData(), bs_src_nib0_h.data(), sizeof(size_t) * total_byte_slots, &pin_off);
+    upload(cuda_bs_src_nib1_.RawData(), bs_src_nib1_h.data(), sizeof(size_t) * total_byte_slots, &pin_off);
+    upload(cuda_bs_src_stride_nib_.RawData(), bs_src_stride_nib_h.data(), sizeof(int) * total_byte_slots, &pin_off);
+    upload(cuda_bs_dst_byte_.RawData(), bs_dst_byte_h.data(), sizeof(size_t) * total_byte_slots, &pin_off);
+    upload(cuda_bs_dst_stride_.RawData(), bs_dst_stride_h.data(), sizeof(int) * total_byte_slots, &pin_off);
     LaunchFillCompactData4BitKernel(
-      cuda_stream_,
+      stream,
       cuda_row_data_->GetBin<uint8_t>(),
-      compact_data_uint8_t_.RawData(),
+      dst,
       cuda_bs_src_nib0_.RawData(),
       cuda_bs_src_nib1_.RawData(),
       cuda_bs_src_stride_nib_.RawData(),
@@ -516,12 +619,11 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
       cuda_bs_dst_stride_.RawData(),
       total_byte_slots,
       num_data);
-    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
-    compact_is_col_major_ = false;
   } else {
     // Build per-slot src/dst metadata host-side. Each compact slot has a fully
     // computed source byte offset and destination byte offset, so the kernel
     // does no per-thread partition lookups (massive win on this gather pattern).
+    const std::vector<int>& src_part_stride_h = layout.src_part_stride;
     std::vector<size_t> slot_src_byte_h(total_compact);
     std::vector<int> slot_src_stride_h(total_compact);
     std::vector<size_t> slot_dst_byte_h(total_compact);
@@ -546,18 +648,18 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
       cuda_slot_dst_byte_.Resize(total_compact);
       cuda_slot_dst_stride_.Resize(total_compact);
     }
-    CopyFromHostToCUDADevice<size_t>(cuda_slot_src_byte_.RawData(), slot_src_byte_h.data(), total_compact, __FILE__, __LINE__);
-    CopyFromHostToCUDADevice<int>(cuda_slot_src_stride_.RawData(), slot_src_stride_h.data(), total_compact, __FILE__, __LINE__);
-    CopyFromHostToCUDADevice<size_t>(cuda_slot_dst_byte_.RawData(), slot_dst_byte_h.data(), total_compact, __FILE__, __LINE__);
-    CopyFromHostToCUDADevice<int>(cuda_slot_dst_stride_.RawData(), slot_dst_stride_h.data(), total_compact, __FILE__, __LINE__);
+    upload(cuda_slot_src_byte_.RawData(), slot_src_byte_h.data(), sizeof(size_t) * total_compact, &pin_off);
+    upload(cuda_slot_src_stride_.RawData(), slot_src_stride_h.data(), sizeof(int) * total_compact, &pin_off);
+    upload(cuda_slot_dst_byte_.RawData(), slot_dst_byte_h.data(), sizeof(size_t) * total_compact, &pin_off);
+    upload(cuda_slot_dst_stride_.RawData(), slot_dst_stride_h.data(), sizeof(int) * total_compact, &pin_off);
     // NOTE: a fused column-major second output here was measured SLOWER than
     // the tree learner's separate tile-transposed gather from the compact
     // matrix (the fill's slot-major warps write the column-major layout one
     // 32-byte sector per byte); keep the fill single-output.
     LaunchFillCompactDataKernel(
-      cuda_stream_,
+      stream,
       cuda_row_data_->GetBin<uint8_t>(),
-      compact_data_uint8_t_.RawData(),
+      dst,
       cuda_slot_src_byte_.RawData(),
       cuda_slot_src_stride_.RawData(),
       cuda_slot_dst_byte_.RawData(),
@@ -565,22 +667,32 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
       total_compact,
       num_data,
       nullptr);
-    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
-    compact_is_col_major_ = false;
   }
+}
 
-
-  // Compute max compact cols per partition (sets block_dim_x for compact launches).
-  int max_compact_per_p = 0;
-  for (int p = 0; p < num_partitions; ++p) {
-    const int cnt = compact_part_col_offsets[p + 1] - compact_part_col_offsets[p];
-    if (cnt > max_compact_per_p) max_compact_per_p = cnt;
+void CUDAHistogramConstructor::PrefillNextCompactView(
+    const std::vector<int8_t>& is_feature_used_bytree) {
+  // Any previous prefill was consumed or invalidated by BuildCompactView.
+  prefill_valid_ = false;
+  if (!FalcataPlan::Get().compact_prefill) return;
+  if (cuda_row_data_ == nullptr || cuda_row_data_->is_data_host_mapped()) return;
+  CompactLayout layout;
+  if (!ScanCompactLayout(is_feature_used_bytree, &layout)) return;
+  if (compact_data_uint8_t_alt_.Size() < layout.data_bytes) {
+    compact_data_uint8_t_alt_.Resize(layout.data_bytes);
   }
-  max_num_compact_cols_per_partition_ = max_compact_per_p;
+  LaunchCompactFill(layout, compact_data_uint8_t_alt_.RawData(), prefetch_stream_,
+                    /*async_meta=*/true);
+  CUDASUCCESS_OR_FATAL(cudaEventRecord(fill_done_event_alt_, prefetch_stream_));
+  prefill_bitmap_ = is_feature_used_bytree;
+  prefill_valid_ = true;
+}
 
-  num_compact_columns_ = total_compact;
-  use_compact_view_ = true;
-  return true;
+void CUDAHistogramConstructor::InvalidateCompactPrefill() {
+  if (prefill_valid_) {
+    CUDASUCCESS_OR_FATAL(cudaEventSynchronize(fill_done_event_alt_));
+    prefill_valid_ = false;
+  }
 }
 
 void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStates* share_state) {
@@ -605,6 +717,10 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   }
 
   CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_stream_));
+  // Non-blocking side stream for the next-tree compact-view prefill: must not
+  // synchronize with the legacy default stream while training kernels run.
+  CUDASUCCESS_OR_FATAL(cudaStreamCreateWithFlags(&prefetch_stream_, cudaStreamNonBlocking));
+  CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&fill_done_event_alt_, cudaEventDisableTiming));
   // Lightweight (timing-disabled) events used to order the best split finder's
   // per-leaf kernels after histogram construction/subtraction without a device sync.
   // One (stream, event-pair) pipeline per concurrently-processed sibling pair.
