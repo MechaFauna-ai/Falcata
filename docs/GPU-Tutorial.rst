@@ -55,7 +55,7 @@ Now we are ready to checkout Falcata and compile it with GPU support:
 
 ::
 
-    git clone --recursive https://github.com/BelixRogner/Falcata
+    git clone --recursive https://github.com/MechaFauna-ai/Falcata
     cd Falcata
     cmake -B build -S . -DUSE_GPU=1
     # if you have installed NVIDIA CUDA to a customized location, you should specify paths to OpenCL headers and library like the following:
@@ -185,7 +185,7 @@ Huan Zhang, Si Si and Cho-Jui Hsieh. "`GPU Acceleration for Large-scale Tree Boo
 
 .. _AMDGPU-Pro: https://www.amd.com/en/support.html
 
-.. _Python-package Examples: https://github.com/BelixRogner/Falcata/tree/master/examples/python-guide
+.. _Python-package Examples: https://github.com/MechaFauna-ai/Falcata/tree/master/examples/python-guide
 
 .. _GPU Acceleration for Large-scale Tree Boosting: https://arxiv.org/abs/1706.08359
 

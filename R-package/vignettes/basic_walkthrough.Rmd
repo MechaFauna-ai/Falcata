@@ -25,7 +25,7 @@ knitr::opts_chunk$set(
 
 ## Introduction
 
-Welcome to the world of [Falcata](https://github.com/BelixRogner/Falcata), a highly efficient gradient boosting implementation (Ke et al. 2017).
+Welcome to the world of [Falcata](https://github.com/MechaFauna-ai/Falcata), a highly efficient gradient boosting implementation (Ke et al. 2017).
 
 ```{r}
 library(falcata)
@@ -111,7 +111,7 @@ fit <- lgb.train(
 )
 ```
 
-Try it out! If stuck, visit Falcata's [documentation](https://github.com/BelixRogner/Falcata/blob/master/docs/R/index.rst) for more details.
+Try it out! If stuck, visit Falcata's [documentation](https://github.com/MechaFauna-ai/Falcata/blob/master/docs/R/index.rst) for more details.
 
 ```{r, echo = FALSE, results = "hide"}
 # Cleanup

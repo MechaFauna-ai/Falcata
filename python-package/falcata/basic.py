@@ -5133,7 +5133,7 @@ class Booster:
                     "'categorical_feature' value found in Booster.params. "
                     "Preferring the value passed via keyword argument. "
                     "Using refit() to change which columns are treated as categorical is not supported. "
-                    "If you have a valid use case for this, please open an issue at https://github.com/BelixRogner/Falcata/issues."
+                    "If you have a valid use case for this, please open an issue at https://github.com/MechaFauna-ai/Falcata/issues."
                 )
                 raise FalcataError(error_msg)
 

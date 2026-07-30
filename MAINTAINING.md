@@ -51,7 +51,7 @@ These runs build and test the official artifacts that will be attached to the Gi
 
 ### Step 4: Create a Release
 
-Navigate to https://github.com/BelixRogner/Falcata/releases.
+Navigate to https://github.com/MechaFauna-ai/Falcata/releases.
 
 Click "edit" on the draft release that `release-drafter` has created there.
 
@@ -70,7 +70,7 @@ After creating a release, run the following from the root of the repo to populat
 
 # attach them to the GitHub release
 gh release upload \
-    --repo BelixRogner/Falcata \
+    --repo MechaFauna-ai/Falcata \
     "${TAG}" \
     ./release-artifacts/*
 ```

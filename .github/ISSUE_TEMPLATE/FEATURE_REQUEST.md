@@ -5,7 +5,7 @@ labels: enhancement, feature-request
 ---
 
 <!--
-Please search your feature on previous issues and the existing issues (https://github.com/BelixRogner/Falcata/issues) before you open a new one.
+Please search your feature on previous issues and the existing issues (https://github.com/MechaFauna-ai/Falcata/issues) before you open a new one.
 -->
 
 ## Summary

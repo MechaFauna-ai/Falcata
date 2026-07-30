@@ -35,7 +35,7 @@ Requires docker and [nvidia-docker](https://github.com/NVIDIA/nvidia-docker) on 
 ```sh
 mkdir falcata-docker
 cd falcata-docker
-wget https://raw.githubusercontent.com/BelixRogner/Falcata/master/docker/gpu/dockerfile.gpu
+wget https://raw.githubusercontent.com/MechaFauna-ai/Falcata/master/docker/gpu/dockerfile.gpu
 docker build -f dockerfile.gpu -t falcata-gpu .
 ```
 

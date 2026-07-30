@@ -128,7 +128,7 @@ def _get_group_from_constructed_dataset(dataset: Dataset) -> Optional[np.ndarray
     group = dataset.get_group()
     error_msg = (
         "Estimators in falcata.sklearn should only retrieve query groups from a constructed Dataset. "
-        "If you're seeing this message, it's a bug in falcata. Please report it at https://github.com/BelixRogner/Falcata/issues."
+        "If you're seeing this message, it's a bug in falcata. Please report it at https://github.com/MechaFauna-ai/Falcata/issues."
     )
     assert group is None or isinstance(group, np.ndarray), error_msg
     return group
@@ -138,7 +138,7 @@ def _get_label_from_constructed_dataset(dataset: Dataset) -> np.ndarray:
     label = dataset.get_label()
     error_msg = (
         "Estimators in falcata.sklearn should only retrieve labels from a constructed Dataset. "
-        "If you're seeing this message, it's a bug in falcata. Please report it at https://github.com/BelixRogner/Falcata/issues."
+        "If you're seeing this message, it's a bug in falcata. Please report it at https://github.com/MechaFauna-ai/Falcata/issues."
     )
     assert isinstance(label, np.ndarray), error_msg
     return label
@@ -148,7 +148,7 @@ def _get_weight_from_constructed_dataset(dataset: Dataset) -> Optional[np.ndarra
     weight = dataset.get_weight()
     error_msg = (
         "Estimators in falcata.sklearn should only retrieve weights from a constructed Dataset. "
-        "If you're seeing this message, it's a bug in falcata. Please report it at https://github.com/BelixRogner/Falcata/issues."
+        "If you're seeing this message, it's a bug in falcata. Please report it at https://github.com/MechaFauna-ai/Falcata/issues."
     )
     assert weight is None or isinstance(weight, np.ndarray), error_msg
     return weight
@@ -639,7 +639,7 @@ class FalcataModel(_FalcataModelBase):
             If 'gain', result contains total gains of splits which use the feature.
         **kwargs
             Other parameters for the model.
-            Check https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst for more parameters.
+            Check https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Parameters.rst for more parameters.
 
             .. warning::
 
@@ -1766,7 +1766,7 @@ class FalcataClassifier(_FalcataClassifierBase, FalcataModel):
         else:
             error_msg = (
                 "predict() should return np.ndarray when pred_contrib=False. "
-                "If you're seeing this message, it's a bug in falcata. Please report it at https://github.com/BelixRogner/Falcata/issues."
+                "If you're seeing this message, it's a bug in falcata. Please report it at https://github.com/MechaFauna-ai/Falcata/issues."
             )
             assert isinstance(result, np.ndarray), error_msg
             return np.vstack((1.0 - result, result)).transpose()

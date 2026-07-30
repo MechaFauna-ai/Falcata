@@ -52,7 +52,7 @@ docker run \
 
 After this runs, a Falcata model can be found at `Falcata-CLI-model.txt`.
 
-For more details on how to configure and use the Falcata CLI, see https://github.com/BelixRogner/Falcata/blob/master/docs/Quick-Start.rst.
+For more details on how to configure and use the Falcata CLI, see https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Quick-Start.rst.
 
 ## Running the Python-package Container
 

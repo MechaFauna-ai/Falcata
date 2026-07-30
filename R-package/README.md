@@ -2,7 +2,7 @@
 
 [![CRAN Version](https://www.r-pkg.org/badges/version/falcata)](https://cran.r-project.org/package=falcata)
 [![Downloads](https://cranlogs.r-pkg.org/badges/grand-total/falcata)](https://cran.r-project.org/package=falcata)
-[![API Docs](https://readthedocs.org/projects/falcata/badge/?version=latest)](https://github.com/BelixRogner/Falcata/tree/master/docsR/reference/)
+[![API Docs](https://readthedocs.org/projects/falcata/badge/?version=latest)](https://github.com/MechaFauna-ai/Falcata/tree/master/docsR/reference/)
 
 <img src="man/figures/logo.svg" align="right" alt="" width="175" />
 
@@ -31,7 +31,7 @@ If you experience any issues with that, try ["Installing from Source with CMake"
 
 To build a GPU-enabled version of the package, follow the steps in ["Installing a GPU-enabled Build"](#installing-a-gpu-enabled-build).
 
-If any of the above options do not work for you or do not meet your needs, please let the maintainers know by [opening an issue](https://github.com/BelixRogner/Falcata/issues).
+If any of the above options do not work for you or do not meet your needs, please let the maintainers know by [opening an issue](https://github.com/MechaFauna-ai/Falcata/issues).
 
 When your package installation is done, you can check quickly if your Falcata R-package is working by running the following:
 
@@ -59,7 +59,7 @@ install.packages("falcata", repos = "https://cran.r-project.org")
 
 This is the easiest way to install `{falcata}`. It does not require `CMake` or `Visual Studio`, and should work well on many different operating systems and compilers.
 
-Each CRAN package is also available on [Falcata releases](https://github.com/BelixRogner/Falcata/releases), with a name like `falcata-{VERSION}-r-cran.tar.gz`.
+Each CRAN package is also available on [Falcata releases](https://github.com/MechaFauna-ai/Falcata/releases), with a name like `falcata-{VERSION}-r-cran.tar.gz`.
 
 #### Custom Installation (Linux, Mac)
 
@@ -144,7 +144,7 @@ Rscript build_r.R --use-mingw
 
 #### Mac OS Preparation
 
-You can perform installation either with **Apple Clang** or **gcc**. In case you prefer **Apple Clang**, you should install **OpenMP** (details for installation can be found in [Installation Guide](https://github.com/BelixRogner/Falcata/blob/master/docs/Installation-Guide.rst#apple-clang)) first. In case you prefer **gcc**, you need to install it (details for installation can be found in [Installation Guide](https://github.com/BelixRogner/Falcata/blob/master/docs/Installation-Guide.rst#gcc)) and set some environment variables to tell R to use `gcc` and `g++`. If you install these from Homebrew, your versions of `g++` and `gcc` are most likely in `/usr/local/bin`, as shown below.
+You can perform installation either with **Apple Clang** or **gcc**. In case you prefer **Apple Clang**, you should install **OpenMP** (details for installation can be found in [Installation Guide](https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Installation-Guide.rst#apple-clang)) first. In case you prefer **gcc**, you need to install it (details for installation can be found in [Installation Guide](https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Installation-Guide.rst#gcc)) and set some environment variables to tell R to use `gcc` and `g++`. If you install these from Homebrew, your versions of `g++` and `gcc` are most likely in `/usr/local/bin`, as shown below.
 
 ```
 # replace 8 with version of gcc installed on your machine
@@ -156,7 +156,7 @@ export CXX=/usr/local/bin/g++-8 CC=/usr/local/bin/gcc-8
 After following the "preparation" steps above for your operating system, build and install the R-package with the following commands:
 
 ```sh
-git clone --recursive https://github.com/BelixRogner/Falcata
+git clone --recursive https://github.com/MechaFauna-ai/Falcata
 cd Falcata
 Rscript build_r.R
 ```
@@ -176,7 +176,7 @@ Note: for the build with Visual Studio/VS Build Tools in Windows, you should use
 
 ### Installing a GPU-enabled Build
 
-You will need to install Boost and OpenCL first: details for installation can be found in [Installation-Guide](https://github.com/BelixRogner/Falcata/blob/master/docs/Installation-Guide.rst#build-gpu-version).
+You will need to install Boost and OpenCL first: details for installation can be found in [Installation-Guide](https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Installation-Guide.rst#build-gpu-version).
 
 After installing these other libraries, follow the steps in ["Installing from Source with CMake"](#install). When you reach the step that mentions `build_r.R`, pass the flag `--use-gpu`.
 
@@ -225,25 +225,25 @@ CRAN does not prepare precompiled binaries for Linux, and as of this writing nei
 
 Previous versions of Falcata offered the ability to first compile the C++ library (`lib_falcata.{dll,dylib,so}`) and then build an R-package that wraps it.
 
-As of version 3.0.0, this is no longer supported. If building from source is difficult for you, please [open an issue](https://github.com/BelixRogner/Falcata/issues).
+As of version 3.0.0, this is no longer supported. If building from source is difficult for you, please [open an issue](https://github.com/MechaFauna-ai/Falcata/issues).
 
 Examples
 --------
 
-Please visit [demo](https://github.com/BelixRogner/Falcata/tree/master/R-package/demo):
+Please visit [demo](https://github.com/MechaFauna-ai/Falcata/tree/master/R-package/demo):
 
-* [Basic walkthrough of wrappers](https://github.com/BelixRogner/Falcata/blob/master/R-package/demo/basic_walkthrough.R)
-* [Boosting from existing prediction](https://github.com/BelixRogner/Falcata/blob/master/R-package/demo/boost_from_prediction.R)
-* [Early Stopping](https://github.com/BelixRogner/Falcata/blob/master/R-package/demo/early_stopping.R)
-* [Cross Validation](https://github.com/BelixRogner/Falcata/blob/master/R-package/demo/cross_validation.R)
-* [Multiclass Training/Prediction](https://github.com/BelixRogner/Falcata/blob/master/R-package/demo/multiclass.R)
-* [Leaf (in)Stability](https://github.com/BelixRogner/Falcata/blob/master/R-package/demo/leaf_stability.R)
-* [Weight-Parameter Adjustment Relationship](https://github.com/BelixRogner/Falcata/blob/master/R-package/demo/weight_param.R)
+* [Basic walkthrough of wrappers](https://github.com/MechaFauna-ai/Falcata/blob/master/R-package/demo/basic_walkthrough.R)
+* [Boosting from existing prediction](https://github.com/MechaFauna-ai/Falcata/blob/master/R-package/demo/boost_from_prediction.R)
+* [Early Stopping](https://github.com/MechaFauna-ai/Falcata/blob/master/R-package/demo/early_stopping.R)
+* [Cross Validation](https://github.com/MechaFauna-ai/Falcata/blob/master/R-package/demo/cross_validation.R)
+* [Multiclass Training/Prediction](https://github.com/MechaFauna-ai/Falcata/blob/master/R-package/demo/multiclass.R)
+* [Leaf (in)Stability](https://github.com/MechaFauna-ai/Falcata/blob/master/R-package/demo/leaf_stability.R)
+* [Weight-Parameter Adjustment Relationship](https://github.com/MechaFauna-ai/Falcata/blob/master/R-package/demo/weight_param.R)
 
 Testing
 -------
 
-The R-package's unit tests are run automatically on every commit, via integrations like [GitHub Actions](https://github.com/BelixRogner/Falcata/actions). Adding new tests in `R-package/tests/testthat` is a valuable way to improve the reliability of the R-package.
+The R-package's unit tests are run automatically on every commit, via integrations like [GitHub Actions](https://github.com/MechaFauna-ai/Falcata/actions). Adding new tests in `R-package/tests/testthat` is a valuable way to improve the reliability of the R-package.
 
 ### Running the Tests
 
@@ -258,7 +258,7 @@ cd R-package/tests
 Rscript testthat.R
 ```
 
-To run the tests with more verbose logs, set environment variable `FALCATA_TEST_VERBOSITY` to a valid value for parameter [`verbosity`](https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst#verbosity).
+To run the tests with more verbose logs, set environment variable `FALCATA_TEST_VERBOSITY` to a valid value for parameter [`verbosity`](https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Parameters.rst#verbosity).
 
 ```shell
 export FALCATA_TEST_VERBOSITY=1
@@ -378,7 +378,7 @@ At build time, `configure` will be run and used to create a file `Makevars`, usi
 
 Alternatively, GitHub Actions can re-generate this file for you.
 
-1. navigate to https://github.com/BelixRogner/Falcata/actions/workflows/r_configure.yml
+1. navigate to https://github.com/MechaFauna-ai/Falcata/actions/workflows/r_configure.yml
 2. click "Run workflow" (drop-down)
 3. enter the branch from the pull request for the `pr-branch` input
 4. click "Run workflow" (button)
@@ -486,7 +486,7 @@ RDvalgrind \
 
 These tests can also be triggered on a pull request branch, using GitHub Actions.
 
-1. navigate to https://github.com/BelixRogner/Falcata/actions/workflows/r_valgrind.yml
+1. navigate to https://github.com/MechaFauna-ai/Falcata/actions/workflows/r_valgrind.yml
 2. click "Run workflow" (drop-down)
 3. enter the branch from the pull request for the `pr-branch` input
 4. enter the pull request ID for the `pr-number` input
@@ -496,7 +496,7 @@ Or by using the GitHub CLI, using a command similar to this:
 
 ```shell
 gh workflow run \
-    --repo BelixRogner/Falcata \
+    --repo MechaFauna-ai/Falcata \
     r_valgrind.yml \
     -f pr-branch=ci/fix-rerun-workflow \
     -f pr-number=7072
@@ -505,4 +505,4 @@ gh workflow run \
 Known Issues
 ------------
 
-For information about known issues with the R-package, see the [R-package section of Falcata's main FAQ page](https://github.com/BelixRogner/Falcata/blob/master/docs/FAQ.rst#r-package).
+For information about known issues with the R-package, see the [R-package section of Falcata's main FAQ page](https://github.com/MechaFauna-ai/Falcata/blob/master/docs/FAQ.rst#r-package).
