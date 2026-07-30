@@ -50,7 +50,9 @@ struct FalcataPlan {
   bool graph_loop = true;           // key: graph_loop
   // graph level loop also for quantized training (opt-in; less measured)
   bool graph_quant = false;         // key: graph_quant
-  // per-tree compact column view for feature_fraction<1 quantized construct
+  // per-tree compact column view for quantized construct at any
+  // 0 < feature_fraction < 1 (win scales with the excluded fraction:
+  // ~3.4x at ff=0.1, ~1.1x at ff=0.6)
   bool compact_quant = true;        // key: compact_quant
   // NVRTC runtime-JIT construct kernels (self-test-then-promote; AOT fallback)
   bool construct_jit = false;       // key: construct_jit
