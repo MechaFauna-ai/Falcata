@@ -35,10 +35,12 @@ What makes it fast
 - **GPU-native dataset construction.** Dense binning, row-data build, and EFB
   pre-checking run on the device; CuPy and `__cuda_array_interface__` inputs are
   ingested without a host round-trip.
-- **Quantized training, two ways.** `quant_mode=stochastic` is the aggressive,
-  bit-deterministic integer path; `quant_mode=fixedpoint` is a near-lossless
-  deterministic mode with a gap-gated outlier-robust gradient scale for
-  imbalanced data.
+- **Quantized training, two ways.** `quant_mode=stochastic` is the speed end:
+  gradients packed into 4 bins with seeded stochastic rounding (unbiased in
+  expectation). `quant_mode=fixedpoint` is the near-lossless end: 64-bin
+  deterministic rounding, with an internal outlier-robust gradient scale so
+  rare huge gradients don't crush the quantization range. Both modes are
+  bit-reproducible run to run; `quant_mode=none` is full precision.
 - **An execution planner.** Shape-conditional kernel choices are resolved once
   from the data and parameters (`cuda_plan=auto`) instead of from a pile of
   environment variables — every decision guaranteed bit-identical, and
