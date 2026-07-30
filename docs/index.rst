@@ -37,14 +37,12 @@ For more details, please refer to `Features <./Features.rst>`__.
    Python API <Python-API>
    R API <https://github.com/MechaFauna-ai/Falcata/tree/master/docsR/reference/>
    Distributed Learning Guide <Parallel-Learning-Guide>
-   GPU Tutorial <GPU-Tutorial>
    Advanced Topics <Advanced-Topics>
    Development Guide <Development-Guide>
 
 .. toctree::
    :hidden:
 
-   GPU-Targets
    README
 
 Indices and Tables

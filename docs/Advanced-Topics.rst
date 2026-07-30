@@ -77,7 +77,7 @@ Distributed Learning
 GPU Support
 -----------
 
--  Refer to `GPU Tutorial <./GPU-Tutorial.rst>`__ and `GPU Targets <./GPU-Targets.rst>`__.
+-  For GPU training use the CUDA backend (``device_type=cuda``); see the `Installation Guide <./Installation-Guide.rst#build-cuda-version>`__.
 
 Support for Position Bias Treatment
 ------------------------------------

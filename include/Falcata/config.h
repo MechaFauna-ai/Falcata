@@ -1143,13 +1143,13 @@ struct Config {
   // desc = used only with ``gpu`` device type
   // desc = OpenCL platform ID. Usually each GPU vendor exposes one OpenCL platform
   // desc = ``-1`` means the system-wide default platform
-  // desc = **Note**: refer to `GPU Targets <./GPU-Targets.rst#query-opencl-devices-in-your-system>`__ for more details
+  // desc = **Note**: applies to the legacy OpenCL backend (``device_type=gpu``) only; use ``clinfo`` to enumerate platforms/devices
   int gpu_platform_id = -1;
 
   // desc = OpenCL device ID in the specified platform or CUDA device ID. Each GPU in the selected platform has a unique device ID
   // desc = ``-1`` means the default device in the selected platform
   // desc = in multi-GPU case (``num_gpu>1``) means ID of the master GPU
-  // desc = **Note**: refer to `GPU Targets <./GPU-Targets.rst#query-opencl-devices-in-your-system>`__ for more details
+  // desc = **Note**: applies to the legacy OpenCL backend (``device_type=gpu``) only; use ``clinfo`` to enumerate platforms/devices
   int gpu_device_id = -1;
 
   // desc = list of CUDA device IDs

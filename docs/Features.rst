@@ -180,7 +180,6 @@ still exists but is not developed here.
 
 - `GPU Installation <./Installation-Guide.rst#build-gpu-version>`__
 
-- `GPU Tutorial <./GPU-Tutorial.rst>`__
 
 Applications and Metrics
 ------------------------

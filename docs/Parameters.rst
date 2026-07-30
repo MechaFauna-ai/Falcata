@@ -1377,7 +1377,7 @@ GPU Parameters
 
    -  ``-1`` means the system-wide default platform
 
-   -  **Note**: refer to `GPU Targets <./GPU-Targets.rst#query-opencl-devices-in-your-system>`__ for more details
+   -  **Note**: applies to the legacy OpenCL backend (``device_type=gpu``) only; use ``clinfo`` to enumerate platforms/devices
 
 -  ``gpu_device_id`` :raw-html:`<a id="gpu_device_id" title="Permalink to this parameter" href="#gpu_device_id">&#x1F517;&#xFE0E;</a>`, default = ``-1``, type = int
 
@@ -1387,7 +1387,7 @@ GPU Parameters
 
    -  in multi-GPU case (``num_gpu>1``) means ID of the master GPU
 
-   -  **Note**: refer to `GPU Targets <./GPU-Targets.rst#query-opencl-devices-in-your-system>`__ for more details
+   -  **Note**: applies to the legacy OpenCL backend (``device_type=gpu``) only; use ``clinfo`` to enumerate platforms/devices
 
 -  ``gpu_device_id_list`` :raw-html:`<a id="gpu_device_id_list" title="Permalink to this parameter" href="#gpu_device_id_list">&#x1F517;&#xFE0E;</a>`, default = ``""``, type = string
 

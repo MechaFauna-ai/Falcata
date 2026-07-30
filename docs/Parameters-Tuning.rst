@@ -50,7 +50,7 @@ Using distributed (multi-machine) training might also reduce training time. See 
 Use a GPU-enabled version of Falcata
 '''''''''''''''''''''''''''''''''''''
 
-You might find that training is faster using a GPU-enabled build of Falcata. See the `GPU Tutorial <./GPU-Tutorial.rst>`__ for details.
+You might find that training is faster using the CUDA build of Falcata (``device_type=cuda``); see the `Installation Guide <./Installation-Guide.rst#build-cuda-version>`__.
 
 Grow Shallower Trees
 ''''''''''''''''''''

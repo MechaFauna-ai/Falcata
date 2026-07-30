@@ -613,7 +613,6 @@ Following procedure is for the **MSVC** (Microsoft Visual C++) build.
 
    - For running on NVIDIA, get `CUDA Toolkit`_.
 
-   Further reading and correspondence table: `GPU SDK Correspondence and Device Targeting Table <./GPU-Targets.rst>`__.
 
 3. Install `Boost Binaries`_.
 
