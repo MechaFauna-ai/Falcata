@@ -278,7 +278,7 @@ struct Config {
   // desc = used only with ``cpu`` device type
   // desc = setting this to ``true`` should ensure the stable results when using the same data and the same parameters (and different ``num_threads``)
   // desc = when you use the different seeds, different Falcata versions, the binaries compiled by different compilers, or in different systems, the results are expected to be different
-  // desc = you can `raise issues <https://github.com/lightgbm-org/Falcata/issues>`__ in Falcata GitHub repo when you meet the unstable results
+  // desc = you can `raise issues <https://github.com/BelixRogner/Falcata/issues>`__ in Falcata GitHub repo when you meet the unstable results
   // desc = **Note**: setting this to ``true`` may slow down the training
   // desc = **Note**: to avoid potential instability due to numerical issues, please set ``force_col_wise=true`` or ``force_row_wise=true`` when setting ``deterministic=true``
   bool deterministic = false;
@@ -558,7 +558,7 @@ struct Config {
   // desc = ``.json`` file can be arbitrarily nested, and each split contains ``feature``, ``threshold`` fields, as well as ``left`` and ``right`` fields representing subsplits
   // desc = categorical splits are forced in a one-hot fashion, with ``left`` representing the split containing the feature value and ``right`` representing other values
   // desc = **Note**: the forced split logic will be ignored, if the split makes gain worse
-  // desc = see `this file <https://github.com/lightgbm-org/Falcata/blob/master/examples/binary_classification/forced_splits.json>`__ as an example
+  // desc = see `this file <https://github.com/BelixRogner/Falcata/blob/master/examples/binary_classification/forced_splits.json>`__ as an example
   std::string forcedsplits_filename = "";
 
   // check = >=0.0
@@ -732,7 +732,7 @@ struct Config {
   bool is_enable_sparse = true;
 
   // alias = is_enable_bundle, bundle
-  // desc = set this to ``false`` to disable Exclusive Feature Bundling (EFB), which is described in `Falcata: A Highly Efficient Gradient Boosting Decision Tree <https://proceedings.neurips.cc/paper/2017/hash/6449f44a102fde848669bdd9eb6b76fa-Abstract.html>`__
+  // desc = set this to ``false`` to disable Exclusive Feature Bundling (EFB), which is described in `LightGBM: A Highly Efficient Gradient Boosting Decision Tree <https://proceedings.neurips.cc/paper/2017/hash/6449f44a102fde848669bdd9eb6b76fa-Abstract.html>`__
   // desc = **Note**: disabling this may cause the slow training speed for sparse datasets
   bool enable_bundle = true;
 
@@ -819,7 +819,7 @@ struct Config {
 
   // desc = path to a ``.json`` file that specifies bin upper bounds for some or all features
   // desc = ``.json`` file should contain an array of objects, each containing the word ``feature`` (integer feature index) and ``bin_upper_bound`` (array of thresholds for binning)
-  // desc = see `this file <https://github.com/lightgbm-org/Falcata/blob/master/examples/regression/forced_bins.json>`__ as an example
+  // desc = see `this file <https://github.com/BelixRogner/Falcata/blob/master/examples/regression/forced_bins.json>`__ as an example
   std::string forcedbins_filename = "";
 
   // [no-save]
@@ -834,8 +834,8 @@ struct Config {
   bool precise_float_parser = false;
 
   // desc = path to a ``.json`` file that specifies customized parser initialized configuration
-  // desc = see `lightgbm-transform <https://github.com/lightgbm-org/Falcata-transform>`__ for usage examples
-  // desc = **Note**: ``lightgbm-transform`` is not maintained by Falcata's maintainers. Bug reports or feature requests should go to `issues page <https://github.com/lightgbm-org/Falcata-transform/issues>`__
+  // desc = see `lightgbm-transform <https://github.com/lightgbm-org/LightGBM-transform>`__ for usage examples
+  // desc = **Note**: ``lightgbm-transform`` is not maintained by LightGBM's maintainers. Bug reports or feature requests should go to `issues page <https://github.com/lightgbm-org/LightGBM-transform/issues>`__
   // desc = *New in version 4.0.0*
   std::string parser_config_file = "";
 
