@@ -27,9 +27,11 @@ What makes it fast
 - **NVRTC runtime JIT.** Construct kernels are specialized at runtime to the
   actual data shape (bin count, column layout), self-tested against the
   ahead-of-time kernel, and promoted only if bit-identical.
-- **Per-tree compact column view.** At `feature_fraction = 0.1` only the sampled
-  columns are materialized and gathered — 2.5× faster histogram construction on
-  wide, low-cardinality data.
+- **Per-tree compact column view.** With any `feature_fraction < 1`, only the
+  sampled columns are materialized and gathered for histogram construction.
+  The win scales with the excluded fraction: ~3.4× end-to-end training at
+  `feature_fraction = 0.1` on wide, low-cardinality data, tapering to ~1.1×
+  at 0.6.
 - **GPU-native dataset construction.** Dense binning, row-data build, and EFB
   pre-checking run on the device; CuPy and `__cuda_array_interface__` inputs are
   ingested without a host round-trip.
