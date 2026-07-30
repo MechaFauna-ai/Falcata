@@ -168,7 +168,15 @@ It uses two-stage voting to reduce the communication cost of feature histograms\
 GPU Support
 -----------
 
-Thanks `@huanzhang12 <https://github.com/huanzhang12>`__ for contributing this feature. Please read `[11] <#references>`__ to get more details.
+Falcata's primary backend is a CUDA-native tree learner (``device_type=cuda``):
+histogram construction, split finding, and tree building run as batched,
+level-parallel GPU kernels, with quantized-gradient training
+(``quant_mode``), an execution planner (``cuda_plan``), and GPU inference via
+NVIDIA FIL. See the `README <https://github.com/MechaFauna-ai/Falcata#what-makes-it-fast>`__
+for the feature overview and ``docs/design/`` for the internals.
+
+A legacy OpenCL backend (``device_type=gpu``, from upstream LightGBM\ `[11] <#references>`__)
+still exists but is not developed here.
 
 - `GPU Installation <./Installation-Guide.rst#build-gpu-version>`__
 
