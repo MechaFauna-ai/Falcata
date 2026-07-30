@@ -38,19 +38,36 @@ To get good results using a leaf-wise tree, these are some important parameters:
 For Faster Speed
 ----------------
 
+Use the CUDA Backend
+''''''''''''''''''''
+
+``device_type=cuda`` is the single biggest speed lever in Falcata -- the
+training loop was built for it (see `Features
+<./Features.rst#the-cuda-native-training-pipeline>`__). On top of it:
+
+- ``quant_mode=stochastic`` typically adds another large speedup by
+  quantizing gradients into 4 bins; on suitable data it reaches quality
+  parity with full precision. ``quant_mode=fixedpoint`` is the near-lossless
+  alternative. Both are bit-reproducible.
+- ``cuda_precision=fp32`` halves global-histogram bandwidth for
+  *non-quantized* training (quality-gated, not bit-identical).
+- Leave ``cuda_plan=auto`` alone: the planner already resolves the fastest
+  kernel choices from your data shape; the override keys exist for
+  experiments, not tuning.
+- ``feature_fraction < 1`` is cheaper than it looks on CUDA: the per-tree
+  compact column view means histogram passes only read the sampled columns.
+
+See the `Installation Guide <./Installation-Guide.rst#build-cuda-version>`__
+for building with CUDA.
+
 Add More Computational Resources
 ''''''''''''''''''''''''''''''''
 
-On systems where it is available, Falcata uses OpenMP to parallelize many operations. The maximum number of threads used by Falcata is controlled by the parameter ``num_threads``. By default, this will defer to the default behavior of OpenMP (one thread per real CPU core or the value in environment variable ``OMP_NUM_THREADS``, if it is set). For best performance, set this to the number of **real** CPU cores available.
+For CPU training, Falcata uses OpenMP to parallelize many operations. The maximum number of threads used by Falcata is controlled by the parameter ``num_threads``. By default, this will defer to the default behavior of OpenMP (one thread per real CPU core or the value in environment variable ``OMP_NUM_THREADS``, if it is set). For best performance, set this to the number of **real** CPU cores available.
 
 You might be able to achieve faster training by moving to a machine with more available CPU cores.
 
 Using distributed (multi-machine) training might also reduce training time. See the `Distributed Learning Guide <./Parallel-Learning-Guide.rst>`_ for details.
-
-Use a GPU-enabled version of Falcata
-'''''''''''''''''''''''''''''''''''''
-
-You might find that training is faster using the CUDA build of Falcata (``device_type=cuda``); see the `Installation Guide <./Installation-Guide.rst#build-cuda-version>`__.
 
 Grow Shallower Trees
 ''''''''''''''''''''
