@@ -79,6 +79,14 @@ struct FalcataPlan {
   // gap-gated outlier-robust gradient scale (fixedpoint quant only; no-op in
   // other modes). Changes the model when it fires -- NOT an equality key.
   bool robust_scale = true;         // key: robust_scale
+  // prefill the next tree's compact column view on a side stream during the
+  // current tree's training (bit-identical). Default OFF: measured no wall
+  // win -- steady-state training is 97% device-busy and the ~41 synchronous
+  // D2H readbacks per tree impose legacy-stream barriers that serialize the
+  // fill anyway -- while the alt buffer costs VRAM (620MB on numerai). Becomes
+  // worthwhile only if the barrier structure is reduced; kept keyed and
+  // gate-covered so the machinery stays correct.
+  bool compact_prefill = false;     // key: compact_prefill
 
   // --- baked tuning constants (no keys) ------------------------------------
   int batch_construct_min_rows_per_thread = 64;
@@ -117,6 +125,7 @@ struct FalcataPlan {
     if (key == "gh_interleave") return &gh_interleave;
     if (key == "small_leaf_construct") return &small_leaf_construct;
     if (key == "robust_scale") return &robust_scale;
+    if (key == "compact_prefill") return &compact_prefill;
     return nullptr;
   }
 
