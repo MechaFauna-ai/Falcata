@@ -4,10 +4,9 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 #include <gtest/gtest.h>
+#include <Falcata/utils/common.h>
 
 #include <limits>
-
-#include "../include/LightGBM/utils/common.h"
 
 
 // This is a basic test for floating number parsing.

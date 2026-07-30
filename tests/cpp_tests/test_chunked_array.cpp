@@ -9,7 +9,7 @@
 
 #include <vector>
 
-#include "../include/LightGBM/utils/chunked_array.hpp"
+#include <Falcata/utils/chunked_array.hpp>
 
 using Falcata::ChunkedArray;
 
