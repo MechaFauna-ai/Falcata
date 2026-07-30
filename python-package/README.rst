@@ -47,7 +47,7 @@ Falcata builds from source against your CUDA toolkit:
 
 .. code:: sh
 
-    git clone https://github.com/BelixRogner/Falcata.git
+    git clone https://github.com/MechaFauna-ai/Falcata.git
     cd Falcata
     git submodule update --init --recursive
     # Adjust CMAKE_CUDA_ARCHITECTURES for your GPU. RTX 5090 = 120, RTX 4090 = 89.

@@ -6,7 +6,7 @@ on:
       pr-branch:
         type: string
         description: |
-          Branch in BelixRogner/Falcata to update.
+          Branch in MechaFauna-ai/Falcata to update.
 
 # automatically cancel in-progress builds if another commit is pushed
 concurrency:
@@ -43,7 +43,7 @@ jobs:
         with:
           fetch-depth: 5
           submodules: false
-          repository: BelixRogner/Falcata
+          repository: MechaFauna-ai/Falcata
           ref: "refs/heads/${{ inputs.pr-branch }}"
           token: ${{ github.token }}
           persist-credentials: true

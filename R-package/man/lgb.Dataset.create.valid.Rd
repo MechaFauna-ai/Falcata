@@ -35,7 +35,7 @@ second group, etc.}
 \item{init_score}{initial score is the base prediction falcata will boost from}
 
 \item{params}{a list of parameters. See
-\href{https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst#dataset-parameters}{
+\href{https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Parameters.rst#dataset-parameters}{
 The "Dataset Parameters" section of the documentation} for a list of parameters
 and valid values. If this is an empty list (the default), the validation Dataset
 will have the same parameters as the Dataset passed to argument \code{dataset}.}

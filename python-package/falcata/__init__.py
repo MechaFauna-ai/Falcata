@@ -1,7 +1,7 @@
 # coding: utf-8
 """Falcata, Light Gradient Boosting Machine.
 
-Contributors: https://github.com/BelixRogner/Falcata/graphs/contributors.
+Contributors: https://github.com/MechaFauna-ai/Falcata/graphs/contributors.
 """
 
 from pathlib import Path

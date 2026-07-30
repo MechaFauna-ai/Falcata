@@ -115,7 +115,7 @@ With GUI
 
 1. Install `Visual Studio`_.
 
-2. Navigate to one of the releases at https://github.com/BelixRogner/Falcata/releases, download ``Falcata-complete_source_code_zip.zip``, and unzip it.
+2. Navigate to one of the releases at https://github.com/MechaFauna-ai/Falcata/releases, download ``Falcata-complete_source_code_zip.zip``, and unzip it.
 
 3. Go to ``Falcata-complete_source_code_zip/windows`` folder.
 
@@ -137,7 +137,7 @@ From Command Line
 
    .. code:: console
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -A x64
      cmake --build build --target ALL_BUILD --config Release
@@ -153,7 +153,7 @@ MinGW-w64
 
    .. code:: console
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -G "MinGW Makefiles"
      cmake --build build -j4
@@ -184,7 +184,7 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S .
      cmake --build build -j4
@@ -198,7 +198,7 @@ Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      export CXX=clang++-14 CC=clang-14  # replace "14" with version of Clang installed on your machine
      cmake -B build -S .
@@ -255,7 +255,7 @@ Apple Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S .
      cmake --build build -j4
@@ -273,7 +273,7 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      export CXX=g++-7 CC=gcc-7  # replace "7" with version of gcc installed on your machine
      cmake -B build -S .
@@ -282,7 +282,7 @@ gcc
 Docker
 ~~~~~~
 
-Refer to `Docker folder <https://github.com/BelixRogner/Falcata/tree/master/docker>`__.
+Refer to `Docker folder <https://github.com/MechaFauna-ai/Falcata/tree/master/docker>`__.
 
 Build Threadless Version (not Recommended)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -307,7 +307,7 @@ With GUI
 
 1. Install `Visual Studio`_.
 
-2. Navigate to one of the releases at https://github.com/BelixRogner/Falcata/releases, download ``Falcata-complete_source_code_zip.zip``, and unzip it.
+2. Navigate to one of the releases at https://github.com/MechaFauna-ai/Falcata/releases, download ``Falcata-complete_source_code_zip.zip``, and unzip it.
 
 3. Go to ``Falcata-complete_source_code_zip/windows`` folder.
 
@@ -333,7 +333,7 @@ From Command Line
 
    .. code:: console
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -A x64 -DUSE_OPENMP=OFF
      cmake --build build --target ALL_BUILD --config Release
@@ -349,7 +349,7 @@ MinGW-w64
 
    .. code:: console
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -G "MinGW Makefiles" -DUSE_OPENMP=OFF
      cmake --build build -j4
@@ -377,7 +377,7 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -DUSE_OPENMP=OFF
      cmake --build build -j4
@@ -391,7 +391,7 @@ Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      export CXX=clang++-14 CC=clang-14  # replace "14" with version of Clang installed on your machine
      cmake -B build -S . -DUSE_OPENMP=OFF
@@ -420,7 +420,7 @@ Apple Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -DUSE_OPENMP=OFF
      cmake --build build -j4
@@ -438,7 +438,7 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      export CXX=g++-7 CC=gcc-7  # replace "7" with version of gcc installed on your machine
      cmake -B build -S . -DUSE_OPENMP=OFF
@@ -469,7 +469,7 @@ With GUI
 
 2. Install `Visual Studio`_.
 
-3. Navigate to one of the releases at https://github.com/BelixRogner/Falcata/releases, download ``Falcata-complete_source_code_zip.zip``, and unzip it.
+3. Navigate to one of the releases at https://github.com/MechaFauna-ai/Falcata/releases, download ``Falcata-complete_source_code_zip.zip``, and unzip it.
 
 4. Go to ``Falcata-complete_source_code_zip/windows`` folder.
 
@@ -492,7 +492,7 @@ From Command Line
 
    .. code:: console
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -A x64 -DUSE_MPI=ON
      cmake --build build --target ALL_BUILD --config Release
@@ -518,7 +518,7 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -DUSE_MPI=ON
      cmake --build build -j4
@@ -532,7 +532,7 @@ Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      export CXX=clang++-14 CC=clang-14  # replace "14" with version of Clang installed on your machine
      cmake -B build -S . -DUSE_MPI=ON
@@ -561,7 +561,7 @@ Apple Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -DUSE_MPI=ON
      cmake --build build -j4
@@ -579,7 +579,7 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      export CXX=g++-7 CC=gcc-7  # replace "7" with version of gcc installed on your machine
      cmake -B build -S . -DUSE_MPI=ON
@@ -626,7 +626,7 @@ Following procedure is for the **MSVC** (Microsoft Visual C++) build.
 
    .. code:: console
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -A x64 -DUSE_GPU=ON -DBOOST_ROOT=C:/local/boost_1_63_0 -DBOOST_LIBRARYDIR=C:/local/boost_1_63_0/lib64-msvc-14.3
      # if you have installed NVIDIA CUDA to a customized location, you should specify paths to OpenCL headers and library like the following:
@@ -661,7 +661,7 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -DUSE_GPU=ON
      # if you have installed NVIDIA CUDA to a customized location, you should specify paths to OpenCL headers and library like the following:
@@ -677,7 +677,7 @@ Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      export CXX=clang++-14 CC=clang-14  # replace "14" with version of Clang installed on your machine
      cmake -B build -S . -DUSE_GPU=ON
@@ -693,7 +693,7 @@ The GPU version is not supported on macOS.
 Docker
 ^^^^^^
 
-Refer to `GPU Docker folder <https://github.com/BelixRogner/Falcata/tree/master/docker/gpu>`__.
+Refer to `GPU Docker folder <https://github.com/MechaFauna-ai/Falcata/tree/master/docker/gpu>`__.
 
 Build CUDA Version
 ~~~~~~~~~~~~~~~~~~
@@ -730,7 +730,7 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -DUSE_CUDA=ON
      cmake --build build -j4
@@ -744,7 +744,7 @@ Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      export CXX=clang++-14 CC=clang-14  # replace "14" with version of Clang installed on your machine
      cmake -B build -S . -DUSE_CUDA=ON
@@ -789,7 +789,7 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -DUSE_ROCM=ON
      cmake --build build -j4
@@ -803,7 +803,7 @@ Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      export CXX=clang++-14 CC=clang-14  # replace "14" with version of Clang installed on your machine
      cmake -B build -S . -DUSE_ROCM=ON
@@ -840,7 +840,7 @@ VS Build Tools
 
    .. code:: console
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -A x64 -DUSE_SWIG=ON
      cmake --build build --target ALL_BUILD --config Release
@@ -856,7 +856,7 @@ MinGW-w64
 
    .. code:: console
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -G "MinGW Makefiles" -DUSE_SWIG=ON
      cmake --build build -j4
@@ -883,7 +883,7 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -DUSE_SWIG=ON
      cmake --build build -j4
@@ -897,7 +897,7 @@ Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      export CXX=clang++-14 CC=clang-14  # replace "14" with version of Clang installed on your machine
      cmake -B build -S . -DUSE_SWIG=ON
@@ -925,7 +925,7 @@ Apple Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -DUSE_SWIG=ON
      cmake --build build -j4
@@ -944,7 +944,7 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      export CXX=g++-7 CC=gcc-7  # replace "7" with version of gcc installed on your machine
      cmake -B build -S . -DUSE_SWIG=ON
@@ -958,7 +958,7 @@ Refer to `the python-package documentation`_.
 Build R-package
 ~~~~~~~~~~~~~~~
 
-Refer to `R-package folder <https://github.com/BelixRogner/Falcata/tree/master/R-package>`__.
+Refer to `R-package folder <https://github.com/MechaFauna-ai/Falcata/tree/master/R-package>`__.
 
 Build C++ Unit Tests
 ~~~~~~~~~~~~~~~~~~~~
@@ -980,7 +980,7 @@ VS Build Tools
 
    .. code:: console
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -A x64 -DBUILD_CPP_TEST=ON
      cmake --build build --target testlightgbm --config Debug
@@ -996,7 +996,7 @@ MinGW-w64
 
    .. code:: console
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -G "MinGW Makefiles" -DBUILD_CPP_TEST=ON
      cmake --build build --target testlightgbm -j4
@@ -1024,7 +1024,7 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -DBUILD_CPP_TEST=ON
      cmake --build build --target testlightgbm -j4
@@ -1038,7 +1038,7 @@ Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      export CXX=clang++-14 CC=clang-14  # replace "14" with version of Clang installed on your machine
      cmake -B build -S . -DBUILD_CPP_TEST=ON
@@ -1067,7 +1067,7 @@ Apple Clang
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      cmake -B build -S . -DBUILD_CPP_TEST=ON
      cmake --build build --target testlightgbm -j4
@@ -1085,7 +1085,7 @@ gcc
 
    .. code:: sh
 
-     git clone --recursive https://github.com/BelixRogner/Falcata
+     git clone --recursive https://github.com/MechaFauna-ai/Falcata
      cd Falcata
      export CXX=g++-7 CC=gcc-7  # replace "7" with version of gcc installed on your machine
      cmake -B build -S . -DBUILD_CPP_TEST=ON
@@ -1119,7 +1119,7 @@ gcc
 
 .. _this detailed guide: https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html
 
-.. _the python-package documentation: https://github.com/BelixRogner/Falcata/tree/master/python-package
+.. _the python-package documentation: https://github.com/MechaFauna-ai/Falcata/tree/master/python-package
 
 .. _the ROCm docs: https://rocm.docs.amd.com/projects/install-on-linux/en/latest/
 

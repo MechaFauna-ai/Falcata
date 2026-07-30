@@ -43,14 +43,14 @@ jobs:
             since there has not been any recent activity since it was closed.
 
             To start a new related discussion,
-            open a new issue at https://github.com/BelixRogner/Falcata/issues
+            open a new issue at https://github.com/MechaFauna-ai/Falcata/issues
             including a reference to this.
           pr-comment: >
             This pull request has been automatically locked
             since there has not been any recent activity since it was closed.
 
             To start a new related discussion,
-            open a new issue at https://github.com/BelixRogner/Falcata/issues
+            open a new issue at https://github.com/MechaFauna-ai/Falcata/issues
             including a reference to this.
           # what should the locking status be?
           issue-lock-reason: 'resolved'

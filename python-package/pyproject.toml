@@ -66,9 +66,9 @@ scikit-learn = [
 ]
 
 [project.urls]
-homepage = "https://github.com/BelixRogner/Falcata"
-repository = "https://github.com/BelixRogner/Falcata.git"
-changelog = "https://github.com/BelixRogner/Falcata/releases"
+homepage = "https://github.com/MechaFauna-ai/Falcata"
+repository = "https://github.com/MechaFauna-ai/Falcata.git"
+changelog = "https://github.com/MechaFauna-ai/Falcata/releases"
 
 # start:build-system
 [build-system]

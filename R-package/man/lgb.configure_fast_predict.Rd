@@ -61,7 +61,7 @@ If <= 0, all iterations from start_iteration are used (no limits).}
             \emph{New in version 4.0.0}}
 
 \item{params}{a list of additional named parameters. See
-\href{https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst#predict-parameters}{
+\href{https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Parameters.rst#predict-parameters}{
 the "Predict Parameters" section of the documentation} for a list of parameters and
 valid values. Where these conflict with the values of keyword arguments to this function,
 the values in \code{params} take precedence.}

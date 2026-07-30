@@ -3,7 +3,7 @@ Regression Example
 
 Here is an example for Falcata to run regression task.
 
-***You must follow the [installation instructions](https://github.com/BelixRogner/Falcata/blob/master/docs/Installation-Guide.rst)
+***You must follow the [installation instructions](https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Installation-Guide.rst)
 for the following commands to work. The `falcata` binary must be built and available at the root of this project.***
 
 Training

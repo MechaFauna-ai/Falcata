@@ -36,7 +36,7 @@ For more details, please refer to `Features <./Features.rst>`__.
    Parameters Tuning <Parameters-Tuning>
    C API <C-API>
    Python API <Python-API>
-   R API <https://github.com/BelixRogner/Falcata/tree/master/docsR/reference/>
+   R API <https://github.com/MechaFauna-ai/Falcata/tree/master/docsR/reference/>
    Distributed Learning Guide <Parallel-Learning-Guide>
    GPU Tutorial <GPU-Tutorial>
    Advanced Topics <Advanced-Topics>

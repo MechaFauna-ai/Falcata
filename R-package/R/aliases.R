@@ -1,5 +1,5 @@
 # Central location for parameter aliases.
-# See https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst#core-parameters
+# See https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Parameters.rst#core-parameters
 
 # [description] List of respected parameter aliases specific to lgb.Dataset. Wrapped in a function to
 #               take advantage of lazy evaluation (so it doesn't matter what order
@@ -64,7 +64,7 @@
 }
 
 # [description]
-#     Per https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst#metric,
+#     Per https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Parameters.rst#metric,
 #     a few different strings can be used to indicate "no metrics".
 # [returns]
 #     A character vector

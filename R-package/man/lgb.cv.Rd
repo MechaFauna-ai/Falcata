@@ -26,7 +26,7 @@ lgb.cv(
 )
 }
 \arguments{
-\item{params}{a list of parameters. See \href{https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst}{
+\item{params}{a list of parameters. See \href{https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Parameters.rst}{
 the "Parameters" section of the documentation} for a list of parameters and valid values.}
 
 \item{data}{a \code{lgb.Dataset} object, used for training. Some functions, such as \code{\link{lgb.cv}},
@@ -48,7 +48,7 @@ may allow you to pass other types of data like \code{matrix} and then separately
                 \item{\bold{a. character vector}:
                     If you provide a character vector to this argument, it should contain strings with valid
                     evaluation metrics.
-                    See \href{https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst#metric}{
+                    See \href{https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Parameters.rst#metric}{
                     The "metric" section of the documentation}
                     for a list of valid metrics.
                 }

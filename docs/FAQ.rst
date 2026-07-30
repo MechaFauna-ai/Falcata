@@ -11,7 +11,7 @@ Falcata FAQ
 
 ------
 
-Please post questions, feature requests, and bug reports at https://github.com/BelixRogner/Falcata/issues.
+Please post questions, feature requests, and bug reports at https://github.com/MechaFauna-ai/Falcata/issues.
 
 This project is mostly maintained by volunteers, so please be patient.
 If your request is time-sensitive or more than a month goes by without a response, please tag the maintainers below for help.
@@ -182,7 +182,7 @@ See `lightgbm-org/LightGBM#3060 <https://github.com/lightgbm-org/LightGBM/issues
 15. Where can I find Falcata's logo to use it in my presentation?
 ------------------------------------------------------------------
 
-You can find Falcata's logo in different file formats and resolutions `here <https://github.com/BelixRogner/Falcata/tree/master/docs/logo>`__.
+You can find Falcata's logo in different file formats and resolutions `here <https://github.com/MechaFauna-ai/Falcata/tree/master/docs/logo>`__.
 
 16. Falcata crashes randomly or operating system hangs during or after running Falcata.
 -----------------------------------------------------------------------------------------
@@ -367,7 +367,7 @@ We are doing our best to provide universal wheels which have high running speed 
 However, sometimes it's just impossible to guarantee the possibility of usage of Falcata in any specific environment (see `lightgbm-org/LightGBM#1743 <https://github.com/lightgbm-org/LightGBM/issues/1743>`__).
 
 Therefore, the first thing you should try in case of segfaults is **compiling from the source** using ``pip install --no-binary falcata falcata``.
-For the OS-specific prerequisites see https://github.com/BelixRogner/Falcata/blob/master/python-package/README.rst.
+For the OS-specific prerequisites see https://github.com/MechaFauna-ai/Falcata/blob/master/python-package/README.rst.
 
 Also, feel free to post a new issue in our GitHub repository. We always look at each case individually and try to find a root cause.
 

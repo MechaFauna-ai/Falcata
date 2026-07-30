@@ -5,8 +5,8 @@ Documentation for Falcata is generated using `Sphinx <https://www.sphinx-doc.org
 and `Breathe <https://breathe.readthedocs.io/>`__, which works on top of `Doxygen <https://www.doxygen.nl/index.html>`__ output.
 
 List of parameters and their descriptions in `Parameters.rst <./Parameters.rst>`__
-is generated automatically from comments in `config file <https://github.com/BelixRogner/Falcata/blob/master/include/Falcata/config.h>`__
-by `this script <https://github.com/BelixRogner/Falcata/blob/master/.ci/parameter-generator.py>`__.
+is generated automatically from comments in `config file <https://github.com/MechaFauna-ai/Falcata/blob/master/include/Falcata/config.h>`__
+by `this script <https://github.com/MechaFauna-ai/Falcata/blob/master/.ci/parameter-generator.py>`__.
 
 Falcata does not publish hosted documentation yet; build it locally with the
 instructions below, or read the sources in this directory.

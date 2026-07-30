@@ -73,7 +73,7 @@ jobs:
           fetch-depth: 5
           submodules: true
           persist-credentials: false
-          repository: BelixRogner/Falcata
+          repository: MechaFauna-ai/Falcata
           ref: "refs/pull/${{ inputs.pr-number }}/merge"
       - name: Run tests with valgrind
         shell: bash
@@ -90,7 +90,7 @@ jobs:
             "${JOB__STATUS}" \
             "${{ github.sha }}"
           comment="Workflow **${GITHUB__WORKFLOW}** has been triggered! 🚀\r\n"
-          comment="${comment}\r\n${GITHUB_SERVER_URL}/BelixRogner/Falcata/actions/runs/${GITHUB_RUN_ID} \r\n"
+          comment="${comment}\r\n${GITHUB_SERVER_URL}/MechaFauna-ai/Falcata/actions/runs/${GITHUB_RUN_ID} \r\n"
           comment="${comment}\r\nStatus: ${JOB__STATUS}"
           $GITHUB_WORKSPACE/.ci/append-comment.sh \
             "${INPUTS__PR_NUMBER}" \

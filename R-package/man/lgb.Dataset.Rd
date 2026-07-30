@@ -23,7 +23,7 @@ a character representing a path to a text file (CSV, TSV, or LibSVM),
 or a character representing a path to a binary \code{lgb.Dataset} file}
 
 \item{params}{a list of parameters. See
-\href{https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst#dataset-parameters}{
+\href{https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Parameters.rst#dataset-parameters}{
 The "Dataset Parameters" section of the documentation} for a list of parameters
 and valid values.}
 

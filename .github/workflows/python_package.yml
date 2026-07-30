@@ -484,7 +484,7 @@ jobs:
     # (only on the upstream repo -- forks lack the ANACONDA_API_TOKEN secret)
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/master'
-      && github.repository == 'BelixRogner/Falcata'
+      && github.repository == 'MechaFauna-ai/Falcata'
     environment:
       name: nightly-python-uploads
       url: https://anaconda.org/falcata-packages/falcata

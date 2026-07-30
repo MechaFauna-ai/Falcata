@@ -36,7 +36,7 @@ may allow you to pass other types of data like \code{matrix} and then separately
 
                \emph{Changed from 'weight', in version 4.0.0}}
 
-\item{params}{a list of parameters. See \href{https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst}{
+\item{params}{a list of parameters. See \href{https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Parameters.rst}{
 the "Parameters" section of the documentation} for a list of parameters and valid values.}
 
 \item{nrounds}{number of training rounds}
@@ -61,7 +61,7 @@ set to the iteration number of the best iteration.}
 
 \item{objective}{Optimization objective (e.g. `"regression"`, `"binary"`, etc.).
                  For a list of accepted objectives, see
-                 \href{https://github.com/BelixRogner/Falcata/blob/master/docs/Parameters.rst#objective}{
+                 \href{https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Parameters.rst#objective}{
                  the "objective" item of the "Parameters" section of the documentation}.
 
                  If passing \code{"auto"} and \code{data} is not of type \code{lgb.Dataset}, the objective will
