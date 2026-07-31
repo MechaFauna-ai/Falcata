@@ -62,9 +62,6 @@ figures from the profiles in the PR discussions.
   genuinely at roofline (then bit-identical no-regression is the honest outcome there).
 - [ ] **Runtime auto-tuner tier 3 -- persisted tuning cache**: store best-found configs
   keyed by dataset-shape signature (FFTW-wisdom style) so retrains skip exploration.
-- [ ] **Selective-growth churn reduction.** covtype 64/12 applies 2.09x the final split
-  count (52% displaced-then-pruned). Smarter speculation — e.g. only apply candidates
-  with a selection margin / hysteresis — to cut wasted search+apply.
 - [ ] **Latency-bound construct on tiny-bin wide data**: post-161fe88b numerai construct
   is scattered-read latency-bound (19ms/tree). The non-JIT 2-columns-per-thread step
   landed 2026-07-31 (`wide_partitions`, +8.8% numerai-deep); the remaining headroom

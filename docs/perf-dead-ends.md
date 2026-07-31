@@ -171,3 +171,34 @@ combine with the DSMEM cluster-merge idea), (b) a layout change makes
 leaf-partitioned rows contiguous in the bin matrix, or (c) multi-target
 vector-leaf training lands (accumulate width T+1 amortizes the dead n
 columns, the formulation's biggest fixed waste).
+
+## Selective-growth apply-churn deferral (gain-margin gating)
+
+**Hypothesis.** Selective grow-then-prune applies ~2.1× the splits it keeps
+on budget-bound shapes (covtype 64/12: 52% displaced-then-collapsed);
+deferring the displacement-prone selected candidates (gain within a margin
+of the selection cutoff, kept visible across levels) should recover that
+wasted apply+construct work while provably preserving the final tree.
+
+**Measured** (covtype 64 leaves / depth 12 / quant, 500 rounds, 5090; full
+mechanism implemented with frontier persistence + progress guarantee, all
+gates green — the trees were bit-identical as designed):
+
+| margin | applied | displaced | deferred | levels | t/s |
+|---|---|---|---|---|---|
+| off | 67,310 | 35,810 | 0 | 6,490 | **93.2** |
+| 0.25 | 62,482 | 30,982 | 10,657 | 7,341 | 87.5 |
+| 1.0 | 59,291 | 27,791 | 20,852 | 7,712 | 85.8 |
+| 4.0 | 58,805 | 27,305 | 23,072 | 7,326 | 91.9 |
+
+**Mechanism of failure.** The premise mispriced the churn: applies are
+BATCHED (an extra pair in a level costs almost nothing) while LEVELS carry
+the fixed launch/sync/readback overhead. Every deferral variant cut applies
+by 8–13% but paid 13–19% more levels — a strictly bad trade at every margin
+tried. The 2.09× apply churn is cheap churn.
+
+**Re-open when:** the per-level fixed cost shrinks dramatically (e.g. the
+one-sync-quant rework lands and level overhead halves), or a predictor
+exists that avoids doomed applies WITHOUT extra levels (i.e., defers only
+candidates that would otherwise be applied and displaced within the SAME
+level budget — requires lookahead the greedy stream does not have).
