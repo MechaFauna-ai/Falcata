@@ -1,0 +1,153 @@
+## covtype-deep-quant  (baseline 82.43 trees/s, acc=0.9179969536070497)
+key                     Δ throughput  Δ construct  verdict
+hybrid                      +1003.5%       +0.00s  growth key, Δacc=+0.00000
+selective                      -5.3%       -0.03s  same tree
+one_sync                       -4.8%       -0.01s  same tree
+batch_kernels                +273.8%       -0.03s  bit-identical
+batch_apply                  +281.4%       -0.02s  bit-identical
+graph_loop                     -4.5%       -0.02s  bit-identical
+graph_quant                    +4.2%       -0.02s  bit-identical
+compact_quant                  -5.2%       -0.02s  bit-identical
+construct_jit                  -3.6%       -0.01s  bit-identical
+fast_rowdata                   -4.6%       -0.01s  bit-identical
+rowdata_4bit                   -4.9%       -0.02s  bit-identical
+gpu_construct                  -4.8%       -0.06s  bit-identical
+efb_precheck                   -5.0%       -0.02s  bit-identical
+batch_reghist                  -4.9%       -0.02s  bit-identical
+batch_wide                     -4.5%       -0.02s  bit-identical
+gh_interleave                  -4.6%       -0.02s  bit-identical
+split_packed_read              -4.5%       -0.02s  bit-identical
+small_leaf_construct           -5.1%       -0.01s  bit-identical
+## covtype-shallow-quant  (baseline 185.88 trees/s, acc=0.8346686402244349)
+key                     Δ throughput  Δ construct  verdict
+hybrid                       +345.2%       -0.00s  growth key, Δacc=-0.00127
+selective                      -0.6%       -0.00s  same tree
+one_sync                       +0.2%       +0.01s  same tree
+batch_kernels                 +80.6%       -0.01s  bit-identical
+batch_apply                  +101.8%       +0.01s  bit-identical
+graph_loop                     +0.0%       +0.01s  bit-identical
+graph_quant                    -1.4%       +0.01s  bit-identical
+compact_quant                  +0.5%       +0.00s  bit-identical
+construct_jit                  +2.9%       +0.01s  bit-identical
+fast_rowdata                   -0.3%       -0.00s  bit-identical
+rowdata_4bit                   -0.0%       +0.01s  bit-identical
+gpu_construct                  +0.0%       -0.04s  bit-identical
+efb_precheck                   -0.1%       -0.01s  bit-identical
+batch_reghist                  +0.1%       -0.00s  bit-identical
+batch_wide                     +0.3%       -0.01s  bit-identical
+gh_interleave                  +0.2%       +0.00s  bit-identical
+split_packed_read              +0.3%       -0.01s  bit-identical
+small_leaf_construct           +1.1%       -0.01s  bit-identical
+## year-shallow-quant  (baseline 814.94 trees/s, rmse=9.089078548776302)
+key                     Δ throughput  Δ construct  verdict
+hybrid                       +303.1%       -0.00s  growth key, Δrmse=+0.00000
+selective                      +0.6%       -0.01s  same tree
+one_sync                       -2.0%       -0.00s  same tree
+batch_kernels                 +60.7%       -0.00s  bit-identical
+batch_apply                   +78.7%       -0.00s  bit-identical
+graph_loop                     +9.8%       +0.00s  bit-identical
+graph_quant                    +3.4%       -0.00s  bit-identical
+compact_quant                  -1.6%       -0.00s  bit-identical
+construct_jit                 +11.4%       -0.02s  bit-identical
+fast_rowdata                  +26.2%       +0.01s  bit-identical
+rowdata_4bit                   +1.4%       +0.00s  bit-identical
+gpu_construct                  +1.9%       -0.01s  bit-identical
+efb_precheck                   -1.1%       +0.02s  bit-identical
+batch_reghist                  -1.6%       +0.01s  bit-identical
+batch_wide                     +6.0%       +0.00s  bit-identical
+gh_interleave                  +5.2%       +0.01s  bit-identical
+split_packed_read              +1.5%       -0.01s  bit-identical
+small_leaf_construct           -1.7%       -0.00s  bit-identical
+## fraud-deep-quant  (baseline 855.29 trees/s, auc=0.9144936217311911)
+key                     Δ throughput  Δ construct  verdict
+hybrid                       +360.2%       -0.01s  growth key, Δauc=+0.00000
+selective                      -1.5%       -0.00s  same tree
+one_sync                       -0.7%       -0.01s  same tree
+batch_kernels                 +92.0%       -0.00s  bit-identical
+batch_apply                   +86.8%       -0.01s  bit-identical
+graph_loop                     +0.2%       -0.00s  bit-identical
+graph_quant                    -1.7%       +0.00s  bit-identical
+compact_quant                  -0.1%       +0.00s  bit-identical
+construct_jit                 +12.3%       -0.01s  bit-identical
+fast_rowdata                   -0.1%       -0.01s  bit-identical
+rowdata_4bit                   +1.3%       +0.01s  bit-identical
+gpu_construct                  -0.7%       -0.00s  bit-identical
+efb_precheck                   +1.9%       +0.02s  bit-identical
+batch_reghist                  +0.7%       -0.01s  bit-identical
+batch_wide                     +1.4%       +0.00s  bit-identical
+gh_interleave                  -0.5%       -0.00s  bit-identical
+split_packed_read              -1.1%       -0.01s  bit-identical
+small_leaf_construct           -0.3%       +0.01s  bit-identical
+## higgs-shallow-quant  (baseline 130.8 trees/s, auc=0.8126292176730524)
+key                     Δ throughput  Δ construct  verdict
+hybrid                        +54.6%       +0.00s  growth key, Δauc=+0.00000
+selective                      +0.3%       +0.00s  same tree
+one_sync                       +1.3%       +0.00s  same tree
+batch_kernels                  -1.9%       +0.00s  bit-identical
+batch_apply                   +11.0%       +0.01s  bit-identical
+graph_loop                     +1.5%       -0.00s  bit-identical
+graph_quant                    +6.6%       +0.01s  bit-identical
+compact_quant                  +1.1%       +0.00s  bit-identical
+construct_jit                  +3.3%       +0.01s  bit-identical
+fast_rowdata                  +20.1%       +0.01s  bit-identical
+rowdata_4bit                   +1.1%       +0.01s  bit-identical
+gpu_construct                  +1.8%       +0.23s  bit-identical
+efb_precheck                   +1.5%       +0.02s  bit-identical
+batch_reghist                  +1.2%       +0.01s  bit-identical
+batch_wide                     +0.5%       +0.01s  bit-identical
+gh_interleave                  +1.4%       +0.01s  bit-identical
+split_packed_read              +1.0%       +0.00s  bit-identical
+small_leaf_construct           +1.0%       +0.01s  bit-identical
+## epsilon-shallow-quant  (baseline 75.05 trees/s, auc=0.9189368707388653)
+key                     Δ throughput  Δ construct  verdict
+hybrid                       +150.3%       +0.10s  growth key, Δauc=+0.00000
+selective                      +0.7%       +0.01s  same tree
+one_sync                       +0.6%       +0.02s  same tree
+batch_kernels                  +9.8%       +0.00s  bit-identical
+batch_apply                   +10.1%       +0.06s  bit-identical
+graph_loop                     -0.1%       +0.03s  bit-identical
+graph_quant                    +4.7%       -0.02s  bit-identical
+compact_quant                  +0.3%       +0.02s  bit-identical
+construct_jit                  +0.9%       +0.05s  bit-identical
+fast_rowdata                  +47.7%       +0.05s  bit-identical
+rowdata_4bit                   +1.1%       +0.04s  bit-identical
+gpu_construct                  +0.1%       +2.16s  bit-identical
+efb_precheck                   -0.1%       +0.58s  bit-identical
+batch_reghist                  -0.4%       +0.02s  bit-identical
+batch_wide                     +9.9%       +0.03s  bit-identical
+gh_interleave                  -0.6%       -0.05s  bit-identical
+split_packed_read              -0.2%       +0.02s  bit-identical
+small_leaf_construct           -0.3%       -0.00s  bit-identical
+## numerai-example-quant  (baseline 46.59 trees/s, None=None)
+key                     Δ throughput  Δ construct  verdict
+hybrid                       +199.8%       -0.01s  growth key (no holdout metric)
+selective                      +0.1%       +0.07s  same tree
+one_sync                       -0.2%       +0.02s  same tree
+batch_kernels                +171.0%       -0.01s  bit-identical
+batch_apply                   +19.3%       -0.01s  bit-identical
+graph_loop                     +0.3%       -0.02s  bit-identical
+graph_quant                    +1.8%       +0.04s  bit-identical
+compact_quant                +152.8%       +0.02s  bit-identical
+construct_jit                 +18.3%       +0.01s  bit-identical
+fast_rowdata                 +296.8%       +0.10s  bit-identical
+rowdata_4bit                  +86.4%       +0.16s  bit-identical
+gpu_construct                  +3.9%       +1.52s  bit-identical
+efb_precheck                   +4.6%       +8.08s  bit-identical
+batch_reghist                 +15.1%       +0.31s  bit-identical
+batch_wide                   +204.1%       +0.44s  bit-identical
+gh_interleave                 +10.8%       +0.28s  bit-identical
+split_packed_read             +22.1%       +0.03s  bit-identical
+small_leaf_construct           +3.8%       +0.06s  bit-identical
+## numerai-deep-quant  (baseline 34.15 trees/s, None=None)
+key                     Δ throughput  Δ construct  verdict
+hybrid                       +324.2%       +0.27s  growth key (no holdout metric)
+selective                      +4.6%       +0.18s  same tree
+one_sync                       +0.9%       -0.10s  same tree
+batch_kernels                +241.2%       +0.21s  *** MD5 DIFFERS — CORRECTNESS BUG ***
+batch_apply                   +28.4%       -0.06s  bit-identical
+graph_loop                     +0.7%       -0.03s  bit-identical
+compact_quant                +236.1%       +0.30s  bit-identical
+construct_jit                 +43.5%       +0.30s  bit-identical
+gh_interleave                 +20.7%       +0.22s  bit-identical
+split_packed_read             +12.3%       +0.01s  bit-identical
+1 NON-BIT-IDENTICAL IDENTITY-KEY FLIPS (bugs):
