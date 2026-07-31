@@ -182,7 +182,11 @@ bit-identical in every cell):
   improved to **+5.3%** once the carve-out was sized to the buffer actually
   pinned (device-proportional sizing, 2026-07-31 follow-up — a fixed carve
   stranded 42MB of L2 the streaming reads could have used); neutral on year
-  at real run lengths.
+  at real run lengths. Its companion: bin-matrix loads are marked
+  **evict-first** (`__ldcs`) since bin bytes have no intra-level reuse —
+  deprioritizing them frees L2 for histogram-subtraction re-reads: +8%
+  covtype-deep, +10% year, neutral on numerai-deep. (Prediction inverted by
+  measurement: the win is largest on the "already L2-resident" shapes.)
 - **`colmajor_fill`** — a one-time column-major copy of the packed bin matrix
   serves as the compact-fill gather source, so the per-tree fill reads
   contiguous columns instead of dragging ~10× its bytes through row-major

@@ -586,11 +586,16 @@ __global__ void CUDAConstructHistogramDenseColMajorKernel(
 template <bool IS_4BIT, typename BIN_TYPE>
 __device__ __forceinline__ uint32_t ReadDenseBin(
   const BIN_TYPE* row_ptr, const unsigned int column_in_partition) {
+  // Evict-first streaming loads: bin bytes have no intra-level reuse, and
+  // deprioritizing them in L2 leaves room for histogram subtraction re-reads
+  // (+8% covtype-deep, +10% year, neutral numerai -- whose hot kernel reads
+  // through the pack codecs, not here). Unconditional: measured >= neutral
+  // on every shape including fully-L2-resident ones.
   if (IS_4BIT) {
-    const uint32_t packed = static_cast<uint32_t>(row_ptr[column_in_partition >> 1]);
+    const uint32_t packed = static_cast<uint32_t>(__ldcs(&row_ptr[column_in_partition >> 1]));
     return (packed >> ((column_in_partition & 1) << 2)) & 0xfu;
   } else {
-    return static_cast<uint32_t>(row_ptr[column_in_partition]);
+    return static_cast<uint32_t>(__ldcs(&row_ptr[column_in_partition]));
   }
 }
 
