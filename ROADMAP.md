@@ -80,14 +80,6 @@ figures from the profiles in the PR discussions.
   want (MultiRMSE-style). Modeling change: validate per-era, don't assume. FIL
   predict falls back to CPU for vector-leaf models initially (treelite support).
 
-- **L2 residency tuning, remaining part (5090: 96 MB L2).** Parts (a)
-  cudaAccessPolicyWindow persistence (`l2_policy`, +5.3% numerai-deep after
-  device-proportional sizing) and (b) __ldcs evict-first bin loads (+8%
-  covtype-deep, +10% year) landed 2026-07-31. Still open: (d) deep configs:
-  fp32-hist halves the hist pool 248 -> 124 MB = from doesn't-fit to
-  mostly-fits L2 -- a cache argument for fp32-hist on deep trees on top of
-  the bandwidth one (subtraction re-reads parent hists).
-
 - **Hybrid coverage extensions.** The hybrid/graph fast paths currently fall
   back to the classic loop for: categorical features (variable-length bitset
   payloads vs the fixed 18-int split slabs -- first one worth lifting), NCCL

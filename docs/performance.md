@@ -160,6 +160,14 @@ fraud-deep −14%, higgs-deep −12%; numerai neutral (sampling-dominated).
 Quality-gated rather than bit-identical, hence a config parameter and not a
 plan key.
 
+A second, separately-measured mechanism (2026-08-01): on DEEP trees the
+histogram pool halves from ~248MB (doesn't fit the 5090's 96MB L2) to
+~124MB (mostly fits), so subtraction's parent-histogram re-reads start
+hitting cache. Isolated on covtype non-quant: fp32 gains **+26% deep** vs
++1.7% shallow — the cache cliff, not bandwidth, dominates the deep win.
+Practical guidance: on deep non-quantized configs, `cuda_precision=fp32` is
+the single highest-leverage switch available.
+
 ## 7. Memory-layout micro-optimizations (each small, all free)
 
 - **`gh_interleave`** — gradient and hessian interleaved as one float2 so a
