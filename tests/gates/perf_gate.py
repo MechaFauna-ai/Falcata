@@ -9,7 +9,14 @@ baseline.
 
 Timing on a desktop GPU is noisy; the gate therefore (a) only runs when the
 gpu_guard admitted an idle GPU, (b) gates on construct+train sums of cells
-marked perf=True, (c) uses the rolling median as reference.
+marked perf=True, (c) uses the rolling median as reference, and (d) FAILS
+only when the same cell regresses in two CONSECUTIVE runs. The box doubles
+as a benchmark/dev machine: a single run's +25-65% blowups are almost always
+host contention that the point-in-time gpu_guard snapshot missed, and each
+one used to send a failure email per push. A real code regression persists
+into the next (usually quieter) run; one-off contention does not.
+Single-run regressions are reported as warnings and remembered in the
+baseline file's "_pending" key.
 """
 
 import argparse
@@ -51,14 +58,19 @@ def main():
     BASELINE_FILE.parent.mkdir(parents=True, exist_ok=True)
     history = json.loads(BASELINE_FILE.read_text()) if BASELINE_FILE.exists() else {}
 
-    failures, warnings = [], []
+    pending_prev = set(history.get("_pending", []))
+    failures, warnings, pending_now = [], [], []
     for cid, t in sorted(times.items()):
         past = history.get(cid, [])
         if len(past) >= 3:
             ref = statistics.median(past)
             pct = (t - ref) / ref * 100.0
             if pct > FAIL_PCT:
-                failures.append(f"{cid}: {t:.3f}s vs median {ref:.3f}s (+{pct:.0f}%)")
+                if cid in pending_prev:
+                    failures.append(f"{cid}: {t:.3f}s vs median {ref:.3f}s (+{pct:.0f}%) [2nd consecutive run]")
+                else:
+                    pending_now.append(cid)
+                    warnings.append(f"{cid}: {t:.3f}s vs median {ref:.3f}s (+{pct:.0f}%) [1st occurrence -- fails if it repeats next run]")
             elif pct > WARN_PCT:
                 warnings.append(f"{cid}: {t:.3f}s vs median {ref:.3f}s (+{pct:.0f}%)")
             else:
@@ -71,8 +83,15 @@ def main():
     for f in failures:
         print(f"  FAIL {f}")
 
+    # persist the pending set even on non-record runs: consecutiveness is the
+    # whole point (over-FAIL_PCT cells never enter the timing history itself)
+    history["_pending"] = sorted(pending_now)
+    BASELINE_FILE.write_text(json.dumps(history, indent=1))
+
     if args.record and not failures:
         for cid, t in times.items():
+            if cid in pending_now:
+                continue  # never let a suspect timing poison the baseline
             history.setdefault(cid, []).append(t)
             history[cid] = history[cid][-HISTORY:]
         BASELINE_FILE.write_text(json.dumps(history, indent=1))
