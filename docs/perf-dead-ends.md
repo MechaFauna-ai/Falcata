@@ -203,7 +203,7 @@ exists that avoids doomed applies WITHOUT extra levels (i.e., defers only
 candidates that would otherwise be applied and displaced within the SAME
 level budget — requires lookahead the greedy stream does not have).
 
-## NVRTC tier-2 shape-specialized construct (phase 3: live wiring)
+## NVRTC specialization of the COMPACT-QUANT construct (one instance of tier-2)
 
 **Hypothesis** (from the July JIT arc): numerai's ~5.5-bin features waste
 >90% of the fixed 12288-entry shared histogram; a kernel with per-feature
@@ -221,6 +221,13 @@ AOT kernel** on numerai-deep at 4 interleaved reps (an earlier +2.2%
 reading was warmup noise). Profile: the remaining hist kernel is
 ALU/issue-bound at ~58% of steady-state tree time with evict-first loads
 already applied.
+
+**Scope note (2026-08-01, after review):** this entry covers ONLY the
+compact-quant instance — the single kernel family the JIT engages today.
+The GENERAL tier-2 question (specialize the non-compact construct/find
+kernels for higgs/epsilon/year/covtype-class shapes) remains OPEN in the
+ROADMAP: those regimes never touched the JIT because it is gated to
+compact-quant, so parity here says nothing about them.
 
 **Re-open when:** a workload trains WIDE data without feature sampling
 (ff=1.0 at 3555+ cols = 4+ partitions — the packing argument returns), or
