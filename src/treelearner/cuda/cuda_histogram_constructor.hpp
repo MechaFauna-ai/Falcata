@@ -302,6 +302,11 @@ class CUDAHistogramConstructor {
    *  per-block float partial sums), which trades the fraud 63/6 exact-quality
    *  reproduction for a measured ~1-2% fraud-deep gain -- not worth it.
    *  Permanently disabled; see the return-0 comment below. */
+  /*! \brief quant small-leaf direct threshold (rows). Unlike the float direct
+   *  body below, the integer direct body IS bit-identical (order-invariant
+   *  atomics), so it defaults on via the small_leaf_construct plan key. */
+  static constexpr data_size_t kQuantSmallLeafRows = 1024;
+
   static data_size_t SmallLeafRowThreshold() {
     // Permanently 0 (disabled): the direct-add body is not bit-identical
     // (per-row double adds vs per-block float partial sums) for a measured

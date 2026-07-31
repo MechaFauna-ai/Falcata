@@ -38,7 +38,8 @@ figures from the profiles in the PR discussions.
   landed 2026-07-31 (`tuner` plan key, default on at >=300 rounds: probe
   {80,160,320,640}, best-of-15, re-probe every 3000 trees — +2.1% numerai-deep,
   +2.7% year; see docs/performance.md). Still open: extending the same bandit to
-  the small-leaf construct threshold (mechanism currently hardcoded off), hist
+  the quant small-leaf threshold (landed 2026-07-31 as a fixed 1024-row cut,
+  +11.2% covtype-deep -- the bandit could tune the cut per shape), hist
   pipeline count, and the selective-growth speculation policy (gain-margin
   gating) — plus hysteresis vs noise and decision logging for multi-knob runs.
 - [ ] **Runtime auto-tuner tier 2 -- NVRTC shape-specialized kernels.** JIT-compile

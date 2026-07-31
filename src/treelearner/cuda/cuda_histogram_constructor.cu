@@ -1185,6 +1185,93 @@ __global__ void CUDAConstructHistogramSparseKernel_GlobalMemory(
   }
 }
 
+
+// Direct small-leaf variant of the discretized construct. For pairs whose
+// smaller leaf is tiny, the shared-histogram body pays zero + syncthreads +
+// merge proportional to PARTITION BINS regardless of rows -- for a few-hundred
+// row leaf that fixed cost dwarfs the row work. Add each row's packed int
+// gradient straight to the GLOBAL histogram instead: integer atomics are
+// order-invariant and the packed int32 / expanded int64 adds reproduce the
+// shared-then-merge sums bit-exactly (same addends, associative), so this is
+// a legitimate plan-key path (unlike the float direct body, which is
+// permanently disabled -- see SmallLeafRowThreshold()).
+template <typename BIN_TYPE, bool USE_16BIT_HIST, class PACK = PackRaw8>
+__device__ __forceinline__ void ConstructDiscretizedHistogramDenseDirectInner(
+  const CUDALeafSplitsStruct* smaller_leaf_splits,
+  const int32_t* cuda_gradients_and_hessians,
+  const BIN_TYPE* data,
+  const uint32_t* column_hist_offsets,
+  const uint32_t* column_hist_offsets_full,
+  const int* feature_partition_column_index_offsets,
+  const int* packed_partition_byte_offsets,
+  const data_size_t num_data,
+  const int dim_y,
+  const int8_t* is_feature_used_bytree) {
+  const data_size_t num_data_in_smaller_leaf = smaller_leaf_splits->num_data_in_leaf;
+  const data_size_t num_data_per_thread = (num_data_in_smaller_leaf + dim_y - 1) / dim_y;
+  const data_size_t block_start = (static_cast<size_t>(blockIdx.y) * blockDim.y) * num_data_per_thread;
+  if (block_start >= num_data_in_smaller_leaf) {
+    return;
+  }
+  const data_size_t* data_indices_ref = smaller_leaf_splits->data_indices_in_leaf;
+  const int partition_column_start = feature_partition_column_index_offsets[blockIdx.x];
+  const int partition_column_end = feature_partition_column_index_offsets[blockIdx.x + 1];
+  const int num_columns_in_partition = partition_column_end - partition_column_start;
+  const int row_stride = PACK::kUsesPackedOffsets ?
+    packed_partition_byte_offsets[blockIdx.x + 1] - packed_partition_byte_offsets[blockIdx.x] :
+    num_columns_in_partition;
+  const BIN_TYPE* data_ptr = data + static_cast<size_t>(
+    PACK::kUsesPackedOffsets ? packed_partition_byte_offsets[blockIdx.x] : partition_column_start) * num_data;
+  const uint32_t partition_hist_start = column_hist_offsets_full[blockIdx.x];
+  const data_size_t* data_indices_ref_this_block = data_indices_ref + block_start;
+  data_size_t block_num_data = max(0, min(num_data_in_smaller_leaf - block_start, num_data_per_thread * static_cast<data_size_t>(blockDim.y)));
+  const data_size_t num_iteration_total = (block_num_data + blockDim.y - 1) / blockDim.y;
+  const data_size_t remainder = block_num_data % blockDim.y;
+  const data_size_t num_iteration_this = remainder == 0 ? num_iteration_total : num_iteration_total - static_cast<data_size_t>(threadIdx.y >= remainder);
+  data_size_t inner_data_index = static_cast<data_size_t>(threadIdx.y);
+  // identical wide-partition two-column coverage as the shared body
+  const int column_index = static_cast<int>(threadIdx.x) + partition_column_start;
+  const unsigned int col2_local = threadIdx.x + blockDim.x;
+  const int column_index2 = static_cast<int>(col2_local) + partition_column_start;
+  const bool use1 = threadIdx.x < static_cast<unsigned int>(num_columns_in_partition) &&
+      (is_feature_used_bytree == nullptr || is_feature_used_bytree[column_index]);
+  const bool use2 = col2_local < static_cast<unsigned int>(num_columns_in_partition) &&
+      (is_feature_used_bytree == nullptr || is_feature_used_bytree[column_index2]);
+  if (!(use1 || use2)) {
+    return;
+  }
+  const typename PACK::Cursor pack_cursor = PACK::Prepare(use1 ? threadIdx.x : col2_local);
+  const typename PACK::Cursor pack_cursor2 = PACK::Prepare(use2 ? col2_local : threadIdx.x);
+  const uint32_t hist_base1 = partition_hist_start + column_hist_offsets[use1 ? column_index : column_index2];
+  const uint32_t hist_base2 = partition_hist_start + column_hist_offsets[use2 ? column_index2 : column_index];
+  int32_t* hist16 = reinterpret_cast<int32_t*>(smaller_leaf_splits->hist_in_leaf);
+  atomic_add_long_t* hist64 = reinterpret_cast<atomic_add_long_t*>(smaller_leaf_splits->hist_in_leaf);
+  for (data_size_t i = 0; i < num_iteration_this; ++i) {
+    const data_size_t data_index = data_indices_ref_this_block[inner_data_index];
+    const int32_t grad_and_hess = cuda_gradients_and_hessians[data_index];
+    const BIN_TYPE* row_base = data_ptr + static_cast<size_t>(data_index) * row_stride;
+    const int64_t gh64 = (static_cast<int64_t>(static_cast<int16_t>(grad_and_hess >> 16)) << 32) |
+        (static_cast<int64_t>(grad_and_hess & 0x0000ffff));
+    if (use1) {
+      const uint32_t bin = PACK::ExtractAt(row_base, pack_cursor);
+      if (USE_16BIT_HIST) {
+        atomicAdd_system(hist16 + hist_base1 + bin, grad_and_hess);
+      } else {
+        atomicAdd_system(hist64 + hist_base1 + bin, (atomic_add_long_t)gh64);
+      }
+    }
+    if (use2) {
+      const uint32_t bin = PACK::ExtractAt(row_base, pack_cursor2);
+      if (USE_16BIT_HIST) {
+        atomicAdd_system(hist16 + hist_base2 + bin, grad_and_hess);
+      } else {
+        atomicAdd_system(hist64 + hist_base2 + bin, (atomic_add_long_t)gh64);
+      }
+    }
+    inner_data_index += blockDim.y;
+  }
+}
+
 // Shared body of the discretized dense histogram kernel (see
 // ConstructHistogramDenseInner for the shared-memory-passing and early-exit
 // rationale).
@@ -1406,6 +1493,55 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
       column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
       packed_partition_byte_offsets,
       num_data, dim_y, is_feature_used_bytree, bin_used);
+  }
+}
+
+
+
+// Dedicated all-small-level variant: launched by the host INSTEAD of the
+// shared-histogram batched kernel when the level's largest smaller-leaf is
+// under the small-leaf threshold (deep-tree tail levels). Keeping it a
+// separate kernel leaves the hot kernel's register footprint untouched --
+// an in-kernel branch measurably slowed the never-taken numerai path.
+template <typename BIN_TYPE, class PACK = PackRaw8>
+__global__ void CUDAConstructDiscretizedHistogramDenseSmallLeafBatchedKernel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const int32_t* cuda_gradients_and_hessians,
+  const BIN_TYPE* data,
+  const uint32_t* column_hist_offsets,
+  const uint32_t* column_hist_offsets_full,
+  const int* feature_partition_column_index_offsets,
+  const int* packed_partition_byte_offsets,
+  const data_size_t num_data,
+  const int8_t* is_feature_used_bytree,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf) {
+  const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.z;
+  if (!desc->construct_valid) {
+    return;
+  }
+  const CUDALeafSplitsStruct* smaller_struct = desc->smaller_struct;
+  const data_size_t num_data_smaller = smaller_struct->num_data_in_leaf;
+  const double sum_hessians_smaller = smaller_struct->sum_of_hessians;
+  const CUDALeafSplitsStruct* larger_struct = desc->larger_struct;
+  const bool has_larger = larger_struct->leaf_index >= 0;
+  const data_size_t num_data_larger = has_larger ? larger_struct->num_data_in_leaf : 0;
+  const double sum_hessians_larger = has_larger ? larger_struct->sum_of_hessians : 0.0;
+  if ((num_data_smaller <= min_data_in_leaf || sum_hessians_smaller <= min_sum_hessian_in_leaf) &&
+      (num_data_larger <= min_data_in_leaf || sum_hessians_larger <= min_sum_hessian_in_leaf)) {
+    return;
+  }
+  const int dim_y = static_cast<int>(gridDim.y * blockDim.y);
+  if (desc->smaller_num_bits <= 16) {
+    ConstructDiscretizedHistogramDenseDirectInner<BIN_TYPE, true, PACK>(
+      smaller_struct, cuda_gradients_and_hessians, data,
+      column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
+      packed_partition_byte_offsets, num_data, dim_y, is_feature_used_bytree);
+  } else {
+    ConstructDiscretizedHistogramDenseDirectInner<BIN_TYPE, false, PACK>(
+      smaller_struct, cuda_gradients_and_hessians, data,
+      column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
+      packed_partition_byte_offsets, num_data, dim_y, is_feature_used_bytree);
   }
 }
 
@@ -2609,6 +2745,54 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     }
   }
   if (use_quantized_grad_) {
+    // All-small level fast path: when even the level's LARGEST smaller-leaf is
+    // under the small-leaf threshold (deep-tree tail levels), launch the
+    // dedicated direct kernel -- no shared zero/sync/merge, and zero register
+    // impact on the regular hot kernel. Bit-identical (order-invariant integer
+    // atomics; the lattice quant fingerprints pin it). Skipped during graph
+    // capture (the captured body must be the general kernel).
+    if (SmallLeafConstructEnabled() &&
+        hybrid_graph_capture_gstate_ == nullptr &&
+        max_num_data_in_smaller_leaf <= static_cast<data_size_t>(kQuantSmallLeafRows)) {
+      const int8_t* feat_used =
+        any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr;
+      if (use_compact_view_) {
+#define FALCATA_LAUNCH_SMALL_LEAF_QUANT(PACKT, DATA, COLOFF, PARTOFF, BYTEOFF, FUSED) \
+        CUDAConstructDiscretizedHistogramDenseSmallLeafBatchedKernel<BIN_TYPE, PACKT><<<grid_dim, block_dim, 0, cuda_stream_>>>( \
+          pair_descs, \
+          reinterpret_cast<const int32_t*>(cuda_gradients_), \
+          DATA, COLOFF, cuda_row_data_->cuda_partition_hist_offsets(), PARTOFF, BYTEOFF, \
+          num_data_, FUSED, \
+          static_cast<data_size_t>(min_data_in_leaf_), min_sum_hessian_in_leaf_)
+        if (compact_is_4bit_) {
+          switch (compact_codec_) {
+            case PackCodecId::kBit3x32:
+              FALCATA_LAUNCH_SMALL_LEAF_QUANT(PackBit3x32, reinterpret_cast<const BIN_TYPE*>(compact_data_uint8_t_.RawData()), compact_column_hist_offsets_.RawData(), compact_feature_partition_column_index_offsets_.RawData(), compact_packed_partition_byte_offsets_.RawData(), nullptr);
+              break;
+            case PackCodecId::kRadix5x32:
+              FALCATA_LAUNCH_SMALL_LEAF_QUANT(PackRadix5x32, reinterpret_cast<const BIN_TYPE*>(compact_data_uint8_t_.RawData()), compact_column_hist_offsets_.RawData(), compact_feature_partition_column_index_offsets_.RawData(), compact_packed_partition_byte_offsets_.RawData(), nullptr);
+              break;
+            case PackCodecId::kRadix6x32:
+              FALCATA_LAUNCH_SMALL_LEAF_QUANT(PackRadix6x32, reinterpret_cast<const BIN_TYPE*>(compact_data_uint8_t_.RawData()), compact_column_hist_offsets_.RawData(), compact_feature_partition_column_index_offsets_.RawData(), compact_packed_partition_byte_offsets_.RawData(), nullptr);
+              break;
+            case PackCodecId::kRadix7x32:
+              FALCATA_LAUNCH_SMALL_LEAF_QUANT(PackRadix7x32, reinterpret_cast<const BIN_TYPE*>(compact_data_uint8_t_.RawData()), compact_column_hist_offsets_.RawData(), compact_feature_partition_column_index_offsets_.RawData(), compact_packed_partition_byte_offsets_.RawData(), nullptr);
+              break;
+            default:
+              FALCATA_LAUNCH_SMALL_LEAF_QUANT(PackNibble4, reinterpret_cast<const BIN_TYPE*>(compact_data_uint8_t_.RawData()), compact_column_hist_offsets_.RawData(), compact_feature_partition_column_index_offsets_.RawData(), compact_packed_partition_byte_offsets_.RawData(), nullptr);
+              break;
+          }
+        } else {
+          FALCATA_LAUNCH_SMALL_LEAF_QUANT(PackRaw8, reinterpret_cast<const BIN_TYPE*>(compact_data_uint8_t_.RawData()), compact_column_hist_offsets_.RawData(), compact_feature_partition_column_index_offsets_.RawData(), nullptr, nullptr);
+        }
+      } else if (cuda_row_data_->is_4bit_packed()) {
+        FALCATA_LAUNCH_SMALL_LEAF_QUANT(PackNibble4, cuda_row_data_->GetBin<BIN_TYPE>(), cuda_row_data_->cuda_column_hist_offsets(), cuda_row_data_->cuda_feature_partition_column_index_offsets(), cuda_row_data_->cuda_packed_partition_byte_offsets(), feat_used);
+      } else {
+        FALCATA_LAUNCH_SMALL_LEAF_QUANT(PackRaw8, cuda_row_data_->GetBin<BIN_TYPE>(), cuda_row_data_->cuda_column_hist_offsets(), cuda_row_data_->cuda_feature_partition_column_index_offsets(), nullptr, feat_used);
+      }
+#undef FALCATA_LAUNCH_SMALL_LEAF_QUANT
+      return;
+    }
     // classic (two-sync) flow: exact host-known level sizes and descriptor bit
     // widths (level_smaller_num_data == nullptr, gstate == nullptr). Inside the
     // graph loop both are derived on-device (see the kernel comment); the

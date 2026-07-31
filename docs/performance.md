@@ -169,7 +169,15 @@ plan key.
   (+9.9% on epsilon in the smoke ablation), plus wide leaf-splits init
   batching.
 - **`small_leaf_construct`** — a cheaper construct body for very small
-  leaves.
+  leaves. Extended 2026-07-31 to quantized training: when a deep level's
+  largest sibling pair is under 1024 rows, a dedicated kernel adds packed
+  integer gradients straight to the global histogram — the shared-memory
+  zero + sync + merge (whose cost is proportional to partition *bins*, not
+  rows) is skipped entirely: **+11.2% covtype-deep**, neutral on numerai
+  (its 10k-row min-leaf never triggers it). Bit-identical by integer
+  order-invariance — unlike the float direct body, which remains permanently
+  disabled. Kept as a separate kernel deliberately: an in-kernel branch
+  version cost the never-taken numerai path measurable register pressure.
 
 Four more landed 2026-07-31 (battery: `benchmarks/top4_2026-07-31.txt`; all
 bit-identical in every cell):
