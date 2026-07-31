@@ -202,3 +202,28 @@ one-sync-quant rework lands and level overhead halves), or a predictor
 exists that avoids doomed applies WITHOUT extra levels (i.e., defers only
 candidates that would otherwise be applied and displaced within the SAME
 level budget — requires lookahead the greedy stream does not have).
+
+## NVRTC tier-2 shape-specialized construct (phase 3: live wiring)
+
+**Hypothesis** (from the July JIT arc): numerai's ~5.5-bin features waste
+>90% of the fixed 12288-entry shared histogram; a kernel with per-feature
+bin counts baked in packs ~10x more features per partition, cutting
+shared→global merge traffic.
+
+**Re-scored 2026-08-01, post the July-31 lever batch:** the headroom the
+specialization targeted no longer exists on the flagship shape. The compact
+column view reduces numerai-deep to 356 live columns and `wide_partitions`
+packs up to 1008 columns per partition — the whole tree trains in a SINGLE
+partition, so "fewer partitions, less merge traffic" has nothing left to
+remove. Measured directly: the working JIT construct path (shape-keyed
+NVRTC cache, bit-identical, 160ms compile) scores **-0.5% vs the current
+AOT kernel** on numerai-deep at 4 interleaved reps (an earlier +2.2%
+reading was warmup noise). Profile: the remaining hist kernel is
+ALU/issue-bound at ~58% of steady-state tree time with evict-first loads
+already applied.
+
+**Re-open when:** a workload trains WIDE data without feature sampling
+(ff=1.0 at 3555+ cols = 4+ partitions — the packing argument returns), or
+the AOT inner loop grows shape-dependent branches that specialization could
+constant-fold (check the JIT template is synced to the AOT kernel first —
+it predates wide_partitions/__ldcs).

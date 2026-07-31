@@ -43,30 +43,8 @@ figures from the profiles in the PR discussions.
   pipeline count — plus hysteresis vs noise and decision logging for
   multi-knob runs. (The selective speculation-policy knob is dead: see the
   churn-deferral entry in perf-dead-ends.md.)
-- **Runtime auto-tuner tier 2 -- NVRTC shape-specialized kernels.** JIT-compile
-  construct/find kernels at Dataset construction with columns / per-feature bin counts
-  baked in (precedent: Falcata's OpenCL backend JIT-compiled with #defined bin counts).
-  Star case: numerai's ~5.5-bin features (5 quintiles + a missing-marker bin on ~half
-  of them) waste >90% of the fixed 12288-entry shared histogram; a specialized kernel
-  packs ~10x more features per partition -> fewer
-  partitions, less shared->global merge traffic. One-time ~0.5s compile amortized over
-  thousands of trees; needs AOT fallback.
-  IN PROGRESS (session goal): NVRTC JIT construct infra WORKING (60cfa129:
-  cuda_construct_jit.{hpp,cpp}, compile shape-consts->PTX->module, shape-keyed cache,
-  AOT fallback, self-tests bit-identity, ~160ms one-time compile; cuda_plan=auto,construct_jit:on,
-  not yet the live batched path). The big win landed via the compact-view-for-quant lever
-  (was hard-disabled): numerai-quant construct 2.46x (32/5) / 1.96x (1024/10),
-  BIT-IDENTICAL (independently verified ff=0.1 compact on/off both = 8f0f9f915449),
-  default-on, FALCATA_CONSTRUCT_COMPACT_QUANT=0 kill-switch. Phase 3: wire JIT as live
-  construct path + score all benchmarks + test whether the bin-cap benches (higgs/epsilon/
-  year) have REAL headroom (phase-1 NO-GO was on upper-bound roofline estimates) or are
-  genuinely at roofline (then bit-identical no-regression is the honest outcome there).
 - **Runtime auto-tuner tier 3 -- persisted tuning cache**: store best-found configs
   keyed by dataset-shape signature (FFTW-wisdom style) so retrains skip exploration.
-- **Latency-bound construct on tiny-bin wide data**: post-161fe88b numerai construct
-  is scattered-read latency-bound (19ms/tree). The non-JIT 2-columns-per-thread step
-  landed 2026-07-31 (`wide_partitions`, +8.8% numerai-deep); the remaining headroom
-  (~10x feature packing with per-feature bin counts baked in) is NVRTC tier 2.
 - **Multi-target training.** Two variants: (1)
   round-robin one-tree-per-target (multiclass machinery minus softmax) -- identical
   models to sequential training, but only ~1.1x/target now that construct is cheap;
