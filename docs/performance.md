@@ -211,8 +211,9 @@ the time; falcata-noquant closes most of the gap at still-lower time.
 
 **The deep end nobody else finishes**: on the numerai *production* config
 (30k trees, 1024 leaves, 5.4M×3555), falcata-fixed trains at **32.4
-trees/s** (~15 minutes total) with corr 0.0232. No other library completes
-this regime at all.
+trees/s** (~15 minutes total) with corr 0.0232. LightGBM and CatBoost crash
+internally on this regime; XGBoost's re-measurement is pending (its earlier
+failure was a since-fixed harness bug, not XGBoost).
 
 **Resources**: falcata trains numerai-deep in ~14GB VRAM with reclaimable
 memmap reads; CatBoost's working numerai run needed ~30GB VRAM (the whole
@@ -222,9 +223,11 @@ card) plus ~112GB of anonymous host RAM.
 LightGBM 4.7.0's CUDA backend is broken on this hardware/scale — garbage
 models on fraud/covtype-deep and hard CUDA crashes on higgs/numerai — and
 its quantized mode produces invalid models everywhere; its legacy OpenCL
-backend (benchmarked above) works but trails by 3–16×. XGBoost and CatBoost
-crash (OOM / kernel timeout) on the numerai-deep regime. Full failure
-ledger with per-cell errors: the benchmark report.
+backend (benchmarked above) works but trails by 3–16×. CatBoost dies on
+numerai-deep with an internal CUDA kernel timeout (error 702). XGBoost
+trains the numerai regimes fine — an earlier recorded failure there was our
+harness's oversized predict allocation, since fixed and re-measured. Full
+failure ledger with per-cell errors: the benchmark report.
 
 ---
 
