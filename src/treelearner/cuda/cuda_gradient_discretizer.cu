@@ -246,10 +246,16 @@ __global__ void DiscretizeGradientsKernel(
       const score_t hessian = input_hessians[index];
       const score_t gradient_random_value = gradient_random_values[index_offset];
       const score_t hessian_random_value = hessian_random_values[index_offset];
+      // Explicit fused multiply-add: ptxas contracts a*b+c differently per
+      // GPU architecture, and at quant_bins > 4 the one-ULP difference flips
+      // rounding buckets often enough to diverge models across GPU models.
+      // Pinning the instruction makes the quantization arch-independent. (The
+      // fixedpoint branch below adds a double 0.5 -- unfusable, already
+      // arch-stable -- and is left untouched.)
       output_gradients_and_hessians_ptr[2 * index + 1] = gradient > 0.0f ?
-        static_cast<int16_t>(gradient * grad_scale + gradient_random_value) :
-        static_cast<int16_t>(gradient * grad_scale - gradient_random_value);
-      output_gradients_and_hessians_ptr[2 * index] = static_cast<int16_t>(hessian * hess_scale + hessian_random_value);
+        static_cast<int16_t>(__fmaf_rn(gradient, grad_scale, gradient_random_value)) :
+        static_cast<int16_t>(__fmaf_rn(gradient, grad_scale, -gradient_random_value));
+      output_gradients_and_hessians_ptr[2 * index] = static_cast<int16_t>(__fmaf_rn(hessian, hess_scale, hessian_random_value));
     } else {
       const score_t gradient = input_gradients[index];
       const score_t hessian = input_hessians[index];

@@ -42,7 +42,9 @@ What makes it fast
   gradients don't crush the quantization range. Bin counts default to 4 and 64
   respectively; override with `quant_bins` (any value in `[2, 65534]` —
   training refuses counts whose histogram sums could overflow at your row
-  count). Both modes are bit-reproducible run to run; `quant_mode=none` is
+  count). Both modes are bit-reproducible — not just run to run, but across GPU
+  models and host machines: the same seed trains the bit-identical model on
+  any CUDA device (verified sm_89 vs sm_120); `quant_mode=none` is
   full precision.
 - **An execution planner.** Shape-conditional kernel choices are resolved once
   from the data and parameters (`cuda_plan=auto`) instead of from a pile of

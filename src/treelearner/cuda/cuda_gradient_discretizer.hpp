@@ -98,16 +98,22 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
       random_values_use_start[tree_index] = random_values_use_start_dist(random_values_use_start_eng);
     }
 
-    int num_blocks = 0;
-    data_size_t block_size = 0;
-    Threading::BlockInfo<data_size_t>(num_data, 512, &num_blocks, &block_size);
-    #pragma omp parallel for schedule(static, 1) num_threads(num_threads)
-    for (int thread_id = 0; thread_id < num_blocks; ++thread_id) {
-      const data_size_t start = thread_id * block_size;
-      const data_size_t end = std::min(start + block_size, num_data);
-      std::mt19937 gradient_random_values_eng(random_seed_ + thread_id);
+    // Table content must depend ONLY on random_seed_: it is generated in
+    // fixed-size virtual chunks, each chunk's engine seeded by (seed, chunk
+    // index). Threads map over chunks without changing content, so the same
+    // seed gives the same tables on any machine at any num_threads. (The
+    // previous chunking followed Threading::BlockInfo(num_threads) and the
+    // hessian seed embedded num_threads -- thread count was effectively part
+    // of the seed, breaking cross-machine reproducibility.)
+    constexpr data_size_t kChunkSize = 65536;
+    const int num_chunks = static_cast<int>((num_data + kChunkSize - 1) / kChunkSize);
+    #pragma omp parallel for schedule(static) num_threads(num_threads)
+    for (int chunk = 0; chunk < num_chunks; ++chunk) {
+      const data_size_t start = static_cast<data_size_t>(chunk) * kChunkSize;
+      const data_size_t end = std::min(start + kChunkSize, num_data);
+      std::mt19937 gradient_random_values_eng(random_seed_ + 2 * chunk);
       std::uniform_real_distribution<double> gradient_random_values_dist(0.0f, 1.0f);
-      std::mt19937 hessian_random_values_eng(random_seed_ + thread_id + num_threads);
+      std::mt19937 hessian_random_values_eng(random_seed_ + 2 * chunk + 1);
       std::uniform_real_distribution<double> hessian_random_values_dist(0.0f, 1.0f);
       for (data_size_t i = start; i < end; ++i) {
         gradient_random_values[i] = gradient_random_values_dist(gradient_random_values_eng);

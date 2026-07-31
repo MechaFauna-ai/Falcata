@@ -129,8 +129,11 @@ aggressive end) and `fixedpoint` (deterministic rounding with an
 outlier-robust gradient scale — the near-lossless end). Bin count is the
 `quant_bins` dial for both modes (defaults: 4 stochastic, 64 fixedpoint;
 any value in [2, 65534]). Both are
-bit-reproducible run to run; integer atomics also make results
-order-invariant, which is what lets the md5 regression gates exist.
+bit-reproducible — run to run, across GPU models, and across host
+machines (same seed → bit-identical model, verified on sm_89 vs sm_120 with
+different host core counts); integer atomics also make results
+order-invariant, which is what lets the md5 regression gates exist and makes
+them portable to any machine.
 
 **Measured (benchmark suite, numerai-deep, 30k trees):**
 
