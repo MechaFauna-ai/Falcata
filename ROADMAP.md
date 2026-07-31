@@ -16,7 +16,7 @@ figures from the profiles in the PR discussions.
 
 ## Performance
 
-- [ ] **Static planner (auto-tuner tier 0).** At Init the dataset shape (rows,
+- **Static planner (auto-tuner tier 0).** At Init the dataset shape (rows,
   features, actual bins/feature) and config (num_leaves, max_depth, num_class,
   iterations) determine: expected level geometry (leaf sizes ~ rows/2^level) -> grid
   configs, small-leaf threshold, speculative bounds; histogram partition packing and
@@ -34,7 +34,7 @@ figures from the profiles in the PR discussions.
   (verified md5 flip). The other 12 tier-0 knobs remain valid. A bit-neutral variant
   needs decoupling block_dim_y from block_dim_x (a launch refactor), only if a future
   very-low-fraction/high-feature workload ever pushes distinct shape keys past 64.
-- [ ] **Runtime auto-tuner tier 1 — remaining knobs.** The saturation-floor bandit
+- **Runtime auto-tuner tier 1 — remaining knobs.** The saturation-floor bandit
   landed 2026-07-31 (`tuner` plan key, default on at >=300 rounds: probe
   {80,160,320,640}, best-of-15, re-probe every 3000 trees — +2.1% numerai-deep,
   +2.7% year; see docs/performance.md). Still open: extending the same bandit to
@@ -43,7 +43,7 @@ figures from the profiles in the PR discussions.
   pipeline count — plus hysteresis vs noise and decision logging for
   multi-knob runs. (The selective speculation-policy knob is dead: see the
   churn-deferral entry in perf-dead-ends.md.)
-- [ ] **Runtime auto-tuner tier 2 -- NVRTC shape-specialized kernels.** JIT-compile
+- **Runtime auto-tuner tier 2 -- NVRTC shape-specialized kernels.** JIT-compile
   construct/find kernels at Dataset construction with columns / per-feature bin counts
   baked in (precedent: Falcata's OpenCL backend JIT-compiled with #defined bin counts).
   Star case: numerai's ~5.5-bin features (5 quintiles + a missing-marker bin on ~half
@@ -61,13 +61,13 @@ figures from the profiles in the PR discussions.
   construct path + score all benchmarks + test whether the bin-cap benches (higgs/epsilon/
   year) have REAL headroom (phase-1 NO-GO was on upper-bound roofline estimates) or are
   genuinely at roofline (then bit-identical no-regression is the honest outcome there).
-- [ ] **Runtime auto-tuner tier 3 -- persisted tuning cache**: store best-found configs
+- **Runtime auto-tuner tier 3 -- persisted tuning cache**: store best-found configs
   keyed by dataset-shape signature (FFTW-wisdom style) so retrains skip exploration.
-- [ ] **Latency-bound construct on tiny-bin wide data**: post-161fe88b numerai construct
+- **Latency-bound construct on tiny-bin wide data**: post-161fe88b numerai construct
   is scattered-read latency-bound (19ms/tree). The non-JIT 2-columns-per-thread step
   landed 2026-07-31 (`wide_partitions`, +8.8% numerai-deep); the remaining headroom
   (~10x feature packing with per-feature bin counts baked in) is NVRTC tier 2.
-- [ ] **Multi-target training (not urgent, per Felix).** Two variants: (1)
+- **Multi-target training.** Two variants: (1)
   round-robin one-tree-per-target (multiclass machinery minus softmax) -- identical
   models to sequential training, but only ~1.1x/target now that construct is cheap;
   API-convenience tier. (2) Vector-leaf trees (the differentiator: nobody ships
@@ -80,7 +80,7 @@ figures from the profiles in the PR discussions.
   want (MultiRMSE-style). Modeling change: validate per-era, don't assume. FIL
   predict falls back to CPU for vector-leaf models initially (treelite support).
 
-- [ ] **L2 residency tuning, remaining part (5090: 96 MB L2).** Parts (a)
+- **L2 residency tuning, remaining part (5090: 96 MB L2).** Parts (a)
   cudaAccessPolicyWindow persistence (`l2_policy`, +5.3% numerai-deep after
   device-proportional sizing) and (b) __ldcs evict-first bin loads (+8%
   covtype-deep, +10% year) landed 2026-07-31. Still open: (d) deep configs:
@@ -88,7 +88,7 @@ figures from the profiles in the PR discussions.
   mostly-fits L2 -- a cache argument for fp32-hist on deep trees on top of
   the bandwidth one (subtraction re-reads parent hists).
 
-- [ ] **Hybrid coverage extensions.** The hybrid/graph fast paths currently fall
+- **Hybrid coverage extensions.** The hybrid/graph fast paths currently fall
   back to the classic loop for: categorical features (variable-length bitset
   payloads vs the fixed 18-int split slabs -- first one worth lifting), NCCL
   multi-GPU (level batching would mean ONE all-reduce per level instead of one per
@@ -103,7 +103,7 @@ figures from the profiles in the PR discussions.
 
 ## Correctness / determinism
 
-- [ ] **Deterministic non-quant CUDA mode** (deprioritized: determinism is a
+- **Deterministic non-quant CUDA mode** (deprioritized: determinism is a
   verification tool here, not a production requirement -- quant mode already provides
   it for md5 gates). Fixed-point integer histogram accumulation (XGBoost-style) would
   eliminate float-atomic run-to-run jitter (measured +-2.6pp on covtype multiclass).
@@ -132,7 +132,5 @@ figures from the profiles in the PR discussions.
 
 ## Benchmark
 
-- [ ] Airline (115M rows): kt.ijs.si down; retry, find a mirror, or substitute the
+- Airline (115M rows): kt.ijs.si down; retry, find a mirror, or substitute the
   benchm-ml 10M-row variant.
-- [x] xgboost-lossguide config and the RLIMIT_DATA host-memory guard both
-  landed in the bench harness 2026-07-31 (in the v3 sweep).
