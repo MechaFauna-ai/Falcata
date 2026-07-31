@@ -209,7 +209,7 @@ falcata variant in parentheses):
 the time; falcata-noquant closes most of the gap at still-lower time.
 ² Upstream LightGBM produced invalid models on these cells (see last bullet).
 
-**The deep end nobody else finishes**: on the numerai *production* config
+**The deep end nobody else finishes**: on the numerai deep example config
 (30k trees, 1024 leaves, 5.4M×3555), falcata-fixed trains at **32.4
 trees/s** (~15 minutes total) with corr 0.0232. LightGBM and CatBoost crash
 internally on this regime; XGBoost's re-measurement is pending (its earlier
