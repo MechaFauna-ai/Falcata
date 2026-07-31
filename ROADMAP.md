@@ -107,6 +107,29 @@ figures from the profiles in the PR discussions.
   genuinely at roofline (then bit-identical no-regression is the honest outcome there).
 - [ ] **Runtime auto-tuner tier 3 -- persisted tuning cache**: store best-found configs
   keyed by dataset-shape signature (FFTW-wisdom style) so retrains skip exploration.
+- [~] **Compact-view packing codecs — INVESTIGATED, honest negative (5ce1c75f).**
+  bit3/radix5/radix6/radix7 policy-template codecs for the compact view (up to
+  1.63x fewer bytes). All bit-identical and gate-covered; all LOSE on
+  numerai-deep (bit3 -2.5%, radix7 -27%): the discretized construct kernel is
+  ALU/issue-bound, not read-bound — extraction ops scale it linearly, byte
+  savings buy nothing. radix5/6 cannot even engage (span-7 columns in every
+  ff=0.1 sample). Keys default OFF. Full record: docs/design/pack-codecs.md.
+  KEY REVISED FACT for all construct ideas: at numerai-deep steady state the
+  device is ~97% busy and the hist kernel is instruction-bound; per-tree the
+  host path holds ~41 synchronous D2H readbacks (legacy-stream barriers) that
+  serialize any would-be-overlapped work.
+- [~] **Compact-view prefill (next-tree fill overlap) — INVESTIGATED, honest
+  negative (631e1bc3).** Double-buffered side-stream prefill of the next
+  tree's compact view; bit-identical; buys 0% because the readback barriers
+  serialize the fill regardless of stream. Key compact_prefill default OFF;
+  becomes worth re-measuring ONLY after the barrier structure is reduced.
+- [ ] **Column-major fill source (+~14% numerai-deep est, +6.2GB VRAM).** The
+  per-tree compact fill reads ~6.2GB/tree because gathering 10% of columns
+  from row-major 4-bit data touches nearly every sector; a one-time
+  column-major copy of the packed matrix would cut fill traffic ~3.7x
+  (fill 4.9 -> ~1.5ms/tree). Unlike the hist kernel, the fill IS
+  bandwidth-bound (1.4TB/s achieved), so this one survives the ALU-bound
+  finding. Needs a tiled-transpose fill kernel + planner VRAM gate.
 - [ ] **Selective-growth churn reduction.** covtype 64/12 applies 2.09x the final split
   count (52% displaced-then-pruned). Smarter speculation — e.g. only apply candidates
   with a selection margin / hysteresis — to cut wasted search+apply.
