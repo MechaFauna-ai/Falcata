@@ -188,8 +188,12 @@ bit-identical in every cell):
   at real run lengths. Its companion: bin-matrix loads are marked
   **evict-first** (`__ldcs`) since bin bytes have no intra-level reuse —
   deprioritizing them frees L2 for histogram-subtraction re-reads: +8%
-  covtype-deep, +10% year, neutral on numerai-deep. (Prediction inverted by
-  measurement: the win is largest on the "already L2-resident" shapes.)
+  covtype-deep, +10% year via the dense-path loads, and **+9.7%
+  numerai-deep** once extended to the compact-view pack-codec reads (the
+  per-tree compact matrix re-reads 11+ passes/level against a 96MB L2 —
+  streaming priority stops it evicting the pinned gradient window).
+  (Prediction inverted by measurement: the win is largest on the "already
+  L2-resident" shapes.)
 - **`colmajor_fill`** — a one-time column-major copy of the packed bin matrix
   serves as the compact-fill gather source, so the per-tree fill reads
   contiguous columns instead of dragging ~10× its bytes through row-major

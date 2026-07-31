@@ -107,7 +107,13 @@ struct PackRaw8 {
   FALCATA_PACK_FN static Cursor Prepare(unsigned col) { return Cursor{col}; }
   template <typename T>
   FALCATA_PACK_FN static uint32_t ExtractAt(const T* row_ptr, const Cursor& c) {
+#if defined(__CUDA_ARCH__)
+    // evict-first: compact bin words have no intra-level reuse (see the
+    // ReadDenseBin rationale in cuda_histogram_constructor.cu)
+    return static_cast<uint32_t>(__ldcs(&row_ptr[c.col]));
+#else
     return static_cast<uint32_t>(row_ptr[c.col]);
+#endif
   }
 };
 
@@ -136,7 +142,11 @@ struct PackNibble4 {
   }
   template <typename T>
   FALCATA_PACK_FN static uint32_t ExtractAt(const T* row_ptr, const Cursor& c) {
+#if defined(__CUDA_ARCH__)
+    return (static_cast<uint32_t>(__ldcs(&reinterpret_cast<const uint8_t*>(row_ptr)[c.byte])) >> c.shift) & 0xfu;
+#else
     return (static_cast<uint32_t>(reinterpret_cast<const uint8_t*>(row_ptr)[c.byte]) >> c.shift) & 0xfu;
+#endif
   }
 
   /*! \brief host-side row packer (dst row segment must be zeroed) */
