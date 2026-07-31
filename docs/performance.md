@@ -168,6 +168,35 @@ plan key.
 - **`small_leaf_construct`** — a cheaper construct body for very small
   leaves.
 
+Four more landed 2026-07-31 (battery: `benchmarks/top4_2026-07-31.txt`; all
+bit-identical in every cell):
+
+- **`wide_partitions`** — on datasets wider than 504 columns, each construct
+  thread handles two columns, halving the partition count and its per-partition
+  zero/merge overhead: **+8.8% numerai-deep**; mechanically inert on narrower
+  data.
+- **`l2_policy`** — pins the gradient/hessian and data-index buffers into a
+  persisting L2 window so each level's bin-matrix stream stops evicting them
+  (the construct kernel is latency-bound on exactly those scattered re-reads):
+  +2.8% numerai-deep and covtype-deep, neutral on year at real run lengths.
+- **`colmajor_fill`** — a one-time column-major copy of the packed bin matrix
+  serves as the compact-fill gather source, so the per-tree fill reads
+  contiguous columns instead of dragging ~10× its bytes through row-major
+  cache lines: +2.2% numerai-deep (the fill is genuinely bandwidth-bound, but
+  it is a small slice of tree time — the +14% pre-measurement estimate did not
+  survive contact with the profiler). VRAM-gated by the planner.
+- **`tuner`** — a per-tree bandit over the batched-construct saturation floor
+  (candidates {80,160,320,640}, best-of-15 timing, re-probe every 3000 trees):
+  +2.1% numerai-deep, +2.7% year. Quantized training only — integer histograms
+  make the model schedule-invariant, so retuning cannot change results. Under
+  `auto` it engages only at ≥300 rounds (the ~60-tree probe phase costs ~2% on
+  a 100-round run); `cuda_plan=auto,tuner:on` forces it regardless.
+
+All four compose: **+10.5% on numerai-deep combined**. A methodology note the
+battery re-taught us: 100-round probe cells on fast datasets (year runs 0.4s)
+sit inside clock/thermal noise — the year "regressions" the battery first
+reported all vanished under interleaved A/B at 500 rounds.
+
 The ablation shows each of these within noise on shapes they don't target —
 the planner's "default on, individually ablatable" contract in action.
 

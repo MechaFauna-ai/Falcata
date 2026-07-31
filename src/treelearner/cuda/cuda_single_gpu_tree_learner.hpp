@@ -413,6 +413,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     int next_probe_at = kWarmupTrees;
   };
   TierOneTuner tuner_;
+  bool TunerActive() const;
   void TunerBeforeTree();
   void TunerAfterTree(double tree_seconds);
   int effective_quant_bins_ = 0;

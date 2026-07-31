@@ -2313,8 +2313,17 @@ void CUDASingleGPUTreeLearner::TrainSelective(CUDATree* tree) {
   global_timer.Stop("CUDASingleGPUTreeLearner::TrainSelective");
 }
 
+bool CUDASingleGPUTreeLearner::TunerActive() const {
+  const auto& plan = FalcataPlan::Get();
+  if (!plan.tuner || !config_->use_quantized_grad) return false;
+  // the probe phase costs ~60 trees; under auto, skip runs too short to
+  // amortize it (measured -1.9% on year @100 rounds, +2.7% @500)
+  if (!plan.tuner_explicit && config_->num_iterations < 300) return false;
+  return true;
+}
+
 void CUDASingleGPUTreeLearner::TunerBeforeTree() {
-  if (!FalcataPlan::Get().tuner || !config_->use_quantized_grad) return;
+  if (!TunerActive()) return;
   TierOneTuner& t = tuner_;
   if (t.tree_index >= t.next_probe_at && t.probe_slot < 0) {
     // start (re-)probe round
@@ -2331,7 +2340,7 @@ void CUDASingleGPUTreeLearner::TunerBeforeTree() {
 }
 
 void CUDASingleGPUTreeLearner::TunerAfterTree(double tree_seconds) {
-  if (!FalcataPlan::Get().tuner || !config_->use_quantized_grad) return;
+  if (!TunerActive()) return;
   TierOneTuner& t = tuner_;
   ++t.tree_index;
   if (t.probe_slot < 0) return;

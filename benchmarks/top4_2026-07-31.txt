@@ -1,0 +1,31 @@
+
+== numerai baseline 16.0 t/s md5=7f7bae171707
+  l2_policy          16.4 t/s ( +2.8%) OK-identical
+  colmajor_fill      16.3 t/s ( +2.2%) OK-identical
+  tuner              16.3 t/s ( +2.1%) OK-identical
+  wide_partitions    17.4 t/s ( +8.8%) OK-identical
+  ALL FOUR           17.6 t/s (+10.5%) OK-identical
+
+== covtype baseline 76.3 t/s md5=20cb576f6758
+  l2_policy          78.5 t/s ( +2.8%) OK-identical
+  colmajor_fill      77.9 t/s ( +2.1%) OK-identical
+  tuner              76.6 t/s ( +0.4%) OK-identical
+  wide_partitions    77.5 t/s ( +1.5%) OK-identical
+  ALL FOUR           78.3 t/s ( +2.6%) OK-identical
+
+== year baseline 250.0 t/s md5=675fbe9f6321
+  l2_policy         232.7 t/s ( -6.9%) OK-identical
+  colmajor_fill     249.1 t/s ( -0.4%) OK-identical
+  tuner             245.2 t/s ( -1.9%) OK-identical
+  wide_partitions   243.4 t/s ( -2.6%) OK-identical
+  ALL FOUR          232.8 t/s ( -6.9%) OK-identical
+
+TOP4 MEASURE DONE — now run: .gates-venv/bin/python tests/gates/lattice.py --check
+
+--- follow-up: year cell re-measured at 500 rounds, interleaved A/B ---
+(the 100-round year cells above run ~0.4s and sit inside clock/thermal noise;
+ these interleaved 500-round medians are the numbers of record for year)
+l2_policy : base 594.3 t/s  on 597.6 t/s  (+0.5% -- neutral, not -6.9%)
+tuner     : base 583.9 t/s  on 599.8 t/s  (+2.7% -- probe cost amortized)
+verdict: all four keys default ON (tuner auto-gated to >=300 rounds);
+lattice 39/39 green on the flipped-defaults build.

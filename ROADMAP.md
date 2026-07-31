@@ -34,17 +34,13 @@ figures from the profiles in the PR discussions.
   (verified md5 flip). The other 12 tier-0 knobs remain valid. A bit-neutral variant
   needs decoupling block_dim_y from block_dim_x (a launch refactor), only if a future
   very-low-fraction/high-feature workload ever pushes distinct shape keys past 64.
-- [ ] **Runtime auto-tuner ("JIT optimizer") tier 1 — online policy tuning.** Boosting
-  runs thousands of near-identical trees: measure per-tree wall time (CUDA events) +
-  feedback stats (churn, level widths, imbalance) and bandit-tune the existing
-  dataset-dependent knobs: batched-construct grid sizing (baked constant
-  FalcataPlan::batch_construct_saturation_floor -- covtype is latency-bound,
-  year/higgs merge-bound), small-leaf construct threshold
-  (mechanism currently hardcoded off), hist pipeline count, and the selective-growth speculation
-  policy (e.g. gain-margin gating for unbalanced trees). Speculation is model-invariant
-  by monotonicity, and quant-mode integer histograms keep md5 locks valid under any
-  schedule retuning -- the tuner cannot break exactness gates. Hysteresis vs noise;
-  decision logging.
+- [ ] **Runtime auto-tuner tier 1 — remaining knobs.** The saturation-floor bandit
+  landed 2026-07-31 (`tuner` plan key, default on at >=300 rounds: probe
+  {80,160,320,640}, best-of-15, re-probe every 3000 trees — +2.1% numerai-deep,
+  +2.7% year; see docs/performance.md). Still open: extending the same bandit to
+  the small-leaf construct threshold (mechanism currently hardcoded off), hist
+  pipeline count, and the selective-growth speculation policy (gain-margin
+  gating) — plus hysteresis vs noise and decision logging for multi-knob runs.
 - [ ] **Runtime auto-tuner tier 2 -- NVRTC shape-specialized kernels.** JIT-compile
   construct/find kernels at Dataset construction with columns / per-feature bin counts
   baked in (precedent: Falcata's OpenCL backend JIT-compiled with #defined bin counts).
@@ -65,19 +61,13 @@ figures from the profiles in the PR discussions.
   genuinely at roofline (then bit-identical no-regression is the honest outcome there).
 - [ ] **Runtime auto-tuner tier 3 -- persisted tuning cache**: store best-found configs
   keyed by dataset-shape signature (FFTW-wisdom style) so retrains skip exploration.
-- [ ] **Column-major fill source (+~14% numerai-deep est, +6.2GB VRAM).** The
-  per-tree compact fill reads ~6.2GB/tree because gathering 10% of columns
-  from row-major 4-bit data touches nearly every sector; a one-time
-  column-major copy of the packed matrix would cut fill traffic ~3.7x
-  (fill 4.9 -> ~1.5ms/tree). Unlike the hist kernel, the fill IS
-  bandwidth-bound (1.4TB/s achieved), so this one survives the ALU-bound
-  finding. Needs a tiled-transpose fill kernel + planner VRAM gate.
 - [ ] **Selective-growth churn reduction.** covtype 64/12 applies 2.09x the final split
   count (52% displaced-then-pruned). Smarter speculation — e.g. only apply candidates
   with a selection margin / hysteresis — to cut wasted search+apply.
 - [ ] **Latency-bound construct on tiny-bin wide data**: post-161fe88b numerai construct
-  is scattered-read latency-bound (19ms/tree) -- candidate for NVRTC shape
-  specialization (auto-tuner tier 2) or layout changes.
+  is scattered-read latency-bound (19ms/tree). The non-JIT 2-columns-per-thread step
+  landed 2026-07-31 (`wide_partitions`, +8.8% numerai-deep); the remaining headroom
+  (~10x feature packing with per-feature bin counts baked in) is NVRTC tier 2.
 - [ ] **Quant one-sync parity.** The quantized path still uses the two-sync level flow;
   extend the one-sync speculative pipeline to it. Also investigate the per-tree gradient
   discretization cost on many-tree/small-tree configs (numerai-quant is slower than
@@ -96,16 +86,15 @@ figures from the profiles in the PR discussions.
   want (MultiRMSE-style). Modeling change: validate per-era, don't assume. FIL
   predict falls back to CPU for vector-leaf models initially (treelite support).
 
-- [ ] **L2 residency tuning (5090: 96 MB L2).** (a) cudaAccessPolicyWindow
-  persistence on grad/hess float2 (43 MB) + data indices (22 MB): each level's
-  compact-matrix stream (~375 MB) currently evicts them, and the construct kernel is
-  latency-bound on exactly those scattered re-reads; (b) evict-first/__ldcs hints on
-  bin-matrix loads (zero reuse within a level -- stop polluting L2); (c) note:
-  fraud/covtype/year datasets (4/31/46 MB) are already fully L2-resident (why they
-  profile latency-bound); (d) deep configs: fp32-hist halves the hist pool 248 ->
-  124 MB = from doesn't-fit to mostly-fits L2 -- a cache argument for fp32-hist on
-  deep trees on top of the bandwidth one (subtraction re-reads parent hists). Few
-  lines each, cleanly A/B-able.
+- [ ] **L2 residency tuning, remaining parts (5090: 96 MB L2).** Part (a) --
+  cudaAccessPolicyWindow persistence on grad/hess + data indices -- landed 2026-07-31
+  (`l2_policy`, +2.8% numerai-deep/covtype-deep). Still open: (b) evict-first/__ldcs
+  hints on bin-matrix loads (zero reuse within a level -- stop polluting L2);
+  (c) note: fraud/covtype/year datasets (4/31/46 MB) are already fully L2-resident
+  (why they profile latency-bound); (d) deep configs: fp32-hist halves the hist pool
+  248 -> 124 MB = from doesn't-fit to mostly-fits L2 -- a cache argument for
+  fp32-hist on deep trees on top of the bandwidth one (subtraction re-reads parent
+  hists). Few lines each, cleanly A/B-able.
 
 - [ ] **Hybrid coverage extensions.** The hybrid/graph fast paths currently fall
   back to the classic loop for: categorical features (variable-length bitset
