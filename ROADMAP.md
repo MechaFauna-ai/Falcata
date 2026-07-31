@@ -39,9 +39,10 @@ figures from the profiles in the PR discussions.
   {80,160,320,640}, best-of-15, re-probe every 3000 trees — +2.1% numerai-deep,
   +2.7% year; see docs/performance.md). Still open: extending the same bandit to
   the quant small-leaf threshold (landed 2026-07-31 as a fixed 1024-row cut,
-  +11.2% covtype-deep -- the bandit could tune the cut per shape), hist
-  pipeline count, and the selective-growth speculation policy (gain-margin
-  gating) — plus hysteresis vs noise and decision logging for multi-knob runs.
+  +11.2% covtype-deep -- the bandit could tune the cut per shape) and hist
+  pipeline count — plus hysteresis vs noise and decision logging for
+  multi-knob runs. (The selective speculation-policy knob is dead: see the
+  churn-deferral entry in perf-dead-ends.md.)
 - [ ] **Runtime auto-tuner tier 2 -- NVRTC shape-specialized kernels.** JIT-compile
   construct/find kernels at Dataset construction with columns / per-feature bin counts
   baked in (precedent: Falcata's OpenCL backend JIT-compiled with #defined bin counts).
@@ -133,7 +134,5 @@ figures from the profiles in the PR discussions.
 
 - [ ] Airline (115M rows): kt.ijs.si down; retry, find a mirror, or substitute the
   benchm-ml 10M-row variant.
-- [ ] Optional: xgboost-lossguide as a seventh benchmark config (leaf-wise
-  apples-to-apples column).
-- [ ] Harness: host-memory guard for runs near RAM limits (xgboost/numerai peaked at
-  102 GB and OOM-killed the host session; its curve cell is skipped).
+- [x] xgboost-lossguide config and the RLIMIT_DATA host-memory guard both
+  landed in the bench harness 2026-07-31 (in the v3 sweep).
