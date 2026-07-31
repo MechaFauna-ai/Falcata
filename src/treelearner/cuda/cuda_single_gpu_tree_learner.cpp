@@ -84,7 +84,6 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // down to quant_mode=stochastic or none, not tune the scale.
   const QuantMode quant_mode = config_->ResolvedQuantMode();
   fixedpoint_quant_ = (quant_mode == QuantMode::kFixedPoint);
-  fixedpoint_robust_scale_ = fixedpoint_quant_ && FalcataPlan::Get().robust_scale;
   effective_quant_bins_ = config_->num_grad_quant_bins;
   if (config_->use_quantized_grad) {
     // The packed histogram accumulates quantized gradients in (at most) 32-bit
@@ -92,14 +91,57 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     // sum is unrepresentable and training silently emits garbage trees (found
     // empirically: quant_bins=1024 at 5M rows -> constant predictions), so
     // refuse loudly instead. Ceiling: bins < 2^32 / num_data.
+    // HESSIANS bound the range, not gradients: hessians quantize to the FULL
+    // bin count (gradients only to +/-bins/2), so the worst per-bin sum is
+    // num_data * bins. The old bins/2 bound let e.g. 515k rows x 4096 bins
+    // through and training emitted inf predictions (hessian sums wrapped).
     const uint64_t worst_per_bin = static_cast<uint64_t>(num_data_) *
-        static_cast<uint64_t>(effective_quant_bins_ / 2);
+        static_cast<uint64_t>(effective_quant_bins_);
     if (worst_per_bin >= (1ULL << 31)) {
-      const int max_bins = static_cast<int>((1ULL << 32) / static_cast<uint64_t>(num_data_));
+      const int max_bins = static_cast<int>((1ULL << 31) / static_cast<uint64_t>(num_data_));
       Log::Fatal(
           "quant_bins=%d is too large for %d rows: the per-bin gradient sum can "
           "exceed the 32-bit histogram range. Use quant_bins <= %d for this dataset.",
           effective_quant_bins_, num_data_, max_bins);
+    }
+  }
+  // The outlier-robust scale protects COARSE quantization (its measured win
+  // is fraud AUC .9825-vs-.8001 at the 64-bin default): re-anchoring to the
+  // bulk buys resolution at the cost of clamping outliers. At fine bin
+  // counts the global-max scale already resolves the bulk, and the clamped
+  // outlier mass turns into measured quality LOSS that grows with bins
+  // (covtype-deep acc .945/.838/.807 at 1024/2048/4096 vs .963 without).
+  // 256 keeps every historical behavior (default 64 and the 256-bin gate
+  // cell inclusive) and frees fine-grained fixedpoint to behave like the
+  // near-lossless mode it is.
+  constexpr int kRobustScaleMaxBins = 256;
+  fixedpoint_robust_scale_ = fixedpoint_quant_ && FalcataPlan::Get().robust_scale &&
+      effective_quant_bins_ <= kRobustScaleMaxBins;
+  // INTERIM CLAMP (tracked): with NON-constant hessians (binary/multiclass),
+  // high quant_bins corrupts training; the threshold is data-dependent
+  // (covtype breaks at 2048, imbalanced fraud already at 1024 -- auc .4996;
+  // constant-hessian regression is immune at any guard-passing bins).
+  // 256 is the verified-safe line across every measured case; clamp there
+  // until the corruption is root-caused.
+  if (effective_quant_bins_ > 256 && !is_constant_hessian) {
+    Log::Warning("quant_bins=%d clamped to 256 for this objective: larger "
+                 "values with non-constant hessians corrupt training on "
+                 "some data (under investigation); constant-hessian "
+                 "regression objectives are unaffected.", effective_quant_bins_);
+    effective_quant_bins_ = 256;
+  }
+  // deterministic=true with auto bin count (quant_bins=0): pick the finest
+  // SAFE resolution instead of the historical default -- near-lossless
+  // deterministic training is the stated intent. Constant-hessian
+  // objectives take the finest guard-passing count up to 2048 (verified
+  // lossless-equivalent on year); others stay at the 256 safety line.
+  if (config_->deterministic && fixedpoint_quant_ && config_->num_grad_quant_bins == 0) {
+    const uint64_t guard_cap = (1ULL << 31) / static_cast<uint64_t>(num_data_) - 1;
+    const int safe_cap = static_cast<int>(std::min<uint64_t>(guard_cap, is_constant_hessian ? 2048 : 256));
+    if (safe_cap > effective_quant_bins_) {
+      effective_quant_bins_ = safe_cap;
+      Log::Info("deterministic=true: quant_bins auto-raised to %d (near-lossless "
+                "fixedpoint resolution for this dataset)", effective_quant_bins_);
     }
   }
   if (fixedpoint_quant_) {

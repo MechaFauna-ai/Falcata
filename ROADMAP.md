@@ -95,14 +95,6 @@ figures from the profiles in the PR discussions.
 
 ## Correctness / determinism
 
-- **Deterministic non-quant CUDA mode** (deprioritized: determinism is a
-  verification tool here, not a production requirement -- quant mode already provides
-  it for md5 gates). Fixed-point integer histogram accumulation (XGBoost-style) would
-  eliminate float-atomic run-to-run jitter (measured +-2.6pp on covtype multiclass).
-  Related: `deterministic=true` silently no-ops on CUDA — make it work or warn; it also
-  doesn't pin the timing-based col/row-wise auto-choice on CPU (bimodal md5s; pin
-  force_col_wise in gates).
-
 ## Upstream (MechaFauna-ai/Falcata) bugs found (documented here for reference;
 ## we do not contribute upstream)
 
@@ -118,6 +110,10 @@ figures from the profiles in the PR discussions.
 - CUDA-vs-CPU growth parity: upstream CUDA over-grows trees ~3.5x vs its own CPU at
   identical params (854 vs 237 leaves/tree on covtype; lambda_l2 sweep shows it is
   systematic).
+- CPU quantized training (``use_quantized_grad`` on device_type=cpu) produces
+  constant/garbage models at num_grad_quant_bins >= 512 on any data tried
+  (AUC 0.500 flat; found 2026-08-01 while investigating the CUDA high-bins
+  corruption). Not investigated further -- we do not use the CPU quant path.
 - Latent race in the classic loop: child leaf-splits structs point into per-split
   scratch that the next split overwrites; masked only by per-split syncs (fixed here
   via point_structs_at_main + copy-event ordering).

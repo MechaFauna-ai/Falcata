@@ -456,8 +456,25 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
     // force row-wise for cuda version
     force_col_wise = false;
     force_row_wise = true;
-    if (deterministic) {
-      Log::Warning("Although \"deterministic\" is set, the results ran by GPU may be non-deterministic.");
+    if (deterministic && ResolvedQuantMode() == QuantMode::kNone) {
+      // quantized CUDA training IS deterministic (bit-identical across runs,
+      // machines and GPU models); only the non-quantized float-atomic path
+      // jitters. deterministic=true is an explicit opt-in to execution
+      // changes for reproducibility, so map it to the near-lossless
+      // deterministic mode instead of warning uselessly. The tree learner
+      // auto-raises the bin count to the finest safe resolution.
+      Log::Info("deterministic=true with device_type=cuda: using "
+                "quant_mode=fixedpoint (near-lossless, bit-reproducible across "
+                "runs, machines and GPU models). Set quant_mode explicitly to "
+                "override.");
+      quant_mode = std::string("fixedpoint");
+      use_quantized_grad = true;
+      if (num_grad_quant_bins == 4) {
+        // the 0->auto default resolved to the stochastic/none value of 4
+        // BEFORE this mapping ran; restore the auto sentinel so the tree
+        // learner's deterministic auto-raise picks the finest safe count
+        num_grad_quant_bins = 0;
+      }
     }
     if (!cegb_penalty_feature_lazy.empty()) {
       Log::Fatal("cegb_penalty_feature_lazy is not supported with device_type=\"cuda\". "

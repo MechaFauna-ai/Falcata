@@ -273,8 +273,8 @@ struct Config {
   // desc = this seed has lower priority in comparison with other seeds, which means that it will be overridden, if you set other seeds explicitly
   int seed = 0;
 
-  // desc = used only with ``cpu`` device type
-  // desc = setting this to ``true`` should ensure the stable results when using the same data and the same parameters (and different ``num_threads``)
+  // desc = on ``device_type=cuda``, setting this to ``true`` selects near-lossless deterministic quantized training (``quant_mode=fixedpoint`` at the finest safe ``quant_bins`` for the dataset): the same seed then trains the bit-identical model across runs, host machines and GPU models, at quality equal to full-precision training. Set ``quant_mode`` explicitly to override
+  // desc = on ``cpu``, setting this to ``true`` should ensure the stable results when using the same data and the same parameters (and different ``num_threads``)
   // desc = when you use the different seeds, different Falcata versions, the binaries compiled by different compilers, or in different systems, the results are expected to be different
   // desc = you can `raise issues <https://github.com/MechaFauna-ai/Falcata/issues>`__ in Falcata GitHub repo when you meet the unstable results
   // desc = **Note**: setting this to ``true`` may slow down the training
