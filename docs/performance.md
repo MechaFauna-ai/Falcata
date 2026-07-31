@@ -220,12 +220,24 @@ bit-identical in every cell):
   cache lines: +2.2% numerai-deep (the fill is genuinely bandwidth-bound, but
   it is a small slice of tree time — the +14% pre-measurement estimate did not
   survive contact with the profiler). VRAM-gated by the planner.
-- **`tuner`** — a per-tree bandit over the batched-construct saturation floor
-  (candidates {80,160,320,640}, best-of-15 timing, re-probe every 3000 trees):
-  +2.1% numerai-deep, +2.7% year. Quantized training only — integer histograms
-  make the model schedule-invariant, so retuning cannot change results. Under
-  `auto` it engages only at ≥300 rounds (the ~60-tree probe phase costs ~2% on
-  a 100-round run); `cuda_plan=auto,tuner:on` forces it regardless.
+- **`tuner`** — a per-tree bandit over behavior-preserving execution knobs,
+  best-of-15 timing, re-probe every 3000 trees: +2.1% numerai-deep, +2.7%
+  year from the saturation-floor knob alone. Quantized training only —
+  integer histograms make the model schedule-invariant, so retuning cannot
+  change results. Under `auto` it engages only at ≥300 rounds;
+  `cuda_plan=auto,tuner:on` forces it. Extended 2026-08-01 into the full
+  three-tier stack: **tier-0** seeds the candidate sets from the device
+  (floor candidates scale with SM count relative to the 5090 they were tuned
+  on); **tier-1** runs coordinate descent over two knobs (saturation floor
+  with an elastic bracket, and the quant small-leaf row threshold); and
+  **tier-3** persists the chosen values per (shape, device) signature to
+  `~/.cache/falcata/wisdom.txt` — retrains of the same workload skip the
+  ~130-tree probe phase and start at the known-best point (measured: +3% on
+  a numerai-deep 300-round retrain, covtype-deep 83.8 → 88.2 t/s), while the
+  periodic re-probe still verifies the cached choice against reality. (A
+  histogram-pipeline-count knob was considered and rejected: it only affects
+  the per-pair fallback path — the batched flow every real workload uses
+  runs on a single stream.)
 
 All four compose: **+10.5% on numerai-deep combined**. A methodology note the
 battery re-taught us: 100-round probe cells on fast datasets (year runs 0.4s)

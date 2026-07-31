@@ -16,35 +16,15 @@ figures from the profiles in the PR discussions.
 
 ## Performance
 
-- **Static planner (auto-tuner tier 0).** At Init the dataset shape (rows,
-  features, actual bins/feature) and config (num_leaves, max_depth, num_class,
-  iterations) determine: expected level geometry (leaf sizes ~ rows/2^level) -> grid
-  configs, small-leaf threshold, speculative bounds; histogram partition packing and
-  quant bit thresholds from the real bin histogram; pipeline selection; and a compact
-  per-tree histogram layout for feature_fraction runs (static version of the 161fe88b
-  dead-entry mask). Precedent: CPU Falcata's row/col-wise chooser, EFB, multi-val bin
-  packing. Decides only provable shape functions; supplies priors for the ambiguous
-  constants below (GPU cost models are brittle: the construct-floor cap gained
-  year/higgs 35% and regressed covtype 45% -- only measurement caught it).
-  UPDATE (investigated the spec's flagged §4 "highest-value win", compact-layout
-  pre-sizing): NOT pursued -- (a) the LRU-eviction cliff it targets does not occur on
-  realistic shapes (numerai 1000 trees: 23 instantiations vs 64 cache limit, 0 evictions,
-  0 disables; feature_fraction 0.05-0.5 all <64); (b) pre-sizing max_num_compact_cols
-  changes block_dim_y -> reorders non-quant float atomicAdds -> NOT bit-identical
-  (verified md5 flip). The other 12 tier-0 knobs remain valid. A bit-neutral variant
-  needs decoupling block_dim_y from block_dim_x (a launch refactor), only if a future
-  very-low-fraction/high-feature workload ever pushes distinct shape keys past 64.
-- **Runtime auto-tuner tier 1 — remaining knobs.** The saturation-floor bandit
-  landed 2026-07-31 (`tuner` plan key, default on at >=300 rounds: probe
-  {80,160,320,640}, best-of-15, re-probe every 3000 trees — +2.1% numerai-deep,
-  +2.7% year; see docs/performance.md). Still open: extending the same bandit to
-  the quant small-leaf threshold (landed 2026-07-31 as a fixed 1024-row cut,
-  +11.2% covtype-deep -- the bandit could tune the cut per shape) and hist
-  pipeline count — plus hysteresis vs noise and decision logging for
-  multi-knob runs. (The selective speculation-policy knob is dead: see the
-  churn-deferral entry in perf-dead-ends.md.)
-- **Runtime auto-tuner tier 3 -- persisted tuning cache**: store best-found configs
-  keyed by dataset-shape signature (FFTW-wisdom style) so retrains skip exploration.
+- **Static planner (tier-0, remaining shape priors).** Device-side seeding
+  landed 2026-08-01 (SM-scaled tuner candidates + per-(shape,device) wisdom
+  cache; see docs/performance.md). Still open: purely shape-derived priors
+  decided at Init — expected level geometry (leaf sizes ~ rows/2^level) for
+  grid configs and speculative bounds, and quant bit thresholds from the
+  real bin histogram. Cost-model caution stands: the construct-floor cap
+  gained year/higgs 35% and regressed covtype 45% — only measurement catches
+  such reversals, which is why the runtime bandit is the primary mechanism
+  and static priors only seed it.
 - **Multi-target training.** Two variants: (1)
   round-robin one-tree-per-target (multiclass machinery minus softmax) -- identical
   models to sequential training, but only ~1.1x/target now that construct is cheap;
