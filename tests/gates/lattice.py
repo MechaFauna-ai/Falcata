@@ -318,7 +318,7 @@ def build_profile(name):
                      "min_data_in_leaf": 40000, "num_leaves": 8192, "max_depth": 11,
                      "num_grad_quant_bins": 64})
     elif name == "tinygrad":
-        # numerai-production regime shrunk to lattice scale: near-constant
+        # numerai-deep example regime shrunk to lattice scale: near-constant
         # [0,1] target, tiny learning rate, max_bin=5 -- the leaf-collapse /
         # quant-scale-underflow class (2026-07 fixedpoint 44-trees bug lived
         # here at FULL scale; the full-scale twin is canonical.py numerai-treecount)

@@ -2,7 +2,7 @@
 
 The per-commit lattice cannot resolve single-digit-percent perf regressions
 (1-second cells, +/-10% noise). This tier trains REAL bench-cache datasets at
-production-like scale, 3 repeats, median construct/train per cell -- enough
+full benchmark scale, 3 repeats, median construct/train per cell -- enough
 resolution for the ~2%-class regressions that so far only same-session A/B
 caught (e.g. the colcap non-quant regression, fixed in 35a7e683, whose shape
 is the numerai-nonquant-fp32 cell here).
