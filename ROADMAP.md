@@ -68,11 +68,6 @@ figures from the profiles in the PR discussions.
   is scattered-read latency-bound (19ms/tree). The non-JIT 2-columns-per-thread step
   landed 2026-07-31 (`wide_partitions`, +8.8% numerai-deep); the remaining headroom
   (~10x feature packing with per-feature bin counts baked in) is NVRTC tier 2.
-- [ ] **Quant one-sync parity.** The quantized path still uses the two-sync level flow;
-  extend the one-sync speculative pipeline to it. Also investigate the per-tree gradient
-  discretization cost on many-tree/small-tree configs (numerai-quant is slower than
-  non-quant today).
-
 - [ ] **Multi-target training (not urgent, per Felix).** Two variants: (1)
   round-robin one-tree-per-target (multiclass machinery minus softmax) -- identical
   models to sequential training, but only ~1.1x/target now that construct is cheap;
@@ -108,6 +103,20 @@ figures from the profiles in the PR discussions.
 ## Inference
 
 ## Correctness / determinism
+
+- [ ] **Cross-GPU bit-identity for stochastic quant at quant_bins > 4.** Measured
+  2026-07-31 (5090 sm_120 vs rented 4070S sm_89): 38/39 lattice cells bit-identical
+  across GPU models; fixedpoint (all bin counts) and stochastic-4 match exactly.
+  Stochastic 16/32/64 diverges from tree ~5: identical STRUCTURE, split gains off in
+  the 6th digit, one leaf value off ~1e-9 (bigrow bisect, scratch scripts preserved in
+  the session). Mechanism: the leaf-splits init reduction sums raw float gradients on
+  a grid shaped by SM count -- per-device-deterministic but different summation order
+  across devices; stochastic rounding then amplifies the ULP drift (bucket boundaries
+  16x coarser at 4 bins = why the default matches). Fix sketch: fix the reduction
+  grid shape (SM-count-independent block count) for every float sum feeding the model
+  (leaf-splits init, boost_from_average) -> bit-identical models across ALL CUDA GPUs,
+  all quant modes. Cost ~nothing (init-time reductions). NOTE: flips every md5
+  baseline -> full lattice re-baseline in the same commit; needs Felix's go.
 
 - [ ] **Deterministic non-quant CUDA mode** (deprioritized: determinism is a
   verification tool here, not a production requirement -- quant mode already provides
