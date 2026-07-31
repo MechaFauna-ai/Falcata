@@ -124,6 +124,10 @@ struct FalcataPlan {
   // --- baked tuning constants (no keys) ------------------------------------
   int batch_construct_min_rows_per_thread = 64;
   int batch_construct_saturation_floor = 160;
+  // quant small-leaf direct-kernel row threshold (0 = off). Behavior-
+  // preserving at any value (order-invariant integer atomics), so the
+  // runtime tuner may retune it mid-training like the saturation floor.
+  int quant_small_leaf_rows = 1024;
   int construct_column_cap = -1;    // -1 = auto sizing
 
   // --- resolved facts from Config (no keys; inputs to auto decisions) -------

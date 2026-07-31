@@ -2751,9 +2751,11 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     // impact on the regular hot kernel. Bit-identical (order-invariant integer
     // atomics; the lattice quant fingerprints pin it). Skipped during graph
     // capture (the captured body must be the general kernel).
-    if (SmallLeafConstructEnabled() &&
+    const data_size_t small_leaf_rows =
+      static_cast<data_size_t>(FalcataPlan::Get().quant_small_leaf_rows);
+    if (SmallLeafConstructEnabled() && small_leaf_rows > 0 &&
         hybrid_graph_capture_gstate_ == nullptr &&
-        max_num_data_in_smaller_leaf <= static_cast<data_size_t>(kQuantSmallLeafRows)) {
+        max_num_data_in_smaller_leaf <= small_leaf_rows) {
       const int8_t* feat_used =
         any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr;
       if (use_compact_view_) {

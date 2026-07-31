@@ -7,6 +7,11 @@
 
 #ifdef USE_CUDA
 
+#include <sys/stat.h>
+#include <cerrno>
+#include <fstream>
+#include <map>
+
 #include "cuda_single_gpu_tree_learner.hpp"
 
 #include <Falcata/cuda/cuda_tree.hpp>
@@ -146,6 +151,9 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   }
   if (fixedpoint_quant_) {
     Log::Info("quant_mode=fixedpoint: non-stochastic quant with %d bins", effective_quant_bins_);
+  }
+  if (TunerActive()) {
+    TunerInitSeeds();
   }
   // cuda_precision=fp32 engages both fp32 switches (histogram storage + gain
   // math). They were only ever measured -- and only ever win -- together, so
@@ -2358,27 +2366,124 @@ void CUDASingleGPUTreeLearner::TrainSelective(CUDATree* tree) {
 bool CUDASingleGPUTreeLearner::TunerActive() const {
   const auto& plan = FalcataPlan::Get();
   if (!plan.tuner || !config_->use_quantized_grad) return false;
-  // the probe phase costs ~60 trees; under auto, skip runs too short to
-  // amortize it (measured -1.9% on year @100 rounds, +2.7% @500)
+  // the probe phase costs ~60 trees per knob; under auto, skip runs too
+  // short to amortize it (measured -1.9% on year @100 rounds, +2.7% @500)
   if (!plan.tuner_explicit && config_->num_iterations < 300) return false;
   return true;
+}
+
+// ---- tier-0 seed + tier-3 wisdom -----------------------------------------
+// Seed: scale the floor candidates by the device's SM count relative to the
+// RTX 5090 they were tuned on (the elastic bracket would find the range
+// anyway; seeding just starts the probe near the right octave).
+// Wisdom: persist the chosen knob values keyed by (shape, device) so
+// retrains of the same workload start from the known-best point instead of
+// re-probing from scratch (FFTW-wisdom style; the periodic re-probe still
+// verifies the cached choice against reality).
+static const char* TunerWisdomPath() {
+  static std::string path = []() {
+    const char* home = std::getenv("HOME");
+    return std::string(home ? home : "/tmp") + "/.cache/falcata/wisdom.txt";
+  }();
+  return path.c_str();
+}
+
+std::string CUDASingleGPUTreeLearner::TunerWisdomKey() const {
+  char buf[160];
+  snprintf(buf, sizeof(buf), "v1:%d:%d:%d:%d:%d:%d",
+           num_data_, train_data_->num_features(), config_->num_leaves,
+           config_->max_depth, effective_quant_bins_, tuner_device_sm_count_);
+  return std::string(buf);
+}
+
+void CUDASingleGPUTreeLearner::TunerInitSeeds() {
+  TierOneTuner& t = tuner_;
+  cudaDeviceProp prop{};
+  if (cudaGetDeviceProperties(&prop, gpu_device_id_ < 0 ? 0 : gpu_device_id_) == cudaSuccess) {
+    tuner_device_sm_count_ = prop.multiProcessorCount;
+    if (prop.multiProcessorCount > 0 && prop.multiProcessorCount != 170) {
+      const double scale = prop.multiProcessorCount / 170.0;
+      for (int& cand : t.candidates[0]) {
+        cand = std::max(TierOneTuner::kFloorMin,
+                        std::min(TierOneTuner::kFloorMax,
+                                 static_cast<int>(cand * scale + 0.5)));
+      }
+    }
+  }
+  // wisdom lookup: exact shape+device hit -> adopt the cached values as the
+  // exploited choice and defer the first probe to the periodic re-probe
+  std::ifstream in(TunerWisdomPath());
+  if (!in.good()) return;
+  const std::string want = TunerWisdomKey();
+  std::string key; int floor_v = 0, slr_v = 0;
+  while (in >> key >> floor_v >> slr_v) {
+    if (key != want) continue;
+    auto adopt = [](std::vector<int>* cands, const int v) {
+      auto it = std::find(cands->begin(), cands->end(), v);
+      if (it == cands->end()) { cands->push_back(v); it = cands->end() - 1; }
+      return static_cast<int>(it - cands->begin());
+    };
+    t.chosen[0] = adopt(&t.candidates[0], floor_v);
+    t.chosen[1] = adopt(&t.candidates[1], slr_v);
+    t.next_probe_at = TierOneTuner::kReprobeEvery;
+    t.seeded_from_wisdom = true;
+    Log::Debug("[tuner] wisdom hit: floor=%d small_leaf_rows=%d (re-verify at tree %d)",
+               floor_v, slr_v, t.next_probe_at);
+    return;
+  }
+}
+
+void CUDASingleGPUTreeLearner::TunerSaveWisdom() {
+  const TierOneTuner& t = tuner_;
+  if (t.chosen[0] < 0 || t.chosen[1] < 0) return;
+  const std::string key = TunerWisdomKey();
+  const int floor_v = t.candidates[0][t.chosen[0]];
+  const int slr_v = t.candidates[1][t.chosen[1]];
+  // read-modify-write with rename for crash safety; best effort (races with
+  // a concurrent trainer at worst lose one update)
+  std::map<std::string, std::pair<int, int>> all;
+  {
+    std::ifstream in(TunerWisdomPath());
+    std::string k; int a = 0, b = 0;
+    while (in >> k >> a >> b) all[k] = {a, b};
+  }
+  all[key] = {floor_v, slr_v};
+  const std::string path = TunerWisdomPath();
+  const std::string dir = path.substr(0, path.find_last_of('/'));
+  if (::mkdir(dir.c_str(), 0755) != 0 && errno != EEXIST) {
+    return;  // cache dir unavailable: wisdom is best-effort
+  }
+  const std::string tmp = path + ".tmp";
+  {
+    std::ofstream out(tmp);
+    for (const auto& kv : all) {
+      out << kv.first << " " << kv.second.first << " " << kv.second.second << "\n";
+    }
+  }
+  ::rename(tmp.c_str(), path.c_str());
 }
 
 void CUDASingleGPUTreeLearner::TunerBeforeTree() {
   if (!TunerActive()) return;
   TierOneTuner& t = tuner_;
   if (t.tree_index >= t.next_probe_at && t.probe_slot < 0) {
-    // start (re-)probe round
+    // start a (re-)probe cycle at knob 0
+    t.knob = 0;
     t.probe_slot = 0;
     t.probe_tree = 0;
     t.cur_best = 1e30;
-    t.best_of_candidate.assign(t.candidates.size(), 1e30);
+    t.best_of_candidate.assign(t.candidates[0].size(), 1e30);
   }
-  if (t.probe_slot >= 0) {
-    FalcataPlan::Mutable().batch_construct_saturation_floor = t.candidates[t.probe_slot];
-  } else if (t.chosen >= 0) {
-    FalcataPlan::Mutable().batch_construct_saturation_floor = t.candidates[t.chosen];
-  }
+  auto& plan = FalcataPlan::Mutable();
+  // knob values: the currently-probed candidate for the active knob, the
+  // exploited choice (or compile-time default) for the other
+  const auto value_for = [&t](const int knob) {
+    if (t.probe_slot >= 0 && t.knob == knob) return t.candidates[knob][t.probe_slot];
+    if (t.chosen[knob] >= 0) return t.candidates[knob][t.chosen[knob]];
+    return knob == 0 ? 160 : 1024;  // pre-first-probe defaults
+  };
+  plan.batch_construct_saturation_floor = value_for(0);
+  plan.quant_small_leaf_rows = value_for(1);
 }
 
 void CUDASingleGPUTreeLearner::TunerAfterTree(double tree_seconds) {
@@ -2392,31 +2497,41 @@ void CUDASingleGPUTreeLearner::TunerAfterTree(double tree_seconds) {
     t.best_of_candidate[t.probe_slot] = t.cur_best;
     t.cur_best = 1e30;
     t.probe_tree = 0;
-    if (++t.probe_slot >= static_cast<int>(t.candidates.size())) {
+    std::vector<int>& cands = t.candidates[t.knob];
+    if (++t.probe_slot >= static_cast<int>(cands.size())) {
       const int best = static_cast<int>(std::min_element(t.best_of_candidate.begin(),
         t.best_of_candidate.end()) - t.best_of_candidate.begin());
-      // Elastic bracket: the initial candidate set is tuned around one GPU
-      // model; if the winner sits on an edge of the set, the optimum for this
-      // silicon may lie beyond it. Extend geometrically (bounded) and keep
-      // probing instead of settling.
-      if (best == static_cast<int>(t.candidates.size()) - 1 &&
-          t.candidates.back() < TierOneTuner::kFloorMax) {
-        t.candidates.push_back(t.candidates.back() * 2);
-        t.best_of_candidate.push_back(1e30);
-        return;  // probe_slot now indexes the appended candidate
+      // Elastic bracket (floor knob only): if the winner sits on an edge of
+      // the set, the optimum for this silicon may lie beyond it. Extend
+      // geometrically (bounded) and keep probing instead of settling.
+      if (t.knob == 0) {
+        if (best == static_cast<int>(cands.size()) - 1 &&
+            cands.back() < TierOneTuner::kFloorMax) {
+          cands.push_back(cands.back() * 2);
+          t.best_of_candidate.push_back(1e30);
+          return;  // probe_slot now indexes the appended candidate
+        }
+        if (best == 0 && cands.front() > TierOneTuner::kFloorMin) {
+          cands.insert(cands.begin(), cands.front() / 2);
+          t.best_of_candidate.insert(t.best_of_candidate.begin(), 1e30);
+          t.probe_slot = 0;  // probe the prepended candidate
+          return;
+        }
       }
-      if (best == 0 && t.candidates.front() > TierOneTuner::kFloorMin) {
-        t.candidates.insert(t.candidates.begin(), t.candidates.front() / 2);
-        t.best_of_candidate.insert(t.best_of_candidate.begin(), 1e30);
-        t.probe_slot = 0;  // probe the prepended candidate
+      t.chosen[t.knob] = best;
+      if (t.knob + 1 < TierOneTuner::kNumKnobs) {
+        // coordinate descent: next knob probes with this knob at its best
+        ++t.knob;
+        t.probe_slot = 0;
+        t.best_of_candidate.assign(t.candidates[t.knob].size(), 1e30);
         return;
       }
-      // probe round complete: exploit the fastest candidate
+      // full cycle complete: exploit and persist
       t.probe_slot = -1;
-      t.chosen = best;
       t.next_probe_at = t.tree_index + TierOneTuner::kReprobeEvery;
-      Log::Debug("[tuner] saturation_floor=%d chosen (per-tree best %.3fms; re-probe at tree %d)",
-                 t.candidates[t.chosen], t.best_of_candidate[t.chosen] * 1e3, t.next_probe_at);
+      Log::Debug("[tuner] chosen floor=%d small_leaf_rows=%d (re-probe at tree %d)",
+                 t.candidates[0][t.chosen[0]], t.candidates[1][t.chosen[1]], t.next_probe_at);
+      TunerSaveWisdom();
     }
   }
 }

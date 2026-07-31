@@ -403,24 +403,39 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     static constexpr int kWarmupTrees = 10;
     static constexpr int kTreesPerCandidate = 15;
     static constexpr int kReprobeEvery = 3000;
-    // elastic-bracket bounds: if a probe round's winner is an endpoint the
-    // candidate set grows geometrically toward it (other GPU models want
-    // floors outside the 5090-tuned initial set)
+    // elastic-bracket bounds for the floor knob: if a probe round's winner is
+    // an endpoint the candidate set grows geometrically toward it (other GPU
+    // models want floors outside the 5090-tuned initial set)
     static constexpr int kFloorMin = 10;
     static constexpr int kFloorMax = 5120;
-    std::vector<int> candidates{80, 160, 320, 640};
+    static constexpr int kNumKnobs = 2;
+    // knob 0: batched-construct saturation floor (elastic bracket).
+    // knob 1: quant small-leaf direct-kernel row threshold (0 = off). Both
+    // are behavior-preserving, so retuning cannot change the model.
+    std::vector<int> candidates[kNumKnobs] = {
+      {80, 160, 320, 640},
+      {0, 256, 1024, 4096},
+    };
     std::vector<double> best_of_candidate;
+    int knob = 0;             // knob currently being probed
     int tree_index = 0;
     int probe_slot = -1;      // candidate index being probed; -1 = exploiting
     int probe_tree = 0;       // trees measured for the current candidate
     double cur_best = 1e30;   // best per-tree seconds within current candidate
-    int chosen = -1;          // exploited candidate index
+    int chosen[kNumKnobs] = {-1, -1};  // exploited candidate index per knob
     int next_probe_at = kWarmupTrees;
+    bool seeded_from_wisdom = false;
   };
   TierOneTuner tuner_;
   bool TunerActive() const;
   void TunerBeforeTree();
   void TunerAfterTree(double tree_seconds);
+  // tier-0 seed (device-scaled candidates) + tier-3 wisdom cache (persisted
+  // best-found knob values keyed by shape+device signature)
+  void TunerInitSeeds();
+  std::string TunerWisdomKey() const;
+  void TunerSaveWisdom();
+  int tuner_device_sm_count_ = 0;
   int effective_quant_bins_ = 0;
 
   // CUDA components for tree training
