@@ -38,17 +38,27 @@ figures from the profiles in the PR discussions.
   want (MultiRMSE-style). Modeling change: validate per-era, don't assume. FIL
   predict falls back to CPU for vector-leaf models initially (treelite support).
 
-- **Hybrid coverage extensions.** The hybrid/graph fast paths currently fall
-  back to the classic loop for: categorical features (variable-length bitset
-  payloads vs the fixed 18-int split slabs -- first one worth lifting), NCCL
-  multi-GPU (level batching would mean ONE all-reduce per level instead of one per
-  split -- promising but unverifiable on a single-GPU box), interaction
-  constraints/select_features_by_node (per-node masks; the 161fe88b bin-used-mask
-  machinery is the natural vehicle), forced splits (a depth-wise prescription that
-  bypasses gain selection), linear trees (leaf renumbering vs per-leaf model
-  bookkeeping). Each lift needs its own verification gates; fallbacks are the
-  md5-reference classic loop, so correctness is never at risk.
-
+- **Hybrid coverage extensions.** The hybrid/graph fast paths fall back to
+  the classic loop for several feature classes; scoped 2026-08-01:
+  - **Categorical features — the priority lift, prize now MEASURED: ~4.8×**
+    (controlled same-data hybrid vs classic at 1M×30, 255 leaves: 250 vs
+    52.5 t/s — this machinery gap is what every categorical workload pays).
+    Worse than the fallback: categorical + quantized training is a hard
+    REFUSAL ("not supported yet"), so categorical users get neither of the
+    fork's two headline wins. Lift plan: (1) variable-length categorical
+    bitset payloads through the batched apply path (the fixed 18-int split
+    slabs need either a side-band bitset arena indexed per split, or a
+    cap-and-fallback for pathological cardinalities); (2) quant support
+    needs the categorical split finder taught to read integer histograms
+    (same dequant scheme as numerical); (3) own equality gates vs the
+    classic loop (the lattice `categorical/nonquant` cell exists; add a
+    categorical fingerprint cell once quant-categorical exists).
+  - NCCL multi-GPU level batching (ONE all-reduce per level): promising but
+    unverifiable on this single-GPU box; revisit with a rented multi-GPU
+    instance.
+  - Interaction constraints / select_features_by_node (per-node masks via
+    the bin-used-mask machinery), forced splits, linear trees: fallback-
+    covered, no measured demand; lift on request.
 ## Inference
 
 ## Correctness / determinism
