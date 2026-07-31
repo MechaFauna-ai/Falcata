@@ -178,21 +178,53 @@ opt-out.
 
 ## 9. How this adds up against other libraries
 
-From the 2026-07 benchmark suite (RTX 5090, aligned hyperparameters, medians
-of 3, failures flagged rather than hidden):
+From the 2026-07 benchmark suite: RTX 5090, aligned hyperparameters
+(gbm-bench convention), medians of 3 timed runs, held-out quality reported
+for every number. Falcata's `quant_mode` is a user-facing dial, so each row
+quotes the variant that matches or beats the competitor's quality — the
+speedup is never bought with quality the user wouldn't accept.
 
-- **numerai-deep**: Falcata 32.4 trees/s; upstream LightGBM, XGBoost and
-  CatBoost all fail (crash/OOM/timeout) at this scale.
-- **numerai-example**: Falcata 51.3 trees/s vs CatBoost 17.5 (2.9×), with
-  better holdout correlation; LightGBM-CUDA and XGBoost failed at warmup
-  (XGBoost's failure was our harness's predict OOM, since fixed).
-- **Classic datasets (deep)**: 1.8× vs best competitor on covtype, 1.2× on
-  higgs, 1.7× on epsilon, 2.2× on year (shallow).
-- Peak memory: Falcata trains numerai-deep in ~14GB VRAM; CatBoost needed
-  ~30GB VRAM + 112GB anonymous host RAM for the same regime.
+**The flagship workload (numerai, official example params — 2000 trees on
+5.4M×3555):**
 
-Full tables, charts, environment manifest and the failure ledger:
-`~/Documents/exaboost-bench/report/REPORT.md`.
+| vs | speedup | quality (era corr) |
+|---|---|---|
+| upstream LightGBM (OpenCL GPU) | **6.2×** | 0.0198 vs 0.0198 — identical |
+| XGBoost (CUDA) | **7.8×** | 0.0198 vs 0.0194 — better |
+| CatBoost (CUDA) | **2.9×** | 0.0198 vs 0.0182 — better |
+
+**Classic gbm-bench datasets** (speedup at matched-or-better quality;
+falcata variant in parentheses):
+
+| dataset / regime | vs LightGBM-OCL | vs XGBoost | vs CatBoost |
+|---|---|---|---|
+| higgs shallow (stoch) | **15.7×** (=AUC) | 1.2× (=AUC) | 3.0× (better) |
+| higgs deep (stoch) | **12.2×** (=AUC) | 1.2× (=AUC) | 2.4× (better) |
+| year deep (fixed) | **7.9×** | **2.9×** (better RMSE) | 2.8×¹ |
+| epsilon shallow (stoch) | 3.3× (=AUC) | 1.9× (=AUC) | 2.3× (=AUC) |
+| covtype deep (fixed) | —² | **1.4×** (better acc: .971 vs .963) | 1.6× (better) |
+| fraud deep (fixed) | —² | ~par speed, **best AUC of any library** (.9846) | **10.5×** (better) |
+
+¹ CatBoost reaches slightly better RMSE on year-deep (8.93 vs 8.97) at 2.8×
+the time; falcata-noquant closes most of the gap at still-lower time.
+² Upstream LightGBM produced invalid models on these cells (see last bullet).
+
+**The deep end nobody else finishes**: on the numerai *production* config
+(30k trees, 1024 leaves, 5.4M×3555), falcata-fixed trains at **32.4
+trees/s** (~15 minutes total) with corr 0.0232. No other library completes
+this regime at all.
+
+**Resources**: falcata trains numerai-deep in ~14GB VRAM with reclaimable
+memmap reads; CatBoost's working numerai run needed ~30GB VRAM (the whole
+card) plus ~112GB of anonymous host RAM.
+
+**Competitor failures** (flagged, never silently averaged): upstream
+LightGBM 4.7.0's CUDA backend is broken on this hardware/scale — garbage
+models on fraud/covtype-deep and hard CUDA crashes on higgs/numerai — and
+its quantized mode produces invalid models everywhere; its legacy OpenCL
+backend (benchmarked above) works but trails by 3–16×. XGBoost and CatBoost
+crash (OOM / kernel timeout) on the numerai-deep regime. Full failure
+ledger with per-cell errors: the benchmark report.
 
 ---
 
