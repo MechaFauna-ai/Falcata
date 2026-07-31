@@ -351,6 +351,60 @@ void LaunchFillCompactData4BitKernel(
     bs_dst_byte, bs_dst_stride, total_byte_slots, num_data);
 }
 
+// One-time nibble transpose: packed row-major bin matrix -> global
+// column-major nibbles (column c occupies nibbles [c*num_data_pad,
+// c*num_data_pad + num_data)). Scattered reads, contiguous writes; runs once
+// at Init when cuda_plan key colmajor_fill is eligible. The per-tree compact
+// fill then reads columns CONTIGUOUSLY (stride-1 nibble metadata) instead of
+// dragging every row sector through the memory system (~10x less fill
+// traffic at feature_fraction=0.1).
+__global__ void CUDATransposeToColMajorNibbleKernel(
+  const uint8_t* __restrict__ src_data,
+  uint8_t* __restrict__ colmajor_data,
+  const size_t* __restrict__ col_src_nib_base,
+  const int* __restrict__ col_src_stride_nib,
+  const int num_columns,
+  const data_size_t num_data,
+  const size_t num_data_pad) {
+  const int col = blockIdx.x * blockDim.x + threadIdx.x;
+  if (col >= num_columns) return;
+  const size_t src_base = col_src_nib_base[col];
+  const size_t src_stride = static_cast<size_t>(col_src_stride_nib[col]);
+  const size_t dst_base = static_cast<size_t>(col) * num_data_pad;
+  const data_size_t row_stride = static_cast<data_size_t>(gridDim.y) * static_cast<data_size_t>(blockDim.y);
+  // two rows per destination byte: each thread owns even rows and packs pairs
+  for (data_size_t r2 = (blockIdx.y * blockDim.y + threadIdx.y) * 2; r2 < num_data; r2 += row_stride * 2) {
+    const size_t nib0 = src_base + static_cast<size_t>(r2) * src_stride;
+    const uint8_t lo = (src_data[nib0 >> 1] >> ((nib0 & 1) << 2)) & 0xf;
+    uint8_t hi = 0;
+    if (r2 + 1 < num_data) {
+      const size_t nib1 = src_base + static_cast<size_t>(r2 + 1) * src_stride;
+      hi = (src_data[nib1 >> 1] >> ((nib1 & 1) << 2)) & 0xf;
+    }
+    colmajor_data[(dst_base + static_cast<size_t>(r2)) >> 1] = static_cast<uint8_t>(lo | (hi << 4));
+  }
+}
+
+void LaunchTransposeToColMajorNibbleKernel(
+  const uint8_t* src_data,
+  uint8_t* colmajor_data,
+  const size_t* col_src_nib_base,
+  const int* col_src_stride_nib,
+  int num_columns,
+  data_size_t num_data,
+  size_t num_data_pad) {
+  const int TX = 32;
+  const int TY = 16;
+  int grid_y = static_cast<int>(((num_data + 1) / 2 + TY - 1) / TY);
+  if (grid_y > 32768) grid_y = 32768;
+  dim3 block_dim(TX, TY);
+  dim3 grid_dim((num_columns + TX - 1) / TX, grid_y);
+  CUDATransposeToColMajorNibbleKernel<<<grid_dim, block_dim>>>(
+    src_data, colmajor_data, col_src_nib_base, col_src_stride_nib,
+    num_columns, num_data, num_data_pad);
+  CUDASUCCESS_OR_FATAL(cudaDeviceSynchronize());
+}
+
 // Codec fill (pack_bit3 / pack_radix5 / pack_radix6): transcode the tree's
 // sampled columns from the 4-bit source row matrix into CODEC-packed uint32
 // words. One thread per (destination word slot, row group): a word slot is a
@@ -1182,19 +1236,39 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
   const data_size_t remainder = block_num_data % blockDim.y;
   const data_size_t num_iteration_this = remainder == 0 ? num_iteration_total : num_iteration_total - static_cast<data_size_t>(threadIdx_y >= remainder);
   data_size_t inner_data_index = static_cast<data_size_t>(threadIdx_y);
+  // Wide partitions (cuda_plan key wide_partitions): a partition may hold up
+  // to 2x blockDim.x columns; each thread then covers a second column at
+  // threadIdx.x + blockDim.x. Narrow partitions predicate col2 off entirely.
+  // The row walk runs ONCE (grad read shared by both columns); integer atomics
+  // keep the extra update order-invariant, so results stay bit-identical.
   const int column_index = static_cast<int>(threadIdx.x) + partition_column_start;
-  if (threadIdx.x < static_cast<unsigned int>(num_columns_in_partition) &&
-      (is_feature_used_bytree == nullptr || is_feature_used_bytree[column_index])) {
+  const unsigned int col2_local = threadIdx.x + blockDim.x;
+  const int column_index2 = static_cast<int>(col2_local) + partition_column_start;
+  const bool use1 = threadIdx.x < static_cast<unsigned int>(num_columns_in_partition) &&
+      (is_feature_used_bytree == nullptr || is_feature_used_bytree[column_index]);
+  const bool use2 = col2_local < static_cast<unsigned int>(num_columns_in_partition) &&
+      (is_feature_used_bytree == nullptr || is_feature_used_bytree[column_index2]);
+  if (use1 || use2) {
     // per-column extraction constants resolved once (register-resident through
     // the row loop; a per-row table lookup runs from thread-local memory)
-    const typename PACK::Cursor pack_cursor = PACK::Prepare(threadIdx.x);
-    int32_t* shared_hist_ptr = shared_hist_packed + (column_hist_offsets[column_index]);
+    const typename PACK::Cursor pack_cursor = PACK::Prepare(use1 ? threadIdx.x : col2_local);
+    const typename PACK::Cursor pack_cursor2 = PACK::Prepare(use2 ? col2_local : threadIdx.x);
+    int32_t* shared_hist_ptr = shared_hist_packed +
+      (column_hist_offsets[use1 ? column_index : column_index2]);
+    int32_t* shared_hist_ptr2 = shared_hist_packed +
+      (column_hist_offsets[use2 ? column_index2 : column_index]);
     for (data_size_t i = 0; i < num_iteration_this; ++i) {
       const data_size_t data_index = data_indices_ref_this_block[inner_data_index];
       const int32_t grad_and_hess = cuda_gradients_and_hessians[data_index];
-      const uint32_t bin = PACK::ExtractAt(data_ptr + static_cast<size_t>(data_index) * row_stride, pack_cursor);
-      int32_t* pos_ptr = shared_hist_ptr + bin;
-      atomicAdd_block(pos_ptr, grad_and_hess);
+      const BIN_TYPE* row_base = data_ptr + static_cast<size_t>(data_index) * row_stride;
+      if (use1) {
+        const uint32_t bin = PACK::ExtractAt(row_base, pack_cursor);
+        atomicAdd_block(shared_hist_ptr + bin, grad_and_hess);
+      }
+      if (use2) {
+        const uint32_t bin = PACK::ExtractAt(row_base, pack_cursor2);
+        atomicAdd_block(shared_hist_ptr2 + bin, grad_and_hess);
+      }
       inner_data_index += blockDim.y;
     }
   }
@@ -2502,7 +2576,10 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     // quant_bins (the 2026-07 "fixedpoint stops after 44 trees" production
     // corruption: quant_bins=64, 6.8M rows, feature_fraction 0.1);
     // num_grad_quant_bins == 0 (non-quantized) reduces to the plain formula.
-    block_dim_x = std::max(1, max_num_compact_cols_per_partition_);
+    {
+      const int cc = std::max(1, max_num_compact_cols_per_partition_);
+      block_dim_x = cc > NUM_THREADS_PER_BLOCK ? (cc + 1) / 2 : cc;
+    }
     block_dim_y = std::max(1, NUM_THREADS_PER_BLOCK / block_dim_x);
     grid_dim_y = HybridBatchedConstructGridDimYQuant(
       max_num_data_in_smaller_leaf, num_pairs, block_dim_y, min_grid_dim_y_,
@@ -2929,7 +3006,10 @@ void CUDAHistogramConstructor::HybridGraphConstructDims(int* grid_x, int* block_
   if (use_compact_view_) {
     // mirror of LaunchConstructHistogramBatchedKernelInner0's compact override
     // (per-tree shape: the graph key includes it, one instance per shape)
-    block_dim_x = std::max(1, max_num_compact_cols_per_partition_);
+    {
+      const int cc = std::max(1, max_num_compact_cols_per_partition_);
+      block_dim_x = cc > NUM_THREADS_PER_BLOCK ? (cc + 1) / 2 : cc;
+    }
     block_dim_y_local = std::max(1, NUM_THREADS_PER_BLOCK / block_dim_x);
   }
   *grid_x = grid_dim_x;

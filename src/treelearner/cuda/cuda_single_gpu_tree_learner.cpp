@@ -2313,8 +2313,50 @@ void CUDASingleGPUTreeLearner::TrainSelective(CUDATree* tree) {
   global_timer.Stop("CUDASingleGPUTreeLearner::TrainSelective");
 }
 
+void CUDASingleGPUTreeLearner::TunerBeforeTree() {
+  if (!FalcataPlan::Get().tuner || !config_->use_quantized_grad) return;
+  TierOneTuner& t = tuner_;
+  if (t.tree_index >= t.next_probe_at && t.probe_slot < 0) {
+    // start (re-)probe round
+    t.probe_slot = 0;
+    t.probe_tree = 0;
+    t.cur_best = 1e30;
+    t.best_of_candidate.assign(t.candidates.size(), 1e30);
+  }
+  if (t.probe_slot >= 0) {
+    FalcataPlan::Mutable().batch_construct_saturation_floor = t.candidates[t.probe_slot];
+  } else if (t.chosen >= 0) {
+    FalcataPlan::Mutable().batch_construct_saturation_floor = t.candidates[t.chosen];
+  }
+}
+
+void CUDASingleGPUTreeLearner::TunerAfterTree(double tree_seconds) {
+  if (!FalcataPlan::Get().tuner || !config_->use_quantized_grad) return;
+  TierOneTuner& t = tuner_;
+  ++t.tree_index;
+  if (t.probe_slot < 0) return;
+  // best-of (not mean): robust to interference spikes on a shared GPU
+  t.cur_best = std::min(t.cur_best, tree_seconds);
+  if (++t.probe_tree >= TierOneTuner::kTreesPerCandidate) {
+    t.best_of_candidate[t.probe_slot] = t.cur_best;
+    t.cur_best = 1e30;
+    t.probe_tree = 0;
+    if (++t.probe_slot >= static_cast<int>(t.candidates.size())) {
+      // probe round complete: exploit the fastest candidate
+      t.probe_slot = -1;
+      t.chosen = static_cast<int>(std::min_element(t.best_of_candidate.begin(),
+        t.best_of_candidate.end()) - t.best_of_candidate.begin());
+      t.next_probe_at = t.tree_index + TierOneTuner::kReprobeEvery;
+      Log::Debug("[tuner] saturation_floor=%d chosen (per-tree best %.3fms; re-probe at tree %d)",
+                 t.candidates[t.chosen], t.best_of_candidate[t.chosen] * 1e3, t.next_probe_at);
+    }
+  }
+}
+
 Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   const score_t* hessians, bool is_first_tree) {
+  TunerBeforeTree();
+  const auto tuner_t0 = std::chrono::steady_clock::now();
   gradients_ = gradients;
   hessians_ = hessians;
   global_timer.Start("CUDASingleGPUTreeLearner::BeforeTrain");
@@ -2479,6 +2521,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     CalculateLinearCUDA(tree.get(), gradients_, hessians_, is_first_tree);
     last_tree_is_linear_ = true;
   }
+  TunerAfterTree(std::chrono::duration<double>(std::chrono::steady_clock::now() - tuner_t0).count());
   return tree.release();
 }
 

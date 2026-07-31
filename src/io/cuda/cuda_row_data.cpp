@@ -280,6 +280,12 @@ void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingSha
     if (cap >= 0) {
       return cap;  // explicit plan-constant cap
     }
+    if (FalcataPlan::Get().wide_partitions && FalcataPlan::Get().quant_training) {
+      // wide partitions (cuda_plan key): let few-bin partitions hold up to
+      // 2x504 columns; the discretized construct kernels give each thread a
+      // second column. Quant-only (the non-quantized kernels assume <=504).
+      return 1008;
+    }
     if (!FalcataPlan::Get().quant_training) {
       return 504;  // upstream cap: the lowered cap only wins under quant
     }

@@ -394,6 +394,27 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // Compact-view prefill: the previous Train() already drew this tree's
   // column sample (BeforeTrain must not draw again; cuda_plan compact_prefill)
   bool next_tree_col_sample_ready_ = false;
+
+  // Tier-1 runtime tuner (cuda_plan key tuner, quantized training only):
+  // probes candidate batched-construct saturation floors for a few trees
+  // each, exploits the fastest, re-probes periodically. Quant integer
+  // histograms are schedule-invariant, so retuning cannot change the model.
+  struct TierOneTuner {
+    static constexpr int kWarmupTrees = 10;
+    static constexpr int kTreesPerCandidate = 15;
+    static constexpr int kReprobeEvery = 3000;
+    std::vector<int> candidates{80, 160, 320, 640};
+    std::vector<double> best_of_candidate;
+    int tree_index = 0;
+    int probe_slot = -1;      // candidate index being probed; -1 = exploiting
+    int probe_tree = 0;       // trees measured for the current candidate
+    double cur_best = 1e30;   // best per-tree seconds within current candidate
+    int chosen = -1;          // exploited candidate index
+    int next_probe_at = kWarmupTrees;
+  };
+  TierOneTuner tuner_;
+  void TunerBeforeTree();
+  void TunerAfterTree(double tree_seconds);
   int effective_quant_bins_ = 0;
 
   // CUDA components for tree training

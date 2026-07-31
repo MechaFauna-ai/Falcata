@@ -733,6 +733,14 @@ class CUDAHistogramConstructor {
   /*! \brief bitmap the pending prefill was built for; empty = no prefill */
   std::vector<int8_t> prefill_bitmap_;
   bool prefill_valid_ = false;
+  /*! \brief global column-major nibble copy of the packed bin matrix
+   *  (cuda_plan key colmajor_fill; empty = unavailable). Fill metadata for it
+   *  is stride-1 with base col*colmajor_pad_. */
+  CUDAVector<uint8_t> colmajor_bin_;
+  size_t colmajor_pad_ = 0;
+  /*! \brief L2 persistence carve-out (cuda_plan key l2_policy; 0 = inactive) */
+  size_t l2_carveout_bytes_ = 0;
+  size_t l2_max_window_bytes_ = 0;
   /*! \brief pinned staging for async metadata uploads (grown on demand) */
   void* prefill_pinned_ = nullptr;
   size_t prefill_pinned_bytes_ = 0;

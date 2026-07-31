@@ -135,6 +135,24 @@ void LaunchInterleaveGradHessKernel(
 void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score_t* hessians) {
   cuda_gradients_ = gradients;
   cuda_hessians_ = hessians;
+  if (l2_carveout_bytes_ > 0 && gradients != nullptr) {
+    // Pin the per-row gradient buffer (quant: packed int32 grad/hess pairs read
+    // once per level per row through data_indices gather) as L2-persisting on
+    // every construct stream. One window per stream is the API limit; the
+    // gradient buffer is the highest-reuse scatter target.
+    cudaStreamAttrValue attr{};
+    const size_t bytes = std::min(l2_max_window_bytes_,
+      static_cast<size_t>(num_data_) * (use_quantized_grad_ ? sizeof(int32_t) : 2 * sizeof(score_t)));
+    attr.accessPolicyWindow.base_ptr = const_cast<score_t*>(gradients);
+    attr.accessPolicyWindow.num_bytes = bytes;
+    attr.accessPolicyWindow.hitRatio =
+      bytes > l2_carveout_bytes_ ? static_cast<float>(l2_carveout_bytes_) / bytes : 1.0f;
+    attr.accessPolicyWindow.hitProp = cudaAccessPropertyPersisting;
+    attr.accessPolicyWindow.missProp = cudaAccessPropertyStreaming;
+    for (int p = 0; p < kNumHistPipelines; ++p) {
+      cudaStreamSetAttribute(pipeline_streams_[p], cudaStreamAttributeAccessPolicyWindow, &attr);
+    }
+  }
   // interleave (gradient, hessian) into float2 pairs for the dense construct
   // kernels (one scattered 32B sector per row instead of two). Launched on the
   // legacy default stream, so it orders before the construct kernels on the
@@ -243,6 +261,15 @@ void LaunchFillCompactDataKernel(
 
 // Implemented in cuda_histogram_constructor.cu — 4-bit packed source AND
 // destination variant (one thread per destination byte = compact column pair).
+void LaunchTransposeToColMajorNibbleKernel(
+  const uint8_t* src_data,
+  uint8_t* colmajor_data,
+  const size_t* col_src_nib_base,
+  const int* col_src_stride_nib,
+  int num_columns,
+  data_size_t num_data,
+  size_t num_data_pad);
+
 void LaunchFillCompactCodecKernel(
   cudaStream_t stream,
   PackCodecId codec,
@@ -713,11 +740,25 @@ void CUDAHistogramConstructor::LaunchCompactFill(
       const int src_stride_nib = (src_packed_offsets[p + 1] - src_packed_offsets[p]) * 2;
       for (int m = 0; m < ((used_in_p + 1) >> 1); ++m) {
         const int s0 = compact_part_start + 2 * m;
+        if (colmajor_pad_ > 0) {
+          // column-major source: column c is a contiguous nibble run at
+          // c * colmajor_pad_, so the per-row stride is 1 -- the SAME fill
+          // kernel then reads coalesced instead of gathering across rows
+          const size_t c0 = static_cast<size_t>(src_part_col_offsets[p]) +
+            static_cast<size_t>(src_local_col_for_compact_h[s0]);
+          bs_src_nib0_h[byte_slot] = c0 * colmajor_pad_;
+          bs_src_nib1_h[byte_slot] = (2 * m + 1) < used_in_p ?
+            (static_cast<size_t>(src_part_col_offsets[p]) +
+             static_cast<size_t>(src_local_col_for_compact_h[s0 + 1])) * colmajor_pad_ :
+            ~static_cast<size_t>(0);
+          bs_src_stride_nib_h[byte_slot] = 1;
+        } else {
         bs_src_nib0_h[byte_slot] = src_part_nib + static_cast<size_t>(src_local_col_for_compact_h[s0]);
         bs_src_nib1_h[byte_slot] = (2 * m + 1) < used_in_p ?
           src_part_nib + static_cast<size_t>(src_local_col_for_compact_h[s0 + 1]) :
           ~static_cast<size_t>(0);
         bs_src_stride_nib_h[byte_slot] = src_stride_nib;
+        }
         bs_dst_byte_h[byte_slot] = dst_part_byte + static_cast<size_t>(m);
         bs_dst_stride_h[byte_slot] = dst_packed_width;
         ++byte_slot;
@@ -738,7 +779,7 @@ void CUDAHistogramConstructor::LaunchCompactFill(
     upload(cuda_bs_dst_stride_.RawData(), bs_dst_stride_h.data(), sizeof(int) * total_byte_slots, &pin_off);
     LaunchFillCompactData4BitKernel(
       stream,
-      cuda_row_data_->GetBin<uint8_t>(),
+      colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : cuda_row_data_->GetBin<uint8_t>(),
       dst,
       cuda_bs_src_nib0_.RawData(),
       cuda_bs_src_nib1_.RawData(),
@@ -844,6 +885,20 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
     Log::Debug("CUDAHistogramConstructor: fp32 histogram mode %s", hist_fp32_ ? "engaged" : "unsupported for this dataset, using fp64");
   }
 
+  if (FalcataPlan::Get().l2_policy) {
+    // Reserve a persisting-L2 carve-out once; the per-tree window is set in
+    // BeforeTrain when the gradient buffer for the tree is known. Failure is
+    // non-fatal (arch without persisting L2): the key becomes a no-op.
+    cudaDeviceProp prop{};
+    if (cudaGetDeviceProperties(&prop, gpu_device_id_ < 0 ? 0 : gpu_device_id_) == cudaSuccess &&
+        prop.persistingL2CacheMaxSize > 0) {
+      const size_t want = std::min<size_t>(prop.persistingL2CacheMaxSize, 64u << 20);
+      if (cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, want) == cudaSuccess) {
+        l2_carveout_bytes_ = want;
+        l2_max_window_bytes_ = static_cast<size_t>(prop.accessPolicyMaxWindowSize);
+      }
+    }
+  }
   CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_stream_));
   // Non-blocking side stream for the next-tree compact-view prefill: must not
   // synchronize with the legacy default stream while training kernels run.
@@ -882,6 +937,47 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
       cuda_hist_buffer_.Resize(buffer_size);
     }
   }
+  // Column-major fill source (cuda_plan key colmajor_fill): one-time nibble
+  // transpose of the packed matrix so the per-tree compact fill gathers
+  // contiguous columns. Eligible: 4-bit device-resident data + enough free
+  // VRAM to duplicate the matrix with margin.
+  if (FalcataPlan::Get().colmajor_fill && cuda_row_data_->is_4bit_packed() &&
+      !cuda_row_data_->is_data_host_mapped()) {
+    const std::vector<int>& part_cols = cuda_row_data_->host_feature_partition_column_index_offsets();
+    const std::vector<int>& packed_offsets = cuda_row_data_->host_packed_partition_byte_offsets();
+    const int num_columns = part_cols.back();
+    const size_t pad = (static_cast<size_t>(num_data_) + 1) & ~static_cast<size_t>(1);
+    const size_t bytes = static_cast<size_t>(num_columns) * (pad / 2);
+    size_t free_b = 0, total_b = 0;
+    cudaMemGetInfo(&free_b, &total_b);
+    if (free_b > bytes + (2ULL << 30)) {
+      std::vector<size_t> base_h(num_columns);
+      std::vector<int> stride_h(num_columns);
+      for (int p = 0; p + 1 < static_cast<int>(part_cols.size()); ++p) {
+        const size_t part_nib = static_cast<size_t>(packed_offsets[p]) * static_cast<size_t>(num_data_) * 2;
+        const int stride_nib = (packed_offsets[p + 1] - packed_offsets[p]) * 2;
+        for (int c = part_cols[p]; c < part_cols[p + 1]; ++c) {
+          base_h[c] = part_nib + static_cast<size_t>(c - part_cols[p]);
+          stride_h[c] = stride_nib;
+        }
+      }
+      CUDAVector<size_t> d_base(num_columns);
+      CUDAVector<int> d_stride(num_columns);
+      CopyFromHostToCUDADevice<size_t>(d_base.RawData(), base_h.data(), num_columns, __FILE__, __LINE__);
+      CopyFromHostToCUDADevice<int>(d_stride.RawData(), stride_h.data(), num_columns, __FILE__, __LINE__);
+      colmajor_bin_.Resize(bytes);
+      LaunchTransposeToColMajorNibbleKernel(
+        cuda_row_data_->GetBin<uint8_t>(), colmajor_bin_.RawData(),
+        d_base.RawData(), d_stride.RawData(), num_columns, num_data_, pad);
+      colmajor_pad_ = pad;
+      Log::Debug("colmajor_fill: %d columns transposed (%.2f GB)", num_columns,
+                 bytes / (1024.0 * 1024.0 * 1024.0));
+    } else {
+      Log::Warning("colmajor_fill requested but only %.1f GB VRAM free for a %.1f GB copy; disabled",
+                   free_b / (1024.0 * 1024.0 * 1024.0), bytes / (1024.0 * 1024.0 * 1024.0));
+    }
+  }
+
   // one int32 region of num_total_bin_ entries per histogram pipeline (the pairs
   // of a level run concurrently on different pipeline streams and must not share
   // the 64->32-bit compaction scratch space); sized in hist_t (8 byte) units
@@ -1008,8 +1104,12 @@ void CUDAHistogramConstructor::CalcConstructHistogramKernelDim(
   int* block_dim_x,
   int* block_dim_y,
   const data_size_t num_data_in_smaller_leaf) {
-  *block_dim_x = cuda_row_data_->max_num_column_per_partition();
-  *block_dim_y = NUM_THREADS_PER_BLOCK / cuda_row_data_->max_num_column_per_partition();
+  // wide partitions (>504 cols): each thread covers two columns
+  {
+    const int cols = cuda_row_data_->max_num_column_per_partition();
+    *block_dim_x = cols > NUM_THREADS_PER_BLOCK ? (cols + 1) / 2 : cols;
+  }
+  *block_dim_y = NUM_THREADS_PER_BLOCK / *block_dim_x;
   *grid_dim_x = cuda_row_data_->num_feature_partitions();
   int rows_per_thread = NUM_DATA_PER_THREAD;
   if (use_quantized_grad_) {
@@ -1026,8 +1126,12 @@ void CUDAHistogramConstructor::CalcConstructHistogramBatchedKernelDim(
   int* block_dim_y,
   const data_size_t max_num_data_in_smaller_leaf,
   const int num_pairs) {
-  *block_dim_x = cuda_row_data_->max_num_column_per_partition();
-  *block_dim_y = NUM_THREADS_PER_BLOCK / cuda_row_data_->max_num_column_per_partition();
+  // wide partitions (>504 cols): each thread covers two columns
+  {
+    const int cols = cuda_row_data_->max_num_column_per_partition();
+    *block_dim_x = cols > NUM_THREADS_PER_BLOCK ? (cols + 1) / 2 : cols;
+  }
+  *block_dim_y = NUM_THREADS_PER_BLOCK / *block_dim_x;
   *grid_dim_x = cuda_row_data_->num_feature_partitions();
   // The per-leaf sizing forces min_grid_dim_y_ y-blocks to saturate the device
   // for a SINGLE leaf; every active block, however, pays a fixed shared-hist

@@ -86,6 +86,23 @@ struct FalcataPlan {
   bool pack_radix5 = false;         // key: pack_radix5 -- 3.25 values/byte, <=5 bins
   bool pack_radix6 = false;         // key: pack_radix6 -- 3.0 values/byte, <=6 bins
   bool pack_radix7 = false;         // key: pack_radix7 -- 2.75 values/byte, <=7 bins
+  // L2 persistence window on the per-row scattered-reread buffers (grad/hess,
+  // leaf data indices): each level's bin-matrix stream otherwise evicts them.
+  // Cache hint only -- bit-identical by construction.
+  bool l2_policy = false;           // key: l2_policy
+  // one-time column-major copy of the packed bin matrix as the compact-fill
+  // gather source: fill reads contiguous columns (~10x less fill traffic on
+  // ff<<1 data) at the cost of duplicating the matrix in VRAM (planner-gated
+  // on free memory). Bit-identical (same bytes, different source layout).
+  bool colmajor_fill = false;       // key: colmajor_fill
+  // runtime tier-1 tuner: bandit over the batched-construct saturation floor,
+  // timed per tree; quantized training only (integer hists keep results
+  // schedule-invariant, so retuning cannot change the model)
+  bool tuner = false;               // key: tuner
+  // wide partitions: let few-bin partitions hold up to 2x504 columns (each
+  // construct thread handles 2 columns), halving partition count and its
+  // per-partition zero/merge overhead on wide low-bin data
+  bool wide_partitions = false;     // key: wide_partitions
   // prefill the next tree's compact column view on a side stream during the
   // current tree's training (bit-identical). Default OFF: measured no wall
   // win -- steady-state training is 97% device-busy and the ~41 synchronous
@@ -137,6 +154,10 @@ struct FalcataPlan {
     if (key == "pack_radix5") return &pack_radix5;
     if (key == "pack_radix6") return &pack_radix6;
     if (key == "pack_radix7") return &pack_radix7;
+    if (key == "l2_policy") return &l2_policy;
+    if (key == "colmajor_fill") return &colmajor_fill;
+    if (key == "tuner") return &tuner;
+    if (key == "wide_partitions") return &wide_partitions;
     return nullptr;
   }
 
