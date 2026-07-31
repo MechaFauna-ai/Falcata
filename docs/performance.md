@@ -124,9 +124,11 @@ double-precision gradient/hessian pairs is memory-heavy.
 
 **The idea.** Quantize gradients to small integers (a published technique —
 see the NeurIPS'22 reference in the README) and accumulate integers instead.
-Falcata ships two modes: `stochastic` (4 bins, seeded stochastic rounding —
-the aggressive end) and `fixedpoint` (deterministic rounding with an
-outlier-robust gradient scale — the near-lossless end). Both are
+Falcata ships two modes: `stochastic` (seeded stochastic rounding — the
+aggressive end) and `fixedpoint` (deterministic rounding with an
+outlier-robust gradient scale — the near-lossless end). Bin count is the
+`quant_bins` dial for both modes (defaults: 4 stochastic, 64 fixedpoint;
+any value in [2, 65534]). Both are
 bit-reproducible run to run; integer atomics also make results
 order-invariant, which is what lets the md5 regression gates exist.
 
