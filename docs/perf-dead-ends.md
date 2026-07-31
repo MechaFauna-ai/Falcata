@@ -139,3 +139,35 @@ why it actually failed → **re-open when**.
   (ablation 2026-07-30 measured +4.2% on covtype-deep — shape-dependent,
   net-negative or noise on the shapes that matter).
 - **Re-open when:** deep-config controller latency changes materially.
+
+## Tensor-core histogram construction (one-hot MMA)
+
+**Hypothesis.** Recast the hist pass as H = Bᵀ·G (B = rows×bins one-hot built
+on the fly, G = int8 quant grad/hess) and let int8 MMA replace shared-memory
+atomics: no atomic serialization, fixed accumulation order, and quantized
+grads already fit int8.
+
+**Measured** (`benchmarks/tc_hist_prototype.cu`, 5090, 2M×356×8-bin synthetic,
+all exactly verified): three escalating implementations — WMMA with
+shared-staged fragments (0.32 T upd/s), register-direct PTX `mma.m16n8k32`
+with `__vcmpeq4` one-hot build (0.45 T), plus packed dual-column loads and
+4 column-pairs per warp amortizing B fragments (0.58 T). The atomic baseline
+does **1.12 T upd/s** — TC lost by ~2× after all tuning.
+
+**Mechanism of failure.** (1) The MMAs were only ~4% of tensor throughput —
+the kernel is bound by the ~10 fragment-construction instructions per MMA
+(loads, nibble masks, vector compares), which the formulation cannot avoid;
+scaling analysis puts the ceiling at atomic *parity*. (2) The premise
+overestimated the atomic path's pain: thread-per-column shared atomics
+self-serialize per column and never conflict, so there is no serialization
+to eliminate. (3) Integration reality is worse than the synthetic: below the
+root level, rows arrive through the `data_indices` leaf-partition gather, so
+the contiguous 32-row tiles the vectorized one-hot build needs don't exist
+(~2× additional penalty).
+
+**Re-open when:** (a) targeting datacenter silicon where the int8-TC :
+int-ALU throughput ratio is several times the consumer ratio (H100/B200 —
+combine with the DSMEM cluster-merge idea), (b) a layout change makes
+leaf-partitioned rows contiguous in the bin matrix, or (c) multi-target
+vector-leaf training lands (accumulate width T+1 amortizes the dead n
+columns, the formulation's biggest fixed waste).
