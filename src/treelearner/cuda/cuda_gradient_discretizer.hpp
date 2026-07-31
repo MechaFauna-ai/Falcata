@@ -82,48 +82,9 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
     // scan then finds the percentile threshold. Allocated unconditionally (a few
     // KB) so toggling the robust flag needs no re-Init.
     grad_mag_hist_buffer_.Resize(kNumMagBuckets);
-    random_values_use_start_.Resize(num_trees_);
-    gradient_random_values_.Resize(num_data);
-    hessian_random_values_.Resize(num_data);
-
-    std::vector<score_t> gradient_random_values(num_data, 0.0f);
-    std::vector<score_t> hessian_random_values(num_data, 0.0f);
-    std::vector<int> random_values_use_start(num_trees_, 0);
-
-    const int num_threads = OMP_NUM_THREADS();
-
-    std::mt19937 random_values_use_start_eng = std::mt19937(random_seed_);
-    std::uniform_int_distribution<data_size_t> random_values_use_start_dist = std::uniform_int_distribution<data_size_t>(0, num_data);
-    for (int tree_index = 0; tree_index < num_trees_; ++tree_index) {
-      random_values_use_start[tree_index] = random_values_use_start_dist(random_values_use_start_eng);
-    }
-
-    // Table content must depend ONLY on random_seed_: it is generated in
-    // fixed-size virtual chunks, each chunk's engine seeded by (seed, chunk
-    // index). Threads map over chunks without changing content, so the same
-    // seed gives the same tables on any machine at any num_threads. (The
-    // previous chunking followed Threading::BlockInfo(num_threads) and the
-    // hessian seed embedded num_threads -- thread count was effectively part
-    // of the seed, breaking cross-machine reproducibility.)
-    constexpr data_size_t kChunkSize = 65536;
-    const int num_chunks = static_cast<int>((num_data + kChunkSize - 1) / kChunkSize);
-    #pragma omp parallel for schedule(static) num_threads(num_threads)
-    for (int chunk = 0; chunk < num_chunks; ++chunk) {
-      const data_size_t start = static_cast<data_size_t>(chunk) * kChunkSize;
-      const data_size_t end = std::min(start + kChunkSize, num_data);
-      std::mt19937 gradient_random_values_eng(random_seed_ + 2 * chunk);
-      std::uniform_real_distribution<double> gradient_random_values_dist(0.0f, 1.0f);
-      std::mt19937 hessian_random_values_eng(random_seed_ + 2 * chunk + 1);
-      std::uniform_real_distribution<double> hessian_random_values_dist(0.0f, 1.0f);
-      for (data_size_t i = start; i < end; ++i) {
-        gradient_random_values[i] = gradient_random_values_dist(gradient_random_values_eng);
-        hessian_random_values[i] = hessian_random_values_dist(hessian_random_values_eng);
-      }
-    }
-
-    CopyFromHostToCUDADevice<score_t>(gradient_random_values_.RawData(), gradient_random_values.data(), gradient_random_values.size(), __FILE__, __LINE__);
-    CopyFromHostToCUDADevice<score_t>(hessian_random_values_.RawData(), hessian_random_values.data(), hessian_random_values.size(), __FILE__, __LINE__);
-    CopyFromHostToCUDADevice<int>(random_values_use_start_.RawData(), random_values_use_start.data(), random_values_use_start.size(), __FILE__, __LINE__);
+    // Stochastic rounding noise is Philox-generated in-kernel from
+    // (random_seed_, tree, row) -- no tables (formerly 2 float arrays of
+    // num_data each, 8 bytes/row of resident VRAM + per-tree reads).
     iter_ = 0;
   }
 
@@ -141,9 +102,6 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
   mutable CUDAVector<score_t> hess_min_block_buffer_;
   mutable CUDAVector<score_t> hess_max_block_buffer_;
   mutable CUDAVector<unsigned int> grad_mag_hist_buffer_;
-  CUDAVector<int> random_values_use_start_;
-  CUDAVector<score_t> gradient_random_values_;
-  CUDAVector<score_t> hessian_random_values_;
   int num_reduce_blocks_;
   bool robust_scale_ = false;
 };

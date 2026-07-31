@@ -1,12 +1,12 @@
 {
  "cells": {
   "bigrow/quant64": {
-   "md5": "9d3285db72ac2be36ac6f9ee1c78f392",
+   "md5": "56e341d5cbc61b7ef73cc39bda2bf741",
    "metric": 0.218733,
    "metric_name": "rmse"
   },
   "categorical/nonquant": {
-   "metric": 1.470073,
+   "metric": 1.470012,
    "metric_name": "rmse"
   },
   "dense/fixedpoint": {
@@ -28,28 +28,28 @@
    "metric_name": "rmse"
   },
   "dense/quant": {
-   "md5": "a4a232c3641ae663b52189acba4d3801",
-   "metric": 1.963837,
+   "md5": "900fc3dc9c745fd57a15f7633358e70c",
+   "metric": 1.982575,
    "metric_name": "rmse"
   },
   "dense/quant-classic": {
-   "md5": "c025db585ca4ca1cfb05dd678c835d8e",
-   "metric": 1.963837,
+   "md5": "1c7695a4901a137a6f69212b1dfaaccb",
+   "metric": 1.982575,
    "metric_name": "rmse"
   },
   "dense/quant-deep": {
-   "md5": "06bb615ce030a39d7ce74f727fc4fcdc",
-   "metric": 1.666004,
+   "md5": "b6bd59448273aaea59cd1afa695ca281",
+   "metric": 1.678572,
    "metric_name": "rmse"
   },
   "dense/quant-deep-classic": {
-   "md5": "06bb615ce030a39d7ce74f727fc4fcdc",
-   "metric": 1.666004,
+   "md5": "b6bd59448273aaea59cd1afa695ca281",
+   "metric": 1.678572,
    "metric_name": "rmse"
   },
   "efb/quant": {
-   "md5": "4f21b7d8ab2b7b5e72482797822abfd0",
-   "metric": 1.279845,
+   "md5": "26faf0afa2868add8d2dd6ee8b1ef974",
+   "metric": 1.281376,
    "metric_name": "rmse"
   },
   "fewbin/fixedpoint": {
@@ -58,22 +58,22 @@
    "metric_name": "rmse"
   },
   "fewbin/quant": {
-   "md5": "454094c368c43236697226408e9cd844",
-   "metric": 3.997994,
+   "md5": "fb92cef6bd5339087c6ac272fc590517",
+   "metric": 4.015338,
    "metric_name": "rmse"
   },
   "graph/flipbase-graph_loop": {
-   "md5": "c9798e6991c2e4e3b75a2fd1e3d18be1",
-   "metric": 0.749321,
+   "md5": "38798f987b0d7d6a12b0b39d0b284416",
+   "metric": 0.756316,
    "metric_name": "mlogloss"
   },
   "graph/nonquant": {
-   "metric": 0.605165,
+   "metric": 0.605169,
    "metric_name": "mlogloss"
   },
   "graph/quant": {
-   "md5": "c9798e6991c2e4e3b75a2fd1e3d18be1",
-   "metric": 0.749321,
+   "md5": "38798f987b0d7d6a12b0b39d0b284416",
+   "metric": 0.756316,
    "metric_name": "mlogloss"
   },
   "imbalanced/fixedpoint": {
@@ -86,38 +86,38 @@
    "metric_name": "auc"
   },
   "imbalanced/quant": {
-   "md5": "aefeeed2d69a5df5110c983af91387b7",
-   "metric": 0.983768,
+   "md5": "11cbafc214155cf27d6f444f0520b5af",
+   "metric": 0.976573,
    "metric_name": "auc"
   },
   "int8wide/quant": {
-   "md5": "7c951e26ecc816d4364ddee62eb4ef89",
-   "metric": 69.650422,
+   "md5": "019fbb05f62293ad3fb641216c23ba55",
+   "metric": 70.250892,
    "metric_name": "rmse"
   },
   "int8wide/quant-deep": {
-   "md5": "4668ff96c128fad486e796e8d57e8d57",
-   "metric": 70.799092,
+   "md5": "ef5def955ab765628f2ca0ad9e5ce7dc",
+   "metric": 71.451373,
    "metric_name": "rmse"
   },
   "missing/quant": {
-   "md5": "28e3ffe27587060a271f903a3dbc0cbd",
-   "metric": 3.293785,
+   "md5": "c2b43a11209a653030abdf52e44e5c65",
+   "metric": 3.33428,
    "metric_name": "rmse"
   },
   "sampled/flipbase-jit8": {
-   "md5": "23158b72509919c04d5b54a339015efa",
-   "metric": 37.408158,
+   "md5": "c7787cabe424cf21bba419b423b7b915",
+   "metric": 37.425693,
    "metric_name": "rmse"
   },
   "sampled/quant": {
-   "md5": "23158b72509919c04d5b54a339015efa",
-   "metric": 37.408158,
+   "md5": "c7787cabe424cf21bba419b423b7b915",
+   "metric": 37.425693,
    "metric_name": "rmse"
   },
   "sampled/quant-deep": {
-   "md5": "d238fb78531b723cf5ded103890617b4",
-   "metric": 37.870941,
+   "md5": "8edbe7dbda00acb29c6ba32ba59dd18c",
+   "metric": 38.3236,
    "metric_name": "rmse"
   },
   "tinygrad/fixedpoint": {
@@ -126,8 +126,8 @@
    "metric_name": "rmse"
   },
   "tinygrad/quant": {
-   "md5": "cf56e4177d114a1d286e51445ac402d2",
-   "metric": 0.059667,
+   "md5": "a5a68755cf0a35d37af9c4cf445c10af",
+   "metric": 0.059668,
    "metric_name": "rmse"
   }
  }

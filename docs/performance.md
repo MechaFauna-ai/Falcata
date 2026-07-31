@@ -130,10 +130,14 @@ outlier-robust gradient scale — the near-lossless end). Bin count is the
 `quant_bins` dial for both modes (defaults: 4 stochastic, 64 fixedpoint;
 any value in [2, 65534]). Both are
 bit-reproducible — run to run, across GPU models, and across host
-machines (same seed → bit-identical model, verified on sm_89 vs sm_120 with
-different host core counts); integer atomics also make results
-order-invariant, which is what lets the md5 regression gates exist and makes
-them portable to any machine.
+machines: stochastic rounding noise is Philox-generated in-kernel as a pure
+function of (seed, tree, row) — an idea borrowed from XGBoost 3.3's Philox
+sampling — so machine-independence holds by construction (no tables; also
+freed 8 bytes/row of VRAM and their per-tree reads, worth ~+4% on
+numerai-deep). Integer atomics make results order-invariant, which is what
+lets the md5 regression gates exist and makes them portable to any machine
+(cross-arch verified sm_89 vs sm_120 on the table-era build; Philox is pure
+integer math and inherits the guarantee).
 
 **Measured (benchmark suite, numerai-deep, 30k trees):**
 

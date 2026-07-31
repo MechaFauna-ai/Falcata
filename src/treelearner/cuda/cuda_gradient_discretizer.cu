@@ -217,6 +217,35 @@ __global__ void ComputeRobustGradScaleKernel(
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Philox4x32-10 (Salmon et al., "Parallel random numbers: as easy as 1, 2, 3",
+// SC'11): counter-based RNG. The rounding noise for row r of tree t is a pure
+// function of (seed, t, r) -- no tables, no memory traffic, and identical on
+// any machine/thread-count/GPU by construction. (Idea borrowed from XGBoost
+// 3.3's move to Philox sampling, dmlc/xgboost#12223.)
+// ---------------------------------------------------------------------------
+__device__ __forceinline__ uint4 Philox4x32Round(const uint4 ctr, const uint2 key) {
+  const uint32_t hi0 = __umulhi(0xD2511F53u, ctr.x);
+  const uint32_t lo0 = 0xD2511F53u * ctr.x;
+  const uint32_t hi1 = __umulhi(0xCD9E8D57u, ctr.z);
+  const uint32_t lo1 = 0xCD9E8D57u * ctr.z;
+  return make_uint4(hi1 ^ ctr.y ^ key.x, lo1, hi0 ^ ctr.w ^ key.y, lo0);
+}
+__device__ __forceinline__ uint4 Philox4x32_10(uint4 ctr, uint2 key) {
+  #pragma unroll
+  for (int r = 0; r < 10; ++r) {
+    ctr = Philox4x32Round(ctr, key);
+    key.x += 0x9E3779B9u;
+    key.y += 0xBB67AE85u;
+  }
+  return ctr;
+}
+// uniform in [0, 1): top 24 bits -> exact float
+__device__ __forceinline__ float PhiloxUniform(const uint32_t x) {
+  return static_cast<float>(x >> 8) * 5.9604644775390625e-08f;  // 2^-24
+}
+
 template <bool STOCHASTIC_ROUNDING, bool CLAMP>
 __global__ void DiscretizeGradientsKernel(
   const data_size_t num_data,
@@ -225,12 +254,9 @@ __global__ void DiscretizeGradientsKernel(
   const score_t* grad_scale_ptr,
   const score_t* hess_scale_ptr,
   const int iter,
-  const int* random_values_use_start,
-  const score_t* gradient_random_values,
-  const score_t* hessian_random_values,
+  const uint32_t philox_seed,
   const int grad_discretize_bins,
   int8_t* output_gradients_and_hessians) {
-  const int start = random_values_use_start[iter];
   const data_size_t index = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
   const score_t grad_scale = *grad_scale_ptr;
   const score_t hess_scale = *hess_scale_ptr;
@@ -241,11 +267,14 @@ __global__ void DiscretizeGradientsKernel(
   int16_t* output_gradients_and_hessians_ptr = reinterpret_cast<int16_t*>(output_gradients_and_hessians);
   if (index < num_data) {
     if (STOCHASTIC_ROUNDING) {
-      const data_size_t index_offset = (index + start) % num_data;
       const score_t gradient = input_gradients[index];
       const score_t hessian = input_hessians[index];
-      const score_t gradient_random_value = gradient_random_values[index_offset];
-      const score_t hessian_random_value = hessian_random_values[index_offset];
+      const uint4 rnd = Philox4x32_10(
+        make_uint4(static_cast<uint32_t>(index), static_cast<uint32_t>(iter),
+                   0x9E3779B9u, 0xBB67AE85u),
+        make_uint2(philox_seed, philox_seed ^ 0x85EBCA6Bu));
+      const score_t gradient_random_value = PhiloxUniform(rnd.x);
+      const score_t hessian_random_value = PhiloxUniform(rnd.y);
       // Explicit fused multiply-add: ptxas contracts a*b+c differently per
       // GPU architecture, and at quant_bins > 4 the one-ULP difference flips
       // rounding buckets often enough to diverge models across GPU models.
@@ -339,10 +368,8 @@ void CUDAGradientDiscretizer::DiscretizeGradients(
     input_hessians, \
     grad_min_block_buffer_.RawData(), \
     hess_min_block_buffer_.RawData(), \
-    iter_ % num_trees_, /* guard: never index past the per-tree offset buffer */ \
-    random_values_use_start_.RawData(), \
-    gradient_random_values_.RawData(), \
-    hessian_random_values_.RawData(), \
+    iter_, /* Philox counter component: any 32-bit value is a valid stream */ \
+    static_cast<uint32_t>(random_seed_), \
     num_grad_quant_bins_, \
     discretized_gradients_and_hessians_.RawData()
 
