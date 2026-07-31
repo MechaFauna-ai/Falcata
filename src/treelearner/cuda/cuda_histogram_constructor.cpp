@@ -892,8 +892,18 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
     cudaDeviceProp prop{};
     if (cudaGetDeviceProperties(&prop, gpu_device_id_ < 0 ? 0 : gpu_device_id_) == cudaSuccess &&
         prop.persistingL2CacheMaxSize > 0) {
-      const size_t want = std::min<size_t>(prop.persistingL2CacheMaxSize, 64u << 20);
-      if (cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, want) == cudaSuccess) {
+      // Size the carve-out to the device, not to any one GPU model: at most
+      // 2/3 of total L2 (the streaming bin-matrix reads need the rest -- the
+      // 2/3 ratio is the 64MB/96MB split validated on the 5090), at most the
+      // arch's persisting max, and no larger than the buffer we actually pin
+      // (a fixed carve would strand L2 on small datasets).
+      const size_t needed = static_cast<size_t>(num_data_) *
+        (use_quantized_grad_ ? sizeof(int32_t) : 2 * sizeof(score_t));
+      const size_t want = std::min({needed,
+        static_cast<size_t>(prop.persistingL2CacheMaxSize),
+        static_cast<size_t>(prop.l2CacheSize) * 2 / 3});
+      if (want > 0 &&
+          cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, want) == cudaSuccess) {
         l2_carveout_bytes_ = want;
         l2_max_window_bytes_ = static_cast<size_t>(prop.accessPolicyMaxWindowSize);
       }

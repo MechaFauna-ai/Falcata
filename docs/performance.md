@@ -178,7 +178,11 @@ bit-identical in every cell):
 - **`l2_policy`** — pins the gradient/hessian and data-index buffers into a
   persisting L2 window so each level's bin-matrix stream stops evicting them
   (the construct kernel is latency-bound on exactly those scattered re-reads):
-  +2.8% numerai-deep and covtype-deep, neutral on year at real run lengths.
+  +2.8% numerai-deep and covtype-deep at the original fixed 64MB carve-out,
+  improved to **+5.3%** once the carve-out was sized to the buffer actually
+  pinned (device-proportional sizing, 2026-07-31 follow-up — a fixed carve
+  stranded 42MB of L2 the streaming reads could have used); neutral on year
+  at real run lengths.
 - **`colmajor_fill`** — a one-time column-major copy of the packed bin matrix
   serves as the compact-fill gather source, so the per-tree fill reads
   contiguous columns instead of dragging ~10× its bytes through row-major

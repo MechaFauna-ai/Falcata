@@ -2351,10 +2351,27 @@ void CUDASingleGPUTreeLearner::TunerAfterTree(double tree_seconds) {
     t.cur_best = 1e30;
     t.probe_tree = 0;
     if (++t.probe_slot >= static_cast<int>(t.candidates.size())) {
+      const int best = static_cast<int>(std::min_element(t.best_of_candidate.begin(),
+        t.best_of_candidate.end()) - t.best_of_candidate.begin());
+      // Elastic bracket: the initial candidate set is tuned around one GPU
+      // model; if the winner sits on an edge of the set, the optimum for this
+      // silicon may lie beyond it. Extend geometrically (bounded) and keep
+      // probing instead of settling.
+      if (best == static_cast<int>(t.candidates.size()) - 1 &&
+          t.candidates.back() < TierOneTuner::kFloorMax) {
+        t.candidates.push_back(t.candidates.back() * 2);
+        t.best_of_candidate.push_back(1e30);
+        return;  // probe_slot now indexes the appended candidate
+      }
+      if (best == 0 && t.candidates.front() > TierOneTuner::kFloorMin) {
+        t.candidates.insert(t.candidates.begin(), t.candidates.front() / 2);
+        t.best_of_candidate.insert(t.best_of_candidate.begin(), 1e30);
+        t.probe_slot = 0;  // probe the prepended candidate
+        return;
+      }
       // probe round complete: exploit the fastest candidate
       t.probe_slot = -1;
-      t.chosen = static_cast<int>(std::min_element(t.best_of_candidate.begin(),
-        t.best_of_candidate.end()) - t.best_of_candidate.begin());
+      t.chosen = best;
       t.next_probe_at = t.tree_index + TierOneTuner::kReprobeEvery;
       Log::Debug("[tuner] saturation_floor=%d chosen (per-tree best %.3fms; re-probe at tree %d)",
                  t.candidates[t.chosen], t.best_of_candidate[t.chosen] * 1e3, t.next_probe_at);

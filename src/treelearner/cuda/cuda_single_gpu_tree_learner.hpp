@@ -403,6 +403,11 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     static constexpr int kWarmupTrees = 10;
     static constexpr int kTreesPerCandidate = 15;
     static constexpr int kReprobeEvery = 3000;
+    // elastic-bracket bounds: if a probe round's winner is an endpoint the
+    // candidate set grows geometrically toward it (other GPU models want
+    // floors outside the 5090-tuned initial set)
+    static constexpr int kFloorMin = 10;
+    static constexpr int kFloorMax = 5120;
     std::vector<int> candidates{80, 160, 320, 640};
     std::vector<double> best_of_candidate;
     int tree_index = 0;

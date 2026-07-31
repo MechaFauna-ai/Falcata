@@ -278,7 +278,12 @@ if(USE_CUDA)
     # https://en.wikipedia.org/wiki/CUDA#GPUs_supported
     # CUDA 13.0 removed offline-compilation support for Maxwell (sm_50/52/53), Pascal (sm_60/61/62)
     # and Volta (sm_70/72). sm_75 (Turing) is the lowest still-supported architecture.
-    if(DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "")
+    # NOTE: when the user passes nothing, CMake itself injects nvcc's default
+    # target ("52") into CMAKE_CUDA_ARCHITECTURES at language enablement -- an
+    # arch our code does not even support. Treat that auto-injected value as
+    # "not set" so the every-supported-arch fallback below actually runs.
+    if(DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL ""
+       AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "52")
         set(CUDA_ARCHS "${CMAKE_CUDA_ARCHITECTURES}")
     else()
         if(CUDAToolkit_VERSION VERSION_LESS "13.0")
