@@ -2614,6 +2614,10 @@ __global__ void FindBestSplitsForLevelKernel(
   const double lambda_l2,
   const double path_smooth,
   const double max_delta_step,
+  const double cat_smooth,
+  const double cat_l2,
+  const int max_cat_threshold,
+  const int min_data_per_group,
   CUDASplitInfo* cuda_best_split_info,
   const CUDAHybridGraphLoopStateOpt gstate) {
   // graphs A2: the graph-frozen grid is a pow2 bucket of the live pair count;
@@ -2654,9 +2658,18 @@ __global__ void FindBestSplitsForLevelKernel(
   CUDARandom* cuda_random = USE_RAND ?
     (is_larger ? cuda_randoms + task_index * 2 + 1 : cuda_randoms + task_index * 2) : nullptr;
   if (is_feature_used_bytree[task->inner_feature_index]) {
-    // no categorical branch: the batched path is gated on !has_categorical_feature_
     const hist_t* hist_ptr = FeatureHistPtr(leaf_splits->hist_in_leaf, task->hist_offset, fp32_hist);
-    if (!task->reverse) {
+    if (task->is_categorical) {
+      // fp32_hist is globally disabled for datasets with categorical features
+      const CatHistReaderF64 hist_reader{hist_ptr};
+      FindBestSplitsForLeafKernelCategoricalInner<USE_RAND, USE_L1, USE_SMOOTHING, CatHistReaderF64>(
+        hist_reader, task, cuda_random,
+        lambda_l1, lambda_l2, path_smooth, max_delta_step,
+        min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
+        cat_smooth, cat_l2, max_cat_threshold, min_data_per_group,
+        parent_gain, sum_gradients, sum_hessians, num_data, parent_output,
+        /*sum_gradients_hessians_total=*/0, out);
+    } else if (!task->reverse) {
       FindBestSplitsForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, false, GAIN_T, /*USE_MC=*/false>(
         hist_ptr, fp32_hist, task, cuda_random,
         lambda_l1, lambda_l2, path_smooth, max_delta_step,
@@ -2697,6 +2710,10 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
   const double lambda_l2,
   const double path_smooth,
   const double max_delta_step,
+  const double cat_smooth,
+  const double cat_l2,
+  const int max_cat_threshold,
+  const int min_data_per_group,
   const score_t* grad_scale,
   const score_t* hess_scale,
   CUDASplitInfo* cuda_best_split_info,
@@ -2745,8 +2762,39 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
     (is_larger ? desc->larger_num_bits : desc->smaller_num_bits);
   const bool use_16bit_bin = leaf_num_bits <= 16;
   if (is_feature_used_bytree[task->inner_feature_index]) {
-    // no categorical branch: quantized training rejects categorical features
-    if (!task->reverse) {
+    if (task->is_categorical) {
+      // mirror of the per-pair discretized categorical dispatch: unpack the
+      // integer bins per bin through a reader; the shared categorical body
+      // serves both pipelines
+      const double sum_gradients = static_cast<double>(
+        static_cast<int32_t>((sum_gradients_hessians & 0xffffffff00000000) >> 32)) * (*grad_scale);
+      const double sum_hessians = static_cast<double>(
+        static_cast<int32_t>(sum_gradients_hessians & 0x00000000ffffffff)) * (*hess_scale) + 2 * kEpsilon;
+      const int8_t* hist_base = reinterpret_cast<const int8_t*>(leaf_splits->hist_in_leaf);
+      if (use_16bit_bin) {
+        const CatHistReaderQuant16 hist_reader{
+          reinterpret_cast<const int32_t*>(hist_base) + task->hist_offset,
+          static_cast<double>(*grad_scale), static_cast<double>(*hess_scale)};
+        FindBestSplitsForLeafKernelCategoricalInner<USE_RAND, USE_L1, USE_SMOOTHING, CatHistReaderQuant16>(
+          hist_reader, task, cuda_random,
+          lambda_l1, lambda_l2, path_smooth, max_delta_step,
+          min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
+          cat_smooth, cat_l2, max_cat_threshold, min_data_per_group,
+          parent_gain, sum_gradients, sum_hessians, num_data, parent_output,
+          sum_gradients_hessians, out);
+      } else {
+        const CatHistReaderQuant32 hist_reader{
+          reinterpret_cast<const int64_t*>(hist_base) + task->hist_offset,
+          static_cast<double>(*grad_scale), static_cast<double>(*hess_scale)};
+        FindBestSplitsForLeafKernelCategoricalInner<USE_RAND, USE_L1, USE_SMOOTHING, CatHistReaderQuant32>(
+          hist_reader, task, cuda_random,
+          lambda_l1, lambda_l2, path_smooth, max_delta_step,
+          min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
+          cat_smooth, cat_l2, max_cat_threshold, min_data_per_group,
+          parent_gain, sum_gradients, sum_hessians, num_data, parent_output,
+          sum_gradients_hessians, out);
+      }
+    } else if (!task->reverse) {
       if (use_16bit_bin) {
         const int32_t* hist_ptr =
           reinterpret_cast<const int32_t*>(leaf_splits->hist_in_leaf) + task->hist_offset;
@@ -2957,6 +3005,10 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
       lambda_l2_, \
       path_smooth_, \
       max_delta_step_, \
+      cat_smooth_, \
+      cat_l2_, \
+      max_cat_threshold_, \
+      min_data_per_group_, \
       cuda_best_split_info_.RawData(), \
       gstate
   if (FalcataFP32GainEnabled()) {
@@ -2996,6 +3048,10 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
       lambda_l2_, \
       path_smooth_, \
       max_delta_step_, \
+      cat_smooth_, \
+      cat_l2_, \
+      max_cat_threshold_, \
+      min_data_per_group_, \
       grad_scale, \
       hess_scale, \
       cuda_best_split_info_.RawData(), \

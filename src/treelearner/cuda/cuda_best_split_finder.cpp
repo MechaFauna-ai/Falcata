@@ -527,9 +527,14 @@ void CUDABestSplitFinder::EnsureHybridLevelCapacity(const int num_pairs) {
   const size_t needed = 2 * static_cast<size_t>(num_tasks_) * static_cast<size_t>(num_pairs);
   if (cuda_best_split_info_.Size() < needed) {
     cuda_best_split_info_.Resize(needed);
-    // (re)initialize the categorical-threshold pointers of every slot; the batched
-    // path never runs with categorical features, so this just nulls them so the
-    // sync kernel's wholesale struct copies stay safe
+    // (re)initialize the categorical-threshold slab of every slot: the batched
+    // level find writes categorical thresholds into the per-slot slabs, so they
+    // must grow with the output buffer (numerical-only datasets just get their
+    // pointers nulled, keeping the sync kernel's wholesale struct copies safe)
+    if (has_categorical_feature_) {
+      cuda_cat_threshold_feature_.Resize(static_cast<size_t>(max_num_categories_in_split_) * needed);
+      cuda_cat_threshold_real_feature_.Resize(static_cast<size_t>(max_num_categories_in_split_) * needed);
+    }
     AllocateCatVectors(cuda_best_split_info_.RawData(), cuda_cat_threshold_feature_.RawData(),
                        cuda_cat_threshold_real_feature_.RawData(), needed);
   }

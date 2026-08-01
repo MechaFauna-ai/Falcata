@@ -148,13 +148,13 @@ class CUDABestSplitFinder {
   /*! \brief whether the batched per-level find+sync path supports the current
    *  configuration (only the template combination the benchmarks exercise:
    *  no extra_trees / L1 / path smoothing, shared-memory histograms, no
-   *  per-node feature selection, no categorical features). Wide shapes
+   *  per-node feature selection; categorical tasks run the shared
+   *  categorical body per block since 2026-08-02). Wide shapes
    *  (num_tasks > one sync block) use the multi-block batched sync mirroring
    *  the per-pair two-stage reduction; cuda_plan=auto,batch_wide:off disables that. */
   bool SupportsBatchedLevel() const {
     return !extra_trees_ && lambda_l1_ <= 0.0f && !use_smoothing_ &&
            !use_global_memory_ && !select_features_by_node_ &&
-           !has_categorical_feature_ &&
            (num_tasks_ <= NUM_TASKS_PER_SYNC_BLOCK || FalcataBatchWideEnabled());
   }
 
