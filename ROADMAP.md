@@ -104,6 +104,19 @@ figures from the profiles in the PR discussions.
 
 ## Correctness / determinism
 
+- OPEN: hybrid categorical corruption at max_cat_threshold >= 48 (FENCED to
+  classic since 2026-08-02). Symptom: leaf-cache cat_threshold entries contain
+  invalid bins (e.g. bin 255 for a 255-bin feature) at small indices with
+  plausible counts -> OOB reads of categorical_bin_to_value (the batched
+  recording kernel now crashes loudly where the old per-split path consumed
+  the same garbage silently). Bisected on airline-cat 5M subsample, 63
+  leaves/depth 6, noquant: classic CLEAN; hybrid DIRTY with both the batched
+  level finder AND the per-pair finder (batch_kernels:off), one-sync and
+  two-sync alike; onset between max_cat_threshold 32 (clean) and 48. Repro:
+  scratchpad crash_edge.py. Suspects: pipelined pair searches sharing the
+  task-out cat slabs, or the level-capacity slab re-allocation; per-pair-
+  finder involvement points at the former.
+
 - Airline-cat quality gap vs upstream lightgbm CUDA: at identical params
   (500r, both regimes) upstream posts 0.850/0.886 AUC where we and xgboost
   sit at ~0.843/0.873. NOT fp32 gain (fp64 measured identical: 0.87221 vs

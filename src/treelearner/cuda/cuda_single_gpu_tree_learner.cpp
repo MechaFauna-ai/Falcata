@@ -694,9 +694,27 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
   // trampled the staging (>256-bin features trained garbage). The batched
   // level kernels are excluded for global memory anyway, so hybrid offers no
   // upside on these shapes: route them to the classic flow.
+  // FENCE (2026-08-02): with categorical features and max_cat_threshold > 32
+  // the hybrid flow produces categorical split thresholds containing invalid
+  // bins (bisected: classic clean, hybrid dirty with BOTH the batched-level
+  // and per-pair finders, one-sync and two-sync alike; onset at
+  // max_cat_threshold >= 48 on airline-cat 5M). Root cause is open on the
+  // ROADMAP; until then those configs take the (correct) classic loop.
+  const bool cat_threshold_fenced = has_categorical_feature_ &&
+      config_->max_cat_threshold > 32;
+  if (cat_threshold_fenced) {
+    static bool warned = false;
+    if (!warned) {
+      warned = true;
+      Log::Warning("Hybrid CUDA growth is disabled for categorical datasets with "
+                   "max_cat_threshold > 32 (open correctness issue); using the "
+                   "classic training loop for this configuration.");
+    }
+  }
   const bool base = use_hybrid_growth_ &&
          nccl_communicator_ == nullptr &&
          !select_features_by_node_ &&
+         !cat_threshold_fenced &&
          (cuda_best_split_finder_ == nullptr || !cuda_best_split_finder_->use_global_memory()) &&
          (forced_split_json_ == nullptr || forced_split_json_->is_null()) &&
          config_->num_leaves > 2;
