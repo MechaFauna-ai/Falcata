@@ -16,15 +16,6 @@ figures from the profiles in the PR discussions.
 
 ## Performance
 
-- **Static planner (tier-0, remaining shape priors).** Device-side seeding
-  landed 2026-08-01 (SM-scaled tuner candidates + per-(shape,device) wisdom
-  cache; see docs/performance.md). Still open: purely shape-derived priors
-  decided at Init — expected level geometry (leaf sizes ~ rows/2^level) for
-  grid configs and speculative bounds, and quant bit thresholds from the
-  real bin histogram. Cost-model caution stands: the construct-floor cap
-  gained year/higgs 35% and regressed covtype 45% — only measurement catches
-  such reversals, which is why the runtime bandit is the primary mechanism
-  and static priors only seed it.
 - **Multi-target training.** Two variants: (1)
   round-robin one-tree-per-target (multiclass machinery minus softmax) -- identical
   models to sequential training, but only ~1.1x/target now that construct is cheap;

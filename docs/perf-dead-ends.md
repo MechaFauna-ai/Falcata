@@ -238,3 +238,26 @@ compact-quant, so parity here says nothing about them.
 the AOT inner loop grows shape-dependent branches that specialization could
 constant-fold (check the JIT template is synced to the AOT kernel first —
 it predates wide_partitions/__ldcs).
+
+## Static planner tier-0: shape-derived knob priors (superseded)
+
+**Hypothesis.** Decide tuner priors at Init from dataset shape (expected
+level geometry → grid configs and speculative bounds; bin-histogram-derived
+packing thresholds).
+
+**Why it closed without implementation (2026-08-02):** the runtime
+machinery landed first and confined the priors' value to ~nothing. With
+the wisdom cache, a shape's second-ever run starts at the known-best knob
+values; the priors could only improve the first ~130 probe trees of the
+FIRST run on a shape — probe candidates measure within ~20% of optimum on
+average, so the entire addressable win is ~26 tree-equivalents (~0.2% of
+one long run), once per (shape, device), ever. Against that, the measured
+brittleness of GPU cost models (the construct-floor cap: +35% year, −45%
+covtype — same formula) makes fitted shape formulas net-risk. The
+bin-threshold sub-item was moot: every current packing decision already
+reads real bin-mapper counts. Device-side seeding (SM-scaled candidates)
+did land and stays.
+
+**Re-open when:** a deployment pattern emerges with many DISTINCT one-shot
+shapes on fresh machines (wisdom never warm), or a knob appears whose probe
+cost is large relative to run length.
