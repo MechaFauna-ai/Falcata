@@ -52,6 +52,56 @@ figures from the profiles in the PR discussions.
     covered, no measured demand; lift on request.
 ## Inference
 
+## Serialization
+
+- FALB binary model format -- plan in docs/design/binary-model-format-plan.md
+  (numerai 50k-tree reference: 657 MB text -> ~21 MB f64 bit-exact). Adopted with
+  the following amendments from the 2026-08-02 review; implement M1/M2 first.
+  - Reserve a per-model ``leaf_dim`` in the v1 leaf-value layout (leaf_value is
+    [num_leaves x leaf_dim]); writer emits dim=1 until vector-leaf multi-target
+    lands, but the format must not need a v2 for it. Same reservation for linear
+    trees (flag bit + section id): both are on this roadmap, so "refuse forever"
+    is not an option -- v1 readers must reject them cleanly, not misparse.
+  - Per-array dtype tags instead of boolean flags: every tree-data array header
+    carries a dtype enum (u8/u16/u32/f32/f64, room for f16/bf16). New precisions
+    become additive; old readers fail with "unknown dtype", never misread.
+  - Threshold modes: bin-index is verify-on-write -- the writer bit-compares each
+    reconstructed double against the tree threshold and falls back to raw-f64
+    per model (text-edited, refit, imported models have off-grid thresholds).
+    Bin-index width u8/u16/u32 (max_bin > 256 is supported since 0af854af).
+    Raw-f32 thresholds are an IMPORT fidelity mode (XGBoost is f32-native, so
+    f32 is exact there), NOT a compression knob: on f64 thresholds it moves
+    decision boundaries.
+  - Sections split three ways: core (structure + thresholds + leaf values),
+    structural stats (internal/leaf counts + weights -- DEFAULT ON: TreeSHAP /
+    pred_contrib reads data_count() on every internal node, trees_to_dataframe
+    and dump_model need them; varint+zstd keeps them small), training
+    diagnostics (split_gain, internal_value -- opt-in, clear error from
+    feature_importance("gain") when absent).
+  - Header carries the exact predict-semantics set, enumerated: objective string
+    verbatim (sigmoid, quantile alpha, ...), num_class / num_tree_per_iteration,
+    average_output, init/base score, missing-handling flags, feature names +
+    feature_infos. Plus the full param blob (tiny) so continued training /
+    refit from a FALB-loaded booster either works or refuses explicitly --
+    "predict-only params" would break init_model continuation silently.
+  - Pickle flips to FALB only with an escape hatch (falcata.set_pickle_format /
+    env var) and __setstate__ accepts text-payload pickles forever. New pickles
+    are unreadable by stock lightgbm and older Falcata by design; numerai prod
+    stays *.txt.gz until the container ships Falcata (plan section 8).
+  - C API is FLC_BoosterSaveModelBinary / FLC_BoosterCreateFromBinary with
+    LGBM_* shim aliases (plan predates the rename). Python/C++/CLI only in v1;
+    R/SWIG explicitly deferred.
+  - Fixed-width section-relative per-tree offsets (not varint): O(1) tree access
+    keeps mmap + start_iteration/num_iteration slicing cheap. Little-endian
+    declared, raw sections 8-byte aligned.
+  - Text writer stays byte-stable: canonical md5 gates hash model text, and
+    treelite/FIL + stock-lightgbm interop consume it. FALB is purely additive;
+    the stock-interop CI guard (plan section 6.2) is mandatory before M2 ships.
+  - Importer caveats to settle with parity tests: xgboost strict-less-than vs
+    our <= (nextafter(t, -inf) is exact on f64; validate against f32 input
+    pipelines), xgboost transformed base_score -> raw margin, catboost
+    scale/bias, pinned source-library versions in CI.
+
 ## Correctness / determinism
 
 ## Upstream (MechaFauna-ai/Falcata) bugs found (documented here for reference;
