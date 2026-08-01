@@ -353,7 +353,9 @@ void Config::ResolveFalcataParams() {
 }
 
 bool CheckMultiClassObjective(const std::string& objective) {
-  return (objective == std::string("multiclass") || objective == std::string("multiclassova"));
+  // multi_regression rides the multiclass plumbing (num_class = target count)
+  return (objective == std::string("multiclass") || objective == std::string("multiclassova")
+          || objective == std::string("multi_regression"));
 }
 
 void Config::CheckParamConflict(const std::unordered_map<std::string, std::string>& params) {
@@ -374,6 +376,7 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
     bool metric_type_multiclass = (CheckMultiClassObjective(metric_type)
                                    || metric_type == std::string("multi_logloss")
                                    || metric_type == std::string("multi_error")
+                                   || metric_type == std::string("multi_rmse")
                                    || metric_type == std::string("auc_mu")
                                    || (metric_type == std::string("custom") && num_class_check > 1));
     if ((objective_type_multiclass && !metric_type_multiclass)

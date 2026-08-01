@@ -61,6 +61,9 @@ Metric* Metric::CreateMetric(const std::string& type, const Config& config) {
     } else if (type == std::string("multi_error")) {
       Log::Warning("Metric multi_error is not implemented in cuda version. Fall back to evaluation on CPU.");
       return new MultiErrorMetric(config);
+    } else if (type == std::string("multi_rmse") || type == std::string("multi_regression")) {
+      // CPU evaluation; cheap relative to training
+      return new MultiRMSEMetric(config);
     } else if (type == std::string("cross_entropy")) {
       Log::Warning("Metric cross_entropy is not implemented in cuda version. Fall back to evaluation on CPU.");
       return new CrossEntropyMetric(config);
@@ -116,6 +119,8 @@ Metric* Metric::CreateMetric(const std::string& type, const Config& config) {
       return new MultiSoftmaxLoglossMetric(config);
     } else if (type == std::string("multi_error")) {
       return new MultiErrorMetric(config);
+    } else if (type == std::string("multi_rmse") || type == std::string("multi_regression")) {
+      return new MultiRMSEMetric(config);
     } else if (type == std::string("cross_entropy")) {
       return new CrossEntropyMetric(config);
     } else if (type == std::string("cross_entropy_lambda")) {

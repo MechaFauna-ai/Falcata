@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "../regression_objective.hpp"
+#include "../multi_regression_objective.hpp"
 
 namespace Falcata {
 
@@ -53,6 +54,23 @@ class CUDARegressionL2loss : public CUDARegressionObjectiveInterface<RegressionL
   const double* LaunchConvertOutputCUDAKernel(const data_size_t num_data, const double* input, double* output) const override;
 
   bool NeedConvertOutputCUDA() const override { return sqrt_; }
+};
+
+
+// Round-robin multi-target L2: one elementwise kernel over
+// num_target * num_data (score/label/gradient layouts are all column-major
+// [target * num_data + i]); per-row weights broadcast across targets.
+// Boost-from-average stays on host (per-target label means, host label copy).
+class CUDAMultiRegressionL2 : public CUDAObjectiveInterface<MultiRegressionL2> {
+ public:
+  explicit CUDAMultiRegressionL2(const Config& config);
+
+  explicit CUDAMultiRegressionL2(const std::vector<std::string>& strs);
+
+  ~CUDAMultiRegressionL2();
+
+ protected:
+  void LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const override;
 };
 
 

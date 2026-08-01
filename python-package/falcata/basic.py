@@ -3104,7 +3104,12 @@ class Dataset:
         """
         self.label = label
         if self._handle is not None:
-            if isinstance(label, pd_DataFrame):
+            if isinstance(label, np.ndarray) and label.ndim == 2 and label.shape[1] > 1:
+                # multi-target label matrix (objective="multi_regression" with
+                # num_class = number of targets): flatten column-major so the
+                # stored layout is [target * num_data + i]
+                label_array = np.ravel(np.asarray(label, dtype=np.float32), order="F")
+            elif isinstance(label, pd_DataFrame):
                 if len(label.columns) > 1:
                     raise ValueError("DataFrame for label cannot have multiple columns")
                 label_array = np.ravel(_pandas_to_numpy(label, target_dtype=np.float32))

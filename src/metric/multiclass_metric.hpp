@@ -365,5 +365,76 @@ class AucMuMetric : public Metric {
   std::vector<data_size_t> sorted_data_idx_;
 };
 
+
+/*!
+* \brief Root-mean-squared-error averaged over the targets of a
+* multi_regression model. Labels are column-major [target * num_data + i]
+* (see MultiRegressionL2); the reported value is the RMSE over all
+* (row, target) pairs, with per-row weights broadcast across targets.
+*/
+class MultiRMSEMetric : public Metric {
+ public:
+  explicit MultiRMSEMetric(const Config& config) : num_class_(config.num_class) {}
+
+  ~MultiRMSEMetric() {}
+
+  void Init(const Metadata& metadata, data_size_t num_data) override {
+    name_.emplace_back("multi_rmse");
+    num_data_ = num_data;
+    label_ = metadata.label();
+    weights_ = metadata.weights();
+    if (metadata.label_size() !=
+        static_cast<size_t>(num_data_) * static_cast<size_t>(num_class_)) {
+      Log::Fatal("multi_rmse with num_class=%d expects %zu label values but got %zu",
+                 num_class_, static_cast<size_t>(num_data_) * num_class_,
+                 metadata.label_size());
+    }
+    if (weights_ == nullptr) {
+      sum_weights_ = static_cast<double>(num_data_) * num_class_;
+    } else {
+      double s = 0.0;
+      for (data_size_t i = 0; i < num_data_; ++i) {
+        s += weights_[i];
+      }
+      sum_weights_ = s * num_class_;
+    }
+  }
+
+  const std::vector<std::string>& GetName() const override { return name_; }
+
+  double factor_to_bigger_better() const override { return -1.0f; }
+
+  std::vector<double> Eval(const double* score, const ObjectiveFunction*) const override {
+    double sum_loss = 0.0;
+    for (int k = 0; k < num_class_; ++k) {
+      const size_t offset = static_cast<size_t>(k) * num_data_;
+      const label_t* target_label = label_ + offset;
+      const double* target_score = score + offset;
+      if (weights_ == nullptr) {
+        #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) reduction(+:sum_loss)
+        for (data_size_t i = 0; i < num_data_; ++i) {
+          const double d = target_score[i] - target_label[i];
+          sum_loss += d * d;
+        }
+      } else {
+        #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static) reduction(+:sum_loss)
+        for (data_size_t i = 0; i < num_data_; ++i) {
+          const double d = target_score[i] - target_label[i];
+          sum_loss += d * d * weights_[i];
+        }
+      }
+    }
+    return std::vector<double>(1, std::sqrt(sum_loss / sum_weights_));
+  }
+
+ private:
+  int num_class_;
+  data_size_t num_data_;
+  const label_t* label_;
+  const label_t* weights_;
+  double sum_weights_;
+  std::vector<std::string> name_;
+};
+
 }  // namespace Falcata
 #endif   // FALCATA_SRC_METRIC_MULTICLASS_METRIC_HPP_

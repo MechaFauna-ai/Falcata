@@ -105,6 +105,37 @@ void CUDARegressionL2loss::LaunchGetGradientsKernel(const double* score, score_t
 }
 
 
+template <bool USE_WEIGHT>
+__global__ void GetGradientsKernel_MultiRegressionL2(const double* cuda_scores, const label_t* cuda_labels,
+  const label_t* cuda_weights, const data_size_t num_data, const data_size_t total,
+  score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
+  const data_size_t index = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
+  if (index < total) {
+    if (!USE_WEIGHT) {
+      cuda_out_gradients[index] = static_cast<score_t>(cuda_scores[index] - cuda_labels[index]);
+      cuda_out_hessians[index] = 1.0f;
+    } else {
+      // per-row weights broadcast over the column-major target dimension
+      const score_t weight = static_cast<score_t>(cuda_weights[index % num_data]);
+      cuda_out_gradients[index] = static_cast<score_t>(cuda_scores[index] - cuda_labels[index]) * weight;
+      cuda_out_hessians[index] = weight;
+    }
+  }
+}
+
+void CUDAMultiRegressionL2::LaunchGetGradientsKernel(const double* score, score_t* gradients, score_t* hessians) const {
+  const data_size_t total = num_data_ * static_cast<data_size_t>(num_target_);
+  const int num_blocks = (total + GET_GRADIENTS_BLOCK_SIZE_REGRESSION - 1) / GET_GRADIENTS_BLOCK_SIZE_REGRESSION;
+  if (cuda_weights_ == nullptr) {
+    GetGradientsKernel_MultiRegressionL2<false><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+      score, cuda_labels_, nullptr, num_data_, total, gradients, hessians);
+  } else {
+    GetGradientsKernel_MultiRegressionL2<true><<<num_blocks, GET_GRADIENTS_BLOCK_SIZE_REGRESSION>>>(
+      score, cuda_labels_, cuda_weights_, num_data_, total, gradients, hessians);
+  }
+}
+
+
 double CUDARegressionL1loss::LaunchCalcInitScoreKernel(const int /*class_id*/) const {
   const double alpha = 0.5f;
   if (cuda_weights_ == nullptr) {

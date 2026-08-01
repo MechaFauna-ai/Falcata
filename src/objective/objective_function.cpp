@@ -9,6 +9,7 @@
 #include <string>
 
 #include "binary_objective.hpp"
+#include "multi_regression_objective.hpp"
 #include "multiclass_objective.hpp"
 #include "rank_objective.hpp"
 #include "regression_objective.hpp"
@@ -43,6 +44,8 @@ ObjectiveFunction* ObjectiveFunction::CreateObjectiveFunctionCUDA(const std::str
     return new CUDALambdarankNDCG(config);
   } else if (type == std::string("rank_xendcg")) {
     return new CUDARankXENDCG(config);
+  } else if (type == std::string("multi_regression")) {
+    return new CUDAMultiRegressionL2(config);
   } else if (type == std::string("multiclass")) {
     return new CUDAMulticlassSoftmax(config);
   } else if (type == std::string("multiclassova")) {
@@ -95,6 +98,8 @@ ObjectiveFunction* ObjectiveFunction::CreateObjectiveFunction(const std::string&
       return new LambdarankNDCG(config);
     } else if (type == std::string("rank_xendcg")) {
       return new RankXENDCG(config);
+    } else if (type == std::string("multi_regression")) {
+      return new MultiRegressionL2(config);
     } else if (type == std::string("multiclass")) {
       return new MulticlassSoftmax(config);
     } else if (type == std::string("multiclassova")) {
@@ -140,6 +145,8 @@ ObjectiveFunction* ObjectiveFunction::CreateObjectiveFunction(const std::string&
     return new LambdarankNDCG(strs);
   } else if (type == std::string("rank_xendcg")) {
     return new RankXENDCG(strs);
+  } else if (type == std::string("multi_regression")) {
+    return new MultiRegressionL2(strs);
   } else if (type == std::string("multiclass")) {
     return new MulticlassSoftmax(strs);
   } else if (type == std::string("multiclassova")) {

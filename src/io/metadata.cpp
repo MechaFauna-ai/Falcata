@@ -458,15 +458,19 @@ void Metadata::InsertInitScores(const double* init_scores, data_size_t start_ind
 template <typename It>
 void Metadata::SetLabelsFromIterator(It first, It last) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (num_data_ != last - first) {
+  const auto len = last - first;
+  // multi-target objectives (multi_regression) store column-major
+  // [target * num_data + i] labels: any exact multiple of #data is accepted,
+  // and the consuming objective validates the multiple it needs
+  if (len <= 0 || num_data_ <= 0 || len % num_data_ != 0) {
     Log::Fatal("Length of labels differs from the length of #data");
   }
-  if (label_.empty()) {
-    label_.resize(num_data_);
+  if (label_.size() != static_cast<size_t>(len)) {
+    label_.resize(len);
   }
 
-  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static, 512) if (num_data_ >= 1024)
-  for (data_size_t i = 0; i < num_data_; ++i) {
+  #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static, 512) if (len >= 1024)
+  for (data_size_t i = 0; i < static_cast<data_size_t>(len); ++i) {
     label_[i] = Common::AvoidInf(first[i]);
   }
 

@@ -152,6 +152,12 @@ class Metadata {
   inline const label_t* label() const { return label_.data(); }
 
   /*!
+  * \brief Number of stored label values (num_data times the number of
+  * targets for multi-target objectives; equal to num_data otherwise)
+  */
+  inline size_t label_size() const { return label_.size(); }
+
+  /*!
   * \brief Set label for one record
   * \param idx Index of this record
   * \param value Label value of this record
