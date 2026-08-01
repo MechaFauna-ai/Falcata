@@ -404,11 +404,21 @@ Airline-cat, 500 rounds, RTX 5090 (xgboost native-categorical as reference):
 | deep (1023 leaves) | 95.1s -> **47.0s** | 93.4s -> **41.7s** | 43.8s |
 | shallow (63 leaves) | 28.7s -> **23.5s** | 26.8s -> **20.5s** | 22.8s |
 
-Per-level partition cost fell from ~17.4ms to ~2.2ms; the remaining per-tree
-profile is construct 26.5ms, leaf-map materialize 17ms, partition 22ms,
-fixed-overhead kernels ~9ms, plus ~30ms host sync gaps (the two-sync flow's
-per-level readbacks -- lifting the one-sync categorical exclusion is the next
-lever if more is needed).
+Per-level partition cost fell from ~17.4ms to ~2.2ms. A second round
+(944d9cdc) removed the next three bottlenecks: the interleaved categorical
+recording ran ~6 launches + TWO blocking length readbacks per categorical
+split (~432/deep tree -- also the source of +-2.3s run-to-run jitter), now
+ONE batched bitset kernel + ONE readback per level; the known-final level
+writes the row->leaf map inline in split-inner (with explicit leaf-cache
+invalidation for its never-searched children -- the subtle correctness pair
+the lattice fingerprints caught) and skips a wasted next-level search; and
+the one-sync prefix admits categorical datasets. Official harness numbers
+(944d9cdc wheel, warmup+2 timed, stable to ~0.1s):
+
+| regime | falcata-stoch | falcata-noquant | xgboost | lightgbm CUDA |
+|---|---|---|---|---|
+| shallow | **18.6s (-18.4%)** | 20.2s | 22.8s | 34.6s |
+| deep | **33.2s (-24.2%)** | 36.0s | 43.8s | 152.9s |
 
 ---
 
