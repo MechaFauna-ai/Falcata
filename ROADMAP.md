@@ -104,6 +104,14 @@ figures from the profiles in the PR discussions.
 
 ## Correctness / determinism
 
+- Airline-cat quality gap vs upstream lightgbm CUDA: at identical params
+  (500r, both regimes) upstream posts 0.850/0.886 AUC where we and xgboost
+  sit at ~0.843/0.873. NOT fp32 gain (fp64 measured identical: 0.87221 vs
+  0.87231). Suspects: categorical split-selection defaults or the hybrid
+  level-batched top-K selection differing from pure leaf-wise on this data
+  shape. Worth a bisect: same seed classic-vs-upstream split-by-split on a
+  subsample.
+
 ## Upstream (MechaFauna-ai/Falcata) bugs found (documented here for reference;
 ## we do not contribute upstream)
 

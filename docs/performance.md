@@ -376,6 +376,42 @@ finder. Open items tracked on the ROADMAP.
 
 ---
 
+## 11. Batched-apply partition overhaul: deferred leaf map + flat-grid kernels (2026-08-02, a23fe633)
+
+Profiling the 92M-row airline-cat deep regime (1023 leaves, depth 10) showed
+the level-batched apply's partition kernels at 77% of GPU time -- the
+data-partition-memory-bound class first profiled on higgs. Two structural
+fixes, both bit-parity (canonical md5 locks reproduce identically):
+
+- **Deferred row->leaf map.** The gen-bit-vector kernel wrote
+  `data_index_to_leaf_index` for every row at every level: a 4-byte random
+  scatter, one full DRAM sector per row, ~55% of the kernel's traffic at deep
+  levels. Every consumer of the map is a tree-end operation, so it is now
+  written once per tree by `MaterializeLeafMapKernel` from the final leaf
+  windows (the selective flow materializes from the final classic layout,
+  replacing its remap).
+- **Flat-grid apply kernels.** The 2D `(largest leaf's blocks x num_splits)`
+  grid is mostly empty blocks at skewed deep levels (millions per launch).
+  Host-launched levels now run a 1D grid-stride loop over the level's real
+  chunk count with a binary-searched `(descriptor, local block)` mapping
+  (`flat_block_start` prefix in the descriptor). The graph-captured device
+  loop keeps the controller-resized 2D form.
+
+Airline-cat, 500 rounds, RTX 5090 (xgboost native-categorical as reference):
+
+| regime | falcata-noquant | falcata-stoch | xgboost |
+|---|---|---|---|
+| deep (1023 leaves) | 95.1s -> **47.0s** | 93.4s -> **41.7s** | 43.8s |
+| shallow (63 leaves) | 28.7s -> **23.5s** | 26.8s -> **20.5s** | 22.8s |
+
+Per-level partition cost fell from ~17.4ms to ~2.2ms; the remaining per-tree
+profile is construct 26.5ms, leaf-map materialize 17ms, partition 22ms,
+fixed-overhead kernels ~9ms, plus ~30ms host sync gaps (the two-sync flow's
+per-level readbacks -- lifting the one-sync categorical exclusion is the next
+lever if more is needed).
+
+---
+
 *Footnote on the 2026-07-30 ablation snapshot: the numerai-deep
 `batch_kernels` row is marked "MD5 DIFFERS" in the raw table; this was
 subsequently investigated and verified benign — the fallback path breaks
