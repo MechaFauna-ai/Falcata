@@ -1355,6 +1355,11 @@ __device__ __forceinline__ int HybridFlatBlockDesc(
 // stats, linear trees), so the per-level 4-byte random scatter over every row
 // -- one full DRAM sector per row at deep levels -- is deferred to ONE
 // MaterializeLeafMapKernel pass per tree reading the final windows.
+// Packed-bit chunk body: the per-row direction bits travel between the
+// gen-bit and split-inner kernels as warp ballot words (1 bit/row) instead of
+// a per-row uint16 running prefix -- 32x less inter-kernel traffic. The
+// per-block left/right totals still land in the offset buffers for the
+// aggregate kernel, unchanged.
 __device__ __forceinline__ void HybridGenBitChunk(
   const CUDAHybridApplyDescriptor& d,
   const unsigned int block_x,
@@ -1363,19 +1368,51 @@ __device__ __forceinline__ void HybridGenBitChunk(
   data_size_t* block_to_left_offset_buffer,
   data_size_t* block_to_right_offset_buffer,
   uint16_t* shared_mem_buffer) {
-  uint16_t thread_to_left_offset_cnt = 0;
+  uint16_t to_left = 0;
   const data_size_t local_data_index = static_cast<data_size_t>(block_x * blockDim.x + threadIdx.x);
   if (local_data_index < d.num_data_in_leaf) {
     const data_size_t global_data_index = cuda_data_indices[d.leaf_data_start + local_data_index];
     const uint32_t bin = HybridLoadBin(d, global_data_index);
-    thread_to_left_offset_cnt = HybridGenBitVectorDecision(d, bin);
+    to_left = HybridGenBitVectorDecision(d, bin);
+  }
+  const uint32_t ballot = __ballot_sync(0xffffffffu, to_left != 0);
+  const unsigned int lane = threadIdx.x & (WARPSIZE - 1);
+  const unsigned int warp = threadIdx.x / WARPSIZE;
+  // bit words live in the (reinterpreted) block_to_left_offset buffer: one
+  // uint32 per warp-of-rows, at word index (row position / 32)
+  // chunk-slot word indexing: leaf windows are not 32-aligned, so bits are
+  // stored per (descriptor, block) slot -- d.block_offset_start is a unique
+  // monotone per-desc slot base in both the host flat path and the graph path
+  uint32_t* bit_words = reinterpret_cast<uint32_t*>(block_to_left_offset);
+  if (lane == 0) {
+    bit_words[(static_cast<size_t>(d.block_offset_start) + block_x) * (blockDim.x / WARPSIZE) + warp] = ballot;
+  }
+  // block totals for the aggregate kernel (unchanged layout)
+  uint16_t warp_left = static_cast<uint16_t>(__popc(ballot));
+  if (lane == 0) {
+    shared_mem_buffer[warp] = warp_left;
   }
   __syncthreads();
-  PrepareOffsetAt(block_x, d.num_data_in_leaf,
-    block_to_left_offset + d.leaf_data_start + block_x * blockDim.x,
-    block_to_left_offset_buffer + d.block_offset_start,
-    block_to_right_offset_buffer + d.block_offset_start,
-    thread_to_left_offset_cnt, shared_mem_buffer);
+  if (threadIdx.x == 0) {
+    uint32_t block_left = 0;
+    const unsigned int num_warps = blockDim.x / WARPSIZE;
+    for (unsigned int w = 0; w < num_warps; ++w) {
+      block_left += shared_mem_buffer[w];
+    }
+    const data_size_t num_data_in_block =
+      (static_cast<data_size_t>(block_x) + 1) * blockDim.x <= d.num_data_in_leaf ?
+        static_cast<data_size_t>(blockDim.x) :
+        d.num_data_in_leaf - static_cast<data_size_t>(block_x) * blockDim.x;
+    data_size_t* left_buf = block_to_left_offset_buffer + d.block_offset_start;
+    data_size_t* right_buf = block_to_right_offset_buffer + d.block_offset_start;
+    if (num_data_in_block > 0) {
+      left_buf[block_x + 1] = static_cast<data_size_t>(block_left);
+      right_buf[block_x + 1] = num_data_in_block - static_cast<data_size_t>(block_left);
+    } else {
+      left_buf[block_x + 1] = 0;
+      right_buf[block_x + 1] = 0;
+    }
+  }
 }
 
 __global__ void HybridGenBitVectorUpdateLeafIndexBatchKernel(
@@ -1515,20 +1552,36 @@ __device__ __forceinline__ void HybridSplitInnerChunk(
   const data_size_t* block_to_right_offset_buffer_base,
   const uint16_t* block_to_left_offset,
   data_size_t* out_data_indices_in_leaf,
-  int* cuda_data_index_to_leaf_index) {
+  int* cuda_data_index_to_leaf_index,
+  uint16_t* shared_warp_scan) {
   const data_size_t num_data_in_leaf = d.num_data_in_leaf;
   const unsigned int threadIdx_x = threadIdx.x;
   const unsigned int blockDim_x = blockDim.x;
   const unsigned int global_thread_index = block_x * blockDim_x + threadIdx_x;
   const data_size_t* cuda_data_indices_in_leaf = cuda_data_indices + d.leaf_data_start;
-  const uint16_t* block_to_left_offset_ptr = block_to_left_offset + d.leaf_data_start + block_x * blockDim_x;
   const uint32_t to_right_block_offset = block_to_right_offset_buffer_base[d.block_offset_start + block_x];
   const uint32_t to_left_block_offset = block_to_left_offset_buffer_base[d.block_offset_start + block_x];
   data_size_t* left_out_data_indices_in_leaf = out_data_indices_in_leaf + d.leaf_data_start + to_left_block_offset;
   data_size_t* right_out_data_indices_in_leaf = out_data_indices_in_leaf + d.leaf_data_start + to_right_block_offset;
+  // reconstruct per-thread positions from the packed ballot words
+  const uint32_t* bit_words = reinterpret_cast<const uint32_t*>(block_to_left_offset);
+  const unsigned int lane = threadIdx_x & (WARPSIZE - 1);
+  const unsigned int warp = threadIdx_x / WARPSIZE;
+  const uint32_t word = bit_words[(static_cast<size_t>(d.block_offset_start) + block_x) * (blockDim_x / WARPSIZE) + warp];
+  const uint16_t warp_left_total = static_cast<uint16_t>(__popc(word));
+  if (lane == 0) {
+    shared_warp_scan[warp] = warp_left_total;
+  }
+  __syncthreads();
+  // exclusive scan of per-warp left counts (few warps; thread 0 serial)
+  uint32_t warp_left_base = 0;
+  for (unsigned int w = 0; w < warp; ++w) {
+    warp_left_base += shared_warp_scan[w];
+  }
   if (static_cast<data_size_t>(global_thread_index) < num_data_in_leaf) {
-    const uint32_t thread_to_left_offset = (threadIdx_x == 0 ? 0 : block_to_left_offset_ptr[threadIdx_x - 1]);
-    const bool to_left = block_to_left_offset_ptr[threadIdx_x] > thread_to_left_offset;
+    const bool to_left = (word >> lane) & 1u;
+    const uint32_t lefts_before_in_warp = __popc(word & ((1u << lane) - 1u));
+    const uint32_t thread_to_left_offset = warp_left_base + lefts_before_in_warp;
     const data_size_t row_index = cuda_data_indices_in_leaf[global_thread_index];
     if (to_left) {
       left_out_data_indices_in_leaf[thread_to_left_offset] = row_index;
@@ -1543,6 +1596,7 @@ __device__ __forceinline__ void HybridSplitInnerChunk(
       cuda_data_index_to_leaf_index[row_index] = to_left ? d.left_leaf_index : d.right_leaf_index;
     }
   }
+  __syncthreads();
 }
 
 __global__ void HybridSplitInnerBatchKernel(
@@ -1557,6 +1611,7 @@ __global__ void HybridSplitInnerBatchKernel(
   const int total_flat_blocks,
   int* cuda_data_index_to_leaf_index,
   const int write_leaf_map) {
+  __shared__ uint16_t shared_warp_scan[WARPSIZE];
   if (total_flat_blocks > 0) {
     // host-launched flat grid (see the gen-bit-vector kernel)
     if (write_leaf_map != 0) {
@@ -1567,7 +1622,7 @@ __global__ void HybridSplitInnerBatchKernel(
         HybridSplitInnerChunk<true>(d, static_cast<unsigned int>(flat - d.flat_block_start),
           cuda_data_indices_param, block_to_left_offset_buffer_base,
           block_to_right_offset_buffer_base, block_to_left_offset,
-          out_data_indices_param, cuda_data_index_to_leaf_index);
+          out_data_indices_param, cuda_data_index_to_leaf_index, shared_warp_scan);
       }
     } else {
       for (int flat = static_cast<int>(blockIdx.x); flat < total_flat_blocks;
@@ -1577,7 +1632,7 @@ __global__ void HybridSplitInnerBatchKernel(
         HybridSplitInnerChunk<false>(d, static_cast<unsigned int>(flat - d.flat_block_start),
           cuda_data_indices_param, block_to_left_offset_buffer_base,
           block_to_right_offset_buffer_base, block_to_left_offset,
-          out_data_indices_param, cuda_data_index_to_leaf_index);
+          out_data_indices_param, cuda_data_index_to_leaf_index, shared_warp_scan);
       }
     }
     return;
@@ -1596,7 +1651,8 @@ __global__ void HybridSplitInnerBatchKernel(
   }
   HybridSplitInnerChunk<false>(d, blockIdx.x, cuda_data_indices,
     block_to_left_offset_buffer_base, block_to_right_offset_buffer_base,
-    block_to_left_offset, out_data_indices_in_leaf, cuda_data_index_to_leaf_index);
+    block_to_left_offset, out_data_indices_in_leaf, cuda_data_index_to_leaf_index,
+    shared_warp_scan);
 }
 
 // replica of SplitTreeStructureKernel<false, USE_GRAD_DISCRETIZED> with
