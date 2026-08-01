@@ -670,9 +670,13 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
   // classic one-split-at-a-time loop runs.
   const bool depth_limited = config_->max_depth > 0 && config_->max_depth < 31 &&
       (1LL << config_->max_depth) <= static_cast<int64_t>(config_->num_leaves) + 1;
+  // Categorical datasets are allowed on the (two-sync) hybrid prefix since
+  // 2026-08-02: the batched apply routes categorical splits through the
+  // per-level bitset arena, and tree recording interleaves the per-split
+  // categorical path with numerical SplitBatch chunks. The selective and
+  // one-sync/speculative flows keep their categorical exclusions for now.
   const bool base = use_hybrid_growth_ &&
          nccl_communicator_ == nullptr &&
-         !has_categorical_feature_ &&
          !select_features_by_node_ &&
          (forced_split_json_ == nullptr || forced_split_json_->is_null()) &&
          config_->num_leaves > 2;
@@ -708,6 +712,7 @@ bool CUDASingleGPUTreeLearner::UseSelectiveGrowth() const {
 
 bool CUDASingleGPUTreeLearner::UseOneSyncPrefix() const {
   return use_hybrid_one_sync_ &&
+         !has_categorical_feature_ &&
          !config_->use_quantized_grad &&
          use_hybrid_batch_kernels_ &&
          use_hybrid_batch_apply_ &&
@@ -1118,11 +1123,17 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
     // runs while CEGB is active. Kept as a defensive guard in case that gating is
     // ever relaxed. No-op unless CEGB is configured.
     cuda_best_split_finder_->MarkFeatureUsedInSplit(inner_feature_index);
+    // Categorical splits: the entry is never consumed (the interleave below
+    // routes them through SplitCategorical), and RealThreshold() would
+    // OOB-index the bin-upper-bound array with the categorical threshold
+    // payload -- do not call it.
+    const bool is_cat_split = host_leaf_best_splits_[leaf].num_cat_threshold > 0;
     host_tree_batch_splits_.push_back({
       leaf,
       right_leaf_index,  // == tree num_leaves at the time of this split
       train_data_->RealFeatureIndex(inner_feature_index),
-      train_data_->RealThreshold(inner_feature_index, leaf_best_split_threshold_[leaf]),
+      is_cat_split ? 0.0 :
+        train_data_->RealThreshold(inner_feature_index, leaf_best_split_threshold_[leaf]),
       static_cast<int>(train_data_->FeatureBinMapper(inner_feature_index)->missing_type()),
       best_split_info});
     host_apply_split_inputs_.push_back({
@@ -1132,6 +1143,7 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
       inner_feature_index,
       leaf_best_split_threshold_[leaf],
       leaf_best_split_default_left_[leaf],
+      host_leaf_best_splits_[leaf].num_cat_threshold,
       leaf_num_data_[leaf],
       leaf_data_start_[leaf],
       smaller_slot,
@@ -1140,8 +1152,44 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
     slot_id += 2;
   }
   // ZeroHistForLeaf is a no-op (BeforeTrain zeroes the full histogram
-  // buffer), so the batched path skips the per-split calls entirely
-  tree->SplitBatch(host_tree_batch_splits_);
+  // buffer), so the batched path skips the per-split calls entirely.
+  //
+  // Tree recording: numerical runs go through SplitBatch chunks; the level's
+  // categorical splits (rare) interleave through the per-split categorical
+  // path IN LEVEL ORDER, preserving the consecutive right-child numbering.
+  // The data partition still applies EVERYTHING through the batched arena
+  // path below.
+  {
+    std::vector<CUDATreeBatchSplit> chunk;
+    chunk.reserve(host_tree_batch_splits_.size());
+    for (size_t k = 0; k < host_tree_batch_splits_.size(); ++k) {
+      const CUDAHybridApplySplitInput& in = host_apply_split_inputs_[k];
+      if (in.num_cat_threshold > 0) {
+        if (!chunk.empty()) {
+          tree->SplitBatch(chunk);
+          chunk.clear();
+        }
+        const int inner_feature = in.split_feature;
+        CHECK_GE(inner_feature, 0);
+        CHECK_LT(inner_feature, train_data_->num_features());
+        num_cat_threshold_ = in.num_cat_threshold;
+        ConstructBitsetForCategoricalSplit(in.best_split_info);
+        const int right = tree->SplitCategorical(
+            in.left_leaf_index,
+            train_data_->RealFeatureIndex(inner_feature),
+            train_data_->FeatureBinMapper(inner_feature)->missing_type(),
+            in.best_split_info,
+            cuda_bitset_, cuda_bitset_len_,
+            cuda_bitset_inner_, cuda_bitset_inner_len_);
+        CHECK_EQ(right, in.right_leaf_index);
+      } else {
+        chunk.push_back(host_tree_batch_splits_[k]);
+      }
+    }
+    if (!chunk.empty()) {
+      tree->SplitBatch(chunk);
+    }
+  }
   cuda_data_partition_->SplitLevelBatched(host_apply_split_inputs_);
 }
 
@@ -1444,6 +1492,12 @@ bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
   const bool debug_envs = FalcataDebug().any_growth_hook();
   if (!HybridGraphEnvEnabled() || debug_envs || !HybridGraphDriverSupported() ||
       hybrid_graph_disabled_) {
+    return false;
+  }
+  // categorical splits interleave a per-split host path (bitset construct +
+  // SplitCategorical) through the level apply -- impossible inside a captured
+  // graph body; categorical datasets keep the host-driven prefix loop
+  if (has_categorical_feature_) {
     return false;
   }
   // quant graph support is bit-exact (a2279763) but a net loss on large/cheap-level
@@ -2171,6 +2225,7 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatchedSelective(std::vector<HybridAppl
       node.info.inner_feature_index,
       node.info.threshold,
       static_cast<uint8_t>(node.info.default_left),
+      node.info.num_cat_threshold,
       node.num_data,
       node.data_start,
       smaller_slot,

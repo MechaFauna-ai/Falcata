@@ -370,11 +370,15 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
   host_apply_descs_.resize(splits.size());
   data_size_t total_block_offset_slots = 0;
   int max_num_blocks = 0;
+  uint32_t cat_arena_cursor = 0;
+  std::vector<int> cat_desc_indices;
+  std::vector<uint32_t> cat_mfb_bins;
+  std::vector<uint32_t> cat_word_offsets;
   for (int k = 0; k < num_splits; ++k) {
     const CUDAHybridApplySplitInput& in = splits[k];
     CUDAHybridApplyDescriptor& desc = host_apply_descs_[k];
     const int split_feature_index = in.split_feature;
-    CHECK(!is_categorical_feature_[split_feature_index]);
+    const bool is_cat = is_categorical_feature_[split_feature_index];
     // host-side split metadata math, mirroring LaunchGenDataToLeftBitVectorKernel
     const bool missing_is_zero = static_cast<bool>(cuda_column_data_->feature_missing_is_zero(split_feature_index));
     const bool missing_is_na = static_cast<bool>(cuda_column_data_->feature_missing_is_na(split_feature_index));
@@ -446,6 +450,27 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
     desc.mfb_is_na = mfb_is_na ? 1 : 0;
     desc.max_bin_to_left = (max_bin <= th) ? 1 : 0;
     desc.use_min_bin = is_single_feature_in_column ? 0 : 1;
+    if (is_cat) {
+      // categorical split: region of the per-level inner-bitset arena, sized
+      // by the bin-range cap (trailing zero words are inert for the bitset
+      // test, so no device length is ever read back). The default-direction
+      // fields are patched ON DEVICE by the arena-build kernel (MFB
+      // membership needs the bitset; the classic flow pays a D2H here).
+      CHECK(!cuda_column_data_->packed_column_view_active());
+      const int8_t mfb_offset = static_cast<int8_t>(most_freq_bin == 0);
+      const uint32_t max_pos = max_bin - min_bin + static_cast<uint32_t>(mfb_offset);
+      desc.cat_bitset_len = static_cast<int>(max_pos / 32 + 1);
+      desc.cat_bitset = nullptr;  // patched below once the arena is sized
+      desc.cat_mfb_offset = mfb_offset;
+      cat_word_offsets.push_back(cat_arena_cursor);
+      cat_arena_cursor += static_cast<uint32_t>(desc.cat_bitset_len);
+      cat_desc_indices.push_back(k);
+      cat_mfb_bins.push_back(most_freq_bin);
+    } else {
+      desc.cat_bitset_len = 0;
+      desc.cat_bitset = nullptr;
+      desc.cat_mfb_offset = 0;
+    }
     total_block_offset_slots += desc.num_blocks + 1;
     if (desc.num_blocks > max_num_blocks) {
       max_num_blocks = desc.num_blocks;
@@ -511,9 +536,25 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
   // stream) and before the launches below. The host staging buffer is only
   // rewritten after the next FinishSplitBatch full sync, and a pageable async
   // H2D returns only once the data is staged, so reuse is safe.
+  if (cat_arena_cursor > 0) {
+    if (cuda_cat_bitset_arena_.Size() < static_cast<size_t>(cat_arena_cursor)) {
+      cuda_cat_bitset_arena_.Resize(static_cast<size_t>(cat_arena_cursor) * 2);
+    }
+    for (size_t i = 0; i < cat_desc_indices.size(); ++i) {
+      host_apply_descs_[cat_desc_indices[i]].cat_bitset =
+        cuda_cat_bitset_arena_.RawData() + cat_word_offsets[i];
+    }
+  }
   CopyFromHostToCUDADeviceAsync<CUDAHybridApplyDescriptor>(
     cuda_apply_descs_.RawData(), host_apply_descs_.data(),
     static_cast<size_t>(num_descs), cuda_streams_[0], __FILE__, __LINE__);
+  if (!cat_desc_indices.empty()) {
+    // build the level's bitsets + patch descriptor default directions; on
+    // stream 0, so ordered after the descriptor upload and before the
+    // bit-vector kernels below
+    LaunchBuildCatBitsetArenaKernel(static_cast<int>(cat_desc_indices.size()),
+                                    cat_desc_indices, cat_mfb_bins);
+  }
   LaunchSplitLevelBatchedKernels(num_splits, max_num_blocks, num_gaps, max_gap_blocks);
   // the out buffer now holds every leaf's indices at the main layout positions:
   // promote it to the main index array (the old main becomes the next scratch)

@@ -1168,6 +1168,15 @@ __device__ __forceinline__ uint32_t HybridLoadBin(
 // (MISSING_IS_ZERO || MFB_IS_ZERO) condition mirrors the template verbatim
 __device__ __forceinline__ uint16_t HybridGenBitVectorDecision(
   const CUDAHybridApplyDescriptor& d, const uint32_t bin) {
+  if (d.cat_bitset_len > 0) {
+    // categorical: mirror GenDataToLeftBitVectorKernel_Categorical exactly
+    if ((d.use_min_bin && (bin < d.min_bin || bin > d.max_bin)) ||
+        (!d.use_min_bin && bin == 0)) {
+      return d.split_default_to_left;
+    }
+    return CUDAFindInBitset(d.cat_bitset, d.cat_bitset_len,
+                            bin - d.min_bin + static_cast<uint32_t>(d.cat_mfb_offset)) ? 1 : 0;
+  }
   if (!d.min_is_max) {
     if ((d.missing_is_zero && !d.mfb_is_zero && bin == d.t_zero_bin) ||
       (d.missing_is_na && !d.mfb_is_na && bin == d.max_bin)) {
@@ -1208,6 +1217,16 @@ __device__ __forceinline__ uint16_t HybridGenBitVectorDecision(
 // runtime-branch replica of UpdateDataIndexToLeafIndexKernel's templated decision
 __device__ __forceinline__ int HybridUpdateLeafIndexDecision(
   const CUDAHybridApplyDescriptor& d, const uint32_t bin) {
+  if (d.cat_bitset_len > 0) {
+    // categorical: mirror UpdateDataIndexToLeafIndexKernel_Categorical exactly
+    if ((d.use_min_bin && (bin < d.min_bin || bin > d.max_bin)) ||
+        (!d.use_min_bin && bin == 0)) {
+      return d.default_leaf_index;
+    }
+    return CUDAFindInBitset(d.cat_bitset, d.cat_bitset_len,
+                            bin - d.min_bin + static_cast<uint32_t>(d.cat_mfb_offset)) ?
+        d.left_leaf_index : d.right_leaf_index;
+  }
   if (!d.min_is_max) {
     if ((d.missing_is_zero && !d.mfb_is_zero && bin == d.t_zero_bin) ||
       (d.missing_is_na && !d.mfb_is_na && bin == d.max_bin)) {
@@ -1243,6 +1262,62 @@ __device__ __forceinline__ int HybridUpdateLeafIndexDecision(
       }
     }
   }
+}
+
+
+// One block per categorical split of the level: build the split's INNER
+// bitset in its arena region from the finder's cat thresholds, then patch the
+// (device-resident) descriptor's default-direction fields from on-device MFB
+// membership. Mirrors LaunchGenDataToLeftBitVectorCategoricalKernel's host
+// logic (including its raw-most_freq_bin membership test) without its D2H.
+__global__ void HybridBuildCatBitsetArenaKernel(
+  CUDAHybridApplyDescriptor* descs,
+  const int* cat_desc_indices,
+  const uint32_t* cat_mfb_bins) {
+  CUDAHybridApplyDescriptor* d = descs + cat_desc_indices[blockIdx.x];
+  uint32_t* bits = const_cast<uint32_t*>(d->cat_bitset);
+  const int len = d->cat_bitset_len;
+  for (int i = static_cast<int>(threadIdx.x); i < len; i += static_cast<int>(blockDim.x)) {
+    bits[i] = 0;
+  }
+  __syncthreads();
+  const CUDASplitInfo* info = d->best_split_info;
+  const int n = info->num_cat_threshold;
+  const uint32_t* th = info->cat_threshold;
+  for (int i = static_cast<int>(threadIdx.x); i < n; i += static_cast<int>(blockDim.x)) {
+    const uint32_t pos = th[i];
+    if (static_cast<int>(pos >> 5) < len) {
+      atomicOr(&bits[pos >> 5], 1u << (pos & 31));
+    }
+  }
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    const uint32_t mfb = cat_mfb_bins[blockIdx.x];
+    uint8_t to_left = 0;
+    if (mfb > 0 && CUDAFindInBitset(bits, len, mfb)) {
+      to_left = 1;
+    }
+    d->split_default_to_left = to_left;
+    d->split_missing_default_to_left = to_left;
+    d->default_leaf_index = to_left ? d->left_leaf_index : d->right_leaf_index;
+    d->missing_default_leaf_index = d->default_leaf_index;
+  }
+}
+
+void CUDADataPartition::LaunchBuildCatBitsetArenaKernel(
+    const int num_cat_splits, const std::vector<int>& cat_desc_indices,
+    const std::vector<uint32_t>& cat_mfb_bins) {
+  if (cuda_cat_desc_indices_.Size() < cat_desc_indices.size()) {
+    cuda_cat_desc_indices_.Resize(cat_desc_indices.size() * 2);
+    cuda_cat_mfb_bins_.Resize(cat_desc_indices.size() * 2);
+  }
+  CopyFromHostToCUDADeviceAsync<int>(cuda_cat_desc_indices_.RawData(), cat_desc_indices.data(),
+                                     cat_desc_indices.size(), cuda_streams_[0], __FILE__, __LINE__);
+  CopyFromHostToCUDADeviceAsync<uint32_t>(cuda_cat_mfb_bins_.RawData(), cat_mfb_bins.data(),
+                                          cat_mfb_bins.size(), cuda_streams_[0], __FILE__, __LINE__);
+  HybridBuildCatBitsetArenaKernel<<<num_cat_splits, 128, 0, cuda_streams_[0]>>>(
+    cuda_apply_descs_.RawData(), cuda_cat_desc_indices_.RawDataReadOnly(),
+    cuda_cat_mfb_bins_.RawDataReadOnly());
 }
 
 // fused GenDataToLeftBitVector + UpdateDataIndexToLeafIndex: both derive from

@@ -39,6 +39,9 @@ struct CUDAHybridApplySplitInput {
   int split_feature;
   uint32_t split_threshold;
   uint8_t split_default_left;
+  /*! \brief >0 for a categorical split (host-known from the level readback);
+   *  the batched apply then routes through the per-level bitset arena */
+  int num_cat_threshold;
   data_size_t num_data_in_leaf;
   data_size_t leaf_data_start;
   CUDALeafSplitsStruct* smaller_leaf_splits;
@@ -91,6 +94,13 @@ struct CUDAHybridApplyDescriptor {
   uint8_t mfb_is_na;
   uint8_t max_bin_to_left;
   uint8_t use_min_bin;
+  /*! \brief categorical split: words of this split's INNER bitset in the
+   *  per-level arena (0 = numerical split). Trailing zero words beyond the
+   *  real bitset are semantically inert for CUDAFindInBitset, so the host
+   *  sizes regions by a bin-range cap and never reads device lengths back. */
+  int cat_bitset_len;
+  const uint32_t* cat_bitset;  // absolute arena pointer (host-patched post-resize)
+  int8_t cat_mfb_offset;
 };
 
 /*! \brief One collapsed (pruned) subtree of the selective grow-then-prune hybrid
@@ -296,6 +306,12 @@ class CUDADataPartition: public NCCLInfo {
    *  a sparse gap copy carrying terminal leaves' regions into the out buffer);
    *  descriptors (splits first, then gaps) already uploaded. The caller swaps
    *  the out buffer in as the new main index array afterwards. */
+  /*! \brief one block per categorical split of the level: zero + build the
+   *  split's arena region from best_split_info->cat_threshold, then patch the
+   *  (already uploaded) descriptor's default-direction fields from on-device
+   *  MFB-membership (the classic flow needs a host D2H for this) */
+  void LaunchBuildCatBitsetArenaKernel(const int num_splits, const std::vector<int>& cat_desc_indices,
+                                       const std::vector<uint32_t>& cat_mfb_bins);
   void LaunchSplitLevelBatchedKernels(const int num_splits, const int max_num_blocks,
                                       const int num_gaps, const int max_gap_blocks);
 
@@ -589,6 +605,13 @@ class CUDADataPartition: public NCCLInfo {
   CUDAVector<data_size_t> cuda_out_data_indices_in_leaf_;
   /*! \brief device copy of one level's batched apply descriptors */
   CUDAVector<CUDAHybridApplyDescriptor> cuda_apply_descs_;
+  /*! \brief per-level INNER-bitset arena for batched categorical applies:
+   *  regions sized by host bin-range caps, content built on-device from the
+   *  finder's cat thresholds (no per-split D2H syncs, unlike the classic
+   *  per-split flow) */
+  CUDAVector<uint32_t> cuda_cat_bitset_arena_;
+  CUDAVector<int> cuda_cat_desc_indices_;
+  CUDAVector<uint32_t> cuda_cat_mfb_bins_;
   /*! \brief selective grow-then-prune: device copy of one level's collapsed
    *  subtree windows and host staging (see CollapseLeafWindows) */
   CUDAVector<CUDACollapseWindow> cuda_collapse_windows_;
