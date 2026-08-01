@@ -408,13 +408,34 @@ void CUDATree::RebuildFromHostSplits(const std::vector<CUDATreeHostSplit>& split
     leaf_count_[num_leaves_] = s.right_count;
     leaf_depth_[num_leaves_] = leaf_depth_[leaf_index] + 1;
     ++leaf_depth_[leaf_index];
-    int8_t decision_type = 0;
-    SetDecisionType(&decision_type, false, kCategoricalMask);
-    SetDecisionType(&decision_type, s.default_left != 0, kDefaultLeftMask);
-    SetMissingType(&decision_type, static_cast<int8_t>(s.missing_type));
-    decision_type_[new_node_index] = decision_type;
-    threshold_in_bin_[new_node_index] = s.threshold_in_bin;
-    threshold_[new_node_index] = s.real_threshold;
+    if (s.num_cat_threshold > 0) {
+      // replay of Tree::SplitCategorical's threshold bookkeeping: the node's
+      // threshold is an index into the categorical bitset tables, whose words
+      // were prebuilt on host (SelectiveFinalize) in the model-format layout
+      int8_t decision_type = 0;
+      SetDecisionType(&decision_type, true, kCategoricalMask);
+      SetMissingType(&decision_type, static_cast<int8_t>(s.missing_type));
+      decision_type_[new_node_index] = decision_type;
+      threshold_in_bin_[new_node_index] = static_cast<uint32_t>(num_cat_);
+      threshold_[new_node_index] = num_cat_;
+      ++num_cat_;
+      cat_boundaries_.push_back(cat_boundaries_.back() + static_cast<int>(s.cat_bitset.size()));
+      for (const uint32_t word : s.cat_bitset) {
+        cat_threshold_.push_back(word);
+      }
+      cat_boundaries_inner_.push_back(cat_boundaries_inner_.back() + static_cast<int>(s.cat_bitset_inner.size()));
+      for (const uint32_t word : s.cat_bitset_inner) {
+        cat_threshold_inner_.push_back(word);
+      }
+    } else {
+      int8_t decision_type = 0;
+      SetDecisionType(&decision_type, false, kCategoricalMask);
+      SetDecisionType(&decision_type, s.default_left != 0, kDefaultLeftMask);
+      SetMissingType(&decision_type, static_cast<int8_t>(s.missing_type));
+      decision_type_[new_node_index] = decision_type;
+      threshold_in_bin_[new_node_index] = s.threshold_in_bin;
+      threshold_[new_node_index] = s.real_threshold;
+    }
     RecordBranchFeatures(leaf_index, num_leaves_, s.real_feature_index);
     ++num_leaves_;
   }

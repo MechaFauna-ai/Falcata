@@ -565,7 +565,10 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
                                 num_compact_cols, __FILE__, __LINE__);
 
   compact_packed_view_active_ = false;
-  if (SplitPackedReadEnabled() && gather_src_is_4bit && HybridGrowthUsable()) {
+  if (SplitPackedReadEnabled() && gather_src_is_4bit && HybridGrowthUsable() &&
+      !has_categorical_feature_) {
+    // categorical batched-apply descriptors need the plain per-column view
+    // (SplitLevelBatched CHECKs it); numerical-only datasets keep the packed read
     // packed split read: skip the column-major gather entirely; the batched
     // apply descriptors address the packed source per column (byte of row 0,
     // per-row byte stride, nibble shift). The slot metadata just uploaded stays
@@ -719,7 +722,6 @@ bool CUDASingleGPUTreeLearner::UseSelectiveGrowth() const {
          use_hybrid_batch_kernels_ &&
          !config_->linear_tree &&
          nccl_communicator_ == nullptr &&
-         !has_categorical_feature_ &&
          !select_features_by_node_ &&
          (forced_split_json_ == nullptr || forced_split_json_->is_null()) &&
          config_->num_leaves > 2;
@@ -2202,6 +2204,12 @@ int CUDASingleGPUTreeLearner::RunSelectiveLevel() {
     node.data_start = leaf_data_start_[f.leaf];
     node.num_data = leaf_num_data_[f.leaf];
     node.info = host_leaf_best_splits_[f.leaf];
+    if (node.info.num_cat_threshold > 0) {
+      // snapshot the inner threshold bins now: the leaf's slab slot is reused
+      // as soon as the (recycled) leaf index is searched again
+      cuda_best_split_finder_->CopyLeafCatThresholdToHost(
+        f.leaf, node.info.num_cat_threshold, &node.cat_inner);
+    }
     sel_applied_.push_back(node);
     if (f.parent >= 0) {
       SelectiveApplied& p = sel_applied_[f.parent];
@@ -2359,13 +2367,39 @@ void CUDASingleGPUTreeLearner::SelectiveFinalize(CUDATree* tree) {
     CHECK_GE(id, 0);
     const SelectiveApplied& node = sel_applied_[id];
     const int inner_feature = node.info.inner_feature_index;
+    const bool is_cat_split = node.info.num_cat_threshold > 0;
     CUDATreeHostSplit s;
     s.leaf_index = sel_order_classic_leaf_[t];
     s.real_feature_index = train_data_->RealFeatureIndex(inner_feature);
-    s.real_threshold = train_data_->RealThreshold(inner_feature, node.info.threshold);
+    // categorical payloads carry no numerical threshold; RealThreshold would
+    // index the bin-upper-bound array with garbage
+    s.real_threshold = is_cat_split ? 0.0 :
+      train_data_->RealThreshold(inner_feature, node.info.threshold);
     s.missing_type = static_cast<int>(train_data_->FeatureBinMapper(inner_feature)->missing_type());
     s.inner_feature_index = inner_feature;
-    s.threshold_in_bin = node.info.threshold;
+    s.threshold_in_bin = is_cat_split ? 0 : node.info.threshold;
+    if (is_cat_split) {
+      // mirror LaunchConstructBitsetForCategoricalSplitKernel on host: the
+      // inner bitset is over the snapshotted bin values, the real bitset over
+      // categorical_bin_to_value_[offset + bin]
+      CHECK_EQ(static_cast<int>(node.cat_inner.size()), node.info.num_cat_threshold);
+      s.num_cat_threshold = node.info.num_cat_threshold;
+      const int* bin_to_value = categorical_bin_to_value_.data() +
+        categorical_bin_offsets_[inner_feature];
+      uint32_t max_inner = 0;
+      int max_real = 0;
+      for (const uint32_t bin : node.cat_inner) {
+        max_inner = std::max(max_inner, bin);
+        max_real = std::max(max_real, bin_to_value[bin]);
+      }
+      s.cat_bitset_inner.assign(static_cast<size_t>(max_inner / 32 + 1), 0);
+      s.cat_bitset.assign(static_cast<size_t>(max_real / 32 + 1), 0);
+      for (const uint32_t bin : node.cat_inner) {
+        s.cat_bitset_inner[bin / 32] |= (0x1u << (bin % 32));
+        const uint32_t real = static_cast<uint32_t>(bin_to_value[bin]);
+        s.cat_bitset[real / 32] |= (0x1u << (real % 32));
+      }
+    }
     s.gain = node.info.gain;
     s.default_left = node.info.default_left ? 1 : 0;
     s.left_sum_hessians = node.info.left_sum_hessians;

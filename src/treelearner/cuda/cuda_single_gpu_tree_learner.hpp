@@ -274,6 +274,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     // captured host copy of the device CUDASplitInfo at apply time (categorical
     // pointers scrubbed by SyncAllLeafBestSplitsToHost)
     CUDASplitInfo info;
+    // categorical splits: inner threshold bins snapshotted from the device slab
+    // at record creation (the slab slot is reused once the leaf is re-searched,
+    // so SelectiveFinalize cannot read it later)
+    std::vector<uint32_t> cat_inner;
   };
   // One frontier candidate (discovered this level, not yet applied).
   struct SelectiveFrontier {

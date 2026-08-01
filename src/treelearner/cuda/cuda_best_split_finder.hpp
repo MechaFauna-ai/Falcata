@@ -101,6 +101,20 @@ class CUDABestSplitFinder {
    *  histogram mode when this is set */
   bool use_global_memory() const { return use_global_memory_; }
 
+  /*! \brief synchronous D2H snapshot of a leaf's categorical split thresholds
+   *  (inner bin values) from the per-leaf slab; valid between the leaf's search
+   *  readback and the next search that reuses the leaf index */
+  void CopyLeafCatThresholdToHost(const int leaf_index, const int count,
+                                  std::vector<uint32_t>* inner_bins) const {
+    CHECK_GT(count, 0);
+    CHECK_LE(count, max_num_categories_in_split_);
+    inner_bins->resize(static_cast<size_t>(count));
+    CopyFromCUDADeviceToHost<uint32_t>(inner_bins->data(),
+      cuda_cat_threshold_leaf_.RawDataReadOnly() +
+        static_cast<size_t>(leaf_index) * static_cast<size_t>(max_num_categories_in_split_),
+      static_cast<size_t>(count), __FILE__, __LINE__);
+  }
+
   // host-side penalty (feature_contri) for the given inner feature index
   double GetFeaturePenalty(int inner_feature_index) const;
 

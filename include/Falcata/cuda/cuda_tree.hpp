@@ -68,6 +68,13 @@ struct CUDATreeHostSplit {
   data_size_t right_count;
   double left_value;
   double right_value;
+  /*! \brief categorical split payload: >0 selects the categorical replay.
+   *  The bitsets are prebuilt on host in the model-format layout (uint32 words,
+   *  bit v set for member value v): cat_bitset over REAL category values,
+   *  cat_bitset_inner over inner bin values. */
+  int num_cat_threshold = 0;
+  std::vector<uint32_t> cat_bitset;
+  std::vector<uint32_t> cat_bitset_inner;
 };
 
 class CUDATree : public Tree {

@@ -98,21 +98,26 @@ class CUDASplitInfo {
     // scrubbed copies (ReadPrefetchedLeafBestSplits). Assignment therefore
     // NEVER allocates -- the old `new[]` here paired device-heap allocation
     // with the destructor's cudaFree, an allocator mismatch that could never
-    // be freed correctly on either side. A destination without storage cannot
-    // hold thresholds: record zero rather than corrupt.
+    // be freed correctly on either side.
+    // The count is METADATA and survives every assignment except one: a
+    // destination WITH a slab receiving a scrubbed source would pair a
+    // positive count with stale slab words, so only that case records zero.
+    // (Scrubbed host copies legitimately carry count > 0 with null pointers --
+    // the selective flow's SelectiveApplied records depend on the count
+    // surviving vector push_back / struct assignment.)
     num_cat_threshold = other.num_cat_threshold;
-    if (num_cat_threshold > 0 &&
-        (cat_threshold == nullptr || other.cat_threshold == nullptr)) {
-      num_cat_threshold = 0;
-    }
-    if (num_cat_threshold > 0) {
-      for (int i = 0; i < num_cat_threshold; ++i) {
-        cat_threshold[i] = other.cat_threshold[i];
-      }
-      if (cat_threshold_real != nullptr && other.cat_threshold_real != nullptr) {
+    if (num_cat_threshold > 0 && cat_threshold != nullptr) {
+      if (other.cat_threshold != nullptr) {
         for (int i = 0; i < num_cat_threshold; ++i) {
-          cat_threshold_real[i] = other.cat_threshold_real[i];
+          cat_threshold[i] = other.cat_threshold[i];
         }
+        if (cat_threshold_real != nullptr && other.cat_threshold_real != nullptr) {
+          for (int i = 0; i < num_cat_threshold; ++i) {
+            cat_threshold_real[i] = other.cat_threshold_real[i];
+          }
+        }
+      } else {
+        num_cat_threshold = 0;
       }
     }
     return *this;
