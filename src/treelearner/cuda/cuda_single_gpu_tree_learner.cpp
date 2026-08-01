@@ -235,8 +235,10 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     // left the branch as a TODO that launches NOTHING, silently training on
     // stale split info). Refuse loudly instead of producing a garbage model.
     Log::Fatal("use_quantized_grad is not supported on CUDA when a feature has more than %d histogram bins "
-               "(max_bin=%d requested). Reduce max_bin to at most 256 or disable quantized gradients.",
-               NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, config_->max_bin);
+               "(max_bin=%d requested; a categorical feature with more than %d categories also exceeds the "
+               "limit). Reduce max_bin / group rare categories, or disable quantized gradients.",
+               NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, config_->max_bin,
+               NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER);
   }
   // Wire the histogram constructor's completion events into the best split finder so
   // per-leaf FindBestSplits kernels are ordered after histogram construction/subtraction

@@ -735,10 +735,53 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
   }
 }
 
-template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING>
+// Histogram readers for the categorical finder: the categorical search runs
+// its per-bin math in double either way, so quantized histograms are unpacked
+// per bin (exact integer sums times the scales) and the one body serves both
+// pipelines. Packed() returns the canonical int64 (grad32 << 32 | hess32)
+// accumulator the quantized pipeline needs for child-leaf seeding.
+struct CatHistReaderF64 {
+  static constexpr bool kQuant = false;
+  const hist_t* p;
+  __device__ __forceinline__ double Grad(int bin) const { return p[bin << 1]; }
+  __device__ __forceinline__ double Hess(int bin) const { return p[(bin << 1) + 1]; }
+  __device__ __forceinline__ int64_t Packed(int) const { return 0; }
+};
+struct CatHistReaderQuant16 {
+  static constexpr bool kQuant = true;
+  const int32_t* p;
+  double grad_scale;
+  double hess_scale;
+  __device__ __forceinline__ int64_t Packed(int bin) const {
+    const int32_t v = p[bin];
+    return (static_cast<int64_t>(static_cast<int16_t>(v >> 16)) << 32) |
+           static_cast<int64_t>(v & 0x0000ffff);
+  }
+  __device__ __forceinline__ double Grad(int bin) const {
+    return static_cast<double>(static_cast<int16_t>(p[bin] >> 16)) * grad_scale;
+  }
+  __device__ __forceinline__ double Hess(int bin) const {
+    return static_cast<double>(p[bin] & 0x0000ffff) * hess_scale;
+  }
+};
+struct CatHistReaderQuant32 {
+  static constexpr bool kQuant = true;
+  const int64_t* p;
+  double grad_scale;
+  double hess_scale;
+  __device__ __forceinline__ int64_t Packed(int bin) const { return p[bin]; }
+  __device__ __forceinline__ double Grad(int bin) const {
+    return static_cast<double>(static_cast<int32_t>((p[bin] & 0xffffffff00000000) >> 32)) * grad_scale;
+  }
+  __device__ __forceinline__ double Hess(int bin) const {
+    return static_cast<double>(static_cast<int32_t>(p[bin] & 0x00000000ffffffff)) * hess_scale;
+  }
+};
+
+template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, typename HIST_READER>
 __device__ void FindBestSplitsForLeafKernelCategoricalInner(
   // input feature information
-  const hist_t* feature_hist_ptr,
+  const HIST_READER hist_reader,
   // input task information
   const SplitFindTask* task,
   CUDARandom* cuda_random,
@@ -760,6 +803,8 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
   const double sum_hessians,
   const data_size_t num_data,
   const double parent_output,
+  // canonical int64 leaf total (quant readers only; 0 for f64)
+  const int64_t sum_gradients_hessians_total,
   // output parameters
   CUDASplitInfo* cuda_best_split_info) {
   __shared__ double shared_gain_buffer[WARPSIZE];
@@ -790,9 +835,8 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
     }
     __syncthreads();
     if (threadIdx_x >= bin_start && threadIdx_x < bin_end) {
-      const int bin_offset = (threadIdx_x << 1);
-      const hist_t grad = feature_hist_ptr[bin_offset];
-      const hist_t hess = feature_hist_ptr[bin_offset + 1];
+      const double grad = hist_reader.Grad(threadIdx_x);
+      const double hess = hist_reader.Hess(threadIdx_x);
       data_size_t cnt =
             static_cast<data_size_t>(CUDARoundInt(hess * cnt_factor));
       if (cnt >= min_data_in_leaf && hess >= min_sum_hessian_in_leaf) {
@@ -825,9 +869,14 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
       cuda_best_split_info->gain = (local_gain - min_gain_shift) * task->penalty;
       *(cuda_best_split_info->cat_threshold) = static_cast<uint32_t>(threadIdx_x + task->mfb_offset);
       cuda_best_split_info->default_left = false;
-      const int bin_offset = (threadIdx_x << 1);
-      const hist_t sum_left_gradient = feature_hist_ptr[bin_offset];
-      const hist_t sum_left_hessian = feature_hist_ptr[bin_offset + 1];
+      if (HIST_READER::kQuant) {
+        const int64_t left_packed = hist_reader.Packed(threadIdx_x);
+        cuda_best_split_info->left_sum_of_gradients_hessians = left_packed;
+        cuda_best_split_info->right_sum_of_gradients_hessians =
+          sum_gradients_hessians_total - left_packed;
+      }
+      const double sum_left_gradient = hist_reader.Grad(threadIdx_x);
+      const double sum_left_hessian = hist_reader.Hess(threadIdx_x);
       const data_size_t left_count = static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
@@ -861,10 +910,9 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
     double best_sum_left_gradient = 0.0f;
     double best_sum_left_hessian = 0.0f;
     if (threadIdx_x >= bin_start && threadIdx_x < bin_end) {
-      const int bin_offset = (threadIdx_x << 1);
-      const double hess = feature_hist_ptr[bin_offset + 1];
+      const double hess = hist_reader.Hess(threadIdx_x);
       if (CUDARoundInt(hess * cnt_factor) >= cat_smooth) {
-        const double grad = feature_hist_ptr[bin_offset];
+        const double grad = hist_reader.Grad(threadIdx_x);
         shared_value_buffer[threadIdx_x] = grad / (hess + cat_smooth);
         is_valid_bin = 1;
       } else {
@@ -910,9 +958,9 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
     double grad = 0.0f;
     double hess = 0.0f;
     if (threadIdx_x < used_bin && threadIdx_x < max_num_cat) {
-      const int bin_offset = (shared_index_buffer[threadIdx_x] << 1);
-      grad = feature_hist_ptr[bin_offset];
-      hess = feature_hist_ptr[bin_offset + 1];
+      const int sorted_bin = shared_index_buffer[threadIdx_x];
+      grad = hist_reader.Grad(sorted_bin);
+      hess = hist_reader.Hess(sorted_bin);
     }
     if (threadIdx_x == 0) {
       hess += kEpsilon;
@@ -955,9 +1003,9 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
     grad = 0.0f;
     hess = 0.0f;
     if (threadIdx_x < used_bin && threadIdx_x < max_num_cat) {
-      const int bin_offset = (shared_index_buffer[used_bin - 1 - threadIdx_x] << 1);
-      grad = feature_hist_ptr[bin_offset];
-      hess = feature_hist_ptr[bin_offset + 1];
+      const int sorted_bin = shared_index_buffer[used_bin - 1 - threadIdx_x];
+      grad = hist_reader.Grad(sorted_bin);
+      hess = hist_reader.Hess(sorted_bin);
     }
     if (threadIdx_x == 0) {
       hess += kEpsilon;
@@ -1014,9 +1062,27 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
           (cuda_best_split_info->cat_threshold)[i] = shared_index_buffer[used_bin - 1 - i] + task->mfb_offset;
         }
       }
+      if (HIST_READER::kQuant) {
+        // exact int64 left sums over the selected categories (<= max_cat_threshold
+        // iterations by one thread): the quantized pipeline seeds the child leaf
+        // structs from these packed fields
+        int64_t left_packed = 0;
+        if (best_dir == 1) {
+          for (int i = 0; i < threadIdx_x + 1; ++i) {
+            left_packed += hist_reader.Packed(shared_index_buffer[i]);
+          }
+        } else {
+          for (int i = 0; i < threadIdx_x + 1; ++i) {
+            left_packed += hist_reader.Packed(shared_index_buffer[used_bin - 1 - i]);
+          }
+        }
+        cuda_best_split_info->left_sum_of_gradients_hessians = left_packed;
+        cuda_best_split_info->right_sum_of_gradients_hessians =
+          sum_gradients_hessians_total - left_packed;
+      }
       cuda_best_split_info->default_left = false;
-      const hist_t sum_left_gradient = best_sum_left_gradient;
-      const hist_t sum_left_hessian = best_sum_left_hessian;
+      const double sum_left_gradient = best_sum_left_gradient;
+      const double sum_left_hessian = best_sum_left_hessian;
       const data_size_t left_count = static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
@@ -1097,9 +1163,10 @@ __global__ void FindBestSplitsForLeafKernel(
       IS_LARGER ? larger_leaf_splits->hist_in_leaf : smaller_leaf_splits->hist_in_leaf, task->hist_offset, fp32_hist);
     if (task->is_categorical) {
       // fp32_hist is globally disabled for datasets with categorical features
-      FindBestSplitsForLeafKernelCategoricalInner<USE_RAND, USE_L1, USE_SMOOTHING>(
+      const CatHistReaderF64 hist_reader{hist_ptr};
+      FindBestSplitsForLeafKernelCategoricalInner<USE_RAND, USE_L1, USE_SMOOTHING, CatHistReaderF64>(
         // input feature information
-        hist_ptr,
+        hist_reader,
         // input task information
         task,
         cuda_random,
@@ -1121,6 +1188,7 @@ __global__ void FindBestSplitsForLeafKernel(
         sum_hessians,
         num_data,
         parent_output,
+        /*sum_gradients_hessians_total=*/0,
         // output parameters
         out);
     } else {
@@ -1251,12 +1319,39 @@ __global__ void FindBestSplitsDiscretizedForLeafKernel(
   const bool use_16bit_bin = IS_LARGER ? (larger_leaf_num_bits_in_histogram_bin <= 16) : (smaller_leaf_num_bits_in_histogram_bin <= 16);
   if (is_feature_used_bytree[inner_feature_index]) {
     if (task->is_categorical) {
-      __threadfence();  // ensure store issued before trap
-#if defined(USE_ROCM)
-      __builtin_trap();
-#else
-      asm("trap;");
-#endif
+      // categorical search: per-bin math runs in double either way, so the
+      // quantized histogram is unpacked per bin through a reader and the
+      // shared categorical body serves both pipelines; the packed int64 leaf
+      // totals seed the child leaf structs (writer blocks)
+      const double sum_gradients = static_cast<double>(
+        static_cast<int32_t>((sum_gradients_hessians & 0xffffffff00000000) >> 32)) * (*grad_scale);
+      const double sum_hessians = static_cast<double>(
+        static_cast<int32_t>(sum_gradients_hessians & 0x00000000ffffffff)) * (*hess_scale) + 2 * kEpsilon;
+      const int8_t* hist_base = reinterpret_cast<const int8_t*>(
+        IS_LARGER ? larger_leaf_splits->hist_in_leaf : smaller_leaf_splits->hist_in_leaf);
+      if (use_16bit_bin) {
+        const CatHistReaderQuant16 hist_reader{
+          reinterpret_cast<const int32_t*>(hist_base) + task->hist_offset,
+          static_cast<double>(*grad_scale), static_cast<double>(*hess_scale)};
+        FindBestSplitsForLeafKernelCategoricalInner<USE_RAND, USE_L1, USE_SMOOTHING, CatHistReaderQuant16>(
+          hist_reader, task, cuda_random,
+          lambda_l1, lambda_l2, path_smooth, max_delta_step,
+          min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
+          cat_smooth, cat_l2, max_cat_threshold, min_data_per_group,
+          parent_gain, sum_gradients, sum_hessians, num_data, parent_output,
+          sum_gradients_hessians, out);
+      } else {
+        const CatHistReaderQuant32 hist_reader{
+          reinterpret_cast<const int64_t*>(hist_base) + task->hist_offset,
+          static_cast<double>(*grad_scale), static_cast<double>(*hess_scale)};
+        FindBestSplitsForLeafKernelCategoricalInner<USE_RAND, USE_L1, USE_SMOOTHING, CatHistReaderQuant32>(
+          hist_reader, task, cuda_random,
+          lambda_l1, lambda_l2, path_smooth, max_delta_step,
+          min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
+          cat_smooth, cat_l2, max_cat_threshold, min_data_per_group,
+          parent_gain, sum_gradients, sum_hessians, num_data, parent_output,
+          sum_gradients_hessians, out);
+      }
     } else {
       if (!task->reverse) {
         if (use_16bit_bin) {

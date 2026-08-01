@@ -44,9 +44,6 @@ CUDABestSplitFinder::CUDABestSplitFinder(
   train_data_(train_data) {
   feature_contri_ = config->feature_contri;
   InitFeatureMetaInfo(train_data);
-  if (has_categorical_feature_ && config->use_quantized_grad) {
-    Log::Fatal("Quantized training on GPU with categorical features is not supported yet.");
-  }
   // Build a per-inner-feature monotone constraint vector. config->monotone_constraints
   // is indexed by REAL feature index (see FeatureHistogram feature-meta init), so map
   // each inner feature through RealFeatureIndex.
