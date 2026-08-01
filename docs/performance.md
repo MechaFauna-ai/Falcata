@@ -331,6 +331,51 @@ failure ledger with per-cell errors: the benchmark report.
 
 ---
 
+## 10. Categorical features on the hybrid fast paths (phases 1a-2b, 2026-08-02)
+
+Categorical datasets previously fell back to the classic one-split-at-a-time
+loop for every hybrid stage, and quantized training refused them outright.
+Four commits lifted the whole class (c3b27ae7, d6934128, b235de83, 0a839325):
+
+- **Batched apply** (1a): variable-length categorical bitsets travel through
+  the fixed-size batched split inputs via a per-level side-band INNER-bitset
+  arena in the data partition. The arena-build kernel constructs bitsets and
+  patches most-frequent-bin default directions on device, removing the
+  classic flow's three per-split D2H round trips. Tree recording interleaves
+  per-split categorical recording with numerical SplitBatch chunks.
+- **Selective (grow-then-prune) flow** (1b): applied-record snapshots of the
+  inner threshold bins (the finder's per-leaf slab is recycled before
+  finalize) plus a categorical replay branch in RebuildFromHostSplits with
+  host-built bitsets. Selective vs classic produces identical structure and
+  categorical bitsets (leaf-value fp noise only, same class as numerical).
+- **Quantized training** (2a): the categorical search runs its per-bin math
+  in double either way, so one reader-templatized body serves both
+  pipelines; quantized readers unpack the packed int32/int64 integer bins
+  per bin (exact) and the writers fill the packed int64 child totals the
+  quantized pipeline seeds child leaves from. fixedpoint-vs-none rmse delta
+  at 200k rows with card-3 + card-120 categoricals: 0.198356 vs 0.198346.
+- **Batched level kernels** (2b): both level find kernels (non-quantized and
+  discretized) run the categorical body per (task, pair, role) block; the
+  per-slot categorical-threshold slabs grow with the level output buffer.
+
+Measured (RTX 5090, 400k rows x (5 numeric + card-3 + card-150 categorical),
+63 leaves, 200 rounds, identical rmse and categorical split counts across
+all flows):
+
+| flow | train time |
+|---|---|
+| classic loop | 1.76s |
+| hybrid, per-pair fallback (after 1b) | 1.45s |
+| hybrid, batched level kernels (after 2b) | **0.48s (3.7x)** |
+
+Still excluded for categoricals: the one-sync speculative prefix and the
+graph loop (two-sync batched carries the win); >256-category features use
+the 255 most frequent categories per split on the shared-memory finder
+(Init warns) because upstream never wrote a global-memory discretized
+finder. Open items tracked on the ROADMAP.
+
+---
+
 *Footnote on the 2026-07-30 ablation snapshot: the numerai-deep
 `batch_kernels` row is marked "MD5 DIFFERS" in the raw table; this was
 subsequently investigated and verified benign — the fallback path breaks

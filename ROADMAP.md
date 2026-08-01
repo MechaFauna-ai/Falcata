@@ -30,20 +30,20 @@ figures from the profiles in the PR discussions.
   predict falls back to CPU for vector-leaf models initially (treelite support).
 
 - **Hybrid coverage extensions.** The hybrid/graph fast paths fall back to
-  the classic loop for several feature classes; scoped 2026-08-01:
-  - **Categorical features — the priority lift, prize now MEASURED: ~4.8×**
-    (controlled same-data hybrid vs classic at 1M×30, 255 leaves: 250 vs
-    52.5 t/s — this machinery gap is what every categorical workload pays).
-    Worse than the fallback: categorical + quantized training is a hard
-    REFUSAL ("not supported yet"), so categorical users get neither of the
-    fork's two headline wins. Lift plan: (1) variable-length categorical
-    bitset payloads through the batched apply path (the fixed 18-int split
-    slabs need either a side-band bitset arena indexed per split, or a
-    cap-and-fallback for pathological cardinalities); (2) quant support
-    needs the categorical split finder taught to read integer histograms
-    (same dequant scheme as numerical); (3) own equality gates vs the
-    classic loop (the lattice `categorical/nonquant` cell exists; add a
-    categorical fingerprint cell once quant-categorical exists).
+  the classic loop for several feature classes; scoped 2026-08-01.
+  Categorical features LANDED 2026-08-02 (phases 1a c3b27ae7, 1b d6934128,
+  2a b235de83, 2b 0a839325): batched-apply bitset arena, selective-flow
+  replay, quant-categorical finder, batched level kernels — measured 3.7×
+  vs classic on 400k×(5 num + 2 cat); details in docs/performance.md §10.
+  Remaining categorical items:
+  - One-sync speculative prefix + graph loop keep categorical exclusions
+    (two-sync batched is live; lift on measured demand).
+  - Categorical fingerprint gate: add a quant-categorical lattice/canonical
+    cell so the quant-cat path is regression-locked like the numerical one.
+  - >256-category features: shared-memory finder considers the 255 most
+    frequent categories per split (Init warns); exact full-cardinality
+    support means a discretized global-memory finder (upstream never wrote
+    one — the branch was an empty TODO).
   - NCCL multi-GPU level batching (ONE all-reduce per level): promising but
     unverifiable on this single-GPU box; revisit with a rented multi-GPU
     instance.
