@@ -880,7 +880,17 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
       used_bin = local_used_bin;
     }
     __syncthreads();
-    BitonicArgSort_1024<double, int16_t, true>(shared_value_buffer, shared_index_buffer, bin_end);
+    // The shared sort buffers hold one slot per thread; a categorical feature
+    // with more bins than the block has threads (cardinality > 256 -- bin
+    // counts for categoricals are NOT capped by max_bin) previously made this
+    // sort index past the buffers, corrupting adjacent shared state and
+    // exploding training. Bins beyond the block are excluded from the
+    // many-vs-many candidate set instead (categorical bins are ordered by
+    // descending category frequency, so these are the rarest categories;
+    // their mass routes to the right child). Exact full-cardinality support
+    // is a tracked follow-up; the Init-time warning names affected features.
+    const int sortable_bin_end = min(bin_end, static_cast<int>(blockDim.x));
+    BitonicArgSort_1024<double, int16_t, true>(shared_value_buffer, shared_index_buffer, static_cast<int16_t>(sortable_bin_end));
     __syncthreads();
     const int max_num_cat = min(max_cat_threshold, (used_bin + 1) / 2);
     // Number of candidate thresholds CPU would walk in each direction.
@@ -1492,7 +1502,12 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
     for (unsigned int bin = threadIdx_x; bin < feature_num_bin_minus_offset; bin += blockDim.x) {
       const bool skip_sum = (bin >= static_cast<unsigned int>(task->na_as_missing) &&
         (task->skip_default_bin && (task->num_bin - 1 - bin) == static_cast<int>(task->default_bin)));
-      if (!skip_sum) {
+      // bin == num_bin - 1 (reachable when mfb_offset == 0) would encode
+      // threshold = num_bin - 2 - bin = -1, a split the CPU reverse scan never
+      // considers; without this bound it escaped as threshold 0xFFFFFFFF and the
+      // host indexed bin_upper_bound with it. The shared-memory kernel has the
+      // same bound (threadIdx_x <= task->num_bin - 2).
+      if (!skip_sum && static_cast<int>(bin) <= task->num_bin - 2) {
         const double sum_right_gradient = hist_grad_buffer_ptr[bin];
         const double sum_right_hessian = hist_hess_buffer_ptr[bin];
         const data_size_t right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
@@ -2028,7 +2043,8 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
   hist_t* feature_hist_grad_buffer,
   hist_t* feature_hist_hess_buffer,
   hist_t* feature_hist_stat_buffer,
-  data_size_t* feature_hist_index_buffer) {
+  data_size_t* feature_hist_index_buffer,
+  const uint32_t hist_buffer_stride) {
   const double leaf_constraint_min = IS_LARGER ? larger_leaf_constraint_min : smaller_leaf_constraint_min;
   const double leaf_constraint_max = IS_LARGER ? larger_leaf_constraint_max : smaller_leaf_constraint_max;
   const unsigned int task_index = blockIdx.x;
@@ -2052,8 +2068,14 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
     // the prefix scans ran off the end of these buffers for any feature with
     // hist_offset >= 1, reading adjacent (stale) memory and producing data-dependent
     // wrong splits.
-    hist_t* hist_grad_buffer_ptr = feature_hist_grad_buffer + hist_offset;
-    hist_t* hist_hess_buffer_ptr = feature_hist_hess_buffer + hist_offset;
+    // The forward and reverse tasks of one numerical feature share the same
+    // hist_offset but run as DIFFERENT BLOCKS of this launch: without a
+    // per-direction region they race on the staging buffers, silently
+    // corrupting every split decision (any run with a >256-bin feature took
+    // this path and trained garbage). Reverse tasks use the second half.
+    const uint32_t dir_offset = task->reverse ? hist_buffer_stride : 0;
+    hist_t* hist_grad_buffer_ptr = feature_hist_grad_buffer + dir_offset + hist_offset;
+    hist_t* hist_hess_buffer_ptr = feature_hist_hess_buffer + dir_offset + hist_offset;
     hist_t* hist_stat_buffer_ptr = feature_hist_stat_buffer + hist_offset;
     data_size_t* hist_index_buffer_ptr = feature_hist_index_buffer + hist_offset;
     if (task->is_categorical) {
@@ -2224,7 +2246,8 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
   cuda_feature_hist_grad_buffer_.RawData(), \
   cuda_feature_hist_hess_buffer_.RawData(), \
   cuda_feature_hist_stat_buffer_.RawData(), \
-  cuda_feature_hist_index_buffer_.RawData()
+  cuda_feature_hist_index_buffer_.RawData(), \
+  static_cast<uint32_t>(num_total_bin_)
 
 void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernel(LaunchFindBestSplitsForLeafKernel_PARAMS) {
   if (!is_smaller_leaf_valid && !is_larger_leaf_valid) {

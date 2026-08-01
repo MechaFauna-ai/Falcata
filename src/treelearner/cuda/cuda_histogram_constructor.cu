@@ -2129,13 +2129,25 @@ __device__ __forceinline__ void FixHistogramInner(
   float* feature_hist32 = reinterpret_cast<float*>(cuda_smaller_leaf_splits->hist_in_leaf) + feature_hist_offset * 2;
   const unsigned int threadIdx_x = threadIdx.x;
   const uint32_t num_bin = cuda_feature_num_bins[feature_index];
-  const uint32_t hist_pos = threadIdx_x << 1;
-  const bool in_range = (threadIdx_x < num_bin && threadIdx_x != most_freq_bin);
+  // Block-strided accumulation: one-bin-per-thread capped the fix at blockDim.x
+  // (512) bins -- for wider features the un-read tail bins stayed OUT of the
+  // partial sum, so the most-frequent-bin patch (leaf_sum - partial) re-injected
+  // their mass and inflated the histogram total by exactly the missed tail
+  // (and num_bin_aligned > blockDim.x made the reduction read stale shared
+  // memory). The strided loop is exact for any bin count and any block size.
   // the reduction stays hist_t/double in both storage layouts
-  const hist_t bin_gradient = in_range ? (hist_fp32 ? static_cast<hist_t>(feature_hist32[hist_pos]) : feature_hist[hist_pos]) : 0.0f;
-  const hist_t bin_hessian = in_range ? (hist_fp32 ? static_cast<hist_t>(feature_hist32[hist_pos + 1]) : feature_hist[hist_pos + 1]) : 0.0f;
-  const hist_t sum_gradient = ShuffleReduceSum<hist_t>(bin_gradient, shared_mem_buffer, num_bin_aligned);
-  const hist_t sum_hessian = ShuffleReduceSum<hist_t>(bin_hessian, shared_mem_buffer, num_bin_aligned);
+  hist_t bin_gradient = 0.0f;
+  hist_t bin_hessian = 0.0f;
+  for (uint32_t bin = threadIdx_x; bin < num_bin; bin += blockDim.x) {
+    if (bin != most_freq_bin) {
+      const uint32_t hist_pos = bin << 1;
+      bin_gradient += (hist_fp32 ? static_cast<hist_t>(feature_hist32[hist_pos]) : feature_hist[hist_pos]);
+      bin_hessian += (hist_fp32 ? static_cast<hist_t>(feature_hist32[hist_pos + 1]) : feature_hist[hist_pos + 1]);
+    }
+  }
+  const uint32_t reduce_len = num_bin_aligned < blockDim.x ? num_bin_aligned : blockDim.x;
+  const hist_t sum_gradient = ShuffleReduceSum<hist_t>(bin_gradient, shared_mem_buffer, reduce_len);
+  const hist_t sum_hessian = ShuffleReduceSum<hist_t>(bin_hessian, shared_mem_buffer, reduce_len);
   if (threadIdx_x == 0) {
     const hist_t fixed_gradient = leaf_sum_gradients - sum_gradient;
     const hist_t fixed_hessian = leaf_sum_hessians - sum_hessian;
@@ -2454,11 +2466,19 @@ __device__ __forceinline__ void FixHistogramDiscretizedInner(
     int32_t* feature_hist = reinterpret_cast<int32_t*>(cuda_smaller_leaf_splits->hist_in_leaf) + feature_hist_offset;
     const unsigned int threadIdx_x = threadIdx.x;
     const uint32_t num_bin = cuda_feature_num_bins[feature_index];
-    const int32_t bin_gradient_hessian = (threadIdx_x < num_bin && threadIdx_x != most_freq_bin) ? feature_hist[threadIdx_x] : 0;
+    // block-strided: one-bin-per-thread missed bins >= blockDim.x (see the
+    // non-discretized FixHistogramInner for the failure mode)
+    int32_t bin_gradient_hessian = 0;
+    for (uint32_t bin = threadIdx_x; bin < num_bin; bin += blockDim.x) {
+      if (bin != most_freq_bin) {
+        bin_gradient_hessian += feature_hist[bin];
+      }
+    }
+    const uint32_t reduce_len = num_bin_aligned < blockDim.x ? num_bin_aligned : blockDim.x;
     const int32_t sum_gradient_hessian = ShuffleReduceSum<int32_t>(
       bin_gradient_hessian,
       reinterpret_cast<int32_t*>(shared_mem_buffer),
-      num_bin_aligned);
+      reduce_len);
     if (threadIdx_x == 0) {
       feature_hist[most_freq_bin] = leaf_sum_gradients_hessians - sum_gradient_hessian;
     }
@@ -2467,8 +2487,16 @@ __device__ __forceinline__ void FixHistogramDiscretizedInner(
     int64_t* feature_hist = reinterpret_cast<int64_t*>(cuda_smaller_leaf_splits->hist_in_leaf) + feature_hist_offset;
     const unsigned int threadIdx_x = threadIdx.x;
     const uint32_t num_bin = cuda_feature_num_bins[feature_index];
-    const int64_t bin_gradient_hessian = (threadIdx_x < num_bin && threadIdx_x != most_freq_bin) ? feature_hist[threadIdx_x] : 0;
-    const int64_t sum_gradient_hessian = ShuffleReduceSum<int64_t>(bin_gradient_hessian, shared_mem_buffer, num_bin_aligned);
+    // block-strided: one-bin-per-thread missed bins >= blockDim.x (see the
+    // non-discretized FixHistogramInner for the failure mode)
+    int64_t bin_gradient_hessian = 0;
+    for (uint32_t bin = threadIdx_x; bin < num_bin; bin += blockDim.x) {
+      if (bin != most_freq_bin) {
+        bin_gradient_hessian += feature_hist[bin];
+      }
+    }
+    const uint32_t reduce_len = num_bin_aligned < blockDim.x ? num_bin_aligned : blockDim.x;
+    const int64_t sum_gradient_hessian = ShuffleReduceSum<int64_t>(bin_gradient_hessian, shared_mem_buffer, reduce_len);
     if (threadIdx_x == 0) {
       feature_hist[most_freq_bin] = leaf_sum_gradients_hessians - sum_gradient_hessian;
     }

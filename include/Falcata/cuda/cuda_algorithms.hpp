@@ -90,15 +90,19 @@ __device__ __forceinline__ T ShufflePrefixSumExclusive(T value, T* shared_mem_bu
   __syncthreads();
   const T warp_base = warpID == 0 ? 0 : shared_mem_buffer[warpID - 1];
   const T inclusive_result = warp_base + value;
-  if (threadIdx.x % warpSize == warpSize - 1) {
-    shared_mem_buffer[warpLane] = inclusive_result;
+  // Hand-off of each warp's total to the next warp's lane 0. The buffer must be
+  // indexed by warpID: for a last-lane thread warpLane is always warpSize-1, so
+  // indexing by warpLane made every warp overwrite one slot, and lane 0's read
+  // at warpLane-1 underflowed to an out-of-bounds shared address.
+  if (warpLane == warpSize - 1) {
+    shared_mem_buffer[warpID] = inclusive_result;
   }
   __syncthreads();
   T exclusive_result = __shfl_up_sync(mask, inclusive_result, 1);
   if (threadIdx.x == 0) {
     exclusive_result = 0;
-  } else if (threadIdx.x % warpSize == 0) {
-    exclusive_result = shared_mem_buffer[warpLane - 1];
+  } else if (warpLane == 0) {
+    exclusive_result = shared_mem_buffer[warpID - 1];
   }
   return exclusive_result;
 }
@@ -187,6 +191,10 @@ __device__ __forceinline__ void GlobalMemoryPrefixSum(T* array, const size_t len
   for (size_t index = start + 1; index < end; ++index) {
     array[index] += array[index - 1];
   }
+  // Callers read the scanned array with a DIFFERENT thread->element mapping
+  // (strided) than the contiguous per-thread chunks written above; without a
+  // barrier they observe pre-scan values from other threads' chunks.
+  __syncthreads();
 }
 
 template <typename T>

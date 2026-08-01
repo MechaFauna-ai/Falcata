@@ -76,6 +76,29 @@ figures from the profiles in the PR discussions.
 - Latent race in the classic loop: child leaf-splits structs point into per-split
   scratch that the next split overwrites; masked only by per-split syncs (fixed here
   via point_structs_at_main + copy-event ordering).
+- The whole CUDA >256-bin family (any feature with more than 256 histogram bins:
+  max_bin > 256, or a categorical with > 256 non-trivial categories) was broken
+  upstream, five distinct defects (all fixed here 2026-08-01):
+  (1) ``ShufflePrefixSumExclusive`` indexed the warp hand-off buffer by warpLane
+  instead of warpID -- every warp overwrote one slot and lane 0 read shared memory
+  at index -1 (uint underflow), so every global-memory prefix scan was garbage;
+  the same helper corrupts the weighted L1/quantile leaf-renewal kernels.
+  (2) ``GlobalMemoryPrefixSum`` had no trailing barrier while consumers read the
+  scanned array with a different thread mapping than the writers.
+  (3) The global-memory reverse scan visits bin num_bin-1 (mfb_offset 0), encoding
+  threshold -1 (0xFFFFFFFF); when it wins, the host indexes bin_upper_bound with it
+  (garbage split or segfault). The shared-memory kernel has the missing bound.
+  (4) ``FixHistogram(Discretized)Inner`` read one bin per thread with a 512-thread
+  block: bins >= 512 were excluded from the partial sum, so the most-frequent-bin
+  patch re-injected their mass (histogram total inflated by exactly the missed
+  tail; num_bin_aligned > blockDim also made the reduction read stale shared mem).
+  (5) Quantized + global-memory finder: upstream's launch branch is an empty
+  ``TODO(shiyu1994)`` -- no kernel runs, training silently uses stale split info
+  (we now refuse with an actionable error).
+  Additionally the forward+reverse tasks of one feature share a staging region
+  across concurrent blocks (fixed here with per-direction regions), and the hybrid
+  per-pair fallback overlapped pairs on the shared staging (hybrid now routes
+  global-memory shapes to the classic flow).
 
 ## Benchmark
 

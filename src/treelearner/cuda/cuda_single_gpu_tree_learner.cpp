@@ -230,6 +230,14 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   cuda_best_split_finder_.reset(new CUDABestSplitFinder(cuda_histogram_constructor_->cuda_hist(),
     train_data_, this->share_state_->feature_hist_offsets(), select_features_by_node_, config_));
   cuda_best_split_finder_->Init();
+  if (config_->use_quantized_grad && cuda_best_split_finder_->use_global_memory()) {
+    // The discretized best-split finder has no global-memory variant (upstream
+    // left the branch as a TODO that launches NOTHING, silently training on
+    // stale split info). Refuse loudly instead of producing a garbage model.
+    Log::Fatal("use_quantized_grad is not supported on CUDA when a feature has more than %d histogram bins "
+               "(max_bin=%d requested). Reduce max_bin to at most 256 or disable quantized gradients.",
+               NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, config_->max_bin);
+  }
   // Wire the histogram constructor's completion events into the best split finder so
   // per-leaf FindBestSplits kernels are ordered after histogram construction/subtraction
   // via cudaStreamWaitEvent instead of per-split device syncs.
@@ -675,9 +683,16 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
   // per-level bitset arena, and tree recording interleaves the per-split
   // categorical path with numerical SplitBatch chunks. The selective and
   // one-sync/speculative flows keep their categorical exclusions for now.
+  // The global-memory finder stages per-feature scratch in buffers shared by
+  // every in-flight launch; the classic loop serializes those launches with a
+  // device sync per split, but the hybrid per-pair fallback overlaps pairs and
+  // trampled the staging (>256-bin features trained garbage). The batched
+  // level kernels are excluded for global memory anyway, so hybrid offers no
+  // upside on these shapes: route them to the classic flow.
   const bool base = use_hybrid_growth_ &&
          nccl_communicator_ == nullptr &&
          !select_features_by_node_ &&
+         (cuda_best_split_finder_ == nullptr || !cuda_best_split_finder_->use_global_memory()) &&
          (forced_split_json_ == nullptr || forced_split_json_->is_null()) &&
          config_->num_leaves > 2;
   if (!base) {
@@ -3204,6 +3219,12 @@ void CUDASingleGPUTreeLearner::AllocateBitset() {
       if (bin_mapper->bin_type() == BinType::CategoricalBin) {
         max_cat_value = std::max(bin_mapper->MaxCatValue(), max_cat_value);
         max_cat_num_bin = std::max(bin_mapper->num_bin(), max_cat_num_bin);
+        if (bin_mapper->num_bin() > 256) {
+          Log::Warning("Categorical feature %d has %d category bins; the CUDA "
+                       "many-vs-many split search considers the 255 most frequent "
+                       "categories (rarer ones route to the right child). Group "
+                       "rare categories to avoid this.", i, bin_mapper->num_bin());
+        }
       }
     }
     // std::max(..., 1) to avoid error in the case when there are NaN's in the categorical values.
