@@ -67,6 +67,11 @@ struct CUDAHybridApplyDescriptor {
   data_size_t block_offset_start;
   /*! \brief per-split grid size: ceil(num_data_in_leaf / 1024) (host-computed) */
   int num_blocks;
+  /*! \brief prefix sum of num_blocks over the level's split descriptors
+   *  (host-computed): the flat-grid apply kernels map a flat block id to
+   *  (descriptor, local block) by binary search over this field, so skewed
+   *  levels never launch the (max_blocks x num_splits) mostly-empty grid */
+  int flat_block_start;
   int left_leaf_index;
   int right_leaf_index;
   /*! \brief split decision parameters (see LaunchGenDataToLeftBitVectorKernel) */
@@ -192,6 +197,10 @@ class CUDADataPartition: public NCCLInfo {
    *  synchronizes. */
   void RemapDataIndexToLeafIndex(const std::vector<int>& leaf_map);
 
+  /*! \brief one tree-end pass writing the row -> leaf map from the final
+   *  leaf windows; replaces the per-level map scatter of the batched apply */
+  void MaterializeHybridLeafMap(const int num_leaves);
+
   /*! \brief Selective grow-then-prune finalize: upload the final per-leaf data
    *  layout (num_data / data_start / data_end) for the first num_leaves leaves,
    *  so post-training consumers (objective renewal, quantized leaf renewal)
@@ -313,7 +322,8 @@ class CUDADataPartition: public NCCLInfo {
   void LaunchBuildCatBitsetArenaKernel(const int num_splits, const std::vector<int>& cat_desc_indices,
                                        const std::vector<uint32_t>& cat_mfb_bins);
   void LaunchSplitLevelBatchedKernels(const int num_splits, const int max_num_blocks,
-                                      const int num_gaps, const int max_gap_blocks);
+                                      const int num_gaps, const int max_gap_blocks,
+                                      const int total_flat_blocks);
 
   void GenDataToLeftBitVector(
     const data_size_t num_data_in_leaf,

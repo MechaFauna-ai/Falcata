@@ -2436,12 +2436,16 @@ void CUDASingleGPUTreeLearner::SelectiveFinalize(CUDATree* tree) {
     ++live_count;
   }
   CHECK_EQ(live_count, final_num_leaves);
-  cuda_data_partition_->RemapDataIndexToLeafIndex(remap);
+  // the batched apply defers the row -> leaf map; with the final classic
+  // layout installed below, one materialize pass writes classic leaf ids
+  // directly from the final windows (replacing the old remap of per-level
+  // hybrid entries, which are stale under deferral)
   cuda_data_partition_->SetLeafDataLayout(final_num, final_start, final_num_leaves);
   for (int i = 0; i < final_num_leaves; ++i) {
     leaf_num_data_[i] = final_num[i];
     leaf_data_start_[i] = final_start[i];
   }
+  cuda_data_partition_->MaterializeHybridLeafMap(final_num_leaves);
   sel_last_peak_ = sel_num_allocated_;
   ++sel_stat_trees_;
   const bool hybrid_debug = FalcataDebug().debug;
@@ -2686,6 +2690,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   ForceSplitsCUDA(tree.get(), &num_splits_done);
   bool pair_search_cached = false;
   bool selective_handled = false;
+  bool batched_apply_ran = false;
   if (num_splits_done == 0 && HybridGrowthUsable()) {
     if (UseSelectiveGrowth()) {
       // budget-limited exact grow-then-prune: builds the COMPLETE tree
@@ -2696,6 +2701,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
       global_timer.Start("CUDASingleGPUTreeLearner::TrainLevelWisePrefix");
       num_splits_done = TrainLevelWisePrefix(tree.get());
       global_timer.Stop("CUDASingleGPUTreeLearner::TrainLevelWisePrefix");
+      batched_apply_ran = num_splits_done > 0;
       // every current leaf already has a cached best-split candidate; the first
       // tail iteration must not redo the pair search
       pair_search_cached = num_splits_done > 0;
@@ -2786,6 +2792,13 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     global_timer.Stop("CUDASingleGPUTreeLearner::Split");
   }
   SynchronizeCUDADevice(__FILE__, __LINE__);
+  if (batched_apply_ran) {
+    // the batched apply defers the per-level row -> leaf map scatter; write the
+    // map once from the final leaf windows before any tree-end consumer
+    // (AddPredictionToScore / refit stats / linear trees) reads it. The classic
+    // tail splits above kept their inline updates, which this pass subsumes.
+    cuda_data_partition_->MaterializeHybridLeafMap(tree->num_leaves());
+  }
   if (config_->use_quantized_grad && config_->quant_train_renew_leaf) {
     global_timer.Start("CUDASingleGPUTreeLearner::RenewDiscretizedTreeLeaves");
     RenewDiscretizedTreeLeaves(tree.get());

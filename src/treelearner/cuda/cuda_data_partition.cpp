@@ -369,6 +369,7 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
   global_timer.Start("CUDADataPartition::SplitLevelBatched");
   host_apply_descs_.resize(splits.size());
   data_size_t total_block_offset_slots = 0;
+  int total_flat_blocks = 0;
   int max_num_blocks = 0;
   uint32_t cat_arena_cursor = 0;
   std::vector<int> cat_desc_indices;
@@ -431,6 +432,8 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
     desc.block_offset_start = total_block_offset_slots;
     desc.num_blocks = (in.num_data_in_leaf + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) /
       SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+    desc.flat_block_start = total_flat_blocks;
+    total_flat_blocks += desc.num_blocks;
     desc.left_leaf_index = in.left_leaf_index;
     desc.right_leaf_index = in.right_leaf_index;
     desc.th = th;
@@ -555,7 +558,8 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
     LaunchBuildCatBitsetArenaKernel(static_cast<int>(cat_desc_indices.size()),
                                     cat_desc_indices, cat_mfb_bins);
   }
-  LaunchSplitLevelBatchedKernels(num_splits, max_num_blocks, num_gaps, max_gap_blocks);
+  LaunchSplitLevelBatchedKernels(num_splits, max_num_blocks, num_gaps, max_gap_blocks,
+                                 total_flat_blocks);
   // the out buffer now holds every leaf's indices at the main layout positions:
   // promote it to the main index array (the old main becomes the next scratch)
   cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);
