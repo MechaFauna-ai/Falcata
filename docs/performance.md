@@ -412,13 +412,19 @@ ONE batched bitset kernel + ONE readback per level; the known-final level
 writes the row->leaf map inline in split-inner (with explicit leaf-cache
 invalidation for its never-searched children -- the subtle correctness pair
 the lattice fingerprints caught) and skips a wasted next-level search; and
-the one-sync prefix admits categorical datasets. Official harness numbers
-(944d9cdc wheel, warmup+2 timed, stable to ~0.1s):
+the one-sync prefix admits categorical datasets. A third landing (6dbe4c86)
+replaced the gen/aggregate byte hand-off with packed ballot bits.
 
-| regime | falcata-stoch | falcata-noquant | xgboost | lightgbm CUDA |
-|---|---|---|---|---|
-| shallow | **18.6s (-18.4%)** | 20.2s | 22.8s | 34.6s |
-| deep | **33.2s (-24.2%)** | 36.0s | 43.8s | 152.9s |
+**Official numbers** (6dbe4c86 wheel, FAIR interleaved protocol: quiet
+desktop, per regime one warmup round-robin then 3 timed rounds with the four
+engines interleaved per round — earlier mixed-condition numbers had up to
++-10% desktop-GPU-contention noise, spreads now 0.0-0.5% shallow / 2.5-9.8%
+deep; catboost from the prior pass, not re-run at 925.6s/1838.3s):
+
+| regime | falcata-stoch | falcata-noquant | xgboost | lightgbm CUDA | margin vs best other |
+|---|---|---|---|---|---|
+| shallow | **18.8s** | 20.4s | 22.6s | 35.4s | **19.8% faster** |
+| deep | **33.9s** | 36.7s | 44.8s | 144.6s | **31.9% faster** |
 
 Time-to-quality (report/aircat_time_to_quality.png in the bench workspace;
 curve cells + extended falcata runs): falcata-stoch rides the top envelope at
