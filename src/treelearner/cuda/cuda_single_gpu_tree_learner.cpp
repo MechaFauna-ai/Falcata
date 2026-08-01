@@ -175,6 +175,12 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     config_->use_quantized_grad, effective_quant_bins_));
   cuda_histogram_constructor_->Init(train_data_, share_state_.get());
 
+  // construct-JIT auto-gate (mirrors the tuner's): the one-time NVRTC
+  // compile + self-test (~230ms) amortizes only on real runs
+  cuda_histogram_constructor_->SetConstructJITAllowed(
+      FalcataPlan::Get().construct_jit &&
+      (FalcataPlan::Get().construct_jit_explicit || config_->num_iterations >= 300));
+
   const auto& feature_hist_offsets = share_state_->feature_hist_offsets();
   num_total_bin_ = feature_hist_offsets.empty() ? 0 : static_cast<int>(feature_hist_offsets.back());
   cuda_data_partition_.reset(new CUDADataPartition(

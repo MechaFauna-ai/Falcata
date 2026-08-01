@@ -54,8 +54,14 @@ struct FalcataPlan {
   // 0 < feature_fraction < 1 (win scales with the excluded fraction:
   // ~3.4x at ff=0.1, ~1.1x at ff=0.6)
   bool compact_quant = true;        // key: compact_quant
-  // NVRTC runtime-JIT construct kernels (self-test-then-promote; AOT fallback)
-  bool construct_jit = false;       // key: construct_jit
+  // NVRTC runtime-JIT construct kernels (self-test-then-promote; AOT
+  // fallback). Default ON for quant runs >= 300 rounds (the ~230ms one-time
+  // compile amortizes): measured +4.0% numerai-deep, +2.4% covtype-deep,
+  // +2.2% year, +0.7% higgs, bit-identical (2026-08-01, post-ldcs sync).
+  bool construct_jit = true;        // key: construct_jit
+  // true when the user wrote construct_jit:on/off -- bypasses the >=300
+  // rounds auto-gate (mirrors tuner_explicit)
+  bool construct_jit_explicit = false;
   // dense row-data build from column bins (skips host multi-val bin)
   bool fast_rowdata = true;         // key: fast_rowdata
   // 4-bit packed row data for <=16-bin features
@@ -217,6 +223,7 @@ struct FalcataPlan {
       }
       *slot = value;
       if (kv[0] == std::string("tuner")) plan.tuner_explicit = true;
+      if (kv[0] == std::string("construct_jit")) plan.construct_jit_explicit = true;
       overridden = true;
     }
     Mutable() = plan;

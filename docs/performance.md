@@ -247,6 +247,28 @@ reported all vanished under interleaved A/B at 500 rounds.
 The ablation shows each of these within noise on shapes they don't target —
 the planner's "default on, individually ablatable" contract in action.
 
+## 7b. Runtime-JIT construct kernels (`construct_jit`)
+
+The NVRTC infrastructure from the July arc (shape-keyed compile cache, AOT
+fallback, self-test-then-promote) now serves ALL mask-free quantized dense
+shapes, not just the compact view. The specialized kernel strips the runtime
+branches the AOT kernel must carry (feature/bin masks, graph state,
+speculative sizing, wide-partition predication) — on an issue-bound kernel
+those branches are the remaining fat. Measured (bit-identical everywhere;
+the canonical 700-round locks reproduce exactly with JIT live):
+
+| numerai-deep | covtype-deep | year | higgs |
+|---|---|---|---|
+| **+4.0%** | +2.4% | +2.2% | +0.7% |
+
+The numerai number required syncing the JIT template with the evict-first
+(`__ldcs`) loads first — an unsynced template measured at parity, which
+earlier led to a premature dead-end verdict (since corrected). Default ON
+for quantized runs of ≥300 rounds (the ~230ms one-time compile+self-test
+amortizes); `construct_jit:on` forces it, unsupported shapes (graph capture,
+speculative levels, masked trees, wide partitions) fall back to AOT
+automatically.
+
 ## 8. GPU inference via NVIDIA FIL
 
 `Booster.predict()` on a CUDA-trained model routes through cuML's Forest

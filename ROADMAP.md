@@ -25,17 +25,6 @@ figures from the profiles in the PR discussions.
   gained year/higgs 35% and regressed covtype 45% — only measurement catches
   such reversals, which is why the runtime bandit is the primary mechanism
   and static priors only seed it.
-- **NVRTC tier-2, general case (non-compact kernels) — REOPENED 2026-08-01.**
-  The compact-quant instance measured at parity and is closed
-  (perf-dead-ends.md), but that kernel is the only one the JIT engages —
-  higgs/epsilon/year/covtype-class regimes (no feature sampling, no compact
-  view) have never run specialized code, so phase 3's real question ("do the
-  bin-cap benches have headroom, or are they at roofline?") is untested.
-  Work: extend the JIT template to the non-compact discretized + non-quant
-  batched construct kernels (bake per-feature bin offsets, column count,
-  row stride; sync the template with wide_partitions/__ldcs first), then
-  A/B on year/covtype/higgs quant + nonquant. The infra (shape-keyed cache,
-  AOT fallback, bit-identity self-tests) is live and reusable.
 - **Multi-target training.** Two variants: (1)
   round-robin one-tree-per-target (multiclass machinery minus softmax) -- identical
   models to sequential training, but only ~1.1x/target now that construct is cheap;

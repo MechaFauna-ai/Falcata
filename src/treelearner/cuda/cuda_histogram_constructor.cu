@@ -2644,16 +2644,19 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernel(
   // construct is captured (multiclass graph loop with JIT force-enabled), defer
   // the self-test to the first NON-capturing construct. The JIT declines under
   // graph capture anyway, so deferring never loses a live launch.
-  if (!construct_jit_selftest_done_ && CUDAConstructJIT::Enabled()) {
+  if (!construct_jit_selftest_done_ && construct_jit_allowed_ && CUDAConstructJIT::Enabled()) {
     cudaStreamCaptureStatus cap = cudaStreamCaptureStatusNone;
     if (cudaStreamIsCapturing(cuda_stream_, &cap) == cudaSuccess &&
         cap == cudaStreamCaptureStatusNone) {
       RunConstructJITSelfTest();
     }
-  } else if (!construct_jit_selftest_done_) {
-    // JIT disabled: mark done so the check is a one-time no-op (matches prior
-    // behavior; RunConstructJITSelfTest short-circuits on !Enabled()).
-    RunConstructJITSelfTest();
+  } else if (!construct_jit_selftest_done_ && !construct_jit_allowed_) {
+    // JIT not allowed for this run (plan off, or auto-gate: < 300 rounds):
+    // mark done directly. (Historically this called RunConstructJITSelfTest
+    // relying on its !Enabled() short-circuit -- with construct_jit now
+    // default-ON that would run the full compile+launch self-test, including
+    // MID GRAPH CAPTURE, which is illegal.)
+    construct_jit_selftest_done_ = true;
   }
   if (cuda_row_data_->shared_hist_size() == DP_SHARED_HIST_SIZE && gpu_use_dp_) {
     LaunchConstructHistogramBatchedKernelInner<double, DP_SHARED_HIST_SIZE>(pair_descs, num_pairs, max_num_data_in_smaller_leaf, level_smaller_num_data);
@@ -2871,6 +2874,11 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           hybrid_graph_capture_gstate_);
       }
     } else if (cuda_row_data_->is_4bit_packed()) {
+      if (TryLaunchConstructJITBatchedRowDataQuant(
+              grid_dim, block_dim, pair_descs, level_smaller_num_data,
+              static_cast<int>(SHARED_HIST_SIZE), sizeof(BIN_TYPE), true)) {
+        // JIT launched (validated module; mask-free shape)
+      } else
       CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE, PackNibble4><<<grid_dim, block_dim, 0, cuda_stream_>>>(
         pair_descs,
         reinterpret_cast<const int32_t*>(cuda_gradients_),
@@ -2887,6 +2895,11 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         level_smaller_num_data,
         hybrid_graph_capture_gstate_);
     } else {
+      if (TryLaunchConstructJITBatchedRowDataQuant(
+              grid_dim, block_dim, pair_descs, level_smaller_num_data,
+              static_cast<int>(SHARED_HIST_SIZE), sizeof(BIN_TYPE), false)) {
+        return;  // JIT launched (validated module; mask-free shape)
+      }
       CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE><<<grid_dim, block_dim, 0, cuda_stream_>>>(
         pair_descs,
         reinterpret_cast<const int32_t*>(cuda_gradients_),
@@ -3448,6 +3461,54 @@ bool CUDAHistogramConstructor::RunConstructJITSelfTestShape(bool is_4bit, int sm
                  is_4bit ? "4bit" : "8bit");
   }
   return ok;
+}
+
+
+// Live JIT batched construct for the NON-COMPACT quant dense path (the
+// covtype/year/higgs-class shapes: no feature sampling, so the per-tree
+// feature/bin masks are null and the mask-free JIT body is exact). Reuses the
+// module the self-test validated -- the batched body bakes only
+// (SHARED_HIST_SIZE, IS_4BIT, sm), none of the dataset shape.
+bool CUDAHistogramConstructor::TryLaunchConstructJITBatchedRowDataQuant(
+    const dim3& grid_dim, const dim3& block_dim,
+    const CUDAHybridPairDescriptor* pair_descs,
+    const data_size_t* level_smaller_num_data,
+    int shared_hist_size, size_t bin_type_bytes, bool is_4bit) {
+  const int slot = is_4bit ? 1 : 0;
+  if (!construct_jit_live_ready_[slot]) return false;
+  if (hybrid_graph_capture_gstate_ != nullptr) return false;
+  if (level_smaller_num_data != nullptr) return false;
+  if (bin_type_bytes != 1) return false;
+  if (any_feature_unused_bytree_) return false;  // JIT body has no mask support
+  // wide partitions map two columns per thread; the JIT body maps one
+  if (cuda_row_data_->max_num_column_per_partition() > static_cast<int>(block_dim.x)) return false;
+  if (shared_hist_size != construct_jit_live_key_[slot].shared_hist_size) return false;
+  void* fn = construct_jit_.GetBatchedIfValidated(construct_jit_live_key_[slot]);
+  if (fn == nullptr) return false;
+  CUfunction func = reinterpret_cast<CUfunction>(fn);
+
+  const int32_t* gh_ptr = reinterpret_cast<const int32_t*>(cuda_gradients_);
+  const uint8_t* data_ptr = cuda_row_data_->GetBin<uint8_t>();
+  const uint32_t* col_off_ptr = cuda_row_data_->cuda_column_hist_offsets();
+  const uint32_t* part_hist_ptr = cuda_row_data_->cuda_partition_hist_offsets();
+  const int* part_col_ptr = cuda_row_data_->cuda_feature_partition_column_index_offsets();
+  const int* packed_off_ptr = is_4bit ?
+      cuda_row_data_->cuda_packed_partition_byte_offsets() : nullptr;
+  data_size_t num_data_arg = num_data_;
+  data_size_t min_data_arg = static_cast<data_size_t>(min_data_in_leaf_);
+  double min_hess_arg = min_sum_hessian_in_leaf_;
+  void* args[] = {&pair_descs, &gh_ptr, &data_ptr, &col_off_ptr, &part_hist_ptr,
+                  &part_col_ptr, &packed_off_ptr, &num_data_arg, &min_data_arg, &min_hess_arg};
+  const CUresult lr = cuLaunchKernel(
+      func, grid_dim.x, grid_dim.y, grid_dim.z,
+      block_dim.x, block_dim.y, block_dim.z, 0, cuda_stream_, args, nullptr);
+  if (lr != CUDA_SUCCESS) {
+    Log::Warning("CUDAConstructJIT rowdata launch failed (%d); disabling live JIT, using AOT",
+                 static_cast<int>(lr));
+    construct_jit_live_ready_[slot] = false;
+    return false;
+  }
+  return true;
 }
 
 // Live JIT batched construct launch (see the header). Bit-identical to the AOT

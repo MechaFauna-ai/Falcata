@@ -203,7 +203,11 @@ exists that avoids doomed applies WITHOUT extra levels (i.e., defers only
 candidates that would otherwise be applied and displaced within the SAME
 level budget — requires lookahead the greedy stream does not have).
 
-## NVRTC specialization of the COMPACT-QUANT construct (one instance of tier-2)
+## NVRTC specialization of the COMPACT-QUANT construct — SUPERSEDED
+(2026-08-01: the parity finding was an unsynced template; with __ldcs added
+the same shape measures +4.0%. Kept for the methodology lesson: keep JIT
+templates in lockstep with the AOT kernel before comparing. The general
+tier-2 case LANDED — see performance.md §7b.)
 
 **Hypothesis** (from the July JIT arc): numerai's ~5.5-bin features waste
 >90% of the fixed 12288-entry shared histogram; a kernel with per-feature

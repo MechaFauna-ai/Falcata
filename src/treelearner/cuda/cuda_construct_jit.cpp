@@ -84,6 +84,14 @@ std::string CUDAConstructJIT::BuildKernelSource(const ConstructJITShapeKey& key)
   src += "#define USE_16BIT_HIST " + std::to_string(key.use_16bit_hist) + "\n";
   src += "#define IS_4BIT " + std::to_string(key.is_4bit) + "\n";
   src += R"CUDA(
+// evict-first byte load (matches the AOT kernel's __ldcs: bin bytes have no
+// intra-level reuse; keeping them out of L2 leaves room for grad + hist reuse)
+__device__ __forceinline__ uint32_t ldcs_u8(const uint8_t* p) {
+  unsigned short v;
+  asm volatile("ld.global.cs.u8 %0, [%1];" : "=h"(v) : "l"(p));
+  return (uint32_t)v;
+}
+
 struct LeafSplits {
   int leaf_index;
   double sum_of_gradients;
@@ -151,7 +159,7 @@ extern "C" __global__ void construct_jit(
     for (data_size_t i = 0; i < num_iteration_this; ++i) {
       const data_size_t data_index = data_indices_ref_this_block[inner_data_index];
       const int32_t gh = grad_and_hess[data_index];
-      const uint32_t bin = (uint32_t)data_ptr[(size_t)data_index * row_stride + threadIdx.x];
+      const uint32_t bin = ldcs_u8(data_ptr + (size_t)data_index * row_stride + threadIdx.x);
       atomicAdd_block(shared_hist_ptr + bin, gh);
       inner_data_index += blockDim.y;
     }
@@ -270,10 +278,10 @@ __device__ __forceinline__ void construct_jit_inner(
       const int32_t gh = grad_and_hess[data_index];
       const uint8_t* row_ptr = data_ptr + (size_t)data_index * row_stride;
 #if IS_4BIT
-      const uint32_t packed = (uint32_t)row_ptr[threadIdx.x >> 1];
+      const uint32_t packed = ldcs_u8(row_ptr + (threadIdx.x >> 1));
       const uint32_t bin = (packed >> ((threadIdx.x & 1) << 2)) & 0xfu;
 #else
-      const uint32_t bin = (uint32_t)row_ptr[threadIdx.x];
+      const uint32_t bin = ldcs_u8(row_ptr + threadIdx.x);
 #endif
       atomicAdd_block(shared_hist_ptr + bin, gh);
       inner_data_index += blockDim.y;

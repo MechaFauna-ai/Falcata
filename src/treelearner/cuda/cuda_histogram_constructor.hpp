@@ -390,6 +390,9 @@ class CUDAHistogramConstructor {
 
   void ResetConfig(const Config* config);
 
+  // resolved by the tree learner: plan.construct_jit AND (explicit override
+  // OR num_iterations >= 300) -- the compile+selftest cost needs amortizing
+  void SetConstructJITAllowed(bool allowed) { construct_jit_allowed_ = allowed; }
   void BeforeTrain(const score_t* gradients, const score_t* hessians);
 
   /*! \brief number of leaf histogram slots the finished tree dirtied (== its
@@ -672,6 +675,7 @@ class CUDAHistogramConstructor {
   // One per packing (8-bit dense / 4-bit nibble-packed), armed independently.
   ConstructJITShapeKey construct_jit_live_key_[2];      // [0]=8-bit, [1]=4-bit
   bool construct_jit_live_ready_[2] = {false, false};   // self-test validated -> live launch allowed
+  bool construct_jit_allowed_ = false;
 
  public:
   // One-time NVRTC pipeline self-check (compile + module load + launch +
@@ -690,6 +694,11 @@ class CUDAHistogramConstructor {
   // kernel (bit-identical to the AOT kernel); false => caller runs AOT. Declines
   // for graph capture, non-uint8 bins, mismatched shared-hist size, speculative
   // (level_smaller_num_data != null) flow, or an unvalidated shape.
+  bool TryLaunchConstructJITBatchedRowDataQuant(
+    const dim3& grid_dim, const dim3& block_dim,
+    const CUDAHybridPairDescriptor* pair_descs,
+    const data_size_t* level_smaller_num_data,
+    int shared_hist_size, size_t bin_type_bytes, bool is_4bit);
   bool TryLaunchConstructJITBatchedCompactQuant(
     const dim3& grid_dim, const dim3& block_dim,
     const CUDAHybridPairDescriptor* pair_descs,
