@@ -1506,6 +1506,7 @@ __global__ void HybridAggregateBlockOffsetBatchKernel(
   }
 }
 
+template <bool WRITE_LEAF_MAP>
 __device__ __forceinline__ void HybridSplitInnerChunk(
   const CUDAHybridApplyDescriptor& d,
   const unsigned int block_x,
@@ -1513,7 +1514,8 @@ __device__ __forceinline__ void HybridSplitInnerChunk(
   const data_size_t* block_to_left_offset_buffer_base,
   const data_size_t* block_to_right_offset_buffer_base,
   const uint16_t* block_to_left_offset,
-  data_size_t* out_data_indices_in_leaf) {
+  data_size_t* out_data_indices_in_leaf,
+  int* cuda_data_index_to_leaf_index) {
   const data_size_t num_data_in_leaf = d.num_data_in_leaf;
   const unsigned int threadIdx_x = threadIdx.x;
   const unsigned int blockDim_x = blockDim.x;
@@ -1527,11 +1529,18 @@ __device__ __forceinline__ void HybridSplitInnerChunk(
   if (static_cast<data_size_t>(global_thread_index) < num_data_in_leaf) {
     const uint32_t thread_to_left_offset = (threadIdx_x == 0 ? 0 : block_to_left_offset_ptr[threadIdx_x - 1]);
     const bool to_left = block_to_left_offset_ptr[threadIdx_x] > thread_to_left_offset;
+    const data_size_t row_index = cuda_data_indices_in_leaf[global_thread_index];
     if (to_left) {
-      left_out_data_indices_in_leaf[thread_to_left_offset] = cuda_data_indices_in_leaf[global_thread_index];
+      left_out_data_indices_in_leaf[thread_to_left_offset] = row_index;
     } else {
       const uint32_t thread_to_right_offset = threadIdx_x - thread_to_left_offset;
-      right_out_data_indices_in_leaf[thread_to_right_offset] = cuda_data_indices_in_leaf[global_thread_index];
+      right_out_data_indices_in_leaf[thread_to_right_offset] = row_index;
+    }
+    if (WRITE_LEAF_MAP) {
+      // final level of the tree: the row index is already in a register, so
+      // the map write costs one store here instead of a separate full-data
+      // materialize pass re-reading every window
+      cuda_data_index_to_leaf_index[row_index] = to_left ? d.left_leaf_index : d.right_leaf_index;
     }
   }
 }
@@ -1545,17 +1554,31 @@ __global__ void HybridSplitInnerBatchKernel(
   data_size_t* out_data_indices_param,
   const CUDAHybridGraphLoopStateOpt gstate,
   const int num_split_descs,
-  const int total_flat_blocks) {
+  const int total_flat_blocks,
+  int* cuda_data_index_to_leaf_index,
+  const int write_leaf_map) {
   if (total_flat_blocks > 0) {
     // host-launched flat grid (see the gen-bit-vector kernel)
-    for (int flat = static_cast<int>(blockIdx.x); flat < total_flat_blocks;
-         flat += static_cast<int>(gridDim.x)) {
-      const int desc_index = HybridFlatBlockDesc(descs, num_split_descs, flat);
-      const CUDAHybridApplyDescriptor d = descs[desc_index];
-      HybridSplitInnerChunk(d, static_cast<unsigned int>(flat - d.flat_block_start),
-        cuda_data_indices_param, block_to_left_offset_buffer_base,
-        block_to_right_offset_buffer_base, block_to_left_offset,
-        out_data_indices_param);
+    if (write_leaf_map != 0) {
+      for (int flat = static_cast<int>(blockIdx.x); flat < total_flat_blocks;
+           flat += static_cast<int>(gridDim.x)) {
+        const int desc_index = HybridFlatBlockDesc(descs, num_split_descs, flat);
+        const CUDAHybridApplyDescriptor d = descs[desc_index];
+        HybridSplitInnerChunk<true>(d, static_cast<unsigned int>(flat - d.flat_block_start),
+          cuda_data_indices_param, block_to_left_offset_buffer_base,
+          block_to_right_offset_buffer_base, block_to_left_offset,
+          out_data_indices_param, cuda_data_index_to_leaf_index);
+      }
+    } else {
+      for (int flat = static_cast<int>(blockIdx.x); flat < total_flat_blocks;
+           flat += static_cast<int>(gridDim.x)) {
+        const int desc_index = HybridFlatBlockDesc(descs, num_split_descs, flat);
+        const CUDAHybridApplyDescriptor d = descs[desc_index];
+        HybridSplitInnerChunk<false>(d, static_cast<unsigned int>(flat - d.flat_block_start),
+          cuda_data_indices_param, block_to_left_offset_buffer_base,
+          block_to_right_offset_buffer_base, block_to_left_offset,
+          out_data_indices_param, cuda_data_index_to_leaf_index);
+      }
     }
     return;
   }
@@ -1571,9 +1594,9 @@ __global__ void HybridSplitInnerBatchKernel(
   if (static_cast<int>(blockIdx.x) >= d.num_blocks) {
     return;
   }
-  HybridSplitInnerChunk(d, blockIdx.x, cuda_data_indices,
+  HybridSplitInnerChunk<false>(d, blockIdx.x, cuda_data_indices,
     block_to_left_offset_buffer_base, block_to_right_offset_buffer_base,
-    block_to_left_offset, out_data_indices_in_leaf);
+    block_to_left_offset, out_data_indices_in_leaf, cuda_data_index_to_leaf_index);
 }
 
 // replica of SplitTreeStructureKernel<false, USE_GRAD_DISCRETIZED> with
@@ -1835,7 +1858,8 @@ __global__ void HybridCopyDataIndicesBatchKernel(
 
 void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, const int max_num_blocks,
                                                        const int num_gaps, const int max_gap_blocks,
-                                                       const int total_flat_blocks) {
+                                                       const int total_flat_blocks,
+                                                       const bool write_leaf_map) {
   const CUDAHybridApplyDescriptor* descs = cuda_apply_descs_.RawDataReadOnly();
   (void)max_num_blocks;
   // flat 1D grid over the level's REAL chunk count (grid-stride in-kernel):
@@ -1863,7 +1887,8 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
   HybridSplitInnerBatchKernel<<<flat_grid, block_dim, 0, cuda_streams_[0]>>>(
     descs, cuda_data_indices_.RawData(), cuda_block_data_to_left_offset_.RawData(),
     cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
-    new_main_indices, nullptr, num_splits, total_flat_blocks);
+    new_main_indices, nullptr, num_splits, total_flat_blocks,
+    cuda_data_index_to_leaf_index_.RawData(), write_leaf_map ? 1 : 0);
   if (use_quantized_grad_) {
     HybridSplitTreeStructureBatchKernel<true><<<num_splits, 32, 0, cuda_streams_[0]>>>(
       descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
@@ -1914,7 +1939,8 @@ void CUDADataPartition::CaptureHybridGraphApplyKernels(
     descs, cuda_data_indices_.RawData(), cuda_block_data_to_left_offset_.RawData(),
     cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
     cuda_out_data_indices_in_leaf_.RawData(), gstate, /*num_split_descs=*/0,
-    /*total_flat_blocks=*/0);
+    /*total_flat_blocks=*/0, cuda_data_index_to_leaf_index_.RawData(),
+    /*write_leaf_map=*/0);
   if (!AppendCapturedNode(stream, nodes)) return;
   roles->push_back(kHybridGraphNodeSplitInner);
   // template selection mirrors LaunchSplitLevelBatchedKernels (the quantized
@@ -1989,6 +2015,41 @@ __global__ void MaterializeLeafMapKernel(
        j < num; j += stride) {
     cuda_data_index_to_leaf_index[cuda_data_indices[start + j]] = leaf;
   }
+}
+
+__global__ void MaterializeLeafMapSubsetKernel(
+  const data_size_t* cuda_data_indices,
+  const data_size_t* cuda_leaf_data_start,
+  const data_size_t* cuda_leaf_num_data,
+  const int* leaf_list,
+  int* cuda_data_index_to_leaf_index) {
+  const int leaf = leaf_list[blockIdx.y];
+  const data_size_t start = cuda_leaf_data_start[leaf];
+  const data_size_t num = cuda_leaf_num_data[leaf];
+  const data_size_t stride = static_cast<data_size_t>(gridDim.x) * blockDim.x;
+  for (data_size_t j = static_cast<data_size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       j < num; j += stride) {
+    cuda_data_index_to_leaf_index[cuda_data_indices[start + j]] = leaf;
+  }
+}
+
+void CUDADataPartition::MaterializeHybridLeafMapSubset(const std::vector<int>& leaves) {
+  if (leaves.empty()) {
+    return;
+  }
+  global_timer.Start("CUDADataPartition::MaterializeHybridLeafMap");
+  if (cuda_materialize_leaf_list_.Size() < leaves.size()) {
+    cuda_materialize_leaf_list_.Resize(leaves.size());
+  }
+  CopyFromHostToCUDADevice<int>(cuda_materialize_leaf_list_.RawData(), leaves.data(),
+                                leaves.size(), __FILE__, __LINE__);
+  dim3 grid(64, static_cast<unsigned int>(leaves.size()));
+  MaterializeLeafMapSubsetKernel<<<grid, FILL_INDICES_BLOCK_SIZE_DATA_PARTITION>>>(
+    cuda_data_indices_.RawData(), cuda_leaf_data_start_.RawData(),
+    cuda_leaf_num_data_.RawData(), cuda_materialize_leaf_list_.RawData(),
+    cuda_data_index_to_leaf_index_.RawData());
+  SynchronizeCUDADevice(__FILE__, __LINE__);
+  global_timer.Stop("CUDADataPartition::MaterializeHybridLeafMap");
 }
 
 void CUDADataPartition::MaterializeHybridLeafMap(const int num_leaves) {

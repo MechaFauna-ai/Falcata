@@ -181,7 +181,12 @@ class CUDADataPartition: public NCCLInfo {
    *  caller via FinishSplitBatch(n). Requires the level's splits to partition
    *  disjoint index regions (host-known leaf_data_start/num_data from the
    *  previous level's readback). */
-  void SplitLevelBatched(const std::vector<CUDAHybridApplySplitInput>& splits);
+  /*! \brief write_leaf_map: the level is known to be the tree's last (children
+   *  at max_depth or leaf budget exhausted) -- the split-inner scatter writes
+   *  data_index_to_leaf_index inline (the row index is already in registers),
+   *  letting the tree-end materialize cover only earlier-finalized leaves */
+  void SplitLevelBatched(const std::vector<CUDAHybridApplySplitInput>& splits,
+                         const bool write_leaf_map = false);
 
   /*! \brief Selective grow-then-prune: rewrite the data-index-to-leaf-index
    *  entries of the given collapsed subtree windows to their target leaves.
@@ -200,6 +205,10 @@ class CUDADataPartition: public NCCLInfo {
   /*! \brief one tree-end pass writing the row -> leaf map from the final
    *  leaf windows; replaces the per-level map scatter of the batched apply */
   void MaterializeHybridLeafMap(const int num_leaves);
+
+  /*! \brief materialize the map for an explicit subset of leaves (the leaves
+   *  NOT covered by a write_leaf_map final level) */
+  void MaterializeHybridLeafMapSubset(const std::vector<int>& leaves);
 
   /*! \brief Selective grow-then-prune finalize: upload the final per-leaf data
    *  layout (num_data / data_start / data_end) for the first num_leaves leaves,
@@ -323,7 +332,8 @@ class CUDADataPartition: public NCCLInfo {
                                        const std::vector<uint32_t>& cat_mfb_bins);
   void LaunchSplitLevelBatchedKernels(const int num_splits, const int max_num_blocks,
                                       const int num_gaps, const int max_gap_blocks,
-                                      const int total_flat_blocks);
+                                      const int total_flat_blocks,
+                                      const bool write_leaf_map);
 
   void GenDataToLeftBitVector(
     const data_size_t num_data_in_leaf,
@@ -607,6 +617,8 @@ class CUDADataPartition: public NCCLInfo {
   CUDAVector<uint16_t> cuda_block_to_left_offset_;
   /*! \brief maps data index to leaf index, for adding scores to training data set */
   CUDAVector<int> cuda_data_index_to_leaf_index_;
+  /*! \brief staging for MaterializeHybridLeafMapSubset's leaf list */
+  CUDAVector<int> cuda_materialize_leaf_list_;
   /*! \brief prefix sum of number of data going to left in all blocks */
   CUDAVector<data_size_t> cuda_block_data_to_left_offset_;
   /*! \brief prefix sum of number of data going to right in all blocks */

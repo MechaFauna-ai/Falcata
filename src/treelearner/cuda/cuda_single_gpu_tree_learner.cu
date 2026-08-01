@@ -250,6 +250,69 @@ size_t CUDABitsetLen(const CUDASplitInfo* best_split_info, const int num_cat_thr
   return host_max_len;
 }
 
+// Level-batched categorical bitset construction: one block per categorical
+// split builds the real-value and inner-bin bitsets into slab regions and
+// writes both word lengths. Replaces the per-split SetRealThreshold +
+// 2x(CalcBitsetLen + ReduceBlockMaxLen + sync D2H) + 2x(memset +
+// ConstructBitset) sequence -- ~six launches and two blocking readbacks PER
+// SPLIT -- with one launch and one readback PER LEVEL.
+__global__ void BatchConstructCatBitsetsKernel(
+  const CUDASplitInfo* const* infos,
+  const int* inner_features,
+  const int* categorical_bin_to_value,
+  const int* categorical_bin_offsets,
+  uint32_t* bitset_slab, const int bitset_stride,
+  uint32_t* bitset_inner_slab, const int bitset_inner_stride,
+  uint64_t* lens_out) {
+  const int c = static_cast<int>(blockIdx.x);
+  const CUDASplitInfo* info = infos[c];
+  const int n = info->num_cat_threshold;
+  const uint32_t* cat_threshold = info->cat_threshold;
+  int* cat_threshold_real = info->cat_threshold_real;
+  const int* bin_to_value = categorical_bin_to_value + categorical_bin_offsets[inner_features[c]];
+  uint32_t* bitset = bitset_slab + static_cast<size_t>(c) * bitset_stride;
+  uint32_t* bitset_inner = bitset_inner_slab + static_cast<size_t>(c) * bitset_inner_stride;
+  __shared__ uint32_t max_inner_shared;
+  __shared__ uint32_t max_real_shared;
+  if (threadIdx.x == 0) {
+    max_inner_shared = 0;
+    max_real_shared = 0;
+  }
+  // zero the slab regions
+  for (int w = static_cast<int>(threadIdx.x); w < bitset_stride; w += static_cast<int>(blockDim.x)) {
+    bitset[w] = 0;
+  }
+  for (int w = static_cast<int>(threadIdx.x); w < bitset_inner_stride; w += static_cast<int>(blockDim.x)) {
+    bitset_inner[w] = 0;
+  }
+  __syncthreads();
+  for (int i = static_cast<int>(threadIdx.x); i < n; i += static_cast<int>(blockDim.x)) {
+    const uint32_t inner = cat_threshold[i];
+    const uint32_t real = static_cast<uint32_t>(bin_to_value[inner]);
+    cat_threshold_real[i] = static_cast<int>(real);
+    atomicOr(bitset_inner + (inner >> 5), 1u << (inner & 31));
+    atomicOr(bitset + (real >> 5), 1u << (real & 31));
+    atomicMax(&max_inner_shared, inner);
+    atomicMax(&max_real_shared, real);
+  }
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    lens_out[2 * c] = static_cast<uint64_t>(max_real_shared / 32 + 1);
+    lens_out[2 * c + 1] = static_cast<uint64_t>(max_inner_shared / 32 + 1);
+  }
+}
+
+void CUDASingleGPUTreeLearner::LaunchBatchConstructCatBitsetsKernel(const int num_cat_splits) {
+  BatchConstructCatBitsetsKernel<<<num_cat_splits, 128>>>(
+    cuda_batch_cat_infos_.RawDataReadOnly(),
+    cuda_batch_cat_feats_.RawDataReadOnly(),
+    cuda_categorical_bin_to_value_,
+    cuda_categorical_bin_offsets_,
+    cuda_batch_cat_bitset_.RawData(), static_cast<int>(batch_cat_bitset_stride_),
+    cuda_batch_cat_bitset_inner_.RawData(), static_cast<int>(batch_cat_bitset_inner_stride_),
+    cuda_batch_cat_lens_.RawData());
+}
+
 void CUDASingleGPUTreeLearner::LaunchConstructBitsetForCategoricalSplitKernel(
   const CUDASplitInfo* best_split_info) {
   const int num_blocks = (num_cat_threshold_ + CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE - 1) / CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE;

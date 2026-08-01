@@ -360,7 +360,8 @@ void CUDADataPartition::BuildHybridGraphFeatureSource(
 }
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
-void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplitInput>& splits) {
+void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplitInput>& splits,
+                                          const bool write_leaf_map) {
   const int num_splits = static_cast<int>(splits.size());
   if (num_splits <= 0) {
     return;
@@ -559,7 +560,7 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
                                     cat_desc_indices, cat_mfb_bins);
   }
   LaunchSplitLevelBatchedKernels(num_splits, max_num_blocks, num_gaps, max_gap_blocks,
-                                 total_flat_blocks);
+                                 total_flat_blocks, write_leaf_map);
   // the out buffer now holds every leaf's indices at the main layout positions:
   // promote it to the main index array (the old main becomes the next scratch)
   cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);

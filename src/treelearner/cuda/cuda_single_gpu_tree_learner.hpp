@@ -99,6 +99,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
 
   void LaunchConstructBitsetForCategoricalSplitKernel(const CUDASplitInfo* best_split_info);
 
+  /*! \brief build ALL of a level's categorical split bitsets (real + inner)
+   *  into per-split slab regions + write their word lengths; one launch */
+  void LaunchBatchConstructCatBitsetsKernel(const int num_cat_splits);
+
   void AllocateBitset();
 
   void SelectFeatureByNode(const Tree* tree);
@@ -188,7 +192,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // Batched apply of one level's splits: tree-structure update (SplitBatch) +
   // partition (SplitLevelBatched), zero host synchronization; fills *applied.
   void ApplyLevelBatched(CUDATree* tree, const std::vector<int>& splittable,
-    std::vector<HybridAppliedSplit>* applied);
+    std::vector<HybridAppliedSplit>* applied, const bool final_level = false);
   // Shared per-level readback bookkeeping: consume the deferred split info of one
   // level's applied splits (child counts/starts/sums), update the host leaf
   // arrays, quantized histogram bit widths and smaller/larger designation, count
@@ -467,6 +471,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool use_hybrid_batch_apply_ = false;
   std::vector<CUDATreeBatchSplit> host_tree_batch_splits_;
   std::vector<CUDAHybridApplySplitInput> host_apply_split_inputs_;
+  /*! \brief the final level's split-inner wrote the leaf map inline; the
+   *  tree-end materialize covers only hybrid_map_residual_leaves_ */
+  bool hybrid_map_final_written_ = false;
+  std::vector<int> hybrid_map_residual_leaves_;
   // hybrid growth: single-sync (speculative) level pipeline
   // (FALCATA_HYBRID_ONE_SYNC, default on; "0" keeps the classic two-sync flow)
   bool use_hybrid_one_sync_ = false;
@@ -563,6 +571,19 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   mutable data_size_t refit_num_data_;
   uint32_t* cuda_bitset_;
   size_t cuda_bitset_len_;
+  /*! \brief level-batched categorical bitset construction: per-split slab
+   *  strides (words) + device staging; ONE kernel + ONE length readback per
+   *  level replaces the per-split 4-kernel/2-sync construction swarm */
+  size_t batch_cat_bitset_stride_ = 0;
+  size_t batch_cat_bitset_inner_stride_ = 0;
+  CUDAVector<const CUDASplitInfo*> cuda_batch_cat_infos_;
+  CUDAVector<int> cuda_batch_cat_feats_;
+  CUDAVector<uint32_t> cuda_batch_cat_bitset_;
+  CUDAVector<uint32_t> cuda_batch_cat_bitset_inner_;
+  CUDAVector<uint64_t> cuda_batch_cat_lens_;
+  std::vector<const CUDASplitInfo*> host_batch_cat_infos_;
+  std::vector<int> host_batch_cat_feats_;
+  std::vector<uint64_t> host_batch_cat_lens_;
   uint32_t* cuda_bitset_inner_;
   size_t cuda_bitset_inner_len_;
   size_t* cuda_block_bitset_len_buffer_;

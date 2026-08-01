@@ -101,6 +101,13 @@ class CUDABestSplitFinder {
    *  histogram mode when this is set */
   bool use_global_memory() const { return use_global_memory_; }
 
+  /*! \brief mark the given leaves' cached best splits invalid (device leaf
+   *  cache). Used when a level is applied WITHOUT searching its children (the
+   *  known-final level of the hybrid prefix): the children's slots hold stale
+   *  entries from earlier occupants of the same leaf indices, and the
+   *  leaf-wise tail's FindBestFromAllSplits must not resurrect them. */
+  void InvalidateLeafCandidates(const std::vector<int>& leaves);
+
   /*! \brief synchronous D2H snapshot of a leaf's categorical split thresholds
    *  (inner bin values) from the per-leaf slab; valid between the leaf's search
    *  readback and the next search that reuses the leaf index */
@@ -527,6 +534,7 @@ class CUDABestSplitFinder {
   CUDAVector<hist_t> cuda_feature_hist_stat_buffer_;
   CUDAVector<data_size_t> cuda_feature_hist_index_buffer_;
   CUDAVector<uint32_t> cuda_cat_threshold_leaf_;
+  CUDAVector<int> cuda_invalidate_leaves_;
   CUDAVector<int> cuda_cat_threshold_real_leaf_;
   CUDAVector<uint32_t> cuda_cat_threshold_feature_;
   CUDAVector<int> cuda_cat_threshold_real_feature_;

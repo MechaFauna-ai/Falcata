@@ -730,8 +730,13 @@ bool CUDASingleGPUTreeLearner::UseSelectiveGrowth() const {
 }
 
 bool CUDASingleGPUTreeLearner::UseOneSyncPrefix() const {
+  // categorical datasets ride the one-sync flow since 2026-08-02: the apply
+  // runs AFTER the level's single readback (host split infos, including
+  // num_cat_threshold, are available -- the phase-1b operator= fix keeps the
+  // count through host copies), and the speculative children's search uses the
+  // batched level finder, categorical-capable since phase 2b. The graph loop
+  // keeps its categorical exclusion (arena build is host-driven).
   return use_hybrid_one_sync_ &&
-         !has_categorical_feature_ &&
          !config_->use_quantized_grad &&
          use_hybrid_batch_kernels_ &&
          use_hybrid_batch_apply_ &&
@@ -1074,7 +1079,28 @@ bool CUDASingleGPUTreeLearner::ArbitrateLevelBudget(const CUDATree* tree,
   // defer to the leaf-wise tail, which selects among the cached candidates in
   // exact best-gain order.
   *final_partial_level = false;
-  if (tree->num_leaves() + static_cast<int>(splittable->size()) > config_->num_leaves) {
+  bool all_children_depth_capped = config_->max_depth > 0 && !splittable->empty();
+  if (all_children_depth_capped) {
+    for (const int leaf : *splittable) {
+      if (tree->leaf_depth(leaf) + 1 < config_->max_depth) {
+        all_children_depth_capped = false;
+        break;
+      }
+    }
+  }
+  if (tree->num_leaves() + static_cast<int>(splittable->size()) <= config_->num_leaves) {
+    // Budget does not bind. When every child this level creates sits at
+    // max_depth the level is still FINAL: no child can become a candidate, so
+    // flagging it skips a whole wasted next-level search AND lets the apply
+    // write the leaf map inline (see ApplyLevelBatched).
+    *final_partial_level = all_children_depth_capped;
+    if (FalcataDebug().maxsplits >= 0) {
+      const size_t cap = static_cast<size_t>(FalcataDebug().maxsplits);
+      if (splittable->size() > cap) splittable->resize(cap);
+    }
+    return true;
+  }
+  {
     // The budget binds. In general the leaf-wise tail must arbitrate between
     // this level's candidates and their future children, so defer to it. But
     // when every child this level could create would sit at max_depth, no
@@ -1085,16 +1111,7 @@ bool CUDASingleGPUTreeLearner::ArbitrateLevelBudget(const CUDATree* tree,
     // order, one full search-partition-sync round trip per split. Reproduce
     // exactly that as one final batched partial level.
     const int remaining_budget = config_->num_leaves - tree->num_leaves();
-    bool children_depth_capped = config_->max_depth > 0;
-    if (children_depth_capped) {
-      for (const int leaf : *splittable) {
-        if (tree->leaf_depth(leaf) + 1 < config_->max_depth) {
-          children_depth_capped = false;
-          break;
-        }
-      }
-    }
-    if (!children_depth_capped || remaining_budget <= 0) {
+    if (!all_children_depth_capped || remaining_budget <= 0) {
       return false;
     }
     // descending gain; ties go to the lower leaf index (splittable is leaf-
@@ -1118,7 +1135,8 @@ bool CUDASingleGPUTreeLearner::ArbitrateLevelBudget(const CUDATree* tree,
 }
 
 void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
-    const std::vector<int>& splittable, std::vector<HybridAppliedSplit>* applied) {
+    const std::vector<int>& splittable, std::vector<HybridAppliedSplit>* applied,
+    const bool final_level) {
   // one launch per kernel family for the whole level: batched tree-structure
   // update (CUDATree::SplitBatch) + batched partition (SplitLevelBatched);
   // right children take consecutive leaf indices exactly as the per-split
@@ -1179,8 +1197,45 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
   // The data partition still applies EVERYTHING through the batched arena
   // path below.
   {
+    // Level-batched categorical bitset construction: build every categorical
+    // split's bitsets + lengths with ONE kernel and ONE readback, then record
+    // splits in level order (the per-split construction did ~6 launches and 2
+    // blocking readbacks per categorical split -- hundreds per deep tree).
+    host_batch_cat_infos_.clear();
+    host_batch_cat_feats_.clear();
+    for (size_t k = 0; k < host_apply_split_inputs_.size(); ++k) {
+      const CUDAHybridApplySplitInput& in = host_apply_split_inputs_[k];
+      if (in.num_cat_threshold > 0) {
+        host_batch_cat_infos_.push_back(in.best_split_info);
+        host_batch_cat_feats_.push_back(in.split_feature);
+      }
+    }
+    const int num_cat_splits = static_cast<int>(host_batch_cat_infos_.size());
+    if (num_cat_splits > 0) {
+      const size_t needed_real = static_cast<size_t>(num_cat_splits) * batch_cat_bitset_stride_;
+      const size_t needed_inner = static_cast<size_t>(num_cat_splits) * batch_cat_bitset_inner_stride_;
+      if (cuda_batch_cat_bitset_.Size() < needed_real) {
+        cuda_batch_cat_bitset_.Resize(needed_real);
+        cuda_batch_cat_bitset_inner_.Resize(needed_inner);
+      }
+      if (cuda_batch_cat_infos_.Size() < static_cast<size_t>(num_cat_splits)) {
+        cuda_batch_cat_infos_.Resize(num_cat_splits);
+        cuda_batch_cat_feats_.Resize(num_cat_splits);
+        cuda_batch_cat_lens_.Resize(2 * static_cast<size_t>(num_cat_splits));
+      }
+      CopyFromHostToCUDADevice<const CUDASplitInfo*>(cuda_batch_cat_infos_.RawData(),
+        host_batch_cat_infos_.data(), num_cat_splits, __FILE__, __LINE__);
+      CopyFromHostToCUDADevice<int>(cuda_batch_cat_feats_.RawData(),
+        host_batch_cat_feats_.data(), num_cat_splits, __FILE__, __LINE__);
+      LaunchBatchConstructCatBitsetsKernel(num_cat_splits);
+      host_batch_cat_lens_.resize(2 * static_cast<size_t>(num_cat_splits));
+      CopyFromCUDADeviceToHost<uint64_t>(host_batch_cat_lens_.data(),
+        cuda_batch_cat_lens_.RawData(), 2 * static_cast<size_t>(num_cat_splits),
+        __FILE__, __LINE__);
+    }
     std::vector<CUDATreeBatchSplit> chunk;
     chunk.reserve(host_tree_batch_splits_.size());
+    int cat_index = 0;
     for (size_t k = 0; k < host_tree_batch_splits_.size(); ++k) {
       const CUDAHybridApplySplitInput& in = host_apply_split_inputs_[k];
       if (in.num_cat_threshold > 0) {
@@ -1191,16 +1246,19 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
         const int inner_feature = in.split_feature;
         CHECK_GE(inner_feature, 0);
         CHECK_LT(inner_feature, train_data_->num_features());
-        num_cat_threshold_ = in.num_cat_threshold;
-        ConstructBitsetForCategoricalSplit(in.best_split_info);
         const int right = tree->SplitCategorical(
             in.left_leaf_index,
             train_data_->RealFeatureIndex(inner_feature),
             train_data_->FeatureBinMapper(inner_feature)->missing_type(),
             in.best_split_info,
-            cuda_bitset_, cuda_bitset_len_,
-            cuda_bitset_inner_, cuda_bitset_inner_len_);
+            cuda_batch_cat_bitset_.RawData() +
+              static_cast<size_t>(cat_index) * batch_cat_bitset_stride_,
+            static_cast<size_t>(host_batch_cat_lens_[2 * cat_index]),
+            cuda_batch_cat_bitset_inner_.RawData() +
+              static_cast<size_t>(cat_index) * batch_cat_bitset_inner_stride_,
+            static_cast<size_t>(host_batch_cat_lens_[2 * cat_index + 1]));
         CHECK_EQ(right, in.right_leaf_index);
+        ++cat_index;
       } else {
         chunk.push_back(host_tree_batch_splits_[k]);
       }
@@ -1209,7 +1267,34 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
       tree->SplitBatch(chunk);
     }
   }
-  cuda_data_partition_->SplitLevelBatched(host_apply_split_inputs_);
+  cuda_data_partition_->SplitLevelBatched(host_apply_split_inputs_, final_level);
+  if (final_level) {
+    // this level's children are never searched (the level is known final), so
+    // their device leaf-cache slots still hold stale entries from earlier
+    // occupants of the same indices; invalidate them so the leaf-wise tail's
+    // FindBestFromAllSplits cannot resurrect a stale candidate
+    std::vector<int> children;
+    children.reserve(2 * host_apply_split_inputs_.size());
+    for (const CUDAHybridApplySplitInput& in : host_apply_split_inputs_) {
+      children.push_back(in.left_leaf_index);
+      children.push_back(in.right_leaf_index);
+    }
+    cuda_best_split_finder_->InvalidateLeafCandidates(children);
+    // the final level's split-inner wrote the map for every row it moved;
+    // the tree-end materialize only needs the leaves NOT split at this level
+    hybrid_map_final_written_ = true;
+    hybrid_map_residual_leaves_.clear();
+    std::vector<bool> covered(tree->num_leaves(), false);
+    for (const CUDAHybridApplySplitInput& in : host_apply_split_inputs_) {
+      covered[in.left_leaf_index] = true;
+      covered[in.right_leaf_index] = true;
+    }
+    for (int leaf = 0; leaf < tree->num_leaves(); ++leaf) {
+      if (!covered[leaf]) {
+        hybrid_map_residual_leaves_.push_back(leaf);
+      }
+    }
+  }
 }
 
 void CUDASingleGPUTreeLearner::FinishLevelBookkeeping(
@@ -1350,7 +1435,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
     // back once for the whole level below (FinishSplitBatch synchronizes)
     std::vector<HybridAppliedSplit> applied;
     if (use_batched_level_apply) {
-      ApplyLevelBatched(tree, splittable, &applied);
+      ApplyLevelBatched(tree, splittable, &applied, final_partial_level);
     } else {
       applied.reserve(splittable.size());
       size_t slot_id = 0;
@@ -1453,7 +1538,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefixOneSync(CUDATree* tree) {
       // already has a valid cached best-split candidate
       break;
     }
-    ApplyLevelBatched(tree, splittable, &applied);
+    ApplyLevelBatched(tree, splittable, &applied, final_partial_level);
     if (final_partial_level) {
       // the tree is full and every child sits at max_depth: nothing is left to
       // search, so read the apply info back immediately and stop
@@ -2797,8 +2882,15 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     // map once from the final leaf windows before any tree-end consumer
     // (AddPredictionToScore / refit stats / linear trees) reads it. The classic
     // tail splits above kept their inline updates, which this pass subsumes.
-    cuda_data_partition_->MaterializeHybridLeafMap(tree->num_leaves());
+    // When the final level's split-inner already wrote the map inline
+    // (final_partial_level), only earlier-finalized leaves remain.
+    if (hybrid_map_final_written_) {
+      cuda_data_partition_->MaterializeHybridLeafMapSubset(hybrid_map_residual_leaves_);
+    } else {
+      cuda_data_partition_->MaterializeHybridLeafMap(tree->num_leaves());
+    }
   }
+  hybrid_map_final_written_ = false;
   if (config_->use_quantized_grad && config_->quant_train_renew_leaf) {
     global_timer.Start("CUDASingleGPUTreeLearner::RenewDiscretizedTreeLeaves");
     RenewDiscretizedTreeLeaves(tree.get());
@@ -3282,6 +3374,8 @@ void CUDASingleGPUTreeLearner::AllocateBitset() {
     // template argument deduction failed to compile on Windows even though it worked on Linux.
     const size_t cuda_bitset_max_size = std::max(static_cast<size_t>((max_cat_value + 31) / 32), static_cast<size_t>(1));
     const size_t cuda_bitset_inner_max_size = std::max(static_cast<size_t>((max_cat_num_bin + 31) / 32), static_cast<size_t>(1));
+    batch_cat_bitset_stride_ = cuda_bitset_max_size;
+    batch_cat_bitset_inner_stride_ = cuda_bitset_inner_max_size;
     AllocateCUDAMemory<uint32_t>(&cuda_bitset_, cuda_bitset_max_size, __FILE__, __LINE__);
     AllocateCUDAMemory<uint32_t>(&cuda_bitset_inner_, cuda_bitset_inner_max_size, __FILE__, __LINE__);
     const int max_cat_in_split = std::min(config_->max_cat_threshold, max_cat_num_bin / 2);

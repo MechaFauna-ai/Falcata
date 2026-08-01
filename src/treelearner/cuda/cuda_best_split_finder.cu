@@ -3483,6 +3483,30 @@ void CUDABestSplitFinder::LaunchSyncBestSplitForLeafKernel(
   }
 }
 
+__global__ void InvalidateLeafCandidatesKernel(
+  const int* leaves, const int num, CUDASplitInfo* cuda_leaf_best_split_info) {
+  const int i = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (i < num) {
+    cuda_leaf_best_split_info[leaves[i]].is_valid = false;
+    cuda_leaf_best_split_info[leaves[i]].gain = kMinScore;
+  }
+}
+
+void CUDABestSplitFinder::InvalidateLeafCandidates(const std::vector<int>& leaves) {
+  if (leaves.empty()) {
+    return;
+  }
+  if (cuda_invalidate_leaves_.Size() < leaves.size()) {
+    cuda_invalidate_leaves_.Resize(leaves.size());
+  }
+  CopyFromHostToCUDADevice<int>(cuda_invalidate_leaves_.RawData(), leaves.data(),
+                                leaves.size(), __FILE__, __LINE__);
+  const int num = static_cast<int>(leaves.size());
+  InvalidateLeafCandidatesKernel<<<(num + 255) / 256, 256>>>(
+    cuda_invalidate_leaves_.RawDataReadOnly(), num, cuda_leaf_best_split_info_.RawData());
+  SynchronizeCUDADevice(__FILE__, __LINE__);
+}
+
 __global__ void FindBestFromAllSplitsKernel(const int cur_num_leaves,
   CUDASplitInfo* cuda_leaf_best_split_info,
   int* cuda_best_split_info_buffer) {
