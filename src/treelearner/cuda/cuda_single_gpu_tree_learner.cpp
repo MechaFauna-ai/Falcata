@@ -2128,6 +2128,7 @@ int CUDASingleGPUTreeLearner::SelectiveTieBreak(const std::vector<int>& tied_cla
 }
 
 int CUDASingleGPUTreeLearner::RunSelectiveLevel() {
+  const auto sim_t0 = std::chrono::steady_clock::now();
   const int budget = config_->num_leaves - 1;
   // ---- 1. greedy simulation over live applied splits + the current frontier.
   // Exactly the classic leaf-wise selection: repeatedly take the max-gain
@@ -2334,6 +2335,8 @@ int CUDASingleGPUTreeLearner::RunSelectiveLevel() {
   sel_stat_applied_ += static_cast<int64_t>(sel_level_apply_.size());
   sel_stat_displaced_ += num_displaced;
   ++sel_stat_levels_;
+  sel_stat_sim_ns_ += std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now() - sim_t0).count();
   return static_cast<int>(sel_level_apply_.size());
 }
 
@@ -2554,11 +2557,12 @@ void CUDASingleGPUTreeLearner::SelectiveFinalize(CUDATree* tree) {
   const bool hybrid_debug = FalcataDebug().debug;
   if (hybrid_debug) {
     // stderr (not the logger): churn statistics must be visible under verbose=-1
-    fprintf(stderr, "[selective] trees=%" PRId64 " leaves=%d cumulative: applied=%" PRId64 " displaced=%" PRId64 " levels=%" PRId64 "\n",
+    fprintf(stderr, "[selective] trees=%" PRId64 " leaves=%d cumulative: applied=%" PRId64 " displaced=%" PRId64 " levels=%" PRId64 " sim_ms=%.1f\n",
             static_cast<int64_t>(sel_stat_trees_), final_num_leaves,
             static_cast<int64_t>(sel_stat_applied_),
             static_cast<int64_t>(sel_stat_displaced_),
-            static_cast<int64_t>(sel_stat_levels_));
+            static_cast<int64_t>(sel_stat_levels_),
+            sel_stat_sim_ns_ * 1e-6);
   }
 }
 

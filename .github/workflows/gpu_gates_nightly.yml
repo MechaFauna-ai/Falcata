@@ -35,6 +35,8 @@ jobs:
         run: bash tests/gates/ci_build.sh
       - name: Lattice with runtime self-verification (FALCATA_VERIFY=1)
         run: FALCATA_VERIFY=1 .gates-venv/bin/python tests/gates/lattice.py --check
+      - name: Selective-growth equivalence (wide)
+        run: .gates-venv/bin/python tests/gates/selective_equivalence.py --seeds 32 --rounds 30
       - name: Fuzz (seeded by date; corpus reruns first)
         run: .gates-venv/bin/python tests/gates/fuzz.py --minutes 45
       - name: Full-scale fixedpoint tree-emission gate (needs ~20GB free VRAM)

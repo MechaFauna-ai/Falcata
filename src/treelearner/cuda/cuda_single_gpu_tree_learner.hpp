@@ -524,6 +524,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   int64_t sel_stat_displaced_ = 0;
   int64_t sel_stat_levels_ = 0;
   int64_t sel_stat_trees_ = 0;
+  int64_t sel_stat_sim_ns_ = 0;
   // reusable device slab for CUDATree's per-tree arrays (see CUDATree ctor)
   CUDAVector<uint8_t> cuda_tree_pool_buffer_;
   // whether BeforeTrain deferred the root-sum readback (single-sync flow); the
