@@ -420,6 +420,19 @@ the one-sync prefix admits categorical datasets. Official harness numbers
 | shallow | **18.6s (-18.4%)** | 20.2s | 22.8s | 34.6s |
 | deep | **33.2s (-24.2%)** | 36.0s | 43.8s | 152.9s |
 
+Time-to-quality (report/aircat_time_to_quality.png in the bench workspace;
+curve cells + extended falcata runs): falcata-stoch rides the top envelope at
+small budgets (shallow @10s: 0.8224 vs xgboost 0.8206 vs lightgbm 0.8072;
+deep @33s: 0.8675 vs 0.8661 vs 0.8565) and at large budgets it passes every
+competitor's TERMINAL quality -- deep 0.8852 @154s vs lightgbm's 0.8837
+there, 0.8873 @210s beyond lightgbm's 0.8863 endpoint; shallow 0.8541 @72s
+vs their 0.850/0.845 bests. In a narrow band around xgboost's own endpoint
+it is tied-to-slightly-ahead (within ~0.004) before its curve stops. The
+upstream-lightgbm AUC outlier at fixed rounds (investigated 2026-08-02) is
+its CUDA deviating from its own CPU spec (inflated split gains, first-tree
+divergence analysis; our engine matches lightgbm-CPU node for node) -- at
+equal wall time the outlier disappears.
+
 ---
 
 *Footnote on the 2026-07-30 ablation snapshot: the numerai-deep
