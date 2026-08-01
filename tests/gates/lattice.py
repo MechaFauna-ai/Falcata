@@ -216,14 +216,24 @@ def build_cells():
         rounds=50,
         fingerprint=False,
     )
-    # categorical: CUDA quantized training with categorical features is
-    # unsupported (library rejects it), so this path is guarded non-quant
+    # categorical, non-quant: hybrid-vs-classic equivalence guard
     cell(
         "categorical/nonquant",
         "categorical",
         {"quant_mode": "none"},
         rounds=50,
         fingerprint=False,
+    )
+    # categorical, quantized (supported since b235de83): fingerprint-locks the
+    # quant-categorical finder (reader-unpacked integer histograms + packed
+    # child totals) and the batched-level categorical kernels
+    cell("categorical/quant", "categorical", rounds=50)
+    # deep variant: selective (grow-then-prune) flow with categorical replay
+    cell(
+        "categorical/quant-deep",
+        "categorical",
+        {"num_leaves": 63, "max_depth": -1},
+        rounds=25,
     )
 
     ids = [c["id"] for c in cells]

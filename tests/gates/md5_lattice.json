@@ -9,6 +9,16 @@
    "metric": 1.470012,
    "metric_name": "rmse"
   },
+  "categorical/quant": {
+   "md5": "e79ee6bfde527beb3f569860558aa17a",
+   "metric": 1.448241,
+   "metric_name": "rmse"
+  },
+  "categorical/quant-deep": {
+   "md5": "1760e17d5649516d8ea4dffb8fca4734",
+   "metric": 2.579622,
+   "metric_name": "rmse"
+  },
   "dense/fixedpoint": {
    "md5": "1d7ad5f297ee063cb50150a25bfdb10e",
    "metric": 2.072014,
