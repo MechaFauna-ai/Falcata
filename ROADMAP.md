@@ -115,6 +115,16 @@ figures from the profiles in the PR discussions.
     `python -m falcata convert`. Conversion is LOSSLESS by default (--drop-stats
     / --drop-diagnostics to shrink), because converting an existing artifact
     must not silently cost it pred_contrib and gain importance.
+  - M4 LANDED 2026-08-02: falcata.from_xgboost() converts XGBoost gbtree models
+    (reg:squarederror, binary:logistic, reg:logistic, binary:logitraw,
+    multi:softprob/softmax, count:poisson) from a Booster, sklearn wrapper,
+    .json path or parsed dict. Parity vs XGBoost ~2e-7 (float32 rounding) on
+    all objectives incl. missing values; gblinear, native categorical splits
+    and unsupported objectives refuse explicitly. Two conversion subtleties are
+    load-bearing: thresholds must be recovered THROUGH float32 (XGBoost's JSON
+    stores the shortest decimal round-tripping a float32, and parsing it as
+    float64 reroutes rows in the gap), and multiclass base_score is per-class
+    (softmax is only shift-invariant under a uniform shift).
   - Pickle flips to FALB only with an escape hatch (falcata.set_pickle_format /
     env var) and __setstate__ accepts text-payload pickles forever. New pickles
     are unreadable by stock lightgbm and older Falcata by design; numerai prod
