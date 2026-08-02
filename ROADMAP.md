@@ -54,8 +54,14 @@ figures from the profiles in the PR discussions.
 
 ## Serialization
 
-- FALB binary model format -- plan in docs/design/binary-model-format-plan.md
-  (numerai 50k-tree reference: 657 MB text -> ~21 MB f64 bit-exact). Adopted with
+- FALB binary model format -- plan in docs/design/binary-model-format-plan.md.
+  M1 LANDED 2026-08-02 (2ccc6aa2) and MEASURED on a real numerai production
+  artifact (45k trees, 3555 features): 471.6 MB text -> 65.5 MB core (7.2x;
+  gzip -6 of the text is 148 MB, so 2.3x better than gzip), predictions
+  bit-identical, load 0.188s -> 0.063s (3.0x). Not the 31x originally projected
+  -- that assumed a 31-leaf model with far more verbose text per node; see the
+  measured table at the top of the plan. leaf_value f64 is 54.8% of the file
+  and is the only remaining lever (f32 leaves trade exactness). Adopted with
   the following amendments from the 2026-08-02 review; implement M1/M2 first.
   - Reserve a per-model ``leaf_dim`` in the v1 leaf-value layout (leaf_value is
     [num_leaves x leaf_dim]); writer emits dim=1 until vector-leaf multi-target

@@ -10,6 +10,33 @@
 
 ## 1. Motivation (measured, real production model)
 
+> **M1 measured on a real artifact (2026-08-02).** numerai production model
+> `target_jasper_60_11_...`: 45,000 trees, 3555 features, ~100 leaves/tree.
+>
+> | representation | size | vs text |
+> |---|---|---|
+> | model text | 471.6 MB | 1.0x |
+> | gzip -6 text | 148.1 MB | 3.2x |
+> | **FALB core (M1, f64 leaves, bit-exact)** | **65.5 MB** | **7.2x** |
+> | FALB + structural stats + diagnostics | 226.1 MB | 2.1x |
+>
+> Predictions are BIT-IDENTICAL to the text-loaded model across all 3555
+> features. Load: 0.188s text -> 0.063s FALB (**3.0x**).
+>
+> This is 7.2x, not the 31x estimated below. The estimate assumed a 31-leaf
+> model whose text ran ~215 bytes per node; this real artifact has ~100 leaves
+> per tree and a text that is already ~53 bytes per node, so there was less
+> ASCII to reclaim. The 31x line below is kept as the original (unverified)
+> projection -- treat 7.2x as the measured figure.
+>
+> Where the 65.5 MB goes: **leaf_value f64 is 54.8%** (4.49M leaves x 8B) --
+> the single remaining lever, and it is the one that costs exactness (f32
+> leaves would save ~18 MB for ~1e-7 relative error). The threshold dictionary
+> did its job: 4.45M thresholds encode as 4.4 MB of indices plus **94.8 KB** of
+> dictionary (11.8k distinct doubles across all 45k trees), where raw f64 would
+> have been 35.6 MB.
+
+
 50k-tree numerai model, 3555 features, 31 leaves/tree:
 
 | representation | size | note |
