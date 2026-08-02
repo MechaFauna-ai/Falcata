@@ -78,15 +78,21 @@ enum DType : uint32_t {
 };
 
 enum Codec : uint32_t {
-  kCodecRaw = 0,  // default: mmap-able, O(1) tree access
-  kCodecZstd = 1,  // reserved for M2
+  kCodecRaw = 0,   // mmap-able, O(1) tree access
+  kCodecZstd = 1,  // RESERVED: never written, readers reject it
+  kCodecZlib = 2,  // default: space is the point for an archived model
 };
 
 struct SectionEntry {
   uint32_t id;
   uint32_t dtype;
   uint32_t codec;
-  uint32_t reserved;
+  /*! \brief byte-plane shuffle item size (0/1 = none). Splitting an array of
+   *  N-byte items into N planes of like-significance bytes makes the
+   *  high-order bytes near-constant, which is what the entropy coder can
+   *  actually exploit: measured on a real 45k-tree model it takes the whole
+   *  core file from 49.5 MB to 45.6 MB. */
+  uint32_t shuffle;
   uint64_t offset;      // from file start
   uint64_t stored_len;  // bytes in file
   uint64_t raw_len;     // bytes after decode (== stored_len for kCodecRaw)
@@ -221,6 +227,24 @@ inline uint32_t NarrowestUnsigned(uint64_t max_value) {
   if (max_value <= UINT16_MAX) return kDTypeU16;
   if (max_value <= UINT32_MAX) return kDTypeU32;
   return kDTypeU64;
+}
+
+/*! \brief split `count` items of `item_size` bytes into byte planes. */
+inline std::vector<char> ShuffleBytes(const char* src, size_t count, size_t item_size) {
+  std::vector<char> out(count * item_size);
+  for (size_t b = 0; b < item_size; ++b) {
+    char* dst = out.data() + b * count;
+    for (size_t i = 0; i < count; ++i) dst[i] = src[i * item_size + b];
+  }
+  return out;
+}
+
+/*! \brief inverse of ShuffleBytes. */
+inline void UnshuffleBytes(const char* src, size_t count, size_t item_size, char* dst) {
+  for (size_t b = 0; b < item_size; ++b) {
+    const char* plane = src + b * count;
+    for (size_t i = 0; i < count; ++i) dst[i * item_size + b] = plane[i];
+  }
 }
 
 struct TreeIO;  // friend of Tree; defined in gbdt_model_binary.cpp

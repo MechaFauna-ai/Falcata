@@ -61,14 +61,15 @@ def save_text(booster):
     return buf.value.decode()
 
 
-def save_falb(booster, stats=1, diag=1):
+def save_falb(booster, stats=1, diag=1, f32=0, level=6):
+    args = (ctypes.c_int(stats), ctypes.c_int(diag), ctypes.c_int(f32),
+            ctypes.c_int(level))
     n = ctypes.c_int64(0)
-    LIB.FLC_BoosterSaveModelToBinary(booster, 0, -1, 0, ctypes.c_int(stats),
-                                     ctypes.c_int(diag), ctypes.c_int64(0),
+    LIB.FLC_BoosterSaveModelToBinary(booster, 0, -1, 0, *args, ctypes.c_int64(0),
                                      ctypes.byref(n), ctypes.c_char_p(None))
     buf = ctypes.create_string_buffer(n.value)
-    check(LIB.FLC_BoosterSaveModelToBinary(booster, 0, -1, 0, ctypes.c_int(stats),
-                                           ctypes.c_int(diag), n, ctypes.byref(n), buf))
+    check(LIB.FLC_BoosterSaveModelToBinary(booster, 0, -1, 0, *args, n,
+                                           ctypes.byref(n), buf))
     return buf.raw[:n.value]
 
 
@@ -126,14 +127,24 @@ for name, kw, params in CASES:
     text2 = save_text(b2)
     p1, p2 = predict(booster, X), predict(b2, X)
 
-    ok_text = text == text2
+    # raw (uncompressed, mmap-able) must round-trip identically too
+    raw = save_falb(booster, level=0)
+    text_raw = save_text(load_falb(raw))
+    ok_raw = text_raw == text
+    # f32 leaves are opt-in lossy: structure exact, predictions close
+    f32blob = save_falb(booster, 0, 0, f32=1)
+    p_f32 = predict(load_falb(f32blob), X)
+    f32_rel = float(np.max(np.abs(p_f32 - p1)) / max(1e-12, np.max(np.abs(p1))))
+
+    ok_text = text == text2 and ok_raw
     maxdiff = float(np.max(np.abs(p1 - p2)))
     ok_pred = maxdiff == 0.0
     ratio = len(text) / len(blob)
     status = "PASS" if (ok_text and ok_pred) else "FAIL"
-    print(f"{name:12s} text={len(text):>9,}B falb={len(blob):>9,}B ({ratio:4.1f}x)  "
+    print(f"{name:12s} text={len(text):>9,}B falb={len(blob):>9,}B ({ratio:4.1f}x) "
+          f"raw={len(raw):>9,}B f32core={len(f32blob):>8,}B  "
           f"text_roundtrip={'exact' if ok_text else 'DIFFERS'}  "
-          f"pred_maxdiff={maxdiff:.1e}  {status}")
+          f"pred_maxdiff={maxdiff:.1e} f32rel={f32_rel:.1e}  {status}")
     if not (ok_text and ok_pred):
         fails += 1
         if not ok_text:

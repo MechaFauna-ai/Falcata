@@ -10,44 +10,40 @@
 
 ## 1. Motivation (measured, real production model)
 
-> **M1 measured on a real artifact (2026-08-02).** numerai production model
-> `target_jasper_60_11_...`: 45,000 trees, 3555 features, ~100 leaves/tree.
+> **M1 + compression, measured on a real artifact (2026-08-02).** numerai
+> production model `target_jasper_60_11_...`: 45,000 trees, 3555 features,
+> ~100 leaves/tree.
 >
-> | representation | size | vs text |
-> |---|---|---|
-> | model text | 471.6 MB | 1.0x |
-> | gzip -6 text | 148.1 MB | 3.2x |
-> | **FALB core (M1, f64 leaves, bit-exact)** | **65.5 MB** | **7.2x** |
-> | FALB + structural stats + diagnostics | 226.1 MB | 2.1x |
+> | representation | size | vs text | exact? |
+> |---|---|---|---|
+> | model text | 471.6 MB | 1.0x | - |
+> | gzip -6 text | 148.1 MB | 3.2x | yes |
+> | FALB raw (mmap-able) | 65.5 MB | 7.2x | **bit-exact** |
+> | **FALB zlib-6 (default)** | **45.6 MB** | **10.3x** | **bit-exact** |
+> | FALB zlib-9 | 45.4 MB | 10.4x | bit-exact |
+> | FALB zlib-6 + f32 leaves (opt-in) | 29.6 MB | 15.9x | ~2.7e-08 rel |
+> | FALB zlib-6 + stats + diagnostics | 133.1 MB | 3.5x | bit-exact |
 >
-> Predictions are BIT-IDENTICAL to the text-loaded model across all 3555
-> features. Load: 0.188s text -> 0.063s FALB (**3.0x**).
+> Predictions from the default (zlib, f64) are BIT-IDENTICAL to the text model
+> across all 3555 features. Load 0.188s text -> 0.160s. zlib-9 buys 0.2 MB for
+> 8x the save time, so 6 is the default.
 >
-> This is 7.2x, not the 31x estimated below. The estimate assumed a 31-leaf
-> model whose text ran ~215 bytes per node; this real artifact has ~100 leaves
-> per tree and a text that is already ~53 bytes per node, so there was less
-> ASCII to reclaim. The 31x line below is kept as the original (unverified)
-> projection -- treat 7.2x as the measured figure.
+> The 31x originally projected here is not reached losslessly: that estimate
+> assumed a 31-leaf model whose text ran ~215 bytes per node, and this real
+> artifact has ~100 leaves/tree with text already at ~53 bytes/node. 10.3x
+> lossless (15.9x with f32 leaves) is the measured figure.
 >
-> Where the 65.5 MB goes: **leaf_value f64 is 54.8%** (4.49M leaves x 8B) --
-> the single remaining lever, and it is the one that costs exactness (f32
-> leaves would save ~18 MB for ~1e-7 relative error). The threshold dictionary
-> did its job: 4.45M thresholds encode as 4.4 MB of indices plus **94.8 KB** of
-> dictionary (11.8k distinct doubles across all 45k trees), where raw f64 would
-> have been 35.6 MB.
-
-
-50k-tree numerai model, 3555 features, 31 leaves/tree:
-
-| representation | size | note |
-|---|---|---|
-| pickled Booster | 656.8 MB | pickle wraps `model_to_string()` — byte-identical to text |
-| model text | 656.8 MB | every double as ~19 ASCII chars |
-| gzip -6 text | 206.5 MB | 3.2× |
-| **FALB (this plan), f64 bit-exact** | **~21 MB** | ~31× |
-| **FALB, f32 leaves + zstd** | **~13–15 MB** | ~45× |
-
-Text field breakdown of those 657 MB: **45% is training diagnostics never read at predict time** (`internal_value` 11.7%, `split_gain` 7.9%, `internal_weight` 7.0%, `internal_count` 6.6%, `leaf_weight` 5.8%, `leaf_count` 5.8%); the remaining 55% is ASCII numbers with small natural dtypes. Load time is the second prize: text load = `atof` on ~40M numbers (seconds per model); binary load = read + memcpy (sub-second, mmap-friendly).
+> Where the bytes are, and why the format is shaped as it is:
+> - **leaf_value f64 was 54.8% of the raw file and is incompressible** (1.15x
+>   even byte-shuffled -- f64 mantissas are high entropy). It is the only
+>   reason f32 leaves exist as an option, and the only lever that trades
+>   exactness for space.
+> - everything else compresses well once byte-plane shuffled: threshold
+>   indices 3.6x, decision types 4.3x, tree index 11x. The shuffle alone is
+>   worth ~4 MB here (49.5 -> 45.6).
+> - the **threshold dictionary** did its job: 4.45M thresholds encode as 4.4 MB
+>   of indices plus **94.8 KB** of dictionary (11.8k distinct doubles across all
+>   45k trees), where raw f64 would have been 35.6 MB.
 
 ## 2. Requirements
 

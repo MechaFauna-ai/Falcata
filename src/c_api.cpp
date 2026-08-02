@@ -826,10 +826,12 @@ class Booster {
 
   std::string SaveModelToBinary(int start_iteration, int num_iteration,
                                 int feature_importance_type, bool with_stats,
-                                bool with_diagnostics) const {
+                                bool with_diagnostics, bool f32_leaves,
+                                int compress_level) const {
     return boosting_->SaveModelToBinary(start_iteration, num_iteration,
                                         feature_importance_type, with_stats,
-                                        with_diagnostics);
+                                        with_diagnostics, f32_leaves,
+                                        compress_level);
   }
 
   void LoadModelFromBinary(const char* buffer, size_t len) {
@@ -3079,6 +3081,8 @@ int FLC_BoosterSaveModelToBinary(BoosterHandle handle,
                                  int feature_importance_type,
                                  int with_stats,
                                  int with_diagnostics,
+                                 int f32_leaves,
+                                 int compress_level,
                                  int64_t buffer_len,
                                  int64_t* out_len,
                                  char* out_buf) {
@@ -3086,7 +3090,7 @@ int FLC_BoosterSaveModelToBinary(BoosterHandle handle,
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);
   std::string model = ref_booster->SaveModelToBinary(
       start_iteration, num_iteration, feature_importance_type,
-      with_stats != 0, with_diagnostics != 0);
+      with_stats != 0, with_diagnostics != 0, f32_leaves != 0, compress_level);
   // binary payload: the length is exact, no NUL terminator
   *out_len = static_cast<int64_t>(model.size());
   if (*out_len <= buffer_len) {

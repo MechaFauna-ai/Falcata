@@ -1604,6 +1604,8 @@ FALCATA_C_EXPORT int FLC_BoosterSaveModelToString(BoosterHandle handle,
  * \param feature_importance_type Type of feature importance, can be ``C_API_FEATURE_IMPORTANCE_SPLIT`` or ``C_API_FEATURE_IMPORTANCE_GAIN``
  * \param with_stats Non-zero to include structural stats (leaf/internal counts and weights)
  * \param with_diagnostics Non-zero to include split_gain / internal_value
+ * \param f32_leaves Non-zero to store leaf values as f32 (LOSSY, ~6e-8 relative; f64 default keeps predictions bit-identical)
+ * \param compress_level zlib level 0-9; 0 leaves sections raw and mmap-able
  * \param buffer_len Buffer length; if ``buffer_len < out_len`` you should re-allocate and call again
  * \param[out] out_len Actual output length in bytes (binary, NOT NUL-terminated)
  * \param[out] out_buf Model bytes, should pre-allocate memory
@@ -1615,6 +1617,8 @@ FALCATA_C_EXPORT int FLC_BoosterSaveModelToBinary(BoosterHandle handle,
                                                   int feature_importance_type,
                                                   int with_stats,
                                                   int with_diagnostics,
+                                                  int f32_leaves,
+                                                  int compress_level,
                                                   int64_t buffer_len,
                                                   int64_t* out_len,
                                                   char* out_buf);

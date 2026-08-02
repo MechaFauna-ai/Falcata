@@ -485,6 +485,11 @@ if(USE_MPI)
   include_directories(${MPI_CXX_INCLUDE_PATH})
 endif()
 
+# zlib backs the FALB binary model format's compressed sections (space is the
+# point for an archived model); it is present on every supported platform and
+# is linked dynamically, so the redistributable wheels stay portable.
+find_package(ZLIB REQUIRED)
+
 set(
     FLC_SOURCES
       src/boosting/boosting.cpp
@@ -586,6 +591,7 @@ endif()
 add_library(falcata_objs OBJECT ${FLC_SOURCES})
 if(NOT __BUILD_FOR_R)
   target_link_libraries(falcata_objs PRIVATE nanoarrow_static)
+  target_link_libraries(falcata_objs PUBLIC ZLIB::ZLIB)
 endif()
 
 if(BUILD_CLI)
@@ -624,6 +630,7 @@ endif()
 # LightGBM headers include openmp, cuda, R etc. headers,
 # thus PUBLIC is required for building _falcata_swig target.
 target_link_libraries(_falcata PUBLIC falcata_capi_objs falcata_objs)
+target_link_libraries(_falcata PUBLIC ZLIB::ZLIB)
 
 if(MSVC AND NOT __BUILD_FOR_R)
   set_target_properties(_falcata PROPERTIES OUTPUT_NAME "lib_falcata")

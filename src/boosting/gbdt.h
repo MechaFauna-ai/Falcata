@@ -373,7 +373,8 @@ class GBDT : public GBDTBase {
   */
   std::string SaveModelToBinary(int start_iteration, int num_iterations,
                                 int feature_importance_type,
-                                bool with_stats, bool with_diagnostics) const override;
+                                bool with_stats, bool with_diagnostics,
+                                bool f32_leaves, int compress_level) const override;
 
   /*! \brief Load a FALB binary model. The buffer is treated as untrusted
   *          input: every offset and length is validated before use. */

@@ -232,7 +232,9 @@ class FALCATA_EXPORT Boosting {
   virtual std::string SaveModelToBinary(int /*start_iteration*/, int /*num_iterations*/,
                                         int /*feature_importance_type*/,
                                         bool /*with_stats*/,
-                                        bool /*with_diagnostics*/) const {
+                                        bool /*with_diagnostics*/,
+                                        bool /*f32_leaves*/,
+                                        int /*compress_level*/) const {
     Log::Fatal("FALB binary serialization is not implemented for this boosting type");
     return std::string();
   }
