@@ -9,7 +9,7 @@ from pathlib import Path
 # .basic is intentionally loaded as early as possible, to dlopen() lib_falcata.{dll,dylib,so}
 # and its dependencies as early as possible
 from .basic import Booster, Dataset, Sequence, get_pickle_format, register_logger, set_pickle_format
-from .importers import from_xgboost
+from .importers import from_catboost, from_xgboost
 from .callback import EarlyStopException, early_stopping, log_evaluation, record_evaluation, reset_parameter
 from .engine import CVBooster, cv, train
 
@@ -36,6 +36,7 @@ if _version_path.is_file():
     __version__ = _version_path.read_text(encoding="utf-8").strip()
 
 __all__ = [
+    "from_catboost",
     "from_xgboost",
     "get_pickle_format",
     "set_pickle_format",

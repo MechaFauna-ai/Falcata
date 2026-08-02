@@ -125,6 +125,13 @@ figures from the profiles in the PR discussions.
     stores the shortest decimal round-tripping a float32, and parsing it as
     float64 reroutes rows in the gap), and multiclass base_score is per-class
     (softmax is only shift-invariant under a uniform shift).
+  - M5 LANDED 2026-08-02: falcata.from_catboost() converts CatBoost models over
+    numeric features (RMSE, MAE, Quantile, Logloss, Poisson), unrolling the
+    oblivious trees into ordinary binary ones. Parity is exact to machine
+    precision (~1e-16) since CatBoost's JSON carries float64 borders. Refuses
+    multiclass, categorical/CTR features and non-oblivious grow policies. The
+    leaf-index bit order (LSB-first over the listed splits) and the
+    scale_and_bias convention were both determined by measurement, not docs.
   - Pickle flips to FALB only with an escape hatch (falcata.set_pickle_format /
     env var) and __setstate__ accepts text-payload pickles forever. New pickles
     are unreadable by stock lightgbm and older Falcata by design; numerai prod

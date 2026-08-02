@@ -53,8 +53,10 @@ jobs:
         run: |
           .gates-venv/bin/python tests/gates/falb_roundtrip.py
           .gates-venv/bin/python tests/gates/falb_python.py
-      - name: XGBoost import parity
-        run: .gates-venv/bin/python tests/gates/import_xgboost.py
+      - name: Foreign-model import parity (XGBoost, CatBoost)
+        run: |
+          .gates-venv/bin/python tests/gates/import_xgboost.py
+          .gates-venv/bin/python tests/gates/import_catboost.py
       - name: Selective-growth equivalence (vs classic leaf-wise)
         run: .gates-venv/bin/python tests/gates/selective_equivalence.py --seeds 8
       # Advisory on this box, never a failure: the GPU is shared with dev and

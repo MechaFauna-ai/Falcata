@@ -6,7 +6,8 @@ the GPU predictor. The point is to run one engine over models trained
 anywhere.
 
 Currently supported: XGBoost ``gbtree`` models with numeric splits
-(:func:`from_xgboost`).
+(:func:`from_xgboost`) and CatBoost models over numeric features
+(:func:`from_catboost`).
 
 The conversions here are exact, not approximate, and the two places where the
 engines genuinely disagree are handled explicitly rather than papered over:
@@ -43,7 +44,7 @@ import numpy as np
 
 from .basic import Booster
 
-__all__ = ["from_xgboost"]
+__all__ = ["from_catboost", "from_xgboost"]
 
 # LightGBM decision_type bits (see include/Falcata/tree.h)
 _CATEGORICAL_MASK = 1
@@ -354,3 +355,236 @@ def from_xgboost(model: Any, feature_names: Optional[List[str]] = None) -> Boost
     )
     text = header + "".join(chunks) + "end of trees\n"
     return Booster(model_str=text)
+
+
+# ---------------------------------------------------------------------------
+# CatBoost
+# ---------------------------------------------------------------------------
+
+def _catboost_json(model: Any) -> Dict[str, Any]:
+    """Get the model JSON from a CatBoost model, a path, or a parsed dict."""
+    if isinstance(model, dict):
+        return model
+    if isinstance(model, (str, Path)):
+        path = Path(model)
+        if path.suffix.lower() == ".json":
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        try:
+            import catboost  # noqa: PLC0415
+        except ImportError as exc:  # pragma: no cover
+            raise ImportError(
+                f"reading '{path.name}' needs catboost installed (only .json can "
+                "be parsed without it)"
+            ) from exc
+        loaded = catboost.CatBoost()
+        loaded.load_model(str(path))
+        model = loaded
+    if hasattr(model, "save_model"):
+        import tempfile  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = str(Path(tmp) / "model.json")
+            model.save_model(out, format="json")
+            with open(out, "r", encoding="utf-8") as f:
+                return json.load(f)
+    raise TypeError(f"cannot read a CatBoost model from {type(model)!r}")
+
+
+def _catboost_objective(raw: Dict[str, Any]) -> Tuple[str, Any]:
+    """(falcata objective string, leaf transform) for a CatBoost loss."""
+    info = raw.get("model_info", {}) or {}
+    params = info.get("params")
+    loss = ""
+    if isinstance(params, str):
+        try:
+            params = json.loads(params)
+        except ValueError:
+            params = {}
+    if isinstance(params, dict):
+        loss = str(
+            (params.get("loss_function") or {}).get("type")
+            if isinstance(params.get("loss_function"), dict)
+            else params.get("loss_function", "")
+        )
+    if loss in ("RMSE", "", "Quantile", "MAE", "LossFunctionChange"):
+        return "regression", None
+    if loss == "Logloss":
+        return "binary sigmoid:1", None
+    if loss == "Poisson":
+        return "poisson", None
+    raise ValueError(
+        f"CatBoost loss_function '{loss}' is not supported by from_catboost(); "
+        "supported: RMSE, MAE, Quantile, Logloss, Poisson"
+    )
+
+
+def _oblivious_to_text(splits: List[Dict[str, Any]], leaf_values: List[float],
+                       leaf_weights: Optional[List[float]], scale: float) -> str:
+    """One CatBoost oblivious (symmetric) tree -> a LightGBM text tree.
+
+    CatBoost picks a leaf by bits: ``leaf = sum((x[f_i] > border_i) << i)`` over
+    the splits in listed order. A perfect binary tree reproduces that exactly if
+    the ROOT tests the LAST split and each level down tests the next-lower one,
+    because then the left-to-right leaf position is the same bit number.
+
+    The split sense also lines up without adjusting the threshold: CatBoost
+    sends ``x > border`` to bit 1, and LightGBM sends ``x <= threshold`` left,
+    so bit 0 is the left child at threshold == border.
+    """
+    depth = len(splits)
+    n_leaf = 1 << depth
+    n_internal = n_leaf - 1
+    split_feature, threshold, decision_type = [], [], []
+    left_child, right_child = [], []
+    # level-order (BFS) numbering: node k at level L, children 2k+1 / 2k+2
+    for node in range(n_internal):
+        level = int(math.floor(math.log2(node + 1)))
+        sp = splits[depth - 1 - level]
+        split_feature.append(int(sp["float_feature_index"]))
+        threshold.append(float(np.float64(sp["border"])))
+        # NaN routing comes from the feature's nan_value_treatment, resolved by
+        # the caller into "nan_left"
+        decision_type.append((_MISSING_TYPE_NAN << 2)
+                             | (_DEFAULT_LEFT_MASK if sp.get("nan_left", True) else 0))
+        lc, rc = 2 * node + 1, 2 * node + 2
+        left_child.append(lc if lc < n_internal else ~(lc - n_internal))
+        right_child.append(rc if rc < n_internal else ~(rc - n_internal))
+    weights = leaf_weights or [0] * n_leaf
+
+    def arr(vals, fmt="{}"):
+        return " ".join(fmt.format(v) for v in vals)
+
+    return (
+        f"num_leaves={n_leaf}\n"
+        "num_cat=0\n"
+        f"split_feature={arr(split_feature)}\n"
+        f"split_gain={arr([0] * n_internal)}\n"
+        f"threshold={arr(threshold, '{:.17g}')}\n"
+        f"decision_type={arr(decision_type)}\n"
+        f"left_child={arr(left_child)}\n"
+        f"right_child={arr(right_child)}\n"
+        f"leaf_value={arr([v * scale for v in leaf_values], '{:.17g}')}\n"
+        f"leaf_weight={arr([0] * n_leaf)}\n"
+        f"leaf_count={arr([int(w) for w in weights])}\n"
+        f"internal_value={arr([0] * n_internal)}\n"
+        f"internal_weight={arr([0] * n_internal)}\n"
+        f"internal_count={arr([0] * n_internal)}\n"
+        "is_linear=0\n"
+        "shrinkage=1\n"
+    )
+
+
+def from_catboost(model: Any, feature_names: Optional[List[str]] = None) -> Booster:
+    """Convert a CatBoost model over numeric features into a Falcata Booster.
+
+    Parameters
+    ----------
+    model : catboost model, str, pathlib.Path or dict
+        A CatBoost estimator, a path to a saved model (``.json`` parses without
+        catboost installed; other formats need it), or a parsed model dict.
+    feature_names : list of str or None, optional (default=None)
+        Names for the converted model; defaults to CatBoost's own, else
+        ``Column_0 ...``.
+
+    Returns
+    -------
+    booster : Booster
+        A Falcata Booster predicting the same function as the source model.
+
+    Raises
+    ------
+    ValueError
+        For models this cannot represent exactly: categorical/CTR features,
+        multiclass, or a non-oblivious structure. It refuses rather than
+        approximating.
+
+    Notes
+    -----
+    CatBoost's symmetric trees are unrolled into ordinary binary trees, so the
+    converted model is larger in node count but predicts identically (verified
+    to ~1e-6 relative; see tests/gates/import_catboost.py).
+    """
+    raw = _catboost_json(model)
+    if "oblivious_trees" not in raw:
+        raise ValueError(
+            "only CatBoost models with oblivious (symmetric) trees can be "
+            "converted; this model has no 'oblivious_trees' section"
+        )
+    fi = raw.get("features_info", {}) or {}
+    for unsupported in ("categorical_features", "ctr_features", "ctrs",
+                        "text_features", "embedding_features"):
+        if fi.get(unsupported):
+            raise ValueError(
+                f"CatBoost models using {unsupported} are not supported by "
+                "from_catboost() (numeric features only)"
+            )
+    float_features = fi.get("float_features", []) or []
+    # NaN routing is a per-feature property in CatBoost, not per-split
+    nan_left: Dict[int, bool] = {}
+    for f in float_features:
+        treatment = str(f.get("nan_value_treatment", "AsIs"))
+        # AsFalse sends NaN to the 0 bit (left); AsTrue to the 1 bit (right)
+        nan_left[int(f["flat_feature_index"])] = treatment != "AsTrue"
+    num_feature = 1 + max(
+        [int(f["flat_feature_index"]) for f in float_features] or [-1]
+    )
+
+    objective, _ = _catboost_objective(raw)
+    scale_and_bias = raw.get("scale_and_bias") or [1.0, [0.0]]
+    scale = float(scale_and_bias[0])
+    bias_raw = scale_and_bias[1]
+    bias_list = list(bias_raw) if isinstance(bias_raw, (list, tuple)) else [bias_raw]
+    if len(bias_list) != 1:
+        raise ValueError("multiclass CatBoost models are not supported yet")
+    bias = float(bias_list[0])
+
+    trees = raw["oblivious_trees"]
+    bodies: List[str] = []
+    if bias != 0.0:
+        bodies.append(_constant_tree(bias))
+    for t in trees:
+        splits = list(t.get("splits") or [])
+        if not splits:
+            # a constant tree: CatBoost can emit depth-0 trees
+            vals = t["leaf_values"]
+            bodies.append(_constant_tree(float(vals[0]) * scale))
+            continue
+        for sp in splits:
+            if str(sp.get("split_type", "FloatFeature")) != "FloatFeature":
+                raise ValueError(
+                    f"CatBoost split_type '{sp.get('split_type')}' is not "
+                    "supported (numeric FloatFeature splits only)"
+                )
+            sp["nan_left"] = nan_left.get(int(sp["float_feature_index"]), True)
+        leaf_values = t["leaf_values"]
+        if len(leaf_values) != (1 << len(splits)):
+            raise ValueError(
+                f"expected {1 << len(splits)} leaves for a depth-{len(splits)} "
+                f"oblivious tree, got {len(leaf_values)} -- multiclass CatBoost "
+                "models are not supported yet"
+            )
+        bodies.append(_oblivious_to_text(splits, leaf_values, t.get("leaf_weights"), scale))
+
+    if feature_names is None:
+        names = [str(f.get("feature_id") or "") for f in float_features]
+        feature_names = (
+            names if all(names) and len(names) == num_feature
+            else [f"Column_{i}" for i in range(num_feature)]
+        )
+    feature_names = [str(n).replace(" ", "_") for n in feature_names]
+
+    chunks = [f"Tree={i}\n{body}\n" for i, body in enumerate(bodies)]
+    header = (
+        "tree\n"
+        "version=v4\n"
+        "num_class=1\n"
+        "num_tree_per_iteration=1\n"
+        "label_index=0\n"
+        f"max_feature_idx={num_feature - 1}\n"
+        f"objective={objective}\n"
+        f"feature_names={' '.join(feature_names)}\n"
+        f"feature_infos={' '.join(['none'] * num_feature)}\n"
+        f"tree_sizes={' '.join(str(len(c)) for c in chunks)}\n\n"
+    )
+    return Booster(model_str=header + "".join(chunks) + "end of trees\n")
