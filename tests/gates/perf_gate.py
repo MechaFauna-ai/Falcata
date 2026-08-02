@@ -70,10 +70,14 @@ def main():
     ap.add_argument("--baseline-file", default=str(DEFAULT_BASELINE))
     ap.add_argument("--warn-pct", type=float, default=10.0)
     ap.add_argument("--fail-pct", type=float, default=25.0)
+    ap.add_argument("--contended-pct", type=float, default=10.0,
+                    help="median cell elevation above which the whole run is "
+                         "treated as contention rather than regression")
     args = ap.parse_args()
-    global BASELINE_FILE, WARN_PCT, FAIL_PCT
+    global BASELINE_FILE, WARN_PCT, FAIL_PCT, CONTENDED_PCT
     BASELINE_FILE = Path(args.baseline_file).expanduser()
     WARN_PCT, FAIL_PCT = args.warn_pct, args.fail_pct
+    CONTENDED_PCT = args.contended_pct
 
     results = json.loads(Path(args.results).read_text())["results"]
     times = {
@@ -87,12 +91,35 @@ def main():
 
     pending_prev = set(history.get("_pending", []))
     failures, warnings, pending_now = [], [], []
+
+    # Is the whole MACHINE slow, or is one cell slow? This box is a shared
+    # dev/benchmark machine, and a busy GPU lifts every cell at once, while a
+    # real code regression moves the cells it touches and leaves the rest
+    # alone. So judge the run before judging the cells: if the median cell is
+    # meaningfully elevated, this is common-cause (contention), not a
+    # regression, and no individual cell's timing is trustworthy.
+    deltas = []
+    for cid, t in times.items():
+        past = history.get(cid, [])
+        if len(past) >= 3:
+            ref = statistics.median(past)
+            deltas.append((t - ref) / ref * 100.0)
+    median_delta = statistics.median(deltas) if deltas else 0.0
+    contended = median_delta > CONTENDED_PCT
+    if contended:
+        print(f"  NOTE run looks contended: median cell is {median_delta:+.0f}% "
+              f"vs baseline across {len(deltas)} tracked cells (threshold "
+              f"{CONTENDED_PCT:+.0f}%). Timings are not trustworthy -- reporting "
+              f"as warnings, not failures, and not recording a baseline.")
+
     for cid, t in sorted(times.items()):
         past = history.get(cid, [])
         if len(past) >= 3:
             ref = statistics.median(past)
             pct = (t - ref) / ref * 100.0
-            if pct > FAIL_PCT:
+            if pct > FAIL_PCT and contended:
+                warnings.append(f"{cid}: {t:.3f}s vs median {ref:.3f}s (+{pct:.0f}%) [contended run -- not counted]")
+            elif pct > FAIL_PCT:
                 if cid in pending_prev:
                     # This box doubles as a dev/benchmark machine, so a second
                     # slow run is NOT proof of a regression -- both runs can
@@ -127,10 +154,12 @@ def main():
 
     # persist the pending set even on non-record runs: consecutiveness is the
     # whole point (over-FAIL_PCT cells never enter the timing history itself)
-    history["_pending"] = sorted(pending_now)
+    # A contended run proves nothing, so it neither arms nor disarms the
+    # consecutive-run latch: keep whatever was pending before.
+    history["_pending"] = sorted(pending_prev if contended else pending_now)
     BASELINE_FILE.write_text(json.dumps(history, indent=1))
 
-    if args.record and not failures:
+    if args.record and not failures and not contended:
         for cid, t in times.items():
             if cid in pending_now:
                 continue  # never let a suspect timing poison the baseline
