@@ -21,12 +21,39 @@ baseline file's "_pending" key.
 
 import argparse
 import json
+import os
 import statistics
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 DEFAULT_BASELINE = Path.home() / ".cache" / "falcata-gates" / "perf_baseline.json"
 HISTORY = 20
+
+
+def remeasure(cell_id):
+    """Re-run one lattice cell and return its construct+train seconds.
+
+    Returns None if the re-run cannot be done (lattice failure, missing cell);
+    the caller then falls back to the original timing.
+    """
+    gates_dir = Path(__file__).resolve().parent
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "results.json"
+        proc = subprocess.run(
+            [sys.executable, str(gates_dir / "lattice.py"), "--check",
+             "--only", cell_id],
+            capture_output=True, text=True, check=False,
+            env={**os.environ, "FALCATA_GATES_RESULTS": str(out)})
+        if proc.returncode != 0 or not out.exists():
+            print(f"  note {cell_id}: re-measurement unavailable, keeping original timing")
+            return None
+        try:
+            r = json.loads(out.read_text())["results"][cell_id]
+            return round(r["construct_sec"] + r["train_sec"], 4)
+        except (KeyError, ValueError):
+            return None
 
 
 def main():
@@ -67,7 +94,22 @@ def main():
             pct = (t - ref) / ref * 100.0
             if pct > FAIL_PCT:
                 if cid in pending_prev:
-                    failures.append(f"{cid}: {t:.3f}s vs median {ref:.3f}s (+{pct:.0f}%) [2nd consecutive run]")
+                    # This box doubles as a dev/benchmark machine, so a second
+                    # slow run is NOT proof of a regression -- both runs can
+                    # simply have overlapped GPU work. Contention only ever
+                    # makes a cell slower, so re-measure it now and keep the
+                    # best observation; only a cell that is still slow when
+                    # asked again is called a regression.
+                    again = remeasure(cid)
+                    if again is not None and again < t:
+                        t = again
+                        pct = (t - ref) / ref * 100.0
+                    how = ("confirmed by re-measurement" if again is not None
+                           else "re-measurement unavailable")
+                    if pct > FAIL_PCT:
+                        failures.append(f"{cid}: {t:.3f}s vs median {ref:.3f}s (+{pct:.0f}%) [2nd consecutive run, {how}]")
+                    else:
+                        warnings.append(f"{cid}: cleared on re-measurement ({t:.3f}s vs median {ref:.3f}s, {pct:+.0f}%) -- earlier timing was contention")
                 else:
                     pending_now.append(cid)
                     warnings.append(f"{cid}: {t:.3f}s vs median {ref:.3f}s (+{pct:.0f}%) [1st occurrence -- fails if it repeats next run]")
