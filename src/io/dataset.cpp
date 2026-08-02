@@ -1315,11 +1315,17 @@ void Dataset::CopySubrowToDevice(const Dataset* fullset,
 
   #ifdef USE_CUDA
   if (device_type_ == std::string("cuda")) {
-    if (cuda_column_data_ == nullptr) {
-      cuda_column_data_.reset(new CUDAColumnData(num_used_indices, gpu_device_id_));
-      metadata_.CreateCUDAMetadata(gpu_device_id_);
-    }
-    cuda_column_data_->CopySubrow(fullset->cuda_column_data(), used_indices, num_used_indices);
+    // Build this subset's device columns from the HOST-side copy that
+    // CopySubrowHostPart just produced, NOT from `fullset`'s device buffers.
+    // This is the MULTI-GPU path: `fullset` lives on another GPU, and a kernel
+    // dereferencing a foreign device pointer is an illegal memory access
+    // unless peer access is enabled -- nothing in this codebase enables it,
+    // and the driver refuses P2P outright on GeForce parts, so the
+    // device-to-device CopySubrow could never work across devices. It cost an
+    // illegal access in cuda_column_data.cpp on the first real 2-GPU run.
+    // (Single-device bagging keeps using the fast Dataset::CopySubrow.)
+    CreateCUDAColumnData();
+    metadata_.CreateCUDAMetadata(gpu_device_id_);
   }
   #endif  // USE_CUDA
 }

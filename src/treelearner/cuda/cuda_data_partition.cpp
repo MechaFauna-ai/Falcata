@@ -644,6 +644,18 @@ void CUDADataPartition::UpdateTrainScore(const Tree* tree, double* scores) {
 }
 
 void CUDADataPartition::CalcBlockDim(const data_size_t num_data_in_leaf) {
+  if (num_data_in_leaf <= 1) {
+    // An EMPTY leaf is normal under multi-GPU: splits are chosen from
+    // ALL-REDUCED histograms, so a leaf that holds rows on one rank can hold
+    // none on another. Single-GPU never sees it, which is why the arithmetic
+    // below was allowed to assume otherwise -- at 0 rows it yields a block
+    // size of -1, and at 1 row exactly 0, tripping the CHECK.
+    // One block covers a leaf this small; with 0 rows every kernel's bounds
+    // check simply retires the block immediately.
+    grid_dim_ = 1;
+    block_dim_ = SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+    return;
+  }
   const int min_num_blocks = num_data_in_leaf <= 100 ? 1 : 80;
   const int num_blocks = std::max(min_num_blocks, (num_data_in_leaf + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION);
   int split_indices_block_size_data_partition = (num_data_in_leaf + num_blocks - 1) / num_blocks - 1;

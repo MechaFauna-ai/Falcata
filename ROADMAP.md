@@ -157,6 +157,34 @@ figures from the profiles in the PR discussions.
     pipelines), xgboost transformed base_score -> raw margin, catboost
     scale/bias, pinned source-library versions in CI.
 
+## Multi-GPU (NCCL) -- CURRENTLY NON-FUNCTIONAL
+
+First real 2-GPU run, 2026-08-02 (rented 2x RTX 3090, PCIe PHB, no NVLink).
+Multi-GPU had never actually been executed; it fails in a chain, and two links
+are now fixed:
+
+1. FIXED: cross-device illegal access. Each rank built its row-subset by having
+   a kernel read the FULL dataset's column pointers -- which live on ANOTHER
+   GPU. Nothing in the tree enables peer access, and the driver refuses P2P
+   outright on GeForce parts, so that read can only ever fault. The subset is
+   now built from the host-side copy CopySubrowHostPart already makes.
+2. FIXED: CalcBlockDim CHECK on empty leaves. An EMPTY local leaf is normal
+   under data-parallel training -- splits come from ALL-REDUCED histograms, so
+   a leaf holding rows on one rank can hold none on another -- but the block
+   arithmetic produced a negative block size and tripped a CHECK.
+3. OPEN: ranks deadlock. With both fixes in, training starts and then hangs:
+   one rank stopped at 25 leaves ("no further splits with positive gain")
+   while the other kept growing, so they issue different numbers of NCCL
+   collectives and block forever. Some rank-visible decision still derives
+   from LOCAL state where it must be global. The histogram-derived gains are
+   global (histograms are all-reduced) and smaller/larger selection already
+   uses global_num_data_in_leaf_, so the divergence is elsewhere -- finding it
+   is the next step, and every later optimization depends on it.
+
+Until (3) is fixed, num_gpu>1 does not train. The level-batched all-reduce in
+docs/design/nccl-level-allreduce-plan.md is an OPTIMIZATION of a path that
+does not yet work, so it is blocked behind this.
+
 ## Correctness / determinism
 
 - OPEN: hybrid categorical corruption at max_cat_threshold >= 48 (FENCED to
