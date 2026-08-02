@@ -1597,6 +1597,42 @@ FALCATA_C_EXPORT int FLC_BoosterSaveModelToString(BoosterHandle handle,
                                                     char* out_str);
 
 /*!
+ * \brief Save model in the FALB binary format.
+ * \param handle Handle of booster
+ * \param start_iteration Start index of the iteration that should be saved
+ * \param num_iteration Index of the iteration that should be saved, <= 0 means save all
+ * \param feature_importance_type Type of feature importance, can be ``C_API_FEATURE_IMPORTANCE_SPLIT`` or ``C_API_FEATURE_IMPORTANCE_GAIN``
+ * \param with_stats Non-zero to include structural stats (leaf/internal counts and weights)
+ * \param with_diagnostics Non-zero to include split_gain / internal_value
+ * \param buffer_len Buffer length; if ``buffer_len < out_len`` you should re-allocate and call again
+ * \param[out] out_len Actual output length in bytes (binary, NOT NUL-terminated)
+ * \param[out] out_buf Model bytes, should pre-allocate memory
+ * \return 0 when succeed, -1 when failure happens
+ */
+FALCATA_C_EXPORT int FLC_BoosterSaveModelToBinary(BoosterHandle handle,
+                                                  int start_iteration,
+                                                  int num_iteration,
+                                                  int feature_importance_type,
+                                                  int with_stats,
+                                                  int with_diagnostics,
+                                                  int64_t buffer_len,
+                                                  int64_t* out_len,
+                                                  char* out_buf);
+
+/*!
+ * \brief Load an existing booster from a FALB binary model.
+ * \param buf Model bytes
+ * \param len Length of ``buf`` in bytes
+ * \param[out] out_num_iterations Number of iterations of this booster
+ * \param[out] out Handle of created booster
+ * \return 0 when succeed, -1 when failure happens
+ */
+FALCATA_C_EXPORT int FLC_BoosterCreateFromBinary(const char* buf,
+                                                 int64_t len,
+                                                 int* out_num_iterations,
+                                                 BoosterHandle* out);
+
+/*!
  * \brief Dump model to JSON.
  * \param handle Handle of booster
  * \param start_iteration Start index of the iteration that should be dumped

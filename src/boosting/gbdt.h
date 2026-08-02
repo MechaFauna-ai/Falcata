@@ -364,6 +364,22 @@ class GBDT : public GBDTBase {
   std::string SaveModelToString(int start_iteration, int num_iterations, int feature_importance_type) const override;
 
   /*!
+  * \brief Serialize the model in the FALB binary format (see
+  *        docs/design/binary-model-format-plan.md). Metadata is the text
+  *        header verbatim; trees are binary structure-of-arrays.
+  * \param with_stats include structural stats (leaf/internal counts+weights),
+  *        needed by TreeSHAP / pred_contrib / trees_to_dataframe
+  * \param with_diagnostics include split_gain / internal_value
+  */
+  std::string SaveModelToBinary(int start_iteration, int num_iterations,
+                                int feature_importance_type,
+                                bool with_stats, bool with_diagnostics) const override;
+
+  /*! \brief Load a FALB binary model. The buffer is treated as untrusted
+  *          input: every offset and length is validated before use. */
+  bool LoadModelFromBinary(const char* buffer, size_t len) override;
+
+  /*!
   * \brief Restore from a serialized buffer
   */
   bool LoadModelFromString(const char* buffer, size_t len) override;

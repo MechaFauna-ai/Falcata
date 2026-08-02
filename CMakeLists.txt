@@ -488,6 +488,7 @@ endif()
 set(
     FLC_SOURCES
       src/boosting/boosting.cpp
+      src/boosting/gbdt_model_binary.cpp
       src/boosting/gbdt_model_text.cpp
       src/boosting/gbdt_prediction.cpp
       src/boosting/gbdt.cpp

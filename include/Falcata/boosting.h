@@ -8,6 +8,7 @@
 
 #include <Falcata/config.h>
 #include <Falcata/meta.h>
+#include <Falcata/utils/log.h>
 
 #include <string>
 #include <map>
@@ -223,6 +224,24 @@ class FALCATA_EXPORT Boosting {
   * \return true if succeeded
   */
   virtual bool LoadModelFromString(const char* buffer, size_t len) = 0;
+
+  /*!
+  * \brief Save model in the FALB binary format. Boosting types that do not
+  *        implement it fail loudly rather than silently emitting text.
+  */
+  virtual std::string SaveModelToBinary(int /*start_iteration*/, int /*num_iterations*/,
+                                        int /*feature_importance_type*/,
+                                        bool /*with_stats*/,
+                                        bool /*with_diagnostics*/) const {
+    Log::Fatal("FALB binary serialization is not implemented for this boosting type");
+    return std::string();
+  }
+
+  /*! \brief Restore from a FALB binary model. */
+  virtual bool LoadModelFromBinary(const char* /*buffer*/, size_t /*len*/) {
+    Log::Fatal("FALB binary deserialization is not implemented for this boosting type");
+    return false;
+  }
 
   /*!
   * \brief Calculate feature importances

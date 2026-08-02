@@ -18,6 +18,14 @@
 
 namespace Falcata {
 
+namespace FALB {
+// The FALB binary serializer reads and writes the tree arrays directly. It is
+// a friend rather than a set of public setters so that the binary format stays
+// out of this header, and so no caller outside serialization can assemble a
+// Tree from raw arrays without going through the validating loader.
+struct TreeIO;
+}  // namespace FALB
+
 #define kCategoricalMask (1)
 #define kDefaultLeftMask (2)
 
@@ -329,6 +337,8 @@ class Tree {
   inline void SetIsLinear(bool is_linear) {
     is_linear_ = is_linear;
   }
+
+  friend struct FALB::TreeIO;
 
  protected:
   std::string NumericalDecisionIfElse(int node) const;

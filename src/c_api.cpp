@@ -824,6 +824,18 @@ class Booster {
                                         num_iteration, feature_importance_type);
   }
 
+  std::string SaveModelToBinary(int start_iteration, int num_iteration,
+                                int feature_importance_type, bool with_stats,
+                                bool with_diagnostics) const {
+    return boosting_->SaveModelToBinary(start_iteration, num_iteration,
+                                        feature_importance_type, with_stats,
+                                        with_diagnostics);
+  }
+
+  void LoadModelFromBinary(const char* buffer, size_t len) {
+    boosting_->LoadModelFromBinary(buffer, len);
+  }
+
   std::string DumpModel(int start_iteration, int num_iteration,
                         int feature_importance_type) const {
     return boosting_->DumpModel(start_iteration, num_iteration,
@@ -3058,6 +3070,40 @@ int FLC_BoosterSaveModelToString(BoosterHandle handle,
   if (*out_len <= buffer_len) {
     std::memcpy(out_str, model.c_str(), *out_len);
   }
+  API_END();
+}
+
+int FLC_BoosterSaveModelToBinary(BoosterHandle handle,
+                                 int start_iteration,
+                                 int num_iteration,
+                                 int feature_importance_type,
+                                 int with_stats,
+                                 int with_diagnostics,
+                                 int64_t buffer_len,
+                                 int64_t* out_len,
+                                 char* out_buf) {
+  API_BEGIN();
+  Booster* ref_booster = reinterpret_cast<Booster*>(handle);
+  std::string model = ref_booster->SaveModelToBinary(
+      start_iteration, num_iteration, feature_importance_type,
+      with_stats != 0, with_diagnostics != 0);
+  // binary payload: the length is exact, no NUL terminator
+  *out_len = static_cast<int64_t>(model.size());
+  if (*out_len <= buffer_len) {
+    std::memcpy(out_buf, model.data(), static_cast<size_t>(*out_len));
+  }
+  API_END();
+}
+
+int FLC_BoosterCreateFromBinary(const char* buf,
+                                int64_t len,
+                                int* out_num_iterations,
+                                BoosterHandle* out) {
+  API_BEGIN();
+  auto ret = std::unique_ptr<Booster>(new Booster(nullptr));
+  ret->LoadModelFromBinary(buf, static_cast<size_t>(len));
+  *out_num_iterations = ret->GetBoosting()->GetCurrentIteration();
+  *out = ret.release();
   API_END();
 }
 
