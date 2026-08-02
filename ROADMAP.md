@@ -107,6 +107,14 @@ figures from the profiles in the PR discussions.
     feature_infos. Plus the full param blob (tiny) so continued training /
     refit from a FALB-loaded booster either works or refuses explicitly --
     "predict-only params" would break init_model continuation silently.
+  - M2 LANDED 2026-08-02: save_model(format="auto"|"txt"|"falb") picking by
+    extension, model_to_binary/Booster(model_bin=), model files loaded by MAGIC
+    rather than extension (a renamed model still loads), pickle emitting FALB
+    by default with falcata.set_pickle_format("text") / FALCATA_PICKLE_FORMAT
+    as the escape hatch and __setstate__ accepting both payloads forever, and
+    `python -m falcata convert`. Conversion is LOSSLESS by default (--drop-stats
+    / --drop-diagnostics to shrink), because converting an existing artifact
+    must not silently cost it pred_contrib and gain importance.
   - Pickle flips to FALB only with an escape hatch (falcata.set_pickle_format /
     env var) and __setstate__ accepts text-payload pickles forever. New pickles
     are unreadable by stock lightgbm and older Falcata by design; numerai prod

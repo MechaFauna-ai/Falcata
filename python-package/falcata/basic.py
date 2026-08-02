@@ -13,6 +13,7 @@ from .libpath import _LIB  # isort: skip
 
 import abc
 import ctypes
+import os
 import inspect
 import json
 import warnings
@@ -843,6 +844,47 @@ def _data_from_pandas(
         categorical_feature,
         pandas_categorical,
     )
+
+
+_PICKLE_FORMAT = os.environ.get("FALCATA_PICKLE_FORMAT", "falb").strip().lower()
+if _PICKLE_FORMAT not in ("falb", "text"):  # never fail an import over this
+    _log_warning(f'Unknown FALCATA_PICKLE_FORMAT "{_PICKLE_FORMAT}", using "falb"')
+    _PICKLE_FORMAT = "falb"
+
+_FALB_MAGIC = b"FALB"
+
+
+def set_pickle_format(fmt: str) -> None:
+    """Choose the payload ``pickle`` writes for a Booster.
+
+    Parameters
+    ----------
+    fmt : str
+        ``"falb"`` (default) pickles the compact binary model -- typically ~10x
+        smaller than the text payload, with bit-identical predictions.
+        ``"text"`` restores the old behaviour, which is what you want when the
+        pickle has to be read by stock LightGBM or an older Falcata.
+
+    Notes
+    -----
+    Unpickling always accepts BOTH payloads regardless of this setting, so
+    existing pickles keep working forever. The initial value can also be set
+    with the ``FALCATA_PICKLE_FORMAT`` environment variable.
+    """
+    global _PICKLE_FORMAT
+    fmt = fmt.strip().lower()
+    if fmt not in ("falb", "text"):
+        raise ValueError(f'pickle format must be "falb" or "text", got "{fmt}"')
+    _PICKLE_FORMAT = fmt
+
+
+def get_pickle_format() -> str:
+    """Return the payload ``pickle`` currently writes for a Booster."""
+    return _PICKLE_FORMAT
+
+
+def _is_falb(blob: bytes) -> bool:
+    return len(blob) >= 4 and blob[:4] == _FALB_MAGIC
 
 
 def _dump_pandas_categorical(
@@ -3648,6 +3690,7 @@ class Booster:
         train_set: Optional[Dataset] = None,
         model_file: Optional[Union[str, Path]] = None,
         model_str: Optional[str] = None,
+        model_bin: Optional[bytes] = None,
     ):
         """Initialize the Booster.
 
@@ -3748,7 +3791,18 @@ class Booster:
             self.pandas_categorical = train_set.pandas_categorical
             self.train_set_version = train_set.version
         elif model_file is not None:
-            # Prediction task
+            # Prediction task. Sniff the magic rather than trusting the
+            # extension: a renamed model still loads.
+            with open(model_file, "rb") as _f:
+                _head = _f.read(4)
+            if _head == _FALB_MAGIC:
+                with open(model_file, "rb") as _f:
+                    self.model_from_binary(_f.read())
+                self.pandas_categorical = _load_pandas_categorical(file_name=model_file)
+                if params:
+                    _log_warning("Ignoring params argument, using parameters from model file.")
+                self.params = self._get_loaded_param()
+                return
             out_num_iterations = ctypes.c_int(0)
             _safe_call(
                 _LIB.FLC_BoosterCreateFromModelfile(
@@ -3774,9 +3828,15 @@ class Booster:
             if params:
                 _log_warning("Ignoring params argument, using parameters from model string.")
             params = self._get_loaded_param()
+        elif model_bin is not None:
+            self.model_from_binary(model_bin)
+            if params:
+                _log_warning("Ignoring params argument, using parameters from model bytes.")
+            params = self._get_loaded_param()
         else:
             raise TypeError(
-                "Need at least one training dataset or model file or model string to create Booster instance"
+                "Need at least one training dataset or model file or model string "
+                "or model bytes to create Booster instance"
             )
         self.params = params
 
@@ -3806,21 +3866,41 @@ class Booster:
         this.pop("valid_sets", None)
         this.pop("_fil_models", None)
         if handle is not None:
-            this["_handle"] = self.model_to_string(num_iteration=-1)
+            # FALB by default: same model, ~10x less to write and read. Opt out
+            # with set_pickle_format("text") or FALCATA_PICKLE_FORMAT=text when
+            # the pickle must be readable by stock LightGBM or older Falcata.
+            if _PICKLE_FORMAT == "falb":
+                this["_handle"] = self.model_to_binary(num_iteration=-1)
+            else:
+                this["_handle"] = self.model_to_string(num_iteration=-1)
         return this
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
-        model_str = state.get("_handle", state.get("handle", None))
-        if model_str is not None:
+        # Accepts BOTH payloads, forever: text pickles predate the binary
+        # format and must keep loading regardless of the current setting.
+        model = state.get("_handle", state.get("handle", None))
+        if model is not None:
             handle = ctypes.c_void_p()
             out_num_iterations = ctypes.c_int(0)
-            _safe_call(
-                _LIB.FLC_BoosterLoadModelFromString(
-                    _c_str(model_str),
-                    ctypes.byref(out_num_iterations),
-                    ctypes.byref(handle),
+            if isinstance(model, bytes) and _is_falb(model):
+                _safe_call(
+                    _LIB.FLC_BoosterCreateFromBinary(
+                        model,
+                        ctypes.c_int64(len(model)),
+                        ctypes.byref(out_num_iterations),
+                        ctypes.byref(handle),
+                    )
                 )
-            )
+            else:
+                if isinstance(model, bytes):
+                    model = model.decode("utf-8")
+                _safe_call(
+                    _LIB.FLC_BoosterLoadModelFromString(
+                        _c_str(model),
+                        ctypes.byref(out_num_iterations),
+                        ctypes.byref(handle),
+                    )
+                )
             state["_handle"] = handle
         self.__dict__.update(state)
 
@@ -4526,6 +4606,8 @@ class Booster:
         num_iteration: Optional[int] = None,
         start_iteration: int = 0,
         importance_type: str = "split",
+        format: str = "auto",
+        **binary_kwargs: Any,
     ) -> "Booster":
         """Save Booster to file.
 
@@ -4543,12 +4625,45 @@ class Booster:
             What type of feature importance should be saved.
             If "split", result contains numbers of times the feature is used in a model.
             If "gain", result contains total gains of splits which use the feature.
+        format : str, optional (default="auto")
+            ``"txt"`` writes the LightGBM text model, which stock LightGBM and
+            treelite/FIL can read. ``"falb"`` writes the Falcata binary format:
+            roughly 10x smaller with bit-identical predictions, but only
+            Falcata can read it. ``"auto"`` picks by file extension --
+            ``.falb`` means binary, anything else means text.
+        **binary_kwargs
+            Extra options forwarded to :meth:`model_to_binary` for binary
+            formats (``with_stats``, ``with_diagnostics``, ``f32_leaves``,
+            ``compress_level``).
 
         Returns
         -------
         self : Booster
             Returns self.
         """
+        if format not in ("auto", "txt", "text", "falb"):
+            raise ValueError(f'save_model format must be "auto", "txt" or "falb", got "{format}"')
+        if format == "auto":
+            suffixes = [x.lower() for x in Path(str(filename)).suffixes]
+            # tolerate model.falb.gz / model.txt.gz
+            stripped = [x for x in suffixes if x != ".gz"]
+            format = "falb" if stripped and stripped[-1] == ".falb" else "txt"
+        if format == "falb":
+            blob = self.model_to_binary(
+                num_iteration=num_iteration,
+                start_iteration=start_iteration,
+                importance_type=importance_type,
+                **binary_kwargs,
+            )
+            with open(filename, "wb") as f:
+                f.write(blob)
+            # appended AFTER the binary payload: the loader addresses sections
+            # through its table and ignores trailing bytes, so both formats
+            # carry the pandas categories the same way
+            _dump_pandas_categorical(self.pandas_categorical, filename)
+            return self
+        if binary_kwargs:
+            raise ValueError(f"binary options {sorted(binary_kwargs)} are not valid for a text model")
         if num_iteration is None:
             num_iteration = self.best_iteration
         importance_type_int = _FEATURE_IMPORTANCE_TYPE_MAPPER[importance_type]
@@ -4562,6 +4677,116 @@ class Booster:
             )
         )
         _dump_pandas_categorical(self.pandas_categorical, filename)
+        return self
+
+    def model_to_binary(
+        self,
+        num_iteration: Optional[int] = None,
+        start_iteration: int = 0,
+        importance_type: str = "split",
+        with_stats: bool = False,
+        with_diagnostics: bool = False,
+        f32_leaves: bool = False,
+        compress_level: int = 6,
+    ) -> bytes:
+        """Serialize the Booster in the FALB binary format.
+
+        Parameters
+        ----------
+        num_iteration : int or None, optional (default=None)
+            Index of the iteration that should be saved.
+            If None, if the best iteration exists, it is saved; otherwise, all iterations are saved.
+            If <= 0, all iterations are saved.
+        start_iteration : int, optional (default=0)
+            Start index of the iteration that should be saved.
+        importance_type : str, optional (default="split")
+            What type of feature importance should be saved.
+        with_stats : bool, optional (default=False)
+            Include per-node counts and weights. Needed by ``pred_contrib``
+            (TreeSHAP), ``trees_to_dataframe`` and ``dump_model``; they roughly
+            triple the file, which is why they are off by default.
+        with_diagnostics : bool, optional (default=False)
+            Include ``split_gain`` / ``internal_value``. Needed by
+            ``feature_importance("gain")``.
+        f32_leaves : bool, optional (default=False)
+            Store leaf values as float32. LOSSY (~1e-8 relative on predictions)
+            but ~35% smaller. The default keeps predictions bit-identical to
+            the text model.
+        compress_level : int, optional (default=6)
+            zlib level 0-9. 0 leaves every section uncompressed and mmap-able;
+            9 is marginally smaller than 6 for many times the write cost.
+
+        Returns
+        -------
+        model_bin : bytes
+            The serialized model.
+        """
+        if num_iteration is None:
+            num_iteration = self.best_iteration
+        importance_type_int = _FEATURE_IMPORTANCE_TYPE_MAPPER[importance_type]
+        flags = (
+            ctypes.c_int(int(with_stats)),
+            ctypes.c_int(int(with_diagnostics)),
+            ctypes.c_int(int(f32_leaves)),
+            ctypes.c_int(int(compress_level)),
+        )
+
+        def _save(buffer_len: int) -> Tuple[int, ctypes.Array]:
+            buf = ctypes.create_string_buffer(buffer_len)
+            out_len = ctypes.c_int64(0)
+            _safe_call(
+                _LIB.FLC_BoosterSaveModelToBinary(
+                    self._handle,
+                    ctypes.c_int(start_iteration),
+                    ctypes.c_int(num_iteration),
+                    ctypes.c_int(importance_type_int),
+                    *flags,
+                    ctypes.c_int64(buffer_len),
+                    ctypes.byref(out_len),
+                    buf,
+                )
+            )
+            return out_len.value, buf
+
+        # one probe call to size the buffer, then the real one
+        needed, buf = _save(1 << 20)
+        if needed > (1 << 20):
+            needed, buf = _save(needed)
+        return buf.raw[:needed]
+
+    def model_from_binary(self, model_bin: bytes) -> "Booster":
+        """Load the Booster from a FALB binary payload.
+
+        Parameters
+        ----------
+        model_bin : bytes
+            Model produced by :meth:`model_to_binary` or ``save_model`` with a
+            binary format.
+
+        Returns
+        -------
+        self : Booster
+            Returns self.
+        """
+        if not _is_falb(model_bin):
+            raise ValueError("not a FALB binary model (bad magic)")
+        if self._handle is not None:
+            _safe_call(_LIB.FLC_BoosterFree(self._handle))
+        self._handle = ctypes.c_void_p()
+        out_num_iterations = ctypes.c_int(0)
+        _safe_call(
+            _LIB.FLC_BoosterCreateFromBinary(
+                model_bin,
+                ctypes.c_int64(len(model_bin)),
+                ctypes.byref(out_num_iterations),
+                ctypes.byref(self._handle),
+            )
+        )
+        out_num_class = ctypes.c_int(0)
+        _safe_call(_LIB.FLC_BoosterGetNumClasses(self._handle, ctypes.byref(out_num_class)))
+        self.__dict__["_Booster__num_class"] = out_num_class.value
+        self.pandas_categorical = None
+        self.params = self._get_loaded_param()
         return self
 
     def shuffle_models(

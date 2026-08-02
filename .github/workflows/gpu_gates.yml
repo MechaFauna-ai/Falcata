@@ -37,6 +37,10 @@ jobs:
         run: python3 tests/gates/gpu_guard.py --require-free-mb 8000 --max-util 20 --timeout-min 30
       - name: Lattice (md5 + equality + validity + metric gates)
         run: .gates-venv/bin/python tests/gates/lattice.py --check
+      - name: FALB binary format (round-trip, loader robustness, python plumbing)
+        run: |
+          .gates-venv/bin/python tests/gates/falb_roundtrip.py
+          .gates-venv/bin/python tests/gates/falb_python.py
       - name: Selective-growth equivalence (vs classic leaf-wise)
         run: .gates-venv/bin/python tests/gates/selective_equivalence.py --seeds 8
       - name: Perf gate (vs machine-local rolling baseline)
