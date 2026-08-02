@@ -318,6 +318,31 @@ class CUDADataPartition: public NCCLInfo {
  private:
   void CalcBlockDim(const data_size_t num_data_in_leaf);
 
+  /*! \brief uint16 units cuda_block_to_left_offset_ must hold to serve as the
+   *  packed-bit hand-off buffer for a level with `total_slots` chunk slots:
+   *  one uint32 ballot word per (slot, warp), expressed in uint16 units. */
+  /*! \brief worst-case uint16 units for the packed-bit hand-off over ANY level.
+   *  The CUDA-graph path builds its descriptors (and scans their block-offset
+   *  slots) ON DEVICE, so the host never sees that level's real slot count
+   *  before replay -- the buffer has to be big enough up front. A level holds
+   *  at most one descriptor per split plus one per terminal gap, and each
+   *  contributes ceil(rows / block) + 1 slots; summed, that is bounded by
+   *  num_data / block + 2 * num_leaves (+ slack). */
+  size_t HybridBitWordUnitsWorstCase() const {
+    const data_size_t blocks_over_all_leaves =
+      num_data_ / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+    return HybridBitWordUnits(blocks_over_all_leaves + 2 * num_leaves_ + 2);
+  }
+
+  static size_t HybridBitWordUnits(const data_size_t total_slots) {
+    // warp size 32 is the smallest any supported target uses, so it yields the
+    // largest word count -- a safe upper bound on wave64 (ROCm) too, where the
+    // kernel writes half as many words per block.
+    const size_t warps_per_block =
+      static_cast<size_t>(SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION) / 32;
+    return static_cast<size_t>(total_slots) * warps_per_block * 2;
+  }
+
   /*! \brief launch the batched apply kernels of one level, in dependency order
    *  on cuda_streams_[0] (fused gen-bit-vector+update-leaf-index, aggregate
    *  block offsets, split inner into the out buffer, split tree structure, and

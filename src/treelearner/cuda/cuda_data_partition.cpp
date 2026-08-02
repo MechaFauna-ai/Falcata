@@ -76,8 +76,11 @@ void CUDADataPartition::Init() {
   cuda_leaf_data_start_.Resize(static_cast<size_t>(num_leaves_));
   cuda_leaf_data_end_.Resize(static_cast<size_t>(num_leaves_));
   cuda_leaf_num_data_.Resize(static_cast<size_t>(num_leaves_));
-  // leave some space for alignment
-  cuda_block_to_left_offset_.Resize(static_cast<size_t>(num_data_));
+  // leave some space for alignment. Sized for the larger of its two roles:
+  // per-row uint16 offsets, and the packed-bit warp-ballot words of the
+  // widest possible level (see HybridBitWordUnitsWorstCase).
+  cuda_block_to_left_offset_.Resize(std::max(static_cast<size_t>(num_data_),
+                                             HybridBitWordUnitsWorstCase()));
   cuda_data_index_to_leaf_index_.Resize(static_cast<size_t>(num_data_));
   cuda_block_data_to_left_offset_.Resize(static_cast<size_t>(max_num_split_indices_blocks_) + 1);
   cuda_block_data_to_right_offset_.Resize(static_cast<size_t>(max_num_split_indices_blocks_) + 1);
@@ -522,6 +525,18 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
       append_gap(cursor, num_data_total - cursor);
     }
   }
+  // The packed-bit hand-off reinterprets cuda_block_to_left_offset_ as uint32
+  // warp-ballot words indexed by CHUNK SLOT: (block_offset_start + block) *
+  // warps_per_block + warp. Every descriptor consumes a whole block slot's
+  // worth of words no matter how few rows its leaf holds, so the requirement
+  // scales with the SLOT count, not with num_data -- a level of many tiny
+  // leaves (num_leaves >> num_data / block_size) needs more than the
+  // num_data-sized allocation. Grow it here, where the real slot count is
+  // known.
+  const size_t required_bit_word_units = HybridBitWordUnits(total_block_offset_slots);
+  if (cuda_block_to_left_offset_.Size() < required_bit_word_units) {
+    cuda_block_to_left_offset_.Resize(required_bit_word_units);
+  }
   // per-split regions of the level-sized block offset buffers
   if (cuda_block_data_to_left_offset_.Size() < static_cast<size_t>(total_block_offset_slots)) {
     cuda_block_data_to_left_offset_.Resize(static_cast<size_t>(total_block_offset_slots));
@@ -672,7 +687,8 @@ void CUDADataPartition::ResetTrainingData(const Dataset* train_data, const int n
       SetCUDAMemory<data_size_t>(cuda_block_data_to_right_offset_.RawData(), 0, cuda_block_data_to_right_offset_.Size(), __FILE__, __LINE__);
     }
     cuda_data_indices_.Resize(static_cast<size_t>(num_data_));
-    cuda_block_to_left_offset_.Resize(static_cast<size_t>(num_data_));
+    cuda_block_to_left_offset_.Resize(std::max(static_cast<size_t>(num_data_),
+                                               HybridBitWordUnitsWorstCase()));
     cuda_data_index_to_leaf_index_.Resize(static_cast<size_t>(num_data_));
     cuda_out_data_indices_in_leaf_.Resize(static_cast<size_t>(num_data_));
   }
