@@ -65,19 +65,35 @@ figures from the profiles in the PR discussions.
   - Per-array dtype tags instead of boolean flags: every tree-data array header
     carries a dtype enum (u8/u16/u32/f32/f64, room for f16/bf16). New precisions
     become additive; old readers fail with "unknown dtype", never misread.
-  - Threshold modes: bin-index is verify-on-write -- the writer bit-compares each
-    reconstructed double against the tree threshold and falls back to raw-f64
-    per model (text-edited, refit, imported models have off-grid thresholds).
-    Bin-index width u8/u16/u32 (max_bin > 256 is supported since 0af854af).
-    Raw-f32 thresholds are an IMPORT fidelity mode (XGBoost is f32-native, so
+  - Thresholds: per-feature DICTIONARY of the distinct doubles occurring in the
+    trees, nodes store an index (u8/u16/u32 by dictionary size). Supersedes the
+    bin-index + verify-on-write design, which could not work: the bin bounds it
+    meant to reference are not in the model at all (``feature_infos`` is only
+    ``[min:max]``, bin.h:236 -- the bounds live in the Dataset), so text-loaded
+    models could never re-encode. The dictionary is exact by construction (no
+    grid to fall off, so no whole-model f64 fallback for one refit/text-edited
+    threshold), Dataset-free, and never larger than the bin table it replaces.
+    Raw-f32 thresholds remain an IMPORT fidelity mode (XGBoost is f32-native, so
     f32 is exact there), NOT a compression knob: on f64 thresholds it moves
     decision boundaries.
   - Sections split three ways: core (structure + thresholds + leaf values),
-    structural stats (internal/leaf counts + weights -- DEFAULT ON: TreeSHAP /
-    pred_contrib reads data_count() on every internal node, trees_to_dataframe
-    and dump_model need them; varint+zstd keeps them small), training
-    diagnostics (split_gain, internal_value -- opt-in, clear error from
-    feature_importance("gain") when absent).
+    structural stats (internal/leaf counts + weights -- TreeSHAP / pred_contrib
+    reads data_count() on every internal node, trees_to_dataframe and
+    dump_model need them), training diagnostics (split_gain, internal_value --
+    opt-in, clear error from feature_importance("gain") when absent). Stats are
+    BEHIND A FLAG in M1, not default-on as first amended: naive encoding adds
+    ~37 MB to a ~21 MB core on the numerai reference (~1.5M internal + ~1.55M
+    leaf entries), so the headline is a core-only number. Default-on is
+    reconsidered in M3 against a measurement, with f32 weights (hessian sums;
+    leaf VALUES stay f64), varint counts and zstd on that section.
+  - Codec default raw, so core sections stay mmap-able and per-tree access is
+    O(1); zstd opt-in for archival. The loader is an untrusted-input parser:
+    every section offset/length bounds-checked against real file size before
+    any read, clean failure never UB, with the fuzzing as verification.
+  - M1 includes categoricals (the 2026-08-01 categorical lift makes them a
+    headline feature; a format that cannot store an airline-class model is not
+    shippable). Importers M4/M5 are independent of the format -- they can build
+    models through canonical text -- so they need not wait on it.
   - Header carries the exact predict-semantics set, enumerated: objective string
     verbatim (sigmoid, quantile alpha, ...), num_class / num_tree_per_iteration,
     average_output, init/base score, missing-handling flags, feature names +

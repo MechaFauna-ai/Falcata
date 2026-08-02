@@ -1,6 +1,12 @@
 # Falcata binary model format (FALB) — design plan
 
-**Status:** proposal (handover doc) · **Date:** 2026-08-01 · **Origin:** numerai prod-artifact analysis
+**Status:** adopted; v1 scope fixed 2026-08-02 · **Origin:** numerai prod-artifact analysis
+
+> **v1 decisions (2026-08-02 review #2).** M1 optimizes for load time and size:
+> core sections + categoricals, raw/mmap-able by default, structural stats
+> behind a flag (see §3.1 for why the original threshold design had to
+> change). Pickle flips to FALB in M2 with an escape hatch. Importers (M4/M5)
+> are independent of the format and can proceed on their own schedule.
 
 ## 1. Motivation (measured, real production model)
 
@@ -28,7 +34,7 @@ Text field breakdown of those 657 MB: **45% is training diagnostics never read a
 ```
 magic "FALB" | u32 version | u64 flags | header section | section table | sections…
 ```
-- **header**: num_trees, num_features, max_leaves, objective + predict-relevant params only, feature names, optional per-feature bin-bounds table (from `feature_infos` — needed for bin-index thresholds), average-output/base-score.
+- **header**: num_trees, num_features, max_leaves, objective + predict-relevant params only, feature names, average-output/base-score. (No bin-bounds table — see §3.1.)
 - **section table**: (id, offset, compressed_len, raw_len, codec) per section. Codec ∈ {raw, zstd}. Raw sections are mmap-able; store raw_len for preallocation.
 - **flags**: bitmask of required capabilities; loader errors on unknown *required* flags (forward-compat with a clean failure, never silent misparse).
 
@@ -37,14 +43,64 @@ magic "FALB" | u32 version | u64 flags | header section | section table | sectio
 |---|---|---|
 | num_leaves per tree | varint | |
 | split_feature | u16 | u32 flag if >65k features |
-| threshold | **u8/u16 bin index** _or_ f32 _or_ f64 | per-model flag. Bin-index reconstructs the exact double from the header bin-bounds table → **bit-exact** and 1–2 bytes. Raw-float mode required for imported models (no bin structure) |
+| threshold | **u8/u16/u32 dictionary index** _or_ f32 _or_ f64 | index into the per-feature threshold dictionary (§3.1); bit-exact by construction. Raw-float modes for imported models |
 | decision_type | u8 (bit-packed later) | default-left, missing-type |
 | left/right_child | i8 when leaves ≤127 else i16 | |
 | leaf_value | f64 (default, bit-exact) or f32 (opt-in, ~1e-7 rel) | |
 | categoricals | optional section: cat_boundaries u32, cat_threshold bitset u32 | spec'd v1, implementation may land M3 |
 | diagnostics | optional section (split_gain, counts, weights…) | written only with `with_diagnostics=True`; absence disables feature_importance(gain) with a clear error |
 
-**Explicit non-goals v1** (refuse with clear error, flag bits reserved): linear trees, CatBoost CTR features, multi-output-per-leaf.
+**Sizing note — structural stats.** counts + weights are ~1.5M internal and
+~1.55M leaf entries on the numerai reference; naively (u32 counts, f64 weights)
+that is ~+37 MB against a ~21 MB core, i.e. the headline is a core-only number.
+They are therefore **behind a flag in M1**, and when they are enabled by
+default the encoding must be deliberate: f32 weights (hessian sums used for
+SHAP weighting — f32 is ample; leaf VALUES stay f64), varint counts, zstd on
+that section. Decide the default from a measurement, not from this estimate.
+
+**Explicit non-goals v1** (refuse with clear error, flag bits reserved): linear trees, CatBoost CTR features. Multi-output-per-leaf is NOT refused — the v1 leaf layout reserves `leaf_dim` (§ROADMAP amendments) so vector-leaf multi-target needs no v2.
+
+**Loader is an untrusted-input parser.** Models are shared as files. Every
+section-table offset and length is bounds-checked against the actual file size
+before any read, and every count is validated against the space remaining;
+the loader must fail cleanly, never UB, on truncated or hostile input. The
+fuzzing in §6.3 verifies this property — it is not the mechanism providing it.
+
+**Codec default: raw.** Core sections stay uncompressed so they are mmap-able
+and per-tree access via the fixed-width offsets is O(1); zstd is opt-in for
+archival. The load-time win is the point, so we do not trade it for the size
+headline by default.
+
+### 3.1 Threshold dictionary (replaces the bin-index design)
+
+The original spec had bin-index thresholds reconstructing the exact double
+from "the header bin-bounds table (from `feature_infos`)". **That table does
+not exist.** `feature_infos` for a numerical feature is only its range —
+`bin_info_string()` emits `'[' << min_val_ << ':' << max_val_ << ']'`
+(bin.h:236). Bin upper bounds live in the `BinMapper`, i.e. in the **Dataset**,
+and never enter the model. So (a) there is nothing to reference, and (b) a
+model loaded from text has no Dataset at all, which would make
+`convert in.txt out.falb` — most of M2's value — impossible in indexed mode.
+
+v1 instead stores a **per-feature dictionary of the distinct thresholds that
+actually occur in the trees**, sorted, as f64; tree nodes store an index into
+their feature's dictionary. Properties:
+
+- **Exact by construction.** Dictionary entries are the tree's own doubles,
+  copied verbatim. There is no grid to fall off, so the "verify-on-write
+  bit-compare, else fall back to raw-f64 for the whole model" rule is dropped:
+  refit, text-edited and imported models all encode losslessly with no
+  whole-model penalty for one off-grid value.
+- **Dataset-free.** Identical path for freshly-trained and text-loaded models.
+- **Bounded by the bin table it replaces**: every used threshold is a bin
+  bound, deduplicated per feature, so the dictionary is never larger and is
+  typically far smaller (numerai: a full 3555×255 f64 table would be ~7.2 MB
+  of a ~21 MB budget).
+- Index width per feature: u8 (≤256 distinct), u16, else u32 — carried by the
+  per-array dtype tag, so it is not a new mechanism.
+
+Raw f32/f64 threshold modes remain for importers (§5); f32 is an import
+fidelity mode for f32-native sources, never a compression knob on f64 trees.
 
 ### Exactness contract
 `text → FALB(f64 leaves, bin-index or f64 thresholds) → text` is byte-idempotent (modulo key ordering, which the test canonicalizes), and predictions are bit-identical. f32 leaf mode is opt-in and documented lossy.
@@ -77,9 +133,9 @@ magic "FALB" | u32 version | u64 flags | header section | section table | sectio
 
 ## 7. Milestones
 
-- **M1** — binary core: save/load predict-only, f64 leaves, bin-index + f64 thresholds, round-trip tests. *(the 90% of value)*
+- **M1** — binary core: save/load predict-only, f64 leaves, dictionary + f64 thresholds, **categoricals included** (our categorical support is a headline feature since the 2026-08-01 lift; a format that cannot store an airline-class model is not shippable), bounds-checked loader, round-trip tests. *(the 90% of value)*
 - **M2** — python plumbing: auto-detect, `model_to_binary`, pickle via FALB, zstd sections, CLI convert.
-- **M3** — diagnostics section (+ feature_importance support), categorical section.
+- **M3** — structural-stats + training-diagnostics sections (+ feature_importance support), and the measurement that decides whether structural stats become default-on.
 - **M4** — XGBoost importer.
 - **M5** — CatBoost importer (numeric, oblivious-unroll).
 
