@@ -412,6 +412,12 @@ class _EarlyStoppingCallback:
                 "early_stopping() callback enabled but no evaluation results found. This is a probably bug in Falcata. "
                 "Please report it at https://github.com/MechaFauna-ai/Falcata/issues"
             )
+        if not env.evaluation_result_list:
+            # train(eval_freq=N) skipped evaluation this iteration. Returning
+            # rather than treating it as "no improvement" is what makes
+            # stopping_rounds count EVALUATIONS instead of iterations, which
+            # is the only reading that stays stable when eval_freq changes.
+            return
         # self.best_score_list is initialized to an empty list
         first_time_updating_best_score_list = self.best_score_list == []
         for i in range(len(env.evaluation_result_list)):

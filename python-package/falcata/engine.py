@@ -116,6 +116,7 @@ def train(
     init_model: Optional[Union[str, Path, Booster]] = None,
     keep_training_booster: bool = False,
     callbacks: Optional[List[Callable]] = None,
+    eval_freq: int = 1,
 ) -> Booster:
     """Perform the training with given parameters.
 
@@ -165,6 +166,23 @@ def train(
     callbacks : list of callable, or None, optional (default=None)
         List of callback functions that are applied at each iteration.
         See Callbacks in Python API for more information.
+    eval_freq : int, optional (default=1)
+        Evaluate ``valid_sets`` only every ``eval_freq`` iterations (and on
+        the final one). The default of 1 preserves the historical behaviour
+        of evaluating after every iteration.
+
+        This exists because evaluation can cost more than the boosting it
+        guards. A custom ``feval`` that scores a large validation slice can
+        dominate the run when it fires 100,000 times, while firing it every
+        few thousand iterations is enough to detect a plateau. On iterations
+        that are skipped, ``evaluation_result_list`` is empty and callbacks
+        which consume it -- ``early_stopping``, ``log_evaluation``, and
+        ``record_evaluation`` -- do nothing.
+
+        Note this changes what ``stopping_rounds`` counts: with
+        ``eval_freq > 1`` early stopping tolerates ``stopping_rounds``
+        EVALUATIONS without improvement, i.e. ``stopping_rounds * eval_freq``
+        boosting iterations.
 
     Note
     ----
@@ -305,6 +323,9 @@ def train(
             valid_set._reverse_update_params()
     booster.best_iteration = 0
 
+    if eval_freq < 1:
+        raise ValueError(f"eval_freq must be >= 1, got {eval_freq}")
+
     # start training
     for i in range(init_iteration, init_iteration + num_boost_round):
         for cb in callbacks_before_iter:
@@ -322,8 +343,13 @@ def train(
         booster.update(fobj=fobj)
 
         evaluation_result_list: List[_FALCATA_BoosterEvalMethodResultType] = []
-        # check evaluation result.
-        if valid_sets is not None:
+        # check evaluation result. With eval_freq > 1 most iterations skip
+        # this entirely and leave the list empty; the final iteration always
+        # evaluates so the reported best score reflects the finished model.
+        is_eval_iteration = (
+            eval_freq <= 1 or (i - init_iteration + 1) % eval_freq == 0 or i == init_iteration + num_boost_round - 1
+        )
+        if valid_sets is not None and is_eval_iteration:
             if is_valid_contain_train:
                 evaluation_result_list.extend(booster.eval_train(feval))
             evaluation_result_list.extend(booster.eval_valid(feval))
