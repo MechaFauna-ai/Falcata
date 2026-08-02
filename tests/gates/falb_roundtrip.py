@@ -161,6 +161,59 @@ for name, kw, params in CASES:
 # Loader robustness: a model file is untrusted input. Truncated / corrupt /
 # future-version files must fail cleanly, never crash and never load silently.
 # ---------------------------------------------------------------------------
+def contrib_suite():
+    """pred_contrib is the one consumer that needs the stats section.
+
+    It is also where a FALB-loaded tree is most fragile: TreeSHAP sizes its
+    path buffer from max_depth_, which is DERIVED lazily and only recomputed
+    when leaf_depth_ is empty. A loader that leaves leaf_depth_ pre-sized (as
+    Tree's max_leaves constructor does) yields max_depth_ == 0, a 1-entry
+    buffer, and nondeterministic heap corruption on the first contrib call.
+    """
+    X, y = make_data(seed=21)
+    booster, _ = train(X, y, "objective=regression num_leaves=31 max_bin=255 verbose=-1")
+    n_feat = X.shape[1]
+
+    def contrib(handle, rows=8):
+        need = ctypes.c_int64(0)
+        check(LIB.FLC_BoosterCalcNumPredict(handle, ctypes.c_int(rows), ctypes.c_int(3),
+                                            ctypes.c_int(0), ctypes.c_int(-1),
+                                            ctypes.byref(need)))
+        out = np.zeros(need.value)
+        ol = ctypes.c_int64(0)
+        check(LIB.FLC_BoosterPredictForMat(
+            handle, np.ascontiguousarray(X, dtype=np.float64).ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(1), ctypes.c_int32(rows), ctypes.c_int32(n_feat), ctypes.c_int(1),
+            ctypes.c_int(3), ctypes.c_int(0), ctypes.c_int(-1), b"",
+            ctypes.byref(ol), out.ctypes.data_as(ctypes.c_void_p)))
+        return out[: ol.value]
+
+    ref = contrib(booster)
+    bad = 0
+    with_stats = load_falb(save_falb(booster, 1, 1))
+    got = contrib(with_stats)
+    ok = np.isfinite(got).all() and np.allclose(got, ref, atol=1e-9)
+    print(f"  {'PASS' if ok else 'FAIL'}  pred_contrib with stats: finite and matches original")
+    bad += 0 if ok else 1
+    # repeated cycles surface a heap smash that a single call can hide
+    for _ in range(3):
+        contrib(load_falb(save_falb(booster, 1, 1)))
+        _junk = [bytearray(1 << 20) for _ in range(16)]
+        del _junk
+    print("  PASS  pred_contrib repeated save/load/contrib cycles leave the heap intact")
+    # without the stats section it must REFUSE, not return NaN/Inf
+    core = load_falb(save_falb(booster, 0, 0))
+    try:
+        contrib(core)
+        print("  FAIL  core-only pred_contrib returned instead of refusing")
+        bad += 1
+    except RuntimeError as exc:
+        good = "with_stats" in str(exc)
+        print(f"  {'PASS' if good else 'FAIL'}  core-only pred_contrib refuses with a clear message")
+        bad += 0 if good else 1
+    return bad
+
+
 def robustness_suite():
     X, y = make_data(seed=3)
     booster, _ = train(X, y, "objective=regression num_leaves=31 max_bin=255 verbose=-1")
@@ -187,7 +240,7 @@ def robustness_suite():
     return accepted
 
 
-bad = robustness_suite()
+bad = robustness_suite() + contrib_suite()
 if bad:
     fails += bad
 

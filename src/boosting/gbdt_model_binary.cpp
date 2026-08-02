@@ -110,7 +110,15 @@ struct TreeIO {
   }
 
   /*! \brief text-loaded trees leave these sized-but-zero; match that so a
-   *  FALB-loaded tree behaves identically when a section was omitted. */
+   *  FALB-loaded tree behaves identically when a section was omitted.
+   *
+   *  leaf_depth_ and leaf_parent_ are deliberately left EMPTY, exactly as the
+   *  text constructor leaves them. They are lazily derived: RecomputeMaxDepth()
+   *  only calls RecomputeLeafDepths() when leaf_depth_ is empty, so pre-filling
+   *  it with zeros makes max_depth_ come out 0. TreeSHAP then sizes its path
+   *  buffer as max_depth_ + 1 == 1 and writes a real, deeper path past the end
+   *  -- silent heap corruption on any pred_contrib call. max_depth_ is set to
+   *  -1 for the same reason: the value is recomputed, never trusted. */
   static void ZeroFillMissing(Tree* t) {
     const int n_node = t->num_leaves_ - 1;
     if (t->split_gain_.empty()) t->split_gain_.resize(n_node, 0.0f);
@@ -119,8 +127,17 @@ struct TreeIO {
     if (t->internal_count_.empty()) t->internal_count_.resize(n_node, 0);
     if (t->leaf_weight_.empty()) t->leaf_weight_.resize(t->num_leaves_, 0.0);
     if (t->leaf_count_.empty()) t->leaf_count_.resize(t->num_leaves_, 0);
-    t->leaf_parent_.resize(t->num_leaves_, -1);
-    t->leaf_depth_.resize(t->num_leaves_, 0);
+    // The Tree(max_leaves, ...) constructor SIZES leaf_depth_/leaf_parent_
+    // (tree.cpp: leaf_depth_.resize(max_leaves_)), but the text loader leaves
+    // them empty and everything downstream derives them lazily. Clearing them
+    // is what makes RecomputeMaxDepth() actually recompute: it only calls
+    // RecomputeLeafDepths() when leaf_depth_ is EMPTY, so a pre-sized array of
+    // zeros yields max_depth_ == 0, and TreeSHAP then allocates a path buffer
+    // of max_depth_+1 == 1 entries and writes a real, deeper path past its end
+    // -- nondeterministic heap corruption on pred_contrib.
+    t->leaf_depth_.clear();
+    t->leaf_parent_.clear();
+    t->max_depth_ = -1;
   }
 };
 
@@ -767,7 +784,7 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
     TreeIO::SetStructure(tree.get(), std::move(split_feature), std::move(threshold),
                          std::move(decision_type), std::move(left_child),
                          std::move(right_child), std::move(leaf_value),
-                         rec.shrinkage, rec.max_depth);
+                         rec.shrinkage, -1);
 
     if (has_cat && rec.num_cat > 0) {
       const SectionEntry& cb = need(kSecCatBoundaries);
@@ -828,7 +845,12 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
   }
 
   num_iteration_for_pred_ = static_cast<int>(models_.size()) / num_tree_per_iteration_;
+  num_init_iteration_ = num_iteration_for_pred_;
   iter_ = 0;
+  // TreeSHAP divides by each node's data_count, so a model saved without the
+  // stats section would produce NaN/Inf contributions rather than fail. Record
+  // it and refuse loudly at the point of use.
+  falb_without_stats_ = !has_stats;
   return true;
 }
 

@@ -132,6 +132,13 @@ figures from the profiles in the PR discussions.
     multiclass, categorical/CTR features and non-oblivious grow policies. The
     leaf-index bit order (LSB-first over the listed splits) and the
     scale_and_bias convention were both determined by measurement, not docs.
+  - M3 DECIDED 2026-08-02 by measurement on the 45k-tree numerai artifact:
+    structural stats and training diagnostics stay OFF by default. Each nearly
+    doubles the file (core 45.6 MB / 10.3x; +stats 87.9 MB / 5.4x; +diagnostics
+    90.8 MB / 5.2x; both 133.1 MB / 3.5x), which is the wrong price for a
+    feature most models never invoke. This supersedes the earlier "DEFAULT ON"
+    amendment. The default is safe because a stats-less model now REFUSES
+    pred_contrib with a clear message rather than returning NaN/Inf.
   - Pickle flips to FALB only with an escape hatch (falcata.set_pickle_format /
     env var) and __setstate__ accepts text-payload pickles forever. New pickles
     are unreadable by stock lightgbm and older Falcata by design; numerai prod

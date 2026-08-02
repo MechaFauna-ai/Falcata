@@ -73,6 +73,18 @@ magic "FALB" | u32 version | u64 flags | header section | section table | sectio
 | categoricals | optional section: cat_boundaries u32, cat_threshold bitset u32 | spec'd v1, implementation may land M3 |
 | diagnostics | optional section (split_gain, counts, weights…) | written only with `with_diagnostics=True`; absence disables feature_importance(gain) with a clear error |
 
+**M3 DECIDED (2026-08-02, measured on the 45k-tree numerai model): both
+optional sections stay OFF by default.** Each roughly DOUBLES the file --
+core 45.6 MB (10.3x vs text), +structural stats 87.9 MB (5.4x, +93%),
++diagnostics 90.8 MB (5.2x, +99%), both 133.1 MB (3.5x). Paying +93% so that
+`pred_contrib` works without being asked is the wrong default when most models
+never call it; better encoding (f32 weights, varint counts) could shave part
+of the weight arrays but cannot change that conclusion, so it is not pursued.
+What makes the default SAFE is that a stats-less model now REFUSES
+`pred_contrib` with a clear message instead of silently returning NaN/Inf --
+TreeSHAP divides by each node's data count, so zero-filled counts produce
+garbage, not an error.
+
 **Sizing note — structural stats.** counts + weights are ~1.5M internal and
 ~1.55M leaf entries on the numerai reference; naively (u32 counts, f64 weights)
 that is ~+37 MB against a ~21 MB core, i.e. the headline is a core-only number.

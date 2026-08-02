@@ -452,6 +452,14 @@ class GBDT : public GBDTBase {
     }
     start_iteration_for_pred_ = start_iteration;
 
+    if (is_pred_contrib && falb_without_stats_) {
+      Log::Fatal(
+          "this model was loaded from a FALB file saved WITHOUT structural "
+          "stats, and pred_contrib (TreeSHAP) weights every path by each "
+          "node's data count -- without them the contributions would be "
+          "NaN/Inf rather than wrong-but-plausible. Re-save the model with "
+          "save_model(..., with_stats=True) (or format='txt').");
+    }
     if (is_pred_contrib && !models_initialized_) {
       std::lock_guard<std::mutex> lock(instance_mutex_);
       if (models_initialized_)
@@ -632,6 +640,8 @@ class GBDT : public GBDTBase {
   bool need_re_bagging_;
   bool balanced_bagging_;
   std::string loaded_parameter_;
+  /*! \brief loaded from FALB without the structural-stats section */
+  bool falb_without_stats_ = false;
   std::vector<int8_t> monotone_constraints_;
   Json forced_splits_json_;
   bool linear_tree_;
