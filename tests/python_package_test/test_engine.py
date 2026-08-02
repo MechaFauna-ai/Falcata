@@ -5083,3 +5083,129 @@ def test_cuda_dataset_device_type_unchangeable_after_construct(rng, dataset_devi
             ds,
             num_boost_round=1,
         )
+
+
+def _eval_freq_data(seed=0):
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal((2000, 8))
+    y = x[:, 0] * 1.5 + x[:, 1] - 0.5 * x[:, 2] + rng.standard_normal(2000) * 0.3
+    return x[:1500], y[:1500], x[1500:], y[1500:]
+
+
+def test_eval_freq_reduces_feval_calls_without_changing_the_model():
+    """eval_freq must be purely about WHEN evaluation happens.
+
+    Boosting is untouched, so the trained model has to come out identical;
+    only the number of feval invocations changes.
+    """
+    xt, yt, xv, yv = _eval_freq_data()
+    calls = {"n": 0}
+
+    def counting_feval(preds, eval_data):
+        calls["n"] += 1
+        return "l1", float(np.mean(np.abs(preds - eval_data.get_label()))), False
+
+    params = {
+        "objective": "regression",
+        "verbose": -1,
+        "num_leaves": 7,
+        "learning_rate": 0.1,
+        "seed": 0,
+        "deterministic": True,
+        "num_threads": 1,
+    }
+    rounds = 40
+    out = {}
+    for freq in (1, 10):
+        calls["n"] = 0
+        train_set = lgb.Dataset(xt, label=yt)
+        valid_set = lgb.Dataset(xv, label=yv, reference=train_set)
+        booster = lgb.train(
+            params, train_set, num_boost_round=rounds, valid_sets=[valid_set], feval=counting_feval, eval_freq=freq
+        )
+        out[freq] = (calls["n"], booster.model_to_string())
+
+    n1, model1 = out[1]
+    n10, model10 = out[10]
+    assert n1 == rounds, f"expected one eval per iteration, got {n1}"
+    # rounds/freq, plus the always-evaluated final iteration if not aligned
+    assert n10 == rounds // 10, f"expected {rounds // 10} evals, got {n10}"
+    assert model1 == model10, "eval_freq must not change the trained model"
+
+
+def test_eval_freq_always_evaluates_the_final_iteration():
+    """The reported best score must describe the finished model."""
+    xt, yt, xv, yv = _eval_freq_data(1)
+    seen = []
+
+    def rec_feval(preds, eval_data):
+        seen.append(len(preds))
+        return "l2", float(np.mean((preds - eval_data.get_label()) ** 2)), False
+
+    params = {"objective": "regression", "verbose": -1, "num_leaves": 7, "seed": 0, "num_threads": 1}
+    train_set = lgb.Dataset(xt, label=yt)
+    valid_set = lgb.Dataset(xv, label=yv, reference=train_set)
+    # 25 rounds at freq 10 -> evals at 10, 20 and the final 25
+    booster = lgb.train(params, train_set, num_boost_round=25, valid_sets=[valid_set], feval=rec_feval, eval_freq=10)
+    assert len(seen) == 3, f"expected evals at 10, 20, 25; got {len(seen)}"
+    assert booster.best_score, "final evaluation must populate best_score"
+
+
+def test_eval_freq_early_stopping_counts_evaluations():
+    """stopping_rounds counts EVALUATIONS under eval_freq, not iterations.
+
+    A metric that gets worse every evaluation must stop after
+    stopping_rounds evaluations, i.e. stopping_rounds*eval_freq iterations
+    past the best — not after stopping_rounds iterations.
+    """
+    xt, yt, xv, yv = _eval_freq_data(2)
+    step = 5
+    worsening = {"i": 0}
+
+    def worsening_feval(preds, eval_data):
+        worsening["i"] += 1
+        return "fake", float(worsening["i"]), False  # lower is better
+
+    params = {"objective": "regression", "verbose": -1, "num_leaves": 7, "seed": 0, "num_threads": 1}
+    train_set = lgb.Dataset(xt, label=yt)
+    valid_set = lgb.Dataset(xv, label=yv, reference=train_set)
+    rounds = 3
+    booster = lgb.train(
+        params,
+        train_set,
+        num_boost_round=200,
+        valid_sets=[valid_set],
+        feval=worsening_feval,
+        eval_freq=step,
+        callbacks=[lgb.early_stopping(stopping_rounds=rounds, verbose=False)],
+    )
+    # The metric worsens at every evaluation, so the best is the FIRST one
+    # (iteration `step`) and `rounds` further evaluations must elapse before
+    # stopping: iteration step*(1+rounds), exactly.
+    #
+    # Asserted exactly, not as an upper bound. A loose bound here passed
+    # while stopping_rounds was still differencing iteration indices, which
+    # fired on the SECOND evaluation for any eval_freq > stopping_rounds --
+    # the bug this test exists to pin down.
+    # Assert on the EVALUATION COUNT, which is what "counts evaluations"
+    # actually means and is directly observable. current_iteration() is the
+    # wrong probe here: after an early stop it reports best_iteration, not
+    # how far training got, so it reads step*1 for any correct or incorrect
+    # stopping point.
+    #
+    # The metric worsens at every evaluation, so the best is the first one
+    # and exactly `rounds` further evaluations must elapse before stopping.
+    # If this reads 2, stopping_rounds is differencing iteration indices
+    # again, which fires on the second evaluation for any
+    # eval_freq > stopping_rounds -- the bug this test exists to pin down.
+    assert worsening["i"] == 1 + rounds, (
+        f"{worsening['i']} evaluations before stopping, expected "
+        f"{1 + rounds} (the best one plus stopping_rounds without gain)"
+    )
+    assert booster.num_trees() < 200, "early stopping did not fire"
+
+
+def test_eval_freq_rejects_zero():
+    xt, yt, _, _ = _eval_freq_data(3)
+    with pytest.raises(ValueError, match="eval_freq"):
+        lgb.train({"objective": "regression", "verbose": -1}, lgb.Dataset(xt, label=yt), num_boost_round=5, eval_freq=0)

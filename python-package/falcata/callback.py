@@ -138,6 +138,7 @@ class _RecordEvaluationCallback:
     def __init__(self, eval_result: _EvalResultDict) -> None:
         self.order = 20
         self.before_iteration = False
+        self._initialized = False
 
         if not isinstance(eval_result, dict):
             raise TypeError("eval_result should be a dictionary")
@@ -160,13 +161,16 @@ class _RecordEvaluationCallback:
                 self.eval_result[dataset_name].setdefault(f"{metric_name}-stdv", [])
 
     def __call__(self, env: CallbackEnv) -> None:
-        if env.iteration == env.begin_iteration:
-            self._init(env)
         if env.evaluation_result_list is None:
             raise RuntimeError(
                 "record_evaluation() callback enabled but no evaluation results found. This is a probably bug in Falcata. "
                 "Please report it at https://github.com/MechaFauna-ai/Falcata/issues"
             )
+        if not env.evaluation_result_list:
+            return  # train(eval_freq=N) skipped evaluation this iteration
+        if not self._initialized:
+            self._initialized = True
+            self._init(env)
         for item in env.evaluation_result_list:
             # for cv(), 'metric_value' is actually a mean of metric values over all CV folds
             dataset_name, metric_name, metric_value, *_ = item
@@ -294,6 +298,7 @@ class _EarlyStoppingCallback:
         self.first_metric_only = first_metric_only
         self.verbose = verbose
         self.min_delta = min_delta
+        self._initialized = False
 
         self._reset_storages()
 
@@ -303,6 +308,13 @@ class _EarlyStoppingCallback:
         self.best_score_list: List[_ListOfEvalResultTuples] = []
         self.cmp_op: List[Callable[[float, float, float], bool]] = []
         self.first_metric = ""
+        # Evaluations seen since each metric last improved. Counting
+        # EVALUATIONS rather than differencing iteration indices is what makes
+        # stopping_rounds mean the same thing under train(eval_freq=N): with
+        # eval_freq=1 the two are identical, but at eval_freq=5000 the index
+        # difference jumps by 5000 per evaluation and any stopping_rounds
+        # below that fires on the second evaluation regardless of its value.
+        self.evals_since_best: List[int] = []
 
     def _gt_delta(self, *, curr_score: float, best_score: float, delta: float) -> bool:
         return curr_score > best_score + delta
@@ -403,20 +415,26 @@ class _EarlyStoppingCallback:
             )
 
     def __call__(self, env: CallbackEnv) -> None:
-        if env.iteration == env.begin_iteration:
-            self._init(env)
-        if not self.enabled:
-            return
         if env.evaluation_result_list is None:
             raise RuntimeError(
                 "early_stopping() callback enabled but no evaluation results found. This is a probably bug in Falcata. "
                 "Please report it at https://github.com/MechaFauna-ai/Falcata/issues"
             )
         if not env.evaluation_result_list:
-            # train(eval_freq=N) skipped evaluation this iteration. Returning
-            # rather than treating it as "no improvement" is what makes
-            # stopping_rounds count EVALUATIONS instead of iterations, which
-            # is the only reading that stays stable when eval_freq changes.
+            # train(eval_freq=N) skipped evaluation on this iteration. Return
+            # rather than treating it as "no improvement", which is what makes
+            # stopping_rounds count EVALUATIONS instead of iterations — the
+            # only reading that stays stable when eval_freq changes. Note this
+            # also covers iteration 0 under eval_freq > 1, which is why _init
+            # below keys on the first RESULT rather than the first iteration.
+            return
+        if not self._initialized:
+            # Deferred to here: _init reads the metric names out of the
+            # results to size its per-metric storage, so it cannot run before
+            # the first actual evaluation.
+            self._initialized = True
+            self._init(env)
+        if not self.enabled:
             return
         # self.best_score_list is initialized to an empty list
         first_time_updating_best_score_list = self.best_score_list == []
@@ -429,8 +447,12 @@ class _EarlyStoppingCallback:
                 self.best_iter[i] = env.iteration
                 if first_time_updating_best_score_list:
                     self.best_score_list.append(env.evaluation_result_list)
+                    self.evals_since_best.append(0)
                 else:
                     self.best_score_list[i] = env.evaluation_result_list
+                    self.evals_since_best[i] = 0
+            else:
+                self.evals_since_best[i] += 1
             if self.first_metric_only and self.first_metric != metric_name:
                 continue  # use only the first metric for early stopping
             if self._is_train_set(
@@ -438,7 +460,7 @@ class _EarlyStoppingCallback:
                 env=env,
             ):
                 continue  # train data for lgb.cv or sklearn wrapper (underlying lgb.train)
-            elif env.iteration - self.best_iter[i] >= self.stopping_rounds:
+            elif self.evals_since_best[i] >= self.stopping_rounds:
                 if self.verbose:
                     eval_result_str = "\t".join(
                         [_format_eval_result(x, show_stdv=True) for x in self.best_score_list[i]]
