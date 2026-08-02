@@ -9,12 +9,24 @@ on:
   push:
     branches:
       - master
+    # Docs-only commits cannot move a fingerprint or a timing, and this box is
+    # a shared dev machine -- running the GPU suite for a README edit only
+    # burns the GPU and mails noise.
+    paths:
+      - "src/**"
+      - "include/**"
+      - "python-package/**"
+      - "tests/gates/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/gpu_gates.yml"
   pull_request:
   workflow_dispatch:
 
 concurrency:
+  # A push train should leave ONE run, on the newest commit: superseded runs
+  # are cancelled instead of queueing behind each other on the single GPU.
   group: gpu-gates
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -43,5 +55,9 @@ jobs:
           .gates-venv/bin/python tests/gates/falb_python.py
       - name: Selective-growth equivalence (vs classic leaf-wise)
         run: .gates-venv/bin/python tests/gates/selective_equivalence.py --seeds 8
-      - name: Perf gate (vs machine-local rolling baseline)
+      # Advisory on this box, never a failure: the GPU is shared with dev and
+      # training work, so a timing here is a hint, not a verdict. The nightly
+      # run gates on it for real, on a quieter machine state.
+      - name: Perf gate (vs machine-local rolling baseline, advisory)
+        continue-on-error: true
         run: .gates-venv/bin/python tests/gates/perf_gate.py --record
