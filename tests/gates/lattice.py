@@ -94,8 +94,18 @@ def build_cells():
         "efb",
         "imbalanced",
         "missing",
+        "missing-mfb0",
     ]:
         cell(f"{profile}/quant", profile, perf=profile in ("dense", "int8wide"))
+
+    # deep + classic twins for the missing-bin-0 shape: the synthesised bin 0
+    # feeds the level-batched and the classic split search through the same
+    # kernel, and only the deep cell exercises enough leaves to catch a
+    # threshold that is right at the root and wrong further down.
+    cell("missing-mfb0/quant-deep", "missing-mfb0",
+         {"num_leaves": 255, "max_depth": 12, "min_data_in_leaf": 5})
+    cell("missing-mfb0/quant-classic", "missing-mfb0", {"cuda_plan": "auto,hybrid:off"})
+    cell("missing-mfb0/fixedpoint", "missing-mfb0", {"quant_mode": "fixedpoint"})
 
     # --- deep trees: where leaf-wise/level-batched divergence bugs live ----- #
     for profile in ["dense", "sampled", "int8wide"]:
@@ -312,6 +322,21 @@ def build_profile(name):
         y = X @ rng.standard_normal(m) + 0.3 * rng.standard_normal(n)
         X[rng.random((n, m)) < 0.3] = np.nan
         y[np.isnan(y)] = 0.0
+    elif name == "missing-mfb0":
+        # NaN features whose MOST FREQUENT bin is bin 0 -- the one shape that
+        # sets na_as_missing && mfb_offset==1, where the histogram omits bin 0
+        # and the forward split scan has to synthesise it from the leaf total.
+        # (2026-08 numerai bug: the quantized CUDA kernel skipped that entirely,
+        # so quantized runs on NaN data silently trained on wrong left sums and
+        # off-by-one thresholds. The plain `missing` profile misses this: its
+        # Gaussian features spread mass evenly, so mfb is never bin 0.)
+        m = 20
+        X = rng.choice([0.0, 1.0, 2.0, 3.0, 4.0], size=(n, m),
+                       p=[0.4, 0.15, 0.15, 0.15, 0.15]).astype(np.float64)
+        w = rng.standard_normal(m)
+        y = (X - 2.0) @ w + 0.3 * rng.standard_normal(n)
+        X[rng.random((n, m)) < 0.2] = np.nan
+        base["max_bin"] = 5
     elif name == "bigrow":
         # 2M rows x 64 quant bins x compact view: the packed-int16 shared-hist
         # overflow class (2026-07 production corruption: the compact-view grid

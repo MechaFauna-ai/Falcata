@@ -611,7 +611,23 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
     (task->skip_default_bin && (threadIdx_x + task->mfb_offset) == static_cast<int>(task->default_bin));
   const uint32_t feature_num_bin_minus_offset = task->num_bin - task->mfb_offset;
   if (!REVERSE) {
-    if (threadIdx_x < feature_num_bin_minus_offset && !skip_sum) {
+    if (task->na_as_missing && task->mfb_offset == 1) {
+      // NaN is its own bin AND the most-frequent bin 0 is not stored in the
+      // histogram, so the forward scan must read shifted by one and synthesise
+      // bin 0 from the leaf total (done right after the sync below) -- exactly
+      // what the non-quantized kernel does. Without this the quantized scan
+      // drops every most-frequent-bin row from the left sums and reports
+      // thresholds one bin off from what the partitioner then applies.
+      if (threadIdx_x < static_cast<uint32_t>(task->num_bin) && threadIdx_x > 0) {
+        const unsigned int bin_offset = threadIdx_x - 1;
+        if (USE_16BIT_BIN_HIST && !USE_16BIT_ACC_HIST) {
+          const int32_t local_grad_hess_hist_int32 = feature_hist_ptr[bin_offset];
+          local_grad_hess_hist = (static_cast<int64_t>(static_cast<int16_t>(local_grad_hess_hist_int32 >> 16)) << 32) | (static_cast<int64_t>(local_grad_hess_hist_int32 & 0x0000ffff));
+        } else {
+          local_grad_hess_hist = feature_hist_ptr[bin_offset];
+        }
+      }
+    } else if (threadIdx_x < feature_num_bin_minus_offset && !skip_sum) {
       const unsigned int bin_offset = threadIdx_x;
       if (USE_16BIT_BIN_HIST && !USE_16BIT_ACC_HIST) {
         const int32_t local_grad_hess_hist_int32 = feature_hist_ptr[bin_offset];
@@ -633,6 +649,27 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
     }
   }
   __syncthreads();
+  if (!REVERSE && task->na_as_missing && task->mfb_offset == 1) {
+    // bin 0 (the unstored most-frequent bin) = leaf total - sum of stored bins.
+    // Packed accumulators add field-wise, so the reduction works directly on the
+    // packed representation; the int64 detour below is only to reuse the leaf
+    // total, which is always packed grad32<<32 | hess32.
+    const ACC_HIST_TYPE sum_non_default = ShuffleReduceSum<ACC_HIST_TYPE>(
+      local_grad_hess_hist, reinterpret_cast<ACC_HIST_TYPE*>(shared_int_buffer), blockDim.x);
+    if (threadIdx_x == 0) {
+      const int64_t non_default_packed = USE_16BIT_ACC_HIST ?
+        ((static_cast<int64_t>(static_cast<int16_t>(sum_non_default >> 16)) << 32) |
+         static_cast<int64_t>(sum_non_default & 0x0000ffff)) :
+        static_cast<int64_t>(sum_non_default);
+      const int64_t default_bin_packed = sum_gradients_hessians - non_default_packed;
+      local_grad_hess_hist = USE_16BIT_ACC_HIST ?
+        static_cast<ACC_HIST_TYPE>(static_cast<int32_t>(
+          (static_cast<uint32_t>(static_cast<int32_t>(default_bin_packed >> 32)) << 16) |
+          (static_cast<uint32_t>(default_bin_packed) & 0x0000ffffu))) :
+        static_cast<ACC_HIST_TYPE>(default_bin_packed);
+    }
+    __syncthreads();
+  }
   local_gain = kMinScore;
   local_grad_hess_hist = ShufflePrefixSum<ACC_HIST_TYPE>(local_grad_hess_hist, reinterpret_cast<ACC_HIST_TYPE*>(shared_int_buffer));
   GAIN_T sum_left_gradient = 0.0f;
@@ -671,7 +708,9 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
       }
     }
   } else {
-    if (threadIdx_x <= feature_num_bin_minus_offset - 2 && !skip_sum) {
+    const uint32_t end = (task->na_as_missing && task->mfb_offset == 1) ?
+      static_cast<uint32_t>(task->num_bin - 2) : feature_num_bin_minus_offset - 2;
+    if (threadIdx_x <= end && !skip_sum) {
       sum_left_gradient_hessian = USE_16BIT_ACC_HIST ?
         (static_cast<int64_t>(static_cast<int16_t>(local_grad_hess_hist >> 16)) << 32) | static_cast<int64_t>(local_grad_hess_hist & 0x0000ffff) :
         local_grad_hess_hist;
@@ -692,7 +731,9 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
         // gain with split is worse than without split
         if (current_gain > min_gain_shift) {
           local_gain = current_gain - min_gain_shift;
-          threshold_value = static_cast<uint32_t>(threadIdx_x + task->mfb_offset);
+          threshold_value = (task->na_as_missing && task->mfb_offset == 1) ?
+            static_cast<uint32_t>(threadIdx_x) :
+            static_cast<uint32_t>(threadIdx_x + task->mfb_offset);
           threshold_found = true;
         }
       }

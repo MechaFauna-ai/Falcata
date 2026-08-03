@@ -110,6 +110,26 @@
    "metric": 71.451373,
    "metric_name": "rmse"
   },
+  "missing-mfb0/fixedpoint": {
+   "md5": "821f88ac97ead14828263602e6b07161",
+   "metric": 4.271658,
+   "metric_name": "rmse"
+  },
+  "missing-mfb0/quant": {
+   "md5": "eb897dd579e345ed84ef64a087e2e9dc",
+   "metric": 4.155652,
+   "metric_name": "rmse"
+  },
+  "missing-mfb0/quant-classic": {
+   "md5": "26828dd5085eba77924878d607b5331c",
+   "metric": 4.155652,
+   "metric_name": "rmse"
+  },
+  "missing-mfb0/quant-deep": {
+   "md5": "0942c1f4f1f95cabbea16e6d284a7012",
+   "metric": 4.017718,
+   "metric_name": "rmse"
+  },
   "missing/quant": {
    "md5": "c2b43a11209a653030abdf52e44e5c65",
    "metric": 3.33428,
