@@ -395,6 +395,12 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
   cuda_best_split_finder_->BeforeTrain(col_sampler_.is_feature_used_bytree());
   cuda_histogram_constructor_->SetFeatureUsedBytree(col_sampler_.is_feature_used_bytree());
   cuda_histogram_constructor_->BuildCompactView(col_sampler_.is_feature_used_bytree());
+  if (nccl_communicator_ != nullptr) {
+    // this tree's feature sample decides which histogram bins the all-reduce
+    // has to carry; everything else is dead storage no kernel of this tree
+    // reads (see BuildNCCLReduceBinIndex)
+    BuildNCCLReduceBinIndex();
+  }
   // Build per-tree compact column data for the partition kernels.
   BuildCompactColumnView();
   leaf_data_start_[0] = 0;
@@ -3529,6 +3535,38 @@ void CUDASingleGPUTreeLearner::SetNCCLInfo(
   nccl_stream_ = CUDAStreamCreate();
 }
 
+bool CUDASingleGPUTreeLearner::BuildNCCLReduceBinIndex() {
+  // Only worth it when feature_fraction sampling actually excludes features.
+  if (!cuda_histogram_constructor_->any_feature_unused_bytree()) {
+    nccl_reduce_num_bins_ = 0;
+    return false;
+  }
+  const std::vector<uint8_t>& used = cuda_histogram_constructor_->host_bin_used_bytree();
+  if (static_cast<int>(used.size()) != num_total_bin_) {
+    nccl_reduce_num_bins_ = 0;
+    return false;
+  }
+  std::vector<int> idx;
+  idx.reserve(used.size());
+  for (int b = 0; b < num_total_bin_; ++b) {
+    if (used[b]) idx.push_back(b);
+  }
+  // compaction costs a gather + a scatter; only pay it when it removes real
+  // traffic (the collective is latency-bound below a few tens of KB anyway)
+  if (idx.empty() || static_cast<double>(idx.size()) > 0.75 * num_total_bin_) {
+    nccl_reduce_num_bins_ = 0;
+    return false;
+  }
+  nccl_reduce_num_bins_ = static_cast<int>(idx.size());
+  if (cuda_nccl_reduce_bin_idx_.Size() < idx.size()) {
+    cuda_nccl_reduce_bin_idx_.Resize(idx.size());
+    cuda_nccl_reduce_buf_.Resize(idx.size() * 2);
+  }
+  CopyFromHostToCUDADevice<int>(cuda_nccl_reduce_bin_idx_.RawData(), idx.data(),
+                                idx.size(), __FILE__, __LINE__);
+  return true;
+}
+
 void CUDASingleGPUTreeLearner::NCCLReduceHistogram(const int pipeline) {
   // ConstructHistogramForLeaf is ASYNC: it records construct_done_events_ on
   // the construct stream rather than syncing. The all-reduce below runs on
@@ -3566,14 +3604,30 @@ void CUDASingleGPUTreeLearner::NCCLReduceHistogram(const int pipeline) {
   } else {
     hist_t* smaller_leaf_hist_pointer = cuda_histogram_constructor_->cuda_hist_pointer() +
         leaf_to_hist_index_map_[smaller_leaf_index_] * num_total_bin_ * 2;
-    NCCLAllReduce<hist_t>(
-      smaller_leaf_hist_pointer,
-      smaller_leaf_hist_pointer,
-      static_cast<size_t>(num_total_bin_) * 2,
-      ncclFloat64,
-      ncclSum,
-      nccl_communicator_,
-      nccl_stream_);
+    if (nccl_reduce_num_bins_ > 0) {
+      // ship only the bins this tree's feature sample can read
+      LaunchNCCLGatherBins(smaller_leaf_hist_pointer, cuda_nccl_reduce_buf_.RawData(),
+                           nccl_reduce_num_bins_, nccl_stream_);
+      NCCLAllReduce<double>(
+        cuda_nccl_reduce_buf_.RawData(),
+        cuda_nccl_reduce_buf_.RawData(),
+        static_cast<size_t>(nccl_reduce_num_bins_) * 2,
+        ncclFloat64,
+        ncclSum,
+        nccl_communicator_,
+        nccl_stream_);
+      LaunchNCCLScatterBins(cuda_nccl_reduce_buf_.RawData(), smaller_leaf_hist_pointer,
+                            nccl_reduce_num_bins_, nccl_stream_);
+    } else {
+      NCCLAllReduce<hist_t>(
+        smaller_leaf_hist_pointer,
+        smaller_leaf_hist_pointer,
+        static_cast<size_t>(num_total_bin_) * 2,
+        ncclFloat64,
+        ncclSum,
+        nccl_communicator_,
+        nccl_stream_);
+    }
   }
   SynchronizeCUDAStream(nccl_stream_, __FILE__, __LINE__);
 }

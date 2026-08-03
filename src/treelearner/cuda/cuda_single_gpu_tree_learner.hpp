@@ -350,7 +350,23 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
 
   void LaunchCalcLeafValuesGivenGradStat(CUDATree* cuda_tree, const data_size_t* num_data_in_leaf);
 
-  void NCCLReduceHistogram();
+  void NCCLReduceHistogram(const int pipeline);
+
+  /*! \brief (re)build the compacted list of histogram bins this tree can read,
+   *  from the histogram constructor's per-tree feature sample. Returns true
+   *  when compaction is worthwhile (sampling active and a real reduction). */
+  bool BuildNCCLReduceBinIndex();
+
+  /*! \brief gather the used bins of `hist` into `cuda_nccl_reduce_buf_`
+   *  (2 doubles per bin), and the inverse. */
+  void LaunchNCCLGatherBins(const hist_t* hist, double* out, int num_bins, cudaStream_t stream);
+  void LaunchNCCLScatterBins(const double* in, hist_t* hist, int num_bins, cudaStream_t stream);
+
+  /*! \brief compacted bin indices this tree reads (empty = reduce everything) */
+  CUDAVector<int> cuda_nccl_reduce_bin_idx_;
+  /*! \brief staging buffer for the compacted all-reduce (2 doubles per bin) */
+  CUDAVector<double> cuda_nccl_reduce_buf_;
+  int nccl_reduce_num_bins_ = 0;
 
   // Per-tree compact column data: transposes the on-GPU row-major bin matrix into
   // a column-major buffer for partition kernels, avoiding the 17 GB per-column

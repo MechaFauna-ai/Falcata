@@ -146,6 +146,13 @@ class CUDAHistogramConstructor {
    *  reading the smaller-leaf histogram, replacing a per-split device sync. */
   cudaEvent_t construct_done_event() const { return construct_done_events_[0]; }
 
+  /*! \brief per-tree bin-used mask (host copy) and whether sampling is active.
+   *  The NCCL path uses these to all-reduce ONLY the bins this tree's
+   *  feature_fraction sample can read: the rest are dead storage, and at
+   *  feature_fraction=0.1 they are 90% of the message. */
+  const std::vector<uint8_t>& host_bin_used_bytree() const { return host_bin_used_bytree_; }
+  bool any_feature_unused_bytree() const { return any_feature_unused_bytree_; }
+
 
   /*! \brief number of independent (stream, event-pair) pipelines for hybrid
    *  level-batched growth; pairs of one level round-robin across them so their

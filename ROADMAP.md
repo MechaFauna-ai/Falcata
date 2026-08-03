@@ -189,6 +189,20 @@ Multi-GPU had never been run. Six findings, five fixed:
    off. The global per-leaf histogram bit widths were never maintained past
    the root (now fixed), but that is not sufficient. Refuses at Init.
 
+OPTIMIZATION 1 of 3 LANDED (colsample-aware reduce): with feature_fraction < 1
+the per-leaf histogram still spans EVERY feature's bins, but only the sampled
+features' bins are ever read, so the all-reduce was shipping (1 - fraction) of
+the message for nothing. The live bins are now gathered into a contiguous
+staging buffer, all-reduced once, and scattered back. Measured on 2x RTX 3090,
+1.5M x 200, 255 leaves: 2-GPU overhead falls from ~68 ms/tree (ff=1.0) to
+~48 ms/tree (ff=0.1) -- the byte count drops 10x (202 KB -> 20 KB per
+collective) but only ~20 ms of the overhead goes with it.
+
+THE REMAINING COST IS LATENCY, NOT BANDWIDTH: ~254 collectives per tree at
+~190 us each. That is what optimization 2 (level-batched all-reduce, ~254 ->
+~10 collectives per tree) has to fix; it is now clearly the decisive one, and
+bandwidth tricks cannot substitute for it.
+
 PERFORMANCE: 2 GPUs are ~3.2x SLOWER than 1 on BOTH pairs, and the A100 pair
 is no better than the 3090 pair despite far faster GPUs -- the cost is the
 per-split collective, not compute. NVLink could not be obtained on vast.ai:

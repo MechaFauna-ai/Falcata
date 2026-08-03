@@ -491,3 +491,53 @@ void CUDASingleGPUTreeLearner::LaunchLinearAddScoreKernel(
 }  // namespace Falcata
 
 #endif  // USE_CUDA
+
+namespace Falcata {
+
+// ---- NCCL compacted histogram reduce -------------------------------------
+// With feature_fraction < 1 the per-leaf histogram still spans EVERY feature's
+// bins, but only the sampled features' bins are ever read. All-reducing the
+// whole array therefore ships (1 - feature_fraction) of the message for
+// nothing -- 90% of it at numerai's feature_fraction=0.1. These two kernels
+// pack the readable bins into a contiguous staging buffer so one collective
+// moves only the live data, and unpack afterwards.
+
+__global__ void NCCLGatherBinsKernel(const hist_t* __restrict__ hist,
+                                     const int* __restrict__ idx,
+                                     double* __restrict__ out,
+                                     const int num_bins) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= num_bins) return;
+  const int bin = idx[i];
+  out[2 * i] = hist[2 * bin];
+  out[2 * i + 1] = hist[2 * bin + 1];
+}
+
+__global__ void NCCLScatterBinsKernel(const double* __restrict__ in,
+                                      const int* __restrict__ idx,
+                                      hist_t* __restrict__ hist,
+                                      const int num_bins) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= num_bins) return;
+  const int bin = idx[i];
+  hist[2 * bin] = in[2 * i];
+  hist[2 * bin + 1] = in[2 * i + 1];
+}
+
+void CUDASingleGPUTreeLearner::LaunchNCCLGatherBins(const hist_t* hist, double* out,
+                                                    int num_bins, cudaStream_t stream) {
+  const int block = 256;
+  const int grid = (num_bins + block - 1) / block;
+  NCCLGatherBinsKernel<<<grid, block, 0, stream>>>(
+      hist, cuda_nccl_reduce_bin_idx_.RawData(), out, num_bins);
+}
+
+void CUDASingleGPUTreeLearner::LaunchNCCLScatterBins(const double* in, hist_t* hist,
+                                                     int num_bins, cudaStream_t stream) {
+  const int block = 256;
+  const int grid = (num_bins + block - 1) / block;
+  NCCLScatterBinsKernel<<<grid, block, 0, stream>>>(
+      in, cuda_nccl_reduce_bin_idx_.RawData(), hist, num_bins);
+}
+
+}  // namespace Falcata
