@@ -157,33 +157,32 @@ figures from the profiles in the PR discussions.
     pipelines), xgboost transformed base_score -> raw margin, catboost
     scale/bias, pinned source-library versions in CI.
 
-## Multi-GPU (NCCL) -- CURRENTLY NON-FUNCTIONAL
+## Multi-GPU (NCCL) -- WORKS as of 2026-08-03, unoptimized
 
-First real 2-GPU run, 2026-08-02 (rented 2x RTX 3090, PCIe PHB, no NVLink).
-Multi-GPU had never actually been executed; it fails in a chain, and two links
-are now fixed:
+First working 2-GPU training (rented 2x RTX 3090, PCIe SYS, no NVLink).
+Verified: 2M x 50 binary, 200 trees -- 1 GPU auc 0.80870, 2 GPU auc 0.80935
+(parity), no hang. Four bugs had to be fixed; multi-GPU had never been run.
 
-1. FIXED: cross-device illegal access. Each rank built its row-subset by having
-   a kernel read the FULL dataset's column pointers -- which live on ANOTHER
-   GPU. Nothing in the tree enables peer access, and the driver refuses P2P
-   outright on GeForce parts, so that read can only ever fault. The subset is
-   now built from the host-side copy CopySubrowHostPart already makes.
-2. FIXED: CalcBlockDim CHECK on empty leaves. An EMPTY local leaf is normal
-   under data-parallel training -- splits come from ALL-REDUCED histograms, so
-   a leaf holding rows on one rank can hold none on another -- but the block
-   arithmetic produced a negative block size and tripped a CHECK.
-3. OPEN: ranks deadlock. With both fixes in, training starts and then hangs:
-   one rank stopped at 25 leaves ("no further splits with positive gain")
-   while the other kept growing, so they issue different numbers of NCCL
-   collectives and block forever. Some rank-visible decision still derives
-   from LOCAL state where it must be global. The histogram-derived gains are
-   global (histograms are all-reduced) and smaller/larger selection already
-   uses global_num_data_in_leaf_, so the divergence is elsewhere -- finding it
-   is the next step, and every later optimization depends on it.
+1. Cross-device illegal access: each rank built its row subset by having a
+   kernel read the FULL dataset's column pointers, which live on ANOTHER GPU.
+   Nothing enables peer access and the driver refuses P2P on GeForce, so this
+   could never work. Now built from the host-side subset copy.
+2. CalcBlockDim CHECK on empty leaves: an empty LOCAL leaf is normal when
+   splits come from all-reduced histograms; the block arithmetic returned -1.
+3. Global child counts were never written. Slots 16/17 of the split-info
+   buffer are READ to pick the smaller leaf and to feed
+   global_num_data_in_leaf_, but nothing ever wrote them -- every rank read
+   stale garbage, independently.
+4. THE deadlock: the histogram all-reduce ran on nccl_stream_ without waiting
+   on the construct-done event recorded on the CONSTRUCT stream, so it reduced
+   half-built histograms. Wrong gains, ranks growing different trees, and
+   finally a hang when they issued different numbers of collectives.
 
-Until (3) is fixed, num_gpu>1 does not train. The level-batched all-reduce in
-docs/design/nccl-level-allreduce-plan.md is an OPTIMIZATION of a path that
-does not yet work, so it is blocked behind this.
+PERFORMANCE IS BAD AND UNOPTIMIZED: 64.3 ms/tree on 2 GPUs vs 20.5 ms on 1
+(3.1x SLOWER). Expected -- the current path does one all-reduce plus one FULL
+stream sync per split, i.e. ~2*num_leaves round trips per tree, on a PCIe link
+with no NVLink. The level-batched all-reduce in
+docs/design/nccl-level-allreduce-plan.md is the fix and is now unblocked.
 
 ## Correctness / determinism
 

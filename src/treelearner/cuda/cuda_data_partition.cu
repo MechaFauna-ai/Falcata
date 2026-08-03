@@ -845,10 +845,25 @@ __global__ void SplitTreeStructureKernel(const int left_leaf_index,
   } else if (global_thread_index == 9) {
     cuda_split_info_buffer_for_hessians[1] = best_split_info->right_sum_hessians;
     cuda_split_info_buffer_for_hessians[3] = best_split_info->right_sum_gradients;
+  } else if (global_thread_index == 10 && USE_NCCL_REDUCE) {
+    // Slots 16/17 are the GLOBAL child counts the host reads back into
+    // global_num_data_in_leaf_. Nothing used to write them: the buffer is
+    // reused across splits and never cleared, so every rank read stale
+    // garbage -- independently. That desynchronised both the smaller/larger
+    // choice below (ranks then all-reduce DIFFERENT leaves) and the
+    // min_data_in_leaf validity gates (one rank stops growing while the other
+    // continues), which is exactly how 2-GPU training deadlocked.
+    // best_split_info's counts come from the ALL-REDUCED histogram, so they
+    // are already global and identical on every rank.
+    cuda_split_info_buffer[16] = best_split_info->left_count;
+    cuda_split_info_buffer[17] = best_split_info->right_count;
   }
 
+  // Read the counts from the split info directly rather than through the
+  // buffer: the writes above land in another thread, and there is no barrier
+  // between them and this read.
   bool left_is_smaller = USE_NCCL_REDUCE ?
-    cuda_split_info_buffer[16] < cuda_split_info_buffer[17] :
+    best_split_info->left_count < best_split_info->right_count :
     cuda_leaf_num_data[left_leaf_index] < cuda_leaf_num_data[right_leaf_index];
 
   if (left_is_smaller) {

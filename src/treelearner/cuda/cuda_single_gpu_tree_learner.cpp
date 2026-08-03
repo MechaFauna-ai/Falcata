@@ -3516,6 +3516,20 @@ void CUDASingleGPUTreeLearner::SetNCCLInfo(
 }
 
 void CUDASingleGPUTreeLearner::NCCLReduceHistogram() {
+  // ConstructHistogramForLeaf is ASYNC: it records construct_done_events_ on
+  // the construct stream rather than syncing. The all-reduce below runs on
+  // nccl_stream_, a DIFFERENT stream, so without this wait it can read the
+  // histogram while it is still being built -- reducing garbage, and doing so
+  // nondeterministically per rank. That produced wrong gains, ranks that grew
+  // different trees, and ultimately a hang when they issued different numbers
+  // of collectives. (The trailing SynchronizeCUDAStream already orders the
+  // finder AFTER the reduce; only this edge was missing.)
+  // wait on every pipeline's event: whichever one built this histogram is the
+  // one that matters, and waiting on an already-complete event is a no-op
+  for (int p = 0; p < CUDAHistogramConstructor::kNumHistPipelines; ++p) {
+    CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(
+        nccl_stream_, cuda_histogram_constructor_->construct_done_events()[p], 0));
+  }
   if (config_->use_quantized_grad) {
     hist_t* smaller_leaf_hist_pointer = cuda_histogram_constructor_->cuda_hist_pointer() +
       leaf_to_hist_index_map_[smaller_leaf_index_] * num_total_bin_;
