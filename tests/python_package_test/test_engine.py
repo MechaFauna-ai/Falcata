@@ -5205,6 +5205,71 @@ def test_eval_freq_early_stopping_counts_evaluations():
     assert booster.num_trees() < 200, "early stopping did not fire"
 
 
+def test_min_iterations_keeps_an_early_blip_from_truncating_the_model():
+    """min_iterations is a warmup: evaluations below it can neither become
+    the best nor count towards stopping_rounds.
+
+    An early stop discards every tree past best_iteration, so a best chosen
+    on the first noisy evaluation is unrecoverable -- the caller cannot pick
+    a later tree count afterwards, because those trees no longer exist.
+    stopping_rounds cannot express this: it bounds the distance from the
+    best to the stop, not where the best may land.
+    """
+    xt, yt, xv, yv = _eval_freq_data(4)
+    step, rounds, floor = 5, 2, 30
+    seen = []
+
+    def spike_then_improve(preds, eval_data):
+        # best possible score on the FIRST evaluation, then steadily worse
+        # than it but improving among themselves
+        seen.append(len(seen))
+        return "fake", (0.0 if len(seen) == 1 else 10.0 - len(seen)), False
+
+    params = {"objective": "regression", "verbose": -1, "num_leaves": 7, "seed": 0, "num_threads": 1}
+    train_set = lgb.Dataset(xt, label=yt)
+    valid_set = lgb.Dataset(xv, label=yv, reference=train_set)
+    booster = lgb.train(
+        params,
+        train_set,
+        num_boost_round=100,
+        valid_sets=[valid_set],
+        feval=spike_then_improve,
+        eval_freq=step,
+        callbacks=[lgb.early_stopping(stopping_rounds=rounds, min_iterations=floor, verbose=False)],
+    )
+    # Without the warmup the spike at iteration `step` is the best and
+    # training stops `rounds` evaluations later, at iteration 15, leaving 5
+    # trees. With it, evaluations below `floor` are ignored entirely.
+    assert booster.best_iteration >= floor, (
+        f"best_iteration {booster.best_iteration} is below min_iterations "
+        f"{floor} -- the warmup did not suppress the early blip"
+    )
+
+
+def test_min_iterations_defaults_to_no_warmup():
+    """Default 0 must leave existing behaviour untouched."""
+    xt, yt, xv, yv = _eval_freq_data(5)
+    worsening = {"i": 0}
+
+    def worsening_feval(preds, eval_data):
+        worsening["i"] += 1
+        return "fake", float(worsening["i"]), False
+
+    params = {"objective": "regression", "verbose": -1, "num_leaves": 7, "seed": 0, "num_threads": 1}
+    train_set = lgb.Dataset(xt, label=yt)
+    valid_set = lgb.Dataset(xv, label=yv, reference=train_set)
+    rounds = 3
+    lgb.train(
+        params,
+        train_set,
+        num_boost_round=200,
+        valid_sets=[valid_set],
+        feval=worsening_feval,
+        callbacks=[lgb.early_stopping(stopping_rounds=rounds, verbose=False)],
+    )
+    assert worsening["i"] == 1 + rounds
+
+
 def test_eval_freq_rejects_zero():
     xt, yt, _, _ = _eval_freq_data(3)
     with pytest.raises(ValueError, match="eval_freq"):

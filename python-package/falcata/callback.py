@@ -288,16 +288,21 @@ class _EarlyStoppingCallback:
         first_metric_only: bool = False,
         verbose: bool = True,
         min_delta: Union[float, List[float]] = 0.0,
+        min_iterations: int = 0,
     ) -> None:
         self.enabled = _should_enable_early_stopping(stopping_rounds)
 
         self.order = 30
         self.before_iteration = False
 
+        if min_iterations < 0:
+            raise ValueError("Early stopping min_iterations must be non-negative.")
+
         self.stopping_rounds = stopping_rounds
         self.first_metric_only = first_metric_only
         self.verbose = verbose
         self.min_delta = min_delta
+        self.min_iterations = min_iterations
         self._initialized = False
 
         self._reset_storages()
@@ -436,6 +441,19 @@ class _EarlyStoppingCallback:
             self._init(env)
         if not self.enabled:
             return
+        if env.iteration + 1 < self.min_iterations:
+            # Warmup. Neither record a best nor count towards stopping, so
+            # best_iteration can never land below min_iterations.
+            #
+            # This bounds the ROLLBACK, which is the part callers cannot undo:
+            # after an early stop the booster keeps only the trees up to
+            # best_iteration, so a best chosen on an early noisy blip discards
+            # every later checkpoint. A caller selecting a tree count post-hoc
+            # from the surviving checkpoints is then left with just one, and
+            # its selection step degenerates into whatever the stopper picked.
+            # stopping_rounds cannot express this: it bounds the distance from
+            # the best to the stop, not where the best may be.
+            return
         # self.best_score_list is initialized to an empty list
         first_time_updating_best_score_list = self.best_score_list == []
         for i in range(len(env.evaluation_result_list)):
@@ -492,6 +510,7 @@ def early_stopping(
     first_metric_only: bool = False,
     verbose: bool = True,
     min_delta: Union[float, List[float]] = 0.0,
+    min_iterations: int = 0,
 ) -> _EarlyStoppingCallback:
     """Create a callback that activates early stopping.
 
@@ -525,6 +544,16 @@ def early_stopping(
         If list, its length should match the total number of metrics.
 
         .. versionadded:: 4.0.0
+    min_iterations : int, optional (default=0)
+        Minimum number of iterations before early stopping may take effect.
+        Evaluations below this are neither recorded as a best nor counted
+        towards ``stopping_rounds``, so ``best_iteration`` is always at or
+        above it.
+
+        Because an early stop discards the trees after ``best_iteration``,
+        a best chosen on an early noisy blip is unrecoverable. Use this when
+        the metric is noisy enough early on to peak spuriously, or when a
+        caller needs a guaranteed number of iterations to select from.
 
     Returns
     -------
@@ -536,4 +565,5 @@ def early_stopping(
         first_metric_only=first_metric_only,
         verbose=verbose,
         min_delta=min_delta,
+        min_iterations=min_iterations,
     )
