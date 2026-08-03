@@ -146,6 +146,7 @@ class CUDAHistogramConstructor {
    *  reading the smaller-leaf histogram, replacing a per-split device sync. */
   cudaEvent_t construct_done_event() const { return construct_done_events_[0]; }
 
+
   /*! \brief number of independent (stream, event-pair) pipelines for hybrid
    *  level-batched growth; pairs of one level round-robin across them so their
    *  small histogram kernels can execute concurrently */

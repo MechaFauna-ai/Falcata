@@ -27,6 +27,18 @@ void NCCLGBDT<GBDT_T>::Init(
   const Config* gbdt_config, const Dataset* train_data,
   const ObjectiveFunction* objective_function,
   const std::vector<const Metric*>& training_metrics) {
+  if (gbdt_config->use_quantized_grad) {
+    // Multi-GPU + quantized gradients HANGS: the per-leaf histogram bit widths
+    // that select the all-reduce element type were never maintained for the
+    // global (NCCL) side beyond the root, and fixing that alone does not make
+    // it converge -- the quantized multi-GPU path has more unfinished
+    // plumbing. Refuse with a message instead of deadlocking, which is the
+    // worst way to fail. Non-quantized multi-GPU works and is verified.
+    Log::Fatal(
+        "multi-GPU training (num_gpu > 1) does not yet support quantized "
+        "gradients: the run would hang. Set quant_mode=none for multi-GPU, or "
+        "use a single GPU with quantization.");
+  }
   GBDT_T::Init(gbdt_config, train_data, objective_function, training_metrics);
 
   this->tree_learner_.reset();

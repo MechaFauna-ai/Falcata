@@ -810,7 +810,7 @@ void CUDASingleGPUTreeLearner::EnqueuePairBestSplitSearch(const CUDATree* tree,
 
   global_timer.Start("CUDASingleGPUTreeLearner::NCCLReduceHistogram");
   if (nccl_communicator_ != nullptr) {
-    NCCLReduceHistogram();
+    NCCLReduceHistogram(pipeline);
   }
   global_timer.Stop("CUDASingleGPUTreeLearner::NCCLReduceHistogram");
 
@@ -3005,6 +3005,20 @@ int CUDASingleGPUTreeLearner::ApplySplit(CUDATree* tree, const CUDASplitInfo* be
                               global_num_data_in_leaf_.data() + right_leaf_index,
                               /*point_structs_at_main=*/smaller_slot != nullptr,
                               deferred_slot);
+  if (config_->use_quantized_grad && nccl_communicator_ != nullptr) {
+    // The GLOBAL per-leaf histogram bit widths were only ever set for the ROOT
+    // (BeforeTrain). Every other leaf kept 0, so GetHistBitsInLeaf<true>()
+    // returned 0 and NCCLReduceHistogram took its "<= 16 bits" branch and
+    // all-reduced num_total_bin INT32s over a histogram that is actually
+    // 32-bit-per-stat -- reducing the wrong element type and half the bytes.
+    // The result was corrupt histograms, divergent gains and a hang. The CPU
+    // data-parallel learner does this update per split
+    // (data_parallel_tree_learner.cpp); the CUDA one simply never did.
+    cuda_gradient_discretizer_->SetNumBitsInHistogramBin<true>(
+        leaf_index, right_leaf_index,
+        global_num_data_in_leaf_[leaf_index],
+        global_num_data_in_leaf_[right_leaf_index]);
+  }
   #ifdef DEBUG
   CheckSplitValid(leaf_index, right_leaf_index);
   #endif  // DEBUG
@@ -3515,7 +3529,7 @@ void CUDASingleGPUTreeLearner::SetNCCLInfo(
   nccl_stream_ = CUDAStreamCreate();
 }
 
-void CUDASingleGPUTreeLearner::NCCLReduceHistogram() {
+void CUDASingleGPUTreeLearner::NCCLReduceHistogram(const int pipeline) {
   // ConstructHistogramForLeaf is ASYNC: it records construct_done_events_ on
   // the construct stream rather than syncing. The all-reduce below runs on
   // nccl_stream_, a DIFFERENT stream, so without this wait it can read the
@@ -3524,12 +3538,8 @@ void CUDASingleGPUTreeLearner::NCCLReduceHistogram() {
   // different trees, and ultimately a hang when they issued different numbers
   // of collectives. (The trailing SynchronizeCUDAStream already orders the
   // finder AFTER the reduce; only this edge was missing.)
-  // wait on every pipeline's event: whichever one built this histogram is the
-  // one that matters, and waiting on an already-complete event is a no-op
-  for (int p = 0; p < CUDAHistogramConstructor::kNumHistPipelines; ++p) {
-    CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(
-        nccl_stream_, cuda_histogram_constructor_->construct_done_events()[p], 0));
-  }
+  const cudaEvent_t hist_event = cuda_histogram_constructor_->construct_done_events()[pipeline];
+  CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(nccl_stream_, hist_event, 0));
   if (config_->use_quantized_grad) {
     hist_t* smaller_leaf_hist_pointer = cuda_histogram_constructor_->cuda_hist_pointer() +
       leaf_to_hist_index_map_[smaller_leaf_index_] * num_total_bin_;

@@ -157,32 +157,38 @@ figures from the profiles in the PR discussions.
     pipelines), xgboost transformed base_score -> raw margin, catboost
     scale/bias, pinned source-library versions in CI.
 
-## Multi-GPU (NCCL) -- WORKS as of 2026-08-03, unoptimized
+## Multi-GPU (NCCL) -- WORKS for non-quantized training (2026-08-03)
 
-First working 2-GPU training (rented 2x RTX 3090, PCIe SYS, no NVLink).
-Verified: 2M x 50 binary, 200 trees -- 1 GPU auc 0.80870, 2 GPU auc 0.80935
-(parity), no hang. Four bugs had to be fixed; multi-GPU had never been run.
+Verified on a rented 2x RTX 3090 (PCIe, no NVLink), 2M x 50 binary, 200 trees:
+1 GPU auc 0.80870 / 20.5 ms per tree, 2 GPU auc 0.80935 / 64.9 ms per tree.
+Correct, and 3.2x SLOWER than one GPU. Multi-GPU had never been run before;
+five bugs, four fixed:
 
-1. Cross-device illegal access: each rank built its row subset by having a
-   kernel read the FULL dataset's column pointers, which live on ANOTHER GPU.
-   Nothing enables peer access and the driver refuses P2P on GeForce, so this
-   could never work. Now built from the host-side subset copy.
-2. CalcBlockDim CHECK on empty leaves: an empty LOCAL leaf is normal when
-   splits come from all-reduced histograms; the block arithmetic returned -1.
-3. Global child counts were never written. Slots 16/17 of the split-info
-   buffer are READ to pick the smaller leaf and to feed
-   global_num_data_in_leaf_, but nothing ever wrote them -- every rank read
-   stale garbage, independently.
-4. THE deadlock: the histogram all-reduce ran on nccl_stream_ without waiting
-   on the construct-done event recorded on the CONSTRUCT stream, so it reduced
-   half-built histograms. Wrong gains, ranks growing different trees, and
-   finally a hang when they issued different numbers of collectives.
+1. FIXED cross-device illegal access: each rank built its row subset by having
+   a kernel read the FULL dataset's column pointers, which live on ANOTHER
+   GPU. Nothing enables peer access and the driver refuses P2P on GeForce.
+2. FIXED CalcBlockDim CHECK on empty leaves (normal when splits come from
+   all-reduced histograms; the arithmetic returned -1).
+3. FIXED global child counts never written: split-info slots 16/17 are READ to
+   pick the smaller leaf and to feed global_num_data_in_leaf_, but nothing
+   wrote them, so each rank read stale garbage independently.
+4. FIXED the deadlock: the all-reduce ran on nccl_stream_ without waiting on
+   the construct-done event recorded on the CONSTRUCT stream, so it reduced
+   half-built histograms.
+5. OPEN, now FENCED: quantized gradients + num_gpu > 1 still hangs. The global
+   per-leaf histogram bit widths (which choose the all-reduce element type)
+   were never maintained past the root; adding that update (done) does not
+   make it converge, so more of the quantized multi-GPU path is unfinished.
+   It now refuses with a clear message instead of deadlocking.
 
-PERFORMANCE IS BAD AND UNOPTIMIZED: 64.3 ms/tree on 2 GPUs vs 20.5 ms on 1
-(3.1x SLOWER). Expected -- the current path does one all-reduce plus one FULL
-stream sync per split, i.e. ~2*num_leaves round trips per tree, on a PCIe link
-with no NVLink. The level-batched all-reduce in
-docs/design/nccl-level-allreduce-plan.md is the fix and is now unblocked.
+PERFORMANCE, measured, unoptimized: 64.9 vs 20.5 ms/tree. The path does one
+all-reduce plus one FULL host-blocking stream sync per split (~2*num_leaves
+round trips per tree). Removing that host sync via event ordering was tried
+and measured NEUTRAL (66.6 vs 64.3 ms/tree) -- the classic loop's dependency
+chain is serial, so there is nothing to overlap; the cost is the collectives
+themselves. The real lever is the level-batched all-reduce in
+docs/design/nccl-level-allreduce-plan.md (fewer, larger collectives), which
+needs the hybrid path enabled under NCCL.
 
 ## Correctness / determinism
 
