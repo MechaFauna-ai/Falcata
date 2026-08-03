@@ -159,36 +159,45 @@ figures from the profiles in the PR discussions.
 
 ## Multi-GPU (NCCL) -- WORKS for non-quantized training (2026-08-03)
 
-Verified on a rented 2x RTX 3090 (PCIe, no NVLink), 2M x 50 binary, 200 trees:
-1 GPU auc 0.80870 / 20.5 ms per tree, 2 GPU auc 0.80935 / 64.9 ms per tree.
-Correct, and 3.2x SLOWER than one GPU. Multi-GPU had never been run before;
-five bugs, four fixed:
+Verified on TWO different pairs, 2M x 50 binary, 200 trees:
 
-1. FIXED cross-device illegal access: each rank built its row subset by having
-   a kernel read the FULL dataset's column pointers, which live on ANOTHER
-   GPU. Nothing enables peer access and the driver refuses P2P on GeForce.
+| hardware | interconnect | 1 GPU | 2 GPU | auc 1 / 2 |
+|---|---|---|---|---|
+| 2x RTX 3090 | PCIe SYS (no P2P) | 20.5 ms/tree | 64.9 ms/tree | 0.80870 / 0.80935 |
+| 2x A100-SXM4-40GB | PCIe NODE (NVLink INACTIVE) | 14.8 ms/tree | 64.7 ms/tree | 0.80870 / 0.80935 |
+
+Multi-GPU had never been run. Six findings, five fixed:
+
+1. FIXED cross-device illegal access (rank read the full dataset's column
+   pointers, which live on another GPU; no peer access, and GeForce forbids
+   P2P outright).
 2. FIXED CalcBlockDim CHECK on empty leaves (normal when splits come from
-   all-reduced histograms; the arithmetic returned -1).
+   all-reduced histograms).
 3. FIXED global child counts never written: split-info slots 16/17 are READ to
-   pick the smaller leaf and to feed global_num_data_in_leaf_, but nothing
-   wrote them, so each rank read stale garbage independently.
-4. FIXED the deadlock: the all-reduce ran on nccl_stream_ without waiting on
-   the construct-done event recorded on the CONSTRUCT stream, so it reduced
-   half-built histograms.
-5. OPEN, now FENCED: quantized gradients + num_gpu > 1 still hangs. The global
-   per-leaf histogram bit widths (which choose the all-reduce element type)
-   were never maintained past the root; adding that update (done) does not
-   make it converge, so more of the quantized multi-GPU path is unfinished.
-   It now refuses with a clear message instead of deadlocking.
+   pick the smaller leaf and feed global_num_data_in_leaf_, but nothing wrote
+   them, so each rank read stale garbage independently.
+4. FIXED the first deadlock: the all-reduce ran on nccl_stream_ without
+   waiting on the construct-done event recorded on the CONSTRUCT stream, so it
+   reduced half-built histograms.
+5. FIXED (worked around) the second deadlock: NCCL's P2P/direct-pointer
+   transport hangs this trainer at the first collective. It only showed on the
+   A100 pair, because GeForce forbids P2P and so silently used host staging --
+   the 3090 success was luck of topology, not correctness. NCCL_P2P_DISABLE=1
+   is now set by default (with a warning, overridable); root cause not yet
+   found.
+6. OPEN, FENCED: quantized gradients + num_gpu > 1 still hangs even with P2P
+   off. The global per-leaf histogram bit widths were never maintained past
+   the root (now fixed), but that is not sufficient. Refuses at Init.
 
-PERFORMANCE, measured, unoptimized: 64.9 vs 20.5 ms/tree. The path does one
-all-reduce plus one FULL host-blocking stream sync per split (~2*num_leaves
-round trips per tree). Removing that host sync via event ordering was tried
-and measured NEUTRAL (66.6 vs 64.3 ms/tree) -- the classic loop's dependency
-chain is serial, so there is nothing to overlap; the cost is the collectives
-themselves. The real lever is the level-batched all-reduce in
-docs/design/nccl-level-allreduce-plan.md (fewer, larger collectives), which
-needs the hybrid path enabled under NCCL.
+PERFORMANCE: 2 GPUs are ~3.2x SLOWER than 1 on BOTH pairs, and the A100 pair
+is no better than the 3090 pair despite far faster GPUs -- the cost is the
+per-split collective, not compute. NVLink could not be obtained on vast.ai:
+the only 2x A100-SXM4 offers report "all links inActive" (2 GPUs sliced out of
+a larger node), so NVLink remains unmeasured. Removing the per-split
+host-blocking sync via event ordering was measured NEUTRAL (66.6 vs 64.3
+ms/tree) -- the classic loop is a serial chain, so there is nothing to
+overlap. The real lever is the level-batched all-reduce in
+docs/design/nccl-level-allreduce-plan.md.
 
 ## Correctness / determinism
 

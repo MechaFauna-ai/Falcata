@@ -19,6 +19,8 @@
 #include <Falcata/network.h>
 #include <Falcata/utils/common.h>
 
+#include <cstdlib>
+
 #include <memory>
 #include <set>
 #include <string>
@@ -103,6 +105,23 @@ class NCCLTopology {
   ~NCCLTopology() {}
 
   void InitNCCL() {
+    // NCCL's P2P/direct-pointer transport DEADLOCKS this trainer: with two
+    // ranks driven as threads of one process, enabling P2P makes the very
+    // first all-reduce hang (reproduced on 2x A100-SXM4, where NCCL picks
+    // "via P2P/direct pointer"; NCCL_P2P_DISABLE=1 trains fine, and a GeForce
+    // pair -- where the driver forbids P2P so NCCL stages through host -- also
+    // trains fine). Until that is root-caused, opt out by default so
+    // multi-GPU works on every topology rather than only where P2P happens to
+    // be unavailable. Set NCCL_P2P_DISABLE yourself to override.
+    if (std::getenv("NCCL_P2P_DISABLE") == nullptr) {
+      Log::Warning(
+          "multi-GPU: setting NCCL_P2P_DISABLE=1. NCCL's peer-to-peer "
+          "transport currently deadlocks this trainer; host-staged transport "
+          "is correct and is what the verified runs use. Export "
+          "NCCL_P2P_DISABLE=0 to override.");
+      // 0 = do not overwrite an existing value
+      setenv("NCCL_P2P_DISABLE", "1", 0);
+    }
     nccl_gpu_rank_.resize(num_gpu_, -1);
     nccl_communicators_.resize(num_gpu_);
     ncclUniqueId nccl_unique_id;
