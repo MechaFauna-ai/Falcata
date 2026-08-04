@@ -1975,9 +1975,12 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
     cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
     new_main_indices, nullptr, num_splits, total_flat_blocks,
     cuda_data_index_to_leaf_index_.RawData(), write_leaf_map ? 1 : 0);
-  if (nccl_communicator_ != nullptr) {
-    // quantized multi-GPU is fenced at the NCCLGBDT layer, so only the
-    // non-quantized variant needs the NCCL role/count contract here
+  if (nccl_communicator_ != nullptr && use_quantized_grad_) {
+    HybridSplitTreeStructureBatchKernel<true, true><<<num_splits, 32, 0, cuda_streams_[0]>>>(
+      descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
+      new_main_indices, num_total_bin_, cuda_hist_, cuda_hist_pool_.RawData(),
+      cuda_leaf_output_.RawData(), cuda_split_info_buffer_.RawData(), nullptr);
+  } else if (nccl_communicator_ != nullptr) {
     HybridSplitTreeStructureBatchKernel<true, false><<<num_splits, 32, 0, cuda_streams_[0]>>>(
       descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
       new_main_indices, num_total_bin_, cuda_hist_, cuda_hist_pool_.RawData(),

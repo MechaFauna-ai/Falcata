@@ -28,16 +28,16 @@ void NCCLGBDT<GBDT_T>::Init(
   const ObjectiveFunction* objective_function,
   const std::vector<const Metric*>& training_metrics) {
   if (gbdt_config->use_quantized_grad) {
-    // Multi-GPU + quantized gradients HANGS: the per-leaf histogram bit widths
-    // that select the all-reduce element type were never maintained for the
-    // global (NCCL) side beyond the root, and fixing that alone does not make
-    // it converge -- the quantized multi-GPU path has more unfinished
-    // plumbing. Refuse with a message instead of deadlocking, which is the
-    // worst way to fail. Non-quantized multi-GPU works and is verified.
-    Log::Fatal(
-        "multi-GPU training (num_gpu > 1) does not yet support quantized "
-        "gradients: the run would hang. Set quant_mode=none for multi-GPU, or "
-        "use a single GPU with quantization.");
+    // 2026-08-04: quantized multi-GPU rides the hybrid two-sync level flow
+    // with an integer level all-reduce (per-pair 16/32-bit histograms widened
+    // to uniform int64 lanes; bit widths from the GLOBAL count table so every
+    // rank picks the same lane format and the summed histograms fit). The
+    // former hang was the same rank-local-count class fixed in a923eb22 plus
+    // the missing global bit-width maintenance, both now handled in the level
+    // flow. The CLASSIC (hybrid:off) quantized path stays unverified.
+    Log::Warning(
+        "multi-GPU + quantized gradients is newly enabled and rides the "
+        "hybrid level flow; report divergence against a single-GPU run.");
   }
   GBDT_T::Init(gbdt_config, train_data, objective_function, training_metrics);
 

@@ -375,6 +375,15 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   void LaunchNCCLScatterLevel(const double* in, const int* idx,
                               const CUDAHybridPairDescriptor* descs,
                               int num_bins, int num_pairs, cudaStream_t stream);
+  /*! \brief integer (quantized) variants: per-pair 16/32-bit histograms are
+   *  widened into uniform int64 (grad32,hess32) lanes so one ncclInt64 sum
+   *  serves the level; half the payload of the fp64-pair reduce, exact sums */
+  void LaunchNCCLGatherLevelQuant(const CUDAHybridPairDescriptor* descs, const int* idx,
+                                  int64_t* out, int num_bins, int num_pairs,
+                                  cudaStream_t stream);
+  void LaunchNCCLScatterLevelQuant(const int64_t* in, const int* idx,
+                                   const CUDAHybridPairDescriptor* descs,
+                                   int num_bins, int num_pairs, cudaStream_t stream);
 
   /*! \brief compacted bin indices this tree reads (empty = reduce everything) */
   CUDAVector<int> cuda_nccl_reduce_bin_idx_;
@@ -631,6 +640,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // members used in multi-GPU training
   /*! \brief cuda stream for nccl operations */
   cudaStream_t nccl_stream_;
+  /*! \brief scatter-complete marker of the level all-reduce: the deferred
+   *  fix/subtract on the histogram stream waits on this instead of a
+   *  host-blocking stream sync (one host round trip per level saved) */
+  cudaEvent_t nccl_reduce_done_event_ = nullptr;
   /*! \brief index map from leaf index to histogram index */
   std::vector<int> leaf_to_hist_index_map_;
   /*! \brief number of total histogram bins */

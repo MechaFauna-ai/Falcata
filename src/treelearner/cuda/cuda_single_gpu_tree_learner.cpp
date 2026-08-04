@@ -992,14 +992,26 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
         // selective growth recycled the right-child index
         const int parent_leaf_index = pair.parent >= 0 ?
           pair.parent : std::min(pair.smaller, pair.larger);
-        desc.parent_num_bits = cuda_gradient_discretizer_->GetHistBitsInNode<false>(parent_leaf_index);
-        desc.smaller_num_bits = cuda_gradient_discretizer_->GetHistBitsInLeaf<false>(pair.smaller);
-        desc.larger_num_bits = cuda_gradient_discretizer_->GetHistBitsInLeaf<false>(pair.larger);
+        // Under NCCL the bit widths must come from the GLOBAL counts: they
+        // select the all-reduce element type AND must guarantee the summed
+        // (global) histogram fits the chosen width -- the local table would
+        // pick 16-bit where the global sum needs 32 and differ per rank.
+        if (nccl_communicator_ != nullptr) {
+          desc.parent_num_bits = cuda_gradient_discretizer_->GetHistBitsInNode<true>(parent_leaf_index);
+          desc.smaller_num_bits = cuda_gradient_discretizer_->GetHistBitsInLeaf<true>(pair.smaller);
+          desc.larger_num_bits = cuda_gradient_discretizer_->GetHistBitsInLeaf<true>(pair.larger);
+        } else {
+          desc.parent_num_bits = cuda_gradient_discretizer_->GetHistBitsInNode<false>(parent_leaf_index);
+          desc.smaller_num_bits = cuda_gradient_discretizer_->GetHistBitsInLeaf<false>(pair.smaller);
+          desc.larger_num_bits = cuda_gradient_discretizer_->GetHistBitsInLeaf<false>(pair.larger);
+        }
         if (desc.parent_num_bits > 16 && desc.larger_num_bits <= 16) {
           any_bit_change_copy = true;
         }
       } else {
-        desc.parent_num_bits = cuda_gradient_discretizer_->GetHistBitsInLeaf<false>(0);
+        desc.parent_num_bits = nccl_communicator_ != nullptr ?
+          cuda_gradient_discretizer_->GetHistBitsInLeaf<true>(0) :
+          cuda_gradient_discretizer_->GetHistBitsInLeaf<false>(0);
         desc.smaller_num_bits = desc.parent_num_bits;
         desc.larger_num_bits = desc.parent_num_bits;
       }
@@ -1442,6 +1454,13 @@ void CUDASingleGPUTreeLearner::FinishLevelBookkeeping(
     if (config_->use_quantized_grad) {
       cuda_gradient_discretizer_->SetNumBitsInHistogramBin<false>(
         a.left, a.right, leaf_num_data_[a.left], leaf_num_data_[a.right]);
+      if (nccl_communicator_ != nullptr) {
+        // global table: identical on every rank (slots 16/17 are the
+        // all-reduce-derived counts) and the source of both the collective
+        // element type and the construct's packing width under NCCL
+        cuda_gradient_discretizer_->SetNumBitsInHistogramBin<true>(
+          a.left, a.right, info[16], info[17]);
+      }
     }
     if (next_pairs != nullptr) {
       next_pairs->push_back({smaller, larger, a.left, a.smaller_slot, a.larger_slot});
@@ -2907,6 +2926,17 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   bool pair_search_cached = false;
   bool selective_handled = false;
   bool batched_apply_ran = false;
+  if (nccl_communicator_ != nullptr && config_->use_quantized_grad &&
+      (num_splits_done != 0 || !HybridGrowthUsable())) {
+    // quantized multi-GPU is only wired through the hybrid level flow (integer
+    // level all-reduce + global bit-width table); the classic per-split loop's
+    // quantized reduce is unverified and historically hung. Refuse clearly.
+    Log::Fatal(
+        "multi-GPU + quantized gradients requires the hybrid level flow, "
+        "which is unavailable for this configuration (needs a depth-limited "
+        "config: 2^max_depth <= num_leaves + 1, no forced splits). "
+        "Set quant_mode=none, adjust max_depth/num_leaves, or use num_gpu=1.");
+  }
   if (num_splits_done == 0 && HybridGrowthUsable()) {
     if (UseSelectiveGrowth()) {
       // budget-limited exact grow-then-prune: builds the COMPLETE tree
@@ -3022,7 +3052,16 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     }
   }
   hybrid_map_final_written_ = false;
-  if (config_->use_quantized_grad && config_->quant_train_renew_leaf) {
+  if (config_->use_quantized_grad && config_->quant_train_renew_leaf &&
+      nccl_communicator_ != nullptr) {
+    static bool warned_renew = false;
+    if (!warned_renew) {
+      warned_renew = true;
+      Log::Warning("quant_train_renew_leaf is ignored under multi-GPU: the "
+                   "renewed outputs would use rank-LOCAL gradient sums and "
+                   "diverge across ranks.");
+    }
+  } else if (config_->use_quantized_grad && config_->quant_train_renew_leaf) {
     global_timer.Start("CUDASingleGPUTreeLearner::RenewDiscretizedTreeLeaves");
     RenewDiscretizedTreeLeaves(tree.get());
     if (selective_handled) {
@@ -3636,6 +3675,7 @@ void CUDASingleGPUTreeLearner::SetNCCLInfo(
   leaf_to_hist_index_map_.resize(config_->num_leaves - 1);
   global_num_data_in_leaf_.resize(config_->num_leaves, 0);
   nccl_stream_ = CUDAStreamCreate();
+  CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&nccl_reduce_done_event_, cudaEventDisableTiming));
 }
 
 void CUDASingleGPUTreeLearner::NCCLReduceLevelHistograms(const int num_pairs) {
@@ -3649,18 +3689,35 @@ void CUDASingleGPUTreeLearner::NCCLReduceLevelHistograms(const int num_pairs) {
   const int* idx = nccl_reduce_num_bins_ > 0 ? cuda_nccl_reduce_bin_idx_.RawDataReadOnly() : nullptr;
   const size_t elems = static_cast<size_t>(num_pairs) * num_bins * 2;
   if (cuda_nccl_reduce_buf_.Size() < elems) {
+    // growth frees the old buffer: the previous level's scatter must be done
+    // reading it. Rare (monotonic high-water growth), so a sync here is cheap.
+    SynchronizeCUDAStream(nccl_stream_, __FILE__, __LINE__);
     cuda_nccl_reduce_buf_.Resize(elems);
   }
   const CUDAHybridPairDescriptor* descs = cuda_hybrid_pair_descs_.RawDataReadOnly();
-  LaunchNCCLGatherLevel(descs, idx, cuda_nccl_reduce_buf_.RawData(),
-                        num_bins, num_pairs, nccl_stream_);
-  NCCLAllReduce<double>(cuda_nccl_reduce_buf_.RawData(), cuda_nccl_reduce_buf_.RawData(),
-                        elems, ncclFloat64, ncclSum, nccl_communicator_, nccl_stream_);
-  LaunchNCCLScatterLevel(cuda_nccl_reduce_buf_.RawDataReadOnly(), idx, descs,
-                         num_bins, num_pairs, nccl_stream_);
-  // host-blocking: the deferred SubtractHistogramsForLevel launches next on the
-  // histogram stream and must see the globally reduced smaller histograms
-  SynchronizeCUDAStream(nccl_stream_, __FILE__, __LINE__);
+  if (config_->use_quantized_grad) {
+    // integer lanes: one int64 per bin (half the fp64-pair payload), exact sums
+    int64_t* ibuf = reinterpret_cast<int64_t*>(cuda_nccl_reduce_buf_.RawData());
+    LaunchNCCLGatherLevelQuant(descs, idx, ibuf, num_bins, num_pairs, nccl_stream_);
+    NCCLAllReduce<int64_t>(ibuf, ibuf,
+                           static_cast<size_t>(num_pairs) * num_bins,
+                           ncclInt64, ncclSum, nccl_communicator_, nccl_stream_);
+    LaunchNCCLScatterLevelQuant(ibuf, idx, descs, num_bins, num_pairs, nccl_stream_);
+  } else {
+    LaunchNCCLGatherLevel(descs, idx, cuda_nccl_reduce_buf_.RawData(),
+                          num_bins, num_pairs, nccl_stream_);
+    NCCLAllReduce<double>(cuda_nccl_reduce_buf_.RawData(), cuda_nccl_reduce_buf_.RawData(),
+                          elems, ncclFloat64, ncclSum, nccl_communicator_, nccl_stream_);
+    LaunchNCCLScatterLevel(cuda_nccl_reduce_buf_.RawDataReadOnly(), idx, descs,
+                           num_bins, num_pairs, nccl_stream_);
+  }
+  // The deferred SubtractHistogramsForLevel launches next on the histogram
+  // stream and must see the globally reduced smaller histograms: order it
+  // with a cross-stream event instead of a host-blocking sync (the collective
+  // itself synchronizes the ranks; the host has no reason to wait with it).
+  CUDASUCCESS_OR_FATAL(cudaEventRecord(nccl_reduce_done_event_, nccl_stream_));
+  CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(
+      cuda_histogram_constructor_->hist_stream(), nccl_reduce_done_event_, 0));
   if (FalcataDebug().dump) {
     // per-pair reduce diagnostics: the hessian total of the reduced smaller
     // histogram must match the (global) struct sum the finder will gate on

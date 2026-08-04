@@ -613,4 +613,79 @@ void CUDASingleGPUTreeLearner::LaunchNCCLScatterLevel(const double* in, const in
   NCCLScatterLevelKernel<<<grid, block, 0, stream>>>(in, idx, descs, num_bins);
 }
 
+// ---- quantized level reduce ------------------------------------------------
+// Integer histograms: 16-bit mode packs (grad16,hess16) into one int32 per
+// bin, 32-bit mode packs (grad32,hess32) into one int64 per bin; the per-pair
+// width is desc->smaller_num_bits (the GLOBAL table under NCCL, so every rank
+// picks the same lane format AND the summed histogram is guaranteed to fit
+// the width). The gather widens 16-bit fields to the int64 (grad32,hess32)
+// lane so a single ncclInt64 sum serves every pair regardless of width --
+// field carries are impossible because the final sums fit the ORIGINAL
+// width (16/32 bits) with the widened lane giving 16 spare bits per field.
+// Payload: one int64 per bin, HALF the fp64-pair layout of the non-quantized
+// reduce, and the sums are exact integers (bit-stable across topologies).
+
+__global__ void NCCLGatherLevelQuantKernel(const CUDAHybridPairDescriptor* __restrict__ descs,
+                                           const int* __restrict__ idx,
+                                           int64_t* __restrict__ out,
+                                           const int num_bins) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= num_bins) return;
+  const int pair = blockIdx.y;
+  int64_t* dst = out + static_cast<size_t>(pair) * num_bins;
+  if (!descs[pair].construct_valid) {
+    dst[i] = 0;
+    return;
+  }
+  const int bin = (idx == nullptr) ? i : idx[i];
+  const hist_t* hist = descs[pair].smaller_struct->hist_in_leaf;
+  if (descs[pair].smaller_num_bits <= 16) {
+    const int32_t v = reinterpret_cast<const int32_t*>(hist)[bin];
+    dst[i] = (static_cast<int64_t>(static_cast<int16_t>(v >> 16)) << 32) |
+             static_cast<int64_t>(static_cast<uint32_t>(v & 0x0000ffff));
+  } else {
+    dst[i] = reinterpret_cast<const int64_t*>(hist)[bin];
+  }
+}
+
+__global__ void NCCLScatterLevelQuantKernel(const int64_t* __restrict__ in,
+                                            const int* __restrict__ idx,
+                                            const CUDAHybridPairDescriptor* __restrict__ descs,
+                                            const int num_bins) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= num_bins) return;
+  const int pair = blockIdx.y;
+  if (!descs[pair].construct_valid) return;
+  const int bin = (idx == nullptr) ? i : idx[i];
+  hist_t* hist = descs[pair].smaller_struct->hist_in_leaf;
+  const int64_t lane = in[static_cast<size_t>(pair) * num_bins + i];
+  if (descs[pair].smaller_num_bits <= 16) {
+    const int32_t grad = static_cast<int32_t>(lane >> 32);
+    const int32_t hess = static_cast<int32_t>(lane & 0x00000000ffffffff);
+    reinterpret_cast<int32_t*>(hist)[bin] =
+        (static_cast<int32_t>(static_cast<uint32_t>(grad) << 16)) |
+        (hess & 0x0000ffff);
+  } else {
+    reinterpret_cast<int64_t*>(hist)[bin] = lane;
+  }
+}
+
+void CUDASingleGPUTreeLearner::LaunchNCCLGatherLevelQuant(const CUDAHybridPairDescriptor* descs,
+                                                          const int* idx, int64_t* out,
+                                                          int num_bins, int num_pairs,
+                                                          cudaStream_t stream) {
+  const int block = 256;
+  dim3 grid((num_bins + block - 1) / block, num_pairs);
+  NCCLGatherLevelQuantKernel<<<grid, block, 0, stream>>>(descs, idx, out, num_bins);
+}
+
+void CUDASingleGPUTreeLearner::LaunchNCCLScatterLevelQuant(const int64_t* in, const int* idx,
+                                                           const CUDAHybridPairDescriptor* descs,
+                                                           int num_bins, int num_pairs,
+                                                           cudaStream_t stream) {
+  const int block = 256;
+  dim3 grid((num_bins + block - 1) / block, num_pairs);
+  NCCLScatterLevelQuantKernel<<<grid, block, 0, stream>>>(in, idx, descs, num_bins);
+}
+
 }  // namespace Falcata
