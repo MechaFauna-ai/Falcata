@@ -447,3 +447,39 @@ subsequently investigated and verified benign — the fallback path breaks
 exact-gain ties in a different order at 5.4M-row scale (holdout corr
 identical to 5 decimals). It is reclassified as a tie-break key, not an
 equality key (commit `2f30f043`).*
+
+## Multi-GPU: level-batched NCCL all-reduce (2026-08-04)
+
+The classic data-parallel path all-reduces one leaf histogram per split
+(~254 collectives for a 255-leaf tree at ~190us each on 2x3090). Multi-GPU
+now rides the hybrid two-sync flow, whose per-level structure allows ONE
+grouped collective per level: gather every pair's smaller-leaf histogram
+into a contiguous staging buffer (through the colsample-aware used-bin
+index when active), reduce once, scatter back, then run the deferred
+fix/subtract on the globally reduced histograms (`6aa4748c`, correctness
+completed in `a923eb22`).
+
+Measured on a rented 2x RTX 3090 (PCIe, host-staged transport), 4M x 400
+int8 `max_bin=5`, 200 trees, `min_data_in_leaf=20k`, depth 11:
+
+| arm | time | trees/s | rmse |
+|---|---|---|---|
+| 1 GPU (hybrid) | 6.86 s | 29.2 | 0.149124 |
+| 2 GPU level-batched | 10.09 s | 19.8 | 0.149141 |
+| 2 GPU per-split (classic) | 15.54 s | 12.9 | 0.149138 |
+
+Level batching is **1.54x faster than the per-split reduce** and produces
+structurally identical trees to single-GPU (81 leaves, same features and
+gains for the first 3 trees; rmse delta is fp32 reduce-order noise). It is
+the multi-GPU default wherever the two-sync flow is usable; one-sync,
+graph and selective flows remain single-GPU.
+
+Correctness notes for future multi-GPU work: `NCCLTopology` silently
+clamps `num_gpu` to the visible device count, so a 2-rank test on a
+1-GPU box is a single-rank no-op — multi-rank semantics can only be
+tested on real multi-GPU hardware. The two count-leak bugs fixed in
+`a923eb22` (struct `num_data_in_leaf` is rank-LOCAL under NCCL; desc
+counts and histogram sums are GLOBAL) are the canonical failure class.
+`FALCATA_DEBUG=dump` now prints per-level reduce totals, leaf-cache
+entries and bookkeeping counts on NCCL runs — the instrumentation that
+located both bugs.

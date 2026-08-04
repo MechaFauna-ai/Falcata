@@ -261,3 +261,38 @@ did land and stays.
 **Re-open when:** a deployment pattern emerges with many DISTINCT one-shot
 shapes on fresh machines (wisdom never warm), or a knob appears whose probe
 cost is large relative to run length.
+
+## Multi-GPU beyond level batching: transport and scale are not the levers (2026-08-04)
+
+**Claim tested.** After the level-batched all-reduce (1.54x over per-split),
+the remaining 2-GPU gap (0.68x vs a single GPU on 2x3090/PCIe) might close
+with a faster interconnect, or at larger data where construct dominates the
+collectives.
+
+**Result: both refuted, same day, same workload (4M x 400 int8, max_bin=5).**
+
+- NVLink-bridged 2x3090 (NV4, 56 GB/s, verified topology; `NCCL_P2P_DISABLE=0`
+  so the collectives actually ride the bridge): 13.57 s vs 13.13 s
+  host-staged — NO transport win (ratios 0.64x vs 0.66x of that box's 1-GPU
+  8.7 s). The per-level messages are ~1.5 MB; the binding term is fixed
+  per-level cost (collective rendezvous, the host-blocking reduce sync, the
+  two-sync flow's per-level readbacks), which faster wires do not shrink.
+  Notably the historical P2P deadlock did NOT reproduce over NVLink — it
+  appears specific to PCIe P2P.
+- 3x the data (12M x 400, 100 trees): ratio got WORSE, 0.54x — at fixed
+  min_data_in_leaf the deeper/wider levels add pairs (bigger payloads, same
+  barrier count per tree), so overhead grows with data instead of amortizing.
+  There is no crossover on this workload class.
+
+**Conclusion.** Data-parallel level-synchronous GBDT on 2 GPUs does not beat
+one fast GPU on dense tabular workloads of this shape, independent of
+interconnect. The collective COUNT was already cut ~10x by level batching;
+what remains is the per-level barrier structure itself.
+
+**Re-open if:** (a) the flow becomes device-driven end-to-end across ranks
+(graph-captured multi-GPU with device-initiated collectives — a redesign,
+not a tune); (b) histograms are quantized into integer collectives (4-8x
+smaller payloads AND cheap ncclInt sums) once quantized multi-GPU plumbing
+is finished; or (c) the workload is not data-parallel-per-tree at all
+(multi-target: one tree per target per GPU has zero per-level collectives
+and is the natural 2-GPU win).
