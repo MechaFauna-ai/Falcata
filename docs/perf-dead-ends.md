@@ -296,3 +296,28 @@ smaller payloads AND cheap ncclInt sums) once quantized multi-GPU plumbing
 is finished; or (c) the workload is not data-parallel-per-tree at all
 (multi-target: one tree per target per GPU has zero per-level collectives
 and is the natural 2-GPU win).
+
+**2026-08-04, same day: (b) was implemented** (`e65313ca` — integer level
+all-reduce, global bit-width table, quantized multi-GPU un-fenced and
+verified exact on an NVLink 2x3090). Outcome: correctness delivered,
+throughput verdict UNCHANGED — 2gpu-quant is 0.72x of 1gpu-quant at 4M rows
+and 0.62x at 10M, because quantized construct is so fast that the per-level
+barrier structure dominates again, and the barrier cost scales with
+pairs-per-level (host-side readbacks and bookkeeping), not with payload or
+transport. Two refinements to the record:
+
+- The non-quantized crossover EXISTS: at feature_fraction=1.0 on 400
+  features (double the construct load of the earlier ff=0.5 benches),
+  2gpu-fp beat 1gpu-fp for the first time — 19.53s vs 24.43s (1.25x) at 4M
+  rows, shrinking to 1.11x at 10M. Data-parallel 2-GPU pays off only when
+  per-level construct time clearly exceeds the fixed per-level barrier cost
+  — heavy-construct, moderate-leaf-count shapes. Quantization removes that
+  regime by making construct cheap: 1gpu-quant beats every other arm at
+  every size tested.
+- What binds now is neither transport (NVLink == host-staged) nor payload
+  (integer reduce halved it: no ratio change) but the per-level HOST
+  machinery scaling with leaf count (best-split readback, splittable
+  arbitration, apply bookkeeping). Removing it is re-open condition (a),
+  the device-driven loop — the only remaining lever, and a redesign.
+
+(c) multi-target remains the practical 2-GPU win and is unaffected.
