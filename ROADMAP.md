@@ -248,13 +248,18 @@ docs/design/nccl-level-allreduce-plan.md.
   device-side write-logger on one leaf's cache entry. Repro:
   crash_edge2.py (rental) / crash_edge.py, mct=32, FALCATA_DEBUG=dump.
 
-- Airline-cat quality gap vs upstream lightgbm CUDA: at identical params
-  (500r, both regimes) upstream posts 0.850/0.886 AUC where we and xgboost
-  sit at ~0.843/0.873. NOT fp32 gain (fp64 measured identical: 0.87221 vs
-  0.87231). Suspects: categorical split-selection defaults or the hybrid
-  level-batched top-K selection differing from pure leaf-wise on this data
-  shape. Worth a bisect: same seed classic-vs-upstream split-by-split on a
-  subsample.
+- RESOLVED 2026-08-04: the airline-cat "quality gap vs upstream" was never a
+  quality gap -- **upstream's CUDA learner silently ignores max_depth**. On a
+  same-box, same-data A/B (rented 3090, 5M subsample, 500r): upstream trees
+  under max_depth=6 average DEPTH 14.7 (max 20) while ours honor 6.0 exactly;
+  its 63 leaves therefore sit wherever gain is best instead of inside 6
+  levels. Giving falcata identical semantics (max_depth=-1) matches upstream
+  to the 5th decimal: shallow 0.83466 == 0.83466, deep 0.86642 vs 0.86650 --
+  at 1.7x/3.7x our speed. Isolation chain: gap present numeric-only (not
+  categorical), unchanged by hybrid:off (not the level-batched selection),
+  both sides fp64. Filed under upstream bugs below; benchmark comparisons
+  against upstream CUDA must either drop max_depth or note that upstream
+  does not enforce it.
 
 ## Upstream (MechaFauna-ai/Falcata) bugs found (documented here for reference;
 ## we do not contribute upstream)
@@ -270,7 +275,10 @@ docs/design/nccl-level-allreduce-plan.md.
   1b28ba03).
 - CUDA-vs-CPU growth parity: upstream CUDA over-grows trees ~3.5x vs its own CPU at
   identical params (854 vs 237 leaves/tree on covtype; lambda_l2 sweep shows it is
-  systematic).
+  systematic). 2026-08-04: the mechanism is (at least partly) that upstream's
+  CUDA learner DOES NOT ENFORCE max_depth at all -- measured depth 14.7 avg /
+  20 max under max_depth=6 on airline 5M. This also explained our entire
+  apparent airline-cat AUC deficit (see Correctness section).
 - CPU quantized training (``use_quantized_grad`` on device_type=cpu) produces
   constant/garbage models at num_grad_quant_bins >= 512 on any data tried
   (AUC 0.500 flat; found 2026-08-01 while investigating the CUDA high-bins
