@@ -321,3 +321,35 @@ transport. Two refinements to the record:
   the device-driven loop — the only remaining lever, and a redesign.
 
 (c) multi-target remains the practical 2-GPU win and is unaffected.
+
+
+## Feature-parallel multi-GPU: the last tree-level variant, also closed (2026-08-04)
+
+**Claim tested.** Splitting FEATURES instead of rows (every rank holds the
+full dataset, searches its feature stripe, ranks merge per-leaf winners
+host-side — kilobytes per level instead of megabytes, and no local-vs-global
+count hazards by construction) should win on wide data where histogram
+construction dominates.
+
+**Result: refuted** (`cbce5d82`, correct but slower everywhere). On
+2M x 2000 int8: 0.80x of 1 GPU at ff=1.0, 0.22x at ff=0.1. The premise fails
+because the OPTIMIZED single-GPU flow (graph-captured level loop, JIT
+construct, compact view) runs a whole level in ~3.4ms at the numerai-style
+regime — halving construct saves ~1.5ms while the coordination (thread
+barrier, ~1MB leaf-cache re-upload, forced two-sync instead of the graph
+flow) costs several ms. The faster the single-GPU path gets, the less room
+any per-level cross-GPU scheme has; ours got too fast.
+
+**Standing conclusion.** Tree-level multi-GPU parallelism is closed in every
+variant tried: data-parallel per-split, data-parallel level-batched,
+integer-quantized collectives, NVLink transport, bigger data, and
+feature-parallel. The one remaining multi-GPU win is MODEL-level
+parallelism: multi-target training with one tree per GPU (zero per-level
+coordination) — task #67. The feature-parallel mode stays in-tree (opt-in
+`tree_learner=feature`, off by default, zero-cost when unused): its
+merge-state machinery is the seed of the multi-target orchestration.
+
+**Operational note:** two fresh vast.ai boxes on driver 590.48.01 threw a
+cold-start CUDA "invalid argument" on the first multi-GPU touch after boot
+(old wheel and new alike); warm runs pass consistently.
+`CUDA_MODULE_LOADING=EAGER` is the rental hedge.
