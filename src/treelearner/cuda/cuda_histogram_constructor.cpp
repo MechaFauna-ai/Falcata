@@ -1022,7 +1022,8 @@ void CUDAHistogramConstructor::ConstructHistogramsForLevel(
   const int num_pairs,
   const data_size_t max_num_data_in_smaller_leaf,
   const bool any_pair_needs_bit_change_copy,
-  const data_size_t* level_smaller_num_data) {
+  const data_size_t* level_smaller_num_data,
+  const bool defer_subtract) {
   if (num_pairs <= 0) {
     return;
   }
@@ -1046,6 +1047,25 @@ void CUDAHistogramConstructor::ConstructHistogramsForLevel(
                                         level_smaller_num_data);
   // (no construct_done event here: the batched find kernel only waits on the
   // subtract event below, and the per-pair path re-records its own events)
+  if (defer_subtract) {
+    // Multi-GPU: the caller all-reduces the smaller-leaf histograms and then
+    // runs SubtractHistogramsForLevel. Record the construct completion so the
+    // reduce stream can wait on it (the subtract event is NOT recorded yet).
+    CUDASUCCESS_OR_FATAL(cudaEventRecord(construct_done_events_[0], cuda_stream_));
+    global_timer.Stop("CUDAHistogramConstructor::ConstructHistogramsForLevel");
+    return;
+  }
+  SubtractHistogramsForLevel(pair_descs, num_pairs, any_pair_needs_bit_change_copy);
+  global_timer.Stop("CUDAHistogramConstructor::ConstructHistogramsForLevel");
+}
+
+void CUDAHistogramConstructor::SubtractHistogramsForLevel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const int num_pairs,
+  const bool any_pair_needs_bit_change_copy) {
+  if (num_pairs <= 0) {
+    return;
+  }
   if (!use_quantized_grad_ && SmallLeafConstructEnabled()) {
     // fused fix + subtract: one launch, bit-identical to the sequential pair
     LaunchFixSubtractHistogramSmallLeafBatchedKernel(pair_descs, num_pairs);
@@ -1055,7 +1075,6 @@ void CUDAHistogramConstructor::ConstructHistogramsForLevel(
   // the best split finder's batched find kernel waits on this event before reading
   // any of this level's histograms (construct/fix/subtract are stream-ordered here)
   CUDASUCCESS_OR_FATAL(cudaEventRecord(subtract_done_events_[0], cuda_stream_));
-  global_timer.Stop("CUDAHistogramConstructor::ConstructHistogramsForLevel");
 }
 
 void CUDAHistogramConstructor::InitFixMFBMask() {

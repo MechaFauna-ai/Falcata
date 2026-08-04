@@ -362,6 +362,20 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   void LaunchNCCLGatherBins(const hist_t* hist, double* out, int num_bins, cudaStream_t stream);
   void LaunchNCCLScatterBins(const double* in, hist_t* hist, int num_bins, cudaStream_t stream);
 
+  /*! \brief one grouped all-reduce for a whole level's smaller-leaf
+   *  histograms (replaces one collective per split; the level path is
+   *  latency-bound, so this is the dominant multi-GPU optimization).
+   *  Histogram locations are read on-device from the pair descriptors'
+   *  smaller_struct->hist_in_leaf -- the pointer the construct kernel itself
+   *  wrote through -- because the level flow does not maintain the host-side
+   *  leaf_to_hist_index_map_. */
+  void NCCLReduceLevelHistograms(const int num_pairs);
+  void LaunchNCCLGatherLevel(const CUDAHybridPairDescriptor* descs, const int* idx,
+                             double* out, int num_bins, int num_pairs, cudaStream_t stream);
+  void LaunchNCCLScatterLevel(const double* in, const int* idx,
+                              const CUDAHybridPairDescriptor* descs,
+                              int num_bins, int num_pairs, cudaStream_t stream);
+
   /*! \brief compacted bin indices this tree reads (empty = reduce everything) */
   CUDAVector<int> cuda_nccl_reduce_bin_idx_;
   /*! \brief staging buffer for the compacted all-reduce (2 doubles per bin) */

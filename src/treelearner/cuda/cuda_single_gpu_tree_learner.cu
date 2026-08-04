@@ -541,3 +541,76 @@ void CUDASingleGPUTreeLearner::LaunchNCCLScatterBins(const double* in, hist_t* h
 }
 
 }  // namespace Falcata
+
+namespace Falcata {
+
+// ---- level-batched NCCL histogram reduce ---------------------------------
+// The classic path all-reduces ONE leaf histogram per split, so a 255-leaf
+// tree pays ~254 collectives. Measured on 2x RTX 3090 that is ~190 us of
+// latency each and dominates everything else -- shrinking the messages (the
+// colsample-aware compaction) removed only ~20 ms of ~68 ms. Reducing a whole
+// LEVEL in one collective attacks the term that actually binds.
+//
+// Every pair's smaller-leaf histogram is gathered into one contiguous buffer
+// (optionally through the per-tree used-bin index), reduced once, scattered
+// back. Grid is (bins, pairs). Histogram locations come from the pair
+// descriptors' smaller_struct->hist_in_leaf -- written by the batched apply,
+// and the same pointer the construct kernel writes through -- because the
+// level flow does not maintain the host leaf_to_hist_index_map_. A pair
+// invalid for construct (construct_valid == 0) has a stale hist pointer, so
+// it is skipped on both sides; its buffer region still participates in the
+// collective (ranks must stay symmetric), so the gather zero-fills it.
+
+__global__ void NCCLGatherLevelKernel(const CUDAHybridPairDescriptor* __restrict__ descs,
+                                      const int* __restrict__ idx,
+                                      double* __restrict__ out,
+                                      const int num_bins) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= num_bins) return;
+  const int pair = blockIdx.y;
+  double* dst = out + static_cast<size_t>(pair) * num_bins * 2;
+  if (!descs[pair].construct_valid) {
+    dst[2 * i] = 0.0;
+    dst[2 * i + 1] = 0.0;
+    return;
+  }
+  const hist_t* hist = descs[pair].smaller_struct->hist_in_leaf;
+  const int bin = (idx == nullptr) ? i : idx[i];
+  dst[2 * i] = hist[2 * bin];
+  dst[2 * i + 1] = hist[2 * bin + 1];
+}
+
+__global__ void NCCLScatterLevelKernel(const double* __restrict__ in,
+                                       const int* __restrict__ idx,
+                                       const CUDAHybridPairDescriptor* __restrict__ descs,
+                                       const int num_bins) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= num_bins) return;
+  const int pair = blockIdx.y;
+  if (!descs[pair].construct_valid) return;
+  hist_t* hist = descs[pair].smaller_struct->hist_in_leaf;
+  const int bin = (idx == nullptr) ? i : idx[i];
+  const double* src = in + static_cast<size_t>(pair) * num_bins * 2;
+  hist[2 * bin] = src[2 * i];
+  hist[2 * bin + 1] = src[2 * i + 1];
+}
+
+void CUDASingleGPUTreeLearner::LaunchNCCLGatherLevel(const CUDAHybridPairDescriptor* descs,
+                                                     const int* idx,
+                                                     double* out, int num_bins, int num_pairs,
+                                                     cudaStream_t stream) {
+  const int block = 256;
+  dim3 grid((num_bins + block - 1) / block, num_pairs);
+  NCCLGatherLevelKernel<<<grid, block, 0, stream>>>(descs, idx, out, num_bins);
+}
+
+void CUDASingleGPUTreeLearner::LaunchNCCLScatterLevel(const double* in, const int* idx,
+                                                      const CUDAHybridPairDescriptor* descs,
+                                                      int num_bins,
+                                                      int num_pairs, cudaStream_t stream) {
+  const int block = 256;
+  dim3 grid((num_bins + block - 1) / block, num_pairs);
+  NCCLScatterLevelKernel<<<grid, block, 0, stream>>>(in, idx, descs, num_bins);
+}
+
+}  // namespace Falcata

@@ -717,8 +717,20 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
                    "classic training loop for this configuration.");
     }
   }
+  // Multi-GPU rides the hybrid TWO-SYNC batched flow only: that is the flow
+  // whose per-level structure allows ONE grouped all-reduce per level instead
+  // of one per split, which is the dominant multi-GPU cost. The one-sync,
+  // graph and selective flows derive leaf counts on-device or reorder the
+  // readback, and their rank-visible decisions have not been made global, so
+  // they stay single-GPU (see UseOneSyncPrefix / HybridGraphPrefixUsable /
+  // UseSelectiveGrowth).
+  const bool nccl_ok = nccl_communicator_ == nullptr ||
+      (cuda_histogram_constructor_ != nullptr && cuda_best_split_finder_ != nullptr &&
+       use_hybrid_batch_kernels_ && use_hybrid_batch_apply_ &&
+       cuda_histogram_constructor_->SupportsBatchedLevel() &&
+       cuda_best_split_finder_->SupportsBatchedLevel());
   const bool base = use_hybrid_growth_ &&
-         nccl_communicator_ == nullptr &&
+         nccl_ok &&
          !select_features_by_node_ &&
          !cat_threshold_fenced &&
          (cuda_best_split_finder_ == nullptr || !cuda_best_split_finder_->use_global_memory()) &&
@@ -731,6 +743,10 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
 }
 
 bool CUDASingleGPUTreeLearner::UseSelectiveGrowth() const {
+  // multi-GPU: selective grow-then-prune keeps its own host-side leaf bookkeeping, none of which is global
+  if (nccl_communicator_ != nullptr) {
+    return false;
+  }
   const bool depth_limited = config_->max_depth > 0 && config_->max_depth < 31 &&
       (1LL << config_->max_depth) <= static_cast<int64_t>(config_->num_leaves) + 1;
   if (depth_limited || HybridAggressiveEnv()) {
@@ -754,6 +770,10 @@ bool CUDASingleGPUTreeLearner::UseSelectiveGrowth() const {
 }
 
 bool CUDASingleGPUTreeLearner::UseOneSyncPrefix() const {
+  // multi-GPU: the one-sync flow derives leaf counts on-device, so ranks cannot agree host-side
+  if (nccl_communicator_ != nullptr) {
+    return false;
+  }
   // categorical datasets ride the one-sync flow since 2026-08-02: the apply
   // runs AFTER the level's single readback (host split infos, including
   // num_cat_threshold, are available -- the phase-1b operator= fix keeps the
@@ -928,8 +948,14 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
     desc.larger_struct = pair.larger_struct;
     desc.smaller_leaf_index = pair.smaller;
     desc.larger_leaf_index = pair.larger;
-    const data_size_t num_data_in_smaller_leaf = leaf_num_data_[pair.smaller];
-    const data_size_t num_data_in_larger_leaf = pair.larger < 0 ? 0 : leaf_num_data_[pair.larger];
+    // Under NCCL every rank must reach the SAME validity verdict, so these
+    // gates read the global counts; the local ones would differ per rank and
+    // desynchronise the collectives (that is how the classic path deadlocked).
+    const data_size_t num_data_in_smaller_leaf = nccl_communicator_ != nullptr ?
+        global_num_data_in_leaf_[pair.smaller] : leaf_num_data_[pair.smaller];
+    const data_size_t num_data_in_larger_leaf = pair.larger < 0 ? 0 :
+        (nccl_communicator_ != nullptr ? global_num_data_in_leaf_[pair.larger]
+                                       : leaf_num_data_[pair.larger]);
     const double sum_hessians_in_smaller_leaf = leaf_sum_hessians_[pair.smaller];
     const double sum_hessians_in_larger_leaf = pair.larger < 0 ? 0.0 : leaf_sum_hessians_[pair.larger];
     desc.num_data_in_smaller_leaf = num_data_in_smaller_leaf;
@@ -992,9 +1018,22 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
     cuda_hybrid_pair_descs_.RawData(), host_hybrid_pair_descs_.data(),
     static_cast<size_t>(num_pairs), cuda_histogram_constructor_->hist_stream(),
     __FILE__, __LINE__);
+  // Multi-GPU defers the fix+subtract tail: the mfb fix writes
+  // leaf_total - sum(other bins) with leaf-struct totals that are GLOBAL under
+  // NCCL, and the subtract derives the larger child from the (global) parent,
+  // so both must run on globally reduced smaller histograms. Order mirrors the
+  // classic flow: construct -> reduce -> fix/subtract -> find.
   cuda_histogram_constructor_->ConstructHistogramsForLevel(
     cuda_hybrid_pair_descs_.RawDataReadOnly(), num_pairs,
-    max_num_data_in_smaller_leaf, any_bit_change_copy);
+    max_num_data_in_smaller_leaf, any_bit_change_copy,
+    /*level_smaller_num_data=*/nullptr,
+    /*defer_subtract=*/nccl_communicator_ != nullptr);
+  if (nccl_communicator_ != nullptr) {
+    // ONE collective for the level instead of one per split
+    NCCLReduceLevelHistograms(num_pairs);
+    cuda_histogram_constructor_->SubtractHistogramsForLevel(
+      cuda_hybrid_pair_descs_.RawDataReadOnly(), num_pairs, any_bit_change_copy);
+  }
   cuda_best_split_finder_->FindBestSplitsForLevel(
     cuda_hybrid_pair_descs_.RawDataReadOnly(), num_pairs,
     config_->use_quantized_grad ? cuda_gradient_discretizer_->grad_scale_ptr() : nullptr,
@@ -1338,8 +1377,23 @@ void CUDASingleGPUTreeLearner::FinishLevelBookkeeping(
     leaf_sum_hessians_[a.right] = dinfo[1];
     leaf_sum_gradients_[a.left] = dinfo[2];
     leaf_sum_gradients_[a.right] = dinfo[3];
-    const int smaller = leaf_num_data_[a.left] < leaf_num_data_[a.right] ? a.left : a.right;
-    const int larger = smaller == a.left ? a.right : a.left;
+    // Under NCCL the smaller/larger roles must match the device kernel's
+    // choice AND be identical on every rank, so both read the GLOBAL counts
+    // (slots 16/17, from the all-reduced histograms); the local partition
+    // counts can order differently per rank on skewed leaves. These are also
+    // the gates' counts: EnqueueLevelBestSplitSearch reads
+    // global_num_data_in_leaf_ for the next level's validity decisions, and
+    // without this update every child read stale garbage from earlier trees.
+    int smaller, larger;
+    if (nccl_communicator_ != nullptr) {
+      global_num_data_in_leaf_[a.left] = info[16];
+      global_num_data_in_leaf_[a.right] = info[17];
+      smaller = info[16] < info[17] ? a.left : a.right;
+      larger = smaller == a.left ? a.right : a.left;
+    } else {
+      smaller = leaf_num_data_[a.left] < leaf_num_data_[a.right] ? a.left : a.right;
+      larger = smaller == a.left ? a.right : a.left;
+    }
     if (config_->use_quantized_grad) {
       cuda_gradient_discretizer_->SetNumBitsInHistogramBin<false>(
         a.left, a.right, leaf_num_data_[a.left], leaf_num_data_[a.right]);
@@ -1615,6 +1669,10 @@ CUDASingleGPUTreeLearner::HybridGraphInstance::~HybridGraphInstance() {
 }
 
 bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
+  // multi-GPU: the graph flow builds descriptors on-device; its rank-visible decisions are not global
+  if (nccl_communicator_ != nullptr) {
+    return false;
+  }
   // the per-level debug envs steer the host loop's decisions in ways the
   // device controller does not replicate
   const bool debug_envs = FalcataDebug().any_growth_hook();
@@ -3533,6 +3591,32 @@ void CUDASingleGPUTreeLearner::SetNCCLInfo(
   leaf_to_hist_index_map_.resize(config_->num_leaves - 1);
   global_num_data_in_leaf_.resize(config_->num_leaves, 0);
   nccl_stream_ = CUDAStreamCreate();
+}
+
+void CUDASingleGPUTreeLearner::NCCLReduceLevelHistograms(const int num_pairs) {
+  if (num_pairs <= 0) return;
+  global_timer.Start("CUDASingleGPUTreeLearner::NCCLReduceLevelHistograms");
+  // ConstructHistogramsForLevel(defer_subtract=true) recorded this event on
+  // its stream right after the batched construct launch
+  CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(
+      nccl_stream_, cuda_histogram_constructor_->construct_done_events()[0], 0));
+  const int num_bins = nccl_reduce_num_bins_ > 0 ? nccl_reduce_num_bins_ : num_total_bin_;
+  const int* idx = nccl_reduce_num_bins_ > 0 ? cuda_nccl_reduce_bin_idx_.RawDataReadOnly() : nullptr;
+  const size_t elems = static_cast<size_t>(num_pairs) * num_bins * 2;
+  if (cuda_nccl_reduce_buf_.Size() < elems) {
+    cuda_nccl_reduce_buf_.Resize(elems);
+  }
+  const CUDAHybridPairDescriptor* descs = cuda_hybrid_pair_descs_.RawDataReadOnly();
+  LaunchNCCLGatherLevel(descs, idx, cuda_nccl_reduce_buf_.RawData(),
+                        num_bins, num_pairs, nccl_stream_);
+  NCCLAllReduce<double>(cuda_nccl_reduce_buf_.RawData(), cuda_nccl_reduce_buf_.RawData(),
+                        elems, ncclFloat64, ncclSum, nccl_communicator_, nccl_stream_);
+  LaunchNCCLScatterLevel(cuda_nccl_reduce_buf_.RawDataReadOnly(), idx, descs,
+                         num_bins, num_pairs, nccl_stream_);
+  // host-blocking: the deferred SubtractHistogramsForLevel launches next on the
+  // histogram stream and must see the globally reduced smaller histograms
+  SynchronizeCUDAStream(nccl_stream_, __FILE__, __LINE__);
+  global_timer.Stop("CUDASingleGPUTreeLearner::NCCLReduceLevelHistograms");
 }
 
 bool CUDASingleGPUTreeLearner::BuildNCCLReduceBinIndex() {

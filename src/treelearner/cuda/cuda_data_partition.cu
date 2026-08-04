@@ -1674,7 +1674,10 @@ __global__ void HybridSplitInnerBatchKernel(
 // point_structs_at_main fixed to true (batched apply always points the child
 // structs' data_indices_in_leaf at the main index array); one 32-thread block
 // per split, threadIdx.x playing the original global thread index.
-template <bool USE_GRAD_DISCRETIZED>
+// USE_NCCL_REDUCE mirrors SplitTreeStructureKernel: slots 16/17 carry the
+// GLOBAL child counts and the smaller/larger role assignment reads the
+// global counts from the split info, so every rank makes the same choice.
+template <bool USE_NCCL_REDUCE, bool USE_GRAD_DISCRETIZED>
 __global__ void HybridSplitTreeStructureBatchKernel(
   const CUDAHybridApplyDescriptor* descs,
   data_size_t* cuda_leaf_data_start,
@@ -1726,9 +1729,21 @@ __global__ void HybridSplitTreeStructureBatchKernel(
   } else if (global_thread_index == 9) {
     cuda_split_info_buffer_for_hessians[1] = best_split_info->right_sum_hessians;
     cuda_split_info_buffer_for_hessians[3] = best_split_info->right_sum_gradients;
+  } else if (global_thread_index == 10 && USE_NCCL_REDUCE) {
+    // GLOBAL child counts for the host's global_num_data_in_leaf_ (identical
+    // on every rank: derived from the all-reduced histograms). Same contract
+    // as SplitTreeStructureKernel slots 16/17.
+    cuda_split_info_buffer[16] = best_split_info->left_count;
+    cuda_split_info_buffer[17] = best_split_info->right_count;
   }
 
-  const bool left_is_smaller = cuda_leaf_num_data[left_leaf_index] < cuda_leaf_num_data[right_leaf_index];
+  // Under NCCL the smaller/larger role must be the same on every rank -- the
+  // level all-reduce pairs up smaller-leaf histograms BY ROLE across ranks --
+  // so the choice reads the global counts from the split info; local
+  // partition counts can order differently per rank on skewed leaves.
+  const bool left_is_smaller = USE_NCCL_REDUCE ?
+    best_split_info->left_count < best_split_info->right_count :
+    cuda_leaf_num_data[left_leaf_index] < cuda_leaf_num_data[right_leaf_index];
 
   if (left_is_smaller) {
     if (global_thread_index == 0) {
@@ -1960,13 +1975,20 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
     cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
     new_main_indices, nullptr, num_splits, total_flat_blocks,
     cuda_data_index_to_leaf_index_.RawData(), write_leaf_map ? 1 : 0);
-  if (use_quantized_grad_) {
-    HybridSplitTreeStructureBatchKernel<true><<<num_splits, 32, 0, cuda_streams_[0]>>>(
+  if (nccl_communicator_ != nullptr) {
+    // quantized multi-GPU is fenced at the NCCLGBDT layer, so only the
+    // non-quantized variant needs the NCCL role/count contract here
+    HybridSplitTreeStructureBatchKernel<true, false><<<num_splits, 32, 0, cuda_streams_[0]>>>(
+      descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
+      new_main_indices, num_total_bin_, cuda_hist_, cuda_hist_pool_.RawData(),
+      cuda_leaf_output_.RawData(), cuda_split_info_buffer_.RawData(), nullptr);
+  } else if (use_quantized_grad_) {
+    HybridSplitTreeStructureBatchKernel<false, true><<<num_splits, 32, 0, cuda_streams_[0]>>>(
       descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
       new_main_indices, num_total_bin_, cuda_hist_, cuda_hist_pool_.RawData(),
       cuda_leaf_output_.RawData(), cuda_split_info_buffer_.RawData(), nullptr);
   } else {
-    HybridSplitTreeStructureBatchKernel<false><<<num_splits, 32, 0, cuda_streams_[0]>>>(
+    HybridSplitTreeStructureBatchKernel<false, false><<<num_splits, 32, 0, cuda_streams_[0]>>>(
       descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
       new_main_indices, num_total_bin_, cuda_hist_, cuda_hist_pool_.RawData(),
       cuda_leaf_output_.RawData(), cuda_split_info_buffer_.RawData(), nullptr);
@@ -2017,13 +2039,14 @@ void CUDADataPartition::CaptureHybridGraphApplyKernels(
   // template selection mirrors LaunchSplitLevelBatchedKernels (the quantized
   // variant also writes the child structs' packed int64 gradient/hessian sums)
   if (use_quantized_grad_) {
-    HybridSplitTreeStructureBatchKernel<true><<<1, 32, 0, stream>>>(
+    // graph flow is single-GPU only (HybridGraphPrefixUsable), no NCCL variant
+    HybridSplitTreeStructureBatchKernel<false, true><<<1, 32, 0, stream>>>(
       descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
       cuda_out_data_indices_in_leaf_.RawData(), num_total_bin_, cuda_hist_,
       cuda_hist_pool_.RawData(), cuda_leaf_output_.RawData(),
       cuda_split_info_buffer_.RawData(), gstate);
   } else {
-    HybridSplitTreeStructureBatchKernel<false><<<1, 32, 0, stream>>>(
+    HybridSplitTreeStructureBatchKernel<false, false><<<1, 32, 0, stream>>>(
       descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
       cuda_out_data_indices_in_leaf_.RawData(), num_total_bin_, cuda_hist_,
       cuda_hist_pool_.RawData(), cuda_leaf_output_.RawData(),

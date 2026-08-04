@@ -268,7 +268,20 @@ class CUDAHistogramConstructor {
     const int num_pairs,
     const data_size_t max_num_data_in_smaller_leaf,
     const bool any_pair_needs_bit_change_copy,
-    const data_size_t* level_smaller_num_data = nullptr);
+    const data_size_t* level_smaller_num_data = nullptr,
+    const bool defer_subtract = false);
+
+  /*! \brief the deferred fix+subtract tail of ConstructHistogramsForLevel
+   *  (defer_subtract=true). Multi-GPU inserts the level all-reduce of the
+   *  smaller-leaf histograms between construct and this call: the mfb fix
+   *  writes leaf_total - sum(other bins) with leaf-struct totals that are
+   *  GLOBAL under NCCL, and the subtract derives the larger child from the
+   *  (global) parent, so both are only correct on globally reduced smaller
+   *  histograms. */
+  void SubtractHistogramsForLevel(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    const bool any_pair_needs_bit_change_copy);
 
   /*! \brief minimum rows-per-thread cap of the batched construct grid sizing
    *  (baked constant FalcataPlan::batch_construct_min_rows_per_thread;
