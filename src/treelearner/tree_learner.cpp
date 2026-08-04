@@ -57,7 +57,11 @@ TreeLearner* TreeLearner::CreateTreeLearner(const std::string& learner_type, con
       return MakeSerialFamily<GPUTreeLearner>(lt, c);
     }},
     {"cuda", [](const std::string& lt, const Config* c, bool on_cuda) -> TreeLearner* {
-      if (lt == std::string("serial")) {
+      if (lt == std::string("serial") ||
+          (lt == std::string("feature") && c->num_gpu > 1)) {
+        // tree_learner=feature + num_gpu>1 selects the feature-parallel
+        // multi-GPU strategy, orchestrated by NCCLGBDT; the learner class is
+        // the same (each rank runs the single-GPU flow on a feature stripe)
         return new CUDASingleGPUTreeLearner(c, on_cuda);
       }
       Log::Fatal("Currently cuda version only supports training on a single machine.");

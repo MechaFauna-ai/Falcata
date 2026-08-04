@@ -389,7 +389,13 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
     is_parallel = true;
   } else {
     is_parallel = false;
-    tree_learner = "serial";
+    // tree_learner=feature doubles as the CUDA multi-GPU strategy selector
+    // (feature-parallel: full rows per GPU, feature stripes, tiny per-level
+    // winner merge); keep it for that combination instead of downgrading.
+    if (!(device_type == std::string("cuda") && num_gpu > 1 &&
+          tree_learner == std::string("feature"))) {
+      tree_learner = "serial";
+    }
   }
 
   bool is_single_tree_learner = tree_learner == std::string("serial");

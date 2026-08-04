@@ -19,6 +19,7 @@
 #include <Falcata/cuda/cuda_objective_function.hpp>
 #include "cuda_score_updater.hpp"
 #include "../../treelearner/cuda/cuda_single_gpu_tree_learner.hpp"
+#include "../../treelearner/cuda/cuda_feature_parallel.hpp"
 
 namespace Falcata {
 
@@ -28,12 +29,21 @@ class NCCLGBDTComponent: public NCCLInfo {
 
   ~NCCLGBDTComponent() {}
 
-  void Init(const Config* config, const Dataset* train_data, const int num_tree_per_iteration, const bool boosting_on_gpu, const bool is_constant_hessian) {
+  void Init(const Config* config, const Dataset* train_data, const int num_tree_per_iteration, const bool boosting_on_gpu, const bool is_constant_hessian,
+            FeatureParallelMergeState* fp_state = nullptr) {
     CUDASUCCESS_OR_FATAL(cudaGetDeviceCount(&num_gpu_in_node_));
-    const data_size_t num_data_per_gpu = (train_data->num_data() + num_gpu_in_node_ - 1) / num_gpu_in_node_;
-    data_start_index_ = num_data_per_gpu * local_gpu_rank_;
-    data_end_index_ = std::min<data_size_t>(data_start_index_ + num_data_per_gpu, train_data->num_data());
-    num_data_in_gpu_ = data_end_index_ - data_start_index_;
+    if (fp_state != nullptr) {
+      // feature-parallel: every rank holds the FULL row set; the parallelism
+      // is over feature stripes inside the tree learner
+      data_start_index_ = 0;
+      data_end_index_ = train_data->num_data();
+      num_data_in_gpu_ = train_data->num_data();
+    } else {
+      const data_size_t num_data_per_gpu = (train_data->num_data() + num_gpu_in_node_ - 1) / num_gpu_in_node_;
+      data_start_index_ = num_data_per_gpu * local_gpu_rank_;
+      data_end_index_ = std::min<data_size_t>(data_start_index_ + num_data_per_gpu, train_data->num_data());
+      num_data_in_gpu_ = data_end_index_ - data_start_index_;
+    }
 
     dataset_.reset(new Dataset(num_data_in_gpu_));
     dataset_->ReSize(num_data_in_gpu_);
@@ -45,13 +55,24 @@ class NCCLGBDTComponent: public NCCLInfo {
     dataset_->CopySubrowToDevice(train_data, used_indices.data(), num_data_in_gpu_, true, gpu_device_id_);
 
     objective_function_.reset(ObjectiveFunction::CreateObjectiveFunctionCUDA(config->objective, *config));
-    objective_function_->SetNCCLInfo(nccl_communicator_, nccl_gpu_rank_, local_gpu_rank_, gpu_device_id_, train_data->num_data());
+    if (fp_state == nullptr) {
+      // data-parallel: the objective's statistics are reduced across ranks.
+      // Feature-parallel ranks compute them on the FULL data (identically),
+      // so a reduce would double-count; the objective stays single-GPU.
+      objective_function_->SetNCCLInfo(nccl_communicator_, nccl_gpu_rank_, local_gpu_rank_, gpu_device_id_, train_data->num_data());
+    }
     train_score_updater_.reset(new CUDAScoreUpdater(dataset_.get(), num_tree_per_iteration, boosting_on_gpu));
     gradients_.reset(new CUDAVector<score_t>(num_data_in_gpu_));
     hessians_.reset(new CUDAVector<score_t>(num_data_in_gpu_));
     tree_learner_.reset(new CUDASingleGPUTreeLearner(config, boosting_on_gpu));
 
-    tree_learner_->SetNCCLInfo(nccl_communicator_, nccl_gpu_rank_, local_gpu_rank_, gpu_device_id_, train_data->num_data());
+    if (fp_state == nullptr) {
+      tree_learner_->SetNCCLInfo(nccl_communicator_, nccl_gpu_rank_, local_gpu_rank_, gpu_device_id_, train_data->num_data());
+    } else {
+      // no communicator: the learner runs the ordinary single-GPU flow on
+      // its feature stripe and merges winners host-side per level
+      tree_learner_->SetFeatureParallel(local_gpu_rank_, fp_state->num_ranks(), fp_state);
+    }
 
     objective_function_->Init(dataset_->metadata(), dataset_->num_data());
     tree_learner_->Init(dataset_.get(), is_constant_hessian);

@@ -21,6 +21,7 @@
 
 #include "cuda_score_updater.hpp"
 #include "nccl_gbdt_component.hpp"
+#include "../../treelearner/cuda/cuda_feature_parallel.hpp"
 
 #include "../gbdt.h"
 
@@ -133,6 +134,11 @@ class NCCLGBDT: public GBDT_T {
 
   int num_threads_;
   std::unique_ptr<NCCLTopology> nccl_topology_;
+
+  /*! \brief feature-parallel mode (tree_learner=feature): full rows per
+   *  rank, feature stripes, host-side per-level winner merge */
+  bool feature_parallel_ = false;
+  std::unique_ptr<FeatureParallelMergeState> fp_merge_state_;
 
   std::vector<int> nccl_gpu_rank_;
   std::vector<ncclComm_t> nccl_communicators_;

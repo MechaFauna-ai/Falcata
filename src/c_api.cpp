@@ -198,10 +198,17 @@ class Booster {
     train_data_ = train_data;
     CreateObjectiveAndMetrics();
     // initialize the boosting
-    if (config_.tree_learner == std::string("feature")) {
+    // tree_learner=feature doubles as the CUDA multi-GPU feature-parallel
+    // strategy selector (full rows per GPU, feature stripes) -- in-process,
+    // no distributed workers involved.
+    const bool cuda_feature_parallel =
+        config_.device_type == std::string("cuda") && config_.num_gpu > 1 &&
+        config_.tree_learner == std::string("feature");
+    if (config_.tree_learner == std::string("feature") && !cuda_feature_parallel) {
       Log::Fatal("Do not support feature parallel in c api");
     }
-    if (Network::num_machines() == 1 && config_.tree_learner != std::string("serial")) {
+    if (Network::num_machines() == 1 && !cuda_feature_parallel &&
+        config_.tree_learner != std::string("serial")) {
       Log::Warning("Only find one worker, will switch to serial tree learner");
       config_.tree_learner = "serial";
     }

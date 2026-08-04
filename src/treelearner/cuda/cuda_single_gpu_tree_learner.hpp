@@ -13,6 +13,7 @@
 #ifdef USE_CUDA
 
 #include "cuda_leaf_splits.hpp"
+#include "cuda_feature_parallel.hpp"
 #include "cuda_histogram_constructor.hpp"
 #include "cuda_data_partition.hpp"
 #include "cuda_best_split_finder.hpp"
@@ -59,6 +60,16 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     int local_gpu_rank,
     int gpu_device_id,
     data_size_t global_num_data) override;
+
+  /*! \brief enable feature-parallel multi-GPU: this learner constructs and
+   *  searches only inner features with index %% num_ranks == rank; per-level
+   *  winners are merged host-side through the shared state. Mutually
+   *  exclusive with SetNCCLInfo (no communicator, full data per rank). */
+  void SetFeatureParallel(int rank, int num_ranks, FeatureParallelMergeState* state) {
+    fp_rank_ = rank;
+    fp_num_ranks_ = num_ranks;
+    fp_merge_state_ = state;
+  }
 
  protected:
   bool IsCUDATreeLearner() const override { return true; }
@@ -183,6 +194,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // device cache into the host split arrays (the leaf-wise tail may apply any of
   // them later).
   void CollectSplittableLeaves(const CUDATree* tree, std::vector<int>* splittable);
+  /*! \brief feature-parallel: deterministic per-leaf winner merge across the
+   *  rank threads (host buffers), then re-upload to the device leaf cache so
+   *  the batched apply reads the winning split infos */
+  void FeatureParallelMergeLevel(int num_leaves);
   // Leaf-budget arbitration of one level: returns false when the budget binds
   // and the level must defer to the leaf-wise tail; truncates splittable to a
   // final partial level (*final_partial_level = true) when every child would sit
@@ -640,6 +655,16 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // members used in multi-GPU training
   /*! \brief cuda stream for nccl operations */
   cudaStream_t nccl_stream_;
+  // ---- feature-parallel multi-GPU (tree_learner=feature) ----
+  /*! \brief rank of this learner's feature stripe; -1 = feature parallel off */
+  int fp_rank_ = -1;
+  int fp_num_ranks_ = 0;
+  FeatureParallelMergeState* fp_merge_state_ = nullptr;
+  /*! \brief per-tree feature mask: col_sampler sample intersected with the
+   *  rank stripe (inner feature %% fp_num_ranks_ == fp_rank_) */
+  std::vector<int8_t> fp_feature_mask_;
+  /*! \brief scratch for the deterministic per-leaf winner merge */
+  std::vector<CUDASplitInfo> fp_merge_tmp_;
   /*! \brief scatter-complete marker of the level all-reduce: the deferred
    *  fix/subtract on the histogram stream waits on this instead of a
    *  host-blocking stream sync (one host round trip per level saved) */

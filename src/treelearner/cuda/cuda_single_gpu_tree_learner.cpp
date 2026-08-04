@@ -392,9 +392,26 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
   } else {
     col_sampler_.ResetByTree();
   }
-  cuda_best_split_finder_->BeforeTrain(col_sampler_.is_feature_used_bytree());
-  cuda_histogram_constructor_->SetFeatureUsedBytree(col_sampler_.is_feature_used_bytree());
-  cuda_histogram_constructor_->BuildCompactView(col_sampler_.is_feature_used_bytree());
+  if (fp_merge_state_ != nullptr) {
+    // feature-parallel: every rank draws the IDENTICAL per-tree sample (same
+    // seed, same RNG call sequence) and keeps its stripe of it. The union of
+    // the ranks' masks is exactly the sample, so the merged search space
+    // matches single-GPU training.
+    const std::vector<int8_t>& sample = col_sampler_.is_feature_used_bytree();
+    fp_feature_mask_.assign(sample.begin(), sample.end());
+    for (int i = 0; i < static_cast<int>(fp_feature_mask_.size()); ++i) {
+      if (i % fp_num_ranks_ != fp_rank_) {
+        fp_feature_mask_[i] = 0;
+      }
+    }
+    cuda_best_split_finder_->BeforeTrain(fp_feature_mask_);
+    cuda_histogram_constructor_->SetFeatureUsedBytree(fp_feature_mask_);
+    cuda_histogram_constructor_->BuildCompactView(fp_feature_mask_);
+  } else {
+    cuda_best_split_finder_->BeforeTrain(col_sampler_.is_feature_used_bytree());
+    cuda_histogram_constructor_->SetFeatureUsedBytree(col_sampler_.is_feature_used_bytree());
+    cuda_histogram_constructor_->BuildCompactView(col_sampler_.is_feature_used_bytree());
+  }
   if (nccl_communicator_ != nullptr) {
     // this tree's feature sample decides which histogram bins the all-reduce
     // has to carry; everything else is dead storage no kernel of this tree
@@ -430,7 +447,7 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
   // feature sampling (GetByNode draws from the same RNG per node; an early
   // by-tree draw would reorder the stream and change models).
   if (FalcataPlan::Get().compact_prefill && !select_features_by_node_ &&
-      nccl_communicator_ == nullptr &&
+      nccl_communicator_ == nullptr && fp_merge_state_ == nullptr &&
       cuda_histogram_constructor_->compact_view_active()) {
     col_sampler_.ResetByTree();
     next_tree_col_sample_ready_ = true;
@@ -747,6 +764,10 @@ bool CUDASingleGPUTreeLearner::UseSelectiveGrowth() const {
   if (nccl_communicator_ != nullptr) {
     return false;
   }
+  // feature-parallel: the per-level winner merge lives in the two-sync loop
+  if (fp_merge_state_ != nullptr) {
+    return false;
+  }
   const bool depth_limited = config_->max_depth > 0 && config_->max_depth < 31 &&
       (1LL << config_->max_depth) <= static_cast<int64_t>(config_->num_leaves) + 1;
   if (depth_limited || HybridAggressiveEnv()) {
@@ -772,6 +793,10 @@ bool CUDASingleGPUTreeLearner::UseSelectiveGrowth() const {
 bool CUDASingleGPUTreeLearner::UseOneSyncPrefix() const {
   // multi-GPU: the one-sync flow derives leaf counts on-device, so ranks cannot agree host-side
   if (nccl_communicator_ != nullptr) {
+    return false;
+  }
+  // feature-parallel: the host merge needs the two-sync readback each level
+  if (fp_merge_state_ != nullptr) {
     return false;
   }
   // categorical datasets ride the one-sync flow since 2026-08-02: the apply
@@ -1471,6 +1496,33 @@ void CUDASingleGPUTreeLearner::FinishLevelBookkeeping(
   }
 }
 
+void CUDASingleGPUTreeLearner::FeatureParallelMergeLevel(const int num_leaves) {
+  global_timer.Start("CUDASingleGPUTreeLearner::FeatureParallelMergeLevel");
+  FeatureParallelMergeState* st = fp_merge_state_;
+  st->Publish(fp_rank_, &host_leaf_best_splits_);
+  st->Arrive();  // every rank's host buffer is published and final
+  // deterministic winner per leaf, computed identically on every rank
+  fp_merge_tmp_.resize(static_cast<size_t>(num_leaves));
+  for (int leaf = 0; leaf < num_leaves; ++leaf) {
+    const CUDASplitInfo* best = &(*st->rank_buf(0))[leaf];
+    for (int r = 1; r < st->num_ranks(); ++r) {
+      const CUDASplitInfo* cand = &(*st->rank_buf(r))[leaf];
+      if (FeatureParallelMergeState::FirstBeatsSecond(*cand, *best)) {
+        best = cand;
+      }
+    }
+    fp_merge_tmp_[leaf] = *best;
+  }
+  st->Arrive();  // all ranks done READING each other's buffers
+  std::copy(fp_merge_tmp_.begin(), fp_merge_tmp_.end(), host_leaf_best_splits_.begin());
+  // the batched apply reads split infos from the DEVICE cache: overwrite its
+  // first num_leaves entries with the winners (numerical splits only; the
+  // categorical side-band pointers in these entries are unused -- FP mode
+  // fences categorical features)
+  cuda_best_split_finder_->UploadLeafBestSplits(fp_merge_tmp_.data(), num_leaves);
+  global_timer.Stop("CUDASingleGPUTreeLearner::FeatureParallelMergeLevel");
+}
+
 int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   // two struct slots per split of a level, reused across levels; one device
   // slab, sized once (the kernels initialize every slot they use before any
@@ -1562,6 +1614,9 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
     }
     // one device synchronization + one transfer for the whole level
     cuda_best_split_finder_->SyncAllLeafBestSplitsToHost(tree->num_leaves(), &host_leaf_best_splits_);
+    if (fp_merge_state_ != nullptr) {
+      FeatureParallelMergeLevel(tree->num_leaves());
+    }
     std::vector<int> splittable;
     CollectSplittableLeaves(tree, &splittable);
     if (splittable.empty()) {
@@ -1735,6 +1790,10 @@ CUDASingleGPUTreeLearner::HybridGraphInstance::~HybridGraphInstance() {
 bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
   // multi-GPU: the graph flow builds descriptors on-device; its rank-visible decisions are not global
   if (nccl_communicator_ != nullptr) {
+    return false;
+  }
+  // feature-parallel: the device controller cannot host-merge winners per level
+  if (fp_merge_state_ != nullptr) {
     return false;
   }
   // the per-level debug envs steer the host loop's decisions in ways the
@@ -2926,6 +2985,15 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   bool pair_search_cached = false;
   bool selective_handled = false;
   bool batched_apply_ran = false;
+  if (fp_merge_state_ != nullptr &&
+      (num_splits_done != 0 || !HybridGrowthUsable() || has_categorical_feature_)) {
+    Log::Fatal(
+        "feature-parallel multi-GPU (tree_learner=feature) currently requires "
+        "the hybrid level flow: a depth-limited config "
+        "(2^max_depth <= num_leaves + 1), no categorical features and no "
+        "forced splits. Use tree_learner=serial (data-parallel) or num_gpu=1 "
+        "for this configuration.");
+  }
   if (nccl_communicator_ != nullptr && config_->use_quantized_grad &&
       (num_splits_done != 0 || !HybridGrowthUsable())) {
     // quantized multi-GPU is only wired through the hybrid level flow (integer
@@ -2955,6 +3023,16 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   }
   for (int i = num_splits_done; !selective_handled && i < config_->num_leaves - 1; ++i) {
     if (!pair_search_cached) {
+      if (fp_merge_state_ != nullptr) {
+        // The leaf-wise tail's fresh per-pair searches are not winner-merged
+        // across ranks. The prefix covers the whole tree for depth-limited
+        // configs unless the leaf budget binds mid-level; refuse rather than
+        // silently searching only this rank's feature stripe.
+        Log::Fatal(
+            "feature-parallel multi-GPU reached the leaf-wise tail (the leaf "
+            "budget bound before max_depth). Raise num_leaves to at least "
+            "2^max_depth - 1 or use tree_learner=serial.");
+      }
       EnqueuePairBestSplitSearch(tree.get(),
         cuda_smaller_leaf_splits_->GetCUDAStruct(),
         cuda_larger_leaf_splits_->GetCUDAStruct(),

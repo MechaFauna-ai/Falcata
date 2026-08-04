@@ -27,7 +27,8 @@ void NCCLGBDT<GBDT_T>::Init(
   const Config* gbdt_config, const Dataset* train_data,
   const ObjectiveFunction* objective_function,
   const std::vector<const Metric*>& training_metrics) {
-  if (gbdt_config->use_quantized_grad) {
+  feature_parallel_ = gbdt_config->tree_learner == std::string("feature");
+  if (gbdt_config->use_quantized_grad && !feature_parallel_) {
     // 2026-08-04: quantized multi-GPU rides the hybrid two-sync level flow
     // with an integer level all-reduce (per-pair 16/32-bit histograms widened
     // to uniform int64 lanes; bit widths from the GLOBAL count table so every
@@ -47,10 +48,17 @@ void NCCLGBDT<GBDT_T>::Init(
 
   nccl_topology_->InitNCCL();
 
+  if (feature_parallel_) {
+    fp_merge_state_.reset(new FeatureParallelMergeState(nccl_topology_->num_gpu()));
+    Log::Info("feature-parallel multi-GPU: %d ranks, full rows per rank, "
+              "feature stripes, host-side winner merge per level",
+              nccl_topology_->num_gpu());
+  }
   nccl_topology_->InitPerDevice<NCCLGBDTComponent>(&nccl_gbdt_components_);
   nccl_topology_->RunPerDevice<NCCLGBDTComponent, void>(nccl_gbdt_components_, [this, gbdt_config, train_data]
     (NCCLGBDTComponent* nccl_gbdt_component) { nccl_gbdt_component->Init(
-      gbdt_config, train_data, this->num_tree_per_iteration_, this->boosting_on_gpu_, this->is_constant_hessian_);
+      gbdt_config, train_data, this->num_tree_per_iteration_, this->boosting_on_gpu_, this->is_constant_hessian_,
+      this->fp_merge_state_.get());
   });
 }
 

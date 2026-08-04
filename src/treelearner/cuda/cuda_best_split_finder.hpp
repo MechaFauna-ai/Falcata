@@ -307,6 +307,16 @@ class CUDABestSplitFinder {
     return cuda_leaf_best_split_info_.RawDataReadOnly() + leaf_index;
   }
 
+  /*! \brief feature-parallel: overwrite the device leaf cache's first
+   *  num_leaves entries with the host-merged winners (numerical splits only;
+   *  the categorical side-band pointers in these entries are unused because
+   *  feature-parallel mode fences categorical features) */
+  void UploadLeafBestSplits(const CUDASplitInfo* host_infos, const int num_leaves) {
+    CopyFromHostToCUDADevice<CUDASplitInfo>(
+      cuda_leaf_best_split_info_.RawData(), host_infos,
+      static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+  }
+
   // Cost-effective gradient boosting (CEGB) support. Mirrors
   // CostEfficientGradientBoosting on the CPU path. Called once per training
   // session (after Init / ResetConfig) with the *real-feature-indexed*
