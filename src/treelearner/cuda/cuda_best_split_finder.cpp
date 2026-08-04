@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "cuda_best_split_finder.hpp"
+#include <Falcata/falcata_plan.h>
 #include "cuda_leaf_splits.hpp"
 
 namespace Falcata {
@@ -557,7 +558,15 @@ void CUDABestSplitFinder::FindBestSplitsForLevel(
   } else {
     LaunchFindBestSplitsForLevelKernel(pair_descs, num_pairs, nullptr, gate_on_desc_counts);
   }
+  if (FalcataDebug().dump) {
+    SynchronizeCUDADevice(__FILE__, __LINE__);
+    Log::Warning("[stage] level-find clean");
+  }
   LaunchSyncBestSplitForLevelKernel(pair_descs, num_pairs, gate_on_desc_counts);
+  if (FalcataDebug().dump) {
+    SynchronizeCUDADevice(__FILE__, __LINE__);
+    Log::Warning("[stage] level-syncbest clean");
+  }
 }
 
 const CUDASplitInfo* CUDABestSplitFinder::FindBestFromAllSplits(

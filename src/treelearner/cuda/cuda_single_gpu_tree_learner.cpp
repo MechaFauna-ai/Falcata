@@ -723,15 +723,24 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
   // and per-pair finders, one-sync and two-sync alike; onset at
   // max_cat_threshold >= 48 on airline-cat 5M). Root cause is open on the
   // ROADMAP; until then those configs take the (correct) classic loop.
-  const bool cat_threshold_fenced = has_categorical_feature_ &&
-      config_->max_cat_threshold > 32;
+  // 2026-08-04: the fence WIDENED to every categorical dataset. The repro
+  // crashes at the DEFAULT max_cat_threshold=32 on sm_86 (illegal access in
+  // the level bitset arena consuming a valid-flagged cat candidate whose
+  // num_cat_threshold vanished), so the previous >32 boundary was wrong.
+  // Deep instrumentation (FALCATA_DEBUG=dump: two host checkpoints, pointer
+  // probes, per-stage device serialization, growth elimination) validates
+  // every kernel input clean microseconds before the fault -- root cause
+  // still open, see ROADMAP. The classic loop is verified correct on
+  // categorical data; hybrid's ~3.7x categorical speedup returns when this
+  // is fixed.
+  const bool cat_threshold_fenced = has_categorical_feature_;
   if (cat_threshold_fenced) {
     static bool warned = false;
     if (!warned) {
       warned = true;
-      Log::Warning("Hybrid CUDA growth is disabled for categorical datasets with "
-                   "max_cat_threshold > 32 (open correctness issue); using the "
-                   "classic training loop for this configuration.");
+      Log::Warning("Hybrid CUDA growth is disabled for categorical datasets "
+                   "(open correctness issue in the batched categorical "
+                   "recording); using the classic training loop.");
     }
   }
   // Multi-GPU rides the hybrid TWO-SYNC batched flow only: that is the flow
@@ -1101,11 +1110,13 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
       }
     }
   }
+  cuda_best_split_finder_->WaitOnCatSlabConsumers(cat_consumed_default_event_, cat_consumed_tree_event_);
   cuda_best_split_finder_->FindBestSplitsForLevel(
     cuda_hybrid_pair_descs_.RawDataReadOnly(), num_pairs,
     config_->use_quantized_grad ? cuda_gradient_discretizer_->grad_scale_ptr() : nullptr,
     config_->use_quantized_grad ? cuda_gradient_discretizer_->hess_scale_ptr() : nullptr,
     /*gate_on_desc_counts=*/nccl_communicator_ != nullptr);
+      if (FalcataDebug().dump) { SynchronizeCUDADevice(__FILE__, __LINE__); Log::Warning("[stage] find-sync clean"); }
   global_timer.Stop("CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch");
 }
 
@@ -1171,6 +1182,7 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearchSpeculative(const CUDA
     cuda_hybrid_pair_descs_.RawDataReadOnly(), num_pairs,
     max_smaller_leaf_bound, /*any_pair_needs_bit_change_copy=*/false,
     cuda_data_partition_->level_smaller_leaf_counts());
+  cuda_best_split_finder_->WaitOnCatSlabConsumers(cat_consumed_default_event_, cat_consumed_tree_event_);
   cuda_best_split_finder_->FindBestSplitsForLevel(
     cuda_hybrid_pair_descs_.RawDataReadOnly(), num_pairs, nullptr, nullptr);
   global_timer.Stop("CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch");
@@ -1207,6 +1219,33 @@ void CUDASingleGPUTreeLearner::CollectSplittableLeaves(const CUDATree* tree,
                    nccl_gpu_rank_, leaf, static_cast<int>(info.is_valid), info.gain,
                    info.inner_feature_index, info.threshold,
                    info.left_count, info.right_count);
+    }
+    // categorical candidate validation: every cached cat threshold must be a
+    // REAL bin of its feature (inner bins live in [mfb_offset, num_bin));
+    // dumps the first corruption the moment it enters the cache
+    for (int leaf = 0; leaf < tree->num_leaves(); ++leaf) {
+      const CUDASplitInfo& info = host_leaf_best_splits_[leaf];
+      if (!info.is_valid || info.num_cat_threshold <= 0) continue;
+      const int feat = info.inner_feature_index;
+      if (feat < 0 || feat >= train_data_->num_features()) {
+        Log::Warning("[catcheck] BAD-FEAT leaf=%d feat=%d nct=%d gain=%.4f",
+                     leaf, feat, info.num_cat_threshold, info.gain);
+        continue;
+      }
+      if (train_data_->FeatureBinMapper(feat)->bin_type() != BinType::CategoricalBin) {
+        Log::Warning("[catcheck] NUMFEAT-WITH-CATCOUNT leaf=%d feat=%d nct=%d thr=%u gain=%.4f",
+                     leaf, feat, info.num_cat_threshold, info.threshold, info.gain);
+        continue;
+      }
+      const int nb = static_cast<int>(train_data_->FeatureBinMapper(feat)->num_bin());
+      std::vector<uint32_t> bins;
+      cuda_best_split_finder_->CopyLeafCatThresholdToHost(leaf, info.num_cat_threshold, &bins);
+      for (int i = 0; i < info.num_cat_threshold; ++i) {
+        if (static_cast<int>(bins[i]) >= nb) {
+          Log::Warning("[catcheck] CORRUPT leaf=%d feat=%d nct=%d idx=%d bin=%u (num_bin=%d) gain=%.4f",
+                       leaf, feat, info.num_cat_threshold, i, bins[i], nb, info.gain);
+        }
+      }
     }
   }
 }
@@ -1367,11 +1406,72 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
         host_batch_cat_infos_.data(), num_cat_splits, __FILE__, __LINE__);
       CopyFromHostToCUDADevice<int>(cuda_batch_cat_feats_.RawData(),
         host_batch_cat_feats_.data(), num_cat_splits, __FILE__, __LINE__);
+      if (FalcataDebug().dump) {
+        // second checkpoint: validate the exact entries the bitset kernel is
+        // about to consume (the sync-time check passed; a diff here pins the
+        // corruption to the window between sync readback and apply)
+        for (int c = 0; c < num_cat_splits; ++c) {
+          // host_batch_cat_infos_ holds leaf_best_split_info_ptr(leaf); find leaf
+          for (size_t k2 = 0; k2 < host_apply_split_inputs_.size(); ++k2) {
+            const CUDAHybridApplySplitInput& in2 = host_apply_split_inputs_[k2];
+            if (in2.best_split_info != host_batch_cat_infos_[c]) continue;
+            const int leaf2 = in2.left_leaf_index;
+            const int feat2 = in2.split_feature;
+            const int nct2 = in2.num_cat_threshold;
+            const bool is_cat2 = train_data_->FeatureBinMapper(feat2)->bin_type() == BinType::CategoricalBin;
+            const int nb2 = static_cast<int>(train_data_->FeatureBinMapper(feat2)->num_bin());
+            std::vector<uint32_t> bins2;
+            if (nct2 > 0) {
+              cuda_best_split_finder_->CopyLeafCatThresholdToHost(leaf2, nct2, &bins2);
+            }
+            uint32_t mx = 0;
+            for (int i2 = 0; i2 < nct2; ++i2) mx = std::max(mx, bins2[i2]);
+            // pointer-integrity probe: the cache entry's device cat_threshold
+            // must aim at ITS per-leaf slab; anything else means a raw struct
+            // copy clobbered it and the bitset kernel reads foreign memory
+            // raw byte read: a real host CUDASplitInfo would run its dtor on
+            // the DEVICE pointers it copies
+            alignas(alignof(CUDASplitInfo)) unsigned char probe_bytes[sizeof(CUDASplitInfo)];
+            CopyFromCUDADeviceToHost<unsigned char>(probe_bytes,
+                reinterpret_cast<const unsigned char*>(in2.best_split_info),
+                sizeof(CUDASplitInfo), __FILE__, __LINE__);
+            const CUDASplitInfo& probe = *reinterpret_cast<const CUDASplitInfo*>(probe_bytes);
+            const uint32_t* expect = cuda_best_split_finder_->ExpectedLeafCatThresholdPtr(leaf2);
+            const int* expect_real = cuda_best_split_finder_->ExpectedLeafCatThresholdRealPtr(leaf2);
+            if (probe.cat_threshold_real != expect_real) {
+              Log::Warning("[applycheck] c=%d leaf=%d REAL-PTR-CLOBBERED real=%p expect=%p",
+                           c, leaf2, static_cast<const void*>(probe.cat_threshold_real),
+                           static_cast<const void*>(expect_real));
+            }
+            Log::Warning("[applycheck] c=%d leaf=%d feat=%d cat=%d nct=%d dev_nct=%d dev_feat=%d maxbin=%u num_bin=%d ptr=%p expect=%p%s%s%s",
+                         c, leaf2, feat2, static_cast<int>(is_cat2), nct2,
+                         probe.num_cat_threshold, probe.inner_feature_index, mx, nb2,
+                         static_cast<const void*>(probe.cat_threshold),
+                         static_cast<const void*>(expect),
+                         probe.cat_threshold != expect ? " <-- PTR-CLOBBERED" : "",
+                         probe.num_cat_threshold != nct2 ? " <-- NCT-MISMATCH" : "",
+                         (!is_cat2 || static_cast<int>(mx) >= nb2) ? " <-- CORRUPT" : "");
+          }
+        }
+      }
       LaunchBatchConstructCatBitsetsKernel(num_cat_splits);
+      if (FalcataDebug().dump) {
+        // surface the bitset kernel's own fault AT ITS LEVEL instead of one
+        // level later through the sticky-error fog
+        SynchronizeCUDADevice(__FILE__, __LINE__);
+        Log::Warning("[applycheck] bitset kernel of this level completed clean");
+      }
       host_batch_cat_lens_.resize(2 * static_cast<size_t>(num_cat_splits));
       CopyFromCUDADeviceToHost<uint64_t>(host_batch_cat_lens_.data(),
         cuda_batch_cat_lens_.RawData(), 2 * static_cast<size_t>(num_cat_splits),
         __FILE__, __LINE__);
+      if (cat_consumed_default_event_ == nullptr) {
+        CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&cat_consumed_default_event_, cudaEventDisableTiming));
+        CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&cat_consumed_tree_event_, cudaEventDisableTiming));
+      }
+      // the bitset kernel (legacy stream) has consumed every candidate's
+      // per-leaf thresholds once this event completes
+      CUDASUCCESS_OR_FATAL(cudaEventRecord(cat_consumed_default_event_, nullptr));
     }
     std::vector<CUDATreeBatchSplit> chunk;
     chunk.reserve(host_tree_batch_splits_.size());
@@ -1406,8 +1506,16 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
     if (!chunk.empty()) {
       tree->SplitBatch(chunk);
     }
+    if (cat_index > 0 && cat_consumed_tree_event_ != nullptr) {
+      // SplitCategorical kernels (tree stream) also read the per-leaf
+      // threshold slabs (cat_threshold_real for the tree's real-value bitset)
+      CUDASUCCESS_OR_FATAL(cudaEventRecord(cat_consumed_tree_event_, tree->tree_stream()));
+    }
+      if (FalcataDebug().dump) { SynchronizeCUDADevice(__FILE__, __LINE__); Log::Warning("[stage] tree-record clean"); }
   }
   cuda_data_partition_->SplitLevelBatched(host_apply_split_inputs_, final_level);
+      if (FalcataDebug().dump) { SynchronizeCUDADevice(__FILE__, __LINE__); Log::Warning("[stage] partition-apply clean"); }
+
   if (final_level) {
     // this level's children are never searched (the level is known final), so
     // their device leaf-cache slots still hold stale entries from earlier
@@ -1697,6 +1805,7 @@ void CUDASingleGPUTreeLearner::EnqueueRootLevelSearchOneSync() {
   cuda_histogram_constructor_->ConstructHistogramsForLevel(
     cuda_hybrid_pair_descs_.RawDataReadOnly(), 1, leaf_num_data_[0],
     /*any_pair_needs_bit_change_copy=*/false);
+  cuda_best_split_finder_->WaitOnCatSlabConsumers(cat_consumed_default_event_, cat_consumed_tree_event_);
   cuda_best_split_finder_->FindBestSplitsForLevel(
     cuda_hybrid_pair_descs_.RawDataReadOnly(), 1,
     config_->use_quantized_grad ? cuda_gradient_discretizer_->grad_scale_ptr() : nullptr,

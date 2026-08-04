@@ -669,6 +669,12 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
    *  fix/subtract on the histogram stream waits on this instead of a
    *  host-blocking stream sync (one host round trip per level saved) */
   cudaEvent_t nccl_reduce_done_event_ = nullptr;
+  /*! \brief categorical-slab consumption markers: recorded after the batched
+   *  bitset build (legacy stream) and the tree's categorical recording (tree
+   *  stream); the next level's best-split sync waits on both so its per-leaf
+   *  threshold deep-copies cannot overwrite entries still being consumed */
+  cudaEvent_t cat_consumed_default_event_ = nullptr;
+  cudaEvent_t cat_consumed_tree_event_ = nullptr;
   /*! \brief index map from leaf index to histogram index */
   std::vector<int> leaf_to_hist_index_map_;
   /*! \brief number of total histogram bins */

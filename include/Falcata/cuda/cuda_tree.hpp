@@ -290,6 +290,14 @@ class CUDATree : public Tree {
 
   cudaStream_t cuda_stream_;
 
+ public:
+  /*! \brief stream the tree-structure kernels (SplitBatch/SplitCategorical)
+   *  run on; the hybrid apply's categorical-slab consumers are ordered
+   *  against the next level's best-split sync through it */
+  cudaStream_t tree_stream() const { return cuda_stream_; }
+
+ private:
+
   const int num_threads_per_block_add_prediction_to_score_;
 };
 

@@ -307,6 +307,32 @@ class CUDABestSplitFinder {
     return cuda_leaf_best_split_info_.RawDataReadOnly() + leaf_index;
   }
 
+  /*! \brief order the NEXT best-split sync after the given events: the sync
+   *  kernel deep-copies winning categorical thresholds into the PER-LEAF
+   *  slabs, and the previous level's apply (bitset arena + tree recording,
+   *  on other streams) reads those same slabs. Without this edge the
+   *  speculative (one-sync) flow overwrites thresholds mid-consumption
+   *  (2026-08-04 root cause of the max_cat_threshold corruption). */
+  void WaitOnCatSlabConsumers(cudaEvent_t a, cudaEvent_t b) {
+    if (a != nullptr) {
+      CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], a, 0));
+    }
+    if (b != nullptr) {
+      CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], b, 0));
+    }
+  }
+
+  /*! \brief debug: expected per-leaf cat-threshold slab address of a leaf's
+   *  cache entry (catcheck pointer-integrity probe) */
+  const uint32_t* ExpectedLeafCatThresholdPtr(const int leaf_index) const {
+    return cuda_cat_threshold_leaf_.RawDataReadOnly() +
+           static_cast<size_t>(leaf_index) * static_cast<size_t>(max_num_categories_in_split_);
+  }
+  const int* ExpectedLeafCatThresholdRealPtr(const int leaf_index) const {
+    return cuda_cat_threshold_real_leaf_.RawDataReadOnly() +
+           static_cast<size_t>(leaf_index) * static_cast<size_t>(max_num_categories_in_split_);
+  }
+
   /*! \brief feature-parallel: overwrite the device leaf cache's first
    *  num_leaves entries with the host-merged winners (numerical splits only;
    *  the categorical side-band pointers in these entries are unused because
