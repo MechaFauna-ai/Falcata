@@ -95,9 +95,19 @@
    "metric": 0.990058,
    "metric_name": "auc"
   },
+  "imbalanced/posweight": {
+   "md5": "7bcde524fc052c3cf24f4b0a95da32f2",
+   "metric": 0.875747,
+   "metric_name": "auc"
+  },
   "imbalanced/quant": {
    "md5": "11cbafc214155cf27d6f444f0520b5af",
    "metric": 0.976573,
+   "metric_name": "auc"
+  },
+  "imbalanced/unbalance": {
+   "md5": "c9451abdc2f535d4f69b4318c1078ddb",
+   "metric": 0.941019,
    "metric_name": "auc"
   },
   "int8wide/quant": {

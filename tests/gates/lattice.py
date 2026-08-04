@@ -137,6 +137,11 @@ def build_cells():
     # balanced (gap-free, exact global-max) behavior.
     for profile in ["dense", "fewbin", "imbalanced"]:
         cell(f"{profile}/fixedpoint", profile, {"quant_mode": "fixedpoint"})
+    # weighted CUDA binary gradients: is_unbalance indexes the 2-entry label
+    # weight table -- the 2026-08-04 fix (negative labels read one double
+    # BEFORE the allocation) lives exactly here
+    cell("imbalanced/unbalance", "imbalanced", {"is_unbalance": True})
+    cell("imbalanced/posweight", "imbalanced", {"scale_pos_weight": 10.0})
     cell(
         "dense/fixedpoint-256bins",
         "dense",
