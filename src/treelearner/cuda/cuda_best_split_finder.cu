@@ -2660,6 +2660,7 @@ __global__ void FindBestSplitsForLevelKernel(
   const int max_cat_threshold,
   const int min_data_per_group,
   CUDASplitInfo* cuda_best_split_info,
+  const bool use_desc_counts,
   const CUDAHybridGraphLoopStateOpt gstate) {
   // graphs A2: the graph-frozen grid is a pow2 bucket of the live pair count;
   // blocks beyond the live range exit before any read (stale descriptors)
@@ -2678,7 +2679,15 @@ __global__ void FindBestSplitsForLevelKernel(
     return;
   }
   const CUDALeafSplitsStruct* leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
-  const data_size_t num_data = leaf_splits->num_data_in_leaf;
+  // Under NCCL (use_desc_counts) the struct count is the rank-LOCAL row count
+  // while every histogram sum is GLOBAL: deriving cnt_factor from it halves
+  // every split's left/right counts (min_data gates then reject globally
+  // splittable leaves, and the halved counts poison slots 16/17 -> the next
+  // level's global bookkeeping). The descriptor counts are host-written GLOBAL
+  // counts there, mirroring the discretized level kernel's host-launched path.
+  const data_size_t num_data = use_desc_counts ?
+    (is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf) :
+    leaf_splits->num_data_in_leaf;
   const double leaf_sum_hessians = leaf_splits->sum_of_hessians;
   if (leaf_splits->leaf_index < 0 || num_data <= min_data_in_leaf ||
       leaf_sum_hessians <= min_sum_hessian_in_leaf) {
@@ -2901,6 +2910,7 @@ __global__ void SyncBestSplitForLevelKernel(
   const int num_leaves,
   const data_size_t min_data_in_leaf,
   const double min_sum_hessian_in_leaf,
+  const bool gate_on_desc_counts,
   const CUDAHybridGraphLoopStateOpt gstate) {
   // graphs A2 idle-block guard (pow2-frozen grid; see the find kernel)
   if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
@@ -2924,7 +2934,15 @@ __global__ void SyncBestSplitForLevelKernel(
     return;
   }
   bool leaf_valid = is_larger ? (desc->larger_valid != 0) : (desc->smaller_valid != 0);
-  leaf_valid = leaf_valid && leaf_splits->num_data_in_leaf > min_data_in_leaf &&
+  // Under NCCL (gate_on_desc_counts) the struct's num_data_in_leaf is the
+  // rank-LOCAL row count -- gating on it re-imposes min_data_in_leaf per rank
+  // and silently prunes leaves that are globally splittable (a 2-rank run cut
+  // trees at half size). The descriptor counts are host-written GLOBAL counts
+  // there; the struct hessian sums are global either way.
+  const data_size_t gate_num_data = gate_on_desc_counts ?
+    (is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf) :
+    leaf_splits->num_data_in_leaf;
+  leaf_valid = leaf_valid && gate_num_data > min_data_in_leaf &&
     leaf_splits->sum_of_hessians > min_sum_hessian_in_leaf;
   if (!leaf_valid) {
     // mirror SetInvalidLeafSplitInfoKernel of the per-pair path (block-slot
@@ -2989,6 +3007,7 @@ __global__ void SyncBestSplitForLevelKernelAllBlocks(
   const int num_leaves,
   const data_size_t min_data_in_leaf,
   const double min_sum_hessian_in_leaf,
+  const bool gate_on_desc_counts,
   const CUDAHybridGraphLoopStateOpt gstate) {
   // graphs A2 idle-block guard (pow2-frozen grid; see the find kernel)
   if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
@@ -3003,7 +3022,11 @@ __global__ void SyncBestSplitForLevelKernelAllBlocks(
     return;
   }
   bool leaf_valid = is_larger ? (desc->larger_valid != 0) : (desc->smaller_valid != 0);
-  leaf_valid = leaf_valid && leaf_splits->num_data_in_leaf > min_data_in_leaf &&
+  // same NCCL local-vs-global count distinction as SyncBestSplitForLevelKernel
+  const data_size_t gate_num_data = gate_on_desc_counts ?
+    (is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf) :
+    leaf_splits->num_data_in_leaf;
+  leaf_valid = leaf_valid && gate_num_data > min_data_in_leaf &&
     leaf_splits->sum_of_hessians > min_sum_hessian_in_leaf;
   if (!leaf_valid) {
     // the sync kernel's block-slot copies were skipped for this leaf
@@ -3025,7 +3048,8 @@ __global__ void SyncBestSplitForLevelKernelAllBlocks(
 void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,
-  const CUDAHybridGraphLoopStateOpt gstate) {
+  const CUDAHybridGraphLoopStateOpt gstate,
+  const bool use_desc_counts) {
   const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
   if (num_used_tasks_ == 0) {
     return;  // no usable feature this tree; the sync masks every lane not-found
@@ -3051,6 +3075,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
       max_cat_threshold_, \
       min_data_per_group_, \
       cuda_best_split_info_.RawData(), \
+      use_desc_counts, \
       gstate
   if (FalcataFP32GainEnabled()) {
     FindBestSplitsForLevelKernel<false, false, false, float>
@@ -3146,6 +3171,7 @@ void CUDABestSplitFinder::CaptureHybridGraphFindKernels(
     num_leaves_,
     min_data_in_leaf_,
     min_sum_hessian_in_leaf_,
+    /*gate_on_desc_counts=*/false,  // graph flow is single-GPU only
     gstate);
   if (!AppendCapturedNode(cuda_streams_[0], nodes)) return;
   roles->push_back(kHybridGraphNodeSyncLevel);
@@ -3159,6 +3185,7 @@ void CUDABestSplitFinder::CaptureHybridGraphFindKernels(
       num_leaves_,
       min_data_in_leaf_,
       min_sum_hessian_in_leaf_,
+      /*gate_on_desc_counts=*/false,  // graph flow is single-GPU only
       gstate);
     if (!AppendCapturedNode(cuda_streams_[0], nodes)) return;
     roles->push_back(kHybridGraphNodeSyncAllBlocks);
@@ -3169,7 +3196,8 @@ void CUDABestSplitFinder::CaptureHybridGraphFindKernels(
 
 void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
   const CUDAHybridPairDescriptor* pair_descs,
-  const int num_pairs) {
+  const int num_pairs,
+  const bool gate_on_desc_counts) {
   const int num_blocks_per_leaf = (num_tasks_ + NUM_TASKS_PER_SYNC_BLOCK - 1) / NUM_TASKS_PER_SYNC_BLOCK;
   const bool compact_tasks = num_used_tasks_ < num_tasks_;
   dim3 grid_dim(2, num_pairs, num_blocks_per_leaf);
@@ -3183,6 +3211,7 @@ void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
     num_leaves_,
     min_data_in_leaf_,
     min_sum_hessian_in_leaf_,
+    gate_on_desc_counts,
     nullptr);
   if (num_blocks_per_leaf > 1) {
     // stream-ordered after the sync kernel above; same stream as the batched
@@ -3195,6 +3224,7 @@ void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
       num_leaves_,
       min_data_in_leaf_,
       min_sum_hessian_in_leaf_,
+      gate_on_desc_counts,
       nullptr);
   }
 }

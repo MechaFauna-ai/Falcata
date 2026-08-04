@@ -960,6 +960,14 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
     const double sum_hessians_in_larger_leaf = pair.larger < 0 ? 0.0 : leaf_sum_hessians_[pair.larger];
     desc.num_data_in_smaller_leaf = num_data_in_smaller_leaf;
     desc.num_data_in_larger_leaf = num_data_in_larger_leaf;
+    if (nccl_communicator_ != nullptr && FalcataDebug().dump) {
+      Log::Warning("[enq rank%d] pair s=%d l=%d desc_n=(%d,%d) local=(%d,%d) gN=%d",
+                   nccl_gpu_rank_, pair.smaller, pair.larger,
+                   num_data_in_smaller_leaf, num_data_in_larger_leaf,
+                   leaf_num_data_[pair.smaller],
+                   pair.larger < 0 ? 0 : leaf_num_data_[pair.larger],
+                   global_num_data_);
+    }
     // mirror of ConstructHistogramForLeaf's min_data/min_hessian early return
     desc.construct_valid =
       ((num_data_in_smaller_leaf <= config_->min_data_in_leaf ||
@@ -1033,11 +1041,34 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
     NCCLReduceLevelHistograms(num_pairs);
     cuda_histogram_constructor_->SubtractHistogramsForLevel(
       cuda_hybrid_pair_descs_.RawDataReadOnly(), num_pairs, any_bit_change_copy);
+    if (FalcataDebug().dump) {
+      // larger-side diagnostics: after the deferred subtract, each pair's
+      // larger hist must total (parent - smaller) with GLOBAL sums
+      SynchronizeCUDADevice(__FILE__, __LINE__);
+      std::vector<double> hist_host(static_cast<size_t>(num_total_bin_) * 2);
+      for (int i = 0; i < num_pairs; ++i) {
+        const CUDAHybridPairDescriptor& d = host_hybrid_pair_descs_[i];
+        if (d.larger_leaf_index < 0) continue;
+        CUDALeafSplitsStruct s{};
+        CopyFromCUDADeviceToHost<CUDALeafSplitsStruct>(&s, d.larger_struct, 1, __FILE__, __LINE__);
+        double hess_total = 0.0;
+        if (s.hist_in_leaf != nullptr) {
+          CopyFromCUDADeviceToHost<double>(hist_host.data(), reinterpret_cast<const double*>(s.hist_in_leaf),
+                                           hist_host.size(), __FILE__, __LINE__);
+          for (int b = 0; b < num_total_bin_; ++b) hess_total += hist_host[2 * b + 1];
+        }
+        Log::Warning("[nccl-lvl-L rank%d] pair%d Lleaf=%d desc_n=%d struct_n=%d struct_hess=%.2f hist_hess=%.2f valid=%d",
+                     nccl_gpu_rank_, i, d.larger_leaf_index, d.num_data_in_larger_leaf,
+                     s.num_data_in_leaf, s.sum_of_hessians, hess_total,
+                     static_cast<int>(d.larger_valid));
+      }
+    }
   }
   cuda_best_split_finder_->FindBestSplitsForLevel(
     cuda_hybrid_pair_descs_.RawDataReadOnly(), num_pairs,
     config_->use_quantized_grad ? cuda_gradient_discretizer_->grad_scale_ptr() : nullptr,
-    config_->use_quantized_grad ? cuda_gradient_discretizer_->hess_scale_ptr() : nullptr);
+    config_->use_quantized_grad ? cuda_gradient_discretizer_->hess_scale_ptr() : nullptr,
+    /*gate_on_desc_counts=*/nccl_communicator_ != nullptr);
   global_timer.Stop("CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch");
 }
 
@@ -1131,6 +1162,15 @@ void CUDASingleGPUTreeLearner::CollectSplittableLeaves(const CUDATree* tree,
     }
     Log::Warning("[hybrid] leaves=%d splittable=%d gain=[%g, %g]",
                  tree->num_leaves(), static_cast<int>(splittable->size()), min_gain, max_gain);
+  }
+  if (FalcataDebug().dump) {
+    for (int leaf = 0; leaf < tree->num_leaves(); ++leaf) {
+      const CUDASplitInfo& info = host_leaf_best_splits_[leaf];
+      Log::Warning("[leafcache rank%d] leaf=%d valid=%d gain=%.4f feat=%d thr=%u lc=%d rc=%d",
+                   nccl_gpu_rank_, leaf, static_cast<int>(info.is_valid), info.gain,
+                   info.inner_feature_index, info.threshold,
+                   info.left_count, info.right_count);
+    }
   }
 }
 
@@ -1390,6 +1430,11 @@ void CUDASingleGPUTreeLearner::FinishLevelBookkeeping(
       global_num_data_in_leaf_[a.right] = info[17];
       smaller = info[16] < info[17] ? a.left : a.right;
       larger = smaller == a.left ? a.right : a.left;
+      if (FalcataDebug().dump) {
+        Log::Warning("[bookkeep rank%d] L=%d R=%d local(%d,%d) global(%d,%d)",
+                     nccl_gpu_rank_, a.left, a.right,
+                     leaf_num_data_[a.left], leaf_num_data_[a.right], info[16], info[17]);
+      }
     } else {
       smaller = leaf_num_data_[a.left] < leaf_num_data_[a.right] ? a.left : a.right;
       larger = smaller == a.left ? a.right : a.left;
@@ -3616,6 +3661,26 @@ void CUDASingleGPUTreeLearner::NCCLReduceLevelHistograms(const int num_pairs) {
   // host-blocking: the deferred SubtractHistogramsForLevel launches next on the
   // histogram stream and must see the globally reduced smaller histograms
   SynchronizeCUDAStream(nccl_stream_, __FILE__, __LINE__);
+  if (FalcataDebug().dump) {
+    // per-pair reduce diagnostics: the hessian total of the reduced smaller
+    // histogram must match the (global) struct sum the finder will gate on
+    std::vector<double> buf(static_cast<size_t>(num_pairs) * num_bins * 2);
+    CopyFromCUDADeviceToHost<double>(buf.data(), cuda_nccl_reduce_buf_.RawDataReadOnly(),
+                                     buf.size(), __FILE__, __LINE__);
+    for (int i = 0; i < num_pairs; ++i) {
+      double hess_total = 0.0;
+      for (int b = 0; b < num_bins; ++b) {
+        hess_total += buf[static_cast<size_t>(i) * num_bins * 2 + 2 * b + 1];
+      }
+      const CUDAHybridPairDescriptor& d = host_hybrid_pair_descs_[i];
+      CUDALeafSplitsStruct s{};
+      CopyFromCUDADeviceToHost<CUDALeafSplitsStruct>(&s, d.smaller_struct, 1, __FILE__, __LINE__);
+      Log::Warning("[nccl-lvl rank%d] pair%d leaf=%d desc_n=%d struct_n=%d struct_hess=%.2f hist_hess=%.2f cvalid=%d",
+                   nccl_gpu_rank_, i, d.smaller_leaf_index, d.num_data_in_smaller_leaf,
+                   s.num_data_in_leaf, s.sum_of_hessians, hess_total,
+                   static_cast<int>(d.construct_valid));
+    }
+  }
   global_timer.Stop("CUDASingleGPUTreeLearner::NCCLReduceLevelHistograms");
 }
 

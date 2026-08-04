@@ -190,7 +190,8 @@ class CUDABestSplitFinder {
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
     const score_t* grad_scale,
-    const score_t* hess_scale);
+    const score_t* hess_scale,
+    const bool gate_on_desc_counts = false);
 
   const CUDASplitInfo* FindBestFromAllSplits(
     const int cur_num_leaves,
@@ -409,7 +410,8 @@ class CUDABestSplitFinder {
   void LaunchFindBestSplitsForLevelKernel(
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
-    const CUDAHybridGraphLoopStateOpt gstate = nullptr);
+    const CUDAHybridGraphLoopStateOpt gstate = nullptr,
+    const bool use_desc_counts = false);
 
   void LaunchFindBestSplitsDiscretizedForLevelKernel(
     const CUDAHybridPairDescriptor* pair_descs,
@@ -420,7 +422,8 @@ class CUDABestSplitFinder {
 
   void LaunchSyncBestSplitForLevelKernel(
     const CUDAHybridPairDescriptor* pair_descs,
-    const int num_pairs);
+    const int num_pairs,
+    const bool gate_on_desc_counts = false);
 
   void LaunchFindBestFromAllSplitsKernel(
     const int cur_num_leaves,

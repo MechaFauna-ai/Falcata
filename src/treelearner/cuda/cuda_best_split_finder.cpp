@@ -544,7 +544,8 @@ void CUDABestSplitFinder::FindBestSplitsForLevel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,
   const score_t* grad_scale,
-  const score_t* hess_scale) {
+  const score_t* hess_scale,
+  const bool gate_on_desc_counts) {
   if (num_pairs <= 0) {
     return;
   }
@@ -554,9 +555,9 @@ void CUDABestSplitFinder::FindBestSplitsForLevel(
   if (grad_scale != nullptr && hess_scale != nullptr) {
     LaunchFindBestSplitsDiscretizedForLevelKernel(pair_descs, num_pairs, grad_scale, hess_scale);
   } else {
-    LaunchFindBestSplitsForLevelKernel(pair_descs, num_pairs);
+    LaunchFindBestSplitsForLevelKernel(pair_descs, num_pairs, nullptr, gate_on_desc_counts);
   }
-  LaunchSyncBestSplitForLevelKernel(pair_descs, num_pairs);
+  LaunchSyncBestSplitForLevelKernel(pair_descs, num_pairs, gate_on_desc_counts);
 }
 
 const CUDASplitInfo* CUDABestSplitFinder::FindBestFromAllSplits(
