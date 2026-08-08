@@ -2666,6 +2666,14 @@ class Dataset:
                         self.set_group(self.group)
                     if self.position is not None:
                         self.set_position(self.position)
+                    # Weights queued via set_weight() before construction were
+                    # silently dropped on the subset path: group and position
+                    # are re-applied here but weight never was (the fresh-
+                    # dataset branch delivers it through _lazy_init). Observed
+                    # as bit-identical models across scale_weights 2..16 on
+                    # the CUDA quantized path, 2026-08-08.
+                    if self.weight is not None:
+                        self.set_weight(self.weight)
                     if self.get_label() is None:
                         raise ValueError("Label should not be None.")
                     if (
