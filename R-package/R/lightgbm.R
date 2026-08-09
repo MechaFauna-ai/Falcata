@@ -49,8 +49,9 @@
 #' @param obj objective function, can be character or custom objective function. Examples include
 #'            \code{regression}, \code{regression_l1}, \code{huber},
 #'            \code{binary}, \code{lambdarank}, \code{multiclass}, \code{multiclass}
-#' @param params a list of parameters. See \href{https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Parameters.rst}{
-#'               the "Parameters" section of the documentation} for a list of parameters and valid values.
+#' @param params a list of parameters. See the
+#'               \href{https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Parameters.rst}{"Parameters"
+#'               section of the documentation} for a list of parameters and valid values.
 #' @param verbose verbosity for output, if <= 0 and \code{valids} has been provided, also will disable the
 #'                printing of evaluation during training
 #' @param serializable whether to make the resulting objects serializable through functions such as

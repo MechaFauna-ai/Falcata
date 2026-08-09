@@ -22,8 +22,9 @@ lgb.train(
 )
 }
 \arguments{
-\item{params}{a list of parameters. See \href{https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Parameters.rst}{
-the "Parameters" section of the documentation} for a list of parameters and valid values.}
+\item{params}{a list of parameters. See the
+\href{https://github.com/MechaFauna-ai/Falcata/blob/master/docs/Parameters.rst}{"Parameters"
+section of the documentation} for a list of parameters and valid values.}
 
 \item{data}{a \code{lgb.Dataset} object, used for training. Some functions, such as \code{\link{lgb.cv}},
 may allow you to pass other types of data like \code{matrix} and then separately supply

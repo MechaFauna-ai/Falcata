@@ -7,11 +7,8 @@
 getLGBMthreads()
 }
 \value{
-number of threads as an integer
+number of threads configured for Falcata
 }
 \description{
-Kept for code written against the pre-rename name. Calls \link{getFalcataThreads}.
-}
-\seealso{
-\link{getFalcataThreads}
+Kept for code written against the pre-rename name.
 }

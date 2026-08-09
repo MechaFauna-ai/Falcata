@@ -7,14 +7,8 @@
 setLGBMthreads(num_threads)
 }
 \arguments{
-\item{num_threads}{maximum number of threads to be used by Falcata in multi-threaded operations}
-}
-\value{
-NULL, invisibly
+\item{num_threads}{number of threads to use}
 }
 \description{
-Kept for code written against the pre-rename name. Calls \link{setFalcataThreads}.
-}
-\seealso{
-\link{setFalcataThreads}
+Kept for code written against the pre-rename name.
 }
