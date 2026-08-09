@@ -486,3 +486,4 @@ dmypy.json
 /release-artifacts
 benchmarks/workspace/
 .gates-venv/
+tests/gates/lattice_results.json
