@@ -2906,22 +2906,23 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
               grid_dim, block_dim, pair_descs, level_smaller_num_data,
               static_cast<int>(SHARED_HIST_SIZE), sizeof(BIN_TYPE), true)) {
         // JIT launched (validated module; mask-free shape)
-      } else
-      CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE, PackNibble4><<<grid_dim, block_dim, 0, cuda_stream_>>>(
-        pair_descs,
-        reinterpret_cast<const int32_t*>(cuda_gradients_),
-        cuda_row_data_->GetBin<BIN_TYPE>(),
-        cuda_row_data_->cuda_column_hist_offsets(),
-        cuda_row_data_->cuda_partition_hist_offsets(),
-        cuda_row_data_->cuda_feature_partition_column_index_offsets(),
-        cuda_row_data_->cuda_packed_partition_byte_offsets(),
-        num_data_,
-        any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
-        any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
-        static_cast<data_size_t>(min_data_in_leaf_),
-        min_sum_hessian_in_leaf_,
-        level_smaller_num_data,
-        hybrid_graph_capture_gstate_);
+      } else {
+        CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE, PackNibble4><<<grid_dim, block_dim, 0, cuda_stream_>>>(
+          pair_descs,
+          reinterpret_cast<const int32_t*>(cuda_gradients_),
+          cuda_row_data_->GetBin<BIN_TYPE>(),
+          cuda_row_data_->cuda_column_hist_offsets(),
+          cuda_row_data_->cuda_partition_hist_offsets(),
+          cuda_row_data_->cuda_feature_partition_column_index_offsets(),
+          cuda_row_data_->cuda_packed_partition_byte_offsets(),
+          num_data_,
+          any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
+          any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
+          static_cast<data_size_t>(min_data_in_leaf_),
+          min_sum_hessian_in_leaf_,
+          level_smaller_num_data,
+          hybrid_graph_capture_gstate_);
+      }
     } else {
       if (TryLaunchConstructJITBatchedRowDataQuant(
               grid_dim, block_dim, pair_descs, level_smaller_num_data,

@@ -9,10 +9,8 @@
 
 #ifdef USE_CUDA
 
-#include <Falcata/cuda/cuda_row_data.hpp>
-#include <Falcata/falcata_plan.h>
-#include <Falcata/cuda/pack_codecs.hpp>
 #include <Falcata/cuda/cuda_utils.hu>
+#include <Falcata/falcata_plan.h>
 #include <Falcata/feature_group.h>
 #include <Falcata/tree.h>
 
@@ -22,6 +20,9 @@
 #include <memory>
 #include <string>
 #include <vector>
+
+#include <Falcata/cuda/cuda_row_data.hpp>
+#include <Falcata/cuda/pack_codecs.hpp>
 
 #include "cuda_leaf_splits.hpp"
 #include "cuda_hybrid_graph.hpp"

@@ -8,33 +8,33 @@
 #ifdef USE_CUDA
 
 #include <sys/stat.h>
-#include <cerrno>
-#include <fstream>
-#include <map>
 
-#include "cuda_single_gpu_tree_learner.hpp"
-
-#include <Falcata/cuda/cuda_tree.hpp>
-#include <Falcata/falcata_plan.h>
 #include <Falcata/cuda/cuda_utils.hu>
+#include <Falcata/falcata_plan.h>
 #include <Falcata/feature_group.h>
 #include <Falcata/network.h>
 #include <Falcata/objective_function.h>
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <cinttypes>
-#include <string>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <queue>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include <Falcata/cuda/cuda_tree.hpp>
+
+#include "cuda_single_gpu_tree_learner.hpp"
 #include "../cost_effective_gradient_boosting.hpp"
 #include "../linear_leaf_solver.h"
 
@@ -1191,7 +1191,10 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
     config_->use_quantized_grad ? cuda_gradient_discretizer_->grad_scale_ptr() : nullptr,
     config_->use_quantized_grad ? cuda_gradient_discretizer_->hess_scale_ptr() : nullptr,
     /*gate_on_desc_counts=*/nccl_communicator_ != nullptr);
-      if (FalcataDebug().dump) { SynchronizeCUDADevice(__FILE__, __LINE__); Log::Warning("[stage] find-sync clean"); }
+      if (FalcataDebug().dump) {
+        SynchronizeCUDADevice(__FILE__, __LINE__);
+        Log::Warning("[stage] find-sync clean");
+      }
   global_timer.Stop("CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch");
 }
 
@@ -1586,10 +1589,16 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
       // threshold slabs (cat_threshold_real for the tree's real-value bitset)
       CUDASUCCESS_OR_FATAL(cudaEventRecord(cat_consumed_tree_event_, tree->tree_stream()));
     }
-      if (FalcataDebug().dump) { SynchronizeCUDADevice(__FILE__, __LINE__); Log::Warning("[stage] tree-record clean"); }
+      if (FalcataDebug().dump) {
+        SynchronizeCUDADevice(__FILE__, __LINE__);
+        Log::Warning("[stage] tree-record clean");
+      }
   }
   cuda_data_partition_->SplitLevelBatched(host_apply_split_inputs_, final_level);
-      if (FalcataDebug().dump) { SynchronizeCUDADevice(__FILE__, __LINE__); Log::Warning("[stage] partition-apply clean"); }
+      if (FalcataDebug().dump) {
+        SynchronizeCUDADevice(__FILE__, __LINE__);
+        Log::Warning("[stage] partition-apply clean");
+      }
 
   if (final_level) {
     // this level's children are never searched (the level is known final), so
@@ -3014,7 +3023,10 @@ void CUDASingleGPUTreeLearner::TunerInitSeeds() {
     if (key != want) continue;
     auto adopt = [](std::vector<int>* cands, const int v) {
       auto it = std::find(cands->begin(), cands->end(), v);
-      if (it == cands->end()) { cands->push_back(v); it = cands->end() - 1; }
+      if (it == cands->end()) {
+        cands->push_back(v);
+        it = cands->end() - 1;
+      }
       return static_cast<int>(it - cands->begin());
     };
     t.chosen[0] = adopt(&t.candidates[0], floor_v);

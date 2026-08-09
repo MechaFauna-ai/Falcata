@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Falcata {
@@ -173,10 +174,10 @@ class ByteReader {
       Log::Fatal(
           "FALB: corrupt model -- %s claims %llu elements of %llu bytes at "
           "offset %llu, past the end of a %llu-byte buffer",
-          where, static_cast<unsigned long long>(count),
-          static_cast<unsigned long long>(elem_size),
-          static_cast<unsigned long long>(offset),
-          static_cast<unsigned long long>(len_));
+          where, static_cast<unsigned long long>(count),  // NOLINT(runtime/int): %llu format
+          static_cast<unsigned long long>(elem_size),  // NOLINT(runtime/int): %llu format
+          static_cast<unsigned long long>(offset),  // NOLINT(runtime/int): %llu format
+          static_cast<unsigned long long>(len_));  // NOLINT(runtime/int): %llu format
     }
   }
 

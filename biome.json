@@ -14,7 +14,8 @@
             "!falcata-python",
             "!falcata_r",
             "!.pixi",
-            "!R-package/docs"
+            "!R-package/docs",
+            "!tests/gates/lattice_results.json"
         ]
     },
     "formatter": {

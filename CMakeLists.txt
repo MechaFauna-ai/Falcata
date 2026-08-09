@@ -283,7 +283,7 @@ if(USE_CUDA)
     # arch our code does not even support. Treat that auto-injected value as
     # "not set" so the every-supported-arch fallback below actually runs.
     if(DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL ""
-       AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "52")
+            AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "52")
         set(CUDA_ARCHS "${CMAKE_CUDA_ARCHITECTURES}")
     else()
         if(CUDAToolkit_VERSION VERSION_LESS "13.0")
@@ -495,12 +495,12 @@ if(NOT ZLIB_FOUND)
   include(FetchContent)
   set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   set(SKIP_INSTALL_ALL ON CACHE BOOL "" FORCE)
-  FetchContent_Declare(
+  fetchcontent_declare(
     zlib_fallback
     URL https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
     URL_HASH SHA256=9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
   )
-  FetchContent_MakeAvailable(zlib_fallback)
+  fetchcontent_makeavailable(zlib_fallback)
   set_target_properties(zlibstatic PROPERTIES POSITION_INDEPENDENT_CODE ON)
   target_include_directories(
     zlibstatic
@@ -818,7 +818,7 @@ if(BUILD_CPP_TEST)
     message(STATUS "Did not find Google Test in the system root. Fetching Google Test now...")
     include(FetchContent)
 # lint_cmake: -readability/wonkycase
-    FetchContent_Declare(
+    fetchcontent_declare(
 # lint_cmake: +readability/wonkycase
       googletest
       GIT_REPOSITORY https://github.com/google/googletest.git

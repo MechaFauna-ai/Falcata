@@ -26,11 +26,9 @@ void CUDARegressionL2loss::Init(const Metadata& metadata, data_size_t num_data) 
   CUDARegressionObjectiveInterface<RegressionL2loss>::Init(metadata, num_data);
 }
 
-CUDAMultiRegressionL2::CUDAMultiRegressionL2(const Config& config):
-  CUDAObjectiveInterface<MultiRegressionL2>(config) {}
+CUDAMultiRegressionL2::CUDAMultiRegressionL2(const Config& config): CUDAObjectiveInterface<MultiRegressionL2>(config) {}
 
-CUDAMultiRegressionL2::CUDAMultiRegressionL2(const std::vector<std::string>& strs):
-  CUDAObjectiveInterface<MultiRegressionL2>(strs) {}
+CUDAMultiRegressionL2::CUDAMultiRegressionL2(const std::vector<std::string>& strs): CUDAObjectiveInterface<MultiRegressionL2>(strs) {}
 
 CUDAMultiRegressionL2::~CUDAMultiRegressionL2() {}
 

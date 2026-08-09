@@ -31,7 +31,7 @@ repos:
       - id: cpplint
         # Standalone perf-probe microbenchmarks (not compiled into the library)
         # follow compact benchmark style, not the library C++ style.
-        exclude: ^benchmarks/(construct_partition_probe|construct_find_jit_probe)/
+        exclude: ^benchmarks/(construct_partition_probe|construct_find_jit_probe)/|^benchmarks/tc_hist_prototype\.cu$
         args:
           # --root=.. previously made cpplint derive the header-guard prefix
           # from the parent directory name. After the repo rename to Falcata

@@ -6,11 +6,12 @@
 
 #ifdef USE_CUDA
 
+#include <Falcata/falcata_plan.h>
+
 #include <algorithm>
 #include <vector>
 
 #include "cuda_best_split_finder.hpp"
-#include <Falcata/falcata_plan.h>
 #include "cuda_leaf_splits.hpp"
 
 namespace Falcata {

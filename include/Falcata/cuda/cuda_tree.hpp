@@ -297,7 +297,6 @@ class CUDATree : public Tree {
   cudaStream_t tree_stream() const { return cuda_stream_; }
 
  private:
-
   const int num_threads_per_block_add_prediction_to_score_;
 };
 

@@ -22,8 +22,10 @@
 #include <algorithm>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "falb.h"
@@ -563,7 +565,7 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
     Log::Fatal(
         "FALB: model requires capabilities this build does not have "
         "(unknown flag bits 0x%llx) -- written by a newer Falcata",
-        static_cast<unsigned long long>(flags & ~static_cast<uint64_t>(kFlagKnownMask)));
+        static_cast<unsigned long long>(flags & ~static_cast<uint64_t>(kFlagKnownMask)));  // NOLINT(runtime/int): %llu format
   }
   const uint64_t num_trees = r.Read<uint64_t>(16, "num_trees");
   const uint32_t num_sections = r.Read<uint32_t>(24, "num_sections");
@@ -607,7 +609,7 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
       if (e.raw_len > (1ULL << 40)) {
         Log::Fatal("FALB: corrupt model -- section %u declares an implausible "
                    "decompressed size of %llu bytes", e.id,
-                   static_cast<unsigned long long>(e.raw_len));
+                   static_cast<unsigned long long>(e.raw_len));  // NOLINT(runtime/int): %llu format
       }
       std::vector<char> out(static_cast<size_t>(e.raw_len));
       uLongf out_len = static_cast<uLongf>(e.raw_len);
@@ -623,7 +625,7 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
         if (out.size() % e.shuffle != 0) {
           Log::Fatal("FALB: corrupt model -- section %u length %llu is not a "
                      "multiple of its shuffle width %u", e.id,
-                     static_cast<unsigned long long>(out.size()), e.shuffle);
+                     static_cast<unsigned long long>(out.size()), e.shuffle);  // NOLINT(runtime/int): %llu format
         }
         std::vector<char> flat(out.size());
         UnshuffleBytes(out.data(), out.size() / e.shuffle, e.shuffle, flat.data());
@@ -701,7 +703,7 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
   uint64_t total_nodes = 0, total_leaves = 0;
   for (uint64_t i = 0; i < num_trees; ++i) {
     if (recs[i].num_leaves == 0) Log::Fatal("FALB: corrupt model -- tree %llu has 0 leaves",
-                                            static_cast<unsigned long long>(i));
+                                            static_cast<unsigned long long>(i));  // NOLINT(runtime/int): %llu format
     total_nodes += recs[i].num_leaves - 1;
     total_leaves += recs[i].num_leaves;
   }
@@ -723,7 +725,7 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
     if (rec.leaf_dim != 1) {
       Log::Fatal("FALB: tree %llu has leaf_dim=%u; this build reads only 1 "
                  "(vector-leaf multi-target models need a newer Falcata)",
-                 static_cast<unsigned long long>(i), rec.leaf_dim);
+                 static_cast<unsigned long long>(i), rec.leaf_dim);  // NOLINT(runtime/int): %llu format
     }
 
     std::vector<int> split_feature, left_child, right_child;

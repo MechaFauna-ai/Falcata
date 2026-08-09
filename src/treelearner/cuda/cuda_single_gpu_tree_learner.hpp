@@ -8,6 +8,7 @@
 #define FALCATA_SRC_TREELEARNER_CUDA_CUDA_SINGLE_GPU_TREE_LEARNER_HPP_
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #ifdef USE_CUDA

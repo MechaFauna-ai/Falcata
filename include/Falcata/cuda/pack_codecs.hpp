@@ -81,7 +81,10 @@ struct PackMagic {
 FALCATA_PACK_FN constexpr PackMagic MakeMagic(uint64_t d) {
   uint32_t L = 0;
   uint64_t p = 1;
-  while (p < d) { p <<= 1; ++L; }
+  while (p < d) {
+    p <<= 1;
+    ++L;
+  }
   const uint32_t shift = 32 + L;
   // 2^shift <= 2^63 for our divisors (d < 2^31 => L <= 31)
   const uint64_t two_pow = 1ULL << shift;
@@ -143,7 +146,7 @@ struct PackNibble4 {
   template <typename T>
   FALCATA_PACK_FN static uint32_t ExtractAt(const T* row_ptr, const Cursor& c) {
 #if defined(__CUDA_ARCH__)
-    return (static_cast<uint32_t>(__ldcs(&reinterpret_cast<const uint8_t*>(row_ptr)[c.byte])) >> c.shift) & 0xfu;
+    return (static_cast<uint32_t>(__ldcs(&(reinterpret_cast<const uint8_t*>(row_ptr)[c.byte]))) >> c.shift) & 0xfu;
 #else
     return (static_cast<uint32_t>(reinterpret_cast<const uint8_t*>(row_ptr)[c.byte]) >> c.shift) & 0xfu;
 #endif
@@ -330,7 +333,7 @@ constexpr bool CodecRoundtripProof() {
       const uint32_t word = static_cast<uint32_t>(w);
       const uint32_t q_i = ((static_cast<uint64_t>(word) * (C::kMagicsTable.v[i].mul >> 32)) +
         ((static_cast<uint64_t>(word) * static_cast<uint32_t>(C::kMagicsTable.v[i].mul)) >> 32))
-        >> (C::kMagicsTable.v[i].shift - 32) ;
+        >> (C::kMagicsTable.v[i].shift - 32);
       const uint32_t q_n = (i + 1 < C::kValuesPerWord) ?
         static_cast<uint32_t>(((static_cast<uint64_t>(word) * (C::kMagicsTable.v[i + 1].mul >> 32)) +
           ((static_cast<uint64_t>(word) * static_cast<uint32_t>(C::kMagicsTable.v[i + 1].mul)) >> 32))

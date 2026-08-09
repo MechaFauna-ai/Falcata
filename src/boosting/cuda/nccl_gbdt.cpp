@@ -7,6 +7,7 @@
 #include <Falcata/metric.h>
 
 #include <set>
+#include <string>
 #include <vector>
 
 #include "nccl_gbdt.hpp"
