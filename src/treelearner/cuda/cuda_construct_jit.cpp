@@ -39,8 +39,8 @@ CUDAConstructJIT::~CUDAConstructJIT() {
 }
 
 bool CUDAConstructJIT::Enabled() {
-  // opt-in for now: plan default OFF so the AOT compact-quant fast path is the
-  // shipped behavior. cuda_plan=auto,construct_jit:on requests the JIT.
+  // plan default ON (see falcata_plan.h); cuda_plan=auto,construct_jit:off
+  // falls back to the AOT compact-quant fast path.
   return FalcataPlan::Get().construct_jit;
 }
 

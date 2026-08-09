@@ -687,7 +687,7 @@ class CUDAHistogramConstructor {
   bool construct_reg_bins_ = false;
 
   // Runtime NVRTC JIT of the shape-specialized quantized construct kernel
-  // (cuda_plan=auto,construct_jit:on; default OFF -> AOT compact-quant fast path). The
+  // (cuda_plan key construct_jit; plan default ON, AOT compact-quant fast path on fallback). The
   // JIT is validated bit-identical vs AOT before any use; see cuda_construct_jit.
   CUDAConstructJIT construct_jit_;
   bool construct_jit_selftest_done_ = false;

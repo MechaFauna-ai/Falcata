@@ -337,6 +337,7 @@ void Config::ResolveFalcataParams() {
   // quant_bins: 0 means auto (the Falcata-historical 4 for stochastic; 64 for
   // fixedpoint, whose deterministic rounding needs the finer scale). The int16
   // discretized gradient holds +/-(bins/2), so cap well inside that range.
+  quant_bins_from_auto = (num_grad_quant_bins == 0);
   if (num_grad_quant_bins == 0) {
     num_grad_quant_bins = (mode == std::string("fixedpoint")) ? 64 : 4;
   } else if (num_grad_quant_bins < 2 || num_grad_quant_bins > 65534) {

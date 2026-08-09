@@ -104,10 +104,22 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
         static_cast<uint64_t>(effective_quant_bins_);
     if (worst_per_bin >= (1ULL << 31)) {
       const int max_bins = static_cast<int>((1ULL << 31) / static_cast<uint64_t>(num_data_));
-      Log::Fatal(
-          "quant_bins=%d is too large for %d rows: the per-bin gradient sum can "
-          "exceed the 32-bit histogram range. Use quant_bins <= %d for this dataset.",
-          effective_quant_bins_, num_data_, max_bins);
+      if (config_->quant_bins_from_auto && max_bins >= 2) {
+        // the bin count was the mode's auto default, not a user choice: pick
+        // the finest dataset-safe count instead of refusing (the guard exists
+        // to prevent silent int32 wrap, not to make big data unusable)
+        Log::Warning(
+            "quant_bins auto default %d exceeds the 32-bit histogram range for "
+            "%d rows; using the dataset-safe quant_bins=%d instead (set "
+            "quant_bins explicitly to override).",
+            effective_quant_bins_, num_data_, max_bins);
+        effective_quant_bins_ = max_bins;
+      } else {
+        Log::Fatal(
+            "quant_bins=%d is too large for %d rows: the per-bin gradient sum can "
+            "exceed the 32-bit histogram range. Use quant_bins <= %d for this dataset.",
+            effective_quant_bins_, num_data_, max_bins);
+      }
     }
   }
   // The outlier-robust scale protects COARSE quantization (its measured win
@@ -140,7 +152,10 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // deterministic training is the stated intent. Constant-hessian
   // objectives take the finest guard-passing count up to 2048 (verified
   // lossless-equivalent on year); others stay at the 256 safety line.
-  if (config_->deterministic && fixedpoint_quant_ && config_->num_grad_quant_bins == 0) {
+  // (quant_bins_from_auto: ResolveFalcataParams rewrites the 0 sentinel to
+  // the mode default at parse time, so the raw ==0 test here was dead code
+  // from the env-var->config refactor until 2026-08-09)
+  if (config_->deterministic && fixedpoint_quant_ && config_->quant_bins_from_auto) {
     const uint64_t guard_cap = (1ULL << 31) / static_cast<uint64_t>(num_data_) - 1;
     const int safe_cap = static_cast<int>(std::min<uint64_t>(guard_cap, is_constant_hessian ? 2048 : 256));
     if (safe_cap > effective_quant_bins_) {
