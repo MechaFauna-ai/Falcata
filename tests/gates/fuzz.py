@@ -86,6 +86,19 @@ def sample_spec(rng):
     }
     if spec["bagging_fraction"] < 1.0:
         spec["bagging_freq"] = 1
+
+    # CPU-reference cost guard: the parity arm runs on 8 CPU threads under a
+    # bounded timeout, and an unlucky joint draw (40k rows x 800 cols x 150
+    # rounds x 7 classes) is hours of CPU work, not signal -- it was the
+    # standing cause of nightly timeouts. Downscale rounds, then rows, until
+    # the cost estimate is bounded; every dimension still gets fuzzed, just
+    # not all maxed in the same spec.
+    def est(s):
+        return s["n"] * s["m"] * s["rounds"] * (s["num_class"] or 1)
+    while est(spec) > 6e8 and spec["rounds"] > 10:
+        spec["rounds"] = max(10, spec["rounds"] // 2)
+    while est(spec) > 6e8 and spec["n"] > 2000:
+        spec["n"] = max(2000, spec["n"] // 2)
     return spec
 
 
@@ -225,7 +238,9 @@ def check_spec(spec):
             fails.append(f"cuda rerun failed: {b['error']}")
         elif a["md5"] != b["md5"]:
             fails.append(f"quant nondeterminism: {a['md5']} != {b['md5']}")
-    c = run(spec, "cpu")
+    # the CPU arm is legitimately ~10-50x slower than CUDA on big specs; give
+    # it headroom beyond the cost guard rather than fail on machine noise
+    c = run(spec, "cpu", timeout=900)
     if "error" in c:
         if is_known_cpu_quant_defect(spec, c["error"]):
             known.append(f"cpu quant count-inference defect: {c['error'].splitlines()[-1][:120]}")

@@ -18,7 +18,9 @@ python3 -m venv "$VENV"
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
 pip install --quiet --upgrade pip
-pip install --quiet numpy scipy scikit-learn pyarrow
+# xgboost/catboost: the FALB import-parity gates (import_xgboost.py,
+# import_catboost.py) train tiny reference models with them
+pip install --quiet numpy scipy scikit-learn pyarrow xgboost catboost
 
 CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120-real;120-virtual -DUSE_NCCL=ON -DBUILD_WITH_SHARED_NCCL=ON"
 if command -v ccache >/dev/null 2>&1; then
