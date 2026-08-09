@@ -97,8 +97,8 @@ void test_predict_type(int predict_type, int num_predicts) {
     for (int i = 0; i < kNThreads; i++) {
         predict_for_mat_threads[i] = std::thread(
             [
-                i, test_set_size, output_size, n_features,
-                    test = &test[0], booster_handle, predict_type, numIterations
+                test_set_size, output_size, n_features,
+                    test = &test[0], booster_handle, predict_type
             ]() {
                 for (int j = 0; j < numIterations; j++) {
                     int result;
