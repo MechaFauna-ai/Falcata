@@ -148,7 +148,22 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     // fit-the-noise drift only emerges when a big dataset drives many small
     // leaves (year/epsilon deep, >=400k rows)
     constexpr data_size_t kMinRowsForRaise = 100000;
-    if (num_data_ >= kMinRowsForRaise && rows_per_leaf < kSmallLeafRows) {
+    // extreme binary imbalance defeats finer stochastic bins outright
+    // (fraud-deep 577:1 measured AUC .956@4 -> .870@16: rare-class outlier
+    // gradients pin the global-max scale, the same no-robust-scale failure
+    // mode fixedpoint guards against) -- keep the 4-bin default there. 50:1
+    // matches the objective's imbalance-warning threshold.
+    bool extreme_imbalance = false;
+    if (config_->objective == std::string("binary")) {
+      const label_t* labels = train_data_->metadata().label();
+      data_size_t pos = 0;
+      for (data_size_t i = 0; i < num_data_; ++i) pos += (labels[i] > 0);
+      const data_size_t minority = std::min(pos, num_data_ - pos);
+      extreme_imbalance = (minority == 0) ||
+          (static_cast<int64_t>(num_data_ - minority) >= 50LL * minority);
+    }
+    if (num_data_ >= kMinRowsForRaise && rows_per_leaf < kSmallLeafRows &&
+        !extreme_imbalance) {
       // constant-hessian objectives take the full 64 (fixedpoint's count,
       // drift-free on year); non-constant ones take 16 -- enough to kill the
       // drift (epsilon: zero at 16) without the imbalanced-binary quality
