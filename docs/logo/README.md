@@ -9,7 +9,7 @@
 | `falcata-mark-{180,256,512}.png` | Raster exports of the primary mark. |
 | `falcata-icon-{16,32,64,180,512}.png` | Raster exports of the icon. |
 
-Regenerate the PNGs after editing an SVG:
+Regenerate the PNG files after editing an SVG:
 
 ```python
 import cairosvg

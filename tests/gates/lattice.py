@@ -39,13 +39,9 @@ from pathlib import Path
 
 GATES_DIR = Path(__file__).resolve().parent
 FINGERPRINT_FILE = GATES_DIR / "md5_lattice.json"
-RESULTS_FILE = Path(
-    os.environ.get("FALCATA_GATES_RESULTS", GATES_DIR / "lattice_results.json")
-)
+RESULTS_FILE = Path(os.environ.get("FALCATA_GATES_RESULTS", GATES_DIR / "lattice_results.json"))
 WORKER_CHUNK = 30
-METRIC_TOLERANCE = (
-    0.02  # relative; only applied to non-fingerprinted (nondeterministic) cells
-)
+METRIC_TOLERANCE = 0.02  # relative; only applied to non-fingerprinted (nondeterministic) cells
 
 # --------------------------------------------------------------------------- #
 # Cell matrix. Each cell:
@@ -102,8 +98,7 @@ def build_cells():
     # feeds the level-batched and the classic split search through the same
     # kernel, and only the deep cell exercises enough leaves to catch a
     # threshold that is right at the root and wrong further down.
-    cell("missing-mfb0/quant-deep", "missing-mfb0",
-         {"num_leaves": 255, "max_depth": 12, "min_data_in_leaf": 5})
+    cell("missing-mfb0/quant-deep", "missing-mfb0", {"num_leaves": 255, "max_depth": 12, "min_data_in_leaf": 5})
     cell("missing-mfb0/quant-classic", "missing-mfb0", {"cuda_plan": "auto,hybrid:off"})
     cell("missing-mfb0/fixedpoint", "missing-mfb0", {"quant_mode": "fixedpoint"})
 
@@ -221,9 +216,7 @@ def build_cells():
         fingerprint=False,
         perf=True,
     )
-    cell(
-        "graph/nonquant", "graph", {"quant_mode": "none"}, rounds=50, fingerprint=False
-    )
+    cell("graph/nonquant", "graph", {"quant_mode": "none"}, rounds=50, fingerprint=False)
     cell(
         "imbalanced/nonquant",
         "imbalanced",
@@ -256,9 +249,7 @@ def build_cells():
     by_id = {c["id"]: c for c in cells}
     for c in cells:
         if c["equal_to"] is not None:
-            assert c["equal_to"] in by_id, (
-                f"{c['id']}: unknown equal_to {c['equal_to']}"
-            )
+            assert c["equal_to"] in by_id, f"{c['id']}: unknown equal_to {c['equal_to']}"
     return cells
 
 
@@ -459,9 +450,7 @@ def run_cells(cells):
                 }
                 pending = unreported[1:] + pending
             else:
-                print(
-                    f"worker exited {proc.returncode} after all cells reported:\n{proc.stderr[-800:]}"
-                )
+                print(f"worker exited {proc.returncode} after all cells reported:\n{proc.stderr[-800:]}")
     return results
 
 
@@ -472,16 +461,12 @@ def check(cells, results, fingerprints, update_ids=None, write_all=False):
     for c in cells:
         r = results.get(c["id"])
         if r is None or not r.get("ok"):
-            failures.append(
-                f"{c['id']}: {'missing result' if r is None else r['error']}"
-            )
+            failures.append(f"{c['id']}: {'missing result' if r is None else r['error']}")
             continue
         if c["equal_to"] is not None:
             base = results.get(c["equal_to"])
             if not base or not base.get("ok"):
-                failures.append(
-                    f"{c['id']}: base cell {c['equal_to']} failed; equality unchecked"
-                )
+                failures.append(f"{c['id']}: base cell {c['equal_to']} failed; equality unchecked")
             elif r["md5"] != base["md5"]:
                 failures.append(
                     f"{c['id']}: NOT bit-identical to {c['equal_to']} "
@@ -496,14 +481,8 @@ def check(cells, results, fingerprints, update_ids=None, write_all=False):
                     "metric": round(r["metric"], 6),
                     "metric_name": r["metric_name"],
                 }
-                if (
-                    known is None
-                    and not write_all
-                    and not (update_ids and c["id"] in update_ids)
-                ):
-                    failures.append(
-                        f"{c['id']}: no fingerprint on record -- run --update '{c['id']}' to baseline it"
-                    )
+                if known is None and not write_all and not (update_ids and c["id"] in update_ids):
+                    failures.append(f"{c['id']}: no fingerprint on record -- run --update '{c['id']}' to baseline it")
             elif r["md5"] != known["md5"]:
                 failures.append(
                     f"{c['id']}: md5 {r['md5']} != baseline {known['md5']} "
@@ -518,14 +497,8 @@ def check(cells, results, fingerprints, update_ids=None, write_all=False):
                     "metric": round(r["metric"], 6),
                     "metric_name": r["metric_name"],
                 }
-                if (
-                    known is None
-                    and not write_all
-                    and not (update_ids and c["id"] in update_ids)
-                ):
-                    failures.append(
-                        f"{c['id']}: no metric baseline -- run --update '{c['id']}'"
-                    )
+                if known is None and not write_all and not (update_ids and c["id"] in update_ids):
+                    failures.append(f"{c['id']}: no metric baseline -- run --update '{c['id']}'")
             else:
                 base_m, cur = known["metric"], r["metric"]
                 tol = abs(base_m) * METRIC_TOLERANCE
@@ -556,11 +529,7 @@ def main():
     cells = build_cells()
     if args.list:
         for c in cells:
-            kind = (
-                "equal_to:" + c["equal_to"]
-                if c["equal_to"]
-                else ("md5" if c["fingerprint"] else "metric")
-            )
+            kind = "equal_to:" + c["equal_to"] if c["equal_to"] else ("md5" if c["fingerprint"] else "metric")
             print(f"{c['id']:40s} {c['profile']:12s} rounds={c['rounds']:<3d} {kind}")
         print(f"{len(cells)} cells")
         return 0
@@ -588,24 +557,14 @@ def main():
         write_all=args.baseline,
     )
 
-    RESULTS_FILE.write_text(
-        json.dumps({"results": results, "elapsed_sec": round(elapsed, 2)}, indent=1)
-    )
+    RESULTS_FILE.write_text(json.dumps({"results": results, "elapsed_sec": round(elapsed, 2)}, indent=1))
     n_ok = sum(1 for r in results.values() if r.get("ok"))
-    print(
-        f"lattice: {n_ok}/{len(cells)} cells ok in {elapsed:.1f}s; results -> {RESULTS_FILE}"
-    )
+    print(f"lattice: {n_ok}/{len(cells)} cells ok in {elapsed:.1f}s; results -> {RESULTS_FILE}")
 
     if args.baseline or args.update:
-        FINGERPRINT_FILE.write_text(
-            json.dumps({"cells": dict(sorted(new_fp.items()))}, indent=1) + "\n"
-        )
+        FINGERPRINT_FILE.write_text(json.dumps({"cells": dict(sorted(new_fp.items()))}, indent=1) + "\n")
         print(f"fingerprints written -> {FINGERPRINT_FILE}")
-        failures = [
-            f
-            for f in failures
-            if "no fingerprint" not in f and "no metric baseline" not in f
-        ]
+        failures = [f for f in failures if "no fingerprint" not in f and "no metric baseline" not in f]
 
     if failures:
         print(f"\n{len(failures)} FAILURE(S):")

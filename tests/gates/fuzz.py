@@ -95,6 +95,7 @@ def sample_spec(rng):
     # not all maxed in the same spec.
     def est(s):
         return s["n"] * s["m"] * s["rounds"] * (s["num_class"] or 1)
+
     while est(spec) > 6e8 and spec["rounds"] > 10:
         spec["rounds"] = max(10, spec["rounds"] // 2)
     while est(spec) > 6e8 and spec["n"] > 2000:
@@ -259,9 +260,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--minutes", type=float, default=30.0)
     ap.add_argument("--seed", type=int, default=None)
-    ap.add_argument(
-        "--spec", type=str, default=None, help="run one JSON spec (repro mode)"
-    )
+    ap.add_argument("--spec", type=str, default=None, help="run one JSON spec (repro mode)")
     args = ap.parse_args()
 
     import numpy as np
@@ -274,11 +273,7 @@ def main():
             print(f"FAIL {f}")
         return 1 if fails else 0
 
-    seed = (
-        args.seed
-        if args.seed is not None
-        else int(datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d"))
-    )
+    seed = args.seed if args.seed is not None else int(datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d"))
     rng = np.random.default_rng(seed)
     print(f"fuzz: seed={seed} budget={args.minutes}min")
 
@@ -303,12 +298,9 @@ def main():
         for f in fails:
             failures.append((f"seed{seed}#{tried}", f, spec))
 
-    print(f"fuzz: {tried} specs tried, {len(failures)} failure(s), "
-          f"{num_known} known CPU-quant count-inference hit(s)")
+    print(f"fuzz: {tried} specs tried, {len(failures)} failure(s), {num_known} known CPU-quant count-inference hit(s)")
     for name, f, spec in failures:
-        print(
-            f"\nFAIL [{name}] {f}\nrepro: python tests/gates/fuzz.py --spec '{json.dumps(spec)}'"
-        )
+        print(f"\nFAIL [{name}] {f}\nrepro: python tests/gates/fuzz.py --spec '{json.dumps(spec)}'")
     return 1 if failures else 0
 
 

@@ -88,7 +88,7 @@ def main():
     for ret, name, args in decls:
         ret = " ".join(ret.split())
         compact_args = " ".join(args.split())
-        old = "LGBM_" + name[len("FLC_"):]
+        old = "LGBM_" + name[len("FLC_") :]
         call = f"{name}({', '.join(arg_names(args))})"
         ret_kw = "" if ret == "void" else "return "
         lines.append(f"inline {ret} {old}({compact_args}) {{ {ret_kw}{call}; }}")

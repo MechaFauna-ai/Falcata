@@ -63,9 +63,11 @@ def _objective_mapping(xgb_objective: str, num_class: int) -> Tuple[str, int, in
             raise ValueError("reg:squaredlogerror is not representable in Falcata")
         return "regression", 1, 1, (lambda p: p)
     if xgb_objective in ("binary:logistic", "reg:logistic"):
+
         def _logit(p: float) -> float:
             p = min(max(p, 1e-12), 1 - 1e-12)
             return math.log(p / (1.0 - p))
+
         return "binary sigmoid:1", 1, 1, _logit
     if xgb_objective in ("binary:logitraw",):
         # logitraw's predict() returns the raw margin, so the Falcata side must
@@ -98,8 +100,7 @@ def _xgb_json(model: Any) -> Dict[str, Any]:
             import xgboost as xgb  # noqa: PLC0415
         except ImportError as exc:  # pragma: no cover
             raise ImportError(
-                f"reading '{path.name}' needs xgboost installed (only .json can be "
-                "parsed without it)"
+                f"reading '{path.name}' needs xgboost installed (only .json can be parsed without it)"
             ) from exc
         booster = xgb.Booster()
         booster.load_model(str(path))
@@ -176,8 +177,7 @@ class _TreeConverter:
         self.split_feature.append(int(self.feat[node]))
         # XGBoost: go left when x < cond. LightGBM: go left when x <= t.
         # The next double DOWN makes the two identical -- nothing lies between.
-        self.threshold.append(
-            float(np.nextafter(np.float64(self.cond[node]), -np.inf)))
+        self.threshold.append(float(np.nextafter(np.float64(self.cond[node]), -np.inf)))
         dtype = _MISSING_TYPE_NAN << 2
         if int(self.default_left[node]):
             dtype |= _DEFAULT_LEFT_MASK
@@ -278,12 +278,10 @@ def from_xgboost(model: Any, feature_names: Optional[List[str]] = None) -> Boost
     objectives, including missing values (see tests/gates/import_xgboost.py).
     """
     raw = _xgb_json(model)
-    learner = raw["learner"] if "learner" in raw else raw
+    learner = raw.get("learner", raw)
     gb = learner["gradient_booster"]
     if gb.get("name") != "gbtree":
-        raise ValueError(
-            f"only XGBoost 'gbtree' models can be converted, got '{gb.get('name')}'"
-        )
+        raise ValueError(f"only XGBoost 'gbtree' models can be converted, got '{gb.get('name')}'")
     mp = learner["learner_model_param"]
     num_feature = int(mp["num_feature"])
     num_class_raw = int(mp.get("num_class", 0) or 0)
@@ -291,9 +289,7 @@ def from_xgboost(model: Any, feature_names: Optional[List[str]] = None) -> Boost
         raise ValueError("multi-target XGBoost trees are not supported")
 
     xgb_obj = learner["objective"]["name"]
-    objective, num_class, trees_per_iter, inverse_link = _objective_mapping(
-        xgb_obj, num_class_raw
-    )
+    objective, num_class, trees_per_iter, inverse_link = _objective_mapping(xgb_obj, num_class_raw)
 
     base_score_raw = mp.get("base_score", "0")
     if isinstance(base_score_raw, str):
@@ -307,10 +303,7 @@ def from_xgboost(model: Any, feature_names: Optional[List[str]] = None) -> Boost
     if len(base_margins) == 1:
         base_margins = base_margins * trees_per_iter
     elif len(base_margins) != trees_per_iter:
-        raise ValueError(
-            f"base_score has {len(base_margins)} entries for {trees_per_iter} "
-            "outputs; cannot map it"
-        )
+        raise ValueError(f"base_score has {len(base_margins)} entries for {trees_per_iter} outputs; cannot map it")
 
     trees = gb["model"]["trees"]
     tree_info = gb["model"].get("tree_info") or [0] * len(trees)
@@ -331,9 +324,7 @@ def from_xgboost(model: Any, feature_names: Optional[List[str]] = None) -> Boost
 
     if feature_names is None:
         names = learner.get("feature_names") or []
-        feature_names = list(names) if len(names) == num_feature else [
-            f"Column_{i}" for i in range(num_feature)
-        ]
+        feature_names = list(names) if len(names) == num_feature else [f"Column_{i}" for i in range(num_feature)]
     feature_names = [str(n).replace(" ", "_") for n in feature_names]
 
     chunks = []
@@ -361,6 +352,7 @@ def from_xgboost(model: Any, feature_names: Optional[List[str]] = None) -> Boost
 # CatBoost
 # ---------------------------------------------------------------------------
 
+
 def _catboost_json(model: Any) -> Dict[str, Any]:
     """Get the model JSON from a CatBoost model, a path, or a parsed dict."""
     if isinstance(model, dict):
@@ -374,8 +366,7 @@ def _catboost_json(model: Any) -> Dict[str, Any]:
             import catboost  # noqa: PLC0415
         except ImportError as exc:  # pragma: no cover
             raise ImportError(
-                f"reading '{path.name}' needs catboost installed (only .json can "
-                "be parsed without it)"
+                f"reading '{path.name}' needs catboost installed (only .json can be parsed without it)"
             ) from exc
         loaded = catboost.CatBoost()
         loaded.load_model(str(path))
@@ -419,8 +410,9 @@ def _catboost_objective(raw: Dict[str, Any]) -> Tuple[str, Any]:
     )
 
 
-def _oblivious_to_text(splits: List[Dict[str, Any]], leaf_values: List[float],
-                       leaf_weights: Optional[List[float]], scale: float) -> str:
+def _oblivious_to_text(
+    splits: List[Dict[str, Any]], leaf_values: List[float], leaf_weights: Optional[List[float]], scale: float
+) -> str:
     """One CatBoost oblivious (symmetric) tree -> a LightGBM text tree.
 
     CatBoost picks a leaf by bits: ``leaf = sum((x[f_i] > border_i) << i)`` over
@@ -445,8 +437,7 @@ def _oblivious_to_text(splits: List[Dict[str, Any]], leaf_values: List[float],
         threshold.append(float(np.float64(sp["border"])))
         # NaN routing comes from the feature's nan_value_treatment, resolved by
         # the caller into "nan_left"
-        decision_type.append((_MISSING_TYPE_NAN << 2)
-                             | (_DEFAULT_LEFT_MASK if sp.get("nan_left", True) else 0))
+        decision_type.append((_MISSING_TYPE_NAN << 2) | (_DEFAULT_LEFT_MASK if sp.get("nan_left", True) else 0))
         lc, rc = 2 * node + 1, 2 * node + 2
         left_child.append(lc if lc < n_internal else ~(lc - n_internal))
         right_child.append(rc if rc < n_internal else ~(rc - n_internal))
@@ -512,12 +503,10 @@ def from_catboost(model: Any, feature_names: Optional[List[str]] = None) -> Boos
             "converted; this model has no 'oblivious_trees' section"
         )
     fi = raw.get("features_info", {}) or {}
-    for unsupported in ("categorical_features", "ctr_features", "ctrs",
-                        "text_features", "embedding_features"):
+    for unsupported in ("categorical_features", "ctr_features", "ctrs", "text_features", "embedding_features"):
         if fi.get(unsupported):
             raise ValueError(
-                f"CatBoost models using {unsupported} are not supported by "
-                "from_catboost() (numeric features only)"
+                f"CatBoost models using {unsupported} are not supported by from_catboost() (numeric features only)"
             )
     float_features = fi.get("float_features", []) or []
     # NaN routing is a per-feature property in CatBoost, not per-split
@@ -526,9 +515,7 @@ def from_catboost(model: Any, feature_names: Optional[List[str]] = None) -> Boos
         treatment = str(f.get("nan_value_treatment", "AsIs"))
         # AsFalse sends NaN to the 0 bit (left); AsTrue to the 1 bit (right)
         nan_left[int(f["flat_feature_index"])] = treatment != "AsTrue"
-    num_feature = 1 + max(
-        [int(f["flat_feature_index"]) for f in float_features] or [-1]
-    )
+    num_feature = 1 + max([int(f["flat_feature_index"]) for f in float_features] or [-1])
 
     objective, _ = _catboost_objective(raw)
     scale_and_bias = raw.get("scale_and_bias") or [1.0, [0.0]]
@@ -553,8 +540,7 @@ def from_catboost(model: Any, feature_names: Optional[List[str]] = None) -> Boos
         for sp in splits:
             if str(sp.get("split_type", "FloatFeature")) != "FloatFeature":
                 raise ValueError(
-                    f"CatBoost split_type '{sp.get('split_type')}' is not "
-                    "supported (numeric FloatFeature splits only)"
+                    f"CatBoost split_type '{sp.get('split_type')}' is not supported (numeric FloatFeature splits only)"
                 )
             sp["nan_left"] = nan_left.get(int(sp["float_feature_index"]), True)
         leaf_values = t["leaf_values"]
@@ -569,8 +555,7 @@ def from_catboost(model: Any, feature_names: Optional[List[str]] = None) -> Boos
     if feature_names is None:
         names = [str(f.get("feature_id") or "") for f in float_features]
         feature_names = (
-            names if all(names) and len(names) == num_feature
-            else [f"Column_{i}" for i in range(num_feature)]
+            names if all(names) and len(names) == num_feature else [f"Column_{i}" for i in range(num_feature)]
         )
     feature_names = [str(n).replace(" ", "_") for n in feature_names]
 

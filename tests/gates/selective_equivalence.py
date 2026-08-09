@@ -39,8 +39,7 @@ import numpy as np
 # finders may break differently. Same data partition, same predictions.
 ZERO_THRESHOLD = 1.0000000180025095e-35
 
-STRUCTURAL_KEYS = ("split_feature=", "threshold=", "decision_type=",
-                   "left_child=", "right_child=", "num_leaves=")
+STRUCTURAL_KEYS = ("split_feature=", "threshold=", "decision_type=", "left_child=", "right_child=", "num_leaves=")
 
 
 def tree_structure(model_str):
@@ -50,8 +49,7 @@ def tree_structure(model_str):
         if not line.startswith(STRUCTURAL_KEYS):
             continue
         if line.startswith("threshold="):
-            vals = ["ZERO" if abs(float(v)) == ZERO_THRESHOLD else v
-                    for v in line.split("=", 1)[1].split()]
+            vals = ["ZERO" if abs(float(v)) == ZERO_THRESHOLD else v for v in line.split("=", 1)[1].split()]
             line = "threshold=" + " ".join(vals)
         keep.append(line)
     return "\n".join(keep)
@@ -71,10 +69,19 @@ def make_data(rng, n=200_000, m=30):
 def params_for(leaves, extra):
     # max_depth=-1 is what engages selective growth: the leaf budget, not the
     # depth cap, is the binding constraint (depth-capped configs never run it)
-    p = {"objective": "regression", "learning_rate": 0.1, "num_leaves": leaves,
-         "max_depth": -1, "max_bin": 255, "min_data_in_leaf": 50,
-         "device_type": "cuda", "seed": 42, "verbose": -1, "num_threads": 16,
-         "quant_mode": "stochastic"}
+    p = {
+        "objective": "regression",
+        "learning_rate": 0.1,
+        "num_leaves": leaves,
+        "max_depth": -1,
+        "max_bin": 255,
+        "min_data_in_leaf": 50,
+        "device_type": "cuda",
+        "seed": 42,
+        "verbose": -1,
+        "num_threads": 16,
+        "quant_mode": "stochastic",
+    }
     p.update(extra)
     return p
 
@@ -93,8 +100,7 @@ def assert_selective_engaged():
         flc.train(p, flc.Dataset(X, label=y, params=p), num_boost_round=5)
     """)
     env = dict(os.environ, FALCATA_DEBUG="debug")
-    out = subprocess.run([sys.executable, "-c", probe], env=env,
-                         capture_output=True, text=True)
+    out = subprocess.run([sys.executable, "-c", probe], check=False, env=env, capture_output=True, text=True)
     if out.returncode != 0:
         print(out.stderr[-2000:])
         raise SystemExit("selective_equivalence: probe run failed")
@@ -102,7 +108,8 @@ def assert_selective_engaged():
         raise SystemExit(
             "selective_equivalence: selective growth never engaged -- the gate "
             "would pass vacuously. Did the plan stop selecting it for "
-            "unbounded-depth leaf-budget configs?")
+            "unbounded-depth leaf-budget configs?"
+        )
 
 
 def main():
@@ -121,8 +128,7 @@ def main():
         X, y = make_data(rng)
         leaves = int(rng.choice([15, 31, 63, 127]))
         structs, preds = {}, {}
-        for mode, extra in (("selective", {}),
-                            ("classic", {"cuda_plan": "hybrid:off"})):
+        for mode, extra in (("selective", {}), ("classic", {"cuda_plan": "hybrid:off"})):
             p = params_for(leaves, extra)
             ds = flc.Dataset(X, label=y, params=p)
             bst = flc.train(p, ds, num_boost_round=args.rounds)
@@ -131,21 +137,21 @@ def main():
         struct_ok = structs["selective"] == structs["classic"]
         pdiff = float(np.max(np.abs(preds["selective"] - preds["classic"])))
         ok = struct_ok and pdiff == 0.0
-        print(f"seed={seed} leaves={leaves}: "
-              f"struct={'identical' if struct_ok else 'DIVERGED'} "
-              f"pred_maxdiff={pdiff:.2e} -> {'PASS' if ok else 'FAIL'}")
+        print(
+            f"seed={seed} leaves={leaves}: "
+            f"struct={'identical' if struct_ok else 'DIVERGED'} "
+            f"pred_maxdiff={pdiff:.2e} -> {'PASS' if ok else 'FAIL'}"
+        )
         if not ok:
             fails += 1
-            for i, (a, b) in enumerate(zip(structs["selective"].splitlines(),
-                                           structs["classic"].splitlines())):
+            for i, (a, b) in enumerate(zip(structs["selective"].splitlines(), structs["classic"].splitlines())):
                 if a != b:
                     print(f"  first differing structural line {i}:")
                     print(f"    selective: {a[:200]}")
                     print(f"    classic  : {b[:200]}")
                     break
 
-    print("SELECTIVE EQUIVALENCE PASS" if fails == 0
-          else f"SELECTIVE EQUIVALENCE FAIL ({fails}/{args.seeds} seeds)")
+    print("SELECTIVE EQUIVALENCE PASS" if fails == 0 else f"SELECTIVE EQUIVALENCE FAIL ({fails}/{args.seeds} seeds)")
     return 1 if fails else 0
 
 

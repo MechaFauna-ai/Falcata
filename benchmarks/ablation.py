@@ -76,8 +76,15 @@ RENUMBER_KEYS = {"batch_apply"}
 
 #: keys worth paying for on the expensive numerai-deep cell
 DEEP_KEYS = [
-    "hybrid", "selective", "one_sync", "batch_kernels", "batch_apply",
-    "graph_loop", "compact_quant", "construct_jit", "gh_interleave",
+    "hybrid",
+    "selective",
+    "one_sync",
+    "batch_kernels",
+    "batch_apply",
+    "graph_loop",
+    "compact_quant",
+    "construct_jit",
+    "gh_interleave",
     "split_packed_read",
 ]
 
@@ -89,52 +96,114 @@ BASE = {"device_type": "cuda", "seed": 42, "verbose": -1, "metric": "None", "num
 CELLS = {
     "covtype-deep-quant": (
         "covtype",
-        {"objective": "multiclass", "num_class": 7, "learning_rate": 0.1, "num_leaves": 1023,
-         "max_depth": 10, "max_bin": 255, "lambda_l2": 1.0, "quant_mode": "stochastic"},
-        100, list(ALL_KEYS),
+        {
+            "objective": "multiclass",
+            "num_class": 7,
+            "learning_rate": 0.1,
+            "num_leaves": 1023,
+            "max_depth": 10,
+            "max_bin": 255,
+            "lambda_l2": 1.0,
+            "quant_mode": "stochastic",
+        },
+        100,
+        list(ALL_KEYS),
     ),
     "covtype-shallow-quant": (
         "covtype",
-        {"objective": "multiclass", "num_class": 7, "learning_rate": 0.1, "num_leaves": 63,
-         "max_depth": 6, "max_bin": 255, "lambda_l2": 1.0, "quant_mode": "stochastic"},
-        100, list(ALL_KEYS),
+        {
+            "objective": "multiclass",
+            "num_class": 7,
+            "learning_rate": 0.1,
+            "num_leaves": 63,
+            "max_depth": 6,
+            "max_bin": 255,
+            "lambda_l2": 1.0,
+            "quant_mode": "stochastic",
+        },
+        100,
+        list(ALL_KEYS),
     ),
     "year-shallow-quant": (
         "year",
-        {"objective": "regression", "learning_rate": 0.1, "num_leaves": 63, "max_depth": 6,
-         "max_bin": 255, "quant_mode": "stochastic"},
-        100, list(ALL_KEYS),
+        {
+            "objective": "regression",
+            "learning_rate": 0.1,
+            "num_leaves": 63,
+            "max_depth": 6,
+            "max_bin": 255,
+            "quant_mode": "stochastic",
+        },
+        100,
+        list(ALL_KEYS),
     ),
     "fraud-deep-quant": (
         "fraud",
-        {"objective": "binary", "learning_rate": 0.1, "num_leaves": 1023, "max_depth": 10,
-         "max_bin": 255, "quant_mode": "stochastic"},
-        100, list(ALL_KEYS),
+        {
+            "objective": "binary",
+            "learning_rate": 0.1,
+            "num_leaves": 1023,
+            "max_depth": 10,
+            "max_bin": 255,
+            "quant_mode": "stochastic",
+        },
+        100,
+        list(ALL_KEYS),
     ),
     "higgs-shallow-quant": (
         "higgs",
-        {"objective": "binary", "learning_rate": 0.1, "num_leaves": 63, "max_depth": 6,
-         "max_bin": 255, "quant_mode": "stochastic"},
-        100, list(ALL_KEYS),
+        {
+            "objective": "binary",
+            "learning_rate": 0.1,
+            "num_leaves": 63,
+            "max_depth": 6,
+            "max_bin": 255,
+            "quant_mode": "stochastic",
+        },
+        100,
+        list(ALL_KEYS),
     ),
     "epsilon-shallow-quant": (
         "epsilon",
-        {"objective": "binary", "learning_rate": 0.1, "num_leaves": 63, "max_depth": 6,
-         "max_bin": 255, "quant_mode": "stochastic"},
-        100, list(ALL_KEYS),
+        {
+            "objective": "binary",
+            "learning_rate": 0.1,
+            "num_leaves": 63,
+            "max_depth": 6,
+            "max_bin": 255,
+            "quant_mode": "stochastic",
+        },
+        100,
+        list(ALL_KEYS),
     ),
     "numerai-example-quant": (
         "numerai",
-        {"objective": "regression", "learning_rate": 0.01, "num_leaves": 32, "max_depth": 5,
-         "max_bin": 255, "feature_fraction": 0.1, "quant_mode": "stochastic"},
-        200, list(ALL_KEYS),
+        {
+            "objective": "regression",
+            "learning_rate": 0.01,
+            "num_leaves": 32,
+            "max_depth": 5,
+            "max_bin": 255,
+            "feature_fraction": 0.1,
+            "quant_mode": "stochastic",
+        },
+        200,
+        list(ALL_KEYS),
     ),
     "numerai-deep-quant": (
         "numerai",
-        {"objective": "regression", "learning_rate": 0.001, "num_leaves": 1024, "max_depth": 10,
-         "max_bin": 255, "feature_fraction": 0.1, "min_data_in_leaf": 10000,
-         "quant_mode": "stochastic"},
-        300, DEEP_KEYS,
+        {
+            "objective": "regression",
+            "learning_rate": 0.001,
+            "num_leaves": 1024,
+            "max_depth": 10,
+            "max_bin": 255,
+            "feature_fraction": 0.1,
+            "min_data_in_leaf": 10000,
+            "quant_mode": "stochastic",
+        },
+        300,
+        DEEP_KEYS,
     ),
 }
 
@@ -162,9 +231,7 @@ def quality(params, bst, X_te, y_te):
     if X_te is None:
         return None, None
     step = 500_000
-    preds = np.concatenate(
-        [bst.predict(np.ascontiguousarray(X_te[i:i + step])) for i in range(0, len(X_te), step)]
-    )
+    preds = np.concatenate([bst.predict(np.ascontiguousarray(X_te[i : i + step])) for i in range(0, len(X_te), step)])
     obj = params.get("objective")
     if obj == "multiclass":
         return float((preds.argmax(axis=1) == y_te).mean()), "acc"
@@ -202,9 +269,14 @@ def run_one(cell_id, data, params, rounds, plan):
     metric, metric_name = quality(p, bst, X_te, y_te)
     train_s = statistics.median(ts)
     return {
-        "cell": cell_id, "plan": plan, "construct_s": round(statistics.median(cs), 3),
-        "train_s": round(train_s, 3), "trees_per_s": round(rounds / train_s, 2),
-        "tree_md5": md5, "metric": metric, "metric_name": metric_name,
+        "cell": cell_id,
+        "plan": plan,
+        "construct_s": round(statistics.median(cs), 3),
+        "train_s": round(train_s, 3),
+        "trees_per_s": round(rounds / train_s, 2),
+        "tree_md5": md5,
+        "metric": metric,
+        "metric_name": metric_name,
     }
 
 
@@ -236,8 +308,7 @@ def main():
         base = run_one(cid, data, params, rounds, "auto")
         with out.open("a") as f:
             f.write(json.dumps({**base, "key": "BASELINE"}) + "\n")
-        print(f"\n## {cid}  (baseline {base['trees_per_s']} trees/s, "
-              f"{base['metric_name']}={base['metric']})")
+        print(f"\n## {cid}  (baseline {base['trees_per_s']} trees/s, {base['metric_name']}={base['metric']})")
         print(f"{'key':22s} {'Δ throughput':>13s} {'Δ construct':>12s}  verdict")
         for key in keys:
             r = run_one(cid, data, params, rounds, flip_plan(key))
@@ -248,8 +319,7 @@ def main():
             same = r["tree_md5"] == base["tree_md5"]
             if key in GROWTH_KEYS or key in TIEBREAK_KEYS or key in RENUMBER_KEYS:
                 # different tree is legitimate; judge on quality
-                kind = ("growth" if key in GROWTH_KEYS else
-                        "renumber" if key in RENUMBER_KEYS else "tiebreak")
+                kind = "growth" if key in GROWTH_KEYS else "renumber" if key in RENUMBER_KEYS else "tiebreak"
                 if base["metric"] is None or same:
                     note = "same tree" if same else f"{kind} key (no holdout metric)"
                 else:

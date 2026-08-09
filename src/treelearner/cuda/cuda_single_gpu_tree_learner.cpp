@@ -668,7 +668,7 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   if (SplitPackedReadEnabled() && gather_src_is_4bit && HybridGrowthUsable() &&
       !has_categorical_feature_) {
     // categorical batched-apply descriptors need the plain per-column view
-    // (SplitLevelBatched CHECKs it); numerical-only datasets keep the packed read
+    // (SplitLevelBatched CHECK-enforces it); numerical-only datasets keep the packed read
     // packed split read: skip the column-major gather entirely; the batched
     // apply descriptors address the packed source per column (byte of row 0,
     // per-row byte stride, nibble shift). The slot metadata just uploaded stays

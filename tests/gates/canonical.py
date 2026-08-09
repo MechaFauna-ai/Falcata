@@ -37,11 +37,7 @@ import sys
 import time
 from pathlib import Path
 
-CACHE = Path(
-    os.environ.get(
-        "FALCATA_BENCH_CACHE", "/home/felixjk/Documents/exaboost-bench/data/cache"
-    )
-)
+CACHE = Path(os.environ.get("FALCATA_BENCH_CACHE", "/home/felixjk/Documents/exaboost-bench/data/cache"))
 
 LOCKS = {
     # re-baselined 2026-07-31 (2nd): stochastic rounding is Philox-generated
@@ -60,6 +56,7 @@ def _tree_md5(model_str):
 
 def run_covtype(classic=False):
     import numpy as np
+
     import falcata as lgb
 
     d = CACHE / "covtype"
@@ -96,6 +93,7 @@ def run_covtype(classic=False):
 
 def run_numerai():
     import numpy as np
+
     import falcata as lgb
 
     d = CACHE / "numerai"
@@ -144,6 +142,7 @@ def run_numerai_treecount():
     the class. Detectors: exact tree count + non-collapsed late-tree leaves.
     """
     import numpy as np
+
     import falcata as lgb
 
     if not NUMERAI_V53_DATASET.exists():
@@ -191,10 +190,7 @@ def run_numerai_treecount():
         txt = bst.model_to_string(start_iteration=tree, num_iteration=1)
         for ln in txt.splitlines():
             if ln.startswith("leaf_value="):
-                late_leaf_max = max(
-                    late_leaf_max,
-                    max(abs(float(v)) for v in ln.split("=", 1)[1].split()),
-                )
+                late_leaf_max = max(late_leaf_max, *(abs(float(v)) for v in ln.split("=", 1)[1].split()))
                 break
     if late_leaf_max == 0.0:
         return (
@@ -212,9 +208,7 @@ def run_numerai_treecount():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("gate", choices=["covtype", "numerai", "numerai-treecount", "all"])
-    ap.add_argument(
-        "--classic", action="store_true", help="covtype with cuda_plan=auto,hybrid:off"
-    )
+    ap.add_argument("--classic", action="store_true", help="covtype with cuda_plan=auto,hybrid:off")
     args = ap.parse_args()
 
     runs = []
@@ -229,9 +223,7 @@ def main():
     for name, md5, info in runs:
         want = LOCKS[name]
         if want is None:
-            print(
-                f"BASELINE {name}: tree_md5={md5} {info} -- record in LOCKS after cross-build verification"
-            )
+            print(f"BASELINE {name}: tree_md5={md5} {info} -- record in LOCKS after cross-build verification")
             failed = True
             continue
         ok = md5 == want

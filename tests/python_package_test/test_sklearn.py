@@ -342,7 +342,9 @@ def test_stacking_regressor():
     n_input_models = 2
     X_train, X_test, y_train, y_test = train_test_split(X, y, random_state=42)
     regressors = [("gbm1", lgb.FalcataRegressor(n_estimators=3)), ("gbm2", lgb.FalcataRegressor(n_estimators=3))]
-    reg = StackingRegressor(estimators=regressors, final_estimator=lgb.FalcataRegressor(n_estimators=3), passthrough=True)
+    reg = StackingRegressor(
+        estimators=regressors, final_estimator=lgb.FalcataRegressor(n_estimators=3), passthrough=True
+    )
     reg.fit(X_train, y_train)
     score = reg.score(X_test, y_test)
     assert score >= 0.2
@@ -1184,7 +1186,9 @@ def test_metrics():
     assert "mape" in gbm.evals_result_["training"]
 
     # non-default metric with non-default metric in eval_metric for non-default objective
-    gbm = lgb.FalcataRegressor(objective="regression_l1", metric="gamma", **params).fit(eval_metric="mape", **params_fit)
+    gbm = lgb.FalcataRegressor(objective="regression_l1", metric="gamma", **params).fit(
+        eval_metric="mape", **params_fit
+    )
     assert len(gbm.evals_result_["training"]) == 2
     assert "gamma" in gbm.evals_result_["training"]
     assert "mape" in gbm.evals_result_["training"]
@@ -1226,7 +1230,9 @@ def test_metrics():
     assert "mape" in gbm.evals_result_["training"]
 
     # non-default regression metric with metric in eval_metric for custom objective
-    gbm = lgb.FalcataRegressor(objective=custom_dummy_obj, metric="mape", **params).fit(eval_metric="gamma", **params_fit)
+    gbm = lgb.FalcataRegressor(objective=custom_dummy_obj, metric="mape", **params).fit(
+        eval_metric="gamma", **params_fit
+    )
     assert len(gbm.evals_result_["training"]) == 2
     assert "mape" in gbm.evals_result_["training"]
     assert "gamma" in gbm.evals_result_["training"]

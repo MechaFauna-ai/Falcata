@@ -197,6 +197,28 @@ select = [
 raises-extend-require-match-for = ["*Exception", "*Error"]
 
 [tool.ruff.lint.per-file-ignores]
+".ci/gen-c-api-compat.py" = [
+    # codegen dev script: print is its status channel, helpers are internal
+    "D103",
+    "T201"
+]
+"tests/gates/*" = [
+    # operational gate/fuzz scripts, not library API: prints are the output
+    # channel, terse local helpers don't carry docstrings, zip() pairs are
+    # length-checked by construction
+    "D",
+    "T201",
+    "B905",
+    "PLC0415",
+    "PLW0603"
+]
+"docs/perf-plots/*" = [
+    # plot-generation script (see docs/performance.md): same operational class
+    "D",
+    "T201",
+    "B905",
+    "PLC0415"
+]
 "benchmarks/*" = [
     # (pydocstyle) missing docstrings: these are CLI scripts, not library API
     "D103",

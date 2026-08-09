@@ -43,10 +43,12 @@ def remeasure(cell_id):
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / "results.json"
         proc = subprocess.run(
-            [sys.executable, str(gates_dir / "lattice.py"), "--check",
-             "--only", cell_id],
-            capture_output=True, text=True, check=False,
-            env={**os.environ, "FALCATA_GATES_RESULTS": str(out)})
+            [sys.executable, str(gates_dir / "lattice.py"), "--check", "--only", cell_id],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "FALCATA_GATES_RESULTS": str(out)},
+        )
         if proc.returncode != 0 or not out.exists():
             print(f"  note {cell_id}: re-measurement unavailable, keeping original timing")
             return None
@@ -86,11 +88,14 @@ def foreign_gpu_processes():
     """
     try:
         out = subprocess.run(
-            ["nvidia-smi", "--query-compute-apps=pid,used_memory",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, check=True, timeout=30).stdout
+            ["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        ).stdout
     except (OSError, subprocess.SubprocessError):
-        return []          # no nvidia-smi: cannot tell, do not claim contention
+        return []  # no nvidia-smi: cannot tell, do not claim contention
     ours = _own_process_tree()
     found = []
     for line in out.strip().splitlines():
@@ -127,9 +132,12 @@ def main():
     ap.add_argument("--baseline-file", default=str(DEFAULT_BASELINE))
     ap.add_argument("--warn-pct", type=float, default=10.0)
     ap.add_argument("--fail-pct", type=float, default=25.0)
-    ap.add_argument("--contended-pct", type=float, default=10.0,
-                    help="median cell elevation above which the whole run is "
-                         "treated as contention rather than regression")
+    ap.add_argument(
+        "--contended-pct",
+        type=float,
+        default=10.0,
+        help="median cell elevation above which the whole run is treated as contention rather than regression",
+    )
     args = ap.parse_args()
     global BASELINE_FILE, WARN_PCT, FAIL_PCT, CONTENDED_PCT
     BASELINE_FILE = Path(args.baseline_file).expanduser()
@@ -166,14 +174,18 @@ def main():
     contended = median_delta > CONTENDED_PCT or bool(neighbours)
     if neighbours:
         who = ", ".join(f"{name}[{pid}] {mem} MiB" for pid, name, mem in neighbours)
-        print(f"  NOTE another process is on the GPU ({who}). Timings are not "
-              f"comparable to a baseline recorded alone -- reporting as "
-              f"warnings, not failures, and not recording a baseline.")
+        print(
+            f"  NOTE another process is on the GPU ({who}). Timings are not "
+            f"comparable to a baseline recorded alone -- reporting as "
+            f"warnings, not failures, and not recording a baseline."
+        )
     elif contended:
-        print(f"  NOTE run looks contended: median cell is {median_delta:+.0f}% "
-              f"vs baseline across {len(deltas)} tracked cells (threshold "
-              f"{CONTENDED_PCT:+.0f}%). Timings are not trustworthy -- reporting "
-              f"as warnings, not failures, and not recording a baseline.")
+        print(
+            f"  NOTE run looks contended: median cell is {median_delta:+.0f}% "
+            f"vs baseline across {len(deltas)} tracked cells (threshold "
+            f"{CONTENDED_PCT:+.0f}%). Timings are not trustworthy -- reporting "
+            f"as warnings, not failures, and not recording a baseline."
+        )
 
     for cid, t in sorted(times.items()):
         past = history.get(cid, [])
@@ -197,19 +209,28 @@ def main():
                             break
                         best = again if best is None else min(best, again)
                         if (best - ref) / ref * 100.0 <= FAIL_PCT:
-                            break   # already clears; no need to keep measuring
+                            break  # already clears; no need to keep measuring
                     if best is not None and best < t:
                         t = best
                         pct = (t - ref) / ref * 100.0
-                    how = (f"confirmed by best of {REMEASURE_TRIES} re-measurements"
-                           if best is not None else "re-measurement unavailable")
+                    how = (
+                        f"confirmed by best of {REMEASURE_TRIES} re-measurements"
+                        if best is not None
+                        else "re-measurement unavailable"
+                    )
                     if pct > FAIL_PCT:
-                        failures.append(f"{cid}: {t:.3f}s vs median {ref:.3f}s (+{pct:.0f}%) [2nd consecutive run, {how}]")
+                        failures.append(
+                            f"{cid}: {t:.3f}s vs median {ref:.3f}s (+{pct:.0f}%) [2nd consecutive run, {how}]"
+                        )
                     else:
-                        warnings.append(f"{cid}: cleared on re-measurement ({t:.3f}s vs median {ref:.3f}s, {pct:+.0f}%) -- earlier timing was contention")
+                        warnings.append(
+                            f"{cid}: cleared on re-measurement ({t:.3f}s vs median {ref:.3f}s, {pct:+.0f}%) -- earlier timing was contention"
+                        )
                 else:
                     pending_now.append(cid)
-                    warnings.append(f"{cid}: {t:.3f}s vs median {ref:.3f}s (+{pct:.0f}%) [1st occurrence -- fails if it repeats next run]")
+                    warnings.append(
+                        f"{cid}: {t:.3f}s vs median {ref:.3f}s (+{pct:.0f}%) [1st occurrence -- fails if it repeats next run]"
+                    )
             elif pct > WARN_PCT:
                 warnings.append(f"{cid}: {t:.3f}s vs median {ref:.3f}s (+{pct:.0f}%)")
             else:

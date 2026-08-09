@@ -103,8 +103,8 @@ reference:
   - title: Multithreading Control
     desc: Manage degree of parallelism used by LightGBM
     contents:
-      - '`getLGBMThreads`'
-      - '`setLGBMThreads`'
+      - '`getLGBMthreads`'
+      - '`setLGBMthreads`'
   - title: Deprecated
     desc: Functionality that will be removed in the future
     contents:

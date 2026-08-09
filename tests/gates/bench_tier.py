@@ -152,9 +152,7 @@ def run_cell(cid, dataset, params, rounds):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "--out", default=str(Path(__file__).resolve().parent / "bench_results.json")
-    )
+    ap.add_argument("--out", default=str(Path(__file__).resolve().parent / "bench_results.json"))
     args = ap.parse_args()
 
     results = {}

@@ -15,6 +15,9 @@ extend-ignore-re = [
 
 [default.extend-words]
 MAPE = "MAPE"
+# threshold abbreviation (cat_thr, total_cat_thr, FALB array names, ROADMAP
+# debug dumps)
+thr = "thr"
 datas = "datas"
 indx = "indx"
 interprete = "interprete"
@@ -23,6 +26,8 @@ splitted = "splitted"
 
 [default.extend-identifiers]
 ERRORs = "ERRORs"
+# packed-accumulator type template parameter in the CUDA histogram kernels
+PACKT = "PACKT"
 GAM = "GAM"
 ND24s = "ND24s"
 WARNINGs = "WARNINGs"

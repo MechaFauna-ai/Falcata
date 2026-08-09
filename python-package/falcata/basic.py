@@ -13,9 +13,9 @@ from .libpath import _LIB  # isort: skip
 
 import abc
 import ctypes
-import os
 import inspect
 import json
+import os
 import warnings
 from collections import OrderedDict
 from copy import deepcopy
@@ -3642,7 +3642,6 @@ class Dataset:
 _FIL_IMPORT_FAILED = False
 
 
-
 def _falcata_env(name: str, default: str) -> str:
     """Read a FALCATA_* environment variable.
 
@@ -3653,6 +3652,7 @@ def _falcata_env(name: str, default: str) -> str:
     if value is None:
         value = environ.get(f"EXABOOST_{name}", default)
     return value
+
 
 def _load_fil_modules() -> Optional[Tuple[Any, Any]]:
     """Lazily import the GPU forest-inference stack.

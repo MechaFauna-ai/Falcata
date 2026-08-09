@@ -660,11 +660,6 @@ struct Config {
   // desc = *New in version 4.0.0*
   int num_grad_quant_bins = 0;
 
-  // NOT a parameter: records whether num_grad_quant_bins was 0 ("auto")
-  // before ResolveFalcataParams resolved it to a concrete default, so the
-  // CUDA learner can distinguish "clamp the auto default to the dataset-safe
-  // ceiling" from "the user explicitly asked for an unsafe value" (Fatal).
-  bool quant_bins_from_auto = false;
 
   // desc = used only if ``use_quantized_grad=true``
   // desc = whether to renew the leaf values with original gradients when quantized training
@@ -1190,6 +1185,12 @@ struct Config {
   #pragma endregion
 
   #pragma endregion
+
+  // NOT a parameter: records whether num_grad_quant_bins was 0 ("auto")
+  // before ResolveFalcataParams resolved it to a concrete default, so the
+  // CUDA learner can distinguish "clamp the auto default to the dataset-safe
+  // ceiling" from "the user explicitly asked for an unsafe value" (Fatal).
+  bool quant_bins_from_auto = false;
   #endif  // __NVCC__
 
   size_t file_load_progress_interval_bytes = size_t(10) * 1024 * 1024 * 1024;
