@@ -105,6 +105,8 @@ reference:
     contents:
       - '`getLGBMthreads`'
       - '`setLGBMthreads`'
+      - '`getLGBMThreads`'
+      - '`setLGBMThreads`'
   - title: Deprecated
     desc: Functionality that will be removed in the future
     contents:
