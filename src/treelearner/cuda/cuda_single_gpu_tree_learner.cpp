@@ -122,6 +122,51 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
       }
     }
   }
+  // Stochastic small-leaf auto-raise (2026-08-09): with the historical 4-bin
+  // auto default, deep regimes whose leaves get small fit rounding noise and
+  // test quality DECLINES mid-training (measured: epsilon-deep peaks at iter
+  // ~300 then loses 0.005 AUC; year-deep peaks at ~75 then loses +4.9 MSE;
+  // higgs at ~10k rows/leaf is immune). The rounding scheme is innocent --
+  // stochastic@64 exactly matches fixedpoint@64 quality -- the resolution is
+  // just too coarse for small per-leaf sums, and renew_leaf recovers only
+  // ~1/3 of the damage (split-selection noise dominates). So when the bin
+  // count is the mode's auto default and the expected leaf is small, use 64
+  // bins (fixedpoint's count, capped by the int32 guard ceiling). Costs +28%
+  // on epsilon-deep (= fixedpoint's cost) and nothing on big-leaf shapes,
+  // which keep the 4-bin speed.
+  if (config_->use_quantized_grad && !fixedpoint_quant_ &&
+      config_->quant_bins_from_auto) {
+    const int64_t depth_leaf_cap = (config_->max_depth > 0 && config_->max_depth < 31) ?
+        (1LL << config_->max_depth) : std::numeric_limits<int64_t>::max();
+    const int64_t effective_leaves = std::min<int64_t>(config_->num_leaves, depth_leaf_cap);
+    const data_size_t rows_per_leaf = static_cast<data_size_t>(
+        num_data_ / std::max<int64_t>(1, effective_leaves));
+    constexpr data_size_t kSmallLeafRows = 4096;
+    // the raise needs BOTH conditions: on small datasets (gate-profile scale)
+    // 4-bin stochastic noise acts as regularization and finer bins measurably
+    // HURT (lattice: dense rmse +5%, unbalance AUC -0.08 even at 16); the
+    // fit-the-noise drift only emerges when a big dataset drives many small
+    // leaves (year/epsilon deep, >=400k rows)
+    constexpr data_size_t kMinRowsForRaise = 100000;
+    if (num_data_ >= kMinRowsForRaise && rows_per_leaf < kSmallLeafRows) {
+      // constant-hessian objectives take the full 64 (fixedpoint's count,
+      // drift-free on year); non-constant ones take 16 -- enough to kill the
+      // drift (epsilon: zero at 16) without the imbalanced-binary quality
+      // loss the gate lattice showed at 64 (unbalance AUC .94 -> .81: coarse
+      // global-max scale + rare-class outliers, the failure mode fixedpoint's
+      // robust scale exists for; stochastic has no robust scale)
+      const int target = is_constant_hessian ? 64 : 16;
+      const uint64_t guard_cap = (1ULL << 31) / static_cast<uint64_t>(num_data_) - 1;
+      const int raised = static_cast<int>(std::min<uint64_t>(target, guard_cap));
+      if (raised > effective_quant_bins_) {
+        effective_quant_bins_ = raised;
+        Log::Info("stochastic quant_bins auto-raised to %d: ~%d rows/leaf is too "
+                  "small for the 4-bin default (test quality would degrade "
+                  "mid-training); set quant_bins explicitly to override.",
+                  effective_quant_bins_, rows_per_leaf);
+      }
+    }
+  }
   // The outlier-robust scale protects COARSE quantization (its measured win
   // is fraud AUC .9825-vs-.8001 at the 64-bin default): re-anchoring to the
   // bulk buys resolution at the cost of clamping outliers. At fine bin
