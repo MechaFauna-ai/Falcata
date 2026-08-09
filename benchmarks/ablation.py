@@ -67,6 +67,13 @@ GROWTH_KEYS = {"hybrid", "selective", "one_sync"}
 #: identical to 5 decimals). Judged like growth keys.
 TIEBREAK_KEYS = {"batch_kernels"}
 
+#: keys whose fallback assigns child-leaf indices in a different ORDER
+#: (batched apply numbers new leaves level-wise, the per-split fallback in
+#: split order): equivalent trees, different node numbering, different file
+#: md5. Verified 2026-08-09 on covtype-deep-quant: predictions bit-identical
+#: (max |diff| = 0.0) between batch_apply on/off. Judged on quality delta.
+RENUMBER_KEYS = {"batch_apply"}
+
 #: keys worth paying for on the expensive numerai-deep cell
 DEEP_KEYS = [
     "hybrid", "selective", "one_sync", "batch_kernels", "batch_apply",
@@ -239,9 +246,10 @@ def main():
             dtp = (base["trees_per_s"] / r["trees_per_s"] - 1) * 100 if r["trees_per_s"] else 0
             dcon = r["construct_s"] - base["construct_s"]
             same = r["tree_md5"] == base["tree_md5"]
-            if key in GROWTH_KEYS or key in TIEBREAK_KEYS:
+            if key in GROWTH_KEYS or key in TIEBREAK_KEYS or key in RENUMBER_KEYS:
                 # different tree is legitimate; judge on quality
-                kind = "growth" if key in GROWTH_KEYS else "tiebreak"
+                kind = ("growth" if key in GROWTH_KEYS else
+                        "renumber" if key in RENUMBER_KEYS else "tiebreak")
                 if base["metric"] is None or same:
                     note = "same tree" if same else f"{kind} key (no holdout metric)"
                 else:
