@@ -486,9 +486,30 @@ if(USE_MPI)
 endif()
 
 # zlib backs the FALB binary model format's compressed sections (space is the
-# point for an archived model); it is present on every supported platform and
-# is linked dynamically, so the redistributable wheels stay portable.
-find_package(ZLIB REQUIRED)
+# point for an archived model). Prefer the system zlib (dynamic link keeps the
+# redistributable wheels portable); environments without dev headers (minimal
+# CI containers, stock Windows runners) fall back to a pinned static build.
+find_package(ZLIB)
+if(NOT ZLIB_FOUND)
+  message(STATUS "System zlib not found; building pinned static zlib 1.3.1 via FetchContent")
+  include(FetchContent)
+  set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(SKIP_INSTALL_ALL ON CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    zlib_fallback
+    URL https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
+    URL_HASH SHA256=9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
+  )
+  FetchContent_MakeAvailable(zlib_fallback)
+  set_target_properties(zlibstatic PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  target_include_directories(
+    zlibstatic
+    INTERFACE
+      $<BUILD_INTERFACE:${zlib_fallback_SOURCE_DIR}>
+      $<BUILD_INTERFACE:${zlib_fallback_BINARY_DIR}>
+  )
+  add_library(ZLIB::ZLIB ALIAS zlibstatic)
+endif()
 
 set(
     FLC_SOURCES

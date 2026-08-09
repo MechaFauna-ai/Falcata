@@ -18,11 +18,13 @@ PKG_CXXFLAGS = \
 PKG_LIBS = \
     @OPENMP_CXXFLAGS@ \
     @OPENMP_LIB@ \
-    -pthread
+    -pthread \
+    -lz
 
 OBJECTS = \
     boosting/boosting.o \
     boosting/gbdt.o \
+    boosting/gbdt_model_binary.o \
     boosting/gbdt_model_text.o \
     boosting/gbdt_prediction.o \
     boosting/prediction_early_stop.o \

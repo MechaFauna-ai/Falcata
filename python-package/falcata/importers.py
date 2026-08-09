@@ -214,7 +214,7 @@ class _TreeConverter:
                 f"internal_count=\nis_linear=0\nshrinkage={shrinkage:.17g}\n"
             )
 
-        def arr(vals, fmt="{}"):
+        def arr(vals: Any, fmt: str = "{}") -> str:
             return " ".join(fmt.format(v) for v in vals)
 
         return (
@@ -452,7 +452,7 @@ def _oblivious_to_text(splits: List[Dict[str, Any]], leaf_values: List[float],
         right_child.append(rc if rc < n_internal else ~(rc - n_internal))
     weights = leaf_weights or [0] * n_leaf
 
-    def arr(vals, fmt="{}"):
+    def arr(vals: Any, fmt: str = "{}") -> str:
         return " ".join(fmt.format(v) for v in vals)
 
     return (

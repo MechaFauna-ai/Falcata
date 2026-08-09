@@ -19,11 +19,13 @@ PKG_LIBS = \
     ${SHLIB_OPENMP_CXXFLAGS} \
     ${SHLIB_PTHREAD_FLAGS} \
     -lws2_32 \
-    -liphlpapi
+    -liphlpapi \
+    -lz
 
 OBJECTS = \
     boosting/boosting.o \
     boosting/gbdt.o \
+    boosting/gbdt_model_binary.o \
     boosting/gbdt_model_text.o \
     boosting/gbdt_prediction.o \
     boosting/prediction_early_stop.o \

@@ -49,7 +49,7 @@ def _cmd_convert(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv=None) -> int:
+def main(argv: "list[str] | None" = None) -> int:
     ap = argparse.ArgumentParser(prog="falcata")
     sub = ap.add_subparsers(dest="command", required=True)
 

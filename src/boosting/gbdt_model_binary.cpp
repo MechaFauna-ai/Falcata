@@ -322,15 +322,11 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
   std::string meta = SaveModelToString(total_iteration, 0, feature_importance_type);
 
   // ---- per-array sizing ----
-  size_t total_nodes = 0, total_leaves = 0, total_cat_bound = 0, total_cat_thr = 0;
+  size_t total_cat_thr = 0;
   int max_feature = 0;
   int max_children_mag = 0;
   for (int i = start_model; i < num_used_model; ++i) {
     const Tree& t = *models_[i];
-    const int nl = TreeIO::NumLeaves(t);
-    total_nodes += static_cast<size_t>(std::max(0, nl - 1));
-    total_leaves += static_cast<size_t>(nl);
-    total_cat_bound += TreeIO::CatBoundaries(t).size();
     total_cat_thr += TreeIO::CatThreshold(t).size();
     for (int f : TreeIO::SplitFeature(t)) max_feature = std::max(max_feature, f);
     for (int c : TreeIO::LeftChild(t)) max_children_mag = std::max(max_children_mag, std::abs(c));

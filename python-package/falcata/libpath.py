@@ -48,7 +48,7 @@ def _add_cuda_dll_dirs() -> None:
         seen.add(key)
         try:
             if directory.is_dir():
-                _DLL_DIR_HANDLES.append(os.add_dll_directory(str(directory)))
+                _DLL_DIR_HANDLES.append(os.add_dll_directory(str(directory)))  # type: ignore[attr-defined]
         except OSError:
             # a non-existent or inaccessible directory is not fatal: the load
             # below will surface a clear error if a dependency is truly missing
