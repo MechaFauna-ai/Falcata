@@ -1,3 +1,5 @@
+url: https://mechafauna-ai.github.io/Falcata/
+
 template:
   bootstrap: 5
   params:
@@ -5,7 +7,7 @@ template:
 
 site:
   root: ''
-  title: LightGBM, Light Gradient Boosting Machine
+  title: Falcata, GPU-first gradient boosting
 
 repo:
   url:
