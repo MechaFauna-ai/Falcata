@@ -244,12 +244,8 @@ Clang
 macOS
 ~~~~~
 
-On macOS, Falcata can be installed using
-
-- **Homebrew**;
-- **MacPorts**;
-
-or can be built using
+macOS builds are CPU-only -- no CUDA toolkit exists for it, so a source build
+falls back to the CPU library there. Falcata can be built using
 
 - **CMake** and **Apple Clang**;
 - **CMake** and **gcc**.
