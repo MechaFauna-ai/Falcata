@@ -7,16 +7,15 @@
 # host. Cron inverts the direction -- this machine pulls the repo and runs the
 # gates itself, so there is no inbound execution path at all.
 #
-# Install (runs 03:00 daily):
-#   crontab -l 2>/dev/null | grep -v nightly_local.sh > /tmp/ct
-#   echo "0 3 * * * $HOME/Falcata/tests/gates/nightly_local.sh" >> /tmp/ct
-#   crontab /tmp/ct
+# Normally enqueued by gpuq rather than run directly, so it waits for the GPU
+# behind whatever else is queued (see the crontab entry for falcata-nightly).
+# Running it by hand works too -- it falls back to gpu_guard.py per step.
 #
 # Logs: ~/.cache/falcata-gates/nightly-YYYY-MM-DD.log (30 kept)
 # Exit: 0 all gates passed, non-zero otherwise (the log names the failed step).
 set -u -o pipefail
 
-REPO="${FALCATA_REPO:-$HOME/Falcata}"
+REPO="${FALCATA_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 LOGDIR="$HOME/.cache/falcata-gates"
 LOG="$LOGDIR/nightly-$(date +%F).log"
 VENV="$REPO/.gates-venv/bin/python"
