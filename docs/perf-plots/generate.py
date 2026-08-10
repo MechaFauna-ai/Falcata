@@ -68,6 +68,39 @@ LIB_LABEL = {
     "lightgbm-ocl": "lightgbm OpenCL",
 }
 
+# One type scale for every figure. Sizes are quoted at the reference width
+# below and rescaled per figure by normalize_text(), because these PNGs are all
+# displayed at the same column width in performance.md: a 10pt title on a 13in
+# figure and a 10pt title on a 7in figure arrive at the reader nearly 2x apart.
+REF_WIDTH_IN = 12.0
+TITLE_PT = 11.0  # figure title (suptitle, or the title of a single-axes plot)
+SUB_PT = 9.5  # subplot title beneath a suptitle
+CAP_PT = 7.5  # caption line under the axes
+
+
+def normalize_text(fig):
+    """Scale every text element by this figure's width vs the reference.
+
+    Apparent size after uniform display scaling is fontsize / figure width, so
+    making the size proportional to the width holds it constant across plots
+    while preserving each figure's internal hierarchy.
+    """
+    import matplotlib.text
+
+    scale = fig.get_figwidth() / REF_WIDTH_IN
+    if abs(scale - 1.0) < 1e-9:
+        return
+    for txt in fig.findobj(matplotlib.text.Text):
+        txt.set_fontsize(txt.get_fontsize() * scale)
+    for ax in fig.axes:
+        # tick labels are re-created on draw, so the Text pass above does not
+        # stick to them -- set the tick size itself
+        for axis in (ax.xaxis, ax.yaxis):
+            lbls = axis.get_ticklabels()
+            if len(lbls):
+                axis.set_tick_params(labelsize=lbls[0].get_fontsize())
+
+
 plt.rcParams.update(
     {
         "figure.facecolor": SURFACE,
@@ -255,7 +288,7 @@ def plot_cross_library():
     ax.minorticks_off()
     ax.set_xticks(list(x), [DS_LABEL.get(dr, dr[0]) for dr in DS_REGS], fontsize=9)
     ax.set_ylabel("training time vs falcata (×, log)")
-    ax.set_title("GPU training time relative to falcata", fontsize=10.5, pad=26)
+    ax.set_title("GPU training time relative to falcata", fontsize=TITLE_PT, pad=26)
     fig.text(
         0.5,
         -0.04,
@@ -265,7 +298,7 @@ def plot_cross_library():
         "regression)",
         ha="center",
         va="top",
-        fontsize=7.5,
+        fontsize=CAP_PT,
         color=TEXT2,
     )
     ax.legend(
@@ -277,6 +310,7 @@ def plot_cross_library():
     )
     bar_ends(ax)
     fig.tight_layout()
+    normalize_text(fig)
     fig.savefig(os.path.join(HERE, "cross_library_deep.png"), bbox_inches="tight")
     plt.close(fig)
 
@@ -332,7 +366,7 @@ def plot_quant_modes():
                 )
     ax1.set_xticks(list(x), labels, fontsize=8, rotation=20)
     ax1.set_ylabel("speedup vs no-quant (×)")
-    ax1.set_title("Speed", fontsize=10)
+    ax1.set_title("Speed", fontsize=SUB_PT)
     ax1.legend(fontsize=8, frameon=False)
     bar_ends(ax1)
     # quality: relative metric delta vs noquant, in % (sign = better/worse)
@@ -365,19 +399,20 @@ def plot_quant_modes():
     ax2.axhline(0, color=TEXT2, linewidth=0.8)
     ax2.set_xticks(list(x), labels, fontsize=8, rotation=20)
     ax2.set_ylabel("quality vs no-quant (%)")
-    ax2.set_title("Quality (+ is better)", fontsize=10)
+    ax2.set_title("Quality (+ is better)", fontsize=SUB_PT)
     bar_ends(ax2)
-    fig.suptitle("Quantization modes", fontsize=11, y=1.03)
+    fig.suptitle("Quantization modes", fontsize=TITLE_PT, y=1.03)
     fig.text(
         0.5,
         -0.02,
         "quant_mode effect, measured on the cross-library sweep (deep regimes)",
         ha="center",
         va="top",
-        fontsize=7.5,
+        fontsize=CAP_PT,
         color=TEXT2,
     )
     fig.tight_layout()
+    normalize_text(fig)
     fig.savefig(os.path.join(HERE, "quant_modes.png"), bbox_inches="tight")
     plt.close(fig)
 
@@ -414,18 +449,19 @@ def plot_construct():
     ax.invert_yaxis()
     ax.set_xlim(0, 64)
     ax.set_xlabel("time until training can start (s)")
-    ax.set_title("Ingestion of the numerai matrix", fontsize=10)
+    ax.set_title("Ingestion of the numerai matrix", fontsize=TITLE_PT)
     fig.text(
         0.5,
         -0.06,
         "6.8M rows × 3555 features, ~96 GB as float32",
         ha="center",
         va="top",
-        fontsize=7.5,
+        fontsize=CAP_PT,
         color=TEXT2,
     )
     ax.grid(axis="y", visible=False)
     fig.tight_layout()
+    normalize_text(fig)
     fig.savefig(os.path.join(HERE, "construct_time.png"), bbox_inches="tight")
     plt.close(fig)
 
@@ -460,20 +496,21 @@ def plot_hybrid_ablation():
             )
         ax.set_yticks(list(ys), [c for c, _ in vals], fontsize=8)
         ax.invert_yaxis()
-        ax.set_title(title, fontsize=9.5)
+        ax.set_title(title, fontsize=SUB_PT)
         ax.margins(x=0.22)
         ax.grid(axis="y", visible=False)
-    fig.suptitle("What each hybrid-growth feature is worth", fontsize=11, y=1.04)
+    fig.suptitle("What each hybrid-growth feature is worth", fontsize=TITLE_PT, y=1.04)
     fig.text(
         0.5,
         -0.01,
         "leave-one-out ablation: throughput cost of turning the feature off — larger = worth more",
         ha="center",
         va="top",
-        fontsize=7.5,
+        fontsize=CAP_PT,
         color=TEXT2,
     )
     fig.tight_layout()
+    normalize_text(fig)
     fig.savefig(os.path.join(HERE, "hybrid_ablation.png"), bbox_inches="tight")
     plt.close(fig)
 
@@ -501,7 +538,7 @@ def plot_single_feature(key, title, fname):
     ax.axvline(0, color=TEXT2, linewidth=0.8)
     ax.set_yticks(list(ys), [c for c, _ in vals], fontsize=9)
     ax.invert_yaxis()
-    ax.set_title(title, fontsize=10)
+    ax.set_title(title, fontsize=TITLE_PT)
     xlbl = "Δ throughput when disabled (%)"
     if n_neutral:
         xlbl += (
@@ -511,6 +548,7 @@ def plot_single_feature(key, title, fname):
     ax.margins(x=0.18)
     ax.grid(axis="y", visible=False)
     fig.tight_layout()
+    normalize_text(fig)
     fig.savefig(os.path.join(HERE, fname), bbox_inches="tight")
     plt.close(fig)
 
@@ -573,7 +611,7 @@ def plot_selective_prune():
             ax.text(x, 1.35, glabel, ha="center", fontsize=8, color=TEXT2)
 
     frontier(axes[0], drawn=True)
-    axes[0].set_title("1. grow the whole level speculatively", fontsize=10)
+    axes[0].set_title("1. grow the whole level speculatively", fontsize=SUB_PT)
     axes[0].text(
         5,
         -1.1,
@@ -608,7 +646,7 @@ def plot_selective_prune():
             color=TEXT if inside else TEXT2,
             weight="bold" if inside else "normal",
         )
-    axes[1].set_title("2. rank by gain, take what the budget allows", fontsize=10)
+    axes[1].set_title("2. rank by gain, take what the budget allows", fontsize=SUB_PT)
     axes[1].text(
         5,
         -1.1,
@@ -619,7 +657,7 @@ def plot_selective_prune():
     )
 
     frontier(axes[2], drawn=True, kept_only=True)
-    axes[2].set_title("3. collapse the rest, recycle their leaf ids", fontsize=10)
+    axes[2].set_title("3. collapse the rest, recycle their leaf ids", fontsize=SUB_PT)
     axes[2].text(
         5,
         -1.1,
@@ -630,17 +668,18 @@ def plot_selective_prune():
         color=TEXT2,
     )
 
-    fig.suptitle("Selective grow-then-prune", fontsize=11, y=1.03)
+    fig.suptitle("Selective grow-then-prune", fontsize=TITLE_PT, y=1.03)
     fig.text(
         0.5,
         0.0,
         "how level batching works when the leaf budget binds",
         ha="center",
         va="top",
-        fontsize=7.5,
+        fontsize=CAP_PT,
         color=TEXT2,
     )
     fig.tight_layout()
+    normalize_text(fig)
     fig.savefig(os.path.join(HERE, "hybrid_selective_prune.png"), bbox_inches="tight")
     plt.close(fig)
 
@@ -697,7 +736,7 @@ def plot_hybrid_diagram():
     # LEFT: classic leaf-wise -- one split at a time, order follows gain and
     # ping-pongs across the tree; every number is a full GPU<->CPU round trip
     draw_tree(axt_l, {0: "1", 1: "2", 2: "3", 3: "5", 4: "4", 5: "7", 6: "6"})
-    axt_l.set_title("classic leaf-wise: one split at a time", fontsize=11)
+    axt_l.set_title("classic leaf-wise: one split at a time", fontsize=TITLE_PT)
     axt_l.text(
         5,
         -1.0,
@@ -729,7 +768,7 @@ def plot_hybrid_diagram():
             va="center",
         )
     draw_tree(axt_r, {0: "1", 1: "2", 2: "2", 3: "3", 4: "3", 5: "3", 6: "3"})
-    axt_r.set_title("hybrid level-batched: whole levels at once", fontsize=11)
+    axt_r.set_title("hybrid level-batched: whole levels at once", fontsize=TITLE_PT)
     axt_r.text(
         5,
         -1.0,
@@ -764,6 +803,7 @@ def plot_hybrid_diagram():
         "GPU timeline: batched kernels back-to-back (the graph loop, §3, then removes the last gaps)",
     )
     fig.tight_layout()
+    normalize_text(fig)
     fig.savefig(os.path.join(HERE, "hybrid_growth_diagram.png"), bbox_inches="tight")
     plt.close(fig)
 
@@ -828,7 +868,7 @@ def plot_curves():
         ax.set_ylim(bottom=ymin)
         ax.set_xlabel("wall time (s, log)")
         ax.set_ylabel("test AUC")
-        ax.set_title(ds, fontsize=10)
+        ax.set_title(ds, fontsize=SUB_PT)
         handles, labels = ax.get_legend_handles_labels()
         order = sorted(range(len(labels)), key=lambda i: labels[i])
         ax.legend(
@@ -838,14 +878,14 @@ def plot_curves():
             frameon=False,
             loc="upper left",
         )
-    fig.suptitle("Time-to-quality", fontsize=11, y=1.04)
+    fig.suptitle("Time-to-quality", fontsize=TITLE_PT, y=1.04)
     fig.text(
         0.5,
         0.995,
         "deep regime, 500 trees, evaluated every 25 iterations",
         ha="center",
         va="top",
-        fontsize=7.5,
+        fontsize=CAP_PT,
         color=TEXT2,
     )
     fig.text(
@@ -856,7 +896,7 @@ def plot_curves():
         "5th decimal)",
         ha="center",
         va="top",
-        fontsize=7.5,
+        fontsize=CAP_PT,
         color=TEXT2,
     )
     if missing:
@@ -872,6 +912,7 @@ def plot_curves():
             color=TEXT2,
         )
     fig.tight_layout()
+    normalize_text(fig)
     fig.savefig(os.path.join(HERE, "time_to_quality.png"), bbox_inches="tight")
     plt.close(fig)
 
@@ -903,9 +944,10 @@ def plot_model_size():
         "model file size (MB)\n45k-tree / 3555-feature numerai production "
         "model, predictions bit-identical unless noted"
     )
-    ax.set_title("FALB binary model format vs the text format", fontsize=10)
+    ax.set_title("FALB binary model format vs the text format", fontsize=TITLE_PT)
     ax.grid(axis="y", visible=False)
     fig.tight_layout()
+    normalize_text(fig)
     fig.savefig(os.path.join(HERE, "model_size.png"), bbox_inches="tight")
     plt.close(fig)
 
@@ -955,7 +997,7 @@ def plot_memory():
                 ax.text(xx, v, note, ha="center", va="bottom", fontsize=9, color=TEXT)
     ax.set_xticks(list(x), [DS_LABEL.get(dr, dr[0]) for dr in drs], fontsize=9)
     ax.set_ylabel("GPU peak (GB)")
-    ax.set_title("Peak GPU memory", fontsize=10)
+    ax.set_title("Peak GPU memory", fontsize=TITLE_PT)
     # Below the axes, not floating inside them: the tallest bars (catboost on
     # airline/numerai) ran straight through a legend placed automatically.
     ax.legend(
@@ -972,11 +1014,12 @@ def plot_memory():
         "keeps the training data host-side",
         ha="center",
         va="top",
-        fontsize=7.5,
+        fontsize=CAP_PT,
         color=TEXT2,
     )
     bar_ends(ax)
     fig.tight_layout()
+    normalize_text(fig)
     fig.savefig(os.path.join(HERE, "gpu_memory.png"), bbox_inches="tight")
     plt.close(fig)
 
