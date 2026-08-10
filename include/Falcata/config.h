@@ -1189,13 +1189,21 @@ struct Config {
   #pragma endregion
 
   #pragma endregion
+  #endif  // __NVCC__
 
   // NOT a parameter: records whether num_grad_quant_bins was 0 ("auto")
   // before ResolveFalcataParams resolved it to a concrete default, so the
   // CUDA learner can distinguish "clamp the auto default to the dataset-safe
   // ceiling" from "the user explicitly asked for an unsafe value" (Fatal).
+  //
+  // MUST live outside the #ifndef __NVCC__ region above. Anything declared in
+  // there is invisible to nvcc, so Config would have one layout in .cu objects
+  // and another in .cpp objects -- an ODR violation that silently shifts every
+  // member of every class holding a Config by value (Metric, ObjectiveFunction,
+  // ...). That cost a wild pointer read in the CUDA metric kernels. Only
+  // #pragma region markers, which the parameter-doc generator scans for and
+  // nvcc warns about, belong inside the guard.
   bool quant_bins_from_auto = false;
-  #endif  // __NVCC__
 
   size_t file_load_progress_interval_bytes = size_t(10) * 1024 * 1024 * 1024;
 

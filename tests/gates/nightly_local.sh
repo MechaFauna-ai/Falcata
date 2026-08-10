@@ -75,6 +75,7 @@ step "build CUDA wheel"            -     bash tests/gates/ci_build.sh
 step "lattice (FALCATA_VERIFY=1)"  12000 env FALCATA_VERIFY=1 "$VENV" tests/gates/lattice.py --check
 step "selective equivalence"       -     "$VENV" tests/gates/selective_equivalence.py --seeds 32 --rounds 30
 step "fuzz (45 min, corpus first)" -     "$VENV" tests/gates/fuzz.py --minutes 45
+step "validation scoring"          -     "$VENV" tests/gates/valid_metric.py
 step "FALB python plumbing"        -     "$VENV" tests/gates/falb_python.py
 step "FALB binary roundtrip"       -     env FALCATA_LIB="$REPO/lib_falcata.so" "$VENV" tests/gates/falb_roundtrip.py
 step "fixedpoint tree-emission"    20000 "$VENV" tests/gates/canonical.py numerai-treecount

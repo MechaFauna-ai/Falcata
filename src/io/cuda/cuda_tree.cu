@@ -489,6 +489,13 @@ __global__ void AddPredictionToScoreKernel(
       const uint32_t min_bin = cuda_feature_min_bin[split_feature_inner];
       const uint32_t offset = cuda_feature_offset[split_feature_inner];
       const uint8_t column_bit_type = cuda_column_bit_type[column];
+      // min_bin/max_bin index the RAW column, which may bundle several features;
+      // default_bin, most_freq_bin and threshold_in_bin are all feature-local.
+      // The row's bin is converted to feature-local below, so the NaN test needs
+      // the feature-local max bin too -- comparing a converted bin against the
+      // raw max_bin never matches, which routed every NaN row by value instead
+      // of down the split's default direction.
+      const uint32_t max_bin_local = max_bin - min_bin + offset;
       uint32_t bin = 0;
       if (column_bit_type == 8) {
         bin = static_cast<uint32_t>((reinterpret_cast<const uint8_t*>(cuda_data_by_column[column]))[data_index]);
@@ -515,7 +522,7 @@ __global__ void AddPredictionToScoreKernel(
         const uint32_t threshold_in_bin = cuda_threshold_in_bin[node];
         const int8_t missing_type = GetMissingTypeCUDA(decision_type);
         const bool default_left = ((decision_type & kDefaultLeftMask) > 0);
-        if ((missing_type == 1 && bin == default_bin) || (missing_type == 2 && bin == max_bin)) {
+        if ((missing_type == 1 && bin == default_bin) || (missing_type == 2 && bin == max_bin_local)) {
           if (default_left) {
             node = cuda_left_child[node];
           } else {

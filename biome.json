@@ -14,6 +14,9 @@
             "!falcata-python",
             "!falcata_r",
             "!.pixi",
+            "!.gates-venv",
+            "!**/site-packages",
+            "!venv",
             "!R-package/docs",
             "!tests/gates/lattice_results.json"
         ]
