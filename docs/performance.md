@@ -1,82 +1,5 @@
 # What makes Falcata fast — and how we know
 
-This is the verbose companion to the README's feature bullets: each landed
-optimization explained for readers who do not live inside CUDA, with the
-measured gains that justify it. The evidence comes from two instruments:
-
-- **Leave-one-out ablation** (`benchmarks/ablation.py`): train with the full
-  auto plan, then turn each feature off one at a time and measure how much
-  slower training gets. "+300%" below means *turning the feature off makes
-  training 4× slower* — i.e. the feature is worth 4×. Because every
-  mechanical feature is required to produce bit-identical models, the
-  ablation doubles as a correctness gate. Raw data: the newest
-  `benchmarks/ablation_*.txt` battery.
-- **The cross-library benchmark suite** (`~ benchmarks/README.md`): Falcata
-  vs upstream LightGBM, XGBoost, and CatBoost on the gbm-bench datasets plus
-  the real numerai workload (603 recorded runs, medians of 3 where
-  affordable).
-
-The plots throughout are rendered from those two measured sources by
-[perf-plots/generate.py](perf-plots/generate.py) — regenerate after a new
-sweep with `python docs/perf-plots/generate.py`. Exact provenance for
-every number — hardware, dataset builds, and the measured commit — is
-recorded in this file's git history and the benchmark workspace notes, not
-repeated here.
-
-Failed ideas are deliberately NOT here — they live in
-[perf-dead-ends.md](perf-dead-ends.md). Open ideas live in
-[../ROADMAP.md](../ROADMAP.md).
-
-Datasets referenced below: **covtype** (581k×54, 7-class), **year** (515k×90
-regression), **fraud** (285k×28, imbalanced binary), **higgs** (11M×28
-binary), **epsilon** (500k×2000 binary), **airline** (115M×13 binary),
-**numerai** (6.8M×3555 int8 regression, the production workload).
-
-Every benchmark cell is one of five **regimes** — the exact training
-configuration behind shorthand like "deep" or "30k trees":
-
-| regime | trees | learning rate | leaves / depth | extras |
-|---|---|---|---|---|
-| shallow | 500 | 0.1 | 63 / 6 | gbm-bench convention, `max_bin` 255 |
-| deep | 500 | 0.1 | 1023 / 10 | gbm-bench convention, `max_bin` 255 |
-| numerai example | 2 000 | 0.01 | 32 / 5 | `colsample_bytree` 0.1 |
-| numerai deep | 30 000 | 0.001 | 1024 / 10 | `colsample_bytree` 0.1, `min_data_in_leaf` 10k |
-| numerai leaf | 30 000 | 0.001 | 1024 / unbounded | `colsample_bytree` 0.1, `min_data_in_leaf` 1k — leaf-wise growth where the 1024-leaf budget binds (maps to lossguide on XGBoost/CatBoost) |
-
-Both numerai regimes are Numerai's own published example models, taken
-unchanged from [numerai/example-scripts](https://github.com/numerai/example-scripts)
-so the configuration is reproducible and not tuned to favour any library here.
-
-The two 30k-tree regimes are single timed runs (repeats are unaffordable at
-2–3 h per competitor cell); everything else is a median of 3.
-
-### Reproducing any number on this page
-
-Everything here comes from [`benchmarks/`](../benchmarks/README.md) in this
-repository — that harness is the only copy, and it is the one that produced
-these numbers. It builds the four engines into their own environments, caches
-every dataset as identical float32 bits, and runs each cell in an isolated
-subprocess:
-
-```bash
-export FALCATA_BENCH_ROOT=/big/disk/falcata-bench   # ~200GB when fully cached
-./benchmarks/setup_envs.sh                          # build all four engines
-$FALCATA_BENCH_ROOT/env-competitors/bin/python benchmarks/datasets.py all
-python3 benchmarks/orchestrate.py                   # resumable; --only fraud,covtype for a quick pass
-python3 docs/perf-plots/generate.py                 # re-render these plots
-```
-
-Two things to know before comparing your numbers to ours. Each engine is run
-on **its own default L2 leaf penalty** (they differ: 0, 1 and 3), following the
-gbm-bench convention rather than aligning them — `bench.py --align-l2` does
-align them and will move the quality figures. And timings need a **quiet
-machine**: host contention alone moved our medians by 18–55%, which is larger
-than several of the effects discussed below.
-
----
-
-## 1. The scoreboard: Falcata vs LightGBM, XGBoost, CatBoost
-
 **2.4× faster than XGBoost. 14× faster than LightGBM. 4.7× faster than
 CatBoost.** All libraries training on the same GPU via CUDA; geometric mean
 over the seven deep workloads at matched-or-better held-out quality — and
@@ -84,15 +7,13 @@ falcata is the fastest library on every single one of them:
 
 ![cross library deep](perf-plots/cross_library_deep.png)
 
-How it was measured: the full cross-library sweep — one GPU, aligned
-hyperparameters (gbm-bench convention), medians of 3 timed runs where
-affordable, every failure recorded rather than averaged away. Falcata's `quant_mode` is a user-facing dial, so each
-comparison quotes the variant that matches or beats the competitor's
-quality — the speedup is never bought with quality the user wouldn't
-accept.
+Falcata's `quant_mode` is a user-facing dial, so every comparison below quotes
+the variant that matches or beats the competitor's quality — the speedup is
+never bought with quality the user wouldn't accept. Method, regimes and
+reproduction steps: [How this was measured](#how-this-was-measured).
 
-**The flagship workload — numerai (6.8M×3555; regimes as defined in the
-intro table):**
+**The flagship workload — numerai (6.8M×3555; regimes defined under
+[How this was measured](#how-this-was-measured)):**
 
 | regime | falcata (stoch) | XGBoost | CatBoost | upstream LightGBM |
 |---|---|---|---|---|
@@ -166,14 +87,79 @@ its quantized mode is 0-for-sweep (CUDA crashes on higgs/airline, invalid
 models elsewhere); its OpenCL fallback lost most datasets to a
 display-driver regression. CatBoost's 30k-round cells fight the display watchdog (CUDA
 702). Falcata's own airline fixedpoint cells run at the auto-clamped 23
-bins — the int32 histogram guard bounds the bin count on 92M rows (§6).
+bins — the int32 histogram guard bounds the bin count on 92M rows (§5).
 
 ---
 
-The rest of this document explains where that speed comes from, one
-feature at a time.
+## How this was measured
 
-## 2. Hybrid level-batched growth — the biggest single win
+Two instruments, both shipped in this repository:
+
+- **The cross-library sweep** ([`benchmarks/`](../benchmarks/README.md)) —
+  falcata against upstream LightGBM, XGBoost and CatBoost on the gbm-bench
+  datasets plus the real numerai workload: 603 recorded runs, medians of 3
+  where affordable, every failure recorded rather than averaged away.
+- **Leave-one-out ablation** (`benchmarks/ablation.py`) — train with the full
+  auto plan, then turn each feature off one at a time. "+300%" below means
+  *turning the feature off makes training 4× slower*, i.e. the feature is worth
+  4×. Because every mechanical feature is required to produce bit-identical
+  models, the ablation doubles as a correctness gate. Raw data: the newest
+  `benchmarks/ablation_*.txt` battery.
+
+Datasets: **covtype** (581k×54, 7-class), **year** (515k×90 regression),
+**fraud** (285k×28, imbalanced binary), **higgs** (11M×28 binary), **epsilon**
+(500k×2000 binary), **airline** (115M×13 binary), **numerai** (6.8M×3555 int8
+regression, the production workload).
+
+Every cell is one of five **regimes** — the exact training configuration behind
+shorthand like "deep" or "30k trees":
+
+| regime | trees | learning rate | leaves / depth | extras |
+|---|---|---|---|---|
+| shallow | 500 | 0.1 | 63 / 6 | gbm-bench convention, `max_bin` 255 |
+| deep | 500 | 0.1 | 1023 / 10 | gbm-bench convention, `max_bin` 255 |
+| numerai example | 2 000 | 0.01 | 32 / 5 | `colsample_bytree` 0.1 |
+| numerai deep | 30 000 | 0.001 | 1024 / 10 | `colsample_bytree` 0.1, `min_data_in_leaf` 10k |
+| numerai leaf | 30 000 | 0.001 | 1024 / unbounded | `colsample_bytree` 0.1, `min_data_in_leaf` 1k — leaf-wise growth where the 1024-leaf budget binds (maps to lossguide on XGBoost/CatBoost) |
+
+Both numerai regimes are Numerai's own published example models, taken
+unchanged from [numerai/example-scripts](https://github.com/numerai/example-scripts)
+so the configuration is reproducible and not tuned to favour any library here.
+The two 30k-tree regimes are single timed runs (repeats are unaffordable at
+2–3 h per competitor cell); everything else is a median of 3.
+
+### Reproducing any number on this page
+
+That harness is the only copy, and it is the one that produced these numbers.
+It builds the four engines into their own environments, caches every dataset as
+identical float32 bits, and runs each cell in an isolated subprocess:
+
+```bash
+export FALCATA_BENCH_ROOT=/big/disk/falcata-bench   # ~200GB when fully cached
+./benchmarks/setup_envs.sh                          # build all four engines
+$FALCATA_BENCH_ROOT/env-competitors/bin/python benchmarks/datasets.py all
+python3 benchmarks/orchestrate.py                   # resumable; --only fraud,covtype for a quick pass
+python3 docs/perf-plots/generate.py                 # re-render these plots
+```
+
+Two things to know before comparing your numbers to ours. Each engine is run
+on **its own default L2 leaf penalty** (they differ: 0, 1 and 3), following the
+gbm-bench convention rather than aligning them — `bench.py --align-l2` does
+align them and will move the quality figures. And timings need a **quiet
+machine**: host contention alone moved our medians by 18–55%, which is larger
+than several of the effects discussed below.
+
+The plots are rendered from those two measured sources by
+[perf-plots/generate.py](perf-plots/generate.py). Failed ideas are deliberately
+not here — they live in [perf-dead-ends.md](perf-dead-ends.md); open ideas in
+[../ROADMAP.md](../ROADMAP.md).
+
+---
+
+The rest of this document explains where that speed comes from, one feature at
+a time.
+
+## 1. Hybrid level-batched growth — the biggest single win
 
 **The problem.** A leaf-wise GBDT learner classically grows a tree one split
 at a time: build histograms for one leaf, find its best split, tell the CPU,
@@ -224,12 +210,12 @@ Two sub-features extend the same idea:
   case the diagram above explicitly sets aside. A whole level is grown
   speculatively, the candidates are ranked by gain (which is the order leaf-wise
   would have used), and everything past the budget is collapsed again, its leaf
-  ids recycled. The `numerai-leaf` regime in the table above is exactly this
+  ids recycled. The `numerai-leaf` regime is exactly this
   shape: 1024 leaves, unbounded depth.
 
   ![selective grow-then-prune](perf-plots/hybrid_selective_prune.png)
 
-## 3. CUDA-graph level loops (`graph_loop`)
+## 2. CUDA-graph level loops (`graph_loop`)
 
 **The problem.** Even batched, each level's launch sequence is issued by the
 CPU. For shallow trees the levels are so short that CPU launch overhead
@@ -242,7 +228,7 @@ the inner loop entirely.
 
 **Measured (leave-one-out ablation):** nothing clears the noise floor. The
 largest readings are +9.3% on covtype-deep and +4.5% on both numerai cells,
-against noise bands of 12% and 5% respectively (§8 methodology note) — every
+against noise bands of 12% and 5% respectively (§7 methodology note) — every
 other cell is inside ±2%. The direction is consistently positive on the big
 cells, which is what you would expect from a real but small effect, but this
 suite cannot resolve it, so no number here is quotable and the section carries
@@ -253,7 +239,7 @@ batched flows already removed most of the host round-trips it was built to
 hide. It stays on because it is free where it doesn't help, and the planner
 picks per shape.
 
-## 4. Per-tree compact column view (`compact_quant`)
+## 3. Per-tree compact column view (`compact_quant`)
 
 **The problem.** With `feature_fraction < 1`, each tree randomly samples a
 subset of columns. But the bin matrix is row-major: even if a tree uses 10%
@@ -272,7 +258,7 @@ fraction: ~3.4× at `feature_fraction=0.1`, tapering to ~1.1× at 0.6.
 
 ![compact view ablation](perf-plots/ablation_compact_quant.png)
 
-## 5. GPU-native ingestion (`gpu_construct`, `fast_rowdata`, `efb_precheck`, `rowdata_4bit`)
+## 4. GPU-native ingestion (`gpu_construct`, `fast_rowdata`, `efb_precheck`, `rowdata_4bit`)
 
 **The problem.** Before training starts, raw features must be binned and laid
 out for the GPU. Upstream does this on the CPU, then uploads — minutes of
@@ -306,7 +292,7 @@ training backend — 3.4× slower than our GPU-native construct. Catboost's
 low bar is partly an accounting artifact — its Pool build is a host copy,
 with quantization deferred into `fit()` where it lands in the train timer.
 
-## 6. Quantized training: `quant_mode` (the speed/quality dial)
+## 5. Quantized training: `quant_mode` (the speed/quality dial)
 
 **The problem.** Histogram accumulation is the hot loop, and accumulating
 double-precision gradient/hessian pairs is memory-heavy.
@@ -365,7 +351,7 @@ with a warning (airline's 92M rows → 23 bins) instead of refusing; an
 explicitly-set unsafe `quant_bins` still fails loudly rather than silently
 wrap.
 
-## 7. Precision modes (`cuda_precision=fp32`)
+## 6. Precision modes (`cuda_precision=fp32`)
 
 For NON-quantized training, storing global histograms as float pairs instead
 of double pairs halves their bandwidth. Measured per-tree wins at
@@ -382,7 +368,7 @@ hitting cache. Isolated on covtype non-quant: fp32 gains **+26% deep** vs
 Practical guidance: on deep non-quantized configs, `cuda_precision=fp32` is
 the single highest-leverage switch available.
 
-## 8. Memory-layout micro-optimizations (each small, all free)
+## 7. Memory-layout micro-optimizations (each small, all free)
 
 - **`gh_interleave`** — gradient and hessian interleaved as one float2 so a
   row costs one scattered 32-byte read instead of two: +21% numerai-deep.
@@ -461,7 +447,7 @@ reported all vanished under interleaved A/B at 500 rounds.
 The ablation shows each of these within noise on shapes they don't target —
 the planner's "default on, individually ablatable" contract in action.
 
-## 8b. Runtime-JIT construct kernels (`construct_jit`)
+## 7b. Runtime-JIT construct kernels (`construct_jit`)
 
 The NVRTC infrastructure (shape-keyed compile cache, AOT fallback,
 self-test-then-promote) serves ALL mask-free quantized dense shapes, not just
@@ -474,7 +460,7 @@ reproduce exactly with the JIT live.
 **Measured (leave-one-out ablation):** small single-digit effects on the
 big cells — numerai-deep sits inside run-to-run noise (consecutive
 measurements: +8.4% and +0.3%). The one above-noise reading, fraud-deep
-+48%, is a sub-second cell — too swingy to quote as precise (§8 methodology
++48%, is a sub-second cell — too swingy to quote as precise (§7 methodology
 note), which is also why this section carries no plot: the honest chart
 would show a single bar of exactly that number.
 
@@ -487,14 +473,14 @@ amortizes); `construct_jit:on` forces it, unsupported shapes (graph capture,
 speculative levels, masked trees, wide partitions) fall back to AOT
 automatically.
 
-## 9. GPU inference via NVIDIA FIL
+## 8. GPU inference via NVIDIA FIL
 
 `Booster.predict()` on a CUDA-trained model routes through cuML's Forest
 Inference Library when available: numerai predict 0.90s → **0.046s** (CuPy
 in/out), higgs 0.37s → 0.004s. See the README for precision notes and the
 opt-out.
 
-## 9b. Model size: the FALB binary format
+## 8b. Model size: the FALB binary format
 
 **The problem.** The upstream text model format is enormous — a 45k-tree
 numerai production model is 471.6 MB of ASCII, and even gzip only takes it
@@ -521,7 +507,7 @@ leaves at 15.9× for ~3e-08 relative error, the one knob that trades
 exactness. The format reserves `leaf_dim` and dtype tags per array so
 vector leaves (multi-target) and new precisions arrive without a v2.
 
-## 10. Categorical features on the hybrid fast paths
+## 9. Categorical features on the hybrid fast paths
 
 Categorical datasets previously fell back to the classic one-split-at-a-time
 loop for every hybrid stage, and quantized training refused them outright.
@@ -566,7 +552,7 @@ finder. Open items tracked on the ROADMAP.
 
 ---
 
-## 11. Batched-apply partition overhaul: deferred leaf map + flat-grid kernels
+## 10. Batched-apply partition overhaul: deferred leaf map + flat-grid kernels
 
 Profiling the 92M-row airline-cat deep regime (1023 leaves, depth 10) showed
 the level-batched apply's partition kernels at 77% of GPU time -- the
