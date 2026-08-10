@@ -96,6 +96,25 @@ __host__ __device__ inline int HybridQuantConstructMaxRowsPerThread(
   return cap > 1 ? cap : 1;
 }
 
+/*! \brief block-y cap for the quantized construct kernels. The packed 16+16-bit
+ *  shared histogram is per BLOCK, so the whole block's row budget --
+ *  block_dim_y * rows_per_thread, and rows_per_thread cannot go below 1 -- must
+ *  fit 65534/bins. When block_dim_y alone already exceeds that budget, capping
+ *  rows-per-thread cannot enforce the bound (HybridQuantConstructMaxRowsPerThread
+ *  clamps to 1 and the block silently overruns), so the BLOCK has to be narrowed
+ *  instead. Overrunning wraps the packed int16 partials: silent, data-dependent
+ *  model corruption whenever enough of a block's rows share one bin (found by the
+ *  nightly fuzz at quant_bins 255/256 and 1024 on a 13-distinct-value feature). */
+__host__ __device__ inline int HybridQuantConstructBlockDimY(
+    const int block_dim_y, const int num_grad_quant_bins) {
+  if (num_grad_quant_bins <= 0) {
+    return block_dim_y;
+  }
+  const int max_rows_per_block = 65534 / (num_grad_quant_bins > 1 ? num_grad_quant_bins : 1);
+  const int capped = max_rows_per_block > 1 ? max_rows_per_block : 1;
+  return block_dim_y < capped ? block_dim_y : capped;
+}
+
 /*! \brief quantized-training y-grid sizing of the batched construct kernel:
  *  the shared formula plus the packed int32 shared-histogram overflow guard,
  *  mirroring CalcConstructHistogramBatchedKernelDim's host math verbatim.

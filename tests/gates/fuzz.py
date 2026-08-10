@@ -140,10 +140,15 @@ p = {"objective": spec["objective"], "num_leaves": spec["num_leaves"],
      "quant_mode": spec["quant_mode"], "quant_bins": spec["quant_bins"],
      "cuda_plan": spec["cuda_plan"],
      "device_type": device, "seed": 42, "verbose": -1, "metric": "None", "num_threads": 8}
-# fixedpoint is CUDA-only; the CPU reference run maps it to stochastic quant
-# (same quant family, well-defined on CPU) -- the parity check is tolerant.
+# fixedpoint is CUDA-only. The CPU reference runs FULL PRECISION, because
+# fixedpoint's contract is "near-lossless vs non-quantized" -- that is the
+# invariant worth testing. (It used to map to stochastic@4bins, which is a
+# genuinely different algorithm: its rounding noise regularizes, so on some
+# data it beats full precision by >10% and the tolerant check reported a
+# correct fixedpoint model as a failure -- three such false alarms in the
+# 2026-08-10 nightly, all verified same-device as fixedpoint == non-quant.)
 if device == "cpu" and p["quant_mode"] == "fixedpoint":
-    p["quant_mode"] = "stochastic"
+    p["quant_mode"] = "none"
     p["quant_bins"] = 0
 if spec.get("bagging_freq"):
     p["bagging_freq"] = spec["bagging_freq"]

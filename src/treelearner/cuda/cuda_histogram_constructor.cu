@@ -2753,6 +2753,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       block_dim_x = cc > NUM_THREADS_PER_BLOCK ? (cc + 1) / 2 : cc;
     }
     block_dim_y = std::max(1, NUM_THREADS_PER_BLOCK / block_dim_x);
+    block_dim_y = HybridQuantConstructBlockDimY(
+      block_dim_y, use_quantized_grad_ ? num_grad_quant_bins_ : 0);
     grid_dim_y = HybridBatchedConstructGridDimYQuant(
       max_num_data_in_smaller_leaf, num_pairs, block_dim_y, min_grid_dim_y_,
       BatchConstructMinRowsPerThread(), BatchConstructSaturationFloor(),

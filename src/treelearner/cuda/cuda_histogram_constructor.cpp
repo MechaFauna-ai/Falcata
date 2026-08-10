@@ -1139,6 +1139,9 @@ void CUDAHistogramConstructor::CalcConstructHistogramKernelDim(
     *block_dim_x = cols > NUM_THREADS_PER_BLOCK ? (cols + 1) / 2 : cols;
   }
   *block_dim_y = NUM_THREADS_PER_BLOCK / *block_dim_x;
+  // packed-shared-hist row budget is per block (see HybridQuantConstructBlockDimY)
+  *block_dim_y = HybridQuantConstructBlockDimY(
+    *block_dim_y, use_quantized_grad_ ? num_grad_quant_bins_ : 0);
   *grid_dim_x = cuda_row_data_->num_feature_partitions();
   int rows_per_thread = NUM_DATA_PER_THREAD;
   if (use_quantized_grad_) {
@@ -1161,6 +1164,9 @@ void CUDAHistogramConstructor::CalcConstructHistogramBatchedKernelDim(
     *block_dim_x = cols > NUM_THREADS_PER_BLOCK ? (cols + 1) / 2 : cols;
   }
   *block_dim_y = NUM_THREADS_PER_BLOCK / *block_dim_x;
+  // packed-shared-hist row budget is per block (see HybridQuantConstructBlockDimY)
+  *block_dim_y = HybridQuantConstructBlockDimY(
+    *block_dim_y, use_quantized_grad_ ? num_grad_quant_bins_ : 0);
   *grid_dim_x = cuda_row_data_->num_feature_partitions();
   // The per-leaf sizing forces min_grid_dim_y_ y-blocks to saturate the device
   // for a SINGLE leaf; every active block, however, pays a fixed shared-hist
