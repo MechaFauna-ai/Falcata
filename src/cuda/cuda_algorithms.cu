@@ -8,6 +8,7 @@
 #ifdef USE_CUDA
 
 #include <Falcata/cuda/cuda_algorithms.hpp>
+#include <Falcata/config.h>
 #include <Falcata/cuda/cuda_rocm_interop.h>
 
 #include <algorithm>
@@ -449,3 +450,22 @@ void BitonicArgSortGlobal<data_size_t, int, true>(const data_size_t* values, int
 }  // namespace Falcata
 
 #endif  // USE_CUDA
+
+namespace Falcata {
+
+// Layout tripwire for the nvcc/host-compiler boundary.
+//
+// Config is held BY VALUE by Metric, ObjectiveFunction and friends, and those
+// classes are touched from both .cu and .cpp translation units. If the two
+// compilers ever disagree about sizeof(Config) -- as they did when a member was
+// declared inside the `#ifndef __NVCC__` region, invisible to nvcc -- then every
+// member of every such class silently shifts between TUs. The symptom is a wild
+// pointer read in a CUDA kernel, arbitrarily far from the cause.
+//
+// This function is compiled by nvcc; the host side compares it against its own
+// sizeof at startup. Cheap, and it turns a day of debugging into one message.
+size_t CUDASideSizeOfConfig() {
+  return sizeof(Config);
+}
+
+}  // namespace Falcata

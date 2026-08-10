@@ -21,6 +21,13 @@
 
 namespace Falcata {
 
+#ifdef USE_CUDA
+// Defined in src/cuda/cuda_algorithms.cu, i.e. compiled by nvcc. Declared here
+// rather than pulled in from a header because cuda_algorithms.hpp is device
+// code and will not compile in a host TU.
+size_t CUDASideSizeOfConfig();
+#endif  // USE_CUDA
+
 void Config::KV2Map(std::unordered_map<std::string, std::vector<std::string>>* params, const char* kv) {
   std::vector<std::string> tmp_strs = Common::Split(kv, '=');
   if (tmp_strs.size() == 2 || tmp_strs.size() == 1) {
@@ -282,6 +289,24 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
   GetMetricType(params, objective, &metric);
   GetDeviceType(params, &device_type);
 #ifdef USE_CUDA
+  // See CUDASideSizeOfConfig(): if nvcc and the host compiler disagree about
+  // Config's layout, every class holding one by value has its members shifted
+  // between translation units and the failure surfaces as a wild pointer in an
+  // unrelated kernel. Check once, loudly.
+  {
+    static std::once_flag config_layout_checked;
+    std::call_once(config_layout_checked, []() {
+      const size_t host_size = sizeof(Config);
+      const size_t device_size = CUDASideSizeOfConfig();
+      if (host_size != device_size) {
+        Log::Fatal("Config layout differs between the host compiler (%zu bytes) and nvcc "
+                   "(%zu bytes). A member is almost certainly declared inside an "
+                   "`#ifndef __NVCC__` block in config.h, which hides it from nvcc; only "
+                   "`#pragma region` markers belong in there.",
+                   host_size, device_size);
+      }
+    });
+  }
   // device_type keeps LightGBM's "cpu" default so parameter files stay portable,
   // but a CUDA build that silently trains on the CPU is the single easiest way
   // to miss the point of this library. Say so once per process; setting
