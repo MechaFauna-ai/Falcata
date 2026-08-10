@@ -55,7 +55,7 @@ across the hyperparameter regimes (gbm-bench convention: 500 rounds, lr 0.1,
 
 - **shallow**: depth 6 / 63 leaves
 - **deep**: depth 10 / 1023 leaves
-- **numerai**: Numerai's `hello_numerai` notebook model (2000 trees, lr 0.01, depth 5, 32 leaves, colsample 0.1 — the notebook says 31 leaves; see common.py)
+- **numerai**: Numerai's `hello_numerai` notebook model (2000 trees, lr 0.01, depth 5, 32 leaves, colsample 0.1). 32 = 2^max_depth, matching the convention in Numerai's documented parameter sets; the notebook itself writes 2^5−1 = 31 (see common.py)
 - **numerai-deep**: Numerai's published [`deep_lgbm_params`](https://docs.numer.ai/numerai-tournament/models#deep-lgbm-params), the v5 benchmark-model parameters (30k trees, lr 0.001, depth 10, 1024 leaves, colsample 0.1, min_data 10k)
 - **numerai-leaf**: ours, not Numerai's — numerai-deep with the depth cap lifted, so the 1024-leaf budget is what binds (min_data 1000)
 

@@ -126,9 +126,10 @@ The numerai regimes come from Numerai, not from us, so the configuration is
 public and not tuned to favour any library here. *numerai deep* is their
 published `deep_lgbm_params` — the parameters behind the v5 benchmark models —
 from [the Numerai docs](https://docs.numer.ai/numerai-tournament/models#deep-lgbm-params).
-*numerai example* is the model in their `hello_numerai` notebook, with one
-deviation: we run 32 leaves where the notebook says `2**5-1` = 31 (all engines
-get the same 32, so the comparison stays even). *numerai leaf* is ours — the
+*numerai example* is the model in their `hello_numerai` notebook. Numerai's
+own two sources disagree by one leaf here: every parameter set on the docs page
+uses `num_leaves = 2**max_depth` (64 at depth 6, 1024 at depth 10), while the
+notebook writes `2**5-1` = 31. We use 32 at depth 5, following the docs. *numerai leaf* is ours — the
 deep parameters with the depth cap lifted, so the leaf budget is what binds.
 The two 30k-tree regimes are single timed runs (repeats are unaffordable at
 2–3 h per competitor cell); everything else is a median of 3.

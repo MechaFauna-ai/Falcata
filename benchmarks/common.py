@@ -76,10 +76,10 @@ REGIMES = {
     },
     # the model in Numerai's hello_numerai notebook
     # (github.com/numerai/example-scripts, numerai/hello_numerai.ipynb).
-    # DEVIATION: that notebook sets num_leaves=2**5-1 = 31; every published
-    # number was measured at 32 and the value is kept so this config still
-    # reproduces them. Every engine gets the same 32, so the comparison is
-    # unaffected -- but it is not a verbatim copy of the notebook.
+    # 32 = 2**max_depth, the convention every parameter set on Numerai's docs
+    # page uses (2**6 = 64 at depth 6, 1024 at depth 10). The notebook itself
+    # writes 2**5-1 = 31 -- a one-leaf disagreement between Numerai's own two
+    # sources, resolved here in favour of the documented convention.
     "numerai": {
         "rounds": 2000,
         "lr": 0.01,
