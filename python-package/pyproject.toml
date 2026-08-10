@@ -2,6 +2,8 @@
 
 classifiers = [
     "Development Status :: 5 - Production/Stable",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Environment :: GPU :: NVIDIA CUDA :: 12",
     "Intended Audience :: Science/Research",
     "Natural Language :: English",
     "Operating System :: MacOS",
