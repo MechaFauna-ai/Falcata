@@ -250,17 +250,23 @@ def plot_quant_modes():
         return reg if reg.startswith("numerai") else f"{ds}-{reg}"
 
     labels = [dr_label(*dr) for dr in drs]
-    modes = ["falcata-fixed", "falcata-stoch"]
+    # no-quant is a bar of its own (1x by definition) rather than a baseline
+    # line: a reader compares bar heights within a group far more easily than
+    # bar-to-rule, and it keeps the group self-contained.
+    modes = ["falcata-noquant", "falcata-fixed", "falcata-stoch"]
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 3.6), gridspec_kw={"width_ratios": [1.15, 1]})
     x = range(len(drs))
-    w = 0.32
+    w = 0.26
     for i, lib in enumerate(modes):
         sp = []
         for ds, reg in drs:
             m = MED.get((lib, ds, reg))
             b = MED.get(("falcata-noquant", ds, reg))
-            sp.append(b["train_s"] / m["train_s"] if (m and b) else 0)
-        xs_i = [xx + (i - 0.5) * w for xx in x]
+            if lib == "falcata-noquant":
+                sp.append(1.0 if b else 0)
+            else:
+                sp.append(b["train_s"] / m["train_s"] if (m and b) else 0)
+        xs_i = [xx + (i - 1) * w for xx in x]
         ax1.bar(xs_i, sp, width=w - 0.04, color=LIB_COLOR[lib], label=LIB_LABEL[lib])
         for xx, v, dr in zip(xs_i, sp, drs):
             if v == 0:
@@ -275,7 +281,6 @@ def plot_quant_modes():
                     color=TEXT,
                     weight="bold",
                 )
-    ax1.axhline(1.0, color=TEXT, linewidth=1.3, linestyle="--", label="no-quant baseline (1×)")
     ax1.set_xticks(list(x), labels, fontsize=8, rotation=20)
     ax1.set_ylabel("speedup vs no-quant (×)")
     ax1.set_title("Quantized training: speed", fontsize=10)
