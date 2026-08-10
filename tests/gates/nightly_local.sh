@@ -41,6 +41,11 @@ cd "$REPO" || fail "repo not found at $REPO"
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   log "SKIP: working tree dirty (uncommitted changes) -- nothing to verify"
   echo "SKIPPED: dirty tree" > "$LOGDIR/last-status"
+  # Exit 0 (this is not a failure) but poison the token: nothing was verified,
+  # so the next submit must not be suppressed as "already covered".
+  if [ -n "${GPUQ_JOB_ID:-}" ] && command -v gpuq >/dev/null 2>&1; then
+    gpuq token "skipped-dirty-$(date +%s)" || true
+  fi
   exit 0
 fi
 if git fetch --quiet origin; then
@@ -49,10 +54,17 @@ else
   log "WARN: git fetch failed; testing local HEAD"
 fi
 log "testing $(git rev-parse --short HEAD)"
+# The queue recorded a token at dispatch; this is the exact commit we ended up
+# on after the fast-forward above, so it supersedes it.
+if [ -n "${GPUQ_JOB_ID:-}" ] && command -v gpuq >/dev/null 2>&1; then
+  gpuq token "$(git rev-parse HEAD)" || true
+fi
 
 step() {  # step <name> <gpu_free_mb|-> <command...>
   local name="$1" need="$2"; shift 2
-  if [ "$need" != "-" ]; then
+  # Under gpuq the scheduler already holds the GPU for us; the per-step guard
+  # would only be waiting on ourselves. Keep it for direct manual runs.
+  if [ "$need" != "-" ] && [ -z "${GPUQ_JOB_ID:-}" ]; then
     python3 tests/gates/gpu_guard.py --require-free-mb "$need" --max-util 10 --timeout-min 120 >>"$LOG" 2>&1 \
       || fail "$name (GPU never freed up)"
   fi
