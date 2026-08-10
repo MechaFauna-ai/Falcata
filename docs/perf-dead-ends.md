@@ -353,3 +353,38 @@ merge-state machinery is the seed of the multi-target orchestration.
 cold-start CUDA "invalid argument" on the first multi-GPU touch after boot
 (old wheel and new alike); warm runs pass consistently.
 `CUDA_MODULE_LOADING=EAGER` is the rental hedge.
+
+## Level-synchronous out-of-bag scoring: the pass it targets is already free
+
+Under bagging, each tree is applied to in-bag rows through the data partition
+(their leaf is already known) and to out-of-bag rows by walking the tree per
+row. That walk is a chain of dependent, uncoalesced gathers — neighbouring
+threads sit at different nodes and read different feature columns — so it looks
+like an obvious target once the sampler moves to the device: at
+`bagging_fraction` 0.25 three quarters of the rows take it on every tree.
+
+Replacing it with a level-synchronous descent (keep a node id per row, advance
+every row one level per kernel, so all rows read the same feature at the root,
+two at level 1, ...) made it **44% SLOWER**: higgs 4M, 255 leaves, bagging 0.25,
+0.442s → 0.637s. The launch count is the reason. A safe bound on path length is
+`num_leaves - 1`, and a CUDA-built tree does not maintain `max_depth_`, so a
+63-leaf tree pays 62 launches per tree where the descent pays one — and after
+about eight levels every row has already reached a leaf and the remaining
+launches do nothing.
+
+The deeper reason not to retry: **the pass costs nothing to begin with.**
+Skipping the out-of-bag score update entirely (measured, results discarded) does
+not speed training up at all — 0.487s vs 0.437s at bagging 0.25, i.e. inside the
+noise. There is no headroom to win.
+
+A warning about how this was nearly mis-concluded: the first measurement, taken
+while an unrelated GPU job shared the box, showed the same comparison as 1.055s
+vs 0.409s and implied a 2.6x win. Run-to-run spread was 18-55%. On a quiet
+machine the spread fell to 1-5% and the effect vanished. **Never size a
+performance opportunity from a contended box** — take medians of several
+repetitions and check the spread before believing the gap.
+
+Re-open when: the out-of-bag pass actually shows up in a profile — which needs
+much deeper trees (the walk is O(depth) per row, and these were depth 10) or a
+shape where scoring dominates histogram construction. Even then, bound the level
+loop by the tree's real depth from `leaf_depth_`, not by `num_leaves - 1`.
