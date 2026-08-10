@@ -695,7 +695,7 @@ The GPU version is not supported on macOS.
 Docker
 ^^^^^^
 
-Refer to `GPU Docker folder <https://github.com/MechaFauna-ai/Falcata/tree/master/docker/gpu>`__.
+Refer to the `Docker folder <https://github.com/MechaFauna-ai/Falcata/tree/master/docker>`__.
 
 Build CUDA Version
 ~~~~~~~~~~~~~~~~~~

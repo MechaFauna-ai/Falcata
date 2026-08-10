@@ -18,6 +18,10 @@ remap = [
     '(?P<host>^https://github\.com)/(?P<path>.*)#(?P<anchor>.*)$ $host/$path/',
 ]
 exclude = [
+    # the pkgdown site is configured (pkgdown requires a canonical url) but not
+    # published yet: every generated R cross-reference points at it. Drop this
+    # entry once GitHub Pages serves the R docs.
+    '^https://mechafauna-ai\.github\.io/Falcata/.*',
     '^https://www\.swig\.org/download\.html$',
     '^https://proceedings\.neurips\.cc/.*',
     '^https://www\.amd\.com/en/support\.html$',
@@ -29,4 +33,7 @@ exclude = [
 ]
 exclude_path = [
     "(^|/)docs/.*\\.rst",
+    # vendored third-party docs (fmt, eigen, nanoarrow ...): not ours to fix,
+    # and only reachable since the docs build began checking out submodules
+    "(^|/)external_libs/",
 ]
