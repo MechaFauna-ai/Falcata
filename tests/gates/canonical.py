@@ -40,7 +40,13 @@ LOCKS = {
     # table fix; Philox replaced the tables entirely.
     "covtype": "cf08d1a953b2",
     "covtype-classic": "4f628ccd7455",
-    "numerai": "55da8a851897",
+    # Re-baselined 2026-08-10 for the DATA, not a code change. The bench cache's
+    # numerai build was regenerated on 2026-08-07 (the 1224 -> 1226 source bump,
+    # which is explicitly not comparable to older archives); the old lock was set
+    # 2026-07-31 against the previous build. Proof it is data and not drift: the
+    # lock's own commit (07257bd8) run against today's cache produces this same
+    # 795599fb164c, and its covtype cell still reproduces cf08d1a953b2 exactly.
+    "numerai": "795599fb164c",
 }
 
 

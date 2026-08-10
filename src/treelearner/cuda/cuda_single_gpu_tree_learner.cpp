@@ -162,8 +162,17 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
       extreme_imbalance = (minority == 0) ||
           (static_cast<int64_t>(num_data_ - minority) >= 50LL * minority);
     }
+    // Multiclass is excluded for the same reason as extreme binary imbalance,
+    // which it structurally resembles: each per-class tree sees only ~1/k
+    // positives, so the rare-class gradients pin the global-max scale and the
+    // finer bins buy resolution the bulk cannot use. Measured on covtype
+    // (7 classes, 464k rows, ~454 rows/leaf -- squarely inside the raise
+    // window): accuracy .91841 at the 4-bin default vs .91510 raised to 16.
+    // The shapes the raise was built for (year-deep regression, epsilon-deep
+    // binary) are untouched.
+    const bool multiclass = config_->num_class > 1;
     if (num_data_ >= kMinRowsForRaise && rows_per_leaf < kSmallLeafRows &&
-        !extreme_imbalance) {
+        !extreme_imbalance && !multiclass) {
       // constant-hessian objectives take the full 64 (fixedpoint's count,
       // drift-free on year); non-constant ones take 16 -- enough to kill the
       // drift (epsilon: zero at 16) without the imbalanced-binary quality
