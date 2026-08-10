@@ -5,7 +5,15 @@ this project keeps hitting: silently invalid trees, quality regressions, and
 perf regressions -- each surfacing only for specific (config x dataset-shape)
 combinations.
 
-## Per-commit (`gpu_gates.yml`, self-hosted GPU runner, ~10 min)
+These gates need a CUDA GPU, so they do NOT run in GitHub Actions: this is a
+public repository, and a self-hosted runner would let a fork's pull request
+execute code on the GPU host. They run locally instead -- the machine pulls the
+repo and tests it, so nothing inbound can trigger execution.
+
+## Per-commit (~10 min, run locally)
+
+    bash tests/gates/ci_build.sh                       # CUDA wheel into .gates-venv
+    .gates-venv/bin/python tests/gates/lattice.py --check
 
 | Detector | Mechanism |
 |---|---|
@@ -20,7 +28,15 @@ lattice by design. Re-baseline explicitly -- `lattice.py --update <cell-id> ...`
 (or `--baseline` for everything) -- and commit the `md5_lattice.json` diff; the
 diff review shows exactly which cells moved and is itself the review artifact.
 
-## Nightly (`gpu_gates_nightly.yml`)
+## Nightly (`nightly_local.sh`, cron)
+
+    crontab -l 2>/dev/null | grep -v nightly_local.sh > /tmp/ct
+    echo "0 3 * * * $HOME/Documents/lightgbm-fork/tests/gates/nightly_local.sh" >> /tmp/ct
+    crontab /tmp/ct
+
+Waits for a free GPU, fast-forwards to `origin/master` (skips entirely if the
+tree is dirty), runs every tier below, and writes
+`~/.cache/falcata-gates/nightly-<date>.log` plus a one-line `last-status`.
 
 - `FALCATA_VERIFY=1` lattice sweep: ingestion fast paths self-verify
   byte-for-byte against their reference implementations.
