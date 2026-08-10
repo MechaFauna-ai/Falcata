@@ -494,6 +494,17 @@ def plot_hybrid_diagram():
 
 
 # ---------------------------------------------------------------- 6. §9 time-to-quality
+# Overrides for the line plot ONLY. Bars sit side by side with a label under
+# each, so near-neighbours in hue read fine there; five overlapping lines with
+# no labels do not. These two pairs were the problem: falcata-fixed's violet
+# against falcata-stoch's blue, and lightgbm's aqua against falcata-noquant's
+# green. The bar charts keep the shared palette.
+CURVE_COLOR = {
+    "falcata-fixed": "#9467bd",  # purple, clear of the blue
+    "lightgbm": "#8c564b",  # brown, clear of the green
+}
+
+
 def plot_curves():
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 3.8))
     for ax, ds, reg in ((ax1, "higgs", "deep"), (ax2, "epsilon", "deep")):
@@ -508,13 +519,17 @@ def plot_curves():
             # clip the early ramp, but never a curve's FINAL value (an honest
             # quality dip must stay in frame)
             ymin = min(ymin, ys[len(ys) // 4], ys[-1] - 0.0008)
-            ax.plot(xs, ys, color=LIB_COLOR[lib], linewidth=2, label=LIB_LABEL[lib])
+            ax.plot(xs, ys, color=CURVE_COLOR.get(lib, LIB_COLOR[lib]), linewidth=2, label=LIB_LABEL[lib])
         ax.set_xscale("log")
         ax.set_ylim(bottom=ymin)
         ax.set_xlabel("wall time (s, log)")
         ax.set_ylabel("test AUC")
         ax.set_title(f"{ds} deep (500 trees)", fontsize=10)
-        ax.legend(fontsize=7.5, frameon=False, loc="lower right")
+        handles, labels = ax.get_legend_handles_labels()
+        order = sorted(range(len(labels)), key=lambda i: labels[i])
+        ax.legend(
+            [handles[i] for i in order], [labels[i] for i in order], fontsize=7.5, frameon=False, loc="upper left"
+        )
     fig.suptitle("Time-to-quality (eval every 25 iters; cross-library sweep)", fontsize=10, y=1.02)
     fig.tight_layout()
     fig.savefig(os.path.join(HERE, "time_to_quality.png"), bbox_inches="tight")
@@ -558,7 +573,7 @@ def plot_model_size():
 def plot_memory():
     libs = ["falcata-stoch", "lightgbm", "xgboost", "catboost"]
     drs = [("higgs", "deep"), ("epsilon", "deep"), ("airline", "deep"), ("numerai", "numerai-deep")]
-    fig, ax = plt.subplots(figsize=(9, 3.2))
+    fig, ax = plt.subplots(figsize=(9, 3.5))
     x = range(len(drs))
     w = 0.2
     for i, lib in enumerate(libs):
@@ -580,7 +595,9 @@ def plot_memory():
     ax.set_xticks(list(x), [DS_LABEL.get(dr, dr[0]) for dr in drs], fontsize=9)
     ax.set_ylabel("GPU peak (GB)")
     ax.set_title("Peak GPU memory, deep regimes  ·  * = upstream's OpenCL backend (its CUDA build OOMs)", fontsize=10)
-    ax.legend(fontsize=8, frameon=False, ncols=4)
+    # Below the axes, not floating inside them: the tallest bars (catboost on
+    # airline/numerai) ran straight through a legend placed automatically.
+    ax.legend(fontsize=8, frameon=False, ncols=4, loc="upper center", bbox_to_anchor=(0.5, -0.16))
     bar_ends(ax)
     fig.tight_layout()
     fig.savefig(os.path.join(HERE, "gpu_memory.png"), bbox_inches="tight")
