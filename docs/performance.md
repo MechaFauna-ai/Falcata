@@ -178,6 +178,15 @@ Two sub-features extend the same idea:
   non-quantized configurations; on shapes where they don't apply they cost
   nothing (±2% noise in every cell), which is exactly why they can default on.
 
+  Selective is what keeps the batching exact once the budget *can* bind — the
+  case the diagram above explicitly sets aside. A whole level is grown
+  speculatively, the candidates are ranked by gain (which is the order leaf-wise
+  would have used), and everything past the budget is collapsed again, its leaf
+  ids recycled. The `numerai-leaf` regime in the table above is exactly this
+  shape: 1024 leaves, unbounded depth.
+
+  ![selective grow-then-prune](perf-plots/hybrid_selective_prune.png)
+
 ## 3. CUDA-graph level loops (`graph_loop`)
 
 **The problem.** Even batched, each level's launch sequence is issued by the

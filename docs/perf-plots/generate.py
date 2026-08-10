@@ -415,6 +415,108 @@ def plot_small_features():
     plot_single_feature("fast_rowdata", "fast rowdata build", "ablation_fast_rowdata.png")
 
 
+# ------------------------------------------------- 5c. §1 selective grow-then-prune
+def plot_selective_prune():
+    """How level batching stays leaf-wise-exact once the leaf budget binds.
+
+    The main diagram covers the easy half: while the budget cannot bind, every
+    profitable leaf gets split eventually so the ORDER cannot change the tree.
+    Once the budget can bind, order decides which leaves exist at all -- that is
+    what this shows.
+    """
+    from matplotlib.patches import Rectangle
+
+    BLUE = LIB_COLOR["falcata-stoch"]
+    GRAY = "#b5b4ae"
+    DROP = "#d9d8d4"
+    fig, axes = plt.subplots(1, 3, figsize=(13, 3.5))
+    for ax in axes:
+        ax.set_xlim(0, 10)
+        ax.set_ylim(-1.5, 2.4)
+        ax.axis("off")
+
+    # one frontier of four candidate splits; gains chosen so the budget cuts
+    # the field in half and the two survivors are not the leftmost two
+    cand = [(1.6, "gain 0.9"), (4.0, "gain 0.3"), (6.4, "gain 1.4"), (8.8, "gain 0.2")]
+    keep = {0, 2}
+
+    def frontier(ax, drawn, kept_only=False):
+        ax.plot([0.8, 9.6], [2.0, 2.0], color=GRID, linewidth=1.2)
+        for i, (x, glabel) in enumerate(cand):
+            live = (i in keep) if kept_only else True
+            col = BLUE if (not drawn or i in keep or not kept_only) else DROP
+            ax.plot([x, x], [2.0, 0.9], color=GRID, linewidth=1.2, zorder=1)
+            ax.scatter([x], [0.9], s=360, color=BLUE if live else DROP, zorder=2)
+            if drawn:
+                for dx in (-0.7, 0.7):
+                    ax.plot([x, x + dx], [0.9, -0.2], color=GRID if live else DROP, linewidth=1.1, zorder=1)
+                    ax.scatter([x + dx], [-0.2], s=150, color=GRAY if live else DROP, zorder=2)
+            ax.text(x, 1.35, glabel, ha="center", fontsize=8, color=TEXT2)
+
+    frontier(axes[0], drawn=True)
+    axes[0].set_title("1. grow the whole level speculatively", fontsize=10)
+    axes[0].text(
+        5,
+        -1.1,
+        "one batched histogram + split search for every\ncandidate on the frontier, budget ignored",
+        ha="center",
+        fontsize=8.5,
+        color=TEXT2,
+    )
+
+    frontier(axes[1], drawn=True)
+    order = sorted(range(4), key=lambda i: -float(cand[i][1].split()[1]))
+    for rank, i in enumerate(order):
+        inside = rank < len(keep)
+        axes[1].add_patch(
+            Rectangle(
+                (cand[i][0] - 0.62, 0.45),
+                1.24,
+                0.9,
+                facecolor=BLUE if inside else "none",
+                alpha=0.16 if inside else 1.0,
+                edgecolor="none" if inside else DROP,
+                linestyle="--",
+                zorder=0,
+            )
+        )
+        axes[1].text(
+            cand[i][0],
+            0.15,
+            f"#{rank + 1}",
+            ha="center",
+            fontsize=8,
+            color=TEXT if inside else TEXT2,
+            weight="bold" if inside else "normal",
+        )
+    axes[1].set_title("2. rank by gain, take what the budget allows", fontsize=10)
+    axes[1].text(
+        5,
+        -1.1,
+        "greedy by gain is exactly the order leaf-wise\nwould have used  ·  budget here allows 2",
+        ha="center",
+        fontsize=8.5,
+        color=TEXT2,
+    )
+
+    frontier(axes[2], drawn=True, kept_only=True)
+    axes[2].set_title("3. collapse the rest, recycle their leaf ids", fontsize=10)
+    axes[2].text(
+        5,
+        -1.1,
+        "the unselected children never existed as far as the tree\n"
+        "is concerned — same structure leaf-wise would have built",
+        ha="center",
+        fontsize=8.5,
+        color=TEXT2,
+    )
+
+    fig.suptitle("Selective grow-then-prune: level batching when the leaf budget binds", fontsize=10.5, y=1.03)
+    fig.tight_layout()
+    fig.savefig(os.path.join(HERE, "hybrid_selective_prune.png"), bbox_inches="tight")
+    plt.close(fig)
+
+
 # ---------------------------------------------------------------- 5b. §1 how hybrid growth works
 def plot_hybrid_diagram():
     from matplotlib.patches import Rectangle
@@ -618,6 +720,7 @@ def plot_memory():
 
 plot_cross_library()
 plot_hybrid_diagram()
+plot_selective_prune()
 plot_quant_modes()
 plot_construct()
 plot_hybrid_ablation()
