@@ -458,7 +458,7 @@ def plot_hybrid_diagram():
     # RIGHT: hybrid -- level bands, one batch per level
     for d, ytop in ((0, 3), (1, 3 - 1.15), (2, 3 - 2.3)):
         axt_r.add_patch(Rectangle((0.25, ytop - 0.42), 9.5, 0.84, facecolor=BLUE, alpha=0.10, edgecolor="none"))
-        axt_r.text(9.85, ytop, f"batch {d + 1}", fontsize=8.5, color=TEXT2, ha="right", va="center")
+        axt_r.text(9.55, ytop, f"batch {d + 1}", fontsize=8.5, color=TEXT2, ha="right", va="center")
     draw_tree(axt_r, {0: "1", 1: "2", 2: "2", 3: "3", 4: "3", 5: "3", 6: "3"})
     axt_r.set_title("hybrid level-batched: whole levels at once", fontsize=11)
     axt_r.text(
