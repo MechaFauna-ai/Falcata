@@ -68,7 +68,9 @@ def fetch(filename: str) -> str:
 def save(name, x_tr, y_tr, x_te, y_te):
     d = os.path.join(CACHE_DIR, name)
     os.makedirs(d, exist_ok=True)
-    np.save(os.path.join(d, "X_train.npy"), np.ascontiguousarray(x_tr, dtype=np.float32))
+    np.save(
+        os.path.join(d, "X_train.npy"), np.ascontiguousarray(x_tr, dtype=np.float32)
+    )
     np.save(os.path.join(d, "y_train.npy"), np.asarray(y_tr, dtype=np.float32))
     np.save(os.path.join(d, "X_test.npy"), np.ascontiguousarray(x_te, dtype=np.float32))
     np.save(os.path.join(d, "y_test.npy"), np.asarray(y_te, dtype=np.float32))
@@ -78,7 +80,9 @@ def save(name, x_tr, y_tr, x_te, y_te):
 def random_split(x, y, frac=0.2, stratify=False):
     from sklearn.model_selection import train_test_split
 
-    return train_test_split(x, y, test_size=frac, random_state=SEED, stratify=y if stratify else None)
+    return train_test_split(
+        x, y, test_size=frac, random_state=SEED, stratify=y if stratify else None
+    )
 
 
 def prep_higgs():
@@ -113,7 +117,8 @@ def prep_epsilon():
     )
 
 
-def prep_airline():
+def _airline_split():
+    """Ordinal-encoded airline, split 80/20 (shared by both airline variants)."""
     import pandas as pd
 
     cols = [
@@ -135,7 +140,9 @@ def prep_airline():
     cat_cols = ["UniqueCarrier", "Origin", "Dest"]
     cat_maps = {c: {} for c in cat_cols}
     chunks = []
-    reader = pd.read_csv(fetch("airline.data.bz2"), header=None, names=cols, chunksize=5_000_000)
+    reader = pd.read_csv(
+        fetch("airline.data.bz2"), header=None, names=cols, chunksize=5_000_000
+    )
     for i, ch in enumerate(reader):
         for c in cat_cols:  # ordinal-encode string categoricals
             m = cat_maps[c]
@@ -154,13 +161,62 @@ def prep_airline():
     rng = np.random.default_rng(SEED)
     perm = rng.permutation(len(x))
     n_test = int(0.2 * len(x))
-    save(
-        "airline",
+    return (
         x[perm[n_test:]],
         y[perm[n_test:]],
         x[perm[:n_test]],
         y[perm[:n_test]],
     )
+
+
+def prep_airline():
+    save("airline", *_airline_split())
+
+
+#: categorical columns of the airline matrix once ArrDelay is dropped:
+#: UniqueCarrier (6), Origin (9), Dest (10)
+AIRLINE_CAT_COLS = [6, 9, 10]
+#: distinct categories kept per high-cardinality column; everything rarer
+#: collapses into one bucket, so the column fits the suite-wide 255-bin budget
+#: (catboost's border_count is 254) and no engine is silently given more
+#: resolution than another
+AIRLINE_CAT_KEEP = 254
+
+
+def prep_airline_cat():
+    """Airline with the three string columns left CATEGORICAL, not ordinal.
+
+    Same rows, split and encoding as ``airline``; the difference is that
+    bench.py declares columns 6/9/10 as categorical, so the engines take their
+    categorical split paths instead of treating the codes as ordered numbers.
+
+    Origin/Dest carry ~300 airports each, more than the 255-bin budget. Their
+    codes are therefore recoded by descending TRAIN-set frequency and the tail
+    beyond the top 254 is collapsed into a single rare bucket. Ranking on the
+    train split only keeps the test split from informing the encoding.
+    """
+    x_tr, y_tr, x_te, y_te = _airline_split()
+    for col in AIRLINE_CAT_COLS:
+        codes, counts = np.unique(x_tr[:, col], return_counts=True)
+        # descending frequency; ties broken by code for a deterministic map
+        order = np.lexsort((codes, -counts))
+        rank = np.empty(len(codes), dtype=np.int64)
+        rank[order] = np.arange(len(codes))
+        rare = min(len(codes), AIRLINE_CAT_KEEP)
+        new_code = np.minimum(rank, rare).astype(np.float32)
+        for mat in (x_tr, x_te):
+            vals = mat[:, col]
+            # searchsorted needs codes sorted by VALUE (np.unique guarantees it);
+            # values absent from the train split are test-only categories and
+            # land in the rare bucket alongside the frequency tail
+            idx = np.searchsorted(codes, vals)
+            np.clip(idx, 0, len(codes) - 1, out=idx)
+            mat[:, col] = np.where(codes[idx] == vals, new_code[idx], np.float32(rare))
+        print(
+            f"airline-cat col {col}: {len(codes)} categories -> {rare + 1}",
+            flush=True,
+        )
+    save("airline-cat", x_tr, y_tr, x_te, y_te)
 
 
 def prep_covtype():
@@ -215,8 +271,12 @@ def _numerai_roles(f):
     kept_eras = era_int[keep]
     uniq = np.unique(kept_eras)
     test_eras = uniq[-NUMERAI_TEST_ERAS:]
-    embargo_eras = uniq[-(NUMERAI_TEST_ERAS + NUMERAI_EMBARGO_ERAS) : -NUMERAI_TEST_ERAS]
-    role = np.full(len(kept_eras), 1, dtype=np.int8)  # 1 train, 0 embargo (drop), 2 test
+    embargo_eras = uniq[
+        -(NUMERAI_TEST_ERAS + NUMERAI_EMBARGO_ERAS) : -NUMERAI_TEST_ERAS
+    ]
+    role = np.full(
+        len(kept_eras), 1, dtype=np.int8
+    )  # 1 train, 0 embargo (drop), 2 test
     role[np.isin(kept_eras, embargo_eras)] = 0
     role[np.isin(kept_eras, test_eras)] = 2
 
@@ -247,7 +307,9 @@ def prep_numerai():
     p = len(feat_cols)
     print(f"numerai: {n_rows} rows x {p} features, train_end={train_end}", flush=True)
 
-    x = np.memmap(os.path.join(d, "X.f32.mem"), dtype=np.float32, mode="w+", shape=(n_rows, p))
+    x = np.memmap(
+        os.path.join(d, "X.f32.mem"), dtype=np.float32, mode="w+", shape=(n_rows, p)
+    )
     y = np.empty(n_rows, dtype=np.float32)
     era_out = np.empty(n_rows, dtype=np.int32)
 
@@ -261,7 +323,9 @@ def prep_numerai():
             sel = arr[mask]
             x[row_out : row_out + len(sel)] = sel
             y[row_out : row_out + len(sel)] = tgt_all[row_abs : row_abs + nb][mask]
-            era_out[row_out : row_out + len(sel)] = era_int[row_abs : row_abs + nb][mask]
+            era_out[row_out : row_out + len(sel)] = era_int[row_abs : row_abs + nb][
+                mask
+            ]
             row_out += len(sel)
         row_abs += nb
     assert row_out == n_rows, (row_out, n_rows)
@@ -304,7 +368,9 @@ def prep_numerai_int8():
         sys.exit("numerai-int8: row filter disagrees with the existing f32 cache")
     p = len(feat_cols)
 
-    x = np.memmap(os.path.join(d, "X.i8.mem"), dtype=np.int8, mode="w+", shape=(n_rows, p))
+    x = np.memmap(
+        os.path.join(d, "X.i8.mem"), dtype=np.int8, mode="w+", shape=(n_rows, p)
+    )
     row_abs = row_out = 0
     for batch in f.iter_batches(batch_size=200_000, columns=feat_cols):
         nb = batch.num_rows
@@ -317,7 +383,9 @@ def prep_numerai_int8():
     assert row_out == n_rows, (row_out, n_rows)
     x.flush()
 
-    xf = np.memmap(os.path.join(d, "X.f32.mem"), dtype=np.float32, mode="r", shape=(n_rows, p))
+    xf = np.memmap(
+        os.path.join(d, "X.f32.mem"), dtype=np.float32, mode="r", shape=(n_rows, p)
+    )
     rng = np.random.default_rng(SEED)
     for r in rng.integers(0, n_rows, 50):
         if not (x[r].astype(np.float32) == xf[r]).all():
@@ -329,6 +397,7 @@ PREPS = {
     "higgs": prep_higgs,
     "epsilon": prep_epsilon,
     "airline": prep_airline,
+    "airline-cat": prep_airline_cat,
     "covtype": prep_covtype,
     "year": prep_year,
     "fraud": prep_fraud,
@@ -338,7 +407,9 @@ PREPS = {
 
 if __name__ == "__main__":
     names = sys.argv[1:]
-    targets = [n for n in PREPS if not n.startswith("numerai")] if names == ["all"] else names
+    targets = (
+        [n for n in PREPS if not n.startswith("numerai")] if names == ["all"] else names
+    )
     for t in targets:
         if dataset_ready(t):
             print(f"{t}: cached, skipping", flush=True)

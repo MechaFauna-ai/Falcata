@@ -20,7 +20,7 @@ import sys
 import time
 
 from common import (
-    LIBRARIES,
+    ALL_LIBRARIES,
     RUNS_JSONL,
     dataset_ready,
     library_runs_cell,
@@ -31,12 +31,24 @@ from common import (
 BENCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench.py")
 
 #: small/fast first for early signal; the huge ones last
-DATASET_ORDER = ["fraud", "covtype", "year", "higgs", "epsilon", "numerai", "airline"]
+# small/fast first for early signal; the two airline variants last
+DATASET_ORDER = [
+    "fraud",
+    "covtype",
+    "year",
+    "higgs",
+    "epsilon",
+    "numerai",
+    "airline",
+    "airline-cat",
+]
 KINDS = ["warmup", "timed1", "timed2", "timed3", "curve"]
 #: multi-hour 30k-tree runs measure ±1% across repeats and warm their own
 #: caches during construct — ONE timed run per library, no warmup, no curve
 #: (fast cells keep the full warmup+3+curve protocol)
-REGIME_KINDS = {"numerai-deep": ["timed1"]}
+# 30k-round regimes: repeats are unaffordable, so one timed run, no warmup/curve
+REGIME_KINDS = {"numerai-deep": ["timed1"], "numerai-leaf": ["timed1"]}
+REGIME_TIMEOUT_S = {"numerai-deep": 18000, "numerai-leaf": 18000}
 TIMEOUT_S = {
     "fraud": 1800,
     "covtype": 1800,
@@ -94,7 +106,7 @@ def main():
             )
             continue
         for reg in regimes_for(ds):
-            for lib in LIBRARIES:
+            for lib in ALL_LIBRARIES:
                 if not library_runs_cell(lib, ds, reg):
                     continue
                 for kind in REGIME_KINDS.get(reg, KINDS):
@@ -139,7 +151,7 @@ def main():
             p = subprocess.run(
                 cmd,
                 check=False,
-                timeout=TIMEOUT_S.get(ds, 7200),
+                timeout=REGIME_TIMEOUT_S.get(reg, TIMEOUT_S.get(ds, 7200)),
                 env={
                     **os.environ,
                     "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES", "0"),

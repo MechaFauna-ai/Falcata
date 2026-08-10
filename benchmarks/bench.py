@@ -27,7 +27,24 @@ import time
 import traceback
 
 import numpy as np
-from common import CACHE_DIR, DATASETS, REGIMES, RUNS_JSONL, SEED
+from common import CACHE_DIR, DATASETS, LIBRARIES, REGIMES, RUNS_JSONL, SEED
+
+NUM_THREADS = int(os.environ.get("FALCATA_BENCH_THREADS", "0")) or os.cpu_count()
+
+# Anonymous-memory cap: competitors that materialize full float copies
+# (catboost/xgboost peaked >100GB anonymous on numerai) die with a clean
+# MemoryError instead of inviting the host OOM killer. RLIMIT_DATA leaves
+# file-backed memmaps (the cache reads) uncounted. Override with
+# FALCATA_BENCH_MEM_GB; the default suits a 128GB host with swap. The guard's
+# job is stopping UNBOUNDED growth, not excluding known-hungry-but-finite
+# competitors, so it is set well above their measured peak.
+try:
+    import resource
+
+    _cap = int(float(os.environ.get("FALCATA_BENCH_MEM_GB", "120")) * 1024**3)
+    resource.setrlimit(resource.RLIMIT_DATA, (_cap, _cap))
+except Exception:
+    pass
 
 
 class ResourceMonitor:
@@ -123,7 +140,9 @@ def numerai_corr_np(preds, targets):
 
 
 def numerai_metrics(preds, y, era):
-    corrs = np.array([numerai_corr_np(preds[era == e], y[era == e]) for e in np.unique(era)])
+    corrs = np.array(
+        [numerai_corr_np(preds[era == e], y[era == e]) for e in np.unique(era)]
+    )
     mean, std = corrs.mean(), corrs.std(ddof=0)
     cumulative = np.cumprod(1 + corrs)
     rolling_max = np.maximum.accumulate(cumulative)
@@ -158,9 +177,15 @@ def quality_metrics(task, preds, y, extra):
     raise ValueError(task)
 
 
-def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, quantized, curve, opencl=False):
-    import lightgbm as lgb
+def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=None):
+    # falcata* variants import falcata, lightgbm* import upstream lightgbm --
+    # the two install under different venvs (both own the ``lgb`` API surface).
+    if library.startswith("falcata"):
+        import falcata as lgb
+    else:
+        import lightgbm as lgb
 
+    opencl = library == "lightgbm-ocl"
     params = {
         "objective": {
             "binary": "binary",
@@ -172,27 +197,16 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, quantized, curve, opencl=Fal
         "num_leaves": reg["leaves"],
         "max_depth": reg["depth"],
         "max_bin": 255,
-        # OpenCL backend ("gpu"): platform 0 is the only ICD on the bench box
-        # (NVIDIA); used only where the upstream CUDA build crashes
+        # upstream's legacy OpenCL backend is the working GPU path on hardware
+        # where its CUDA backend fails; max_bin stays at the suite-wide 255 for
+        # config parity (OpenCL's recommended 63 would favor it)
         "device_type": "gpu" if opencl else "cuda",
-        "num_threads": os.cpu_count(),
+        "num_threads": NUM_THREADS,
         "seed": SEED,
         "verbose": -1,
-        # plain runs never evaluate, so metric stays "None" there; curve runs
-        # need a real eval metric or eval_valid() returns no results and the
-        # curve records null quality (matching the metrics xgboost curves use)
-        "metric": {
-            "binary": "auc",
-            "multiclass": "multi_logloss",
-            "regression": "rmse",
-            "numerai": "rmse",
-        }[task]
-        if curve
-        else "None",
+        # speed cells never evaluate; curve runs set a real metric below
+        "metric": "None",
     }
-    if opencl:
-        params["gpu_platform_id"] = 0
-        params["gpu_device_id"] = 0
     if task == "multiclass":
         params["num_class"] = DATASETS["covtype"]["num_class"]
     if "colsample" in reg:
@@ -201,26 +215,52 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, quantized, curve, opencl=Fal
         params["lambda_l2"] = reg["l2"]
     if "min_data" in reg:
         params["min_data_in_leaf"] = reg["min_data"]
-    if quantized:
+    if library == "falcata-stoch":
+        params["quant_mode"] = "stochastic"
+    elif library == "falcata-stoch64":
+        # fixedpoint's bin budget with stochastic's rounding scheme: isolates
+        # the rounding scheme from the bin count in the mode comparison
+        params["quant_mode"] = "stochastic"
+        params["quant_bins"] = 64
+    elif library == "falcata-fixed":
+        params["quant_mode"] = "fixedpoint"
+    elif library == "falcata-noquant":
+        params["quant_mode"] = "none"
+    elif library == "lightgbm-quant":
         params["use_quantized_grad"] = True
 
     t0 = time.perf_counter()
-    # the Dataset must be created with the final params (incl. device_type)
-    dtrain = lgb.Dataset(x_tr, label=y_tr, params=params)
+    # the Dataset must be built with the final params (incl. device_type);
+    # non-memmap inputs are made contiguous so binning does not pay for strides
+    dtrain = lgb.Dataset(
+        x_tr if isinstance(x_tr, np.memmap) else np.ascontiguousarray(x_tr),
+        label=y_tr,
+        params=params,
+        categorical_feature=cat_cols if cat_cols else "auto",
+    )
     dtrain.construct()
     construct_s = time.perf_counter() - t0
 
     curve_pts = []
     t0 = time.perf_counter()
     if curve:
+        # without a real metric eval_valid() returns nothing and the curve
+        # records null quality
+        params["metric"] = {
+            "binary": "auc",
+            "multiclass": "multi_logloss",
+            "regression": "l2",
+            "numerai": "l2",
+        }[task]
         dvalid = lgb.Dataset(x_te, label=y_te, reference=dtrain)
         bst = lgb.Booster(params=params, train_set=dtrain)
         bst.add_valid(dvalid, "test")
         for i in range(reg["rounds"]):
             bst.update()
             if (i + 1) % reg["eval_every"] == 0 or i + 1 == reg["rounds"]:
+                t_now = time.perf_counter() - t0
                 res = bst.eval_valid()
-                curve_pts.append([i + 1, time.perf_counter() - t0, res[0][2] if res else None])
+                curve_pts.append([i + 1, t_now, res[0][2] if res else None])
     else:
         bst = lgb.train(params, dtrain, num_boost_round=reg["rounds"])
     train_s = time.perf_counter() - t0
@@ -235,7 +275,7 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, quantized, curve, opencl=Fal
     }
 
 
-def run_xgboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
+def run_xgboost(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=None):
     import xgboost as xgb
 
     params = {
@@ -250,9 +290,16 @@ def run_xgboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
         "max_bin": 255,
         "device": "cuda",
         "tree_method": "hist",
-        "nthread": os.cpu_count(),
+        "nthread": NUM_THREADS,
         "seed": SEED,
     }
+    if reg["depth"] == -1:
+        # unbounded-depth leaf-limited regime -> xgboost's leaf-wise mode
+        params.update(grow_policy="lossguide", max_leaves=reg["leaves"], max_depth=0)
+    elif library == "xgboost-lossguide":
+        # leaf-wise apples-to-apples: the same (num_leaves, max_depth) pair the
+        # LightGBM-family libraries get, instead of depth-wise max_depth alone
+        params.update(grow_policy="lossguide", max_leaves=reg["leaves"])
     if task == "multiclass":
         params["num_class"] = DATASETS["covtype"]["num_class"]
     if "colsample" in reg:
@@ -260,39 +307,65 @@ def run_xgboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
     if "l2" in reg:
         params["lambda"] = reg["l2"]  # xgboost default is already 1
     if "min_data" in reg:
-        # for squared error the hessian is 1 per row, so min_child_weight
-        # is exactly a row count -- equivalent to min_data_in_leaf
+        # hessian-weighted, but the hessian is 1 per row for squared error, so
+        # this is exactly a row count -- equivalent to min_data_in_leaf
         params["min_child_weight"] = reg["min_data"]
+    eval_metric = {
+        "binary": "auc",
+        "multiclass": "mlogloss",
+        "regression": "rmse",
+        "numerai": "rmse",
+    }[task]
 
+    ft = None
+    if cat_cols:
+        ft = ["c" if i in set(cat_cols) else "q" for i in range(x_tr.shape[1])]
     t0 = time.perf_counter()
-    dtrain = xgb.QuantileDMatrix(np.asarray(x_tr), label=y_tr, max_bin=255)
+    dtrain = xgb.QuantileDMatrix(
+        np.asarray(x_tr),
+        label=y_tr,
+        max_bin=255,
+        feature_types=ft,
+        enable_categorical=bool(cat_cols),
+    )
     construct_s = time.perf_counter() - t0
 
     curve_pts = []
     t0 = time.perf_counter()
     if curve:
-        dtest = xgb.DMatrix(np.asarray(x_te), label=y_te)
-        params["eval_metric"] = {
-            "binary": "auc",
-            "multiclass": "mlogloss",
-            "regression": "rmse",
-            "numerai": "rmse",
-        }[task]
+        dtest = xgb.DMatrix(
+            np.asarray(x_te),
+            label=y_te,
+            feature_types=ft,
+            enable_categorical=bool(cat_cols),
+        )
+        params["eval_metric"] = eval_metric
         bst = xgb.Booster(params, [dtrain])
         for i in range(reg["rounds"]):
             bst.update(dtrain, i)
             if (i + 1) % reg["eval_every"] == 0 or i + 1 == reg["rounds"]:
+                t_now = time.perf_counter() - t0
                 res = bst.eval_set([(dtest, "test")], i)
-                curve_pts.append([i + 1, time.perf_counter() - t0, float(res.split(":")[-1])])
+                curve_pts.append([i + 1, t_now, float(res.split(":")[-1])])
     else:
         bst = xgb.train(params, dtrain, num_boost_round=reg["rounds"])
     train_s = time.perf_counter() - t0
 
-    # chunked inplace_predict: a full GPU DMatrix of a wide test set can OOM
-    # the device while the trained booster is still resident
+    # chunked GPU predict: a single DMatrix over the full test set asks for
+    # more VRAM than the card has on numerai-scale data (observed 34GB ask)
+    bst.set_param({"device": "cuda"})
     step = 200_000
     preds = np.concatenate(
-        [bst.inplace_predict(np.ascontiguousarray(x_te[i : i + step])) for i in range(0, x_te.shape[0], step)]
+        [
+            bst.predict(
+                xgb.DMatrix(
+                    np.asarray(x_te[i : i + step]),
+                    feature_types=ft,
+                    enable_categorical=bool(cat_cols),
+                )
+            )
+            for i in range(0, x_te.shape[0], step)
+        ]
     )
     return {
         "construct_s": construct_s,
@@ -303,7 +376,7 @@ def run_xgboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
     }
 
 
-def run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
+def run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve, cat_cols=None):
     import catboost as cb
 
     loss = {
@@ -324,28 +397,43 @@ def run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
         "allow_writing_files": False,
         "loss_function": loss,
     }
+    if reg["depth"] == -1:
+        # leaf-limited regime -> catboost's leaf-wise mode; 16 is its hard
+        # maximum depth (it has no unlimited setting), noted in the report
+        kw.update(grow_policy="Lossguide", max_leaves=reg["leaves"], depth=16)
     rsm_dropped = False
-    min_data_dropped = "min_data" in reg  # symmetric trees don't support it
     if "colsample" in reg:
         kw["rsm"] = reg["colsample"]
     if "l2" in reg:
         kw["l2_leaf_reg"] = reg["l2"]  # catboost default is 3
+    if "min_data" in reg:
+        # ignored by the default SymmetricTree grow policy; noted in the report
+        kw["min_data_in_leaf"] = reg["min_data"]
+
+    def to_pool_matrix(x):
+        # catboost requires integer/string categorical values; the airline
+        # columns are all integral, so an int32 cast is lossless
+        return np.asarray(x).astype(np.int32) if cat_cols else np.asarray(x)
 
     t0 = time.perf_counter()
-    train_pool = cb.Pool(np.asarray(x_tr), label=y_tr)
+    train_pool = cb.Pool(to_pool_matrix(x_tr), label=y_tr, cat_features=cat_cols)
     construct_s = time.perf_counter() - t0
 
-    cls = cb.CatBoostClassifier if task in ("binary", "multiclass") else cb.CatBoostRegressor
+    cls = (
+        cb.CatBoostClassifier
+        if task in ("binary", "multiclass")
+        else cb.CatBoostRegressor
+    )
 
     def fit(kw):
         model = cls(**kw)
         t0 = time.perf_counter()
         if curve:
-            model.fit(
-                train_pool,
-                eval_set=cb.Pool(np.asarray(x_te), label=y_te),
-                metric_period=reg["eval_every"],
-            )
+            if task == "binary":
+                kw["eval_metric"] = "AUC"
+                model = cls(**kw)
+            test_pool = cb.Pool(to_pool_matrix(x_te), label=y_te, cat_features=cat_cols)
+            model.fit(train_pool, eval_set=test_pool, metric_period=reg["eval_every"])
         else:
             model.fit(train_pool)
         return model, time.perf_counter() - t0
@@ -367,15 +455,30 @@ def run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
         if vals:
             series = vals[next(iter(vals))]
             n = len(series)
-            # no per-iteration wall clock exposed; approximate linearly
-            curve_pts = [[i + 1, train_s * (i + 1) / n, series[i]] for i in range(0, n, reg["eval_every"])]
+            # metric_period=eval_every already makes catboost record ONLY every
+            # eval_every-th iteration, so `series` IS the subsampled curve --
+            # 20 entries for 500 rounds at eval_every 25. Striding by eval_every
+            # again is a second subsample: range(0, 20, 25) yields one point,
+            # which is what silently dropped catboost from the time-to-quality
+            # plot. Walk every recorded entry and map index i back to its real
+            # iteration. catboost exposes no per-iteration wall clock, so the
+            # time axis is approximated linearly (flagged in the record).
+            for i in range(n):
+                iteration = (
+                    reg["rounds"]
+                    if i == n - 1
+                    else min(i * reg["eval_every"] + 1, reg["rounds"])
+                )
+                curve_pts.append(
+                    [iteration, train_s * iteration / reg["rounds"], series[i]]
+                )
 
     if task == "binary":
-        preds = model.predict_proba(np.asarray(x_te))[:, 1]
+        preds = model.predict_proba(to_pool_matrix(x_te))[:, 1]
     elif task == "multiclass":
-        preds = model.predict_proba(np.asarray(x_te))
+        preds = model.predict_proba(to_pool_matrix(x_te))
     else:
-        preds = model.predict(np.asarray(x_te))
+        preds = model.predict(to_pool_matrix(x_te))
     return {
         "construct_s": construct_s,
         "train_s": train_s,
@@ -383,36 +486,31 @@ def run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve):
         "version": cb.__version__,
         "curve": curve_pts,
         "rsm_dropped": rsm_dropped,
-        "min_data_dropped": min_data_dropped,
         "curve_time_approx": bool(curve),
     }
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "--library",
-        required=True,
-        choices=[
-            "falcata",
-            "falcata-quant",
-            "lightgbm",
-            "lightgbm-quant",
-            "lightgbm-ocl",
-            "xgboost",
-            "catboost",
-        ],
-    )
+    ap.add_argument("--library", required=True, choices=LIBRARIES)
     ap.add_argument("--dataset", required=True, choices=list(DATASETS))
     ap.add_argument("--regime", required=True, choices=list(REGIMES))
+    ap.add_argument(
+        "--align-l2",
+        action="store_true",
+        help="set lambda_l2/lambda/l2_leaf_reg to 1.0 on every engine. Off by "
+        "default because the engines' own defaults differ (0/1/3) and the "
+        "published numbers were measured that way; on, the comparison is "
+        "stricter but will NOT match docs/performance.md.",
+    )
     ap.add_argument("--kind", required=True)  # warmup | timed1..3 | curve
     ap.add_argument("--out", default=RUNS_JSONL)
     args = ap.parse_args()
 
     task = DATASETS[args.dataset]["task"]
-    reg = REGIMES[args.regime]
-    if args.kind == "warmup" and "warmup_rounds" in reg:
-        reg = {**reg, "rounds": reg["warmup_rounds"]}
+    reg = dict(REGIMES[args.regime])
+    if args.align_l2:
+        reg["l2"] = 1.0
     curve = args.kind == "curve"
 
     rec = {
@@ -425,6 +523,7 @@ def main():
     try:
         x_tr, y_tr, x_te, y_te, extra = load_data(args.dataset)
         rec["n_train"], rec["n_features"] = int(x_tr.shape[0]), int(x_tr.shape[1])
+        cat_cols = DATASETS[args.dataset].get("cat_cols")
         with ResourceMonitor() as mon:
             t_total = time.perf_counter()
             if args.library.startswith(("falcata", "lightgbm")):
@@ -435,14 +534,26 @@ def main():
                     x_te,
                     y_te,
                     reg,
-                    quantized=args.library.endswith("-quant"),
-                    curve=curve,
-                    opencl=args.library == "lightgbm-ocl",
+                    args.library,
+                    curve,
+                    cat_cols=cat_cols,
                 )
-            elif args.library == "xgboost":
-                r = run_xgboost(task, x_tr, y_tr, x_te, y_te, reg, curve)
+            elif args.library.startswith("xgboost"):
+                r = run_xgboost(
+                    task,
+                    x_tr,
+                    y_tr,
+                    x_te,
+                    y_te,
+                    reg,
+                    args.library,
+                    curve,
+                    cat_cols=cat_cols,
+                )
             else:
-                r = run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve)
+                r = run_catboost(
+                    task, x_tr, y_tr, x_te, y_te, reg, curve, cat_cols=cat_cols
+                )
             total_s = time.perf_counter() - t_total
         preds = r.pop("preds")
         rec.update(r)
@@ -451,6 +562,11 @@ def main():
         rec["gpu_mem_peak_mb"] = mon.gpu_peak_mb
         rec["rss_peak_mb"] = mon.rss_peak_mb
         rec["metrics"] = quality_metrics(task, np.asarray(preds), y_te, extra)
+        # a run that trains but produces a garbage model is a FAILURE, not a
+        # fast run -- its timings must never enter the report tables
+        if not rec["metrics"].get("sane", True):
+            rec["status"] = "insane"
+            rec["error"] = f"quality sanity check failed: {rec['metrics']}"
     except Exception:
         rec["status"] = "failed"
         rec["error"] = traceback.format_exc()[-3000:]

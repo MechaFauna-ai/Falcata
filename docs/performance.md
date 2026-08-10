@@ -50,6 +50,29 @@ so the configuration is reproducible and not tuned to favour any library here.
 The two 30k-tree regimes are single timed runs (repeats are unaffordable at
 2–3 h per competitor cell); everything else is a median of 3.
 
+### Reproducing any number on this page
+
+Everything here comes from [`benchmarks/`](../benchmarks/README.md) in this
+repository — that harness is the only copy, and it is the one that produced
+these numbers. It builds the four engines into their own environments, caches
+every dataset as identical float32 bits, and runs each cell in an isolated
+subprocess:
+
+```bash
+export FALCATA_BENCH_ROOT=/big/disk/falcata-bench   # ~200GB when fully cached
+./benchmarks/setup_envs.sh                          # build all four engines
+$FALCATA_BENCH_ROOT/env-competitors/bin/python benchmarks/datasets.py all
+python3 benchmarks/orchestrate.py                   # resumable; --only fraud,covtype for a quick pass
+python3 docs/perf-plots/generate.py                 # re-render these plots
+```
+
+Two things to know before comparing your numbers to ours. Each engine is run
+on **its own default L2 leaf penalty** (they differ: 0, 1 and 3), following the
+gbm-bench convention rather than aligning them — `bench.py --align-l2` does
+align them and will move the quality figures. And timings need a **quiet
+machine**: host contention alone moved our medians by 18–55%, which is larger
+than several of the effects discussed below.
+
 ---
 
 ## 1. The scoreboard: Falcata vs LightGBM, XGBoost, CatBoost

@@ -3,7 +3,8 @@
 
 Sources:
 - the cross-library sweep produced by benchmarks/, one JSON record per run.
-  Point FALCATA_SWEEP_RUNS at it; default ./results/runs.jsonl
+  Found in the benchmark workspace ($FALCATA_BENCH_ROOT, see benchmarks/) --
+  override the file directly with $FALCATA_SWEEP_RUNS.
 - the leave-one-out ablation battery: benchmarks/ablation_2026-08-09.txt
 
 Run with any python that has matplotlib:
@@ -13,6 +14,7 @@ Run with any python that has matplotlib:
 import json
 import os
 import statistics
+import sys
 
 import matplotlib
 
@@ -20,8 +22,21 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RUNS = os.environ.get("FALCATA_SWEEP_RUNS", "results/runs.jsonl")
 ABLATION = os.path.join(HERE, "..", "..", "benchmarks", "ablation_2026-08-09.txt")
+
+
+def _default_runs():
+    """The sweep file the benchmark suite writes -- same workspace, one place."""
+    sys.path.insert(0, os.path.join(HERE, "..", "..", "benchmarks"))
+    try:
+        from common import RUNS_JSONL
+
+        return RUNS_JSONL
+    except ImportError:  # benchmarks/ not alongside these docs
+        return "results/runs.jsonl"
+
+
+RUNS = os.environ.get("FALCATA_SWEEP_RUNS") or _default_runs()
 
 # ---- style: one fixed color per library entity, everywhere -----------------
 SURFACE = "#fcfcfb"
@@ -167,7 +182,10 @@ DS_REGS = [
     ("airline", "deep"),
     ("numerai", "numerai-deep"),
 ]
-DS_LABEL = {("numerai", "numerai-deep"): "numerai-deep (30k)", ("numerai", "numerai"): "numerai-ex (2k)"}
+DS_LABEL = {
+    ("numerai", "numerai-deep"): "numerai-deep (30k)",
+    ("numerai", "numerai"): "numerai-ex (2k)",
+}
 
 
 # ---------------------------------------------------------------- 1. §1 scoreboard
@@ -187,7 +205,10 @@ def plot_cross_library():
                 ratios[c][dr] = (m["train_s"] / base["train_s"], note)
     import math
 
-    {c: math.exp(sum(math.log(v[0]) for v in ratios[c].values()) / len(ratios[c])) for c in comps}
+    {
+        c: math.exp(sum(math.log(v[0]) for v in ratios[c].values()) / len(ratios[c]))
+        for c in comps
+    }
     fig, ax = plt.subplots(figsize=(11.5, 3.9))
     x = range(len(DS_REGS))
     w = 0.21
@@ -199,24 +220,46 @@ def plot_cross_library():
             color=LIB_COLOR["falcata-stoch"],
             label="falcata (stochastic)" if xi == 0 else None,
         )
-        ax.text(xi - 1.5 * w, 1.0, "1", ha="center", va="bottom", fontsize=7.5, color=TEXT)
+        ax.text(
+            xi - 1.5 * w, 1.0, "1", ha="center", va="bottom", fontsize=7.5, color=TEXT
+        )
     for i, c in enumerate(comps):
         labeled = False
         for xi, dr in enumerate(DS_REGS):
             xx = xi + (i - 0.5) * w
             if dr in ratios[c]:
                 v, note = ratios[c][dr]
-                ax.bar(xx, v, width=w - 0.04, color=LIB_COLOR[c], label=None if labeled else LIB_LABEL[c])
+                ax.bar(
+                    xx,
+                    v,
+                    width=w - 0.04,
+                    color=LIB_COLOR[c],
+                    label=None if labeled else LIB_LABEL[c],
+                )
                 labeled = True
-                ax.text(xx, v, f"{v:.1f}{note}", ha="center", va="bottom", fontsize=7.5, color=TEXT)
+                ax.text(
+                    xx,
+                    v,
+                    f"{v:.1f}{note}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=7.5,
+                    color=TEXT,
+                )
             else:
-                ax.text(xx, 1.08, "✗", ha="center", va="bottom", fontsize=9, color=TEXT2)
+                ax.text(
+                    xx, 1.08, "✗", ha="center", va="bottom", fontsize=9, color=TEXT2
+                )
     ax.set_yscale("log")
     ax.set_yticks([1, 2, 5, 10, 30], ["1×", "2×", "5×", "10×", "30×"])
     ax.minorticks_off()
     ax.set_xticks(list(x), [DS_LABEL.get(dr, dr[0]) for dr in DS_REGS], fontsize=9)
     ax.set_ylabel("training time vs falcata (×, log)")
-    ax.set_title("GPU training time relative to falcata — all libraries on CUDA, deep regimes", fontsize=10.5, pad=26)
+    ax.set_title(
+        "GPU training time relative to falcata — all libraries on CUDA, deep regimes",
+        fontsize=10.5,
+        pad=26,
+    )
     fig.text(
         0.5,
         -0.04,
@@ -228,7 +271,13 @@ def plot_cross_library():
         fontsize=7.5,
         color=TEXT2,
     )
-    ax.legend(fontsize=8.5, frameon=False, ncols=4, loc="lower left", bbox_to_anchor=(0.0, 1.0))
+    ax.legend(
+        fontsize=8.5,
+        frameon=False,
+        ncols=4,
+        loc="lower left",
+        bbox_to_anchor=(0.0, 1.0),
+    )
     bar_ends(ax)
     fig.tight_layout()
     fig.savefig(os.path.join(HERE, "cross_library_deep.png"), bbox_inches="tight")
@@ -255,7 +304,9 @@ def plot_quant_modes():
     # line: a reader compares bar heights within a group far more easily than
     # bar-to-rule, and it keeps the group self-contained.
     modes = ["falcata-noquant", "falcata-fixed", "falcata-stoch"]
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 3.6), gridspec_kw={"width_ratios": [1.15, 1]})
+    fig, (ax1, ax2) = plt.subplots(
+        1, 2, figsize=(12, 3.6), gridspec_kw={"width_ratios": [1.15, 1]}
+    )
     x = range(len(drs))
     w = 0.26
     for i, lib in enumerate(modes):
@@ -299,18 +350,31 @@ def plot_quant_modes():
             met = (
                 "rmse"
                 if ds == "year"
-                else ("corr_mean" if ds == "numerai" else ("accuracy" if ds == "covtype" else "auc"))
+                else (
+                    "corr_mean"
+                    if ds == "numerai"
+                    else ("accuracy" if ds == "covtype" else "auc")
+                )
             )
             mv, bv = m["metrics"][met], b["metrics"][met]
             dq.append((bv - mv) / bv * 100 if met == "rmse" else (mv - bv) / bv * 100)
         xs_i = [xx + (i - 0.5) * w for xx in x]
-        ax2.bar(xs_i, [v if v is not None else 0 for v in dq], width=w - 0.04, color=LIB_COLOR[lib])
+        ax2.bar(
+            xs_i,
+            [v if v is not None else 0 for v in dq],
+            width=w - 0.04,
+            color=LIB_COLOR[lib],
+        )
     ax2.axhline(0, color=TEXT2, linewidth=0.8)
     ax2.set_xticks(list(x), labels, fontsize=8, rotation=20)
     ax2.set_ylabel("quality vs no-quant (%)")
     ax2.set_title("Quantized training: quality delta (+ is better)", fontsize=10)
     bar_ends(ax2)
-    fig.suptitle("quant_mode effect, measured on the cross-library sweep (deep regimes)", fontsize=10, y=1.03)
+    fig.suptitle(
+        "quant_mode effect, measured on the cross-library sweep (deep regimes)",
+        fontsize=10,
+        y=1.03,
+    )
     fig.tight_layout()
     fig.savefig(os.path.join(HERE, "quant_modes.png"), bbox_inches="tight")
     plt.close(fig)
@@ -327,19 +391,31 @@ def plot_construct():
     fig, ax = plt.subplots(figsize=(8.5, 2.7))
     ys = range(len(libs))
     for y, lib in zip(ys, libs):
-        m = MED.get((lib, "numerai", "numerai")) or MED.get((lib, "numerai", "numerai-deep"))
+        m = MED.get((lib, "numerai", "numerai")) or MED.get(
+            (lib, "numerai", "numerai-deep")
+        )
         v = m["construct_s"]
-        ax.barh(y, v, height=0.6, color=LIB_COLOR["lightgbm" if lib == "lightgbm-ocl" else lib])
+        ax.barh(
+            y,
+            v,
+            height=0.6,
+            color=LIB_COLOR["lightgbm" if lib == "lightgbm-ocl" else lib],
+        )
         note = {
             "catboost": "   (host copy only — quantization deferred into fit)",
             "lightgbm-ocl": "   (CPU binning)",
         }.get(lib, "")
         ax.text(v + 0.6, y, f"{v:.0f}s" + note, va="center", fontsize=9, color=TEXT)
-    ax.set_yticks(list(ys), [labels.get(lib, LIB_LABEL[lib]) for lib in libs], fontsize=9.5)
+    ax.set_yticks(
+        list(ys), [labels.get(lib, LIB_LABEL[lib]) for lib in libs], fontsize=9.5
+    )
     ax.invert_yaxis()
     ax.set_xlim(0, 64)
     ax.set_xlabel("time until training can start (s)")
-    ax.set_title("Ingestion of the numerai matrix (6.8M rows × 3555 features, ~96 GB float32)", fontsize=10)
+    ax.set_title(
+        "Ingestion of the numerai matrix (6.8M rows × 3555 features, ~96 GB float32)",
+        fontsize=10,
+    )
     ax.grid(axis="y", visible=False)
     fig.tight_layout()
     fig.savefig(os.path.join(HERE, "construct_time.png"), bbox_inches="tight")
@@ -359,9 +435,21 @@ def plot_hybrid_ablation():
         vals = [(short_cell(c), LOO[c].get(key, 0)) for c in cells if key in LOO[c]]
         vals.sort(key=lambda t: -t[1])
         ys = range(len(vals))
-        ax.barh(list(ys), [v for _, v in vals], height=0.62, color=LIB_COLOR["falcata-stoch"])
+        ax.barh(
+            list(ys),
+            [v for _, v in vals],
+            height=0.62,
+            color=LIB_COLOR["falcata-stoch"],
+        )
         for y, (_c, v) in zip(ys, vals):
-            ax.text(v, y, f" +{v:.0f}%" if v > 0 else f" {v:.0f}%", va="center", fontsize=7.5, color=TEXT)
+            ax.text(
+                v,
+                y,
+                f" +{v:.0f}%" if v > 0 else f" {v:.0f}%",
+                va="center",
+                fontsize=7.5,
+                color=TEXT,
+            )
         ax.set_yticks(list(ys), [c for c, _ in vals], fontsize=8)
         ax.invert_yaxis()
         ax.set_title(title, fontsize=9.5)
@@ -392,7 +480,9 @@ def plot_single_feature(key, title, fname):
         return
     fig, ax = plt.subplots(figsize=(7, 0.55 * max(len(vals), 2) + 1.1))
     ys = range(len(vals))
-    ax.barh(list(ys), [v for _, v in vals], height=0.62, color=LIB_COLOR["falcata-stoch"])
+    ax.barh(
+        list(ys), [v for _, v in vals], height=0.62, color=LIB_COLOR["falcata-stoch"]
+    )
     for y, (_c, v) in zip(ys, vals):
         ax.text(max(v, 0), y, f" {v:+.0f}%", va="center", fontsize=8.5, color=TEXT)
     ax.axvline(0, color=TEXT2, linewidth=0.8)
@@ -411,9 +501,15 @@ def plot_single_feature(key, title, fname):
 
 
 def plot_small_features():
-    plot_single_feature("graph_loop", "CUDA-graph level loop", "ablation_graph_loop.png")
-    plot_single_feature("compact_quant", "compact column view", "ablation_compact_quant.png")
-    plot_single_feature("fast_rowdata", "fast rowdata build", "ablation_fast_rowdata.png")
+    plot_single_feature(
+        "graph_loop", "CUDA-graph level loop", "ablation_graph_loop.png"
+    )
+    plot_single_feature(
+        "compact_quant", "compact column view", "ablation_compact_quant.png"
+    )
+    plot_single_feature(
+        "fast_rowdata", "fast rowdata build", "ablation_fast_rowdata.png"
+    )
 
 
 # ------------------------------------------------- 5c. §1 selective grow-then-prune
@@ -449,8 +545,16 @@ def plot_selective_prune():
             ax.scatter([x], [0.9], s=360, color=BLUE if live else DROP, zorder=2)
             if drawn:
                 for dx in (-0.7, 0.7):
-                    ax.plot([x, x + dx], [0.9, -0.2], color=GRID if live else DROP, linewidth=1.1, zorder=1)
-                    ax.scatter([x + dx], [-0.2], s=150, color=GRAY if live else DROP, zorder=2)
+                    ax.plot(
+                        [x, x + dx],
+                        [0.9, -0.2],
+                        color=GRID if live else DROP,
+                        linewidth=1.1,
+                        zorder=1,
+                    )
+                    ax.scatter(
+                        [x + dx], [-0.2], s=150, color=GRAY if live else DROP, zorder=2
+                    )
             ax.text(x, 1.35, glabel, ha="center", fontsize=8, color=TEXT2)
 
     frontier(axes[0], drawn=True)
@@ -511,7 +615,11 @@ def plot_selective_prune():
         color=TEXT2,
     )
 
-    fig.suptitle("Selective grow-then-prune: level batching when the leaf budget binds", fontsize=10.5, y=1.03)
+    fig.suptitle(
+        "Selective grow-then-prune: level batching when the leaf budget binds",
+        fontsize=10.5,
+        y=1.03,
+    )
     fig.tight_layout()
     fig.savefig(os.path.join(HERE, "hybrid_selective_prune.png"), bbox_inches="tight")
     plt.close(fig)
@@ -523,7 +631,9 @@ def plot_hybrid_diagram():
 
     BLUE = LIB_COLOR["falcata-stoch"]
     GRAY = "#b5b4ae"
-    fig, axes = plt.subplots(2, 2, figsize=(12.5, 5.6), gridspec_kw={"height_ratios": [3.2, 1]})
+    fig, axes = plt.subplots(
+        2, 2, figsize=(12.5, 5.6), gridspec_kw={"height_ratios": [3.2, 1]}
+    )
     (axt_l, axt_r), (axs_l, axs_r) = axes
     for ax in (axt_l, axt_r, axs_l, axs_r):
         ax.set_xlim(0, 10)
@@ -550,7 +660,15 @@ def plot_hybrid_diagram():
             x, y = pos[node]
             ax.scatter([x], [y], s=430, color=BLUE, zorder=2)
             ax.text(
-                x, y, order_labels[node], ha="center", va="center", fontsize=9, color="white", weight="bold", zorder=3
+                x,
+                y,
+                order_labels[node],
+                ha="center",
+                va="center",
+                fontsize=9,
+                color="white",
+                weight="bold",
+                zorder=3,
             )
         for node in leaves:
             x, y = pos[node]
@@ -571,8 +689,25 @@ def plot_hybrid_diagram():
 
     # RIGHT: hybrid -- level bands, one batch per level
     for d, ytop in ((0, 3), (1, 3 - 1.15), (2, 3 - 2.3)):
-        axt_r.add_patch(Rectangle((0.25, ytop - 0.42), 9.5, 0.84, facecolor=BLUE, alpha=0.10, edgecolor="none"))
-        axt_r.text(9.55, ytop, f"batch {d + 1}", fontsize=8.5, color=TEXT2, ha="right", va="center")
+        axt_r.add_patch(
+            Rectangle(
+                (0.25, ytop - 0.42),
+                9.5,
+                0.84,
+                facecolor=BLUE,
+                alpha=0.10,
+                edgecolor="none",
+            )
+        )
+        axt_r.text(
+            9.55,
+            ytop,
+            f"batch {d + 1}",
+            fontsize=8.5,
+            color=TEXT2,
+            ha="right",
+            va="center",
+        )
     draw_tree(axt_r, {0: "1", 1: "2", 2: "2", 3: "3", 4: "3", 5: "3", 6: "3"})
     axt_r.set_title("hybrid level-batched: whole levels at once", fontsize=11)
     axt_r.text(
@@ -590,12 +725,18 @@ def plot_hybrid_diagram():
         ax.set_ylim(0, 1)
         x = 0.2
         for w, busy in blocks:
-            ax.add_patch(Rectangle((x, 0.3), w, 0.4, facecolor=BLUE if busy else GRAY, edgecolor="none"))
+            ax.add_patch(
+                Rectangle(
+                    (x, 0.3), w, 0.4, facecolor=BLUE if busy else GRAY, edgecolor="none"
+                )
+            )
             x += w + 0.04
         ax.text(0.2, 0.92, label, fontsize=9, color=TEXT2, va="top")
 
     strip(
-        axs_l, [(0.22, True), (1.05, False)] * 7, "GPU timeline: short kernels, long CPU-latency gaps — GPU mostly idle"
+        axs_l,
+        [(0.22, True), (1.05, False)] * 7,
+        "GPU timeline: short kernels, long CPU-latency gaps — GPU mostly idle",
     )
     strip(
         axs_r,
@@ -625,7 +766,11 @@ def plot_curves():
     for ax, ds, reg in ((ax1, "higgs", "deep"), (ax2, "epsilon", "deep")):
         ymin = 1.0
         for (lib, d, r), curve in CURVES.items():
-            if d != ds or r != reg or lib in ("lightgbm-quant", "lightgbm-ocl", "xgboost-lossguide"):
+            if (
+                d != ds
+                or r != reg
+                or lib in ("lightgbm-quant", "lightgbm-ocl", "xgboost-lossguide")
+            ):
                 continue
             if len(curve) < 2:
                 missing.append(LIB_LABEL.get(lib, lib))
@@ -636,7 +781,13 @@ def plot_curves():
             # quality dip must stay in frame)
             ymin = min(ymin, ys[len(ys) // 4], ys[-1] - 0.0008)
             label = LIB_LABEL[lib] + ("*" if lib == "lightgbm" else "")
-            ax.plot(xs, ys, color=CURVE_COLOR.get(lib, LIB_COLOR[lib]), linewidth=2, label=label)
+            ax.plot(
+                xs,
+                ys,
+                color=CURVE_COLOR.get(lib, LIB_COLOR[lib]),
+                linewidth=2,
+                label=label,
+            )
             if lib == "lightgbm":
                 # Mark the curve itself, not just the legend entry: the endpoint
                 # is the thing that looks like a win, so the caveat belongs
@@ -661,9 +812,17 @@ def plot_curves():
         handles, labels = ax.get_legend_handles_labels()
         order = sorted(range(len(labels)), key=lambda i: labels[i])
         ax.legend(
-            [handles[i] for i in order], [labels[i] for i in order], fontsize=7.5, frameon=False, loc="upper left"
+            [handles[i] for i in order],
+            [labels[i] for i in order],
+            fontsize=7.5,
+            frameon=False,
+            loc="upper left",
         )
-    fig.suptitle("Time-to-quality (eval every 25 iters; cross-library sweep)", fontsize=10, y=1.04)
+    fig.suptitle(
+        "Time-to-quality (eval every 25 iters; cross-library sweep)",
+        fontsize=10,
+        y=1.04,
+    )
     fig.text(
         0.5,
         -0.02,
@@ -714,9 +873,10 @@ def plot_model_size():
     ax.set_yticks(list(ys), [r[0] for r in rows], fontsize=9)
     ax.invert_yaxis()
     ax.set_xlim(0, 660)
+    # two lines: as one line this runs past the figure edge and gets clipped
     ax.set_xlabel(
-        "model file size (MB) — 45k-tree / 3555-feature numerai "
-        "production model, predictions bit-identical unless noted"
+        "model file size (MB)\n45k-tree / 3555-feature numerai production "
+        "model, predictions bit-identical unless noted"
     )
     ax.set_title("FALB binary model format vs the text format", fontsize=10)
     ax.grid(axis="y", visible=False)
@@ -728,7 +888,12 @@ def plot_model_size():
 # ---------------------------------------------------------------- 7. memory
 def plot_memory():
     libs = ["falcata-stoch", "lightgbm", "xgboost", "catboost"]
-    drs = [("higgs", "deep"), ("epsilon", "deep"), ("airline", "deep"), ("numerai", "numerai-deep")]
+    drs = [
+        ("higgs", "deep"),
+        ("epsilon", "deep"),
+        ("airline", "deep"),
+        ("numerai", "numerai-deep"),
+    ]
     fig, ax = plt.subplots(figsize=(9, 3.5))
     x = range(len(drs))
     w = 0.2
@@ -742,18 +907,42 @@ def plot_memory():
                 note, color = "*", LIB_COLOR["lightgbm-ocl"]
             xx = xi + (i - 1.5) * w
             if m is None:
-                ax.text(xx, 0.4, "✗ OOM", rotation=90, ha="center", va="bottom", fontsize=8, color=TEXT2)
+                ax.text(
+                    xx,
+                    0.4,
+                    "✗ OOM",
+                    rotation=90,
+                    ha="center",
+                    va="bottom",
+                    fontsize=8,
+                    color=TEXT2,
+                )
                 continue
             v = m["gpu_mb"] / 1024
-            ax.bar(xx, v, width=w - 0.03, color=color, label=LIB_LABEL[lib] if xi == 0 else None)
+            ax.bar(
+                xx,
+                v,
+                width=w - 0.03,
+                color=color,
+                label=LIB_LABEL[lib] if xi == 0 else None,
+            )
             if note:
                 ax.text(xx, v, note, ha="center", va="bottom", fontsize=9, color=TEXT)
     ax.set_xticks(list(x), [DS_LABEL.get(dr, dr[0]) for dr in drs], fontsize=9)
     ax.set_ylabel("GPU peak (GB)")
-    ax.set_title("Peak GPU memory, deep regimes  ·  * = upstream's OpenCL backend (its CUDA build OOMs)", fontsize=10)
+    ax.set_title(
+        "Peak GPU memory, deep regimes  ·  * = upstream's OpenCL backend (its CUDA build OOMs)",
+        fontsize=10,
+    )
     # Below the axes, not floating inside them: the tallest bars (catboost on
     # airline/numerai) ran straight through a legend placed automatically.
-    ax.legend(fontsize=8, frameon=False, ncols=4, loc="upper center", bbox_to_anchor=(0.5, -0.16))
+    ax.legend(
+        fontsize=8,
+        frameon=False,
+        ncols=4,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.16),
+    )
     bar_ends(ax)
     fig.tight_layout()
     fig.savefig(os.path.join(HERE, "gpu_memory.png"), bbox_inches="tight")

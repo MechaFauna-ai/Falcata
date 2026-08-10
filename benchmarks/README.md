@@ -17,7 +17,15 @@ The classic GBDT speed suite (NVIDIA gbm-bench lineage) plus Numerai:
 | higgs (UCI) | 11M × 28 | binary | canonical last 500K |
 | epsilon (LIBSVM) | 500K × 2000 | binary | official train/test |
 | airline (Ikonomovska) | 115M × 13 | binary (ArrDelay>0) | random 20%, seed 42 |
-| numerai (v5 "all data", optional) | ~6.7M × ~2.7K | regression + era metrics | last 200 eras, 10-era embargo |
+| airline-cat | as airline | binary | as airline |
+| numerai (v5 "all data", optional) | 6.8M × 3,555 | regression + era metrics | last 200 eras, 10-era embargo |
+
+`airline-cat` is the same data as `airline`, but `UniqueCarrier`/`Origin`/`Dest`
+are declared **categorical** instead of being read as ordered integers, so the
+engines take their categorical split paths. Origin/Dest carry ~300 airports
+each, past the suite-wide 255-bin budget, so they are recoded by descending
+train-set frequency with the tail beyond the top 254 collapsed into one rare
+bucket (ranking uses the train split only).
 
 All datasets are cached as float32 arrays so every library trains from
 identical bits. Numerai requires the v5 training parquet (get it with
@@ -27,28 +35,54 @@ per-era mean/std/Sharpe and max drawdown.
 
 ## Run matrix
 
-Six library configs — `falcata`, `falcata-quant` (`use_quantized_grad`),
-`lightgbm`, `lightgbm-quant`, `xgboost`, `catboost` — across two aligned
-hyperparameter regimes (gbm-bench convention: 500 rounds, lr 0.1, 255 bins,
-L2 leaf regularization 1.0):
+Ten library configs:
+
+| config | what it is |
+|---|---|
+| `falcata-stoch` | Falcata, `quant_mode=stochastic` (the default) |
+| `falcata-fixed` | Falcata, `quant_mode=fixedpoint` |
+| `falcata-noquant` | Falcata, `quant_mode=none` (full-precision gradients) |
+| `falcata-stoch64` | stochastic rounding at fixedpoint's 64-bin budget; isolates the rounding scheme from the bin count (`numerai-deep` only) |
+| `lightgbm` | upstream LightGBM, CUDA backend |
+| `lightgbm-quant` | upstream + `use_quantized_grad` |
+| `lightgbm-ocl` | upstream, legacy OpenCL backend — the reference wherever its CUDA backend crashes |
+| `xgboost` | `device=cuda`, `tree_method=hist`, depth-wise |
+| `xgboost-lossguide` | same, `grow_policy=lossguide` with the LightGBM family's `(num_leaves, max_depth)` pair — the leaf-wise apples-to-apples cell |
+| `catboost` | `task_type=GPU`, symmetric trees |
+
+across the hyperparameter regimes (gbm-bench convention: 500 rounds, lr 0.1,
+255 bins):
 
 - **shallow**: depth 6 / 63 leaves
 - **deep**: depth 10 / 1023 leaves
+- **numerai**: official example-model config (2000 trees, lr 0.01, depth 5, 32 leaves, colsample 0.1)
+- **numerai-deep**: official v5 benchmark-model deep params (30k trees, lr 0.001, depth 10, 1024 leaves, colsample 0.1, min_data 10k)
+- **numerai-leaf**: as numerai-deep but depth-unbounded, so the 1024-leaf budget is the binding constraint (min_data 1000)
 
-L2 is aligned explicitly because engine defaults differ (XGBoost `lambda=1`,
-LightGBM `lambda_l2=0`, CatBoost `l2_leaf_reg=3`) and at lr 0.1 an
-unregularized leaf-wise model degenerates on imbalanced data (fraud drops to
-~0.5 AUC), which would measure default choices rather than the engines.
+Structural caveat: the LightGBM family grows leaf-wise (`num_leaves` +
+`max_depth` cap), XGBoost depth-wise (`max_depth`), CatBoost symmetric
+(`depth`) — the regimes align the tree budget, not the tree shape.
 
-plus the official Numerai example-model config (2000 trees, lr 0.01, depth 5,
-32 leaves, colsample 0.1). Structural caveat: LightGBM-family grows leaf-wise
-(`num_leaves` + `max_depth` cap), XGBoost depth-wise (`max_depth`), CatBoost
-symmetric (`depth`) — the regimes align the tree budget, not the tree shape.
+**On L2 regularization.** The engines ship different default L2 leaf penalties
+(XGBoost `lambda=1`, LightGBM `lambda_l2=0`, CatBoost `l2_leaf_reg=3`) and the
+gbm-bench convention does not align them, so every published number is measured
+on each engine's own default. `bench.py --align-l2` sets all three to 1.0 for
+the stricter comparison; results from it will **not** match `docs/performance.md`.
 
 Each cell runs 1 discarded warmup + 3 timed repeats (median reported) + 1
 `curve` run that evaluates the held-out set periodically for time-to-quality
-plots. Every run is an isolated subprocess; peak GPU memory and host RSS are
-polled throughout. See the docstring in `bench.py` for exact timing semantics.
+plots. The two 30k-round Numerai regimes run a single timed cell instead —
+repeats there cost days. Every run is an isolated subprocess; peak GPU memory
+and host RSS are polled throughout. See the docstring in `bench.py` for exact
+timing semantics.
+
+A run whose held-out quality fails a sanity floor is recorded with status
+`insane` rather than `ok`, so a model that trained fast by learning nothing can
+never enter the speed tables.
+
+**Timings are only as quiet as the machine.** Contention on the host moved
+medians by 18–55% in our own measurements, which is larger than most of the
+effects being measured. Run the suite on an otherwise idle box.
 
 ## Reproducing
 
@@ -68,8 +102,24 @@ python3 benchmarks/orchestrate.py
 ./benchmarks/workspace/env-competitors/bin/python benchmarks/report.py
 ```
 
+To reproduce one cell rather than the matrix, call `bench.py` directly with the
+venv that owns the library:
+
+```bash
+export FALCATA_BENCH_ROOT=/big/disk/falcata-bench
+$FALCATA_BENCH_ROOT/env-falcata/bin/python benchmarks/bench.py \
+    --library falcata-stoch --dataset covtype --regime deep --kind timed1
+$FALCATA_BENCH_ROOT/env-competitors/bin/python benchmarks/bench.py \
+    --library xgboost --dataset covtype --regime deep --kind timed1
+```
+
+Each call appends one JSON record to `<workspace>/results/runs.jsonl` and
+prints it. `--regime smoke` (10 trees) is the fastest way to confirm all four
+engines really are on the GPU before committing to a long run.
+
 Everything lands under `benchmarks/workspace/` (override with
-`FALCATA_BENCH_ROOT`). `FALCATA_CUDA_ARCHS` overrides
+`FALCATA_BENCH_ROOT`; point it at a big disk — the full cache is ~200GB).
+`FALCATA_CUDA_ARCHS` overrides
 `CMAKE_CUDA_ARCHITECTURES` (default `native`; e.g. `120-real;120-virtual` for
 Blackwell). Expect ~25GB of downloads and, with all datasets, a day-plus of
 GPU time for the full matrix; `--only fraud,covtype,year` gives a quick
