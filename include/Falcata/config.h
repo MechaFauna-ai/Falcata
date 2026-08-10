@@ -535,6 +535,7 @@ struct Config {
   // descl2 = ``basic``, the most basic monotone constraints method. It does not slow down the training speed at all, but over-constrains the predictions
   // descl2 = ``intermediate``, a `more advanced method <https://hal.science/hal-02862802/document>`__, which may slow down the training speed very slightly. However, this method is much less constraining than the basic method and should significantly improve the results
   // descl2 = ``advanced``, an `even more advanced method <https://hal.science/hal-02862802/document>`__, which may slow down the training speed. However, this method is even less constraining than the intermediate method and should again significantly improve the results
+  // desc = **CUDA**: only ``basic`` is supported with ``device_type=cuda``; the other two raise an error
   std::string monotone_constraints_method = "basic";
 
   // alias = monotone_splits_penalty, ms_penalty, mc_penalty
@@ -542,6 +543,7 @@ struct Config {
   // desc = used only if ``monotone_constraints`` is set
   // desc = `monotone penalty <https://hal.science/hal-02862802/document>`__: a penalization parameter X forbids any monotone splits on the first X (rounded down) level(s) of the tree. The penalty applied to monotone splits on a given depth is a continuous, increasing function the penalization parameter
   // desc = if ``0.0`` (the default), no penalization is applied
+  // desc = **CUDA**: not supported with ``device_type=cuda``; a non-zero value raises an error
   double monotone_penalty = 0.0;
 
   // type = multi-double
@@ -577,6 +579,7 @@ struct Config {
   // default = 0,0,...,0
   // desc = cost-effective gradient boosting penalty for using a feature
   // desc = applied per data point
+  // desc = **CUDA**: not supported with ``device_type=cuda``; use ``cegb_penalty_feature_coupled`` or ``cegb_penalty_split`` instead
   std::vector<double> cegb_penalty_feature_lazy;
 
   // type = multi-double
@@ -728,6 +731,7 @@ struct Config {
 
   // alias = is_sparse, enable_sparse, sparse
   // desc = used to enable/disable sparse optimization
+  // desc = **CUDA**: sparse features are not supported with ``device_type=cuda``; this is forced to ``false`` there
   bool is_enable_sparse = true;
 
   // alias = is_enable_bundle, bundle

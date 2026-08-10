@@ -269,14 +269,6 @@ void CUDAColumnData::SetCompactPackedColumnView(const std::vector<int>& column_t
   packed_column_view_active_ = true;
 }
 
-void CUDAColumnData::RestoreOriginalColumnView() {
-  // Restore cuda_data_by_column_ to point at the original per-column
-  // allocations owned by data_by_column_. No-op when init_skipped_per_column_alloc_
-  // was set (the original "view" is just nullptrs, which is fine as long as
-  // no kernel reads it before another SetCompactColumnView).
-  cuda_data_by_column_.InitFromHostVector(GetDataByColumnPointers(data_by_column_));
-}
-
 void CUDAColumnData::ResizeWhenCopySubrow(const data_size_t num_used_indices) {
   const size_t num_used_indices_size = static_cast<size_t>(num_used_indices);
   cuda_used_indices_.Resize(num_used_indices_size);

@@ -54,6 +54,10 @@ The most important parameters which new users should take a look at are located 
 and the top of `Learning Control Parameters <./Parameters.rst#learning-control-parameters>`__
 sections of the full detailed list of `Falcata's parameters <./Parameters.rst>`__.
 
+The one to set first is ``device_type=cuda``. It defaults to ``cpu`` because
+Falcata keeps LightGBM's parameter names and defaults, but the CUDA learner is
+what this project exists for; without it you get the inherited CPU code path.
+
 Run Falcata
 ------------
 

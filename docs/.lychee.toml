@@ -30,9 +30,12 @@ exclude = [
     '^https://packages\.ubuntu\.com/search.*',
     '^https://stackoverflow\.com/.*',
     '^https://.*\.stackexchange\.com/.*',
+    # bot-blocks the checker (403) regardless of link health
+    '^https://medium\.com/.*',
+    # rate-limits the checker to 429 when a run has more than a couple of links
+    '^https://en\.wikipedia\.org/.*',
 ]
 exclude_path = [
-    "(^|/)docs/.*\\.rst",
     # vendored third-party docs (fmt, eigen, nanoarrow ...): not ours to fix,
     # and only reachable since the docs build began checking out submodules
     "(^|/)external_libs/",

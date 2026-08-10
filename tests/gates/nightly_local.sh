@@ -9,14 +9,14 @@
 #
 # Install (runs 03:00 daily):
 #   crontab -l 2>/dev/null | grep -v nightly_local.sh > /tmp/ct
-#   echo "0 3 * * * $HOME/Documents/lightgbm-fork/tests/gates/nightly_local.sh" >> /tmp/ct
+#   echo "0 3 * * * $HOME/Falcata/tests/gates/nightly_local.sh" >> /tmp/ct
 #   crontab /tmp/ct
 #
 # Logs: ~/.cache/falcata-gates/nightly-YYYY-MM-DD.log (30 kept)
 # Exit: 0 all gates passed, non-zero otherwise (the log names the failed step).
 set -u -o pipefail
 
-REPO="${FALCATA_REPO:-$HOME/Documents/lightgbm-fork}"
+REPO="${FALCATA_REPO:-$HOME/Falcata}"
 LOGDIR="$HOME/.cache/falcata-gates"
 LOG="$LOGDIR/nightly-$(date +%F).log"
 VENV="$REPO/.gates-venv/bin/python"
@@ -58,6 +58,8 @@ step "build CUDA wheel"            -     bash tests/gates/ci_build.sh
 step "lattice (FALCATA_VERIFY=1)"  12000 env FALCATA_VERIFY=1 "$VENV" tests/gates/lattice.py --check
 step "selective equivalence"       -     "$VENV" tests/gates/selective_equivalence.py --seeds 32 --rounds 30
 step "fuzz (45 min, corpus first)" -     "$VENV" tests/gates/fuzz.py --minutes 45
+step "FALB python plumbing"        -     "$VENV" tests/gates/falb_python.py
+step "FALB binary roundtrip"       -     env FALCATA_LIB="$REPO/lib_falcata.so" "$VENV" tests/gates/falb_roundtrip.py
 step "fixedpoint tree-emission"    20000 "$VENV" tests/gates/canonical.py numerai-treecount
 step "canonical md5 locks"         -     "$VENV" tests/gates/canonical.py all
 step "bench tier"                  12000 "$VENV" tests/gates/bench_tier.py --out tests/gates/bench_results.json

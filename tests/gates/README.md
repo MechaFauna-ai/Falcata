@@ -31,7 +31,7 @@ diff review shows exactly which cells moved and is itself the review artifact.
 ## Nightly (`nightly_local.sh`, cron)
 
     crontab -l 2>/dev/null | grep -v nightly_local.sh > /tmp/ct
-    echo "0 3 * * * $HOME/Documents/lightgbm-fork/tests/gates/nightly_local.sh" >> /tmp/ct
+    echo "0 3 * * * $HOME/Falcata/tests/gates/nightly_local.sh" >> /tmp/ct
     crontab /tmp/ct
 
 Waits for a free GPU, fast-forwards to `origin/master` (skips entirely if the

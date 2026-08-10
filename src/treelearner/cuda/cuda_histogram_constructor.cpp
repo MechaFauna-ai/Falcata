@@ -236,7 +236,6 @@ void CUDAHistogramConstructor::SetFeatureUsedBytree(const std::vector<int8_t>& i
   }
 }
 
-void LaunchDiagRead(cudaStream_t stream, const uint8_t* src, uint8_t* dst, int n);
 void LaunchTransposeColMajorToRowMajor(
     cudaStream_t stream,
     const uint8_t* staging,

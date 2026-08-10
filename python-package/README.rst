@@ -49,22 +49,38 @@ metric floors and a perf gate.
 Install
 -------
 
-Falcata builds from source against your CUDA toolkit:
+.. code:: sh
+
+    pip install falcata
+
+That builds the CUDA library from source, so you need the CUDA toolkit
+(>= 11.0), CMake >= 3.28, a C++17 compiler and Python >= 3.10. Nothing else:
+the source distribution vendors every dependency, so no ``git clone`` and no
+submodule dance.
+
+The build targets every GPU architecture your toolkit supports, plus PTX for
+the newest, which is why it takes a while. Building for just your own card is
+far faster:
 
 .. code:: sh
 
-    git clone https://github.com/MechaFauna-ai/Falcata.git
-    cd Falcata
-    git submodule update --init --recursive
-    # Adjust CMAKE_CUDA_ARCHITECTURES for your GPU. RTX 5090 = 120, RTX 4090 = 89.
-    CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120-real;120-virtual" \
-      sh build-python.sh install --cuda
+    # RTX 5090 = 120, RTX 4090 = 89, A100 = 80, T4 = 75
+    pip install falcata --config-settings=cmake.define.CMAKE_CUDA_ARCHITECTURES=89
 
-Requires Python >= 3.10, CMake >= 3.28, a CUDA toolkit >= 11.0, and an NVIDIA
-GPU. The default build is single-GPU with no NCCL dependency; for multi-GPU
-training add ``-DUSE_NCCL=ON -DBUILD_WITH_SHARED_NCCL=ON`` to ``CMAKE_ARGS``
-and install NCCL with its headers (``libnccl-dev`` on Debian/Ubuntu). Building
-without ``--cuda`` produces a CPU-only library.
+There is a CPU build, though it is not what this library is for:
+
+.. code:: sh
+
+    pip install falcata --config-settings=cmake.define.USE_CUDA=OFF
+
+Multi-GPU training additionally needs NCCL *and its headers*
+(``libnccl-dev`` on Debian/Ubuntu):
+
+.. code:: sh
+
+    pip install falcata \
+      --config-settings=cmake.define.USE_NCCL=ON \
+      --config-settings=cmake.define.BUILD_WITH_SHARED_NCCL=ON
 
 Installing the wheel also installs a ``lightgbm`` import shim. If the target
 environment already has stock LightGBM, uninstall it first or use a fresh

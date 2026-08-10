@@ -10,13 +10,13 @@ directions — nothing is deleted.
 > variables. Those were replaced by typed config params (`quant_mode`,
 > `quant_bins`, `cuda_precision`) and `cuda_plan` keys; the names are kept
 > here as written at the time. See `include/Falcata/falcata_plan.h`.
-Ideas from the hybrid-growth + benchmark session (2026-07-13/14, PRs #32/#33), roughly
-priority-ordered within groups. Measurements refer to an RTX 5090, per-tree/per-100-tree
-figures from the profiles in the PR discussions.
+Roughly priority-ordered within groups. Measurements refer to an RTX 5090.
 
 ## Performance
 
-- **Multi-target training.** Two variants: (1)
+- **Multi-target training.** Design spec:
+  [docs/design/multi-target-training.md](docs/design/multi-target-training.md).
+  Two variants: (1)
   round-robin one-tree-per-target (multiclass machinery minus softmax) -- identical
   models to sequential training, but only ~1.1x/target now that construct is cheap;
   API-convenience tier. (2) Vector-leaf trees (the differentiator: nobody ships
@@ -50,7 +50,6 @@ figures from the profiles in the PR discussions.
   - Interaction constraints / select_features_by_node (per-node masks via
     the bin-used-mask machinery), forced splits, linear trees: fallback-
     covered, no measured demand; lift on request.
-## Inference
 
 ## Serialization
 
@@ -261,8 +260,9 @@ docs/design/nccl-level-allreduce-plan.md.
   against upstream CUDA must either drop max_depth or note that upstream
   does not enforce it.
 
-## Upstream (MechaFauna-ai/Falcata) bugs found (documented here for reference;
-## we do not contribute upstream)
+## Upstream LightGBM bugs found
+
+Documented here for reference; we do not contribute them upstream.
 
 - Packed 16+16-bit quantized histogram overflow (fixed here in 3afe7c62): with
   num_grad_quant_bins >= 16, blocks accumulating > 65534/bins rows into one shared

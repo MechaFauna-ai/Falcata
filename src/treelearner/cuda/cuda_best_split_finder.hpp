@@ -156,7 +156,7 @@ class CUDABestSplitFinder {
    *  configuration (only the template combination the benchmarks exercise:
    *  no extra_trees / L1 / path smoothing, shared-memory histograms, no
    *  per-node feature selection; categorical tasks run the shared
-   *  categorical body per block since 2026-08-02). Wide shapes
+   *  categorical body per block). Wide shapes
    *  (num_tasks > one sync block) use the multi-block batched sync mirroring
    *  the per-pair two-stage reduction; cuda_plan=auto,batch_wide:off disables that. */
   bool SupportsBatchedLevel() const {
@@ -312,7 +312,7 @@ class CUDABestSplitFinder {
    *  slabs, and the previous level's apply (bitset arena + tree recording,
    *  on other streams) reads those same slabs. Without this edge the
    *  speculative (one-sync) flow overwrites thresholds mid-consumption
-   *  (2026-08-04 root cause of the max_cat_threshold corruption). */
+   *  (root cause of the max_cat_threshold corruption). */
   void WaitOnCatSlabConsumers(cudaEvent_t a, cudaEvent_t b) {
     if (a != nullptr) {
       CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], a, 0));

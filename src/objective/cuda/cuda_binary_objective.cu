@@ -144,7 +144,7 @@ __global__ void GetGradientsKernel_BinaryLogloss(const double* cuda_scores, cons
       if (USE_LABEL_WEIGHT) {
         // label_weights is indexed {0,1} like the CPU's label_weights_[is_pos];
         // indexing it with label {-1,+1} read one double BEFORE the allocation
-        // for every negative sample (found 2026-08-04: is_unbalance /
+        // for every negative sample (is_unbalance /
         // scale_pos_weight on device=cuda trained garbage, AUC 0.500 on fraud)
         const double label_weight = cuda_label_weights[is_pos];
         cuda_out_gradients[data_index] = static_cast<score_t>(response * label_weight);

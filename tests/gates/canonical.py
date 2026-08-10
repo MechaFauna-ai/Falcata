@@ -9,15 +9,9 @@ Locks are md5[:12] over the TREE section of model_to_string() only (up to the
 "parameters:" block): the parameters dump moves whenever a config param is
 added/renamed -- it did in the 2026-07 planner refactor with zero behavior
 change (all 700 covtype trees bit-identical, full-string md5 moved) -- so tree
-bytes are the behavior signature. Historical full-string locks: covtype
-1bfd2d7aed5f / classic 26852449fbac (pre-refactor builds only).
+bytes are the behavior signature.
 
-Expected values (post-#13 tie-break baseline; tree-only since 2026-07-28):
-  covtype 1023/10 quant hybrid      -> 20cb576f6758   (quality 0.91800)
-  covtype 1023/10 quant hybrid:off  -> b4ef7b24f170   (also proves env
-                                        GROWTH=0 == cuda_plan hybrid:off)
-  numerai int8 quant example-shape  -> 6a6837e72e7d
-
+The LOCKS dict below is the single source of truth for the expected values.
 If a value differs: FIRST distrust the build/invocation, not the lock --
 rebuild from the exact commit and rerun this exact script. Only re-baseline
 with an understood, approved behavior change. A lock of None means
@@ -37,7 +31,7 @@ import sys
 import time
 from pathlib import Path
 
-CACHE = Path(os.environ.get("FALCATA_BENCH_CACHE", "/home/felixjk/Documents/exaboost-bench/data/cache"))
+CACHE = Path(os.environ.get("FALCATA_BENCH_CACHE", "bench-cache"))
 
 LOCKS = {
     # re-baselined 2026-07-31 (2nd): stochastic rounding is Philox-generated
@@ -123,12 +117,7 @@ def run_numerai():
     return "numerai", md5, f"train={t:.2f}s"
 
 
-NUMERAI_V53_DATASET = Path(
-    os.environ.get(
-        "FALCATA_NUMERAI_V53",
-        "/home/felixjk/Documents/numerai/data/1224_int8nan.dataset",
-    )
-)
+NUMERAI_V53_DATASET = Path(os.environ.get("FALCATA_NUMERAI_V53", "numerai-v53.dataset"))
 
 
 def run_numerai_treecount():

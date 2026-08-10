@@ -111,7 +111,6 @@ class CUDAColumnData {
 
   // Restore data_by_column_ to point to the original per-column allocations.
   // Needed when feature_fraction = 1.0 / no compaction (rare path).
-  void RestoreOriginalColumnView();
 
   // ===== Per-tree packed compact column view (4-bit) =====
   // Register the histogram constructor's 4-bit packed compact matrix as this

@@ -489,7 +489,7 @@ Example
 Ray
 ^^^
 
-`Ray`_ is a Python-based framework for distributed computing. Ray provides Falcata support through the Ray Train API with ``LightGBMTrainer`` and the `lightgbm_ray`_ project maintained within the official Ray GitHub organization.
+`Ray`_ is a Python-based framework for distributed computing. Ray provides LightGBM support through the Ray Train API with ``LightGBMTrainer`` and the `lightgbm_ray`_ project maintained within the official Ray GitHub organization. These target upstream LightGBM; Falcata ships an ``import lightgbm`` alias, so they may work unmodified, but that combination is not tested here.
 
 For the Ray Train API, see `the Ray documentation`_ for usage examples.
 
@@ -502,7 +502,7 @@ For the lightgbm_ray project, see `the lightgbm_ray documentation`_ for usage ex
 Mars
 ^^^^
 
-`Mars`_ is a tensor-based framework for large-scale data computation. Falcata integration, maintained within the Mars GitHub repository, can be used to perform distributed Falcata training using ``pymars``.
+`Mars`_ is a tensor-based framework for large-scale data computation. The LightGBM integration, maintained within the Mars GitHub repository, can be used to perform distributed training using ``pymars``. It targets upstream LightGBM and is not tested against Falcata.
 
 See `the mars documentation`_ for usage examples.
 
@@ -514,7 +514,7 @@ See `the mars documentation`_ for usage examples.
 
 .. _SynapseML: https://aka.ms/spark
 
-.. _this SynapseML example: https://github.com/microsoft/SynapseML/tree/master/docs/Explore%20Algorithms/Falcata
+.. _this SynapseML example: https://github.com/microsoft/SynapseML/tree/master/docs/Explore%20Algorithms/LightGBM
 
 .. _the Dask Array documentation: https://docs.dask.org/en/latest/array.html
 
@@ -530,7 +530,7 @@ See `the mars documentation`_ for usage examples.
 
 .. _Kubeflow XGBoost Operator: https://github.com/kubeflow/xgboost-operator
 
-.. _this example: https://github.com/kubeflow/xgboost-operator/tree/master/config/samples/falcata-dist
+.. _this example: https://github.com/kubeflow/xgboost-operator/tree/master/config/samples/lightgbm-dist
 
 .. _here: https://www.youtube.com/watch?v=iqzXhp5TxUY
 
@@ -540,10 +540,10 @@ See `the mars documentation`_ for usage examples.
 
 .. _Ray: https://www.ray.io/
 
-.. _the lightgbm_ray documentation: https://docs.ray.io/en/latest/tune/api_docs/integration.html#falcata-tune-integration-falcata
+.. _the lightgbm_ray documentation: https://docs.ray.io/en/latest/tune/api_docs/integration.html#lightgbm-tune-integration-lightgbm
 
-.. _the Ray documentation: https://docs.ray.io/en/latest/train/api/api.html#falcata
+.. _the Ray documentation: https://docs.ray.io/en/latest/train/api/api.html#lightgbm
 
 .. _Mars: https://mars-project.readthedocs.io/en/latest/
 
-.. _the mars documentation: https://mars-project.readthedocs.io/en/latest/user_guide/learn/falcata.html
+.. _the mars documentation: https://mars-project.readthedocs.io/en/latest/user_guide/learn/lightgbm.html

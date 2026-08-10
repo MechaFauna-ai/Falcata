@@ -32,10 +32,6 @@ __device__ int8_t GetMissingTypeCUDA(int8_t decision_type) {
   return (decision_type >> 2) & 3;
 }
 
-__device__ bool IsZeroCUDA(double fval) {
-  return (fval >= -kZeroThreshold && fval <= kZeroThreshold);
-}
-
 template<typename T>
 __device__ bool FindInBitsetCUDA(const uint32_t* bits, int n, T pos) {
   int i1 = pos / 32;

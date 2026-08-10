@@ -1,6 +1,6 @@
 # Design Spec: Multi-Target Training in the Falcata CUDA Learner
 
-Status: **design only** (no code changes yet). Author: design agent.
+Status: **design only** (no code changes yet).
 Scope: single-GPU CUDA learner (`CUDASingleGPUTreeLearner`). Two variants are
 specified; **variant 2 (vector-leaf) is the differentiator** and gets the depth.
 

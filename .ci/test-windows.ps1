@@ -78,7 +78,7 @@ if ($env:TASK -eq "swig") {
     }
     cmake --build build --target ALL_BUILD --config Release ; Assert-Output $?
     if ($env:PRODUCES_ARTIFACTS -eq "true") {
-        cp ./build/falcatalib.jar $env:BUILD_ARTIFACTSTAGINGDIRECTORY/lightgbmlib_win.jar ; Assert-Output $?
+        cp ./build/falcatalib.jar $env:BUILD_ARTIFACTSTAGINGDIRECTORY/falcatalib_win.jar ; Assert-Output $?
     }
     exit 0
 }

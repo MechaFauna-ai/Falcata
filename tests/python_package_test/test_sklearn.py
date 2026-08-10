@@ -1753,7 +1753,7 @@ def test_feature_names_in_and_predict_warning(
     """Test feature_names_in_ behavior and predict()-time feature name warnings.
 
     Should cover all combinations of fit X type, feature_name argument, and predict X type.
-    Regression test for https://github.com/lightgbm-org/Falcata/issues/6798.
+    Regression test for https://github.com/lightgbm-org/LightGBM/issues/6798.
     """
     if fit_X_type.startswith("pa_") or predict_X_type.startswith("pa_"):
         pa = pytest.importorskip("pyarrow")

@@ -122,7 +122,7 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
       }
     }
   }
-  // Stochastic small-leaf auto-raise (2026-08-09): with the historical 4-bin
+  // Stochastic small-leaf auto-raise: with the historical 4-bin
   // auto default, deep regimes whose leaves get small fit rounding noise and
   // test quality DECLINES mid-training (measured: epsilon-deep peaks at iter
   // ~300 then loses 0.005 AUC; year-deep peaks at ~75 then loses +4.9 MSE;
@@ -212,9 +212,9 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // deterministic training is the stated intent. Constant-hessian
   // objectives take the finest guard-passing count up to 2048 (verified
   // lossless-equivalent on year); others stay at the 256 safety line.
-  // (quant_bins_from_auto: ResolveFalcataParams rewrites the 0 sentinel to
-  // the mode default at parse time, so the raw ==0 test here was dead code
-  // from the env-var->config refactor until 2026-08-09)
+  // Test quant_bins_from_auto, not quant_bins == 0: ResolveFalcataParams
+  // rewrites the 0 sentinel to the mode default at parse time, so it never
+  // reaches here.
   if (config_->deterministic && fixedpoint_quant_ && config_->quant_bins_from_auto) {
     const uint64_t guard_cap = (1ULL << 31) / static_cast<uint64_t>(num_data_) - 1;
     const int safe_cap = static_cast<int>(std::min<uint64_t>(guard_cap, is_constant_hessian ? 2048 : 256));
@@ -794,8 +794,8 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
   // classic one-split-at-a-time loop runs.
   const bool depth_limited = config_->max_depth > 0 && config_->max_depth < 31 &&
       (1LL << config_->max_depth) <= static_cast<int64_t>(config_->num_leaves) + 1;
-  // Categorical datasets are allowed on the (two-sync) hybrid prefix since
-  // 2026-08-02: the batched apply routes categorical splits through the
+  // Categorical datasets are allowed on the (two-sync) hybrid prefix: the
+  // batched apply routes categorical splits through the
   // per-level bitset arena, and tree recording interleaves the per-split
   // categorical path with numerical SplitBatch chunks. The selective and
   // one-sync/speculative flows keep their categorical exclusions for now.
@@ -805,22 +805,14 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
   // trampled the staging (>256-bin features trained garbage). The batched
   // level kernels are excluded for global memory anyway, so hybrid offers no
   // upside on these shapes: route them to the classic flow.
-  // FENCE (2026-08-02): with categorical features and max_cat_threshold > 32
-  // the hybrid flow produces categorical split thresholds containing invalid
-  // bins (bisected: classic clean, hybrid dirty with BOTH the batched-level
-  // and per-pair finders, one-sync and two-sync alike; onset at
-  // max_cat_threshold >= 48 on airline-cat 5M). Root cause is open on the
-  // ROADMAP; until then those configs take the (correct) classic loop.
-  // 2026-08-04: the fence WIDENED to every categorical dataset. The repro
-  // crashes at the DEFAULT max_cat_threshold=32 on sm_86 (illegal access in
-  // the level bitset arena consuming a valid-flagged cat candidate whose
-  // num_cat_threshold vanished), so the previous >32 boundary was wrong.
-  // Deep instrumentation (FALCATA_DEBUG=dump: two host checkpoints, pointer
-  // probes, per-stage device serialization, growth elimination) validates
-  // every kernel input clean microseconds before the fault -- root cause
-  // still open, see ROADMAP. The classic loop is verified correct on
-  // categorical data; hybrid's ~3.7x categorical speedup returns when this
-  // is fixed.
+  // FENCE: hybrid growth is disabled for every categorical dataset. It emits
+  // categorical split thresholds containing invalid bins, and on sm_86 the
+  // level bitset arena hits an illegal access consuming a valid-flagged
+  // candidate whose num_cat_threshold vanished -- at the DEFAULT
+  // max_cat_threshold, with both the batched-level and per-pair finders, one-
+  // sync and two-sync alike. Root cause is still open (see ROADMAP); the
+  // classic loop is verified correct here, so categorical data takes it and
+  // gives up hybrid's ~3.7x on those shapes until this is fixed.
   const bool cat_threshold_fenced = has_categorical_feature_;
   if (cat_threshold_fenced) {
     static bool warned = false;
@@ -896,7 +888,7 @@ bool CUDASingleGPUTreeLearner::UseOneSyncPrefix() const {
   if (fp_merge_state_ != nullptr) {
     return false;
   }
-  // categorical datasets ride the one-sync flow since 2026-08-02: the apply
+  // categorical datasets ride the one-sync flow: the apply
   // runs AFTER the level's single readback (host split infos, including
   // num_cat_threshold, are available -- the phase-1b operator= fix keeps the
   // count through host copies), and the speculative children's search uses the
@@ -2015,7 +2007,7 @@ bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
   if (has_categorical_feature_) {
     return false;
   }
-  // quant graph support is bit-exact (a2279763) but a net loss on large/cheap-level
+  // quant graph support is bit-exact but a net loss on large/cheap-level
   // shapes (covtype 1023/10 -10.8%, year 63/6 -7%: quant levels are cheap, so the
   // controller's fixed serial latency dominates) -- opt-in until that frontier
   // shrinks. cuda_plan=auto,graph_quant:on enables.

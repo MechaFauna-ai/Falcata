@@ -179,8 +179,13 @@ For instance:
 
    .. code:: python
 
-       param = {'num_leaves': 31, 'objective': 'binary'}
+       param = {'num_leaves': 31, 'objective': 'binary', 'device_type': 'cuda'}
        param['metric'] = 'auc'
+
+   ``device_type`` defaults to ``cpu``, inherited from LightGBM's parameter
+   set. Falcata's whole point is the CUDA learner, so set
+   ``'device_type': 'cuda'`` — on the ``Dataset`` as well as the booster — to
+   get it. See `Parameters <./Parameters.rst#device_type>`__.
 
 -  You can also specify multiple eval metrics:
 

@@ -5,12 +5,13 @@ lib_falcata.so, so M1 is verifiable before M2's Python plumbing exists.
 """
 
 import ctypes
+import os
 import struct
 import sys
 
 import numpy as np
 
-LIB = ctypes.cdll.LoadLibrary("/home/felixjk/Documents/lightgbm-fork/lib_falcata.so")
+LIB = ctypes.cdll.LoadLibrary(os.environ.get("FALCATA_LIB", "./lib_falcata.so"))
 LIB.FLC_GetLastError.restype = ctypes.c_char_p
 
 

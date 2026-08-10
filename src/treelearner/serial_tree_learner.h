@@ -241,7 +241,7 @@ class SerialTreeLearner: public TreeLearner {
   // NCCL per-device components create learners that never receive the
   // GBDT::Init SetForcedSplit call (it goes to the master learner, which
   // NCCLGBDT resets), so any pre-SetForcedSplit read would otherwise be
-  // uninitialized garbage (2026-08-04: segfault in HybridGrowthUsable's
+  // uninitialized garbage (segfault in HybridGrowthUsable's
   // forced_split_json_->is_null() on NCCL worker threads).
   const Json* forced_split_json_ = nullptr;
   std::unique_ptr<TrainingShareStates> share_state_;

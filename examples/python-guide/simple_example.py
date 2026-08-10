@@ -17,15 +17,19 @@ y_test = df_test[0]
 X_train = df_train.drop(0, axis=1)
 X_test = df_test.drop(0, axis=1)
 
-# create dataset for falcata
-lgb_train = flc.Dataset(X_train, y_train)
-lgb_eval = flc.Dataset(X_test, y_test, reference=lgb_train)
+# create dataset for falcata. device_type=cuda selects the GPU learner; drop it
+# (or set "cpu") to run the inherited CPU path instead.
+DEVICE = "cuda"
+
+lgb_train = flc.Dataset(X_train, y_train, params={"device_type": DEVICE})
+lgb_eval = flc.Dataset(X_test, y_test, reference=lgb_train, params={"device_type": DEVICE})
 
 # specify your configurations as a dict
 params = {
     "boosting_type": "gbdt",
     "objective": "regression",
     "metric": {"l2", "l1"},
+    "device_type": DEVICE,
     "num_leaves": 31,
     "learning_rate": 0.05,
     "feature_fraction": 0.9,

@@ -30,13 +30,12 @@ void NCCLGBDT<GBDT_T>::Init(
   const std::vector<const Metric*>& training_metrics) {
   feature_parallel_ = gbdt_config->tree_learner == std::string("feature");
   if (gbdt_config->use_quantized_grad && !feature_parallel_) {
-    // 2026-08-04: quantized multi-GPU rides the hybrid two-sync level flow
+    // Quantized multi-GPU rides the hybrid two-sync level flow
     // with an integer level all-reduce (per-pair 16/32-bit histograms widened
     // to uniform int64 lanes; bit widths from the GLOBAL count table so every
     // rank picks the same lane format and the summed histograms fit). The
-    // former hang was the same rank-local-count class fixed in a923eb22 plus
-    // the missing global bit-width maintenance, both now handled in the level
-    // flow. The CLASSIC (hybrid:off) quantized path stays unverified.
+    // former hang was a rank-local count table plus missing global bit-width
+    // maintenance, both now handled in the level flow. The CLASSIC (hybrid:off) quantized path stays unverified.
     Log::Warning(
         "multi-GPU + quantized gradients is newly enabled and rides the "
         "hybrid level flow; report divergence against a single-GPU run.");

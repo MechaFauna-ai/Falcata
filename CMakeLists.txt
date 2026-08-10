@@ -31,7 +31,7 @@ option(BUILD_STATIC_LIB "Build static library" OFF)
 option(INSTALL_HEADERS "Install headers to CMAKE_INSTALL_PREFIX (e.g. '/usr/local/include')" ON)
 option(__BUILD_FOR_PYTHON "Set to ON if building lib_falcata for use with the Python-package" OFF)
 option(__BUILD_FOR_R "Set to ON if building lib_falcata for use with the R-package" OFF)
-option(__INTEGRATE_OPENCL "Set to ON if building LightGBM with the OpenCL ICD Loader and its dependencies included" OFF)
+option(__INTEGRATE_OPENCL "Set to ON if building Falcata with the OpenCL ICD Loader and its dependencies included" OFF)
 
 # If using Visual Studio generators, always target v10.x of the Windows SDK.
 # Doing this avoids lookups that could fall back to very old versions, e.g. by finding
@@ -173,6 +173,14 @@ if(USE_MPI)
     add_definitions(-DUSE_MPI)
 else()
     add_definitions(-DUSE_SOCKET)
+endif()
+
+# The Python build turns USE_CUDA on by default, which is right everywhere CUDA
+# can exist. Apple dropped CUDA support entirely, so honouring it there only
+# produces a confusing configure failure -- fall back to the CPU build instead.
+if(USE_CUDA AND APPLE)
+    message(STATUS "USE_CUDA=ON ignored on macOS (no CUDA toolkit exists for it): building CPU-only.")
+    set(USE_CUDA OFF CACHE BOOL "Enable CUDA-accelerated training " FORCE)
 endif()
 
 if(USE_CUDA)

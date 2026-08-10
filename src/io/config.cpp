@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cctype>
 #include <limits>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -280,6 +281,20 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
   GetObjectiveType(params, &objective);
   GetMetricType(params, objective, &metric);
   GetDeviceType(params, &device_type);
+#ifdef USE_CUDA
+  // device_type keeps LightGBM's "cpu" default so parameter files stay portable,
+  // but a CUDA build that silently trains on the CPU is the single easiest way
+  // to miss the point of this library. Say so once per process; setting
+  // device_type explicitly (to either value) silences it.
+  if (params.count("device_type") == 0) {
+    static std::once_flag cpu_default_warned;
+    std::call_once(cpu_default_warned, []() {
+      Log::Warning(
+          "device_type is unset, so training will use the CPU. This build has "
+          "the CUDA learner compiled in -- pass device_type=cuda to use it.");
+    });
+  }
+#endif  // USE_CUDA
   if (device_type == std::string("cuda")) {
     FLC_config_::current_device = lgbm_device_cuda;
   }
@@ -435,7 +450,7 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
   //     - this block reduces num_leaves to 2^max_depth
   //   * (max_depth > 4) 31 leaves is less than a full depth-wise tree, which might lead to underfitting
   //     - this block warns about that
-  // ref: https://github.com/lightgbm-org/Falcata/issues/2898#issuecomment-1002860601
+  // ref: https://github.com/lightgbm-org/LightGBM/issues/2898#issuecomment-1002860601
   if (max_depth > 0 && (params.count("num_leaves") == 0 || params.at("num_leaves").empty())) {
     double full_num_leaves = std::pow(2, max_depth);
     if (full_num_leaves > num_leaves) {

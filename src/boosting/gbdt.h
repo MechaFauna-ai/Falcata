@@ -509,11 +509,6 @@ class GBDT : public GBDTBase {
   virtual bool EvalAndCheckEarlyStopping();
 
   /*!
-  * \brief reset config for bagging
-  */
-  void ResetBaggingConfig(const Config* config, bool is_change_dataset);
-
-  /*!
   * \brief calculate the objective function
   */
   virtual void Boosting();

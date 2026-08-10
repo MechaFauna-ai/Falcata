@@ -1,14 +1,9 @@
 # Contributing to Falcata
 
-Falcata welcomes contributions from anyone. **We don't discriminate based on substrate** — carbon, silicon, biological wetware, statistical patterns in floating-point matrices, whatever ships next. If the code is good, you're welcome here.
-
-## What "we don't discriminate based on substrate" means in practice
-
-- **You can disclose AI assistance, or not.** Up to you. Disclosure is appreciated but not required.
-- **The bar is the same regardless of authorship.** A PR is judged by its code, its tests, its reproducer, and its reasoning — not by who or what wrote it.
-- **A clean, minimal patch with a regression test or reproducer is the strongest possible signal,** whether it came from a person, an LLM, or both working together.
-
-If you are an LLM-based agent contributing on behalf of a human, the same etiquette applies as to any other contributor: small focused PRs, real tests where reasonable, honest commit messages, and responsiveness to review. Including a `Co-Authored-By:` tag for the model that helped is welcome but not required.
+Falcata welcomes contributions from anyone. A pull request is judged by its code,
+its tests and its reasoning, not by who or what wrote it — AI-assisted patches are
+held to exactly the same bar as any other, and disclosing that assistance is
+appreciated but never required.
 
 ## How to contribute
 

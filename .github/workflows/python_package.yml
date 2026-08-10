@@ -60,7 +60,7 @@ jobs:
           ${{ env.BUILD_DIRECTORY }}/.ci/setup.sh || exit 1
           ${{ env.BUILD_DIRECTORY }}/.ci/test.sh || exit 1
           EOF
-          IMAGE_URI="falcata/vsts-agent:manylinux2014_aarch64"
+          IMAGE_URI="lightgbm/vsts-agent:manylinux2014_aarch64"
           docker pull "${IMAGE_URI}" || exit 1
           docker run \
             --platform "${PLATFORM}" \
@@ -384,7 +384,7 @@ jobs:
             --env CMAKE_BUILD_PARALLEL_LEVEL=${{ env.CMAKE_BUILD_PARALLEL_LEVEL }} \
             -v $(pwd):/opt/lgb-build \
             -w /opt/lgb-build \
-            falcata/vsts-agent:manylinux_2_28_x86_64 \
+            lightgbm/vsts-agent:manylinux_2_28_x86_64 \
             /bin/bash -c 'PATH=/opt/miniforge/bin:$PATH sh ./build-python.sh bdist_wheel --nomp'
       - name: Test compatibility
         run: |
@@ -420,7 +420,7 @@ jobs:
             --env CMAKE_BUILD_PARALLEL_LEVEL=${{ env.CMAKE_BUILD_PARALLEL_LEVEL }} \
             -v $(pwd):/opt/lgb-build \
             -w /opt/lgb-build \
-            falcata/vsts-agent:manylinux_2_28_x86_64 \
+            lightgbm/vsts-agent:manylinux_2_28_x86_64 \
             /bin/bash -c 'PATH=/opt/miniforge/bin:$PATH sh ./build-python.sh bdist_wheel --nomp'
       - name: Test compatibility
         run: |

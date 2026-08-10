@@ -233,6 +233,6 @@ Deal with Over-fitting
 
 -  Try increasing ``path_smooth``
 
-.. _Optuna: https://medium.com/optuna/falcata-tuner-new-optuna-integration-for-hyperparameter-optimization-8b7095e99258
+.. _Optuna: https://medium.com/optuna/lightgbm-tuner-new-optuna-integration-for-hyperparameter-optimization-8b7095e99258
 
 .. _FLAML: https://github.com/microsoft/FLAML

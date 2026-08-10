@@ -723,13 +723,6 @@ void CUDADataPartition::ResetConfig(const Config* config, hist_t* cuda_hist) {
   cuda_level_smaller_counts_.Resize(static_cast<size_t>(num_leaves_) + 1);
 }
 
-void CUDADataPartition::SetBaggingSubset(const Dataset* subset) {
-  num_used_indices_ = subset->num_data();
-  used_indices_ = nullptr;
-  use_bagging_ = true;
-  cuda_column_data_ = subset->cuda_column_data();
-}
-
 void CUDADataPartition::ResetByLeafPred(const std::vector<int>& leaf_pred, int num_leaves) {
   if (leaf_pred.size() != static_cast<size_t>(num_data_)) {
     cuda_data_index_to_leaf_index_.Clear();

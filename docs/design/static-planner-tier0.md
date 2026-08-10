@@ -1,6 +1,9 @@
 # Design spec: static planner (auto-tuner tier 0)
 
-Status: design only. No code in this document. Scope: the CUDA single-GPU tree
+Status: **SUPERSEDED** -- closed without implementation; see the
+`Static planner tier-0` entry in [docs/perf-dead-ends.md](../perf-dead-ends.md)
+for why, and the conditions that would re-open it. Kept for that rationale.
+No code in this document. Scope: the CUDA single-GPU tree
 learner (`src/treelearner/cuda/*`) and its Dataset-side inputs
 (`src/io/cuda/cuda_row_data.cpp`, `src/treelearner/gradient_discretizer.cpp`).
 

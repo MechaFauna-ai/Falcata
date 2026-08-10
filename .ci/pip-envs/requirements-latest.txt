@@ -5,7 +5,7 @@
 #
 # pinning rules:
 #
-#   * latest versions of lightgbm's dependencies,
+#   * latest versions of falcata's dependencies,
 #   * including pre-releases and nightlies
 #
 cffi>=2.0.0

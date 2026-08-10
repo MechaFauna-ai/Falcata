@@ -1372,7 +1372,7 @@ def test_cuda_pandas_int_frame_matches_numpy():
 
 
 # machine-local bench cache; keeps its pre-rename directory name (~105GB)
-_COVTYPE_DIR = os.environ.get("FALCATA_BENCH_CACHE", "/home/felixjk/Documents/exaboost-bench/data/cache") + "/covtype/"
+_COVTYPE_DIR = os.environ.get("FALCATA_BENCH_CACHE", "bench-cache") + "/covtype/"
 _HAS_COVTYPE = os.path.isdir(_COVTYPE_DIR) and os.path.isfile(_COVTYPE_DIR + "X_train.npy")
 
 

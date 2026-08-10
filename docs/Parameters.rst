@@ -603,6 +603,8 @@ Learning Control Parameters
 
       -  ``advanced``, an `even more advanced method <https://hal.science/hal-02862802/document>`__, which may slow down the training speed. However, this method is even less constraining than the intermediate method and should again significantly improve the results
 
+   -  **CUDA**: only ``basic`` is supported with ``device_type=cuda``; the other two raise an error
+
 -  ``monotone_penalty`` :raw-html:`<a id="monotone_penalty" title="Permalink to this parameter" href="#monotone_penalty">&#x1F517;&#xFE0E;</a>`, default = ``0.0``, type = double, aliases: ``monotone_splits_penalty``, ``ms_penalty``, ``mc_penalty``, constraints: ``monotone_penalty >= 0.0``
 
    -  used only if ``monotone_constraints`` is set
@@ -610,6 +612,8 @@ Learning Control Parameters
    -  `monotone penalty <https://hal.science/hal-02862802/document>`__: a penalization parameter X forbids any monotone splits on the first X (rounded down) level(s) of the tree. The penalty applied to monotone splits on a given depth is a continuous, increasing function the penalization parameter
 
    -  if ``0.0`` (the default), no penalization is applied
+
+   -  **CUDA**: not supported with ``device_type=cuda``; a non-zero value raises an error
 
 -  ``feature_contri`` :raw-html:`<a id="feature_contri" title="Permalink to this parameter" href="#feature_contri">&#x1F517;&#xFE0E;</a>`, default = ``None``, type = multi-double, aliases: ``feature_contrib``, ``fc``, ``fp``, ``feature_penalty``
 
@@ -648,6 +652,8 @@ Learning Control Parameters
    -  cost-effective gradient boosting penalty for using a feature
 
    -  applied per data point
+
+   -  **CUDA**: not supported with ``device_type=cuda``; use ``cegb_penalty_feature_coupled`` or ``cegb_penalty_split`` instead
 
 -  ``cegb_penalty_feature_coupled`` :raw-html:`<a id="cegb_penalty_feature_coupled" title="Permalink to this parameter" href="#cegb_penalty_feature_coupled">&#x1F517;&#xFE0E;</a>`, default = ``0,0,...,0``, type = multi-double
 
@@ -854,6 +860,8 @@ Dataset Parameters
 -  ``is_enable_sparse`` :raw-html:`<a id="is_enable_sparse" title="Permalink to this parameter" href="#is_enable_sparse">&#x1F517;&#xFE0E;</a>`, default = ``true``, type = bool, aliases: ``is_sparse``, ``enable_sparse``, ``sparse``
 
    -  used to enable/disable sparse optimization
+
+   -  **CUDA**: sparse features are not supported with ``device_type=cuda``; this is forced to ``false`` there
 
 -  ``enable_bundle`` :raw-html:`<a id="enable_bundle" title="Permalink to this parameter" href="#enable_bundle">&#x1F517;&#xFE0E;</a>`, default = ``true``, type = bool, aliases: ``is_enable_bundle``, ``bundle``
 

@@ -3673,7 +3673,7 @@ void CUDABestSplitFinder::ReadPrefetchedLeafBestSplits(const int num_leaves, std
     static_cast<size_t>(num_leaves) * sizeof(CUDASplitInfo));
   // the raw copy brings over device categorical-threshold pointers; scrub the
   // POINTERS so the host-side destructor never frees device memory, but KEEP
-  // num_cat_threshold: the hybrid categorical apply (2026-08-02) uses the
+  // num_cat_threshold: the hybrid categorical apply uses the
   // count to route splits, and both ~CUDASplitInfo and operator= are
   // null-pointer-safe with a positive count
   for (CUDASplitInfo& info : *out) {

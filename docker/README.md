@@ -2,7 +2,9 @@
 
 This directory contains `Dockerfile`s to make it easy to build and run Falcata via [Docker](https://www.docker.com/).
 
-These builds of Falcata all train on the CPU. For GPU-enabled builds, see [the gpu/ directory](./gpu).
+Note that these images build the CPU-only library. Falcata's CUDA backend is
+not yet packaged as an image; build it from source per the
+[installation guide](../docs/Installation-Guide.rst).
 
 ## Installing Docker
 

@@ -407,13 +407,13 @@ the planner's "default on, individually ablatable" contract in action.
 
 ## 8b. Runtime-JIT construct kernels (`construct_jit`)
 
-The NVRTC infrastructure from the July arc (shape-keyed compile cache, AOT
-fallback, self-test-then-promote) now serves ALL mask-free quantized dense
-shapes, not just the compact view. The specialized kernel strips the runtime
-branches the AOT kernel must carry (feature/bin masks, graph state,
-speculative sizing, wide-partition predication) — on an issue-bound kernel
-those branches are the remaining fat. Measured (bit-identical everywhere;
-the canonical 700-round locks reproduce exactly with JIT live):
+The NVRTC infrastructure (shape-keyed compile cache, AOT fallback,
+self-test-then-promote) serves ALL mask-free quantized dense shapes, not just
+the compact view. The specialized kernel strips the runtime branches the AOT
+kernel must carry (feature/bin masks, graph state, speculative sizing,
+wide-partition predication) — on an issue-bound kernel those branches are the
+remaining fat. It is bit-identical everywhere; the canonical 700-round locks
+reproduce exactly with the JIT live.
 
 **Measured (leave-one-out ablation):** small single-digit effects on the
 big cells — numerai-deep sits inside run-to-run noise (consecutive

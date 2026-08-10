@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Render the per-feature effect plots embedded in docs/performance.md.
 
-Sources (both measured, both checked in / archived):
-- the 2026-08-07 final cross-library sweep (falcata master @ 724e9358):
-  ~/Documents/exaboost-bench/results/runs.jsonl
-- the 2026-08-09 leave-one-out ablation battery: benchmarks/ablation_2026-08-09.txt
+Sources:
+- the cross-library sweep produced by benchmarks/, one JSON record per run.
+  Point FALCATA_SWEEP_RUNS at it; default ./results/runs.jsonl
+- the leave-one-out ablation battery: benchmarks/ablation_2026-08-09.txt
 
-Run with any python that has pandas+matplotlib (the bench env works):
-  ~/Documents/exaboost-bench/env-falcata/bin/python docs/perf-plots/generate.py
+Run with any python that has matplotlib:
+  python docs/perf-plots/generate.py
 """
 
 import json
@@ -20,7 +20,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RUNS = os.path.expanduser("~/Documents/exaboost-bench/results/runs.jsonl")
+RUNS = os.environ.get("FALCATA_SWEEP_RUNS", "results/runs.jsonl")
 ABLATION = os.path.join(HERE, "..", "..", "benchmarks", "ablation_2026-08-09.txt")
 
 # ---- style: one fixed color per library entity, everywhere -----------------

@@ -48,7 +48,8 @@ Histogram-construction kernels can be specialized at runtime (via NVRTC) to
 the actual data shape -- bin counts, column layout -- instead of relying on
 one generic kernel. A JIT kernel is self-tested against the ahead-of-time
 kernel on real data and promoted **only if bit-identical**; otherwise the AOT
-kernel keeps running. Opt-in via ``cuda_plan=auto,construct_jit:on``.
+kernel keeps running. On by default; disable with
+``cuda_plan=auto,construct_jit:off``.
 
 Per-Tree Compact Column View
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -116,7 +117,14 @@ Shared Engine Fundamentals
 --------------------------
 
 The sections below describe the engine Falcata inherits from the LightGBM
-lineage; they apply to CPU and CUDA training alike.
+lineage. Most of it applies to CPU and CUDA training alike, with two
+exceptions:
+
+- **Sparse optimization** is CPU-only. Under ``device_type=cuda``,
+  ``is_enable_sparse`` is forced to ``false``.
+- **Distributed learning** (``tree_learner=data`` / ``voting``) is CPU-only.
+  CUDA training runs on a single machine; scale out across GPUs in that
+  machine with ``num_gpu`` and an NCCL-enabled build instead.
 
 Optimization in Speed and Memory Usage
 --------------------------------------

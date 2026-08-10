@@ -37,7 +37,7 @@ authors:
     html: <img src="https://avatars.githubusercontent.com/u/7608904?s=400&v=4" height="48" /> James Lamb
 
 navbar:
-  title: LightGBM
+  title: Falcata
   type: default
   left:
     - icon: fa-reply fa-lg
@@ -60,7 +60,7 @@ reference:
       - '`agaricus.test`'
       - '`bank`'
   - title: Data Input / Output
-    desc: Data I/O required for LightGBM
+    desc: Data I/O required for Falcata
     contents:
       - '`dim.lgb.Dataset`'
       - '`dimnames.lgb.Dataset`'
@@ -75,7 +75,7 @@ reference:
       - '`lgb.convert_with_rules`'
       - '`lgb.slice.Dataset`'
   - title: Machine Learning
-    desc: Train models with LightGBM and then use them to make predictions on new data
+    desc: Train models with Falcata and then use them to make predictions on new data
     contents:
       - '`falcata`'
       - '`lgb.train`'
@@ -83,7 +83,7 @@ reference:
       - '`lgb.cv`'
       - '`lgb.configure_fast_predict`'
   - title: Saving / Loading Models
-    desc: Save and load LightGBM models
+    desc: Save and load Falcata models
     contents:
       - '`lgb.dump`'
       - '`lgb.save`'
@@ -103,7 +103,7 @@ reference:
       - '`print.lgb.Booster`'
       - '`summary.lgb.Booster`'
   - title: Multithreading Control
-    desc: Manage degree of parallelism used by LightGBM
+    desc: Manage degree of parallelism used by Falcata
     contents:
       - '`getLGBMthreads`'
       - '`setLGBMthreads`'

@@ -222,7 +222,6 @@ class CUDADataPartition: public NCCLInfo {
 
   void SetUsedDataIndices(const data_size_t* used_indices, const data_size_t num_used_indices);
 
-  void SetBaggingSubset(const Dataset* subset);
 
   void ResetTrainingData(const Dataset* train_data, const int num_total_bin, hist_t* cuda_hist);
 

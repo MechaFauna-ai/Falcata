@@ -201,7 +201,7 @@ if ($env:COMPILER -ne "MSVC") {
         Invoke-R-Code-Redirect-Stderr $params ; Assert-Output $?
         Remove-From-Path ".*msys64.*"
         # Test CRAN source .tar.gz in a directory that is not this repo or below it.
-        # When people install.packages('lightgbm'), they won't have the LightGBM
+        # When people install.packages('falcata'), they won't have the Falcata
         # git repo around. This is to protect against the use of relative paths
         # like ../../CMakeLists.txt that would only work if you are in the repoo
         $R_CMD_CHECK_DIR = "tmp-r-cmd-check"
@@ -243,7 +243,7 @@ if ($env:COMPILER -ne "MSVC") {
     Assert-Output $install_succeeded
     # some errors are not raised above, but can be found in the logs
     if (Get-Content "$INSTALL_LOG_FILE_NAME" | Select-String -Pattern "ERROR" -CaseSensitive -Quiet) {
-        Write-Output "ERRORs have been found installing lightgbm"
+        Write-Output "ERRORs have been found installing falcata"
         Assert-Output $False
     }
 }

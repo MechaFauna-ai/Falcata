@@ -3643,15 +3643,8 @@ _FIL_IMPORT_FAILED = False
 
 
 def _falcata_env(name: str, default: str) -> str:
-    """Read a FALCATA_* environment variable.
-
-    Falls back to the pre-rename ``EXABOOST_*`` spelling so setups written
-    against the old name keep working; drop the fallback once those are gone.
-    """
-    value = environ.get(f"FALCATA_{name}")
-    if value is None:
-        value = environ.get(f"EXABOOST_{name}", default)
-    return value
+    """Read a FALCATA_* environment variable."""
+    return environ.get(f"FALCATA_{name}", default)
 
 
 def _load_fil_modules() -> Optional[Tuple[Any, Any]]:

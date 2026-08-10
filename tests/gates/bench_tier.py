@@ -23,7 +23,7 @@ from pathlib import Path
 
 # Machine-local bench data. The directory keeps its pre-rename name because it
 # holds ~105GB of cached datasets; override to point elsewhere.
-CACHE = Path(os.environ.get("FALCATA_BENCH_CACHE", "/home/felixjk/Documents/exaboost-bench/data/cache"))
+CACHE = Path(os.environ.get("FALCATA_BENCH_CACHE", "bench-cache"))
 REPEATS = 3
 
 BASE = {

@@ -1,6 +1,40 @@
 Installation Guide
 ==================
 
+Quick Install
+~~~~~~~~~~~~~
+
+For the Python package — which is how most people use Falcata — this is the
+whole story:
+
+.. code:: sh
+
+   pip install falcata
+
+That builds the CUDA library from source, so it needs the CUDA toolkit
+(>= 11.0), CMake >= 3.28, a C++17 compiler and Python >= 3.10. The source
+distribution vendors every dependency, so there is no ``git clone`` and no
+submodule step.
+
+The build targets every GPU architecture your toolkit supports, plus PTX for
+the newest, which is why it takes a few minutes. Building for one architecture
+is much faster:
+
+.. code:: sh
+
+   # RTX 5090 = 120, RTX 4090 = 89, A100 = 80, T4 = 75
+   pip install falcata --config-settings=cmake.define.CMAKE_CUDA_ARCHITECTURES=89
+
+Falcata is a CUDA-first library and the source build targets the GPU by
+default. A CPU-only build exists, but it is not what the project is for:
+
+.. code:: sh
+
+   pip install falcata --config-settings=cmake.define.USE_CUDA=OFF
+
+The rest of this page covers building the CLI, the R package and the language
+bindings from a checkout, plus the CPU, MPI and legacy OpenCL configurations.
+
 Versioning
 ~~~~~~~~~~
 
@@ -219,26 +253,6 @@ or can be built using
 
 - **CMake** and **Apple Clang**;
 - **CMake** and **gcc**.
-
-Install Using ``Homebrew``
-^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-.. code:: sh
-
-  brew install falcata
-
-Refer to https://formulae.brew.sh/formula/falcata for more details.
-
-Install Using ``MacPorts``
-^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-.. code:: sh
-
-  sudo port install Falcata
-
-Refer to https://ports.macports.org/port/Falcata for more details.
-
-**Note**: Port for Falcata is not maintained by Falcata's maintainers.
 
 Build from GitHub
 ^^^^^^^^^^^^^^^^^

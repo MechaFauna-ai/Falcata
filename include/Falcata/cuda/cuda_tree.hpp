@@ -27,7 +27,6 @@ __device__ bool GetDecisionTypeCUDA(int8_t decision_type, int8_t mask);
 
 __device__ int8_t GetMissingTypeCUDA(int8_t decision_type);
 
-__device__ bool IsZeroCUDA(double fval);
 
 /*! \brief Per-split descriptor for the batched tree-structure update of the hybrid
  *  level-batched growth phase: one SplitBatchKernel launch applies all numerical

@@ -31,8 +31,8 @@ namespace Falcata {
 // guarantee rather than a hope, the first launch is VALIDATED against the AOT
 // kernel's histogram; on any mismatch (or any NVRTC/driver failure, or an
 // unsupported shape) the module is discarded and the caller falls back to the AOT
-// kernel permanently for that signature. The JIT is opt-in
-// (cuda_plan=auto,construct_jit:on; the key defaults off -> AOT).
+// kernel permanently for that signature. The JIT is on by default
+// (cuda_plan key construct_jit); set construct_jit:off to force AOT.
 //
 // Scope of the specialized kernel: the host-launched (two-sync), non-graph,
 // non-4bit, dense compact-quant path -- exactly numerai's shape. Every other

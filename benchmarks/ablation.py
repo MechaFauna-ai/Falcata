@@ -32,7 +32,7 @@ import os
 import time
 from pathlib import Path
 
-CACHE = Path(os.environ.get("FALCATA_BENCH_CACHE", "/home/felixjk/Documents/exaboost-bench/data/cache"))
+CACHE = Path(os.environ.get("FALCATA_BENCH_CACHE", "bench-cache"))
 OUT_DEFAULT = Path(__file__).resolve().parent / "ablation_results.jsonl"
 
 #: every cuda_plan key with its default state; LOO flips it to the opposite

@@ -413,9 +413,6 @@ python-package/lightgbm/VERSION.txt
 **/autom4te.cache/
 R-package/conftest*
 R-package/config.status
-!R-package/data/agaricus.test.rda
-!R-package/data/agaricus.train.rda
-!R-package/data/bank.rda
 R-package/docs
 R-package/src/CMakeLists.txt
 R-package/src/Makevars
@@ -487,3 +484,21 @@ dmypy.json
 benchmarks/workspace/
 .gates-venv/
 tests/gates/lattice_results.json
+
+# Tracked files that the blanket rules above would otherwise shadow. Without
+# these the files survive only because they were force-added, and a
+# `git rm --cached` + re-add cycle would silently drop them.
+!R-package/data/agaricus.test.rda
+!R-package/data/agaricus.train.rda
+!R-package/data/bank.rda
+!R-package/inst/Makevars.win
+!R-package/src/falcata-win.def
+!R-package/inst/bin/
+!R-package/inst/bin/.gitkeep
+!examples/parallel_learning/mlist.txt
+
+# Out-of-tree build directories and benchmark scratch
+build-*/
+catboost_info/
+bench-cache/
+results/

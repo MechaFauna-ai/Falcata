@@ -248,15 +248,6 @@ void LaunchInterleaveGradHessKernel(
     gradients, hessians, gradients_hessians, num_data);
 }
 
-// Diagnostic kernel: read N bytes from a (possibly host-mapped) source pointer.
-__global__ void DiagReadKernel(const uint8_t* __restrict__ src, uint8_t* dst, int n) {
-  const int i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i < n) dst[i] = src[i];
-}
-void LaunchDiagRead(cudaStream_t stream, const uint8_t* src, uint8_t* dst, int n) {
-  DiagReadKernel<<<(n + 31) / 32, 32, 0, stream>>>(src, dst, n);
-}
-
 // Host wrapper called from cuda_histogram_constructor.cpp.
 void LaunchFillCompactDataKernel(
   cudaStream_t stream,
@@ -2745,7 +2736,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     // so the rows-per-block cap (65534/bins, guarding the packed 16+16-bit
     // shared-histogram partials) must be re-applied for it. Sizing with the
     // plain formula overflowed the int16 partials on large leaves at high
-    // quant_bins (the 2026-07 "fixedpoint stops after 44 trees" production
+    // quant_bins (the "fixedpoint stops after 44 trees" production
     // corruption: quant_bins=64, 6.8M rows, feature_fraction 0.1);
     // num_grad_quant_bins == 0 (non-quantized) reduces to the plain formula.
     {

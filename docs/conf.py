@@ -129,8 +129,8 @@ master_doc = "index"
 
 # General information about the project.
 project = "Falcata"
-copyright = f"{datetime.datetime.now().year}, Microsoft Corporation"
-author = "Microsoft Corporation"
+copyright = f"{datetime.datetime.now().year}, Falcata contributors"
+author = "Falcata contributors"
 
 # The name of an image file (relative to this directory) to place at the top
 # of the sidebar.
@@ -202,7 +202,7 @@ html_static_path = ["_static"]
 # -- Options for HTMLHelp output ------------------------------------------
 
 # Output file base name for HTML help builder.
-htmlhelp_basename = "LightGBMdoc"
+htmlhelp_basename = "Falcatadoc"
 
 # -- Options for LaTeX output ---------------------------------------------
 

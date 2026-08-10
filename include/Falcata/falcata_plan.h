@@ -57,7 +57,7 @@ struct FalcataPlan {
   // NVRTC runtime-JIT construct kernels (self-test-then-promote; AOT
   // fallback). Default ON for quant runs >= 300 rounds (the ~230ms one-time
   // compile amortizes): measured +4.0% numerai-deep, +2.4% covtype-deep,
-  // +2.2% year, +0.7% higgs, bit-identical (2026-08-01, post-ldcs sync).
+  // +2.2% year, +0.7% higgs, bit-identical.
   bool construct_jit = true;        // key: construct_jit
   // true when the user wrote construct_jit:on/off -- bypasses the >=300
   // rounds auto-gate (mirrors tuner_explicit)
@@ -94,7 +94,7 @@ struct FalcataPlan {
   bool pack_radix7 = false;         // key: pack_radix7 -- 2.75 values/byte, <=7 bins
   // L2 persistence window on the per-row scattered-reread buffers (grad/hess,
   // leaf data indices): each level's bin-matrix stream otherwise evicts them.
-  // Cache hint only -- bit-identical by construction. Measured 2026-07-31:
+  // Cache hint only -- bit-identical by construction. Measured:
   // +2.8% numerai-deep/covtype-deep, neutral on year at real run lengths.
   bool l2_policy = true;            // key: l2_policy
   // one-time column-major copy of the packed bin matrix as the compact-fill

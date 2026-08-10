@@ -20,8 +20,6 @@ Description: Tree based algorithms can be improved by introducing boosting frame
         3. Better accuracy.
         4. Parallel learning supported.
         5. Capable of handling large-scale data.
-    In recognition of these advantages, 'Falcata' has been widely-used in many winning solutions of machine learning competitions.
-    Comparison experiments on public datasets suggest that 'Falcata' can outperform existing boosting frameworks on both efficiency and accuracy, with significantly lower memory consumption. In addition, parallel experiments suggest that in certain circumstances, 'Falcata' can achieve a linear speed-up in training time by using multiple machines.
 Encoding: UTF-8
 License: MIT + file LICENSE
 URL: https://mechafauna-ai.github.io/Falcata/, https://github.com/MechaFauna-ai/Falcata

@@ -138,7 +138,7 @@ while [ $# -gt 0 ]; do
     # flags #
     #########
     --bit32)
-        echo "[INFO] Attempting to build 32-bit version of LightGBM, which is only supported on Windows with Visual Studio."
+        echo "[INFO] Attempting to build 32-bit version of Falcata, which is only supported on Windows with Visual Studio."
         BUILD_ARGS="${BUILD_ARGS} --config-setting=cmake.args=-AWin32"
         ;;
     --cuda)
