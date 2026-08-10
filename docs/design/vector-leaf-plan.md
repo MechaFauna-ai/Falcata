@@ -46,7 +46,7 @@ paths. Plane-per-target reuses ALL existing kernels unchanged for
 construction:
 
 - **Construct:** launch the existing dense construct once per target with the
-  same leaf indices and per-target gradient pointers (`gradients_ + t*nd`).
+  same leaf indices and per-target gradient pointers (`gradients_ + t * num_data`).
   The row→bin reads are cached hot across the T launches (same data, same
   partition); measured cost is the atomics, not the reads.
 - **Fix/subtract:** existing kernels run per plane (T cheap launches, or the
@@ -78,7 +78,7 @@ Memory: hist pool grows ×T for the planes. At numerai scale (10240 bins ×
   with a clear error. FIL/treelite: fall back to CPU predict for vector
   models (treelite has no vector-leaf support).
 - **Score updater:** one AddScore kernel that traverses once and updates T
-  score planes (`scores + t*nd`).
+  score planes (`scores + t * num_data`).
 
 ## 5. Learner changes (CUDA)
 
