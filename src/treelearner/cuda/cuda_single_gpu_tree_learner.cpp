@@ -192,8 +192,18 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // cell inclusive) and frees fine-grained fixedpoint to behave like the
   // near-lossless mode it is.
   constexpr int kRobustScaleMaxBins = 256;
+  // Multiclass is excluded. The guard looks for a SMALL cluster of outlier
+  // gradients sitting above a magnitude gap, and re-anchors the quant scale to
+  // the bulk below it -- the shape produced by extreme binary imbalance, which
+  // is what it was built for. Softmax gradients are bounded and bimodal by
+  // construction (p-1 for the true class, p for the rest), so the "outliers"
+  // it finds are the most informative gradients in the problem, and clipping
+  // them costs real accuracy: measured multi_logloss 1.2219 with the guard vs
+  // 1.0956 without, against a 1.0954 full-precision reference (7 classes,
+  // max_bin 5). It does not fire at all for binary or regression, so nothing
+  // it was designed for is lost here.
   fixedpoint_robust_scale_ = fixedpoint_quant_ && FalcataPlan::Get().robust_scale &&
-      effective_quant_bins_ <= kRobustScaleMaxBins;
+      effective_quant_bins_ <= kRobustScaleMaxBins && config_->num_class <= 1;
   // INTERIM CLAMP (tracked): with NON-constant hessians (binary/multiclass),
   // high quant_bins corrupts training; the threshold is data-dependent
   // (covtype breaks at 2048, imbalanced fraud already at 1024 -- auc .4996;

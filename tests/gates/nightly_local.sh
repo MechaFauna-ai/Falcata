@@ -28,7 +28,16 @@ export FALCATA_BENCH_CACHE="${FALCATA_BENCH_CACHE:-$HOME/Documents/exaboost-benc
 export FALCATA_NUMERAI_V53="${FALCATA_NUMERAI_V53:-$HOME/Documents/numerai/data/1226_int8nan.dataset}"
 
 log() { echo "[$(date +%H:%M:%S)] $*" >> "$LOG"; }
-fail() { log "FAIL: $*"; echo "FAILED: $*" >> "$LOGDIR/last-status"; exit 1; }
+# The build is the one hard stop: every later gate tests the artifact it
+# produces, so continuing past it would just report noise.
+abort() { log "ABORT: $*"; echo "ABORTED: $*" > "$LOGDIR/last-status"; exit 1; }
+# Everything else records the failure and carries on. Stopping at the first one
+# meant a single known-failing fuzz spec hid the canonical md5 locks, the bench
+# tier and the perf gate every single night -- the gates most likely to catch a
+# real regression were the ones never reached.
+FAILED_STEPS=""
+fail() { log "FAIL: $*"; FAILED_STEPS="$FAILED_STEPS
+  - $*"; }
 
 exec 2>>"$LOG"
 log "=== nightly gates start ($(git -C "$REPO" rev-parse --short HEAD 2>/dev/null))"
@@ -64,14 +73,17 @@ step() {  # step <name> <gpu_free_mb|-> <command...>
   # Under gpuq the scheduler already holds the GPU for us; the per-step guard
   # would only be waiting on ourselves. Keep it for direct manual runs.
   if [ "$need" != "-" ] && [ -z "${GPUQ_JOB_ID:-}" ]; then
-    python3 tests/gates/gpu_guard.py --require-free-mb "$need" --max-util 10 --timeout-min 120 >>"$LOG" 2>&1 \
-      || fail "$name (GPU never freed up)"
+    if ! python3 tests/gates/gpu_guard.py --require-free-mb "$need" --max-util 10 --timeout-min 120 >>"$LOG" 2>&1; then
+      fail "$name (GPU never freed up)"
+      return 0
+    fi
   fi
   log "-> $name"
   "$@" >>"$LOG" 2>&1 || fail "$name"
 }
 
-step "build CUDA wheel"            -     bash tests/gates/ci_build.sh
+log "-> build CUDA wheel"
+bash tests/gates/ci_build.sh >>"$LOG" 2>&1 || abort "build CUDA wheel"
 step "lattice (FALCATA_VERIFY=1)"  12000 env FALCATA_VERIFY=1 "$VENV" tests/gates/lattice.py --check
 step "selective equivalence"       -     "$VENV" tests/gates/selective_equivalence.py --seeds 32 --rounds 30
 step "fuzz (45 min, corpus first)" -     "$VENV" tests/gates/fuzz.py --minutes 45
@@ -85,6 +97,12 @@ step "perf gate"                   -     "$VENV" tests/gates/perf_gate.py \
   --results tests/gates/bench_results.json \
   --baseline-file "$LOGDIR/bench_baseline.json" --warn-pct 4 --fail-pct 8 --record
 
+if [ -n "$FAILED_STEPS" ]; then
+  log "=== GATES FAILED:$FAILED_STEPS"
+  { echo "FAILED $(git rev-parse --short HEAD)"; echo "$FAILED_STEPS"; } > "$LOGDIR/last-status"
+  find "$LOGDIR" -name 'nightly-*.log' -mtime +30 -delete 2>/dev/null
+  exit 1
+fi
 log "=== ALL GATES PASSED"
 echo "PASSED $(git rev-parse --short HEAD)" > "$LOGDIR/last-status"
 find "$LOGDIR" -name 'nightly-*.log' -mtime +30 -delete 2>/dev/null
