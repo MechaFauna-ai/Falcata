@@ -61,9 +61,10 @@ REGIMES = {
         "leaves": 1023,
         "eval_every": 25,
     },
-    # official Numerai v5 benchmark-model "deep" parameters
-    # (docs.numer.ai/numerai-tournament/models#deep-lgbm-params) -- the config
-    # most Numerai users care about; the example config stays for completeness
+    # Numerai's published deep_lgbm_params, the parameters behind their v5
+    # benchmark models (docs.numer.ai/numerai-tournament/models#deep-lgbm-params);
+    # verified field-for-field against that page. The config most Numerai users
+    # care about; the example config stays for completeness
     "numerai-deep": {
         "rounds": 30000,
         "lr": 0.001,
@@ -73,7 +74,12 @@ REGIMES = {
         "min_data": 10000,
         "eval_every": 3000,
     },
-    # official Numerai example-model parameters
+    # the model in Numerai's hello_numerai notebook
+    # (github.com/numerai/example-scripts, numerai/hello_numerai.ipynb).
+    # DEVIATION: that notebook sets num_leaves=2**5-1 = 31; every published
+    # number was measured at 32 and the value is kept so this config still
+    # reproduces them. Every engine gets the same 32, so the comparison is
+    # unaffected -- but it is not a verbatim copy of the notebook.
     "numerai": {
         "rounds": 2000,
         "lr": 0.01,

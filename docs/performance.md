@@ -122,9 +122,14 @@ shorthand like "deep" or "30k trees":
 | numerai deep | 30 000 | 0.001 | 1024 / 10 | `colsample_bytree` 0.1, `min_data_in_leaf` 10k |
 | numerai leaf | 30 000 | 0.001 | 1024 / unbounded | `colsample_bytree` 0.1, `min_data_in_leaf` 1k — leaf-wise growth where the 1024-leaf budget binds (maps to lossguide on XGBoost/CatBoost) |
 
-Both numerai regimes are Numerai's own published example models, taken
-unchanged from [numerai/example-scripts](https://github.com/numerai/example-scripts)
-so the configuration is reproducible and not tuned to favour any library here.
+The numerai regimes come from Numerai, not from us, so the configuration is
+public and not tuned to favour any library here. *numerai deep* is their
+published `deep_lgbm_params` — the parameters behind the v5 benchmark models —
+from [the Numerai docs](https://docs.numer.ai/numerai-tournament/models#deep-lgbm-params).
+*numerai example* is the model in their `hello_numerai` notebook, with one
+deviation: we run 32 leaves where the notebook says `2**5-1` = 31 (all engines
+get the same 32, so the comparison stays even). *numerai leaf* is ours — the
+deep parameters with the depth cap lifted, so the leaf budget is what binds.
 The two 30k-tree regimes are single timed runs (repeats are unaffordable at
 2–3 h per competitor cell); everything else is a median of 3.
 

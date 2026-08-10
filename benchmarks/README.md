@@ -55,9 +55,9 @@ across the hyperparameter regimes (gbm-bench convention: 500 rounds, lr 0.1,
 
 - **shallow**: depth 6 / 63 leaves
 - **deep**: depth 10 / 1023 leaves
-- **numerai**: official example-model config (2000 trees, lr 0.01, depth 5, 32 leaves, colsample 0.1)
-- **numerai-deep**: official v5 benchmark-model deep params (30k trees, lr 0.001, depth 10, 1024 leaves, colsample 0.1, min_data 10k)
-- **numerai-leaf**: as numerai-deep but depth-unbounded, so the 1024-leaf budget is the binding constraint (min_data 1000)
+- **numerai**: Numerai's `hello_numerai` notebook model (2000 trees, lr 0.01, depth 5, 32 leaves, colsample 0.1 — the notebook says 31 leaves; see common.py)
+- **numerai-deep**: Numerai's published [`deep_lgbm_params`](https://docs.numer.ai/numerai-tournament/models#deep-lgbm-params), the v5 benchmark-model parameters (30k trees, lr 0.001, depth 10, 1024 leaves, colsample 0.1, min_data 10k)
+- **numerai-leaf**: ours, not Numerai's — numerai-deep with the depth cap lifted, so the 1024-leaf budget is what binds (min_data 1000)
 
 Structural caveat: the LightGBM family grows leaf-wise (`num_leaves` +
 `max_depth` cap), XGBoost depth-wise (`max_depth`), CatBoost symmetric
