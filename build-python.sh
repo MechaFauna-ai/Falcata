@@ -215,6 +215,10 @@ create_isolated_source_dir() {
     cp -R ./python-package ./falcata-python
 
     cp LICENSE ./falcata-python/
+    # NOTICE carries the fork provenance, the Microsoft/LightGBM non-affiliation
+    # disclaimer and the bundled third-party license list -- it has to travel
+    # with the distribution, not just live in the repo.
+    cp NOTICE ./falcata-python/
     cp VERSION.txt ./falcata-python/falcata/VERSION.txt
 
     cp -R ./cmake ./falcata-python

@@ -26,7 +26,8 @@ dependencies = [
 description = "Falcata: GPU-first gradient boosted decision trees"
 license = "MIT"
 license-files = [
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
 ]
 authors = [
   {name = "Felix Jonas Kroner", email = "felix@mechafauna.ai"},
