@@ -109,6 +109,25 @@ upstream-bugs).
 
 ![time to quality](perf-plots/time_to_quality.png)
 
+Two endpoints on this chart need reading carefully, and neither changes the
+frontier claim above — reaching each quality level first is a separate
+statement from where the curves stop.
+
+*Upstream ends above falcata on higgs* (.8505 vs .8485). That is the
+`max_depth` bug of footnote ⁵: the deep regime asks for 1023 leaves inside
+depth 10, and upstream's CUDA learner places them wherever gain is best, so it
+trains a deeper, more expressive model than the one configured — which is also
+why its curve sits so far right. Given the same semantics (`max_depth=-1`)
+falcata matches it to the 5th decimal at 1.7–3.7× the speed.
+
+*XGBoost ends above falcata on epsilon* (.9440 vs .9429), and that one is
+simply real. It is an XGBoost-vs-LightGBM difference on this dataset rather
+than a falcata regression: `falcata-noquant` lands at .94307 against upstream's
+.94320, so the two implementations of the same algorithm agree to 1e-4, and
+quantization costs a further ~4e-4 (§5). CatBoost is actually the quality
+leader on this cell at .95076, but it cannot be drawn — its curve run recorded
+a single eval point. Every endpoint is in the scoreboard table above.
+
 **Resources** — falcata's 4-bit rowdata + compact view keep it the smallest
 or tied-smallest footprint of the CUDA libraries, where CatBoost
 pre-allocates the whole card. (The asterisked OpenCL bar is smaller only

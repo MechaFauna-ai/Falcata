@@ -621,12 +621,14 @@ CURVE_COLOR = {
 
 def plot_curves():
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 3.8))
+    missing = []
     for ax, ds, reg in ((ax1, "higgs", "deep"), (ax2, "epsilon", "deep")):
         ymin = 1.0
         for (lib, d, r), curve in CURVES.items():
             if d != ds or r != reg or lib in ("lightgbm-quant", "lightgbm-ocl", "xgboost-lossguide"):
                 continue
             if len(curve) < 2:
+                missing.append(LIB_LABEL.get(lib, lib))
                 continue
             xs = [p[1] for p in curve]
             ys = [p[2] for p in curve]
@@ -673,6 +675,18 @@ def plot_curves():
         fontsize=7.5,
         color=TEXT2,
     )
+    if missing:
+        names = ", ".join(sorted(set(missing)))
+        fig.text(
+            0.5,
+            -0.13,
+            f"not shown: {names} — the curve run recorded a single eval point, so there is no curve to draw "
+            f"(endpoint quality for every library is in the scoreboard table)",
+            ha="center",
+            va="top",
+            fontsize=7.5,
+            color=TEXT2,
+        )
     fig.tight_layout()
     fig.savefig(os.path.join(HERE, "time_to_quality.png"), bbox_inches="tight")
     plt.close(fig)
