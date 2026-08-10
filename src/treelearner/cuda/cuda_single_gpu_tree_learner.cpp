@@ -567,8 +567,21 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   for (size_t i = 0; i < bytree_mask.size(); ++i) {
     if (bytree_mask[i]) sig = sig * 1099511628211ULL ^ static_cast<uint64_t>(i + 1);
   }
+  // The published view is made of DEVICE POINTERS into the histogram
+  // constructor's compact buffer (SetCompactPackedColumnView bakes
+  // packed_buf + per-column offset, which the split kernels dereference), so
+  // an unchanged column set does NOT by itself mean the cached pointers are
+  // still valid: compact_prefill swaps the compact buffer between trees, and
+  // a stale base silently routes splits through the previous tree's bytes.
+  // Fold the source addresses into the key so any swap forces a rebuild.
+  sig = sig * 1099511628211ULL ^
+        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(
+            cuda_histogram_constructor_->compact_data_device()));
+  sig = sig * 1099511628211ULL ^
+        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(
+            cuda_histogram_constructor_->compact_col_major_device()));
   if (sig == compact_col_signature_ && !compact_column_to_orig_.empty()) {
-    // Cache hit: layout unchanged → pointers still valid.
+    // Cache hit: layout AND source pointers unchanged → published view valid.
     return;
   }
 
