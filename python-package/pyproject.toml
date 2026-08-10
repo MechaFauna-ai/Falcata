@@ -100,6 +100,11 @@ build-type = "Release"
 
 [tool.scikit-build.cmake.define]
 __BUILD_FOR_PYTHON = "ON"
+# Falcata is a CUDA-native library, so a source build targets the GPU by
+# default (upstream LightGBM defaults to CPU; that default makes no sense
+# here). Needs the CUDA toolkit. For a CPU-only build:
+#   pip install falcata --config-settings=cmake.define.USE_CUDA=OFF
+USE_CUDA = "ON"
 
 # end:build-system
 

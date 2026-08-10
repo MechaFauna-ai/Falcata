@@ -132,7 +132,10 @@ cd "${BUILD_DIRECTORY}"
 if [[ $TASK == "sdist" ]]; then
     sh ./build-python.sh sdist || exit 1
     sh .ci/check-python-dists.sh ./dist || exit 1
-    pip install -v --no-deps "./dist/falcata-${LGB_VER}.tar.gz" || exit 1
+    # the package now defaults to a CUDA build; these runners have no toolkit
+    pip install -v --no-deps \
+        --config-settings=cmake.define.USE_CUDA=OFF \
+        "./dist/falcata-${LGB_VER}.tar.gz" || exit 1
     if [[ $PRODUCES_ARTIFACTS == "true" ]]; then
         cp "./dist/falcata-${LGB_VER}.tar.gz" "${BUILD_ARTIFACTSTAGINGDIRECTORY}" || exit 1
     fi

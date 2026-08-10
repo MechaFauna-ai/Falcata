@@ -113,43 +113,65 @@ preds = model.predict(cupy_X)          # device in -> device out, no host round-
   FIL: they use the booster's internal evaluation on the attached validation
   set, which is already GPU-resident under `device_type=cuda`.
 
-Build from source
------------------
+Install
+-------
 
-Prerequisites: CMake >= 3.28, a C++17 compiler (gcc or clang on Linux, MSVC /
-VS Build Tools on Windows), the CUDA toolkit >= 11.0, and Python >= 3.10. The
-default build is single-GPU and has no NCCL dependency (NCCL has no official
-Windows distribution):
+```bash
+pip install falcata
+```
+
+That builds the CUDA library from source, so you need the **CUDA toolkit
+(>= 11.0)**, CMake >= 3.28, a C++17 compiler and Python >= 3.10. Nothing else:
+the source distribution vendors every dependency, so no `git clone` and no
+submodule dance.
+
+The build targets **every GPU architecture your toolkit supports** (sm_75
+upward, plus PTX for the newest so future cards still run), which is why it
+takes a while. If you know your own GPU, building for just that one is far
+faster:
+
+```bash
+# RTX 5090 = 120, RTX 4090 = 89, A100 = 80, T4 = 75
+pip install falcata --config-settings=cmake.define.CMAKE_CUDA_ARCHITECTURES=89
+```
+
+No GPU? There is a CPU build, though it is not what this library is for:
+
+```bash
+pip install falcata --config-settings=cmake.define.USE_CUDA=OFF
+```
+
+**Multi-GPU training** additionally needs NCCL *and its headers* — on
+Debian/Ubuntu `sudo apt-get install libnccl2 libnccl-dev`, or
+`conda install -c conda-forge nccl`. `BUILD_WITH_SHARED_NCCL` links
+`libnccl.so` instead of the static archive, which avoids nvlink failures
+against some static NCCL builds on newer architectures:
+
+```bash
+pip install falcata \
+  --config-settings=cmake.define.USE_NCCL=ON \
+  --config-settings=cmake.define.BUILD_WITH_SHARED_NCCL=ON
+```
+
+With `USE_NCCL=ON` but no NCCL headers on the include path, configuration
+fails with `Could NOT find NCCL (missing: NCCL_INCLUDE_DIR)`.
+
+Build from source (development)
+-------------------------------
 
 ```bash
 git clone https://github.com/MechaFauna-ai/Falcata.git
 cd Falcata
 git submodule update --init --recursive
-# Adjust CMAKE_CUDA_ARCHITECTURES for your GPU. RTX 5090 = 120, RTX 4090 = 89.
-CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120-real;120-virtual" \
-  sh build-python.sh install --cuda
+sh build-python.sh install --cuda
 ```
-
-For **multi-GPU training**, enable NCCL — including its headers, which on
-Debian/Ubuntu means `sudo apt-get install libnccl2 libnccl-dev` (or
-`conda install -c conda-forge nccl`):
-
-```bash
-# BUILD_WITH_SHARED_NCCL links libnccl.so instead of libnccl_static.a, which
-# avoids nvlink failures against some static NCCL builds on newer archs.
-CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120-real;120-virtual -DUSE_NCCL=ON -DBUILD_WITH_SHARED_NCCL=ON" \
-  sh build-python.sh install --cuda
-```
-
-With `USE_NCCL=ON` but no NCCL headers on the include path, configuration
-fails with `Could NOT find NCCL (missing: NCCL_INCLUDE_DIR)`.
 
 **Windows.** CUDA builds and runs on Windows too (single-GPU). Use the Ninja
 generator from an *x64 Native Tools Command Prompt for VS* (so `nvcc` finds
 `cl.exe`), then install against the compiled DLL:
 
 ```console
-cmake -B build -S . -G Ninja -DUSE_CUDA=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120-real
+cmake -B build -S . -G Ninja -DUSE_CUDA=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 sh ./build-python.sh install --precompile
 ```

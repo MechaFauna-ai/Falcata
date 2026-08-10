@@ -204,6 +204,14 @@ create_isolated_source_dir() {
         ./python-package/dist \
         ./python-package/falcata.egg-info
 
+    # a locally built (or symlinked) library here would be copied into the
+    # sdist -- an absolute symlink makes the archive uninstallable, since pip
+    # rejects tar members that link outside the archive
+    rm -f \
+        ./python-package/lib_falcata.so \
+        ./python-package/lib_falcata.dylib \
+        ./python-package/lib_falcata.dll
+
     cp -R ./python-package ./falcata-python
 
     cp LICENSE ./falcata-python/
