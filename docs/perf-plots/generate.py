@@ -224,6 +224,7 @@ def plot_cross_library():
         "quality  ·  * = upstream's OpenCL backend (its CUDA build OOMs)  ·  "
         "✗ = no working upstream path (diverged; OpenCL lost to a driver regression)",
         ha="center",
+        va="top",
         fontsize=7.5,
         color=TEXT2,
     )
@@ -632,7 +633,8 @@ def plot_curves():
             # clip the early ramp, but never a curve's FINAL value (an honest
             # quality dip must stay in frame)
             ymin = min(ymin, ys[len(ys) // 4], ys[-1] - 0.0008)
-            ax.plot(xs, ys, color=CURVE_COLOR.get(lib, LIB_COLOR[lib]), linewidth=2, label=LIB_LABEL[lib])
+            label = LIB_LABEL[lib] + ("*" if lib == "lightgbm" else "")
+            ax.plot(xs, ys, color=CURVE_COLOR.get(lib, LIB_COLOR[lib]), linewidth=2, label=label)
         ax.set_xscale("log")
         ax.set_ylim(bottom=ymin)
         ax.set_xlabel("wall time (s, log)")
@@ -643,7 +645,18 @@ def plot_curves():
         ax.legend(
             [handles[i] for i in order], [labels[i] for i in order], fontsize=7.5, frameon=False, loc="upper left"
         )
-    fig.suptitle("Time-to-quality (eval every 25 iters; cross-library sweep)", fontsize=10, y=1.02)
+    fig.suptitle("Time-to-quality (eval every 25 iters; cross-library sweep)", fontsize=10, y=1.04)
+    fig.text(
+        0.5,
+        -0.02,
+        "* upstream's CUDA learner does not enforce max_depth: its trees grow past the configured depth 10, so its "
+        "higher endpoint is a bigger model, not a like-for-like win\n(at equal semantics falcata matches it to the "
+        "5th decimal)",
+        ha="center",
+        va="top",
+        fontsize=7.5,
+        color=TEXT2,
+    )
     fig.tight_layout()
     fig.savefig(os.path.join(HERE, "time_to_quality.png"), bbox_inches="tight")
     plt.close(fig)
