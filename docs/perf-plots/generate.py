@@ -255,17 +255,14 @@ def plot_cross_library():
     ax.minorticks_off()
     ax.set_xticks(list(x), [DS_LABEL.get(dr, dr[0]) for dr in DS_REGS], fontsize=9)
     ax.set_ylabel("training time vs falcata (×, log)")
-    ax.set_title(
-        "GPU training time relative to falcata — all libraries on CUDA, deep regimes",
-        fontsize=10.5,
-        pad=26,
-    )
+    ax.set_title("GPU training time relative to falcata", fontsize=10.5, pad=26)
     fig.text(
         0.5,
         -0.04,
-        "cross-library sweep, one GPU, 500 trees (numerai: 30k) at matched-or-better "
-        "quality  ·  * = upstream's OpenCL backend (its CUDA build OOMs)  ·  "
-        "✗ = no working upstream path (diverged; OpenCL lost to a driver regression)",
+        "deep regimes, all libraries on CUDA, one GPU, 500 trees (numerai: 30k) at "
+        "matched-or-better quality  ·  * = upstream's OpenCL backend (its CUDA build "
+        "OOMs)  ·  ✗ = no working upstream path (diverged; OpenCL lost to a driver "
+        "regression)",
         ha="center",
         va="top",
         fontsize=7.5,
@@ -335,7 +332,7 @@ def plot_quant_modes():
                 )
     ax1.set_xticks(list(x), labels, fontsize=8, rotation=20)
     ax1.set_ylabel("speedup vs no-quant (×)")
-    ax1.set_title("Quantized training: speed", fontsize=10)
+    ax1.set_title("Speed", fontsize=10)
     ax1.legend(fontsize=8, frameon=False)
     bar_ends(ax1)
     # quality: relative metric delta vs noquant, in % (sign = better/worse)
@@ -368,12 +365,17 @@ def plot_quant_modes():
     ax2.axhline(0, color=TEXT2, linewidth=0.8)
     ax2.set_xticks(list(x), labels, fontsize=8, rotation=20)
     ax2.set_ylabel("quality vs no-quant (%)")
-    ax2.set_title("Quantized training: quality delta (+ is better)", fontsize=10)
+    ax2.set_title("Quality (+ is better)", fontsize=10)
     bar_ends(ax2)
-    fig.suptitle(
+    fig.suptitle("Quantization modes", fontsize=11, y=1.03)
+    fig.text(
+        0.5,
+        -0.02,
         "quant_mode effect, measured on the cross-library sweep (deep regimes)",
-        fontsize=10,
-        y=1.03,
+        ha="center",
+        va="top",
+        fontsize=7.5,
+        color=TEXT2,
     )
     fig.tight_layout()
     fig.savefig(os.path.join(HERE, "quant_modes.png"), bbox_inches="tight")
@@ -412,9 +414,15 @@ def plot_construct():
     ax.invert_yaxis()
     ax.set_xlim(0, 64)
     ax.set_xlabel("time until training can start (s)")
-    ax.set_title(
-        "Ingestion of the numerai matrix (6.8M rows × 3555 features, ~96 GB float32)",
-        fontsize=10,
+    ax.set_title("Ingestion of the numerai matrix", fontsize=10)
+    fig.text(
+        0.5,
+        -0.06,
+        "6.8M rows × 3555 features, ~96 GB as float32",
+        ha="center",
+        va="top",
+        fontsize=7.5,
+        color=TEXT2,
     )
     ax.grid(axis="y", visible=False)
     fig.tight_layout()
@@ -455,10 +463,15 @@ def plot_hybrid_ablation():
         ax.set_title(title, fontsize=9.5)
         ax.margins(x=0.22)
         ax.grid(axis="y", visible=False)
-    fig.suptitle(
-        "Throughput cost of turning the feature OFF (leave-one-out ablation) — larger = feature worth more",
-        fontsize=10,
-        y=1.04,
+    fig.suptitle("What each hybrid-growth feature is worth", fontsize=11, y=1.04)
+    fig.text(
+        0.5,
+        -0.01,
+        "leave-one-out ablation: throughput cost of turning the feature off — larger = worth more",
+        ha="center",
+        va="top",
+        fontsize=7.5,
+        color=TEXT2,
     )
     fig.tight_layout()
     fig.savefig(os.path.join(HERE, "hybrid_ablation.png"), bbox_inches="tight")
@@ -488,10 +501,12 @@ def plot_single_feature(key, title, fname):
     ax.axvline(0, color=TEXT2, linewidth=0.8)
     ax.set_yticks(list(ys), [c for c, _ in vals], fontsize=9)
     ax.invert_yaxis()
-    ax.set_title(f"{title}: throughput cost of turning it OFF", fontsize=9.5)
+    ax.set_title(title, fontsize=10)
     xlbl = "Δ throughput when disabled (%)"
     if n_neutral:
-        xlbl += f"   —   free on the other {n_neutral} suite cells (within run noise, verified)"
+        xlbl += (
+            f"\nfree on the other {n_neutral} suite cells (within run noise, verified)"
+        )
     ax.set_xlabel(xlbl, fontsize=8.5)
     ax.margins(x=0.18)
     ax.grid(axis="y", visible=False)
@@ -615,10 +630,15 @@ def plot_selective_prune():
         color=TEXT2,
     )
 
-    fig.suptitle(
-        "Selective grow-then-prune: level batching when the leaf budget binds",
-        fontsize=10.5,
-        y=1.03,
+    fig.suptitle("Selective grow-then-prune", fontsize=11, y=1.03)
+    fig.text(
+        0.5,
+        0.0,
+        "how level batching works when the leaf budget binds",
+        ha="center",
+        va="top",
+        fontsize=7.5,
+        color=TEXT2,
     )
     fig.tight_layout()
     fig.savefig(os.path.join(HERE, "hybrid_selective_prune.png"), bbox_inches="tight")
@@ -808,7 +828,7 @@ def plot_curves():
         ax.set_ylim(bottom=ymin)
         ax.set_xlabel("wall time (s, log)")
         ax.set_ylabel("test AUC")
-        ax.set_title(f"{ds} deep (500 trees)", fontsize=10)
+        ax.set_title(ds, fontsize=10)
         handles, labels = ax.get_legend_handles_labels()
         order = sorted(range(len(labels)), key=lambda i: labels[i])
         ax.legend(
@@ -818,10 +838,15 @@ def plot_curves():
             frameon=False,
             loc="upper left",
         )
-    fig.suptitle(
-        "Time-to-quality (eval every 25 iters; cross-library sweep)",
-        fontsize=10,
-        y=1.04,
+    fig.suptitle("Time-to-quality", fontsize=11, y=1.04)
+    fig.text(
+        0.5,
+        0.995,
+        "deep regime, 500 trees, evaluated every 25 iterations",
+        ha="center",
+        va="top",
+        fontsize=7.5,
+        color=TEXT2,
     )
     fig.text(
         0.5,
@@ -930,10 +955,7 @@ def plot_memory():
                 ax.text(xx, v, note, ha="center", va="bottom", fontsize=9, color=TEXT)
     ax.set_xticks(list(x), [DS_LABEL.get(dr, dr[0]) for dr in drs], fontsize=9)
     ax.set_ylabel("GPU peak (GB)")
-    ax.set_title(
-        "Peak GPU memory, deep regimes  ·  * = upstream's OpenCL backend (its CUDA build OOMs)",
-        fontsize=10,
-    )
+    ax.set_title("Peak GPU memory", fontsize=10)
     # Below the axes, not floating inside them: the tallest bars (catboost on
     # airline/numerai) ran straight through a legend placed automatically.
     ax.legend(
@@ -942,6 +964,16 @@ def plot_memory():
         ncols=4,
         loc="upper center",
         bbox_to_anchor=(0.5, -0.16),
+    )
+    fig.text(
+        0.5,
+        -0.06,
+        "deep regimes  ·  * = upstream's OpenCL backend (its CUDA build OOMs), which "
+        "keeps the training data host-side",
+        ha="center",
+        va="top",
+        fontsize=7.5,
+        color=TEXT2,
     )
     bar_ends(ax)
     fig.tight_layout()
