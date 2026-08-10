@@ -635,6 +635,22 @@ def plot_curves():
             ymin = min(ymin, ys[len(ys) // 4], ys[-1] - 0.0008)
             label = LIB_LABEL[lib] + ("*" if lib == "lightgbm" else "")
             ax.plot(xs, ys, color=CURVE_COLOR.get(lib, LIB_COLOR[lib]), linewidth=2, label=label)
+            if lib == "lightgbm":
+                # Mark the curve itself, not just the legend entry: the endpoint
+                # is the thing that looks like a win, so the caveat belongs
+                # where the eye lands. clip_on=False keeps it visible when the
+                # curve ends against the right spine.
+                ax.text(
+                    xs[-1],
+                    ys[-1],
+                    " *",
+                    color=CURVE_COLOR["lightgbm"],
+                    fontsize=14,
+                    weight="bold",
+                    ha="left",
+                    va="center",
+                    clip_on=False,
+                )
         ax.set_xscale("log")
         ax.set_ylim(bottom=ymin)
         ax.set_xlabel("wall time (s, log)")
