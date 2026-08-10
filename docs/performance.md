@@ -189,13 +189,18 @@ returns.
 sequence and lets a device-side controller replay it, removing the CPU from
 the inner loop entirely.
 
-**Measured (leave-one-out ablation):** single-digit percentages everywhere —
-+9% covtype-deep, +5% numerai-deep, +4% numerai-example, ±2% elsewhere. The
-graph's job today is smaller than when it landed (the one-sync and batched
-flows already removed most host round-trips it was built to hide), but it is
-free where it doesn't help and the planner picks per shape.
+**Measured (leave-one-out ablation):** nothing clears the noise floor. The
+largest readings are +9.3% on covtype-deep and +4.5% on both numerai cells,
+against noise bands of 12% and 5% respectively (§8 methodology note) — every
+other cell is inside ±2%. The direction is consistently positive on the big
+cells, which is what you would expect from a real but small effect, but this
+suite cannot resolve it, so no number here is quotable and the section carries
+no plot.
 
-![graph loop ablation](perf-plots/ablation_graph_loop.png)
+The graph's job today is simply smaller than when it landed: the one-sync and
+batched flows already removed most of the host round-trips it was built to
+hide. It stays on because it is free where it doesn't help, and the planner
+picks per shape.
 
 ## 4. Per-tree compact column view (`compact_quant`)
 

@@ -377,6 +377,13 @@ def plot_single_feature(key, title, fname):
     vals = [(sc, v) for c, sc, v in all_vals if abs(v) > cell_noise_band(c)]
     n_neutral = len(all_vals) - len(vals)
     vals.sort(key=lambda t: -t[1])
+    if not vals:
+        # Every cell landed inside its noise band. An axes with no bars reads as
+        # a broken figure, and worse, implies there was something to show; the
+        # doc states the result in prose instead (same convention as the JIT
+        # section). Emitting nothing keeps the two in step.
+        print(f"  {fname}: no cell clears the noise band -- no plot written")
+        return
     fig, ax = plt.subplots(figsize=(7, 0.55 * max(len(vals), 2) + 1.1))
     ys = range(len(vals))
     ax.barh(list(ys), [v for _, v in vals], height=0.62, color=LIB_COLOR["falcata-stoch"])
