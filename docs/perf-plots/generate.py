@@ -444,7 +444,6 @@ def plot_selective_prune():
         ax.plot([0.8, 9.6], [2.0, 2.0], color=GRID, linewidth=1.2)
         for i, (x, glabel) in enumerate(cand):
             live = (i in keep) if kept_only else True
-            col = BLUE if (not drawn or i in keep or not kept_only) else DROP
             ax.plot([x, x], [2.0, 0.9], color=GRID, linewidth=1.2, zorder=1)
             ax.scatter([x], [0.9], s=360, color=BLUE if live else DROP, zorder=2)
             if drawn:
