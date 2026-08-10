@@ -22,6 +22,12 @@ LOG="$LOGDIR/nightly-$(date +%F).log"
 VENV="$REPO/.gates-venv/bin/python"
 mkdir -p "$LOGDIR"
 
+# Machine-local data locations. The gate scripts default to repo-relative paths
+# so they stay runnable on any checkout; this box keeps the real caches outside
+# the repo, so point them at the actual copies here rather than in tracked code.
+export FALCATA_BENCH_CACHE="${FALCATA_BENCH_CACHE:-$HOME/Documents/exaboost-bench/data/cache}"
+export FALCATA_NUMERAI_V53="${FALCATA_NUMERAI_V53:-$HOME/Documents/numerai/data/1226_int8nan.dataset}"
+
 log() { echo "[$(date +%H:%M:%S)] $*" >> "$LOG"; }
 fail() { log "FAIL: $*"; echo "FAILED: $*" >> "$LOGDIR/last-status"; exit 1; }
 
