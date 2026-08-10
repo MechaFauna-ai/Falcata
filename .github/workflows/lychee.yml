@@ -33,7 +33,10 @@ jobs:
         with:
           fetch-depth: 5
           persist-credentials: false
-          submodules: false
+          # the docs build compiles the R package (generate_r_docs), which
+          # needs the vendored headers -- Static Analysis's check-docs job
+          # checks out submodules for exactly this reason
+          submodules: true
       - name: Build docs
         run: |
           export CONDA=${HOME}/miniforge
