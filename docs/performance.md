@@ -39,9 +39,13 @@ configuration behind shorthand like "deep" or "30k trees":
 |---|---|---|---|---|
 | shallow | 500 | 0.1 | 63 / 6 | gbm-bench convention, `max_bin` 255 |
 | deep | 500 | 0.1 | 1023 / 10 | gbm-bench convention, `max_bin` 255 |
-| numerai example | 2 000 | 0.01 | 32 / 5 | `colsample_bytree` 0.1 — the official Numerai example-model params |
-| numerai deep | 30 000 | 0.001 | 1024 / 10 | `colsample_bytree` 0.1, `min_data_in_leaf` 10k — the canonical production deep params |
+| numerai example | 2 000 | 0.01 | 32 / 5 | `colsample_bytree` 0.1 |
+| numerai deep | 30 000 | 0.001 | 1024 / 10 | `colsample_bytree` 0.1, `min_data_in_leaf` 10k |
 | numerai leaf | 30 000 | 0.001 | 1024 / unbounded | `colsample_bytree` 0.1, `min_data_in_leaf` 1k — leaf-wise growth where the 1024-leaf budget binds (maps to lossguide on XGBoost/CatBoost) |
+
+Both numerai regimes are Numerai's own published example models, taken
+unchanged from [numerai/example-scripts](https://github.com/numerai/example-scripts)
+so the configuration is reproducible and not tuned to favour any library here.
 
 The two 30k-tree regimes are single timed runs (repeats are unaffordable at
 2–3 h per competitor cell); everything else is a median of 3.
