@@ -111,7 +111,7 @@ fit <- lgb.train(
 )
 ```
 
-Try it out! If stuck, visit Falcata's [documentation](https://github.com/MechaFauna-ai/Falcata/blob/master/docs/R/index.rst) for more details.
+Try it out! If stuck, visit Falcata's [documentation](https://github.com/MechaFauna-ai/Falcata/tree/master/R-package) for more details.
 
 ```{r, echo = FALSE, results = "hide"}
 # Cleanup

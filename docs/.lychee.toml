@@ -34,8 +34,17 @@ exclude = [
     '^https://medium\.com/.*',
     # rate-limits the checker to 429 when a run has more than a couple of links
     '^https://en\.wikipedia\.org/.*',
+    # serves a corrupt TLS record to the checker; opens fine in a browser
+    '^https://dirk\.eddelbuettel\.com/.*',
 ]
 exclude_path = [
+    # generated pkgdown output. The R README's in-page links use inline
+    # <a id="..."> anchors, which lychee cannot resolve in the rendered
+    # markdown (it derives fragments from heading slugs), so every one of them
+    # reports as a missing fragment. The links work on GitHub, which is where
+    # they are actually read.
+    "(^|/)R-package/docs/",
+    "(^|/)docs/_build/html/R/",
     # vendored third-party docs (fmt, eigen, nanoarrow ...): not ours to fix,
     # and only reachable since the docs build began checking out submodules
     "(^|/)external_libs/",
