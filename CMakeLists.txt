@@ -560,6 +560,7 @@ set(
 set(
     FLC_CUDA_SOURCES
       src/boosting/cuda/cuda_score_updater.cpp
+      src/boosting/cuda/cuda_bagging.cu
       src/boosting/cuda/cuda_score_updater.cu
       src/metric/cuda/cuda_binary_metric.cpp
       src/metric/cuda/cuda_pointwise_metric.cpp

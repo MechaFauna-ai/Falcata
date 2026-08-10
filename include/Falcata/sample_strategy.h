@@ -80,6 +80,9 @@ class SampleStrategy {
   #ifdef USE_CUDA
   /*! \brief Buffer for bag_data_indices_ on GPU, used only with cuda */
   CUDAVector<data_size_t> cuda_bag_data_indices_;
+  /*! \brief device scratch for the on-device sampler (flags + prefix scan) */
+  CUDAVector<data_size_t> cuda_bag_scratch_;
+  CUDAVector<data_size_t> cuda_bag_block_buffer_;
   #endif  // USE_CUDA
 };
 

@@ -71,6 +71,7 @@ void ShufflePrefixSumGlobal(T* values, size_t len, T* block_prefix_sum_buffer) {
 template void ShufflePrefixSumGlobal<uint16_t>(uint16_t* values, size_t len, uint16_t* block_prefix_sum_buffer);
 template void ShufflePrefixSumGlobal<uint32_t>(uint32_t* values, size_t len, uint32_t* block_prefix_sum_buffer);
 template void ShufflePrefixSumGlobal<uint64_t>(uint64_t* values, size_t len, uint64_t* block_prefix_sum_buffer);
+template void ShufflePrefixSumGlobal<int>(int* values, size_t len, int* block_prefix_sum_buffer);
 
 __global__ void BitonicArgSortItemsGlobalKernel(const double* scores,
   const int num_queries,

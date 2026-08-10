@@ -7,6 +7,10 @@
 #ifndef FALCATA_SRC_BOOSTING_BAGGING_HPP_
 #define FALCATA_SRC_BOOSTING_BAGGING_HPP_
 
+#ifdef USE_CUDA
+#include <Falcata/cuda/cuda_bagging.hpp>
+#endif  // USE_CUDA
+
 #include <string>
 #include <vector>
 
@@ -34,6 +38,30 @@ class BaggingSampleStrategy : public SampleStrategy {
     if ((bag_data_cnt_ < num_data_ && iter % config_->bagging_freq == 0) ||
       need_re_bagging_) {
       need_re_bagging_ = false;
+      #ifdef USE_CUDA
+      // Device-side sampling. The host path below walks every row through a
+      // stateful RNG and then copies the whole num_data index array over PCIe,
+      // so its cost tracks the DATASET, not the sample -- which is why bagging
+      // used to make training 3.5x SLOWER despite touching less data, and why
+      // the penalty grew with host thread count. Philox is counter-based, so
+      // the device can draw the same kind of sample without any host state.
+      // Query bagging and balanced bagging keep the host path; neither is a
+      // plain per-row Bernoulli draw.
+      if (config_->device_type == std::string("cuda") && !config_->bagging_by_query &&
+          !balanced_bagging_) {
+        if (cuda_bag_data_indices_.Size() < static_cast<size_t>(num_data_)) {
+          cuda_bag_data_indices_.Resize(static_cast<size_t>(num_data_));
+        }
+        bag_data_cnt_ = CUDABaggingSample(num_data_, config_->bagging_fraction, iter,
+                                          config_->bagging_seed, &cuda_bag_scratch_,
+                                          &cuda_bag_block_buffer_,
+                                          cuda_bag_data_indices_.RawData());
+        // is_use_subset_ is always false on CUDA, so nothing reads the host
+        // bag_data_indices_ array; leaving it unfilled is what buys the win.
+        tree_learner->SetBaggingData(nullptr, cuda_bag_data_indices_.RawData(), bag_data_cnt_);
+        return;
+      }
+      #endif  // USE_CUDA
       if (!config_->bagging_by_query) {
         auto left_cnt = bagging_runner_.Run<true>(
           num_data_,
