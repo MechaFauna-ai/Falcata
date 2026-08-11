@@ -34,7 +34,7 @@ def measure_one(kind):
     import resource
     import time
 
-    import lightgbm as lgb
+    import falcata as lgb
     import numpy as np
 
     d = os.path.join(CACHE_DIR, "numerai")

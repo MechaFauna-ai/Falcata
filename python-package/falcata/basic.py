@@ -16,6 +16,7 @@ import ctypes
 import inspect
 import json
 import os
+import tempfile
 import warnings
 from collections import OrderedDict
 from copy import deepcopy
@@ -5042,15 +5043,21 @@ class Booster:
     ) -> Optional[Any]:
         """Convert this model to a GPU FIL model via an in-memory Treelite handoff."""
         try:
-            if start_iteration == 0 and num_iteration == self.best_iteration:
-                # from_lightgbm() serializes with model_to_string(), whose defaults
-                # resolve to exactly this slice
-                source: "Booster" = self
-            else:
-                source = Booster(
-                    model_str=self.model_to_string(num_iteration=num_iteration, start_iteration=start_iteration)
-                )
-            tl_model = treelite_frontend.from_lightgbm(source)
+            # hand the model text over via a temp file: load_lightgbm_model()
+            # is treelite's public loader with no dependency on a `lightgbm`
+            # python package (from_lightgbm() isinstance-checks against one)
+            model_str = self.model_to_string(
+                num_iteration=num_iteration, start_iteration=start_iteration
+            )
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".txt", delete=False
+            ) as tmp_file:
+                tmp_file.write(model_str)
+                tmp_path = tmp_file.name
+            try:
+                tl_model = treelite_frontend.load_lightgbm_model(tmp_path)
+            finally:
+                os.remove(tmp_path)
             header = tl_model.get_header_accessor()
             postprocessor = str(header.get_field("postprocessor"))
             # only routes with verified parity against the CPU predictor:

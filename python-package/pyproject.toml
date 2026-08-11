@@ -89,8 +89,7 @@ install.strip = true
 logging.level = "INFO"
 sdist.reproducible = true
 wheel.py-api = "py3"
-# ship the legacy `lightgbm` import shim alongside the real package
-wheel.packages = ["falcata", "lightgbm"]
+wheel.packages = ["falcata"]
 experimental = false
 strict-config = false
 minimum-version = "build-system.requires"

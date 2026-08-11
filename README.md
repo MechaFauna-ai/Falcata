@@ -196,8 +196,9 @@ data boundaries:
 - **Binary datasets** (`.dataset`) interchange in both directions.
 - **Parameter names** are unchanged; Falcata's additions (`quant_mode`,
   `cuda_precision`, `cuda_plan`) are new names that upstream simply ignores.
-- `import lightgbm` still works as an alias for `import falcata`, and the
-  historical `LGBM_*` C API names remain as aliases for `FLC_*`.
+- The historical `LGBM_*` C API names remain as aliases for `FLC_*`. The
+  Python package is `import falcata` only — code written against
+  `import lightgbm` needs its import changed, nothing else.
 
 See [docs/design/format-compatibility.md](docs/design/format-compatibility.md).
 
