@@ -85,6 +85,14 @@ struct FalcataPlan {
   // gap-gated outlier-robust gradient scale (fixedpoint quant only; no-op in
   // other modes). Changes the model when it fires -- NOT an equality key.
   bool robust_scale = true;         // key: robust_scale
+  // error-feedback accumulation for fixedpoint rounding (fixedpoint quant
+  // only; no-op in other modes): each row carries its rounding residual into
+  // the next tree's quantization, so the deterministic round-to-nearest bias
+  // telescopes away instead of accumulating -- the failure mode was single-row
+  // leaves at low bin budgets (fuzz seed20260811#431: mean +15.8% mlogloss vs
+  // full precision at 16 bins / min_data 1). Changes the model -- NOT an
+  // equality key. Fully deterministic: no RNG, no atomics, row-indexed.
+  bool quant_ef = true;             // key: quant_ef
   // experimental compact-view packing codecs (uniform per tree; eligible only
   // when every sampled feature's bin count fits the codec). Bit-identical by
   // construction (lossless packing). Priority radix5 > radix6 > bit3.
@@ -168,6 +176,7 @@ struct FalcataPlan {
     if (key == "gh_interleave") return &gh_interleave;
     if (key == "small_leaf_construct") return &small_leaf_construct;
     if (key == "robust_scale") return &robust_scale;
+    if (key == "quant_ef") return &quant_ef;
     if (key == "compact_prefill") return &compact_prefill;
     if (key == "pack_bit3") return &pack_bit3;
     if (key == "pack_radix5") return &pack_radix5;

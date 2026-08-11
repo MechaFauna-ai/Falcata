@@ -387,6 +387,11 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     cuda_gradient_discretizer_.reset(new CUDAGradientDiscretizer(
       effective_quant_bins_, config_->num_iterations * std::max(config_->num_class, 1), config_->seed, is_constant_hessian, fp_stochastic));
     cuda_gradient_discretizer_->SetRobustScale(fixedpoint_robust_scale_);
+    // error feedback debiases fixedpoint's deterministic rounding; stochastic
+    // rounding is already unbiased and never gets it
+    cuda_gradient_discretizer_->SetErrorFeedback(
+        fixedpoint_quant_ && FalcataPlan::Get().quant_ef,
+        std::max(config_->num_class, 1));
     cuda_gradient_discretizer_->SetNCCLInfo(nccl_communicator_, nccl_gpu_rank_, local_gpu_rank_, gpu_device_id_, global_num_data_);
     cuda_gradient_discretizer_->Init(num_data_, config_->num_leaves, train_data_->num_features(), train_data_);
   } else {
@@ -435,6 +440,12 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     cuda_data_partition_->use_bagging() ? cuda_data_partition_->cuda_data_indices() : nullptr;
   cuda_data_partition_->BeforeTrain();
   if (config_->use_quantized_grad) {
+    if (cuda_data_partition_->use_bagging()) {
+      cuda_gradient_discretizer_->SetBagForThisTree(
+          cuda_data_partition_->cuda_data_indices(), cuda_data_partition_->root_num_data());
+    } else {
+      cuda_gradient_discretizer_->SetBagForThisTree(nullptr, 0);
+    }
     cuda_gradient_discretizer_->DiscretizeGradients(num_data_, gradients_, hessians_);
     cuda_histogram_constructor_->BeforeTrain(
       reinterpret_cast<const score_t*>(cuda_gradient_discretizer_->discretized_gradients_and_hessians()), nullptr);

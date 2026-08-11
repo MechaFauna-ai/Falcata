@@ -232,17 +232,17 @@ def is_known_cpu_quant_defect(spec, error):
 
 
 def is_fixedpoint_lowbin_bias(spec):
-    """Fixedpoint's deterministic rounding at very low bin budgets, feeding
-    leaves small enough to hold single rows, is measurably biased: on the
-    2026-08-11 nightly's seed20260811#431 spec, a 6-seed sweep gave gaps vs
-    full precision of -12.9%..+39.2% (mean +15.8) -- the sign flips, and
-    stochastic at the SAME 16 bins passes, so this is the rounding scheme's
-    bias, not a kernel defect (see docs/performance.md on quant modes and the
-    fixedpoint-vs-stochastic gap). The cpu cross-check compares against
-    unquantized cpu (fixedpoint has no cpu arm), so in this corner it measures
-    quantization error, not implementation parity. All three conditions are
-    required; everything outside them still fails hard, and the md5
-    determinism check above still applies here.
+    """Fixedpoint at very low bin budgets with single-row leaves: the cpu
+    cross-check compares against UNQUANTIZED cpu (fixedpoint has no cpu arm),
+    so in this corner it measures quantization noise, not implementation
+    parity. The systematic bias this corner used to show (6-seed mean +15.8%
+    on the 2026-08-11 nightly's seed20260811#431) was fixed by error-feedback
+    accumulation in the discretizer (cuda_plan key quant_ef); what remains is
+    symmetric variance, measured -29..+15% across seeds with mean -6% (cuda
+    slightly BETTER than full precision). Single seeds still cross the 10%
+    tolerance in either direction, hence this classification. All three
+    conditions are required; everything outside them still fails hard, and
+    the md5 determinism check above still applies here.
     """
     return (
         spec["quant_mode"] == "fixedpoint"
@@ -279,21 +279,21 @@ def check_spec(spec):
         tol = abs(ref) * CPU_METRIC_TOLERANCE + 1e-9
         worse = cur < ref - tol if a["higher_better"] else cur > ref + tol
         if worse and is_fixedpoint_lowbin_bias(spec):
-            # still bounded: a gap this size is the measured bias envelope;
-            # a corrupted kernel blows past it (historically 2-10x)
+            # still bounded: the post-error-feedback variance envelope is
+            # +-30%; a corrupted kernel blows past it (historically 2-10x)
             blown = (
-                cur < ref - abs(ref) * 0.6
+                cur < ref - abs(ref) * 0.35
                 if a["higher_better"]
-                else cur > ref + abs(ref) * 0.6
+                else cur > ref + abs(ref) * 0.35
             )
             if blown:
                 fails.append(
                     f"cuda metric {cur:.6f} vs cpu {ref:.6f}: beyond the "
-                    "fixedpoint low-bin bias envelope -- treat as real"
+                    "fixedpoint low-bin variance envelope -- treat as real"
                 )
             else:
                 known.append(
-                    f"fixedpoint low-bin bias: cuda {cur:.6f} vs cpu-noquant {ref:.6f}"
+                    f"fixedpoint low-bin variance: cuda {cur:.6f} vs cpu-noquant {ref:.6f}"
                 )
         elif worse:
             fails.append(f"cuda metric {cur:.6f} much worse than cpu {ref:.6f}")

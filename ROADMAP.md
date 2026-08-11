@@ -214,17 +214,18 @@ docs/design/nccl-level-allreduce-plan.md.
 
 ## Correctness / determinism
 
-- OPEN: fixedpoint bias at very low bin budgets with single-row leaves.
-  Fuzz seed20260811#431 (4-class, quant_bins 16, min_data_in_leaf 1, bagging
-  0.7): 6-seed sweep vs full precision spans -12.9%..+39.2% mlogloss (mean
-  +15.8). Stochastic at the SAME 16 bins is fine, 64 bins is fine, min_data 20
-  is fine -- so it is round-to-nearest bias amplified by single-gradient
-  leaves, not a kernel defect. The fuzz gate now classifies exactly this
-  conjunction as known (tests/gates/fuzz.py, is_fixedpoint_lowbin_bias) with a
-  0.6-relative hard ceiling so corruption still fails. Possible real fix:
-  error-feedback accumulation in the fixedpoint discretizer (carry the
-  rounding residual into the next iteration's quantization); would close the
-  bias without giving up determinism.
+- FIXED 2026-08-11: fixedpoint rounding bias at low bin budgets, by
+  error-feedback accumulation (plan key `quant_ef`, default on): each row
+  carries its rounding residual (int8, 1/128-bin units, 2B/row/class) into the
+  next tree's quantization, so deterministic round-to-nearest bias telescopes
+  away. Under bagging, residuals only move for in-bag rows -- an out-of-bag
+  carry "corrects" error that was never injected, and measurably made things
+  worse before that gate existed. Fuzz corner seed20260811#431: 6-seed mean
+  +15.8% mlogloss vs full precision -> -6.1%; lattice imbalanced/fixedpoint
+  AUC 0.9368 -> 0.9626; the 6 fixedpoint lattice cells re-baselined, all 41
+  other cells and the canonical (stochastic) locks bit-identical. Remaining:
+  symmetric seed variance in that pathological corner (fuzz classifies it,
+  hard ceiling 0.35).
 
 - OPEN: hybrid categorical corruption -- FENCE WIDENED 2026-08-04 to EVERY
   categorical dataset (hybrid+cat now always routes to the verified-correct
