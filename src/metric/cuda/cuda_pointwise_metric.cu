@@ -36,10 +36,16 @@ __global__ void EvalKernel(const data_size_t num_data, const label_t* labels, co
     double weight = 0.0;
     if (index < num_data) {
       weight = static_cast<double>(weights[index]);
-      const double block_sum_weight = ShuffleReduceSum<double>(weight, shared_mem_buffer, NUM_DATA_PER_EVAL_THREAD);
-      if (threadIdx.x == 0) {
-        reduce_block_buffer[blockIdx.x + gridDim.x] = block_sum_weight;
-      }
+    }
+    // Warp 0 is still reading shared_mem_buffer at the end of the reduction
+    // above, so a barrier must precede this one reusing the same buffer. The
+    // reduction itself must be taken by EVERY thread of the block (it
+    // synchronizes internally; a divergent barrier in the grid's tail block is
+    // undefined behavior) -- out-of-range threads contribute weight = 0.
+    __syncthreads();
+    const double block_sum_weight = ShuffleReduceSum<double>(weight, shared_mem_buffer, NUM_DATA_PER_EVAL_THREAD);
+    if (threadIdx.x == 0) {
+      reduce_block_buffer[blockIdx.x + gridDim.x] = block_sum_weight;
     }
   }
 }
