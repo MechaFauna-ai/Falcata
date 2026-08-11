@@ -14,6 +14,13 @@ Roughly priority-ordered within groups. Measurements refer to an RTX 5090.
 
 ## Performance
 
+- Salvage review (post-1.0.0) from `archive/drop-lightgbm-shim` and
+  `archive/werror-and-build-docs`: eval_freq (evaluate every N iterations),
+  early-stopping min_iterations + evaluation-count semantics, the queued
+  weights fix on the Dataset subset path, and Windows CUDA (MSVC) support.
+  Each predates the current master by 90+ commits; cherry-pick and re-validate
+  rather than merge.
+
 - **Multi-target training.** Design spec:
   [docs/design/multi-target-training.md](docs/design/multi-target-training.md).
   Two variants: (1)
