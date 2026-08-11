@@ -11,6 +11,9 @@
 
 namespace Falcata {
 
+// defined in cuda_algorithms.cu (needs nvcc's __CUDA_ARCH_LIST__)
+void CheckCUDADeviceSupportsThisBuild(int device_id);
+
 void SynchronizeCUDADevice(const char* file, const int line) {
   gpuAssert(cudaDeviceSynchronize(), file, line);
 }
@@ -30,6 +33,8 @@ void SetCUDADevice(int gpu_device_id, const char* file, int line) {
   if (cur_gpu_device_id != gpu_device_id) {
     CUDASUCCESS_OR_FATAL_OUTER(cudaSetDevice(gpu_device_id));
   }
+  // fail with an actionable message instead of "no kernel image" mid-launch
+  CheckCUDADeviceSupportsThisBuild(gpu_device_id);
 }
 
 int GetCUDADevice(const char* file, int line) {

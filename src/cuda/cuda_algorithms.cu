@@ -7,6 +7,8 @@
 
 #ifdef USE_CUDA
 
+#include <atomic>
+#include <string>
 #include <Falcata/cuda/cuda_algorithms.hpp>
 #include <Falcata/config.h>
 #include <Falcata/cuda/cuda_rocm_interop.h>
@@ -467,6 +469,48 @@ namespace Falcata {
 // sizeof at startup. Cheap, and it turns a day of debugging into one message.
 size_t CUDASideSizeOfConfig() {
   return sizeof(Config);
+}
+
+// Verify the device can run the GPU code compiled into this binary BEFORE any
+// kernel launches: without it, an uncovered architecture surfaces as a cryptic
+// "no kernel image is available" somewhere inside the first launch. A cubin
+// runs on a device iff the majors match and the cubin's minor is <= the
+// device's. (__CUDA_ARCH_LIST__ is nvcc >= 11.5; older toolkits skip the
+// check and keep the raw CUDA error.)
+void CheckCUDADeviceSupportsThisBuild(const int device_id) {
+#ifdef __CUDA_ARCH_LIST__
+  // one-shot per device: SetCUDADevice calls this on every CUDA entry path
+  static std::atomic<uint64_t> checked_mask{0};
+  const int slot = device_id < 0 ? 0 : (device_id < 63 ? device_id : 63);
+  const uint64_t bit = 1ULL << slot;
+  if (checked_mask.fetch_or(bit) & bit) {
+    return;
+  }
+  static const int kCompiledArchs[] = {__CUDA_ARCH_LIST__};
+  cudaDeviceProp prop{};
+  if (cudaGetDeviceProperties(&prop, device_id < 0 ? 0 : device_id) != cudaSuccess) {
+    return;  // let the real launch produce its own error
+  }
+  std::string archs;
+  for (const int a : kCompiledArchs) {
+    const int major = a / 100;
+    const int minor = (a / 10) % 10;
+    if (major == prop.major && minor <= prop.minor) {
+      return;
+    }
+    if (!archs.empty()) {
+      archs += ", ";
+    }
+    archs += "sm_" + std::to_string(a / 10);
+  }
+  Log::Fatal(
+      "This falcata binary contains GPU code for [%s] but the selected device "
+      "(%s) is sm_%d%d. Install from source so the build targets your GPU: "
+      "pip install --no-binary falcata falcata",
+      archs.c_str(), prop.name, prop.major, prop.minor);
+#else
+  (void)device_id;
+#endif
 }
 
 }  // namespace Falcata

@@ -13,6 +13,9 @@
 
 namespace Falcata {
 
+// defined in cuda_algorithms.cu
+void CheckCUDADeviceSupportsThisBuild(int device_id);
+
 namespace {
 
 constexpr uint32_t kDeviceSkipBin = 0xFFFFFFFFu;  // == Bin::kSkipBin
@@ -249,6 +252,8 @@ void LaunchCUDADenseBinChunkKernel(const void* in, int dtype_code,
                                    int num_groups,
                                    const CUDADenseBinnerTables& tables,
                                    uint8_t* out, cudaStream_t stream) {
+  // this entry runs at Dataset construction, before any tree learner exists
+  CheckCUDADeviceSupportsThisBuild(-1);
   switch (dtype_code) {
     case 0:
       LaunchTyped<float, false>(in, is_row_major, in_stride, rows, pairs,
