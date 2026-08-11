@@ -34,8 +34,9 @@ def measure_one(kind):
     import resource
     import time
 
-    import falcata as lgb
     import numpy as np
+
+    import falcata as lgb
 
     d = os.path.join(CACHE_DIR, "numerai")
     meta = json.load(open(os.path.join(d, "meta.json")))

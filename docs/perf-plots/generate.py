@@ -69,7 +69,7 @@ LIB_LABEL = {
 }
 
 # One type scale for every figure. Sizes are quoted at the reference width
-# below and rescaled per figure by normalize_text(), because these PNGs are all
+# below and rescaled per figure by normalize_text(), because these images are
 # displayed at the same column width in performance.md: a 10pt title on a 13in
 # figure and a 10pt title on a 7in figure arrive at the reader nearly 2x apart.
 REF_WIDTH_IN = 12.0
