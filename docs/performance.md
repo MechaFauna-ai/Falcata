@@ -64,13 +64,14 @@ trains a deeper, more expressive model than the one configured — which is also
 why its curve sits so far right. Given the same semantics (`max_depth=-1`)
 falcata matches it to the 5th decimal at 1.7–3.7× the speed.
 
-*XGBoost ends above falcata on epsilon* (.9440 vs .9429), and that one is
-simply real. It is an XGBoost-vs-LightGBM difference on this dataset rather
-than a falcata regression: `falcata-noquant` lands at .94307 against upstream's
+*XGBoost and CatBoost end above falcata on epsilon*, and that is simply real.
+It is a cross-family difference on this dataset rather than a falcata
+regression: `falcata-noquant` lands at .94307 against upstream LightGBM's
 .94320, so the two implementations of the same algorithm agree to 1e-4, and
-quantization costs a further ~4e-4 (§5). CatBoost is actually the quality
-leader on this cell at .95076, but it cannot be drawn — its curve run recorded
-a single eval point. Every endpoint is in the scoreboard table above.
+quantization costs a further ~4e-4 (§5). CatBoost is the quality leader on
+this cell (.9508) — visibly so on the chart — at 2.6× falcata's time; the
+frontier claim is about reaching each quality level first, which falcata does
+up to the point where its curves end.
 
 **Resources** — falcata's 4-bit rowdata + compact view keep it the smallest
 or tied-smallest footprint of the CUDA libraries, where CatBoost
