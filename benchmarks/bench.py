@@ -177,6 +177,26 @@ def quality_metrics(task, preds, y, extra):
     raise ValueError(task)
 
 
+def curve_metric_ok(task, curve_pts, metrics):
+    """Cross-check a curve's final point against the predict()-based metric.
+
+    The curve's last evaluation and the end-of-run quality are computed on the
+    same model and test set, so they must agree closely. A large gap means the
+    curve recorded the WRONG SERIES -- exactly what happened when catboost's
+    evals_result was read by position and yielded Logloss on an AUC axis.
+    Binary only: that is where every engine reports the same metric (AUC);
+    elsewhere the curve metric legitimately differs from the recorded one
+    (lightgbm regression curves carry l2 = MSE, metrics carry RMSE).
+    """
+    if task != "binary" or not curve_pts:
+        return True
+    final = curve_pts[-1][2]
+    auc = (metrics or {}).get("auc")
+    if final is None or auc is None:
+        return True
+    return abs(final - auc) < 0.02
+
+
 def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=None):
     # falcata* variants import falcata, lightgbm* import upstream lightgbm --
     # the two install under different venvs (both own the ``lgb`` API surface).
@@ -577,6 +597,14 @@ def main():
         if not rec["metrics"].get("sane", True):
             rec["status"] = "insane"
             rec["error"] = f"quality sanity check failed: {rec['metrics']}"
+        elif curve and not curve_metric_ok(task, rec.get("curve"), rec["metrics"]):
+            # wrong-series curves must never reach the time-to-quality plot
+            rec["status"] = "bad_curve"
+            rec["error"] = (
+                f"curve final point {rec['curve'][-1][2]} disagrees with "
+                f"recomputed auc {rec['metrics']['auc']} -- the curve recorded "
+                "a different metric than the one it claims"
+            )
     except Exception:
         rec["status"] = "failed"
         rec["error"] = traceback.format_exc()[-3000:]
