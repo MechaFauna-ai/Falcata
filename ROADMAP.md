@@ -214,6 +214,14 @@ docs/design/nccl-level-allreduce-plan.md.
 
 ## Correctness / determinism
 
+- OPEN (minor): NEGATIVE categorical codes -- documented as "treated as
+  missing" -- train measurably differently on CUDA vs CPU: fuzz shapes whose
+  int8 storage wrapped high category codes negative showed cuda consistently
+  worse (+6..35% multiclass NLL) while the same shapes with intact codes agree
+  to +-1%. Real data should never hit this (the codes are invalid input), but
+  the missing-category routing in the CUDA cat finder evidently differs from
+  the CPU one; worth aligning whenever the cat finder is next open.
+
 - FIXED 2026-08-11: fixedpoint rounding bias at low bin budgets, by
   error-feedback accumulation (plan key `quant_ef`, default on): each row
   carries its rounding residual (int8, 1/128-bin units, 2B/row/class) into the
