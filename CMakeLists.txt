@@ -357,10 +357,15 @@ if(USE_CUDA)
         list(APPEND CUDA_ARCHS "${CUDA_LAST_SUPPORTED_ARCH}-real" "${CUDA_LAST_SUPPORTED_ARCH}-virtual")
     endif()
     message(STATUS "CUDA_ARCHITECTURES: ${CUDA_ARCHS}")
+    # profiler source-line mapping in every kernel; costs real binary size,
+    # so release wheels turn it off
+    option(FALCATA_CUDA_LINEINFO "Embed CUDA -lineinfo" ON)
     if(USE_DEBUG)
       set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -g")
-    else()
+    elseif(FALCATA_CUDA_LINEINFO)
       set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3 -lineinfo")
+    else()
+      set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3")
     endif()
     message(STATUS "CMAKE_CUDA_FLAGS: ${CMAKE_CUDA_FLAGS}")
 
