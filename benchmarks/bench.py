@@ -140,9 +140,7 @@ def numerai_corr_np(preds, targets):
 
 
 def numerai_metrics(preds, y, era):
-    corrs = np.array(
-        [numerai_corr_np(preds[era == e], y[era == e]) for e in np.unique(era)]
-    )
+    corrs = np.array([numerai_corr_np(preds[era == e], y[era == e]) for e in np.unique(era)])
     mean, std = corrs.mean(), corrs.std(ddof=0)
     cumulative = np.cumprod(1 + corrs)
     rolling_max = np.maximum.accumulate(cumulative)
@@ -439,11 +437,7 @@ def run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve, cat_cols=None):
     train_pool = cb.Pool(to_pool_matrix(x_tr), label=y_tr, cat_features=cat_cols)
     construct_s = time.perf_counter() - t0
 
-    cls = (
-        cb.CatBoostClassifier
-        if task in ("binary", "multiclass")
-        else cb.CatBoostRegressor
-    )
+    cls = cb.CatBoostClassifier if task in ("binary", "multiclass") else cb.CatBoostRegressor
 
     def fit(kw):
         model = cls(**kw)
@@ -494,14 +488,8 @@ def run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve, cat_cols=None):
             # iteration. catboost exposes no per-iteration wall clock, so the
             # time axis is approximated linearly (flagged in the record).
             for i in range(n):
-                iteration = (
-                    reg["rounds"]
-                    if i == n - 1
-                    else min(i * reg["eval_every"] + 1, reg["rounds"])
-                )
-                curve_pts.append(
-                    [iteration, train_s * iteration / reg["rounds"], series[i]]
-                )
+                iteration = reg["rounds"] if i == n - 1 else min(i * reg["eval_every"] + 1, reg["rounds"])
+                curve_pts.append([iteration, train_s * iteration / reg["rounds"], series[i]])
 
     if task == "binary":
         preds = model.predict_proba(to_pool_matrix(x_te))[:, 1]
@@ -581,9 +569,7 @@ def main():
                     cat_cols=cat_cols,
                 )
             else:
-                r = run_catboost(
-                    task, x_tr, y_tr, x_te, y_te, reg, curve, cat_cols=cat_cols
-                )
+                r = run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve, cat_cols=cat_cols)
             total_s = time.perf_counter() - t_total
         preds = r.pop("preds")
         rec.update(r)

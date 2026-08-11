@@ -72,9 +72,7 @@ def sample_spec(rng):
         # cardinalities <= 250 keep quant modes eligible (256-bin CUDA guard);
         # int8 storage caps codes at 127 -- larger cards would wrap NEGATIVE,
         # and negative categorical codes mean "missing", not a category
-        "cat_cards": [int(c) for c in rng.choice([12, 31, 64, 120, 250], size=num_cat)]
-        if num_cat
-        else [],
+        "cat_cards": [int(c) for c in rng.choice([12, 31, 64, 120, 250], size=num_cat)] if num_cat else [],
         "max_cat_threshold": int(rng.choice([8, 32, 32, 64])),
         "learning_rate": float(rng.choice([0.1, 0.1, 0.01, 0.0015])),
         "dtype": str(rng.choice(["float64", "int8", "int16"])),
@@ -270,9 +268,7 @@ def is_fixedpoint_lowbin_bias(spec):
     determinism check above still applies here.
     """
     return (
-        spec["quant_mode"] == "fixedpoint"
-        and spec.get("quant_bins", 0) <= 16
-        and spec.get("min_data_in_leaf", 20) <= 2
+        spec["quant_mode"] == "fixedpoint" and spec.get("quant_bins", 0) <= 16 and spec.get("min_data_in_leaf", 20) <= 2
     )
 
 
@@ -294,9 +290,7 @@ def check_spec(spec):
     c = run(spec, "cpu", timeout=900)
     if "error" in c:
         if is_known_cpu_quant_defect(spec, c["error"]):
-            known.append(
-                f"cpu quant count-inference defect: {c['error'].splitlines()[-1][:120]}"
-            )
+            known.append(f"cpu quant count-inference defect: {c['error'].splitlines()[-1][:120]}")
         else:
             fails.append(f"cpu run failed: {c['error']}")
     else:
@@ -320,27 +314,20 @@ def check_spec(spec):
                 confirm += (u2 < r2 - t2) if a2["higher_better"] else (u2 > r2 + t2)
             if confirm == 0:
                 known.append(
-                    f"bagged single-run variance: cuda {cur:.6f} vs cpu {ref:.6f}, "
-                    "2/2 reseeded runs within tolerance"
+                    f"bagged single-run variance: cuda {cur:.6f} vs cpu {ref:.6f}, 2/2 reseeded runs within tolerance"
                 )
                 worse = False
         if worse and is_fixedpoint_lowbin_bias(spec):
             # still bounded: the post-error-feedback variance envelope is
             # +-30%; a corrupted kernel blows past it (historically 2-10x)
-            blown = (
-                cur < ref - abs(ref) * 0.35
-                if a["higher_better"]
-                else cur > ref + abs(ref) * 0.35
-            )
+            blown = cur < ref - abs(ref) * 0.35 if a["higher_better"] else cur > ref + abs(ref) * 0.35
             if blown:
                 fails.append(
                     f"cuda metric {cur:.6f} vs cpu {ref:.6f}: beyond the "
                     "fixedpoint low-bin variance envelope -- treat as real"
                 )
             else:
-                known.append(
-                    f"fixedpoint low-bin variance: cuda {cur:.6f} vs cpu-noquant {ref:.6f}"
-                )
+                known.append(f"fixedpoint low-bin variance: cuda {cur:.6f} vs cpu-noquant {ref:.6f}")
         elif worse:
             fails.append(f"cuda metric {cur:.6f} much worse than cpu {ref:.6f}")
     return fails, known
@@ -350,9 +337,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--minutes", type=float, default=30.0)
     ap.add_argument("--seed", type=int, default=None)
-    ap.add_argument(
-        "--spec", type=str, default=None, help="run one JSON spec (repro mode)"
-    )
+    ap.add_argument("--spec", type=str, default=None, help="run one JSON spec (repro mode)")
     args = ap.parse_args()
 
     import numpy as np
@@ -365,11 +350,7 @@ def main():
             print(f"FAIL {f}")
         return 1 if fails else 0
 
-    seed = (
-        args.seed
-        if args.seed is not None
-        else int(datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d"))
-    )
+    seed = args.seed if args.seed is not None else int(datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d"))
     rng = np.random.default_rng(seed)
     print(f"fuzz: seed={seed} budget={args.minutes}min")
 
@@ -394,13 +375,9 @@ def main():
         for f in fails:
             failures.append((f"seed{seed}#{tried}", f, spec))
 
-    print(
-        f"fuzz: {tried} specs tried, {len(failures)} failure(s), {num_known} known CPU-quant count-inference hit(s)"
-    )
+    print(f"fuzz: {tried} specs tried, {len(failures)} failure(s), {num_known} known CPU-quant count-inference hit(s)")
     for name, f, spec in failures:
-        print(
-            f"\nFAIL [{name}] {f}\nrepro: python tests/gates/fuzz.py --spec '{json.dumps(spec)}'"
-        )
+        print(f"\nFAIL [{name}] {f}\nrepro: python tests/gates/fuzz.py --spec '{json.dumps(spec)}'")
     return 1 if failures else 0
 
 

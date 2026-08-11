@@ -18,7 +18,8 @@
             "!**/site-packages",
             "!venv",
             "!R-package/docs",
-            "!tests/gates/lattice_results.json"
+            "!tests/gates/lattice_results.json",
+            "!tests/gates/md5_lattice.json"
         ]
     },
     "formatter": {

@@ -5046,12 +5046,8 @@ class Booster:
             # hand the model text over via a temp file: load_lightgbm_model()
             # is treelite's public loader with no dependency on a `lightgbm`
             # python package (from_lightgbm() isinstance-checks against one)
-            model_str = self.model_to_string(
-                num_iteration=num_iteration, start_iteration=start_iteration
-            )
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".txt", delete=False
-            ) as tmp_file:
+            model_str = self.model_to_string(num_iteration=num_iteration, start_iteration=start_iteration)
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tmp_file:
                 tmp_file.write(model_str)
                 tmp_path = tmp_file.name
             try:

@@ -237,12 +237,7 @@ def quality(params, bst, X_te, y_te):
     if X_te is None:
         return None, None
     step = 500_000
-    preds = np.concatenate(
-        [
-            bst.predict(np.ascontiguousarray(X_te[i : i + step]))
-            for i in range(0, len(X_te), step)
-        ]
-    )
+    preds = np.concatenate([bst.predict(np.ascontiguousarray(X_te[i : i + step])) for i in range(0, len(X_te), step)])
     obj = params.get("objective")
     if obj == "multiclass":
         return float((preds.argmax(axis=1) == y_te).mean()), "acc"
@@ -251,9 +246,7 @@ def quality(params, bst, X_te, y_te):
         ranks = np.empty(len(preds))
         ranks[order] = np.arange(len(preds))
         pos = y_te == 1
-        auc = (ranks[pos].sum() - pos.sum() * (pos.sum() - 1) / 2) / max(
-            1, pos.sum() * (~pos).sum()
-        )
+        auc = (ranks[pos].sum() - pos.sum() * (pos.sum() - 1) / 2) / max(1, pos.sum() * (~pos).sum())
         return float(auc), "auc"
     return float(np.sqrt(np.mean((preds - y_te) ** 2))), "rmse"
 
@@ -278,9 +271,7 @@ def run_one(cell_id, data, params, rounds, plan):
         t2 = time.perf_counter()
         cs.append(t1 - t0)
         ts.append(t2 - t1)
-    md5 = hashlib.md5(
-        bst.model_to_string().split("\nparameters:")[0].encode()
-    ).hexdigest()[:12]
+    md5 = hashlib.md5(bst.model_to_string().split("\nparameters:")[0].encode()).hexdigest()[:12]
     metric, metric_name = quality(p, bst, X_te, y_te)
     train_s = statistics.median(ts)
     return {
@@ -323,30 +314,18 @@ def main():
         base = run_one(cid, data, params, rounds, "auto")
         with out.open("a") as f:
             f.write(json.dumps({**base, "key": "BASELINE"}) + "\n")
-        print(
-            f"\n## {cid}  (baseline {base['trees_per_s']} trees/s, {base['metric_name']}={base['metric']})"
-        )
+        print(f"\n## {cid}  (baseline {base['trees_per_s']} trees/s, {base['metric_name']}={base['metric']})")
         print(f"{'key':22s} {'Δ throughput':>13s} {'Δ construct':>12s}  verdict")
         for key in keys:
             r = run_one(cid, data, params, rounds, flip_plan(key))
             with out.open("a") as f:
                 f.write(json.dumps({**r, "key": key}) + "\n")
-            dtp = (
-                (base["trees_per_s"] / r["trees_per_s"] - 1) * 100
-                if r["trees_per_s"]
-                else 0
-            )
+            dtp = (base["trees_per_s"] / r["trees_per_s"] - 1) * 100 if r["trees_per_s"] else 0
             dcon = r["construct_s"] - base["construct_s"]
             same = r["tree_md5"] == base["tree_md5"]
             if key in GROWTH_KEYS or key in TIEBREAK_KEYS or key in RENUMBER_KEYS:
                 # different tree is legitimate; judge on quality
-                kind = (
-                    "growth"
-                    if key in GROWTH_KEYS
-                    else "renumber"
-                    if key in RENUMBER_KEYS
-                    else "tiebreak"
-                )
+                kind = "growth" if key in GROWTH_KEYS else "renumber" if key in RENUMBER_KEYS else "tiebreak"
                 if base["metric"] is None or same:
                     note = "same tree" if same else f"{kind} key (no holdout metric)"
                 else:

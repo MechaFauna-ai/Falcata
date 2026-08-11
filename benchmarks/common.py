@@ -142,11 +142,7 @@ LIBRARY_CELLS = {
 
 #: every library that appears anywhere in the matrix -- iterate this and let
 #: library_runs_cell() filter, so regime-only libraries are never invisible
-ALL_LIBRARIES = LIBRARIES + [
-    x
-    for x in dict.fromkeys(sum(LIBRARIES_BY_REGIME.values(), []))
-    if x not in LIBRARIES
-]
+ALL_LIBRARIES = LIBRARIES + [x for x in dict.fromkeys(sum(LIBRARIES_BY_REGIME.values(), [])) if x not in LIBRARIES]
 
 
 def libraries_for(regime: str):
