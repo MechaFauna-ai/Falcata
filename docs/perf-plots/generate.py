@@ -203,6 +203,26 @@ def bar_ends(ax):
     ax.set_axisbelow(True)
 
 
+def mark_axis_break(ax, axis="y"):
+    """Two parallel slashes across the spine near its origin end: the
+    conventional mark for an axis that does not start at zero."""
+    d, gap, pos = 0.007, 0.010, 0.045
+    kw = {
+        "transform": ax.transAxes,
+        "color": TEXT2,
+        "clip_on": False,
+        "linewidth": 0.9,
+        "zorder": 5,
+        "solid_capstyle": "round",
+    }
+    if axis in ("y", "both"):
+        for off in (0.0, gap):
+            ax.plot((-d, d), (pos + off - 1.6 * d, pos + off + 1.6 * d), **kw)
+    if axis in ("x", "both"):
+        for off in (0.0, gap):
+            ax.plot((pos + off - d, pos + off + d), (-1.6 * d, 1.6 * d), **kw)
+
+
 MED, FAIL, CURVES = load_sweep()
 LOO, BASE_TIME = load_ablation()
 
@@ -284,6 +304,7 @@ def plot_cross_library():
                     xx, 1.08, "✗", ha="center", va="bottom", fontsize=9, color=TEXT2
                 )
     ax.set_yscale("log")
+    mark_axis_break(ax, "y")
     ax.set_yticks([1, 2, 5, 10, 30], ["1×", "2×", "5×", "10×", "30×"])
     ax.minorticks_off()
     ax.set_xticks(list(x), [DS_LABEL.get(dr, dr[0]) for dr in DS_REGS], fontsize=9)
@@ -821,10 +842,12 @@ CURVE_COLOR = {
 
 
 def plot_curves():
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 3.8))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9.6, 3.8))
     missing = []
     for ax, ds, reg in ((ax1, "higgs", "deep"), (ax2, "epsilon", "deep")):
         ymin = 1.0
+        drawn = []
+        xmin, xmax = float("inf"), 0.0
         for (lib, d, r), curve in CURVES.items():
             if (
                 d != ds
@@ -837,6 +860,8 @@ def plot_curves():
                 continue
             xs = [p[1] for p in curve]
             ys = [p[2] for p in curve]
+            drawn.append((xs, ys))
+            xmax = max(xmax, xs[-1])
             # clip the early ramp, but never a curve's FINAL value (an honest
             # quality dip must stay in frame)
             ymin = min(ymin, ys[len(ys) // 4], ys[-1] - 0.0008)
@@ -866,6 +891,19 @@ def plot_curves():
                 )
         ax.set_xscale("log")
         ax.set_ylim(bottom=ymin)
+        # start just left of where the earliest curve ENTERS the visible
+        # y-range: points below ymin are clipped anyway (catboost's linearly
+        # approximated time axis puts its first point near t=0), and the empty
+        # decades a log axis pads with say nothing. The axis break marks that
+        # neither axis starts at zero.
+        for xs, ys in drawn:
+            for x, y in zip(xs, ys):
+                if y >= ymin:
+                    xmin = min(xmin, x)
+                    break
+        if xmax > 0 and xmin < float("inf"):
+            ax.set_xlim(xmin * 0.7, xmax * 1.45)
+        mark_axis_break(ax, "both")
         ax.set_xlabel("wall time (s, log)")
         ax.set_ylabel("test AUC")
         ax.set_title(ds, fontsize=SUB_PT)
