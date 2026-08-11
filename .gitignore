@@ -484,6 +484,8 @@ dmypy.json
 benchmarks/workspace/
 .gates-venv/
 tests/gates/lattice_results.json
+tests/gates/bench_results.json
+tests/gates/falb_fuzz_crash.falb
 
 # Tracked files that the blanket rules above would otherwise shadow. Without
 # these the files survive only because they were force-added, and a
