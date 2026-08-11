@@ -498,6 +498,7 @@ tests/gates/falb_fuzz_crash.falb
 !R-package/inst/bin/
 !R-package/inst/bin/.gitkeep
 !examples/parallel_learning/mlist.txt
+!tests/gates/falb_fixtures/**
 
 # Out-of-tree build directories and benchmark scratch
 build-*/

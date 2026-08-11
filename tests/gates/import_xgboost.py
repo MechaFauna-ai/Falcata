@@ -114,6 +114,24 @@ try:
     chk("refuses gblinear", False)
 except ValueError as e:
     chk("refuses gblinear", "gbtree" in str(e), str(e)[:44])
+# booster=dart is deprecated in xgboost >= 3.4: dropout applies during
+# training only and the model SAVES as gbtree, so it must convert with parity
+drt = xgb.train(
+    {"booster": "dart", "objective": "reg:squarederror", "max_depth": 3, "rate_drop": 0.1, "seed": 1},
+    xgb.DMatrix(Xs, label=ys),
+    num_boost_round=5,
+)
+dref = drt.predict(xgb.DMatrix(Xs))
+chk("dart-trained (saves as gbtree)", np.allclose(np.asarray(from_xgboost(drt).predict(Xs)), dref, atol=1e-6))
+# ...but a legacy dart MODEL (older xgboost) scales leaves at predict time, so
+# a plain tree walk would predict something else -- must refuse, not approximate
+legacy = json.loads(drt.save_raw("json").decode())
+legacy["learner"]["gradient_booster"]["name"] = "dart"
+try:
+    from_xgboost(legacy)
+    chk("refuses legacy dart model", False)
+except ValueError as e:
+    chk("refuses legacy dart model", "gbtree" in str(e) and "dart" in str(e), str(e)[:44])
 Xc = Xs.copy()
 dm = xgb.DMatrix(
     np.c_[Xc, rng.integers(0, 5, len(Xc))].astype(np.float32),

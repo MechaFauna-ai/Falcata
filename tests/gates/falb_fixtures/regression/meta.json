@@ -1,0 +1,7 @@
+{
+ "falcata_version": "1.0.0",
+ "params": {
+  "objective": "regression",
+  "num_leaves": 31
+ }
+}

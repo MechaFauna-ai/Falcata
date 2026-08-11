@@ -1,0 +1,8 @@
+{
+ "falcata_version": "1.0.0",
+ "params": {
+  "objective": "multiclass",
+  "num_class": 4,
+  "num_leaves": 31
+ }
+}

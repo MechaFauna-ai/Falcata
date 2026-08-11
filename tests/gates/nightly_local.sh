@@ -90,6 +90,10 @@ step "fuzz (45 min, corpus first)" -     "$VENV" tests/gates/fuzz.py --minutes 4
 step "validation scoring"          -     "$VENV" tests/gates/valid_metric.py
 step "FALB python plumbing"        -     "$VENV" tests/gates/falb_python.py
 step "FALB binary roundtrip"       -     env FALCATA_LIB="$REPO/lib_falcata.so" "$VENV" tests/gates/falb_roundtrip.py
+step "FALB frozen-fixture compat"  -     "$VENV" tests/gates/falb_compat.py
+step "FALB parser fuzz"            -     "$VENV" tests/gates/falb_fuzz.py --seconds 120
+step "import parity: xgboost"      -     "$VENV" tests/gates/import_xgboost.py
+step "import parity: catboost"     -     "$VENV" tests/gates/import_catboost.py
 step "fixedpoint tree-emission"    20000 "$VENV" tests/gates/canonical.py numerai-treecount
 step "canonical md5 locks"         -     "$VENV" tests/gates/canonical.py all
 step "bench tier"                  12000 "$VENV" tests/gates/bench_tier.py --out tests/gates/bench_results.json
