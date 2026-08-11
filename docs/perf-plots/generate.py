@@ -303,12 +303,11 @@ def plot_cross_library():
                 ax.text(
                     xx, 1.08, "✗", ha="center", va="bottom", fontsize=9, color=TEXT2
                 )
-    ax.set_yscale("log")
-    mark_axis_break(ax, "y")
-    ax.set_yticks([1, 2, 5, 10, 30], ["1×", "2×", "5×", "10×", "30×"])
+    ax.set_ylim(bottom=0)
+    ax.set_yticks([0, 5, 10, 15, 20, 25, 30], ["0", "5×", "10×", "15×", "20×", "25×", "30×"])
     ax.minorticks_off()
     ax.set_xticks(list(x), [DS_LABEL.get(dr, dr[0]) for dr in DS_REGS], fontsize=9)
-    ax.set_ylabel("training time vs falcata (×, log)")
+    ax.set_ylabel("training time vs falcata (×)")
     ax.set_title("GPU training time relative to falcata", fontsize=TITLE_PT, pad=26)
     fig.text(
         0.5,
