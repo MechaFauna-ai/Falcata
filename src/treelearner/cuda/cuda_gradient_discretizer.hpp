@@ -61,25 +61,17 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
   // clamps quantized magnitudes to +/-(bins/2) so rare outliers saturate.
   void SetRobustScale(bool robust_scale) { robust_scale_ = robust_scale; }
 
-  // Enable error-feedback accumulation (fixed-point mode only). Each row keeps
-  // the residual of its last rounding and adds it before the next one, so the
-  // per-row quantization error telescopes across trees instead of accumulating
-  // as bias (the visible failure mode: single-row leaves at low bin budgets).
-  // num_slots must be the number of trees per boosting iteration (num_class
-  // for multiclass): the learner trains classes in a fixed order and iter_
-  // advances once per tree, so iter_ % num_slots addresses this tree's class
-  // and residuals never mix across classes.
+  // Error-feedback accumulation (fixed-point only). num_slots = trees per
+  // boosting iteration: iter_ % num_slots addresses this tree's class, so
+  // residuals never mix across classes.
   void SetErrorFeedback(bool error_feedback, int num_slots) {
     error_feedback_ = error_feedback;
     ef_num_slots_ = num_slots > 0 ? num_slots : 1;
   }
 
-  // Under bagging, residuals must only move for rows whose quantized gradient
-  // is actually consumed this tree: the kernel discretizes ALL rows, and an
-  // out-of-bag row would otherwise accumulate corrections for values nothing
-  // ever read -- a stale, wrong carry by the time it re-enters the bag. Pass
-  // the device array of in-bag row indices before each tree's
-  // DiscretizeGradients; nullptr means no bagging.
+  // Residuals may only move for in-bag rows: the kernel discretizes ALL rows,
+  // and an out-of-bag row would accumulate corrections for values nothing
+  // read. nullptr = no bagging.
   void SetBagForThisTree(const data_size_t* inbag_indices, data_size_t inbag_count) {
     ef_inbag_indices_ = inbag_indices;
     ef_inbag_count_ = inbag_count;
@@ -108,11 +100,8 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
     if (error_feedback_) {
       // one (hess, grad) float pair per row per class slot, zero-initialized:
       // a fresh model starts with no carried residual
-      // int8 residuals in units of 1/128 of a quant bin: the carry's own
-      // quantum (1/256 bin worst case) is 128x finer than the 1/2-bin rounding
-      // error it corrects, and 2 bytes/row/class keeps the buffer negligible
-      // on cards already running near capacity. The in-bag mask is allocated
-      // lazily on the first bagged tree for the same reason.
+      // int8 residuals in 1/128-bin units: 128x finer than the 1/2-bin error
+      // being corrected, at 2 bytes/row/class. Mask allocated lazily.
       const size_t ef_size = static_cast<size_t>(num_data) * 2 * ef_num_slots_;
       ef_residuals_.Resize(ef_size);
       SetCUDAMemory<int8_t>(ef_residuals_.RawData(), 0, ef_size, __FILE__, __LINE__);

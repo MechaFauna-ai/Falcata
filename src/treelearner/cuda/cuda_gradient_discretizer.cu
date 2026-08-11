@@ -298,15 +298,11 @@ __global__ void DiscretizeGradientsKernel(
         static_cast<int16_t>(__fmaf_rn(gradient, grad_scale, -gradient_random_value));
       output_gradients_and_hessians_ptr[2 * index] = static_cast<int16_t>(__fmaf_rn(hessian, hess_scale, hessian_random_value));
     } else {
-      // The double 0.5 is deliberate (see the stochastic branch's fma note):
-      // a double add cannot be contracted with the float multiply, so the
-      // rounding sequence is arch-stable. With ef_residuals == nullptr this
-      // path is bit-identical to the pre-error-feedback code.
+      // the double 0.5 is deliberate: a double add cannot be contracted with
+      // the float multiply, keeping the rounding sequence arch-stable
       const score_t gv = input_gradients[index] * grad_scale;
       const score_t hv = input_hessians[index] * hess_scale;
-      // Out-of-bag rows are discretized (this kernel runs over every row) but
-      // nothing consumes their values, so their residuals must not move: an
-      // OOB carry would "correct" for error that was never injected.
+      // out-of-bag residuals must not move: nothing consumes those values
       const bool ef_active = ef_residuals != nullptr &&
           (ef_inbag_mask == nullptr || ef_inbag_mask[index] != 0);
       // residuals are stored as int8 in units of 1/128 quant bin (see Init)
@@ -321,10 +317,8 @@ __global__ void DiscretizeGradientsKernel(
         static_cast<int16_t>((gv + ge) - 0.5);
       const int16_t qh = static_cast<int16_t>((hv + he) + 0.5);
       if (ef_active) {
-        // rounding error only, bounded in (-1, 1): the clamp below is
-        // intentional saturation (robust scale) and must NOT feed back --
-        // a saturated row would otherwise accumulate unbounded carry.
-        // __float2int_rn: single arch-stable instruction, deterministic.
+        // rounding error only: the clamp below is intentional saturation and
+        // must not feed back, or a saturated row accumulates unbounded carry
         int rh = __float2int_rn(((hv + he) - static_cast<score_t>(qh)) * 128.0f);
         int rg = __float2int_rn(((gv + ge) - static_cast<score_t>(q)) * 128.0f);
         rh = rh > 127 ? 127 : (rh < -127 ? -127 : rh);
@@ -403,9 +397,8 @@ void CUDAGradientDiscretizer::DiscretizeGradients(
     SynchronizeCUDADevice(__FILE__, __LINE__);
   }
 
-  // This tree's class slot of the residual buffer: iter_ advances once per
-  // tree and multiclass trains its classes in a fixed order, so
-  // iter_ % ef_num_slots_ is the class index and residuals never mix classes.
+  // iter_ advances once per tree and classes train in fixed order, so
+  // iter_ % ef_num_slots_ is this tree's class slot
   int8_t* ef_slot = error_feedback_
       ? ef_residuals_.RawData() +
             static_cast<size_t>(iter_ % ef_num_slots_) * static_cast<size_t>(num_data) * 2
@@ -413,11 +406,8 @@ void CUDAGradientDiscretizer::DiscretizeGradients(
   const uint8_t* ef_mask = nullptr;
   if (ef_slot != nullptr && ef_inbag_indices_ != nullptr && ef_inbag_count_ < num_data) {
     if (ef_inbag_mask_.Size() < static_cast<size_t>(num_data)) {
-      ef_inbag_mask_.Resize(static_cast<size_t>(num_data));  // lazy: first bagged tree
+      ef_inbag_mask_.Resize(static_cast<size_t>(num_data));
     }
-    // rebuild the in-bag mask for this tree (all class trees of one iteration
-    // share the bag, so this repeats identical work num_class times -- two
-    // trivial kernels, not worth caching)
     SetCUDAMemory<uint8_t>(ef_inbag_mask_.RawData(), 0, static_cast<size_t>(num_data), __FILE__, __LINE__);
     const int mask_blocks = (ef_inbag_count_ + CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE - 1) / CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE;
     BuildInbagMaskKernel<<<mask_blocks, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(

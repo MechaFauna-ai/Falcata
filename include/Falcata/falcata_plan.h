@@ -85,15 +85,10 @@ struct FalcataPlan {
   // gap-gated outlier-robust gradient scale (fixedpoint quant only; no-op in
   // other modes). Changes the model when it fires -- NOT an equality key.
   bool robust_scale = true;         // key: robust_scale
-  // error-feedback accumulation for fixedpoint rounding (fixedpoint quant
-  // only; no-op in other modes): each row carries its rounding residual into
-  // the next tree's quantization, so the deterministic round-to-nearest bias
-  // telescopes away instead of accumulating -- the failure mode was single-row
-  // leaves at low bin budgets (fuzz seed20260811#431: mean +15.8% mlogloss vs
-  // full precision at 16 bins / min_data 1). Changes the model -- NOT an
-  // equality key. Fully deterministic: no RNG, no atomics, row-indexed.
+  // error-feedback accumulation for fixedpoint rounding: rows carry their
+  // rounding residual into the next tree, so round-to-nearest bias telescopes
+  // away. Deterministic; changes the model -- NOT an equality key.
   bool quant_ef = true;             // key: quant_ef
-  // hybrid growth on categorical datasets (~3.7x on cat-heavy shapes);
   // cat_hybrid:off routes categorical data to the classic training loop.
   bool cat_hybrid = true;           // key: cat_hybrid
   // experimental compact-view packing codecs (uniform per tree; eligible only
