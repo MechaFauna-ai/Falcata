@@ -21,6 +21,9 @@ classifiers = [
 dependencies = [
     "narwhals>=1.15",
     "numpy>=1.21.3",
+    # runtime-JIT construct kernels link libnvrtc.so.12; NVIDIA ships it as
+    # its own wheel, so the falcata wheel does not have to bundle 100MB
+    "nvidia-cuda-nvrtc-cu12",
     "scipy"
 ]
 description = "Falcata: GPU-first gradient boosted decision trees"
