@@ -16,9 +16,9 @@ CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=${ARCHS} -DUSE_NCCL=OFF -DFALCATA_CUDA_LI
 
 # manylinux tag + graft libgomp; libcuda comes from the user's driver and
 # libnvrtc from the nvidia-cuda-nvrtc-cu12 wheel this package depends on
-RAW=$(ls dist/falcata-*-py3-none-linux_x86_64.whl | tail -1)
+RAW=$(find dist -name "falcata-*-py3-none-linux_x86_64.whl" | sort | tail -1)
 auditwheel repair --exclude libcuda.so.1 --exclude "libnvrtc.so.12" "$RAW" -w dist/
-REPAIRED=$(ls dist/falcata-*manylinux*.whl | tail -1)
+REPAIRED=$(find dist -name "falcata-*manylinux*.whl" | sort | tail -1)
 
 # let the loader find nvrtc inside the nvidia wheel's install location
 python -m wheel unpack "$REPAIRED" -d /tmp/fal-wheel
@@ -27,4 +27,4 @@ OLD_RPATH=$(patchelf --print-rpath "$LIB")
 patchelf --set-rpath "${OLD_RPATH}:\$ORIGIN/../../nvidia/cuda_nvrtc/lib" "$LIB"
 python -m wheel pack /tmp/fal-wheel/* -d dist/
 rm -rf /tmp/fal-wheel
-ls -la dist/*manylinux*.whl | tail -1
+du -h dist/*manylinux*.whl

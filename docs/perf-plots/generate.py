@@ -258,10 +258,7 @@ def plot_cross_library():
                 ratios[c][dr] = (m["train_s"] / base["train_s"], note)
     import math
 
-    {
-        c: math.exp(sum(math.log(v[0]) for v in ratios[c].values()) / len(ratios[c]))
-        for c in comps
-    }
+    {c: math.exp(sum(math.log(v[0]) for v in ratios[c].values()) / len(ratios[c])) for c in comps}
     fig, ax = plt.subplots(figsize=(11.5, 3.9))
     x = range(len(DS_REGS))
     w = 0.21
@@ -273,9 +270,7 @@ def plot_cross_library():
             color=LIB_COLOR["falcata-stoch"],
             label="falcata (stochastic)" if xi == 0 else None,
         )
-        ax.text(
-            xi - 1.5 * w, 1.0, "1", ha="center", va="bottom", fontsize=7.5, color=TEXT
-        )
+        ax.text(xi - 1.5 * w, 1.0, "1", ha="center", va="bottom", fontsize=7.5, color=TEXT)
     for i, c in enumerate(comps):
         labeled = False
         for xi, dr in enumerate(DS_REGS):
@@ -300,9 +295,7 @@ def plot_cross_library():
                     color=TEXT,
                 )
             else:
-                ax.text(
-                    xx, 1.08, "✗", ha="center", va="bottom", fontsize=9, color=TEXT2
-                )
+                ax.text(xx, 1.08, "✗", ha="center", va="bottom", fontsize=9, color=TEXT2)
     ax.set_ylim(bottom=0)
     ax.set_yticks([0, 5, 10, 15, 20, 25, 30], ["0", "5×", "10×", "15×", "20×", "25×", "30×"])
     ax.minorticks_off()
@@ -355,9 +348,7 @@ def plot_quant_modes():
     # line: a reader compares bar heights within a group far more easily than
     # bar-to-rule, and it keeps the group self-contained.
     modes = ["falcata-noquant", "falcata-fixed", "falcata-stoch"]
-    fig, (ax1, ax2) = plt.subplots(
-        1, 2, figsize=(12, 3.6), gridspec_kw={"width_ratios": [1.15, 1]}
-    )
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 3.6), gridspec_kw={"width_ratios": [1.15, 1]})
     x = range(len(drs))
     w = 0.26
     for i, lib in enumerate(modes):
@@ -401,11 +392,7 @@ def plot_quant_modes():
             met = (
                 "rmse"
                 if ds == "year"
-                else (
-                    "corr_mean"
-                    if ds == "numerai"
-                    else ("accuracy" if ds == "covtype" else "auc")
-                )
+                else ("corr_mean" if ds == "numerai" else ("accuracy" if ds == "covtype" else "auc"))
             )
             mv, bv = m["metrics"][met], b["metrics"][met]
             dq.append((bv - mv) / bv * 100 if met == "rmse" else (mv - bv) / bv * 100)
@@ -448,9 +435,7 @@ def plot_construct():
     fig, ax = plt.subplots(figsize=(8.5, 2.7))
     ys = range(len(libs))
     for y, lib in zip(ys, libs):
-        m = MED.get((lib, "numerai", "numerai")) or MED.get(
-            (lib, "numerai", "numerai-deep")
-        )
+        m = MED.get((lib, "numerai", "numerai")) or MED.get((lib, "numerai", "numerai-deep"))
         v = m["construct_s"]
         ax.barh(
             y,
@@ -463,9 +448,7 @@ def plot_construct():
             "lightgbm-ocl": "   (CPU binning)",
         }.get(lib, "")
         ax.text(v + 0.6, y, f"{v:.0f}s" + note, va="center", fontsize=9, color=TEXT)
-    ax.set_yticks(
-        list(ys), [labels.get(lib, LIB_LABEL[lib]) for lib in libs], fontsize=9.5
-    )
+    ax.set_yticks(list(ys), [labels.get(lib, LIB_LABEL[lib]) for lib in libs], fontsize=9.5)
     ax.invert_yaxis()
     ax.set_xlim(0, 64)
     ax.set_xlabel("time until training can start (s)")
@@ -550,9 +533,7 @@ def plot_single_feature(key, title, fname):
         return
     fig, ax = plt.subplots(figsize=(7, 0.55 * max(len(vals), 2) + 1.1))
     ys = range(len(vals))
-    ax.barh(
-        list(ys), [v for _, v in vals], height=0.62, color=LIB_COLOR["falcata-stoch"]
-    )
+    ax.barh(list(ys), [v for _, v in vals], height=0.62, color=LIB_COLOR["falcata-stoch"])
     for y, (_c, v) in zip(ys, vals):
         ax.text(max(v, 0), y, f" {v:+.0f}%", va="center", fontsize=8.5, color=TEXT)
     ax.axvline(0, color=TEXT2, linewidth=0.8)
@@ -561,9 +542,7 @@ def plot_single_feature(key, title, fname):
     ax.set_title(title, fontsize=TITLE_PT)
     xlbl = "Δ throughput when disabled (%)"
     if n_neutral:
-        xlbl += (
-            f"\nfree on the other {n_neutral} suite cells (within run noise, verified)"
-        )
+        xlbl += f"\nfree on the other {n_neutral} suite cells (within run noise, verified)"
     ax.set_xlabel(xlbl, fontsize=8.5)
     ax.margins(x=0.18)
     ax.grid(axis="y", visible=False)
@@ -574,15 +553,9 @@ def plot_single_feature(key, title, fname):
 
 
 def plot_small_features():
-    plot_single_feature(
-        "graph_loop", "CUDA-graph level loop", "ablation_graph_loop.png"
-    )
-    plot_single_feature(
-        "compact_quant", "compact column view", "ablation_compact_quant.png"
-    )
-    plot_single_feature(
-        "fast_rowdata", "fast rowdata build", "ablation_fast_rowdata.png"
-    )
+    plot_single_feature("graph_loop", "CUDA-graph level loop", "ablation_graph_loop.png")
+    plot_single_feature("compact_quant", "compact column view", "ablation_compact_quant.png")
+    plot_single_feature("fast_rowdata", "fast rowdata build", "ablation_fast_rowdata.png")
 
 
 # ------------------------------------------------- 5c. §1 selective grow-then-prune
@@ -625,9 +598,7 @@ def plot_selective_prune():
                         linewidth=1.1,
                         zorder=1,
                     )
-                    ax.scatter(
-                        [x + dx], [-0.2], s=150, color=GRAY if live else DROP, zorder=2
-                    )
+                    ax.scatter([x + dx], [-0.2], s=150, color=GRAY if live else DROP, zorder=2)
             ax.text(x, 1.35, glabel, ha="center", fontsize=8, color=TEXT2)
 
     frontier(axes[0], drawn=True)
@@ -710,9 +681,7 @@ def plot_hybrid_diagram():
 
     BLUE = LIB_COLOR["falcata-stoch"]
     GRAY = "#b5b4ae"
-    fig, axes = plt.subplots(
-        2, 2, figsize=(12.5, 5.6), gridspec_kw={"height_ratios": [3.2, 1]}
-    )
+    fig, axes = plt.subplots(2, 2, figsize=(12.5, 5.6), gridspec_kw={"height_ratios": [3.2, 1]})
     (axt_l, axt_r), (axs_l, axs_r) = axes
     for ax in (axt_l, axt_r, axs_l, axs_r):
         ax.set_xlim(0, 10)
@@ -804,11 +773,7 @@ def plot_hybrid_diagram():
         ax.set_ylim(0, 1)
         x = 0.2
         for w, busy in blocks:
-            ax.add_patch(
-                Rectangle(
-                    (x, 0.3), w, 0.4, facecolor=BLUE if busy else GRAY, edgecolor="none"
-                )
-            )
+            ax.add_patch(Rectangle((x, 0.3), w, 0.4, facecolor=BLUE if busy else GRAY, edgecolor="none"))
             x += w + 0.04
         ax.text(0.2, 0.92, label, fontsize=9, color=TEXT2, va="top")
 
@@ -848,11 +813,7 @@ def plot_curves():
         drawn = []
         xmin, xmax = float("inf"), 0.0
         for (lib, d, r), curve in CURVES.items():
-            if (
-                d != ds
-                or r != reg
-                or lib in ("lightgbm-quant", "lightgbm-ocl", "xgboost-lossguide")
-            ):
+            if d != ds or r != reg or lib in ("lightgbm-quant", "lightgbm-ocl", "xgboost-lossguide"):
                 continue
             if len(curve) < 2:
                 missing.append(LIB_LABEL.get(lib, lib))
@@ -978,8 +939,7 @@ def plot_model_size():
     ax.set_xlim(0, 660)
     # two lines: as one line this runs past the figure edge and gets clipped
     ax.set_xlabel(
-        "model file size (MB)\n45k-tree / 3555-feature numerai production "
-        "model, predictions bit-identical unless noted"
+        "model file size (MB)\n45k-tree / 3555-feature numerai production model, predictions bit-identical unless noted"
     )
     ax.set_title("FALB binary model format vs the text format", fontsize=TITLE_PT)
     ax.grid(axis="y", visible=False)
@@ -1047,8 +1007,7 @@ def plot_memory():
     fig.text(
         0.5,
         -0.06,
-        "deep regimes  ·  * = upstream's OpenCL backend (its CUDA build OOMs), which "
-        "keeps the training data host-side",
+        "deep regimes  ·  * = upstream's OpenCL backend (its CUDA build OOMs), which keeps the training data host-side",
         ha="center",
         va="top",
         fontsize=CAP_PT,

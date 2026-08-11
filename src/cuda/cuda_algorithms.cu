@@ -7,13 +7,14 @@
 
 #ifdef USE_CUDA
 
+#include <Falcata/config.h>
+#include <Falcata/cuda/cuda_rocm_interop.h>
+
 #include <algorithm>
 #include <atomic>
 #include <string>
 
-#include <Falcata/config.h>
 #include <Falcata/cuda/cuda_algorithms.hpp>
-#include <Falcata/cuda/cuda_rocm_interop.h>
 
 namespace Falcata {
 
