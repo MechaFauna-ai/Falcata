@@ -41,10 +41,9 @@ class BaggingSampleStrategy : public SampleStrategy {
       #ifdef USE_CUDA
       // Device-side sampling. The host path below walks every row through a
       // stateful RNG and then copies the whole num_data index array over PCIe,
-      // so its cost tracks the DATASET, not the sample -- which is why bagging
-      // used to make training 3.5x SLOWER despite touching less data, and why
-      // the penalty grew with host thread count. Philox is counter-based, so
-      // the device can draw the same kind of sample without any host state.
+      // so its cost tracks the DATASET, not the sample, and grows with host
+      // thread count. Philox is counter-based, so the device draws the same
+      // kind of sample without any host state.
       // Query bagging and balanced bagging keep the host path; neither is a
       // plain per-row Bernoulli draw.
       if (config_->device_type == std::string("cuda") && !config_->bagging_by_query &&

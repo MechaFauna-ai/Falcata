@@ -1899,9 +1899,9 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
     if (threshold_found && threadIdx_x == best_thread_index) {
       cuda_best_split_info->is_valid = true;
       cuda_best_split_info->num_cat_threshold = 1;
-      // write into the slab slot pre-assigned by AllocateCatVectorsKernel
-      // (device-heap `new` here orphaned the slab and leaked per split; the
-      // shared-memory twin has always written the slab directly)
+      // write into the slab slot pre-assigned by AllocateCatVectorsKernel;
+      // the kernel must never allocate (the slab is the only storage whose
+      // lifetime the host controls)
       *(cuda_best_split_info->cat_threshold) = static_cast<uint32_t>(best_threshold);
       cuda_best_split_info->default_left = false;
       const int bin_offset = (best_threshold << 1);
@@ -2028,12 +2028,11 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
           sum_right_hessian, lambda_l1,
           l2, path_smooth, max_delta_step, left_count, right_count, parent_output);
-        // Keep the best gain across BOTH the left-to-right and right-to-left
-        // passes (and, above 256 bins, across the grid-stride bins a thread owns).
-        // The old `current_gain > min_gain_shift` test overwrote local_gain on
-        // every qualifying threshold, so the right-to-left pass clobbered a better
-        // left-to-right split -- CUDA then reported a lower-gain split over a
-        // disjoint category set than CPU. Track the running maximum instead.
+        // Keep the RUNNING MAXIMUM across BOTH the left-to-right and
+        // right-to-left passes (and, above 256 bins, across the grid-stride
+        // bins a thread owns): a bare `> min_gain_shift` test would overwrite
+        // local_gain on every qualifying threshold, letting the right-to-left
+        // pass clobber a better left-to-right split.
         if (current_gain > min_gain_shift && current_gain - min_gain_shift > local_gain) {
           local_gain = current_gain - min_gain_shift;
           threshold_found = true;
@@ -2073,12 +2072,11 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
           sum_right_hessian, lambda_l1,
           l2, path_smooth, max_delta_step, left_count, right_count, parent_output);
-        // Keep the best gain across BOTH the left-to-right and right-to-left
-        // passes (and, above 256 bins, across the grid-stride bins a thread owns).
-        // The old `current_gain > min_gain_shift` test overwrote local_gain on
-        // every qualifying threshold, so the right-to-left pass clobbered a better
-        // left-to-right split -- CUDA then reported a lower-gain split over a
-        // disjoint category set than CPU. Track the running maximum instead.
+        // Keep the RUNNING MAXIMUM across BOTH the left-to-right and
+        // right-to-left passes (and, above 256 bins, across the grid-stride
+        // bins a thread owns): a bare `> min_gain_shift` test would overwrite
+        // local_gain on every qualifying threshold, letting the right-to-left
+        // pass clobber a better left-to-right split.
         if (current_gain > min_gain_shift && current_gain - min_gain_shift > local_gain) {
           local_gain = current_gain - min_gain_shift;
           threshold_found = true;

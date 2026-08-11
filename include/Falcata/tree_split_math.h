@@ -6,10 +6,10 @@
  * Single source of truth for the per-leaf split-gain / leaf-output numeric
  * math shared by every backend (CPU serial learner, OpenCL, CUDA).
  *
- * These functions used to be duplicated: FeatureHistogram (CPU) and
- * CUDALeafSplits (CUDA) each carried their own copy, which drifted over time
- * (e.g. ThresholdL1 sign handling). Defining them once as __host__ __device__
- * free functions means the CPU and device paths can never disagree again.
+ * Defined ONCE as __host__ __device__ free functions so the CPU and device
+ * paths cannot disagree -- per-backend copies of this math inevitably drift
+ * (sign handling, epsilon placement), and any drift is a model-correctness
+ * bug, not a style problem.
  */
 #ifndef FALCATA_TREE_SPLIT_MATH_H_
 #define FALCATA_TREE_SPLIT_MATH_H_

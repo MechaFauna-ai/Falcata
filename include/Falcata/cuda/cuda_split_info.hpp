@@ -95,10 +95,9 @@ class CUDASplitInfo {
 
     // Threshold storage discipline: device instances use slab slots
     // pre-assigned by AllocateCatVectorsKernel; host instances only ever see
-    // scrubbed copies (ReadPrefetchedLeafBestSplits). Assignment therefore
-    // NEVER allocates -- the old `new[]` here paired device-heap allocation
-    // with the destructor's cudaFree, an allocator mismatch that could never
-    // be freed correctly on either side.
+    // scrubbed copies (ReadPrefetchedLeafBestSplits). Assignment must NEVER
+    // allocate: any allocation here would pair with the destructor's cudaFree
+    // across the host/device boundary, an allocator mismatch.
     // The count is METADATA and survives every assignment except one: a
     // destination WITH a slab receiving a scrubbed source would pair a
     // positive count with stale slab words, so only that case records zero.

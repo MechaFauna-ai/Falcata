@@ -1100,9 +1100,9 @@ void CUDAHistogramConstructor::SubtractHistogramForLeaf(
   global_timer.Start("CUDAHistogramConstructor::ConstructHistogramForLeaf::LaunchSubtractHistogramKernel");
   LaunchSubtractHistogramKernel(cuda_smaller_leaf_splits, cuda_larger_leaf_splits, use_quantized_grad,
                                 parent_num_bits_in_histogram_bins, smaller_num_bits_in_histogram_bins, larger_num_bits_in_histogram_bins);
-  // Record completion on cuda_stream_; the best split finder waits on this before
-  // reading the larger-leaf (subtracted) histogram, replacing the per-split device sync
-  // that previously separated the smaller- and larger-leaf FindBestSplits launches.
+  // Record completion on cuda_stream_; the best split finder waits on this
+  // event before reading the larger-leaf (subtracted) histogram -- the only
+  // ordering between the subtract and the FindBestSplits launches.
   CUDASUCCESS_OR_FATAL(cudaEventRecord(subtract_done_events_[active_pipeline_], current_stream()));
   global_timer.Stop("CUDAHistogramConstructor::ConstructHistogramForLeaf::LaunchSubtractHistogramKernel");
 }

@@ -103,8 +103,8 @@ __host__ __device__ inline int HybridQuantConstructMaxRowsPerThread(
  *  rows-per-thread cannot enforce the bound (HybridQuantConstructMaxRowsPerThread
  *  clamps to 1 and the block silently overruns), so the BLOCK has to be narrowed
  *  instead. Overrunning wraps the packed int16 partials: silent, data-dependent
- *  model corruption whenever enough of a block's rows share one bin (found by the
- *  nightly fuzz at quant_bins 255/256 and 1024 on a 13-distinct-value feature). */
+ *  model corruption whenever enough of a block's rows share one bin (low-
+ *  cardinality features at high quant_bins are the typical trigger). */
 __host__ __device__ inline int HybridQuantConstructBlockDimY(
     const int block_dim_y, const int num_grad_quant_bins) {
   if (num_grad_quant_bins <= 0) {

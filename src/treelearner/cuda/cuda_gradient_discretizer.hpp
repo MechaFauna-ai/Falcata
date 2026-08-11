@@ -75,12 +75,11 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
   }
 
   // Under bagging, residuals must only move for rows whose quantized gradient
-  // is actually consumed this tree. The kernel discretizes ALL rows, so
-  // without this an out-of-bag row accumulates corrections for values nothing
-  // ever read -- a stale, wrong carry by the time it re-enters the bag
-  // (measured: EF helped the no-bagging fuzz corner and HURT the bagged one
-  // until this gate existed). Pass the device array of in-bag row indices
-  // before each tree's DiscretizeGradients; nullptr means no bagging.
+  // is actually consumed this tree: the kernel discretizes ALL rows, and an
+  // out-of-bag row would otherwise accumulate corrections for values nothing
+  // ever read -- a stale, wrong carry by the time it re-enters the bag. Pass
+  // the device array of in-bag row indices before each tree's
+  // DiscretizeGradients; nullptr means no bagging.
   void SetBagForThisTree(const data_size_t* inbag_indices, data_size_t inbag_count) {
     ef_inbag_indices_ = inbag_indices;
     ef_inbag_count_ = inbag_count;
@@ -92,10 +91,9 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
     // Each data point stores an int16 gradient and an int16 hessian (see
     // DiscretizeGradientsKernel, which writes through an int16_t* view). That is
     // 2 * sizeof(int16_t) = 4 bytes per data point. The buffer is int8_t, so it
-    // must hold num_data * 4 elements; sizing it as num_data * 2 (the original
-    // 8-bit layout) under-allocates by 2x and lets the discretize kernel overrun
-    // into the adjacent gradient/hessian scale buffers, corrupting the dequant
-    // scales and producing garbage leaf sums (no splits under use_quantized_grad).
+    // must hold num_data * 4 elements; num_data * 2 (an 8-bit layout) would
+    // under-allocate by 2x and let the discretize kernel overrun into the
+    // adjacent gradient/hessian scale buffers, corrupting the dequant scales.
     discretized_gradients_and_hessians_.Resize(num_data * 4);
     num_reduce_blocks_ = (num_data + CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE - 1) / CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE;
     grad_min_block_buffer_.Resize(num_reduce_blocks_);
@@ -112,18 +110,15 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
       // a fresh model starts with no carried residual
       // int8 residuals in units of 1/128 of a quant bin: the carry's own
       // quantum (1/256 bin worst case) is 128x finer than the 1/2-bin rounding
-      // error it corrects, and the buffer costs 2 bytes/row/class instead of 8
-      // -- this matters because the numerai treecount gate already peaks
-      // within ~300MiB of the card, where a float buffer measurably tipped
-      // runs into OOM. The in-bag mask is allocated lazily on first bagged
-      // tree for the same reason.
+      // error it corrects, and 2 bytes/row/class keeps the buffer negligible
+      // on cards already running near capacity. The in-bag mask is allocated
+      // lazily on the first bagged tree for the same reason.
       const size_t ef_size = static_cast<size_t>(num_data) * 2 * ef_num_slots_;
       ef_residuals_.Resize(ef_size);
       SetCUDAMemory<int8_t>(ef_residuals_.RawData(), 0, ef_size, __FILE__, __LINE__);
     }
     // Stochastic rounding noise is Philox-generated in-kernel from
-    // (random_seed_, tree, row) -- no tables (formerly 2 float arrays of
-    // num_data each, 8 bytes/row of resident VRAM + per-tree reads).
+    // (random_seed_, tree, row) -- no resident tables, no per-tree reads.
     iter_ = 0;
   }
 

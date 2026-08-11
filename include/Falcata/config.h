@@ -1200,9 +1200,9 @@ struct Config {
   // there is invisible to nvcc, so Config would have one layout in .cu objects
   // and another in .cpp objects -- an ODR violation that silently shifts every
   // member of every class holding a Config by value (Metric, ObjectiveFunction,
-  // ...). That cost a wild pointer read in the CUDA metric kernels. Only
-  // #pragma region markers, which the parameter-doc generator scans for and
-  // nvcc warns about, belong inside the guard.
+  // ...) and ends in wild pointer reads. Only #pragma region markers, which
+  // the parameter-doc generator scans for and nvcc warns about, belong inside
+  // the guard.
   bool quant_bins_from_auto = false;
 
   size_t file_load_progress_interval_bytes = size_t(10) * 1024 * 1024 * 1024;

@@ -15,11 +15,10 @@ namespace Falcata {
 /*!
  * \brief Draw a bagging sample on the device.
  *
- * Replaces the host sampler for device_type=cuda. The host version walks every
- * row through a stateful RNG and then copies the whole index array over PCIe on
- * each re-bagging iteration -- work proportional to the DATASET rather than to
- * the sample, and the dominant cost of bagged training (measured 3.5x slower
- * than not bagging at all, worsening with host thread count).
+ * Used instead of the host sampler for device_type=cuda: the host version
+ * walks every row through a stateful RNG and copies the whole index array over
+ * PCIe on each re-bagging iteration -- work proportional to the DATASET rather
+ * than to the sample, and the dominant cost of bagged training.
  *
  * \param num_data          rows in the training set
  * \param bagging_fraction  probability a row is kept
