@@ -125,10 +125,13 @@ That builds the CUDA library from source, so you need the **CUDA toolkit
 the source distribution vendors every dependency, so no `git clone` and no
 submodule dance.
 
-The build targets **every GPU architecture your toolkit supports** (sm_60
-upward on CUDA 11/12, sm_75 upward on CUDA 13+, which dropped the older ones,
-plus PTX for the newest so future cards still run), which is why it takes a
-while. If you know your own GPU, building for just that one is far faster:
+The build detects the GPU(s) in the machine and **compiles only for those**
+(15–20 minutes on typical hardware). When no GPU is visible at build time —
+docker build stages, CPU-only CI — it instead targets every architecture the
+toolkit supports (sm_60 upward on CUDA 11/12, sm_75 upward on CUDA 13+, plus
+PTX for the newest so future cards still run), which takes several times
+longer. To build for a card other than the one present, or to pick one
+explicitly:
 
 ```bash
 # RTX 5090 = 120, RTX 4090 = 89, A100 = 80, T4 = 75

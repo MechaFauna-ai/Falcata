@@ -290,10 +290,45 @@ if(USE_CUDA)
     # target ("52") into CMAKE_CUDA_ARCHITECTURES at language enablement -- an
     # arch our code does not even support. Treat that auto-injected value as
     # "not set" so the every-supported-arch fallback below actually runs.
+    # Detect the GPUs actually present so a plain `pip install falcata` builds
+    # only for them (minutes instead of the better part of an hour). The
+    # every-supported-arch build below remains the fallback when no GPU is
+    # visible at build time (docker build stages, CPU-only CI).
+    set(FALCATA_DETECTED_ARCHS "")
+    execute_process(
+        COMMAND nvidia-smi --query-gpu=compute_cap --format=csv,noheader
+        OUTPUT_VARIABLE _falcata_caps
+        RESULT_VARIABLE _falcata_caps_rc
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if(_falcata_caps_rc EQUAL 0 AND NOT "${_falcata_caps}" STREQUAL "")
+        string(REPLACE "\n" ";" _falcata_cap_list "${_falcata_caps}")
+        foreach(_cap IN LISTS _falcata_cap_list)
+            string(STRIP "${_cap}" _cap)
+            string(REPLACE "." "" _cap "${_cap}")
+            if(_cap MATCHES "^[0-9]+$")
+                list(APPEND FALCATA_DETECTED_ARCHS "${_cap}")
+            endif()
+        endforeach()
+        list(REMOVE_DUPLICATES FALCATA_DETECTED_ARCHS)
+        list(SORT FALCATA_DETECTED_ARCHS COMPARE NATURAL)
+    endif()
+
     if(DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL ""
             AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "52")
         set(CUDA_ARCHS "${CMAKE_CUDA_ARCHITECTURES}")
+    elseif(NOT "${FALCATA_DETECTED_ARCHS}" STREQUAL "")
+        # real code for each detected GPU + PTX of the newest for forward compat
+        set(CUDA_ARCHS ${FALCATA_DETECTED_ARCHS})
+        list(GET CUDA_ARCHS -1 _falcata_max_arch)
+        list(TRANSFORM CUDA_ARCHS APPEND "-real")
+        list(APPEND CUDA_ARCHS "${_falcata_max_arch}-virtual")
+        message(STATUS "Building for the detected GPU(s): ${FALCATA_DETECTED_ARCHS} "
+                       "(pass -DCMAKE_CUDA_ARCHITECTURES=... to override)")
     else()
+        message(STATUS "No GPU detected at build time; building for every "
+                       "architecture the toolkit supports")
         if(CUDAToolkit_VERSION VERSION_LESS "13.0")
             set(CUDA_ARCHS "60" "61" "62" "70" "75")
         else()

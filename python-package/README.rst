@@ -58,9 +58,10 @@ That builds the CUDA library from source, so you need the CUDA toolkit
 the source distribution vendors every dependency, so no ``git clone`` and no
 submodule dance.
 
-The build targets every GPU architecture your toolkit supports, plus PTX for
-the newest, which is why it takes a while. Building for just your own card is
-far faster:
+The build detects the GPU(s) in the machine and compiles only for those
+(15–20 minutes on typical hardware). When no GPU is visible at build time it
+targets every architecture the toolkit supports instead, which takes several
+times longer. To pick an architecture explicitly:
 
 .. code:: sh
 
