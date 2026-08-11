@@ -560,6 +560,16 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
   // (num_leaves_ <= 1) have no internal nodes and never enter the traversal.
   const bool restore_tree_structure =
     num_leaves_ > 1 && cuda_split_feature_inner_.Size() == 0;
+  // The categorical arrays need the same treatment, but on a DIFFERENT
+  // trigger: the classic flow populates them on device (SplitCategorical) and
+  // ToHost never frees them, while the selective grow-then-prune flow builds
+  // the whole tree on host (RebuildFromHostSplits), leaving the device copies
+  // empty -- a categorical decision would then dereference the null
+  // bitset/boundary bases. Restore from the host mirrors (always populated by
+  // both flows) and, like the structure arrays, free again below so per-tree
+  // device memory stays bounded across thousands of rounds.
+  const bool restore_cat_arrays =
+    num_cat_ > 0 && cuda_bitset_inner_.Size() == 0;
   if (restore_tree_structure) {
     CUDATree* self = const_cast<CUDATree*>(this);
     self->cuda_left_child_.InitFromHostVector(left_child_);
@@ -567,6 +577,11 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
     self->cuda_split_feature_inner_.InitFromHostVector(split_feature_inner_);
     self->cuda_threshold_in_bin_.InitFromHostVector(threshold_in_bin_);
     self->cuda_decision_type_.InitFromHostVector(decision_type_);
+  }
+  if (restore_cat_arrays) {
+    CUDATree* self = const_cast<CUDATree*>(this);
+    self->cuda_bitset_inner_.InitFromHostVector(cat_threshold_inner_);
+    self->cuda_cat_boundaries_inner_.InitFromHostVector(cat_boundaries_inner_);
   }
   if (used_data_indices == nullptr) {
     AddPredictionToScoreKernel<false><<<num_blocks, num_threads_per_block_add_prediction_to_score_>>>(
@@ -625,6 +640,13 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
     self->cuda_split_feature_inner_.Clear();
     self->cuda_threshold_in_bin_.Clear();
     self->cuda_decision_type_.Clear();
+  }
+  if (restore_cat_arrays) {
+    // only what THIS launch uploaded: a classic-flow tree's live device cat
+    // arrays (restore_cat_arrays false) must not be freed under it
+    CUDATree* self = const_cast<CUDATree*>(this);
+    self->cuda_bitset_inner_.Clear();
+    self->cuda_cat_boundaries_inner_.Clear();
   }
 }
 

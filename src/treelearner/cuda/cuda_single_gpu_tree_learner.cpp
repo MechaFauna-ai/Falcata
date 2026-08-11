@@ -843,14 +843,14 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
   // sync and two-sync alike. Root cause is still open (see ROADMAP); the
   // classic loop is verified correct here, so categorical data takes it and
   // gives up hybrid's ~3.7x on those shapes until this is fixed.
-  const bool cat_threshold_fenced = has_categorical_feature_;
+  const bool cat_threshold_fenced =
+      has_categorical_feature_ && !FalcataPlan::Get().cat_hybrid;
   if (cat_threshold_fenced) {
     static bool warned = false;
     if (!warned) {
       warned = true;
-      Log::Warning("Hybrid CUDA growth is disabled for categorical datasets "
-                   "(open correctness issue in the batched categorical "
-                   "recording); using the classic training loop.");
+      Log::Warning("cat_hybrid:off -- categorical dataset routed to the "
+                   "classic CUDA training loop.");
     }
   }
   // Multi-GPU rides the hybrid TWO-SYNC batched flow only: that is the flow

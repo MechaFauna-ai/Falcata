@@ -10,7 +10,7 @@
    "metric_name": "rmse"
   },
   "categorical/quant": {
-   "md5": "77b635b1b481c16a9fea4e7fcf94913f",
+   "md5": "e79ee6bfde527beb3f569860558aa17a",
    "metric": 1.448241,
    "metric_name": "rmse"
   },

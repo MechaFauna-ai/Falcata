@@ -227,38 +227,34 @@ docs/design/nccl-level-allreduce-plan.md.
   symmetric seed variance in that pathological corner (fuzz classifies it,
   hard ceiling 0.35).
 
-- OPEN: hybrid categorical corruption -- FENCE WIDENED 2026-08-04 to EVERY
-  categorical dataset (hybrid+cat now always routes to the verified-correct
-  classic loop; ~3.7x cat speedup suspended until fixed). The previous >32
-  boundary was wrong: on a rented 3090 (sm_86) the crash reproduces at the
-  DEFAULT max_cat_threshold=32 (illegal access in
-  BatchConstructCatBitsetsKernel / downstream consumers). A day of rented
-  debugging narrowed it enormously without landing the root cause:
-  * The victim kernel's inputs validate CLEAN microseconds before the fault:
-    two host checkpoints (post-sync catcheck + pre-launch applycheck, both
-    now permanent under FALCATA_DEBUG=dump) verify every candidate's
-    cat_threshold contents (< num_bin), the device-side num_cat_threshold,
-    inner_feature_index, and BOTH slab pointers (cat_threshold /
-    cat_threshold_real match their per-leaf slab addresses exactly).
-  * Per-stage device serialization (dump mode syncs construct/find/syncbest/
-    bitset/tree-record/partition-apply each level) shows every stage clean
-    for 16+ levels, then a fresh level's find emits a cache winner on a CAT
-    feature with num_cat_threshold=0 and a stale garbage ->threshold (e.g.
-    thr=923712 on a 29-bin feature) -- the apply then misroutes it as a
-    NUMERICAL split and the partition faults on the garbage bin. The count
-    zeroing matches operator='s scrubbed-source branch (source task entry
-    with null cat_threshold), but AllocateCatVectors provably covers every
-    task slot, so how a null-pointer source arises is the open question.
-  * Ruled out: per-leaf slab pointer clobbering, slab content races at the
-    checkpoints, the level-capacity growth/re-pointing (pre-sizing so growth
-    never happens still crashes), bin_offsets table indexing, real-value
-    bitset stride off-by-one (data max values don't trigger it), the
-    speculative sync-vs-consumer race (event edge added anyway -- it IS a
-    real ordering hazard: the next level's sync deep-copies into per-leaf
-    slabs the apply's bitset/tree kernels still read; kept as hardening).
-  Resume with: compute-sanitizer racecheck on the one-sync flow, and a
-  device-side write-logger on one leaf's cache entry. Repro:
-  crash_edge2.py (rental) / crash_edge.py, mct=32, FALCATA_DEBUG=dump.
+- FIXED 2026-08-11, fence lifted: the "hybrid categorical corruption" was the
+  out-of-bag/validation traversal (AddPredictionToScoreKernel) running against
+  a tree whose categorical bitset arrays were absent on device. ToHost frees
+  the per-tree structure arrays and the traversal's restore path re-uploaded
+  five of them but not cuda_bitset_inner_/cuda_cat_boundaries_inner_; the
+  selective grow-then-prune flow never populates the device copies at all
+  (RebuildFromHostSplits builds the tree on host), so a categorical decision
+  dereferenced null bases. Restore now covers the categorical arrays, gated so
+  a classic-flow tree's live copies are never freed under it.
+  Validation on sm_120: the previously-crashing local repro sweep (36 cells)
+  and a 9-shape hostile matrix (4095 leaves, min_data 1, mct 8/64, one-hot,
+  35% NaN, both quant modes, extreme skew) all pass; hybrid-vs-classic
+  prediction parity is at fp-accumulation noise (<2e-6) on every non-bagging
+  shape, matching the numerical baseline; airline-cat deep (92M rows, the
+  original crash regime) trains clean, AUC .8722; memcheck 0 errors. The
+  sm_86 rental crash in BatchConstructCatBitsetsKernel was never reproduced
+  on sm_120 before or after the fix -- if it resurfaces, cat_hybrid:off is
+  the escape hatch and the fuzzer now generates categorical specs (~25%) to
+  keep hunting. Bagging-mode hybrid-vs-classic divergence exists equally for
+  numerical and categorical data (butterfly of near-tied gains, quality-
+  neutral) and is tracked separately below.
+
+- OPEN: hybrid-vs-classic model divergence under bagging (numerical AND
+  categorical equally; max|pred delta| ~0.3 after 40 rounds on tie-heavy
+  synthetic data, end quality equal). Not cat-specific and not new -- the
+  no-bagging paths agree to fp noise. Likely near-tied gains resolving
+  differently after bagged hessian sums; worth a tie-break audit of the
+  bagged level flow someday.
 
 - RESOLVED 2026-08-04: the airline-cat "quality gap vs upstream" was never a
   quality gap -- **upstream's CUDA learner silently ignores max_depth**. On a

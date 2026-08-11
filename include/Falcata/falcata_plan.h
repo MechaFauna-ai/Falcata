@@ -93,6 +93,9 @@ struct FalcataPlan {
   // full precision at 16 bins / min_data 1). Changes the model -- NOT an
   // equality key. Fully deterministic: no RNG, no atomics, row-indexed.
   bool quant_ef = true;             // key: quant_ef
+  // hybrid growth on categorical datasets (~3.7x on cat-heavy shapes);
+  // cat_hybrid:off routes categorical data to the classic training loop.
+  bool cat_hybrid = true;           // key: cat_hybrid
   // experimental compact-view packing codecs (uniform per tree; eligible only
   // when every sampled feature's bin count fits the codec). Bit-identical by
   // construction (lossless packing). Priority radix5 > radix6 > bit3.
@@ -177,6 +180,7 @@ struct FalcataPlan {
     if (key == "small_leaf_construct") return &small_leaf_construct;
     if (key == "robust_scale") return &robust_scale;
     if (key == "quant_ef") return &quant_ef;
+    if (key == "cat_hybrid") return &cat_hybrid;
     if (key == "compact_prefill") return &compact_prefill;
     if (key == "pack_bit3") return &pack_bit3;
     if (key == "pack_radix5") return &pack_radix5;

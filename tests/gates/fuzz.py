@@ -61,9 +61,19 @@ def sample_spec(rng):
         plan.append("hybrid:off")
     if quant_mode == "fixedpoint" and rng.random() < 0.20:
         plan.append("robust_scale:off")
+    # ~25% of specs get categorical features (the hybrid+cat paths were fenced
+    # until 2026-08-11 and therefore under-fuzzed; the null-bitset restore bug
+    # shipped precisely because nothing here generated cat+bagging)
+    num_cat = int(rng.choice([0, 0, 0, 2, 4]))
     spec = {
         "n": n,
         "m": m,
+        "num_cat_features": num_cat,
+        # cardinalities <= 250 keep quant modes eligible (256-bin CUDA guard)
+        "cat_cards": [int(c) for c in rng.choice([12, 31, 64, 128, 250], size=num_cat)]
+        if num_cat
+        else [],
+        "max_cat_threshold": int(rng.choice([8, 32, 32, 64])),
         "learning_rate": float(rng.choice([0.1, 0.1, 0.01, 0.0015])),
         "dtype": str(rng.choice(["float64", "int8", "int16"])),
         "nan_frac": float(rng.choice([0.0, 0.0, 0.1, 0.4])),
@@ -117,6 +127,15 @@ if spec["dtype"] == "float64":
     X = rng.standard_normal((n, m))
 else:
     X = rng.integers(spec["int_lo"], spec["int_hi"], size=(n, m)).astype(spec["dtype"])
+num_cat = spec.get("num_cat_features", 0)
+if num_cat:
+    # first num_cat columns become skewed categorical codes
+    X = X.astype(np.float64) if spec["dtype"] != "float64" else X
+    for j, card in enumerate(spec["cat_cards"]):
+        pj = 1.0 / np.arange(1, card + 1) ** 1.2
+        X[:, j] = rng.choice(card, size=n, p=pj / pj.sum())
+    if spec["dtype"] != "float64":
+        X = X.astype(spec["dtype"])
 Xf = X.astype(np.float64)
 if spec["sparsity"] > 0:
     mask = rng.random((n, m)) < spec["sparsity"]
@@ -139,14 +158,15 @@ p = {"objective": spec["objective"], "num_leaves": spec["num_leaves"],
      "max_bin": spec["max_bin"], "learning_rate": spec.get("learning_rate", 0.1),
      "quant_mode": spec["quant_mode"], "quant_bins": spec["quant_bins"],
      "cuda_plan": spec["cuda_plan"],
-     "device_type": device, "seed": 42, "verbose": -1, "metric": "None", "num_threads": 8}
+     "device_type": device, "seed": 42, "verbose": -1, "metric": "None", "num_threads": 8,
+     "max_cat_threshold": spec.get("max_cat_threshold", 32)}
+cat_features = list(range(spec.get("num_cat_features", 0)))
 # fixedpoint is CUDA-only. The CPU reference runs FULL PRECISION, because
 # fixedpoint's contract is "near-lossless vs non-quantized" -- that is the
-# invariant worth testing. (It used to map to stochastic@4bins, which is a
-# genuinely different algorithm: its rounding noise regularizes, so on some
-# data it beats full precision by >10% and the tolerant check reported a
-# correct fixedpoint model as a failure -- three such false alarms in the
-# 2026-08-10 nightly, all verified same-device as fixedpoint == non-quant.)
+# invariant worth testing. (Mapping to a stochastic mode instead would compare
+# against a genuinely different algorithm: stochastic rounding noise
+# regularizes, on some data beating full precision by >10%, and the tolerant
+# check would then flag a correct fixedpoint model as a failure.)
 if device == "cpu" and p["quant_mode"] == "fixedpoint":
     p["quant_mode"] = "none"
     p["quant_bins"] = 0
@@ -156,7 +176,8 @@ if spec["objective"] == "multiclass":
     p["num_class"] = spec["num_class"]
 
 k = int(n * 0.8)
-ds = lgb.Dataset(X[:k], label=y[:k], params=p)
+ds = lgb.Dataset(X[:k], label=y[:k], params=p,
+                 categorical_feature=cat_features if cat_features else "auto")
 bst = lgb.train(p, ds, num_boost_round=spec["rounds"])
 model_str = bst.model_to_string()
 expected = spec["rounds"] * (spec["num_class"] or 1)
@@ -235,14 +256,12 @@ def is_fixedpoint_lowbin_bias(spec):
     """Fixedpoint at very low bin budgets with single-row leaves: the cpu
     cross-check compares against UNQUANTIZED cpu (fixedpoint has no cpu arm),
     so in this corner it measures quantization noise, not implementation
-    parity. The systematic bias this corner used to show (6-seed mean +15.8%
-    on the 2026-08-11 nightly's seed20260811#431) was fixed by error-feedback
-    accumulation in the discretizer (cuda_plan key quant_ef); what remains is
-    symmetric variance, measured -29..+15% across seeds with mean -6% (cuda
-    slightly BETTER than full precision). Single seeds still cross the 10%
-    tolerance in either direction, hence this classification. All three
-    conditions are required; everything outside them still fails hard, and
-    the md5 determinism check above still applies here.
+    parity. With error feedback (cuda_plan key quant_ef) the noise is
+    symmetric seed variance -- roughly -30%..+15% across seeds, mean slightly
+    BETTER than full precision -- so single seeds cross the 10% tolerance in
+    either direction without indicating a defect. All three conditions are
+    required; everything outside them still fails hard, and the md5
+    determinism check above still applies here.
     """
     return (
         spec["quant_mode"] == "fixedpoint"
