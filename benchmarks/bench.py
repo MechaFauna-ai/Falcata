@@ -453,7 +453,17 @@ def run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve, cat_cols=None):
     if curve:
         vals = model.get_evals_result().get("validation", {})
         if vals:
-            series = vals[next(iter(vals))]
+            # catboost records the LOSS first and any extra eval_metric after
+            # it, so taking the first key yields Logloss on binary tasks --
+            # where every other engine here records AUC. That silently puts a
+            # loss curve on an AUC axis, so pick the series by name.
+            want = {
+                "binary": "AUC",
+                "multiclass": "MultiClass",
+                "regression": "RMSE",
+                "numerai": "RMSE",
+            }[task]
+            series = vals.get(want, vals[next(iter(vals))])
             n = len(series)
             # metric_period=eval_every already makes catboost record ONLY every
             # eval_every-th iteration, so `series` IS the subsampled curve --
