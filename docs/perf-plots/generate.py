@@ -809,7 +809,7 @@ def plot_curves():
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9.6, 3.8))
     missing = []
     for ax, ds, reg in ((ax1, "higgs", "deep"), (ax2, "epsilon", "deep")):
-        ymin = 1.0
+        curve_mins = []
         drawn = []
         xmin, xmax = float("inf"), 0.0
         for (lib, d, r), curve in CURVES.items():
@@ -822,9 +822,10 @@ def plot_curves():
             ys = [p[2] for p in curve]
             drawn.append((xs, ys))
             xmax = max(xmax, xs[-1])
-            # clip the early ramp, but never a curve's FINAL value (an honest
-            # quality dip must stay in frame)
-            ymin = min(ymin, ys[len(ys) // 4], ys[-1] - 0.0008)
+            # the axis starts at the HIGHEST of the curves' minima: the slowest
+            # starter sets the floor, so every line is present across the whole
+            # visible range and no single early point stretches the axis
+            curve_mins.append(min(ys))
             label = LIB_LABEL[lib] + ("*" if lib == "lightgbm" else "")
             ax.plot(
                 xs,
@@ -850,6 +851,7 @@ def plot_curves():
                     clip_on=False,
                 )
         ax.set_xscale("log")
+        ymin = max(curve_mins) if curve_mins else 0.0
         ax.set_ylim(bottom=ymin)
         # start just left of where the earliest curve ENTERS the visible
         # y-range: points below ymin are clipped anyway (catboost's linearly
@@ -862,7 +864,7 @@ def plot_curves():
                     xmin = min(xmin, x)
                     break
         if xmax > 0 and xmin < float("inf"):
-            ax.set_xlim(xmin * 0.7, xmax * 1.45)
+            ax.set_xlim(xmin * (0.35 if ds == "epsilon" else 0.45), xmax * 1.45)
         mark_axis_break(ax, "both")
         ax.set_xlabel("wall time (s, log)")
         ax.set_ylabel("test AUC")
