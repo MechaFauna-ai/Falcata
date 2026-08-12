@@ -521,6 +521,16 @@ def main():
         "published numbers were measured that way; on, the comparison is "
         "stricter but will NOT match docs/performance.md.",
     )
+    ap.add_argument(
+        "--set",
+        dest="overrides",
+        action="append",
+        default=[],
+        metavar="KEY=VAL",
+        help="override a regime knob (l2, min_data, colsample, rounds, ...) for "
+        "one-off experiments; repeatable. Overridden runs are stamped with an "
+        "'overrides' field so they can never be mistaken for published cells.",
+    )
     ap.add_argument("--kind", required=True)  # warmup | timed1..3 | curve
     ap.add_argument("--out", default=RUNS_JSONL)
     args = ap.parse_args()
@@ -529,6 +539,12 @@ def main():
     reg = dict(REGIMES[args.regime])
     if args.align_l2:
         reg["l2"] = 1.0
+    overrides = {}
+    for kv in args.overrides:
+        k, v = kv.split("=", 1)
+        x = float(v)
+        overrides[k] = int(x) if x.is_integer() else x
+    reg.update(overrides)
     curve = args.kind == "curve"
 
     rec = {
@@ -538,6 +554,8 @@ def main():
         "kind": args.kind,
         "status": "ok",
     }
+    if overrides:
+        rec["overrides"] = overrides
     try:
         x_tr, y_tr, x_te, y_te, extra = load_data(args.dataset)
         rec["n_train"], rec["n_features"] = int(x_tr.shape[0]), int(x_tr.shape[1])
