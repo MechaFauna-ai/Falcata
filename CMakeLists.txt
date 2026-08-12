@@ -542,9 +542,13 @@ if(NOT ZLIB_FOUND)
   include(FetchContent)
   set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   set(SKIP_INSTALL_ALL ON CACHE BOOL "" FORCE)
+  # two independent hosts: a transient failure on one must not fail the build
+  # (the pinned SHA256 makes the mirror exactly as trustworthy as the origin)
   fetchcontent_declare(
     zlib_fallback
-    URL https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
+    URL
+      https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
+      https://zlib.net/fossils/zlib-1.3.1.tar.gz
     URL_HASH SHA256=9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
   )
   fetchcontent_makeavailable(zlib_fallback)
