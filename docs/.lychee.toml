@@ -10,7 +10,11 @@ require_https = true
 accept = ["100..=103", "200..=299"]
 user_agent = "curl/7.88.1"
 header = {"User-Agent" = "curl/7.88.1"}
-timeout = 30
+# generous timeout + retries: academic hosts (hal.science and friends) stall
+# intermittently, and a scheduled checker should only fail on links that stay
+# unreachable across the whole run, not on one slow response
+timeout = 45
+max_retries = 4
 retry_wait_time = 10
 max_concurrency = 10
 # remove anchors from GitHub URLs to overcome https://github.com/lycheeverse/lychee/issues/1729
