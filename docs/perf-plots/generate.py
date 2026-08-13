@@ -14,7 +14,6 @@ Run with any python that has matplotlib:
 import json
 import os
 import statistics
-import sys
 
 import matplotlib
 
@@ -26,14 +25,11 @@ ABLATION = os.path.join(HERE, "..", "..", "benchmarks", "ablation_2026-08-09.txt
 
 
 def _default_runs():
-    """The sweep file the benchmark suite writes -- same workspace, one place."""
-    sys.path.insert(0, os.path.join(HERE, "..", "..", "benchmarks"))
-    try:
-        from common import RUNS_JSONL
-
-        return RUNS_JSONL
-    except ImportError:  # benchmarks/ not alongside these docs
-        return "results/runs.jsonl"
+    """The committed measurement snapshot: every plot regenerates from the
+    repo alone. A fresh sweep points here via $FALCATA_SWEEP_RUNS (usually the
+    workspace runs.jsonl) and updates the snapshot in the same commit as the
+    plots it changes."""
+    return os.path.join(HERE, "data", "runs.jsonl")
 
 
 RUNS = os.environ.get("FALCATA_SWEEP_RUNS") or _default_runs()
