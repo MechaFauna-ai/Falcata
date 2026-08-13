@@ -559,11 +559,22 @@ void Dataset::Construct(std::vector<std::unique_ptr<BinMapper>>* bin_mappers,
 
   auto is_sparse = io_config.is_enable_sparse;
   if (io_config.device_type == std::string("cuda")) {
-      FLC_config_::current_device = lgbm_device_cuda;
-      if ((io_config.device_type == std::string("cuda")) && is_sparse) {
-        Log::Warning("Using sparse features with CUDA is currently not supported.");
-        is_sparse = false;
+    FLC_config_::current_device = lgbm_device_cuda;
+    if (is_sparse) {
+      // The CUDA kernels address dense per-group bins, so sparse bin storage
+      // never engages on this device. That only deserves a mention when the
+      // data actually has columns sparse enough to have used it -- for dense
+      // data disabling the flag changes nothing.
+      is_sparse = false;
+      for (const int fidx : used_features) {
+        if (ref_bin_mappers[fidx]->sparse_rate() >= kSparseThreshold) {
+          Log::Info(
+              "Sparse columns are stored dense on CUDA; memory use may be "
+              "higher than the CPU path for this dataset.");
+          break;
+        }
       }
+    }
   }
 
   std::vector<int8_t> group_is_multi_val(used_features.size(), 0);
