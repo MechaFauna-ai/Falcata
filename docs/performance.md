@@ -40,8 +40,16 @@ competitor; quality in parentheses):
 | airline (stoch) | 30 s, AUC .8640 | 1.3× (.8633) | 3.9× (.8782⁵) | 4.7× (.8223) |
 
 ³ upstream's CUDA learner produced diverged/garbage models on those cells.
-⁴ CatBoost reaches slightly better quality on year/epsilon at 2.6–2.7× the
-time — the honest trade; falcata-noquant closes most of the year gap.
+⁴ CatBoost reaches slightly better endpoint quality on year and epsilon at
+2.6–2.7× the time; falcata-noquant closes most of the year gap. On epsilon,
+most of CatBoost's lead is default regularization, not the algorithm: the
+regimes run each engine's default L2, and CatBoost ships `l2_leaf_reg=3`
+where the LightGBM family ships 0. Sweeping L2 on epsilon-deep closes the
+gap from .0079 to .0015 (falcata .9499 at `lambda_l2=300` in 42 s vs
+CatBoost's plateau .9514 at 109 s; XGBoost tracks falcata within .0006 at
+every L2). The residual .0015 is the oblivious-tree structure itself —
+CatBoost gains almost nothing from extra L2 because its level-wide shared
+splits already are the constraint. Reproduce with `bench.py --set l2=N`.
 ⁵ upstream's higher AUC here is its `max_depth` bug: its CUDA learner does
 not enforce the depth cap (measured depth 14.7 avg / 20 max under
 `max_depth=6`), so those cells train much bigger trees than configured. At
@@ -64,14 +72,15 @@ trains a deeper, more expressive model than the one configured — which is also
 why its curve sits so far right. Given the same semantics (`max_depth=-1`)
 falcata matches it to the 5th decimal at 1.7–3.7× the speed.
 
-*XGBoost and CatBoost end above falcata on epsilon*, and that is simply real.
-It is a cross-family difference on this dataset rather than a falcata
-regression: `falcata-noquant` lands at .94307 against upstream LightGBM's
-.94320, so the two implementations of the same algorithm agree to 1e-4, and
-quantization costs a further ~4e-4 (§5). CatBoost is the quality leader on
-this cell (.9508) — visibly so on the chart — at 2.6× falcata's time; the
-frontier claim is about reaching each quality level first, which falcata does
-up to the point where its curves end.
+*XGBoost and CatBoost end above falcata on epsilon*, and that is real but
+smaller than it looks: footnote ⁴ quantifies it with an L2 sweep — at matched
+regularization the CatBoost lead shrinks from .0079 to .0015, the residual
+being its oblivious-tree structure. It is a cross-family difference rather
+than a falcata regression: `falcata-noquant` lands at .94307 against upstream
+LightGBM's .94320, so the two implementations of the same algorithm agree to
+1e-4, and quantization costs a further ~4e-4 (§5). The frontier claim is
+about reaching each quality level first, which falcata does up to the point
+where its curves end.
 
 **Resources** — falcata's 4-bit rowdata + compact view keep it the smallest
 or tied-smallest footprint of the CUDA libraries, where CatBoost
