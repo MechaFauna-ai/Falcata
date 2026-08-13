@@ -849,6 +849,32 @@ if(USE_CUDA)
   # NVRTC + CUDA driver API for the runtime construct-kernel JIT
   # (src/treelearner/cuda/cuda_construct_jit.cpp). Both are optional at runtime:
   # if NVRTC compile fails the construct dispatch falls back to the AOT kernel.
+  if(NOT TARGET CUDA::cuda_driver)
+    # find_package(CUDAToolkit) defines CUDA::cuda_driver only when it sees an
+    # unversioned libcuda.so or the toolkit's stubs/ directory. Hosted notebook
+    # images (Kaggle, Colab) ship neither -- just the driver's libcuda.so.1 in
+    # a nonstandard directory -- so find that and link it directly.
+    find_library(
+      FALCATA_LIBCUDA
+      NAMES cuda libcuda.so.1
+      PATHS
+        /usr/lib64-nvidia
+        /usr/local/nvidia/lib64
+        /usr/lib/x86_64-linux-gnu
+        ${CUDAToolkit_LIBRARY_DIR}/stubs
+    )
+    if(NOT FALCATA_LIBCUDA)
+      message(
+        FATAL_ERROR
+        "libcuda not found. The CUDA driver library is needed to link; "
+        "install the NVIDIA driver, or the toolkit's cuda-driver-devel "
+        "package for its build-time stub."
+      )
+    endif()
+    add_library(CUDA::cuda_driver SHARED IMPORTED)
+    set_target_properties(CUDA::cuda_driver PROPERTIES IMPORTED_LOCATION "${FALCATA_LIBCUDA}")
+    message(STATUS "CUDA driver library located directly: ${FALCATA_LIBCUDA}")
+  endif()
   target_link_libraries(falcata_objs PUBLIC CUDA::nvrtc CUDA::cuda_driver)
 endif()
 
