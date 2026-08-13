@@ -396,7 +396,17 @@ std::string GBDT::SaveModelToString(int start_iteration, int num_iteration, int 
   }
   if (config_ != nullptr) {
     ss << "\nparameters:" << '\n';
-    ss << config_->ToString() << "\n";
+    std::string param_dump = config_->ToString();
+    if (config_->device_type_from_auto) {
+      // the device was chosen by the unset-means-auto probe on THIS machine;
+      // a saved model is device-portable and must not pin that choice
+      const std::string from = "[device_type: " + config_->device_type + "]";
+      const size_t pos = param_dump.find(from);
+      if (pos != std::string::npos) {
+        param_dump.replace(pos, from.size(), "[device_type: cpu]");
+      }
+    }
+    ss << param_dump << "\n";
     ss << "end of parameters" << '\n';
   } else if (!loaded_parameter_.empty()) {
     ss << "\nparameters:" << '\n';

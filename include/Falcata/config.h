@@ -1205,6 +1205,11 @@ struct Config {
   // the guard.
   bool quant_bins_from_auto = false;
 
+  // device_type was resolved by the unset-means-auto probe rather than set by
+  // the user; model files must not inherit the machine-local choice (see
+  // SaveModelToString: a model trained wherever stays device-portable)
+  bool device_type_from_auto = false;
+
   size_t file_load_progress_interval_bytes = size_t(10) * 1024 * 1024 * 1024;
 
   bool is_parallel = false;

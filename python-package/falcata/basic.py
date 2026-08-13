@@ -5093,6 +5093,10 @@ class Booster:
         is_host = isinstance(data, np.ndarray)
         params = getattr(self, "params", None) or {}
         devices = {str(params[alias]).lower() for alias in _ConfigAliases.get("device_type") if alias in params}
+        # FIL engages only on an EXPLICIT cuda/gpu device. Auto-resolved
+        # training deliberately does not count: the auto choice is not
+        # persisted to model files (see SaveModelToString), so a live booster
+        # and its save/load round-trip take the same predict path either way.
         if (
             _falcata_env("FIL", "1") == "0"
             or (not is_host and not hasattr(data, "__cuda_array_interface__"))

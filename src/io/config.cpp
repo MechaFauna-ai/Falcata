@@ -313,6 +313,7 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
   // it. Passing device_type explicitly (either value) pins the choice.
   if (params.count("device_type") == 0 && CUDADeviceUsableByDefault()) {
     device_type = "cuda";
+    device_type_from_auto = true;
     static std::once_flag auto_cuda_logged;
     std::call_once(auto_cuda_logged, []() {
       Log::Info(

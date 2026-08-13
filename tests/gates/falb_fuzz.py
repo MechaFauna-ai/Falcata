@@ -50,7 +50,10 @@ def build_seed_files(tmp):
         y = x @ rng.standard_normal(6)
         if name == "multi":
             y = (x @ rng.standard_normal((6, 3))).argmax(1).astype(float)
-        p = dict(params, verbose=-1, seed=42, num_threads=1)
+        # explicit cpu: the fuzzer tests the PARSER, and cpu-trained seed
+        # files keep every mutated load off the GPU -- immune to whatever
+        # state the preceding gates left the device in
+        p = dict(params, verbose=-1, seed=42, num_threads=1, device_type="cpu")
         ds = flc.Dataset(x, label=y, params=p, categorical_feature=list(range(cats)) or "auto")
         bst = flc.train(p, ds, num_boost_round=8)
         f = tmp / f"{name}.falb"
@@ -106,13 +109,41 @@ def main():
                 f.write_bytes(mutated)
                 paths.append(str(f))
                 recipes.append(mseed)
-            proc = subprocess.run(
-                [sys.executable, "-c", _WORKER, *paths],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                check=False,
-            )
+            try:
+                proc = subprocess.run(
+                    [sys.executable, "-c", _WORKER, *paths],
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as e:
+                # a hang is a finding just like a crash: bisect the batch with
+                # a per-file timeout to name the culprit
+                done = (e.stdout or b"").decode(errors="replace").count("OK ")
+                for j, path in enumerate(paths):
+                    try:
+                        subprocess.run(
+                            [sys.executable, "-c", _WORKER, path],
+                            capture_output=True,
+                            timeout=20,
+                            check=False,
+                        )
+                    except subprocess.TimeoutExpired:
+                        repro = Path(__file__).resolve().parent / "falb_fuzz_crash.falb"
+                        shutil.copy(path, repro)
+                        print(
+                            f"FAIL: loader HUNG on mutation #{tried + j} "
+                            f"(mutation seed {recipes[j]}, fuzz seed {args.seed})"
+                        )
+                        print(f"repro file kept at: {repro}")
+                        return 1
+                print(
+                    f"FAIL: batch timed out after {done} loads but no single file "
+                    f"hangs alone (fuzz seed {args.seed}, batch start #{tried}) -- "
+                    "suspect environment slowness, rerun"
+                )
+                return 1
             if proc.returncode != 0:
                 done = proc.stdout.count("OK ")
                 crash_idx = tried + done
