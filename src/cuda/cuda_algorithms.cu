@@ -478,6 +478,32 @@ size_t CUDASideSizeOfConfig() {
 // runs on a device iff the majors match and the cubin's minor is <= the
 // device's. (__CUDA_ARCH_LIST__ is nvcc >= 11.5; older toolkits skip the
 // check and keep the raw CUDA error.)
+// Whether an unset device_type may resolve to CUDA: a device must exist and,
+// when the compiled arch list is known, be runnable by this binary. Never
+// fatal -- auto-resolution falls back to the CPU; the explicit device_type
+// path keeps its loud error below.
+bool CUDADeviceUsableByDefault() {
+  int count = 0;
+  if (cudaGetDeviceCount(&count) != cudaSuccess || count < 1) {
+    return false;
+  }
+#ifdef __CUDA_ARCH_LIST__
+  static const int kCompiledArchs[] = {__CUDA_ARCH_LIST__};
+  cudaDeviceProp prop{};
+  if (cudaGetDeviceProperties(&prop, 0) != cudaSuccess) {
+    return false;
+  }
+  for (const int a : kCompiledArchs) {
+    if (a / 100 == prop.major && (a / 10) % 10 <= prop.minor) {
+      return true;
+    }
+  }
+  return false;
+#else
+  return true;
+#endif
+}
+
 void CheckCUDADeviceSupportsThisBuild(const int device_id) {
 #ifdef __CUDA_ARCH_LIST__
   // one-shot per device: SetCUDADevice calls this on every CUDA entry path

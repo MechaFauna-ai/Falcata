@@ -26,6 +26,7 @@ namespace Falcata {
 // rather than pulled in from a header because cuda_algorithms.hpp is device
 // code and will not compile in a host TU.
 size_t CUDASideSizeOfConfig();
+bool CUDADeviceUsableByDefault();
 #endif  // USE_CUDA
 
 void Config::KV2Map(std::unordered_map<std::string, std::vector<std::string>>* params, const char* kv) {
@@ -307,16 +308,16 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
       }
     });
   }
-  // device_type keeps LightGBM's "cpu" default so parameter files stay portable,
-  // but a CUDA build that silently trains on the CPU is the single easiest way
-  // to miss the point of this library. Say so once per process; setting
-  // device_type explicitly (to either value) silences it.
-  if (params.count("device_type") == 0) {
-    static std::once_flag cpu_default_warned;
-    std::call_once(cpu_default_warned, []() {
-      Log::Warning(
-          "device_type is unset, so training will use the CPU. This build has "
-          "the CUDA learner compiled in -- pass device_type=cuda to use it.");
+  // device_type keeps LightGBM's "cpu" spelling in parameter files, but in
+  // this library UNSET means auto: a CUDA build with a usable GPU trains on
+  // it. Passing device_type explicitly (either value) pins the choice.
+  if (params.count("device_type") == 0 && CUDADeviceUsableByDefault()) {
+    device_type = "cuda";
+    static std::once_flag auto_cuda_logged;
+    std::call_once(auto_cuda_logged, []() {
+      Log::Info(
+          "device_type is unset and a usable GPU is present: training on "
+          "CUDA. Pass device_type=cpu to override.");
     });
   }
 #endif  // USE_CUDA
