@@ -315,8 +315,59 @@ if(USE_CUDA)
         list(SORT FALCATA_DETECTED_ARCHS COMPARE NATURAL)
     endif()
 
+    # The toolkit bounds what is compilable: CUDA 13 removed offline
+    # compilation for everything below sm_75, so a detected Pascal/Volta GPU
+    # must fail here with the remedy, not minutes later inside nvcc.
+    if(NOT "${FALCATA_DETECTED_ARCHS}" STREQUAL "")
+        set(_falcata_nvcc "${CMAKE_CUDA_COMPILER}")
+        if(NOT _falcata_nvcc)
+            set(_falcata_nvcc "nvcc")
+        endif()
+        execute_process(
+            COMMAND ${_falcata_nvcc} --version
+            OUTPUT_VARIABLE _falcata_nvcc_out
+            RESULT_VARIABLE _falcata_nvcc_rc
+            ERROR_QUIET
+        )
+        if(_falcata_nvcc_rc EQUAL 0 AND _falcata_nvcc_out MATCHES "release ([0-9]+)\\.")
+            set(_falcata_nvcc_major "${CMAKE_MATCH_1}")
+            if(_falcata_nvcc_major GREATER_EQUAL 13)
+                set(_falcata_supported "")
+                set(_falcata_dropped "")
+                foreach(_arch IN LISTS FALCATA_DETECTED_ARCHS)
+                    if(_arch LESS 75)
+                        list(APPEND _falcata_dropped "sm_${_arch}")
+                    else()
+                        list(APPEND _falcata_supported "${_arch}")
+                    endif()
+                endforeach()
+                if(NOT "${_falcata_dropped}" STREQUAL "")
+                    message(
+                        WARNING
+                        "CUDA ${_falcata_nvcc_major} cannot compile for detected GPU(s) ${_falcata_dropped}: "
+                        "CUDA 13 removed support for architectures below sm_75. "
+                        "Building for these GPUs needs a CUDA 12.x toolkit."
+                    )
+                endif()
+                if("${_falcata_supported}" STREQUAL "")
+                    message(
+                        FATAL_ERROR
+                        "None of the detected GPU(s) can be targeted by this CUDA toolkit. "
+                        "Install a CUDA 12.x toolkit (e.g. 12.9) and rebuild, "
+                        "or pass -DCMAKE_CUDA_ARCHITECTURES to target a different device."
+                    )
+                endif()
+                set(FALCATA_DETECTED_ARCHS ${_falcata_supported})
+            endif()
+        endif()
+    endif()
+
+    # "52" is what CMake injects as nvcc's default target on CUDA <= 12;
+    # nvcc 13 raised that injected default to "75". Both mean "the user
+    # passed nothing", so both must yield to GPU detection below.
     if(DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL ""
-            AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "52")
+            AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "52"
+            AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "75")
         set(CUDA_ARCHS "${CMAKE_CUDA_ARCHITECTURES}")
     elseif(NOT "${FALCATA_DETECTED_ARCHS}" STREQUAL "")
         # real code for each detected GPU + PTX of the newest for forward compat
