@@ -8,7 +8,10 @@
 #   FALCATA_WHEEL_ARCHS  override the architecture list
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-ARCHS="${FALCATA_WHEEL_ARCHS:-61-real;70-real;75-real;80-real;86-real;89-real;90-real;100-real;120-real}"
+# 60-real, not 61-real: an sm_60 cubin runs on every Pascal device (CUDA
+# binary compatibility is upward within a major), so one slot covers P100 AND
+# GTX 10xx; the codebase uses no sm_61-only features (no dp4a).
+ARCHS="${FALCATA_WHEEL_ARCHS:-60-real;70-real;75-real;80-real;86-real;89-real;90-real;100-real;120-real}"
 
 cd "$HERE"
 CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=${ARCHS} -DUSE_NCCL=OFF -DFALCATA_CUDA_LINEINFO=OFF" \

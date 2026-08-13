@@ -121,7 +121,7 @@ pip install falcata
 ```
 
 On Linux x86_64 this installs a **prebuilt wheel** — no compilation, no CUDA
-toolkit needed — with native GPU code for sm_61 through sm_120 (GTX 10xx,
+toolkit needed — with native GPU code for sm_60 through sm_120 (P100, GTX 10xx,
 V100, T4, A100, RTX 30xx/40xx, H100, B100/B200, RTX 50xx). A GPU outside that
 list fails fast with a message pointing at the source build below.
 
