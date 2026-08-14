@@ -247,6 +247,14 @@ create_isolated_source_dir() {
         external_libs/fast_double_parser/include/fast_double_parser.h \
         ./falcata-python/external_libs/fast_double_parser/include/
 
+    ########
+    # nccl #
+    ########
+    mkdir -p ./falcata-python/external_libs/nccl
+    cp \
+        external_libs/nccl/* \
+        ./falcata-python/external_libs/nccl/
+
     #######
     # fmt #
     #######
