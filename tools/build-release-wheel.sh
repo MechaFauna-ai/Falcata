@@ -23,7 +23,10 @@ RAW=$(find dist -name "falcata-*-py3-none-linux_x86_64.whl" | sort | tail -1)
 auditwheel repair --exclude libcuda.so.1 --exclude "libnvrtc.so.12" "$RAW" -w dist/
 REPAIRED=$(find dist -name "falcata-*manylinux*.whl" | sort | tail -1)
 
-# let the loader find nvrtc inside the nvidia wheel's install location
+# let the loader find nvrtc inside the nvidia wheel's install location.
+# The manylinux images ship pip but not the wheel module, and without it the
+# rpath below is never applied -- the wheel then loads no nvrtc and no nccl.
+python -c 'import wheel' 2>/dev/null || python -m pip install --quiet --user wheel
 python -m wheel unpack "$REPAIRED" -d /tmp/fal-wheel
 LIB=$(ls /tmp/fal-wheel/*/falcata/lib/lib_falcata.so)
 OLD_RPATH=$(patchelf --print-rpath "$LIB")
