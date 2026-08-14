@@ -6,10 +6,15 @@ option(USE_GPU "Enable GPU-accelerated training" OFF)
 option(USE_SWIG "Enable SWIG to generate Java API" OFF)
 option(USE_TIMETAG "Set to ON to output time costs" OFF)
 option(USE_CUDA "Enable CUDA-accelerated training " OFF)
-# OFF by default: NCCL has no official Windows distribution and only multi-GPU
-# training needs it. Pass -DUSE_NCCL=ON (with BUILD_WITH_SHARED_NCCL=ON
-# recommended on newer archs) for multi-GPU builds.
-option(USE_NCCL "Enable NCCL for multi-GPU CUDA training (requires USE_CUDA)" OFF)
+# NCCL is never linked: types come from the vendored header
+# (external_libs/nccl) and libnccl.so.2 is dlopen'ed on first multi-GPU use
+# (src/cuda/nccl_shim.cpp), so enabling this costs nothing at build or install
+# time. OFF only on Windows, where NCCL has no official distribution.
+if(WIN32)
+    option(USE_NCCL "Enable NCCL for multi-GPU CUDA training (requires USE_CUDA)" OFF)
+else()
+    option(USE_NCCL "Enable NCCL for multi-GPU CUDA training (requires USE_CUDA)" ON)
+endif()
 option(USE_ROCM "Enable ROCm-accelerated training " OFF)
 option(USE_DEBUG "Set to ON for Debug mode" OFF)
 option(USE_SANITIZER "Use sanitizer flags" OFF)
@@ -248,7 +253,8 @@ endif()
 if(USE_CUDA)
     find_package(CUDAToolkit 11.0 REQUIRED)
     if(USE_NCCL)
-        find_package(NCCL REQUIRED)
+        # nothing to find or link: vendored header for types, dlopen at runtime
+        include_directories("${PROJECT_SOURCE_DIR}/external_libs/nccl")
     else()
         message(STATUS "USE_NCCL is OFF: building single-GPU only, without the NCCL dependency.")
     endif()
@@ -694,7 +700,7 @@ set(
 )
 
 if(USE_NCCL)
-  list(APPEND FLC_CUDA_SOURCES src/boosting/cuda/nccl_gbdt.cpp)
+  list(APPEND FLC_CUDA_SOURCES src/boosting/cuda/nccl_gbdt.cpp src/cuda/nccl_shim.cpp)
 endif()
 
 if(USE_CUDA OR USE_ROCM)
@@ -842,7 +848,7 @@ if(USE_GPU)
 endif()
 
 if(USE_CUDA AND USE_NCCL)
-  target_link_libraries(falcata_objs PUBLIC NCCL::NCCL)
+  target_link_libraries(falcata_objs PUBLIC ${CMAKE_DL_LIBS})
 endif()
 
 if(USE_CUDA)

@@ -54,7 +54,14 @@ Boosting* Boosting::CreateBoosting(const std::string& type, const char* filename
       #ifdef USE_CUDA
       if (device_type == std::string("cuda") && num_gpu > 1) {
       #ifdef USE_NCCL
-        return new NCCLGBDT<GBDT>();
+        if (NcclShim::Available()) {
+          return new NCCLGBDT<GBDT>();
+        }
+        Log::Warning(
+            "num_gpu > 1 needs the NCCL library, and libnccl.so.2 was not "
+            "found -- install it with: pip install nvidia-nccl-cu12. "
+            "Falling back to a single GPU.");
+        return new GBDT();
       #else
         Log::Warning("num_gpu > 1 requires NCCL, which was not compiled in (USE_NCCL=OFF). Falling back to a single GPU.");
         return new GBDT();
@@ -81,7 +88,15 @@ Boosting* Boosting::CreateBoosting(const std::string& type, const char* filename
         #ifdef USE_CUDA
         if (device_type == std::string("cuda") && num_gpu > 1) {
         #ifdef USE_NCCL
-          ret.reset(new NCCLGBDT<GBDT>());
+          if (NcclShim::Available()) {
+            ret.reset(new NCCLGBDT<GBDT>());
+          } else {
+            Log::Warning(
+                "num_gpu > 1 needs the NCCL library, and libnccl.so.2 was not "
+                "found -- install it with: pip install nvidia-nccl-cu12. "
+                "Falling back to a single GPU.");
+            ret.reset(new GBDT());
+          }
         #else
           Log::Warning("num_gpu > 1 requires NCCL, which was not compiled in (USE_NCCL=OFF). Falling back to a single GPU.");
           ret.reset(new GBDT());

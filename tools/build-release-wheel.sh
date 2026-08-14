@@ -14,7 +14,7 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 ARCHS="${FALCATA_WHEEL_ARCHS:-60-real;70-real;75-real;80-real;86-real;89-real;90-real;100-real;120-real}"
 
 cd "$HERE"
-CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=${ARCHS} -DUSE_NCCL=OFF -DFALCATA_CUDA_LINEINFO=OFF" \
+CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=${ARCHS} -DUSE_NCCL=ON -DFALCATA_CUDA_LINEINFO=OFF" \
   sh build-python.sh bdist_wheel --cuda
 
 # manylinux tag + graft libgomp; libcuda comes from the user's driver and
@@ -27,7 +27,8 @@ REPAIRED=$(find dist -name "falcata-*manylinux*.whl" | sort | tail -1)
 python -m wheel unpack "$REPAIRED" -d /tmp/fal-wheel
 LIB=$(ls /tmp/fal-wheel/*/falcata/lib/lib_falcata.so)
 OLD_RPATH=$(patchelf --print-rpath "$LIB")
-patchelf --set-rpath "${OLD_RPATH}:\$ORIGIN/../../nvidia/cuda_nvrtc/lib" "$LIB"
+# nvrtc for the runtime JIT, nccl for the multi-GPU dlopen (falcata[multigpu])
+patchelf --set-rpath "${OLD_RPATH}:\$ORIGIN/../../nvidia/cuda_nvrtc/lib:\$ORIGIN/../../nvidia/nccl/lib" "$LIB"
 python -m wheel pack /tmp/fal-wheel/* -d dist/
 rm -rf /tmp/fal-wheel
 du -h dist/*manylinux*.whl

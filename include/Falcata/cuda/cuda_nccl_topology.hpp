@@ -13,6 +13,8 @@
 #include <rccl/rccl.h>
 #else
 #include <nccl.h>
+
+#include <Falcata/cuda/nccl_shim.hpp>
 #endif
 
 #include <Falcata/cuda/cuda_utils.hu>

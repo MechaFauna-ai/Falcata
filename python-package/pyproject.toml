@@ -50,6 +50,11 @@ arrow = [
     "narwhals[pyarrow]",
     "pyarrow>=16.0.0"
 ]
+multigpu = [
+    # num_gpu > 1 dlopens libnccl.so.2 at runtime (never linked); this wheel
+    # provides it without a system NCCL install
+    "nvidia-nccl-cu12"
+]
 dask = [
     "dask[array,dataframe,distributed]>=2.0.0",
     "narwhals[pandas]",
