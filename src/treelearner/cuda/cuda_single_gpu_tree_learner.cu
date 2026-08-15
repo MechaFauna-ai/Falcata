@@ -419,8 +419,10 @@ __global__ void CalcLinearGramKernel(
 
 // score += leaf_const + sum(coeff * raw_feat); if any used feature is NaN, fall back
 // to the constant leaf output. Mirrors LinearTreeLearner::AddPredictionToScoreInner.
+template <bool USE_BAGGING>
 __global__ void LinearAddScoreKernel(
     const data_size_t num_data,
+    const data_size_t* __restrict__ data_indices,
     const int* __restrict__ data_index_to_leaf_index,
     const float* __restrict__ raw_data,
     const data_size_t num_data_stride,
@@ -431,10 +433,18 @@ __global__ void LinearAddScoreKernel(
     const int* __restrict__ leaf_num_coeff,
     const double* __restrict__ leaf_output,
     double* __restrict__ score) {
-  const data_size_t i = static_cast<data_size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (i >= num_data) {
+  const data_size_t local_data_index = static_cast<data_size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (local_data_index >= num_data) {
     return;
   }
+  // Under bagging num_data is the BAGGED count and the rows to score are the
+  // partition's index list -- exactly what the non-linear
+  // CUDADataPartition::AddPredictionToScoreKernel does. Walking 0..num_data_
+  // instead scored the out-of-bag rows here too, and GBDT::UpdateScore scored
+  // them a second time through its own out-of-bag pass: their score carried
+  // twice the tree's contribution, so the training metric stopped matching
+  // what the model predicts.
+  const data_size_t i = USE_BAGGING ? data_indices[local_data_index] : local_data_index;
   const int leaf = data_index_to_leaf_index[i];
   if (leaf < 0) {
     return;
@@ -476,15 +486,25 @@ void CUDASingleGPUTreeLearner::LaunchLinearAddScoreKernel(
     const int* cuda_data_index_to_leaf_index, const double* cuda_leaf_const,
     const double* cuda_leaf_coeff, const int* cuda_leaf_coeff_offset, const int* cuda_leaf_coeff_col,
     const int* leaf_num_coeff, const double* cuda_leaf_output, double* score) const {
-  if (num_data_ <= 0) {
+  const data_size_t num_score_data = cuda_data_partition_->root_num_data();
+  if (num_score_data <= 0) {
     return;
   }
   const int block = 256;
-  const int grid = (num_data_ + block - 1) / block;
-  LinearAddScoreKernel<<<grid, block>>>(
-    num_data_, cuda_data_index_to_leaf_index, cuda_raw_data_.RawData(), num_data_,
-    cuda_leaf_const, cuda_leaf_coeff, cuda_leaf_coeff_offset, cuda_leaf_coeff_col,
-    leaf_num_coeff, cuda_leaf_output, score);
+  const int grid = (num_score_data + block - 1) / block;
+  if (cuda_data_partition_->use_bagging()) {
+    LinearAddScoreKernel<true><<<grid, block>>>(
+      num_score_data, cuda_data_partition_->cuda_data_indices(),
+      cuda_data_index_to_leaf_index, cuda_raw_data_.RawData(), num_data_,
+      cuda_leaf_const, cuda_leaf_coeff, cuda_leaf_coeff_offset, cuda_leaf_coeff_col,
+      leaf_num_coeff, cuda_leaf_output, score);
+  } else {
+    LinearAddScoreKernel<false><<<grid, block>>>(
+      num_score_data, nullptr,
+      cuda_data_index_to_leaf_index, cuda_raw_data_.RawData(), num_data_,
+      cuda_leaf_const, cuda_leaf_coeff, cuda_leaf_coeff_offset, cuda_leaf_coeff_col,
+      leaf_num_coeff, cuda_leaf_output, score);
+  }
   SynchronizeCUDADevice(__FILE__, __LINE__);
 }
 
