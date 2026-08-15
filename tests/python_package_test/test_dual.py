@@ -2461,3 +2461,113 @@ def test_cuda_bagging_diverges_from_cpu_but_tracks_its_quality():
     mse_cpu = float(np.mean((y - pred_cpu) ** 2))
     mse_cuda = float(np.mean((y - pred_cuda) ** 2))
     assert mse_cuda < 1.5 * mse_cpu, f"CUDA bagging quality {mse_cuda} far off CPU {mse_cpu}"
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("feature_fraction", [0.4, 0.8])
+def test_cuda_dart_with_feature_fraction_scores_old_trees(feature_fraction):
+    """DART re-scores trees grown many iterations ago; the column view must serve them.
+
+    Under feature_fraction the tree learner publishes a per-tree compact
+    column view: columns the current tree did not sample are null pointers,
+    and the sampled ones point into a scratch buffer the next tree
+    overwrites. Traversing an OLD tree against that view dereferenced a null
+    column ("an illegal memory access was encountered", cuda_tree.cu) or, when
+    the pointer happened to be live, silently read another tree's bins.
+    CUDATree::LaunchAddPredictionToScoreKernel now restores the original
+    per-column table whenever the published view cannot serve the tree.
+    """
+    X, y = _make_regression_for_parity(n=600, d=12, seed=3)
+    overrides = {
+        "boosting": "dart",
+        "feature_fraction": feature_fraction,
+        "feature_fraction_seed": 7,
+        "drop_seed": 5,
+        "num_leaves": 15,
+    }
+    pair = _train_cpu_and_cuda(overrides, X, y, num_round=25)
+    pred_cuda = pair["cuda"].predict(X, raw_score=True)
+    assert np.all(np.isfinite(pred_cuda))
+    mse_cpu = float(np.mean((y - pair["cpu"].predict(X, raw_score=True)) ** 2))
+    mse_cuda = float(np.mean((y - pred_cuda) ** 2))
+    assert mse_cuda < 1.5 * mse_cpu, f"CUDA dart quality {mse_cuda} far off CPU {mse_cpu}"
+
+
+@_REQUIRES_CUDA
+def test_cuda_dart_training_metric_matches_the_model():
+    """The metric DART reports must be the one its own model produces.
+
+    Device-side scores of dropped trees are what the reported metric is built
+    from, so reading the wrong columns for an old tree shows up here as a
+    training l2 that the model cannot reproduce -- silently, with no crash.
+    """
+    X, y = _make_regression_for_parity(n=600, d=12, seed=4)
+    evals = {}
+    ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False})
+    booster = lgb.train(
+        {
+            "objective": "regression",
+            "metric": "l2",
+            "boosting": "dart",
+            "device_type": "cuda",
+            "quant_mode": "none",
+            "deterministic": True,
+            "feature_fraction": 0.5,
+            "feature_fraction_seed": 7,
+            "num_leaves": 15,
+            "verbose": -1,
+        },
+        ds,
+        num_boost_round=20,
+        valid_sets=[ds],
+        valid_names=["train"],
+        callbacks=[lgb.record_evaluation(evals)],
+    )
+    reported = evals["train"]["l2"][-1]
+    from_model = float(np.mean((y - booster.predict(X)) ** 2))
+    assert reported == pytest.approx(from_model, rel=1e-6), (
+        f"dart reported l2 {reported} but its model produces {from_model}"
+    )
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("bagging_fraction", [0.5, 0.8])
+def test_cuda_bagged_linear_tree_metric_matches_the_model(bagging_fraction):
+    """A bagged linear tree's training metric must be the one its model produces.
+
+    In-bag rows are scored by the tree learner's linear kernel and out-of-bag
+    rows by GBDT's own pass. The linear kernel walked every row rather than the
+    partition's bagged index list, so out-of-bag rows were scored twice --
+    their score carried twice the tree's contribution and the reported l2
+    (0.133) had nothing to do with what the model predicts (0.270). The
+    out-of-bag pass had its own half of the bug: it went through the device
+    traversal, which knows leaf constants only and ignores leaf regressions.
+    """
+    rng = np.random.default_rng(42)
+    X = rng.standard_normal((1000, 5))
+    y = X @ rng.standard_normal(5) + 0.1 * rng.standard_normal(1000)
+    ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False})
+    evals = {}
+    booster = lgb.train(
+        {
+            "objective": "regression",
+            "metric": "l2",
+            "device_type": "cuda",
+            "linear_tree": True,
+            "num_leaves": 8,
+            "bagging_fraction": bagging_fraction,
+            "bagging_freq": 1,
+            "seed": 0,
+            "verbose": -1,
+        },
+        ds,
+        num_boost_round=10,
+        valid_sets=[ds],
+        valid_names=["train"],
+        callbacks=[lgb.record_evaluation(evals)],
+    )
+    reported = evals["train"]["l2"][-1]
+    from_model = float(np.mean((y - booster.predict(X)) ** 2))
+    assert reported == pytest.approx(from_model, rel=1e-6), (
+        f"bagged linear tree reported l2 {reported} but its model produces {from_model}"
+    )
