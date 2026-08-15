@@ -810,11 +810,13 @@ void Dataset::FinishLoad() {
   #endif  // USE_CUDA
 
   #ifdef USE_CUDA
+  // Columns upload on first use (EnsureCUDAColumnData), not here: a
+  // dataset that is only ever subset, or never trained on at all, should
+  // not pay for device residency. Metadata is small and several call
+  // sites read it without touching columns, so it stays eager.
+  ReleaseCUDAColumnData();
   if (device_type_ == std::string("cuda")) {
-    CreateCUDAColumnData();
     metadata_.CreateCUDAMetadata(gpu_device_id_);
-  } else {
-    cuda_column_data_.reset(nullptr);
   }
   #endif  // USE_CUDA
   is_finish_load_ = true;
@@ -1305,11 +1307,14 @@ void Dataset::CopySubrow(const Dataset* fullset,
 
   #ifdef USE_CUDA
   if (device_type_ == std::string("cuda")) {
-    if (cuda_column_data_ == nullptr) {
-      cuda_column_data_.reset(new CUDAColumnData(num_used_indices, gpu_device_id_));
-      metadata_.CreateCUDAMetadata(gpu_device_id_);
-    }
-    cuda_column_data_->CopySubrow(fullset->cuda_column_data(), used_indices, num_used_indices);
+    // Build from the host rows CopySubrowHostPart just produced rather than
+    // device-to-device from `fullset`. The old path read the parent's device
+    // columns, which forced BOTH copies resident: excluding 0.9% of rows cost
+    // a second full dataset on the card and OOMed 32GB on data that fits
+    // twice. Deferring to the lazy upload also means a parent that is only
+    // ever subset never uploads at all.
+    metadata_.CreateCUDAMetadata(gpu_device_id_);
+    ReleaseCUDAColumnData();
   }
   #endif  // USE_CUDA
 }
@@ -2200,11 +2205,8 @@ void Dataset::AddFeaturesFrom(Dataset* other) {
     }
   }
   #ifdef USE_CUDA
-  if (device_type_ == std::string("cuda")) {
-    CreateCUDAColumnData();
-  } else {
-    cuda_column_data_ = nullptr;
-  }
+  // The columns just changed shape; drop them and let the next use rebuild.
+  ReleaseCUDAColumnData();
   #endif  // USE_CUDA
 }
 
@@ -2227,8 +2229,30 @@ const void* Dataset::GetColWiseData(
   return feature_groups_[feature_group_index]->GetColWiseData(sub_feature_index, bit_type, is_sparse, bin_iterator);
 }
 
+void Dataset::EnsureCUDAColumnData() const {
+  #ifdef USE_CUDA
+  if (device_type_ != std::string("cuda")) {
+    return;
+  }
+  if (cuda_column_data_ != nullptr) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(cuda_column_data_mutex_);
+  if (cuda_column_data_ == nullptr) {  // another thread may have won the race
+    CreateCUDAColumnData();
+  }
+  #endif  // USE_CUDA
+}
+
+void Dataset::ReleaseCUDAColumnData() {
+  #ifdef USE_CUDA
+  std::lock_guard<std::mutex> lock(cuda_column_data_mutex_);
+  cuda_column_data_.reset(nullptr);
+  #endif  // USE_CUDA
+}
+
 #ifdef USE_CUDA
-void Dataset::CreateCUDAColumnData() {
+void Dataset::CreateCUDAColumnData() const {
   cuda_column_data_.reset(new CUDAColumnData(num_data_, gpu_device_id_));
   int num_columns = 0;
   std::vector<const void*> column_data;

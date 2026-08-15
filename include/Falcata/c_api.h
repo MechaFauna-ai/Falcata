@@ -562,6 +562,15 @@ FALCATA_C_EXPORT int FLC_DatasetGetFeatureNames(DatasetHandle handle,
 FALCATA_C_EXPORT int FLC_DatasetFree(DatasetHandle handle);
 
 /*!
+ * \brief Release a dataset's device columns, keeping the host side usable.
+ *        They upload again on the next device use. A no-op on a CPU
+ *        dataset, or one whose columns are not resident.
+ * \param handle Handle of dataset
+ * \return 0 when succeed, -1 when failure happens
+ */
+FALCATA_C_EXPORT int FLC_DatasetFreeDeviceData(DatasetHandle handle);
+
+/*!
  * \brief Save dataset to binary file.
  * \param handle Handle of dataset
  * \param filename The name of the file

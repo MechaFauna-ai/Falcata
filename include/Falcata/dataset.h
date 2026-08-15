@@ -1067,18 +1067,44 @@ class Dataset {
 
   #ifdef USE_CUDA
 
+  /*! \brief Device columns for this dataset, uploaded on first use.
+   *
+   * Lazy on purpose. Uploading at load time costs the full binned
+   * dataset in device memory whether or not anything trains on it, and
+   * the subset path made that fatal: taking a subset used to require
+   * BOTH the parent and the child resident, so dropping 0.9% of rows
+   * doubled device memory and OOMed a 32GB card on a dataset that fits
+   * twice over. Nothing outside this accessor needs to know: every
+   * consumer already reaches the columns through here.
+   */
   const CUDAColumnData* cuda_column_data() const {
+    EnsureCUDAColumnData();
     return cuda_column_data_.get();
   }
 
   #endif  // USE_CUDA
+
+  /*! \brief Upload the device columns if they are not resident yet.
+   *  No-op unless device_type_ is cuda, and on CPU-only builds.
+   *  Declared outside USE_CUDA so callers -- including the C API -- do
+   *  not have to branch on how the library was compiled. */
+  void EnsureCUDAColumnData() const;
+
+  /*! \brief Drop the device columns, keeping the host side intact.
+   *
+   * The next cuda_column_data() re-uploads them. Lets a caller that has
+   * finished with a dataset -- e.g. a parent whose subset now owns its
+   * own columns -- return the memory without destroying the object.
+   * No-op on CPU-only builds.
+   */
+  void ReleaseCUDAColumnData();
 
  private:
   void SerializeHeader(BinaryWriter* serializer);
 
   size_t GetSerializedHeaderSize();
 
-  void CreateCUDAColumnData();
+  void CreateCUDAColumnData() const;
 
   #ifdef USE_CUDA
   /*! \brief Whether the CUDA row data can be built directly from column bins,
@@ -1140,7 +1166,11 @@ class Dataset {
   std::mutex mutex_;
 
   #ifdef USE_CUDA
-  std::unique_ptr<CUDAColumnData> cuda_column_data_;
+  /*! \brief Device columns. Mutable + guarded because they are built on
+   *  demand from the const accessor; see EnsureCUDAColumnData. */
+  mutable std::unique_ptr<CUDAColumnData> cuda_column_data_;
+  /*! \brief Guards the lazy upload against two threads racing to build it. */
+  mutable std::mutex cuda_column_data_mutex_;
   /*! \brief per-group expected bin bytes captured by GPUBinDenseRows under
    *  FALCATA_GPU_CONSTRUCT_VERIFY=1; compared against the host-binned
    *  storage in FinishLoad */

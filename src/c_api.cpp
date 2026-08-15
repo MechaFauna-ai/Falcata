@@ -2141,6 +2141,12 @@ int FLC_DatasetFree(DatasetHandle handle) {
   API_END();
 }
 
+int FLC_DatasetFreeDeviceData(DatasetHandle handle) {
+  API_BEGIN();
+  reinterpret_cast<Dataset*>(handle)->ReleaseCUDAColumnData();
+  API_END();
+}
+
 int FLC_DatasetSaveBinary(DatasetHandle handle,
                            const char* filename) {
   API_BEGIN();
