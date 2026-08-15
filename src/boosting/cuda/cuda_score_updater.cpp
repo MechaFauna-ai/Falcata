@@ -8,6 +8,9 @@
 
 #ifdef USE_CUDA
 
+#include <algorithm>
+#include <vector>
+
 namespace Falcata {
 
 CUDAScoreUpdater::CUDAScoreUpdater(const Dataset* data, int num_tree_per_iteration, const bool boosting_on_cuda):
@@ -54,9 +57,35 @@ inline void CUDAScoreUpdater::AddScore(double val, int cur_tree_id) {
 inline void CUDAScoreUpdater::AddScore(const Tree* tree, int cur_tree_id) {
   Common::FunctionTimer fun_timer("ScoreUpdater::AddScore", global_timer);
   const size_t offset = static_cast<size_t>(num_data_) * cur_tree_id;
+  if (tree->is_linear()) {
+    ScoreLinearTreeOnHost(tree, offset);
+    return;
+  }
   tree->AddPredictionToScore(data_, num_data_, cuda_score_.RawData() + offset);
   if (!boosting_on_cuda_) {
     CopyFromCUDADeviceToHost<double>(score_.data() + offset, cuda_score_.RawData() + offset, static_cast<size_t>(num_data_), __FILE__, __LINE__);
+  }
+}
+
+void CUDAScoreUpdater::ScoreLinearTreeOnHost(const Tree* tree, size_t offset) {
+  // The device traversal kernel knows only leaf constants, so a linear tree
+  // scored there lands on the wrong value: training would report a metric that
+  // disagrees with what the very same model predicts, and early stopping would
+  // act on it. Tree::AddPredictionToScore evaluates the leaf regressions, so
+  // round-trip through the host copy and use it. This costs a device<->host
+  // transfer per tree, but only for linear_tree, and only on the score updaters
+  // that go through this overload (the training data uses the tree learner's
+  // own linear kernel).
+  // A local buffer, not score_: when boosting runs on the device the host copy
+  // is not kept in step, so it is not a safe staging area.
+  std::vector<double> host_score(static_cast<size_t>(num_data_));
+  CopyFromCUDADeviceToHost<double>(host_score.data(), cuda_score_.RawData() + offset,
+                                   static_cast<size_t>(num_data_), __FILE__, __LINE__);
+  tree->Tree::AddPredictionToScore(data_, num_data_, host_score.data());
+  CopyFromHostToCUDADevice<double>(cuda_score_.RawData() + offset, host_score.data(),
+                                   static_cast<size_t>(num_data_), __FILE__, __LINE__);
+  if (!boosting_on_cuda_) {
+    std::copy(host_score.begin(), host_score.end(), score_.data() + offset);
   }
 }
 

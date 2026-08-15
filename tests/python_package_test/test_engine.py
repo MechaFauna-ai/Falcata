@@ -4983,17 +4983,24 @@ def test_equal_predict_from_row_major_and_col_major_data():
 
 
 @pytest.mark.skipif(getenv("TASK", "") != "cuda", reason="requires CUDA build")
-def test_cuda_dataset_device_type_unchangeable_after_construct(rng):
-    # Switching to device_type=cuda after constructing a CPU-side Dataset used
-    # to leave cuda_metadata_ unset and SIGSEGV inside CUDAObjectiveInterface::Init.
-    # The check on device_type in CheckDatasetResetConfig now surfaces a clear
-    # error instead.
+@pytest.mark.parametrize(("dataset_device", "train_device"), [("cpu", "cuda"), ("cuda", "cpu")])
+def test_cuda_dataset_device_type_unchangeable_after_construct(rng, dataset_device, train_device):
+    # Switching device_type after constructing a Dataset used to leave
+    # cuda_metadata_ unset and SIGSEGV inside CUDAObjectiveInterface::Init.
+    # The check in CheckDatasetResetConfig surfaces a clear error instead.
+    #
+    # Both devices are pinned explicitly. An unset device_type resolves to
+    # whatever the machine has, so on a GPU box the dataset would already be
+    # cuda and "switching to cuda" would not be a switch at all -- the test
+    # would pass by testing nothing. Pinning also makes the reverse direction
+    # (a cuda Dataset trained on cpu) reachable, which is a real user path now
+    # that construction picks a device on its own.
     X = rng.uniform(size=(100, 5)).astype(np.float32)
     y = rng.uniform(size=100).astype(np.float32)
-    ds = lgb.Dataset(X, label=y).construct()
+    ds = lgb.Dataset(X, label=y, params={"device_type": dataset_device, "verbose": -1}).construct()
     with pytest.raises(lgb.basic.FalcataError, match="Cannot change device_type"):
         lgb.train(
-            {"device_type": "cuda", "objective": "regression", "verbose": -1},
+            {"device_type": train_device, "objective": "regression", "verbose": -1},
             ds,
             num_boost_round=1,
         )
