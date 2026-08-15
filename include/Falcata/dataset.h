@@ -1083,7 +1083,15 @@ class Dataset {
 
   /*! \brief Whether the device columns are resident right now.
    *  Does NOT upload them -- callers use this to choose between a
-   *  device-to-device copy and a host build. */
+   *  device-to-device copy and a host build.
+   *
+   *  Reads the pointer without the lock on purpose: this only picks
+   *  between two paths that are both correct, so a stale answer costs
+   *  at most a suboptimal choice. Answering "resident" about columns
+   *  another thread has just released is still safe, because the
+   *  device path reaches them through cuda_column_data(), which
+   *  re-uploads if they are gone.
+   */
   bool has_cuda_column_data() const {
     #ifdef USE_CUDA
     return cuda_column_data_ != nullptr;

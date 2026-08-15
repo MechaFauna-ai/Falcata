@@ -2092,6 +2092,13 @@ class Dataset:
         can go back to the card immediately instead of sitting there for
         the whole run.
 
+        Do not call this while a Booster is training on the dataset. The
+        CUDA tree learner caches a raw pointer to the columns, and the
+        next device use builds a *new* set rather than refilling the old
+        one, so an in-flight booster would be left pointing at freed
+        memory. Release between fits, or on a dataset nothing is training
+        on -- such as a parent you have finished subsetting.
+
         Returns
         -------
         self : Dataset

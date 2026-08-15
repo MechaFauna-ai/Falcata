@@ -565,6 +565,10 @@ FALCATA_C_EXPORT int FLC_DatasetFree(DatasetHandle handle);
  * \brief Release a dataset's device columns, keeping the host side usable.
  *        They upload again on the next device use. A no-op on a CPU
  *        dataset, or one whose columns are not resident.
+ *
+ *        Not safe while a booster is training on this dataset: the CUDA
+ *        tree learner caches a raw pointer to the columns, and the next
+ *        device use builds a new set rather than refilling the old one.
  * \param handle Handle of dataset
  * \return 0 when succeed, -1 when failure happens
  */
