@@ -1362,7 +1362,7 @@ def test_cv():
     rank_example_dir = Path(__file__).absolute().parents[2] / "examples" / "lambdarank"
     X_train, y_train = load_svmlight_file(str(rank_example_dir / "rank.train"))
     q_train = np.loadtxt(str(rank_example_dir / "rank.train.query"))
-    params_lambdarank = {"objective": "lambdarank", "verbose": -1, "eval_at": 3}
+    params_lambdarank = {"objective": "lambdarank", "verbose": -1, "eval_at": 3, "deterministic": True}
     lgb_train = lgb.Dataset(X_train, y_train, group=q_train)
     # ... with l2 metric
     cv_res_lambda = lgb.cv(params_lambdarank, lgb_train, num_boost_round=10, nfold=3, metrics="l2")
@@ -1379,7 +1379,9 @@ def test_cv():
 
 def test_cv_works_with_init_model(tmp_path):
     X, y = make_synthetic_regression()
-    params = {"objective": "regression", "verbose": -1}
+    # deterministic: cv results from separate runs are compared below, which
+    # needs bit-reproducible training on CUDA.
+    params = {"objective": "regression", "verbose": -1, "deterministic": True}
     num_train_rounds = 2
     lgb_train = lgb.Dataset(X, y, free_raw_data=False)
     bst = lgb.train(params=params, train_set=lgb_train, num_boost_round=num_train_rounds)
@@ -1705,6 +1707,15 @@ def test_all_expected_params_are_written_out_to_model_text(tmp_path):
         "sub_row": 0.8234,
         "verbose": -1,
     }
+    # The point of this test is that what you PASS is what gets written out, so
+    # the device has to be passed rather than inferred: an auto-resolved
+    # device_type is deliberately not persisted (a model trained on whatever GPU
+    # happened to be present must still load on a machine without one).
+    if BuildInfo.has_cuda:
+        params["device_type"] = "cuda"
+        params["gpu_use_dp"] = True
+    elif BuildInfo.has_gpu:
+        params["device_type"] = "gpu"
     dtrain = lgb.Dataset(data=X, label=y)
     gbm = lgb.train(params=params, train_set=dtrain, num_boost_round=3)
 
