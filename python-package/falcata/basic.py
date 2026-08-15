@@ -2081,6 +2081,33 @@ class Dataset:
             self.data = None
         return self
 
+    def free_device_data(self) -> "Dataset":
+        """Release this dataset's GPU columns, keeping it fully usable.
+
+        They upload again on the next device use, so this is a memory
+        hint, not a teardown. A no-op on CPU datasets.
+
+        The case it exists for: a large dataset that is loaded only to be
+        subset. The child owns its own columns once built, so the parent's
+        can go back to the card immediately instead of sitting there for
+        the whole run.
+
+        Do not call this while a Booster is training on the dataset. The
+        CUDA tree learner caches a raw pointer to the columns, and the
+        next device use builds a *new* set rather than refilling the old
+        one, so an in-flight booster would be left pointing at freed
+        memory. Release between fits, or on a dataset nothing is training
+        on -- such as a parent you have finished subsetting.
+
+        Returns
+        -------
+        self : Dataset
+            Dataset with its device columns released.
+        """
+        if self._handle is not None:
+            _safe_call(_LIB.FLC_DatasetFreeDeviceData(self._handle))
+        return self
+
     def _set_init_score_by_predictor(
         self,
         predictor: Optional[_InnerPredictor],

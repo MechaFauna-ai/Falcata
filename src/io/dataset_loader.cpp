@@ -293,11 +293,12 @@ Dataset* DatasetLoader::LoadFromFile(const char* filename, int rank, int num_mac
     dataset->device_type_ = config_.device_type;
     dataset->gpu_device_id_ = config_.gpu_device_id;
     #ifdef USE_CUDA
+    // Columns upload on first use, not at load, so a dataset loaded only
+    // to be subset or predicted from on the host stays off the card. See
+    // Dataset::EnsureCUDAColumnData.
+    dataset->ReleaseCUDAColumnData();
     if (config_.device_type == std::string("cuda")) {
-      dataset->CreateCUDAColumnData();
       dataset->metadata_.CreateCUDAMetadata(dataset->gpu_device_id_);
-    } else {
-      dataset->cuda_column_data_ = nullptr;
     }
     #endif  // USE_CUDA
   }

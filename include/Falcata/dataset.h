@@ -1067,18 +1067,60 @@ class Dataset {
 
   #ifdef USE_CUDA
 
+  /*! \brief Device columns for this dataset, uploaded on first use.
+   *
+   * Lazy so that a dataset which is never trained on -- one that is only
+   * subset, or only predicted from on the host -- costs no device
+   * memory. This accessor is the single point through which every
+   * consumer reaches the columns, so the upload cannot be missed.
+   */
   const CUDAColumnData* cuda_column_data() const {
+    EnsureCUDAColumnData();
     return cuda_column_data_.get();
   }
 
   #endif  // USE_CUDA
+
+  /*! \brief Whether the device columns are resident right now.
+   *  Does NOT upload them -- callers use this to choose between a
+   *  device-to-device copy and a host build.
+   *
+   *  Reads the pointer without the lock on purpose: this only picks
+   *  between two paths that are both correct, so a stale answer costs
+   *  at most a suboptimal choice. Answering "resident" about columns
+   *  another thread has just released is still safe, because the
+   *  device path reaches them through cuda_column_data(), which
+   *  re-uploads if they are gone.
+   */
+  bool has_cuda_column_data() const {
+    #ifdef USE_CUDA
+    return cuda_column_data_ != nullptr;
+    #else
+    return false;
+    #endif  // USE_CUDA
+  }
+
+  /*! \brief Upload the device columns if they are not resident yet.
+   *  No-op unless device_type_ is cuda, and on CPU-only builds.
+   *  Declared outside USE_CUDA so callers -- including the C API -- do
+   *  not have to branch on how the library was compiled. */
+  void EnsureCUDAColumnData() const;
+
+  /*! \brief Drop the device columns, keeping the host side intact.
+   *
+   * The next cuda_column_data() re-uploads them, so this is a memory
+   * hint rather than a teardown: a caller done with a dataset on the
+   * device returns the memory without destroying the object. No-op on
+   * CPU-only builds.
+   */
+  void ReleaseCUDAColumnData();
 
  private:
   void SerializeHeader(BinaryWriter* serializer);
 
   size_t GetSerializedHeaderSize();
 
-  void CreateCUDAColumnData();
+  void CreateCUDAColumnData() const;
 
   #ifdef USE_CUDA
   /*! \brief Whether the CUDA row data can be built directly from column bins,
@@ -1140,7 +1182,11 @@ class Dataset {
   std::mutex mutex_;
 
   #ifdef USE_CUDA
-  std::unique_ptr<CUDAColumnData> cuda_column_data_;
+  /*! \brief Device columns. Mutable and mutex-guarded: they are built on
+   *  demand from the const accessor, concurrently on the NCCL path. */
+  mutable std::unique_ptr<CUDAColumnData> cuda_column_data_;
+  /*! \brief Guards the lazy upload against two threads racing to build it. */
+  mutable std::mutex cuda_column_data_mutex_;
   /*! \brief per-group expected bin bytes captured by GPUBinDenseRows under
    *  FALCATA_GPU_CONSTRUCT_VERIFY=1; compared against the host-binned
    *  storage in FinishLoad */

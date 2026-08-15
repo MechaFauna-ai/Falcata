@@ -44,6 +44,15 @@ class GOSSStrategy : public SampleStrategy {
         },
         bag_data_indices_.data());
     bag_data_cnt_ = left_cnt;
+    #ifdef USE_CUDA
+    // GOSS builds its index list on the host and ships it down, so the device
+    // buffer has to exist before either branch copies into it. Bagging sizes
+    // this in its own sampling path; GOSS never goes through that path.
+    if (config_->device_type == std::string("cuda") &&
+        cuda_bag_data_indices_.Size() < static_cast<size_t>(num_data_)) {
+      cuda_bag_data_indices_.Resize(static_cast<size_t>(num_data_));
+    }
+    #endif  // USE_CUDA
     // set bagging data to tree learner
     if (!is_use_subset_) {
       #ifdef USE_CUDA
