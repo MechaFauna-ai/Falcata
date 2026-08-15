@@ -1,13 +1,12 @@
 # coding: utf-8
 """Device memory is allocated when it is used, not when data is loaded.
 
-Regression tests for the subset blow-up: taking a subset used to copy
-device-to-device, which required the parent's columns to be resident
-alongside the child's. Dropping 0.9% of rows therefore doubled device
-memory, and a 12GB binned dataset OOMed a 32GB card it fits on twice.
+A dataset uploads its columns on first device use. Subsetting a
+host-only dataset keeps it host-only, so one dataset is resident where
+a parent and child would otherwise both be.
 
-The CPU tests here pin the API contract and run everywhere; the CUDA
-tests pin the memory behaviour that motivated the change.
+The CPU tests pin the API contract and run everywhere; the CUDA tests
+pin the memory behaviour.
 """
 
 import os
@@ -35,18 +34,27 @@ def _data(seed=0):
 
 
 def _gpu_used_bytes():
-    """Device memory in use, via NVML, or None when unavailable."""
+    """Device memory used by THIS process, or None when unavailable.
+
+    Per-process rather than whole-card: anything else sharing the GPU
+    would otherwise make these thresholds flaky.
+    """
     try:
         out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+            ["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
             capture_output=True,
             text=True,
             timeout=10,
             check=False,
         )
-        return int(out.stdout.strip().splitlines()[0]) * 1024 * 1024
     except Exception:
         return None
+    mine = os.getpid()
+    for line in out.stdout.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) == 2 and parts[0].isdigit() and int(parts[0]) == mine:
+            return int(parts[1]) * 1024 * 1024
+    return 0  # no allocation attributed to us yet
 
 
 def test_free_device_data_is_a_noop_on_cpu_datasets():
@@ -67,8 +75,8 @@ def test_free_device_data_before_construct_does_not_raise():
 
 
 def test_subset_matches_training_on_the_filtered_rows():
-    """The memory fix must not move a single split: a subset has to stay
-    exactly equivalent to building the dataset from those rows."""
+    """A subset is exactly equivalent to building the dataset from those
+    rows -- identical predictions, not merely close ones."""
     X, y = _data()
     keep = np.arange(ROWS) % 100 != 0  # drop 1%, like an unresolved target tail
     idx = np.where(keep)[0]
@@ -81,13 +89,13 @@ def test_subset_matches_training_on_the_filtered_rows():
     from_direct = lgb.train(PARAMS, direct, num_boost_round=20)
 
     Xt = _data(seed=1)[0][:2_000]
-    np.testing.assert_allclose(from_subset.predict(Xt), from_direct.predict(Xt), rtol=0, atol=1e-9)
+    np.testing.assert_array_equal(from_subset.predict(Xt), from_direct.predict(Xt))
 
 
 @_REQUIRES_CUDA
 def test_loading_a_dataset_does_not_upload_it():
-    """Constructing is not using: the columns belong on the card only
-    once something trains."""
+    """Constructing is not using: columns reach the card only once
+    something trains."""
     X, y = _data()
     before = _gpu_used_bytes()
     ds = lgb.Dataset(X, label=y, params={**PARAMS, "device_type": "cuda"})
@@ -100,24 +108,32 @@ def test_loading_a_dataset_does_not_upload_it():
 
 
 @_REQUIRES_CUDA
-def test_subset_does_not_hold_two_copies_on_the_device():
-    """The bug: parent + child resident at once. Peak while training a
-    99% subset must stay near ONE dataset, not two."""
+def test_subset_of_a_host_only_parent_holds_one_copy():
+    """Training a 99% subset costs one resident dataset, not two.
+
+    Sized against a measured single copy rather than a guess: train the
+    full dataset first to learn what one costs, then require the subset
+    run to stay under 1.5x of it.
+    """
     X, y = _data()
-    keep = np.arange(ROWS) % 100 != 0
     cuda_params = {**PARAMS, "device_type": "cuda"}
 
+    start = _gpu_used_bytes()
+    full = lgb.Dataset(X, label=y, params=cuda_params)
+    lgb.train(cuda_params, full, num_boost_round=10)
+    one_copy = _gpu_used_bytes() - start
+    assert one_copy > 0, "could not measure a single resident copy"
+
     parent = lgb.Dataset(X, label=y, params=cuda_params)
-    parent.construct()
-    sub = parent.subset(list(np.where(keep)[0]))
+    parent.construct()  # host-only until something uses it on the device
+    sub = parent.subset(list(np.where(np.arange(ROWS) % 100 != 0)[0]))
     sub.construct()
 
-    baseline = _gpu_used_bytes()
+    before = _gpu_used_bytes()
     lgb.train(cuda_params, sub, num_boost_round=10)
-    peak = _gpu_used_bytes()
-    one_copy = X.nbytes // 4  # binned bytes are far smaller than the float32 input
+    grew = _gpu_used_bytes() - before
 
-    assert peak - baseline < 2 * one_copy, (
-        "device memory grew by more than a second copy of the dataset — "
-        "the parent is resident alongside the subset again"
+    assert grew < 1.5 * one_copy, (
+        f"subset training added {grew / 1e6:.0f}MB against a {one_copy / 1e6:.0f}MB "
+        "single copy — parent and child are both resident"
     )

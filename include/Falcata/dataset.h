@@ -1069,13 +1069,10 @@ class Dataset {
 
   /*! \brief Device columns for this dataset, uploaded on first use.
    *
-   * Lazy on purpose. Uploading at load time costs the full binned
-   * dataset in device memory whether or not anything trains on it, and
-   * the subset path made that fatal: taking a subset used to require
-   * BOTH the parent and the child resident, so dropping 0.9% of rows
-   * doubled device memory and OOMed a 32GB card on a dataset that fits
-   * twice over. Nothing outside this accessor needs to know: every
-   * consumer already reaches the columns through here.
+   * Lazy so that a dataset which is never trained on -- one that is only
+   * subset, or only predicted from on the host -- costs no device
+   * memory. This accessor is the single point through which every
+   * consumer reaches the columns, so the upload cannot be missed.
    */
   const CUDAColumnData* cuda_column_data() const {
     EnsureCUDAColumnData();
@@ -1083,6 +1080,17 @@ class Dataset {
   }
 
   #endif  // USE_CUDA
+
+  /*! \brief Whether the device columns are resident right now.
+   *  Does NOT upload them -- callers use this to choose between a
+   *  device-to-device copy and a host build. */
+  bool has_cuda_column_data() const {
+    #ifdef USE_CUDA
+    return cuda_column_data_ != nullptr;
+    #else
+    return false;
+    #endif  // USE_CUDA
+  }
 
   /*! \brief Upload the device columns if they are not resident yet.
    *  No-op unless device_type_ is cuda, and on CPU-only builds.
@@ -1092,10 +1100,10 @@ class Dataset {
 
   /*! \brief Drop the device columns, keeping the host side intact.
    *
-   * The next cuda_column_data() re-uploads them. Lets a caller that has
-   * finished with a dataset -- e.g. a parent whose subset now owns its
-   * own columns -- return the memory without destroying the object.
-   * No-op on CPU-only builds.
+   * The next cuda_column_data() re-uploads them, so this is a memory
+   * hint rather than a teardown: a caller done with a dataset on the
+   * device returns the memory without destroying the object. No-op on
+   * CPU-only builds.
    */
   void ReleaseCUDAColumnData();
 
@@ -1166,8 +1174,8 @@ class Dataset {
   std::mutex mutex_;
 
   #ifdef USE_CUDA
-  /*! \brief Device columns. Mutable + guarded because they are built on
-   *  demand from the const accessor; see EnsureCUDAColumnData. */
+  /*! \brief Device columns. Mutable and mutex-guarded: they are built on
+   *  demand from the const accessor, concurrently on the NCCL path. */
   mutable std::unique_ptr<CUDAColumnData> cuda_column_data_;
   /*! \brief Guards the lazy upload against two threads racing to build it. */
   mutable std::mutex cuda_column_data_mutex_;

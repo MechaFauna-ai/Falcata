@@ -810,10 +810,9 @@ void Dataset::FinishLoad() {
   #endif  // USE_CUDA
 
   #ifdef USE_CUDA
-  // Columns upload on first use (EnsureCUDAColumnData), not here: a
-  // dataset that is only ever subset, or never trained on at all, should
-  // not pay for device residency. Metadata is small and several call
-  // sites read it without touching columns, so it stays eager.
+  // Columns upload on first use (EnsureCUDAColumnData). Metadata is small
+  // and several call sites read it without touching columns, so it stays
+  // eager.
   ReleaseCUDAColumnData();
   if (device_type_ == std::string("cuda")) {
     metadata_.CreateCUDAMetadata(gpu_device_id_);
@@ -1307,14 +1306,23 @@ void Dataset::CopySubrow(const Dataset* fullset,
 
   #ifdef USE_CUDA
   if (device_type_ == std::string("cuda")) {
-    // Build from the host rows CopySubrowHostPart just produced rather than
-    // device-to-device from `fullset`. The old path read the parent's device
-    // columns, which forced BOTH copies resident: excluding 0.9% of rows cost
-    // a second full dataset on the card and OOMed 32GB on data that fits
-    // twice. Deferring to the lazy upload also means a parent that is only
-    // ever subset never uploads at all.
-    metadata_.CreateCUDAMetadata(gpu_device_id_);
-    ReleaseCUDAColumnData();
+    if (fullset->has_cuda_column_data()) {
+      // Parent already resident: gather on the device and reuse this
+      // subset's existing allocation. This is the bagging/GOSS steady
+      // state, which re-subsets every iteration, so a host round trip
+      // here would be a full H2D transfer per iteration.
+      if (cuda_column_data_ == nullptr) {
+        cuda_column_data_.reset(new CUDAColumnData(num_used_indices, gpu_device_id_));
+        metadata_.CreateCUDAMetadata(gpu_device_id_);
+      }
+      cuda_column_data_->CopySubrow(fullset->cuda_column_data(), used_indices, num_used_indices);
+    } else {
+      // Parent is host-only: leave it that way. The child uploads its own
+      // rows on first device use, so subsetting a freshly loaded dataset
+      // never needs two copies resident.
+      metadata_.CreateCUDAMetadata(gpu_device_id_);
+      ReleaseCUDAColumnData();
+    }
   }
   #endif  // USE_CUDA
 }
@@ -2234,11 +2242,13 @@ void Dataset::EnsureCUDAColumnData() const {
   if (device_type_ != std::string("cuda")) {
     return;
   }
-  if (cuda_column_data_ != nullptr) {
-    return;
-  }
+  // The check is inside the lock. Ranks share one Dataset on the NCCL
+  // path (NCCLGBDT::Init -> RunPerDevice -> CUDADataPartition), so this
+  // runs concurrently; an unsynchronized read here is a data race. Every
+  // caller is an Init/Reset path rather than a per-level loop, so an
+  // uncontended lock costs nothing measurable.
   std::lock_guard<std::mutex> lock(cuda_column_data_mutex_);
-  if (cuda_column_data_ == nullptr) {  // another thread may have won the race
+  if (cuda_column_data_ == nullptr) {
     CreateCUDAColumnData();
   }
   #endif  // USE_CUDA
@@ -2253,7 +2263,11 @@ void Dataset::ReleaseCUDAColumnData() {
 
 #ifdef USE_CUDA
 void Dataset::CreateCUDAColumnData() const {
-  cuda_column_data_.reset(new CUDAColumnData(num_data_, gpu_device_id_));
+  // Built into a local and published at the end: cuda_column_data_ must
+  // never be observable between allocation and Init, or a reader sees a
+  // non-null object with no columns in it.
+  std::unique_ptr<CUDAColumnData> column_data_holder(
+      new CUDAColumnData(num_data_, gpu_device_id_));
   int num_columns = 0;
   std::vector<const void*> column_data;
   std::vector<BinIterator*> column_bin_iterator;
@@ -2370,20 +2384,21 @@ void Dataset::CreateCUDAColumnData() const {
       ++num_columns;
     }
   }
-  cuda_column_data_->Init(num_columns,
-                          column_data,
-                          column_bin_iterator,
-                          column_bit_type,
-                          feature_max_bins,
-                          feature_min_bins,
-                          feature_offsets,
-                          feature_most_freq_bins,
-                          feature_default_bin,
-                          feature_missing_is_zero,
-                          feature_missing_is_na,
-                          feature_mfb_is_zero,
-                          feature_mfb_is_na,
-                          feature_to_column);
+  column_data_holder->Init(num_columns,
+                           column_data,
+                           column_bin_iterator,
+                           column_bit_type,
+                           feature_max_bins,
+                           feature_min_bins,
+                           feature_offsets,
+                           feature_most_freq_bins,
+                           feature_default_bin,
+                           feature_missing_is_zero,
+                           feature_missing_is_na,
+                           feature_mfb_is_zero,
+                           feature_mfb_is_na,
+                           feature_to_column);
+  cuda_column_data_ = std::move(column_data_holder);
 }
 
 #endif  // USE_CUDA
