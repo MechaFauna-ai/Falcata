@@ -370,8 +370,11 @@ def test_add_features_same_booster_behaviour(tmp_path, rng):
         y = rng.uniform(size=(100,))
         d1.set_label(y)
         d.set_label(y)
-        b1 = lgb.Booster(train_set=d1)
-        b = lgb.Booster(train_set=d)
+        # deterministic: the two boosters are trained separately and compared by
+        # model text, which needs bit-reproducible training on CUDA.
+        booster_params = {"deterministic": True, "verbose": -1}
+        b1 = lgb.Booster(train_set=d1, params=booster_params)
+        b = lgb.Booster(train_set=d, params=booster_params)
         for _ in range(10):
             b.update()
             b1.update()
@@ -464,9 +467,14 @@ def test_cegb_affects_behavior(tmp_path, rng):
     # Set extremely harsh penalties, so CEGB will block most splits.
     cases = [
         {"cegb_penalty_feature_coupled": [50, 100, 10, 25, 30]},
-        {"cegb_penalty_feature_lazy": [1, 2, 3, 4, 5]},
         {"cegb_penalty_split": 1},
     ]
+    # cegb_penalty_feature_lazy charges a feature the first time a ROW touches
+    # it, which needs per-row state the CUDA learner does not keep; it refuses
+    # the parameter outright rather than ignoring it. The other two penalties
+    # are supported and still exercised on both devices.
+    if not BuildInfo.has_cuda:
+        cases.insert(1, {"cegb_penalty_feature_lazy": [1, 2, 3, 4, 5]})
     for case in cases:
         booster = lgb.Booster(train_set=ds, params=case)
         for _ in range(10):
@@ -491,12 +499,17 @@ def test_cegb_scaling_equalities(tmp_path, rng):
             {"cegb_penalty_feature_coupled": [1, 2, 1, 2, 1]},
             {"cegb_penalty_feature_coupled": [0.5, 1, 0.5, 1, 0.5], "cegb_tradeoff": 2},
         ),
-        (
-            {"cegb_penalty_feature_lazy": [0.01, 0.02, 0.03, 0.04, 0.05]},
-            {"cegb_penalty_feature_lazy": [0.005, 0.01, 0.015, 0.02, 0.025], "cegb_tradeoff": 2},
-        ),
         ({"cegb_penalty_split": 1}, {"cegb_penalty_split": 2, "cegb_tradeoff": 0.5}),
     ]
+    # see test_cegb_affects_behavior: the lazy penalty is refused on CUDA
+    if not BuildInfo.has_cuda:
+        pairs.insert(
+            1,
+            (
+                {"cegb_penalty_feature_lazy": [0.01, 0.02, 0.03, 0.04, 0.05]},
+                {"cegb_penalty_feature_lazy": [0.005, 0.01, 0.015, 0.02, 0.025], "cegb_tradeoff": 2},
+            ),
+        )
     for p1, p2 in pairs:
         booster1 = lgb.Booster(train_set=ds, params=p1)
         booster2 = lgb.Booster(train_set=ds, params=p2)
