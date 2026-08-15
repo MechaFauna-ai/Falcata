@@ -57,7 +57,7 @@ inline void CUDAScoreUpdater::AddScore(double val, int cur_tree_id) {
 inline void CUDAScoreUpdater::AddScore(const Tree* tree, int cur_tree_id) {
   Common::FunctionTimer fun_timer("ScoreUpdater::AddScore", global_timer);
   const size_t offset = static_cast<size_t>(num_data_) * cur_tree_id;
-  if (tree->is_linear()) {
+  if (tree->HasLinearMetadata()) {
     ScoreLinearTreeOnHost(tree, offset);
     return;
   }
@@ -67,17 +67,22 @@ inline void CUDAScoreUpdater::AddScore(const Tree* tree, int cur_tree_id) {
   }
 }
 
+
+
+
+
 void CUDAScoreUpdater::ScoreLinearTreeOnHost(const Tree* tree, size_t offset) {
   // The device traversal kernel knows only leaf constants, so a linear tree
-  // scored there lands on the wrong value: training would report a metric that
-  // disagrees with what the very same model predicts, and early stopping would
-  // act on it. Tree::AddPredictionToScore evaluates the leaf regressions, so
-  // round-trip through the host copy and use it. This costs a device<->host
-  // transfer per tree, but only for linear_tree, and only on the score updaters
-  // that go through this overload (the training data uses the tree learner's
-  // own linear kernel).
-  // A local buffer, not score_: when boosting runs on the device the host copy
-  // is not kept in step, so it is not a safe staging area.
+  // scored there lands on the wrong value: training reported a metric that
+  // disagreed with what the same model predicts (l2=1118.85 against a real
+  // 431.77), and early stopping acted on it. Tree::AddPredictionToScore
+  // evaluates the leaf regressions, so round-trip through the host.
+  //
+  // Only this overload. The tree-learner overload is also used by
+  // GBDT::RefitTree, where the tree's inner feature indices belong to the
+  // dataset it was GROWN on while data_ is the narrower refit one -- the host
+  // evaluator dereferences those and segfaults. Bagged training scores
+  // therefore stay on the device path; task #88 tracks that.
   std::vector<double> host_score(static_cast<size_t>(num_data_));
   CopyFromCUDADeviceToHost<double>(host_score.data(), cuda_score_.RawData() + offset,
                                    static_cast<size_t>(num_data_), __FILE__, __LINE__);
@@ -92,15 +97,6 @@ void CUDAScoreUpdater::ScoreLinearTreeOnHost(const Tree* tree, size_t offset) {
 inline void CUDAScoreUpdater::AddScore(const TreeLearner* tree_learner, const Tree* tree, int cur_tree_id) {
   Common::FunctionTimer fun_timer("ScoreUpdater::AddScore", global_timer);
   const size_t offset = static_cast<size_t>(num_data_) * cur_tree_id;
-  if (tree->is_linear()) {
-    // The learner's linear kernel scores through the data partition's leaf
-    // assignment, which covers only the rows in the bag when bagging is on --
-    // every other row keeps a stale score. That stays invisible until this
-    // updater's dataset is also handed to valid_sets, where the gap surfaces as
-    // a metric that flatters the model (350.7 reported against a real 505.4).
-    ScoreLinearTreeOnHost(tree, offset);
-    return;
-  }
   tree_learner->AddPredictionToScore(tree, cuda_score_.RawData() + offset);
   if (!boosting_on_cuda_) {
     CopyFromCUDADeviceToHost<double>(score_.data() + offset, cuda_score_.RawData() + offset, static_cast<size_t>(num_data_), __FILE__, __LINE__);

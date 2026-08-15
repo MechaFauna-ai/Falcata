@@ -48,8 +48,8 @@ class CUDAScoreUpdater: public ScoreUpdater {
  private:
   void InitCUDA(const size_t total_size);
 
-  /*! \brief Add a linear tree's predictions using the host evaluator, which is
-   *  the only one that applies the leaf regressions. */
+  /*! \brief Add a linear tree's predictions using the host evaluator, the
+   *  only one that applies the leaf regressions. */
   void ScoreLinearTreeOnHost(const Tree* tree, size_t offset);
 
   void LaunchAddScoreConstantKernel(const double val, const size_t offset);

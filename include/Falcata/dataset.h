@@ -1053,6 +1053,21 @@ class Dataset {
     return raw_data_[numeric_feature_map_[feat_ind]].data();
   }
 
+  /*! \brief Whether raw_index(feat_ind) is safe to call.
+   *
+   * raw_index indirects twice -- through numeric_feature_map_ and then into
+   * raw_data_ -- and the map holds -1 for a feature with no numeric column,
+   * which a refit on a narrower dataset can produce. Callers holding feature
+   * indices from a DIFFERENT dataset (a tree's leaf regressions, say) must ask
+   * this first. */
+  inline bool HasRawIndex(int feat_ind) const {
+    if (!has_raw_ || feat_ind < 0 || feat_ind >= static_cast<int>(numeric_feature_map_.size())) {
+      return false;
+    }
+    const int col = numeric_feature_map_[feat_ind];
+    return col >= 0 && col < static_cast<int>(raw_data_.size());
+  }
+
   inline uint32_t feature_max_bin(const int inner_feature_index) const {
     const int feature_group_index = Feature2Group(inner_feature_index);
     const int sub_feature_index = feature2subfeature_[inner_feature_index];

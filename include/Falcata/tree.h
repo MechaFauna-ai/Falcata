@@ -302,6 +302,19 @@ class Tree {
   /*! \brief Get the linear model features of one leaf */
   inline std::vector<int> LeafFeaturesInner(int leaf) const {return leaf_features_inner_[leaf]; }
 
+  /*! \brief Whether the per-leaf linear regressions are actually populated.
+   *
+   * is_linear() only says the tree was GROWN as a linear tree. Refit hands
+   * back a tree that has not had its leaf features and coefficients rebuilt
+   * yet, so anything that reads them must ask this first rather than trusting
+   * the flag. */
+  inline bool HasLinearMetadata() const {
+    return is_linear_ &&
+           static_cast<int>(leaf_features_inner_.size()) >= num_leaves_ &&
+           static_cast<int>(leaf_coeff_.size()) >= num_leaves_ &&
+           static_cast<int>(leaf_const_.size()) >= num_leaves_;
+  }
+
   /*! \brief Get the linear model features of one leaf */
   inline std::vector<int> LeafFeatures(int leaf) const {return leaf_features_[leaf]; }
 
