@@ -34,6 +34,9 @@ namespace Falcata {
 
 class NCCLTopology {
  public:
+  // the gpu_device_id default: no master was requested, so this class picks one
+  static constexpr int kNoMasterGPUChosen = -1;
+
   NCCLTopology(const int master_gpu_device_id, const int num_gpu, const std::string& gpu_device_id_list, const data_size_t global_num_data) {
     num_gpu_ = num_gpu;
     master_gpu_device_id_ = master_gpu_device_id;
@@ -73,7 +76,12 @@ class NCCLTopology {
         }
       }
       if (!check_master_gpu) {
-        Log::Warning("Master GPU index not in gpu_device_list. Using %d as the master GPU instead.", gpu_list_[0]);
+        // gpu_device_id is -1 unless the user picks a master: then the first
+        // listed device is the master, and that is not worth a warning. Only
+        // an explicitly chosen device missing from the list is.
+        if (master_gpu_device_id_ != kNoMasterGPUChosen) {
+          Log::Warning("Master GPU index not in gpu_device_list. Using %d as the master GPU instead.", gpu_list_[0]);
+        }
         master_gpu_device_id_ = gpu_list_[0];
         master_gpu_index_ = 0;
       }
@@ -84,7 +92,11 @@ class NCCLTopology {
         Log::Warning("Only %d GPUs available, using num_gpu = %d.", max_num_gpu, max_num_gpu);
         num_gpu_ = max_num_gpu;
       }
-      if (master_gpu_device_id_ < 0 || master_gpu_device_id_ >= num_gpu_) {
+      if (master_gpu_device_id_ == kNoMasterGPUChosen) {
+        // the documented default: "the default device", i.e. device 0.
+        master_gpu_device_id_ = 0;
+        master_gpu_index_ = 0;
+      } else if (master_gpu_device_id_ < 0 || master_gpu_device_id_ >= num_gpu_) {
         Log::Warning("Invalid gpu_device_id = %d for master GPU index, using gpu_device_id = 0 instead.", master_gpu_device_id_);
         master_gpu_device_id_ = 0;
         master_gpu_index_ = 0;
