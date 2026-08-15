@@ -1,7 +1,9 @@
-# The Python test suite on CPU. The CUDA half of the same suite runs in the
-# local nightly (tests/gates/nightly_local.sh), because hosted runners have no
-# GPU. Between the two, every test executes on both devices.
-name: Python tests
+# Every test suite in the repository, on CPU: the Python package tests, the C
+# API tests, the GoogleTest C++ suite and the distributed CLI tests. The CUDA
+# half of all four runs in the local nightly (tests/gates/nightly_local.sh),
+# because hosted runners have no GPU. Between the two, everything executes on
+# both devices.
+name: Tests
 
 on:
   push:
@@ -54,15 +56,54 @@ jobs:
         shell: bash
         run: |
           python -m pip install \
-            cloudpickle matplotlib pandas psutil pyarrow pytest pytest-timeout scikit-learn scipy
-      - name: Run the Python test suite
+            cloudpickle graphviz matplotlib pandas psutil pyarrow pytest pytest-timeout scikit-learn scipy
+          # graphviz the Python binding renders by shelling out to `dot`; without
+          # the executable the plot-rendering tests skip instead of running.
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y graphviz
+      - name: Run the Python and C API test suites
         shell: bash
         run: |
-          python -m pytest ./tests/python_package_test -ra --timeout=900
+          python -m pytest ./tests/python_package_test ./tests/c_api_test -ra --timeout=900
+  cpp-tests-cpu:
+    name: cpp + distributed tests (cpu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 5
+          persist-credentials: false
+          submodules: true
+      - name: Set up Python
+        uses: actions/setup-python@e797f83a9d19a0b6b0b1d3adb3e37fe0ea9c7b53  # v6.0.0
+        with:
+          python-version: '3.12'
+      - name: Build the C++ tests and the CLI
+        shell: bash
+        run: |
+          cmake -S . -B build-cpp-test \
+            -DBUILD_CPP_TEST=ON \
+            -DUSE_CUDA=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+          # Executables land in the repo root, which is where this project's
+          # CMake puts them.
+          cmake --build build-cpp-test --target testfalcata falcata -j "$(nproc)"
+      - name: Run the C++ test suite
+        shell: bash
+        run: ./testfalcata
+      - name: Run the distributed tests
+        shell: bash
+        run: |
+          python -m pip install numpy pytest pytest-timeout scikit-learn
+          python -m pytest ./tests/distributed/_test_distributed.py -ra --timeout=600 \
+            --execfile "$(pwd)/falcata"
   all-python-tests-successful:
     if: always()
     runs-on: ubuntu-latest
     needs:
+      - cpp-tests-cpu
       - python-tests-cpu
     permissions:
       statuses: read

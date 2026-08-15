@@ -1,4 +1,6 @@
 # coding: utf-8
+import shutil
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -7,6 +9,20 @@ from sklearn.model_selection import train_test_split
 import falcata as lgb
 
 from .utils import load_breast_cancer, make_synthetic_regression
+
+
+def _require_graphviz_renderer():
+    """Skip unless graphviz can actually render.
+
+    The graphviz Python binding renders by shelling out to `dot`, and a machine
+    can have the binding (it arrives with several unrelated packages) without
+    the executable. Then these tests fail on a missing binary rather than on
+    anything Falcata did.
+    """
+    graphviz = pytest.importorskip("graphviz")
+    if shutil.which("dot") is None:
+        pytest.skip("the graphviz `dot` executable is not installed")
+    return graphviz
 
 
 @pytest.fixture(scope="function")
@@ -246,7 +262,7 @@ def test_plot_split_value_histogram(params, breast_cancer_split, train_data, mat
 
 
 def test_plot_tree(breast_cancer_split, matplotlib):
-    pytest.importorskip("graphviz")
+    _require_graphviz_renderer()
     X_train, _, y_train, _ = breast_cancer_split
     gbm = lgb.FalcataClassifier(n_estimators=10, num_leaves=3, verbose=-1)
     gbm.fit(X_train, y_train)
@@ -262,7 +278,7 @@ def test_plot_tree(breast_cancer_split, matplotlib):
 
 
 def test_create_tree_digraph(tmp_path, breast_cancer_split):
-    graphviz = pytest.importorskip("graphviz")
+    graphviz = _require_graphviz_renderer()
     X_train, _, y_train, _ = breast_cancer_split
 
     constraints = [-1, 1] * int(X_train.shape[1] / 2)
@@ -299,7 +315,7 @@ def test_create_tree_digraph(tmp_path, breast_cancer_split):
 
 
 def test_tree_with_categories_below_max_category_values(tmp_path):
-    graphviz = pytest.importorskip("graphviz")
+    graphviz = _require_graphviz_renderer()
     X_train, y_train = _categorical_data(2, 10)
     params = {
         "n_estimators": 10,
@@ -344,7 +360,7 @@ def test_tree_with_categories_below_max_category_values(tmp_path):
 
 
 def test_tree_with_categories_above_max_category_values(tmp_path):
-    graphviz = pytest.importorskip("graphviz")
+    graphviz = _require_graphviz_renderer()
     X_train, y_train = _categorical_data(20, 30)
     params = {
         "n_estimators": 10,
