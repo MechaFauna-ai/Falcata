@@ -3393,6 +3393,19 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     // released the device arrays in RebuildFromHostSplits already
     tree->ToHost();
   }
+  // The counts the split finder recorded are estimates: a histogram bin holds
+  // gradient and hessian but no row count, so it infers one from the hessian
+  // mass. That is exact only when every hessian is 1 (l2); under binary or
+  // poisson a node's recorded count disagreed with its own children's by a few
+  // rows. The data partition knows the exact per-leaf counts -- take them.
+  // Rank-local under multi-GPU, where the partition holds only this rank's
+  // rows, so the estimate stays in force there.
+  if (nccl_communicator_ == nullptr && tree->num_leaves() > 0) {
+    std::vector<data_size_t> leaf_num_data(static_cast<size_t>(tree->num_leaves()));
+    CopyFromCUDADeviceToHost<data_size_t>(leaf_num_data.data(),
+      cuda_data_partition_->cuda_leaf_num_data(), leaf_num_data.size(), __FILE__, __LINE__);
+    tree->SyncNodeCountsFromPartition(leaf_num_data);
+  }
   // only the leaf histogram slots this tree used can be dirty; the next
   // BeforeTrain zeroes just that prefix (single-GPU only: the NCCL path keeps
   // the conservative full zeroing). Selective growth dirties every hybrid slot

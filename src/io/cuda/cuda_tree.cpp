@@ -198,6 +198,28 @@ int CUDATree::SplitCategorical(const int leaf_index,
   return num_leaves_ - 1;
 }
 
+data_size_t CUDATree::RebuildInternalCounts(const int node) {
+  const int left = left_child_[node];
+  const int right = right_child_[node];
+  const data_size_t left_count = left >= 0 ? RebuildInternalCounts(left) : leaf_count_[~left];
+  const data_size_t right_count = right >= 0 ? RebuildInternalCounts(right) : leaf_count_[~right];
+  internal_count_[node] = left_count + right_count;
+  return internal_count_[node];
+}
+
+void CUDATree::SyncNodeCountsFromPartition(const std::vector<data_size_t>& leaf_num_data) {
+  if (static_cast<int>(leaf_num_data.size()) < num_leaves_ ||
+      static_cast<int>(leaf_count_.size()) < num_leaves_) {
+    return;
+  }
+  for (int leaf = 0; leaf < num_leaves_; ++leaf) {
+    leaf_count_[leaf] = leaf_num_data[leaf];
+  }
+  if (num_leaves_ > 1 && static_cast<int>(internal_count_.size()) >= num_leaves_ - 1) {
+    RebuildInternalCounts(0);
+  }
+}
+
 void CUDATree::RecordBranchFeatures(const int left_leaf_index,
                                     const int right_leaf_index,
                                     const int real_feature_index) {
