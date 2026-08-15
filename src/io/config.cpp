@@ -519,7 +519,14 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
     } else if (!monotone_constraints.empty()) {
       quant_incompatible_request = "monotone constraints";
     }
+    // Saying quant_mode explicitly settles it: the mapping below infers a mode
+    // for callers who expressed no preference, and inferring over a stated one
+    // means quant_mode=none cannot be asked for at all while deterministic is
+    // set -- which silently turns any CPU-vs-CUDA comparison into a comparison
+    // of two different algorithms.
+    const bool quant_mode_chosen_by_user = params.count("quant_mode") > 0;
     if (deterministic && quant_incompatible_request != nullptr &&
+        !quant_mode_chosen_by_user &&
         ResolvedQuantMode() == QuantMode::kNone) {
       Log::Warning("deterministic=true with device_type=cuda normally switches to "
                    "quant_mode=fixedpoint, which does not support %s. Keeping the "
@@ -527,7 +534,8 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
                    "slightly between runs. Set quant_mode=fixedpoint explicitly to "
                    "prefer reproducibility instead.",
                    quant_incompatible_request);
-    } else if (deterministic && ResolvedQuantMode() == QuantMode::kNone) {
+    } else if (deterministic && !quant_mode_chosen_by_user &&
+               ResolvedQuantMode() == QuantMode::kNone) {
       // quantized CUDA training IS deterministic (bit-identical across runs,
       // machines and GPU models); only the non-quantized float-atomic path
       // jitters. deterministic=true is an explicit opt-in to execution

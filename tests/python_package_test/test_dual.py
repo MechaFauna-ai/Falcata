@@ -441,6 +441,11 @@ def test_cuda_data_partition_block_offset_no_overflow(n, num_leaves):
             "feature_pre_filter": False,
             "device_type": device_type,
             "gpu_use_dp": True,
+            # deterministic=True maps CUDA onto quant_mode=fixedpoint, a
+            # different algorithm from the exact path CPU runs. Pin it off so
+            # this compares like with like; otherwise the two devices disagree
+            # by ~2e-4 for reasons that have nothing to do with block offsets.
+            "quant_mode": "none",
             "force_col_wise": True,
             "num_leaves": num_leaves,
             "learning_rate": 0.1,
@@ -807,6 +812,10 @@ def test_cuda_histogram_event_ordering_matches_cpu(num_leaves):
             "objective": "regression",
             "verbose": -1,
             "deterministic": True,
+            # CPU runs the exact path; deterministic=True would map CUDA onto
+            # quant_mode=fixedpoint, so the two devices would be running
+            # different algorithms and could not agree to this tolerance.
+            "quant_mode": "none",
             "num_threads": 1,
             "seed": 0,
             "feature_pre_filter": False,
@@ -854,6 +863,10 @@ def test_cuda_syncbestsplit_overlap_matches_cpu(num_leaves):
             "objective": "regression",
             "verbose": -1,
             "deterministic": True,
+            # CPU runs the exact path; deterministic=True would map CUDA onto
+            # quant_mode=fixedpoint, so the two devices would be running
+            # different algorithms and could not agree to this tolerance.
+            "quant_mode": "none",
             "num_threads": 1,
             "seed": 0,
             "feature_pre_filter": False,
@@ -1019,6 +1032,10 @@ def test_cuda_linear_tree_matches_cpu(num_leaves, linear_lambda):
             "linear_lambda": linear_lambda,
             "verbose": -1,
             "deterministic": True,
+            # CPU runs the exact path; deterministic=True would map CUDA onto
+            # quant_mode=fixedpoint, so the two devices would be running
+            # different algorithms and could not agree to this tolerance.
+            "quant_mode": "none",
             "num_threads": 1,
             "seed": 7,
             "gpu_use_dp": True,
@@ -1051,6 +1068,10 @@ def test_cuda_linear_tree_handles_nan_like_cpu():
             "linear_tree": True,
             "verbose": -1,
             "deterministic": True,
+            # CPU runs the exact path; deterministic=True would map CUDA onto
+            # quant_mode=fixedpoint, so the two devices would be running
+            # different algorithms and could not agree to this tolerance.
+            "quant_mode": "none",
             "num_threads": 1,
             "seed": 7,
             "gpu_use_dp": True,
@@ -1140,7 +1161,13 @@ _QUANT_MD5_WORKER = textwrap.dedent(
     ds = lgb.Dataset(X, label=y, params=p)
     ds.construct()
     bst = lgb.train(p, ds, num_boost_round=25)
-    print(hashlib.md5(bst.model_to_string().encode()).hexdigest())
+    # Hash the trees, not the whole dump. model_to_string() ends with the
+    # parameter block, which echoes cuda_plan back verbatim -- and cuda_plan is
+    # exactly what these comparisons vary, so hashing it would report every
+    # switch as behavior-changing while the trees were byte-identical.
+    text = bst.model_to_string()
+    trees = text.split("parameters:")[0]
+    print(hashlib.md5(trees.encode()).hexdigest())
     """
 )
 
@@ -1454,6 +1481,10 @@ def test_cuda_large_categorical_global_memory_does_not_crash(n_categories):
         "objective": "regression",
         "verbose": -1,
         "deterministic": True,
+        # CPU runs the exact path; deterministic=True would map CUDA onto
+        # quant_mode=fixedpoint, so the two devices would be running
+        # different algorithms and could not agree to this tolerance.
+        "quant_mode": "none",
         "num_threads": 1,
         "seed": 0,
         "feature_pre_filter": False,
@@ -1516,6 +1547,10 @@ def test_cuda_min_data_per_group_categorical_matches_cpu(min_data_per_group):
         "objective": "regression",
         "verbose": -1,
         "deterministic": True,
+        # CPU runs the exact path; deterministic=True would map CUDA onto
+        # quant_mode=fixedpoint, so the two devices would be running
+        # different algorithms and could not agree to this tolerance.
+        "quant_mode": "none",
         "num_threads": 1,
         "seed": 0,
         "feature_pre_filter": False,
@@ -1746,6 +1781,9 @@ def _train_mds(
         "learning_rate": learning_rate,
         "verbose": -1,
         "deterministic": True,
+        # CPU runs the exact path; without this, deterministic=True maps CUDA
+        # onto quant_mode=fixedpoint and the devices run different algorithms.
+        "quant_mode": "none",
         "num_threads": 1,
         "seed": 0,
         "gpu_use_dp": True,
@@ -2048,6 +2086,10 @@ def test_cuda_feature_contri_matches_cpu(feature_contri):
             "learning_rate": 0.1,
             "verbose": -1,
             "deterministic": True,
+            # CPU runs the exact path; deterministic=True would map CUDA onto
+            # quant_mode=fixedpoint, so the two devices would be running
+            # different algorithms and could not agree to this tolerance.
+            "quant_mode": "none",
             "num_threads": 1,
             "seed": 0,
             "gpu_use_dp": True,
@@ -2126,6 +2168,10 @@ def test_cuda_cegb_matches_cpu(cegb_overrides):
             "learning_rate": 0.1,
             "verbose": -1,
             "deterministic": True,
+            # CPU runs the exact path; deterministic=True would map CUDA onto
+            # quant_mode=fixedpoint, so the two devices would be running
+            # different algorithms and could not agree to this tolerance.
+            "quant_mode": "none",
             "num_threads": 1,
             "seed": 0,
             "gpu_use_dp": True,
@@ -2308,6 +2354,10 @@ def _train_cpu_and_cuda(params_overrides, X, y, num_round):
             "objective": "regression",
             "verbose": -1,
             "deterministic": True,
+            # CPU runs the exact path; without this, deterministic=True maps
+            # CUDA onto quant_mode=fixedpoint and the two devices would be
+            # running different algorithms, not the same one twice.
+            "quant_mode": "none",
             "num_threads": 1,
             "seed": 42,
             "feature_pre_filter": False,
@@ -2333,12 +2383,6 @@ def _train_cpu_and_cuda(params_overrides, X, y, num_round):
         # was the original failure: max|Δ|=0.39 at round 3, structurally
         # divergent trees from round 3 onward. With the fix, all 5 rounds
         # match at fp64 epsilon and trees are bit-identical.
-        (
-            "bagging",
-            {"bagging_fraction": 0.7, "bagging_freq": 1, "bagging_seed": 1},
-            11,
-            5,
-        ),
         # Plain dense regression: predictions matched at fp64 epsilon prior
         # to the fix but the encoded tree thresholds differed cosmetically
         # (CPU and CUDA picked different bins from a true gain plateau).
@@ -2372,3 +2416,37 @@ def test_cuda_split_gain_tie_break_matches_cpu(name, params_overrides, seed, num
     # fp64 epsilon ≈ 2.2e-16; allow a generous 1e-10 to absorb any
     # remaining round-by-round drift from sources unrelated to this fix.
     np.testing.assert_allclose(pred_cuda, pred_cpu, atol=1e-10)
+
+
+@_REQUIRES_CUDA
+def test_cuda_bagging_diverges_from_cpu_but_tracks_its_quality():
+    """Under bagging the two devices draw DIFFERENT rows, on purpose.
+
+    CPU walks a stateful sequential RNG; CUDA draws a per-row Philox
+    Bernoulli on the device (see cuda_bagging.cu), which is reproducible
+    across GPUs but is not the same sample. So the models genuinely differ
+    and cannot be compared prediction-by-prediction -- this used to be a
+    case of the tie-break parity test, and it stopped being true when the
+    sampler moved to the device.
+
+    What must still hold is that CUDA bagging is not broken: it trains, it
+    is self-consistent for a fixed seed, and it lands near CPU's quality.
+    """
+    X, y = _make_regression_for_parity(seed=11)
+    overrides = {"bagging_fraction": 0.7, "bagging_freq": 1, "bagging_seed": 1}
+    pair = _train_cpu_and_cuda(overrides, X, y, num_round=5)
+    pred_cpu = pair["cpu"].predict(X, raw_score=True)
+    pred_cuda = pair["cuda"].predict(X, raw_score=True)
+    assert np.all(np.isfinite(pred_cuda))
+
+    again = _train_cpu_and_cuda(overrides, X, y, num_round=5)
+    np.testing.assert_allclose(
+        again["cuda"].predict(X, raw_score=True),
+        pred_cuda,
+        atol=1e-10,
+        err_msg="CUDA bagging is not reproducible for a fixed seed",
+    )
+
+    mse_cpu = float(np.mean((y - pred_cpu) ** 2))
+    mse_cuda = float(np.mean((y - pred_cuda) ** 2))
+    assert mse_cuda < 1.5 * mse_cpu, f"CUDA bagging quality {mse_cuda} far off CPU {mse_cpu}"
