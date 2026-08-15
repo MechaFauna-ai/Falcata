@@ -2169,6 +2169,10 @@ def test_sliced_data(rng):
             "application": "binary",
             "verbose": -1,
             "min_data": 5,
+            # two trainings on the same rows must agree exactly; CUDA is not
+            # bit-reproducible unless asked, so without this the comparison
+            # measures float-atomic ordering rather than the slicing.
+            "deterministic": True,
         }
         gbm = lgb.train(
             params=lgb_params,
@@ -4583,7 +4587,9 @@ def test_pandas_with_numpy_regular_dtypes(rng_fixed_seed):
     df = df.astype(np.float64)
     y = df["x1"] * (df["x2"] + df["x3"] + df["x4"])
     ds = lgb.Dataset(df, y)
-    params = {"objective": "l2", "num_leaves": 31, "min_child_samples": 1}
+    # deterministic: each dtype variant is trained separately and must give the
+    # same model, which needs bit-reproducible training on CUDA.
+    params = {"objective": "l2", "num_leaves": 31, "min_child_samples": 1, "deterministic": True}
     bst = lgb.train(params, ds, num_boost_round=5)
     preds = bst.predict(df)
 
@@ -4623,7 +4629,9 @@ def test_pandas_nullable_dtypes(rng_fixed_seed):
     y = y.fillna(0)
 
     # train with regular dtypes
-    params = {"objective": "l2", "num_leaves": 31, "min_child_samples": 1}
+    # deterministic: the two dtype variants are trained separately and must
+    # produce the same model, which needs bit-reproducible training on CUDA.
+    params = {"objective": "l2", "num_leaves": 31, "min_child_samples": 1, "deterministic": True}
     ds = lgb.Dataset(df, y)
     bst = lgb.train(params, ds, num_boost_round=5)
     preds = bst.predict(df)
