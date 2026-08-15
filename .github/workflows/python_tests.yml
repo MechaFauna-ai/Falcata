@@ -36,7 +36,7 @@ jobs:
           persist-credentials: false
           submodules: true
       - name: Set up Python
-        uses: actions/setup-python@e797f83a9d19a0b6b0b1d3adb3e37fe0ea9c7b53  # v6.0.0
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c  # v6.0.0
         with:
           python-version: '3.12'
       - name: Build and install the CPU package
@@ -77,7 +77,7 @@ jobs:
           persist-credentials: false
           submodules: true
       - name: Set up Python
-        uses: actions/setup-python@e797f83a9d19a0b6b0b1d3adb3e37fe0ea9c7b53  # v6.0.0
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c  # v6.0.0
         with:
           python-version: '3.12'
       - name: Build the C++ tests and the CLI
