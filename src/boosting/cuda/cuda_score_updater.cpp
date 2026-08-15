@@ -92,6 +92,15 @@ void CUDAScoreUpdater::ScoreLinearTreeOnHost(const Tree* tree, size_t offset) {
 inline void CUDAScoreUpdater::AddScore(const TreeLearner* tree_learner, const Tree* tree, int cur_tree_id) {
   Common::FunctionTimer fun_timer("ScoreUpdater::AddScore", global_timer);
   const size_t offset = static_cast<size_t>(num_data_) * cur_tree_id;
+  if (tree->is_linear()) {
+    // The learner's linear kernel scores through the data partition's leaf
+    // assignment, which covers only the rows in the bag when bagging is on --
+    // every other row keeps a stale score. That stays invisible until this
+    // updater's dataset is also handed to valid_sets, where the gap surfaces as
+    // a metric that flatters the model (350.7 reported against a real 505.4).
+    ScoreLinearTreeOnHost(tree, offset);
+    return;
+  }
   tree_learner->AddPredictionToScore(tree, cuda_score_.RawData() + offset);
   if (!boosting_on_cuda_) {
     CopyFromCUDADeviceToHost<double>(score_.data() + offset, cuda_score_.RawData() + offset, static_cast<size_t>(num_data_), __FILE__, __LINE__);

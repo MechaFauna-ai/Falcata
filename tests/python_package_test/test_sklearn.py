@@ -760,8 +760,14 @@ def test_random_state_object(rng_constructor):
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
     state1 = rng_constructor(123)
     state2 = rng_constructor(123)
-    clf1 = lgb.FalcataClassifier(n_estimators=10, subsample=0.5, subsample_freq=1, random_state=state1)
-    clf2 = lgb.FalcataClassifier(n_estimators=10, subsample=0.5, subsample_freq=1, random_state=state2)
+    # deterministic=True: this test is about random_state plumbing, and it can
+    # only see that through models being identical. CUDA training is not
+    # bit-reproducible by default (float atomics accumulate in arrival order),
+    # so without this the assertion would be measuring the histogram path
+    # rather than the seed.
+    kwargs = {"n_estimators": 10, "subsample": 0.5, "subsample_freq": 1, "deterministic": True}
+    clf1 = lgb.FalcataClassifier(random_state=state1, **kwargs)
+    clf2 = lgb.FalcataClassifier(random_state=state2, **kwargs)
     # Test if random_state is properly stored
     assert clf1.random_state is state1
     assert clf2.random_state is state2
