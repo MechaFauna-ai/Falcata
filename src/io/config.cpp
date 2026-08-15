@@ -508,7 +508,26 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
     // force row-wise for cuda version
     force_col_wise = false;
     force_row_wise = true;
-    if (deterministic && ResolvedQuantMode() == QuantMode::kNone) {
+    // Quantized CUDA training supports neither of these, so mapping
+    // deterministic onto it would silently drop whichever one was asked for --
+    // forced splits used to vanish this way, with the tree learner's warning
+    // hidden by the verbosity most callers run at. An explicitly requested
+    // feature outranks an inferred execution mode.
+    const char* quant_incompatible_request = nullptr;
+    if (!forcedsplits_filename.empty()) {
+      quant_incompatible_request = "forced splits";
+    } else if (!monotone_constraints.empty()) {
+      quant_incompatible_request = "monotone constraints";
+    }
+    if (deterministic && quant_incompatible_request != nullptr &&
+        ResolvedQuantMode() == QuantMode::kNone) {
+      Log::Warning("deterministic=true with device_type=cuda normally switches to "
+                   "quant_mode=fixedpoint, which does not support %s. Keeping the "
+                   "non-quantized path so that stays in effect; results may differ "
+                   "slightly between runs. Set quant_mode=fixedpoint explicitly to "
+                   "prefer reproducibility instead.",
+                   quant_incompatible_request);
+    } else if (deterministic && ResolvedQuantMode() == QuantMode::kNone) {
       // quantized CUDA training IS deterministic (bit-identical across runs,
       // machines and GPU models); only the non-quantized float-atomic path
       // jitters. deterministic=true is an explicit opt-in to execution
