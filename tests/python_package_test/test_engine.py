@@ -1123,7 +1123,22 @@ def test_early_stopping_min_delta(first_only, single_metric, greater_is_better):
     train_ds = lgb.Dataset(X_train, y_train)
     valid_ds = lgb.Dataset(X_valid, y_valid, reference=train_ds)
 
-    params = {"objective": "binary", "metric": metric, "verbose": -1}
+    # A slow learning rate on purpose: the point of the test is that a positive
+    # min_delta stops EARLIER than plain early stopping, which needs the plain
+    # run to last well past the 10-round patience. At the default rate CUDA's
+    # metric plateaus around round 10, so both runs bottom out at the patience
+    # floor and there is nothing left to measure.
+    # deterministic=True as well: the test compares the score sequences of two
+    # SEPARATE training runs, and CUDA is not bit-reproducible by default, so
+    # the tail of the two runs drifts apart by ~5e-7 -- far above the 1e-7 the
+    # comparison allows.
+    params = {
+        "objective": "binary",
+        "metric": metric,
+        "verbose": -1,
+        "learning_rate": 0.02,
+        "deterministic": True,
+    }
     if isinstance(metric, str):
         min_delta = metric2min_delta[metric]
     elif first_only:
