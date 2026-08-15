@@ -109,8 +109,40 @@ class CUDAColumnData {
                             void* compact_buf,
                             size_t bytes_per_col);
 
-  // Restore data_by_column_ to point to the original per-column allocations.
-  // Needed when feature_fraction = 1.0 / no compaction (rare path).
+  // Restore the GPU pointer table to the original per-column allocations.
+  // Any consumer that reads columns the CURRENT tree did not sample -- tree
+  // traversal over an older tree, above all -- must run against this view: a
+  // per-tree compact view leaves non-sampled columns null and repoints sampled
+  // ones at a scratch buffer the next tree overwrites.
+  void RestoreOriginalColumnView();
+
+  /*! \brief Whether the pointer table currently holds the original per-column
+   *  allocations rather than a per-tree compact view. */
+  bool original_column_view_active() const { return original_column_view_active_; }
+
+  /*! \brief Whether original per-column buffers exist at all. They are skipped
+   *  when they would not fit (see init_skipped_per_column_alloc_), and then only
+   *  the per-tree compact views ever exist. */
+  bool has_original_column_view() const { return !init_skipped_per_column_alloc_; }
+
+  /*! \brief Whether the published pointer table can serve reads of this column.
+   *  False for a column the current tree did not sample, and for every column
+   *  while a nibble-packed view is published (the plain readers cannot decode
+   *  it). */
+  bool ColumnAvailableInCurrentView(const int column_index) const {
+    if (original_column_view_active_) {
+      return true;
+    }
+    if (packed_column_view_active_) {
+      return false;
+    }
+    return column_index >= 0 && column_index < static_cast<int>(compact_column_host_view_.size()) &&
+           compact_column_host_view_[column_index] != nullptr;
+  }
+
+  /*! \brief Bumped on every change of the published pointer table, so callers
+   *  that cache an installed view can tell when someone else replaced it. */
+  uint64_t column_view_generation() const { return column_view_generation_; }
 
   // ===== Per-tree packed compact column view (4-bit) =====
   // Register the histogram constructor's 4-bit packed compact matrix as this
@@ -192,6 +224,9 @@ class CUDAColumnData {
   // per-column device base pointer / per-row byte stride / nibble shift. Only
   // consumed host-side when building batched apply descriptors.
   bool packed_column_view_active_ = false;
+  // True while cuda_data_by_column_ holds the original per-column allocations.
+  bool original_column_view_active_ = false;
+  uint64_t column_view_generation_ = 0;
   std::vector<const uint8_t*> packed_column_ptr_;
   std::vector<int> packed_column_stride_;
   std::vector<uint8_t> packed_column_shift_;

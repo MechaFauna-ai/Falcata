@@ -547,6 +547,40 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
   data_size_t num_data,
   double* score) const {
   const CUDAColumnData* cuda_column_data = data->cuda_column_data();
+  // This kernel may traverse ANY tree, including one grown many iterations ago
+  // (DART re-scores dropped trees). Under feature_fraction the tree learner
+  // publishes a per-tree compact column view: columns the current tree did not
+  // sample are null, and the sampled ones point into a scratch buffer the next
+  // tree overwrites. Traversing an older tree against that view dereferences a
+  // null column ("an illegal memory access was encountered") or, when the
+  // pointer happens to be live, silently reads another tree's bins. Put the
+  // original per-column table back; the learner reinstalls its view per tree.
+  // A tree still holding live device arrays is the one being grown right now,
+  // so the view in force is the one it was grown under and serves it as-is.
+  const bool host_structure_authoritative = cuda_split_feature_inner_.Size() == 0;
+  bool view_serves_this_tree = cuda_column_data->original_column_view_active() ||
+                               (!cuda_column_data->packed_column_view_active() &&
+                                !host_structure_authoritative);
+  if (!view_serves_this_tree && host_structure_authoritative &&
+      !cuda_column_data->packed_column_view_active() &&
+      static_cast<int>(split_feature_inner_.size()) >= num_leaves_ - 1) {
+    view_serves_this_tree = true;
+    for (int node = 0; node < num_leaves_ - 1; ++node) {
+      if (!cuda_column_data->ColumnAvailableInCurrentView(
+              cuda_column_data->feature_to_column(split_feature_inner_[node]))) {
+        view_serves_this_tree = false;
+        break;
+      }
+    }
+  }
+  if (!view_serves_this_tree) {
+    if (!cuda_column_data->has_original_column_view()) {
+      Log::Fatal("Scoring a tree on CUDA needs the per-column data, which was skipped "
+                 "because it would not fit in GPU memory. Reduce the number of features, "
+                 "or train this configuration with device_type=cpu.");
+    }
+    const_cast<CUDAColumnData*>(cuda_column_data)->RestoreOriginalColumnView();
+  }
   const int num_blocks = (num_data + num_threads_per_block_add_prediction_to_score_ - 1) / num_threads_per_block_add_prediction_to_score_;
   // ToHost() frees the per-tree GPU tree-structure arrays to bound device memory
   // across many boosting rounds, keeping only cuda_leaf_value_. This kernel,

@@ -145,6 +145,8 @@ void CUDAColumnData::Init(const int num_columns,
   OMP_THROW_EX();
   feature_to_column_ = feature_to_column;
   cuda_data_by_column_.InitFromHostVector(GetDataByColumnPointers(data_by_column_));
+  original_column_view_active_ = !init_skipped_per_column_alloc_;
+  ++column_view_generation_;
   InitColumnMetaInfo();
 }
 
@@ -208,6 +210,8 @@ void CUDAColumnData::CopySubrow(
       OMP_THROW_EX();
     }
     cuda_data_by_column_.InitFromHostVector(GetDataByColumnPointers(data_by_column_));
+    original_column_view_active_ = !init_skipped_per_column_alloc_;
+    ++column_view_generation_;
     InitColumnMetaInfo();
     cur_subset_buffer_size_ = num_used_indices;
   } else {
@@ -221,6 +225,12 @@ void CUDAColumnData::CopySubrow(
   // In the skipped path full_set has no per-column buffers to copy from; the
   // subset's per-tree buffers come from the compact-view system instead.
   if (!init_skipped_per_column_alloc_) {
+    // The kernel reads the full set's published pointer table, so it must be
+    // the original one: a per-tree compact view left behind by the last tree
+    // holds nulls for every column that tree did not sample.
+    if (!full_set->original_column_view_active()) {
+      const_cast<CUDAColumnData*>(full_set)->RestoreOriginalColumnView();
+    }
     LaunchCopySubrowKernel(full_set->cuda_data_by_column());
   }
   SynchronizeCUDADevice(__FILE__, __LINE__);
@@ -245,6 +255,22 @@ void CUDAColumnData::SetCompactColumnView(const std::vector<int>& column_to_comp
   // device pointer in the skip-allocation path (data_by_column_ stays null there).
   compact_column_host_view_ = view;
   packed_column_view_active_ = false;
+  original_column_view_active_ = false;
+  ++column_view_generation_;
+}
+
+void CUDAColumnData::RestoreOriginalColumnView() {
+  if (original_column_view_active_) {
+    return;
+  }
+  CHECK(has_original_column_view());
+  cuda_data_by_column_.InitFromHostVector(GetDataByColumnPointers(data_by_column_));
+  // The host mirror only ever describes a compact view; with the originals back
+  // in place GetColumnData reads data_by_column_ directly.
+  compact_column_host_view_.clear();
+  packed_column_view_active_ = false;
+  original_column_view_active_ = true;
+  ++column_view_generation_;
 }
 
 void CUDAColumnData::SetCompactPackedColumnView(const std::vector<int>& column_to_compact_slot,
@@ -267,6 +293,8 @@ void CUDAColumnData::SetCompactPackedColumnView(const std::vector<int>& column_t
   // GetColumnData consumer fails loudly instead of reading last tree's bytes
   compact_column_host_view_.assign(num_columns_, nullptr);
   packed_column_view_active_ = true;
+  original_column_view_active_ = false;
+  ++column_view_generation_;
 }
 
 void CUDAColumnData::ResizeWhenCopySubrow(const data_size_t num_used_indices) {
