@@ -142,7 +142,7 @@ double CUDARegressionL1loss::LaunchCalcInitScoreKernel(const int /*class_id*/) c
     PercentileGlobal<label_t, data_size_t, label_t, double, false, false>(
       cuda_labels_, nullptr, cuda_data_indices_buffer_.RawData(), nullptr, nullptr, alpha, num_data_, cuda_percentile_result_.RawData());
   } else {
-    PercentileGlobal<label_t, data_size_t, label_t, double, false, true>(
+    PercentileGlobal<label_t, data_size_t, label_t, double, true, true>(
       cuda_labels_, cuda_weights_, cuda_data_indices_buffer_.RawData(), cuda_weights_prefix_sum_.RawData(),
       cuda_weights_prefix_sum_buffer_.RawData(), alpha, num_data_, cuda_percentile_result_.RawData());
   }
@@ -211,7 +211,7 @@ __global__ void RenewTreeOutputCUDAKernel_RegressionL1(
     }
   }
   __syncthreads();
-  const double renew_leaf_value = PercentileDevice<double, data_size_t, label_t, double, false, USE_WEIGHT>(
+  const double renew_leaf_value = PercentileDevice<double, data_size_t, label_t, double, USE_WEIGHT, USE_WEIGHT>(
     residual_buffer_pointer, weight_by_leaf_pointer, data_indices_buffer_pointer,
     weight_prefix_sum_buffer_pointer, alpha, num_data);
   if (threadIdx.x == 0) {
@@ -388,7 +388,7 @@ double CUDARegressionQuantileloss::LaunchCalcInitScoreKernel(const int /*class_i
     PercentileGlobal<label_t, data_size_t, label_t, double, false, false>(
       cuda_labels_, nullptr, cuda_data_indices_buffer_.RawData(), nullptr, nullptr, alpha_, num_data_, cuda_percentile_result_.RawData());
   } else {
-    PercentileGlobal<label_t, data_size_t, label_t, double, false, true>(
+    PercentileGlobal<label_t, data_size_t, label_t, double, true, true>(
       cuda_labels_, cuda_weights_, cuda_data_indices_buffer_.RawData(), cuda_weights_prefix_sum_.RawData(),
       cuda_weights_prefix_sum_buffer_.RawData(), alpha_, num_data_, cuda_percentile_result_.RawData());
   }
@@ -429,7 +429,7 @@ __global__ void RenewTreeOutputCUDAKernel_RegressionQuantile(
     }
   }
   __syncthreads();
-  const double renew_leaf_value = PercentileDevice<double, data_size_t, label_t, double, false, USE_WEIGHT>(
+  const double renew_leaf_value = PercentileDevice<double, data_size_t, label_t, double, USE_WEIGHT, USE_WEIGHT>(
     residual_buffer_pointer, weight_by_leaf_pointer, data_indices_buffer_pointer,
     weight_prefix_sum_buffer_pointer, alpha, num_data);
   if (threadIdx.x == 0) {

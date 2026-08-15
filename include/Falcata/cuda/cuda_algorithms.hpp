@@ -569,7 +569,12 @@ __global__ void PercentileGlobalKernel(const VAL_T* values,
       *out_value = static_cast<VAL_T>(v1 - (v1 - v2) * bias);
     }
   } else {
-    const WEIGHT_REDUCE_T threshold = weights_prefix_sum[len - 1] * (1.0f - alpha);
+    // alpha, not 1-alpha: the weighted branch runs on an ASCENDING sort so it
+    // is a direct port of WeightedPercentileFun. Mirroring the threshold onto a
+    // descending sort does not give the same answer, because the interpolation
+    // segment is not symmetric under reversal -- for y=[2,3,4,5] w=[4,3,2,1] it
+    // interpolated between 4 and 3 (3.333) instead of 2 and 3 (2.333).
+    const WEIGHT_REDUCE_T threshold = weights_prefix_sum[len - 1] * alpha;
     __shared__ INDEX_T pos;
     if (threadIdx.x == 0) {
       pos = len;
@@ -583,11 +588,24 @@ __global__ void PercentileGlobalKernel(const VAL_T* values,
     __syncthreads();
     pos = min(pos, len - 1);
     if (pos == 0 || pos == len - 1) {
-      *out_value = values[pos];
+      // Two bugs lived here: the value was read as values[pos], skipping the
+      // sort permutation every other access applies, and there was no return,
+      // so the interpolation below ran anyway and at pos == 0 indexed
+      // sorted_indices[-1]. For y=[2,3,4,5] w=[4,3,2,1] the weighted median
+      // came out as 3.333 against CPU's correct 2.333.
+      *out_value = values[sorted_indices[pos]];
+      return;
     }
     const VAL_T v1 = values[sorted_indices[pos - 1]];
     const VAL_T v2 = values[sorted_indices[pos]];
-    *out_value = static_cast<VAL_T>(v1 - (v1 - v2) * (threshold - weights_prefix_sum[pos - 1]) / (weights_prefix_sum[pos] - weights_prefix_sum[pos - 1]));
+    const WEIGHT_REDUCE_T cdf_gap = weights_prefix_sum[pos] - weights_prefix_sum[pos - 1];
+    // Matches WeightedPercentileFun: a gap below 1 leaves the lower value
+    // rather than interpolating across it.
+    if (cdf_gap >= 1.0) {
+      *out_value = static_cast<VAL_T>((threshold - weights_prefix_sum[pos - 1]) / cdf_gap * (v2 - v1) + v1);
+    } else {
+      *out_value = v1;
+    }
   }
 }
 
@@ -640,7 +658,8 @@ __device__ VAL_T PercentileDevice(const VAL_T* values,
   } else {
     BitonicArgSortDevice<VAL_T, INDEX_T, ASCENDING, BITONIC_SORT_NUM_ELEMENTS / 4, 9>(values, indices, len);
     ShuffleSortedPrefixSumDevice<WEIGHT_T, REDUCE_WEIGHT_T, INDEX_T>(weights, indices, weights_prefix_sum, len);
-    const REDUCE_WEIGHT_T threshold = weights_prefix_sum[len - 1] * (1.0f - alpha);
+    // see PercentileGlobalKernel: ascending sort, so the CPU threshold applies
+    const REDUCE_WEIGHT_T threshold = weights_prefix_sum[len - 1] * alpha;
     __shared__ INDEX_T pos;
     if (threadIdx.x == 0) {
       pos = len;
@@ -654,11 +673,19 @@ __device__ VAL_T PercentileDevice(const VAL_T* values,
     __syncthreads();
     pos = min(pos, len - 1);
     if (pos == 0 || pos == len - 1) {
-      return values[pos];
+      // indices[pos], not pos: values is in input order and the sort lives in
+      // the permutation, which every other read here applies.
+      return values[indices[pos]];
     }
     const VAL_T v1 = values[indices[pos - 1]];
     const VAL_T v2 = values[indices[pos]];
-    return static_cast<VAL_T>(v1 - (v1 - v2) * (threshold - weights_prefix_sum[pos - 1]) / (weights_prefix_sum[pos] - weights_prefix_sum[pos - 1]));
+    const REDUCE_WEIGHT_T cdf_gap = weights_prefix_sum[pos] - weights_prefix_sum[pos - 1];
+    // Matches WeightedPercentileFun: a gap below 1 leaves the lower value
+    // rather than interpolating across it.
+    if (cdf_gap >= 1.0) {
+      return static_cast<VAL_T>((threshold - weights_prefix_sum[pos - 1]) / cdf_gap * (v2 - v1) + v1);
+    }
+    return v1;
   }
 }
 

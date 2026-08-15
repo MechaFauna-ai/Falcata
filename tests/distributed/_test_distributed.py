@@ -55,6 +55,11 @@ class DistributedMockup:
 
     default_train_config = {
         "task": "train",
+        # Distributed training is CPU-only ("Currently cuda version only supports
+        # training on a single machine"), and a CUDA-capable build with
+        # device_type unset resolves to cuda. Pin it: what these tests exercise
+        # is socket parallelism, not device selection.
+        "device_type": "cpu",
         "pre_partition": True,
         "machine_list_file": TESTS_DIR / "mlist.txt",
         "tree_learner": "data",
@@ -67,6 +72,7 @@ class DistributedMockup:
 
     default_predict_config = {
         "task": "predict",
+        "device_type": "cpu",
         "data": TESTS_DIR / "train.txt",
         "input_model": TESTS_DIR / "model0.txt",
         "output_result": TESTS_DIR / "predictions.txt",

@@ -502,6 +502,8 @@ tests/gates/falb_fuzz_crash.falb
 
 # Out-of-tree build directories and benchmark scratch
 build-*/
+# incremental build tree for tests/gates/cpp_suite.sh
+.cpp-test-build/
 catboost_info/
 bench-cache/
 results/

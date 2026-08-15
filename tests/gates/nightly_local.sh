@@ -92,6 +92,16 @@ step "FALB python plumbing"        -     "$VENV" tests/gates/falb_python.py
 step "FALB binary roundtrip"       -     env FALCATA_LIB="$REPO/lib_falcata.so" "$VENV" tests/gates/falb_roundtrip.py
 step "FALB frozen-fixture compat"  -     "$VENV" tests/gates/falb_compat.py
 step "FALB parser fuzz"            -     "$VENV" tests/gates/falb_fuzz.py --seconds 120
+# The Python suite on CUDA. GH CI runs the same tests on CPU; hosted runners
+# have no GPU, so this is the only place the CUDA half executes. --forked keeps
+# failures independent: a CUDA context error is sticky, and in one process a
+# single bug turns into a cascade that hides everything after it.
+step "python suite (CUDA)"         -     env TASK=cuda "$VENV" -m pytest tests/python_package_test tests/c_api_test \
+  -q --forked --timeout=900 -p no:cacheprovider
+# The C++ (GoogleTest) suite and the distributed CLI tests, against a CUDA
+# build. GH CI runs both on a CPU build; this is the shipped configuration, and
+# the only place the test binary's CUDA device link is exercised at all.
+step "cpp + distributed (CUDA)"    -     env FALCATA_GATES_PYTHON="$VENV" bash tests/gates/cpp_suite.sh
 step "import parity: xgboost"      -     "$VENV" tests/gates/import_xgboost.py
 step "import parity: catboost"     -     "$VENV" tests/gates/import_catboost.py
 step "fixedpoint tree-emission"    20000 "$VENV" tests/gates/canonical.py numerai-treecount

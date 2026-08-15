@@ -429,6 +429,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   CUDAVector<int> cuda_slot_p_stride_;
   CUDAVector<int> cuda_slot_col_in_p_;
   uint64_t compact_col_signature_ = 0;
+  // Published-view generation when compact_col_signature_'s view was installed;
+  // a mismatch means someone replaced the table and we must reinstall.
+  uint64_t col_view_generation_seen_ = 0;
   // packed split read: this tree's column view is the packed compact matrix
   // (no column-major gather ran yet; see EnsureClassicColumnView)
   bool compact_packed_view_active_ = false;

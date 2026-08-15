@@ -73,7 +73,7 @@
    "metric_name": "rmse"
   },
   "graph/flipbase-graph_loop": {
-   "md5": "38798f987b0d7d6a12b0b39d0b284416",
+   "md5": "229140128847fc198dd6f81468bb789a",
    "metric": 0.756316,
    "metric_name": "mlogloss"
   },
@@ -82,12 +82,12 @@
    "metric_name": "mlogloss"
   },
   "graph/quant": {
-   "md5": "38798f987b0d7d6a12b0b39d0b284416",
+   "md5": "229140128847fc198dd6f81468bb789a",
    "metric": 0.756316,
    "metric_name": "mlogloss"
   },
   "imbalanced/fixedpoint": {
-   "md5": "a51e3808de6702665ac17d535494508f",
+   "md5": "654af3e78ab45cf1ad8ddc5f8ea2512a",
    "metric": 0.962627,
    "metric_name": "auc"
   },
@@ -96,17 +96,17 @@
    "metric_name": "auc"
   },
   "imbalanced/posweight": {
-   "md5": "7bcde524fc052c3cf24f4b0a95da32f2",
+   "md5": "cc05b6be1dc0548c957494232a84c5e5",
    "metric": 0.875747,
    "metric_name": "auc"
   },
   "imbalanced/quant": {
-   "md5": "11cbafc214155cf27d6f444f0520b5af",
+   "md5": "e13ade3e8839642e9f51ded30e65ed3b",
    "metric": 0.976573,
    "metric_name": "auc"
   },
   "imbalanced/unbalance": {
-   "md5": "c9451abdc2f535d4f69b4318c1078ddb",
+   "md5": "294d0be2f3912f38c1486d9de3e72e41",
    "metric": 0.941019,
    "metric_name": "auc"
   },

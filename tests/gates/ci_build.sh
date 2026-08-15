@@ -19,8 +19,13 @@ python3 -m venv "$VENV"
 source "$VENV/bin/activate"
 pip install --quiet --upgrade pip
 # xgboost/catboost: the FALB import-parity gates (import_xgboost.py,
-# import_catboost.py) train tiny reference models with them
-pip install --quiet numpy scipy scikit-learn pyarrow xgboost catboost
+# import_catboost.py) train tiny reference models with them.
+# pytest + friends: the nightly runs tests/python_package_test on CUDA, which
+# hosted CI cannot do (no GPU runners). pytest-forked is not optional there --
+# a CUDA context error is sticky, so without one process per test a single
+# failure cascades into dozens and eventually aborts the run.
+pip install --quiet numpy scipy scikit-learn pyarrow xgboost catboost \
+  cloudpickle matplotlib pandas psutil pytest pytest-forked pytest-timeout
 
 CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120-real;120-virtual -DUSE_NCCL=ON -DBUILD_WITH_SHARED_NCCL=ON"
 if command -v ccache >/dev/null 2>&1; then

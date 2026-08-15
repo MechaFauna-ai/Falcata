@@ -3899,7 +3899,13 @@ class Booster:
             # with set_pickle_format("text") or FALCATA_PICKLE_FORMAT=text when
             # the pickle must be readable by stock LightGBM or older Falcata.
             if _PICKLE_FORMAT == "falb":
-                this["_handle"] = self.model_to_binary(num_iteration=-1)
+                # stats and diagnostics are not optional here: the text format
+                # carries them, so leaving them out would make the choice of
+                # pickle format change results. Without them split_gain comes
+                # back zero, and feature_importance() -- which only counts
+                # splits whose gain is positive -- reports zeros for a model
+                # that predicts perfectly well.
+                this["_handle"] = self.model_to_binary(num_iteration=-1, with_stats=True, with_diagnostics=True)
             else:
                 this["_handle"] = self.model_to_string(num_iteration=-1)
         return this

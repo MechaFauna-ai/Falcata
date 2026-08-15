@@ -38,8 +38,19 @@ LOCKS = {
     # in-kernel from (seed, tree, row) -- machine/thread/GPU-independent by
     # construction (no tables). Same-day 1st re-baseline was the fixed-chunk
     # table fix; Philox replaced the tables entirely.
-    "covtype": "cf08d1a953b2",
-    "covtype-classic": "4f628ccd7455",
+    # Re-baselined 2026-08-15 for RECORDED COUNTS, not a training change. A CUDA
+    # histogram bin carries gradient and hessian but no row count, so the split
+    # finder estimated one as round(hessian * num_data / sum_hessians) -- exact
+    # only when every hessian is 1. covtype is multiclass, so its leaf_count /
+    # internal_count fields were a few rows off and a node disagreed with its own
+    # children. The tree now records the data partition's exact counts. Proof it
+    # is metadata and nothing else: md5 over the tree text with leaf_count,
+    # internal_count and tree_sizes lines removed is 19dfb0a3b2c5 for both this
+    # build and 1.0.3 (97401efd76b6 for the classic cell) -- every split,
+    # threshold and leaf value across all 700 trees is bit-identical, and test
+    # accuracy is 0.91841 either way.
+    "covtype": "fad8aaa500f7",
+    "covtype-classic": "f2c90e1bfc66",
     # Re-baselined 2026-08-10 for the DATA, not a code change. The bench cache's
     # numerai build was regenerated on 2026-08-07 (the 1224 -> 1226 source bump,
     # which is explicitly not comparable to older archives); the old lock was set

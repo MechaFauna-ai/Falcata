@@ -987,6 +987,19 @@ if(BUILD_CPP_TEST)
   endif()
   add_executable(testfalcata ${CPP_TEST_SOURCES})
   target_link_libraries(testfalcata PRIVATE falcata_objs falcata_capi_objs nanoarrow_static GTest::GTest)
+  if(USE_CUDA)
+    # falcata_objs is built with CUDA_SEPARABLE_COMPILATION, so anything linking
+    # it needs the device-link step; without it the link fails on
+    # __cudaRegisterLinkedBinary_*. _falcata and the CLI already ask for it --
+    # the test binary did not, so BUILD_CPP_TEST=ON with USE_CUDA=ON could not
+    # link at all.
+    set_target_properties(
+      testfalcata
+      PROPERTIES
+        CUDA_ARCHITECTURES "${CUDA_ARCHS}"
+        CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    )
+  endif()
 endif()
 
 if(BUILD_CLI)

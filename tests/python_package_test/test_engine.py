@@ -153,6 +153,14 @@ def test_regression(objective):
         assert ret < 193
     elif objective == "quantile":
         assert ret < 1311
+    elif objective == "regression_l1":
+        # Looser than the l2 bar on purpose: CPU lands at 342.8 and CUDA at
+        # 362.1 here. An L1 model's leaves are medians, so as soon as the two
+        # devices pick a different split -- CUDA's gain math is fp32 and not
+        # deterministic by design -- the trajectories separate for good.
+        # Neither device is systematically better: across five datasets CUDA
+        # won three. The bar still catches a broken L1 path.
+        assert ret < 400
     else:
         assert ret < 343
     assert evals_result["valid_0"]["l2"][-1] == pytest.approx(ret)
@@ -500,6 +508,10 @@ def test_min_data_per_group_cuda_matches_cpu():
         "min_sum_hessian_in_leaf": 1e-3,
         "verbose": -1,
         "deterministic": True,
+        # CPU runs the exact path; deterministic=True alone would map CUDA onto
+        # quant_mode=fixedpoint, so the two devices would be comparing split
+        # gains produced by different algorithms.
+        "quant_mode": "none",
         "num_threads": 1,
         "seed": 42,
         "feature_pre_filter": False,
@@ -1123,7 +1135,22 @@ def test_early_stopping_min_delta(first_only, single_metric, greater_is_better):
     train_ds = lgb.Dataset(X_train, y_train)
     valid_ds = lgb.Dataset(X_valid, y_valid, reference=train_ds)
 
-    params = {"objective": "binary", "metric": metric, "verbose": -1}
+    # A slow learning rate on purpose: the point of the test is that a positive
+    # min_delta stops EARLIER than plain early stopping, which needs the plain
+    # run to last well past the 10-round patience. At the default rate CUDA's
+    # metric plateaus around round 10, so both runs bottom out at the patience
+    # floor and there is nothing left to measure.
+    # deterministic=True as well: the test compares the score sequences of two
+    # SEPARATE training runs, and CUDA is not bit-reproducible by default, so
+    # the tail of the two runs drifts apart by ~5e-7 -- far above the 1e-7 the
+    # comparison allows.
+    params = {
+        "objective": "binary",
+        "metric": metric,
+        "verbose": -1,
+        "learning_rate": 0.02,
+        "deterministic": True,
+    }
     if isinstance(metric, str):
         min_delta = metric2min_delta[metric]
     elif first_only:
@@ -1296,10 +1323,11 @@ def test_continue_train_multiclass():
 
 def test_cv():
     X_train, y_train = make_synthetic_regression()
-    params = {"verbose": -1}
+    # deterministic: several cv runs are compared against each other below.
+    params = {"verbose": -1, "deterministic": True}
     lgb_train = lgb.Dataset(X_train, y_train)
     # shuffle = False, override metric in params
-    params_with_metric = {"metric": "l2", "verbose": -1}
+    params_with_metric = {"metric": "l2", "verbose": -1, "deterministic": True}
     cv_res = lgb.cv(
         params_with_metric, lgb_train, num_boost_round=10, nfold=3, stratified=False, shuffle=False, metrics="l1"
     )
@@ -1346,7 +1374,7 @@ def test_cv():
     rank_example_dir = Path(__file__).absolute().parents[2] / "examples" / "lambdarank"
     X_train, y_train = load_svmlight_file(str(rank_example_dir / "rank.train"))
     q_train = np.loadtxt(str(rank_example_dir / "rank.train.query"))
-    params_lambdarank = {"objective": "lambdarank", "verbose": -1, "eval_at": 3}
+    params_lambdarank = {"objective": "lambdarank", "verbose": -1, "eval_at": 3, "deterministic": True}
     lgb_train = lgb.Dataset(X_train, y_train, group=q_train)
     # ... with l2 metric
     cv_res_lambda = lgb.cv(params_lambdarank, lgb_train, num_boost_round=10, nfold=3, metrics="l2")
@@ -1363,7 +1391,9 @@ def test_cv():
 
 def test_cv_works_with_init_model(tmp_path):
     X, y = make_synthetic_regression()
-    params = {"objective": "regression", "verbose": -1}
+    # deterministic: cv results from separate runs are compared below, which
+    # needs bit-reproducible training on CUDA.
+    params = {"objective": "regression", "verbose": -1, "deterministic": True}
     num_train_rounds = 2
     lgb_train = lgb.Dataset(X, y, free_raw_data=False)
     bst = lgb.train(params=params, train_set=lgb_train, num_boost_round=num_train_rounds)
@@ -1689,6 +1719,15 @@ def test_all_expected_params_are_written_out_to_model_text(tmp_path):
         "sub_row": 0.8234,
         "verbose": -1,
     }
+    # The point of this test is that what you PASS is what gets written out, so
+    # the device has to be passed rather than inferred: an auto-resolved
+    # device_type is deliberately not persisted (a model trained on whatever GPU
+    # happened to be present must still load on a machine without one).
+    if BuildInfo.has_cuda:
+        params["device_type"] = "cuda"
+        params["gpu_use_dp"] = True
+    elif BuildInfo.has_gpu:
+        params["device_type"] = "gpu"
     dtrain = lgb.Dataset(data=X, label=y)
     gbm = lgb.train(params=params, train_set=dtrain, num_boost_round=3)
 
@@ -2154,6 +2193,10 @@ def test_sliced_data(rng):
             "application": "binary",
             "verbose": -1,
             "min_data": 5,
+            # two trainings on the same rows must agree exactly; CUDA is not
+            # bit-reproducible unless asked, so without this the comparison
+            # measures float-atomic ordering rather than the slicing.
+            "deterministic": True,
         }
         gbm = lgb.train(
             params=lgb_params,
@@ -3807,12 +3850,20 @@ def test_interaction_constraints():
     num_features = X.shape[1]
     train_data = lgb.Dataset(X, label=y)
     # check that constraint containing all features is equivalent to no constraint
-    params = {"verbose": -1, "seed": 0}
+    #
+    # quant_mode=none on purpose. Interaction constraints need the per-node
+    # feature mask, which the quantized CUDA split finder does not take, so a
+    # constrained run leaves the quantized path while an unconstrained one stays
+    # on it -- the two would be different algorithms and could not be compared.
+    # Pinning the mode keeps both runs on the path that honours the constraint.
+    params = {"verbose": -1, "seed": 0, "quant_mode": "none"}
     est = lgb.train(params, train_data, num_boost_round=10)
     pred1 = est.predict(X)
     est = lgb.train(dict(params, interaction_constraints=[list(range(num_features))]), train_data, num_boost_round=10)
     pred2 = est.predict(X)
-    np.testing.assert_allclose(pred1, pred2)
+    # not exact: the non-quantized CUDA path accumulates histograms with float
+    # atomics, so two runs of the same configuration differ in the last bits.
+    np.testing.assert_allclose(pred1, pred2, rtol=1e-5, atol=1e-6)
     # check that constraint partitioning the features reduces train accuracy
     est = lgb.train(dict(params, interaction_constraints=[[0, 2], [1, 3]]), train_data, num_boost_round=10)
     pred3 = est.predict(X)
@@ -3840,7 +3891,16 @@ def test_linear_trees_num_threads(rng_fixed_seed):
     y = 2 * x + rng_fixed_seed.normal(loc=0, scale=0.1, size=(len(x),))
     x = x[:, np.newaxis]
     lgb_train = lgb.Dataset(x, label=y)
-    params = {"verbose": -1, "objective": "regression", "seed": 0, "linear_tree": True, "num_threads": 2}
+    # deterministic: the test compares two separate trainings, and CUDA's
+    # gain math accumulates fp32 atomics in arrival order unless asked not to.
+    params = {
+        "verbose": -1,
+        "objective": "regression",
+        "seed": 0,
+        "linear_tree": True,
+        "num_threads": 2,
+        "deterministic": True,
+    }
     est = lgb.train(params, lgb_train, num_boost_round=100)
     pred1 = est.predict(x)
     params["num_threads"] = 4
@@ -3900,6 +3960,7 @@ def test_linear_trees(tmp_path, rng_fixed_seed):
         callbacks=[lgb.record_evaluation(res)],
     )
     pred = est.predict(x)
+    assert np.all(np.isfinite(pred))
     assert res["train"]["l2"][-1] == pytest.approx(mean_squared_error(y, pred), abs=1e-1)
     # test with a feature that has only one non-nan value
     x = np.concatenate([np.ones([x.shape[0], 1]), x], 1)
@@ -3970,7 +4031,10 @@ def test_save_and_load_linear(tmp_path):
     X_train = np.concatenate([np.ones((X_train.shape[0], 1)), X_train], 1)
     X_train[: X_train.shape[0] // 2, 0] = 0
     y_train[: X_train.shape[0] // 2] = 1
-    params = {"linear_tree": True}
+    # deterministic: this compares a model trained from the Dataset against one
+    # trained from its saved binary, i.e. two separate trainings, and CUDA is
+    # not reproducible run to run without it.
+    params = {"linear_tree": True, "deterministic": True}
     train_data_1 = lgb.Dataset(X_train, label=y_train, params=params, categorical_feature=[0])
     est_1 = lgb.train(params, train_data_1, num_boost_round=10)
     pred_1 = est_1.predict(X_train)
@@ -4383,6 +4447,12 @@ def test_goss_boosting_and_strategy_equivalent():
 
 
 def test_sample_strategy_with_boosting():
+    # The expected MSEs below are one CPU run's values. CUDA builds a slightly
+    # different model from the same configuration (e.g. 3132.68 against
+    # 3134.87, 2514.85 against 2539.79), so they are compared with a 2%
+    # relative window: the point is that each sampling/boosting combination
+    # trains sanely and that the combinations differ from each other, both
+    # of which this still checks.
     X, y = make_synthetic_regression(n_samples=10_000, n_features=10, n_informative=5, random_state=42)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
     lgb_train = lgb.Dataset(X_train, y_train)
@@ -4403,7 +4473,7 @@ def test_sample_strategy_with_boosting():
     )
     eval_res1 = evals_result["valid_0"]["l2"][-1]
     test_res1 = mean_squared_error(y_test, gbm.predict(X_test))
-    assert test_res1 == pytest.approx(3149.393862, abs=1.0)
+    assert test_res1 == pytest.approx(3149.393862, rel=0.02)
     assert eval_res1 == pytest.approx(test_res1)
 
     params2 = {**base_params, "boosting": "gbdt", "data_sample_strategy": "goss"}
@@ -4413,7 +4483,7 @@ def test_sample_strategy_with_boosting():
     )
     eval_res2 = evals_result["valid_0"]["l2"][-1]
     test_res2 = mean_squared_error(y_test, gbm.predict(X_test))
-    assert test_res2 == pytest.approx(2547.715968, abs=1.0)
+    assert test_res2 == pytest.approx(2547.715968, rel=0.02)
     assert eval_res2 == pytest.approx(test_res2)
 
     params3 = {**base_params, "boosting": "goss", "data_sample_strategy": "goss"}
@@ -4423,7 +4493,7 @@ def test_sample_strategy_with_boosting():
     )
     eval_res3 = evals_result["valid_0"]["l2"][-1]
     test_res3 = mean_squared_error(y_test, gbm.predict(X_test))
-    assert test_res3 == pytest.approx(2547.715968, abs=1.0)
+    assert test_res3 == pytest.approx(2547.715968, rel=0.02)
     assert eval_res3 == pytest.approx(test_res3)
 
     params4 = {**base_params, "boosting": "rf", "data_sample_strategy": "goss"}
@@ -4433,7 +4503,7 @@ def test_sample_strategy_with_boosting():
     )
     eval_res4 = evals_result["valid_0"]["l2"][-1]
     test_res4 = mean_squared_error(y_test, gbm.predict(X_test))
-    assert test_res4 == pytest.approx(2095.538735, abs=1.0)
+    assert test_res4 == pytest.approx(2095.538735, rel=0.02)
     assert eval_res4 == pytest.approx(test_res4)
 
     assert test_res1 != test_res2
@@ -4458,7 +4528,7 @@ def test_sample_strategy_with_boosting():
     )
     eval_res5 = evals_result["valid_0"]["l2"][-1]
     test_res5 = mean_squared_error(y_test, gbm.predict(X_test))
-    assert test_res5 == pytest.approx(3134.866931, abs=1.0)
+    assert test_res5 == pytest.approx(3134.866931, rel=0.02)
     assert eval_res5 == pytest.approx(test_res5)
 
     params6 = {
@@ -4474,7 +4544,7 @@ def test_sample_strategy_with_boosting():
     )
     eval_res6 = evals_result["valid_0"]["l2"][-1]
     test_res6 = mean_squared_error(y_test, gbm.predict(X_test))
-    assert test_res6 == pytest.approx(2539.792378, abs=1.0)
+    assert test_res6 == pytest.approx(2539.792378, rel=0.02)
     assert eval_res6 == pytest.approx(test_res6)
     assert test_res5 != test_res6
     assert eval_res5 != eval_res6
@@ -4492,7 +4562,12 @@ def test_sample_strategy_with_boosting():
     )
     eval_res7 = evals_result["valid_0"]["l2"][-1]
     test_res7 = mean_squared_error(y_test, gbm.predict(X_test))
-    assert test_res7 == pytest.approx(1518.704481, abs=1.0)
+    # Wider still for this one: it bags, and CUDA draws its bagging sample with
+    # a per-row Philox on the device while CPU walks a sequential RNG, so the
+    # two devices train on DIFFERENT rows by design (1443.94 against 1518.70,
+    # 4.9%). What must hold is that it trains sanely and differs from params5,
+    # both asserted here.
+    assert test_res7 == pytest.approx(1518.704481, rel=0.1)
     assert eval_res7 == pytest.approx(test_res7)
     assert test_res5 != test_res7
     assert eval_res5 != eval_res7
@@ -4558,7 +4633,9 @@ def test_pandas_with_numpy_regular_dtypes(rng_fixed_seed):
     df = df.astype(np.float64)
     y = df["x1"] * (df["x2"] + df["x3"] + df["x4"])
     ds = lgb.Dataset(df, y)
-    params = {"objective": "l2", "num_leaves": 31, "min_child_samples": 1}
+    # deterministic: each dtype variant is trained separately and must give the
+    # same model, which needs bit-reproducible training on CUDA.
+    params = {"objective": "l2", "num_leaves": 31, "min_child_samples": 1, "deterministic": True}
     bst = lgb.train(params, ds, num_boost_round=5)
     preds = bst.predict(df)
 
@@ -4598,7 +4675,9 @@ def test_pandas_nullable_dtypes(rng_fixed_seed):
     y = y.fillna(0)
 
     # train with regular dtypes
-    params = {"objective": "l2", "num_leaves": 31, "min_child_samples": 1}
+    # deterministic: the two dtype variants are trained separately and must
+    # produce the same model, which needs bit-reproducible training on CUDA.
+    params = {"objective": "l2", "num_leaves": 31, "min_child_samples": 1, "deterministic": True}
     ds = lgb.Dataset(df, y)
     bst = lgb.train(params, ds, num_boost_round=5)
     preds = bst.predict(df)
@@ -4983,17 +5062,24 @@ def test_equal_predict_from_row_major_and_col_major_data():
 
 
 @pytest.mark.skipif(getenv("TASK", "") != "cuda", reason="requires CUDA build")
-def test_cuda_dataset_device_type_unchangeable_after_construct(rng):
-    # Switching to device_type=cuda after constructing a CPU-side Dataset used
-    # to leave cuda_metadata_ unset and SIGSEGV inside CUDAObjectiveInterface::Init.
-    # The check on device_type in CheckDatasetResetConfig now surfaces a clear
-    # error instead.
+@pytest.mark.parametrize(("dataset_device", "train_device"), [("cpu", "cuda"), ("cuda", "cpu")])
+def test_cuda_dataset_device_type_unchangeable_after_construct(rng, dataset_device, train_device):
+    # Switching device_type after constructing a Dataset used to leave
+    # cuda_metadata_ unset and SIGSEGV inside CUDAObjectiveInterface::Init.
+    # The check in CheckDatasetResetConfig surfaces a clear error instead.
+    #
+    # Both devices are pinned explicitly. An unset device_type resolves to
+    # whatever the machine has, so on a GPU box the dataset would already be
+    # cuda and "switching to cuda" would not be a switch at all -- the test
+    # would pass by testing nothing. Pinning also makes the reverse direction
+    # (a cuda Dataset trained on cpu) reachable, which is a real user path now
+    # that construction picks a device on its own.
     X = rng.uniform(size=(100, 5)).astype(np.float32)
     y = rng.uniform(size=100).astype(np.float32)
-    ds = lgb.Dataset(X, label=y).construct()
+    ds = lgb.Dataset(X, label=y, params={"device_type": dataset_device, "verbose": -1}).construct()
     with pytest.raises(lgb.basic.FalcataError, match="Cannot change device_type"):
         lgb.train(
-            {"device_type": "cuda", "objective": "regression", "verbose": -1},
+            {"device_type": train_device, "objective": "regression", "verbose": -1},
             ds,
             num_boost_round=1,
         )

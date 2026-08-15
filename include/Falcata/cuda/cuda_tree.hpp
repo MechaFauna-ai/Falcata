@@ -139,6 +139,13 @@ class CUDATree : public Tree {
    *  the graphs L1 device controller; stable across pooled trees) */
   CUDATreeBatchSplit* hybrid_graph_batch_splits() { return cuda_batch_splits_.RawData(); }
 
+  /*! \brief Replace the recorded node counts with the data partition's exact
+   *  per-leaf row counts and rebuild the internal counts from them. The split
+   *  finder can only estimate counts (count = round(hessian * num_data /
+   *  sum_hessians), since a CUDA histogram bin carries gradient and hessian but
+   *  no count), which is exact only for a constant-hessian objective. */
+  void SyncNodeCountsFromPartition(const std::vector<data_size_t>& leaf_num_data);
+
   /*! \brief graphs L1 post-prefix replay: the host-mirror half of SplitBatch
    *  (branch features, leaf depth, num_leaves_) for ONE split whose device
    *  updates already ran inside the graph */
@@ -257,6 +264,9 @@ class CUDATree : public Tree {
   void LaunchShrinkageKernel(const double rate);
 
   void LaunchAddBiasKernel(const double val);
+
+  /*! \brief internal_count_ of the subtree at node, bottom-up from leaf_count_ */
+  data_size_t RebuildInternalCounts(const int node);
 
   void RecordBranchFeatures(const int left_leaf_index,
                             const int right_leaf_index,

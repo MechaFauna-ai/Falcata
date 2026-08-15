@@ -446,6 +446,13 @@ void BitonicArgSortGlobal<label_t, data_size_t, false>(const label_t* values, da
   BitonicArgSortGlobalHelper<label_t, data_size_t, false>(values, indices, len);
 }
 
+// ascending: the weighted percentile path sorts this way so it can follow
+// WeightedPercentileFun directly (see PercentileGlobalKernel)
+template <>
+void BitonicArgSortGlobal<label_t, data_size_t, true>(const label_t* values, data_size_t* indices, const size_t len) {
+  BitonicArgSortGlobalHelper<label_t, data_size_t, true>(values, indices, len);
+}
+
 template <>
 void BitonicArgSortGlobal<data_size_t, int, true>(const data_size_t* values, int* indices, const size_t len) {
   BitonicArgSortGlobalHelper<data_size_t, int, true>(values, indices, len);

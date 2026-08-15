@@ -610,14 +610,19 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   sig = sig * 1099511628211ULL ^
         static_cast<uint64_t>(reinterpret_cast<uintptr_t>(
             cuda_histogram_constructor_->compact_col_major_device()));
-  if (sig == compact_col_signature_ && !compact_column_to_orig_.empty()) {
-    // Cache hit: layout AND source pointers unchanged → published view valid.
+  // Someone else may have replaced the published table since we installed ours
+  // -- tree traversal restores the original per-column view (see
+  // CUDATree::LaunchAddPredictionToScoreKernel) -- and then an unchanged layout
+  // no longer means our view is the one in force.
+  CUDAColumnData* col_data = const_cast<CUDAColumnData*>(train_data_->cuda_column_data());
+  if (sig == compact_col_signature_ && !compact_column_to_orig_.empty() &&
+      col_view_generation_seen_ == col_data->column_view_generation()) {
+    // Cache hit: layout, source pointers AND published view unchanged.
     return;
   }
 
   // Build column->slot mapping. CUDAColumnData uses column index, not feature index.
   // For dense single-feature groups (Numerai), feature_to_column[f] returns the column index.
-  CUDAColumnData* col_data = const_cast<CUDAColumnData*>(train_data_->cuda_column_data());
   const int num_features = static_cast<int>(bytree_mask.size());
   const int num_total_cols = static_cast<int>(row_data->host_feature_partition_column_index_offsets().back());
 
@@ -661,6 +666,7 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
                                    const_cast<uint8_t*>(cuda_histogram_constructor_->compact_col_major_device()),
                                    static_cast<size_t>(num_data));
     compact_col_signature_ = sig;
+    col_view_generation_seen_ = col_data->column_view_generation();
     return;
   }
   const uint8_t* gather_src = compact_src ? cuda_histogram_constructor_->compact_data_device() : src;
@@ -729,6 +735,7 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
     compact_gather_src_ = gather_src;
     compact_gather_src_is_4bit_ = gather_src_is_4bit;
     compact_col_signature_ = sig;
+    col_view_generation_seen_ = col_data->column_view_generation();
     return;
   }
 
@@ -749,6 +756,7 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
                                  compact_column_buffer_.RawData(),
                                  static_cast<size_t>(num_data));
   compact_col_signature_ = sig;
+  col_view_generation_seen_ = col_data->column_view_generation();
 }
 
 void CUDASingleGPUTreeLearner::EnsureClassicColumnView() {
@@ -3384,6 +3392,19 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     // the selective path rebuilt the host tree from captured split info and
     // released the device arrays in RebuildFromHostSplits already
     tree->ToHost();
+  }
+  // The counts the split finder recorded are estimates: a histogram bin holds
+  // gradient and hessian but no row count, so it infers one from the hessian
+  // mass. That is exact only when every hessian is 1 (l2); under binary or
+  // poisson a node's recorded count disagreed with its own children's by a few
+  // rows. The data partition knows the exact per-leaf counts -- take them.
+  // Rank-local under multi-GPU, where the partition holds only this rank's
+  // rows, so the estimate stays in force there.
+  if (nccl_communicator_ == nullptr && tree->num_leaves() > 0) {
+    std::vector<data_size_t> leaf_num_data(static_cast<size_t>(tree->num_leaves()));
+    CopyFromCUDADeviceToHost<data_size_t>(leaf_num_data.data(),
+      cuda_data_partition_->cuda_leaf_num_data(), leaf_num_data.size(), __FILE__, __LINE__);
+    tree->SyncNodeCountsFromPartition(leaf_num_data);
   }
   // only the leaf histogram slots this tree used can be dirty; the next
   // BeforeTrain zeroes just that prefix (single-GPU only: the NCCL path keeps

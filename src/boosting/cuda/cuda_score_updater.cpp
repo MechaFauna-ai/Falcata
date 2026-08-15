@@ -8,6 +8,9 @@
 
 #ifdef USE_CUDA
 
+#include <algorithm>
+#include <vector>
+
 namespace Falcata {
 
 CUDAScoreUpdater::CUDAScoreUpdater(const Dataset* data, int num_tree_per_iteration, const bool boosting_on_cuda):
@@ -54,9 +57,52 @@ inline void CUDAScoreUpdater::AddScore(double val, int cur_tree_id) {
 inline void CUDAScoreUpdater::AddScore(const Tree* tree, int cur_tree_id) {
   Common::FunctionTimer fun_timer("ScoreUpdater::AddScore", global_timer);
   const size_t offset = static_cast<size_t>(num_data_) * cur_tree_id;
+  if (tree->HasLinearMetadata()) {
+    ScoreLinearTreeOnHost(tree, offset, nullptr, 0);
+    return;
+  }
   tree->AddPredictionToScore(data_, num_data_, cuda_score_.RawData() + offset);
   if (!boosting_on_cuda_) {
     CopyFromCUDADeviceToHost<double>(score_.data() + offset, cuda_score_.RawData() + offset, static_cast<size_t>(num_data_), __FILE__, __LINE__);
+  }
+}
+
+
+
+
+
+void CUDAScoreUpdater::ScoreLinearTreeOnHost(const Tree* tree, size_t offset,
+                                             const data_size_t* data_indices,
+                                             data_size_t data_cnt) {
+  // The device traversal kernel knows only leaf constants, so a linear tree
+  // scored there lands on the wrong value: training reported a metric that
+  // disagreed with what the same model predicts (l2=1118.85 against a real
+  // 431.77), and early stopping acted on it. Tree::AddPredictionToScore
+  // evaluates the leaf regressions, so round-trip through the host.
+  //
+  // Not for the tree-learner overload, which GBDT::RefitTree also uses: there
+  // the tree's inner feature indices belong to the dataset it was GROWN on
+  // while data_ is the narrower refit one, and the host evaluator dereferences
+  // those and segfaults. That overload has its own linear path on the device
+  // (CUDASingleGPUTreeLearner::AddPredictionToScore).
+  std::vector<double> host_score(static_cast<size_t>(num_data_));
+  CopyFromCUDADeviceToHost<double>(host_score.data(), cuda_score_.RawData() + offset,
+                                   static_cast<size_t>(num_data_), __FILE__, __LINE__);
+  if (data_indices == nullptr) {
+    tree->Tree::AddPredictionToScore(data_, num_data_, host_score.data());
+  } else {
+    // data_indices is a DEVICE pointer here: GBDT::UpdateScore hands the CUDA
+    // score updater cuda_bag_data_indices() because every other overload feeds
+    // it straight to a kernel. The host evaluator needs them on the host.
+    std::vector<data_size_t> host_indices(static_cast<size_t>(data_cnt));
+    CopyFromCUDADeviceToHost<data_size_t>(host_indices.data(), data_indices,
+                                          host_indices.size(), __FILE__, __LINE__);
+    tree->Tree::AddPredictionToScore(data_, host_indices.data(), data_cnt, host_score.data());
+  }
+  CopyFromHostToCUDADevice<double>(cuda_score_.RawData() + offset, host_score.data(),
+                                   static_cast<size_t>(num_data_), __FILE__, __LINE__);
+  if (!boosting_on_cuda_) {
+    std::copy(host_score.begin(), host_score.end(), score_.data() + offset);
   }
 }
 
@@ -73,6 +119,15 @@ inline void CUDAScoreUpdater::AddScore(const Tree* tree, const data_size_t* data
                       data_size_t data_cnt, int cur_tree_id) {
   Common::FunctionTimer fun_timer("ScoreUpdater::AddScore", global_timer);
   const size_t offset = static_cast<size_t>(num_data_) * cur_tree_id;
+  if (tree->HasLinearMetadata()) {
+    // GBDT::UpdateScore scores the out-of-bag rows here. The device traversal
+    // knows only leaf constants, so under bagging those rows got the constant
+    // while the in-bag rows (scored by the tree learner) got the leaf
+    // regression -- one model, two scorings, and a training metric its own
+    // predictions could not reproduce (l2 377 against a real 535).
+    ScoreLinearTreeOnHost(tree, offset, data_indices, data_cnt);
+    return;
+  }
   tree->AddPredictionToScore(data_, data_indices, data_cnt, cuda_score_.RawData() + offset);
   if (!boosting_on_cuda_) {
     CopyFromCUDADeviceToHost<double>(score_.data() + offset, cuda_score_.RawData() + offset, static_cast<size_t>(num_data_), __FILE__, __LINE__);
