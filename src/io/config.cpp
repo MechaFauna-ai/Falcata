@@ -518,6 +518,8 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
       quant_incompatible_request = "forced splits";
     } else if (!monotone_constraints.empty()) {
       quant_incompatible_request = "monotone constraints";
+    } else if (!interaction_constraints_vector.empty()) {
+      quant_incompatible_request = "interaction constraints";
     }
     // Saying quant_mode explicitly settles it: the mapping below infers a mode
     // for callers who expressed no preference, and inferring over a stated one
@@ -613,6 +615,14 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
       Log::Fatal("monotone_constraints is not supported with use_quantized_grad on "
                  "device_type=cuda. Disable one of them or use device_type=cpu.");
     }
+  }
+  if (device_type == std::string("cuda") && use_quantized_grad && !interaction_constraints_vector.empty()) {
+    // The quantized split finder takes one feature mask for the whole tree, so
+    // the per-node mask that carries interaction constraints never reaches it:
+    // the constraint was silently dropped and the model was free to violate it.
+    // The non-quantized CUDA path applies it correctly and matches CPU exactly.
+    Log::Fatal("interaction_constraints is not supported with use_quantized_grad on "
+               "device_type=cuda. Disable one of them or use device_type=cpu.");
   }
   if (min_data_in_leaf <= 0 && min_sum_hessian_in_leaf <= kEpsilon) {
     Log::Warning(

@@ -1311,10 +1311,11 @@ def test_continue_train_multiclass():
 
 def test_cv():
     X_train, y_train = make_synthetic_regression()
-    params = {"verbose": -1}
+    # deterministic: several cv runs are compared against each other below.
+    params = {"verbose": -1, "deterministic": True}
     lgb_train = lgb.Dataset(X_train, y_train)
     # shuffle = False, override metric in params
-    params_with_metric = {"metric": "l2", "verbose": -1}
+    params_with_metric = {"metric": "l2", "verbose": -1, "deterministic": True}
     cv_res = lgb.cv(
         params_with_metric, lgb_train, num_boost_round=10, nfold=3, stratified=False, shuffle=False, metrics="l1"
     )
@@ -3826,12 +3827,20 @@ def test_interaction_constraints():
     num_features = X.shape[1]
     train_data = lgb.Dataset(X, label=y)
     # check that constraint containing all features is equivalent to no constraint
-    params = {"verbose": -1, "seed": 0}
+    #
+    # quant_mode=none on purpose. Interaction constraints need the per-node
+    # feature mask, which the quantized CUDA split finder does not take, so a
+    # constrained run leaves the quantized path while an unconstrained one stays
+    # on it -- the two would be different algorithms and could not be compared.
+    # Pinning the mode keeps both runs on the path that honours the constraint.
+    params = {"verbose": -1, "seed": 0, "quant_mode": "none"}
     est = lgb.train(params, train_data, num_boost_round=10)
     pred1 = est.predict(X)
     est = lgb.train(dict(params, interaction_constraints=[list(range(num_features))]), train_data, num_boost_round=10)
     pred2 = est.predict(X)
-    np.testing.assert_allclose(pred1, pred2)
+    # not exact: the non-quantized CUDA path accumulates histograms with float
+    # atomics, so two runs of the same configuration differ in the last bits.
+    np.testing.assert_allclose(pred1, pred2, rtol=1e-5, atol=1e-6)
     # check that constraint partitioning the features reduces train accuracy
     est = lgb.train(dict(params, interaction_constraints=[[0, 2], [1, 3]]), train_data, num_boost_round=10)
     pred3 = est.predict(X)
