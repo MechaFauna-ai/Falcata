@@ -183,12 +183,18 @@ int CUDATree::SplitCategorical(const int leaf_index,
     cuda_bitset_len, cuda_bitset_inner_len);
   cuda_bitset_.PushBack(cuda_bitset, cuda_bitset_len);
   cuda_bitset_inner_.PushBack(cuda_bitset_inner, cuda_bitset_inner_len);
-  ++num_leaves_;
-  ++num_cat_;
+  // The new leaf is num_leaves_ BEFORE the increment, as in Split(). Recording
+  // it afterwards addressed branch_features_ one past the new leaf: out of
+  // bounds on the last split of a full tree (branch_features_ holds exactly
+  // max_leaves_ entries), and one leaf's ancestors written over another's for
+  // every earlier split. linear_tree turns this tracking on for every tree, so
+  // a categorical split under linear_tree corrupted the heap.
   RecordBranchFeatures(leaf_index, num_leaves_, real_feature_index);
   // mirror CPU Tree::Split: keep host-side leaf_depth_ in sync.
-  leaf_depth_[num_leaves_ - 1] = leaf_depth_[leaf_index] + 1;
+  leaf_depth_[num_leaves_] = leaf_depth_[leaf_index] + 1;
   leaf_depth_[leaf_index]++;
+  ++num_leaves_;
+  ++num_cat_;
   return num_leaves_ - 1;
 }
 
