@@ -25,6 +25,33 @@ _REQUIRES_CUDA = pytest.mark.skipif(
 )
 
 
+def _fil_stack_available():
+    """Whether cuML's Forest Inference Library can serve predictions here."""
+    try:
+        import nvforest  # noqa: F401, PLC0415
+        import treelite  # noqa: F401, PLC0415
+    except ImportError:
+        return False
+    return True
+
+
+@pytest.fixture(autouse=True)
+def _engine_predictor_only(monkeypatch):
+    """Predict with the engine, not FIL, for every test in this file.
+
+    These tests compare the CUDA training path against the CPU one and use
+    predictions as the observable, at tolerances as tight as atol=1e-10. But
+    every one of them puts device_type=cuda in the params, which is exactly
+    what makes Booster.predict hand the work to FIL -- a different predictor
+    with a single-precision default. Wherever the FIL stack happens to be
+    installed (the gate venv has it), 59 of these tests were comparing fp32
+    output against an fp64 reference and failing on the difference.
+
+    FIL has its own parity test below, at the tolerance it actually promises.
+    """
+    monkeypatch.setenv("FALCATA_FIL", "0")
+
+
 def _get_init_score(device_type, objective, alpha, X, y):
     """Train a 1-tree model and read 'Start training from score' from the log."""
     params = {
@@ -2571,3 +2598,43 @@ def test_cuda_bagged_linear_tree_metric_matches_the_model(bagging_fraction):
     assert reported == pytest.approx(from_model, rel=1e-6), (
         f"bagged linear tree reported l2 {reported} but its model produces {from_model}"
     )
+
+
+@_REQUIRES_CUDA
+@pytest.mark.skipif(not _fil_stack_available(), reason="cuML Forest Inference (treelite + nvforest) not installed")
+@pytest.mark.parametrize("objective", ["regression", "binary"])
+def test_fil_matches_the_engine_predictor(objective, monkeypatch):
+    """FIL is a second predictor, and it has to agree with the engine.
+
+    It engages on any booster whose params name an explicit cuda/gpu device,
+    and it defaults to single precision, so it is held to a single-precision
+    tolerance rather than the exact one the rest of this file uses. At
+    FALCATA_FIL_PRECISION=double it must agree to fp64 epsilon: that pins the
+    difference as precision alone, not routing or a mishandled transform.
+    """
+    rng = np.random.default_rng(3)
+    X = rng.standard_normal((1500, 10))
+    signal = X @ rng.standard_normal(10)
+    y = (signal > 0).astype(float) if objective == "binary" else signal + 0.1 * rng.standard_normal(1500)
+    params = {
+        "objective": objective,
+        "device_type": "cuda",
+        "num_leaves": 15,
+        "learning_rate": 0.1,
+        "verbose": -1,
+        "seed": 7,
+    }
+    booster = lgb.train(params, lgb.Dataset(X, label=y, params={"verbose": -1}), num_boost_round=20)
+
+    monkeypatch.setenv("FALCATA_FIL", "0")
+    engine = np.asarray(booster.predict(X))
+
+    monkeypatch.setenv("FALCATA_FIL", "1")
+    booster._fil_models = {}
+    fil_single = np.asarray(booster.predict(X))
+    np.testing.assert_allclose(fil_single, engine, rtol=1e-5, atol=1e-6)
+
+    monkeypatch.setenv("FALCATA_FIL_PRECISION", "double")
+    booster._fil_models = {}
+    fil_double = np.asarray(booster.predict(X))
+    np.testing.assert_allclose(fil_double, engine, rtol=1e-12, atol=1e-12)
