@@ -155,7 +155,8 @@ class CUDAHistogramConstructor {
     const int gpu_device_id,
     const bool gpu_use_dp,
     const bool use_discretized_grad,
-    const int grad_discretized_bins);
+    const int grad_discretized_bins,
+    const double feature_fraction);
 
   ~CUDAHistogramConstructor();
 
@@ -636,6 +637,9 @@ class CUDAHistogramConstructor {
   std::vector<uint32_t> feature_most_freq_bins_;
   /*! \brief minimum number of data allowed per leaf */
   int min_data_in_leaf_;
+  /*! \brief feature_fraction, so this class can size what the tree learner
+   *  will still need before spending VRAM on an optional copy */
+  double feature_fraction_;
   /*! \brief minimum sum value of hessians allowed per leaf */
   double min_sum_hessian_in_leaf_;
   /*! \brief cuda stream for histogram construction */

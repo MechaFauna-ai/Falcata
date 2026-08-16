@@ -266,7 +266,7 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   cuda_histogram_constructor_.reset(new CUDAHistogramConstructor(train_data_, config_->num_leaves, num_threads_,
     share_state_->feature_hist_offsets(),
     config_->min_data_in_leaf, config_->min_sum_hessian_in_leaf, gpu_device_id_, config_->gpu_use_dp,
-    config_->use_quantized_grad, effective_quant_bins_));
+    config_->use_quantized_grad, effective_quant_bins_, config_->feature_fraction));
   cuda_histogram_constructor_->Init(train_data_, share_state_.get());
 
   // construct-JIT auto-gate (mirrors the tuner's): the one-time NVRTC

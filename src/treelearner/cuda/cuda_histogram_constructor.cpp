@@ -42,12 +42,14 @@ CUDAHistogramConstructor::CUDAHistogramConstructor(
   const int gpu_device_id,
   const bool gpu_use_dp,
   const bool use_quantized_grad,
-  const int num_grad_quant_bins):
+  const int num_grad_quant_bins,
+  const double feature_fraction):
   num_data_(train_data->num_data()),
   num_features_(train_data->num_features()),
   num_leaves_(num_leaves),
   num_threads_(num_threads),
   min_data_in_leaf_(min_data_in_leaf),
+  feature_fraction_(feature_fraction),
   min_sum_hessian_in_leaf_(min_sum_hessian_in_leaf),
   gpu_device_id_(gpu_device_id),
   gpu_use_dp_(gpu_use_dp),
@@ -959,7 +961,21 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
     const size_t bytes = static_cast<size_t>(num_columns) * (pad / 2);
     size_t free_b = 0, total_b = 0;
     cudaMemGetInfo(&free_b, &total_b);
-    if (free_b > bytes + (2ULL << 30)) {
+    // Leave room for what the tree learner still has to allocate. The per-tree
+    // column view is the big one -- sampled columns x num_data, one byte per
+    // value -- and it is built AFTER this. Reserving a flat margin instead let
+    // this optional copy take the memory that view needed: on a 6.8M x 3555
+    // dataset the transpose fit (11.3 GiB on top of 11.3 GiB of row data) and
+    // training then died asking for 3.39 GiB with 2.72 GiB left.
+    const double sampled = (feature_fraction_ > 0.0 && feature_fraction_ <= 1.0) ? feature_fraction_ : 1.0;
+    const size_t view_bytes =
+        static_cast<size_t>(static_cast<double>(num_columns) * sampled) * static_cast<size_t>(num_data_);
+    // Slack beyond the view: histograms, the data partition and the split
+    // finder all allocate after this too. Scale it with the copy rather than
+    // pick a constant -- this is an optimization, and a dataset big enough for
+    // the transpose to matter is big enough for everything downstream to.
+    const size_t slack = std::max<size_t>(2ULL << 30, bytes / 2);
+    if (free_b > bytes + view_bytes + slack) {
       std::vector<size_t> base_h(num_columns);
       std::vector<int> stride_h(num_columns);
       for (int p = 0; p + 1 < static_cast<int>(part_cols.size()); ++p) {
@@ -1212,6 +1228,7 @@ void CUDAHistogramConstructor::ResetConfig(const Config* config) {
   num_threads_ = OMP_NUM_THREADS();
   num_leaves_ = config->num_leaves;
   min_data_in_leaf_ = config->min_data_in_leaf;
+  feature_fraction_ = config->feature_fraction;
   min_sum_hessian_in_leaf_ = config->min_sum_hessian_in_leaf;
   cuda_hist_.Resize(static_cast<size_t>(num_total_bin_ * 2 * num_leaves_));
   cuda_hist_.SetValue(0);
