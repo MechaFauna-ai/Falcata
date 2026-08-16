@@ -504,6 +504,8 @@ tests/gates/falb_fuzz_crash.falb
 build-*/
 # incremental build tree for tests/gates/cpp_suite.sh
 .cpp-test-build/
+# wheel/sdist output of tests/gates/ci_build.sh (kept out of dist/)
+.gates-dist/
 catboost_info/
 bench-cache/
 results/

@@ -66,6 +66,13 @@ set -e -u
 
 echo "[INFO] building falcata"
 
+# Where the built sdist/wheel goes. The build DELETES what is already there
+# (see the rm calls below), so anything that needs to keep a release artifact
+# around -- the nightly gate build, above all -- points this somewhere else.
+# Absolute, because the build runs from an isolated source dir one level down.
+FALCATA_DIST_DIR="${FALCATA_DIST_DIR:-$(pwd)/dist}"
+mkdir -p "${FALCATA_DIST_DIR}"
+
 # Default values of arguments
 INSTALL="false"
 BUILD_SDIST="false"
@@ -416,31 +423,31 @@ fi
 
 if test "${BUILD_SDIST}" = true; then
     echo "[INFO] --- building sdist ---"
-    rm -f ../dist/*.tar.gz
+    rm -f "${FALCATA_DIST_DIR}"/*.tar.gz
     # use xargs to work with args that contain whitespaces
     # note that empty echo string leads to that xargs doesn't run the command
     # in some implementations of xargs
     # ref: https://stackoverflow.com/a/8296746
-    echo "--sdist --outdir ../dist ${BUILD_ARGS} ." | xargs python -m build
+    echo "--sdist --outdir ${FALCATA_DIST_DIR} ${BUILD_ARGS} ." | xargs python -m build
 fi
 
 if test "${BUILD_WHEEL}" = true; then
     echo "[INFO] --- building wheel ---"
-    rm -f ../dist/*.whl || true
+    rm -f "${FALCATA_DIST_DIR}"/*.whl || true
     # use xargs to work with args that contain whitespaces
     # note that empty echo string leads to that xargs doesn't run the command
     # in some implementations of xargs
     # ref: https://stackoverflow.com/a/8296746
-    echo "--wheel --outdir ../dist ${BUILD_ARGS} ." | xargs python -m build
+    echo "--wheel --outdir ${FALCATA_DIST_DIR} ${BUILD_ARGS} ." | xargs python -m build
 fi
 
 if test "${INSTALL}" = true; then
     echo "[INFO] --- installing falcata ---"
     cd ..
     if test "${BUILD_WHEEL}" = true; then
-        PACKAGE_FILE="$(echo dist/falcata*.whl)"
+        PACKAGE_FILE="$(echo "${FALCATA_DIST_DIR}"/falcata*.whl)"
     else
-        PACKAGE_FILE="$(echo dist/falcata*.tar.gz)"
+        PACKAGE_FILE="$(echo "${FALCATA_DIST_DIR}"/falcata*.tar.gz)"
     fi
     # shellcheck disable=SC2086
     python -m pip install \

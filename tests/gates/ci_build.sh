@@ -36,6 +36,12 @@ else
 fi
 export CMAKE_ARGS
 
+# Build into the gate's own directory. The build wipes its output dir first, so
+# using the default dist/ meant a nightly run deleted whatever release artifact
+# was staged there -- it took out a signed 1.0.2 wheel once.
+FALCATA_DIST_DIR="${FALCATA_DIST_DIR:-$PWD/.gates-dist}"
+export FALCATA_DIST_DIR
+
 sh build-python.sh install --cuda
 
 python -c "import falcata; print('falcata', falcata.__version__, '->', falcata.__file__)"
