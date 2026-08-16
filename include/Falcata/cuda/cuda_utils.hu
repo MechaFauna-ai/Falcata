@@ -85,7 +85,22 @@ int GetCUDADevice(const char* file, int line);
 template <typename T>
 void AllocateCUDAMemory(T** out_ptr, size_t size, const char* file, const int line) {
   void* tmp_ptr = nullptr;
-  CUDASUCCESS_OR_FATAL_OUTER(cudaMalloc(&tmp_ptr, size * sizeof(T)));
+  const size_t bytes = size * sizeof(T);
+  const cudaError_t status = cudaMalloc(&tmp_ptr, bytes);
+  if (status == cudaErrorMemoryAllocation) {
+    // Say what was asked for. A bare "[CUDA] out of memory" names the helper
+    // that failed and nothing about the request, which leaves the size of the
+    // problem -- and whether it is one big allocation or a slow leak -- to be
+    // reconstructed from a GPU sampler.
+    size_t free_bytes = 0, total_bytes = 0;
+    cudaGetLastError();  // clear the sticky error before querying
+    cudaMemGetInfo(&free_bytes, &total_bytes);
+    Log::Fatal("[CUDA] out of memory allocating %.2f GiB (%.2f GiB free of %.2f GiB) %s %d",
+               bytes / static_cast<double>(1ULL << 30),
+               free_bytes / static_cast<double>(1ULL << 30),
+               total_bytes / static_cast<double>(1ULL << 30), file, line);
+  }
+  CUDASUCCESS_OR_FATAL_OUTER(status);
   *out_ptr = reinterpret_cast<T*>(tmp_ptr);
 }
 

@@ -12,6 +12,8 @@ pin the memory behaviour.
 import os
 import subprocess
 import sys
+import threading
+import time
 
 import numpy as np
 import pytest
@@ -228,3 +230,111 @@ def test_goss_resubsets_on_the_device_every_iteration():
     assert np.isfinite(preds).all()
     # GOSS on 25 rounds still has to track a signal this clean.
     assert np.corrcoef(preds, y)[0, 1] > 0.5, "GOSS subsetting produced a model that learned nothing"
+
+
+# --- how much device memory the per-tree feature view costs -------------------
+#
+# The tree learner gathers the sampled features into a column-major buffer, one
+# per tree. It is the largest single allocation training makes on a wide
+# dataset -- 3555 features x 6.8M rows is 24 GB of it -- so a change in its
+# width or its lifetime is the difference between a workload fitting on a card
+# and not. These tests measure it the only way that is honest from Python: vary
+# feature_fraction and watch what the peak does.
+#
+# The shape is deliberately large. Below a few GB the measurement is swamped by
+# a fixed ~1.7 GB of workspace and reports nothing (verified: at 1M x 400 the
+# same comparison moves 64 MiB, which is noise).
+
+_MEM_ROWS, _MEM_FEATS = 4_000_000, 400
+
+
+def peak_device_mib_while_training(rows, feats, max_bin, feature_fraction):
+    """Peak device memory used by THIS process while training, in MiB.
+
+    Sampled from a thread: the peak is a transient, and the end-of-run value
+    misses it entirely.
+    """
+    peak = [0]
+    stop = [False]
+
+    def sample():
+        while not stop[0]:
+            used = _gpu_used_bytes()
+            if used:
+                peak[0] = max(peak[0], used // (1024 * 1024))
+            time.sleep(0.05)
+
+    rng = np.random.default_rng(0)
+    X = rng.integers(0, max_bin, size=(rows, feats)).astype(np.float32)
+    y = X[:, 0] * 0.4 + rng.normal(size=rows) * 0.1
+    params = {
+        "objective": "regression",
+        "max_bin": max_bin,
+        "device_type": "cuda",
+        "num_leaves": 63,
+        "min_data_in_leaf": 100,
+        "feature_fraction": feature_fraction,
+        "feature_fraction_seed": 1,
+        "verbosity": -1,
+        "num_threads": 8,
+    }
+    watcher = threading.Thread(target=sample, daemon=True)
+    watcher.start()
+    ds = lgb.Dataset(X, label=y, params=params)
+    ds.construct()
+    lgb.train(params, ds, num_boost_round=5)
+    stop[0] = True
+    watcher.join(timeout=2)
+    return peak[0]
+
+
+def _feature_view_mib(max_bin):
+    """Device cost of the features the per-tree view adds, in MiB.
+
+    The difference between sampling every feature and a tenth of them is the
+    view and nothing else: same rows, same trees, same workspace.
+    """
+    snippet = f"print(dm.peak_device_mib_while_training({_MEM_ROWS}, {_MEM_FEATS}, {max_bin}, %s))"
+    full = _isolated(snippet % "1.0")
+    tenth = _isolated(snippet % "0.1")
+    return full - tenth
+
+
+@_REQUIRES_CUDA
+def test_feature_view_costs_no_more_than_one_byte_per_value():
+    """An 8-bit dataset's feature view must stay at one byte per value.
+
+    This is the regression guard for a second copy: before columns uploaded
+    lazily, subsetting held parent and child at once and doubled exactly this.
+    Measured at 1214 MiB against the 1373 MiB the values themselves occupy.
+    """
+    added_values = _MEM_ROWS * _MEM_FEATS * 0.9  # ff 1.0 vs 0.1
+    one_byte_each_mib = added_values / (1024 * 1024)
+    measured = _feature_view_mib(max_bin=200)
+    assert measured < one_byte_each_mib * 1.25, (
+        f"per-tree feature view took {measured} MiB for {one_byte_each_mib:.0f} MiB of values "
+        f"({measured / one_byte_each_mib:.2f} bytes per value) -- a second copy?"
+    )
+
+
+@_REQUIRES_CUDA
+@pytest.mark.xfail(
+    strict=True,
+    reason="4-bit bins are widened to 8 in the per-tree feature view, and the packed "
+    "matrix is built alongside it, so a 4-bit dataset costs MORE than an 8-bit one "
+    "(2158 MiB against 1214 MiB measured). Tracked as the 4-bit expansion issue.",
+)
+def test_four_bit_bins_stay_packed_in_the_feature_view():
+    """A 4-bit dataset should cost about half of an 8-bit one, not more.
+
+    max_bin=5 puts two values in a byte on the host and in the row-major
+    device copy. The per-tree feature view unpacks them to a byte each, which
+    is what makes a 12 GB dataset need 24 GB of card.
+    """
+    added_values = _MEM_ROWS * _MEM_FEATS * 0.9
+    packed_mib = added_values / 2 / (1024 * 1024)
+    measured = _feature_view_mib(max_bin=5)
+    assert measured < packed_mib * 1.25, (
+        f"per-tree feature view took {measured} MiB for 4-bit data that packs into "
+        f"{packed_mib:.0f} MiB ({measured / packed_mib:.2f}x)"
+    )

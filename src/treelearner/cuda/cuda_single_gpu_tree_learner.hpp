@@ -417,6 +417,11 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // per-split Split() (leaf-wise tail, forced splits, batched-apply fallback
   // env) still needs the plain per-column buffer, so ApplySplit calls this
   // first to run the deferred gather once for the tree.
+  /*! \brief Grow the per-tree compact column buffer, refusing with a sized
+   *  message rather than a bare cudaMalloc OOM when it cannot fit. */
+  void EnsureCompactColumnBuffer(const size_t needed_bytes, const int num_compact_cols,
+                                 const data_size_t num_data);
+
   void EnsureClassicColumnView();
   CUDAVector<uint8_t> compact_column_buffer_;
   std::vector<int> compact_column_to_orig_;        // [slot] -> original column index

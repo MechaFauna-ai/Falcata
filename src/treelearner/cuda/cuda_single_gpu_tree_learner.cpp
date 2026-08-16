@@ -642,9 +642,7 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
 
   const data_size_t num_data = row_data->num_data();
   const size_t needed_bytes = static_cast<size_t>(num_compact_cols) * static_cast<size_t>(num_data);
-  if (compact_column_buffer_.Size() < needed_bytes) {
-    compact_column_buffer_.Resize(needed_bytes);
-  }
+  EnsureCompactColumnBuffer(needed_bytes, num_compact_cols, num_data);
 
   // Build per-slot source-frame metadata host-side (one entry per compact slot).
   // When the histogram constructor already gathered this tree's sampled columns
@@ -759,6 +757,35 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   col_view_generation_seen_ = col_data->column_view_generation();
 }
 
+void CUDASingleGPUTreeLearner::EnsureCompactColumnBuffer(
+    const size_t needed_bytes, const int num_compact_cols, const data_size_t num_data) {
+  if (compact_column_buffer_.Size() >= needed_bytes) {
+    return;
+  }
+  // Resize allocates the new block before releasing the old one, so the peak is
+  // the sum. Check before asking: this buffer is the largest single allocation
+  // training makes on a wide dataset, and cudaMalloc failing here reports only
+  // "[CUDA] out of memory" with no indication of what wanted the memory or how
+  // much. Note the one byte per value: a 4-bit dataset is NOT packed here, so
+  // this view costs twice what the dataset itself does.
+  size_t free_bytes = 0, total_bytes = 0;
+  cudaMemGetInfo(&free_bytes, &total_bytes);
+  const size_t peak_bytes = needed_bytes + compact_column_buffer_.Size();
+  const size_t headroom = 256ULL << 20;
+  if (free_bytes < peak_bytes + headroom) {
+    Log::Fatal(
+      "Not enough GPU memory for the per-tree column view: %.2f GiB needed "
+      "(%d features x %d rows, one byte per value), %.2f GiB free of %.2f GiB. "
+      "This view is not bit-packed, so it costs one byte per value even when the "
+      "dataset itself is 4-bit. Lower feature_fraction to shrink it, train on "
+      "fewer rows, or use a card with more memory.",
+      peak_bytes / static_cast<double>(1ULL << 30), num_compact_cols,
+      static_cast<int>(num_data), free_bytes / static_cast<double>(1ULL << 30),
+      total_bytes / static_cast<double>(1ULL << 30));
+  }
+  compact_column_buffer_.Resize(needed_bytes);
+}
+
 void CUDASingleGPUTreeLearner::EnsureClassicColumnView() {
   if (!compact_packed_view_active_) {
     return;
@@ -768,9 +795,7 @@ void CUDASingleGPUTreeLearner::EnsureClassicColumnView() {
   const data_size_t num_data = cuda_histogram_constructor_->cuda_row_data_internal()->num_data();
   const int num_compact_cols = static_cast<int>(compact_column_to_orig_.size());
   const size_t needed_bytes = static_cast<size_t>(num_compact_cols) * static_cast<size_t>(num_data);
-  if (compact_column_buffer_.Size() < needed_bytes) {
-    compact_column_buffer_.Resize(needed_bytes);
-  }
+  EnsureCompactColumnBuffer(needed_bytes, num_compact_cols, num_data);
   LaunchRowToColCompactKernel(
       0,
       compact_gather_src_,
