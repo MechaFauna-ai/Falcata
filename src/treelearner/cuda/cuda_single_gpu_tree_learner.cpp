@@ -3398,6 +3398,12 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   // mass. That is exact only when every hessian is 1 (l2); under binary or
   // poisson a node's recorded count disagreed with its own children's by a few
   // rows. The data partition knows the exact per-leaf counts -- take them.
+  //
+  // This is what the CPU learner does too: it keeps the estimate for the
+  // min_data_in_leaf constraint (both devices do, by upstream design) and
+  // overwrites it with data_partition_->leaf_count() before recording the
+  // split, in serial_tree_learner.cpp. Same semantics, one tree later.
+  //
   // Rank-local under multi-GPU, where the partition holds only this rank's
   // rows, so the estimate stays in force there.
   if (nccl_communicator_ == nullptr && tree->num_leaves() > 0) {
