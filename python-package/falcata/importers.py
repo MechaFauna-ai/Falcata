@@ -14,8 +14,10 @@ engines genuinely disagree are handled explicitly rather than papered over:
 
 * **Split comparison.** XGBoost sends a row left when ``x < threshold``;
   Falcata/LightGBM send it left when ``x <= threshold``. Converting the
-  threshold to the next double DOWN makes ``x <= t'`` exactly equivalent to
-  ``x < t``, because no double lies between them.
+  threshold to the next FLOAT32 down makes ``x <= t'`` exactly equivalent to
+  ``x < t`` -- no float32 lies between them, and XGBoost compares in float32
+  anyway. The step stays on the float32 grid so that single-precision
+  evaluation of the converted model agrees with double-precision evaluation.
 * **base_score.** XGBoost stores it in the objective's OUTPUT space (0.5 for
   ``binary:logistic``), while a tree ensemble sums raw margins. It is mapped
   back through the objective's inverse link and emitted as a constant first
@@ -176,8 +178,15 @@ class _TreeConverter:
         # placeholders, filled after the children are known
         self.split_feature.append(int(self.feat[node]))
         # XGBoost: go left when x < cond. LightGBM: go left when x <= t.
-        # The next double DOWN makes the two identical -- nothing lies between.
-        self.threshold.append(float(np.nextafter(np.float64(self.cond[node]), -np.inf)))
+        # The next FLOAT32 down makes the two identical for float32 data --
+        # nothing representable lies between -- and, unlike the next double
+        # down, it is itself a float32. That matters because the model is also
+        # evaluated in single precision (FIL on the GPU, via treelite): a
+        # double-space step rounds back to cond there, so every row sitting
+        # exactly on a split -- and splits are chosen AT data values, so there
+        # are many -- took the other branch. It cost 3.6% of rows on an
+        # imported model, against 0.01% for a natively trained one.
+        self.threshold.append(float(np.nextafter(self.cond[node], np.float32("-inf"))))
         dtype = _MISSING_TYPE_NAN << 2
         if int(self.default_left[node]):
             dtype |= _DEFAULT_LEFT_MASK
