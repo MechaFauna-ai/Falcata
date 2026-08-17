@@ -45,10 +45,22 @@ class CUDAColumnData {
     // In the skip-allocation path, data_by_column_[c] is null; the per-column
     // device pointers live in the per-tree compact view (set by
     // SetCompactColumnView). Read those instead to avoid a host null-deref.
-    if (init_skipped_per_column_alloc_) {
+    // Sparse-encoded columns keep their own buffer even there (see
+    // column_is_sparse_).
+    if (init_skipped_per_column_alloc_ && !column_is_sparse(column_index)) {
       return compact_column_host_view_[column_index];
     }
     return data_by_column_[column_index]->RawData();
+  }
+
+  /*! \brief Whether this column's bins came from a sparse bin iterator rather
+   *  than a dense buffer. Such a column stores 0 for every row at the feature's
+   *  most-frequent bin, while the row-wise matrix stores that bin's real index
+   *  -- so its bytes are NOT interchangeable with the row-data-derived compact
+   *  view the split-apply kernels otherwise read. */
+  bool column_is_sparse(const int column_index) const {
+    return column_index < static_cast<int>(column_is_sparse_.size()) &&
+           column_is_sparse_[column_index] != 0;
   }
 
   void CopySubrow(const CUDAColumnData* full_set, const data_size_t* used_indices, const data_size_t num_used_indices);
@@ -203,6 +215,8 @@ class CUDAColumnData {
   data_size_t num_data_;
   int num_columns_;
   std::vector<uint8_t> column_bit_type_;
+  /*! \brief per column: bins came from a sparse bin iterator (see column_is_sparse) */
+  std::vector<uint8_t> column_is_sparse_;
   std::vector<uint32_t> feature_min_bin_;
   std::vector<uint32_t> feature_max_bin_;
   std::vector<uint32_t> feature_offset_;

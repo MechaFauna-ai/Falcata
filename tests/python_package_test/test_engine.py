@@ -5305,3 +5305,35 @@ def test_callbacks_do_not_carry_state_between_runs(rng):
     )
     # and the recorded history describes the second run alone, not both
     assert len(evals_result["valid_0"]["l2"]) == second.num_trees()
+
+
+def test_training_stops_on_non_finite_leaf_output(rng):
+    """A model whose leaves are inf must not be returned as if it trained.
+
+    Boosting can run away -- the leaf output is -sum_grad / (sum_hess + lambda),
+    and once the score is ruined every later tree inherits it. Silence here is
+    expensive downstream: the model file is well formed, checksums pass, and a
+    prediction fingerprint taken from the broken model agrees with itself.
+    """
+    X = rng.uniform(size=(200, 3))
+    # labels at the top of the double range: the first residuals already
+    # overflow, so the leaf outputs are non-finite from the start
+    y = np.full(200, 1e308)
+    y[::2] = -1e308
+    train_set = lgb.Dataset(X, label=y, params={"verbose": -1})
+    params = {"objective": "regression", "num_leaves": 7, "learning_rate": 1.0, "verbose": -1}
+
+    with pytest.raises(lgb.basic.FalcataError, match="non-finite leaf output"):
+        lgb.train(params, train_set, num_boost_round=10)
+
+
+def test_finite_training_is_unaffected_by_the_non_finite_guard(rng):
+    """The guard reads leaf outputs only; ordinary training must not notice."""
+    X = rng.uniform(size=(500, 4))
+    y = X[:, 0] * 2.0 + rng.normal(scale=0.1, size=500)
+    train_set = lgb.Dataset(X, label=y, params={"verbose": -1})
+    params = {"objective": "regression", "num_leaves": 15, "learning_rate": 0.1, "verbose": -1}
+
+    booster = lgb.train(params, train_set, num_boost_round=20)
+    assert booster.num_trees() == 20
+    assert np.isfinite(booster.predict(X)).all()

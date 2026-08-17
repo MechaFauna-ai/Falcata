@@ -96,6 +96,7 @@ void CUDAColumnData::Init(const int num_columns,
     // SetCompactColumnView populates it for the first tree.
     compact_column_host_view_.assign(num_columns_, nullptr);
   }
+  column_is_sparse_.assign(num_columns_, 0);
   for (int column_index = 0; column_index < num_columns_; ++column_index) {
     data_by_column_.emplace_back(new CUDAVector<uint8_t>());
   }
@@ -110,6 +111,7 @@ void CUDAColumnData::Init(const int num_columns,
       if (column_data[column_index] != nullptr) {
         // is dense column
         if (init_skipped_per_column_alloc_) {
+          // (sparse columns take the other branch and are always materialized)
           // Adjust column_bit_type_ for 4-bit case (which expanded to 8) and skip GPU alloc.
           if (bit_type == 4) {
             column_bit_type_[column_index] = 8;
@@ -128,7 +130,13 @@ void CUDAColumnData::Init(const int num_columns,
           Log::Fatal("Unknown column bit type %d", bit_type);
         }
       } else {
-        // is sparse column
+        // Sparse column: the bin iterator yields 0 for every row sitting at the
+        // feature's most-frequent bin, where the row-wise matrix carries that
+        // bin's real index. The two encodings are not interchangeable, so this
+        // buffer is built even in the skip-allocation path -- it is the only
+        // correct source for the split-apply kernels, and there are few enough
+        // sparse columns for the cost to be noise.
+        column_is_sparse_[column_index] = 1;
         if (bit_type == 8) {
           InitOneColumnData<true, false, uint8_t>(nullptr, column_bin_iterator[column_index], data_by_column_[column_index].get());
         } else if (bit_type == 16) {
@@ -143,6 +151,17 @@ void CUDAColumnData::Init(const int num_columns,
     }
   }
   OMP_THROW_EX();
+  {
+    // Sparse columns are the ones a per-tree compact view may not serve (their
+    // encoding differs from the row matrix's), so how many there are decides
+    // how much of the view's win is available on this dataset.
+    int num_sparse = 0;
+    for (const uint8_t is_sparse : column_is_sparse_) {
+      num_sparse += (is_sparse != 0);
+    }
+    Log::Debug("CUDAColumnData: %d of %d columns are sparse-encoded (kept out of per-tree compact views)",
+               num_sparse, num_columns_);
+  }
   feature_to_column_ = feature_to_column;
   cuda_data_by_column_.InitFromHostVector(GetDataByColumnPointers(data_by_column_));
   original_column_view_active_ = !init_skipped_per_column_alloc_;
@@ -245,6 +264,15 @@ void CUDAColumnData::SetCompactColumnView(const std::vector<int>& column_to_comp
   std::vector<uint8_t*> view(num_columns_, nullptr);
   uint8_t* base = reinterpret_cast<uint8_t*>(compact_buf);
   for (int c = 0; c < num_columns_; ++c) {
+    if (column_is_sparse(c)) {
+      // The compact buffer is gathered from the ROW matrix, whose encoding
+      // differs from a sparse column's (0 there means "the most-frequent bin",
+      // which the row matrix spells out). Publishing those bytes would make the
+      // split-apply kernels route this feature's rows by the wrong rule, so
+      // this column keeps its own buffer.
+      view[c] = data_by_column_[c]->RawData();
+      continue;
+    }
     if (c < static_cast<int>(column_to_compact_slot.size()) && column_to_compact_slot[c] >= 0) {
       const size_t off = static_cast<size_t>(column_to_compact_slot[c]) * bytes_per_col;
       view[c] = base + off;

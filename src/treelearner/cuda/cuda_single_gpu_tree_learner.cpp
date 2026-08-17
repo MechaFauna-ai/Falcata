@@ -711,9 +711,20 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   CopyFromHostToCUDADevice<int>(cuda_slot_col_in_p_.RawData(), slot_col_in_p_h.data(),
                                 num_compact_cols, __FILE__, __LINE__);
 
+  // A sparse-encoded column cannot be served from the packed row matrix at all
+  // (its own buffer spells the most-frequent bin as 0, the row matrix as the
+  // real bin), and the packed descriptors have no per-column escape hatch --
+  // so a tree that sampled one takes the plain view instead.
+  bool sampled_sparse_column = false;
+  for (const int orig_col : compact_column_to_orig_) {
+    if (col_data->column_is_sparse(orig_col)) {
+      sampled_sparse_column = true;
+      break;
+    }
+  }
   compact_packed_view_active_ = false;
   if (SplitPackedReadEnabled() && gather_src_is_4bit && HybridGrowthUsable() &&
-      !has_categorical_feature_) {
+      !has_categorical_feature_ && !sampled_sparse_column) {
     // categorical batched-apply descriptors need the plain per-column view
     // (SplitLevelBatched CHECK-enforces it); numerical-only datasets keep the packed read
     // packed split read: skip the column-major gather entirely; the batched

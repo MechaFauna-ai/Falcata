@@ -28,6 +28,31 @@ namespace Falcata {
 
 Common::Timer global_timer;
 
+namespace {
+
+// A leaf output is -sum_grad / (sum_hess + lambda): finite for every objective
+// on finite gradients. A non-finite one means the boosting loop has diverged,
+// and every later tree inherits the ruined score. Training that carries on
+// writes a well-formed model whose predictions are inf -- checksums pass, and a
+// prediction fingerprint taken from that model compares garbage against garbage
+// and agrees. Stop at the first one instead.
+void CheckLeafOutputsAreFinite(const Tree* tree, int iter, int tree_id) {
+  const int num_leaves = tree->num_leaves();
+  for (int leaf = 0; leaf < num_leaves; ++leaf) {
+    const double output = tree->LeafOutput(leaf);
+    if (!std::isfinite(output)) {
+      Log::Fatal(
+        "Iteration %d (tree %d) produced a non-finite leaf output (leaf %d = %g). "
+        "Boosting has diverged, so training stops here rather than writing a model "
+        "that predicts inf. Lower learning_rate, raise min_data_in_leaf or the "
+        "regularization, or check the labels for extreme values.",
+        iter, tree_id, leaf, output);
+    }
+  }
+}
+
+}  // namespace
+
 int FLC_config_::current_device = lgbm_device_cpu;
 int FLC_config_::current_learner = use_cpu_learner;
 
@@ -416,6 +441,7 @@ bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
     }
 
     if (new_tree->num_leaves() > 1) {
+      CheckLeafOutputsAreFinite(new_tree.get(), iter_, cur_tree_id);
       should_continue = true;
       auto score_ptr = train_score_updater_->score() + offset;
       auto residual_getter = [score_ptr](const label_t* label, int i) {return static_cast<double>(label[i]) - score_ptr[i]; };
