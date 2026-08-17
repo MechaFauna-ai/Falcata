@@ -5274,3 +5274,34 @@ def test_eval_freq_rejects_zero():
     xt, yt, _, _ = _eval_freq_data(3)
     with pytest.raises(ValueError, match="eval_freq"):
         lgb.train({"objective": "regression", "verbose": -1}, lgb.Dataset(xt, label=yt), num_boost_round=5, eval_freq=0)
+
+
+def test_callbacks_do_not_carry_state_between_runs(rng):
+    """A reused callback instance must start each run clean.
+
+    early_stopping and record_evaluation both hold per-run state -- the best
+    score so far, the caller's result dict -- and callers reuse one instance
+    across runs all the time: sklearn's GridSearchCV hands the same callback
+    list to every fit. State that survives a run makes the next model stop on
+    the previous model's history, which showed up as a second fit that trained
+    a single tree and reported the first fit's score.
+    """
+    X = rng.uniform(size=(500, 4))
+    y = X[:, 0] * 2.0 + rng.normal(scale=0.1, size=500)
+    train_set = lgb.Dataset(X, label=y, params={"verbose": -1})
+    valid_set = lgb.Dataset(X[:200], label=y[:200], params={"verbose": -1}, reference=train_set)
+    params = {"objective": "regression", "num_leaves": 7, "learning_rate": 0.1, "verbose": -1}
+
+    evals_result = {}
+    callbacks = [lgb.early_stopping(5, verbose=False), lgb.record_evaluation(evals_result)]
+
+    first = lgb.train(params, train_set, num_boost_round=25, valid_sets=[valid_set], callbacks=callbacks)
+    first_trees = first.num_trees()
+    second = lgb.train(params, train_set, num_boost_round=25, valid_sets=[valid_set], callbacks=callbacks)
+
+    assert second.num_trees() == first_trees, (
+        f"reused callbacks made the second run stop at {second.num_trees()} trees "
+        f"against the first run's {first_trees} -- state leaked across runs"
+    )
+    # and the recorded history describes the second run alone, not both
+    assert len(evals_result["valid_0"]["l2"]) == second.num_trees()

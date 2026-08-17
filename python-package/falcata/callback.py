@@ -166,6 +166,18 @@ class _RecordEvaluationCallback:
                 "record_evaluation() callback enabled but no evaluation results found. This is a probably bug in Falcata. "
                 "Please report it at https://github.com/MechaFauna-ai/Falcata/issues"
             )
+        if env.iteration == env.begin_iteration:
+            # A new run starts here. Callbacks are routinely REUSED across runs
+            # -- sklearn's GridSearchCV hands the same list to every fit -- so
+            # per-run state has to be re-armed, not initialized once for the
+            # life of the object. Initialization itself still waits for the
+            # first evaluation below, because it reads the metric names out of
+            # the results and train(eval_freq=N) may not produce any here.
+            self._initialized = False
+            # Clear here rather than in _init: a run that never evaluates at all
+            # (metric="None") must still leave the caller's dict empty, and _init
+            # only runs once there is a result to read metric names from.
+            self.eval_result.clear()
         if not env.evaluation_result_list:
             return  # train(eval_freq=N) skipped evaluation this iteration
         if not self._initialized:
@@ -425,6 +437,14 @@ class _EarlyStoppingCallback:
                 "early_stopping() callback enabled but no evaluation results found. This is a probably bug in Falcata. "
                 "Please report it at https://github.com/MechaFauna-ai/Falcata/issues"
             )
+        if env.iteration == env.begin_iteration:
+            # A new run starts here. Callbacks are routinely REUSED across runs
+            # -- sklearn's GridSearchCV hands the same list to every fit -- so
+            # per-run state has to be re-armed, not initialized once for the
+            # life of the object. Initialization itself still waits for the
+            # first evaluation below, because it reads the metric names out of
+            # the results and train(eval_freq=N) may not produce any here.
+            self._initialized = False
         if not env.evaluation_result_list:
             # train(eval_freq=N) skipped evaluation on this iteration. Return
             # rather than treating it as "no improvement", which is what makes
