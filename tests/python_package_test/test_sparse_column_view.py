@@ -107,18 +107,52 @@ def test_sampled_trees_score_the_rows_they_route_cuda():
 
 
 @_REQUIRES_CUDA
-def test_sampled_trees_match_cpu_cuda():
-    """Both devices must build the same trees here, not merely plausible ones:
-    a mis-served column changes which splits win."""
+@pytest.mark.parametrize("feature_fraction", [0.1, 0.15, 0.5, 1.0])
+def test_sampled_trees_match_cpu_cuda(feature_fraction):
+    """Both devices must build the same trees, not merely plausible ones: a
+    mis-served column changes which splits win. Swept over the sampling rate
+    because the per-tree view exists only below 1.0 and its column set -- hence
+    which columns can be served wrongly -- changes with the rate."""
     X, y = _data(seed=1)
-    cuda_params = {**PARAMS, "device_type": "cuda"}
-    cpu_params = {**PARAMS, "device_type": "cpu"}
+    cuda_params = {**PARAMS, "device_type": "cuda", "feature_fraction": feature_fraction}
+    cpu_params = {**PARAMS, "device_type": "cpu", "feature_fraction": feature_fraction}
     on_cuda = lgb.train(cuda_params, lgb.Dataset(X, label=y, params=cuda_params), num_boost_round=15)
     on_cpu = lgb.train(cpu_params, lgb.Dataset(X, label=y, params=cpu_params), num_boost_round=15)
 
     pred_cuda = on_cuda.predict(X)
     assert np.isfinite(pred_cuda).all()
     np.testing.assert_allclose(pred_cuda, on_cpu.predict(X), rtol=1e-4, atol=1e-5)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(
+    "extra",
+    [
+        pytest.param({}, id="plain"),
+        pytest.param({"cuda_plan": "auto,hybrid:off"}, id="classic-loop"),
+        pytest.param({"cuda_plan": "auto,split_packed_read:off"}, id="no-packed-read"),
+        pytest.param({"cuda_plan": "auto,colmajor_fill:off"}, id="no-colmajor-fill"),
+        pytest.param({"cuda_plan": "auto,compact_prefill:off"}, id="no-prefill"),
+        pytest.param({"use_quantized_grad": True, "quant_mode": "fixedpoint"}, id="quantized"),
+        pytest.param({"cuda_precision": "fp32"}, id="fp32-hist"),
+        pytest.param({"bagging_fraction": 0.7, "bagging_freq": 1}, id="bagged"),
+    ],
+)
+def test_sampled_trees_score_the_rows_they_route_across_paths_cuda(extra):
+    """Every path that publishes or consumes the per-tree column view holds the
+    same invariant. The original defect survived all of these individually,
+    which is why they are swept rather than trusted."""
+    X, y = _data(seed=2)
+    params = {**PARAMS, "device_type": "cuda", **extra}
+    booster = lgb.train(params, lgb.Dataset(X, label=y, params=params), num_boost_round=20)
+
+    leaves, mismatched, smallest = _leaf_stats(booster)
+    assert leaves > 0
+    assert mismatched == 0, f"{mismatched} of {leaves} leaves were scored on rows they did not get"
+    if not extra.get("bagging_freq"):
+        # bagging shrinks the row pool a leaf can draw from, so the floor is
+        # enforced against the bag rather than the full dataset
+        assert smallest >= PARAMS["min_data_in_leaf"]
 
 
 def test_sampled_trees_score_the_rows_they_route_cpu():

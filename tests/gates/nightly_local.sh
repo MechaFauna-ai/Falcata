@@ -106,6 +106,10 @@ step "import parity: xgboost"      -     "$VENV" tests/gates/import_xgboost.py
 step "import parity: catboost"     -     "$VENV" tests/gates/import_catboost.py
 step "fixedpoint tree-emission"    20000 "$VENV" tests/gates/canonical.py numerai-treecount
 step "canonical md5 locks"         -     "$VENV" tests/gates/canonical.py all
+# Runs against every binary dataset this machine has, because the defect it
+# guards (a sampled column served from the wrong bin encoding) only appears on
+# data carrying sparse-encoded columns -- no synthetic shape reproduces it.
+step "sparse column view"          20000 "$VENV" tests/gates/sparse_column_view.py
 step "bench tier"                  12000 "$VENV" tests/gates/bench_tier.py --out tests/gates/bench_results.json
 step "perf gate"                   -     "$VENV" tests/gates/perf_gate.py \
   --results tests/gates/bench_results.json \
