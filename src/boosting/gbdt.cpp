@@ -441,7 +441,6 @@ bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
     }
 
     if (new_tree->num_leaves() > 1) {
-      CheckLeafOutputsAreFinite(new_tree.get(), iter_, cur_tree_id);
       should_continue = true;
       auto score_ptr = train_score_updater_->score() + offset;
       auto residual_getter = [score_ptr](const label_t* label, int i) {return static_cast<double>(label[i]) - score_ptr[i]; };
@@ -472,6 +471,7 @@ bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
       }
     }
     // add model
+    CheckLeafOutputsAreFinite(new_tree.get(), iter_, cur_tree_id);
     models_.push_back(std::move(new_tree));
   }
 
