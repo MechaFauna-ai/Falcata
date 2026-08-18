@@ -1226,6 +1226,24 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   cuda_row_data_.reset(new CUDARowData(train_data, share_states, gpu_device_id_, gpu_use_dp_));
   cuda_row_data_->Init(train_data, share_states);
 
+  // Deterministic dense-construct scratch: sized from the widest partition's
+  // item count once the row data exists. Non-quantized only; quantized
+  // training keeps its order-invariant integer atomics.
+  const std::vector<uint32_t>& dense_part_offsets = cuda_row_data_->host_partition_hist_offsets();
+  uint32_t dense_stride = 0;
+  for (size_t p = 1; p < dense_part_offsets.size(); ++p) {
+    dense_stride = std::max(dense_stride, (dense_part_offsets[p] - dense_part_offsets[p - 1]) << 1);
+  }
+  det_dense_slot_stride_ = dense_stride;
+  if (!use_quantized_grad_ && dense_stride > 0) {
+    const size_t per_row = static_cast<size_t>(dense_stride) * sizeof(hist_t);
+    det_dense_dy_ = std::max(1, std::min<int>(kDetDenseDyCap,
+        static_cast<int>(kDetDenseSlotBudget / (static_cast<size_t>(kDetTileCap) * per_row))));
+    cuda_det_dense_slots_.Resize(static_cast<size_t>(kDetTileCap) * det_dense_dy_ * dense_stride);
+  } else {
+    det_dense_dy_ = 0;
+  }
+
   hist_fp32_ = FalcataFP32HistRequested() && !use_quantized_grad_ && !gpu_use_dp_ &&
     !cuda_row_data_->is_sparse() && cuda_row_data_->NumLargeBinPartition() == 0 &&
     !has_categorical_feature_;

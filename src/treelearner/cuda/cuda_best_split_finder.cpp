@@ -117,6 +117,7 @@ void CUDABestSplitFinder::Init() {
     // 2x: separate staging regions for the forward and reverse direction
     // tasks of a feature (they run as concurrent blocks of one launch)
     cuda_feature_hist_grad_buffer_.Resize(static_cast<size_t>(num_total_bin_) * 2);
+    cuda_feature_hist_cnt_buffer_.Resize(static_cast<size_t>(num_total_bin_) * 2);
     cuda_feature_hist_hess_buffer_.Resize(static_cast<size_t>(num_total_bin_) * 2);
     if (has_categorical_feature_) {
       cuda_feature_hist_stat_buffer_.Resize(static_cast<size_t>(num_total_bin_));

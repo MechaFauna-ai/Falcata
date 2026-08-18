@@ -572,6 +572,9 @@ class CUDABestSplitFinder {
   CUDAVector<hist_t> cuda_feature_hist_hess_buffer_;
   CUDAVector<hist_t> cuda_feature_hist_stat_buffer_;
   CUDAVector<data_size_t> cuda_feature_hist_index_buffer_;
+  /*! \brief Per-category count prefix scratch for the categorical finder
+   *  (GlobalMemory variant); mirrors the grad buffer's two-direction sizing. */
+  CUDAVector<data_size_t> cuda_feature_hist_cnt_buffer_;
   CUDAVector<uint32_t> cuda_cat_threshold_leaf_;
   CUDAVector<int> cuda_invalidate_leaves_;
   CUDAVector<int> cuda_cat_threshold_real_leaf_;

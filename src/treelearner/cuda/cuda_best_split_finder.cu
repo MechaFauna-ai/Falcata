@@ -91,9 +91,9 @@ __device__ __forceinline__ const hist_t* FeatureHistPtr(const hist_t* hist_in_le
 template <typename PREFIX_PTR_T>
 __device__ __forceinline__ bool SequentialCategoricalGroupAccepted(
   const PREFIX_PTR_T sum_left_hessian_prefix,
+  const data_size_t* left_count_prefix,
   const int i,
   const int num_thresholds,
-  const double cnt_factor,
   const data_size_t num_data,
   const double sum_hessians,
   const data_size_t min_data_in_leaf,
@@ -102,8 +102,7 @@ __device__ __forceinline__ bool SequentialCategoricalGroupAccepted(
   data_size_t last_accepted_left_count = 0;
   for (int j = 0; j < num_thresholds; ++j) {
     const double sum_left_hessian = sum_left_hessian_prefix[j];
-    const data_size_t left_count =
-      static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
+    const data_size_t left_count = left_count_prefix[j];
     // CPU: `continue` -- the group counter keeps accumulating across skipped
     // thresholds, which the left_count difference below accounts for.
     if (left_count < min_data_in_leaf || sum_left_hessian < min_sum_hessian_in_leaf) {
@@ -944,6 +943,8 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
     __shared__ int16_t shared_index_buffer[NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER];
     __shared__ uint16_t shared_mem_buffer_uint16[WARPSIZE];
     __shared__ double shared_mem_buffer_double[WARPSIZE];
+    __shared__ data_size_t shared_mem_buffer_cnt[WARPSIZE];
+    __shared__ data_size_t shared_count_buffer[NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER];
     __shared__ int used_bin;
     l2 += cat_l2;
     uint16_t is_valid_bin = 0;
@@ -998,10 +999,15 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
     // left to right
     double grad = 0.0f;
     double hess = 0.0f;
+    data_size_t cat_cnt = 0;
     if (threadIdx_x < used_bin && threadIdx_x < max_num_cat) {
       const int sorted_bin = shared_index_buffer[threadIdx_x];
       grad = hist_reader.Grad(sorted_bin);
       hess = hist_reader.Hess(sorted_bin);
+      // CPU rounds each category's count separately and sums the roundings;
+      // rounding the summed hessian disagrees with that by a category
+      // whenever the two roundings differ.
+      cat_cnt = static_cast<data_size_t>(CUDARoundInt(hess * cnt_factor));
     }
     if (threadIdx_x == 0) {
       hess += kEpsilon;
@@ -1011,17 +1017,22 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
     __syncthreads();
     double sum_left_hessian = ShufflePrefixSum<double>(hess, shared_mem_buffer_double);
     __syncthreads();
+    data_size_t left_count_prefix =
+      ShufflePrefixSum<data_size_t>(cat_cnt, shared_mem_buffer_cnt);
+    __syncthreads();
     if (threadIdx_x < num_cat_thresholds) {
       shared_value_buffer[threadIdx_x] = sum_left_hessian;
+      shared_count_buffer[threadIdx_x] = left_count_prefix;
     }
     __syncthreads();
     if (threadIdx_x < num_cat_thresholds) {
-      const data_size_t left_count = static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
+      const data_size_t left_count = left_count_prefix;
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
       const data_size_t right_count = num_data - left_count;
-      if (SequentialCategoricalGroupAccepted(shared_value_buffer, threadIdx_x, num_cat_thresholds,
-          cnt_factor, num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
+      if (SequentialCategoricalGroupAccepted(shared_value_buffer, shared_count_buffer,
+          threadIdx_x, num_cat_thresholds,
+          num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
           min_data_per_group) &&
         (!USE_RAND || threadIdx_x == static_cast<int>(rand_threshold))) {
         double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
@@ -1043,10 +1054,12 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
     // right to left
     grad = 0.0f;
     hess = 0.0f;
+    cat_cnt = 0;
     if (threadIdx_x < used_bin && threadIdx_x < max_num_cat) {
       const int sorted_bin = shared_index_buffer[used_bin - 1 - threadIdx_x];
       grad = hist_reader.Grad(sorted_bin);
       hess = hist_reader.Hess(sorted_bin);
+      cat_cnt = static_cast<data_size_t>(CUDARoundInt(hess * cnt_factor));
     }
     if (threadIdx_x == 0) {
       hess += kEpsilon;
@@ -1056,17 +1069,21 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
     __syncthreads();
     sum_left_hessian = ShufflePrefixSum<double>(hess, shared_mem_buffer_double);
     __syncthreads();
+    left_count_prefix = ShufflePrefixSum<data_size_t>(cat_cnt, shared_mem_buffer_cnt);
+    __syncthreads();
     if (threadIdx_x < num_cat_thresholds) {
       shared_value_buffer[threadIdx_x] = sum_left_hessian;
+      shared_count_buffer[threadIdx_x] = left_count_prefix;
     }
     __syncthreads();
     if (threadIdx_x < num_cat_thresholds) {
-      const data_size_t left_count = static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
+      const data_size_t left_count = left_count_prefix;
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
       const data_size_t right_count = num_data - left_count;
-      if (SequentialCategoricalGroupAccepted(shared_value_buffer, threadIdx_x, num_cat_thresholds,
-          cnt_factor, num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
+      if (SequentialCategoricalGroupAccepted(shared_value_buffer, shared_count_buffer,
+          threadIdx_x, num_cat_thresholds,
+          num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
           min_data_per_group) &&
         (!USE_RAND || threadIdx_x == static_cast<int>(rand_threshold))) {
         double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
@@ -1836,6 +1853,7 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
   hist_t* hist_hess_buffer_ptr,
   hist_t* hist_stat_buffer_ptr,
   data_size_t* hist_index_buffer_ptr,
+  data_size_t* hist_cnt_buffer_ptr,
   // output parameters
   CUDASplitInfo* cuda_best_split_info) {
   __shared__ double shared_gain_buffer[WARPSIZE];
@@ -2006,6 +2024,9 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
       const int bin_offset = (hist_index_buffer_ptr[bin] << 1);
       hist_grad_buffer_ptr[bin] = feature_hist_ptr[bin_offset];
       hist_hess_buffer_ptr[bin] = feature_hist_ptr[bin_offset + 1];
+      // CPU rounds each category's count separately and sums the roundings.
+      hist_cnt_buffer_ptr[bin] = static_cast<data_size_t>(
+        CUDARoundInt(feature_hist_ptr[bin_offset + 1] * cnt_factor));
     }
     if (threadIdx_x == 0) {
       hist_hess_buffer_ptr[0] += kEpsilon;
@@ -2014,15 +2035,17 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
     GlobalMemoryPrefixSum<double>(hist_grad_buffer_ptr, static_cast<size_t>(bin_end));
     __syncthreads();
     GlobalMemoryPrefixSum<double>(hist_hess_buffer_ptr, static_cast<size_t>(bin_end));
+    __syncthreads();
+    GlobalMemoryPrefixSum<data_size_t>(hist_cnt_buffer_ptr, static_cast<size_t>(bin_end));
     for (int bin = static_cast<int>(threadIdx_x); bin < used_bin && bin < max_num_cat; bin += static_cast<int>(blockDim.x)) {
       const double sum_left_gradient = hist_grad_buffer_ptr[bin];
       const double sum_left_hessian = hist_hess_buffer_ptr[bin];
-      const data_size_t left_count = static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
+      const data_size_t left_count = hist_cnt_buffer_ptr[bin];
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
       const data_size_t right_count = num_data - left_count;
-      if (SequentialCategoricalGroupAccepted(hist_hess_buffer_ptr, bin, num_cat_thresholds,
-          cnt_factor, num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
+      if (SequentialCategoricalGroupAccepted(hist_hess_buffer_ptr, hist_cnt_buffer_ptr, bin, num_cat_thresholds,
+          num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
           min_data_per_group)) {
         double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
@@ -2050,6 +2073,8 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
       const int bin_offset = (hist_index_buffer_ptr[used_bin - 1 - bin] << 1);
       hist_grad_buffer_ptr[bin] = feature_hist_ptr[bin_offset];
       hist_hess_buffer_ptr[bin] = feature_hist_ptr[bin_offset + 1];
+      hist_cnt_buffer_ptr[bin] = static_cast<data_size_t>(
+        CUDARoundInt(feature_hist_ptr[bin_offset + 1] * cnt_factor));
     }
     if (threadIdx_x == 0) {
       hist_hess_buffer_ptr[0] += kEpsilon;
@@ -2058,15 +2083,17 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
     GlobalMemoryPrefixSum<double>(hist_grad_buffer_ptr, static_cast<size_t>(bin_end));
     __syncthreads();
     GlobalMemoryPrefixSum<double>(hist_hess_buffer_ptr, static_cast<size_t>(bin_end));
+    __syncthreads();
+    GlobalMemoryPrefixSum<data_size_t>(hist_cnt_buffer_ptr, static_cast<size_t>(bin_end));
     for (int bin = static_cast<int>(threadIdx_x); bin < used_bin && bin < max_num_cat; bin += static_cast<int>(blockDim.x)) {
       const double sum_left_gradient = hist_grad_buffer_ptr[bin];
       const double sum_left_hessian = hist_hess_buffer_ptr[bin];
-      const data_size_t left_count = static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
+      const data_size_t left_count = hist_cnt_buffer_ptr[bin];
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
       const data_size_t right_count = num_data - left_count;
-      if (SequentialCategoricalGroupAccepted(hist_hess_buffer_ptr, bin, num_cat_thresholds,
-          cnt_factor, num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
+      if (SequentialCategoricalGroupAccepted(hist_hess_buffer_ptr, hist_cnt_buffer_ptr, bin, num_cat_thresholds,
+          num_data, sum_hessians, min_data_in_leaf, min_sum_hessian_in_leaf,
           min_data_per_group)) {
         double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
           sum_left_gradient, sum_left_hessian, sum_right_gradient,
@@ -2178,6 +2205,7 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
   hist_t* feature_hist_hess_buffer,
   hist_t* feature_hist_stat_buffer,
   data_size_t* feature_hist_index_buffer,
+  data_size_t* feature_hist_cnt_buffer,
   const uint32_t hist_buffer_stride) {
   const double leaf_constraint_min = IS_LARGER ? larger_leaf_constraint_min : smaller_leaf_constraint_min;
   const double leaf_constraint_max = IS_LARGER ? larger_leaf_constraint_max : smaller_leaf_constraint_max;
@@ -2212,6 +2240,7 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
     hist_t* hist_hess_buffer_ptr = feature_hist_hess_buffer + dir_offset + hist_offset;
     hist_t* hist_stat_buffer_ptr = feature_hist_stat_buffer + hist_offset;
     data_size_t* hist_index_buffer_ptr = feature_hist_index_buffer + hist_offset;
+    data_size_t* hist_cnt_buffer_ptr = feature_hist_cnt_buffer + dir_offset + hist_offset;
     if (task->is_categorical) {
       FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory<USE_RAND, USE_L1, USE_SMOOTHING>(
         // input feature information
@@ -2242,6 +2271,7 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
         hist_hess_buffer_ptr,
         hist_stat_buffer_ptr,
         hist_index_buffer_ptr,
+        hist_cnt_buffer_ptr,
         // output parameters
         out);
     } else {
@@ -2381,6 +2411,7 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
   cuda_feature_hist_hess_buffer_.RawData(), \
   cuda_feature_hist_stat_buffer_.RawData(), \
   cuda_feature_hist_index_buffer_.RawData(), \
+  cuda_feature_hist_cnt_buffer_.RawData(), \
   static_cast<uint32_t>(num_total_bin_)
 
 void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernel(LaunchFindBestSplitsForLeafKernel_PARAMS) {

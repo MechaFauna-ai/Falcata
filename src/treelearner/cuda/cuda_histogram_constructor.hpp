@@ -44,6 +44,11 @@
 inline constexpr size_t kDetFloatSharedBudget = 46 * 1024;
 inline constexpr int kDetTileCap = 128;
 inline constexpr int kDetRowsPerThread = 32;
+// Deterministic dense construct (wide partitions, global scratch): total
+// slot budget and the per-block row-group cap it buys (dy adapts down when
+// the widest partition's item count is large).
+inline constexpr size_t kDetDenseSlotBudget = 96 * 1024 * 1024;
+inline constexpr int kDetDenseDyCap = 32;
 
 namespace Falcata {
 
@@ -701,6 +706,13 @@ class CUDAHistogramConstructor {
    *  quantized training (integer atomics are order-invariant). */
   CUDAVector<hist_t> cuda_det_tile_partials_;
   int det_tile_alloc_ = 0;
+  /*! \brief Dense deterministic construct: slot rows [tile * dy + row_group]
+   *  [slot_stride] in double. Engaged (det_dense_dy_ > 0) only for
+   *  non-quantized training whose widest partition exceeds the shared-memory
+   *  construct's budget. */
+  CUDAVector<hist_t> cuda_det_dense_slots_;
+  int det_dense_dy_ = 0;
+  uint32_t det_dense_slot_stride_ = 0;
   /*! \brief Per-tree feature mask (1 = feature in this tree's sample, 0 = skip).
    *  Indexed by column_index (== inner_feature_index for dense single-feature groups). */
   CUDAVector<int8_t> cuda_is_feature_used_bytree_;
