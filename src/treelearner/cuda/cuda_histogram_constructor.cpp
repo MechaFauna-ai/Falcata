@@ -871,7 +871,7 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   // Deterministic float-mode construct scratch (see ResetTrainingData; both
   // entry points size it because either can be the only one a flow calls).
   det_tile_alloc_ = std::min(kDetTileCap, (train_data->num_data() + kDetRowsPerThread - 1) / kDetRowsPerThread);
-  cuda_det_tile_partials_.Resize(static_cast<size_t>(det_tile_alloc_) * 2 * num_total_bin_);
+  cuda_det_tile_partials_.Resize(static_cast<size_t>(kNumHistPipelines) * det_tile_alloc_ * 2 * num_total_bin_);
 
   cuda_feature_num_bins_.InitFromHostVector(feature_num_bins_);
   cuda_feature_hist_offsets_.InitFromHostVector(feature_hist_offsets_);
@@ -1214,7 +1214,10 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   // Deterministic float-mode construct scratch: launches clamp their tile
   // grid to det_tile_alloc_, so the buffer can never be written past its end.
   det_tile_alloc_ = std::min(kDetTileCap, (num_data_ + kDetRowsPerThread - 1) / kDetRowsPerThread);
-  cuda_det_tile_partials_.Resize(static_cast<size_t>(det_tile_alloc_) * 2 * num_total_bin_);
+  // One region per histogram pipeline: pipelined pair-constructs run on
+  // different pipeline streams, so a shared region would let one construct's
+  // tiles overwrite another's before its merge reads them.
+  cuda_det_tile_partials_.Resize(static_cast<size_t>(kNumHistPipelines) * det_tile_alloc_ * 2 * num_total_bin_);
   num_dirty_leaves_ = -1;
   cuda_feature_num_bins_.InitFromHostVector(feature_num_bins_);
   cuda_feature_hist_offsets_.InitFromHostVector(feature_hist_offsets_);

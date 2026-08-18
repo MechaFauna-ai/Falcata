@@ -2041,13 +2041,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           slot_stride = std::max(slot_stride, (part_offsets[p] - part_offsets[p - 1]) << 1);
         }
         const size_t smem_per_row = static_cast<size_t>(slot_stride) * sizeof(HIST_TYPE);
-        // Dormant until the consumption-ordering bug is fixed: the split
-        // finder reads uninitialized histogram entries under this path
-        // (compute-sanitizer initcheck, SyncBestSplitForLeafKernel), so the
-        // merge's stores are not visible where the pipeline expects them --
-        // suspected stream/event ordering around the hybrid level pipeline's
-        // hist_subtract_done events. See tasks.md before re-enabling.
-        constexpr bool kDetSparseConstructEnabled = false;
+        constexpr bool kDetSparseConstructEnabled = true;
         if (kDetSparseConstructEnabled && det_tile_alloc_ > 0 && smem_per_row > 0 && smem_per_row <= kDetFloatSharedBudget) {
           const int det_dy = std::max(1, std::min<int>(block_dim.y, static_cast<int>(kDetFloatSharedBudget / smem_per_row)));
           // One writer per row group leaves the x lanes idle, so buy back
@@ -2057,6 +2051,10 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           det_grid_y = std::min(std::min(det_grid_y, static_cast<int>(kDetTileCap)), det_tile_alloc_);
           dim3 det_grid(grid_dim_x, static_cast<unsigned int>(std::max(det_grid_y, 1)));
           dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dy));
+          // Pipeline-private scratch region (pipelined pair-constructs run on
+          // different pipeline streams; a shared region would race).
+          hist_t* det_tiles = cuda_det_tile_partials_.RawData() +
+            static_cast<size_t>(active_pipeline_) * det_tile_alloc_ * (2 * num_total_bin_);
           CUDAConstructHistogramSparseDeterministicKernel<BIN_TYPE, PTR_TYPE, HIST_TYPE>
             <<<det_grid, det_block, static_cast<size_t>(det_dy) * smem_per_row, current_stream()>>>(
               cuda_smaller_leaf_splits,
@@ -2067,14 +2065,14 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
               cuda_row_data_->cuda_partition_hist_offsets(),
               num_data_,
               slot_stride,
-              cuda_det_tile_partials_.RawData(),
+              det_tiles,
               static_cast<uint32_t>(2 * num_total_bin_));
           const int num_items_total = 2 * num_total_bin_;
           const int merge_threads = 256;
           const int merge_blocks = (num_items_total + merge_threads - 1) / merge_threads;
           MergeDeterministicHistogramKernel<<<merge_blocks, merge_threads, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
-            cuda_det_tile_partials_.RawData(),
+            det_tiles,
             num_items_total,
             std::max(det_grid_y, 1));
         } else {
