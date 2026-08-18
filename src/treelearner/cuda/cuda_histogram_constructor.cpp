@@ -882,11 +882,10 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
 
   // Deterministic dense-construct scratch (same as ResetTrainingData; both
   // entry points size it because either can be the only one a flow calls).
+  // Slot rows span the FULL histogram (positions are global per partition,
+  // so partitions own disjoint ranges of each row).
   const std::vector<uint32_t>& dense_part_offsets = cuda_row_data_->host_partition_hist_offsets();
-  uint32_t dense_stride = 0;
-  for (size_t p = 1; p < dense_part_offsets.size(); ++p) {
-    dense_stride = std::max(dense_stride, (dense_part_offsets[p] - dense_part_offsets[p - 1]) << 1);
-  }
+  const uint32_t dense_stride = dense_part_offsets.empty() ? 0u : (dense_part_offsets.back() << 1);
   det_dense_slot_stride_ = dense_stride;
   if (!use_quantized_grad_ && dense_stride > 0) {
     const size_t per_row = static_cast<size_t>(dense_stride) * sizeof(hist_t);
@@ -1253,11 +1252,10 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   // Deterministic dense-construct scratch: sized from the widest partition's
   // item count once the row data exists. Non-quantized only; quantized
   // training keeps its order-invariant integer atomics.
+  // Slot rows span the FULL histogram (positions are global per partition,
+  // so partitions own disjoint ranges of each row).
   const std::vector<uint32_t>& dense_part_offsets = cuda_row_data_->host_partition_hist_offsets();
-  uint32_t dense_stride = 0;
-  for (size_t p = 1; p < dense_part_offsets.size(); ++p) {
-    dense_stride = std::max(dense_stride, (dense_part_offsets[p] - dense_part_offsets[p - 1]) << 1);
-  }
+  const uint32_t dense_stride = dense_part_offsets.empty() ? 0u : (dense_part_offsets.back() << 1);
   det_dense_slot_stride_ = dense_stride;
   if (!use_quantized_grad_ && dense_stride > 0) {
     const size_t per_row = static_cast<size_t>(dense_stride) * sizeof(hist_t);

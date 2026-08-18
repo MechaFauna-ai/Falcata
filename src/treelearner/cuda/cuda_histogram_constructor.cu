@@ -1178,9 +1178,16 @@ __global__ void CUDAConstructHistogramDenseGMDeterministicKernel(
   const uint32_t partition_hist_end = column_hist_offsets_full[blockIdx.x + 1];
   const uint32_t num_items_in_partition = (partition_hist_end - partition_hist_start) << 1;
   const unsigned int thread_idx = threadIdx.x + threadIdx.y * blockDim.x;
+  // Slot positions are GLOBAL (offset by this partition's histogram start):
+  // with partition-relative positions, different partitions' blocks would
+  // zero overlapping low ranges of the SAME row -- one partition's late
+  // zeroing wipes another's accumulated sums, and its merge reads the
+  // contamination. Global positions make every partition own a disjoint
+  // range of every row.
   hist_t* my_slot_row = slots + (static_cast<size_t>(blockIdx.y) * dy + threadIdx.y) * slot_stride;
-  for (unsigned int i = thread_idx; i < num_items_in_partition; i += num_threads_per_block) {
-    my_slot_row[i] = 0.0;
+  const uint32_t zero_base = partition_hist_start << 1;
+  for (uint32_t j = thread_idx; j < num_items_in_partition; j += num_threads_per_block) {
+    my_slot_row[zero_base + j] = 0.0;
   }
   __syncthreads();
   const data_size_t block_start = (static_cast<size_t>(blockIdx.y) * dy) * num_data_per_thread;
@@ -1197,7 +1204,7 @@ __global__ void CUDAConstructHistogramDenseGMDeterministicKernel(
         continue;
       }
       const uint32_t bin = static_cast<uint32_t>(row[c]);
-      const uint32_t pos = (column_hist_offsets[column_index] << 1) + (bin << 1);
+      const uint32_t pos = ((partition_hist_start + column_hist_offsets[column_index]) << 1) + (bin << 1);
       my_slot_row[pos] += static_cast<double>(grad);
       my_slot_row[pos + 1] += static_cast<double>(hess);
     }
@@ -1216,15 +1223,16 @@ __global__ void MergeDeterministicDenseHistogramKernel(
   const int num_rows) {
   const uint32_t start = column_hist_offsets_full[blockIdx.y];
   const uint32_t items = (column_hist_offsets_full[blockIdx.y + 1] - start) << 1;
-  const unsigned int i = threadIdx.x + static_cast<unsigned int>(blockIdx.x) * blockDim.x;
-  if (i >= items) {
+  const unsigned int j = threadIdx.x + static_cast<unsigned int>(blockIdx.x) * blockDim.x;
+  if (j >= items) {
     return;
   }
+  const uint32_t i = (start << 1) + j;  // global slot position
   double acc = 0.0;
   for (int r = 0; r < num_rows; ++r) {
     acc += slots[static_cast<size_t>(r) * slot_stride + i];
   }
-  smaller_leaf_splits->hist_in_leaf[(start << 1) + i] = acc;
+  smaller_leaf_splits->hist_in_leaf[i] = acc;
 }
 
 // Sum the row-tile partials in tile-index order and store: the leaf
