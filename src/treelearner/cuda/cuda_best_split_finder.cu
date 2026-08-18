@@ -1141,7 +1141,10 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
       cuda_best_split_info->default_left = false;
       const double sum_left_gradient = best_sum_left_gradient;
       const double sum_left_hessian = best_sum_left_hessian;
-      const data_size_t left_count = static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
+      // CPU stores the sum of per-category roundings; the child leaf inherits
+      // this count, so rounding the summed hessian here diverges from CPU by
+      // a category and shifts every child decision.
+      const data_size_t left_count = shared_count_buffer[threadIdx_x];
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
       const data_size_t right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
@@ -2140,7 +2143,8 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
       cuda_best_split_info->default_left = false;
       const hist_t sum_left_gradient = best_sum_left_gradient;
       const hist_t sum_left_hessian = best_sum_left_hessian;
-      const data_size_t left_count = static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
+      // CPU stores the sum of per-category roundings (see the shared variant).
+      const data_size_t left_count = hist_cnt_buffer_ptr[best_threshold];
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
       const data_size_t right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
