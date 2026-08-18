@@ -880,6 +880,23 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   cuda_row_data_.reset(new CUDARowData(train_data, share_state, gpu_device_id_, gpu_use_dp_));
   cuda_row_data_->Init(train_data, share_state);
 
+  // Deterministic dense-construct scratch (same as ResetTrainingData; both
+  // entry points size it because either can be the only one a flow calls).
+  const std::vector<uint32_t>& dense_part_offsets = cuda_row_data_->host_partition_hist_offsets();
+  uint32_t dense_stride = 0;
+  for (size_t p = 1; p < dense_part_offsets.size(); ++p) {
+    dense_stride = std::max(dense_stride, (dense_part_offsets[p] - dense_part_offsets[p - 1]) << 1);
+  }
+  det_dense_slot_stride_ = dense_stride;
+  if (!use_quantized_grad_ && dense_stride > 0) {
+    const size_t per_row = static_cast<size_t>(dense_stride) * sizeof(hist_t);
+    det_dense_dy_ = std::max(1, std::min<int>(kDetDenseDyCap,
+        static_cast<int>(kDetDenseSlotBudget / (static_cast<size_t>(kDetTileCap) * per_row))));
+    cuda_det_dense_slots_.Resize(static_cast<size_t>(kNumHistPipelines) * kDetTileCap * det_dense_dy_ * dense_stride);
+  } else {
+    det_dense_dy_ = 0;
+  }
+
   // fp32-pair global histograms: dense shared-memory non-quantized layout only
   // (sparse / large-bin construct kernels and the categorical find path stay
   // hist_t and are excluded)
@@ -1239,7 +1256,12 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
     const size_t per_row = static_cast<size_t>(dense_stride) * sizeof(hist_t);
     det_dense_dy_ = std::max(1, std::min<int>(kDetDenseDyCap,
         static_cast<int>(kDetDenseSlotBudget / (static_cast<size_t>(kDetTileCap) * per_row))));
-    cuda_det_dense_slots_.Resize(static_cast<size_t>(kDetTileCap) * det_dense_dy_ * dense_stride);
+    // One region per histogram pipeline: pipelined pair-constructs run on
+    // different pipeline streams, so a shared region would let one
+    // construct's slot rows overwrite another's before its merge reads them
+    // (same failure mode the sparse tile partials needed per-pipeline
+    // regions for). Worst case 4x the slot budget.
+    cuda_det_dense_slots_.Resize(static_cast<size_t>(kNumHistPipelines) * kDetTileCap * det_dense_dy_ * dense_stride);
   } else {
     det_dense_dy_ = 0;
   }
