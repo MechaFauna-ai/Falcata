@@ -202,7 +202,15 @@ assert got > 0 and got % per_iter == 0, (
 stopped_early = got < expected
 pred = bst.predict(X[k:])
 assert np.all(np.isfinite(pred)), "non-finite predictions"
-assert float(np.std(pred)) > 0.0, "constant predictions (garbage model)"
+if float(np.std(pred)) <= 0.0:
+    # A model that saturated at iteration 1 (every split rejected) holds only
+    # zero-output constant trees; a FULL-length model predicting one value is
+    # a different, hard failure -- the harness classifies only the former as
+    # the known cpu-quant defect.
+    if stopped_early:
+        raise AssertionError("constant predictions after early stop (all-zero model)")
+    raise AssertionError("constant predictions (garbage model)")
+assert float(np.std(pred)) > 0.0
 pred2 = lgb.Booster(model_str=model_str).predict(X[k:])
 assert np.array_equal(pred, pred2), "reloaded model predicts differently"
 yt = y[k:]
@@ -256,7 +264,9 @@ def run(spec, device, timeout=300):
 #     the model has fewer trees than requested. The worker now accepts any
 #     WHOLE-iteration short count as a legitimate saturation stop (the same
 #     stop occurs on unquantized saturated data, on either device), so this
-#     flavor surfaces as a "saturation stop" note, and the tree-count
+#     flavor surfaces as a "saturation stop" note when the short model still
+#     predicts, as "constant predictions after early stop" when it saturated
+#     at iteration 1 (all-zero trees, seen on 2026-08-18), and the tree-count
 #     signature below fires only for partial-iteration counts.
 # Both are CPU-only and quant-only; every one of the ~238 CPU failures in
 # the 2026-08-02 nightly is one of these two. The CPU run here is only a REFERENCE
@@ -266,6 +276,9 @@ KNOWN_CPU_QUANT_SIGNATURES = (
     "best_split_info.left_count) > (0)",
     "best_split_info.right_count) > (0)",
     "AssertionError: tree count",
+    # the same defect's saturation flavor, surfacing as a zero-output model
+    # since the worker began accepting whole-iteration early stops
+    "AssertionError: constant predictions after early stop",
 )
 
 
