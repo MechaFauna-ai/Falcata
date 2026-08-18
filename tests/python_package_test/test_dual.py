@@ -564,8 +564,8 @@ def test_cuda_bagging_does_not_crash_and_matches_cpu(n, num_leaves, bagging_frac
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize(("n", "seed"), [(1000, 7), (2000, 7), (2000, 11)])
-def test_cuda_quantized_tree_structure_matches_cpu(n, seed):
-    """CUDA quantized trees must grow to roughly the same size as CPU quantized.
+def test_cuda_quantized_tree_structure_matches_full_precision_cpu(n, seed):
+    """CUDA quantized trees must grow to roughly the same size as full-precision CPU.
 
     Regression test for the child-leaf packed-sum bugs: the int64 packed
     gradient/hessian sum (sum_of_gradients_hessians) was (1) dropped by
@@ -601,8 +601,15 @@ def test_cuda_quantized_tree_structure_matches_cpu(n, seed):
     }
     models = {}
     for device_type in ("cpu", "cuda"):
-        ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False})
-        models[device_type] = lgb.train({**params, "device_type": device_type}, ds, num_boost_round=20)
+        run_params = {**params, "device_type": device_type}
+        if device_type == "cpu":
+            run_params["quant_mode"] = "none"
+        ds = lgb.Dataset(
+            X,
+            label=y,
+            params={"device_type": device_type, "verbose": -1, "feature_pre_filter": False},
+        )
+        models[device_type] = lgb.train(run_params, ds, num_boost_round=20)
 
     cpu_leaves = sum(t["num_leaves"] for t in models["cpu"].dump_model()["tree_info"])
     cuda_leaves = sum(t["num_leaves"] for t in models["cuda"].dump_model()["tree_info"])
@@ -616,8 +623,8 @@ def test_cuda_quantized_tree_structure_matches_cpu(n, seed):
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize(("n", "seed"), [(1000, 7), (2000, 7), (1000, 11)])
-def test_cuda_quantized_deep_trees_track_cpu(n, seed):
-    """Deep CUDA quantized trees (small leaves) must track CPU, not explode.
+def test_cuda_quantized_deep_trees_track_full_precision_cpu(n, seed):
+    """Deep CUDA quantized trees (small leaves) must track full-precision CPU, not explode.
 
     Regression test for the histogram-slot collision: in SplitTreeStructureKernel
     the left-is-smaller branch handed the discretized child a hist slot at a 1x
@@ -651,8 +658,15 @@ def test_cuda_quantized_deep_trees_track_cpu(n, seed):
     }
     models = {}
     for device_type in ("cpu", "cuda"):
-        ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False})
-        models[device_type] = lgb.train({**params, "device_type": device_type}, ds, num_boost_round=20)
+        run_params = {**params, "device_type": device_type}
+        if device_type == "cpu":
+            run_params["quant_mode"] = "none"
+        ds = lgb.Dataset(
+            X,
+            label=y,
+            params={"device_type": device_type, "verbose": -1, "feature_pre_filter": False},
+        )
+        models[device_type] = lgb.train(run_params, ds, num_boost_round=20)
 
     cpu_leaves = sum(t["num_leaves"] for t in models["cpu"].dump_model()["tree_info"])
     cuda_leaves = sum(t["num_leaves"] for t in models["cuda"].dump_model()["tree_info"])
@@ -969,8 +983,8 @@ def test_cuda_quantized_training_produces_splits(n, num_leaves):
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("n", [2000, 8000, 50000])
-def test_cuda_quantized_32bit_histogram_matches_cpu(n):
-    """CUDA quantized training must match CPU once leaves need 32-bit histograms.
+def test_cuda_quantized_32bit_histogram_matches_full_precision_cpu(n):
+    """CUDA quantized training must track full-precision CPU with 32-bit histograms.
 
     Regression test for the best-split finder reading the 32-bit discretized
     histogram with the wrong width. A leaf whose max per-bin stat
@@ -983,8 +997,8 @@ def test_cuda_quantized_32bit_histogram_matches_cpu(n):
     CPU). The 8-bit and 16-bit paths were correct, so small-data tests never hit it.
 
     With num_grad_quant_bins=16: n=2000 stays 16-bit (already correct), while
-    n>=8000 forces a 32-bit root. The fix reads the histogram as int64, making CUDA
-    bit-identical to CPU at all scales.
+    n>=8000 forces a 32-bit root. The fix reads the histogram as int64, restoring
+    high correlation with the full-precision CPU reference at all scales.
     """
     rng = np.random.default_rng(0)
     nf = 40
@@ -1008,7 +1022,13 @@ def test_cuda_quantized_32bit_histogram_matches_cpu(n):
             "feature_pre_filter": False,
             "device_type": device_type,
         }
-        ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False})
+        if device_type == "cpu":
+            params["quant_mode"] = "none"
+        ds = lgb.Dataset(
+            X,
+            label=y,
+            params={"device_type": device_type, "verbose": -1, "feature_pre_filter": False},
+        )
         preds[device_type] = lgb.train(params, ds, num_boost_round=20).predict(X)
     corr = float(np.corrcoef(preds["cpu"], preds["cuda"])[0, 1])
     # Before the fix, 32-bit-histogram leaves (n>=8000) gave correlation ~0.

@@ -264,7 +264,7 @@ Core Parameters
 
    -  ``cuda`` is Falcata's primary backend: the CUDA-native tree learner (also targets ROCm). This is where Falcata's speed lives -- see `Features <./Features.rst#the-cuda-native-training-pipeline>`__ and the related parameters ``quant_mode``, ``cuda_precision``, ``cuda_plan``
 
-   -  ``cpu`` supports all Falcata functionality and is portable across the widest range of operating systems and hardware
+   -  ``cpu`` is the portable full-precision backend and supports the widest range of operating systems and hardware; quantized training requires ``cuda``
 
    -  ``gpu`` is the legacy OpenCL backend inherited from LightGBM; it is not developed here. If you use it: smaller ``max_bin`` (e.g. 63) speeds it up, and it accumulates in 32-bit floats by default (``gpu_use_dp=true`` restores 64-bit at a speed cost)
 
@@ -739,7 +739,7 @@ Learning Control Parameters
 
    -  gradient quantization can accelerate training, with little accuracy drop in most cases
 
-   -  **Note**: works only with ``cpu`` and ``cuda`` device type
+   -  **Note**: works only with ``cuda`` device type; CPU quantized training is rejected because its split finder cannot recover exact row counts from quantized hessians
 
    -  *New in version 4.0.0*
 
@@ -755,7 +755,7 @@ Learning Control Parameters
 
    -  ``fixedpoint``: XGBoost-style deterministic fixed-point quantization with an outlier-robust, gap-gated gradient scale; near-lossless at the default 64 bins
 
-   -  **Note**: ``fixedpoint`` works only with ``cuda`` device type
+   -  **Note**: ``stochastic`` and ``fixedpoint`` work only with ``cuda`` device type; use ``none`` for CPU training
 
 -  ``num_grad_quant_bins`` :raw-html:`<a id="num_grad_quant_bins" title="Permalink to this parameter" href="#num_grad_quant_bins">&#x1F517;&#xFE0E;</a>`, default = ``0``, type = int, aliases: ``quant_bins``, constraints: ``num_grad_quant_bins >= 0``
 
@@ -767,7 +767,7 @@ Learning Control Parameters
 
    -  ``0`` means auto: ``4`` for ``stochastic`` (Falcata default), ``64`` for ``fixedpoint``
 
-   -  **Note**: works only with ``cpu`` and ``cuda`` device type
+   -  **Note**: quantized training works only with ``cuda`` device type
 
    -  *New in version 4.0.0*
 
@@ -779,7 +779,7 @@ Learning Control Parameters
 
    -  renewing is very helpful for good quantized training accuracy for ranking objectives
 
-   -  **Note**: works only with ``cpu`` and ``cuda`` device type
+   -  **Note**: works only with ``cuda`` device type
 
    -  *New in version 4.0.0*
 
@@ -789,7 +789,7 @@ Learning Control Parameters
 
    -  whether to use stochastic rounding in gradient quantization
 
-   -  **Note**: works only with ``cpu`` and ``cuda`` device type
+   -  **Note**: works only with ``cuda`` device type
 
    -  *New in version 4.0.0*
 

@@ -376,6 +376,11 @@ void Config::ResolveFalcataParams() {
   if (mode == std::string("fixedpoint") && device_type != std::string("cuda")) {
     Log::Fatal("quant_mode=fixedpoint works only with device_type=cuda");
   }
+  if (mode != std::string("none") && device_type == std::string("cpu")) {
+    Log::Fatal("Quantized training is not supported with device_type=cpu in Falcata because "
+               "the CPU split finder cannot recover exact row counts from quantized hessians. "
+               "Use device_type=cuda, or set quant_mode=none.");
+  }
   // quant_bins: 0 means auto (the Falcata-historical 4 for stochastic; 64 for
   // fixedpoint, whose deterministic rounding needs the finer scale). The int16
   // discretized gradient holds +/-(bins/2), so cap well inside that range.

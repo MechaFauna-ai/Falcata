@@ -304,10 +304,11 @@ Documented here for reference; we do not contribute them upstream.
   CUDA learner DOES NOT ENFORCE max_depth at all -- measured depth 14.7 avg /
   20 max under max_depth=6 on airline 5M. This also explained our entire
   apparent airline-cat AUC deficit (see Correctness section).
-- CPU quantized training (``use_quantized_grad`` on device_type=cpu) produces
-  constant/garbage models at num_grad_quant_bins >= 512 on any data tried
-  (AUC 0.500 flat; found 2026-08-01 while investigating the CUDA high-bins
-  corruption). Not investigated further -- we do not use the CPU quant path.
+- Before the CPU quantization fence, upstream and this fork produced
+  constant/garbage models with ``use_quantized_grad`` on device_type=cpu at
+  num_grad_quant_bins >= 512 on any data tried (AUC 0.500 flat; found
+  2026-08-01 while investigating the CUDA high-bins corruption). See the
+  resolved count-inference defect below.
 - CPU split finder infers row counts from hessians, which quantization
   invalidates (found 2026-08-02 via the nightly fuzz; upstream 4.7.0 reproduces
   identically, so inherited). ``FeatureHistogram`` recovers per-bin counts as
@@ -319,14 +320,15 @@ Documented here for reference; we do not contribute them upstream.
   estimated 0 rows on one side -- ``min_data_in_leaf`` gates the ESTIMATE, so
   the split passes and ``CHECK_GT(count, 0)`` then aborts training in
   serial_tree_learner 886/898 -- or (b) leaves no candidate clearing the guard,
-  so boosting stops early with fewer trees than requested. Repro (both
-  symptoms, falcata and upstream):
-  ``tests/gates/fuzz.py --spec`` on any corpus entry with device_type=cpu +
-  quant_mode=stochastic. OPEN in this fork: reachable by any user setting
-  quant_mode with device_type=cpu. The nightly fuzz classifies the signature as
-  KNOWN rather than failing on it (~238 hits/run were drowning the gate); fix
-  would be to carry true counts in the quantized CPU histogram, or to fence the
-  combination. We do not develop the CPU path, so this is parked, not planned.
+  so boosting stops early with fewer trees than requested. Historical
+  pre-fence corpus entries with device_type=cpu + quant_mode=stochastic
+  reproduced both symptoms in Falcata and upstream. FENCED 2026-08-18 in this
+  fork: configuration rejects every resolved quantized mode with
+  device_type=cpu and directs callers to
+  CUDA quantization or CPU full-precision training. The nightly fuzz now uses
+  full-precision CPU as the quality reference for quantized CUDA cells instead
+  of suppressing the inherited CPU crashes. A full fix would carry true counts
+  in the CPU quantized histogram; we do not develop that path.
 - Latent race in the classic loop: child leaf-splits structs point into per-split
   scratch that the next split overwrites; masked only by per-split syncs (fixed here
   via point_structs_at_main + copy-event ordering).
