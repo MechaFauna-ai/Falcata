@@ -940,8 +940,15 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   // per-leaf kernels after histogram construction/subtraction without a device sync.
   // One (stream, event-pair) pipeline per concurrently-processed sibling pair.
   pipeline_streams_[0] = cuda_stream_;
+  // FALCATA_SINGLE_STREAM (diagnostic): alias every pipeline to the main
+  // stream, removing all cross-stream event ordering from the flow.
+  const bool single_stream = std::getenv("FALCATA_SINGLE_STREAM") != nullptr;
   for (int p = 1; p < kNumHistPipelines; ++p) {
-    CUDASUCCESS_OR_FATAL(cudaStreamCreate(&pipeline_streams_[p]));
+    if (single_stream) {
+      pipeline_streams_[p] = cuda_stream_;
+    } else {
+      CUDASUCCESS_OR_FATAL(cudaStreamCreate(&pipeline_streams_[p]));
+    }
   }
   for (int p = 0; p < kNumHistPipelines; ++p) {
     CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&construct_done_events_[p], cudaEventDisableTiming));
