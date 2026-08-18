@@ -35,6 +35,15 @@
 #define FIX_HISTOGRAM_SHARED_MEM_SIZE (1024)
 #define FIX_HISTOGRAM_BLOCK_SIZE (512)
 #define USED_HISTOGRAM_BUFFER_NUM (8)
+// Deterministic float-mode sparse construct (see
+// CUDAConstructHistogramSparseDeterministicKernel): dynamic-shared budget for
+// the per-row-group slot rows, the row-tile partial cap beyond which rows per
+// thread grow instead of the tile count, and the det path's finer rows-per-
+// thread (its one-writer-per-slot-row mapping leaves the x lanes idle, so it
+// buys parallelism with more tiles than the atomic kernel's 400).
+inline constexpr size_t kDetFloatSharedBudget = 46 * 1024;
+inline constexpr int kDetTileCap = 128;
+inline constexpr int kDetRowsPerThread = 32;
 
 namespace Falcata {
 
@@ -686,6 +695,12 @@ class CUDAHistogramConstructor {
   CUDAVector<hist_t> cuda_hist_;
   /*! \brief CUDA histograms buffer for each block */
   CUDAVector<float> cuda_hist_buffer_;
+  /*! \brief Per-row-tile partial histograms for the deterministic float-mode
+   *  sparse construct, [tile][2 * num_total_bin_]. det_tile_alloc_ is the
+   *  allocated tile count; launches clamp their grid to it. Unused by
+   *  quantized training (integer atomics are order-invariant). */
+  CUDAVector<hist_t> cuda_det_tile_partials_;
+  int det_tile_alloc_ = 0;
   /*! \brief Per-tree feature mask (1 = feature in this tree's sample, 0 = skip).
    *  Indexed by column_index (== inner_feature_index for dense single-feature groups). */
   CUDAVector<int8_t> cuda_is_feature_used_bytree_;

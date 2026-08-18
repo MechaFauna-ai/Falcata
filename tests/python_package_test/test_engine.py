@@ -5362,3 +5362,49 @@ def test_finite_training_is_unaffected_by_the_non_finite_guard(rng):
     booster = lgb.train(params, train_set, num_boost_round=20)
     assert booster.num_trees() == 20
     assert np.isfinite(booster.predict(X)).all()
+
+
+def test_divergence_guard_stops_a_runaway_model():
+    """Boosting that grows WRONG on its own training data stops, loudly.
+
+    On fixed data the mean gradient magnitude falls as trees fit it. A runaway
+    inverts the trend: a rare-class multiclass dataset trained to 1000x its
+    healthy loss this way while every tree individually looked plausible (huge
+    leaf outputs also appear in healthy runs, so leaf shape cannot carry the
+    signal). The monitor samples the gradient trend and stops the run.
+
+    Forced here with a learning rate that overshoots: each iteration's leaf
+    output (the mean residual, ~1) is added at rate 3, so the residual -- the
+    L2 gradient -- doubles every iteration. That is slow enough to keep every
+    split gain finite (a rate like 100 overflows the gains within the warmup
+    window, the split finder then rejects every candidate, and training ends
+    quietly instead of diverging) and fast enough to blow past the ratio the
+    monitor compares between checks.
+    """
+    X = np.linspace(0.0, 1.0, 200).reshape(-1, 1)
+    y = np.where(X[:, 0] > 0.5, 1.0, -1.0)
+    train_set = lgb.Dataset(X, label=y, params={"verbose": -1})
+    params = {
+        "objective": "regression",
+        "num_leaves": 2,
+        "min_data_in_leaf": 1,
+        "learning_rate": 3.0,
+        "verbose": -1,
+    }
+
+    with pytest.raises(lgb.basic.FalcataError, match="mean gradient magnitude"):
+        lgb.train(params, train_set, num_boost_round=200)
+
+
+def test_finite_training_is_unaffected_by_the_divergence_guard(rng):
+    """Ordinary convergence only ever lowers the sampled mean gradient, so the
+    monitor armed by the previous test stays silent through a healthy run that
+    trains past its warmup window."""
+    X = rng.uniform(size=(500, 4))
+    y = X[:, 0] * 2.0 + rng.normal(scale=0.1, size=500)
+    train_set = lgb.Dataset(X, label=y, params={"verbose": -1})
+    params = {"objective": "regression", "num_leaves": 15, "learning_rate": 0.1, "verbose": -1}
+
+    booster = lgb.train(params, train_set, num_boost_round=100)
+    assert booster.num_trees() == 100
+    assert np.isfinite(booster.predict(X)).all()

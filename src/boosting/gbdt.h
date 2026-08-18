@@ -513,6 +513,11 @@ class GBDT : public GBDTBase {
   */
   virtual void Boosting();
 
+  /*! \brief Stop training when the mean gradient magnitude climbs far above
+  *  its run minimum: the model is getting worse on its own training data
+  *  (see the divergence constants in gbdt.cpp). */
+  void CheckGradientNormForDivergence(const score_t* gradients);
+
   /*!
   * \brief updating score after tree was trained
   * \param tree Trained tree of this iteration
@@ -598,6 +603,10 @@ class GBDT : public GBDTBase {
   score_t* hessians_pointer_;
   /*! \brief Whether boosting is done on GPU, used for device_type=cuda */
   bool boosting_on_gpu_;
+  /*! \brief Smallest sampled mean gradient magnitude this run has seen; the
+   *  divergence monitor fires when the mean climbs far above it (see
+   *  CheckGradientNormForDivergence). */
+  double divergence_grad_floor_ = 0.0;
   #ifdef USE_CUDA
   /*! \brief Gradient vector on GPU */
   CUDAVector<score_t> cuda_gradients_;

@@ -1055,6 +1055,112 @@ __global__ void CUDAConstructHistogramSparseKernel(
   }
 }
 
+// Deterministic float-mode sparse construct. The atomic kernel above sums a
+// bin's gradients in hardware-scheduling order (shared atomics across a
+// block's row groups, system atomics across row tiles); on degenerate data
+// that jitter decides between a healthy and a runaway boosting basin, so
+// identical runs ship different models -- a rare-class multiclass dataset
+// trained to logloss 0.013 or 23.6 depending on the run. Here row group y is
+// the sole writer of slot row y (a row's entries hit distinct bins: features
+// own disjoint bin ranges), which removes the shared atomics, and both
+// reductions run in fixed index order, so the histogram is a function of the
+// inputs alone. Quantized training never routes here; its integer atomics
+// are order-invariant already.
+template <typename BIN_TYPE, typename DATA_PTR_TYPE, typename HIST_TYPE>
+__global__ void CUDAConstructHistogramSparseDeterministicKernel(
+  const CUDALeafSplitsStruct* smaller_leaf_splits,
+  const score_t* cuda_gradients,
+  const score_t* cuda_hessians,
+  const BIN_TYPE* data,
+  const DATA_PTR_TYPE* row_ptr,
+  const DATA_PTR_TYPE* partition_ptr,
+  const uint32_t* column_hist_offsets_full,
+  const data_size_t num_data,
+  const uint32_t slot_stride,  // HIST_TYPE elements; >= every partition's item count
+  hist_t* tile_partials,       // [gridDim.y][2 * num_total_bin]
+  const uint32_t num_total_items) {
+  extern __shared__ unsigned char det_smem_raw[];
+  HIST_TYPE* slot_rows = reinterpret_cast<HIST_TYPE*>(det_smem_raw);
+  const int dim_y = static_cast<int>(gridDim.y * blockDim.y);
+  const data_size_t num_data_in_smaller_leaf = smaller_leaf_splits->num_data_in_leaf;
+  const data_size_t num_data_per_thread = (num_data_in_smaller_leaf + dim_y - 1) / dim_y;
+  const data_size_t* data_indices_ref = smaller_leaf_splits->data_indices_in_leaf;
+  const unsigned int num_threads_per_block = blockDim.x * blockDim.y;
+  const DATA_PTR_TYPE* block_row_ptr = row_ptr + static_cast<size_t>(blockIdx.x) * (num_data + 1);
+  const BIN_TYPE* data_ptr = data + partition_ptr[blockIdx.x];
+  const uint32_t partition_hist_start = column_hist_offsets_full[blockIdx.x];
+  const uint32_t partition_hist_end = column_hist_offsets_full[blockIdx.x + 1];
+  const uint32_t num_items_in_partition = (partition_hist_end - partition_hist_start) << 1;
+  const unsigned int thread_idx = threadIdx.x + threadIdx.y * blockDim.x;
+  for (unsigned int i = thread_idx; i < num_items_in_partition * blockDim.y; i += num_threads_per_block) {
+    const unsigned int y = i / num_items_in_partition;
+    const unsigned int item = i % num_items_in_partition;
+    slot_rows[static_cast<size_t>(y) * slot_stride + item] = static_cast<HIST_TYPE>(0);
+  }
+  __syncthreads();
+  HIST_TYPE* my_slot_row = slot_rows + static_cast<size_t>(threadIdx.y) * slot_stride;
+  const data_size_t block_start = (static_cast<size_t>(blockIdx.y) * blockDim.y) * num_data_per_thread;
+  const data_size_t* data_indices_ref_this_block = data_indices_ref + block_start;
+  data_size_t block_num_data = max(0, min(num_data_in_smaller_leaf - block_start, num_data_per_thread * static_cast<data_size_t>(blockDim.y)));
+  const data_size_t num_iteration_total = (block_num_data + blockDim.y - 1) / blockDim.y;
+  const data_size_t remainder = block_num_data % blockDim.y;
+  const data_size_t num_iteration_this = remainder == 0 ? num_iteration_total : num_iteration_total - static_cast<data_size_t>(threadIdx.y >= remainder);
+  data_size_t inner_data_index = static_cast<data_size_t>(threadIdx.y);
+  // One writer per slot row: thread y walks its rows' FULL entry lists, so
+  // every bin's addends arrive in row order. (Mapping threadIdx.x to entry
+  // positions instead would race: entries at equal positions in different
+  // rows belong to different features, so two x threads can hit the same bin
+  // of consecutive rows with unsynchronized adds. The x lanes stay idle here;
+  // the lost parallelism moves to the tile grid.)
+  if (threadIdx.x == 0) {
+    for (data_size_t i = 0; i < num_iteration_this; ++i) {
+      const data_size_t data_index = data_indices_ref_this_block[inner_data_index];
+      const DATA_PTR_TYPE row_start = block_row_ptr[data_index];
+      const DATA_PTR_TYPE row_end = block_row_ptr[data_index + 1];
+      const score_t grad = cuda_gradients[data_index];
+      const score_t hess = cuda_hessians[data_index];
+      for (DATA_PTR_TYPE e = row_start; e < row_end; ++e) {
+        const uint32_t bin = static_cast<uint32_t>(data_ptr[e]);
+        const uint32_t pos = bin << 1;
+        my_slot_row[pos] += static_cast<HIST_TYPE>(grad);
+        my_slot_row[pos + 1] += static_cast<HIST_TYPE>(hess);
+      }
+      inner_data_index += blockDim.y;
+    }
+  }
+  __syncthreads();
+  // Fixed-order reduce over the block's row groups, then a plain store into
+  // this tile's partial: (partition, tile) blocks own disjoint item ranges,
+  // so no atomics and no ordering ambiguity remain anywhere in the construct.
+  hist_t* tile_row = tile_partials + static_cast<size_t>(blockIdx.y) * num_total_items;
+  const uint32_t out_base = partition_hist_start << 1;
+  for (unsigned int i = thread_idx; i < num_items_in_partition; i += num_threads_per_block) {
+    HIST_TYPE acc = static_cast<HIST_TYPE>(0);
+    for (unsigned int y = 0; y < blockDim.y; ++y) {
+      acc += slot_rows[static_cast<size_t>(y) * slot_stride + i];
+    }
+    tile_row[out_base + i] = static_cast<hist_t>(acc);
+  }
+}
+
+// Sum the row-tile partials in tile-index order and store: the leaf
+// histogram is a fixed-order reduction of fixed-order partials, end to end.
+__global__ void MergeDeterministicHistogramKernel(
+  const CUDALeafSplitsStruct* smaller_leaf_splits,
+  const hist_t* tile_partials,
+  const int num_total_items,
+  const int num_tiles) {
+  const unsigned int i = threadIdx.x + static_cast<unsigned int>(blockIdx.x) * blockDim.x;
+  if (i >= static_cast<unsigned int>(num_total_items)) {
+    return;
+  }
+  double acc = 0.0;
+  for (int t = 0; t < num_tiles; ++t) {
+    acc += static_cast<double>(tile_partials[static_cast<size_t>(t) * num_total_items + i]);
+  }
+  smaller_leaf_splits->hist_in_leaf[i] = acc;
+}
+
 template <typename BIN_TYPE, typename HIST_TYPE>
 __global__ void CUDAConstructHistogramDenseKernel_GlobalMemory(
   const CUDALeafSplitsStruct* smaller_leaf_splits,
@@ -1924,14 +2030,63 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
   } else {
     if (!USE_GLOBAL_MEM_BUFFER) {
       if (cuda_row_data_->is_sparse()) {
-        CUDAConstructHistogramSparseKernel<BIN_TYPE, PTR_TYPE, HIST_TYPE, SHARED_HIST_SIZE><<<grid_dim, block_dim, 0, current_stream()>>>(
-          cuda_smaller_leaf_splits,
-          cuda_gradients_, cuda_hessians_,
-          cuda_row_data_->GetBin<BIN_TYPE>(),
-          cuda_row_data_->GetRowPtr<PTR_TYPE>(),
-          cuda_row_data_->GetPartitionPtr<PTR_TYPE>(),
-          cuda_row_data_->cuda_partition_hist_offsets(),
-          num_data_);
+        // Deterministic float construct: slot rows sized by the widest
+        // partition's item count. When even one row cannot fit the dynamic
+        // shared budget, the dataset is out of this kernel's reach and the
+        // atomic kernel keeps serving it (order-invariant on quantized
+        // gradients, jittered here -- see the kernel comment above).
+        const std::vector<uint32_t>& part_offsets = cuda_row_data_->host_partition_hist_offsets();
+        uint32_t slot_stride = 0;
+        for (size_t p = 1; p < part_offsets.size(); ++p) {
+          slot_stride = std::max(slot_stride, (part_offsets[p] - part_offsets[p - 1]) << 1);
+        }
+        const size_t smem_per_row = static_cast<size_t>(slot_stride) * sizeof(HIST_TYPE);
+        // Dormant until the consumption-ordering bug is fixed: the split
+        // finder reads uninitialized histogram entries under this path
+        // (compute-sanitizer initcheck, SyncBestSplitForLeafKernel), so the
+        // merge's stores are not visible where the pipeline expects them --
+        // suspected stream/event ordering around the hybrid level pipeline's
+        // hist_subtract_done events. See tasks.md before re-enabling.
+        constexpr bool kDetSparseConstructEnabled = false;
+        if (kDetSparseConstructEnabled && det_tile_alloc_ > 0 && smem_per_row > 0 && smem_per_row <= kDetFloatSharedBudget) {
+          const int det_dy = std::max(1, std::min<int>(block_dim.y, static_cast<int>(kDetFloatSharedBudget / smem_per_row)));
+          // One writer per row group leaves the x lanes idle, so buy back
+          // parallelism with a finer row tiling than the atomic kernel's.
+          int det_grid_y = (num_data_in_smaller_leaf + kDetRowsPerThread * det_dy - 1) / (kDetRowsPerThread * det_dy);
+          det_grid_y = std::max(det_grid_y, min_grid_dim_y_);
+          det_grid_y = std::min(std::min(det_grid_y, static_cast<int>(kDetTileCap)), det_tile_alloc_);
+          dim3 det_grid(grid_dim_x, static_cast<unsigned int>(std::max(det_grid_y, 1)));
+          dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dy));
+          CUDAConstructHistogramSparseDeterministicKernel<BIN_TYPE, PTR_TYPE, HIST_TYPE>
+            <<<det_grid, det_block, static_cast<size_t>(det_dy) * smem_per_row, current_stream()>>>(
+              cuda_smaller_leaf_splits,
+              cuda_gradients_, cuda_hessians_,
+              cuda_row_data_->GetBin<BIN_TYPE>(),
+              cuda_row_data_->GetRowPtr<PTR_TYPE>(),
+              cuda_row_data_->GetPartitionPtr<PTR_TYPE>(),
+              cuda_row_data_->cuda_partition_hist_offsets(),
+              num_data_,
+              slot_stride,
+              cuda_det_tile_partials_.RawData(),
+              static_cast<uint32_t>(2 * num_total_bin_));
+          const int num_items_total = 2 * num_total_bin_;
+          const int merge_threads = 256;
+          const int merge_blocks = (num_items_total + merge_threads - 1) / merge_threads;
+          MergeDeterministicHistogramKernel<<<merge_blocks, merge_threads, 0, current_stream()>>>(
+            cuda_smaller_leaf_splits,
+            cuda_det_tile_partials_.RawData(),
+            num_items_total,
+            std::max(det_grid_y, 1));
+        } else {
+          CUDAConstructHistogramSparseKernel<BIN_TYPE, PTR_TYPE, HIST_TYPE, SHARED_HIST_SIZE><<<grid_dim, block_dim, 0, current_stream()>>>(
+            cuda_smaller_leaf_splits,
+            cuda_gradients_, cuda_hessians_,
+            cuda_row_data_->GetBin<BIN_TYPE>(),
+            cuda_row_data_->GetRowPtr<PTR_TYPE>(),
+            cuda_row_data_->GetPartitionPtr<PTR_TYPE>(),
+            cuda_row_data_->cuda_partition_hist_offsets(),
+            num_data_);
+        }
       } else {
         // ====== COMPACT VIEW PATH (feature_fraction sampling honored on GPU) ======
         if (use_compact_view_) {

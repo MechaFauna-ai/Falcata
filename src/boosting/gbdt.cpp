@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <ctime>
 #include <memory>
 #include <queue>
@@ -24,11 +25,29 @@
 #include <utility>
 #include <vector>
 
+#ifdef USE_CUDA
+#include <cuda_runtime.h>
+#endif  // USE_CUDA
+
 namespace Falcata {
 
 Common::Timer global_timer;
 
 namespace {
+
+// Boosting divides the score-space error among iterations: on fixed training
+// data the mean gradient magnitude falls as trees fit it, on every objective
+// (logloss gradients are bounded by 1 but their healthy floor keeps sinking,
+// so the ratio still opens up). A runaway inverts the trend -- the model
+// grows confidently wrong on the very rows it trains on. A rare-class
+// multiclass dataset reached 1000x its healthy training loss this way while
+// every individual tree still looked plausible: huge leaf outputs also
+// appear in healthy runs (near-zero hessians with lambda_l2=0), so tree
+// shape cannot carry this signal, only the gradient trend can.
+constexpr int kDivergenceCheckEvery = 32;
+constexpr int kDivergenceWarmupIters = 64;
+constexpr size_t kDivergenceSampleCap = 1 << 16;
+constexpr double kDivergenceFactor = 50.0;
 
 // A leaf output is -sum_grad / (sum_hess + lambda): finite for every objective
 // on finite gradients. A non-finite one means the boosting loop has diverged,
@@ -52,6 +71,61 @@ void CheckLeafOutputsAreFinite(const Tree* tree, int iter, int tree_id) {
 }
 
 }  // namespace
+
+void GBDT::CheckGradientNormForDivergence(const score_t* gradients) {
+  if (gradients == nullptr || num_data_ <= 0 || num_tree_per_iteration_ <= 0) {
+    return;
+  }
+  if (iter_ < kDivergenceWarmupIters || (iter_ + 1) % kDivergenceCheckEvery != 0) {
+    return;
+  }
+  const size_t total = static_cast<size_t>(num_data_) * num_tree_per_iteration_;
+  size_t sample_count = 0;
+  double sample_sum = 0.0;
+#ifdef USE_CUDA
+  if (boosting_on_gpu_) {
+    // Device-side gradients: pull a capped prefix. The copy synchronizes the
+    // stream, which the check interval keeps to noise; on its own failure the
+    // monitor stands down rather than breaking training.
+    const size_t cap = std::min(total, kDivergenceSampleCap);
+    std::vector<score_t> host_copy(cap);
+    if (cudaMemcpy(host_copy.data(), gradients, cap * sizeof(score_t),
+                   cudaMemcpyDeviceToHost) != cudaSuccess) {
+      return;
+    }
+    for (size_t i = 0; i < cap; ++i) {
+      sample_sum += std::fabs(static_cast<double>(host_copy[i]));
+    }
+    sample_count = cap;
+  } else {
+#endif  // USE_CUDA
+    const size_t stride = std::max<size_t>(1, total / kDivergenceSampleCap);
+    for (size_t i = 0; i < total; i += stride) {
+      sample_sum += std::fabs(static_cast<double>(gradients[i]));
+      ++sample_count;
+    }
+#ifdef USE_CUDA
+  }
+#endif  // USE_CUDA
+  if (sample_count == 0) {
+    return;
+  }
+  const double mean_abs = sample_sum / static_cast<double>(sample_count);
+  if (divergence_grad_floor_ <= 0.0) {
+    divergence_grad_floor_ = mean_abs;
+    return;
+  }
+  divergence_grad_floor_ = std::min(divergence_grad_floor_, mean_abs);
+  if (mean_abs > divergence_grad_floor_ * kDivergenceFactor) {
+    Log::Fatal(
+      "Iteration %d: mean gradient magnitude %.3g is %.0fx the run's minimum "
+      "%.3g -- the model is growing more wrong on its own training data "
+      "instead of fitting it. Training stops here rather than shipping that "
+      "model. Lower learning_rate, raise min_data_in_leaf or the "
+      "regularization, or rebalance the labels.",
+      iter_, mean_abs, kDivergenceFactor, divergence_grad_floor_);
+  }
+}
 
 int FLC_config_::current_device = lgbm_device_cpu;
 int FLC_config_::current_learner = use_cpu_learner;
@@ -389,6 +463,7 @@ bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
     Boosting();
     gradients = gradients_pointer_;
     hessians = hessians_pointer_;
+    CheckGradientNormForDivergence(gradients);
   } else {
     // use customized objective function
     // the check below fails unless objective=custom is provided in the parameters on Booster creation
