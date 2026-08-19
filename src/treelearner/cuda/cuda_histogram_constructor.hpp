@@ -49,6 +49,13 @@ inline constexpr int kDetRowsPerThread = 32;
 // the widest partition's item count is large).
 inline constexpr size_t kDetDenseSlotBudget = 96 * 1024 * 1024;
 inline constexpr int kDetDenseDyCap = 32;
+// Deterministic dense BATCHED construct (hybrid level batch): maximum pairs a
+// level may hold and still take the det path (each pair needs at least one
+// slot row of the slab; the slab-fit check in DetDenseBatchedEligible is the
+// real bound). Determinism is level-global -- a single atomic level breaks
+// run-to-run identity of the whole model -- so this covers every level of a
+// num_leaves <= 2048 prefix rather than being a small tuning constant.
+inline constexpr int kDetDenseBatchedPairCap = 1024;
 
 namespace Falcata {
 
@@ -570,6 +577,16 @@ class CUDAHistogramConstructor {
     const data_size_t num_data_in_smaller_leaf,
     const uint8_t num_bits_in_histogram_bins);
 
+  /*! \brief shared per-leaf deterministic dense construct+merge launch (the
+   *  non-GM and GM per-leaf arms route here identically; pipeline-private
+   *  region of the deterministic slot slab, launched on current_stream()) */
+  template <typename BIN_TYPE>
+  void LaunchConstructHistogramDenseDeterministic(
+    const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,
+    const data_size_t num_data_in_smaller_leaf,
+    const int grid_dim_x,
+    const int block_dim_x);
+
   void LaunchSubtractHistogramKernel(
     const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,
     const CUDALeafSplitsStruct* cuda_larger_leaf_splits,
@@ -602,6 +619,24 @@ class CUDAHistogramConstructor {
     const int num_pairs,
     const data_size_t max_num_data_in_smaller_leaf,
     const data_size_t* level_smaller_num_data);
+
+  /*! \brief whether the batched non-quantized construct of a num_pairs-wide
+   *  level takes the deterministic dense construct+merge instead of the atomic
+   *  kernel (shape gates mirror the per-leaf det arm; graph capture and levels
+   *  too wide for the slot slab keep the atomic kernel -- see the .cu) */
+  bool DetDenseBatchedEligible(const int num_pairs) const;
+
+  /*! \brief deterministic dense construct+merge for a whole hybrid level:
+   *  blockIdx.z pair axis, per-pair disjoint regions carved from the FULL
+   *  deterministic slot slab (the batched level runs on cuda_stream_ alone, so
+   *  no pipeline concurrency contends for it) */
+  template <typename BIN_TYPE>
+  void LaunchConstructHistogramDenseBatchedDeterministic(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    const data_size_t max_num_data_in_smaller_leaf,
+    const int grid_dim_x,
+    const int block_dim_x);
 
   void LaunchSubtractHistogramBatchedKernel(
     const CUDAHybridPairDescriptor* pair_descs,

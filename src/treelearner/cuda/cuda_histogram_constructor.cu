@@ -1087,8 +1087,8 @@ __global__ void CUDAConstructHistogramSparseDeterministicKernel(
 // partition base from packed_partition_byte_offsets, nullptr and unused in
 // the 8-bit variant); the bin -> slot arithmetic is unchanged because a
 // nibble value still indexes its own column's bin range.
-template <typename BIN_TYPE, bool IS_4BIT = false>
-__global__ void CUDAConstructHistogramDenseGMDeterministicKernel(
+template <typename BIN_TYPE, bool IS_4BIT>
+__device__ __forceinline__ void ConstructHistogramDenseGMDeterministicInner(
   const CUDALeafSplitsStruct* smaller_leaf_splits,
   const score_t* cuda_gradients,
   const score_t* cuda_hessians,
@@ -1160,6 +1160,95 @@ __global__ void CUDAConstructHistogramDenseGMDeterministicKernel(
   }
 }
 
+template <typename BIN_TYPE, bool IS_4BIT = false>
+__global__ void CUDAConstructHistogramDenseGMDeterministicKernel(
+  const CUDALeafSplitsStruct* smaller_leaf_splits,
+  const score_t* cuda_gradients,
+  const score_t* cuda_hessians,
+  const BIN_TYPE* data,
+  const uint32_t* column_hist_offsets,
+  const uint32_t* column_hist_offsets_full,
+  const int* feature_partition_column_index_offsets,
+  const int* packed_partition_byte_offsets,
+  const int8_t* is_feature_used_bytree,
+  const data_size_t num_data,
+  const uint32_t slot_stride,
+  hist_t* slots,
+  const int dy) {
+  ConstructHistogramDenseGMDeterministicInner<BIN_TYPE, IS_4BIT>(
+    smaller_leaf_splits, cuda_gradients, cuda_hessians, data,
+    column_hist_offsets, column_hist_offsets_full,
+    feature_partition_column_index_offsets, packed_partition_byte_offsets,
+    is_feature_used_bytree, num_data, slot_stride, slots, dy);
+}
+
+// Device mirror of the batched construct kernels' per-pair skip gates: the
+// host-set construct_valid flag plus the min_data/min_hessian early return
+// evaluated from the (device-written) pair structs, so the speculative
+// single-sync flow -- whose host bounds are not the actual child sizes -- takes
+// the identical decision the classic per-leaf host gate would. Block-uniform,
+// so the early return is divergence-free. The deterministic batched construct
+// AND its merge both call this: a pair whose construct is skipped must also
+// keep its (stale-slot) merge from overwriting the leaf histogram.
+__device__ __forceinline__ bool HybridPairConstructSkipped(
+  const CUDAHybridPairDescriptor* desc,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf) {
+  if (!desc->construct_valid) {
+    return true;
+  }
+  const data_size_t num_data_smaller = desc->smaller_struct->num_data_in_leaf;
+  const double sum_hessians_smaller = desc->smaller_struct->sum_of_hessians;
+  const bool has_larger = desc->larger_struct->leaf_index >= 0;
+  const data_size_t num_data_larger = has_larger ? desc->larger_struct->num_data_in_leaf : 0;
+  const double sum_hessians_larger = has_larger ? desc->larger_struct->sum_of_hessians : 0.0;
+  return (num_data_smaller <= min_data_in_leaf || sum_hessians_smaller <= min_sum_hessian_in_leaf) &&
+         (num_data_larger <= min_data_in_leaf || sum_hessians_larger <= min_sum_hessian_in_leaf);
+}
+
+// Deterministic dense construct for the hybrid LEVEL batch: blockIdx.z selects
+// the sibling pair and each pair owns a disjoint pair_rows * slot_stride slab
+// of the deterministic slot scratch, so all pairs of a level accumulate
+// concurrently with the per-leaf kernel's exact fixed-order math (see
+// ConstructHistogramDenseGMDeterministicInner). The batch runs on the single
+// batched-level stream (cuda_stream_) with no pipeline concurrency, so the
+// WHOLE kNumHistPipelines slab is available to carve into per-pair regions.
+// Unlike the atomic batched kernel there is no small-leaf direct body (its
+// global float atomics are exactly the order dependence this kernel removes)
+// and no device row-grouping replica: the double-slot sums are exact, so any
+// row grouping produces the identical histogram and the launched grid extent
+// (gridDim.y * dy, uniform across pairs) is used as-is.
+template <typename BIN_TYPE, bool IS_4BIT = false>
+__global__ void CUDAConstructHistogramDenseGMDeterministicBatchedKernel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const score_t* cuda_gradients,
+  const score_t* cuda_hessians,
+  const BIN_TYPE* data,
+  const uint32_t* column_hist_offsets,
+  const uint32_t* column_hist_offsets_full,
+  const int* feature_partition_column_index_offsets,
+  const int* packed_partition_byte_offsets,
+  const int8_t* is_feature_used_bytree,
+  const data_size_t num_data,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf,
+  const uint32_t slot_stride,
+  hist_t* slots,          // [num_pairs][pair_rows][slot_stride]
+  const int pair_rows,
+  const int dy) {
+  const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.z;
+  if (HybridPairConstructSkipped(desc, min_data_in_leaf, min_sum_hessian_in_leaf)) {
+    return;
+  }
+  hist_t* pair_slots = slots +
+    static_cast<size_t>(blockIdx.z) * static_cast<size_t>(pair_rows) * slot_stride;
+  ConstructHistogramDenseGMDeterministicInner<BIN_TYPE, IS_4BIT>(
+    desc->smaller_struct, cuda_gradients, cuda_hessians, data,
+    column_hist_offsets, column_hist_offsets_full,
+    feature_partition_column_index_offsets, packed_partition_byte_offsets,
+    is_feature_used_bytree, num_data, slot_stride, pair_slots, dy);
+}
+
 // Fixed-order merge for the dense deterministic construct: one block row per
 // partition, threads over its items, summing the (tile, row group) slot rows
 // in row-major (tile asc, then row group asc) order and storing into the
@@ -1182,6 +1271,39 @@ __global__ void MergeDeterministicDenseHistogramKernel(
     acc += slots[static_cast<size_t>(r) * slot_stride + i];
   }
   smaller_leaf_splits->hist_in_leaf[i] = acc;
+}
+
+// Batched per-level variant: blockIdx.z selects the pair, whose pair_rows
+// slot-slab region holds num_rows (<= pair_rows) accumulated rows. Replicates
+// the construct's per-pair skip gates so a gated-out pair's stale slots never
+// overwrite its leaf histogram (the merge STORES; only live pairs may write).
+__global__ void MergeDeterministicDenseHistogramBatchedKernel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const hist_t* slots,
+  const uint32_t* column_hist_offsets_full,
+  const uint32_t slot_stride,
+  const int pair_rows,
+  const int num_rows,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf) {
+  const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.z;
+  if (HybridPairConstructSkipped(desc, min_data_in_leaf, min_sum_hessian_in_leaf)) {
+    return;
+  }
+  const uint32_t start = column_hist_offsets_full[blockIdx.y];
+  const uint32_t items = (column_hist_offsets_full[blockIdx.y + 1] - start) << 1;
+  const unsigned int j = threadIdx.x + static_cast<unsigned int>(blockIdx.x) * blockDim.x;
+  if (j >= items) {
+    return;
+  }
+  const uint32_t i = (start << 1) + j;  // global slot position
+  const hist_t* pair_slots = slots +
+    static_cast<size_t>(blockIdx.z) * static_cast<size_t>(pair_rows) * slot_stride;
+  double acc = 0.0;
+  for (int r = 0; r < num_rows; ++r) {
+    acc += pair_slots[static_cast<size_t>(r) * slot_stride + i];
+  }
+  desc->smaller_struct->hist_in_leaf[i] = acc;
 }
 
 // Sum the row-tile partials in tile-index order and store: the leaf
@@ -2178,47 +2300,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           // shapes it does not cover (hist_fp32_ -- the det merge stores
           // hist_t doubles while that mode reinterprets the leaf histogram
           // as float pairs).
-          // The block budget caps the row groups: block_dim_x follows the
-          // widest partition's column count, and block_dim_x * dy must stay
-          // within 1024 threads or the launch fails with InvalidConfiguration
-          // -- which, unchecked, is a SILENT no-op construct: the histogram
-          // stays zero and FixHistogram turns it into a degenerate
-          // everything-in-the-mfb-bin shape that gates out every split.
-          const int det_dy = std::max(1, std::min(det_dense_dy_, 1024 / std::max(1, block_dim_x)));
-          int det_grid_y = (num_data_in_smaller_leaf + kDetRowsPerThread * det_dy - 1) / (kDetRowsPerThread * det_dy);
-          det_grid_y = std::min(std::min(det_grid_y, static_cast<int>(kDetTileCap)), det_tile_alloc_);
-          dim3 det_grid(grid_dim_x, static_cast<unsigned int>(std::max(det_grid_y, 1)));
-          dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dy));
-          // Pipeline-private scratch region (pipelined pair-constructs run on
-          // different pipeline streams; a shared region would race).
-          hist_t* det_slots = cuda_det_dense_slots_.RawData() +
-            static_cast<size_t>(active_pipeline_) * kDetTileCap * det_dense_dy_ * det_dense_slot_stride_;
-          const bool det_packed_4bit = cuda_row_data_->is_4bit_packed();
-          auto det_kernel = det_packed_4bit ?
-            &CUDAConstructHistogramDenseGMDeterministicKernel<BIN_TYPE, true> :
-            &CUDAConstructHistogramDenseGMDeterministicKernel<BIN_TYPE, false>;
-          det_kernel<<<det_grid, det_block, 0, current_stream()>>>(
-              cuda_smaller_leaf_splits,
-              cuda_gradients_, cuda_hessians_,
-              cuda_row_data_->GetBin<BIN_TYPE>(),
-              cuda_row_data_->cuda_column_hist_offsets(),
-              cuda_row_data_->cuda_partition_hist_offsets(),
-              cuda_row_data_->cuda_feature_partition_column_index_offsets(),
-              det_packed_4bit ? cuda_row_data_->cuda_packed_partition_byte_offsets() : nullptr,
-              cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr,
-              num_data_,
-              det_dense_slot_stride_,
-              det_slots,
-              det_dy);
-          const int merge_threads = 256;
-          dim3 merge_grid((det_dense_slot_stride_ + merge_threads - 1) / merge_threads, grid_dim_x);
-          MergeDeterministicDenseHistogramKernel<<<merge_grid, merge_threads, 0, current_stream()>>>(
-            cuda_smaller_leaf_splits,
-            det_slots,
-            cuda_row_data_->cuda_partition_hist_offsets(),
-            det_dense_slot_stride_,
-            std::max(det_grid_y, 1) * det_dy);
-          CUDASUCCESS_OR_FATAL(cudaGetLastError());
+          LaunchConstructHistogramDenseDeterministic<BIN_TYPE>(
+            cuda_smaller_leaf_splits, num_data_in_smaller_leaf, grid_dim_x, block_dim_x);
         } else if (cuda_row_data_->is_4bit_packed()) {
           CUDAConstructHistogramDenseKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, true><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
@@ -2260,43 +2343,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
         // Deterministic float construct for wide partitions (double slots in
         // global scratch; see CUDAConstructHistogramDenseGMDeterministicKernel).
         // fp32-pair histograms excluded; see the non-GM arm.
-        // block_dim_x * dy capped at the 1024-thread block budget; see the
-        // non-GM arm for the silent-no-op failure mode.
-        const int det_dy = std::max(1, std::min(det_dense_dy_, 1024 / std::max(1, block_dim_x)));
-        int det_grid_y = (num_data_in_smaller_leaf + kDetRowsPerThread * det_dy - 1) / (kDetRowsPerThread * det_dy);
-        det_grid_y = std::min(std::min(det_grid_y, static_cast<int>(kDetTileCap)), det_tile_alloc_);
-        dim3 det_grid(grid_dim_x, static_cast<unsigned int>(std::max(det_grid_y, 1)));
-        dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dy));
-        // Pipeline-private scratch region (pipelined pair-constructs run on
-        // different pipeline streams; a shared region would race).
-        hist_t* det_slots = cuda_det_dense_slots_.RawData() +
-          static_cast<size_t>(active_pipeline_) * kDetTileCap * det_dense_dy_ * det_dense_slot_stride_;
-        const bool det_packed_4bit = cuda_row_data_->is_4bit_packed();
-        auto det_kernel = det_packed_4bit ?
-          &CUDAConstructHistogramDenseGMDeterministicKernel<BIN_TYPE, true> :
-          &CUDAConstructHistogramDenseGMDeterministicKernel<BIN_TYPE, false>;
-        det_kernel<<<det_grid, det_block, 0, current_stream()>>>(
-            cuda_smaller_leaf_splits,
-            cuda_gradients_, cuda_hessians_,
-            cuda_row_data_->GetBin<BIN_TYPE>(),
-            cuda_row_data_->cuda_column_hist_offsets(),
-            cuda_row_data_->cuda_partition_hist_offsets(),
-            cuda_row_data_->cuda_feature_partition_column_index_offsets(),
-            det_packed_4bit ? cuda_row_data_->cuda_packed_partition_byte_offsets() : nullptr,
-            cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr,
-            num_data_,
-            det_dense_slot_stride_,
-            det_slots,
-            det_dy);
-        const int merge_threads = 256;
-        dim3 merge_grid((det_dense_slot_stride_ + merge_threads - 1) / merge_threads, grid_dim_x);
-        MergeDeterministicDenseHistogramKernel<<<merge_grid, merge_threads, 0, current_stream()>>>(
-          cuda_smaller_leaf_splits,
-          det_slots,
-          cuda_row_data_->cuda_partition_hist_offsets(),
-          det_dense_slot_stride_,
-          std::max(det_grid_y, 1) * det_dy);
-        CUDASUCCESS_OR_FATAL(cudaGetLastError());
+        LaunchConstructHistogramDenseDeterministic<BIN_TYPE>(
+          cuda_smaller_leaf_splits, num_data_in_smaller_leaf, grid_dim_x, block_dim_x);
       } else {
         CUDAConstructHistogramDenseKernel_GlobalMemory<BIN_TYPE, HIST_TYPE><<<grid_dim, block_dim, 0, current_stream()>>>(
           cuda_smaller_leaf_splits,
@@ -2939,6 +2987,149 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramKernel(
 // subtract are ordered by the stream; the caller records subtract_done_events_[0]
 // afterwards for the best split finder to wait on.
 
+// Shared per-leaf deterministic dense construct+merge launch (the non-GM and
+// GM per-leaf arms route here identically).
+// The block budget caps the row groups: block_dim_x follows the widest
+// partition's column count, and block_dim_x * dy must stay within 1024 threads
+// or the launch fails with InvalidConfiguration -- which, unchecked, is a
+// SILENT no-op construct: the histogram stays zero and FixHistogram turns it
+// into a degenerate everything-in-the-mfb-bin shape that gates out every split.
+template <typename BIN_TYPE>
+void CUDAHistogramConstructor::LaunchConstructHistogramDenseDeterministic(
+  const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,
+  const data_size_t num_data_in_smaller_leaf,
+  const int grid_dim_x,
+  const int block_dim_x) {
+  const int det_dy = std::max(1, std::min(det_dense_dy_, 1024 / std::max(1, block_dim_x)));
+  int det_grid_y = (num_data_in_smaller_leaf + kDetRowsPerThread * det_dy - 1) / (kDetRowsPerThread * det_dy);
+  det_grid_y = std::min(std::min(det_grid_y, static_cast<int>(kDetTileCap)), det_tile_alloc_);
+  dim3 det_grid(grid_dim_x, static_cast<unsigned int>(std::max(det_grid_y, 1)));
+  dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dy));
+  // Pipeline-private scratch region (pipelined pair-constructs run on
+  // different pipeline streams; a shared region would race).
+  hist_t* det_slots = cuda_det_dense_slots_.RawData() +
+    static_cast<size_t>(active_pipeline_) * kDetTileCap * det_dense_dy_ * det_dense_slot_stride_;
+  const bool det_packed_4bit = cuda_row_data_->is_4bit_packed();
+  auto det_kernel = det_packed_4bit ?
+    &CUDAConstructHistogramDenseGMDeterministicKernel<BIN_TYPE, true> :
+    &CUDAConstructHistogramDenseGMDeterministicKernel<BIN_TYPE, false>;
+  det_kernel<<<det_grid, det_block, 0, current_stream()>>>(
+      cuda_smaller_leaf_splits,
+      cuda_gradients_, cuda_hessians_,
+      cuda_row_data_->GetBin<BIN_TYPE>(),
+      cuda_row_data_->cuda_column_hist_offsets(),
+      cuda_row_data_->cuda_partition_hist_offsets(),
+      cuda_row_data_->cuda_feature_partition_column_index_offsets(),
+      det_packed_4bit ? cuda_row_data_->cuda_packed_partition_byte_offsets() : nullptr,
+      cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr,
+      num_data_,
+      det_dense_slot_stride_,
+      det_slots,
+      det_dy);
+  const int merge_threads = 256;
+  dim3 merge_grid((det_dense_slot_stride_ + merge_threads - 1) / merge_threads, grid_dim_x);
+  MergeDeterministicDenseHistogramKernel<<<merge_grid, merge_threads, 0, current_stream()>>>(
+    cuda_smaller_leaf_splits,
+    det_slots,
+    cuda_row_data_->cuda_partition_hist_offsets(),
+    det_dense_slot_stride_,
+    std::max(det_grid_y, 1) * det_dy);
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+}
+
+// Eligibility of the deterministic BATCHED dense construct for a level:
+// mirrors the per-leaf det arm's shape gates (non-quantized, dense global-slot
+// scratch engaged, no fp32-pair histograms, no compact column view -- the
+// per-leaf det path does not serve compact either, so batched coverage equals
+// per-leaf coverage), plus two batch-specific ones:
+//  - hybrid_graph_capture_gstate_ != nullptr: the graph loop keeps the atomic
+//    kernel. The captured construct node's frozen pow2 grid and baked pointer
+//    parameters are incompatible with a two-kernel construct+merge (the merge
+//    would need its own controller node role, resized and gated per level);
+//    until that lands, the captured body stays the single atomic kernel
+//    (order-invariant for quantized training, quality-parity for non-quant).
+//  - the level's pairs must each get at least one slot row out of the full
+//    deterministic slab (batched levels run on the single batched stream, so
+//    all kNumHistPipelines regions are available to carve up), capped at
+//    kDetDenseBatchedPairCap. Determinism is level-global -- one atomic level
+//    would break run-to-run identity of the whole model -- so the cap is
+//    sized to cover every level of the deepest supported prefixes rather than
+//    being a small tuning constant.
+bool CUDAHistogramConstructor::DetDenseBatchedEligible(const int num_pairs) const {
+  if (use_quantized_grad_ || det_dense_dy_ <= 0 || hist_fp32_ || use_compact_view_) {
+    return false;
+  }
+  if (hybrid_graph_capture_gstate_ != nullptr) {
+    return false;
+  }
+  const int total_slot_rows = kNumHistPipelines * kDetTileCap * det_dense_dy_;
+  return num_pairs > 0 &&
+         num_pairs <= std::min(total_slot_rows, kDetDenseBatchedPairCap);
+}
+
+// Deterministic dense construct+merge for a whole hybrid level: one construct
+// launch (pair axis = blockIdx.z) and one merge launch on cuda_stream_. Each
+// pair owns floor(total_rows / num_pairs) slot rows of the full deterministic
+// slab; dy and the tile grid are clamped so every pair's used rows fit its
+// region. max_num_data_in_smaller_leaf may be an upper BOUND (speculative
+// single-sync flow): grid sizing from a bound is safe because the kernel reads
+// the actual leaf sizes from the device structs and the double-slot sums are
+// exact under any row grouping.
+template <typename BIN_TYPE>
+void CUDAHistogramConstructor::LaunchConstructHistogramDenseBatchedDeterministic(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const int num_pairs,
+  const data_size_t max_num_data_in_smaller_leaf,
+  const int grid_dim_x,
+  const int block_dim_x) {
+  const int total_slot_rows = kNumHistPipelines * kDetTileCap * det_dense_dy_;
+  const int pair_rows = std::max(1, total_slot_rows / num_pairs);
+  // block_dim_x * dy within the 1024-thread block budget (see the per-leaf
+  // launcher for the silent-no-op failure mode of an oversized block)
+  int det_dy = std::max(1, std::min(det_dense_dy_, 1024 / std::max(1, block_dim_x)));
+  det_dy = std::min(det_dy, pair_rows);
+  const int pair_tiles = std::max(1, pair_rows / det_dy);
+  int det_grid_y = (max_num_data_in_smaller_leaf + kDetRowsPerThread * det_dy - 1) /
+    (kDetRowsPerThread * det_dy);
+  det_grid_y = std::min(std::max(det_grid_y, 1), pair_tiles);
+  dim3 det_grid(grid_dim_x, static_cast<unsigned int>(det_grid_y),
+                static_cast<unsigned int>(num_pairs));
+  dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dy));
+  const bool det_packed_4bit = cuda_row_data_->is_4bit_packed();
+  auto det_kernel = det_packed_4bit ?
+    &CUDAConstructHistogramDenseGMDeterministicBatchedKernel<BIN_TYPE, true> :
+    &CUDAConstructHistogramDenseGMDeterministicBatchedKernel<BIN_TYPE, false>;
+  det_kernel<<<det_grid, det_block, 0, cuda_stream_>>>(
+      pair_descs,
+      cuda_gradients_, cuda_hessians_,
+      cuda_row_data_->GetBin<BIN_TYPE>(),
+      cuda_row_data_->cuda_column_hist_offsets(),
+      cuda_row_data_->cuda_partition_hist_offsets(),
+      cuda_row_data_->cuda_feature_partition_column_index_offsets(),
+      det_packed_4bit ? cuda_row_data_->cuda_packed_partition_byte_offsets() : nullptr,
+      cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr,
+      num_data_,
+      static_cast<data_size_t>(min_data_in_leaf_),
+      min_sum_hessian_in_leaf_,
+      det_dense_slot_stride_,
+      cuda_det_dense_slots_.RawData(),
+      pair_rows,
+      det_dy);
+  const int merge_threads = 256;
+  dim3 merge_grid((det_dense_slot_stride_ + merge_threads - 1) / merge_threads,
+                  grid_dim_x, static_cast<unsigned int>(num_pairs));
+  MergeDeterministicDenseHistogramBatchedKernel<<<merge_grid, merge_threads, 0, cuda_stream_>>>(
+    pair_descs,
+    cuda_det_dense_slots_.RawData(),
+    cuda_row_data_->cuda_partition_hist_offsets(),
+    det_dense_slot_stride_,
+    pair_rows,
+    det_grid_y * det_dy,
+    static_cast<data_size_t>(min_data_in_leaf_),
+    min_sum_hessian_in_leaf_);
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+}
+
 void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,
@@ -3041,14 +3232,17 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
   }
   dim3 grid_dim(grid_dim_x, grid_dim_y, num_pairs);
   dim3 block_dim(block_dim_x, block_dim_y);
+  const bool det_batched = DetDenseBatchedEligible(num_pairs);
   const int* level_dim_y = nullptr;
   const data_size_t* level_sizes_for_kernel = nullptr;
-  if (level_smaller_num_data != nullptr) {
+  if (level_smaller_num_data != nullptr && !det_batched) {
     // speculative flow: the grid above was sized from an upper BOUND; the exact
     // row-grouping extent comes from the level's actual sizes. Few-pair levels
     // evaluate the formula inside the construct kernel itself (saves a launch
     // on the per-level critical path); many-pair levels keep the single-block
     // reduction kernel so construct blocks read one precomputed scalar.
+    // (The deterministic batched construct needs neither: its exact double
+    // sums are row-grouping invariant, so the launched grid extent is used.)
     if (num_pairs <= 32) {
       level_sizes_for_kernel = level_smaller_num_data;
     } else {
@@ -3226,6 +3420,13 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         level_smaller_num_data,
         hybrid_graph_capture_gstate_);
     }
+  } else if (det_batched) {
+    // Deterministic float construct for the level batch: the same fixed-order
+    // double-slot math as the per-leaf det arm, one construct + one merge
+    // launch covering every pair (see DetDenseBatchedEligible for the shape
+    // gates and why graph capture keeps the atomic kernel below).
+    LaunchConstructHistogramDenseBatchedDeterministic<BIN_TYPE>(
+      pair_descs, num_pairs, max_num_data_in_smaller_leaf, grid_dim_x, block_dim_x);
   } else if (use_compact_view_) {
     // compact data holds only the tree's sampled columns, so no per-column
     // feature mask is needed (mirrors the per-pair compact launch). Few-bin
