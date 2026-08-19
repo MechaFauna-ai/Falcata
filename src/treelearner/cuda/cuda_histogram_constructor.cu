@@ -2266,7 +2266,25 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           // active_buffer_is_alt_ after the swap, since BuildCompactView fills the "alt"
           // and then flips active_buffer_is_alt_.)
           uint8_t* active_data = compact_data_uint8_t_.RawData();
-          if (compact_is_4bit_) {
+          if (det_dense_dy_ > 0 && !hist_fp32_) {
+            // Deterministic float construct over the compact view: the
+            // compact offsets share the det kernel's convention, so slot
+            // positions land in the same global ranges as the uncompacted
+            // path; each partition's FULL global range is zeroed while
+            // accumulation touches only the sampled columns' subranges, so
+            // unsampled columns merge as zeros -- dead storage the finder
+            // never reads this tree.
+            const DetDenseSource compact_source{
+              active_data,
+              compact_column_hist_offsets_.RawData(),
+              compact_feature_partition_column_index_offsets_.RawData(),
+              compact_is_4bit_ ? compact_packed_partition_byte_offsets_.RawData() : nullptr,
+              nullptr,
+              compact_is_4bit_};
+            LaunchConstructHistogramDenseDeterministic<BIN_TYPE>(
+              cuda_smaller_leaf_splits, num_data_in_smaller_leaf,
+              grid_dim_x, compact_block_x, &compact_source);
+          } else if (compact_is_4bit_) {
             CUDAConstructHistogramDenseKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, true><<<compact_grid_dim, compact_block_dim, 0, current_stream()>>>(
               cuda_smaller_leaf_splits,
               cuda_gradients_, cuda_hessians_,
@@ -2999,7 +3017,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramDenseDeterministic(
   const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,
   const data_size_t num_data_in_smaller_leaf,
   const int grid_dim_x,
-  const int block_dim_x) {
+  const int block_dim_x,
+  const DetDenseSource* source) {
   const int det_dy = std::max(1, std::min(det_dense_dy_, 1024 / std::max(1, block_dim_x)));
   int det_grid_y = (num_data_in_smaller_leaf + kDetRowsPerThread * det_dy - 1) / (kDetRowsPerThread * det_dy);
   det_grid_y = std::min(std::min(det_grid_y, static_cast<int>(kDetTileCap)), det_tile_alloc_);
@@ -3009,19 +3028,25 @@ void CUDAHistogramConstructor::LaunchConstructHistogramDenseDeterministic(
   // different pipeline streams; a shared region would race).
   hist_t* det_slots = cuda_det_dense_slots_.RawData() +
     static_cast<size_t>(active_pipeline_) * kDetTileCap * det_dense_dy_ * det_dense_slot_stride_;
-  const bool det_packed_4bit = cuda_row_data_->is_4bit_packed();
+  const bool det_packed_4bit = source != nullptr ?
+    source->is_4bit : cuda_row_data_->is_4bit_packed();
   auto det_kernel = det_packed_4bit ?
     &CUDAConstructHistogramDenseGMDeterministicKernel<BIN_TYPE, true> :
     &CUDAConstructHistogramDenseGMDeterministicKernel<BIN_TYPE, false>;
   det_kernel<<<det_grid, det_block, 0, current_stream()>>>(
       cuda_smaller_leaf_splits,
       cuda_gradients_, cuda_hessians_,
-      cuda_row_data_->GetBin<BIN_TYPE>(),
-      cuda_row_data_->cuda_column_hist_offsets(),
+      source != nullptr ? static_cast<const BIN_TYPE*>(source->data)
+                        : cuda_row_data_->GetBin<BIN_TYPE>(),
+      source != nullptr ? source->column_hist_offsets
+                        : cuda_row_data_->cuda_column_hist_offsets(),
       cuda_row_data_->cuda_partition_hist_offsets(),
-      cuda_row_data_->cuda_feature_partition_column_index_offsets(),
-      det_packed_4bit ? cuda_row_data_->cuda_packed_partition_byte_offsets() : nullptr,
-      cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr,
+      source != nullptr ? source->partition_column_offsets
+                        : cuda_row_data_->cuda_feature_partition_column_index_offsets(),
+      source != nullptr ? source->packed_byte_offsets :
+        (det_packed_4bit ? cuda_row_data_->cuda_packed_partition_byte_offsets() : nullptr),
+      source != nullptr ? source->is_feature_used :
+        (cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr),
       num_data_,
       det_dense_slot_stride_,
       det_slots,

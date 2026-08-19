@@ -577,15 +577,31 @@ class CUDAHistogramConstructor {
     const data_size_t num_data_in_smaller_leaf,
     const uint8_t num_bits_in_histogram_bins);
 
+  /*! \brief bin/offset sources for the deterministic dense construct; the
+   *  default (nullptr source) reads the row data, the compact-view arm
+   *  passes its sampled layout (same offset conventions: partition-relative
+   *  column offsets + the SOURCE partition hist offsets as the global table,
+   *  so slot positions land in the same global ranges). */
+  struct DetDenseSource {
+    const void* data;
+    const uint32_t* column_hist_offsets;
+    const int* partition_column_offsets;
+    const int* packed_byte_offsets;  // nullptr unless 4-bit packed
+    const int8_t* is_feature_used;   // nullptr = every column used
+    bool is_4bit;
+  };
+
   /*! \brief shared per-leaf deterministic dense construct+merge launch (the
-   *  non-GM and GM per-leaf arms route here identically; pipeline-private
-   *  region of the deterministic slot slab, launched on current_stream()) */
+   *  non-GM, GM, and compact-view per-leaf arms route here identically;
+   *  pipeline-private region of the deterministic slot slab, launched on
+   *  current_stream()) */
   template <typename BIN_TYPE>
   void LaunchConstructHistogramDenseDeterministic(
     const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,
     const data_size_t num_data_in_smaller_leaf,
     const int grid_dim_x,
-    const int block_dim_x);
+    const int block_dim_x,
+    const DetDenseSource* source = nullptr);
 
   void LaunchSubtractHistogramKernel(
     const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,
