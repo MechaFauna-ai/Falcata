@@ -2250,14 +2250,25 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
             cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr,
             num_data_,
             hist_fp32_);
-        } else if (det_dense_dy_ > 0) {
+        } else if (det_dense_dy_ > 0 && !hist_fp32_) {
           // Deterministic float construct: double slot rows cannot fit the
           // shared budget at these partition widths, so this routes through
           // the global-slot kernel (see CUDAConstructHistogramDenseGMDeterministicKernel).
-          int det_grid_y = (num_data_in_smaller_leaf + kDetRowsPerThread * det_dense_dy_ - 1) / (kDetRowsPerThread * det_dense_dy_);
+          // fp32-pair histograms are excluded: the det merge stores hist_t
+          // (double) while the fp32 pipeline reinterprets the leaf histogram
+          // as float pairs -- that mode is a speed mode with no parity
+          // contract and keeps the fp32-aware atomic kernel below.
+          // The block budget caps the row groups: block_dim_x follows the
+          // widest partition's column count, and block_dim_x * dy must stay
+          // within 1024 threads or the launch fails with InvalidConfiguration
+          // -- which, unchecked, is a SILENT no-op construct: the histogram
+          // stays zero and FixHistogram turns it into a degenerate
+          // everything-in-the-mfb-bin shape that gates out every split.
+          const int det_dy = std::max(1, std::min(det_dense_dy_, 1024 / std::max(1, block_dim_x)));
+          int det_grid_y = (num_data_in_smaller_leaf + kDetRowsPerThread * det_dy - 1) / (kDetRowsPerThread * det_dy);
           det_grid_y = std::min(std::min(det_grid_y, static_cast<int>(kDetTileCap)), det_tile_alloc_);
           dim3 det_grid(grid_dim_x, static_cast<unsigned int>(std::max(det_grid_y, 1)));
-          dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dense_dy_));
+          dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dy));
           // Pipeline-private scratch region (pipelined pair-constructs run on
           // different pipeline streams; a shared region would race).
           hist_t* det_slots = cuda_det_dense_slots_.RawData() +
@@ -2274,7 +2285,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
               num_data_,
               det_dense_slot_stride_,
               det_slots,
-              det_dense_dy_);
+              det_dy);
           const int merge_threads = 256;
           dim3 merge_grid((det_dense_slot_stride_ + merge_threads - 1) / merge_threads, grid_dim_x);
           MergeDeterministicDenseHistogramKernel<<<merge_grid, merge_threads, 0, current_stream()>>>(
@@ -2282,7 +2293,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
             det_slots,
             cuda_row_data_->cuda_partition_hist_offsets(),
             det_dense_slot_stride_,
-            std::max(det_grid_y, 1) * det_dense_dy_);
+            std::max(det_grid_y, 1) * det_dy);
+          CUDASUCCESS_OR_FATAL(cudaGetLastError());
         } else {
           CUDAConstructHistogramDenseKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
@@ -2308,13 +2320,17 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           cuda_row_data_->cuda_partition_hist_offsets(),
           num_data_,
           reinterpret_cast<HIST_TYPE*>(cuda_hist_buffer_.RawData()));
-      } else if (det_dense_dy_ > 0) {
+      } else if (det_dense_dy_ > 0 && !hist_fp32_) {
         // Deterministic float construct for wide partitions (double slots in
         // global scratch; see CUDAConstructHistogramDenseGMDeterministicKernel).
-        int det_grid_y = (num_data_in_smaller_leaf + kDetRowsPerThread * det_dense_dy_ - 1) / (kDetRowsPerThread * det_dense_dy_);
+        // fp32-pair histograms excluded; see the non-GM arm.
+        // block_dim_x * dy capped at the 1024-thread block budget; see the
+        // non-GM arm for the silent-no-op failure mode.
+        const int det_dy = std::max(1, std::min(det_dense_dy_, 1024 / std::max(1, block_dim_x)));
+        int det_grid_y = (num_data_in_smaller_leaf + kDetRowsPerThread * det_dy - 1) / (kDetRowsPerThread * det_dy);
         det_grid_y = std::min(std::min(det_grid_y, static_cast<int>(kDetTileCap)), det_tile_alloc_);
         dim3 det_grid(grid_dim_x, static_cast<unsigned int>(std::max(det_grid_y, 1)));
-        dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dense_dy_));
+        dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dy));
         // Pipeline-private scratch region (pipelined pair-constructs run on
         // different pipeline streams; a shared region would race).
         hist_t* det_slots = cuda_det_dense_slots_.RawData() +
@@ -2331,7 +2347,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
             num_data_,
             det_dense_slot_stride_,
             det_slots,
-            det_dense_dy_);
+            det_dy);
         const int merge_threads = 256;
         dim3 merge_grid((det_dense_slot_stride_ + merge_threads - 1) / merge_threads, grid_dim_x);
         MergeDeterministicDenseHistogramKernel<<<merge_grid, merge_threads, 0, current_stream()>>>(
@@ -2339,7 +2355,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           det_slots,
           cuda_row_data_->cuda_partition_hist_offsets(),
           det_dense_slot_stride_,
-          std::max(det_grid_y, 1) * det_dense_dy_);
+          std::max(det_grid_y, 1) * det_dy);
+        CUDASUCCESS_OR_FATAL(cudaGetLastError());
       } else {
         CUDAConstructHistogramDenseKernel_GlobalMemory<BIN_TYPE, HIST_TYPE><<<grid_dim, block_dim, 0, current_stream()>>>(
           cuda_smaller_leaf_splits,

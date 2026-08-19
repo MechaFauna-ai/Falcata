@@ -229,6 +229,44 @@ __device__ __forceinline__ void SequentialPrefixSumPair(
   *value_b = row_buffer[blockDim.x + threadIdx.x];
 }
 
+// CPU-order in-place inclusive scan over a global-memory row (the
+// GlobalMemory finder's fp64 buffers, features wider than one block): chunks
+// are staged through shared memory (coalesced), one thread folds each chunk
+// carrying the running sum, so the fold order is exactly CPU's sequential
+// accumulation at staging speed. Integer count prefixes stay on the parallel
+// GlobalMemoryPrefixSum (order-invariant).
+template <typename T>
+__device__ __forceinline__ void GlobalMemorySequentialPrefixSum(T* array, const size_t len) {
+  constexpr unsigned int kSeqScanChunk = 256;
+  __shared__ T seq_scan_stage[kSeqScanChunk];
+  __shared__ T seq_scan_carry;
+  if (threadIdx.x == 0) {
+    seq_scan_carry = 0;
+  }
+  for (size_t chunk_start = 0; chunk_start < len; chunk_start += kSeqScanChunk) {
+    const unsigned int chunk = static_cast<unsigned int>(
+      min(static_cast<size_t>(kSeqScanChunk), len - chunk_start));
+    __syncthreads();
+    for (unsigned int i = threadIdx.x; i < chunk; i += blockDim.x) {
+      seq_scan_stage[i] = array[chunk_start + i];
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+      T acc = seq_scan_carry;
+      for (unsigned int i = 0; i < chunk; ++i) {
+        acc += seq_scan_stage[i];
+        seq_scan_stage[i] = acc;
+      }
+      seq_scan_carry = acc;
+    }
+    __syncthreads();
+    for (unsigned int i = threadIdx.x; i < chunk; i += blockDim.x) {
+      array[chunk_start + i] = seq_scan_stage[i];
+    }
+  }
+  __syncthreads();
+}
+
 template <typename GAIN_T>
 __device__ __forceinline__ bool OtherIsBetterWithTieBreak(
     GAIN_T other_gain, GAIN_T gain, uint32_t other_thread_index, uint32_t thread_index) {
@@ -462,18 +500,7 @@ __device__ void FindBestSplitsForLeafKernelInner(
     }
   }
   __syncthreads();
-  if (!REVERSE && task->na_as_missing && task->mfb_offset == 1) {
-    const GAIN_T sum_gradients_non_default = ShuffleReduceSum<GAIN_T>(local_grad_hist, shared_gain_buffer, blockDim.x);
-    __syncthreads();
-    const GAIN_T sum_hessians_non_default = ShuffleReduceSum<GAIN_T>(local_hess_hist, shared_gain_buffer, blockDim.x);
-    if (threadIdx_x == 0) {
-      local_grad_hist += (sum_gradients_acc - sum_gradients_non_default);
-      local_hess_hist += (sum_hessians_acc - sum_hessians_non_default);
-    }
-  }
-  if (threadIdx_x == 0) {
-    local_hess_hist += kEpsilon;
-  }
+  const bool na_missing_head = (!REVERSE && task->na_as_missing && task->mfb_offset == 1);
   local_gain = kMinScore;
   data_size_t local_cnt_prefix = 0;
   if (sizeof(GAIN_T) == sizeof(double)) {
@@ -487,13 +514,54 @@ __device__ void FindBestSplitsForLeafKernelInner(
     // shuffle scan serves them bit-exactly. (Bin 0's kEpsilon shifts its
     // product by ~1e-15, which never moves RoundInt in practice.)
     __shared__ GAIN_T seq_prefix_buffer[2 * NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER];
-    const data_size_t local_bin_cnt = static_cast<data_size_t>(
+    data_size_t local_bin_cnt = static_cast<data_size_t>(
       CUDARoundInt(static_cast<double>(local_hess_hist) * static_cast<double>(cnt_factor)));
+    if (na_missing_head) {
+      // CPU's NaN-missing head (feature_histogram.hpp NA_AS_MISSING,
+      // offset == 1): the lane-0 "missing" mass is the totals with every bin
+      // SUBTRACTED in scan order -- gradient seeded from the total, hessian
+      // from total - kEpsilon (no bin-0 epsilon add in this mode) -- and its
+      // count is num_data minus the sum of per-bin roundings.
+      const data_size_t cnt_non_default = ShuffleReduceSum<data_size_t>(
+        local_bin_cnt, reinterpret_cast<data_size_t*>(shared_gain_buffer), blockDim.x);
+      if (threadIdx_x == 0) {
+        local_bin_cnt = num_data - cnt_non_default;
+      }
+      seq_prefix_buffer[threadIdx_x] = local_grad_hist;
+      seq_prefix_buffer[blockDim.x + threadIdx_x] = local_hess_hist;
+      __syncthreads();
+      if (threadIdx_x == 0) {
+        GAIN_T acc_g = static_cast<GAIN_T>(sum_gradients);
+        GAIN_T acc_h = static_cast<GAIN_T>(sum_hessians) - static_cast<GAIN_T>(kEpsilon);
+        for (unsigned int i = 1; i < blockDim.x; ++i) {
+          acc_g -= seq_prefix_buffer[i];
+          acc_h -= seq_prefix_buffer[blockDim.x + i];
+        }
+        local_grad_hist = acc_g;
+        local_hess_hist = acc_h;
+      }
+    } else if (threadIdx_x == 0) {
+      local_hess_hist += kEpsilon;
+    }
     local_cnt_prefix = ShufflePrefixSum<data_size_t>(
       local_bin_cnt, reinterpret_cast<data_size_t*>(shared_gain_buffer));
     SequentialPrefixSumPair<GAIN_T>(&local_grad_hist, &local_hess_hist,
       seq_prefix_buffer, static_cast<unsigned int>(task->num_bin));
   } else {
+    // fp32 gain mode: the parallel missing-mass reduce and shuffle scans
+    // (no bit-parity contract).
+    if (na_missing_head) {
+      const GAIN_T sum_gradients_non_default = ShuffleReduceSum<GAIN_T>(local_grad_hist, shared_gain_buffer, blockDim.x);
+      __syncthreads();
+      const GAIN_T sum_hessians_non_default = ShuffleReduceSum<GAIN_T>(local_hess_hist, shared_gain_buffer, blockDim.x);
+      if (threadIdx_x == 0) {
+        local_grad_hist += (sum_gradients_acc - sum_gradients_non_default);
+        local_hess_hist += (sum_hessians_acc - sum_hessians_non_default);
+      }
+    }
+    if (threadIdx_x == 0) {
+      local_hess_hist += kEpsilon;
+    }
     local_grad_hist = ShufflePrefixSum(local_grad_hist, shared_gain_buffer);
     __syncthreads();
     local_hess_hist = ShufflePrefixSum(local_hess_hist, shared_gain_buffer);
@@ -1716,7 +1784,8 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
   CUDASplitInfo* cuda_best_split_info,
   // buffer
   hist_t* hist_grad_buffer_ptr,
-  hist_t* hist_hess_buffer_ptr) {
+  hist_t* hist_hess_buffer_ptr,
+  data_size_t* hist_cnt_buffer_ptr) {
   const int8_t monotone_constraint = task->monotone_type;
   const double cnt_factor = num_data / sum_hessians;
   const double min_gain_shift = parent_gain + min_gain_to_split;
@@ -1788,13 +1857,24 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
     }
   }
   __syncthreads();
+  // Per-bin count roundings summed in scan order, like CPU's
+  // right_count += RoundInt(hess * cnt_factor) per bin (see the shared-memory
+  // variant); rounding the summed hessian instead can differ by a count.
+  // Bin 0's kEpsilon (added below, after this loop reads raw values) shifts
+  // nothing at RoundInt granularity.
+  for (unsigned int bin = threadIdx_x; bin < feature_num_bin_minus_offset; bin += blockDim.x) {
+    hist_cnt_buffer_ptr[bin] = static_cast<data_size_t>(
+      CUDARoundInt(hist_hess_buffer_ptr[bin] * cnt_factor));
+  }
   if (threadIdx_x == 0) {
     hist_hess_buffer_ptr[0] += kEpsilon;
   }
   local_gain = kMinScore;
-  GlobalMemoryPrefixSum(hist_grad_buffer_ptr, static_cast<size_t>(feature_num_bin_minus_offset));
-  __syncthreads();
-  GlobalMemoryPrefixSum(hist_hess_buffer_ptr, static_cast<size_t>(feature_num_bin_minus_offset));
+  // CPU-order fp64 scans; the integer count prefix is order-invariant and
+  // keeps the parallel scan.
+  GlobalMemorySequentialPrefixSum(hist_grad_buffer_ptr, static_cast<size_t>(feature_num_bin_minus_offset));
+  GlobalMemorySequentialPrefixSum(hist_hess_buffer_ptr, static_cast<size_t>(feature_num_bin_minus_offset));
+  GlobalMemoryPrefixSum<data_size_t>(hist_cnt_buffer_ptr, static_cast<size_t>(feature_num_bin_minus_offset));
   if (REVERSE) {
     for (unsigned int bin = threadIdx_x; bin < feature_num_bin_minus_offset; bin += blockDim.x) {
       const bool skip_sum = (bin >= static_cast<unsigned int>(task->na_as_missing) &&
@@ -1807,7 +1887,7 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
       if (!skip_sum && static_cast<int>(bin) <= task->num_bin - 2) {
         const double sum_right_gradient = hist_grad_buffer_ptr[bin];
         const double sum_right_hessian = hist_hess_buffer_ptr[bin];
-        const data_size_t right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
+        const data_size_t right_count = hist_cnt_buffer_ptr[bin];
         const double sum_left_gradient = sum_gradients - sum_right_gradient;
         const double sum_left_hessian = sum_hessians - sum_right_hessian;
         const data_size_t left_count = num_data - right_count;
@@ -1841,7 +1921,7 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
       if (!skip_sum) {
         const double sum_left_gradient = hist_grad_buffer_ptr[bin];
         const double sum_left_hessian = hist_hess_buffer_ptr[bin];
-        const data_size_t left_count = static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
+        const data_size_t left_count = hist_cnt_buffer_ptr[bin];
         const double sum_right_gradient = sum_gradients - sum_left_gradient;
         const double sum_right_hessian = sum_hessians - sum_left_hessian;
         const data_size_t right_count = num_data - left_count;
@@ -1881,13 +1961,17 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
     cuda_best_split_info->gain = local_gain * task->penalty;
     cuda_best_split_info->default_left = task->assume_out_default_left;
     if (REVERSE) {
+      // CPU's output chain (see the shared-memory variant): left-basis sums
+      // carry the kEpsilon seed; stored fields subtract kEpsilon through
+      // EXACTLY the CPU expression sequence; the count is the per-bin-
+      // rounding prefix.
       const unsigned int best_bin = static_cast<uint32_t>(task->num_bin - 2 - threshold_value);
-      const double sum_right_gradient = hist_grad_buffer_ptr[best_bin];
-      const double sum_right_hessian = hist_hess_buffer_ptr[best_bin] - kEpsilon;
-      const data_size_t right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
-      const double sum_left_gradient = sum_gradients - sum_right_gradient;
-      const double sum_left_hessian = sum_hessians - sum_right_hessian - kEpsilon;
-      const data_size_t left_count = num_data - right_count;
+      const double sum_left_gradient = sum_gradients - hist_grad_buffer_ptr[best_bin];
+      const double sum_left_hessian = sum_hessians - hist_hess_buffer_ptr[best_bin];
+      const data_size_t left_count = num_data - hist_cnt_buffer_ptr[best_bin];
+      const double sum_right_gradient = sum_gradients - sum_left_gradient;
+      const double sum_right_hessian = sum_hessians - sum_left_hessian;
+      const data_size_t right_count = num_data - left_count;
       // Unconstrained outputs first (max_delta_step cap included). The leaf VALUE
       // is clamped into the constraint range (MC), but the leaf GAIN stored for
       // future splits must stay unconstrained: it becomes the child's parent_gain
@@ -1910,10 +1994,10 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
           (right_output_unconstrained > leaf_constraint_max ? leaf_constraint_max : right_output_unconstrained)) :
         right_output_unconstrained;
       cuda_best_split_info->left_sum_gradients = sum_left_gradient;
-      cuda_best_split_info->left_sum_hessians = sum_left_hessian;
+      cuda_best_split_info->left_sum_hessians = sum_left_hessian - kEpsilon;
       cuda_best_split_info->left_count = left_count;
       cuda_best_split_info->right_sum_gradients = sum_right_gradient;
-      cuda_best_split_info->right_sum_hessians = sum_right_hessian;
+      cuda_best_split_info->right_sum_hessians = sum_hessians - sum_left_hessian - kEpsilon;
       cuda_best_split_info->right_count = right_count;
       cuda_best_split_info->left_value = left_output;
       cuda_best_split_info->left_gain = CUDALeafSplits::GetLeafGainGivenOutput<USE_L1>(sum_left_gradient,
@@ -1922,13 +2006,14 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
       cuda_best_split_info->right_gain = CUDALeafSplits::GetLeafGainGivenOutput<USE_L1>(sum_right_gradient,
         sum_right_hessian, lambda_l1, lambda_l2, right_output_unconstrained);
     } else {
+      // CPU's output chain; see the REVERSE branch.
       const unsigned int best_bin = (task->na_as_missing && task->mfb_offset == 1) ?
         threshold_value : static_cast<uint32_t>(threshold_value - task->mfb_offset);
       const double sum_left_gradient = hist_grad_buffer_ptr[best_bin];
-      const double sum_left_hessian = hist_hess_buffer_ptr[best_bin] - kEpsilon;
-      const data_size_t left_count = static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
+      const double sum_left_hessian = hist_hess_buffer_ptr[best_bin];
+      const data_size_t left_count = hist_cnt_buffer_ptr[best_bin];
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
-      const double sum_right_hessian = sum_hessians - sum_left_hessian - kEpsilon;
+      const double sum_right_hessian = sum_hessians - sum_left_hessian;
       const data_size_t right_count = num_data - left_count;
       // Unconstrained outputs first (max_delta_step cap included). The leaf VALUE
       // is clamped into the constraint range (MC), but the leaf GAIN stored for
@@ -2465,7 +2550,8 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
           out,
           // buffer
           hist_grad_buffer_ptr,
-          hist_hess_buffer_ptr);
+          hist_hess_buffer_ptr,
+          hist_cnt_buffer_ptr);
       } else {
         FindBestSplitsForLeafKernelInner_GlobalMemory<USE_RAND, USE_L1, USE_SMOOTHING, true, USE_MC>(
           // input feature information
@@ -2494,7 +2580,8 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
           out,
           // buffer
           hist_grad_buffer_ptr,
-          hist_hess_buffer_ptr);
+          hist_hess_buffer_ptr,
+          hist_cnt_buffer_ptr);
       }
     }
     // CEGB: subtract cost penalty (see numerical kernel for rationale).

@@ -179,46 +179,52 @@ void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
     const MissingType missing_type = feature_missing_type_[inner_feature_index];
     if (num_bin > 2 && missing_type != MissingType::None && !is_categorical_[inner_feature_index]) {
       if (missing_type == MissingType::Zero) {
+        // REVERSE task first: CPU evaluates the reverse scan before the
+        // forward one with a strict '>' update, so on a direction tie (both
+        // scans find the same threshold at the same gain) CPU keeps the
+        // REVERSE candidate and its default_left. Task order is the
+        // tie-break order, so reverse must come first here too.
         SplitFindTask* new_task = &split_find_tasks_[cur_task_index];
-        new_task->reverse = false;
-        new_task->skip_default_bin = true;
-        new_task->na_as_missing = false;
-        new_task->inner_feature_index = inner_feature_index;
-        new_task->assume_out_default_left = false;
-        new_task->is_categorical = false;
-        uint32_t num_bin = feature_num_bins_[inner_feature_index];
-        new_task->is_one_hot = false;
-        new_task->hist_offset = feature_hist_offsets_[inner_feature_index];
-        new_task->mfb_offset = feature_mfb_offsets_[inner_feature_index];
-        new_task->default_bin = feature_default_bins_[inner_feature_index];
-        new_task->num_bin = num_bin;
-        new_task->monotone_type = use_monotone_constraints_ ?
-          monotone_constraints_[inner_feature_index] : 0;
-        ++cur_task_index;
-
-        new_task = &split_find_tasks_[cur_task_index];
         new_task->reverse = true;
         new_task->skip_default_bin = true;
         new_task->na_as_missing = false;
         new_task->inner_feature_index = inner_feature_index;
         new_task->assume_out_default_left = true;
         new_task->is_categorical = false;
-        num_bin = feature_num_bins_[inner_feature_index];
+        uint32_t num_bin = feature_num_bins_[inner_feature_index];
         new_task->is_one_hot = false;
         new_task->hist_offset = feature_hist_offsets_[inner_feature_index];
         new_task->default_bin = feature_default_bins_[inner_feature_index];
         new_task->mfb_offset = feature_mfb_offsets_[inner_feature_index];
+        new_task->num_bin = num_bin;
+        new_task->monotone_type = use_monotone_constraints_ ?
+          monotone_constraints_[inner_feature_index] : 0;
+        ++cur_task_index;
+
+        new_task = &split_find_tasks_[cur_task_index];
+        new_task->reverse = false;
+        new_task->skip_default_bin = true;
+        new_task->na_as_missing = false;
+        new_task->inner_feature_index = inner_feature_index;
+        new_task->assume_out_default_left = false;
+        new_task->is_categorical = false;
+        num_bin = feature_num_bins_[inner_feature_index];
+        new_task->is_one_hot = false;
+        new_task->hist_offset = feature_hist_offsets_[inner_feature_index];
+        new_task->mfb_offset = feature_mfb_offsets_[inner_feature_index];
+        new_task->default_bin = feature_default_bins_[inner_feature_index];
         new_task->num_bin = num_bin;
         new_task->monotone_type = use_monotone_constraints_ ?
           monotone_constraints_[inner_feature_index] : 0;
         ++cur_task_index;
       } else {
+        // REVERSE first; see the Zero-missing pair above.
         SplitFindTask* new_task = &split_find_tasks_[cur_task_index];
-        new_task->reverse = false;
+        new_task->reverse = true;
         new_task->skip_default_bin = false;
         new_task->na_as_missing = true;
         new_task->inner_feature_index = inner_feature_index;
-        new_task->assume_out_default_left = false;
+        new_task->assume_out_default_left = true;
         new_task->is_categorical = false;
         uint32_t num_bin = feature_num_bins_[inner_feature_index];
         new_task->is_one_hot = false;
@@ -231,11 +237,11 @@ void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
         ++cur_task_index;
 
         new_task = &split_find_tasks_[cur_task_index];
-        new_task->reverse = true;
+        new_task->reverse = false;
         new_task->skip_default_bin = false;
         new_task->na_as_missing = true;
         new_task->inner_feature_index = inner_feature_index;
-        new_task->assume_out_default_left = true;
+        new_task->assume_out_default_left = false;
         new_task->is_categorical = false;
         num_bin = feature_num_bins_[inner_feature_index];
         new_task->is_one_hot = false;
@@ -315,9 +321,13 @@ void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
   // forced-split support: per-leaf output buffer + inner-feature -> task map
   cuda_forced_split_info_.Resize(static_cast<size_t>(num_leaves_));
   feature_to_task_index_.assign(num_features_, -1);
+  // Forced splits pin the FORWARD task where one exists (its threshold
+  // semantics are direction-agnostic metadata, but keep the choice stable
+  // under task reordering); single-task features take their only task.
   for (int task_index = 0; task_index < num_tasks_; ++task_index) {
     const int inner_feature_index = split_find_tasks_[task_index].inner_feature_index;
-    if (feature_to_task_index_[inner_feature_index] < 0) {
+    if (feature_to_task_index_[inner_feature_index] < 0 ||
+        !split_find_tasks_[task_index].reverse) {
       feature_to_task_index_[inner_feature_index] = task_index;
     }
   }
