@@ -575,7 +575,7 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
         num_data,
         total_compact);
     CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
-    compact_is_col_major_ = false;  // compact_data is now row-major-in-partition
+    // compact_data is now row-major-in-partition
     compact_col_major_filled_ = true;  // the col-major staging holds the same slots
   } else if (prefill_valid_ && prefill_bitmap_ == is_feature_used_bytree) {
     // The prefill already produced exactly these bytes into the alt buffer
@@ -583,12 +583,10 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
     // and skip the fill entirely.
     prefill_valid_ = false;
     compact_data_uint8_t_.Swap(&compact_data_uint8_t_alt_);
-    compact_is_col_major_ = false;
   } else {
     prefill_valid_ = false;
     LaunchCompactFill(layout, compact_data_uint8_t_.RawData(), cuda_stream_, /*async_meta=*/false);
     CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
-    compact_is_col_major_ = false;
   }
 
 

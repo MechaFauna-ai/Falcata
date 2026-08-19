@@ -487,74 +487,6 @@ void LaunchFillCompactCodecKernel(
   }
 }
 
-// Column-major-in-partition variant of the dense histogram kernel.
-// Used by the CompactView host-mapped path on large datasets, where compact_data
-// is laid out column-major-per-partition for cheap per-column cudaMemcpy fill.
-template <typename BIN_TYPE, typename HIST_TYPE, size_t SHARED_HIST_SIZE>
-__global__ void CUDAConstructHistogramDenseColMajorKernel(
-  const CUDALeafSplitsStruct* smaller_leaf_splits,
-  const score_t* cuda_gradients,
-  const score_t* cuda_hessians,
-  const BIN_TYPE* data,
-  const uint32_t* column_hist_offsets,
-  const uint32_t* column_hist_offsets_full,
-  const int* feature_partition_column_index_offsets,
-  const data_size_t num_data,
-  const bool hist_fp32) {
-  const int dim_y = static_cast<int>(gridDim.y * blockDim.y);
-  const data_size_t num_data_in_smaller_leaf = smaller_leaf_splits->num_data_in_leaf;
-  const data_size_t num_data_per_thread = (num_data_in_smaller_leaf + dim_y - 1) / dim_y;
-  const data_size_t* data_indices_ref = smaller_leaf_splits->data_indices_in_leaf;
-  __shared__ HIST_TYPE shared_hist[SHARED_HIST_SIZE];
-  const unsigned int num_threads_per_block = blockDim.x * blockDim.y;
-  const int partition_column_start = feature_partition_column_index_offsets[blockIdx.x];
-  const int partition_column_end = feature_partition_column_index_offsets[blockIdx.x + 1];
-  // data is column-major-in-partition: column c at offset partition_column_start + threadIdx.x
-  // starts at byte (partition_column_start + threadIdx.x) * num_data.
-  const BIN_TYPE* data_ptr = data + static_cast<size_t>(partition_column_start) * num_data;
-  const int num_columns_in_partition = partition_column_end - partition_column_start;
-  const uint32_t partition_hist_start = column_hist_offsets_full[blockIdx.x];
-  const uint32_t partition_hist_end = column_hist_offsets_full[blockIdx.x + 1];
-  const uint32_t num_items_in_partition = (partition_hist_end - partition_hist_start) << 1;
-  const unsigned int thread_idx = threadIdx.x + threadIdx.y * blockDim.x;
-  for (unsigned int i = thread_idx; i < num_items_in_partition; i += num_threads_per_block) {
-    shared_hist[i] = 0.0f;
-  }
-  __syncthreads();
-  const unsigned int blockIdx_y = blockIdx.y;
-  const data_size_t block_start = (static_cast<size_t>(blockIdx_y) * blockDim.y) * num_data_per_thread;
-  const data_size_t* data_indices_ref_this_block = data_indices_ref + block_start;
-  data_size_t block_num_data = max(0, min(num_data_in_smaller_leaf - block_start, num_data_per_thread * static_cast<data_size_t>(blockDim.y)));
-  const int column_index = static_cast<int>(threadIdx.x) + partition_column_start;
-  if (threadIdx.x < static_cast<unsigned int>(num_columns_in_partition)) {
-    HIST_TYPE* shared_hist_ptr = shared_hist + (column_hist_offsets[column_index] << 1);
-    // Column-major: this thread's column starts at data_ptr + threadIdx.x * num_data.
-    const BIN_TYPE* col_ptr = data_ptr + static_cast<size_t>(threadIdx.x) * static_cast<size_t>(num_data);
-    for (data_size_t inner_data_index = static_cast<data_size_t>(threadIdx.y); inner_data_index < block_num_data; inner_data_index += blockDim.y) {
-      const data_size_t data_index = data_indices_ref_this_block[inner_data_index];
-      const score_t grad = cuda_gradients[data_index];
-      const score_t hess = cuda_hessians[data_index];
-      const uint32_t bin = static_cast<uint32_t>(col_ptr[data_index]);
-      const uint32_t pos = bin << 1;
-      HIST_TYPE* pos_ptr = shared_hist_ptr + pos;
-      atomicAdd_block(pos_ptr, grad);
-      atomicAdd_block(pos_ptr + 1, hess);
-    }
-  }
-  __syncthreads();
-  if (hist_fp32) {
-    float* feature_histogram_ptr = reinterpret_cast<float*>(smaller_leaf_splits->hist_in_leaf) + (partition_hist_start << 1);
-    for (unsigned int i = thread_idx; i < num_items_in_partition; i += num_threads_per_block) {
-      atomicAdd_system(feature_histogram_ptr + i, static_cast<float>(shared_hist[i]));
-    }
-  } else {
-    hist_t* feature_histogram_ptr = smaller_leaf_splits->hist_in_leaf + (partition_hist_start << 1);
-    for (unsigned int i = thread_idx; i < num_items_in_partition; i += num_threads_per_block) {
-      atomicAdd_system(feature_histogram_ptr + i, shared_hist[i]);
-    }
-  }
-}
-
 // Shared body of the dense histogram kernel; the shared-memory histogram is
 // declared by the calling __global__ kernel and passed in so a kernel that
 // instantiates the helper more than once does not duplicate the allocation.
@@ -2212,17 +2144,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           // active_buffer_is_alt_ after the swap, since BuildCompactView fills the "alt"
           // and then flips active_buffer_is_alt_.)
           uint8_t* active_data = compact_data_uint8_t_.RawData();
-          if (compact_is_col_major_) {
-            CUDAConstructHistogramDenseColMajorKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE><<<compact_grid_dim, compact_block_dim, 0, current_stream()>>>(
-              cuda_smaller_leaf_splits,
-              cuda_gradients_, cuda_hessians_,
-              reinterpret_cast<const BIN_TYPE*>(active_data),
-              compact_column_hist_offsets_.RawData(),
-              cuda_row_data_->cuda_partition_hist_offsets(),
-              compact_feature_partition_column_index_offsets_.RawData(),
-              num_data_,
-              hist_fp32_);
-          } else if (compact_is_4bit_) {
+          if (compact_is_4bit_) {
             CUDAConstructHistogramDenseKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, true><<<compact_grid_dim, compact_block_dim, 0, current_stream()>>>(
               cuda_smaller_leaf_splits,
               cuda_gradients_, cuda_hessians_,

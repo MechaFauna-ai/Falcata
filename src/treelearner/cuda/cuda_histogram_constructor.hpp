@@ -245,7 +245,7 @@ class CUDAHistogramConstructor {
            !cuda_row_data_->is_sparse() &&
            cuda_row_data_->NumLargeBinPartition() == 0 &&
            (!use_compact_view_ ||
-            (FalcataBatchWideEnabled() && !compact_is_col_major_ &&
+            (FalcataBatchWideEnabled() &&
              cuda_row_data_->bit_type() == 8));
   }
 
@@ -253,7 +253,7 @@ class CUDAHistogramConstructor {
    *  gather from this constructor's compact matrix (row-major-in-partition over
    *  the tree's sampled columns) instead of the full bin matrix */
   bool CompactViewSourceAvailable() const {
-    return use_compact_view_ && !compact_is_col_major_;
+    return use_compact_view_;
   }
   const std::vector<int>& compact_src_cols() const { return compact_src_cols_host_; }
   const std::vector<size_t>& compact_slot_bytes() const { return compact_slot_byte_host_; }
@@ -274,12 +274,11 @@ class CUDAHistogramConstructor {
     char buf[256];
     snprintf(buf, sizeof(buf),
              "hist: row_data=%d sparse=%d large_bin_parts=%d compact_view=%d "
-             "col_major=%d bit_type=%d batch_wide=%d",
+             "bit_type=%d batch_wide=%d",
              static_cast<int>(cuda_row_data_ != nullptr),
              cuda_row_data_ != nullptr ? static_cast<int>(cuda_row_data_->is_sparse()) : -1,
              cuda_row_data_ != nullptr ? cuda_row_data_->NumLargeBinPartition() : -1,
              static_cast<int>(use_compact_view_),
-             static_cast<int>(compact_is_col_major_),
              cuda_row_data_ != nullptr ? cuda_row_data_->bit_type() : -1,
              static_cast<int>(FalcataBatchWideEnabled()));
     return std::string(buf);
@@ -835,8 +834,6 @@ class CUDAHistogramConstructor {
 
   /*! \brief whether compact view is active for current tree */
   bool use_compact_view_;
-  /*! \brief if true, compact_data_uint8_t_ is column-major-in-partition (used when source is host) */
-  bool compact_is_col_major_ = false;
   /*! \brief packing codec of the active compact view (see pack_codecs.hpp) */
   PackCodecId compact_codec_ = PackCodecId::kNibble4;
   /*! \brief codec-fill metadata: per compact column source nibble base/stride,
