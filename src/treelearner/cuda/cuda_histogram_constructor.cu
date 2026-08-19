@@ -1184,12 +1184,20 @@ __global__ void CUDAConstructHistogramDenseGMDeterministicKernel(
   // zeroing wipes another's accumulated sums, and its merge reads the
   // contamination. Global positions make every partition own a disjoint
   // range of every row.
-  hist_t* my_slot_row = slots + (static_cast<size_t>(blockIdx.y) * dy + threadIdx.y) * slot_stride;
+  hist_t* block_slot_rows = slots + static_cast<size_t>(blockIdx.y) * dy * slot_stride;
   const uint32_t zero_base = partition_hist_start << 1;
-  for (uint32_t j = thread_idx; j < num_items_in_partition; j += num_threads_per_block) {
-    my_slot_row[zero_base + j] = 0.0;
+  // Cooperative zero of ALL dy slot rows this block owns, not just
+  // threadIdx.y's: the scratch persists across launches and the accumulate
+  // below ADDS into the slots, so every position of every row must be zeroed
+  // or the previous leaf's sums leak into this histogram.
+  const uint32_t num_zero_items = num_items_in_partition * static_cast<uint32_t>(dy);
+  for (uint32_t i = thread_idx; i < num_zero_items; i += num_threads_per_block) {
+    const uint32_t y = i / num_items_in_partition;
+    const uint32_t j = i % num_items_in_partition;
+    block_slot_rows[static_cast<size_t>(y) * slot_stride + zero_base + j] = 0.0;
   }
   __syncthreads();
+  hist_t* my_slot_row = block_slot_rows + static_cast<size_t>(threadIdx.y) * slot_stride;
   const data_size_t block_start = (static_cast<size_t>(blockIdx.y) * dy) * num_data_per_thread;
   const data_size_t* data_indices_ref_this_block = data_indices_ref + block_start;
   data_size_t block_num_data = max(0, min(num_data_in_smaller_leaf - block_start, num_data_per_thread * static_cast<data_size_t>(dy)));
@@ -2250,6 +2258,10 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           det_grid_y = std::min(std::min(det_grid_y, static_cast<int>(kDetTileCap)), det_tile_alloc_);
           dim3 det_grid(grid_dim_x, static_cast<unsigned int>(std::max(det_grid_y, 1)));
           dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dense_dy_));
+          // Pipeline-private scratch region (pipelined pair-constructs run on
+          // different pipeline streams; a shared region would race).
+          hist_t* det_slots = cuda_det_dense_slots_.RawData() +
+            static_cast<size_t>(active_pipeline_) * kDetTileCap * det_dense_dy_ * det_dense_slot_stride_;
           CUDAConstructHistogramDenseGMDeterministicKernel<BIN_TYPE>
             <<<det_grid, det_block, 0, current_stream()>>>(
               cuda_smaller_leaf_splits,
@@ -2261,13 +2273,13 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
               cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr,
               num_data_,
               det_dense_slot_stride_,
-              cuda_det_dense_slots_.RawData(),
+              det_slots,
               det_dense_dy_);
           const int merge_threads = 256;
           dim3 merge_grid((det_dense_slot_stride_ + merge_threads - 1) / merge_threads, grid_dim_x);
           MergeDeterministicDenseHistogramKernel<<<merge_grid, merge_threads, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
-            cuda_det_dense_slots_.RawData(),
+            det_slots,
             cuda_row_data_->cuda_partition_hist_offsets(),
             det_dense_slot_stride_,
             std::max(det_grid_y, 1) * det_dense_dy_);
@@ -2303,6 +2315,10 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
         det_grid_y = std::min(std::min(det_grid_y, static_cast<int>(kDetTileCap)), det_tile_alloc_);
         dim3 det_grid(grid_dim_x, static_cast<unsigned int>(std::max(det_grid_y, 1)));
         dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dense_dy_));
+        // Pipeline-private scratch region (pipelined pair-constructs run on
+        // different pipeline streams; a shared region would race).
+        hist_t* det_slots = cuda_det_dense_slots_.RawData() +
+          static_cast<size_t>(active_pipeline_) * kDetTileCap * det_dense_dy_ * det_dense_slot_stride_;
         CUDAConstructHistogramDenseGMDeterministicKernel<BIN_TYPE>
           <<<det_grid, det_block, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
@@ -2314,13 +2330,13 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
             cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr,
             num_data_,
             det_dense_slot_stride_,
-            cuda_det_dense_slots_.RawData(),
+            det_slots,
             det_dense_dy_);
         const int merge_threads = 256;
         dim3 merge_grid((det_dense_slot_stride_ + merge_threads - 1) / merge_threads, grid_dim_x);
         MergeDeterministicDenseHistogramKernel<<<merge_grid, merge_threads, 0, current_stream()>>>(
           cuda_smaller_leaf_splits,
-          cuda_det_dense_slots_.RawData(),
+          det_slots,
           cuda_row_data_->cuda_partition_hist_offsets(),
           det_dense_slot_stride_,
           std::max(det_grid_y, 1) * det_dense_dy_);
