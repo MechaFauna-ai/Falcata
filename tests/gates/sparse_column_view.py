@@ -27,7 +27,7 @@ leaf values by tree ~1500.
 Datasets are taken in this order and every one that exists is checked:
   --dataset PATH             (repeatable)
   $FALCATA_SPARSE_GATE_DATA  (colon-separated paths)
-  the numerai binary dataset, if this machine has it
+  the NEWEST numerai binary dataset (<round>_int8nan.dataset), if present
 plus a synthetic dense case that always runs, so the gate still exercises the
 sampled path where no such dataset exists. A dataset carrying sparse columns is
 what makes this gate a regression test for THIS bug rather than a smoke test;
@@ -48,7 +48,20 @@ from pathlib import Path
 
 import numpy as np
 
-NUMERAI_DATASET = Path.home() / "Documents/numerai/data/1227_int8nan.dataset"
+NUMERAI_DATA_DIR = Path.home() / "Documents/numerai/data"
+
+
+def latest_numerai_dataset():
+    """The newest round's binary dataset (<round>_int8nan.dataset). The sweep
+    always trains on the latest round, so that file's shape -- not any one
+    round pinned here -- is what this gate has to keep honest."""
+    rounds = []
+    for p in NUMERAI_DATA_DIR.glob("*_int8nan.dataset"):
+        prefix = p.name.split("_", 1)[0]
+        if prefix.isdigit():
+            rounds.append((int(prefix), p))
+    return max(rounds)[1] if rounds else None
+
 
 # feature_fraction well under 1 so the per-tree compact view is built; a leaf
 # floor big enough that a violation cannot be a rounding artefact
@@ -191,7 +204,9 @@ def main():
 
     candidates = [Path(p) for p in args.dataset]
     candidates += [Path(p) for p in os.environ.get("FALCATA_SPARSE_GATE_DATA", "").split(":") if p]
-    candidates.append(NUMERAI_DATASET)
+    latest = latest_numerai_dataset()
+    if latest is not None:
+        candidates.append(latest)
 
     present = [p for p in candidates if p.exists()]
     if not present:

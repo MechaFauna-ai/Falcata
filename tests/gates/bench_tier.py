@@ -116,7 +116,42 @@ CELLS = [
         },
         100,
     ),
+    # The production h60 sweep shape: sparse-encoded columns concentrated in
+    # one EFB bundle + feature_fraction < 1 + deep wide trees. This is the
+    # shape where the packed split read silently un-shipped itself (21358be8,
+    # -27% trees/s, fixed 12701bf5) and NO bench cell showed it -- the cache's
+    # numerai sample does not reproduce the sparse-bundle structure, so this
+    # cell trains the real binary dataset (newest round on disk). It is the
+    # absolute-throughput trend complement to sparse_column_view.py's
+    # packed-vs-gather ratio assertion.
+    (
+        "bench/numerai-h60-sparse",
+        "numerai-h60",
+        {
+            "objective": "regression",
+            "learning_rate": 0.003375,
+            "num_leaves": 250,
+            "max_depth": 12,
+            "min_data_in_leaf": 40_000,
+            "feature_fraction": 0.15,
+            "max_bin": 5,
+        },
+        60,
+    ),
 ]
+
+NUMERAI_DATA_DIR = Path.home() / "Documents/numerai/data"
+
+
+def latest_numerai_dataset():
+    """The newest round's binary dataset (<round>_int8nan.dataset); the h60
+    cell trains whatever the sweep currently trains."""
+    rounds = []
+    for p in NUMERAI_DATA_DIR.glob("*_int8nan.dataset"):
+        prefix = p.name.split("_", 1)[0]
+        if prefix.isdigit():
+            rounds.append((int(prefix), p))
+    return max(rounds)[1] if rounds else None
 
 
 def load(dataset):
@@ -133,9 +168,46 @@ def load(dataset):
     return X, y
 
 
+def run_h60_cell(cid, params, rounds):
+    """Like run_cell, but on the real numerai binary dataset: construct is a
+    12GB binary load + device ingest, and the label is a fixed seeded vector
+    (the file's label may be a placeholder; timing does not care which)."""
+    import numpy as np
+
+    import falcata as lgb
+
+    path = latest_numerai_dataset()
+    p = {**BASE, **params}
+    cs, ts = [], []
+    label = None
+    for _ in range(REPEATS):
+        t0 = time.monotonic()
+        ds = lgb.Dataset(str(path), params=p)
+        ds.construct()
+        if label is None:
+            label = np.random.default_rng(42).standard_normal(ds.num_data()).astype(np.float32)
+        ds.set_label(label)
+        t1 = time.monotonic()
+        bst = lgb.train(p, ds, num_boost_round=rounds)
+        t2 = time.monotonic()
+        assert bst.num_trees() == rounds
+        cs.append(t1 - t0)
+        ts.append(t2 - t1)
+        del bst, ds
+    return {
+        "id": cid,
+        "ok": True,
+        "dataset": path.name,
+        "construct_sec": round(statistics.median(cs), 4),
+        "train_sec": round(statistics.median(ts), 4),
+    }
+
+
 def run_cell(cid, dataset, params, rounds):
     import falcata as lgb
 
+    if dataset == "numerai-h60":
+        return run_h60_cell(cid, params, rounds)
     X, y = load(dataset)
     p = {**BASE, **params}
     cs, ts = [], []
@@ -173,7 +245,18 @@ def main():
     results = {}
     t0 = time.monotonic()
     for cid, dataset, params, rounds in CELLS:
-        if not (CACHE / dataset).exists():
+        if dataset == "numerai-h60":
+            if latest_numerai_dataset() is None:
+                # Hard-fail, not skip: on this box the sweep data is always
+                # present, and a silent skip is how this shape went unwatched.
+                results[cid] = {
+                    "id": cid,
+                    "ok": False,
+                    "error": f"no *_int8nan.dataset under {NUMERAI_DATA_DIR}",
+                }
+                print(results[cid])
+                continue
+        elif not (CACHE / dataset).exists():
             print(f"skip {cid}: cache missing {CACHE / dataset}")
             continue
         try:

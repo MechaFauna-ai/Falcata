@@ -46,6 +46,20 @@ tree is dirty), runs every tier below, and writes
   Failures print a `--spec` repro; promote real bugs into `fuzz_corpus.json`
   so they rerun first, forever.
 
+## Convention: every fast-path escape gets a mechanism gate
+
+When a fast path grows an escape hatch or fallback condition, the same commit
+adds an assertion that the fast path still engages on the workload it was
+built for -- as an on/off throughput RATIO (fast path vs `cuda_plan`-disabled)
+on a real dataset, not an absolute time. Ratios of two arms in the same run
+cancel clock/thermal drift, and they catch the failure absolute baselines are
+worst at: the optimization silently un-shipping itself while everything stays
+green. Precedent: 21358be8's per-tree sparse-column fallback fired on ~99% of
+trees at `feature_fraction` 0.15 (-27% trees/s on the production numerai
+shape) and no gate noticed; `sparse_column_view.py`'s packed-vs-gather ratio
+plus the `bench/numerai-h60-sparse` trend cell are the pair that now covers
+it -- mechanism ratio for the sharp edge, absolute trend for everything else.
+
 ## Shared GPU
 
 The runner box's GPU is shared with training jobs. Every GPU step starts with
