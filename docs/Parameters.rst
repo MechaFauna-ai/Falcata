@@ -268,6 +268,8 @@ Core Parameters
 
    -  ``gpu`` is the legacy OpenCL backend inherited from LightGBM; it is not developed here. If you use it: smaller ``max_bin`` (e.g. 63) speeds it up, and it accumulates in 32-bit floats by default (``gpu_use_dp=true`` restores 64-bit at a speed cost)
 
+   -  **Note**: on CUDA builds, leaving ``device_type`` unset auto-selects ``cuda`` when a usable GPU is present (a one-time log line reports the choice); pass ``device_type=cpu`` to force CPU training
+
    -  **Note**: refer to `Installation Guide <./Installation-Guide.rst>`__ to build Falcata with CUDA, ROCm, or OpenCL support
 
 -  ``seed`` :raw-html:`<a id="seed" title="Permalink to this parameter" href="#seed">&#x1F517;&#xFE0E;</a>`, default = ``None``, type = int, aliases: ``random_seed``, ``random_state``

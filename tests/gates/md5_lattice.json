@@ -1,7 +1,7 @@
 {
  "cells": {
   "bigrow/quant64": {
-   "md5": "56e341d5cbc61b7ef73cc39bda2bf741",
+   "md5": "3daba94c44e0071dab375d3d3678d248",
    "metric": 0.218733,
    "metric_name": "rmse"
   },
@@ -10,22 +10,22 @@
    "metric_name": "rmse"
   },
   "categorical/quant": {
-   "md5": "e79ee6bfde527beb3f569860558aa17a",
-   "metric": 1.448241,
+   "md5": "18b3b35fc7ced50fb7f68f8f2530d6c3",
+   "metric": 1.433063,
    "metric_name": "rmse"
   },
   "categorical/quant-deep": {
-   "md5": "1760e17d5649516d8ea4dffb8fca4734",
-   "metric": 2.579622,
+   "md5": "c284acdce9f5cc7c29ea765945be055e",
+   "metric": 2.577822,
    "metric_name": "rmse"
   },
   "dense/fixedpoint": {
-   "md5": "794ab463d9bbda9bdce25256a71d6cb3",
-   "metric": 2.072046,
+   "md5": "38950acc920172bd8cb22f80e9190c3b",
+   "metric": 2.076173,
    "metric_name": "rmse"
   },
   "dense/fixedpoint-256bins": {
-   "md5": "682958f06b10619bc805d55d24bc4e4c",
+   "md5": "8b973ef76fe9583fe9b98a38830fbf2b",
    "metric": 2.08166,
    "metric_name": "rmse"
   },
@@ -38,43 +38,43 @@
    "metric_name": "rmse"
   },
   "dense/quant": {
-   "md5": "900fc3dc9c745fd57a15f7633358e70c",
-   "metric": 1.982575,
+   "md5": "499e3a65087c926957ffc1bf0b4932a9",
+   "metric": 2.002375,
    "metric_name": "rmse"
   },
   "dense/quant-classic": {
-   "md5": "1c7695a4901a137a6f69212b1dfaaccb",
-   "metric": 1.982575,
+   "md5": "5b6533bbc82cb56e65d55977166a8fa4",
+   "metric": 2.002375,
    "metric_name": "rmse"
   },
   "dense/quant-deep": {
-   "md5": "b6bd59448273aaea59cd1afa695ca281",
-   "metric": 1.678572,
+   "md5": "24687819e872256b88d806643a8b222f",
+   "metric": 1.6693,
    "metric_name": "rmse"
   },
   "dense/quant-deep-classic": {
-   "md5": "b6bd59448273aaea59cd1afa695ca281",
-   "metric": 1.678572,
+   "md5": "33bdef527ee354b37879389e6f721ddb",
+   "metric": 1.6693,
    "metric_name": "rmse"
   },
   "efb/quant": {
-   "md5": "26faf0afa2868add8d2dd6ee8b1ef974",
+   "md5": "40620d5a015947e5921674efa2d30ab5",
    "metric": 1.281376,
    "metric_name": "rmse"
   },
   "fewbin/fixedpoint": {
-   "md5": "8f31c6634a2efa27b74019a11dedb5bf",
+   "md5": "adaca591aac857bbffcfbec6841da58a",
    "metric": 4.285597,
    "metric_name": "rmse"
   },
   "fewbin/quant": {
-   "md5": "fb92cef6bd5339087c6ac272fc590517",
-   "metric": 4.015338,
+   "md5": "5dc7f02bd797d3c1f7d11aad5c338028",
+   "metric": 4.002929,
    "metric_name": "rmse"
   },
   "graph/flipbase-graph_loop": {
-   "md5": "229140128847fc198dd6f81468bb789a",
-   "metric": 0.756316,
+   "md5": "d64cb4fba1b8cdd92e9b97db20f6ea74",
+   "metric": 0.754484,
    "metric_name": "mlogloss"
   },
   "graph/nonquant": {
@@ -82,13 +82,13 @@
    "metric_name": "mlogloss"
   },
   "graph/quant": {
-   "md5": "229140128847fc198dd6f81468bb789a",
-   "metric": 0.756316,
+   "md5": "d64cb4fba1b8cdd92e9b97db20f6ea74",
+   "metric": 0.754484,
    "metric_name": "mlogloss"
   },
   "imbalanced/fixedpoint": {
-   "md5": "654af3e78ab45cf1ad8ddc5f8ea2512a",
-   "metric": 0.962627,
+   "md5": "4c1453b8e3eaff4ca72b7a8ed6af6175",
+   "metric": 0.961707,
    "metric_name": "auc"
   },
   "imbalanced/nonquant": {
@@ -96,77 +96,77 @@
    "metric_name": "auc"
   },
   "imbalanced/posweight": {
-   "md5": "cc05b6be1dc0548c957494232a84c5e5",
-   "metric": 0.875747,
+   "md5": "4a2d27f978547e5bb5047eed7853898b",
+   "metric": 0.888046,
    "metric_name": "auc"
   },
   "imbalanced/quant": {
-   "md5": "e13ade3e8839642e9f51ded30e65ed3b",
-   "metric": 0.976573,
+   "md5": "966358cd405ca04acd0fe90656781bc8",
+   "metric": 0.961106,
    "metric_name": "auc"
   },
   "imbalanced/unbalance": {
-   "md5": "294d0be2f3912f38c1486d9de3e72e41",
-   "metric": 0.941019,
+   "md5": "335431acbc518189e4b243925b4690de",
+   "metric": 0.948448,
    "metric_name": "auc"
   },
   "int8wide/quant": {
-   "md5": "019fbb05f62293ad3fb641216c23ba55",
-   "metric": 70.250892,
+   "md5": "5c2463c90304967aa5b3aff3f45b72af",
+   "metric": 69.899107,
    "metric_name": "rmse"
   },
   "int8wide/quant-deep": {
-   "md5": "ef5def955ab765628f2ca0ad9e5ce7dc",
-   "metric": 71.451373,
+   "md5": "9f51299a051ddc40747fb6149e44596f",
+   "metric": 70.744453,
    "metric_name": "rmse"
   },
   "missing-mfb0/fixedpoint": {
-   "md5": "f516daba52b65f02f63b74d04dbdc018",
-   "metric": 4.273856,
+   "md5": "c205e63c49634fff563da859bc8a09f6",
+   "metric": 4.25467,
    "metric_name": "rmse"
   },
   "missing-mfb0/quant": {
-   "md5": "eb897dd579e345ed84ef64a087e2e9dc",
-   "metric": 4.155652,
+   "md5": "bb4405ed2aae4d54d5d58586f3125f0b",
+   "metric": 4.17063,
    "metric_name": "rmse"
   },
   "missing-mfb0/quant-classic": {
-   "md5": "26828dd5085eba77924878d607b5331c",
-   "metric": 4.155652,
+   "md5": "347ad9ca4c9c70c50850163c3f1329df",
+   "metric": 4.17063,
    "metric_name": "rmse"
   },
   "missing-mfb0/quant-deep": {
-   "md5": "0942c1f4f1f95cabbea16e6d284a7012",
-   "metric": 4.017718,
+   "md5": "867060fab55b182bab727fd558df3d0d",
+   "metric": 4.038961,
    "metric_name": "rmse"
   },
   "missing/quant": {
-   "md5": "c2b43a11209a653030abdf52e44e5c65",
-   "metric": 3.33428,
+   "md5": "2768d748786cfaa4117ce1a62b3f2cb7",
+   "metric": 3.312701,
    "metric_name": "rmse"
   },
   "sampled/flipbase-jit8": {
-   "md5": "c7787cabe424cf21bba419b423b7b915",
-   "metric": 37.425693,
+   "md5": "9d1ca352b27c4efe0d5ef73055d3cbfe",
+   "metric": 37.066516,
    "metric_name": "rmse"
   },
   "sampled/quant": {
-   "md5": "c7787cabe424cf21bba419b423b7b915",
-   "metric": 37.425693,
+   "md5": "9d1ca352b27c4efe0d5ef73055d3cbfe",
+   "metric": 37.066516,
    "metric_name": "rmse"
   },
   "sampled/quant-deep": {
-   "md5": "8edbe7dbda00acb29c6ba32ba59dd18c",
-   "metric": 38.3236,
+   "md5": "c0ca85053c56f3fb99f3bfd021e6f9c9",
+   "metric": 38.544012,
    "metric_name": "rmse"
   },
   "tinygrad/fixedpoint": {
-   "md5": "9b7652b5d84dd1fcda3a21c0173cd1fb",
+   "md5": "52c8005c600fef6a7e22940ab40aa60f",
    "metric": 0.059661,
    "metric_name": "rmse"
   },
   "tinygrad/quant": {
-   "md5": "a5a68755cf0a35d37af9c4cf445c10af",
+   "md5": "6fcf6d9d4460c57f6ec381ef57c81d48",
    "metric": 0.059668,
    "metric_name": "rmse"
   }

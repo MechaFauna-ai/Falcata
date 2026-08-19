@@ -47,9 +47,9 @@ This section describes how to run distributed Falcata training in various progra
 Apache Spark
 ^^^^^^^^^^^^
 
-Apache Spark users can use `SynapseML`_ for machine learning workflows with Falcata. This project is not maintained by Falcata's maintainers.
+Apache Spark users can use `SynapseML`_ for distributed LightGBM training. SynapseML targets and bundles upstream LightGBM and does not work with Falcata; it is listed here for users who need a Spark-native workflow.
 
-See `this SynapseML example`_ for additional information on using Falcata on Spark.
+See `this SynapseML example`_ for additional information on using LightGBM on Spark.
 
 .. note::
 
@@ -381,17 +381,6 @@ From the point forward, you can use any of the following methods to save the Boo
 * ``bst.model_to_string()``: dump the model to a string in memory
 * ``bst.save_model()``: write the output of ``bst.model_to_string()`` to a text file
 
-Kubeflow
-^^^^^^^^
-
-Kubeflow users can also use the `Kubeflow XGBoost Operator`_ for machine learning workflows with Falcata. You can see `this example`_ for more details.
-
-Kubeflow integrations for Falcata are not maintained by Falcata's maintainers.
-
-.. note::
-
-  The Kubeflow integrations for Falcata are not maintained by Falcata's maintainers. Bug reports or feature requests should be directed to https://github.com/kubeflow/fairing/issues or https://github.com/kubeflow/xgboost-operator/issues.
-
 Falcata CLI
 ^^^^^^^^^^^^
 
@@ -489,7 +478,7 @@ Example
 Ray
 ^^^
 
-`Ray`_ is a Python-based framework for distributed computing. Ray provides LightGBM support through the Ray Train API with ``LightGBMTrainer`` and the `lightgbm_ray`_ project maintained within the official Ray GitHub organization. These target upstream LightGBM; Falcata ships an ``import lightgbm`` alias, so they may work unmodified, but that combination is not tested here.
+`Ray`_ is a Python-based framework for distributed computing. Ray provides LightGBM support through the Ray Train API with ``LightGBMTrainer`` and the `lightgbm_ray`_ project maintained within the official Ray GitHub organization. These target upstream LightGBM and cannot load Falcata (the package is ``import falcata`` only); use them with upstream LightGBM.
 
 For the Ray Train API, see `the Ray documentation`_ for usage examples.
 
@@ -527,10 +516,6 @@ See `the mars documentation`_ for usage examples.
 .. _the metrics functions from dask-ml: https://ml.dask.org/modules/api.html#dask-ml-metrics-metrics
 
 .. _these Dask examples: https://github.com/MechaFauna-ai/Falcata/tree/master/examples/python-guide/dask
-
-.. _Kubeflow XGBoost Operator: https://github.com/kubeflow/xgboost-operator
-
-.. _this example: https://github.com/kubeflow/xgboost-operator/tree/master/config/samples/lightgbm-dist
 
 .. _here: https://www.youtube.com/watch?v=iqzXhp5TxUY
 

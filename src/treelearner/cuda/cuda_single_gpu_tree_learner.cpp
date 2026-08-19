@@ -3346,8 +3346,25 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     global_timer.Stop("CUDASingleGPUTreeLearner::FindBestFromAllSplits");
 
     if (best_leaf_index_ == -1) {
+      if (std::getenv("FALCATA_DEBUG_SPLITS") != nullptr) {
+        CUDALeafSplitsStruct sdbg;
+        CopyFromCUDADeviceToHost<CUDALeafSplitsStruct>(&sdbg, cuda_smaller_leaf_splits_->GetCUDAStruct(), 1, __FILE__, __LINE__);
+        double hist_head[16];
+        CopyFromCUDADeviceToHost<double>(hist_head, cuda_histogram_constructor_->cuda_hist_pointer(), 16, __FILE__, __LINE__);
+        fprintf(stderr, "CUDANOSPLIT iter=%d leaf=%d n=%d sg=%.17g sh=%.17g gain=%.17g hist0..7=", i,
+                sdbg.leaf_index, sdbg.num_data_in_leaf, sdbg.sum_of_gradients, sdbg.sum_of_hessians, sdbg.gain);
+        for (int hh = 0; hh < 16; ++hh) fprintf(stderr, "%.6g ", hist_head[hh]);
+        fprintf(stderr, "\n");
+      }
       Log::Warning("No further splits with positive gain, training stopped with %d leaves.", (i + 1));
       break;
+    }
+    if (std::getenv("FALCATA_DEBUG_SPLITS") != nullptr) {
+      CUDASplitInfo dbg;
+      CopyFromCUDADeviceToHost<CUDASplitInfo>(&dbg, best_split_info, 1, __FILE__, __LINE__);
+      fprintf(stderr, "CUDASPLIT leaf=%d feat=%d thr=%u gain=%.17g slg=%.17g slh=%.17g lc=%d rc=%d\n",
+              best_leaf_index_, dbg.inner_feature_index, dbg.threshold, dbg.gain,
+              dbg.left_sum_gradients, dbg.left_sum_hessians, dbg.left_count, dbg.right_count);
     }
 
     global_timer.Start("CUDASingleGPUTreeLearner::Split");

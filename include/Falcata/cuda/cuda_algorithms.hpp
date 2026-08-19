@@ -36,6 +36,11 @@ __device__ __forceinline__ T ShufflePrefixSum(T value, T* shared_mem_buffer) {
   const uint32_t warpLane = threadIdx.x % warpSize;
   const uint32_t warpID = threadIdx.x / warpSize;
   const uint32_t num_warp = blockDim.x / warpSize;
+  // A previous Shuffle*Sum call on the same scratch ends with late readers of
+  // shared_mem_buffer[warpID - 1]; this call's first scratch write must not
+  // overtake them. The barrier is legal because every call site is
+  // block-uniform (the mid-function barriers already require that).
+  __syncthreads();
   for (uint32_t offset = 1; offset < warpSize; offset <<= 1) {
     const T other_value = __shfl_up_sync(mask, value, offset);
     if (warpLane >= offset) {
@@ -129,6 +134,9 @@ template <typename T>
 __device__ __forceinline__ T ShuffleReduceSum(T value, T* shared_mem_buffer, const size_t len) {
   const uint32_t warpLane = threadIdx.x % warpSize;
   const uint32_t warpID = threadIdx.x / warpSize;
+  // See ShufflePrefixSum: late readers of the previous call must finish
+  // before this call's first scratch write.
+  __syncthreads();
   const data_size_t warp_len = min(static_cast<data_size_t>(warpSize), static_cast<data_size_t>(len) - static_cast<data_size_t>(warpID * warpSize));
   value = ShuffleReduceSumWarp<T>(value, warp_len);
   if (warpLane == 0) {

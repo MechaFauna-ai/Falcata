@@ -161,14 +161,38 @@ void CUDARowData::Init(const Dataset* train_data, TrainingShareStates* train_sha
   // Large-bin partitions are impossible under that cap, so the global-memory
   // histogram kernels (which do not unpack) are unreachable.
   is_4bit_packed_ = false;
+  uint32_t widest_column_bins = 0;
+  {
+    const std::vector<uint32_t>& column_hist_offsets = train_share_state->column_hist_offsets();
+    for (size_t i = 0; i + 1 < column_hist_offsets.size(); ++i) {
+      widest_column_bins = std::max(widest_column_bins, column_hist_offsets[i + 1] - column_hist_offsets[i]);
+    }
+  }
   if (!is_sparse_ && bit_type_ == 8 && large_bin_partitions_.empty() &&
       num_feature_partitions_ > 0 && RowData4BitEnabled()) {
-    const std::vector<uint32_t>& column_hist_offsets = train_share_state->column_hist_offsets();
-    uint32_t max_bin_per_column = 0;
-    for (size_t i = 0; i + 1 < column_hist_offsets.size(); ++i) {
-      max_bin_per_column = std::max(max_bin_per_column, column_hist_offsets[i + 1] - column_hist_offsets[i]);
+    is_4bit_packed_ = widest_column_bins <= 16;
+  }
+  // The row-major device copy is the single largest allocation training makes,
+  // and 4-bit packing halves it. The decision is all-or-nothing across the
+  // dataset -- one wide column disqualifies every other -- so report it, and
+  // report why when it does not engage. Otherwise a dataset that quietly costs
+  // twice what it should looks exactly like one that does not.
+  if (!is_sparse_) {
+    const size_t bytes_per_value_x2 = is_4bit_packed_ ? 1 : (bit_type_ / 4);
+    const double gib = static_cast<double>(num_data_) * num_feature_ *
+                       bytes_per_value_x2 / 2.0 / static_cast<double>(1ULL << 30);
+    if (is_4bit_packed_) {
+      Log::Info("CUDARowData: 4-bit packed row data, %.2f GiB on the device.", gib);
+    } else {
+      const char* reason = !RowData4BitEnabled()  ? "disabled by cuda_plan (rowdata_4bit=0)"
+                         : bit_type_ != 8         ? "a column needs more than 256 bins"
+                         : !large_bin_partitions_.empty() ? "large-bin feature partitions present"
+                         : num_feature_partitions_ <= 0   ? "no feature partitions"
+                         : "the widest column has more than 16 bins";
+      Log::Info("CUDARowData: %d-bit row data, %.2f GiB on the device -- not 4-bit packed "
+                "because %s (widest column: %u bins). Packing would halve this.",
+                static_cast<int>(bit_type_), gib, reason, widest_column_bins);
     }
-    is_4bit_packed_ = max_bin_per_column <= 16;
   }
   if (!is_sparse_) {
     if (is_4bit_packed_) {

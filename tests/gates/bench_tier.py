@@ -25,6 +25,14 @@ from pathlib import Path
 # holds ~105GB of cached datasets; override to point elsewhere.
 CACHE = Path(os.environ.get("FALCATA_BENCH_CACHE", "bench-cache"))
 REPEATS = 3
+# Fast cells get more repeats. The tier's shortest cell (year-shallow, ~0.39s)
+# has historically ranged -4% to +8% around its own median at three repeats --
+# the same width as the perf gate's fail threshold, so it fired on its own
+# upper tail and taught readers to ignore the gate. Every cell's tail reaches
+# ~8%; the short ones just get there often. Median over more samples narrows
+# that, and nine repeats of a 0.4s cell costs about four seconds.
+MEASURE_BUDGET_SEC = 3.0
+MAX_REPEATS = 15
 
 BASE = {
     "device_type": "cuda",
@@ -131,7 +139,8 @@ def run_cell(cid, dataset, params, rounds):
     X, y = load(dataset)
     p = {**BASE, **params}
     cs, ts = [], []
-    for _ in range(REPEATS):
+    repeats = REPEATS
+    for attempt in range(MAX_REPEATS):
         t0 = time.monotonic()
         ds = lgb.Dataset(X, label=y, params=p)
         ds.construct()
@@ -142,6 +151,12 @@ def run_cell(cid, dataset, params, rounds):
         cs.append(t1 - t0)
         ts.append(t2 - t1)
         del bst, ds
+        if attempt == 0:
+            # Budget the repeats off the first one: long cells stay at three.
+            per_run = max(t2 - t0, 1e-6)
+            repeats = max(REPEATS, min(MAX_REPEATS, int(MEASURE_BUDGET_SEC / per_run) + 1))
+        if attempt + 1 >= repeats:
+            break
     return {
         "id": cid,
         "ok": True,

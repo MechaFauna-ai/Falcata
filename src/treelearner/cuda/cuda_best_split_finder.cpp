@@ -61,8 +61,10 @@ CUDABestSplitFinder::CUDABestSplitFinder(
 }
 
 CUDABestSplitFinder::~CUDABestSplitFinder() {
-  gpuAssert(cudaStreamDestroy(cuda_streams_[0]), __FILE__, __LINE__);
-  gpuAssert(cudaStreamDestroy(cuda_streams_[1]), __FILE__, __LINE__);
+  if (std::getenv("FALCATA_SINGLE_STREAM") == nullptr) {
+    gpuAssert(cudaStreamDestroy(cuda_streams_[0]), __FILE__, __LINE__);
+    gpuAssert(cudaStreamDestroy(cuda_streams_[1]), __FILE__, __LINE__);
+  }
   cuda_streams_.clear();
   cuda_streams_.shrink_to_fit();
   if (pinned_leaf_best_split_info_ != nullptr) {
@@ -110,13 +112,19 @@ void CUDABestSplitFinder::InitFeatureMetaInfo(const Dataset* train_data) {
 void CUDABestSplitFinder::Init() {
   InitCUDAFeatureMetaInfo();
   cuda_streams_.resize(2);
-  CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_streams_[0]));
-  CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_streams_[1]));
+  if (std::getenv("FALCATA_SINGLE_STREAM") != nullptr) {
+    // Diagnostic: legacy default stream orders against every blocking stream.
+    cuda_streams_[0] = cuda_streams_[1] = cudaStreamLegacy;
+  } else {
+    CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_streams_[0]));
+    CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_streams_[1]));
+  }
   cuda_best_split_info_buffer_.Resize(8);
   if (use_global_memory_) {
     // 2x: separate staging regions for the forward and reverse direction
     // tasks of a feature (they run as concurrent blocks of one launch)
     cuda_feature_hist_grad_buffer_.Resize(static_cast<size_t>(num_total_bin_) * 2);
+    cuda_feature_hist_cnt_buffer_.Resize(static_cast<size_t>(num_total_bin_) * 2);
     cuda_feature_hist_hess_buffer_.Resize(static_cast<size_t>(num_total_bin_) * 2);
     if (has_categorical_feature_) {
       cuda_feature_hist_stat_buffer_.Resize(static_cast<size_t>(num_total_bin_));
@@ -171,46 +179,52 @@ void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
     const MissingType missing_type = feature_missing_type_[inner_feature_index];
     if (num_bin > 2 && missing_type != MissingType::None && !is_categorical_[inner_feature_index]) {
       if (missing_type == MissingType::Zero) {
+        // REVERSE task first: CPU evaluates the reverse scan before the
+        // forward one with a strict '>' update, so on a direction tie (both
+        // scans find the same threshold at the same gain) CPU keeps the
+        // REVERSE candidate and its default_left. Task order is the
+        // tie-break order, so reverse must come first here too.
         SplitFindTask* new_task = &split_find_tasks_[cur_task_index];
-        new_task->reverse = false;
-        new_task->skip_default_bin = true;
-        new_task->na_as_missing = false;
-        new_task->inner_feature_index = inner_feature_index;
-        new_task->assume_out_default_left = false;
-        new_task->is_categorical = false;
-        uint32_t num_bin = feature_num_bins_[inner_feature_index];
-        new_task->is_one_hot = false;
-        new_task->hist_offset = feature_hist_offsets_[inner_feature_index];
-        new_task->mfb_offset = feature_mfb_offsets_[inner_feature_index];
-        new_task->default_bin = feature_default_bins_[inner_feature_index];
-        new_task->num_bin = num_bin;
-        new_task->monotone_type = use_monotone_constraints_ ?
-          monotone_constraints_[inner_feature_index] : 0;
-        ++cur_task_index;
-
-        new_task = &split_find_tasks_[cur_task_index];
         new_task->reverse = true;
         new_task->skip_default_bin = true;
         new_task->na_as_missing = false;
         new_task->inner_feature_index = inner_feature_index;
         new_task->assume_out_default_left = true;
         new_task->is_categorical = false;
-        num_bin = feature_num_bins_[inner_feature_index];
+        uint32_t num_bin = feature_num_bins_[inner_feature_index];
         new_task->is_one_hot = false;
         new_task->hist_offset = feature_hist_offsets_[inner_feature_index];
         new_task->default_bin = feature_default_bins_[inner_feature_index];
         new_task->mfb_offset = feature_mfb_offsets_[inner_feature_index];
+        new_task->num_bin = num_bin;
+        new_task->monotone_type = use_monotone_constraints_ ?
+          monotone_constraints_[inner_feature_index] : 0;
+        ++cur_task_index;
+
+        new_task = &split_find_tasks_[cur_task_index];
+        new_task->reverse = false;
+        new_task->skip_default_bin = true;
+        new_task->na_as_missing = false;
+        new_task->inner_feature_index = inner_feature_index;
+        new_task->assume_out_default_left = false;
+        new_task->is_categorical = false;
+        num_bin = feature_num_bins_[inner_feature_index];
+        new_task->is_one_hot = false;
+        new_task->hist_offset = feature_hist_offsets_[inner_feature_index];
+        new_task->mfb_offset = feature_mfb_offsets_[inner_feature_index];
+        new_task->default_bin = feature_default_bins_[inner_feature_index];
         new_task->num_bin = num_bin;
         new_task->monotone_type = use_monotone_constraints_ ?
           monotone_constraints_[inner_feature_index] : 0;
         ++cur_task_index;
       } else {
+        // REVERSE first; see the Zero-missing pair above.
         SplitFindTask* new_task = &split_find_tasks_[cur_task_index];
-        new_task->reverse = false;
+        new_task->reverse = true;
         new_task->skip_default_bin = false;
         new_task->na_as_missing = true;
         new_task->inner_feature_index = inner_feature_index;
-        new_task->assume_out_default_left = false;
+        new_task->assume_out_default_left = true;
         new_task->is_categorical = false;
         uint32_t num_bin = feature_num_bins_[inner_feature_index];
         new_task->is_one_hot = false;
@@ -223,11 +237,11 @@ void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
         ++cur_task_index;
 
         new_task = &split_find_tasks_[cur_task_index];
-        new_task->reverse = true;
+        new_task->reverse = false;
         new_task->skip_default_bin = false;
         new_task->na_as_missing = true;
         new_task->inner_feature_index = inner_feature_index;
-        new_task->assume_out_default_left = true;
+        new_task->assume_out_default_left = false;
         new_task->is_categorical = false;
         num_bin = feature_num_bins_[inner_feature_index];
         new_task->is_one_hot = false;
@@ -272,6 +286,20 @@ void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
   }
   CHECK_EQ(cur_task_index, static_cast<int>(split_find_tasks_.size()));
 
+  // Task order IS the tie-break order: every best-split reduction breaks exact
+  // gain ties to the lower task index. The CUDA dataset's inner feature order
+  // is a storage permutation (its grouping differs from the CPU dataset's), so
+  // ordering tasks by REAL feature index makes cross-feature plateau ties
+  // resolve like CPU's feature scan whenever CPU's scan order is the real
+  // order (it is unless CPU bundled features). Stable: a feature's own tasks
+  // keep their direction order, which already matches CPU's within-feature
+  // evaluation order.
+  std::stable_sort(split_find_tasks_.begin(), split_find_tasks_.end(),
+    [this](const SplitFindTask& a, const SplitFindTask& b) {
+      return real_feature_index_[a.inner_feature_index] <
+             real_feature_index_[b.inner_feature_index];
+    });
+
   SetTaskFeaturePenalties();
 
   if (extra_trees_) {
@@ -293,9 +321,13 @@ void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
   // forced-split support: per-leaf output buffer + inner-feature -> task map
   cuda_forced_split_info_.Resize(static_cast<size_t>(num_leaves_));
   feature_to_task_index_.assign(num_features_, -1);
+  // Forced splits pin the FORWARD task where one exists (its threshold
+  // semantics are direction-agnostic metadata, but keep the choice stable
+  // under task reordering); single-task features take their only task.
   for (int task_index = 0; task_index < num_tasks_; ++task_index) {
     const int inner_feature_index = split_find_tasks_[task_index].inner_feature_index;
-    if (feature_to_task_index_[inner_feature_index] < 0) {
+    if (feature_to_task_index_[inner_feature_index] < 0 ||
+        !split_find_tasks_[task_index].reverse) {
       feature_to_task_index_[inner_feature_index] = task_index;
     }
   }

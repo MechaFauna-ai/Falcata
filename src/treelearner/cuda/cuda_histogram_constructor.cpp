@@ -575,7 +575,7 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
         num_data,
         total_compact);
     CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
-    compact_is_col_major_ = false;  // compact_data is now row-major-in-partition
+    // compact_data is now row-major-in-partition
     compact_col_major_filled_ = true;  // the col-major staging holds the same slots
   } else if (prefill_valid_ && prefill_bitmap_ == is_feature_used_bytree) {
     // The prefill already produced exactly these bytes into the alt buffer
@@ -583,12 +583,10 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
     // and skip the fill entirely.
     prefill_valid_ = false;
     compact_data_uint8_t_.Swap(&compact_data_uint8_t_alt_);
-    compact_is_col_major_ = false;
   } else {
     prefill_valid_ = false;
     LaunchCompactFill(layout, compact_data_uint8_t_.RawData(), cuda_stream_, /*async_meta=*/false);
     CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
-    compact_is_col_major_ = false;
   }
 
 
@@ -880,6 +878,22 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   cuda_row_data_.reset(new CUDARowData(train_data, share_state, gpu_device_id_, gpu_use_dp_));
   cuda_row_data_->Init(train_data, share_state);
 
+  // Deterministic dense-construct scratch (same as ResetTrainingData; both
+  // entry points size it because either can be the only one a flow calls).
+  // Slot rows span the FULL histogram (positions are global per partition,
+  // so partitions own disjoint ranges of each row).
+  const std::vector<uint32_t>& dense_part_offsets = cuda_row_data_->host_partition_hist_offsets();
+  const uint32_t dense_stride = dense_part_offsets.empty() ? 0u : (dense_part_offsets.back() << 1);
+  det_dense_slot_stride_ = dense_stride;
+  if (!use_quantized_grad_ && dense_stride > 0) {
+    const size_t per_row = static_cast<size_t>(dense_stride) * sizeof(hist_t);
+    det_dense_dy_ = std::max(1, std::min<int>(kDetDenseDyCap,
+        static_cast<int>(kDetDenseSlotBudget / (static_cast<size_t>(kDetTileCap) * per_row))));
+    cuda_det_dense_slots_.Resize(static_cast<size_t>(kNumHistPipelines) * kDetTileCap * det_dense_dy_ * dense_stride);
+  } else {
+    det_dense_dy_ = 0;
+  }
+
   // fp32-pair global histograms: dense shared-memory non-quantized layout only
   // (sparse / large-bin construct kernels and the categorical find path stay
   // hist_t and are excluded)
@@ -923,8 +937,15 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   // per-leaf kernels after histogram construction/subtraction without a device sync.
   // One (stream, event-pair) pipeline per concurrently-processed sibling pair.
   pipeline_streams_[0] = cuda_stream_;
+  // FALCATA_SINGLE_STREAM (diagnostic): alias every pipeline to the main
+  // stream, removing all cross-stream event ordering from the flow.
+  const bool single_stream = std::getenv("FALCATA_SINGLE_STREAM") != nullptr;
   for (int p = 1; p < kNumHistPipelines; ++p) {
-    CUDASUCCESS_OR_FATAL(cudaStreamCreate(&pipeline_streams_[p]));
+    if (single_stream) {
+      pipeline_streams_[p] = cuda_stream_;
+    } else {
+      CUDASUCCESS_OR_FATAL(cudaStreamCreate(&pipeline_streams_[p]));
+    }
   }
   for (int p = 0; p < kNumHistPipelines; ++p) {
     CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&construct_done_events_[p], cudaEventDisableTiming));
@@ -1225,6 +1246,28 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
 
   cuda_row_data_.reset(new CUDARowData(train_data, share_states, gpu_device_id_, gpu_use_dp_));
   cuda_row_data_->Init(train_data, share_states);
+
+  // Deterministic dense-construct scratch: sized from the widest partition's
+  // item count once the row data exists. Non-quantized only; quantized
+  // training keeps its order-invariant integer atomics.
+  // Slot rows span the FULL histogram (positions are global per partition,
+  // so partitions own disjoint ranges of each row).
+  const std::vector<uint32_t>& dense_part_offsets = cuda_row_data_->host_partition_hist_offsets();
+  const uint32_t dense_stride = dense_part_offsets.empty() ? 0u : (dense_part_offsets.back() << 1);
+  det_dense_slot_stride_ = dense_stride;
+  if (!use_quantized_grad_ && dense_stride > 0) {
+    const size_t per_row = static_cast<size_t>(dense_stride) * sizeof(hist_t);
+    det_dense_dy_ = std::max(1, std::min<int>(kDetDenseDyCap,
+        static_cast<int>(kDetDenseSlotBudget / (static_cast<size_t>(kDetTileCap) * per_row))));
+    // One region per histogram pipeline: pipelined pair-constructs run on
+    // different pipeline streams, so a shared region would let one
+    // construct's slot rows overwrite another's before its merge reads them
+    // (same failure mode the sparse tile partials needed per-pipeline
+    // regions for). Worst case 4x the slot budget.
+    cuda_det_dense_slots_.Resize(static_cast<size_t>(kNumHistPipelines) * kDetTileCap * det_dense_dy_ * dense_stride);
+  } else {
+    det_dense_dy_ = 0;
+  }
 
   hist_fp32_ = FalcataFP32HistRequested() && !use_quantized_grad_ && !gpu_use_dp_ &&
     !cuda_row_data_->is_sparse() && cuda_row_data_->NumLargeBinPartition() == 0 &&

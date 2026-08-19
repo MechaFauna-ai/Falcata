@@ -7,8 +7,7 @@ This page contains parameters tuning guides for different scenarios.
 
 -  `Parameters <./Parameters.rst>`__
 -  `Python API <./Python-API.rst>`__
--  `FLAML`_ for automated hyperparameter tuning
--  `Optuna`_ for automated hyperparameter tuning
+-  Generic hyperparameter tuners such as `Optuna <https://optuna.org>`__ work with Falcata like with any estimator; their built-in LightGBM integrations (Optuna's ``LightGBMTuner``, `FLAML <https://github.com/microsoft/FLAML>`__'s ``lgbm`` estimator) target upstream LightGBM and do not work with Falcata
 
 Tune Parameters for the Leaf-wise (Best-first) Tree
 ---------------------------------------------------
@@ -232,7 +231,3 @@ Deal with Over-fitting
 -  Try ``extra_trees``
 
 -  Try increasing ``path_smooth``
-
-.. _Optuna: https://medium.com/optuna/lightgbm-tuner-new-optuna-integration-for-hyperparameter-optimization-8b7095e99258
-
-.. _FLAML: https://github.com/microsoft/FLAML
