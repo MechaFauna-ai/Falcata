@@ -3349,6 +3349,13 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
       Log::Warning("No further splits with positive gain, training stopped with %d leaves.", (i + 1));
       break;
     }
+    if (std::getenv("FALCATA_DEBUG_SPLITS") != nullptr) {
+      CUDASplitInfo dbg;
+      CopyFromCUDADeviceToHost<CUDASplitInfo>(&dbg, best_split_info, 1, __FILE__, __LINE__);
+      fprintf(stderr, "CUDASPLIT leaf=%d feat=%d thr=%u gain=%.17g slg=%.17g slh=%.17g lc=%d rc=%d\n",
+              best_leaf_index_, dbg.inner_feature_index, dbg.threshold, dbg.gain,
+              dbg.left_sum_gradients, dbg.left_sum_hessians, dbg.left_count, dbg.right_count);
+    }
 
     global_timer.Start("CUDASingleGPUTreeLearner::Split");
     if (num_cat_threshold_ > 0) {

@@ -280,6 +280,20 @@ void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
   }
   CHECK_EQ(cur_task_index, static_cast<int>(split_find_tasks_.size()));
 
+  // Task order IS the tie-break order: every best-split reduction breaks exact
+  // gain ties to the lower task index. The CUDA dataset's inner feature order
+  // is a storage permutation (its grouping differs from the CPU dataset's), so
+  // ordering tasks by REAL feature index makes cross-feature plateau ties
+  // resolve like CPU's feature scan whenever CPU's scan order is the real
+  // order (it is unless CPU bundled features). Stable: a feature's own tasks
+  // keep their direction order, which already matches CPU's within-feature
+  // evaluation order.
+  std::stable_sort(split_find_tasks_.begin(), split_find_tasks_.end(),
+    [this](const SplitFindTask& a, const SplitFindTask& b) {
+      return real_feature_index_[a.inner_feature_index] <
+             real_feature_index_[b.inner_feature_index];
+    });
+
   SetTaskFeaturePenalties();
 
   if (extra_trees_) {

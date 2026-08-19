@@ -140,19 +140,25 @@ __device__ __forceinline__ constexpr double GainTieEpsilon<double>() { return 2.
 template <>
 __device__ __forceinline__ constexpr float GainTieEpsilon<float>() { return 1.19209290e-07f; }
 
-// Relative tolerance for gain-tie detection in the best-split reductions.
-// Two gains within this relative band are treated as a plateau; the reduction
-// tie-breaks to the lower thread index, which corresponds to the lower bin index
-// (for REVERSE tasks, lower thread index is earlier in CPU's reverse scan) --
-// matching CPU's "first candidate in scan order wins" on a strict-'>' scan.
-// Sized at ~5000x the GAIN type's epsilon, well above the reduction-order FP
-// noise (~1e-15 fp64 / ~1e-7 fp32) but well below any genuine gain difference
-// seen in practice. Type-dependent so that under FALCATA_FP32_GAIN the band is
-// float-appropriate (~6e-4) instead of the fixed 1e-12, which is below float
-// epsilon and would degenerate to exact equality, re-exposing the plateau bug.
-// Note the comparison is intentionally non-transitive: a chain of near-ties
-// spanning more than one tolerance band can still be pairing-dependent in a tree
-// reduction. With this ~5000x-epsilon band that is theoretical, not observed.
+// Gain-tie handling in the best-split reductions: ties break to the lower
+// thread index, which corresponds to the lower bin index (for REVERSE tasks,
+// lower thread index is earlier in CPU's reverse scan) -- matching CPU's
+// "first candidate in scan order wins" on a strict-'>' scan.
+//
+// In fp64 gain arithmetic the tie test is EXACT equality: the deterministic
+// constructs make both devices' histogram sums bit-equal, so equal candidates
+// produce bit-equal gains and (gain desc, index asc) is a TOTAL ORDER -- the
+// tree reduction is pairing-independent and lands on the same candidate CPU's
+// sequential scan does. A tolerance band here would break transitivity: a
+// chain of near-ties spanning more than one band lets a higher-index
+// candidate win without ever comparing against the true (lower-index) winner
+// -- observed as the #308-class plateau divergence, where a 2^-42 noise-gain
+// tie went to feature 2 while CPU took feature 0.
+//
+// Under FALCATA_FP32_GAIN the gains themselves are float-noisy, so exact
+// equality would degenerate to "never ties" and re-expose the plateau bug;
+// the fp32 specialization keeps a ~5000-epsilon band (~6e-4 relative) --
+// non-transitive in theory, but fp32 gain mode holds no bit-parity contract.
 //
 // The same helper flows through ReduceBestGain (warp + block reductions) into
 // every path -- the classic per-leaf kernels, the batched level kernels, the
@@ -162,10 +168,42 @@ __device__ __forceinline__ constexpr float GainTieEpsilon<float>() { return 1.19
 // direction-minor (InitCUDAFeatureMetaInfo), so a cross-feature plateau
 // tie-breaks to the lower feature index, matching the order CPU scans features.
 template <typename GAIN_T>
+__device__ __forceinline__ constexpr GAIN_T GainTieRelTol();
+template <>
+__device__ __forceinline__ constexpr double GainTieRelTol<double>() { return 0.0; }
+template <>
+__device__ __forceinline__ constexpr float GainTieRelTol<float>() {
+  return 5.0e3f * GainTieEpsilon<float>();
+}
+
+// CPU-order inclusive prefix sum: one thread accumulates lanes 0..i
+// sequentially, bit-matching the CPU finder's threshold scan. The shuffle
+// scan's tree-shaped addition order is not bit-equal to sequential
+// accumulation, and on plateau (cancellation-noise) gains those low bits
+// decide the argmax -- device-vs-host parity needs the same bits, not the
+// same tolerance class. Serving the fp64 gain path only: quantized prefixes
+// are integer (order-invariant) and fp32 gain mode holds no parity contract,
+// so both keep the parallel scan.
+template <typename T>
+__device__ __forceinline__ T SequentialPrefixSum(T value, T* row_buffer) {
+  __syncthreads();  // previous users of row_buffer may still be reading
+  row_buffer[threadIdx.x] = value;
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    T acc = row_buffer[0];
+    for (unsigned int i = 1; i < blockDim.x; ++i) {
+      acc += row_buffer[i];
+      row_buffer[i] = acc;
+    }
+  }
+  __syncthreads();
+  return row_buffer[threadIdx.x];
+}
+
+template <typename GAIN_T>
 __device__ __forceinline__ bool OtherIsBetterWithTieBreak(
     GAIN_T other_gain, GAIN_T gain, uint32_t other_thread_index, uint32_t thread_index) {
-  constexpr GAIN_T kRelTol = static_cast<GAIN_T>(5.0e3) * GainTieEpsilon<GAIN_T>();
-  const GAIN_T tol = fmax(fabs(gain), fabs(other_gain)) * kRelTol;
+  const GAIN_T tol = fmax(fabs(gain), fabs(other_gain)) * GainTieRelTol<GAIN_T>();
   if (other_gain > gain + tol) {
     return true;
   }
@@ -237,7 +275,9 @@ __device__ void ReduceBestGainForLeaves(double* gain, int* leaves, int cuda_cur_
   for (unsigned int s = 1; s < cuda_cur_num_leaves; s *= 2) {
     if (tid % (2 * s) == 0 && (tid + s) < cuda_cur_num_leaves) {
       const uint32_t tid_s = tid + s;
-      if ((leaves[tid] == -1 && leaves[tid_s] != -1) || (leaves[tid] != -1 && leaves[tid_s] != -1 && gain[tid_s] > gain[tid])) {
+      if ((leaves[tid] == -1 && leaves[tid_s] != -1) ||
+          (leaves[tid] != -1 && leaves[tid_s] != -1 &&
+           (gain[tid_s] > gain[tid] || (gain[tid_s] == gain[tid] && leaves[tid_s] < leaves[tid])))) {
         gain[tid] = gain[tid_s];
         leaves[tid] = leaves[tid_s];
       }
@@ -246,13 +286,30 @@ __device__ void ReduceBestGainForLeaves(double* gain, int* leaves, int cuda_cur_
   }
 }
 
+// Gain ties break to the LOWER leaf index: CPU's ArgMax over
+// best_split_per_leaf_ keeps the first (lowest-index) leaf on a strict-'>'
+// scan, and (gain desc, leaf asc) is a total order, so the shuffle reduction
+// is pairing-independent. Without the index tie-break, "keep own on tie"
+// crowns whichever tied leaf happens to travel up the reduction lanes --
+// observed as the #308-class cross-leaf plateau divergence.
+__device__ __forceinline__ bool OtherLeafIsBetter(
+    double other_gain, double gain, int other_leaf_index, int leaf_index) {
+  if (leaf_index == -1) {
+    return other_leaf_index != -1;
+  }
+  if (other_leaf_index == -1) {
+    return false;
+  }
+  return other_gain > gain || (other_gain == gain && other_leaf_index < leaf_index);
+}
+
 __device__ void ReduceBestGainForLeavesWarp(double gain, int leaf_index, double* out_gain, int* out_leaf_index) {
   const uint32_t mask = 0xffffffff;
   const uint32_t warpLane = threadIdx.x % warpSize;
   for (uint32_t offset = warpSize / 2; offset > 0; offset >>= 1) {
     const int other_leaf_index = __shfl_down_sync(mask, leaf_index, offset);
     const double other_gain = __shfl_down_sync(mask, gain, offset);
-    if ((leaf_index != -1 && other_leaf_index != -1 && other_gain > gain) || (leaf_index == -1 && other_leaf_index != -1)) {
+    if (OtherLeafIsBetter(other_gain, gain, other_leaf_index, leaf_index)) {
       gain = other_gain;
       leaf_index = other_leaf_index;
     }
@@ -268,7 +325,7 @@ __device__ int ReduceBestGainForLeavesBlock(double gain, int leaf_index) {
   for (uint32_t offset = warpSize / 2; offset > 0; offset >>= 1) {
     const int other_leaf_index = __shfl_down_sync(mask, leaf_index, offset);
     const double other_gain = __shfl_down_sync(mask, gain, offset);
-    if ((leaf_index != -1 && other_leaf_index != -1 && other_gain > gain) || (leaf_index == -1 && other_leaf_index != -1)) {
+    if (OtherLeafIsBetter(other_gain, gain, other_leaf_index, leaf_index)) {
       gain = other_gain;
       leaf_index = other_leaf_index;
     }
@@ -389,14 +446,36 @@ __device__ void FindBestSplitsForLeafKernelInner(
     local_hess_hist += kEpsilon;
   }
   local_gain = kMinScore;
-  local_grad_hist = ShufflePrefixSum(local_grad_hist, shared_gain_buffer);
-  __syncthreads();
-  local_hess_hist = ShufflePrefixSum(local_hess_hist, shared_gain_buffer);
+  data_size_t local_cnt_prefix = 0;
+  if (sizeof(GAIN_T) == sizeof(double)) {
+    // fp64 gains: CPU-order scans (see SequentialPrefixSum) -- plateau
+    // (cancellation-noise) gains rank by their low bits, so the prefix must
+    // carry CPU's exact fold order. The count prefix sums PER-BIN roundings
+    // like CPU's scan (right_count += RoundInt(hess * cnt_factor) each bin,
+    // feature_histogram.hpp) -- rounding the summed hessian instead can
+    // differ by a count, and the count feeds min_data_in_leaf gating and the
+    // stored child counts; integer addends are order-invariant, so the
+    // shuffle scan serves them bit-exactly. (Bin 0's kEpsilon shifts its
+    // product by ~1e-15, which never moves RoundInt in practice.)
+    __shared__ GAIN_T seq_prefix_buffer[NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER];
+    const data_size_t local_bin_cnt = static_cast<data_size_t>(
+      CUDARoundInt(static_cast<double>(local_hess_hist) * static_cast<double>(cnt_factor)));
+    local_cnt_prefix = ShufflePrefixSum<data_size_t>(
+      local_bin_cnt, reinterpret_cast<data_size_t*>(shared_gain_buffer));
+    local_grad_hist = SequentialPrefixSum<GAIN_T>(local_grad_hist, seq_prefix_buffer);
+    local_hess_hist = SequentialPrefixSum<GAIN_T>(local_hess_hist, seq_prefix_buffer);
+  } else {
+    local_grad_hist = ShufflePrefixSum(local_grad_hist, shared_gain_buffer);
+    __syncthreads();
+    local_hess_hist = ShufflePrefixSum(local_hess_hist, shared_gain_buffer);
+  }
   if (REVERSE) {
     if (threadIdx_x >= static_cast<unsigned int>(task->na_as_missing) && threadIdx_x <= task->num_bin - 2 && !skip_sum) {
       const GAIN_T sum_right_gradient = local_grad_hist;
       const GAIN_T sum_right_hessian = local_hess_hist;
-      const data_size_t right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
+      const data_size_t right_count = sizeof(GAIN_T) == sizeof(double) ?
+        local_cnt_prefix :
+        static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
       const GAIN_T sum_left_gradient = sum_gradients_acc - sum_right_gradient;
       const GAIN_T sum_left_hessian = sum_hessians_acc - sum_right_hessian;
       const data_size_t left_count = num_data - right_count;
@@ -426,7 +505,9 @@ __device__ void FindBestSplitsForLeafKernelInner(
     if (threadIdx_x <= end && !skip_sum) {
       const GAIN_T sum_left_gradient = local_grad_hist;
       const GAIN_T sum_left_hessian = local_hess_hist;
-      const data_size_t left_count = static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
+      const data_size_t left_count = sizeof(GAIN_T) == sizeof(double) ?
+        local_cnt_prefix :
+        static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
       const GAIN_T sum_right_gradient = sum_gradients_acc - sum_left_gradient;
       const GAIN_T sum_right_hessian = sum_hessians_acc - sum_left_hessian;
       const data_size_t right_count = num_data - left_count;
@@ -467,51 +548,21 @@ __device__ void FindBestSplitsForLeafKernelInner(
     cuda_best_split_info->default_left = task->assume_out_default_left;
     // the once-per-task output block stays in double (negligible cost)
     if (REVERSE) {
-      const double sum_right_gradient = static_cast<double>(local_grad_hist);
-      const double sum_right_hessian = static_cast<double>(local_hess_hist) - kEpsilon;
-      const data_size_t right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * static_cast<double>(cnt_factor)));
-      const double sum_left_gradient = sum_gradients - sum_right_gradient;
-      const double sum_left_hessian = sum_hessians - sum_right_hessian - kEpsilon;
-      const data_size_t left_count = num_data - right_count;
-      // Unconstrained outputs first (max_delta_step cap included). The leaf VALUE
-      // is clamped into the constraint range (MC), but the leaf GAIN stored for
-      // future splits must stay unconstrained: it becomes the child's parent_gain
-      // / min_gain_shift baseline, and the CPU reference (BeforeNumerical)
-      // recomputes that baseline as the unconstrained GetLeafGain of the leaf's
-      // sums. The max_delta_step cap is part of the analytic (unconstrained)
-      // output, applied before the MC clamp, matching the CPU ordering.
-      const double left_output_unconstrained =
-        CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_left_gradient,
-          sum_left_hessian, lambda_l1, lambda_l2, path_smooth, max_delta_step, left_count, parent_output);
-      const double right_output_unconstrained =
-        CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_right_gradient,
-          sum_right_hessian, lambda_l1, lambda_l2, path_smooth, max_delta_step, right_count, parent_output);
-      const double left_output = USE_MC ?
-        (left_output_unconstrained < leaf_constraint_min ? leaf_constraint_min :
-          (left_output_unconstrained > leaf_constraint_max ? leaf_constraint_max : left_output_unconstrained)) :
-        left_output_unconstrained;
-      const double right_output = USE_MC ?
-        (right_output_unconstrained < leaf_constraint_min ? leaf_constraint_min :
-          (right_output_unconstrained > leaf_constraint_max ? leaf_constraint_max : right_output_unconstrained)) :
-        right_output_unconstrained;
-      cuda_best_split_info->left_sum_gradients = sum_left_gradient;
-      cuda_best_split_info->left_sum_hessians = sum_left_hessian;
-      cuda_best_split_info->left_count = left_count;
-      cuda_best_split_info->right_sum_gradients = sum_right_gradient;
-      cuda_best_split_info->right_sum_hessians = sum_right_hessian;
-      cuda_best_split_info->right_count = right_count;
-      cuda_best_split_info->left_value = left_output;
-      cuda_best_split_info->left_gain = CUDALeafSplits::GetLeafGainGivenOutput<USE_L1>(sum_left_gradient,
-        sum_left_hessian, lambda_l1, lambda_l2, left_output_unconstrained);
-      cuda_best_split_info->right_value = right_output;
-      cuda_best_split_info->right_gain = CUDALeafSplits::GetLeafGainGivenOutput<USE_L1>(sum_right_gradient,
-        sum_right_hessian, lambda_l1, lambda_l2, right_output_unconstrained);
-    } else {
-      const double sum_left_gradient = static_cast<double>(local_grad_hist);
-      const double sum_left_hessian = static_cast<double>(local_hess_hist) - kEpsilon;
-      const data_size_t left_count = static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * static_cast<double>(cnt_factor)));
-      const double sum_right_gradient = sum_gradients - sum_left_gradient;
-      const double sum_right_hessian = sum_hessians - sum_left_hessian - kEpsilon;
+      // CPU's output chain (feature_histogram.hpp ~1015): left-basis sums
+      // carry the kEpsilon seed; the stored fields subtract kEpsilon through
+      // EXACTLY the CPU expression sequence, because a different rounding
+      // chain leaves ulp differences in the child sums that snowball into
+      // divergent trees. In fp64 the count is the per-bin-rounding prefix.
+      const double best_sum_left_gradient = sum_gradients - static_cast<double>(local_grad_hist);
+      const double best_sum_left_hessian = sum_hessians - static_cast<double>(local_hess_hist);
+      const data_size_t left_count = sizeof(GAIN_T) == sizeof(double) ?
+        (num_data - local_cnt_prefix) :
+        (num_data - static_cast<data_size_t>(CUDARoundInt(
+          (static_cast<double>(local_hess_hist) - kEpsilon) * static_cast<double>(cnt_factor))));
+      const double sum_left_gradient = best_sum_left_gradient;
+      const double sum_left_hessian = best_sum_left_hessian;
+      const double sum_right_gradient = sum_gradients - best_sum_left_gradient;
+      const double sum_right_hessian = sum_hessians - best_sum_left_hessian;
       const data_size_t right_count = num_data - left_count;
       // Unconstrained outputs first (max_delta_step cap included). The leaf VALUE
       // is clamped into the constraint range (MC), but the leaf GAIN stored for
@@ -535,10 +586,56 @@ __device__ void FindBestSplitsForLeafKernelInner(
           (right_output_unconstrained > leaf_constraint_max ? leaf_constraint_max : right_output_unconstrained)) :
         right_output_unconstrained;
       cuda_best_split_info->left_sum_gradients = sum_left_gradient;
-      cuda_best_split_info->left_sum_hessians = sum_left_hessian;
+      cuda_best_split_info->left_sum_hessians = sum_left_hessian - kEpsilon;
       cuda_best_split_info->left_count = left_count;
       cuda_best_split_info->right_sum_gradients = sum_right_gradient;
-      cuda_best_split_info->right_sum_hessians = sum_right_hessian;
+      cuda_best_split_info->right_sum_hessians = sum_hessians - sum_left_hessian - kEpsilon;
+      cuda_best_split_info->right_count = right_count;
+      cuda_best_split_info->left_value = left_output;
+      cuda_best_split_info->left_gain = CUDALeafSplits::GetLeafGainGivenOutput<USE_L1>(sum_left_gradient,
+        sum_left_hessian, lambda_l1, lambda_l2, left_output_unconstrained);
+      cuda_best_split_info->right_value = right_output;
+      cuda_best_split_info->right_gain = CUDALeafSplits::GetLeafGainGivenOutput<USE_L1>(sum_right_gradient,
+        sum_right_hessian, lambda_l1, lambda_l2, right_output_unconstrained);
+    } else {
+      // CPU's output chain; see the REVERSE branch.
+      const double best_sum_left_gradient = static_cast<double>(local_grad_hist);
+      const double best_sum_left_hessian = static_cast<double>(local_hess_hist);
+      const data_size_t left_count = sizeof(GAIN_T) == sizeof(double) ?
+        local_cnt_prefix :
+        static_cast<data_size_t>(CUDARoundInt(
+          (static_cast<double>(local_hess_hist) - kEpsilon) * static_cast<double>(cnt_factor)));
+      const double sum_left_gradient = best_sum_left_gradient;
+      const double sum_left_hessian = best_sum_left_hessian;
+      const double sum_right_gradient = sum_gradients - best_sum_left_gradient;
+      const double sum_right_hessian = sum_hessians - best_sum_left_hessian;
+      const data_size_t right_count = num_data - left_count;
+      // Unconstrained outputs first (max_delta_step cap included). The leaf VALUE
+      // is clamped into the constraint range (MC), but the leaf GAIN stored for
+      // future splits must stay unconstrained: it becomes the child's parent_gain
+      // / min_gain_shift baseline, and the CPU reference (BeforeNumerical)
+      // recomputes that baseline as the unconstrained GetLeafGain of the leaf's
+      // sums. The max_delta_step cap is part of the analytic (unconstrained)
+      // output, applied before the MC clamp, matching the CPU ordering.
+      const double left_output_unconstrained =
+        CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_left_gradient,
+          sum_left_hessian, lambda_l1, lambda_l2, path_smooth, max_delta_step, left_count, parent_output);
+      const double right_output_unconstrained =
+        CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_right_gradient,
+          sum_right_hessian, lambda_l1, lambda_l2, path_smooth, max_delta_step, right_count, parent_output);
+      const double left_output = USE_MC ?
+        (left_output_unconstrained < leaf_constraint_min ? leaf_constraint_min :
+          (left_output_unconstrained > leaf_constraint_max ? leaf_constraint_max : left_output_unconstrained)) :
+        left_output_unconstrained;
+      const double right_output = USE_MC ?
+        (right_output_unconstrained < leaf_constraint_min ? leaf_constraint_min :
+          (right_output_unconstrained > leaf_constraint_max ? leaf_constraint_max : right_output_unconstrained)) :
+        right_output_unconstrained;
+      cuda_best_split_info->left_sum_gradients = sum_left_gradient;
+      cuda_best_split_info->left_sum_hessians = sum_left_hessian - kEpsilon;
+      cuda_best_split_info->left_count = left_count;
+      cuda_best_split_info->right_sum_gradients = sum_right_gradient;
+      cuda_best_split_info->right_sum_hessians = sum_hessians - sum_left_hessian - kEpsilon;
       cuda_best_split_info->right_count = right_count;
       cuda_best_split_info->left_value = left_output;
       cuda_best_split_info->left_gain = CUDALeafSplits::GetLeafGainGivenOutput<USE_L1>(sum_left_gradient,
@@ -942,7 +1039,6 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
     __shared__ double shared_value_buffer[NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER];
     __shared__ int16_t shared_index_buffer[NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER];
     __shared__ uint16_t shared_mem_buffer_uint16[WARPSIZE];
-    __shared__ double shared_mem_buffer_double[WARPSIZE];
     __shared__ data_size_t shared_mem_buffer_cnt[WARPSIZE];
     __shared__ data_size_t shared_count_buffer[NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER];
     __shared__ int used_bin;
@@ -951,6 +1047,10 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
     int best_dir = 0;
     double best_sum_left_gradient = 0.0f;
     double best_sum_left_hessian = 0.0f;
+    // Registered per thread: the count buffers hold only the LAST pass's
+    // prefixes at write-out time, so the winning pass's count must ride along
+    // with the other best_* registers.
+    data_size_t best_left_count = 0;
     if (threadIdx_x >= bin_start && threadIdx_x < bin_end) {
       const double hess = hist_reader.Hess(threadIdx_x);
       if (CUDARoundInt(hess * cnt_factor) >= cat_smooth) {
@@ -1013,10 +1113,11 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
       hess += kEpsilon;
     }
     __syncthreads();
-    double sum_left_gradient = ShufflePrefixSum<double>(grad, shared_mem_buffer_double);
-    __syncthreads();
-    double sum_left_hessian = ShufflePrefixSum<double>(hess, shared_mem_buffer_double);
-    __syncthreads();
+    // CPU-order scans (see SequentialPrefixSum); shared_value_buffer is free
+    // scratch here -- its prefix contents are (re)stored right below. The
+    // count prefix stays a shuffle scan: integer sums are order-invariant.
+    double sum_left_gradient = SequentialPrefixSum<double>(grad, shared_value_buffer);
+    double sum_left_hessian = SequentialPrefixSum<double>(hess, shared_value_buffer);
     data_size_t left_count_prefix =
       ShufflePrefixSum<data_size_t>(cat_cnt, shared_mem_buffer_cnt);
     __syncthreads();
@@ -1046,6 +1147,7 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
           best_dir = 1;
           best_sum_left_gradient = sum_left_gradient;
           best_sum_left_hessian = sum_left_hessian;
+          best_left_count = left_count;
         }
       }
     }
@@ -1065,10 +1167,8 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
       hess += kEpsilon;
     }
     __syncthreads();
-    sum_left_gradient = ShufflePrefixSum<double>(grad, shared_mem_buffer_double);
-    __syncthreads();
-    sum_left_hessian = ShufflePrefixSum<double>(hess, shared_mem_buffer_double);
-    __syncthreads();
+    sum_left_gradient = SequentialPrefixSum<double>(grad, shared_value_buffer);
+    sum_left_hessian = SequentialPrefixSum<double>(hess, shared_value_buffer);
     left_count_prefix = ShufflePrefixSum<data_size_t>(cat_cnt, shared_mem_buffer_cnt);
     __syncthreads();
     if (threadIdx_x < num_cat_thresholds) {
@@ -1097,6 +1197,7 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
           best_dir = -1;
           best_sum_left_gradient = sum_left_gradient;
           best_sum_left_hessian = sum_left_hessian;
+          best_left_count = left_count;
         }
       }
     }
@@ -1143,8 +1244,10 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
       const double sum_left_hessian = best_sum_left_hessian;
       // CPU stores the sum of per-category roundings; the child leaf inherits
       // this count, so rounding the summed hessian here diverges from CPU by
-      // a category and shifts every child decision.
-      const data_size_t left_count = shared_count_buffer[threadIdx_x];
+      // a category and shifts every child decision. The count comes from the
+      // winning pass's register: shared_count_buffer holds only the
+      // right-to-left prefixes by now.
+      const data_size_t left_count = best_left_count;
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
       const data_size_t right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
@@ -1210,11 +1313,20 @@ __global__ void FindBestSplitsForLeafKernel(
   const unsigned int task_index = blockIdx.x;
   const SplitFindTask* task = tasks + task_index;
   const int inner_feature_index = task->inner_feature_index;
-  const double parent_gain = IS_LARGER ? larger_leaf_splits->gain : smaller_leaf_splits->gain;
   const double sum_gradients = IS_LARGER ? larger_leaf_splits->sum_of_gradients : smaller_leaf_splits->sum_of_gradients;
   const double sum_hessians = (IS_LARGER ? larger_leaf_splits->sum_of_hessians : smaller_leaf_splits->sum_of_hessians) + 2 * kEpsilon;
   const data_size_t num_data = IS_LARGER ? global_num_data_in_larger_leaf : global_num_data_in_smaller_leaf;
   const double parent_output = IS_LARGER ? larger_leaf_splits->leaf_value : smaller_leaf_splits->leaf_value;
+  // CPU recomputes the parent's gain from the leaf sums at find time
+  // (feature_histogram.hpp gain_shift); the leaf struct's stored gain is the
+  // same quantity through GetLeafGainGivenOutput, whose low bits differ -- and
+  // a min_gain_shift off by one noise quantum flips split VALIDITY and
+  // ranking on plateau gains. Same formula from the same sums, same bits.
+  // (The discretized kernels keep the stored gain: the quantized flow has its
+  // own shift semantics and no CPU bit-parity contract.)
+  const double parent_gain = CUDALeafSplits::GetLeafGain<USE_L1, USE_SMOOTHING>(
+      sum_gradients, sum_hessians, lambda_l1, lambda_l2, path_smooth,
+      max_delta_step, num_data, parent_output);
   const unsigned int output_offset = IS_LARGER ? (task_index + num_tasks) : task_index;
   CUDASplitInfo* out = cuda_best_split_info + output_offset;
   CUDARandom* cuda_random = USE_RAND ?
@@ -1957,6 +2069,10 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
     int best_dir = 0;
     double best_sum_left_gradient = 0.0f;
     double best_sum_left_hessian = 0.0f;
+    // Registered per thread: the count buffer holds only the LAST pass's
+    // prefixes at write-out time, so the winning pass's count must ride along
+    // with the other best_* registers.
+    data_size_t best_left_count = 0;
     // Grid-stride over every bin: thread t owns bins t, t + blockDim, ... The
     // original loop started at bin = 0 for every thread, so it only ever touched
     // bins that are multiples of blockDim and raced on the writes -- leaving most
@@ -2066,6 +2182,7 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
           best_sum_left_gradient = sum_left_gradient;
           best_sum_left_hessian = sum_left_hessian;
           best_threshold = bin;
+          best_left_count = left_count;
         }
       }
     }
@@ -2114,6 +2231,7 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
           best_sum_left_gradient = sum_left_gradient;
           best_sum_left_hessian = sum_left_hessian;
           best_threshold = bin;
+          best_left_count = left_count;
         }
       }
     }
@@ -2144,7 +2262,9 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
       const hist_t sum_left_gradient = best_sum_left_gradient;
       const hist_t sum_left_hessian = best_sum_left_hessian;
       // CPU stores the sum of per-category roundings (see the shared variant).
-      const data_size_t left_count = hist_cnt_buffer_ptr[best_threshold];
+      // The count comes from the winning pass's register: the cnt buffer holds
+      // only the right-to-left prefixes by now.
+      const data_size_t left_count = best_left_count;
       const double sum_right_gradient = sum_gradients - sum_left_gradient;
       const double sum_right_hessian = sum_hessians - sum_left_hessian;
       const data_size_t right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
@@ -2215,11 +2335,20 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
   const double leaf_constraint_max = IS_LARGER ? larger_leaf_constraint_max : smaller_leaf_constraint_max;
   const unsigned int task_index = blockIdx.x;
   const SplitFindTask* task = tasks + task_index;
-  const double parent_gain = IS_LARGER ? larger_leaf_splits->gain : smaller_leaf_splits->gain;
   const double sum_gradients = IS_LARGER ? larger_leaf_splits->sum_of_gradients : smaller_leaf_splits->sum_of_gradients;
   const double sum_hessians = (IS_LARGER ? larger_leaf_splits->sum_of_hessians : smaller_leaf_splits->sum_of_hessians) + 2 * kEpsilon;
   const data_size_t num_data = IS_LARGER ? global_num_data_in_larger_leaf : global_num_data_in_smaller_leaf;
   const double parent_output = IS_LARGER ? larger_leaf_splits->leaf_value : smaller_leaf_splits->leaf_value;
+  // CPU recomputes the parent's gain from the leaf sums at find time
+  // (feature_histogram.hpp gain_shift); the leaf struct's stored gain is the
+  // same quantity through GetLeafGainGivenOutput, whose low bits differ -- and
+  // a min_gain_shift off by one noise quantum flips split VALIDITY and
+  // ranking on plateau gains. Same formula from the same sums, same bits.
+  // (The discretized kernels keep the stored gain: the quantized flow has its
+  // own shift semantics and no CPU bit-parity contract.)
+  const double parent_gain = CUDALeafSplits::GetLeafGain<USE_L1, USE_SMOOTHING>(
+      sum_gradients, sum_hessians, lambda_l1, lambda_l2, path_smooth,
+      max_delta_step, num_data, parent_output);
   const unsigned int output_offset = IS_LARGER ? (task_index + num_tasks) : task_index;
   CUDASplitInfo* out = cuda_best_split_info + output_offset;
   CUDARandom* cuda_random = USE_RAND ?
@@ -2731,10 +2860,14 @@ __global__ void FindBestSplitsForLevelKernel(
   const unsigned int task_index = used_task_indices == nullptr ?
     blockIdx.x : static_cast<unsigned int>(used_task_indices[blockIdx.x]);
   const SplitFindTask* task = tasks + task_index;
-  const double parent_gain = leaf_splits->gain;
   const double sum_gradients = leaf_splits->sum_of_gradients;
   const double sum_hessians = leaf_sum_hessians + 2 * kEpsilon;
   const double parent_output = leaf_splits->leaf_value;
+  // Recompute the parent's gain from the leaf sums, matching CPU's gain_shift
+  // (see FindBestSplitsForLeafKernel for the full rationale).
+  const double parent_gain = CUDALeafSplits::GetLeafGain<USE_L1, USE_SMOOTHING>(
+      sum_gradients, sum_hessians, lambda_l1, lambda_l2, path_smooth,
+      max_delta_step, num_data, parent_output);
   const unsigned int output_offset = pair_index * (2 * static_cast<unsigned int>(num_tasks)) +
     (is_larger ? task_index + num_tasks : task_index);
   CUDASplitInfo* out = cuda_best_split_info + output_offset;

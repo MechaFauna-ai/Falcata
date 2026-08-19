@@ -2431,7 +2431,6 @@ __device__ __forceinline__ void FixHistogramInner(
   const unsigned int blockIdx_x = fix_feature_index >= 0 ?
     static_cast<unsigned int>(fix_feature_index) : blockIdx.x;
   const int feature_index = cuda_need_fix_histogram_features[blockIdx_x];
-  const uint32_t num_bin_aligned = cuda_need_fix_histogram_features_num_bin_aligned[blockIdx_x];
   const uint32_t feature_hist_offset = cuda_feature_hist_offsets[feature_index];
   const uint32_t most_freq_bin = cuda_feature_most_freq_bins[feature_index];
   const double leaf_sum_gradients = cuda_smaller_leaf_splits->sum_of_gradients;
@@ -2440,25 +2439,37 @@ __device__ __forceinline__ void FixHistogramInner(
   float* feature_hist32 = reinterpret_cast<float*>(cuda_smaller_leaf_splits->hist_in_leaf) + feature_hist_offset * 2;
   const unsigned int threadIdx_x = threadIdx.x;
   const uint32_t num_bin = cuda_feature_num_bins[feature_index];
-  // Block-strided accumulation: one-bin-per-thread capped the fix at blockDim.x
-  // (512) bins -- for wider features the un-read tail bins stayed OUT of the
-  // partial sum, so the most-frequent-bin patch (leaf_sum - partial) re-injected
-  // their mass and inflated the histogram total by exactly the missed tail
-  // (and num_bin_aligned > blockDim.x made the reduction read stale shared
-  // memory). The strided loop is exact for any bin count and any block size.
-  // the reduction stays hist_t/double in both storage layouts
-  hist_t bin_gradient = 0.0f;
-  hist_t bin_hessian = 0.0f;
-  for (uint32_t bin = threadIdx_x; bin < num_bin; bin += blockDim.x) {
-    if (bin != most_freq_bin) {
-      const uint32_t hist_pos = bin << 1;
-      bin_gradient += (hist_fp32 ? static_cast<hist_t>(feature_hist32[hist_pos]) : feature_hist[hist_pos]);
-      bin_hessian += (hist_fp32 ? static_cast<hist_t>(feature_hist32[hist_pos + 1]) : feature_hist[hist_pos + 1]);
+  // Sequential accumulation in ascending bin order: CPU's FixHistogram sums
+  // the non-mfb bins in bin order, and the reconstructed most-frequent bin
+  // must be bit-equal to CPU's or every threshold prefix crossing it inherits
+  // the ulp difference. Bins are STAGED into shared memory cooperatively
+  // (coalesced) so thread 0's order-exact fold reads shared, not a dependent
+  // chain of global loads; chunking keeps it exact for any bin count. (The
+  // discretized fix keeps its parallel reduction: integer sums are
+  // order-invariant. shared_mem_buffer stays a parameter for that variant's
+  // shared call signature.)
+  (void)shared_mem_buffer;
+  constexpr uint32_t kFixStageChunk = 256;
+  __shared__ double fix_stage[2 * kFixStageChunk];
+  hist_t sum_gradient = 0.0f;
+  hist_t sum_hessian = 0.0f;
+  for (uint32_t chunk_start = 0; chunk_start < num_bin; chunk_start += kFixStageChunk) {
+    const uint32_t chunk = min(kFixStageChunk, num_bin - chunk_start);
+    __syncthreads();
+    for (uint32_t i = threadIdx_x; i < (chunk << 1); i += blockDim.x) {
+      const uint32_t pos = (chunk_start << 1) + i;
+      fix_stage[i] = hist_fp32 ? static_cast<hist_t>(feature_hist32[pos]) : feature_hist[pos];
+    }
+    __syncthreads();
+    if (threadIdx_x == 0) {
+      for (uint32_t b = 0; b < chunk; ++b) {
+        if (chunk_start + b != most_freq_bin) {
+          sum_gradient += fix_stage[b << 1];
+          sum_hessian += fix_stage[(b << 1) + 1];
+        }
+      }
     }
   }
-  const uint32_t reduce_len = num_bin_aligned < blockDim.x ? num_bin_aligned : blockDim.x;
-  const hist_t sum_gradient = ShuffleReduceSum<hist_t>(bin_gradient, shared_mem_buffer, reduce_len);
-  const hist_t sum_hessian = ShuffleReduceSum<hist_t>(bin_hessian, shared_mem_buffer, reduce_len);
   if (threadIdx_x == 0) {
     const hist_t fixed_gradient = leaf_sum_gradients - sum_gradient;
     const hist_t fixed_hessian = leaf_sum_hessians - sum_hessian;

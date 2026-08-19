@@ -11,6 +11,8 @@
 #include <Falcata/utils/common.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <queue>
 #include <set>
@@ -233,6 +235,13 @@ Tree* SerialTreeLearner::Train(const score_t* gradients, const score_t *hessians
     int best_leaf = static_cast<int>(ArrayArgs<SplitInfo>::ArgMax(best_split_per_leaf_));
     // Get split information for best leaf
     const SplitInfo& best_leaf_SplitInfo = best_split_per_leaf_[best_leaf];
+    if (std::getenv("FALCATA_DEBUG_SPLITS") != nullptr) {
+      fprintf(stderr, "CPUSPLIT leaf=%d feat=%d thr=%u gain=%.17g slg=%.17g slh=%.17g lc=%d rc=%d\n",
+              best_leaf, best_leaf_SplitInfo.feature, best_leaf_SplitInfo.threshold,
+              best_leaf_SplitInfo.gain, best_leaf_SplitInfo.left_sum_gradient,
+              best_leaf_SplitInfo.left_sum_hessian,
+              best_leaf_SplitInfo.left_count, best_leaf_SplitInfo.right_count);
+    }
     // cannot split, quit
     if (best_leaf_SplitInfo.gain <= 0.0) {
       Log::Warning("No further splits with positive gain, best gain: %f", best_leaf_SplitInfo.gain);
