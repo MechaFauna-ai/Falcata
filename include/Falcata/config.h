@@ -260,7 +260,7 @@ struct Config {
   // alias = device
   // desc = device for the tree learning
   // desc = ``cuda`` is Falcata's primary backend: the CUDA-native tree learner (also targets ROCm). This is where Falcata's speed lives -- see `Features <./Features.rst#the-cuda-native-training-pipeline>`__ and the related parameters ``quant_mode``, ``cuda_precision``, ``cuda_plan``
-  // desc = ``cpu`` supports all Falcata functionality and is portable across the widest range of operating systems and hardware
+  // desc = ``cpu`` is the portable full-precision backend and supports the widest range of operating systems and hardware; quantized training requires ``cuda``
   // desc = ``gpu`` is the legacy OpenCL backend inherited from LightGBM; it is not developed here. If you use it: smaller ``max_bin`` (e.g. 63) speeds it up, and it accumulates in 32-bit floats by default (``gpu_use_dp=true`` restores 64-bit at a speed cost)
   // desc = **Note**: on CUDA builds, leaving ``device_type`` unset auto-selects ``cuda`` when a usable GPU is present (a one-time log line reports the choice); pass ``device_type=cpu`` to force CPU training
   // desc = **Note**: refer to `Installation Guide <./Installation-Guide.rst>`__ to build Falcata with CUDA, ROCm, or OpenCL support
@@ -642,7 +642,7 @@ struct Config {
   // desc = enabling this will discretize (quantize) the gradients and hessians into bins of ``num_grad_quant_bins``
   // desc = with quantized training, most arithmetics in the training process will be integer operations
   // desc = gradient quantization can accelerate training, with little accuracy drop in most cases
-  // desc = **Note**: works only with ``cpu`` and ``cuda`` device type
+  // desc = **Note**: works only with ``cuda`` device type; CPU quantized training is rejected because its split finder cannot recover exact row counts from quantized hessians
   // desc = *New in version 4.0.0*
   bool use_quantized_grad = false;
 
@@ -651,7 +651,7 @@ struct Config {
   // desc = ``none``: full-precision (fp64) gradient/hessian accumulation
   // desc = ``stochastic``: Falcata-native quantized training (same as ``use_quantized_grad=true``): stochastic rounding into ``quant_bins`` bins; aggressive speed end of the trade-off
   // desc = ``fixedpoint``: XGBoost-style deterministic fixed-point quantization with an outlier-robust, gap-gated gradient scale; near-lossless at the default 64 bins
-  // desc = **Note**: ``fixedpoint`` works only with ``cuda`` device type
+  // desc = **Note**: ``stochastic`` and ``fixedpoint`` work only with ``cuda`` device type; use ``none`` for CPU training
   std::string quant_mode = "auto";
 
   // alias = quant_bins
@@ -660,7 +660,7 @@ struct Config {
   // desc = number of bins to quantization gradients and hessians
   // desc = with more bins, the quantized training will be closer to full precision training
   // desc = ``0`` means auto: ``4`` for ``stochastic`` (Falcata default), ``64`` for ``fixedpoint``
-  // desc = **Note**: works only with ``cpu`` and ``cuda`` device type
+  // desc = **Note**: quantized training works only with ``cuda`` device type
   // desc = *New in version 4.0.0*
   int num_grad_quant_bins = 0;
 
@@ -668,13 +668,13 @@ struct Config {
   // desc = used only if ``use_quantized_grad=true``
   // desc = whether to renew the leaf values with original gradients when quantized training
   // desc = renewing is very helpful for good quantized training accuracy for ranking objectives
-  // desc = **Note**: works only with ``cpu`` and ``cuda`` device type
+  // desc = **Note**: works only with ``cuda`` device type
   // desc = *New in version 4.0.0*
   bool quant_train_renew_leaf = false;
 
   // desc = used only if ``use_quantized_grad=true``
   // desc = whether to use stochastic rounding in gradient quantization
-  // desc = **Note**: works only with ``cpu`` and ``cuda`` device type
+  // desc = **Note**: works only with ``cuda`` device type
   // desc = *New in version 4.0.0*
   bool stochastic_rounding = true;
 

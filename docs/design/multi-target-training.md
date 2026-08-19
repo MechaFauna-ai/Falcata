@@ -454,7 +454,8 @@ New `RegressionMultiTargetVector` objective (host + `src/objective/cuda/`):
     guards).
   - *Numeric gate:* CPU reference vector-leaf (small, exact) vs CUDA vector-leaf
     ⇒ leaf values within tolerance, identical tree structure (mirror the
-    quantized-gradient CPU/GPU parity harness already in the repo).
+    quantized-CUDA versus full-precision-CPU quality-reference pattern already
+    in the repo).
   - *Quality gate:* **per-era Numerai correlation / MMC**, per target, vs
     sequential baseline — this is a *modeling* change and must be judged on
     validation, not on md5. Report mean and per-era spread.

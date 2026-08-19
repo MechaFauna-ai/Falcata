@@ -11,10 +11,10 @@ and checks each one for:
      and stopped early -- which truncates WHOLE iterations only;
   2. CUDA determinism (quant modes): the identical spec trained twice must be
      bit-identical;
-  3. CPU parity (tolerant): the same spec trained on device_type=cpu must
-     reach a held-out metric within tolerance of the CUDA model (trees are not
-     required to be identical; a large metric gap means one side built
-     garbage).
+  3. CPU quality reference (tolerant): the same data and model shape trained
+     full-precision on device_type=cpu must reach a held-out metric within
+     tolerance of the CUDA model (trees are not required to be identical; a
+     large metric gap means one side built garbage).
 
 Every failing spec prints a self-contained JSON repro. Promote it into
 fuzz_corpus.json (a list of spec objects) and it reruns first on every future
@@ -168,13 +168,10 @@ p = {"objective": spec["objective"], "num_leaves": spec["num_leaves"],
      "device_type": device, "seed": 42, "verbose": -1, "metric": "None", "num_threads": 8,
      "max_cat_threshold": spec.get("max_cat_threshold", 32)}
 cat_features = list(range(spec.get("num_cat_features", 0)))
-# fixedpoint is CUDA-only. The CPU reference runs FULL PRECISION, because
-# fixedpoint's contract is "near-lossless vs non-quantized" -- that is the
-# invariant worth testing. (Mapping to a stochastic mode instead would compare
-# against a genuinely different algorithm: stochastic rounding noise
-# regularizes, on some data beating full precision by >10%, and the tolerant
-# check would then flag a correct fixedpoint model as a failure.)
-if device == "cpu" and p["quant_mode"] == "fixedpoint":
+# Quantized training is CUDA-only in Falcata. The CPU arm is a full-precision
+# quality reference for both quantized modes, not an implementation-parity arm:
+# quantized CPU histograms cannot recover exact row counts from their hessians.
+if device == "cpu" and p["quant_mode"] != "none":
     p["quant_mode"] = "none"
     p["quant_bins"] = 0
 if device == "cpu":
@@ -260,47 +257,6 @@ def run(spec, device, timeout=300):
     return {"error": f"no output: {proc.stdout[-300:]}"}
 
 
-# Known-inherited defect, fork-local record (verified against upstream
-# LightGBM 4.7.0, which fails identically on the same specs): the CPU split
-# finder INFERS per-bin row counts from hessians rather than counting them --
-#     cnt_factor = num_data / sum_hessian;  cnt = RoundInt(hess * cnt_factor)
-# (feature_histogram.hpp). That inversion is exact only when every row
-# contributes the SAME hessian to the histogram. Quantized gradients break
-# that for every objective: the hessians are quantized per row (stochastic
-# rounding literally randomizes them, so even L2's constant hessian stops
-# being constant once binned), and the inferred count then drifts from the
-# real one in two directions:
-#   * it can reach num_data, leaving an estimated 0 rows on one side -- the
-#     min_data_in_leaf guard checks the ESTIMATE, lets the split through, and
-#     CHECK_GT(count, 0) then fires in serial_tree_learner (lines 886/898);
-#   * or no candidate clears the guard at all, so boosting stops early and
-#     the model has fewer trees than requested. The worker now accepts any
-#     WHOLE-iteration short count as a legitimate saturation stop (the same
-#     stop occurs on unquantized saturated data, on either device), so this
-#     flavor surfaces as a "saturation stop" note when the short model still
-#     predicts, as "constant predictions after early stop" when it saturated
-#     at iteration 1 (all-zero trees, seen on 2026-08-18), and the tree-count
-#     signature below fires only for partial-iteration counts.
-# Both are CPU-only and quant-only; every one of the ~238 CPU failures in
-# the 2026-08-02 nightly is one of these two. The CPU run here is only a REFERENCE
-# for the CUDA parity check, so these are reported and not counted as failures
-# -- narrowly, by signature, so a genuine CPU regression still fails the gate.
-KNOWN_CPU_QUANT_SIGNATURES = (
-    "best_split_info.left_count) > (0)",
-    "best_split_info.right_count) > (0)",
-    "AssertionError: tree count",
-    # the same defect's saturation flavor, surfacing as a zero-output model
-    # since the worker began accepting whole-iteration early stops
-    "AssertionError: constant predictions after early stop",
-)
-
-
-def is_known_cpu_quant_defect(spec, error):
-    if spec["quant_mode"] == "none":
-        return False
-    return any(sig in error for sig in KNOWN_CPU_QUANT_SIGNATURES)
-
-
 def is_fixedpoint_lowbin_bias(spec):
     """Fixedpoint at very low bin budgets with single-row leaves: the cpu
     cross-check compares against UNQUANTIZED cpu (fixedpoint has no cpu arm),
@@ -338,10 +294,7 @@ def check_spec(spec):
     # it headroom beyond the cost guard rather than fail on machine noise
     c = run(spec, "cpu", timeout=900)
     if "error" in c:
-        if is_known_cpu_quant_defect(spec, c["error"]):
-            known.append(f"cpu quant count-inference defect: {c['error'].splitlines()[-1][:120]}")
-        else:
-            fails.append(f"cpu run failed: {c['error']}")
+        fails.append(f"cpu run failed: {c['error']}")
     else:
         if c.get("stopped_early"):
             known.append(
@@ -428,9 +381,7 @@ def main():
         for f in fails:
             failures.append((f"seed{seed}#{tried}", f, spec))
 
-    print(
-        f"fuzz: {tried} specs tried, {len(failures)} failure(s), {num_known} known-issue hit(s) (cpu-quant defect / benign saturation stop)"
-    )
+    print(f"fuzz: {tried} specs tried, {len(failures)} failure(s), {num_known} known variance note(s)")
     for name, f, spec in failures:
         print(f"\nFAIL [{name}] {f}\nrepro: python tests/gates/fuzz.py --spec '{json.dumps(spec)}'")
     return 1 if failures else 0

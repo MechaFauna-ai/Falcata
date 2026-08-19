@@ -337,20 +337,7 @@ def test_missing_value_handle_none():
     assert evals_result["valid_0"]["auc"][-1] == pytest.approx(ret)
 
 
-@pytest.mark.parametrize(
-    "use_quantized_grad",
-    [
-        pytest.param(
-            True,
-            marks=pytest.mark.skipif(
-                BuildInfo.has_cuda,
-                reason="Skip because quantized training with categorical features is not supported for cuda version",
-            ),
-        ),
-        False,
-    ],
-)
-def test_categorical_handle(use_quantized_grad):
+def test_categorical_handle():
     x = [0, 1, 2, 3, 4, 5, 6, 7]
     y = [0, 1, 0, 1, 0, 1, 0, 1]
 
@@ -374,7 +361,6 @@ def test_categorical_handle(use_quantized_grad):
         "max_cat_to_onehot": 1,
         "zero_as_missing": True,
         "categorical_column": 0,
-        "use_quantized_grad": use_quantized_grad,
     }
     evals_result = {}
     gbm = lgb.train(
@@ -387,20 +373,7 @@ def test_categorical_handle(use_quantized_grad):
     assert evals_result["valid_0"]["auc"][-1] == pytest.approx(ret)
 
 
-@pytest.mark.parametrize(
-    "use_quantized_grad",
-    [
-        pytest.param(
-            True,
-            marks=pytest.mark.skipif(
-                BuildInfo.has_cuda,
-                reason="Skip because quantized training with categorical features is not supported for cuda version",
-            ),
-        ),
-        False,
-    ],
-)
-def test_categorical_handle_na(use_quantized_grad):
+def test_categorical_handle_na():
     x = [0, np.nan, 0, np.nan, 0, np.nan]
     y = [0, 1, 0, 1, 0, 1]
 
@@ -424,7 +397,6 @@ def test_categorical_handle_na(use_quantized_grad):
         "max_cat_to_onehot": 1,
         "zero_as_missing": False,
         "categorical_column": 0,
-        "use_quantized_grad": use_quantized_grad,
     }
     evals_result = {}
     gbm = lgb.train(
@@ -437,20 +409,7 @@ def test_categorical_handle_na(use_quantized_grad):
     assert evals_result["valid_0"]["auc"][-1] == pytest.approx(ret)
 
 
-@pytest.mark.parametrize(
-    "use_quantized_grad",
-    [
-        pytest.param(
-            True,
-            marks=pytest.mark.skipif(
-                BuildInfo.has_cuda,
-                reason="Skip because quantized training with categorical features is not supported for cuda version",
-            ),
-        ),
-        False,
-    ],
-)
-def test_categorical_non_zero_inputs(use_quantized_grad):
+def test_categorical_non_zero_inputs():
     x = [1, 1, 1, 1, 1, 1, 2, 2]
     y = [1, 1, 1, 1, 1, 1, 0, 0]
 
@@ -474,7 +433,6 @@ def test_categorical_non_zero_inputs(use_quantized_grad):
         "max_cat_to_onehot": 1,
         "zero_as_missing": False,
         "categorical_column": 0,
-        "use_quantized_grad": use_quantized_grad,
     }
     evals_result = {}
     gbm = lgb.train(
@@ -5006,10 +4964,63 @@ def test_train_raises_informative_error_for_params_of_wrong_type():
         lgb.train(params, dtrain)
 
 
-def test_quantized_training():
+@pytest.mark.parametrize(
+    ("quantized_params", "expected_error"),
+    [
+        pytest.param(
+            {"quant_mode": "stochastic"},
+            "Quantized training is not supported with device_type=cpu",
+            id="quant-mode",
+        ),
+        pytest.param(
+            {"use_quantized_grad": True},
+            "Quantized training is not supported with device_type=cpu",
+            id="legacy-alias",
+        ),
+        pytest.param(
+            {"quant_mode": "fixedpoint"},
+            "quant_mode=fixedpoint works only with device_type=cuda",
+            id="fixedpoint",
+        ),
+    ],
+)
+def test_cpu_quantized_training_is_rejected(quantized_params, expected_error):
     X, y = make_synthetic_regression()
-    ds = lgb.Dataset(X, label=y)
-    bst_params = {"num_leaves": 15, "verbose": -1, "seed": 0}
+    cpu_params = {"device_type": "cpu", "objective": "regression", "verbose": -1}
+    ds = lgb.Dataset(X, label=y, params=cpu_params)
+
+    with pytest.raises(
+        lgb.basic.FalcataError,
+        match=expected_error,
+    ):
+        lgb.train({**cpu_params, **quantized_params}, ds, num_boost_round=1)
+
+
+@pytest.mark.parametrize(
+    "full_precision_params",
+    [
+        pytest.param({"quant_mode": "none"}, id="none"),
+        pytest.param(
+            {"quant_mode": "none", "use_quantized_grad": True},
+            id="explicit-mode-overrides-legacy-flag",
+        ),
+    ],
+)
+def test_cpu_full_precision_training_remains_supported(full_precision_params):
+    X, y = make_synthetic_regression()
+    cpu_params = {"device_type": "cpu", "objective": "regression", "verbose": -1, **full_precision_params}
+    ds = lgb.Dataset(X, label=y, params=cpu_params)
+
+    # The fence is specific to quantization; the CPU full-precision path stays supported.
+    bst = lgb.train(cpu_params, ds, num_boost_round=1)
+    assert bst.num_trees() == 1
+
+
+@pytest.mark.skipif(getenv("TASK", "") != "cuda", reason="requires CUDA build")
+def test_cuda_quantized_training():
+    X, y = make_synthetic_regression()
+    ds = lgb.Dataset(X, label=y, params={"device_type": "cuda"})
+    bst_params = {"device_type": "cuda", "num_leaves": 15, "verbose": -1, "seed": 0}
     bst = lgb.train(bst_params, ds, num_boost_round=10)
     rmse = np.sqrt(np.mean((bst.predict(X) - y) ** 2))
     bst_params.update(

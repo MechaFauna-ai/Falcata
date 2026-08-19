@@ -1672,14 +1672,13 @@ def test_predict_stump(output, use_init_score, cluster, rng):
             assert_eq(preds_all, np.full_like(preds_all, fill_value=y_avg))
 
 
-def test_distributed_quantized_training(tmp_path, cluster):
+def test_distributed_cpu_quantized_training_is_rejected(cluster):
     with Client(cluster) as client:
-        X, y, w, _, dX, dy, dw, _ = _create_data(objective="regression", output="array")
-
-        np.savetxt(tmp_path / "data_dask.csv", np.hstack([np.array([y]).T, X]), fmt="%f,%f,%f,%f,%f")
+        _, _, _, _, dX, dy, dw, _ = _create_data(objective="regression", output="array")
 
         params = {
             "boosting_type": "gbdt",
+            "device_type": "cpu",
             "n_estimators": 50,
             "num_leaves": 31,
             "use_quantized_grad": True,
@@ -1689,13 +1688,8 @@ def test_distributed_quantized_training(tmp_path, cluster):
         }
 
         quant_dask_classifier = lgb.DaskFalcataRegressor(client=client, time_out=5, **params)
-        quant_dask_classifier = quant_dask_classifier.fit(dX, dy, sample_weight=dw)
-        quant_p1 = quant_dask_classifier.predict(dX)
-        quant_rmse = np.sqrt(np.mean((quant_p1.compute() - y) ** 2))
-
-        params["use_quantized_grad"] = False
-        dask_classifier = lgb.DaskFalcataRegressor(client=client, time_out=5, **params)
-        dask_classifier = dask_classifier.fit(dX, dy, sample_weight=dw)
-        p1 = dask_classifier.predict(dX)
-        rmse = np.sqrt(np.mean((p1.compute() - y) ** 2))
-        assert quant_rmse < rmse + 7.0
+        with pytest.raises(
+            lgb.basic.FalcataError,
+            match="Quantized training is not supported with device_type=cpu",
+        ):
+            quant_dask_classifier.fit(dX, dy, sample_weight=dw)
