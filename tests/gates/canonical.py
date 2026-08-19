@@ -49,8 +49,15 @@ LOCKS = {
     # build and 1.0.3 (97401efd76b6 for the classic cell) -- every split,
     # threshold and leaf value across all 700 trees is bit-identical, and test
     # accuracy is 0.91841 either way.
-    "covtype": "fad8aaa500f7",
-    "covtype-classic": "f2c90e1bfc66",
+    # Re-baselined 2026-08-19 for the CPU-parity tie-break semantics (approved
+    # by Felix with the parity-followup merge). Exact-gain ties now break the
+    # way CPU's scan does -- lowest task/leaf index in real-feature order --
+    # instead of an arbitrary-but-deterministic reduction order, so cells with
+    # exact ties pick different (equally valid) tied splits. covtype hits such
+    # ties; quality moved 0.91841 -> 0.91883 and training is as deterministic
+    # as before. numerai (L2, no exact ties in practice) did not move.
+    "covtype": "a705ae13cb03",
+    "covtype-classic": "5206deab7a35",
     # Re-baselined 2026-08-10 for the DATA, not a code change. The bench cache's
     # numerai build was regenerated on 2026-08-07 (the 1224 -> 1226 source bump,
     # which is explicitly not comparable to older archives); the old lock was set

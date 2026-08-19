@@ -10,18 +10,18 @@
    "metric_name": "rmse"
   },
   "categorical/quant": {
-   "md5": "e79ee6bfde527beb3f569860558aa17a",
-   "metric": 1.448241,
+   "md5": "1a65fbddedf24ddbeb0cff20519b400b",
+   "metric": 1.433063,
    "metric_name": "rmse"
   },
   "categorical/quant-deep": {
-   "md5": "1760e17d5649516d8ea4dffb8fca4734",
-   "metric": 2.579622,
+   "md5": "fa1d0c4f867def50350fb669c02adb44",
+   "metric": 2.577822,
    "metric_name": "rmse"
   },
   "dense/fixedpoint": {
-   "md5": "794ab463d9bbda9bdce25256a71d6cb3",
-   "metric": 2.072046,
+   "md5": "c7a8f28f450b0fd4b2f188210e863e26",
+   "metric": 2.076173,
    "metric_name": "rmse"
   },
   "dense/fixedpoint-256bins": {
@@ -38,23 +38,23 @@
    "metric_name": "rmse"
   },
   "dense/quant": {
-   "md5": "900fc3dc9c745fd57a15f7633358e70c",
-   "metric": 1.982575,
+   "md5": "c909b4ae98114d1323f8fdce24f293fa",
+   "metric": 2.002375,
    "metric_name": "rmse"
   },
   "dense/quant-classic": {
-   "md5": "1c7695a4901a137a6f69212b1dfaaccb",
-   "metric": 1.982575,
+   "md5": "d83c558147f00c4232ef491e1df90780",
+   "metric": 2.002375,
    "metric_name": "rmse"
   },
   "dense/quant-deep": {
-   "md5": "b6bd59448273aaea59cd1afa695ca281",
-   "metric": 1.678572,
+   "md5": "7f526485274c615f78661e6c7e56ceab",
+   "metric": 1.6693,
    "metric_name": "rmse"
   },
   "dense/quant-deep-classic": {
-   "md5": "b6bd59448273aaea59cd1afa695ca281",
-   "metric": 1.678572,
+   "md5": "bfb08b7d4433ab9bb91970f257614e9a",
+   "metric": 1.6693,
    "metric_name": "rmse"
   },
   "efb/quant": {
@@ -68,13 +68,13 @@
    "metric_name": "rmse"
   },
   "fewbin/quant": {
-   "md5": "fb92cef6bd5339087c6ac272fc590517",
-   "metric": 4.015338,
+   "md5": "62f466f8f212c795ed1218b07f28c27b",
+   "metric": 4.002929,
    "metric_name": "rmse"
   },
   "graph/flipbase-graph_loop": {
-   "md5": "229140128847fc198dd6f81468bb789a",
-   "metric": 0.756316,
+   "md5": "1864df223a7c072363085ccd2f1d3f33",
+   "metric": 0.754484,
    "metric_name": "mlogloss"
   },
   "graph/nonquant": {
@@ -82,13 +82,13 @@
    "metric_name": "mlogloss"
   },
   "graph/quant": {
-   "md5": "229140128847fc198dd6f81468bb789a",
-   "metric": 0.756316,
+   "md5": "1864df223a7c072363085ccd2f1d3f33",
+   "metric": 0.754484,
    "metric_name": "mlogloss"
   },
   "imbalanced/fixedpoint": {
-   "md5": "654af3e78ab45cf1ad8ddc5f8ea2512a",
-   "metric": 0.962627,
+   "md5": "2512dd7bfedc51093d21eb8cf481298e",
+   "metric": 0.961707,
    "metric_name": "auc"
   },
   "imbalanced/nonquant": {
@@ -96,68 +96,68 @@
    "metric_name": "auc"
   },
   "imbalanced/posweight": {
-   "md5": "cc05b6be1dc0548c957494232a84c5e5",
-   "metric": 0.875747,
+   "md5": "8006384a6e09bf8c562de126d5d5a8e8",
+   "metric": 0.888046,
    "metric_name": "auc"
   },
   "imbalanced/quant": {
-   "md5": "e13ade3e8839642e9f51ded30e65ed3b",
-   "metric": 0.976573,
+   "md5": "7c1b395a3f100870d7bdc71d813dff8e",
+   "metric": 0.961106,
    "metric_name": "auc"
   },
   "imbalanced/unbalance": {
-   "md5": "294d0be2f3912f38c1486d9de3e72e41",
-   "metric": 0.941019,
+   "md5": "0e581b95168ade01eae781bd515b19c8",
+   "metric": 0.948448,
    "metric_name": "auc"
   },
   "int8wide/quant": {
-   "md5": "019fbb05f62293ad3fb641216c23ba55",
-   "metric": 70.250892,
+   "md5": "bbbbf9ac9eb2990bcd36913e41b6dd37",
+   "metric": 69.899107,
    "metric_name": "rmse"
   },
   "int8wide/quant-deep": {
-   "md5": "ef5def955ab765628f2ca0ad9e5ce7dc",
-   "metric": 71.451373,
+   "md5": "8edb42b0ffa3bf5dcd91337098f32aad",
+   "metric": 70.744453,
    "metric_name": "rmse"
   },
   "missing-mfb0/fixedpoint": {
-   "md5": "f516daba52b65f02f63b74d04dbdc018",
-   "metric": 4.273856,
+   "md5": "cc6b03dc76e1dc00fa699d0ba897e6bf",
+   "metric": 4.25467,
    "metric_name": "rmse"
   },
   "missing-mfb0/quant": {
-   "md5": "eb897dd579e345ed84ef64a087e2e9dc",
-   "metric": 4.155652,
+   "md5": "864026c095b54740862b658aee17a781",
+   "metric": 4.170856,
    "metric_name": "rmse"
   },
   "missing-mfb0/quant-classic": {
-   "md5": "26828dd5085eba77924878d607b5331c",
-   "metric": 4.155652,
+   "md5": "6df015e0c31259547c28f983a86ea55b",
+   "metric": 4.170856,
    "metric_name": "rmse"
   },
   "missing-mfb0/quant-deep": {
-   "md5": "0942c1f4f1f95cabbea16e6d284a7012",
-   "metric": 4.017718,
+   "md5": "9c684a3a168b6a3716e0596842d986fe",
+   "metric": 4.020155,
    "metric_name": "rmse"
   },
   "missing/quant": {
-   "md5": "c2b43a11209a653030abdf52e44e5c65",
-   "metric": 3.33428,
+   "md5": "aaf0b4e49010afaaafc288d676e57072",
+   "metric": 3.314987,
    "metric_name": "rmse"
   },
   "sampled/flipbase-jit8": {
-   "md5": "c7787cabe424cf21bba419b423b7b915",
-   "metric": 37.425693,
+   "md5": "29f130499cdd76bb7a24a9c4d209641c",
+   "metric": 37.066516,
    "metric_name": "rmse"
   },
   "sampled/quant": {
-   "md5": "c7787cabe424cf21bba419b423b7b915",
-   "metric": 37.425693,
+   "md5": "29f130499cdd76bb7a24a9c4d209641c",
+   "metric": 37.066516,
    "metric_name": "rmse"
   },
   "sampled/quant-deep": {
-   "md5": "8edbe7dbda00acb29c6ba32ba59dd18c",
-   "metric": 38.3236,
+   "md5": "11db773f5a85c7091b2600b5b10a14e7",
+   "metric": 38.544012,
    "metric_name": "rmse"
   },
   "tinygrad/fixedpoint": {
