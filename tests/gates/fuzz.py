@@ -29,6 +29,7 @@ failure reproduces with --seed.
 import argparse
 import datetime
 import json
+import os
 import subprocess
 import sys
 import time
@@ -176,6 +177,13 @@ cat_features = list(range(spec.get("num_cat_features", 0)))
 if device == "cpu" and p["quant_mode"] == "fixedpoint":
     p["quant_mode"] = "none"
     p["quant_bins"] = 0
+if device == "cpu":
+    # Pin the reference basin: OpenMP's unspecified reduction combine order
+    # jitters the gradient/hessian sums at the last ulp per run, which flips
+    # plateau-tie split picks on degenerate data and lands DIFFERENT models
+    # (and metrics) across identical invocations. deterministic serializes
+    # exactly those reductions; verified bit-stable.
+    p["deterministic"] = True
 if spec.get("bagging_freq"):
     p["bagging_freq"] = spec["bagging_freq"]
 if spec["objective"] == "multiclass":
@@ -232,12 +240,17 @@ print("OUT " + json.dumps({"md5": hashlib.md5(tree_str.encode()).hexdigest(),
 
 
 def run(spec, device, timeout=300):
+    # Engine predictor only: FIL predicts in single precision, which collapses
+    # legitimate near-zero models (whole-iteration early stops) to constant
+    # and fails the std(pred) > 0 assert on a healthy model.
+    env = dict(os.environ, FALCATA_FIL="0")
     proc = subprocess.run(
         [sys.executable, "-c", _WORKER_SOURCE, json.dumps(spec), device],
         capture_output=True,
         text=True,
         timeout=timeout,
         check=False,
+        env=env,
     )
     if proc.returncode != 0:
         return {"error": proc.stderr.strip()[-800:] or f"exit {proc.returncode}"}
