@@ -715,27 +715,20 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   CopyFromHostToCUDADevice<int>(cuda_slot_col_in_p_.RawData(), slot_col_in_p_h.data(),
                                 num_compact_cols, __FILE__, __LINE__);
 
-  // A sparse-encoded column cannot be served from the packed row matrix at all
-  // (its own buffer spells the most-frequent bin as 0, the row matrix as the
-  // real bin), and the packed descriptors have no per-column escape hatch --
-  // so a tree that sampled one takes the plain view instead.
-  bool sampled_sparse_column = false;
-  for (const int orig_col : compact_column_to_orig_) {
-    if (col_data->column_is_sparse(orig_col)) {
-      sampled_sparse_column = true;
-      break;
-    }
-  }
   compact_packed_view_active_ = false;
   if (SplitPackedReadEnabled() && gather_src_is_4bit && HybridGrowthUsable() &&
-      !has_categorical_feature_ && !sampled_sparse_column) {
+      !has_categorical_feature_) {
     // categorical batched-apply descriptors need the plain per-column view
     // (SplitLevelBatched CHECK-enforces it); numerical-only datasets keep the packed read
     // packed split read: skip the column-major gather entirely; the batched
     // apply descriptors address the packed source per column (byte of row 0,
-    // per-row byte stride, nibble shift). The slot metadata just uploaded stays
-    // valid for the lazy classic fallback (EnsureClassicColumnView), which any
-    // classic per-split Split() triggers via ApplySplit.
+    // per-row byte stride, nibble shift). Sparse-encoded columns are the
+    // exception: SetCompactPackedColumnView points them at their own
+    // materialized buffer at their real width, because their encoding (the
+    // most-frequent bin spelled as 0) never matches the row matrix. The slot
+    // metadata just uploaded stays valid for the lazy classic fallback
+    // (EnsureClassicColumnView), which any classic per-split Split() triggers
+    // via ApplySplit.
     std::vector<size_t> col_base_byte_h(num_compact_cols);
     std::vector<uint8_t> col_shift_h(num_compact_cols);
     for (int s = 0; s < num_compact_cols; ++s) {

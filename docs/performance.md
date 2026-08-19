@@ -390,7 +390,13 @@ the single highest-leverage switch available.
   row costs one scattered 32-byte read instead of two: +21% numerai-deep.
 - **`split_packed_read`** — split kernels read the 4-bit packed matrix
   directly instead of materializing a ~1.5GB per-tree column copy: +12%
-  numerai-deep.
+  numerai-deep. Sparse-encoded columns are served per column from their own
+  materialized buffer (their encoding spells the most-frequent bin as 0, which
+  never matches the row matrix); a per-tree fallback here is a trap — with the
+  sparse columns concentrated in one EFB bundle, `feature_fraction` 0.15
+  samples the bundle on ~99% of trees, which silently un-ships the read
+  (measured −27% trees/s on the numerai h60 shape). Guarded by the throughput
+  ratio in `tests/gates/sparse_column_view.py`.
 - **`batch_reghist`** — for ≤8-bin datasets, accumulate a thread's rows in
   registers and flush once instead of two shared-memory atomics per row.
 - **`batch_wide`** — wide-shape batched search for many-column datasets

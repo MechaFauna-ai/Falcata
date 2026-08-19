@@ -43,6 +43,7 @@ import argparse
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -112,7 +113,52 @@ def run_dataset(path, lgb):
     params["min_data_in_leaf"] = max(1000, num_data // 170)
     ds.set_label(GAUSS_LEVELS[np.random.default_rng(0).integers(0, 5, size=num_data)])
     booster = lgb.train(params, ds, num_boost_round=ROUNDS)
-    return check(f"{Path(path).name} ({num_data:,} rows)", booster, params["min_data_in_leaf"])
+    ok = check(f"{Path(path).name} ({num_data:,} rows)", booster, params["min_data_in_leaf"])
+    del booster
+    return ok and check_packed_read_speedup(path, ds, lgb)
+
+
+# The packed split read's win must survive sparse columns: a per-TREE fallback
+# (instead of the per-COLUMN escape SetCompactPackedColumnView implements)
+# fires on nearly every tree when a dataset's sparse columns share one EFB
+# bundle -- at feature_fraction 0.15 a 30-feature bundle is sampled by
+# 1 - 0.85^30 ~ 99.2% of trees -- and silently un-ships the read on exactly the
+# dataset class it was built for (measured -27% trees/s on the numerai h60
+# shape). Guard the mechanism as a throughput ratio: default plan vs
+# split_packed_read:off must beat this floor, at the production h60 config
+# (250 leaves / depth 12 / 40k floor) where the gather dominates per-tree
+# cost. The measured gap there is 1.10-1.35x depending on window and clocks; a
+# ratio near 1.0 means every tree is paying the column-major gather again, so
+# the floor sits between the two regimes rather than close to either.
+SPEED_ROUNDS = 60
+SPEED_WARMUP = 10  # trees before the timer starts (allocations, graph capture)
+SPEED_MIN_RATIO = 1.05
+SPEED_PARAMS = {**PARAMS, "num_leaves": 250, "max_depth": 12, "min_data_in_leaf": 40_000}
+
+
+def timed_train(params, ds, lgb):
+    booster = lgb.Booster(params=params, train_set=ds)
+    for _ in range(SPEED_WARMUP):
+        booster.update()
+    start = time.perf_counter()
+    for _ in range(SPEED_ROUNDS - SPEED_WARMUP):
+        booster.update()
+    elapsed = time.perf_counter() - start
+    del booster
+    return (SPEED_ROUNDS - SPEED_WARMUP) / elapsed
+
+
+def check_packed_read_speedup(path, ds, lgb):
+    params = dict(SPEED_PARAMS)
+    packed = timed_train(params, ds, lgb)
+    gather = timed_train({**params, "cuda_plan": "auto,split_packed_read:off"}, ds, lgb)
+    ratio = packed / gather
+    ok = ratio >= SPEED_MIN_RATIO
+    print(
+        f"{'PASS' if ok else 'FAIL'} {Path(path).name} packed split read: "
+        f"{packed:.2f} vs {gather:.2f} trees/s (ratio {ratio:.3f}, floor {SPEED_MIN_RATIO})"
+    )
+    return ok
 
 
 def run_synthetic(lgb):

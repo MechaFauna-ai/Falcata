@@ -309,12 +309,24 @@ void CUDAColumnData::SetCompactPackedColumnView(const std::vector<int>& column_t
   packed_column_ptr_.assign(num_columns_, nullptr);
   packed_column_stride_.assign(num_columns_, 0);
   packed_column_shift_.assign(num_columns_, 0);
+  packed_column_bit_type_.assign(num_columns_, 0);
   for (int c = 0; c < num_columns_; ++c) {
     if (c < static_cast<int>(column_to_compact_slot.size()) && column_to_compact_slot[c] >= 0) {
       const int slot = column_to_compact_slot[c];
-      packed_column_ptr_[c] = packed_buf + slot_base_byte[slot];
-      packed_column_stride_[c] = slot_row_stride[slot];
-      packed_column_shift_[c] = slot_shift[slot];
+      if (column_is_sparse_[c] != 0) {
+        // A sparse-encoded column's own buffer spells the most-frequent bin as
+        // 0 where the row matrix carries the real index, and the apply
+        // descriptors' decision fields assume the former -- so this column is
+        // served from its always-materialized buffer at its real width while
+        // every other column keeps the packed nibble read.
+        packed_column_ptr_[c] = data_by_column_[c]->RawData();
+        packed_column_bit_type_[c] = column_bit_type_[c];
+      } else {
+        packed_column_ptr_[c] = packed_buf + slot_base_byte[slot];
+        packed_column_stride_[c] = slot_row_stride[slot];
+        packed_column_shift_[c] = slot_shift[slot];
+        packed_column_bit_type_[c] = 4;
+      }
     }
   }
   // no per-column plain buffer exists this tree: null the host view so any

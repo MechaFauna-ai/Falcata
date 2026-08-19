@@ -156,15 +156,21 @@ class CUDAColumnData {
    *  that cache an installed view can tell when someone else replaced it. */
   uint64_t column_view_generation() const { return column_view_generation_; }
 
-  // ===== Per-tree packed compact column view (4-bit) =====
+  // ===== Per-tree packed compact column view =====
   // Register the histogram constructor's 4-bit packed compact matrix as this
-  // tree's column source: column c's bin for row r is
+  // tree's column source. Dense columns serve bit_type 4: column c's bin for
+  // row r is
   //   (packed_column_data(c)[r * packed_column_stride(c)] >> packed_column_shift(c)) & 0xf.
-  // Only the batched apply path (CUDAHybridApplyDescriptor, bit_type 4) reads
-  // it; callers needing a plain per-column buffer must first re-register one
-  // via SetCompactColumnView (see the tree learner's lazy classic fallback).
-  // Also nulls compact_column_host_view_ so a stale GetColumnData pointer can
-  // never be consumed silently.
+  // Sparse-encoded columns cannot be served from the row matrix (their own
+  // buffer spells the most-frequent bin as 0 where the matrix carries the real
+  // index, and the descriptor decision fields assume the former), so they are
+  // pointed at their own materialized buffer at their real width
+  // (packed_column_bit_type 8/16/32, plain row indexing).
+  // Only the batched apply path (CUDAHybridApplyDescriptor / HybridLoadBin)
+  // reads this view; callers needing a plain per-column buffer must first
+  // re-register one via SetCompactColumnView (see the tree learner's lazy
+  // classic fallback). Also nulls compact_column_host_view_ so a stale
+  // GetColumnData pointer can never be consumed silently.
   void SetCompactPackedColumnView(const std::vector<int>& column_to_compact_slot,
                                   const uint8_t* packed_buf,
                                   const std::vector<size_t>& slot_base_byte,
@@ -183,6 +189,10 @@ class CUDAColumnData {
 
   uint8_t packed_column_shift(const int column_index) const {
     return packed_column_shift_[column_index];
+  }
+
+  uint8_t packed_column_bit_type(const int column_index) const {
+    return packed_column_bit_type_[column_index];
   }
 
   // Skip per-column allocation in Init? Used when caller will provide compact view.
@@ -244,6 +254,9 @@ class CUDAColumnData {
   std::vector<const uint8_t*> packed_column_ptr_;
   std::vector<int> packed_column_stride_;
   std::vector<uint8_t> packed_column_shift_;
+  // 4 for a dense column read as row-matrix nibbles; the column's real bit
+  // type (8/16/32) for a sparse column served from its own buffer.
+  std::vector<uint8_t> packed_column_bit_type_;
 
   CUDAVector<uint8_t> cuda_column_bit_type_;
   CUDAVector<uint32_t> cuda_feature_min_bin_;
