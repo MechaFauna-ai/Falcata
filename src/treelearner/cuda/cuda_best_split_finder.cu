@@ -200,6 +200,35 @@ __device__ __forceinline__ T SequentialPrefixSum(T value, T* row_buffer) {
   return row_buffer[threadIdx.x];
 }
 
+// Two CPU-order scans in one pass: the a/b accumulator chains are
+// independent, so interleaving them hides each other's add latency and the
+// pair costs about as much as one scan. len bounds the fold at the lanes the
+// caller actually reads (trailing lanes then keep their own deposit, which
+// the callers' bin-range guards never read); row_buffer holds 2 * blockDim.x
+// elements.
+template <typename T>
+__device__ __forceinline__ void SequentialPrefixSumPair(
+    T* value_a, T* value_b, T* row_buffer, const unsigned int len) {
+  __syncthreads();  // previous users of row_buffer may still be reading
+  row_buffer[threadIdx.x] = *value_a;
+  row_buffer[blockDim.x + threadIdx.x] = *value_b;
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    T acc_a = row_buffer[0];
+    T acc_b = row_buffer[blockDim.x];
+    const unsigned int bound = len < blockDim.x ? len : blockDim.x;
+    for (unsigned int i = 1; i < bound; ++i) {
+      acc_a += row_buffer[i];
+      row_buffer[i] = acc_a;
+      acc_b += row_buffer[blockDim.x + i];
+      row_buffer[blockDim.x + i] = acc_b;
+    }
+  }
+  __syncthreads();
+  *value_a = row_buffer[threadIdx.x];
+  *value_b = row_buffer[blockDim.x + threadIdx.x];
+}
+
 template <typename GAIN_T>
 __device__ __forceinline__ bool OtherIsBetterWithTieBreak(
     GAIN_T other_gain, GAIN_T gain, uint32_t other_thread_index, uint32_t thread_index) {
@@ -457,13 +486,13 @@ __device__ void FindBestSplitsForLeafKernelInner(
     // stored child counts; integer addends are order-invariant, so the
     // shuffle scan serves them bit-exactly. (Bin 0's kEpsilon shifts its
     // product by ~1e-15, which never moves RoundInt in practice.)
-    __shared__ GAIN_T seq_prefix_buffer[NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER];
+    __shared__ GAIN_T seq_prefix_buffer[2 * NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER];
     const data_size_t local_bin_cnt = static_cast<data_size_t>(
       CUDARoundInt(static_cast<double>(local_hess_hist) * static_cast<double>(cnt_factor)));
     local_cnt_prefix = ShufflePrefixSum<data_size_t>(
       local_bin_cnt, reinterpret_cast<data_size_t*>(shared_gain_buffer));
-    local_grad_hist = SequentialPrefixSum<GAIN_T>(local_grad_hist, seq_prefix_buffer);
-    local_hess_hist = SequentialPrefixSum<GAIN_T>(local_hess_hist, seq_prefix_buffer);
+    SequentialPrefixSumPair<GAIN_T>(&local_grad_hist, &local_hess_hist,
+      seq_prefix_buffer, static_cast<unsigned int>(task->num_bin));
   } else {
     local_grad_hist = ShufflePrefixSum(local_grad_hist, shared_gain_buffer);
     __syncthreads();
