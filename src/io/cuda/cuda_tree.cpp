@@ -288,23 +288,27 @@ void CUDATree::ToHost() {
       if (bytes > 0) std::memcpy(dst, p, bytes);
       p += stride;
     };
-    scatter(threshold_.data(), (num_leaves_size - 1) * sizeof(double), L * sizeof(double));
-    scatter(internal_weight_.data(), (num_leaves_size - 1) * sizeof(double), L * sizeof(double));
-    scatter(internal_value_.data(), (num_leaves_size - 1) * sizeof(double), L * sizeof(double));
+    // num_leaves_ >= 1 always, but the compiler cannot prove it: the guarded
+    // count keeps num_leaves_size - 1 from wrapping in size_t arithmetic
+    // (the manylinux gcc rejects the unguarded memcpy sizes under -Werror).
+    const size_t n_int = num_leaves_size > 1 ? num_leaves_size - 1 : 0;
+    scatter(threshold_.data(), n_int * sizeof(double), L * sizeof(double));
+    scatter(internal_weight_.data(), n_int * sizeof(double), L * sizeof(double));
+    scatter(internal_value_.data(), n_int * sizeof(double), L * sizeof(double));
     scatter(leaf_value_.data(), num_leaves_size * sizeof(double), L * sizeof(double));
     scatter(leaf_weight_.data(), num_leaves_size * sizeof(double), L * sizeof(double));
     p += sizeof(CUDATreeBatchSplit) * (L / 2 + 2);  // skip the batched split descriptors
-    scatter(left_child_.data(), (num_leaves_size - 1) * sizeof(int), L * sizeof(int));
-    scatter(right_child_.data(), (num_leaves_size - 1) * sizeof(int), L * sizeof(int));
-    scatter(split_feature_inner_.data(), (num_leaves_size - 1) * sizeof(int), L * sizeof(int));
-    scatter(split_feature_.data(), (num_leaves_size - 1) * sizeof(int), L * sizeof(int));
+    scatter(left_child_.data(), n_int * sizeof(int), L * sizeof(int));
+    scatter(right_child_.data(), n_int * sizeof(int), L * sizeof(int));
+    scatter(split_feature_inner_.data(), n_int * sizeof(int), L * sizeof(int));
+    scatter(split_feature_.data(), n_int * sizeof(int), L * sizeof(int));
     scatter(leaf_depth_.data(), num_leaves_size * sizeof(int), L * sizeof(int));
-    scatter(leaf_parent_.data(), (num_leaves_size - 1) * sizeof(int), L * sizeof(int));
-    scatter(threshold_in_bin_.data(), (num_leaves_size - 1) * sizeof(uint32_t), L * sizeof(uint32_t));
+    scatter(leaf_parent_.data(), n_int * sizeof(int), L * sizeof(int));
+    scatter(threshold_in_bin_.data(), n_int * sizeof(uint32_t), L * sizeof(uint32_t));
     scatter(leaf_count_.data(), num_leaves_size * sizeof(data_size_t), L * sizeof(data_size_t));
-    scatter(internal_count_.data(), (num_leaves_size - 1) * sizeof(data_size_t), L * sizeof(data_size_t));
-    scatter(split_gain_.data(), (num_leaves_size - 1) * sizeof(float), L * sizeof(float));
-    scatter(decision_type_.data(), (num_leaves_size - 1) * sizeof(int8_t), L * sizeof(int8_t));
+    scatter(internal_count_.data(), n_int * sizeof(data_size_t), L * sizeof(data_size_t));
+    scatter(split_gain_.data(), n_int * sizeof(float), L * sizeof(float));
+    scatter(decision_type_.data(), n_int * sizeof(int8_t), L * sizeof(int8_t));
   } else {
   CopyFromCUDADeviceToHost<int>(left_child_.data(), cuda_left_child_.RawData(), num_leaves_size - 1, __FILE__, __LINE__);
   CopyFromCUDADeviceToHost<int>(right_child_.data(), cuda_right_child_.RawData(), num_leaves_size - 1, __FILE__, __LINE__);
