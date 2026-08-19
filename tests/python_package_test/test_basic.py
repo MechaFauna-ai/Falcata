@@ -309,6 +309,42 @@ def test_subset_group():
     assert subset_group[1] == 9
 
 
+def test_subset_construct_delivers_weight_queued_before_construction(rng_fixed_seed):
+    # set_weight() on a not-yet-constructed subset stores the weights on the
+    # Python object; the subset branch of construct() must deliver them to the
+    # C++ Dataset (it re-applies group and position there, and weight used to
+    # be silently dropped, making models weight-invariant).
+    X = rng_fixed_seed.uniform(size=(300, 5))
+    y = rng_fixed_seed.uniform(size=300)
+    indices = list(range(0, 300, 2))
+    weight = np.where(rng_fixed_seed.uniform(size=len(indices)) < 0.2, 10.0, 1.0)
+    params = {
+        "objective": "regression",
+        "min_data_in_leaf": 5,
+        "num_leaves": 7,
+        "seed": 42,
+        "num_threads": 1,
+        "verbose": -1,
+    }
+
+    parent = lgb.Dataset(X, label=y, free_raw_data=False)
+    subset_weighted = parent.subset(indices)
+    subset_weighted.set_weight(weight)
+    subset_uniform = parent.subset(indices)
+
+    bst_weighted = lgb.train(params, subset_weighted, num_boost_round=5)
+    bst_uniform = lgb.train(params, subset_uniform, num_boost_round=5)
+
+    # the queued weights reach the constructed C++ Dataset ...
+    expected_weight = weight.astype(np.float32)
+    np_assert_array_equal(subset_weighted.get_field("weight"), expected_weight, strict=True)
+    np_assert_array_equal(subset_weighted.get_weight(), expected_weight, strict=True)
+    assert subset_uniform.get_field("weight") is None
+
+    # ... and actually change the trained model
+    assert not np.allclose(bst_weighted.predict(X), bst_uniform.predict(X))
+
+
 def test_add_features_throws_if_num_data_unequal(rng):
     X1 = rng.uniform(size=(100, 1))
     X2 = rng.uniform(size=(10, 1))
