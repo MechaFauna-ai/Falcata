@@ -549,6 +549,9 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
     // preallocate for the deepest possible level (splits + as many gaps) so
     // this resizes at most once
     cuda_apply_descs_.Resize(static_cast<size_t>(std::max(num_descs, num_leaves_ + 4)));
+    // zeroed slots are inert (num_blocks == 0); see EnsureHybridGraphCapacity
+    SetCUDAMemory<CUDAHybridApplyDescriptor>(cuda_apply_descs_.RawData(),
+      0, cuda_apply_descs_.Size(), __FILE__, __LINE__);
   }
   // single async H2D per level on cuda_streams_[0]: ordered after any batched
   // apply kernel of a previous level still reading the descriptor buffer (same

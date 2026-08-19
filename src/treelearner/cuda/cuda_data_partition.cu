@@ -2070,6 +2070,16 @@ void CUDADataPartition::EnsureHybridGraphCapacity(const data_size_t max_root_num
     static_cast<size_t>(kHybridGraphMaxSplitsPerLevel) + 2;
   if (cuda_apply_descs_.Size() < desc_capacity) {
     cuda_apply_descs_.Resize(desc_capacity);
+    // Zeroed descriptors are inert (num_blocks == 0 -> every consumer
+    // returns before touching the pointer fields). The graph replay reads
+    // slots the controller has not written for the current level -- gap
+    // slots, and split slots beyond a shallow level -- and a RECYCLED
+    // allocation hands those reads the previous owner's bytes: garbage
+    // pointers, intermittent illegal access (lattice imbalanced/nonquant
+    // crashed exactly when another cell's allocations preceded this one in
+    // the worker process). Fresh allocations hid it with zero pages.
+    SetCUDAMemory<CUDAHybridApplyDescriptor>(cuda_apply_descs_.RawData(),
+      0, cuda_apply_descs_.Size(), __FILE__, __LINE__);
   }
   // worst-case per-level block-offset slots: the split regions partition at
   // most the whole root window, plus one sentinel slot per split
