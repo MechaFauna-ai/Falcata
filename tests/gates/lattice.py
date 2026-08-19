@@ -217,6 +217,21 @@ def build_cells():
         perf=True,
     )
     cell("graph/nonquant", "graph", {"quant_mode": "none"}, rounds=50, fingerprint=False)
+    # Non-quant DETERMINISTIC cells: with graph_loop off, every construct on
+    # these shapes runs the deterministic kernels (per-leaf, batched-level,
+    # compact view, sparse fallback), so their models fingerprint like quant
+    # cells do. The graph loop itself stays atomic (frozen-grid capture is
+    # incompatible with the two-kernel construct+merge) -- graph/nonquant
+    # above remains the unfingerprinted coverage for it.
+    cell("dense/nonquant-det", "dense", {"quant_mode": "none", "cuda_plan": "auto,graph_loop:off"}, rounds=50)
+    # hybrid:off -- the BATCHED level flow keeps the atomic kernel for compact
+    # views (per-leaf det covers them; batched does not yet), so the compact
+    # det lock pins the per-leaf flow.
+    cell("sampled/nonquant-det", "sampled", {"quant_mode": "none", "cuda_plan": "auto,hybrid:off"}, rounds=50)
+    cell("missing/nonquant-det", "missing", {"quant_mode": "none", "cuda_plan": "auto,graph_loop:off"}, rounds=50)
+    cell(
+        "categorical/nonquant-det", "categorical", {"quant_mode": "none", "cuda_plan": "auto,graph_loop:off"}, rounds=50
+    )
     cell(
         "imbalanced/nonquant",
         "imbalanced",

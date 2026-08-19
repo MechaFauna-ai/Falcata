@@ -286,12 +286,29 @@ def check_spec(spec):
         known.append(
             f"saturation stop: cuda emitted {a['trees'] // (spec['num_class'] or 1)}/{spec['rounds']} iterations"
         )
-    if spec["quant_mode"] != "none":
+    # Determinism rerun. Quantized training is bit-deterministic everywhere
+    # (integer atomics); non-quantized training is bit-deterministic on every
+    # shape the deterministic float constructs cover -- which is everything
+    # EXCEPT the graph-captured level loop (still atomic by design). A
+    # non-quant spec is md5-checked when its shape cannot take the graph loop:
+    # the plan disables it (or the whole hybrid flow), or the spec is not
+    # depth-limited (the hybrid prefix requires 2^max_depth <= num_leaves + 1).
+    md5_checked = spec["quant_mode"] != "none"
+    if not md5_checked:
+        plan = spec.get("cuda_plan", "")
+        depth_limited = spec.get("max_depth", -1) > 0 and (2 ** spec["max_depth"] <= spec["num_leaves"] + 1)
+        batched_possible = depth_limited and "hybrid:off" not in plan
+        graph_possible = batched_possible and "graph_loop:off" not in plan
+        # the BATCHED flow keeps the atomic kernel for compact views
+        # (feature sampling); per-leaf covers them
+        compact_hole = batched_possible and spec.get("feature_fraction", 1.0) < 1.0
+        md5_checked = not graph_possible and not compact_hole
+    if md5_checked:
         b = run(spec, "cuda")
         if "error" in b:
             fails.append(f"cuda rerun failed: {b['error']}")
         elif a["md5"] != b["md5"]:
-            fails.append(f"quant nondeterminism: {a['md5']} != {b['md5']}")
+            fails.append(f"cuda nondeterminism: {a['md5']} != {b['md5']}")
     # the CPU arm is legitimately ~10-50x slower than CUDA on big specs; give
     # it headroom beyond the cost guard rather than fail on machine noise
     c = run(spec, "cpu", timeout=900)

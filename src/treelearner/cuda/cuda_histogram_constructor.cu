@@ -2349,13 +2349,13 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           const int det_dy = std::max(1, std::min(det_dense_dy_, 1024 / std::max(1, block_dim_x)));
           int det_grid_y = (num_data_in_smaller_leaf + kDetRowsPerThread * det_dy - 1) / (kDetRowsPerThread * det_dy);
           det_grid_y = std::max(det_grid_y, min_grid_dim_y_);
-          det_grid_y = std::min(std::min(det_grid_y, static_cast<int>(kDetTileCap)), det_tile_alloc_);
+          det_grid_y = std::min(std::min(det_grid_y, det_dense_tile_cap_), det_tile_alloc_);
           dim3 det_grid(grid_dim_x, static_cast<unsigned int>(std::max(det_grid_y, 1)));
           dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dy));
           // Pipeline-private scratch regions (pipelined pair-constructs run
           // on different pipeline streams; shared regions would race).
           hist_t* det_slots = cuda_det_dense_slots_.RawData() +
-            static_cast<size_t>(active_pipeline_) * kDetTileCap * det_dense_dy_ * det_dense_slot_stride_;
+            static_cast<size_t>(active_pipeline_) * det_dense_tile_cap_ * det_dense_dy_ * det_dense_slot_stride_;
           hist_t* det_tiles = cuda_det_tile_partials_.RawData() +
             static_cast<size_t>(active_pipeline_) * det_tile_alloc_ * (2 * num_total_bin_);
           CUDAConstructHistogramSparseGMDeterministicKernel<BIN_TYPE, PTR_TYPE>
@@ -2500,13 +2500,13 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           const int det_dy = std::max(1, std::min(det_dense_dy_, 1024 / std::max(1, block_dim_x)));
           int det_grid_y = (num_data_in_smaller_leaf + kDetRowsPerThread * det_dy - 1) / (kDetRowsPerThread * det_dy);
           det_grid_y = std::max(det_grid_y, min_grid_dim_y_);
-          det_grid_y = std::min(std::min(det_grid_y, static_cast<int>(kDetTileCap)), det_tile_alloc_);
+          det_grid_y = std::min(std::min(det_grid_y, det_dense_tile_cap_), det_tile_alloc_);
           dim3 det_grid(grid_dim_x, static_cast<unsigned int>(std::max(det_grid_y, 1)));
           dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dy));
           // Pipeline-private scratch regions (pipelined pair-constructs run
           // on different pipeline streams; shared regions would race).
           hist_t* det_slots = cuda_det_dense_slots_.RawData() +
-            static_cast<size_t>(active_pipeline_) * kDetTileCap * det_dense_dy_ * det_dense_slot_stride_;
+            static_cast<size_t>(active_pipeline_) * det_dense_tile_cap_ * det_dense_dy_ * det_dense_slot_stride_;
           hist_t* det_tiles = cuda_det_tile_partials_.RawData() +
             static_cast<size_t>(active_pipeline_) * det_tile_alloc_ * (2 * num_total_bin_);
           CUDAConstructHistogramSparseGMDeterministicKernel<BIN_TYPE, PTR_TYPE>
@@ -3206,13 +3206,13 @@ void CUDAHistogramConstructor::LaunchConstructHistogramDenseDeterministic(
   const DetDenseSource* source) {
   const int det_dy = std::max(1, std::min(det_dense_dy_, 1024 / std::max(1, block_dim_x)));
   int det_grid_y = (num_data_in_smaller_leaf + kDetRowsPerThread * det_dy - 1) / (kDetRowsPerThread * det_dy);
-  det_grid_y = std::min(std::min(det_grid_y, static_cast<int>(kDetTileCap)), det_tile_alloc_);
+  det_grid_y = std::min(std::min(det_grid_y, det_dense_tile_cap_), det_tile_alloc_);
   dim3 det_grid(grid_dim_x, static_cast<unsigned int>(std::max(det_grid_y, 1)));
   dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dy));
   // Pipeline-private scratch region (pipelined pair-constructs run on
   // different pipeline streams; a shared region would race).
   hist_t* det_slots = cuda_det_dense_slots_.RawData() +
-    static_cast<size_t>(active_pipeline_) * kDetTileCap * det_dense_dy_ * det_dense_slot_stride_;
+    static_cast<size_t>(active_pipeline_) * det_dense_tile_cap_ * det_dense_dy_ * det_dense_slot_stride_;
   const bool det_packed_4bit = source != nullptr ?
     source->is_4bit : cuda_row_data_->is_4bit_packed();
   auto det_kernel = det_packed_4bit ?
@@ -3269,10 +3269,18 @@ bool CUDAHistogramConstructor::DetDenseBatchedEligible(const int num_pairs) cons
   if (use_quantized_grad_ || det_dense_dy_ <= 0 || hist_fp32_ || use_compact_view_) {
     return false;
   }
-  if (hybrid_graph_capture_gstate_ != nullptr) {
+  if (hybrid_graph_capture_gstate_ != nullptr || !det_batched_allowed_) {
+    // The graph loop keeps the atomic kernel, and a run where the graph
+    // prefix engages at all stays atomic END TO END: mixing graph-replayed
+    // construct levels with det construct+merge levels in one tree
+    // interleaves two ownership models of the same histogram storage, and
+    // the combination raced in the 2026-08-19 lattice (intermittent illegal
+    // access on imbalanced/nonquant with the default plan). Determinism for
+    // depth-limited non-quant runs is opted into via graph_loop:off, which
+    // is exactly what the det lattice cells and the fuzz md5 gate use.
     return false;
   }
-  const int total_slot_rows = kNumHistPipelines * kDetTileCap * det_dense_dy_;
+  const int total_slot_rows = kNumHistPipelines * det_dense_tile_cap_ * det_dense_dy_;
   return num_pairs > 0 &&
          num_pairs <= std::min(total_slot_rows, kDetDenseBatchedPairCap);
 }
@@ -3292,7 +3300,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramDenseBatchedDeterministic
   const data_size_t max_num_data_in_smaller_leaf,
   const int grid_dim_x,
   const int block_dim_x) {
-  const int total_slot_rows = kNumHistPipelines * kDetTileCap * det_dense_dy_;
+  const int total_slot_rows = kNumHistPipelines * det_dense_tile_cap_ * det_dense_dy_;
   const int pair_rows = std::max(1, total_slot_rows / num_pairs);
   // block_dim_x * dy within the 1024-thread block budget (see the per-leaf
   // launcher for the silent-no-op failure mode of an oversized block)

@@ -475,6 +475,10 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     // may flip once BuildCompactView below runs, which the classic prefix
     // handles by reading the sums back at its start.
     root_sums_deferred_ = HybridGrowthUsable() && UseOneSyncPrefix();
+    // The batched det construct and the graph loop's atomic construct must
+    // not interleave within one tree (see DetDenseBatchedEligible); a run
+    // where the graph prefix is usable stays atomic end to end.
+    cuda_histogram_constructor_->SetDetBatchedAllowed(!HybridGraphPrefixUsable());
     cuda_smaller_leaf_splits_->InitValues(
       config_->lambda_l1,
       config_->lambda_l2,

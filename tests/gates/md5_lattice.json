@@ -9,6 +9,11 @@
    "metric": 1.470012,
    "metric_name": "rmse"
   },
+  "categorical/nonquant-det": {
+   "md5": "2ceab72d48e50f1a841e04202af78234",
+   "metric": 1.46986,
+   "metric_name": "rmse"
+  },
   "categorical/quant": {
    "md5": "18b3b35fc7ced50fb7f68f8f2530d6c3",
    "metric": 1.433063,
@@ -35,6 +40,11 @@
   },
   "dense/nonquant": {
    "metric": 1.594167,
+   "metric_name": "rmse"
+  },
+  "dense/nonquant-det": {
+   "md5": "5d5153509c6aef803586d7740377f5ec",
+   "metric": 1.593959,
    "metric_name": "rmse"
   },
   "dense/quant": {
@@ -140,6 +150,11 @@
    "metric": 4.038961,
    "metric_name": "rmse"
   },
+  "missing/nonquant-det": {
+   "md5": "43993ddcfadc45fe226264df6d56e7ad",
+   "metric": 3.062735,
+   "metric_name": "rmse"
+  },
   "missing/quant": {
    "md5": "2768d748786cfaa4117ce1a62b3f2cb7",
    "metric": 3.312701,
@@ -148,6 +163,11 @@
   "sampled/flipbase-jit8": {
    "md5": "9d1ca352b27c4efe0d5ef73055d3cbfe",
    "metric": 37.066516,
+   "metric_name": "rmse"
+  },
+  "sampled/nonquant-det": {
+   "md5": "404607691450b02e40282681b188743a",
+   "metric": 35.126362,
    "metric_name": "rmse"
   },
   "sampled/quant": {

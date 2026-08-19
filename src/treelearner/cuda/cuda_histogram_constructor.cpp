@@ -889,9 +889,14 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
     const size_t per_row = static_cast<size_t>(dense_stride) * sizeof(hist_t);
     det_dense_dy_ = std::max(1, std::min<int>(kDetDenseDyCap,
         static_cast<int>(kDetDenseSlotBudget / (static_cast<size_t>(kDetTileCap) * per_row))));
-    cuda_det_dense_slots_.Resize(static_cast<size_t>(kNumHistPipelines) * kDetTileCap * det_dense_dy_ * dense_stride);
+    // The dy formula floors at 1; ultra-wide strides then need the TILE
+    // count to yield instead, or the slab exceeds the budget kDetTileCap-fold.
+    det_dense_tile_cap_ = std::max(1, std::min<int>(kDetTileCap,
+        static_cast<int>(kDetDenseSlotBudget / (static_cast<size_t>(det_dense_dy_) * per_row))));
+    cuda_det_dense_slots_.Resize(static_cast<size_t>(kNumHistPipelines) * det_dense_tile_cap_ * det_dense_dy_ * dense_stride);
   } else {
     det_dense_dy_ = 0;
+    det_dense_tile_cap_ = 0;
   }
 
   // fp32-pair global histograms: dense shared-memory non-quantized layout only
@@ -1259,14 +1264,19 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
     const size_t per_row = static_cast<size_t>(dense_stride) * sizeof(hist_t);
     det_dense_dy_ = std::max(1, std::min<int>(kDetDenseDyCap,
         static_cast<int>(kDetDenseSlotBudget / (static_cast<size_t>(kDetTileCap) * per_row))));
+    // The dy formula floors at 1; ultra-wide strides then need the TILE
+    // count to yield instead, or the slab exceeds the budget kDetTileCap-fold.
+    det_dense_tile_cap_ = std::max(1, std::min<int>(kDetTileCap,
+        static_cast<int>(kDetDenseSlotBudget / (static_cast<size_t>(det_dense_dy_) * per_row))));
     // One region per histogram pipeline: pipelined pair-constructs run on
     // different pipeline streams, so a shared region would let one
     // construct's slot rows overwrite another's before its merge reads them
     // (same failure mode the sparse tile partials needed per-pipeline
     // regions for). Worst case 4x the slot budget.
-    cuda_det_dense_slots_.Resize(static_cast<size_t>(kNumHistPipelines) * kDetTileCap * det_dense_dy_ * dense_stride);
+    cuda_det_dense_slots_.Resize(static_cast<size_t>(kNumHistPipelines) * det_dense_tile_cap_ * det_dense_dy_ * dense_stride);
   } else {
     det_dense_dy_ = 0;
+    det_dense_tile_cap_ = 0;
   }
 
   hist_fp32_ = FalcataFP32HistRequested() && !use_quantized_grad_ && !gpu_use_dp_ &&

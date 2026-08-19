@@ -455,6 +455,7 @@ class CUDAHistogramConstructor {
   // resolved by the tree learner: plan.construct_jit AND (explicit override
   // OR num_iterations >= 300) -- the compile+selftest cost needs amortizing
   void SetConstructJITAllowed(bool allowed) { construct_jit_allowed_ = allowed; }
+  void SetDetBatchedAllowed(bool allowed) { det_batched_allowed_ = allowed; }
   void BeforeTrain(const score_t* gradients, const score_t* hessians);
 
   /*! \brief number of leaf histogram slots the finished tree dirtied (== its
@@ -762,6 +763,17 @@ class CUDAHistogramConstructor {
    *  construct's budget. */
   CUDAVector<hist_t> cuda_det_dense_slots_;
   int det_dense_dy_ = 0;
+  /*! \brief Whether the BATCHED det construct may engage this run: the
+   *  learner clears it whenever the hybrid graph prefix is usable (the graph
+   *  loop's atomic construct and the det construct+merge must not interleave
+   *  within one tree). */
+  bool det_batched_allowed_ = true;
+  /*! \brief Slot-row TILE cap for the dense det slab. Normally kDetTileCap;
+   *  shrinks when one slot row alone approaches the budget (ultra-wide
+   *  histograms floor dy at 1, and kDetTileCap rows of a multi-MB stride
+   *  would blow kDetDenseSlotBudget by an order of magnitude). Every launch
+   *  clamp and slab offset uses THIS, never the raw constant. */
+  int det_dense_tile_cap_ = 0;
   uint32_t det_dense_slot_stride_ = 0;
   /*! \brief Per-tree feature mask (1 = feature in this tree's sample, 0 = skip).
    *  Indexed by column_index (== inner_feature_index for dense single-feature groups). */
