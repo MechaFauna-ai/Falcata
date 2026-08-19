@@ -25,7 +25,7 @@ Falcata is not published to CRAN; install by building the CRAN-style tarball loc
 
 If you experience any issues with that, try ["Installing from Source with CMake"](#install). This can produce a more efficient version of the library on Windows systems with Visual Studio.
 
-To build a GPU-enabled version of the package, follow the steps in ["Installing a GPU-enabled Build"](#installing-a-gpu-enabled-build).
+To build a GPU-enabled version of the package, follow the steps in ["Installing a GPU-enabled Build"](#installing-a-gpu-enabled-build). Note: the R package supports CPU and the legacy OpenCL backend only; Falcata's primary CUDA backend is currently available from the Python package and the CLI.
 
 If any of the above options do not work for you or do not meet your needs, please let the maintainers know by [opening an issue](https://github.com/MechaFauna-ai/Falcata/issues).
 

@@ -262,6 +262,7 @@ struct Config {
   // desc = ``cuda`` is Falcata's primary backend: the CUDA-native tree learner (also targets ROCm). This is where Falcata's speed lives -- see `Features <./Features.rst#the-cuda-native-training-pipeline>`__ and the related parameters ``quant_mode``, ``cuda_precision``, ``cuda_plan``
   // desc = ``cpu`` supports all Falcata functionality and is portable across the widest range of operating systems and hardware
   // desc = ``gpu`` is the legacy OpenCL backend inherited from LightGBM; it is not developed here. If you use it: smaller ``max_bin`` (e.g. 63) speeds it up, and it accumulates in 32-bit floats by default (``gpu_use_dp=true`` restores 64-bit at a speed cost)
+  // desc = **Note**: on CUDA builds, leaving ``device_type`` unset auto-selects ``cuda`` when a usable GPU is present (a one-time log line reports the choice); pass ``device_type=cpu`` to force CPU training
   // desc = **Note**: refer to `Installation Guide <./Installation-Guide.rst>`__ to build Falcata with CUDA, ROCm, or OpenCL support
   std::string device_type = "cpu";
 
