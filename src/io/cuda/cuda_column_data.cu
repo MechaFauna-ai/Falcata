@@ -41,7 +41,21 @@ __global__ void CopySubrowKernel_ColumnData(
       const uint8_t* in_column_data = in_cuda_data_by_column[column_index];
       uint8_t* out_column_data = out_cuda_data_by_column[column_index];
       const uint8_t bit_type = cuda_column_bit_type[column_index];
-      if (bit_type == 8) {
+      if (bit_type == kNibbleColumnBitType) {
+        // Two output rows share a byte, so let the even thread compose both
+        // nibbles and write once -- the alternative is two threads writing the
+        // same byte.
+        if ((local_data_index & 1) == 0) {
+          const data_size_t first = cuda_used_indices[local_data_index];
+          uint8_t packed = static_cast<uint8_t>((in_column_data[first >> 1] >> ((first & 1) << 2)) & 0xf);
+          if (local_data_index + 1 < num_used_indices) {
+            const data_size_t second = cuda_used_indices[local_data_index + 1];
+            const uint8_t high = static_cast<uint8_t>((in_column_data[second >> 1] >> ((second & 1) << 2)) & 0xf);
+            packed = static_cast<uint8_t>(packed | (high << 4));
+          }
+          out_column_data[local_data_index >> 1] = packed;
+        }
+      } else if (bit_type == 8) {
         const uint8_t* true_in_column_data = reinterpret_cast<const uint8_t*>(in_column_data);
         uint8_t* true_out_column_data = reinterpret_cast<uint8_t*>(out_column_data);
         const data_size_t global_data_index = cuda_used_indices[local_data_index];

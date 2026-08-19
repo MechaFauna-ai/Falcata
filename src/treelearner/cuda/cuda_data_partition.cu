@@ -19,6 +19,17 @@
 
 namespace Falcata {
 
+// A column stored two rows per byte (kNibbleColumnBitType). Indexing it looks
+// like indexing an array, so the split kernels take a reader rather than an
+// element pointer and work unchanged for both.
+struct NibbleColumnReader {
+  const uint8_t* data;
+  __device__ __forceinline__ uint8_t operator[](const data_size_t index) const {
+    return static_cast<uint8_t>((data[index >> 1] >> ((index & 1) << 2)) & 0xf);
+  }
+};
+
+
 // Number of thread blocks assigned to each leaf in RenewDiscretizedTreeLeavesKernel.
 // Shallow trees have few leaves; with 1 block/leaf the reduction launches too few
 // blocks to fill the GPU. 16 blocks/leaf saturates a large SM count while keeping
@@ -101,7 +112,7 @@ __device__ bool CUDAFindInBitset(const uint32_t* bits, int n, T pos) {
 
 
 #define UpdateDataIndexToLeafIndexKernel_PARAMS \
-  const BIN_TYPE* column_data, \
+  const BIN_TYPE column_data, \
   const data_size_t num_data_in_leaf, \
   const data_size_t* data_indices_in_leaf, \
   const uint32_t th, \
@@ -281,7 +292,7 @@ void CUDADataPartition::LaunchUpdateDataIndexToLeafIndexKernel_Inner4(
 }
 
 #define GenDataToLeftBitVectorKernel_PARAMS \
-  const BIN_TYPE* column_data, \
+  const BIN_TYPE column_data, \
   const data_size_t num_data_in_leaf, \
   const data_size_t* data_indices_in_leaf, \
   const uint32_t th, \
@@ -507,9 +518,10 @@ void CUDADataPartition::LaunchGenDataToLeftBitVectorKernel(
   const data_size_t* data_indices_in_leaf = cuda_data_indices_.RawData() + leaf_data_start;
   const void* column_data_pointer = cuda_column_data_->GetColumnData(column_index);
 
-  if (bit_type == 8) {
-    const uint8_t* column_data = reinterpret_cast<const uint8_t*>(column_data_pointer);
-    LaunchGenDataToLeftBitVectorKernelInner<uint8_t>(
+  if (bit_type == kNibbleColumnBitType) {
+    // two rows per byte: hand the kernels a reader instead of a pointer
+    const NibbleColumnReader column_data{reinterpret_cast<const uint8_t*>(column_data_pointer)};
+    LaunchGenDataToLeftBitVectorKernelInner<NibbleColumnReader>(
       GenBitVector_ARGS,
       missing_is_zero,
       missing_is_na,
@@ -517,7 +529,25 @@ void CUDADataPartition::LaunchGenDataToLeftBitVectorKernel(
       mfb_is_na,
       max_bin_to_left,
       is_single_feature_in_column);
-    LaunchUpdateDataIndexToLeafIndexKernel<uint8_t>(
+    LaunchUpdateDataIndexToLeafIndexKernel<NibbleColumnReader>(
+      UpdateDataIndexToLeafIndex_ARGS,
+      missing_is_zero,
+      missing_is_na,
+      mfb_is_zero,
+      mfb_is_na,
+      max_bin_to_left,
+      is_single_feature_in_column);
+  } else if (bit_type == 8) {
+    const uint8_t* column_data = reinterpret_cast<const uint8_t*>(column_data_pointer);
+    LaunchGenDataToLeftBitVectorKernelInner<const uint8_t*>(
+      GenBitVector_ARGS,
+      missing_is_zero,
+      missing_is_na,
+      mfb_is_zero,
+      mfb_is_na,
+      max_bin_to_left,
+      is_single_feature_in_column);
+    LaunchUpdateDataIndexToLeafIndexKernel<const uint8_t*>(
       UpdateDataIndexToLeafIndex_ARGS,
       missing_is_zero,
       missing_is_na,
@@ -527,7 +557,7 @@ void CUDADataPartition::LaunchGenDataToLeftBitVectorKernel(
       is_single_feature_in_column);
   } else if (bit_type == 16) {
     const uint16_t* column_data = reinterpret_cast<const uint16_t*>(column_data_pointer);
-    LaunchGenDataToLeftBitVectorKernelInner<uint16_t>(
+    LaunchGenDataToLeftBitVectorKernelInner<const uint16_t*>(
       GenBitVector_ARGS,
       missing_is_zero,
       missing_is_na,
@@ -535,7 +565,7 @@ void CUDADataPartition::LaunchGenDataToLeftBitVectorKernel(
       mfb_is_na,
       max_bin_to_left,
       is_single_feature_in_column);
-    LaunchUpdateDataIndexToLeafIndexKernel<uint16_t>(
+    LaunchUpdateDataIndexToLeafIndexKernel<const uint16_t*>(
       UpdateDataIndexToLeafIndex_ARGS,
       missing_is_zero,
       missing_is_na,
@@ -545,7 +575,7 @@ void CUDADataPartition::LaunchGenDataToLeftBitVectorKernel(
       is_single_feature_in_column);
   } else if (bit_type == 32) {
     const uint32_t* column_data = reinterpret_cast<const uint32_t*>(column_data_pointer);
-    LaunchGenDataToLeftBitVectorKernelInner<uint32_t>(
+    LaunchGenDataToLeftBitVectorKernelInner<const uint32_t*>(
       GenBitVector_ARGS,
       missing_is_zero,
       missing_is_na,
@@ -553,7 +583,7 @@ void CUDADataPartition::LaunchGenDataToLeftBitVectorKernel(
       mfb_is_na,
       max_bin_to_left,
       is_single_feature_in_column);
-    LaunchUpdateDataIndexToLeafIndexKernel<uint32_t>(
+    LaunchUpdateDataIndexToLeafIndexKernel<const uint32_t*>(
       UpdateDataIndexToLeafIndex_ARGS,
       missing_is_zero,
       missing_is_na,
@@ -572,7 +602,7 @@ void CUDADataPartition::LaunchGenDataToLeftBitVectorKernel(
 template <typename BIN_TYPE, bool USE_MIN_BIN>
 __global__ void UpdateDataIndexToLeafIndexKernel_Categorical(
   const data_size_t num_data_in_leaf, const data_size_t* data_indices_in_leaf,
-  const uint32_t* bitset, const int bitset_len, const BIN_TYPE* column_data,
+  const uint32_t* bitset, const int bitset_len, const BIN_TYPE column_data,
   // values from feature
   const uint32_t max_bin, const uint32_t min_bin, const int8_t mfb_offset,
   int* cuda_data_index_to_leaf_index, const int left_leaf_index, const int right_leaf_index,
@@ -597,7 +627,7 @@ __global__ void UpdateDataIndexToLeafIndexKernel_Categorical(
 template <typename BIN_TYPE, bool USE_MIN_BIN>
 __global__ void GenDataToLeftBitVectorKernel_Categorical(
   const data_size_t num_data_in_leaf, const data_size_t* data_indices_in_leaf,
-  const uint32_t* bitset, int bitset_len, const BIN_TYPE* column_data,
+  const uint32_t* bitset, int bitset_len, const BIN_TYPE column_data,
   // values from feature
   const uint32_t max_bin, const uint32_t min_bin, const int8_t mfb_offset,
   const uint8_t split_default_to_left,
@@ -661,32 +691,41 @@ void CUDADataPartition::LaunchGenDataToLeftBitVectorCategoricalKernel(
     split_default_to_left = 1;
     default_leaf_index = left_leaf_index;
   }
-  if (bit_type == 8) {
+  if (bit_type == kNibbleColumnBitType) {
+    const NibbleColumnReader column_data{reinterpret_cast<const uint8_t*>(column_data_pointer)};
+    if (is_single_feature_in_column) {
+      GenDataToLeftBitVectorKernel_Categorical<NibbleColumnReader, false><<<grid_dim_, block_dim_, 0, cuda_streams_[0]>>>(GenBitVector_Categorical_ARGS);
+      UpdateDataIndexToLeafIndexKernel_Categorical<NibbleColumnReader, false><<<grid_dim_, block_dim_, 0, cuda_streams_[3]>>>(UpdateDataIndexToLeafIndex_Categorical_ARGS);
+    } else {
+      GenDataToLeftBitVectorKernel_Categorical<NibbleColumnReader, true><<<grid_dim_, block_dim_, 0, cuda_streams_[0]>>>(GenBitVector_Categorical_ARGS);
+      UpdateDataIndexToLeafIndexKernel_Categorical<NibbleColumnReader, true><<<grid_dim_, block_dim_, 0, cuda_streams_[3]>>>(UpdateDataIndexToLeafIndex_Categorical_ARGS);
+    }
+  } else if (bit_type == 8) {
     const uint8_t* column_data = reinterpret_cast<const uint8_t*>(column_data_pointer);
     if (is_single_feature_in_column) {
-      GenDataToLeftBitVectorKernel_Categorical<uint8_t, false><<<grid_dim_, block_dim_, 0, cuda_streams_[0]>>>(GenBitVector_Categorical_ARGS);
-      UpdateDataIndexToLeafIndexKernel_Categorical<uint8_t, false><<<grid_dim_, block_dim_, 0, cuda_streams_[3]>>>(UpdateDataIndexToLeafIndex_Categorical_ARGS);
+      GenDataToLeftBitVectorKernel_Categorical<const uint8_t*, false><<<grid_dim_, block_dim_, 0, cuda_streams_[0]>>>(GenBitVector_Categorical_ARGS);
+      UpdateDataIndexToLeafIndexKernel_Categorical<const uint8_t*, false><<<grid_dim_, block_dim_, 0, cuda_streams_[3]>>>(UpdateDataIndexToLeafIndex_Categorical_ARGS);
     } else {
-      GenDataToLeftBitVectorKernel_Categorical<uint8_t, true><<<grid_dim_, block_dim_, 0, cuda_streams_[0]>>>(GenBitVector_Categorical_ARGS);
-      UpdateDataIndexToLeafIndexKernel_Categorical<uint8_t, true><<<grid_dim_, block_dim_, 0, cuda_streams_[3]>>>(UpdateDataIndexToLeafIndex_Categorical_ARGS);
+      GenDataToLeftBitVectorKernel_Categorical<const uint8_t*, true><<<grid_dim_, block_dim_, 0, cuda_streams_[0]>>>(GenBitVector_Categorical_ARGS);
+      UpdateDataIndexToLeafIndexKernel_Categorical<const uint8_t*, true><<<grid_dim_, block_dim_, 0, cuda_streams_[3]>>>(UpdateDataIndexToLeafIndex_Categorical_ARGS);
     }
   } else if (bit_type == 16) {
     const uint16_t* column_data = reinterpret_cast<const uint16_t*>(column_data_pointer);
     if (is_single_feature_in_column) {
-      GenDataToLeftBitVectorKernel_Categorical<uint16_t, false><<<grid_dim_, block_dim_, 0, cuda_streams_[0]>>>(GenBitVector_Categorical_ARGS);
-      UpdateDataIndexToLeafIndexKernel_Categorical<uint16_t, false><<<grid_dim_, block_dim_, 0, cuda_streams_[3]>>>(UpdateDataIndexToLeafIndex_Categorical_ARGS);
+      GenDataToLeftBitVectorKernel_Categorical<const uint16_t*, false><<<grid_dim_, block_dim_, 0, cuda_streams_[0]>>>(GenBitVector_Categorical_ARGS);
+      UpdateDataIndexToLeafIndexKernel_Categorical<const uint16_t*, false><<<grid_dim_, block_dim_, 0, cuda_streams_[3]>>>(UpdateDataIndexToLeafIndex_Categorical_ARGS);
     } else {
-      GenDataToLeftBitVectorKernel_Categorical<uint16_t, true><<<grid_dim_, block_dim_, 0, cuda_streams_[0]>>>(GenBitVector_Categorical_ARGS);
-      UpdateDataIndexToLeafIndexKernel_Categorical<uint16_t, true><<<grid_dim_, block_dim_, 0, cuda_streams_[3]>>>(UpdateDataIndexToLeafIndex_Categorical_ARGS);
+      GenDataToLeftBitVectorKernel_Categorical<const uint16_t*, true><<<grid_dim_, block_dim_, 0, cuda_streams_[0]>>>(GenBitVector_Categorical_ARGS);
+      UpdateDataIndexToLeafIndexKernel_Categorical<const uint16_t*, true><<<grid_dim_, block_dim_, 0, cuda_streams_[3]>>>(UpdateDataIndexToLeafIndex_Categorical_ARGS);
     }
   } else if (bit_type == 32) {
     const uint32_t* column_data = reinterpret_cast<const uint32_t*>(column_data_pointer);
     if (is_single_feature_in_column) {
-      GenDataToLeftBitVectorKernel_Categorical<uint32_t, false><<<grid_dim_, block_dim_, 0, cuda_streams_[0]>>>(GenBitVector_Categorical_ARGS);
-      UpdateDataIndexToLeafIndexKernel_Categorical<uint32_t, false><<<grid_dim_, block_dim_, 0, cuda_streams_[3]>>>(UpdateDataIndexToLeafIndex_Categorical_ARGS);
+      GenDataToLeftBitVectorKernel_Categorical<const uint32_t*, false><<<grid_dim_, block_dim_, 0, cuda_streams_[0]>>>(GenBitVector_Categorical_ARGS);
+      UpdateDataIndexToLeafIndexKernel_Categorical<const uint32_t*, false><<<grid_dim_, block_dim_, 0, cuda_streams_[3]>>>(UpdateDataIndexToLeafIndex_Categorical_ARGS);
     } else {
-      GenDataToLeftBitVectorKernel_Categorical<uint32_t, true><<<grid_dim_, block_dim_, 0, cuda_streams_[0]>>>(GenBitVector_Categorical_ARGS);
-      UpdateDataIndexToLeafIndexKernel_Categorical<uint32_t, true><<<grid_dim_, block_dim_, 0, cuda_streams_[3]>>>(UpdateDataIndexToLeafIndex_Categorical_ARGS);
+      GenDataToLeftBitVectorKernel_Categorical<const uint32_t*, true><<<grid_dim_, block_dim_, 0, cuda_streams_[0]>>>(GenBitVector_Categorical_ARGS);
+      UpdateDataIndexToLeafIndexKernel_Categorical<const uint32_t*, true><<<grid_dim_, block_dim_, 0, cuda_streams_[3]>>>(UpdateDataIndexToLeafIndex_Categorical_ARGS);
     }
   }
 }
@@ -1180,6 +1219,10 @@ __device__ __forceinline__ uint32_t HybridLoadBin(
     const uint8_t packed = static_cast<const uint8_t*>(d.column_data)[
       static_cast<size_t>(global_data_index) * static_cast<size_t>(d.packed_row_stride)];
     return static_cast<uint32_t>(packed >> d.packed_shift) & 0xfu;
+  } else if (d.bit_type == kNibbleColumnBitType) {
+    // flat nibble-packed column: two rows per byte, alternating nibble
+    const uint8_t packed = static_cast<const uint8_t*>(d.column_data)[global_data_index >> 1];
+    return static_cast<uint32_t>((packed >> ((global_data_index & 1) << 2)) & 0xf);
   } else if (d.bit_type == 16) {
     return static_cast<uint32_t>(static_cast<const uint16_t*>(d.column_data)[global_data_index]);
   } else {

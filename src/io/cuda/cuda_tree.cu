@@ -7,6 +7,7 @@
 
 #ifdef USE_CUDA
 
+#include <Falcata/cuda/cuda_column_data.hpp>
 #include <Falcata/cuda/cuda_tree.hpp>
 
 namespace Falcata {
@@ -523,6 +524,11 @@ __global__ void AddPredictionToScoreKernel(
         }
       } else if (column_bit_type == 8) {
         bin = static_cast<uint32_t>((reinterpret_cast<const uint8_t*>(cuda_data_by_column[column]))[data_index]);
+      } else if (column_bit_type == kNibbleColumnBitType) {
+        // two rows per byte; see kNibbleColumnBitType
+        const uint8_t packed =
+          (reinterpret_cast<const uint8_t*>(cuda_data_by_column[column]))[data_index >> 1];
+        bin = static_cast<uint32_t>((packed >> ((data_index & 1) << 2)) & 0xf);
       } else if (column_bit_type == 16) {
         bin = static_cast<uint32_t>((reinterpret_cast<const uint16_t*>(cuda_data_by_column[column]))[data_index]);
       } else if (column_bit_type == 32) {

@@ -52,6 +52,17 @@ void CUDAColumnData::InitOneColumnData(const void* in_column_data, BinIterator* 
   out_column_data_pointer->MoveFrom(cuda_column_data, sizeof(BIN_TYPE) * cuda_column_data.Size());
 }
 
+void CUDAColumnData::InitOneNibbleColumnData(const void* in_column_data,
+                                             CUDAVector<uint8_t>* out_column_data_pointer) {
+  // Upload the nibbles as they already are. Expanding them to a byte per row
+  // here is what made a 4-bit dataset cost twice its size on the device; the
+  // readers understand kNibbleColumnBitType.
+  const size_t packed_bytes = (static_cast<size_t>(num_data_) + 1) / 2;
+  CUDAVector<uint8_t> cuda_column_data;
+  cuda_column_data.InitFromHostMemory(reinterpret_cast<const uint8_t*>(in_column_data), packed_bytes);
+  out_column_data_pointer->MoveFrom(cuda_column_data, packed_bytes);
+}
+
 void CUDAColumnData::Init(const int num_columns,
                           const std::vector<const void*>& column_data,
                           const std::vector<BinIterator*>& column_bin_iterator,
@@ -118,8 +129,8 @@ void CUDAColumnData::Init(const int num_columns,
           }
           data_by_column_[column_index] = nullptr;
         } else if (bit_type == 4) {
-          column_bit_type_[column_index] = 8;
-          InitOneColumnData<false, true, uint8_t>(column_data[column_index], nullptr, data_by_column_[column_index].get());
+          column_bit_type_[column_index] = kNibbleColumnBitType;
+          InitOneNibbleColumnData(column_data[column_index], data_by_column_[column_index].get());
         } else if (bit_type == 8) {
           InitOneColumnData<false, false, uint8_t>(column_data[column_index], nullptr, data_by_column_[column_index].get());
         } else if (bit_type == 16) {
@@ -163,6 +174,9 @@ void CUDAColumnData::Init(const int num_columns,
                num_sparse, num_columns_);
   }
   feature_to_column_ = feature_to_column;
+  // What the ORIGINAL per-column buffers are. column_bit_type_ tracks whatever
+  // is published right now, which a compact view changes.
+  original_column_bit_type_ = column_bit_type_;
   cuda_data_by_column_.InitFromHostVector(GetDataByColumnPointers(data_by_column_));
   original_column_view_active_ = !init_skipped_per_column_alloc_;
   ++column_view_generation_;
@@ -176,6 +190,7 @@ void CUDAColumnData::CopySubrow(
   num_threads_ = full_set->num_threads_;
   num_columns_ = full_set->num_columns_;
   column_bit_type_ = full_set->column_bit_type_;
+  original_column_bit_type_ = full_set->original_column_bit_type_;
   feature_min_bin_ = full_set->feature_min_bin_;
   feature_max_bin_ = full_set->feature_max_bin_;
   feature_offset_ = full_set->feature_offset_;
@@ -210,7 +225,11 @@ void CUDAColumnData::CopySubrow(
         for (int column_index = 0; column_index < num_columns_; ++column_index) {
           OMP_LOOP_EX_BEGIN();
           const uint8_t bit_type = column_bit_type_[column_index];
-          if (bit_type == 8) {
+          if (bit_type == kNibbleColumnBitType) {
+            CUDAVector<uint8_t> column_data;
+            column_data.Resize((num_used_indices_size + 1) / 2);
+            data_by_column_[column_index]->MoveFrom(column_data, column_data.Size());
+          } else if (bit_type == 8) {
             CUDAVector<uint8_t> column_data;
             column_data.Resize(num_used_indices_size);
             data_by_column_[column_index]->MoveFrom(column_data, sizeof(uint8_t) * column_data.Size());
@@ -282,6 +301,15 @@ void CUDAColumnData::SetCompactColumnView(const std::vector<int>& column_to_comp
   // Keep a host-readable mirror so GetColumnData() can return the split column's
   // device pointer in the skip-allocation path (data_by_column_ stays null there).
   compact_column_host_view_ = view;
+  // The gather writes a byte per value, whatever the source column was. Sparse
+  // columns are in the view too, but pointing at their ORIGINAL buffers -- they
+  // keep their original encoding.
+  for (int c = 0; c < num_columns_; ++c) {
+    if (view[c] != nullptr && !column_is_sparse(c)) {
+      column_bit_type_[c] = 8;
+    }
+  }
+  cuda_column_bit_type_.InitFromHostVector(column_bit_type_);
   packed_column_view_active_ = false;
   original_column_view_active_ = false;
   ++column_view_generation_;
@@ -296,6 +324,8 @@ void CUDAColumnData::RestoreOriginalColumnView() {
   // The host mirror only ever describes a compact view; with the originals back
   // in place GetColumnData reads data_by_column_ directly.
   compact_column_host_view_.clear();
+  column_bit_type_ = original_column_bit_type_;
+  cuda_column_bit_type_.InitFromHostVector(column_bit_type_);
   packed_column_view_active_ = false;
   original_column_view_active_ = true;
   ++column_view_generation_;
@@ -361,7 +391,9 @@ void CUDAColumnData::ResizeWhenCopySubrow(const data_size_t num_used_indices) {
     for (int column_index = 0; column_index < num_columns_; ++column_index) {
       OMP_LOOP_EX_BEGIN();
       const uint8_t bit_type = column_bit_type_[column_index];
-      if (bit_type == 8) {
+      if (bit_type == kNibbleColumnBitType) {
+        data_by_column_[column_index]->Resize((num_used_indices_size + 1) / 2);
+      } else if (bit_type == 8) {
         data_by_column_[column_index]->Resize(sizeof(uint8_t) * num_used_indices_size);
       } else if (bit_type == 16) {
         data_by_column_[column_index]->Resize(sizeof(uint16_t) * num_used_indices_size);

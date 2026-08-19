@@ -20,6 +20,19 @@
 
 namespace Falcata {
 
+/*! \brief Column encoding for the device readers.
+ *
+ * 8, 16 and 32 are one value per row. This one is two rows per byte: row i
+ * lives in byte i >> 1, in the low nibble when i is even and the high nibble
+ * when it is odd. It is what a max_bin <= 16 dataset arrives as, and keeping it
+ * halves every per-column structure on the device.
+ *
+ * Distinct from the `bit_type = 4` a CUDAHybridApplyDescriptor carries, which
+ * addresses the histogram constructor's packed MATRIX -- one nibble per row at
+ * a fixed shift, rows a stride apart. Same width, different addressing.
+ */
+constexpr uint8_t kNibbleColumnBitType = 5;
+
 class CUDAColumnData {
  public:
   CUDAColumnData(const data_size_t num_data, const int gpu_device_id);
@@ -221,6 +234,9 @@ class CUDAColumnData {
   template <bool IS_SPARSE, bool IS_4BIT, typename BIN_TYPE>
   void InitOneColumnData(const void* in_column_data, BinIterator* bin_iterator, CUDAVector<uint8_t>* out_column_data_pointer);
 
+  /*! \brief Upload a nibble-packed column without expanding it. */
+  void InitOneNibbleColumnData(const void* in_column_data, CUDAVector<uint8_t>* out_column_data_pointer);
+
   void LaunchCopySubrowKernel(uint8_t* const* in_cuda_data_by_column);
 
   void InitColumnMetaInfo();
@@ -243,7 +259,11 @@ class CUDAColumnData {
   int num_threads_;
   data_size_t num_data_;
   int num_columns_;
+  // Encoding of what is PUBLISHED in cuda_data_by_column_ right now; a compact
+  // view swaps it to 8 for the columns it gathers.
   std::vector<uint8_t> column_bit_type_;
+  // Encoding of the original per-column buffers, restored with them.
+  std::vector<uint8_t> original_column_bit_type_;
   /*! \brief per column: bins came from a sparse bin iterator (see column_is_sparse) */
   std::vector<uint8_t> column_is_sparse_;
   std::vector<uint32_t> feature_min_bin_;

@@ -441,7 +441,7 @@ class CUDADataPartition: public NCCLInfo {
     const int right_leaf_index);
 
 #define GenDataToLeftBitVectorKernel_PARAMS \
-  const BIN_TYPE* column_data, \
+  const BIN_TYPE column_data, \
   const data_size_t num_data_in_leaf, \
   const data_size_t* data_indices_in_leaf, \
   const uint32_t th, \
@@ -499,7 +499,7 @@ class CUDADataPartition: public NCCLInfo {
 #undef GenDataToLeftBitVectorKernel_PARAMS
 
 #define UpdateDataIndexToLeafIndexKernel_PARAMS \
-  const BIN_TYPE* column_data, \
+  const BIN_TYPE column_data, \
   const data_size_t num_data_in_leaf, \
   const data_size_t* data_indices_in_leaf, \
   const uint32_t th, \
