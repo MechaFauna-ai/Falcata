@@ -56,15 +56,20 @@ LOCKS = {
     # exact ties pick different (equally valid) tied splits. covtype hits such
     # ties; quality moved 0.91841 -> 0.91883 and training is as deterministic
     # as before. numerai (L2, no exact ties in practice) did not move.
-    "covtype": "a705ae13cb03",
-    "covtype-classic": "5206deab7a35",
+    # Re-baselined again 2026-08-19 (same approved change set): the root-sums
+    # readback fix (cuda_leaf_splits.cu) corrects every model's root
+    # internal_value, which moves every md5 while training itself is
+    # bit-unchanged -- all three cells reproduce their metrics exactly
+    # (covtype 0.91883, numerai unchanged) with only the root value moving.
+    "covtype": "1d718eb58f25",
+    "covtype-classic": "362c835d1d06",
     # Re-baselined 2026-08-10 for the DATA, not a code change. The bench cache's
     # numerai build was regenerated on 2026-08-07 (the 1224 -> 1226 source bump,
     # which is explicitly not comparable to older archives); the old lock was set
     # 2026-07-31 against the previous build. Proof it is data and not drift: the
     # lock's own commit (07257bd8) run against today's cache produces this same
     # 795599fb164c, and its covtype cell still reproduces cf08d1a953b2 exactly.
-    "numerai": "795599fb164c",
+    "numerai": "7f156c480681",
 }
 
 
