@@ -1075,6 +1075,96 @@ __global__ void CUDAConstructHistogramSparseDeterministicKernel(
   }
 }
 
+// Deterministic float-mode sparse construct for datasets whose widest
+// partition's slot row cannot fit the dynamic shared budget: the slot rows
+// live in a global scratch slab instead. Ownership and ordering are identical
+// to the shared-memory kernel above -- row group y of tile blockIdx.y is the
+// sole writer of slot row (blockIdx.y * blockDim.y + y), threadIdx.x == 0
+// walks each row's full entry list, and a fixed-order reduce stores this
+// tile's partial. Slot positions are GLOBAL (offset by this partition's
+// histogram start): with partition-relative positions, different partitions'
+// blocks would zero overlapping low ranges of the SAME row -- one partition's
+// late zeroing wipes another's accumulated sums, and the reduce reads the
+// contamination. Global positions make every partition own a disjoint range
+// of every row.
+template <typename BIN_TYPE, typename DATA_PTR_TYPE>
+__global__ void CUDAConstructHistogramSparseGMDeterministicKernel(
+  const CUDALeafSplitsStruct* smaller_leaf_splits,
+  const score_t* cuda_gradients,
+  const score_t* cuda_hessians,
+  const BIN_TYPE* data,
+  const DATA_PTR_TYPE* row_ptr,
+  const DATA_PTR_TYPE* partition_ptr,
+  const uint32_t* column_hist_offsets_full,
+  const data_size_t num_data,
+  const uint32_t slot_stride,  // double elements; == the full histogram's item count
+  hist_t* slots,               // [tile * blockDim.y + row_group][slot_stride]
+  hist_t* tile_partials,       // [gridDim.y][2 * num_total_bin]
+  const uint32_t num_total_items) {
+  const int dim_y = static_cast<int>(gridDim.y * blockDim.y);
+  const data_size_t num_data_in_smaller_leaf = smaller_leaf_splits->num_data_in_leaf;
+  const data_size_t num_data_per_thread = (num_data_in_smaller_leaf + dim_y - 1) / dim_y;
+  const data_size_t* data_indices_ref = smaller_leaf_splits->data_indices_in_leaf;
+  const unsigned int num_threads_per_block = blockDim.x * blockDim.y;
+  const DATA_PTR_TYPE* block_row_ptr = row_ptr + static_cast<size_t>(blockIdx.x) * (num_data + 1);
+  const BIN_TYPE* data_ptr = data + partition_ptr[blockIdx.x];
+  const uint32_t partition_hist_start = column_hist_offsets_full[blockIdx.x];
+  const uint32_t partition_hist_end = column_hist_offsets_full[blockIdx.x + 1];
+  const uint32_t num_items_in_partition = (partition_hist_end - partition_hist_start) << 1;
+  const unsigned int thread_idx = threadIdx.x + threadIdx.y * blockDim.x;
+  hist_t* block_slot_rows = slots + static_cast<size_t>(blockIdx.y) * blockDim.y * slot_stride;
+  const uint32_t slot_base = partition_hist_start << 1;
+  // Cooperative zero of ALL blockDim.y slot rows this block owns, not just
+  // threadIdx.y's: the scratch persists across launches and the accumulate
+  // below ADDS into the slots, so every position of every row must be zeroed
+  // or the previous leaf's sums leak into this histogram.
+  const uint32_t num_zero_items = num_items_in_partition * blockDim.y;
+  for (uint32_t i = thread_idx; i < num_zero_items; i += num_threads_per_block) {
+    const uint32_t y = i / num_items_in_partition;
+    const uint32_t j = i % num_items_in_partition;
+    block_slot_rows[static_cast<size_t>(y) * slot_stride + slot_base + j] = 0.0;
+  }
+  __syncthreads();
+  hist_t* my_slot_row = block_slot_rows + static_cast<size_t>(threadIdx.y) * slot_stride;
+  const data_size_t block_start = (static_cast<size_t>(blockIdx.y) * blockDim.y) * num_data_per_thread;
+  const data_size_t* data_indices_ref_this_block = data_indices_ref + block_start;
+  data_size_t block_num_data = max(0, min(num_data_in_smaller_leaf - block_start, num_data_per_thread * static_cast<data_size_t>(blockDim.y)));
+  const data_size_t num_iteration_total = (block_num_data + blockDim.y - 1) / blockDim.y;
+  const data_size_t remainder = block_num_data % blockDim.y;
+  const data_size_t num_iteration_this = remainder == 0 ? num_iteration_total : num_iteration_total - static_cast<data_size_t>(threadIdx.y >= remainder);
+  data_size_t inner_data_index = static_cast<data_size_t>(threadIdx.y);
+  // One writer per slot row; see the shared-memory kernel above for why the
+  // x lanes cannot map to entry positions.
+  if (threadIdx.x == 0) {
+    for (data_size_t i = 0; i < num_iteration_this; ++i) {
+      const data_size_t data_index = data_indices_ref_this_block[inner_data_index];
+      const DATA_PTR_TYPE row_start = block_row_ptr[data_index];
+      const DATA_PTR_TYPE row_end = block_row_ptr[data_index + 1];
+      const score_t grad = cuda_gradients[data_index];
+      const score_t hess = cuda_hessians[data_index];
+      for (DATA_PTR_TYPE e = row_start; e < row_end; ++e) {
+        const uint32_t bin = static_cast<uint32_t>(data_ptr[e]);
+        const uint32_t pos = slot_base + (bin << 1);
+        my_slot_row[pos] += static_cast<double>(grad);
+        my_slot_row[pos + 1] += static_cast<double>(hess);
+      }
+      inner_data_index += blockDim.y;
+    }
+  }
+  __syncthreads();
+  // Fixed-order reduce over the block's row groups, then a plain store into
+  // this tile's partial: (partition, tile) blocks own disjoint item ranges,
+  // so no atomics and no ordering ambiguity remain anywhere in the construct.
+  hist_t* tile_row = tile_partials + static_cast<size_t>(blockIdx.y) * num_total_items;
+  for (unsigned int i = thread_idx; i < num_items_in_partition; i += num_threads_per_block) {
+    double acc = 0.0;
+    for (unsigned int y = 0; y < blockDim.y; ++y) {
+      acc += block_slot_rows[static_cast<size_t>(y) * slot_stride + slot_base + i];
+    }
+    tile_row[slot_base + i] = acc;
+  }
+}
+
 // Deterministic float-mode dense construct for partitions too wide for shared
 // memory (the GlobalMemory variant). Slot row (tile * dy + threadIdx.y) is
 // owned exclusively by that row group; within it the x lanes walk a row's
@@ -2194,10 +2284,10 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
     if (!USE_GLOBAL_MEM_BUFFER) {
       if (cuda_row_data_->is_sparse()) {
         // Deterministic float construct: slot rows sized by the widest
-        // partition's item count. When even one row cannot fit the dynamic
-        // shared budget, the dataset is out of this kernel's reach and the
-        // atomic kernel keeps serving it (order-invariant on quantized
-        // gradients, jittered here -- see the kernel comment above).
+        // partition's item count. Rows that fit the dynamic shared budget use
+        // the shared-memory kernel (faster); wider rows move to the global
+        // slab variant, so the order-dependent atomic kernel only remains for
+        // shapes with no det scratch at all.
         const std::vector<uint32_t>& part_offsets = cuda_row_data_->host_partition_hist_offsets();
         uint32_t slot_stride = 0;
         for (size_t p = 1; p < part_offsets.size(); ++p) {
@@ -2240,6 +2330,56 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
             det_tiles,
             num_items_total,
             std::max(det_grid_y, 1));
+        } else if (kDetSparseConstructEnabled && det_tile_alloc_ > 0 && smem_per_row > 0) {
+          // Wide-partition fallback: one slot row exceeds the shared budget,
+          // so the rows live in the dense det construct's global slab instead
+          // (slot positions GLOBAL per partition; see
+          // CUDAConstructHistogramSparseGMDeterministicKernel). The slab is
+          // sized for every non-quantized dataset with a nonempty partition
+          // table (cuda_histogram_constructor.cpp), this branch is
+          // non-quantized-only, and smem_per_row > 0 proves the table is
+          // nonempty, so the scratch is always present here; its stride spans
+          // the full histogram, which is exactly what global slot positions
+          // and the 2 * num_total_bin_ tile rows require.
+          CHECK_GT(det_dense_dy_, 0);
+          CHECK_EQ(det_dense_slot_stride_, static_cast<uint32_t>(2 * num_total_bin_));
+          // block_dim_x * dy must stay within the 1024-thread block budget or
+          // the launch fails with InvalidConfiguration -- which, unchecked,
+          // is a SILENT no-op construct (see the dense det launch below).
+          const int det_dy = std::max(1, std::min(det_dense_dy_, 1024 / std::max(1, block_dim_x)));
+          int det_grid_y = (num_data_in_smaller_leaf + kDetRowsPerThread * det_dy - 1) / (kDetRowsPerThread * det_dy);
+          det_grid_y = std::max(det_grid_y, min_grid_dim_y_);
+          det_grid_y = std::min(std::min(det_grid_y, static_cast<int>(kDetTileCap)), det_tile_alloc_);
+          dim3 det_grid(grid_dim_x, static_cast<unsigned int>(std::max(det_grid_y, 1)));
+          dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dy));
+          // Pipeline-private scratch regions (pipelined pair-constructs run
+          // on different pipeline streams; shared regions would race).
+          hist_t* det_slots = cuda_det_dense_slots_.RawData() +
+            static_cast<size_t>(active_pipeline_) * kDetTileCap * det_dense_dy_ * det_dense_slot_stride_;
+          hist_t* det_tiles = cuda_det_tile_partials_.RawData() +
+            static_cast<size_t>(active_pipeline_) * det_tile_alloc_ * (2 * num_total_bin_);
+          CUDAConstructHistogramSparseGMDeterministicKernel<BIN_TYPE, PTR_TYPE>
+            <<<det_grid, det_block, 0, current_stream()>>>(
+              cuda_smaller_leaf_splits,
+              cuda_gradients_, cuda_hessians_,
+              cuda_row_data_->GetBin<BIN_TYPE>(),
+              cuda_row_data_->GetRowPtr<PTR_TYPE>(),
+              cuda_row_data_->GetPartitionPtr<PTR_TYPE>(),
+              cuda_row_data_->cuda_partition_hist_offsets(),
+              num_data_,
+              det_dense_slot_stride_,
+              det_slots,
+              det_tiles,
+              static_cast<uint32_t>(2 * num_total_bin_));
+          const int num_items_total = 2 * num_total_bin_;
+          const int merge_threads = 256;
+          const int merge_blocks = (num_items_total + merge_threads - 1) / merge_threads;
+          MergeDeterministicHistogramKernel<<<merge_blocks, merge_threads, 0, current_stream()>>>(
+            cuda_smaller_leaf_splits,
+            det_tiles,
+            num_items_total,
+            std::max(det_grid_y, 1));
+          CUDASUCCESS_OR_FATAL(cudaGetLastError());
         } else {
           CUDAConstructHistogramSparseKernel<BIN_TYPE, PTR_TYPE, HIST_TYPE, SHARED_HIST_SIZE><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
@@ -2348,15 +2488,60 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
       }
     } else {
       if (cuda_row_data_->is_sparse()) {
-        CUDAConstructHistogramSparseKernel_GlobalMemory<BIN_TYPE, HIST_TYPE, PTR_TYPE><<<grid_dim, block_dim, 0, current_stream()>>>(
-          cuda_smaller_leaf_splits,
-          cuda_gradients_, cuda_hessians_,
-          cuda_row_data_->GetBin<BIN_TYPE>(),
-          cuda_row_data_->GetRowPtr<PTR_TYPE>(),
-          cuda_row_data_->GetPartitionPtr<PTR_TYPE>(),
-          cuda_row_data_->cuda_partition_hist_offsets(),
-          num_data_,
-          reinterpret_cast<HIST_TYPE*>(cuda_hist_buffer_.RawData()));
+        if (det_tile_alloc_ > 0 && det_dense_dy_ > 0 && num_total_bin_ > 0) {
+          // Deterministic float construct: a large-bin partition put this
+          // dataset on the GlobalMemory arm, so a shared slot row can never
+          // fit and the global slab serves directly (slot positions GLOBAL
+          // per partition; see CUDAConstructHistogramSparseGMDeterministicKernel
+          // and the non-GM sparse arm for the launch-shape rationale).
+          CHECK_EQ(det_dense_slot_stride_, static_cast<uint32_t>(2 * num_total_bin_));
+          // block_dim_x * dy capped at the 1024-thread block budget; see the
+          // non-GM arm for the silent-no-op failure mode.
+          const int det_dy = std::max(1, std::min(det_dense_dy_, 1024 / std::max(1, block_dim_x)));
+          int det_grid_y = (num_data_in_smaller_leaf + kDetRowsPerThread * det_dy - 1) / (kDetRowsPerThread * det_dy);
+          det_grid_y = std::max(det_grid_y, min_grid_dim_y_);
+          det_grid_y = std::min(std::min(det_grid_y, static_cast<int>(kDetTileCap)), det_tile_alloc_);
+          dim3 det_grid(grid_dim_x, static_cast<unsigned int>(std::max(det_grid_y, 1)));
+          dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dy));
+          // Pipeline-private scratch regions (pipelined pair-constructs run
+          // on different pipeline streams; shared regions would race).
+          hist_t* det_slots = cuda_det_dense_slots_.RawData() +
+            static_cast<size_t>(active_pipeline_) * kDetTileCap * det_dense_dy_ * det_dense_slot_stride_;
+          hist_t* det_tiles = cuda_det_tile_partials_.RawData() +
+            static_cast<size_t>(active_pipeline_) * det_tile_alloc_ * (2 * num_total_bin_);
+          CUDAConstructHistogramSparseGMDeterministicKernel<BIN_TYPE, PTR_TYPE>
+            <<<det_grid, det_block, 0, current_stream()>>>(
+              cuda_smaller_leaf_splits,
+              cuda_gradients_, cuda_hessians_,
+              cuda_row_data_->GetBin<BIN_TYPE>(),
+              cuda_row_data_->GetRowPtr<PTR_TYPE>(),
+              cuda_row_data_->GetPartitionPtr<PTR_TYPE>(),
+              cuda_row_data_->cuda_partition_hist_offsets(),
+              num_data_,
+              det_dense_slot_stride_,
+              det_slots,
+              det_tiles,
+              static_cast<uint32_t>(2 * num_total_bin_));
+          const int num_items_total = 2 * num_total_bin_;
+          const int merge_threads = 256;
+          const int merge_blocks = (num_items_total + merge_threads - 1) / merge_threads;
+          MergeDeterministicHistogramKernel<<<merge_blocks, merge_threads, 0, current_stream()>>>(
+            cuda_smaller_leaf_splits,
+            det_tiles,
+            num_items_total,
+            std::max(det_grid_y, 1));
+          CUDASUCCESS_OR_FATAL(cudaGetLastError());
+        } else {
+          CUDAConstructHistogramSparseKernel_GlobalMemory<BIN_TYPE, HIST_TYPE, PTR_TYPE><<<grid_dim, block_dim, 0, current_stream()>>>(
+            cuda_smaller_leaf_splits,
+            cuda_gradients_, cuda_hessians_,
+            cuda_row_data_->GetBin<BIN_TYPE>(),
+            cuda_row_data_->GetRowPtr<PTR_TYPE>(),
+            cuda_row_data_->GetPartitionPtr<PTR_TYPE>(),
+            cuda_row_data_->cuda_partition_hist_offsets(),
+            num_data_,
+            reinterpret_cast<HIST_TYPE*>(cuda_hist_buffer_.RawData()));
+        }
       } else if (det_dense_dy_ > 0 && !hist_fp32_) {
         // Deterministic float construct for wide partitions (double slots in
         // global scratch; see CUDAConstructHistogramDenseGMDeterministicKernel).
