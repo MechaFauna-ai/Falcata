@@ -12,6 +12,7 @@ from .basic import Booster, Dataset, Sequence, get_pickle_format, register_logge
 from .callback import EarlyStopException, early_stopping, log_evaluation, record_evaluation, reset_parameter
 from .engine import CVBooster, cv, train
 from .importers import from_catboost, from_xgboost
+from .oblique import ObliquePool
 
 try:
     from .sklearn import FalcataClassifier, FalcataModel, FalcataRanker, FalcataRegressor
@@ -38,6 +39,7 @@ if _version_path.is_file():
 __all__ = [
     "from_catboost",
     "from_xgboost",
+    "ObliquePool",
     "get_pickle_format",
     "set_pickle_format",
     "Dataset",
