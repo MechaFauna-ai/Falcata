@@ -475,10 +475,20 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     // may flip once BuildCompactView below runs, which the classic prefix
     // handles by reading the sums back at its start.
     root_sums_deferred_ = HybridGrowthUsable() && UseOneSyncPrefix();
-    // The batched det construct and the graph loop's atomic construct must
-    // not interleave within one tree (see DetDenseBatchedEligible); a run
-    // where the graph prefix is usable stays atomic end to end.
-    cuda_histogram_constructor_->SetDetBatchedAllowed(!HybridGraphPrefixUsable());
+    // One ownership model of the histogram storage per tree (see
+    // DetDenseBatchedEligible): host batched det may run alongside the graph
+    // prefix only when the graph itself captured the det construct+merge
+    // nodes; a run whose graph stays atomic stays atomic end to end.
+    bool det_batched_allowed = !HybridGraphPrefixUsable();
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+    if (!det_batched_allowed) {
+      const int widest = std::min(
+        1 << std::max(0, std::min(config_->max_depth - 1, 10)),
+        kHybridGraphMaxSplitsPerLevel);
+      det_batched_allowed = cuda_histogram_constructor_->DetDenseGraphEligible(widest);
+    }
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+    cuda_histogram_constructor_->SetDetBatchedAllowed(det_batched_allowed);
     cuda_smaller_leaf_splits_->InitValues(
       config_->lambda_l1,
       config_->lambda_l2,
@@ -2234,6 +2244,14 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
   // pow2-frozen tree-split grid's idle blocks guard on it (plain int pointer
   // so the tree's public header stays free of the loop-state type)
   const int* graph_live_split_count = &instance->state_dev->cur_num_splits;
+  // deterministic construct inside the graph: decided ONCE for the whole
+  // instance (node counts must be body-uniform) against the widest possible
+  // level; each body's capture gets its own tighter pair bound so shallow
+  // bodies keep a full block dy
+  const int det_widest_level_pairs = std::min(
+    1 << std::min(num_level_bodies - 1, 10), kHybridGraphMaxSplitsPerLevel);
+  const bool graph_det =
+    cuda_histogram_constructor_->DetDenseGraphEligible(det_widest_level_pairs);
   for (int body = 0; body < num_level_bodies; ++body) {
     const size_t body_node_start = nodes.size();
     CaptureHybridGraphControllerKernel(hist_stream, instance->state_dev, body);
@@ -2248,10 +2266,13 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
     }
     capture_ok = capture_ok && cudaEventRecord(apply_event, apply_stream) == cudaSuccess;
     capture_ok = capture_ok && cudaStreamWaitEvent(hist_stream, apply_event, 0) == cudaSuccess;
+    const int det_body_pairs = graph_det ?
+      std::min(1 << std::min(body, 10), det_widest_level_pairs) : 0;
     cuda_histogram_constructor_->CaptureHybridGraphSearchKernels(
       cuda_hybrid_pair_descs_.RawDataReadOnly(),
       cuda_data_partition_->level_smaller_leaf_counts(),
       instance->state_dev,
+      det_body_pairs,
       &nodes, &roles, &role_static_x);
     cuda_best_split_finder_->CaptureHybridGraphFindKernels(
       cuda_hybrid_pair_descs_.RawDataReadOnly(),
@@ -2295,6 +2316,9 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
   cuda_histogram_constructor_->HybridGraphConstructDims(&construct_grid_x, &construct_block_dim_y);
   state.construct_grid_x = construct_grid_x;
   state.construct_block_dim_y = construct_block_dim_y;
+  state.det_total_slot_rows =
+    graph_det ? cuda_histogram_constructor_->det_dense_total_slot_rows() : 0;
+  state.det_rows_per_thread = CUDAHistogramConstructor::det_rows_per_thread();
   state.num_nodes = static_cast<int>(nodes_per_level);
   for (size_t i = 0; i < nodes.size(); ++i) {
     const size_t slot = (i / nodes_per_level) * static_cast<size_t>(kHybridGraphMaxNodes) +

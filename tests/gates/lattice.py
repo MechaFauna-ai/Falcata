@@ -216,13 +216,14 @@ def build_cells():
         fingerprint=False,
         perf=True,
     )
-    cell("graph/nonquant", "graph", {"quant_mode": "none"}, rounds=50, fingerprint=False)
-    # Non-quant DETERMINISTIC cells: with graph_loop off, every construct on
-    # these shapes runs the deterministic kernels (per-leaf, batched-level,
-    # compact view, sparse fallback), so their models fingerprint like quant
-    # cells do. The graph loop itself stays atomic (frozen-grid capture is
-    # incompatible with the two-kernel construct+merge) -- graph/nonquant
-    # above remains the unfingerprinted coverage for it.
+    # Non-quant DETERMINISTIC cells: on these shapes every construct runs the
+    # deterministic kernels (per-leaf, batched-level, compact view, sparse
+    # fallback), so their models fingerprint like quant cells do. The graph
+    # loop now captures the det construct+merge node pair too (per-level
+    # extents come from the controller and the kernels' device layout
+    # replica), so DEFAULT-plan cells on graph-eligible shapes fingerprint as
+    # well -- graph/nonquant-det and imbalanced/nonquant-det below pin
+    # exactly that path; the graph_loop:off det cells pin the host loop.
     cell("dense/nonquant-det", "dense", {"quant_mode": "none", "cuda_plan": "auto,graph_loop:off"}, rounds=50)
     # hybrid:off -- the BATCHED level flow keeps the atomic kernel for compact
     # views (per-leaf det covers them; batched does not yet), so the compact
@@ -232,12 +233,22 @@ def build_cells():
     cell(
         "categorical/nonquant-det", "categorical", {"quant_mode": "none", "cuda_plan": "auto,graph_loop:off"}, rounds=50
     )
+    # DEFAULT plan (graph loop ON): the captured det construct+merge nodes.
+    # graph/nonquant-det replaces the old unfingerprinted graph/nonquant cell
+    # (same run, now md5-pinned); imbalanced is the shape whose atomic/det mix
+    # raced in the 2026-08-19 lattice, so its default-plan model is pinned too.
+    cell("graph/nonquant-det", "graph", {"quant_mode": "none"}, rounds=50)
+    cell("imbalanced/nonquant-det", "imbalanced", {"quant_mode": "none"}, rounds=50)
+    # ... and the graph det loop must be BIT-IDENTICAL to the host det loop:
+    # the controller replays the host loop's decisions and the det
+    # construct+merge is row-grouping invariant, so flipping graph_loop may
+    # not change a single tree byte.
     cell(
-        "imbalanced/nonquant",
-        "imbalanced",
-        {"quant_mode": "none"},
+        "graph/flip-graph_loop-det",
+        "graph",
+        {"quant_mode": "none", "cuda_plan": "auto,graph_loop:off"},
         rounds=50,
-        fingerprint=False,
+        equal_to="graph/nonquant-det",
     )
     # categorical, non-quant: hybrid-vs-classic equivalence guard
     cell(

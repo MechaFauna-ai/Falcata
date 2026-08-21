@@ -91,6 +91,11 @@
    "metric": 0.605169,
    "metric_name": "mlogloss"
   },
+  "graph/nonquant-det": {
+   "md5": "18adb66ff4391be5667464bf2c02943e",
+   "metric": 0.608904,
+   "metric_name": "mlogloss"
+  },
   "graph/quant": {
    "md5": "d64cb4fba1b8cdd92e9b97db20f6ea74",
    "metric": 0.754484,
@@ -103,6 +108,11 @@
   },
   "imbalanced/nonquant": {
    "metric": 0.990058,
+   "metric_name": "auc"
+  },
+  "imbalanced/nonquant-det": {
+   "md5": "1d5c6ed3ac299ed545b588a86e2ceaa1",
+   "metric": 0.990074,
    "metric_name": "auc"
   },
   "imbalanced/posweight": {

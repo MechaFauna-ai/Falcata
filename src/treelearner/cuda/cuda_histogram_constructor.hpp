@@ -381,9 +381,15 @@ class CUDAHistogramConstructor {
    *  placeholder grids on the hist stream, node handles + roles collected for
    *  the device controller; records subtract_done_events_[0] (the find phase
    *  waits on it inside the graph exactly like the host flow) */
+  /*! \brief det_max_level_pairs > 0 captures the deterministic construct +
+   *  merge node pair (clamping the det block dy to the slab carve at that
+   *  pair bound) instead of the atomic construct node; 0 keeps the atomic
+   *  capture. The caller passes the SAME choice for every level body (node
+   *  counts must be body-uniform) with each body's own pair bound. */
   void CaptureHybridGraphSearchKernels(const CUDAHybridPairDescriptor* pair_descs,
                                        const data_size_t* level_smaller_num_data,
                                        const CUDAHybridGraphLoopState* gstate,
+                                       const int det_max_level_pairs,
                                        std::vector<cudaGraphNode_t>* nodes,
                                        std::vector<int>* roles,
                                        std::vector<int>* role_static_x);
@@ -456,6 +462,24 @@ class CUDAHistogramConstructor {
   // OR num_iterations >= 300) -- the compile+selftest cost needs amortizing
   void SetConstructJITAllowed(bool allowed) { construct_jit_allowed_ = allowed; }
   void SetDetBatchedAllowed(bool allowed) { det_batched_allowed_ = allowed; }
+
+  /*! \brief whether the graph loop's construct nodes can be the deterministic
+   *  construct+merge pair for a prefix whose widest level has at most
+   *  max_level_pairs sibling pairs: same shape gates as the host batched det
+   *  arm, plus the slab must give every pair of the widest level at least one
+   *  slot row (the block dy is clamped to that carve at capture, so the
+   *  frozen block never overruns a pair's region) */
+  bool DetDenseGraphEligible(const int max_level_pairs) const;
+
+  /*! \brief total slot rows of the deterministic dense slab (the graph
+   *  controller carves this by the live pair count) */
+  int det_dense_total_slot_rows() const {
+    return kNumHistPipelines * det_dense_tile_cap_ * det_dense_dy_;
+  }
+
+  /*! \brief kDetRowsPerThread for the graph controller's tile-extent replica */
+  static constexpr int det_rows_per_thread() { return kDetRowsPerThread; }
+
   void BeforeTrain(const score_t* gradients, const score_t* hessians);
 
   /*! \brief number of leaf histogram slots the finished tree dirtied (== its
@@ -643,6 +667,7 @@ class CUDAHistogramConstructor {
    *  too wide for the slot slab keep the atomic kernel -- see the .cu) */
   bool DetDenseBatchedEligible(const int num_pairs) const;
 
+
   /*! \brief deterministic dense construct+merge for a whole hybrid level:
    *  blockIdx.z pair axis, per-pair disjoint regions carved from the FULL
    *  deterministic slot slab (the batched level runs on cuda_stream_ alone, so
@@ -654,6 +679,31 @@ class CUDAHistogramConstructor {
     const data_size_t max_num_data_in_smaller_leaf,
     const int grid_dim_x,
     const int block_dim_x);
+
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+  /*! \brief captures the deterministic construct + merge kernels as two graph
+   *  nodes (roles kHybridGraphNodeConstructDet / ...DetMerge) with placeholder
+   *  grids; the det block dy is clamped so a pair region of the
+   *  max_level_pairs-wide carve always fits the frozen block */
+  void CaptureHybridGraphDetConstructMerge(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const CUDAHybridGraphLoopState* gstate,
+    const int max_level_pairs,
+    std::vector<cudaGraphNode_t>* nodes,
+    std::vector<int>* roles,
+    std::vector<int>* role_static_x);
+
+  template <typename BIN_TYPE>
+  void CaptureHybridGraphDetConstructMergeInner(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const CUDAHybridGraphLoopState* gstate,
+    const int block_dim_x,
+    const int grid_dim_x,
+    const int dy,
+    std::vector<cudaGraphNode_t>* nodes,
+    std::vector<int>* roles,
+    std::vector<int>* role_static_x);
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
   void LaunchSubtractHistogramBatchedKernel(
     const CUDAHybridPairDescriptor* pair_descs,

@@ -1191,8 +1191,8 @@ __device__ __forceinline__ void ConstructHistogramDenseGMDeterministicInner(
   const data_size_t num_data,
   const uint32_t slot_stride,  // double elements; >= every partition's item count
   hist_t* slots,               // [tile * dy + row_group][slot_stride]
-  const int dy) {
-  const int dim_y = static_cast<int>(gridDim.y * dy);
+  const int dy,
+  const int dim_y) {           // total slot rows the data is distributed over
   const data_size_t num_data_in_smaller_leaf = smaller_leaf_splits->num_data_in_leaf;
   const data_size_t num_data_per_thread = (num_data_in_smaller_leaf + dim_y - 1) / dim_y;
   const data_size_t* data_indices_ref = smaller_leaf_splits->data_indices_in_leaf;
@@ -1269,7 +1269,8 @@ __global__ void CUDAConstructHistogramDenseGMDeterministicKernel(
     smaller_leaf_splits, cuda_gradients, cuda_hessians, data,
     column_hist_offsets, column_hist_offsets_full,
     feature_partition_column_index_offsets, packed_partition_byte_offsets,
-    is_feature_used_bytree, num_data, slot_stride, slots, dy);
+    is_feature_used_bytree, num_data, slot_stride, slots, dy,
+    static_cast<int>(gridDim.y) * dy);
 }
 
 // Device mirror of the batched construct kernels' per-pair skip gates: the
@@ -1296,6 +1297,32 @@ __device__ __forceinline__ bool HybridPairConstructSkipped(
          (num_data_larger <= min_data_in_leaf || sum_hessians_larger <= min_sum_hessian_in_leaf);
 }
 
+// Device replica of the per-pair slot-row layout shared by the deterministic
+// batched construct and its merge (the two MUST agree on it exactly):
+//   pair_rows = total_slot_rows / live_pairs   (>= dy by the eligibility and
+//                                               capture-time dy clamps)
+//   tiles     = clamp(ceil(leaf_rows / (kDetRowsPerThread * dy)), 1,
+//                     pair_rows / dy)
+//   rows_used = tiles * dy                     (rows zeroed AND merged)
+// Inputs are device-exact (live pair count from the loop state or the launch
+// grid, leaf size from the pair struct), so both kernels derive the identical
+// layout with no host round trip -- which is what lets the graph loop freeze
+// the launch grids at upper bounds.
+__device__ __forceinline__ int DetDensePairRows(const int total_slot_rows,
+                                                const int live_pairs) {
+  return max(1, total_slot_rows / max(1, live_pairs));
+}
+
+__device__ __forceinline__ int DetDensePairTiles(const data_size_t leaf_rows,
+                                                 const int pair_rows,
+                                                 const int dy) {
+  const int tile_cap = max(1, pair_rows / dy);
+  const data_size_t denom = static_cast<data_size_t>(kDetRowsPerThread) * dy;
+  const int tiles_data = static_cast<int>(
+    max(static_cast<data_size_t>(1), (leaf_rows + denom - 1) / denom));
+  return min(tiles_data, tile_cap);
+}
+
 // Deterministic dense construct for the hybrid LEVEL batch: blockIdx.z selects
 // the sibling pair and each pair owns a disjoint pair_rows * slot_stride slab
 // of the deterministic slot scratch, so all pairs of a level accumulate
@@ -1304,10 +1331,13 @@ __device__ __forceinline__ bool HybridPairConstructSkipped(
 // batched-level stream (cuda_stream_) with no pipeline concurrency, so the
 // WHOLE kNumHistPipelines slab is available to carve into per-pair regions.
 // Unlike the atomic batched kernel there is no small-leaf direct body (its
-// global float atomics are exactly the order dependence this kernel removes)
-// and no device row-grouping replica: the double-slot sums are exact, so any
-// row grouping produces the identical histogram and the launched grid extent
-// (gridDim.y * dy, uniform across pairs) is used as-is.
+// global float atomics are exactly the order dependence this kernel removes).
+// The per-pair layout (pair rows, tile count) is derived on device (see
+// DetDensePairRows / DetDensePairTiles): under the graph loop the launch grid
+// is a frozen upper bound and the live pair count comes from the loop state;
+// on the host path the grid is exact and gstate is null. The double-slot sums
+// are exact, so any row grouping produces the identical merged histogram --
+// host and graph paths agree bit-for-bit by construction.
 template <typename BIN_TYPE, bool IS_4BIT = false>
 __global__ void CUDAConstructHistogramDenseGMDeterministicBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
@@ -1323,12 +1353,22 @@ __global__ void CUDAConstructHistogramDenseGMDeterministicBatchedKernel(
   const data_size_t min_data_in_leaf,
   const double min_sum_hessian_in_leaf,
   const uint32_t slot_stride,
-  hist_t* slots,          // [num_pairs][pair_rows][slot_stride]
-  const int pair_rows,
-  const int dy) {
+  hist_t* slots,          // [live_pairs][pair_rows][slot_stride]
+  const int total_slot_rows,
+  const int dy,
+  const CUDAHybridGraphLoopStateOpt gstate) {
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.z)) {
+    return;
+  }
   const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.z;
   if (HybridPairConstructSkipped(desc, min_data_in_leaf, min_sum_hessian_in_leaf)) {
     return;
+  }
+  const int live_pairs = HybridGraphLivePairCount(gstate, static_cast<int>(gridDim.z));
+  const int pair_rows = DetDensePairRows(total_slot_rows, live_pairs);
+  const int tiles = DetDensePairTiles(desc->smaller_struct->num_data_in_leaf, pair_rows, dy);
+  if (static_cast<int>(blockIdx.y) >= tiles) {
+    return;  // idle tile (frozen-grid upper bound); exits before the zeroing
   }
   hist_t* pair_slots = slots +
     static_cast<size_t>(blockIdx.z) * static_cast<size_t>(pair_rows) * slot_stride;
@@ -1336,7 +1376,7 @@ __global__ void CUDAConstructHistogramDenseGMDeterministicBatchedKernel(
     desc->smaller_struct, cuda_gradients, cuda_hessians, data,
     column_hist_offsets, column_hist_offsets_full,
     feature_partition_column_index_offsets, packed_partition_byte_offsets,
-    is_feature_used_bytree, num_data, slot_stride, pair_slots, dy);
+    is_feature_used_bytree, num_data, slot_stride, pair_slots, dy, tiles * dy);
 }
 
 // Fixed-order merge for the dense deterministic construct: one block row per
@@ -1363,19 +1403,28 @@ __global__ void MergeDeterministicDenseHistogramKernel(
   smaller_leaf_splits->hist_in_leaf[i] = acc;
 }
 
-// Batched per-level variant: blockIdx.z selects the pair, whose pair_rows
-// slot-slab region holds num_rows (<= pair_rows) accumulated rows. Replicates
-// the construct's per-pair skip gates so a gated-out pair's stale slots never
-// overwrite its leaf histogram (the merge STORES; only live pairs may write).
+// Batched per-level variant: blockIdx.z selects the pair; the per-pair slab
+// region and the merged row count are the DetDensePairRows/DetDensePairTiles
+// device replica, so the merge reads exactly the rows its construct zeroed
+// and accumulated -- on the host path (exact grid, gstate null) and inside
+// the graph loop (frozen upper-bound grid, live pair count from the loop
+// state) alike. Replicates the construct's per-pair skip gates so a
+// gated-out pair's stale slots never overwrite its leaf histogram (the merge
+// STORES; only live pairs may write).
 __global__ void MergeDeterministicDenseHistogramBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const hist_t* slots,
   const uint32_t* column_hist_offsets_full,
   const uint32_t slot_stride,
-  const int pair_rows,
-  const int num_rows,
+  const int total_slot_rows,
+  const int dy,
+  const int host_num_pairs,
   const data_size_t min_data_in_leaf,
-  const double min_sum_hessian_in_leaf) {
+  const double min_sum_hessian_in_leaf,
+  const CUDAHybridGraphLoopStateOpt gstate) {
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.z)) {
+    return;
+  }
   const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.z;
   if (HybridPairConstructSkipped(desc, min_data_in_leaf, min_sum_hessian_in_leaf)) {
     return;
@@ -1387,6 +1436,10 @@ __global__ void MergeDeterministicDenseHistogramBatchedKernel(
     return;
   }
   const uint32_t i = (start << 1) + j;  // global slot position
+  const int live_pairs = HybridGraphLivePairCount(gstate, host_num_pairs);
+  const int pair_rows = DetDensePairRows(total_slot_rows, live_pairs);
+  const int num_rows =
+    DetDensePairTiles(desc->smaller_struct->num_data_in_leaf, pair_rows, dy) * dy;
   const hist_t* pair_slots = slots +
     static_cast<size_t>(blockIdx.z) * static_cast<size_t>(pair_rows) * slot_stride;
   double acc = 0.0;
@@ -3270,19 +3323,29 @@ bool CUDAHistogramConstructor::DetDenseBatchedEligible(const int num_pairs) cons
     return false;
   }
   if (hybrid_graph_capture_gstate_ != nullptr || !det_batched_allowed_) {
-    // The graph loop keeps the atomic kernel, and a run where the graph
-    // prefix engages at all stays atomic END TO END: mixing graph-replayed
-    // construct levels with det construct+merge levels in one tree
-    // interleaves two ownership models of the same histogram storage, and
-    // the combination raced in the 2026-08-19 lattice (intermittent illegal
-    // access on imbalanced/nonquant with the default plan). Determinism for
-    // depth-limited non-quant runs is opted into via graph_loop:off, which
-    // is exactly what the det lattice cells and the fuzz md5 gate use.
+    // hybrid_graph_capture_gstate_: the graph loop's det construct is
+    // captured explicitly (CaptureHybridGraphDetConstructMerge), never
+    // through this launcher chain -- an atomic body capture must stay atomic.
+    // det_batched_allowed_: one tree must keep ONE ownership model of the
+    // histogram storage end to end. Mixing graph-replayed atomic construct
+    // levels with host det construct+merge levels raced in the 2026-08-19
+    // lattice (intermittent illegal access, imbalanced/nonquant); the
+    // learner therefore allows host batched det only when the graph prefix
+    // is off OR the graph itself runs the det nodes (DetDenseGraphEligible).
     return false;
   }
-  const int total_slot_rows = kNumHistPipelines * det_dense_tile_cap_ * det_dense_dy_;
+  const int total_slot_rows = det_dense_total_slot_rows();
   return num_pairs > 0 &&
          num_pairs <= std::min(total_slot_rows, kDetDenseBatchedPairCap);
+}
+
+bool CUDAHistogramConstructor::DetDenseGraphEligible(const int max_level_pairs) const {
+  if (use_quantized_grad_ || det_dense_dy_ <= 0 || hist_fp32_ || use_compact_view_) {
+    return false;
+  }
+  const int total_slot_rows = det_dense_total_slot_rows();
+  return max_level_pairs > 0 &&
+         max_level_pairs <= std::min(total_slot_rows, kDetDenseBatchedPairCap);
 }
 
 // Deterministic dense construct+merge for a whole hybrid level: one construct
@@ -3331,8 +3394,9 @@ void CUDAHistogramConstructor::LaunchConstructHistogramDenseBatchedDeterministic
       min_sum_hessian_in_leaf_,
       det_dense_slot_stride_,
       cuda_det_dense_slots_.RawData(),
-      pair_rows,
-      det_dy);
+      total_slot_rows,
+      det_dy,
+      nullptr);
   const int merge_threads = 256;
   dim3 merge_grid((det_dense_slot_stride_ + merge_threads - 1) / merge_threads,
                   grid_dim_x, static_cast<unsigned int>(num_pairs));
@@ -3341,10 +3405,12 @@ void CUDAHistogramConstructor::LaunchConstructHistogramDenseBatchedDeterministic
     cuda_det_dense_slots_.RawData(),
     cuda_row_data_->cuda_partition_hist_offsets(),
     det_dense_slot_stride_,
-    pair_rows,
-    det_grid_y * det_dy,
+    total_slot_rows,
+    det_dy,
+    num_pairs,
     static_cast<data_size_t>(min_data_in_leaf_),
-    min_sum_hessian_in_leaf_);
+    min_sum_hessian_in_leaf_,
+    nullptr);
   CUDASUCCESS_OR_FATAL(cudaGetLastError());
 }
 
@@ -3824,10 +3890,97 @@ void CUDAHistogramConstructor::LaunchFixSubtractHistogramSmallLeafBatchedKernel(
 }
 
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+template <typename BIN_TYPE>
+void CUDAHistogramConstructor::CaptureHybridGraphDetConstructMergeInner(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const CUDAHybridGraphLoopState* gstate,
+    const int block_dim_x,
+    const int grid_dim_x,
+    const int dy,
+    std::vector<cudaGraphNode_t>* nodes,
+    std::vector<int>* roles,
+    std::vector<int>* role_static_x) {
+  const int total_slot_rows = det_dense_total_slot_rows();
+  const bool det_packed_4bit = cuda_row_data_->is_4bit_packed();
+  auto det_kernel = det_packed_4bit ?
+    &CUDAConstructHistogramDenseGMDeterministicBatchedKernel<BIN_TYPE, true> :
+    &CUDAConstructHistogramDenseGMDeterministicBatchedKernel<BIN_TYPE, false>;
+  // placeholder grids: the controller resizes both nodes per level (exact
+  // tile extent for the construct, pow2 pair bucket for both)
+  dim3 det_grid(static_cast<unsigned int>(grid_dim_x), 1, 1);
+  dim3 det_block(static_cast<unsigned int>(block_dim_x), static_cast<unsigned int>(dy));
+  det_kernel<<<det_grid, det_block, 0, cuda_stream_>>>(
+      pair_descs,
+      cuda_gradients_, cuda_hessians_,
+      cuda_row_data_->GetBin<BIN_TYPE>(),
+      cuda_row_data_->cuda_column_hist_offsets(),
+      cuda_row_data_->cuda_partition_hist_offsets(),
+      cuda_row_data_->cuda_feature_partition_column_index_offsets(),
+      det_packed_4bit ? cuda_row_data_->cuda_packed_partition_byte_offsets() : nullptr,
+      cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr,
+      num_data_,
+      static_cast<data_size_t>(min_data_in_leaf_),
+      min_sum_hessian_in_leaf_,
+      det_dense_slot_stride_,
+      cuda_det_dense_slots_.RawData(),
+      total_slot_rows,
+      dy,
+      gstate);
+  if (!AppendCapturedNode(cuda_stream_, nodes)) return;
+  roles->push_back(kHybridGraphNodeConstructDet);
+  role_static_x->push_back(dy);  // the controller's tile formula needs dy
+  const int merge_threads = 256;
+  const int merge_blocks_x =
+    (static_cast<int>(det_dense_slot_stride_) + merge_threads - 1) / merge_threads;
+  dim3 merge_grid(static_cast<unsigned int>(merge_blocks_x),
+                  static_cast<unsigned int>(grid_dim_x), 1);
+  MergeDeterministicDenseHistogramBatchedKernel<<<merge_grid, merge_threads, 0, cuda_stream_>>>(
+    pair_descs,
+    cuda_det_dense_slots_.RawData(),
+    cuda_row_data_->cuda_partition_hist_offsets(),
+    det_dense_slot_stride_,
+    total_slot_rows,
+    dy,
+    /*host_num_pairs=*/1,
+    static_cast<data_size_t>(min_data_in_leaf_),
+    min_sum_hessian_in_leaf_,
+    gstate);
+  if (!AppendCapturedNode(cuda_stream_, nodes)) return;
+  roles->push_back(kHybridGraphNodeConstructDetMerge);
+  role_static_x->push_back(merge_blocks_x);
+}
+
+void CUDAHistogramConstructor::CaptureHybridGraphDetConstructMerge(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const CUDAHybridGraphLoopState* gstate,
+    const int max_level_pairs,
+    std::vector<cudaGraphNode_t>* nodes,
+    std::vector<int>* roles,
+    std::vector<int>* role_static_x) {
+  int grid_dim_x = 0, grid_dim_y = 0, block_dim_x = 0, block_dim_y = 0;
+  CalcConstructHistogramBatchedKernelDim(&grid_dim_x, &grid_dim_y, &block_dim_x, &block_dim_y, 1, 1);
+  // dy under the 1024-thread block budget (mirrors the host launcher), then
+  // clamped to the widest level's slab carve so the frozen block's dy rows
+  // always fit one pair region (DetDensePairTiles assumes dy <= pair_rows)
+  int dy = std::max(1, std::min(det_dense_dy_, 1024 / std::max(1, block_dim_x)));
+  dy = std::min(dy, std::max(1, det_dense_total_slot_rows() / std::max(1, max_level_pairs)));
+  if (cuda_row_data_->bit_type() == 8) {
+    CaptureHybridGraphDetConstructMergeInner<uint8_t>(
+      pair_descs, gstate, block_dim_x, grid_dim_x, dy, nodes, roles, role_static_x);
+  } else if (cuda_row_data_->bit_type() == 16) {
+    CaptureHybridGraphDetConstructMergeInner<uint16_t>(
+      pair_descs, gstate, block_dim_x, grid_dim_x, dy, nodes, roles, role_static_x);
+  } else {
+    CaptureHybridGraphDetConstructMergeInner<uint32_t>(
+      pair_descs, gstate, block_dim_x, grid_dim_x, dy, nodes, roles, role_static_x);
+  }
+}
+
 void CUDAHistogramConstructor::CaptureHybridGraphSearchKernels(
     const CUDAHybridPairDescriptor* pair_descs,
     const data_size_t* level_smaller_num_data,
     const CUDAHybridGraphLoopState* gstate,
+    const int det_max_level_pairs,
     std::vector<cudaGraphNode_t>* nodes,
     std::vector<int>* roles,
     std::vector<int>* role_static_x) {
@@ -3839,12 +3992,21 @@ void CUDAHistogramConstructor::CaptureHybridGraphSearchKernels(
   // shared-histogram overflow guard).
   // graphs A2: the captured construct kernel reads the live pair count from
   // the loop state (its frozen grid is only a pow2 upper bound)
-  hybrid_graph_capture_gstate_ = gstate;
-  LaunchConstructHistogramBatchedKernel(pair_descs, 1, 1, level_smaller_num_data);
-  hybrid_graph_capture_gstate_ = nullptr;
-  if (!AppendCapturedNode(cuda_stream_, nodes)) return;
-  roles->push_back(kHybridGraphNodeConstruct);
-  role_static_x->push_back(0);
+  if (det_max_level_pairs > 0) {
+    // deterministic runs: the level's construct is the det construct + merge
+    // node pair; every per-level extent the host launcher would compute is
+    // derived on device (DetDensePairRows/DetDensePairTiles) or resized by
+    // the controller, so determinism survives the frozen graph body
+    CaptureHybridGraphDetConstructMerge(pair_descs, gstate, det_max_level_pairs,
+                                        nodes, roles, role_static_x);
+  } else {
+    hybrid_graph_capture_gstate_ = gstate;
+    LaunchConstructHistogramBatchedKernel(pair_descs, 1, 1, level_smaller_num_data);
+    hybrid_graph_capture_gstate_ = nullptr;
+    if (!AppendCapturedNode(cuda_stream_, nodes)) return;
+    roles->push_back(kHybridGraphNodeConstruct);
+    role_static_x->push_back(0);
+  }
   if (use_quantized_grad_) {
     // mirror of LaunchSubtractHistogramBatchedKernel's quantized branch, one
     // collected node per launch; the copy node is always captured (per-pair

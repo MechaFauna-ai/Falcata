@@ -559,6 +559,33 @@ __global__ void HybridGraphLevelControllerKernel(CUDAHybridGraphLoopState* st,
                       st->construct_min_grid_dim_y, st->construct_min_rows_per_thread,
                       st->construct_saturation_floor, st->num_grad_quant_bins))), qn);
         break;
+      case kHybridGraphNodeConstructDet: {
+        // deterministic construct: exact tile extent (like the atomic
+        // construct's exact y) -- the kernels' DetDensePairTiles replica is
+        // bounded by this same formula per pair, so the grid always covers
+        // every live pair's zeroed+merged rows. slot.static_x carries the
+        // node's frozen block dy.
+        enabled = !final_partial;
+        const int det_dy = max(1, slot.static_x);
+        const int pair_rows = max(1, st->det_total_slot_rows / max(1, n));
+        const int tile_cap = max(1, pair_rows / det_dy);
+        const data_size_t denom =
+          static_cast<data_size_t>(st->det_rows_per_thread) * det_dy;
+        const data_size_t tiles_data_l =
+          (max_smaller_leaf_bound + denom - 1) / denom;
+        const int tiles_data = static_cast<int>(
+          tiles_data_l > 0 ? tiles_data_l : static_cast<data_size_t>(1));
+        grid = dim3(static_cast<unsigned int>(st->construct_grid_x),
+                    static_cast<unsigned int>(min(tile_cap, tiles_data)), qn);
+        break;
+      }
+      case kHybridGraphNodeConstructDetMerge:
+        // fixed-order merge of the det slot rows: static x (slot-stride
+        // blocks) and y (partitions); only the pair bucket varies
+        enabled = !final_partial;
+        grid = dim3(static_cast<unsigned int>(slot.static_x),
+                    static_cast<unsigned int>(st->construct_grid_x), qn);
+        break;
       case kHybridGraphNodeSearchPairY:
         enabled = !final_partial;
         grid = dim3(static_cast<unsigned int>(slot.static_x), qn, 1);

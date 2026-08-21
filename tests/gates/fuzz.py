@@ -295,8 +295,13 @@ def check_spec(spec):
         )
     # Determinism rerun. Quantized training is bit-deterministic everywhere
     # (integer atomics); non-quantized training is bit-deterministic on every
-    # shape the deterministic float constructs cover -- which is everything
-    # EXCEPT the graph-captured level loop (still atomic by design). A
+    # shape the deterministic float constructs cover -- including the graph
+    # loop, whose captured det construct+merge nodes are bit-identical to the
+    # host loop (lattice cell graph/flip-graph_loop-det pins that). The gate
+    # still skips md5 on graph-possible specs because det ELIGIBILITY inside
+    # the graph depends on internal slab sizing (an ultra-wide histogram
+    # shrinks the det slab until the widest level no longer fits and the
+    # graph stays atomic) -- a spec cannot see that from the outside. A
     # non-quant spec is md5-checked when its shape cannot take the graph loop:
     # the plan disables it (or the whole hybrid flow), or the spec is not
     # depth-limited (the hybrid prefix requires 2^max_depth <= num_leaves + 1).

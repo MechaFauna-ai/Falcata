@@ -102,6 +102,13 @@ enum CUDAHybridGraphNodeRole : int {
   kHybridGraphNodeCopyGaps,        // grid (p2(max_gap_blocks), p2(num_gaps)); disabled when no gaps
   kHybridGraphNodeConstruct,       // grid (static_x, p2(formula_y), p2(n))
   kHybridGraphNodeSearchPairY,     // grid (static_x, p2(n)): fix/subtract family
+  /*! \brief deterministic dense construct (non-quant det runs): grid
+   *  (construct_grid_x, exact tiles_y, p2(n)); static_x carries the node's
+   *  frozen block dy so the controller can compute the tile extent */
+  kHybridGraphNodeConstructDet,
+  /*! \brief fixed-order merge of the det construct's slot rows: grid
+   *  (static_x = slot-stride blocks, construct_grid_x, p2(n)) */
+  kHybridGraphNodeConstructDetMerge,
   kHybridGraphNodeFind,            // grid (find_grid_x, p2(n), 2)
   kHybridGraphNodeSyncLevel,       // grid (2, p2(n), static_x /* blocks per leaf */)
   kHybridGraphNodeSyncAllBlocks,   // grid (2, p2(n))
@@ -184,6 +191,14 @@ struct CUDAHybridGraphLoopState {
    *  histogram bit widths from the device-resident leaf counts with it
    *  (exactly the host's SetNumBitsInHistogramBin thresholds) */
   int num_grad_quant_bins;
+  /*! \brief deterministic dense construct inside the graph loop (0 when the
+   *  det nodes were not captured): total slot rows of the det slab. The
+   *  controller carves rows per pair as det_total_slot_rows / live pairs
+   *  when sizing the det construct's tile extent. */
+  int det_total_slot_rows;
+  /*! \brief kDetRowsPerThread mirrored into the state so the controller's
+   *  tile-extent formula matches the det kernels' device replica */
+  int det_rows_per_thread;
 
   // ---- fixed device buffers ----
   const CUDASplitInfo* leaf_best_split_info;
