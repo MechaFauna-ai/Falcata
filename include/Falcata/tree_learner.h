@@ -57,6 +57,20 @@ class TreeLearner {
   */
   virtual void ResetBoostingOnGPU(const bool /*boosting_on_gpu*/) {}
 
+  /*!
+  * \brief Make the freshly trained tree traversable for score updates that
+  *        walk the column data (the out-of-bag pass under bagging).
+  *
+  * The CUDA learner may leave the per-tree column view in its packed form,
+  * which only the batched split-apply kernels can read. A tree traversal
+  * (CUDATree::AddPredictionToScore) needs plain per-column pointers, and on
+  * datasets whose full per-column table was skipped for VRAM there is no
+  * fallback to restore -- scoring would be impossible. The CUDA learner
+  * overrides this to materialize the classic per-tree view; other learners
+  * have nothing to do.
+  */
+  virtual void EnsureScorableColumnView() {}
+
   virtual void SetForcedSplit(const Json* forced_split_json) = 0;
 
   /*!

@@ -614,6 +614,11 @@ void GBDT::UpdateScore(const Tree* tree, const int cur_tree_id) {
     if (num_data_ - bag_data_cnt > 0) {
       #ifdef USE_CUDA
       if (config_->device_type == std::string("cuda")) {
+        // The OOB update traverses the tree against per-column data. Make
+        // sure the learner's per-tree view can serve a traversal — under the
+        // packed split read it cannot, and skip-allocation datasets have no
+        // original table to fall back to (bagging used to Fatal there).
+        tree_learner_->EnsureScorableColumnView();
         train_score_updater_->AddScore(tree, data_sample_strategy_->cuda_bag_data_indices().RawData() + bag_data_cnt, num_data_ - bag_data_cnt, cur_tree_id);
       } else {
       #endif  // USE_CUDA

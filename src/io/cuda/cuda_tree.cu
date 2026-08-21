@@ -575,9 +575,14 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
   }
   if (!view_serves_this_tree) {
     if (!cuda_column_data->has_original_column_view()) {
-      Log::Fatal("Scoring a tree on CUDA needs the per-column data, which was skipped "
-                 "because it would not fit in GPU memory. Reduce the number of features, "
-                 "or train this configuration with device_type=cpu.");
+      // The freshly trained tree is served by the learner's per-tree view
+      // (GBDT::UpdateScore ensures a scorable one before the out-of-bag
+      // pass), so reaching here means an OLDER tree — DART re-scoring a
+      // dropped tree whose sampled columns are no longer materialized.
+      Log::Fatal("Scoring a previously trained tree on CUDA needs the full "
+                 "per-column data, which was skipped because it would not fit "
+                 "in GPU memory. This configuration (e.g. DART on a very wide "
+                 "dataset) needs fewer features or device_type=cpu.");
     }
     const_cast<CUDAColumnData*>(cuda_column_data)->RestoreOriginalColumnView();
   }
