@@ -55,13 +55,6 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
 
   void ResetBoostingOnGPU(const bool boosting_on_gpu) override;
 
-  // The out-of-bag score update traverses the just-trained tree against the
-  // per-column data. Under the packed split read no per-column pointers are
-  // published, and on skip-allocation datasets there is no original table to
-  // restore — so materialize the classic per-tree view first (one gather,
-  // same lazy fallback the classic per-split path uses).
-  void EnsureScorableColumnView() override { EnsureClassicColumnView(); }
-
   void SetNCCLInfo(
     ncclComm_t nccl_communicator,
     int nccl_gpu_rank,

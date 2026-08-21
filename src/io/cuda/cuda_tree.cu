@@ -452,7 +452,7 @@ void CUDATree::LaunchAddBiasKernel(const double val) {
   AddBiasKernel<<<num_blocks, num_threads_per_block>>>(val, cuda_leaf_value_.RawData(), num_leaves_);
 }
 
-template <bool USE_INDICES>
+template <bool USE_INDICES, bool USE_PACKED>
 __global__ void AddPredictionToScoreKernel(
   // dataset information
   const data_size_t num_data,
@@ -464,6 +464,13 @@ __global__ void AddPredictionToScoreKernel(
   const uint32_t* cuda_feature_default_bin,
   const uint32_t* cuda_feature_most_freq_bin,
   const int* cuda_feature_to_column,
+  // per-tree packed view (USE_PACKED only): per-column base pointer, per-row
+  // byte stride and nibble shift into the row matrix; sparse-encoded columns
+  // carry their own buffer at their real width (bit type 8/16/32)
+  const uint8_t* const* cuda_packed_column_ptr,
+  const int* cuda_packed_column_stride,
+  const uint8_t* cuda_packed_column_shift,
+  const uint8_t* cuda_packed_column_bit_type,
   const data_size_t* cuda_used_indices,
   // tree information
   const uint32_t* cuda_threshold_in_bin,
@@ -497,7 +504,24 @@ __global__ void AddPredictionToScoreKernel(
       // of down the split's default direction.
       const uint32_t max_bin_local = max_bin - min_bin + offset;
       uint32_t bin = 0;
-      if (column_bit_type == 8) {
+      if (USE_PACKED) {
+        // the values match the classic gathered view byte for byte: the
+        // gather kernel only copies these nibbles/bytes, so the bin logic
+        // below is untouched
+        const uint8_t* base = cuda_packed_column_ptr[column];
+        const uint8_t packed_bit_type = cuda_packed_column_bit_type[column];
+        if (packed_bit_type == 4) {
+          const size_t byte_index = static_cast<size_t>(data_index) *
+            static_cast<size_t>(cuda_packed_column_stride[column]);
+          bin = static_cast<uint32_t>((base[byte_index] >> cuda_packed_column_shift[column]) & 0xf);
+        } else if (packed_bit_type == 8) {
+          bin = static_cast<uint32_t>(base[data_index]);
+        } else if (packed_bit_type == 16) {
+          bin = static_cast<uint32_t>((reinterpret_cast<const uint16_t*>(base))[data_index]);
+        } else {
+          bin = static_cast<uint32_t>((reinterpret_cast<const uint32_t*>(base))[data_index]);
+        }
+      } else if (column_bit_type == 8) {
         bin = static_cast<uint32_t>((reinterpret_cast<const uint8_t*>(cuda_data_by_column[column]))[data_index]);
       } else if (column_bit_type == 16) {
         bin = static_cast<uint32_t>((reinterpret_cast<const uint16_t*>(cuda_data_by_column[column]))[data_index]);
@@ -547,6 +571,16 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
   data_size_t num_data,
   double* score) const {
   const CUDAColumnData* cuda_column_data = data->cuda_column_data();
+  // A launch with used_data_indices on the TRAIN data is the out-of-bag score
+  // update of the tree trained this very iteration (nothing else scores a row
+  // subset), so a live packed per-tree view is that tree's own view and the
+  // packed kernel variant traverses it directly — no classic per-column
+  // gather. Every other caller scores against a plain per-column view.
+  const bool packed_serves_oob =
+    cuda_column_data->packed_column_view_active() && used_data_indices != nullptr;
+  if (packed_serves_oob) {
+    const_cast<CUDAColumnData*>(cuda_column_data)->EnsurePackedViewOnDevice();
+  } else {
   // This kernel may traverse ANY tree, including one grown many iterations ago
   // (DART re-scores dropped trees). Under feature_fraction the tree learner
   // publishes a per-tree compact column view: columns the current tree did not
@@ -575,16 +609,16 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
   }
   if (!view_serves_this_tree) {
     if (!cuda_column_data->has_original_column_view()) {
-      // The freshly trained tree is served by the learner's per-tree view
-      // (GBDT::UpdateScore ensures a scorable one before the out-of-bag
-      // pass), so reaching here means an OLDER tree — DART re-scoring a
-      // dropped tree whose sampled columns are no longer materialized.
+      // Reaching here means an OLDER tree — DART re-scoring a dropped tree
+      // whose sampled columns are no longer materialized (the freshly trained
+      // tree's out-of-bag pass is served by the packed branch above).
       Log::Fatal("Scoring a previously trained tree on CUDA needs the full "
                  "per-column data, which was skipped because it would not fit "
                  "in GPU memory. This configuration (e.g. DART on a very wide "
                  "dataset) needs fewer features or device_type=cpu.");
     }
     const_cast<CUDAColumnData*>(cuda_column_data)->RestoreOriginalColumnView();
+  }
   }
   const int num_blocks = (num_data + num_threads_per_block_add_prediction_to_score_ - 1) / num_threads_per_block_add_prediction_to_score_;
   // ToHost() frees the per-tree GPU tree-structure arrays to bound device memory
@@ -618,8 +652,8 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
     self->cuda_bitset_inner_.InitFromHostVector(cat_threshold_inner_);
     self->cuda_cat_boundaries_inner_.InitFromHostVector(cat_boundaries_inner_);
   }
-  if (used_data_indices == nullptr) {
-    AddPredictionToScoreKernel<false><<<num_blocks, num_threads_per_block_add_prediction_to_score_>>>(
+  if (packed_serves_oob) {
+    AddPredictionToScoreKernel<true, true><<<num_blocks, num_threads_per_block_add_prediction_to_score_>>>(
       // dataset information
       num_data,
       cuda_column_data->cuda_data_by_column(),
@@ -630,6 +664,38 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
       cuda_column_data->cuda_feature_default_bin(),
       cuda_column_data->cuda_feature_most_freq_bin(),
       cuda_column_data->cuda_feature_to_column(),
+      cuda_column_data->cuda_packed_column_ptr(),
+      cuda_column_data->cuda_packed_column_stride(),
+      cuda_column_data->cuda_packed_column_shift(),
+      cuda_column_data->cuda_packed_column_bit_type(),
+      used_data_indices,
+      // tree information
+      cuda_threshold_in_bin_.RawData(),
+      cuda_decision_type_.RawData(),
+      cuda_split_feature_inner_.RawData(),
+      cuda_left_child_.RawData(),
+      cuda_right_child_.RawData(),
+      cuda_leaf_value_.RawData(),
+      cuda_bitset_inner_.RawDataReadOnly(),
+      cuda_cat_boundaries_inner_.RawDataReadOnly(),
+      // output
+      score);
+  } else if (used_data_indices == nullptr) {
+    AddPredictionToScoreKernel<false, false><<<num_blocks, num_threads_per_block_add_prediction_to_score_>>>(
+      // dataset information
+      num_data,
+      cuda_column_data->cuda_data_by_column(),
+      cuda_column_data->cuda_column_bit_type(),
+      cuda_column_data->cuda_feature_min_bin(),
+      cuda_column_data->cuda_feature_max_bin(),
+      cuda_column_data->cuda_feature_offset(),
+      cuda_column_data->cuda_feature_default_bin(),
+      cuda_column_data->cuda_feature_most_freq_bin(),
+      cuda_column_data->cuda_feature_to_column(),
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
       nullptr,
       // tree information
       cuda_threshold_in_bin_.RawData(),
@@ -643,7 +709,7 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
       // output
       score);
   } else {
-    AddPredictionToScoreKernel<true><<<num_blocks, num_threads_per_block_add_prediction_to_score_>>>(
+    AddPredictionToScoreKernel<true, false><<<num_blocks, num_threads_per_block_add_prediction_to_score_>>>(
       // dataset information
       num_data,
       cuda_column_data->cuda_data_by_column(),
@@ -654,6 +720,10 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
       cuda_column_data->cuda_feature_default_bin(),
       cuda_column_data->cuda_feature_most_freq_bin(),
       cuda_column_data->cuda_feature_to_column(),
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
       used_data_indices,
       // tree information
       cuda_threshold_in_bin_.RawData(),

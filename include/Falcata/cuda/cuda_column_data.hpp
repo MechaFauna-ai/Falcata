@@ -195,6 +195,25 @@ class CUDAColumnData {
     return packed_column_bit_type_[column_index];
   }
 
+  // Device copies of the packed per-column descriptors, for kernels that
+  // traverse the packed view directly (the out-of-bag score update under
+  // bagging). Uploaded lazily; a stale generation re-uploads, so the tables
+  // always describe the currently registered view.
+  void EnsurePackedViewOnDevice();
+
+  const uint8_t* const* cuda_packed_column_ptr() const {
+    return cuda_packed_column_ptr_.RawDataReadOnly();
+  }
+  const int* cuda_packed_column_stride() const {
+    return cuda_packed_column_stride_.RawDataReadOnly();
+  }
+  const uint8_t* cuda_packed_column_shift() const {
+    return cuda_packed_column_shift_.RawDataReadOnly();
+  }
+  const uint8_t* cuda_packed_column_bit_type() const {
+    return cuda_packed_column_bit_type_.RawDataReadOnly();
+  }
+
   // Skip per-column allocation in Init? Used when caller will provide compact view.
   bool init_skipped_per_column_alloc_ = false;
 
@@ -257,6 +276,13 @@ class CUDAColumnData {
   // 4 for a dense column read as row-matrix nibbles; the column's real bit
   // type (8/16/32) for a sparse column served from its own buffer.
   std::vector<uint8_t> packed_column_bit_type_;
+  // Device mirrors of the four vectors above (see EnsurePackedViewOnDevice);
+  // valid while packed_view_device_generation_ == column_view_generation_.
+  CUDAVector<const uint8_t*> cuda_packed_column_ptr_;
+  CUDAVector<int> cuda_packed_column_stride_;
+  CUDAVector<uint8_t> cuda_packed_column_shift_;
+  CUDAVector<uint8_t> cuda_packed_column_bit_type_;
+  uint64_t packed_view_device_generation_ = 0;
 
   CUDAVector<uint8_t> cuda_column_bit_type_;
   CUDAVector<uint32_t> cuda_feature_min_bin_;

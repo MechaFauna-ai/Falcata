@@ -337,6 +337,19 @@ void CUDAColumnData::SetCompactPackedColumnView(const std::vector<int>& column_t
   ++column_view_generation_;
 }
 
+void CUDAColumnData::EnsurePackedViewOnDevice() {
+  CHECK(packed_column_view_active_);
+  if (packed_view_device_generation_ == column_view_generation_ &&
+      cuda_packed_column_ptr_.Size() > 0) {
+    return;
+  }
+  cuda_packed_column_ptr_.InitFromHostVector(packed_column_ptr_);
+  cuda_packed_column_stride_.InitFromHostVector(packed_column_stride_);
+  cuda_packed_column_shift_.InitFromHostVector(packed_column_shift_);
+  cuda_packed_column_bit_type_.InitFromHostVector(packed_column_bit_type_);
+  packed_view_device_generation_ = column_view_generation_;
+}
+
 void CUDAColumnData::ResizeWhenCopySubrow(const data_size_t num_used_indices) {
   const size_t num_used_indices_size = static_cast<size_t>(num_used_indices);
   cuda_used_indices_.Resize(num_used_indices_size);
