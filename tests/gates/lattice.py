@@ -233,16 +233,19 @@ def build_cells():
     cell(
         "categorical/nonquant-det", "categorical", {"quant_mode": "none", "cuda_plan": "auto,graph_loop:off"}, rounds=50
     )
-    # DEFAULT plan (graph loop ON): the captured det construct+merge nodes.
-    # graph/nonquant-det replaces the old unfingerprinted graph/nonquant cell
-    # (same run, now md5-pinned); imbalanced is the shape whose atomic/det mix
-    # raced in the 2026-08-19 lattice, so its default-plan model is pinned too.
-    cell("graph/nonquant-det", "graph", {"quant_mode": "none"}, rounds=50)
-    cell("imbalanced/nonquant-det", "imbalanced", {"quant_mode": "none"}, rounds=50)
+    # graph_det:on -- the captured det construct+merge nodes inside the graph
+    # loop (opt-in; the DEFAULT graph plan keeps the atomic construct for
+    # speed). graph/nonquant-det replaces the old unfingerprinted
+    # graph/nonquant cell; imbalanced is the shape whose atomic/det mix raced
+    # in the 2026-08-19 lattice, so its graph-det model is pinned too.
+    cell("graph/nonquant-det", "graph", {"quant_mode": "none", "cuda_plan": "auto,graph_det:on"}, rounds=50)
+    cell("imbalanced/nonquant-det", "imbalanced", {"quant_mode": "none", "cuda_plan": "auto,graph_det:on"}, rounds=50)
+    # the DEFAULT plan stays atomic in the graph: metric-only coverage
+    cell("graph/nonquant", "graph", {"quant_mode": "none"}, rounds=50, fingerprint=False)
     # ... and the graph det loop must be BIT-IDENTICAL to the host det loop:
     # the controller replays the host loop's decisions and the det
-    # construct+merge is row-grouping invariant, so flipping graph_loop may
-    # not change a single tree byte.
+    # construct+merge is row-grouping invariant, so swapping graph_det:on for
+    # graph_loop:off may not change a single tree byte.
     cell(
         "graph/flip-graph_loop-det",
         "graph",

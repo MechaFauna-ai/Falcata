@@ -50,6 +50,13 @@ struct FalcataPlan {
   bool graph_loop = true;           // key: graph_loop
   // graph level loop also for quantized training (opt-in; less measured)
   bool graph_quant = false;         // key: graph_quant
+  // deterministic construct+merge nodes inside the graph loop (non-quant):
+  // bit-identical to the host det loop (graph_loop:off), so opting in buys
+  // run-to-run md5 identity AND the graph's launch-overhead win. Off by
+  // default: the det merge costs ~4x on shallow non-quant shapes
+  // (covtype-shallow-class), and the default trades that determinism for
+  // speed like the fp32 opt-ins do.
+  bool graph_det = false;           // key: graph_det
   // per-tree compact column view for quantized construct at any
   // 0 < feature_fraction < 1 (win scales with the excluded fraction:
   // ~3.4x at ff=0.1, ~1.1x at ff=0.6)
@@ -158,6 +165,7 @@ struct FalcataPlan {
     if (key == "hybrid") return &hybrid;
     if (key == "graph_loop") return &graph_loop;
     if (key == "graph_quant") return &graph_quant;
+    if (key == "graph_det") return &graph_det;
     if (key == "compact_quant") return &compact_quant;
     if (key == "construct_jit") return &construct_jit;
     if (key == "fast_rowdata") return &fast_rowdata;

@@ -3340,6 +3340,14 @@ bool CUDAHistogramConstructor::DetDenseBatchedEligible(const int num_pairs) cons
 }
 
 bool CUDAHistogramConstructor::DetDenseGraphEligible(const int max_level_pairs) const {
+  if (!FalcataPlan::Get().graph_det) {
+    // opt-in (cuda_plan=auto,graph_det:on): by default the graph loop keeps
+    // the atomic construct -- the det merge costs ~4x on shallow non-quant
+    // shapes, and the default trades that determinism for speed. graph_det
+    // gates BOTH the capture and the host-det-alongside-graph allowance
+    // (SetDetBatchedAllowed), so a default run stays atomic end to end.
+    return false;
+  }
   if (use_quantized_grad_ || det_dense_dy_ <= 0 || hist_fp32_ || use_compact_view_) {
     return false;
   }

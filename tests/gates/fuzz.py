@@ -295,16 +295,15 @@ def check_spec(spec):
         )
     # Determinism rerun. Quantized training is bit-deterministic everywhere
     # (integer atomics); non-quantized training is bit-deterministic on every
-    # shape the deterministic float constructs cover -- including the graph
-    # loop, whose captured det construct+merge nodes are bit-identical to the
-    # host loop (lattice cell graph/flip-graph_loop-det pins that). The gate
-    # still skips md5 on graph-possible specs because det ELIGIBILITY inside
-    # the graph depends on internal slab sizing (an ultra-wide histogram
-    # shrinks the det slab until the widest level no longer fits and the
-    # graph stays atomic) -- a spec cannot see that from the outside. A
-    # non-quant spec is md5-checked when its shape cannot take the graph loop:
-    # the plan disables it (or the whole hybrid flow), or the spec is not
-    # depth-limited (the hybrid prefix requires 2^max_depth <= num_leaves + 1).
+    # shape the deterministic float constructs cover. The graph loop CAN run
+    # det construct+merge nodes bit-identical to the host loop, but only as
+    # the cuda_plan=auto,graph_det:on opt-in (the det merge costs ~4x on
+    # shallow shapes, so the default graph stays atomic for speed; lattice
+    # cells graph/nonquant-det + graph/flip-graph_loop-det pin the opt-in). A
+    # non-quant spec is therefore md5-checked when its shape cannot take the
+    # graph loop: the plan disables it (or the whole hybrid flow), or the
+    # spec is not depth-limited (the hybrid prefix requires
+    # 2^max_depth <= num_leaves + 1).
     md5_checked = spec["quant_mode"] != "none"
     if not md5_checked:
         plan = spec.get("cuda_plan", "")
