@@ -48,6 +48,8 @@ from typing import Any, List, Optional
 
 import numpy as np
 
+from .compat import PANDAS_INSTALLED, pd_DataFrame
+
 try:  # optional: only needed when the caller passes device matrices
     import cupy as _cupy
 except ImportError:
@@ -61,6 +63,29 @@ def _xp(mat: Any) -> Any:
     if _cupy is not None and type(mat).__module__.startswith("cupy"):
         return _cupy
     return np
+
+
+def _is_pandas_dataframe(mat: Any) -> bool:
+    """Return whether mat is a pandas DataFrame without requiring pandas."""
+    return PANDAS_INSTALLED and isinstance(mat, pd_DataFrame)
+
+
+def _dataframe_to_numpy(frame: Any) -> np.ndarray:
+    """Convert a numerical DataFrame to NumPy, including nullable dtypes."""
+    bad_columns = []
+    for name, pandas_dtype in zip(frame.columns, frame.dtypes, strict=True):
+        # Match Falcata's supported pandas types: bool, integer, unsigned
+        # integer, and floating-point (including pandas extension dtypes).
+        if getattr(pandas_dtype, "kind", None) not in {"b", "i", "u", "f"}:
+            bad_columns.append(str(name))
+    if bad_columns:
+        raise ValueError(f"pandas DataFrame columns must be numeric; invalid columns: {', '.join(bad_columns)}")
+
+    values = frame.to_numpy(copy=False)
+    if values.dtype.kind in "biuf":
+        return values
+    # Nullable pandas dtypes produce an object array; convert pd.NA to NaN.
+    return frame.to_numpy(dtype=np.float32, copy=False, na_value=np.nan)
 
 
 class ObliquePool:
@@ -101,22 +126,41 @@ class ObliquePool:
         self.center_: Optional[np.ndarray] = None  # per-feature median
         self.scale_: Optional[np.ndarray] = None  # per-feature robust scale
         self.num_features_: Optional[int] = None
+        self.feature_names_: Optional[List[str]] = None
 
     # ---- fitting ----
 
     def fit(self, X: Any) -> "ObliquePool":
-        """Draw the pool for a raw feature matrix (rows x features)."""
-        xp = _xp(X)
-        n, p = X.shape
+        """Draw the pool for a raw numerical feature matrix (rows x features).
+
+        Pandas column names are retained as the fitted feature schema.
+        """
+        is_dataframe = _is_pandas_dataframe(X)
+        matrix = _dataframe_to_numpy(X) if is_dataframe else X
+        xp = _xp(matrix)
+        n, p = matrix.shape
         if p < 2:
             raise ValueError("need at least 2 features to form projections")
         self.num_features_ = int(p)
 
+        self.feature_names_ = None
+        if is_dataframe:
+            feature_names = [str(column) for column in X.columns]
+            if len(set(feature_names)) != len(feature_names):
+                raise ValueError("pandas DataFrame columns must have unique names after conversion to strings")
+            generated_names = {f"oblique_{j}" for j in range(self.num_projections)}
+            collisions = generated_names.intersection(feature_names)
+            if collisions:
+                raise ValueError(
+                    f"pandas DataFrame columns conflict with generated features: {', '.join(sorted(collisions))}"
+                )
+            self.feature_names_ = feature_names
+
         rng = np.random.default_rng(self.seed)
-        sample = X
+        sample = matrix
         if n > self.sample_rows:
             take = np.sort(rng.choice(n, size=self.sample_rows, replace=False))
-            sample = X[xp.asarray(take)] if xp is not np else X[take]
+            sample = matrix[xp.asarray(take)] if xp is not np else matrix[take]
         sample = xp.asarray(sample, dtype=xp.float32)
         med = xp.nanmedian(sample, axis=0)
         med = xp.nan_to_num(med, nan=0.0)  # all-NaN column: center 0
@@ -146,27 +190,42 @@ class ObliquePool:
     # ---- applying ----
 
     def transform(self, X: Any, dtype: Any = None) -> Any:
-        """Return X with the K projection columns appended (same device)."""
+        """Return X with the K projection columns appended (same device).
+
+        A pandas input produces a DataFrame with its index and column names
+        preserved. If the pool was fitted on a DataFrame, transform-time
+        columns must match the fitted schema in the same order.
+        """
         if self.feature_idx_ is None or self.weights_ is None:
             raise RuntimeError("pool is not fitted; call fit() or load()")
         assert self.center_ is not None
         assert self.scale_ is not None
         if X.shape[1] != self.num_features_:
             raise ValueError(f"matrix has {X.shape[1]} features, pool was fitted on {self.num_features_}")
-        xp = _xp(X)
-        n = X.shape[0]
-        out_dtype = dtype or (X.dtype if X.dtype in (xp.float32, xp.float64) else xp.float32)
+        is_dataframe = _is_pandas_dataframe(X)
+        if is_dataframe and self.feature_names_ is not None:
+            feature_names = [str(column) for column in X.columns]
+            if feature_names != self.feature_names_:
+                raise ValueError("pandas DataFrame columns must match the fitted columns in the same order")
+        matrix = _dataframe_to_numpy(X) if is_dataframe else X
+        xp = _xp(matrix)
+        n = matrix.shape[0]
+        out_dtype = dtype or (matrix.dtype if matrix.dtype in (xp.float32, xp.float64) else xp.float32)
         Z = xp.empty((n, self.num_projections), dtype=xp.float32)
         center = xp.asarray(self.center_, dtype=xp.float32)
         scale = xp.asarray(self.scale_, dtype=xp.float32)
         for j, (idx_h, w_h) in enumerate(zip(self.feature_idx_, self.weights_, strict=True)):
             idx = xp.asarray(idx_h)
             w = xp.asarray(w_h, dtype=xp.float32)
-            cols = xp.asarray(X[:, idx], dtype=xp.float32)
+            cols = xp.asarray(matrix[:, idx], dtype=xp.float32)
             cols = xp.where(xp.isnan(cols), center[idx], cols)
             cols = (cols - center[idx]) / scale[idx]
             Z[:, j] = cols @ w
-        return xp.concatenate([xp.asarray(X, dtype=out_dtype), Z.astype(out_dtype)], axis=1)
+        augmented = xp.concatenate([xp.asarray(matrix, dtype=out_dtype), Z.astype(out_dtype)], axis=1)
+        if is_dataframe:
+            columns = list(X.columns) + [f"oblique_{j}" for j in range(self.num_projections)]
+            return pd_DataFrame(augmented, index=X.index, columns=columns)
+        return augmented
 
     def fit_transform(self, X: Any, dtype: Any = None) -> Any:
         """Fit the pool on X and return X with the K z-columns appended."""
@@ -177,7 +236,7 @@ class ObliquePool:
         if self.num_features_ is None:
             raise RuntimeError("pool is not fitted; call fit() or load()")
         if base_names is None:
-            base_names = [f"Column_{i}" for i in range(self.num_features_)]
+            base_names = self.feature_names_ or [f"Column_{i}" for i in range(self.num_features_)]
         return list(base_names) + [f"oblique_{j}" for j in range(self.num_projections)]
 
     # ---- persistence (sidecar next to the model file) ----
@@ -201,6 +260,8 @@ class ObliquePool:
                 for idx, w in zip(self.feature_idx_, self.weights_, strict=True)
             ],
         }
+        if self.feature_names_ is not None:
+            blob["feature_names"] = self.feature_names_
         Path(path).write_text(json.dumps(blob))
 
     @classmethod
@@ -215,6 +276,15 @@ class ObliquePool:
             seed=blob["seed"],
         )
         pool.num_features_ = blob["num_features"]
+        feature_names = blob.get("feature_names")
+        if feature_names is not None:
+            if (
+                not isinstance(feature_names, list)
+                or len(feature_names) != pool.num_features_
+                or not all(isinstance(name, str) for name in feature_names)
+            ):
+                raise ValueError("invalid feature_names in oblique pool")
+            pool.feature_names_ = feature_names
         pool.center_ = np.asarray(blob["center"], dtype=np.float64)
         pool.scale_ = np.asarray(blob["scale"], dtype=np.float64)
         pool.feature_idx_ = [np.asarray(p["features"], dtype=np.int32) for p in blob["projections"]]

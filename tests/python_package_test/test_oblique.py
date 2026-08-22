@@ -1,14 +1,15 @@
-# coding: utf-8
 """ObliquePool: the projection pool must (a) be exactly reproducible and
 persistable, and (b) actually help on a rotated decision boundary -- the
 workload class it exists for."""
 
-import numpy as np
-import pytest
-from sklearn.metrics import roc_auc_score
+import json
 
 import falcata as lgb
+import numpy as np
+import pytest
 from falcata import ObliquePool
+from falcata.compat import PANDAS_INSTALLED, pd_DataFrame
+from sklearn.metrics import roc_auc_score
 
 
 def _rotated_problem(n=20_000, p=20, seed=7):
@@ -74,3 +75,82 @@ def test_shape_mismatch_rejected():
     pool = ObliquePool(num_projections=4, seed=0).fit(X)
     with pytest.raises(ValueError, match="fitted on 10"):
         pool.transform(X[:, :7])
+
+
+@pytest.mark.skipif(not PANDAS_INSTALLED, reason="pandas is not installed")
+def test_dataframe_transform_preserves_metadata_and_matches_numpy():
+    X, _ = _rotated_problem(n=20, p=4)
+    columns = ["temperature", "pressure", "humidity", "wind"]
+    index = [f"sample-{i}" for i in range(X.shape[0])]
+    frame = pd_DataFrame(X, columns=columns, index=index)
+
+    expected = ObliquePool(
+        num_projections=5, density=2.0, seed=7, sample_rows=8
+    ).fit_transform(X)
+    pool = ObliquePool(num_projections=5, density=2.0, seed=7, sample_rows=8)
+    actual = pool.fit_transform(frame)
+
+    assert isinstance(actual, pd_DataFrame)
+    assert actual.index.equals(frame.index)
+    assert list(actual.columns) == columns + [f"oblique_{i}" for i in range(5)]
+    assert pool.feature_names() == list(actual.columns)
+    np.testing.assert_allclose(actual.to_numpy(), expected, rtol=1e-6)
+
+
+@pytest.mark.skipif(not PANDAS_INSTALLED, reason="pandas is not installed")
+def test_dataframe_transform_rejects_changed_schema():
+    frame = pd_DataFrame(
+        np.arange(24, dtype=np.float32).reshape(8, 3), columns=["a", "b", "c"]
+    )
+    pool = ObliquePool(num_projections=3, seed=4).fit(frame)
+
+    with pytest.raises(ValueError, match="same order"):
+        pool.transform(frame[["b", "a", "c"]])
+    with pytest.raises(ValueError, match="fitted on 3"):
+        pool.transform(frame[["a", "b"]])
+    with pytest.raises(ValueError, match="fitted on 3"):
+        pool.transform(frame.assign(d=1.0))
+
+
+@pytest.mark.skipif(not PANDAS_INSTALLED, reason="pandas is not installed")
+def test_dataframe_schema_is_persisted_backward_compatibly(tmp_path):
+    frame = pd_DataFrame(
+        np.arange(24, dtype=np.float32).reshape(8, 3), columns=["a", "b", "c"]
+    )
+    pool = ObliquePool(num_projections=3, seed=4).fit(frame)
+    path = tmp_path / "pool.json"
+    pool.save(path)
+
+    loaded = ObliquePool.load(path)
+    assert loaded.feature_names() == [
+        "a",
+        "b",
+        "c",
+        "oblique_0",
+        "oblique_1",
+        "oblique_2",
+    ]
+    with pytest.raises(ValueError, match="same order"):
+        loaded.transform(frame[["b", "a", "c"]])
+
+    # Sidecars written before DataFrame schemas were added remain loadable.
+    blob = json.loads(path.read_text())
+    del blob["feature_names"]
+    path.write_text(json.dumps(blob))
+    legacy = ObliquePool.load(path)
+    assert legacy.feature_names() == [
+        "Column_0",
+        "Column_1",
+        "Column_2",
+        "oblique_0",
+        "oblique_1",
+        "oblique_2",
+    ]
+    assert isinstance(legacy.transform(frame), pd_DataFrame)
+
+
+@pytest.mark.skipif(not PANDAS_INSTALLED, reason="pandas is not installed")
+def test_dataframe_rejects_non_numeric_columns():
+    frame = pd_DataFrame({"numeric": [1.0, 2.0], "text": ["one", "two"]})
+    with pytest.raises(ValueError, match="numeric"):
+        ObliquePool(num_projections=2).fit(frame)
