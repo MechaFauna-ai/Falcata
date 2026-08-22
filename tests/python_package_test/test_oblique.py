@@ -4,12 +4,13 @@ workload class it exists for."""
 
 import json
 
-import falcata as lgb
 import numpy as np
 import pytest
+from sklearn.metrics import roc_auc_score
+
+import falcata as lgb
 from falcata import ObliquePool
 from falcata.compat import PANDAS_INSTALLED, pd_DataFrame
-from sklearn.metrics import roc_auc_score
 
 
 def _rotated_problem(n=20_000, p=20, seed=7):
@@ -84,9 +85,7 @@ def test_dataframe_transform_preserves_metadata_and_matches_numpy():
     index = [f"sample-{i}" for i in range(X.shape[0])]
     frame = pd_DataFrame(X, columns=columns, index=index)
 
-    expected = ObliquePool(
-        num_projections=5, density=2.0, seed=7, sample_rows=8
-    ).fit_transform(X)
+    expected = ObliquePool(num_projections=5, density=2.0, seed=7, sample_rows=8).fit_transform(X)
     pool = ObliquePool(num_projections=5, density=2.0, seed=7, sample_rows=8)
     actual = pool.fit_transform(frame)
 
@@ -99,9 +98,7 @@ def test_dataframe_transform_preserves_metadata_and_matches_numpy():
 
 @pytest.mark.skipif(not PANDAS_INSTALLED, reason="pandas is not installed")
 def test_dataframe_transform_rejects_changed_schema():
-    frame = pd_DataFrame(
-        np.arange(24, dtype=np.float32).reshape(8, 3), columns=["a", "b", "c"]
-    )
+    frame = pd_DataFrame(np.arange(24, dtype=np.float32).reshape(8, 3), columns=["a", "b", "c"])
     pool = ObliquePool(num_projections=3, seed=4).fit(frame)
 
     with pytest.raises(ValueError, match="same order"):
@@ -114,9 +111,7 @@ def test_dataframe_transform_rejects_changed_schema():
 
 @pytest.mark.skipif(not PANDAS_INSTALLED, reason="pandas is not installed")
 def test_dataframe_schema_is_persisted_backward_compatibly(tmp_path):
-    frame = pd_DataFrame(
-        np.arange(24, dtype=np.float32).reshape(8, 3), columns=["a", "b", "c"]
-    )
+    frame = pd_DataFrame(np.arange(24, dtype=np.float32).reshape(8, 3), columns=["a", "b", "c"])
     pool = ObliquePool(num_projections=3, seed=4).fit(frame)
     path = tmp_path / "pool.json"
     pool.save(path)
