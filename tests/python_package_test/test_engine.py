@@ -486,6 +486,41 @@ def test_categorical_random_search():
     assert models[0] == models[1]
 
 
+def test_categorical_random_search_high_cardinality():
+    # a subset of a 200-category feature drives the target. Subsets must stay
+    # within max_cat_threshold, or every draw is rejected and the feature never
+    # splits -- which is the whole point of the option.
+    rng = np.random.default_rng(5)
+    n, n_cat = 20000, 200
+    cat = rng.integers(0, n_cat, size=n)
+    good = rng.permutation(n_cat)[:70]
+    num = rng.random((n, 3))
+    y = (1.4 * np.isin(cat, good) + 0.8 * num[:, 0] - 1.4 + rng.normal(0, 0.6, n) > 0).astype(int)
+    X = np.column_stack([cat.astype(float), num])
+    params = {
+        "objective": "binary",
+        "verbose": -1,
+        "seed": 7,
+        "num_threads": 4,
+        "device_type": "cpu",
+        "max_cat_threshold": 32,
+        "cat_random_search": 32,
+    }
+    train_set = lgb.Dataset(X, y, categorical_feature=[0], free_raw_data=False)
+    bst = lgb.train(params, train_set, num_boost_round=30)
+    cat_splits = 0
+    stack = [t["tree_structure"] for t in bst.dump_model()["tree_info"]]
+    while stack:
+        node = stack.pop()
+        if "split_index" not in node:
+            continue
+        if node["decision_type"] == "==" and node["split_feature"] == 0:
+            cat_splits += 1
+            assert len(str(node["threshold"]).split("||")) <= params["max_cat_threshold"]
+        stack += [node["left_child"], node["right_child"]]
+    assert cat_splits > 0
+
+
 @pytest.mark.skipif(getenv("TASK", "") != "cuda", reason="CUDA-only regression test")
 def test_min_data_per_group_cuda_matches_cpu():
     # Regression test for the categorical kernels in cuda_best_split_finder.cu
