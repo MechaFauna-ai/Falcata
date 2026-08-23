@@ -189,7 +189,13 @@ void CUDAColumnData::CopySubrow(
   const data_size_t num_used_indices) {
   num_threads_ = full_set->num_threads_;
   num_columns_ = full_set->num_columns_;
-  column_bit_type_ = full_set->column_bit_type_;
+  // The subrow copy reads the full set's ORIGINAL per-column buffers (a compact
+  // view is restored below before the kernel launches) and writes the subset's
+  // own originals, so both encodings here are the original ones. Taking the
+  // published column_bit_type_ instead would inherit a live compact view's
+  // flipped-to-8 entries and make the kernel read nibble-packed source bytes
+  // one row per byte.
+  column_bit_type_ = full_set->original_column_bit_type_;
   original_column_bit_type_ = full_set->original_column_bit_type_;
   feature_min_bin_ = full_set->feature_min_bin_;
   feature_max_bin_ = full_set->feature_max_bin_;
@@ -349,6 +355,12 @@ void CUDAColumnData::SetCompactPackedColumnView(const std::vector<int>& column_t
         // descriptors' decision fields assume the former -- so this column is
         // served from its always-materialized buffer at its real width while
         // every other column keeps the packed nibble read.
+        // This width is never kNibbleColumnBitType. 4-bit is a DenseBin-only
+        // encoding (DenseBin<uint8_t, true>::GetColWiseData is the sole
+        // reporter of bit_type 4, and it reports is_sparse false); every
+        // SparseBin reports 8/16/32, Init Fatals on anything else, and nothing
+        // flips a sparse column's published bit type. HybridLoadBin and the
+        // packed traversal therefore only ever see 4/8/16/32 here.
         packed_column_ptr_[c] = data_by_column_[c]->RawData();
         packed_column_bit_type_[c] = column_bit_type_[c];
       } else {

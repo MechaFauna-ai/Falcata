@@ -301,7 +301,9 @@ class CUDAColumnData {
   std::vector<int> packed_column_stride_;
   std::vector<uint8_t> packed_column_shift_;
   // 4 for a dense column read as row-matrix nibbles; the column's real bit
-  // type (8/16/32) for a sparse column served from its own buffer.
+  // type (8/16/32) for a sparse column served from its own buffer. Never
+  // kNibbleColumnBitType -- that width describes an original dense per-column
+  // buffer, and the packed view serves dense columns from the row matrix.
   std::vector<uint8_t> packed_column_bit_type_;
   // Device mirrors of the four vectors above (see EnsurePackedViewOnDevice);
   // valid while packed_view_device_generation_ == column_view_generation_.
