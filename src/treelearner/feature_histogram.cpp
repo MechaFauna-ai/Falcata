@@ -8,15 +8,16 @@
 #include "feature_histogram.hpp"
 
 #include <algorithm>
+#include <utility>
 #include <vector>
 
 namespace Falcata {
 
 namespace {
 
-// Mask bits for the RANDOM categorical search come from a SplitMix64 stream:
-// the per-feature Random is an LCG whose low bit alternates with period two,
-// so its raw output cannot supply independent coin flips.
+// Draws for the RANDOM categorical search come from a SplitMix64 stream: the
+// per-feature Random is an LCG whose low bits carry short periods, so its raw
+// output cannot supply independent subset draws.
 inline uint64_t SplitMix64(uint64_t* state) {
   uint64_t z = (*state += 0x9E3779B97F4A7C15ULL);
   z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
@@ -24,16 +25,27 @@ inline uint64_t SplitMix64(uint64_t* state) {
   return z ^ (z >> 31);
 }
 
-// Draws one coin flip, refilling the 64-bit buffer as needed.
-inline bool NextMaskBit(uint64_t* state, uint64_t* bits, int* bits_left) {
-  if (*bits_left == 0) {
-    *bits = SplitMix64(state);
-    *bits_left = 64;
+// Uniform index in [0, n); n is a category count, so modulo bias is below 2^-48.
+inline int NextIndex(uint64_t* state, int n) {
+  return static_cast<int>(SplitMix64(state) % static_cast<uint64_t>(n));
+}
+
+// Seeds a trial stream from the feature's Random, keeping masks reproducible
+// given extra_seed, the feature, and the sequence of node evaluations.
+inline uint64_t SeedFromFeatureRandom(Random* rand) {
+  return (static_cast<uint64_t>(rand->NextShort(0, 32768)) << 15) |
+         static_cast<uint64_t>(rand->NextShort(0, 32768));
+}
+
+// Moves `size` uniformly-chosen candidates to the front of `pool` (partial
+// Fisher-Yates; the residual order carries into the next trial, which stays
+// uniform).
+inline void DrawSubset(uint64_t* state, int size, std::vector<int>* pool) {
+  const int num_cand = static_cast<int>(pool->size());
+  for (int j = 0; j < size; ++j) {
+    const int r = j + NextIndex(state, num_cand - j);
+    std::swap((*pool)[j], (*pool)[r]);
   }
-  const bool bit = (*bits & 1) != 0;
-  *bits >>= 1;
-  --(*bits_left);
-  return bit;
 }
 
 }  // namespace
@@ -268,11 +280,12 @@ void FeatureHistogram::FindBestThresholdCategoricalInner(double sum_gradient,
     }
   } else if (meta_->config->cat_random_search > 0) {
     // RANDOM categorical search (YDF-style): each trial draws a random subset
-    // of the present categories, every category included independently with
-    // probability 1/2, and evaluates subset-vs-rest with the exact search's
-    // gain formula and constraints; the best subset wins. The emitted left
-    // set is the smaller side of the mask, so max_cat_threshold caps it the
-    // same way it caps the exact search's prefix length.
+    // of the present categories and evaluates subset-vs-rest with the exact
+    // search's gain formula and constraints; the best subset wins. Subset
+    // sizes are uniform over [1, max_num_cat], the same cap the exact search
+    // puts on its prefix length -- drawing each category with probability 1/2
+    // instead would put every subset of a high-cardinality feature over that
+    // cap, so the feature would never split at all.
     for (int i = bin_start; i < bin_end; ++i) {
       if (Common::RoundInt(GET_HESS(data_, i) * cnt_factor) >=
           meta_->config->cat_smooth) {
@@ -280,57 +293,32 @@ void FeatureHistogram::FindBestThresholdCategoricalInner(double sum_gradient,
       }
     }
     const int num_cand = static_cast<int>(sorted_idx.size());
+    const int max_num_cat =
+        std::min(meta_->config->max_cat_threshold, (num_cand + 1) / 2);
 
     l2 += meta_->config->cat_l2;
 
-    double cand_sum_gradient = 0.0;
-    double cand_sum_hessian = 0.0;
-    data_size_t cand_count = 0;
-    for (int k = 0; k < num_cand; ++k) {
-      const int t = sorted_idx[k];
-      cand_sum_gradient += GET_GRAD(data_, t);
-      cand_sum_hessian += GET_HESS(data_, t);
-      cand_count += static_cast<data_size_t>(
-          Common::RoundInt(GET_HESS(data_, t) * cnt_factor));
-    }
+    std::vector<int> pool(sorted_idx);
+    std::vector<int> best_subset;
+    uint64_t rand_state = SeedFromFeatureRandom(&meta_->rand);
+    for (int trial = 0; trial < meta_->config->cat_random_search && max_num_cat > 0;
+         ++trial) {
+      const int subset_size = 1 + NextIndex(&rand_state, max_num_cat);
+      DrawSubset(&rand_state, subset_size, &pool);
 
-    std::vector<int8_t> in_mask(num_cand);
-    std::vector<int8_t> best_mask;
-    bool best_flip = false;
-    // seeded from the per-feature RNG, so masks are deterministic given
-    // extra_seed, the feature, and the sequence of node evaluations
-    uint64_t mask_state = (static_cast<uint64_t>(meta_->rand.NextShort(0, 32768)) << 15) |
-                          static_cast<uint64_t>(meta_->rand.NextShort(0, 32768));
-    uint64_t mask_bits = 0;
-    int mask_bits_left = 0;
-    for (int trial = 0; trial < meta_->config->cat_random_search; ++trial) {
-      int in_size = 0;
-      double in_gradient = 0.0;
-      double in_hessian = 0.0;
-      data_size_t in_count = 0;
-      for (int k = 0; k < num_cand; ++k) {
-        in_mask[k] = static_cast<int8_t>(NextMaskBit(&mask_state, &mask_bits, &mask_bits_left));
-        if (in_mask[k]) {
-          const int t = sorted_idx[k];
-          in_gradient += GET_GRAD(data_, t);
-          in_hessian += GET_HESS(data_, t);
-          in_count += static_cast<data_size_t>(
-              Common::RoundInt(GET_HESS(data_, t) * cnt_factor));
-          ++in_size;
-        }
+      double sum_left_gradient = 0.0;
+      double sum_left_hessian = kEpsilon;
+      data_size_t left_count = 0;
+      for (int j = 0; j < subset_size; ++j) {
+        const int t = pool[j];
+        const auto hess = GET_HESS(data_, t);
+        sum_left_gradient += GET_GRAD(data_, t);
+        sum_left_hessian += hess;
+        left_count +=
+            static_cast<data_size_t>(Common::RoundInt(hess * cnt_factor));
       }
-      // categories filtered by cat_smooth (and categories unseen in this
-      // node) always go right, whichever mask side becomes the left set
-      const bool flip = in_size * 2 > num_cand;
-      const int left_size = flip ? num_cand - in_size : in_size;
-      if (left_size == 0 || left_size > meta_->config->max_cat_threshold) {
-        continue;
-      }
-      const double sum_left_gradient =
-          flip ? cand_sum_gradient - in_gradient : in_gradient;
-      const double sum_left_hessian =
-          (flip ? cand_sum_hessian - in_hessian : in_hessian) + kEpsilon;
-      const data_size_t left_count = flip ? cand_count - in_count : in_count;
+      // categories filtered by cat_smooth, and categories unseen in this node,
+      // always go right
       const data_size_t right_count = num_data - left_count;
       if (left_count < meta_->config->min_data_in_leaf ||
           left_count < meta_->config->min_data_per_group ||
@@ -356,8 +344,7 @@ void FeatureHistogram::FindBestThresholdCategoricalInner(double sum_gradient,
       }
       is_splittable_ = true;
       if (current_gain > best_gain) {
-        best_mask = in_mask;
-        best_flip = flip;
+        best_subset.assign(pool.begin(), pool.begin() + subset_size);
         best_left_count = left_count;
         best_sum_left_gradient = sum_left_gradient;
         best_sum_left_hessian = sum_left_hessian;
@@ -365,15 +352,11 @@ void FeatureHistogram::FindBestThresholdCategoricalInner(double sum_gradient,
       }
     }
     if (is_splittable_) {
-      // rewrite sorted_idx so the shared output block below emits the mask's
-      // left set as a plain prefix
-      std::vector<int> left_bins;
-      for (int k = 0; k < num_cand; ++k) {
-        if ((best_mask[k] != 0) != best_flip) {
-          left_bins.push_back(sorted_idx[k]);
-        }
-      }
-      sorted_idx = left_bins;
+      // the shared output block below emits sorted_idx's prefix as the left
+      // set; the bin order within a split is a bitset downstream, so the
+      // ascending order is for reproducible model text only
+      std::sort(best_subset.begin(), best_subset.end());
+      sorted_idx = best_subset;
       used_bin = static_cast<int>(sorted_idx.size());
       best_threshold = used_bin - 1;
       best_dir = 1;
@@ -672,13 +655,13 @@ void FeatureHistogram::FindBestThresholdCategoricalIntInner(int64_t int_sum_grad
       }
     }
     const int num_cand = static_cast<int>(sorted_idx.size());
+    const int max_num_cat =
+        std::min(meta_->config->max_cat_threshold, (num_cand + 1) / 2);
 
     l2 += meta_->config->cat_l2;
 
     std::vector<PACKED_HIST_ACC_T> cand_acc(num_cand);
     std::vector<data_size_t> cand_cnt(num_cand);
-    PACKED_HIST_ACC_T cand_sum_grad_and_hess = 0;
-    data_size_t cand_count = 0;
     for (int k = 0; k < num_cand; ++k) {
       const PACKED_HIST_BIN_T int_grad_and_hess = data_ptr[sorted_idx[k]];
       if (HIST_BITS_ACC != HIST_BITS_BIN) {
@@ -692,41 +675,28 @@ void FeatureHistogram::FindBestThresholdCategoricalIntInner(int64_t int_sum_grad
         static_cast<uint32_t>(int_grad_and_hess & 0x0000ffff) :
         static_cast<uint32_t>(int_grad_and_hess & 0x00000000ffffffff);
       cand_cnt[k] = static_cast<data_size_t>(Common::RoundInt(int_hess * cnt_factor));
-      cand_sum_grad_and_hess += cand_acc[k];
-      cand_count += cand_cnt[k];
     }
 
-    std::vector<int8_t> in_mask(num_cand);
-    std::vector<int8_t> best_mask;
-    bool best_flip = false;
-    // seeded from the per-feature RNG, so masks are deterministic given
-    // extra_seed, the feature, and the sequence of node evaluations
-    uint64_t mask_state = (static_cast<uint64_t>(meta_->rand.NextShort(0, 32768)) << 15) |
-                          static_cast<uint64_t>(meta_->rand.NextShort(0, 32768));
-    uint64_t mask_bits = 0;
-    int mask_bits_left = 0;
-    for (int trial = 0; trial < meta_->config->cat_random_search; ++trial) {
-      int in_size = 0;
-      PACKED_HIST_ACC_T in_grad_and_hess = 0;
-      data_size_t in_count = 0;
-      for (int k = 0; k < num_cand; ++k) {
-        in_mask[k] = static_cast<int8_t>(NextMaskBit(&mask_state, &mask_bits, &mask_bits_left));
-        if (in_mask[k]) {
-          in_grad_and_hess += cand_acc[k];
-          in_count += cand_cnt[k];
-          ++in_size;
-        }
+    // positions into the candidate arrays, partially shuffled per trial
+    std::vector<int> pool(num_cand);
+    for (int k = 0; k < num_cand; ++k) {
+      pool[k] = k;
+    }
+    std::vector<int> best_subset;
+    uint64_t rand_state = SeedFromFeatureRandom(&meta_->rand);
+    for (int trial = 0; trial < meta_->config->cat_random_search && max_num_cat > 0;
+         ++trial) {
+      const int subset_size = 1 + NextIndex(&rand_state, max_num_cat);
+      DrawSubset(&rand_state, subset_size, &pool);
+
+      PACKED_HIST_ACC_T int_sum_left_gradient_and_hessian = 0;
+      data_size_t left_count = 0;
+      for (int j = 0; j < subset_size; ++j) {
+        int_sum_left_gradient_and_hessian += cand_acc[pool[j]];
+        left_count += cand_cnt[pool[j]];
       }
-      // categories filtered by cat_smooth (and categories unseen in this
-      // node) always go right, whichever mask side becomes the left set
-      const bool flip = in_size * 2 > num_cand;
-      const int left_size = flip ? num_cand - in_size : in_size;
-      if (left_size == 0 || left_size > meta_->config->max_cat_threshold) {
-        continue;
-      }
-      const PACKED_HIST_ACC_T int_sum_left_gradient_and_hessian =
-          flip ? cand_sum_grad_and_hess - in_grad_and_hess : in_grad_and_hess;
-      const data_size_t left_count = flip ? cand_count - in_count : in_count;
+      // categories filtered by cat_smooth, and categories unseen in this node,
+      // always go right
       const data_size_t right_count = num_data - left_count;
       const uint32_t int_left_sum_hessian = HIST_BITS_ACC == 16 ?
         static_cast<uint32_t>(int_sum_left_gradient_and_hessian & 0x0000ffff) :
@@ -768,22 +738,20 @@ void FeatureHistogram::FindBestThresholdCategoricalIntInner(int64_t int_sum_grad
       }
       is_splittable_ = true;
       if (current_gain > best_gain) {
-        best_mask = in_mask;
-        best_flip = flip;
+        best_subset.clear();
+        for (int j = 0; j < subset_size; ++j) {
+          best_subset.push_back(sorted_idx[pool[j]]);
+        }
         best_sum_left_gradient_and_hessian = int_sum_left_gradient_and_hessian;
         best_gain = current_gain;
       }
     }
     if (is_splittable_) {
-      // rewrite sorted_idx so the shared output block below emits the mask's
-      // left set as a plain prefix
-      std::vector<int> left_bins;
-      for (int k = 0; k < num_cand; ++k) {
-        if ((best_mask[k] != 0) != best_flip) {
-          left_bins.push_back(sorted_idx[k]);
-        }
-      }
-      sorted_idx = left_bins;
+      // the shared output block below emits sorted_idx's prefix as the left
+      // set; the bin order within a split is a bitset downstream, so the
+      // ascending order is for reproducible model text only
+      std::sort(best_subset.begin(), best_subset.end());
+      sorted_idx = best_subset;
       used_bin = static_cast<int>(sorted_idx.size());
       best_threshold = used_bin - 1;
       best_dir = 1;

@@ -517,7 +517,7 @@ struct Config {
   // check = >=0
   // desc = used for the categorical features
   // desc = number of random category subsets evaluated per categorical feature and node, replacing the sorted exact search (the ``RANDOM`` categorical algorithm of Yggdrasil Decision Forests, Breiman 2001)
-  // desc = each subset includes every present category independently with probability ``0.5``; the subset with the best split gain wins, under the same ``min_data_in_leaf`` / ``min_sum_hessian_in_leaf`` / ``min_data_per_group`` / ``max_cat_threshold`` constraints as the exact search
+  // desc = each subset draws its size uniformly from ``[1, min(max_cat_threshold, (number of candidate categories + 1) / 2)]`` and then draws that many categories without replacement; the subset with the best split gain wins, under the same ``min_data_in_leaf`` / ``min_sum_hessian_in_leaf`` / ``min_data_per_group`` / ``max_cat_threshold`` constraints as the exact search
   // desc = acts as a regularizer on high-cardinality categorical features
   // desc = ``0`` means use the exact sorted search
   // desc = has no effect on features split one-vs-other (``number of categories <= max_cat_to_onehot``)
