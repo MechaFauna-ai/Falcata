@@ -468,10 +468,14 @@ def test_categorical_random_search():
         "device_type": "cpu",
     }
     aucs = {}
+    trees = {}
     for name, num_masks in [("exact", 0), ("random", 32)]:
         train_set = lgb.Dataset(X[tr], y[tr], categorical_feature=[0], free_raw_data=False)
         bst = lgb.train({**params, "cat_random_search": num_masks}, train_set, num_boost_round=50)
         aucs[name] = roc_auc_score(y[te], bst.predict(X[te]))
+        trees[name] = bst.model_to_string().split("\nparameters:")[0]
+    # the random search picks different subsets than the sorted scan
+    assert trees["random"] != trees["exact"]
     assert aucs["random"] > 0.5 + 0.9 * (aucs["exact"] - 0.5)
     # same seed twice yields the same model
     models = []
