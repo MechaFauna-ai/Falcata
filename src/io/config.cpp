@@ -359,6 +359,16 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
 }
 
 void Config::ResolveFalcataParams() {
+  std::string resolved_tree_mode = Common::Trim(tree_mode);
+  std::transform(resolved_tree_mode.begin(), resolved_tree_mode.end(),
+                 resolved_tree_mode.begin(), [](unsigned char c){ return std::tolower(c); });
+  if (resolved_tree_mode != std::string("scalar") &&
+      resolved_tree_mode != std::string("vector_leaf")) {
+    Log::Fatal("Unknown tree_mode \"%s\": must be scalar or vector_leaf",
+               tree_mode.c_str());
+  }
+  tree_mode = resolved_tree_mode;
+
   // quant_mode: "auto" defers to use_quantized_grad for backward compatibility;
   // an explicit mode is authoritative and drives use_quantized_grad.
   std::string mode = Common::Trim(quant_mode);
@@ -430,6 +440,31 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
     if ((objective_type_multiclass && !metric_type_multiclass)
         || (!objective_type_multiclass && metric_type_multiclass)) {
       Log::Fatal("Multiclass objective and metrics don't match");
+    }
+  }
+
+  if (tree_mode == std::string("vector_leaf") && task == TaskType::kTrain) {
+    if (objective != std::string("regression") || num_class != 1) {
+      Log::Fatal(
+          "tree_mode=vector_leaf currently implements the T=1 plumbing milestone "
+          "only (objective=regression, num_class=1). Multi-target vector-leaf "
+          "training kernels are not implemented yet. Use tree_mode=scalar with "
+          "objective=multi_regression for the supported round-robin baseline.");
+    }
+    if (device_type != std::string("cpu") && device_type != std::string("cuda")) {
+      Log::Fatal(
+          "tree_mode=vector_leaf currently supports device_type=cpu for reference "
+          "parity and device_type=cuda for the target backend; device_type=%s is "
+          "not supported.",
+          device_type.c_str());
+    }
+    if (quant_mode != std::string("none")) {
+      Log::Fatal(
+          "tree_mode=vector_leaf does not support quantized training yet. Set "
+          "quant_mode=none.");
+    }
+    if (linear_tree) {
+      Log::Fatal("tree_mode=vector_leaf does not support linear_tree=true.");
     }
   }
 
@@ -525,6 +560,8 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
       quant_incompatible_request = "monotone constraints";
     } else if (!interaction_constraints_vector.empty()) {
       quant_incompatible_request = "interaction constraints";
+    } else if (tree_mode == std::string("vector_leaf")) {
+      quant_incompatible_request = "vector-leaf trees";
     }
     // Saying quant_mode explicitly settles it: the mapping below infers a mode
     // for callers who expressed no preference, and inferring over a stated one

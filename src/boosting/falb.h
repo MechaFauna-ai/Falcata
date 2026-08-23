@@ -105,7 +105,7 @@ struct TreeIndexRecord {
   uint32_t num_leaves;
   uint32_t num_cat;
   int32_t max_depth;
-  uint32_t leaf_dim;    // RESERVED for vector-leaf multi-target; v1 writes 1
+  uint32_t leaf_dim;     // outputs per leaf; 1 for legacy scalar trees
   uint64_t node_offset;  // into the per-node arrays
   uint64_t leaf_offset;  // into the per-leaf arrays
   uint64_t cat_boundary_offset;

@@ -5080,6 +5080,12 @@ class Booster:
             # is treelite's public loader with no dependency on a `lightgbm`
             # python package (from_lightgbm() isinstance-checks against one)
             model_str = self.model_to_string(num_iteration=num_iteration, start_iteration=start_iteration)
+            # Treelite's LightGBM IR has scalar leaves only. Detect Falcata's
+            # extension before invoking the loader so vector models take the
+            # documented native-predictor fallback without an exception-driven
+            # conversion attempt.
+            if "\nleaf_value_dim=" in model_str:
+                return None
             with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tmp_file:
                 tmp_file.write(model_str)
                 tmp_path = tmp_file.name

@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <string>
@@ -48,7 +49,10 @@ struct TreeIO {
   static const std::vector<int8_t>& DecisionType(const Tree& t) { return t.decision_type_; }
   static const std::vector<int>& LeftChild(const Tree& t) { return t.left_child_; }
   static const std::vector<int>& RightChild(const Tree& t) { return t.right_child_; }
-  static const std::vector<double>& LeafValue(const Tree& t) { return t.leaf_value_; }
+  static int LeafValueDim(const Tree& t) { return t.leaf_value_dim_; }
+  static const std::vector<double>& LeafValues(const Tree& t) {
+    return t.leaf_value_dim_ == 1 ? t.leaf_value_ : t.leaf_values_vec_;
+  }
   static const std::vector<int>& CatBoundaries(const Tree& t) { return t.cat_boundaries_; }
   static const std::vector<uint32_t>& CatThreshold(const Tree& t) { return t.cat_threshold_; }
   static const std::vector<float>& SplitGain(const Tree& t) { return t.split_gain_; }
@@ -60,10 +64,13 @@ struct TreeIO {
 
   /*! \brief build an empty tree shell sized for `num_leaves`; the loader then
    *  fills the arrays. Mirrors what Tree(const char*) does before parsing. */
-  static std::unique_ptr<Tree> MakeShell(int num_leaves, int num_cat, bool is_linear) {
-    auto tree = std::unique_ptr<Tree>(new Tree(std::max(num_leaves, 2), false, is_linear));
+  static std::unique_ptr<Tree> MakeShell(int num_leaves, int num_cat,
+                                         bool is_linear, int leaf_value_dim) {
+    auto tree = std::unique_ptr<Tree>(
+        new Tree(std::max(num_leaves, 2), false, is_linear));
     tree->num_leaves_ = num_leaves;
     tree->num_cat_ = num_cat;
+    tree->leaf_value_dim_ = leaf_value_dim;
     return tree;
   }
 
@@ -72,14 +79,25 @@ struct TreeIO {
                            std::vector<int8_t>&& decision_type,
                            std::vector<int>&& left_child,
                            std::vector<int>&& right_child,
-                           std::vector<double>&& leaf_value, double shrinkage,
-                           int max_depth) {
+                           std::vector<double>&& leaf_values,
+                           int leaf_value_dim, double shrinkage, int max_depth) {
     t->split_feature_ = std::move(split_feature);
     t->threshold_ = std::move(threshold);
     t->decision_type_ = std::move(decision_type);
     t->left_child_ = std::move(left_child);
     t->right_child_ = std::move(right_child);
-    t->leaf_value_ = std::move(leaf_value);
+    t->leaf_value_dim_ = leaf_value_dim;
+    if (leaf_value_dim == 1) {
+      t->leaf_value_ = std::move(leaf_values);
+      t->leaf_values_vec_.clear();
+    } else {
+      t->leaf_values_vec_ = std::move(leaf_values);
+      t->leaf_value_.resize(t->num_leaves_);
+      for (int leaf = 0; leaf < t->num_leaves_; ++leaf) {
+        t->leaf_value_[leaf] =
+            t->leaf_values_vec_[static_cast<size_t>(leaf) * leaf_value_dim];
+      }
+    }
     t->shrinkage_ = shrinkage;
     t->max_depth_ = max_depth;
   }
@@ -314,6 +332,19 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
     }
   }
 
+  int leaf_value_dim = 1;
+  if (start_model < num_used_model) {
+    leaf_value_dim = TreeIO::LeafValueDim(*models_[start_model]);
+    for (int i = start_model + 1; i < num_used_model; ++i) {
+      if (TreeIO::LeafValueDim(*models_[i]) != leaf_value_dim) {
+        Log::Fatal(
+            "FALB cannot store a model that mixes leaf dimensions: tree %d "
+            "has leaf_value_dim=%d, expected %d",
+            i, TreeIO::LeafValueDim(*models_[i]), leaf_value_dim);
+      }
+    }
+  }
+
   // ---- metadata block: the text header, verbatim, with NO tree bodies ----
   // SaveModelToString writes header, then trees, then importances/params. Ask
   // it for a slice that starts past the last iteration: num_iteration <= 0
@@ -408,7 +439,7 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
       rec.num_leaves = static_cast<uint32_t>(TreeIO::NumLeaves(t));
       rec.num_cat = static_cast<uint32_t>(TreeIO::NumCat(t));
       rec.max_depth = TreeIO::MaxDepth(t);
-      rec.leaf_dim = 1;  // reserved for vector-leaf multi-target
+      rec.leaf_dim = static_cast<uint32_t>(TreeIO::LeafValueDim(t));
       rec.node_offset = node_off;
       rec.leaf_offset = leaf_off;
       rec.cat_boundary_offset = cb_off;
@@ -449,12 +480,16 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
       if (f32_leaves) {
         // opt-in and documented lossy (~6e-8 relative); f64 stays the default
         // so "predictions are bit-identical" remains the standard guarantee
-        const auto& lv = TreeIO::LeafValue(t);
-        for (int l = 0; l < TreeIO::NumLeaves(t); ++l) {
+        const auto& lv = TreeIO::LeafValues(t);
+        const size_t num_leaf_values =
+            static_cast<size_t>(TreeIO::NumLeaves(t)) * TreeIO::LeafValueDim(t);
+        for (size_t l = 0; l < num_leaf_values; ++l) {
           lv_w.Write(static_cast<float>(lv[l]));
         }
       } else {
-        lv_w.WriteArray(TreeIO::LeafValue(t).data(), TreeIO::NumLeaves(t));
+        const size_t num_leaf_values =
+            static_cast<size_t>(TreeIO::NumLeaves(t)) * TreeIO::LeafValueDim(t);
+        lv_w.WriteArray(TreeIO::LeafValues(t).data(), num_leaf_values);
       }
     }
     auto width = [](uint32_t d) -> size_t {
@@ -683,6 +718,28 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
   const TreeIndexRecord* recs =
       idx_r.View<TreeIndexRecord>(0, num_trees, "tree index");
 
+  uint32_t leaf_value_dim = 1;
+  if (num_trees > 0) {
+    leaf_value_dim = recs[0].leaf_dim;
+    if (leaf_value_dim == 0) {
+      Log::Fatal("FALB: corrupt model -- tree 0 has leaf_dim=0");
+    }
+    if (leaf_value_dim > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+      Log::Fatal(
+          "FALB: corrupt model -- leaf_dim=%u exceeds this build's maximum %d",
+          leaf_value_dim, std::numeric_limits<int>::max());
+    }
+    for (uint64_t i = 1; i < num_trees; ++i) {
+      if (recs[i].leaf_dim != leaf_value_dim) {
+        Log::Fatal(
+            "FALB: corrupt model -- mixed leaf dimensions: tree 0 has %u but "
+            "tree %llu has %u",
+            leaf_value_dim, static_cast<unsigned long long>(i),  // NOLINT(runtime/int): %llu format
+            recs[i].leaf_dim);
+      }
+    }
+  }
+
   ByteReader sf_r = section_reader(kSecSplitFeature);
   ByteReader ti_r = section_reader(kSecThresholdIdx);
   ByteReader dt_r = section_reader(kSecDecisionType);
@@ -722,16 +779,39 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
     const TreeIndexRecord& rec = recs[i];
     const size_t n_node = rec.num_leaves - 1;
     const size_t n_leaf = rec.num_leaves;
-    if (rec.leaf_dim != 1) {
-      Log::Fatal("FALB: tree %llu has leaf_dim=%u; this build reads only 1 "
-                 "(vector-leaf multi-target models need a newer Falcata)",
-                 static_cast<unsigned long long>(i), rec.leaf_dim);  // NOLINT(runtime/int): %llu format
+    if (n_leaf > std::numeric_limits<size_t>::max() / rec.leaf_dim ||
+        rec.leaf_offset > std::numeric_limits<uint64_t>::max() / rec.leaf_dim) {
+      Log::Fatal(
+          "FALB: corrupt model -- tree %llu leaf dimensions overflow "
+          "(num_leaves=%zu, leaf_dim=%u, leaf_offset=%llu)",
+          static_cast<unsigned long long>(i), n_leaf, rec.leaf_dim,  // NOLINT(runtime/int): %llu format
+          static_cast<unsigned long long>(rec.leaf_offset));  // NOLINT(runtime/int): %llu format
     }
+    const size_t n_leaf_value = n_leaf * rec.leaf_dim;
+    const uint64_t leaf_value_offset = rec.leaf_offset * rec.leaf_dim;
+
+    size_t leaf_value_element_size = 0;
+    if (lv.dtype == kDTypeF32) {
+      leaf_value_element_size = sizeof(float);
+    } else if (lv.dtype == kDTypeF64) {
+      leaf_value_element_size = sizeof(double);
+    } else {
+      Log::Fatal("FALB: leaf_value has dtype %s, which this build cannot read",
+                 DTypeName(lv.dtype));
+    }
+    if (leaf_value_offset >
+        std::numeric_limits<uint64_t>::max() / leaf_value_element_size) {
+      Log::Fatal(
+          "FALB: corrupt model -- tree %llu leaf_value byte offset overflows",
+          static_cast<unsigned long long>(i));  // NOLINT(runtime/int): %llu format
+    }
+    lv_r.Require(leaf_value_offset * leaf_value_element_size, n_leaf_value,
+                 leaf_value_element_size, "leaf_value");
 
     std::vector<int> split_feature, left_child, right_child;
     std::vector<double> threshold(n_node);
     std::vector<int8_t> decision_type(n_node);
-    std::vector<double> leaf_value(n_leaf);
+    std::vector<double> leaf_value(n_leaf_value);
 
     ReadWidened(sf_r, rec.node_offset * elem_size(sf.dtype), n_node,
                 sf.dtype, "split_feature", &split_feature);
@@ -744,16 +824,15 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
       std::copy(p, p + n_node, decision_type.begin());
     }
     if (lv.dtype == kDTypeF32) {
-      const float* p = lv_r.View<float>(rec.leaf_offset * sizeof(float), n_leaf,
+      const float* p = lv_r.View<float>(leaf_value_offset * sizeof(float), n_leaf_value,
                                         "leaf_value");
-      for (size_t l = 0; l < n_leaf; ++l) leaf_value[l] = static_cast<double>(p[l]);
+      for (size_t l = 0; l < n_leaf_value; ++l) {
+        leaf_value[l] = static_cast<double>(p[l]);
+      }
     } else if (lv.dtype == kDTypeF64) {
-      const double* p = lv_r.View<double>(rec.leaf_offset * sizeof(double), n_leaf,
+      const double* p = lv_r.View<double>(leaf_value_offset * sizeof(double), n_leaf_value,
                                           "leaf_value");
-      std::copy(p, p + n_leaf, leaf_value.begin());
-    } else {
-      Log::Fatal("FALB: leaf_value has dtype %s, which this build cannot read",
-                 DTypeName(lv.dtype));
+      std::copy(p, p + n_leaf_value, leaf_value.begin());
     }
     {
       std::vector<uint32_t> tidx;
@@ -778,11 +857,12 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
     }
 
     auto tree = TreeIO::MakeShell(static_cast<int>(rec.num_leaves),
-                                 static_cast<int>(rec.num_cat), false);
+                                 static_cast<int>(rec.num_cat), false,
+                                 static_cast<int>(rec.leaf_dim));
     TreeIO::SetStructure(tree.get(), std::move(split_feature), std::move(threshold),
                          std::move(decision_type), std::move(left_child),
                          std::move(right_child), std::move(leaf_value),
-                         rec.shrinkage, -1);
+                         static_cast<int>(rec.leaf_dim), rec.shrinkage, -1);
 
     if (has_cat && rec.num_cat > 0) {
       const SectionEntry& cb = need(kSecCatBoundaries);
@@ -842,6 +922,7 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
     models_.push_back(std::move(tree));
   }
 
+  ValidateLeafValueDimensions();
   num_iteration_for_pred_ = static_cast<int>(models_.size()) / num_tree_per_iteration_;
   num_init_iteration_ = num_iteration_for_pred_;
   iter_ = 0;
