@@ -243,6 +243,7 @@ const std::unordered_set<std::string>& Config::parameter_set() {
   "cat_l2",
   "cat_smooth",
   "max_cat_to_onehot",
+  "cat_random_search",
   "top_k",
   "monotone_constraints",
   "monotone_constraints_method",
@@ -465,6 +466,9 @@ void Config::GetMembersFromString(const std::unordered_map<std::string, std::str
 
   GetInt(params, "max_cat_to_onehot", &max_cat_to_onehot);
   CHECK_GT(max_cat_to_onehot, 0);
+
+  GetInt(params, "cat_random_search", &cat_random_search);
+  CHECK_GE(cat_random_search, 0);
 
   GetInt(params, "top_k", &top_k);
   CHECK_GT(top_k, 0);
@@ -739,6 +743,7 @@ std::string Config::SaveMembersToString() const {
   str_buf << "[cat_l2: " << cat_l2 << "]\n";
   str_buf << "[cat_smooth: " << cat_smooth << "]\n";
   str_buf << "[max_cat_to_onehot: " << max_cat_to_onehot << "]\n";
+  str_buf << "[cat_random_search: " << cat_random_search << "]\n";
   str_buf << "[top_k: " << top_k << "]\n";
   str_buf << "[monotone_constraints: " << Common::Join(Common::ArrayCast<int8_t, int>(monotone_constraints), ",") << "]\n";
   str_buf << "[monotone_constraints_method: " << monotone_constraints_method << "]\n";
@@ -869,6 +874,7 @@ const std::unordered_map<std::string, std::vector<std::string>>& Config::paramet
     {"cat_l2", {}},
     {"cat_smooth", {}},
     {"max_cat_to_onehot", {}},
+    {"cat_random_search", {}},
     {"top_k", {"topk"}},
     {"monotone_constraints", {"mc", "monotone_constraint", "monotonic_cst"}},
     {"monotone_constraints_method", {"monotone_constraining_method", "mc_method"}},
@@ -1018,6 +1024,7 @@ const std::unordered_map<std::string, std::string>& Config::ParameterTypes() {
     {"cat_l2", "double"},
     {"cat_smooth", "double"},
     {"max_cat_to_onehot", "int"},
+    {"cat_random_search", "int"},
     {"top_k", "int"},
     {"monotone_constraints", "vector<int>"},
     {"monotone_constraints_method", "string"},

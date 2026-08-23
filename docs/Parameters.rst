@@ -579,6 +579,22 @@ Learning Control Parameters
 
    -  when number of categories of one feature smaller than or equal to ``max_cat_to_onehot``, one-vs-other split algorithm will be used
 
+-  ``cat_random_search`` :raw-html:`<a id="cat_random_search" title="Permalink to this parameter" href="#cat_random_search">&#x1F517;&#xFE0E;</a>`, default = ``0``, type = int, constraints: ``cat_random_search >= 0``
+
+   -  used for the categorical features
+
+   -  number of random category subsets evaluated per categorical feature and node, replacing the sorted exact search (the ``RANDOM`` categorical algorithm of Yggdrasil Decision Forests, Breiman 2001)
+
+   -  each subset includes every present category independently with probability ``0.5``; the subset with the best split gain wins, under the same ``min_data_in_leaf`` / ``min_sum_hessian_in_leaf`` / ``min_data_per_group`` / ``max_cat_threshold`` constraints as the exact search
+
+   -  acts as a regularizer on high-cardinality categorical features
+
+   -  ``0`` means use the exact sorted search
+
+   -  has no effect on features split one-vs-other (``number of categories <= max_cat_to_onehot``)
+
+   -  used only with ``device_type = cpu``
+
 -  ``top_k`` :raw-html:`<a id="top_k" title="Permalink to this parameter" href="#top_k">&#x1F517;&#xFE0E;</a>`, default = ``20``, type = int, aliases: ``topk``, constraints: ``top_k > 0``
 
    -  used only in ``voting`` tree learner, refer to `Voting parallel <./Parallel-Learning-Guide.rst#choose-appropriate-parallel-algorithm>`__

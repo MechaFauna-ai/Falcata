@@ -514,6 +514,16 @@ struct Config {
   // desc = when number of categories of one feature smaller than or equal to ``max_cat_to_onehot``, one-vs-other split algorithm will be used
   int max_cat_to_onehot = 4;
 
+  // check = >=0
+  // desc = used for the categorical features
+  // desc = number of random category subsets evaluated per categorical feature and node, replacing the sorted exact search (the ``RANDOM`` categorical algorithm of Yggdrasil Decision Forests, Breiman 2001)
+  // desc = each subset includes every present category independently with probability ``0.5``; the subset with the best split gain wins, under the same ``min_data_in_leaf`` / ``min_sum_hessian_in_leaf`` / ``min_data_per_group`` / ``max_cat_threshold`` constraints as the exact search
+  // desc = acts as a regularizer on high-cardinality categorical features
+  // desc = ``0`` means use the exact sorted search
+  // desc = has no effect on features split one-vs-other (``number of categories <= max_cat_to_onehot``)
+  // desc = used only with ``device_type = cpu``
+  int cat_random_search = 0;
+
   // alias = topk
   // check = >0
   // desc = used only in ``voting`` tree learner, refer to `Voting parallel <./Parallel-Learning-Guide.rst#choose-appropriate-parallel-algorithm>`__

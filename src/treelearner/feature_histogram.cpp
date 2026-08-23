@@ -12,6 +12,32 @@
 
 namespace Falcata {
 
+namespace {
+
+// Mask bits for the RANDOM categorical search come from a SplitMix64 stream:
+// the per-feature Random is an LCG whose low bit alternates with period two,
+// so its raw output cannot supply independent coin flips.
+inline uint64_t SplitMix64(uint64_t* state) {
+  uint64_t z = (*state += 0x9E3779B97F4A7C15ULL);
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+  return z ^ (z >> 31);
+}
+
+// Draws one coin flip, refilling the 64-bit buffer as needed.
+inline bool NextMaskBit(uint64_t* state, uint64_t* bits, int* bits_left) {
+  if (*bits_left == 0) {
+    *bits = SplitMix64(state);
+    *bits_left = 64;
+  }
+  const bool bit = (*bits & 1) != 0;
+  *bits >>= 1;
+  --(*bits_left);
+  return bit;
+}
+
+}  // namespace
+
 void FeatureHistogram::FuncForCategorical() {
   if (meta_->config->extra_trees) {
     if (meta_->config->monotone_constraints.empty()) {
@@ -239,6 +265,118 @@ void FeatureHistogram::FindBestThresholdCategoricalInner(double sum_gradient,
         best_left_count = cnt;
         best_gain = current_gain;
       }
+    }
+  } else if (meta_->config->cat_random_search > 0) {
+    // RANDOM categorical search (YDF-style): each trial draws a random subset
+    // of the present categories, every category included independently with
+    // probability 1/2, and evaluates subset-vs-rest with the exact search's
+    // gain formula and constraints; the best subset wins. The emitted left
+    // set is the smaller side of the mask, so max_cat_threshold caps it the
+    // same way it caps the exact search's prefix length.
+    for (int i = bin_start; i < bin_end; ++i) {
+      if (Common::RoundInt(GET_HESS(data_, i) * cnt_factor) >=
+          meta_->config->cat_smooth) {
+        sorted_idx.push_back(i);
+      }
+    }
+    const int num_cand = static_cast<int>(sorted_idx.size());
+
+    l2 += meta_->config->cat_l2;
+
+    double cand_sum_gradient = 0.0;
+    double cand_sum_hessian = 0.0;
+    data_size_t cand_count = 0;
+    for (int k = 0; k < num_cand; ++k) {
+      const int t = sorted_idx[k];
+      cand_sum_gradient += GET_GRAD(data_, t);
+      cand_sum_hessian += GET_HESS(data_, t);
+      cand_count += static_cast<data_size_t>(
+          Common::RoundInt(GET_HESS(data_, t) * cnt_factor));
+    }
+
+    std::vector<int8_t> in_mask(num_cand);
+    std::vector<int8_t> best_mask;
+    bool best_flip = false;
+    // seeded from the per-feature RNG, so masks are deterministic given
+    // extra_seed, the feature, and the sequence of node evaluations
+    uint64_t mask_state = (static_cast<uint64_t>(meta_->rand.NextShort(0, 32768)) << 15) |
+                          static_cast<uint64_t>(meta_->rand.NextShort(0, 32768));
+    uint64_t mask_bits = 0;
+    int mask_bits_left = 0;
+    for (int trial = 0; trial < meta_->config->cat_random_search; ++trial) {
+      int in_size = 0;
+      double in_gradient = 0.0;
+      double in_hessian = 0.0;
+      data_size_t in_count = 0;
+      for (int k = 0; k < num_cand; ++k) {
+        in_mask[k] = static_cast<int8_t>(NextMaskBit(&mask_state, &mask_bits, &mask_bits_left));
+        if (in_mask[k]) {
+          const int t = sorted_idx[k];
+          in_gradient += GET_GRAD(data_, t);
+          in_hessian += GET_HESS(data_, t);
+          in_count += static_cast<data_size_t>(
+              Common::RoundInt(GET_HESS(data_, t) * cnt_factor));
+          ++in_size;
+        }
+      }
+      // categories filtered by cat_smooth (and categories unseen in this
+      // node) always go right, whichever mask side becomes the left set
+      const bool flip = in_size * 2 > num_cand;
+      const int left_size = flip ? num_cand - in_size : in_size;
+      if (left_size == 0 || left_size > meta_->config->max_cat_threshold) {
+        continue;
+      }
+      const double sum_left_gradient =
+          flip ? cand_sum_gradient - in_gradient : in_gradient;
+      const double sum_left_hessian =
+          (flip ? cand_sum_hessian - in_hessian : in_hessian) + kEpsilon;
+      const data_size_t left_count = flip ? cand_count - in_count : in_count;
+      const data_size_t right_count = num_data - left_count;
+      if (left_count < meta_->config->min_data_in_leaf ||
+          left_count < meta_->config->min_data_per_group ||
+          sum_left_hessian < meta_->config->min_sum_hessian_in_leaf) {
+        continue;
+      }
+      if (right_count < meta_->config->min_data_in_leaf ||
+          right_count < meta_->config->min_data_per_group) {
+        continue;
+      }
+      const double sum_right_hessian = sum_hessian - sum_left_hessian;
+      if (sum_right_hessian < meta_->config->min_sum_hessian_in_leaf) {
+        continue;
+      }
+      const double sum_right_gradient = sum_gradient - sum_left_gradient;
+      double current_gain = GetSplitGains<USE_MC, USE_L1, USE_MAX_OUTPUT, USE_SMOOTHING>(
+          sum_left_gradient, sum_left_hessian, sum_right_gradient,
+          sum_right_hessian, meta_->config->lambda_l1, l2,
+          meta_->config->max_delta_step, constraints, 0, meta_->config->path_smooth,
+          left_count, right_count, parent_output);
+      if (current_gain <= min_gain_shift) {
+        continue;
+      }
+      is_splittable_ = true;
+      if (current_gain > best_gain) {
+        best_mask = in_mask;
+        best_flip = flip;
+        best_left_count = left_count;
+        best_sum_left_gradient = sum_left_gradient;
+        best_sum_left_hessian = sum_left_hessian;
+        best_gain = current_gain;
+      }
+    }
+    if (is_splittable_) {
+      // rewrite sorted_idx so the shared output block below emits the mask's
+      // left set as a plain prefix
+      std::vector<int> left_bins;
+      for (int k = 0; k < num_cand; ++k) {
+        if ((best_mask[k] != 0) != best_flip) {
+          left_bins.push_back(sorted_idx[k]);
+        }
+      }
+      sorted_idx = left_bins;
+      used_bin = static_cast<int>(sorted_idx.size());
+      best_threshold = used_bin - 1;
+      best_dir = 1;
     }
   } else {
     for (int i = bin_start; i < bin_end; ++i) {
@@ -518,6 +656,137 @@ void FeatureHistogram::FindBestThresholdCategoricalIntInner(int64_t int_sum_grad
         best_sum_left_gradient_and_hessian = grad_and_hess_acc;
         best_gain = current_gain;
       }
+    }
+  } else if (meta_->config->cat_random_search > 0) {
+    // RANDOM categorical search over the quantized histogram: same trial
+    // scheme as the non-quantized path, accumulating packed integer sums so
+    // the output block emits exact quantized left/right totals.
+    for (int i = bin_start; i < bin_end; ++i) {
+      const PACKED_HIST_BIN_T int_grad_and_hess = data_ptr[i];
+      const uint32_t int_hess = HIST_BITS_BIN == 16 ?
+        static_cast<uint32_t>(int_grad_and_hess & 0x0000ffff) :
+        static_cast<uint32_t>(int_grad_and_hess & 0x00000000ffffffff);
+      const int cnt = Common::RoundInt(int_hess * cnt_factor);
+      if (cnt >= meta_->config->cat_smooth) {
+        sorted_idx.push_back(i);
+      }
+    }
+    const int num_cand = static_cast<int>(sorted_idx.size());
+
+    l2 += meta_->config->cat_l2;
+
+    std::vector<PACKED_HIST_ACC_T> cand_acc(num_cand);
+    std::vector<data_size_t> cand_cnt(num_cand);
+    PACKED_HIST_ACC_T cand_sum_grad_and_hess = 0;
+    data_size_t cand_count = 0;
+    for (int k = 0; k < num_cand; ++k) {
+      const PACKED_HIST_BIN_T int_grad_and_hess = data_ptr[sorted_idx[k]];
+      if (HIST_BITS_ACC != HIST_BITS_BIN) {
+        cand_acc[k] =
+          (static_cast<PACKED_HIST_ACC_T>(static_cast<int64_t>(int_grad_and_hess & 0xffff0000)) << 32) |
+          (static_cast<PACKED_HIST_ACC_T>(int_grad_and_hess & 0x0000ffff));
+      } else {
+        cand_acc[k] = static_cast<PACKED_HIST_ACC_T>(int_grad_and_hess);
+      }
+      const uint32_t int_hess = HIST_BITS_BIN == 16 ?
+        static_cast<uint32_t>(int_grad_and_hess & 0x0000ffff) :
+        static_cast<uint32_t>(int_grad_and_hess & 0x00000000ffffffff);
+      cand_cnt[k] = static_cast<data_size_t>(Common::RoundInt(int_hess * cnt_factor));
+      cand_sum_grad_and_hess += cand_acc[k];
+      cand_count += cand_cnt[k];
+    }
+
+    std::vector<int8_t> in_mask(num_cand);
+    std::vector<int8_t> best_mask;
+    bool best_flip = false;
+    // seeded from the per-feature RNG, so masks are deterministic given
+    // extra_seed, the feature, and the sequence of node evaluations
+    uint64_t mask_state = (static_cast<uint64_t>(meta_->rand.NextShort(0, 32768)) << 15) |
+                          static_cast<uint64_t>(meta_->rand.NextShort(0, 32768));
+    uint64_t mask_bits = 0;
+    int mask_bits_left = 0;
+    for (int trial = 0; trial < meta_->config->cat_random_search; ++trial) {
+      int in_size = 0;
+      PACKED_HIST_ACC_T in_grad_and_hess = 0;
+      data_size_t in_count = 0;
+      for (int k = 0; k < num_cand; ++k) {
+        in_mask[k] = static_cast<int8_t>(NextMaskBit(&mask_state, &mask_bits, &mask_bits_left));
+        if (in_mask[k]) {
+          in_grad_and_hess += cand_acc[k];
+          in_count += cand_cnt[k];
+          ++in_size;
+        }
+      }
+      // categories filtered by cat_smooth (and categories unseen in this
+      // node) always go right, whichever mask side becomes the left set
+      const bool flip = in_size * 2 > num_cand;
+      const int left_size = flip ? num_cand - in_size : in_size;
+      if (left_size == 0 || left_size > meta_->config->max_cat_threshold) {
+        continue;
+      }
+      const PACKED_HIST_ACC_T int_sum_left_gradient_and_hessian =
+          flip ? cand_sum_grad_and_hess - in_grad_and_hess : in_grad_and_hess;
+      const data_size_t left_count = flip ? cand_count - in_count : in_count;
+      const data_size_t right_count = num_data - left_count;
+      const uint32_t int_left_sum_hessian = HIST_BITS_ACC == 16 ?
+        static_cast<uint32_t>(int_sum_left_gradient_and_hessian & 0x0000ffff) :
+        static_cast<uint32_t>(int_sum_left_gradient_and_hessian & 0x00000000ffffffff);
+      const double sum_left_hessian = int_left_sum_hessian * hess_scale;
+      if (left_count < meta_->config->min_data_in_leaf ||
+          left_count < meta_->config->min_data_per_group ||
+          sum_left_hessian < meta_->config->min_sum_hessian_in_leaf) {
+        continue;
+      }
+      if (right_count < meta_->config->min_data_in_leaf ||
+          right_count < meta_->config->min_data_per_group) {
+        continue;
+      }
+      const PACKED_HIST_ACC_T int_sum_right_gradient_and_hessian =
+          local_int_sum_gradient_and_hessian - int_sum_left_gradient_and_hessian;
+      const uint32_t int_right_sum_hessian = HIST_BITS_ACC == 16 ?
+        static_cast<uint32_t>(int_sum_right_gradient_and_hessian & 0x0000ffff) :
+        static_cast<uint32_t>(int_sum_right_gradient_and_hessian & 0x00000000ffffffff);
+      const double sum_right_hessian = int_right_sum_hessian * hess_scale;
+      if (sum_right_hessian < meta_->config->min_sum_hessian_in_leaf) {
+        continue;
+      }
+      const int32_t int_sum_left_gradient = HIST_BITS_ACC == 16 ?
+        static_cast<int32_t>(static_cast<int16_t>(int_sum_left_gradient_and_hessian >> 16)) :
+        static_cast<int32_t>(static_cast<int64_t>(int_sum_left_gradient_and_hessian) >> 32);
+      const double sum_left_gradient = int_sum_left_gradient * grad_scale;
+      const int32_t int_sum_right_gradient = HIST_BITS_ACC == 16 ?
+        static_cast<int32_t>(static_cast<int16_t>(int_sum_right_gradient_and_hessian >> 16)) :
+        static_cast<int32_t>(static_cast<int64_t>(int_sum_right_gradient_and_hessian) >> 32);
+      const double sum_right_gradient = int_sum_right_gradient * grad_scale;
+      double current_gain = GetSplitGains<USE_MC, USE_L1, USE_MAX_OUTPUT, USE_SMOOTHING>(
+          sum_left_gradient, sum_left_hessian, sum_right_gradient,
+          sum_right_hessian, meta_->config->lambda_l1, l2,
+          meta_->config->max_delta_step, constraints, 0, meta_->config->path_smooth,
+          left_count, right_count, parent_output);
+      if (current_gain <= min_gain_shift) {
+        continue;
+      }
+      is_splittable_ = true;
+      if (current_gain > best_gain) {
+        best_mask = in_mask;
+        best_flip = flip;
+        best_sum_left_gradient_and_hessian = int_sum_left_gradient_and_hessian;
+        best_gain = current_gain;
+      }
+    }
+    if (is_splittable_) {
+      // rewrite sorted_idx so the shared output block below emits the mask's
+      // left set as a plain prefix
+      std::vector<int> left_bins;
+      for (int k = 0; k < num_cand; ++k) {
+        if ((best_mask[k] != 0) != best_flip) {
+          left_bins.push_back(sorted_idx[k]);
+        }
+      }
+      sorted_idx = left_bins;
+      used_bin = static_cast<int>(sorted_idx.size());
+      best_threshold = used_bin - 1;
+      best_dir = 1;
     }
   } else {
     for (int i = bin_start; i < bin_end; ++i) {
