@@ -1794,6 +1794,13 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
   double local_gain = 0.0f;
   bool threshold_found = false;
   uint32_t threshold_value = 0;
+  // Scan position (the shared-memory kernel's threadIdx_x) of this thread's
+  // best candidate. Above blockDim.x bins a thread owns SEVERAL positions
+  // (bin, bin + blockDim.x, ...), so the block reduce must tie-break on the
+  // position, not the thread index: CPU's strict-'>' scan keeps the EARLIEST
+  // position on an exact gain tie, and positions congruent mod blockDim.x
+  // do not order like thread indices across the stride boundary.
+  uint32_t local_best_pos = 0;
   __shared__ int rand_threshold;
   if (USE_RAND && threadIdx.x == 0) {
     if (task->num_bin - 2 > 0) {
@@ -1815,8 +1822,15 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
         const unsigned int bin_offset = (bin - 1) << 1;
         const hist_t grad = feature_hist_ptr[bin_offset];
         const hist_t hess = feature_hist_ptr[bin_offset + 1];
-        hist_grad_buffer_ptr[bin] = grad;
-        hist_hess_buffer_ptr[bin] = hess;
+        // This feature's scratch region holds num_bin - 1 slots (mfb_offset
+        // == 1 here); bin == num_bin - 1 is only ever summed, never scanned
+        // (the scan stops at num_bin - 2), and storing it would land one past
+        // the region -- in the NEXT feature's slot 0, which another block of
+        // this launch stages and scans concurrently.
+        if (bin + 1 < static_cast<uint32_t>(task->num_bin)) {
+          hist_grad_buffer_ptr[bin] = grad;
+          hist_hess_buffer_ptr[bin] = hess;
+        }
         thread_sum_gradients += grad;
         thread_sum_hessians += hess;
       }
@@ -1904,10 +1918,17 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
               sum_left_gradient, sum_left_hessian, sum_right_gradient,
               sum_right_hessian, lambda_l1,
               lambda_l2, path_smooth, max_delta_step, left_count, right_count, parent_output);
-          // gain with split is worse than without split
-          if (current_gain > min_gain_shift) {
+          // gain with split is worse than without split. Running MAXIMUM over
+          // the grid-stride bins this thread owns (strict '>' keeps the
+          // earliest scan position on an exact tie, like CPU's sequential
+          // scan): a bare `> min_gain_shift` overwrite let a later, worse bin
+          // clobber the thread's best candidate whenever the feature has more
+          // than blockDim.x bins.
+          if (current_gain > min_gain_shift &&
+              current_gain - min_gain_shift > local_gain) {
             local_gain = current_gain - min_gain_shift;
             threshold_value = static_cast<uint32_t>(task->num_bin - 2 - bin);
+            local_best_pos = bin;
             threshold_found = true;
           }
         }
@@ -1938,11 +1959,14 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
               sum_left_gradient, sum_left_hessian, sum_right_gradient,
               sum_right_hessian, lambda_l1,
               lambda_l2, path_smooth, max_delta_step, left_count, right_count, parent_output);
-          // gain with split is worse than without split
-          if (current_gain > min_gain_shift) {
+          // gain with split is worse than without split. Running MAXIMUM over
+          // the thread's grid-stride bins; see the REVERSE branch.
+          if (current_gain > min_gain_shift &&
+              current_gain - min_gain_shift > local_gain) {
             local_gain = current_gain - min_gain_shift;
             threshold_value = (task->na_as_missing && task->mfb_offset == 1) ?
               bin : static_cast<uint32_t>(bin + task->mfb_offset);
+            local_best_pos = bin;
             threshold_found = true;
           }
         }
@@ -1950,12 +1974,18 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
     }
   }
   __syncthreads();
-  const uint32_t result = ReduceBestGain(local_gain, threshold_found, threadIdx_x, shared_double_buffer, shared_found_buffer, shared_thread_index_buffer);
+  // Reduce on the scan POSITION of each thread's best candidate, not the
+  // thread index: with more bins than threads the earliest tied position is
+  // what CPU's strict-'>' scan keeps, and positions across the stride
+  // boundary do not order like thread indices. Positions are disjoint across
+  // threads (position mod blockDim.x == threadIdx.x), so the winner check
+  // below selects exactly one writer.
+  const uint32_t result = ReduceBestGain(local_gain, threshold_found, local_best_pos, shared_double_buffer, shared_found_buffer, shared_thread_index_buffer);
   if (threadIdx_x == 0) {
     best_thread_index = result;
   }
   __syncthreads();
-  if (threshold_found && threadIdx_x == best_thread_index) {
+  if (threshold_found && local_best_pos == best_thread_index) {
     cuda_best_split_info->is_valid = true;
     cuda_best_split_info->threshold = threshold_value;
     cuda_best_split_info->gain = local_gain * task->penalty;
