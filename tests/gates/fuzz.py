@@ -45,6 +45,25 @@ def sample_spec(rng):
     m = int(rng.choice([5, 20, 80, 300, 800]))
     objective = str(rng.choice(["regression", "binary", "multiclass"]))
     quant_mode = str(rng.choice(["stochastic", "stochastic", "fixedpoint", "none"]))
+    # 511 reaches the GLOBAL-MEMORY split finder: CUDA runs a separate kernel
+    # family once a feature's histogram exceeds one block
+    # (NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER == 256 bins), and that family
+    # scans grid-stride instead of one-bin-per-thread. Two whole defect
+    # clusters lived there unreached (the numeric scan kept the LAST qualifying
+    # bin instead of the best, and the NaN head scored the missing-mass
+    # position CPU never considers) because every max_bin here used to cap at
+    # 255. Quantized gradients are refused on that path (the discretized finder
+    # has no global-memory variant; the tree learner raises), so a wide draw
+    # forces the full-precision mode -- otherwise the spec is a guaranteed
+    # config error, not a test.
+    max_bin = int(rng.choice([5, 15, 63, 255, 511]))
+    dtype = str(rng.choice(["float64", "int8", "int16"]))
+    if max_bin > 256:
+        quant_mode = "none"
+        # ... and the budget only becomes real on continuous data: the integer
+        # draws span int_lo..int_hi, so their features bin into ~13 values and
+        # a wide budget would silently stay narrow.
+        dtype = "float64"
     plan = ["auto"]
     for key in [
         "graph_loop",
@@ -78,7 +97,7 @@ def sample_spec(rng):
         "cat_cards": [int(c) for c in rng.choice([12, 31, 64, 120, 250], size=num_cat)] if num_cat else [],
         "max_cat_threshold": int(rng.choice([8, 32, 32, 64])),
         "learning_rate": float(rng.choice([0.1, 0.1, 0.01, 0.0015])),
-        "dtype": str(rng.choice(["float64", "int8", "int16"])),
+        "dtype": dtype,
         "nan_frac": float(rng.choice([0.0, 0.0, 0.1, 0.4])),
         "sparsity": float(rng.choice([0.0, 0.0, 0.8])),
         "int_lo": -6,
@@ -92,7 +111,7 @@ def sample_spec(rng):
         "min_data_in_leaf": int(rng.choice([1, 5, 20, 100])),
         "feature_fraction": float(rng.choice([1.0, 1.0, 0.2, 0.6])),
         "bagging_fraction": float(rng.choice([1.0, 1.0, 0.7])),
-        "max_bin": int(rng.choice([5, 15, 63, 255])),
+        "max_bin": max_bin,
         "cuda_plan": ",".join(plan),
         "rounds": int(rng.choice([10, 25, 25, 150])),
         "data_seed": int(rng.integers(0, 2**31)),
@@ -308,7 +327,12 @@ def check_spec(spec):
     if not md5_checked:
         plan = spec.get("cuda_plan", "")
         depth_limited = spec.get("max_depth", -1) > 0 and (2 ** spec["max_depth"] <= spec["num_leaves"] + 1)
-        hybrid_off = "hybrid:off" in plan
+        # A feature wider than one block forces the global-memory finder, and
+        # the tree learner disables the whole hybrid family (and the fp32
+        # histogram layout) on that path. A wide spec therefore runs the
+        # classic loop over the deterministic per-leaf constructs whatever the
+        # plan string asks for, so it is bit-stable and md5-checkable.
+        hybrid_off = spec.get("max_bin", 255) > 256 or "hybrid:off" in plan
         graph_possible = depth_limited and not hybrid_off and "graph_loop:off" not in plan
         # BATCHED-level constructs keep the atomic kernel for compact views
         # (feature sampling), and the SELECTIVE flow batches levels even on

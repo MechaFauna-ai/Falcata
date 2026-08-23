@@ -273,6 +273,53 @@ def build_cells():
         rounds=25,
     )
 
+    # --- wide features: the GLOBAL-MEMORY split finder ---------------------- #
+    # Once a feature's histogram exceeds one block
+    # (NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER == 256 bins) CUDA switches to a
+    # separate kernel family that stages histograms in global memory and scans
+    # them GRID-STRIDE -- several bin positions per thread instead of one.
+    # Every other cell here caps at max_bin=255 and therefore never launches
+    # it, which is how two whole defect clusters survived: the numeric scan
+    # kept the LAST qualifying bin rather than the best one and broke exact
+    # gain ties on threadIdx_x, and the NaN head scored the missing-mass
+    # position CPU never considers (plus a reduce shape, an epsilon sign and a
+    # missing-count rounding that all disagreed with CPU's forward scan).
+    # max_bin=511 is the smallest round budget past the boundary; deep trees
+    # are what expose it, because the divergence needs the small leaves where
+    # plateau gains and exact ties appear.
+    #
+    # These cells fingerprint despite being non-quant: quantized gradients are
+    # REFUSED on this path (the discretized finder has no global-memory
+    # variant), and the tree learner also disables the whole hybrid family and
+    # the fp32 histogram layout there, so a wide shape always runs the classic
+    # loop over the deterministic per-leaf constructs -- bit-stable, no
+    # graph_loop:off needed.
+    #
+    # Three cells because the wide kernel has three distinct entries and one
+    # shape covers only one of them (task counts confirmed against the tasks
+    # the finder builds): `dense` is numeric-only (20 wide tasks, no NaN
+    # tasks) and pins the running-maximum scan; `missing` adds the reverse
+    # na_as_missing scan (20 of its 40 tasks) whose gate had gone dead;
+    # `missing-mfb0-wide` is the only one that reaches the FORWARD
+    # na_as_missing head (20 forward-head + 20 reverse tasks), where the
+    # reduce shape, the epsilon sign and the missing-count rounding had to
+    # match CPU bit for bit.
+    cell(
+        "dense/nonquant-widebin",
+        "dense",
+        {"quant_mode": "none", "max_bin": 511, "num_leaves": 255, "max_depth": 12, "min_data_in_leaf": 5},
+    )
+    cell(
+        "missing/nonquant-widebin",
+        "missing",
+        {"quant_mode": "none", "max_bin": 511, "num_leaves": 255, "max_depth": 12, "min_data_in_leaf": 5},
+    )
+    cell(
+        "missing-mfb0-wide/nonquant",
+        "missing-mfb0-wide",
+        {"quant_mode": "none", "num_leaves": 255, "max_depth": 12, "min_data_in_leaf": 5},
+    )
+
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "duplicate cell ids"
     by_id = {c["id"]: c for c in cells}
@@ -362,6 +409,23 @@ def build_profile(name):
         y = (X - 2.0) @ w + 0.3 * rng.standard_normal(n)
         X[rng.random((n, m)) < 0.2] = np.nan
         base["max_bin"] = 5
+    elif name == "missing-mfb0-wide":
+        # NaN features, MORE than 256 histogram bins, and a most-frequent bin
+        # of 0 -- the only shape that reaches the global-memory finder's
+        # FORWARD na_as_missing head (na_as_missing && mfb_offset == 1), where
+        # slot 0 is a missing pseudo-bin synthesised from the leaf totals
+        # minus every real bin. Non-negative values are what buy mfb 0: the
+        # binner keeps an arg-max bin only above the 0.7 sparse rate and
+        # otherwise falls back to ValueToBin(0), which is bin 0 here.
+        # `missing` at the same width only reaches the reverse NaN scan (its
+        # Gaussian features straddle zero, so ValueToBin(0) is mid-range).
+        m = 20
+        X = rng.random((n, m))
+        w = rng.standard_normal(m)
+        y = (X - 0.5) @ w + 0.3 * rng.standard_normal(n)
+        X = X.copy()
+        X[rng.random((n, m)) < 0.2] = np.nan
+        base["max_bin"] = 511
     elif name == "bigrow":
         # 2M rows x 64 quant bins x compact view: the packed-int16 shared-hist
         # overflow class (2026-07 production corruption: the compact-view grid

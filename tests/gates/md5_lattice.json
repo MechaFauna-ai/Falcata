@@ -47,6 +47,11 @@
    "metric": 1.593959,
    "metric_name": "rmse"
   },
+  "dense/nonquant-widebin": {
+   "md5": "a0da80196a363759cf8c38021b7236c0",
+   "metric": 1.86005,
+   "metric_name": "rmse"
+  },
   "dense/quant": {
    "md5": "499e3a65087c926957ffc1bf0b4932a9",
    "metric": 2.002375,
@@ -140,6 +145,11 @@
    "metric": 70.744453,
    "metric_name": "rmse"
   },
+  "missing-mfb0-wide/nonquant": {
+   "md5": "d4315ce8c385940d1dd5034aeef04064",
+   "metric": 0.900577,
+   "metric_name": "rmse"
+  },
   "missing-mfb0/fixedpoint": {
    "md5": "c205e63c49634fff563da859bc8a09f6",
    "metric": 4.25467,
@@ -163,6 +173,11 @@
   "missing/nonquant-det": {
    "md5": "43993ddcfadc45fe226264df6d56e7ad",
    "metric": 3.062735,
+   "metric_name": "rmse"
+  },
+  "missing/nonquant-widebin": {
+   "md5": "ef890a5505beb12bc88eded7e21f0b6b",
+   "metric": 3.196301,
    "metric_name": "rmse"
   },
   "missing/quant": {
