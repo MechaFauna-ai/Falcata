@@ -563,7 +563,6 @@ def early_stopping(
         If float, this single value is used for all metrics.
         If list, its length should match the total number of metrics.
 
-        .. versionadded:: 4.0.0
     min_iterations : int, optional (default=0)
         Minimum number of iterations before early stopping may take effect.
         Evaluations below this are neither recorded as a best nor counted

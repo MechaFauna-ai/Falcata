@@ -190,9 +190,8 @@ notably, use Ninja (not the VS generator), and if `nvcc` rejects your MSVC as an
 "unsupported Microsoft Visual Studio version" add
 `-DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler`.
 
-The wheel installs a `lightgbm` import shim (see below). If the target
-environment already has stock LightGBM installed, uninstall it first or install
-Falcata into a fresh environment — pip will not report the collision.
+Falcata installs under its own name only, so it coexists with stock LightGBM in
+one environment; `import lightgbm` keeps resolving to LightGBM.
 
 Compatibility with LightGBM
 ---------------------------

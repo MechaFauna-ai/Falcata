@@ -345,7 +345,7 @@ _lgbmmodel_doc_fit = """
         For example, if you have a 100-document dataset with ``group = [10, 20, 40, 10, 10, 10]``, that means that you have 6 groups,
         where the first 10 records are in the first group, records 11-30 are in the second group, records 31-70 are in the third group, etc.
     eval_set : list or None, optional (default=None)
-        .. deprecated:: 4.7.0
+        .. deprecated:: 1.0.0
             A list of (X, y) tuple pairs to use as validation sets.
             Use ``eval_X`` and ``eval_y`` instead.
     eval_names : list of str, or None, optional (default=None)
@@ -630,8 +630,6 @@ class FalcataModel(_FalcataModelBase):
             threads configured for OpenMP in the system. A value of ``None`` (the default) corresponds
             to using the number of physical cores in the system (its correct detection requires
             either the ``joblib`` or the ``psutil`` util libraries to be installed).
-
-            .. versionchanged:: 4.0.0
 
         importance_type : str, optional (default='split')
             The type of feature importance to be filled into ``feature_importances_``.
@@ -1305,8 +1303,6 @@ class FalcataModel(_FalcataModelBase):
 
         This might be less than parameter ``n_estimators`` if early stopping was enabled or
         if boosting stopped early due to limits on complexity like ``min_gain_to_split``.
-
-        .. versionadded:: 4.0.0
         """
         if not self.__sklearn_is_fitted__():
             raise FalcataNotFittedError("No n_estimators found. Need to call fit beforehand.")
@@ -1318,8 +1314,6 @@ class FalcataModel(_FalcataModelBase):
 
         This might be less than parameter ``n_estimators`` if early stopping was enabled or
         if boosting stopped early due to limits on complexity like ``min_gain_to_split``.
-
-        .. versionadded:: 4.0.0
         """
         if not self.__sklearn_is_fitted__():
             raise FalcataNotFittedError("No n_iter found. Need to call fit beforehand.")
@@ -1371,8 +1365,6 @@ class FalcataModel(_FalcataModelBase):
         Only available when training data had feature names (e.g. a pandas DataFrame).
         When training was done with data without feature names (e.g. a numpy array),
         accessing this attribute raises ``AttributeError``.
-
-        .. versionadded:: 4.5.0
         """
         if not self.__sklearn_is_fitted__():
             raise FalcataNotFittedError("No feature_names_in_ found. Need to call fit beforehand.")
