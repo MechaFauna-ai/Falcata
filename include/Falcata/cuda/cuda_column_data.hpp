@@ -55,13 +55,20 @@ class CUDAColumnData {
             const std::vector<int>& feature_to_column);
 
   const uint8_t* GetColumnData(const int column_index) const {
-    // In the skip-allocation path, data_by_column_[c] is null; the per-column
-    // device pointers live in the per-tree compact view (set by
-    // SetCompactColumnView). Read those instead to avoid a host null-deref.
-    // Sparse-encoded columns keep their own buffer even there (see
-    // column_is_sparse_).
-    if (init_skipped_per_column_alloc_ && !column_is_sparse(column_index)) {
-      return compact_column_host_view_[column_index];
+    // Return what is PUBLISHED for this column, which is what
+    // column_bit_type(column_index) describes. While a per-tree compact view is
+    // active (SetCompactColumnView), a gathered dense column's published buffer
+    // is its compact byte-per-row slot and its bit type is 8 -- the original
+    // buffer may be nibble-packed, so handing it out here would let a caller
+    // read nibbles with a byte kernel. Sparse-encoded columns and columns the
+    // view does not cover keep their original buffer AND original bit type.
+    // In the skip-allocation path data_by_column_[c] is null, so the view is
+    // also the only valid pointer there.
+    if (!column_is_sparse(column_index) && !compact_column_host_view_.empty()) {
+      const uint8_t* view_ptr = compact_column_host_view_[column_index];
+      if (view_ptr != nullptr || init_skipped_per_column_alloc_) {
+        return view_ptr;
+      }
     }
     return data_by_column_[column_index]->RawData();
   }
