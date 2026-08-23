@@ -35,6 +35,7 @@ CUDABestSplitFinder::CUDABestSplitFinder(
   max_cat_threshold_(config->max_cat_threshold),
   min_data_per_group_(config->min_data_per_group),
   max_cat_to_onehot_(config->max_cat_to_onehot),
+  cat_random_search_(config->cat_random_search),
   extra_trees_(config->extra_trees),
   extra_seed_(config->extra_seed),
   use_smoothing_(config->path_smooth > 0),
@@ -302,7 +303,9 @@ void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
 
   SetTaskFeaturePenalties();
 
-  if (extra_trees_) {
+  // Both consumers of the per-task RNG state: extra_trees draws one random
+  // threshold per task, cat_random_search draws the categorical subsets.
+  if (extra_trees_ || cat_random_search_ > 0) {
     cuda_randoms_.Resize(num_tasks_ * 2);
     LaunchInitCUDARandomKernel();
   }
@@ -370,6 +373,7 @@ void CUDABestSplitFinder::ResetConfig(const Config* config, const hist_t* cuda_h
   max_cat_threshold_ = config->max_cat_threshold;
   min_data_per_group_ = config->min_data_per_group;
   max_cat_to_onehot_ = config->max_cat_to_onehot;
+  cat_random_search_ = config->cat_random_search;
   extra_trees_ = config->extra_trees;
   extra_seed_ = config->extra_seed;
   use_smoothing_ = (config->path_smooth > 0.0f);
@@ -399,6 +403,14 @@ void CUDABestSplitFinder::ResetConfig(const Config* config, const hist_t* cuda_h
   cuda_cat_threshold_feature_.Resize(total_cat_threshold_size);
   cuda_cat_threshold_real_feature_.Resize(total_cat_threshold_size);
   AllocateCatVectors(cuda_best_split_info_.RawData(), cuda_cat_threshold_feature_.RawData(), cuda_cat_threshold_real_feature_.RawData(), cuda_best_leaf_split_info_buffer_size);
+
+  // A reset can turn on a consumer of the per-task RNG state that Init left
+  // unallocated; the kernels dereference the pointer unconditionally once one
+  // of them is on.
+  if ((extra_trees_ || cat_random_search_ > 0) && cuda_randoms_.Size() == 0) {
+    cuda_randoms_.Resize(num_tasks_ * 2);
+    LaunchInitCUDARandomKernel();
+  }
 
   // Re-init CEGB from the (possibly reset) config. CPU re-creates the CEGB object
   // on a parameter reset (serial_tree_learner.cpp), so the per-model "used

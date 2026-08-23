@@ -593,7 +593,7 @@ Learning Control Parameters
 
    -  has no effect on features split one-vs-other (``number of categories <= max_cat_to_onehot``)
 
-   -  used only with ``device_type = cpu``
+   -  supported by ``device_type = cpu`` and ``device_type = cuda``; the two devices draw their subsets in different orders, so their models differ (as they do under ``extra_trees``)
 
 -  ``top_k`` :raw-html:`<a id="top_k" title="Permalink to this parameter" href="#top_k">&#x1F517;&#xFE0E;</a>`, default = ``20``, type = int, aliases: ``topk``, constraints: ``top_k > 0``
 

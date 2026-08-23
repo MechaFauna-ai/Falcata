@@ -129,6 +129,47 @@ __device__ __forceinline__ bool SequentialCategoricalGroupAccepted(
   return false;
 }
 
+// ----- RANDOM categorical search (cat_random_search) -------------------------
+// Draws for the RANDOM search come from a SplitMix64 stream, not from
+// CUDARandom: CUDARandom is an LCG whose low bits carry short periods, and the
+// trials run one per thread, so a single shared LCG could not feed them
+// independently. The block's CUDARandom is drawn ONCE, by thread 0, to seed the
+// node; every trial stream is then mixed from that seed and its own trial
+// index, which makes a trial's subset a pure function of (node seed, trial) and
+// so re-drawable by the winning thread at write-out.
+__device__ __forceinline__ uint64_t CatSplitMix64(uint64_t* state) {
+  uint64_t z = (*state += 0x9E3779B97F4A7C15ULL);
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+  return z ^ (z >> 31);
+}
+
+__device__ __forceinline__ uint64_t CatTrialSeed(const unsigned int node_seed, const int trial) {
+  return (static_cast<uint64_t>(node_seed) << 32) ^
+         (static_cast<uint64_t>(static_cast<uint32_t>(trial)) * 0x9E3779B97F4A7C15ULL);
+}
+
+// Subset size, uniform over [1, max_num_cat] -- max_num_cat is the same cap the
+// exact search puts on its prefix length. Including each category with
+// probability 1/2 instead would put every subset of a high-cardinality feature
+// over that cap, and the feature would never split at all.
+__device__ __forceinline__ int CatTrialSubsetSize(uint64_t* state, const int max_num_cat) {
+  return 1 + static_cast<int>(CatSplitMix64(state) % static_cast<uint64_t>(max_num_cat));
+}
+
+// One step of Knuth's selection sampling (Algorithm S): take the next candidate
+// with probability remaining_needed / remaining_cand. A whole pass draws a
+// uniformly random subset of exactly the requested size -- the same
+// distribution as CPU's partial Fisher-Yates -- in ascending candidate order
+// and with no per-thread scratch, which a shuffled pool copy would need (the
+// candidate list runs to thousands of categories, far past a thread's budget).
+__device__ __forceinline__ bool CatCandidateSelected(uint64_t* state,
+                                                     const int remaining_cand,
+                                                     const int remaining_needed) {
+  return CatSplitMix64(state) % static_cast<uint64_t>(remaining_cand) <
+         static_cast<uint64_t>(remaining_needed);
+}
+
 // Per-type machine epsilon used to size the gain-tie tolerance. Spelled out as
 // device-safe constants (rather than std::numeric_limits, which is awkward in
 // device code) so the reductions can run in either fp64 (default) or fp32
@@ -1056,6 +1097,203 @@ struct CatHistReaderQuant32 {
   }
 };
 
+// RANDOM categorical search (YDF's categorical_algorithm=RANDOM, Breiman 2001
+// 5.1), the cat_random_search > 0 replacement for the sorted exact search. The
+// reference implementation is FeatureHistogram::FindBestThresholdCategoricalInner
+// in src/treelearner/feature_histogram.cpp; the constraint set and the gain
+// formula are the exact search's.
+//
+// The parallel mapping INVERTS: the exact search puts one thread on each
+// candidate THRESHOLD, which only works because the thresholds are prefixes of
+// one sorted order and so share a prefix scan. Random subsets have no such
+// structure, so a thread owns a whole TRIAL -- it draws its own subset and sums
+// it serially -- and the sort, the prefix scans and the group-acceptance replay
+// all drop out. Trials beyond blockDim.x are grid-strided.
+//
+// `candidate_bins` is the ascending, compacted list of the bins that pass
+// cat_smooth (CPU's sorted_idx before its sort); both callers build it from
+// their own scratch, so the search itself needs no scratch beyond the reduce.
+// `l2` already carries cat_l2, and `min_gain_shift` the parent gain, as in the
+// callers' exact branches.
+template <bool USE_L1, bool USE_SMOOTHING, typename HIST_READER, typename INDEX_T>
+__device__ void FindBestSplitsForLeafKernelCategoricalRandom(
+  const HIST_READER hist_reader,
+  const SplitFindTask* task,
+  CUDARandom* cuda_random,
+  const INDEX_T* candidate_bins,
+  const int num_cand,
+  // input config parameter values
+  const int cat_random_search,
+  const double lambda_l1,
+  const double l2,
+  const double path_smooth,
+  const double max_delta_step,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf,
+  const int max_cat_threshold,
+  const int min_data_per_group,
+  // input parent node information
+  const double min_gain_shift,
+  const double cnt_factor,
+  const double sum_gradients,
+  const double sum_hessians,
+  const data_size_t num_data,
+  const double parent_output,
+  // canonical int64 leaf total (quant readers only; 0 for f64)
+  const int64_t sum_gradients_hessians_total,
+  // output parameters
+  CUDASplitInfo* cuda_best_split_info) {
+  __shared__ double shared_rand_gain_buffer[WARPSIZE];
+  __shared__ bool shared_rand_found_buffer[WARPSIZE];
+  __shared__ uint32_t shared_rand_trial_buffer[WARPSIZE];
+  __shared__ uint32_t best_trial;
+  __shared__ unsigned int node_seed;
+  // One draw off the block's CUDARandom per node evaluation: the trial streams
+  // fan out from it, so the shared LCG advances exactly once and its state
+  // stays a function of how many nodes this task has been evaluated for.
+  if (threadIdx.x == 0) {
+    node_seed = static_cast<unsigned int>(cuda_random->NextInt(0, 0x7FFFFFFF));
+  }
+  __syncthreads();
+
+  const int max_num_cat = min(max_cat_threshold, (num_cand + 1) / 2);
+  double local_gain = min_gain_shift;
+  bool trial_found = false;
+  uint32_t local_best_trial = 0;
+  double best_sum_left_gradient = 0.0;
+  double best_sum_left_hessian = 0.0;
+  data_size_t best_left_count = 0;
+  int best_subset_size = 0;
+
+  for (int trial = static_cast<int>(threadIdx.x);
+       trial < cat_random_search && max_num_cat > 0;
+       trial += static_cast<int>(blockDim.x)) {
+    uint64_t state = CatTrialSeed(node_seed, trial);
+    const int subset_size = CatTrialSubsetSize(&state, max_num_cat);
+    double sum_left_gradient = 0.0;
+    double sum_left_hessian = kEpsilon;
+    data_size_t left_count = 0;
+    int remaining_needed = subset_size;
+    for (int k = 0; k < num_cand && remaining_needed > 0; ++k) {
+      if (!CatCandidateSelected(&state, num_cand - k, remaining_needed)) {
+        continue;
+      }
+      --remaining_needed;
+      const int bin = static_cast<int>(candidate_bins[k]);
+      const double hess = hist_reader.Hess(bin);
+      sum_left_gradient += hist_reader.Grad(bin);
+      sum_left_hessian += hess;
+      // CPU rounds each category's count separately and sums the roundings.
+      left_count += static_cast<data_size_t>(CUDARoundInt(hess * cnt_factor));
+    }
+    // categories filtered by cat_smooth, and categories unseen in this node,
+    // always go right
+    const data_size_t right_count = num_data - left_count;
+    if (left_count < min_data_in_leaf || left_count < min_data_per_group ||
+        sum_left_hessian < min_sum_hessian_in_leaf) {
+      continue;
+    }
+    if (right_count < min_data_in_leaf || right_count < min_data_per_group) {
+      continue;
+    }
+    const double sum_right_hessian = sum_hessians - sum_left_hessian;
+    if (sum_right_hessian < min_sum_hessian_in_leaf) {
+      continue;
+    }
+    const double sum_right_gradient = sum_gradients - sum_left_gradient;
+    const double current_gain = CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING>(
+      sum_left_gradient, sum_left_hessian, sum_right_gradient, sum_right_hessian,
+      lambda_l1, l2, path_smooth, max_delta_step, left_count, right_count, parent_output);
+    // Running MAXIMUM over the grid-stride trials this thread owns; strict '>'
+    // keeps the lowest trial index on an exact tie, matching CPU's scan over
+    // its trial sequence.
+    if (current_gain > local_gain) {
+      local_gain = current_gain;
+      trial_found = true;
+      local_best_trial = static_cast<uint32_t>(trial);
+      best_sum_left_gradient = sum_left_gradient;
+      best_sum_left_hessian = sum_left_hessian;
+      best_left_count = left_count;
+      best_subset_size = subset_size;
+    }
+  }
+  __syncthreads();
+  // Reduce on the TRIAL index, not the thread index: above blockDim.x trials a
+  // thread owns several, and trials across the stride boundary do not order
+  // like thread indices. Trials are disjoint across threads (trial mod
+  // blockDim.x == threadIdx.x), so exactly one writer matches below.
+  const uint32_t result = ReduceBestGain(local_gain, trial_found, local_best_trial,
+    shared_rand_gain_buffer, shared_rand_found_buffer, shared_rand_trial_buffer);
+  if (threadIdx.x == 0) {
+    best_trial = result;
+  }
+  __syncthreads();
+  if (trial_found && local_best_trial == best_trial) {
+    cuda_best_split_info->is_valid = true;
+    cuda_best_split_info->num_cat_threshold = best_subset_size;
+    cuda_best_split_info->gain = (local_gain - min_gain_shift) * task->penalty;
+    cuda_best_split_info->default_left = false;
+    // The winning subset is a draw, not a function of the thread index, so the
+    // winner re-runs its own trial stream to emit it (one pass over the
+    // candidates by one thread). Caching every trial's mask in shared memory
+    // instead would cost blockDim.x * max_cat_threshold slots. Candidates are
+    // ascending, so the emitted set is ascending, like CPU's sorted left set.
+    uint64_t state = CatTrialSeed(node_seed, static_cast<int>(local_best_trial));
+    const int subset_size = CatTrialSubsetSize(&state, max_num_cat);
+    int remaining_needed = subset_size;
+    int num_emitted = 0;
+    int64_t left_packed = 0;
+    for (int k = 0; k < num_cand && remaining_needed > 0; ++k) {
+      if (!CatCandidateSelected(&state, num_cand - k, remaining_needed)) {
+        continue;
+      }
+      --remaining_needed;
+      const int bin = static_cast<int>(candidate_bins[k]);
+      // slab slot pre-assigned by AllocateCatVectorsKernel; capacity is
+      // max_num_categories_in_split, which bounds subset_size <= max_num_cat
+      // exactly as it bounds the exact search's threshold + 1
+      (cuda_best_split_info->cat_threshold)[num_emitted] =
+        static_cast<uint32_t>(bin + task->mfb_offset);
+      ++num_emitted;
+      if (HIST_READER::kQuant) {
+        left_packed += hist_reader.Packed(bin);
+      }
+    }
+    if (HIST_READER::kQuant) {
+      // exact int64 left sums over the selected categories: the quantized
+      // pipeline seeds the child leaf structs from these packed fields
+      cuda_best_split_info->left_sum_of_gradients_hessians = left_packed;
+      cuda_best_split_info->right_sum_of_gradients_hessians =
+        sum_gradients_hessians_total - left_packed;
+    }
+    const double sum_left_gradient = best_sum_left_gradient;
+    const double sum_left_hessian = best_sum_left_hessian;
+    // CPU stores the sum of per-category roundings; the child leaf inherits
+    // this count, so rounding the summed hessian here would diverge by a
+    // category and shift every child decision.
+    const data_size_t left_count = best_left_count;
+    const double sum_right_gradient = sum_gradients - sum_left_gradient;
+    const double sum_right_hessian = sum_hessians - sum_left_hessian;
+    const data_size_t right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
+    const double left_output = CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_left_gradient,
+      sum_left_hessian, lambda_l1, l2, path_smooth, max_delta_step, left_count, parent_output);
+    const double right_output = CUDALeafSplits::CalculateSplittedLeafOutput<USE_L1, USE_SMOOTHING>(sum_right_gradient,
+      sum_right_hessian, lambda_l1, l2, path_smooth, max_delta_step, right_count, parent_output);
+    cuda_best_split_info->left_sum_gradients = sum_left_gradient;
+    cuda_best_split_info->left_sum_hessians = sum_left_hessian;
+    cuda_best_split_info->left_count = left_count;
+    cuda_best_split_info->right_sum_gradients = sum_right_gradient;
+    cuda_best_split_info->right_sum_hessians = sum_right_hessian;
+    cuda_best_split_info->right_count = right_count;
+    cuda_best_split_info->left_value = left_output;
+    cuda_best_split_info->left_gain = CUDALeafSplits::GetLeafGainGivenOutput<USE_L1>(sum_left_gradient,
+      sum_left_hessian, lambda_l1, l2, left_output);
+    cuda_best_split_info->right_value = right_output;
+    cuda_best_split_info->right_gain = CUDALeafSplits::GetLeafGainGivenOutput<USE_L1>(sum_right_gradient,
+      sum_right_hessian, lambda_l1, l2, right_output);
+  }
+}
+
 template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, typename HIST_READER>
 __device__ void FindBestSplitsForLeafKernelCategoricalInner(
   // input feature information
@@ -1075,6 +1313,7 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
   const double cat_l2,
   const int max_cat_threshold,
   const int min_data_per_group,
+  const int cat_random_search,
   // input parent node information
   const double parent_gain,
   const double sum_gradients,
@@ -1192,6 +1431,32 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
     // prefixes at write-out time, so the winning pass's count must ride along
     // with the other best_* registers.
     data_size_t best_left_count = 0;
+    if (cat_random_search > 0) {
+      // Compact the cat_smooth-passing bins into shared_index_buffer -- the
+      // RANDOM search needs the candidate list, not the sorted order, so the
+      // bitonic sort below is skipped entirely. Same candidate rule and same
+      // <= blockDim.x bin window as the exact branch.
+      if (threadIdx_x >= bin_start && threadIdx_x < bin_end &&
+          CUDARoundInt(hist_reader.Hess(threadIdx_x) * cnt_factor) >= cat_smooth) {
+        is_valid_bin = 1;
+      }
+      const data_size_t candidate_prefix =
+        ShufflePrefixSum<data_size_t>(static_cast<data_size_t>(is_valid_bin), shared_mem_buffer_cnt);
+      if (threadIdx.x == blockDim.x - 1) {
+        used_bin = static_cast<int>(candidate_prefix);
+      }
+      if (is_valid_bin) {
+        shared_index_buffer[candidate_prefix - 1] = static_cast<int16_t>(threadIdx_x);
+      }
+      __syncthreads();
+      FindBestSplitsForLeafKernelCategoricalRandom<USE_L1, USE_SMOOTHING, HIST_READER, int16_t>(
+        hist_reader, task, cuda_random, shared_index_buffer, used_bin,
+        cat_random_search, lambda_l1, l2, path_smooth, max_delta_step,
+        min_data_in_leaf, min_sum_hessian_in_leaf, max_cat_threshold, min_data_per_group,
+        min_gain_shift, cnt_factor, sum_gradients, sum_hessians, num_data, parent_output,
+        sum_gradients_hessians_total, cuda_best_split_info);
+      return;
+    }
     if (threadIdx_x >= bin_start && threadIdx_x < bin_end) {
       const double hess = hist_reader.Hess(threadIdx_x);
       if (CUDARoundInt(hess * cnt_factor) >= cat_smooth) {
@@ -1436,6 +1701,7 @@ __global__ void FindBestSplitsForLeafKernel(
   const double cat_l2,
   const int max_cat_threshold,
   const int min_data_per_group,
+  const int cat_random_search,
   // output
   CUDASplitInfo* cuda_best_split_info,
   // global num data in leaf
@@ -1470,7 +1736,10 @@ __global__ void FindBestSplitsForLeafKernel(
       max_delta_step, num_data, parent_output);
   const unsigned int output_offset = IS_LARGER ? (task_index + num_tasks) : task_index;
   CUDASplitInfo* out = cuda_best_split_info + output_offset;
-  CUDARandom* cuda_random = USE_RAND ?
+  // Both extra_trees (USE_RAND) and cat_random_search consume the per-task RNG
+  // state, and the host allocates it for either, so the pointer must not be
+  // gated on USE_RAND alone.
+  CUDARandom* cuda_random = (USE_RAND || cat_random_search > 0) ?
     (IS_LARGER ? cuda_randoms + task_index * 2 + 1 : cuda_randoms + task_index * 2) : nullptr;
   if (is_feature_used_bytree[inner_feature_index]) {
     const hist_t* hist_ptr = FeatureHistPtr(
@@ -1496,6 +1765,7 @@ __global__ void FindBestSplitsForLeafKernel(
         cat_l2,
         max_cat_threshold,
         min_data_per_group,
+        cat_random_search,
         // input parent node information
         parent_gain,
         sum_gradients,
@@ -1607,6 +1877,7 @@ __global__ void FindBestSplitsDiscretizedForLeafKernel(
   const double cat_l2,
   const int max_cat_threshold,
   const int min_data_per_group,
+  const int cat_random_search,
   const int max_cat_to_onehot,
   // gradient scale
   const score_t* grad_scale,
@@ -1628,7 +1899,10 @@ __global__ void FindBestSplitsDiscretizedForLeafKernel(
   const double parent_output = IS_LARGER ? larger_leaf_splits->leaf_value : smaller_leaf_splits->leaf_value;
   const unsigned int output_offset = IS_LARGER ? (task_index + num_tasks) : task_index;
   CUDASplitInfo* out = cuda_best_split_info + output_offset;
-  CUDARandom* cuda_random = USE_RAND ?
+  // Both extra_trees (USE_RAND) and cat_random_search consume the per-task RNG
+  // state, and the host allocates it for either, so the pointer must not be
+  // gated on USE_RAND alone.
+  CUDARandom* cuda_random = (USE_RAND || cat_random_search > 0) ?
     (IS_LARGER ? cuda_randoms + task_index * 2 + 1 : cuda_randoms + task_index * 2) : nullptr;
   const bool use_16bit_bin = IS_LARGER ? (larger_leaf_num_bits_in_histogram_bin <= 16) : (smaller_leaf_num_bits_in_histogram_bin <= 16);
   if (is_feature_used_bytree[inner_feature_index]) {
@@ -1651,7 +1925,7 @@ __global__ void FindBestSplitsDiscretizedForLeafKernel(
           hist_reader, task, cuda_random,
           lambda_l1, lambda_l2, path_smooth, max_delta_step,
           min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
-          cat_smooth, cat_l2, max_cat_threshold, min_data_per_group,
+          cat_smooth, cat_l2, max_cat_threshold, min_data_per_group, cat_random_search,
           parent_gain, sum_gradients, sum_hessians, num_data, parent_output,
           sum_gradients_hessians, out);
       } else {
@@ -1662,7 +1936,7 @@ __global__ void FindBestSplitsDiscretizedForLeafKernel(
           hist_reader, task, cuda_random,
           lambda_l1, lambda_l2, path_smooth, max_delta_step,
           min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
-          cat_smooth, cat_l2, max_cat_threshold, min_data_per_group,
+          cat_smooth, cat_l2, max_cat_threshold, min_data_per_group, cat_random_search,
           parent_gain, sum_gradients, sum_hessians, num_data, parent_output,
           sum_gradients_hessians, out);
       }
@@ -2178,6 +2452,7 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
   const double cat_l2,
   const int max_cat_threshold,
   const int min_data_per_group,
+  const int cat_random_search,
   // input parent node information
   const double parent_gain,
   const double sum_gradients,
@@ -2294,6 +2569,40 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
     // prefixes at write-out time, so the winning pass's count must ride along
     // with the other best_* registers.
     data_size_t best_left_count = 0;
+    if (cat_random_search > 0) {
+      // Compact the cat_smooth-passing bins into hist_index_buffer_ptr -- the
+      // RANDOM search needs the candidate list, not the sorted order, so the
+      // bitonic sort and the prefix scans below are skipped entirely. The count
+      // buffer carries the compaction scan; the index buffer's -1 sentinel for
+      // filtered bins has no reader on this path.
+      for (int bin = threadIdx_x; bin < bin_end; bin += static_cast<int>(blockDim.x)) {
+        data_size_t is_candidate = 0;
+        if (bin >= bin_start &&
+            CUDARoundInt(feature_hist_ptr[(bin << 1) + 1] * cnt_factor) >= cat_smooth) {
+          is_candidate = 1;
+        }
+        hist_cnt_buffer_ptr[bin] = is_candidate;
+      }
+      __syncthreads();
+      GlobalMemoryPrefixSum<data_size_t>(hist_cnt_buffer_ptr, static_cast<size_t>(bin_end));
+      const int num_cand = bin_end > 0 ? static_cast<int>(hist_cnt_buffer_ptr[bin_end - 1]) : 0;
+      for (int bin = threadIdx_x; bin < bin_end; bin += static_cast<int>(blockDim.x)) {
+        const data_size_t inclusive = hist_cnt_buffer_ptr[bin];
+        const data_size_t exclusive = bin > 0 ? hist_cnt_buffer_ptr[bin - 1] : 0;
+        if (inclusive > exclusive) {
+          hist_index_buffer_ptr[inclusive - 1] = bin;
+        }
+      }
+      __syncthreads();
+      const CatHistReaderF64 hist_reader{feature_hist_ptr};
+      FindBestSplitsForLeafKernelCategoricalRandom<USE_L1, USE_SMOOTHING, CatHistReaderF64, data_size_t>(
+        hist_reader, task, cuda_random, hist_index_buffer_ptr, num_cand,
+        cat_random_search, lambda_l1, l2, path_smooth, max_delta_step,
+        min_data_in_leaf, min_sum_hessian_in_leaf, max_cat_threshold, min_data_per_group,
+        min_gain_shift, cnt_factor, sum_gradients, sum_hessians, num_data, parent_output,
+        /*sum_gradients_hessians_total=*/0, cuda_best_split_info);
+      return;
+    }
     // Grid-stride over every bin: thread t owns bins t, t + blockDim, ... The
     // original loop started at bin = 0 for every thread, so it only ever touched
     // bins that are multiples of blockDim and raced on the writes -- leaving most
@@ -2532,6 +2841,7 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
   const double cat_l2,
   const int max_cat_threshold,
   const int min_data_per_group,
+  const int cat_random_search,
   // output
   CUDASplitInfo* cuda_best_split_info,
   // global num data in leaf
@@ -2572,7 +2882,10 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
       max_delta_step, num_data, parent_output);
   const unsigned int output_offset = IS_LARGER ? (task_index + num_tasks) : task_index;
   CUDASplitInfo* out = cuda_best_split_info + output_offset;
-  CUDARandom* cuda_random = USE_RAND ?
+  // Both extra_trees (USE_RAND) and cat_random_search consume the per-task RNG
+  // state, and the host allocates it for either, so the pointer must not be
+  // gated on USE_RAND alone.
+  CUDARandom* cuda_random = (USE_RAND || cat_random_search > 0) ?
     (IS_LARGER ? cuda_randoms + task_index * 2 + 1: cuda_randoms + task_index * 2) : nullptr;
   if (is_feature_used_bytree[task->inner_feature_index]) {
     const uint32_t hist_offset = task->hist_offset;
@@ -2614,6 +2927,7 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
         cat_l2,
         max_cat_threshold,
         min_data_per_group,
+        cat_random_search,
         // input parent node information
         parent_gain,
         sum_gradients,
@@ -2750,6 +3064,7 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
     cat_l2_, \
     max_cat_threshold_, \
     min_data_per_group_, \
+    cat_random_search_, \
     cuda_best_split_info_.RawData(), \
     global_num_data_in_smaller_leaf, \
     global_num_data_in_larger_leaf, \
@@ -2940,6 +3255,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelInner3(LaunchFindBest
     cat_l2_, \
     max_cat_threshold_, \
     min_data_per_group_, \
+    cat_random_search_, \
     max_cat_to_onehot_, \
     grad_scale, \
     hess_scale, \
@@ -3106,6 +3422,10 @@ __global__ void FindBestSplitsForLevelKernel(
         lambda_l1, lambda_l2, path_smooth, max_delta_step,
         min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
         cat_smooth, cat_l2, max_cat_threshold, min_data_per_group,
+        // SupportsBatchedLevel excludes cat_random_search: this launch covers
+        // every sibling pair of the level, so its blocks would share (and race
+        // on) the per-task CUDARandom the RANDOM search draws from.
+        /*cat_random_search=*/0,
         parent_gain, sum_gradients, sum_hessians, num_data, parent_output,
         /*sum_gradients_hessians_total=*/0, out);
     } else if (!task->reverse) {
@@ -3219,6 +3539,9 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
           lambda_l1, lambda_l2, path_smooth, max_delta_step,
           min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
           cat_smooth, cat_l2, max_cat_threshold, min_data_per_group,
+          // see the non-quantized level kernel: SupportsBatchedLevel excludes
+          // cat_random_search, whose draws would race across the level's pairs
+          /*cat_random_search=*/0,
           parent_gain, sum_gradients, sum_hessians, num_data, parent_output,
           sum_gradients_hessians, out);
       } else {
@@ -3230,6 +3553,7 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
           lambda_l1, lambda_l2, path_smooth, max_delta_step,
           min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
           cat_smooth, cat_l2, max_cat_threshold, min_data_per_group,
+          /*cat_random_search=*/0,
           parent_gain, sum_gradients, sum_hessians, num_data, parent_output,
           sum_gradients_hessians, out);
       }

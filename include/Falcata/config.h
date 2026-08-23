@@ -521,7 +521,7 @@ struct Config {
   // desc = acts as a regularizer on high-cardinality categorical features
   // desc = ``0`` means use the exact sorted search
   // desc = has no effect on features split one-vs-other (``number of categories <= max_cat_to_onehot``)
-  // desc = used only with ``device_type = cpu``
+  // desc = supported by ``device_type = cpu`` and ``device_type = cuda``; the two devices draw their subsets in different orders, so their models differ (as they do under ``extra_trees``)
   int cat_random_search = 0;
 
   // alias = topk

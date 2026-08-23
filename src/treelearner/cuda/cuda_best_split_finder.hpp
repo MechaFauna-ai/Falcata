@@ -158,9 +158,13 @@ class CUDABestSplitFinder {
    *  per-node feature selection; categorical tasks run the shared
    *  categorical body per block). Wide shapes
    *  (num_tasks > one sync block) use the multi-block batched sync mirroring
-   *  the per-pair two-stage reduction; cuda_plan=auto,batch_wide:off disables that. */
+   *  the per-pair two-stage reduction; cuda_plan=auto,batch_wide:off disables that.
+   *
+   *  cat_random_search is excluded for the reason extra_trees is: one launch
+   *  covers every sibling pair of the level, so the blocks of a level share the
+   *  per-task CUDARandom and their draws would race. */
   bool SupportsBatchedLevel() const {
-    return !extra_trees_ && lambda_l1_ <= 0.0f && !use_smoothing_ &&
+    return !extra_trees_ && cat_random_search_ == 0 && lambda_l1_ <= 0.0f && !use_smoothing_ &&
            !use_global_memory_ && !select_features_by_node_ &&
            (num_tasks_ <= NUM_TASKS_PER_SYNC_BLOCK || FalcataBatchWideEnabled());
   }
@@ -169,9 +173,9 @@ class CUDABestSplitFinder {
   std::string BatchedLevelGateDiag() const {
     char buf[256];
     snprintf(buf, sizeof(buf),
-             "finder: extra_trees=%d l1=%f smoothing=%d global_mem=%d "
+             "finder: extra_trees=%d cat_random_search=%d l1=%f smoothing=%d global_mem=%d "
              "by_node=%d categorical=%d num_tasks=%d (cap %d, batch_wide=%d)",
-             static_cast<int>(extra_trees_), lambda_l1_,
+             static_cast<int>(extra_trees_), cat_random_search_, lambda_l1_,
              static_cast<int>(use_smoothing_), static_cast<int>(use_global_memory_),
              static_cast<int>(select_features_by_node_),
              static_cast<int>(has_categorical_feature_), num_tasks_,
@@ -505,6 +509,7 @@ class CUDABestSplitFinder {
   int max_cat_threshold_;
   int min_data_per_group_;
   int max_cat_to_onehot_;
+  int cat_random_search_;
   bool extra_trees_;
   int extra_seed_;
   bool use_smoothing_;
