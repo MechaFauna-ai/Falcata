@@ -113,6 +113,10 @@ step "canonical md5 locks"         -     "$VENV" tests/gates/canonical.py all
 # none is found the throughput assertion silently degrades to synthetic-only,
 # which is exactly the blind spot that let the 21358be8 regression ship.
 step "sparse column view"          20000 "$VENV" tests/gates/sparse_column_view.py --require-sparse-dataset
+# Nibble-packed device columns: a broken nibble read collapses signal rather
+# than moving a digit, so the contracts are prediction-level (see the gate's
+# docstring on why an md5 assertion would be noise here).
+step "nibble packed columns"       20000 "$VENV" tests/gates/nibble_validate.py
 step "bench tier"                  12000 "$VENV" tests/gates/bench_tier.py --out tests/gates/bench_results.json
 step "perf gate"                   -     "$VENV" tests/gates/perf_gate.py \
   --results tests/gates/bench_results.json \
