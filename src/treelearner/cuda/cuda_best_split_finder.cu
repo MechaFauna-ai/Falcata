@@ -267,6 +267,50 @@ __device__ __forceinline__ void GlobalMemorySequentialPrefixSum(T* array, const 
   __syncthreads();
 }
 
+// CPU-order sequential subtraction of a feature's raw histogram out of the
+// leaf totals (the GlobalMemory finder's NA_AS_MISSING head). CPU seeds the
+// "missing" pseudo-bin with the totals and subtracts every real bin in
+// ASCENDING bin order (feature_histogram.hpp, NA_AS_MISSING && offset == 1),
+// so a tree-shaped reduce of the bins followed by one subtraction lands on
+// different low bits. Chunks are staged through shared memory (coalesced) and
+// one thread folds each chunk, the same shape as
+// GlobalMemorySequentialPrefixSum.
+__device__ __forceinline__ void GlobalMemorySequentialSubtractPair(
+    const hist_t* hist, const uint32_t num_bins, double* grad, double* hess) {
+  constexpr unsigned int kSeqSubChunk = 256;
+  __shared__ double seq_sub_stage[2 * kSeqSubChunk];
+  __shared__ double seq_sub_acc_grad;
+  __shared__ double seq_sub_acc_hess;
+  if (threadIdx.x == 0) {
+    seq_sub_acc_grad = *grad;
+    seq_sub_acc_hess = *hess;
+  }
+  for (uint32_t chunk_start = 0; chunk_start < num_bins; chunk_start += kSeqSubChunk) {
+    const unsigned int chunk = static_cast<unsigned int>(
+      min(static_cast<uint32_t>(kSeqSubChunk), num_bins - chunk_start));
+    __syncthreads();
+    for (unsigned int i = threadIdx.x; i < chunk; i += blockDim.x) {
+      const unsigned int bin_offset = (chunk_start + i) << 1;
+      seq_sub_stage[i] = hist[bin_offset];
+      seq_sub_stage[kSeqSubChunk + i] = hist[bin_offset + 1];
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+      double acc_g = seq_sub_acc_grad;
+      double acc_h = seq_sub_acc_hess;
+      for (unsigned int i = 0; i < chunk; ++i) {
+        acc_g -= seq_sub_stage[i];
+        acc_h -= seq_sub_stage[kSeqSubChunk + i];
+      }
+      seq_sub_acc_grad = acc_g;
+      seq_sub_acc_hess = acc_h;
+    }
+  }
+  __syncthreads();
+  *grad = seq_sub_acc_grad;
+  *hess = seq_sub_acc_hess;
+}
+
 template <typename GAIN_T>
 __device__ __forceinline__ bool OtherIsBetterWithTieBreak(
     GAIN_T other_gain, GAIN_T gain, uint32_t other_thread_index, uint32_t thread_index) {
@@ -1813,11 +1857,18 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
   __shared__ uint32_t shared_thread_index_buffer[WARPSIZE];
   const unsigned int threadIdx_x = threadIdx.x;
   const uint32_t feature_num_bin_minus_offset = task->num_bin - task->mfb_offset;
+  // NA_AS_MISSING head (CPU: feature_histogram.hpp, offset == 1): slot 0 is a
+  // "missing" pseudo-bin holding the leaf totals minus every real bin, and its
+  // COUNT is num_data minus the sum of the per-bin roundings -- not a rounding
+  // of the pseudo-bin's own hessian, which differs by whole rows and so flips
+  // min_data_in_leaf gating. Carried out of the staging branch because the
+  // count fix-up lands after the shared per-bin count loop below.
+  const bool na_missing_head = (!REVERSE && task->na_as_missing && task->mfb_offset == 1);
+  data_size_t na_cnt_non_default = 0;
   if (!REVERSE) {
-    if (task->na_as_missing && task->mfb_offset == 1) {
+    if (na_missing_head) {
       uint32_t bin_start = threadIdx_x > 0 ? threadIdx_x : blockDim.x;
-      hist_t thread_sum_gradients = 0.0f;
-      hist_t thread_sum_hessians = 0.0f;
+      data_size_t thread_cnt = 0;
       for (unsigned int bin = bin_start; bin < static_cast<uint32_t>(task->num_bin); bin += blockDim.x) {
         const unsigned int bin_offset = (bin - 1) << 1;
         const hist_t grad = feature_hist_ptr[bin_offset];
@@ -1831,15 +1882,23 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
           hist_grad_buffer_ptr[bin] = grad;
           hist_hess_buffer_ptr[bin] = hess;
         }
-        thread_sum_gradients += grad;
-        thread_sum_hessians += hess;
+        // Per-bin rounding, summed over every real bin (the last one has no
+        // scratch slot but still belongs to the non-default mass). Integer
+        // addends are order-invariant, so the parallel reduce is exact.
+        thread_cnt += static_cast<data_size_t>(CUDARoundInt(hess * cnt_factor));
       }
-      const hist_t sum_gradients_non_default = ShuffleReduceSum<double>(thread_sum_gradients, shared_double_buffer, blockDim.x);
-      __syncthreads();
-      const hist_t sum_hessians_non_default = ShuffleReduceSum<double>(thread_sum_hessians, shared_double_buffer, blockDim.x);
+      na_cnt_non_default = ShuffleReduceSum<data_size_t>(
+        thread_cnt, reinterpret_cast<data_size_t*>(shared_double_buffer), blockDim.x);
+      // Totals minus every real bin, subtracted in CPU's ascending bin order.
+      // The hessian seed is sum_hessians - kEpsilon (CPU's), which is why the
+      // generic bin-0 kEpsilon ADD below is skipped for this head.
+      double missing_grad = sum_gradients;
+      double missing_hess = sum_hessians - kEpsilon;
+      GlobalMemorySequentialSubtractPair(feature_hist_ptr, feature_num_bin_minus_offset,
+                                         &missing_grad, &missing_hess);
       if (threadIdx_x == 0) {
-        hist_grad_buffer_ptr[0] = sum_gradients - sum_gradients_non_default;
-        hist_hess_buffer_ptr[0] = sum_hessians - sum_hessians_non_default;
+        hist_grad_buffer_ptr[0] = missing_grad;
+        hist_hess_buffer_ptr[0] = missing_hess;
       }
     } else {
       for (unsigned int bin = threadIdx_x; bin < feature_num_bin_minus_offset; bin += blockDim.x) {
@@ -1857,9 +1916,16 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
     }
   } else {
     for (unsigned int bin = threadIdx_x; bin < feature_num_bin_minus_offset; bin += blockDim.x) {
-      const bool skip_sum = bin >= static_cast<unsigned int>(task->na_as_missing) &&
+      // The na_as_missing gate is INDEPENDENT of skip_default_bin (see the
+      // shared-memory kernel): a NaN feature's reverse scan leaves position 0
+      // empty because that slot is the missing mass, which the reverse
+      // direction assigns to the left side wholesale. Folding the gate into
+      // skip_sum -- `bin >= na_as_missing && (skip_default_bin && ...)` --
+      // made it dead, because NaN tasks carry skip_default_bin == false: the
+      // scan then staged and scored a bin the CPU never considers.
+      const bool skip_sum =
         (task->skip_default_bin && (task->num_bin - 1 - bin) == static_cast<int>(task->default_bin));
-      if (!skip_sum) {
+      if (bin >= static_cast<unsigned int>(task->na_as_missing) && !skip_sum) {
         const unsigned int read_index = feature_num_bin_minus_offset - 1 - bin;
         const unsigned int bin_offset = read_index << 1;
         hist_grad_buffer_ptr[bin] = feature_hist_ptr[bin_offset];
@@ -1880,8 +1946,16 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
     hist_cnt_buffer_ptr[bin] = static_cast<data_size_t>(
       CUDARoundInt(hist_hess_buffer_ptr[bin] * cnt_factor));
   }
+  __syncthreads();
   if (threadIdx_x == 0) {
-    hist_hess_buffer_ptr[0] += kEpsilon;
+    if (na_missing_head) {
+      // CPU's left_count seed for the missing pseudo-bin; the loop above
+      // rounded the pseudo-bin's own hessian instead, which is a different
+      // integer. The hessian already carries CPU's -kEpsilon seed.
+      hist_cnt_buffer_ptr[0] = num_data - na_cnt_non_default;
+    } else {
+      hist_hess_buffer_ptr[0] += kEpsilon;
+    }
   }
   local_gain = kMinScore;
   // CPU-order fp64 scans; the integer count prefix is order-invariant and
@@ -1891,14 +1965,17 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
   GlobalMemoryPrefixSum<data_size_t>(hist_cnt_buffer_ptr, static_cast<size_t>(feature_num_bin_minus_offset));
   if (REVERSE) {
     for (unsigned int bin = threadIdx_x; bin < feature_num_bin_minus_offset; bin += blockDim.x) {
-      const bool skip_sum = (bin >= static_cast<unsigned int>(task->na_as_missing) &&
-        (task->skip_default_bin && (task->num_bin - 1 - bin) == static_cast<int>(task->default_bin)));
+      // na_as_missing gates the candidate independently of skip_default_bin;
+      // see the staging loop above for why conflating the two made it dead.
+      const bool skip_sum =
+        (task->skip_default_bin && (task->num_bin - 1 - bin) == static_cast<int>(task->default_bin));
       // bin == num_bin - 1 (reachable when mfb_offset == 0) would encode
       // threshold = num_bin - 2 - bin = -1, a split the CPU reverse scan never
       // considers; without this bound it escaped as threshold 0xFFFFFFFF and the
       // host indexed bin_upper_bound with it. The shared-memory kernel has the
       // same bound (threadIdx_x <= task->num_bin - 2).
-      if (!skip_sum && static_cast<int>(bin) <= task->num_bin - 2) {
+      if (bin >= static_cast<unsigned int>(task->na_as_missing) &&
+          !skip_sum && static_cast<int>(bin) <= task->num_bin - 2) {
         const double sum_right_gradient = hist_grad_buffer_ptr[bin];
         const double sum_right_hessian = hist_hess_buffer_ptr[bin];
         const data_size_t right_count = hist_cnt_buffer_ptr[bin];
