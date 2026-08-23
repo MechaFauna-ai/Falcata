@@ -445,6 +445,43 @@ def test_categorical_non_zero_inputs():
     assert evals_result["valid_0"]["auc"][-1] == pytest.approx(ret)
 
 
+def test_categorical_random_search():
+    # target depends on a random half of a 30-category feature; the RANDOM
+    # search must find splits nearly as good as the exact sorted search
+    rng = np.random.default_rng(42)
+    n = 20000
+    n_cat = 30
+    cat = rng.integers(0, n_cat, size=n)
+    good = rng.permutation(n_cat)[: n_cat // 2]
+    p = 0.15 + 0.7 * np.isin(cat, good)
+    y = (rng.random(n) < p).astype(int)
+    X = np.column_stack([cat.astype(float), rng.random((n, 3))])
+    tr = np.arange(14000)
+    te = np.arange(14000, n)
+    params = {
+        "objective": "binary",
+        "metric": "auc",
+        "verbose": -1,
+        "seed": 7,
+        "num_threads": 4,
+        "max_cat_to_onehot": 1,
+        "device_type": "cpu",
+    }
+    aucs = {}
+    for name, num_masks in [("exact", 0), ("random", 32)]:
+        train_set = lgb.Dataset(X[tr], y[tr], categorical_feature=[0], free_raw_data=False)
+        bst = lgb.train({**params, "cat_random_search": num_masks}, train_set, num_boost_round=50)
+        aucs[name] = roc_auc_score(y[te], bst.predict(X[te]))
+    assert aucs["random"] > 0.5 + 0.9 * (aucs["exact"] - 0.5)
+    # same seed twice yields the same model
+    models = []
+    for _ in range(2):
+        train_set = lgb.Dataset(X[tr], y[tr], categorical_feature=[0], free_raw_data=False)
+        bst = lgb.train({**params, "cat_random_search": 32}, train_set, num_boost_round=20)
+        models.append(bst.model_to_string())
+    assert models[0] == models[1]
+
+
 @pytest.mark.skipif(getenv("TASK", "") != "cuda", reason="CUDA-only regression test")
 def test_min_data_per_group_cuda_matches_cpu():
     # Regression test for the categorical kernels in cuda_best_split_finder.cu
