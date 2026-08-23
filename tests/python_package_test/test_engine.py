@@ -522,6 +522,66 @@ def test_categorical_random_search_high_cardinality():
 
 
 @pytest.mark.skipif(getenv("TASK", "") != "cuda", reason="CUDA-only regression test")
+@pytest.mark.parametrize(
+    ("n_cat", "quantized"),
+    # 30 categories exercise the shared-memory categorical kernel, 400 the
+    # global-memory one (> 256 bins in a feature switches the whole finder);
+    # quantized swaps the histogram reader under the same search body
+    [(30, False), (30, True), (400, False)],
+)
+def test_cat_random_search_cuda(n_cat, quantized):
+    # CPU and CUDA draw their subsets in different orders, so their models
+    # differ (as they do under extra_trees). What must hold on CUDA: a fixed
+    # seed reproduces the model exactly, the emitted subsets respect
+    # max_cat_threshold, and the search finds splits at least as good as the
+    # exact one on a high-cardinality categorical.
+    rng = np.random.default_rng(5)
+    n = 20000
+    cat = rng.integers(0, n_cat, size=n)
+    good = rng.permutation(n_cat)[: max(1, n_cat // 3)]
+    num = rng.random((n, 3))
+    y = (1.4 * np.isin(cat, good) + 0.8 * num[:, 0] - 0.7 + rng.normal(0, 0.6, n) > 0).astype(int)
+    X = np.column_stack([cat.astype(float), num])
+    tr, te = np.arange(14000), np.arange(14000, n)
+    params = {
+        "objective": "binary",
+        "metric": "None",
+        "verbose": -1,
+        "seed": 7,
+        "num_threads": 4,
+        "device_type": "cuda",
+        "max_cat_to_onehot": 1,
+        "max_cat_threshold": 32,
+        "use_quantized_grad": quantized,
+    }
+
+    def train(num_trials, rounds):
+        train_set = lgb.Dataset(X[tr], y[tr], categorical_feature=[0], free_raw_data=False, params=params)
+        return lgb.train({**params, "cat_random_search": num_trials}, train_set, num_boost_round=rounds)
+
+    # a fixed seed reproduces the model bit for bit
+    models = [train(32, 20).model_to_string().split("\nparameters:")[0] for _ in range(2)]
+    assert models[0] == models[1]
+
+    bst = train(32, 40)
+    cat_splits = 0
+    stack = [t["tree_structure"] for t in bst.dump_model()["tree_info"]]
+    while stack:
+        node = stack.pop()
+        if "split_index" not in node:
+            continue
+        if node["decision_type"] == "==" and node["split_feature"] == 0:
+            cat_splits += 1
+            assert len(str(node["threshold"]).split("||")) <= params["max_cat_threshold"]
+        stack += [node["left_child"], node["right_child"]]
+    assert cat_splits > 0
+
+    auc_random = roc_auc_score(y[te], bst.predict(X[te]))
+    auc_exact = roc_auc_score(y[te], train(0, 40).predict(X[te]))
+    assert auc_random > 0.5 + 0.9 * (auc_exact - 0.5)
+
+
+@pytest.mark.skipif(getenv("TASK", "") != "cuda", reason="CUDA-only regression test")
 def test_min_data_per_group_cuda_matches_cpu():
     # Regression test for the categorical kernels in cuda_best_split_finder.cu
     # ignoring min_data_per_group entirely. Dataset has 200 rows split across
