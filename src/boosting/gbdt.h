@@ -70,6 +70,16 @@ class GBDT : public GBDTBase {
   */
   void MergeFrom(const Boosting* other) override {
     auto other_gbdt = reinterpret_cast<const GBDT*>(other);
+    std::vector<const Tree*> merged_models;
+    merged_models.reserve(other_gbdt->models_.size() + models_.size());
+    for (const auto& tree : other_gbdt->models_) {
+      merged_models.push_back(tree.get());
+    }
+    for (const auto& tree : models_) {
+      merged_models.push_back(tree.get());
+    }
+    CheckLeafValueDimensions(merged_models);
+
     // tmp move to other vector
     auto original_models = std::move(models_);
     models_ = std::vector<std::unique_ptr<Tree>>();
@@ -85,6 +95,7 @@ class GBDT : public GBDTBase {
       models_.push_back(std::move(new_tree));
     }
     num_iteration_for_pred_ = static_cast<int>(models_.size()) / num_tree_per_iteration_;
+    ValidateLeafValueDimensions();
   }
 
   void ShuffleModels(int start_iter, int end_iter) override {
@@ -517,6 +528,7 @@ class GBDT : public GBDTBase {
  protected:
   /*! \brief Validate per-tree output dimensions after model loading. */
   void ValidateLeafValueDimensions();
+  int CheckLeafValueDimensions(const std::vector<const Tree*>& models) const;
 
   inline int NumOutputPerIteration() const {
     return vector_leaf_mode_ ? leaf_value_dim_ : num_tree_per_iteration_;

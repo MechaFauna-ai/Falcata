@@ -463,6 +463,12 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
           "tree_mode=vector_leaf does not support quantized training yet. Set "
           "quant_mode=none.");
     }
+    if (device_type == std::string("cuda") && deterministic) {
+      Log::Fatal(
+          "tree_mode=vector_leaf with device_type=cuda does not support "
+          "deterministic=true yet because deterministic CUDA training uses the "
+          "quantized path. Set deterministic=false.");
+    }
     if (linear_tree) {
       Log::Fatal("tree_mode=vector_leaf does not support linear_tree=true.");
     }

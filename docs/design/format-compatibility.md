@@ -7,16 +7,34 @@ branding** — changing them breaks interchange for no user-visible gain.
 
 ## 1. Model text format (`model_to_string` / `save_model`)
 
-**Status: identical to LightGBM, deliberately.**
+**Status: identical to LightGBM for scalar-leaf models. Vector-leaf models use
+a self-describing Falcata extension.**
 
 The serialized model contains no product name at all — it starts with `tree`,
 `version=v4`, `num_class=…`. So Falcata-trained models load in stock LightGBM
 and vice versa, with byte-identical predictions.
 
-This is load-bearing in production: models trained on the GPU with Falcata are
-served on CPU by stock `lightgbm`, and a deploy gate asserts prediction
-equality. **Do not change the model text format** without an explicit decision
-and a migration plan for deployed models.
+This is load-bearing in production: scalar-leaf models trained on the GPU with
+Falcata are served on CPU by stock `lightgbm`, and a deploy gate asserts
+prediction equality. **Do not change the scalar model text format** without an
+explicit decision and a migration plan for deployed models.
+
+Vector-leaf trees are the explicit exception. Each such tree adds
+`leaf_value_dim=T`, and its `leaf_value=` line contains `num_leaves * T`
+values in leaf-major, target-minor order. This extension is required to retain
+all target outputs in one tree and is written only when `T > 1`; T=1 models
+remain byte-identical to the scalar format. The top-level `version=v4` marker
+is deliberately unchanged; `leaf_value_dim` is the per-tree capability marker.
+
+Stock LightGBM and Falcata versions from before this extension cannot read a
+vector-leaf text model. Their parser expects exactly `num_leaves` values and
+fails on the wider array; some old parallel loaders terminate the process
+instead of returning a recoverable error. Do not pass these models to an old or
+stock reader. Deployments that require stock-LightGBM serving must continue to
+use scalar trees (including the round-robin multi-target baseline). There is no
+automatic downgrade because splitting a vector tree into scalar trees would
+change its structure and semantics. New Falcata versions read both the original
+scalar format and this extension.
 
 ## 2. Binary dataset tokens (`.dataset` files)
 

@@ -1,12 +1,16 @@
 # coding: utf-8
 """Contract tests for the vector-leaf V1 model and prediction plumbing."""
 
+import ctypes
+import hashlib
+import re
 import struct
 
 import numpy as np
 import pytest
 
 import falcata as lgb
+from falcata.basic import _LIB, _c_int_array, _safe_call
 
 
 def _training_data():
@@ -35,6 +39,22 @@ def _train_scalar(*, tree_mode="scalar"):
     return booster, X
 
 
+def _repair_tree_sizes(model: str) -> str:
+    """Rebuild the parallel-loader index after editing serialized trees."""
+    tree_start = model.index("Tree=0\n")
+    tree_end = model.index("end of trees\n", tree_start)
+    tree_payload = model[tree_start:tree_end]
+    starts = [match.start() for match in re.finditer(r"(?m)^Tree=\d+\n", tree_payload)]
+    boundaries = starts[1:] + [len(tree_payload)]
+    sizes = [boundary - start for start, boundary in zip(starts, boundaries, strict=True)]
+    return re.sub(
+        r"(?m)^tree_sizes=.*$",
+        "tree_sizes=" + " ".join(map(str, sizes)),
+        model,
+        count=1,
+    )
+
+
 def _as_two_target_vector_model(model: str) -> str:
     """Widen each scalar leaf x to [x, 2*x] and repair model metadata."""
     output = []
@@ -43,10 +63,6 @@ def _as_two_target_vector_model(model: str) -> str:
             output.append("num_class=2")
         elif line.startswith("objective="):
             output.append("objective=multi_regression num_class:2")
-        elif line.startswith("tree_sizes="):
-            # Widening changes every tree size. Omitting the optional index asks
-            # the loader to parse the tree blocks sequentially.
-            continue
         elif line.startswith("leaf_value="):
             values = [float(value) for value in line.removeprefix("leaf_value=").split()]
             widened = [item for value in values for item in (value, 2.0 * value)]
@@ -54,7 +70,7 @@ def _as_two_target_vector_model(model: str) -> str:
             output.append("leaf_value=" + " ".join(map(repr, widened)))
         else:
             output.append(line)
-    return "\n".join(output) + "\n"
+    return _repair_tree_sizes("\n".join(output) + "\n")
 
 
 def _vector_booster():
@@ -83,6 +99,12 @@ def test_vector_leaf_t1_is_bit_identical_to_scalar_training():
     np.testing.assert_array_equal(vector.predict(X), scalar.predict(X))
 
 
+def test_scalar_model_text_has_stable_golden_hash():
+    scalar, _ = _train_scalar()
+    digest = hashlib.sha256(scalar.model_to_string().encode()).hexdigest()
+    assert digest == "ab981c613b70aca25c4a897c172410530114111a1f40799b2fa9d6b2eb03a721"
+
+
 def test_vector_leaf_training_fences_unimplemented_multi_target_path():
     X, y = _training_data()
     labels = np.column_stack((y, -y))
@@ -90,11 +112,27 @@ def test_vector_leaf_training_fences_unimplemented_multi_target_path():
         lgb.train(
             {
                 "objective": "multi_regression",
+                "metric": "multi_rmse",
                 "num_class": 2,
                 "tree_mode": "vector_leaf",
                 "device_type": "cpu",
             },
             lgb.Dataset(X, label=labels),
+            num_boost_round=1,
+        )
+
+
+def test_vector_leaf_cuda_deterministic_mode_is_rejected_before_training():
+    X, y = _training_data()
+    with pytest.raises(lgb.basic.FalcataError, match="does not support deterministic=true"):
+        lgb.train(
+            {
+                "objective": "regression",
+                "tree_mode": "vector_leaf",
+                "device_type": "cuda",
+                "deterministic": True,
+            },
+            lgb.Dataset(X, label=y),
             num_boost_round=1,
         )
 
@@ -127,6 +165,104 @@ def test_vector_leaf_text_prediction_roundtrip_and_leaf_shape():
 
     with pytest.raises(lgb.basic.FalcataError, match="pred_contrib is not supported"):
         vector.predict(X, pred_contrib=True)
+
+
+def test_vector_leaf_parallel_loader_propagates_malformed_tree_error():
+    _, vector, _ = _vector_booster()
+    malformed = vector.model_to_string().replace("leaf_value_dim=2\n", "", 1)
+    malformed = _repair_tree_sizes(malformed)
+
+    with pytest.raises(lgb.basic.FalcataError, match=r"strs\.size"):
+        lgb.Booster(model_str=malformed)
+
+
+def test_vector_leaf_merge_is_rejected_without_mutating_destination():
+    scalar, vector, _ = _vector_booster()
+    scalar_before = scalar.model_to_string()
+
+    with pytest.raises(lgb.basic.FalcataError, match="mixes leaf dimensions"):
+        _safe_call(_LIB.FLC_BoosterMerge(scalar._handle, vector._handle))
+
+    assert scalar.model_to_string() == scalar_before
+
+
+def test_vector_leaf_refit_is_rejected_without_mutating_model():
+    _, vector, X = _vector_booster()
+    vector_before = vector.model_to_string()
+    leaf_predictions = vector.predict(X, pred_leaf=True)
+    rows, columns = leaf_predictions.shape
+    pointer, _, _ = _c_int_array(leaf_predictions.reshape(-1))
+
+    with pytest.raises(lgb.basic.FalcataError, match="Refitting vector-leaf models is not supported"):
+        _safe_call(
+            _LIB.FLC_BoosterRefit(
+                vector._handle,
+                pointer,
+                ctypes.c_int32(rows),
+                ctypes.c_int32(columns),
+            )
+        )
+
+    assert vector.model_to_string() == vector_before
+
+
+def test_vector_leaf_init_model_merge_is_rejected():
+    _, vector, X = _vector_booster()
+    y = _training_data()[1]
+    labels = np.column_stack((y, 2.0 * y))
+
+    with pytest.raises(lgb.basic.FalcataError, match="metadata is inconsistent"):
+        lgb.train(
+            {
+                "objective": "multi_regression",
+                "metric": "multi_rmse",
+                "num_class": 2,
+                "tree_mode": "scalar",
+                "device_type": "cpu",
+            },
+            lgb.Dataset(X, label=labels),
+            num_boost_round=1,
+            init_model=vector,
+        )
+
+
+def test_multiclass_model_cannot_reset_to_vector_leaf_mode():
+    X, _ = _training_data()
+    labels = np.arange(X.shape[0]) % 3
+    booster = lgb.train(
+        {
+            "objective": "multiclass",
+            "num_class": 3,
+            "device_type": "cpu",
+            "verbosity": -1,
+        },
+        lgb.Dataset(X, label=labels),
+        num_boost_round=2,
+    )
+    prediction_before = booster.predict(X)
+
+    with pytest.raises(lgb.basic.FalcataError, match="Cannot enable tree_mode=vector_leaf"):
+        booster.reset_parameter({"tree_mode": "vector_leaf"})
+
+    np.testing.assert_array_equal(booster.predict(X), prediction_before)
+
+
+def test_multiclass_pred_leaf_shape_is_unchanged():
+    X, _ = _training_data()
+    labels = np.arange(X.shape[0]) % 3
+    booster = lgb.train(
+        {
+            "objective": "multiclass",
+            "num_class": 3,
+            "device_type": "cpu",
+            "verbosity": -1,
+        },
+        lgb.Dataset(X, label=labels),
+        num_boost_round=2,
+    )
+
+    leaves = booster.predict(X, pred_leaf=True)
+    assert leaves.shape == (X.shape[0], booster.num_trees())
 
 
 def test_vector_leaf_falb_roundtrip_and_dimension_validation():

@@ -64,10 +64,11 @@ Roughly priority-ordered within groups. Measurements refer to an RTX 5090.
   (1.15x shuffled) and was 54.8% of the raw file, which is exactly why f32
   leaves exist as an option and why nothing else would have moved the number.
   - Reserve a per-model ``leaf_dim`` in the v1 leaf-value layout (leaf_value is
-    [num_leaves x leaf_dim]); writer emits dim=1 until vector-leaf multi-target
-    lands, but the format must not need a v2 for it. Same reservation for linear
-    trees (flag bit + section id): both are on this roadmap, so "refuse forever"
-    is not an option -- v1 readers must reject them cleanly, not misparse.
+    [num_leaves x leaf_dim]); scalar writers emit dim=1 and vector-leaf models
+    now emit their target dimension without requiring a binary-format v2. Same
+    reservation for linear trees (flag bit + section id): both are on this
+    roadmap, so "refuse forever" is not an option -- v1 readers must reject
+    them cleanly, not misparse.
   - Per-array dtype tags instead of boolean flags: every tree-data array header
     carries a dtype enum (u8/u16/u32/f32/f64, room for f16/bf16). New precisions
     become additive; old readers fail with "unknown dtype", never misread.

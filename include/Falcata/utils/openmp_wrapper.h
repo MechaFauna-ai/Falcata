@@ -57,8 +57,10 @@ class ThreadExceptionHelper {
     ReThrow();
   }
   void ReThrow() {
-    if (ex_ptr_ != nullptr) {
-      std::rethrow_exception(ex_ptr_);
+    auto ex_ptr = ex_ptr_;
+    ex_ptr_ = nullptr;
+    if (ex_ptr != nullptr) {
+      std::rethrow_exception(ex_ptr);
     }
   }
   void CaptureException() {

@@ -371,6 +371,12 @@ void GBDT::Train(int snapshot_freq, const std::string& model_output_path) {
 }
 
 void GBDT::RefitTree(const int* tree_leaf_prediction, const size_t nrow, const size_t ncol) {
+  if (leaf_value_dim_ > 1) {
+    Log::Fatal(
+        "Refitting vector-leaf models is not supported yet "
+        "(leaf_value_dim=%d).",
+        leaf_value_dim_);
+  }
   CHECK_GT(nrow * ncol, 0);
   CHECK_EQ(static_cast<size_t>(num_data_), nrow);
   CHECK_EQ(models_.size(), ncol);
@@ -955,6 +961,13 @@ void GBDT::ResetConfig(const Config* config) {
   early_stopping_round_ = new_config->early_stopping_round;
   shrinkage_rate_ = new_config->learning_rate;
   if (leaf_value_dim_ == 1) {
+    if (new_config->tree_mode == std::string("vector_leaf") &&
+        num_tree_per_iteration_ != 1) {
+      Log::Fatal(
+          "Cannot enable tree_mode=vector_leaf for a model with "
+          "num_tree_per_iteration=%d; the T=1 plumbing milestone requires 1.",
+          num_tree_per_iteration_);
+    }
     vector_leaf_mode_ = new_config->tree_mode == std::string("vector_leaf");
   }
   if (tree_learner_ != nullptr) {

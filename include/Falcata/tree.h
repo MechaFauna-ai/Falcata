@@ -124,10 +124,8 @@ class Tree {
 
   /*! \brief Set the output of one leaf */
   inline void SetLeafOutput(int leaf, double output) {
+    CHECK_EQ(leaf_value_dim_, 1);
     leaf_value_[leaf] = MaybeRoundToZero(output);
-    if (leaf_value_dim_ > 1) {
-      leaf_values_vec_[static_cast<size_t>(leaf) * leaf_value_dim_] = leaf_value_[leaf];
-    }
   }
 
   /*! \brief Set one target in a vector leaf. */
@@ -594,7 +592,7 @@ class Tree {
   /*! \brief Output of leaves */
   std::vector<double> leaf_value_;
   /*! \brief Number of outputs in each leaf. */
-  int leaf_value_dim_;
+  int leaf_value_dim_ = 1;
   /*! \brief Flat [leaf][target] outputs when leaf_value_dim_ > 1. */
   std::vector<double> leaf_values_vec_;
   /*! \brief weight of leaves */

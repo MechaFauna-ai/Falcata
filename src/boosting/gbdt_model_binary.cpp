@@ -67,10 +67,9 @@ struct TreeIO {
   static std::unique_ptr<Tree> MakeShell(int num_leaves, int num_cat,
                                          bool is_linear, int leaf_value_dim) {
     auto tree = std::unique_ptr<Tree>(
-        new Tree(std::max(num_leaves, 2), false, is_linear));
+        new Tree(std::max(num_leaves, 2), false, is_linear, leaf_value_dim));
     tree->num_leaves_ = num_leaves;
     tree->num_cat_ = num_cat;
-    tree->leaf_value_dim_ = leaf_value_dim;
     return tree;
   }
 
