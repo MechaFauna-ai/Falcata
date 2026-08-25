@@ -20,6 +20,14 @@ def _training_data():
     return X, y
 
 
+def _golden_training_data():
+    """Return exactly representable data for a cross-platform model lock."""
+    grid = np.arange(256 * 6, dtype=np.int64).reshape(256, 6)
+    X = (((grid * 17 + 13) % 101) - 50).astype(np.float64) / 8.0
+    y = (3.0 * X[:, 0] - 2.0 * X[:, 2] + X[:, 5]) / 4.0
+    return X, y
+
+
 def _train_scalar(*, tree_mode="scalar"):
     X, y = _training_data()
     params = {
@@ -100,9 +108,26 @@ def test_vector_leaf_t1_is_bit_identical_to_scalar_training():
 
 
 def test_scalar_model_text_has_stable_golden_hash():
-    scalar, _ = _train_scalar()
+    X, y = _golden_training_data()
+    scalar = lgb.train(
+        {
+            "objective": "regression",
+            "device_type": "cpu",
+            "tree_mode": "scalar",
+            "force_col_wise": True,
+            "deterministic": True,
+            "num_threads": 1,
+            "num_leaves": 7,
+            "min_data_in_leaf": 5,
+            "learning_rate": 0.2,
+            "seed": 17,
+            "verbosity": -1,
+        },
+        lgb.Dataset(X, label=y),
+        num_boost_round=4,
+    )
     digest = hashlib.sha256(scalar.model_to_string().encode()).hexdigest()
-    assert digest == "ab981c613b70aca25c4a897c172410530114111a1f40799b2fa9d6b2eb03a721"
+    assert digest == "d362deb753333d8707b662700d63765c904d56559993258259d3e02bb3118027"
 
 
 def test_vector_leaf_training_fences_unimplemented_multi_target_path():
