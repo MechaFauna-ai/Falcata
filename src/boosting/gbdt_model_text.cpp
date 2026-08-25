@@ -126,6 +126,12 @@ std::string GBDT::DumpModel(int start_iteration, int num_iteration, int feature_
 }
 
 std::string GBDT::ModelToIfElse(int num_iteration) const {
+  if (leaf_value_dim_ > 1) {
+    Log::Fatal(
+        "if-else model export does not support vector leaves "
+        "(leaf_value_dim=%d). Use native Falcata prediction instead.",
+        leaf_value_dim_);
+  }
   std::stringstream str_buf;
   Common::C_stringstream(str_buf);
 
@@ -432,6 +438,61 @@ bool GBDT::SaveModelToFile(int start_iteration, int num_iteration, int feature_i
   return size > 0;
 }
 
+int GBDT::CheckLeafValueDimensions(const std::vector<const Tree*>& models) const {
+  if (models.empty()) {
+    return 1;
+  }
+  if (num_tree_per_iteration_ <= 0 || num_class_ <= 0) {
+    Log::Fatal(
+        "Model has invalid output metadata: num_tree_per_iteration=%d, "
+        "num_class=%d",
+        num_tree_per_iteration_, num_class_);
+  }
+  if (models.size() % static_cast<size_t>(num_tree_per_iteration_) != 0) {
+    Log::Fatal(
+        "Model contains %zu trees, which is not divisible by "
+        "num_tree_per_iteration=%d",
+        models.size(), num_tree_per_iteration_);
+  }
+
+  const int leaf_value_dim = models.front()->leaf_value_dim();
+  for (size_t tree = 1; tree < models.size(); ++tree) {
+    if (models[tree]->leaf_value_dim() != leaf_value_dim) {
+      Log::Fatal(
+          "Model mixes leaf dimensions: tree 0 has leaf_value_dim=%d but tree "
+          "%zu has leaf_value_dim=%d",
+          leaf_value_dim, tree, models[tree]->leaf_value_dim());
+    }
+  }
+
+  if (leaf_value_dim > 1) {
+    if (num_tree_per_iteration_ != 1 || num_class_ != leaf_value_dim) {
+      Log::Fatal(
+          "Vector-leaf model metadata is inconsistent: leaf_value_dim=%d "
+          "requires num_tree_per_iteration=1 and num_class=%d, got %d and %d",
+          leaf_value_dim, leaf_value_dim, num_tree_per_iteration_, num_class_);
+    }
+    if (objective_function_ != nullptr &&
+        std::string(objective_function_->GetName()) != std::string("multi_regression")) {
+      Log::Fatal(
+          "Vector-leaf models require objective=multi_regression (or no stored "
+          "objective for raw-score-only models), got objective=%s",
+          objective_function_->GetName());
+    }
+  }
+  return leaf_value_dim;
+}
+
+void GBDT::ValidateLeafValueDimensions() {
+  std::vector<const Tree*> model_trees;
+  model_trees.reserve(models_.size());
+  for (const auto& tree : models_) {
+    model_trees.push_back(tree.get());
+  }
+  leaf_value_dim_ = CheckLeafValueDimensions(model_trees);
+  vector_leaf_mode_ = leaf_value_dim_ > 1;
+}
+
 bool GBDT::LoadModelFromString(const char* buffer, size_t len) {
   // use serialized string to restore this object
   models_.clear();
@@ -584,6 +645,7 @@ bool GBDT::LoadModelFromString(const char* buffer, size_t len) {
     }
     OMP_THROW_EX();
   }
+  ValidateLeafValueDimensions();
   num_iteration_for_pred_ = static_cast<int>(models_.size()) / num_tree_per_iteration_;
   num_init_iteration_ = num_iteration_for_pred_;
   iter_ = 0;

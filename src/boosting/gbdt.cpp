@@ -141,6 +141,8 @@ GBDT::GBDT()
       max_feature_idx_(0),
       num_tree_per_iteration_(1),
       num_class_(1),
+      leaf_value_dim_(1),
+      vector_leaf_mode_(false),
       num_iteration_for_pred_(0),
       shrinkage_rate_(0.1f),
       num_init_iteration_(0) {
@@ -170,6 +172,8 @@ void GBDT::Init(const Config* config, const Dataset* train_data, const Objective
   num_iteration_for_pred_ = 0;
   max_feature_idx_ = 0;
   num_class_ = config->num_class;
+  leaf_value_dim_ = 1;
+  vector_leaf_mode_ = config->tree_mode == std::string("vector_leaf");
   config_ = std::unique_ptr<Config>(new Config(*config));
   early_stopping_round_ = config_->early_stopping_round;
   early_stopping_min_delta_ = config->early_stopping_min_delta;
@@ -367,6 +371,12 @@ void GBDT::Train(int snapshot_freq, const std::string& model_output_path) {
 }
 
 void GBDT::RefitTree(const int* tree_leaf_prediction, const size_t nrow, const size_t ncol) {
+  if (leaf_value_dim_ > 1) {
+    Log::Fatal(
+        "Refitting vector-leaf models is not supported yet "
+        "(leaf_value_dim=%d).",
+        leaf_value_dim_);
+  }
   CHECK_GT(nrow * ncol, 0);
   CHECK_EQ(static_cast<size_t>(num_data_), nrow);
   CHECK_EQ(models_.size(), ncol);
@@ -453,6 +463,12 @@ double GBDT::BoostFromAverage(int class_id, bool update_scorer) {
 }
 
 bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
+  if (leaf_value_dim_ > 1) {
+    Log::Fatal(
+        "Continuing training from a vector-leaf model is not supported by the "
+        "T=1 plumbing milestone. Multi-target CUDA training kernels must be "
+        "implemented first.");
+  }
   Common::FunctionTimer fun_timer("GBDT::TrainOneIter", global_timer);
   std::vector<double> init_scores(num_tree_per_iteration_, 0.0);
   // boosting first
@@ -760,6 +776,9 @@ const double* GBDT::GetTrainingScore(int64_t* out_len) {
 }
 
 void GBDT::PredictContrib(const double* features, double* output) const {
+  if (leaf_value_dim_ > 1) {
+    Log::Fatal("pred_contrib is not supported for vector-leaf models.");
+  }
   // set zero
   const int num_features = max_feature_idx_ + 1;
   std::memset(output, 0, sizeof(double) * num_tree_per_iteration_ * (num_features + 1));
@@ -774,6 +793,9 @@ void GBDT::PredictContrib(const double* features, double* output) const {
 
 void GBDT::PredictContribByMap(const std::unordered_map<int, double>& features,
                                std::vector<std::unordered_map<int, double>>* output) const {
+  if (leaf_value_dim_ > 1) {
+    Log::Fatal("pred_contrib is not supported for vector-leaf models.");
+  }
   const int num_features = max_feature_idx_ + 1;
   const int end_iteration_for_pred = start_iteration_for_pred_ + num_iteration_for_pred_;
   for (int i = start_iteration_for_pred_; i < end_iteration_for_pred; ++i) {
@@ -830,6 +852,9 @@ void GBDT::GetPredictAt(int data_idx, double* out_result, int64_t* out_len) {
 }
 
 double GBDT::GetUpperBoundValue() const {
+  if (leaf_value_dim_ > 1) {
+    Log::Fatal("Upper-bound queries are not defined for vector-leaf models.");
+  }
   double max_value = 0.0;
   for (const auto &tree : models_) {
     max_value += tree->GetUpperBoundValue();
@@ -838,6 +863,9 @@ double GBDT::GetUpperBoundValue() const {
 }
 
 double GBDT::GetLowerBoundValue() const {
+  if (leaf_value_dim_ > 1) {
+    Log::Fatal("Lower-bound queries are not defined for vector-leaf models.");
+  }
   double min_value = 0.0;
   for (const auto &tree : models_) {
     min_value += tree->GetLowerBoundValue();
@@ -847,6 +875,11 @@ double GBDT::GetLowerBoundValue() const {
 
 void GBDT::ResetTrainingData(const Dataset* train_data, const ObjectiveFunction* objective_function,
                              const std::vector<const Metric*>& training_metrics) {
+  if (leaf_value_dim_ > 1) {
+    Log::Fatal(
+        "Continuing training from a vector-leaf model is not supported by the "
+        "T=1 plumbing milestone.");
+  }
   if (train_data != train_data_ && !train_data_->CheckAlign(*train_data)) {
     Log::Fatal("Cannot reset training data, since new training data has different bin mappers");
   }
@@ -927,6 +960,16 @@ void GBDT::ResetConfig(const Config* config) {
   }
   early_stopping_round_ = new_config->early_stopping_round;
   shrinkage_rate_ = new_config->learning_rate;
+  if (leaf_value_dim_ == 1) {
+    if (new_config->tree_mode == std::string("vector_leaf") &&
+        num_tree_per_iteration_ != 1) {
+      Log::Fatal(
+          "Cannot enable tree_mode=vector_leaf for a model with "
+          "num_tree_per_iteration=%d; the T=1 plumbing milestone requires 1.",
+          num_tree_per_iteration_);
+    }
+    vector_leaf_mode_ = new_config->tree_mode == std::string("vector_leaf");
+  }
   if (tree_learner_ != nullptr) {
     tree_learner_->ResetConfig(new_config.get());
   }

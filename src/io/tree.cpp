@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <functional>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -19,8 +20,13 @@
 
 namespace Falcata {
 
-Tree::Tree(int max_leaves, bool track_branch_features, bool is_linear)
+Tree::Tree(int max_leaves, bool track_branch_features, bool is_linear,
+           int leaf_value_dim)
   :max_leaves_(max_leaves), track_branch_features_(track_branch_features) {
+  CHECK_GT(max_leaves_, 0);
+  CHECK_GT(leaf_value_dim, 0);
+  CHECK_LE(max_leaves_, std::numeric_limits<int>::max() / leaf_value_dim);
+  leaf_value_dim_ = leaf_value_dim;
   left_child_.resize(max_leaves_ - 1);
   right_child_.resize(max_leaves_ - 1);
   split_feature_inner_.resize(max_leaves_ - 1);
@@ -31,6 +37,9 @@ Tree::Tree(int max_leaves, bool track_branch_features, bool is_linear)
   split_gain_.resize(max_leaves_ - 1);
   leaf_parent_.resize(max_leaves_);
   leaf_value_.resize(max_leaves_);
+  if (leaf_value_dim_ > 1) {
+    leaf_values_vec_.resize(static_cast<size_t>(max_leaves_) * leaf_value_dim_);
+  }
   leaf_weight_.resize(max_leaves_);
   leaf_count_.resize(max_leaves_);
   internal_value_.resize(max_leaves_ - 1);
@@ -361,8 +370,14 @@ std::string Tree::ToString() const {
     << ArrayToString(left_child_, num_leaves_ - 1) << '\n';
   str_buf << "right_child="
     << ArrayToString(right_child_, num_leaves_ - 1) << '\n';
+  if (leaf_value_dim_ > 1) {
+    str_buf << "leaf_value_dim=" << leaf_value_dim_ << '\n';
+  }
   str_buf << "leaf_value="
-    << ArrayToString<true>(leaf_value_, num_leaves_) << '\n';
+    << (leaf_value_dim_ == 1
+            ? ArrayToString<true>(leaf_value_, num_leaves_)
+            : ArrayToString<true>(leaf_values_vec_, num_leaves_ * leaf_value_dim_))
+    << '\n';
   str_buf << "leaf_weight="
     << ArrayToString<true>(leaf_weight_, num_leaves_) << '\n';
   str_buf << "leaf_count="
@@ -420,9 +435,21 @@ std::string Tree::ToJSON() const {
   str_buf << "\"num_leaves\":" << num_leaves_ << "," << '\n';
   str_buf << "\"num_cat\":" << num_cat_ << "," << '\n';
   str_buf << "\"shrinkage\":" << shrinkage_ << "," << '\n';
+  if (leaf_value_dim_ > 1) {
+    str_buf << "\"leaf_value_dim\":" << leaf_value_dim_ << "," << '\n';
+  }
   if (num_leaves_ == 1) {
     str_buf << "\"tree_structure\":{";
-    str_buf << "\"leaf_value\":" << leaf_value_[0] << ", " << '\n';
+    if (leaf_value_dim_ == 1) {
+      str_buf << "\"leaf_value\":" << leaf_value_[0] << ", " << '\n';
+    } else {
+      str_buf << "\"leaf_value\":[";
+      for (int target = 0; target < leaf_value_dim_; ++target) {
+        if (target > 0) str_buf << ",";
+        str_buf << LeafOutput(0, target);
+      }
+      str_buf << "], " << '\n';
+    }
     if (is_linear_) {
       str_buf << "\"leaf_count\":" << leaf_count_[0] << ", " << '\n';
       str_buf << LinearModelToJSON(0);
@@ -512,7 +539,16 @@ std::string Tree::NodeToJSON(int index) const {
     index = ~index;
     str_buf << "{" << '\n';
     str_buf << "\"leaf_index\":" << index << "," << '\n';
-    str_buf << "\"leaf_value\":" << leaf_value_[index] << "," << '\n';
+    if (leaf_value_dim_ == 1) {
+      str_buf << "\"leaf_value\":" << leaf_value_[index] << "," << '\n';
+    } else {
+      str_buf << "\"leaf_value\":[";
+      for (int target = 0; target < leaf_value_dim_; ++target) {
+        if (target > 0) str_buf << ",";
+        str_buf << LeafOutput(index, target);
+      }
+      str_buf << "]," << '\n';
+    }
     str_buf << "\"leaf_weight\":" << leaf_weight_[index] << "," << '\n';
     if (is_linear_) {
       str_buf << "\"leaf_count\":" << leaf_count_[index] << "," << '\n';
@@ -565,6 +601,12 @@ std::string Tree::CategoricalDecisionIfElse(int node) const {
 }
 
 std::string Tree::ToIfElse(int index, bool predict_leaf_index) const {
+  if (leaf_value_dim_ > 1) {
+    Log::Fatal(
+        "if-else model export does not support vector leaves (leaf_value_dim=%d). "
+        "Use native Falcata prediction instead.",
+        leaf_value_dim_);
+  }
   std::stringstream str_buf;
   Common::C_stringstream(str_buf);
   str_buf << "double PredictTree" << index;
@@ -690,7 +732,7 @@ std::string Tree::NodeToIfElseByMap(int index, bool predict_leaf_index) const {
 Tree::Tree(const char* str, size_t* used_len) {
   auto p = str;
   std::unordered_map<std::string, std::string> key_vals;
-  const int max_num_line = 22;
+  const int max_num_line = 23;
   int read_line = 0;
   while (read_line < max_num_line) {
     if (*p == '\r' || *p == '\n') break;
@@ -712,6 +754,9 @@ Tree::Tree(const char* str, size_t* used_len) {
   }
 
   Common::Atoi(key_vals["num_leaves"].c_str(), &num_leaves_);
+  if (num_leaves_ <= 0) {
+    Log::Fatal("Tree model has invalid num_leaves=%d", num_leaves_);
+  }
 
   if (key_vals.count("num_cat") <= 0) {
     Log::Fatal("Tree model should contain num_cat field");
@@ -719,8 +764,28 @@ Tree::Tree(const char* str, size_t* used_len) {
 
   Common::Atoi(key_vals["num_cat"].c_str(), &num_cat_);
 
+  leaf_value_dim_ = 1;
+  if (key_vals.count("leaf_value_dim")) {
+    Common::Atoi(key_vals["leaf_value_dim"].c_str(), &leaf_value_dim_);
+  }
+  if (leaf_value_dim_ <= 0 || num_leaves_ > std::numeric_limits<int>::max() / leaf_value_dim_) {
+    Log::Fatal(
+        "Tree model has invalid leaf_value_dim=%d for num_leaves=%d",
+        leaf_value_dim_, num_leaves_);
+  }
+
   if (key_vals.count("leaf_value")) {
-    leaf_value_ = CommonC::StringToArray<double>(key_vals["leaf_value"], num_leaves_);
+    if (leaf_value_dim_ == 1) {
+      leaf_value_ = CommonC::StringToArray<double>(key_vals["leaf_value"], num_leaves_);
+    } else {
+      const int num_leaf_values = num_leaves_ * leaf_value_dim_;
+      leaf_values_vec_ =
+          CommonC::StringToArray<double>(key_vals["leaf_value"], num_leaf_values);
+      leaf_value_.resize(num_leaves_);
+      for (int leaf = 0; leaf < num_leaves_; ++leaf) {
+        leaf_value_[leaf] = leaf_values_vec_[static_cast<size_t>(leaf) * leaf_value_dim_];
+      }
+    }
   } else {
     Log::Fatal("Tree model string format error, should contain leaf_value field");
   }
@@ -737,6 +802,9 @@ Tree::Tree(const char* str, size_t* used_len) {
     is_linear_ = static_cast<bool>(is_linear_int);
   } else {
     is_linear_ = false;
+  }
+  if (leaf_value_dim_ > 1 && is_linear_) {
+    Log::Fatal("Vector leaves do not support linear tree models");
   }
 
   if (key_vals.count("leaf_count")) {

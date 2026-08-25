@@ -39,8 +39,10 @@ class Tree {
   * \param max_leaves The number of max leaves
   * \param track_branch_features Whether to keep track of ancestors of leaf nodes
   * \param is_linear Whether the tree has linear models at each leaf
+  * \param leaf_value_dim Number of outputs stored in each leaf
   */
-  explicit Tree(int max_leaves, bool track_branch_features, bool is_linear);
+  explicit Tree(int max_leaves, bool track_branch_features, bool is_linear,
+                int leaf_value_dim = 1);
 
   /*!
   * \brief Constructor, from a string
@@ -99,9 +101,46 @@ class Tree {
   /*! \brief Get the output of one leaf */
   inline double LeafOutput(int leaf) const { return leaf_value_[leaf]; }
 
+  /*! \brief Get one target from a vector leaf. */
+  inline double LeafOutput(int leaf, int target) const {
+    CHECK_GE(target, 0);
+    CHECK_LT(target, leaf_value_dim_);
+    if (leaf_value_dim_ == 1) {
+      return leaf_value_[leaf];
+    }
+    return leaf_values_vec_[static_cast<size_t>(leaf) * leaf_value_dim_ + target];
+  }
+
+  /*! \brief Get all outputs of one leaf as a contiguous vector. */
+  inline const double* LeafOutputVector(int leaf) const {
+    if (leaf_value_dim_ == 1) {
+      return leaf_value_.data() + leaf;
+    }
+    return leaf_values_vec_.data() + static_cast<size_t>(leaf) * leaf_value_dim_;
+  }
+
+  /*! \brief Number of outputs stored in each leaf. */
+  inline int leaf_value_dim() const { return leaf_value_dim_; }
+
   /*! \brief Set the output of one leaf */
   inline void SetLeafOutput(int leaf, double output) {
+    CHECK_EQ(leaf_value_dim_, 1);
     leaf_value_[leaf] = MaybeRoundToZero(output);
+  }
+
+  /*! \brief Set one target in a vector leaf. */
+  inline void SetLeafOutput(int leaf, int target, double output) {
+    CHECK_GE(target, 0);
+    CHECK_LT(target, leaf_value_dim_);
+    const double rounded = MaybeRoundToZero(output);
+    if (leaf_value_dim_ == 1) {
+      leaf_value_[leaf] = rounded;
+      return;
+    }
+    leaf_values_vec_[static_cast<size_t>(leaf) * leaf_value_dim_ + target] = rounded;
+    if (target == 0) {
+      leaf_value_[leaf] = rounded;
+    }
   }
 
   /*!
@@ -142,6 +181,11 @@ class Tree {
   */
   inline double Predict(const double* feature_values) const;
   inline double PredictByMap(const std::unordered_map<int, double>& feature_values) const;
+
+  /*! \brief Predict all leaf outputs after one tree traversal. */
+  inline const double* PredictVector(const double* feature_values) const;
+  inline const double* PredictVectorByMap(
+      const std::unordered_map<int, double>& feature_values) const;
 
   inline int PredictLeafIndex(const double* feature_values) const;
   inline int PredictLeafIndexByMap(const std::unordered_map<int, double>& feature_values) const;
@@ -195,6 +239,12 @@ class Tree {
   * \param rate The factor of shrinkage
   */
   virtual inline void Shrinkage(double rate) {
+    if (leaf_value_dim_ > 1) {
+#pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static, 1024) if (num_leaves_ * leaf_value_dim_ >= 2048)
+      for (int i = 0; i < num_leaves_ * leaf_value_dim_; ++i) {
+        leaf_values_vec_[i] = MaybeRoundToZero(leaf_values_vec_[i] * rate);
+      }
+    }
 #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static, 1024) if (num_leaves_ >= 2048)
     for (int i = 0; i < num_leaves_ - 1; ++i) {
       leaf_value_[i] = MaybeRoundToZero(leaf_value_[i] * rate);
@@ -220,6 +270,12 @@ class Tree {
   inline double shrinkage() const { return shrinkage_; }
 
   virtual inline void AddBias(double val) {
+    if (leaf_value_dim_ > 1) {
+#pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static, 1024) if (num_leaves_ * leaf_value_dim_ >= 2048)
+      for (int i = 0; i < num_leaves_ * leaf_value_dim_; ++i) {
+        leaf_values_vec_[i] = MaybeRoundToZero(leaf_values_vec_[i] + val);
+      }
+    }
 #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static, 1024) if (num_leaves_ >= 2048)
     for (int i = 0; i < num_leaves_ - 1; ++i) {
       leaf_value_[i] = MaybeRoundToZero(leaf_value_[i] + val);
@@ -242,6 +298,11 @@ class Tree {
     num_leaves_ = 1;
     shrinkage_ = 1.0f;
     leaf_value_[0] = val;
+    if (leaf_value_dim_ > 1) {
+      for (int target = 0; target < leaf_value_dim_; ++target) {
+        leaf_values_vec_[target] = val;
+      }
+    }
     if (is_linear_) {
       leaf_const_[0] = val;
     }
@@ -530,6 +591,10 @@ class Tree {
   std::vector<int> leaf_parent_;
   /*! \brief Output of leaves */
   std::vector<double> leaf_value_;
+  /*! \brief Number of outputs in each leaf. */
+  int leaf_value_dim_ = 1;
+  /*! \brief Flat [leaf][target] outputs when leaf_value_dim_ > 1. */
+  std::vector<double> leaf_values_vec_;
   /*! \brief weight of leaves */
   std::vector<double> leaf_weight_;
   /*! \brief DataCount of leaves */
@@ -567,6 +632,7 @@ class Tree {
 inline void Tree::Split(int leaf, int feature, int real_feature,
                         double left_value, double right_value, int left_cnt, int right_cnt,
                         double left_weight, double right_weight, float gain) {
+  CHECK_EQ(leaf_value_dim_, 1);
   int new_node_idx = num_leaves_ - 1;
   // update parent info
   int parent = leaf_parent_[leaf];
@@ -669,6 +735,19 @@ inline double Tree::PredictByMap(const std::unordered_map<int, double>& feature_
       return leaf_value_[0];
     }
   }
+}
+
+inline const double* Tree::PredictVector(const double* feature_values) const {
+  CHECK(!is_linear_);
+  const int leaf = num_leaves_ > 1 ? GetLeaf(feature_values) : 0;
+  return LeafOutputVector(leaf);
+}
+
+inline const double* Tree::PredictVectorByMap(
+    const std::unordered_map<int, double>& feature_values) const {
+  CHECK(!is_linear_);
+  const int leaf = num_leaves_ > 1 ? GetLeafByMap(feature_values) : 0;
+  return LeafOutputVector(leaf);
 }
 
 inline int Tree::PredictLeafIndex(const double* feature_values) const {

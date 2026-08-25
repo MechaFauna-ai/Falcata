@@ -201,6 +201,7 @@ const std::unordered_set<std::string>& Config::parameter_set() {
   "learning_rate",
   "num_leaves",
   "tree_learner",
+  "tree_mode",
   "num_threads",
   "device_type",
   "seed",
@@ -356,6 +357,8 @@ void Config::GetMembersFromString(const std::unordered_map<std::string, std::str
   GetInt(params, "num_leaves", &num_leaves);
   CHECK_GT(num_leaves, 1);
   CHECK_LE(num_leaves, 131072);
+
+  GetString(params, "tree_mode", &tree_mode);
 
   GetInt(params, "num_threads", &num_threads);
 
@@ -832,6 +835,7 @@ const std::unordered_map<std::string, std::vector<std::string>>& Config::paramet
     {"learning_rate", {"shrinkage_rate", "eta"}},
     {"num_leaves", {"num_leaf", "max_leaves", "max_leaf", "max_leaf_nodes"}},
     {"tree_learner", {"tree", "tree_type", "tree_learner_type"}},
+    {"tree_mode", {}},
     {"num_threads", {"num_thread", "nthread", "nthreads", "n_jobs"}},
     {"device_type", {"device"}},
     {"seed", {"random_seed", "random_state"}},
@@ -982,6 +986,7 @@ const std::unordered_map<std::string, std::string>& Config::ParameterTypes() {
     {"learning_rate", "double"},
     {"num_leaves", "int"},
     {"tree_learner", "string"},
+    {"tree_mode", "string"},
     {"num_threads", "int"},
     {"device_type", "string"},
     {"seed", "int"},

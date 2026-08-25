@@ -240,6 +240,14 @@ Core Parameters
 
    -  refer to `Distributed Learning Guide <./Parallel-Learning-Guide.rst>`__ to get more details
 
+-  ``tree_mode`` :raw-html:`<a id="tree_mode" title="Permalink to this parameter" href="#tree_mode">&#x1F517;&#xFE0E;</a>`, default = ``scalar``, type = enum, options: ``scalar``, ``vector_leaf``
+
+   -  controls whether each tree leaf stores one output or a vector of outputs
+
+   -  ``scalar`` is the production path and remains the default
+
+   -  ``vector_leaf`` currently exposes the T=1 model and prediction plumbing only; multi-target training kernels will land in a later milestone
+
 -  ``num_threads`` :raw-html:`<a id="num_threads" title="Permalink to this parameter" href="#num_threads">&#x1F517;&#xFE0E;</a>`, default = ``0``, type = int, aliases: ``num_thread``, ``nthread``, ``nthreads``, ``n_jobs``
 
    -  used only in ``train``, ``prediction`` and ``refit`` tasks or in correspondent functions of language-specific packages

@@ -15,18 +15,26 @@ namespace Falcata {
 
 void GBDT::PredictRaw(const double* features, double* output, const PredictionEarlyStopInstance* early_stop) const {
   int early_stop_round_counter = 0;
+  const int num_output = NumOutputPerIteration();
   // set zero
-  std::memset(output, 0, sizeof(double) * num_tree_per_iteration_);
+  std::memset(output, 0, sizeof(double) * num_output);
   const int end_iteration_for_pred = start_iteration_for_pred_ + num_iteration_for_pred_;
   for (int i = start_iteration_for_pred_; i < end_iteration_for_pred; ++i) {
-    // predict all the trees for one iteration
-    for (int k = 0; k < num_tree_per_iteration_; ++k) {
-      output[k] += models_[i * num_tree_per_iteration_ + k]->Predict(features);
+    if (vector_leaf_mode_) {
+      const double* tree_output = models_[i]->PredictVector(features);
+      for (int target = 0; target < num_output; ++target) {
+        output[target] += tree_output[target];
+      }
+    } else {
+      // predict all the trees for one iteration
+      for (int k = 0; k < num_tree_per_iteration_; ++k) {
+        output[k] += models_[i * num_tree_per_iteration_ + k]->Predict(features);
+      }
     }
     // check early stopping
     ++early_stop_round_counter;
     if (early_stop->round_period == early_stop_round_counter) {
-      if (early_stop->callback_function(output, num_tree_per_iteration_)) {
+      if (early_stop->callback_function(output, num_output)) {
         return;
       }
       early_stop_round_counter = 0;
@@ -36,18 +44,26 @@ void GBDT::PredictRaw(const double* features, double* output, const PredictionEa
 
 void GBDT::PredictRawByMap(const std::unordered_map<int, double>& features, double* output, const PredictionEarlyStopInstance* early_stop) const {
   int early_stop_round_counter = 0;
+  const int num_output = NumOutputPerIteration();
   // set zero
-  std::memset(output, 0, sizeof(double) * num_tree_per_iteration_);
+  std::memset(output, 0, sizeof(double) * num_output);
   const int end_iteration_for_pred = start_iteration_for_pred_ + num_iteration_for_pred_;
   for (int i = start_iteration_for_pred_; i < end_iteration_for_pred; ++i) {
-    // predict all the trees for one iteration
-    for (int k = 0; k < num_tree_per_iteration_; ++k) {
-      output[k] += models_[i * num_tree_per_iteration_ + k]->PredictByMap(features);
+    if (vector_leaf_mode_) {
+      const double* tree_output = models_[i]->PredictVectorByMap(features);
+      for (int target = 0; target < num_output; ++target) {
+        output[target] += tree_output[target];
+      }
+    } else {
+      // predict all the trees for one iteration
+      for (int k = 0; k < num_tree_per_iteration_; ++k) {
+        output[k] += models_[i * num_tree_per_iteration_ + k]->PredictByMap(features);
+      }
     }
     // check early stopping
     ++early_stop_round_counter;
     if (early_stop->round_period == early_stop_round_counter) {
-      if (early_stop->callback_function(output, num_tree_per_iteration_)) {
+      if (early_stop->callback_function(output, num_output)) {
         return;
       }
       early_stop_round_counter = 0;
@@ -58,7 +74,7 @@ void GBDT::PredictRawByMap(const std::unordered_map<int, double>& features, doub
 void GBDT::Predict(const double* features, double* output, const PredictionEarlyStopInstance* early_stop) const {
   PredictRaw(features, output, early_stop);
   if (average_output_) {
-    for (int k = 0; k < num_tree_per_iteration_; ++k) {
+    for (int k = 0; k < NumOutputPerIteration(); ++k) {
       output[k] /= num_iteration_for_pred_;
     }
   }
@@ -70,7 +86,7 @@ void GBDT::Predict(const double* features, double* output, const PredictionEarly
 void GBDT::PredictByMap(const std::unordered_map<int, double>& features, double* output, const PredictionEarlyStopInstance* early_stop) const {
   PredictRawByMap(features, output, early_stop);
   if (average_output_) {
-    for (int k = 0; k < num_tree_per_iteration_; ++k) {
+    for (int k = 0; k < NumOutputPerIteration(); ++k) {
       output[k] /= num_iteration_for_pred_;
     }
   }

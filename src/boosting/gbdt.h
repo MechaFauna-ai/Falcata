@@ -70,6 +70,16 @@ class GBDT : public GBDTBase {
   */
   void MergeFrom(const Boosting* other) override {
     auto other_gbdt = reinterpret_cast<const GBDT*>(other);
+    std::vector<const Tree*> merged_models;
+    merged_models.reserve(other_gbdt->models_.size() + models_.size());
+    for (const auto& tree : other_gbdt->models_) {
+      merged_models.push_back(tree.get());
+    }
+    for (const auto& tree : models_) {
+      merged_models.push_back(tree.get());
+    }
+    CheckLeafValueDimensions(merged_models);
+
     // tmp move to other vector
     auto original_models = std::move(models_);
     models_ = std::vector<std::unique_ptr<Tree>>();
@@ -85,6 +95,7 @@ class GBDT : public GBDTBase {
       models_.push_back(std::move(new_tree));
     }
     num_iteration_for_pred_ = static_cast<int>(models_.size()) / num_tree_per_iteration_;
+    ValidateLeafValueDimensions();
   }
 
   void ShuffleModels(int start_iter, int end_iter) override {
@@ -282,6 +293,7 @@ class GBDT : public GBDTBase {
   inline int NumPredictOneRow(int start_iteration, int num_iteration, bool is_pred_leaf, bool is_pred_contrib) const override {
     int num_pred_in_one_row = num_class_;
     if (is_pred_leaf) {
+      num_pred_in_one_row = num_tree_per_iteration_;
       int max_iteration = GetCurrentIteration();
       start_iteration = std::max(start_iteration, 0);
       start_iteration = std::min(start_iteration, max_iteration);
@@ -452,6 +464,12 @@ class GBDT : public GBDTBase {
     }
     start_iteration_for_pred_ = start_iteration;
 
+    if (is_pred_contrib && leaf_value_dim_ > 1) {
+      Log::Fatal(
+          "pred_contrib is not supported for vector-leaf models "
+          "(leaf_value_dim=%d).",
+          leaf_value_dim_);
+    }
     if (is_pred_contrib && falb_without_stats_) {
       Log::Fatal(
           "this model was loaded from a FALB file saved WITHOUT structural "
@@ -477,12 +495,24 @@ class GBDT : public GBDTBase {
   inline double GetLeafValue(int tree_idx, int leaf_idx) const override {
     CHECK(tree_idx >= 0 && static_cast<size_t>(tree_idx) < models_.size());
     CHECK(leaf_idx >= 0 && leaf_idx < models_[tree_idx]->num_leaves());
+    if (models_[tree_idx]->leaf_value_dim() > 1) {
+      Log::Fatal(
+          "GetLeafValue is scalar-only and cannot address vector leaves "
+          "(tree %d has leaf_value_dim=%d).",
+          tree_idx, models_[tree_idx]->leaf_value_dim());
+    }
     return models_[tree_idx]->LeafOutput(leaf_idx);
   }
 
   inline void SetLeafValue(int tree_idx, int leaf_idx, double val) override {
     CHECK(tree_idx >= 0 && static_cast<size_t>(tree_idx) < models_.size());
     CHECK(leaf_idx >= 0 && leaf_idx < models_[tree_idx]->num_leaves());
+    if (models_[tree_idx]->leaf_value_dim() > 1) {
+      Log::Fatal(
+          "SetLeafValue is scalar-only and cannot address vector leaves "
+          "(tree %d has leaf_value_dim=%d).",
+          tree_idx, models_[tree_idx]->leaf_value_dim());
+    }
     models_[tree_idx]->SetLeafOutput(leaf_idx, val);
   }
 
@@ -496,6 +526,14 @@ class GBDT : public GBDTBase {
   inline std::string ParserConfigStr() const override {return parser_config_str_;}
 
  protected:
+  /*! \brief Validate per-tree output dimensions after model loading. */
+  void ValidateLeafValueDimensions();
+  int CheckLeafValueDimensions(const std::vector<const Tree*>& models) const;
+
+  inline int NumOutputPerIteration() const {
+    return vector_leaf_mode_ ? leaf_value_dim_ : num_tree_per_iteration_;
+  }
+
   virtual bool GetIsConstHessian(const ObjectiveFunction* objective_function) {
     if (objective_function != nullptr && !data_sample_strategy_->IsHessianChange()) {
       return objective_function->IsConstantHessian();
@@ -624,6 +662,10 @@ class GBDT : public GBDTBase {
   int num_tree_per_iteration_;
   /*! \brief Number of class */
   int num_class_;
+  /*! \brief Number of outputs stored by each tree leaf. */
+  int leaf_value_dim_;
+  /*! \brief Whether prediction uses one vector-valued tree per iteration. */
+  bool vector_leaf_mode_;
   /*! \brief Index of label column */
   data_size_t label_idx_;
   /*! \brief number of used model */

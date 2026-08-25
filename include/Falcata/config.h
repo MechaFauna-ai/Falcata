@@ -242,6 +242,14 @@ struct Config {
   // desc = refer to `Distributed Learning Guide <./Parallel-Learning-Guide.rst>`__ to get more details
   std::string tree_learner = "serial";
 
+  // [no-save]
+  // type = enum
+  // options = scalar, vector_leaf
+  // desc = controls whether each tree leaf stores one output or a vector of outputs
+  // desc = ``scalar`` is the production path and remains the default
+  // desc = ``vector_leaf`` currently exposes the T=1 model and prediction plumbing only; multi-target training kernels will land in a later milestone
+  std::string tree_mode = "scalar";
+
   // alias = num_thread, nthread, nthreads, n_jobs
   // desc = used only in ``train``, ``prediction`` and ``refit`` tasks or in correspondent functions of language-specific packages
   // desc = number of threads for Falcata
