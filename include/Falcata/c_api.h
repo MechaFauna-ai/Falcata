@@ -32,6 +32,7 @@ typedef void* DatasetHandle;  /*!< \brief Handle of dataset. */
 typedef void* BoosterHandle;  /*!< \brief Handle of booster. */
 typedef void* FastConfigHandle; /*!< \brief Handle of FastConfig. */
 typedef void* ByteBufferHandle; /*!< \brief Handle of ByteBuffer. */
+typedef void* DatasetBuilderHandle; /*!< \brief Handle of a chunked device dataset builder. */
 
 #define C_API_DTYPE_FLOAT32 (0)  /*!< \brief float32 (single precision float). */
 #define C_API_DTYPE_FLOAT64 (1)  /*!< \brief float64 (double precision float). */
@@ -476,6 +477,131 @@ FALCATA_C_EXPORT int FLC_DatasetCreateFromMats(int32_t nmat,
                                                  const char* parameters,
                                                  const DatasetHandle reference,
                                                  DatasetHandle* out);
+
+/*!
+ * \brief Create dataset from an array of dense matrices that live in CUDA
+ *        device memory: the device analogue of ``FLC_DatasetCreateFromMats``.
+ *        Bin boundaries are found from one sample drawn across all chunks
+ *        (identical to the sample the host path draws from the equal
+ *        concatenated matrix) and every chunk is then binned on the device at
+ *        its row offset. All chunks must be device-resident for the duration
+ *        of the call; to stream chunks through a single reusable device
+ *        buffer use the ``FLC_DatasetDeviceBuilder*`` functions instead.
+ *        Requires a CUDA build and ``device_type=cuda``.
+ * \param nmat Number of dense matrices
+ * \param data Device pointers to the matrices
+ * \param data_type Type of ``data`` pointers, can be ``C_API_DTYPE_FLOAT32``, ``C_API_DTYPE_FLOAT64``, ``C_API_DTYPE_INT8``, ``C_API_DTYPE_INT16``, ``C_API_DTYPE_UINT8``, ``C_API_DTYPE_UINT16`` or ``C_API_DTYPE_FLOAT16``
+ * \param nrow Number of rows of each matrix
+ * \param ncol Number of columns (shared by all matrices)
+ * \param is_row_major Data layouts of each matrix. 1 for row-major, 0 for column-major
+ * \param parameters Additional parameters
+ * \param reference Used to align bin mapper with other dataset, nullptr means isn't used
+ * \param[out] out Created dataset
+ * \return 0 when succeed, -1 when failure happens
+ */
+FALCATA_C_EXPORT int FLC_DatasetCreateFromMatsDevice(int32_t nmat,
+                                                       const void** data,
+                                                       int data_type,
+                                                       const int32_t* nrow,
+                                                       int32_t ncol,
+                                                       const int* is_row_major,
+                                                       const char* parameters,
+                                                       const DatasetHandle reference,
+                                                       DatasetHandle* out);
+
+/*!
+ * \brief Begin a chunked (streaming) dataset build from dense matrix chunks,
+ *        keeping peak device memory at one chunk plus the binned output
+ *        instead of the whole raw matrix. Requires a CUDA build and
+ *        ``device_type=cuda``.
+ *
+ *        Protocol (all row counts over all calls must sum to ``total_nrow``,
+ *        chunks are consumed in ascending row order, any chunk sizes):
+ *        1. without ``reference``: call ``FLC_DatasetDeviceBuilderSampleChunk``
+ *           once per chunk (this only reads the rows selected for the bin
+ *           boundary sample, so a host chunk costs no device upload); with a
+ *           ``reference`` dataset skip this phase entirely.
+ *        2. call ``FLC_DatasetDeviceBuilderPushChunk`` once per chunk to bin
+ *           it. Each call is synchronous: when it returns the chunk buffer is
+ *           no longer referenced and may be freed or reused for the next
+ *           upload, so a caller with host data needs only one chunk-sized
+ *           device buffer for the whole build.
+ *        3. call ``FLC_DatasetDeviceBuilderFinish`` to obtain the dataset
+ *           (this also frees the builder).
+ *        Use ``FLC_DatasetDeviceBuilderFree`` to abandon a build on an error
+ *        path.
+ *
+ *        A chunk passed with ``is_device_ptr=0`` may live in host memory; it
+ *        is streamed through a pinned staging ring. The declared
+ *        ``missing_sentinel`` dataset parameter is honored (integer/float16
+ *        data types only).
+ * \param total_nrow Total number of rows over all chunks
+ * \param ncol Number of columns
+ * \param data_type Type of the chunk pointers, can be ``C_API_DTYPE_FLOAT32``, ``C_API_DTYPE_FLOAT64``, ``C_API_DTYPE_INT8``, ``C_API_DTYPE_INT16``, ``C_API_DTYPE_UINT8``, ``C_API_DTYPE_UINT16`` or ``C_API_DTYPE_FLOAT16``
+ * \param parameters Additional parameters
+ * \param reference Used to align bin mapper with other dataset, nullptr means isn't used
+ * \param[out] out Created builder
+ * \return 0 when succeed, -1 when failure happens
+ */
+FALCATA_C_EXPORT int FLC_DatasetDeviceBuilderCreate(int32_t total_nrow,
+                                                      int32_t ncol,
+                                                      int data_type,
+                                                      const char* parameters,
+                                                      const DatasetHandle reference,
+                                                      DatasetBuilderHandle* out);
+
+/*!
+ * \brief Feed one chunk to the bin-boundary sampling phase of a device
+ *        dataset builder created without a reference. Only the sampled rows
+ *        are read (and copied to the host); the chunk buffer may be freed or
+ *        reused as soon as the call returns.
+ * \param handle Builder handle
+ * \param data Pointer to the chunk's values
+ * \param nrow Number of rows in the chunk
+ * \param is_row_major 1 for row-major data, 0 for column-major
+ * \param is_device_ptr 1 when ``data`` is a CUDA device pointer, 0 for host memory
+ * \return 0 when succeed, -1 when failure happens
+ */
+FALCATA_C_EXPORT int FLC_DatasetDeviceBuilderSampleChunk(DatasetBuilderHandle handle,
+                                                           const void* data,
+                                                           int32_t nrow,
+                                                           int is_row_major,
+                                                           int is_device_ptr);
+
+/*!
+ * \brief Bin one chunk of rows into the dataset being built. The first call
+ *        constructs the bin mappers (from the completed sampling phase or the
+ *        reference dataset). Synchronous: the chunk buffer may be freed or
+ *        reused as soon as the call returns.
+ * \param handle Builder handle
+ * \param data Pointer to the chunk's values
+ * \param nrow Number of rows in the chunk
+ * \param is_row_major 1 for row-major data, 0 for column-major
+ * \param is_device_ptr 1 when ``data`` is a CUDA device pointer, 0 for host memory
+ * \return 0 when succeed, -1 when failure happens
+ */
+FALCATA_C_EXPORT int FLC_DatasetDeviceBuilderPushChunk(DatasetBuilderHandle handle,
+                                                         const void* data,
+                                                         int32_t nrow,
+                                                         int is_row_major,
+                                                         int is_device_ptr);
+
+/*!
+ * \brief Finish a chunked device dataset build after every row has been
+ *        pushed. On success the builder is freed and must not be used again.
+ * \param handle Builder handle
+ * \param[out] out Created dataset
+ * \return 0 when succeed, -1 when failure happens
+ */
+FALCATA_C_EXPORT int FLC_DatasetDeviceBuilderFinish(DatasetBuilderHandle handle,
+                                                      DatasetHandle* out);
+
+/*!
+ * \brief Free a device dataset builder without finishing it (error paths).
+ * \param handle Builder handle
+ * \return 0 when succeed, -1 when failure happens
+ */
+FALCATA_C_EXPORT int FLC_DatasetDeviceBuilderFree(DatasetBuilderHandle handle);
 
 /*!
  * \brief Create dataset from Arrow.

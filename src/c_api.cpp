@@ -22,9 +22,11 @@
 #include <Falcata/utils/threading.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -1050,6 +1052,66 @@ static inline std::vector<int32_t> CreateSampleIndices(int32_t total_nrow, const
   return rand.Sample(total_nrow, sample_cnt);
 }
 
+// Parses and validates the missing_sentinel dataset parameter for a dense
+// matrix input of the given C API dtype. Returns NaN when the parameter is
+// unset (NaN compares unequal to every value, so all sentinel rewrites
+// downstream become no-ops).
+static double DenseMissingSentinel(const Config& config, int data_type) {
+  if (config.missing_sentinel.empty()) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  double sentinel = 0.0;
+  if (!Falcata::Common::AtofAndCheck(config.missing_sentinel.c_str(),
+                                     &sentinel) ||
+      !std::isfinite(sentinel)) {
+    Log::Fatal("missing_sentinel=%s is not a finite number",
+               config.missing_sentinel.c_str());
+  }
+  if (sentinel == 0.0) {
+    // zero is filtered from the bin-boundary sample before the rewrite could
+    // see it (and usually IS a most-frequent value); use zero_as_missing
+    Log::Fatal("missing_sentinel must be nonzero (use zero_as_missing "
+               "instead)");
+  }
+  if (!config.use_missing) {
+    Log::Fatal("missing_sentinel requires use_missing=true");
+  }
+  if (config.linear_tree) {
+    Log::Fatal("missing_sentinel is not supported with linear_tree");
+  }
+  if (data_type == C_API_DTYPE_FLOAT32 || data_type == C_API_DTYPE_FLOAT64) {
+    Log::Fatal("missing_sentinel is only supported for integer and float16 "
+               "matrix inputs; convert the sentinel to NaN in float32/64 "
+               "data directly");
+  }
+  return sentinel;
+}
+
+// Rewrites sampled values equal to the declared sentinel to NaN before bin
+// boundaries are found, mirroring the caller-side sentinel-to-NaN conversion
+// the sentinel stands in for. No-op when the sentinel is unset (NaN).
+static void ApplyMissingSentinelToSample(
+    double sentinel, std::vector<std::vector<double>>* sample_values) {
+  if (std::isnan(sentinel)) {
+    return;
+  }
+  for (auto& col : *sample_values) {
+    for (auto& value : col) {
+      if (value == sentinel) {
+        value = std::numeric_limits<double>::quiet_NaN();
+      }
+    }
+  }
+}
+
+// Guard for input formats that do not implement the sentinel rewrite: a
+// silently ignored sentinel would bin the sentinel as a real value.
+static void CheckNoMissingSentinel(const Config& config, const char* what) {
+  if (!config.missing_sentinel.empty()) {
+    Log::Fatal("missing_sentinel is not supported for %s input", what);
+  }
+}
+
 int FLC_GetSampleCount(int32_t num_total_row,
                         const char* parameters,
                         int* out) {
@@ -1107,6 +1169,7 @@ int FLC_DatasetCreateFromFile(const char* filename,
   Config config;
   config.Set(param);
   OMP_SET_NUM_THREADS(config.num_threads);
+  CheckNoMissingSentinel(config, "file");
   DatasetLoader loader(config, nullptr, 1, filename);
   if (reference == nullptr) {
     if (Network::num_machines() == 1) {
@@ -1398,6 +1461,7 @@ int FLC_DatasetCreateFromMats(int32_t nmat,
   Config config;
   config.Set(param);
   OMP_SET_NUM_THREADS(config.num_threads);
+  const double missing_sentinel = DenseMissingSentinel(config, data_type);
   std::unique_ptr<Dataset> ret;
   int32_t total_nrow = 0;
   for (int j = 0; j < nmat; ++j) {
@@ -1449,6 +1513,7 @@ int FLC_DatasetCreateFromMats(int32_t nmat,
         }
       }
     }
+    ApplyMissingSentinelToSample(missing_sentinel, &sample_values);
     DatasetLoader loader(config, nullptr, 1, nullptr);
     ret.reset(loader.ConstructFromSampleData(Vector2Ptr<double>(&sample_values).data(),
                                              Vector2Ptr<int>(&sample_idx).data(),
@@ -1496,21 +1561,22 @@ int FLC_DatasetCreateFromMats(int32_t nmat,
     if (dtype_supported) {
       gpu_binned = ret->GPUBinDenseRows(data[0], binner_dtype, nrow[0], ncol,
                                         is_row_major[0] != 0,
-                                        /*data_is_device=*/false);
+                                        /*data_is_device=*/false,
+                                        missing_sentinel);
     }
   }
 #endif  // USE_CUDA
   for (int j = 0; j < nmat && !gpu_binned; ++j) {
     if (data_type == C_API_DTYPE_INT8) {
-      ret->PushDenseSmallIntRows(reinterpret_cast<const int8_t*>(data[j]), nrow[j], ncol, is_row_major[j], start_row);
+      ret->PushDenseSmallIntRows(reinterpret_cast<const int8_t*>(data[j]), nrow[j], ncol, is_row_major[j], start_row, missing_sentinel);
     } else if (data_type == C_API_DTYPE_INT16) {
-      ret->PushDenseSmallIntRows(reinterpret_cast<const int16_t*>(data[j]), nrow[j], ncol, is_row_major[j], start_row);
+      ret->PushDenseSmallIntRows(reinterpret_cast<const int16_t*>(data[j]), nrow[j], ncol, is_row_major[j], start_row, missing_sentinel);
     } else if (data_type == C_API_DTYPE_UINT8) {
-      ret->PushDenseSmallIntRows(reinterpret_cast<const uint8_t*>(data[j]), nrow[j], ncol, is_row_major[j], start_row);
+      ret->PushDenseSmallIntRows(reinterpret_cast<const uint8_t*>(data[j]), nrow[j], ncol, is_row_major[j], start_row, missing_sentinel);
     } else if (data_type == C_API_DTYPE_UINT16) {
-      ret->PushDenseSmallIntRows(reinterpret_cast<const uint16_t*>(data[j]), nrow[j], ncol, is_row_major[j], start_row);
+      ret->PushDenseSmallIntRows(reinterpret_cast<const uint16_t*>(data[j]), nrow[j], ncol, is_row_major[j], start_row, missing_sentinel);
     } else if (data_type == C_API_DTYPE_FLOAT16) {
-      ret->PushDenseSmallIntRows<uint16_t, true>(reinterpret_cast<const uint16_t*>(data[j]), nrow[j], ncol, is_row_major[j], start_row);
+      ret->PushDenseSmallIntRows<uint16_t, true>(reinterpret_cast<const uint16_t*>(data[j]), nrow[j], ncol, is_row_major[j], start_row, missing_sentinel);
     } else {
       OMP_INIT_EX();
       #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
@@ -1553,10 +1619,13 @@ int64_t DenseMatDTypeSize(int data_type) {
 }
 
 // fallback for device matrices the GPU binner cannot handle: stream row
-// chunks to the host and feed them through the normal host push loops
+// chunks to the host and feed them through the normal host push loops.
+// base_row offsets the pushed rows so the matrix may be one chunk of a
+// larger dataset build.
 void PushDeviceMatrixViaHost(Dataset* ret, const void* data, int data_type,
                              int64_t elem_size, int32_t nrow, int32_t ncol,
-                             int is_row_major) {
+                             int is_row_major, data_size_t base_row,
+                             double missing_sentinel) {
   const int64_t row_bytes = static_cast<int64_t>(ncol) * elem_size;
   const int32_t chunk_rows = static_cast<int32_t>(std::max<int64_t>(
       1, std::min<int64_t>(nrow, (256LL << 20) / std::max<int64_t>(row_bytes, 1))));
@@ -1577,16 +1646,17 @@ void PushDeviceMatrixViaHost(Dataset* ret, const void* data, int data_type,
           cudaMemcpyDeviceToHost));
     }
     const void* chunk = host_chunk.data();
+    const data_size_t dst_row = base_row + start_row;
     if (data_type == C_API_DTYPE_INT8) {
-      ret->PushDenseSmallIntRows(reinterpret_cast<const int8_t*>(chunk), rows, ncol, is_row_major, start_row);
+      ret->PushDenseSmallIntRows(reinterpret_cast<const int8_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
     } else if (data_type == C_API_DTYPE_INT16) {
-      ret->PushDenseSmallIntRows(reinterpret_cast<const int16_t*>(chunk), rows, ncol, is_row_major, start_row);
+      ret->PushDenseSmallIntRows(reinterpret_cast<const int16_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
     } else if (data_type == C_API_DTYPE_UINT8) {
-      ret->PushDenseSmallIntRows(reinterpret_cast<const uint8_t*>(chunk), rows, ncol, is_row_major, start_row);
+      ret->PushDenseSmallIntRows(reinterpret_cast<const uint8_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
     } else if (data_type == C_API_DTYPE_UINT16) {
-      ret->PushDenseSmallIntRows(reinterpret_cast<const uint16_t*>(chunk), rows, ncol, is_row_major, start_row);
+      ret->PushDenseSmallIntRows(reinterpret_cast<const uint16_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
     } else if (data_type == C_API_DTYPE_FLOAT16) {
-      ret->PushDenseSmallIntRows<uint16_t, true>(reinterpret_cast<const uint16_t*>(chunk), rows, ncol, is_row_major, start_row);
+      ret->PushDenseSmallIntRows<uint16_t, true>(reinterpret_cast<const uint16_t*>(chunk), rows, ncol, is_row_major, dst_row, missing_sentinel);
     } else {
       auto get_row_fun = RowFunctionFromDenseMatrix(chunk, rows, ncol, data_type, is_row_major);
       OMP_INIT_EX();
@@ -1595,7 +1665,7 @@ void PushDeviceMatrixViaHost(Dataset* ret, const void* data, int data_type,
         OMP_LOOP_EX_BEGIN();
         const int tid = omp_get_thread_num();
         auto one_row = get_row_fun(i);
-        ret->PushOneRow(tid, start_row + i, one_row);
+        ret->PushOneRow(tid, dst_row + i, one_row);
         OMP_LOOP_EX_END();
       }
       OMP_THROW_EX();
@@ -1633,6 +1703,7 @@ int FLC_DatasetCreateFromMatDevice(const void* data,
   if (config.device_type != std::string("cuda")) {
     Log::Fatal("FLC_DatasetCreateFromMatDevice requires device_type=cuda");
   }
+  const double missing_sentinel = DenseMissingSentinel(config, data_type);
   const int64_t elem_size = DenseMatDTypeSize(data_type);
   if (elem_size == 0) {
     Log::Fatal("Unsupported data type %d for FLC_DatasetCreateFromMatDevice", data_type);
@@ -1679,6 +1750,7 @@ int FLC_DatasetCreateFromMatDevice(const void* data,
     } else {
       SampleDenseFloat<double>(&block, identity, &block_nrow, ncol, &block_row_major, &sample_values, &sample_idx);
     }
+    ApplyMissingSentinelToSample(missing_sentinel, &sample_values);
     DatasetLoader loader(config, nullptr, 1, nullptr);
     ret.reset(loader.ConstructFromSampleData(Vector2Ptr<double>(&sample_values).data(),
                                              Vector2Ptr<int>(&sample_idx).data(),
@@ -1711,12 +1783,434 @@ int FLC_DatasetCreateFromMatDevice(const void* data,
     binner_dtype = Dataset::DenseBinnerDType::kFloat16Bits;
   }
   if (!ret->GPUBinDenseRows(data, binner_dtype, nrow, ncol, is_row_major != 0,
-                            /*data_is_device=*/true)) {
+                            /*data_is_device=*/true, missing_sentinel)) {
     PushDeviceMatrixViaHost(ret.get(), data, data_type, elem_size, nrow, ncol,
-                            is_row_major);
+                            is_row_major, /*base_row=*/0, missing_sentinel);
   }
   ret->FinishLoad();
   *out = ret.release();
+#endif  // USE_CUDA
+  API_END();
+}
+
+#ifdef USE_CUDA
+namespace {
+
+Dataset::DenseBinnerDType DenseBinnerDTypeFromCApi(int data_type) {
+  switch (data_type) {
+    case C_API_DTYPE_FLOAT32:
+      return Dataset::DenseBinnerDType::kFloat32;
+    case C_API_DTYPE_FLOAT64:
+      return Dataset::DenseBinnerDType::kFloat64;
+    case C_API_DTYPE_INT8:
+      return Dataset::DenseBinnerDType::kInt8;
+    case C_API_DTYPE_INT16:
+      return Dataset::DenseBinnerDType::kInt16;
+    case C_API_DTYPE_UINT8:
+      return Dataset::DenseBinnerDType::kUInt8;
+    case C_API_DTYPE_UINT16:
+      return Dataset::DenseBinnerDType::kUInt16;
+    default:
+      return Dataset::DenseBinnerDType::kFloat16Bits;
+  }
+}
+
+// State of one chunked (streaming) dataset build behind the
+// FLC_DatasetDeviceBuilder* C API: rows arrive as dense matrix chunks (device
+// or host resident), the bin-boundary sample is accumulated across every
+// chunk first, and each pushed chunk is then binned at its dataset row offset
+// with the input buffer reusable as soon as the call returns. Peak device
+// memory is one caller chunk plus the binner's staging ring, never the whole
+// raw matrix.
+class DeviceDatasetBuilder {
+ public:
+  DeviceDatasetBuilder(int32_t total_nrow, int32_t ncol, int data_type,
+                       const char* parameters, const Dataset* reference)
+      : total_nrow_(total_nrow), ncol_(ncol), data_type_(data_type),
+        reference_(reference) {
+    auto param = Config::Str2Map(parameters);
+    config_.Set(param);
+    OMP_SET_NUM_THREADS(config_.num_threads);
+    if (config_.device_type != std::string("cuda")) {
+      Log::Fatal("FLC_DatasetDeviceBuilderCreate requires device_type=cuda");
+    }
+    missing_sentinel_ = DenseMissingSentinel(config_, data_type);
+    elem_size_ = DenseMatDTypeSize(data_type);
+    if (elem_size_ == 0) {
+      Log::Fatal("Unsupported data type %d for FLC_DatasetDeviceBuilderCreate",
+                 data_type);
+    }
+    if (total_nrow <= 0 || ncol <= 0) {
+      Log::Fatal("FLC_DatasetDeviceBuilderCreate needs a non-empty dataset "
+                 "shape");
+    }
+    if (reference_ == nullptr) {
+      sample_indices_ = CreateSampleIndices(total_nrow_, config_);
+      sample_block_.resize(sample_indices_.size() *
+                           static_cast<size_t>(ncol_) * elem_size_);
+    }
+  }
+
+  void SampleChunk(const void* data, int32_t nrow, bool is_row_major,
+                   bool is_device) {
+    OMP_SET_NUM_THREADS(config_.num_threads);
+    if (reference_ != nullptr) {
+      Log::Fatal("the sampling phase is not used when a reference dataset "
+                 "is given; push chunks directly");
+    }
+    if (dataset_ != nullptr) {
+      Log::Fatal("FLC_DatasetDeviceBuilderSampleChunk cannot be called after "
+                 "the first FLC_DatasetDeviceBuilderPushChunk");
+    }
+    if (nrow <= 0) {
+      Log::Fatal("chunks must have at least one row");
+    }
+    if (static_cast<int64_t>(sample_cursor_) + nrow > total_nrow_) {
+      Log::Fatal("sampled chunks hold more than the declared %d total rows",
+                 total_nrow_);
+    }
+    // global sample row ids falling into this chunk, made chunk-local
+    // (sample_indices_ is ascending, chunks arrive in ascending row order)
+    const size_t block_pos = sample_pos_;
+    std::vector<int32_t> local_rows;
+    while (sample_pos_ < sample_indices_.size() &&
+           sample_indices_[sample_pos_] < sample_cursor_ + nrow) {
+      local_rows.push_back(sample_indices_[sample_pos_] - sample_cursor_);
+      ++sample_pos_;
+    }
+    if (!local_rows.empty()) {
+      uint8_t* dst = sample_block_.data() +
+                     block_pos * static_cast<size_t>(ncol_) * elem_size_;
+      if (is_device) {
+        // the producer of the chunk may still have work in flight
+        CUDASUCCESS_OR_FATAL(cudaDeviceSynchronize());
+        CUDAGatherSampleRowsToHost(data, elem_size_, is_row_major, nrow,
+                                   ncol_, local_rows.data(),
+                                   static_cast<int>(local_rows.size()), dst);
+      } else {
+        GatherHostRows(static_cast<const uint8_t*>(data), nrow, is_row_major,
+                       local_rows, dst);
+      }
+    }
+    sample_cursor_ += nrow;
+  }
+
+  void PushChunk(const void* data, int32_t nrow, bool is_row_major,
+                 bool is_device) {
+    OMP_SET_NUM_THREADS(config_.num_threads);
+    if (nrow <= 0) {
+      Log::Fatal("chunks must have at least one row");
+    }
+    if (static_cast<int64_t>(push_cursor_) + nrow > total_nrow_) {
+      Log::Fatal("pushed chunks hold more than the declared %d total rows",
+                 total_nrow_);
+    }
+    if (dataset_ == nullptr) {
+      InitDataset();
+    }
+    if (is_device) {
+      // the producer of the chunk may still have work in flight
+      CUDASUCCESS_OR_FATAL(cudaDeviceSynchronize());
+    }
+    if (binner_ != nullptr) {
+      binner_->BinChunk(data, nrow, is_row_major, is_device, push_cursor_);
+    }
+    if (binner_ == nullptr || binner_->verify()) {
+      HostPush(data, nrow, is_row_major, is_device, push_cursor_);
+    }
+    push_cursor_ += nrow;
+  }
+
+  Dataset* Finish() {
+    OMP_SET_NUM_THREADS(config_.num_threads);
+    if (push_cursor_ != total_nrow_) {
+      Log::Fatal("FLC_DatasetDeviceBuilderFinish: only %d of the declared %d "
+                 "rows were pushed", push_cursor_, total_nrow_);
+    }
+    if (binner_ != nullptr) {
+      binner_->Finalize();
+    }
+    dataset_->FinishLoad();
+    return dataset_.release();
+  }
+
+ private:
+  void InitDataset() {
+    if (reference_ == nullptr) {
+      if (sample_cursor_ != total_nrow_) {
+        Log::Fatal("the sampling phase covered %d of the declared %d rows; "
+                   "pass every chunk to FLC_DatasetDeviceBuilderSampleChunk "
+                   "before the first push", sample_cursor_, total_nrow_);
+      }
+      // run the standard samplers over the gathered block with identity
+      // indices: this yields exactly the sample the host FromMats path
+      // draws from the equal concatenated matrix
+      const int sample_cnt = static_cast<int>(sample_indices_.size());
+      std::vector<std::vector<double>> sample_values(ncol_);
+      std::vector<std::vector<int>> sample_idx(ncol_);
+      const void* block = sample_block_.data();
+      int32_t block_nrow = sample_cnt;
+      int block_row_major = 1;
+      std::vector<int32_t> identity(sample_cnt);
+      for (int i = 0; i < sample_cnt; ++i) {
+        identity[i] = i;
+      }
+      if (data_type_ == C_API_DTYPE_INT8) {
+        SampleDenseSmallInt<int8_t>(&block, identity, &block_nrow, ncol_, &block_row_major, &sample_values, &sample_idx);
+      } else if (data_type_ == C_API_DTYPE_INT16) {
+        SampleDenseSmallInt<int16_t>(&block, identity, &block_nrow, ncol_, &block_row_major, &sample_values, &sample_idx);
+      } else if (data_type_ == C_API_DTYPE_UINT8) {
+        SampleDenseSmallInt<uint8_t>(&block, identity, &block_nrow, ncol_, &block_row_major, &sample_values, &sample_idx);
+      } else if (data_type_ == C_API_DTYPE_UINT16) {
+        SampleDenseSmallInt<uint16_t>(&block, identity, &block_nrow, ncol_, &block_row_major, &sample_values, &sample_idx);
+      } else if (data_type_ == C_API_DTYPE_FLOAT16) {
+        SampleDenseSmallInt<uint16_t, true>(&block, identity, &block_nrow, ncol_, &block_row_major, &sample_values, &sample_idx);
+      } else if (data_type_ == C_API_DTYPE_FLOAT32) {
+        SampleDenseFloat<float>(&block, identity, &block_nrow, ncol_, &block_row_major, &sample_values, &sample_idx);
+      } else {
+        SampleDenseFloat<double>(&block, identity, &block_nrow, ncol_, &block_row_major, &sample_values, &sample_idx);
+      }
+      ApplyMissingSentinelToSample(missing_sentinel_, &sample_values);
+      DatasetLoader loader(config_, nullptr, 1, nullptr);
+      dataset_.reset(loader.ConstructFromSampleData(
+          Vector2Ptr<double>(&sample_values).data(),
+          Vector2Ptr<int>(&sample_idx).data(),
+          ncol_,
+          VectorSize<double>(sample_values).data(),
+          sample_cnt,
+          total_nrow_,
+          total_nrow_));
+      std::vector<uint8_t>().swap(sample_block_);
+    } else {
+      dataset_.reset(new Dataset(total_nrow_));
+      dataset_->CreateValid(reference_);
+      if (dataset_->has_raw()) {
+        dataset_->ResizeRaw(total_nrow_);
+      }
+    }
+    binner_.reset(dataset_->GPUDenseBinnerBegin(
+        DenseBinnerDTypeFromCApi(data_type_), ncol_,
+        /*host_input_possible=*/true, missing_sentinel_));
+  }
+
+  // host analogue of CUDAGatherSampleRowsToHost: bitwise copies of the given
+  // chunk-local rows into a row-major block
+  void GatherHostRows(const uint8_t* src, int32_t nrow, bool is_row_major,
+                      const std::vector<int32_t>& rows, uint8_t* dst) const {
+    const size_t row_bytes = static_cast<size_t>(ncol_) * elem_size_;
+    if (is_row_major) {
+      for (size_t i = 0; i < rows.size(); ++i) {
+        std::memcpy(dst + i * row_bytes,
+                    src + static_cast<size_t>(rows[i]) * row_bytes,
+                    row_bytes);
+      }
+    } else {
+      for (size_t i = 0; i < rows.size(); ++i) {
+        for (int32_t c = 0; c < ncol_; ++c) {
+          std::memcpy(dst + (i * ncol_ + c) * elem_size_,
+                      src + (static_cast<size_t>(c) * nrow + rows[i]) *
+                                elem_size_,
+                      static_cast<size_t>(elem_size_));
+        }
+      }
+    }
+  }
+
+  // host push loops for chunks the GPU binner does not handle (and the
+  // reference run of FALCATA_GPU_CONSTRUCT_VERIFY=1)
+  void HostPush(const void* data, int32_t nrow, bool is_row_major,
+                bool is_device, data_size_t base_row) {
+    if (is_device) {
+      PushDeviceMatrixViaHost(dataset_.get(), data, data_type_, elem_size_,
+                              nrow, ncol_, is_row_major ? 1 : 0, base_row,
+                              missing_sentinel_);
+      return;
+    }
+    const int layout = is_row_major ? 1 : 0;
+    if (data_type_ == C_API_DTYPE_INT8) {
+      dataset_->PushDenseSmallIntRows(reinterpret_cast<const int8_t*>(data), nrow, ncol_, layout, base_row, missing_sentinel_);
+    } else if (data_type_ == C_API_DTYPE_INT16) {
+      dataset_->PushDenseSmallIntRows(reinterpret_cast<const int16_t*>(data), nrow, ncol_, layout, base_row, missing_sentinel_);
+    } else if (data_type_ == C_API_DTYPE_UINT8) {
+      dataset_->PushDenseSmallIntRows(reinterpret_cast<const uint8_t*>(data), nrow, ncol_, layout, base_row, missing_sentinel_);
+    } else if (data_type_ == C_API_DTYPE_UINT16) {
+      dataset_->PushDenseSmallIntRows(reinterpret_cast<const uint16_t*>(data), nrow, ncol_, layout, base_row, missing_sentinel_);
+    } else if (data_type_ == C_API_DTYPE_FLOAT16) {
+      dataset_->PushDenseSmallIntRows<uint16_t, true>(reinterpret_cast<const uint16_t*>(data), nrow, ncol_, layout, base_row, missing_sentinel_);
+    } else {
+      auto get_row_fun =
+          RowFunctionFromDenseMatrix(data, nrow, ncol_, data_type_, layout);
+      Dataset* ret = dataset_.get();
+      OMP_INIT_EX();
+      #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
+      for (int i = 0; i < nrow; ++i) {
+        OMP_LOOP_EX_BEGIN();
+        const int tid = omp_get_thread_num();
+        auto one_row = get_row_fun(i);
+        ret->PushOneRow(tid, base_row + i, one_row);
+        OMP_LOOP_EX_END();
+      }
+      OMP_THROW_EX();
+    }
+  }
+
+  const int32_t total_nrow_;
+  const int32_t ncol_;
+  const int data_type_;
+  const Dataset* reference_;
+  Config config_;
+  double missing_sentinel_ = std::numeric_limits<double>::quiet_NaN();
+  int64_t elem_size_ = 0;
+  std::vector<int32_t> sample_indices_;
+  std::vector<uint8_t> sample_block_;  // row-major gathered sample rows
+  size_t sample_pos_ = 0;              // next unplaced sample index
+  int32_t sample_cursor_ = 0;          // rows covered by SampleChunk calls
+  int32_t push_cursor_ = 0;            // rows covered by PushChunk calls
+  std::unique_ptr<Dataset> dataset_;
+  std::unique_ptr<Falcata::CUDADenseBinnerCtx> binner_;
+};
+
+}  // anonymous namespace
+#endif  // USE_CUDA
+
+int FLC_DatasetDeviceBuilderCreate(int32_t total_nrow,
+                                    int32_t ncol,
+                                    int data_type,
+                                    const char* parameters,
+                                    const DatasetHandle reference,
+                                    DatasetBuilderHandle* out) {
+  API_BEGIN();
+#ifndef USE_CUDA
+  (void)total_nrow;
+  (void)ncol;
+  (void)data_type;
+  (void)parameters;
+  (void)reference;
+  (void)out;
+  Log::Fatal("FLC_DatasetDeviceBuilderCreate requires a CUDA build of "
+             "Falcata");
+#else
+  *out = new DeviceDatasetBuilder(
+      total_nrow, ncol, data_type, parameters,
+      reinterpret_cast<const Dataset*>(reference));
+#endif  // USE_CUDA
+  API_END();
+}
+
+int FLC_DatasetDeviceBuilderSampleChunk(DatasetBuilderHandle handle,
+                                         const void* data,
+                                         int32_t nrow,
+                                         int is_row_major,
+                                         int is_device_ptr) {
+  API_BEGIN();
+#ifndef USE_CUDA
+  (void)handle;
+  (void)data;
+  (void)nrow;
+  (void)is_row_major;
+  (void)is_device_ptr;
+  Log::Fatal("FLC_DatasetDeviceBuilderSampleChunk requires a CUDA build of "
+             "Falcata");
+#else
+  reinterpret_cast<DeviceDatasetBuilder*>(handle)->SampleChunk(
+      data, nrow, is_row_major != 0, is_device_ptr != 0);
+#endif  // USE_CUDA
+  API_END();
+}
+
+int FLC_DatasetDeviceBuilderPushChunk(DatasetBuilderHandle handle,
+                                       const void* data,
+                                       int32_t nrow,
+                                       int is_row_major,
+                                       int is_device_ptr) {
+  API_BEGIN();
+#ifndef USE_CUDA
+  (void)handle;
+  (void)data;
+  (void)nrow;
+  (void)is_row_major;
+  (void)is_device_ptr;
+  Log::Fatal("FLC_DatasetDeviceBuilderPushChunk requires a CUDA build of "
+             "Falcata");
+#else
+  reinterpret_cast<DeviceDatasetBuilder*>(handle)->PushChunk(
+      data, nrow, is_row_major != 0, is_device_ptr != 0);
+#endif  // USE_CUDA
+  API_END();
+}
+
+int FLC_DatasetDeviceBuilderFinish(DatasetBuilderHandle handle,
+                                    DatasetHandle* out) {
+  API_BEGIN();
+#ifndef USE_CUDA
+  (void)handle;
+  (void)out;
+  Log::Fatal("FLC_DatasetDeviceBuilderFinish requires a CUDA build of "
+             "Falcata");
+#else
+  auto* builder = reinterpret_cast<DeviceDatasetBuilder*>(handle);
+  *out = builder->Finish();
+  delete builder;
+#endif  // USE_CUDA
+  API_END();
+}
+
+int FLC_DatasetDeviceBuilderFree(DatasetBuilderHandle handle) {
+  API_BEGIN();
+#ifndef USE_CUDA
+  (void)handle;
+  Log::Fatal("FLC_DatasetDeviceBuilderFree requires a CUDA build of Falcata");
+#else
+  delete reinterpret_cast<DeviceDatasetBuilder*>(handle);
+#endif  // USE_CUDA
+  API_END();
+}
+
+int FLC_DatasetCreateFromMatsDevice(int32_t nmat,
+                                     const void** data,
+                                     int data_type,
+                                     const int32_t* nrow,
+                                     int32_t ncol,
+                                     const int* is_row_major,
+                                     const char* parameters,
+                                     const DatasetHandle reference,
+                                     DatasetHandle* out) {
+  API_BEGIN();
+#ifndef USE_CUDA
+  (void)nmat;
+  (void)data;
+  (void)data_type;
+  (void)nrow;
+  (void)ncol;
+  (void)is_row_major;
+  (void)parameters;
+  (void)reference;
+  (void)out;
+  Log::Fatal("FLC_DatasetCreateFromMatsDevice requires a CUDA build of "
+             "Falcata");
+#else
+  if (nmat <= 0) {
+    Log::Fatal("FLC_DatasetCreateFromMatsDevice needs at least one matrix");
+  }
+  int64_t total_nrow = 0;
+  for (int32_t j = 0; j < nmat; ++j) {
+    total_nrow += nrow[j];
+  }
+  if (total_nrow >= INT32_MAX) {
+    Log::Fatal("The total number of rows should be smaller than INT32_MAX");
+  }
+  std::unique_ptr<DeviceDatasetBuilder> builder(new DeviceDatasetBuilder(
+      static_cast<int32_t>(total_nrow), ncol, data_type, parameters,
+      reinterpret_cast<const Dataset*>(reference)));
+  if (reference == nullptr) {
+    for (int32_t j = 0; j < nmat; ++j) {
+      builder->SampleChunk(data[j], nrow[j], is_row_major[j] != 0, true);
+    }
+  }
+  for (int32_t j = 0; j < nmat; ++j) {
+    builder->PushChunk(data[j], nrow[j], is_row_major[j] != 0, true);
+  }
+  *out = builder->Finish();
 #endif  // USE_CUDA
   API_END();
 }
@@ -1742,6 +2236,7 @@ int FLC_DatasetCreateFromCSR(const void* indptr,
   Config config;
   config.Set(param);
   OMP_SET_NUM_THREADS(config.num_threads);
+  CheckNoMissingSentinel(config, "CSR");
   std::unique_ptr<Dataset> ret;
   auto get_row_fun = RowFunctionFromCSR<int>(indptr, indptr_type, indices, data, data_type, nindptr, nelem);
   int32_t nrow = static_cast<int32_t>(nindptr - 1);
@@ -1810,6 +2305,7 @@ int FLC_DatasetCreateFromCSRFunc(void* get_row_funptr,
   Config config;
   config.Set(param);
   OMP_SET_NUM_THREADS(config.num_threads);
+  CheckNoMissingSentinel(config, "CSR");
   std::unique_ptr<Dataset> ret;
   int32_t nrow = num_rows;
   if (reference == nullptr) {
@@ -1882,6 +2378,7 @@ int FLC_DatasetCreateFromCSC(const void* col_ptr,
   Config config;
   config.Set(param);
   OMP_SET_NUM_THREADS(config.num_threads);
+  CheckNoMissingSentinel(config, "CSC");
   std::unique_ptr<Dataset> ret;
   int32_t nrow = static_cast<int32_t>(num_row);
   if (reference == nullptr) {
@@ -1965,6 +2462,7 @@ void DatasetCreateFromArrowChunkedArray(ArrowChunkedArray& chunked_array,
   Config config;
   config.Set(param);
   OMP_SET_NUM_THREADS(config.num_threads);
+  CheckNoMissingSentinel(config, "Arrow");
 
   std::unique_ptr<Dataset> ret;
   auto chunked_array_view = chunked_array.view();
