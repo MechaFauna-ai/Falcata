@@ -350,6 +350,10 @@ def _is_list_of_numpy_arrays(data: Any) -> "TypeGuard[List[np.ndarray]]":
     return isinstance(data, list) and all(isinstance(x, np.ndarray) for x in data)
 
 
+def _is_list_of_cuda_arrays(data: Any) -> bool:
+    return isinstance(data, list) and all(hasattr(x, "__cuda_array_interface__") for x in data)
+
+
 def _is_list_of_sequences(data: Any) -> "TypeGuard[List[Sequence]]":
     return isinstance(data, list) and all(isinstance(x, Sequence) for x in data)
 
@@ -2243,12 +2247,14 @@ class Dataset:
         elif nwd.is_into_dataframe(data):
             self.__init_from_narwhals(data=nw.from_native(data), params_str=params_str, ref_dataset=ref_dataset)
         elif isinstance(data, list) and len(data) > 0:
-            if _is_list_of_numpy_arrays(data):
+            if _is_list_of_cuda_arrays(data):
+                self.__init_from_list_cuda_arrays(mats=data, params_str=params_str, ref_dataset=ref_dataset)
+            elif _is_list_of_numpy_arrays(data):
                 self.__init_from_list_np2d(mats=data, params_str=params_str, ref_dataset=ref_dataset)
             elif _is_list_of_sequences(data):
                 self.__init_from_seqs(seqs=data, ref_dataset=ref_dataset)
             else:
-                raise TypeError("Data list can only be of ndarray or Sequence")
+                raise TypeError("Data list can only be of ndarray, CUDA array or Sequence")
         elif isinstance(data, Sequence):
             self.__init_from_seqs(seqs=[data], ref_dataset=ref_dataset)
         else:
@@ -2383,19 +2389,9 @@ class Dataset:
         )
         return self
 
-    def __init_from_cuda_array_interface(
-        self,
-        *,
-        data: Any,
-        params_str: str,
-        ref_dataset: Optional[_DatasetHandle],
-    ) -> "Dataset":
-        """Initialize data from an object exposing ``__cuda_array_interface__`` (e.g. a CuPy array).
-
-        The matrix stays in device memory: bin boundaries are found from a sampled
-        copy of the rows and the data is binned on the GPU (requires a CUDA build
-        and ``device_type="cuda"``). For cuDF DataFrames pass ``df.values``.
-        """
+    @staticmethod
+    def _cuda_matrix_info(data: Any) -> Tuple[int, int, int, int, int]:
+        """Parse ``__cuda_array_interface__`` into ``(device_ptr, nrow, ncol, layout, c_api_dtype)``."""
         cai = data.__cuda_array_interface__
         shape = tuple(cai["shape"])
         if len(shape) != 2:
@@ -2427,11 +2423,27 @@ class Dataset:
         ptr = cai["data"][0]
         if not ptr:
             raise ValueError("CUDA array has no data pointer")
+        return ptr, nrow, ncol, layout, dtype_map[typestr]
+
+    def __init_from_cuda_array_interface(
+        self,
+        *,
+        data: Any,
+        params_str: str,
+        ref_dataset: Optional[_DatasetHandle],
+    ) -> "Dataset":
+        """Initialize data from an object exposing ``__cuda_array_interface__`` (e.g. a CuPy array).
+
+        The matrix stays in device memory: bin boundaries are found from a sampled
+        copy of the rows and the data is binned on the GPU (requires a CUDA build
+        and ``device_type="cuda"``). For cuDF DataFrames pass ``df.values``.
+        """
+        ptr, nrow, ncol, layout, dtype_code = self._cuda_matrix_info(data)
         self._handle = ctypes.c_void_p()
         _safe_call(
             _LIB.FLC_DatasetCreateFromMatDevice(
                 ctypes.c_void_p(ptr),
-                ctypes.c_int(dtype_map[typestr]),
+                ctypes.c_int(dtype_code),
                 ctypes.c_int32(nrow),
                 ctypes.c_int32(ncol),
                 ctypes.c_int(layout),
@@ -2440,6 +2452,74 @@ class Dataset:
                 ctypes.byref(self._handle),
             )
         )
+        return self
+
+    def __init_from_list_cuda_arrays(
+        self,
+        *,
+        mats: List[Any],
+        params_str: str,
+        ref_dataset: Optional[_DatasetHandle],
+    ) -> "Dataset":
+        """Initialize data from a list of ``__cuda_array_interface__`` row chunks.
+
+        The chunks are the row-wise pieces of one matrix (same columns and
+        dtype; the concatenation order is the dataset row order). Bin
+        boundaries are found from a sample drawn across all chunks and each
+        chunk is binned on the GPU at its row offset -- byte-identical to
+        building from the equal concatenated matrix. Requires a CUDA build
+        and ``device_type="cuda"``.
+        """
+        infos = [self._cuda_matrix_info(mat) for mat in mats]
+        ncol = infos[0][2]
+        dtype_code = infos[0][4]
+        for _, _, chunk_ncol, _, chunk_dtype in infos:
+            if chunk_ncol != ncol:
+                raise ValueError("Input arrays must have same number of columns")
+            if chunk_dtype != dtype_code:
+                raise ValueError("Input chunks must have same type")
+        total_nrow = sum(info[1] for info in infos)
+        builder = ctypes.c_void_p()
+        _safe_call(
+            _LIB.FLC_DatasetDeviceBuilderCreate(
+                ctypes.c_int32(total_nrow),
+                ctypes.c_int32(ncol),
+                ctypes.c_int(dtype_code),
+                _c_str(params_str),
+                ref_dataset,
+                ctypes.byref(builder),
+            )
+        )
+        finished = False
+        try:
+            if ref_dataset is None:
+                for ptr, nrow, _, layout, _ in infos:
+                    _safe_call(
+                        _LIB.FLC_DatasetDeviceBuilderSampleChunk(
+                            builder,
+                            ctypes.c_void_p(ptr),
+                            ctypes.c_int32(nrow),
+                            ctypes.c_int(layout),
+                            ctypes.c_int(1),
+                        )
+                    )
+            for ptr, nrow, _, layout, _ in infos:
+                _safe_call(
+                    _LIB.FLC_DatasetDeviceBuilderPushChunk(
+                        builder,
+                        ctypes.c_void_p(ptr),
+                        ctypes.c_int32(nrow),
+                        ctypes.c_int(layout),
+                        ctypes.c_int(1),
+                    )
+                )
+            self._handle = ctypes.c_void_p()
+            _safe_call(_LIB.FLC_DatasetDeviceBuilderFinish(builder, ctypes.byref(self._handle)))
+            finished = True
+        finally:
+            # Finish frees the builder on success; a failed call above leaves it alive
+            if not finished:
+                _safe_call(_LIB.FLC_DatasetDeviceBuilderFree(builder))
         return self
 
     def __init_from_list_np2d(
