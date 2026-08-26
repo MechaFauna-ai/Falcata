@@ -677,7 +677,8 @@ void Dataset::Construct(std::vector<std::unique_ptr<BinMapper>>* bin_mappers,
 
 template <typename T, bool IS_FLOAT16>
 void Dataset::PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
-                                    int is_row_major, data_size_t start_row) {
+                                    int is_row_major, data_size_t start_row,
+                                    double missing_sentinel) {
   if (is_finish_load_) {
     return;
   }
@@ -701,9 +702,14 @@ void Dataset::PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
     const BinMapper* mapper = FeatureBinMapper(feature_idx);
     uint32_t* col_lut = lut.data() + static_cast<size_t>(col) * kLutSize;
     for (int64_t v = 0; v < kLutSize; ++v) {
-      const double value = IS_FLOAT16
+      double value = IS_FLOAT16
           ? static_cast<double>(Common::HalfBitsToFloat(static_cast<uint16_t>(v)))
           : static_cast<double>(static_cast<T>(v - kLutOffset));
+      if (value == missing_sentinel) {
+        // declared missing sentinel (never matches the default NaN): bin the
+        // raw value exactly as the NaN it stands for
+        value = std::numeric_limits<double>::quiet_NaN();
+      }
       col_lut[v] = fg->EncodeBinForPush(sub_feature, mapper->ValueToBin(value));
     }
   }
@@ -757,15 +763,20 @@ void Dataset::PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
 }
 
 template void Dataset::PushDenseSmallIntRows<int8_t>(const int8_t* data, int32_t nrow, int32_t ncol,
-                                                     int is_row_major, data_size_t start_row);
+                                                     int is_row_major, data_size_t start_row,
+                                                     double missing_sentinel);
 template void Dataset::PushDenseSmallIntRows<int16_t>(const int16_t* data, int32_t nrow, int32_t ncol,
-                                                      int is_row_major, data_size_t start_row);
+                                                      int is_row_major, data_size_t start_row,
+                                                      double missing_sentinel);
 template void Dataset::PushDenseSmallIntRows<uint8_t>(const uint8_t* data, int32_t nrow, int32_t ncol,
-                                                      int is_row_major, data_size_t start_row);
+                                                      int is_row_major, data_size_t start_row,
+                                                      double missing_sentinel);
 template void Dataset::PushDenseSmallIntRows<uint16_t>(const uint16_t* data, int32_t nrow, int32_t ncol,
-                                                       int is_row_major, data_size_t start_row);
+                                                       int is_row_major, data_size_t start_row,
+                                                       double missing_sentinel);
 template void Dataset::PushDenseSmallIntRows<uint16_t, true>(const uint16_t* data, int32_t nrow, int32_t ncol,
-                                                             int is_row_major, data_size_t start_row);
+                                                             int is_row_major, data_size_t start_row,
+                                                             double missing_sentinel);
 
 void Dataset::FinishLoad() {
   if (is_finish_load_) {

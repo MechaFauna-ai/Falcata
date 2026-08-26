@@ -81,11 +81,16 @@ __device__ __forceinline__ uint32_t DeviceLutIndex(uint16_t v) {
 
 // one thread handles one row pair of one feature group: it walks the group's
 // columns in ascending column order with last-non-skip-wins semantics
-// (replicating the host push order) and writes the final packed value once
+// (replicating the host push order) and writes the final packed value once.
+// `parity` shifts the pairing by one row so a chunk that starts at an odd
+// dataset row keeps its rows in the dataset-global nibble positions: with
+// parity=1 the first pair holds only the chunk's first row in its high slot
+// (the low slot stays zero and is OR-merged into the byte the previous chunk
+// already wrote). parity=0 reproduces the original behavior exactly.
 template <typename T, bool ROW_MAJOR, bool USE_LUT>
 __global__ void CUDADenseBinChunkKernel(const T* __restrict__ in,
                                         int64_t in_stride, data_size_t rows,
-                                        data_size_t pairs,
+                                        data_size_t pairs, int parity,
                                         CUDADenseBinnerTables tables,
                                         uint8_t* __restrict__ out) {
   const int group = static_cast<int>(blockIdx.y);
@@ -94,18 +99,17 @@ __global__ void CUDADenseBinChunkKernel(const T* __restrict__ in,
   if (pair >= pairs) {
     return;
   }
-  const data_size_t row0 = pair * 2;
-  const int num_rows = (row0 + 1 < rows) ? 2 : 1;
+  const data_size_t row0 = pair * 2 - static_cast<data_size_t>(parity);
   uint32_t vals[2] = {0, 0};
   const int k_end = tables.group_col_ptr[group + 1];
   for (int k = tables.group_col_ptr[group]; k < k_end; ++k) {
     const int col = tables.group_cols[k];
     #pragma unroll
     for (int t = 0; t < 2; ++t) {
-      if (t >= num_rows) {
-        break;
-      }
       const data_size_t row = row0 + t;
+      if (row < 0 || row >= rows) {
+        continue;
+      }
       const T raw = ROW_MAJOR
           ? in[static_cast<int64_t>(row) * in_stride + col]
           : in[static_cast<int64_t>(col) * in_stride + row];
@@ -127,41 +131,42 @@ __global__ void CUDADenseBinChunkKernel(const T* __restrict__ in,
   uint8_t* group_out = out + tables.group_pair_off[group] * pairs;
   if (width == 0) {
     group_out[pair] = static_cast<uint8_t>(vals[0] | (vals[1] << 4));
-  } else if (width == 1) {
-    group_out[row0] = static_cast<uint8_t>(vals[0]);
-    if (num_rows == 2) {
-      group_out[row0 + 1] = static_cast<uint8_t>(vals[1]);
+    return;
+  }
+  #pragma unroll
+  for (int t = 0; t < 2; ++t) {
+    const data_size_t row = row0 + t;
+    if (row < 0 || row >= rows) {
+      continue;
     }
-  } else if (width == 2) {
-    uint16_t* out16 = reinterpret_cast<uint16_t*>(group_out);
-    out16[row0] = static_cast<uint16_t>(vals[0]);
-    if (num_rows == 2) {
-      out16[row0 + 1] = static_cast<uint16_t>(vals[1]);
-    }
-  } else {
-    uint32_t* out32 = reinterpret_cast<uint32_t*>(group_out);
-    out32[row0] = vals[0];
-    if (num_rows == 2) {
-      out32[row0 + 1] = vals[1];
+    // element index in chunk-aligned output space (row + parity == 2*pair + t)
+    const data_size_t elem = pair * 2 + t;
+    if (width == 1) {
+      group_out[elem] = static_cast<uint8_t>(vals[t]);
+    } else if (width == 2) {
+      reinterpret_cast<uint16_t*>(group_out)[elem] =
+          static_cast<uint16_t>(vals[t]);
+    } else {
+      reinterpret_cast<uint32_t*>(group_out)[elem] = vals[t];
     }
   }
 }
 
 template <typename T, bool USE_LUT>
 void LaunchTyped(const void* in, bool is_row_major, int64_t in_stride,
-                 data_size_t rows, data_size_t pairs, int num_groups,
-                 const CUDADenseBinnerTables& tables, uint8_t* out,
-                 cudaStream_t stream) {
+                 data_size_t rows, data_size_t pairs, int parity,
+                 int num_groups, const CUDADenseBinnerTables& tables,
+                 uint8_t* out, cudaStream_t stream) {
   const int block_dim = 256;
   dim3 grid((pairs + block_dim - 1) / block_dim,
             static_cast<unsigned int>(num_groups));
   const T* typed_in = reinterpret_cast<const T*>(in);
   if (is_row_major) {
     CUDADenseBinChunkKernel<T, true, USE_LUT><<<grid, block_dim, 0, stream>>>(
-        typed_in, in_stride, rows, pairs, tables, out);
+        typed_in, in_stride, rows, pairs, parity, tables, out);
   } else {
     CUDADenseBinChunkKernel<T, false, USE_LUT><<<grid, block_dim, 0, stream>>>(
-        typed_in, in_stride, rows, pairs, tables, out);
+        typed_in, in_stride, rows, pairs, parity, tables, out);
   }
   CUDASUCCESS_OR_FATAL(cudaGetLastError());
 }
@@ -249,7 +254,7 @@ void CUDAGatherSampleRowsToHost(const void* device_data, int64_t elem_size,
 void LaunchCUDADenseBinChunkKernel(const void* in, int dtype_code,
                                    bool is_row_major, int64_t in_stride,
                                    data_size_t rows, data_size_t pairs,
-                                   int num_groups,
+                                   int parity, int num_groups,
                                    const CUDADenseBinnerTables& tables,
                                    uint8_t* out, cudaStream_t stream) {
   // this entry runs at Dataset construction, before any tree learner exists
@@ -257,27 +262,27 @@ void LaunchCUDADenseBinChunkKernel(const void* in, int dtype_code,
   switch (dtype_code) {
     case 0:
       LaunchTyped<float, false>(in, is_row_major, in_stride, rows, pairs,
-                                num_groups, tables, out, stream);
+                                parity, num_groups, tables, out, stream);
       break;
     case 1:
       LaunchTyped<double, false>(in, is_row_major, in_stride, rows, pairs,
-                                num_groups, tables, out, stream);
+                                parity, num_groups, tables, out, stream);
       break;
     case 2:
       LaunchTyped<int8_t, true>(in, is_row_major, in_stride, rows, pairs,
-                                num_groups, tables, out, stream);
+                                parity, num_groups, tables, out, stream);
       break;
     case 3:
       LaunchTyped<int16_t, true>(in, is_row_major, in_stride, rows, pairs,
-                                num_groups, tables, out, stream);
+                                parity, num_groups, tables, out, stream);
       break;
     case 4:
       LaunchTyped<uint8_t, true>(in, is_row_major, in_stride, rows, pairs,
-                                num_groups, tables, out, stream);
+                                parity, num_groups, tables, out, stream);
       break;
     case 5:
       LaunchTyped<uint16_t, true>(in, is_row_major, in_stride, rows, pairs,
-                                num_groups, tables, out, stream);
+                                parity, num_groups, tables, out, stream);
       break;
     default:
       Log::Fatal("CUDADenseBinner: unsupported dtype code %d", dtype_code);

@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <string>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -33,6 +34,9 @@ namespace Falcata {
 
 /*! \brief forward declaration */
 class DatasetLoader;
+#ifdef USE_CUDA
+class CUDADenseBinnerCtx;
+#endif  // USE_CUDA
 /*!
 * \brief This class is used to store some meta(non-feature) data for training data,
 *        e.g. labels, weights, initial scores, query level information.
@@ -607,10 +611,15 @@ class Dataset {
    * \param ncol Number of columns
    * \param is_row_major 1 for row-major data, 0 for column-major
    * \param start_row Dataset row index of the block's first row
+   * \param missing_sentinel Raw value binned as if it were NaN (the
+   *        ``missing_sentinel`` dataset parameter); the default NaN never
+   *        matches, i.e. the sentinel rewrite is off
    */
   template <typename T, bool IS_FLOAT16 = false>
   void PushDenseSmallIntRows(const T* data, int32_t nrow, int32_t ncol,
-                             int is_row_major, data_size_t start_row);
+                             int is_row_major, data_size_t start_row,
+                             double missing_sentinel =
+                                 std::numeric_limits<double>::quiet_NaN());
 
   #ifdef USE_CUDA
   /*! \brief Element type of a dense matrix handed to GPUBinDenseRows */
@@ -639,11 +648,34 @@ class Dataset {
    * \param ncol Number of columns
    * \param is_row_major true for row-major (C order) data
    * \param data_is_device true if ``data`` is a device pointer
+   * \param missing_sentinel Raw value binned as if it were NaN (LUT dtypes
+   *        only; the default NaN disables the rewrite)
    * \return true if the matrix was fully binned on the device
    */
   bool GPUBinDenseRows(const void* data, DenseBinnerDType dtype,
                        data_size_t nrow, int ncol, bool is_row_major,
-                       bool data_is_device);
+                       bool data_is_device,
+                       double missing_sentinel =
+                           std::numeric_limits<double>::quiet_NaN());
+
+  /*!
+   * \brief Begin a chunked device binning session for this dataset (bin
+   *        mappers must already be constructed). Returns nullptr when the
+   *        dataset is ineligible for device binning and the host push loops
+   *        must be used instead. The caller owns the returned session:
+   *        call CUDADenseBinnerCtx::BinChunk once per input chunk (ascending
+   *        dataset row order, any chunk sizes), then
+   *        CUDADenseBinnerCtx::Finalize before FinishLoad, then delete it.
+   * \param dtype Element type of the matrix chunks
+   * \param ncol Number of columns
+   * \param host_input_possible true when host-resident chunks may be pushed
+   *        (reserves device budget for the input staging ring)
+   * \param missing_sentinel Raw value binned as if it were NaN (LUT dtypes
+   *        only; NaN disables the rewrite)
+   */
+  CUDADenseBinnerCtx* GPUDenseBinnerBegin(DenseBinnerDType dtype, int ncol,
+                                          bool host_input_possible,
+                                          double missing_sentinel);
   #endif  // USE_CUDA
 
   inline void PushOneRow(int tid, data_size_t row_idx, const std::vector<double>& feature_values) {
