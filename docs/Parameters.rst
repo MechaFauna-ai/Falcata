@@ -905,6 +905,18 @@ Dataset Parameters
 
    -  set this to ``false`` to use ``na`` for representing missing values
 
+-  ``missing_sentinel`` :raw-html:`<a id="missing_sentinel" title="Permalink to this parameter" href="#missing_sentinel">&#x1F517;&#xFE0E;</a>`, default = ``""``, type = string
+
+   -  raw feature value to treat as missing in dense matrix inputs, e.g. ``missing_sentinel=-1``; the value is rewritten to NaN before bin boundaries are found and before rows are binned, exactly as if the caller had converted it to NaN in a float matrix
+
+   -  for integer-coded matrices (``int8``/``int16``/``uint8``/``uint16``) and ``float16`` matrices, which either cannot represent NaN at all or should not pay a widening conversion just to mark missing values
+
+   -  must be a nonzero finite number and requires ``use_missing=true``; not supported together with ``linear_tree`` or for ``float32``/``float64`` inputs (convert the sentinel to NaN yourself there)
+
+   -  honored only by the dense matrix construction paths (``Dataset`` from a numpy array / array list / CUDA device matrix, i.e. ``FLC_DatasetCreateFromMat[s]``, ``FLC_DatasetCreateFromMat[s]Device`` and the device dataset builder); every other input format raises an error when it is set
+
+   -  prediction inputs are NOT rewritten: convert the sentinel to NaN in the raw features you predict on
+
 -  ``feature_pre_filter`` :raw-html:`<a id="feature_pre_filter" title="Permalink to this parameter" href="#feature_pre_filter">&#x1F517;&#xFE0E;</a>`, default = ``true``, type = bool
 
    -  set this to ``true`` (the default) to tell Falcata to ignore the features that are unsplittable based on ``min_data_in_leaf``

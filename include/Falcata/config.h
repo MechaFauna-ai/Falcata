@@ -765,6 +765,13 @@ struct Config {
   // desc = set this to ``false`` to use ``na`` for representing missing values
   bool zero_as_missing = false;
 
+  // desc = raw feature value to treat as missing in dense matrix inputs, e.g. ``missing_sentinel=-1``; the value is rewritten to NaN before bin boundaries are found and before rows are binned, exactly as if the caller had converted it to NaN in a float matrix
+  // desc = for integer-coded matrices (``int8``/``int16``/``uint8``/``uint16``) and ``float16`` matrices, which either cannot represent NaN at all or should not pay a widening conversion just to mark missing values
+  // desc = must be a nonzero finite number and requires ``use_missing=true``; not supported together with ``linear_tree`` or for ``float32``/``float64`` inputs (convert the sentinel to NaN yourself there)
+  // desc = honored only by the dense matrix construction paths (``Dataset`` from a numpy array / array list / CUDA device matrix, i.e. ``FLC_DatasetCreateFromMat[s]``, ``FLC_DatasetCreateFromMat[s]Device`` and the device dataset builder); every other input format raises an error when it is set
+  // desc = prediction inputs are NOT rewritten: convert the sentinel to NaN in the raw features you predict on
+  std::string missing_sentinel = "";
+
   // desc = set this to ``true`` (the default) to tell Falcata to ignore the features that are unsplittable based on ``min_data_in_leaf``
   // desc = as dataset object is initialized only once and cannot be changed after that, you may need to set this to ``false`` when searching parameters with ``min_data_in_leaf``, otherwise features are filtered by ``min_data_in_leaf`` firstly if you don't reconstruct dataset object
   // desc = **Note**: setting this to ``false`` may slow down the training

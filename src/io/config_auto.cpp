@@ -278,6 +278,7 @@ const std::unordered_set<std::string>& Config::parameter_set() {
   "enable_bundle",
   "use_missing",
   "zero_as_missing",
+  "missing_sentinel",
   "feature_pre_filter",
   "pre_partition",
   "two_round",
@@ -560,6 +561,8 @@ void Config::GetMembersFromString(const std::unordered_map<std::string, std::str
 
   GetBool(params, "zero_as_missing", &zero_as_missing);
 
+  GetString(params, "missing_sentinel", &missing_sentinel);
+
   GetBool(params, "feature_pre_filter", &feature_pre_filter);
 
   GetBool(params, "pre_partition", &pre_partition);
@@ -777,6 +780,7 @@ std::string Config::SaveMembersToString() const {
   str_buf << "[enable_bundle: " << enable_bundle << "]\n";
   str_buf << "[use_missing: " << use_missing << "]\n";
   str_buf << "[zero_as_missing: " << zero_as_missing << "]\n";
+  str_buf << "[missing_sentinel: " << missing_sentinel << "]\n";
   str_buf << "[feature_pre_filter: " << feature_pre_filter << "]\n";
   str_buf << "[pre_partition: " << pre_partition << "]\n";
   str_buf << "[two_round: " << two_round << "]\n";
@@ -912,6 +916,7 @@ const std::unordered_map<std::string, std::vector<std::string>>& Config::paramet
     {"enable_bundle", {"is_enable_bundle", "bundle"}},
     {"use_missing", {}},
     {"zero_as_missing", {}},
+    {"missing_sentinel", {}},
     {"feature_pre_filter", {}},
     {"pre_partition", {"is_pre_partition"}},
     {"two_round", {"two_round_loading", "use_two_round_loading"}},
@@ -1063,6 +1068,7 @@ const std::unordered_map<std::string, std::string>& Config::ParameterTypes() {
     {"enable_bundle", "bool"},
     {"use_missing", "bool"},
     {"zero_as_missing", "bool"},
+    {"missing_sentinel", "string"},
     {"feature_pre_filter", "bool"},
     {"pre_partition", "bool"},
     {"two_round", "bool"},
