@@ -3670,9 +3670,24 @@ __global__ void SyncBestSplitForLevelKernel(
     static_cast<size_t>(pair_index) * (2 * static_cast<size_t>(num_tasks));
   bool best_found = false;
   double best_gain = kMinScore;
-  uint32_t shared_read_index = 0;
   const int task_index = static_cast<int>(leaf_block_index * blockDim.x + threadIdx_x);
   const uint32_t read_index = is_larger ? static_cast<uint32_t>(task_index + num_tasks) : static_cast<uint32_t>(task_index);
+  // The nothing-found default MUST name a slot of THIS role (in bounds).
+  // It used to be plain 0 == (smaller role, task 0): when this role's fresh
+  // search found no valid split, thread 0 then consulted the SMALLER role's
+  // task-0 slot -- which is stale whenever the smaller sibling was skipped
+  // (e.g. it sits at exactly min_data_in_leaf), because the find kernel
+  // early-returns for invalid roles and never rewrites their slots. The
+  // is_valid flag left there by an EARLIER level passed the final guard, and
+  // an ancestor's candidate (tagged with tasks[0]'s feature, the lowest real
+  // feature index) was resurrected as this leaf's best split: min_data
+  // violations, leaf_weight != leaf_count, and unreachable leaves in the
+  // serialized model. An own-role default is always safe: the slot is fresh
+  // whenever this (valid) role was searched, and the mask re-check below
+  // rejects tasks the compacted find skipped.
+  const int safe_task_index = task_index < num_tasks ? task_index : num_tasks - 1;
+  uint32_t shared_read_index = is_larger ? static_cast<uint32_t>(safe_task_index + num_tasks)
+                                         : static_cast<uint32_t>(safe_task_index);
   // Feature-sampled trees launch the batched find over USED tasks only, leaving
   // unused tasks' output slots stale; mask them to not-found here. This is
   // bit-identical to the per-pair reduction, where those lanes hold the
@@ -4090,12 +4105,22 @@ __global__ void SyncBestSplitForLeafKernel(const int smaller_leaf_index, const i
 
   bool best_found = false;
   double best_gain = kMinScore;
-  uint32_t shared_read_index = 0;
 
   const bool is_smaller = (blockIdx_x < static_cast<unsigned int>(num_blocks_per_leaf) && !larger_only);
   const uint32_t leaf_block_index = (is_smaller || larger_only) ? blockIdx_x : (blockIdx_x - static_cast<unsigned int>(num_blocks_per_leaf));
   const int task_index = static_cast<int>(leaf_block_index * blockDim.x + threadIdx_x);
   const uint32_t read_index = is_smaller ? static_cast<uint32_t>(task_index) : static_cast<uint32_t>(task_index + num_tasks);
+  // Same stale-slot hazard as SyncBestSplitForLevelKernel (see the comment
+  // there): the nothing-found default used to be plain 0 == (smaller role,
+  // task 0). When this kernel syncs the LARGER leaf and its search found no
+  // valid split, a stale-valid smaller-role task-0 slot from an earlier
+  // search was resurrected as the larger leaf's best split. Default to the
+  // lane's OWN role and block instead: those slots are always freshly
+  // written when this role was searched, and this kernel is only launched
+  // over searched roles.
+  const int safe_task_index = task_index < num_tasks ? task_index : num_tasks - 1;
+  uint32_t shared_read_index = is_smaller ? static_cast<uint32_t>(safe_task_index)
+                                          : static_cast<uint32_t>(safe_task_index + num_tasks);
   if (task_index < num_tasks) {
     best_found = cuda_best_split_info[read_index].is_valid;
     best_gain = cuda_best_split_info[read_index].gain;
