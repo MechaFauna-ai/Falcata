@@ -117,6 +117,12 @@ step "sparse column view"          20000 "$VENV" tests/gates/sparse_column_view.
 # than moving a digit, so the contracts are prediction-level (see the gate's
 # docstring on why an md5 assertion would be noise here).
 step "nibble packed columns"       20000 "$VENV" tests/gates/nibble_validate.py
+# Stale-candidate resurrection class (best-split sync reductions): trains in
+# the budget-limited tiny-gain regime and asserts leaf_weight == leaf_count,
+# no sub-floor leaves, bit-exact text AND falb-binary round trips, and exact
+# per-leaf occupancy when the training matrix is routed through the
+# serialized model. This is the CUDA fixedpoint production path.
+step "leaf integrity + round trip" 8000  "$VENV" tests/gates/leaf_integrity.py
 step "bench tier"                  12000 "$VENV" tests/gates/bench_tier.py --out tests/gates/bench_results.json
 step "perf gate"                   -     "$VENV" tests/gates/perf_gate.py \
   --results tests/gates/bench_results.json \
