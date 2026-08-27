@@ -2555,6 +2555,21 @@ void CUDASingleGPUTreeLearner::SelectiveDiscoverFrontier(const std::vector<int>&
     if (!info.is_valid) {
       continue;  // permanently dormant leaf (no positive gain / gates failed)
     }
+    // diag: a candidate whose finder counts cannot reproduce the leaf's
+    // actual row count was not computed from this leaf's histogram -- the
+    // signature of the stale-slot resurrection bug the sync kernels guard
+    // against (see SyncBestSplitForLevelKernel). Kept as a canary; counts
+    // are hessian-derived estimates off-L2, so this only warns.
+    if (FalcataDebug().diag &&
+        info.left_count + info.right_count != leaf_num_data_[leaf]) {
+      fprintf(stderr,
+              "[selective-diag] stale candidate? tree=%" PRId64 " leaf=%d "
+              "actual_n=%d finder_n=%d feat=%d thr=%u gain=%.17g\n",
+              static_cast<int64_t>(sel_stat_trees_), leaf,
+              static_cast<int>(leaf_num_data_[leaf]),
+              static_cast<int>(info.left_count + info.right_count),
+              info.inner_feature_index, info.threshold, info.gain);
+    }
     sel_leaf_frontier_[leaf] = static_cast<int>(sel_frontier_.size());
     sel_frontier_.push_back({sel_leaf_parent_[leaf], leaf, info.gain});
   }
