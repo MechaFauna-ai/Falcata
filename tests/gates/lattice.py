@@ -272,6 +272,25 @@ def build_cells():
         {"num_leaves": 63, "max_depth": -1},
         rounds=25,
     )
+    # quantized categorical x BAGGING x multiclass x tiny leaves: pins the
+    # bagged-quant discretized find path, where the hessian-quantum l2 ridge
+    # is active (no other fingerprinted cell reaches it). Deep trees + small
+    # min_data are load-bearing: they produce the dither-dominated tiny-leaf
+    # hessian sums whose 1/H the ridge bounds.
+    cell(
+        "categorical-mc/quant-bagged",
+        "categorical-mc",
+        {
+            "quant_mode": "fixedpoint",
+            "quant_bins": 16,
+            "bagging_fraction": 0.7,
+            "bagging_freq": 1,
+            "num_leaves": 255,
+            "max_depth": 10,
+            "min_data_in_leaf": 5,
+        },
+        rounds=50,
+    )
 
     # --- wide features: the GLOBAL-MEMORY split finder ---------------------- #
     # Once a feature's histogram exceeds one block
@@ -458,6 +477,18 @@ def build_profile(name):
         X[:, :3] = rng.integers(0, 30, size=(n, 3))
         y = X @ rng.standard_normal(m) + np.sin(X[:, 0]) + 0.3 * rng.standard_normal(n)
         base["categorical_feature"] = [0, 1, 2]
+    elif name == "categorical-mc":
+        # multiclass with skew-frequency categorical columns: the shape whose
+        # non-constant hessians shrink toward zero as training fits, which is
+        # what the bagged-quant hessian-quantum ridge exists for
+        m = 10
+        X = rng.standard_normal((n, m))
+        pj = 1.0 / np.arange(1, 31) ** 1.2
+        for j in range(3):
+            X[:, j] = rng.choice(30, size=n, p=pj / pj.sum())
+        y = (X @ rng.standard_normal((m, 4))).argmax(axis=1).astype(np.float64)
+        base.update({"objective": "multiclass", "num_class": 4,
+                     "categorical_feature": [0, 1, 2]})
     else:
         raise ValueError(f"unknown profile {name}")
     return X, np.asarray(y, dtype=np.float64), base

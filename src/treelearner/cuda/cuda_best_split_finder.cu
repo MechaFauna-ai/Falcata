@@ -1870,7 +1870,7 @@ __global__ void FindBestSplitsDiscretizedForLeafKernel(
   const double min_sum_hessian_in_leaf,
   const double min_gain_to_split,
   const double lambda_l1,
-  const double lambda_l2,
+  const double lambda_l2_in,
   const double path_smooth,
   const double max_delta_step,
   const double cat_smooth,
@@ -1882,6 +1882,7 @@ __global__ void FindBestSplitsDiscretizedForLeafKernel(
   // gradient scale
   const score_t* grad_scale,
   const score_t* hess_scale,
+  const bool quant_bagging_ridge,
   // output
   CUDASplitInfo* cuda_best_split_info,
   // global num data in leaf
@@ -1890,6 +1891,17 @@ __global__ void FindBestSplitsDiscretizedForLeafKernel(
   // CEGB
   const double* cuda_task_cegb_penalty,
   const double cegb_tradeoff_times_penalty_split) {
+  // Bagged quantized training: a child's integer hessian sum carries O(1)
+  // quanta of rounding noise, and bagging redraws that noise every iteration.
+  // The gain argmax then harvests children whose noisy |G| is large while
+  // noisy H is near zero; with lambda_l2 == 0 their gains and outputs explode
+  // far beyond what the leaf's true gradient mass supports (the compounding
+  // multiclass-deep-tree quality collapse). One hessian quantum of ridge
+  // bounds 1/H against exactly that noise. Unbagged training keeps the exact
+  // math: its rounding noise is drawn once and fitted once, which stays
+  // within quantization tolerance -- and keeps those models bit-identical.
+  const double lambda_l2 = quant_bagging_ridge ?
+    lambda_l2_in + static_cast<double>(*hess_scale) : lambda_l2_in;
   const unsigned int task_index = blockIdx.x;
   const SplitFindTask* task = tasks + task_index;
   const int inner_feature_index = task->inner_feature_index;
@@ -4455,6 +4467,7 @@ void CUDABestSplitFinder::LaunchAssignVecPayloadKernel(
     max_cat_to_onehot_, \
     grad_scale, \
     hess_scale, \
+    quant_bagging_ridge_, \
     cuda_best_split_info_.RawData(), \
     global_num_data_in_smaller_leaf, \
     global_num_data_in_larger_leaf, \
@@ -4662,7 +4675,7 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
   const double min_sum_hessian_in_leaf,
   const double min_gain_to_split,
   const double lambda_l1,
-  const double lambda_l2,
+  const double lambda_l2_in,
   const double path_smooth,
   const double max_delta_step,
   const double cat_smooth,
@@ -4671,6 +4684,7 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
   const int min_data_per_group,
   const score_t* grad_scale,
   const score_t* hess_scale,
+  const bool quant_bagging_ridge,
   CUDASplitInfo* cuda_best_split_info,
   const CUDAHybridGraphLoopStateOpt gstate) {
   // graphs A2: the graph-frozen grid is a pow2 bucket of the live pair count;
@@ -4678,6 +4692,10 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
   if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
     return;
   }
+  // one hessian quantum of ridge under bagging (see the per-leaf discretized
+  // kernel for the noise argument; unbagged models stay bit-identical)
+  const double lambda_l2 = quant_bagging_ridge ?
+    lambda_l2_in + static_cast<double>(*hess_scale) : lambda_l2_in;
   const unsigned int pair_index = blockIdx.y;
   const bool is_larger = (blockIdx.z == 1);
   const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
@@ -5044,6 +5062,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
       min_data_per_group_, \
       grad_scale, \
       hess_scale, \
+      quant_bagging_ridge_, \
       cuda_best_split_info_.RawData(), \
       gstate
   if (FalcataFP32GainEnabled()) {

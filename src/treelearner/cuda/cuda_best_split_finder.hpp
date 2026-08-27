@@ -628,7 +628,8 @@ class CUDABestSplitFinder {
   // non-quantized histograms stored as float pairs (FALCATA_FP32_HIST)
   bool hist_fp32_ = false;
   // bagged quantized training: one hessian quantum of l2 ridge in the
-  // discretized find kernels (see FindBestSplitsDiscretizedVectorInner)
+  // discretized find kernels, scalar (FindBestSplitsDiscretizedForLeafKernel)
+  // and vector (FindBestSplitsDiscretizedVectorInner) alike
   bool quant_bagging_ridge_ = false;
   // number of total bins in the dataset
   const int num_total_bin_;

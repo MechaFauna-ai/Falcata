@@ -481,16 +481,18 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     cuda_data_partition_->use_bagging() ? cuda_data_partition_->cuda_data_indices() : nullptr;
   cuda_data_partition_->BeforeTrain();
   if (config_->use_quantized_grad) {
+    // bagged quantized training gets one hessian quantum of l2 ridge in every
+    // discretized find kernel -- scalar (FindBestSplitsDiscretizedForLeafKernel,
+    // FindBestSplitsDiscretizedForLevelKernel) and vector
+    // (FindBestSplitsDiscretizedVectorInner) alike; unbagged quantized models
+    // are bit-identical with the flag off
+    cuda_best_split_finder_->SetQuantBaggingRidge(cuda_data_partition_->use_bagging());
     if (cuda_data_partition_->use_bagging()) {
       cuda_gradient_discretizer_->SetBagForThisTree(
           cuda_data_partition_->cuda_data_indices(), cuda_data_partition_->root_num_data());
     } else {
       cuda_gradient_discretizer_->SetBagForThisTree(nullptr, 0);
     }
-    // bagged quantized training gets one hessian quantum of l2 ridge in the
-    // discretized find kernels (see FindBestSplitsDiscretizedVectorInner);
-    // unbagged quantized models are bit-identical with the flag off
-    cuda_best_split_finder_->SetQuantBaggingRidge(cuda_data_partition_->use_bagging());
     cuda_gradient_discretizer_->DiscretizeGradients(num_data_, gradients_, hessians_);
     for (int t = 1; t < vec_num_targets_; ++t) {
       // plane t: target t's gradients at their own scale, plane 0's hessians

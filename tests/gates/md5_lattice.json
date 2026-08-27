@@ -5,6 +5,11 @@
    "metric": 0.218733,
    "metric_name": "rmse"
   },
+  "categorical-mc/quant-bagged": {
+   "md5": "d29716877823b9ba63ba3fdd68e83a08",
+   "metric": 0.273179,
+   "metric_name": "mlogloss"
+  },
   "categorical/nonquant": {
    "metric": 1.470012,
    "metric_name": "rmse"
