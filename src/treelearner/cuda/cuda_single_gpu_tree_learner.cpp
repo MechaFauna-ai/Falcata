@@ -365,13 +365,6 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
                                    config_->cegb_tradeoff,
                                    config_->cegb_penalty_split,
                                    train_data_);
-  if (vec_num_targets_ > 1) {
-    CheckVectorLeafSupported();
-    cuda_best_split_finder_->InitVectorMode(vec_num_targets_);
-    vec_plane_structs_.Resize(2 * static_cast<size_t>(vec_num_targets_));
-    vec_root_sum_gradients_.resize(vec_num_targets_, 0.0);
-    vec_root_sum_hessians_.resize(vec_num_targets_, 0.0);
-  }
 
   leaf_best_split_feature_.resize(config_->num_leaves, -1);
   leaf_best_split_threshold_.resize(config_->num_leaves, 0);
@@ -400,6 +393,16 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     cuda_hessians_.Resize(static_cast<size_t>(num_data_) * grad_planes);
   }
   AllocateBitset();
+
+  // vector-leaf gates read has_categorical_feature_, which AllocateBitset
+  // just derived from the dataset
+  if (vec_num_targets_ > 1) {
+    CheckVectorLeafSupported();
+    cuda_best_split_finder_->InitVectorMode(vec_num_targets_);
+    vec_plane_structs_.Resize(2 * static_cast<size_t>(vec_num_targets_));
+    vec_root_sum_gradients_.resize(vec_num_targets_, 0.0);
+    vec_root_sum_hessians_.resize(vec_num_targets_, 0.0);
+  }
 
   leaf_stat_buffer_size_ = 0;
   num_cat_threshold_ = 0;
