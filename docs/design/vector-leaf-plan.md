@@ -1,8 +1,40 @@
 # Vector-leaf multi-target trees (CUDA) — design plan
 
-**Status:** draft for implementation · **Date:** 2026-08-02 · **Prereq:** the
-round-robin tier (`objective=multi_regression`) is the API on-ramp and the
-baseline these models are judged against.
+**Status:** V1 (plumbing) and V2 (training kernels, classic flow) landed ·
+**Date:** 2026-08-02 (plan), 2026-08-28 (V2) · **Prereq:** the round-robin
+tier (`objective=multi_regression`) is the API on-ramp and the baseline these
+models are judged against.
+
+## 0. Implementation notes — where V2 diverges from the plan below
+
+- **Classic per-split loop only.** §2's "hybrid growth prefix support from day
+  one" did not land: vector training disables hybrid growth entirely and rides
+  the classic one-split-at-a-time loop. The hybrid/one-sync/graph prefixes need
+  plane-aware batched kernels (V3).
+- **Per-plane leaf-splits structs instead of widened structs.** §5's
+  `CUDALeafSplitsStruct` stays untouched. The learner keeps a slab of 2·T
+  structs (smaller/larger × plane): plane t carries target t's gradient sums
+  and its histogram-plane pointer, so the existing construct/fix/subtract
+  kernels run per plane completely unchanged. A tiny fan-out kernel refreshes
+  the slab from the primary structs after every applied split.
+- **`CUDASplitInfo` payload is a slab side-band, not inline arrays.** Four
+  fields per target (left/right gradient sums, left/right leaf outputs) in a
+  finder-owned slab, with the categorical-threshold pointer discipline. The
+  finder recomputes parent gains from the plane sums (the scalar kernel does
+  the same), so per-target child gains are not stored.
+- **The finder is a separate kernel, not a `NUM_TARGETS` template.**
+  `FindBestSplitsForLeafKernelVector` handles runtime T ≤ 16 with the scalar
+  kernel's exact fp64 CPU-order folds; the scalar instantiations are untouched.
+- **v1 fences (beyond §2):** numerical features only, no bagging/GOSS, no
+  L1/path-smooth/max_delta_step/extra-trees/monotone/interaction/forced-splits/
+  CEGB, fp64 only (`cuda_precision=fp64`), `boost_from_average` forced off
+  (per-target biases would need a per-target AddBias), max_bin ≤ 256
+  (shared-memory finder), single GPU.
+- **Verified by invariants, not md5** (non-quant CUDA is atomic-order
+  nondeterministic): duplicated targets reproduce the scalar model's structure
+  and outputs, negated targets predict antisymmetrically, per-target loss
+  drops, text/FALB round-trips are exact. The scalar path is locked by the
+  canonical md5 gates and the lattice.
 
 ## 1. What it is and why it wins
 
