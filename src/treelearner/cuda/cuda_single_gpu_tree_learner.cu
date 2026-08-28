@@ -17,6 +17,52 @@
 
 namespace Falcata {
 
+// Vector-leaf plane fan-out: refresh the per-plane leaf-splits structs of both
+// children from the primary structs the partition split just wrote. Plane t
+// copies the primary struct of its role, then overrides the per-target
+// gradient sum and mirror output from the split's vector payload and offsets
+// the histogram pointer to plane t. The role's side (left vs right child) is
+// identified by comparing the primary struct's leaf index against the split
+// leaf (== the left child's index).
+__global__ void VectorPlaneFanOutKernel(
+  const CUDALeafSplitsStruct* smaller_struct,
+  const CUDALeafSplitsStruct* larger_struct,
+  CUDALeafSplitsStruct* planes,
+  const int num_targets,
+  const size_t plane_stride_entries,
+  const CUDASplitInfo* split_info,
+  const int left_leaf_index) {
+  const int i = static_cast<int>(threadIdx.x + blockIdx.x * blockDim.x);
+  if (i < 2 * num_targets) {
+    const int role = i / num_targets;
+    const int t = i % num_targets;
+    const CUDALeafSplitsStruct* src = role == 0 ? smaller_struct : larger_struct;
+    CUDALeafSplitsStruct s = *src;
+    const bool is_left = (s.leaf_index == left_leaf_index);
+    const double* payload = split_info->vec_payload;
+    s.sum_of_gradients = payload[(is_left ? kVecLeftSumGradients : kVecRightSumGradients) * num_targets + t];
+    s.leaf_value = payload[(is_left ? kVecLeftValue : kVecRightValue) * num_targets + t];
+    // the vector finder recomputes the parent gain from the plane sums, so the
+    // scalar (target-0) gain field would be stale for t > 0; zero it
+    s.gain = 0.0;
+    s.hist_in_leaf = src->hist_in_leaf + static_cast<size_t>(t) * plane_stride_entries;
+    planes[i] = s;
+  }
+}
+
+void CUDASingleGPUTreeLearner::LaunchVectorPlaneFanOutKernel(
+    const CUDASplitInfo* best_split_info, const int left_leaf_index) {
+  const int num_slots = 2 * vec_num_targets_;
+  VectorPlaneFanOutKernel<<<1, ((num_slots + 31) / 32) * 32>>>(
+    cuda_smaller_leaf_splits_->GetCUDAStruct(),
+    cuda_larger_leaf_splits_->GetCUDAStruct(),
+    vec_plane_structs_.RawData(),
+    vec_num_targets_,
+    static_cast<size_t>(2) * num_total_bin_,
+    best_split_info,
+    left_leaf_index);
+}
+
 __global__ void ReduceLeafStatKernel_SharedMemory(
   const score_t* gradients,
   const score_t* hessians,

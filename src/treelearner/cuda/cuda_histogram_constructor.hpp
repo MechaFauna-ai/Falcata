@@ -482,6 +482,21 @@ class CUDAHistogramConstructor {
 
   void BeforeTrain(const score_t* gradients, const score_t* hessians);
 
+  /*! \brief vector-leaf mode: give every leaf histogram slot `planes`
+   *  contiguous (grad, hess)-pair planes (one per target). Must be called
+   *  before Init(); scales the pool allocation and the per-slot zeroing. */
+  void SetNumHistPlanes(const int planes) {
+    CHECK_GE(planes, 1);
+    num_hist_planes_ = planes;
+  }
+
+  int num_hist_planes() const { return num_hist_planes_; }
+
+  /*! \brief vector-leaf mode: point the construct kernels at one target's
+   *  gradient/hessian slices (pointer swap only; BeforeTrain remains the
+   *  per-tree entry point and receives plane 0) */
+  void SelectGradientPlane(const score_t* gradients, const score_t* hessians);
+
   /*! \brief number of leaf histogram slots the finished tree dirtied (== its
    *  final leaf count; leaf k's histogram is slot k). BeforeTrain only zeroes
    *  that prefix of cuda_hist_ instead of all num_leaves slots. -1 (initial /
@@ -744,6 +759,12 @@ class CUDAHistogramConstructor {
   int num_threads_;
   /*! \brief total number of bins in histogram */
   int num_total_bin_;
+  /*! \brief vector-leaf mode: histogram planes per leaf slot (1 = scalar).
+   *  Plane t of a leaf's slot starts at hist_in_leaf + t * 2 * num_total_bin_;
+   *  the construct/fix/subtract kernels are plane-agnostic (they write through
+   *  the leaf-splits struct's hist_in_leaf), only the pool sizing and the
+   *  per-slot zeroing scale by this. */
+  int num_hist_planes_ = 1;
   /*! \brief number of bins per feature */
   std::vector<uint32_t> feature_num_bins_;
   /*! \brief offsets in histogram of all features */

@@ -444,18 +444,28 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
   }
 
   if (tree_mode == std::string("vector_leaf") && task == TaskType::kTrain) {
-    if (objective != std::string("regression") || num_class != 1) {
+    const bool multi_target =
+        objective == std::string("multi_regression") && num_class > 1;
+    if (!multi_target && (objective != std::string("regression") || num_class != 1)) {
       Log::Fatal(
-          "tree_mode=vector_leaf currently implements the T=1 plumbing milestone "
-          "only (objective=regression, num_class=1). Multi-target vector-leaf "
-          "training kernels are not implemented yet. Use tree_mode=scalar with "
-          "objective=multi_regression for the supported round-robin baseline.");
+          "tree_mode=vector_leaf training supports objective=multi_regression "
+          "with num_class>1 (vector-leaf multi-target) or objective=regression "
+          "with num_class=1 (the T=1 plumbing milestone). Use tree_mode=scalar "
+          "with objective=multi_regression for the round-robin baseline.");
     }
     if (device_type != std::string("cpu") && device_type != std::string("cuda")) {
       Log::Fatal(
           "tree_mode=vector_leaf currently supports device_type=cpu for reference "
           "parity and device_type=cuda for the target backend; device_type=%s is "
           "not supported.",
+          device_type.c_str());
+    }
+    if (multi_target && device_type != std::string("cuda")) {
+      Log::Fatal(
+          "tree_mode=vector_leaf multi-target training is implemented for "
+          "device_type=cuda only; device_type=%s implements the T=1 plumbing milestone "
+          "only. Use tree_mode=scalar with objective=multi_regression for the "
+          "round-robin baseline.",
           device_type.c_str());
     }
     if (quant_mode != std::string("none")) {
@@ -471,6 +481,57 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
     }
     if (linear_tree) {
       Log::Fatal("tree_mode=vector_leaf does not support linear_tree=true.");
+    }
+    if (multi_target) {
+      if (num_class > 16) {
+        Log::Fatal("tree_mode=vector_leaf supports at most 16 targets "
+                   "(num_class=%d requested).", num_class);
+      }
+      if (boosting != std::string("gbdt")) {
+        Log::Fatal("tree_mode=vector_leaf multi-target training requires "
+                   "boosting=gbdt.");
+      }
+      const bool bagging_active =
+          (bagging_freq > 0 && bagging_fraction < 1.0) ||
+          pos_bagging_fraction < 1.0 || neg_bagging_fraction < 1.0 ||
+          bagging_by_query;
+      if (bagging_active || data_sample_strategy != std::string("bagging")) {
+        Log::Fatal("tree_mode=vector_leaf multi-target training does not "
+                   "support bagging or GOSS yet.");
+      }
+      if (lambda_l1 > 0.0 || path_smooth > 0.0 || max_delta_step > 0.0 ||
+          extra_trees) {
+        Log::Fatal("tree_mode=vector_leaf multi-target training does not "
+                   "support lambda_l1, path_smooth, max_delta_step or "
+                   "extra_trees yet.");
+      }
+      if (!monotone_constraints.empty() || !interaction_constraints.empty() ||
+          !forcedsplits_filename.empty() || feature_fraction_bynode < 1.0) {
+        Log::Fatal("tree_mode=vector_leaf multi-target training does not "
+                   "support monotone constraints, interaction constraints, "
+                   "forced splits or feature_fraction_bynode yet.");
+      }
+      if (cegb_tradeoff != 1.0 || cegb_penalty_split != 0.0 ||
+          !cegb_penalty_feature_coupled.empty() ||
+          !cegb_penalty_feature_lazy.empty()) {
+        Log::Fatal("tree_mode=vector_leaf multi-target training does not "
+                   "support CEGB penalties yet.");
+      }
+      if (ResolvedCudaPrecision() != CudaPrecision::kFP64) {
+        Log::Fatal("tree_mode=vector_leaf multi-target training requires "
+                   "cuda_precision=fp64.");
+      }
+      if (num_gpu > 1 || num_machines > 1) {
+        Log::Fatal("tree_mode=vector_leaf multi-target training is "
+                   "single-GPU, single-machine only.");
+      }
+      if (boost_from_average) {
+        // per-target init scores would need a per-target AddBias on the first
+        // tree; the first trees fit the target means instead
+        Log::Warning("boost_from_average is disabled for vector-leaf "
+                     "multi-target training.");
+        boost_from_average = false;
+      }
     }
   }
 

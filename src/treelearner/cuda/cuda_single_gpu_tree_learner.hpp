@@ -452,6 +452,31 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     const int left_leaf, const int right_leaf, const int inner_feature_index,
     const double left_value, const double right_value, const bool is_numerical_split);
 
+  // ---- vector-leaf (multi-target) training ----
+  // Number of targets T; > 1 engages the vector flow: T histogram planes per
+  // leaf slot, the summed-gain vector finder, and per-target leaf outputs.
+  // Rides the classic per-split loop only (hybrid growth is disabled).
+  int vec_num_targets_ = 0;
+  // Per-plane leaf-splits structs: slots [0, T) mirror the smaller leaf with
+  // plane t's gradient sums / histogram pointer, slots [T, 2T) the larger leaf.
+  CUDAVector<CUDALeafSplitsStruct> vec_plane_structs_;
+  // Per-target root sums (host copies of the per-plane InitValues readbacks).
+  std::vector<double> vec_root_sum_gradients_;
+  std::vector<double> vec_root_sum_hessians_;
+  // Refuse dataset/config shapes the vector flow does not cover.
+  void CheckVectorLeafSupported() const;
+  // Root init of the plane structs (BeforeTrain tail).
+  void VectorInitRootPlanes(const data_size_t* leaf_splits_init_indices,
+                            const data_size_t root_num_data);
+  // Per-pair search: per-plane construct + subtract, then the vector finder.
+  void EnqueuePairBestSplitSearchVector(const CUDATree* tree,
+    const int smaller_leaf_index, const int larger_leaf_index);
+  // Refresh the plane structs from the just-applied split (partition wrote the
+  // primary smaller/larger structs; planes add per-target sums/values and the
+  // plane histogram pointers).
+  void LaunchVectorPlaneFanOutKernel(const CUDASplitInfo* best_split_info,
+    const int left_leaf_index);
+
   // number of threads on CPU
   int num_threads_;
 

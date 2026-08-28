@@ -256,6 +256,10 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   const bool fp32 = (config_->ResolvedCudaPrecision() == CudaPrecision::kFP32);
   FalcataFP32HistRequestedFlag() = fp32;
   FalcataFP32GainEnabledFlag() = fp32;
+  // vector-leaf (multi-target) mode: T = num_class when tree_mode=vector_leaf
+  // (the config layer guarantees objective=multi_regression for T > 1)
+  vec_num_targets_ = (config_->tree_mode == std::string("vector_leaf") &&
+                      config_->num_class > 1) ? config_->num_class : 0;
   cuda_smaller_leaf_splits_.reset(new CUDALeafSplits(num_data_));
   cuda_smaller_leaf_splits_->SetNCCLInfo(nccl_communicator_, nccl_gpu_rank_, local_gpu_rank_, gpu_device_id_, global_num_data_);
   cuda_smaller_leaf_splits_->Init(config_->use_quantized_grad);
@@ -267,18 +271,29 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     share_state_->feature_hist_offsets(),
     config_->min_data_in_leaf, config_->min_sum_hessian_in_leaf, gpu_device_id_, config_->gpu_use_dp,
     config_->use_quantized_grad, effective_quant_bins_, config_->feature_fraction));
+  if (vec_num_targets_ > 1) {
+    // one (grad, hess)-pair histogram plane per target within each leaf slot
+    cuda_histogram_constructor_->SetNumHistPlanes(vec_num_targets_);
+  }
   cuda_histogram_constructor_->Init(train_data_, share_state_.get());
 
   // construct-JIT auto-gate (mirrors the tuner's): the one-time NVRTC
-  // compile + self-test (~230ms) amortizes only on real runs
+  // compile + self-test (~230ms) amortizes only on real runs. Vector mode
+  // launches the construct kernels once per gradient plane through swapped
+  // pointers, which the JIT capture does not model -- keep it off there.
   cuda_histogram_constructor_->SetConstructJITAllowed(
+      vec_num_targets_ <= 1 &&
       FalcataPlan::Get().construct_jit &&
       (FalcataPlan::Get().construct_jit_explicit || config_->num_iterations >= 300));
 
   const auto& feature_hist_offsets = share_state_->feature_hist_offsets();
   num_total_bin_ = feature_hist_offsets.empty() ? 0 : static_cast<int>(feature_hist_offsets.back());
+  // the partition's bin count is ONLY used for leaf histogram slot arithmetic
+  // (cuda_hist + 2 * leaf * num_total_bin); vector mode widens each slot to T
+  // contiguous planes, so hand it the per-slot width
   cuda_data_partition_.reset(new CUDADataPartition(
-    train_data_, num_total_bin_, config_->num_leaves, num_threads_, config_->use_quantized_grad,
+    train_data_, num_total_bin_ * std::max(1, vec_num_targets_), config_->num_leaves,
+    num_threads_, config_->use_quantized_grad,
     cuda_histogram_constructor_->cuda_hist_pointer()));
   cuda_data_partition_->SetNCCLInfo(nccl_communicator_, nccl_gpu_rank_, local_gpu_rank_, gpu_device_id_, global_num_data_);
   cuda_data_partition_->Init();
@@ -287,6 +302,11 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // hybrid level-batched growth is on by default; cuda_plan=auto,hybrid:off
   // falls back to the classic one-split-at-a-time leaf-wise loop everywhere
   use_hybrid_growth_ = FalcataPlan::Get().hybrid;
+  // vector-leaf training rides the classic per-split loop only: the hybrid
+  // level flows would need plane-aware batched kernels
+  if (vec_num_targets_ > 1) {
+    use_hybrid_growth_ = false;
+  }
   // Monotone constraints are inherited down the tree: a leaf's [min, max] bounds
   // come from the splits already applied above it. Level-batched growth scores a
   // whole level before applying any of it, so the children of a level's splits
@@ -345,6 +365,13 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
                                    config_->cegb_tradeoff,
                                    config_->cegb_penalty_split,
                                    train_data_);
+  if (vec_num_targets_ > 1) {
+    CheckVectorLeafSupported();
+    cuda_best_split_finder_->InitVectorMode(vec_num_targets_);
+    vec_plane_structs_.Resize(2 * static_cast<size_t>(vec_num_targets_));
+    vec_root_sum_gradients_.resize(vec_num_targets_, 0.0);
+    vec_root_sum_hessians_.resize(vec_num_targets_, 0.0);
+  }
 
   leaf_best_split_feature_.resize(config_->num_leaves, -1);
   leaf_best_split_threshold_.resize(config_->num_leaves, 0);
@@ -368,8 +395,9 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   }
 
   if (!boosting_on_cuda_) {
-    cuda_gradients_.Resize(static_cast<size_t>(num_data_));
-    cuda_hessians_.Resize(static_cast<size_t>(num_data_));
+    const size_t grad_planes = static_cast<size_t>(std::max(1, vec_num_targets_));
+    cuda_gradients_.Resize(static_cast<size_t>(num_data_) * grad_planes);
+    cuda_hessians_.Resize(static_cast<size_t>(num_data_) * grad_planes);
   }
   AllocateBitset();
 
@@ -425,8 +453,10 @@ void CUDASingleGPUTreeLearner::SyncHistFP32() {
 void CUDASingleGPUTreeLearner::BeforeTrain() {
   const data_size_t root_num_data = cuda_data_partition_->root_num_data();
   if (!boosting_on_cuda_) {
-    CopyFromHostToCUDADevice<score_t>(cuda_gradients_.RawData(), gradients_, static_cast<size_t>(num_data_), __FILE__, __LINE__);
-    CopyFromHostToCUDADevice<score_t>(cuda_hessians_.RawData(), hessians_, static_cast<size_t>(num_data_), __FILE__, __LINE__);
+    const size_t grad_count = static_cast<size_t>(num_data_) *
+      static_cast<size_t>(std::max(1, vec_num_targets_));
+    CopyFromHostToCUDADevice<score_t>(cuda_gradients_.RawData(), gradients_, grad_count, __FILE__, __LINE__);
+    CopyFromHostToCUDADevice<score_t>(cuda_hessians_.RawData(), hessians_, grad_count, __FILE__, __LINE__);
     gradients_ = cuda_gradients_.RawData();
     hessians_ = cuda_hessians_.RawData();
   }
@@ -505,6 +535,9 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
   }
   leaf_num_data_[0] = root_num_data;
   cuda_larger_leaf_splits_->InitValues();
+  if (vec_num_targets_ > 1) {
+    VectorInitRootPlanes(leaf_splits_init_indices, root_num_data);
+  }
   if (next_tree_col_sample_ready_) {
     // the previous Train() already drew this tree's column sample (prefill)
     next_tree_col_sample_ready_ = false;
@@ -1124,6 +1157,119 @@ void CUDASingleGPUTreeLearner::EnqueuePairBestSplitSearch(const CUDATree* tree,
   global_timer.Stop("CUDASingleGPUTreeLearner::FindBestSplitsForLeaf");
   cuda_histogram_constructor_->SetActivePipeline(0);
   cuda_best_split_finder_->SetActiveHistPipeline(0);
+}
+
+void CUDASingleGPUTreeLearner::CheckVectorLeafSupported() const {
+  if (vec_num_targets_ > 16) {
+    Log::Fatal("tree_mode=vector_leaf supports at most 16 targets "
+               "(num_class=%d requested).", vec_num_targets_);
+  }
+  if (has_categorical_feature_) {
+    Log::Fatal("tree_mode=vector_leaf multi-target training does not support "
+               "categorical features yet.");
+  }
+  if (cuda_best_split_finder_->use_global_memory()) {
+    Log::Fatal("tree_mode=vector_leaf multi-target training requires every "
+               "feature to fit %d histogram bins (reduce max_bin).",
+               NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER);
+  }
+  if (select_features_by_node_) {
+    Log::Fatal("tree_mode=vector_leaf multi-target training does not support "
+               "interaction constraints or feature_fraction_bynode.");
+  }
+  if (nccl_communicator_ != nullptr || fp_merge_state_ != nullptr) {
+    Log::Fatal("tree_mode=vector_leaf multi-target training is single-GPU only.");
+  }
+  if (cuda_histogram_constructor_->hist_fp32()) {
+    Log::Fatal("tree_mode=vector_leaf multi-target training requires "
+               "cuda_precision=fp64.");
+  }
+}
+
+void CUDASingleGPUTreeLearner::VectorInitRootPlanes(
+    const data_size_t* leaf_splits_init_indices, const data_size_t root_num_data) {
+  const int num_targets = vec_num_targets_;
+  CUDALeafSplitsStruct* planes = vec_plane_structs_.RawData();
+  // plane 0 is exactly the primary init BeforeTrain just ran
+  CopyFromCUDADeviceToCUDADevice<CUDALeafSplitsStruct>(
+    planes, cuda_smaller_leaf_splits_->GetCUDAStruct(), 1, __FILE__, __LINE__);
+  vec_root_sum_gradients_[0] = leaf_sum_gradients_[0];
+  vec_root_sum_hessians_[0] = leaf_sum_hessians_[0];
+  // planes 1..T-1: rerun the root reduction on each target's gradient slice
+  // into the primary struct, snapshot it into the plane slab, then restore
+  // plane 0 as the primary contents
+  for (int t = 1; t < num_targets; ++t) {
+    cuda_smaller_leaf_splits_->InitValues(
+      config_->lambda_l1,
+      config_->lambda_l2,
+      config_->max_delta_step,
+      gradients_ + static_cast<size_t>(t) * num_data_,
+      hessians_ + static_cast<size_t>(t) * num_data_,
+      leaf_splits_init_indices,
+      cuda_data_partition_->cuda_data_indices(),
+      root_num_data,
+      cuda_histogram_constructor_->cuda_hist_pointer() +
+        static_cast<size_t>(t) * 2 * num_total_bin_,
+      &vec_root_sum_gradients_[t],
+      &vec_root_sum_hessians_[t]);
+    CopyFromCUDADeviceToCUDADevice<CUDALeafSplitsStruct>(
+      planes + t, cuda_smaller_leaf_splits_->GetCUDAStruct(), 1, __FILE__, __LINE__);
+  }
+  if (num_targets > 1) {
+    CopyFromCUDADeviceToCUDADevice<CUDALeafSplitsStruct>(
+      cuda_smaller_leaf_splits_->GetCUDAStructRef(), planes, 1, __FILE__, __LINE__);
+  }
+  // larger-leaf planes start empty, like the primary larger struct
+  for (int t = 0; t < num_targets; ++t) {
+    CopyFromCUDADeviceToCUDADevice<CUDALeafSplitsStruct>(
+      planes + num_targets + t, cuda_larger_leaf_splits_->GetCUDAStruct(), 1, __FILE__, __LINE__);
+  }
+}
+
+void CUDASingleGPUTreeLearner::EnqueuePairBestSplitSearchVector(const CUDATree* tree,
+    const int smaller_leaf_index, const int larger_leaf_index) {
+  const int num_targets = vec_num_targets_;
+  CUDALeafSplitsStruct* planes = vec_plane_structs_.RawData();
+  const data_size_t num_data_in_smaller_leaf = leaf_num_data_[smaller_leaf_index];
+  const data_size_t num_data_in_larger_leaf =
+    larger_leaf_index < 0 ? 0 : leaf_num_data_[larger_leaf_index];
+  const double sum_hessians_in_smaller_leaf = leaf_sum_hessians_[smaller_leaf_index];
+  const double sum_hessians_in_larger_leaf =
+    larger_leaf_index < 0 ? 0 : leaf_sum_hessians_[larger_leaf_index];
+  global_timer.Start("CUDASingleGPUTreeLearner::ConstructHistogramForLeaf");
+  for (int t = 0; t < num_targets; ++t) {
+    cuda_histogram_constructor_->SelectGradientPlane(
+      gradients_ + static_cast<size_t>(t) * num_data_,
+      hessians_ + static_cast<size_t>(t) * num_data_);
+    cuda_histogram_constructor_->ConstructHistogramForLeaf(
+      planes + t,
+      planes + num_targets + t,
+      num_data_in_smaller_leaf,
+      num_data_in_larger_leaf,
+      num_data_in_smaller_leaf,
+      num_data_in_larger_leaf,
+      sum_hessians_in_smaller_leaf,
+      sum_hessians_in_larger_leaf,
+      0);
+    cuda_histogram_constructor_->SubtractHistogramForLeaf(
+      planes + t,
+      planes + num_targets + t,
+      false, 0, 0, 0);
+  }
+  cuda_histogram_constructor_->SelectGradientPlane(gradients_, hessians_);
+  global_timer.Stop("CUDASingleGPUTreeLearner::ConstructHistogramForLeaf");
+  global_timer.Start("CUDASingleGPUTreeLearner::FindBestSplitsForLeaf");
+  cuda_best_split_finder_->FindBestSplitsForLeafVector(
+    planes,
+    planes + num_targets,
+    smaller_leaf_index, larger_leaf_index,
+    num_data_in_smaller_leaf, num_data_in_larger_leaf,
+    sum_hessians_in_smaller_leaf, sum_hessians_in_larger_leaf,
+    config_->max_depth <= 0 || tree->leaf_depth(smaller_leaf_index) < config_->max_depth,
+    larger_leaf_index < 0 || config_->max_depth <= 0 ||
+      tree->leaf_depth(larger_leaf_index) < config_->max_depth,
+    /*synchronize=*/true);
+  global_timer.Stop("CUDASingleGPUTreeLearner::FindBestSplitsForLeaf");
 }
 
 void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
@@ -3279,12 +3425,20 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   }
   std::unique_ptr<CUDATree> tree(new CUDATree(config_->num_leaves, track_branch_features,
     config_->linear_tree, gpu_device_id_, has_categorical_feature_,
-    cuda_tree_pool_buffer_.RawData()));
+    cuda_tree_pool_buffer_.RawData(), std::max(1, vec_num_targets_)));
   // set the root value by hand, as it is not handled by splits. When the root
   // sums were deferred (single-sync hybrid growth), this happens lazily in
   // EnsureRootSumsReadBack -- the root value only survives when the tree ends
   // up a stump (any split overwrites leaf 0's output on device).
-  if (!root_sums_deferred_) {
+  if (vec_num_targets_ > 1) {
+    for (int t = 0; t < vec_num_targets_; ++t) {
+      tree->SetLeafOutput(0, t, CUDALeafSplits::CalculateSplittedLeafOutput<true, false>(
+        vec_root_sum_gradients_[t], vec_root_sum_hessians_[t],
+        config_->lambda_l1, config_->lambda_l2, config_->path_smooth, config_->max_delta_step,
+        static_cast<data_size_t>(num_data_), 0.0));
+    }
+    tree->SyncLeafOutputFromHostToCUDA();
+  } else if (!root_sums_deferred_) {
     tree->SetLeafOutput(0, CUDALeafSplits::CalculateSplittedLeafOutput<true, false>(
       leaf_sum_gradients_[smaller_leaf_index_], leaf_sum_hessians_[smaller_leaf_index_],
       config_->lambda_l1, config_->lambda_l2,  config_->path_smooth, config_->max_delta_step,
@@ -3344,10 +3498,14 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
             "budget bound before max_depth). Raise num_leaves to at least "
             "2^max_depth - 1 or use tree_learner=serial.");
       }
-      EnqueuePairBestSplitSearch(tree.get(),
-        cuda_smaller_leaf_splits_->GetCUDAStruct(),
-        cuda_larger_leaf_splits_->GetCUDAStruct(),
-        smaller_leaf_index_, larger_leaf_index_, /*synchronize=*/true);
+      if (vec_num_targets_ > 1) {
+        EnqueuePairBestSplitSearchVector(tree.get(), smaller_leaf_index_, larger_leaf_index_);
+      } else {
+        EnqueuePairBestSplitSearch(tree.get(),
+          cuda_smaller_leaf_splits_->GetCUDAStruct(),
+          cuda_larger_leaf_splits_->GetCUDAStruct(),
+          smaller_leaf_index_, larger_leaf_index_, /*synchronize=*/true);
+      }
     }
     pair_search_cached = false;
     global_timer.Start("CUDASingleGPUTreeLearner::FindBestFromAllSplits");
@@ -3547,6 +3705,11 @@ int CUDASingleGPUTreeLearner::ApplySplit(CUDATree* tree, const CUDASplitInfo* be
                                       leaf_best_split_threshold_[leaf_index]),
                                      train_data_->FeatureBinMapper(leaf_best_split_feature_[leaf_index])->missing_type(),
                                      best_split_info);
+    if (vec_num_targets_ > 1) {
+      // the split kernel wrote the target-0 (mirror) outputs; record every
+      // target's child outputs from the winning split's vector payload
+      tree->SetVectorLeafValuesFromSplit(leaf_index, right_leaf_index, best_split_info);
+    }
   }
 
   // The right leaf is a freshly allocated hist slot that hasn't been zeroed.
@@ -3578,6 +3741,12 @@ int CUDASingleGPUTreeLearner::ApplySplit(CUDATree* tree, const CUDASplitInfo* be
                               global_num_data_in_leaf_.data() + right_leaf_index,
                               /*point_structs_at_main=*/smaller_slot != nullptr,
                               deferred_slot);
+  if (vec_num_targets_ > 1) {
+    // the partition seeded the primary smaller/larger structs (target-0 sums,
+    // plane-0 histogram pointers); fan them out into the per-plane structs
+    // with per-target sums/values from the split's vector payload
+    LaunchVectorPlaneFanOutKernel(best_split_info, leaf_index);
+  }
   if (config_->use_quantized_grad && nccl_communicator_ != nullptr) {
     // The GLOBAL per-leaf histogram bit widths were only ever set for the ROOT
     // (BeforeTrain). Every other leaf kept 0, so GetHistBitsInLeaf<true>()
@@ -3803,7 +3972,7 @@ void CUDASingleGPUTreeLearner::ResetTrainingData(
   CHECK_EQ(num_features_, train_data_->num_features());
   cuda_histogram_constructor_->ResetTrainingData(train_data, share_state_.get());
   cuda_data_partition_->ResetTrainingData(train_data,
-    static_cast<int>(share_state_->feature_hist_offsets().back()),
+    static_cast<int>(share_state_->feature_hist_offsets().back()) * std::max(1, vec_num_targets_),
     cuda_histogram_constructor_->cuda_hist_pointer());
   cuda_best_split_finder_->ResetTrainingData(
     cuda_histogram_constructor_->cuda_hist(),
@@ -3814,8 +3983,9 @@ void CUDASingleGPUTreeLearner::ResetTrainingData(
   cuda_larger_leaf_splits_->Resize(num_data_);
   CHECK_EQ(is_constant_hessian, share_state_->is_constant_hessian);
   if (!boosting_on_cuda_) {
-    cuda_gradients_.Resize(static_cast<size_t>(num_data_));
-    cuda_hessians_.Resize(static_cast<size_t>(num_data_));
+    const size_t grad_planes = static_cast<size_t>(std::max(1, vec_num_targets_));
+    cuda_gradients_.Resize(static_cast<size_t>(num_data_) * grad_planes);
+    cuda_hessians_.Resize(static_cast<size_t>(num_data_) * grad_planes);
   }
   // training data changed: the predrawn column sample and any prefilled
   // compact view belong to the old data / re-seeded sampler

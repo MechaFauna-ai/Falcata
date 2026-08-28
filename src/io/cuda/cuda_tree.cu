@@ -438,6 +438,11 @@ void CUDATree::LaunchShrinkageKernel(const double rate) {
   const int num_threads_per_block = 1024;
   const int num_blocks = (num_leaves_ + num_threads_per_block - 1) / num_threads_per_block;
   ShrinkageKernel<<<num_blocks, num_threads_per_block>>>(rate, cuda_leaf_value_.RawData(), num_leaves_);
+  if (leaf_value_dim_ > 1 && cuda_leaf_values_vec_.Size() > 0) {
+    const int num_values = num_leaves_ * leaf_value_dim_;
+    const int num_vec_blocks = (num_values + num_threads_per_block - 1) / num_threads_per_block;
+    ShrinkageKernel<<<num_vec_blocks, num_threads_per_block>>>(rate, cuda_leaf_values_vec_.RawData(), num_values);
+  }
 }
 
 __global__ void AddBiasKernel(const double val, double* cuda_leaf_value, const int num_leaves) {
@@ -451,6 +456,35 @@ void CUDATree::LaunchAddBiasKernel(const double val) {
   const int num_threads_per_block = 1024;
   const int num_blocks = (num_leaves_ + num_threads_per_block - 1) / num_threads_per_block;
   AddBiasKernel<<<num_blocks, num_threads_per_block>>>(val, cuda_leaf_value_.RawData(), num_leaves_);
+  if (leaf_value_dim_ > 1 && cuda_leaf_values_vec_.Size() > 0) {
+    const int num_values = num_leaves_ * leaf_value_dim_;
+    const int num_vec_blocks = (num_values + num_threads_per_block - 1) / num_threads_per_block;
+    AddBiasKernel<<<num_vec_blocks, num_threads_per_block>>>(val, cuda_leaf_values_vec_.RawData(), num_values);
+  }
+}
+
+__global__ void SetVectorLeafValuesFromSplitKernel(
+  const int left_leaf_index, const int right_leaf_index, const int leaf_value_dim,
+  const CUDASplitInfo* cuda_split_info, double* cuda_leaf_values_vec) {
+  const int target = static_cast<int>(threadIdx.x + blockIdx.x * blockDim.x);
+  if (target < leaf_value_dim) {
+    const double* payload = cuda_split_info->vec_payload;
+    const double left_value = payload[kVecLeftValue * leaf_value_dim + target];
+    const double right_value = payload[kVecRightValue * leaf_value_dim + target];
+    cuda_leaf_values_vec[static_cast<size_t>(left_leaf_index) * leaf_value_dim + target] =
+      isnan(left_value) ? 0.0 : left_value;
+    cuda_leaf_values_vec[static_cast<size_t>(right_leaf_index) * leaf_value_dim + target] =
+      isnan(right_value) ? 0.0 : right_value;
+  }
+}
+
+void CUDATree::LaunchSetVectorLeafValuesFromSplitKernel(const int left_leaf_index,
+  const int right_leaf_index, const CUDASplitInfo* cuda_split_info) {
+  const int num_threads_per_block = 32;
+  const int num_blocks = (leaf_value_dim_ + num_threads_per_block - 1) / num_threads_per_block;
+  SetVectorLeafValuesFromSplitKernel<<<num_blocks, num_threads_per_block, 0, cuda_stream_>>>(
+    left_leaf_index, right_leaf_index, leaf_value_dim_, cuda_split_info,
+    cuda_leaf_values_vec_.RawData());
 }
 
 template <bool USE_INDICES, bool USE_PACKED>
@@ -480,6 +514,11 @@ __global__ void AddPredictionToScoreKernel(
   const int* cuda_left_child,
   const int* cuda_right_child,
   const double* cuda_leaf_value,
+  // vector-leaf outputs (nullptr in scalar mode): one traversal feeds every
+  // target's score plane (plane stride == the dataset's total row count)
+  const double* cuda_leaf_values_vec,
+  const int leaf_value_dim,
+  const data_size_t score_plane_stride,
   const uint32_t* cuda_bitset_inner,
   const int* cuda_cat_boundaries_inner,
   // output
@@ -571,7 +610,15 @@ __global__ void AddPredictionToScoreKernel(
         }
       }
     }
-    score[data_index] += cuda_leaf_value[~node];
+    if (cuda_leaf_values_vec == nullptr) {
+      score[data_index] += cuda_leaf_value[~node];
+    } else {
+      const int leaf = ~node;
+      for (int target = 0; target < leaf_value_dim; ++target) {
+        score[static_cast<size_t>(target) * score_plane_stride + data_index] +=
+          cuda_leaf_values_vec[static_cast<size_t>(leaf) * leaf_value_dim + target];
+      }
+    }
   }
 }
 
@@ -662,6 +709,11 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
     self->cuda_bitset_inner_.InitFromHostVector(cat_threshold_inner_);
     self->cuda_cat_boundaries_inner_.InitFromHostVector(cat_boundaries_inner_);
   }
+  // vector-leaf outputs (retained through ToHost) and the score plane stride:
+  // score planes are laid out [target][row] over the DATASET's full row count
+  const double* score_leaf_values_vec =
+    leaf_value_dim_ > 1 ? cuda_leaf_values_vec_.RawData() : nullptr;
+  const data_size_t score_plane_stride = data->num_data();
   if (packed_serves_oob) {
     AddPredictionToScoreKernel<true, true><<<num_blocks, num_threads_per_block_add_prediction_to_score_>>>(
       // dataset information
@@ -686,6 +738,9 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
       cuda_left_child_.RawData(),
       cuda_right_child_.RawData(),
       cuda_leaf_value_.RawData(),
+      score_leaf_values_vec,
+      leaf_value_dim_,
+      score_plane_stride,
       cuda_bitset_inner_.RawDataReadOnly(),
       cuda_cat_boundaries_inner_.RawDataReadOnly(),
       // output
@@ -714,6 +769,9 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
       cuda_left_child_.RawData(),
       cuda_right_child_.RawData(),
       cuda_leaf_value_.RawData(),
+      score_leaf_values_vec,
+      leaf_value_dim_,
+      score_plane_stride,
       cuda_bitset_inner_.RawDataReadOnly(),
       cuda_cat_boundaries_inner_.RawDataReadOnly(),
       // output
@@ -742,6 +800,9 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
       cuda_left_child_.RawData(),
       cuda_right_child_.RawData(),
       cuda_leaf_value_.RawData(),
+      score_leaf_values_vec,
+      leaf_value_dim_,
+      score_plane_stride,
       cuda_bitset_inner_.RawDataReadOnly(),
       cuda_cat_boundaries_inner_.RawDataReadOnly(),
       // output

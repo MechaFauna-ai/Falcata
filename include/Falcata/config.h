@@ -247,7 +247,7 @@ struct Config {
   // options = scalar, vector_leaf
   // desc = controls whether each tree leaf stores one output or a vector of outputs
   // desc = ``scalar`` is the production path and remains the default
-  // desc = ``vector_leaf`` currently exposes the T=1 model and prediction plumbing only; multi-target training kernels will land in a later milestone
+  // desc = ``vector_leaf`` with ``objective=multi_regression`` and ``num_class`` targets trains ONE shared-structure tree per iteration whose leaves hold a vector of outputs (CUDA only, L2 loss, up to 16 targets); with ``objective=regression`` it exposes the T=1 model and prediction plumbing
   std::string tree_mode = "scalar";
 
   // alias = num_thread, nthread, nthreads, n_jobs

@@ -16,8 +16,8 @@ namespace Falcata {
 
 CUDATree::CUDATree(int max_leaves, bool track_branch_features, bool is_linear,
   const int gpu_device_id, const bool has_categorical_feature,
-  uint8_t* pooled_device_buffer):
-Tree(max_leaves, track_branch_features, is_linear),
+  uint8_t* pooled_device_buffer, int leaf_value_dim):
+Tree(max_leaves, track_branch_features, is_linear, leaf_value_dim),
 num_threads_per_block_add_prediction_to_score_(1024) {
   is_cuda_tree_ = true;
   if (gpu_device_id >= 0) {
@@ -30,6 +30,12 @@ num_threads_per_block_add_prediction_to_score_(1024) {
     cuda_cat_boundaries_inner_.Resize(max_leaves);
   }
   InitCUDAMemory(pooled_device_buffer);
+  if (leaf_value_dim_ > 1) {
+    cuda_leaf_values_vec_.Resize(static_cast<size_t>(max_leaves_) * leaf_value_dim_);
+    // the root's vector output must start defined (a stump reads it back)
+    CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_leaf_values_vec_.RawData()), 0,
+      static_cast<size_t>(leaf_value_dim_) * sizeof(double)));
+  }
 }
 
 CUDATree::CUDATree(const Tree* host_tree):
@@ -244,6 +250,12 @@ void CUDATree::AddPredictionToScore(const Dataset* data,
   SynchronizeCUDADevice(__FILE__, __LINE__);
 }
 
+void CUDATree::SetVectorLeafValuesFromSplit(const int left_leaf_index, const int right_leaf_index,
+                                            const CUDASplitInfo* cuda_split_info) {
+  CHECK_GT(leaf_value_dim_, 1);
+  LaunchSetVectorLeafValuesFromSplitKernel(left_leaf_index, right_leaf_index, cuda_split_info);
+}
+
 inline void CUDATree::Shrinkage(double rate) {
   Tree::Shrinkage(rate);
   LaunchShrinkageKernel(rate);
@@ -337,6 +349,12 @@ void CUDATree::ToHost() {
     cat_threshold_inner_ = cuda_bitset_inner_.ToHost();
   }
 
+  if (leaf_value_dim_ > 1) {
+    leaf_values_vec_.resize(static_cast<size_t>(max_leaves_) * leaf_value_dim_);
+    CopyFromCUDADeviceToHost<double>(leaf_values_vec_.data(), cuda_leaf_values_vec_.RawData(),
+      num_leaves_size * static_cast<size_t>(leaf_value_dim_), __FILE__, __LINE__);
+  }
+
   ShrinkHostVectorsAndReleaseDevice();
 }
 
@@ -363,6 +381,10 @@ void CUDATree::ShrinkHostVectorsAndReleaseDevice() {
     leaf_weight_.resize(n_leaves); leaf_weight_.shrink_to_fit();
     leaf_count_.resize(n_leaves); leaf_count_.shrink_to_fit();
     leaf_depth_.resize(n_leaves); leaf_depth_.shrink_to_fit();
+    if (leaf_value_dim_ > 1) {
+      leaf_values_vec_.resize(n_leaves * leaf_value_dim_);
+      leaf_values_vec_.shrink_to_fit();
+    }
   }
 
   SynchronizeCUDADevice(__FILE__, __LINE__);
@@ -378,6 +400,12 @@ void CUDATree::ShrinkHostVectorsAndReleaseDevice() {
     cuda_leaf_value_.Resize(static_cast<size_t>(num_leaves_));
   }
   cuda_leaf_value_.Materialize();
+  // the vector-leaf outputs are retained for the same reasons (score updates,
+  // shrinkage); already owned memory, just shrunk
+  if (leaf_value_dim_ > 1 && num_leaves_ > 0 && num_leaves_ < max_leaves_ &&
+      cuda_leaf_values_vec_.Size() > 0) {
+    cuda_leaf_values_vec_.Resize(static_cast<size_t>(num_leaves_) * leaf_value_dim_);
+  }
   cuda_left_child_.Clear();
   cuda_right_child_.Clear();
   cuda_split_feature_inner_.Clear();
@@ -481,10 +509,18 @@ void CUDATree::RebuildFromHostSplits(const std::vector<CUDATreeHostSplit>& split
 
 void CUDATree::SyncLeafOutputFromHostToCUDA() {
   CopyFromHostToCUDADevice<double>(cuda_leaf_value_.RawData(), leaf_value_.data(), leaf_value_.size(), __FILE__, __LINE__);
+  if (leaf_value_dim_ > 1) {
+    const size_t count = std::min(leaf_values_vec_.size(), cuda_leaf_values_vec_.Size());
+    CopyFromHostToCUDADevice<double>(cuda_leaf_values_vec_.RawData(), leaf_values_vec_.data(), count, __FILE__, __LINE__);
+  }
 }
 
 void CUDATree::SyncLeafOutputFromCUDAToHost() {
   CopyFromCUDADeviceToHost<double>(leaf_value_.data(), cuda_leaf_value_.RawData(), leaf_value_.size(), __FILE__, __LINE__);
+  if (leaf_value_dim_ > 1) {
+    const size_t count = std::min(leaf_values_vec_.size(), cuda_leaf_values_vec_.Size());
+    CopyFromCUDADeviceToHost<double>(leaf_values_vec_.data(), cuda_leaf_values_vec_.RawData(), count, __FILE__, __LINE__);
+  }
 }
 
 void CUDATree::AsConstantTree(double val, int count) {
@@ -497,6 +533,13 @@ void CUDATree::AsConstantTree(double val, int count) {
     cuda_leaf_value_.Resize(1);
   }
   CopyFromHostToCUDADevice<double>(cuda_leaf_value_.RawData(), &val, 1, __FILE__, __LINE__);
+  if (leaf_value_dim_ > 1) {
+    if (cuda_leaf_values_vec_.Size() < static_cast<size_t>(leaf_value_dim_)) {
+      cuda_leaf_values_vec_.Resize(static_cast<size_t>(leaf_value_dim_));
+    }
+    CopyFromHostToCUDADevice<double>(cuda_leaf_values_vec_.RawData(), leaf_values_vec_.data(),
+      static_cast<size_t>(leaf_value_dim_), __FILE__, __LINE__);
+  }
   if (cuda_leaf_count_.Size() > 0) {
     CopyFromHostToCUDADevice<int>(cuda_leaf_count_.RawData(), &count, 1, __FILE__, __LINE__);
   }

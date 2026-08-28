@@ -2239,6 +2239,23 @@ __global__ void AddPredictionToScoreKernel(
   }
 }
 
+// Vector-leaf train-score update: one leaf lookup feeds every target's score
+// plane (planes are [target][row] over the full training row count). Bagging
+// is gated off in vector mode, so only the direct row mapping exists.
+__global__ void AddPredictionToScoreVectorKernel(
+  const double* leaf_values_vec, const int leaf_value_dim,
+  double* cuda_scores,
+  const int* cuda_data_index_to_leaf_index, const data_size_t num_data) {
+  const data_size_t data_index = static_cast<data_size_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (data_index < num_data) {
+    const int leaf_index = cuda_data_index_to_leaf_index[data_index];
+    for (int target = 0; target < leaf_value_dim; ++target) {
+      cuda_scores[static_cast<size_t>(target) * num_data + data_index] +=
+        leaf_values_vec[static_cast<size_t>(leaf_index) * leaf_value_dim + target];
+    }
+  }
+}
+
 void CUDADataPartition::LaunchAddPredictionToScoreKernel(const double* leaf_value, double* cuda_scores) {
   global_timer.Start("CUDADataPartition::AddPredictionToScoreKernel");
   const data_size_t num_data_in_root = root_num_data();
@@ -2250,6 +2267,19 @@ void CUDADataPartition::LaunchAddPredictionToScoreKernel(const double* leaf_valu
     AddPredictionToScoreKernel<false><<<num_blocks, FILL_INDICES_BLOCK_SIZE_DATA_PARTITION>>>(
       cuda_data_indices_.RawData(), leaf_value, cuda_scores, cuda_data_index_to_leaf_index_.RawData(), num_data_in_root);
   }
+  SynchronizeCUDADevice(__FILE__, __LINE__);
+  global_timer.Stop("CUDADataPartition::AddPredictionToScoreKernel");
+}
+
+void CUDADataPartition::LaunchAddPredictionToScoreVectorKernel(
+  const double* leaf_values_vec, const int leaf_value_dim, double* cuda_scores) {
+  global_timer.Start("CUDADataPartition::AddPredictionToScoreKernel");
+  CHECK(!use_bagging_);
+  const data_size_t num_data_in_root = root_num_data();
+  const int num_blocks = (num_data_in_root + FILL_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / FILL_INDICES_BLOCK_SIZE_DATA_PARTITION;
+  AddPredictionToScoreVectorKernel<<<num_blocks, FILL_INDICES_BLOCK_SIZE_DATA_PARTITION>>>(
+    leaf_values_vec, leaf_value_dim, cuda_scores,
+    cuda_data_index_to_leaf_index_.RawData(), num_data_in_root);
   SynchronizeCUDADevice(__FILE__, __LINE__);
   global_timer.Stop("CUDADataPartition::AddPredictionToScoreKernel");
 }

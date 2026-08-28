@@ -569,6 +569,54 @@ void CUDABestSplitFinder::FindBestSplitsForLeaf(
   global_timer.Stop("CUDABestSplitFinder::LaunchSyncBestSplitForLeafKernel");
 }
 
+void CUDABestSplitFinder::InitVectorMode(const int num_targets) {
+  CHECK_GT(num_targets, 1);
+  CHECK(!has_categorical_feature_);
+  CHECK(!use_global_memory_);
+  vec_num_targets_ = num_targets;
+  const size_t fields_per_slot =
+    static_cast<size_t>(kNumVecPayloadFields) * static_cast<size_t>(num_targets);
+  const size_t task_slots = cuda_best_split_info_.Size();
+  const size_t leaf_slots = cuda_leaf_best_split_info_.Size();
+  cuda_vec_payload_task_.Resize(task_slots * fields_per_slot);
+  cuda_vec_payload_leaf_.Resize(leaf_slots * fields_per_slot);
+  LaunchAssignVecPayloadKernel(cuda_best_split_info_.RawData(),
+                               cuda_vec_payload_task_.RawData(), task_slots);
+  LaunchAssignVecPayloadKernel(cuda_leaf_best_split_info_.RawData(),
+                               cuda_vec_payload_leaf_.RawData(), leaf_slots);
+}
+
+void CUDABestSplitFinder::FindBestSplitsForLeafVector(
+  const CUDALeafSplitsStruct* smaller_leaf_splits_planes,
+  const CUDALeafSplitsStruct* larger_leaf_splits_planes,
+  const int smaller_leaf_index,
+  const int larger_leaf_index,
+  const data_size_t num_data_in_smaller_leaf,
+  const data_size_t num_data_in_larger_leaf,
+  const double sum_hessians_in_smaller_leaf,
+  const double sum_hessians_in_larger_leaf,
+  const bool smaller_leaf_below_max_depth,
+  const bool larger_leaf_below_max_depth,
+  const bool synchronize) {
+  CHECK_GT(vec_num_targets_, 1);
+  const bool is_smaller_leaf_valid = (num_data_in_smaller_leaf > min_data_in_leaf_ &&
+    sum_hessians_in_smaller_leaf > min_sum_hessian_in_leaf_ &&
+    smaller_leaf_below_max_depth);
+  const bool is_larger_leaf_valid = (num_data_in_larger_leaf > min_data_in_leaf_ &&
+    sum_hessians_in_larger_leaf > min_sum_hessian_in_leaf_ && larger_leaf_index >= 0 &&
+    larger_leaf_below_max_depth);
+  LaunchFindBestSplitsForLeafKernelVector(
+    smaller_leaf_splits_planes, larger_leaf_splits_planes,
+    is_smaller_leaf_valid, is_larger_leaf_valid,
+    num_data_in_smaller_leaf, num_data_in_larger_leaf);
+  global_timer.Start("CUDABestSplitFinder::LaunchSyncBestSplitForLeafKernel");
+  LaunchSyncBestSplitForLeafKernel(smaller_leaf_index, larger_leaf_index, is_smaller_leaf_valid, is_larger_leaf_valid);
+  if (synchronize) {
+    SynchronizeCUDADevice(__FILE__, __LINE__);
+  }
+  global_timer.Stop("CUDABestSplitFinder::LaunchSyncBestSplitForLeafKernel");
+}
+
 void CUDABestSplitFinder::EnsureHybridLevelCapacity(const int num_pairs) {
   const size_t needed = 2 * static_cast<size_t>(num_tasks_) * static_cast<size_t>(num_pairs);
   if (cuda_best_split_info_.Size() < needed) {

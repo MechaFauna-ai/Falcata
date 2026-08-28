@@ -246,7 +246,7 @@ Core Parameters
 
    -  ``scalar`` is the production path and remains the default
 
-   -  ``vector_leaf`` currently exposes the T=1 model and prediction plumbing only; multi-target training kernels will land in a later milestone
+   -  ``vector_leaf`` with ``objective=multi_regression`` and ``num_class`` targets trains ONE shared-structure tree per iteration whose leaves hold a vector of outputs (CUDA only, L2 loss, up to 16 targets); with ``objective=regression`` it exposes the T=1 model and prediction plumbing
 
 -  ``num_threads`` :raw-html:`<a id="num_threads" title="Permalink to this parameter" href="#num_threads">&#x1F517;&#xFE0E;</a>`, default = ``0``, type = int, aliases: ``num_thread``, ``nthread``, ``nthreads``, ``n_jobs``
 

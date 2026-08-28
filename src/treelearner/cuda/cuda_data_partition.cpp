@@ -646,7 +646,12 @@ void CUDADataPartition::UpdateTrainScore(const Tree* tree, double* scores) {
     // we need restore the order of indices in cuda_data_indices_
     CopyFromCUDADeviceToCUDADevice<data_size_t>(cuda_data_indices_.RawData(), used_indices_, static_cast<size_t>(num_used_indices_), __FILE__, __LINE__);
   }
-  LaunchAddPredictionToScoreKernel(cuda_tree->cuda_leaf_value(), scores);
+  if (cuda_tree->leaf_value_dim() > 1) {
+    LaunchAddPredictionToScoreVectorKernel(cuda_tree->cuda_leaf_values_vec(),
+                                           cuda_tree->leaf_value_dim(), scores);
+  } else {
+    LaunchAddPredictionToScoreKernel(cuda_tree->cuda_leaf_value(), scores);
+  }
 }
 
 void CUDADataPartition::CalcBlockDim(const data_size_t num_data_in_leaf) {

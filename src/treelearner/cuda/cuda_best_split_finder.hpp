@@ -131,6 +131,33 @@ class CUDABestSplitFinder {
 
   void BeforeTrain(const std::vector<int8_t>& is_feature_used_bytree);
 
+  /*! \brief vector-leaf (multi-target) mode: attach a per-slot payload slab
+   *  (kNumVecPayloadFields * num_targets doubles) to every task and leaf
+   *  best-split slot, so the vector find kernel can record per-target child
+   *  sums/values and the sync kernels' wholesale struct copies carry them.
+   *  Called once after Init(); numerical-feature, fp64, shared-memory
+   *  configurations only (the tree learner gates the rest). */
+  void InitVectorMode(const int num_targets);
+
+  /*! \brief per-pair best-split search over T histogram planes: the
+   *  vector-leaf counterpart of FindBestSplitsForLeaf. smaller/larger point at
+   *  T contiguous CUDALeafSplitsStructs (plane t carries the target-t gradient
+   *  sums and histogram plane pointer; plane 0's hessian is the shared one).
+   *  Split gain is the sum of per-target gains; the winner's per-target child
+   *  sums/values land in the slot's vector payload. */
+  void FindBestSplitsForLeafVector(
+    const CUDALeafSplitsStruct* smaller_leaf_splits_planes,
+    const CUDALeafSplitsStruct* larger_leaf_splits_planes,
+    const int smaller_leaf_index,
+    const int larger_leaf_index,
+    const data_size_t num_data_in_smaller_leaf,
+    const data_size_t num_data_in_larger_leaf,
+    const double sum_hessians_in_smaller_leaf,
+    const double sum_hessians_in_larger_leaf,
+    const bool smaller_leaf_below_max_depth,
+    const bool larger_leaf_below_max_depth,
+    const bool synchronize = true);
+
   void FindBestSplitsForLeaf(
     const CUDALeafSplitsStruct* smaller_leaf_splits,
     const CUDALeafSplitsStruct* larger_leaf_splits,
@@ -392,6 +419,16 @@ class CUDABestSplitFinder {
 
   void LaunchFindBestSplitsForLeafKernel(LaunchFindBestSplitsForLeafKernel_PARAMS);
 
+  void LaunchFindBestSplitsForLeafKernelVector(
+    const CUDALeafSplitsStruct* smaller_leaf_splits_planes,
+    const CUDALeafSplitsStruct* larger_leaf_splits_planes,
+    const bool is_smaller_leaf_valid,
+    const bool is_larger_leaf_valid,
+    const data_size_t global_num_data_in_smaller_leaf,
+    const data_size_t global_num_data_in_larger_leaf);
+
+  void LaunchAssignVecPayloadKernel(CUDASplitInfo* cuda_split_infos, double* payload_slab, size_t len);
+
   template <bool USE_RAND>
   void LaunchFindBestSplitsForLeafKernelInner0(LaunchFindBestSplitsForLeafKernel_PARAMS);
 
@@ -581,6 +618,11 @@ class CUDABestSplitFinder {
    *  (GlobalMemory variant); mirrors the grad buffer's two-direction sizing. */
   CUDAVector<data_size_t> cuda_feature_hist_cnt_buffer_;
   CUDAVector<uint32_t> cuda_cat_threshold_leaf_;
+  /*! \brief vector-leaf mode: number of targets (0 = scalar mode) and the
+   *  payload slabs backing the task-slot / leaf-slot CUDASplitInfo payloads */
+  int vec_num_targets_ = 0;
+  CUDAVector<double> cuda_vec_payload_task_;
+  CUDAVector<double> cuda_vec_payload_leaf_;
   CUDAVector<int> cuda_invalidate_leaves_;
   CUDAVector<int> cuda_cat_threshold_real_leaf_;
   CUDAVector<uint32_t> cuda_cat_threshold_feature_;

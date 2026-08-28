@@ -94,7 +94,7 @@ class CUDATree : public Tree {
   */
   explicit CUDATree(int max_leaves, bool track_branch_features, bool is_linear,
     const int gpu_device_id, const bool has_categorical_feature,
-    uint8_t* pooled_device_buffer = nullptr);
+    uint8_t* pooled_device_buffer = nullptr, int leaf_value_dim = 1);
 
   /*! \brief bytes needed by the pooled per-tree device arrays (16 arrays of
    *  max_leaves entries + the batched split descriptors), 8-byte aligned */
@@ -221,6 +221,16 @@ class CUDATree : public Tree {
 
   double* cuda_leaf_value_ref() { return cuda_leaf_value_.RawData(); }
 
+  /*! \brief vector-leaf mode: flat [leaf * leaf_value_dim + target] device
+   *  leaf outputs (empty when leaf_value_dim == 1). Retained after ToHost()
+   *  like cuda_leaf_value_ so score updates and shrinkage can read it. */
+  const double* cuda_leaf_values_vec() const { return cuda_leaf_values_vec_.RawData(); }
+
+  /*! \brief vector-leaf mode: write both children's per-target leaf outputs
+   *  from the winning split's vector payload (called right after Split()) */
+  void SetVectorLeafValuesFromSplit(const int left_leaf_index, const int right_leaf_index,
+                                    const CUDASplitInfo* cuda_split_info);
+
   inline void Shrinkage(double rate) override;
 
   inline void AddBias(double val) override;
@@ -265,6 +275,9 @@ class CUDATree : public Tree {
 
   void LaunchAddBiasKernel(const double val);
 
+  void LaunchSetVectorLeafValuesFromSplitKernel(const int left_leaf_index,
+    const int right_leaf_index, const CUDASplitInfo* cuda_split_info);
+
   /*! \brief internal_count_ of the subtree at node, bottom-up from leaf_count_ */
   data_size_t RebuildInternalCounts(const int node);
 
@@ -284,6 +297,9 @@ class CUDATree : public Tree {
   CUDAVector<double> cuda_internal_value_;
   CUDAVector<int8_t> cuda_decision_type_;
   CUDAVector<double> cuda_leaf_value_;
+  /*! \brief vector-leaf outputs [leaf * leaf_value_dim + target]; own device
+   *  memory (never pooled), empty in scalar mode */
+  CUDAVector<double> cuda_leaf_values_vec_;
   CUDAVector<data_size_t> cuda_leaf_count_;
   CUDAVector<double> cuda_leaf_weight_;
   CUDAVector<data_size_t> cuda_internal_count_;
