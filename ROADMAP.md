@@ -15,19 +15,25 @@ Roughly priority-ordered within groups. Measurements refer to an RTX 5090.
 ## Performance
 
 - **Multi-target training.** Design spec:
-  [docs/design/multi-target-training.md](docs/design/multi-target-training.md).
-  Two variants: (1)
-  round-robin one-tree-per-target (multiclass machinery minus softmax) -- identical
-  models to sequential training, but only ~1.1x/target now that construct is cheap;
-  API-convenience tier. (2) Vector-leaf trees (the differentiator: nobody ships
-  this CUDA-supported on asymmetric trees -- XGBoost's multi_output_tree is
-  experimental/hist-CPU-mostly, CatBoost MultiRMSE is symmetric-only): shared
-  structure, gain = sum of per-target gains, leaf outputs vectors; RMSE-family
-  hessians are identical across targets so hist entries are T grads + 1 shared
-  hess -- est. per-tree cost ~1.3-1.6x single-target at T=5 => ~3.6x per-target
-  speedup vs sequential, plus the shared-structure regularization numerai folks
-  want (MultiRMSE-style). Modeling change: validate per-era, don't assume. FIL
-  predict falls back to CPU for vector-leaf models initially (treelite support).
+  [docs/design/multi-target-training.md](docs/design/multi-target-training.md);
+  vector-leaf plan + landed-V2 notes in
+  [docs/design/vector-leaf-plan.md](docs/design/vector-leaf-plan.md).
+  Round-robin (variant 1, `objective=multi_regression`) and the vector-leaf
+  training core (variant 2 V1/V2: `tree_mode=vector_leaf`, CUDA classic loop,
+  plane-per-target histograms, summed-gain finder, vector apply/serialize/
+  predict) are LANDED. Open items:
+  - Hybrid/one-sync/graph prefix support for vector mode (currently classic
+    per-split loop only; the speed thesis lives in the batched flows) and a
+    perf measurement vs round-robin at numerai-like T=5.
+  - Lift v1 fences on demand: bagging/GOSS, categorical features,
+    L1/path-smooth/max_delta_step/extra-trees/monotone/CEGB, fp32 modes,
+    quantized training (needs a T-grad packed cell layout), per-target
+    boost_from_average bias, T > 16, multi-GPU.
+  - Per-era numerai validation of the shared-structure model vs round-robin
+    (modeling change: validate, don't assume); SketchBoost-style reduced
+    split-gradient hook.
+  - FIL predict falls back to CPU for vector-leaf models (treelite has no
+    vector-leaf IR).
 
 - **Hybrid coverage extensions.** The hybrid/graph fast paths fall back to
   the classic loop for several feature classes; scoped 2026-08-01.
