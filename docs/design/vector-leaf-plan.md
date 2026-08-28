@@ -1,16 +1,37 @@
 # Vector-leaf multi-target trees (CUDA) — design plan
 
-**Status:** V1 (plumbing) and V2 (training kernels, classic flow) landed ·
-**Date:** 2026-08-02 (plan), 2026-08-28 (V2) · **Prereq:** the round-robin
+**Status:** V1 (plumbing), V2 (training kernels, classic flow) and V3 (hybrid
+level-batched prefix) landed ·
+**Date:** 2026-08-02 (plan), 2026-08-28 (V2, V3) · **Prereq:** the round-robin
 tier (`objective=multi_regression`) is the API on-ramp and the baseline these
 models are judged against.
 
-## 0. Implementation notes — where V2 diverges from the plan below
+## 0. Implementation notes — where the implementation diverges from the plan below
 
-- **Classic per-split loop only.** §2's "hybrid growth prefix support from day
-  one" did not land: vector training disables hybrid growth entirely and rides
-  the classic one-split-at-a-time loop. The hybrid/one-sync/graph prefixes need
-  plane-aware batched kernels (V3).
+- **Hybrid TWO-SYNC level prefix + classic fallback.** §2's "hybrid growth
+  prefix support from day one" landed one release late (V3): vector training
+  takes the hybrid level-batched prefix in the depth-limited regime
+  (`2^max_depth <= num_leaves + 1`), the same regime plain level batching is
+  leaf-wise-exact in for scalar training, and the classic one-split-at-a-time
+  loop everywhere else. The level path adds three pieces to the scalar
+  machinery: a batched vector find kernel that shares its whole body with the
+  per-pair vector finder, a level plane fan-out kernel that refreshes every
+  child's T leaf-splits structs from the primary structs the batched apply
+  wrote, and the per-pair histogram loop the next bullet explains. The one-sync
+  (speculative), selective (grow-then-prune) and graph-loop
+  prefixes stay excluded: one-sync gates the children on device structs the
+  fan-out has not refreshed yet, selective rebuilds the host tree from captured
+  splits carrying target-0 leaf values only, and the graph controller models one
+  construct node per level rather than one per plane.
+- **The level flow batches the SEARCH, not the histograms.** The batched level
+  construct is what makes plain level batching pay for scalar training, and it
+  is the one piece vector mode does NOT take: with T gradient planes it measured
+  110.8 ms/tree against the per-pair loop's 68.1 (200k x 200 features, T=5, 63
+  leaves, depth 6) — the entire cost of the level flow on that shape, while the
+  batched find was already cheaper (3.1 vs 4.7) and the batched apply plus the
+  plane fan-out cost 0.6 together. So each pair's T planes construct through the
+  per-pair path, back to back, and the level contributes ONE find + ONE sync +
+  ONE apply and no per-split device syncs.
 - **Per-plane leaf-splits structs instead of widened structs.** §5's
   `CUDALeafSplitsStruct` stays untouched. The learner keeps a slab of 2·T
   structs (smaller/larger × plane): plane t carries target t's gradient sums
@@ -64,8 +85,12 @@ models are judged against.
 - **Verified by invariants, not md5** (non-quant CUDA is atomic-order
   nondeterministic): duplicated targets reproduce the scalar model's structure
   and outputs, negated targets predict antisymmetrically, per-target loss
-  drops, text/FALB round-trips are exact. The scalar path is locked by the
-  canonical md5 gates and the lattice.
+  drops, text/FALB round-trips are exact. The hybrid level prefix is verified
+  against the classic loop on the same config (T=2 and T=4): predictions match
+  and the two leaf labelings of the same row partition form a bijection —
+  level-batched growth numbers right children in level order where the
+  per-split loop numbers them in best-gain order, exactly as on the scalar
+  path. The scalar path is locked by the canonical md5 gates and the lattice.
 
 ## 1. What it is and why it wins
 
@@ -164,8 +189,9 @@ Memory: hist pool grows ×T for the planes. At numerai scale (10240 bins ×
 - **V2** — finder + construct planes on the classic flow; parity harness vs
   round-robin on synthetic data (same seeds: vector-leaf trees are NOT
   expected identical — quality parity per target + speed measurement).
-- **V3** — hybrid two-sync batched prefix; numerai multi-target benchmark
-  (v5 targets), per-era corr validation vs round-robin and vs sequential.
+- **V3** — hybrid two-sync batched prefix (LANDED; see §0); numerai
+  multi-target benchmark (v5 targets), per-era corr validation vs round-robin
+  and vs sequential.
 - **V4** — docs + gates (vector/nonquant lattice cell, perf entry).
 
 ## 7. Open questions (resolve during V2)

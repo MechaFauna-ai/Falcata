@@ -126,6 +126,12 @@ class CUDATree : public Tree {
    *  are safe to run concurrently. */
   void SplitBatch(const std::vector<CUDATreeBatchSplit>& splits);
 
+  /*! \brief vector-leaf counterpart of SetVectorLeafValuesFromSplit for a
+   *  batch: writes both children's T leaf values of every split of the batch
+   *  most recently passed to SplitBatch (the descriptors still live in the
+   *  device batch buffer), one launch instead of one per split. */
+  void SetVectorLeafValuesFromSplitBatch(const int num_splits);
+
   /*! \brief graphs L1 body capture: launch SplitBatchKernel with a placeholder
    *  grid on \p stream (the graph controller resizes it per level); the batch
    *  split descriptors are read from the pooled device buffer the controller
@@ -277,6 +283,8 @@ class CUDATree : public Tree {
 
   void LaunchSetVectorLeafValuesFromSplitKernel(const int left_leaf_index,
     const int right_leaf_index, const CUDASplitInfo* cuda_split_info);
+
+  void LaunchSetVectorLeafValuesFromSplitBatchKernel(const int num_splits);
 
   /*! \brief internal_count_ of the subtree at node, bottom-up from leaf_count_ */
   data_size_t RebuildInternalCounts(const int node);

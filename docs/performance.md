@@ -673,3 +673,67 @@ counts and histogram sums are GLOBAL.
 `FALCATA_DEBUG=dump` now prints per-level reduce totals, leaf-cache
 entries and bookkeeping counts on NCCL runs — the instrumentation that
 located both bugs.
+
+---
+
+## 11. Vector-leaf multi-target trees on the hybrid level prefix
+
+`tree_mode=vector_leaf` trains ONE shared-structure tree per iteration whose
+leaves hold a vector of T outputs (`docs/design/vector-leaf-plan.md`). It shipped
+on the classic one-split-at-a-time loop; the level-batched prefix now covers it
+in the depth-limited regime (`2^max_depth <= num_leaves + 1`), the same regime
+plain level batching is leaf-wise-exact in for scalar training.
+
+Three pieces carry T through the level machinery:
+
+- **Per-plane pair descriptors.** A level's descriptor is copied once per
+  gradient plane with only the two leaf-splits struct pointers changed, so every
+  histogram kernel that takes a descriptor runs per plane unchanged.
+- **A batched vector find.** `FindBestSplitsForLevelKernelVector` shares its
+  whole body with the per-pair vector finder (one `__device__` inner) and adds
+  the scalar level kernel's grid: blockIdx.y = pair, blockIdx.z = smaller/larger.
+  The existing level sync reduces it, carrying the per-target payload through
+  `CUDASplitInfo::operator=`'s deep copy.
+- **A level plane fan-out.** After the batched apply writes each child's primary
+  leaf-splits struct, one kernel refreshes all `2 * pairs * T` plane structs from
+  it, taking each target's child sums and outputs from the parent split's vector
+  payload and offsetting the histogram pointer to plane t.
+
+**The level flow batches the search, not the histograms.** The batched level
+construct is what makes plain level batching pay for scalar training, and it is
+the one piece vector mode does not take. Per-phase timings (200k x 200,
+T=5, 63 leaves, depth 6, ms/tree):
+
+| phase | batched-level construct | per-pair construct |
+|---|---|---|
+| construct | 110.8 | **68.1** |
+| find | 3.1 | 3.1 |
+| readback + apply + finish + fan-out | 0.6 | 0.6 |
+
+The batched construct's whole win for scalar is doing one launch with a
+saturation floor shared across the level's pairs; with T planes that trades away
+the per-leaf sizing and the row working set a pair's T launches share, and costs
+more than the launches it saves. So each pair's T planes construct through the
+per-pair path back to back, and the level contributes one find, one sync, one
+apply and no per-split device syncs.
+
+Measured (synthetic, 200 features, 5 correlated targets, 63 leaves, max_depth 6,
+non-quantized fp64, RTX 5090):
+
+| rows | vector classic | vector level prefix | speedup | cost vs a scalar tree |
+|---|---|---|---|---|
+| 200k | 78.0 ms/tree | **53.7 ms/tree** | **1.45x** | 18.5x -> 12.7x |
+| 600k | 155.6 ms/tree | **125.3 ms/tree** | **1.24x** | 25.8x -> 20.8x |
+
+The last column is against a single-target tree trained on the same shape and
+the same level prefix (4.22 / 6.03 ms/tree). It is the honest remaining gap: a
+T=5 tree still costs far more than 5 scalar trees and still degrades with rows,
+because the per-plane construct visits every row T times with no sharing. A
+construct that accumulates all T planes from one pass over the rows is the lever
+that would close it; the level prefix does not address it.
+
+The prefix produces the tree the classic loop produces: on T=2 and T=4 the two
+paths' predictions are bit-identical and their leaf labelings are a bijection of
+the same row partition (level-batched growth numbers right children in level
+order, the per-split loop in best-gain order). Locked by
+`test_vector_leaf_cuda_hybrid_level_matches_classic`.

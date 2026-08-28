@@ -256,6 +256,14 @@ void CUDATree::SetVectorLeafValuesFromSplit(const int left_leaf_index, const int
   LaunchSetVectorLeafValuesFromSplitKernel(left_leaf_index, right_leaf_index, cuda_split_info);
 }
 
+void CUDATree::SetVectorLeafValuesFromSplitBatch(const int num_splits) {
+  CHECK_GT(leaf_value_dim_, 1);
+  if (num_splits <= 0) {
+    return;
+  }
+  LaunchSetVectorLeafValuesFromSplitBatchKernel(num_splits);
+}
+
 inline void CUDATree::Shrinkage(double rate) {
   Tree::Shrinkage(rate);
   LaunchShrinkageKernel(rate);

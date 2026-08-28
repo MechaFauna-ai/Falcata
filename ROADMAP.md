@@ -19,33 +19,24 @@ Roughly priority-ordered within groups. Measurements refer to an RTX 5090.
   vector-leaf plan + landed-V2 notes in
   [docs/design/vector-leaf-plan.md](docs/design/vector-leaf-plan.md).
   Round-robin (variant 1, `objective=multi_regression`) and the vector-leaf
-  training core (variant 2 V1/V2: `tree_mode=vector_leaf`, CUDA classic loop,
-  plane-per-target histograms, summed-gain finder, vector apply/serialize/
-  predict) are LANDED. Open items:
-  - Hybrid/one-sync/graph prefix support for vector mode (currently classic
-    per-split loop only). Profiled (nsys, RTX 5090) in
-    [docs/design/vector-leaf-plan.md](docs/design/vector-leaf-plan.md) §8:
-    the T sequential histogram constructs are 85% of a vector tree's GPU time
-    at 700k rows and cost exactly T x the scalar construct, while the host
-    sync COUNT already matches the classic scalar loop and extra launch time
-    is ~2% — so a batched prefix buys the scalar hybrid win, not the
-    multi-target factor. That win is `feature_fraction`-dependent (scalar
-    classic/hybrid on numerai 700k x 3555, T=4, 250 leaves, depth 12: 0.90 at
-    ff=1.0, 2.00 at ff=0.3, 2.08 at ff=0.1), which is why the production A/B
-    at production ff looked far worse than the ff=1.0 comparison.
-    Vector ms/tree vs T independent scalar trainings, after the gradient-only
-    plane fix: numerai 700k T=4 0.54x (a 1.9x win) at ff=1.0 and 0.95x at
-    ff=0.3; synthetic 200k x 200 features T=5 0.5x. Per-target RMSE is worse
-    (0.90-0.99 vs 0.73-0.82) because one shared tree per iteration carries
-    1/T the total leaf budget. Open: equal-tree-budget comparison, hybrid
-    speed, per-era numerai validation.
-  - Gradient-only histogram planes LANDED: planes 1..T-1 skip the redundant
-    hessian accumulate (every consumer reads hessians from plane 0), cutting
-    construct work from 2T to T+1 slot updates per (row, column). Measured
-    1.53x per vector tree on real numerai 700k x 3555 (T=4, 250 leaves,
-    depth 12: 739 -> 483 ms/tree), 1.43x on the numerai-shaped synthetic at
-    700k, 1.03-1.09x on wide continuous features (200 x 255 bins), where the
-    two accumulates share a cache sector.
+  training core (variant 2 V1/V2/V3: `tree_mode=vector_leaf`, plane-per-target
+  histograms, gradient-only planes 1..T-1, summed-gain finder, vector
+  apply/serialize/predict, and the hybrid TWO-SYNC level-batched prefix in the
+  depth-limited regime) are LANDED; details in docs/performance.md §11 and
+  [docs/design/vector-leaf-plan.md](docs/design/vector-leaf-plan.md) §8.
+  Open items:
+  - One-sync (speculative), selective (grow-then-prune) and graph-loop prefix
+    support for vector mode. Selective is what budget-limited configs
+    (num_leaves << 2^max_depth, e.g. the numerai 250-leaf/depth-12 shape) need
+    to leave the classic loop at all — the two-sync prefix only engages when
+    `2^max_depth <= num_leaves + 1`. Selective needs per-target leaf values
+    through RebuildFromHostSplits; one-sync needs the plane fan-out moved
+    ahead of the speculative child gating.
+  - Per-target RMSE is worse than round-robin (0.90-0.99 vs 0.73-0.82 on the
+    synthetic T=5 shape) because one shared tree per iteration carries 1/T the
+    total leaf budget. Open: equal-tree-budget comparison, per-era numerai
+    validation.
+
   - Lift v1 fences on demand: GOSS/query/balanced bagging (plain per-row
     bagging landed) and categorical features (landed; cat_random_search still
     fenced), L1/path-smooth/max_delta_step/extra-trees/monotone/CEGB, fp32

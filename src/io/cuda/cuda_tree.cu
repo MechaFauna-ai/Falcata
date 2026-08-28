@@ -478,6 +478,38 @@ __global__ void SetVectorLeafValuesFromSplitKernel(
   }
 }
 
+// Batched form: blockIdx.y selects the split of the level's batch (its left and
+// right leaf indices are the descriptor's leaf_index / num_leaves_at_split,
+// exactly what SplitBatchKernel uses).
+__global__ void SetVectorLeafValuesFromSplitBatchKernel(
+  const CUDATreeBatchSplit* splits, const int num_splits, const int leaf_value_dim,
+  double* cuda_leaf_values_vec) {
+  const int split_index = static_cast<int>(blockIdx.y);
+  if (split_index >= num_splits) {
+    return;
+  }
+  const int target = static_cast<int>(threadIdx.x + blockIdx.x * blockDim.x);
+  if (target < leaf_value_dim) {
+    const CUDATreeBatchSplit& split = splits[split_index];
+    const double* payload = split.split_info->vec_payload;
+    const double left_value = payload[kVecLeftValue * leaf_value_dim + target];
+    const double right_value = payload[kVecRightValue * leaf_value_dim + target];
+    cuda_leaf_values_vec[static_cast<size_t>(split.leaf_index) * leaf_value_dim + target] =
+      isnan(left_value) ? 0.0 : left_value;
+    cuda_leaf_values_vec[static_cast<size_t>(split.num_leaves_at_split) * leaf_value_dim + target] =
+      isnan(right_value) ? 0.0 : right_value;
+  }
+}
+
+void CUDATree::LaunchSetVectorLeafValuesFromSplitBatchKernel(const int num_splits) {
+  const int num_threads_per_block = 32;
+  const dim3 grid_dim((leaf_value_dim_ + num_threads_per_block - 1) / num_threads_per_block,
+                      num_splits);
+  SetVectorLeafValuesFromSplitBatchKernel<<<grid_dim, num_threads_per_block, 0, cuda_stream_>>>(
+    cuda_batch_splits_.RawDataReadOnly(), num_splits, leaf_value_dim_,
+    cuda_leaf_values_vec_.RawData());
+}
+
 void CUDATree::LaunchSetVectorLeafValuesFromSplitKernel(const int left_leaf_index,
   const int right_leaf_index, const CUDASplitInfo* cuda_split_info) {
   const int num_threads_per_block = 32;
