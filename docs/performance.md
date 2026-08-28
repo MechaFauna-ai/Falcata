@@ -831,3 +831,50 @@ that fails if vector training stops reaching selective growth
 (`test_vector_leaf_cuda_selective_matches_classic`). Ground truth against
 scalar training comes from
 `test_vector_leaf_cuda_selective_duplicated_target_matches_scalar`.
+
+### Quantized vector-leaf training
+
+`quant_mode=fixedpoint` runs one discretized gradient plane per target, each at
+its own gradient scale, over plane 0's shared quantized hessians
+(`docs/design/vector-leaf-plan.md` §3a). It attacks the term that actually
+dominates a vector tree: histogram construct is ~85% of GPU time and is paid T
+times, and quantization replaces each plane's 16-byte fp64 (grad, hess) bin with
+a 4-byte packed int32 one.
+
+ms/tree, RTX 5090, T=4, 600 five-valued features, `max_bin=15`,
+`num_grad_quant_bins=16`, 10 timed rounds after 3 warmup:
+
+| rows | leaves | depth | ff | fp64 | quantized | speedup |
+|---|---|---|---|---|---|---|
+| 200k | 63 | 6 | 1.0 | 86.3 | **68.2** | 1.26x |
+| 200k | 63 | 6 | 0.3 | 72.0 | **66.4** | 1.08x |
+| 200k | 255 | 8 | 1.0 | 103.3 | **78.9** | 1.31x |
+| 700k | 63 | 6 | 1.0 | 146.9 | **96.6** | 1.52x |
+| 700k | 63 | 6 | 0.3 | 108.6 | **102.3** | 1.06x |
+| 700k | 255 | 8 | 1.0 | 177.5 | **114.4** | 1.55x |
+
+The win tracks the construct's share exactly: largest (1.5x) at 700k rows and
+255 leaves, where construct dominates, and smallest (1.06-1.08x) under
+`feature_fraction=0.3`, where the construct is already cheap and the per-plane
+launch and find overheads are a bigger fraction of the tree.
+
+Quality is unmoved. Per-target normalized MSE, T=2 and T=4, targets spread over
+27x in magnitude:
+
+| targets | fp64 | quantized (16 bins) | quantized (64 bins) |
+|---|---|---|---|
+| T=2 | 0.0386, 0.0228 | 0.0385, 0.0224 | 0.0391, 0.0226 |
+| T=4 | 0.0398, 0.0398, 0.0179, 0.0217 | 0.0402, 0.0406, 0.0183, 0.0220 | 0.0400, 0.0402, 0.0178, 0.0217 |
+
+Every target fits equally well despite the 27x magnitude spread, which is the
+per-target gradient scale doing its job — one shared scale would round the
+smallest target's gradients to zero. Under bagging (60 rounds, T=4) quantized
+lands at 1.02-1.07x of unbagged quantized and 0.98-1.04x of bagged fp64: no sign
+of the winner's-curse collapse the discretized find kernels' one-hessian-quantum
+l2 ridge guards against.
+
+A separate property, not a performance one: quantized vector models are
+**bit-reproducible across execution strategies**. Integer histogram accumulation
+is order-invariant, so the batched level prefix and the per-split loop produce
+identical predictions to the last bit — where the fp64 vector paths agree only
+to ~1e-6 because their batched construct reduces with fp64 atomics.
