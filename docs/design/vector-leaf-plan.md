@@ -25,11 +25,14 @@ models are judged against.
 - **The finder is a separate kernel, not a `NUM_TARGETS` template.**
   `FindBestSplitsForLeafKernelVector` handles runtime T ≤ 16 with the scalar
   kernel's exact fp64 CPU-order folds; the scalar instantiations are untouched.
-- **v1 fences (beyond §2):** numerical features only, no bagging/GOSS, no
-  L1/path-smooth/max_delta_step/extra-trees/monotone/interaction/forced-splits/
-  CEGB, fp64 only (`cuda_precision=fp64`), `boost_from_average` forced off
-  (per-target biases would need a per-target AddBias), max_bin ≤ 256
-  (shared-memory finder), single GPU.
+- **v1 fences (beyond §2):** numerical features only, no GOSS/query/balanced
+  bagging (plain per-row bagging IS supported: the CUDA bagging path is
+  index-based, so one shared row subset feeds every target's histogram plane
+  and the per-plane leaf-splits init just takes the partition's index list),
+  no L1/path-smooth/max_delta_step/extra-trees/monotone/interaction/
+  forced-splits/CEGB, fp64 only (`cuda_precision=fp64`), `boost_from_average`
+  forced off (per-target biases would need a per-target AddBias), max_bin ≤
+  256 (shared-memory finder), single GPU.
 - **Verified by invariants, not md5** (non-quant CUDA is atomic-order
   nondeterministic): duplicated targets reproduce the scalar model's structure
   and outputs, negated targets predict antisymmetrically, per-target loss

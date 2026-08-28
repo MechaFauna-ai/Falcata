@@ -595,12 +595,19 @@ bool GBDT::VectorTrainOneIter() {
   Common::FunctionTimer fun_timer("GBDT::TrainOneIter", global_timer);
   CHECK_NOTNULL(objective_function_);
   CHECK_EQ(num_tree_per_iteration_, 1);
-  // The vector flow supports neither bagging nor GOSS (config layer gates
-  // them), so the objective's T gradient planes are consumed in place.
+  // The objective's T gradient planes are consumed in place: plain per-row
+  // bagging is index-based on CUDA (is_use_subset is always false), so the
+  // gradient buffers are never re-packed. GOSS, query bagging and balanced
+  // bagging are gated off by the config layer.
   Boosting();
   const score_t* gradients = gradients_pointer_;
   const score_t* hessians = hessians_pointer_;
   CheckGradientNormForDivergence(gradients);
+
+  // bagging: draw this iteration's row subset and hand it to the tree
+  // learner's data partition (every target's histogram plane reads the same
+  // subset through the partition's index list)
+  data_sample_strategy_->Bagging(iter_, tree_learner_.get(), gradients_.data(), hessians_.data());
 
   std::unique_ptr<Tree> new_tree(new Tree(2, false, false, leaf_value_dim_));
   if (train_data_->num_features() > 0) {

@@ -25,7 +25,8 @@ Roughly priority-ordered within groups. Measurements refer to an RTX 5090.
   - Hybrid/one-sync/graph prefix support for vector mode (currently classic
     per-split loop only; the speed thesis lives in the batched flows) and a
     perf measurement vs round-robin at numerai-like T=5.
-  - Lift v1 fences on demand: bagging/GOSS, categorical features,
+  - Lift v1 fences on demand: GOSS/query/balanced bagging (plain per-row
+    bagging landed), categorical features,
     L1/path-smooth/max_delta_step/extra-trees/monotone/CEGB, fp32 modes,
     quantized training (needs a T-grad packed cell layout), per-target
     boost_from_average bias, T > 16, multi-GPU.

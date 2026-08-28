@@ -491,13 +491,18 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
         Log::Fatal("tree_mode=vector_leaf multi-target training requires "
                    "boosting=gbdt.");
       }
-      const bool bagging_active =
-          (bagging_freq > 0 && bagging_fraction < 1.0) ||
-          pos_bagging_fraction < 1.0 || neg_bagging_fraction < 1.0 ||
-          bagging_by_query;
-      if (bagging_active || data_sample_strategy != std::string("bagging")) {
+      // plain per-row bagging is supported: the CUDA bagging path is
+      // index-based (one shared row subset feeds every target's histogram
+      // plane); GOSS, query bagging and balanced (pos/neg) bagging are not
+      if (data_sample_strategy != std::string("bagging")) {
         Log::Fatal("tree_mode=vector_leaf multi-target training does not "
-                   "support bagging or GOSS yet.");
+                   "support GOSS yet.");
+      }
+      if (bagging_by_query || pos_bagging_fraction < 1.0 ||
+          neg_bagging_fraction < 1.0) {
+        Log::Fatal("tree_mode=vector_leaf multi-target training supports "
+                   "plain per-row bagging only (no bagging_by_query, no "
+                   "pos/neg balanced bagging).");
       }
       if (lambda_l1 > 0.0 || path_smooth > 0.0 || max_delta_step > 0.0 ||
           extra_trees) {

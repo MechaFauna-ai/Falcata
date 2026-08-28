@@ -68,9 +68,11 @@ def _train_vector(X, labels, num_boost_round=20, extra_params=None):
     return lgb.train(params, lgb.Dataset(X, label=labels), num_boost_round=num_boost_round)
 
 
-def _train_scalar(X, y, num_boost_round=20):
+def _train_scalar(X, y, num_boost_round=20, extra_params=None):
     params = _base_params()
     params.update({"objective": "regression", "boost_from_average": False})
+    if extra_params:
+        params.update(extra_params)
     return lgb.train(params, lgb.Dataset(X, label=y), num_boost_round=num_boost_round)
 
 
@@ -167,13 +169,80 @@ def test_vector_leaf_cuda_validation_metric_and_early_rounds():
 
 
 @_REQUIRES_CUDA
-def test_vector_leaf_cuda_rejects_bagging():
+def test_vector_leaf_cuda_rejects_goss_and_query_bagging():
     X, y0, y1 = _make_data()
     labels = np.column_stack((y0, y1))
+    with pytest.raises(lgb.basic.FalcataError, match="GOSS"):
+        _train_vector(
+            X,
+            labels,
+            num_boost_round=1,
+            extra_params={"data_sample_strategy": "goss"},
+        )
     with pytest.raises(lgb.basic.FalcataError, match="bagging"):
         _train_vector(
             X,
             labels,
             num_boost_round=1,
-            extra_params={"bagging_fraction": 0.5, "bagging_freq": 1},
+            extra_params={
+                "bagging_fraction": 0.5,
+                "bagging_freq": 1,
+                "bagging_by_query": True,
+            },
         )
+
+
+_BAGGING_PARAMS = {"bagging_fraction": 0.7, "bagging_freq": 1}
+
+
+@_REQUIRES_CUDA
+def test_vector_leaf_cuda_bagging_trains_and_loss_decreases():
+    X, y0, y1 = _make_data()
+    labels = np.column_stack((y0, y1))
+    train_set = lgb.Dataset(X[: N_ROWS // 2], label=labels[: N_ROWS // 2])
+    valid_set = train_set.create_valid(X[N_ROWS // 2 :], label=labels[N_ROWS // 2 :])
+    params = _base_params()
+    params.update(
+        {
+            "objective": "multi_regression",
+            "metric": "multi_rmse",
+            "num_class": 2,
+            "tree_mode": "vector_leaf",
+        }
+    )
+    params.update(_BAGGING_PARAMS)
+    evals = {}
+    booster = lgb.train(
+        params,
+        train_set,
+        num_boost_round=20,
+        valid_sets=[valid_set],
+        valid_names=["valid"],
+        callbacks=[lgb.record_evaluation(evals)],
+    )
+    curve = evals["valid"]["multi_rmse"]
+    assert len(curve) == 20
+    assert curve[-1] < curve[0]
+    prediction = booster.predict(X)
+    assert prediction.shape == (N_ROWS, 2)
+    assert np.all(np.isfinite(prediction))
+
+
+@_REQUIRES_CUDA
+def test_vector_leaf_cuda_bagging_duplicated_target_matches_scalar():
+    # the bag is drawn per iteration from (bagging_seed, iter) only, so the
+    # vector and scalar runs subset identical rows; duplicated targets then
+    # reproduce the scalar bagged model exactly
+    X, y0, _ = _make_data()
+    labels = np.column_stack((y0, y0))
+    vector = _train_vector(X, labels, extra_params=_BAGGING_PARAMS)
+    scalar = _train_scalar(X, y0, extra_params=_BAGGING_PARAMS)
+
+    vector_leaves = vector.predict(X, pred_leaf=True)
+    scalar_leaves = scalar.predict(X, pred_leaf=True)
+    np.testing.assert_array_equal(vector_leaves, scalar_leaves)
+
+    scalar_prediction = scalar.predict(X)
+    vector_prediction = vector.predict(X)
+    for target in range(2):
+        np.testing.assert_allclose(vector_prediction[:, target], scalar_prediction, rtol=1e-9, atol=1e-9)
