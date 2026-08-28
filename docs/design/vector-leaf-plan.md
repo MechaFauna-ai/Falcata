@@ -25,14 +25,25 @@ models are judged against.
 - **The finder is a separate kernel, not a `NUM_TARGETS` template.**
   `FindBestSplitsForLeafKernelVector` handles runtime T ≤ 16 with the scalar
   kernel's exact fp64 CPU-order folds; the scalar instantiations are untouched.
-- **v1 fences (beyond §2):** numerical features only, no GOSS/query/balanced
+- **v1 fences (beyond §2):** no GOSS/query/balanced
   bagging (plain per-row bagging IS supported: the CUDA bagging path is
   index-based, so one shared row subset feeds every target's histogram plane
   and the per-plane leaf-splits init just takes the partition's index list),
   no L1/path-smooth/max_delta_step/extra-trees/monotone/interaction/
   forced-splits/CEGB, fp64 only (`cuda_precision=fp64`), `boost_from_average`
   forced off (per-target biases would need a per-target AddBias), max_bin ≤
-  256 (shared-memory finder), single GPU.
+  256 (shared-memory finder), single GPU, no `cat_random_search`.
+- **Categorical splits (supported).**
+  `FindBestSplitsForLeafKernelVectorCategoricalInner` mirrors the scalar
+  categorical inner (one-hot + `max_cat_threshold`-sorted many-vs-many) over
+  the T gradient streams with the shared plane-0 hessians; per-target child
+  sums/outputs ride the slab payload exactly like numerical splits. The one
+  designed divergence: the many-vs-many sort key is the summed-over-targets
+  gradient over the smoothed hessian, `(Σ_t g_t) / (h + cat_smooth)` — the
+  1-D output-ordering heuristic applied to the summed objective (there is no
+  total category order that is optimal for every target at once). For
+  duplicated targets the key is a positive multiple of the scalar key, so the
+  sorted order — and the greedy structure — matches scalar training exactly.
 - **Verified by invariants, not md5** (non-quant CUDA is atomic-order
   nondeterministic): duplicated targets reproduce the scalar model's structure
   and outputs, negated targets predict antisymmetrically, per-target loss

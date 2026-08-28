@@ -1167,9 +1167,9 @@ void CUDASingleGPUTreeLearner::CheckVectorLeafSupported() const {
     Log::Fatal("tree_mode=vector_leaf supports at most 16 targets "
                "(num_class=%d requested).", vec_num_targets_);
   }
-  if (has_categorical_feature_) {
+  if (has_categorical_feature_ && config_->cat_random_search > 0) {
     Log::Fatal("tree_mode=vector_leaf multi-target training does not support "
-               "categorical features yet.");
+               "cat_random_search yet.");
   }
   if (cuda_best_split_finder_->use_global_memory()) {
     Log::Fatal("tree_mode=vector_leaf multi-target training requires every "
@@ -3701,6 +3701,12 @@ int CUDASingleGPUTreeLearner::ApplySplit(CUDATree* tree, const CUDASplitInfo* be
                                      cuda_bitset_len_,
                                      cuda_bitset_inner_,
                                      cuda_bitset_inner_len_);
+    if (vec_num_targets_ > 1) {
+      // same as the numerical branch: the split kernel wrote the target-0
+      // (mirror) outputs; record every target's child outputs from the
+      // winning split's vector payload
+      tree->SetVectorLeafValuesFromSplit(leaf_index, right_leaf_index, best_split_info);
+    }
   } else {
     right_leaf_index = tree->Split(leaf_index,
                                      train_data_->RealFeatureIndex(leaf_best_split_feature_[leaf_index]),

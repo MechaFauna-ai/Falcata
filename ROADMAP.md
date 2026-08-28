@@ -26,9 +26,9 @@ Roughly priority-ordered within groups. Measurements refer to an RTX 5090.
     per-split loop only; the speed thesis lives in the batched flows) and a
     perf measurement vs round-robin at numerai-like T=5.
   - Lift v1 fences on demand: GOSS/query/balanced bagging (plain per-row
-    bagging landed), categorical features,
-    L1/path-smooth/max_delta_step/extra-trees/monotone/CEGB, fp32 modes,
-    quantized training (needs a T-grad packed cell layout), per-target
+    bagging landed) and categorical features (landed; cat_random_search still
+    fenced), L1/path-smooth/max_delta_step/extra-trees/monotone/CEGB, fp32
+    modes, quantized training (needs a T-grad packed cell layout), per-target
     boost_from_average bias, T > 16, multi-GPU.
   - Per-era numerai validation of the shared-structure model vs round-robin
     (modeling change: validate, don't assume); SketchBoost-style reduced

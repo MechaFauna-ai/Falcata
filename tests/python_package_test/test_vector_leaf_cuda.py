@@ -195,6 +195,92 @@ def test_vector_leaf_cuda_rejects_goss_and_query_bagging():
 _BAGGING_PARAMS = {"bagging_fraction": 0.7, "bagging_freq": 1}
 
 
+def _make_cat_data(seed=20260828):
+    """Numerical features plus two declared categoricals: one low-cardinality
+    (one-hot split path) and one 12-category (sorted many-vs-many path)."""
+    rng = np.random.default_rng(seed)
+    X = rng.normal(size=(N_ROWS, N_FEATURES))
+    cat_small = rng.integers(0, 3, size=N_ROWS)
+    cat_large = rng.integers(0, 12, size=N_ROWS)
+    small_effect = np.array([1.5, -0.5, -1.0])[cat_small]
+    large_effect = np.linspace(-2.0, 2.0, 12)[cat_large]
+    y0 = 1.5 * X[:, 0] + small_effect + large_effect + 0.05 * rng.normal(size=N_ROWS)
+    y1 = -0.8 * X[:, 2] + 0.5 * small_effect - large_effect + 0.05 * rng.normal(size=N_ROWS)
+    X_full = np.column_stack((X, cat_small.astype(np.float64), cat_large.astype(np.float64)))
+    cat_indices = [N_FEATURES, N_FEATURES + 1]
+    return X_full, y0, y1, cat_indices
+
+
+@_REQUIRES_CUDA
+def test_vector_leaf_cuda_categorical_trains_and_roundtrips():
+    X, y0, y1, cat_indices = _make_cat_data()
+    labels = np.column_stack((y0, y1))
+    params = _base_params()
+    params.update(
+        {
+            "objective": "multi_regression",
+            "metric": "multi_rmse",
+            "num_class": 2,
+            "tree_mode": "vector_leaf",
+        }
+    )
+    booster = lgb.train(
+        params,
+        lgb.Dataset(X, label=labels, categorical_feature=cat_indices),
+        num_boost_round=20,
+    )
+    prediction = booster.predict(X)
+    assert prediction.shape == (N_ROWS, 2)
+    assert np.all(np.isfinite(prediction))
+    # the categorical effects dominate the targets: a fit that never splits on
+    # them cannot reach this margin
+    for target in range(2):
+        residual = prediction[:, target] - labels[:, target]
+        assert np.mean(residual**2) < 0.25 * np.var(labels[:, target])
+    # at least one tree must actually use a categorical split
+    model_text = booster.model_to_string()
+    num_cat_counts = [int(line.split("=", 1)[1]) for line in model_text.splitlines() if line.startswith("num_cat=")]
+    assert sum(num_cat_counts) > 0
+    reloaded = lgb.Booster(model_str=model_text)
+    np.testing.assert_array_equal(reloaded.predict(X), prediction)
+
+
+@_REQUIRES_CUDA
+def test_vector_leaf_cuda_categorical_duplicated_target_matches_scalar():
+    X, y0, _, cat_indices = _make_cat_data()
+    labels = np.column_stack((y0, y0))
+    vec_params = _base_params()
+    vec_params.update(
+        {
+            "objective": "multi_regression",
+            "metric": "multi_rmse",
+            "num_class": 2,
+            "tree_mode": "vector_leaf",
+        }
+    )
+    vector = lgb.train(
+        vec_params,
+        lgb.Dataset(X, label=labels, categorical_feature=cat_indices),
+        num_boost_round=20,
+    )
+    scal_params = _base_params()
+    scal_params.update({"objective": "regression", "boost_from_average": False})
+    scalar = lgb.train(
+        scal_params,
+        lgb.Dataset(X, label=y0, categorical_feature=cat_indices),
+        num_boost_round=20,
+    )
+
+    vector_leaves = vector.predict(X, pred_leaf=True)
+    scalar_leaves = scalar.predict(X, pred_leaf=True)
+    np.testing.assert_array_equal(vector_leaves, scalar_leaves)
+
+    scalar_prediction = scalar.predict(X)
+    vector_prediction = vector.predict(X)
+    for target in range(2):
+        np.testing.assert_allclose(vector_prediction[:, target], scalar_prediction, rtol=1e-9, atol=1e-9)
+
+
 @_REQUIRES_CUDA
 def test_vector_leaf_cuda_bagging_trains_and_loss_decreases():
     X, y0, y1 = _make_data()

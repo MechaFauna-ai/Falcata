@@ -571,7 +571,6 @@ void CUDABestSplitFinder::FindBestSplitsForLeaf(
 
 void CUDABestSplitFinder::InitVectorMode(const int num_targets) {
   CHECK_GT(num_targets, 1);
-  CHECK(!has_categorical_feature_);
   CHECK(!use_global_memory_);
   vec_num_targets_ = num_targets;
   const size_t fields_per_slot =
