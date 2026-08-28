@@ -36,6 +36,8 @@ exclude = [
     '^https://.*\.stackexchange\.com/.*',
     # bot-blocks the checker (403) regardless of link health
     '^https://medium\.com/.*',
+    # 403s GitHub-runner IPs; loads fine elsewhere with the same user agent
+    '^https://www\.csie\.ntu\.edu\.tw/~cjlin/libsvm/$',
     # rate-limits the checker to 429 when a run has more than a couple of links
     '^https://en\.wikipedia\.org/.*',
     # serves a corrupt TLS record to the checker; opens fine in a browser
