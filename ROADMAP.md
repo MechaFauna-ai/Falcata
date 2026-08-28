@@ -21,21 +21,28 @@ Roughly priority-ordered within groups. Measurements refer to an RTX 5090.
   Round-robin (variant 1, `objective=multi_regression`) and the vector-leaf
   training core (variant 2 V1/V2/V3: `tree_mode=vector_leaf`, plane-per-target
   histograms, gradient-only planes 1..T-1, summed-gain finder, vector
-  apply/serialize/predict, and the hybrid TWO-SYNC level-batched prefix in the
-  depth-limited regime) are LANDED; details in docs/performance.md §11 and
-  [docs/design/vector-leaf-plan.md](docs/design/vector-leaf-plan.md) §8.
+  apply/serialize/predict, and both hybrid TWO-SYNC level prefixes: the
+  exact-fit level-batched one in the depth-limited regime and selective
+  grow-then-prune in the budget-limited one) are LANDED; details in
+  docs/performance.md §11 and
+  [docs/design/vector-leaf-plan.md](docs/design/vector-leaf-plan.md) §8/§8b.
   Open items:
-  - One-sync (speculative), selective (grow-then-prune) and graph-loop prefix
-    support for vector mode. Selective is what budget-limited configs
-    (num_leaves << 2^max_depth, e.g. the numerai 250-leaf/depth-12 shape) need
-    to leave the classic loop at all — the two-sync prefix only engages when
-    `2^max_depth <= num_leaves + 1`. Selective needs per-target leaf values
-    through RebuildFromHostSplits; one-sync needs the plane fan-out moved
-    ahead of the speculative child gating.
+  - One-sync (speculative) and graph-loop prefix support for vector mode.
+    One-sync needs the plane fan-out moved ahead of the speculative child
+    gating; the graph controller models one construct node per level rather
+    than one per plane. Both are worth little: the selective prefix, which
+    covers the budget-limited (numerai 250-leaf/depth-12) shape, measured only
+    1.0-1.11x over the classic loop, because the batched level CONSTRUCT — the
+    part of a level prefix that pays for scalar training under
+    `feature_fraction` subsampling — is the one piece vector mode cannot take
+    (§8b).
   - Shape targeting. Against T independent scalar trainings a vector tree is a
-    0.67-0.94x WIN on many low-cardinality features (2400 five-valued, T=5,
-    strongest under `feature_fraction` subsampling) and a 1.9-3.8x LOSS on few
-    wide continuous ones, where the construct dominates and is paid T times.
+    0.53-1.01x WIN on many low-cardinality features (2400 five-valued, T=4/5,
+    at 63 or 250 leaves) and a 1.9-3.8x LOSS on few wide continuous ones, where
+    the construct dominates and is paid T times. The production numerai A/B's
+    "3x slower than T scalars" does NOT reproduce on the low-cardinality
+    synthetic at any `feature_fraction` (§8b) — re-measure it on the real v5
+    dataset before attributing it to the growth path.
     The T-times-construct term is closed, not open: a fused all-T-planes
     construct was built and measured and LOSES 1.35-3.2x
     (docs/perf-dead-ends.md).

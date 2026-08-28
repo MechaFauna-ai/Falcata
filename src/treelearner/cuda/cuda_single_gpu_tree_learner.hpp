@@ -301,6 +301,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     // at record creation (the slab slot is reused once the leaf is re-searched,
     // so SelectiveFinalize cannot read it later)
     std::vector<uint32_t> cat_inner;
+    // vector-leaf mode: kNumVecPayloadFields * T doubles snapshotted from the
+    // per-leaf payload slab, under the same reuse discipline as cat_inner.
+    // SelectiveFinalize replays both children's per-target outputs from it.
+    std::vector<double> vec_payload;
   };
   // One frontier candidate (discovered this level, not yet applied).
   struct SelectiveFrontier {
@@ -458,8 +462,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // ---- vector-leaf (multi-target) training ----
   // Number of targets T; > 1 engages the vector flow: T histogram planes per
   // leaf slot, the summed-gain vector finder, and per-target leaf outputs.
-  // Rides the classic per-split loop and the hybrid TWO-SYNC level-batched
-  // prefix (the one-sync, graph and selective flows are excluded).
+  // Rides the classic per-split loop and both hybrid TWO-SYNC level flows: the
+  // exact-fit level-batched prefix and selective grow-then-prune (the one-sync
+  // and graph flows are excluded).
   int vec_num_targets_ = 0;
   // Per-plane leaf-splits structs: slots [0, T) mirror the smaller leaf with
   // plane t's gradient sums / histogram pointer, slots [T, 2T) the larger leaf.
@@ -630,6 +635,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::vector<int> sel_level_apply_;    // applied record ids to apply this level
   std::vector<CUDACollapseWindow> sel_collapse_windows_;
   std::vector<int> sel_freed_hist_slots_;
+  // vector-leaf mode: this level's host snapshot of the per-leaf payload slab
+  // (kNumVecPayloadFields * T doubles per hybrid leaf), read once per level
+  // right after the best-split readback
+  std::vector<double> sel_leaf_vec_payloads_;
   int sel_num_allocated_ = 0;           // peak hybrid leaf count (dirty hist slots)
   int sel_num_splits_ = 0;              // applied splits surviving readback bookkeeping
   int sel_last_peak_ = 0;               // sel_num_allocated_ of the finished tree

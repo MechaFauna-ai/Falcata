@@ -122,6 +122,21 @@ class CUDABestSplitFinder {
       static_cast<size_t>(count), __FILE__, __LINE__);
   }
 
+  /*! \brief vector-leaf mode: synchronous D2H snapshot of the per-leaf best-split
+   *  vector payloads (kNumVecPayloadFields * T doubles per leaf, see
+   *  VecPayloadField). Same validity window as the categorical thresholds: a
+   *  leaf's slot holds its cached candidate until the next search that reuses
+   *  the leaf index. */
+  void CopyLeafVecPayloadsToHost(const int num_leaves, std::vector<double>* out) const {
+    CHECK_GT(vec_num_targets_, 1);
+    const size_t count = static_cast<size_t>(num_leaves) *
+      static_cast<size_t>(kNumVecPayloadFields) * static_cast<size_t>(vec_num_targets_);
+    CHECK_LE(count, cuda_vec_payload_leaf_.Size());
+    out->resize(count);
+    CopyFromCUDADeviceToHost<double>(out->data(),
+      cuda_vec_payload_leaf_.RawDataReadOnly(), count, __FILE__, __LINE__);
+  }
+
   // host-side penalty (feature_contri) for the given inner feature index
   double GetFeaturePenalty(int inner_feature_index) const;
 

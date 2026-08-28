@@ -17,7 +17,10 @@ training is run-to-run nondeterministic (fp64 atomic histograms):
 """
 
 import os
+import subprocess
+import sys
 import tempfile
+import textwrap
 
 import numpy as np
 import pytest
@@ -381,6 +384,90 @@ def test_vector_leaf_cuda_hybrid_level_matches_classic(num_targets):
     hybrid_trees = hybrid.dump_model()["tree_info"]
     classic_trees = classic.dump_model()["tree_info"]
     assert [t["num_leaves"] for t in hybrid_trees] == [t["num_leaves"] for t in classic_trees]
+
+
+# budget-limited config (2^max_depth > num_leaves + 1): the regime plain level
+# batching is only approximate in, and therefore the regime vector-leaf training
+# takes the SELECTIVE (grow-then-prune) level prefix in
+_SELECTIVE_PARAMS = {"num_leaves": 31, "max_depth": 10}
+
+
+def _assert_vector_selective_engaged():
+    """A vacuous equivalence test is worse than none: the two arms below are the
+    same code path unless vector mode really reaches selective growth, so probe
+    for the growth phase's own stderr line in a subprocess (FALCATA_DEBUG is read
+    once per process)."""
+    probe = textwrap.dedent(f"""
+        import numpy as np, falcata as lgb
+        rng = np.random.default_rng(0)
+        X = rng.normal(size=({N_ROWS}, {N_FEATURES}))
+        y = X[:, 0] + 0.5 * X[:, 3]
+        labels = np.column_stack((y, -y))
+        p = {{"device_type": "cuda", "quant_mode": "none", "objective": "multi_regression",
+              "num_class": 2, "tree_mode": "vector_leaf", "min_data_in_leaf": 20,
+              "learning_rate": 0.1, "seed": 7, "verbosity": -1,
+              "num_leaves": {_SELECTIVE_PARAMS["num_leaves"]},
+              "max_depth": {_SELECTIVE_PARAMS["max_depth"]}}}
+        lgb.train(p, lgb.Dataset(X, label=labels), num_boost_round=5)
+    """)
+    env = dict(os.environ, FALCATA_DEBUG="debug")
+    out = subprocess.run([sys.executable, "-c", probe], check=False, env=env, capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr[-4000:]
+    assert "[selective]" in out.stderr, (
+        "vector-leaf training never reached selective growth; the equivalence "
+        "assertions below would compare the classic loop against itself"
+    )
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("num_targets", [2, 4])
+def test_vector_leaf_cuda_selective_matches_classic(num_targets):
+    _assert_vector_selective_engaged()
+    # the selective prefix grows whole levels and prunes the splits the classic
+    # greedy selection would never have made, so the tree it ends with is the
+    # one the classic per-split loop grows -- with classic leaf numbering, since
+    # the final structure is replayed host-side in greedy order
+    rng = np.random.default_rng(20260902)
+    X = rng.normal(size=(N_ROWS, N_FEATURES))
+    columns = []
+    for target in range(num_targets):
+        columns.append(
+            (2.0 + target) * X[:, target % N_FEATURES]
+            - 1.5 * X[:, (target + 3) % N_FEATURES]
+            + np.where(X[:, (target + 5) % N_FEATURES] > 0.25, 1.0, -1.0)
+            + 0.05 * rng.normal(size=N_ROWS)
+        )
+    labels = np.column_stack(columns)
+
+    selective = _train_vector(X, labels, extra_params=dict(_SELECTIVE_PARAMS, cuda_plan="auto"))
+    classic = _train_vector(X, labels, extra_params=dict(_SELECTIVE_PARAMS, cuda_plan="auto,hybrid:off"))
+
+    _assert_same_leaf_partition(selective.predict(X, pred_leaf=True), classic.predict(X, pred_leaf=True))
+    np.testing.assert_allclose(selective.predict(X), classic.predict(X), rtol=1e-9, atol=1e-9)
+
+    selective_trees = selective.dump_model()["tree_info"]
+    classic_trees = classic.dump_model()["tree_info"]
+    assert [t["num_leaves"] for t in selective_trees] == [t["num_leaves"] for t in classic_trees]
+
+
+@_REQUIRES_CUDA
+def test_vector_leaf_cuda_selective_duplicated_target_matches_scalar():
+    # Ground truth for the selective prefix: the per-target leaf outputs of the
+    # rebuilt (pruned) tree come from a host snapshot of each split's vector
+    # payload, which a vector-vs-vector comparison alone cannot validate.
+    # Duplicating the target makes the scalar model the answer.
+    X, y0, _ = _make_data()
+    labels = np.column_stack((y0, y0))
+    vector = _train_vector(X, labels, extra_params=dict(_SELECTIVE_PARAMS, cuda_plan="auto"))
+    scalar = _train_scalar(X, y0, extra_params=dict(_SELECTIVE_PARAMS, cuda_plan="auto"))
+
+    _assert_same_leaf_partition(
+        vector.predict(X, pred_leaf=True), scalar.predict(X, pred_leaf=True).reshape(N_ROWS, -1)
+    )
+    scalar_prediction = scalar.predict(X)
+    vector_prediction = vector.predict(X)
+    for target in range(2):
+        np.testing.assert_allclose(vector_prediction[:, target], scalar_prediction, rtol=1e-5, atol=1e-6)
 
 
 @_REQUIRES_CUDA

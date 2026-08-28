@@ -773,3 +773,61 @@ paths' predictions are bit-identical and their leaf labelings are a bijection of
 the same row partition (level-batched growth numbers right children in level
 order, the per-split loop in best-gain order). Locked by
 `test_vector_leaf_cuda_hybrid_level_matches_classic`.
+
+### The selective prefix in the budget-limited regime
+
+Level batching is only leaf-wise-exact while `2^max_depth <= num_leaves + 1`.
+The production numerai shape (250 leaves, `max_depth=12`) is not in that regime,
+so it took the classic loop; the SELECTIVE (grow-then-prune) prefix now covers
+it for vector mode as it does for scalar. Three pieces carry T through it:
+
+- the level's batched search runs on the plane slab, and the plane fan-out runs
+  after the level's partition-only apply — the same two calls the exact-fit
+  prefix makes;
+- selective growth rebuilds the final (pruned) tree host-side, so each applied
+  record snapshots its winning split's `kNumVecPayloadFields * T` payload from
+  the per-leaf slab under the same reuse discipline as the categorical
+  thresholds (one D2H per level, not per split), and `RebuildFromHostSplits`
+  replays `SetVectorLeafValuesFromSplitKernel` over it;
+- eager collapse recycles leaf indices and their histogram slots; `ZeroHistSlots`
+  already zeroes a full T-plane slot, so nothing else changes.
+
+ms/tree, RTX 5090, non-quantized fp64, synthetic 2400 five-valued features,
+`num_leaves=250`, `max_depth=12`, 8 timed rounds after 1 warmup (10 at ff=0.1):
+
+| rows | T | ff | vector classic | vector selective | sel/classic | T x scalar | sel/(T scalars) |
+|---|---|---|---|---|---|---|---|
+| 200k | 4 | 1.0 | 214.6 | 212.2 | 1.01x | 380.0 | **0.56** |
+| 200k | 4 | 0.3 | 130.3 | **119.1** | 1.09x | 147.6 | **0.81** |
+| 200k | 4 | 0.1 | 89.9 | **81.2** | 1.11x | 90.4 | **0.90** |
+| 200k | 5 | 1.0 | 246.8 | 250.9 | 0.98x | 475.0 | **0.53** |
+| 200k | 5 | 0.3 | 150.8 | **138.3** | 1.09x | 184.5 | **0.75** |
+| 200k | 5 | 0.1 | 98.4 | **94.8** | 1.04x | 113.1 | **0.84** |
+| 700k | 4 | 1.0 | 478.0 | 484.1 | 0.99x | 823.7 | **0.59** |
+| 700k | 4 | 0.3 | 257.3 | **248.6** | 1.03x | 247.2 | 1.01 |
+| 700k | 4 | 0.1 | 157.3 | **144.1** | 1.09x | 165.2 | **0.87** |
+| 700k | 5 | 1.0 | 561.8 | 573.6 | 0.98x | 1029.6 | **0.56** |
+| 700k | 5 | 0.3 | 300.0 | **289.7** | 1.04x | 309.0 | **0.94** |
+| 700k | 5 | 0.1 | 178.7 | **164.2** | 1.09x | 206.5 | **0.80** |
+
+The scalar reference is one single-target training on the same shape, itself on
+the selective prefix: 95.0 / 36.9 / 22.6 ms/tree at 200k and 205.9 / 61.8 / 41.3
+at 700k for ff 1.0 / 0.3 / 0.1.
+
+**The prefix is worth 1.0x at `feature_fraction=1.0` and 1.03-1.11x under
+subsampling — not the ~2x it is worth for scalar training, and that gap is
+structural.** The scalar selective prefix's subsampling win comes from the
+batched level CONSTRUCT: the per-tree compact-view repack pays off through one
+launch per level far better than through the per-split loop. Vector mode does
+not take the batched construct (it measured a 0.7x regression with T planes, see
+above), so what the prefix buys it is only the batched search, one sync per level
+instead of per split, and the level apply. That is a real but small win, and it
+is largest exactly where the search is the biggest share: subsampled features.
+
+The equivalence is the same one the exact-fit prefix has: on T=2 and T=4 the
+selective and classic vector paths' predictions agree to 1e-9 and their leaf
+labelings are a bijection of the same row partition, with a non-vacuity guard
+that fails if vector training stops reaching selective growth
+(`test_vector_leaf_cuda_selective_matches_classic`). Ground truth against
+scalar training comes from
+`test_vector_leaf_cuda_selective_duplicated_target_matches_scalar`.

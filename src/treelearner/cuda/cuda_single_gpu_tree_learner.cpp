@@ -336,15 +336,15 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // (num_leaves << 2^max_depth): exactly leaf-wise-equivalent level batching
   // with end-of-selection pruning; "0" falls back to the classic loop there
   use_hybrid_selective_ = FalcataPlan::Get().selective;
-  // vector-leaf training rides the hybrid TWO-SYNC level flow: the speculative
-  // (one-sync) flow derives its child gates from device structs the plane
-  // fan-out has not refreshed yet, and selective growth recycles leaf indices
-  // through a host tree rebuild that carries target-0 leaf values only. Both
-  // fall back to the classic per-split loop here, as does the graph loop
+  // vector-leaf training rides the hybrid TWO-SYNC level flows: the exact-fit
+  // prefix in depth-limited configs and the SELECTIVE (grow-then-prune) prefix
+  // in budget-limited ones, both on the per-plane histogram loop and the
+  // batched vector find. The speculative (one-sync) flow derives its child
+  // gates from device structs the plane fan-out has not refreshed yet, so it
+  // falls back to the classic per-split loop here, as does the graph loop
   // (HybridGraphPrefixUsable).
   if (vec_num_targets_ > 1) {
     use_hybrid_one_sync_ = false;
-    use_hybrid_selective_ = false;
   }
   cuda_best_split_finder_.reset(new CUDABestSplitFinder(cuda_histogram_constructor_->cuda_hist(),
     train_data_, this->share_state_->feature_hist_offsets(), select_features_by_node_, config_));
@@ -957,9 +957,10 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
        use_hybrid_batch_kernels_ && use_hybrid_batch_apply_ &&
        cuda_histogram_constructor_->SupportsBatchedLevel() &&
        cuda_best_split_finder_->SupportsBatchedLevel());
-  // Vector-leaf mode has one level flow: the two-sync prefix with the batched
-  // level kernels (per-plane construct/fix/subtract + the batched vector find)
-  // and the batched apply, which is where the per-level plane fan-out lives.
+  // Vector-leaf mode rides the two-sync level flows (exact-fit prefix and
+  // selective grow-then-prune) with the batched level kernels (per-plane
+  // construct/fix/subtract + the batched vector find) and the batched apply,
+  // which is where the per-level plane fan-out lives.
   const bool vec_ok = vec_num_targets_ <= 1 ||
       (use_hybrid_batch_kernels_ && use_hybrid_batch_apply_ &&
        cuda_histogram_constructor_ != nullptr && cuda_best_split_finder_ != nullptr &&
@@ -3096,6 +3097,17 @@ int CUDASingleGPUTreeLearner::RunSelectiveLevel() {
     node.data_start = leaf_data_start_[f.leaf];
     node.num_data = leaf_num_data_[f.leaf];
     node.info = host_leaf_best_splits_[f.leaf];
+    if (vec_num_targets_ > 1) {
+      // snapshot the per-target child sums/outputs now, for the same reason
+      // the categorical thresholds are snapshotted: the leaf's payload slot is
+      // reused as soon as the (possibly recycled) leaf index is searched again
+      const size_t fields = static_cast<size_t>(kNumVecPayloadFields) *
+        static_cast<size_t>(vec_num_targets_);
+      const size_t base = static_cast<size_t>(f.leaf) * fields;
+      CHECK_LE(base + fields, sel_leaf_vec_payloads_.size());
+      node.vec_payload.assign(sel_leaf_vec_payloads_.begin() + base,
+                              sel_leaf_vec_payloads_.begin() + base + fields);
+    }
     if (node.info.num_cat_threshold > 0) {
       // snapshot the inner threshold bins now: the leaf's slab slot is reused
       // as soon as the (recycled) leaf index is searched again
@@ -3154,6 +3166,9 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatchedSelective(std::vector<HybridAppl
 }
 
 void CUDASingleGPUTreeLearner::TrainSelectiveOneSync(CUDATree* tree) {
+  // the speculative flow gates the children on device structs the vector plane
+  // fan-out has not refreshed yet (UseOneSyncPrefix is forced off in Init)
+  CHECK_LE(vec_num_targets_, 1);
   EnqueueRootLevelSearchOneSync();
   std::vector<HybridAppliedSplit> pending;  // applied splits awaiting readback
   std::vector<HybridAppliedSplit> applied;
@@ -3199,6 +3214,9 @@ void CUDASingleGPUTreeLearner::TrainSelectiveTwoSync(CUDATree* tree) {
   const bool use_batched_level_kernels = use_hybrid_batch_kernels_ &&
     cuda_histogram_constructor_->SupportsBatchedLevel() &&
     cuda_best_split_finder_->SupportsBatchedLevel();
+  // vector mode reaches selective growth only through the batched phases
+  // (HybridGrowthUsable): the per-pair search fallback below is scalar-only
+  CHECK(vec_num_targets_ <= 1 || use_batched_level_kernels);
   const bool hybrid_diag = FalcataDebug().diag;
   if (hybrid_diag) {
     static bool diag_logged = false;
@@ -3211,12 +3229,17 @@ void CUDASingleGPUTreeLearner::TrainSelectiveTwoSync(CUDATree* tree) {
       fprintf(stderr, "[hybrid-diag] %s\n", cuda_best_split_finder_->BatchedLevelGateDiag().c_str());
     }
   }
+  // vector mode: the ROOT level's planes are the fixed slab BeforeTrain filled
+  // (pair 0's smaller role at [0, T), larger at [T, 2T)); every later level
+  // reads the per-slot slab the plane fan-out writes
+  CUDALeafSplitsStruct* vec_plane_slab =
+    vec_num_targets_ > 1 ? vec_plane_structs_.RawData() : nullptr;
   std::vector<HybridAppliedSplit> applied;
   std::vector<int> batch_info;
   std::vector<int> child_leaves;
   while (true) {
     if (use_batched_level_kernels) {
-      EnqueueLevelBestSplitSearch(tree, pairs);
+      EnqueueLevelBestSplitSearch(tree, pairs, vec_plane_slab);
     } else {
       int pair_counter = 0;
       for (const HybridPendingPair& pair : pairs) {
@@ -3228,6 +3251,9 @@ void CUDASingleGPUTreeLearner::TrainSelectiveTwoSync(CUDATree* tree) {
       }
     }
     cuda_best_split_finder_->SyncAllLeafBestSplitsToHost(sel_num_allocated_, &host_leaf_best_splits_);
+    if (vec_num_targets_ > 1) {
+      cuda_best_split_finder_->CopyLeafVecPayloadsToHost(sel_num_allocated_, &sel_leaf_vec_payloads_);
+    }
     child_leaves.clear();
     for (const HybridPendingPair& pair : pairs) {
       child_leaves.push_back(pair.smaller);
@@ -3243,6 +3269,13 @@ void CUDASingleGPUTreeLearner::TrainSelectiveTwoSync(CUDATree* tree) {
     pairs.clear();
     cuda_data_partition_->FinishSplitBatch(static_cast<int>(applied.size()), &batch_info);
     FinishLevelBookkeeping(applied, batch_info, &pairs, &sel_num_splits_);
+    if (vec_num_targets_ > 1) {
+      // the partition seeded the primary child structs (target-0 sums, plane-0
+      // histogram pointers); fan them out into this level's plane structs with
+      // per-target sums/values from each parent split's vector payload
+      VectorLevelPlaneFanOut(applied);
+      vec_plane_slab = vec_level_plane_slots_.RawData();
+    }
   }
 }
 
@@ -3302,6 +3335,16 @@ void CUDASingleGPUTreeLearner::SelectiveFinalize(CUDATree* tree) {
     s.right_count = node.info.right_count;
     s.left_value = node.info.left_value;
     s.right_value = node.info.right_value;
+    if (vec_num_targets_ > 1) {
+      // both children's per-target outputs from the snapshotted payload; the
+      // scalar fields above are its target-0 entries
+      const int num_targets = vec_num_targets_;
+      CHECK_EQ(static_cast<int>(node.vec_payload.size()), kNumVecPayloadFields * num_targets);
+      const auto left_begin = node.vec_payload.begin() + kVecLeftValue * num_targets;
+      const auto right_begin = node.vec_payload.begin() + kVecRightValue * num_targets;
+      s.vec_left_values.assign(left_begin, left_begin + num_targets);
+      s.vec_right_values.assign(right_begin, right_begin + num_targets);
+    }
     seq.push_back(s);
   }
   tree->RebuildFromHostSplits(seq);
@@ -3361,6 +3404,12 @@ void CUDASingleGPUTreeLearner::TrainSelective(CUDATree* tree) {
   const size_t max_slots = static_cast<size_t>(config_->num_leaves) + 2;
   if (hybrid_pair_slots_.Size() < max_slots) {
     hybrid_pair_slots_.Resize(max_slots);
+  }
+  // vector mode: T plane structs per slot, in the slot order the fan-out and
+  // the batched vector find share
+  if (vec_num_targets_ > 1 &&
+      vec_level_plane_slots_.Size() < max_slots * static_cast<size_t>(vec_num_targets_)) {
+    vec_level_plane_slots_.Resize(max_slots * static_cast<size_t>(vec_num_targets_));
   }
   if (UseOneSyncPrefix()) {
     TrainSelectiveOneSync(tree);

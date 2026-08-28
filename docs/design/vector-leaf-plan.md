@@ -1,27 +1,33 @@
 # Vector-leaf multi-target trees (CUDA) — design plan
 
-**Status:** V1 (plumbing), V2 (training kernels, classic flow) and V3 (hybrid
-level-batched prefix) landed ·
+**Status:** V1 (plumbing), V2 (training kernels, classic flow) and V3 (both
+hybrid two-sync level prefixes: exact-fit level-batched and selective
+grow-then-prune) landed ·
 **Date:** 2026-08-02 (plan), 2026-08-28 (V2, V3) · **Prereq:** the round-robin
 tier (`objective=multi_regression`) is the API on-ramp and the baseline these
 models are judged against.
 
 ## 0. Implementation notes — where the implementation diverges from the plan below
 
-- **Hybrid TWO-SYNC level prefix + classic fallback.** §2's "hybrid growth
-  prefix support from day one" landed one release late (V3): vector training
-  takes the hybrid level-batched prefix in the depth-limited regime
+- **Both hybrid TWO-SYNC level prefixes + classic fallback.** §2's "hybrid
+  growth prefix support from day one" landed one release late (V3): vector
+  training takes the hybrid level-batched prefix in the depth-limited regime
   (`2^max_depth <= num_leaves + 1`), the same regime plain level batching is
-  leaf-wise-exact in for scalar training, and the classic one-split-at-a-time
-  loop everywhere else. The level path adds three pieces to the scalar
+  leaf-wise-exact in for scalar training, and the SELECTIVE (grow-then-prune)
+  prefix in the budget-limited regime (`num_leaves << 2^max_depth` — the
+  production numerai shape), leaving the classic one-split-at-a-time loop only
+  where neither applies. The level path adds three pieces to the scalar
   machinery: a batched vector find kernel that shares its whole body with the
   per-pair vector finder, a level plane fan-out kernel that refreshes every
   child's T leaf-splits structs from the primary structs the batched apply
-  wrote, and the per-pair histogram loop the next bullet explains. The one-sync
-  (speculative), selective (grow-then-prune) and graph-loop
-  prefixes stay excluded: one-sync gates the children on device structs the
-  fan-out has not refreshed yet, selective rebuilds the host tree from captured
-  splits carrying target-0 leaf values only, and the graph controller models one
+  wrote, and the per-pair histogram loop the next bullet explains. Selective
+  growth adds a fourth: the final tree is replayed host-side from captured
+  splits, so each applied record snapshots its winning split's T-target payload
+  from the per-leaf slab (same reuse discipline as the categorical thresholds,
+  one D2H per level), and `RebuildFromHostSplits` replays
+  `SetVectorLeafValuesFromSplitKernel` over it. The one-sync (speculative) and
+  graph-loop prefixes stay excluded: one-sync gates the children on device
+  structs the fan-out has not refreshed yet, and the graph controller models one
   construct node per level rather than one per plane.
 - **The level flow batches the SEARCH, not the histograms.** The batched level
   construct is what makes plain level batching pay for scalar training, and it
@@ -191,7 +197,8 @@ Memory: hist pool grows ×T for the planes. At numerai scale (10240 bins ×
 - **V2** — finder + construct planes on the classic flow; parity harness vs
   round-robin on synthetic data (same seeds: vector-leaf trees are NOT
   expected identical — quality parity per target + speed measurement).
-- **V3** — hybrid two-sync batched prefix (LANDED; see §0); numerai
+- **V3** — hybrid two-sync batched prefix and selective grow-then-prune
+  (LANDED; see §0, §8b); numerai
   multi-target benchmark (v5 targets), per-era corr validation vs round-robin
   and vs sequential.
 - **V4** — docs + gates (vector/nonquant lattice cell, perf entry).
@@ -363,6 +370,38 @@ interleaved `[bin][target]` cell layout that keeps one thread's working set at
 one row), because that, not the launch count, is the term the measurement
 indicts.
 
-The remaining vector-leaf levers are therefore the ones that do not touch the
-construct: selective and one-sync prefix support for vector mode, and the
+### 8b. The selective prefix lands, and is worth 1.0-1.1x — not the scalar 2x
+
+Selective (grow-then-prune) prefix support for vector mode landed on the basis
+above and was measured on exactly the shape §8's table C uses (2400 five-valued
+features, 250 leaves, `max_depth=12`). Selective / classic vector, ms/tree:
+
+| rows | T | ff=1.0 | ff=0.3 | ff=0.1 |
+| --- | --- | --- | --- | --- |
+| 200k | 4 | 1.01x | 1.09x | 1.11x |
+| 200k | 5 | 0.98x | 1.09x | 1.04x |
+| 700k | 4 | 0.99x | 1.03x | 1.09x |
+| 700k | 5 | 0.98x | 1.04x | 1.09x |
+
+The full table with absolute ms/tree and the vector/(T scalars) ratios is in
+`docs/performance.md` §11. Two readings:
+
+1. **The `feature_fraction` multiplier §8 predicted does NOT transfer.** §8 read
+   the scalar classic/hybrid ratio (0.90 at ff=1.0, 2.00 at 0.3, 2.08 at 0.1) as
+   "a ~2x multiplier the vector path is missing". It is not: that ratio is the
+   batched level CONSTRUCT's win, and vector mode deliberately does not take the
+   batched construct (§0). What transfers is the batched search and the level's
+   single sync — 1.03-1.11x under subsampling, nothing at ff=1.0. The prediction
+   was wrong in the same way §8a's fused-construct prediction was wrong, and for
+   the same reason: attributing a construct-side win to the level structure.
+2. **Vector already wins on this synthetic shape.** sel/(T scalars) is 0.53-0.59
+   at ff=1.0, 0.75-1.01 at 0.3 and 0.80-0.90 at 0.1, so the "3x slower than T
+   scalars" the production numerai A/B reported does not reproduce on the
+   2400-five-valued synthetic at any feature_fraction. Whatever produces the 3x
+   is a property of the real 3555-feature v5 dataset or its production
+   hyperparameters, not of the shape class — re-measure it there before
+   attributing it to the growth path.
+
+The remaining vector-leaf levers are therefore the one-sync prefix (whose gate
+needs the plane fan-out to run before the children's speculative search) and the
 modeling-side question of the leaf budget (§0).

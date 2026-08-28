@@ -472,6 +472,20 @@ void CUDATree::RebuildFromHostSplits(const std::vector<CUDATreeHostSplit>& split
     internal_count_[new_node_index] = s.left_count + s.right_count;
     leaf_count_[leaf_index] = s.left_count;
     leaf_value_[num_leaves_] = std::isnan(s.right_value) ? 0.0f : s.right_value;
+    if (leaf_value_dim_ > 1) {
+      // host replay of SetVectorLeafValuesFromSplitKernel over the split's
+      // captured vector payload
+      CHECK_EQ(static_cast<int>(s.vec_left_values.size()), leaf_value_dim_);
+      CHECK_EQ(static_cast<int>(s.vec_right_values.size()), leaf_value_dim_);
+      const size_t left_base = static_cast<size_t>(leaf_index) * leaf_value_dim_;
+      const size_t right_base = static_cast<size_t>(num_leaves_) * leaf_value_dim_;
+      for (int target = 0; target < leaf_value_dim_; ++target) {
+        const double left_value = s.vec_left_values[target];
+        const double right_value = s.vec_right_values[target];
+        leaf_values_vec_[left_base + target] = std::isnan(left_value) ? 0.0 : left_value;
+        leaf_values_vec_[right_base + target] = std::isnan(right_value) ? 0.0 : right_value;
+      }
+    }
     leaf_weight_[num_leaves_] = s.right_sum_hessians;
     leaf_count_[num_leaves_] = s.right_count;
     leaf_depth_[num_leaves_] = leaf_depth_[leaf_index] + 1;
@@ -512,6 +526,10 @@ void CUDATree::RebuildFromHostSplits(const std::vector<CUDATreeHostSplit>& split
   // renewal kernels read them
   CopyFromHostToCUDADevice<double>(cuda_leaf_value_.RawData(), leaf_value_.data(),
     static_cast<size_t>(num_leaves_), __FILE__, __LINE__);
+  if (leaf_value_dim_ > 1) {
+    CopyFromHostToCUDADevice<double>(cuda_leaf_values_vec_.RawData(), leaf_values_vec_.data(),
+      static_cast<size_t>(num_leaves_) * leaf_value_dim_, __FILE__, __LINE__);
+  }
   ShrinkHostVectorsAndReleaseDevice();
 }
 

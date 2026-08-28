@@ -67,6 +67,11 @@ struct CUDATreeHostSplit {
   data_size_t right_count;
   double left_value;
   double right_value;
+  /*! \brief vector-leaf mode: both children's per-target outputs, leaf_value_dim
+   *  entries each (empty in scalar mode). Entry 0 is the target-0 mirror
+   *  left_value / right_value already carry. */
+  std::vector<double> vec_left_values;
+  std::vector<double> vec_right_values;
   /*! \brief categorical split payload: >0 selects the categorical replay.
    *  The bitsets are prebuilt on host in the model-format layout (uint32 words,
    *  bit v set for member value v): cat_bitset over REAL category values,
@@ -171,7 +176,9 @@ class CUDATree : public Tree {
    *  them), and then performs ToHost()'s cleanup (host vector shrink, leaf
    *  value materialization, device array release, stream destroy). The caller
    *  must NOT call ToHost() afterwards. leaf_value_[0] must hold the root
-   *  output before the call (it seeds the internal_value_ chain). */
+   *  output before the call (it seeds the internal_value_ chain), and in
+   *  vector-leaf mode leaf_values_vec_[0, T) must hold the root's per-target
+   *  outputs. */
   void RebuildFromHostSplits(const std::vector<CUDATreeHostSplit>& splits);
 
   int SplitCategorical(
