@@ -341,6 +341,11 @@ class FALCATA_EXPORT Boosting {
 
   virtual bool IsLinear() const { return false; }
 
+  /*!
+  * \brief Number of values stored per leaf; > 1 marks a vector-leaf model
+  */
+  virtual int LeafValueDim() const { return 1; }
+
   virtual std::string ParserConfigStr() const = 0;
 };
 

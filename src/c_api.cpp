@@ -2931,6 +2931,13 @@ int FLC_BoosterGetLinear(BoosterHandle handle, int* out) {
   API_END();
 }
 
+int FLC_BoosterGetLeafValueDim(BoosterHandle handle, int* out) {
+  API_BEGIN();
+  Booster* ref_booster = reinterpret_cast<Booster*>(handle);
+  *out = ref_booster->GetBoosting()->LeafValueDim();
+  API_END();
+}
+
 int FLC_BoosterRefit(BoosterHandle handle, const int32_t* leaf_preds, int32_t nrow, int32_t ncol) {
   API_BEGIN();
   Booster* ref_booster = reinterpret_cast<Booster*>(handle);

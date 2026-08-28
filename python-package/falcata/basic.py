@@ -4315,6 +4315,17 @@ class Booster:
         self.__is_predicted_cur_iter.append(False)
         return self
 
+    def _leaf_value_dim(self) -> int:
+        """Get the number of values stored per leaf; > 1 marks a vector-leaf model."""
+        out = ctypes.c_int(0)
+        _safe_call(
+            _LIB.FLC_BoosterGetLeafValueDim(
+                self._handle,
+                ctypes.byref(out),
+            )
+        )
+        return out.value
+
     def reset_parameter(self, params: Dict[str, Any]) -> "Booster":
         """Reset parameters of Booster.
 
@@ -5150,16 +5161,16 @@ class Booster:
     ) -> Optional[Any]:
         """Convert this model to a GPU FIL model via an in-memory Treelite handoff."""
         try:
-            # hand the model text over via a temp file: load_lightgbm_model()
-            # is treelite's public loader with no dependency on a `lightgbm`
-            # python package (from_lightgbm() isinstance-checks against one)
-            model_str = self.model_to_string(num_iteration=num_iteration, start_iteration=start_iteration)
             # Treelite's LightGBM IR has scalar leaves only. Detect Falcata's
             # extension before invoking the loader so vector models take the
             # documented native-predictor fallback without an exception-driven
             # conversion attempt.
-            if "\nleaf_value_dim=" in model_str:
+            if self._leaf_value_dim() > 1:
                 return None
+            # hand the model text over via a temp file: load_lightgbm_model()
+            # is treelite's public loader with no dependency on a `lightgbm`
+            # python package (from_lightgbm() isinstance-checks against one)
+            model_str = self.model_to_string(num_iteration=num_iteration, start_iteration=start_iteration)
             with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tmp_file:
                 tmp_file.write(model_str)
                 tmp_path = tmp_file.name

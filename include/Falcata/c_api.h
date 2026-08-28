@@ -857,6 +857,14 @@ FALCATA_C_EXPORT int FLC_DatasetAddFeaturesFrom(DatasetHandle target,
 FALCATA_C_EXPORT int FLC_BoosterGetLinear(BoosterHandle handle, int* out);
 
 /*!
+* \brief Get the number of values stored per leaf; > 1 marks a vector-leaf model.
+* \param handle Handle of booster
+* \param[out] out The address to hold the leaf value dimension
+* \return 0 when succeed, -1 when failure happens
+*/
+FALCATA_C_EXPORT int FLC_BoosterGetLeafValueDim(BoosterHandle handle, int* out);
+
+/*!
  * \brief Create a new boosting learner.
  * \param train_data Training dataset
  * \param parameters Parameters in format 'key1=value1 key2=value2'
