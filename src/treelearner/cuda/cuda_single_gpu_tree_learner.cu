@@ -365,8 +365,19 @@ void CUDASingleGPUTreeLearner::LaunchCalcLeafValuesGivenGradStat(
 // in LinearTreeLearner::CalculateLinear (float row, double accumulation, g applied
 // before the hessian scaling). NaN rows are skipped (and not counted), matching the
 // CPU HAS_NAN branch; for NaN-free data every leaf row is counted == leaf_count.
+//
+// Under bagging num_data is the BAGGED count and the rows to accumulate are the
+// partition's index list -- exactly like LinearAddScoreKernel below. The row ->
+// leaf map is maintained only for partition rows (FillDataIndicesBeforeTrain
+// writes the bagged rows each tree; the split kernels update the same set), so
+// an out-of-bag row's map entry is stale device memory that may name any leaf
+// id, in or out of range: the map must never be consulted for such rows. This
+// mirrors the CPU learner, whose GetLeafMap assigns leaves only to partition
+// rows (out-of-bag rows keep -1 and are skipped).
+template <bool USE_BAGGING>
 __global__ void CalcLinearGramKernel(
     const data_size_t num_data,
+    const data_size_t* __restrict__ data_indices,
     const int* __restrict__ data_index_to_leaf_index,
     const float* __restrict__ raw_data,
     const data_size_t num_data_stride,
@@ -380,10 +391,11 @@ __global__ void CalcLinearGramKernel(
     double* __restrict__ xthx,
     double* __restrict__ xtg,
     int* __restrict__ leaf_nonzero) {
-  const data_size_t i = static_cast<data_size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (i >= num_data) {
+  const data_size_t local_data_index = static_cast<data_size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (local_data_index >= num_data) {
     return;
   }
+  const data_size_t i = USE_BAGGING ? data_indices[local_data_index] : local_data_index;
   const int leaf = data_index_to_leaf_index[i];
   if (leaf < 0) {
     return;
@@ -470,15 +482,25 @@ void CUDASingleGPUTreeLearner::LaunchCalcLinearGramKernel(
     const int* leaf_num_feat, const int* leaf_feat_offset, const int* leaf_feat_col,
     const int* leaf_xthx_offset, const int* leaf_xtg_offset, int /*num_leaves*/,
     double* cuda_xthx, double* cuda_xtg, int* cuda_leaf_nonzero) {
-  if (num_data_ <= 0) {
+  const data_size_t num_gram_data = cuda_data_partition_->root_num_data();
+  if (num_gram_data <= 0) {
     return;
   }
   const int block = 256;
-  const int grid = (num_data_ + block - 1) / block;
-  CalcLinearGramKernel<<<grid, block>>>(
-    num_data_, cuda_data_index_to_leaf_index, cuda_raw_data_.RawData(), num_data_,
-    gradients, hessians, leaf_num_feat, leaf_feat_offset, leaf_feat_col,
-    leaf_xthx_offset, leaf_xtg_offset, cuda_xthx, cuda_xtg, cuda_leaf_nonzero);
+  const int grid = (num_gram_data + block - 1) / block;
+  if (cuda_data_partition_->use_bagging()) {
+    CalcLinearGramKernel<true><<<grid, block>>>(
+      num_gram_data, cuda_data_partition_->cuda_data_indices(),
+      cuda_data_index_to_leaf_index, cuda_raw_data_.RawData(), num_data_,
+      gradients, hessians, leaf_num_feat, leaf_feat_offset, leaf_feat_col,
+      leaf_xthx_offset, leaf_xtg_offset, cuda_xthx, cuda_xtg, cuda_leaf_nonzero);
+  } else {
+    CalcLinearGramKernel<false><<<grid, block>>>(
+      num_gram_data, nullptr,
+      cuda_data_index_to_leaf_index, cuda_raw_data_.RawData(), num_data_,
+      gradients, hessians, leaf_num_feat, leaf_feat_offset, leaf_feat_col,
+      leaf_xthx_offset, leaf_xtg_offset, cuda_xthx, cuda_xtg, cuda_leaf_nonzero);
+  }
   SynchronizeCUDADevice(__FILE__, __LINE__);
 }
 
