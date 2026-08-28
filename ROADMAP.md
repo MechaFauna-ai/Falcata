@@ -45,10 +45,32 @@ Roughly priority-ordered within groups. Measurements refer to an RTX 5090.
     validation.
 
   - Lift v1 fences on demand: GOSS/query/balanced bagging (plain per-row
-    bagging landed) and categorical features (landed; cat_random_search still
-    fenced), L1/path-smooth/max_delta_step/extra-trees/monotone/CEGB, fp32
-    modes, quantized training (needs a T-grad packed cell layout), per-target
-    boost_from_average bias, T > 16, multi-GPU.
+    bagging landed), categorical features (landed; cat_random_search still
+    fenced), quantized training (LANDED — one discretized gradient plane per
+    target at its own scale over plane 0's shared quantized hessians, see
+    docs/design/vector-leaf-plan.md §3a; categorical and
+    quant_train_renew_leaf stay fenced within it),
+    L1/path-smooth/max_delta_step/extra-trees/monotone/CEGB, per-target
+    boost_from_average bias, multi-GPU.
+  - A lattice fingerprint cell for quantized vector training. Quantized vector
+    models ARE bit-reproducible (exact associative integer scans), so unlike
+    every fp64 vector path they can be md5-locked — and no lattice cell reaches
+    vector mode at all today. Blocked on lattice runner surgery: `build_profile`
+    yields a 1-D label and `run_cell` asserts `num_trees == rounds * num_class`,
+    which vector mode (one tree per round) fails by construction.
+  - fp32 histograms (`cuda_precision=fp32`) for vector mode: needs the fp64
+    vector finder templated on the histogram element type plus an fp32
+    dispatch in the two vector launchers. Low priority now that quantized
+    landed — fp32 halves histogram bandwidth non-deterministically where
+    quantized quarters it (16-byte fp64 pair vs 4-byte packed int32) and is
+    bit-reproducible.
+  - T > 16: the binding constraint is the fp64 finder's `(T+1) x 256 x 8B`
+    dynamic shared prefix slab against the 48KB default per-block limit, which
+    runs out at T = 21. Raising the cap means opting those kernels into
+    `cudaFuncAttributeMaxDynamicSharedMemorySize` (~99KB on sm_120, good to
+    about T = 47) or chunking the prefix. The quantized finder needs no slab
+    (exact associative integer scans) and is bounded only by per-thread array
+    spill.
   - Per-era numerai validation of the shared-structure model vs round-robin
     (modeling change: validate, don't assume); SketchBoost-style reduced
     split-gradient hook.

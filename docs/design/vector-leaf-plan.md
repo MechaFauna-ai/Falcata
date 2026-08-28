@@ -53,9 +53,10 @@ models are judged against.
   index-based, so one shared row subset feeds every target's histogram plane
   and the per-plane leaf-splits init just takes the partition's index list),
   no L1/path-smooth/max_delta_step/extra-trees/monotone/interaction/
-  forced-splits/CEGB, fp64 only (`cuda_precision=fp64`), `boost_from_average`
-  forced off (per-target biases would need a per-target AddBias), max_bin ≤
-  256 (shared-memory finder), single GPU, no `cat_random_search`.
+  forced-splits/CEGB, fp64 only (`cuda_precision=fp64`; quantized training IS
+  supported, see §3a), `boost_from_average` forced off (per-target biases would
+  need a per-target AddBias), max_bin ≤ 256 (shared-memory finder), single GPU,
+  no `cat_random_search`.
 - **Categorical splits (supported).**
   `FindBestSplitsForLeafKernelVectorCategoricalInner` mirrors the scalar
   categorical inner (one-hot + `max_cat_threshold`-sorted many-vs-many) over
@@ -119,8 +120,9 @@ is symmetric-only. Two prizes:
 - Constant or per-row weights (hessian shared across targets either way).
 - Hybrid growth prefix support from day one (the speed thesis lives there);
   classic fallback for excluded shapes as usual.
-- Quantized vector-leaf is explicitly out of scope for v1 (the packed int
-  hist carries one grad field; widening it interacts with every codec).
+- Quantized vector-leaf was out of scope for v1 on the assumption that it
+  needed a WIDER packed histogram word (one carrying T gradient fields), which
+  would touch every codec. It does not, and it is now supported: see §3a.
 
 ## 3. Histogram layout — the load-bearing decision
 
@@ -151,6 +153,64 @@ construction:
 Memory: hist pool grows ×T for the planes. At numerai scale (10240 bins ×
 2 × 8B × 1024 leaves ≈ 168MB single-target) T=5 → ~840MB; acceptable on
 24–32GB cards, and the fp32-hist mode halves it.
+
+## 3a. Quantized vector-leaf (supported)
+
+The v1 scope note assumed quantized vector training meant widening the packed
+histogram word to carry T gradient fields. It does not, and the plane layout of
+§3 is exactly why: a quantized plane is a NORMAL `(grad32, hess32)` packed
+histogram — the same word, the same codecs, the same fix/subtract/bit-width
+machinery — just one per target.
+
+Three decisions carry it:
+
+- **Per-target gradient scales.** Each plane is discretized with its own
+  `grad_scale`. Targets differ in gradient magnitude by orders of magnitude
+  (that is the whole point of multi-target training), and a single shared scale
+  would round the small-magnitude targets to zero. `grad_scale_ptr(t)` names
+  target t's scale; the finder dequantizes plane t with it. The scales are
+  SNAPSHOTS, not the discretizer's reduce scratch: a T-plane tree overwrites
+  that scratch once per plane, so naming it would hand every consumer the last
+  plane's scale.
+- **One hessian, quantized once.** The hessian is target-independent, so plane
+  0 owns it and planes 1..T-1 copy plane 0's already-quantized int16 hessians
+  rather than re-rounding them under an independent dither. Every plane's
+  packed word is then `(g_t, h)` with a bit-identical `h`, so the leaf's
+  integer hessian total, the bin bit widths, and the row counts inferred from
+  the hessian are the same object on every plane — the finder reads them from
+  plane 0 and the invariant holds by construction, not by luck. There is one
+  `hess_scale`.
+- **Integer scans, no fp64 slab.** The fp64 vector finder needs a
+  `(T+1) x blockDim` shared prefix buffer because its folds must run in a fixed
+  CPU order to stay reproducible. Integer addition is exact and associative, so
+  the quantized finder just runs the existing warp-shuffle prefix once per
+  plane over one shared scratch. It is therefore the cheaper kernel in shared
+  memory, and quantized vector models are bit-identical across execution
+  strategies (batched level prefix vs per-split loop) where fp64 ones are not.
+
+The child's exact integer parent total travels in the split payload as two
+extra per-target fields (`kVecLeftGradInt` / `kVecRightGradInt`, int32 values
+held as doubles, which is exact); the plane fan-out re-packs them against the
+hessian half of the child's primary leaf-splits struct.
+
+Fenced within quantized vector mode: categorical features (the quantized
+vector search covers numerical tasks only) and `quant_train_renew_leaf` (it
+reduces one exact gradient stream and overwrites a scalar leaf value).
+
+Under bagging the discretized find kernels add one hessian quantum of L2
+ridge, for the winner's-curse reason documented in the scalar quantized
+finder — vector mode sums T such gains, so the same noise enters T times over.
+
+**Not done, and why.** `grad_only` is passed for planes 1..T-1 in the quantized
+construct loop as it is in the fp64 one, but it is inert there: a quantized row
+is ONE packed int32 carrying gradient and hessian together, so skipping the
+hessian saves no traffic. The apparent way to recover a saving — packing two
+TARGETS' gradients into one word, halving the number of construct passes — does
+not work with the existing field-wise accumulation. That trick is sound only
+because the low field (the hessian) is non-negative and therefore never borrows
+into the high one; two signed gradients in one word break it, and biasing the
+low field to fix that requires a per-bin row count the histogram does not
+carry.
 
 ## 4. Tree storage, model format, predict
 

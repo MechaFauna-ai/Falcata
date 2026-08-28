@@ -596,6 +596,7 @@ void CUDABestSplitFinder::FindBestSplitsForLeafVector(
   const double sum_hessians_in_larger_leaf,
   const bool smaller_leaf_below_max_depth,
   const bool larger_leaf_below_max_depth,
+  const VectorQuantArgs& quant,
   const bool synchronize) {
   CHECK_GT(vec_num_targets_, 1);
   const bool is_smaller_leaf_valid = (num_data_in_smaller_leaf > min_data_in_leaf_ &&
@@ -607,7 +608,7 @@ void CUDABestSplitFinder::FindBestSplitsForLeafVector(
   LaunchFindBestSplitsForLeafKernelVector(
     smaller_leaf_splits_planes, larger_leaf_splits_planes,
     is_smaller_leaf_valid, is_larger_leaf_valid,
-    num_data_in_smaller_leaf, num_data_in_larger_leaf);
+    num_data_in_smaller_leaf, num_data_in_larger_leaf, quant);
   global_timer.Start("CUDABestSplitFinder::LaunchSyncBestSplitForLeafKernel");
   LaunchSyncBestSplitForLeafKernel(smaller_leaf_index, larger_leaf_index, is_smaller_leaf_valid, is_larger_leaf_valid);
   if (synchronize) {
@@ -644,7 +645,8 @@ void CUDABestSplitFinder::EnsureHybridLevelCapacity(const int num_pairs) {
 void CUDABestSplitFinder::FindBestSplitsForLevelVector(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,
-  const CUDALeafSplitsStruct* plane_slab) {
+  const CUDALeafSplitsStruct* plane_slab,
+  const VectorQuantArgs& quant) {
   CHECK_GT(vec_num_targets_, 1);
   if (num_pairs <= 0) {
     return;
@@ -652,7 +654,7 @@ void CUDABestSplitFinder::FindBestSplitsForLevelVector(
   EnsureHybridLevelCapacity(num_pairs);
   // order the batched find after the whole batched histogram phase of this level
   CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], hist_subtract_done_events_[0], 0));
-  LaunchFindBestSplitsForLevelKernelVector(pair_descs, num_pairs, plane_slab);
+  LaunchFindBestSplitsForLevelKernelVector(pair_descs, num_pairs, plane_slab, quant);
   LaunchSyncBestSplitForLevelKernel(pair_descs, num_pairs, /*gate_on_desc_counts=*/false);
 }
 

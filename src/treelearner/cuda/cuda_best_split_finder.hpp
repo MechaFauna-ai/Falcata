@@ -97,6 +97,11 @@ class CUDABestSplitFinder {
    *  decided by the histogram constructor, wired in by the tree learner */
   void SetHistFP32(const bool hist_fp32) { hist_fp32_ = hist_fp32; }
 
+  /*! \brief bagged quantized training adds one hessian quantum of l2 ridge in
+   *  the discretized find kernels (bounds gains/outputs against the per-bag
+   *  redraw of hessian rounding noise); wired in by the tree learner */
+  void SetQuantBaggingRidge(const bool on) { quant_bagging_ridge_ = on; }
+
   /*! \brief large-bin fallback stays fp64: the tree learner disables the fp32
    *  histogram mode when this is set */
   bool use_global_memory() const { return use_global_memory_; }
@@ -139,6 +144,18 @@ class CUDABestSplitFinder {
    *  configurations only (the tree learner gates the rest). */
   void InitVectorMode(const int num_targets);
 
+  /*! \brief quantized-training inputs of a vector-leaf find: the per-target
+   *  dequantization scales (T contiguous score_t) and the shared hessian
+   *  scale, plus the leaf histogram bit widths. grad_scales == nullptr selects
+   *  the fp64 (non-quantized) vector kernels. */
+  struct VectorQuantArgs {
+    const score_t* grad_scales = nullptr;
+    const score_t* hess_scale = nullptr;
+    uint8_t smaller_num_bits = 32;
+    uint8_t larger_num_bits = 32;
+    bool active() const { return grad_scales != nullptr && hess_scale != nullptr; }
+  };
+
   /*! \brief per-pair best-split search over T histogram planes: the
    *  vector-leaf counterpart of FindBestSplitsForLeaf. smaller/larger point at
    *  T contiguous CUDALeafSplitsStructs (plane t carries the target-t gradient
@@ -156,6 +173,7 @@ class CUDABestSplitFinder {
     const double sum_hessians_in_larger_leaf,
     const bool smaller_leaf_below_max_depth,
     const bool larger_leaf_below_max_depth,
+    const VectorQuantArgs& quant,
     const bool synchronize = true);
 
   void FindBestSplitsForLeaf(
@@ -233,7 +251,8 @@ class CUDABestSplitFinder {
   void FindBestSplitsForLevelVector(
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
-    const CUDALeafSplitsStruct* plane_slab);
+    const CUDALeafSplitsStruct* plane_slab,
+    const VectorQuantArgs& quant);
 
   const CUDASplitInfo* FindBestFromAllSplits(
     const int cur_num_leaves,
@@ -436,7 +455,8 @@ class CUDABestSplitFinder {
     const bool is_smaller_leaf_valid,
     const bool is_larger_leaf_valid,
     const data_size_t global_num_data_in_smaller_leaf,
-    const data_size_t global_num_data_in_larger_leaf);
+    const data_size_t global_num_data_in_larger_leaf,
+    const VectorQuantArgs& quant);
 
   void LaunchAssignVecPayloadKernel(CUDASplitInfo* cuda_split_infos, double* payload_slab, size_t len);
 
@@ -511,7 +531,8 @@ class CUDABestSplitFinder {
   void LaunchFindBestSplitsForLevelKernelVector(
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
-    const CUDALeafSplitsStruct* plane_slab);
+    const CUDALeafSplitsStruct* plane_slab,
+    const VectorQuantArgs& quant);
 
   void LaunchSyncBestSplitForLevelKernel(
     const CUDAHybridPairDescriptor* pair_descs,
@@ -591,6 +612,9 @@ class CUDABestSplitFinder {
   bool use_global_memory_;
   // non-quantized histograms stored as float pairs (FALCATA_FP32_HIST)
   bool hist_fp32_ = false;
+  // bagged quantized training: one hessian quantum of l2 ridge in the
+  // discretized find kernels (see FindBestSplitsDiscretizedVectorInner)
+  bool quant_bagging_ridge_ = false;
   // number of total bins in the dataset
   const int num_total_bin_;
   // has categorical feature

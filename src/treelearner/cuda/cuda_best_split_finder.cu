@@ -3221,9 +3221,22 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelInner3(LaunchFindBest
 // the scalar fields (leaf_value_ mirrors target 0 everywhere in vector mode)
 // and every target's child sums/outputs in the slot's vector payload.
 
-/*! \brief hard cap on vector-leaf targets: bounds the kernel's per-thread
- *  arrays and the (T+1)-row shared prefix buffer (17 rows * 256 lanes * 8B =
- *  ~35KB, inside the default 48KB static+dynamic shared budget) */
+/*! \brief hard cap on vector-leaf targets.
+ *
+ *  The binding constraint is the fp64 kernel's (T+1)-row dynamic shared prefix
+ *  buffer: (T+1) * 256 lanes * 8B, which at T=16 is 34.8KB. A block also carries
+ *  ~4.6KB of static shared (the categorical inner's sort scratch dominates), and
+ *  a kernel that never calls cudaFuncSetAttribute is capped at 48KB of
+ *  static+dynamic together -- so the fp64 kernels stop working at T = 21, and 16
+ *  is the round number below that. Raising the cap therefore means opting the
+ *  fp64 vector kernels into the larger per-block shared limit
+ *  (cudaFuncAttributeMaxDynamicSharedMemorySize, ~99KB on sm_120, good to about
+ *  T = 47) or restructuring the prefix to scan targets in chunks.
+ *
+ *  The quantized vector kernels need no prefix slab at all -- integer scans are
+ *  exact and associative, so they reuse one warp-shuffle scratch per plane --
+ *  and are bounded only by the per-thread arrays below (T int64 + T doubles),
+ *  which spill to local memory and cost bandwidth rather than correctness. */
 static constexpr int kMaxVectorTargets = 16;
 
 // Vector-leaf categorical split search: the scalar categorical inner
@@ -3804,6 +3817,366 @@ __device__ void FindBestSplitsVectorInner(
   }
 }
 
+// ---- vector-leaf x quantized (discretized) find ------------------------------
+//
+// The quantized twin of FindBestSplitsVectorInner. Plane t's histogram holds
+// target t's gradients packed against the SHARED hessian stream, at target t's
+// own gradient scale (CUDAGradientDiscretizer::DiscretizeGradientsForPlane).
+// Every scan therefore runs in exact packed integers -- one ShufflePrefixSum
+// per plane, no fp64 slab -- and only the gain evaluation dequantizes, with
+// grad_scales[t] for target t and the one hess_scale for the hessian every
+// target shares. Numerical tasks only; categorical is fenced off for the
+// quantized vector configuration.
+template <bool USE_16BIT_ACC_HIST, typename ACC_HIST_TYPE>
+__device__ __forceinline__ int64_t VectorUnpackAcc(const ACC_HIST_TYPE v) {
+  return USE_16BIT_ACC_HIST ?
+    ((static_cast<int64_t>(static_cast<int16_t>(v >> 16)) << 32) |
+      static_cast<int64_t>(v & 0x0000ffff)) :
+    static_cast<int64_t>(v);
+}
+
+template <bool REVERSE, typename ACC_HIST_TYPE, bool USE_16BIT_ACC_HIST>
+__device__ void FindBestSplitsDiscretizedVectorInner(
+  const CUDALeafSplitsStruct* leaf_splits_planes,
+  const int num_targets,
+  const SplitFindTask* task,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf,
+  const double min_gain_to_split,
+  const double lambda_l2_in,
+  const data_size_t num_data,
+  const score_t* grad_scales,
+  const score_t* hess_scale_ptr,
+  const bool quant_bagging_ridge,
+  CUDASplitInfo* out) {
+  __shared__ double shared_gain_buffer[WARPSIZE];
+  __shared__ bool shared_bool_buffer[WARPSIZE];
+  // sized for ACC_HIST_TYPE == int64_t, which the prefix scans reinterpret onto
+  __shared__ uint32_t shared_int_buffer[2 * WARPSIZE];
+  __shared__ uint32_t best_thread_index;
+
+  const double hess_scale = static_cast<double>(*hess_scale_ptr);
+  // one hessian quantum of ridge under bagging: bagged quantized training
+  // redraws the hessian rounding noise every iteration, and the gain argmax
+  // harvests children whose noisy |G| is large while noisy H is near zero.
+  // Vector mode sums T such gains, so the same noise enters T times over.
+  const double lambda_l2 = quant_bagging_ridge ? lambda_l2_in + hess_scale : lambda_l2_in;
+  const int64_t parent_gh_hess = leaf_splits_planes[0].sum_of_gradients_hessians;
+  const double sum_hessians =
+    static_cast<double>(static_cast<int32_t>(parent_gh_hess & 0x00000000ffffffff)) * hess_scale;
+  const double cnt_factor = static_cast<double>(num_data) / sum_hessians;
+
+  int64_t parent_gh[kMaxVectorTargets];
+  double grad_scale[kMaxVectorTargets];
+  double parent_gain = 0.0;
+  for (int t = 0; t < num_targets; ++t) {
+    parent_gh[t] = leaf_splits_planes[t].sum_of_gradients_hessians;
+    grad_scale[t] = static_cast<double>(grad_scales[t]);
+    const double sum_gradients_t = static_cast<double>(
+      static_cast<int32_t>((parent_gh[t] & 0xffffffff00000000) >> 32)) * grad_scale[t];
+    parent_gain += CUDALeafSplits::GetLeafGain<false, false>(
+      sum_gradients_t, sum_hessians, 0.0, lambda_l2, 0.0, 0.0, num_data, 0.0);
+  }
+  const double min_gain_shift = parent_gain + min_gain_to_split;
+
+  if (threadIdx.x == 0) {
+    out->is_valid = false;
+  }
+
+  ACC_HIST_TYPE local_hist[kMaxVectorTargets];
+  for (int t = 0; t < num_targets; ++t) {
+    local_hist[t] = 0;
+  }
+  double local_gain = kMinScore;
+  bool threshold_found = false;
+  uint32_t threshold_value = 0;
+  const unsigned int threadIdx_x = threadIdx.x;
+  const bool skip_sum = REVERSE ?
+    (task->skip_default_bin && (task->num_bin - 1 - threadIdx_x) == static_cast<int>(task->default_bin)) :
+    (task->skip_default_bin && (threadIdx_x + task->mfb_offset) == static_cast<int>(task->default_bin));
+  const uint32_t feature_num_bin_minus_offset = task->num_bin - task->mfb_offset;
+  const bool na_missing_head = (!REVERSE && task->na_as_missing && task->mfb_offset == 1);
+  int read_bin = -1;
+  if (!REVERSE) {
+    if (na_missing_head) {
+      if (threadIdx_x < static_cast<uint32_t>(task->num_bin) && threadIdx_x > 0) {
+        read_bin = static_cast<int>(threadIdx_x) - 1;
+      }
+    } else if (threadIdx_x < feature_num_bin_minus_offset && !skip_sum) {
+      read_bin = static_cast<int>(threadIdx_x);
+    }
+  } else {
+    if (threadIdx_x >= static_cast<unsigned int>(task->na_as_missing) &&
+        threadIdx_x < feature_num_bin_minus_offset && !skip_sum) {
+      read_bin = static_cast<int>(feature_num_bin_minus_offset - 1 - threadIdx_x);
+    }
+  }
+  if (read_bin >= 0) {
+    for (int t = 0; t < num_targets; ++t) {
+      local_hist[t] = reinterpret_cast<const ACC_HIST_TYPE*>(
+        leaf_splits_planes[t].hist_in_leaf)[task->hist_offset + read_bin];
+    }
+  }
+  __syncthreads();
+  if (na_missing_head) {
+    // bin 0 (the unstored most-frequent bin) = plane total - sum of stored bins,
+    // per plane. Packed accumulators add field-wise, so the reduction runs
+    // directly on the packed representation.
+    for (int t = 0; t < num_targets; ++t) {
+      const ACC_HIST_TYPE sum_non_default = ShuffleReduceSum<ACC_HIST_TYPE>(
+        local_hist[t], reinterpret_cast<ACC_HIST_TYPE*>(shared_int_buffer), blockDim.x);
+      if (threadIdx_x == 0) {
+        const int64_t default_bin_packed = parent_gh[t] -
+          VectorUnpackAcc<USE_16BIT_ACC_HIST, ACC_HIST_TYPE>(sum_non_default);
+        local_hist[t] = USE_16BIT_ACC_HIST ?
+          static_cast<ACC_HIST_TYPE>(static_cast<int32_t>(
+            (static_cast<uint32_t>(static_cast<int32_t>(default_bin_packed >> 32)) << 16) |
+            (static_cast<uint32_t>(default_bin_packed) & 0x0000ffffu))) :
+          static_cast<ACC_HIST_TYPE>(default_bin_packed);
+      }
+      __syncthreads();
+    }
+  }
+  for (int t = 0; t < num_targets; ++t) {
+    local_hist[t] = ShufflePrefixSum<ACC_HIST_TYPE>(
+      local_hist[t], reinterpret_cast<ACC_HIST_TYPE*>(shared_int_buffer));
+  }
+  // the packed prefix of plane 0 carries the shared hessian side
+  int64_t scan_gh0 = VectorUnpackAcc<USE_16BIT_ACC_HIST, ACC_HIST_TYPE>(local_hist[0]);
+  double sum_left_hessian = 0.0;
+  double sum_right_hessian = 0.0;
+  data_size_t left_count = 0;
+  data_size_t right_count = 0;
+  const bool in_range = REVERSE ?
+    (threadIdx_x >= static_cast<unsigned int>(task->na_as_missing) &&
+     threadIdx_x <= static_cast<unsigned int>(task->num_bin - 2) && !skip_sum) :
+    (threadIdx_x <= (na_missing_head ? static_cast<uint32_t>(task->num_bin - 2)
+                                     : feature_num_bin_minus_offset - 2) && !skip_sum);
+  if (in_range) {
+    if (REVERSE) {
+      sum_right_hessian =
+        static_cast<double>(static_cast<int32_t>(scan_gh0 & 0x00000000ffffffff)) * hess_scale;
+      right_count = static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
+      const int64_t left_gh0 = parent_gh_hess - scan_gh0;
+      sum_left_hessian =
+        static_cast<double>(static_cast<int32_t>(left_gh0 & 0x00000000ffffffff)) * hess_scale;
+      left_count = num_data - right_count;
+    } else {
+      sum_left_hessian =
+        static_cast<double>(static_cast<int32_t>(scan_gh0 & 0x00000000ffffffff)) * hess_scale;
+      left_count = static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
+      const int64_t right_gh0 = parent_gh_hess - scan_gh0;
+      sum_right_hessian =
+        static_cast<double>(static_cast<int32_t>(right_gh0 & 0x00000000ffffffff)) * hess_scale;
+      right_count = num_data - left_count;
+    }
+    if (sum_left_hessian >= min_sum_hessian_in_leaf && left_count >= min_data_in_leaf &&
+        sum_right_hessian >= min_sum_hessian_in_leaf && right_count >= min_data_in_leaf) {
+      double current_gain = 0.0;
+      for (int t = 0; t < num_targets; ++t) {
+        const int64_t scan_gh_t =
+          VectorUnpackAcc<USE_16BIT_ACC_HIST, ACC_HIST_TYPE>(local_hist[t]);
+        const int64_t other_gh_t = parent_gh[t] - scan_gh_t;
+        const double scan_grad = static_cast<double>(
+          static_cast<int32_t>((scan_gh_t & 0xffffffff00000000) >> 32)) * grad_scale[t];
+        const double other_grad = static_cast<double>(
+          static_cast<int32_t>((other_gh_t & 0xffffffff00000000) >> 32)) * grad_scale[t];
+        const double sum_left_gradient = REVERSE ? other_grad : scan_grad;
+        const double sum_right_gradient = REVERSE ? scan_grad : other_grad;
+        current_gain += CUDALeafSplits::GetSplitGains<false, false, double>(
+          sum_left_gradient, sum_left_hessian + kEpsilon,
+          sum_right_gradient, sum_right_hessian + kEpsilon,
+          0.0, lambda_l2, 0.0, 0.0, left_count, right_count, 0.0);
+      }
+      if (current_gain > min_gain_shift) {
+        local_gain = current_gain - min_gain_shift;
+        threshold_value = REVERSE ?
+          static_cast<uint32_t>(task->num_bin - 2 - threadIdx_x) :
+          (na_missing_head ? static_cast<uint32_t>(threadIdx_x) :
+                             static_cast<uint32_t>(threadIdx_x + task->mfb_offset));
+        threshold_found = true;
+      }
+    }
+  }
+  __syncthreads();
+  const uint32_t result = ReduceBestGain(local_gain, threshold_found, threadIdx_x,
+    shared_gain_buffer, shared_bool_buffer, shared_int_buffer);
+  if (threadIdx_x == 0) {
+    best_thread_index = result;
+  }
+  __syncthreads();
+  if (threshold_found && threadIdx_x == best_thread_index) {
+    out->is_valid = true;
+    out->threshold = threshold_value;
+    out->gain = local_gain * task->penalty;
+    out->default_left = task->assume_out_default_left;
+    out->num_vec_targets = num_targets;
+    const int64_t left_gh0 = REVERSE ? (parent_gh_hess - scan_gh0) : scan_gh0;
+    const int64_t right_gh0 = parent_gh_hess - left_gh0;
+    out->left_sum_hessians = sum_left_hessian;
+    out->right_sum_hessians = sum_right_hessian;
+    out->left_count = left_count;
+    out->right_count = right_count;
+    out->left_sum_of_gradients_hessians = left_gh0;
+    out->right_sum_of_gradients_hessians = right_gh0;
+    double* payload = out->vec_payload;
+    for (int t = 0; t < num_targets; ++t) {
+      const int64_t scan_gh_t =
+        VectorUnpackAcc<USE_16BIT_ACC_HIST, ACC_HIST_TYPE>(local_hist[t]);
+      const int64_t left_gh_t = REVERSE ? (parent_gh[t] - scan_gh_t) : scan_gh_t;
+      const int32_t left_grad_int = static_cast<int32_t>((left_gh_t & 0xffffffff00000000) >> 32);
+      const int32_t right_grad_int = static_cast<int32_t>(
+        ((parent_gh[t] - left_gh_t) & 0xffffffff00000000) >> 32);
+      const double sum_left_gradient = static_cast<double>(left_grad_int) * grad_scale[t];
+      const double sum_right_gradient = static_cast<double>(right_grad_int) * grad_scale[t];
+      const double left_output = CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(
+        sum_left_gradient, sum_left_hessian, 0.0, lambda_l2, 0.0, 0.0, left_count, 0.0);
+      const double right_output = CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(
+        sum_right_gradient, sum_right_hessian, 0.0, lambda_l2, 0.0, 0.0, right_count, 0.0);
+      payload[kVecLeftSumGradients * num_targets + t] = sum_left_gradient;
+      payload[kVecRightSumGradients * num_targets + t] = sum_right_gradient;
+      payload[kVecLeftValue * num_targets + t] = left_output;
+      payload[kVecRightValue * num_targets + t] = right_output;
+      payload[kVecLeftGradInt * num_targets + t] = static_cast<double>(left_grad_int);
+      payload[kVecRightGradInt * num_targets + t] = static_cast<double>(right_grad_int);
+      if (t == 0) {
+        out->left_sum_gradients = sum_left_gradient;
+        out->right_sum_gradients = sum_right_gradient;
+        out->left_value = left_output;
+        out->right_value = right_output;
+        out->left_gain = CUDALeafSplits::GetLeafGainGivenOutput<false>(
+          sum_left_gradient, sum_left_hessian, 0.0, lambda_l2, left_output);
+        out->right_gain = CUDALeafSplits::GetLeafGainGivenOutput<false>(
+          sum_right_gradient, sum_right_hessian, 0.0, lambda_l2, right_output);
+      }
+    }
+  }
+}
+
+// Dispatch on the leaf's histogram bit width, then on scan direction.
+__device__ void FindBestSplitsDiscretizedVectorDispatch(
+  const CUDALeafSplitsStruct* leaf_splits_planes,
+  const int num_targets,
+  const SplitFindTask* task,
+  const bool use_16bit_bin,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf,
+  const double min_gain_to_split,
+  const double lambda_l2,
+  const data_size_t num_data,
+  const score_t* grad_scales,
+  const score_t* hess_scale,
+  const bool quant_bagging_ridge,
+  CUDASplitInfo* out) {
+  if (use_16bit_bin) {
+    if (task->reverse) {
+      FindBestSplitsDiscretizedVectorInner<true, int32_t, true>(
+        leaf_splits_planes, num_targets, task, min_data_in_leaf, min_sum_hessian_in_leaf,
+        min_gain_to_split, lambda_l2, num_data, grad_scales, hess_scale,
+        quant_bagging_ridge, out);
+    } else {
+      FindBestSplitsDiscretizedVectorInner<false, int32_t, true>(
+        leaf_splits_planes, num_targets, task, min_data_in_leaf, min_sum_hessian_in_leaf,
+        min_gain_to_split, lambda_l2, num_data, grad_scales, hess_scale,
+        quant_bagging_ridge, out);
+    }
+  } else {
+    if (task->reverse) {
+      FindBestSplitsDiscretizedVectorInner<true, int64_t, false>(
+        leaf_splits_planes, num_targets, task, min_data_in_leaf, min_sum_hessian_in_leaf,
+        min_gain_to_split, lambda_l2, num_data, grad_scales, hess_scale,
+        quant_bagging_ridge, out);
+    } else {
+      FindBestSplitsDiscretizedVectorInner<false, int64_t, false>(
+        leaf_splits_planes, num_targets, task, min_data_in_leaf, min_sum_hessian_in_leaf,
+        min_gain_to_split, lambda_l2, num_data, grad_scales, hess_scale,
+        quant_bagging_ridge, out);
+    }
+  }
+}
+
+__global__ void FindBestSplitsDiscretizedForLeafKernelVector(
+  const int8_t* is_feature_used_bytree,
+  const int num_tasks,
+  const SplitFindTask* tasks,
+  const CUDALeafSplitsStruct* leaf_splits_planes,
+  const int num_targets,
+  const bool is_larger,
+  const uint8_t num_bits_in_histogram_bin,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf,
+  const double min_gain_to_split,
+  const double lambda_l2,
+  const score_t* grad_scales,
+  const score_t* hess_scale,
+  const bool quant_bagging_ridge,
+  CUDASplitInfo* cuda_best_split_info,
+  const data_size_t global_num_data_in_leaf) {
+  const unsigned int task_index = blockIdx.x;
+  const SplitFindTask* task = tasks + task_index;
+  const unsigned int output_offset = is_larger ? (task_index + num_tasks) : task_index;
+  CUDASplitInfo* out = cuda_best_split_info + output_offset;
+  if (!is_feature_used_bytree[task->inner_feature_index]) {
+    if (threadIdx.x == 0) {
+      out->is_valid = false;
+    }
+    return;
+  }
+  FindBestSplitsDiscretizedVectorDispatch(leaf_splits_planes, num_targets, task,
+    num_bits_in_histogram_bin <= 16, min_data_in_leaf, min_sum_hessian_in_leaf,
+    min_gain_to_split, lambda_l2, global_num_data_in_leaf, grad_scales, hess_scale,
+    quant_bagging_ridge, out);
+}
+
+// Batched per-level quantized vector find: grid and output layout mirror
+// FindBestSplitsForLevelKernelVector.
+__global__ void FindBestSplitsDiscretizedForLevelKernelVector(
+  const int8_t* is_feature_used_bytree,
+  const int num_tasks,
+  const SplitFindTask* tasks,
+  const int* used_task_indices,
+  const CUDAHybridPairDescriptor* pair_descs,
+  const CUDALeafSplitsStruct* plane_slab,
+  const int num_targets,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf,
+  const double min_gain_to_split,
+  const double lambda_l2,
+  const score_t* grad_scales,
+  const score_t* hess_scale,
+  const bool quant_bagging_ridge,
+  CUDASplitInfo* cuda_best_split_info) {
+  const unsigned int pair_index = blockIdx.y;
+  const bool is_larger = (blockIdx.z == 1);
+  const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
+  if (is_larger ? !desc->larger_valid : !desc->smaller_valid) {
+    return;
+  }
+  const CUDALeafSplitsStruct* leaf_splits_planes = plane_slab +
+    (static_cast<size_t>(2 * pair_index) + (is_larger ? 1 : 0)) * static_cast<size_t>(num_targets);
+  const data_size_t num_data = leaf_splits_planes[0].num_data_in_leaf;
+  if (leaf_splits_planes[0].leaf_index < 0 || num_data <= min_data_in_leaf ||
+      leaf_splits_planes[0].sum_of_hessians <= min_sum_hessian_in_leaf) {
+    return;
+  }
+  const unsigned int task_index = used_task_indices == nullptr ?
+    blockIdx.x : static_cast<unsigned int>(used_task_indices[blockIdx.x]);
+  const SplitFindTask* task = tasks + task_index;
+  CUDASplitInfo* out = cuda_best_split_info +
+    pair_index * (2 * static_cast<unsigned int>(num_tasks)) +
+    (is_larger ? task_index + num_tasks : task_index);
+  if (!is_feature_used_bytree[task->inner_feature_index]) {
+    if (threadIdx.x == 0) {
+      out->is_valid = false;
+    }
+    return;
+  }
+  const uint8_t num_bits = is_larger ? desc->larger_num_bits : desc->smaller_num_bits;
+  FindBestSplitsDiscretizedVectorDispatch(leaf_splits_planes, num_targets, task,
+    num_bits <= 16, min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
+    lambda_l2, num_data, grad_scales, hess_scale, quant_bagging_ridge, out);
+}
+
 __global__ void FindBestSplitsForLeafKernelVector(
   const int8_t* is_feature_used_bytree,
   const int num_tasks,
@@ -3898,12 +4271,35 @@ __global__ void FindBestSplitsForLevelKernelVector(
 void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernelVector(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,
-  const CUDALeafSplitsStruct* plane_slab) {
+  const CUDALeafSplitsStruct* plane_slab,
+  const VectorQuantArgs& quant) {
   const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
   if (num_used_tasks_ == 0) {
     return;  // no usable feature this tree; the sync masks every lane not-found
   }
   const dim3 grid_dim(compact_tasks ? num_used_tasks_ : num_tasks_, num_pairs, 2);
+  if (quant.active()) {
+    // integer prefix scans are exact and associative, so the quantized vector
+    // kernel needs no fp64 prefix slab
+    FindBestSplitsDiscretizedForLevelKernelVector
+      <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
+        cuda_is_feature_used_bytree_.RawData(),
+        num_tasks_,
+        cuda_split_find_tasks_.RawData(),
+        compact_tasks ? cuda_used_task_indices_.RawDataReadOnly() : nullptr,
+        pair_descs,
+        plane_slab,
+        vec_num_targets_,
+        min_data_in_leaf_,
+        min_sum_hessian_in_leaf_,
+        min_gain_to_split_,
+        lambda_l2_,
+        quant.grad_scales,
+        quant.hess_scale,
+        quant_bagging_ridge_,
+        cuda_best_split_info_.RawData());
+    return;
+  }
   const size_t shared_bytes = static_cast<size_t>(vec_num_targets_ + 1) *
     NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER * sizeof(double);
   FindBestSplitsForLevelKernelVector
@@ -3932,8 +4328,32 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelVector(
   const bool is_smaller_leaf_valid,
   const bool is_larger_leaf_valid,
   const data_size_t global_num_data_in_smaller_leaf,
-  const data_size_t global_num_data_in_larger_leaf) {
+  const data_size_t global_num_data_in_larger_leaf,
+  const VectorQuantArgs& quant) {
   if (!is_smaller_leaf_valid && !is_larger_leaf_valid) {
+    return;
+  }
+  if (quant.active()) {
+    if (is_smaller_leaf_valid) {
+      CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], hist_subtract_done_events_[active_hist_pipeline_], 0));
+      FindBestSplitsDiscretizedForLeafKernelVector
+        <<<num_tasks_, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>(
+        cuda_is_feature_used_bytree_.RawData(), num_tasks_, cuda_split_find_tasks_.RawData(),
+        smaller_leaf_splits_planes, vec_num_targets_, false, quant.smaller_num_bits,
+        min_data_in_leaf_, min_sum_hessian_in_leaf_, min_gain_to_split_, lambda_l2_,
+        quant.grad_scales, quant.hess_scale, quant_bagging_ridge_,
+        cuda_best_split_info_.RawData(), global_num_data_in_smaller_leaf);
+    }
+    if (is_larger_leaf_valid) {
+      CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[1], hist_subtract_done_events_[active_hist_pipeline_], 0));
+      FindBestSplitsDiscretizedForLeafKernelVector
+        <<<num_tasks_, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[1]>>>(
+        cuda_is_feature_used_bytree_.RawData(), num_tasks_, cuda_split_find_tasks_.RawData(),
+        larger_leaf_splits_planes, vec_num_targets_, true, quant.larger_num_bits,
+        min_data_in_leaf_, min_sum_hessian_in_leaf_, min_gain_to_split_, lambda_l2_,
+        quant.grad_scales, quant.hess_scale, quant_bagging_ridge_,
+        cuda_best_split_info_.RawData(), global_num_data_in_larger_leaf);
+    }
     return;
   }
   const size_t shared_bytes = static_cast<size_t>(vec_num_targets_ + 1) *

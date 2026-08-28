@@ -468,16 +468,11 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
           "round-robin baseline.",
           device_type.c_str());
     }
-    if (quant_mode != std::string("none")) {
+    if (quant_mode != std::string("none") && !multi_target) {
       Log::Fatal(
-          "tree_mode=vector_leaf does not support quantized training yet. Set "
-          "quant_mode=none.");
-    }
-    if (device_type == std::string("cuda") && deterministic) {
-      Log::Fatal(
-          "tree_mode=vector_leaf with device_type=cuda does not support "
-          "deterministic=true yet because deterministic CUDA training uses the "
-          "quantized path. Set deterministic=false.");
+          "tree_mode=vector_leaf quantized training needs the multi-target "
+          "configuration (objective=multi_regression with num_class>1); the "
+          "T=1 plumbing milestone runs fp64 only. Set quant_mode=none.");
     }
     if (linear_tree) {
       Log::Fatal("tree_mode=vector_leaf does not support linear_tree=true.");
@@ -632,8 +627,11 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
       quant_incompatible_request = "monotone constraints";
     } else if (!interaction_constraints_vector.empty()) {
       quant_incompatible_request = "interaction constraints";
-    } else if (tree_mode == std::string("vector_leaf")) {
-      quant_incompatible_request = "vector-leaf trees";
+    } else if (tree_mode == std::string("vector_leaf") &&
+               !(objective == std::string("multi_regression") && num_class > 1)) {
+      // multi-target vector-leaf trees DO run quantized (one discretized
+      // gradient plane per target); the T=1 plumbing milestone does not
+      quant_incompatible_request = "single-target vector-leaf trees";
     }
     // Saying quant_mode explicitly settles it: the mapping below infers a mode
     // for callers who expressed no preference, and inferring over a stated one
