@@ -527,6 +527,8 @@ class GBDT : public GBDTBase {
 
   bool IsLinear() const override { return linear_tree_; }
 
+  int LeafValueDim() const override { return leaf_value_dim_; }
+
   inline std::string ParserConfigStr() const override {return parser_config_str_;}
 
  protected:

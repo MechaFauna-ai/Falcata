@@ -192,6 +192,23 @@ def test_vector_leaf_merge_is_rejected_without_mutating_destination():
     assert scalar.model_to_string() == scalar_before
 
 
+def test_leaf_value_dim_c_api_accessor():
+    scalar, vector, _ = _vector_booster()
+    assert scalar._leaf_value_dim() == 1
+    assert vector._leaf_value_dim() == 2
+
+
+def test_python_refit_raises_a_clear_error_on_vector_leaf_models():
+    _, vector, X = _vector_booster()
+    y = _training_data()[1]
+    vector_before = vector.model_to_string()
+
+    with pytest.raises(lgb.basic.FalcataError, match=r"refit\(\) is unsupported for vector-leaf models"):
+        vector.refit(X, y)
+
+    assert vector.model_to_string() == vector_before
+
+
 def test_vector_leaf_refit_is_rejected_without_mutating_model():
     _, vector, X = _vector_booster()
     vector_before = vector.model_to_string()

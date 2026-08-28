@@ -4408,6 +4408,26 @@ def test_reset_params_works_with_metric_num_class_and_boosting():
     assert new_bst.params == expected_params
 
 
+def test_reset_parameter_works_on_a_booster_without_training_data():
+    # train() returns a model-loaded Booster (keep_training_booster=False),
+    # which carries no training data and no tree learner
+    X, y = load_breast_cancer(return_X_y=True)
+    bst = lgb.train({"objective": "binary", "verbose": -1}, lgb.Dataset(X, label=y), num_boost_round=3)
+    reference = bst.predict(X)
+
+    assert bst.reset_parameter({"learning_rate": 0.05}) is bst
+    assert bst.params["learning_rate"] == 0.05
+    np.testing.assert_array_equal(bst.predict(X), reference)
+
+    loaded = lgb.Booster(model_str=bst.model_to_string())
+    loaded.reset_parameter({"num_threads": 1, "bagging_fraction": 0.8})
+    np.testing.assert_array_equal(loaded.predict(X), reference)
+
+    # recreating an objective needs training data to initialize against
+    with pytest.raises(lgb.basic.FalcataError, match="no training data"):
+        loaded.reset_parameter({"objective": "regression"})
+
+
 @pytest.mark.parametrize("linear_tree", [False, True])
 def test_dump_model_stump(linear_tree):
     X, y = load_breast_cancer(return_X_y=True)

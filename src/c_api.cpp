@@ -409,6 +409,11 @@ class Booster {
     OMP_SET_NUM_THREADS(config_.num_threads);
 
     if (param.count("objective")) {
+      // recreating the objective requires training data to initialize
+      // against; a model-loaded booster has none
+      if (train_data_ == nullptr) {
+        Log::Fatal("Cannot change objective for a Booster with no training data.");
+      }
       // create objective function
       objective_fun_.reset(ObjectiveFunction::CreateObjectiveFunction(config_.objective,
                                                                       config_));
@@ -926,7 +931,9 @@ class Booster {
   const Boosting* GetBoosting() const { return boosting_.get(); }
 
  private:
-  const Dataset* train_data_;
+  // nullptr for a model-loaded Booster: the filename constructor never
+  // attaches training data
+  const Dataset* train_data_ = nullptr;
   std::unique_ptr<Boosting> boosting_;
   std::unique_ptr<SingleRowPredictorInner> single_row_predictor_[PREDICTOR_TYPES];
 
@@ -2921,6 +2928,13 @@ int FLC_BoosterGetLinear(BoosterHandle handle, int* out) {
   } else {
     *out = 0;
   }
+  API_END();
+}
+
+int FLC_BoosterGetLeafValueDim(BoosterHandle handle, int* out) {
+  API_BEGIN();
+  Booster* ref_booster = reinterpret_cast<Booster*>(handle);
+  *out = ref_booster->GetBoosting()->LeafValueDim();
   API_END();
 }
 

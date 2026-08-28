@@ -1010,10 +1010,13 @@ void GBDT::ResetTrainingData(const Dataset* train_data, const ObjectiveFunction*
 
 void GBDT::ResetConfig(const Config* config) {
   auto new_config = std::unique_ptr<Config>(new Config(*config));
-  if (!config->monotone_constraints.empty()) {
+  // A model-loaded booster (the default return of train()) has no training
+  // data and no tree learner; per-feature checks and learner resets only
+  // apply when they exist.
+  if (train_data_ != nullptr && !config->monotone_constraints.empty()) {
     CHECK_EQ(static_cast<size_t>(train_data_->num_total_features()), config->monotone_constraints.size());
   }
-  if (!config->feature_contri.empty()) {
+  if (train_data_ != nullptr && !config->feature_contri.empty()) {
     CHECK_EQ(static_cast<size_t>(train_data_->num_total_features()), config->feature_contri.size());
   }
   if (objective_function_ != nullptr && objective_function_->IsRenewTreeOutput() && !config->monotone_constraints.empty()) {
@@ -1033,11 +1036,10 @@ void GBDT::ResetConfig(const Config* config) {
   }
   if (tree_learner_ != nullptr) {
     tree_learner_->ResetConfig(new_config.get());
+    boosting_on_gpu_ = objective_function_ != nullptr && objective_function_->IsCUDAObjective() &&
+                      !data_sample_strategy_->IsHessianChange();  // for sample strategy with Hessian change, fall back to boosting on CPU
+    tree_learner_->ResetBoostingOnGPU(boosting_on_gpu_);
   }
-
-  boosting_on_gpu_ = objective_function_ != nullptr && objective_function_->IsCUDAObjective() &&
-                    !data_sample_strategy_->IsHessianChange();  // for sample strategy with Hessian change, fall back to boosting on CPU
-  tree_learner_->ResetBoostingOnGPU(boosting_on_gpu_);
 
   if (train_data_ != nullptr) {
     data_sample_strategy_->ResetSampleConfig(new_config.get(), false);

@@ -1,0 +1,26 @@
+{
+ "binary": {
+  "falb-load/lean": "232fdc34f1adca990ec5a26426eb86d3",
+  "text-load/full": "4851d967fedf9ce3afe6d476c78f092f"
+ },
+ "categorical": {
+  "falb-load/lean": "1cd93e217d5d9dd0cc0d6815cccd3513",
+  "text-load/full": "727dcdc71192df3e7dffa22b51a25ff7"
+ },
+ "deep": {
+  "falb-load/lean": "6a3e60d1a2fa2d8cb8a3322a7a8c46bd",
+  "text-load/full": "e49b6e268862ea271046caaae78cc13b"
+ },
+ "multiclass": {
+  "falb-load/lean": "af13400757e5695ae708c0293390a2f3",
+  "text-load/full": "e40f6b4a4855d2768a93d0153afaca49"
+ },
+ "regression": {
+  "falb-load/lean": "6c206dbdad34190d090e512913935977",
+  "text-load/full": "5c3cd0808a52458a0ffba438ee4a0a5e"
+ },
+ "regression-missing": {
+  "falb-load/lean": "35f5d5c858fd181c50fdbb8a4b116b0e",
+  "text-load/full": "8afab860761cf930c5fd628757a8595a"
+ }
+}
