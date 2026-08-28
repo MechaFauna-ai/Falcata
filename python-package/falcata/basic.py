@@ -5433,6 +5433,11 @@ class Booster:
         result : Booster
             Refitted Booster.
         """
+        if self._leaf_value_dim() > 1:
+            # fence here, before any work: the merge into the scratch booster
+            # below would otherwise fail with an opaque metadata-inconsistency
+            # error
+            raise FalcataError("refit() is unsupported for vector-leaf models.")
         if self.__set_objective_to_none:
             raise FalcataError("Cannot refit due to null objective function.")
         if dataset_params is None:
