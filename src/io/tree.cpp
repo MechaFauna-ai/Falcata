@@ -818,6 +818,22 @@ Tree::Tree(const char* str, size_t* used_len) {
   #endif  // USE_CUDA
 
   if ((num_leaves_ <= 1) && !is_linear_) {
+    // A constant tree has no internal nodes, so every num_leaves_-1 array is
+    // legitimately empty -- but the per-LEAF arrays are num_leaves_ wide, and
+    // consumers index them by leaf (ToString, the FALB writer, anything
+    // reading leaf_weight). leaf_weight_ is the one this early return would
+    // otherwise leave empty, making a 1-leaf tree the only Tree whose leaf
+    // arrays disagree with its own leaf count.
+    //
+    // The field is parsed rather than merely sized because a model may carry a
+    // value. An EMPTY value stays on the resize path: StringToArray requires
+    // exactly as many tokens as it is asked for, and a model written before
+    // this tree carried a leaf_weight has none.
+    if (key_vals.count("leaf_weight") && !key_vals["leaf_weight"].empty()) {
+      leaf_weight_ = CommonC::StringToArray<double>(key_vals["leaf_weight"], num_leaves_);
+    } else {
+      leaf_weight_.resize(num_leaves_, 0.0);
+    }
     return;
   }
 

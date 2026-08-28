@@ -94,10 +94,10 @@ def load_text(text):
     return out
 
 
-def predict(booster, X):
+def predict(booster, X, n_out=1):
     n, m = X.shape
     Xf = np.ascontiguousarray(X, dtype=np.float64)
-    out = np.zeros(n, dtype=np.float64)
+    out = np.zeros(n * n_out, dtype=np.float64)
     out_len = ctypes.c_int64(0)
     check(
         LIB.FLC_BoosterPredictForMat(
@@ -129,19 +129,67 @@ CASES = [
     ("wide-bins", {}, "objective=regression num_leaves=63 max_bin=400 verbose=-1"),
     ("deep", {}, "objective=regression num_leaves=255 max_bin=255 min_data_in_leaf=1 verbose=-1"),
     ("binary", {}, "objective=binary num_leaves=31 max_bin=255 verbose=-1"),
+    # A boosting round that finds nothing worth splitting emits a CONSTANT
+    # (1-leaf) tree. Its per-node arrays are legitimately empty and its
+    # per-leaf arrays are one wide, which is what the stats and diagnostics
+    # sections must be sized from -- a tree's in-memory vectors are neither.
+    ("constant", {}, "objective=regression num_leaves=31 max_bin=255 min_data_in_leaf=3000 verbose=-1"),
+    (
+        "constant-multiclass",
+        {},
+        "objective=multiclass num_class=3 num_leaves=31 max_bin=255 min_data_in_leaf=3000 verbose=-1",
+    ),
+    (
+        "mixed-constant",
+        {},
+        "objective=multiclass num_class=3 num_leaves=15 max_bin=255 verbose=-1",
+    ),
+    # trees that stop short keep the learner's max_leaves-wide arrays: the
+    # sections must still be one num_leaves-sized block per tree
+    (
+        "short-trees",
+        {},
+        "objective=regression device_type=cpu num_leaves=255 max_bin=255 min_data_in_leaf=400 verbose=-1",
+    ),
 ]
+
+#: name -> what the trained model must LOOK like for the case to be covering
+#: what it is named for. A recipe that quietly stops producing constant trees
+#: would leave the gate green while testing nothing.
+REQUIRED_SHAPE = {
+    "constant": ("every tree constant", lambda nl: all(n == 1 for n in nl)),
+    "constant-multiclass": ("every tree constant", lambda nl: all(n == 1 for n in nl)),
+    "mixed-constant": ("constant and grown trees", lambda nl: min(nl) == 1 < max(nl)),
+    "short-trees": ("trees short of num_leaves", lambda nl: max(nl) < 255),
+}
+
+
+def leaf_counts(text):
+    return [int(c.split("num_leaves=")[1].split("\n")[0]) for c in text.split("\nTree=")[1:]]
+
 
 fails = 0
 for name, kw, params in CASES:
     X, y = make_data(seed=abs(hash(name)) % 1000, **kw)
     if "binary" in params:
         y = (y > np.median(y)).astype(np.float64)
+    n_out = 1
+    if "num_class=" in params:
+        n_out = int(params.split("num_class=")[1].split(" ")[0])
+        if name == "mixed-constant":
+            # class 2 never occurs, so nothing about it is left to learn and no
+            # split of its per-class trees has any gain: those come back
+            # CONSTANT every round while classes 0 and 1 keep growing -- one
+            # model, both tree shapes, without depending on a gain threshold
+            y = (X[:, 1] > 0).astype(np.float64)
+        else:
+            y = np.digitize(y, np.quantile(y, np.linspace(0, 1, n_out + 1)[1:-1])).astype(np.float64)
     booster, ds = train(X, y, params)
     text = save_text(booster)
     blob = save_falb(booster)
     b2 = load_falb(blob)
     text2 = save_text(b2)
-    p1, p2 = predict(booster, X), predict(b2, X)
+    p1, p2 = predict(booster, X, n_out), predict(b2, X, n_out)
 
     # raw (uncompressed, mmap-able) must round-trip identically too
     raw = save_falb(booster, level=0)
@@ -149,12 +197,16 @@ for name, kw, params in CASES:
     ok_raw = text_raw == text
     # f32 leaves are opt-in lossy: structure exact, predictions close
     f32blob = save_falb(booster, 0, 0, f32=1)
-    p_f32 = predict(load_falb(f32blob), X)
+    p_f32 = predict(load_falb(f32blob), X, n_out)
     f32_rel = float(np.max(np.abs(p_f32 - p1)) / max(1e-12, np.max(np.abs(p1))))
 
     ok_text = text == text2 and ok_raw
     maxdiff = float(np.max(np.abs(p1 - p2)))
     ok_pred = maxdiff == 0.0
+    want, holds = REQUIRED_SHAPE.get(name, ("", None))
+    if holds is not None and not holds(leaf_counts(text)):
+        print(f"  SHAPE FAIL {name}: no longer trains {want} -- {leaf_counts(text)}")
+        fails += 1
     ratio = len(text) / len(blob)
     status = "PASS" if (ok_text and ok_pred) else "FAIL"
     print(
