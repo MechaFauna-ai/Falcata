@@ -67,6 +67,11 @@ struct CUDATreeHostSplit {
   data_size_t right_count;
   double left_value;
   double right_value;
+  /*! \brief vector-leaf mode: both children's per-target outputs, leaf_value_dim
+   *  entries each (empty in scalar mode). Entry 0 is the target-0 mirror
+   *  left_value / right_value already carry. */
+  std::vector<double> vec_left_values;
+  std::vector<double> vec_right_values;
   /*! \brief categorical split payload: >0 selects the categorical replay.
    *  The bitsets are prebuilt on host in the model-format layout (uint32 words,
    *  bit v set for member value v): cat_bitset over REAL category values,
@@ -94,7 +99,7 @@ class CUDATree : public Tree {
   */
   explicit CUDATree(int max_leaves, bool track_branch_features, bool is_linear,
     const int gpu_device_id, const bool has_categorical_feature,
-    uint8_t* pooled_device_buffer = nullptr);
+    uint8_t* pooled_device_buffer = nullptr, int leaf_value_dim = 1);
 
   /*! \brief bytes needed by the pooled per-tree device arrays (16 arrays of
    *  max_leaves entries + the batched split descriptors), 8-byte aligned */
@@ -125,6 +130,12 @@ class CUDATree : public Tree {
    *  indices). The level's splits touch disjoint leaves, so the device updates
    *  are safe to run concurrently. */
   void SplitBatch(const std::vector<CUDATreeBatchSplit>& splits);
+
+  /*! \brief vector-leaf counterpart of SetVectorLeafValuesFromSplit for a
+   *  batch: writes both children's T leaf values of every split of the batch
+   *  most recently passed to SplitBatch (the descriptors still live in the
+   *  device batch buffer), one launch instead of one per split. */
+  void SetVectorLeafValuesFromSplitBatch(const int num_splits);
 
   /*! \brief graphs L1 body capture: launch SplitBatchKernel with a placeholder
    *  grid on \p stream (the graph controller resizes it per level); the batch
@@ -165,7 +176,9 @@ class CUDATree : public Tree {
    *  them), and then performs ToHost()'s cleanup (host vector shrink, leaf
    *  value materialization, device array release, stream destroy). The caller
    *  must NOT call ToHost() afterwards. leaf_value_[0] must hold the root
-   *  output before the call (it seeds the internal_value_ chain). */
+   *  output before the call (it seeds the internal_value_ chain), and in
+   *  vector-leaf mode leaf_values_vec_[0, T) must hold the root's per-target
+   *  outputs. */
   void RebuildFromHostSplits(const std::vector<CUDATreeHostSplit>& splits);
 
   int SplitCategorical(
@@ -221,6 +234,16 @@ class CUDATree : public Tree {
 
   double* cuda_leaf_value_ref() { return cuda_leaf_value_.RawData(); }
 
+  /*! \brief vector-leaf mode: flat [leaf * leaf_value_dim + target] device
+   *  leaf outputs (empty when leaf_value_dim == 1). Retained after ToHost()
+   *  like cuda_leaf_value_ so score updates and shrinkage can read it. */
+  const double* cuda_leaf_values_vec() const { return cuda_leaf_values_vec_.RawData(); }
+
+  /*! \brief vector-leaf mode: write both children's per-target leaf outputs
+   *  from the winning split's vector payload (called right after Split()) */
+  void SetVectorLeafValuesFromSplit(const int left_leaf_index, const int right_leaf_index,
+                                    const CUDASplitInfo* cuda_split_info);
+
   inline void Shrinkage(double rate) override;
 
   inline void AddBias(double val) override;
@@ -265,6 +288,11 @@ class CUDATree : public Tree {
 
   void LaunchAddBiasKernel(const double val);
 
+  void LaunchSetVectorLeafValuesFromSplitKernel(const int left_leaf_index,
+    const int right_leaf_index, const CUDASplitInfo* cuda_split_info);
+
+  void LaunchSetVectorLeafValuesFromSplitBatchKernel(const int num_splits);
+
   /*! \brief internal_count_ of the subtree at node, bottom-up from leaf_count_ */
   data_size_t RebuildInternalCounts(const int node);
 
@@ -284,6 +312,9 @@ class CUDATree : public Tree {
   CUDAVector<double> cuda_internal_value_;
   CUDAVector<int8_t> cuda_decision_type_;
   CUDAVector<double> cuda_leaf_value_;
+  /*! \brief vector-leaf outputs [leaf * leaf_value_dim + target]; own device
+   *  memory (never pooled), empty in scalar mode */
+  CUDAVector<double> cuda_leaf_values_vec_;
   CUDAVector<data_size_t> cuda_leaf_count_;
   CUDAVector<double> cuda_leaf_weight_;
   CUDAVector<data_size_t> cuda_internal_count_;

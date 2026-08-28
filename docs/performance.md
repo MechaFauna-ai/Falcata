@@ -673,3 +673,217 @@ counts and histogram sums are GLOBAL.
 `FALCATA_DEBUG=dump` now prints per-level reduce totals, leaf-cache
 entries and bookkeeping counts on NCCL runs — the instrumentation that
 located both bugs.
+
+---
+
+## 11. Vector-leaf multi-target trees on the hybrid level prefix
+
+`tree_mode=vector_leaf` trains ONE shared-structure tree per iteration whose
+leaves hold a vector of T outputs (`docs/design/vector-leaf-plan.md`). It shipped
+on the classic one-split-at-a-time loop; the level-batched prefix now covers it
+in the depth-limited regime (`2^max_depth <= num_leaves + 1`), the same regime
+plain level batching is leaf-wise-exact in for scalar training.
+
+Three pieces carry T through the level machinery:
+
+- **Per-plane pair descriptors.** A level's descriptor is copied once per
+  gradient plane with only the two leaf-splits struct pointers changed, so every
+  histogram kernel that takes a descriptor runs per plane unchanged.
+- **A batched vector find.** `FindBestSplitsForLevelKernelVector` shares its
+  whole body with the per-pair vector finder (one `__device__` inner) and adds
+  the scalar level kernel's grid: blockIdx.y = pair, blockIdx.z = smaller/larger.
+  The existing level sync reduces it, carrying the per-target payload through
+  `CUDASplitInfo::operator=`'s deep copy.
+- **A level plane fan-out.** After the batched apply writes each child's primary
+  leaf-splits struct, one kernel refreshes all `2 * pairs * T` plane structs from
+  it, taking each target's child sums and outputs from the parent split's vector
+  payload and offsetting the histogram pointer to plane t.
+
+**The level flow batches the search, not the histograms.** The batched level
+construct is what makes plain level batching pay for scalar training, and it is
+the one piece vector mode does not take. Per-phase timings (200k x 200,
+T=5, 63 leaves, depth 6, ms/tree):
+
+| phase | batched-level construct | per-pair construct |
+|---|---|---|
+| construct | 110.8 | **68.1** |
+| find | 3.1 | 3.1 |
+| readback + apply + finish + fan-out | 0.6 | 0.6 |
+
+The batched construct's whole win for scalar is doing one launch with a
+saturation floor shared across the level's pairs; with T planes that trades away
+the per-leaf sizing and the row working set a pair's T launches share, and costs
+more than the launches it saves. So each pair's T planes construct through the
+per-pair path back to back, and the level contributes one find, one sync, one
+apply and no per-split device syncs.
+
+### What the level prefix and gradient-only planes are worth, together
+
+The prefix and gradient-only histogram planes (§0 of the plan doc) are
+independent — one batches the split search over a level's pairs, the other
+halves each construct's slot traffic — and they compose almost exactly
+multiplicatively. ms/tree, RTX 5090, `num_leaves=63`, `max_depth=6`,
+non-quantized fp64, 10 timed rounds after 3 warmup, against the pre-V3 base:
+
+| shape | rows | T | ff | base | +grad-only | +prefix | both | both/base |
+|---|---|---|---|---|---|---|---|---|
+| 200 cont. features | 200k | 5 | 1.0 | 78.0 | 80.7 | 58.3 | **57.9** | 1.35x |
+| 200 cont. features | 200k | 5 | 0.3 | 65.9 | 64.1 | 44.5 | **42.0** | 1.57x |
+| 200 cont. features | 700k | 5 | 1.0 | 200.0 | 205.3 | 163.3 | **168.0** | 1.19x |
+| 200 cont. features | 700k | 5 | 0.3 | 125.5 | 120.1 | 92.6 | **92.0** | 1.36x |
+| 2400 five-valued | 200k | 5 | 1.0 | 189.5 | 130.4 | 163.2 | **111.7** | 1.70x |
+| 2400 five-valued | 200k | 5 | 0.3 | 93.9 | 75.7 | 78.9 | **64.7** | 1.45x |
+| 2400 five-valued | 700k | 5 | 1.0 | 584.6 | 377.5 | 511.8 | **328.5** | 1.78x |
+| 2400 five-valued | 700k | 5 | 0.3 | 261.5 | 204.8 | 223.5 | **171.2** | 1.53x |
+
+T=4 tracks T=5 within a few percent (base/both 1.24–1.70x over the same cells).
+The two levers cover disjoint shapes: gradient-only planes are worth 1.23–1.55x
+on many low-cardinality features and nothing (0.97–1.04x) on wide continuous
+ones, where a bin's gradient and hessian cells share a cache sector and the
+second accumulate is free; the level prefix is worth 1.19–1.56x with the larger
+share on the wide shape, where the per-split device syncs are a bigger fraction
+of a cheap level.
+
+### Against T independent scalar trainings
+
+The decision-relevant ratio is one vector tree against T single-target trees on
+the same shape, all on the level prefix. `vector / (T x scalar)`, below 1.0 means
+vector wins:
+
+| shape | rows | T=5, ff=1.0 | T=5, ff=0.3 |
+|---|---|---|---|
+| 200 continuous features | 200k | 2.46 | 1.87 |
+| 200 continuous features | 700k | 3.82 | 2.49 |
+| 2400 five-valued features | 200k | 0.94 | **0.67** |
+| 2400 five-valued features | 700k | 1.34 | **0.83** |
+
+Vector-leaf pays off exactly where the split SEARCH is the expensive phase and
+the construct is not: many cheap low-cardinality features, and more so under
+feature subsampling, because the shared tree searches the sampled feature set
+once for all T targets. On few wide continuous features the construct dominates,
+it is paid T times, and T independent scalar trainings win by 1.9–3.8x. This is
+a shape decision, not a tuning one.
+
+The T-times-construct term itself is closed: a construct that accumulates all T
+planes from one pass over the rows was built and measured, and it LOSES 1.35–3.2x
+(plan doc §8a, `docs/perf-dead-ends.md`).
+
+The prefix produces the tree the classic loop produces: on T=2 and T=4 the two
+paths' predictions are bit-identical and their leaf labelings are a bijection of
+the same row partition (level-batched growth numbers right children in level
+order, the per-split loop in best-gain order). Locked by
+`test_vector_leaf_cuda_hybrid_level_matches_classic`.
+
+### The selective prefix in the budget-limited regime
+
+Level batching is only leaf-wise-exact while `2^max_depth <= num_leaves + 1`.
+The production numerai shape (250 leaves, `max_depth=12`) is not in that regime,
+so it took the classic loop; the SELECTIVE (grow-then-prune) prefix now covers
+it for vector mode as it does for scalar. Three pieces carry T through it:
+
+- the level's batched search runs on the plane slab, and the plane fan-out runs
+  after the level's partition-only apply — the same two calls the exact-fit
+  prefix makes;
+- selective growth rebuilds the final (pruned) tree host-side, so each applied
+  record snapshots its winning split's `kNumVecPayloadFields * T` payload from
+  the per-leaf slab under the same reuse discipline as the categorical
+  thresholds (one D2H per level, not per split), and `RebuildFromHostSplits`
+  replays `SetVectorLeafValuesFromSplitKernel` over it;
+- eager collapse recycles leaf indices and their histogram slots; `ZeroHistSlots`
+  already zeroes a full T-plane slot, so nothing else changes.
+
+ms/tree, RTX 5090, non-quantized fp64, synthetic 2400 five-valued features,
+`num_leaves=250`, `max_depth=12`, 8 timed rounds after 1 warmup (10 at ff=0.1):
+
+| rows | T | ff | vector classic | vector selective | sel/classic | T x scalar | sel/(T scalars) |
+|---|---|---|---|---|---|---|---|
+| 200k | 4 | 1.0 | 214.6 | 212.2 | 1.01x | 380.0 | **0.56** |
+| 200k | 4 | 0.3 | 130.3 | **119.1** | 1.09x | 147.6 | **0.81** |
+| 200k | 4 | 0.1 | 89.9 | **81.2** | 1.11x | 90.4 | **0.90** |
+| 200k | 5 | 1.0 | 246.8 | 250.9 | 0.98x | 475.0 | **0.53** |
+| 200k | 5 | 0.3 | 150.8 | **138.3** | 1.09x | 184.5 | **0.75** |
+| 200k | 5 | 0.1 | 98.4 | **94.8** | 1.04x | 113.1 | **0.84** |
+| 700k | 4 | 1.0 | 478.0 | 484.1 | 0.99x | 823.7 | **0.59** |
+| 700k | 4 | 0.3 | 257.3 | **248.6** | 1.03x | 247.2 | 1.01 |
+| 700k | 4 | 0.1 | 157.3 | **144.1** | 1.09x | 165.2 | **0.87** |
+| 700k | 5 | 1.0 | 561.8 | 573.6 | 0.98x | 1029.6 | **0.56** |
+| 700k | 5 | 0.3 | 300.0 | **289.7** | 1.04x | 309.0 | **0.94** |
+| 700k | 5 | 0.1 | 178.7 | **164.2** | 1.09x | 206.5 | **0.80** |
+
+The scalar reference is one single-target training on the same shape, itself on
+the selective prefix: 95.0 / 36.9 / 22.6 ms/tree at 200k and 205.9 / 61.8 / 41.3
+at 700k for ff 1.0 / 0.3 / 0.1.
+
+**The prefix is worth 1.0x at `feature_fraction=1.0` and 1.03-1.11x under
+subsampling — not the ~2x it is worth for scalar training, and that gap is
+structural.** The scalar selective prefix's subsampling win comes from the
+batched level CONSTRUCT: the per-tree compact-view repack pays off through one
+launch per level far better than through the per-split loop. Vector mode does
+not take the batched construct (it measured a 0.7x regression with T planes, see
+above), so what the prefix buys it is only the batched search, one sync per level
+instead of per split, and the level apply. That is a real but small win, and it
+is largest exactly where the search is the biggest share: subsampled features.
+
+The equivalence is the same one the exact-fit prefix has: on T=2 and T=4 the
+selective and classic vector paths' predictions agree to 1e-9 and their leaf
+labelings are a bijection of the same row partition, with a non-vacuity guard
+that fails if vector training stops reaching selective growth
+(`test_vector_leaf_cuda_selective_matches_classic`). Ground truth against
+scalar training comes from
+`test_vector_leaf_cuda_selective_duplicated_target_matches_scalar`.
+
+### Quantized vector-leaf training
+
+`quant_mode=fixedpoint` runs one discretized gradient plane per target, each at
+its own gradient scale, over plane 0's shared quantized hessians
+(`docs/design/vector-leaf-plan.md` §3a). It attacks the term that actually
+dominates a vector tree: histogram construct is ~85% of GPU time and is paid T
+times, and quantization replaces each plane's 16-byte fp64 (grad, hess) bin with
+a 4-byte packed int32 one.
+
+ms/tree, RTX 5090, T=4, 600 five-valued features, `max_bin=15`,
+`num_grad_quant_bins=16`, 10 timed rounds after 3 warmup:
+
+| rows | leaves | depth | ff | fp64 | quantized | speedup |
+|---|---|---|---|---|---|---|
+| 200k | 63 | 6 | 1.0 | 86.3 | **68.2** | 1.26x |
+| 200k | 63 | 6 | 0.3 | 72.0 | **66.4** | 1.08x |
+| 200k | 255 | 8 | 1.0 | 103.3 | **78.9** | 1.31x |
+| 700k | 63 | 6 | 1.0 | 146.9 | **96.6** | 1.52x |
+| 700k | 63 | 6 | 0.3 | 108.6 | **102.3** | 1.06x |
+| 700k | 255 | 8 | 1.0 | 177.5 | **114.4** | 1.55x |
+
+The win tracks the construct's share exactly: largest (1.5x) at 700k rows and
+255 leaves, where construct dominates, and smallest (1.06-1.08x) under
+`feature_fraction=0.3`, where the construct is already cheap and the per-plane
+launch and find overheads are a bigger fraction of the tree.
+
+Quality is unmoved. Per-target normalized MSE, T=2 and T=4, targets spread over
+27x in magnitude:
+
+| targets | fp64 | quantized (16 bins) | quantized (64 bins) |
+|---|---|---|---|
+| T=2 | 0.0386, 0.0228 | 0.0385, 0.0224 | 0.0391, 0.0226 |
+| T=4 | 0.0398, 0.0398, 0.0179, 0.0217 | 0.0402, 0.0406, 0.0183, 0.0220 | 0.0400, 0.0402, 0.0178, 0.0217 |
+
+Every target fits equally well despite the 27x magnitude spread, which is the
+per-target gradient scale doing its job — one shared scale would round the
+smallest target's gradients to zero. Under bagging (60 rounds, T=4) quantized
+lands at 1.02-1.07x of unbagged quantized and 0.98-1.04x of bagged fp64: no sign
+of the winner's-curse collapse the discretized find kernels' one-hessian-quantum
+l2 ridge guards against.
+
+A separate property, not a performance one: quantized vector models are
+**bit-reproducible across execution strategies**. Integer histogram accumulation
+is order-invariant, so the batched level prefix and the per-split loop produce
+identical predictions to the last bit — where the fp64 vector paths agree only
+to ~1e-6 because their batched construct reduces with fp64 atomics.
+
+Quantization is orthogonal to the growth prefix. Both two-sync level flows —
+the exact-fit one and the selective grow-then-prune one — reach the planes
+through the same `EnqueueLevelHistogramsAndFindVector`, so a quantized
+budget-limited config runs quantized selective growth by default, and the model
+it produces is the quantized classic loop's to the bit
+(`test_vector_leaf_cuda_quantized_selective_matches_classic`, with scalar
+quantized training as ground truth in
+`test_vector_leaf_cuda_quantized_selective_duplicated_target_matches_scalar`).

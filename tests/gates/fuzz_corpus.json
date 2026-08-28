@@ -1119,5 +1119,34 @@
             250
         ],
         "max_cat_threshold": 64
+    },
+    {
+        "n": 5000,
+        "m": 80,
+        "num_cat_features": 1,
+        "cat_cards": [
+            64
+        ],
+        "max_cat_threshold": 32,
+        "learning_rate": 0.1,
+        "dtype": "int16",
+        "nan_frac": 0.0,
+        "sparsity": 0.0,
+        "int_lo": -6,
+        "int_hi": 7,
+        "objective": "multiclass",
+        "num_class": 4,
+        "quant_mode": "fixedpoint",
+        "quant_bins": 16,
+        "num_leaves": 1023,
+        "max_depth": 10,
+        "min_data_in_leaf": 5,
+        "feature_fraction": 1.0,
+        "bagging_fraction": 0.7,
+        "max_bin": 63,
+        "cuda_plan": "auto,fast_rowdata:off,hybrid:off",
+        "rounds": 150,
+        "data_seed": 1196376789,
+        "bagging_freq": 1
     }
 ]

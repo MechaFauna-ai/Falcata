@@ -57,15 +57,18 @@ constexpr double kDivergenceFactor = 50.0;
 // and agrees. Stop at the first one instead.
 void CheckLeafOutputsAreFinite(const Tree* tree, int iter, int tree_id) {
   const int num_leaves = tree->num_leaves();
+  const int leaf_value_dim = tree->leaf_value_dim();
   for (int leaf = 0; leaf < num_leaves; ++leaf) {
-    const double output = tree->LeafOutput(leaf);
-    if (!std::isfinite(output)) {
-      Log::Fatal(
-        "Iteration %d (tree %d) produced a non-finite leaf output (leaf %d = %g). "
-        "Boosting has diverged, so training stops here rather than writing a model "
-        "that predicts inf. Lower learning_rate, raise min_data_in_leaf or the "
-        "regularization, or check the labels for extreme values.",
-        iter, tree_id, leaf, output);
+    for (int target = 0; target < leaf_value_dim; ++target) {
+      const double output = tree->LeafOutput(leaf, target);
+      if (!std::isfinite(output)) {
+        Log::Fatal(
+          "Iteration %d (tree %d) produced a non-finite leaf output (leaf %d = %g). "
+          "Boosting has diverged, so training stops here rather than writing a model "
+          "that predicts inf. Lower learning_rate, raise min_data_in_leaf or the "
+          "regularization, or check the labels for extreme values.",
+          iter, tree_id, leaf, output);
+      }
     }
   }
 }
@@ -79,7 +82,7 @@ void GBDT::CheckGradientNormForDivergence(const score_t* gradients) {
   if (iter_ < kDivergenceWarmupIters || (iter_ + 1) % kDivergenceCheckEvery != 0) {
     return;
   }
-  const size_t total = static_cast<size_t>(num_data_) * num_tree_per_iteration_;
+  const size_t total = static_cast<size_t>(num_data_) * NumOutputPerIteration();
   size_t sample_count = 0;
   double sample_sum = 0.0;
 #ifdef USE_CUDA
@@ -210,6 +213,13 @@ void GBDT::Init(const Config* config, const Dataset* train_data, const Objective
       Log::Fatal("Cannot use ``monotone_constraints`` in %s objective, please disable it.", objective_function_->GetName());
     }
   }
+  if (vector_leaf_mode_ && num_tree_per_iteration_ > 1) {
+    // vector-leaf multi-target training: ONE tree per iteration carrying T
+    // outputs. The objective keeps producing T gradient planes; buffer and
+    // score-plane sizing goes through NumOutputPerIteration().
+    leaf_value_dim_ = num_tree_per_iteration_;
+    num_tree_per_iteration_ = 1;
+  }
 
   data_sample_strategy_.reset(SampleStrategy::CreateSampleStrategy(config_.get(), train_data_, objective_function_, num_tree_per_iteration_));
   is_constant_hessian_ = GetIsConstHessian(objective_function);
@@ -233,10 +243,10 @@ void GBDT::Init(const Config* config, const Dataset* train_data, const Objective
 
   #ifdef USE_CUDA
   if (config_->device_type == std::string("cuda")) {
-    train_score_updater_.reset(new CUDAScoreUpdater(train_data_, num_tree_per_iteration_, boosting_on_gpu_));
+    train_score_updater_.reset(new CUDAScoreUpdater(train_data_, NumOutputPerIteration(), boosting_on_gpu_));
   } else {
   #endif  // USE_CUDA
-    train_score_updater_.reset(new ScoreUpdater(train_data_, num_tree_per_iteration_));
+    train_score_updater_.reset(new ScoreUpdater(train_data_, NumOutputPerIteration()));
   #ifdef USE_CUDA
   }
   #endif  // USE_CUDA
@@ -303,10 +313,10 @@ void GBDT::AddValidDataset(const Dataset* valid_data,
   auto new_score_updater =
     #ifdef USE_CUDA
     config_->device_type == std::string("cuda") ?
-    std::unique_ptr<CUDAScoreUpdater>(new CUDAScoreUpdater(valid_data, num_tree_per_iteration_,
+    std::unique_ptr<CUDAScoreUpdater>(new CUDAScoreUpdater(valid_data, NumOutputPerIteration(),
       objective_function_ != nullptr && objective_function_->IsCUDAObjective())) :
     #endif  // USE_CUDA
-    std::unique_ptr<ScoreUpdater>(new ScoreUpdater(valid_data, num_tree_per_iteration_));
+    std::unique_ptr<ScoreUpdater>(new ScoreUpdater(valid_data, NumOutputPerIteration()));
   // update score
   for (int i = 0; i < iter_; ++i) {
     for (int cur_tree_id = 0; cur_tree_id < num_tree_per_iteration_; ++cur_tree_id) {
@@ -464,10 +474,11 @@ double GBDT::BoostFromAverage(int class_id, bool update_scorer) {
 
 bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
   if (leaf_value_dim_ > 1) {
-    Log::Fatal(
-        "Continuing training from a vector-leaf model is not supported by the "
-        "T=1 plumbing milestone. Multi-target CUDA training kernels must be "
-        "implemented first.");
+    if (gradients != nullptr || hessians != nullptr) {
+      Log::Fatal("Custom objectives are not supported with vector-leaf "
+                 "multi-target training.");
+    }
+    return VectorTrainOneIter();
   }
   Common::FunctionTimer fun_timer("GBDT::TrainOneIter", global_timer);
   std::vector<double> init_scores(num_tree_per_iteration_, 0.0);
@@ -580,6 +591,55 @@ bool GBDT::TrainOneIter(const score_t* gradients, const score_t* hessians) {
   return false;
 }
 
+bool GBDT::VectorTrainOneIter() {
+  Common::FunctionTimer fun_timer("GBDT::TrainOneIter", global_timer);
+  CHECK_NOTNULL(objective_function_);
+  CHECK_EQ(num_tree_per_iteration_, 1);
+  // The objective's T gradient planes are consumed in place: plain per-row
+  // bagging is index-based on CUDA (is_use_subset is always false), so the
+  // gradient buffers are never re-packed. GOSS, query bagging and balanced
+  // bagging are gated off by the config layer.
+  Boosting();
+  const score_t* gradients = gradients_pointer_;
+  const score_t* hessians = hessians_pointer_;
+  CheckGradientNormForDivergence(gradients);
+
+  // bagging: draw this iteration's row subset and hand it to the tree
+  // learner's data partition (every target's histogram plane reads the same
+  // subset through the partition's index list)
+  data_sample_strategy_->Bagging(iter_, tree_learner_.get(), gradients_.data(), hessians_.data());
+
+  std::unique_ptr<Tree> new_tree(new Tree(2, false, false, leaf_value_dim_));
+  if (train_data_->num_features() > 0) {
+    const bool is_first_tree = models_.empty();
+    new_tree.reset(tree_learner_->Train(gradients, hessians, is_first_tree));
+  }
+
+  bool should_continue = false;
+  if (new_tree->num_leaves() > 1) {
+    should_continue = true;
+    // no RenewTreeOutput: multi_regression is not a renewal objective
+    new_tree->Shrinkage(shrinkage_rate_);
+    UpdateScore(new_tree.get(), 0);
+  } else {
+    // boost_from_average is disabled for vector-leaf training (config layer),
+    // so a stump contributes nothing
+    new_tree->AsConstantTree(0, num_data_);
+  }
+  CheckLeafOutputsAreFinite(new_tree.get(), iter_, 0);
+  models_.push_back(std::move(new_tree));
+
+  if (!should_continue) {
+    Log::Warning("Stopped training because there are no more leaves that meet the split requirements");
+    if (models_.size() > 1) {
+      models_.pop_back();
+    }
+    return true;
+  }
+  ++iter_;
+  return false;
+}
+
 void GBDT::RollbackOneIter() {
   if (iter_ <= 0) {
     return;
@@ -665,14 +725,14 @@ std::vector<double> GBDT::EvalOneMetric(const Metric* metric, const double* scor
     return metric->Eval(score, objective_function_);
   #ifdef USE_CUDA
   } else if (boosting_on_gpu_ && !evaluation_on_cuda) {
-    const size_t total_size = static_cast<size_t>(num_data) * static_cast<size_t>(num_tree_per_iteration_);
+    const size_t total_size = static_cast<size_t>(num_data) * static_cast<size_t>(NumOutputPerIteration());
     if (total_size > host_score_.size()) {
       host_score_.resize(total_size, 0.0f);
     }
     CopyFromCUDADeviceToHost<double>(host_score_.data(), score, total_size, __FILE__, __LINE__);
     return metric->Eval(host_score_.data(), objective_function_);
   } else {
-    const size_t total_size = static_cast<size_t>(num_data) * static_cast<size_t>(num_tree_per_iteration_);
+    const size_t total_size = static_cast<size_t>(num_data) * static_cast<size_t>(NumOutputPerIteration());
     if (total_size > cuda_score_.Size()) {
       cuda_score_.Resize(total_size);
     }
@@ -828,11 +888,12 @@ void GBDT::GetPredictAt(int data_idx, double* out_result, int64_t* out_len) {
     raw_scores = host_raw_scores.data();
   }
   #endif  // USE_CUDA
+  const int num_score_planes = NumOutputPerIteration();
   if (objective_function_ != nullptr) {
     #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
     for (data_size_t i = 0; i < num_data; ++i) {
-      std::vector<double> tree_pred(num_tree_per_iteration_);
-      for (int j = 0; j < num_tree_per_iteration_; ++j) {
+      std::vector<double> tree_pred(num_score_planes);
+      for (int j = 0; j < num_score_planes; ++j) {
         tree_pred[j] = raw_scores[j * num_data + i];
       }
       std::vector<double> tmp_result(num_class_);
@@ -844,7 +905,7 @@ void GBDT::GetPredictAt(int data_idx, double* out_result, int64_t* out_len) {
   } else {
     #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
     for (data_size_t i = 0; i < num_data; ++i) {
-      for (int j = 0; j < num_tree_per_iteration_; ++j) {
+      for (int j = 0; j < num_score_planes; ++j) {
         out_result[j * num_data + i] = static_cast<double>(raw_scores[j * num_data + i]);
       }
     }
@@ -914,10 +975,10 @@ void GBDT::ResetTrainingData(const Dataset* train_data, const ObjectiveFunction*
     // create score tracker
     #ifdef USE_CUDA
     if (config_->device_type == std::string("cuda")) {
-      train_score_updater_.reset(new CUDAScoreUpdater(train_data_, num_tree_per_iteration_, boosting_on_gpu_));
+      train_score_updater_.reset(new CUDAScoreUpdater(train_data_, NumOutputPerIteration(), boosting_on_gpu_));
     } else {
     #endif  // USE_CUDA
-      train_score_updater_.reset(new ScoreUpdater(train_data_, num_tree_per_iteration_));
+      train_score_updater_.reset(new ScoreUpdater(train_data_, NumOutputPerIteration()));
     #ifdef USE_CUDA
     }
     #endif  // USE_CUDA
@@ -1007,7 +1068,7 @@ void GBDT::ResetConfig(const Config* config) {
 }
 
 void GBDT::ResetGradientBuffers() {
-  const size_t total_size = static_cast<size_t>(num_data_) * num_tree_per_iteration_;
+  const size_t total_size = static_cast<size_t>(num_data_) * NumOutputPerIteration();
   const bool is_use_subset = data_sample_strategy_->is_use_subset();
   const data_size_t bag_data_cnt = data_sample_strategy_->bag_data_cnt();
   if (objective_function_ != nullptr) {

@@ -137,6 +137,8 @@ void LaunchInterleaveGradHessKernel(
 void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score_t* hessians) {
   cuda_gradients_ = gradients;
   cuda_hessians_ = hessians;
+  // every tree starts on plane 0, whose hessians are the ones every consumer reads
+  grad_only_plane_ = false;
   if (l2_carveout_bytes_ > 0 && gradients != nullptr) {
     // Pin the per-row gradient buffer (quant: packed int32 grad/hess pairs read
     // once per level per row through data_indices gather) as L2-persisting on
@@ -160,7 +162,7 @@ void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score
   // legacy default stream, so it orders before the construct kernels on the
   // (blocking) histogram streams; a trivial streaming kernel (~0.05ms at 5M rows).
   gh_interleave_valid_ = false;
-  if (!use_quantized_grad_ && GHInterleaveEnabled() &&
+  if (!use_quantized_grad_ && GHInterleaveEnabled() && num_hist_planes_ == 1 &&
       gradients != nullptr && hessians != nullptr) {
     if (cuda_gradients_hessians_.Size() < static_cast<size_t>(num_data_)) {
       cuda_gradients_hessians_.Resize(static_cast<size_t>(num_data_));
@@ -180,7 +182,18 @@ void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score
     static_cast<size_t>(num_leaves_) :
     std::min(static_cast<size_t>(num_dirty_leaves_), static_cast<size_t>(num_leaves_));
   CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_hist_.RawData()), 0,
-    num_slots_to_zero * static_cast<size_t>(2 * num_total_bin_) * sizeof(hist_t)));
+    num_slots_to_zero * static_cast<size_t>(2 * num_total_bin_) *
+    static_cast<size_t>(num_hist_planes_) * sizeof(hist_t)));
+}
+
+void CUDAHistogramConstructor::SelectGradientPlane(const score_t* gradients, const score_t* hessians,
+                                                   const bool grad_only) {
+  // vector-leaf plane switch: pointer swap only. The interleaved float2 copy is
+  // disabled in plane mode (BeforeTrain) and the per-tree histogram zeroing
+  // already covered every plane, so neither is redone here.
+  cuda_gradients_ = gradients;
+  cuda_hessians_ = hessians;
+  grad_only_plane_ = grad_only;
 }
 
 void CUDAHistogramConstructor::ZeroHistForLeaf(int /*leaf_index*/) {
@@ -188,7 +201,8 @@ void CUDAHistogramConstructor::ZeroHistForLeaf(int /*leaf_index*/) {
 }
 
 void CUDAHistogramConstructor::ZeroHistSlots(const std::vector<int>& slots) {
-  const size_t slot_size = static_cast<size_t>(2 * num_total_bin_);
+  const size_t slot_size = static_cast<size_t>(2 * num_total_bin_) *
+    static_cast<size_t>(num_hist_planes_);
   for (const int slot : slots) {
     CUDASUCCESS_OR_FATAL(cudaMemsetAsync(
       reinterpret_cast<void*>(cuda_hist_.RawData() + static_cast<size_t>(slot) * slot_size), 0,
@@ -864,7 +878,8 @@ void CUDAHistogramConstructor::InvalidateCompactPrefill() {
 }
 
 void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStates* share_state) {
-  cuda_hist_.Resize(static_cast<size_t>(num_total_bin_ * 2 * num_leaves_));
+  cuda_hist_.Resize(static_cast<size_t>(num_total_bin_ * 2 * num_leaves_) *
+                    static_cast<size_t>(num_hist_planes_));
   cuda_hist_.SetValue(0);
   // Deterministic float-mode construct scratch (see ResetTrainingData; both
   // entry points size it because either can be the only one a flow calls).
@@ -1235,7 +1250,8 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   num_features_ = train_data->num_features();
   InitFeatureMetaInfo(train_data, share_states->feature_hist_offsets());
 
-  cuda_hist_.Resize(static_cast<size_t>(num_total_bin_ * 2 * num_leaves_));
+  cuda_hist_.Resize(static_cast<size_t>(num_total_bin_ * 2 * num_leaves_) *
+                    static_cast<size_t>(num_hist_planes_));
   cuda_hist_.SetValue(0);
   // Deterministic float-mode construct scratch: launches clamp their tile
   // grid to det_tile_alloc_, so the buffer can never be written past its end.
@@ -1294,7 +1310,8 @@ void CUDAHistogramConstructor::ResetConfig(const Config* config) {
   min_data_in_leaf_ = config->min_data_in_leaf;
   feature_fraction_ = config->feature_fraction;
   min_sum_hessian_in_leaf_ = config->min_sum_hessian_in_leaf;
-  cuda_hist_.Resize(static_cast<size_t>(num_total_bin_ * 2 * num_leaves_));
+  cuda_hist_.Resize(static_cast<size_t>(num_total_bin_ * 2 * num_leaves_) *
+                    static_cast<size_t>(num_hist_planes_));
   cuda_hist_.SetValue(0);
   num_dirty_leaves_ = -1;
 }

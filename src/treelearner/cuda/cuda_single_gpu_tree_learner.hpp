@@ -169,8 +169,11 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // batched construct/fix/subtract launch (histogram constructor) and ONE batched
   // find + sync launch (best split finder) covering every pair. Device work only;
   // the caller synchronizes via SyncAllLeafBestSplitsToHost.
+  // vec_plane_slab is the level's per-plane leaf-splits slab in vector mode
+  // (nullptr in scalar mode).
   void EnqueueLevelBestSplitSearch(const CUDATree* tree,
-    const std::vector<HybridPendingPair>& pairs);
+    const std::vector<HybridPendingPair>& pairs,
+    CUDALeafSplitsStruct* vec_plane_slab = nullptr);
   // One applied split of a level: host-assigned child leaf indices plus the pair
   // struct slots the batched apply kernels fill (smaller/larger designation is
   // decided on-device; the host learns it from the deferred readback).
@@ -298,6 +301,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     // at record creation (the slab slot is reused once the leaf is re-searched,
     // so SelectiveFinalize cannot read it later)
     std::vector<uint32_t> cat_inner;
+    // vector-leaf mode: kNumVecPayloadFields * T doubles snapshotted from the
+    // per-leaf payload slab, under the same reuse discipline as cat_inner.
+    // SelectiveFinalize replays both children's per-target outputs from it.
+    std::vector<double> vec_payload;
   };
   // One frontier candidate (discovered this level, not yet applied).
   struct SelectiveFrontier {
@@ -452,6 +459,55 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     const int left_leaf, const int right_leaf, const int inner_feature_index,
     const double left_value, const double right_value, const bool is_numerical_split);
 
+  // ---- vector-leaf (multi-target) training ----
+  // Number of targets T; > 1 engages the vector flow: T histogram planes per
+  // leaf slot, the summed-gain vector finder, and per-target leaf outputs.
+  // Rides the classic per-split loop and both hybrid TWO-SYNC level flows: the
+  // exact-fit level-batched prefix and selective grow-then-prune (the one-sync
+  // and graph flows are excluded).
+  int vec_num_targets_ = 0;
+  // Per-plane leaf-splits structs: slots [0, T) mirror the smaller leaf with
+  // plane t's gradient sums / histogram pointer, slots [T, 2T) the larger leaf.
+  // This is also the ROOT level's plane slab of the hybrid prefix (pair 0's
+  // smaller role at [0, T), larger role at [T, 2T)).
+  CUDAVector<CUDALeafSplitsStruct> vec_plane_structs_;
+  // Hybrid level prefix: per-plane leaf-splits structs of a whole level, at
+  // [(2 * pair + role) * T + t] over the same pair/role order as
+  // hybrid_pair_slots_ (role 0 = smaller, 1 = larger). Plane 0 of each role is
+  // a copy of the primary slot the partition wrote.
+  CUDAVector<CUDALeafSplitsStruct> vec_level_plane_slots_;
+  // Fan-out inputs of one level: the parent split info and left-child leaf
+  // index of every applied split (device copies).
+  std::vector<const CUDASplitInfo*> host_vec_fanout_infos_;
+  std::vector<int> host_vec_fanout_left_leaves_;
+  CUDAVector<const CUDASplitInfo*> cuda_vec_fanout_infos_;
+  CUDAVector<int> cuda_vec_fanout_left_leaves_;
+  // Per-target root sums (host copies of the per-plane InitValues readbacks).
+  std::vector<double> vec_root_sum_gradients_;
+  std::vector<double> vec_root_sum_hessians_;
+  // Refuse dataset/config shapes the vector flow does not cover.
+  void CheckVectorLeafSupported() const;
+  // Root init of the plane structs (BeforeTrain tail).
+  void VectorInitRootPlanes(const data_size_t* leaf_splits_init_indices,
+                            const data_size_t root_num_data);
+  // Per-pair search: per-plane construct + subtract, then the vector finder.
+  void EnqueuePairBestSplitSearchVector(const CUDATree* tree,
+    const int smaller_leaf_index, const int larger_leaf_index);
+  // Refresh the plane structs from the just-applied split (partition wrote the
+  // primary smaller/larger structs; planes add per-target sums/values and the
+  // plane histogram pointers).
+  void LaunchVectorPlaneFanOutKernel(const CUDASplitInfo* best_split_info,
+    const int left_leaf_index);
+  // Level-batched counterpart: refresh every plane struct of a level's applied
+  // splits from the primary slots the batched apply wrote.
+  void VectorLevelPlaneFanOut(const std::vector<HybridAppliedSplit>& applied);
+  void LaunchVectorLevelPlaneFanOutKernel(const int num_pairs);
+  // Per-plane histogram phase + vector find of one level (the vector branch of
+  // EnqueueLevelBestSplitSearch); plane_slab holds this level's plane structs.
+  void EnqueueLevelHistogramsAndFindVector(const int num_pairs,
+    const data_size_t max_num_data_in_smaller_leaf,
+    CUDALeafSplitsStruct* plane_slab);
+
   // number of threads on CPU
   int num_threads_;
 
@@ -579,6 +635,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::vector<int> sel_level_apply_;    // applied record ids to apply this level
   std::vector<CUDACollapseWindow> sel_collapse_windows_;
   std::vector<int> sel_freed_hist_slots_;
+  // vector-leaf mode: this level's host snapshot of the per-leaf payload slab
+  // (kNumVecPayloadFields * T doubles per hybrid leaf), read once per level
+  // right after the best-split readback
+  std::vector<double> sel_leaf_vec_payloads_;
   int sel_num_allocated_ = 0;           // peak hybrid leaf count (dirty hist slots)
   int sel_num_splits_ = 0;              // applied splits surviving readback bookkeeping
   int sel_last_peak_ = 0;               // sel_num_allocated_ of the finished tree

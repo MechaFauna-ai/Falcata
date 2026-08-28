@@ -560,6 +560,11 @@ class CUDADataPartition: public NCCLInfo {
 
   void LaunchAddPredictionToScoreKernel(const double* leaf_value, double* cuda_scores);
 
+  /*! \brief vector-leaf train-score update: one leaf-map lookup per row feeds
+   *  all leaf_value_dim score planes (non-bagged only) */
+  void LaunchAddPredictionToScoreVectorKernel(const double* leaf_values_vec,
+    const int leaf_value_dim, double* cuda_scores);
+
   void LaunchFillDataIndexToLeafIndex();
 
   void LaunchReduceLeafGradStat(

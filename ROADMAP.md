@@ -15,19 +15,74 @@ Roughly priority-ordered within groups. Measurements refer to an RTX 5090.
 ## Performance
 
 - **Multi-target training.** Design spec:
-  [docs/design/multi-target-training.md](docs/design/multi-target-training.md).
-  Two variants: (1)
-  round-robin one-tree-per-target (multiclass machinery minus softmax) -- identical
-  models to sequential training, but only ~1.1x/target now that construct is cheap;
-  API-convenience tier. (2) Vector-leaf trees (the differentiator: nobody ships
-  this CUDA-supported on asymmetric trees -- XGBoost's multi_output_tree is
-  experimental/hist-CPU-mostly, CatBoost MultiRMSE is symmetric-only): shared
-  structure, gain = sum of per-target gains, leaf outputs vectors; RMSE-family
-  hessians are identical across targets so hist entries are T grads + 1 shared
-  hess -- est. per-tree cost ~1.3-1.6x single-target at T=5 => ~3.6x per-target
-  speedup vs sequential, plus the shared-structure regularization numerai folks
-  want (MultiRMSE-style). Modeling change: validate per-era, don't assume. FIL
-  predict falls back to CPU for vector-leaf models initially (treelite support).
+  [docs/design/multi-target-training.md](docs/design/multi-target-training.md);
+  vector-leaf plan + landed-V2 notes in
+  [docs/design/vector-leaf-plan.md](docs/design/vector-leaf-plan.md).
+  Round-robin (variant 1, `objective=multi_regression`) and the vector-leaf
+  training core (variant 2 V1/V2/V3: `tree_mode=vector_leaf`, plane-per-target
+  histograms, gradient-only planes 1..T-1, summed-gain finder, vector
+  apply/serialize/predict, and both hybrid TWO-SYNC level prefixes: the
+  exact-fit level-batched one in the depth-limited regime and selective
+  grow-then-prune in the budget-limited one) are LANDED; details in
+  docs/performance.md §11 and
+  [docs/design/vector-leaf-plan.md](docs/design/vector-leaf-plan.md) §8/§8b.
+  Open items:
+  - One-sync (speculative) and graph-loop prefix support for vector mode.
+    One-sync needs the plane fan-out moved ahead of the speculative child
+    gating; the graph controller models one construct node per level rather
+    than one per plane. Both are worth little: the selective prefix, which
+    covers the budget-limited (numerai 250-leaf/depth-12) shape, measured only
+    1.0-1.11x over the classic loop, because the batched level CONSTRUCT — the
+    part of a level prefix that pays for scalar training under
+    `feature_fraction` subsampling — is the one piece vector mode cannot take
+    (§8b).
+  - Shape targeting. Against T independent scalar trainings a vector tree is a
+    0.53-1.01x WIN on many low-cardinality features (2400 five-valued, T=4/5,
+    at 63 or 250 leaves) and a 1.9-3.8x LOSS on few wide continuous ones, where
+    the construct dominates and is paid T times. The production numerai A/B's
+    "3x slower than T scalars" does NOT reproduce on the low-cardinality
+    synthetic at any `feature_fraction` (§8b) — re-measure it on the real v5
+    dataset before attributing it to the growth path.
+    The T-times-construct term is closed, not open: a fused all-T-planes
+    construct was built and measured and LOSES 1.35-3.2x
+    (docs/perf-dead-ends.md).
+  - Per-target RMSE is worse than round-robin (0.90-0.99 vs 0.73-0.82 on the
+    synthetic T=5 shape) because one shared tree per iteration carries 1/T the
+    total leaf budget. Open: equal-tree-budget comparison, per-era numerai
+    validation.
+
+  - Lift v1 fences on demand: GOSS/query/balanced bagging (plain per-row
+    bagging landed), categorical features (landed; cat_random_search still
+    fenced), quantized training (LANDED — one discretized gradient plane per
+    target at its own scale over plane 0's shared quantized hessians, see
+    docs/design/vector-leaf-plan.md §3a; categorical and
+    quant_train_renew_leaf stay fenced within it),
+    L1/path-smooth/max_delta_step/extra-trees/monotone/CEGB, per-target
+    boost_from_average bias, multi-GPU.
+  - A lattice fingerprint cell for quantized vector training. Quantized vector
+    models ARE bit-reproducible (exact associative integer scans), so unlike
+    every fp64 vector path they can be md5-locked — and no lattice cell reaches
+    vector mode at all today. Blocked on lattice runner surgery: `build_profile`
+    yields a 1-D label and `run_cell` asserts `num_trees == rounds * num_class`,
+    which vector mode (one tree per round) fails by construction.
+  - fp32 histograms (`cuda_precision=fp32`) for vector mode: needs the fp64
+    vector finder templated on the histogram element type plus an fp32
+    dispatch in the two vector launchers. Low priority now that quantized
+    landed — fp32 halves histogram bandwidth non-deterministically where
+    quantized quarters it (16-byte fp64 pair vs 4-byte packed int32) and is
+    bit-reproducible.
+  - T > 16: the binding constraint is the fp64 finder's `(T+1) x 256 x 8B`
+    dynamic shared prefix slab against the 48KB default per-block limit, which
+    runs out at T = 21. Raising the cap means opting those kernels into
+    `cudaFuncAttributeMaxDynamicSharedMemorySize` (~99KB on sm_120, good to
+    about T = 47) or chunking the prefix. The quantized finder needs no slab
+    (exact associative integer scans) and is bounded only by per-thread array
+    spill.
+  - Per-era numerai validation of the shared-structure model vs round-robin
+    (modeling change: validate, don't assume); SketchBoost-style reduced
+    split-gradient hook.
+  - FIL predict falls back to CPU for vector-leaf models (treelite has no
+    vector-leaf IR).
 
 - **Hybrid coverage extensions.** The hybrid/graph fast paths fall back to
   the classic loop for several feature classes; scoped 2026-08-01.

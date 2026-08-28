@@ -39,7 +39,35 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
     const score_t* input_gradients,
     const score_t* input_hessians) override;
 
+  /*! \brief vector-leaf multi-target training: one discretized plane per
+   *  target. Plane t holds target t's gradients at their OWN scale (targets
+   *  differ in gradient magnitude by orders of magnitude, and one shared scale
+   *  would quantize the small-magnitude targets to zero) and, for t > 0, a
+   *  bit-identical copy of plane 0's quantized hessians -- the hessian is
+   *  target-independent, so re-quantizing it per plane would only add an
+   *  independent dither to a stream every consumer reads from plane 0. */
+  void SetNumPlanes(const int num_planes) {
+    num_planes_ = num_planes > 0 ? num_planes : 1;
+  }
+
+  int num_planes() const { return num_planes_; }
+
+  /*! \brief discretize target \p plane's gradients into its own plane region.
+   *  Plane 0 must run first each tree: planes 1..T-1 copy its quantized
+   *  hessians. */
+  void DiscretizeGradientsForPlane(
+    const int plane,
+    const data_size_t num_data,
+    const score_t* input_gradients,
+    const score_t* input_hessians);
+
   const int8_t* discretized_gradients_and_hessians() const override { return discretized_gradients_and_hessians_.RawData(); }
+
+  /*! \brief plane \p plane's (int16 gradient, int16 hessian) row pairs */
+  const int8_t* discretized_gradients_and_hessians(const int plane) const {
+    return discretized_gradients_and_hessians_.RawData() +
+      static_cast<size_t>(plane) * static_cast<size_t>(num_data_planes_) * 4;
+  }
 
   double grad_scale() const override {
     Log::Fatal("grad_scale() of CUDAGradientDiscretizer should not be called.");
@@ -51,9 +79,19 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
     return 0.0;
   }
 
-  const score_t* grad_scale_ptr() const { return grad_max_block_buffer_.RawData(); }
+  /*! \brief dequantization scales the find kernels multiply integer histogram
+   *  sums by. These are SNAPSHOTS taken as each plane is discretized, not the
+   *  reduce scratch itself: a multi-plane tree overwrites that scratch once per
+   *  plane, so naming it would hand every consumer the last plane's scale. */
+  const score_t* grad_scale_ptr() const { return grad_scale_ptr(0); }
 
-  const score_t* hess_scale_ptr() const { return hess_max_block_buffer_.RawData(); }
+  const score_t* hess_scale_ptr() const { return plane_hess_scale_.RawData(); }
+
+  /*! \brief target \p plane's own gradient scale. The hessian is
+   *  target-independent, so there is one hess_scale_ptr() for every plane. */
+  const score_t* grad_scale_ptr(const int plane) const {
+    return plane_grad_scale_.RawData() + plane;
+  }
 
   // Enable the outlier-robust gradient scale (fixed-point mode only). When on,
   // the grad scale is derived from a high percentile of |grad| via a cheap
@@ -86,7 +124,13 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
     // must hold num_data * 4 elements; num_data * 2 (an 8-bit layout) would
     // under-allocate by 2x and let the discretize kernel overrun into the
     // adjacent gradient/hessian scale buffers, corrupting the dequant scales.
-    discretized_gradients_and_hessians_.Resize(num_data * 4);
+    // vector-leaf mode holds num_planes_ such buffers back to back, one per
+    // target; scalar training is the num_planes_ == 1 case of the same layout
+    num_data_planes_ = num_data;
+    discretized_gradients_and_hessians_.Resize(
+      static_cast<size_t>(num_data) * 4 * static_cast<size_t>(num_planes_));
+    plane_grad_scale_.Resize(num_planes_);
+    plane_hess_scale_.Resize(1);
     num_reduce_blocks_ = (num_data + CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE - 1) / CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE;
     grad_min_block_buffer_.Resize(num_reduce_blocks_);
     grad_max_block_buffer_.Resize(num_reduce_blocks_);
@@ -125,9 +169,13 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
   mutable CUDAVector<score_t> hess_min_block_buffer_;
   mutable CUDAVector<score_t> hess_max_block_buffer_;
   mutable CUDAVector<unsigned int> grad_mag_hist_buffer_;
+  mutable CUDAVector<score_t> plane_grad_scale_;
+  mutable CUDAVector<score_t> plane_hess_scale_;
   mutable CUDAVector<int8_t> ef_residuals_;
   mutable CUDAVector<uint8_t> ef_inbag_mask_;
   int num_reduce_blocks_;
+  int num_planes_ = 1;
+  data_size_t num_data_planes_ = 0;
   bool robust_scale_ = false;
   bool error_feedback_ = false;
   int ef_num_slots_ = 1;

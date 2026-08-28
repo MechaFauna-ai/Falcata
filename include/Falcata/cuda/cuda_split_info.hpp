@@ -15,6 +15,26 @@
 
 namespace Falcata {
 
+/*! \brief Field order of the vector-leaf (multi-target) payload slab attached
+ *  to a CUDASplitInfo slot: per-target child gradient sums and leaf outputs,
+ *  laid out [field][target] (field stride == num_vec_targets). The shared
+ *  hessian and the counts live in the scalar fields. */
+enum VecPayloadField {
+  kVecLeftSumGradients = 0,
+  kVecRightSumGradients = 1,
+  kVecLeftValue = 2,
+  kVecRightValue = 3,
+  /*! \brief quantized training only: the child's INTEGER gradient sum for this
+   *  target, the high half of the packed (grad32, hess32) accumulator the next
+   *  level's discretized search needs as an exact parent total. Held as a
+   *  double because every int32 is exactly representable, which keeps the whole
+   *  payload one slab under one copy discipline. The shared hessian half comes
+   *  from the child's primary leaf-splits struct. */
+  kVecLeftGradInt = 4,
+  kVecRightGradInt = 5,
+  kNumVecPayloadFields = 6,
+};
+
 class CUDASplitInfo {
  public:
   bool is_valid;
@@ -42,10 +62,20 @@ class CUDASplitInfo {
   uint32_t* cat_threshold = nullptr;
   int* cat_threshold_real = nullptr;
 
+  /*! \brief vector-leaf payload: kNumVecPayloadFields * num_vec_targets
+   *  doubles in a finder-owned slab slot (see VecPayloadField). Same pointer
+   *  discipline as the categorical thresholds -- device slots are pre-assigned
+   *  by the finder, host copies are scrubbed to nullptr, assignment never
+   *  allocates -- except the slab is never freed through this struct. */
+  int num_vec_targets = 0;
+  double* vec_payload = nullptr;
+
   __host__ __device__ CUDASplitInfo() {
     num_cat_threshold = 0;
     cat_threshold = nullptr;
     cat_threshold_real = nullptr;
+    num_vec_targets = 0;
+    vec_payload = nullptr;
   }
 
   __host__ __device__ ~CUDASplitInfo() {
@@ -117,6 +147,20 @@ class CUDASplitInfo {
         }
       } else {
         num_cat_threshold = 0;
+      }
+    }
+    // vector-leaf payload: same discipline as the categorical thresholds
+    // above -- deep-copy into a pre-assigned destination slab, never allocate,
+    // and zero the count only when a slab-holding destination receives a
+    // scrubbed source (positive count over stale slab words).
+    num_vec_targets = other.num_vec_targets;
+    if (num_vec_targets > 0 && vec_payload != nullptr) {
+      if (other.vec_payload != nullptr) {
+        for (int i = 0; i < kNumVecPayloadFields * num_vec_targets; ++i) {
+          vec_payload[i] = other.vec_payload[i];
+        }
+      } else {
+        num_vec_targets = 0;
       }
     }
     return *this;

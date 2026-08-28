@@ -17,6 +17,122 @@
 
 namespace Falcata {
 
+// Vector-leaf plane fan-out: refresh the per-plane leaf-splits structs of both
+// children from the primary structs the partition split just wrote. Plane t
+// copies the primary struct of its role, then overrides the per-target
+// gradient sum and mirror output from the split's vector payload and offsets
+// the histogram pointer to plane t. The role's side (left vs right child) is
+// identified by comparing the primary struct's leaf index against the split
+// leaf (== the left child's index).
+// Quantized training additionally re-packs the plane's exact integer parent
+// total: the target-t gradient half comes from the payload, the hessian half
+// from the role's primary struct (the hessian stream every target shares).
+__device__ __forceinline__ int64_t VectorPlanePackedSum(
+  const double* payload, const int num_targets, const int t, const bool is_left,
+  const int64_t primary_packed) {
+  const int32_t grad_int = static_cast<int32_t>(
+    payload[(is_left ? kVecLeftGradInt : kVecRightGradInt) * num_targets + t]);
+  return (static_cast<int64_t>(grad_int) << 32) |
+         (primary_packed & 0x00000000ffffffffLL);
+}
+
+__global__ void VectorPlaneFanOutKernel(
+  const CUDALeafSplitsStruct* smaller_struct,
+  const CUDALeafSplitsStruct* larger_struct,
+  CUDALeafSplitsStruct* planes,
+  const int num_targets,
+  const size_t plane_stride_entries,
+  const CUDASplitInfo* split_info,
+  const int left_leaf_index,
+  const bool use_quantized_grad) {
+  const int i = static_cast<int>(threadIdx.x + blockIdx.x * blockDim.x);
+  if (i < 2 * num_targets) {
+    const int role = i / num_targets;
+    const int t = i % num_targets;
+    const CUDALeafSplitsStruct* src = role == 0 ? smaller_struct : larger_struct;
+    CUDALeafSplitsStruct s = *src;
+    const bool is_left = (s.leaf_index == left_leaf_index);
+    const double* payload = split_info->vec_payload;
+    s.sum_of_gradients = payload[(is_left ? kVecLeftSumGradients : kVecRightSumGradients) * num_targets + t];
+    s.leaf_value = payload[(is_left ? kVecLeftValue : kVecRightValue) * num_targets + t];
+    if (use_quantized_grad) {
+      s.sum_of_gradients_hessians = VectorPlanePackedSum(
+        payload, num_targets, t, is_left, src->sum_of_gradients_hessians);
+    }
+    // the vector finder recomputes the parent gain from the plane sums, so the
+    // scalar (target-0) gain field would be stale for t > 0; zero it
+    s.gain = 0.0;
+    s.hist_in_leaf = src->hist_in_leaf + static_cast<size_t>(t) * plane_stride_entries;
+    planes[i] = s;
+  }
+}
+
+void CUDASingleGPUTreeLearner::LaunchVectorPlaneFanOutKernel(
+    const CUDASplitInfo* best_split_info, const int left_leaf_index) {
+  const int num_slots = 2 * vec_num_targets_;
+  VectorPlaneFanOutKernel<<<1, ((num_slots + 31) / 32) * 32>>>(
+    cuda_smaller_leaf_splits_->GetCUDAStruct(),
+    cuda_larger_leaf_splits_->GetCUDAStruct(),
+    vec_plane_structs_.RawData(),
+    vec_num_targets_,
+    static_cast<size_t>(2) * num_total_bin_,
+    best_split_info,
+    left_leaf_index,
+    config_->use_quantized_grad);
+}
+
+// Level-batched plane fan-out: the hybrid prefix's counterpart of
+// VectorPlaneFanOutKernel. Thread i covers plane t of primary slot
+// s = 2 * pair + role (role 0 = smaller, 1 = larger) and writes plane slab
+// entry s * T + t, the layout the batched vector find kernel reads.
+__global__ void VectorLevelPlaneFanOutKernel(
+  const CUDALeafSplitsStruct* slots,
+  const CUDASplitInfo* const* split_infos,
+  const int* left_leaf_indices,
+  CUDALeafSplitsStruct* plane_slab,
+  const int num_targets,
+  const size_t plane_stride_entries,
+  const int num_pairs,
+  const bool use_quantized_grad) {
+  const int i = static_cast<int>(threadIdx.x + blockIdx.x * blockDim.x);
+  if (i >= num_pairs * 2 * num_targets) {
+    return;
+  }
+  const int slot = i / num_targets;
+  const int t = i - slot * num_targets;
+  const int pair = slot >> 1;
+  const CUDALeafSplitsStruct* src = slots + slot;
+  CUDALeafSplitsStruct s = *src;
+  const bool is_left = (s.leaf_index == left_leaf_indices[pair]);
+  const double* payload = split_infos[pair]->vec_payload;
+  s.sum_of_gradients = payload[(is_left ? kVecLeftSumGradients : kVecRightSumGradients) * num_targets + t];
+  s.leaf_value = payload[(is_left ? kVecLeftValue : kVecRightValue) * num_targets + t];
+  if (use_quantized_grad) {
+    s.sum_of_gradients_hessians = VectorPlanePackedSum(
+      payload, num_targets, t, is_left, src->sum_of_gradients_hessians);
+  }
+  // the vector finder recomputes the parent gain from the plane sums, so the
+  // scalar (target-0) gain field would be stale for t > 0; zero it
+  s.gain = 0.0;
+  s.hist_in_leaf = src->hist_in_leaf + static_cast<size_t>(t) * plane_stride_entries;
+  plane_slab[i] = s;
+}
+
+void CUDASingleGPUTreeLearner::LaunchVectorLevelPlaneFanOutKernel(const int num_pairs) {
+  const int num_slots = num_pairs * 2 * vec_num_targets_;
+  const int num_threads_per_block = 128;
+  const int num_blocks = (num_slots + num_threads_per_block - 1) / num_threads_per_block;
+  VectorLevelPlaneFanOutKernel<<<num_blocks, num_threads_per_block>>>(
+    hybrid_pair_slots_.RawDataReadOnly(),
+    cuda_vec_fanout_infos_.RawDataReadOnly(),
+    cuda_vec_fanout_left_leaves_.RawDataReadOnly(),
+    vec_level_plane_slots_.RawData(),
+    vec_num_targets_,
+    static_cast<size_t>(2) * num_total_bin_,
+    num_pairs,
+    config_->use_quantized_grad);
+}
+
 __global__ void ReduceLeafStatKernel_SharedMemory(
   const score_t* gradients,
   const score_t* hessians,

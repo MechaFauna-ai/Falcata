@@ -97,6 +97,11 @@ class CUDABestSplitFinder {
    *  decided by the histogram constructor, wired in by the tree learner */
   void SetHistFP32(const bool hist_fp32) { hist_fp32_ = hist_fp32; }
 
+  /*! \brief bagged quantized training adds one hessian quantum of l2 ridge in
+   *  the discretized find kernels (bounds gains/outputs against the per-bag
+   *  redraw of hessian rounding noise); wired in by the tree learner */
+  void SetQuantBaggingRidge(const bool on) { quant_bagging_ridge_ = on; }
+
   /*! \brief large-bin fallback stays fp64: the tree learner disables the fp32
    *  histogram mode when this is set */
   bool use_global_memory() const { return use_global_memory_; }
@@ -122,6 +127,21 @@ class CUDABestSplitFinder {
       static_cast<size_t>(count), __FILE__, __LINE__);
   }
 
+  /*! \brief vector-leaf mode: synchronous D2H snapshot of the per-leaf best-split
+   *  vector payloads (kNumVecPayloadFields * T doubles per leaf, see
+   *  VecPayloadField). Same validity window as the categorical thresholds: a
+   *  leaf's slot holds its cached candidate until the next search that reuses
+   *  the leaf index. */
+  void CopyLeafVecPayloadsToHost(const int num_leaves, std::vector<double>* out) const {
+    CHECK_GT(vec_num_targets_, 1);
+    const size_t count = static_cast<size_t>(num_leaves) *
+      static_cast<size_t>(kNumVecPayloadFields) * static_cast<size_t>(vec_num_targets_);
+    CHECK_LE(count, cuda_vec_payload_leaf_.Size());
+    out->resize(count);
+    CopyFromCUDADeviceToHost<double>(out->data(),
+      cuda_vec_payload_leaf_.RawDataReadOnly(), count, __FILE__, __LINE__);
+  }
+
   // host-side penalty (feature_contri) for the given inner feature index
   double GetFeaturePenalty(int inner_feature_index) const;
 
@@ -130,6 +150,46 @@ class CUDABestSplitFinder {
 
 
   void BeforeTrain(const std::vector<int8_t>& is_feature_used_bytree);
+
+  /*! \brief vector-leaf (multi-target) mode: attach a per-slot payload slab
+   *  (kNumVecPayloadFields * num_targets doubles) to every task and leaf
+   *  best-split slot, so the vector find kernel can record per-target child
+   *  sums/values and the sync kernels' wholesale struct copies carry them.
+   *  Called once after Init(); numerical-feature, fp64, shared-memory
+   *  configurations only (the tree learner gates the rest). */
+  void InitVectorMode(const int num_targets);
+
+  /*! \brief quantized-training inputs of a vector-leaf find: the per-target
+   *  dequantization scales (T contiguous score_t) and the shared hessian
+   *  scale, plus the leaf histogram bit widths. grad_scales == nullptr selects
+   *  the fp64 (non-quantized) vector kernels. */
+  struct VectorQuantArgs {
+    const score_t* grad_scales = nullptr;
+    const score_t* hess_scale = nullptr;
+    uint8_t smaller_num_bits = 32;
+    uint8_t larger_num_bits = 32;
+    bool active() const { return grad_scales != nullptr && hess_scale != nullptr; }
+  };
+
+  /*! \brief per-pair best-split search over T histogram planes: the
+   *  vector-leaf counterpart of FindBestSplitsForLeaf. smaller/larger point at
+   *  T contiguous CUDALeafSplitsStructs (plane t carries the target-t gradient
+   *  sums and histogram plane pointer; plane 0's hessian is the shared one).
+   *  Split gain is the sum of per-target gains; the winner's per-target child
+   *  sums/values land in the slot's vector payload. */
+  void FindBestSplitsForLeafVector(
+    const CUDALeafSplitsStruct* smaller_leaf_splits_planes,
+    const CUDALeafSplitsStruct* larger_leaf_splits_planes,
+    const int smaller_leaf_index,
+    const int larger_leaf_index,
+    const data_size_t num_data_in_smaller_leaf,
+    const data_size_t num_data_in_larger_leaf,
+    const double sum_hessians_in_smaller_leaf,
+    const double sum_hessians_in_larger_leaf,
+    const bool smaller_leaf_below_max_depth,
+    const bool larger_leaf_below_max_depth,
+    const VectorQuantArgs& quant,
+    const bool synchronize = true);
 
   void FindBestSplitsForLeaf(
     const CUDALeafSplitsStruct* smaller_leaf_splits,
@@ -196,6 +256,18 @@ class CUDABestSplitFinder {
     const score_t* grad_scale,
     const score_t* hess_scale,
     const bool gate_on_desc_counts = false);
+
+  /*! \brief vector-leaf counterpart of FindBestSplitsForLevel: one find launch
+   *  and one sync launch cover every sibling pair of a level over T histogram
+   *  planes. \p plane_slab holds the level's per-role leaf-splits planes at
+   *  [(2 * pair + role) * T + t]; plane 0 of each role mirrors the primary
+   *  struct the descriptor points at. Split decisions are identical to the
+   *  per-pair FindBestSplitsForLeafVector (same kernel body). */
+  void FindBestSplitsForLevelVector(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    const CUDALeafSplitsStruct* plane_slab,
+    const VectorQuantArgs& quant);
 
   const CUDASplitInfo* FindBestFromAllSplits(
     const int cur_num_leaves,
@@ -392,6 +464,17 @@ class CUDABestSplitFinder {
 
   void LaunchFindBestSplitsForLeafKernel(LaunchFindBestSplitsForLeafKernel_PARAMS);
 
+  void LaunchFindBestSplitsForLeafKernelVector(
+    const CUDALeafSplitsStruct* smaller_leaf_splits_planes,
+    const CUDALeafSplitsStruct* larger_leaf_splits_planes,
+    const bool is_smaller_leaf_valid,
+    const bool is_larger_leaf_valid,
+    const data_size_t global_num_data_in_smaller_leaf,
+    const data_size_t global_num_data_in_larger_leaf,
+    const VectorQuantArgs& quant);
+
+  void LaunchAssignVecPayloadKernel(CUDASplitInfo* cuda_split_infos, double* payload_slab, size_t len);
+
   template <bool USE_RAND>
   void LaunchFindBestSplitsForLeafKernelInner0(LaunchFindBestSplitsForLeafKernel_PARAMS);
 
@@ -459,6 +542,12 @@ class CUDABestSplitFinder {
     const score_t* grad_scale,
     const score_t* hess_scale,
     const CUDAHybridGraphLoopStateOpt gstate = nullptr);
+
+  void LaunchFindBestSplitsForLevelKernelVector(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    const CUDALeafSplitsStruct* plane_slab,
+    const VectorQuantArgs& quant);
 
   void LaunchSyncBestSplitForLevelKernel(
     const CUDAHybridPairDescriptor* pair_descs,
@@ -538,6 +627,10 @@ class CUDABestSplitFinder {
   bool use_global_memory_;
   // non-quantized histograms stored as float pairs (FALCATA_FP32_HIST)
   bool hist_fp32_ = false;
+  // bagged quantized training: one hessian quantum of l2 ridge in the
+  // discretized find kernels, scalar (FindBestSplitsDiscretizedForLeafKernel)
+  // and vector (FindBestSplitsDiscretizedVectorInner) alike
+  bool quant_bagging_ridge_ = false;
   // number of total bins in the dataset
   const int num_total_bin_;
   // has categorical feature
@@ -581,6 +674,11 @@ class CUDABestSplitFinder {
    *  (GlobalMemory variant); mirrors the grad buffer's two-direction sizing. */
   CUDAVector<data_size_t> cuda_feature_hist_cnt_buffer_;
   CUDAVector<uint32_t> cuda_cat_threshold_leaf_;
+  /*! \brief vector-leaf mode: number of targets (0 = scalar mode) and the
+   *  payload slabs backing the task-slot / leaf-slot CUDASplitInfo payloads */
+  int vec_num_targets_ = 0;
+  CUDAVector<double> cuda_vec_payload_task_;
+  CUDAVector<double> cuda_vec_payload_leaf_;
   CUDAVector<int> cuda_invalidate_leaves_;
   CUDAVector<int> cuda_cat_threshold_real_leaf_;
   CUDAVector<uint32_t> cuda_cat_threshold_feature_;

@@ -165,6 +165,10 @@ class GBDT : public GBDTBase {
   */
   bool TrainOneIter(const score_t* gradients, const score_t* hessians) override;
 
+  /*! \brief one vector-leaf multi-target boosting iteration: the objective's T
+   *  gradient planes feed ONE shared-structure tree with T-vector leaves */
+  bool VectorTrainOneIter();
+
   /*!
   * \brief Rollback one iteration
   */

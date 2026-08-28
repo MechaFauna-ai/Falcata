@@ -256,7 +256,10 @@ __global__ void BuildInbagMaskKernel(
   }
 }
 
-template <bool STOCHASTIC_ROUNDING, bool CLAMP>
+// COPY_HESS: vector-leaf plane t >= 1. The hessian is target-independent and
+// every consumer reads it from plane 0, so the plane copies plane 0's already
+// quantized hessian instead of re-rounding it under an independent dither.
+template <bool STOCHASTIC_ROUNDING, bool CLAMP, bool COPY_HESS = false>
 __global__ void DiscretizeGradientsKernel(
   const data_size_t num_data,
   const score_t* input_gradients,
@@ -268,7 +271,8 @@ __global__ void DiscretizeGradientsKernel(
   const int grad_discretize_bins,
   int8_t* ef_residuals,
   const uint8_t* ef_inbag_mask,
-  int8_t* output_gradients_and_hessians) {
+  int8_t* output_gradients_and_hessians,
+  const int8_t* plane0_gradients_and_hessians = nullptr) {
   const data_size_t index = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
   const score_t grad_scale = *grad_scale_ptr;
   const score_t hess_scale = *hess_scale_ptr;
@@ -296,7 +300,9 @@ __global__ void DiscretizeGradientsKernel(
       output_gradients_and_hessians_ptr[2 * index + 1] = gradient > 0.0f ?
         static_cast<int16_t>(__fmaf_rn(gradient, grad_scale, gradient_random_value)) :
         static_cast<int16_t>(__fmaf_rn(gradient, grad_scale, -gradient_random_value));
-      output_gradients_and_hessians_ptr[2 * index] = static_cast<int16_t>(__fmaf_rn(hessian, hess_scale, hessian_random_value));
+      output_gradients_and_hessians_ptr[2 * index] = COPY_HESS ?
+        reinterpret_cast<const int16_t*>(plane0_gradients_and_hessians)[2 * index] :
+        static_cast<int16_t>(__fmaf_rn(hessian, hess_scale, hessian_random_value));
     } else {
       // the double 0.5 is deliberate: a double add cannot be contracted with
       // the float multiply, keeping the rounding sequence arch-stable
@@ -315,15 +321,21 @@ __global__ void DiscretizeGradientsKernel(
       int16_t q = (gv + ge) > 0.0f ?
         static_cast<int16_t>((gv + ge) + 0.5) :
         static_cast<int16_t>((gv + ge) - 0.5);
-      const int16_t qh = static_cast<int16_t>((hv + he) + 0.5);
+      const int16_t qh = COPY_HESS ?
+        reinterpret_cast<const int16_t*>(plane0_gradients_and_hessians)[2 * index] :
+        static_cast<int16_t>((hv + he) + 0.5);
       if (ef_active) {
         // rounding error only: the clamp below is intentional saturation and
-        // must not feed back, or a saturated row accumulates unbounded carry
-        int rh = __float2int_rn(((hv + he) - static_cast<score_t>(qh)) * 128.0f);
+        // must not feed back, or a saturated row accumulates unbounded carry.
+        // A copied-hessian plane rounds no hessian, so it carries no hessian
+        // residual (plane 0 owns that stream).
         int rg = __float2int_rn(((gv + ge) - static_cast<score_t>(q)) * 128.0f);
-        rh = rh > 127 ? 127 : (rh < -127 ? -127 : rh);
         rg = rg > 127 ? 127 : (rg < -127 ? -127 : rg);
-        ef_residuals[2 * index] = static_cast<int8_t>(rh);
+        if (!COPY_HESS) {
+          int rh = __float2int_rn(((hv + he) - static_cast<score_t>(qh)) * 128.0f);
+          rh = rh > 127 ? 127 : (rh < -127 ? -127 : rh);
+          ef_residuals[2 * index] = static_cast<int8_t>(rh);
+        }
         ef_residuals[2 * index + 1] = static_cast<int8_t>(rg);
       }
       if (CLAMP) {
@@ -336,7 +348,30 @@ __global__ void DiscretizeGradientsKernel(
   }
 }
 
+// Snapshot the reduced dequantization scales out of the shared reduce scratch,
+// which the next plane's reduction overwrites.
+__global__ void SnapshotPlaneScalesKernel(
+  const score_t* grad_scale_src,
+  const score_t* hess_scale_src,
+  score_t* plane_grad_scale,
+  score_t* plane_hess_scale) {
+  if (threadIdx.x == 0) {
+    *plane_grad_scale = *grad_scale_src;
+    if (plane_hess_scale != nullptr) {
+      *plane_hess_scale = *hess_scale_src;
+    }
+  }
+}
+
 void CUDAGradientDiscretizer::DiscretizeGradients(
+  const data_size_t num_data,
+  const score_t* input_gradients,
+  const score_t* input_hessians) {
+  DiscretizeGradientsForPlane(0, num_data, input_gradients, input_hessians);
+}
+
+void CUDAGradientDiscretizer::DiscretizeGradientsForPlane(
+  const int plane,
   const data_size_t num_data,
   const score_t* input_gradients,
   const score_t* input_hessians) {
@@ -415,6 +450,11 @@ void CUDAGradientDiscretizer::DiscretizeGradients(
     ef_mask = ef_inbag_mask_.RawData();
   }
 
+  // Plane 0 owns the hessian stream; planes 1..T-1 copy its quantized hessians
+  // (see the COPY_HESS branch of DiscretizeGradientsKernel).
+  const bool copy_hess = plane > 0;
+  const int8_t* plane0 = discretized_gradients_and_hessians(0);
+
   #define DiscretizeGradientsKernel_ARGS \
     num_data, \
     input_gradients, \
@@ -426,16 +466,37 @@ void CUDAGradientDiscretizer::DiscretizeGradients(
     num_grad_quant_bins_, \
     ef_slot, \
     ef_mask, \
-    discretized_gradients_and_hessians_.RawData()
+    discretized_gradients_and_hessians_.RawData() + \
+      static_cast<size_t>(plane) * static_cast<size_t>(num_data_planes_) * 4, \
+    plane0
 
   if (stochastic_rounding_) {
     // Stochastic path never uses the robust scale (it is a fixed-point-only mode).
-    DiscretizeGradientsKernel<true, false><<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(DiscretizeGradientsKernel_ARGS);
+    if (copy_hess) {
+      DiscretizeGradientsKernel<true, false, true><<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(DiscretizeGradientsKernel_ARGS);
+    } else {
+      DiscretizeGradientsKernel<true, false, false><<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(DiscretizeGradientsKernel_ARGS);
+    }
   } else if (robust_scale_) {
-    DiscretizeGradientsKernel<false, true><<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(DiscretizeGradientsKernel_ARGS);
+    if (copy_hess) {
+      DiscretizeGradientsKernel<false, true, true><<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(DiscretizeGradientsKernel_ARGS);
+    } else {
+      DiscretizeGradientsKernel<false, true, false><<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(DiscretizeGradientsKernel_ARGS);
+    }
   } else {
-    DiscretizeGradientsKernel<false, false><<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(DiscretizeGradientsKernel_ARGS);
+    if (copy_hess) {
+      DiscretizeGradientsKernel<false, false, true><<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(DiscretizeGradientsKernel_ARGS);
+    } else {
+      DiscretizeGradientsKernel<false, false, false><<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(DiscretizeGradientsKernel_ARGS);
+    }
   }
+  // the scales the find kernels dequantize with: per-plane for the gradient,
+  // plane 0's for the shared hessian
+  SnapshotPlaneScalesKernel<<<1, 1>>>(
+    grad_max_block_buffer_.RawDataReadOnly(),
+    hess_max_block_buffer_.RawDataReadOnly(),
+    plane_grad_scale_.RawData() + plane,
+    copy_hess ? nullptr : plane_hess_scale_.RawData());
   SynchronizeCUDADevice(__FILE__, __LINE__);
   ++iter_;
 }
