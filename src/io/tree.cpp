@@ -754,6 +754,14 @@ Tree::Tree(const char* str, size_t* used_len) {
   }
   *used_len = p - str;
 
+  // Text carries no depth, so a text-loaded tree has none: -1 is the "unknown"
+  // value every other constructor starts from. It is set HERE rather than at
+  // the end of the constructor because the constant-tree path below returns
+  // early -- a 1-leaf tree would otherwise leave the member with whatever the
+  // allocation held, which the FALB writer then serializes as this tree's
+  // max_depth (and the TreeSHAP path length reads back).
+  max_depth_ = -1;
+
   if (key_vals.count("num_leaves") <= 0) {
     Log::Fatal("Tree model should contain num_leaves field");
   }
@@ -956,7 +964,6 @@ Tree::Tree(const char* str, size_t* used_len) {
       Log::Fatal("Tree model should contain cat_threshold field");
     }
   }
-  max_depth_ = -1;
 }
 
 void Tree::ExtendPath(PathElement *unique_path, int unique_depth,
