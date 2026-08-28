@@ -91,6 +91,7 @@ step "validation scoring"          -     "$VENV" tests/gates/valid_metric.py
 step "FALB python plumbing"        -     "$VENV" tests/gates/falb_python.py
 step "FALB binary roundtrip"       -     env FALCATA_LIB="$REPO/lib_falcata.so" "$VENV" tests/gates/falb_roundtrip.py
 step "FALB frozen-fixture compat"  -     "$VENV" tests/gates/falb_compat.py
+step "FALB writer-byte golden"     -     "$VENV" tests/gates/falb_golden.py
 step "FALB parser fuzz"            -     "$VENV" tests/gates/falb_fuzz.py --seconds 120
 # The Python suite on CUDA. GH CI runs the same tests on CPU; hosted runners
 # have no GPU, so this is the only place the CUDA half executes. --forked keeps

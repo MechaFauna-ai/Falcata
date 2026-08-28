@@ -20,6 +20,7 @@
             "!R-package/docs",
             "!tests/gates/lattice_results.json",
             "!tests/gates/md5_lattice.json",
+            "!tests/gates/falb_golden.json",
             "!tests/gates/falb_fixtures"
         ]
     },

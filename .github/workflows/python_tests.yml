@@ -65,6 +65,12 @@ jobs:
         shell: bash
         run: |
           python -m pytest ./tests/python_package_test ./tests/c_api_test -ra --timeout=900
+      - name: FALB writer-byte golden gate
+        # Locked bytes are machine-independent by construction (committed
+        # fixtures in, compress_level=0 out); a hosted runner proving that is
+        # the point of running it here as well as in the nightly.
+        shell: bash
+        run: python ./tests/gates/falb_golden.py
   cpp-tests-cpu:
     name: cpp + distributed tests (cpu)
     runs-on: ubuntu-latest
