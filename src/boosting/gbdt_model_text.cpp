@@ -10,6 +10,7 @@
 #include <Falcata/utils/common.h>
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 #include <sstream>
 #include <unordered_map>
@@ -496,6 +497,14 @@ void GBDT::ValidateLeafValueDimensions() {
 bool GBDT::LoadModelFromString(const char* buffer, size_t len) {
   // use serialized string to restore this object
   models_.clear();
+  // A serialized model is text and never contains a NUL byte. The line
+  // cursors below advance across '\n'/'\r' only, and GetLine/SkipNewLine
+  // both stop AT a NUL without consuming it -- so a NUL inside [buffer,
+  // buffer+len) would stall the cursor forever. Rejecting it here bounds
+  // every line-scanning loop in this function.
+  if (std::memchr(buffer, '\0', len) != nullptr) {
+    Log::Fatal("Model file is corrupt: the model text contains a NUL byte");
+  }
   auto c_str = buffer;
   auto p = c_str;
   auto end = p + len;
