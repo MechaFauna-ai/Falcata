@@ -630,7 +630,30 @@ void CUDABestSplitFinder::EnsureHybridLevelCapacity(const int num_pairs) {
     }
     AllocateCatVectors(cuda_best_split_info_.RawData(), cuda_cat_threshold_feature_.RawData(),
                        cuda_cat_threshold_real_feature_.RawData(), needed);
+    if (vec_num_targets_ > 1) {
+      // the vector payload slab is indexed by task slot, so it grows with the
+      // output buffer and every slot's pointer is reassigned
+      cuda_vec_payload_task_.Resize(needed *
+        static_cast<size_t>(kNumVecPayloadFields) * static_cast<size_t>(vec_num_targets_));
+      LaunchAssignVecPayloadKernel(cuda_best_split_info_.RawData(),
+                                   cuda_vec_payload_task_.RawData(), needed);
+    }
   }
+}
+
+void CUDABestSplitFinder::FindBestSplitsForLevelVector(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const int num_pairs,
+  const CUDALeafSplitsStruct* plane_slab) {
+  CHECK_GT(vec_num_targets_, 1);
+  if (num_pairs <= 0) {
+    return;
+  }
+  EnsureHybridLevelCapacity(num_pairs);
+  // order the batched find after the whole batched histogram phase of this level
+  CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], hist_subtract_done_events_[0], 0));
+  LaunchFindBestSplitsForLevelKernelVector(pair_descs, num_pairs, plane_slab);
+  LaunchSyncBestSplitForLevelKernel(pair_descs, num_pairs, /*gate_on_desc_counts=*/false);
 }
 
 void CUDABestSplitFinder::FindBestSplitsForLevel(

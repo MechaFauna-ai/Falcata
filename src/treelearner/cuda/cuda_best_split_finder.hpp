@@ -224,6 +224,17 @@ class CUDABestSplitFinder {
     const score_t* hess_scale,
     const bool gate_on_desc_counts = false);
 
+  /*! \brief vector-leaf counterpart of FindBestSplitsForLevel: one find launch
+   *  and one sync launch cover every sibling pair of a level over T histogram
+   *  planes. \p plane_slab holds the level's per-role leaf-splits planes at
+   *  [(2 * pair + role) * T + t]; plane 0 of each role mirrors the primary
+   *  struct the descriptor points at. Split decisions are identical to the
+   *  per-pair FindBestSplitsForLeafVector (same kernel body). */
+  void FindBestSplitsForLevelVector(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    const CUDALeafSplitsStruct* plane_slab);
+
   const CUDASplitInfo* FindBestFromAllSplits(
     const int cur_num_leaves,
     const int smaller_leaf_index,
@@ -496,6 +507,11 @@ class CUDABestSplitFinder {
     const score_t* grad_scale,
     const score_t* hess_scale,
     const CUDAHybridGraphLoopStateOpt gstate = nullptr);
+
+  void LaunchFindBestSplitsForLevelKernelVector(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    const CUDALeafSplitsStruct* plane_slab);
 
   void LaunchSyncBestSplitForLevelKernel(
     const CUDAHybridPairDescriptor* pair_descs,

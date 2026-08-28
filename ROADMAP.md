@@ -19,18 +19,26 @@ Roughly priority-ordered within groups. Measurements refer to an RTX 5090.
   vector-leaf plan + landed-V2 notes in
   [docs/design/vector-leaf-plan.md](docs/design/vector-leaf-plan.md).
   Round-robin (variant 1, `objective=multi_regression`) and the vector-leaf
-  training core (variant 2 V1/V2: `tree_mode=vector_leaf`, CUDA classic loop,
-  plane-per-target histograms, summed-gain finder, vector apply/serialize/
-  predict) are LANDED. Open items:
-  - Hybrid/one-sync/graph prefix support for vector mode (currently classic
-    per-split loop only; the speed thesis lives in the batched flows).
-    First classic-loop datapoint (2026-08-28, synthetic 200k rows x 200
-    features, 5 correlated targets, 63 leaves, 200 rounds): 1.9x wall-clock
-    vs 5 independent scalar CUDA trainings (13.1s vs 24.7s), i.e. a T=5
-    vector tree costs ~2.6x a scalar tree; per-target RMSE is worse
-    (0.90-0.99 vs 0.73-0.82) because one shared tree per iteration carries
-    1/5 the total leaf budget. Open: equal-tree-budget comparison, hybrid
-    speed, per-era numerai validation.
+  training core (variant 2 V1/V2/V3: `tree_mode=vector_leaf`, plane-per-target
+  histograms, summed-gain finder, vector apply/serialize/predict, and the
+  hybrid TWO-SYNC level-batched prefix in the depth-limited regime) are
+  LANDED; details in docs/performance.md §11. Open items:
+  - One-sync (speculative), selective (grow-then-prune) and graph-loop prefix
+    support for vector mode. Selective is what budget-limited configs
+    (num_leaves << 2^max_depth, e.g. the numerai 250-leaf/depth-12 shape) need
+    to leave the classic loop at all — the two-sync prefix only engages when
+    `2^max_depth <= num_leaves + 1`. Selective needs per-target leaf values
+    through RebuildFromHostSplits; one-sync needs the plane fan-out moved
+    ahead of the speculative child gating.
+  - Batched-level histogram construct for T planes: the level flow deliberately
+    keeps the per-pair construct because the batched one costs 110.8 vs 68.1
+    ms/tree at T=5 on 200k x 200 (see the plan doc §0). A construct that
+    accumulates all T planes from one pass over the rows would collapse that
+    and is the remaining big lever for vector-leaf throughput.
+  - Per-target RMSE is worse than round-robin (0.90-0.99 vs 0.73-0.82 on the
+    synthetic T=5 shape) because one shared tree per iteration carries 1/5 the
+    total leaf budget. Open: equal-tree-budget comparison, per-era numerai
+    validation.
   - Lift v1 fences on demand: GOSS/query/balanced bagging (plain per-row
     bagging landed) and categorical features (landed; cat_random_search still
     fenced), L1/path-smooth/max_delta_step/extra-trees/monotone/CEGB, fp32

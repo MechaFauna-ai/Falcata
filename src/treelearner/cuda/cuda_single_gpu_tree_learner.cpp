@@ -302,11 +302,6 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // hybrid level-batched growth is on by default; cuda_plan=auto,hybrid:off
   // falls back to the classic one-split-at-a-time leaf-wise loop everywhere
   use_hybrid_growth_ = FalcataPlan::Get().hybrid;
-  // vector-leaf training rides the classic per-split loop only: the hybrid
-  // level flows would need plane-aware batched kernels
-  if (vec_num_targets_ > 1) {
-    use_hybrid_growth_ = false;
-  }
   // Monotone constraints are inherited down the tree: a leaf's [min, max] bounds
   // come from the splits already applied above it. Level-batched growth scores a
   // whole level before applying any of it, so the children of a level's splits
@@ -341,6 +336,16 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // (num_leaves << 2^max_depth): exactly leaf-wise-equivalent level batching
   // with end-of-selection pruning; "0" falls back to the classic loop there
   use_hybrid_selective_ = FalcataPlan::Get().selective;
+  // vector-leaf training rides the hybrid TWO-SYNC level flow: the speculative
+  // (one-sync) flow derives its child gates from device structs the plane
+  // fan-out has not refreshed yet, and selective growth recycles leaf indices
+  // through a host tree rebuild that carries target-0 leaf values only. Both
+  // fall back to the classic per-split loop here, as does the graph loop
+  // (HybridGraphPrefixUsable).
+  if (vec_num_targets_ > 1) {
+    use_hybrid_one_sync_ = false;
+    use_hybrid_selective_ = false;
+  }
   cuda_best_split_finder_.reset(new CUDABestSplitFinder(cuda_histogram_constructor_->cuda_hist(),
     train_data_, this->share_state_->feature_hist_offsets(), select_features_by_node_, config_));
   cuda_best_split_finder_->Init();
@@ -952,8 +957,17 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
        use_hybrid_batch_kernels_ && use_hybrid_batch_apply_ &&
        cuda_histogram_constructor_->SupportsBatchedLevel() &&
        cuda_best_split_finder_->SupportsBatchedLevel());
+  // Vector-leaf mode has one level flow: the two-sync prefix with the batched
+  // level kernels (per-plane construct/fix/subtract + the batched vector find)
+  // and the batched apply, which is where the per-level plane fan-out lives.
+  const bool vec_ok = vec_num_targets_ <= 1 ||
+      (use_hybrid_batch_kernels_ && use_hybrid_batch_apply_ &&
+       cuda_histogram_constructor_ != nullptr && cuda_best_split_finder_ != nullptr &&
+       cuda_histogram_constructor_->SupportsBatchedLevel() &&
+       cuda_best_split_finder_->SupportsBatchedLevel());
   const bool base = use_hybrid_growth_ &&
          nccl_ok &&
+         vec_ok &&
          !select_features_by_node_ &&
          !cat_threshold_fenced &&
          (cuda_best_split_finder_ == nullptr || !cuda_best_split_finder_->use_global_memory()) &&
@@ -1275,8 +1289,84 @@ void CUDASingleGPUTreeLearner::EnqueuePairBestSplitSearchVector(const CUDATree* 
   global_timer.Stop("CUDASingleGPUTreeLearner::FindBestSplitsForLeaf");
 }
 
+void CUDASingleGPUTreeLearner::VectorLevelPlaneFanOut(
+    const std::vector<HybridAppliedSplit>& applied) {
+  const int num_pairs = static_cast<int>(applied.size());
+  if (num_pairs <= 0) {
+    return;
+  }
+  host_vec_fanout_infos_.resize(static_cast<size_t>(num_pairs));
+  host_vec_fanout_left_leaves_.resize(static_cast<size_t>(num_pairs));
+  for (int k = 0; k < num_pairs; ++k) {
+    // the fan-out kernel addresses the pair's two primary slots as
+    // hybrid_pair_slots_[2k, 2k + 1], the layout ApplyLevelBatched assigns
+    CHECK_EQ(applied[k].smaller_slot, hybrid_pair_slots_.RawData() + 2 * k);
+    host_vec_fanout_infos_[k] =
+      cuda_best_split_finder_->leaf_best_split_info_ptr(applied[k].left);
+    host_vec_fanout_left_leaves_[k] = applied[k].left;
+  }
+  if (cuda_vec_fanout_infos_.Size() < static_cast<size_t>(num_pairs)) {
+    const size_t capacity = static_cast<size_t>(
+      std::max(num_pairs, config_->num_leaves / 2 + 2));
+    cuda_vec_fanout_infos_.Resize(capacity);
+    cuda_vec_fanout_left_leaves_.Resize(capacity);
+  }
+  CopyFromHostToCUDADevice<const CUDASplitInfo*>(cuda_vec_fanout_infos_.RawData(),
+    host_vec_fanout_infos_.data(), static_cast<size_t>(num_pairs), __FILE__, __LINE__);
+  CopyFromHostToCUDADevice<int>(cuda_vec_fanout_left_leaves_.RawData(),
+    host_vec_fanout_left_leaves_.data(), static_cast<size_t>(num_pairs), __FILE__, __LINE__);
+  LaunchVectorLevelPlaneFanOutKernel(num_pairs);
+}
+
+void CUDASingleGPUTreeLearner::EnqueueLevelHistogramsAndFindVector(
+    const int num_pairs,
+    const data_size_t max_num_data_in_smaller_leaf,
+    CUDALeafSplitsStruct* plane_slab) {
+  const int num_targets = vec_num_targets_;
+  (void)max_num_data_in_smaller_leaf;
+  // Histogram phase: PER PAIR, all T planes of a pair back to back -- the
+  // per-leaf construct sizing and the T launches' shared row working set. The
+  // batched level construct is what makes plain level batching pay for scalar
+  // training (one launch, one shared saturation floor over the level's pairs),
+  // but with T gradient planes it measures 110.8 ms/tree against this loop's
+  // 68.1 on 200k x 200 / T=5 / 63 leaves, which is the whole of the level
+  // flow's cost there. What the level flow contributes for vector mode is the
+  // ONE find + ONE sync + ONE apply below (find 3.1 ms/tree against the
+  // per-pair 4.7, plus the per-split device syncs the classic loop pays).
+  for (int i = 0; i < num_pairs; ++i) {
+    const CUDAHybridPairDescriptor& desc = host_hybrid_pair_descs_[i];
+    if (desc.construct_valid == 0) {
+      continue;
+    }
+    const double sum_hessians_in_smaller_leaf =
+      leaf_sum_hessians_[desc.smaller_leaf_index];
+    const double sum_hessians_in_larger_leaf = desc.larger_leaf_index < 0 ?
+      0.0 : leaf_sum_hessians_[desc.larger_leaf_index];
+    CUDALeafSplitsStruct* smaller_planes =
+      plane_slab + static_cast<size_t>(2 * i) * num_targets;
+    CUDALeafSplitsStruct* larger_planes =
+      plane_slab + (static_cast<size_t>(2 * i) + 1) * num_targets;
+    for (int t = 0; t < num_targets; ++t) {
+      cuda_histogram_constructor_->SelectGradientPlane(
+        gradients_ + static_cast<size_t>(t) * num_data_,
+        hessians_ + static_cast<size_t>(t) * num_data_);
+      cuda_histogram_constructor_->ConstructHistogramForLeaf(
+        smaller_planes + t, larger_planes + t,
+        desc.num_data_in_smaller_leaf, desc.num_data_in_larger_leaf,
+        desc.num_data_in_smaller_leaf, desc.num_data_in_larger_leaf,
+        sum_hessians_in_smaller_leaf, sum_hessians_in_larger_leaf, 0);
+      cuda_histogram_constructor_->SubtractHistogramForLeaf(
+        smaller_planes + t, larger_planes + t, false, 0, 0, 0);
+    }
+  }
+  cuda_histogram_constructor_->SelectGradientPlane(gradients_, hessians_);
+  cuda_best_split_finder_->FindBestSplitsForLevelVector(
+    cuda_hybrid_pair_descs_.RawDataReadOnly(), num_pairs, plane_slab);
+}
+
 void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
-    const std::vector<HybridPendingPair>& pairs) {
+    const std::vector<HybridPendingPair>& pairs,
+    CUDALeafSplitsStruct* vec_plane_slab) {
   const int num_pairs = static_cast<int>(pairs.size());
   if (num_pairs <= 0) {
     return;
@@ -1382,6 +1472,13 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
     cuda_hybrid_pair_descs_.RawData(), host_hybrid_pair_descs_.data(),
     static_cast<size_t>(num_pairs), cuda_histogram_constructor_->hist_stream(),
     __FILE__, __LINE__);
+  if (vec_num_targets_ > 1) {
+    CHECK(vec_plane_slab != nullptr);
+    EnqueueLevelHistogramsAndFindVector(num_pairs, max_num_data_in_smaller_leaf,
+                                        vec_plane_slab);
+    global_timer.Stop("CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch");
+    return;
+  }
   // Multi-GPU defers the fix+subtract tail: the mfb fix writes
   // leaf_total - sum(other bins) with leaf-struct totals that are GLOBAL under
   // NCCL, and the subtract derives the larger child from the (global) parent,
@@ -1794,6 +1891,9 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
       if (in.num_cat_threshold > 0) {
         if (!chunk.empty()) {
           tree->SplitBatch(chunk);
+          if (vec_num_targets_ > 1) {
+            tree->SetVectorLeafValuesFromSplitBatch(static_cast<int>(chunk.size()));
+          }
           chunk.clear();
         }
         const int inner_feature = in.split_feature;
@@ -1811,6 +1911,9 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
               static_cast<size_t>(cat_index) * batch_cat_bitset_inner_stride_,
             static_cast<size_t>(host_batch_cat_lens_[2 * cat_index + 1]));
         CHECK_EQ(right, in.right_leaf_index);
+        if (vec_num_targets_ > 1) {
+          tree->SetVectorLeafValuesFromSplit(in.left_leaf_index, right, in.best_split_info);
+        }
         ++cat_index;
       } else {
         chunk.push_back(host_tree_batch_splits_[k]);
@@ -1818,6 +1921,11 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
     }
     if (!chunk.empty()) {
       tree->SplitBatch(chunk);
+      if (vec_num_targets_ > 1) {
+        // the split kernel wrote the target-0 (mirror) outputs; record every
+        // target's child outputs from the winning splits' vector payloads
+        tree->SetVectorLeafValuesFromSplitBatch(static_cast<int>(chunk.size()));
+      }
     }
     if (cat_index > 0 && cat_consumed_tree_event_ != nullptr) {
       // SplitCategorical kernels (tree stream) also read the per-leaf
@@ -1958,6 +2066,12 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   if (hybrid_pair_slots_.Size() < max_slots) {
     hybrid_pair_slots_.Resize(max_slots);
   }
+  // vector mode: T plane structs per slot, in the slot order the fan-out and
+  // the batched vector find share
+  if (vec_num_targets_ > 1 &&
+      vec_level_plane_slots_.Size() < max_slots * static_cast<size_t>(vec_num_targets_)) {
+    vec_level_plane_slots_.Resize(max_slots * static_cast<size_t>(vec_num_targets_));
+  }
   // batched per-level kernels: one construct/fix/subtract/find/sync launch covers
   // all pairs of a level. Falls back to the per-pair loop when the data layout or
   // config is outside the batched kernels' support, or when disabled via env.
@@ -1982,6 +2096,10 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   // guarantees the preconditions (single GPU, no categorical splits; bagging
   // shares the same index array), so this only falls back when disabled by env.
   const bool use_batched_level_apply = use_hybrid_batch_apply_;
+  // vector mode reaches the prefix only through the batched phases
+  // (HybridGrowthUsable): the per-pair search fallback and the per-split apply
+  // fallback below are scalar-only
+  CHECK(vec_num_targets_ <= 1 || (use_batched_level_kernels && use_batched_level_apply));
   // single-sync (speculative) level pipeline: requires both batched phases and
   // non-quantized training (the quantized HOST path selects histogram kernels
   // host-side from per-leaf bit widths, which needs the classic readback
@@ -2023,12 +2141,17 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   pairs.push_back({smaller_leaf_index_, larger_leaf_index_, /*parent=*/-1,
                    cuda_smaller_leaf_splits_->GetCUDAStruct(),
                    cuda_larger_leaf_splits_->GetCUDAStruct()});
+  // vector mode: the ROOT level's planes are the fixed slab BeforeTrain filled
+  // (pair 0's smaller role at [0, T), larger at [T, 2T)); every later level
+  // reads the per-slot slab the plane fan-out writes
+  CUDALeafSplitsStruct* vec_plane_slab =
+    vec_num_targets_ > 1 ? vec_plane_structs_.RawData() : nullptr;
   int num_splits = 0;
   while (true) {
     // enqueue histogram + best-split search for every pair of this level; device
     // work only, ordered per pair by the histogram-completion events
     if (use_batched_level_kernels) {
-      EnqueueLevelBestSplitSearch(tree, pairs);
+      EnqueueLevelBestSplitSearch(tree, pairs, vec_plane_slab);
     } else {
       int pair_counter = 0;
       for (const HybridPendingPair& pair : pairs) {
@@ -2041,7 +2164,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
     }
     // one device synchronization + one transfer for the whole level
     cuda_best_split_finder_->SyncAllLeafBestSplitsToHost(tree->num_leaves(), &host_leaf_best_splits_);
-    if (fp_merge_state_ != nullptr) {
+      if (fp_merge_state_ != nullptr) {
       FeatureParallelMergeLevel(tree->num_leaves());
     }
     std::vector<int> splittable;
@@ -2073,9 +2196,16 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
         slot_id += 2;
       }
     }
-    std::vector<int> batch_info;
+      std::vector<int> batch_info;
     cuda_data_partition_->FinishSplitBatch(static_cast<int>(applied.size()), &batch_info);
     FinishLevelBookkeeping(applied, batch_info, &pairs, &num_splits);
+      if (vec_num_targets_ > 1) {
+      // the partition seeded the primary child structs (target-0 sums, plane-0
+      // histogram pointers); fan them out into this level's plane structs with
+      // per-target sums/values from each parent split's vector payload
+      VectorLevelPlaneFanOut(applied);
+      vec_plane_slab = vec_level_plane_slots_.RawData();
+        }
     if (final_partial_level) {
       // the tree is full and every child sits at max_depth: nothing is left
       // for the leaf-wise tail to search or split
@@ -2235,6 +2365,12 @@ bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
   // SplitCategorical) through the level apply -- impossible inside a captured
   // graph body; categorical datasets keep the host-driven prefix loop
   if (has_categorical_feature_) {
+    return false;
+  }
+  // vector-leaf training: the captured level body has one construct/find node
+  // per level, while the vector flow issues one construct per gradient PLANE
+  // and a plane fan-out per level, none of which the device controller models
+  if (vec_num_targets_ > 1) {
     return false;
   }
   // quant graph support is bit-exact but a net loss on large/cheap-level

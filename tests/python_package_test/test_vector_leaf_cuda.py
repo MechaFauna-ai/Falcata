@@ -332,3 +332,52 @@ def test_vector_leaf_cuda_bagging_duplicated_target_matches_scalar():
     vector_prediction = vector.predict(X)
     for target in range(2):
         np.testing.assert_allclose(vector_prediction[:, target], scalar_prediction, rtol=1e-9, atol=1e-9)
+
+
+# depth-limited config (2^max_depth <= num_leaves + 1): the regime in which
+# plain level batching is exactly leaf-wise-equivalent, and therefore the regime
+# vector-leaf training takes the hybrid level-batched prefix in
+_HYBRID_PARAMS = {"num_leaves": 15, "max_depth": 4}
+
+
+def _assert_same_leaf_partition(hybrid_leaves, classic_leaves):
+    # Level-batched growth applies a whole level at once, so right children take
+    # leaf indices in level order where the per-split loop numbers them in
+    # best-gain order: the two labelings of the SAME partition differ. Assert the
+    # partitions match by requiring the (hybrid leaf, classic leaf) pairs to form
+    # a bijection within every tree.
+    assert hybrid_leaves.shape == classic_leaves.shape
+    for tree_index in range(hybrid_leaves.shape[1]):
+        left = hybrid_leaves[:, tree_index]
+        right = classic_leaves[:, tree_index]
+        pairs = np.unique(np.stack([left, right], axis=1), axis=0)
+        assert len(pairs) == len(np.unique(left)) == len(np.unique(right))
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("num_targets", [2, 4])
+def test_vector_leaf_cuda_hybrid_level_matches_classic(num_targets):
+    # the hybrid level-batched path is an execution-strategy change: a level's
+    # splits are searched in batched launches instead of one at a time, and the
+    # tree it grows is the one the classic per-split loop grows
+    rng = np.random.default_rng(20260901)
+    X = rng.normal(size=(N_ROWS, N_FEATURES))
+    columns = []
+    for target in range(num_targets):
+        columns.append(
+            (2.0 + target) * X[:, target % N_FEATURES]
+            - 1.5 * X[:, (target + 3) % N_FEATURES]
+            + np.where(X[:, (target + 5) % N_FEATURES] > 0.25, 1.0, -1.0)
+            + 0.05 * rng.normal(size=N_ROWS)
+        )
+    labels = np.column_stack(columns)
+
+    hybrid = _train_vector(X, labels, extra_params=dict(_HYBRID_PARAMS, cuda_plan="auto"))
+    classic = _train_vector(X, labels, extra_params=dict(_HYBRID_PARAMS, cuda_plan="auto,hybrid:off"))
+
+    _assert_same_leaf_partition(hybrid.predict(X, pred_leaf=True), classic.predict(X, pred_leaf=True))
+    np.testing.assert_allclose(hybrid.predict(X), classic.predict(X), rtol=1e-9, atol=1e-9)
+
+    hybrid_trees = hybrid.dump_model()["tree_info"]
+    classic_trees = classic.dump_model()["tree_info"]
+    assert [t["num_leaves"] for t in hybrid_trees] == [t["num_leaves"] for t in classic_trees]

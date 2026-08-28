@@ -3507,13 +3507,14 @@ __device__ void FindBestSplitsForLeafKernelVectorCategoricalInner(
   }
 }
 
-__global__ void FindBestSplitsForLeafKernelVector(
-  const int8_t* is_feature_used_bytree,
-  const int num_tasks,
-  const SplitFindTask* tasks,
+// One (leaf, feature task) vector-leaf best-split search over T histogram
+// planes. Shared by the per-pair kernel and the batched per-level kernel: both
+// resolve their own leaf planes / output slot and then run this body, so the
+// two flows produce identical split decisions.
+__device__ void FindBestSplitsVectorInner(
   const CUDALeafSplitsStruct* leaf_splits_planes,
   const int num_targets,
-  const bool is_larger,
+  const SplitFindTask* task,
   const data_size_t min_data_in_leaf,
   const double min_sum_hessian_in_leaf,
   const double min_gain_to_split,
@@ -3522,18 +3523,8 @@ __global__ void FindBestSplitsForLeafKernelVector(
   const double cat_l2,
   const int max_cat_threshold,
   const int min_data_per_group,
-  CUDASplitInfo* cuda_best_split_info,
-  const data_size_t global_num_data_in_leaf) {
-  const unsigned int task_index = blockIdx.x;
-  const SplitFindTask* task = tasks + task_index;
-  const unsigned int output_offset = is_larger ? (task_index + num_tasks) : task_index;
-  CUDASplitInfo* out = cuda_best_split_info + output_offset;
-  if (!is_feature_used_bytree[task->inner_feature_index]) {
-    if (threadIdx.x == 0) {
-      out->is_valid = false;
-    }
-    return;
-  }
+  const data_size_t num_data_in_leaf,
+  CUDASplitInfo* out) {
   // dynamic shared prefix rows: row 0 = hessian stream, rows 1..T = per-target
   // gradient streams; blockDim.x lanes each
   extern __shared__ double vec_prefix_rows[];
@@ -3543,7 +3534,7 @@ __global__ void FindBestSplitsForLeafKernelVector(
   __shared__ uint32_t best_thread_index;
 
   const double sum_hessians = leaf_splits_planes[0].sum_of_hessians + 2 * kEpsilon;
-  const data_size_t num_data = global_num_data_in_leaf;
+  const data_size_t num_data = num_data_in_leaf;
   const double cnt_factor = static_cast<double>(num_data) / sum_hessians;
   // parent gain recomputed from the plane sums at find time, exactly like the
   // scalar kernel (same formula from the same sums, same bits)
@@ -3811,6 +3802,128 @@ __global__ void FindBestSplitsForLeafKernelVector(
       }
     }
   }
+}
+
+__global__ void FindBestSplitsForLeafKernelVector(
+  const int8_t* is_feature_used_bytree,
+  const int num_tasks,
+  const SplitFindTask* tasks,
+  const CUDALeafSplitsStruct* leaf_splits_planes,
+  const int num_targets,
+  const bool is_larger,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf,
+  const double min_gain_to_split,
+  const double lambda_l2,
+  const double cat_smooth,
+  const double cat_l2,
+  const int max_cat_threshold,
+  const int min_data_per_group,
+  CUDASplitInfo* cuda_best_split_info,
+  const data_size_t global_num_data_in_leaf) {
+  const unsigned int task_index = blockIdx.x;
+  const SplitFindTask* task = tasks + task_index;
+  const unsigned int output_offset = is_larger ? (task_index + num_tasks) : task_index;
+  CUDASplitInfo* out = cuda_best_split_info + output_offset;
+  if (!is_feature_used_bytree[task->inner_feature_index]) {
+    if (threadIdx.x == 0) {
+      out->is_valid = false;
+    }
+    return;
+  }
+  FindBestSplitsVectorInner(leaf_splits_planes, num_targets, task,
+    min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split, lambda_l2,
+    cat_smooth, cat_l2, max_cat_threshold, min_data_per_group,
+    global_num_data_in_leaf, out);
+}
+
+// Batched per-level vector-leaf find: blockIdx.x = task, blockIdx.y = pair,
+// blockIdx.z = 0 (smaller leaf) / 1 (larger leaf), mirroring the scalar level
+// kernel's grid and output layout. Each (pair, role) reads its own T
+// contiguous leaf-splits planes from the level plane slab
+// (slab[(2 * pair + role) * T + t] carries target t's gradient sums and
+// histogram plane) and writes its own region of the task output buffer.
+__global__ void FindBestSplitsForLevelKernelVector(
+  const int8_t* is_feature_used_bytree,
+  const int num_tasks,
+  const SplitFindTask* tasks,
+  const int* used_task_indices,
+  const CUDAHybridPairDescriptor* pair_descs,
+  const CUDALeafSplitsStruct* plane_slab,
+  const int num_targets,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf,
+  const double min_gain_to_split,
+  const double lambda_l2,
+  const double cat_smooth,
+  const double cat_l2,
+  const int max_cat_threshold,
+  const int min_data_per_group,
+  CUDASplitInfo* cuda_best_split_info) {
+  const unsigned int pair_index = blockIdx.y;
+  const bool is_larger = (blockIdx.z == 1);
+  const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
+  if (is_larger ? !desc->larger_valid : !desc->smaller_valid) {
+    return;
+  }
+  const CUDALeafSplitsStruct* leaf_splits_planes = plane_slab +
+    (static_cast<size_t>(2 * pair_index) + (is_larger ? 1 : 0)) * static_cast<size_t>(num_targets);
+  // plane 0 mirrors the primary leaf-splits struct of this role (leaf index,
+  // row count and the shared hessian sum), so the gates read it
+  const data_size_t num_data = leaf_splits_planes[0].num_data_in_leaf;
+  if (leaf_splits_planes[0].leaf_index < 0 || num_data <= min_data_in_leaf ||
+      leaf_splits_planes[0].sum_of_hessians <= min_sum_hessian_in_leaf) {
+    return;
+  }
+  // feature-sampled trees launch one block per USED task only; the output slot
+  // keeps the ORIGINAL task index (unused slots are masked out by the sync)
+  const unsigned int task_index = used_task_indices == nullptr ?
+    blockIdx.x : static_cast<unsigned int>(used_task_indices[blockIdx.x]);
+  const SplitFindTask* task = tasks + task_index;
+  CUDASplitInfo* out = cuda_best_split_info +
+    pair_index * (2 * static_cast<unsigned int>(num_tasks)) +
+    (is_larger ? task_index + num_tasks : task_index);
+  if (!is_feature_used_bytree[task->inner_feature_index]) {
+    if (threadIdx.x == 0) {
+      out->is_valid = false;
+    }
+    return;
+  }
+  FindBestSplitsVectorInner(leaf_splits_planes, num_targets, task,
+    min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split, lambda_l2,
+    cat_smooth, cat_l2, max_cat_threshold, min_data_per_group,
+    num_data, out);
+}
+
+void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernelVector(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const int num_pairs,
+  const CUDALeafSplitsStruct* plane_slab) {
+  const bool compact_tasks = num_used_tasks_ > 0 && num_used_tasks_ < num_tasks_;
+  if (num_used_tasks_ == 0) {
+    return;  // no usable feature this tree; the sync masks every lane not-found
+  }
+  const dim3 grid_dim(compact_tasks ? num_used_tasks_ : num_tasks_, num_pairs, 2);
+  const size_t shared_bytes = static_cast<size_t>(vec_num_targets_ + 1) *
+    NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER * sizeof(double);
+  FindBestSplitsForLevelKernelVector
+    <<<grid_dim, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, shared_bytes, cuda_streams_[0]>>>(
+      cuda_is_feature_used_bytree_.RawData(),
+      num_tasks_,
+      cuda_split_find_tasks_.RawData(),
+      compact_tasks ? cuda_used_task_indices_.RawDataReadOnly() : nullptr,
+      pair_descs,
+      plane_slab,
+      vec_num_targets_,
+      min_data_in_leaf_,
+      min_sum_hessian_in_leaf_,
+      min_gain_to_split_,
+      lambda_l2_,
+      cat_smooth_,
+      cat_l2_,
+      max_cat_threshold_,
+      min_data_per_group_,
+      cuda_best_split_info_.RawData());
 }
 
 void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelVector(
