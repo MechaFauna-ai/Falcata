@@ -137,6 +137,8 @@ void LaunchInterleaveGradHessKernel(
 void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score_t* hessians) {
   cuda_gradients_ = gradients;
   cuda_hessians_ = hessians;
+  // every tree starts on plane 0, whose hessians are the ones every consumer reads
+  grad_only_plane_ = false;
   if (l2_carveout_bytes_ > 0 && gradients != nullptr) {
     // Pin the per-row gradient buffer (quant: packed int32 grad/hess pairs read
     // once per level per row through data_indices gather) as L2-persisting on
@@ -184,12 +186,14 @@ void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score
     static_cast<size_t>(num_hist_planes_) * sizeof(hist_t)));
 }
 
-void CUDAHistogramConstructor::SelectGradientPlane(const score_t* gradients, const score_t* hessians) {
+void CUDAHistogramConstructor::SelectGradientPlane(const score_t* gradients, const score_t* hessians,
+                                                   const bool grad_only) {
   // vector-leaf plane switch: pointer swap only. The interleaved float2 copy is
   // disabled in plane mode (BeforeTrain) and the per-tree histogram zeroing
   // already covered every plane, so neither is redone here.
   cuda_gradients_ = gradients;
   cuda_hessians_ = hessians;
+  grad_only_plane_ = grad_only;
 }
 
 void CUDAHistogramConstructor::ZeroHistForLeaf(int /*leaf_index*/) {

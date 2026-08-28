@@ -1241,9 +1241,12 @@ void CUDASingleGPUTreeLearner::EnqueuePairBestSplitSearchVector(const CUDATree* 
     larger_leaf_index < 0 ? 0 : leaf_sum_hessians_[larger_leaf_index];
   global_timer.Start("CUDASingleGPUTreeLearner::ConstructHistogramForLeaf");
   for (int t = 0; t < num_targets; ++t) {
+    // planes 1..T-1 accumulate gradients only: the hessian is target-independent
+    // and the finder reads it from plane 0, so their hessian cells stay zero
     cuda_histogram_constructor_->SelectGradientPlane(
       gradients_ + static_cast<size_t>(t) * num_data_,
-      hessians_ + static_cast<size_t>(t) * num_data_);
+      hessians_ + static_cast<size_t>(t) * num_data_,
+      /*grad_only=*/t > 0);
     cuda_histogram_constructor_->ConstructHistogramForLeaf(
       planes + t,
       planes + num_targets + t,

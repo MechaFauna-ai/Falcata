@@ -1177,7 +1177,12 @@ __global__ void CUDAConstructHistogramSparseGMDeterministicKernel(
 // partition base from packed_partition_byte_offsets, nullptr and unused in
 // the 8-bit variant); the bin -> slot arithmetic is unchanged because a
 // nibble value still indexes its own column's bin range.
-template <typename BIN_TYPE, bool IS_4BIT>
+// GRAD_ONLY: vector-leaf gradient plane t >= 1. The hessian is shared across
+// targets and every consumer reads it from plane 0, so plane t's hessian cells
+// carry no information; skipping their read-modify-write halves the inner
+// loop's slot traffic. The zeroed slots still merge into the plane, so the
+// cells are defined (zero), just meaningless.
+template <typename BIN_TYPE, bool IS_4BIT, bool GRAD_ONLY = false>
 __device__ __forceinline__ void ConstructHistogramDenseGMDeterministicInner(
   const CUDALeafSplitsStruct* smaller_leaf_splits,
   const score_t* cuda_gradients,
@@ -1235,7 +1240,7 @@ __device__ __forceinline__ void ConstructHistogramDenseGMDeterministicInner(
   for (data_size_t inner = static_cast<data_size_t>(threadIdx.y); inner < block_num_data; inner += dy) {
     const data_size_t data_index = data_indices_ref_this_block[inner];
     const score_t grad = cuda_gradients[data_index];
-    const score_t hess = cuda_hessians[data_index];
+    const score_t hess = GRAD_ONLY ? 0.0f : cuda_hessians[data_index];
     const BIN_TYPE* row = data_ptr + static_cast<size_t>(data_index) * row_stride;
     for (int c = static_cast<int>(threadIdx.x); c < num_columns_in_partition; c += static_cast<int>(blockDim.x)) {
       const int column_index = c + partition_column_start;
@@ -1245,12 +1250,14 @@ __device__ __forceinline__ void ConstructHistogramDenseGMDeterministicInner(
       const uint32_t bin = ReadDenseBin<IS_4BIT>(row, static_cast<unsigned int>(c));
       const uint32_t pos = ((partition_hist_start + column_hist_offsets[column_index]) << 1) + (bin << 1);
       my_slot_row[pos] += static_cast<double>(grad);
-      my_slot_row[pos + 1] += static_cast<double>(hess);
+      if (!GRAD_ONLY) {
+        my_slot_row[pos + 1] += static_cast<double>(hess);
+      }
     }
   }
 }
 
-template <typename BIN_TYPE, bool IS_4BIT = false>
+template <typename BIN_TYPE, bool IS_4BIT = false, bool GRAD_ONLY = false>
 __global__ void CUDAConstructHistogramDenseGMDeterministicKernel(
   const CUDALeafSplitsStruct* smaller_leaf_splits,
   const score_t* cuda_gradients,
@@ -1265,7 +1272,7 @@ __global__ void CUDAConstructHistogramDenseGMDeterministicKernel(
   const uint32_t slot_stride,
   hist_t* slots,
   const int dy) {
-  ConstructHistogramDenseGMDeterministicInner<BIN_TYPE, IS_4BIT>(
+  ConstructHistogramDenseGMDeterministicInner<BIN_TYPE, IS_4BIT, GRAD_ONLY>(
     smaller_leaf_splits, cuda_gradients, cuda_hessians, data,
     column_hist_offsets, column_hist_offsets_full,
     feature_partition_column_index_offsets, packed_partition_byte_offsets,
@@ -3268,9 +3275,13 @@ void CUDAHistogramConstructor::LaunchConstructHistogramDenseDeterministic(
     static_cast<size_t>(active_pipeline_) * det_dense_tile_cap_ * det_dense_dy_ * det_dense_slot_stride_;
   const bool det_packed_4bit = source != nullptr ?
     source->is_4bit : cuda_row_data_->is_4bit_packed();
-  auto det_kernel = det_packed_4bit ?
-    &CUDAConstructHistogramDenseGMDeterministicKernel<BIN_TYPE, true> :
-    &CUDAConstructHistogramDenseGMDeterministicKernel<BIN_TYPE, false>;
+  auto det_kernel = grad_only_plane_ ?
+    (det_packed_4bit ?
+      &CUDAConstructHistogramDenseGMDeterministicKernel<BIN_TYPE, true, true> :
+      &CUDAConstructHistogramDenseGMDeterministicKernel<BIN_TYPE, false, true>) :
+    (det_packed_4bit ?
+      &CUDAConstructHistogramDenseGMDeterministicKernel<BIN_TYPE, true, false> :
+      &CUDAConstructHistogramDenseGMDeterministicKernel<BIN_TYPE, false, false>);
   det_kernel<<<det_grid, det_block, 0, current_stream()>>>(
       cuda_smaller_leaf_splits,
       cuda_gradients_, cuda_hessians_,

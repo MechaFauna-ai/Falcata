@@ -494,8 +494,13 @@ class CUDAHistogramConstructor {
 
   /*! \brief vector-leaf mode: point the construct kernels at one target's
    *  gradient/hessian slices (pointer swap only; BeforeTrain remains the
-   *  per-tree entry point and receives plane 0) */
-  void SelectGradientPlane(const score_t* gradients, const score_t* hessians);
+   *  per-tree entry point and receives plane 0).
+   *  `grad_only` marks a plane whose hessian cells nobody reads (the hessian is
+   *  target-independent and every consumer takes it from plane 0), letting the
+   *  deterministic dense construct skip half its slot traffic. Plane 0 must
+   *  always be selected with grad_only=false. */
+  void SelectGradientPlane(const score_t* gradients, const score_t* hessians,
+                           const bool grad_only = false);
 
   /*! \brief number of leaf histogram slots the finished tree dirtied (== its
    *  final leaf count; leaf k's histogram is slot k). BeforeTrain only zeroes
@@ -765,6 +770,10 @@ class CUDAHistogramConstructor {
    *  the leaf-splits struct's hist_in_leaf), only the pool sizing and the
    *  per-slot zeroing scale by this. */
   int num_hist_planes_ = 1;
+  /*! \brief vector-leaf mode: the selected gradient plane carries no readable
+   *  hessian (see SelectGradientPlane). Always false in scalar training, so the
+   *  scalar construct instantiations are untouched. */
+  bool grad_only_plane_ = false;
   /*! \brief number of bins per feature */
   std::vector<uint32_t> feature_num_bins_;
   /*! \brief offsets in histogram of all features */

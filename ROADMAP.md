@@ -23,14 +23,29 @@ Roughly priority-ordered within groups. Measurements refer to an RTX 5090.
   plane-per-target histograms, summed-gain finder, vector apply/serialize/
   predict) are LANDED. Open items:
   - Hybrid/one-sync/graph prefix support for vector mode (currently classic
-    per-split loop only; the speed thesis lives in the batched flows).
-    First classic-loop datapoint (2026-08-28, synthetic 200k rows x 200
-    features, 5 correlated targets, 63 leaves, 200 rounds): 1.9x wall-clock
-    vs 5 independent scalar CUDA trainings (13.1s vs 24.7s), i.e. a T=5
-    vector tree costs ~2.6x a scalar tree; per-target RMSE is worse
+    per-split loop only). Profiled (nsys, RTX 5090) in
+    [docs/design/vector-leaf-plan.md](docs/design/vector-leaf-plan.md) §8:
+    the T sequential histogram constructs are 85% of a vector tree's GPU time
+    at 700k rows and cost exactly T x the scalar construct, while the host
+    sync COUNT already matches the classic scalar loop and extra launch time
+    is ~2% — so a batched prefix buys the scalar hybrid win, not the
+    multi-target factor. That win is `feature_fraction`-dependent (scalar
+    classic/hybrid on numerai 700k x 3555, T=4, 250 leaves, depth 12: 0.90 at
+    ff=1.0, 2.00 at ff=0.3, 2.08 at ff=0.1), which is why the production A/B
+    at production ff looked far worse than the ff=1.0 comparison.
+    Vector ms/tree vs T independent scalar trainings, after the gradient-only
+    plane fix: numerai 700k T=4 0.54x (a 1.9x win) at ff=1.0 and 0.95x at
+    ff=0.3; synthetic 200k x 200 features T=5 0.5x. Per-target RMSE is worse
     (0.90-0.99 vs 0.73-0.82) because one shared tree per iteration carries
-    1/5 the total leaf budget. Open: equal-tree-budget comparison, hybrid
+    1/T the total leaf budget. Open: equal-tree-budget comparison, hybrid
     speed, per-era numerai validation.
+  - Gradient-only histogram planes LANDED: planes 1..T-1 skip the redundant
+    hessian accumulate (every consumer reads hessians from plane 0), cutting
+    construct work from 2T to T+1 slot updates per (row, column). Measured
+    1.53x per vector tree on real numerai 700k x 3555 (T=4, 250 leaves,
+    depth 12: 739 -> 483 ms/tree), 1.43x on the numerai-shaped synthetic at
+    700k, 1.03-1.09x on wide continuous features (200 x 255 bins), where the
+    two accumulates share a cache sector.
   - Lift v1 fences on demand: GOSS/query/balanced bagging (plain per-row
     bagging landed) and categorical features (landed; cat_random_search still
     fenced), L1/path-smooth/max_delta_step/extra-trees/monotone/CEGB, fp32

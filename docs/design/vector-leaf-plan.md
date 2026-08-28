@@ -44,6 +44,23 @@ models are judged against.
   total category order that is optimal for every target at once). For
   duplicated targets the key is a positive multiple of the scalar key, so the
   sorted order — and the greedy structure — matches scalar training exactly.
+- **Gradient-only planes.** The hessian is target-independent and every
+  consumer reads it from plane 0 (the finder's `local_hess`, the categorical
+  inner's `plane_hist[0]`, the `sum_hessians` gate). Planes 1..T-1 therefore
+  construct GRADIENTS ONLY: `SelectGradientPlane(..., grad_only=true)`
+  instantiates the deterministic dense construct with `GRAD_ONLY`, which drops
+  the hessian read-modify-write from the inner slot loop. Their hessian cells
+  stay zero (the slots are zeroed and merged as before) and carry no
+  information — reading them is a bug. Accumulate work per (row, column) falls
+  from 2T to T+1. The win depends on whether the slot rows are cache-resident:
+  measured per-construct-launch cost of the grad-only kernel against the full
+  one at 700k rows, 0.525× on 2400 five-valued features (`num_total_bin` ~
+  12k, 192 KB slot rows) but 0.99× on 200 255-bin continuous features
+  (`num_total_bin` 51k, 816 KB slot rows), where the gradient and hessian
+  cells are adjacent doubles in the same sector so the second update is free.
+  End to end per vector tree: 1.53× on real numerai 700k × 3555 (T=4, 250
+  leaves, depth 12), 1.43× on the numerai-shaped synthetic, 1.03× on the wide
+  continuous shape.
 - **Verified by invariants, not md5** (non-quant CUDA is atomic-order
   nondeterministic): duplicated targets reproduce the scalar model's structure
   and outputs, negated targets predict antisymmetrically, per-target loss
@@ -161,3 +178,95 @@ Memory: hist pool grows ×T for the planes. At numerai scale (10240 bins ×
 - Per-target learning-rate / target weights (numerai wants target weighting);
   cheap to add at the leaf-output step (`target_weights` param, applied as
   gain weights + output scaling).
+
+## 8. What the classic-loop profile says V3 must do
+
+Nsight Systems GPU-kernel breakdown of the classic vector loop against the
+classic scalar loop on the same data (RTX 5090, non-quant fp64, per-kernel
+totals over the whole training region). Two shapes, two row scales:
+
+**Shape A** — synthetic 200 continuous features, T=5, `num_leaves=63`, no depth
+cap, 10 rounds (620 splits). Vector / scalar-classic GPU ms:
+
+| phase | 150k | ratio | 700k | ratio |
+| --- | --- | --- | --- | --- |
+| construct | 439.4 / 83.9 | 5.24 | 1824.3 / 335.6 | 5.44 |
+| det merge | 82.4 / 15.8 | 5.22 | 115.4 / 22.8 | 5.07 |
+| fix histogram | 50.1 / 10.0 | 4.99 | 50.6 / 10.2 | 4.99 |
+| subtract | 6.3 / 1.3 | 4.91 | 7.1 / 1.5 | 4.92 |
+| find split | 122.2 / 44.9 | 2.72 | 128.6 / 45.5 | 2.83 |
+| apply + partition + tree | 26 / 26 | 1.00 | 29 / 29 | 1.00 |
+| **total** | **726.3 / 177.1** | **4.10** | **2155.5 / 439.3** | **4.91** |
+
+**Shape C** — numerai-shaped synthetic 2400 five-valued features, T=4,
+`num_leaves=250`, `max_depth=12`, 8 rounds (1992 splits):
+
+| phase | 150k | ratio | 700k | ratio |
+| --- | --- | --- | --- | --- |
+| construct | 1125.7 / 278.9 | 4.04 | 4461.3 / 1155.8 | 3.86 |
+| det merge | 49.2 / 12.2 | 4.04 | 125.0 / 31.0 | 4.03 |
+| subtract | 12.9 / 2.8 | 4.57 | 13.4 / 3.3 | 4.06 |
+| find split | 480.3 / 268.4 | 1.79 | 482.3 / 271.6 | 1.78 |
+| apply + partition + tree | 25 / 25 | 1.00 | 27 / 27 | 1.00 |
+| **total** | **1770.7 / 645.9** | **2.74** | **5208.3 / 1578.9** | **3.30** |
+
+Three facts fall out, and they set V3's scope.
+
+1. **Construct is the whole story, and it is exactly T×.** Its share of vector
+   GPU time is 60.5% → 84.6% (shape A) and 63.6% → 85.7% (shape C) from 150k to
+   700k rows. Per-launch cost is within ±8% of the scalar construct's on the
+   same leaf (shape C 700k: 560 µs vector vs 580 µs scalar), so a vector
+   construct is a scalar construct — there are just T of them. Construct is the
+   ONLY row-proportional phase: the finder costs 121 µs per launch at both 150k
+   and 700k, and apply/partition are literally shared. That is the entire
+   row-scaling law: `ratio = (T·C(N) + F) / (C(N) + F)` with `F` row-independent,
+   so the vector/scalar-classic ratio climbs toward T as N grows.
+2. **Launch and sync overhead is NOT the mechanism.** The vector loop issues
+   the SAME NUMBER of host syncs as the classic scalar loop (3769 shape A,
+   12003 shape C `cudaDeviceSynchronize` calls in both), and its extra
+   `cudaLaunchKernel` host time is 41.6 ms of 2193 ms (1.9%) at shape A 700k
+   and 104.8 ms of 5316 ms (2.0%) at shape C 700k — never the critical path
+   (the GPU is busy the whole time). **A batched/one-sync/graph vector prefix
+   that still issues T sequential per-plane constructs cannot move the T×
+   term.** Batch the launches only for the reasons the scalar path batches
+   them, not expecting the multi-target cost back.
+3. **Memory bandwidth from the T gradient planes is second order.** At shape A
+   700k the construct moves 140 MB of bin matrix in 541 µs = 259 GB/s, ~14% of
+   the card's peak, while its slot read-modify-write traffic is 4.5 GB — 32×
+   larger. The construct is accumulate-bound, not read-bound, so a fused
+   plane-aware kernel that reads the bin row once and scatters into T planes
+   buys only the bin re-reads (a few percent), NOT a factor of T. The
+   accumulate-bound diagnosis is what made gradient-only planes (§0) worth
+   1.35–1.53× on the numerai-shaped runs; the residual accumulate work is
+   T+1 slot updates per (row, column) and there is no known way below it while
+   each target keeps its own histogram plane. (Both tables above predate
+   gradient-only planes, so their construct rows read T×; post-fix the shape C
+   700k construct is 2846 ms — 3.86× → 2.46× — and total vector GPU time is
+   3594 ms against the same 1579 ms scalar baseline.)
+
+So V3's job is the scalar hybrid prefix's own win, no more and no less, and
+that win is strongly `feature_fraction`-dependent. Measured scalar
+classic/hybrid ratio, real numerai 700k × 3555, T=4, 250 leaves, depth 12:
+0.90 at `feature_fraction=1.0` (hybrid LOSES on this shape), 2.00 at 0.3, 2.08
+at 0.1 — the compact-view repack pays off through the batched level kernels far
+better than through the per-split loop. That is why the production numerai A/B
+(run at production `feature_fraction`) reported vector as 3× slower than T
+independent scalar trainings while the same comparison at `feature_fraction=1.0`
+makes vector a 1.3–1.9× WIN: the missing prefix is a ~2× multiplier that only
+appears once features are subsampled.
+
+Concretely, the batched vector prefix needs:
+
+- a plane dimension on the batched construct/merge so a level's
+  `pairs × T` constructs are one launch pair (`grid.z`, or T entries per pair in
+  the descriptor), with the deterministic slot slab sized `pairs × T` — or the
+  plane loop kept inside the kernel to keep the slab at `pairs`;
+- `FindBestSplitsForLevelKernel` routed to the runtime-T vector finder
+  (`FindBestSplitsForLeafKernelVector` is already runtime-T; it needs the
+  per-pair descriptor plumbing, not new gain math);
+- one fix/subtract launch per level covering all planes;
+- gradient-only planes carried through: only plane 0 of each pair may
+  accumulate hessians (§0).
+
+Judge it against `cuda_plan=auto,hybrid:off` on the SAME shape at the SAME
+`feature_fraction`, not against a `feature_fraction=1.0` baseline.
