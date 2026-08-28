@@ -392,7 +392,7 @@ def test_vector_leaf_cuda_hybrid_level_matches_classic(num_targets):
 _SELECTIVE_PARAMS = {"num_leaves": 31, "max_depth": 10}
 
 
-def _assert_vector_selective_engaged():
+def _assert_vector_selective_engaged(extra_params=None):
     """A vacuous equivalence test is worse than none: the two arms below are the
     same code path unless vector mode really reaches selective growth, so probe
     for the growth phase's own stderr line in a subprocess (FALCATA_DEBUG is read
@@ -408,6 +408,7 @@ def _assert_vector_selective_engaged():
               "learning_rate": 0.1, "seed": 7, "verbosity": -1,
               "num_leaves": {_SELECTIVE_PARAMS["num_leaves"]},
               "max_depth": {_SELECTIVE_PARAMS["max_depth"]}}}
+        p.update({extra_params or {}!r})
         lgb.train(p, lgb.Dataset(X, label=labels), num_boost_round=5)
     """)
     env = dict(os.environ, FALCATA_DEBUG="debug")
@@ -671,6 +672,50 @@ def test_vector_leaf_cuda_quantized_bagging_does_not_collapse():
     assert np.all(bagged_mse < 1.5 * unbagged_mse + 1e-12), bagged_mse / unbagged_mse
     assert np.all(bagged_mse < 1.5 * bagged_fp64_mse + 1e-12), bagged_mse / bagged_fp64_mse
     assert np.all(bagged_mse < 0.15 * variance), bagged_mse / variance
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("quant_params", [_QUANT_PARAMS, _QUANT_PARAMS_32BIT])
+def test_vector_leaf_cuda_quantized_selective_matches_classic(quant_params):
+    # The budget-limited regime (num_leaves << 2^max_depth) routes vector mode
+    # to the SELECTIVE grow-then-prune prefix, and quantization is orthogonal to
+    # it: the prefix reuses the same batched level histograms and vector find as
+    # the exact-fit one, so a quantized selective tree is the quantized classic
+    # tree. Integer accumulation is order-invariant, so this is bit-identity, not
+    # a tolerance -- including the leaf values the selective prefix replays from
+    # its host payload snapshot.
+    _assert_vector_selective_engaged(quant_params)
+    X, labels = _multi_target_labels(3)
+    selective = _train_vector(X, labels, extra_params=dict(_SELECTIVE_PARAMS, **quant_params, cuda_plan="auto"))
+    classic = _train_vector(
+        X, labels, extra_params=dict(_SELECTIVE_PARAMS, **quant_params, cuda_plan="auto,hybrid:off")
+    )
+    _assert_same_leaf_partition(selective.predict(X, pred_leaf=True), classic.predict(X, pred_leaf=True))
+    np.testing.assert_allclose(selective.predict(X), classic.predict(X), rtol=1e-12, atol=1e-12)
+    assert [t["num_leaves"] for t in selective.dump_model()["tree_info"]] == [
+        t["num_leaves"] for t in classic.dump_model()["tree_info"]
+    ]
+
+
+@_REQUIRES_CUDA
+def test_vector_leaf_cuda_quantized_selective_duplicated_target_matches_scalar():
+    # Ground truth for quantized selective growth: the rebuilt (pruned) tree's
+    # per-target leaf outputs come from a host snapshot of each split's vector
+    # payload, whose gradient half the quantized plane fan-out re-packs against
+    # plane 0's shared integer hessians. Duplicating the target makes scalar
+    # quantized training the answer, exactly and to the bit.
+    X, y0, _ = _make_data()
+    labels = np.column_stack((y0, y0))
+    vector = _train_vector(X, labels, extra_params=dict(_SELECTIVE_PARAMS, **_QUANT_PARAMS, cuda_plan="auto"))
+    scalar = _train_scalar(X, y0, extra_params=dict(_SELECTIVE_PARAMS, **_QUANT_PARAMS, cuda_plan="auto"))
+
+    np.testing.assert_array_equal(
+        vector.predict(X, pred_leaf=True), scalar.predict(X, pred_leaf=True).reshape(N_ROWS, -1)
+    )
+    scalar_prediction = scalar.predict(X)
+    vector_prediction = vector.predict(X)
+    for target in range(2):
+        np.testing.assert_allclose(vector_prediction[:, target], scalar_prediction, rtol=1e-9, atol=1e-9)
 
 
 @_REQUIRES_CUDA

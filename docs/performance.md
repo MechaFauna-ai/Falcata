@@ -878,3 +878,12 @@ A separate property, not a performance one: quantized vector models are
 is order-invariant, so the batched level prefix and the per-split loop produce
 identical predictions to the last bit — where the fp64 vector paths agree only
 to ~1e-6 because their batched construct reduces with fp64 atomics.
+
+Quantization is orthogonal to the growth prefix. Both two-sync level flows —
+the exact-fit one and the selective grow-then-prune one — reach the planes
+through the same `EnqueueLevelHistogramsAndFindVector`, so a quantized
+budget-limited config runs quantized selective growth by default, and the model
+it produces is the quantized classic loop's to the bit
+(`test_vector_leaf_cuda_quantized_selective_matches_classic`, with scalar
+quantized training as ground truth in
+`test_vector_leaf_cuda_quantized_selective_duplicated_target_matches_scalar`).

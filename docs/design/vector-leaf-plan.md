@@ -206,6 +206,17 @@ reduces one exact gradient stream and overwrites a scalar leaf value).
 Under bagging the discretized find kernels add one hessian quantum of L2
 ridge, for the winner's-curse reason documented in the scalar quantized
 finder — vector mode sums T such gains, so the same noise enters T times over.
+One member, one setter (`SetQuantBaggingRidge`) and one call site serve the
+scalar and the vector discretized kernels alike.
+
+Both two-sync level prefixes carry quantization, because both reach the planes
+through the same `EnqueueLevelHistogramsAndFindVector` and the same
+`VectorLevelPlaneFanOut`: the exact-fit one in the depth-limited regime and
+selective grow-then-prune (§8b) in the budget-limited one, where the per-pair
+bit widths already account for selective growth's recycled right-child index.
+Selective growth's host-side rebuild is quant-agnostic — the payload fields it
+snapshots are the per-target sums and leaf VALUES, which the find kernel has
+already dequantized.
 
 **Not done, and why.** `grad_only` is passed for planes 1..T-1 in the quantized
 construct loop as it is in the fp64 one, but it is inert there: a quantized row
