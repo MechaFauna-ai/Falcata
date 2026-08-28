@@ -32,6 +32,13 @@ Roughly priority-ordered within groups. Measurements refer to an RTX 5090.
     `2^max_depth <= num_leaves + 1`. Selective needs per-target leaf values
     through RebuildFromHostSplits; one-sync needs the plane fan-out moved
     ahead of the speculative child gating.
+  - Shape targeting. Against T independent scalar trainings a vector tree is a
+    0.67-0.94x WIN on many low-cardinality features (2400 five-valued, T=5,
+    strongest under `feature_fraction` subsampling) and a 1.9-3.8x LOSS on few
+    wide continuous ones, where the construct dominates and is paid T times.
+    The T-times-construct term is closed, not open: a fused all-T-planes
+    construct was built and measured and LOSES 1.35-3.2x
+    (docs/perf-dead-ends.md).
   - Per-target RMSE is worse than round-robin (0.90-0.99 vs 0.73-0.82 on the
     synthetic T=5 shape) because one shared tree per iteration carries 1/T the
     total leaf budget. Open: equal-tree-budget comparison, per-era numerai

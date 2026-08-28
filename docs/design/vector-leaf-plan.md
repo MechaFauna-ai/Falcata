@@ -31,7 +31,9 @@ models are judged against.
   batched find was already cheaper (3.1 vs 4.7) and the batched apply plus the
   plane fan-out cost 0.6 together. So each pair's T planes construct through the
   per-pair path, back to back, and the level contributes ONE find + ONE sync +
-  ONE apply and no per-split device syncs.
+  ONE apply and no per-split device syncs. That per-pair plane loop selects
+  planes 1..T-1 gradient-only exactly as the classic loop does, so the two
+  optimizations compose (measured 1.19-1.78x together, docs/performance.md §11).
 - **Per-plane leaf-splits structs instead of widened structs.** §5's
   `CUDALeafSplitsStruct` stays untouched. The learner keeps a slab of 2·T
   structs (smaller/larger × plane): plane t carries target t's gradient sums
@@ -281,18 +283,86 @@ independent scalar trainings while the same comparison at `feature_fraction=1.0`
 makes vector a 1.3–1.9× WIN: the missing prefix is a ~2× multiplier that only
 appears once features are subsampled.
 
-Concretely, the batched vector prefix needs:
+The prefix landed on that basis (§0, `docs/performance.md` §11): it batches the
+SEARCH — one find, one sync, one apply per level — and leaves each pair's T
+planes to construct back to back through the per-pair path. Judge it against
+`cuda_plan=auto,hybrid:off` on the SAME shape at the SAME `feature_fraction`,
+not against a `feature_fraction=1.0` baseline.
 
-- a plane dimension on the batched construct/merge so a level's
-  `pairs × T` constructs are one launch pair (`grid.z`, or T entries per pair in
-  the descriptor), with the deterministic slot slab sized `pairs × T` — or the
-  plane loop kept inside the kernel to keep the slab at `pairs`;
-- `FindBestSplitsForLevelKernel` routed to the runtime-T vector finder
-  (`FindBestSplitsForLeafKernelVector` is already runtime-T; it needs the
-  per-pair descriptor plumbing, not new gain math);
-- one fix/subtract launch per level covering all planes;
-- gradient-only planes carried through: only plane 0 of each pair may
-  accumulate hessians (§0).
+### 8a. The fused all-T-planes construct is closed: it LOSES, 1.35–3.2×
 
-Judge it against `cuda_plan=auto,hybrid:off` on the SAME shape at the SAME
-`feature_fraction`, not against a `feature_fraction=1.0` baseline.
+The one lever the two independent V3 workstreams disagreed about was a construct
+that reads each bin row once and accumulates all T gradient planes from it.
+Settled by measurement, not by roofline argument.
+
+**A priori**, once planes 1..T-1 are gradient-only (§0) the T gradient
+accumulates are irreducible — there genuinely are T gradients to add per
+(row, column). All fusing can remove is the (T-1) redundant passes over the bin
+matrix and the (T-1) launches.
+
+**The measurement.** A standalone probe mirrors
+`ConstructHistogramDenseGMDeterministicInner` exactly (private per-thread slot
+rows, global slot positions, cooperative zero, `__ldcs` bin reads, nibble
+unpack) and runs at the geometry the learner actually launches, dumped from
+`LaunchConstructHistogramDenseDeterministic`:
+
+- wide continuous — 200 columns × 256 bins, 8-bit, 9 partitions,
+  `grid=(9,122) block=(24,1)`, slot_stride 102400 doubles (800 KB per row);
+- numerai-shaped — 2400 columns × 5 bins, 4-bit packed, 5 partitions,
+  `grid=(5,128) block=(504,2)`, slot_stride 24000 doubles (188 KB per row).
+
+Two fused arms: same `grid_y` as the sequential arm (same parallelism, T× the
+slot slab) and `grid_y / T` (same 96 KB × 1024 slot budget, T× fewer tiles).
+`seq / fused` — above 1.0 fusing would win:
+
+| shape | rows | T | fused, same parallelism | fused, same slot budget |
+| --- | --- | --- | --- | --- |
+| wide200 | 200k | 4 | 0.331 | 0.649 |
+| wide200 | 700k | 4 | 0.325 | 0.636 |
+| wide200 | 200k | 5 | 0.319 | 0.568 |
+| wide200 | 700k | 5 | 0.315 | 0.558 |
+| numlike | 200k | 4 | 0.735 | 0.732 |
+| numlike | 700k | 4 | 0.738 | 0.732 |
+| numlike | 200k | 5 | 0.730 | 0.737 |
+| numlike | 700k | 5 | 0.733 | 0.740 |
+
+Fusing is slower everywhere, by 1.35× on the numerai-shaped geometry and 1.8–3.2×
+on the wide one. Three readings settle it:
+
+1. **The bin re-reads are already free.** T sequential grad-only constructs cost
+   exactly T single-plane constructs: measured `seq / one-plane` is 4.00–4.21 at
+   T=4 and 4.98–5.25 at T=5. The marginal cost of adding a plane IS a whole
+   construct, so the read component of a construct is ≈ 0 and there is nothing
+   for fusing to recover.
+2. **Bin-matrix residency does not move the answer.** Sweeping the wide200
+   geometry from an L2-resident bin matrix to several times L2, at T=5, same
+   parallelism:
+
+   | bin matrix | 9.5 MB | 38 MB | 133 MB | 381 MB |
+   | --- | --- | --- | --- | --- |
+   | seq / fused | 0.333 | 0.320 | 0.315 | 0.326 |
+
+   A read-bound construct would show fusing gaining sharply as the matrix leaves
+   L2, and gaining nothing when it fits. The ratio is flat to ±3%. Reads are not
+   the constraint at any residency.
+3. **Fusing makes the binding resource worse.** The dominant traffic is the slot
+   read-modify-write, and a fused thread holds T private slot rows instead of
+   one — 5 × 800 KB against 800 KB on wide200. Holding the slot budget fixed by
+   cutting `grid_y` by T recovers about half the loss on wide200 (0.32 → 0.56)
+   at the price of T× less parallelism, and recovers nothing on the numerai
+   shape, where the slab was never the binding term.
+
+**Verdict.** The construct is accumulate-bound, exactly as §8.3's Nsight reading
+said, and the conclusion there was if anything too generous: a fused construct
+does not buy "a few percent", it costs 1.35–3.2×. The competing claim that "a
+construct accumulating all T planes in one pass is the remaining big lever" is
+refuted — it confused the level flow's batched-construct regression (which is
+about batching PAIRS, §0) with plane fusion. Not shipped. Re-open only if the
+histogram layout changes so that a leaf's T planes share one slot row (e.g. an
+interleaved `[bin][target]` cell layout that keeps one thread's working set at
+one row), because that, not the launch count, is the term the measurement
+indicts.
+
+The remaining vector-leaf levers are therefore the ones that do not touch the
+construct: selective and one-sync prefix support for vector mode, and the
+modeling-side question of the leaf budget (§0).

@@ -388,3 +388,29 @@ Re-open when: the out-of-bag pass actually shows up in a profile — which needs
 much deeper trees (the walk is O(depth) per row, and these were depth 10) or a
 shape where scoring dominates histogram construction. Even then, bound the level
 loop by the tree's real depth from `leaf_depth_`, not by `num_leaves - 1`.
+
+## Fused all-T-planes vector-leaf histogram construct (2026-08-28)
+
+One construct that reads each bin row once and accumulates all T gradient
+planes from it, replacing the T sequential per-plane constructs a vector-leaf
+tree issues per (leaf, level). Built as a probe that mirrors
+`ConstructHistogramDenseGMDeterministicInner` exactly and runs at the geometry
+the learner launches. It is **1.35x to 3.2x SLOWER** than the T sequential
+constructs at every shape, every T, and every bin-matrix residency, whether the
+fused arm keeps the same parallelism or the same slot-slab budget.
+
+Once planes 1..T-1 are gradient-only the T gradient accumulates are
+irreducible, so fusing can only remove the (T-1) redundant bin-matrix passes --
+and those are already free: T sequential grad-only constructs cost exactly T
+single-plane constructs (`seq / one-plane` 4.00-4.21 at T=4, 4.98-5.25 at T=5).
+Sweeping the bin matrix from L2-resident to several times L2 leaves `seq/fused`
+flat at 0.315-0.333, which a read-bound construct could not do. What fusing
+does change is the binding resource in the wrong direction: a fused thread
+holds T private slot rows instead of one.
+
+Numbers and the full sweep: `docs/design/vector-leaf-plan.md` section 8a.
+
+Re-open when: the histogram layout changes so a leaf's T planes share ONE slot
+row (an interleaved `[bin][target]` cell layout), which is the term the
+measurement indicts. Fusing purely to save launches is settled -- launch
+overhead is ~2% of a vector tree and was never the mechanism.

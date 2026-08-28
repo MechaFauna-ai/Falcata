@@ -717,20 +717,56 @@ more than the launches it saves. So each pair's T planes construct through the
 per-pair path back to back, and the level contributes one find, one sync, one
 apply and no per-split device syncs.
 
-Measured (synthetic, 200 features, 5 correlated targets, 63 leaves, max_depth 6,
-non-quantized fp64, RTX 5090):
+### What the level prefix and gradient-only planes are worth, together
 
-| rows | vector classic | vector level prefix | speedup | cost vs a scalar tree |
-|---|---|---|---|---|
-| 200k | 78.0 ms/tree | **53.7 ms/tree** | **1.45x** | 18.5x -> 12.7x |
-| 600k | 155.6 ms/tree | **125.3 ms/tree** | **1.24x** | 25.8x -> 20.8x |
+The prefix and gradient-only histogram planes (§0 of the plan doc) are
+independent — one batches the split search over a level's pairs, the other
+halves each construct's slot traffic — and they compose almost exactly
+multiplicatively. ms/tree, RTX 5090, `num_leaves=63`, `max_depth=6`,
+non-quantized fp64, 10 timed rounds after 3 warmup, against the pre-V3 base:
 
-The last column is against a single-target tree trained on the same shape and
-the same level prefix (4.22 / 6.03 ms/tree). It is the honest remaining gap: a
-T=5 tree still costs far more than 5 scalar trees and still degrades with rows,
-because the per-plane construct visits every row T times with no sharing. A
-construct that accumulates all T planes from one pass over the rows is the lever
-that would close it; the level prefix does not address it.
+| shape | rows | T | ff | base | +grad-only | +prefix | both | both/base |
+|---|---|---|---|---|---|---|---|---|
+| 200 cont. features | 200k | 5 | 1.0 | 78.0 | 80.7 | 58.3 | **57.9** | 1.35x |
+| 200 cont. features | 200k | 5 | 0.3 | 65.9 | 64.1 | 44.5 | **42.0** | 1.57x |
+| 200 cont. features | 700k | 5 | 1.0 | 200.0 | 205.3 | 163.3 | **168.0** | 1.19x |
+| 200 cont. features | 700k | 5 | 0.3 | 125.5 | 120.1 | 92.6 | **92.0** | 1.36x |
+| 2400 five-valued | 200k | 5 | 1.0 | 189.5 | 130.4 | 163.2 | **111.7** | 1.70x |
+| 2400 five-valued | 200k | 5 | 0.3 | 93.9 | 75.7 | 78.9 | **64.7** | 1.45x |
+| 2400 five-valued | 700k | 5 | 1.0 | 584.6 | 377.5 | 511.8 | **328.5** | 1.78x |
+| 2400 five-valued | 700k | 5 | 0.3 | 261.5 | 204.8 | 223.5 | **171.2** | 1.53x |
+
+T=4 tracks T=5 within a few percent (base/both 1.24–1.70x over the same cells).
+The two levers cover disjoint shapes: gradient-only planes are worth 1.23–1.55x
+on many low-cardinality features and nothing (0.97–1.04x) on wide continuous
+ones, where a bin's gradient and hessian cells share a cache sector and the
+second accumulate is free; the level prefix is worth 1.19–1.56x with the larger
+share on the wide shape, where the per-split device syncs are a bigger fraction
+of a cheap level.
+
+### Against T independent scalar trainings
+
+The decision-relevant ratio is one vector tree against T single-target trees on
+the same shape, all on the level prefix. `vector / (T x scalar)`, below 1.0 means
+vector wins:
+
+| shape | rows | T=5, ff=1.0 | T=5, ff=0.3 |
+|---|---|---|---|
+| 200 continuous features | 200k | 2.46 | 1.87 |
+| 200 continuous features | 700k | 3.82 | 2.49 |
+| 2400 five-valued features | 200k | 0.94 | **0.67** |
+| 2400 five-valued features | 700k | 1.34 | **0.83** |
+
+Vector-leaf pays off exactly where the split SEARCH is the expensive phase and
+the construct is not: many cheap low-cardinality features, and more so under
+feature subsampling, because the shared tree searches the sampled feature set
+once for all T targets. On few wide continuous features the construct dominates,
+it is paid T times, and T independent scalar trainings win by 1.9–3.8x. This is
+a shape decision, not a tuning one.
+
+The T-times-construct term itself is closed: a construct that accumulates all T
+planes from one pass over the rows was built and measured, and it LOSES 1.35–3.2x
+(plan doc §8a, `docs/perf-dead-ends.md`).
 
 The prefix produces the tree the classic loop produces: on T=2 and T=4 the two
 paths' predictions are bit-identical and their leaf labelings are a bijection of
