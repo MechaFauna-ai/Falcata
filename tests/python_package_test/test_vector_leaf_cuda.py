@@ -381,3 +381,31 @@ def test_vector_leaf_cuda_hybrid_level_matches_classic(num_targets):
     hybrid_trees = hybrid.dump_model()["tree_info"]
     classic_trees = classic.dump_model()["tree_info"]
     assert [t["num_leaves"] for t in hybrid_trees] == [t["num_leaves"] for t in classic_trees]
+
+
+@_REQUIRES_CUDA
+def test_vector_leaf_cuda_hybrid_duplicated_target_matches_scalar():
+    # Ground truth for the hybrid level prefix, not just self-consistency with
+    # the classic loop: both vector paths construct planes 1..T-1 gradient-only,
+    # so a hybrid-vs-classic comparison alone cannot catch a plane whose
+    # hessians are wrong. Duplicating the target makes the scalar model the
+    # answer -- doubling every candidate gain leaves the greedy structure
+    # unchanged -- and the scalar path never takes a gradient-only construct.
+    X, y0, _ = _make_data()
+    labels = np.column_stack((y0, y0))
+    vector = _train_vector(X, labels, extra_params=dict(_HYBRID_PARAMS, cuda_plan="auto"))
+    scalar = _train_scalar(X, y0, extra_params=dict(_HYBRID_PARAMS, cuda_plan="auto"))
+
+    _assert_same_leaf_partition(
+        vector.predict(X, pred_leaf=True), scalar.predict(X, pred_leaf=True).reshape(N_ROWS, -1)
+    )
+    # The structure assertion above is the exact one. Leaf VALUES are compared
+    # loosely because the reference is itself nondeterministic: the scalar
+    # hybrid path's batched level construct reduces with fp64 atomics, so two
+    # runs of the same scalar config differ by ~2e-8 absolute. The classic
+    # duplicated-target test above can assert 1e-9 only because both of its
+    # paths take the same deterministic per-leaf construct.
+    scalar_prediction = scalar.predict(X)
+    vector_prediction = vector.predict(X)
+    for target in range(2):
+        np.testing.assert_allclose(vector_prediction[:, target], scalar_prediction, rtol=1e-5, atol=1e-6)
