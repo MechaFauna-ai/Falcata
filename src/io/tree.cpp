@@ -735,13 +735,18 @@ Tree::Tree(const char* str, size_t* used_len) {
   const int max_num_line = 23;
   int read_line = 0;
   while (read_line < max_num_line) {
-    if (*p == '\r' || *p == '\n') break;
+    if (*p == '\r' || *p == '\n' || *p == '\0') break;
     auto start = p;
-    while (*p != '=') ++p;
+    // the scans stop at NUL so a tree block without the expected '=' or
+    // end-of-line stays inside the caller's NUL-terminated buffer
+    while (*p != '=' && *p != '\r' && *p != '\n' && *p != '\0') ++p;
+    if (*p != '=') {
+      Log::Fatal("Tree model string format error: expected key=value lines");
+    }
     std::string key(start, p - start);
     ++p;
     start = p;
-    while (*p != '\r' && *p != '\n') ++p;
+    while (*p != '\r' && *p != '\n' && *p != '\0') ++p;
     key_vals[key] = std::string(start, p - start);
     ++read_line;
     if (*p == '\r') ++p;

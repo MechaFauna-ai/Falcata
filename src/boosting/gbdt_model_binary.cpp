@@ -704,7 +704,12 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
                                           "section table entry");
     // validate the section's extent before anything reads through it
     r.Require(e.offset, e.stored_len, 1, "section payload");
-    sec[e.id] = e;
+    // the writer emits each section id once; a duplicate means a corrupted
+    // table where one section masquerades as another (e.g. binary array
+    // bytes served as the text metadata block)
+    if (!sec.emplace(e.id, e).second) {
+      Log::Fatal("FALB: corrupt model -- duplicate section id %u", e.id);
+    }
   }
 
   auto need = [&sec](uint32_t id) -> const SectionEntry& {

@@ -22,6 +22,10 @@ import falcata as flc
 
 BATCH = 40  # mutations per child process
 
+#: past fuzz findings, committed verbatim: every file here once crashed or
+#: hung the loader, and each run replays them first so a fixed bug stays fixed
+CRASH_DIR = Path(__file__).resolve().parent / "falb_fixtures" / "crashes"
+
 _WORKER = r"""
 import sys
 import falcata as flc
@@ -95,12 +99,37 @@ def mutate(rng, blob):
     return bytes(b)
 
 
+def replay_crash_corpus():
+    """Each committed finding must load or refuse cleanly, in bounded time."""
+    files = sorted(CRASH_DIR.glob("*.falb"))
+    for f in files:
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", _WORKER, str(f)],
+                capture_output=True,
+                timeout=20,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"FAIL: loader HUNG on committed crash fixture {f.name}")
+            return 1
+        if proc.returncode != 0:
+            print(f"FAIL: loader killed (exit {proc.returncode}) on committed crash fixture {f.name}")
+            return 1
+    print(f"crash corpus replay: {len(files)} fixture(s) load or refuse cleanly")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seconds", type=float, default=30.0)
     ap.add_argument("--seed", type=int, default=20260811)
     args = ap.parse_args()
     rng = np.random.default_rng(args.seed)
+
+    rc = replay_crash_corpus()
+    if rc != 0:
+        return rc
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
