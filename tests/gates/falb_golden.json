@@ -15,6 +15,10 @@
   "falb-load/lean": "af13400757e5695ae708c0293390a2f3",
   "text-load/full": "e40f6b4a4855d2768a93d0153afaca49"
  },
+ "multiclass-constant": {
+  "falb-load/lean": "223e955f2426dcc1b201d6c146771b8c",
+  "text-load/full": "6f9bfb0bfb0bb6d5b3e25777ae47a1fe"
+ },
  "regression": {
   "falb-load/lean": "6c206dbdad34190d090e512913935977",
   "text-load/full": "5c3cd0808a52458a0ffba438ee4a0a5e"
