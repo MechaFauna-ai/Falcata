@@ -90,5 +90,25 @@ chk("no LightGBM token in FALB bytes", b"LightGBM" not in blob and b"lightgbm" n
 # 7. pandas_categorical still travels with the file
 chk("pandas_categorical preserved", flc.Booster(model_file=falb).pandas_categorical == bst.pandas_categorical)
 
+# 8. constant (1-leaf) trees: ordinary in multiclass, and FALB is what pickle
+#    writes, so a model full of them has to survive the default user path.
+rng_c = np.random.default_rng(0)
+X_c = rng_c.random((300, 6))
+y_c = rng_c.integers(0, 3, 300)
+p_c = {"objective": "multiclass", "num_class": 3, "min_data_in_leaf": 200, "verbose": -1, "num_threads": 8}
+bst_c = flc.train(p_c, flc.Dataset(X_c, label=y_c, params=p_c), num_boost_round=10)
+leaves_c = [int(t.split("num_leaves=")[1].split("\n")[0]) for t in bst_c.model_to_string().split("\nTree=")[1:]]
+ref_c = bst_c.predict(X_c)
+chk("constant-tree model trained", bool(leaves_c) and all(n == 1 for n in leaves_c), f"({len(leaves_c)} trees)")
+chk("constant trees unpickle identically", np.array_equal(pickle.loads(pickle.dumps(bst_c)).predict(X_c), ref_c))
+falb_c = os.path.join(d, "constant.falb")
+bst_c.save_model(falb_c, format="falb")
+chk("constant trees survive a .falb file", np.array_equal(flc.Booster(model_file=falb_c).predict(X_c), ref_c))
+chk(
+    "constant trees keep their text form through FALB",
+    flc.Booster(model_bin=bst_c.model_to_binary(with_stats=True, with_diagnostics=True)).model_to_string()
+    == bst_c.model_to_string(),
+)
+
 print("M2 PASS" if not fails else f"M2 FAIL: {fails}")
 sys.exit(1 if fails else 0)

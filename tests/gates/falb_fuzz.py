@@ -42,6 +42,10 @@ def build_seed_files(tmp):
         ("plain", {"objective": "regression", "num_leaves": 31}, 0),
         ("cat", {"objective": "regression", "num_leaves": 31}, 2),
         ("multi", {"objective": "multiclass", "num_class": 3, "num_leaves": 15}, 0),
+        # constant (1-leaf) trees beside grown ones, saved WITH the sections
+        # the loader addresses by COUNT rather than by a stored offset: a
+        # zero-node tree makes every one of those blocks a degenerate width
+        ("constant", {"objective": "multiclass", "num_class": 3, "num_leaves": 15}, 0),
     ]:
         rng = np.random.default_rng(7)
         x = rng.standard_normal((2000, 6))
@@ -50,6 +54,10 @@ def build_seed_files(tmp):
         y = x @ rng.standard_normal(6)
         if name == "multi":
             y = (x @ rng.standard_normal((6, 3))).argmax(1).astype(float)
+        if name == "constant":
+            # class 2 never occurs, so its per-class trees find no gain and
+            # come back constant every round while classes 0 and 1 grow
+            y = (x[:, 1] > 0).astype(float)
         # explicit cpu: the fuzzer tests the PARSER, and cpu-trained seed
         # files keep every mutated load off the GPU -- immune to whatever
         # state the preceding gates left the device in
@@ -57,7 +65,8 @@ def build_seed_files(tmp):
         ds = flc.Dataset(x, label=y, params=p, categorical_feature=list(range(cats)) or "auto")
         bst = flc.train(p, ds, num_boost_round=8)
         f = tmp / f"{name}.falb"
-        bst.save_model(str(f), format="falb")
+        full = name == "constant"
+        bst.save_model(str(f), format="falb", with_stats=full, with_diagnostics=full)
         files.append(f.read_bytes())
     return files
 

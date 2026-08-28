@@ -253,6 +253,58 @@ void WriteNarrowed(ByteWriter* w, const SrcT* src, size_t count, uint32_t dtype)
   }
 }
 
+/*! \brief number of internal nodes a tree of `num_leaves` leaves has. */
+inline size_t NodeCount(int num_leaves) {
+  return static_cast<size_t>(std::max(0, num_leaves - 1));
+}
+
+/*! \brief write exactly `count` items of a per-tree array, zero-filling a
+ *  source vector that holds fewer.
+ *
+ *  The stats and diagnostics sections are laid out BY COUNT: the loader has no
+ *  per-array offsets for them, it slices each tree's block out of the running
+ *  totals it derives from the records' num_leaves. A tree's block is therefore
+ *  num_leaves items wide (per-leaf arrays) or num_leaves-1 (per-node arrays),
+ *  and a Tree's vector is NOT that width by construction -- the CPU learner
+ *  leaves them at the max_leaves it reserved, and the text loader returns from
+ *  a 1-leaf tree before it ever sizes leaf_weight_. The count comes from
+ *  num_leaves here, never from .size().
+ *
+ *  Zero is the value an absent entry already has everywhere else: the text
+ *  loader resizes its missing stats arrays, and ZeroFillMissing does the same
+ *  for a section the writer omitted. */
+template <typename T>
+void WriteCounted(ByteWriter* w, const std::vector<T>& src, size_t count) {
+  const size_t n = std::min(count, src.size());
+  w->WriteArray(src.data(), n);
+  for (size_t i = n; i < count; ++i) w->Write(static_cast<T>(0));
+}
+
+/*! \brief WriteCounted through a dtype narrowing. */
+template <typename SrcT>
+void WriteNarrowedCounted(ByteWriter* w, const std::vector<SrcT>& src,
+                          size_t count, uint32_t dtype) {
+  const size_t n = std::min(count, src.size());
+  WriteNarrowed(w, src.data(), n, dtype);
+  if (n < count) {
+    const std::vector<SrcT> zeros(count - n, SrcT());
+    WriteNarrowed(w, zeros.data(), zeros.size(), dtype);
+  }
+}
+
+/*! \brief a structure array must already hold everything the tree's leaf count
+ *  advertises. Unlike a stats entry, a missing split feature or child has no
+ *  meaningful zero, so a short array means the in-memory tree is malformed and
+ *  writing it would produce a file that silently decodes as a different model. */
+inline void RequireWidth(size_t have, size_t need, const char* what, int tree) {
+  if (have < need) {
+    Log::Fatal(
+        "FALB: tree %d has %zu %s entries but its leaf count requires %zu -- "
+        "refusing to write a model that cannot be read back",
+        tree, have, what, need);
+  }
+}
+
 /*! \brief read `count` values of `dtype` widening into DstT. */
 template <typename DstT>
 void ReadWidened(const ByteReader& r, uint64_t offset, size_t count,
@@ -354,15 +406,28 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
   std::string meta = SaveModelToString(total_iteration, 0, feature_importance_type);
 
   // ---- per-array sizing ----
-  size_t total_cat_thr = 0;
+  // Everything here scans exactly the nodes the tree HAS: a Tree's vectors may
+  // be wider than num_leaves-1 (the CPU learner keeps them at the max_leaves it
+  // reserved), and the slots past the end are not part of the model.
+  bool any_cat = false;
   int max_feature = 0;
   int max_children_mag = 0;
   for (int i = start_model; i < num_used_model; ++i) {
     const Tree& t = *models_[i];
-    total_cat_thr += TreeIO::CatThreshold(t).size();
-    for (int f : TreeIO::SplitFeature(t)) max_feature = std::max(max_feature, f);
-    for (int c : TreeIO::LeftChild(t)) max_children_mag = std::max(max_children_mag, std::abs(c));
-    for (int c : TreeIO::RightChild(t)) max_children_mag = std::max(max_children_mag, std::abs(c));
+    any_cat = any_cat || TreeIO::NumCat(t) > 0;
+    const size_t n_node = NodeCount(TreeIO::NumLeaves(t));
+    const auto& feats = TreeIO::SplitFeature(t);
+    const auto& lc = TreeIO::LeftChild(t);
+    const auto& rc = TreeIO::RightChild(t);
+    for (size_t n = 0; n < n_node && n < feats.size(); ++n) {
+      max_feature = std::max(max_feature, feats[n]);
+    }
+    for (size_t n = 0; n < n_node && n < lc.size(); ++n) {
+      max_children_mag = std::max(max_children_mag, std::abs(lc[n]));
+    }
+    for (size_t n = 0; n < n_node && n < rc.size(); ++n) {
+      max_children_mag = std::max(max_children_mag, std::abs(rc[n]));
+    }
   }
 
   ThresholdDictionary dict;
@@ -377,7 +442,7 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
       ? kDTypeI8
       : ((max_children_mag <= INT16_MAX) ? kDTypeI16 : kDTypeI32);
 
-  const bool has_cat = total_cat_thr > 0;
+  const bool has_cat = any_cat;
 
   // ---- build sections ----
   std::vector<SectionBuilder> sections;
@@ -445,7 +510,12 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
       rec.cat_threshold_offset = ct_off;
       rec.shrinkage = TreeIO::Shrinkage(t);
       w.Write(rec);
-      node_off += static_cast<uint64_t>(std::max(0, TreeIO::NumLeaves(t) - 1));
+      // The node and leaf offsets are what the loader also derives from
+      // num_leaves, so they must come from num_leaves here too. The two
+      // categorical offsets are different in kind: the loader reads them back
+      // out of this record, so they only have to agree with what the
+      // categorical writer below emits -- which is the whole vector.
+      node_off += NodeCount(TreeIO::NumLeaves(t));
       leaf_off += static_cast<uint64_t>(TreeIO::NumLeaves(t));
       cb_off += TreeIO::CatBoundaries(t).size();
       ct_off += TreeIO::CatThreshold(t).size();
@@ -456,12 +526,20 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
     ByteWriter feat_w, thr_w, dt_w, lc_w, rc_w, lv_w;
     for (int i = start_model; i < num_used_model; ++i) {
       const Tree& t = *models_[i];
-      const int n_node = std::max(0, TreeIO::NumLeaves(t) - 1);
+      const size_t n_node = NodeCount(TreeIO::NumLeaves(t));
       const auto& feats = TreeIO::SplitFeature(t);
       const auto& thr = TreeIO::Threshold(t);
       const auto& dtypes = TreeIO::DecisionType(t);
+      RequireWidth(feats.size(), n_node, "split_feature", i);
+      RequireWidth(thr.size(), n_node, "threshold", i);
+      RequireWidth(dtypes.size(), n_node, "decision_type", i);
+      RequireWidth(TreeIO::LeftChild(t).size(), n_node, "left_child", i);
+      RequireWidth(TreeIO::RightChild(t).size(), n_node, "right_child", i);
+      RequireWidth(TreeIO::LeafValues(t).size(),
+                   static_cast<size_t>(TreeIO::NumLeaves(t)) * TreeIO::LeafValueDim(t),
+                   "leaf_value", i);
       WriteNarrowed(&feat_w, feats.data(), n_node, feat_dtype);
-      for (int n = 0; n < n_node; ++n) {
+      for (size_t n = 0; n < n_node; ++n) {
         // categorical nodes carry a cat_threshold index in threshold_; store it
         // verbatim rather than through the numeric dictionary
         const uint32_t idx = ((dtypes[n] & kCategoricalMask) > 0)
@@ -518,6 +596,19 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
     ByteWriter cb_w, ct_w;
     for (int i = start_model; i < num_used_model; ++i) {
       const Tree& t = *models_[i];
+      // This section is addressed by the offsets stored in each record, so the
+      // whole vector goes out and the offsets follow it. What the loader does
+      // derive from the record is how much of the block to read back:
+      // num_cat + 1 boundaries, and cat_boundaries.back() thresholds. Both
+      // must therefore be THERE -- a tree that claims categorical splits it
+      // does not carry would decode as the next tree's data.
+      if (TreeIO::NumCat(t) > 0) {
+        const size_t n_bound = static_cast<size_t>(TreeIO::NumCat(t)) + 1;
+        RequireWidth(TreeIO::CatBoundaries(t).size(), n_bound, "cat_boundaries", i);
+        RequireWidth(TreeIO::CatThreshold(t).size(),
+                     static_cast<size_t>(TreeIO::CatBoundaries(t)[n_bound - 1]),
+                     "cat_threshold", i);
+      }
       WriteNarrowed(&cb_w, TreeIO::CatBoundaries(t).data(),
                     TreeIO::CatBoundaries(t).size(), kDTypeU32);
       ct_w.WriteArray(TreeIO::CatThreshold(t).data(), TreeIO::CatThreshold(t).size());
@@ -529,19 +620,20 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
     ByteWriter w;
     for (int i = start_model; i < num_used_model; ++i) {
       const Tree& t = *models_[i];
-      w.WriteArray(TreeIO::LeafWeight(t).data(), TreeIO::LeafWeight(t).size());
+      WriteCounted(&w, TreeIO::LeafWeight(t), TreeIO::NumLeaves(t));
     }
     for (int i = start_model; i < num_used_model; ++i) {
       const Tree& t = *models_[i];
-      WriteNarrowed(&w, TreeIO::LeafCount(t).data(), TreeIO::LeafCount(t).size(), kDTypeI32);
+      WriteNarrowedCounted(&w, TreeIO::LeafCount(t), TreeIO::NumLeaves(t), kDTypeI32);
     }
     for (int i = start_model; i < num_used_model; ++i) {
       const Tree& t = *models_[i];
-      w.WriteArray(TreeIO::InternalWeight(t).data(), TreeIO::InternalWeight(t).size());
+      WriteCounted(&w, TreeIO::InternalWeight(t), NodeCount(TreeIO::NumLeaves(t)));
     }
     for (int i = start_model; i < num_used_model; ++i) {
       const Tree& t = *models_[i];
-      WriteNarrowed(&w, TreeIO::InternalCount(t).data(), TreeIO::InternalCount(t).size(), kDTypeI32);
+      WriteNarrowedCounted(&w, TreeIO::InternalCount(t),
+                           NodeCount(TreeIO::NumLeaves(t)), kDTypeI32);
     }
     add_section(kSecStats, kDTypeBytes, std::move(w), 8);
   }
@@ -549,11 +641,11 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
     ByteWriter w;
     for (int i = start_model; i < num_used_model; ++i) {
       const Tree& t = *models_[i];
-      w.WriteArray(TreeIO::SplitGain(t).data(), TreeIO::SplitGain(t).size());
+      WriteCounted(&w, TreeIO::SplitGain(t), NodeCount(TreeIO::NumLeaves(t)));
     }
     for (int i = start_model; i < num_used_model; ++i) {
       const Tree& t = *models_[i];
-      w.WriteArray(TreeIO::InternalValue(t).data(), TreeIO::InternalValue(t).size());
+      WriteCounted(&w, TreeIO::InternalValue(t), NodeCount(TreeIO::NumLeaves(t)));
     }
     add_section(kSecDiagnostics, kDTypeBytes, std::move(w), 8);
   }
@@ -762,6 +854,41 @@ bool GBDT::LoadModelFromBinary(const char* buffer, size_t len) {
                                             static_cast<unsigned long long>(i));  // NOLINT(runtime/int): %llu format
     total_nodes += recs[i].num_leaves - 1;
     total_leaves += recs[i].num_leaves;
+  }
+
+  // The stats and diagnostics sections carry no per-array offsets: their whole
+  // layout follows from the leaf counts above, so their length is known here.
+  // Checking it up front turns a mis-sized section into one message that names
+  // the cause, instead of whichever sub-array first runs off the end.
+  auto check_by_count = [](const ByteReader& r, uint64_t need, const char* what) {
+    if (r.size() < need) {
+      Log::Fatal(
+          "FALB: corrupt model -- the %s section holds %llu bytes where this "
+          "model's trees need %llu. Releases through 1.0.4 wrote a short %s "
+          "block for models containing constant (1-leaf) trees; that file "
+          "cannot be repaired -- re-save from the model's text form.",
+          what, static_cast<unsigned long long>(r.size()),  // NOLINT(runtime/int): %llu format
+          static_cast<unsigned long long>(need), what);  // NOLINT(runtime/int): %llu format
+    }
+    if (r.size() > need) {
+      // readable, but the extra bytes mean the per-tree slices are not where
+      // this build computes them: say so rather than serve silent nonsense
+      Log::Warning(
+          "FALB: the %s section is %llu bytes where this model's trees need "
+          "%llu -- the per-tree statistics may not belong to their trees.",
+          what, static_cast<unsigned long long>(r.size()),  // NOLINT(runtime/int): %llu format
+          static_cast<unsigned long long>(need));  // NOLINT(runtime/int): %llu format
+    }
+  };
+  if (has_stats) {
+    check_by_count(section_reader(kSecStats),
+                   total_leaves * (sizeof(double) + sizeof(int32_t)) +
+                       total_nodes * (sizeof(double) + sizeof(int32_t)),
+                   "stats");
+  }
+  if (has_diag) {
+    check_by_count(section_reader(kSecDiagnostics),
+                   total_nodes * (sizeof(float) + sizeof(double)), "diagnostics");
   }
 
   auto elem_size = [](uint32_t d) -> size_t {
