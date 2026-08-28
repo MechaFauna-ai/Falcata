@@ -23,8 +23,14 @@ Roughly priority-ordered within groups. Measurements refer to an RTX 5090.
   plane-per-target histograms, summed-gain finder, vector apply/serialize/
   predict) are LANDED. Open items:
   - Hybrid/one-sync/graph prefix support for vector mode (currently classic
-    per-split loop only; the speed thesis lives in the batched flows) and a
-    perf measurement vs round-robin at numerai-like T=5.
+    per-split loop only; the speed thesis lives in the batched flows).
+    First classic-loop datapoint (2026-08-28, synthetic 200k rows x 200
+    features, 5 correlated targets, 63 leaves, 200 rounds): 1.9x wall-clock
+    vs 5 independent scalar CUDA trainings (13.1s vs 24.7s), i.e. a T=5
+    vector tree costs ~2.6x a scalar tree; per-target RMSE is worse
+    (0.90-0.99 vs 0.73-0.82) because one shared tree per iteration carries
+    1/5 the total leaf budget. Open: equal-tree-budget comparison, hybrid
+    speed, per-era numerai validation.
   - Lift v1 fences on demand: GOSS/query/balanced bagging (plain per-row
     bagging landed) and categorical features (landed; cat_random_search still
     fenced), L1/path-smooth/max_delta_step/extra-trees/monotone/CEGB, fp32
