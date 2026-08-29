@@ -656,7 +656,16 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
 
   const data_size_t num_data = row_data->num_data();
   const size_t needed_bytes = static_cast<size_t>(num_compact_cols) * static_cast<size_t>(num_data);
-  EnsureCompactColumnBuffer(needed_bytes, num_compact_cols, num_data);
+
+  // NOT allocated here. Two of the three paths below return before the gather
+  // and never read compact_column_buffer_: the fused-second-output path points
+  // CUDAColumnData straight at the histogram constructor's column-major view,
+  // and the packed-split-read path only rewrites a pointer table. Allocating up
+  // front therefore reserved one byte per (sampled feature x row) — 10.69 GiB
+  // at 3555 features and 6.3M rows — that nothing ever touched, and it was the
+  // single largest contributor to the colsample OOM ceiling. The gather path
+  // allocates it at its own call site below; EnsureClassicColumnView, the only
+  // other consumer, already calls this itself.
 
   // Build per-slot source-frame metadata host-side (one entry per compact slot).
   // When the histogram constructor already gathered this tree's sampled columns
@@ -754,6 +763,10 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
     col_view_generation_seen_ = col_data->column_view_generation();
     return;
   }
+
+  // The gather is the buffer's only consumer on this path, so this is where it
+  // gets allocated (moved down from the top of the function).
+  EnsureCompactColumnBuffer(needed_bytes, num_compact_cols, num_data);
 
   LaunchRowToColCompactKernel(
       0,

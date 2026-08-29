@@ -213,6 +213,26 @@ class CUDAVector {
     owns_ = true;
   }
 
+  /*! \brief Resize WITHOUT preserving the old contents.
+   *
+   *  Resize allocates the new block before releasing the old one, so its peak
+   *  is old+new. For a buffer the caller is about to overwrite in full, that
+   *  copy is pure waste and the transient double-hold is a real OOM: the
+   *  compact view's width depends on per-partition parity, so a grow of a few
+   *  bytes per row could ask for two 5.35 GiB blocks at once with 1.6 GiB
+   *  free — training died ~13s in, on whichever tree first made every
+   *  partition odd, which is why the failure looked intermittent.
+   *
+   *  Only for buffers that are entirely rewritten before their next read.
+   */
+  void ResizeDiscard(size_t size) {
+    if (size == size_) {
+      return;
+    }
+    Clear();
+    Resize(size);
+  }
+
   void InitFromHostVector(const std::vector<T>& host_vector) {
     Resize(host_vector.size());
     CopyFromHostToCUDADevice(data_, host_vector.data(), host_vector.size(), __FILE__, __LINE__);
