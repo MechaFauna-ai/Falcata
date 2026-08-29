@@ -318,12 +318,6 @@ def test_feature_view_costs_no_more_than_one_byte_per_value():
 
 
 @_REQUIRES_CUDA
-@pytest.mark.xfail(
-    strict=True,
-    reason="4-bit bins are widened to 8 in the per-tree feature view, and the packed "
-    "matrix is built alongside it, so a 4-bit dataset costs MORE than an 8-bit one "
-    "(2158 MiB against 1214 MiB measured). Tracked as the 4-bit expansion issue.",
-)
 def test_four_bit_bins_stay_packed_in_the_feature_view():
     """A 4-bit dataset should cost about half of an 8-bit one, not more.
 
