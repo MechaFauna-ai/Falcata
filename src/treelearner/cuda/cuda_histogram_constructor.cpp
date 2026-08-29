@@ -480,7 +480,12 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
   // Allocate / resize compact buffers.
   const size_t compact_data_bytes = layout.data_bytes;
   if (compact_data_uint8_t_.Size() < compact_data_bytes) {
-    compact_data_uint8_t_.Resize(compact_data_bytes);
+    // Discard: both fill paths below (LaunchCompactFill, and the host-mapped
+    // staging transpose) rewrite every byte for the CURRENT layout, so Resize's
+    // preserve-copy would carry over a previous layout that is about to be
+    // overwritten — while holding both blocks. This is the allocation that
+    // OOM-ed the rev-3 sweep's judge stage.
+    compact_data_uint8_t_.ResizeDiscard(compact_data_bytes);
   }
   if (compact_is_4bit_) {
     if (compact_packed_partition_byte_offsets_.Size() < compact_packed_part_offsets.size()) {
@@ -550,7 +555,9 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
                                   partition_for_compact_h.size(), __FILE__, __LINE__);
     // Multi-stream direct cudaMemcpyAsync per column.
     if (compact_staging_col_major_.Size() < compact_data_bytes) {
-      compact_staging_col_major_.Resize(compact_data_bytes);
+      // Discard: the per-column memcpys below write every sampled column, and
+      // compact_data_bytes is sized for exactly those columns.
+      compact_staging_col_major_.ResizeDiscard(compact_data_bytes);
     }
     static const int N_STREAMS = 4;
     static cudaStream_t copy_streams[N_STREAMS] = {nullptr};
@@ -861,7 +868,8 @@ void CUDAHistogramConstructor::PrefillNextCompactView(
   CompactLayout layout;
   if (!ScanCompactLayout(is_feature_used_bytree, &layout)) return;
   if (compact_data_uint8_t_alt_.Size() < layout.data_bytes) {
-    compact_data_uint8_t_alt_.Resize(layout.data_bytes);
+    // Discard: LaunchCompactFill on the next line rewrites all of it.
+    compact_data_uint8_t_alt_.ResizeDiscard(layout.data_bytes);
   }
   LaunchCompactFill(layout, compact_data_uint8_t_alt_.RawData(), prefetch_stream_,
                     /*async_meta=*/true);
