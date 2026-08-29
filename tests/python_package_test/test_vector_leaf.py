@@ -128,19 +128,29 @@ def test_vector_leaf_training_fences_unimplemented_multi_target_path():
         )
 
 
-def test_vector_leaf_cuda_deterministic_mode_is_rejected_before_training():
+def test_vector_leaf_cuda_deterministic_mode_keeps_the_non_quantized_path():
+    # deterministic=true normally switches CUDA training to quant_mode=fixedpoint.
+    # A SINGLE-target vector-leaf tree is one of the quant-incompatible requests
+    # -- beside forced splits and monotone/interaction constraints -- and every
+    # one of those keeps quant_mode=none with a warning rather than failing, so
+    # an explicitly requested feature outranks an inferred execution mode.
+    # (MULTI-target vector-leaf trees do run quantized, one discretized gradient
+    # plane per target, and take the ordinary fixedpoint path.)
     X, y = _training_data()
-    with pytest.raises(lgb.basic.FalcataError, match="does not support deterministic=true"):
-        lgb.train(
-            {
-                "objective": "regression",
-                "tree_mode": "vector_leaf",
-                "device_type": "cuda",
-                "deterministic": True,
-            },
-            lgb.Dataset(X, label=y),
-            num_boost_round=1,
-        )
+    booster = lgb.train(
+        {
+            "objective": "regression",
+            "tree_mode": "vector_leaf",
+            "device_type": "cuda",
+            "deterministic": True,
+            "verbosity": -1,
+        },
+        lgb.Dataset(X, label=y),
+        num_boost_round=1,
+    )
+    assert booster.num_trees() >= 1
+    assert "[quant_mode: none]" in booster.model_to_string()
+    assert "[use_quantized_grad: 0]" in booster.model_to_string()
 
 
 def test_vector_leaf_text_prediction_roundtrip_and_leaf_shape():
