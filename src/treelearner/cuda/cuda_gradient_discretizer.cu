@@ -270,6 +270,7 @@ __global__ void DiscretizeGradientsKernel(
   const uint32_t philox_seed,
   const int grad_discretize_bins,
   int8_t* ef_residuals,
+  const int ef_slot,
   const uint8_t* ef_inbag_mask,
   int8_t* output_gradients_and_hessians,
   const int8_t* plane0_gradients_and_hessians = nullptr) {
@@ -314,16 +315,43 @@ __global__ void DiscretizeGradientsKernel(
       // residuals are stored as int8 in units of 1/128 quant bin (see Init)
       score_t ge = 0.0f;
       score_t he = 0.0f;
+      // SUBTRACTIVE DITHER on the rounding threshold. Error feedback is a
+      // sigma-delta loop, and rows that carry the SAME value drive identical
+      // loops: without a dither they cross the rounding threshold on the same
+      // round and emit their whole-quantum steps in lockstep, so a group of N
+      // identical rows contributes N quanta at once instead of N*value. Real
+      // data supplies such groups by the thousand (every row that is zero in
+      // every feature is one), and a leaf holding one is handed a gradient sum
+      // that is pure quantization step. A fixed per-row phase spreads the
+      // group's crossings uniformly across rounds; because every row in the
+      // group rotates by the same amount each round, the spread is preserved
+      // for the whole run. The phase is a pure function of (seed, class slot,
+      // row) -- deterministic and machine-independent, like the stochastic
+      // path's noise -- and it shifts only WHEN a quantum is emitted: the
+      // residual below still accumulates the undithered error, so the loop
+      // stays exactly conservative and the mode stays unbiased.
+      score_t gphase = 0.0f;
+      score_t hphase = 0.0f;
       if (ef_active) {
         he = static_cast<score_t>(ef_residuals[2 * index]) * 0.0078125f;      // 1/128
         ge = static_cast<score_t>(ef_residuals[2 * index + 1]) * 0.0078125f;
+        const uint4 ph = Philox4x32_10(
+          make_uint4(static_cast<uint32_t>(index), static_cast<uint32_t>(ef_slot),
+                     0x243F6A88u, 0x85A308D3u),
+          make_uint2(philox_seed, philox_seed ^ 0xC2B2AE35u));
+        gphase = PhiloxUniform(ph.x) - 0.5f;
+        hphase = PhiloxUniform(ph.y) - 0.5f;
       }
-      int16_t q = (gv + ge) > 0.0f ?
-        static_cast<int16_t>((gv + ge) + 0.5) :
-        static_cast<int16_t>((gv + ge) - 0.5);
+      int16_t q = (gv + ge + gphase) > 0.0f ?
+        static_cast<int16_t>((gv + ge + gphase) + 0.5) :
+        static_cast<int16_t>((gv + ge + gphase) - 0.5);
+      // hessians are non-negative by construction and the packed histogram
+      // reads their field unsigned, so the dither may shift a crossing but
+      // never below zero
+      const score_t hx = hv + he + hphase;
       const int16_t qh = COPY_HESS ?
         reinterpret_cast<const int16_t*>(plane0_gradients_and_hessians)[2 * index] :
-        static_cast<int16_t>((hv + he) + 0.5);
+        (hx > 0.0f ? static_cast<int16_t>(hx + 0.5) : static_cast<int16_t>(0));
       if (ef_active) {
         // rounding error only: the clamp below is intentional saturation and
         // must not feed back, or a saturated row accumulates unbounded carry.
@@ -434,9 +462,10 @@ void CUDAGradientDiscretizer::DiscretizeGradientsForPlane(
 
   // iter_ advances once per tree and classes train in fixed order, so
   // iter_ % ef_num_slots_ is this tree's class slot
+  const int ef_slot_index = iter_ % ef_num_slots_;
   int8_t* ef_slot = error_feedback_
       ? ef_residuals_.RawData() +
-            static_cast<size_t>(iter_ % ef_num_slots_) * static_cast<size_t>(num_data) * 2
+            static_cast<size_t>(ef_slot_index) * static_cast<size_t>(num_data) * 2
       : nullptr;
   const uint8_t* ef_mask = nullptr;
   if (ef_slot != nullptr && ef_inbag_indices_ != nullptr && ef_inbag_count_ < num_data) {
@@ -465,6 +494,7 @@ void CUDAGradientDiscretizer::DiscretizeGradientsForPlane(
     static_cast<uint32_t>(random_seed_), \
     num_grad_quant_bins_, \
     ef_slot, \
+    ef_slot_index, \
     ef_mask, \
     discretized_gradients_and_hessians_.RawData() + \
       static_cast<size_t>(plane) * static_cast<size_t>(num_data_planes_) * 4, \
