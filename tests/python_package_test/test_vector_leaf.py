@@ -3,6 +3,7 @@
 
 import ctypes
 import hashlib
+import os
 import re
 import struct
 from pathlib import Path
@@ -12,6 +13,11 @@ import pytest
 
 import falcata as lgb
 from falcata.basic import _LIB, _c_int_array, _safe_call
+
+_REQUIRES_CUDA = pytest.mark.skipif(
+    os.environ.get("TASK", "") != "cuda",
+    reason="requires CUDA-enabled Falcata build (set TASK=cuda)",
+)
 
 
 def _training_data():
@@ -128,6 +134,7 @@ def test_vector_leaf_training_fences_unimplemented_multi_target_path():
         )
 
 
+@_REQUIRES_CUDA
 def test_vector_leaf_cuda_deterministic_mode_keeps_the_non_quantized_path():
     # deterministic=true normally switches CUDA training to quant_mode=fixedpoint.
     # A SINGLE-target vector-leaf tree is one of the quant-incompatible requests
