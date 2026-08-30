@@ -127,8 +127,8 @@ def test_vector_leaf_cuda_duplicated_target_matches_scalar():
     scalar_leaves = scalar.predict(X, pred_leaf=True)
     np.testing.assert_array_equal(vector_leaves, scalar_leaves)
 
-    scalar_prediction = scalar.predict(X)
-    vector_prediction = vector.predict(X)
+    scalar_prediction = scalar.predict(X, use_fil=False)
+    vector_prediction = vector.predict(X, use_fil=False)
     for target in range(2):
         np.testing.assert_allclose(vector_prediction[:, target], scalar_prediction, rtol=1e-9, atol=1e-9)
 
@@ -278,8 +278,8 @@ def test_vector_leaf_cuda_categorical_duplicated_target_matches_scalar():
     scalar_leaves = scalar.predict(X, pred_leaf=True)
     np.testing.assert_array_equal(vector_leaves, scalar_leaves)
 
-    scalar_prediction = scalar.predict(X)
-    vector_prediction = vector.predict(X)
+    scalar_prediction = scalar.predict(X, use_fil=False)
+    vector_prediction = vector.predict(X, use_fil=False)
     for target in range(2):
         np.testing.assert_allclose(vector_prediction[:, target], scalar_prediction, rtol=1e-9, atol=1e-9)
 
@@ -331,8 +331,8 @@ def test_vector_leaf_cuda_bagging_duplicated_target_matches_scalar():
     scalar_leaves = scalar.predict(X, pred_leaf=True)
     np.testing.assert_array_equal(vector_leaves, scalar_leaves)
 
-    scalar_prediction = scalar.predict(X)
-    vector_prediction = vector.predict(X)
+    scalar_prediction = scalar.predict(X, use_fil=False)
+    vector_prediction = vector.predict(X, use_fil=False)
     for target in range(2):
         np.testing.assert_allclose(vector_prediction[:, target], scalar_prediction, rtol=1e-9, atol=1e-9)
 
@@ -465,8 +465,8 @@ def test_vector_leaf_cuda_selective_duplicated_target_matches_scalar():
     _assert_same_leaf_partition(
         vector.predict(X, pred_leaf=True), scalar.predict(X, pred_leaf=True).reshape(N_ROWS, -1)
     )
-    scalar_prediction = scalar.predict(X)
-    vector_prediction = vector.predict(X)
+    scalar_prediction = scalar.predict(X, use_fil=False)
+    vector_prediction = vector.predict(X, use_fil=False)
     for target in range(2):
         np.testing.assert_allclose(vector_prediction[:, target], scalar_prediction, rtol=1e-5, atol=1e-6)
 
@@ -493,8 +493,8 @@ def test_vector_leaf_cuda_hybrid_duplicated_target_matches_scalar():
     # runs of the same scalar config differ by ~2e-8 absolute. The classic
     # duplicated-target test above can assert 1e-9 only because both of its
     # paths take the same deterministic per-leaf construct.
-    scalar_prediction = scalar.predict(X)
-    vector_prediction = vector.predict(X)
+    scalar_prediction = scalar.predict(X, use_fil=False)
+    vector_prediction = vector.predict(X, use_fil=False)
     for target in range(2):
         np.testing.assert_allclose(vector_prediction[:, target], scalar_prediction, rtol=1e-5, atol=1e-6)
 
@@ -629,8 +629,8 @@ def test_vector_leaf_cuda_quantized_duplicated_target_matches_scalar():
     scalar = _train_scalar(X, y0, extra_params=_QUANT_PARAMS)
 
     np.testing.assert_array_equal(vector.predict(X, pred_leaf=True), scalar.predict(X, pred_leaf=True))
-    scalar_prediction = scalar.predict(X)
-    vector_prediction = vector.predict(X)
+    scalar_prediction = scalar.predict(X, use_fil=False)
+    vector_prediction = vector.predict(X, use_fil=False)
     for target in range(2):
         np.testing.assert_allclose(vector_prediction[:, target], scalar_prediction, rtol=1e-9, atol=1e-9)
 
@@ -712,8 +712,8 @@ def test_vector_leaf_cuda_quantized_selective_duplicated_target_matches_scalar()
     np.testing.assert_array_equal(
         vector.predict(X, pred_leaf=True), scalar.predict(X, pred_leaf=True).reshape(N_ROWS, -1)
     )
-    scalar_prediction = scalar.predict(X)
-    vector_prediction = vector.predict(X)
+    scalar_prediction = scalar.predict(X, use_fil=False)
+    vector_prediction = vector.predict(X, use_fil=False)
     for target in range(2):
         np.testing.assert_allclose(vector_prediction[:, target], scalar_prediction, rtol=1e-9, atol=1e-9)
 
