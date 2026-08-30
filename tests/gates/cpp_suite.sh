@@ -34,8 +34,8 @@ if command -v ccache >/dev/null 2>&1; then
 fi
 
 cmake "${cmake_args[@]}"
-# Only these two targets: building everything would also relink lib_falcata.so
-# in the repo root, which the FALB roundtrip gate reads.
+# Only these two targets: this suite runs the test binary and the CLI, and
+# building everything would add a lib_falcata.so relink no gate reads.
 cmake --build "$BUILD" --target testfalcata falcata -j "$(nproc)"
 
 echo "== C++ tests (CUDA build)"

@@ -89,7 +89,9 @@ step "selective equivalence"       -     "$VENV" tests/gates/selective_equivalen
 step "fuzz (45 min, corpus first)" -     "$VENV" tests/gates/fuzz.py --minutes 45
 step "validation scoring"          -     "$VENV" tests/gates/valid_metric.py
 step "FALB python plumbing"        -     "$VENV" tests/gates/falb_python.py
-step "FALB binary roundtrip"       -     env FALCATA_LIB="$REPO/lib_falcata.so" "$VENV" tests/gates/falb_roundtrip.py
+# No FALCATA_LIB here: the gate resolves the shared object the venv's freshly
+# installed falcata loads, which is the artifact ci_build.sh above produced.
+step "FALB binary roundtrip"       -     "$VENV" tests/gates/falb_roundtrip.py
 step "FALB frozen-fixture compat"  -     "$VENV" tests/gates/falb_compat.py
 step "FALB writer-byte golden"     -     "$VENV" tests/gates/falb_golden.py
 step "FALB parser fuzz"            -     "$VENV" tests/gates/falb_fuzz.py --seconds 120
