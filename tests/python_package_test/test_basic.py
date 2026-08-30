@@ -1469,3 +1469,42 @@ def test_fil_leaf_and_contrib_stay_on_cpu(fil_cuda_booster):
     assert not booster.__dict__.get("_fil_models")
     assert leaves.shape[0] == X.shape[0]
     assert contrib.shape == (X.shape[0], X.shape[1] + 1)
+
+
+def test_tree_sizes_must_account_for_every_tree_in_the_text():
+    """A tree_sizes= line lists every tree the model text carries.
+
+    One listing fewer leaves the trailing blocks unread, and the model loads
+    short in silence -- an EMPTY line lists none, so every prediction becomes
+    the init score.
+    """
+    rng = np.random.default_rng(7)
+    X = rng.standard_normal((300, 4))
+    y = X[:, 0] + X[:, 1]
+    bst = lgb.train(
+        {"objective": "regression", "verbose": -1, "num_leaves": 7},
+        lgb.Dataset(X, label=y),
+        num_boost_round=5,
+    )
+    text = bst.model_to_string()
+    head, _, tail = text.partition("tree_sizes=")
+    sizes, rest = tail.split("\n", 1)
+
+    with pytest.raises(lgb.basic.FalcataError, match="tree_sizes lists 0 tree"):
+        lgb.Booster(model_str=f"{head}tree_sizes=\n{rest}")
+    with pytest.raises(lgb.basic.FalcataError, match="tree_sizes lists 1 tree"):
+        lgb.Booster(model_str=f"{head}tree_sizes={sizes.split(' ')[0]}\n{rest}")
+
+    # removing the line entirely takes the scan-forward branch, which reads
+    # every tree, so it stays a valid way to write the model
+    assert lgb.Booster(model_str=head + rest).model_to_string() == text
+
+    # a model that genuinely holds no trees writes the empty line itself and
+    # must keep loading: "end of trees" follows it immediately
+    empty = lgb.Booster(
+        train_set=lgb.Dataset(X, label=y),
+        params={"objective": "regression", "verbose": -1},
+    )
+    empty_text = empty.model_to_string()
+    assert "\ntree_sizes=\n" in empty_text
+    assert lgb.Booster(model_str=empty_text).num_trees() == 0
