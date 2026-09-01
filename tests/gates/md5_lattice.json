@@ -6,8 +6,8 @@
    "metric_name": "rmse"
   },
   "categorical-mc/quant-bagged": {
-   "md5": "7e9efc5837afa2d237e08635f9508b61",
-   "metric": 0.277766,
+   "md5": "765f9284abac034d73b7054147efba29",
+   "metric": 0.26946,
    "metric_name": "mlogloss"
   },
   "categorical/nonquant": {
@@ -30,13 +30,13 @@
    "metric_name": "rmse"
   },
   "dense/fixedpoint": {
-   "md5": "1aff16e7b64a195555270160e8a0c594",
-   "metric": 2.105311,
+   "md5": "036a50917cfad28792195b63b0258178",
+   "metric": 2.071777,
    "metric_name": "rmse"
   },
   "dense/fixedpoint-256bins": {
-   "md5": "6cd64cb5d2be9c674f9e9966bc2ce636",
-   "metric": 2.081231,
+   "md5": "705d18589a83a6feb13863d96b71e4ca",
+   "metric": 2.073767,
    "metric_name": "rmse"
   },
   "dense/fp32": {
@@ -83,8 +83,8 @@
    "metric_name": "rmse"
   },
   "fewbin/fixedpoint": {
-   "md5": "82cd1dd40182f631cb591313da18ae9b",
-   "metric": 4.299018,
+   "md5": "31103055d2516f1c42346170601d5f01",
+   "metric": 4.309202,
    "metric_name": "rmse"
   },
   "fewbin/quant": {
@@ -112,8 +112,8 @@
    "metric_name": "mlogloss"
   },
   "imbalanced/fixedpoint": {
-   "md5": "ec50e9e9c0282f50e259bc9e0c21beef",
-   "metric": 0.950937,
+   "md5": "91cde06bf054860872551aa4b201e0f3",
+   "metric": 0.90683,
    "metric_name": "auc"
   },
   "imbalanced/nonquant": {
@@ -156,8 +156,8 @@
    "metric_name": "rmse"
   },
   "missing-mfb0/fixedpoint": {
-   "md5": "246dd58721012e2e364c0b0105a8db3c",
-   "metric": 4.258921,
+   "md5": "a8692a614aa92e31fada7792b597f42c",
+   "metric": 4.283214,
    "metric_name": "rmse"
   },
   "missing-mfb0/quant": {
@@ -211,13 +211,13 @@
    "metric_name": "rmse"
   },
   "sparse-mc/quant-deep": {
-   "md5": "07ed743b7b107f1cb9141d322f43865b",
-   "metric": 0.08899,
+   "md5": "f2b9785f595e9513f76093ce51a6bc84",
+   "metric": 0.085856,
    "metric_name": "mlogloss"
   },
   "tinygrad/fixedpoint": {
-   "md5": "53fab19e25ebaa6b871f48521bc3a048",
-   "metric": 0.059661,
+   "md5": "022cf931cf8ca9c1bcd06b005f7574c0",
+   "metric": 0.05966,
    "metric_name": "rmse"
   },
   "tinygrad/quant": {
