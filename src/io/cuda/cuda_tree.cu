@@ -12,6 +12,9 @@
 
 namespace Falcata {
 
+// Decision-type bit helpers, used only by the kernels below. They stay in this
+// translation unit: a __device__ function called across TUs would need
+// relocatable device code, which the build deliberately does not use.
 __device__ void SetDecisionTypeCUDA(int8_t* decision_type, bool input, int8_t mask) {
   if (input) {
     (*decision_type) |= mask;

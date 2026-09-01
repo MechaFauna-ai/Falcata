@@ -900,18 +900,24 @@ endif()
 
 if(USE_CUDA)
 
+  # Whole-program device compilation. No __device__ function or device global
+  # crosses a translation unit here -- every shared device helper is defined in
+  # a header, and the runtime NVRTC path compiles whole-program PTX of its own
+  # -- so nothing needs relocatable device code. Separable compilation would
+  # make each TU emit relocatable device code AND the device link emit the
+  # final cubins, and the linked .so keeps both copies (__nv_relfatbin next to
+  # .nv_fatbin), which roughly doubles a nine-architecture wheel.
   set_target_properties(
     falcata_objs
     PROPERTIES
       CUDA_ARCHITECTURES "${CUDA_ARCHS}"
-      CUDA_SEPARABLE_COMPILATION ON
+      CUDA_SEPARABLE_COMPILATION OFF
   )
 
   set_target_properties(
     _falcata
     PROPERTIES
       CUDA_ARCHITECTURES "${CUDA_ARCHS}"
-      CUDA_RESOLVE_DEVICE_SYMBOLS ON
   )
 
   if(BUILD_CLI)
@@ -919,7 +925,6 @@ if(USE_CUDA)
       falcata
       PROPERTIES
         CUDA_ARCHITECTURES "${CUDA_ARCHS}"
-        CUDA_RESOLVE_DEVICE_SYMBOLS ON
     )
   endif()
 endif()
@@ -988,16 +993,10 @@ if(BUILD_CPP_TEST)
   add_executable(testfalcata ${CPP_TEST_SOURCES})
   target_link_libraries(testfalcata PRIVATE falcata_objs falcata_capi_objs nanoarrow_static GTest::GTest)
   if(USE_CUDA)
-    # falcata_objs is built with CUDA_SEPARABLE_COMPILATION, so anything linking
-    # it needs the device-link step; without it the link fails on
-    # __cudaRegisterLinkedBinary_*. _falcata and the CLI already ask for it --
-    # the test binary did not, so BUILD_CPP_TEST=ON with USE_CUDA=ON could not
-    # link at all.
     set_target_properties(
       testfalcata
       PROPERTIES
         CUDA_ARCHITECTURES "${CUDA_ARCHS}"
-        CUDA_RESOLVE_DEVICE_SYMBOLS ON
     )
   endif()
 endif()
