@@ -117,8 +117,7 @@ extern "C" __global__ void construct_jit(
     const uint32_t* partition_hist_offsets,
     const int* feature_partition_column_index_offsets,
     const data_size_t num_data) {
-  __shared__ int16_t shared_hist[SHARED_HIST_SIZE];
-  int32_t* shared_hist_packed = (int32_t*)shared_hist;
+  __shared__ int32_t shared_hist_packed[SHARED_HIST_SIZE / 2];
 
   const data_size_t num_data_in_smaller_leaf = smaller_leaf->num_data_in_leaf;
   const int dim_y = (int)(gridDim.y * blockDim.y);
@@ -222,7 +221,7 @@ struct HybridPairDescriptor {
 template <bool USE_16BIT>
 __device__ __forceinline__ void construct_jit_inner(
     const LeafSplits* smaller_leaf,
-    int16_t* shared_hist,
+    int32_t* shared_hist_packed,
     const int32_t* grad_and_hess,
     const uint8_t* data,
     const uint32_t* column_hist_offsets,
@@ -231,7 +230,6 @@ __device__ __forceinline__ void construct_jit_inner(
     const int* packed_partition_byte_offsets,
     const data_size_t num_data,
     const int dim_y) {
-  int32_t* shared_hist_packed = (int32_t*)shared_hist;
   const data_size_t num_data_in_smaller_leaf = smaller_leaf->num_data_in_leaf;
   const data_size_t num_data_per_thread = (num_data_in_smaller_leaf + dim_y - 1) / dim_y;
   const unsigned int blockIdx_y = blockIdx.y;
@@ -315,7 +313,7 @@ extern "C" __global__ void construct_jit_batched(
     const data_size_t num_data,
     const data_size_t min_data_in_leaf,
     const double min_sum_hessian_in_leaf) {
-  __shared__ int16_t shared_hist[SHARED_HIST_SIZE];
+  __shared__ int32_t shared_hist_packed[SHARED_HIST_SIZE / 2];
   const HybridPairDescriptor* desc = pair_descs + blockIdx.z;
   if (!desc->construct_valid) return;
   const LeafSplits* smaller_struct = desc->smaller_struct;
@@ -332,12 +330,12 @@ extern "C" __global__ void construct_jit_batched(
   const int dim_y = (int)(gridDim.y * blockDim.y);
   const uint8_t smaller_num_bits = desc->smaller_num_bits;
   if (smaller_num_bits <= 16) {
-    construct_jit_inner<true>(smaller_struct, shared_hist, grad_and_hess, data,
+    construct_jit_inner<true>(smaller_struct, shared_hist_packed, grad_and_hess, data,
         column_hist_offsets, partition_hist_offsets,
         feature_partition_column_index_offsets, packed_partition_byte_offsets,
         num_data, dim_y);
   } else {
-    construct_jit_inner<false>(smaller_struct, shared_hist, grad_and_hess, data,
+    construct_jit_inner<false>(smaller_struct, shared_hist_packed, grad_and_hess, data,
         column_hist_offsets, partition_hist_offsets,
         feature_partition_column_index_offsets, packed_partition_byte_offsets,
         num_data, dim_y);
