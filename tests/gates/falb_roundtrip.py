@@ -1,17 +1,50 @@
 """FALB binary-format gate: round-trip fidelity + untrusted-loader robustness.
 
-Drives the C API directly through ctypes against the freshly built CPU
-lib_falcata.so, so M1 is verifiable before M2's Python plumbing exists.
+Drives the C API directly through ctypes rather than through the Python
+package, so the format is verifiable independently of its Python plumbing.
 """
 
 import ctypes
+import datetime
 import os
 import struct
 import sys
 
 import numpy as np
 
-LIB = ctypes.cdll.LoadLibrary(os.environ.get("FALCATA_LIB", "./lib_falcata.so"))
+
+def resolve_lib():
+    """Path of the shared object under test.
+
+    Every other gate in the suite exercises the wheel the build step installed
+    into the gates venv, so this one resolves the SAME file: the shared object
+    that the importable ``falcata`` package itself loads. A path of its own is
+    the one way a gate can end up reporting on an artifact nobody built --
+    a stale build product left in a directory keeps loading, and its verdict
+    reads exactly like a verdict on the commit under test.
+
+    ``FALCATA_LIB`` overrides it for a source tree with no package installed.
+    """
+    installed = None
+    try:
+        from falcata.libpath import _LIB
+
+        installed = _LIB._name
+    except Exception:
+        pass
+    explicit = os.environ.get("FALCATA_LIB")
+    path = explicit or installed or "./lib_falcata.so"
+    stamp = "missing"
+    if os.path.exists(path):
+        mtime = datetime.datetime.fromtimestamp(os.path.getmtime(path))
+        stamp = f"{os.path.getsize(path):,}B built {mtime:%Y-%m-%d %H:%M}"
+    print(f"library under test: {path} ({stamp})")
+    if explicit and installed and os.path.realpath(explicit) != os.path.realpath(installed):
+        print(f"  NOTE: FALCATA_LIB overrides the installed package's {installed}")
+    return path
+
+
+LIB = ctypes.cdll.LoadLibrary(resolve_lib())
 LIB.FLC_GetLastError.restype = ctypes.c_char_p
 
 

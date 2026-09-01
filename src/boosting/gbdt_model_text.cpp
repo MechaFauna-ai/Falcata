@@ -635,6 +635,23 @@ bool GBDT::LoadModelFromString(const char* buffer, size_t len) {
       tree_boundaries[i + 1] = tree_boundaries[i] + tree_sizes[i];
       models_.emplace_back(nullptr);
     }
+    // tree_sizes accounts for every tree the text carries, so the byte after
+    // the last one it lists is never the start of another. A line listing
+    // fewer -- an EMPTY one lists none -- would otherwise leave the trailing
+    // blocks unread and load a shorter model in silence: at zero trees every
+    // prediction becomes the init score. A model with genuinely no trees
+    // writes the empty line too and still loads, since "end of trees" follows
+    // it immediately.
+    {
+      const size_t consumed = tree_boundaries[num_trees];
+      const size_t remaining = static_cast<size_t>(end - p);
+      if (consumed + 5 <= remaining && std::strncmp(p + consumed, "Tree=", 5) == 0) {
+        Log::Fatal(
+            "Model format error: tree_sizes lists %d tree(s) but the model "
+            "text holds more -- loading it would silently drop the rest",
+            num_trees);
+      }
+    }
     OMP_INIT_EX();
     #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
     for (int i = 0; i < num_trees; ++i) {
