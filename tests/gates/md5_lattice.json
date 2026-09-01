@@ -6,8 +6,8 @@
    "metric_name": "rmse"
   },
   "categorical-mc/quant-bagged": {
-   "md5": "d29716877823b9ba63ba3fdd68e83a08",
-   "metric": 0.273179,
+   "md5": "765f9284abac034d73b7054147efba29",
+   "metric": 0.26946,
    "metric_name": "mlogloss"
   },
   "categorical/nonquant": {
@@ -30,13 +30,13 @@
    "metric_name": "rmse"
   },
   "dense/fixedpoint": {
-   "md5": "38950acc920172bd8cb22f80e9190c3b",
-   "metric": 2.076173,
+   "md5": "036a50917cfad28792195b63b0258178",
+   "metric": 2.071777,
    "metric_name": "rmse"
   },
   "dense/fixedpoint-256bins": {
-   "md5": "8b973ef76fe9583fe9b98a38830fbf2b",
-   "metric": 2.08166,
+   "md5": "705d18589a83a6feb13863d96b71e4ca",
+   "metric": 2.073767,
    "metric_name": "rmse"
   },
   "dense/fp32": {
@@ -83,8 +83,8 @@
    "metric_name": "rmse"
   },
   "fewbin/fixedpoint": {
-   "md5": "adaca591aac857bbffcfbec6841da58a",
-   "metric": 4.285597,
+   "md5": "31103055d2516f1c42346170601d5f01",
+   "metric": 4.309202,
    "metric_name": "rmse"
   },
   "fewbin/quant": {
@@ -112,8 +112,8 @@
    "metric_name": "mlogloss"
   },
   "imbalanced/fixedpoint": {
-   "md5": "4c1453b8e3eaff4ca72b7a8ed6af6175",
-   "metric": 0.961707,
+   "md5": "91cde06bf054860872551aa4b201e0f3",
+   "metric": 0.90683,
    "metric_name": "auc"
   },
   "imbalanced/nonquant": {
@@ -156,8 +156,8 @@
    "metric_name": "rmse"
   },
   "missing-mfb0/fixedpoint": {
-   "md5": "c205e63c49634fff563da859bc8a09f6",
-   "metric": 4.25467,
+   "md5": "a8692a614aa92e31fada7792b597f42c",
+   "metric": 4.283214,
    "metric_name": "rmse"
   },
   "missing-mfb0/quant": {
@@ -210,9 +210,14 @@
    "metric": 38.544012,
    "metric_name": "rmse"
   },
+  "sparse-mc/quant-deep": {
+   "md5": "f2b9785f595e9513f76093ce51a6bc84",
+   "metric": 0.085856,
+   "metric_name": "mlogloss"
+  },
   "tinygrad/fixedpoint": {
-   "md5": "52c8005c600fef6a7e22940ab40aa60f",
-   "metric": 0.059661,
+   "md5": "022cf931cf8ca9c1bcd06b005f7574c0",
+   "metric": 0.05966,
    "metric_name": "rmse"
   },
   "tinygrad/quant": {

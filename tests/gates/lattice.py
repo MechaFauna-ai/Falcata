@@ -291,6 +291,25 @@ def build_cells():
         },
         rounds=50,
     )
+    # the same ridge WITHOUT bagging: sparse few-bin columns against a
+    # separable multiclass label, grown deep over tiny leaves for long enough
+    # that a mis-sized leaf output feeds back into the next round's gradients.
+    # Bagging is not what compounds the dither's tiny-hessian outputs -- a
+    # geometry that keeps re-splitting the same few regions does it alone --
+    # and no bagged cell can show that. rounds is load-bearing: the collapse
+    # needs tens of rounds of feedback to leave the quantization envelope.
+    cell(
+        "sparse-mc/quant-deep",
+        "sparse-mc",
+        {
+            "quant_mode": "fixedpoint",
+            "quant_bins": 16,
+            "num_leaves": 63,
+            "max_depth": 10,
+            "min_data_in_leaf": 5,
+        },
+        rounds=80,
+    )
 
     # --- wide features: the GLOBAL-MEMORY split finder ---------------------- #
     # Once a feature's histogram exceeds one block
@@ -489,6 +508,20 @@ def build_profile(name):
         y = (X @ rng.standard_normal((m, 4))).argmax(axis=1).astype(np.float64)
         base.update({"objective": "multiclass", "num_class": 4,
                      "categorical_feature": [0, 1, 2]})
+    elif name == "sparse-mc":
+        # five 80%-zero integer columns binned to 5 bins, against a SEPARABLE
+        # 6-class argmax label. Few features x few bins means the tree keeps
+        # carving the same handful of regions, and a separable label lets the
+        # model fit them to near-certainty -- so late leaves hold almost no
+        # gradient or hessian mass and their whole content is dither. The
+        # sparsity is what makes the leaves tiny: 80% of every column sits in
+        # one bin, so a split can only ever peel off a small group.
+        m = 5
+        X = rng.integers(-6, 7, size=(n, m)).astype(np.float64)
+        X[rng.random((n, m)) < 0.8] = 0.0
+        y = (X @ rng.standard_normal((m, 6))).argmax(axis=1).astype(np.float64)
+        base.update({"objective": "multiclass", "num_class": 6,
+                     "metric": "multi_logloss", "max_bin": 5})
     else:
         raise ValueError(f"unknown profile {name}")
     return X, np.asarray(y, dtype=np.float64), base
