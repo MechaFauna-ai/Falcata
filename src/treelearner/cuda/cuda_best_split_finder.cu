@@ -829,6 +829,19 @@ __device__ void FindBestSplitsForLeafKernelInner(
   }
 }
 
+// Warp-partial scratch for the discretized split kernels. One block-wide scan
+// over packed ACC_HIST_TYPE accumulators and one best-gain reduction over
+// uint32_t thread indices run at disjoint times, so they share the storage. The
+// union is what makes the sharing legal: it carries the size AND the alignment
+// of the widest member, whereas a uint32_t array over-sized to the right byte
+// count still only guarantees 4-byte alignment, which an 8-byte ACC_HIST_TYPE
+// store may not use.
+template <typename ACC_HIST_TYPE>
+union DiscretizedScanScratch {
+  ACC_HIST_TYPE acc[WARPSIZE];
+  uint32_t thread_index[WARPSIZE];
+};
+
 template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, bool REVERSE, typename BIN_HIST_TYPE, typename ACC_HIST_TYPE, bool USE_16BIT_BIN_HIST, bool USE_16BIT_ACC_HIST, typename GAIN_T>
 __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
   // input feature information
@@ -882,7 +895,7 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
   __shared__ uint32_t best_thread_index;
   __shared__ GAIN_T shared_gain_buffer[WARPSIZE];
   __shared__ bool shared_bool_buffer[WARPSIZE];
-  __shared__ uint32_t shared_int_buffer[2 * WARPSIZE];  // need 2 * WARPSIZE since the actual ACC_HIST_TYPE could be long int
+  __shared__ DiscretizedScanScratch<ACC_HIST_TYPE> shared_scan_scratch;
   const unsigned int threadIdx_x = threadIdx.x;
   const bool skip_sum = REVERSE ?
     (task->skip_default_bin && (task->num_bin - 1 - threadIdx_x) == static_cast<int>(task->default_bin)) :
@@ -933,7 +946,7 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
     // packed representation; the int64 detour below is only to reuse the leaf
     // total, which is always packed grad32<<32 | hess32.
     const ACC_HIST_TYPE sum_non_default = ShuffleReduceSum<ACC_HIST_TYPE>(
-      local_grad_hess_hist, reinterpret_cast<ACC_HIST_TYPE*>(shared_int_buffer), blockDim.x);
+      local_grad_hess_hist, shared_scan_scratch.acc, blockDim.x);
     if (threadIdx_x == 0) {
       const int64_t non_default_packed = USE_16BIT_ACC_HIST ?
         ((static_cast<int64_t>(static_cast<int16_t>(sum_non_default >> 16)) << 32) |
@@ -949,7 +962,7 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
     __syncthreads();
   }
   local_gain = kMinScore;
-  local_grad_hess_hist = ShufflePrefixSum<ACC_HIST_TYPE>(local_grad_hess_hist, reinterpret_cast<ACC_HIST_TYPE*>(shared_int_buffer));
+  local_grad_hess_hist = ShufflePrefixSum<ACC_HIST_TYPE>(local_grad_hess_hist, shared_scan_scratch.acc);
   GAIN_T sum_left_gradient = 0.0f;
   GAIN_T sum_left_hessian = 0.0f;
   GAIN_T sum_right_gradient = 0.0f;
@@ -1018,7 +1031,7 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
     }
   }
   __syncthreads();
-  const uint32_t result = ReduceBestGain(local_gain, threshold_found, threadIdx_x, shared_gain_buffer, shared_bool_buffer, shared_int_buffer);
+  const uint32_t result = ReduceBestGain(local_gain, threshold_found, threadIdx_x, shared_gain_buffer, shared_bool_buffer, shared_scan_scratch.thread_index);
   if (threadIdx_x == 0) {
     best_thread_index = result;
   }
@@ -3863,8 +3876,7 @@ __device__ void FindBestSplitsDiscretizedVectorInner(
   CUDASplitInfo* out) {
   __shared__ double shared_gain_buffer[WARPSIZE];
   __shared__ bool shared_bool_buffer[WARPSIZE];
-  // sized for ACC_HIST_TYPE == int64_t, which the prefix scans reinterpret onto
-  __shared__ uint32_t shared_int_buffer[2 * WARPSIZE];
+  __shared__ DiscretizedScanScratch<ACC_HIST_TYPE> shared_scan_scratch;
   __shared__ uint32_t best_thread_index;
 
   const double hess_scale = static_cast<double>(*hess_scale_ptr);
@@ -3936,7 +3948,7 @@ __device__ void FindBestSplitsDiscretizedVectorInner(
     // directly on the packed representation.
     for (int t = 0; t < num_targets; ++t) {
       const ACC_HIST_TYPE sum_non_default = ShuffleReduceSum<ACC_HIST_TYPE>(
-        local_hist[t], reinterpret_cast<ACC_HIST_TYPE*>(shared_int_buffer), blockDim.x);
+        local_hist[t], shared_scan_scratch.acc, blockDim.x);
       if (threadIdx_x == 0) {
         const int64_t default_bin_packed = parent_gh[t] -
           VectorUnpackAcc<USE_16BIT_ACC_HIST, ACC_HIST_TYPE>(sum_non_default);
@@ -3951,7 +3963,7 @@ __device__ void FindBestSplitsDiscretizedVectorInner(
   }
   for (int t = 0; t < num_targets; ++t) {
     local_hist[t] = ShufflePrefixSum<ACC_HIST_TYPE>(
-      local_hist[t], reinterpret_cast<ACC_HIST_TYPE*>(shared_int_buffer));
+      local_hist[t], shared_scan_scratch.acc);
   }
   // the packed prefix of plane 0 carries the shared hessian side
   int64_t scan_gh0 = VectorUnpackAcc<USE_16BIT_ACC_HIST, ACC_HIST_TYPE>(local_hist[0]);
@@ -4012,7 +4024,7 @@ __device__ void FindBestSplitsDiscretizedVectorInner(
   }
   __syncthreads();
   const uint32_t result = ReduceBestGain(local_gain, threshold_found, threadIdx_x,
-    shared_gain_buffer, shared_bool_buffer, shared_int_buffer);
+    shared_gain_buffer, shared_bool_buffer, shared_scan_scratch.thread_index);
   if (threadIdx_x == 0) {
     best_thread_index = result;
   }

@@ -1688,7 +1688,7 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseDirectInner(
 template <typename BIN_TYPE, bool USE_16BIT_HIST, class PACK = PackRaw8>
 __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
   const CUDALeafSplitsStruct* smaller_leaf_splits,
-  int16_t* shared_hist,
+  int32_t* shared_hist_packed,
   const int32_t* cuda_gradients_and_hessians,
   const BIN_TYPE* data,
   const uint32_t* column_hist_offsets,
@@ -1707,7 +1707,6 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
     return;
   }
   const data_size_t* data_indices_ref = smaller_leaf_splits->data_indices_in_leaf;
-  int32_t* shared_hist_packed = reinterpret_cast<int32_t*>(shared_hist);
   const unsigned int num_threads_per_block = blockDim.x * blockDim.y;
   const int partition_column_start = feature_partition_column_index_offsets[blockIdx.x];
   const int partition_column_end = feature_partition_column_index_offsets[blockIdx.x + 1];
@@ -1807,9 +1806,12 @@ __global__ void CUDAConstructDiscretizedHistogramDenseKernel(
   const int* feature_partition_column_index_offsets,
   const int* packed_partition_byte_offsets,
   const data_size_t num_data) {
-  __shared__ int16_t shared_hist[SHARED_HIST_SIZE];
+  // packed grad<<16|hess slots. SHARED_HIST_SIZE counts the 16-bit slots of the
+  // budget shared with the non-quantized kernels, so the int32 array holds half
+  // as many entries in the same bytes, at the alignment its atomics require.
+  __shared__ int32_t shared_hist_packed[SHARED_HIST_SIZE / 2];
   ConstructDiscretizedHistogramDenseInner<BIN_TYPE, USE_16BIT_HIST, PACK>(
-    smaller_leaf_splits, shared_hist, cuda_gradients_and_hessians, data,
+    smaller_leaf_splits, shared_hist_packed, cuda_gradients_and_hessians, data,
     column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
     packed_partition_byte_offsets,
     num_data, static_cast<int>(gridDim.y * blockDim.y));
@@ -1839,7 +1841,10 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
   const double min_sum_hessian_in_leaf,
   const data_size_t* level_smaller_num_data,
   const CUDAHybridGraphLoopStateOpt gstate) {
-  __shared__ int16_t shared_hist[SHARED_HIST_SIZE];
+  // packed grad<<16|hess slots. SHARED_HIST_SIZE counts the 16-bit slots of the
+  // budget shared with the non-quantized kernels, so the int32 array holds half
+  // as many entries in the same bytes, at the alignment its atomics require.
+  __shared__ int32_t shared_hist_packed[SHARED_HIST_SIZE / 2];
   // graphs A2 idle-block guard (pow2-frozen grid; see the non-quantized kernel)
   if (HybridGraphBeyondLiveSplits(gstate, blockIdx.z)) {
     return;
@@ -1893,13 +1898,13 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
     HybridGraphQuantHistBits(gstate, num_data_smaller) : desc->smaller_num_bits;
   if (smaller_num_bits <= 16) {
     ConstructDiscretizedHistogramDenseInner<BIN_TYPE, true, PACK>(
-      smaller_struct, shared_hist, cuda_gradients_and_hessians, data,
+      smaller_struct, shared_hist_packed, cuda_gradients_and_hessians, data,
       column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
       packed_partition_byte_offsets,
       num_data, dim_y, is_feature_used_bytree, bin_used);
   } else {
     ConstructDiscretizedHistogramDenseInner<BIN_TYPE, false, PACK>(
-      smaller_struct, shared_hist, cuda_gradients_and_hessians, data,
+      smaller_struct, shared_hist_packed, cuda_gradients_and_hessians, data,
       column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
       packed_partition_byte_offsets,
       num_data, dim_y, is_feature_used_bytree, bin_used);
@@ -1968,8 +1973,10 @@ __global__ void CUDAConstructDiscretizedHistogramSparseKernel(
   const data_size_t num_data_in_smaller_leaf = smaller_leaf_splits->num_data_in_leaf;
   const data_size_t num_data_per_thread = (num_data_in_smaller_leaf + dim_y - 1) / dim_y;
   const data_size_t* data_indices_ref = smaller_leaf_splits->data_indices_in_leaf;
-  __shared__ int16_t shared_hist[SHARED_HIST_SIZE];
-  int32_t* shared_hist_packed = reinterpret_cast<int32_t*>(shared_hist);
+  // packed grad<<16|hess slots. SHARED_HIST_SIZE counts the 16-bit slots of the
+  // budget shared with the non-quantized kernels, so the int32 array holds half
+  // as many entries in the same bytes, at the alignment its atomics require.
+  __shared__ int32_t shared_hist_packed[SHARED_HIST_SIZE / 2];
   const unsigned int num_threads_per_block = blockDim.x * blockDim.y;
   const DATA_PTR_TYPE* block_row_ptr = row_ptr + blockIdx.x * (num_data + 1);
   const BIN_TYPE* data_ptr = data + partition_ptr[blockIdx.x];
