@@ -19,6 +19,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include <Falcata/cuda/cuda_driver_shim.hpp>
+
 namespace Falcata {
 
 #ifdef USE_CUDA
@@ -323,6 +325,14 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
   }
 #endif  // USE_CUDA
   if (device_type == std::string("cuda")) {
+#if defined(USE_CUDA) && !defined(USE_ROCM)
+    // Refuse here, before any CUDA object exists: a driverless host otherwise
+    // fails inside allocators whose destructors then fail again during
+    // unwinding, and the process terminates instead of raising.
+    if (const char* missing_driver = CudaDriverShim::MissingDriverMessage()) {
+      Log::Fatal(missing_driver);
+    }
+#endif
     FLC_config_::current_device = lgbm_device_cuda;
   }
   GetTreeLearnerType(params, &tree_learner);

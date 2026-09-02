@@ -18,6 +18,8 @@
 #include <algorithm>
 #include <vector>
 
+#include <Falcata/cuda/cuda_driver_shim.hpp>
+
 namespace Falcata {
 
 // =====================================================================

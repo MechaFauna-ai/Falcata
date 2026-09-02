@@ -9,6 +9,7 @@
 
 #include "cuda_construct_jit.hpp"
 
+#include <Falcata/cuda/cuda_driver_shim.hpp>
 #include <Falcata/utils/log.h>
 #include <Falcata/falcata_plan.h>
 
@@ -54,6 +55,10 @@ bool CUDAConstructJIT::Available() {
     }
     // Driver API present and a current/primary context obtainable? The runtime
     // API has already created a primary context by the time we get here.
+    if (!CudaDriverShim::Available()) {
+      Log::Debug("CUDAConstructJIT: libcuda.so.1 not loadable, JIT disabled");
+      return false;
+    }
     if (cuInit(0) != CUDA_SUCCESS) {
       Log::Debug("CUDAConstructJIT: cuInit failed, JIT disabled");
       return false;

@@ -15,6 +15,7 @@
 #else
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <Falcata/cuda/cuda_driver_shim.hpp>
 #endif
 
 #ifdef USE_NCCL
@@ -62,6 +63,13 @@ typedef unsigned long long atomic_add_long_t;
 #define CUDASUCCESS_OR_FATAL(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort = true) {
   if (code != cudaSuccess) {
+#if !defined(USE_ROCM)
+    // Without the NVIDIA driver the runtime reports "driver version is
+    // insufficient", which misleads: name the actual cause and the CPU fallback.
+    if (const char* missing_driver = Falcata::CudaDriverShim::MissingDriverMessage()) {
+      Falcata::Log::Fatal("[CUDA] %s (%s %s %d)", missing_driver, cudaGetErrorString(code), file, line);
+    }
+#endif
     Falcata::Log::Fatal("[CUDA] %s %s %d\n", cudaGetErrorString(code), file, line);
     if (abort) exit(code);
   }

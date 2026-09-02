@@ -9,7 +9,10 @@ option(USE_CUDA "Enable CUDA-accelerated training " OFF)
 # NCCL is never linked: types come from the vendored header
 # (external_libs/nccl) and libnccl.so.2 is dlopen'ed on first multi-GPU use
 # (src/cuda/nccl_shim.cpp), so enabling this costs nothing at build or install
-# time. OFF only on Windows, where NCCL has no official distribution.
+# time. OFF only on Windows, where NCCL has no official distribution. The CUDA
+# driver library gets the same treatment (src/cuda/cuda_driver_shim.cpp), so a
+# CUDA build imports on a machine without the NVIDIA driver and trains on the
+# CPU there.
 if(WIN32)
     option(USE_NCCL "Enable NCCL for multi-GPU CUDA training (requires USE_CUDA)" OFF)
 else()
@@ -696,6 +699,7 @@ set(
       src/io/cuda/cuda_row_data.cpp
       src/io/cuda/cuda_tree.cpp
       src/cuda/cuda_utils.cpp
+      src/cuda/cuda_driver_shim.cpp
       src/cuda/cuda_algorithms.cu
 )
 
@@ -847,41 +851,17 @@ if(USE_GPU)
   target_link_libraries(falcata_objs PUBLIC ${OpenCL_LIBRARY} ${Boost_LIBRARIES})
 endif()
 
-if(USE_CUDA AND USE_NCCL)
-  target_link_libraries(falcata_objs PUBLIC ${CMAKE_DL_LIBS})
-endif()
-
 if(USE_CUDA)
-  # NVRTC + CUDA driver API for the runtime construct-kernel JIT
-  # (src/treelearner/cuda/cuda_construct_jit.cpp). Both are optional at runtime:
-  # if NVRTC compile fails the construct dispatch falls back to the AOT kernel.
-  if(NOT TARGET CUDA::cuda_driver)
-    # find_package(CUDAToolkit) defines CUDA::cuda_driver only when it sees an
-    # unversioned libcuda.so or the toolkit's stubs/ directory. Hosted notebook
-    # images (Kaggle, Colab) ship neither -- just the driver's libcuda.so.1 in
-    # a nonstandard directory -- so find that and link it directly.
-    find_library(
-      FALCATA_LIBCUDA
-      NAMES cuda libcuda.so.1
-      PATHS
-        /usr/lib64-nvidia
-        /usr/local/nvidia/lib64
-        /usr/lib/x86_64-linux-gnu
-        ${CUDAToolkit_LIBRARY_DIR}/stubs
-    )
-    if(NOT FALCATA_LIBCUDA)
-      message(
-        FATAL_ERROR
-        "libcuda not found. The CUDA driver library is needed to link; "
-        "install the NVIDIA driver, or the toolkit's cuda-driver-devel "
-        "package for its build-time stub."
-      )
-    endif()
-    add_library(CUDA::cuda_driver SHARED IMPORTED)
-    set_target_properties(CUDA::cuda_driver PROPERTIES IMPORTED_LOCATION "${FALCATA_LIBCUDA}")
-    message(STATUS "CUDA driver library located directly: ${FALCATA_LIBCUDA}")
-  endif()
-  target_link_libraries(falcata_objs PUBLIC CUDA::nvrtc CUDA::cuda_driver)
+  # NVRTC for the runtime construct-kernel JIT
+  # (src/treelearner/cuda/cuda_construct_jit.cpp); optional at runtime: if the
+  # NVRTC compile fails the construct dispatch falls back to the AOT kernel.
+  # The CUDA driver library (libcuda.so.1) is deliberately NOT linked: it
+  # ships with the NVIDIA driver rather than the toolkit, so a wheel linked to
+  # it cannot be imported on a machine without the driver. The JIT's driver
+  # entry points and NCCL's are dlopen'ed on first use instead
+  # (src/cuda/cuda_driver_shim.cpp, src/cuda/nccl_shim.cpp), which is why the
+  # build needs neither a driver nor the toolkit's link-time stub.
+  target_link_libraries(falcata_objs PUBLIC CUDA::nvrtc ${CMAKE_DL_LIBS})
 endif()
 
 if(USE_ROCM)
