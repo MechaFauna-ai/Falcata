@@ -224,6 +224,15 @@
    "md5": "6fcf6d9d4460c57f6ec381ef57c81d48",
    "metric": 0.059668,
    "metric_name": "rmse"
+  },
+  "vector-leaf/fixedpoint": {
+   "md5": "2bcbc17ab389bb77f94616fd25096c2d",
+   "metric": 0.196778,
+   "metric_name": "max_nrmse"
+  },
+  "vector-leaf/nonquant": {
+   "metric": 0.197116,
+   "metric_name": "max_nrmse"
   }
  }
 }

@@ -272,7 +272,12 @@ carry.
   (LANDED; see §0, §8b); numerai
   multi-target benchmark (v5 targets), per-era corr validation vs round-robin
   and vs sequential.
-- **V4** — docs + gates (vector/nonquant lattice cell, perf entry).
+- **V4** — LANDED 2026-09-06: docs plus a four-target lattice profile. The
+  fixedpoint cell fingerprints the deterministic quantized vector path; the
+  non-quantized twin uses a worst-target normalized-RMSE baseline because its
+  fp64 atomic histograms are not bit-deterministic. Both enforce one tree per
+  round, `(rows, targets)` prediction shape, non-constant output for every
+  target and exact prediction parity after model-text round-trip.
 
 ## 7. Open questions (resolve during V2)
 
