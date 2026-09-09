@@ -26,10 +26,6 @@ Roughly priority-ordered within groups. Measurements refer to an RTX 5090.
   grow-then-prune in the budget-limited one) are LANDED; details in
   docs/performance.md §11 and
   [docs/design/vector-leaf-plan.md](docs/design/vector-leaf-plan.md) §8/§8b.
-  V4 lattice coverage LANDED 2026-09-06: a four-target fixedpoint cell locks
-  the quantized vector path by model md5, while its non-quantized twin guards
-  prediction shape, per-target quality and text round-trip by invariants and a
-  worst-target normalized-RMSE baseline.
   Open items:
   - One-sync (speculative) and graph-loop prefix support for vector mode.
     One-sync needs the plane fan-out moved ahead of the speculative child

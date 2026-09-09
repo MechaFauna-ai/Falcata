@@ -231,6 +231,7 @@
    "metric_name": "max_nrmse"
   },
   "vector-leaf/nonquant": {
+   "md5": "b0e546d28289a29906e1c95aa69e28af",
    "metric": 0.197116,
    "metric_name": "max_nrmse"
   }

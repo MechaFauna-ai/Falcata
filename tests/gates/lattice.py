@@ -295,8 +295,8 @@ def build_cells():
     # --- vector-leaf multi-target training --------------------------------- #
     # The fixedpoint cell is a permanent fingerprint for the quantized vector
     # finder, its per-target gradient scales, and the selective level prefix.
-    # The fp64 twin covers the same end-to-end contract by metric because its
-    # atomic histogram accumulation is intentionally not bit-deterministic.
+    # The fp64 twin fingerprints the deterministic per-leaf dense construct and
+    # vector finder. Both cells also gate worst-target normalized RMSE.
     cell(
         "vector-leaf/fixedpoint",
         "vector-leaf",
@@ -308,7 +308,6 @@ def build_cells():
         "vector-leaf",
         {"quant_mode": "none"},
         rounds=30,
-        fingerprint=False,
     )
 
     # the same ridge WITHOUT bagging: sparse few-bin columns against a
@@ -545,8 +544,9 @@ def build_profile(name):
             noise = 0.05 * rng.standard_normal(n)
             columns.append((signal + noise) * (3.0**target))
         y = np.column_stack(columns)
-        base.update({"objective": "multi_regression", "metric": "multi_rmse",
+        base.update({"objective": "multi_regression",
                      "num_class": num_targets, "tree_mode": "vector_leaf",
+                     "boost_from_average": False,
                      "max_bin": 5, "num_leaves": 31, "max_depth": 10,
                      "min_data_in_leaf": 20})
     elif name == "sparse-mc":
@@ -567,14 +567,9 @@ def build_profile(name):
         raise ValueError(f"unknown profile {name}")
     return X, np.asarray(y, dtype=np.float64), base
 
-def eval_metric(params, model, X_test, y_test):
-    pred = model.predict(X_test)
+def eval_metric(params, pred, y_test):
     if params.get("objective") == "multi_regression":
-        assert pred.shape == y_test.shape, (
-            f"multi-target prediction shape {pred.shape} != label shape {y_test.shape}"
-        )
         target_variance = np.var(y_test, axis=0)
-        assert np.all(target_variance > 0.0), "constant target in multi-target profile"
         nrmse = np.sqrt(np.mean((pred - y_test) ** 2, axis=0) / target_variance)
         # A mean can hide a collapsed small-magnitude target. The worst target
         # is the conservative single-number quality signal the lattice needs.
@@ -605,25 +600,20 @@ def run_cell(cell):
     # with zero behavior change) -- tree bytes are the actual behavior signature
     md5 = hashlib.md5(model_str.split("\nparameters:")[0].encode()).hexdigest()
     # validity: round-trip + finite predictions + tree count
-    is_vector_leaf = (
-        params.get("objective") == "multi_regression"
-        and params.get("tree_mode") == "vector_leaf"
-    )
+    is_vector_leaf = str(params.get("tree_mode", "scalar")).strip().lower() == "vector_leaf"
     expected_trees = cell["rounds"] if is_vector_leaf else cell["rounds"] * params.get("num_class", 1)
     assert bst.num_trees() == expected_trees, f"tree count {bst.num_trees()} != {expected_trees}"
     pred = bst.predict(X_te)
     assert np.all(np.isfinite(pred)), "non-finite predictions"
-    if is_vector_leaf:
+    if y_te.ndim == 2:
         assert pred.shape == y_te.shape, (
             f"multi-target prediction shape {pred.shape} != label shape {y_te.shape}"
         )
-        assert np.all(np.std(pred, axis=0) > 0.0), "constant target predictions (garbage model)"
-    else:
-        assert float(np.std(pred)) > 0.0, "constant predictions (garbage model)"
+    assert np.all(np.std(pred, axis=0) > 0.0), "constant predictions (garbage model)"
     reloaded = lgb.Booster(model_str=model_str)
     pred2 = reloaded.predict(X_te)
     assert np.array_equal(pred, pred2), "reloaded model predicts differently"
-    metric, metric_name, higher_better = eval_metric(params, bst, X_te, y_te)
+    metric, metric_name, higher_better = eval_metric(params, pred, y_te)
     return {"id": cell["id"], "ok": True, "md5": md5, "metric": metric,
             "metric_name": metric_name, "higher_better": higher_better,
             "construct_sec": round(t_construct, 4), "train_sec": round(t_train, 4)}
