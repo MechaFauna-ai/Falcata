@@ -59,12 +59,6 @@ Roughly priority-ordered within groups. Measurements refer to an RTX 5090.
     quant_train_renew_leaf stay fenced within it),
     L1/path-smooth/max_delta_step/extra-trees/monotone/CEGB, per-target
     boost_from_average bias, multi-GPU.
-  - A lattice fingerprint cell for quantized vector training. Quantized vector
-    models ARE bit-reproducible (exact associative integer scans), so unlike
-    every fp64 vector path they can be md5-locked — and no lattice cell reaches
-    vector mode at all today. Blocked on lattice runner surgery: `build_profile`
-    yields a 1-D label and `run_cell` asserts `num_trees == rounds * num_class`,
-    which vector mode (one tree per round) fails by construction.
   - fp32 histograms (`cuda_precision=fp32`) for vector mode: needs the fp64
     vector finder templated on the histogram element type plus an fp32
     dispatch in the two vector launchers. Low priority now that quantized

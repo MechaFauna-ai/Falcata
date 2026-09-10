@@ -291,6 +291,25 @@ def build_cells():
         },
         rounds=50,
     )
+
+    # --- vector-leaf multi-target training --------------------------------- #
+    # The fixedpoint cell is a permanent fingerprint for the quantized vector
+    # finder, its per-target gradient scales, and the selective level prefix.
+    # The fp64 twin fingerprints the deterministic per-leaf dense construct and
+    # vector finder. Both cells also gate worst-target normalized RMSE.
+    cell(
+        "vector-leaf/fixedpoint",
+        "vector-leaf",
+        {"quant_mode": "fixedpoint", "quant_bins": 16},
+        rounds=30,
+    )
+    cell(
+        "vector-leaf/nonquant",
+        "vector-leaf",
+        {"quant_mode": "none"},
+        rounds=30,
+    )
+
     # the same ridge WITHOUT bagging: sparse few-bin columns against a
     # separable multiclass label, grown deep over tiny leaves for long enough
     # that a mis-sized leaf output feeds back into the next round's gradients.
@@ -508,6 +527,28 @@ def build_profile(name):
         y = (X @ rng.standard_normal((m, 4))).argmax(axis=1).astype(np.float64)
         base.update({"objective": "multiclass", "num_class": 4,
                      "categorical_feature": [0, 1, 2]})
+    elif name == "vector-leaf":
+        # Four targets share their strongest drivers, which makes a shared
+        # structure appropriate, but each has a distinct secondary feature.
+        # Their 3^t scale spread makes the per-target quantization scales
+        # observable: one scale shared by all targets would collapse the
+        # smallest target. Five-valued features exercise the production-like
+        # low-cardinality regime where vector-leaf is intended to be useful.
+        n, m, num_targets = 8000, 20, 4
+        X = rng.integers(0, 5, size=(n, m)).astype(np.float64)
+        centered = X - 2.0
+        shared = 1.7 * centered[:, 0] - 1.2 * centered[:, 3]
+        columns = []
+        for target in range(num_targets):
+            signal = shared + 0.4 * centered[:, target + 5]
+            noise = 0.05 * rng.standard_normal(n)
+            columns.append((signal + noise) * (3.0**target))
+        y = np.column_stack(columns)
+        base.update({"objective": "multi_regression",
+                     "num_class": num_targets, "tree_mode": "vector_leaf",
+                     "boost_from_average": False,
+                     "max_bin": 5, "num_leaves": 31, "max_depth": 10,
+                     "min_data_in_leaf": 20})
     elif name == "sparse-mc":
         # five 80%-zero integer columns binned to 5 bins, against a SEPARABLE
         # 6-class argmax label. Few features x few bins means the tree keeps
@@ -526,8 +567,13 @@ def build_profile(name):
         raise ValueError(f"unknown profile {name}")
     return X, np.asarray(y, dtype=np.float64), base
 
-def eval_metric(params, model, X_test, y_test):
-    pred = model.predict(X_test)
+def eval_metric(params, pred, y_test):
+    if params.get("objective") == "multi_regression":
+        target_variance = np.var(y_test, axis=0)
+        nrmse = np.sqrt(np.mean((pred - y_test) ** 2, axis=0) / target_variance)
+        # A mean can hide a collapsed small-magnitude target. The worst target
+        # is the conservative single-number quality signal the lattice needs.
+        return float(np.max(nrmse)), "max_nrmse", False
     if params.get("objective") == "binary":
         from sklearn.metrics import roc_auc_score
         return float(roc_auc_score(y_test, pred)), "auc", True
@@ -554,15 +600,20 @@ def run_cell(cell):
     # with zero behavior change) -- tree bytes are the actual behavior signature
     md5 = hashlib.md5(model_str.split("\nparameters:")[0].encode()).hexdigest()
     # validity: round-trip + finite predictions + tree count
-    expected_trees = cell["rounds"] * params.get("num_class", 1)
+    is_vector_leaf = str(params.get("tree_mode", "scalar")).strip().lower() == "vector_leaf"
+    expected_trees = cell["rounds"] if is_vector_leaf else cell["rounds"] * params.get("num_class", 1)
     assert bst.num_trees() == expected_trees, f"tree count {bst.num_trees()} != {expected_trees}"
     pred = bst.predict(X_te)
     assert np.all(np.isfinite(pred)), "non-finite predictions"
-    assert float(np.std(pred)) > 0.0, "constant predictions (garbage model)"
+    if y_te.ndim == 2:
+        assert pred.shape == y_te.shape, (
+            f"multi-target prediction shape {pred.shape} != label shape {y_te.shape}"
+        )
+    assert np.all(np.std(pred, axis=0) > 0.0), "constant predictions (garbage model)"
     reloaded = lgb.Booster(model_str=model_str)
     pred2 = reloaded.predict(X_te)
     assert np.array_equal(pred, pred2), "reloaded model predicts differently"
-    metric, metric_name, higher_better = eval_metric(params, bst, X_te, y_te)
+    metric, metric_name, higher_better = eval_metric(params, pred, y_te)
     return {"id": cell["id"], "ok": True, "md5": md5, "metric": metric,
             "metric_name": metric_name, "higher_better": higher_better,
             "construct_sec": round(t_construct, 4), "train_sec": round(t_train, 4)}
