@@ -457,6 +457,20 @@ Learning Control Parameters
 
    -  can be used to deal with over-fitting
 
+-  ``split_midpoint`` :raw-html:`<a id="split_midpoint" title="Permalink to this parameter" href="#split_midpoint">&#x1F517;&#xFE0E;</a>`, default = ``false``, type = bool
+
+   -  store each numerical split threshold at the middle of its run of empty bins instead of at one edge
+
+   -  when a node holds no rows in the bins next to the best threshold, every threshold across that run partitions the training rows identically and has the same gain; the scan keeps the edge it meets first, so unseen values inside the run all route to one side
+
+   -  with ``true`` the stored threshold is the middle bin of the run, routing unseen values by their distance to the nearest training data on either side (the convention of scikit-learn and cuML, which split halfway between adjacent training values)
+
+   -  training predictions are unchanged by construction, only predictions on data outside the training support move
+
+   -  emptiness is judged from the histogram, so rows whose hessian sums to exactly zero (quantized training rounding tiny hessians to zero, custom objectives with zero hessians) count as absent
+
+   -  applies to numerical features on ``device_type = cpu`` and ``device_type = cuda``, not to categorical splits, vector-leaf trees, or trees trained with monotone constraints
+
 -  ``extra_seed`` :raw-html:`<a id="extra_seed" title="Permalink to this parameter" href="#extra_seed">&#x1F517;&#xFE0E;</a>`, default = ``6``, type = int
 
    -  random seed for selecting thresholds when ``extra_trees`` is true

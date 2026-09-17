@@ -222,6 +222,7 @@ const std::unordered_set<std::string>& Config::parameter_set() {
   "feature_fraction_bynode",
   "feature_fraction_seed",
   "extra_trees",
+  "split_midpoint",
   "extra_seed",
   "early_stopping_round",
   "early_stopping_min_delta",
@@ -408,6 +409,8 @@ void Config::GetMembersFromString(const std::unordered_map<std::string, std::str
   GetInt(params, "feature_fraction_seed", &feature_fraction_seed);
 
   GetBool(params, "extra_trees", &extra_trees);
+
+  GetBool(params, "split_midpoint", &split_midpoint);
 
   GetInt(params, "extra_seed", &extra_seed);
 
@@ -727,6 +730,7 @@ std::string Config::SaveMembersToString() const {
   str_buf << "[feature_fraction_bynode: " << feature_fraction_bynode << "]\n";
   str_buf << "[feature_fraction_seed: " << feature_fraction_seed << "]\n";
   str_buf << "[extra_trees: " << extra_trees << "]\n";
+  str_buf << "[split_midpoint: " << split_midpoint << "]\n";
   str_buf << "[extra_seed: " << extra_seed << "]\n";
   str_buf << "[early_stopping_round: " << early_stopping_round << "]\n";
   str_buf << "[early_stopping_min_delta: " << early_stopping_min_delta << "]\n";
@@ -860,6 +864,7 @@ const std::unordered_map<std::string, std::vector<std::string>>& Config::paramet
     {"feature_fraction_bynode", {"sub_feature_bynode", "colsample_bynode"}},
     {"feature_fraction_seed", {}},
     {"extra_trees", {"extra_tree"}},
+    {"split_midpoint", {}},
     {"extra_seed", {}},
     {"early_stopping_round", {"early_stopping_rounds", "early_stopping", "n_iter_no_change"}},
     {"early_stopping_min_delta", {}},
@@ -1012,6 +1017,7 @@ const std::unordered_map<std::string, std::string>& Config::ParameterTypes() {
     {"feature_fraction_bynode", "double"},
     {"feature_fraction_seed", "int"},
     {"extra_trees", "bool"},
+    {"split_midpoint", "bool"},
     {"extra_seed", "int"},
     {"early_stopping_round", "int"},
     {"early_stopping_min_delta", "double"},

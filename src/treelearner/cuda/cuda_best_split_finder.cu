@@ -174,6 +174,31 @@ __device__ __forceinline__ bool CatCandidateSelected(uint64_t* state,
 // device-safe constants (rather than std::numeric_limits, which is awkward in
 // device code) so the reductions can run in either fp64 (default) or fp32
 // (FALCATA_FP32_GAIN) gain arithmetic.
+// split_midpoint (SplitGainMath::GapMidpointThreshold) for a threshold a numeric
+// finder produced; the shared helper holds the scan ranges and walls, so CPU
+// and CUDA store the same threshold. Skipped under monotone constraints for
+// the reason given at FeatureHistogram::MidpointThreshold.
+struct CUDAFloatHistEmpty {  // fp32-or-fp64 (grad, hess) pairs behind ReadHistEntry; see PairHistEmpty
+  const hist_t* data;
+  bool fp32_hist;
+  double cnt_factor;
+  __device__ bool operator()(int idx) const {
+    const double hess = ReadHistEntry<double>(data, (static_cast<unsigned int>(idx) << 1) + 1, fp32_hist);
+    return static_cast<int>(hess * cnt_factor + 0.5) == 0;
+  }
+};
+
+template <bool USE_MC, bool REVERSE, typename IS_EMPTY_HIST>
+__device__ __forceinline__ uint32_t CUDAMidpointThreshold(const SplitFindTask* task, const uint32_t threshold,
+                                                          IS_EMPTY_HIST is_empty_hist) {
+  if (USE_MC || !task->split_midpoint) {
+    return threshold;
+  }
+  return static_cast<uint32_t>(SplitGainMath::GapMidpointThreshold(
+      static_cast<int>(threshold), REVERSE, static_cast<int>(task->mfb_offset), static_cast<int>(task->num_bin),
+      task->na_as_missing, task->skip_default_bin, static_cast<int>(task->default_bin), is_empty_hist));
+}
+
 template <typename GAIN_T>
 __device__ __forceinline__ constexpr GAIN_T GainTieEpsilon();
 template <>
@@ -725,7 +750,8 @@ __device__ void FindBestSplitsForLeafKernelInner(
   __syncthreads();
   if (threshold_found && threadIdx_x == best_thread_index) {
     cuda_best_split_info->is_valid = true;
-    cuda_best_split_info->threshold = threshold_value;
+    cuda_best_split_info->threshold = CUDAMidpointThreshold<USE_MC, REVERSE>(
+      task, threshold_value, CUDAFloatHistEmpty{feature_hist_ptr, fp32_hist, static_cast<double>(cnt_factor)});
     cuda_best_split_info->gain = local_gain * task->penalty;
     cuda_best_split_info->default_left = task->assume_out_default_left;
     // the once-per-task output block stays in double (negligible cost)
@@ -1038,7 +1064,9 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
   __syncthreads();
   if (threshold_found && threadIdx_x == best_thread_index) {
     cuda_best_split_info->is_valid = true;
-    cuda_best_split_info->threshold = threshold_value;
+    // packed grad|hess entry == 0 <=> both quantized sums are zero
+    cuda_best_split_info->threshold = CUDAMidpointThreshold<false, REVERSE>(
+      task, threshold_value, SplitGainMath::PackedHistEmpty<BIN_HIST_TYPE>{feature_hist_ptr});
     cuda_best_split_info->gain = local_gain * task->penalty;
     cuda_best_split_info->default_left = task->assume_out_default_left;
     // the once-per-task output block stays in double (negligible cost)
@@ -2363,7 +2391,10 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
   __syncthreads();
   if (threshold_found && local_best_pos == best_thread_index) {
     cuda_best_split_info->is_valid = true;
-    cuda_best_split_info->threshold = threshold_value;
+    // the sums below index the prefix buffers by the SCAN threshold; only the
+    // stored threshold moves
+    cuda_best_split_info->threshold = CUDAMidpointThreshold<USE_MC, REVERSE>(
+      task, threshold_value, SplitGainMath::PairHistEmpty<hist_t>{feature_hist_ptr, cnt_factor});
     cuda_best_split_info->gain = local_gain * task->penalty;
     cuda_best_split_info->default_left = task->assume_out_default_left;
     if (REVERSE) {

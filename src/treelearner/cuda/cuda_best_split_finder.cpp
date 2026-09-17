@@ -36,6 +36,7 @@ CUDABestSplitFinder::CUDABestSplitFinder(
   min_data_per_group_(config->min_data_per_group),
   max_cat_to_onehot_(config->max_cat_to_onehot),
   cat_random_search_(config->cat_random_search),
+  split_midpoint_(config->split_midpoint),
   extra_trees_(config->extra_trees),
   extra_seed_(config->extra_seed),
   use_smoothing_(config->path_smooth > 0),
@@ -286,6 +287,9 @@ void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
     }
   }
   CHECK_EQ(cur_task_index, static_cast<int>(split_find_tasks_.size()));
+  for (SplitFindTask& task : split_find_tasks_) {
+    task.split_midpoint = split_midpoint_;
+  }
 
   // Task order IS the tie-break order: every best-split reduction breaks exact
   // gain ties to the lower task index. The CUDA dataset's inner feature order
@@ -374,6 +378,7 @@ void CUDABestSplitFinder::ResetConfig(const Config* config, const hist_t* cuda_h
   min_data_per_group_ = config->min_data_per_group;
   max_cat_to_onehot_ = config->max_cat_to_onehot;
   cat_random_search_ = config->cat_random_search;
+  split_midpoint_ = config->split_midpoint;
   extra_trees_ = config->extra_trees;
   extra_seed_ = config->extra_seed;
   use_smoothing_ = (config->path_smooth > 0.0f);
@@ -383,6 +388,9 @@ void CUDABestSplitFinder::ResetConfig(const Config* config, const hist_t* cuda_h
 
   feature_contri_ = config->feature_contri;
   SetTaskFeaturePenalties();
+  for (SplitFindTask& task : split_find_tasks_) {
+    task.split_midpoint = split_midpoint_;
+  }
   CopyFromHostToCUDADevice<SplitFindTask>(cuda_split_find_tasks_.RawData(),
                                           split_find_tasks_.data(),
                                           split_find_tasks_.size(),

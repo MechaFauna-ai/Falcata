@@ -246,6 +246,10 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=Non
         params["quant_mode"] = "none"
     elif library == "lightgbm-quant":
         params["use_quantized_grad"] = True
+    # A/B hook for engine flags the regime table does not model (e.g.
+    # split_midpoint): a JSON object merged into the params verbatim
+    if os.environ.get("FALCATA_EXTRA_PARAMS"):
+        params.update(json.loads(os.environ["FALCATA_EXTRA_PARAMS"]))
 
     t0 = time.perf_counter()
     # the Dataset must be built with the final params (incl. device_type);
@@ -288,6 +292,7 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=Non
         "construct_s": construct_s,
         "train_s": train_s,
         "preds": preds,
+        "booster": bst,
         "version": lgb.__version__,
         "curve": curve_pts,
     }
@@ -533,6 +538,8 @@ def main():
     )
     ap.add_argument("--kind", required=True)  # warmup | timed1..3 | curve
     ap.add_argument("--out", default=RUNS_JSONL)
+    ap.add_argument("--save-preds", default=None, help="np.save the test predictions here")
+    ap.add_argument("--save-model", default=None, help="save the trained model here (lightgbm-family only)")
     args = ap.parse_args()
 
     task = DATASETS[args.dataset]["task"]
@@ -556,6 +563,8 @@ def main():
     }
     if overrides:
         rec["overrides"] = overrides
+    if os.environ.get("FALCATA_EXTRA_PARAMS"):
+        rec["extra_params"] = json.loads(os.environ["FALCATA_EXTRA_PARAMS"])
     try:
         x_tr, y_tr, x_te, y_te, extra = load_data(args.dataset)
         rec["n_train"], rec["n_features"] = int(x_tr.shape[0]), int(x_tr.shape[1])
@@ -590,6 +599,11 @@ def main():
                 r = run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve, cat_cols=cat_cols)
             total_s = time.perf_counter() - t_total
         preds = r.pop("preds")
+        if args.save_preds:
+            np.save(args.save_preds, np.asarray(preds))
+        bst = r.pop("booster", None)
+        if args.save_model and bst is not None:
+            bst.save_model(args.save_model)
         rec.update(r)
         rec["total_s"] = total_s
         rec["trees_per_s"] = reg["rounds"] / r["train_s"]

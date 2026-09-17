@@ -811,6 +811,20 @@ class FeatureHistogram {
         sum_gradients, sum_hessians, l1, l2, output);
   }
 
+  // split_midpoint (SplitGainMath::GapMidpointThreshold) for a threshold the
+  // scan below produced. Skipped under monotone constraints: the constraint
+  // machinery intersects ancestor thresholds numerically, so a moved threshold
+  // could change a descendant's bounds even though the partition is the same.
+  template <bool USE_MC, bool REVERSE, bool SKIP_DEFAULT_BIN, bool NA_AS_MISSING, typename IS_EMPTY_HIST>
+  uint32_t MidpointThreshold(uint32_t threshold, IS_EMPTY_HIST is_empty_hist) const {
+    if (USE_MC || !meta_->config->split_midpoint) {
+      return threshold;
+    }
+    return static_cast<uint32_t>(SplitGainMath::GapMidpointThreshold(
+        static_cast<int>(threshold), REVERSE, meta_->offset, meta_->num_bin, NA_AS_MISSING,
+        SKIP_DEFAULT_BIN, static_cast<int>(meta_->default_bin), is_empty_hist));
+  }
+
   template <bool USE_RAND, bool USE_MC, bool USE_L1, bool USE_MAX_OUTPUT, bool USE_SMOOTHING,
             bool REVERSE, bool SKIP_DEFAULT_BIN, bool NA_AS_MISSING>
   void FindBestThresholdSequentially(double sum_gradient, double sum_hessian,
@@ -1013,6 +1027,8 @@ class FeatureHistogram {
     }
 
     if (is_splittable_ && best_gain > output->gain + min_gain_shift) {
+      best_threshold = MidpointThreshold<USE_MC, REVERSE, SKIP_DEFAULT_BIN, NA_AS_MISSING>(
+          best_threshold, SplitGainMath::PairHistEmpty<hist_t>{data_, cnt_factor});
       // update split information
       output->threshold = best_threshold;
       output->left_output =
@@ -1305,6 +1321,9 @@ class FeatureHistogram {
       const double best_sum_right_hessian = static_cast<double>(int_best_sum_right_hessian) * hess_scale;
       const data_size_t best_left_count = Common::RoundInt(static_cast<double>(int_best_sum_left_hessian) * cnt_factor);
       const data_size_t best_right_count = Common::RoundInt(static_cast<double>(int_best_sum_right_hessian) * cnt_factor);
+      // packed grad|hess entry == 0 <=> both quantized sums are zero
+      best_threshold = MidpointThreshold<USE_MC, REVERSE, SKIP_DEFAULT_BIN, NA_AS_MISSING>(
+          best_threshold, SplitGainMath::PackedHistEmpty<PACKED_HIST_BIN_T>{data_ptr});
       // update split information
       output->threshold = best_threshold;
       output->left_output =

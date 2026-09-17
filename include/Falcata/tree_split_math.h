@@ -88,6 +88,76 @@ FLC_HOSTDEV inline T LeafGain(T sum_gradients, T sum_hessians, T l1,
   return LeafGainGivenOutput<USE_L1, T>(sum_gradients, sum_hessians, l1, l2, output);
 }
 
+// split_midpoint: the threshold at the middle of a run of leaf-empty bins.
+// Every threshold across a run of bins that hold none of the leaf's rows
+// partitions those rows identically and scores the same gain, so the scan
+// keeps whichever it met first -- an edge of the run -- and unseen values
+// inside the run all route to one side. Shared by the CPU and CUDA finders so
+// both store the same threshold. is_empty_hist(idx) reads stored histogram
+// entry idx (bin = idx + offset); the walls -- the unstored most-frequent bin,
+// the NaN bin, a default bin the scan routes by direction -- never count as
+// empty because their rows are real. Callers pass plain functor structs, not
+// lambdas: nvcc rejects a host lambda inside a __host__ __device__ template.
+template <typename T>
+struct PackedHistEmpty {  // quantized histograms: packed grad|hess entry == 0
+  const T* data;
+  FLC_HOSTDEV bool operator()(int idx) const { return data[idx] == 0; }
+};
+
+// (grad, hess) pairs: empty when the bin's row count is zero, with the count
+// derived from the hessian sum exactly as the scan derives it
+// (RoundInt(hess * num_data / sum_hessian)). An exact-zero test would miss
+// bins built by histogram subtraction, whose parent-minus-sibling residue is
+// a few ulp rather than 0.
+template <typename T>
+struct PairHistEmpty {
+  const T* data;
+  double cnt_factor;
+  FLC_HOSTDEV bool operator()(int idx) const {
+    return static_cast<int>(static_cast<double>(data[(idx << 1) + 1]) * cnt_factor + 0.5) == 0;
+  }
+};
+
+template <typename IS_EMPTY_HIST>
+FLC_HOSTDEV inline int GapMidpointThreshold(int threshold, bool reverse, int offset, int num_bin,
+                                            bool na_as_missing, bool skip_default_bin, int default_bin,
+                                            IS_EMPTY_HIST is_empty_hist) {
+  // the threshold range the producing scan covers (its t bounds mapped
+  // through t - 1 + offset for the reverse scan, t + offset otherwise)
+  const int min_threshold = reverse ? 0 : ((na_as_missing && offset == 1) ? 0 : offset);
+  const int max_threshold = reverse ? (num_bin - 2 - (na_as_missing ? 1 : 0)) : (num_bin - 2);
+  struct EmptyBin {
+    int offset, num_bin, default_bin;
+    bool na_as_missing, skip_default_bin;
+    IS_EMPTY_HIST hist;
+    FLC_HOSTDEV bool operator()(int bin) const {
+      const int idx = bin - offset;
+      if (idx < 0 || idx >= num_bin - offset) {
+        return false;
+      }
+      if (skip_default_bin && bin == default_bin) {
+        return false;
+      }
+      if (na_as_missing && bin == num_bin - 1) {
+        return false;
+      }
+      return hist(idx);
+    }
+  };
+  const EmptyBin is_empty_bin{offset, num_bin, default_bin, na_as_missing, skip_default_bin, is_empty_hist};
+  int lo = threshold;
+  int hi = threshold;
+  // bin `lo` empty: threshold lo - 1 sends the same rows left
+  while (lo - 1 >= min_threshold && is_empty_bin(lo)) {
+    --lo;
+  }
+  // bin `hi + 1` empty: threshold hi + 1 sends the same rows left
+  while (hi + 1 <= max_threshold && is_empty_bin(hi + 1)) {
+    ++hi;
+  }
+  return lo + (hi - lo + 1) / 2;
+}
+
 }  // namespace SplitGainMath
 
 }  // namespace Falcata

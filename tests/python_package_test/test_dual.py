@@ -2658,3 +2658,106 @@ def test_fil_matches_the_engine_predictor(objective, monkeypatch):
     booster._fil_models = {}
     fil_double = np.asarray(booster.predict(X))
     np.testing.assert_allclose(fil_double, engine, rtol=1e-12, atol=1e-12)
+
+
+def _numeric_split_thresholds(node, out):
+    """Collect (feature, threshold) of every numeric split under `node`, in tree order."""
+    if "split_index" in node:
+        if node["decision_type"] == "<=":
+            out.append((node["split_feature"], node["threshold"]))
+        _numeric_split_thresholds(node["left_child"], out)
+        _numeric_split_thresholds(node["right_child"], out)
+    return out
+
+
+def _gap_data():
+    """Two groups; in group 1, feature 0 leaves the bins for 10..19 empty.
+
+    Bins come from the whole column, so group 0 supplies the values 10..19
+    and keeps those bins alive. Group 0's label is 0 and group 1's is 2 or 3,
+    so the first split separates the groups (feature 1, the larger gain); the
+    second, inside group 1, is the step of the label at the gap in feature 0,
+    where every threshold across the empty run partitions the group-1 rows
+    identically.
+    """
+    rng = np.random.default_rng(7)
+    x0_g1 = np.concatenate([rng.integers(0, 10, size=100), rng.integers(20, 30, size=100)])
+    x0_g0 = rng.integers(10, 20, size=200)
+    x0 = np.concatenate([x0_g1, x0_g0]).astype(np.float64)
+    x1 = np.concatenate([np.ones(200), np.zeros(200)])
+    X = np.stack([x0, x1], axis=1)
+    y = x1 * (2.0 + (x0 >= 15)) + 0.02 * rng.standard_normal(400)
+    return X, y
+
+
+_GAP_PARAMS = {
+    "verbose": -1,
+    "num_leaves": 3,
+    "min_data_in_leaf": 1,
+    "max_bin": 255,
+    "feature_pre_filter": False,
+    "learning_rate": 1.0,
+    "num_threads": 1,
+    "deterministic": True,
+    "seed": 0,
+}
+
+
+def _train_gap(device_type, split_midpoint):
+    X, y = _gap_data()
+    ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False, "max_bin": 255})
+    params = {**_GAP_PARAMS, "device_type": device_type, "split_midpoint": split_midpoint}
+    if device_type == "cuda":
+        params.update({"gpu_use_dp": True, "force_col_wise": True})
+    bst = lgb.train(params, ds, num_boost_round=1)
+    return bst, X
+
+
+def test_split_midpoint_moves_threshold_into_gap_cpu():
+    """split_midpoint stores the middle of the empty run; training output is unchanged.
+
+    Feature 0's bin boundaries sit between adjacent integers, so the group-1
+    split can be stored at any boundary from 9.5 to 19.5. The default finder
+    keeps the edge the reverse scan meets first (19.5); split_midpoint keeps
+    the middle boundary (14.5). No training row lies in the gap, so the two
+    models predict the training set identically.
+    """
+    thr = {}
+    preds = {}
+    for flag in (False, True):
+        bst, X = _train_gap("cpu", flag)
+        splits = _numeric_split_thresholds(bst.dump_model()["tree_info"][0]["tree_structure"], [])
+        gap_splits = [t for f, t in splits if f == 0]
+        assert len(gap_splits) == 1, splits
+        thr[flag] = gap_splits[0]
+        preds[flag] = bst.predict(X)
+    assert thr[False] == pytest.approx(19.5), thr
+    assert thr[True] == pytest.approx(14.5), thr
+    np.testing.assert_array_equal(preds[False], preds[True])
+    # an unseen value inside the gap now routes by proximity: 12 sits with 0..9
+    bst_mid, _ = _train_gap("cpu", True)
+    bst_edge, _ = _train_gap("cpu", False)
+    probe = np.array([[12.0, 1.0], [17.0, 1.0]])
+    lo_leaf, hi_leaf = bst_mid.predict(np.array([[5.0, 1.0], [25.0, 1.0]]))
+    assert bst_mid.predict(probe) == pytest.approx([lo_leaf, hi_leaf])
+    assert bst_edge.predict(probe) == pytest.approx([lo_leaf, lo_leaf])
+
+
+@_REQUIRES_CUDA
+def test_split_midpoint_cuda_matches_cpu():
+    """CUDA stores the same midpoint threshold as CPU; on CUDA the flag leaves
+    training output bit-identical (leaf values are compared within the device,
+    since deterministic=true on CUDA trains in a quantized mode whose leaf
+    values differ from CPU's at the 1e-5 level regardless of this flag).
+    """
+    dumps = {}
+    for device_type in ("cpu", "cuda"):
+        bst, _ = _train_gap(device_type, True)
+        dumps[device_type] = _numeric_split_thresholds(bst.dump_model()["tree_info"][0]["tree_structure"], [])
+    assert dumps["cuda"] == dumps["cpu"]
+    assert [t for f, t in dumps["cuda"] if f == 0] == pytest.approx([14.5])
+    preds = {}
+    for flag in (False, True):
+        bst, X = _train_gap("cuda", flag)
+        preds[flag] = bst.predict(X)
+    np.testing.assert_array_equal(preds[False], preds[True])

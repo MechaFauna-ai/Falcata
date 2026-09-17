@@ -255,10 +255,13 @@ def _numerai_roles(f):
     """
     feat_cols = [c for c in f.schema_arrow.names if c.startswith("feature")]
 
-    # pass 1: era + target only, to build the row filter and split boundaries
-    et = f.read(columns=["era", "target"]).to_pandas()
+    # pass 1: era + target only, to build the row filter and split boundaries.
+    # NUMERAI_TARGET names the label column (default: the parquet's ``target``
+    # alias, which Numerai re-points between data releases).
+    target_col = os.environ.get("NUMERAI_TARGET", "target")
+    et = f.read(columns=["era", target_col]).to_pandas()
     era_int = et["era"].astype(int).to_numpy()
-    keep = et["target"].notna().to_numpy()
+    keep = et[target_col].notna().to_numpy()
     if not (np.diff(era_int) >= 0).all():
         sys.exit("numerai: parquet must be sorted by era")
 
@@ -275,7 +278,7 @@ def _numerai_roles(f):
     keep_all[keep] = keep_within  # absolute row filter
     n_rows = int(keep_within.sum())
     train_end = int((role == 1).sum())
-    targets = et["target"].to_numpy(dtype=np.float32)
+    targets = et[target_col].to_numpy(dtype=np.float32)
     return feat_cols, keep_all, n_rows, train_end, era_int, targets
 
 

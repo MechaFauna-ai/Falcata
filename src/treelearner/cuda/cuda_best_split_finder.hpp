@@ -61,6 +61,9 @@ struct SplitFindTask {
   int rand_threshold;
   // per-feature split-gain scaling (config->feature_contri); 1.0 when unset
   double penalty;
+  // config->split_midpoint, carried per task so the finder kernels need no
+  // extra argument (every numeric finder already receives the task)
+  bool split_midpoint;
 };
 
 class CUDABestSplitFinder {
@@ -599,6 +602,7 @@ class CUDABestSplitFinder {
   int min_data_per_group_;
   int max_cat_to_onehot_;
   int cat_random_search_;
+  bool split_midpoint_;
   bool extra_trees_;
   int extra_seed_;
   bool use_smoothing_;
