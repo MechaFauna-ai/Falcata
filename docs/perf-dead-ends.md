@@ -414,3 +414,34 @@ Re-open when: the histogram layout changes so a leaf's T planes share ONE slot
 row (an interleaved `[bin][target]` cell layout), which is the term the
 measurement indicts. Fusing purely to save launches is settled -- launch
 overhead is ~2% of a vector tree and was never the mechanism.
+
+## Mid-gap split thresholds (`split_midpoint`, 2026-09-17)
+
+- **Tried:** store each numeric threshold at the middle of its run of
+  leaf-empty bins instead of the edge the scan meets first (the
+  scikit-learn / cuML convention; the one transferable idea in cuML's
+  batched-levelalgo tree builder). Flag, default off, on `feat/split-midpoint`.
+- **Promising because:** unseen values inside a training gap route by
+  proximity instead of all to one side; training is unchanged by
+  construction, so it looked like free held-out quality.
+- **Measured (paired, same trees, thresholds the only difference):**
+  Numerai deep, 300 trees: 0 of 69,199 thresholds move -- 5-level
+  equal-frequency features never leave a node's bin empty. year (regression,
+  hess = 1 per row, exact pairing): 18% of thresholds move at depth 10, 7% of
+  test rows re-route, RMSE deltas across four pairs −0.0009 / +0.0002 /
+  +0.00002 / +0.0003 (t between −1.4 and +0.4). Regularized fraud and covtype
+  (`lambda_l2 = 1`): 3–5% move, 0.1–0.5% of test rows re-route, AUC +5e-7,
+  accuracy +3e-5, logloss −5e-5.
+- **Why it failed:** the rows that would benefit are the ones outside the
+  training support, and there are too few of them for the half-gap shift to
+  register. Two real hazards surfaced: a histogram cannot see rows whose
+  gradient and hessian round to zero (quantized histograms, unregularized
+  models with p underflowing), so a "row-count" or integer emptiness test
+  crosses real rows and training diverges (fraud collapsed to AUC 0.50 under
+  the row-count rule; 91% of thresholds "moved" under fixedpoint). The flag
+  is therefore inert on quantized histograms and on fp32 subtracted
+  histograms, which excludes the flagship stochastic mode.
+- **Re-open when:** a dataset shows many held-out values inside training gaps
+  (heavy-tailed continuous features with sparse regions), or the partition is
+  changed to split by the scan threshold while storing the midpoint, which
+  would make the mechanism safe on every histogram type.
