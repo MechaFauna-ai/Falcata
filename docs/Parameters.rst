@@ -467,7 +467,7 @@ Learning Control Parameters
 
    -  training predictions are unchanged by construction, only predictions on data outside the training support move
 
-   -  emptiness is judged from the histogram, so rows whose hessian sums to exactly zero (quantized training rounding tiny hessians to zero, custom objectives with zero hessians) count as absent
+   -  a bin counts as empty only where the histogram can certify it: directly built or double-precision histograms; single-precision histograms built by subtraction (``cuda_precision = fp32``, the larger child) and quantized histograms (``quant_mode`` other than ``none``) leave thresholds unchanged, because rows whose gradient and hessian round to zero are invisible there
 
    -  applies to numerical features on ``device_type = cpu`` and ``device_type = cuda``, not to categorical splits, vector-leaf trees, or trees trained with monotone constraints
 

@@ -1069,9 +1069,9 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
   __syncthreads();
   if (threshold_found && threadIdx_x == best_thread_index) {
     cuda_best_split_info->is_valid = true;
-    // packed grad|hess entry == 0 <=> both quantized sums are zero
-    cuda_best_split_info->threshold = CUDAMidpointThreshold<false, REVERSE>(
-      task, threshold_value, SplitGainMath::PackedHistEmpty<BIN_HIST_TYPE>{feature_hist_ptr});
+    // split_midpoint does not apply here: a quantized histogram cannot
+    // certify a bin empty (see SplitGainMath::GapMidpointThreshold)
+    cuda_best_split_info->threshold = threshold_value;
     cuda_best_split_info->gain = local_gain * task->penalty;
     cuda_best_split_info->default_left = task->assume_out_default_left;
     // the once-per-task output block stays in double (negligible cost)

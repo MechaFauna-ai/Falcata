@@ -2745,24 +2745,23 @@ def test_split_midpoint_moves_threshold_into_gap_cpu():
 
 @_REQUIRES_CUDA
 def test_split_midpoint_cuda_matches_cpu():
-    """CUDA stores the same midpoint threshold as CPU; on CUDA the flag leaves
-    training output bit-identical (leaf values are compared within the device,
-    since deterministic=true on CUDA trains in a quantized mode whose leaf
-    values differ from CPU's at the 1e-5 level regardless of this flag).
+    """CUDA stores the same midpoint threshold as CPU on the float histogram
+    path; on CUDA the flag leaves training output bit-identical (leaf values are
+    compared within the device, whose float sums differ from CPU's in the last
+    bits regardless of this flag).
     """
     dumps = {}
     for device_type in ("cpu", "cuda"):
-        bst, _ = _train_gap(device_type, True)
+        bst, _ = _train_gap(device_type, True, quant_mode="none")
         dumps[device_type] = _numeric_split_thresholds(bst.dump_model()["tree_info"][0]["tree_structure"], [])
     assert dumps["cuda"] == dumps["cpu"]
     assert [t for f, t in dumps["cuda"] if f == 0] == pytest.approx([14.5])
-    # deterministic=true trains quantized (integer histograms); the float
-    # histogram path, whose emptiness rule is a tolerance, must agree
-    bst, _ = _train_gap("cuda", True, quant_mode="none")
-    floats = _numeric_split_thresholds(bst.dump_model()["tree_info"][0]["tree_structure"], [])
-    assert [t for f, t in floats if f == 0] == pytest.approx([14.5])
+    # quantized histograms cannot certify a bin empty, so the flag is inert there
+    bst, _ = _train_gap("cuda", True, quant_mode="fixedpoint")
+    quant = _numeric_split_thresholds(bst.dump_model()["tree_info"][0]["tree_structure"], [])
+    assert [t for f, t in quant if f == 0] == pytest.approx([19.5])
     preds = {}
     for flag in (False, True):
-        bst, X = _train_gap("cuda", flag)
+        bst, X = _train_gap("cuda", flag, quant_mode="none")
         preds[flag] = bst.predict(X)
     np.testing.assert_array_equal(preds[False], preds[True])

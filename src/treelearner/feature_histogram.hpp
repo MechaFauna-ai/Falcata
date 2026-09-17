@@ -1323,9 +1323,8 @@ class FeatureHistogram {
       const double best_sum_right_hessian = static_cast<double>(int_best_sum_right_hessian) * hess_scale;
       const data_size_t best_left_count = Common::RoundInt(static_cast<double>(int_best_sum_left_hessian) * cnt_factor);
       const data_size_t best_right_count = Common::RoundInt(static_cast<double>(int_best_sum_right_hessian) * cnt_factor);
-      // packed grad|hess entry == 0 <=> both quantized sums are zero
-      best_threshold = MidpointThreshold<USE_MC, REVERSE, SKIP_DEFAULT_BIN, NA_AS_MISSING>(
-          best_threshold, SplitGainMath::PackedHistEmpty<PACKED_HIST_BIN_T>{data_ptr});
+      // split_midpoint does not apply here: a quantized histogram cannot
+      // certify a bin empty (see SplitGainMath::GapMidpointThreshold)
       // update split information
       output->threshold = best_threshold;
       output->left_output =

@@ -98,12 +98,12 @@ FLC_HOSTDEV inline T LeafGain(T sum_gradients, T sum_hessians, T l1,
 // the NaN bin, a default bin the scan routes by direction -- never count as
 // empty because their rows are real. Callers pass plain functor structs, not
 // lambdas: nvcc rejects a host lambda inside a __host__ __device__ template.
-template <typename T>
-struct PackedHistEmpty {  // quantized histograms: packed grad|hess entry == 0
-  const T* data;
-  FLC_HOSTDEV bool operator()(int idx) const { return data[idx] == 0; }
-};
-
+// Every bin the returned threshold crosses is empty by the functor's rule, so
+// the split's sums and partition stay consistent without recomputation.
+// Quantized (integer) histograms never qualify: rows whose gradient and
+// hessian both round to zero -- most confidently-classified rows on an
+// imbalanced objective -- leave no trace in the bin, and crossing them
+// re-routes real rows (fraud: 91% of thresholds moved, training diverged).
 // (grad, hess) pairs: empty when both sums are within `tol` of zero. The
 // tolerance comes from MidpointEmptyTolerance: exactly zero where the histogram
 // is exact, a relative epsilon where it carries subtraction residue, and

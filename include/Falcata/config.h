@@ -415,7 +415,7 @@ struct Config {
   // desc = when a node holds no rows in the bins next to the best threshold, every threshold across that run partitions the training rows identically and has the same gain; the scan keeps the edge it meets first, so unseen values inside the run all route to one side
   // desc = with ``true`` the stored threshold is the middle bin of the run, routing unseen values by their distance to the nearest training data on either side (the convention of scikit-learn and cuML, which split halfway between adjacent training values)
   // desc = training predictions are unchanged by construction, only predictions on data outside the training support move
-  // desc = emptiness is judged from the histogram, so rows whose hessian sums to exactly zero (quantized training rounding tiny hessians to zero, custom objectives with zero hessians) count as absent
+  // desc = a bin counts as empty only where the histogram can certify it: directly built or double-precision histograms; single-precision histograms built by subtraction (``cuda_precision = fp32``, the larger child) and quantized histograms (``quant_mode`` other than ``none``) leave thresholds unchanged, because rows whose gradient and hessian round to zero are invisible there
   // desc = applies to numerical features on ``device_type = cpu`` and ``device_type = cuda``, not to categorical splits, vector-leaf trees, or trees trained with monotone constraints
   bool split_midpoint = false;
 
