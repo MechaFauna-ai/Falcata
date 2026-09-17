@@ -181,10 +181,11 @@ __device__ __forceinline__ bool CatCandidateSelected(uint64_t* state,
 struct CUDAFloatHistEmpty {  // fp32-or-fp64 (grad, hess) pairs behind ReadHistEntry; see PairHistEmpty
   const hist_t* data;
   bool fp32_hist;
-  double cnt_factor;
+  double tol;
   __device__ bool operator()(int idx) const {
-    const double hess = ReadHistEntry<double>(data, (static_cast<unsigned int>(idx) << 1) + 1, fp32_hist);
-    return static_cast<int>(hess * cnt_factor + 0.5) == 0;
+    return tol >= 0.0 &&
+      fabs(ReadHistEntry<double>(data, static_cast<unsigned int>(idx) << 1, fp32_hist)) <= tol &&
+      fabs(ReadHistEntry<double>(data, (static_cast<unsigned int>(idx) << 1) + 1, fp32_hist)) <= tol;
   }
 };
 
@@ -550,7 +551,10 @@ __device__ void FindBestSplitsForLeafKernelInner(
   const double leaf_constraint_min,
   const double leaf_constraint_max,
   // output parameters
-  CUDASplitInfo* cuda_best_split_info) {
+  CUDASplitInfo* cuda_best_split_info,
+  // split_midpoint: whether this leaf's histogram came from parent-minus-sibling
+  // subtraction (the larger leaf), which decides the emptiness tolerance
+  const bool hist_subtracted) {
   // leaf-level inputs stay double; GAIN_T = float (FALCATA_FP32_GAIN) converts
   // them ONCE per task here, so all per-bin arithmetic below runs in fp32
   const int8_t monotone_constraint = task->monotone_type;
@@ -751,7 +755,8 @@ __device__ void FindBestSplitsForLeafKernelInner(
   if (threshold_found && threadIdx_x == best_thread_index) {
     cuda_best_split_info->is_valid = true;
     cuda_best_split_info->threshold = CUDAMidpointThreshold<USE_MC, REVERSE>(
-      task, threshold_value, CUDAFloatHistEmpty{feature_hist_ptr, fp32_hist, static_cast<double>(cnt_factor)});
+      task, threshold_value, CUDAFloatHistEmpty{feature_hist_ptr, fp32_hist,
+        SplitGainMath::MidpointEmptyTolerance(sum_gradients, sum_hessians, fp32_hist, hist_subtracted)});
     cuda_best_split_info->gain = local_gain * task->penalty;
     cuda_best_split_info->default_left = task->assume_out_default_left;
     // the once-per-task output block stays in double (negligible cost)
@@ -1843,7 +1848,7 @@ __global__ void FindBestSplitsForLeafKernel(
           leaf_constraint_min,
           leaf_constraint_max,
           // output parameters
-          out);
+          out, IS_LARGER);
       } else {
         FindBestSplitsForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, true, GAIN_T, USE_MC>(
           // input feature information
@@ -1870,7 +1875,7 @@ __global__ void FindBestSplitsForLeafKernel(
           leaf_constraint_min,
           leaf_constraint_max,
           // output parameters
-          out);
+          out, IS_LARGER);
       }
     }
     // CEGB: subtract the cost penalty from this task's gain (block-leader only).
@@ -2156,7 +2161,8 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
   // buffer
   hist_t* hist_grad_buffer_ptr,
   hist_t* hist_hess_buffer_ptr,
-  data_size_t* hist_cnt_buffer_ptr) {
+  data_size_t* hist_cnt_buffer_ptr,
+  const bool hist_subtracted) {
   const int8_t monotone_constraint = task->monotone_type;
   const double cnt_factor = num_data / sum_hessians;
   const double min_gain_shift = parent_gain + min_gain_to_split;
@@ -2394,7 +2400,8 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
     // the sums below index the prefix buffers by the SCAN threshold; only the
     // stored threshold moves
     cuda_best_split_info->threshold = CUDAMidpointThreshold<USE_MC, REVERSE>(
-      task, threshold_value, SplitGainMath::PairHistEmpty<hist_t>{feature_hist_ptr, cnt_factor});
+      task, threshold_value, SplitGainMath::PairHistEmpty<hist_t>{feature_hist_ptr,
+        SplitGainMath::MidpointEmptyTolerance(sum_gradients, sum_hessians, false, hist_subtracted)});
     cuda_best_split_info->gain = local_gain * task->penalty;
     cuda_best_split_info->default_left = task->assume_out_default_left;
     if (REVERSE) {
@@ -3028,7 +3035,7 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
           // buffer
           hist_grad_buffer_ptr,
           hist_hess_buffer_ptr,
-          hist_cnt_buffer_ptr);
+          hist_cnt_buffer_ptr, IS_LARGER);
       } else {
         FindBestSplitsForLeafKernelInner_GlobalMemory<USE_RAND, USE_L1, USE_SMOOTHING, true, USE_MC>(
           // input feature information
@@ -3058,7 +3065,7 @@ __global__ void FindBestSplitsForLeafKernel_GlobalMemory(
           // buffer
           hist_grad_buffer_ptr,
           hist_hess_buffer_ptr,
-          hist_cnt_buffer_ptr);
+          hist_cnt_buffer_ptr, IS_LARGER);
       }
     }
     // CEGB: subtract cost penalty (see numerical kernel for rationale).
@@ -4689,7 +4696,7 @@ __global__ void FindBestSplitsForLevelKernel(
         // hybrid growth is gated off whenever monotone_constraints is set, so the
         // batched path never sees a binding constraint: pass identity bounds.
         -DBL_MAX, DBL_MAX,
-        out);
+        out, is_larger);
     } else {
       FindBestSplitsForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, true, GAIN_T, /*USE_MC=*/false>(
         hist_ptr, fp32_hist, task, cuda_random,
@@ -4699,7 +4706,7 @@ __global__ void FindBestSplitsForLevelKernel(
         // hybrid growth is gated off whenever monotone_constraints is set, so the
         // batched path never sees a binding constraint: pass identity bounds.
         -DBL_MAX, DBL_MAX,
-        out);
+        out, is_larger);
     }
   } else {
     out->is_valid = false;

@@ -104,19 +104,37 @@ struct PackedHistEmpty {  // quantized histograms: packed grad|hess entry == 0
   FLC_HOSTDEV bool operator()(int idx) const { return data[idx] == 0; }
 };
 
-// (grad, hess) pairs: empty when the bin's row count is zero, with the count
-// derived from the hessian sum exactly as the scan derives it
-// (RoundInt(hess * num_data / sum_hessian)). An exact-zero test would miss
-// bins built by histogram subtraction, whose parent-minus-sibling residue is
-// a few ulp rather than 0.
+// (grad, hess) pairs: empty when both sums are within `tol` of zero. The
+// tolerance comes from MidpointEmptyTolerance: exactly zero where the histogram
+// is exact, a relative epsilon where it carries subtraction residue, and
+// negative (never empty) where residue and real rows cannot be told apart.
+// A row-count test (RoundInt(hess * cnt_factor) == 0) is NOT safe here: on an
+// imbalanced binary objective a bin of a few confidently-classified rows
+// rounds to zero rows, the threshold then crosses real rows, and the split's
+// recorded sums no longer match its partition (a model collapsed that way).
 template <typename T>
 struct PairHistEmpty {
   const T* data;
-  double cnt_factor;
+  double tol;
   FLC_HOSTDEV bool operator()(int idx) const {
-    return static_cast<int>(static_cast<double>(data[(idx << 1) + 1]) * cnt_factor + 0.5) == 0;
+    return tol >= 0.0 && fabs(static_cast<double>(data[idx << 1])) <= tol &&
+      fabs(static_cast<double>(data[(idx << 1) + 1])) <= tol;
   }
 };
+
+// Emptiness tolerance for PairHistEmpty. A directly built histogram has exact
+// zeros in empty bins. One built by parent-minus-sibling subtraction carries
+// residue of a few ulp of the parent's bin: ~1e-16 relative in double, where
+// 1e-12 of the leaf's totals separates it from any row that matters, but
+// ~1e-7 relative in fp32, comparable to a real low-hessian row, so fp32
+// subtracted histograms never certify a bin empty.
+FLC_HOSTDEV inline double MidpointEmptyTolerance(double sum_gradient, double sum_hessian,
+                                                 bool fp32_hist, bool subtracted) {
+  if (!fp32_hist) {
+    return 1e-12 * (fabs(sum_gradient) + fabs(sum_hessian));
+  }
+  return subtracted ? -1.0 : 0.0;
+}
 
 template <typename IS_EMPTY_HIST>
 FLC_HOSTDEV inline int GapMidpointThreshold(int threshold, bool reverse, int offset, int num_bin,

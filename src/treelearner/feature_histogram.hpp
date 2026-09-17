@@ -812,7 +812,8 @@ class FeatureHistogram {
   }
 
   // split_midpoint (SplitGainMath::GapMidpointThreshold) for a threshold the
-  // scan below produced. Skipped under monotone constraints: the constraint
+  // scan below produced. CPU histograms are double and may be subtracted, so
+  // the float path always uses the relative tolerance. Skipped under monotone constraints: the constraint
   // machinery intersects ancestor thresholds numerically, so a moved threshold
   // could change a descendant's bounds even though the partition is the same.
   template <bool USE_MC, bool REVERSE, bool SKIP_DEFAULT_BIN, bool NA_AS_MISSING, typename IS_EMPTY_HIST>
@@ -1028,7 +1029,8 @@ class FeatureHistogram {
 
     if (is_splittable_ && best_gain > output->gain + min_gain_shift) {
       best_threshold = MidpointThreshold<USE_MC, REVERSE, SKIP_DEFAULT_BIN, NA_AS_MISSING>(
-          best_threshold, SplitGainMath::PairHistEmpty<hist_t>{data_, cnt_factor});
+          best_threshold, SplitGainMath::PairHistEmpty<hist_t>{
+              data_, SplitGainMath::MidpointEmptyTolerance(sum_gradient, sum_hessian, false, true)});
       // update split information
       output->threshold = best_threshold;
       output->left_output =

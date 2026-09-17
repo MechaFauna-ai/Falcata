@@ -2703,10 +2703,10 @@ _GAP_PARAMS = {
 }
 
 
-def _train_gap(device_type, split_midpoint):
+def _train_gap(device_type, split_midpoint, **extra):
     X, y = _gap_data()
     ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False, "max_bin": 255})
-    params = {**_GAP_PARAMS, "device_type": device_type, "split_midpoint": split_midpoint}
+    params = {**_GAP_PARAMS, "device_type": device_type, "split_midpoint": split_midpoint, **extra}
     if device_type == "cuda":
         params.update({"gpu_use_dp": True, "force_col_wise": True})
     bst = lgb.train(params, ds, num_boost_round=1)
@@ -2756,6 +2756,11 @@ def test_split_midpoint_cuda_matches_cpu():
         dumps[device_type] = _numeric_split_thresholds(bst.dump_model()["tree_info"][0]["tree_structure"], [])
     assert dumps["cuda"] == dumps["cpu"]
     assert [t for f, t in dumps["cuda"] if f == 0] == pytest.approx([14.5])
+    # deterministic=true trains quantized (integer histograms); the float
+    # histogram path, whose emptiness rule is a tolerance, must agree
+    bst, _ = _train_gap("cuda", True, quant_mode="none")
+    floats = _numeric_split_thresholds(bst.dump_model()["tree_info"][0]["tree_structure"], [])
+    assert [t for f, t in floats if f == 0] == pytest.approx([14.5])
     preds = {}
     for flag in (False, True):
         bst, X = _train_gap("cuda", flag)
