@@ -74,12 +74,43 @@ def _gpu_used_bytes():
         )
     except Exception:
         return None
+    if out.returncode != 0:
+        return None
     mine = os.getpid()
     for line in out.stdout.strip().splitlines():
         parts = [p.strip() for p in line.split(",")]
         if len(parts) == 2 and parts[0].isdigit() and int(parts[0]) == mine:
             return int(parts[1]) * 1024 * 1024
     return 0  # no allocation attributed to us yet
+
+
+def _resident_gpu_used_bytes():
+    """Require a valid reading after this process has warmed up CUDA."""
+    used = _gpu_used_bytes()
+    assert used is not None, "nvidia-smi could not query memory for the live CUDA process"
+    assert used > 0, "nvidia-smi reported no memory for the live CUDA process"
+    return used
+
+
+def test_gpu_memory_query_distinguishes_unavailable_from_zero(monkeypatch):
+    """A failed query is unavailable; a successful empty query measures zero."""
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, "", "query failed"),
+    )
+    assert _gpu_used_bytes() is None
+    with pytest.raises(AssertionError, match="live CUDA process"):
+        _resident_gpu_used_bytes()
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+    assert _gpu_used_bytes() == 0
+    with pytest.raises(AssertionError, match="live CUDA process"):
+        _resident_gpu_used_bytes()
 
 
 def test_free_device_data_is_a_noop_on_cpu_datasets():
@@ -152,11 +183,12 @@ X, y = dm._data()
 p = {**dm.PARAMS, "device_type": "cuda"}
 # Establish the CUDA context first. Creating one costs ~500MB on its own,
 # which would swamp the few MB this test is actually looking for.
-dm.lgb.train(p, dm.lgb.Dataset(X[:200], label=y[:200], params=p), num_boost_round=1)
-before = dm._gpu_used_bytes()
+warmup_ds = dm.lgb.Dataset(X[:200], label=y[:200], params=p)
+dm.lgb.train(p, warmup_ds, num_boost_round=1)
+before = dm._resident_gpu_used_bytes()
 ds = dm.lgb.Dataset(X, label=y, params=p)
 ds.construct()
-print(dm._gpu_used_bytes() - before)
+print(dm._resident_gpu_used_bytes() - before)
 """
     )
     # Metadata stays eager and allocation is granular, so allow a few MB;
@@ -176,9 +208,15 @@ def test_subset_of_a_host_only_parent_holds_one_copy():
         """
 X, y = dm._data()
 p = {**dm.PARAMS, "device_type": "cuda"}
-start = dm._gpu_used_bytes()
-dm.lgb.train(p, dm.lgb.Dataset(X, label=y, params=p), num_boost_round=10)
-print(dm._gpu_used_bytes() - start)
+warmup_ds = dm.lgb.Dataset(X[:200], label=y[:200], params=p)
+dm.lgb.train(p, warmup_ds, num_boost_round=1)
+ds = dm.lgb.Dataset(X, label=y, params=p)
+ds.construct()
+start = dm._resident_gpu_used_bytes()
+# The Dataset owns the device columns. Retain it after train() releases its
+# learner, matching the subset measurement without retaining extra workspace.
+dm.lgb.train(p, ds, num_boost_round=10)
+print(dm._resident_gpu_used_bytes() - start)
 """
     )
     assert one_copy > 0, "could not measure a single resident copy"
@@ -188,16 +226,19 @@ print(dm._gpu_used_bytes() - start)
 import numpy as np
 X, y = dm._data()
 p = {**dm.PARAMS, "device_type": "cuda"}
+warmup_ds = dm.lgb.Dataset(X[:200], label=y[:200], params=p)
+dm.lgb.train(p, warmup_ds, num_boost_round=1)
 parent = dm.lgb.Dataset(X, label=y, params=p)
 parent.construct()  # host-only until something uses it on the device
 sub = parent.subset(list(np.where(np.arange(dm.ROWS) % 100 != 0)[0]))
 sub.construct()
-before = dm._gpu_used_bytes()
+before = dm._resident_gpu_used_bytes()
 dm.lgb.train(p, sub, num_boost_round=10)
-print(dm._gpu_used_bytes() - before)
+print(dm._resident_gpu_used_bytes() - before)
 """
     )
 
+    assert grew > 0, "could not measure the resident subset"
     assert grew < 1.5 * one_copy, (
         f"subset training added {grew / 1e6:.0f}MB against a {one_copy / 1e6:.0f}MB "
         "single copy -- parent and child are both resident"
