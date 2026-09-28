@@ -18,7 +18,7 @@ import xgboost as xgb
 from falcata.importers import from_xgboost
 
 
-def case(name, objective, num_class=0, nan_frac=0.0, depth=5, rounds=25, n=4000, m=8):
+def case(name, objective, num_class=0, nan_frac=0.0, depth=5, rounds=25, n=4000, m=8, parallel=1):
     rng = np.random.default_rng(abs(hash(name)) % 10_000)
     # XGBoost consumes float32 (DMatrix truncates); feed both engines the
     # SAME values so the comparison is apples to apples
@@ -37,6 +37,8 @@ def case(name, objective, num_class=0, nan_frac=0.0, depth=5, rounds=25, n=4000,
     params = {"objective": objective, "max_depth": depth, "eta": 0.3, "seed": 1}
     if num_class:
         params["num_class"] = num_class
+    if parallel != 1:
+        params["num_parallel_tree"] = parallel
     bst = xgb.train(params, xgb.DMatrix(X, label=y), num_boost_round=rounds)
     ref = bst.predict(xgb.DMatrix(X))
     got = from_xgboost(bst).predict(X)
@@ -61,6 +63,7 @@ results = [
     case("reg:logistic", "reg:logistic"),
     case("binary:logitraw", "binary:logitraw"),
     case("multi:softprob k=4", "multi:softprob", num_class=4),
+    case("multi:softprob parallel trees", "multi:softprob", num_class=3, parallel=2),
     case("multi:softprob k=3 + missing", "multi:softprob", num_class=3, nan_frac=0.15),
     case("count:poisson", "count:poisson"),
     case("stumps (depth 1)", "reg:squarederror", depth=1),

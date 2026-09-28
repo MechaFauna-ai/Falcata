@@ -24,7 +24,7 @@ import sys
 import zipfile
 
 import numpy as np
-from common import CACHE_DIR, DATA_DIR, SEED, dataset_ready
+from common import CACHE_DIR, DATA_DIR, SEED, dataset_ready, numerai_source_identity
 
 URLS = {
     "higgs.zip": "https://archive.ics.uci.edu/static/public/280/higgs.zip",
@@ -245,7 +245,7 @@ def prep_fraud():
     save("fraud", x_tr, y_tr, x_te, y_te)
 
 
-def _numerai_roles(f):
+def _numerai_roles(f, target_col=None):
     """Row filter shared by the f32 and int8 numerai caches.
 
     Drops rows without a target, embargoes the eras before the test block,
@@ -255,10 +255,13 @@ def _numerai_roles(f):
     """
     feat_cols = [c for c in f.schema_arrow.names if c.startswith("feature")]
 
-    # pass 1: era + target only, to build the row filter and split boundaries
-    et = f.read(columns=["era", "target"]).to_pandas()
+    # pass 1: era + target only, to build the row filter and split boundaries.
+    # NUMERAI_TARGET names the label column (default: the parquet's ``target``
+    # alias, which Numerai re-points between data releases).
+    target_col = target_col or os.environ.get("NUMERAI_TARGET", "target")
+    et = f.read(columns=["era", target_col]).to_pandas()
     era_int = et["era"].astype(int).to_numpy()
-    keep = et["target"].notna().to_numpy()
+    keep = et[target_col].notna().to_numpy()
     if not (np.diff(era_int) >= 0).all():
         sys.exit("numerai: parquet must be sorted by era")
 
@@ -275,7 +278,7 @@ def _numerai_roles(f):
     keep_all[keep] = keep_within  # absolute row filter
     n_rows = int(keep_within.sum())
     train_end = int((role == 1).sum())
-    targets = et["target"].to_numpy(dtype=np.float32)
+    targets = et[target_col].to_numpy(dtype=np.float32)
     return feat_cols, keep_all, n_rows, train_end, era_int, targets
 
 
@@ -295,6 +298,14 @@ def prep_numerai():
     f = pq.ParquetFile(src)
     feat_cols, keep_all, n_rows, train_end, era_int, tgt_all = _numerai_roles(f)
     p = len(feat_cols)
+    source_identity = numerai_source_identity(src)
+    # Invalidate completion markers and derived int8 data before overwriting
+    # any f32 files, so an interrupted rebuild cannot advertise a mixed cache.
+    for stale in ("meta.json", "X.i8.mem"):
+        try:
+            os.unlink(os.path.join(d, stale))
+        except FileNotFoundError:
+            pass
     print(f"numerai: {n_rows} rows x {p} features, train_end={train_end}", flush=True)
 
     x = np.memmap(os.path.join(d, "X.f32.mem"), dtype=np.float32, mode="w+", shape=(n_rows, p))
@@ -326,6 +337,8 @@ def prep_numerai():
         "n_test_eras": NUMERAI_TEST_ERAS,
         "embargo_eras": NUMERAI_EMBARGO_ERAS,
         "source": src,
+        "source_identity": source_identity,
+        "target": os.environ.get("NUMERAI_TARGET", "target"),
     }
     with open(os.path.join(d, "meta.json"), "w") as fh:
         json.dump(meta, fh)
@@ -347,9 +360,18 @@ def prep_numerai_int8():
     if not os.path.exists(meta_path):
         sys.exit("numerai-int8: build the numerai cache first")
     meta = json.load(open(meta_path))
+    target_col = os.environ.get("NUMERAI_TARGET", meta.get("target", "target"))
+    if target_col != meta.get("target", "target"):
+        sys.exit("numerai-int8: target disagrees with the existing f32 cache")
     src = os.environ.get("NUMERAI_PARQUET", meta["source"])
+    try:
+        source_identity = numerai_source_identity(src)
+    except OSError:
+        sys.exit("numerai-int8: source parquet is unavailable")
+    if meta.get("source_identity") != source_identity:
+        sys.exit("numerai-int8: source parquet disagrees with the existing f32 cache")
     f = pq.ParquetFile(src)
-    feat_cols, keep_all, n_rows, train_end, _, _ = _numerai_roles(f)
+    feat_cols, keep_all, n_rows, train_end, _, _ = _numerai_roles(f, target_col=target_col)
     if n_rows != meta["n_rows"] or train_end != meta["train_end"]:
         sys.exit("numerai-int8: row filter disagrees with the existing f32 cache")
     p = len(feat_cols)
@@ -391,7 +413,7 @@ if __name__ == "__main__":
     names = sys.argv[1:]
     targets = [n for n in PREPS if not n.startswith("numerai")] if names == ["all"] else names
     for t in targets:
-        if dataset_ready(t):
+        if dataset_ready(t, for_preprocessing=(t == "numerai")):
             print(f"{t}: cached, skipping", flush=True)
         else:
             PREPS[t]()

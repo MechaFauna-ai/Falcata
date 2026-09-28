@@ -7,6 +7,7 @@ by default, so an artifact does not quietly lose the per-node data that
 pred_contrib and gain importance need.
 """
 
+import ctypes
 import os
 import pickle
 import subprocess
@@ -16,6 +17,7 @@ import tempfile
 import numpy as np
 
 import falcata as flc
+from falcata import basic as flc_basic
 
 rng = np.random.default_rng(0)
 X = rng.standard_normal((5000, 20))
@@ -51,10 +53,21 @@ lying = os.path.join(d, "lying.txt")
 open(lying, "wb").write(open(falb, "rb").read())
 chk("magic beats extension", np.array_equal(flc.Booster(model_file=lying).predict(X), ref))
 chk("Booster(model_file=.txt)", np.array_equal(flc.Booster(model_file=txt).predict(X), ref))
+raw_binary = os.path.join(d, "raw.falb")
+open(raw_binary, "wb").write(bst.model_to_binary())
+chk("raw model_file has no pandas trailer", np.array_equal(flc.Booster(model_file=raw_binary).predict(X), ref))
 
 # 3. bytes round-trip
 blob = bst.model_to_binary()
 chk("model_to_binary/Booster(model_bin=)", np.array_equal(flc.Booster(model_bin=blob).predict(X), ref))
+legacy_len = ctypes.c_int64(0)
+legacy_buf = ctypes.create_string_buffer(len(blob))
+flc_basic._safe_call(
+    flc_basic._LIB.FLC_BoosterSaveModelToBinary(
+        bst._handle, 0, -1, 0, 0, 0, 0, 6, ctypes.c_int64(len(blob)), ctypes.byref(legacy_len), legacy_buf
+    )
+)
+chk("owned-buffer output bytes match legacy C API", blob == legacy_buf.raw[: legacy_len.value])
 
 # 4. pickle defaults to FALB and shrinks
 pk = pickle.dumps(bst)

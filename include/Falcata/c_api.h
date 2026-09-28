@@ -1770,6 +1770,36 @@ FALCATA_C_EXPORT int FLC_BoosterSaveModelToBinary(BoosterHandle handle,
                                                   int64_t* out_len,
                                                   char* out_buf);
 
+/*! \brief Save a binary model into a newly allocated buffer.
+ * \param handle Booster handle
+ * \param start_iteration First iteration to save
+ * \param num_iteration Number of iterations to save; <= 0 means all
+ * \param feature_importance_type Split or gain importance enum
+ * \param with_stats Include structural counts and weights when nonzero
+ * \param with_diagnostics Include split_gain / internal_value when nonzero
+ * \param f32_leaves Store leaf values as float32 when nonzero
+ * \param compress_level Compression level from 0 through 9
+ * \param[out] out_len Exact output length in bytes
+ * \param[out] out_buf Newly allocated output; release with FLC_FreeOwnedBuffer
+ * \return 0 on success, -1 on failure
+ *
+ * This entry point serializes the model once for bindings that cannot predict
+ * the output size in advance. On failure, outputs are reset to zero and null.
+ */
+FALCATA_C_EXPORT int FLC_BoosterSaveModelToBinaryOwned(BoosterHandle handle,
+                                                       int start_iteration,
+                                                       int num_iteration,
+                                                       int feature_importance_type,
+                                                       int with_stats,
+                                                       int with_diagnostics,
+                                                       int f32_leaves,
+                                                       int compress_level,
+                                                       int64_t* out_len,
+                                                       char** out_buf);
+
+/*! \brief Release a buffer returned by an owned-buffer API. */
+FALCATA_C_EXPORT void FLC_FreeOwnedBuffer(char* buffer);
+
 /*!
  * \brief Load an existing booster from a FALB binary model.
  * \param buf Model bytes

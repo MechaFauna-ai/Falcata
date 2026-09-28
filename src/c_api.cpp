@@ -393,6 +393,9 @@ class Booster {
     auto param = Config::Str2Map(parameters);
     Config new_config;
     new_config.Set(param);
+    if (train_data_ == nullptr && !new_config.forcedsplits_filename.empty()) {
+      Log::Fatal("forcedsplits_filename can only be changed for a booster with training data");
+    }
     if (param.count("num_class") && new_config.num_class != config_.num_class) {
       Log::Fatal("Cannot change num_class during training");
     }
@@ -3622,6 +3625,36 @@ int FLC_BoosterSaveModelToBinary(BoosterHandle handle,
     std::memcpy(out_buf, model.data(), static_cast<size_t>(*out_len));
   }
   API_END();
+}
+
+int FLC_BoosterSaveModelToBinaryOwned(BoosterHandle handle,
+                                      int start_iteration,
+                                      int num_iteration,
+                                      int feature_importance_type,
+                                      int with_stats,
+                                      int with_diagnostics,
+                                      int f32_leaves,
+                                      int compress_level,
+                                      int64_t* out_len,
+                                      char** out_buf) {
+  API_BEGIN();
+  *out_len = 0;
+  *out_buf = nullptr;
+  Booster* ref_booster = reinterpret_cast<Booster*>(handle);
+  std::string model = ref_booster->SaveModelToBinary(
+      start_iteration, num_iteration, feature_importance_type,
+      with_stats != 0, with_diagnostics != 0, f32_leaves != 0, compress_level);
+  std::unique_ptr<char[]> owned(new char[model.size()]);
+  if (!model.empty()) {
+    std::memcpy(owned.get(), model.data(), model.size());
+  }
+  *out_len = static_cast<int64_t>(model.size());
+  *out_buf = owned.release();
+  API_END();
+}
+
+void FLC_FreeOwnedBuffer(char* buffer) {
+  delete[] buffer;
 }
 
 int FLC_BoosterCreateFromBinary(const char* buf,

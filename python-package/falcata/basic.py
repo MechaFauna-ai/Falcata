@@ -23,7 +23,6 @@ from copy import deepcopy
 from enum import Enum
 from functools import wraps
 from os import SEEK_END, environ
-from os.path import getsize
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Union
@@ -911,18 +910,26 @@ def _load_pandas_categorical(
     pandas_key = "pandas_categorical:"
     offset = -len(pandas_key)
     if file_name is not None:
-        max_offset = -getsize(file_name)
         with open(file_name, "rb") as f:
+            f.seek(0, SEEK_END)
+            size = f.tell()
+            tail_len = min(size, len(pandas_key))
             while True:
-                offset = max(offset, max_offset)
-                f.seek(offset, SEEK_END)
+                f.seek(-tail_len, SEEK_END)
                 lines = f.readlines()
-                if len(lines) >= 2:
+                if len(lines) >= 2 or tail_len == size:
                     break
-                offset *= 2
-        last_line = lines[-1].decode("utf-8").strip()
-        if not last_line.startswith(pandas_key):
-            last_line = lines[-2].decode("utf-8").strip()
+                tail_len = min(size, tail_len * 2)
+        # Search for a line-aligned trailer before decoding anything. FALB
+        # payloads are arbitrary bytes and are not UTF-8 model text.
+        marker = pandas_key.encode("ascii")
+        trailer = next((line.strip() for line in reversed(lines) if line.startswith(marker)), None)
+        if trailer is None:
+            return None
+        try:
+            last_line = trailer.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
     elif model_str is not None:
         idx = model_str.rfind("\n", 0, offset)
         last_line = model_str[idx:].strip()
@@ -4059,6 +4066,15 @@ class Booster:
         self.__is_predicted_cur_iter = []
         return self
 
+    def _replace_model_handle(self, new_handle: ctypes.c_void_p) -> None:
+        """Replace the native model and invalidate state tied to the old handle."""
+        old_handle = self._handle
+        self._handle = new_handle
+        self._free_buffer()
+        self._invalidate_fil_cache()
+        if old_handle:
+            _safe_call(_LIB.FLC_BoosterFree(old_handle))
+
     def set_network(
         self,
         machines: Union[List[str], Set[str], str],
@@ -4851,28 +4867,23 @@ class Booster:
             ctypes.c_int(int(compress_level)),
         )
 
-        def _save(buffer_len: int) -> Tuple[int, ctypes.Array]:
-            buf = ctypes.create_string_buffer(buffer_len)
-            out_len = ctypes.c_int64(0)
-            _safe_call(
-                _LIB.FLC_BoosterSaveModelToBinary(
-                    self._handle,
-                    ctypes.c_int(start_iteration),
-                    ctypes.c_int(num_iteration),
-                    ctypes.c_int(importance_type_int),
-                    *flags,
-                    ctypes.c_int64(buffer_len),
-                    ctypes.byref(out_len),
-                    buf,
-                )
+        out_len = ctypes.c_int64(0)
+        out_buf = ctypes.c_void_p()
+        _safe_call(
+            _LIB.FLC_BoosterSaveModelToBinaryOwned(
+                self._handle,
+                ctypes.c_int(start_iteration),
+                ctypes.c_int(num_iteration),
+                ctypes.c_int(importance_type_int),
+                *flags,
+                ctypes.byref(out_len),
+                ctypes.byref(out_buf),
             )
-            return out_len.value, buf
-
-        # one probe call to size the buffer, then the real one
-        needed, buf = _save(1 << 20)
-        if needed > (1 << 20):
-            needed, buf = _save(needed)
-        return buf.raw[:needed]
+        )
+        try:
+            return ctypes.string_at(out_buf, out_len.value)
+        finally:
+            _LIB.FLC_FreeOwnedBuffer(out_buf)
 
     def model_from_binary(self, model_bin: bytes) -> "Booster":
         """Load the Booster from a FALB binary payload.
@@ -4890,20 +4901,23 @@ class Booster:
         """
         if not _is_falb(model_bin):
             raise ValueError("not a FALB binary model (bad magic)")
-        if self._handle is not None:
-            _safe_call(_LIB.FLC_BoosterFree(self._handle))
-        self._handle = ctypes.c_void_p()
         out_num_iterations = ctypes.c_int(0)
+        new_handle = ctypes.c_void_p()
         _safe_call(
             _LIB.FLC_BoosterCreateFromBinary(
                 model_bin,
                 ctypes.c_int64(len(model_bin)),
                 ctypes.byref(out_num_iterations),
-                ctypes.byref(self._handle),
+                ctypes.byref(new_handle),
             )
         )
         out_num_class = ctypes.c_int(0)
-        _safe_call(_LIB.FLC_BoosterGetNumClasses(self._handle, ctypes.byref(out_num_class)))
+        try:
+            _safe_call(_LIB.FLC_BoosterGetNumClasses(new_handle, ctypes.byref(out_num_class)))
+        except Exception:
+            _LIB.FLC_BoosterFree(new_handle)
+            raise
+        self._replace_model_handle(new_handle)
         self.__dict__["_Booster__num_class"] = out_num_class.value
         self.pandas_categorical = None
         self.params = self._get_loaded_param()
@@ -4952,29 +4966,24 @@ class Booster:
         self : Booster
             Loaded Booster object.
         """
-        # ensure that existing Booster is freed before replacing it
-        # with a new one createdfrom file
-        _safe_call(_LIB.FLC_BoosterFree(self._handle))
-        self._free_buffer()
-        self._handle = ctypes.c_void_p()
         out_num_iterations = ctypes.c_int(0)
+        new_handle = ctypes.c_void_p()
         _safe_call(
             _LIB.FLC_BoosterLoadModelFromString(
                 _c_str(model_str),
                 ctypes.byref(out_num_iterations),
-                ctypes.byref(self._handle),
+                ctypes.byref(new_handle),
             )
         )
         out_num_class = ctypes.c_int(0)
-        _safe_call(
-            _LIB.FLC_BoosterGetNumClasses(
-                self._handle,
-                ctypes.byref(out_num_class),
-            )
-        )
+        try:
+            _safe_call(_LIB.FLC_BoosterGetNumClasses(new_handle, ctypes.byref(out_num_class)))
+        except Exception:
+            _LIB.FLC_BoosterFree(new_handle)
+            raise
+        self._replace_model_handle(new_handle)
         self.__num_class = out_num_class.value
         self.pandas_categorical = _load_pandas_categorical(model_str=model_str)
-        self._invalidate_fil_cache()
         return self
 
     def model_to_string(

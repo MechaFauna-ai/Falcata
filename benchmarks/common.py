@@ -6,6 +6,7 @@ anywhere -- the full suite runs to hundreds of GB and rarely belongs inside a
 checkout -- and defaults to ``benchmarks/workspace`` in the checkout itself.
 """
 
+import json
 import os
 
 ROOT = os.environ.get(
@@ -177,7 +178,42 @@ def regimes_for(dataset: str):
     return ["shallow", "deep"]
 
 
-def dataset_ready(dataset: str) -> bool:
+def dataset_ready(dataset: str, for_preprocessing: bool = False) -> bool:
     """Whether the preprocessed cache for ``dataset`` exists."""
-    marker = "meta.json" if dataset == "numerai" else "y_test.npy"
-    return os.path.exists(os.path.join(CACHE_DIR, dataset, marker))
+    d = os.path.join(CACHE_DIR, dataset)
+    if dataset != "numerai":
+        return os.path.exists(os.path.join(d, "y_test.npy"))
+
+    meta_path = os.path.join(d, "meta.json")
+    try:
+        with open(meta_path) as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        return False
+
+    # Without request parameters, consumers can use the target already
+    # recorded in the cache. Preprocessing treats an unset target as the
+    # documented default column and must rebuild a custom-target cache.
+    requested_target = os.environ.get("NUMERAI_TARGET")
+    if requested_target is None and for_preprocessing:
+        requested_target = "target"
+    if requested_target is not None and meta.get("target", "target") != requested_target:
+        return False
+    requested_source = os.environ.get("NUMERAI_PARQUET")
+    if requested_source is not None:
+        try:
+            identity = numerai_source_identity(requested_source)
+        except OSError:
+            return False
+        # Legacy caches have no recorded stat identity; an explicitly named
+        # source cannot be proven unchanged, so rebuild them.
+        if meta.get("source_identity") != identity:
+            return False
+    return True
+
+
+def numerai_source_identity(path: str) -> dict:
+    """Cheap identity for a Numerai parquet, without hashing the large file."""
+    resolved = os.path.realpath(os.path.abspath(path))
+    st = os.stat(resolved)
+    return {"path": resolved, "size": st.st_size, "mtime_ns": st.st_mtime_ns}

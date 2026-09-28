@@ -256,6 +256,69 @@ def _constant_tree(value: float) -> str:
     )
 
 
+def _assemble_model_text(
+    num_feature: int,
+    num_class: int,
+    trees_per_iteration: int,
+    objective: str,
+    feature_names: List[str],
+    bodies: List[str],
+) -> str:
+    """Build and validate the shared LightGBM text-model envelope."""
+    if num_feature <= 0:
+        raise ValueError("converted model must have at least one feature")
+    if len(feature_names) != num_feature:
+        raise ValueError(f"expected {num_feature} feature names, got {len(feature_names)}")
+    feature_names = [str(name).replace(" ", "_") for name in feature_names]
+    if any(not name or any(ch.isspace() for ch in name) for name in feature_names):
+        raise ValueError("feature names must be non-empty and contain no whitespace")
+    chunks = [f"Tree={i}\n{body}\n" for i, body in enumerate(bodies)]
+    return (
+        "tree\nversion=v4\n"
+        f"num_class={num_class}\n"
+        f"num_tree_per_iteration={trees_per_iteration}\n"
+        "label_index=0\n"
+        f"max_feature_idx={num_feature - 1}\n"
+        f"objective={objective}\n"
+        f"feature_names={' '.join(feature_names)}\n"
+        f"feature_infos={' '.join(['none'] * num_feature)}\n"
+        f"tree_sizes={' '.join(str(len(c)) for c in chunks)}\n\n" + "".join(chunks) + "end of trees\n"
+    )
+
+
+def _xgb_tree_order(model: Dict[str, Any], tree_info: List[int], num_class: int, num_parallel: int) -> List[int]:
+    """Transpose XGBoost's class-major parallel groups to class-cycling order."""
+    count = len(tree_info)
+    indptr = model.get("iteration_indptr")
+    if indptr is None:
+        trees_per_round = num_class * num_parallel
+        if trees_per_round <= 0 or count % trees_per_round:
+            raise ValueError("XGBoost tree count is inconsistent with class/parallel-tree metadata")
+        indptr = list(range(0, count + 1, trees_per_round))
+    indptr = [int(x) for x in indptr]
+    if (
+        not indptr
+        or indptr[0] != 0
+        or indptr[-1] != count
+        or any(a >= b for a, b in zip(indptr[:-1], indptr[1:], strict=True))
+    ):
+        raise ValueError("XGBoost iteration_indptr is malformed")
+    ordered: List[int] = []
+    for start, end in zip(indptr[:-1], indptr[1:], strict=True):
+        by_class: List[List[int]] = [[] for _ in range(num_class)]
+        for i in range(start, end):
+            cls = int(tree_info[i])
+            if not 0 <= cls < num_class:
+                raise ValueError(f"XGBoost tree_info class id {cls} is outside [0, {num_class})")
+            by_class[cls].append(i)
+        sizes = {len(group) for group in by_class}
+        if len(sizes) != 1 or not sizes or next(iter(sizes)) != num_parallel:
+            raise ValueError("XGBoost iteration has unsupported or inconsistent parallel-tree metadata")
+        for parallel_idx in range(num_parallel):
+            ordered.extend(group[parallel_idx] for group in by_class)
+    return ordered
+
+
 def from_xgboost(model: Any, feature_names: Optional[List[str]] = None) -> Booster:
     """Convert an XGBoost model into a Falcata :class:`Booster`.
 
@@ -315,13 +378,15 @@ def from_xgboost(model: Any, feature_names: Optional[List[str]] = None) -> Boost
         raise ValueError(f"base_score has {len(base_margins)} entries for {trees_per_iter} outputs; cannot map it")
 
     trees = gb["model"]["trees"]
-    tree_info = gb["model"].get("tree_info") or [0] * len(trees)
-    if len(tree_info) != len(trees):
+    tree_info = gb["model"].get("tree_info")
+    if tree_info is None:
         tree_info = [0] * len(trees)
-
-    # order trees iteration-major (class 0..k-1 within each iteration), which
-    # is how LightGBM lays out a multiclass model
-    order = sorted(range(len(trees)), key=lambda i: (i // max(trees_per_iter, 1), tree_info[i]))
+    if len(tree_info) != len(trees):
+        raise ValueError("XGBoost tree_info length does not match the number of trees")
+    num_parallel = int(gb["model"].get("gbtree_model_param", {}).get("num_parallel_tree", 1) or 1)
+    if num_parallel < 1:
+        raise ValueError("XGBoost num_parallel_tree must be positive")
+    order = _xgb_tree_order(gb["model"], tree_info, trees_per_iter, num_parallel)
 
     bodies: List[str] = []
     if any(v != 0.0 for v in base_margins):
@@ -334,27 +399,9 @@ def from_xgboost(model: Any, feature_names: Optional[List[str]] = None) -> Boost
     if feature_names is None:
         names = learner.get("feature_names") or []
         feature_names = list(names) if len(names) == num_feature else [f"Column_{i}" for i in range(num_feature)]
-    feature_names = [str(n).replace(" ", "_") for n in feature_names]
-
-    chunks = []
-    for i, body in enumerate(bodies):
-        chunks.append(f"Tree={i}\n{body}\n")
-    sizes = " ".join(str(len(c)) for c in chunks)
-
-    header = (
-        "tree\n"
-        "version=v4\n"
-        f"num_class={num_class}\n"
-        f"num_tree_per_iteration={trees_per_iter}\n"
-        "label_index=0\n"
-        f"max_feature_idx={num_feature - 1}\n"
-        f"objective={objective}\n"
-        f"feature_names={' '.join(feature_names)}\n"
-        f"feature_infos={' '.join(['none'] * num_feature)}\n"
-        f"tree_sizes={sizes}\n\n"
+    return Booster(
+        model_str=_assemble_model_text(num_feature, num_class, trees_per_iter, objective, feature_names, bodies)
     )
-    text = header + "".join(chunks) + "end of trees\n"
-    return Booster(model_str=text)
 
 
 # ---------------------------------------------------------------------------
@@ -566,19 +613,4 @@ def from_catboost(model: Any, feature_names: Optional[List[str]] = None) -> Boos
         feature_names = (
             names if all(names) and len(names) == num_feature else [f"Column_{i}" for i in range(num_feature)]
         )
-    feature_names = [str(n).replace(" ", "_") for n in feature_names]
-
-    chunks = [f"Tree={i}\n{body}\n" for i, body in enumerate(bodies)]
-    header = (
-        "tree\n"
-        "version=v4\n"
-        "num_class=1\n"
-        "num_tree_per_iteration=1\n"
-        "label_index=0\n"
-        f"max_feature_idx={num_feature - 1}\n"
-        f"objective={objective}\n"
-        f"feature_names={' '.join(feature_names)}\n"
-        f"feature_infos={' '.join(['none'] * num_feature)}\n"
-        f"tree_sizes={' '.join(str(len(c)) for c in chunks)}\n\n"
-    )
-    return Booster(model_str=header + "".join(chunks) + "end of trees\n")
+    return Booster(model_str=_assemble_model_text(num_feature, 1, 1, objective, feature_names, bodies))

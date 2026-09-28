@@ -1010,6 +1010,10 @@ void GBDT::ResetTrainingData(const Dataset* train_data, const ObjectiveFunction*
 
 void GBDT::ResetConfig(const Config* config) {
   auto new_config = std::unique_ptr<Config>(new Config(*config));
+  if (!new_config->forcedsplits_filename.empty() &&
+      (tree_learner_ == nullptr || train_data_ == nullptr)) {
+    Log::Fatal("forcedsplits_filename can only be changed for a booster with training data");
+  }
   // A model-loaded booster (the default return of train()) has no training
   // data and no tree learner; per-feature checks and learner resets only
   // apply when they exist.
@@ -1049,7 +1053,8 @@ void GBDT::ResetConfig(const Config* config) {
     }
   }
   if (config_.get() != nullptr && config_->forcedsplits_filename != new_config->forcedsplits_filename) {
-    // load forced_splits file
+    // Forced splits are a training-time tree-learner setting. The C API
+    // rejects enabling them on a loaded model before committing its config.
     if (!new_config->forcedsplits_filename.empty()) {
       std::ifstream forced_splits_file(
           new_config->forcedsplits_filename.c_str());
@@ -1063,7 +1068,9 @@ void GBDT::ResetConfig(const Config* config) {
       tree_learner_->SetForcedSplit(&forced_splits_json_);
     } else {
       forced_splits_json_ = Json();
-      tree_learner_->SetForcedSplit(nullptr);
+      if (tree_learner_ != nullptr) {
+        tree_learner_->SetForcedSplit(nullptr);
+      }
     }
   }
   config_.reset(new_config.release());
