@@ -469,6 +469,18 @@ reported all vanished under interleaved A/B at 500 rounds.
 The ablation shows each of these within noise on shapes they don't target —
 the planner's "default on, individually ablatable" contract in action.
 
+**`tiled_fill`** (added after that battery, measured on its own) — the per-tree
+4-bit compact fill stages a block of rows for every byte slot in a shared-memory
+`[row][slot]` tile, reading each source column contiguously, then writes each
+partition's destination rows as one contiguous run with 16-byte streaming
+stores. With the column-major source the old one-byte-per-thread kernel ran at
+~24% of DRAM bandwidth; the tiled one reaches ~91%. On the 2.75M-row Numerai
+train set (ff 0.1, 132-133 byte slots): fill 2.01 → 0.52 ms, **-9.4% per
+round on numerai-deep** (1.51 ms, 95% CI [1.44, 1.57], n=30 interleaved) and
+-15.8% on the 32-leaf example config. Row-major sources take a per-cell path
+inside the same kernel (1.2-1.7× faster than before); more than 256 byte slots
+keep the old kernel. Bit-identical: every model md5 unchanged.
+
 ## 7b. Runtime-JIT construct kernels (`construct_jit`)
 
 The NVRTC infrastructure (shape-keyed compile cache, AOT fallback,

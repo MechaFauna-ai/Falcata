@@ -489,7 +489,7 @@ void LaunchFillCompactData4BitKernel(
   const int* bs_dst_stride,
   int total_byte_slots,
   data_size_t num_data) {
-  if (total_byte_slots <= kFill4BitTiledMaxSlots) {
+  if (FalcataPlan::Get().tiled_fill && total_byte_slots <= kFill4BitTiledMaxSlots) {
     const int padded_slots = total_byte_slots + ((2 - total_byte_slots) & 3);
     int half_rows_log = 6;
     while (half_rows_log > 0 &&
