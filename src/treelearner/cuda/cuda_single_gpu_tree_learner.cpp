@@ -3564,9 +3564,11 @@ static const char* TunerWisdomPath() {
 
 std::string CUDASingleGPUTreeLearner::TunerWisdomKey() const {
   char buf[160];
-  snprintf(buf, sizeof(buf), "v1:%d:%d:%d:%d:%d:%d",
+  // the last field is the construct kernel family the knobs were tuned against
+  snprintf(buf, sizeof(buf), "v2:%d:%d:%d:%d:%d:%d:%d",
            num_data_, train_data_->num_features(), config_->num_leaves,
-           config_->max_depth, effective_quant_bins_, tuner_device_sm_count_);
+           config_->max_depth, effective_quant_bins_, tuner_device_sm_count_,
+           FalcataPlan::Get().row_batch ? 1 : 0);
   return std::string(buf);
 }
 

@@ -467,6 +467,18 @@ bit-identical in every cell):
   feature of at most 256 bins (NaN handling only with a stored most-frequent
   bin); one ineligible feature keeps the whole dataset on the block kernel.
   CUDA only. Bit-identical.
+- **`row_batch`** — the batched quantized construct walks a leaf's rows
+  through a dependent chain (row index, then the packed gradient and the bin
+  byte at that index) and was latency-bound on it: ~92% occupancy but ~20% of
+  issue slots busy and 77% of stall cycles waiting on those loads. With one
+  column per thread, each thread now loads 8 rows' indices, then all 16
+  gradient and bin loads, before their shared atomics, and prefetches the next
+  8 indices meanwhile; the flush skips empty bins. **+46.1%
+  numerai-deep, +16.9% higgs-deep** at 100 rounds; against the construct JIT
+  (300 rounds) +26.1% numerai-deep, +7.7% higgs-deep. Wide partitions (two columns per
+  thread) keep the unbatched loop. Under `auto` it also replaces the construct
+  JIT on long runs (the JIT body is the unbatched loop); an explicit
+  `construct_jit:on` runs the JIT in its place, with a warning. Bit-identical.
 - **`tuner`** — a per-tree bandit over behavior-preserving execution knobs,
   best-of-15 timing, re-probe every 3000 trees: +2.1% numerai-deep, +2.7%
   year from the saturation-floor knob alone. Quantized training only —
@@ -515,11 +527,12 @@ would show a single bar of exactly that number.
 The original numerai win required syncing the JIT template with the
 evict-first (`__ldcs`) loads first — an unsynced template measured at
 parity, which earlier led to a premature dead-end verdict (since
-corrected). Default ON
-for quantized runs of ≥300 rounds (the ~230ms one-time compile+self-test
-amortizes); `construct_jit:on` forces it, unsupported shapes (graph capture,
-speculative levels, masked trees, wide partitions) fall back to AOT
-automatically.
+corrected). Its body is the unbatched row loop, so since `row_batch` (§7) it
+is off under `auto`; with `row_batch:off` it engages for quantized runs of
+≥300 rounds (the ~230ms one-time compile+self-test amortizes).
+`construct_jit:on` forces it in place of the row-batched AOT kernel;
+unsupported shapes (graph capture, speculative levels, masked trees, wide
+partitions) fall back to AOT automatically.
 
 ## 8. GPU inference via NVIDIA FIL
 

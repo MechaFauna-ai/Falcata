@@ -45,6 +45,7 @@ ALL_KEYS = {
     "graph_loop": True,
     "graph_quant": False,
     "compact_quant": True,
+    # under auto, row_batch displaces the JIT; the on flip measures the JIT against row_batch
     "construct_jit": False,
     "fast_rowdata": True,
     "rowdata_4bit": True,
@@ -58,6 +59,7 @@ ALL_KEYS = {
     "compact_prefill": False,
     "tiled_fill": True,
     "warp_find": True,
+    "row_batch": True,
 }
 
 #: growth-strategy keys: changing them changes WHICH tree is built (legit),
@@ -89,6 +91,8 @@ DEEP_KEYS = [
     "gh_interleave",
     "split_packed_read",
     "warp_find",
+    # at this cell's 300 rounds the off flip re-enables the JIT (master's long-run behaviour)
+    "row_batch",
 ]
 
 BASE = {
