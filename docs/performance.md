@@ -442,6 +442,19 @@ bit-identical in every cell):
   cache lines: +2.2% numerai-deep (the fill is genuinely bandwidth-bound, but
   it is a small slice of tree time — the +14% pre-measurement estimate did not
   survive contact with the profiler). VRAM-gated by the planner.
+- **`warp_find`** — the quantized per-level split finder runs one warp per
+  (feature, leaf) instead of a 256-thread block. The block kernel spent most
+  of its time in block-wide scans, reductions and `__syncthreads` (about 36%
+  of stall cycles at barriers), and on numerai every feature has 5 bins, so
+  251 of 256 threads held nothing. Each lane now owns 8 scan positions: a
+  register prefix sum plus a warp shuffle scan, and a shuffle reduction that
+  keeps the lowest-position tie-break. On 255-bin features the remaining cost
+  is the fp64 gain math, so an fp32 bound on each threshold's closed-form gain
+  skips the fp64 evaluation of thresholds that cannot win or tie. Split finder
+  1.6× faster across the shapes below; **+6.3% numerai-deep, +22.7%
+  year-deep, +18.8% epsilon-shallow**. Numerical tasks of at most 256 bins
+  outside the CUDA-graph loop; anything else keeps the block kernel.
+  Bit-identical.
 - **`tuner`** — a per-tree bandit over behavior-preserving execution knobs,
   best-of-15 timing, re-probe every 3000 trees: +2.1% numerai-deep, +2.7%
   year from the saturation-floor knob alone. Quantized training only —

@@ -158,6 +158,22 @@ void CUDABestSplitFinder::SetTaskFeaturePenalties() {
   }
 }
 
+void CUDABestSplitFinder::UpdateWarpFindEligibility() {
+  // The warp kernel scans at most 256 positions per task and implements the numerical scans the block kernel
+  // runs for these task shapes: reverse scans without NaN handling at any most-frequent-bin offset, reverse and
+  // forward scans with NaN handling when the most-frequent bin is stored. Anything else keeps the block kernel.
+  warp_find_eligible_ = FalcataPlan::Get().warp_find && !split_find_tasks_.empty() &&
+    std::all_of(split_find_tasks_.begin(), split_find_tasks_.end(), [](const SplitFindTask& t) {
+      if (t.is_categorical || t.skip_default_bin || t.num_bin > 256) return false;
+      if (t.reverse) return !(t.na_as_missing && t.mfb_offset != 0);
+      return t.na_as_missing && t.mfb_offset == 0;
+    });
+  if (FalcataDebug().diag) {
+    Log::Info("split finder: %s kernel for quantized levels (%d tasks)", warp_find_eligible_ ? "warp" : "block",
+              num_tasks_);
+  }
+}
+
 void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
   cuda_is_feature_used_bytree_.Resize(static_cast<size_t>(num_features_));
 
@@ -321,6 +337,7 @@ void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
                                           split_find_tasks_.size(),
                                           __FILE__,
                                           __LINE__);
+  UpdateWarpFindEligibility();
   // forced-split support: per-leaf output buffer + inner-feature -> task map
   cuda_forced_split_info_.Resize(static_cast<size_t>(num_leaves_));
   feature_to_task_index_.assign(num_features_, -1);
@@ -388,6 +405,7 @@ void CUDABestSplitFinder::ResetConfig(const Config* config, const hist_t* cuda_h
                                           split_find_tasks_.size(),
                                           __FILE__,
                                           __LINE__);
+  UpdateWarpFindEligibility();
 
   const int num_task_blocks = (num_tasks_ + NUM_TASKS_PER_SYNC_BLOCK - 1) / NUM_TASKS_PER_SYNC_BLOCK;
   size_t cuda_best_leaf_split_info_buffer_size = static_cast<size_t>(num_task_blocks) * static_cast<size_t>(num_leaves_);
