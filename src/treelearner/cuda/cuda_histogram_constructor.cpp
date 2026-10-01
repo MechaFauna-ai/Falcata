@@ -317,6 +317,11 @@ void LaunchFillCompactData4BitKernel(
 static bool CompactFill4BitTiledEligible(const std::vector<size_t>& nib0, const std::vector<size_t>& nib1,
                                          const std::vector<int>& stride, const std::vector<size_t>& dst_byte,
                                          const std::vector<int>& dst_stride) {
+#if defined(__HIP_PLATFORM_AMD__)
+  // ROCm builds have no tiled kernel (see LaunchFillCompactData4BitKernel)
+  (void)nib0; (void)nib1; (void)stride; (void)dst_byte; (void)dst_stride;
+  return false;
+#else
   const int n = static_cast<int>(nib0.size());
   if (!FalcataPlan::Get().tiled_fill || n == 0 || n > kFill4BitTiledMaxSlots) return false;
   const size_t kNone = ~static_cast<size_t>(0);
@@ -332,6 +337,7 @@ static bool CompactFill4BitTiledEligible(const std::vector<size_t>& nib0, const 
     s += width;
   }
   return true;
+#endif
 }
 
 bool CUDAHistogramConstructor::ScanCompactLayout(
