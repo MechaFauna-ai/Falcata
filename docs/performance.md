@@ -442,6 +442,18 @@ bit-identical in every cell):
   cache lines: +2.2% numerai-deep (the fill is genuinely bandwidth-bound, but
   it is a small slice of tree time — the +14% pre-measurement estimate did not
   survive contact with the profiler). VRAM-gated by the planner.
+- **`row_batch`** — the batched quantized construct walks a leaf's rows
+  through a dependent chain (row index, then the packed gradient and the bin
+  byte at that index) and was latency-bound on it: ~92% occupancy but ~20% of
+  issue slots busy and 77% of stall cycles waiting on those loads. With one
+  column per thread, each thread now loads 8 rows' indices, then all 16
+  gradient and bin loads, before their shared atomics, and prefetches the next
+  8 indices meanwhile; the flush skips empty bins. **+46.1%
+  numerai-deep, +16.9% higgs-deep** at 100 rounds; against the construct JIT
+  (300 rounds) +26.1% numerai-deep, +7.7% higgs-deep. Wide partitions (two columns per
+  thread) keep the unbatched loop. Under `auto` it also replaces the construct
+  JIT on long runs (the JIT body is the unbatched loop); an explicit
+  `construct_jit` takes precedence. Bit-identical.
 - **`tuner`** — a per-tree bandit over behavior-preserving execution knobs,
   best-of-15 timing, re-probe every 3000 trees: +2.1% numerai-deep, +2.7%
   year from the saturation-floor knob alone. Quantized training only —

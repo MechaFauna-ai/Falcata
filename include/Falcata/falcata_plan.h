@@ -66,6 +66,14 @@ struct FalcataPlan {
   // compile amortizes): measured +4.0% numerai-deep, +2.4% covtype-deep,
   // +2.2% year, +0.7% higgs, bit-identical.
   bool construct_jit = true;        // key: construct_jit
+  // batched quantized construct: with one column per thread, each thread issues
+  // the index, gradient and bin loads of 8 rows before their shared atomics (the
+  // row loop is latency-bound on that dependent chain), and the flush skips empty
+  // bins. Wide partitions keep the two-column loop. Under auto it replaces the
+  // construct JIT (whose body is the unbatched loop); an explicit construct_jit
+  // takes precedence. Bit-identical. Measured: +26.1% numerai-deep, +7.7%
+  // higgs-deep against the JIT (300 rounds).
+  bool row_batch = true;            // key: row_batch
   // true when the user wrote construct_jit:on/off -- bypasses the >=300
   // rounds auto-gate (mirrors tuner_explicit)
   bool construct_jit_explicit = false;
@@ -168,6 +176,7 @@ struct FalcataPlan {
     if (key == "graph_det") return &graph_det;
     if (key == "compact_quant") return &compact_quant;
     if (key == "construct_jit") return &construct_jit;
+    if (key == "row_batch") return &row_batch;
     if (key == "fast_rowdata") return &fast_rowdata;
     if (key == "rowdata_4bit") return &rowdata_4bit;
     if (key == "gpu_construct") return &gpu_construct;

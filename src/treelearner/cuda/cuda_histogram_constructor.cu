@@ -1700,7 +1700,8 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
   const data_size_t num_data,
   const int dim_y,
   const int8_t* is_feature_used_bytree = nullptr,
-  const uint8_t* bin_used = nullptr) {
+  const uint8_t* bin_used = nullptr,
+  const bool row_batch = false) {
   const data_size_t num_data_in_smaller_leaf = smaller_leaf_splits->num_data_in_leaf;
   const data_size_t num_data_per_thread = (num_data_in_smaller_leaf + dim_y - 1) / dim_y;
   const unsigned int blockIdx_y = blockIdx.y;
@@ -1751,7 +1752,63 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
       (is_feature_used_bytree == nullptr || is_feature_used_bytree[column_index]);
   const bool use2 = col2_local < static_cast<unsigned int>(num_columns_in_partition) &&
       (is_feature_used_bytree == nullptr || is_feature_used_bytree[column_index2]);
-  if (use1 || use2) {
+  if (row_batch && num_columns_in_partition <= static_cast<int>(blockDim.x)) {
+    // cuda_plan key row_batch, one column per thread: the row loop is latency-bound on the dependent chain
+    // row index -> gradient and bin, so each thread issues the loads of 8 (then 4) rows before their atomics
+    // and prefetches the next 8 row indices meanwhile. Same rows, same atomics: bit-identical.
+    if (use1) {
+      const typename PACK::Cursor pack_cursor = PACK::Prepare(threadIdx.x);
+      int32_t* shared_hist_ptr = shared_hist_packed + column_hist_offsets[column_index];
+      const data_size_t by = static_cast<data_size_t>(blockDim.y);
+      data_size_t i = 0;
+      if (i + 8 <= num_iteration_this) {
+        data_size_t idx[8];
+#pragma unroll
+        for (int j = 0; j < 8; ++j) idx[j] = __ldg(data_indices_ref_this_block + inner_data_index + j * by);
+        for (; i + 8 <= num_iteration_this; i += 8) {
+          int32_t g[8];
+          uint32_t bins[8];
+          data_size_t next_idx[8];
+          // without a next batch, re-read the current (valid) positions; the values go unused
+          const bool has_next = i + 16 <= num_iteration_this;
+          const data_size_t next_start = has_next ? inner_data_index + 8 * by : inner_data_index;
+          const data_size_t next_step = has_next ? by : 0;
+#pragma unroll
+          for (int j = 0; j < 8; ++j) g[j] = __ldg(cuda_gradients_and_hessians + idx[j]);
+#pragma unroll
+          for (int j = 0; j < 8; ++j) next_idx[j] = __ldg(data_indices_ref_this_block + next_start + j * next_step);
+#pragma unroll
+          for (int j = 0; j < 8; ++j) bins[j] = PACK::ExtractAt(data_ptr + static_cast<size_t>(idx[j]) * row_stride, pack_cursor);
+#pragma unroll
+          for (int j = 0; j < 8; ++j) atomicAdd_block(shared_hist_ptr + bins[j], g[j]);
+#pragma unroll
+          for (int j = 0; j < 8; ++j) idx[j] = next_idx[j];
+          inner_data_index += 8 * by;
+        }
+      }
+      if (i + 4 <= num_iteration_this) {
+        data_size_t idx[4];
+        int32_t g[4];
+        uint32_t bins[4];
+#pragma unroll
+        for (int j = 0; j < 4; ++j) idx[j] = __ldg(data_indices_ref_this_block + inner_data_index + j * by);
+#pragma unroll
+        for (int j = 0; j < 4; ++j) g[j] = __ldg(cuda_gradients_and_hessians + idx[j]);
+#pragma unroll
+        for (int j = 0; j < 4; ++j) bins[j] = PACK::ExtractAt(data_ptr + static_cast<size_t>(idx[j]) * row_stride, pack_cursor);
+#pragma unroll
+        for (int j = 0; j < 4; ++j) atomicAdd_block(shared_hist_ptr + bins[j], g[j]);
+        inner_data_index += 4 * by;
+        i += 4;
+      }
+      for (; i < num_iteration_this; ++i) {
+        const data_size_t data_index = data_indices_ref_this_block[inner_data_index];
+        const uint32_t bin = PACK::ExtractAt(data_ptr + static_cast<size_t>(data_index) * row_stride, pack_cursor);
+        atomicAdd_block(shared_hist_ptr + bin, cuda_gradients_and_hessians[data_index]);
+        inner_data_index += by;
+      }
+    }
+  } else if (use1 || use2) {
     // per-column extraction constants resolved once (register-resident through
     // the row loop; a per-row table lookup runs from thread-local memory)
     const typename PACK::Cursor pack_cursor = PACK::Prepare(use1 ? threadIdx.x : col2_local);
@@ -1783,6 +1840,7 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
         continue;
       }
       const int32_t packed_grad_hess = shared_hist_packed[i];
+      if (row_batch && packed_grad_hess == 0) continue;  // adding zero is a no-op
       atomicAdd_system(feature_histogram_ptr + i, packed_grad_hess);
     }
   } else {
@@ -1792,6 +1850,7 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
         continue;
       }
       const int32_t packed_grad_hess = shared_hist_packed[i];
+      if (row_batch && packed_grad_hess == 0) continue;  // adding zero is a no-op
       const int64_t packed_grad_hess_int64 = (static_cast<int64_t>(static_cast<int16_t>(packed_grad_hess >> 16)) << 32) | (static_cast<int64_t>(packed_grad_hess & 0x0000ffff));
       atomicAdd_system(feature_histogram_ptr + i, (atomic_add_long_t)(packed_grad_hess_int64));
     }
@@ -1842,7 +1901,8 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
   const data_size_t min_data_in_leaf,
   const double min_sum_hessian_in_leaf,
   const data_size_t* level_smaller_num_data,
-  const CUDAHybridGraphLoopStateOpt gstate) {
+  const CUDAHybridGraphLoopStateOpt gstate,
+  const bool row_batch) {
   // packed grad<<16|hess slots. SHARED_HIST_SIZE counts the 16-bit slots of the
   // budget shared with the non-quantized kernels, so the int32 array holds half
   // as many entries in the same bytes, at the alignment its atomics require.
@@ -1903,13 +1963,13 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
       smaller_struct, shared_hist_packed, cuda_gradients_and_hessians, data,
       column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
       packed_partition_byte_offsets,
-      num_data, dim_y, is_feature_used_bytree, bin_used);
+      num_data, dim_y, is_feature_used_bytree, bin_used, row_batch);
   } else {
     ConstructDiscretizedHistogramDenseInner<BIN_TYPE, false, PACK>(
       smaller_struct, shared_hist_packed, cuda_gradients_and_hessians, data,
       column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
       packed_partition_byte_offsets,
-      num_data, dim_y, is_feature_used_bytree, bin_used);
+      num_data, dim_y, is_feature_used_bytree, bin_used, row_batch);
   }
 }
 
@@ -3652,7 +3712,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           static_cast<data_size_t>(min_data_in_leaf_), \
           min_sum_hessian_in_leaf_, \
           level_smaller_num_data, \
-          hybrid_graph_capture_gstate_)
+          hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch)
         switch (compact_codec_) {
           case PackCodecId::kBit3x32:
             FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PackBit3x32);
@@ -3686,7 +3746,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           static_cast<data_size_t>(min_data_in_leaf_),
           min_sum_hessian_in_leaf_,
           level_smaller_num_data,
-          hybrid_graph_capture_gstate_);
+          hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch);
       }
     } else if (cuda_row_data_->is_4bit_packed()) {
       if (TryLaunchConstructJITBatchedRowDataQuant(
@@ -3708,7 +3768,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           static_cast<data_size_t>(min_data_in_leaf_),
           min_sum_hessian_in_leaf_,
           level_smaller_num_data,
-          hybrid_graph_capture_gstate_);
+          hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch);
       }
     } else {
       if (TryLaunchConstructJITBatchedRowDataQuant(
@@ -3730,7 +3790,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         static_cast<data_size_t>(min_data_in_leaf_),
         min_sum_hessian_in_leaf_,
         level_smaller_num_data,
-        hybrid_graph_capture_gstate_);
+        hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch);
     }
   } else if (det_batched) {
     // Deterministic float construct for the level batch: the same fixed-order
