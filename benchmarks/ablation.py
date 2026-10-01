@@ -45,6 +45,7 @@ ALL_KEYS = {
     "graph_loop": True,
     "graph_quant": False,
     "compact_quant": True,
+    # under auto, row_batch displaces the JIT; the on flip measures the JIT against row_batch
     "construct_jit": False,
     "fast_rowdata": True,
     "rowdata_4bit": True,
@@ -88,6 +89,8 @@ DEEP_KEYS = [
     "construct_jit",
     "gh_interleave",
     "split_packed_read",
+    # at this cell's 300 rounds the off flip re-enables the JIT (master's long-run behaviour)
+    "row_batch",
 ]
 
 BASE = {

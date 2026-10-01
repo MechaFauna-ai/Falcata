@@ -1820,6 +1820,28 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseDirectInner(
   }
 }
 
+// One batch of the row_batch construct: all N gradient loads and bin extractions are issued before the N shared
+// atomics. With PREFETCH, the next batch's N row indices (next_src[j * next_step]) are loaded between the gradient
+// loads and the extractions.
+template <int N, bool PREFETCH, class PACK, typename BIN_TYPE>
+__device__ __forceinline__ void ConstructRowBatch(
+    const data_size_t (&idx)[N], const int32_t* cuda_gradients_and_hessians, const BIN_TYPE* data_ptr,
+    const int row_stride, const typename PACK::Cursor& pack_cursor, int32_t* shared_hist_ptr,
+    const data_size_t* next_src = nullptr, const data_size_t next_step = 0, data_size_t* next_idx = nullptr) {
+  int32_t g[N];
+  uint32_t bins[N];
+#pragma unroll
+  for (int j = 0; j < N; ++j) g[j] = __ldg(cuda_gradients_and_hessians + idx[j]);
+  if (PREFETCH) {
+#pragma unroll
+    for (int j = 0; j < N; ++j) next_idx[j] = __ldg(next_src + j * next_step);
+  }
+#pragma unroll
+  for (int j = 0; j < N; ++j) bins[j] = PACK::ExtractAt(data_ptr + static_cast<size_t>(idx[j]) * row_stride, pack_cursor);
+#pragma unroll
+  for (int j = 0; j < N; ++j) atomicAdd_block(shared_hist_ptr + bins[j], g[j]);
+}
+
 // Shared body of the discretized dense histogram kernel (see
 // ConstructHistogramDenseInner for the shared-memory-passing and early-exit
 // rationale).
@@ -1902,21 +1924,12 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
 #pragma unroll
         for (int j = 0; j < 8; ++j) idx[j] = __ldg(data_indices_ref_this_block + inner_data_index + j * by);
         for (; i + 8 <= num_iteration_this; i += 8) {
-          int32_t g[8];
-          uint32_t bins[8];
-          data_size_t next_idx[8];
           // without a next batch, re-read the current (valid) positions; the values go unused
           const bool has_next = i + 16 <= num_iteration_this;
-          const data_size_t next_start = has_next ? inner_data_index + 8 * by : inner_data_index;
-          const data_size_t next_step = has_next ? by : 0;
-#pragma unroll
-          for (int j = 0; j < 8; ++j) g[j] = __ldg(cuda_gradients_and_hessians + idx[j]);
-#pragma unroll
-          for (int j = 0; j < 8; ++j) next_idx[j] = __ldg(data_indices_ref_this_block + next_start + j * next_step);
-#pragma unroll
-          for (int j = 0; j < 8; ++j) bins[j] = PACK::ExtractAt(data_ptr + static_cast<size_t>(idx[j]) * row_stride, pack_cursor);
-#pragma unroll
-          for (int j = 0; j < 8; ++j) atomicAdd_block(shared_hist_ptr + bins[j], g[j]);
+          const data_size_t* next_src = data_indices_ref_this_block + inner_data_index + (has_next ? 8 * by : 0);
+          data_size_t next_idx[8];
+          ConstructRowBatch<8, true, PACK>(idx, cuda_gradients_and_hessians, data_ptr, row_stride, pack_cursor,
+                                           shared_hist_ptr, next_src, has_next ? by : 0, next_idx);
 #pragma unroll
           for (int j = 0; j < 8; ++j) idx[j] = next_idx[j];
           inner_data_index += 8 * by;
@@ -1924,23 +1937,17 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
       }
       if (i + 4 <= num_iteration_this) {
         data_size_t idx[4];
-        int32_t g[4];
-        uint32_t bins[4];
 #pragma unroll
         for (int j = 0; j < 4; ++j) idx[j] = __ldg(data_indices_ref_this_block + inner_data_index + j * by);
-#pragma unroll
-        for (int j = 0; j < 4; ++j) g[j] = __ldg(cuda_gradients_and_hessians + idx[j]);
-#pragma unroll
-        for (int j = 0; j < 4; ++j) bins[j] = PACK::ExtractAt(data_ptr + static_cast<size_t>(idx[j]) * row_stride, pack_cursor);
-#pragma unroll
-        for (int j = 0; j < 4; ++j) atomicAdd_block(shared_hist_ptr + bins[j], g[j]);
+        ConstructRowBatch<4, false, PACK>(idx, cuda_gradients_and_hessians, data_ptr, row_stride, pack_cursor,
+                                   shared_hist_ptr);
         inner_data_index += 4 * by;
         i += 4;
       }
       for (; i < num_iteration_this; ++i) {
-        const data_size_t data_index = data_indices_ref_this_block[inner_data_index];
-        const uint32_t bin = PACK::ExtractAt(data_ptr + static_cast<size_t>(data_index) * row_stride, pack_cursor);
-        atomicAdd_block(shared_hist_ptr + bin, cuda_gradients_and_hessians[data_index]);
+        const data_size_t idx[1] = {data_indices_ref_this_block[inner_data_index]};
+        ConstructRowBatch<1, false, PACK>(idx, cuda_gradients_and_hessians, data_ptr, row_stride, pack_cursor,
+                                   shared_hist_ptr);
         inner_data_index += by;
       }
     }
@@ -3832,7 +3839,9 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
               grid_dim, block_dim, pair_descs, level_smaller_num_data,
               static_cast<int>(SHARED_HIST_SIZE), sizeof(BIN_TYPE))) {
         // launched the JIT kernel (nibble layout only; codec views use AOT)
+        DiagConstructKernel("jit");
       } else if (compact_is_4bit_) {
+        DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
 #define FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PACKT) \
         CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE, PACKT><<<grid_dim, block_dim, 0, cuda_stream_>>>( \
           pair_descs, \
@@ -3868,6 +3877,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         }
 #undef FALCATA_LAUNCH_BATCHED_COMPACT_QUANT
       } else {
+        DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
         CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE><<<grid_dim, block_dim, 0, cuda_stream_>>>(
           pair_descs,
           reinterpret_cast<const int32_t*>(cuda_gradients_),
@@ -3889,7 +3899,9 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
               grid_dim, block_dim, pair_descs, level_smaller_num_data,
               static_cast<int>(SHARED_HIST_SIZE), sizeof(BIN_TYPE), true)) {
         // JIT launched (validated module; mask-free shape)
+        DiagConstructKernel("jit");
       } else {
+        DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
         CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE, PackNibble4><<<grid_dim, block_dim, 0, cuda_stream_>>>(
           pair_descs,
           reinterpret_cast<const int32_t*>(cuda_gradients_),
@@ -3910,8 +3922,10 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       if (TryLaunchConstructJITBatchedRowDataQuant(
               grid_dim, block_dim, pair_descs, level_smaller_num_data,
               static_cast<int>(SHARED_HIST_SIZE), sizeof(BIN_TYPE), false)) {
+        DiagConstructKernel("jit");
         return;  // JIT launched (validated module; mask-free shape)
       }
+      DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
       CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE><<<grid_dim, block_dim, 0, cuda_stream_>>>(
         pair_descs,
         reinterpret_cast<const int32_t*>(cuda_gradients_),

@@ -461,8 +461,9 @@ class CUDAHistogramConstructor {
 
   void ResetConfig(const Config* config);
 
-  // resolved by the tree learner: plan.construct_jit AND (explicit override
-  // OR num_iterations >= 300) -- the compile+selftest cost needs amortizing
+  // resolved by the tree learner: plan.construct_jit (off under auto while
+  // row_batch is on) AND (explicit override OR num_iterations >= 300) -- the
+  // compile+selftest cost needs amortizing
   void SetConstructJITAllowed(bool allowed) { construct_jit_allowed_ = allowed; }
   void SetDetBatchedAllowed(bool allowed) { det_batched_allowed_ = allowed; }
 
@@ -893,6 +894,14 @@ class CUDAHistogramConstructor {
   ConstructJITShapeKey construct_jit_live_key_[2];      // [0]=8-bit, [1]=4-bit
   bool construct_jit_live_ready_[2] = {false, false};   // self-test validated -> live launch allowed
   bool construct_jit_allowed_ = false;
+  // FALCATA_DEBUG=diag: the batched quantized construct kernel last logged
+  const char* construct_diag_kernel_ = nullptr;
+  void DiagConstructKernel(const char* kernel) {
+    if (FalcataDebug().diag && kernel != construct_diag_kernel_) {
+      construct_diag_kernel_ = kernel;
+      Log::Info("quantized construct: %s kernel", kernel);
+    }
+  }
 
  public:
   // One-time NVRTC pipeline self-check (compile + module load + launch +

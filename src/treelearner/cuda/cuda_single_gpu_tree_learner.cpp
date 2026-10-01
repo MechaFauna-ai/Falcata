@@ -284,8 +284,7 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   cuda_histogram_constructor_->SetConstructJITAllowed(
       vec_num_targets_ <= 1 &&
       FalcataPlan::Get().construct_jit &&
-      (FalcataPlan::Get().construct_jit_explicit ||
-       (config_->num_iterations >= 300 && !FalcataPlan::Get().row_batch)));
+      (FalcataPlan::Get().construct_jit_explicit || config_->num_iterations >= 300));
 
   const auto& feature_hist_offsets = share_state_->feature_hist_offsets();
   num_total_bin_ = feature_hist_offsets.empty() ? 0 : static_cast<int>(feature_hist_offsets.back());
@@ -3565,9 +3564,11 @@ static const char* TunerWisdomPath() {
 
 std::string CUDASingleGPUTreeLearner::TunerWisdomKey() const {
   char buf[160];
-  snprintf(buf, sizeof(buf), "v1:%d:%d:%d:%d:%d:%d",
+  // the last field is the construct kernel family the knobs were tuned against
+  snprintf(buf, sizeof(buf), "v2:%d:%d:%d:%d:%d:%d:%d",
            num_data_, train_data_->num_features(), config_->num_leaves,
-           config_->max_depth, effective_quant_bins_, tuner_device_sm_count_);
+           config_->max_depth, effective_quant_bins_, tuner_device_sm_count_,
+           FalcataPlan::Get().row_batch ? 1 : 0);
   return std::string(buf);
 }
 

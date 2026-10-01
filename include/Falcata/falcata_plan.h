@@ -32,7 +32,7 @@ namespace Falcata {
  * concurrent in-process boosters with different plans are unsupported.
  *
  * ``cuda_plan`` grammar: ``auto`` (default) optionally followed by
- * comma-separated expert overrides, e.g. ``auto,graph_loop:off,construct_jit:on``.
+ * comma-separated expert overrides, e.g. ``auto,graph_loop:off,tuner:on``.
  * Values: ``on``/``off`` (also ``1``/``0``, ``true``/``false``). The separator
  * is ``:`` (not ``=``) because the surrounding parameter string already uses
  * ``=`` -- a nested ``=`` would be split by the parameter tokenizer.
@@ -62,17 +62,19 @@ struct FalcataPlan {
   // ~3.4x at ff=0.1, ~1.1x at ff=0.6)
   bool compact_quant = true;        // key: compact_quant
   // NVRTC runtime-JIT construct kernels (self-test-then-promote; AOT
-  // fallback). Default ON for quant runs >= 300 rounds (the ~230ms one-time
-  // compile amortizes): measured +4.0% numerai-deep, +2.4% covtype-deep,
-  // +2.2% year, +0.7% higgs, bit-identical.
+  // fallback). The JIT body is the unbatched row loop, so under auto it is
+  // resolved off while row_batch is on; with row_batch:off it engages for quant
+  // runs >= 300 rounds (the ~230ms one-time compile amortizes). Measured against
+  // the unbatched AOT loop: +4.0% numerai-deep, +2.4% covtype-deep, +2.2% year,
+  // +0.7% higgs, bit-identical.
   bool construct_jit = true;        // key: construct_jit
   // batched quantized construct: with one column per thread, each thread issues
   // the index, gradient and bin loads of 8 rows before their shared atomics (the
   // row loop is latency-bound on that dependent chain), and the flush skips empty
-  // bins. Wide partitions keep the two-column loop. Under auto it replaces the
-  // construct JIT (whose body is the unbatched loop); an explicit construct_jit
-  // takes precedence. Bit-identical. Measured: +26.1% numerai-deep, +7.7%
-  // higgs-deep against the JIT (300 rounds).
+  // bins. Wide partitions keep the two-column loop. An explicit construct_jit:on
+  // runs the JIT in its place where the JIT applies (with a warning).
+  // Bit-identical. Measured: +26.1% numerai-deep, +7.7% higgs-deep against the
+  // JIT (300 rounds).
   bool row_batch = true;            // key: row_batch
   // true when the user wrote construct_jit:on/off -- bypasses the >=300
   // rounds auto-gate (mirrors tuner_explicit)
@@ -259,15 +261,23 @@ struct FalcataPlan {
       if (kv[0] == std::string("construct_jit")) plan.construct_jit_explicit = true;
       overridden = true;
     }
+    if (plan.row_batch && plan.construct_jit) {
+      if (plan.construct_jit_explicit) {
+        Log::Warning("cuda_plan: construct_jit:on replaces the row_batch construct with the unbatched JIT kernel "
+                     "wherever the JIT applies");
+      } else {
+        plan.construct_jit = false;
+      }
+    }
     Mutable() = plan;
     if (overridden) {
       Log::Info("cuda_plan: hybrid=%d selective=%d one_sync=%d graph_loop=%d graph_quant=%d "
-                "compact_quant=%d construct_jit=%d fast_rowdata=%d rowdata_4bit=%d "
+                "compact_quant=%d construct_jit=%d row_batch=%d fast_rowdata=%d rowdata_4bit=%d "
                 "gpu_construct=%d efb_precheck=%d batch_kernels=%d batch_apply=%d "
                 "batch_reghist=%d batch_wide=%d gh_interleave=%d split_packed_read=%d "
                 "small_leaf_construct=%d",
                 plan.hybrid, plan.selective, plan.one_sync, plan.graph_loop, plan.graph_quant,
-                plan.compact_quant, plan.construct_jit, plan.fast_rowdata, plan.rowdata_4bit,
+                plan.compact_quant, plan.construct_jit, plan.row_batch, plan.fast_rowdata, plan.rowdata_4bit,
                 plan.gpu_construct, plan.efb_precheck, plan.batch_kernels, plan.batch_apply,
                 plan.batch_reghist, plan.batch_wide, plan.gh_interleave, plan.split_packed_read,
                 plan.small_leaf_construct);

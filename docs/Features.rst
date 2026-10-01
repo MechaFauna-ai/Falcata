@@ -48,8 +48,10 @@ Histogram-construction kernels can be specialized at runtime (via NVRTC) to
 the actual data shape -- bin counts, column layout -- instead of relying on
 one generic kernel. A JIT kernel is self-tested against the ahead-of-time
 kernel on real data and promoted **only if bit-identical**; otherwise the AOT
-kernel keeps running. On by default; disable with
-``cuda_plan=auto,construct_jit:off``.
+kernel keeps running. Its body is the unbatched row loop, so under ``auto`` it
+is used only with ``cuda_plan=auto,row_batch:off`` (then on runs of 300 or more
+rounds); ``construct_jit:on`` forces it in place of the row-batched AOT
+kernel.
 
 Per-Tree Compact Column View
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -99,7 +101,7 @@ and parameters by ``cuda_plan=auto`` -- not from environment variables or
 hidden heuristics scattered through the code. Each decision is guaranteed
 bit-identical (enforced by per-commit regression gates that flip every key
 and require identical models) and individually overridable, e.g.
-``cuda_plan=auto,hybrid:off,construct_jit:on``, which also makes every
+``cuda_plan=auto,hybrid:off,tuner:on``, which also makes every
 feature's contribution measurable by leave-one-out ablation.
 
 GPU Inference

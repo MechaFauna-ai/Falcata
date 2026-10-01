@@ -463,7 +463,7 @@ bit-identical in every cell):
   (300 rounds) +26.1% numerai-deep, +7.7% higgs-deep. Wide partitions (two columns per
   thread) keep the unbatched loop. Under `auto` it also replaces the construct
   JIT on long runs (the JIT body is the unbatched loop); an explicit
-  `construct_jit` takes precedence. Bit-identical.
+  `construct_jit:on` runs the JIT in its place, with a warning. Bit-identical.
 - **`tuner`** — a per-tree bandit over behavior-preserving execution knobs,
   best-of-15 timing, re-probe every 3000 trees: +2.1% numerai-deep, +2.7%
   year from the saturation-floor knob alone. Quantized training only —
@@ -512,11 +512,12 @@ would show a single bar of exactly that number.
 The original numerai win required syncing the JIT template with the
 evict-first (`__ldcs`) loads first — an unsynced template measured at
 parity, which earlier led to a premature dead-end verdict (since
-corrected). Default ON
-for quantized runs of ≥300 rounds (the ~230ms one-time compile+self-test
-amortizes); `construct_jit:on` forces it, unsupported shapes (graph capture,
-speculative levels, masked trees, wide partitions) fall back to AOT
-automatically.
+corrected). Its body is the unbatched row loop, so since `row_batch` (§7) it
+is off under `auto`; with `row_batch:off` it engages for quantized runs of
+≥300 rounds (the ~230ms one-time compile+self-test amortizes).
+`construct_jit:on` forces it in place of the row-batched AOT kernel;
+unsupported shapes (graph capture, speculative levels, masked trees, wide
+partitions) fall back to AOT automatically.
 
 ## 8. GPU inference via NVIDIA FIL
 
