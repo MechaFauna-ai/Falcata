@@ -102,6 +102,8 @@ class CUDABestSplitFinder {
    *  redraw of hessian rounding noise); wired in by the tree learner */
   void SetQuantBaggingRidge(const bool on) { quant_bagging_ridge_ = on; }
 
+  void UpdateWarpFindEligibility();
+
   /*! \brief large-bin fallback stays fp64: the tree learner disables the fp32
    *  histogram mode when this is set */
   bool use_global_memory() const { return use_global_memory_; }
@@ -631,6 +633,8 @@ class CUDABestSplitFinder {
   // discretized find kernels, scalar (FindBestSplitsDiscretizedForLeafKernel)
   // and vector (FindBestSplitsDiscretizedVectorInner) alike
   bool quant_bagging_ridge_ = false;
+  // every task fits the warp-per-task quantized level finder (see UpdateWarpFindEligibility)
+  bool warp_find_eligible_ = false;
   // number of total bins in the dataset
   const int num_total_bin_;
   // has categorical feature

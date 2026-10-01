@@ -57,6 +57,7 @@ ALL_KEYS = {
     "small_leaf_construct": True,
     "compact_prefill": False,
     "tiled_fill": True,
+    "warp_find": True,
 }
 
 #: growth-strategy keys: changing them changes WHICH tree is built (legit),
@@ -87,6 +88,7 @@ DEEP_KEYS = [
     "construct_jit",
     "gh_interleave",
     "split_packed_read",
+    "warp_find",
 ]
 
 BASE = {

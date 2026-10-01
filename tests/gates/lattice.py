@@ -161,6 +161,10 @@ def build_cells():
         ("sampled", "compact_prefill", {}, {"cuda_plan": "auto,compact_prefill:on"}),
         ("sampled", "tiled_fill", {}, {"cuda_plan": "auto,tiled_fill:off"}),
         ("sampledwide", "tiled_fill", {}, {"cuda_plan": "auto,tiled_fill:off"}),
+        ("dense", "warp_find", {}, {"cuda_plan": "auto,warp_find:off"}),
+        ("fewbin", "warp_find", {}, {"cuda_plan": "auto,warp_find:off"}),
+        ("missing", "warp_find", {}, {"cuda_plan": "auto,warp_find:off"}),
+        ("sampled", "warp_find", {}, {"cuda_plan": "auto,warp_find:off"}),
         ("int8wide", "rowdata_4bit", {}, {"cuda_plan": "auto,rowdata_4bit:off"}),
         ("int8wide", "fast_rowdata", {}, {"cuda_plan": "auto,fast_rowdata:off"}),
     ]

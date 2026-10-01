@@ -452,6 +452,21 @@ bit-identical in every cell):
   host picks it when the source is column-major and at most 256 byte slots are
   sampled; row-major sources and wider samples keep the per-cell kernel.
   Bit-identical (the same bytes).
+- **`warp_find`** — the quantized per-level split finder runs one warp per
+  (feature, leaf) instead of a 256-thread block. The block kernel spent most
+  of its time in block-wide scans, reductions and `__syncthreads` (about 36%
+  of stall cycles at barriers), and on numerai every feature has 5 bins, so
+  251 of 256 threads held nothing. Each lane now owns 8 scan positions: a
+  register prefix sum plus a warp shuffle scan, and a shuffle reduction that
+  keeps the lowest-position tie-break. On 255-bin features the remaining cost
+  is the fp64 gain math, so an fp32 bound on each threshold's closed-form gain
+  skips the fp64 evaluation of thresholds that cannot win or tie. **+6.3%
+  numerai-deep, +22.7% year-deep, +18.8% epsilon-shallow** end to end.
+  Scope: quantized levels launched from the host (not the CUDA-graph loop)
+  with fp64 gains, and only when every task of the dataset is a numerical
+  feature of at most 256 bins (NaN handling only with a stored most-frequent
+  bin); one ineligible feature keeps the whole dataset on the block kernel.
+  CUDA only. Bit-identical.
 - **`tuner`** — a per-tree bandit over behavior-preserving execution knobs,
   best-of-15 timing, re-probe every 3000 trees: +2.1% numerai-deep, +2.7%
   year from the saturation-floor knob alone. Quantized training only —
