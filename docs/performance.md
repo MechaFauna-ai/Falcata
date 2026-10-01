@@ -439,9 +439,19 @@ bit-identical in every cell):
 - **`colmajor_fill`** — a one-time column-major copy of the packed bin matrix
   serves as the compact-fill gather source, so the per-tree fill reads
   contiguous columns instead of dragging ~10× its bytes through row-major
-  cache lines: +2.2% numerai-deep (the fill is genuinely bandwidth-bound, but
-  it is a small slice of tree time — the +14% pre-measurement estimate did not
-  survive contact with the profiler). VRAM-gated by the planner.
+  cache lines: +2.2% numerai-deep. The per-cell fill kernel that reads it moves
+  one byte per thread and runs at ~24% of DRAM bandwidth, latency-bound rather
+  than bandwidth-bound; `tiled_fill` below is the kernel that uses the
+  contiguous columns fully. VRAM-gated by the planner.
+- **`tiled_fill`** — the 4-bit compact fill stages 128 rows of every byte slot
+  in a shared-memory `[row][slot]` tile, reading each source column
+  contiguously, then writes each partition's rows as one contiguous run with
+  16-byte streaming stores: fill 2.01 → 0.52 ms on the 2.75M-row Numerai train
+  set (ff 0.1, 132–133 byte slots), ~91% of DRAM bandwidth, **+10.2%
+  numerai-deep**, +19.3% on the 32-leaf numerai example config. The
+  host picks it when the source is column-major and at most 256 byte slots are
+  sampled; row-major sources and wider samples keep the per-cell kernel.
+  Bit-identical (the same bytes).
 - **`warp_find`** — the quantized per-level split finder runs one warp per
   (feature, leaf) instead of a 256-thread block. The block kernel spent most
   of its time in block-wide scans, reductions and `__syncthreads` (about 36%

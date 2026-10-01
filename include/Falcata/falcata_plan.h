@@ -116,6 +116,13 @@ struct FalcataPlan {
   // on free memory). Bit-identical (same bytes, different source layout).
   // Measured: +2.2% numerai-deep; inert without feature sampling.
   bool colmajor_fill = true;        // key: colmajor_fill
+  // 4-bit compact fill through a shared-memory [row][slot] tile: coalesced
+  // column reads, 16-byte streaming writes of each partition's contiguous
+  // destination run. The host takes it for column-major sources with at most
+  // 256 byte slots; anything else keeps the per-cell kernel. Bit-identical
+  // (same bytes). Measured: +10.2% numerai-deep; inert without feature
+  // sampling.
+  bool tiled_fill = true;           // key: tiled_fill
   // quantized per-level split finder with one warp per (task, leaf) instead of
   // a 256-thread block: register prefix sums and shuffle scans/reductions, and
   // fp64 gains evaluated only for thresholds an fp32 bound cannot rule out.
@@ -200,6 +207,7 @@ struct FalcataPlan {
     if (key == "pack_radix7") return &pack_radix7;
     if (key == "l2_policy") return &l2_policy;
     if (key == "colmajor_fill") return &colmajor_fill;
+    if (key == "tiled_fill") return &tiled_fill;
     if (key == "warp_find") return &warp_find;
     if (key == "tuner") return &tuner;
     if (key == "wide_partitions") return &wide_partitions;
