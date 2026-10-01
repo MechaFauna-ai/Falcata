@@ -58,6 +58,7 @@ ALL_KEYS = {
     "small_leaf_construct": True,
     "compact_prefill": False,
     "tiled_fill": True,
+    "warp_find": True,
     "row_batch": True,
 }
 
@@ -89,6 +90,7 @@ DEEP_KEYS = [
     "construct_jit",
     "gh_interleave",
     "split_packed_read",
+    "warp_find",
     # at this cell's 300 rounds the off flip re-enables the JIT (master's long-run behaviour)
     "row_batch",
 ]
