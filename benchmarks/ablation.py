@@ -87,6 +87,7 @@ DEEP_KEYS = [
     "construct_jit",
     "gh_interleave",
     "split_packed_read",
+    "warp_find",
 ]
 
 BASE = {

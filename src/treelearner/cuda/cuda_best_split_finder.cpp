@@ -159,19 +159,19 @@ void CUDABestSplitFinder::SetTaskFeaturePenalties() {
 }
 
 void CUDABestSplitFinder::UpdateWarpFindEligibility() {
-  // The warp kernel scans at most 256 positions per task and implements the numerical scans the block kernel
-  // runs for these task shapes: reverse scans without NaN handling at any most-frequent-bin offset, reverse and
-  // forward scans with NaN handling when the most-frequent bin is stored. Anything else keeps the block kernel.
+#if defined(__HIP_PLATFORM_AMD__)
+  warp_find_eligible_ = false;
+#else
+  // All or nothing per dataset: every task must be a numerical scan of at most 256 positions that the warp kernel
+  // implements (reverse scans without NaN handling at any most-frequent-bin offset, reverse and forward scans with
+  // NaN handling when the most-frequent bin is stored); otherwise every task keeps the block kernel.
   warp_find_eligible_ = FalcataPlan::Get().warp_find && !split_find_tasks_.empty() &&
     std::all_of(split_find_tasks_.begin(), split_find_tasks_.end(), [](const SplitFindTask& t) {
       if (t.is_categorical || t.skip_default_bin || t.num_bin > 256) return false;
       if (t.reverse) return !(t.na_as_missing && t.mfb_offset != 0);
       return t.na_as_missing && t.mfb_offset == 0;
     });
-  if (FalcataDebug().diag) {
-    Log::Info("split finder: %s kernel for quantized levels (%d tasks)", warp_find_eligible_ ? "warp" : "block",
-              num_tasks_);
-  }
+#endif
 }
 
 void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {

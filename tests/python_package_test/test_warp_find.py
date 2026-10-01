@@ -5,8 +5,9 @@ cuda_plan key warp_find switches the quantized per-level split finder between on
 256-thread block per (task, leaf). Both scan the same integer histograms with the same fp64 gain math, so the
 trained model must be byte-identical whichever runs. The sweep covers what the warp kernel branches on: 16- and
 32-bit leaf histograms, forward and reverse scans, NaN handling, a stored or unstored most-frequent bin, unused
-features, the bagging ridge, and the parameters that switch its fp32 pruning off (max_delta_step) or move the
-min-gain cutoff. Only the deterministic (quantized) modes are compared.
+features, the bagging ridge, the parameters that switch its fp32 pruning off (max_delta_step) or move the
+min-gain cutoff, and objectives with non-constant hessians (imbalanced binary, multiclass). Only the deterministic
+(quantized) modes are compared.
 """
 
 import os
@@ -36,13 +37,13 @@ BASE = {
 }
 
 
-def _data(kind, rows, seed):
+def _data(kind, rows, seed, objective="regression"):
     rng = np.random.default_rng(seed)
     if kind == "dense":  # float features, up to 255 bins
         X = rng.standard_normal((rows, 30)).astype(np.float32)
-    elif kind == "fewbin":  # 5 values, mostly zero: the most-frequent bin is not stored (mfb_offset 1)
+    elif kind == "fewbin":  # 5 values, zero most frequent: its bin is not stored (mfb_offset 1)
         X = rng.integers(0, 5, size=(rows, 40)).astype(np.float32)
-        X[rng.random(X.shape) < 0.6] = 0.0
+        X[rng.random(X.shape) < 0.04] = 0.0  # zero 23%, others 19%: under the 25% sparse-rows threshold
     elif kind == "nan":  # NaN in half the columns: forward and reverse scans with NaN handling
         X = rng.standard_normal((rows, 30)).astype(np.float32)
         X[:, :15][rng.random((rows, 15)) < 0.2] = np.nan
@@ -50,12 +51,16 @@ def _data(kind, rows, seed):
         raise ValueError(kind)
     w = rng.standard_normal(min(8, X.shape[1]))
     y = np.nan_to_num(X[:, : len(w)]) @ w + rng.standard_normal(rows)
+    if objective == "binary":  # about 5% positives
+        y = (y > np.quantile(y, 0.95)).astype(np.float32)
+    elif objective == "multiclass":
+        y = np.digitize(y, np.quantile(y, [0.5, 0.85])).astype(np.float32)
     return X, y.astype(np.float32)
 
 
 def _train(kind, rows, params, seed=0, rounds=12, X=None, y=None):
     if X is None:
-        X, y = _data(kind, rows, seed)
+        X, y = _data(kind, rows, seed, params.get("objective", "regression"))
     p = {**BASE, **params}
     model = flc.train(p, flc.Dataset(X, label=y, params=p), num_boost_round=rounds).model_to_string()
     # the parameter dump records the plan string itself
@@ -85,6 +90,25 @@ def test_warp_find_is_bit_identical_cuda(kind, config, quant):
 
 
 @_REQUIRES_CUDA
+@pytest.mark.parametrize("quant", ["stochastic", "fixedpoint"])
+@pytest.mark.parametrize("kind", ["dense", "fewbin", "nan"])
+@pytest.mark.parametrize(
+    "objective",
+    [
+        pytest.param({"objective": "binary"}, id="binary-imbalanced"),
+        pytest.param({"objective": "multiclass", "num_class": 3}, id="multiclass"),
+    ],
+)
+def test_warp_find_is_bit_identical_with_non_constant_hessians_cuda(kind, objective, quant):
+    """Regression has a constant hessian; these exercise the pruning bound and count gates on varying ones."""
+    params = {"quant_mode": quant, **objective}
+    rows = 60_001
+    warp = _train(kind, rows, {**params, "cuda_plan": "auto"}, rounds=8)
+    block = _train(kind, rows, {**params, "cuda_plan": "auto,warp_find:off"}, rounds=8)
+    assert warp == block
+
+
+@_REQUIRES_CUDA
 def test_warp_find_is_bit_identical_with_32bit_leaf_histograms_cuda():
     """Large leaves use 32-bit histogram bins (int64 packing); a few large leaves keep them in play."""
     params = {"quant_mode": "fixedpoint", "num_leaves": 15, "max_depth": 4}
@@ -98,29 +122,40 @@ import sys
 sys.path.insert(0, {here!r})
 import numpy as np
 from test_warp_find import _data, _train
-X, y = _data({kind!r}, 20_000, 0)
+X, y = _data({kind!r}, 20_000, 0, {params!r}.get("objective", "regression"))
+params = {{"quant_mode": "stochastic", "verbosity": 1, **{params!r}}}
 if {categorical!r}:
     X = np.column_stack([X, np.random.default_rng(1).integers(0, 6, size=len(y))]).astype(np.float32)
-    _train(None, 0, {{"quant_mode": "stochastic", "verbosity": 1, "categorical_feature": [X.shape[1] - 1]}}, X=X, y=y, rounds=2)
-else:
-    _train(None, 0, {{"quant_mode": "stochastic", "verbosity": 1}}, X=X, y=y, rounds=2)
+    params["categorical_feature"] = [X.shape[1] - 1]
+_train(None, 0, params, X=X, y=y, rounds=2)
 """
 
 
-def _finder_kernels(kind, categorical):
-    code = _PROBE.format(here=os.path.dirname(os.path.abspath(__file__)), kind=kind, categorical=categorical)
+def _finder_kernels(kind, categorical, params):
+    code = _PROBE.format(
+        here=os.path.dirname(os.path.abspath(__file__)), kind=kind, categorical=categorical, params=params
+    )
     env = {**os.environ, "FALCATA_DEBUG": "diag"}
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, check=True).stdout
-    return re.findall(r"split finder: (\S+) kernel for quantized levels", out)
+    return re.findall(r"split finder: (\S+) kernel for this tree's quantized levels", out)
 
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize(
-    ("kind", "categorical", "kernel"),
-    [("dense", False, "warp"), ("fewbin", False, "warp"), ("nan", False, "warp"), ("dense", True, "block")],
+    ("kind", "categorical", "params", "kernel"),
+    [
+        pytest.param("dense", False, {}, "warp", id="dense"),
+        pytest.param("fewbin", False, {}, "warp", id="fewbin"),
+        pytest.param("nan", False, {}, "warp", id="nan"),
+        pytest.param("dense", False, {"objective": "binary"}, "warp", id="binary"),
+        pytest.param("dense", False, {"objective": "multiclass", "num_class": 3}, "warp", id="multiclass"),
+        pytest.param("dense", False, {"cuda_plan": "auto,warp_find:off"}, "block", id="warp_find-off"),
+        pytest.param("dense", False, {"cuda_precision": "fp32"}, "block", id="fp32-gain"),
+        pytest.param("dense", True, {}, "block", id="categorical"),
+    ],
 )
-def test_datasets_reach_the_intended_finder_cuda(kind, categorical, kernel):
-    """The bit-identity sweep only means something if its datasets take the kernel they are meant to exercise."""
-    kernels = _finder_kernels(kind, categorical)
-    assert kernels, "no split-finder kernel choice was logged"
+def test_datasets_reach_the_intended_finder_cuda(kind, categorical, params, kernel):
+    """The bit-identity sweep only means something if its launches take the kernel they are meant to exercise."""
+    kernels = _finder_kernels(kind, categorical, params)
+    assert kernels, "no split-finder launch was logged"
     assert all(k == kernel for k in kernels), kernels

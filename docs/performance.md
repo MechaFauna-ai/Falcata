@@ -450,11 +450,13 @@ bit-identical in every cell):
   register prefix sum plus a warp shuffle scan, and a shuffle reduction that
   keeps the lowest-position tie-break. On 255-bin features the remaining cost
   is the fp64 gain math, so an fp32 bound on each threshold's closed-form gain
-  skips the fp64 evaluation of thresholds that cannot win or tie. Split finder
-  1.6× faster across the shapes below; **+6.3% numerai-deep, +22.7%
-  year-deep, +18.8% epsilon-shallow**. Numerical tasks of at most 256 bins
-  outside the CUDA-graph loop; anything else keeps the block kernel.
-  Bit-identical.
+  skips the fp64 evaluation of thresholds that cannot win or tie. **+6.3%
+  numerai-deep, +22.7% year-deep, +18.8% epsilon-shallow** end to end.
+  Scope: quantized levels launched from the host (not the CUDA-graph loop)
+  with fp64 gains, and only when every task of the dataset is a numerical
+  feature of at most 256 bins (NaN handling only with a stored most-frequent
+  bin); one ineligible feature keeps the whole dataset on the block kernel.
+  CUDA only. Bit-identical.
 - **`tuner`** — a per-tree bandit over behavior-preserving execution knobs,
   best-of-15 timing, re-probe every 3000 trees: +2.1% numerai-deep, +2.7%
   year from the saturation-floor knob alone. Quantized training only —
@@ -474,7 +476,8 @@ bit-identical in every cell):
   the per-pair fallback path — the batched flow every real workload uses
   runs on a single stream.)
 
-All four compose: **+10.5% on numerai-deep combined**. A methodology note the
+`wide_partitions`, `l2_policy`, `colmajor_fill` and `tuner` compose: **+10.5% on
+numerai-deep combined**. A methodology note the
 battery re-taught us: 100-round probe cells on fast datasets (year runs 0.4s)
 sit inside clock/thermal noise — the year "regressions" the battery first
 reported all vanished under interleaved A/B at 500 rounds.

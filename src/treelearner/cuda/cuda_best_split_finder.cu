@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cstring>
+#include <type_traits>
 #include <vector>
 
 #include <Falcata/cuda/cuda_algorithms.hpp>
@@ -5043,18 +5044,19 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
   #undef FindBestSplitsForLevelKernel_ARGS
 }
 
-template <typename T> struct UnsignedOf;
-template <> struct UnsignedOf<int32_t> { using type = uint32_t; };
-template <> struct UnsignedOf<int64_t> { using type = uint64_t; };
-
-template <typename GAIN_T>
-struct BinOut {
-  GAIN_T sl_g, sl_h, sr_g, sr_h, gain;
+#if !defined(__HIP_PLATFORM_AMD__)
+// Warp-per-task quantized level finder (cuda_plan key warp_find). CUDA only: it assumes 32-lane warps.
+struct WarpFindCandidate {
+  double sl_g, sl_h, sr_g, sr_h, gain;
   data_size_t lc, rc;
   int64_t slgh, srgh;
 };
 
-template <bool REVERSE, bool B16, typename ACC_T, typename GAIN_T>
+// One warp scans one (task, leaf): each lane owns 8 consecutive scan positions. The prefix sum is a per-lane
+// register scan plus a warp shuffle scan of the lane totals (the block kernel's wrapping packed-integer adds);
+// the per-threshold unpack, gates and gain are the block kernel's expressions; the best threshold is a strict
+// ascending scan per lane followed by a shuffle reduction through OtherIsBetterWithTieBreak.
+template <bool REVERSE, bool B16, typename ACC_T>
 __device__ __forceinline__ void WarpFindBest(
     const ACC_T* hist, const SplitFindTask* task,
     const double lambda_l2, const double max_delta_step, const data_size_t min_data_in_leaf,
@@ -5062,25 +5064,18 @@ __device__ __forceinline__ void WarpFindBest(
     const double parent_gain, const int64_t sum_gradients_hessians, const data_size_t num_data,
     const double parent_output, const double grad_scale, const double hess_scale,
     CUDASplitInfo* out) {
-  using UT = typename UnsignedOf<ACC_T>::type;
-  constexpr uint32_t NF = 0xffffffffu;
+  using UT = std::make_unsigned_t<ACC_T>;
+  constexpr uint32_t kNoThreshold = 0xffffffffu;
   const uint32_t lane = threadIdx.x & 31u;
+  // the level kernel only runs without L1 and path smoothing (SupportsBatchedLevel)
   const double lambda_l1 = 0.0;
   const double path_smooth = 0.0;
   const double sum_hessians = static_cast<double>(sum_gradients_hessians & 0x00000000ffffffff) * hess_scale;
-  const GAIN_T cnt_factor = static_cast<GAIN_T>(num_data / sum_hessians);
-  const GAIN_T min_gain_shift = static_cast<GAIN_T>(parent_gain + min_gain_to_split);
-  const GAIN_T grad_scale_acc = static_cast<GAIN_T>(grad_scale);
-  const GAIN_T hess_scale_acc = static_cast<GAIN_T>(hess_scale);
-  const GAIN_T min_sum_hessian_acc = static_cast<GAIN_T>(min_sum_hessian_in_leaf);
-  const GAIN_T lambda_l1_acc = static_cast<GAIN_T>(lambda_l1);
-  const GAIN_T lambda_l2_acc = static_cast<GAIN_T>(lambda_l2);
-  const GAIN_T path_smooth_acc = static_cast<GAIN_T>(path_smooth);
-  const GAIN_T parent_output_acc = static_cast<GAIN_T>(parent_output);
+  const double cnt_factor = num_data / sum_hessians;
+  const double min_gain_shift = parent_gain + min_gain_to_split;
 
   const uint32_t fnb = task->num_bin - task->mfb_offset;
   const uint32_t na = static_cast<uint32_t>(task->na_as_missing);
-  const uint32_t end_fwd = fnb - 2;
   const uint32_t base = lane * 8u;
 
   UT v[8];
@@ -5089,8 +5084,7 @@ __device__ __forceinline__ void WarpFindBest(
     const uint32_t t = base + i;
     UT x = 0;
     if (REVERSE ? (t >= na && t < fnb) : (t < fnb)) {
-      const uint32_t idx = REVERSE ? (fnb - 1 - t) : t;
-      x = static_cast<UT>(hist[idx]);
+      x = static_cast<UT>(hist[REVERSE ? (fnb - 1 - t) : t]);
     }
     v[i] = x;
   }
@@ -5108,171 +5102,145 @@ __device__ __forceinline__ void WarpFindBest(
   }
   const UT excl = incl - run;
 
-  auto prep = [&](UT accu, BinOut<GAIN_T>& o) -> bool {
+  // the block kernel's unpack and validity gates for one threshold
+  auto prep = [&](UT accu, WarpFindCandidate& o) -> bool {
     const ACC_T acc = static_cast<ACC_T>(accu);
-    int64_t packed;
-    if (B16) {
-      packed = (static_cast<int64_t>(static_cast<int16_t>(acc >> 16)) << 32) | static_cast<int64_t>(acc & 0x0000ffff);
-    } else {
-      packed = static_cast<int64_t>(acc);
-    }
+    const int64_t packed = B16 ?
+      ((static_cast<int64_t>(static_cast<int16_t>(acc >> 16)) << 32) | static_cast<int64_t>(acc & 0x0000ffff)) :
+      static_cast<int64_t>(acc);
     if (REVERSE) {
       o.srgh = packed;
-      o.sr_g = static_cast<GAIN_T>(static_cast<int32_t>((o.srgh & 0xffffffff00000000) >> 32)) * grad_scale_acc;
-      o.sr_h = static_cast<GAIN_T>(static_cast<int32_t>(o.srgh & 0x00000000ffffffff)) * hess_scale_acc;
+      o.sr_g = static_cast<double>(static_cast<int32_t>((o.srgh & 0xffffffff00000000) >> 32)) * grad_scale;
+      o.sr_h = static_cast<double>(static_cast<int32_t>(o.srgh & 0x00000000ffffffff)) * hess_scale;
       o.rc = static_cast<data_size_t>(CUDARoundInt(o.sr_h * cnt_factor));
       o.slgh = sum_gradients_hessians - o.srgh;
-      o.sl_g = static_cast<GAIN_T>(static_cast<int32_t>((o.slgh & 0xffffffff00000000) >> 32)) * grad_scale_acc;
-      o.sl_h = static_cast<GAIN_T>(static_cast<int32_t>(o.slgh & 0x00000000ffffffff)) * hess_scale_acc;
+      o.sl_g = static_cast<double>(static_cast<int32_t>((o.slgh & 0xffffffff00000000) >> 32)) * grad_scale;
+      o.sl_h = static_cast<double>(static_cast<int32_t>(o.slgh & 0x00000000ffffffff)) * hess_scale;
       o.lc = num_data - o.rc;
     } else {
       o.slgh = packed;
-      o.sl_g = static_cast<GAIN_T>(static_cast<int32_t>((o.slgh & 0xffffffff00000000) >> 32)) * grad_scale_acc;
-      o.sl_h = static_cast<GAIN_T>(static_cast<int32_t>(o.slgh & 0x00000000ffffffff)) * hess_scale_acc;
+      o.sl_g = static_cast<double>(static_cast<int32_t>((o.slgh & 0xffffffff00000000) >> 32)) * grad_scale;
+      o.sl_h = static_cast<double>(static_cast<int32_t>(o.slgh & 0x00000000ffffffff)) * hess_scale;
       o.lc = static_cast<data_size_t>(CUDARoundInt(o.sl_h * cnt_factor));
       o.srgh = sum_gradients_hessians - o.slgh;
-      o.sr_g = static_cast<GAIN_T>(static_cast<int32_t>((o.srgh & 0xffffffff00000000) >> 32)) * grad_scale_acc;
-      o.sr_h = static_cast<GAIN_T>(static_cast<int32_t>(o.srgh & 0x00000000ffffffff)) * hess_scale_acc;
+      o.sr_g = static_cast<double>(static_cast<int32_t>((o.srgh & 0xffffffff00000000) >> 32)) * grad_scale;
+      o.sr_h = static_cast<double>(static_cast<int32_t>(o.srgh & 0x00000000ffffffff)) * hess_scale;
       o.rc = num_data - o.lc;
     }
-    return (o.sl_h >= min_sum_hessian_acc && o.lc >= min_data_in_leaf &&
-            o.sr_h >= min_sum_hessian_acc && o.rc >= min_data_in_leaf);
+    return o.sl_h >= min_sum_hessian_in_leaf && o.lc >= min_data_in_leaf &&
+           o.sr_h >= min_sum_hessian_in_leaf && o.rc >= min_data_in_leaf;
   };
 
-  auto eval = [&](UT accu, uint32_t t, BinOut<GAIN_T>& o) -> bool {
-    if (!prep(accu, o)) return false;
-    GAIN_T current_gain = CUDALeafSplits::GetSplitGains<false, false, GAIN_T>(
-        o.sl_g, o.sl_h + kEpsilon, o.sr_g, o.sr_h + kEpsilon, lambda_l1_acc,
-        lambda_l2_acc, path_smooth_acc, static_cast<GAIN_T>(max_delta_step), o.lc, o.rc, parent_output_acc);
-    if (current_gain > min_gain_shift) {
-      o.gain = current_gain - min_gain_shift;
-      return true;
-    }
-    return false;
-  };
-
-  GAIN_T best_gain = static_cast<GAIN_T>(kMinScore);
-  uint32_t best_t = NF;
-  UT best_acc = 0;
-  {
-    // Pass 1: an fp32 estimate of the closed-form gain g^2/(h+l2) summed over both children, widened by 2e-4
-    // (far beyond fp32 rounding of a sum of non-negative terms), bounds each candidate. A candidate whose upper
-    // bound is below another valid candidate's lower bound, or below the min-gain cutoff, can neither win nor
-    // tie, so its fp64 evaluation is skipped. The closed form holds only without max_delta_step.
-    const bool prune = (max_delta_step <= 0.0) && (lambda_l2 >= 0.0);
-    constexpr float kRel = 2.0e-4f;
-    constexpr float kAbs = 1.0e-30f;
+  // Pruning (only without max_delta_step, where each candidate's gain is the closed form
+  // g_l^2/(h_l+eps+l2) + g_r^2/(h_r+eps+l2)): an fp32 estimate widened by 2e-4 relative plus 1e-30 absolute
+  // bounds each candidate. A candidate is skipped only when its upper bound is below another valid candidate's
+  // lower bound or below the min-gain cutoff, so it can neither win nor tie. Candidates whose squared gradient
+  // sums underflow fp32 are never pruned and set no lower bound.
+  const bool prune = max_delta_step <= 0.0 && lambda_l2 >= 0.0;
+  constexpr float kRel = 2.0e-4f;
+  constexpr float kAbs = 1.0e-30f;
+  float up[8];
+  uint32_t vmask = 0;
+#pragma unroll
+  for (int i = 0; i < 8; ++i) {
+    const uint32_t t = base + i;
+    const bool candidate = REVERSE ? (t >= na && t <= task->num_bin - 2) : (t + 2 <= fnb);
+    if (candidate) vmask |= (1u << i);
+    up[i] = INFINITY;
+  }
+  if (prune) {
     const float l2e = static_cast<float>(lambda_l2 + kEpsilon);
-    float thr = -INFINITY;
-    if (prune) {
-      const float mg = static_cast<float>(min_gain_shift);
-      thr = mg - fabsf(mg) * kRel - kAbs;
-    }
-    float up[8];
-    uint32_t vmask = 0;
-#pragma unroll
-    for (int i = 0; i < 8; ++i) {
-      up[i] = INFINITY;
-      const uint32_t t = base + i;
-      const bool cand = REVERSE ? (t >= na && t <= task->num_bin - 2) : (t <= end_fwd);
-      if (cand) {
-        BinOut<GAIN_T> o;
-        if (prep(v[i] + excl, o)) {
-          vmask |= (1u << i);
-          if (prune) {
-            const float gl = static_cast<float>(o.sl_g);
-            const float hl = static_cast<float>(o.sl_h);
-            const float gr = static_cast<float>(o.sr_g);
-            const float hr = static_cast<float>(o.sr_h);
-            const float a = gl * gl / (hl + l2e) + gr * gr / (hr + l2e);
-            up[i] = a * (1.0f + kRel) + kAbs;
-            const float lo = a * (1.0f - kRel) - kAbs;
-            if (lo < 1.0e30f) thr = fmaxf(thr, lo);
-          }
-        }
-      }
-    }
-    if (prune) {
-#pragma unroll
-      for (uint32_t off = 16; off > 0; off >>= 1) {
-        thr = fmaxf(thr, __shfl_xor_sync(0xffffffffu, thr, off));
-      }
-    }
-    // Pass 2: the exact fp64 gain, as in the block kernel, for every candidate that can still win.
+    const float mg = static_cast<float>(min_gain_shift);
+    float threshold = mg - fabsf(mg) * kRel - kAbs;
 #pragma unroll
     for (int i = 0; i < 8; ++i) {
       if ((vmask >> i) & 1u) {
-        if (!(up[i] < thr)) {
-          const uint32_t t = base + i;
-          BinOut<GAIN_T> o;
-          const UT accu = v[i] + excl;
-          if (eval(accu, t, o)) {
-            if (best_t == NF || o.gain > best_gain) {
-              best_gain = o.gain;
-              best_t = t;
-              best_acc = accu;
-            }
-          }
+        WarpFindCandidate o;
+        if (!prep(v[i] + excl, o)) {
+          vmask &= ~(1u << i);
+          continue;
         }
+        const float gl = static_cast<float>(o.sl_g);
+        const float gr = static_cast<float>(o.sr_g);
+        const float gl2 = gl * gl;
+        const float gr2 = gr * gr;
+        if (gl2 < FLT_MIN || gr2 < FLT_MIN) continue;  // underflow: keep, set no lower bound
+        const float a = gl2 / (static_cast<float>(o.sl_h) + l2e) + gr2 / (static_cast<float>(o.sr_h) + l2e);
+        up[i] = a * (1.0f + kRel) + kAbs;
+        const float lo = a * (1.0f - kRel) - kAbs;
+        if (lo < 1.0e30f) threshold = fmaxf(threshold, lo);
+      }
+    }
+#pragma unroll
+    for (uint32_t off = 16; off > 0; off >>= 1) {
+      threshold = fmaxf(threshold, __shfl_xor_sync(0xffffffffu, threshold, off));
+    }
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+      if (up[i] < threshold) vmask &= ~(1u << i);
+    }
+  }
+
+  double best_gain = kMinScore;
+  uint32_t best_t = kNoThreshold;
+  WarpFindCandidate best{};
+#pragma unroll
+  for (int i = 0; i < 8; ++i) {
+    if ((vmask >> i) & 1u) {
+      WarpFindCandidate o;
+      if (!prep(v[i] + excl, o)) continue;
+      const double current_gain = CUDALeafSplits::GetSplitGains<false, false, double>(
+          o.sl_g, o.sl_h + kEpsilon, o.sr_g, o.sr_h + kEpsilon, lambda_l1,
+          lambda_l2, path_smooth, max_delta_step, o.lc, o.rc, parent_output);
+      if (current_gain > min_gain_shift && (best_t == kNoThreshold || current_gain - min_gain_shift > best_gain)) {
+        best_gain = current_gain - min_gain_shift;
+        best_t = base + i;
+        best = o;
       }
     }
   }
 #pragma unroll
   for (uint32_t off = 16; off > 0; off >>= 1) {
-    const GAIN_T other_gain = __shfl_xor_sync(0xffffffffu, best_gain, off);
+    const double other_gain = __shfl_xor_sync(0xffffffffu, best_gain, off);
     const uint32_t other_t = __shfl_xor_sync(0xffffffffu, best_t, off);
-    const bool better = (other_t != NF) &&
-        (best_t == NF || other_gain > best_gain || (other_gain == best_gain && other_t < best_t));
-    if (better) {
+    if (other_t != kNoThreshold &&
+        (best_t == kNoThreshold || OtherIsBetterWithTieBreak<double>(other_gain, best_gain, other_t, best_t))) {
       best_gain = other_gain;
       best_t = other_t;
     }
   }
-  if (best_t == NF) {
+  if (best_t == kNoThreshold) {
     if (lane == 0) out->is_valid = false;
     return;
   }
   if (lane == (best_t >> 3)) {
-    BinOut<GAIN_T> o;
-    eval(best_acc, best_t, o);
-    const uint32_t threshold_value = REVERSE ?
-        static_cast<uint32_t>(task->num_bin - 2 - best_t) :
-        static_cast<uint32_t>(best_t + task->mfb_offset);
+    // this lane's local best is the global best: its candidate values are in `best`
     out->is_valid = true;
-    out->threshold = threshold_value;
+    out->threshold = REVERSE ? static_cast<uint32_t>(task->num_bin - 2 - best_t) :
+                               static_cast<uint32_t>(best_t + task->mfb_offset);
     out->gain = best_gain * task->penalty;
     out->default_left = task->assume_out_default_left;
-    const double sum_left_gradient_dbl = static_cast<double>(o.sl_g);
-    const double sum_left_hessian_dbl = static_cast<double>(o.sl_h);
-    const double sum_right_gradient_dbl = static_cast<double>(o.sr_g);
-    const double sum_right_hessian_dbl = static_cast<double>(o.sr_h);
-    const double left_output = CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(sum_left_gradient_dbl,
-      sum_left_hessian_dbl, lambda_l1, lambda_l2, path_smooth, max_delta_step, o.lc, parent_output);
-    const double right_output = CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(sum_right_gradient_dbl,
-      sum_right_hessian_dbl, lambda_l1, lambda_l2, path_smooth, max_delta_step, o.rc, parent_output);
-    out->left_sum_gradients = sum_left_gradient_dbl;
-    out->left_sum_hessians = sum_left_hessian_dbl;
-    out->left_sum_of_gradients_hessians = o.slgh;
-    out->left_count = o.lc;
-    out->right_sum_gradients = sum_right_gradient_dbl;
-    out->right_sum_hessians = sum_right_hessian_dbl;
-    out->right_sum_of_gradients_hessians = o.srgh;
-    out->right_count = o.rc;
+    const double left_output = CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(best.sl_g,
+      best.sl_h, lambda_l1, lambda_l2, path_smooth, max_delta_step, best.lc, parent_output);
+    const double right_output = CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(best.sr_g,
+      best.sr_h, lambda_l1, lambda_l2, path_smooth, max_delta_step, best.rc, parent_output);
+    out->left_sum_gradients = best.sl_g;
+    out->left_sum_hessians = best.sl_h;
+    out->left_sum_of_gradients_hessians = best.slgh;
+    out->left_count = best.lc;
+    out->right_sum_gradients = best.sr_g;
+    out->right_sum_hessians = best.sr_h;
+    out->right_sum_of_gradients_hessians = best.srgh;
+    out->right_count = best.rc;
     out->left_value = left_output;
-    out->left_gain = CUDALeafSplits::GetLeafGainGivenOutput<false>(sum_left_gradient_dbl,
-      sum_left_hessian_dbl, lambda_l1, lambda_l2, left_output);
+    out->left_gain = CUDALeafSplits::GetLeafGainGivenOutput<false>(best.sl_g, best.sl_h, lambda_l1, lambda_l2,
+                                                                  left_output);
     out->right_value = right_output;
-    out->right_gain = CUDALeafSplits::GetLeafGainGivenOutput<false>(sum_right_gradient_dbl,
-      sum_right_hessian_dbl, lambda_l1, lambda_l2, right_output);
+    out->right_gain = CUDALeafSplits::GetLeafGainGivenOutput<false>(best.sr_g, best.sr_h, lambda_l1, lambda_l2,
+                                                                   right_output);
   }
 }
 
-
-// One warp per (task, pair, side) instead of a 256-thread block: each lane holds 8 consecutive scan positions,
-// the prefix sum is a per-lane register scan plus a warp shuffle scan, and the best threshold is a per-lane scan
-// in ascending position followed by a shuffle reduction (ties to the lowest position, as in ReduceBestGain).
-// Integer prefix sums and the per-threshold fp64 gain math match the block kernel exactly.
-template <typename GAIN_T>
 __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKernel(
   const int8_t* is_feature_used_bytree,
   const int num_tasks,
@@ -5320,7 +5288,7 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   const double gscale = *grad_scale;
   const double hscale = *hess_scale;
 #define FALCATA_WARP_FIND(REV, B16, ACC_T) \
-  WarpFindBest<REV, B16, ACC_T, GAIN_T>(reinterpret_cast<const ACC_T*>(leaf_splits->hist_in_leaf) + task->hist_offset, task, \
+  WarpFindBest<REV, B16, ACC_T>(reinterpret_cast<const ACC_T*>(leaf_splits->hist_in_leaf) + task->hist_offset, task, \
     lambda_l2, max_delta_step, min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split, parent_gain, \
     sum_gradients_hessians, num_data, parent_output, gscale, hscale, out)
   if (leaf_num_bits <= 16) {
@@ -5338,6 +5306,7 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   }
 #undef FALCATA_WARP_FIND
 }
+#endif  // !defined(__HIP_PLATFORM_AMD__)
 
 void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
   const CUDAHybridPairDescriptor* pair_descs,
@@ -5349,17 +5318,23 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
   if (num_used_tasks_ == 0) {
     return;  // no usable feature this tree; the sync masks every lane not-found
   }
-  if (warp_find_eligible_ && gstate == nullptr && !FalcataFP32GainEnabled()) {
+  const bool use_warp = warp_find_eligible_ && gstate == nullptr && !FalcataFP32GainEnabled();
+  if (FalcataDebug().diag && num_pairs == 1) {
+    // single-pair levels: each tree logs at least its root
+    Log::Info("split finder: %s kernel for this tree's quantized levels", use_warp ? "warp" : "block");
+  }
+#if !defined(__HIP_PLATFORM_AMD__)
+  if (use_warp) {
     const int num_launch_tasks = compact_tasks ? num_used_tasks_ : num_tasks_;
     const uint64_t items = static_cast<uint64_t>(num_launch_tasks) * static_cast<uint64_t>(num_pairs) * 2;
-    FindBestSplitsDiscretizedForLevelWarpKernel<double><<<static_cast<unsigned int>((items + 3) / 4), 128, 0,
-                                                           cuda_streams_[0]>>>(
+    FindBestSplitsDiscretizedForLevelWarpKernel<<<static_cast<unsigned int>((items + 3) / 4), 128, 0, cuda_streams_[0]>>>(
       cuda_is_feature_used_bytree_.RawData(), num_tasks_, num_launch_tasks, cuda_split_find_tasks_.RawData(),
       compact_tasks ? cuda_used_task_indices_.RawDataReadOnly() : nullptr, pair_descs, num_pairs, min_data_in_leaf_,
       min_sum_hessian_in_leaf_, min_gain_to_split_, lambda_l2_, max_delta_step_, grad_scale, hess_scale,
       quant_bagging_ridge_, cuda_best_split_info_.RawData());
     return;
   }
+#endif
   dim3 grid_dim(compact_tasks ? num_used_tasks_ : num_tasks_, num_pairs, 2);
   #define FindBestSplitsDiscretizedForLevelKernel_ARGS \
       cuda_is_feature_used_bytree_.RawData(), \
