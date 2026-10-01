@@ -56,6 +56,7 @@ ALL_KEYS = {
     "split_packed_read": True,
     "small_leaf_construct": True,
     "compact_prefill": False,
+    "tiled_fill": True,
 }
 
 #: growth-strategy keys: changing them changes WHICH tree is built (legit),

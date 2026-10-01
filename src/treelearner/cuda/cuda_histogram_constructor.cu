@@ -321,7 +321,132 @@ __global__ void CUDAFillCompactData4BitKernel(
   }
 }
 
-// Host wrapper called from cuda_histogram_constructor.cpp.
+#if !defined(__HIP_PLATFORM_AMD__)
+// Tiled 4-bit fill for column-major sources (stride-1 nibble runs) whose partitions are runs of W consecutive byte
+// slots with contiguous destination bytes and stride W; the host checks both (see CompactFill4BitTiledEligible).
+// A block owns kFill4BitTiledRows rows of every slot: it stages them into a shared [row][slot] tile with coalesced
+// byte loads, then writes each partition's rows as one contiguous run with 16-byte streaming stores.
+constexpr int kFill4BitTiledThreads = 256;
+constexpr int kFill4BitTiledUnroll = 10;
+constexpr int kFill4BitTiledRows = 128;
+constexpr size_t kFill4BitTiledSlotBytes = 3 * sizeof(size_t) + sizeof(int);
+
+__host__ __device__ constexpr int Fill4BitTiledPaddedSlots(int num_slots) {
+  return num_slots + ((2 - num_slots) & 3);
+}
+
+__host__ __device__ constexpr size_t Fill4BitTiledSharedBytes(int num_slots) {
+  return static_cast<size_t>(num_slots) * kFill4BitTiledSlotBytes +
+         static_cast<size_t>(kFill4BitTiledRows) * static_cast<size_t>(Fill4BitTiledPaddedSlots(num_slots));
+}
+
+static_assert(Fill4BitTiledSharedBytes(kFill4BitTiledMaxSlots) <= 48 * 1024,
+              "the tiled fill's worst case must fit the default dynamic shared-memory limit");
+
+__global__ void __launch_bounds__(kFill4BitTiledThreads, 4) CUDAFillCompactData4BitTiledKernel(
+  const uint8_t* __restrict__ src_data,
+  uint8_t* __restrict__ compact_data,
+  const size_t* __restrict__ bs_src_nib0,
+  const size_t* __restrict__ bs_src_nib1,
+  const size_t* __restrict__ bs_dst_byte,
+  const int* __restrict__ bs_dst_stride,
+  const int num_slots,
+  const data_size_t num_data) {
+  extern __shared__ __align__(16) unsigned char fill_smem[];
+  size_t* s_nib0 = reinterpret_cast<size_t*>(fill_smem);
+  size_t* s_nib1 = s_nib0 + num_slots;
+  size_t* s_dst_byte = s_nib1 + num_slots;
+  int* s_dst_stride = reinterpret_cast<int*>(s_dst_byte + num_slots);
+  uint8_t* tile = reinterpret_cast<uint8_t*>(s_dst_stride + num_slots);
+  constexpr int kHalfRows = kFill4BitTiledRows / 2;
+  const size_t kNone = ~static_cast<size_t>(0);
+  const int tid = threadIdx.x;
+  const int padded_slots = Fill4BitTiledPaddedSlots(num_slots);
+  const data_size_t row_start = static_cast<data_size_t>(blockIdx.x) * kFill4BitTiledRows;
+  const int rows_valid = static_cast<int>(min(static_cast<data_size_t>(kFill4BitTiledRows), num_data - row_start));
+  for (int i = tid; i < num_slots; i += kFill4BitTiledThreads) {
+    s_nib0[i] = bs_src_nib0[i];
+    s_nib1[i] = bs_src_nib1[i];
+    s_dst_byte[i] = bs_dst_byte[i];
+    s_dst_stride[i] = bs_dst_stride[i];
+  }
+  __syncthreads();
+
+  // each source byte holds two consecutive rows of one column
+  const int tile_bytes = num_slots * kHalfRows;
+  const size_t half_row_start = static_cast<size_t>(row_start >> 1);
+  for (int base = tid; base < tile_bytes; base += kFill4BitTiledThreads * kFill4BitTiledUnroll) {
+    uint8_t b0[kFill4BitTiledUnroll];
+    uint8_t b1[kFill4BitTiledUnroll];
+#pragma unroll
+    for (int u = 0; u < kFill4BitTiledUnroll; ++u) {
+      b0[u] = 0;
+      b1[u] = 0;
+      const int t = base + u * kFill4BitTiledThreads;
+      if (t < tile_bytes) {
+        const int i = t / kHalfRows;
+        const int j = t % kHalfRows;
+        if (row_start + 2 * j < num_data) {
+          b0[u] = __ldg(src_data + (s_nib0[i] >> 1) + half_row_start + j);
+          if (s_nib1[i] != kNone) b1[u] = __ldg(src_data + (s_nib1[i] >> 1) + half_row_start + j);
+        }
+      }
+    }
+#pragma unroll
+    for (int u = 0; u < kFill4BitTiledUnroll; ++u) {
+      const int t = base + u * kFill4BitTiledThreads;
+      if (t < tile_bytes) {
+        const int i = t / kHalfRows;
+        const int j = t % kHalfRows;
+        tile[(2 * j) * padded_slots + i] = static_cast<uint8_t>((b0[u] & 0xf) | ((b1[u] & 0xf) << 4));
+        tile[(2 * j + 1) * padded_slots + i] = static_cast<uint8_t>((b0[u] >> 4) | (b1[u] & 0xf0));
+      }
+    }
+  }
+  __syncthreads();
+
+  const uintptr_t out_base = reinterpret_cast<uintptr_t>(compact_data);
+  for (int s = 0; s < num_slots; s += s_dst_stride[s]) {
+    const int width = s_dst_stride[s];
+    const size_t run_offset = s_dst_byte[s] + static_cast<size_t>(row_start) * static_cast<size_t>(width);
+    const int head = static_cast<int>((out_base + run_offset) & 15);
+    const int total = head + rows_valid * width;
+    const int num_vec = (total + 15) >> 4;
+    uint8_t* aligned = compact_data + run_offset - head;
+    const uint8_t* tile_col = tile + s;
+    for (int j = tid; j < num_vec; j += kFill4BitTiledThreads) {
+      const int off = j << 4;
+      if (off >= head && off + 16 <= total) {
+        const int q = off - head;
+        int row = q / width;
+        int m = q - row * width;
+        uint32_t w[4] = {0u, 0u, 0u, 0u};
+#pragma unroll
+        for (int k = 0; k < 16; ++k) {
+          w[k >> 2] |= static_cast<uint32_t>(tile_col[row * padded_slots + m]) << ((k & 3) * 8);
+          if (++m == width) {
+            m = 0;
+            ++row;
+          }
+        }
+        __stcs(reinterpret_cast<uint4*>(aligned + off), make_uint4(w[0], w[1], w[2], w[3]));
+      } else {
+        for (int k = 0; k < 16; ++k) {
+          const int pos = off + k;
+          if (pos >= head && pos < total) {
+            const int q = pos - head;
+            const int row = q / width;
+            aligned[pos] = tile_col[row * padded_slots + (q - row * width)];
+          }
+        }
+      }
+    }
+  }
+}
+#endif  // !defined(__HIP_PLATFORM_AMD__)
+
+// Host wrapper called from cuda_histogram_constructor.cpp. `tiled` is the host's verdict from
+// CompactFill4BitTiledEligible; ROCm builds always take the per-cell kernel.
 void LaunchFillCompactData4BitKernel(
   cudaStream_t stream,
   const uint8_t* src_data,
@@ -332,7 +457,18 @@ void LaunchFillCompactData4BitKernel(
   const size_t* bs_dst_byte,
   const int* bs_dst_stride,
   int total_byte_slots,
-  data_size_t num_data) {
+  data_size_t num_data,
+  bool tiled) {
+#if !defined(__HIP_PLATFORM_AMD__)
+  if (tiled) {
+    const int grid = (num_data + kFill4BitTiledRows - 1) / kFill4BitTiledRows;
+    CUDAFillCompactData4BitTiledKernel<<<grid, kFill4BitTiledThreads, Fill4BitTiledSharedBytes(total_byte_slots), stream>>>(
+      src_data, compact_data, bs_src_nib0, bs_src_nib1, bs_dst_byte, bs_dst_stride, total_byte_slots, num_data);
+    return;
+  }
+#else
+  (void)tiled;
+#endif
   const int TX = 32;
   const int TY = 32;
   int grid_y = (num_data + TY - 1) / TY;

@@ -85,6 +85,7 @@ def build_cells():
         "dense",
         "fewbin",
         "sampled",
+        "sampledwide",
         "graph",
         "int8wide",
         "efb",
@@ -158,6 +159,8 @@ def build_cells():
         ("sampled", "compact_quant", {}, {"cuda_plan": "auto,compact_quant:off"}),
         ("sampled", "construct_jit", {}, {"cuda_plan": "auto,construct_jit:on"}),
         ("sampled", "compact_prefill", {}, {"cuda_plan": "auto,compact_prefill:on"}),
+        ("sampled", "tiled_fill", {}, {"cuda_plan": "auto,tiled_fill:off"}),
+        ("sampledwide", "tiled_fill", {}, {"cuda_plan": "auto,tiled_fill:off"}),
         ("int8wide", "rowdata_4bit", {}, {"cuda_plan": "auto,rowdata_4bit:off"}),
         ("int8wide", "fast_rowdata", {}, {"cuda_plan": "auto,fast_rowdata:off"}),
     ]
@@ -421,6 +424,12 @@ def build_profile(name):
         m = 600
         X = rng.integers(0, 6, size=(n, m)).astype(np.float64)
         y = X @ rng.standard_normal(m) + rng.standard_normal(n)
+        base.update({"max_bin": 15, "feature_fraction": 0.2})
+    elif name == "sampledwide":
+        # ~120 sampled byte slots over several feature partitions: the multi-partition tiled compact fill
+        m = 1200
+        X = rng.integers(0, 6, size=(n, m)).astype(np.float64)
+        y = X[:, :40] @ rng.standard_normal(40) + rng.standard_normal(n)
         base.update({"max_bin": 15, "feature_fraction": 0.2})
     elif name == "graph":
         m = 20
