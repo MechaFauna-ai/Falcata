@@ -439,9 +439,19 @@ bit-identical in every cell):
 - **`colmajor_fill`** — a one-time column-major copy of the packed bin matrix
   serves as the compact-fill gather source, so the per-tree fill reads
   contiguous columns instead of dragging ~10× its bytes through row-major
-  cache lines: +2.2% numerai-deep (the fill is genuinely bandwidth-bound, but
-  it is a small slice of tree time — the +14% pre-measurement estimate did not
-  survive contact with the profiler). VRAM-gated by the planner.
+  cache lines: +2.2% numerai-deep. The per-cell fill kernel that reads it moves
+  one byte per thread and runs at ~24% of DRAM bandwidth, latency-bound rather
+  than bandwidth-bound; `tiled_fill` below is the kernel that uses the
+  contiguous columns fully. VRAM-gated by the planner.
+- **`tiled_fill`** — the 4-bit compact fill stages 128 rows of every byte slot
+  in a shared-memory `[row][slot]` tile, reading each source column
+  contiguously, then writes each partition's rows as one contiguous run with
+  16-byte streaming stores: fill 2.01 → 0.52 ms on the 2.75M-row Numerai train
+  set (ff 0.1, 132–133 byte slots), ~91% of DRAM bandwidth, **+10.2%
+  numerai-deep**, +19.3% on the 32-leaf numerai example config. The
+  host picks it when the source is column-major and at most 256 byte slots are
+  sampled; row-major sources and wider samples keep the per-cell kernel.
+  Bit-identical (the same bytes).
 - **`tuner`** — a per-tree bandit over behavior-preserving execution knobs,
   best-of-15 timing, re-probe every 3000 trees: +2.1% numerai-deep, +2.7%
   year from the saturation-floor knob alone. Quantized training only —
@@ -461,25 +471,14 @@ bit-identical in every cell):
   the per-pair fallback path — the batched flow every real workload uses
   runs on a single stream.)
 
-All four compose: **+10.5% on numerai-deep combined**. A methodology note the
+`wide_partitions`, `l2_policy`, `colmajor_fill` and `tuner` compose: **+10.5% on
+numerai-deep combined**. A methodology note the
 battery re-taught us: 100-round probe cells on fast datasets (year runs 0.4s)
 sit inside clock/thermal noise — the year "regressions" the battery first
 reported all vanished under interleaved A/B at 500 rounds.
 
 The ablation shows each of these within noise on shapes they don't target —
 the planner's "default on, individually ablatable" contract in action.
-
-**`tiled_fill`** (added after that battery, measured on its own) — the per-tree
-4-bit compact fill stages a block of rows for every byte slot in a shared-memory
-`[row][slot]` tile, reading each source column contiguously, then writes each
-partition's destination rows as one contiguous run with 16-byte streaming
-stores. With the column-major source the old one-byte-per-thread kernel ran at
-~24% of DRAM bandwidth; the tiled one reaches ~91%. On the 2.75M-row Numerai
-train set (ff 0.1, 132-133 byte slots): fill 2.01 → 0.52 ms, **-9.4% per
-round on numerai-deep** (1.51 ms, 95% CI [1.44, 1.57], n=30 interleaved) and
--15.8% on the 32-leaf example config. Row-major sources take a per-cell path
-inside the same kernel (1.2-1.7× faster than before); more than 256 byte slots
-keep the old kernel. Bit-identical: every model md5 unchanged.
 
 ## 7b. Runtime-JIT construct kernels (`construct_jit`)
 

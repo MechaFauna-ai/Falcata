@@ -309,7 +309,30 @@ void LaunchFillCompactData4BitKernel(
   const size_t* bs_dst_byte,
   const int* bs_dst_stride,
   int total_byte_slots,
-  data_size_t num_data);
+  data_size_t num_data,
+  bool tiled);
+
+// The tiled 4-bit fill needs a column-major source (stride-1 nibble runs with even bases) and every partition laid
+// out as a run of W consecutive byte slots whose destination bytes are contiguous with stride W.
+static bool CompactFill4BitTiledEligible(const std::vector<size_t>& nib0, const std::vector<size_t>& nib1,
+                                         const std::vector<int>& stride, const std::vector<size_t>& dst_byte,
+                                         const std::vector<int>& dst_stride) {
+  const int n = static_cast<int>(nib0.size());
+  if (!FalcataPlan::Get().tiled_fill || n == 0 || n > kFill4BitTiledMaxSlots) return false;
+  const size_t kNone = ~static_cast<size_t>(0);
+  for (int i = 0; i < n; ++i) {
+    if (stride[i] != 1 || (nib0[i] & 1) != 0 || (nib1[i] != kNone && (nib1[i] & 1) != 0)) return false;
+  }
+  for (int s = 0; s < n;) {
+    const int width = dst_stride[s];
+    if (width < 1 || s + width > n) return false;
+    for (int m = 0; m < width; ++m) {
+      if (dst_byte[s + m] != dst_byte[s] + static_cast<size_t>(m) || dst_stride[s + m] != width) return false;
+    }
+    s += width;
+  }
+  return true;
+}
 
 bool CUDAHistogramConstructor::ScanCompactLayout(
     const std::vector<int8_t>& is_feature_used_bytree, CompactLayout* layout) const {
@@ -797,6 +820,12 @@ void CUDAHistogramConstructor::LaunchCompactFill(
     upload(cuda_bs_src_stride_nib_.RawData(), bs_src_stride_nib_h.data(), sizeof(int) * total_byte_slots, &pin_off);
     upload(cuda_bs_dst_byte_.RawData(), bs_dst_byte_h.data(), sizeof(size_t) * total_byte_slots, &pin_off);
     upload(cuda_bs_dst_stride_.RawData(), bs_dst_stride_h.data(), sizeof(int) * total_byte_slots, &pin_off);
+    const bool tiled = CompactFill4BitTiledEligible(bs_src_nib0_h, bs_src_nib1_h, bs_src_stride_nib_h, bs_dst_byte_h,
+                                                    bs_dst_stride_h);
+    if (FalcataDebug().diag) {
+      Log::Info("compact fill: %s 4-bit kernel, %d byte slots in %d partitions", tiled ? "tiled" : "per-cell",
+                total_byte_slots, num_partitions);
+    }
     LaunchFillCompactData4BitKernel(
       stream,
       colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : cuda_row_data_->GetBin<uint8_t>(),
@@ -807,7 +836,8 @@ void CUDAHistogramConstructor::LaunchCompactFill(
       cuda_bs_dst_byte_.RawData(),
       cuda_bs_dst_stride_.RawData(),
       total_byte_slots,
-      num_data);
+      num_data,
+      tiled);
   } else {
     // Build per-slot src/dst metadata host-side. Each compact slot has a fully
     // computed source byte offset and destination byte offset, so the kernel

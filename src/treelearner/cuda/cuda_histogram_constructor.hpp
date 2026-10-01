@@ -59,6 +59,9 @@ inline constexpr int kDetDenseBatchedPairCap = 1024;
 
 namespace Falcata {
 
+// Byte slots (pairs of compact columns) the tiled 4-bit compact fill handles in one shared-memory tile.
+constexpr int kFill4BitTiledMaxSlots = 256;
+
 /*! \brief fp32-pair global histogram storage for the non-quantized CUDA path
  *  (config cuda_precision=fp32 requests; default fp64 = hist_t/double pairs,
  *  the historical behavior). The actual engagement additionally requires the

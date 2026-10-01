@@ -118,9 +118,10 @@ struct FalcataPlan {
   bool colmajor_fill = true;        // key: colmajor_fill
   // 4-bit compact fill through a shared-memory [row][slot] tile: coalesced
   // column reads, 16-byte streaming writes of each partition's contiguous
-  // destination run (<= 256 byte slots; other layouts keep the per-cell
-  // path). Bit-identical (same bytes). Measured: fill 2.01 -> 0.52 ms and
-  // -9.4% per round on numerai-deep; inert without feature sampling.
+  // destination run. The host takes it for column-major sources with at most
+  // 256 byte slots; anything else keeps the per-cell kernel. Bit-identical
+  // (same bytes). Measured: +10.2% numerai-deep; inert without feature
+  // sampling.
   bool tiled_fill = true;           // key: tiled_fill
   // runtime tier-1 tuner: bandit over the batched-construct saturation floor,
   // timed per tree; quantized training only (integer hists keep results
