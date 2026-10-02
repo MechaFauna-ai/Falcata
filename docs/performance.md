@@ -274,7 +274,7 @@ fraction: ~3.4× at `feature_fraction=0.1`, tapering to ~1.1× at 0.6.
 
 ![compact view ablation](perf-plots/ablation_compact_quant.png)
 
-## 4. GPU-native ingestion (`gpu_construct`, `fast_rowdata`, `efb_precheck`, `rowdata_4bit`)
+## 4. GPU-native ingestion (`gpu_construct`, `fast_rowdata`, `efb_precheck`, `rowdata_4bit`, `gpu_rowpack`)
 
 **The problem.** Before training starts, raw features must be binned and laid
 out for the GPU. Upstream does this on the CPU, then uploads — minutes of
@@ -295,6 +295,11 @@ earlier fixes; originally far worse).
 - **`rowdata_4bit`**: datasets whose features all fit 16 bins store two
   values per byte, halving the training matrix (numerai: 19GB → 9.5GB on the
   current cache) and the bytes every kernel reads.
+- **`gpu_rowpack`**: the 4-bit row matrix is packed on the device from the
+  Dataset's column bins instead of on the host, so every `train()` call skips
+  the OpenMP pack and the multi-GB pageable upload (numerai: 3.63GB; repeat
+  `train()` setup 1.56s → 0.66s). Falls back to the host path when device
+  memory is tight.
 
 What it buys on the workload ingestion was built for — the numerai matrix,
 the largest in the suite (GPU ingestion is a bandwidth play, so this is
