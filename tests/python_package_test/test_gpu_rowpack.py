@@ -43,6 +43,10 @@ def _data(kind, seed=0):
         X = rng.integers(0, 6, size=(30_003, 700)).astype(np.float32)
     elif kind == "odd-rows":  # odd row count: the last 4-bit column byte holds one row
         X = rng.integers(0, 5, size=(9_999, 51)).astype(np.float32)
+    elif kind == "tall":  # 4-bit columns over 1 MiB: copied to the device one by one
+        X = rng.integers(0, 7, size=(2_100_001, 6)).astype(np.float32)
+    elif kind == "long-runs":  # small columns totalling more than one 16 MiB host gather per partition
+        X = rng.integers(0, 7, size=(200_001, 400)).astype(np.float32)
     else:
         raise ValueError(kind)
     y = X[:, :5] @ rng.standard_normal(5) + rng.standard_normal(len(X))
@@ -58,7 +62,7 @@ def _train(kind, params):
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("quant", ["stochastic", "fixedpoint", "none"])
-@pytest.mark.parametrize("kind", ["narrow", "many", "odd-rows"])
+@pytest.mark.parametrize("kind", ["narrow", "many", "odd-rows", "tall", "long-runs"])
 def test_gpu_rowpack_is_bit_identical_cuda(kind, quant):
     params = {"quant_mode": quant, "deterministic": True} if quant == "none" else {"quant_mode": quant}
     if quant == "none":
@@ -81,7 +85,7 @@ _train({kind!r}, {{"quant_mode": "stochastic", "verbosity": 1}})
 
 
 @_REQUIRES_CUDA
-@pytest.mark.parametrize("kind", ["narrow", "many", "odd-rows"])
+@pytest.mark.parametrize("kind", ["narrow", "many", "odd-rows", "tall", "long-runs"])
 def test_gpu_rowpack_matches_host_bytes_cuda(kind):
     """FALCATA_VERIFY=1 packs on the host as well and compares every byte; the log line also proves engagement."""
     code = _PROBE.format(here=os.path.dirname(os.path.abspath(__file__)), kind=kind)

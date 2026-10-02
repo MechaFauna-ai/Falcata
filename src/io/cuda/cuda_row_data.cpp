@@ -8,6 +8,7 @@
 
 #include <Falcata/cuda/cuda_row_data.hpp>
 #include <Falcata/falcata_plan.h>
+#include <Falcata/utils/threading.h>
 
 #include <cstdio>
 
@@ -826,6 +827,29 @@ bool CUDARowData::PackDense4BitOnDevice(const std::vector<const void*>& column_d
   CUDAVector<uint8_t> staging(staging_bytes);
   CUDAVector<size_t> cuda_col_offsets;
   CUDAVector<uint8_t> cuda_col_bits;
+  // Each pageable copy has a fixed cost of tens of microseconds, so columns below kDirectCopyBytes are gathered
+  // on the host and uploaded in runs of up to kGatherBytes.
+  constexpr size_t kDirectCopyBytes = size_t{1} << 20;
+  constexpr size_t kGatherBytes = size_t{16} << 20;
+  std::unique_ptr<uint8_t[]> gather;
+  std::vector<int> run_columns;
+  std::vector<size_t> run_offsets;
+  size_t run_start = 0;
+  size_t run_bytes = 0;
+  auto flush_run = [&]() {
+    if (run_columns.empty()) return;
+    if (gather == nullptr) gather.reset(new uint8_t[std::min(kGatherBytes, staging_bytes)]);
+    Threading::For<int>(0, static_cast<int>(run_columns.size()), 16, [&](int, int start, int end) {
+      for (int i = start; i < end; ++i) {
+        const int c = run_columns[i];
+        std::memcpy(gather.get() + run_offsets[i], column_data[c], column_bytes(column_bit_types[c]));
+      }
+    });
+    CopyFromHostToCUDADevice<uint8_t>(staging.RawData() + run_start, gather.get(), run_bytes, __FILE__, __LINE__);
+    run_columns.clear();
+    run_offsets.clear();
+    run_bytes = 0;
+  };
   for (size_t p = 0; p + 1 < feature_partition_column_index_offsets_.size(); ++p) {
     const int column_start = feature_partition_column_index_offsets_[p];
     const int column_end = feature_partition_column_index_offsets_[p + 1];
@@ -836,10 +860,20 @@ bool CUDARowData::PackDense4BitOnDevice(const std::vector<const void*>& column_d
       col_offsets.push_back(pos);
       col_bits.push_back(column_bit_types[c]);
       const size_t bytes = column_bytes(column_bit_types[c]);
-      CopyFromHostToCUDADevice<uint8_t>(staging.RawData() + pos, reinterpret_cast<const uint8_t*>(column_data[c]),
-                                        bytes, __FILE__, __LINE__);
+      if (bytes >= kDirectCopyBytes) {
+        flush_run();
+        CopyFromHostToCUDADevice<uint8_t>(staging.RawData() + pos, reinterpret_cast<const uint8_t*>(column_data[c]),
+                                          bytes, __FILE__, __LINE__);
+      } else {
+        if (run_bytes + bytes > kGatherBytes) flush_run();
+        if (run_columns.empty()) run_start = pos;
+        run_columns.push_back(c);
+        run_offsets.push_back(run_bytes);
+        run_bytes += bytes;
+      }
       pos += bytes;
     }
+    flush_run();
     cuda_col_offsets.InitFromHostVector(col_offsets);
     cuda_col_bits.InitFromHostVector(col_bits);
     const int packed_width = packed_partition_byte_offsets_[p + 1] - packed_partition_byte_offsets_[p];
