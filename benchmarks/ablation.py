@@ -60,6 +60,7 @@ ALL_KEYS = {
     "tiled_fill": True,
     "warp_find": True,
     "row_batch": True,
+    "gen_bit_v2": True,
 }
 
 #: growth-strategy keys: changing them changes WHICH tree is built (legit),

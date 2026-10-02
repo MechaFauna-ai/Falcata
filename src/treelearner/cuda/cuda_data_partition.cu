@@ -12,6 +12,7 @@
 
 #include <Falcata/cuda/cuda_algorithms.hpp>
 #include <Falcata/cuda/cuda_rocm_interop.h>
+#include <Falcata/falcata_plan.h>
 #include <Falcata/tree.h>
 
 #include <algorithm>
@@ -1985,6 +1986,232 @@ __global__ void HybridCopyDataIndicesBatchKernel(
   }
 }
 
+// ---- cuda_plan key gen_bit_v2: the host-launched gen-bit-vector kernels ------------------------------------------
+// Same outputs as HybridGenBitChunk (ballot words per (descriptor, chunk, 32-row group); per-chunk left/right
+// counts), produced by three kernels the host picks by bin source:
+//  - 4-bit packed row-major compact source (each row's nibble costs a DRAM sector): 1024-thread chunks, with an
+//    interleaved chunk order when a level has 2..128 splits so that consecutive blocks read nearby rows of every
+//    leaf;
+//  - column-major sources: 128-thread chunks, 8 rows per thread with all loads issued before the decisions.
+
+// warp-cooperative 32-ary search; every lane of the warp must pass the same `flat`
+__device__ __forceinline__ int GenBitV2FlatDesc(const CUDAHybridApplyDescriptor* descs, const int num_split_descs,
+                                                const int flat) {
+  const unsigned int lane = threadIdx.x & (WARPSIZE - 1);
+  int lo = 0;
+  int hi = num_split_descs - 1;
+  while (lo < hi) {
+    const int step = (hi - lo + 1 + WARPSIZE - 1) / WARPSIZE;
+    const int idx = lo + static_cast<int>(lane) * step;
+    const bool ok = idx <= hi && descs[idx].flat_block_start <= flat;
+    const uint32_t m = __ballot_sync(0xffffffffu, ok);
+    const int last = 31 - __clz(m | 1u);
+    lo = lo + last * step;
+    const int nh = lo + step - 1;
+    hi = nh < hi ? nh : hi;
+  }
+  return lo;
+}
+
+// one 1024-row chunk; counts reduced with one warp shuffle instead of a serial loop
+__device__ __forceinline__ void GenBitV2Chunk(const CUDAHybridApplyDescriptor& d, const unsigned int block_x,
+                                              const data_size_t* cuda_data_indices, uint16_t* block_to_left_offset,
+                                              data_size_t* block_to_left_offset_buffer,
+                                              data_size_t* block_to_right_offset_buffer, uint16_t* shared_mem_buffer) {
+  uint16_t to_left = 0;
+  const data_size_t local_data_index = static_cast<data_size_t>(block_x * blockDim.x + threadIdx.x);
+  if (local_data_index < d.num_data_in_leaf) {
+    const data_size_t global_data_index = cuda_data_indices[d.leaf_data_start + local_data_index];
+    to_left = HybridGenBitVectorDecision(d, HybridLoadBin(d, global_data_index));
+  }
+  const uint32_t ballot = __ballot_sync(0xffffffffu, static_cast<int>(to_left));
+  const unsigned int lane = threadIdx.x & (WARPSIZE - 1);
+  const unsigned int warp = threadIdx.x / WARPSIZE;
+  const unsigned int num_warps = blockDim.x / WARPSIZE;
+  uint32_t* bit_words = reinterpret_cast<uint32_t*>(block_to_left_offset);
+  if (lane == 0) {
+    bit_words[(static_cast<size_t>(d.block_offset_start) + block_x) * num_warps + warp] = ballot;
+    shared_mem_buffer[warp] = static_cast<uint16_t>(__popc(ballot));
+  }
+  __syncthreads();
+  if (warp == 0) {
+    uint32_t total_left = lane < num_warps ? static_cast<uint32_t>(shared_mem_buffer[lane]) : 0u;
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) total_left += __shfl_xor_sync(0xffffffffu, total_left, o);
+    if (lane == 0) {
+      const data_size_t num_data_in_block =
+        (static_cast<data_size_t>(block_x) + 1) * blockDim.x <= d.num_data_in_leaf ?
+          static_cast<data_size_t>(blockDim.x) :
+          d.num_data_in_leaf - static_cast<data_size_t>(block_x) * blockDim.x;
+      data_size_t* left_buf = block_to_left_offset_buffer + d.block_offset_start;
+      data_size_t* right_buf = block_to_right_offset_buffer + d.block_offset_start;
+      if (num_data_in_block > 0) {
+        left_buf[block_x + 1] = static_cast<data_size_t>(total_left);
+        right_buf[block_x + 1] = num_data_in_block - static_cast<data_size_t>(total_left);
+      } else {
+        left_buf[block_x + 1] = 0;
+        right_buf[block_x + 1] = 0;
+      }
+    }
+  }
+}
+
+__global__ void GenBitV2PersistentKernel(const CUDAHybridApplyDescriptor* descs, const data_size_t* data_indices,
+                                         uint16_t* block_to_left_offset, data_size_t* left_buf, data_size_t* right_buf,
+                                         const int num_splits, const int total_flat_blocks) {
+  __shared__ uint16_t shared_mem_buffer[WARPSIZE];
+  for (int flat = static_cast<int>(blockIdx.x); flat < total_flat_blocks; flat += static_cast<int>(gridDim.x)) {
+    const CUDAHybridApplyDescriptor& d = descs[GenBitV2FlatDesc(descs, num_splits, flat)];
+    GenBitV2Chunk(d, static_cast<unsigned int>(flat - d.flat_block_start), data_indices, block_to_left_offset,
+                  left_buf, right_buf, shared_mem_buffer);
+    if (flat + static_cast<int>(gridDim.x) < total_flat_blocks) __syncthreads();
+  }
+}
+
+constexpr int kGenBitV2Slices = 128;  // power of two (the >> 7 below)
+
+// Launch-order block g -> (descriptor, chunk), ordered by (slice, descriptor, chunk) so blocks adjacent in launch
+// order cover the same relative region of every leaf. A bijection over all chunks; at most 128 descriptors; every
+// lane of the warp must pass the same g.
+__device__ __forceinline__ void GenBitV2LocateInterleaved(const CUDAHybridApplyDescriptor* descs, const int num_splits,
+                                                          const int g, const int lane, int* desc_index, int* chunk) {
+  int nb[4];
+#pragma unroll
+  for (int k = 0; k < 4; ++k) {
+    const int i = lane + 32 * k;
+    nb[k] = i < num_splits ? static_cast<int>(descs[i].num_blocks) : 0;
+  }
+  int lo = 0, hi = kGenBitV2Slices - 1;
+  while (lo < hi) {
+    const int mid = (lo + hi + 1) >> 1;
+    int sum = 0;
+#pragma unroll
+    for (int k = 0; k < 4; ++k) sum += (mid * nb[k] + (kGenBitV2Slices - 1)) >> 7;
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, off);
+    if (sum <= g) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  const int s = lo;
+  int fs = 0;
+#pragma unroll
+  for (int k = 0; k < 4; ++k) fs += (s * nb[k] + (kGenBitV2Slices - 1)) >> 7;
+#pragma unroll
+  for (int off = 16; off > 0; off >>= 1) fs += __shfl_xor_sync(0xffffffffu, fs, off);
+  const int rem = g - fs;
+  int base = 0;
+  *desc_index = 0;
+  *chunk = 0;
+#pragma unroll
+  for (int k = 0; k < 4; ++k) {
+    const int lo_b = (s * nb[k] + (kGenBitV2Slices - 1)) >> 7;
+    const int hi_b = ((s + 1) * nb[k] + (kGenBitV2Slices - 1)) >> 7;
+    const int c = hi_b - lo_b;
+    int incl = c;
+#pragma unroll
+    for (int off = 1; off < 32; off <<= 1) {
+      const int t = __shfl_up_sync(0xffffffffu, incl, off);
+      if (lane >= off) incl += t;
+    }
+    const int excl = incl - c;
+    const bool hit = rem >= base + excl && rem < base + incl;
+    const uint32_t m = __ballot_sync(0xffffffffu, hit);
+    const int val = lo_b + rem - (base + excl);
+    if (m != 0u) {
+      const int fl = __ffs(m) - 1;
+      *chunk = __shfl_sync(0xffffffffu, val, fl);
+      *desc_index = 32 * k + fl;
+    }
+    base += __shfl_sync(0xffffffffu, incl, 31);
+  }
+}
+
+__global__ void GenBitV2InterleavedKernel(const CUDAHybridApplyDescriptor* descs, const data_size_t* data_indices,
+                                          uint16_t* block_to_left_offset, data_size_t* left_buf, data_size_t* right_buf,
+                                          const int num_splits, const int total_flat_blocks) {
+  __shared__ uint16_t shared_mem_buffer[WARPSIZE];
+  const int lane = static_cast<int>(threadIdx.x & 31);
+  for (int flat = static_cast<int>(blockIdx.x); flat < total_flat_blocks; flat += static_cast<int>(gridDim.x)) {
+    int desc_index, chunk;
+    GenBitV2LocateInterleaved(descs, num_splits, flat, lane, &desc_index, &chunk);
+    GenBitV2Chunk(descs[desc_index], static_cast<unsigned int>(chunk), data_indices, block_to_left_offset,
+                  left_buf, right_buf, shared_mem_buffer);
+    if (flat + static_cast<int>(gridDim.x) < total_flat_blocks) __syncthreads();
+  }
+}
+
+constexpr int kGenBitV2Threads = 128;
+constexpr int kGenBitV2WordsPerWarp = 32 / (kGenBitV2Threads / 32);  // 8 ballot words (256 rows) per warp
+
+// one 128-thread block per 1024-row chunk: each thread takes 8 rows with every index and bin load issued first
+__global__ void __launch_bounds__(kGenBitV2Threads) GenBitV2Rows8Kernel(
+    const CUDAHybridApplyDescriptor* descs, const data_size_t* data_indices, uint16_t* block_to_left_offset,
+    data_size_t* left_buf, data_size_t* right_buf, const int num_splits) {
+  __shared__ int warp_left[kGenBitV2Threads / 32];
+  const int flat = static_cast<int>(blockIdx.x);
+  const int lane = static_cast<int>(threadIdx.x & 31);
+  const int warp = static_cast<int>(threadIdx.x >> 5);
+  const CUDAHybridApplyDescriptor d = descs[GenBitV2FlatDesc(descs, num_splits, flat)];
+  const int b = flat - d.flat_block_start;
+  const int base = b * SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+  const int n = d.num_data_in_leaf;
+  data_size_t rows[kGenBitV2WordsPerWarp];
+#pragma unroll
+  for (int j = 0; j < kGenBitV2WordsPerWarp; ++j) {
+    const int pos = base + (warp * kGenBitV2WordsPerWarp + j) * 32 + lane;
+    rows[j] = pos < n ? data_indices[d.leaf_data_start + pos] : 0;
+  }
+  uint32_t bins[kGenBitV2WordsPerWarp];
+  if (d.bit_type == 4 || d.bit_type == 8) {
+    const bool is4 = d.bit_type == 4;
+    const size_t stride = is4 ? static_cast<size_t>(d.packed_row_stride) : 1;
+    const uint32_t shift = is4 ? static_cast<uint32_t>(d.packed_shift) : 0u;
+    const uint32_t mask = is4 ? 0xfu : 0xffu;
+    const uint8_t* col = static_cast<const uint8_t*>(d.column_data);
+    uint8_t packed[kGenBitV2WordsPerWarp];
+#pragma unroll
+    for (int j = 0; j < kGenBitV2WordsPerWarp; ++j) packed[j] = __ldg(col + static_cast<size_t>(rows[j]) * stride);
+#pragma unroll
+    for (int j = 0; j < kGenBitV2WordsPerWarp; ++j) bins[j] = (static_cast<uint32_t>(packed[j]) >> shift) & mask;
+  } else {
+#pragma unroll
+    for (int j = 0; j < kGenBitV2WordsPerWarp; ++j) {
+      const int pos = base + (warp * kGenBitV2WordsPerWarp + j) * 32 + lane;
+      bins[j] = pos < n ? HybridLoadBin(d, rows[j]) : 0u;
+    }
+  }
+  uint32_t mine = 0;
+  int left = 0;
+#pragma unroll
+  for (int j = 0; j < kGenBitV2WordsPerWarp; ++j) {
+    const int pos = base + (warp * kGenBitV2WordsPerWarp + j) * 32 + lane;
+    const bool bit = pos < n && HybridGenBitVectorDecision(d, bins[j]) != 0;
+    const uint32_t ballot = __ballot_sync(0xffffffffu, bit);
+    left += __popc(ballot);
+    if (lane == j) mine = ballot;
+  }
+  uint32_t* bit_words = reinterpret_cast<uint32_t*>(block_to_left_offset);
+  if (lane < kGenBitV2WordsPerWarp) {
+    bit_words[(static_cast<size_t>(d.block_offset_start) + b) * 32 + warp * kGenBitV2WordsPerWarp + lane] = mine;
+  }
+  if (lane == 0) warp_left[warp] = left;
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    int total_left = 0;
+#pragma unroll
+    for (int w = 0; w < kGenBitV2Threads / 32; ++w) total_left += warp_left[w];
+    int in_block = n - base;
+    in_block = in_block > SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION ? SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION : in_block;
+    if (in_block < 0) in_block = 0;
+    left_buf[d.block_offset_start + b + 1] = in_block > 0 ? total_left : 0;
+    right_buf[d.block_offset_start + b + 1] = in_block > 0 ? in_block - total_left : 0;
+  }
+}
+// -------------------------------------------------------------------------------------------------------------------
+
 void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, const int max_num_blocks,
                                                        const int num_gaps, const int max_gap_blocks,
                                                        const int total_flat_blocks,
@@ -2005,10 +2232,28 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
   if (indices_copy_done_event_ != nullptr) {
     CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], indices_copy_done_event_, 0));
   }
-  HybridGenBitVectorUpdateLeafIndexBatchKernel<<<flat_grid, block_dim, 0, cuda_streams_[0]>>>(
-    descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
-    cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
-    cuda_data_index_to_leaf_index_.RawData(), nullptr, num_splits, total_flat_blocks);
+  bool any_packed_source = false;
+  for (int k = 0; k < num_splits; ++k) any_packed_source |= host_apply_descs_[k].bit_type == 4;
+  if (FalcataPlan::Get().gen_bit_v2 && total_flat_blocks > 0 && !any_packed_source) {
+    GenBitV2Rows8Kernel<<<total_flat_blocks, kGenBitV2Threads, 0, cuda_streams_[0]>>>(
+      descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
+      cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(), num_splits);
+  } else if (FalcataPlan::Get().gen_bit_v2 && total_flat_blocks > 0 && num_splits > 1 && num_splits <= 128) {
+    GenBitV2InterleavedKernel<<<flat_grid, block_dim, 0, cuda_streams_[0]>>>(
+      descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
+      cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(), num_splits,
+      total_flat_blocks);
+  } else if (FalcataPlan::Get().gen_bit_v2 && total_flat_blocks > 0) {
+    GenBitV2PersistentKernel<<<flat_grid, block_dim, 0, cuda_streams_[0]>>>(
+      descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
+      cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(), num_splits,
+      total_flat_blocks);
+  } else {
+    HybridGenBitVectorUpdateLeafIndexBatchKernel<<<flat_grid, block_dim, 0, cuda_streams_[0]>>>(
+      descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
+      cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
+      cuda_data_index_to_leaf_index_.RawData(), nullptr, num_splits, total_flat_blocks);
+  }
   HybridAggregateBlockOffsetBatchKernel<<<num_splits, AGGREGATE_BLOCK_SIZE_DATA_PARTITION, 0, cuda_streams_[0]>>>(
     descs, cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
     cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
