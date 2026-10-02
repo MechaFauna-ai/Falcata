@@ -85,6 +85,9 @@ struct FalcataPlan {
   bool rowdata_4bit = true;         // key: rowdata_4bit
   // GPU dense-matrix binning during dataset construction
   bool gpu_construct = true;        // key: gpu_construct
+  // pack the 4-bit row data on the GPU from the Dataset's columns when a
+  // Booster is created, instead of on the host (same bytes on the device)
+  bool gpu_rowpack = true;          // key: gpu_rowpack
   // cheap host precheck that skips EFB bundling on provably-unbundlable data
   bool efb_precheck = true;         // key: efb_precheck
 
@@ -198,6 +201,7 @@ struct FalcataPlan {
     if (key == "fast_rowdata") return &fast_rowdata;
     if (key == "rowdata_4bit") return &rowdata_4bit;
     if (key == "gpu_construct") return &gpu_construct;
+    if (key == "gpu_rowpack") return &gpu_rowpack;
     if (key == "efb_precheck") return &efb_precheck;
     if (key == "split_packed_read") return &split_packed_read;
     if (key == "batch_kernels") return &batch_kernels;

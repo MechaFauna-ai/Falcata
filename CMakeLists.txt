@@ -692,6 +692,7 @@ set(
       src/treelearner/cuda/cuda_single_gpu_tree_learner.cu
       src/io/cuda/cuda_column_data.cu
       src/io/cuda/cuda_dense_binner.cu
+      src/io/cuda/cuda_row_data.cu
       src/io/cuda/cuda_tree.cu
       src/io/cuda/cuda_column_data.cpp
       src/io/cuda/cuda_dense_binner.cpp

@@ -725,6 +725,21 @@ void CUDARowData::InitDense4BitData(const Dataset* train_data, const uint8_t* ho
   std::vector<const void*> column_data;
   std::vector<uint8_t> column_bit_types;
   const bool use_fast_build = FastRowDataEnabled() && CollectDenseColumnData(train_data, &column_data, &column_bit_types);
+  if (use_fast_build && FalcataPlan::Get().gpu_rowpack &&
+      PackDense4BitOnDevice(column_data, column_bit_types, packed_total)) {
+    if (RowData4BitVerifyEnabled()) {
+      std::unique_ptr<uint8_t[]> host_packed(new uint8_t[packed_total]);
+      BuildDensePacked4BitFromColumns(column_data, column_bit_types, host_packed.get());
+      std::unique_ptr<uint8_t[]> device_packed(new uint8_t[packed_total]);
+      CopyFromCUDADeviceToHost<uint8_t>(device_packed.get(), cuda_data_uint8_t_.RawData(), packed_total, __FILE__, __LINE__);
+      if (std::memcmp(host_packed.get(), device_packed.get(), packed_total) != 0) {
+        Log::Fatal("FALCATA_VERIFY: device-packed 4-bit row data differs from the host-packed bytes.");
+      }
+      Log::Info("FALCATA_VERIFY: device-packed 4-bit row data matches the host-packed bytes (%zu bytes).", packed_total);
+    }
+    cuda_packed_partition_byte_offsets_.InitFromHostVector(packed_partition_byte_offsets_);
+    return;
+  }
   std::unique_ptr<uint8_t[]> packed(new uint8_t[packed_total]);
   if (use_fast_build) {
     BuildDensePacked4BitFromColumns(column_data, column_bit_types, packed.get());
@@ -780,6 +795,63 @@ void CUDARowData::InitDense4BitData(const Dataset* train_data, const uint8_t* ho
              num_feature_partitions_, feature_partition_column_index_offsets_.back(), packed_partition_byte_offsets_.back());
   cuda_data_uint8_t_.InitFromHostMemory(packed.get(), packed_total);
   cuda_packed_partition_byte_offsets_.InitFromHostVector(packed_partition_byte_offsets_);
+}
+
+bool CUDARowData::PackDense4BitOnDevice(const std::vector<const void*>& column_data,
+                                        const std::vector<uint8_t>& column_bit_types, const size_t packed_total) {
+  // Uploads each partition's columns as the Dataset stores them (the same bytes the host path packs) into a
+  // staging buffer and packs them on the device. Declines when a column is not 4- or 8-bit, or when the
+  // packed matrix plus one partition's staging does not fit in free device memory.
+  for (const uint8_t bit_type : column_bit_types) {
+    if (bit_type != 4 && bit_type != 8) return false;
+  }
+  auto column_bytes = [this](uint8_t bit_type) {
+    return bit_type == 4 ? (static_cast<size_t>(num_data_) + 1) / 2 : static_cast<size_t>(num_data_);
+  };
+  size_t staging_bytes = 0;
+  for (size_t p = 0; p + 1 < feature_partition_column_index_offsets_.size(); ++p) {
+    size_t bytes = 0;
+    for (int c = feature_partition_column_index_offsets_[p]; c < feature_partition_column_index_offsets_[p + 1]; ++c) {
+      bytes += column_bytes(column_bit_types[c]);
+    }
+    staging_bytes = std::max(staging_bytes, bytes);
+  }
+  size_t free_bytes = 0, total_bytes = 0;
+  CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_bytes, &total_bytes));
+  constexpr size_t kHeadroom = size_t{256} << 20;
+  if (packed_total + staging_bytes + kHeadroom > free_bytes) {
+    return false;
+  }
+  cuda_data_uint8_t_.ResizeDiscard(packed_total);
+  CUDAVector<uint8_t> staging(staging_bytes);
+  CUDAVector<size_t> cuda_col_offsets;
+  CUDAVector<uint8_t> cuda_col_bits;
+  for (size_t p = 0; p + 1 < feature_partition_column_index_offsets_.size(); ++p) {
+    const int column_start = feature_partition_column_index_offsets_[p];
+    const int column_end = feature_partition_column_index_offsets_[p + 1];
+    std::vector<size_t> col_offsets;
+    std::vector<uint8_t> col_bits;
+    size_t pos = 0;
+    for (int c = column_start; c < column_end; ++c) {
+      col_offsets.push_back(pos);
+      col_bits.push_back(column_bit_types[c]);
+      const size_t bytes = column_bytes(column_bit_types[c]);
+      CopyFromHostToCUDADevice<uint8_t>(staging.RawData() + pos, reinterpret_cast<const uint8_t*>(column_data[c]),
+                                        bytes, __FILE__, __LINE__);
+      pos += bytes;
+    }
+    cuda_col_offsets.InitFromHostVector(col_offsets);
+    cuda_col_bits.InitFromHostVector(col_bits);
+    const int packed_width = packed_partition_byte_offsets_[p + 1] - packed_partition_byte_offsets_[p];
+    LaunchPackDenseNibblesPartition(staging.RawData(), cuda_col_offsets.RawData(), cuda_col_bits.RawData(),
+                                    column_end - column_start, packed_width,
+                                    cuda_data_uint8_t_.RawData() +
+                                      static_cast<size_t>(num_data_) * static_cast<size_t>(packed_partition_byte_offsets_[p]));
+    // the next partition reuses the staging buffer
+    SynchronizeCUDADevice(__FILE__, __LINE__);
+  }
+  Log::Debug("CUDARowData: 4-bit row data packed on the device (%zu bytes, %zu staging)", packed_total, staging_bytes);
+  return true;
 }
 
 template <typename BIN_TYPE, typename DATA_PTR_TYPE>
