@@ -80,6 +80,11 @@ struct FalcataPlan {
   // Bit-identical. Measured: +26.1% numerai-deep, +7.7% higgs-deep against the
   // JIT (300 rounds).
   bool row_batch = true;            // key: row_batch
+  // with row_batch, narrow partitions and no per-tree feature masks: one
+  // thread covers a packed byte (4-bit) or a 16/32-bit word (8-bit) of adjacent
+  // columns, sharing the row's index and gradient loads; wide partitions batch
+  // 4 rows. Bit-identical. Measured: see docs/performance.md.
+  bool multi_col = true;            // key: multi_col
   // root histogram fused into the tiled 4-bit compact fill (quantized, no
   // bagging, so the root leaf is every row the fill stages): the fill adds
   // each staged row's packed gradient into per-block column histograms and the
@@ -360,6 +365,7 @@ struct FalcataPlan {
     if (key == "compact_quant") return &compact_quant;
     if (key == "construct_jit") return &construct_jit;
     if (key == "row_batch") return &row_batch;
+    if (key == "multi_col") return &multi_col;
     if (key == "fused_root_hist") return &fused_root_hist;
     if (key == "root_hist_slot_major") return &root_hist_slot_major;
     if (key == "root_hist_tile_stride") return &root_hist_tile_stride;
