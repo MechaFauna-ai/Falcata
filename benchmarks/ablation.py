@@ -60,6 +60,7 @@ ALL_KEYS = {
     "tiled_fill": True,
     "warp_find": True,
     "row_batch": True,
+    "multi_col": True,
 }
 
 #: growth-strategy keys: changing them changes WHICH tree is built (legit),
