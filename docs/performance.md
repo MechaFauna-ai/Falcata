@@ -481,7 +481,32 @@ bit-identical in every cell):
   measured crossover below; `feature_fraction_bynode` does not enter (the
   views hold the per-tree sample, the per-node draw happens in the split
   finder either way). Bit-identical in every regime (the same bytes, and
-  integer histograms for the masked kernels).
+  integer histograms for the masked kernels), so the regime may change
+  between any two trees without changing the model — which is what makes
+  the live choice below legal.
+
+  **Live regime choice.** Two rules on top of the threshold, both under
+  `view_mode:auto`:
+  - *memory:* the compact regime is taken only if its store, its compact view
+    (sized from `feature_fraction` and the partitions' packed widths, the
+    fill's own arithmetic), the one-byte split view where the split readers
+    need it and the reserve (the split finder's level output and bit-change
+    scratch for `num_leaves / 2 + 2` pairs, the booster's per-row state,
+    256 MiB) fit in free device memory at decision time; otherwise mask, with
+    a diag line saying why. Deterministic: sizes against `cudaMemGetInfo`.
+  - *tuner:* with the tuner running (quantized training; ≥300 rounds under
+    auto, or `tuner:on`), a `feature_fraction` in [`view_probe_lo`,
+    `view_probe_hi`] = [0.5, 0.95] is measured instead: two warm-up trees,
+    five timed trees in the threshold's regime, one untimed tree after the
+    switch, five timed trees in the other; the regime with the lower median
+    per-tree time is kept and written to the tuner's wisdom
+    (`~/.cache/falcata/wisdom.txt`, a `view1:` entry keyed by shape, device
+    and `feature_fraction`), so the next `train()` of that shape adopts it
+    without probing. The floor and small-leaf knob probes wait for it. A
+    regime that does not fit is never probed. Switches happen between trees,
+    before the tree's clock starts; each frees the old layout before
+    building the new one (store → full view: the staged fill from the
+    columns; full view → store: the re-upload).
 - **`tiled_fill`** — the 4-bit compact fill stages 128 rows of every byte slot
   in a shared-memory `[row][slot]` tile, reading each source column
   contiguously, then writes each partition's rows as one contiguous run with
@@ -534,7 +559,11 @@ bit-identical in every cell):
   `~/.cache/falcata/wisdom.txt` — retrains of the same workload skip the
   ~130-tree probe phase and start at the known-best point (measured: +3% on
   a numerai-deep 300-round retrain, covtype-deep 83.8 → 88.2 t/s), while the
-  periodic re-probe still verifies the cached choice against reality. (A
+  periodic re-probe still verifies the cached choice against reality. Under
+  `colmajor_direct` the tuner also chooses the bin matrix's view regime
+  inside [`view_probe_lo`, `view_probe_hi`] (§7, `colmajor_direct`), once per
+  shape and `feature_fraction`, before the knob probes; that choice is not
+  re-probed. (A
   histogram-pipeline-count knob was considered and rejected: it only affects
   the per-pair fallback path — the batched flow every real workload uses
   runs on a single stream.)
@@ -584,6 +613,33 @@ column is the full view next to the store, the same kernels with twice the
 memory.
 
 ![colmajor_direct regimes across feature_fraction](perf-plots/view_regime_crossover.png)
+
+**The live choice on numerai53-deep** (RTX 5090, `tuner:on`, 130 rounds, a
+fresh wisdom file per run, two pairs; "static" is the same plan with the
+probe band emptied, `view_probe_lo:2`; identical model md5 in every pair):
+
+| feature_fraction | 0.1 | 0.8 | 0.85 | 0.9 | 1.0 |
+|---|---|---|---|---|---|
+| regime (probe medians, ms/tree) | compact (outside band) | **compact** (157–159 vs 183–184) | **mask** (205 vs 187–191) | **mask** (206–207 vs 187) | mask (outside band) |
+| same as the static rule | yes | yes | yes | yes | yes |
+| first 130 trees, static → probe | 2.72 → 2.72 s | 21.53 → 22.45 s | 25.30 → 26.16 s | 25.32 → 26.23 s | 23.94 → 23.94 s |
+| peak device memory over idle, static / probe | 13.8 / 13.8 GiB | 21.8 / 21.6 GiB | 12.6 / 22.1 GiB | 12.6 / 22.7 GiB | 12.6 / 12.7 GiB |
+
+The probe costs ~0.9 s once per (shape, device, `feature_fraction`): two
+regime switches and five trees in the slower regime. A cached decision costs
+nothing. On this shape it confirms the threshold. Its memory cost is the
+probed regime's own footprint: above the threshold the five compact trees
+hold the store plus an 85–90% view (22 GiB); the switch itself never holds
+both layouts (a store plus a full view plus that view would not have fit at
+all). After the first `train()`, wisdom skips the probe and the peak is the
+mask regime's 12.6 GiB.
+
+Against master (300 rounds, default plan, a fresh wisdom file per run, three
+pairs, identical models): at `feature_fraction` 0.1 steady state is
+unchanged (16.40 vs 16.42 ms per round, n.s.); at 0.9 it is **5.7% faster**
+(204.9 → 193.2 ms, CI [11.3, 12.2] ms saved), since master fills a 90%
+compact view from its row-major matrix every tree. The first round is 1.8 s
+shorter at both.
 
 `wide_partitions`, `l2_policy`, `colmajor_fill` and `tuner` compose: **+10.5% on
 numerai-deep combined**. A methodology note the
