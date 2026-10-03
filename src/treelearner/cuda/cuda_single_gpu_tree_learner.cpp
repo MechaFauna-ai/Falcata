@@ -445,6 +445,47 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   if (config_->linear_tree) {
     InitLinearTreeCUDA(train_data_);
   }
+  colmajor_fill_pending_ = cuda_histogram_constructor_->ColMajorFillApplicable();
+  colmajor_fill_trees_seen_ = 0;
+}
+
+// colmajor_fill sizing. The column-major copy of the 4-bit row matrix is the largest optional allocation training
+// makes (as large as the row data itself) and, being optional, must never be what runs the device out of memory.
+// It is therefore made before the SECOND tree, not at Init: by then the booster's scores, gradients and bag
+// indices, the training and validation sets' device columns, the data partition, the gradient discretizer,
+// linear-tree data and the first tree's compact views and level buffers all exist, so free device memory already
+// accounts for them, multiclass and vector-leaf per-row state included. This returns what can still be allocated
+// after that point, as an upper bound computed from the shape:
+//  - the split finder's per-level output for up to num_leaves / 2 + 2 pairs (the graph loop's worst case) with its
+//    categorical and vector-payload slabs, the quantized bit-change histogram scratch (pairs x total bins) and,
+//    with NCCL, the level reduce buffer, each counted in full while short of that bound, since a growing Resize
+//    holds the old block until the new one is allocated;
+//  - the compact views growing as later trees' samples fall differently into the feature partitions;
+//  - 256 MiB (the same headroom EnsureCompactColumnBuffer keeps) for everything smaller: per-level metadata, tree
+//    buffers, allocator granularity.
+// A per-column split view, where this configuration uses one, was built by the first tree too; its size is fixed
+// by the per-tree sample count. Not covered: device memory taken outside this booster's training once the copy
+// exists, e.g. a validation set added after the first tree or GPU prediction from a callback; colmajor_fill:off
+// leaves that memory free.
+size_t CUDASingleGPUTreeLearner::ColMajorFillReserveBytes() const {
+  constexpr size_t kHeadroom = 256ULL << 20;
+  const int max_pairs = config_->num_leaves / 2 + 2;
+  size_t reserve = kHeadroom + cuda_best_split_finder_->HybridLevelGrowthBytes(max_pairs) +
+                   cuda_histogram_constructor_->BitChangeScratchGrowthBytes(max_pairs) +
+                   cuda_histogram_constructor_->CompactViewGrowthBytes();
+  if (nccl_communicator_ != nullptr) {
+    const size_t elems = static_cast<size_t>(max_pairs) * static_cast<size_t>(num_total_bin_) * 2;
+    reserve += cuda_nccl_reduce_buf_.Size() >= elems ? 0 : elems * sizeof(double);
+  }
+  return reserve;
+}
+
+void CUDASingleGPUTreeLearner::MaybeInitColMajorFill() {
+  if (!colmajor_fill_pending_ || colmajor_fill_trees_seen_++ == 0) {
+    return;
+  }
+  colmajor_fill_pending_ = false;
+  cuda_histogram_constructor_->InitColMajorFill(ColMajorFillReserveBytes());
 }
 
 // The fp32 histogram layout does not cover the large-bin global-memory find
@@ -3717,6 +3758,8 @@ void CUDASingleGPUTreeLearner::TunerAfterTree(double tree_seconds) {
 
 Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   const score_t* hessians, bool is_first_tree) {
+  // before the tuner's per-tree clock starts: the one-time transpose is not this tree's work
+  MaybeInitColMajorFill();
   TunerBeforeTree();
   const auto tuner_t0 = std::chrono::steady_clock::now();
   gradients_ = gradients;
@@ -4312,6 +4355,9 @@ void CUDASingleGPUTreeLearner::ResetTrainingData(
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   ReleaseHybridGraphs();  // captured buffer pointers may have changed
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+  // the histogram constructor dropped the old data's column-major copy: decide again after a tree on the new data
+  colmajor_fill_pending_ = cuda_histogram_constructor_->ColMajorFillApplicable();
+  colmajor_fill_trees_seen_ = 0;
 }
 
 void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {

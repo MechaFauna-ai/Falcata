@@ -241,6 +241,30 @@ class CUDAVector {
     Resize(size);
   }
 
+  /*! \brief ResizeDiscard for an optional buffer whose caller has a fallback:
+   *  returns false, leaving the vector empty, when the device is out of memory
+   *  instead of aborting. Any other CUDA error is still fatal. */
+  bool TryResizeDiscard(size_t size) {
+    if (size == size_) {
+      return true;
+    }
+    Clear();
+    if (size == 0) {
+      return true;
+    }
+    void* new_data = nullptr;
+    const cudaError_t status = cudaMalloc(&new_data, size * sizeof(T));
+    if (status == cudaErrorMemoryAllocation) {
+      cudaGetLastError();  // consume the error so the next CUDA call does not report it
+      return false;
+    }
+    CUDASUCCESS_OR_FATAL(status);
+    data_ = reinterpret_cast<T*>(new_data);
+    size_ = size;
+    owns_ = true;
+    return true;
+  }
+
   void InitFromHostVector(const std::vector<T>& host_vector) {
     Resize(host_vector.size());
     CopyFromHostToCUDADevice(data_, host_vector.data(), host_vector.size(), __FILE__, __LINE__);

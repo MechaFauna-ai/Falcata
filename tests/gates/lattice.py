@@ -172,6 +172,9 @@ def build_cells():
         ("sampled", "compact_quant", {}, {"cuda_plan": "auto,compact_quant:off"}),
         ("sampled", "construct_jit", {}, {"cuda_plan": "auto,construct_jit:on"}),
         ("sampled", "compact_prefill", {}, {"cuda_plan": "auto,compact_prefill:on"}),
+        # the column-major copy is made before the second tree; off, every fill reads the row-major matrix
+        ("sampled", "colmajor_fill", {}, {"cuda_plan": "auto,colmajor_fill:off"}),
+        ("sampledwide", "colmajor_fill", {}, {"cuda_plan": "auto,colmajor_fill:off"}),
         ("sampled", "tiled_fill", {}, {"cuda_plan": "auto,tiled_fill:off"}),
         ("sampledwide", "tiled_fill", {}, {"cuda_plan": "auto,tiled_fill:off"}),
         ("dense", "warp_find", {}, {"cuda_plan": "auto,warp_find:off"}),

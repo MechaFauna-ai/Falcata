@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -122,9 +123,12 @@ struct FalcataPlan {
   bool l2_policy = true;            // key: l2_policy
   // one-time column-major copy of the packed bin matrix as the compact-fill
   // gather source: fill reads contiguous columns (~10x less fill traffic on
-  // ff<<1 data) at the cost of duplicating the matrix in VRAM (planner-gated
-  // on free memory). Bit-identical (same bytes, different source layout).
-  // Measured: +2.2% numerai-deep; inert without feature sampling.
+  // ff<<1 data) at the cost of duplicating the matrix in VRAM. Made before the
+  // second tree, and only if free memory then still covers what training can
+  // allocate later (CUDASingleGPUTreeLearner::ColMajorFillReserveBytes);
+  // otherwise declined with a warning. Bit-identical (same bytes, different
+  // source layout). Measured: +2.2% numerai-deep; inert without feature
+  // sampling.
   bool colmajor_fill = true;        // key: colmajor_fill
   // 4-bit compact fill through a shared-memory [row][slot] tile: coalesced
   // column reads, 16-byte streaming writes of each partition's contiguous
@@ -317,8 +321,11 @@ inline bool FalcataVerifyEnabled() {
  *  - ``syncpairs``  force per-pair synchronization (isolates batching)
  *  - ``aggressive`` experimental aggressive hybrid batching
  *  - ``maxsplits=N`` cap splits per level (isolates multi-pair interactions)
- * Any debug token also disables the CUDA-graph controller path (the device
- * controller does not replicate these hooks).
+ *  - ``vramfree=N`` treat at most N MiB of device memory as free when
+ *    colmajor_fill decides whether its copy fits (tests the decline path
+ *    without filling the GPU); does not change any result
+ * The growth tokens (debug, syncpairs, maxsplits) also disable the CUDA-graph
+ * controller path (the device controller does not replicate these hooks).
  */
 struct FalcataDebugOptions {
   bool diag = false;
@@ -327,6 +334,7 @@ struct FalcataDebugOptions {
   bool syncpairs = false;
   bool aggressive = false;
   int maxsplits = -1;  // -1 = uncapped
+  int64_t vramfree_mib = -1;  // -1 = the real free memory
   bool any_growth_hook() const { return debug || syncpairs || maxsplits >= 0; }
 };
 
@@ -349,6 +357,8 @@ inline const FalcataDebugOptions& FalcataDebug() {
         o.aggressive = true;
       } else if (token.rfind("maxsplits=", 0) == 0) {
         o.maxsplits = std::atoi(token.c_str() + 10);
+      } else if (token.rfind("vramfree=", 0) == 0) {
+        o.vramfree_mib = std::max<int64_t>(0, std::atoll(token.c_str() + 9));
       } else if (!token.empty()) {
         Log::Warning("FALCATA_DEBUG: unknown token \"%s\" ignored", token.c_str());
       }

@@ -10,7 +10,9 @@
 #include "cuda_histogram_constructor.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -1037,60 +1039,8 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
       cuda_hist_buffer_.Resize(buffer_size);
     }
   }
-  // Column-major fill source (cuda_plan key colmajor_fill): one-time nibble
-  // transpose of the packed matrix so the per-tree compact fill gathers
-  // contiguous columns. Eligible: 4-bit device-resident data + enough free
-  // VRAM to duplicate the matrix with margin.
-  if (FalcataPlan::Get().colmajor_fill && cuda_row_data_->is_4bit_packed() &&
-      !cuda_row_data_->is_data_host_mapped()) {
-    const std::vector<int>& part_cols = cuda_row_data_->host_feature_partition_column_index_offsets();
-    const std::vector<int>& packed_offsets = cuda_row_data_->host_packed_partition_byte_offsets();
-    const int num_columns = part_cols.back();
-    const size_t pad = (static_cast<size_t>(num_data_) + 1) & ~static_cast<size_t>(1);
-    const size_t bytes = static_cast<size_t>(num_columns) * (pad / 2);
-    size_t free_b = 0, total_b = 0;
-    cudaMemGetInfo(&free_b, &total_b);
-    // Leave room for what the tree learner still has to allocate. The per-tree
-    // column view is the big one -- sampled columns x num_data, one byte per
-    // value -- and it is built AFTER this. Reserving a flat margin instead let
-    // this optional copy take the memory that view needed: on a 6.8M x 3555
-    // dataset the transpose fit (11.3 GiB on top of 11.3 GiB of row data) and
-    // training then died asking for 3.39 GiB with 2.72 GiB left.
-    const double sampled = (feature_fraction_ > 0.0 && feature_fraction_ <= 1.0) ? feature_fraction_ : 1.0;
-    const size_t view_bytes =
-        static_cast<size_t>(static_cast<double>(num_columns) * sampled) * static_cast<size_t>(num_data_);
-    // Slack beyond the view: histograms, the data partition and the split
-    // finder all allocate after this too. Scale it with the copy rather than
-    // pick a constant -- this is an optimization, and a dataset big enough for
-    // the transpose to matter is big enough for everything downstream to.
-    const size_t slack = std::max<size_t>(2ULL << 30, bytes / 2);
-    if (free_b > bytes + view_bytes + slack) {
-      std::vector<size_t> base_h(num_columns);
-      std::vector<int> stride_h(num_columns);
-      for (int p = 0; p + 1 < static_cast<int>(part_cols.size()); ++p) {
-        const size_t part_nib = static_cast<size_t>(packed_offsets[p]) * static_cast<size_t>(num_data_) * 2;
-        const int stride_nib = (packed_offsets[p + 1] - packed_offsets[p]) * 2;
-        for (int c = part_cols[p]; c < part_cols[p + 1]; ++c) {
-          base_h[c] = part_nib + static_cast<size_t>(c - part_cols[p]);
-          stride_h[c] = stride_nib;
-        }
-      }
-      CUDAVector<size_t> d_base(num_columns);
-      CUDAVector<int> d_stride(num_columns);
-      CopyFromHostToCUDADevice<size_t>(d_base.RawData(), base_h.data(), num_columns, __FILE__, __LINE__);
-      CopyFromHostToCUDADevice<int>(d_stride.RawData(), stride_h.data(), num_columns, __FILE__, __LINE__);
-      colmajor_bin_.Resize(bytes);
-      LaunchTransposeToColMajorNibbleKernel(
-        cuda_row_data_->GetBin<uint8_t>(), colmajor_bin_.RawData(),
-        d_base.RawData(), d_stride.RawData(), num_columns, num_data_, pad);
-      colmajor_pad_ = pad;
-      Log::Debug("colmajor_fill: %d columns transposed (%.2f GB)", num_columns,
-                 bytes / (1024.0 * 1024.0 * 1024.0));
-    } else {
-      Log::Warning("colmajor_fill requested but only %.1f GB VRAM free for a %.1f GB copy; disabled",
-                   free_b / (1024.0 * 1024.0 * 1024.0), bytes / (1024.0 * 1024.0 * 1024.0));
-    }
-  }
+  // The column-major fill source (cuda_plan key colmajor_fill) is not made here: the tree learner calls
+  // InitColMajorFill before its second tree, once everything sized by the data is allocated.
 
   // one int32 region of num_total_bin_ entries per histogram pipeline (the pairs
   // of a level run concurrently on different pipeline streams and must not share
@@ -1098,6 +1048,113 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   hist_buffer_for_num_bit_change_.Resize(
     std::max<size_t>(static_cast<size_t>(num_total_bin_) * 2,
                      (static_cast<size_t>(num_total_bin_) * kNumHistPipelines + 1) / 2));
+}
+
+bool CUDAHistogramConstructor::ColMajorFillApplicable() const {
+  return FalcataPlan::Get().colmajor_fill && cuda_row_data_ != nullptr && cuda_row_data_->is_4bit_packed() &&
+         !cuda_row_data_->is_data_host_mapped() && colmajor_pad_ == 0;
+}
+
+// The column-major copy duplicates the 4-bit row matrix (one nibble per value) so the per-tree compact fill reads
+// contiguous columns. It is optional: the fill reads the row-major matrix without it and writes the same bytes, so
+// it must never be the allocation that makes training run out of memory. Three checks, each against free device
+// memory as cudaMemGetInfo reports it (FALCATA_DEBUG=vramfree=N caps that figure, for tests):
+//  1. before allocating, free >= copy + reserve, so an allocation that cannot fit is never asked for;
+//  2. the allocation itself, through a non-fatal cudaMalloc (another process may have taken memory since);
+//  3. after allocating, free >= reserve; otherwise the copy is released again.
+// reserve_bytes is what training can still allocate after this point (the tree learner's
+// ColMajorFillReserveBytes). A decline logs a warning with the figures; FALCATA_DEBUG=diag logs an engagement.
+bool CUDAHistogramConstructor::InitColMajorFill(const size_t reserve_bytes) {
+  if (!ColMajorFillApplicable()) {
+    return false;
+  }
+  const std::vector<int>& part_cols = cuda_row_data_->host_feature_partition_column_index_offsets();
+  const std::vector<int>& packed_offsets = cuda_row_data_->host_packed_partition_byte_offsets();
+  const int num_columns = part_cols.back();
+  const size_t pad = (static_cast<size_t>(num_data_) + 1) & ~static_cast<size_t>(1);
+  const size_t bytes = static_cast<size_t>(num_columns) * (pad / 2);
+  if (bytes == 0) {
+    return false;
+  }
+  const int64_t cap_mib = FalcataDebug().vramfree_mib;
+  const size_t cap = cap_mib >= 0 ? static_cast<size_t>(cap_mib) << 20 : std::numeric_limits<size_t>::max();
+  auto free_bytes = [](size_t limit) {
+    size_t free_b = 0, total_b = 0;
+    CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_b, &total_b));
+    return std::min(free_b, limit);
+  };
+  constexpr size_t kMiB = 1ULL << 20;
+  const size_t free_before = free_bytes(cap);
+  auto decline = [&](const char* reason) {
+    Log::Warning("colmajor_fill: declined, %s (copy %zu MiB, reserve %zu MiB, free %zu MiB before the copy); "
+                 "the per-tree fill reads the row-major matrix instead (same model, slower fill)",
+                 reason, (bytes + kMiB - 1) / kMiB, (reserve_bytes + kMiB - 1) / kMiB, free_before / kMiB);
+    return false;
+  };
+  if (free_before < bytes || free_before - bytes < reserve_bytes) {
+    return decline("not enough free device memory");
+  }
+  if (!colmajor_bin_.TryResizeDiscard(bytes)) {
+    return decline("the allocation failed");
+  }
+  const size_t free_after = free_bytes(cap > bytes ? cap - bytes : 0);
+  if (free_after < reserve_bytes) {
+    colmajor_bin_.Clear();
+    return decline("free memory after the copy is below the reserve");
+  }
+  std::vector<size_t> base_h(num_columns);
+  std::vector<int> stride_h(num_columns);
+  for (int p = 0; p + 1 < static_cast<int>(part_cols.size()); ++p) {
+    const size_t part_nib = static_cast<size_t>(packed_offsets[p]) * static_cast<size_t>(num_data_) * 2;
+    const int stride_nib = (packed_offsets[p + 1] - packed_offsets[p]) * 2;
+    for (int c = part_cols[p]; c < part_cols[p + 1]; ++c) {
+      base_h[c] = part_nib + static_cast<size_t>(c - part_cols[p]);
+      stride_h[c] = stride_nib;
+    }
+  }
+  CUDAVector<size_t> d_base(num_columns);
+  CUDAVector<int> d_stride(num_columns);
+  CopyFromHostToCUDADevice<size_t>(d_base.RawData(), base_h.data(), num_columns, __FILE__, __LINE__);
+  CopyFromHostToCUDADevice<int>(d_stride.RawData(), stride_h.data(), num_columns, __FILE__, __LINE__);
+  // synchronizes: every later fill may read the copy
+  LaunchTransposeToColMajorNibbleKernel(
+    cuda_row_data_->GetBin<uint8_t>(), colmajor_bin_.RawData(),
+    d_base.RawData(), d_stride.RawData(), num_columns, num_data_, pad);
+  colmajor_pad_ = pad;
+  const char* fmt = "colmajor_fill: engaged, %d columns (copy %zu MiB, reserve %zu MiB, free %zu MiB before the copy)";
+  if (FalcataDebug().diag) {
+    Log::Info(fmt, num_columns, (bytes + kMiB - 1) / kMiB, (reserve_bytes + kMiB - 1) / kMiB, free_before / kMiB);
+  } else {
+    Log::Debug(fmt, num_columns, (bytes + kMiB - 1) / kMiB, (reserve_bytes + kMiB - 1) / kMiB, free_before / kMiB);
+  }
+  return true;
+}
+
+// Upper bound on how much the compact view buffers can grow after the trees built so far. Every tree samples the
+// same number of columns (num_compact_columns_), but how they fall into the feature partitions, and with the
+// experimental pack codecs the codec, changes from tree to tree. The nibble layout is the widest 4-bit layout:
+// ceil(c / 2) bytes per row for a partition's c sampled columns, at most (num_compact_columns_ + partitions) / 2
+// over all partitions. ResizeDiscard frees a buffer before regrowing it, so the growth is that bound minus the
+// current size, for the view and (compact_prefill) its double buffer.
+size_t CUDAHistogramConstructor::CompactViewGrowthBytes() const {
+  if (cuda_row_data_ == nullptr || !cuda_row_data_->is_4bit_packed() || num_compact_columns_ <= 0) {
+    return 0;
+  }
+  const size_t num_partitions = cuda_row_data_->host_feature_partition_column_index_offsets().size() - 1;
+  const size_t bound = (static_cast<size_t>(num_compact_columns_) + num_partitions + 1) / 2 *
+                       static_cast<size_t>(num_data_);
+  auto growth = [bound](size_t current) { return bound > current ? bound - current : 0; };
+  return growth(compact_data_uint8_t_.Size()) +
+         (FalcataPlan::Get().compact_prefill ? growth(compact_data_uint8_t_alt_.Size()) : 0);
+}
+
+size_t CUDAHistogramConstructor::BitChangeScratchGrowthBytes(const int max_pairs) const {
+  if (!use_quantized_grad_) {
+    return 0;
+  }
+  // ConstructHistogramsForLevel's Resize keeps the old block until the new one is allocated
+  const size_t needed = static_cast<size_t>(std::max(max_pairs, 0)) * static_cast<size_t>(num_total_bin_);
+  return hist_buffer_for_num_bit_change_.Size() >= needed ? 0 : needed * sizeof(hist_t);
 }
 
 void CUDAHistogramConstructor::ConstructHistogramForLeaf(
@@ -1309,6 +1366,9 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   cuda_feature_hist_offsets_.InitFromHostVector(feature_hist_offsets_);
   cuda_feature_most_freq_bins_.InitFromHostVector(feature_most_freq_bins_);
 
+  // the column-major copy belongs to the old row data; the tree learner decides on a new one
+  colmajor_bin_.Clear();
+  colmajor_pad_ = 0;
   cuda_row_data_.reset(new CUDARowData(train_data, share_states, gpu_device_id_, gpu_use_dp_));
   cuda_row_data_->Init(train_data, share_states);
 
