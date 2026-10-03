@@ -131,3 +131,56 @@ def test_row_batch_and_construct_jit_resolution_cuda():
     assert "construct_jit=1 row_batch=1" in forced_out
 
     assert auto_md5 == off_md5 == forced_md5
+
+
+def _cols_data(rows, cols, seed=4):
+    """255-value columns that ALL drive the target, so a lost histogram contribution in any column changes the model."""
+    rng = np.random.default_rng(seed)
+    X = rng.standard_normal((rows, cols)).astype(np.float32)
+    y = X @ rng.uniform(0.5, 1.5, cols) + 0.3 * rng.standard_normal(rows)
+    return X, y.astype(np.float32)
+
+
+# Shapes for each multi_col path. A partition holds at most 6144 histogram bins, so 255-bin columns come 24 to a
+# partition: 24 columns -> one 4-aligned partition (4 columns per 32-bit word), 22 -> 2 per 16-bit word, 21 -> the
+# one-column fallback. 4-bit data takes the nibble-pair path; wide partitions the 4-row batches; per-tree feature
+# masks the masked fallback. The 4-per-word cases use 300k rows so most row lanes run full 8-row batches.
+MULTI_COL_CASES = [
+    pytest.param("int4bit", 60_001, {}, id="4bit-nibble-pairs"),
+    pytest.param("int4bit", 60_001, {"feature_fraction": 0.3}, id="compact-view-nibble-pairs"),
+    pytest.param("cols24", 300_001, {}, id="8bit-4-per-word"),
+    pytest.param("cols22", 60_001, {}, id="8bit-2-per-word"),
+    pytest.param("cols21", 60_001, {}, id="8bit-odd-width-fallback"),
+    pytest.param("wide", 20_003, {}, id="wide-partitions"),
+    pytest.param("cols24", 60_001, {"feature_fraction": 0.5, "compact_quant": False}, id="feature-masks-fallback"),
+    pytest.param("cols24", 300_001, {"bagging_fraction": 0.7, "bagging_freq": 1}, id="bagging"),
+    pytest.param("cols24", 1_200_000, {"num_leaves": 15, "max_depth": 4}, id="32bit-leaf-bins"),
+]
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("quant", ["stochastic", "fixedpoint"])
+@pytest.mark.parametrize(("kind", "rows", "config"), MULTI_COL_CASES)
+def test_multi_col_is_bit_identical_cuda(kind, rows, config, quant):
+    """multi_col lets one thread cover several adjacent columns; every (row, column) must still count exactly once."""
+    params = {"quant_mode": quant, **config}
+    plan = (
+        "auto,construct_jit:off,compact_quant:off"
+        if params.pop("compact_quant", True) is False
+        else "auto,construct_jit:off"
+    )
+    rounds = 6 if rows > 1_000_000 else 12
+    if kind.startswith("cols"):
+        X, y = _cols_data(rows, int(kind[4:]))
+        p = {**BASE, "max_bin": 255, **params}
+
+        def train(pl):
+            q = {**p, "cuda_plan": pl}
+            model = flc.train(q, flc.Dataset(X, label=y, params=q), num_boost_round=rounds).model_to_string()
+            return re.sub(r"^\[cuda_plan: .*\]$", "", model, flags=re.M)
+
+        assert train(plan) == train(plan + ",multi_col:off")
+    else:
+        on = _train(kind, rows, {**params, "cuda_plan": plan}, rounds)
+        off = _train(kind, rows, {**params, "cuda_plan": plan + ",multi_col:off"}, rounds)
+        assert on == off

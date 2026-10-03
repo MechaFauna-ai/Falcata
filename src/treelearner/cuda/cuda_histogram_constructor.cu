@@ -16,6 +16,7 @@
 #include <cuda.h>
 
 #include <algorithm>
+#include <type_traits>
 #include <vector>
 
 #include <Falcata/cuda/cuda_driver_shim.hpp>
@@ -1842,6 +1843,123 @@ __device__ __forceinline__ void ConstructRowBatch(
   for (int j = 0; j < N; ++j) atomicAdd_block(shared_hist_ptr + bins[j], g[j]);
 }
 
+// multi_col, 8-bit narrow partitions: one thread covers G adjacent columns with a single W-wide load per row, so
+// the row index and gradient loads are shared by G columns (bytes are little-endian within W).
+template <int G, typename W>
+__device__ __forceinline__ void ConstructMultiColumn8(const data_size_t* rows, const data_size_t lane_stride,
+                                                      const data_size_t count, const int32_t* gradients,
+                                                      const uint8_t* base, const size_t row_stride,
+                                                      int32_t* const* hist) {
+  int32_t* h[G];
+#pragma unroll
+  for (int k = 0; k < G; ++k) h[k] = hist[k];
+  data_size_t i = 0;
+  if (count >= 8) {
+    data_size_t idx[8];
+#pragma unroll
+    for (int j = 0; j < 8; ++j) idx[j] = __ldg(rows + j * lane_stride);
+    for (; i + 8 <= count; i += 8) {
+      // without a next batch, re-read the current (valid) positions; the values go unused
+      const data_size_t next = i + 16 <= count ? i + 8 : i;
+      int32_t g[8];
+      W w[8];
+      data_size_t next_idx[8];
+#pragma unroll
+      for (int j = 0; j < 8; ++j) g[j] = __ldg(gradients + idx[j]);
+#pragma unroll
+      for (int j = 0; j < 8; ++j) next_idx[j] = __ldg(rows + (next + j) * lane_stride);
+#pragma unroll
+      for (int j = 0; j < 8; ++j) w[j] = __ldg(reinterpret_cast<const W*>(base + static_cast<size_t>(idx[j]) * row_stride));
+#pragma unroll
+      for (int j = 0; j < 8; ++j) {
+#pragma unroll
+        for (int k = 0; k < G; ++k) atomicAdd_block(h[k] + ((static_cast<uint32_t>(w[j]) >> (8 * k)) & 0xFFu), g[j]);
+      }
+#pragma unroll
+      for (int j = 0; j < 8; ++j) idx[j] = next_idx[j];
+    }
+  }
+  for (; i + 4 <= count; i += 4) {
+    data_size_t r[4];
+    int32_t g[4];
+    W w[4];
+#pragma unroll
+    for (int j = 0; j < 4; ++j) r[j] = __ldg(rows + (i + j) * lane_stride);
+#pragma unroll
+    for (int j = 0; j < 4; ++j) g[j] = __ldg(gradients + r[j]);
+#pragma unroll
+    for (int j = 0; j < 4; ++j) w[j] = __ldg(reinterpret_cast<const W*>(base + static_cast<size_t>(r[j]) * row_stride));
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+#pragma unroll
+      for (int k = 0; k < G; ++k) atomicAdd_block(h[k] + ((static_cast<uint32_t>(w[j]) >> (8 * k)) & 0xFFu), g[j]);
+    }
+  }
+  for (; i < count; ++i) {
+    const data_size_t r = __ldg(rows + i * lane_stride);
+    const int32_t g = __ldg(gradients + r);
+    const W w = __ldg(reinterpret_cast<const W*>(base + static_cast<size_t>(r) * row_stride));
+#pragma unroll
+    for (int k = 0; k < G; ++k) atomicAdd_block(h[k] + ((static_cast<uint32_t>(w) >> (8 * k)) & 0xFFu), g);
+  }
+}
+
+// multi_col, 4-bit (PackNibble4) narrow partitions: one thread per packed byte, i.e. two columns.
+__device__ __forceinline__ void ConstructNibblePair(const data_size_t* rows, const data_size_t lane_stride,
+                                                    const data_size_t count, const int32_t* gradients,
+                                                    const uint8_t* base, const size_t row_stride, int32_t* h0,
+                                                    int32_t* h1, const bool use_high) {
+  data_size_t i = 0;
+  if (count >= 8) {
+    data_size_t idx[8];
+#pragma unroll
+    for (int j = 0; j < 8; ++j) idx[j] = __ldg(rows + j * lane_stride);
+    for (; i + 8 <= count; i += 8) {
+      // without a next batch, re-read the current (valid) positions; the values go unused
+      const data_size_t next = i + 16 <= count ? i + 8 : i;
+      int32_t g[8];
+      uint32_t b[8];
+      data_size_t next_idx[8];
+#pragma unroll
+      for (int j = 0; j < 8; ++j) g[j] = __ldg(gradients + idx[j]);
+#pragma unroll
+      for (int j = 0; j < 8; ++j) next_idx[j] = __ldg(rows + (next + j) * lane_stride);
+#pragma unroll
+      for (int j = 0; j < 8; ++j) b[j] = __ldg(base + static_cast<size_t>(idx[j]) * row_stride);
+#pragma unroll
+      for (int j = 0; j < 8; ++j) {
+        atomicAdd_block(h0 + (b[j] & 0xFu), g[j]);
+        if (use_high) atomicAdd_block(h1 + (b[j] >> 4), g[j]);
+      }
+#pragma unroll
+      for (int j = 0; j < 8; ++j) idx[j] = next_idx[j];
+    }
+  }
+  for (; i + 4 <= count; i += 4) {
+    data_size_t r[4];
+    int32_t g[4];
+    uint32_t b[4];
+#pragma unroll
+    for (int j = 0; j < 4; ++j) r[j] = __ldg(rows + (i + j) * lane_stride);
+#pragma unroll
+    for (int j = 0; j < 4; ++j) g[j] = __ldg(gradients + r[j]);
+#pragma unroll
+    for (int j = 0; j < 4; ++j) b[j] = __ldg(base + static_cast<size_t>(r[j]) * row_stride);
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+      atomicAdd_block(h0 + (b[j] & 0xFu), g[j]);
+      if (use_high) atomicAdd_block(h1 + (b[j] >> 4), g[j]);
+    }
+  }
+  for (; i < count; ++i) {
+    const data_size_t r = __ldg(rows + i * lane_stride);
+    const int32_t g = __ldg(gradients + r);
+    const uint32_t b = __ldg(base + static_cast<size_t>(r) * row_stride);
+    atomicAdd_block(h0 + (b & 0xFu), g);
+    if (use_high) atomicAdd_block(h1 + (b >> 4), g);
+  }
+}
+
 // Shared body of the discretized dense histogram kernel (see
 // ConstructHistogramDenseInner for the shared-memory-passing and early-exit
 // rationale).
@@ -1859,7 +1977,8 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
   const int dim_y,
   const int8_t* is_feature_used_bytree = nullptr,
   const uint8_t* bin_used = nullptr,
-  const bool row_batch = false) {
+  const bool row_batch = false,
+  const bool multi_col = false) {
   const data_size_t num_data_in_smaller_leaf = smaller_leaf_splits->num_data_in_leaf;
   const data_size_t num_data_per_thread = (num_data_in_smaller_leaf + dim_y - 1) / dim_y;
   const unsigned int blockIdx_y = blockIdx.y;
@@ -1910,7 +2029,61 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
       (is_feature_used_bytree == nullptr || is_feature_used_bytree[column_index]);
   const bool use2 = col2_local < static_cast<unsigned int>(num_columns_in_partition) &&
       (is_feature_used_bytree == nullptr || is_feature_used_bytree[column_index2]);
-  if (row_batch && num_columns_in_partition <= static_cast<int>(blockDim.x)) {
+  // cuda_plan key multi_col (with row_batch, narrow partitions, no per-tree feature masks): one thread covers
+  // several adjacent columns of the row (a packed byte for 4-bit data, a 16/32-bit word for 8-bit data), so the
+  // row index and gradient loads are shared by those columns; the freed threads become extra row lanes over the
+  // same block rows (so the 16-bit packed shared-histogram bound is unchanged). Every (row, column) is counted
+  // once with the same atomics: bit-identical.
+  constexpr bool kNibble = std::is_same<PACK, PackNibble4>::value;
+  constexpr bool kRaw8 = std::is_same<PACK, PackRaw8>::value;
+  const bool multi_col_ok = multi_col && row_batch && num_columns_in_partition > 0 &&
+      num_columns_in_partition <= static_cast<int>(blockDim.x) &&
+      is_feature_used_bytree == nullptr && bin_used == nullptr;
+  const uintptr_t data_addr = reinterpret_cast<uintptr_t>(data_ptr);
+  const int columns_per_word = !kRaw8 ? 1 :
+      (row_stride % 4 == 0 && (data_addr & 3) == 0) ? 4 : (row_stride % 2 == 0 && (data_addr & 1) == 0) ? 2 : 1;
+  if (kNibble && multi_col_ok) {
+    const int threads_per_row = static_cast<int>((blockDim.x + 1) >> 1);
+    const int groups = static_cast<int>(blockDim.x) / threads_per_row;
+    const int byte_index = static_cast<int>(threadIdx.x) % threads_per_row;
+    const int sub = static_cast<int>(threadIdx.x) / threads_per_row;
+    const int c0 = 2 * byte_index;
+    if (sub < groups && c0 < num_columns_in_partition) {
+      const bool use_high = c0 + 1 < num_columns_in_partition;
+      const data_size_t lane_stride = static_cast<data_size_t>(blockDim.y) * groups;
+      const data_size_t lane = static_cast<data_size_t>(threadIdx_y) * groups + sub;
+      const data_size_t count = lane < block_num_data ? (block_num_data - lane + lane_stride - 1) / lane_stride : 0;
+      int32_t* h0 = shared_hist_packed + column_hist_offsets[partition_column_start + c0];
+      int32_t* h1 = use_high ? shared_hist_packed + column_hist_offsets[partition_column_start + c0 + 1] : h0;
+      ConstructNibblePair(data_indices_ref_this_block + lane, lane_stride, count, cuda_gradients_and_hessians,
+                          reinterpret_cast<const uint8_t*>(data_ptr) + byte_index, static_cast<size_t>(row_stride),
+                          h0, h1, use_high);
+    }
+  } else if (kRaw8 && multi_col_ok && columns_per_word > 1) {
+    const int threads_per_row = num_columns_in_partition / columns_per_word;
+    const int groups = static_cast<int>(blockDim.x) / threads_per_row;
+    const int word = static_cast<int>(threadIdx.x) % threads_per_row;
+    const int sub = static_cast<int>(threadIdx.x) / threads_per_row;
+    if (sub < groups) {
+      const data_size_t lane_stride = static_cast<data_size_t>(blockDim.y) * groups;
+      const data_size_t lane = static_cast<data_size_t>(threadIdx_y) * groups + sub;
+      const data_size_t count = lane < block_num_data ? (block_num_data - lane + lane_stride - 1) / lane_stride : 0;
+      int32_t* hist[4];
+#pragma unroll
+      for (int k = 0; k < 4; ++k) {
+        hist[k] = shared_hist_packed +
+                  column_hist_offsets[partition_column_start + word * columns_per_word + (k < columns_per_word ? k : 0)];
+      }
+      const uint8_t* base = reinterpret_cast<const uint8_t*>(data_ptr) + static_cast<size_t>(word) * columns_per_word;
+      if (columns_per_word == 4) {
+        ConstructMultiColumn8<4, uint32_t>(data_indices_ref_this_block + lane, lane_stride, count,
+                                           cuda_gradients_and_hessians, base, static_cast<size_t>(row_stride), hist);
+      } else {
+        ConstructMultiColumn8<2, uint16_t>(data_indices_ref_this_block + lane, lane_stride, count,
+                                           cuda_gradients_and_hessians, base, static_cast<size_t>(row_stride), hist);
+      }
+    }
+  } else if (row_batch && num_columns_in_partition <= static_cast<int>(blockDim.x)) {
     // cuda_plan key row_batch, one column per thread: the row loop is latency-bound on the dependent chain
     // row index -> gradient and bin, so each thread issues the loads of 8 (then 4) rows before their atomics
     // and prefetches the next 8 row indices meanwhile. Same rows, same atomics: bit-identical.
@@ -1960,7 +2133,28 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
       (column_hist_offsets[use1 ? column_index : column_index2]);
     int32_t* shared_hist_ptr2 = shared_hist_packed +
       (column_hist_offsets[use2 ? column_index2 : column_index]);
-    for (data_size_t i = 0; i < num_iteration_this; ++i) {
+    data_size_t i = 0;
+    if (multi_col && row_batch) {
+      // 4 rows' index and gradient loads in flight before their bins and atomics
+      const data_size_t by = static_cast<data_size_t>(blockDim.y);
+      for (; i + 4 <= num_iteration_this; i += 4) {
+        data_size_t rows[4];
+        int32_t grads[4];
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+          rows[j] = data_indices_ref_this_block[inner_data_index + j * by];
+          grads[j] = cuda_gradients_and_hessians[rows[j]];
+        }
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+          const BIN_TYPE* row_base = data_ptr + static_cast<size_t>(rows[j]) * row_stride;
+          if (use1) atomicAdd_block(shared_hist_ptr + PACK::ExtractAt(row_base, pack_cursor), grads[j]);
+          if (use2) atomicAdd_block(shared_hist_ptr2 + PACK::ExtractAt(row_base, pack_cursor2), grads[j]);
+        }
+        inner_data_index += 4 * by;
+      }
+    }
+    for (; i < num_iteration_this; ++i) {
       const data_size_t data_index = data_indices_ref_this_block[inner_data_index];
       const int32_t grad_and_hess = cuda_gradients_and_hessians[data_index];
       const BIN_TYPE* row_base = data_ptr + static_cast<size_t>(data_index) * row_stride;
@@ -2045,7 +2239,8 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
   const double min_sum_hessian_in_leaf,
   const data_size_t* level_smaller_num_data,
   const CUDAHybridGraphLoopStateOpt gstate,
-  const bool row_batch) {
+  const bool row_batch,
+  const bool multi_col) {
   // packed grad<<16|hess slots. SHARED_HIST_SIZE counts the 16-bit slots of the
   // budget shared with the non-quantized kernels, so the int32 array holds half
   // as many entries in the same bytes, at the alignment its atomics require.
@@ -2106,13 +2301,13 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
       smaller_struct, shared_hist_packed, cuda_gradients_and_hessians, data,
       column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
       packed_partition_byte_offsets,
-      num_data, dim_y, is_feature_used_bytree, bin_used, row_batch);
+      num_data, dim_y, is_feature_used_bytree, bin_used, row_batch, multi_col);
   } else {
     ConstructDiscretizedHistogramDenseInner<BIN_TYPE, false, PACK>(
       smaller_struct, shared_hist_packed, cuda_gradients_and_hessians, data,
       column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
       packed_partition_byte_offsets,
-      num_data, dim_y, is_feature_used_bytree, bin_used, row_batch);
+      num_data, dim_y, is_feature_used_bytree, bin_used, row_batch, multi_col);
   }
 }
 
@@ -3857,7 +4052,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           static_cast<data_size_t>(min_data_in_leaf_), \
           min_sum_hessian_in_leaf_, \
           level_smaller_num_data, \
-          hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch)
+          hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch, FalcataPlan::Get().multi_col)
         switch (compact_codec_) {
           case PackCodecId::kBit3x32:
             FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PackBit3x32);
@@ -3892,7 +4087,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           static_cast<data_size_t>(min_data_in_leaf_),
           min_sum_hessian_in_leaf_,
           level_smaller_num_data,
-          hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch);
+          hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch, FalcataPlan::Get().multi_col);
       }
     } else if (cuda_row_data_->is_4bit_packed()) {
       if (TryLaunchConstructJITBatchedRowDataQuant(
@@ -3916,7 +4111,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           static_cast<data_size_t>(min_data_in_leaf_),
           min_sum_hessian_in_leaf_,
           level_smaller_num_data,
-          hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch);
+          hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch, FalcataPlan::Get().multi_col);
       }
     } else {
       if (TryLaunchConstructJITBatchedRowDataQuant(
@@ -3940,7 +4135,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         static_cast<data_size_t>(min_data_in_leaf_),
         min_sum_hessian_in_leaf_,
         level_smaller_num_data,
-        hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch);
+        hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch, FalcataPlan::Get().multi_col);
     }
   } else if (det_batched) {
     // Deterministic float construct for the level batch: the same fixed-order
