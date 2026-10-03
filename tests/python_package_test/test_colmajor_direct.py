@@ -55,6 +55,9 @@ SHAPES = {
     "tall": (2_100_001, 8, 7, {"feature_fraction": 0.5}),
     # 600 KB columns: the mask regime's 256 MiB staging takes 447 of a partition's 500 columns per chunk
     "chunked": (1_200_001, 500, 6, {"feature_fraction": 0.9}),
+    # the tuner probe's shape: shallow trees over enough rows that the regimes' per-tree times differ clearly
+    # (measured 0.8 vs 2.1 ms at feature_fraction 0.1, 2.6 vs 2.2 ms at 0.99, compact vs mask)
+    "probe": (2_000_001, 400, 6, {"feature_fraction": 0.1, "num_leaves": 15, "max_depth": 4}),
 }
 
 OFF = "auto,colmajor_direct:off"
@@ -174,21 +177,23 @@ sys.path.insert(0, {here!r})
 import falcata as flc
 from test_colmajor_direct import _data, _params, _strip
 X, y = _data({shape!r})
-p = {{**_params({shape!r}, "stochastic", {plan!r}), "verbosity": 1}}
+p = {{**_params({shape!r}, "stochastic", {plan!r}, **{extra!r}), "verbosity": 1}}
 train = flc.Dataset(X, label=y, params=p)
-bst = flc.Booster(p, train)
-for step in {steps!r}:
-    if step == "reset":
-        X2, y2 = _data({shape!r}, seed=1)
-        print("STEP reset", flush=True)
-        bst.update(train_set=flc.Dataset(X2, label=y2, params=p, reference=train))
-        continue
-    if step is not None:
-        print("STEP", step, flush=True)
-        bst.reset_parameter({{"feature_fraction": step}})
-    for _ in range(3):
-        bst.update()
-print("MODEL", __import__("hashlib").md5(_strip(bst.model_to_string()).encode()).hexdigest(), flush=True)
+for training in range({trainings}):
+    print("TRAINING", training, flush=True)
+    bst = flc.Booster(p, train)
+    for step in {steps!r}:
+        if step == "reset":
+            X2, y2 = _data({shape!r}, seed=1)
+            print("STEP reset", flush=True)
+            bst.update(train_set=flc.Dataset(X2, label=y2, params=p, reference=train))
+            continue
+        if step is not None:
+            print("STEP", step, flush=True)
+            bst.reset_parameter({{"feature_fraction": step}})
+        for _ in range({rounds}):
+            bst.update()
+    print("MODEL", __import__("hashlib").md5(_strip(bst.model_to_string()).encode()).hexdigest(), flush=True)
 """
 
 STORE = "colmajor_direct: compact regime"
@@ -197,18 +202,33 @@ FULL_VIEW = "colmajor_direct: full view filled from the "
 RELEASED = "colmajor_direct: full view released"
 
 
-def _child(shape, plan="auto", steps=(None,), verify=False):
-    code = _CHILD.format(here=os.path.dirname(os.path.abspath(__file__)), shape=shape, plan=plan, steps=list(steps))
-    env = {**os.environ, "FALCATA_DEBUG": "diag"}
+def _children(shape, plan="auto", steps=(None,), verify=False, debug="diag", home=None, rounds=3, trainings=1, **extra):
+    """(log, [model md5 per training]) of one child process; home isolates the tuner's wisdom file"""
+    code = _CHILD.format(
+        here=os.path.dirname(os.path.abspath(__file__)),
+        shape=shape,
+        plan=plan,
+        steps=list(steps),
+        rounds=rounds,
+        trainings=trainings,
+        extra=extra,
+    )
+    env = {**os.environ, "FALCATA_DEBUG": debug}
     if verify:
         env["FALCATA_VERIFY"] = "1"
+    if home is not None:
+        env["HOME"] = str(home)
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, check=True).stdout
-    md5 = re.search(r"^MODEL (\w+)$", out, re.M).group(1)
-    return out, md5
+    return out, re.findall(r"^MODEL (\w+)$", out, re.M)
 
 
-def _md5_off(shape, steps):
-    return _child(shape, plan=OFF, steps=steps)[1]
+def _child(shape, plan="auto", steps=(None,), verify=False, **kwargs):
+    out, md5s = _children(shape, plan=plan, steps=steps, verify=verify, **kwargs)
+    return out, md5s[0]
+
+
+def _md5_off(shape, steps, **kwargs):
+    return _child(shape, plan=OFF, steps=steps, **kwargs)[1]
 
 
 @_REQUIRES_CUDA
@@ -297,7 +317,68 @@ def test_view_mode_plan_keys_parse():
     """view_mode takes auto|compact|mask and view_mask_ff a number; anything else is refused (the plan is resolved
     at Dataset construction too, so this needs no GPU)."""
     X, y = _data("ff1")
-    for bad in ("view_mode:sometimes", "view_mask_ff:high", "view_mask_ff:-1"):
+    for bad in ("view_mode:sometimes", "view_mask_ff:high", "view_mask_ff:-1", "view_probe_lo:x", "view_probe_hi:-2"):
         p = {**BASE, "device_type": "cpu", "cuda_plan": f"auto,{bad}"}
         with pytest.raises(flc.basic.FalcataError, match="cuda_plan: bad value"):
             flc.Dataset(X[:2000], label=y[:2000], params=p).construct()
+
+
+@_REQUIRES_CUDA
+def test_compact_regime_that_does_not_fit_falls_back_to_mask_cuda():
+    """With too little free device memory for the store, the compact view and the reserve (FALCATA_DEBUG=vramfree caps
+    the figure the check sees), feature_fraction 0.2 trains in the mask regime, with a diag line saying why."""
+    out, md5 = _child("sampled", debug="diag,vramfree=1")
+    assert "colmajor_direct: the compact regime does not fit (store " in out, out[-3000:]
+    assert "colmajor_direct: mask regime (the compact regime does not fit;" in out, out[-3000:]
+    assert STORE not in out, out[-3000:]
+    assert md5 == _md5_off("sampled", (None,))
+
+
+PROBE_PLAN = "auto,tuner:on,view_probe_lo:0,view_probe_hi:1"
+PROBE_LINE = re.compile(
+    r"colmajor_direct: tuner probe: compact [0-9.]+ ms, mask [0-9.]+ ms per tree .* -> (\w+) regime"
+)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(("fraction", "expected"), [(0.1, "compact"), (0.99, "mask")])
+def test_tuner_probe_keeps_the_faster_regime_cuda(tmp_path, fraction, expected):
+    """With the probe band widened to every feature_fraction, the tuner trains a few trees in each regime and keeps the
+    faster one. The run switches regimes mid-training (tree 7, and back at tree 13 when the first regime wins) and
+    still trains the model colmajor_direct:off (and the tuner off) trains."""
+    out, md5 = _child("probe", plan=PROBE_PLAN, home=tmp_path, rounds=18, feature_fraction=fraction)
+    assert "colmajor_direct: tuner probe of the view regime" in out, out[-3000:]
+    assert PROBE_LINE.findall(out) == [expected], out[-3000:]
+    assert "regime (tuner probe;" in out, out[-3000:]
+    assert md5 == _md5_off("probe", (None,), rounds=18, feature_fraction=fraction)
+
+
+@_REQUIRES_CUDA
+def test_tuner_probe_result_is_cached_in_wisdom_cuda(tmp_path):
+    """The probe's choice is written to the tuner's wisdom file; the next train() of the same shape adopts it without
+    probing. Both trainings train the same model."""
+    out, md5s = _children("probe", plan=PROBE_PLAN, home=tmp_path, rounds=18, trainings=2, feature_fraction=0.99)
+    first, second = out.split("TRAINING 1")
+    assert PROBE_LINE.findall(first) == ["mask"], first[-3000:]
+    assert "tuner probe" not in second, second[-3000:]
+    assert "colmajor_direct: mask regime (the tuner's wisdom;" in second, second[-3000:]
+    assert md5s[0] == md5s[1]
+    wisdom = (tmp_path / ".cache" / "falcata" / "wisdom.txt").read_text()
+    assert re.search(r"^view1:\S+ 1 0$", wisdom, re.M), wisdom
+
+
+@_REQUIRES_CUDA
+def test_tuner_probe_skips_a_regime_that_does_not_fit_cuda(tmp_path):
+    """Inside the band, a compact regime that does not fit is never probed: mask from the start, no switches."""
+    out, md5 = _child("probe", plan=PROBE_PLAN, home=tmp_path, rounds=18, debug="diag,vramfree=1", feature_fraction=0.1)
+    assert "the compact regime does not fit" in out, out[-3000:]
+    assert "tuner probe" not in out, out[-3000:]
+    assert md5 == _md5_off("probe", (None,), rounds=18, feature_fraction=0.1)
+
+
+@_REQUIRES_CUDA
+def test_tuner_leaves_the_static_rule_outside_the_band_cuda(tmp_path):
+    """Outside [view_probe_lo, view_probe_hi] (default [0.5, 0.95]) the static rule decides even with the tuner on."""
+    out, _ = _child("probe", plan="auto,tuner:on", home=tmp_path, rounds=18, feature_fraction=0.1)
+    assert "tuner probe" not in out, out[-3000:]
+    assert out.count(STORE) == 1, out[-3000:]
