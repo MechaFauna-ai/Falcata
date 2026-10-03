@@ -76,6 +76,10 @@ struct FalcataPlan {
   // Bit-identical. Measured: +26.1% numerai-deep, +7.7% higgs-deep against the
   // JIT (300 rounds).
   bool row_batch = true;            // key: row_batch
+  // host-launched gen-bit-vector step of the level apply: 128-thread chunks
+  // with 8 rows per thread for column-major bin sources, interleaved
+  // 1024-thread chunks for the 4-bit packed compact source. Bit-identical.
+  bool gen_bit_v2 = true;           // key: gen_bit_v2
   // true when the user wrote construct_jit:on/off -- bypasses the >=300
   // rounds auto-gate (mirrors tuner_explicit)
   bool construct_jit_explicit = false;
@@ -195,6 +199,7 @@ struct FalcataPlan {
     if (key == "compact_quant") return &compact_quant;
     if (key == "construct_jit") return &construct_jit;
     if (key == "row_batch") return &row_batch;
+    if (key == "gen_bit_v2") return &gen_bit_v2;
     if (key == "fast_rowdata") return &fast_rowdata;
     if (key == "rowdata_4bit") return &rowdata_4bit;
     if (key == "gpu_construct") return &gpu_construct;

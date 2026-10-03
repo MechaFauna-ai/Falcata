@@ -479,6 +479,16 @@ bit-identical in every cell):
   thread) keep the unbatched loop. Under `auto` it also replaces the construct
   JIT on long runs (the JIT body is the unbatched loop); an explicit
   `construct_jit:on` runs the JIT in its place, with a warning. Bit-identical.
+- **`gen_bit_v2`** — the level apply's gen-bit-vector step (one ballot word
+  and one left count per 1024-row chunk) picks a kernel by bin source:
+  column-major sources run 128-thread blocks with 8 rows per thread and every
+  load issued before the decisions; the row-major 4-bit packed source runs
+  1024-thread chunks with a warp-cooperative descriptor search, a shuffle
+  reduction, and (2–128 splits) an interleaved chunk order so neighbouring
+  blocks read neighbouring rows. Found by an LLM-driven evolutionary search
+  seeded with the previous kernel. **+5.8% higgs-deep, +7.2% higgs-shallow**;
+  numerai, year, covtype and fraud unchanged. Host-launched levels only (the
+  CUDA-graph loop keeps the old kernel). Bit-identical.
 - **`tuner`** — a per-tree bandit over behavior-preserving execution knobs,
   best-of-15 timing, re-probe every 3000 trees: +2.1% numerai-deep, +2.7%
   year from the saturation-floor knob alone. Quantized training only —
