@@ -586,12 +586,75 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
                                 compact_part_col_offsets.data(),
                                 compact_part_col_offsets.size(), __FILE__, __LINE__);
 
-  if (compact_column_hist_offsets_.Size() < compact_col_hist_offsets_h.size()) {
-    compact_column_hist_offsets_.Resize(compact_col_hist_offsets_h.size());
+  // Nibble view: the same upload also carries the pair-joint construct layout
+  // (cuda_plan key pair_hist) behind the T hist offsets: [T, 2T) each slot's
+  // value span (its hist-offset delta, the bound of its stored nibbles) and
+  // [2T, 3T) the shared-table offset of the joint (lo, hi) histogram of the
+  // byte holding the slot, span(lo) * span(hi) cells per byte, laid out from 0
+  // in every partition. compact_pair_joint_max_ is the largest partition table
+  // (0: layout not built, the per-column kernel runs).
+  std::vector<uint32_t> compact_col_meta_h = compact_col_hist_offsets_h;
+  compact_pair_joint_max_ = 0;
+  compact_pair_joint_total_ = 0;
+  compact_row_interleave_ = layout.row_interleave;
+  compact_row_bytes_ = layout.packed_part_offsets.empty() ? 0 : layout.packed_part_offsets.back();
+  if (compact_is_4bit_ && compact_codec_ == PackCodecId::kNibble4) {
+    const std::vector<uint32_t>& src_col_hist_offsets = cuda_row_data_->host_column_hist_offsets();
+    const std::vector<uint32_t>& part_hist_offsets = cuda_row_data_->host_partition_hist_offsets();
+    // [3T, 4T): the same joint offsets with all partitions' tables back to back (whole-row pair_hist blocks)
+    compact_col_meta_h.resize(4 * static_cast<size_t>(total_compact));
+    uint32_t joint_max = 0;
+    uint32_t joint_base = 0;
+    bool spans_ok = true;
+    for (int p = 0; p < num_partitions && spans_ok; ++p) {
+      const int part_end_col = src_part_col_offsets[p + 1];
+      const uint32_t part_span = part_hist_offsets[p + 1] - part_hist_offsets[p];
+      uint32_t joint = 0;
+      for (int s = compact_part_col_offsets[p]; s < compact_part_col_offsets[p + 1]; ++s) {
+        const int c = src_part_col_offsets[p] + src_local_col_for_compact_h[s];
+        const uint32_t col_end = (c + 1 < part_end_col) ? src_col_hist_offsets[c + 1] : part_span;
+        const uint32_t span = col_end - src_col_hist_offsets[c];
+        if (span == 0 || span > static_cast<uint32_t>(PackNibble4::kMaxBins)) {
+          spans_ok = false;
+          break;
+        }
+        compact_col_meta_h[total_compact + s] = span;
+      }
+      if (!spans_ok) break;
+      for (int s = compact_part_col_offsets[p]; s < compact_part_col_offsets[p + 1]; s += 2) {
+        const bool has_hi = s + 1 < compact_part_col_offsets[p + 1];
+        const uint32_t lo_span = compact_col_meta_h[total_compact + s];
+        const uint32_t hi_span = has_hi ? compact_col_meta_h[total_compact + s + 1] : 1u;
+        compact_col_meta_h[2 * static_cast<size_t>(total_compact) + s] = joint;
+        if (has_hi) {
+          compact_col_meta_h[2 * static_cast<size_t>(total_compact) + s + 1] = joint;
+        }
+        // cuda_plan key pair_pad: an odd per-byte stride puts the same cell of the 32 tables a warp's threads
+        // own in 32 different shared banks (an even stride such as 6 x 6 = 36 maps every eighth thread to the
+        // same bank, so rows concentrated on a few common cells serialize the atomics); pad cells stay zero
+        const uint32_t stride = lo_span * hi_span;
+        joint += stride + ((FalcataPlan::Get().pair_pad && (stride & 1u) == 0) ? 1u : 0u);
+      }
+      for (int s = compact_part_col_offsets[p]; s < compact_part_col_offsets[p + 1]; ++s) {
+        compact_col_meta_h[3 * static_cast<size_t>(total_compact) + s] =
+            joint_base + compact_col_meta_h[2 * static_cast<size_t>(total_compact) + s];
+      }
+      joint_base += joint;
+      joint_max = std::max(joint_max, joint);
+    }
+    if (spans_ok) {
+      compact_pair_joint_max_ = static_cast<int>(joint_max);
+      compact_pair_joint_total_ = static_cast<int>(joint_base);
+    } else {
+      compact_col_meta_h.resize(total_compact);
+    }
+  }
+  if (compact_column_hist_offsets_.Size() < compact_col_meta_h.size()) {
+    compact_column_hist_offsets_.Resize(compact_col_meta_h.size());
   }
   CopyFromHostToCUDADevice<uint32_t>(compact_column_hist_offsets_.RawData(),
-                                     compact_col_hist_offsets_h.data(),
-                                     compact_col_hist_offsets_h.size(), __FILE__, __LINE__);
+                                     compact_col_meta_h.data(),
+                                     compact_col_meta_h.size(), __FILE__, __LINE__);
 
   // Same partition_hist_offsets as the source (used for global hist write-back position per partition).
   const std::vector<uint32_t>& src_part_hist_offsets = cuda_row_data_->host_partition_hist_offsets();

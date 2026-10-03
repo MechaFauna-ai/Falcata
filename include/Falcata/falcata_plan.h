@@ -194,6 +194,21 @@ struct FalcataPlan {
   // 8 positions, then the same tolerance tie-break between 8-position groups
   // in the same order). Bit-identical.
   bool warp_find_spread = true;     // key: warp_find_spread
+  // 4-bit compact quantized construct with one thread per packed byte: the two
+  // nibbles of a byte index one cell of a joint (lo, hi) shared histogram, so a
+  // row costs one shared atomic per byte instead of one per column; each
+  // column's histogram is the joint table summed over the partner's bins before
+  // the usual flush. Used for host-launched levels on the nibble compact view
+  // when every partition's joint table fits 48 KB of shared memory; otherwise
+  // the per-column kernel. Bit-identical (integer sums of the same rows).
+  bool pair_hist = true;            // key: pair_hist
+  // pair_hist row grouping per pair: each pair of a level splits its rows into
+  // as many y-blocks as the batched sizing formula gives at that pair's own
+  // smaller-leaf size, not at the level's largest one, so the small leaves of
+  // deep levels do not pay a joint-table zero and flush per handful of rows.
+  // The formula keeps the packed-cell rows-per-block cap. Bit-identical
+  // (integer sums are row-grouping invariant within that cap).
+  bool per_pair_rows = true;        // key: per_pair_rows
   // nibble compact view with each row's bytes of all feature partitions
   // stored back to back (partition p at its packed byte offset of the row)
   // instead of one row-major block per partition. Below the first levels a
@@ -203,6 +218,29 @@ struct FalcataPlan {
   // the source has more than one partition. Bit-identical (same bytes, only
   // their addresses change).
   bool compact_row_interleave = true;  // key: compact_row_interleave
+  // pair_hist on the row-interleaved view: one block covers whole rows (the
+  // bytes of every partition) instead of one block per partition, so a row's
+  // bytes are read by one block as one contiguous run and no lanes idle on
+  // narrower partitions. Used when all partitions' joint tables fit 48 KB
+  // together and the row fits a block. Under per_pair_rows its rows-per-thread
+  // floor scales by the partitions a block covers (a block carries all their
+  // tables' zeroing and flush). Bit-identical (integer sums).
+  bool pair_hist_rows = true;       // key: pair_hist_rows
+  // pair_hist joint tables laid out with odd per-byte strides (an even span
+  // product gets one pad cell), so the same cell of neighbouring threads' tables
+  // falls in distinct shared-memory banks. Bit-identical (layout only).
+  bool pair_pad = true;             // key: pair_pad
+  // pair_hist on levels with several leaf pairs: every leaf takes the largest
+  // leaf's rows per thread, so small leaves fill a few whole blocks instead of
+  // spreading a few rows over every block row (each block zeroes and flushes
+  // a whole table). Blocks never exceed the largest leaf's row count, which
+  // the overflow guard bounds. Bit-identical (integer sums).
+  bool level_row_blocks = true;     // key: level_row_blocks
+  // pair_hist on a leaf that holds every row (the root without bagging): its
+  // index list is a permutation of all rows, so each position is read as that
+  // row number without the index gather. Same rows per block, same rows in
+  // total. Bit-identical (integer sums).
+  bool all_rows_direct = true;      // key: all_rows_direct
   // host-launched batched apply (gen-bit-vector and split-inner kernels):
   // each 1024-row chunk is handled by 256 threads of 4 rows each, all loads of
   // a thread's rows issued before their use, instead of 1024 threads of one
@@ -320,7 +358,13 @@ struct FalcataPlan {
     if (key == "warp_find") return &warp_find;
     if (key == "warp_find_narrow") return &warp_find_narrow;
     if (key == "warp_find_spread") return &warp_find_spread;
+    if (key == "pair_hist") return &pair_hist;
+    if (key == "per_pair_rows") return &per_pair_rows;
     if (key == "compact_row_interleave") return &compact_row_interleave;
+    if (key == "pair_hist_rows") return &pair_hist_rows;
+    if (key == "pair_pad") return &pair_pad;
+    if (key == "level_row_blocks") return &level_row_blocks;
+    if (key == "all_rows_direct") return &all_rows_direct;
     if (key == "apply_row_batch") return &apply_row_batch;
     if (key == "sync_used_tasks") return &sync_used_tasks;
     if (key == "root_sums_warp") return &root_sums_warp;

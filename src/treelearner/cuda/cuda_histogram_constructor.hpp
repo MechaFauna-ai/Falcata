@@ -1141,8 +1141,16 @@ class CUDAHistogramConstructor {
   /*! \brief whether compact_staging_col_major_ holds this tree's column-major
    *  compact view (fused second output of the compact fill) */
   bool compact_col_major_filled_ = false;
-  /*! \brief column_hist_offsets for compact view (length num_compact_columns+1) */
+  /*! \brief column_hist_offsets for compact view (length num_compact_columns+1);
+   *  on the nibble view followed by the pair-joint layout (see BuildCompactView) */
   CUDAVector<uint32_t> compact_column_hist_offsets_;
+  /*! \brief largest per-partition joint table of the pair_hist construct (cells), 0 when not built */
+  int compact_pair_joint_max_ = 0;
+  /*! \brief all partitions' joint tables together (cells), 0 when not built */
+  int compact_pair_joint_total_ = 0;
+  /*! \brief whether this tree's nibble compact view is row-interleaved, and its row width in bytes */
+  bool compact_row_interleave_ = false;
+  int compact_row_bytes_ = 0;
   /*! \brief partition_hist_offsets for compact view: [0, total_compact_bins] */
   CUDAVector<uint32_t> compact_partition_hist_offsets_;
   /*! \brief partition column offsets for compact view: [0, num_compact_columns] */
