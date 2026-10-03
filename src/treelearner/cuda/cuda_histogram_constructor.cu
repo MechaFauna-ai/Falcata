@@ -2789,6 +2789,28 @@ static int PairJointMaxThreadsPerBlock() {
   return max_threads;
 }
 
+// Warps of a pair-joint block of `threads` threads resident on one SM: whole blocks, as many as the register file
+// holds at the kernels' register count (the larger of the two instantiations, allocated per warp in 256-register
+// units) and the SM's warp limit allow.
+static int PairJointResidentWarps(const int threads) {
+  static const int2 limits = [] {
+    cudaFuncAttributes attr_gather, attr_direct;
+    CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attr_gather, CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false>));
+    CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attr_direct, CUDAConstructDiscretizedHistogramPairJointBatchedKernel<true>));
+    int device = 0;
+    int regs_per_sm = 0;
+    int threads_per_sm = 0;
+    CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
+    CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&regs_per_sm, cudaDevAttrMaxRegistersPerMultiprocessor, device));
+    CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&threads_per_sm, cudaDevAttrMaxThreadsPerMultiProcessor, device));
+    const int regs = std::max(1, std::max(attr_gather.numRegs, attr_direct.numRegs));
+    const int regs_per_warp = (regs * 32 + 255) / 256 * 256;
+    return make_int2(std::max(1, regs_per_sm / regs_per_warp), std::max(1, threads_per_sm / 32));
+  }();
+  const int block_warps = std::max(1, (threads + 31) / 32);
+  return std::min(limits.x / block_warps, limits.y / block_warps) * block_warps;
+}
+
 // Dedicated all-small-level variant: launched by the host INSTEAD of the
 // shared-histogram batched kernel when the level's largest smaller-leaf is
 // under the small-leaf threshold (deep-tree tail levels). Keeping it a
@@ -4585,10 +4607,36 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
             compact_pair_joint_total_ > 0 && compact_pair_joint_total_ * sizeof(int32_t) <= 48 * 1024 &&
             compact_row_bytes_ > 0 &&
             compact_row_bytes_ * static_cast<int>(block_dim.y) <= std::min(1024, PairJointMaxThreadsPerBlock());
-        const dim3 pair_grid_dim(whole_rows ? 1 : grid_dim.x, grid_dim.y, grid_dim.z);
-        const dim3 pair_block_dim(whole_rows ? compact_row_bytes_ : (cc + 1) / 2, block_dim.y);
+        // cuda_plan key pair_block_rows: a whole-row block takes the row count (from the generic per-partition
+        // block's up to the largest launchable one) that keeps the most warps resident per SM, by the kernel's
+        // register count, instead of the generic block's rows; ties keep the fewer rows. The grid y is re-derived
+        // for that block by the same formula, so the packed-cell rows-per-block guard holds for it.
+        int pair_y = static_cast<int>(block_dim.y);
+        int pair_grid_y = static_cast<int>(grid_dim.y);
+        if (whole_rows && FalcataPlan::Get().pair_block_rows) {
+          const int max_threads = std::min(1024, PairJointMaxThreadsPerBlock());
+          int y = pair_y;
+          int best_warps = PairJointResidentWarps(compact_row_bytes_ * pair_y);
+          for (int c = pair_y + 1; compact_row_bytes_ * c <= max_threads &&
+               HybridQuantConstructBlockDimY(c, use_quantized_grad_ ? num_grad_quant_bins_ : 0) == c; ++c) {
+            const int warps = PairJointResidentWarps(compact_row_bytes_ * c);
+            if (warps > best_warps) {
+              best_warps = warps;
+              y = c;
+            }
+          }
+          if (y != pair_y) {
+            pair_y = y;
+            pair_grid_y = HybridBatchedConstructGridDimYQuant(
+              max_num_data_in_smaller_leaf, num_pairs, pair_y, min_grid_dim_y_,
+              BatchConstructMinRowsPerThread(), BatchConstructSaturationFloor(),
+              use_quantized_grad_ ? num_grad_quant_bins_ : 0);
+          }
+        }
+        const dim3 pair_grid_dim(whole_rows ? 1 : grid_dim.x, pair_grid_y, grid_dim.z);
+        const dim3 pair_block_dim(whole_rows ? compact_row_bytes_ : (cc + 1) / 2, pair_y);
         // level_row_blocks: every leaf at the largest leaf's rows per thread (within the grid's overflow guard)
-        const int64_t pair_dim_y = static_cast<int64_t>(grid_dim.y) * block_dim.y;
+        const int64_t pair_dim_y = static_cast<int64_t>(pair_grid_y) * pair_y;
         const data_size_t pair_min_rows_per_thread = FalcataPlan::Get().level_row_blocks && num_pairs > 1 ?
           static_cast<data_size_t>((static_cast<int64_t>(max_num_data_in_smaller_leaf) + pair_dim_y - 1) / pair_dim_y) : 0;
         // all_rows_direct: the level's one leaf holds every row (the root without bagging)
