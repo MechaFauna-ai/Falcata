@@ -58,6 +58,7 @@ ALL_KEYS = {
     "small_leaf_construct": True,
     "compact_prefill": False,
     "tiled_fill": True,
+    "gpu_rowpack": True,
     "warp_find": True,
     "row_batch": True,
 }

@@ -160,6 +160,8 @@ def build_cells():
         ("sampled", "construct_jit", {}, {"cuda_plan": "auto,construct_jit:on"}),
         ("sampled", "compact_prefill", {}, {"cuda_plan": "auto,compact_prefill:on"}),
         ("sampled", "tiled_fill", {}, {"cuda_plan": "auto,tiled_fill:off"}),
+        ("fewbin", "gpu_rowpack", {}, {"cuda_plan": "auto,gpu_rowpack:off"}),
+        ("sampledwide", "gpu_rowpack", {}, {"cuda_plan": "auto,gpu_rowpack:off"}),
         ("sampledwide", "tiled_fill", {}, {"cuda_plan": "auto,tiled_fill:off"}),
         ("dense", "warp_find", {}, {"cuda_plan": "auto,warp_find:off"}),
         ("fewbin", "warp_find", {}, {"cuda_plan": "auto,warp_find:off"}),

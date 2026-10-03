@@ -110,6 +110,13 @@ class CUDARowData {
    *  the per-partition alignment invariant. */
   void InitDense4BitData(const Dataset* train_data, const uint8_t* host_data);
 
+  /*! \brief Pack the 4-bit row data on the device from the Dataset's columns; false if not applicable */
+  bool PackDense4BitOnDevice(const std::vector<const void*>& column_data,
+                             const std::vector<uint8_t>& column_bit_types, size_t packed_total);
+
+  void LaunchPackDenseNibblesPartition(const uint8_t* staging, const size_t* col_offsets, const uint8_t* col_bits,
+                                       const int num_columns, const int packed_width, uint8_t* out) const;
+
   /*! \brief Packed variant of BuildDensePartitionedFromColumns: writes nibbles. */
   void BuildDensePacked4BitFromColumns(const std::vector<const void*>& column_data,
     const std::vector<uint8_t>& column_bit_types, uint8_t* out_data) const;
