@@ -2534,7 +2534,7 @@ __device__ __forceinline__ void ConstructPairRowBatch(
 // permutation of 0 .. num_data - 1 and position p is read as row p, without the index gather. Every block keeps
 // its row count (the overflow guard is unchanged) and the grid adds up the same rows; wrapping integer sums do
 // not depend on which block adds which row, so the histogram is the same.
-template <bool USE_16BIT_HIST, bool DIRECT>
+template <bool USE_16BIT_HIST, bool DIRECT, int kB>
 __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointInner(
   const CUDALeafSplitsStruct* smaller_leaf_splits,
   int32_t* shared_joint,
@@ -2609,9 +2609,9 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointInner(
     const uint32_t hi_mask = has_hi ? 0xfu : 0u;
     const data_size_t by = static_cast<data_size_t>(blockDim.y);
     data_size_t i = 0;
-    // 16 rows in flight per thread (the per-column kernel uses 8): with half as many threads per row, the gathered
-    // levels are bound by the latency of the index -> gradient / bin chain, and the deeper batch measured -11%
-    constexpr int kB = 16;
+    // kB rows in flight per thread (16 in the default build; the per-column kernel uses 8): with half as many
+    // threads per row, the gathered levels are bound by the latency of the index -> gradient / bin chain, and the
+    // 16-row batch measured -11% against 8 (cuda_plan key pair_capped_rows: a register-capped build, see below)
     if (DIRECT) {
       for (; i + kB <= num_iteration_this; i += kB) {
         data_size_t idx[kB];
@@ -2637,7 +2637,19 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointInner(
         inner_data_index += kB * by;
       }
     }
-    if (i + 8 <= num_iteration_this) {
+    if (kB > 16 && i + 16 <= num_iteration_this) {
+      data_size_t idx[16];
+#pragma unroll
+      for (int j = 0; j < 16; ++j) {
+        idx[j] = DIRECT ? block_start + inner_data_index + j * by :
+                          __ldg(data_indices_ref_this_block + inner_data_index + j * by);
+      }
+      ConstructPairRowBatch<16, false>(idx, cuda_gradients_and_hessians, data_ptr, row_stride, byte_idx, hi_span,
+                                       hi_mask, joint);
+      inner_data_index += 16 * by;
+      i += 16;
+    }
+    if (kB > 8 && i + 8 <= num_iteration_this) {
       data_size_t idx[8];
 #pragma unroll
       for (int j = 0; j < 8; ++j) {
@@ -2649,7 +2661,7 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointInner(
       inner_data_index += 8 * by;
       i += 8;
     }
-    if (i + 4 <= num_iteration_this) {
+    if (kB > 4 && i + 4 <= num_iteration_this) {
       data_size_t idx[4];
 #pragma unroll
       for (int j = 0; j < 4; ++j) {
@@ -2703,26 +2715,32 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointInner(
 // Dynamic shared memory: the largest partition joint table.
 // ALL_ROWS (cuda_plan key all_rows_direct; the host takes it for a single-pair level whose leaf holds every row):
 // a separate instantiation, so the code of the hot per-level kernel is untouched; it still checks the leaf size.
-template <bool ALL_ROWS>
-__global__ void CUDAConstructDiscretizedHistogramPairJointBatchedKernel(
-  const CUDAHybridPairDescriptor* pair_descs,
-  const int32_t* cuda_gradients_and_hessians,
-  const uint8_t* data,
-  const uint32_t* column_meta,
-  const int num_compact_columns,
-  const uint32_t* column_hist_offsets_full,
-  const int* feature_partition_column_index_offsets,
-  const int* packed_partition_byte_offsets,
-  const data_size_t num_data,
-  const data_size_t min_data_in_leaf,
-  const double min_sum_hessian_in_leaf,
-  const int per_pair_min_grid_dim_y,
-  const int min_rows_per_thread,
-  const int saturation_floor_total,
-  const int num_grad_quant_bins,
-  const int whole_row_partitions,
-  const uint32_t whole_row_joint,
-  const data_size_t level_min_rows_per_thread) {
+#define FALCATA_PAIR_JOINT_BATCHED_PARAMS \
+  const CUDAHybridPairDescriptor* pair_descs, \
+  const int32_t* cuda_gradients_and_hessians, \
+  const uint8_t* data, \
+  const uint32_t* column_meta, \
+  const int num_compact_columns, \
+  const uint32_t* column_hist_offsets_full, \
+  const int* feature_partition_column_index_offsets, \
+  const int* packed_partition_byte_offsets, \
+  const data_size_t num_data, \
+  const data_size_t min_data_in_leaf, \
+  const double min_sum_hessian_in_leaf, \
+  const int per_pair_min_grid_dim_y, \
+  const int min_rows_per_thread, \
+  const int saturation_floor_total, \
+  const int num_grad_quant_bins, \
+  const int whole_row_partitions, \
+  const uint32_t whole_row_joint, \
+  const data_size_t level_min_rows_per_thread
+#define FALCATA_PAIR_JOINT_BATCHED_ARGS \
+  pair_descs, cuda_gradients_and_hessians, data, column_meta, num_compact_columns, column_hist_offsets_full, \
+  feature_partition_column_index_offsets, packed_partition_byte_offsets, num_data, min_data_in_leaf, \
+  min_sum_hessian_in_leaf, per_pair_min_grid_dim_y, min_rows_per_thread, saturation_floor_total, \
+  num_grad_quant_bins, whole_row_partitions, whole_row_joint, level_min_rows_per_thread
+template <bool ALL_ROWS, int BATCH>
+__device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_PARAMS) {
   extern __shared__ int32_t shared_joint[];
   const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.z;
   if (!desc->construct_valid) {
@@ -2757,7 +2775,7 @@ __global__ void CUDAConstructDiscretizedHistogramPairJointBatchedKernel(
   // a leaf of num_data distinct rows of the num_data-row matrix holds every row (see the inner DIRECT case)
   const bool direct = ALL_ROWS && num_data_smaller == num_data;
 #define FALCATA_PAIR_JOINT_INNER(B16, DIRECT) \
-    ConstructDiscretizedHistogramPairJointInner<B16, DIRECT>( \
+    ConstructDiscretizedHistogramPairJointInner<B16, DIRECT, BATCH>( \
       smaller_struct, shared_joint, cuda_gradients_and_hessians, data, column_meta, num_compact_columns, \
       column_hist_offsets_full, feature_partition_column_index_offsets, packed_partition_byte_offsets, \
       num_data, dim_y, whole_row_partitions, whole_row_joint, level_min_rows_per_thread)
@@ -2776,6 +2794,24 @@ __global__ void CUDAConstructDiscretizedHistogramPairJointBatchedKernel(
   }
 #undef FALCATA_PAIR_JOINT_INNER
 }
+
+template <bool ALL_ROWS>
+__global__ void CUDAConstructDiscretizedHistogramPairJointBatchedKernel(FALCATA_PAIR_JOINT_BATCHED_PARAMS) {
+  PairJointBatchedBody<ALL_ROWS, 16>(FALCATA_PAIR_JOINT_BATCHED_ARGS);
+}
+
+// cuda_plan key pair_capped_rows: the same kernel built at most MAXREG registers per thread with BATCH rows in
+// flight per thread. A whole-row block of the default build (64 registers) runs one block per SM; at a lower
+// register count two or three shorter whole-row blocks fit the register file (the joint tables' shared memory
+// permitting), so more warps are resident. The host takes it only where the occupancy API gives it strictly more
+// resident warps than the default build (see PairJointCappedRows). Same rows, same integer sums: bit-identical.
+template <bool ALL_ROWS, int BATCH, int MAXREG>
+__global__ void __maxnreg__(MAXREG)
+CUDAConstructDiscretizedHistogramPairJointCappedKernel(FALCATA_PAIR_JOINT_BATCHED_PARAMS) {
+  PairJointBatchedBody<ALL_ROWS, BATCH>(FALCATA_PAIR_JOINT_BATCHED_ARGS);
+}
+#undef FALCATA_PAIR_JOINT_BATCHED_ARGS
+#undef FALCATA_PAIR_JOINT_BATCHED_PARAMS
 
 // Largest block both pair-joint instantiations can launch (register-limited; the whole-row block of
 // pair_hist_rows can exceed the per-partition shapes this kernel was otherwise launched with).
@@ -2809,6 +2845,105 @@ static int PairJointResidentWarps(const int threads) {
   }();
   const int block_warps = std::max(1, (threads + 31) / 32);
   return std::min(limits.x / block_warps, limits.y / block_warps) * block_warps;
+}
+
+using PairJointKernelFn = void (*)(const CUDAHybridPairDescriptor*, const int32_t*, const uint8_t*, const uint32_t*,
+                                   int, const uint32_t*, const int*, const int*, data_size_t, data_size_t, double, int,
+                                   int, int, int, int, uint32_t, data_size_t);
+
+// cuda_plan key pair_capped_rows: the register-capped build. 48 registers fit three 12-warp blocks in a 64K register
+// file. Rows in flight per thread: 15 for the per-level (gathering) instantiation and 12 for the root's direct-read
+// one, each the deepest batch measured that compiles to 48 registers without spilling (15 and 14 beat 12 and 16 at
+// 48-56 registers; 8, 10 and 13 were slower).
+struct PairJointCappedBuild {
+  PairJointKernelFn gather;
+  PairJointKernelFn direct;
+};
+static PairJointCappedBuild PairJointCapped() {
+  return {CUDAConstructDiscretizedHistogramPairJointCappedKernel<false, 15, 48>,
+          CUDAConstructDiscretizedHistogramPairJointCappedKernel<true, 12, 48>};
+}
+
+// resident warps per SM of a pair-joint block of `threads` threads and `smem_bytes` dynamic shared memory, the
+// fewer of the two instantiations, by the occupancy API (registers, shared memory, warp and block limits)
+static int PairJointOccupancyWarps(PairJointKernelFn gather, PairJointKernelFn direct, const int threads,
+                                   const size_t smem_bytes) {
+  int blocks_gather = 0;
+  int blocks_direct = 0;
+  CUDASUCCESS_OR_FATAL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks_gather, gather, threads, smem_bytes));
+  CUDASUCCESS_OR_FATAL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks_direct, direct, threads, smem_bytes));
+  return std::min(blocks_gather, blocks_direct) * ((threads + 31) / 32);
+}
+
+// cuda_plan key pair_capped_rows: the whole-row block height of the register-capped build that keeps the most warps
+// resident per SM (ties keep the taller block: fewer blocks, less zeroing and flushing), or 0 when that is not
+// strictly more than the default build keeps at its own height `default_y`. Heights stay within the packed-cell
+// row cap and both instantiations' max threads. For a chosen height the capped build's shared-memory carveout is
+// set to hold just its resident blocks' joint tables: the driver otherwise takes the largest carveout the occupancy
+// could use (here 100 KB for 56 KB of tables), shrinking the L1 that serves the gathers to a quarter; a shape whose
+// tables need more than 64% of the SM's shared memory keeps the default build. The carveout is a hint and never
+// limits a launch. Memoised per device and launch shape (the queries cost host time).
+static int PairJointCappedRows(const int row_bytes, const size_t smem_bytes, const int default_y,
+                               const int num_grad_quant_bins) {
+  struct Entry {
+    int device = -1;
+    int row_bytes = -1;
+    size_t smem_bytes = 0;
+    int default_y = 0;
+    int bins = 0;
+    int y = 0;
+  };
+  static thread_local Entry memo;
+  int device = 0;
+  CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
+  if (memo.device == device && memo.row_bytes == row_bytes && memo.smem_bytes == smem_bytes &&
+      memo.default_y == default_y && memo.bins == num_grad_quant_bins) {
+    return memo.y;
+  }
+  const PairJointCappedBuild capped = PairJointCapped();
+  // occupancy at the default carveout (a previous shape's carveout must not bound this one's choice)
+  CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(capped.gather, cudaFuncAttributePreferredSharedMemoryCarveout,
+                                            cudaSharedmemCarveoutDefault));
+  CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(capped.direct, cudaFuncAttributePreferredSharedMemoryCarveout,
+                                            cudaSharedmemCarveoutDefault));
+  cudaFuncAttributes attr_gather, attr_direct;
+  CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attr_gather, capped.gather));
+  CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attr_direct, capped.direct));
+  const int max_threads = std::min(1024, std::min(attr_gather.maxThreadsPerBlock, attr_direct.maxThreadsPerBlock));
+  const int default_warps = PairJointOccupancyWarps(CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false>,
+                                                    CUDAConstructDiscretizedHistogramPairJointBatchedKernel<true>,
+                                                    row_bytes * default_y, smem_bytes);
+  int best_y = 0;
+  int best_warps = default_warps;
+  for (int c = 1; row_bytes * c <= max_threads && HybridQuantConstructBlockDimY(c, num_grad_quant_bins) == c; ++c) {
+    const int warps = PairJointOccupancyWarps(capped.gather, capped.direct, row_bytes * c, smem_bytes);
+    if (warps > best_warps || (best_y > 0 && warps == best_warps)) {
+      best_warps = warps;
+      best_y = c;
+    }
+  }
+  if (best_y > 0) {
+    int smem_per_sm = 0;
+    int reserved = 0;
+    CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&smem_per_sm, cudaDevAttrMaxSharedMemoryPerMultiprocessor, device));
+    CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&reserved, cudaDevAttrReservedSharedMemoryPerBlock, device));
+    const int blocks = std::max(1, best_warps / ((row_bytes * best_y + 31) / 32));
+    const int64_t need = static_cast<int64_t>(blocks) * (static_cast<int64_t>(smem_bytes) + reserved);
+    const int percent = static_cast<int>(std::min<int64_t>(100, (need * 100 + std::max(1, smem_per_sm) - 1) /
+                                                                std::max(1, smem_per_sm)));
+    // the extra warps pay off only while the gathers keep at least half of the unified L1: at most 64% of the SM's
+    // shared memory for the tables (the 64 KB tier of 100 KB on sm_120); past it the carveout jumps to the full
+    // 100 KB, L1 falls to a quarter, and the capped build measured slower in every such shape (3 blocks of 22 KB
+    // tables -0.7%, 4 blocks of 18 KB at 40 registers -4.5%), so the default build is kept
+    if (percent > 64) {
+      best_y = 0;
+    } else {
+      CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(capped.gather, cudaFuncAttributePreferredSharedMemoryCarveout, percent));
+      CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(capped.direct, cudaFuncAttributePreferredSharedMemoryCarveout, percent));
+    }
+  }
+  memo = {device, row_bytes, smem_bytes, default_y, num_grad_quant_bins, best_y};
+  return best_y;
 }
 
 // Dedicated all-small-level variant: launched by the host INSTEAD of the
@@ -4633,6 +4768,26 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
               use_quantized_grad_ ? num_grad_quant_bins_ : 0);
           }
         }
+        // cuda_plan key pair_capped_rows: the register-capped build at the height that keeps strictly more warps
+        // resident (shorter blocks, two or three per SM); the grid y is re-derived for that height by the same
+        // formula and packed-cell guard
+        const size_t pair_smem_bytes =
+          static_cast<size_t>(whole_rows ? compact_pair_joint_total_ : compact_pair_joint_max_) * sizeof(int32_t);
+        int capped_y = whole_rows && FalcataPlan::Get().pair_capped_rows ?
+          PairJointCappedRows(compact_row_bytes_, pair_smem_bytes, pair_y, use_quantized_grad_ ? num_grad_quant_bins_ : 0) : 0;
+        if (capped_y > 0) {
+          const int capped_grid_y = HybridBatchedConstructGridDimYQuant(
+            max_num_data_in_smaller_leaf, num_pairs, capped_y, min_grid_dim_y_,
+            BatchConstructMinRowsPerThread(), BatchConstructSaturationFloor(),
+            use_quantized_grad_ ? num_grad_quant_bins_ : 0);
+          // shorter blocks need more of them: keep the default shape if the grid would pass CUDA's y limit
+          if (capped_grid_y <= 65535) {
+            pair_y = capped_y;
+            pair_grid_y = capped_grid_y;
+          } else {
+            capped_y = 0;
+          }
+        }
         const dim3 pair_grid_dim(whole_rows ? 1 : grid_dim.x, pair_grid_y, grid_dim.z);
         const dim3 pair_block_dim(whole_rows ? compact_row_bytes_ : (cc + 1) / 2, pair_y);
         // level_row_blocks: every leaf at the largest leaf's rows per thread (within the grid's overflow guard)
@@ -4642,10 +4797,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         // all_rows_direct: the level's one leaf holds every row (the root without bagging)
         const bool all_rows = FalcataPlan::Get().all_rows_direct && num_pairs == 1 &&
           max_num_data_in_smaller_leaf == num_data_;
-#define FALCATA_LAUNCH_PAIR_JOINT(ALL_ROWS) \
-        CUDAConstructDiscretizedHistogramPairJointBatchedKernel<ALL_ROWS><<<pair_grid_dim, pair_block_dim, \
-            static_cast<size_t>(whole_rows ? compact_pair_joint_total_ : compact_pair_joint_max_) * sizeof(int32_t), \
-            cuda_stream_>>>( \
+#define FALCATA_LAUNCH_PAIR_JOINT(KERNEL) \
+        KERNEL<<<pair_grid_dim, pair_block_dim, pair_smem_bytes, cuda_stream_>>>( \
           pair_descs, \
           reinterpret_cast<const int32_t*>(cuda_gradients_), \
           compact_data_uint8_t_.RawData(), \
@@ -4667,10 +4820,16 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         // a whole-row block does the work of grid_dim.x partition blocks and zeroes / flushes all their joint
         // tables, so its per_pair_rows rows-per-thread floor scales by the partitions it covers to keep the same
         // share of fixed per-block cost (a larger floor only lowers the formula, so the launched grid still bounds it)
-        if (all_rows) {
-          FALCATA_LAUNCH_PAIR_JOINT(true);
+        if (capped_y > 0) {
+          const PairJointCappedBuild capped = PairJointCapped();
+          const PairJointKernelFn kernel = all_rows ? capped.direct : capped.gather;
+          FALCATA_LAUNCH_PAIR_JOINT(kernel);
+          // a new launch shape: a rejected launch must not leave the histogram unbuilt silently
+          CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());
+        } else if (all_rows) {
+          FALCATA_LAUNCH_PAIR_JOINT(CUDAConstructDiscretizedHistogramPairJointBatchedKernel<true>);
         } else {
-          FALCATA_LAUNCH_PAIR_JOINT(false);
+          FALCATA_LAUNCH_PAIR_JOINT(CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false>);
         }
 #undef FALCATA_LAUNCH_PAIR_JOINT
       } else if (compact_is_4bit_) {

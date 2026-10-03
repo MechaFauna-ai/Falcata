@@ -263,6 +263,14 @@ struct FalcataPlan {
   // re-derived for that height by the same formula and packed-cell guard.
   // Bit-identical (integer sums).
   bool pair_block_rows = true;      // key: pair_block_rows
+  // pair_hist_rows blocks on a register-capped build of the pair-joint kernel
+  // (fewer rows in flight per thread), at the whole-row block height that
+  // keeps strictly more warps resident per SM than the default build by the
+  // occupancy API (registers and joint-table shared memory): two or three
+  // shorter blocks per SM instead of one. The grid is re-derived for that
+  // height by the same formula and packed-cell guard. Bit-identical (same
+  // rows, integer sums).
+  bool pair_capped_rows = true;     // key: pair_capped_rows
   // pair_hist joint tables laid out with odd per-byte strides (an even span
   // product gets one pad cell), so the same cell of neighbouring threads' tables
   // falls in distinct shared-memory banks. Bit-identical (layout only).
@@ -405,6 +413,7 @@ struct FalcataPlan {
     if (key == "compact_row_interleave") return &compact_row_interleave;
     if (key == "pair_hist_rows") return &pair_hist_rows;
     if (key == "pair_block_rows") return &pair_block_rows;
+    if (key == "pair_capped_rows") return &pair_capped_rows;
     if (key == "pair_pad") return &pair_pad;
     if (key == "level_row_blocks") return &level_row_blocks;
     if (key == "all_rows_direct") return &all_rows_direct;
