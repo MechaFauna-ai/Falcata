@@ -583,16 +583,17 @@ __global__ void AddPredictionToScoreKernel(
         // the values match the classic gathered view byte for byte: the
         // gather kernel only copies these nibbles/bytes, so the bin logic
         // below is untouched.
-        // Widths here are 4 (row-matrix nibble at a fixed shift, stride apart)
-        // or a sparse column's own 8/16/32 -- never kNibbleColumnBitType, which
-        // describes a dense column's own flat two-rows-per-byte buffer and is
-        // read by the non-packed branch below.
+        // Widths here are 4 (row-matrix nibble at a fixed shift, stride apart),
+        // kNibbleColumnBitType (a column of the column-major nibble copy, two
+        // rows per byte) or a sparse column's own 8/16/32.
         const uint8_t* base = cuda_packed_column_ptr[column];
         const uint8_t packed_bit_type = cuda_packed_column_bit_type[column];
         if (packed_bit_type == 4) {
           const size_t byte_index = static_cast<size_t>(data_index) *
             static_cast<size_t>(cuda_packed_column_stride[column]);
           bin = static_cast<uint32_t>((base[byte_index] >> cuda_packed_column_shift[column]) & 0xf);
+        } else if (packed_bit_type == kNibbleColumnBitType) {
+          bin = static_cast<uint32_t>((base[data_index >> 1] >> ((data_index & 1) << 2)) & 0xf);
         } else if (packed_bit_type == 8) {
           bin = static_cast<uint32_t>(base[data_index]);
         } else if (packed_bit_type == 16) {

@@ -12,6 +12,7 @@
 
 #include <Falcata/cuda/cuda_algorithms.hpp>
 #include <Falcata/cuda/cuda_rocm_interop.h>
+#include <Falcata/falcata_plan.h>
 #include <Falcata/tree.h>
 
 #include <algorithm>
@@ -1418,6 +1419,11 @@ __device__ __forceinline__ int HybridFlatBlockDesc(
 // a per-row uint16 running prefix -- 32x less inter-kernel traffic. The
 // per-block left/right totals still land in the offset buffers for the
 // aggregate kernel, unchanged.
+// ROWS rows per thread (cuda_plan key apply_row_batch): the chunk is ROWS * blockDim.x rows, row r of the chunk
+// handled by thread r % blockDim.x in pass r / blockDim.x, so pass k's warp w produces ballot word
+// k * (blockDim.x / 32) + w -- the same rows per word, the same words and block totals as ROWS = 1 with a block of
+// the full chunk. All of a thread's index loads are issued before its bin loads.
+template <int ROWS>
 __device__ __forceinline__ void HybridGenBitChunk(
   const CUDAHybridApplyDescriptor& d,
   const unsigned int block_x,
@@ -1426,14 +1432,22 @@ __device__ __forceinline__ void HybridGenBitChunk(
   data_size_t* block_to_left_offset_buffer,
   data_size_t* block_to_right_offset_buffer,
   uint16_t* shared_mem_buffer) {
-  uint16_t to_left = 0;
-  const data_size_t local_data_index = static_cast<data_size_t>(block_x * blockDim.x + threadIdx.x);
-  if (local_data_index < d.num_data_in_leaf) {
-    const data_size_t global_data_index = cuda_data_indices[d.leaf_data_start + local_data_index];
-    const uint32_t bin = HybridLoadBin(d, global_data_index);
-    to_left = HybridGenBitVectorDecision(d, bin);
+  const unsigned int chunk_rows = ROWS * blockDim.x;
+  const unsigned int words_per_pass = blockDim.x / WARPSIZE;
+  const unsigned int chunk_words = chunk_rows / WARPSIZE;
+  const data_size_t chunk_start = static_cast<data_size_t>(block_x * chunk_rows);
+  data_size_t global_data_index[ROWS];
+#pragma unroll
+  for (int k = 0; k < ROWS; ++k) {
+    const data_size_t local_data_index = chunk_start + static_cast<data_size_t>(k * blockDim.x + threadIdx.x);
+    global_data_index[k] = local_data_index < d.num_data_in_leaf ?
+      cuda_data_indices[d.leaf_data_start + local_data_index] : -1;
   }
-  const uint32_t ballot = __ballot_sync(0xffffffffu, to_left != 0);
+  uint32_t bin[ROWS];
+#pragma unroll
+  for (int k = 0; k < ROWS; ++k) {
+    bin[k] = global_data_index[k] >= 0 ? HybridLoadBin(d, global_data_index[k]) : 0u;
+  }
   const unsigned int lane = threadIdx.x & (WARPSIZE - 1);
   const unsigned int warp = threadIdx.x / WARPSIZE;
   // bit words live in the (reinterpreted) block_to_left_offset buffer: one
@@ -1442,25 +1456,27 @@ __device__ __forceinline__ void HybridGenBitChunk(
   // stored per (descriptor, block) slot -- d.block_offset_start is a unique
   // monotone per-desc slot base in both the host flat path and the graph path
   uint32_t* bit_words = reinterpret_cast<uint32_t*>(block_to_left_offset);
-  if (lane == 0) {
-    bit_words[(static_cast<size_t>(d.block_offset_start) + block_x) * (blockDim.x / WARPSIZE) + warp] = ballot;
-  }
-  // block totals for the aggregate kernel (unchanged layout)
-  uint16_t warp_left = static_cast<uint16_t>(__popc(ballot));
-  if (lane == 0) {
-    shared_mem_buffer[warp] = warp_left;
+#pragma unroll
+  for (int k = 0; k < ROWS; ++k) {
+    const uint16_t to_left = global_data_index[k] >= 0 ? HybridGenBitVectorDecision(d, bin[k]) : 0;
+    const uint32_t ballot = __ballot_sync(0xffffffffu, to_left != 0);
+    const unsigned int word = k * words_per_pass + warp;
+    if (lane == 0) {
+      bit_words[(static_cast<size_t>(d.block_offset_start) + block_x) * chunk_words + word] = ballot;
+      // block totals for the aggregate kernel (unchanged layout)
+      shared_mem_buffer[word] = static_cast<uint16_t>(__popc(ballot));
+    }
   }
   __syncthreads();
   if (threadIdx.x == 0) {
     uint32_t block_left = 0;
-    const unsigned int num_warps = blockDim.x / WARPSIZE;
-    for (unsigned int w = 0; w < num_warps; ++w) {
+    for (unsigned int w = 0; w < chunk_words; ++w) {
       block_left += shared_mem_buffer[w];
     }
     const data_size_t num_data_in_block =
-      (static_cast<data_size_t>(block_x) + 1) * blockDim.x <= d.num_data_in_leaf ?
-        static_cast<data_size_t>(blockDim.x) :
-        d.num_data_in_leaf - static_cast<data_size_t>(block_x) * blockDim.x;
+      (static_cast<data_size_t>(block_x) + 1) * static_cast<data_size_t>(chunk_rows) <= d.num_data_in_leaf ?
+        static_cast<data_size_t>(chunk_rows) :
+        d.num_data_in_leaf - static_cast<data_size_t>(block_x) * static_cast<data_size_t>(chunk_rows);
     data_size_t* left_buf = block_to_left_offset_buffer + d.block_offset_start;
     data_size_t* right_buf = block_to_right_offset_buffer + d.block_offset_start;
     if (num_data_in_block > 0) {
@@ -1473,6 +1489,7 @@ __device__ __forceinline__ void HybridGenBitChunk(
   }
 }
 
+template <int ROWS>
 __global__ void HybridGenBitVectorUpdateLeafIndexBatchKernel(
   const CUDAHybridApplyDescriptor* descs,
   const data_size_t* cuda_data_indices_param,
@@ -1494,7 +1511,7 @@ __global__ void HybridGenBitVectorUpdateLeafIndexBatchKernel(
          flat += static_cast<int>(gridDim.x)) {
       const int desc_index = HybridFlatBlockDesc(descs, num_split_descs, flat);
       const CUDAHybridApplyDescriptor d = descs[desc_index];
-      HybridGenBitChunk(d, static_cast<unsigned int>(flat - d.flat_block_start),
+      HybridGenBitChunk<ROWS>(d, static_cast<unsigned int>(flat - d.flat_block_start),
         cuda_data_indices_param, block_to_left_offset,
         block_to_left_offset_buffer, block_to_right_offset_buffer, shared_mem_buffer);
       __syncthreads();
@@ -1511,7 +1528,7 @@ __global__ void HybridGenBitVectorUpdateLeafIndexBatchKernel(
   if (static_cast<int>(blockIdx.x) >= d.num_blocks) {
     return;
   }
-  HybridGenBitChunk(d, blockIdx.x, cuda_data_indices, block_to_left_offset,
+  HybridGenBitChunk<ROWS>(d, blockIdx.x, cuda_data_indices, block_to_left_offset,
     block_to_left_offset_buffer, block_to_right_offset_buffer, shared_mem_buffer);
 }
 
@@ -1601,7 +1618,10 @@ __global__ void HybridAggregateBlockOffsetBatchKernel(
   }
 }
 
-template <bool WRITE_LEAF_MAP>
+// ROWS rows per thread (cuda_plan key apply_row_batch): the same chunk -> (pass, thread) mapping as
+// HybridGenBitChunk, so row r of the chunk reads bit r % 32 of word r / 32 and keeps its left / right position
+// (left: lefts before it in the chunk; right: r minus that). Index loads are issued before the scan barrier.
+template <bool WRITE_LEAF_MAP, int ROWS>
 __device__ __forceinline__ void HybridSplitInnerChunk(
   const CUDAHybridApplyDescriptor& d,
   const unsigned int block_x,
@@ -1615,7 +1635,10 @@ __device__ __forceinline__ void HybridSplitInnerChunk(
   const data_size_t num_data_in_leaf = d.num_data_in_leaf;
   const unsigned int threadIdx_x = threadIdx.x;
   const unsigned int blockDim_x = blockDim.x;
-  const unsigned int global_thread_index = block_x * blockDim_x + threadIdx_x;
+  const unsigned int chunk_rows = ROWS * blockDim_x;
+  const unsigned int words_per_pass = blockDim_x / WARPSIZE;
+  const unsigned int chunk_words = chunk_rows / WARPSIZE;
+  const data_size_t chunk_start = static_cast<data_size_t>(block_x * chunk_rows);
   const data_size_t* cuda_data_indices_in_leaf = cuda_data_indices + d.leaf_data_start;
   const uint32_t to_right_block_offset = block_to_right_offset_buffer_base[d.block_offset_start + block_x];
   const uint32_t to_left_block_offset = block_to_left_offset_buffer_base[d.block_offset_start + block_x];
@@ -1625,38 +1648,54 @@ __device__ __forceinline__ void HybridSplitInnerChunk(
   const uint32_t* bit_words = reinterpret_cast<const uint32_t*>(block_to_left_offset);
   const unsigned int lane = threadIdx_x & (WARPSIZE - 1);
   const unsigned int warp = threadIdx_x / WARPSIZE;
-  const uint32_t word = bit_words[(static_cast<size_t>(d.block_offset_start) + block_x) * (blockDim_x / WARPSIZE) + warp];
-  const uint16_t warp_left_total = static_cast<uint16_t>(__popc(word));
-  if (lane == 0) {
-    shared_warp_scan[warp] = warp_left_total;
+  uint32_t word[ROWS];
+  data_size_t row_index[ROWS];
+#pragma unroll
+  for (int k = 0; k < ROWS; ++k) {
+    const unsigned int w = k * words_per_pass + warp;
+    word[k] = bit_words[(static_cast<size_t>(d.block_offset_start) + block_x) * chunk_words + w];
+    if (lane == 0) {
+      shared_warp_scan[w] = static_cast<uint16_t>(__popc(word[k]));
+    }
+    const data_size_t pos = chunk_start + static_cast<data_size_t>(k * blockDim_x + threadIdx_x);
+    row_index[k] = pos < num_data_in_leaf ? cuda_data_indices_in_leaf[pos] : 0;
   }
   __syncthreads();
-  // exclusive scan of per-warp left counts (few warps; thread 0 serial)
+  // exclusive scan of per-warp left counts (few warps; serial per thread)
   uint32_t warp_left_base = 0;
   for (unsigned int w = 0; w < warp; ++w) {
     warp_left_base += shared_warp_scan[w];
   }
-  if (static_cast<data_size_t>(global_thread_index) < num_data_in_leaf) {
-    const bool to_left = (word >> lane) & 1u;
-    const uint32_t lefts_before_in_warp = __popc(word & ((1u << lane) - 1u));
-    const uint32_t thread_to_left_offset = warp_left_base + lefts_before_in_warp;
-    const data_size_t row_index = cuda_data_indices_in_leaf[global_thread_index];
-    if (to_left) {
-      left_out_data_indices_in_leaf[thread_to_left_offset] = row_index;
-    } else {
-      const uint32_t thread_to_right_offset = threadIdx_x - thread_to_left_offset;
-      right_out_data_indices_in_leaf[thread_to_right_offset] = row_index;
+#pragma unroll
+  for (int k = 0; k < ROWS; ++k) {
+    if (k > 0) {
+      for (unsigned int w = (k - 1) * words_per_pass + warp; w < k * words_per_pass + warp; ++w) {
+        warp_left_base += shared_warp_scan[w];
+      }
     }
-    if (WRITE_LEAF_MAP) {
-      // final level of the tree: the row index is already in a register, so
-      // the map write costs one store here instead of a separate full-data
-      // materialize pass re-reading every window
-      cuda_data_index_to_leaf_index[row_index] = to_left ? d.left_leaf_index : d.right_leaf_index;
+    const unsigned int chunk_pos = k * blockDim_x + threadIdx_x;
+    if (chunk_start + static_cast<data_size_t>(chunk_pos) < num_data_in_leaf) {
+      const bool to_left = (word[k] >> lane) & 1u;
+      const uint32_t lefts_before_in_warp = __popc(word[k] & ((1u << lane) - 1u));
+      const uint32_t thread_to_left_offset = warp_left_base + lefts_before_in_warp;
+      if (to_left) {
+        left_out_data_indices_in_leaf[thread_to_left_offset] = row_index[k];
+      } else {
+        const uint32_t thread_to_right_offset = chunk_pos - thread_to_left_offset;
+        right_out_data_indices_in_leaf[thread_to_right_offset] = row_index[k];
+      }
+      if (WRITE_LEAF_MAP) {
+        // final level of the tree: the row index is already in a register, so
+        // the map write costs one store here instead of a separate full-data
+        // materialize pass re-reading every window
+        cuda_data_index_to_leaf_index[row_index[k]] = to_left ? d.left_leaf_index : d.right_leaf_index;
+      }
     }
   }
   __syncthreads();
 }
 
+template <int ROWS>
 __global__ void HybridSplitInnerBatchKernel(
   const CUDAHybridApplyDescriptor* descs,
   const data_size_t* cuda_data_indices_param,
@@ -1677,7 +1716,7 @@ __global__ void HybridSplitInnerBatchKernel(
            flat += static_cast<int>(gridDim.x)) {
         const int desc_index = HybridFlatBlockDesc(descs, num_split_descs, flat);
         const CUDAHybridApplyDescriptor d = descs[desc_index];
-        HybridSplitInnerChunk<true>(d, static_cast<unsigned int>(flat - d.flat_block_start),
+        HybridSplitInnerChunk<true, ROWS>(d, static_cast<unsigned int>(flat - d.flat_block_start),
           cuda_data_indices_param, block_to_left_offset_buffer_base,
           block_to_right_offset_buffer_base, block_to_left_offset,
           out_data_indices_param, cuda_data_index_to_leaf_index, shared_warp_scan);
@@ -1687,7 +1726,7 @@ __global__ void HybridSplitInnerBatchKernel(
            flat += static_cast<int>(gridDim.x)) {
         const int desc_index = HybridFlatBlockDesc(descs, num_split_descs, flat);
         const CUDAHybridApplyDescriptor d = descs[desc_index];
-        HybridSplitInnerChunk<false>(d, static_cast<unsigned int>(flat - d.flat_block_start),
+        HybridSplitInnerChunk<false, ROWS>(d, static_cast<unsigned int>(flat - d.flat_block_start),
           cuda_data_indices_param, block_to_left_offset_buffer_base,
           block_to_right_offset_buffer_base, block_to_left_offset,
           out_data_indices_param, cuda_data_index_to_leaf_index, shared_warp_scan);
@@ -1707,7 +1746,7 @@ __global__ void HybridSplitInnerBatchKernel(
   if (static_cast<int>(blockIdx.x) >= d.num_blocks) {
     return;
   }
-  HybridSplitInnerChunk<false>(d, blockIdx.x, cuda_data_indices,
+  HybridSplitInnerChunk<false, ROWS>(d, blockIdx.x, cuda_data_indices,
     block_to_left_offset_buffer_base, block_to_right_offset_buffer_base,
     block_to_left_offset, out_data_indices_in_leaf, cuda_data_index_to_leaf_index,
     shared_warp_scan);
@@ -2005,19 +2044,37 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
   if (indices_copy_done_event_ != nullptr) {
     CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], indices_copy_done_event_, 0));
   }
-  HybridGenBitVectorUpdateLeafIndexBatchKernel<<<flat_grid, block_dim, 0, cuda_streams_[0]>>>(
-    descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
-    cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
-    cuda_data_index_to_leaf_index_.RawData(), nullptr, num_splits, total_flat_blocks);
+  // cuda_plan key apply_row_batch: each chunk of block_dim rows taken by block_dim / 4 threads of 4 rows
+  constexpr int kApplyRows = 4;
+  const bool apply_row_batch = FalcataPlan::Get().apply_row_batch;
+  if (apply_row_batch) {
+    HybridGenBitVectorUpdateLeafIndexBatchKernel<kApplyRows><<<flat_grid, block_dim / kApplyRows, 0, cuda_streams_[0]>>>(
+      descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
+      cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
+      cuda_data_index_to_leaf_index_.RawData(), nullptr, num_splits, total_flat_blocks);
+  } else {
+    HybridGenBitVectorUpdateLeafIndexBatchKernel<1><<<flat_grid, block_dim, 0, cuda_streams_[0]>>>(
+      descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
+      cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
+      cuda_data_index_to_leaf_index_.RawData(), nullptr, num_splits, total_flat_blocks);
+  }
   HybridAggregateBlockOffsetBatchKernel<<<num_splits, AGGREGATE_BLOCK_SIZE_DATA_PARTITION, 0, cuda_streams_[0]>>>(
     descs, cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
     cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
     cuda_level_smaller_counts_.RawData(), nullptr);
-  HybridSplitInnerBatchKernel<<<flat_grid, block_dim, 0, cuda_streams_[0]>>>(
-    descs, cuda_data_indices_.RawData(), cuda_block_data_to_left_offset_.RawData(),
-    cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
-    new_main_indices, nullptr, num_splits, total_flat_blocks,
-    cuda_data_index_to_leaf_index_.RawData(), write_leaf_map ? 1 : 0);
+  if (apply_row_batch) {
+    HybridSplitInnerBatchKernel<kApplyRows><<<flat_grid, block_dim / kApplyRows, 0, cuda_streams_[0]>>>(
+      descs, cuda_data_indices_.RawData(), cuda_block_data_to_left_offset_.RawData(),
+      cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
+      new_main_indices, nullptr, num_splits, total_flat_blocks,
+      cuda_data_index_to_leaf_index_.RawData(), write_leaf_map ? 1 : 0);
+  } else {
+    HybridSplitInnerBatchKernel<1><<<flat_grid, block_dim, 0, cuda_streams_[0]>>>(
+      descs, cuda_data_indices_.RawData(), cuda_block_data_to_left_offset_.RawData(),
+      cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
+      new_main_indices, nullptr, num_splits, total_flat_blocks,
+      cuda_data_index_to_leaf_index_.RawData(), write_leaf_map ? 1 : 0);
+  }
   if (nccl_communicator_ != nullptr && use_quantized_grad_) {
     HybridSplitTreeStructureBatchKernel<true, true><<<num_splits, 32, 0, cuda_streams_[0]>>>(
       descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
@@ -2061,7 +2118,7 @@ void CUDADataPartition::CaptureHybridGraphApplyKernels(
   const CUDAHybridApplyDescriptor* descs = cuda_apply_descs_.RawDataReadOnly();
   constexpr int block_dim = SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
   cudaStream_t stream = cuda_streams_[0];
-  HybridGenBitVectorUpdateLeafIndexBatchKernel<<<dim3(1, 1), block_dim, 0, stream>>>(
+  HybridGenBitVectorUpdateLeafIndexBatchKernel<1><<<dim3(1, 1), block_dim, 0, stream>>>(
     descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
     cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
     cuda_data_index_to_leaf_index_.RawData(), gstate, /*num_split_descs=*/0,
@@ -2074,7 +2131,7 @@ void CUDADataPartition::CaptureHybridGraphApplyKernels(
     cuda_level_smaller_counts_.RawData(), gstate);
   if (!AppendCapturedNode(stream, nodes)) return;
   roles->push_back(kHybridGraphNodeAggregate);
-  HybridSplitInnerBatchKernel<<<dim3(1, 1), block_dim, 0, stream>>>(
+  HybridSplitInnerBatchKernel<1><<<dim3(1, 1), block_dim, 0, stream>>>(
     descs, cuda_data_indices_.RawData(), cuda_block_data_to_left_offset_.RawData(),
     cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
     cuda_out_data_indices_in_leaf_.RawData(), gstate, /*num_split_descs=*/0,

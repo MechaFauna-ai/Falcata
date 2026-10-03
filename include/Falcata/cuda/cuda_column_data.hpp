@@ -195,7 +195,9 @@ class CUDAColumnData {
                                   const uint8_t* packed_buf,
                                   const std::vector<size_t>& slot_base_byte,
                                   const std::vector<int>& slot_row_stride,
-                                  const std::vector<uint8_t>& slot_shift);
+                                  const std::vector<uint8_t>& slot_shift,
+                                  const uint8_t* colmajor_buf = nullptr,
+                                  size_t colmajor_pad = 0);
 
   bool packed_column_view_active() const { return packed_column_view_active_; }
 
@@ -300,10 +302,10 @@ class CUDAColumnData {
   std::vector<const uint8_t*> packed_column_ptr_;
   std::vector<int> packed_column_stride_;
   std::vector<uint8_t> packed_column_shift_;
-  // 4 for a dense column read as row-matrix nibbles; the column's real bit
-  // type (8/16/32) for a sparse column served from its own buffer. Never
-  // kNibbleColumnBitType -- that width describes an original dense per-column
-  // buffer, and the packed view serves dense columns from the row matrix.
+  // 4 for a dense column read as row-matrix nibbles; kNibbleColumnBitType for
+  // a dense column read from the column-major nibble store of the bin matrix
+  // (colmajor_split); the column's real bit type (8/16/32) for a sparse column
+  // served from its own buffer.
   std::vector<uint8_t> packed_column_bit_type_;
   // Device mirrors of the four vectors above (see EnsurePackedViewOnDevice);
   // valid while packed_view_device_generation_ == column_view_generation_.

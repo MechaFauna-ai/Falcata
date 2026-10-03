@@ -277,6 +277,10 @@ class CUDAHistogramConstructor {
    *  view (compact_col_major_device()[slot * num_data + row]); the tree learner
    *  then uses it directly instead of gathering its own copy */
   bool CompactColMajorFilled() const { return compact_col_major_filled_; }
+  /*! \brief the column-major nibble store (colmajor_direct's compact regime, or colmajor_fill's copy): column c
+   *  is the two-rows-per-byte run at byte c * colmajor_pad() / 2; null when absent (the mask regime, or no copy) */
+  const uint8_t* colmajor_bin() const { return colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : nullptr; }
+  size_t colmajor_pad() const { return colmajor_pad_; }
   const uint8_t* compact_col_major_device() const { return compact_staging_col_major_.RawDataReadOnly(); }
 
   /*! \brief colmajor_fill: whether this row data can take the column-major copy (plan key on, 4-bit packed rows

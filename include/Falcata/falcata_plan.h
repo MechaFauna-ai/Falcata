@@ -180,6 +180,20 @@ struct FalcataPlan {
   // the block kernel. CUDA only. Bit-identical. Measured:
   // +6.3% numerai-deep, +22.7% year-deep.
   bool warp_find = true;            // key: warp_find
+  // host-launched batched apply (gen-bit-vector and split-inner kernels):
+  // each 1024-row chunk is handled by 256 threads of 4 rows each, all loads of
+  // a thread's rows issued before their use, instead of 1024 threads of one
+  // row. A 1024-thread block fills an SM alone and stalls on its own index ->
+  // bin load chain; quarter-size blocks keep several chunks in flight per SM.
+  // Same chunks, same ballot words, same block totals and output positions.
+  // Bit-identical (only the thread -> row mapping changes).
+  bool apply_row_batch = true;      // key: apply_row_batch
+  // packed split read from the column-major nibble store (colmajor_direct's
+  // compact regime, or colmajor_fill's copy) instead of the row-major compact
+  // matrix: the partition reads a row's split bin from a contiguous
+  // two-rows-per-byte column, not one sector of the row matrix per row. Used
+  // whenever the store exists. Bit-identical (same nibbles).
+  bool colmajor_split = true;       // key: colmajor_split
   // runtime tier-1 tuner: bandit over the batched-construct saturation floor,
   // timed per tree; quantized training only (integer hists keep results
   // schedule-invariant, so retuning cannot change the model). The probe phase
@@ -259,6 +273,8 @@ struct FalcataPlan {
     if (key == "colmajor_direct") return &colmajor_direct;
     if (key == "tiled_fill") return &tiled_fill;
     if (key == "warp_find") return &warp_find;
+    if (key == "apply_row_batch") return &apply_row_batch;
+    if (key == "colmajor_split") return &colmajor_split;
     if (key == "tuner") return &tuner;
     if (key == "wide_partitions") return &wide_partitions;
     return nullptr;

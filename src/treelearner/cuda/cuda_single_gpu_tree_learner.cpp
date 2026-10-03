@@ -831,6 +831,10 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   sig = sig * 1099511628211ULL ^ static_cast<uint64_t>(reinterpret_cast<uintptr_t>(row_data));
   sig = sig * 1099511628211ULL ^
         static_cast<uint64_t>(reinterpret_cast<uintptr_t>(cuda_histogram_constructor_->full_view_device()));
+  // ... and the column-major store colmajor_split points the packed view into (released on a switch to the mask
+  // regime and re-uploaded, possibly elsewhere, on the way back)
+  sig = sig * 1099511628211ULL ^
+        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(cuda_histogram_constructor_->colmajor_bin()));
   // Someone else may have replaced the published table since we installed ours
   // -- tree traversal restores the original per-column view (see
   // CUDATree::LaunchAddPredictionToScoreKernel) -- and then an unchanged layout
@@ -971,8 +975,12 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
       col_base_byte_h[s] = slot_p_byte_h[s] + static_cast<size_t>(slot_col_in_p_h[s] >> 1);
       col_shift_h[s] = static_cast<uint8_t>((slot_col_in_p_h[s] & 1) << 2);
     }
+    const bool colmajor_split =
+      FalcataPlan::Get().colmajor_split && cuda_histogram_constructor_->colmajor_bin() != nullptr;
     col_data->SetCompactPackedColumnView(orig_column_to_compact_slot_, gather_src,
-                                         col_base_byte_h, slot_p_stride_h, col_shift_h);
+                                         col_base_byte_h, slot_p_stride_h, col_shift_h,
+                                         colmajor_split ? cuda_histogram_constructor_->colmajor_bin() : nullptr,
+                                         colmajor_split ? cuda_histogram_constructor_->colmajor_pad() : 0);
     compact_packed_view_active_ = true;
     compact_gather_src_ = gather_src;
     compact_gather_src_is_4bit_ = gather_src_is_4bit;
