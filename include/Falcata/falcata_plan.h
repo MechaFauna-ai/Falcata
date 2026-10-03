@@ -358,7 +358,7 @@ inline const FalcataDebugOptions& FalcataDebug() {
       } else if (token.rfind("maxsplits=", 0) == 0) {
         o.maxsplits = std::atoi(token.c_str() + 10);
       } else if (token.rfind("vramfree=", 0) == 0) {
-        o.vramfree_mib = std::max<int64_t>(0, std::atoll(token.c_str() + 9));
+        o.vramfree_mib = std::min<int64_t>(std::max<int64_t>(0, std::atoll(token.c_str() + 9)), int64_t{1} << 40);
       } else if (!token.empty()) {
         Log::Warning("FALCATA_DEBUG: unknown token \"%s\" ignored", token.c_str());
       }

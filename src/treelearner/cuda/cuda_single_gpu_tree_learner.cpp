@@ -463,10 +463,17 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
 //  - the compact views growing as later trees' samples fall differently into the feature partitions;
 //  - 256 MiB (the same headroom EnsureCompactColumnBuffer keeps) for everything smaller: per-level metadata, tree
 //    buffers, allocator granularity.
-// A per-column split view, where this configuration uses one, was built by the first tree too; its size is fixed
-// by the per-tree sample count. Not covered: device memory taken outside this booster's training once the copy
-// exists, e.g. a validation set added after the first tree or GPU prediction from a callback; colmajor_fill:off
-// leaves that memory free.
+//  - the classic per-column split view (one byte per sampled value) where the first tree did not build it. The
+//    packed split-read path builds that view lazily, in the first tree whose level budget binds below max_depth
+//    and hands the final level to the leaf-wise tail (ApplySplit -> EnsureClassicColumnView); a first tree that
+//    grew without the tail leaves it unbuilt for a later tree to allocate. Of the growth modes that enable the
+//    packed read only the approximate plain batching (FALCATA_DEBUG=aggressive) can reach the tail: depth-limited
+//    growth (num_leaves + 1 >= 2^max_depth) cannot bind the budget before the last level, whose children all sit
+//    at max_depth and are applied as one batched partial level (ArbitrateLevelBudget), and selective growth builds
+//    the complete tree.
+// Not covered: device memory taken outside this booster's training once the copy exists, e.g. a validation set
+// added after the first tree, GPU prediction from a callback, or a ResetConfig that raises num_leaves or
+// feature_fraction; colmajor_fill:off leaves that memory free.
 size_t CUDASingleGPUTreeLearner::ColMajorFillReserveBytes() const {
   constexpr size_t kHeadroom = 256ULL << 20;
   const int max_pairs = config_->num_leaves / 2 + 2;
@@ -476,6 +483,11 @@ size_t CUDASingleGPUTreeLearner::ColMajorFillReserveBytes() const {
   if (nccl_communicator_ != nullptr) {
     const size_t elems = static_cast<size_t>(max_pairs) * static_cast<size_t>(num_total_bin_) * 2;
     reserve += cuda_nccl_reduce_buf_.Size() >= elems ? 0 : elems * sizeof(double);
+  }
+  if (compact_packed_view_active_ && FalcataDebug().aggressive) {
+    const size_t view_bytes = compact_column_to_orig_.size() *
+        static_cast<size_t>(cuda_histogram_constructor_->cuda_row_data_internal()->num_data());
+    reserve += view_bytes > compact_column_buffer_.Size() ? view_bytes - compact_column_buffer_.Size() : 0;
   }
   return reserve;
 }

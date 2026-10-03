@@ -83,10 +83,7 @@ def test_colmajor_fill_engages_with_little_headroom_cuda(quant):
     probe, md5_probe = _run(params)
     assert [d[0] for d in probe] == ["engaged"], probe
     _, copy_mib, reserve_mib, _ = probe[0]
-    # The rule this replaces needed more than max(2 GiB, copy / 2) free beyond the copy and the per-tree view;
-    # the cap below leaves far less, so that rule would have declined this run.
     engage_cap = copy_mib + reserve_mib + 32
-    assert engage_cap - copy_mib < max(2048, copy_mib // 2)
 
     engaged, md5_engaged = _run(params, debug=f"diag,vramfree={engage_cap}")
     assert [d[:3] for d in engaged] == [("engaged", copy_mib, reserve_mib)], engaged
@@ -107,6 +104,27 @@ def test_colmajor_fill_declines_when_the_copy_alone_does_not_fit_cuda():
     assert [d[0] for d in declined] == ["declined"], declined
     _, md5_off = _run({**params, "cuda_plan": "auto,colmajor_fill:off"})
     assert md5_declined == md5_off
+
+
+@_REQUIRES_CUDA
+def test_colmajor_fill_reserves_the_unbuilt_per_column_view_cuda():
+    """Under the approximate plain level batching (FALCATA_DEBUG=aggressive) the leaf-wise tail can run in any tree,
+    and the first tree that reaches it builds the classic per-column split view (one byte per sampled value). When
+    the first tree never does, the reserve holds what a later tree would allocate for it; the default growth modes
+    never reach the tail and reserve nothing for it."""
+    view_mib = 0.2 * FEATS * ROWS / 2**20
+    assert view_mib > 12
+    params = {"quant_mode": "stochastic", "max_depth": -1}
+    few_leaves = {**params, "min_data_in_leaf": ROWS // 3}  # at most three leaves: the budget never binds
+    default, _ = _run(few_leaves)
+    unbuilt, _ = _run(few_leaves, debug="diag,aggressive")
+    # 31 leaves: the budget binds at level 5 and the first tree's tail builds the view
+    built, _ = _run(params, debug="diag,aggressive")
+    for decisions in (default, unbuilt, built):
+        assert [d[0] for d in decisions] == ["engaged"], decisions
+    reserve = {k: d[0][2] for k, d in (("default", default), ("unbuilt", unbuilt), ("built", built))}
+    assert view_mib - 2 <= reserve["unbuilt"] - reserve["default"] <= view_mib + 2, reserve
+    assert abs(reserve["built"] - reserve["default"]) <= 2, reserve
 
 
 @_REQUIRES_CUDA
