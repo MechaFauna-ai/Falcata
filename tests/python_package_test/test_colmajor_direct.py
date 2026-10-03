@@ -351,19 +351,34 @@ def test_compact_regime_that_does_not_fit_falls_back_to_mask_cuda():
 
 PROBE_PLAN = "auto,tuner:on,view_probe_lo:0,view_probe_hi:1"
 PROBE_LINE = re.compile(
-    r"colmajor_direct: tuner probe: compact [0-9.]+ ms, mask [0-9.]+ ms per tree .* -> (\w+) regime"
+    r"colmajor_direct: tuner probe: compact ([0-9.]+) ms, mask ([0-9.]+) ms per tree .* -> (\w+) regime"
 )
 
 
+def _probe_choice(out):
+    """The regime the one probe in out chose, checked against its own medians: the lower one wins (printed to 0.01
+    ms, so equal printed medians admit either)."""
+    probes = PROBE_LINE.findall(out)
+    assert len(probes) == 1, out[-3000:]
+    compact_ms, mask_ms, chosen = probes[0]
+    if float(compact_ms) != float(mask_ms):
+        assert chosen == ("mask" if float(mask_ms) < float(compact_ms) else "compact"), out[-3000:]
+    return chosen
+
+
 @_REQUIRES_CUDA
-@pytest.mark.parametrize(("fraction", "expected"), [(0.1, "compact"), (0.99, "mask")])
+@pytest.mark.parametrize(("fraction", "expected"), [(0.1, "compact"), (0.99, None)])
 def test_tuner_probe_keeps_the_faster_regime_cuda(tmp_path, fraction, expected):
     """With the probe band widened to every feature_fraction, the tuner trains a few trees in each regime and keeps the
     faster one. The run switches regimes mid-training (tree 7, and back at tree 13 when the first regime wins) and
-    still trains the model colmajor_direct:off (and the tuner off) trains."""
+    still trains the model colmajor_direct:off (and the tuner off) trains. At 0.1 compact wins by a wide margin on
+    this shape; at 0.99 the two medians now differ by up to about 15% either way from run to run (mask was about 20%
+    faster before the compact regime's construct, fill and apply kernels were tuned), so only the medians decide."""
     out, md5 = _child("probe", plan=PROBE_PLAN, home=tmp_path, rounds=18, feature_fraction=fraction)
     assert "colmajor_direct: tuner probe of the view regime" in out, out[-3000:]
-    assert PROBE_LINE.findall(out) == [expected], out[-3000:]
+    chosen = _probe_choice(out)
+    if expected is not None:
+        assert chosen == expected, out[-3000:]
     assert "regime (tuner probe;" in out, out[-3000:]
     assert md5 == _md5_off("probe", (None,), rounds=18, feature_fraction=fraction)
 
@@ -374,12 +389,12 @@ def test_tuner_probe_result_is_cached_in_wisdom_cuda(tmp_path):
     probing. Both trainings train the same model."""
     out, md5s = _children("probe", plan=PROBE_PLAN, home=tmp_path, rounds=18, trainings=2, feature_fraction=0.99)
     first, second = out.split("TRAINING 1")
-    assert PROBE_LINE.findall(first) == ["mask"], first[-3000:]
+    chosen = _probe_choice(first)
     assert "tuner probe" not in second, second[-3000:]
-    assert "colmajor_direct: mask regime (the tuner's wisdom;" in second, second[-3000:]
+    assert f"colmajor_direct: {chosen} regime (the tuner's wisdom;" in second, second[-3000:]
     assert md5s[0] == md5s[1]
     wisdom = (tmp_path / ".cache" / "falcata" / "wisdom.txt").read_text()
-    assert re.search(r"^view1:\S+ 1 0$", wisdom, re.M), wisdom
+    assert re.search(rf"^view1:\S+ {1 if chosen == 'mask' else 0} 0$", wisdom, re.M), wisdom
 
 
 @_REQUIRES_CUDA
