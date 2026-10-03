@@ -647,6 +647,8 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
   }
   // Build per-tree compact column data for the partition kernels.
   BuildCompactColumnView();
+  // colmajor_direct, compact regime: the full view stays only while consecutive trees read it
+  cuda_histogram_constructor_->ReleaseUnusedFullView();
   leaf_data_start_[0] = 0;
   smaller_leaf_index_ = 0;
   larger_leaf_index_ = -1;
@@ -709,10 +711,10 @@ extern void LaunchRowToColCompactKernel(
 
 void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   const auto* row_data = cuda_histogram_constructor_->cuda_row_data_internal();
-  if (row_data == nullptr) return;
-  const uint8_t* src = row_data->GetBin<uint8_t>();
-  if (src == nullptr) return;  // host-mapped path; not supported here
+  if (row_data == nullptr || train_data_->num_features() == 0) return;  // no row data was built
   if (row_data->bit_type() != 8 || row_data->is_sparse()) return;  // only dense uint8 path supported
+  // The whole matrix in the row-major layout is read below only when the compact matrix cannot serve this tree's
+  // columns: the row data's matrix, or under colmajor_direct the full view (EnsureFullView there, not here).
 
   const auto& bytree_mask = col_sampler_.is_feature_used_bytree();
   uint64_t sig = 0;
@@ -732,6 +734,11 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   sig = sig * 1099511628211ULL ^
         static_cast<uint64_t>(reinterpret_cast<uintptr_t>(
             cuda_histogram_constructor_->compact_col_major_device()));
+  // ... the row data itself (ResetTrainingData replaces it, and the matrix a view may point into) and colmajor_direct's
+  // full view (released and refilled at another address when trees stop and resume needing it, or on a regime change)
+  sig = sig * 1099511628211ULL ^ static_cast<uint64_t>(reinterpret_cast<uintptr_t>(row_data));
+  sig = sig * 1099511628211ULL ^
+        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(cuda_histogram_constructor_->full_view_device()));
   // Someone else may have replaced the published table since we installed ours
   // -- tree traversal restores the original per-column view (see
   // CUDATree::LaunchAddPredictionToScoreKernel) -- and then an unchanged layout
@@ -740,6 +747,9 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   if (sig == compact_col_signature_ && !compact_column_to_orig_.empty() &&
       col_view_generation_seen_ == col_data->column_view_generation()) {
     // Cache hit: layout, source pointers AND published view unchanged.
+    if (column_view_reads_full_view_) {
+      cuda_histogram_constructor_->EnsureFullView("a split view the compact matrix cannot serve");  // still in use
+    }
     return;
   }
 
@@ -787,6 +797,7 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
     // split gather/packed readers; fall back to the original row data
     cuda_histogram_constructor_->compact_codec() == PackCodecId::kNibble4 &&
     cuda_histogram_constructor_->compact_src_cols() == compact_column_to_orig_;
+  column_view_reads_full_view_ = !compact_src;
   if (compact_src && cuda_histogram_constructor_->CompactColMajorFilled()) {
     // the histogram constructor's compact fill already produced the column-major
     // view as a fused second output (same slot order, verified above): point the
@@ -798,7 +809,14 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
     col_view_generation_seen_ = col_data->column_view_generation();
     return;
   }
-  const uint8_t* gather_src = compact_src ? cuda_histogram_constructor_->compact_data_device() : src;
+  // the gather (and the packed split view, and the out-of-bag pass that traverses it) reads every column in the
+  // row-major layout unless the compact matrix serves: the row data's matrix, or colmajor_direct's full view
+  const uint8_t* gather_src = compact_src ? cuda_histogram_constructor_->compact_data_device() :
+    cuda_histogram_constructor_->EnsureFullView("a split view the compact matrix cannot serve");
+  if (gather_src == nullptr) {
+    // the host-mapped layout (the only one without a device pointer here) is column-major and unsupported
+    Log::Fatal("BuildCompactColumnView: the row-major bin matrix has no device pointer");
+  }
   const bool gather_src_is_4bit = compact_src ?
     cuda_histogram_constructor_->compact_src_is_4bit() : row_data->is_4bit_packed();
   std::vector<size_t> slot_p_byte_h(num_compact_cols);

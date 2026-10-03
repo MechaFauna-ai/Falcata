@@ -8,6 +8,7 @@
 
 #include <Falcata/cuda/cuda_row_data.hpp>
 #include <Falcata/falcata_plan.h>
+#include <Falcata/utils/threading.h>
 
 #include <cstdio>
 
@@ -16,6 +17,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Falcata {
@@ -196,7 +198,9 @@ void CUDARowData::Init(const Dataset* train_data, TrainingShareStates* train_sha
   }
   if (!is_sparse_) {
     if (is_4bit_packed_) {
-      InitDense4BitData(train_data, reinterpret_cast<const uint8_t*>(host_data));
+      if (!(request_columns_only_ && InitDense4BitColumnsOnly(train_data))) {
+        InitDense4BitData(train_data, reinterpret_cast<const uint8_t*>(host_data));
+      }
     } else if (bit_type_ == 8) {
       InitDenseData<uint8_t>(train_data, reinterpret_cast<const uint8_t*>(host_data), &cuda_data_uint8_t_);
     } else if (bit_type_ == 16) {
@@ -707,6 +711,121 @@ void CUDARowData::Pack4BitFromPartitioned(const uint8_t* unpacked, uint8_t* pack
     });
 }
 
+bool CUDARowData::InitDense4BitColumnsOnly(const Dataset* train_data) {
+  // The views are built from the Dataset's own column buffers (the ones the fast row data build packs), so the same
+  // conditions apply: fast row data on, dense non-multi-val groups. 4- and 8-bit columns only: the upload reads
+  // exactly those two encodings.
+  if (!FastRowDataEnabled()) {
+    return false;
+  }
+  std::vector<const void*> column_data;
+  std::vector<uint8_t> column_bit_types;
+  if (!CollectDenseColumnData(train_data, &column_data, &column_bit_types)) {
+    return false;
+  }
+  for (const uint8_t bit_type : column_bit_types) {
+    if (bit_type != 4 && bit_type != 8) {
+      return false;
+    }
+  }
+  // the packed row-major layout the views use (the same rule InitDense4BitData applies)
+  packed_partition_byte_offsets_.assign(1, 0);
+  for (size_t i = 0; i + 1 < feature_partition_column_index_offsets_.size(); ++i) {
+    const int num_columns = feature_partition_column_index_offsets_[i + 1] - feature_partition_column_index_offsets_[i];
+    packed_partition_byte_offsets_.emplace_back(packed_partition_byte_offsets_.back() + ((num_columns + 1) >> 1));
+  }
+  cuda_packed_partition_byte_offsets_.InitFromHostVector(packed_partition_byte_offsets_);
+  dense_column_data_ = std::move(column_data);
+  dense_column_bit_types_ = std::move(column_bit_types);
+  dense_4bit_columns_only_ = true;
+  return true;
+}
+
+void CUDARowData::UploadDense4BitColumnsColMajor(uint8_t* dst, const int col_begin, const int col_end) const {
+  CHECK(dense_4bit_columns_only_);
+  CHECK(0 <= col_begin && col_begin <= col_end && col_end <= feature_partition_column_index_offsets_.back());
+  // A 4-bit Dataset column is (num_data + 1) / 2 bytes, two rows per byte, even row in the low nibble: exactly one
+  // column of the layout, and consecutive columns are contiguous in it. Columns of 1 MiB or more are copied
+  // straight from the Dataset; smaller ones, and every 8-bit column (nibble-packed here), are gathered on the host
+  // into runs of up to 16 MiB first, because each pageable copy has a fixed cost of tens of microseconds.
+  const size_t column_bytes = colmajor_column_bytes();
+  constexpr size_t kDirectCopyBytes = size_t{1} << 20;
+  const size_t gather_bytes = std::max(size_t{16} << 20, column_bytes);
+  std::unique_ptr<uint8_t[]> gather;
+  std::vector<int> run_columns;
+  auto out_of = [&](int c) { return dst + static_cast<size_t>(c - col_begin) * column_bytes; };
+  auto flush_run = [&]() {
+    if (run_columns.empty()) return;
+    if (gather == nullptr) gather.reset(new uint8_t[gather_bytes]);
+    Threading::For<int>(0, static_cast<int>(run_columns.size()), 1, [&](int, int start, int end) {
+      for (int i = start; i < end; ++i) {
+        const int c = run_columns[i];
+        uint8_t* out = gather.get() + static_cast<size_t>(i) * column_bytes;
+        if (dense_column_bit_types_[c] == 4) {
+          std::memcpy(out, dense_column_data_[c], column_bytes);
+        } else {
+          const uint8_t* in = reinterpret_cast<const uint8_t*>(dense_column_data_[c]);
+          for (size_t b = 0; b < column_bytes; ++b) {
+            const data_size_t row = static_cast<data_size_t>(2 * b);
+            const uint8_t hi = row + 1 < num_data_ ? static_cast<uint8_t>(in[row + 1] & 0xf) : 0;
+            out[b] = static_cast<uint8_t>((in[row] & 0xf) | (hi << 4));
+          }
+        }
+      }
+    });
+    CopyFromHostToCUDADevice<uint8_t>(out_of(run_columns.front()), gather.get(), run_columns.size() * column_bytes,
+                                      __FILE__, __LINE__);
+    run_columns.clear();
+  };
+  for (int c = col_begin; c < col_end; ++c) {
+    if (dense_column_bit_types_[c] == 4 && column_bytes >= kDirectCopyBytes) {
+      flush_run();
+      CopyFromHostToCUDADevice<uint8_t>(out_of(c), reinterpret_cast<const uint8_t*>(dense_column_data_[c]),
+                                        column_bytes, __FILE__, __LINE__);
+    } else {
+      if ((run_columns.size() + 1) * column_bytes > gather_bytes) flush_run();
+      run_columns.push_back(c);
+    }
+  }
+  flush_run();
+}
+
+void CUDARowData::VerifyDense4BitColMajor(const uint8_t* device) const {
+  const int num_columns = feature_partition_column_index_offsets_.back();
+  const size_t column_bytes = colmajor_column_bytes();
+  const size_t total = static_cast<size_t>(num_columns) * column_bytes;
+  std::unique_ptr<uint8_t[]> expected(new uint8_t[total]);
+  Threading::For<int>(0, num_columns, 1, [&](int, int start, int end) {
+    for (int c = start; c < end; ++c) {
+      for (size_t b = 0; b < column_bytes; ++b) {
+        const data_size_t row = static_cast<data_size_t>(2 * b);
+        const uint8_t lo = FetchColumnBin(dense_column_data_[c], dense_column_bit_types_[c], row) & 0xf;
+        const uint8_t hi = row + 1 < num_data_ ?
+          (FetchColumnBin(dense_column_data_[c], dense_column_bit_types_[c], row + 1) & 0xf) : 0;
+        expected[static_cast<size_t>(c) * column_bytes + b] = static_cast<uint8_t>(lo | (hi << 4));
+      }
+    }
+  });
+  std::unique_ptr<uint8_t[]> got(new uint8_t[total]);
+  CopyFromCUDADeviceToHost<uint8_t>(got.get(), device, total, __FILE__, __LINE__);
+  if (std::memcmp(expected.get(), got.get(), total) != 0) {
+    Log::Fatal("FALCATA_VERIFY: the column-major 4-bit store differs from the Dataset's columns.");
+  }
+  Log::Info("FALCATA_VERIFY: column-major 4-bit store matches the Dataset's columns (%zu bytes).", total);
+}
+
+void CUDARowData::VerifyDense4BitRowMajor(const uint8_t* device, const char* what) const {
+  const size_t packed_total = dense_4bit_bytes();
+  std::unique_ptr<uint8_t[]> host_packed(new uint8_t[packed_total]);
+  BuildDensePacked4BitFromColumns(dense_column_data_, dense_column_bit_types_, host_packed.get());
+  std::unique_ptr<uint8_t[]> got(new uint8_t[packed_total]);
+  CopyFromCUDADeviceToHost<uint8_t>(got.get(), device, packed_total, __FILE__, __LINE__);
+  if (std::memcmp(host_packed.get(), got.get(), packed_total) != 0) {
+    Log::Fatal("FALCATA_VERIFY: the %s differs from the host-packed 4-bit row data.", what);
+  }
+  Log::Info("FALCATA_VERIFY: the %s matches the host-packed 4-bit row data (%zu bytes).", what, packed_total);
+}
+
 void CUDARowData::InitDense4BitData(const Dataset* train_data, const uint8_t* host_data) {
   // Packed layout invariant: each partition's packed row width is
   // ceil(num_columns_in_partition / 2) bytes, i.e. the column count is padded
@@ -867,6 +986,12 @@ void CUDARowData::InitSparseData(const BIN_TYPE* host_data,
 
 template <typename BIN_TYPE>
 const BIN_TYPE* CUDARowData::GetBin() const {
+  if (dense_4bit_columns_only_) {
+    // colmajor_direct: there is no row-major matrix on the device; a reader that needs the row-major layout reads
+    // the histogram constructor's full view (CUDAHistogramConstructor::RowMajorBin) instead of a null pointer
+    Log::Fatal("CUDARowData: the 4-bit row-major matrix was read, but colmajor_direct keeps no row-major matrix "
+               "here; the reader must go through CUDAHistogramConstructor::RowMajorBin.");
+  }
   if (bit_type_ == 8) {
     return reinterpret_cast<const BIN_TYPE*>(cuda_data_uint8_t_.RawData());
   } else if (bit_type_ == 16) {

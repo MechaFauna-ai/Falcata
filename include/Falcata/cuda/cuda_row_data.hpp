@@ -96,6 +96,33 @@ class CUDARowData {
   bool is_data_host_mapped() const { return cuda_data_is_host_mapped_; }
   const uint8_t* host_partitioned_data_uint8_t() const { return host_partitioned_data_uint8_t_.data(); }
 
+  // --- colmajor_direct: the Dataset's 4-bit columns are the source of the device copy; no row-major matrix ---
+  /*! \brief Ask Init to leave the 4-bit packed row-major matrix off the device when the Dataset's columns can
+   *  serve instead (fast row data, dense non-multi-val groups, every column stored as 4 or 8 bits). The caller then
+   *  builds its views from the columns (UploadDense4BitColumnsColMajor) and serves every row-major read itself.
+   *  Call before Init. */
+  void RequestDense4BitColumnsOnly(bool columns_only) { request_columns_only_ = columns_only; }
+  /*! \brief whether Init left the 4-bit row-major matrix off the device; GetBin is fatal then */
+  bool dense_4bit_columns_only() const { return dense_4bit_columns_only_; }
+  /*! \brief device bytes of the 4-bit packed row-major layout (packed row widths x rows) */
+  size_t dense_4bit_bytes() const {
+    return packed_partition_byte_offsets_.empty() ? 0 :
+      static_cast<size_t>(packed_partition_byte_offsets_.back()) * static_cast<size_t>(num_data_);
+  }
+  /*! \brief bytes of one column in the column-major nibble layout: (num_data + 1) / 2 */
+  size_t colmajor_column_bytes() const { return (static_cast<size_t>(num_data_) + 1) / 2; }
+  /*! \brief Copy columns [col_begin, col_end) of the Dataset to device memory dst in the column-major nibble layout
+   *  (column c is the colmajor_column_bytes() run at dst + (c - col_begin) * colmajor_column_bytes(), even row in
+   *  the low nibble): the bytes of the Dataset's 4-bit column buffers; 8-bit columns are nibble-packed on the way.
+   *  The nibble past the last row (odd row counts) is left as the Dataset has it. Only when
+   *  dense_4bit_columns_only(). */
+  void UploadDense4BitColumnsColMajor(uint8_t* dst, int col_begin, int col_end) const;
+  /*! \brief FALCATA_VERIFY=1: fatal unless device holds every column in that layout (pad nibbles zero) */
+  void VerifyDense4BitColMajor(const uint8_t* device) const;
+  /*! \brief FALCATA_VERIFY=1: fatal unless device holds exactly the 4-bit row-major matrix Init would have built
+   *  (the host pack of the same columns); what names it in the log */
+  void VerifyDense4BitRowMajor(const uint8_t* device, const char* what) const;
+
  private:
   void DivideCUDAFeatureGroups(const Dataset* train_data, TrainingShareStates* share_state);
 
@@ -113,6 +140,10 @@ class CUDARowData {
   /*! \brief Packed variant of BuildDensePartitionedFromColumns: writes nibbles. */
   void BuildDensePacked4BitFromColumns(const std::vector<const void*>& column_data,
     const std::vector<uint8_t>& column_bit_types, uint8_t* out_data) const;
+
+  /*! \brief Init's colmajor_direct branch: record the columns and leave the row-major matrix off the device;
+   *  false (build it now) when the columns do not qualify */
+  bool InitDense4BitColumnsOnly(const Dataset* train_data);
 
   /*! \brief Pack an 8-bit partitioned row-major buffer into the 4-bit layout. */
   void Pack4BitFromPartitioned(const uint8_t* unpacked, uint8_t* packed) const;
@@ -203,6 +234,13 @@ class CUDARowData {
   bool cuda_data_is_host_mapped_ = false;
   /*! \brief Backing storage for the host-pinned bin matrix when host-mapping is used. */
   std::vector<uint8_t> host_partitioned_data_uint8_t_;
+  /*! \brief colmajor_direct: Init may leave the 4-bit row-major matrix off the device */
+  bool request_columns_only_ = false;
+  /*! \brief the 4-bit row-major matrix is not on the device (see dense_4bit_columns_only()) */
+  bool dense_4bit_columns_only_ = false;
+  /*! \brief the Dataset's column buffers (host) the views are built from */
+  std::vector<const void*> dense_column_data_;
+  std::vector<uint8_t> dense_column_bit_types_;
 
   // CUDA memory
 

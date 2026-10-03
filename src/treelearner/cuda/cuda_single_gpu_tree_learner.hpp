@@ -459,6 +459,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // gather inputs stashed for the lazy fallback (device pointer + 4-bit flag)
   const uint8_t* compact_gather_src_ = nullptr;
   bool compact_gather_src_is_4bit_ = false;
+  // whether the installed column view reads colmajor_direct's full view (a cache hit must keep it alive)
+  bool column_view_reads_full_view_ = false;
 
   // Mirror of BasicLeafConstraints::Update for the CUDA path. Given a just-applied
   // numerical split on `inner_feature_index`, the parent leaf (`left_leaf`) and the
