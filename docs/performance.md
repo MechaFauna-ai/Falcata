@@ -451,7 +451,37 @@ bit-identical in every cell):
   per-level buffers up to `num_leaves / 2 + 2` pairs, the bit-change scratch,
   the compact view's partition padding, and 256 MiB. Otherwise training keeps
   the row-major source with a warning (same model); `FALCATA_DEBUG=diag` logs
-  an engagement. The first tree always fills from the row-major matrix.
+  an engagement. The first tree always fills from the row-major matrix. This
+  decision is `colmajor_direct:off`'s (and that of data whose columns cannot
+  be uploaded directly); by default there is no copy to decide on.
+- **`colmajor_direct`** (with `view_mode`, `view_mask_ff`) — the column-major
+  copy above holds, byte for byte, the Dataset's 4-bit columns laid end to
+  end, so it is uploaded straight from them and the device keeps **one** copy
+  of the bin matrix: no row-major matrix at Init, no host pack, no transpose,
+  no memory rule. Which copy depends on the training regime, decided per
+  `train()` from `feature_fraction` (again on `update(train_set=...)` and on a
+  `feature_fraction` reset):
+  - **compact** (`feature_fraction` < `view_mask_ff`, default 0.85): the
+    column-major store; every tree fills its compact view of the sampled
+    columns from it (`tiled_fill` reads it).
+  - **mask** (`feature_fraction` ≥ 0.85, or `compact_quant:off`): one full
+    view in the row-major layout, filled once from the columns through a
+    256 MiB staging chunk (never the whole store next to it); no tree copies
+    anything, and the kernels apply the per-tree sample through the column
+    masks they already take (`is_feature_used_bytree`, `bin_used`).
+
+  Against `colmajor_fill`'s decision (numerai53, RTX 5090): the first round
+  of every `train()` is **1.85 s shorter** (2.49 → 0.64 s: no 11 GiB host
+  pack, upload and transpose), steady state is unchanged (16.4 ms per round
+  on numerai53-deep, 8.3 on the example config, identical models), and peak
+  device memory drops by **11.3 GiB** at `feature_fraction` 0.1 and 1.0 and by
+  10.2 GiB at 0.9 (table below).
+  `view_mode:compact|mask` forces a regime; `colmajor_direct:off` restores the
+  row-major matrix and `colmajor_fill`'s decision. The threshold is the
+  measured crossover below; `feature_fraction_bynode` does not enter (the
+  views hold the per-tree sample, the per-node draw happens in the split
+  finder either way). Bit-identical in every regime (the same bytes, and
+  integer histograms for the masked kernels).
 - **`tiled_fill`** — the 4-bit compact fill stages 128 rows of every byte slot
   in a shared-memory `[row][slot]` tile, reading each source column
   contiguously, then writes each partition's rows as one contiguous run with
@@ -508,6 +538,52 @@ bit-identical in every cell):
   histogram-pipeline-count knob was considered and rejected: it only affects
   the per-pair fallback path — the batched flow every real workload uses
   runs on a single stream.)
+
+**Device memory model of the 4-bit bin matrix under `colmajor_direct`**
+(Numerai v5.3, 6.79M rows × 3,555 features; the matrix is 11.24 GiB in
+either layout):
+
+| | layout | lifetime | ff 0.1 | ff 1 |
+|---|---|---|---|---|
+| store (compact regime) | the Dataset's 4-bit columns, column-major (column c from nibble c × rows, rows rounded up to even) | the training | 11.24 GiB | — |
+| compact view (compact regime) | the tree's sampled columns, row-major | refilled from the store every tree | 1.13 GiB | — |
+| full view (mask regime) | every column, row-major (the old row-major matrix's bytes and layout) | the training | — | 11.24 GiB |
+
+Peak device memory over idle on numerai53-deep (30 rounds; nvidia-smi
+`memory.used`, 500 ms sampling), against `colmajor_fill`'s decision:
+
+| feature_fraction | 0.1 | 0.5 | 0.9 | 1.0 |
+|---|---|---|---|---|
+| `colmajor_direct:off` (master) | 25.0 GiB: matrix + copy + view | 18.2 GiB: matrix + view (copy declined) | 22.8 GiB: matrix + view (copy declined) | 24.0 GiB: matrix + copy no tree reads |
+| `colmajor_direct` (auto) | **13.7 GiB**: store + view (compact) | 18.2 GiB: store + view (compact) | **12.6 GiB**: full view (mask) | **12.6 GiB**: full view (mask) |
+
+A compact-regime reader that needs every column in the row-major layout (a
+tree that happens to sample every column, the split view of a pack-codec
+tree) gets the full view filled from the store, kept while consecutive trees
+read it and released on the first that does not; that is the one case with
+two copies, and the default regimes never reach it on numerical data.
+
+**Where the regimes cross.** numerai53-deep, `view_mode:compact` against
+`view_mode:mask`, 200 rounds, two interleaved fresh-process pairs per point;
+identical model md5 at every `feature_fraction`:
+
+| feature_fraction | 0.1 | 0.2 | 0.35 | 0.5 | 0.7 | 0.8 | 0.85 | 0.9 | 0.99 | 1.0 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| compact, ms/round | **16.4** | **33.5** | **59.0** | **133.8** | **175.1** | **189.5** | 246.2 | 251.3 | 262.9 | 210.9 |
+| mask, ms/round | 177.3 | 185.9 | 218.4 | 220.5 | 222.5 | 224.5 | **224.2** | **224.8** | **223.3** | **210.7** |
+| compact, peak GiB over idle | 13.8 | 14.9 | 16.6 | 18.3 | 20.6 | 21.7 | 22.3 | 22.8 | 23.9 | 23.9 |
+| mask, peak GiB over idle | 12.7 | 12.9 | 13.0 | 12.7 | 12.7 | 12.7 | 12.7 | 12.7 | 12.7 | 12.7 |
+
+The masked full-matrix kernels read every column of every row, whatever the
+sample, so their time barely moves with `feature_fraction`; the compact view
+pays a per-tree fill but reads only the sampled bytes. They cross between
+0.80 and 0.85, hence `view_mask_ff` 0.85. Under auto there is no step at
+0.99 → 1.0 any more (mask 223 → 211 ms); before, 0.99 paid a per-tree copy
+of 99% of the matrix that 1.0 did not (263 → 211 ms). At ff 1 the compact
+column is the full view next to the store, the same kernels with twice the
+memory.
+
+![colmajor_direct regimes across feature_fraction](perf-plots/view_regime_crossover.png)
 
 `wide_partitions`, `l2_policy`, `colmajor_fill` and `tuner` compose: **+10.5% on
 numerai-deep combined**. A methodology note the

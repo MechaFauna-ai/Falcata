@@ -1018,6 +1018,71 @@ def plot_memory():
     plt.close(fig)
 
 
+def plot_view_regime():
+    """colmajor_direct's two regimes across feature_fraction on numerai53-deep: per-round time and peak device
+    memory, side by side (two measures, two panels). Source: data/view_regime_sweep.jsonl, one run per line
+    (steady_ms: median of rounds 21-200; peak_over_idle_mib: nvidia-smi memory.used, 500 ms sampling)."""
+    with open(os.path.join(HERE, "data", "view_regime_sweep.jsonl")) as f:
+        runs = [json.loads(line) for line in f if line.strip()]
+    color = {"compact": LIB_COLOR["falcata-stoch"], "mask": LIB_COLOR["xgboost"]}
+    label = {"compact": "compact (store + per-tree view)", "mask": "mask (one full view, column masks)"}
+    ffs = sorted({r["ff"] for r in runs})
+    fig, (ax_t, ax_m) = plt.subplots(1, 2, figsize=(12, 4.2))
+    for mode in ("compact", "mask"):
+        ms = [statistics.median(r["steady_ms"] for r in runs if r["ff"] == ff and r["mode"] == mode) for ff in ffs]
+        gib = [max(r["peak_over_idle_mib"] for r in runs if r["ff"] == ff and r["mode"] == mode) / 1024 for ff in ffs]
+        for ax, ys in ((ax_t, ms), (ax_m, gib)):
+            ax.plot(
+                ffs,
+                ys,
+                color=color[mode],
+                linewidth=2,
+                marker="o",
+                markersize=5,
+                markeredgecolor=SURFACE,
+                markeredgewidth=1.5,
+                label=label[mode],
+                zorder=3,
+            )
+        ax_t.annotate(
+            mode,
+            (ffs[-2], ms[-2]),
+            xytext=(6, 8 if mode == "compact" else -14),
+            textcoords="offset points",
+            color=TEXT2,
+            fontsize=9,
+        )
+    for ax in (ax_t, ax_m):
+        ax.axvline(0.85, color=TEXT2, linewidth=1, linestyle=(0, (4, 3)), zorder=2)
+        ax.set_xlabel("feature_fraction")
+        ax.set_xlim(0.05, 1.03)
+        ax.set_ylim(bottom=0)
+    ax_t.text(0.855, 8, "auto: mask from 0.85", color=TEXT2, fontsize=8.5)
+    ax_t.set_ylabel("ms per round (steady state)")
+    ax_m.set_ylabel("peak device memory over idle (GiB)")
+    ax_t.set_title("time per round", fontsize=SUB_PT, color=TEXT2, loc="left")
+    ax_m.set_title("peak device memory", fontsize=SUB_PT, color=TEXT2, loc="left")
+    ax_m.legend(frameon=False, loc="lower right", fontsize=9)
+    fig.suptitle(
+        "colmajor_direct regimes on numerai53-deep (6.79M rows x 3,555 features): same model at every feature_fraction",
+        fontsize=TITLE_PT,
+        x=0.01,
+        ha="left",
+    )
+    fig.text(
+        0.01,
+        -0.03,
+        "RTX 5090, 200 rounds, two interleaved pairs per point; the 4-bit matrix is 11.24 GiB. "
+        "Source: docs/perf-plots/data/view_regime_sweep.jsonl",
+        fontsize=CAP_PT,
+        color=TEXT2,
+    )
+    fig.tight_layout()
+    normalize_text(fig)
+    fig.savefig(os.path.join(HERE, "view_regime_crossover.png"), bbox_inches="tight")
+    plt.close(fig)
+
+
 plot_cross_library()
 plot_hybrid_diagram()
 plot_selective_prune()
@@ -1028,4 +1093,5 @@ plot_small_features()
 plot_curves()
 plot_model_size()
 plot_memory()
-print("wrote 7 plots to", HERE)
+plot_view_regime()
+print("wrote 8 plots to", HERE)
