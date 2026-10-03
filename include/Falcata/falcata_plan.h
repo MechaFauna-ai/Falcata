@@ -211,6 +211,19 @@ struct FalcataPlan {
   // not finite, the block replays the original per-1024-task reductions and
   // merge exactly. Bit-identical.
   bool sync_used_tasks = true;      // key: sync_used_tasks
+  // quantized root sums (gradient/hessian totals of the tree's rows): one warp
+  // per 1024-row chunk sums 32 rows per lane, instead of one 1024-thread block
+  // per chunk with one row per thread and two block reductions. Each chunk's
+  // integer sums, and so every per-chunk partial the final reduction reads,
+  // are the same. Bit-identical.
+  bool root_sums_warp = true;       // key: root_sums_warp
+  // quantized gradient discretizer's per-chunk min/max: one warp per chunk of
+  // 1024 rows runs the block reduction's shuffle trees itself (the 32 per-warp
+  // trees in turn, then the cross-warp tree over their results), instead of a
+  // 1024-thread block with one row per thread and four block reductions. Same
+  // trees and operand order, so the same partials, NaN and signed zero
+  // included. Bit-identical.
+  bool minmax_warp = true;          // key: minmax_warp
   // packed split read from the column-major nibble store (colmajor_direct's
   // compact regime, or colmajor_fill's copy) instead of the row-major compact
   // matrix: the partition reads a row's split bin from a contiguous
@@ -300,6 +313,8 @@ struct FalcataPlan {
     if (key == "warp_find_spread") return &warp_find_spread;
     if (key == "apply_row_batch") return &apply_row_batch;
     if (key == "sync_used_tasks") return &sync_used_tasks;
+    if (key == "root_sums_warp") return &root_sums_warp;
+    if (key == "minmax_warp") return &minmax_warp;
     if (key == "colmajor_split") return &colmajor_split;
     if (key == "tuner") return &tuner;
     if (key == "wide_partitions") return &wide_partitions;

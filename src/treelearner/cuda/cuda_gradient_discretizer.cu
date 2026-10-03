@@ -7,6 +7,8 @@
 
 #ifdef USE_CUDA
 
+#include <Falcata/falcata_plan.h>
+
 #include <algorithm>
 
 #include <Falcata/cuda/cuda_algorithms.hpp>
@@ -49,6 +51,72 @@ __global__ void ReduceMinMaxKernel(
     hess_max_block_buffer[blockIdx.x] = hess_max_val;
   }
 }
+
+#if !defined(__HIP_PLATFORM_AMD__)
+// ReduceMinMaxKernel with one warp per chunk of CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE rows (cuda_plan key
+// minmax_warp). The block version's thread 32 w + l holds row 32 w + l of the chunk (or the +-inf fill past
+// num_data); ShuffleReduce{Min,Max} run every warp's shuffle tree over its 32 rows, then warp 0's tree over the
+// 32 warp results. Here the warp runs warp w's trees on rows 32 w .. 32 w + 31 (same lanes, same shuffles, same
+// operand order), lane w keeps their lane-0 results, and the warp then runs the cross-warp tree, so every
+// partial is the same value, NaN and signed zero included. CUDA only.
+__global__ void ReduceMinMaxChunkWarpKernel(
+  const data_size_t num_data,
+  const int num_chunks,
+  const score_t* input_gradients,
+  const score_t* input_hessians,
+  score_t* grad_min_block_buffer,
+  score_t* grad_max_block_buffer,
+  score_t* hess_min_block_buffer,
+  score_t* hess_max_block_buffer) {
+  constexpr int kRowsPerWarpTree = 32;
+  static_assert(CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE == kRowsPerWarpTree * kRowsPerWarpTree,
+                "the chunk is 32 warps of 32 rows");
+  const int chunk = static_cast<int>((blockIdx.x * blockDim.x + threadIdx.x) / WARPSIZE);
+  if (chunk >= num_chunks) {
+    return;
+  }
+  const int lane = static_cast<int>(threadIdx.x % WARPSIZE);
+  const data_size_t chunk_start = static_cast<data_size_t>(chunk) * CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE;
+  score_t grad_min_warp = 0.0f;
+  score_t grad_max_warp = 0.0f;
+  score_t hess_min_warp = 0.0f;
+  score_t hess_max_warp = 0.0f;
+#pragma unroll 4
+  for (int w = 0; w < kRowsPerWarpTree; ++w) {
+    const data_size_t index = chunk_start + static_cast<data_size_t>(w * kRowsPerWarpTree + lane);
+    score_t grad_max_val = kMinScore;
+    score_t grad_min_val = kMaxScore;
+    score_t hess_max_val = kMinScore;
+    score_t hess_min_val = kMaxScore;
+    if (index < num_data) {
+      grad_max_val = input_gradients[index];
+      grad_min_val = input_gradients[index];
+      hess_max_val = input_hessians[index];
+      hess_min_val = input_hessians[index];
+    }
+    grad_min_val = __shfl_sync(0xffffffff, ShuffleReduceMinWarp<score_t>(grad_min_val, kRowsPerWarpTree), 0);
+    grad_max_val = __shfl_sync(0xffffffff, ShuffleReduceMaxWarp<score_t>(grad_max_val, kRowsPerWarpTree), 0);
+    hess_min_val = __shfl_sync(0xffffffff, ShuffleReduceMinWarp<score_t>(hess_min_val, kRowsPerWarpTree), 0);
+    hess_max_val = __shfl_sync(0xffffffff, ShuffleReduceMaxWarp<score_t>(hess_max_val, kRowsPerWarpTree), 0);
+    if (lane == w) {
+      grad_min_warp = grad_min_val;
+      grad_max_warp = grad_max_val;
+      hess_min_warp = hess_min_val;
+      hess_max_warp = hess_max_val;
+    }
+  }
+  grad_min_warp = ShuffleReduceMinWarp<score_t>(grad_min_warp, kRowsPerWarpTree);
+  grad_max_warp = ShuffleReduceMaxWarp<score_t>(grad_max_warp, kRowsPerWarpTree);
+  hess_min_warp = ShuffleReduceMinWarp<score_t>(hess_min_warp, kRowsPerWarpTree);
+  hess_max_warp = ShuffleReduceMaxWarp<score_t>(hess_max_warp, kRowsPerWarpTree);
+  if (lane == 0) {
+    grad_min_block_buffer[chunk] = grad_min_warp;
+    grad_max_block_buffer[chunk] = grad_max_warp;
+    hess_min_block_buffer[chunk] = hess_min_warp;
+    hess_max_block_buffer[chunk] = hess_max_warp;
+  }
+}
+#endif  // !defined(__HIP_PLATFORM_AMD__)
 
 __global__ void ReduceBlockMinMaxKernel(
   const int num_blocks,
@@ -411,12 +479,31 @@ void CUDAGradientDiscretizer::DiscretizeGradientsForPlane(
   const data_size_t num_data,
   const score_t* input_gradients,
   const score_t* input_hessians) {
-  ReduceMinMaxKernel<<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(
-    num_data, input_gradients, input_hessians,
-    grad_min_block_buffer_.RawData(),
-    grad_max_block_buffer_.RawData(),
-    hess_min_block_buffer_.RawData(),
-    hess_max_block_buffer_.RawData());
+#if !defined(__HIP_PLATFORM_AMD__)
+  const bool chunk_warp = FalcataPlan::Get().minmax_warp;
+#else
+  const bool chunk_warp = false;  // the warp-per-chunk kernel is CUDA only
+#endif
+  if (chunk_warp) {
+#if !defined(__HIP_PLATFORM_AMD__)
+    // one warp per chunk, eight chunks per 256-thread block
+    constexpr int kChunkWarpThreads = 256;
+    const int chunk_grid = (num_reduce_blocks_ * WARPSIZE + kChunkWarpThreads - 1) / kChunkWarpThreads;
+    ReduceMinMaxChunkWarpKernel<<<chunk_grid, kChunkWarpThreads>>>(
+      num_data, num_reduce_blocks_, input_gradients, input_hessians,
+      grad_min_block_buffer_.RawData(),
+      grad_max_block_buffer_.RawData(),
+      hess_min_block_buffer_.RawData(),
+      hess_max_block_buffer_.RawData());
+#endif
+  } else {
+    ReduceMinMaxKernel<<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(
+      num_data, input_gradients, input_hessians,
+      grad_min_block_buffer_.RawData(),
+      grad_max_block_buffer_.RawData(),
+      hess_min_block_buffer_.RawData(),
+      hess_max_block_buffer_.RawData());
+  }
     SynchronizeCUDADevice(__FILE__, __LINE__);
   ReduceBlockMinMaxKernel<<<1, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(
     num_reduce_blocks_,
