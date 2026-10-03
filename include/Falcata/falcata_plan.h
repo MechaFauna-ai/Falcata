@@ -43,6 +43,9 @@ namespace Falcata {
  * debugging lever for developers.
  */
 struct FalcataPlan {
+  static constexpr int kViewModeAuto = 0;
+  static constexpr int kViewModeCompact = 1;
+  static constexpr int kViewModeMask = 2;
   // --- shape-conditional decisions (cuda_plan override keys) ---------------
   // hybrid level-batched growth (off = classic one-split-at-a-time leaf-wise)
   bool hybrid = true;               // key: hybrid
@@ -130,6 +133,37 @@ struct FalcataPlan {
   // source layout). Measured: +2.2% numerai-deep; inert without feature
   // sampling.
   bool colmajor_fill = true;        // key: colmajor_fill
+  // with colmajor_fill, for data whose columns are all 4-bit (or 8-bit) dense
+  // columns: build the device copy of the bin matrix straight from the
+  // Dataset's column buffers and keep ONE copy, in the layout the training
+  // regime reads (view_mode below). No row-major matrix is built at Init, no
+  // transpose, no memory rule. Bit-identical (same bytes). off: the row-major
+  // matrix is built at Init and colmajor_fill's copy decided before the second
+  // tree, as before.
+  bool colmajor_direct = true;      // key: colmajor_direct
+  // colmajor_direct's training regime, decided per train() (and again on
+  // ResetTrainingData / a feature_fraction change):
+  //  - compact: the column-major store (the Dataset's 4-bit columns end to end)
+  //    stays resident and every tree fills its compact view of the sampled
+  //    columns from it;
+  //  - mask: one full row-major matrix, filled from the columns once, no store,
+  //    no per-tree copy; the per-tree sample reaches the kernels as the column
+  //    masks they already take.
+  // key view_mode: auto (mask iff feature_fraction >= view_mask_ff, or the
+  // compact view is off for this training) | compact | mask.
+  int view_mode = kViewModeAuto;
+  // key view_mask_ff: the auto threshold, a number >= 0 (above 1 = never mask). Measured on numerai53-deep
+  // (6.79M x 3555, 200 rounds): compact 189 vs mask 224 ms per round at ff 0.80, 246 vs 224 at 0.85; md5
+  // identical at every ff. The mask regime also holds one matrix where compact holds the store plus an ff-sized
+  // view (13.0 vs 22.2 GB peak at 0.80).
+  double view_mask_ff = 0.85;
+  // keys view_probe_lo / view_probe_hi: with the tuner active (cuda_plan tuner, quantized training) and view_mode
+  // auto, a feature_fraction in [view_probe_lo, view_probe_hi] is decided by measurement instead: the first trees
+  // run in each regime (both train the same model) and the faster one is kept and cached in the tuner's wisdom.
+  // Outside the band, the static rule above. The numerai53-deep sweep's margins: compact ahead by 39% at 0.5 and
+  // 16% at 0.8, mask ahead by 9-15% from 0.85 to 0.99.
+  double view_probe_lo = 0.5;
+  double view_probe_hi = 0.95;
   // 4-bit compact fill through a shared-memory [row][slot] tile: coalesced
   // column reads, 16-byte streaming writes of each partition's contiguous
   // destination run. The host takes it for column-major sources with at most
@@ -222,6 +256,7 @@ struct FalcataPlan {
     if (key == "pack_radix7") return &pack_radix7;
     if (key == "l2_policy") return &l2_policy;
     if (key == "colmajor_fill") return &colmajor_fill;
+    if (key == "colmajor_direct") return &colmajor_direct;
     if (key == "tiled_fill") return &tiled_fill;
     if (key == "warp_find") return &warp_find;
     if (key == "tuner") return &tuner;
@@ -255,6 +290,34 @@ struct FalcataPlan {
       const std::vector<std::string> kv = Common::Split(token.c_str(), ':');
       if (kv.size() != 2) {
         Log::Fatal("cuda_plan: bad token \"%s\" (expected key:on|off)", token.c_str());
+      }
+      // the non-boolean keys: view_mode and the view_* numbers
+      if (kv[0] == std::string("view_mode")) {
+        if (kv[1] == std::string("auto")) {
+          plan.view_mode = kViewModeAuto;
+        } else if (kv[1] == std::string("compact")) {
+          plan.view_mode = kViewModeCompact;
+        } else if (kv[1] == std::string("mask")) {
+          plan.view_mode = kViewModeMask;
+        } else {
+          Log::Fatal("cuda_plan: bad value \"%s\" for key \"view_mode\" (expected auto|compact|mask)", kv[1].c_str());
+        }
+        overridden = true;
+        continue;
+      }
+      double* number = kv[0] == std::string("view_mask_ff") ? &plan.view_mask_ff :
+                       kv[0] == std::string("view_probe_lo") ? &plan.view_probe_lo :
+                       kv[0] == std::string("view_probe_hi") ? &plan.view_probe_hi : nullptr;
+      if (number != nullptr) {
+        char* end = nullptr;
+        const double value = std::strtod(kv[1].c_str(), &end);
+        if (end == kv[1].c_str() || *end != '\0' || !(value >= 0.0)) {
+          Log::Fatal("cuda_plan: bad value \"%s\" for key \"%s\" (expected a number >= 0)", kv[1].c_str(),
+                     kv[0].c_str());
+        }
+        *number = value;
+        overridden = true;
+        continue;
       }
       bool value;
       if (kv[1] == std::string("on") || kv[1] == std::string("1") || kv[1] == std::string("true")) {

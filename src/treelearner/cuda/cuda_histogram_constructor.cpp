@@ -32,6 +32,20 @@ bool CompactQuantEnabled() {
   return FalcataPlan::Get().compact_quant;
 }
 
+constexpr size_t kMiB = size_t{1} << 20;
+
+size_t ToMiB(const size_t bytes) { return (bytes + kMiB - 1) / kMiB; }
+
+// colmajor_direct's diagnostic: Info under FALCATA_DEBUG=diag, Debug otherwise (as colmajor_fill's engagement line).
+template <typename... Args>
+void LogDirectView(const char* fmt, Args... args) {
+  if (FalcataDebug().diag) {
+    Log::Info(fmt, args...);
+  } else {
+    Log::Debug(fmt, args...);
+  }
+}
+
 }  // namespace
 
 CUDAHistogramConstructor::CUDAHistogramConstructor(
@@ -287,6 +301,9 @@ void LaunchTransposeToColMajorNibbleKernel(
   data_size_t num_data,
   size_t num_data_pad);
 
+// Implemented in cuda_histogram_constructor.cu: zero the nibble past the last row of each column (odd row counts).
+void LaunchClearColMajorPadNibbles(uint8_t* colmajor, int num_columns, size_t column_bytes);
+
 void LaunchFillCompactCodecKernel(
   cudaStream_t stream,
   PackCodecId codec,
@@ -455,6 +472,13 @@ bool CUDAHistogramConstructor::ScanCompactLayout(
 bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_feature_used_bytree) {
   use_compact_view_ = false;
   compact_col_major_filled_ = false;
+  full_view_used_ = false;
+  if (view_mask_regime()) {
+    // mask regime: no per-tree copy; every kernel reads the resident full view under this tree's column masks
+    prefill_valid_ = false;
+    EnsureFullView("the mask regime");
+    return false;
+  }
   CompactLayout layout;
   const bool eligible = ScanCompactLayout(is_feature_used_bytree, &layout);
   if (prefill_valid_) {
@@ -465,6 +489,11 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
   }
   if (!eligible) {
     prefill_valid_ = false;
+    // every construct of this tree reads the whole matrix in the row-major layout: under colmajor_direct, the full
+    // view (kept while trees keep needing it)
+    if (colmajor_direct_) {
+      EnsureFullView("a tree without a compact view");
+    }
     return false;
   }
 
@@ -705,6 +734,13 @@ void CUDAHistogramConstructor::LaunchCompactFill(
     std::vector<int> col_stride_h(total_compact);
     for (int s = 0; s < total_compact; ++s) {
       const int p = partition_for_compact_h[s];
+      if (colmajor_direct_) {
+        // the source is the column-major store: column c is the nibble run at c * pad, per-row stride 1
+        col_nib_h[s] = (static_cast<size_t>(src_part_col_offsets[p]) +
+                        static_cast<size_t>(src_local_col_for_compact_h[s])) * colmajor_pad_;
+        col_stride_h[s] = 1;
+        continue;
+      }
       col_nib_h[s] = static_cast<size_t>(src_packed_offsets[p]) * static_cast<size_t>(num_data) * 2 +
         static_cast<size_t>(src_local_col_for_compact_h[s]);
       col_stride_h[s] = (src_packed_offsets[p + 1] - src_packed_offsets[p]) * 2;
@@ -752,7 +788,7 @@ void CUDAHistogramConstructor::LaunchCompactFill(
     upload(cuda_ws_ndig_.RawData(), ws_ndig_h.data(), sizeof(uint8_t) * total_word_slots, &pin_off);
     LaunchFillCompactCodecKernel(
       stream, layout.codec,
-      cuda_row_data_->GetBin<uint8_t>(),
+      colmajor_direct_ ? colmajor_bin_.RawDataReadOnly() : RowMajorBin<uint8_t>(),
       dst,
       cuda_col_src_nib_base_.RawData(),
       cuda_col_src_stride_nib_.RawData(),
@@ -836,7 +872,7 @@ void CUDAHistogramConstructor::LaunchCompactFill(
     }
     LaunchFillCompactData4BitKernel(
       stream,
-      colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : cuda_row_data_->GetBin<uint8_t>(),
+      colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : RowMajorBin<uint8_t>(),
       dst,
       cuda_bs_src_nib0_.RawData(),
       cuda_bs_src_nib1_.RawData(),
@@ -885,7 +921,7 @@ void CUDAHistogramConstructor::LaunchCompactFill(
     // 32-byte sector per byte); keep the fill single-output.
     LaunchFillCompactDataKernel(
       stream,
-      cuda_row_data_->GetBin<uint8_t>(),
+      RowMajorBin<uint8_t>(),
       dst,
       cuda_slot_src_byte_.RawData(),
       cuda_slot_src_stride_.RawData(),
@@ -937,6 +973,8 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   cuda_feature_most_freq_bins_.InitFromHostVector(feature_most_freq_bins_);
 
   cuda_row_data_.reset(new CUDARowData(train_data, share_state, gpu_device_id_, gpu_use_dp_));
+  // colmajor_direct: no row-major matrix when the Dataset's columns can serve (the tree learner then builds a view)
+  cuda_row_data_->RequestDense4BitColumnsOnly(FalcataPlan::Get().colmajor_fill && FalcataPlan::Get().colmajor_direct);
   cuda_row_data_->Init(train_data, share_state);
 
   // Deterministic dense-construct scratch (same as ResetTrainingData; both
@@ -1039,8 +1077,13 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
       cuda_hist_buffer_.Resize(buffer_size);
     }
   }
-  // The column-major fill source (cuda_plan key colmajor_fill) is not made here: the tree learner calls
-  // InitColMajorFill before its second tree, once everything sized by the data is allocated.
+  // The column-major fill source (cuda_plan key colmajor_fill) is not made here. Under colmajor_direct the tree
+  // learner chooses the regime and its view is built from the Dataset's columns (ChooseViewRegime) at the end of its
+  // Init; otherwise the tree learner calls InitColMajorFill before its second tree.
+  colmajor_bin_.Clear();
+  colmajor_pad_ = 0;
+  full_view_.Clear();
+  colmajor_direct_ = cuda_row_data_->dense_4bit_columns_only();
 
   // one int32 region of num_total_bin_ entries per histogram pipeline (the pairs
   // of a level run concurrently on different pipeline streams and must not share
@@ -1050,9 +1093,328 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
                      (static_cast<size_t>(num_total_bin_) * kNumHistPipelines + 1) / 2));
 }
 
+// colmajor_direct. The column-major store colmajor_fill gathers from holds, byte for byte, the Dataset's 4-bit
+// columns laid end to end (column c from nibble c * pad, even row in the low nibble), so it is uploaded from them
+// and there is no row-major matrix to transpose. The device keeps ONE copy of the bin matrix, in the layout the
+// training regime reads:
+//  - compact regime (low feature_fraction): the store; every tree fills its compact view of the sampled columns
+//    from it. A reader that needs every column in the row-major layout (a tree that samples every column, a split
+//    view the compact matrix cannot serve) gets the full view, filled from the store and kept while trees use it.
+//  - mask regime (high feature_fraction): the full view, the compact view of every column (the row-major matrix's
+//    bytes and layout), filled once from the Dataset's columns a staging chunk at a time, with no store; no tree
+//    copies anything, the kernels apply the per-tree sample through their column masks.
+// INVARIANT (quantized training): both regimes feed every kernel the same bin values for the same sampled columns,
+// and the quantized histograms are integer sums (order-invariant), so a tree trains to the same bytes in either
+// regime. Switching regimes between trees -- the tree learner's tuner probe does, as does a feature_fraction change
+// -- is therefore legal at any tree and never changes the model (tests/python_package_test/test_colmajor_direct.py
+// checks it). Float histograms are not order-invariant: non-quantized training takes the mask regime only where every
+// tree samples every column (the same kernels either way), see ViewMaskWanted.
+// The tree learner chooses (ChooseViewRegime: FalcataPlan::view_mode / view_mask_ff, the memory check, the tuner's
+// probe or its wisdom) at the end of its Init, on ResetTrainingData and when ResetConfig changes feature_fraction;
+// the row data only says whether the direct build applies.
+bool CUDAHistogramConstructor::ViewMaskWanted() const {
+  const FalcataPlan& plan = FalcataPlan::Get();
+  if (plan.view_mode == FalcataPlan::kViewModeCompact) {
+    return false;
+  }
+  if (plan.view_mode == FalcataPlan::kViewModeMask) {
+    return true;
+  }
+  if (!use_quantized_grad_) {
+    // float histograms: the full-matrix kernels group rows by the partition's column count, so under a strict column
+    // sample they sum in another order than the compact view's (the last bits of the model move); only a training in
+    // which every tree samples every column runs the same kernels in both regimes
+    return SampledColumns() >= static_cast<size_t>(cuda_row_data_->host_feature_partition_column_index_offsets().back());
+  }
+  if (!CompactQuantEnabled()) {
+    return true;  // compact_quant:off: no tree builds a compact view, so the store would serve nothing
+  }
+  return ViewFraction() >= plan.view_mask_ff;
+}
+
+size_t CUDAHistogramConstructor::SampledColumns() const {
+  // ColSampler samples round(F x feature_fraction) of the F features (at least one); a column carries at least one
+  const size_t num_columns = static_cast<size_t>(cuda_row_data_->host_feature_partition_column_index_offsets().back());
+  const int sampled_features =
+    std::max(std::min(1, num_features_), static_cast<int>(Common::RoundInt(num_features_ * ViewFraction())));
+  return std::min(num_columns, static_cast<size_t>(sampled_features));
+}
+
+double CUDAHistogramConstructor::ViewFraction() const {
+  return (feature_fraction_ > 0.0 && feature_fraction_ < 1.0) ? feature_fraction_ : 1.0;
+}
+
+CUDAHistogramConstructor::CompactRegimeBytes CUDAHistogramConstructor::CompactRegimeNeed(
+    const bool one_byte_split_view) const {
+  CompactRegimeBytes need;
+  const std::vector<int>& part_cols = cuda_row_data_->host_feature_partition_column_index_offsets();
+  const size_t num_data = static_cast<size_t>(num_data_);
+  const size_t num_columns = static_cast<size_t>(part_cols.back());
+  const size_t num_partitions = part_cols.size() - 1;
+  need.store = num_columns * cuda_row_data_->colmajor_column_bytes();
+  // The compact view (ScanCompactLayout's arithmetic): a partition's s_p sampled columns take ceil(s_p / 2) bytes
+  // per row, at most (S + P) / 2 rounded up over the P partitions for S sampled columns.
+  const size_t sampled = SampledColumns();
+  need.view = std::min(cuda_row_data_->dense_4bit_bytes(), (sampled + num_partitions + 1) / 2 * num_data);
+  if (FalcataPlan::Get().compact_prefill) {
+    need.view *= 2;  // the next tree's view, filled on the side
+  }
+  // the tree learner's one-byte-per-value split view of the sampled columns, when it builds one (its own predicate,
+  // CUDASingleGPUTreeLearner::BuildsOneByteSplitView)
+  if (one_byte_split_view) {
+    need.column_view = sampled * num_data;
+  }
+  return need;
+}
+
+size_t CUDAHistogramConstructor::HeldViewBytes() const {
+  return colmajor_bin_.Size() + full_view_.Size() + compact_data_uint8_t_.Size() + compact_data_uint8_t_alt_.Size();
+}
+
+void CUDAHistogramConstructor::ChooseViewRegime(const size_t reserve_bytes, const bool one_byte_split_view,
+                                                const bool trees_read_full_matrix, const int prefer,
+                                                const char* why) {
+  if (!colmajor_direct_) {
+    return;
+  }
+  const bool initial = colmajor_bin_.Size() == 0 && full_view_.Size() == 0;
+  // Does the compact regime fit? Deterministic: its sizes against what cudaMemGetInfo reports free now, plus what
+  // the views hold now (a regime change frees them first), plus the reserve the tree learner computed for
+  // everything it can still allocate. FALCATA_DEBUG=vramfree=N caps the free figure, for tests.
+  const CompactRegimeBytes need = CompactRegimeNeed(one_byte_split_view);
+  size_t free_b = 0, total_b = 0;
+  CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_b, &total_b));
+  const int64_t cap_mib = FalcataDebug().vramfree_mib;
+  if (cap_mib >= 0) {
+    free_b = std::min(free_b, static_cast<size_t>(cap_mib) << 20);
+  }
+  const size_t available = free_b + HeldViewBytes();
+  compact_fits_ = need.total() + reserve_bytes <= available;
+  LogDirectView("colmajor_direct: the compact regime needs store %zu + compact view %zu + split view %zu + reserve %zu "
+                "MiB, %zu MiB available", ToMiB(need.store), ToMiB(need.view), ToMiB(need.column_view),
+                ToMiB(reserve_bytes), available / kMiB);
+  bool mask = prefer >= 0 ? (prefer == 1) : ViewMaskWanted();
+  const char* reason = why;
+  const bool forced_compact = FalcataPlan::Get().view_mode == FalcataPlan::kViewModeCompact;
+  if (!use_quantized_grad_) {
+    // float histograms: the regime is the static rule's (ViewMaskWanted), never the memory check's, since the mask
+    // regime would change the model under a strict column sample. The compact regime holds the store and the views
+    // the row-major matrix held them next to before, so it needs no more memory than colmajor_direct:off.
+    compact_fits_ = false;  // and no probe (the tuner is quantized-only anyway)
+  } else if (trees_read_full_matrix && !forced_compact) {
+    // every tree's per-leaf construct reads the whole matrix row-major: the compact regime would hold the store and
+    // the full view and fill a compact view nothing reads
+    compact_fits_ = false;
+    if (!mask) {
+      mask = true;
+      reason = "the per-leaf quantized construct reads every column";
+    }
+  }
+  if (!mask && !compact_fits_ && !forced_compact && use_quantized_grad_) {
+    LogDirectView("colmajor_direct: the compact regime does not fit (store %zu + compact view %zu + split view %zu + "
+                  "reserve %zu MiB > %zu MiB available): mask regime", ToMiB(need.store), ToMiB(need.view),
+                  ToMiB(need.column_view), ToMiB(reserve_bytes), available / kMiB);
+    mask = true;
+    reason = "the compact regime does not fit";
+  }
+  if (initial || mask != view_mask_) {
+    if (mask) {
+      EnterMaskRegime(reason);
+    } else {
+      EnterCompactRegime(reason);
+    }
+  }
+}
+
+void CUDAHistogramConstructor::SwitchViewRegime(const bool mask, const char* why) {
+  if (colmajor_direct_ && mask != view_mask_) {
+    if (mask) {
+      EnterMaskRegime(why);
+    } else {
+      EnterCompactRegime(why);
+    }
+  }
+}
+
+namespace {
+const char* ViewModeName() {
+  switch (FalcataPlan::Get().view_mode) {
+    case FalcataPlan::kViewModeCompact: return "compact";
+    case FalcataPlan::kViewModeMask: return "mask";
+    default: return "auto";
+  }
+}
+}  // namespace
+
+// Both transitions free the old layout before building the new one, so a switch peaks at one matrix (plus the
+// mask fill's 256 MiB staging chunk).
+void CUDAHistogramConstructor::EnterCompactRegime(const char* why) {
+  InvalidateCompactPrefill();
+  view_mask_ = false;
+  const size_t view_bytes = full_view_.Size();
+  full_view_.Clear();
+  const int num_columns = cuda_row_data_->host_feature_partition_column_index_offsets().back();
+  const size_t column_bytes = cuda_row_data_->colmajor_column_bytes();
+  const size_t bytes = static_cast<size_t>(num_columns) * column_bytes;
+  colmajor_bin_.ResizeDiscard(bytes);
+  cuda_row_data_->UploadDense4BitColumnsColMajor(colmajor_bin_.RawData(), 0, num_columns);
+  if ((num_data_ & 1) != 0) {
+    // the nibble past the last row: the Dataset's byte may hold anything, the transpose this replaces wrote 0
+    LaunchClearColMajorPadNibbles(colmajor_bin_.RawData(), num_columns, column_bytes);
+  }
+  SynchronizeCUDADevice(__FILE__, __LINE__);
+  colmajor_pad_ = 2 * column_bytes;
+  if (FalcataVerifyEnabled()) {
+    cuda_row_data_->VerifyDense4BitColMajor(colmajor_bin_.RawDataReadOnly());
+  }
+  LogDirectView("colmajor_direct: compact regime (%s; feature_fraction %g, view_mode %s, view_mask_ff %g): "
+                "column-major store built from the Dataset's columns, %d columns (%zu MiB); no row-major matrix on "
+                "the device%s", why, feature_fraction_, ViewModeName(), FalcataPlan::Get().view_mask_ff, num_columns,
+                ToMiB(bytes), view_bytes > 0 ? "; full view released" : "");
+}
+
+void CUDAHistogramConstructor::EnterMaskRegime(const char* why) {
+  InvalidateCompactPrefill();
+  view_mask_ = true;
+  const size_t store_bytes = colmajor_bin_.Size();
+  colmajor_bin_.Clear();
+  colmajor_pad_ = 0;
+  // no tree builds a compact view in this regime: its buffers go too
+  compact_data_uint8_t_.Clear();
+  compact_data_uint8_t_alt_.Clear();
+  full_view_.Clear();
+  FillFullViewFromColumns();
+  if (FalcataVerifyEnabled()) {
+    cuda_row_data_->VerifyDense4BitRowMajor(full_view_.RawDataReadOnly(), "full view filled from the Dataset's columns");
+  }
+  LogDirectView("colmajor_direct: mask regime (%s; feature_fraction %g, view_mode %s, view_mask_ff %g): full view "
+                "filled from the Dataset's columns (%zu MiB); no column-major store on the device%s", why,
+                feature_fraction_, ViewModeName(), FalcataPlan::Get().view_mask_ff, ToMiB(full_view_.Size()),
+                store_bytes > 0 ? "; column-major store released" : "");
+}
+
+CUDAHistogramConstructor::CompactLayout CUDAHistogramConstructor::FullLayout() const {
+  const std::vector<int>& part_cols = cuda_row_data_->host_feature_partition_column_index_offsets();
+  const std::vector<uint32_t>& col_hist_offsets = cuda_row_data_->host_column_hist_offsets();
+  CompactLayout layout;
+  layout.num_partitions = static_cast<int>(part_cols.size()) - 1;
+  layout.part_col_offsets = part_cols;
+  for (int p = 0; p < layout.num_partitions; ++p) {
+    layout.src_part_stride.push_back(part_cols[p + 1] - part_cols[p]);
+    for (int c = part_cols[p]; c < part_cols[p + 1]; ++c) {
+      layout.src_local_col.push_back(c - part_cols[p]);
+      layout.partition_for_slot.push_back(p);
+      layout.col_hist_offsets.push_back(col_hist_offsets[c]);
+    }
+  }
+  layout.total_compact = part_cols.back();
+  layout.is_4bit = true;
+  layout.codec = PackCodecId::kNibble4;
+  layout.packed_part_offsets = cuda_row_data_->host_packed_partition_byte_offsets();
+  layout.data_bytes = cuda_row_data_->dense_4bit_bytes();
+  return layout;
+}
+
+void CUDAHistogramConstructor::FillFullViewFromStore() {
+  const CompactLayout layout = FullLayout();
+  full_view_.ResizeDiscard(layout.data_bytes);
+  // the compact fill of every column, reading the store (colmajor_pad_ > 0)
+  LaunchCompactFill(layout, full_view_.RawData(), cuda_stream_, /*async_meta=*/false);
+  CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
+}
+
+void CUDAHistogramConstructor::FillFullViewFromColumns() {
+  // The same 4-bit fill kernel as the compact fill, reading a staging slice of the store instead of the whole
+  // store: per partition, chunks of an even number of columns are uploaded column-major into the staging buffer
+  // and their byte slots (column pairs 2m, 2m + 1) written into the full view. The full view and one staging
+  // chunk are the only device allocations, so the mask regime never holds two copies of the matrix.
+  const std::vector<int>& part_cols = cuda_row_data_->host_feature_partition_column_index_offsets();
+  const std::vector<int>& packed = cuda_row_data_->host_packed_partition_byte_offsets();
+  const size_t column_bytes = cuda_row_data_->colmajor_column_bytes();
+  const size_t pad = 2 * column_bytes;
+  const size_t num_data = static_cast<size_t>(num_data_);
+  full_view_.ResizeDiscard(cuda_row_data_->dense_4bit_bytes());
+  constexpr size_t kStagingBytes = size_t{256} << 20;
+  const int chunk_columns = std::max(2, static_cast<int>(kStagingBytes / column_bytes) & ~1);
+  int widest = 0;
+  for (size_t p = 0; p + 1 < part_cols.size(); ++p) {
+    widest = std::max(widest, part_cols[p + 1] - part_cols[p]);
+  }
+  const int staged_columns = std::min(chunk_columns, widest);
+  CUDAVector<uint8_t> staging(static_cast<size_t>(staged_columns) * column_bytes);
+  const size_t kNone = ~static_cast<size_t>(0);
+  std::vector<size_t> nib0, nib1, dst_byte;
+  std::vector<int> stride_nib, dst_stride;
+  for (size_t p = 0; p + 1 < part_cols.size(); ++p) {
+    const int width = part_cols[p + 1] - part_cols[p];
+    const int packed_width = packed[p + 1] - packed[p];
+    for (int j0 = 0; j0 < width; j0 += chunk_columns) {
+      const int j1 = std::min(width, j0 + chunk_columns);
+      cuda_row_data_->UploadDense4BitColumnsColMajor(staging.RawData(), part_cols[p] + j0, part_cols[p] + j1);
+      nib0.clear(); nib1.clear(); dst_byte.clear(); stride_nib.clear(); dst_stride.clear();
+      // j0 is even and every chunk but a partition's last has an even width, so no byte slot straddles two chunks
+      for (int m = j0 / 2; m < (j1 + 1) / 2; ++m) {
+        nib0.push_back(static_cast<size_t>(2 * m - j0) * pad);
+        nib1.push_back(2 * m + 1 < width ? static_cast<size_t>(2 * m + 1 - j0) * pad : kNone);
+        stride_nib.push_back(1);
+        dst_byte.push_back(static_cast<size_t>(packed[p]) * num_data + static_cast<size_t>(m));
+        dst_stride.push_back(packed_width);
+      }
+      const int slots = static_cast<int>(nib0.size());
+      if (cuda_bs_src_nib0_.Size() < static_cast<size_t>(slots)) {
+        cuda_bs_src_nib0_.Resize(slots);
+        cuda_bs_src_nib1_.Resize(slots);
+        cuda_bs_src_stride_nib_.Resize(slots);
+        cuda_bs_dst_byte_.Resize(slots);
+        cuda_bs_dst_stride_.Resize(slots);
+      }
+      CopyFromHostToCUDADevice<size_t>(cuda_bs_src_nib0_.RawData(), nib0.data(), slots, __FILE__, __LINE__);
+      CopyFromHostToCUDADevice<size_t>(cuda_bs_src_nib1_.RawData(), nib1.data(), slots, __FILE__, __LINE__);
+      CopyFromHostToCUDADevice<int>(cuda_bs_src_stride_nib_.RawData(), stride_nib.data(), slots, __FILE__, __LINE__);
+      CopyFromHostToCUDADevice<size_t>(cuda_bs_dst_byte_.RawData(), dst_byte.data(), slots, __FILE__, __LINE__);
+      CopyFromHostToCUDADevice<int>(cuda_bs_dst_stride_.RawData(), dst_stride.data(), slots, __FILE__, __LINE__);
+      LaunchFillCompactData4BitKernel(cuda_stream_, staging.RawDataReadOnly(), full_view_.RawData(),
+                                      cuda_bs_src_nib0_.RawData(), cuda_bs_src_nib1_.RawData(),
+                                      cuda_bs_src_stride_nib_.RawData(), cuda_bs_dst_byte_.RawData(),
+                                      cuda_bs_dst_stride_.RawData(), slots, num_data_, /*tiled=*/false);
+      // the next chunk overwrites the staging buffer and the slot metadata
+      CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
+    }
+  }
+}
+
+const uint8_t* CUDAHistogramConstructor::EnsureFullView(const char* reason) {
+  if (!colmajor_direct_) {
+    return RowMajorBin<uint8_t>();
+  }
+  full_view_used_ = true;
+  if (full_view_.Size() == 0) {
+    if (colmajor_pad_ > 0) {
+      FillFullViewFromStore();
+    } else {
+      FillFullViewFromColumns();
+    }
+    if (FalcataVerifyEnabled()) {
+      cuda_row_data_->VerifyDense4BitRowMajor(full_view_.RawDataReadOnly(), "full view filled on demand");
+    }
+    LogDirectView("colmajor_direct: full view filled from the %s for %s (%zu MiB)",
+                  colmajor_pad_ > 0 ? "column-major store" : "Dataset's columns", reason, ToMiB(full_view_.Size()));
+  }
+  return full_view_.RawDataReadOnly();
+}
+
+void CUDAHistogramConstructor::ReleaseUnusedFullView() {
+  if (!colmajor_direct_ || view_mask_ || full_view_.Size() == 0 || full_view_used_) {
+    return;
+  }
+  const size_t bytes = full_view_.Size();
+  full_view_.Clear();
+  LogDirectView("colmajor_direct: full view released (%zu MiB), this tree read only its compact view", ToMiB(bytes));
+}
+
 bool CUDAHistogramConstructor::ColMajorFillApplicable() const {
   return FalcataPlan::Get().colmajor_fill && cuda_row_data_ != nullptr && cuda_row_data_->is_4bit_packed() &&
-         !cuda_row_data_->is_data_host_mapped() && colmajor_pad_ == 0;
+         !cuda_row_data_->is_data_host_mapped() && colmajor_pad_ == 0 && !colmajor_direct_;
 }
 
 // The column-major copy duplicates the 4-bit row matrix (one nibble per value) so the per-tree compact fill reads
@@ -1118,7 +1480,7 @@ bool CUDAHistogramConstructor::InitColMajorFill(const size_t reserve_bytes) {
   CopyFromHostToCUDADevice<int>(d_stride.RawData(), stride_h.data(), num_columns, __FILE__, __LINE__);
   // synchronizes: every later fill may read the copy
   LaunchTransposeToColMajorNibbleKernel(
-    cuda_row_data_->GetBin<uint8_t>(), colmajor_bin_.RawData(),
+    RowMajorBin<uint8_t>(), colmajor_bin_.RawData(),
     d_base.RawData(), d_stride.RawData(), num_columns, num_data_, pad);
   colmajor_pad_ = pad;
   const char* fmt = "colmajor_fill: engaged, %d columns (copy %zu MiB, reserve %zu MiB, free %zu MiB before the copy)";
@@ -1366,10 +1728,16 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   cuda_feature_hist_offsets_.InitFromHostVector(feature_hist_offsets_);
   cuda_feature_most_freq_bins_.InitFromHostVector(feature_most_freq_bins_);
 
-  // the column-major copy belongs to the old row data; the tree learner decides on a new one
+  // the column-major copy (and colmajor_direct's views) belong to the old row data; the tree learner decides on a
+  // new copy (colmajor_fill) or chooses a regime for the new views (colmajor_direct). An in-flight prefill may still
+  // read the old store.
+  InvalidateCompactPrefill();
   colmajor_bin_.Clear();
   colmajor_pad_ = 0;
+  full_view_.Clear();
+  colmajor_direct_ = false;
   cuda_row_data_.reset(new CUDARowData(train_data, share_states, gpu_device_id_, gpu_use_dp_));
+  cuda_row_data_->RequestDense4BitColumnsOnly(FalcataPlan::Get().colmajor_fill && FalcataPlan::Get().colmajor_direct);
   cuda_row_data_->Init(train_data, share_states);
 
   // Deterministic dense-construct scratch: sized from the widest partition's
@@ -1406,6 +1774,8 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   cuda_need_fix_histogram_features_.InitFromHostVector(need_fix_histogram_features_);
   cuda_need_fix_histogram_features_num_bin_aligned_.InitFromHostVector(need_fix_histogram_features_num_bin_aligend_);
   InitFixMFBMask();
+  // the tree learner chooses the regime for the new data (ChooseViewRegime)
+  colmajor_direct_ = cuda_row_data_->dense_4bit_columns_only();
 }
 
 void CUDAHistogramConstructor::ResetConfig(const Config* config) {
@@ -1418,6 +1788,7 @@ void CUDAHistogramConstructor::ResetConfig(const Config* config) {
                     static_cast<size_t>(num_hist_planes_));
   cuda_hist_.SetValue(0);
   num_dirty_leaves_ = -1;
+  // (colmajor_direct: the tree learner re-chooses the regime when feature_fraction changed)
 }
 
 }  // namespace Falcata

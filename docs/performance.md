@@ -451,7 +451,74 @@ bit-identical in every cell):
   per-level buffers up to `num_leaves / 2 + 2` pairs, the bit-change scratch,
   the compact view's partition padding, and 256 MiB. Otherwise training keeps
   the row-major source with a warning (same model); `FALCATA_DEBUG=diag` logs
-  an engagement. The first tree always fills from the row-major matrix.
+  an engagement. The first tree always fills from the row-major matrix. This
+  decision is `colmajor_direct:off`'s (and that of data whose columns cannot
+  be uploaded directly); by default there is no copy to decide on.
+- **`colmajor_direct`** (with `view_mode`, `view_mask_ff`) — the column-major
+  copy above holds, byte for byte, the Dataset's 4-bit columns laid end to
+  end, so it is uploaded straight from them and the device keeps **one** copy
+  of the bin matrix: no row-major matrix at Init, no host pack, no transpose,
+  no memory rule. Which copy depends on the training regime, decided per
+  `train()` from `feature_fraction` (again on `update(train_set=...)` and on a
+  `feature_fraction` reset):
+  - **compact** (`feature_fraction` < `view_mask_ff`, default 0.85): the
+    column-major store; every tree fills its compact view of the sampled
+    columns from it (`tiled_fill` reads it).
+  - **mask** (`feature_fraction` ≥ 0.85, or `compact_quant:off`): one full
+    view in the row-major layout, filled once from the columns through a
+    256 MiB staging chunk (never the whole store next to it); no tree copies
+    anything, and the kernels apply the per-tree sample through the column
+    masks they already take (`is_feature_used_bytree`, `bin_used`).
+
+  Against `colmajor_fill`'s decision (numerai53, RTX 5090): the first round
+  of every `train()` is **1.85 s shorter** (2.49 → 0.64 s: no 11 GiB host
+  pack, upload and transpose), steady state is unchanged (16.4 ms per round
+  on numerai53-deep, 8.3 on the example config, identical models), and peak
+  device memory drops by **11.3 GiB** at `feature_fraction` 0.1 and 1.0 and by
+  10.2 GiB at 0.9 (table below).
+  `view_mode:compact|mask` forces a regime; `colmajor_direct:off` restores the
+  row-major matrix and `colmajor_fill`'s decision. The threshold is the
+  measured crossover below; `feature_fraction_bynode` does not enter (the
+  views hold the per-tree sample, the per-node draw happens in the split
+  finder either way). Quantized training is bit-identical in every regime
+  (the same bytes, and integer histograms for the masked kernels), so the
+  regime may change between any two trees without changing the model —
+  which is what makes the live choice below legal. Float histograms are not
+  order-invariant (the full-matrix kernels group rows by the partition's
+  column count), so non-quantized training takes the mask regime only when
+  every tree samples every column, and otherwise stays compact, which never
+  holds more than `colmajor_direct:off` did. Quantized training outside the
+  hybrid level flow (per-node sampling, forced splits, two leaves, ...)
+  takes the mask regime at any `feature_fraction`: its per-leaf construct
+  reads every column of the row-major layout, so a compact view would serve
+  nothing.
+
+  **Live regime choice.** Two rules on top of the threshold, both under
+  `view_mode:auto`:
+  - *memory:* the compact regime is taken only if its store, its compact view
+    (sized from `feature_fraction` and the partitions' packed widths, the
+    fill's own arithmetic), the one-byte split view of the sampled columns
+    whenever the tree learner will build it (its own predicate: no packed
+    split read, i.e. no hybrid flow, categorical features,
+    `split_packed_read:off`, forced splits, the aggressive tail) and the
+    reserve (the split finder's level output and bit-change
+    scratch for `num_leaves / 2 + 2` pairs, the booster's per-row state,
+    256 MiB) fit in free device memory at decision time; otherwise mask, with
+    a diag line saying why. Deterministic: sizes against `cudaMemGetInfo`.
+    Quantized training only (see above).
+  - *tuner:* with the tuner running (quantized training; ≥300 rounds under
+    auto, or `tuner:on`), a `feature_fraction` in [`view_probe_lo`,
+    `view_probe_hi`] = [0.5, 0.95] is measured instead: two warm-up trees,
+    five timed trees in the threshold's regime, one untimed tree after the
+    switch, five timed trees in the other; the regime with the lower median
+    per-tree time is kept and written to the tuner's wisdom
+    (`~/.cache/falcata/wisdom.txt`, a `view1:` entry keyed by shape, device
+    and `feature_fraction`), so the next `train()` of that shape adopts it
+    without probing. The floor and small-leaf knob probes wait for it. A
+    regime that does not fit is never probed. Switches happen between trees,
+    before the tree's clock starts; each frees the old layout before
+    building the new one (store → full view: the staged fill from the
+    columns; full view → store: the re-upload).
 - **`tiled_fill`** — the 4-bit compact fill stages 128 rows of every byte slot
   in a shared-memory `[row][slot]` tile, reading each source column
   contiguously, then writes each partition's rows as one contiguous run with
@@ -504,10 +571,87 @@ bit-identical in every cell):
   `~/.cache/falcata/wisdom.txt` — retrains of the same workload skip the
   ~130-tree probe phase and start at the known-best point (measured: +3% on
   a numerai-deep 300-round retrain, covtype-deep 83.8 → 88.2 t/s), while the
-  periodic re-probe still verifies the cached choice against reality. (A
+  periodic re-probe still verifies the cached choice against reality. Under
+  `colmajor_direct` the tuner also chooses the bin matrix's view regime
+  inside [`view_probe_lo`, `view_probe_hi`] (§7, `colmajor_direct`), once per
+  shape and `feature_fraction`, before the knob probes; that choice is not
+  re-probed. (A
   histogram-pipeline-count knob was considered and rejected: it only affects
   the per-pair fallback path — the batched flow every real workload uses
   runs on a single stream.)
+
+**Device memory model of the 4-bit bin matrix under `colmajor_direct`**
+(Numerai v5.3, 6.79M rows × 3,555 features; the matrix is 11.24 GiB in
+either layout):
+
+| | layout | lifetime | ff 0.1 | ff 1 |
+|---|---|---|---|---|
+| store (compact regime) | the Dataset's 4-bit columns, column-major (column c from nibble c × rows, rows rounded up to even) | the training | 11.24 GiB | — |
+| compact view (compact regime) | the tree's sampled columns, row-major | refilled from the store every tree | 1.13 GiB | — |
+| full view (mask regime) | every column, row-major (the old row-major matrix's bytes and layout) | the training | — | 11.24 GiB |
+
+Peak device memory over idle on numerai53-deep (30 rounds; nvidia-smi
+`memory.used`, 500 ms sampling), against `colmajor_fill`'s decision:
+
+| feature_fraction | 0.1 | 0.5 | 0.9 | 1.0 |
+|---|---|---|---|---|
+| `colmajor_direct:off` (master) | 25.0 GiB: matrix + copy + view | 18.2 GiB: matrix + view (copy declined) | 22.8 GiB: matrix + view (copy declined) | 24.0 GiB: matrix + copy no tree reads |
+| `colmajor_direct` (auto) | **13.7 GiB**: store + view (compact) | 18.2 GiB: store + view (compact) | **12.6 GiB**: full view (mask) | **12.6 GiB**: full view (mask) |
+
+A compact-regime reader that needs every column in the row-major layout (a
+tree that happens to sample every column, the split view of a pack-codec
+tree) gets the full view filled from the store, kept while consecutive trees
+read it and released on the first that does not; that is the one case with
+two copies, and the default regimes never reach it on numerical data.
+
+**Where the regimes cross.** numerai53-deep, `view_mode:compact` against
+`view_mode:mask`, 200 rounds, two interleaved fresh-process pairs per point;
+identical model md5 at every `feature_fraction`:
+
+| feature_fraction | 0.1 | 0.2 | 0.35 | 0.5 | 0.7 | 0.8 | 0.85 | 0.9 | 0.99 | 1.0 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| compact, ms/round | **16.4** | **33.5** | **59.0** | **133.8** | **175.1** | **189.5** | 246.2 | 251.3 | 262.9 | 210.9 |
+| mask, ms/round | 177.3 | 185.9 | 218.4 | 220.5 | 222.5 | 224.5 | **224.2** | **224.8** | **223.3** | **210.7** |
+| compact, peak GiB over idle | 13.8 | 14.9 | 16.6 | 18.3 | 20.6 | 21.7 | 22.3 | 22.8 | 23.9 | 23.9 |
+| mask, peak GiB over idle | 12.7 | 12.9 | 13.0 | 12.7 | 12.7 | 12.7 | 12.7 | 12.7 | 12.7 | 12.7 |
+
+The masked full-matrix kernels read every column of every row, whatever the
+sample, so their time barely moves with `feature_fraction`; the compact view
+pays a per-tree fill but reads only the sampled bytes. They cross between
+0.80 and 0.85, hence `view_mask_ff` 0.85. Under auto there is no step at
+0.99 → 1.0 any more (mask 223 → 211 ms); before, 0.99 paid a per-tree copy
+of 99% of the matrix that 1.0 did not (263 → 211 ms). At ff 1 the compact
+column is the full view next to the store, the same kernels with twice the
+memory.
+
+![colmajor_direct regimes across feature_fraction](perf-plots/view_regime_crossover.png)
+
+**The live choice on numerai53-deep** (RTX 5090, `tuner:on`, 130 rounds, a
+fresh wisdom file per run, two pairs; "static" is the same plan with the
+probe band emptied, `view_probe_lo:2`; identical model md5 in every pair):
+
+| feature_fraction | 0.1 | 0.8 | 0.85 | 0.9 | 1.0 |
+|---|---|---|---|---|---|
+| regime (probe medians, ms/tree) | compact (outside band) | **compact** (157–159 vs 183–184) | **mask** (205 vs 187–191) | **mask** (206–207 vs 187) | mask (outside band) |
+| same as the static rule | yes | yes | yes | yes | yes |
+| first 130 trees, static → probe | 2.72 → 2.72 s | 21.53 → 22.45 s | 25.30 → 26.16 s | 25.32 → 26.23 s | 23.94 → 23.94 s |
+| peak device memory over idle, static / probe | 13.8 / 13.8 GiB | 21.8 / 21.6 GiB | 12.6 / 22.1 GiB | 12.6 / 22.7 GiB | 12.6 / 12.7 GiB |
+
+The probe costs ~0.9 s once per (shape, device, `feature_fraction`): two
+regime switches and five trees in the slower regime. A cached decision costs
+nothing. On this shape it confirms the threshold. Its memory cost is the
+probed regime's own footprint: above the threshold the five compact trees
+hold the store plus an 85–90% view (22 GiB); the switch itself never holds
+both layouts (a store plus a full view plus that view would not have fit at
+all). After the first `train()`, wisdom skips the probe and the peak is the
+mask regime's 12.6 GiB.
+
+Against master (300 rounds, default plan, a fresh wisdom file per run, three
+pairs, identical models): at `feature_fraction` 0.1 steady state is
+unchanged (16.40 vs 16.42 ms per round, n.s.); at 0.9 it is **5.7% faster**
+(204.9 → 193.2 ms, CI [11.3, 12.2] ms saved), since master fills a 90%
+compact view from its row-major matrix every tree. The first round is 1.8 s
+shorter at both.
 
 `wide_partitions`, `l2_policy`, `colmajor_fill` and `tuner` compose: **+10.5% on
 numerai-deep combined**. A methodology note the

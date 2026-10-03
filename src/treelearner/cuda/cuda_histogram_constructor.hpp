@@ -448,6 +448,8 @@ class CUDAHistogramConstructor {
       static_cast<const void*>(compact_feature_partition_column_index_offsets_.RawDataReadOnly()) : nullptr);
     key->push_back(use_compact_view_ ?
       static_cast<const void*>(compact_packed_partition_byte_offsets_.RawDataReadOnly()) : nullptr);
+    // colmajor_direct: a tree without a compact view reads the full view, which is refilled across regimes
+    key->push_back(use_compact_view_ ? nullptr : static_cast<const void*>(full_view_.RawDataReadOnly()));
     key->push_back(static_cast<const void*>(cuda_gradients_));
     key->push_back(static_cast<const void*>(cuda_hessians_));
     key->push_back(static_cast<const void*>(cuda_gradients_hessians_.RawDataReadOnly()));
@@ -564,6 +566,50 @@ class CUDAHistogramConstructor {
   // Expose internal CUDARowData so the tree learner can build a per-tree compact
   // column view from the on-GPU row-major bin matrix.
   const CUDARowData* cuda_row_data_internal() const { return cuda_row_data_.get(); }
+
+  /*! \brief The bin matrix in the row-major layout, for every reader that reads it whole (the full-matrix construct
+   *  kernels, the split view builder, colmajor_fill's transpose). Without colmajor_direct this is the row data's own
+   *  matrix. With colmajor_direct there is none: this is the full view, the compact view of every column (same bytes
+   *  and layout), resident in the mask regime and filled on demand in the compact regime (EnsureFullView); fatal if
+   *  absent. */
+  template <typename BIN_TYPE>
+  const BIN_TYPE* RowMajorBin() const {
+    if (!colmajor_direct_) {
+      return cuda_row_data_->GetBin<BIN_TYPE>();
+    }
+    if (full_view_.Size() == 0) {
+      Log::Fatal("colmajor_direct: the full view was read before it was built (EnsureFullView)");
+    }
+    return reinterpret_cast<const BIN_TYPE*>(full_view_.RawDataReadOnly());
+  }
+  /*! \brief colmajor_direct: make sure the full view exists and return RowMajorBin. In the compact regime it is
+   *  filled from the column-major store and kept while consecutive trees read it (ReleaseUnusedFullView). Host code
+   *  between trees: it allocates and synchronizes. reason names the reader for the diagnostic. */
+  const uint8_t* EnsureFullView(const char* reason);
+  /*! \brief colmajor_direct, compact regime: free the full view if the tree just trained did not read it */
+  void ReleaseUnusedFullView();
+  /*! \brief the full view's device address (nullptr when absent), for the callers' cache keys */
+  const uint8_t* full_view_device() const { return full_view_.RawDataReadOnly(); }
+  /*! \brief colmajor_direct: whether this training runs in the mask regime (see FalcataPlan::view_mode) */
+  bool view_mask_regime() const { return colmajor_direct_ && view_mask_; }
+  /*! \brief colmajor_direct: the bin matrix has no row-major copy; ChooseViewRegime decides which view holds it */
+  bool colmajor_direct() const { return colmajor_direct_; }
+  /*! \brief colmajor_direct: choose the regime and build its view (freeing the other's first). prefer: -1 for the
+   *  static rule (FalcataPlan::view_mode / view_mask_ff), 0 compact, 1 mask (the tuner's wisdom). Under
+   *  view_mode:auto the compact regime is taken only if its store + compact view (+ the one-byte split view of the
+   *  sampled columns when one_byte_split_view, the tree learner's own predicate) + reserve_bytes fit, and never when
+   *  trees_read_full_matrix (every tree's per-leaf quantized construct reads the whole matrix) in free device memory now (plus what the views hold, freed before the switch);
+   *  otherwise mask, with a diag line. why goes to the log. */
+  void ChooseViewRegime(size_t reserve_bytes, bool one_byte_split_view, bool trees_read_full_matrix, int prefer,
+                        const char* why);
+  /*! \brief whether the compact regime was available at the last ChooseViewRegime (it fit, and the trees read compact
+   *  views); the tuner never probes it otherwise */
+  bool compact_regime_fits() const { return colmajor_direct_ && compact_fits_; }
+  /*! \brief the regime the static rule picks for the current feature_fraction (true = mask) */
+  bool ViewMaskWanted() const;
+  /*! \brief colmajor_direct: move the bin matrix to the given regime between trees (the tuner's probe); a no-op when
+   *  already there. Legal at any tree: both regimes train the same model (see the definition). */
+  void SwitchViewRegime(bool mask, const char* why);
 
   const hist_t* cuda_hist() const { return cuda_hist_.RawData(); }
 
@@ -988,6 +1034,42 @@ class CUDAHistogramConstructor {
    *  Fill metadata for it is stride-1 with base col*colmajor_pad_. */
   CUDAVector<uint8_t> colmajor_bin_;
   size_t colmajor_pad_ = 0;
+  /*! \brief colmajor_direct engaged: the row data has no row-major matrix; colmajor_bin_ (compact regime) or
+   *  full_view_ (mask regime) is the one device copy of the bin matrix, built from the Dataset's columns */
+  bool colmajor_direct_ = false;
+  /*! \brief colmajor_direct: the mask regime (full view resident, no store, no per-tree compact view) */
+  bool view_mask_ = false;
+  /*! \brief colmajor_direct: the compact view of every column, in the row-major layout */
+  CUDAVector<uint8_t> full_view_;
+  /*! \brief whether the current tree read the full view (BuildCompactView resets it) */
+  bool full_view_used_ = false;
+  /*! \brief whether the compact regime fit at the last ChooseViewRegime */
+  bool compact_fits_ = false;
+  /*! \brief feature_fraction clamped to (0, 1] as the views use it */
+  double ViewFraction() const;
+  /*! \brief columns a tree samples at the current feature_fraction (an upper bound: round(F x ff) features) */
+  size_t SampledColumns() const;
+  /*! \brief device bytes the compact regime needs (see ChooseViewRegime) */
+  struct CompactRegimeBytes {
+    size_t store = 0;
+    size_t view = 0;
+    size_t column_view = 0;
+    size_t total() const { return store + view + column_view; }
+  };
+  CompactRegimeBytes CompactRegimeNeed(bool one_byte_split_view) const;
+  /*! \brief device bytes the views hold now (freed before a regime change builds the other layout) */
+  size_t HeldViewBytes() const;
+  /*! \brief enter the compact regime: release the full view, upload the column-major store; why goes to the log */
+  void EnterCompactRegime(const char* why);
+  /*! \brief enter the mask regime: release the store and the compact views, fill the full view from the Dataset's
+   *  columns; why goes to the log */
+  void EnterMaskRegime(const char* why);
+  /*! \brief fill full_view_ from the resident store (compact regime) */
+  void FillFullViewFromStore();
+  /*! \brief fill full_view_ from the Dataset's columns, a staging chunk of columns at a time (no store) */
+  void FillFullViewFromColumns();
+  /*! \brief the compact layout of every column (the row-major matrix's) */
+  CompactLayout FullLayout() const;
   /*! \brief L2 persistence carve-out (cuda_plan key l2_policy; 0 = inactive) */
   size_t l2_carveout_bytes_ = 0;
   size_t l2_max_window_bytes_ = 0;

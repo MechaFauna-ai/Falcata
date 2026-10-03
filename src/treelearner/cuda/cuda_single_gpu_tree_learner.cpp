@@ -447,6 +447,80 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   }
   colmajor_fill_pending_ = cuda_histogram_constructor_->ColMajorFillApplicable();
   colmajor_fill_trees_seen_ = 0;
+  // colmajor_direct: the bin matrix has no row-major copy yet; its view is chosen now that the split finder, the
+  // data partition and the histograms are allocated, so free memory already accounts for them
+  InitViewRegime("train()");
+}
+
+// colmajor_direct: what training can still allocate once the regime's view exists, the compact regime's memory
+// check (CUDAHistogramConstructor::ChooseViewRegime). As colmajor_fill's reserve, without the compact-view growth
+// (the check counts the whole compact view), plus the booster's per-row state allocated after this learner's Init
+// (scores, gradients and hessians per output; already allocated, and so counted twice, at a later re-choice):
+//  - the split finder's per-level output and the quantized bit-change scratch for up to num_leaves / 2 + 2 pairs,
+//    and with NCCL the level reduce buffer;
+//  - 256 MiB for everything smaller.
+size_t CUDASingleGPUTreeLearner::DirectViewReserveBytes() const {
+  constexpr size_t kHeadroom = 256ULL << 20;
+  const int max_pairs = config_->num_leaves / 2 + 2;
+  size_t reserve = kHeadroom + cuda_best_split_finder_->HybridLevelGrowthBytes(max_pairs) +
+                   cuda_histogram_constructor_->BitChangeScratchGrowthBytes(max_pairs);
+  if (nccl_communicator_ != nullptr) {
+    const size_t elems = static_cast<size_t>(max_pairs) * static_cast<size_t>(num_total_bin_) * 2;
+    reserve += cuda_nccl_reduce_buf_.Size() >= elems ? 0 : elems * sizeof(double);
+  }
+  const size_t outputs = static_cast<size_t>(std::max(1, config_->num_class));
+  reserve += static_cast<size_t>(num_data_) * outputs * (sizeof(double) + 2 * sizeof(score_t));
+  return reserve;
+}
+
+static const char* TunerWisdomPath();  // the tuner's wisdom file (defined with the tuner below)
+
+void CUDASingleGPUTreeLearner::InitViewRegime(const char* why) {
+  view_probe_.pending = false;
+  if (!cuda_histogram_constructor_->colmajor_direct()) {
+    return;
+  }
+  view_decided_ff_ = config_->feature_fraction;
+  const FalcataPlan& plan = FalcataPlan::Get();
+  const double fraction = (config_->feature_fraction > 0.0 && config_->feature_fraction < 1.0) ?
+    config_->feature_fraction : 1.0;
+  // the probe band: measured instead of the static rule, while the tuner runs (quantized training) and no knob probe
+  // is in progress (its candidates would confound the comparison)
+  const bool in_band = plan.view_mode == FalcataPlan::kViewModeAuto && TunerActive() && plan.compact_quant &&
+                       fraction >= plan.view_probe_lo && fraction <= plan.view_probe_hi;
+  int prefer = -1;
+  bool probe = false;
+  if (in_band) {
+    std::ifstream in(TunerWisdomPath());
+    const std::string want = TunerViewWisdomKey();
+    std::string key; int regime = 0, unused = 0;
+    while (in >> key >> regime >> unused) {
+      if (key == want) prefer = regime != 0 ? 1 : 0;
+    }
+    probe = prefer < 0 && tuner_.probe_slot < 0;
+  }
+  cuda_histogram_constructor_->ChooseViewRegime(DirectViewReserveBytes(), BuildsOneByteSplitView(),
+                                                TreesReadFullMatrix(), prefer,
+                                                prefer >= 0 ? "the tuner's wisdom" : why);
+  if (probe && !cuda_histogram_constructor_->compact_regime_fits()) {
+    probe = false;  // a regime that does not fit is never probed (ChooseViewRegime logged why)
+  }
+  if (probe) {
+    view_probe_.pending = true;
+    view_probe_.start = tuner_.tree_index;
+    view_probe_.first_mask = cuda_histogram_constructor_->view_mask_regime();
+    view_probe_.seconds[0].clear();
+    view_probe_.seconds[1].clear();
+    const char* fmt = "colmajor_direct: tuner probe of the view regime (feature_fraction %g in [%g, %g]): %d trees "
+                      "in each regime, starting in %s";
+    if (FalcataDebug().diag) {
+      Log::Info(fmt, fraction, plan.view_probe_lo, plan.view_probe_hi, ViewProbe::kTreesPerRegime,
+                view_probe_.first_mask ? "mask" : "compact");
+    } else {
+      Log::Debug(fmt, fraction, plan.view_probe_lo, plan.view_probe_hi, ViewProbe::kTreesPerRegime,
+                 view_probe_.first_mask ? "mask" : "compact");
+    }
+  }
 }
 
 // colmajor_fill sizing. The column-major copy of the 4-bit row matrix is the largest optional allocation training
@@ -707,12 +781,32 @@ extern void LaunchRowToColCompactKernel(
     data_size_t num_data,
     bool src_is_4bit);
 
+bool CUDASingleGPUTreeLearner::PackedSplitReadUsable() const {
+  return SplitPackedReadEnabled() && HybridGrowthUsable() && !has_categorical_feature_;
+}
+
+// The one-byte split view (sampled columns x rows) is built by BuildCompactColumnView's gather whenever the packed
+// read does not apply, and lazily by the leaf-wise tail's first classic split (EnsureClassicColumnView), which only
+// the approximate plain batching (FALCATA_DEBUG=aggressive) reaches alongside the packed read. Forced splits switch
+// the hybrid flow off but reach this learner after its Init (GBDT::SetForcedSplit), where HybridGrowthUsable cannot
+// see them yet, so they count directly.
+bool CUDASingleGPUTreeLearner::BuildsOneByteSplitView() const {
+  return !PackedSplitReadUsable() || !config_->forcedsplits_filename.empty() || FalcataDebug().aggressive;
+}
+
+// Quantized training outside the hybrid level flow (the classic loop: per-node sampling, forced splits, two leaves,
+// monotone constraints, CEGB, ...) builds every histogram with the per-leaf construct, which reads the whole matrix
+// row-major and has no compact-view branch; colmajor_direct then takes the mask regime.
+bool CUDASingleGPUTreeLearner::TreesReadFullMatrix() const {
+  return config_->use_quantized_grad && (!HybridGrowthUsable() || !config_->forcedsplits_filename.empty());
+}
+
 void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   const auto* row_data = cuda_histogram_constructor_->cuda_row_data_internal();
-  if (row_data == nullptr) return;
-  const uint8_t* src = row_data->GetBin<uint8_t>();
-  if (src == nullptr) return;  // host-mapped path; not supported here
+  if (row_data == nullptr || train_data_->num_features() == 0) return;  // no row data was built
   if (row_data->bit_type() != 8 || row_data->is_sparse()) return;  // only dense uint8 path supported
+  // The whole matrix in the row-major layout is read below only when the compact matrix cannot serve this tree's
+  // columns: the row data's matrix, or under colmajor_direct the full view (EnsureFullView there, not here).
 
   const auto& bytree_mask = col_sampler_.is_feature_used_bytree();
   uint64_t sig = 0;
@@ -732,6 +826,11 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   sig = sig * 1099511628211ULL ^
         static_cast<uint64_t>(reinterpret_cast<uintptr_t>(
             cuda_histogram_constructor_->compact_col_major_device()));
+  // ... the row data itself (ResetTrainingData replaces it, and the matrix a view may point into) and colmajor_direct's
+  // full view (released and refilled at another address when trees stop and resume needing it, or on a regime change)
+  sig = sig * 1099511628211ULL ^ static_cast<uint64_t>(reinterpret_cast<uintptr_t>(row_data));
+  sig = sig * 1099511628211ULL ^
+        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(cuda_histogram_constructor_->full_view_device()));
   // Someone else may have replaced the published table since we installed ours
   // -- tree traversal restores the original per-column view (see
   // CUDATree::LaunchAddPredictionToScoreKernel) -- and then an unchanged layout
@@ -740,6 +839,9 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   if (sig == compact_col_signature_ && !compact_column_to_orig_.empty() &&
       col_view_generation_seen_ == col_data->column_view_generation()) {
     // Cache hit: layout, source pointers AND published view unchanged.
+    if (column_view_reads_full_view_) {
+      cuda_histogram_constructor_->EnsureFullView("a split view the compact matrix cannot serve");  // still in use
+    }
     return;
   }
 
@@ -787,6 +889,7 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
     // split gather/packed readers; fall back to the original row data
     cuda_histogram_constructor_->compact_codec() == PackCodecId::kNibble4 &&
     cuda_histogram_constructor_->compact_src_cols() == compact_column_to_orig_;
+  column_view_reads_full_view_ = !compact_src;
   if (compact_src && cuda_histogram_constructor_->CompactColMajorFilled()) {
     // the histogram constructor's compact fill already produced the column-major
     // view as a fused second output (same slot order, verified above): point the
@@ -798,7 +901,14 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
     col_view_generation_seen_ = col_data->column_view_generation();
     return;
   }
-  const uint8_t* gather_src = compact_src ? cuda_histogram_constructor_->compact_data_device() : src;
+  // the gather (and the packed split view, and the out-of-bag pass that traverses it) reads every column in the
+  // row-major layout unless the compact matrix serves: the row data's matrix, or colmajor_direct's full view
+  const uint8_t* gather_src = compact_src ? cuda_histogram_constructor_->compact_data_device() :
+    cuda_histogram_constructor_->EnsureFullView("a split view the compact matrix cannot serve");
+  if (gather_src == nullptr) {
+    // the host-mapped layout (the only one without a device pointer here) is column-major and unsupported
+    Log::Fatal("BuildCompactColumnView: the row-major bin matrix has no device pointer");
+  }
   const bool gather_src_is_4bit = compact_src ?
     cuda_histogram_constructor_->compact_src_is_4bit() : row_data->is_4bit_packed();
   std::vector<size_t> slot_p_byte_h(num_compact_cols);
@@ -843,8 +953,7 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
                                 num_compact_cols, __FILE__, __LINE__);
 
   compact_packed_view_active_ = false;
-  if (SplitPackedReadEnabled() && gather_src_is_4bit && HybridGrowthUsable() &&
-      !has_categorical_feature_) {
+  if (gather_src_is_4bit && PackedSplitReadUsable()) {
     // categorical batched-apply descriptors need the plain per-column view
     // (SplitLevelBatched CHECK-enforces it); numerical-only datasets keep the packed read
     // packed split read: skip the column-major gather entirely; the batched
@@ -3615,6 +3724,49 @@ static const char* TunerWisdomPath() {
   return path.c_str();
 }
 
+// The view regime's wisdom entries live in the same file, as "view1:..." keys with the regime (0 compact, 1 mask)
+// and a reserved 0 as the two value fields, so every reader of the file keeps parsing it as key/value/value lines.
+std::string CUDASingleGPUTreeLearner::TunerViewWisdomKey() const {
+  char buf[192];
+  const double fraction = (config_->feature_fraction > 0.0 && config_->feature_fraction < 1.0) ?
+    config_->feature_fraction : 1.0;
+  snprintf(buf, sizeof(buf), "view1:%d:%d:%d:%d:%d:%d:%d:%d",
+           num_data_, train_data_->num_features(), config_->num_leaves, config_->max_depth, effective_quant_bins_,
+           tuner_device_sm_count_, FalcataPlan::Get().row_batch ? 1 : 0, static_cast<int>(fraction * 1000.0 + 0.5));
+  return std::string(buf);
+}
+
+// read-modify-write of one wisdom entry, with rename for crash safety; best effort (races with a concurrent trainer
+// at worst lose one update)
+static void TunerWisdomStore(const std::string& key, const int a, const int b) {
+  std::map<std::string, std::pair<int, int>> all;
+  {
+    std::ifstream in(TunerWisdomPath());
+    std::string k; int x = 0, y = 0;
+    while (in >> k >> x >> y) all[k] = {x, y};
+  }
+  all[key] = {a, b};
+  const std::string path = TunerWisdomPath();
+  const std::string dir = path.substr(0, path.find_last_of('/'));
+  // create every missing level ($HOME/.cache may not exist yet: a single mkdir of the leaf then fails and the
+  // wisdom was silently never written)
+  for (size_t pos = dir.find('/', 1); ; pos = dir.find('/', pos + 1)) {
+    const std::string level = dir.substr(0, pos);
+    if (::mkdir(level.c_str(), 0755) != 0 && errno != EEXIST) {
+      return;  // cache dir unavailable: wisdom is best-effort
+    }
+    if (pos == std::string::npos) break;
+  }
+  const std::string tmp = path + ".tmp";
+  {
+    std::ofstream out(tmp);
+    for (const auto& kv : all) {
+      out << kv.first << " " << kv.second.first << " " << kv.second.second << "\n";
+    }
+  }
+  ::rename(tmp.c_str(), path.c_str());
+}
+
 std::string CUDASingleGPUTreeLearner::TunerWisdomKey() const {
   char buf[160];
   // the last field is the construct kernel family the knobs were tuned against
@@ -3669,36 +3821,59 @@ void CUDASingleGPUTreeLearner::TunerSaveWisdom() {
   const TierOneTuner& t = tuner_;
   if (t.chosen[0] < 0 || t.chosen[1] < 0) return;
   const std::string key = TunerWisdomKey();
-  const int floor_v = t.candidates[0][t.chosen[0]];
-  const int slr_v = t.candidates[1][t.chosen[1]];
-  // read-modify-write with rename for crash safety; best effort (races with
-  // a concurrent trainer at worst lose one update)
-  std::map<std::string, std::pair<int, int>> all;
-  {
-    std::ifstream in(TunerWisdomPath());
-    std::string k; int a = 0, b = 0;
-    while (in >> k >> a >> b) all[k] = {a, b};
+  TunerWisdomStore(key, t.candidates[0][t.chosen[0]], t.candidates[1][t.chosen[1]]);
+}
+
+bool CUDASingleGPUTreeLearner::ViewProbeStep() {
+  ViewProbe& v = view_probe_;
+  if (!v.pending) {
+    return false;
   }
-  all[key] = {floor_v, slr_v};
-  const std::string path = TunerWisdomPath();
-  const std::string dir = path.substr(0, path.find_last_of('/'));
-  if (::mkdir(dir.c_str(), 0755) != 0 && errno != EEXIST) {
-    return;  // cache dir unavailable: wisdom is best-effort
+  const int k = tuner_.tree_index - v.start;  // trees trained since the probe started
+  const int switch_at = ViewProbe::kWarmupTrees + ViewProbe::kTreesPerRegime;
+  const int end_at = switch_at + 1 + ViewProbe::kTreesPerRegime;
+  // a switch between trees never changes the model (CUDAHistogramConstructor::ChooseViewRegime's invariant); it is
+  // made before the tree's clock starts, so its one-time cost is not counted against either regime
+  if (k == switch_at) {
+    cuda_histogram_constructor_->SwitchViewRegime(!v.first_mask, "tuner probe");
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+    ReleaseHybridGraphs();  // the captured construct nodes baked the other view's pointers
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   }
-  const std::string tmp = path + ".tmp";
-  {
-    std::ofstream out(tmp);
-    for (const auto& kv : all) {
-      out << kv.first << " " << kv.second.first << " " << kv.second.second << "\n";
-    }
+  if (k < end_at) {
+    return true;
   }
-  ::rename(tmp.c_str(), path.c_str());
+  auto median = [](std::vector<double> x) {
+    std::sort(x.begin(), x.end());
+    return x.empty() ? 1e30 : x[x.size() / 2];
+  };
+  const double compact_s = median(v.seconds[0]);
+  const double mask_s = median(v.seconds[1]);
+  const bool mask = mask_s < compact_s;
+  const char* fmt = "colmajor_direct: tuner probe: compact %.2f ms, mask %.2f ms per tree (median of %d) -> %s regime";
+  if (FalcataDebug().diag) {
+    Log::Info(fmt, 1e3 * compact_s, 1e3 * mask_s, ViewProbe::kTreesPerRegime, mask ? "mask" : "compact");
+  } else {
+    Log::Debug(fmt, 1e3 * compact_s, 1e3 * mask_s, ViewProbe::kTreesPerRegime, mask ? "mask" : "compact");
+  }
+  if (mask != cuda_histogram_constructor_->view_mask_regime()) {
+    cuda_histogram_constructor_->SwitchViewRegime(mask, "tuner probe: the faster regime");
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+    ReleaseHybridGraphs();
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+  }
+  TunerWisdomStore(TunerViewWisdomKey(), mask ? 1 : 0, 0);
+  v.pending = false;
+  // the knob probes waited for this one
+  tuner_.next_probe_at = std::max(tuner_.next_probe_at, tuner_.tree_index + 1);
+  return false;
 }
 
 void CUDASingleGPUTreeLearner::TunerBeforeTree() {
   if (!TunerActive()) return;
   TierOneTuner& t = tuner_;
-  if (t.tree_index >= t.next_probe_at && t.probe_slot < 0) {
+  const bool view_probe_running = ViewProbeStep();
+  if (!view_probe_running && t.tree_index >= t.next_probe_at && t.probe_slot < 0) {
     // start a (re-)probe cycle at knob 0
     t.knob = 0;
     t.probe_slot = 0;
@@ -3721,6 +3896,18 @@ void CUDASingleGPUTreeLearner::TunerBeforeTree() {
 void CUDASingleGPUTreeLearner::TunerAfterTree(double tree_seconds) {
   if (!TunerActive()) return;
   TierOneTuner& t = tuner_;
+  if (view_probe_.pending) {
+    // the view probe's timed trees: kTreesPerRegime after the warmup, and as many after the untimed first tree of
+    // the second regime
+    const int k = t.tree_index - view_probe_.start;
+    const int switch_at = ViewProbe::kWarmupTrees + ViewProbe::kTreesPerRegime;
+    const bool first = k >= ViewProbe::kWarmupTrees && k < switch_at;
+    const bool second = k > switch_at && k <= switch_at + ViewProbe::kTreesPerRegime;
+    if (first || second) {
+      const bool mask = first ? view_probe_.first_mask : !view_probe_.first_mask;
+      view_probe_.seconds[mask ? 1 : 0].push_back(tree_seconds);
+    }
+  }
   ++t.tree_index;
   if (t.probe_slot < 0) return;
   // best-of (not mean): robust to interference spikes on a shared GPU
@@ -4042,6 +4229,9 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     last_tree_is_linear_ = true;
   }
   TunerAfterTree(std::chrono::duration<double>(std::chrono::steady_clock::now() - tuner_t0).count());
+  // colmajor_direct, compact regime: the full view stays only while consecutive trees read it (decided after the
+  // tree, since the per-leaf construct may first read it mid-tree)
+  cuda_histogram_constructor_->ReleaseUnusedFullView();
   return tree.release();
 }
 
@@ -4370,6 +4560,8 @@ void CUDASingleGPUTreeLearner::ResetTrainingData(
   // the histogram constructor dropped the old data's column-major copy: decide again after a tree on the new data
   colmajor_fill_pending_ = cuda_histogram_constructor_->ColMajorFillApplicable();
   colmajor_fill_trees_seen_ = 0;
+  // colmajor_direct: the old data's view is gone; choose a regime for the new data and build its view
+  InitViewRegime("update(train_set=...)");
 }
 
 void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
@@ -4399,6 +4591,11 @@ void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   ReleaseHybridGraphs();  // captured buffer pointers / budgets may have changed
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+  // colmajor_direct: a new feature_fraction may call for the other regime (other config changes keep it, so a
+  // per-round reset_parameter callback does not undo the tuner's choice)
+  if (cuda_histogram_constructor_->colmajor_direct() && config_->feature_fraction != view_decided_ff_) {
+    InitViewRegime("a feature_fraction change");
+  }
 }
 
 void CUDASingleGPUTreeLearner::SetBaggingData(const Dataset* /*subset*/,

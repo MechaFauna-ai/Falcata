@@ -480,6 +480,20 @@ void LaunchFillCompactData4BitKernel(
     bs_dst_byte, bs_dst_stride, total_byte_slots, num_data);
 }
 
+// colmajor_direct: with an odd row count the high nibble of each column's last byte lies past the last row.
+__global__ void ClearColMajorPadNibblesKernel(uint8_t* colmajor, const int num_columns, const size_t column_bytes) {
+  const int c = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (c < num_columns) {
+    colmajor[(static_cast<size_t>(c) + 1) * column_bytes - 1] &= 0x0f;
+  }
+}
+
+void LaunchClearColMajorPadNibbles(uint8_t* colmajor, const int num_columns, const size_t column_bytes) {
+  if (num_columns <= 0) return;
+  const int block = 256;
+  ClearColMajorPadNibblesKernel<<<(num_columns + block - 1) / block, block>>>(colmajor, num_columns, column_bytes);
+}
+
 // One-time nibble transpose: packed row-major bin matrix -> global
 // column-major nibbles (column c occupies nibbles [c*num_data_pad,
 // c*num_data_pad + num_data)). Scattered reads, contiguous writes; runs once
@@ -2369,6 +2383,12 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernel(
   const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,
   const data_size_t num_data_in_smaller_leaf,
   const uint8_t num_bits_in_histogram_bins) {
+  if (colmajor_direct_ && use_quantized_grad_) {
+    // the quantized per-leaf construct (classic loop, hybrid per-pair fallback, leaf-wise tail) has no compact-view
+    // branch: it reads every column of the row-major layout. The tree learner picks the mask regime where its trees
+    // take this path; elsewhere (an ablation key, the aggressive tail) the compact regime fills the full view here.
+    EnsureFullView("the per-leaf quantized construct");
+  }
   if (cuda_row_data_->shared_hist_size() == DP_SHARED_HIST_SIZE && gpu_use_dp_) {
     LaunchConstructHistogramKernelInner<double, DP_SHARED_HIST_SIZE>(cuda_smaller_leaf_splits, num_data_in_smaller_leaf, num_bits_in_histogram_bins);
   } else if (cuda_row_data_->shared_hist_size() == SP_SHARED_HIST_SIZE && !gpu_use_dp_) {
@@ -2445,7 +2465,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           CUDAConstructDiscretizedHistogramSparseKernel_GlobalMemory<BIN_TYPE, PTR_TYPE, SHARED_HIST_SIZE, true><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             reinterpret_cast<const int32_t*>(cuda_gradients_),
-            cuda_row_data_->GetBin<BIN_TYPE>(),
+            RowMajorBin<BIN_TYPE>(),
             cuda_row_data_->GetRowPtr<PTR_TYPE>(),
             cuda_row_data_->GetPartitionPtr<PTR_TYPE>(),
             cuda_row_data_->cuda_partition_hist_offsets(),
@@ -2455,7 +2475,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           CUDAConstructDiscretizedHistogramSparseKernel_GlobalMemory<BIN_TYPE, PTR_TYPE, SHARED_HIST_SIZE, false><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             reinterpret_cast<const int32_t*>(cuda_gradients_),
-            cuda_row_data_->GetBin<BIN_TYPE>(),
+            RowMajorBin<BIN_TYPE>(),
             cuda_row_data_->GetRowPtr<PTR_TYPE>(),
             cuda_row_data_->GetPartitionPtr<PTR_TYPE>(),
             cuda_row_data_->cuda_partition_hist_offsets(),
@@ -2467,7 +2487,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           CUDAConstructDiscretizedHistogramDenseKernel_GlobalMemory<BIN_TYPE, SHARED_HIST_SIZE, true><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             reinterpret_cast<const int32_t*>(cuda_gradients_),
-            cuda_row_data_->GetBin<BIN_TYPE>(),
+            RowMajorBin<BIN_TYPE>(),
             cuda_row_data_->cuda_column_hist_offsets(),
             cuda_row_data_->cuda_partition_hist_offsets(),
             cuda_row_data_->cuda_feature_partition_column_index_offsets(),
@@ -2477,7 +2497,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           CUDAConstructDiscretizedHistogramDenseKernel_GlobalMemory<BIN_TYPE, SHARED_HIST_SIZE, false><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             reinterpret_cast<const int32_t*>(cuda_gradients_),
-            cuda_row_data_->GetBin<BIN_TYPE>(),
+            RowMajorBin<BIN_TYPE>(),
             cuda_row_data_->cuda_column_hist_offsets(),
             cuda_row_data_->cuda_partition_hist_offsets(),
             cuda_row_data_->cuda_feature_partition_column_index_offsets(),
@@ -2491,7 +2511,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           CUDAConstructDiscretizedHistogramSparseKernel<BIN_TYPE, PTR_TYPE, SHARED_HIST_SIZE, true><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             reinterpret_cast<const int32_t*>(cuda_gradients_),
-            cuda_row_data_->GetBin<BIN_TYPE>(),
+            RowMajorBin<BIN_TYPE>(),
             cuda_row_data_->GetRowPtr<PTR_TYPE>(),
             cuda_row_data_->GetPartitionPtr<PTR_TYPE>(),
             cuda_row_data_->cuda_partition_hist_offsets(),
@@ -2500,7 +2520,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           CUDAConstructDiscretizedHistogramSparseKernel<BIN_TYPE, PTR_TYPE, SHARED_HIST_SIZE, false><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             reinterpret_cast<const int32_t*>(cuda_gradients_),
-            cuda_row_data_->GetBin<BIN_TYPE>(),
+            RowMajorBin<BIN_TYPE>(),
             cuda_row_data_->GetRowPtr<PTR_TYPE>(),
             cuda_row_data_->GetPartitionPtr<PTR_TYPE>(),
             cuda_row_data_->cuda_partition_hist_offsets(),
@@ -2512,7 +2532,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
             CUDAConstructDiscretizedHistogramDenseKernel<BIN_TYPE, SHARED_HIST_SIZE, true, PackNibble4><<<grid_dim, block_dim, 0, current_stream()>>>(
               cuda_smaller_leaf_splits,
               reinterpret_cast<const int32_t*>(cuda_gradients_),
-              cuda_row_data_->GetBin<BIN_TYPE>(),
+              RowMajorBin<BIN_TYPE>(),
               cuda_row_data_->cuda_column_hist_offsets(),
               cuda_row_data_->cuda_partition_hist_offsets(),
               cuda_row_data_->cuda_feature_partition_column_index_offsets(),
@@ -2522,7 +2542,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
             CUDAConstructDiscretizedHistogramDenseKernel<BIN_TYPE, SHARED_HIST_SIZE, false, PackNibble4><<<grid_dim, block_dim, 0, current_stream()>>>(
               cuda_smaller_leaf_splits,
               reinterpret_cast<const int32_t*>(cuda_gradients_),
-              cuda_row_data_->GetBin<BIN_TYPE>(),
+              RowMajorBin<BIN_TYPE>(),
               cuda_row_data_->cuda_column_hist_offsets(),
               cuda_row_data_->cuda_partition_hist_offsets(),
               cuda_row_data_->cuda_feature_partition_column_index_offsets(),
@@ -2533,7 +2553,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           CUDAConstructDiscretizedHistogramDenseKernel<BIN_TYPE, SHARED_HIST_SIZE, true><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             reinterpret_cast<const int32_t*>(cuda_gradients_),
-            cuda_row_data_->GetBin<BIN_TYPE>(),
+            RowMajorBin<BIN_TYPE>(),
             cuda_row_data_->cuda_column_hist_offsets(),
             cuda_row_data_->cuda_partition_hist_offsets(),
             cuda_row_data_->cuda_feature_partition_column_index_offsets(),
@@ -2543,7 +2563,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           CUDAConstructDiscretizedHistogramDenseKernel<BIN_TYPE, SHARED_HIST_SIZE, false><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             reinterpret_cast<const int32_t*>(cuda_gradients_),
-            cuda_row_data_->GetBin<BIN_TYPE>(),
+            RowMajorBin<BIN_TYPE>(),
             cuda_row_data_->cuda_column_hist_offsets(),
             cuda_row_data_->cuda_partition_hist_offsets(),
             cuda_row_data_->cuda_feature_partition_column_index_offsets(),
@@ -2586,7 +2606,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
             <<<det_grid, det_block, static_cast<size_t>(det_dy) * smem_per_row, current_stream()>>>(
               cuda_smaller_leaf_splits,
               cuda_gradients_, cuda_hessians_,
-              cuda_row_data_->GetBin<BIN_TYPE>(),
+              RowMajorBin<BIN_TYPE>(),
               cuda_row_data_->GetRowPtr<PTR_TYPE>(),
               cuda_row_data_->GetPartitionPtr<PTR_TYPE>(),
               cuda_row_data_->cuda_partition_hist_offsets(),
@@ -2634,7 +2654,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
             <<<det_grid, det_block, 0, current_stream()>>>(
               cuda_smaller_leaf_splits,
               cuda_gradients_, cuda_hessians_,
-              cuda_row_data_->GetBin<BIN_TYPE>(),
+              RowMajorBin<BIN_TYPE>(),
               cuda_row_data_->GetRowPtr<PTR_TYPE>(),
               cuda_row_data_->GetPartitionPtr<PTR_TYPE>(),
               cuda_row_data_->cuda_partition_hist_offsets(),
@@ -2656,7 +2676,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           CUDAConstructHistogramSparseKernel<BIN_TYPE, PTR_TYPE, HIST_TYPE, SHARED_HIST_SIZE><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             cuda_gradients_, cuda_hessians_,
-            cuda_row_data_->GetBin<BIN_TYPE>(),
+            RowMajorBin<BIN_TYPE>(),
             cuda_row_data_->GetRowPtr<PTR_TYPE>(),
             cuda_row_data_->GetPartitionPtr<PTR_TYPE>(),
             cuda_row_data_->cuda_partition_hist_offsets(),
@@ -2736,7 +2756,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           CUDAConstructHistogramDenseKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, true><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             cuda_gradients_, cuda_hessians_,
-            cuda_row_data_->GetBin<BIN_TYPE>(),
+            RowMajorBin<BIN_TYPE>(),
             cuda_row_data_->cuda_column_hist_offsets(),
             cuda_row_data_->cuda_partition_hist_offsets(),
             cuda_row_data_->cuda_feature_partition_column_index_offsets(),
@@ -2748,7 +2768,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           CUDAConstructHistogramDenseKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             cuda_gradients_, cuda_hessians_,
-            cuda_row_data_->GetBin<BIN_TYPE>(),
+            RowMajorBin<BIN_TYPE>(),
             cuda_row_data_->cuda_column_hist_offsets(),
             cuda_row_data_->cuda_partition_hist_offsets(),
             cuda_row_data_->cuda_feature_partition_column_index_offsets(),
@@ -2785,7 +2805,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
             <<<det_grid, det_block, 0, current_stream()>>>(
               cuda_smaller_leaf_splits,
               cuda_gradients_, cuda_hessians_,
-              cuda_row_data_->GetBin<BIN_TYPE>(),
+              RowMajorBin<BIN_TYPE>(),
               cuda_row_data_->GetRowPtr<PTR_TYPE>(),
               cuda_row_data_->GetPartitionPtr<PTR_TYPE>(),
               cuda_row_data_->cuda_partition_hist_offsets(),
@@ -2807,7 +2827,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           CUDAConstructHistogramSparseKernel_GlobalMemory<BIN_TYPE, HIST_TYPE, PTR_TYPE><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             cuda_gradients_, cuda_hessians_,
-            cuda_row_data_->GetBin<BIN_TYPE>(),
+            RowMajorBin<BIN_TYPE>(),
             cuda_row_data_->GetRowPtr<PTR_TYPE>(),
             cuda_row_data_->GetPartitionPtr<PTR_TYPE>(),
             cuda_row_data_->cuda_partition_hist_offsets(),
@@ -2824,7 +2844,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
         CUDAConstructHistogramDenseKernel_GlobalMemory<BIN_TYPE, HIST_TYPE><<<grid_dim, block_dim, 0, current_stream()>>>(
           cuda_smaller_leaf_splits,
           cuda_gradients_, cuda_hessians_,
-          cuda_row_data_->GetBin<BIN_TYPE>(),
+          RowMajorBin<BIN_TYPE>(),
           cuda_row_data_->cuda_column_hist_offsets(),
           cuda_row_data_->cuda_partition_hist_offsets(),
           cuda_row_data_->cuda_feature_partition_column_index_offsets(),
@@ -3498,7 +3518,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramDenseDeterministic(
       cuda_smaller_leaf_splits,
       cuda_gradients_, cuda_hessians_,
       source != nullptr ? static_cast<const BIN_TYPE*>(source->data)
-                        : cuda_row_data_->GetBin<BIN_TYPE>(),
+                        : RowMajorBin<BIN_TYPE>(),
       source != nullptr ? source->column_hist_offsets
                         : cuda_row_data_->cuda_column_hist_offsets(),
       cuda_row_data_->cuda_partition_hist_offsets(),
@@ -3614,7 +3634,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramDenseBatchedDeterministic
   det_kernel<<<det_grid, det_block, 0, cuda_stream_>>>(
       pair_descs,
       cuda_gradients_, cuda_hessians_,
-      cuda_row_data_->GetBin<BIN_TYPE>(),
+      RowMajorBin<BIN_TYPE>(),
       cuda_row_data_->cuda_column_hist_offsets(),
       cuda_row_data_->cuda_partition_hist_offsets(),
       cuda_row_data_->cuda_feature_partition_column_index_offsets(),
@@ -3809,9 +3829,9 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           FALCATA_LAUNCH_SMALL_LEAF_QUANT(PackRaw8, reinterpret_cast<const BIN_TYPE*>(compact_data_uint8_t_.RawData()), compact_column_hist_offsets_.RawData(), compact_feature_partition_column_index_offsets_.RawData(), nullptr, nullptr);
         }
       } else if (cuda_row_data_->is_4bit_packed()) {
-        FALCATA_LAUNCH_SMALL_LEAF_QUANT(PackNibble4, cuda_row_data_->GetBin<BIN_TYPE>(), cuda_row_data_->cuda_column_hist_offsets(), cuda_row_data_->cuda_feature_partition_column_index_offsets(), cuda_row_data_->cuda_packed_partition_byte_offsets(), feat_used);
+        FALCATA_LAUNCH_SMALL_LEAF_QUANT(PackNibble4, RowMajorBin<BIN_TYPE>(), cuda_row_data_->cuda_column_hist_offsets(), cuda_row_data_->cuda_feature_partition_column_index_offsets(), cuda_row_data_->cuda_packed_partition_byte_offsets(), feat_used);
       } else {
-        FALCATA_LAUNCH_SMALL_LEAF_QUANT(PackRaw8, cuda_row_data_->GetBin<BIN_TYPE>(), cuda_row_data_->cuda_column_hist_offsets(), cuda_row_data_->cuda_feature_partition_column_index_offsets(), nullptr, feat_used);
+        FALCATA_LAUNCH_SMALL_LEAF_QUANT(PackRaw8, RowMajorBin<BIN_TYPE>(), cuda_row_data_->cuda_column_hist_offsets(), cuda_row_data_->cuda_feature_partition_column_index_offsets(), nullptr, feat_used);
       }
 #undef FALCATA_LAUNCH_SMALL_LEAF_QUANT
       return;
@@ -3905,7 +3925,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE, PackNibble4><<<grid_dim, block_dim, 0, cuda_stream_>>>(
           pair_descs,
           reinterpret_cast<const int32_t*>(cuda_gradients_),
-          cuda_row_data_->GetBin<BIN_TYPE>(),
+          RowMajorBin<BIN_TYPE>(),
           cuda_row_data_->cuda_column_hist_offsets(),
           cuda_row_data_->cuda_partition_hist_offsets(),
           cuda_row_data_->cuda_feature_partition_column_index_offsets(),
@@ -3929,7 +3949,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE><<<grid_dim, block_dim, 0, cuda_stream_>>>(
         pair_descs,
         reinterpret_cast<const int32_t*>(cuda_gradients_),
-        cuda_row_data_->GetBin<BIN_TYPE>(),
+        RowMajorBin<BIN_TYPE>(),
         cuda_row_data_->cuda_column_hist_offsets(),
         cuda_row_data_->cuda_partition_hist_offsets(),
         cuda_row_data_->cuda_feature_partition_column_index_offsets(),
@@ -4055,7 +4075,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       pair_descs,
       cuda_gradients_, cuda_hessians_,
       USE_GH2 ? cuda_gradients_hessians_.RawDataReadOnly() : nullptr,
-      cuda_row_data_->GetBin<BIN_TYPE>(),
+      RowMajorBin<BIN_TYPE>(),
       cuda_row_data_->cuda_column_hist_offsets(),
       cuda_row_data_->cuda_partition_hist_offsets(),
       cuda_row_data_->cuda_feature_partition_column_index_offsets(),
@@ -4078,7 +4098,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       pair_descs,
       cuda_gradients_, cuda_hessians_,
       USE_GH2 ? cuda_gradients_hessians_.RawDataReadOnly() : nullptr,
-      cuda_row_data_->GetBin<BIN_TYPE>(),
+      RowMajorBin<BIN_TYPE>(),
       cuda_row_data_->cuda_column_hist_offsets(),
       cuda_row_data_->cuda_partition_hist_offsets(),
       cuda_row_data_->cuda_feature_partition_column_index_offsets(),
@@ -4150,7 +4170,7 @@ void CUDAHistogramConstructor::CaptureHybridGraphDetConstructMergeInner(
   det_kernel<<<det_grid, det_block, 0, cuda_stream_>>>(
       pair_descs,
       cuda_gradients_, cuda_hessians_,
-      cuda_row_data_->GetBin<BIN_TYPE>(),
+      RowMajorBin<BIN_TYPE>(),
       cuda_row_data_->cuda_column_hist_offsets(),
       cuda_row_data_->cuda_partition_hist_offsets(),
       cuda_row_data_->cuda_feature_partition_column_index_offsets(),
@@ -4617,7 +4637,7 @@ bool CUDAHistogramConstructor::TryLaunchConstructJITBatchedRowDataQuant(
   CUfunction func = reinterpret_cast<CUfunction>(fn);
 
   const int32_t* gh_ptr = reinterpret_cast<const int32_t*>(cuda_gradients_);
-  const uint8_t* data_ptr = cuda_row_data_->GetBin<uint8_t>();
+  const uint8_t* data_ptr = RowMajorBin<uint8_t>();
   const uint32_t* col_off_ptr = cuda_row_data_->cuda_column_hist_offsets();
   const uint32_t* part_hist_ptr = cuda_row_data_->cuda_partition_hist_offsets();
   const int* part_col_ptr = cuda_row_data_->cuda_feature_partition_column_index_offsets();

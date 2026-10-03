@@ -439,6 +439,37 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool colmajor_fill_pending_ = false;
   int colmajor_fill_trees_seen_ = 0;
 
+  // ---- colmajor_direct: which view holds the bin matrix (CUDAHistogramConstructor::ChooseViewRegime) ----
+  /*! \brief device bytes training can still allocate once the regime's view exists (see the definition) */
+  size_t DirectViewReserveBytes() const;
+  /*! \brief whether the split kernels read the packed compact matrix in place (BuildCompactColumnView); otherwise
+   *  they get the one-byte-per-value view of the sampled columns */
+  bool PackedSplitReadUsable() const;
+  /*! \brief whether training builds that one-byte split view at some tree (see the definition) */
+  bool BuildsOneByteSplitView() const;
+  /*! \brief whether every tree runs the quantized per-leaf construct, which reads the whole matrix (see the
+   *  definition) */
+  bool TreesReadFullMatrix() const;
+  /*! \brief choose the regime for the current data and feature_fraction: the tuner's wisdom or probe inside the
+   *  probe band, the static rule outside it, mask whenever the compact regime does not fit; why goes to the log */
+  void InitViewRegime(const char* why);
+  /*! \brief the tuner's view-regime probe, at the start of a tree: switches regimes on schedule and, once both are
+   *  measured, keeps the faster; returns true while the probe runs (the knob probes wait for it) */
+  bool ViewProbeStep();
+  std::string TunerViewWisdomKey() const;
+  /*! \brief the tuner's view-regime probe: a few trees in each regime, timed like the knob candidates */
+  struct ViewProbe {
+    static constexpr int kWarmupTrees = 2;      // the first trees (JIT, first allocations) are not timed
+    static constexpr int kTreesPerRegime = 5;   // timed trees per regime (median); one untimed tree after the switch
+    bool pending = false;
+    int start = 0;            // tuner tree index the probe started at
+    bool first_mask = false;  // the regime the probe started in
+    std::vector<double> seconds[2];  // per-tree seconds: [0] compact, [1] mask
+  };
+  ViewProbe view_probe_;
+  /*! \brief the feature_fraction the regime was chosen for (ResetConfig re-chooses only when it changes) */
+  double view_decided_ff_ = -1.0;
+
   CUDAVector<uint8_t> compact_column_buffer_;
   std::vector<int> compact_column_to_orig_;        // [slot] -> original column index
   std::vector<int> orig_column_to_compact_slot_;   // [col] -> slot, or -1
@@ -459,6 +490,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // gather inputs stashed for the lazy fallback (device pointer + 4-bit flag)
   const uint8_t* compact_gather_src_ = nullptr;
   bool compact_gather_src_is_4bit_ = false;
+  // whether the installed column view reads colmajor_direct's full view (a cache hit must keep it alive)
+  bool column_view_reads_full_view_ = false;
 
   // Mirror of BasicLeafConstraints::Update for the CUDA path. Given a just-applied
   // numerical split on `inner_feature_index`, the parent leaf (`left_leaf`) and the
