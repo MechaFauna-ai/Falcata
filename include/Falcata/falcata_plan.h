@@ -194,6 +194,15 @@ struct FalcataPlan {
   // 8 positions, then the same tolerance tie-break between 8-position groups
   // in the same order). Bit-identical.
   bool warp_find_spread = true;     // key: warp_find_spread
+  // nibble compact view with each row's bytes of all feature partitions
+  // stored back to back (partition p at its packed byte offset of the row)
+  // instead of one row-major block per partition. Below the first levels a
+  // leaf's rows are sparse in the matrix, so every gathered row costs whole
+  // DRAM sectors: one contiguous run of the full row touches fewer of them
+  // than a partial run per partition. Used on the 4-bit nibble view whenever
+  // the source has more than one partition. Bit-identical (same bytes, only
+  // their addresses change).
+  bool compact_row_interleave = true;  // key: compact_row_interleave
   // host-launched batched apply (gen-bit-vector and split-inner kernels):
   // each 1024-row chunk is handled by 256 threads of 4 rows each, all loads of
   // a thread's rows issued before their use, instead of 1024 threads of one
@@ -311,6 +320,7 @@ struct FalcataPlan {
     if (key == "warp_find") return &warp_find;
     if (key == "warp_find_narrow") return &warp_find_narrow;
     if (key == "warp_find_spread") return &warp_find_spread;
+    if (key == "compact_row_interleave") return &compact_row_interleave;
     if (key == "apply_row_batch") return &apply_row_batch;
     if (key == "sync_used_tasks") return &sync_used_tasks;
     if (key == "root_sums_warp") return &root_sums_warp;

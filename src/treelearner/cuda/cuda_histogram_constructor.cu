@@ -708,11 +708,10 @@ __device__ __forceinline__ void ConstructHistogramDenseInner(
   const int partition_column_start = feature_partition_column_index_offsets[blockIdx.x];
   const int partition_column_end = feature_partition_column_index_offsets[blockIdx.x + 1];
   const int num_columns_in_partition = partition_column_end - partition_column_start;
-  const int row_stride = IS_4BIT ?
-    packed_partition_byte_offsets[blockIdx.x + 1] - packed_partition_byte_offsets[blockIdx.x] :
-    num_columns_in_partition;
-  const BIN_TYPE* data_ptr = data + static_cast<size_t>(
-    IS_4BIT ? packed_partition_byte_offsets[blockIdx.x] : partition_column_start) * num_data;
+  int row_stride = num_columns_in_partition;
+  const BIN_TYPE* data_ptr = data + (IS_4BIT ?
+    PackedPartitionRows(packed_partition_byte_offsets, blockIdx.x, num_data, &row_stride) :
+    static_cast<size_t>(partition_column_start) * num_data);
   const uint32_t partition_hist_start = column_hist_offsets_full[blockIdx.x];
   const uint32_t partition_hist_end = column_hist_offsets_full[blockIdx.x + 1];
   const uint32_t num_items_in_partition = (partition_hist_end - partition_hist_start) << 1;
@@ -931,11 +930,10 @@ __device__ __forceinline__ void ConstructHistogramDenseDirectInner(
     return;
   }
   const data_size_t num_data_in_smaller_leaf = smaller_leaf_splits->num_data_in_leaf;
-  const int data_row_stride = IS_4BIT ?
-    packed_partition_byte_offsets[blockIdx.x + 1] - packed_partition_byte_offsets[blockIdx.x] :
-    num_columns_in_partition;
-  const BIN_TYPE* data_ptr = data + static_cast<size_t>(
-    IS_4BIT ? packed_partition_byte_offsets[blockIdx.x] : partition_column_start) * num_data;
+  int data_row_stride = num_columns_in_partition;
+  const BIN_TYPE* data_ptr = data + (IS_4BIT ?
+    PackedPartitionRows(packed_partition_byte_offsets, blockIdx.x, num_data, &data_row_stride) :
+    static_cast<size_t>(partition_column_start) * num_data);
   const data_size_t* data_indices_ref = smaller_leaf_splits->data_indices_in_leaf;
   // column_hist_offsets is PARTITION-RELATIVE (it indexes the per-partition
   // shared histogram in the shared-memory body); the global histogram position
@@ -1357,11 +1355,10 @@ __device__ __forceinline__ void ConstructHistogramDenseGMDeterministicInner(
   const int partition_column_start = feature_partition_column_index_offsets[blockIdx.x];
   const int partition_column_end = feature_partition_column_index_offsets[blockIdx.x + 1];
   const int num_columns_in_partition = partition_column_end - partition_column_start;
-  const int row_stride = IS_4BIT ?
-    packed_partition_byte_offsets[blockIdx.x + 1] - packed_partition_byte_offsets[blockIdx.x] :
-    num_columns_in_partition;
-  const BIN_TYPE* data_ptr = data + static_cast<size_t>(
-    IS_4BIT ? packed_partition_byte_offsets[blockIdx.x] : partition_column_start) * num_data;
+  int row_stride = num_columns_in_partition;
+  const BIN_TYPE* data_ptr = data + (IS_4BIT ?
+    PackedPartitionRows(packed_partition_byte_offsets, blockIdx.x, num_data, &row_stride) :
+    static_cast<size_t>(partition_column_start) * num_data);
   const uint32_t partition_hist_start = column_hist_offsets_full[blockIdx.x];
   const uint32_t partition_hist_end = column_hist_offsets_full[blockIdx.x + 1];
   const uint32_t num_items_in_partition = (partition_hist_end - partition_hist_start) << 1;
@@ -1779,11 +1776,10 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseDirectInner(
   const int partition_column_start = feature_partition_column_index_offsets[blockIdx.x];
   const int partition_column_end = feature_partition_column_index_offsets[blockIdx.x + 1];
   const int num_columns_in_partition = partition_column_end - partition_column_start;
-  const int row_stride = PACK::kUsesPackedOffsets ?
-    packed_partition_byte_offsets[blockIdx.x + 1] - packed_partition_byte_offsets[blockIdx.x] :
-    num_columns_in_partition;
-  const BIN_TYPE* data_ptr = data + static_cast<size_t>(
-    PACK::kUsesPackedOffsets ? packed_partition_byte_offsets[blockIdx.x] : partition_column_start) * num_data;
+  int row_stride = num_columns_in_partition;
+  const BIN_TYPE* data_ptr = data + (PACK::kUsesPackedOffsets ?
+    PackedPartitionRows(packed_partition_byte_offsets, blockIdx.x, num_data, &row_stride) :
+    static_cast<size_t>(partition_column_start) * num_data);
   const uint32_t partition_hist_start = column_hist_offsets_full[blockIdx.x];
   const data_size_t* data_indices_ref_this_block = data_indices_ref + block_start;
   data_size_t block_num_data = max(0, min(num_data_in_smaller_leaf - block_start, num_data_per_thread * static_cast<data_size_t>(blockDim.y)));
@@ -1886,11 +1882,10 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
   const int partition_column_start = feature_partition_column_index_offsets[blockIdx.x];
   const int partition_column_end = feature_partition_column_index_offsets[blockIdx.x + 1];
   const int num_columns_in_partition = partition_column_end - partition_column_start;
-  const int row_stride = PACK::kUsesPackedOffsets ?
-    packed_partition_byte_offsets[blockIdx.x + 1] - packed_partition_byte_offsets[blockIdx.x] :
-    num_columns_in_partition;
-  const BIN_TYPE* data_ptr = data + static_cast<size_t>(
-    PACK::kUsesPackedOffsets ? packed_partition_byte_offsets[blockIdx.x] : partition_column_start) * num_data;
+  int row_stride = num_columns_in_partition;
+  const BIN_TYPE* data_ptr = data + (PACK::kUsesPackedOffsets ?
+    PackedPartitionRows(packed_partition_byte_offsets, blockIdx.x, num_data, &row_stride) :
+    static_cast<size_t>(partition_column_start) * num_data);
   const uint32_t partition_hist_start = column_hist_offsets_full[blockIdx.x];
   const uint32_t partition_hist_end = column_hist_offsets_full[blockIdx.x + 1];
   const uint32_t num_items_in_partition = (partition_hist_end - partition_hist_start);

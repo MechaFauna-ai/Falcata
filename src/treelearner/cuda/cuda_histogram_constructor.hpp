@@ -29,6 +29,25 @@
 #include "cuda_construct_jit.hpp"
 
 #define NUM_DATA_PER_THREAD (400)
+
+namespace Falcata {
+/*! \brief Rows of one partition of a packed bin matrix (the 4-bit / codec views; offsets = packed partition byte
+ *  offsets). Partition-major, the default: partition p is num_data rows of offsets[p + 1] - offsets[p] bytes
+ *  starting at byte offsets[p] * num_data. Row-interleaved (the nibble compact view under cuda_plan key
+ *  compact_row_interleave): a row holds every partition's bytes back to back, partition p at byte offsets[p] of
+ *  the row; the device copy of the offsets then carries the row width as offsets[0] = -width (offsets[0] is 0 in
+ *  the partition-major layout). Byte b of partition p's row r is at the returned base + r * row_stride + b. */
+__device__ __forceinline__ size_t PackedPartitionRows(const int* offsets, const int p, const data_size_t num_data,
+                                                      int* row_stride) {
+  const int lead = offsets[0];
+  if (lead < 0) {
+    *row_stride = -lead;
+    return p == 0 ? 0 : static_cast<size_t>(offsets[p]);
+  }
+  *row_stride = offsets[p + 1] - offsets[p];
+  return static_cast<size_t>(offsets[p]) * static_cast<size_t>(num_data);
+}
+}  // namespace Falcata
 #define NUM_THREADS_PER_BLOCK (504)
 #define NUM_FEATURE_PER_THREAD_GROUP (28)
 #define SUBTRACT_BLOCK_SIZE (1024)
@@ -1021,6 +1040,8 @@ class CUDAHistogramConstructor {
     bool is_4bit = false;
     PackCodecId codec = PackCodecId::kNibble4;
     size_t data_bytes = 0;
+    /*! \brief nibble rows stored contiguously across partitions (see PackedPartitionRows) */
+    bool row_interleave = false;
   };
   bool ScanCompactLayout(const std::vector<int8_t>& is_feature_used_bytree,
                          CompactLayout* layout) const;

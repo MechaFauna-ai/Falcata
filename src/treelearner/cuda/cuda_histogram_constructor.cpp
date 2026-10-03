@@ -462,6 +462,11 @@ bool CUDAHistogramConstructor::ScanCompactLayout(
     layout->packed_part_offsets.push_back(
       layout->packed_part_offsets.back() + PackRowBytes(layout->codec, used_in_p));
   }
+  // cuda_plan key compact_row_interleave: store each row's nibble bytes of all partitions contiguously. Below the
+  // first levels a leaf's rows are sparse in the matrix, and a gathered row then costs the sectors of one
+  // row-wide run instead of one partial run per partition.
+  layout->row_interleave = layout->is_4bit && layout->codec == PackCodecId::kNibble4 && num_partitions > 1 &&
+                           FalcataPlan::Get().compact_row_interleave;
   const data_size_t num_data = cuda_row_data_->num_data();
   layout->data_bytes = layout->is_4bit ?
     static_cast<size_t>(layout->packed_part_offsets.back()) * static_cast<size_t>(num_data) :
@@ -524,7 +529,11 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
     compact_src_cols_host_[s] = src_part_col_offsets[p] + src_local_col_for_compact_h[s];
     const int compact_part_start = compact_part_col_offsets[p];
     const int compact_col_in_p = s - compact_part_start;
-    if (compact_is_4bit_) {
+    if (compact_is_4bit_ && layout.row_interleave) {
+      compact_slot_byte_host_[s] = static_cast<size_t>(compact_packed_part_offsets[p]);
+      compact_slot_stride_host_[s] = compact_packed_part_offsets[num_partitions];
+      compact_slot_col_host_[s] = compact_col_in_p;
+    } else if (compact_is_4bit_) {
       compact_slot_byte_host_[s] = static_cast<size_t>(compact_packed_part_offsets[p]) * static_cast<size_t>(num_data);
       compact_slot_stride_host_[s] = compact_packed_part_offsets[p + 1] - compact_packed_part_offsets[p];
       compact_slot_col_host_[s] = compact_col_in_p;
@@ -551,9 +560,14 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
     if (compact_packed_partition_byte_offsets_.Size() < compact_packed_part_offsets.size()) {
       compact_packed_partition_byte_offsets_.Resize(compact_packed_part_offsets.size());
     }
+    // row-interleaved rows: the device copy carries the row width as offsets[0] = -width (PackedPartitionRows)
+    std::vector<int> device_packed_offsets = compact_packed_part_offsets;
+    if (layout.row_interleave) {
+      device_packed_offsets[0] = -compact_packed_part_offsets[num_partitions];
+    }
     CopyFromHostToCUDADevice<int>(compact_packed_partition_byte_offsets_.RawData(),
-                                  compact_packed_part_offsets.data(),
-                                  compact_packed_part_offsets.size(), __FILE__, __LINE__);
+                                  device_packed_offsets.data(),
+                                  device_packed_offsets.size(), __FILE__, __LINE__);
   }
 
   // Upload metadata.
@@ -821,8 +835,11 @@ void CUDAHistogramConstructor::LaunchCompactFill(
     for (int p = 0; p < num_partitions; ++p) {
       const int compact_part_start = compact_part_col_offsets[p];
       const int used_in_p = compact_part_col_offsets[p + 1] - compact_part_start;
-      const int dst_packed_width = compact_packed_part_offsets[p + 1] - compact_packed_part_offsets[p];
-      const size_t dst_part_byte = static_cast<size_t>(compact_packed_part_offsets[p]) * static_cast<size_t>(num_data);
+      // row-interleaved: partition p's bytes sit at offset compact_packed_part_offsets[p] of a full-width row
+      const int dst_packed_width = layout.row_interleave ? compact_packed_part_offsets[num_partitions] :
+        compact_packed_part_offsets[p + 1] - compact_packed_part_offsets[p];
+      const size_t dst_part_byte = layout.row_interleave ? static_cast<size_t>(compact_packed_part_offsets[p]) :
+        static_cast<size_t>(compact_packed_part_offsets[p]) * static_cast<size_t>(num_data);
       const size_t src_part_nib = static_cast<size_t>(src_packed_offsets[p]) * static_cast<size_t>(num_data) * 2;
       const int src_stride_nib = (src_packed_offsets[p + 1] - src_packed_offsets[p]) * 2;
       for (int m = 0; m < ((used_in_p + 1) >> 1); ++m) {
