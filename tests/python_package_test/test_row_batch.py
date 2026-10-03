@@ -144,10 +144,12 @@ def _cols_data(rows, cols, seed=4):
 # Shapes for each multi_col path. A partition holds at most 6144 histogram bins, so 255-bin columns come 24 to a
 # partition: 24 columns -> one 4-aligned partition (4 columns per 32-bit word), 22 -> 2 per 16-bit word, 21 -> the
 # one-column fallback. 4-bit data takes the nibble-pair path; wide partitions the 4-row batches; per-tree feature
-# masks the masked fallback. The 4-per-word cases use 300k rows so most row lanes run full 8-row batches.
+# masks the masked fallback. The 4-per-word cases use 300k rows so most row lanes run full 8-row batches. The 4-bit
+# compact view goes to pair_hist by default (multi_col inert there); with pair_hist off it takes the nibble-pair path.
 MULTI_COL_CASES = [
     pytest.param("int4bit", 60_001, {}, id="4bit-nibble-pairs"),
-    pytest.param("int4bit", 60_001, {"feature_fraction": 0.3}, id="compact-view-nibble-pairs"),
+    pytest.param("int4bit", 60_001, {"feature_fraction": 0.3}, id="compact-view-pair-hist"),
+    pytest.param("int4bit", 60_001, {"feature_fraction": 0.3, "pair_hist": False}, id="compact-view-nibble-pairs"),
     pytest.param("cols24", 300_001, {}, id="8bit-4-per-word"),
     pytest.param("cols22", 60_001, {}, id="8bit-2-per-word"),
     pytest.param("cols21", 60_001, {}, id="8bit-odd-width-fallback"),
@@ -169,6 +171,8 @@ def test_multi_col_is_bit_identical_cuda(kind, rows, config, quant):
         if params.pop("compact_quant", True) is False
         else "auto,construct_jit:off"
     )
+    if params.pop("pair_hist", True) is False:
+        plan += ",pair_hist:off"
     rounds = 6 if rows > 1_000_000 else 12
     if kind.startswith("cols"):
         X, y = _cols_data(rows, int(kind[4:]))

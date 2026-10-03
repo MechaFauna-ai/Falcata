@@ -563,8 +563,12 @@ bit-identical in every cell):
   columns, when the partition's stride and base are aligned). The freed
   threads become extra row lanes over the same rows, and wide partitions
   batch 4 rows. Found by an LLM-driven evolutionary search seeded with the
-  `row_batch` kernel. **+3.1% numerai-deep, +4.1% numerai-example, +2.1%
-  year-deep** (300 rounds); higgs +0.8–1.6%, covtype and fraud unchanged.
+  `row_batch` kernel. `pair_hist` takes the 4-bit compact view's levels
+  before this kernel is launched, so there `multi_col` is inert; it covers
+  the 8-bit views, the full 4-bit matrix and the levels `pair_hist` declines.
+  Against `pair_hist` on (300 rounds): **+1.9% year-deep**, covtype +1.3%
+  (within noise), higgs and numerai unchanged. Before `pair_hist` it measured
+  +3.1% numerai-deep and +4.1% numerai-example.
   `PackNibble4` and `PackRaw8` blocks without per-tree feature masks only.
   Bit-identical.
 - **`tuner`** — a per-tree bandit over behavior-preserving execution knobs,
