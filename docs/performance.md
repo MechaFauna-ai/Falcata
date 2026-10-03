@@ -557,6 +557,16 @@ bit-identical in every cell):
   thread) keep the unbatched loop. Under `auto` it also replaces the construct
   JIT on long runs (the JIT body is the unbatched loop); an explicit
   `construct_jit:on` runs the JIT in its place, with a warning. Bit-identical.
+- **`multi_col`** — under `row_batch`, one construct thread covers several
+  adjacent columns of a row, so the row index and gradient loads are shared:
+  a packed byte (two 4-bit columns) or a 16/32-bit word (two or four 8-bit
+  columns, when the partition's stride and base are aligned). The freed
+  threads become extra row lanes over the same rows, and wide partitions
+  batch 4 rows. Found by an LLM-driven evolutionary search seeded with the
+  `row_batch` kernel. **+3.1% numerai-deep, +4.1% numerai-example, +2.1%
+  year-deep** (300 rounds); higgs +0.8–1.6%, covtype and fraud unchanged.
+  `PackNibble4` and `PackRaw8` blocks without per-tree feature masks only.
+  Bit-identical.
 - **`tuner`** — a per-tree bandit over behavior-preserving execution knobs,
   best-of-15 timing, re-probe every 3000 trees: +2.1% numerai-deep, +2.7%
   year from the saturation-floor knob alone. Quantized training only —
