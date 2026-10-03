@@ -247,9 +247,13 @@ __device__ __forceinline__ void construct_jit_inner(
   const int partition_column_end = feature_partition_column_index_offsets[blockIdx.x + 1];
   const int num_columns_in_partition = partition_column_end - partition_column_start;
 #if IS_4BIT
-  const int row_stride = packed_partition_byte_offsets[blockIdx.x + 1] -
-                         packed_partition_byte_offsets[blockIdx.x];
-  const uint8_t* data_ptr = data + (size_t)packed_partition_byte_offsets[blockIdx.x] * num_data;
+  // partition-major rows, or row-interleaved when offsets[0] = -row width (PackedPartitionRows)
+  const int lead = packed_partition_byte_offsets[0];
+  const int row_stride = lead < 0 ? -lead :
+                         packed_partition_byte_offsets[blockIdx.x + 1] - packed_partition_byte_offsets[blockIdx.x];
+  const uint8_t* data_ptr = data + (lead < 0 ?
+      (blockIdx.x == 0 ? (size_t)0 : (size_t)packed_partition_byte_offsets[blockIdx.x]) :
+      (size_t)packed_partition_byte_offsets[blockIdx.x] * num_data);
 #else
   const int row_stride = num_columns_in_partition;
   const uint8_t* data_ptr = data + (size_t)partition_column_start * num_data;

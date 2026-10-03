@@ -331,6 +331,29 @@ void LaunchFillCompactData4BitKernel(
   data_size_t num_data,
   bool tiled);
 
+bool LaunchFillCompactData4BitTiledRootHistKernel(
+  cudaStream_t stream,
+  const uint8_t* src_data,
+  uint8_t* compact_data,
+  const size_t* bs_src_nib0,
+  const size_t* bs_src_nib1,
+  const size_t* bs_dst_byte,
+  const int* bs_dst_stride,
+  int total_byte_slots,
+  data_size_t num_data,
+  const int* slot_first_bin,
+  const uint32_t* local_bin_hist_pos,
+  int num_local_bins,
+  int slot_major_span,
+  bool strided_tiles,
+  bool run_copy,
+  bool word_prefetch,
+  int max_rows_per_block,
+  const int32_t* grad_and_hess,
+  bool hist_16bit,
+  hist_t* root_hist_scratch,
+  size_t root_hist_scratch_bytes);
+
 // The tiled 4-bit fill needs a column-major source (stride-1 nibble runs with even bases) and every partition laid
 // out as a run of W consecutive byte slots whose destination bytes are contiguous with stride W.
 static bool CompactFill4BitTiledEligible(const std::vector<size_t>& nib0, const std::vector<size_t>& nib1,
@@ -462,6 +485,11 @@ bool CUDAHistogramConstructor::ScanCompactLayout(
     layout->packed_part_offsets.push_back(
       layout->packed_part_offsets.back() + PackRowBytes(layout->codec, used_in_p));
   }
+  // cuda_plan key compact_row_interleave: store each row's nibble bytes of all partitions contiguously. Below the
+  // first levels a leaf's rows are sparse in the matrix, and a gathered row then costs the sectors of one
+  // row-wide run instead of one partial run per partition.
+  layout->row_interleave = layout->is_4bit && layout->codec == PackCodecId::kNibble4 && num_partitions > 1 &&
+                           FalcataPlan::Get().compact_row_interleave;
   const data_size_t num_data = cuda_row_data_->num_data();
   layout->data_bytes = layout->is_4bit ?
     static_cast<size_t>(layout->packed_part_offsets.back()) * static_cast<size_t>(num_data) :
@@ -472,6 +500,7 @@ bool CUDAHistogramConstructor::ScanCompactLayout(
 bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_feature_used_bytree) {
   use_compact_view_ = false;
   compact_col_major_filled_ = false;
+  fused_root_ready_ = false;
   full_view_used_ = false;
   if (view_mask_regime()) {
     // mask regime: no per-tree copy; every kernel reads the resident full view under this tree's column masks
@@ -524,7 +553,11 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
     compact_src_cols_host_[s] = src_part_col_offsets[p] + src_local_col_for_compact_h[s];
     const int compact_part_start = compact_part_col_offsets[p];
     const int compact_col_in_p = s - compact_part_start;
-    if (compact_is_4bit_) {
+    if (compact_is_4bit_ && layout.row_interleave) {
+      compact_slot_byte_host_[s] = static_cast<size_t>(compact_packed_part_offsets[p]);
+      compact_slot_stride_host_[s] = compact_packed_part_offsets[num_partitions];
+      compact_slot_col_host_[s] = compact_col_in_p;
+    } else if (compact_is_4bit_) {
       compact_slot_byte_host_[s] = static_cast<size_t>(compact_packed_part_offsets[p]) * static_cast<size_t>(num_data);
       compact_slot_stride_host_[s] = compact_packed_part_offsets[p + 1] - compact_packed_part_offsets[p];
       compact_slot_col_host_[s] = compact_col_in_p;
@@ -551,9 +584,14 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
     if (compact_packed_partition_byte_offsets_.Size() < compact_packed_part_offsets.size()) {
       compact_packed_partition_byte_offsets_.Resize(compact_packed_part_offsets.size());
     }
+    // row-interleaved rows: the device copy carries the row width as offsets[0] = -width (PackedPartitionRows)
+    std::vector<int> device_packed_offsets = compact_packed_part_offsets;
+    if (layout.row_interleave) {
+      device_packed_offsets[0] = -compact_packed_part_offsets[num_partitions];
+    }
     CopyFromHostToCUDADevice<int>(compact_packed_partition_byte_offsets_.RawData(),
-                                  compact_packed_part_offsets.data(),
-                                  compact_packed_part_offsets.size(), __FILE__, __LINE__);
+                                  device_packed_offsets.data(),
+                                  device_packed_offsets.size(), __FILE__, __LINE__);
   }
 
   // Upload metadata.
@@ -572,12 +610,75 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
                                 compact_part_col_offsets.data(),
                                 compact_part_col_offsets.size(), __FILE__, __LINE__);
 
-  if (compact_column_hist_offsets_.Size() < compact_col_hist_offsets_h.size()) {
-    compact_column_hist_offsets_.Resize(compact_col_hist_offsets_h.size());
+  // Nibble view: the same upload also carries the pair-joint construct layout
+  // (cuda_plan key pair_hist) behind the T hist offsets: [T, 2T) each slot's
+  // value span (its hist-offset delta, the bound of its stored nibbles) and
+  // [2T, 3T) the shared-table offset of the joint (lo, hi) histogram of the
+  // byte holding the slot, span(lo) * span(hi) cells per byte, laid out from 0
+  // in every partition. compact_pair_joint_max_ is the largest partition table
+  // (0: layout not built, the per-column kernel runs).
+  std::vector<uint32_t> compact_col_meta_h = compact_col_hist_offsets_h;
+  compact_pair_joint_max_ = 0;
+  compact_pair_joint_total_ = 0;
+  compact_row_interleave_ = layout.row_interleave;
+  compact_row_bytes_ = layout.packed_part_offsets.empty() ? 0 : layout.packed_part_offsets.back();
+  if (compact_is_4bit_ && compact_codec_ == PackCodecId::kNibble4) {
+    const std::vector<uint32_t>& src_col_hist_offsets = cuda_row_data_->host_column_hist_offsets();
+    const std::vector<uint32_t>& part_hist_offsets = cuda_row_data_->host_partition_hist_offsets();
+    // [3T, 4T): the same joint offsets with all partitions' tables back to back (whole-row pair_hist blocks)
+    compact_col_meta_h.resize(4 * static_cast<size_t>(total_compact));
+    uint32_t joint_max = 0;
+    uint32_t joint_base = 0;
+    bool spans_ok = true;
+    for (int p = 0; p < num_partitions && spans_ok; ++p) {
+      const int part_end_col = src_part_col_offsets[p + 1];
+      const uint32_t part_span = part_hist_offsets[p + 1] - part_hist_offsets[p];
+      uint32_t joint = 0;
+      for (int s = compact_part_col_offsets[p]; s < compact_part_col_offsets[p + 1]; ++s) {
+        const int c = src_part_col_offsets[p] + src_local_col_for_compact_h[s];
+        const uint32_t col_end = (c + 1 < part_end_col) ? src_col_hist_offsets[c + 1] : part_span;
+        const uint32_t span = col_end - src_col_hist_offsets[c];
+        if (span == 0 || span > static_cast<uint32_t>(PackNibble4::kMaxBins)) {
+          spans_ok = false;
+          break;
+        }
+        compact_col_meta_h[total_compact + s] = span;
+      }
+      if (!spans_ok) break;
+      for (int s = compact_part_col_offsets[p]; s < compact_part_col_offsets[p + 1]; s += 2) {
+        const bool has_hi = s + 1 < compact_part_col_offsets[p + 1];
+        const uint32_t lo_span = compact_col_meta_h[total_compact + s];
+        const uint32_t hi_span = has_hi ? compact_col_meta_h[total_compact + s + 1] : 1u;
+        compact_col_meta_h[2 * static_cast<size_t>(total_compact) + s] = joint;
+        if (has_hi) {
+          compact_col_meta_h[2 * static_cast<size_t>(total_compact) + s + 1] = joint;
+        }
+        // cuda_plan key pair_pad: an odd per-byte stride puts the same cell of the 32 tables a warp's threads
+        // own in 32 different shared banks (an even stride such as 6 x 6 = 36 maps every eighth thread to the
+        // same bank, so rows concentrated on a few common cells serialize the atomics); pad cells stay zero
+        const uint32_t stride = lo_span * hi_span;
+        joint += stride + ((FalcataPlan::Get().pair_pad && (stride & 1u) == 0) ? 1u : 0u);
+      }
+      for (int s = compact_part_col_offsets[p]; s < compact_part_col_offsets[p + 1]; ++s) {
+        compact_col_meta_h[3 * static_cast<size_t>(total_compact) + s] =
+            joint_base + compact_col_meta_h[2 * static_cast<size_t>(total_compact) + s];
+      }
+      joint_base += joint;
+      joint_max = std::max(joint_max, joint);
+    }
+    if (spans_ok) {
+      compact_pair_joint_max_ = static_cast<int>(joint_max);
+      compact_pair_joint_total_ = static_cast<int>(joint_base);
+    } else {
+      compact_col_meta_h.resize(total_compact);
+    }
+  }
+  if (compact_column_hist_offsets_.Size() < compact_col_meta_h.size()) {
+    compact_column_hist_offsets_.Resize(compact_col_meta_h.size());
   }
   CopyFromHostToCUDADevice<uint32_t>(compact_column_hist_offsets_.RawData(),
-                                     compact_col_hist_offsets_h.data(),
-                                     compact_col_hist_offsets_h.size(), __FILE__, __LINE__);
+                                     compact_col_meta_h.data(),
+                                     compact_col_meta_h.size(), __FILE__, __LINE__);
 
   // Same partition_hist_offsets as the source (used for global hist write-back position per partition).
   const std::vector<uint32_t>& src_part_hist_offsets = cuda_row_data_->host_partition_hist_offsets();
@@ -821,8 +922,11 @@ void CUDAHistogramConstructor::LaunchCompactFill(
     for (int p = 0; p < num_partitions; ++p) {
       const int compact_part_start = compact_part_col_offsets[p];
       const int used_in_p = compact_part_col_offsets[p + 1] - compact_part_start;
-      const int dst_packed_width = compact_packed_part_offsets[p + 1] - compact_packed_part_offsets[p];
-      const size_t dst_part_byte = static_cast<size_t>(compact_packed_part_offsets[p]) * static_cast<size_t>(num_data);
+      // row-interleaved: partition p's bytes sit at offset compact_packed_part_offsets[p] of a full-width row
+      const int dst_packed_width = layout.row_interleave ? compact_packed_part_offsets[num_partitions] :
+        compact_packed_part_offsets[p + 1] - compact_packed_part_offsets[p];
+      const size_t dst_part_byte = layout.row_interleave ? static_cast<size_t>(compact_packed_part_offsets[p]) :
+        static_cast<size_t>(compact_packed_part_offsets[p]) * static_cast<size_t>(num_data);
       const size_t src_part_nib = static_cast<size_t>(src_packed_offsets[p]) * static_cast<size_t>(num_data) * 2;
       const int src_stride_nib = (src_packed_offsets[p + 1] - src_packed_offsets[p]) * 2;
       for (int m = 0; m < ((used_in_p + 1) >> 1); ++m) {
@@ -870,6 +974,104 @@ void CUDAHistogramConstructor::LaunchCompactFill(
       Log::Info("compact fill: %s 4-bit kernel, %d byte slots in %d partitions", tiled ? "tiled" : "per-cell",
                 total_byte_slots, num_partitions);
     }
+    // fused root histogram (cuda_plan key fused_root_hist): requested by the learner for this tree (root = every
+    // row), synchronous fill of the live view, quantized gradients in place
+    bool fused_root = false;
+    if (tiled && fused_root_requested_ && !async_meta && use_quantized_grad_ && cuda_gradients_ != nullptr &&
+        dst == compact_data_uint8_t_.RawData() && FalcataPlan::Get().fused_root_hist) {
+      // local histogram: each compact column's bins in slot order; a column spans its hist-offset delta (as the
+      // codec scan above), which a nibble always fits
+      const std::vector<uint32_t>& src_col_hist_offsets = cuda_row_data_->host_column_hist_offsets();
+      const std::vector<uint32_t>& part_hist_offsets = cuda_row_data_->host_partition_hist_offsets();
+      std::vector<int> col_first_bin(total_compact);
+      std::vector<int> meta(2 * static_cast<size_t>(total_byte_slots));
+      std::vector<int> bin_pos;
+      int num_local_bins = 0;
+      int max_span = 0;
+      bool spans_ok = true;
+      for (int s = 0; s < total_compact && spans_ok; ++s) {
+        const int p = partition_for_compact_h[s];
+        const int c = src_part_col_offsets[p] + src_local_col_for_compact_h[s];
+        const uint32_t part_span = part_hist_offsets[p + 1] - part_hist_offsets[p];
+        const uint32_t col_end = (c + 1 < src_part_col_offsets[p + 1]) ? src_col_hist_offsets[c + 1] : part_span;
+        const int span = static_cast<int>(col_end) - static_cast<int>(src_col_hist_offsets[c]);
+        if (span <= 0 || span > 16) {
+          spans_ok = false;
+          break;
+        }
+        max_span = std::max(max_span, span);
+        col_first_bin[s] = static_cast<int>(bin_pos.size());
+        for (int b = 0; b < span; ++b) {
+          bin_pos.push_back(static_cast<int>(part_hist_offsets[p] + src_col_hist_offsets[c] + b));
+        }
+      }
+      if (spans_ok) {
+        int slot = 0;
+        for (int p = 0; p < num_partitions; ++p) {
+          const int compact_part_start = compact_part_col_offsets[p];
+          const int used_in_p = compact_part_col_offsets[p + 1] - compact_part_start;
+          for (int m = 0; m < ((used_in_p + 1) >> 1); ++m) {
+            meta[2 * slot] = col_first_bin[compact_part_start + 2 * m];
+            meta[2 * slot + 1] = (2 * m + 1) < used_in_p ? col_first_bin[compact_part_start + 2 * m + 1] : -1;
+            ++slot;
+          }
+        }
+        CHECK_EQ(slot, total_byte_slots);
+        num_local_bins = static_cast<int>(bin_pos.size());
+        // the kernel packs two first-bin offsets of a slot into 16 bits each
+        spans_ok = num_local_bins < 0xffff;
+      }
+      if (spans_ok) {
+        meta.insert(meta.end(), bin_pos.begin(), bin_pos.end());
+        if (fused_root_meta_.Size() < meta.size()) {
+          fused_root_meta_.Resize(meta.size());
+        }
+        upload(fused_root_meta_.RawData(), meta.data(), sizeof(int) * meta.size(), &pin_off);
+        // aligned 32-bit source words: the column-major store (column c at nibble c * colmajor_pad_) with every
+        // column a multiple of 4 bytes long, so no word straddles a column end or the store's end
+        bool word_prefetch = FalcataPlan::Get().root_hist_prefetch && colmajor_pad_ > 0 && colmajor_pad_ % 8 == 0 &&
+                             reinterpret_cast<uintptr_t>(colmajor_bin_.RawDataReadOnly()) % 4 == 0;
+        for (int i = 0; word_prefetch && i < total_byte_slots; ++i) {
+          word_prefetch = bs_src_nib0_h[i] % colmajor_pad_ == 0 &&
+                          (bs_src_nib1_h[i] == ~static_cast<size_t>(0) || bs_src_nib1_h[i] % colmajor_pad_ == 0);
+        }
+        if (fused_root_scratch_.Size() < static_cast<size_t>(num_total_bin_)) {
+          fused_root_scratch_.Resize(static_cast<size_t>(num_total_bin_));
+        }
+        fused_root = LaunchFillCompactData4BitTiledRootHistKernel(
+          stream,
+          // the same source as the plain tiled fill below: the column-major store (colmajor_direct's compact
+          // regime, or colmajor_fill's copy), else the row-major matrix through the one accessor
+          colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : RowMajorBin<uint8_t>(),
+          dst,
+          cuda_bs_src_nib0_.RawData(),
+          cuda_bs_src_nib1_.RawData(),
+          cuda_bs_dst_byte_.RawData(),
+          cuda_bs_dst_stride_.RawData(),
+          total_byte_slots,
+          num_data,
+          fused_root_meta_.RawData(),
+          reinterpret_cast<const uint32_t*>(fused_root_meta_.RawData() + 2 * static_cast<size_t>(total_byte_slots)),
+          num_local_bins,
+          // slot-major block histogram rows: every column's nibbles lie below the widest span
+          FalcataPlan::Get().root_hist_slot_major ? max_span : 0,
+          // each block's tiles a grid apart, so the resident blocks stage neighbouring tiles of every column
+          FalcataPlan::Get().root_hist_tile_stride,
+          // one partition: stage the tile as a byte copy of its output run, written with aligned vector copies
+          FalcataPlan::Get().root_hist_run_copy,
+          word_prefetch,
+          // the packed per-block row bound of the gradients as discretized (the effective quant bins, which the
+          // learner may raise above the configured count), exactly the construct's 65534 / bins rule
+          65534 / std::max(1, num_grad_quant_bins_),
+          reinterpret_cast<const int32_t*>(cuda_gradients_),
+          fused_root_request_16bit_,
+          fused_root_scratch_.RawData(),
+          static_cast<size_t>(num_total_bin_) * sizeof(hist_t));
+        fused_root_ready_ = fused_root;
+        fused_root_bits16_ = fused_root_request_16bit_;
+      }
+    }
+    if (!fused_root) {
     LaunchFillCompactData4BitKernel(
       stream,
       colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : RowMajorBin<uint8_t>(),
@@ -882,6 +1084,7 @@ void CUDAHistogramConstructor::LaunchCompactFill(
       total_byte_slots,
       num_data,
       tiled);
+    }
   } else {
     // Build per-slot src/dst metadata host-side. Each compact slot has a fully
     // computed source byte offset and destination byte offset, so the kernel
@@ -1546,7 +1749,10 @@ void CUDAHistogramConstructor::ConstructHistogramsForLevel(
   const data_size_t max_num_data_in_smaller_leaf,
   const bool any_pair_needs_bit_change_copy,
   const data_size_t* level_smaller_num_data,
-  const bool defer_subtract) {
+  const bool defer_subtract,
+  const bool use_fused_root) {
+  // a fused root histogram serves only the root level, the first level construct of the tree
+  fused_root_ready_ = false;
   if (num_pairs <= 0) {
     return;
   }
@@ -1566,8 +1772,13 @@ void CUDAHistogramConstructor::ConstructHistogramsForLevel(
   // dominating small leaves. The quantized path never takes it: its integer
   // shared-then-merge accumulation (and the covtype quant md5 lock) stays
   // byte-identical.
-  LaunchConstructHistogramBatchedKernel(pair_descs, num_pairs, max_num_data_in_smaller_leaf,
-                                        level_smaller_num_data);
+  if (use_fused_root) {
+    // the root level, whose rows the fill already accumulated (ConsumeFusedRootHist)
+    LaunchApplyFusedRootHistogram(pair_descs);
+  } else {
+    LaunchConstructHistogramBatchedKernel(pair_descs, num_pairs, max_num_data_in_smaller_leaf,
+                                          level_smaller_num_data);
+  }
   // (no construct_done event here: the batched find kernel only waits on the
   // subtract event below, and the per-pair path re-records its own events)
   if (defer_subtract) {

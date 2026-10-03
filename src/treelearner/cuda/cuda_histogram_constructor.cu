@@ -443,7 +443,374 @@ __global__ void __launch_bounds__(kFill4BitTiledThreads, 4) CUDAFillCompactData4
     }
   }
 }
+
+// the one-run tile's start: up to 15 bytes to a 16-byte boundary plus the run's 16-byte phase (< 16)
+constexpr size_t kFusedRootRunSlack = 32;
+
+// Shared bytes of the fused fill: the tiled fill's slot metadata and tile, plus the packed first-bin offsets per slot,
+// the tile's gradients and the block's histogram (hist_entries cells: one per local bin, or the slot-major table).
+size_t FusedRootHistFillSharedBytes(int num_slots, int hist_entries) {
+  return Fill4BitTiledSharedBytes(num_slots) + static_cast<size_t>(num_slots) * sizeof(uint32_t) +
+         static_cast<size_t>(kFill4BitTiledRows) * sizeof(int32_t) +
+         static_cast<size_t>(hist_entries) * sizeof(int32_t) + kFusedRootRunSlack;
+}
+
+// Row stride of the slot-major block histogram (cuda_plan key root_hist_slot_major): a multiple of the 32 banks, so
+// the cells [nibble][slot] of the 32 consecutive slots a warp adds to fall in 32 distinct banks whatever the nibbles.
+__host__ __device__ constexpr int FusedRootHistSlotStride(int num_slots) {
+  return (num_slots + 31) & ~31;
+}
+
+// twice the tiled fill's block: the histogram limits the fused fill to two blocks per SM, this keeps 1024 threads
+constexpr int kFusedRootThreads = 512;
+
+// Tiled 4-bit fill with the root histogram fused in (cuda_plan key fused_root_hist). Every row of every sampled
+// column passes through the fill's shared tile, and without bagging the root leaf is exactly all rows, so while a
+// tile is staged the block also adds each row's packed grad<<16|hess value into a per-block histogram over the
+// compact columns' bins: the 16+16-bit packed int32 accumulation of the quantized construct, under the same
+// per-block row bound (tiles_per_block * kFill4BitTiledRows <= 65534 / num_grad_quant_bins). After its last tile
+// the block flushes into the root-histogram scratch in the root's format (wrapping int32 adds of the packed sums for
+// 16-bit, the construct's int64 conversion otherwise). Integer sums do not depend on grouping, so the scratch holds
+// exactly what the root-level construct would add to the root histogram.
+// SLOT_MAJOR: the block histogram is laid out [half][nibble][slot] (low then high column of each byte slot, max_span
+// nibble rows of FusedRootHistSlotStride cells) instead of one cell per local bin. A warp's lanes take consecutive
+// slots of a row, so every atomic hits a distinct bank; with first_bin + nibble the cells of neighbouring slots sit a
+// column pair's bin count apart and collide several ways. The flush maps (half, nibble, slot) back to the same local
+// bin, so each bin receives the same rows' sum.
+template <bool SLOT_MAJOR>
+__global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitTiledRootHistKernel(
+  const uint8_t* __restrict__ src_data,
+  uint8_t* __restrict__ compact_data,
+  const size_t* __restrict__ bs_src_nib0,
+  const size_t* __restrict__ bs_src_nib1,
+  const size_t* __restrict__ bs_dst_byte,
+  const int* __restrict__ bs_dst_stride,
+  const int num_slots,
+  const data_size_t num_data,
+  const int* __restrict__ slot_first_bin,
+  const uint32_t* __restrict__ local_bin_hist_pos,
+  const int num_local_bins,
+  const int max_span,
+  const int tiles_per_block,
+  const bool strided_tiles,
+  const bool run_copy,
+  const bool word_prefetch,
+  const int32_t* __restrict__ grad_and_hess,
+  const bool hist_16bit,
+  hist_t* __restrict__ root_hist_scratch) {
+  extern __shared__ __align__(16) unsigned char fill_smem[];
+  size_t* s_nib0 = reinterpret_cast<size_t*>(fill_smem);
+  size_t* s_nib1 = s_nib0 + num_slots;
+  size_t* s_dst_byte = s_nib1 + num_slots;
+  int* s_dst_stride = reinterpret_cast<int*>(s_dst_byte + num_slots);
+  // first local bin of the slot's low column | high column << 16 (0xffff: no high column)
+  uint32_t* s_bins = reinterpret_cast<uint32_t*>(s_dst_stride + num_slots);
+  int32_t* s_grad = reinterpret_cast<int32_t*>(s_bins + num_slots);
+  int32_t* s_hist = s_grad + kFill4BitTiledRows;
+  const int hist_stride = FusedRootHistSlotStride(num_slots);
+  const int hist_half = max_span * hist_stride;
+  const int hist_entries = SLOT_MAJOR ? 2 * hist_half : num_local_bins;
+  uint8_t* tile = reinterpret_cast<uint8_t*>(s_hist + hist_entries);
+  constexpr int kHalfRows = kFill4BitTiledRows / 2;
+  constexpr int kWarps = kFusedRootThreads / 32;
+  const size_t kNone = ~static_cast<size_t>(0);
+  const int tid = threadIdx.x;
+  const int warp = tid >> 5;
+  const int lane = tid & 31;
+  const int padded_slots = Fill4BitTiledPaddedSlots(num_slots);
+  for (int i = tid; i < num_slots; i += kFusedRootThreads) {
+    s_nib0[i] = bs_src_nib0[i];
+    s_nib1[i] = bs_src_nib1[i];
+    s_dst_byte[i] = bs_dst_byte[i];
+    s_dst_stride[i] = bs_dst_stride[i];
+    const int hi = slot_first_bin[2 * i + 1];
+    s_bins[i] = static_cast<uint32_t>(slot_first_bin[2 * i]) | (static_cast<uint32_t>(hi < 0 ? 0xffff : hi) << 16);
+  }
+  for (int i = tid; i < hist_entries; i += kFusedRootThreads) {
+    s_hist[i] = 0;
+  }
+  const data_size_t num_tiles = (num_data + kFill4BitTiledRows - 1) / kFill4BitTiledRows;
+  // contiguous: tiles [blockIdx.x * tiles_per_block, + tiles_per_block); strided: blockIdx.x + k * gridDim.x
+  const data_size_t tile_first = strided_tiles ? static_cast<data_size_t>(blockIdx.x)
+                                               : static_cast<data_size_t>(blockIdx.x) * tiles_per_block;
+  const data_size_t tile_step = strided_tiles ? static_cast<data_size_t>(gridDim.x) : 1;
+  const int tile_bytes = num_slots * kHalfRows;
+  const uintptr_t out_base = reinterpret_cast<uintptr_t>(compact_data);
+  __syncthreads();
+  // one run (cuda_plan key root_hist_run_copy): when a single partition spans every slot, a tile's output is one
+  // contiguous run of rows * num_slots bytes whose 16-byte phase (run_head) is the same for every tile (128 rows
+  // per tile). Staging the tile at row stride num_slots, run_head bytes past a 16-byte boundary, makes it a byte
+  // copy of that run, so each aligned output vector is one aligned shared vector load.
+  const bool one_run = run_copy && s_dst_stride[0] == num_slots;
+  uint8_t* tile_rows = tile;
+  int tile_stride = padded_slots;
+  int run_head = 0;
+  if (one_run) {
+    run_head = static_cast<int>((out_base + s_dst_byte[0]) & 15);
+    tile_rows = tile + ((16 - (reinterpret_cast<uintptr_t>(tile) & 15)) & 15) + run_head;
+    tile_stride = num_slots;
+  }
+  // word prefetch (cuda_plan key root_hist_prefetch; the host checks every source column starts and ends on a
+  // 4-byte boundary): a tile's source is num_slots x 16 aligned 32-bit words per source column (8 rows each), held
+  // in registers. The next tile's words are loaded right after the current tile is staged, so they are in flight
+  // while the block writes the tile and adds its histogram instead of after the closing barrier. A word holding at
+  // least one valid row is loaded whole; its rows past num_data land in tile rows past rows_valid, which are neither
+  // written nor histogrammed.
+  constexpr int kWordsPerColumn = kFill4BitTiledRows / 8;
+  constexpr int kPrefetchWords = kFill4BitTiledMaxSlots * kWordsPerColumn / kFusedRootThreads;
+  const int tile_words = num_slots * kWordsPerColumn;
+  uint32_t word0[kPrefetchWords];
+  uint32_t word1[kPrefetchWords];
+  auto load_words = [&](data_size_t tile_index) {
+    const data_size_t row_start = tile_index * kFill4BitTiledRows;
+    const size_t half_row_start = static_cast<size_t>(row_start >> 1);
+#pragma unroll
+    for (int u = 0; u < kPrefetchWords; ++u) {
+      word0[u] = 0;
+      word1[u] = 0;
+      const int t = tid + u * kFusedRootThreads;
+      if (t < tile_words) {
+        const int i = t / kWordsPerColumn;
+        const int w = t % kWordsPerColumn;
+        if (row_start + 8 * w < num_data) {
+          word0[u] = __ldg(reinterpret_cast<const uint32_t*>(src_data + (s_nib0[i] >> 1) + half_row_start) + w);
+          if (s_nib1[i] != kNone) {
+            word1[u] = __ldg(reinterpret_cast<const uint32_t*>(src_data + (s_nib1[i] >> 1) + half_row_start) + w);
+          }
+        }
+      }
+    }
+  };
+  if (word_prefetch && tile_first < num_tiles) {
+    load_words(tile_first);
+  }
+  for (int step = 0; step < tiles_per_block; ++step) {
+    const data_size_t tile_index = tile_first + step * tile_step;
+    if (tile_index >= num_tiles) break;  // block-uniform
+    const data_size_t row_start = tile_index * kFill4BitTiledRows;
+    const int rows_valid = static_cast<int>(min(static_cast<data_size_t>(kFill4BitTiledRows), num_data - row_start));
+    if (tid < rows_valid) {
+      s_grad[tid] = __ldg(grad_and_hess + row_start + tid);
+    }
+    if (word_prefetch) {
+      // the same tile bytes as the byte staging below: byte q of word w holds rows 8w + 2q (low) and 8w + 2q + 1
+#pragma unroll
+      for (int u = 0; u < kPrefetchWords; ++u) {
+        const int t = tid + u * kFusedRootThreads;
+        if (t < tile_words) {
+          const int i = t / kWordsPerColumn;
+          const int w = t % kWordsPerColumn;
+#pragma unroll
+          for (int q = 0; q < 4; ++q) {
+            const uint32_t b0 = (word0[u] >> (8 * q)) & 0xff;
+            const uint32_t b1 = (word1[u] >> (8 * q)) & 0xff;
+            const int row = 8 * w + 2 * q;
+            tile_rows[row * tile_stride + i] = static_cast<uint8_t>((b0 & 0xf) | ((b1 & 0xf) << 4));
+            tile_rows[(row + 1) * tile_stride + i] = static_cast<uint8_t>((b0 >> 4) | (b1 & 0xf0));
+          }
+        }
+      }
+    }
+    // stage the tile exactly as CUDAFillCompactData4BitTiledKernel does
+    const size_t half_row_start = static_cast<size_t>(row_start >> 1);
+    for (int base = tid; !word_prefetch && base < tile_bytes; base += kFusedRootThreads * kFill4BitTiledUnroll) {
+      uint8_t b0[kFill4BitTiledUnroll];
+      uint8_t b1[kFill4BitTiledUnroll];
+#pragma unroll
+      for (int u = 0; u < kFill4BitTiledUnroll; ++u) {
+        b0[u] = 0;
+        b1[u] = 0;
+        const int t = base + u * kFusedRootThreads;
+        if (t < tile_bytes) {
+          const int i = t / kHalfRows;
+          const int j = t % kHalfRows;
+          if (row_start + 2 * j < num_data) {
+            b0[u] = __ldg(src_data + (s_nib0[i] >> 1) + half_row_start + j);
+            if (s_nib1[i] != kNone) b1[u] = __ldg(src_data + (s_nib1[i] >> 1) + half_row_start + j);
+          }
+        }
+      }
+#pragma unroll
+      for (int u = 0; u < kFill4BitTiledUnroll; ++u) {
+        const int t = base + u * kFusedRootThreads;
+        if (t < tile_bytes) {
+          const int i = t / kHalfRows;
+          const int j = t % kHalfRows;
+          tile_rows[(2 * j) * tile_stride + i] = static_cast<uint8_t>((b0[u] & 0xf) | ((b1[u] & 0xf) << 4));
+          tile_rows[(2 * j + 1) * tile_stride + i] = static_cast<uint8_t>((b0[u] >> 4) | (b1[u] & 0xf0));
+        }
+      }
+    }
+    __syncthreads();
+    if (word_prefetch && step + 1 < tiles_per_block && tile_index + tile_step < num_tiles) {
+      load_words(tile_index + tile_step);
+    }
+
+    // write the tile exactly as CUDAFillCompactData4BitTiledKernel does
+    if (one_run) {
+      const size_t run_offset = s_dst_byte[0] + static_cast<size_t>(row_start) * static_cast<size_t>(num_slots);
+      const int total = run_head + rows_valid * num_slots;
+      const int num_vec = (total + 15) >> 4;
+      uint8_t* aligned = compact_data + run_offset - run_head;
+      const uint8_t* tile_aligned = tile_rows - run_head;
+      for (int j = tid; j < num_vec; j += kFusedRootThreads) {
+        const int off = j << 4;
+        if (off >= run_head && off + 16 <= total) {
+          __stcs(reinterpret_cast<uint4*>(aligned + off), *reinterpret_cast<const uint4*>(tile_aligned + off));
+        } else {
+          for (int k = 0; k < 16; ++k) {
+            const int pos = off + k;
+            if (pos >= run_head && pos < total) {
+              aligned[pos] = tile_aligned[pos];
+            }
+          }
+        }
+      }
+    }
+    for (int s = 0; !one_run && s < num_slots; s += s_dst_stride[s]) {
+      const int width = s_dst_stride[s];
+      const size_t run_offset = s_dst_byte[s] + static_cast<size_t>(row_start) * static_cast<size_t>(width);
+      const int head = static_cast<int>((out_base + run_offset) & 15);
+      const int total = head + rows_valid * width;
+      const int num_vec = (total + 15) >> 4;
+      uint8_t* aligned = compact_data + run_offset - head;
+      const uint8_t* tile_col = tile + s;
+      for (int j = tid; j < num_vec; j += kFusedRootThreads) {
+        const int off = j << 4;
+        if (off >= head && off + 16 <= total) {
+          const int q = off - head;
+          int row = q / width;
+          int m = q - row * width;
+          uint32_t w[4] = {0u, 0u, 0u, 0u};
+#pragma unroll
+          for (int k = 0; k < 16; ++k) {
+            w[k >> 2] |= static_cast<uint32_t>(tile_col[row * padded_slots + m]) << ((k & 3) * 8);
+            if (++m == width) {
+              m = 0;
+              ++row;
+            }
+          }
+          __stcs(reinterpret_cast<uint4*>(aligned + off), make_uint4(w[0], w[1], w[2], w[3]));
+        } else {
+          for (int k = 0; k < 16; ++k) {
+            const int pos = off + k;
+            if (pos >= head && pos < total) {
+              const int q = pos - head;
+              const int row = q / width;
+              aligned[pos] = tile_col[row * padded_slots + (q - row * width)];
+            }
+          }
+        }
+      }
+    }
+
+    // root histogram: one warp per row, lanes across the row's byte slots (distinct columns)
+    for (int r = warp; r < rows_valid; r += kWarps) {
+      const int32_t grad_hess = s_grad[r];
+      const uint8_t* tile_row = tile_rows + r * tile_stride;
+      for (int s = lane; s < num_slots; s += 32) {
+        const uint32_t b = tile_row[s];
+        if (SLOT_MAJOR) {
+          // a slot without a high column stages nibble 0 there; the flush skips that cell
+          atomicAdd_block(s_hist + (b & 0xf) * hist_stride + s, grad_hess);
+          atomicAdd_block(s_hist + hist_half + (b >> 4) * hist_stride + s, grad_hess);
+        } else {
+          const uint32_t bins = s_bins[s];
+          atomicAdd_block(s_hist + (bins & 0xffff) + (b & 0xf), grad_hess);
+          if ((bins >> 16) != 0xffff) {
+            atomicAdd_block(s_hist + (bins >> 16) + (b >> 4), grad_hess);
+          }
+        }
+      }
+    }
+    __syncthreads();
+  }
+
+  for (int i = tid; i < hist_entries; i += kFusedRootThreads) {
+    const int32_t packed_grad_hess = s_hist[i];
+    if (packed_grad_hess == 0) continue;  // adding zero is a no-op
+    int local_bin = i;
+    if (SLOT_MAJOR) {
+      // nonzero cells lie in real slots (s < num_slots) at nibbles below their column's span
+      const int high = i >= hist_half ? 1 : 0;
+      const int cell = i - high * hist_half;
+      const int nibble = cell / hist_stride;
+      const int s = cell - nibble * hist_stride;
+      const uint32_t first = high ? (s_bins[s] >> 16) : (s_bins[s] & 0xffff);
+      if (first == 0xffff) continue;  // no high column in this slot
+      local_bin = static_cast<int>(first) + nibble;
+    }
+    const uint32_t pos = __ldg(local_bin_hist_pos + local_bin);
+    if (hist_16bit) {
+      atomicAdd(reinterpret_cast<int32_t*>(root_hist_scratch) + pos, packed_grad_hess);
+    } else {
+      const int64_t packed_grad_hess_int64 = (static_cast<int64_t>(static_cast<int16_t>(packed_grad_hess >> 16)) << 32) | (static_cast<int64_t>(packed_grad_hess & 0x0000ffff));
+      atomicAdd(reinterpret_cast<atomic_add_long_t*>(root_hist_scratch) + pos, (atomic_add_long_t)(packed_grad_hess_int64));
+    }
+  }
+}
 #endif  // !defined(__HIP_PLATFORM_AMD__)
+
+// Host wrapper of the fused fill; false (nothing launched) where the tiled kernel does not exist.
+bool LaunchFillCompactData4BitTiledRootHistKernel(
+  cudaStream_t stream,
+  const uint8_t* src_data,
+  uint8_t* compact_data,
+  const size_t* bs_src_nib0,
+  const size_t* bs_src_nib1,
+  const size_t* bs_dst_byte,
+  const int* bs_dst_stride,
+  int total_byte_slots,
+  data_size_t num_data,
+  const int* slot_first_bin,
+  const uint32_t* local_bin_hist_pos,
+  int num_local_bins,
+  int slot_major_span,
+  bool strided_tiles,
+  bool run_copy,
+  bool word_prefetch,
+  int max_rows_per_block,
+  const int32_t* grad_and_hess,
+  bool hist_16bit,
+  hist_t* root_hist_scratch,
+  size_t root_hist_scratch_bytes) {
+#if !defined(__HIP_PLATFORM_AMD__)
+  // the packed per-block row bound, and the default dynamic shared-memory limit (the slot-major table where it
+  // was requested and fits, else one cell per local bin)
+  const int tiles_per_block = std::min(16, max_rows_per_block / kFill4BitTiledRows);
+  const size_t slot_major_bytes = FusedRootHistFillSharedBytes(
+    total_byte_slots, 2 * slot_major_span * FusedRootHistSlotStride(total_byte_slots));
+  const bool slot_major = slot_major_span > 0 && slot_major_bytes <= 48 * 1024;
+  const size_t shared_bytes = slot_major ? slot_major_bytes
+                                         : FusedRootHistFillSharedBytes(total_byte_slots, num_local_bins);
+  if (tiles_per_block < 1 || shared_bytes > 48 * 1024) {
+    return false;
+  }
+  CUDASUCCESS_OR_FATAL(cudaMemsetAsync(root_hist_scratch, 0, root_hist_scratch_bytes, stream));
+  const data_size_t num_tiles = (num_data + kFill4BitTiledRows - 1) / kFill4BitTiledRows;
+  const int grid = static_cast<int>((num_tiles + tiles_per_block - 1) / tiles_per_block);
+  if (slot_major) {
+    CUDAFillCompactData4BitTiledRootHistKernel<true><<<grid, kFusedRootThreads, shared_bytes, stream>>>(
+      src_data, compact_data, bs_src_nib0, bs_src_nib1, bs_dst_byte, bs_dst_stride, total_byte_slots, num_data,
+      slot_first_bin, local_bin_hist_pos, num_local_bins, slot_major_span, tiles_per_block, strided_tiles,
+      run_copy, word_prefetch, grad_and_hess,
+      hist_16bit, root_hist_scratch);
+  } else {
+    CUDAFillCompactData4BitTiledRootHistKernel<false><<<grid, kFusedRootThreads, shared_bytes, stream>>>(
+      src_data, compact_data, bs_src_nib0, bs_src_nib1, bs_dst_byte, bs_dst_stride, total_byte_slots, num_data,
+      slot_first_bin, local_bin_hist_pos, num_local_bins, 0, tiles_per_block, strided_tiles, run_copy,
+      word_prefetch, grad_and_hess, hist_16bit, root_hist_scratch);
+  }
+  return true;
+#else
+  (void)stream; (void)src_data; (void)compact_data; (void)bs_src_nib0; (void)bs_src_nib1; (void)bs_dst_byte;
+  (void)bs_dst_stride; (void)total_byte_slots; (void)num_data; (void)slot_first_bin; (void)local_bin_hist_pos;
+  (void)num_local_bins; (void)slot_major_span; (void)strided_tiles; (void)run_copy; (void)word_prefetch;
+  (void)max_rows_per_block; (void)grad_and_hess; (void)hist_16bit;
+  (void)root_hist_scratch; (void)root_hist_scratch_bytes;
+  return false;
+#endif
+}
 
 // Host wrapper called from cuda_histogram_constructor.cpp. `tiled` is the host's verdict from
 // CompactFill4BitTiledEligible; ROCm builds always take the per-cell kernel.
@@ -708,11 +1075,10 @@ __device__ __forceinline__ void ConstructHistogramDenseInner(
   const int partition_column_start = feature_partition_column_index_offsets[blockIdx.x];
   const int partition_column_end = feature_partition_column_index_offsets[blockIdx.x + 1];
   const int num_columns_in_partition = partition_column_end - partition_column_start;
-  const int row_stride = IS_4BIT ?
-    packed_partition_byte_offsets[blockIdx.x + 1] - packed_partition_byte_offsets[blockIdx.x] :
-    num_columns_in_partition;
-  const BIN_TYPE* data_ptr = data + static_cast<size_t>(
-    IS_4BIT ? packed_partition_byte_offsets[blockIdx.x] : partition_column_start) * num_data;
+  int row_stride = num_columns_in_partition;
+  const BIN_TYPE* data_ptr = data + (IS_4BIT ?
+    PackedPartitionRows(packed_partition_byte_offsets, blockIdx.x, num_data, &row_stride) :
+    static_cast<size_t>(partition_column_start) * num_data);
   const uint32_t partition_hist_start = column_hist_offsets_full[blockIdx.x];
   const uint32_t partition_hist_end = column_hist_offsets_full[blockIdx.x + 1];
   const uint32_t num_items_in_partition = (partition_hist_end - partition_hist_start) << 1;
@@ -931,11 +1297,10 @@ __device__ __forceinline__ void ConstructHistogramDenseDirectInner(
     return;
   }
   const data_size_t num_data_in_smaller_leaf = smaller_leaf_splits->num_data_in_leaf;
-  const int data_row_stride = IS_4BIT ?
-    packed_partition_byte_offsets[blockIdx.x + 1] - packed_partition_byte_offsets[blockIdx.x] :
-    num_columns_in_partition;
-  const BIN_TYPE* data_ptr = data + static_cast<size_t>(
-    IS_4BIT ? packed_partition_byte_offsets[blockIdx.x] : partition_column_start) * num_data;
+  int data_row_stride = num_columns_in_partition;
+  const BIN_TYPE* data_ptr = data + (IS_4BIT ?
+    PackedPartitionRows(packed_partition_byte_offsets, blockIdx.x, num_data, &data_row_stride) :
+    static_cast<size_t>(partition_column_start) * num_data);
   const data_size_t* data_indices_ref = smaller_leaf_splits->data_indices_in_leaf;
   // column_hist_offsets is PARTITION-RELATIVE (it indexes the per-partition
   // shared histogram in the shared-memory body); the global histogram position
@@ -1357,11 +1722,10 @@ __device__ __forceinline__ void ConstructHistogramDenseGMDeterministicInner(
   const int partition_column_start = feature_partition_column_index_offsets[blockIdx.x];
   const int partition_column_end = feature_partition_column_index_offsets[blockIdx.x + 1];
   const int num_columns_in_partition = partition_column_end - partition_column_start;
-  const int row_stride = IS_4BIT ?
-    packed_partition_byte_offsets[blockIdx.x + 1] - packed_partition_byte_offsets[blockIdx.x] :
-    num_columns_in_partition;
-  const BIN_TYPE* data_ptr = data + static_cast<size_t>(
-    IS_4BIT ? packed_partition_byte_offsets[blockIdx.x] : partition_column_start) * num_data;
+  int row_stride = num_columns_in_partition;
+  const BIN_TYPE* data_ptr = data + (IS_4BIT ?
+    PackedPartitionRows(packed_partition_byte_offsets, blockIdx.x, num_data, &row_stride) :
+    static_cast<size_t>(partition_column_start) * num_data);
   const uint32_t partition_hist_start = column_hist_offsets_full[blockIdx.x];
   const uint32_t partition_hist_end = column_hist_offsets_full[blockIdx.x + 1];
   const uint32_t num_items_in_partition = (partition_hist_end - partition_hist_start) << 1;
@@ -1779,11 +2143,10 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseDirectInner(
   const int partition_column_start = feature_partition_column_index_offsets[blockIdx.x];
   const int partition_column_end = feature_partition_column_index_offsets[blockIdx.x + 1];
   const int num_columns_in_partition = partition_column_end - partition_column_start;
-  const int row_stride = PACK::kUsesPackedOffsets ?
-    packed_partition_byte_offsets[blockIdx.x + 1] - packed_partition_byte_offsets[blockIdx.x] :
-    num_columns_in_partition;
-  const BIN_TYPE* data_ptr = data + static_cast<size_t>(
-    PACK::kUsesPackedOffsets ? packed_partition_byte_offsets[blockIdx.x] : partition_column_start) * num_data;
+  int row_stride = num_columns_in_partition;
+  const BIN_TYPE* data_ptr = data + (PACK::kUsesPackedOffsets ?
+    PackedPartitionRows(packed_partition_byte_offsets, blockIdx.x, num_data, &row_stride) :
+    static_cast<size_t>(partition_column_start) * num_data);
   const uint32_t partition_hist_start = column_hist_offsets_full[blockIdx.x];
   const data_size_t* data_indices_ref_this_block = data_indices_ref + block_start;
   data_size_t block_num_data = max(0, min(num_data_in_smaller_leaf - block_start, num_data_per_thread * static_cast<data_size_t>(blockDim.y)));
@@ -1886,11 +2249,10 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
   const int partition_column_start = feature_partition_column_index_offsets[blockIdx.x];
   const int partition_column_end = feature_partition_column_index_offsets[blockIdx.x + 1];
   const int num_columns_in_partition = partition_column_end - partition_column_start;
-  const int row_stride = PACK::kUsesPackedOffsets ?
-    packed_partition_byte_offsets[blockIdx.x + 1] - packed_partition_byte_offsets[blockIdx.x] :
-    num_columns_in_partition;
-  const BIN_TYPE* data_ptr = data + static_cast<size_t>(
-    PACK::kUsesPackedOffsets ? packed_partition_byte_offsets[blockIdx.x] : partition_column_start) * num_data;
+  int row_stride = num_columns_in_partition;
+  const BIN_TYPE* data_ptr = data + (PACK::kUsesPackedOffsets ?
+    PackedPartitionRows(packed_partition_byte_offsets, blockIdx.x, num_data, &row_stride) :
+    static_cast<size_t>(partition_column_start) * num_data);
   const uint32_t partition_hist_start = column_hist_offsets_full[blockIdx.x];
   const uint32_t partition_hist_end = column_hist_offsets_full[blockIdx.x + 1];
   const uint32_t num_items_in_partition = (partition_hist_end - partition_hist_start);
@@ -2131,6 +2493,301 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
 }
 
 
+
+// One batch of the pair-joint construct: as ConstructRowBatch, with the byte of the thread's column pair as the
+// value and the cell (lo * hi_span + hi) of the pair's joint histogram as the bin.
+template <int N, bool PREFETCH>
+__device__ __forceinline__ void ConstructPairRowBatch(
+    const data_size_t (&idx)[N], const int32_t* cuda_gradients_and_hessians, const uint8_t* data_ptr,
+    const int row_stride, const int byte_idx, const uint32_t hi_span, const uint32_t hi_mask, int32_t* joint,
+    const data_size_t* next_src = nullptr, const data_size_t next_step = 0, data_size_t* next_idx = nullptr) {
+  int32_t g[N];
+  uint32_t cells[N];
+#pragma unroll
+  for (int j = 0; j < N; ++j) g[j] = __ldg(cuda_gradients_and_hessians + idx[j]);
+  if (PREFETCH) {
+#pragma unroll
+    for (int j = 0; j < N; ++j) next_idx[j] = __ldg(next_src + j * next_step);
+  }
+#pragma unroll
+  for (int j = 0; j < N; ++j) {
+    const uint32_t v = static_cast<uint32_t>(__ldcs(data_ptr + static_cast<size_t>(idx[j]) * row_stride + byte_idx));
+    cells[j] = (v & 0xfu) * hi_span + ((v >> 4) & hi_mask);
+  }
+#pragma unroll
+  for (int j = 0; j < N; ++j) atomicAdd_block(joint + cells[j], g[j]);
+}
+
+// Pair-joint body of the discretized construct on the 4-bit compact view (cuda_plan key pair_hist). Thread x owns
+// byte x of the partition's packed row: compact columns 2x (low nibble) and 2x+1 (high nibble). A row adds its
+// packed gradient once, to cell lo * span(hi) + hi of the byte's joint table, instead of once per column. After
+// the row loop each column's bin is the sum of its joint row / column, i.e. the same packed int32 sum of the same
+// rows the per-column kernel accumulates (wrapping integer adds are order-invariant), flushed by the same rule.
+// Rows are grouped exactly as in ConstructDiscretizedHistogramDenseInner (same dim_y, same per-block extents).
+// column_meta: [T] partition-relative hist offsets, [T, 2T) value spans, [2T, 3T) joint-table offsets.
+// min_rows_per_thread (cuda_plan key level_row_blocks; 0 = off): a leaf gets at least this many rows per thread,
+// so the small leaves of a many-pair level fill a few whole blocks instead of thinly spreading over every block
+// row of the grid (sized for the level's largest leaf), each paying a full table zero and flush for a few rows.
+// The host passes the largest leaf's own rows per thread, which the grid's overflow guard already bounds, so no
+// block holds more rows than the largest leaf's blocks do.
+// DIRECT (cuda_plan key all_rows_direct): the leaf holds every row of the matrix, so its index list is a
+// permutation of 0 .. num_data - 1 and position p is read as row p, without the index gather. Every block keeps
+// its row count (the overflow guard is unchanged) and the grid adds up the same rows; wrapping integer sums do
+// not depend on which block adds which row, so the histogram is the same.
+template <bool USE_16BIT_HIST, bool DIRECT>
+__device__ __forceinline__ void ConstructDiscretizedHistogramPairJointInner(
+  const CUDALeafSplitsStruct* smaller_leaf_splits,
+  int32_t* shared_joint,
+  const int32_t* cuda_gradients_and_hessians,
+  const uint8_t* data,
+  const uint32_t* column_meta,
+  const int num_compact_columns,
+  const uint32_t* column_hist_offsets_full,
+  const int* feature_partition_column_index_offsets,
+  const int* packed_partition_byte_offsets,
+  const data_size_t num_data,
+  const int dim_y,
+  const int whole_row_partitions,
+  const uint32_t whole_row_joint,
+  const data_size_t min_rows_per_thread) {
+  const data_size_t num_data_in_smaller_leaf = smaller_leaf_splits->num_data_in_leaf;
+  const data_size_t num_data_per_thread = max((num_data_in_smaller_leaf + dim_y - 1) / dim_y, min_rows_per_thread);
+  const size_t block_start_wide = (static_cast<size_t>(blockIdx.y) * blockDim.y) * static_cast<size_t>(num_data_per_thread);
+  if (block_start_wide >= static_cast<size_t>(num_data_in_smaller_leaf)) {
+    return;
+  }
+  const data_size_t block_start = static_cast<data_size_t>(block_start_wide);
+  const data_size_t* data_indices_ref = smaller_leaf_splits->data_indices_in_leaf;
+  const unsigned int num_threads_per_block = blockDim.x * blockDim.y;
+  // whole_row_partitions > 0 (cuda_plan key pair_hist_rows, row-interleaved view): the block covers every
+  // partition's bytes of its rows, thread x owning byte x of the full row; its partition is the one whose byte run
+  // holds x, and the joint tables of all partitions are laid out back to back ([3T, 4T) of column_meta)
+  int part = static_cast<int>(blockIdx.x);
+  int part_byte = static_cast<int>(threadIdx.x);
+  if (whole_row_partitions > 0) {
+    part = 0;
+    while (part + 1 < whole_row_partitions && part_byte >= packed_partition_byte_offsets[part + 1]) ++part;
+    if (part > 0) part_byte -= packed_partition_byte_offsets[part];
+  }
+  const int partition_column_start = feature_partition_column_index_offsets[part];
+  const int partition_column_end = feature_partition_column_index_offsets[part + 1];
+  const int num_columns_in_partition = partition_column_end - partition_column_start;
+  int row_stride = 0;
+  const uint8_t* data_ptr = data + (whole_row_partitions > 0 ? 0 :
+      PackedPartitionRows(packed_partition_byte_offsets, blockIdx.x, num_data, &row_stride));
+  if (whole_row_partitions > 0) row_stride = -packed_partition_byte_offsets[0];
+  const uint32_t partition_hist_start = column_hist_offsets_full[part];
+  const uint32_t* spans = column_meta + num_compact_columns;
+  const uint32_t* joint_offsets = spans + num_compact_columns + (whole_row_partitions > 0 ? num_compact_columns : 0);
+  uint32_t num_joint = 0;
+  if (whole_row_partitions > 0) {
+    num_joint = whole_row_joint;
+  } else if (num_columns_in_partition > 0) {
+    const int last_lo = partition_column_start + ((num_columns_in_partition - 1) & ~1);
+    const uint32_t last_hi_span = last_lo + 1 < partition_column_end ? spans[last_lo + 1] : 1u;
+    num_joint = joint_offsets[last_lo] + spans[last_lo] * last_hi_span;
+  }
+  const unsigned int thread_idx = threadIdx.x + threadIdx.y * blockDim.x;
+  for (unsigned int i = thread_idx; i < num_joint; i += num_threads_per_block) {
+    shared_joint[i] = 0;
+  }
+  __syncthreads();
+  const data_size_t* data_indices_ref_this_block = data_indices_ref + block_start;
+  const data_size_t block_num_data = max(0, min(num_data_in_smaller_leaf - block_start, num_data_per_thread * static_cast<data_size_t>(blockDim.y)));
+  const data_size_t num_iteration_total = (block_num_data + blockDim.y - 1) / blockDim.y;
+  const data_size_t remainder = block_num_data % blockDim.y;
+  const data_size_t num_iteration_this = remainder == 0 ? num_iteration_total : num_iteration_total - static_cast<data_size_t>(threadIdx.y >= remainder);
+  data_size_t inner_data_index = static_cast<data_size_t>(threadIdx.y);
+  const int byte_idx = static_cast<int>(threadIdx.x);
+  const int lo_col = partition_column_start + 2 * part_byte;
+  const bool active = (whole_row_partitions == 0 || byte_idx < row_stride) && lo_col < partition_column_end;
+  const bool has_hi = lo_col + 1 < partition_column_end;
+  const uint32_t lo_span = active ? spans[lo_col] : 0u;
+  const uint32_t hi_span = has_hi ? spans[lo_col + 1] : 1u;
+  int32_t* joint = shared_joint + (active ? joint_offsets[lo_col] : 0u);
+  if (active) {
+    const uint32_t hi_mask = has_hi ? 0xfu : 0u;
+    const data_size_t by = static_cast<data_size_t>(blockDim.y);
+    data_size_t i = 0;
+    // 16 rows in flight per thread (the per-column kernel uses 8): with half as many threads per row, the gathered
+    // levels are bound by the latency of the index -> gradient / bin chain, and the deeper batch measured -11%
+    constexpr int kB = 16;
+    if (DIRECT) {
+      for (; i + kB <= num_iteration_this; i += kB) {
+        data_size_t idx[kB];
+#pragma unroll
+        for (int j = 0; j < kB; ++j) idx[j] = block_start + inner_data_index + j * by;
+        ConstructPairRowBatch<kB, false>(idx, cuda_gradients_and_hessians, data_ptr, row_stride, byte_idx, hi_span,
+                                         hi_mask, joint);
+        inner_data_index += kB * by;
+      }
+    } else if (i + kB <= num_iteration_this) {
+      data_size_t idx[kB];
+#pragma unroll
+      for (int j = 0; j < kB; ++j) idx[j] = __ldg(data_indices_ref_this_block + inner_data_index + j * by);
+      for (; i + kB <= num_iteration_this; i += kB) {
+        // without a next batch, re-read the current (valid) positions; the values go unused
+        const bool has_next = i + 2 * kB <= num_iteration_this;
+        const data_size_t* next_src = data_indices_ref_this_block + inner_data_index + (has_next ? kB * by : 0);
+        data_size_t next_idx[kB];
+        ConstructPairRowBatch<kB, true>(idx, cuda_gradients_and_hessians, data_ptr, row_stride, byte_idx, hi_span,
+                                        hi_mask, joint, next_src, has_next ? by : 0, next_idx);
+#pragma unroll
+        for (int j = 0; j < kB; ++j) idx[j] = next_idx[j];
+        inner_data_index += kB * by;
+      }
+    }
+    if (i + 8 <= num_iteration_this) {
+      data_size_t idx[8];
+#pragma unroll
+      for (int j = 0; j < 8; ++j) {
+        idx[j] = DIRECT ? block_start + inner_data_index + j * by :
+                          __ldg(data_indices_ref_this_block + inner_data_index + j * by);
+      }
+      ConstructPairRowBatch<8, false>(idx, cuda_gradients_and_hessians, data_ptr, row_stride, byte_idx, hi_span,
+                                      hi_mask, joint);
+      inner_data_index += 8 * by;
+      i += 8;
+    }
+    if (i + 4 <= num_iteration_this) {
+      data_size_t idx[4];
+#pragma unroll
+      for (int j = 0; j < 4; ++j) {
+        idx[j] = DIRECT ? block_start + inner_data_index + j * by :
+                          __ldg(data_indices_ref_this_block + inner_data_index + j * by);
+      }
+      ConstructPairRowBatch<4, false>(idx, cuda_gradients_and_hessians, data_ptr, row_stride, byte_idx, hi_span,
+                                      hi_mask, joint);
+      inner_data_index += 4 * by;
+      i += 4;
+    }
+    for (; i < num_iteration_this; ++i) {
+      const data_size_t idx[1] = {DIRECT ? block_start + inner_data_index :
+                                           data_indices_ref_this_block[inner_data_index]};
+      ConstructPairRowBatch<1, false>(idx, cuda_gradients_and_hessians, data_ptr, row_stride, byte_idx, hi_span,
+                                      hi_mask, joint);
+      inner_data_index += by;
+    }
+  }
+  __syncthreads();
+  if (!active) {
+    return;
+  }
+  // marginals: low column bin b = joint row b, high column bin b = joint column b; empty bins are skipped as in
+  // the per-column flush (adding zero is a no-op)
+  const uint32_t num_marginal = lo_span + (has_hi ? hi_span : 0u);
+  for (uint32_t m = threadIdx.y; m < num_marginal; m += blockDim.y) {
+    const bool is_lo = m < lo_span;
+    const uint32_t b = is_lo ? m : m - lo_span;
+    const uint32_t count = is_lo ? hi_span : lo_span;
+    const uint32_t stride = is_lo ? 1u : hi_span;
+    const int32_t* cell = joint + (is_lo ? b * hi_span : b);
+    uint32_t sum = 0;
+    for (uint32_t k = 0; k < count; ++k) {
+      sum += static_cast<uint32_t>(cell[k * stride]);
+    }
+    const int32_t packed_grad_hess = static_cast<int32_t>(sum);
+    if (packed_grad_hess == 0) continue;
+    const uint32_t hist_pos = partition_hist_start + column_meta[is_lo ? lo_col : lo_col + 1] + b;
+    if (USE_16BIT_HIST) {
+      atomicAdd(reinterpret_cast<int32_t*>(smaller_leaf_splits->hist_in_leaf) + hist_pos, packed_grad_hess);
+    } else {
+      const int64_t packed_grad_hess_int64 = (static_cast<int64_t>(static_cast<int16_t>(packed_grad_hess >> 16)) << 32) | (static_cast<int64_t>(packed_grad_hess & 0x0000ffff));
+      atomicAdd(reinterpret_cast<atomic_add_long_t*>(smaller_leaf_splits->hist_in_leaf) + hist_pos, (atomic_add_long_t)(packed_grad_hess_int64));
+    }
+  }
+}
+
+// Host-launched (two-sync) batched pair-joint construct: the prologue of CUDAConstructDiscretizedHistogramDenseBatchedKernel
+// without the graph-loop branches (the host takes this kernel only outside graph capture and with exact level sizes).
+// Dynamic shared memory: the largest partition joint table.
+// ALL_ROWS (cuda_plan key all_rows_direct; the host takes it for a single-pair level whose leaf holds every row):
+// a separate instantiation, so the code of the hot per-level kernel is untouched; it still checks the leaf size.
+template <bool ALL_ROWS>
+__global__ void CUDAConstructDiscretizedHistogramPairJointBatchedKernel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const int32_t* cuda_gradients_and_hessians,
+  const uint8_t* data,
+  const uint32_t* column_meta,
+  const int num_compact_columns,
+  const uint32_t* column_hist_offsets_full,
+  const int* feature_partition_column_index_offsets,
+  const int* packed_partition_byte_offsets,
+  const data_size_t num_data,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf,
+  const int per_pair_min_grid_dim_y,
+  const int min_rows_per_thread,
+  const int saturation_floor_total,
+  const int num_grad_quant_bins,
+  const int whole_row_partitions,
+  const uint32_t whole_row_joint,
+  const data_size_t level_min_rows_per_thread) {
+  extern __shared__ int32_t shared_joint[];
+  const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.z;
+  if (!desc->construct_valid) {
+    return;
+  }
+  const CUDALeafSplitsStruct* smaller_struct = desc->smaller_struct;
+  const data_size_t num_data_smaller = smaller_struct->num_data_in_leaf;
+  const double sum_hessians_smaller = smaller_struct->sum_of_hessians;
+  const CUDALeafSplitsStruct* larger_struct = desc->larger_struct;
+  const bool has_larger = larger_struct->leaf_index >= 0;
+  const data_size_t num_data_larger = has_larger ? larger_struct->num_data_in_leaf : 0;
+  const double sum_hessians_larger = has_larger ? larger_struct->sum_of_hessians : 0.0;
+  if ((num_data_smaller <= min_data_in_leaf || sum_hessians_smaller <= min_sum_hessian_in_leaf) &&
+      (num_data_larger <= min_data_in_leaf || sum_hessians_larger <= min_sum_hessian_in_leaf)) {
+    return;
+  }
+  // cuda_plan key per_pair_rows (per_pair_min_grid_dim_y > 0): the grid's y extent is the level formula at the
+  // level's LARGEST smaller leaf; each pair instead groups its rows by the same formula at its OWN size (never more
+  // blocks, as the formula is monotone in the size), so a small leaf of a deep level is not cut into many blocks of
+  // a few rows each paying the full joint-table zeroing and flush. The formula keeps the packed-cell row cap.
+  int pair_grid_y = static_cast<int>(gridDim.y);
+  if (per_pair_min_grid_dim_y > 0) {
+    const int y = HybridBatchedConstructGridDimYQuant(
+      num_data_smaller, static_cast<int>(gridDim.z), static_cast<int>(blockDim.y), per_pair_min_grid_dim_y,
+      min_rows_per_thread, saturation_floor_total, num_grad_quant_bins);
+    pair_grid_y = max(1, min(pair_grid_y, y));
+    if (static_cast<int>(blockIdx.y) >= pair_grid_y) {
+      return;
+    }
+  }
+  const int dim_y = pair_grid_y * static_cast<int>(blockDim.y);
+  // a leaf of num_data distinct rows of the num_data-row matrix holds every row (see the inner DIRECT case)
+  const bool direct = ALL_ROWS && num_data_smaller == num_data;
+#define FALCATA_PAIR_JOINT_INNER(B16, DIRECT) \
+    ConstructDiscretizedHistogramPairJointInner<B16, DIRECT>( \
+      smaller_struct, shared_joint, cuda_gradients_and_hessians, data, column_meta, num_compact_columns, \
+      column_hist_offsets_full, feature_partition_column_index_offsets, packed_partition_byte_offsets, \
+      num_data, dim_y, whole_row_partitions, whole_row_joint, level_min_rows_per_thread)
+  if (desc->smaller_num_bits <= 16) {
+    if (direct) {
+      FALCATA_PAIR_JOINT_INNER(true, ALL_ROWS);
+    } else {
+      FALCATA_PAIR_JOINT_INNER(true, false);
+    }
+  } else {
+    if (direct) {
+      FALCATA_PAIR_JOINT_INNER(false, ALL_ROWS);
+    } else {
+      FALCATA_PAIR_JOINT_INNER(false, false);
+    }
+  }
+#undef FALCATA_PAIR_JOINT_INNER
+}
+
+// Largest block both pair-joint instantiations can launch (register-limited; the whole-row block of
+// pair_hist_rows can exceed the per-partition shapes this kernel was otherwise launched with).
+static int PairJointMaxThreadsPerBlock() {
+  static const int max_threads = [] {
+    cudaFuncAttributes attr_gather, attr_direct;
+    CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attr_gather, CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false>));
+    CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attr_direct, CUDAConstructDiscretizedHistogramPairJointBatchedKernel<true>));
+    return std::min(attr_gather.maxThreadsPerBlock, attr_direct.maxThreadsPerBlock);
+  }();
+  return max_threads;
+}
 
 // Dedicated all-small-level variant: launched by the host INSTEAD of the
 // shared-histogram batched kernel when the level's largest smaller-leaf is
@@ -3665,6 +4322,59 @@ void CUDAHistogramConstructor::LaunchConstructHistogramDenseBatchedDeterministic
   CUDASUCCESS_OR_FATAL(cudaGetLastError());
 }
 
+// Root level with the fused fill (cuda_plan key fused_root_hist): adds the scratch the fill accumulated into the
+// root leaf's histogram, under the gate of CUDAConstructDiscretizedHistogramDenseBatchedKernel (pair 0 is the root;
+// the bit width matches the scratch, the host checked it). Each entry has one writer and receives the same integer
+// sum the construct's atomics would add.
+__global__ void ApplyFusedRootHistogramKernel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const hist_t* root_hist_scratch,
+  const int num_total_bin,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf) {
+  const CUDAHybridPairDescriptor* desc = pair_descs;
+  if (!desc->construct_valid) {
+    return;
+  }
+  const CUDALeafSplitsStruct* smaller_struct = desc->smaller_struct;
+  const data_size_t num_data_smaller = smaller_struct->num_data_in_leaf;
+  const double sum_hessians_smaller = smaller_struct->sum_of_hessians;
+  const CUDALeafSplitsStruct* larger_struct = desc->larger_struct;
+  const bool has_larger = larger_struct->leaf_index >= 0;
+  const data_size_t num_data_larger = has_larger ? larger_struct->num_data_in_leaf : 0;
+  const double sum_hessians_larger = has_larger ? larger_struct->sum_of_hessians : 0.0;
+  if ((num_data_smaller <= min_data_in_leaf || sum_hessians_smaller <= min_sum_hessian_in_leaf) &&
+      (num_data_larger <= min_data_in_leaf || sum_hessians_larger <= min_sum_hessian_in_leaf)) {
+    return;
+  }
+  const int i = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (i >= num_total_bin) {
+    return;
+  }
+  if (desc->smaller_num_bits <= 16) {
+    const uint32_t v = reinterpret_cast<const uint32_t*>(root_hist_scratch)[i];
+    if (v != 0) {
+      uint32_t* hist = reinterpret_cast<uint32_t*>(smaller_struct->hist_in_leaf);
+      hist[i] += v;
+    }
+  } else {
+    const atomic_add_long_t v = reinterpret_cast<const atomic_add_long_t*>(root_hist_scratch)[i];
+    if (v != 0) {
+      atomic_add_long_t* hist = reinterpret_cast<atomic_add_long_t*>(smaller_struct->hist_in_leaf);
+      hist[i] += v;
+    }
+  }
+}
+
+void CUDAHistogramConstructor::LaunchApplyFusedRootHistogram(const CUDAHybridPairDescriptor* pair_descs) {
+  const int block = 256;
+  const int grid = (num_total_bin_ + block - 1) / block;
+  ApplyFusedRootHistogramKernel<<<grid, block, 0, cuda_stream_>>>(
+    pair_descs, fused_root_scratch_.RawDataReadOnly(), num_total_bin_,
+    static_cast<data_size_t>(min_data_in_leaf_), min_sum_hessian_in_leaf_);
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+}
+
 void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,
@@ -3860,6 +4570,61 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
               static_cast<int>(SHARED_HIST_SIZE), sizeof(BIN_TYPE))) {
         // launched the JIT kernel (nibble layout only; codec views use AOT)
         DiagConstructKernel("jit");
+      } else if (compact_is_4bit_ && compact_codec_ == PackCodecId::kNibble4 && FalcataPlan::Get().pair_hist &&
+                 compact_pair_joint_max_ > 0 &&
+                 compact_pair_joint_max_ * sizeof(int32_t) <= 48 * 1024 &&
+                 level_smaller_num_data == nullptr && hybrid_graph_capture_gstate_ == nullptr &&
+                 (std::max(1, max_num_compact_cols_per_partition_) + 1) / 2 * static_cast<int>(block_dim.y) <=
+                   PairJointMaxThreadsPerBlock()) {
+        // cuda_plan key pair_hist: one thread per packed byte (two compact columns), same grid and block rows
+        DiagConstructKernel("pair_hist");
+        const int cc = std::max(1, max_num_compact_cols_per_partition_);
+        // cuda_plan key pair_hist_rows: on the row-interleaved view one block covers whole rows (every partition's
+        // bytes), when all joint tables fit 48 KB together and the row fits the block
+        const bool whole_rows = FalcataPlan::Get().pair_hist_rows && compact_row_interleave_ &&
+            compact_pair_joint_total_ > 0 && compact_pair_joint_total_ * sizeof(int32_t) <= 48 * 1024 &&
+            compact_row_bytes_ > 0 &&
+            compact_row_bytes_ * static_cast<int>(block_dim.y) <= std::min(1024, PairJointMaxThreadsPerBlock());
+        const dim3 pair_grid_dim(whole_rows ? 1 : grid_dim.x, grid_dim.y, grid_dim.z);
+        const dim3 pair_block_dim(whole_rows ? compact_row_bytes_ : (cc + 1) / 2, block_dim.y);
+        // level_row_blocks: every leaf at the largest leaf's rows per thread (within the grid's overflow guard)
+        const int64_t pair_dim_y = static_cast<int64_t>(grid_dim.y) * block_dim.y;
+        const data_size_t pair_min_rows_per_thread = FalcataPlan::Get().level_row_blocks && num_pairs > 1 ?
+          static_cast<data_size_t>((static_cast<int64_t>(max_num_data_in_smaller_leaf) + pair_dim_y - 1) / pair_dim_y) : 0;
+        // all_rows_direct: the level's one leaf holds every row (the root without bagging)
+        const bool all_rows = FalcataPlan::Get().all_rows_direct && num_pairs == 1 &&
+          max_num_data_in_smaller_leaf == num_data_;
+#define FALCATA_LAUNCH_PAIR_JOINT(ALL_ROWS) \
+        CUDAConstructDiscretizedHistogramPairJointBatchedKernel<ALL_ROWS><<<pair_grid_dim, pair_block_dim, \
+            static_cast<size_t>(whole_rows ? compact_pair_joint_total_ : compact_pair_joint_max_) * sizeof(int32_t), \
+            cuda_stream_>>>( \
+          pair_descs, \
+          reinterpret_cast<const int32_t*>(cuda_gradients_), \
+          compact_data_uint8_t_.RawData(), \
+          compact_column_hist_offsets_.RawData(), \
+          num_compact_columns_, \
+          cuda_row_data_->cuda_partition_hist_offsets(), \
+          compact_feature_partition_column_index_offsets_.RawData(), \
+          compact_packed_partition_byte_offsets_.RawData(), \
+          num_data_, \
+          static_cast<data_size_t>(min_data_in_leaf_), \
+          min_sum_hessian_in_leaf_, \
+          FalcataPlan::Get().per_pair_rows ? min_grid_dim_y_ : 0, \
+          BatchConstructMinRowsPerThread() * (whole_rows ? static_cast<int>(grid_dim.x) : 1), \
+          BatchConstructSaturationFloor(), \
+          use_quantized_grad_ ? num_grad_quant_bins_ : 0, \
+          whole_rows ? static_cast<int>(grid_dim.x) : 0, \
+          whole_rows ? static_cast<uint32_t>(compact_pair_joint_total_) : 0u, \
+          pair_min_rows_per_thread)
+        // a whole-row block does the work of grid_dim.x partition blocks and zeroes / flushes all their joint
+        // tables, so its per_pair_rows rows-per-thread floor scales by the partitions it covers to keep the same
+        // share of fixed per-block cost (a larger floor only lowers the formula, so the launched grid still bounds it)
+        if (all_rows) {
+          FALCATA_LAUNCH_PAIR_JOINT(true);
+        } else {
+          FALCATA_LAUNCH_PAIR_JOINT(false);
+        }
+#undef FALCATA_LAUNCH_PAIR_JOINT
       } else if (compact_is_4bit_) {
         DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
 #define FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PACKT) \

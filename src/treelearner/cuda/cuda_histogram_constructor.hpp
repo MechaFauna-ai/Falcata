@@ -29,6 +29,25 @@
 #include "cuda_construct_jit.hpp"
 
 #define NUM_DATA_PER_THREAD (400)
+
+namespace Falcata {
+/*! \brief Rows of one partition of a packed bin matrix (the 4-bit / codec views; offsets = packed partition byte
+ *  offsets). Partition-major, the default: partition p is num_data rows of offsets[p + 1] - offsets[p] bytes
+ *  starting at byte offsets[p] * num_data. Row-interleaved (the nibble compact view under cuda_plan key
+ *  compact_row_interleave): a row holds every partition's bytes back to back, partition p at byte offsets[p] of
+ *  the row; the device copy of the offsets then carries the row width as offsets[0] = -width (offsets[0] is 0 in
+ *  the partition-major layout). Byte b of partition p's row r is at the returned base + r * row_stride + b. */
+__device__ __forceinline__ size_t PackedPartitionRows(const int* offsets, const int p, const data_size_t num_data,
+                                                      int* row_stride) {
+  const int lead = offsets[0];
+  if (lead < 0) {
+    *row_stride = -lead;
+    return p == 0 ? 0 : static_cast<size_t>(offsets[p]);
+  }
+  *row_stride = offsets[p + 1] - offsets[p];
+  return static_cast<size_t>(offsets[p]) * static_cast<size_t>(num_data);
+}
+}  // namespace Falcata
 #define NUM_THREADS_PER_BLOCK (504)
 #define NUM_FEATURE_PER_THREAD_GROUP (28)
 #define SUBTRACT_BLOCK_SIZE (1024)
@@ -277,6 +296,10 @@ class CUDAHistogramConstructor {
    *  view (compact_col_major_device()[slot * num_data + row]); the tree learner
    *  then uses it directly instead of gathering its own copy */
   bool CompactColMajorFilled() const { return compact_col_major_filled_; }
+  /*! \brief the column-major nibble store (colmajor_direct's compact regime, or colmajor_fill's copy): column c
+   *  is the two-rows-per-byte run at byte c * colmajor_pad() / 2; null when absent (the mask regime, or no copy) */
+  const uint8_t* colmajor_bin() const { return colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : nullptr; }
+  size_t colmajor_pad() const { return colmajor_pad_; }
   const uint8_t* compact_col_major_device() const { return compact_staging_col_major_.RawDataReadOnly(); }
 
   /*! \brief colmajor_fill: whether this row data can take the column-major copy (plan key on, 4-bit packed rows
@@ -325,7 +348,25 @@ class CUDAHistogramConstructor {
     const data_size_t max_num_data_in_smaller_leaf,
     const bool any_pair_needs_bit_change_copy,
     const data_size_t* level_smaller_num_data = nullptr,
-    const bool defer_subtract = false);
+    const bool defer_subtract = false,
+    const bool use_fused_root = false);
+
+  /*! \brief cuda_plan key fused_root_hist: ask the next BuildCompactView to accumulate the root histogram inside
+   *  the tiled 4-bit fill (the caller guarantees the root leaf is every row: no bagging), in the root's bit format
+   *  (root_hist_16bit) and under the packed per-block row bound of the constructor's (effective) quant bins. false
+   *  clears the request. */
+  void RequestFusedRootHist(const bool request, const bool root_hist_16bit) {
+    fused_root_requested_ = request;
+    fused_root_request_16bit_ = root_hist_16bit;
+  }
+
+  /*! \brief true once per tree when this tree's fill accumulated the root histogram in the format of a root with
+   *  root_hist_16bit; the root level then passes use_fused_root to ConstructHistogramsForLevel. */
+  bool ConsumeFusedRootHist(const bool root_hist_16bit) {
+    const bool ready = fused_root_ready_ && fused_root_bits16_ == root_hist_16bit;
+    fused_root_ready_ = false;
+    return ready;
+  }
 
   /*! \brief the deferred fix+subtract tail of ConstructHistogramsForLevel
    *  (defer_subtract=true). Multi-GPU inserts the level all-reduce of the
@@ -1017,6 +1058,8 @@ class CUDAHistogramConstructor {
     bool is_4bit = false;
     PackCodecId codec = PackCodecId::kNibble4;
     size_t data_bytes = 0;
+    /*! \brief nibble rows stored contiguously across partitions (see PackedPartitionRows) */
+    bool row_interleave = false;
   };
   bool ScanCompactLayout(const std::vector<int8_t>& is_feature_used_bytree,
                          CompactLayout* layout) const;
@@ -1070,6 +1113,16 @@ class CUDAHistogramConstructor {
   void FillFullViewFromColumns();
   /*! \brief the compact layout of every column (the row-major matrix's) */
   CompactLayout FullLayout() const;
+  /*! \brief fused root histogram (cuda_plan key fused_root_hist): request for the next fill, whether this tree's
+   *  fill produced the scratch (and in which format), the scratch (num_total_bin_ int64 or int32 entries) and the
+   *  fused fill's per-tree metadata (first local bin of each slot's two columns, then each local bin's position). */
+  bool fused_root_requested_ = false;
+  bool fused_root_request_16bit_ = false;
+  bool fused_root_ready_ = false;
+  bool fused_root_bits16_ = false;
+  CUDAVector<hist_t> fused_root_scratch_;
+  CUDAVector<int> fused_root_meta_;
+  void LaunchApplyFusedRootHistogram(const CUDAHybridPairDescriptor* pair_descs);
   /*! \brief L2 persistence carve-out (cuda_plan key l2_policy; 0 = inactive) */
   size_t l2_carveout_bytes_ = 0;
   size_t l2_max_window_bytes_ = 0;
@@ -1116,8 +1169,16 @@ class CUDAHistogramConstructor {
   /*! \brief whether compact_staging_col_major_ holds this tree's column-major
    *  compact view (fused second output of the compact fill) */
   bool compact_col_major_filled_ = false;
-  /*! \brief column_hist_offsets for compact view (length num_compact_columns+1) */
+  /*! \brief column_hist_offsets for compact view (length num_compact_columns+1);
+   *  on the nibble view followed by the pair-joint layout (see BuildCompactView) */
   CUDAVector<uint32_t> compact_column_hist_offsets_;
+  /*! \brief largest per-partition joint table of the pair_hist construct (cells), 0 when not built */
+  int compact_pair_joint_max_ = 0;
+  /*! \brief all partitions' joint tables together (cells), 0 when not built */
+  int compact_pair_joint_total_ = 0;
+  /*! \brief whether this tree's nibble compact view is row-interleaved, and its row width in bytes */
+  bool compact_row_interleave_ = false;
+  int compact_row_bytes_ = 0;
   /*! \brief partition_hist_offsets for compact view: [0, total_compact_bins] */
   CUDAVector<uint32_t> compact_partition_hist_offsets_;
   /*! \brief partition column offsets for compact view: [0, num_compact_columns] */

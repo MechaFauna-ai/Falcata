@@ -341,7 +341,9 @@ void CUDAColumnData::SetCompactPackedColumnView(const std::vector<int>& column_t
                                                 const uint8_t* packed_buf,
                                                 const std::vector<size_t>& slot_base_byte,
                                                 const std::vector<int>& slot_row_stride,
-                                                const std::vector<uint8_t>& slot_shift) {
+                                                const std::vector<uint8_t>& slot_shift,
+                                                const uint8_t* colmajor_buf,
+                                                const size_t colmajor_pad) {
   packed_column_ptr_.assign(num_columns_, nullptr);
   packed_column_stride_.assign(num_columns_, 0);
   packed_column_shift_.assign(num_columns_, 0);
@@ -363,6 +365,14 @@ void CUDAColumnData::SetCompactPackedColumnView(const std::vector<int>& column_t
         // packed traversal therefore only ever see 4/8/16/32 here.
         packed_column_ptr_[c] = data_by_column_[c]->RawData();
         packed_column_bit_type_[c] = column_bit_type_[c];
+      } else if (colmajor_buf != nullptr) {
+        // column-major nibble store of the bin matrix (cuda_plan key
+        // colmajor_split): column c is the flat two-rows-per-byte run at
+        // nibble c * colmajor_pad (pad even), holding the same nibbles as the
+        // packed row matrix, so a row's bin costs a byte of a contiguous
+        // column instead of a sector of the row matrix
+        packed_column_ptr_[c] = colmajor_buf + static_cast<size_t>(c) * (colmajor_pad / 2);
+        packed_column_bit_type_[c] = kNibbleColumnBitType;
       } else {
         packed_column_ptr_[c] = packed_buf + slot_base_byte[slot];
         packed_column_stride_[c] = slot_row_stride[slot];

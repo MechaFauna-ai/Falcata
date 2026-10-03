@@ -12,6 +12,7 @@
 #include "cuda_leaf_splits.hpp"
 #include <Falcata/cuda/cuda_algorithms.hpp>
 #include <Falcata/cuda/cuda_rocm_interop.h>
+#include <Falcata/falcata_plan.h>
 
 namespace Falcata {
 
@@ -118,6 +119,49 @@ __global__ void CUDAInitValuesKernel3(const int16_t* cuda_gradients_and_hessians
     cuda_sum_of_hessians_hessians[blockIdx.x] = ((block_sum_gradient << 32) | block_sum_hessian);
   }
 }
+
+// CUDAInitValuesKernel3 with one warp per chunk of NUM_THREADS_PER_BLOCK_LEAF_SPLITS rows (cuda_plan key
+// root_sums_warp): lane l sums the chunk's rows l, l + warp size, ..., the rows thread l + 32 w of the block
+// version held. Integer sums do not depend on the order, so every chunk writes the same three partials, through
+// the same expressions, for every chunk index the block version had (empty chunks included). CUDA only.
+#if !defined(__HIP_PLATFORM_AMD__)
+template <bool USE_INDICES>
+__global__ void CUDAInitValuesChunkWarpKernel(const int16_t* cuda_gradients_and_hessians,
+  const data_size_t num_data, const data_size_t* cuda_bagging_data_indices, const int num_chunks,
+  double* cuda_sum_of_gradients, double* cuda_sum_of_hessians, int64_t* cuda_sum_of_hessians_hessians,
+  const score_t* grad_scale_pointer, const score_t* hess_scale_pointer) {
+  const int chunk = static_cast<int>((blockIdx.x * blockDim.x + threadIdx.x) / WARPSIZE);
+  if (chunk >= num_chunks) {
+    return;
+  }
+  const uint32_t lane = threadIdx.x % WARPSIZE;
+  const score_t grad_scale = *grad_scale_pointer;
+  const score_t hess_scale = *hess_scale_pointer;
+  const data_size_t chunk_start = static_cast<data_size_t>(chunk) * NUM_THREADS_PER_BLOCK_LEAF_SPLITS;
+  int64_t int_gradient = 0;
+  int64_t int_hessian = 0;
+#pragma unroll 8
+  for (int k = 0; k < NUM_THREADS_PER_BLOCK_LEAF_SPLITS / WARPSIZE; ++k) {
+    const data_size_t data_index = chunk_start + static_cast<data_size_t>(k * WARPSIZE + lane);
+    if (data_index < num_data) {
+      const data_size_t row = USE_INDICES ? cuda_bagging_data_indices[data_index] : data_index;
+      int_gradient += cuda_gradients_and_hessians[2 * row + 1];
+      int_hessian += cuda_gradients_and_hessians[2 * row];
+    }
+  }
+  for (int offset = WARPSIZE / 2; offset > 0; offset >>= 1) {
+    int_gradient += __shfl_down_sync(0xffffffff, int_gradient, offset);
+    int_hessian += __shfl_down_sync(0xffffffff, int_hessian, offset);
+  }
+  if (lane == 0) {
+    const int64_t block_sum_gradient = int_gradient;
+    const int64_t block_sum_hessian = int_hessian;
+    cuda_sum_of_gradients[chunk] = block_sum_gradient * grad_scale;
+    cuda_sum_of_hessians[chunk] = block_sum_hessian * hess_scale;
+    cuda_sum_of_hessians_hessians[chunk] = ((block_sum_gradient << 32) | block_sum_hessian);
+  }
+}
+#endif  // !defined(__HIP_PLATFORM_AMD__)
 
 __global__ void CUDAInitValuesKernel4(
   const double lambda_l1,
@@ -385,7 +429,30 @@ void CUDALeafSplits::LaunchInitValuesKernel(
   hist_t* cuda_hist_in_leaf,
   const score_t* grad_scale,
   const score_t* hess_scale) {
-  if (cuda_bagging_data_indices == nullptr) {
+#if !defined(__HIP_PLATFORM_AMD__)
+  const bool chunk_warp = FalcataPlan::Get().root_sums_warp;
+#else
+  const bool chunk_warp = false;  // the warp-per-chunk kernel is CUDA only
+#endif
+  if (chunk_warp) {
+#if !defined(__HIP_PLATFORM_AMD__)
+    // one warp per chunk, eight chunks per 256-thread block
+    constexpr int kChunkWarpThreads = 256;
+    const int chunk_grid = (num_blocks_init_from_gradients_ * WARPSIZE + kChunkWarpThreads - 1) / kChunkWarpThreads;
+    if (cuda_bagging_data_indices == nullptr) {
+      CUDAInitValuesChunkWarpKernel<false><<<chunk_grid, kChunkWarpThreads>>>(
+        reinterpret_cast<const int16_t*>(cuda_gradients_), num_used_indices, nullptr, num_blocks_init_from_gradients_,
+        cuda_sum_of_gradients_buffer_.RawData(), cuda_sum_of_hessians_buffer_.RawData(),
+        cuda_sum_of_gradients_hessians_buffer_.RawData(), grad_scale, hess_scale);
+    } else {
+      CUDAInitValuesChunkWarpKernel<true><<<chunk_grid, kChunkWarpThreads>>>(
+        reinterpret_cast<const int16_t*>(cuda_gradients_), num_used_indices, cuda_bagging_data_indices,
+        num_blocks_init_from_gradients_, cuda_sum_of_gradients_buffer_.RawData(),
+        cuda_sum_of_hessians_buffer_.RawData(), cuda_sum_of_gradients_hessians_buffer_.RawData(), grad_scale,
+        hess_scale);
+    }
+#endif
+  } else if (cuda_bagging_data_indices == nullptr) {
     CUDAInitValuesKernel3<false><<<num_blocks_init_from_gradients_, NUM_THREADS_PER_BLOCK_LEAF_SPLITS>>>(
       reinterpret_cast<const int16_t*>(cuda_gradients_), num_used_indices, nullptr, cuda_sum_of_gradients_buffer_.RawData(),
       cuda_sum_of_hessians_buffer_.RawData(), cuda_sum_of_gradients_hessians_buffer_.RawData(), grad_scale, hess_scale);

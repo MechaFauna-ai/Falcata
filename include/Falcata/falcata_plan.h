@@ -80,6 +80,36 @@ struct FalcataPlan {
   // Bit-identical. Measured: +26.1% numerai-deep, +7.7% higgs-deep against the
   // JIT (300 rounds).
   bool row_batch = true;            // key: row_batch
+  // root histogram fused into the tiled 4-bit compact fill (quantized, no
+  // bagging, so the root leaf is every row the fill stages): the fill adds
+  // each staged row's packed gradient into per-block column histograms and the
+  // root level adds that scratch instead of re-reading every row in the
+  // construct. Integer sums under the construct's per-block bound: bit-identical.
+  bool fused_root_hist = true;      // key: fused_root_hist
+  // fused root histogram's per-block table laid out [nibble][byte slot] with
+  // a 32-multiple slot stride (instead of one cell per local bin), so the
+  // warp's atomics over 32 consecutive slots never share a bank. Same cells,
+  // same integer sums: bit-identical. Falls back to the per-bin table when the
+  // slot-major table does not fit 48 KB of shared memory.
+  bool root_hist_slot_major = true;   // key: root_hist_slot_major
+  // fused root histogram fill: block b stages tiles b, b + grid, b + 2*grid,
+  // ... instead of tiles_per_block consecutive tiles, so at any time the
+  // resident blocks read adjacent 64-byte runs of each source column (DRAM
+  // page locality, like the one-tile-per-block plain fill) rather than runs
+  // tiles_per_block tiles apart. Same tile count per block (the packed row
+  // bound), integer sums: bit-identical.
+  bool root_hist_tile_stride = true;  // key: root_hist_tile_stride
+  // fused root histogram fill with a single partition spanning every slot:
+  // the tile is staged at row stride = width and offset to the output run's
+  // 16-byte phase, so the write is aligned 16-byte shared->global copies
+  // instead of 16 byte gathers per vector. Same bytes: bit-identical.
+  bool root_hist_run_copy = true;    // key: root_hist_run_copy
+  // fused root histogram fill from the column-major store whose columns are
+  // whole 4-byte words: each thread holds its share of the next tile's source
+  // as aligned 32-bit words in registers, loaded right after the current tile
+  // is staged, so those loads overlap the tile's write and histogram phases.
+  // Same tile bytes: bit-identical.
+  bool root_hist_prefetch = true;    // key: root_hist_prefetch
   // true when the user wrote construct_jit:on/off -- bypasses the >=300
   // rounds auto-gate (mirrors tuner_explicit)
   bool construct_jit_explicit = false;
@@ -180,6 +210,103 @@ struct FalcataPlan {
   // the block kernel. CUDA only. Bit-identical. Measured:
   // +6.3% numerai-deep, +22.7% year-deep.
   bool warp_find = true;            // key: warp_find
+  // warp_find on tasks with at most 8 bins: one scan position per lane instead
+  // of eight in lane 0, so the threshold unpack and fp64 gain of all positions
+  // issue once per warp, not once per position. Bit-identical (same positions,
+  // same expressions, same first-maximum selection as lane 0's strict scan).
+  bool warp_find_narrow = true;     // key: warp_find_narrow
+  // warp_find for tasks of at most 32 scan positions (few-bin features): one
+  // position per lane instead of 8, so the fp64 unpack and gain math of a
+  // feature with a handful of bins runs across lanes rather than serially in
+  // lane 0; when every task fits 8 positions, a warp instead serves eight
+  // (task, leaf) items with 4 lanes x 2 positions each. The selection
+  // reproduces the 8-per-lane winner exactly (exact first maximum within each
+  // 8 positions, then the same tolerance tie-break between 8-position groups
+  // in the same order). Bit-identical.
+  bool warp_find_spread = true;     // key: warp_find_spread
+  // 4-bit compact quantized construct with one thread per packed byte: the two
+  // nibbles of a byte index one cell of a joint (lo, hi) shared histogram, so a
+  // row costs one shared atomic per byte instead of one per column; each
+  // column's histogram is the joint table summed over the partner's bins before
+  // the usual flush. Used for host-launched levels on the nibble compact view
+  // when every partition's joint table fits 48 KB of shared memory; otherwise
+  // the per-column kernel. Bit-identical (integer sums of the same rows).
+  bool pair_hist = true;            // key: pair_hist
+  // pair_hist row grouping per pair: each pair of a level splits its rows into
+  // as many y-blocks as the batched sizing formula gives at that pair's own
+  // smaller-leaf size, not at the level's largest one, so the small leaves of
+  // deep levels do not pay a joint-table zero and flush per handful of rows.
+  // The formula keeps the packed-cell rows-per-block cap. Bit-identical
+  // (integer sums are row-grouping invariant within that cap).
+  bool per_pair_rows = true;        // key: per_pair_rows
+  // nibble compact view with each row's bytes of all feature partitions
+  // stored back to back (partition p at its packed byte offset of the row)
+  // instead of one row-major block per partition. Below the first levels a
+  // leaf's rows are sparse in the matrix, so every gathered row costs whole
+  // DRAM sectors: one contiguous run of the full row touches fewer of them
+  // than a partial run per partition. Used on the 4-bit nibble view whenever
+  // the source has more than one partition. Bit-identical (same bytes, only
+  // their addresses change).
+  bool compact_row_interleave = true;  // key: compact_row_interleave
+  // pair_hist on the row-interleaved view: one block covers whole rows (the
+  // bytes of every partition) instead of one block per partition, so a row's
+  // bytes are read by one block as one contiguous run and no lanes idle on
+  // narrower partitions. Used when all partitions' joint tables fit 48 KB
+  // together and the row fits a block. Under per_pair_rows its rows-per-thread
+  // floor scales by the partitions a block covers (a block carries all their
+  // tables' zeroing and flush). Bit-identical (integer sums).
+  bool pair_hist_rows = true;       // key: pair_hist_rows
+  // pair_hist joint tables laid out with odd per-byte strides (an even span
+  // product gets one pad cell), so the same cell of neighbouring threads' tables
+  // falls in distinct shared-memory banks. Bit-identical (layout only).
+  bool pair_pad = true;             // key: pair_pad
+  // pair_hist on levels with several leaf pairs: every leaf takes the largest
+  // leaf's rows per thread, so small leaves fill a few whole blocks instead of
+  // spreading a few rows over every block row (each block zeroes and flushes
+  // a whole table). Blocks never exceed the largest leaf's row count, which
+  // the overflow guard bounds. Bit-identical (integer sums).
+  bool level_row_blocks = true;     // key: level_row_blocks
+  // pair_hist on a leaf that holds every row (the root without bagging): its
+  // index list is a permutation of all rows, so each position is read as that
+  // row number without the index gather. Same rows per block, same rows in
+  // total. Bit-identical (integer sums).
+  bool all_rows_direct = true;      // key: all_rows_direct
+  // host-launched batched apply (gen-bit-vector and split-inner kernels):
+  // each 1024-row chunk is handled by 256 threads of 4 rows each, all loads of
+  // a thread's rows issued before their use, instead of 1024 threads of one
+  // row. A 1024-thread block fills an SM alone and stalls on its own index ->
+  // bin load chain; quarter-size blocks keep several chunks in flight per SM.
+  // Same chunks, same ballot words, same block totals and output positions.
+  // Bit-identical (only the thread -> row mapping changes).
+  bool apply_row_batch = true;      // key: apply_row_batch
+  // batched level best-split sync over the tree's feature sample (or over a
+  // task list wider than one 1024-task block): one block per leaf reads only
+  // the used tasks' slots and folds them in task order, instead of one block
+  // per 1024 tasks over every task plus a cross-block merge kernel. With
+  // finite gains the comparison (higher gain, then lower task) is a strict
+  // total order, so any fold order picks the same winner; if a found gain is
+  // not finite, the block replays the original per-1024-task reductions and
+  // merge exactly. Bit-identical.
+  bool sync_used_tasks = true;      // key: sync_used_tasks
+  // quantized root sums (gradient/hessian totals of the tree's rows): one warp
+  // per 1024-row chunk sums 32 rows per lane, instead of one 1024-thread block
+  // per chunk with one row per thread and two block reductions. Each chunk's
+  // integer sums, and so every per-chunk partial the final reduction reads,
+  // are the same. Bit-identical.
+  bool root_sums_warp = true;       // key: root_sums_warp
+  // quantized gradient discretizer's per-chunk min/max: one warp per chunk of
+  // 1024 rows runs the block reduction's shuffle trees itself (the 32 per-warp
+  // trees in turn, then the cross-warp tree over their results), instead of a
+  // 1024-thread block with one row per thread and four block reductions. Same
+  // trees and operand order, so the same partials, NaN and signed zero
+  // included. Bit-identical.
+  bool minmax_warp = true;          // key: minmax_warp
+  // packed split read from the column-major nibble store (colmajor_direct's
+  // compact regime, or colmajor_fill's copy) instead of the row-major compact
+  // matrix: the partition reads a row's split bin from a contiguous
+  // two-rows-per-byte column, not one sector of the row matrix per row. Used
+  // whenever the store exists. Bit-identical (same nibbles).
+  bool colmajor_split = true;       // key: colmajor_split
   // runtime tier-1 tuner: bandit over the batched-construct saturation floor,
   // timed per tree; quantized training only (integer hists keep results
   // schedule-invariant, so retuning cannot change the model). The probe phase
@@ -233,6 +360,11 @@ struct FalcataPlan {
     if (key == "compact_quant") return &compact_quant;
     if (key == "construct_jit") return &construct_jit;
     if (key == "row_batch") return &row_batch;
+    if (key == "fused_root_hist") return &fused_root_hist;
+    if (key == "root_hist_slot_major") return &root_hist_slot_major;
+    if (key == "root_hist_tile_stride") return &root_hist_tile_stride;
+    if (key == "root_hist_run_copy") return &root_hist_run_copy;
+    if (key == "root_hist_prefetch") return &root_hist_prefetch;
     if (key == "fast_rowdata") return &fast_rowdata;
     if (key == "rowdata_4bit") return &rowdata_4bit;
     if (key == "gpu_construct") return &gpu_construct;
@@ -259,6 +391,20 @@ struct FalcataPlan {
     if (key == "colmajor_direct") return &colmajor_direct;
     if (key == "tiled_fill") return &tiled_fill;
     if (key == "warp_find") return &warp_find;
+    if (key == "warp_find_narrow") return &warp_find_narrow;
+    if (key == "warp_find_spread") return &warp_find_spread;
+    if (key == "pair_hist") return &pair_hist;
+    if (key == "per_pair_rows") return &per_pair_rows;
+    if (key == "compact_row_interleave") return &compact_row_interleave;
+    if (key == "pair_hist_rows") return &pair_hist_rows;
+    if (key == "pair_pad") return &pair_pad;
+    if (key == "level_row_blocks") return &level_row_blocks;
+    if (key == "all_rows_direct") return &all_rows_direct;
+    if (key == "apply_row_batch") return &apply_row_batch;
+    if (key == "sync_used_tasks") return &sync_used_tasks;
+    if (key == "root_sums_warp") return &root_sums_warp;
+    if (key == "minmax_warp") return &minmax_warp;
+    if (key == "colmajor_split") return &colmajor_split;
     if (key == "tuner") return &tuner;
     if (key == "wide_partitions") return &wide_partitions;
     return nullptr;
