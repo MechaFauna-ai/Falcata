@@ -348,7 +348,25 @@ class CUDAHistogramConstructor {
     const data_size_t max_num_data_in_smaller_leaf,
     const bool any_pair_needs_bit_change_copy,
     const data_size_t* level_smaller_num_data = nullptr,
-    const bool defer_subtract = false);
+    const bool defer_subtract = false,
+    const bool use_fused_root = false);
+
+  /*! \brief cuda_plan key fused_root_hist: ask the next BuildCompactView to accumulate the root histogram inside
+   *  the tiled 4-bit fill (the caller guarantees the root leaf is every row: no bagging), in the root's bit format
+   *  (root_hist_16bit) and under the packed per-block row bound of the constructor's (effective) quant bins. false
+   *  clears the request. */
+  void RequestFusedRootHist(const bool request, const bool root_hist_16bit) {
+    fused_root_requested_ = request;
+    fused_root_request_16bit_ = root_hist_16bit;
+  }
+
+  /*! \brief true once per tree when this tree's fill accumulated the root histogram in the format of a root with
+   *  root_hist_16bit; the root level then passes use_fused_root to ConstructHistogramsForLevel. */
+  bool ConsumeFusedRootHist(const bool root_hist_16bit) {
+    const bool ready = fused_root_ready_ && fused_root_bits16_ == root_hist_16bit;
+    fused_root_ready_ = false;
+    return ready;
+  }
 
   /*! \brief the deferred fix+subtract tail of ConstructHistogramsForLevel
    *  (defer_subtract=true). Multi-GPU inserts the level all-reduce of the
@@ -1095,6 +1113,16 @@ class CUDAHistogramConstructor {
   void FillFullViewFromColumns();
   /*! \brief the compact layout of every column (the row-major matrix's) */
   CompactLayout FullLayout() const;
+  /*! \brief fused root histogram (cuda_plan key fused_root_hist): request for the next fill, whether this tree's
+   *  fill produced the scratch (and in which format), the scratch (num_total_bin_ int64 or int32 entries) and the
+   *  fused fill's per-tree metadata (first local bin of each slot's two columns, then each local bin's position). */
+  bool fused_root_requested_ = false;
+  bool fused_root_request_16bit_ = false;
+  bool fused_root_ready_ = false;
+  bool fused_root_bits16_ = false;
+  CUDAVector<hist_t> fused_root_scratch_;
+  CUDAVector<int> fused_root_meta_;
+  void LaunchApplyFusedRootHistogram(const CUDAHybridPairDescriptor* pair_descs);
   /*! \brief L2 persistence carve-out (cuda_plan key l2_policy; 0 = inactive) */
   size_t l2_carveout_bytes_ = 0;
   size_t l2_max_window_bytes_ = 0;

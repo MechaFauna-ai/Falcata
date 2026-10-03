@@ -711,7 +711,15 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
   } else {
     cuda_best_split_finder_->BeforeTrain(col_sampler_.is_feature_used_bytree());
     cuda_histogram_constructor_->SetFeatureUsedBytree(col_sampler_.is_feature_used_bytree());
+    // fused root histogram: the fill sees every row, which is the root leaf only without bagging; the root level
+    // of the batched host flow consumes it (EnqueueLevelBestSplitSearch)
+    cuda_histogram_constructor_->RequestFusedRootHist(
+      FalcataPlan::Get().fused_root_hist && config_->use_quantized_grad && use_hybrid_growth_ &&
+        !cuda_data_partition_->use_bagging() && root_num_data == num_data_ && vec_num_targets_ <= 1 &&
+        nccl_communicator_ == nullptr,
+      config_->use_quantized_grad && cuda_gradient_discretizer_->GetHistBitsInLeaf<false>(0) <= 16);
     cuda_histogram_constructor_->BuildCompactView(col_sampler_.is_feature_used_bytree());
+    cuda_histogram_constructor_->RequestFusedRootHist(false, false);
   }
   if (nccl_communicator_ != nullptr) {
     // this tree's feature sample decides which histogram bins the all-reduce
@@ -1777,11 +1785,17 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
   // NCCL, and the subtract derives the larger child from the (global) parent,
   // so both must run on globally reduced smaller histograms. Order mirrors the
   // classic flow: construct -> reduce -> fix/subtract -> find.
+  // the root level reuses the root histogram this tree's compact fill accumulated, if it did
+  const bool use_fused_root = num_pairs == 1 && pairs[0].smaller == 0 && pairs[0].larger < 0 &&
+    nccl_communicator_ == nullptr && config_->use_quantized_grad &&
+    host_hybrid_pair_descs_[0].num_data_in_smaller_leaf == num_data_ &&
+    cuda_histogram_constructor_->ConsumeFusedRootHist(host_hybrid_pair_descs_[0].smaller_num_bits <= 16);
   cuda_histogram_constructor_->ConstructHistogramsForLevel(
     cuda_hybrid_pair_descs_.RawDataReadOnly(), num_pairs,
     max_num_data_in_smaller_leaf, any_bit_change_copy,
     /*level_smaller_num_data=*/nullptr,
-    /*defer_subtract=*/nccl_communicator_ != nullptr);
+    /*defer_subtract=*/nccl_communicator_ != nullptr,
+    use_fused_root);
   if (nccl_communicator_ != nullptr) {
     // ONE collective for the level instead of one per split
     NCCLReduceLevelHistograms(num_pairs);

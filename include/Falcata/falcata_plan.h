@@ -80,6 +80,36 @@ struct FalcataPlan {
   // Bit-identical. Measured: +26.1% numerai-deep, +7.7% higgs-deep against the
   // JIT (300 rounds).
   bool row_batch = true;            // key: row_batch
+  // root histogram fused into the tiled 4-bit compact fill (quantized, no
+  // bagging, so the root leaf is every row the fill stages): the fill adds
+  // each staged row's packed gradient into per-block column histograms and the
+  // root level adds that scratch instead of re-reading every row in the
+  // construct. Integer sums under the construct's per-block bound: bit-identical.
+  bool fused_root_hist = true;      // key: fused_root_hist
+  // fused root histogram's per-block table laid out [nibble][byte slot] with
+  // a 32-multiple slot stride (instead of one cell per local bin), so the
+  // warp's atomics over 32 consecutive slots never share a bank. Same cells,
+  // same integer sums: bit-identical. Falls back to the per-bin table when the
+  // slot-major table does not fit 48 KB of shared memory.
+  bool root_hist_slot_major = true;   // key: root_hist_slot_major
+  // fused root histogram fill: block b stages tiles b, b + grid, b + 2*grid,
+  // ... instead of tiles_per_block consecutive tiles, so at any time the
+  // resident blocks read adjacent 64-byte runs of each source column (DRAM
+  // page locality, like the one-tile-per-block plain fill) rather than runs
+  // tiles_per_block tiles apart. Same tile count per block (the packed row
+  // bound), integer sums: bit-identical.
+  bool root_hist_tile_stride = true;  // key: root_hist_tile_stride
+  // fused root histogram fill with a single partition spanning every slot:
+  // the tile is staged at row stride = width and offset to the output run's
+  // 16-byte phase, so the write is aligned 16-byte shared->global copies
+  // instead of 16 byte gathers per vector. Same bytes: bit-identical.
+  bool root_hist_run_copy = true;    // key: root_hist_run_copy
+  // fused root histogram fill from the column-major store whose columns are
+  // whole 4-byte words: each thread holds its share of the next tile's source
+  // as aligned 32-bit words in registers, loaded right after the current tile
+  // is staged, so those loads overlap the tile's write and histogram phases.
+  // Same tile bytes: bit-identical.
+  bool root_hist_prefetch = true;    // key: root_hist_prefetch
   // true when the user wrote construct_jit:on/off -- bypasses the >=300
   // rounds auto-gate (mirrors tuner_explicit)
   bool construct_jit_explicit = false;
@@ -330,6 +360,11 @@ struct FalcataPlan {
     if (key == "compact_quant") return &compact_quant;
     if (key == "construct_jit") return &construct_jit;
     if (key == "row_batch") return &row_batch;
+    if (key == "fused_root_hist") return &fused_root_hist;
+    if (key == "root_hist_slot_major") return &root_hist_slot_major;
+    if (key == "root_hist_tile_stride") return &root_hist_tile_stride;
+    if (key == "root_hist_run_copy") return &root_hist_run_copy;
+    if (key == "root_hist_prefetch") return &root_hist_prefetch;
     if (key == "fast_rowdata") return &fast_rowdata;
     if (key == "rowdata_4bit") return &rowdata_4bit;
     if (key == "gpu_construct") return &gpu_construct;
