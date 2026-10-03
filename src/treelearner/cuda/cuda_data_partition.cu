@@ -2233,17 +2233,23 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
     CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], indices_copy_done_event_, 0));
   }
   bool any_packed_source = false;
-  for (int k = 0; k < num_splits; ++k) any_packed_source |= host_apply_descs_[k].bit_type == 4;
-  if (FalcataPlan::Get().gen_bit_v2 && total_flat_blocks > 0 && !any_packed_source) {
+  bool any_wide_source = false;
+  for (int k = 0; k < num_splits; ++k) {
+    const int bit_type = host_apply_descs_[k].bit_type;
+    any_packed_source |= bit_type == 4;
+    any_wide_source |= bit_type != 4 && bit_type != 8 && bit_type != kNibbleColumnBitType;
+  }
+  const bool use_gen_bit_v2 = FalcataPlan::Get().gen_bit_v2 && total_flat_blocks > 0 && !any_wide_source;
+  if (use_gen_bit_v2 && !any_packed_source) {
     GenBitV2Rows8Kernel<<<total_flat_blocks, kGenBitV2Threads, 0, cuda_streams_[0]>>>(
       descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
       cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(), num_splits);
-  } else if (FalcataPlan::Get().gen_bit_v2 && total_flat_blocks > 0 && num_splits > 1 && num_splits <= 128) {
+  } else if (use_gen_bit_v2 && num_splits > 1 && num_splits <= 128) {
     GenBitV2InterleavedKernel<<<flat_grid, block_dim, 0, cuda_streams_[0]>>>(
       descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
       cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(), num_splits,
       total_flat_blocks);
-  } else if (FalcataPlan::Get().gen_bit_v2 && total_flat_blocks > 0) {
+  } else if (use_gen_bit_v2) {
     GenBitV2PersistentKernel<<<flat_grid, block_dim, 0, cuda_streams_[0]>>>(
       descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
       cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(), num_splits,
