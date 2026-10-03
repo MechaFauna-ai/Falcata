@@ -442,6 +442,14 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // ---- colmajor_direct: which view holds the bin matrix (CUDAHistogramConstructor::ChooseViewRegime) ----
   /*! \brief device bytes training can still allocate once the regime's view exists (see the definition) */
   size_t DirectViewReserveBytes() const;
+  /*! \brief whether the split kernels read the packed compact matrix in place (BuildCompactColumnView); otherwise
+   *  they get the one-byte-per-value view of the sampled columns */
+  bool PackedSplitReadUsable() const;
+  /*! \brief whether training builds that one-byte split view at some tree (see the definition) */
+  bool BuildsOneByteSplitView() const;
+  /*! \brief whether every tree runs the quantized per-leaf construct, which reads the whole matrix (see the
+   *  definition) */
+  bool TreesReadFullMatrix() const;
   /*! \brief choose the regime for the current data and feature_fraction: the tuner's wisdom or probe inside the
    *  probe band, the static rule outside it, mask whenever the compact regime does not fit; why goes to the log */
   void InitViewRegime(const char* why);

@@ -114,12 +114,14 @@ def test_colmajor_direct_is_bit_identical_cuda(shape, quant):
 @pytest.mark.parametrize("fraction", [0.1, 0.5, 0.99, 1.0])
 @pytest.mark.parametrize("quant", ["stochastic", "none"])
 def test_view_regimes_are_bit_identical_cuda(fraction, quant):
-    """compact and mask train the same model at every feature_fraction, and the same as the row-major matrix."""
-    models = {
-        plan: _train("sampled", quant, plan, feature_fraction=fraction)
-        for plan in ("auto,view_mode:compact", "auto,view_mode:mask", OFF)
-    }
-    assert models["auto,view_mode:compact"] == models["auto,view_mode:mask"] == models[OFF]
+    """Quantized: compact and mask train the same model at every feature_fraction, and the same as the row-major
+    matrix. Non-quantized: auto (compact unless every tree samples every column) trains the row-major matrix's model;
+    forced mask is only the same where every column is sampled (float sums follow the kernels' row grouping)."""
+    plans = ["auto", OFF]
+    if quant != "none" or fraction == 1.0:
+        plans += ["auto,view_mode:compact", "auto,view_mode:mask"]
+    models = {plan: _train("sampled", quant, plan, feature_fraction=fraction) for plan in plans}
+    assert len(set(models.values())) == 1, sorted(models)
 
 
 @_REQUIRES_CUDA
@@ -167,7 +169,8 @@ def test_colmajor_reset_training_data_cuda(quant):
     """After ResetTrainingData the view is rebuilt from the new Dataset; colmajor_fill:off (no store at all) is the
     reference every arm must reproduce."""
     reference = _train_with_reset("auto,colmajor_fill:off", quant)
-    for plan in ("auto", "auto,view_mode:mask", OFF):
+    plans = ("auto", OFF) if quant == "none" else ("auto", "auto,view_mode:mask", OFF)
+    for plan in plans:
         assert _train_with_reset(plan, quant) == reference, plan
 
 
@@ -177,7 +180,7 @@ sys.path.insert(0, {here!r})
 import falcata as flc
 from test_colmajor_direct import _data, _params, _strip
 X, y = _data({shape!r})
-p = {{**_params({shape!r}, "stochastic", {plan!r}, **{extra!r}), "verbosity": 1}}
+p = {{**_params({shape!r}, {quant!r}, {plan!r}, **{extra!r}), "verbosity": 1}}
 train = flc.Dataset(X, label=y, params=p)
 for training in range({trainings}):
     print("TRAINING", training, flush=True)
@@ -202,7 +205,18 @@ FULL_VIEW = "colmajor_direct: full view filled from the "
 RELEASED = "colmajor_direct: full view released"
 
 
-def _children(shape, plan="auto", steps=(None,), verify=False, debug="diag", home=None, rounds=3, trainings=1, **extra):
+def _children(
+    shape,
+    plan="auto",
+    steps=(None,),
+    verify=False,
+    debug="diag",
+    home=None,
+    rounds=3,
+    trainings=1,
+    quant="stochastic",
+    **extra,
+):
     """(log, [model md5 per training]) of one child process; home isolates the tuner's wisdom file"""
     code = _CHILD.format(
         here=os.path.dirname(os.path.abspath(__file__)),
@@ -211,6 +225,7 @@ def _children(shape, plan="auto", steps=(None,), verify=False, debug="diag", hom
         steps=list(steps),
         rounds=rounds,
         trainings=trainings,
+        quant=quant,
         extra=extra,
     )
     env = {**os.environ, "FALCATA_DEBUG": debug}
@@ -382,3 +397,64 @@ def test_tuner_leaves_the_static_rule_outside_the_band_cuda(tmp_path):
     out, _ = _child("probe", plan="auto,tuner:on", home=tmp_path, rounds=18, feature_fraction=0.1)
     assert "tuner probe" not in out, out[-3000:]
     assert out.count(STORE) == 1, out[-3000:]
+
+
+NEED_LINE = re.compile(
+    r"the compact regime needs store (\d+) \+ compact view (\d+) \+ split view (\d+) \+ reserve (\d+) MiB, (\d+) MiB"
+)
+
+
+BYNODE_OR_TWO_LEAVES = pytest.mark.parametrize(
+    "config", [{"feature_fraction_bynode": 0.8}, {"num_leaves": 2, "max_depth": 1}], ids=["bynode", "two-leaves"]
+)
+
+
+@_REQUIRES_CUDA
+def test_memory_check_counts_the_one_byte_split_view_cuda():
+    """Where the split kernels cannot read the packed compact matrix in place (here split_packed_read:off) they get the
+    one-byte view of the sampled columns, which the compact regime's memory check counts (the tree learner's own
+    predicate): with free memory capped between the need without it and the need with it, mask; uncapped, compact."""
+    plan = "auto,split_packed_read:off"
+    out, md5 = _child("probe", plan=plan, feature_fraction=0.2)
+    store, view, split_view, reserve, _ = (int(x) for x in NEED_LINE.search(out).groups())
+    assert split_view > 100, out[-3000:]  # 80 sampled columns x 2M rows
+    assert out.count(STORE) == 1, out[-3000:]
+    cap = store + view + reserve + split_view // 2
+    capped, md5_capped = _child("probe", plan=plan, debug=f"diag,vramfree={cap}", feature_fraction=0.2)
+    assert "colmajor_direct: mask regime (the compact regime does not fit;" in capped, capped[-3000:]
+    assert md5 == md5_capped == _child("probe", plan=OFF + ",split_packed_read:off", feature_fraction=0.2)[1]
+
+
+@_REQUIRES_CUDA
+@BYNODE_OR_TWO_LEAVES
+def test_nonquantized_keeps_the_compact_regime_cuda(config):
+    """Non-quantized training without the hybrid flow (per-node sampling, two leaves) counts the one-byte view too,
+    but never trades the compact regime for mask on memory: the mask kernels would sum the floats in another order.
+    The compact regime needs no more than colmajor_direct:off held."""
+    params = {"feature_fraction": 0.2, "quant": "none", **config}
+    out, md5 = _child("probe", debug="diag,vramfree=1", **params)
+    assert int(NEED_LINE.search(out).group(3)) > 100, out[-3000:]
+    assert out.count(STORE) == 1, out[-3000:]
+    assert MASK not in out, out[-3000:]
+    assert md5 == _md5_off("probe", (None,), **params)
+
+
+@_REQUIRES_CUDA
+@BYNODE_OR_TWO_LEAVES
+def test_quantized_classic_loop_takes_the_mask_regime_cuda(config):
+    """Quantized training outside the hybrid flow builds every histogram with the per-leaf construct, which reads the
+    whole matrix: the mask regime is taken at any feature_fraction (it crashed reading a full view that the compact
+    regime had not built). Forced compact still trains, filling the full view on first use."""
+    params = {"feature_fraction": 0.2, **config}
+    out, md5 = _child("probe", **params)
+    assert "colmajor_direct: mask regime (the per-leaf quantized construct reads every column;" in out, out[-3000:]
+    forced, md5_forced = _child("probe", plan="auto,view_mode:compact", **params)
+    assert "full view filled from the column-major store for the per-leaf quantized construct" in forced
+    assert md5 == md5_forced == _md5_off("probe", (None,), **params)
+
+
+@_REQUIRES_CUDA
+def test_memory_check_leaves_out_the_split_view_under_the_packed_read_cuda():
+    """With the hybrid flow the split kernels read the packed compact matrix in place: no one-byte view is counted."""
+    out, _ = _child("probe", feature_fraction=0.2)
+    assert NEED_LINE.search(out).group(3) == "0", out[-3000:]

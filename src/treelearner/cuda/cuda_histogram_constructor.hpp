@@ -586,7 +586,7 @@ class CUDAHistogramConstructor {
    *  filled from the column-major store and kept while consecutive trees read it (ReleaseUnusedFullView). Host code
    *  between trees: it allocates and synchronizes. reason names the reader for the diagnostic. */
   const uint8_t* EnsureFullView(const char* reason);
-  /*! \brief colmajor_direct, compact regime: free the full view if this tree did not read it */
+  /*! \brief colmajor_direct, compact regime: free the full view if the tree just trained did not read it */
   void ReleaseUnusedFullView();
   /*! \brief the full view's device address (nullptr when absent), for the callers' cache keys */
   const uint8_t* full_view_device() const { return full_view_.RawDataReadOnly(); }
@@ -596,11 +596,14 @@ class CUDAHistogramConstructor {
   bool colmajor_direct() const { return colmajor_direct_; }
   /*! \brief colmajor_direct: choose the regime and build its view (freeing the other's first). prefer: -1 for the
    *  static rule (FalcataPlan::view_mode / view_mask_ff), 0 compact, 1 mask (the tuner's wisdom). Under
-   *  view_mode:auto the compact regime is taken only if its store + compact view (+ the one-byte split view where
-   *  needed) + reserve_bytes fit in free device memory now (plus what the views hold, freed before the switch);
+   *  view_mode:auto the compact regime is taken only if its store + compact view (+ the one-byte split view of the
+   *  sampled columns when one_byte_split_view, the tree learner's own predicate) + reserve_bytes fit, and never when
+   *  trees_read_full_matrix (every tree's per-leaf quantized construct reads the whole matrix) in free device memory now (plus what the views hold, freed before the switch);
    *  otherwise mask, with a diag line. why goes to the log. */
-  void ChooseViewRegime(size_t reserve_bytes, int prefer, const char* why);
-  /*! \brief whether the compact regime fit at the last ChooseViewRegime (the tuner never probes it otherwise) */
+  void ChooseViewRegime(size_t reserve_bytes, bool one_byte_split_view, bool trees_read_full_matrix, int prefer,
+                        const char* why);
+  /*! \brief whether the compact regime was available at the last ChooseViewRegime (it fit, and the trees read compact
+   *  views); the tuner never probes it otherwise */
   bool compact_regime_fits() const { return colmajor_direct_ && compact_fits_; }
   /*! \brief the regime the static rule picks for the current feature_fraction (true = mask) */
   bool ViewMaskWanted() const;
@@ -1044,6 +1047,8 @@ class CUDAHistogramConstructor {
   bool compact_fits_ = false;
   /*! \brief feature_fraction clamped to (0, 1] as the views use it */
   double ViewFraction() const;
+  /*! \brief columns a tree samples at the current feature_fraction (an upper bound: round(F x ff) features) */
+  size_t SampledColumns() const;
   /*! \brief device bytes the compact regime needs (see ChooseViewRegime) */
   struct CompactRegimeBytes {
     size_t store = 0;
@@ -1051,7 +1056,7 @@ class CUDAHistogramConstructor {
     size_t column_view = 0;
     size_t total() const { return store + view + column_view; }
   };
-  CompactRegimeBytes CompactRegimeNeed() const;
+  CompactRegimeBytes CompactRegimeNeed(bool one_byte_split_view) const;
   /*! \brief device bytes the views hold now (freed before a regime change builds the other layout) */
   size_t HeldViewBytes() const;
   /*! \brief enter the compact regime: release the full view, upload the column-major store; why goes to the log */

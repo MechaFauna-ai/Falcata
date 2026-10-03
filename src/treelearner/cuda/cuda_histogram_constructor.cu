@@ -2383,6 +2383,12 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernel(
   const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,
   const data_size_t num_data_in_smaller_leaf,
   const uint8_t num_bits_in_histogram_bins) {
+  if (colmajor_direct_ && use_quantized_grad_) {
+    // the quantized per-leaf construct (classic loop, hybrid per-pair fallback, leaf-wise tail) has no compact-view
+    // branch: it reads every column of the row-major layout. The tree learner picks the mask regime where its trees
+    // take this path; elsewhere (an ablation key, the aggressive tail) the compact regime fills the full view here.
+    EnsureFullView("the per-leaf quantized construct");
+  }
   if (cuda_row_data_->shared_hist_size() == DP_SHARED_HIST_SIZE && gpu_use_dp_) {
     LaunchConstructHistogramKernelInner<double, DP_SHARED_HIST_SIZE>(cuda_smaller_leaf_splits, num_data_in_smaller_leaf, num_bits_in_histogram_bins);
   } else if (cuda_row_data_->shared_hist_size() == SP_SHARED_HIST_SIZE && !gpu_use_dp_) {

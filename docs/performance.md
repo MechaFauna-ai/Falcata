@@ -480,20 +480,32 @@ bit-identical in every cell):
   row-major matrix and `colmajor_fill`'s decision. The threshold is the
   measured crossover below; `feature_fraction_bynode` does not enter (the
   views hold the per-tree sample, the per-node draw happens in the split
-  finder either way). Bit-identical in every regime (the same bytes, and
-  integer histograms for the masked kernels), so the regime may change
-  between any two trees without changing the model — which is what makes
-  the live choice below legal.
+  finder either way). Quantized training is bit-identical in every regime
+  (the same bytes, and integer histograms for the masked kernels), so the
+  regime may change between any two trees without changing the model —
+  which is what makes the live choice below legal. Float histograms are not
+  order-invariant (the full-matrix kernels group rows by the partition's
+  column count), so non-quantized training takes the mask regime only when
+  every tree samples every column, and otherwise stays compact, which never
+  holds more than `colmajor_direct:off` did. Quantized training outside the
+  hybrid level flow (per-node sampling, forced splits, two leaves, ...)
+  takes the mask regime at any `feature_fraction`: its per-leaf construct
+  reads every column of the row-major layout, so a compact view would serve
+  nothing.
 
   **Live regime choice.** Two rules on top of the threshold, both under
   `view_mode:auto`:
   - *memory:* the compact regime is taken only if its store, its compact view
     (sized from `feature_fraction` and the partitions' packed widths, the
-    fill's own arithmetic), the one-byte split view where the split readers
-    need it and the reserve (the split finder's level output and bit-change
+    fill's own arithmetic), the one-byte split view of the sampled columns
+    whenever the tree learner will build it (its own predicate: no packed
+    split read, i.e. no hybrid flow, categorical features,
+    `split_packed_read:off`, forced splits, the aggressive tail) and the
+    reserve (the split finder's level output and bit-change
     scratch for `num_leaves / 2 + 2` pairs, the booster's per-row state,
     256 MiB) fit in free device memory at decision time; otherwise mask, with
     a diag line saying why. Deterministic: sizes against `cudaMemGetInfo`.
+    Quantized training only (see above).
   - *tuner:* with the tuner running (quantized training; ≥300 rounds under
     auto, or `tuner:on`), a `feature_fraction` in [`view_probe_lo`,
     `view_probe_hi`] = [0.5, 0.95] is measured instead: two warm-up trees,

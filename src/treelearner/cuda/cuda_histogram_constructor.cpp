@@ -1103,10 +1103,12 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
 //  - mask regime (high feature_fraction): the full view, the compact view of every column (the row-major matrix's
 //    bytes and layout), filled once from the Dataset's columns a staging chunk at a time, with no store; no tree
 //    copies anything, the kernels apply the per-tree sample through their column masks.
-// INVARIANT: both regimes feed every kernel the same bin values for the same sampled columns, and the quantized
-// histograms are integer sums (order-invariant), so a tree trains to the same bytes in either regime. Switching
-// regimes between trees -- the tree learner's tuner probe does, as does a feature_fraction change -- is therefore
-// legal at any tree and never changes the model (tests/python_package_test/test_colmajor_direct.py checks it).
+// INVARIANT (quantized training): both regimes feed every kernel the same bin values for the same sampled columns,
+// and the quantized histograms are integer sums (order-invariant), so a tree trains to the same bytes in either
+// regime. Switching regimes between trees -- the tree learner's tuner probe does, as does a feature_fraction change
+// -- is therefore legal at any tree and never changes the model (tests/python_package_test/test_colmajor_direct.py
+// checks it). Float histograms are not order-invariant: non-quantized training takes the mask regime only where every
+// tree samples every column (the same kernels either way), see ViewMaskWanted.
 // The tree learner chooses (ChooseViewRegime: FalcataPlan::view_mode / view_mask_ff, the memory check, the tuner's
 // probe or its wisdom) at the end of its Init, on ResetTrainingData and when ResetConfig changes feature_fraction;
 // the row data only says whether the direct build applies.
@@ -1118,17 +1120,32 @@ bool CUDAHistogramConstructor::ViewMaskWanted() const {
   if (plan.view_mode == FalcataPlan::kViewModeMask) {
     return true;
   }
-  if (use_quantized_grad_ && !CompactQuantEnabled()) {
+  if (!use_quantized_grad_) {
+    // float histograms: the full-matrix kernels group rows by the partition's column count, so under a strict column
+    // sample they sum in another order than the compact view's (the last bits of the model move); only a training in
+    // which every tree samples every column runs the same kernels in both regimes
+    return SampledColumns() >= static_cast<size_t>(cuda_row_data_->host_feature_partition_column_index_offsets().back());
+  }
+  if (!CompactQuantEnabled()) {
     return true;  // compact_quant:off: no tree builds a compact view, so the store would serve nothing
   }
   return ViewFraction() >= plan.view_mask_ff;
+}
+
+size_t CUDAHistogramConstructor::SampledColumns() const {
+  // ColSampler samples round(F x feature_fraction) of the F features (at least one); a column carries at least one
+  const size_t num_columns = static_cast<size_t>(cuda_row_data_->host_feature_partition_column_index_offsets().back());
+  const int sampled_features =
+    std::max(std::min(1, num_features_), static_cast<int>(Common::RoundInt(num_features_ * ViewFraction())));
+  return std::min(num_columns, static_cast<size_t>(sampled_features));
 }
 
 double CUDAHistogramConstructor::ViewFraction() const {
   return (feature_fraction_ > 0.0 && feature_fraction_ < 1.0) ? feature_fraction_ : 1.0;
 }
 
-CUDAHistogramConstructor::CompactRegimeBytes CUDAHistogramConstructor::CompactRegimeNeed() const {
+CUDAHistogramConstructor::CompactRegimeBytes CUDAHistogramConstructor::CompactRegimeNeed(
+    const bool one_byte_split_view) const {
   CompactRegimeBytes need;
   const std::vector<int>& part_cols = cuda_row_data_->host_feature_partition_column_index_offsets();
   const size_t num_data = static_cast<size_t>(num_data_);
@@ -1136,18 +1153,15 @@ CUDAHistogramConstructor::CompactRegimeBytes CUDAHistogramConstructor::CompactRe
   const size_t num_partitions = part_cols.size() - 1;
   need.store = num_columns * cuda_row_data_->colmajor_column_bytes();
   // The compact view (ScanCompactLayout's arithmetic): a partition's s_p sampled columns take ceil(s_p / 2) bytes
-  // per row, at most (S + P) / 2 rounded up over the P partitions for S sampled columns. ColSampler samples
-  // round(F x feature_fraction) of the F features (at least one), and a column carries at least one feature.
-  const int sampled_features =
-    std::max(std::min(1, num_features_), static_cast<int>(Common::RoundInt(num_features_ * ViewFraction())));
-  const size_t sampled = std::min(num_columns, static_cast<size_t>(sampled_features));
+  // per row, at most (S + P) / 2 rounded up over the P partitions for S sampled columns.
+  const size_t sampled = SampledColumns();
   need.view = std::min(cuda_row_data_->dense_4bit_bytes(), (sampled + num_partitions + 1) / 2 * num_data);
   if (FalcataPlan::Get().compact_prefill) {
     need.view *= 2;  // the next tree's view, filled on the side
   }
-  // the tree learner's one-byte-per-value split view, where the split readers cannot read the packed compact matrix
-  // in place (BuildCompactColumnView: split_packed_read off, categorical features, the classic loop)
-  if (!FalcataPlan::Get().split_packed_read || has_categorical_feature_ || !FalcataPlan::Get().hybrid) {
+  // the tree learner's one-byte-per-value split view of the sampled columns, when it builds one (its own predicate,
+  // CUDASingleGPUTreeLearner::BuildsOneByteSplitView)
+  if (one_byte_split_view) {
     need.column_view = sampled * num_data;
   }
   return need;
@@ -1157,7 +1171,9 @@ size_t CUDAHistogramConstructor::HeldViewBytes() const {
   return colmajor_bin_.Size() + full_view_.Size() + compact_data_uint8_t_.Size() + compact_data_uint8_t_alt_.Size();
 }
 
-void CUDAHistogramConstructor::ChooseViewRegime(const size_t reserve_bytes, const int prefer, const char* why) {
+void CUDAHistogramConstructor::ChooseViewRegime(const size_t reserve_bytes, const bool one_byte_split_view,
+                                                const bool trees_read_full_matrix, const int prefer,
+                                                const char* why) {
   if (!colmajor_direct_) {
     return;
   }
@@ -1165,7 +1181,7 @@ void CUDAHistogramConstructor::ChooseViewRegime(const size_t reserve_bytes, cons
   // Does the compact regime fit? Deterministic: its sizes against what cudaMemGetInfo reports free now, plus what
   // the views hold now (a regime change frees them first), plus the reserve the tree learner computed for
   // everything it can still allocate. FALCATA_DEBUG=vramfree=N caps the free figure, for tests.
-  const CompactRegimeBytes need = CompactRegimeNeed();
+  const CompactRegimeBytes need = CompactRegimeNeed(one_byte_split_view);
   size_t free_b = 0, total_b = 0;
   CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_b, &total_b));
   const int64_t cap_mib = FalcataDebug().vramfree_mib;
@@ -1174,9 +1190,27 @@ void CUDAHistogramConstructor::ChooseViewRegime(const size_t reserve_bytes, cons
   }
   const size_t available = free_b + HeldViewBytes();
   compact_fits_ = need.total() + reserve_bytes <= available;
+  LogDirectView("colmajor_direct: the compact regime needs store %zu + compact view %zu + split view %zu + reserve %zu "
+                "MiB, %zu MiB available", ToMiB(need.store), ToMiB(need.view), ToMiB(need.column_view),
+                ToMiB(reserve_bytes), available / kMiB);
   bool mask = prefer >= 0 ? (prefer == 1) : ViewMaskWanted();
   const char* reason = why;
-  if (!mask && !compact_fits_ && FalcataPlan::Get().view_mode != FalcataPlan::kViewModeCompact) {
+  const bool forced_compact = FalcataPlan::Get().view_mode == FalcataPlan::kViewModeCompact;
+  if (!use_quantized_grad_) {
+    // float histograms: the regime is the static rule's (ViewMaskWanted), never the memory check's, since the mask
+    // regime would change the model under a strict column sample. The compact regime holds the store and the views
+    // the row-major matrix held them next to before, so it needs no more memory than colmajor_direct:off.
+    compact_fits_ = false;  // and no probe (the tuner is quantized-only anyway)
+  } else if (trees_read_full_matrix && !forced_compact) {
+    // every tree's per-leaf construct reads the whole matrix row-major: the compact regime would hold the store and
+    // the full view and fill a compact view nothing reads
+    compact_fits_ = false;
+    if (!mask) {
+      mask = true;
+      reason = "the per-leaf quantized construct reads every column";
+    }
+  }
+  if (!mask && !compact_fits_ && !forced_compact && use_quantized_grad_) {
     LogDirectView("colmajor_direct: the compact regime does not fit (store %zu + compact view %zu + split view %zu + "
                   "reserve %zu MiB > %zu MiB available): mask regime", ToMiB(need.store), ToMiB(need.view),
                   ToMiB(need.column_view), ToMiB(reserve_bytes), available / kMiB);

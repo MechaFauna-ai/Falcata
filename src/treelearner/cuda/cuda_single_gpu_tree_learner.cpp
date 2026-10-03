@@ -499,7 +499,8 @@ void CUDASingleGPUTreeLearner::InitViewRegime(const char* why) {
     }
     probe = prefer < 0 && tuner_.probe_slot < 0;
   }
-  cuda_histogram_constructor_->ChooseViewRegime(DirectViewReserveBytes(), prefer,
+  cuda_histogram_constructor_->ChooseViewRegime(DirectViewReserveBytes(), BuildsOneByteSplitView(),
+                                                TreesReadFullMatrix(), prefer,
                                                 prefer >= 0 ? "the tuner's wisdom" : why);
   if (probe && !cuda_histogram_constructor_->compact_regime_fits()) {
     probe = false;  // a regime that does not fit is never probed (ChooseViewRegime logged why)
@@ -720,8 +721,6 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
   }
   // Build per-tree compact column data for the partition kernels.
   BuildCompactColumnView();
-  // colmajor_direct, compact regime: the full view stays only while consecutive trees read it
-  cuda_histogram_constructor_->ReleaseUnusedFullView();
   leaf_data_start_[0] = 0;
   smaller_leaf_index_ = 0;
   larger_leaf_index_ = -1;
@@ -781,6 +780,26 @@ extern void LaunchRowToColCompactKernel(
     int num_compact_cols,
     data_size_t num_data,
     bool src_is_4bit);
+
+bool CUDASingleGPUTreeLearner::PackedSplitReadUsable() const {
+  return SplitPackedReadEnabled() && HybridGrowthUsable() && !has_categorical_feature_;
+}
+
+// The one-byte split view (sampled columns x rows) is built by BuildCompactColumnView's gather whenever the packed
+// read does not apply, and lazily by the leaf-wise tail's first classic split (EnsureClassicColumnView), which only
+// the approximate plain batching (FALCATA_DEBUG=aggressive) reaches alongside the packed read. Forced splits switch
+// the hybrid flow off but reach this learner after its Init (GBDT::SetForcedSplit), where HybridGrowthUsable cannot
+// see them yet, so they count directly.
+bool CUDASingleGPUTreeLearner::BuildsOneByteSplitView() const {
+  return !PackedSplitReadUsable() || !config_->forcedsplits_filename.empty() || FalcataDebug().aggressive;
+}
+
+// Quantized training outside the hybrid level flow (the classic loop: per-node sampling, forced splits, two leaves,
+// monotone constraints, CEGB, ...) builds every histogram with the per-leaf construct, which reads the whole matrix
+// row-major and has no compact-view branch; colmajor_direct then takes the mask regime.
+bool CUDASingleGPUTreeLearner::TreesReadFullMatrix() const {
+  return config_->use_quantized_grad && (!HybridGrowthUsable() || !config_->forcedsplits_filename.empty());
+}
 
 void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   const auto* row_data = cuda_histogram_constructor_->cuda_row_data_internal();
@@ -934,8 +953,7 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
                                 num_compact_cols, __FILE__, __LINE__);
 
   compact_packed_view_active_ = false;
-  if (SplitPackedReadEnabled() && gather_src_is_4bit && HybridGrowthUsable() &&
-      !has_categorical_feature_) {
+  if (gather_src_is_4bit && PackedSplitReadUsable()) {
     // categorical batched-apply descriptors need the plain per-column view
     // (SplitLevelBatched CHECK-enforces it); numerical-only datasets keep the packed read
     // packed split read: skip the column-major gather entirely; the batched
@@ -4211,6 +4229,9 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     last_tree_is_linear_ = true;
   }
   TunerAfterTree(std::chrono::duration<double>(std::chrono::steady_clock::now() - tuner_t0).count());
+  // colmajor_direct, compact regime: the full view stays only while consecutive trees read it (decided after the
+  // tree, since the per-leaf construct may first read it mid-tree)
+  cuda_histogram_constructor_->ReleaseUnusedFullView();
   return tree.release();
 }
 
