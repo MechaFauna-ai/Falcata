@@ -175,6 +175,15 @@ def build_cells():
         # the column-major copy is made before the second tree; off, every fill reads the row-major matrix
         ("sampled", "colmajor_fill", {}, {"cuda_plan": "auto,colmajor_fill:off"}),
         ("sampledwide", "colmajor_fill", {}, {"cuda_plan": "auto,colmajor_fill:off"}),
+        # colmajor_direct: the store (compact regime) or the full view (mask regime) built from the Dataset's columns
+        # against the row-major matrix built at Init; fewbin is feature_fraction 1, i.e. the mask regime
+        ("sampled", "colmajor_direct", {}, {"cuda_plan": "auto,colmajor_direct:off"}),
+        ("sampledwide", "colmajor_direct", {}, {"cuda_plan": "auto,colmajor_direct:off"}),
+        ("fewbin", "colmajor_direct", {}, {"cuda_plan": "auto,colmajor_direct:off"}),
+        # the two regimes against each other: sampled trees under column masks, every column through a compact view
+        ("sampled", "view_mask", {}, {"cuda_plan": "auto,view_mode:mask"}),
+        ("sampledwide", "view_mask", {}, {"cuda_plan": "auto,view_mode:mask"}),
+        ("fewbin", "view_compact", {}, {"cuda_plan": "auto,view_mode:compact"}),
         ("sampled", "tiled_fill", {}, {"cuda_plan": "auto,tiled_fill:off"}),
         ("sampledwide", "tiled_fill", {}, {"cuda_plan": "auto,tiled_fill:off"}),
         ("dense", "warp_find", {}, {"cuda_plan": "auto,warp_find:off"}),

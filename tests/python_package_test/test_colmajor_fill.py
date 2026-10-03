@@ -9,6 +9,9 @@ memory then covers the copy plus a reserve for what can still grow (CUDASingleGP
 FALCATA_DEBUG=vramfree=N caps the free-memory figure that decision sees, which lets these tests put the decision on
 either side of the line without filling the GPU; FALCATA_DEBUG=diag logs the decision. The token is read once per
 process, so every run here is a subprocess.
+
+Every run pins colmajor_direct:off: by default the device holds the store built from the Dataset's columns (or the
+full view) and no row-major matrix, so there is no copy to decide on (test_colmajor_direct.py).
 """
 
 import os
@@ -37,7 +40,7 @@ def data(rows, feats, seed):
 
 params = {{"objective": "regression", "device_type": "cuda", "num_leaves": 31, "max_depth": 6,
            "min_data_in_leaf": 50, "max_bin": 15, "learning_rate": 0.1, "feature_fraction": 0.2, "seed": 3,
-           "verbosity": 1, **{params!r}}}
+           "verbosity": 1, "cuda_plan": "auto,colmajor_direct:off", **{params!r}}}
 X, y = data({rows}, {feats}, 0)
 train = flc.Dataset(X, label=y, params=params)
 bst = flc.Booster(params, train)

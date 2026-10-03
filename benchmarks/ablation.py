@@ -59,6 +59,7 @@ ALL_KEYS = {
     "compact_prefill": False,
     "colmajor_fill": True,
     "tiled_fill": True,
+    "colmajor_direct": True,
     "warp_find": True,
     "row_batch": True,
 }
@@ -92,6 +93,7 @@ DEEP_KEYS = [
     "gh_interleave",
     "split_packed_read",
     "colmajor_fill",
+    "colmajor_direct",
     "warp_find",
     # at this cell's 300 rounds the off flip re-enables the JIT (master's long-run behaviour)
     "row_batch",
