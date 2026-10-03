@@ -172,6 +172,15 @@ void CUDABestSplitFinder::UpdateWarpFindEligibility() {
       if (t.is_categorical || t.skip_default_bin || t.num_bin > 256 || t.mfb_offset > 1) return false;
       return t.reverse || t.na_as_missing;
     });
+  warp_find_all_narrow_ = warp_find_eligible_ &&
+    std::all_of(split_find_tasks_.begin(), split_find_tasks_.end(), [](const SplitFindTask& t) { return t.num_bin <= 8; });
+  // longest scan (WarpFindBest's positions 0 .. num_bin - mfb_offset + shift - 1): warp_find_spread packs four
+  // (task, leaf) items per warp when every task fits 8 positions
+  warp_find_max_positions_ = 0;
+  for (const SplitFindTask& t : split_find_tasks_) {
+    const int shift = (!t.reverse && t.na_as_missing && t.mfb_offset == 1) ? 1 : 0;
+    warp_find_max_positions_ = std::max(warp_find_max_positions_, static_cast<int>(t.num_bin) - t.mfb_offset + shift);
+  }
 #endif
 }
 

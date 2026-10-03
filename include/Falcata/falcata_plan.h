@@ -180,6 +180,20 @@ struct FalcataPlan {
   // the block kernel. CUDA only. Bit-identical. Measured:
   // +6.3% numerai-deep, +22.7% year-deep.
   bool warp_find = true;            // key: warp_find
+  // warp_find on tasks with at most 8 bins: one scan position per lane instead
+  // of eight in lane 0, so the threshold unpack and fp64 gain of all positions
+  // issue once per warp, not once per position. Bit-identical (same positions,
+  // same expressions, same first-maximum selection as lane 0's strict scan).
+  bool warp_find_narrow = true;     // key: warp_find_narrow
+  // warp_find for tasks of at most 32 scan positions (few-bin features): one
+  // position per lane instead of 8, so the fp64 unpack and gain math of a
+  // feature with a handful of bins runs across lanes rather than serially in
+  // lane 0; when every task fits 8 positions, a warp instead serves eight
+  // (task, leaf) items with 4 lanes x 2 positions each. The selection
+  // reproduces the 8-per-lane winner exactly (exact first maximum within each
+  // 8 positions, then the same tolerance tie-break between 8-position groups
+  // in the same order). Bit-identical.
+  bool warp_find_spread = true;     // key: warp_find_spread
   // host-launched batched apply (gen-bit-vector and split-inner kernels):
   // each 1024-row chunk is handled by 256 threads of 4 rows each, all loads of
   // a thread's rows issued before their use, instead of 1024 threads of one
@@ -188,6 +202,15 @@ struct FalcataPlan {
   // Same chunks, same ballot words, same block totals and output positions.
   // Bit-identical (only the thread -> row mapping changes).
   bool apply_row_batch = true;      // key: apply_row_batch
+  // batched level best-split sync over the tree's feature sample (or over a
+  // task list wider than one 1024-task block): one block per leaf reads only
+  // the used tasks' slots and folds them in task order, instead of one block
+  // per 1024 tasks over every task plus a cross-block merge kernel. With
+  // finite gains the comparison (higher gain, then lower task) is a strict
+  // total order, so any fold order picks the same winner; if a found gain is
+  // not finite, the block replays the original per-1024-task reductions and
+  // merge exactly. Bit-identical.
+  bool sync_used_tasks = true;      // key: sync_used_tasks
   // packed split read from the column-major nibble store (colmajor_direct's
   // compact regime, or colmajor_fill's copy) instead of the row-major compact
   // matrix: the partition reads a row's split bin from a contiguous
@@ -273,7 +296,10 @@ struct FalcataPlan {
     if (key == "colmajor_direct") return &colmajor_direct;
     if (key == "tiled_fill") return &tiled_fill;
     if (key == "warp_find") return &warp_find;
+    if (key == "warp_find_narrow") return &warp_find_narrow;
+    if (key == "warp_find_spread") return &warp_find_spread;
     if (key == "apply_row_batch") return &apply_row_batch;
+    if (key == "sync_used_tasks") return &sync_used_tasks;
     if (key == "colmajor_split") return &colmajor_split;
     if (key == "tuner") return &tuner;
     if (key == "wide_partitions") return &wide_partitions;

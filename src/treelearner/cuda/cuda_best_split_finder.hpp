@@ -654,6 +654,10 @@ class CUDABestSplitFinder {
   bool quant_bagging_ridge_ = false;
   // every task fits the warp-per-task quantized level finder (see UpdateWarpFindEligibility)
   bool warp_find_eligible_ = false;
+  // ... and every task has at most 8 bins: the warp_find_narrow launch packs four tasks per warp (8-lane groups)
+  bool warp_find_all_narrow_ = false;
+  // longest warp-finder scan over all tasks, in positions (UpdateWarpFindEligibility)
+  int warp_find_max_positions_ = 256;
   // number of total bins in the dataset
   const int num_total_bin_;
   // has categorical feature
