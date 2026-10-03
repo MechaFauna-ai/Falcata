@@ -157,6 +157,13 @@ struct FalcataPlan {
   // identical at every ff. The mask regime also holds one matrix where compact holds the store plus an ff-sized
   // view (13.0 vs 22.2 GB peak at 0.80).
   double view_mask_ff = 0.85;
+  // keys view_probe_lo / view_probe_hi: with the tuner active (cuda_plan tuner, quantized training) and view_mode
+  // auto, a feature_fraction in [view_probe_lo, view_probe_hi] is decided by measurement instead: the first trees
+  // run in each regime (both train the same model) and the faster one is kept and cached in the tuner's wisdom.
+  // Outside the band, the static rule above. The numerai53-deep sweep's margins: compact ahead by 39% at 0.5 and
+  // 16% at 0.8, mask ahead by 9-15% from 0.85 to 0.99.
+  double view_probe_lo = 0.5;
+  double view_probe_hi = 0.95;
   // 4-bit compact fill through a shared-memory [row][slot] tile: coalesced
   // column reads, 16-byte streaming writes of each partition's contiguous
   // destination run. The host takes it for column-major sources with at most
@@ -284,7 +291,7 @@ struct FalcataPlan {
       if (kv.size() != 2) {
         Log::Fatal("cuda_plan: bad token \"%s\" (expected key:on|off)", token.c_str());
       }
-      // the two non-boolean keys
+      // the non-boolean keys: view_mode and the view_* numbers
       if (kv[0] == std::string("view_mode")) {
         if (kv[1] == std::string("auto")) {
           plan.view_mode = kViewModeAuto;
@@ -298,13 +305,17 @@ struct FalcataPlan {
         overridden = true;
         continue;
       }
-      if (kv[0] == std::string("view_mask_ff")) {
+      double* number = kv[0] == std::string("view_mask_ff") ? &plan.view_mask_ff :
+                       kv[0] == std::string("view_probe_lo") ? &plan.view_probe_lo :
+                       kv[0] == std::string("view_probe_hi") ? &plan.view_probe_hi : nullptr;
+      if (number != nullptr) {
         char* end = nullptr;
         const double value = std::strtod(kv[1].c_str(), &end);
         if (end == kv[1].c_str() || *end != '\0' || !(value >= 0.0)) {
-          Log::Fatal("cuda_plan: bad value \"%s\" for key \"view_mask_ff\" (expected a number >= 0)", kv[1].c_str());
+          Log::Fatal("cuda_plan: bad value \"%s\" for key \"%s\" (expected a number >= 0)", kv[1].c_str(),
+                     kv[0].c_str());
         }
-        plan.view_mask_ff = value;
+        *number = value;
         overridden = true;
         continue;
       }

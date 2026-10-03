@@ -473,8 +473,6 @@ class CUDAHistogramConstructor {
 
   void ResetTrainingData(const Dataset* train_data, TrainingShareStates* share_states);
 
-  /*! \brief also moves colmajor_direct's bin matrix to the other regime when feature_fraction calls for it (the
-   *  tree learner's ResetConfig then releases its captured graphs, as it does for every config change) */
   void ResetConfig(const Config* config);
 
   // resolved by the tree learner: plan.construct_jit (off under auto while
@@ -594,6 +592,21 @@ class CUDAHistogramConstructor {
   const uint8_t* full_view_device() const { return full_view_.RawDataReadOnly(); }
   /*! \brief colmajor_direct: whether this training runs in the mask regime (see FalcataPlan::view_mode) */
   bool view_mask_regime() const { return colmajor_direct_ && view_mask_; }
+  /*! \brief colmajor_direct: the bin matrix has no row-major copy; ChooseViewRegime decides which view holds it */
+  bool colmajor_direct() const { return colmajor_direct_; }
+  /*! \brief colmajor_direct: choose the regime and build its view (freeing the other's first). prefer: -1 for the
+   *  static rule (FalcataPlan::view_mode / view_mask_ff), 0 compact, 1 mask (the tuner's wisdom). Under
+   *  view_mode:auto the compact regime is taken only if its store + compact view (+ the one-byte split view where
+   *  needed) + reserve_bytes fit in free device memory now (plus what the views hold, freed before the switch);
+   *  otherwise mask, with a diag line. why goes to the log. */
+  void ChooseViewRegime(size_t reserve_bytes, int prefer, const char* why);
+  /*! \brief whether the compact regime fit at the last ChooseViewRegime (the tuner never probes it otherwise) */
+  bool compact_regime_fits() const { return colmajor_direct_ && compact_fits_; }
+  /*! \brief the regime the static rule picks for the current feature_fraction (true = mask) */
+  bool ViewMaskWanted() const;
+  /*! \brief colmajor_direct: move the bin matrix to the given regime between trees (the tuner's probe); a no-op when
+   *  already there. Legal at any tree: both regimes train the same model (see the definition). */
+  void SwitchViewRegime(bool mask, const char* why);
 
   const hist_t* cuda_hist() const { return cuda_hist_.RawData(); }
 
@@ -1027,14 +1040,25 @@ class CUDAHistogramConstructor {
   CUDAVector<uint8_t> full_view_;
   /*! \brief whether the current tree read the full view (BuildCompactView resets it) */
   bool full_view_used_ = false;
-  /*! \brief colmajor_direct: decide the regime for this training and build its view(s); Init, ResetTrainingData */
-  void InitDirectViews();
-  /*! \brief the regime FalcataPlan::view_mode picks for the current feature_fraction */
-  bool ViewMaskWanted() const;
-  /*! \brief enter the compact regime: upload the column-major store (the full view goes) */
-  void EnterCompactRegime();
-  /*! \brief enter the mask regime: release the store, fill the full view from the Dataset's columns */
-  void EnterMaskRegime();
+  /*! \brief whether the compact regime fit at the last ChooseViewRegime */
+  bool compact_fits_ = false;
+  /*! \brief feature_fraction clamped to (0, 1] as the views use it */
+  double ViewFraction() const;
+  /*! \brief device bytes the compact regime needs (see ChooseViewRegime) */
+  struct CompactRegimeBytes {
+    size_t store = 0;
+    size_t view = 0;
+    size_t column_view = 0;
+    size_t total() const { return store + view + column_view; }
+  };
+  CompactRegimeBytes CompactRegimeNeed() const;
+  /*! \brief device bytes the views hold now (freed before a regime change builds the other layout) */
+  size_t HeldViewBytes() const;
+  /*! \brief enter the compact regime: release the full view, upload the column-major store; why goes to the log */
+  void EnterCompactRegime(const char* why);
+  /*! \brief enter the mask regime: release the store and the compact views, fill the full view from the Dataset's
+   *  columns; why goes to the log */
+  void EnterMaskRegime(const char* why);
   /*! \brief fill full_view_ from the resident store (compact regime) */
   void FillFullViewFromStore();
   /*! \brief fill full_view_ from the Dataset's columns, a staging chunk of columns at a time (no store) */

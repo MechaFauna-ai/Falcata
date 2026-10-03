@@ -973,7 +973,7 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   cuda_feature_most_freq_bins_.InitFromHostVector(feature_most_freq_bins_);
 
   cuda_row_data_.reset(new CUDARowData(train_data, share_state, gpu_device_id_, gpu_use_dp_));
-  // colmajor_direct: no row-major matrix when the Dataset's columns can serve; InitDirectViews below builds the view
+  // colmajor_direct: no row-major matrix when the Dataset's columns can serve (the tree learner then builds a view)
   cuda_row_data_->RequestDense4BitColumnsOnly(FalcataPlan::Get().colmajor_fill && FalcataPlan::Get().colmajor_direct);
   cuda_row_data_->Init(train_data, share_state);
 
@@ -1077,10 +1077,13 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
       cuda_hist_buffer_.Resize(buffer_size);
     }
   }
-  // The column-major fill source (cuda_plan key colmajor_fill) is not made here: under colmajor_direct
-  // InitDirectViews builds it (or the full view) from the Dataset's columns; otherwise the tree learner calls
-  // InitColMajorFill before its second tree, once everything sized by the data is allocated.
-  InitDirectViews();
+  // The column-major fill source (cuda_plan key colmajor_fill) is not made here. Under colmajor_direct the tree
+  // learner chooses the regime and its view is built from the Dataset's columns (ChooseViewRegime) at the end of its
+  // Init; otherwise the tree learner calls InitColMajorFill before its second tree.
+  colmajor_bin_.Clear();
+  colmajor_pad_ = 0;
+  full_view_.Clear();
+  colmajor_direct_ = cuda_row_data_->dense_4bit_columns_only();
 
   // one int32 region of num_total_bin_ entries per histogram pipeline (the pairs
   // of a level run concurrently on different pipeline streams and must not share
@@ -1100,24 +1103,13 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
 //  - mask regime (high feature_fraction): the full view, the compact view of every column (the row-major matrix's
 //    bytes and layout), filled once from the Dataset's columns a staging chunk at a time, with no store; no tree
 //    copies anything, the kernels apply the per-tree sample through their column masks.
-// FalcataPlan::view_mode / view_mask_ff pick the regime; it is decided per train() (Init), on ResetTrainingData,
-// and again when ResetConfig changes feature_fraction.
-void CUDAHistogramConstructor::InitDirectViews() {
-  colmajor_bin_.Clear();
-  colmajor_pad_ = 0;
-  full_view_.Clear();
-  colmajor_direct_ = cuda_row_data_ != nullptr && cuda_row_data_->dense_4bit_columns_only();
-  if (!colmajor_direct_) {
-    return;
-  }
-  view_mask_ = !ViewMaskWanted();  // so that the Enter* below always runs
-  if (ViewMaskWanted()) {
-    EnterMaskRegime();
-  } else {
-    EnterCompactRegime();
-  }
-}
-
+// INVARIANT: both regimes feed every kernel the same bin values for the same sampled columns, and the quantized
+// histograms are integer sums (order-invariant), so a tree trains to the same bytes in either regime. Switching
+// regimes between trees -- the tree learner's tuner probe does, as does a feature_fraction change -- is therefore
+// legal at any tree and never changes the model (tests/python_package_test/test_colmajor_direct.py checks it).
+// The tree learner chooses (ChooseViewRegime: FalcataPlan::view_mode / view_mask_ff, the memory check, the tuner's
+// probe or its wisdom) at the end of its Init, on ResetTrainingData and when ResetConfig changes feature_fraction;
+// the row data only says whether the direct build applies.
 bool CUDAHistogramConstructor::ViewMaskWanted() const {
   const FalcataPlan& plan = FalcataPlan::Get();
   if (plan.view_mode == FalcataPlan::kViewModeCompact) {
@@ -1129,8 +1121,85 @@ bool CUDAHistogramConstructor::ViewMaskWanted() const {
   if (use_quantized_grad_ && !CompactQuantEnabled()) {
     return true;  // compact_quant:off: no tree builds a compact view, so the store would serve nothing
   }
-  const double fraction = (feature_fraction_ > 0.0 && feature_fraction_ < 1.0) ? feature_fraction_ : 1.0;
-  return fraction >= plan.view_mask_ff;
+  return ViewFraction() >= plan.view_mask_ff;
+}
+
+double CUDAHistogramConstructor::ViewFraction() const {
+  return (feature_fraction_ > 0.0 && feature_fraction_ < 1.0) ? feature_fraction_ : 1.0;
+}
+
+CUDAHistogramConstructor::CompactRegimeBytes CUDAHistogramConstructor::CompactRegimeNeed() const {
+  CompactRegimeBytes need;
+  const std::vector<int>& part_cols = cuda_row_data_->host_feature_partition_column_index_offsets();
+  const size_t num_data = static_cast<size_t>(num_data_);
+  const size_t num_columns = static_cast<size_t>(part_cols.back());
+  const size_t num_partitions = part_cols.size() - 1;
+  need.store = num_columns * cuda_row_data_->colmajor_column_bytes();
+  // The compact view (ScanCompactLayout's arithmetic): a partition's s_p sampled columns take ceil(s_p / 2) bytes
+  // per row, at most (S + P) / 2 rounded up over the P partitions for S sampled columns. ColSampler samples
+  // round(F x feature_fraction) of the F features (at least one), and a column carries at least one feature.
+  const int sampled_features =
+    std::max(std::min(1, num_features_), static_cast<int>(Common::RoundInt(num_features_ * ViewFraction())));
+  const size_t sampled = std::min(num_columns, static_cast<size_t>(sampled_features));
+  need.view = std::min(cuda_row_data_->dense_4bit_bytes(), (sampled + num_partitions + 1) / 2 * num_data);
+  if (FalcataPlan::Get().compact_prefill) {
+    need.view *= 2;  // the next tree's view, filled on the side
+  }
+  // the tree learner's one-byte-per-value split view, where the split readers cannot read the packed compact matrix
+  // in place (BuildCompactColumnView: split_packed_read off, categorical features, the classic loop)
+  if (!FalcataPlan::Get().split_packed_read || has_categorical_feature_ || !FalcataPlan::Get().hybrid) {
+    need.column_view = sampled * num_data;
+  }
+  return need;
+}
+
+size_t CUDAHistogramConstructor::HeldViewBytes() const {
+  return colmajor_bin_.Size() + full_view_.Size() + compact_data_uint8_t_.Size() + compact_data_uint8_t_alt_.Size();
+}
+
+void CUDAHistogramConstructor::ChooseViewRegime(const size_t reserve_bytes, const int prefer, const char* why) {
+  if (!colmajor_direct_) {
+    return;
+  }
+  const bool initial = colmajor_bin_.Size() == 0 && full_view_.Size() == 0;
+  // Does the compact regime fit? Deterministic: its sizes against what cudaMemGetInfo reports free now, plus what
+  // the views hold now (a regime change frees them first), plus the reserve the tree learner computed for
+  // everything it can still allocate. FALCATA_DEBUG=vramfree=N caps the free figure, for tests.
+  const CompactRegimeBytes need = CompactRegimeNeed();
+  size_t free_b = 0, total_b = 0;
+  CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_b, &total_b));
+  const int64_t cap_mib = FalcataDebug().vramfree_mib;
+  if (cap_mib >= 0) {
+    free_b = std::min(free_b, static_cast<size_t>(cap_mib) << 20);
+  }
+  const size_t available = free_b + HeldViewBytes();
+  compact_fits_ = need.total() + reserve_bytes <= available;
+  bool mask = prefer >= 0 ? (prefer == 1) : ViewMaskWanted();
+  const char* reason = why;
+  if (!mask && !compact_fits_ && FalcataPlan::Get().view_mode != FalcataPlan::kViewModeCompact) {
+    LogDirectView("colmajor_direct: the compact regime does not fit (store %zu + compact view %zu + split view %zu + "
+                  "reserve %zu MiB > %zu MiB available): mask regime", ToMiB(need.store), ToMiB(need.view),
+                  ToMiB(need.column_view), ToMiB(reserve_bytes), available / kMiB);
+    mask = true;
+    reason = "the compact regime does not fit";
+  }
+  if (initial || mask != view_mask_) {
+    if (mask) {
+      EnterMaskRegime(reason);
+    } else {
+      EnterCompactRegime(reason);
+    }
+  }
+}
+
+void CUDAHistogramConstructor::SwitchViewRegime(const bool mask, const char* why) {
+  if (colmajor_direct_ && mask != view_mask_) {
+    if (mask) {
+      EnterMaskRegime(why);
+    } else {
+      EnterCompactRegime(why);
+    }
+  }
 }
 
 namespace {
@@ -1143,7 +1212,9 @@ const char* ViewModeName() {
 }
 }  // namespace
 
-void CUDAHistogramConstructor::EnterCompactRegime() {
+// Both transitions free the old layout before building the new one, so a switch peaks at one matrix (plus the
+// mask fill's 256 MiB staging chunk).
+void CUDAHistogramConstructor::EnterCompactRegime(const char* why) {
   InvalidateCompactPrefill();
   view_mask_ = false;
   const size_t view_bytes = full_view_.Size();
@@ -1162,25 +1233,28 @@ void CUDAHistogramConstructor::EnterCompactRegime() {
   if (FalcataVerifyEnabled()) {
     cuda_row_data_->VerifyDense4BitColMajor(colmajor_bin_.RawDataReadOnly());
   }
-  LogDirectView("colmajor_direct: compact regime (feature_fraction %g, view_mode %s, view_mask_ff %g): column-major "
-                "store built from the Dataset's columns, %d columns (%zu MiB); no row-major matrix on the device%s",
-                feature_fraction_, ViewModeName(), FalcataPlan::Get().view_mask_ff, num_columns, ToMiB(bytes),
-                view_bytes > 0 ? "; full view released" : "");
+  LogDirectView("colmajor_direct: compact regime (%s; feature_fraction %g, view_mode %s, view_mask_ff %g): "
+                "column-major store built from the Dataset's columns, %d columns (%zu MiB); no row-major matrix on "
+                "the device%s", why, feature_fraction_, ViewModeName(), FalcataPlan::Get().view_mask_ff, num_columns,
+                ToMiB(bytes), view_bytes > 0 ? "; full view released" : "");
 }
 
-void CUDAHistogramConstructor::EnterMaskRegime() {
+void CUDAHistogramConstructor::EnterMaskRegime(const char* why) {
   InvalidateCompactPrefill();
   view_mask_ = true;
   const size_t store_bytes = colmajor_bin_.Size();
   colmajor_bin_.Clear();
   colmajor_pad_ = 0;
+  // no tree builds a compact view in this regime: its buffers go too
+  compact_data_uint8_t_.Clear();
+  compact_data_uint8_t_alt_.Clear();
   full_view_.Clear();
   FillFullViewFromColumns();
   if (FalcataVerifyEnabled()) {
     cuda_row_data_->VerifyDense4BitRowMajor(full_view_.RawDataReadOnly(), "full view filled from the Dataset's columns");
   }
-  LogDirectView("colmajor_direct: mask regime (feature_fraction %g, view_mode %s, view_mask_ff %g): full view filled "
-                "from the Dataset's columns (%zu MiB); no column-major store on the device%s",
+  LogDirectView("colmajor_direct: mask regime (%s; feature_fraction %g, view_mode %s, view_mask_ff %g): full view "
+                "filled from the Dataset's columns (%zu MiB); no column-major store on the device%s", why,
                 feature_fraction_, ViewModeName(), FalcataPlan::Get().view_mask_ff, ToMiB(full_view_.Size()),
                 store_bytes > 0 ? "; column-major store released" : "");
 }
@@ -1620,9 +1694,9 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   cuda_feature_hist_offsets_.InitFromHostVector(feature_hist_offsets_);
   cuda_feature_most_freq_bins_.InitFromHostVector(feature_most_freq_bins_);
 
-  // the column-major copy (and colmajor_direct's full view) belong to the old row data; the tree learner decides on
-  // a new copy (colmajor_fill), InitDirectViews below builds new views (colmajor_direct). An in-flight prefill may
-  // still read the old store.
+  // the column-major copy (and colmajor_direct's views) belong to the old row data; the tree learner decides on a
+  // new copy (colmajor_fill) or chooses a regime for the new views (colmajor_direct). An in-flight prefill may still
+  // read the old store.
   InvalidateCompactPrefill();
   colmajor_bin_.Clear();
   colmajor_pad_ = 0;
@@ -1666,7 +1740,8 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   cuda_need_fix_histogram_features_.InitFromHostVector(need_fix_histogram_features_);
   cuda_need_fix_histogram_features_num_bin_aligned_.InitFromHostVector(need_fix_histogram_features_num_bin_aligend_);
   InitFixMFBMask();
-  InitDirectViews();
+  // the tree learner chooses the regime for the new data (ChooseViewRegime)
+  colmajor_direct_ = cuda_row_data_->dense_4bit_columns_only();
 }
 
 void CUDAHistogramConstructor::ResetConfig(const Config* config) {
@@ -1679,14 +1754,7 @@ void CUDAHistogramConstructor::ResetConfig(const Config* config) {
                     static_cast<size_t>(num_hist_planes_));
   cuda_hist_.SetValue(0);
   num_dirty_leaves_ = -1;
-  // colmajor_direct: a new feature_fraction may move the training to the other regime
-  if (colmajor_direct_ && ViewMaskWanted() != view_mask_) {
-    if (view_mask_) {
-      EnterCompactRegime();
-    } else {
-      EnterMaskRegime();
-    }
-  }
+  // (colmajor_direct: the tree learner re-chooses the regime when feature_fraction changed)
 }
 
 }  // namespace Falcata
