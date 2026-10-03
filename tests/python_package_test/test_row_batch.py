@@ -144,16 +144,16 @@ def _cols_data(rows, cols, seed=4):
 # Shapes for each multi_col path. A partition holds at most 6144 histogram bins, so 255-bin columns come 24 to a
 # partition: 24 columns -> one 4-aligned partition (4 columns per 32-bit word), 22 -> 2 per 16-bit word, 21 -> the
 # one-column fallback. 4-bit data takes the nibble-pair path; wide partitions the 4-row batches; per-tree feature
-# masks the masked fallback.
+# masks the masked fallback. The 4-per-word cases use 300k rows so most row lanes run full 8-row batches.
 MULTI_COL_CASES = [
     pytest.param("int4bit", 60_001, {}, id="4bit-nibble-pairs"),
     pytest.param("int4bit", 60_001, {"feature_fraction": 0.3}, id="compact-view-nibble-pairs"),
-    pytest.param("cols24", 60_001, {}, id="8bit-4-per-word"),
+    pytest.param("cols24", 300_001, {}, id="8bit-4-per-word"),
     pytest.param("cols22", 60_001, {}, id="8bit-2-per-word"),
     pytest.param("cols21", 60_001, {}, id="8bit-odd-width-fallback"),
     pytest.param("wide", 20_003, {}, id="wide-partitions"),
     pytest.param("cols24", 60_001, {"feature_fraction": 0.5, "compact_quant": False}, id="feature-masks-fallback"),
-    pytest.param("cols24", 60_001, {"bagging_fraction": 0.7, "bagging_freq": 1}, id="bagging"),
+    pytest.param("cols24", 300_001, {"bagging_fraction": 0.7, "bagging_freq": 1}, id="bagging"),
     pytest.param("cols24", 1_200_000, {"num_leaves": 15, "max_depth": 4}, id="32bit-leaf-bins"),
 ]
 
