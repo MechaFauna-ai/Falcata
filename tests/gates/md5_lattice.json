@@ -150,6 +150,16 @@
    "metric": 70.744453,
    "metric_name": "rmse"
   },
+  "missing-mfb0-dense/quant": {
+   "md5": "89d1f98ab9992c41cb074d4c63f16cd6",
+   "metric": 4.933049,
+   "metric_name": "rmse"
+  },
+  "missing-mfb0-dense/quant-deep": {
+   "md5": "5e67d186ee95009251ec8aadc9b60d7c",
+   "metric": 4.597091,
+   "metric_name": "rmse"
+  },
   "missing-mfb0-wide/nonquant": {
    "md5": "d4315ce8c385940d1dd5034aeef04064",
    "metric": 0.900577,

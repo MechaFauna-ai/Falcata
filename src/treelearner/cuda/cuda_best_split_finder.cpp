@@ -163,13 +163,14 @@ void CUDABestSplitFinder::UpdateWarpFindEligibility() {
   warp_find_eligible_ = false;
 #else
   // All or nothing per dataset: every task must be a numerical scan of at most 256 positions that the warp kernel
-  // implements (reverse scans without NaN handling at any most-frequent-bin offset, reverse and forward scans with
-  // NaN handling when the most-frequent bin is stored); otherwise every task keeps the block kernel.
+  // implements: reverse scans with or without NaN handling, and forward scans with NaN handling, each whether the
+  // most-frequent bin is stored (mfb_offset 0) or not (mfb_offset 1; the forward scan then rebuilds bin 0 from the
+  // leaf total, as the block kernel does). Zero-as-missing scans skip the default bin and stay on the block kernel,
+  // and one ineligible task keeps every task of the dataset there.
   warp_find_eligible_ = FalcataPlan::Get().warp_find && !split_find_tasks_.empty() &&
     std::all_of(split_find_tasks_.begin(), split_find_tasks_.end(), [](const SplitFindTask& t) {
-      if (t.is_categorical || t.skip_default_bin || t.num_bin > 256) return false;
-      if (t.reverse) return !(t.na_as_missing && t.mfb_offset != 0);
-      return t.na_as_missing && t.mfb_offset == 0;
+      if (t.is_categorical || t.skip_default_bin || t.num_bin > 256 || t.mfb_offset > 1) return false;
+      return t.reverse || t.na_as_missing;
     });
 #endif
 }

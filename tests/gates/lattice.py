@@ -92,6 +92,7 @@ def build_cells():
         "imbalanced",
         "missing",
         "missing-mfb0",
+        "missing-mfb0-dense",
     ]:
         cell(f"{profile}/quant", profile, perf=profile in ("dense", "int8wide"))
 
@@ -102,6 +103,18 @@ def build_cells():
     cell("missing-mfb0/quant-deep", "missing-mfb0", {"num_leaves": 255, "max_depth": 12, "min_data_in_leaf": 5})
     cell("missing-mfb0/quant-classic", "missing-mfb0", {"cuda_plan": "auto,hybrid:off"})
     cell("missing-mfb0/fixedpoint", "missing-mfb0", {"quant_mode": "fixedpoint"})
+    # missing-mfb0's rows are sparse (bin 0 holds over a quarter of the values), so its quantized levels never
+    # reach the batched level finder. The dense twin does, and every task of it is a NaN scan with an unstored
+    # bin 0: warp_find's forward scan has to rebuild bin 0 from the leaf total there. Shallow and deep, each
+    # pinned and flipped against the block kernel (the shallow flip is in the plan-flip list below).
+    deep = {"num_leaves": 255, "max_depth": 12, "min_data_in_leaf": 5}
+    cell("missing-mfb0-dense/quant-deep", "missing-mfb0-dense", deep)
+    cell(
+        "missing-mfb0-dense/flip-warp_find-deep",
+        "missing-mfb0-dense",
+        {**deep, "cuda_plan": "auto,warp_find:off"},
+        equal_to="missing-mfb0-dense/quant-deep",
+    )
 
     # --- deep trees: where leaf-wise/level-batched divergence bugs live ----- #
     for profile in ["dense", "sampled", "int8wide"]:
@@ -164,6 +177,8 @@ def build_cells():
         ("dense", "warp_find", {}, {"cuda_plan": "auto,warp_find:off"}),
         ("fewbin", "warp_find", {}, {"cuda_plan": "auto,warp_find:off"}),
         ("missing", "warp_find", {}, {"cuda_plan": "auto,warp_find:off"}),
+        # NaN with an unstored bin 0: the forward scan rebuilds bin 0 from the leaf total
+        ("missing-mfb0-dense", "warp_find", {}, {"cuda_plan": "auto,warp_find:off"}),
         ("sampled", "warp_find", {}, {"cuda_plan": "auto,warp_find:off"}),
         ("dense", "row_batch", {}, {"cuda_plan": "auto,row_batch:off"}),
         ("sampled", "row_batch", {}, {"cuda_plan": "auto,row_batch:off"}),
@@ -482,6 +497,16 @@ def build_profile(name):
         w = rng.standard_normal(m)
         y = (X - 2.0) @ w + 0.3 * rng.standard_normal(n)
         X[rng.random((n, m)) < 0.2] = np.nan
+        base["max_bin"] = 5
+    elif name == "missing-mfb0-dense":
+        # missing-mfb0 at a density that keeps the row data dense: zero (bin 0, the default and unstored bin)
+        # about 22% of the values and NaN 10%, under the 25% multi-val sparse threshold
+        m = 20
+        X = rng.choice([0.0, 1.0, 2.0, 3.0, 4.0], size=(n, m),
+                       p=[0.24, 0.19, 0.19, 0.19, 0.19]).astype(np.float64)
+        w = rng.standard_normal(m)
+        y = (X - 2.0) @ w + 0.3 * rng.standard_normal(n)
+        X[rng.random((n, m)) < 0.1] = np.nan
         base["max_bin"] = 5
     elif name == "missing-mfb0-wide":
         # NaN features, MORE than 256 histogram bins, and a most-frequent bin
