@@ -442,7 +442,16 @@ bit-identical in every cell):
   cache lines: +2.2% numerai-deep. The per-cell fill kernel that reads it moves
   one byte per thread and runs at ~24% of DRAM bandwidth, latency-bound rather
   than bandwidth-bound; `tiled_fill` below is the kernel that uses the
-  contiguous columns fully. VRAM-gated by the planner.
+  contiguous columns fully. The copy is as large as the 4-bit row data and
+  optional, so it is decided late and against measured memory: before the
+  second tree, when everything sized by the data already exists (row data,
+  training and validation columns, scores and gradients for every class, the
+  partition, the first tree's views and level buffers), it is made only if
+  free memory then covers it plus what can still grow — the split finder's
+  per-level buffers up to `num_leaves / 2 + 2` pairs, the bit-change scratch,
+  the compact view's partition padding, and 256 MiB. Otherwise training keeps
+  the row-major source with a warning (same model); `FALCATA_DEBUG=diag` logs
+  an engagement. The first tree always fills from the row-major matrix.
 - **`tiled_fill`** — the 4-bit compact fill stages 128 rows of every byte slot
   in a shared-memory `[row][slot]` tile, reading each source column
   contiguously, then writes each partition's rows as one contiguous run with
@@ -464,9 +473,11 @@ bit-identical in every cell):
   numerai-deep, +22.7% year-deep, +18.8% epsilon-shallow** end to end.
   Scope: quantized levels launched from the host (not the CUDA-graph loop)
   with fp64 gains, and only when every task of the dataset is a numerical
-  feature of at most 256 bins (NaN handling only with a stored most-frequent
-  bin); one ineligible feature keeps the whole dataset on the block kernel.
-  CUDA only. Bit-identical.
+  feature of at most 256 bins without zero-as-missing handling. NaN features
+  are covered whether or not their most-frequent bin is stored; when bin 0 is
+  not (non-negative data), the forward scan rebuilds it from the leaf total
+  as the block kernel does. One ineligible feature keeps the whole dataset on
+  the block kernel. CUDA only. Bit-identical.
 - **`row_batch`** — the batched quantized construct walks a leaf's rows
   through a dependent chain (row index, then the packed gradient and the bin
   byte at that index) and was latency-bound on it: ~92% occupancy but ~20% of
@@ -506,6 +517,20 @@ reported all vanished under interleaved A/B at 500 rounds.
 
 The ablation shows each of these within noise on shapes they don't target —
 the planner's "default on, individually ablatable" contract in action.
+
+**On 6.8M rows the fill and finder paths were off.** `colmajor_fill`,
+`tiled_fill` and `warp_find` were measured on smaller Numerai caches. On the
+6.79M × 3555 v5.3 training set none of them engaged: the column-major
+copy's old Init-time rule wanted 19.1 GiB free (copy + per-tree view +
+max(2 GiB, copy / 2)) where a 32 GB card had 17.8 GiB, so every fill read the
+row-major matrix with the per-cell kernel; and the warp finder skipped the
+dataset because its NaN features (1,972 of 3,555, all non-negative) do not
+store bin 0. With the copy decided before the second tree against measured
+memory (it engages with 16.3 GiB free: an 11.2 GiB copy plus a 1.2 GiB
+reserve, of which training then used 70 MiB) and the finder covering those
+features, numerai-deep on that set drops from 29.6 to 18.3 ms per round
+(**1.62x**) and numerai-example from 17.0 to 9.0 ms (**1.90x**), identical
+models (interleaved fresh-process A/B, 300 rounds, RTX 5090).
 
 ## 7b. Runtime-JIT construct kernels (`construct_jit`)
 

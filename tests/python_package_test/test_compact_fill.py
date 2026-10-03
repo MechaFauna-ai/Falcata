@@ -88,12 +88,14 @@ _train({rows}, {feats}, {{"feature_fraction": {ff}, "quant_mode": "stochastic", 
 
 
 def _fill_kernels(rows, feats, feature_fraction):
-    """(kernel, slots, partitions) of every compact fill in a training run, from the FALCATA_DEBUG=diag log."""
+    """(kernel, slots, partitions) of every compact fill after the first tree's, from the FALCATA_DEBUG=diag log.
+
+    The first tree's fill always reads the row-major matrix: colmajor_fill makes its copy before the second tree."""
     code = _PROBE.format(here=os.path.dirname(os.path.abspath(__file__)), rows=rows, feats=feats, ff=feature_fraction)
     env = {**os.environ, "FALCATA_DEBUG": "diag"}
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, check=True).stdout
     found = re.findall(r"compact fill: (\S+) 4-bit kernel, (\d+) byte slots in (\d+) partitions", out)
-    return [(k, int(s), int(p)) for k, s, p in found]
+    return [(k, int(s), int(p)) for k, s, p in found][1:]
 
 
 @_REQUIRES_CUDA

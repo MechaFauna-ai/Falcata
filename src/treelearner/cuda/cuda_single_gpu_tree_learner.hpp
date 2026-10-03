@@ -430,6 +430,15 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
                                  const data_size_t num_data);
 
   void EnsureClassicColumnView();
+
+  // ---- colmajor_fill: when to make the column-major copy and how much to leave free after it ----
+  /*! \brief device bytes training can still allocate once the first tree is done (see the definition) */
+  size_t ColMajorFillReserveBytes() const;
+  /*! \brief called at the start of every tree: lets the first tree run, then decides once */
+  void MaybeInitColMajorFill();
+  bool colmajor_fill_pending_ = false;
+  int colmajor_fill_trees_seen_ = 0;
+
   CUDAVector<uint8_t> compact_column_buffer_;
   std::vector<int> compact_column_to_orig_;        // [slot] -> original column index
   std::vector<int> orig_column_to_compact_slot_;   // [col] -> slot, or -1

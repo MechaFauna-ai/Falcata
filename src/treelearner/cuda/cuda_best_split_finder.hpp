@@ -14,6 +14,7 @@
 #include <Falcata/dataset.h>
 #include <Falcata/falcata_plan.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -359,6 +360,24 @@ class CUDABestSplitFinder {
   /*! \brief preallocates the per-pair best-split scratch for the graph loop's
    *  worst case, so the captured buffer pointer never reallocates */
   void EnsureHybridGraphCapacity(const int max_pairs) { EnsureHybridLevelCapacity(max_pairs); }
+
+  /*! \brief device bytes EnsureHybridLevelCapacity can still allocate for levels of up to max_pairs pairs: 0 once
+   *  the output buffer holds them, otherwise the full new block (output slots plus their categorical-threshold
+   *  and vector-payload slabs), since a growing Resize keeps the old block until the new one is allocated */
+  size_t HybridLevelGrowthBytes(const int max_pairs) const {
+    const size_t slots = 2 * static_cast<size_t>(num_tasks_) * static_cast<size_t>(std::max(max_pairs, 0));
+    if (cuda_best_split_info_.Size() >= slots) {
+      return 0;
+    }
+    size_t slot_bytes = sizeof(CUDASplitInfo);
+    if (has_categorical_feature_) {
+      slot_bytes += static_cast<size_t>(max_num_categories_in_split_) * (sizeof(uint32_t) + sizeof(int));
+    }
+    if (vec_num_targets_ > 1) {
+      slot_bytes += static_cast<size_t>(kNumVecPayloadFields) * static_cast<size_t>(vec_num_targets_) * sizeof(double);
+    }
+    return slots * slot_bytes;
+  }
 
   /*! \brief the batched find kernel's x-grid extent of the current tree */
   int hybrid_graph_find_grid_x() const {

@@ -279,6 +279,18 @@ class CUDAHistogramConstructor {
   bool CompactColMajorFilled() const { return compact_col_major_filled_; }
   const uint8_t* compact_col_major_device() const { return compact_staging_col_major_.RawDataReadOnly(); }
 
+  /*! \brief colmajor_fill: whether this row data can take the column-major copy (plan key on, 4-bit packed rows
+   *  resident on the device) and does not have it yet. The tree learner decides when to try. */
+  bool ColMajorFillApplicable() const;
+  /*! \brief colmajor_fill: make the column-major copy of the 4-bit packed row matrix that the per-tree compact
+   *  fill gathers from, if free device memory still covers reserve_bytes once the copy exists; log the decision.
+   *  Declining is never an error: the fill then reads the row-major matrix and writes the same bytes. */
+  bool InitColMajorFill(size_t reserve_bytes);
+  /*! \brief bytes the compact view buffers can still grow by in later trees (see the definition) */
+  size_t CompactViewGrowthBytes() const;
+  /*! \brief bytes the 64->32-bit compaction scratch can still grow by for levels of up to max_pairs pairs */
+  size_t BitChangeScratchGrowthBytes(int max_pairs) const;
+
   /*! \brief one-line gate dump for FALCATA_DEBUG=diag */
   std::string BatchedLevelGateDiag() const {
     char buf[256];
@@ -972,8 +984,8 @@ class CUDAHistogramConstructor {
   std::vector<int8_t> prefill_bitmap_;
   bool prefill_valid_ = false;
   /*! \brief global column-major nibble copy of the packed bin matrix
-   *  (cuda_plan key colmajor_fill; empty = unavailable). Fill metadata for it
-   *  is stride-1 with base col*colmajor_pad_. */
+   *  (cuda_plan key colmajor_fill; empty = unavailable, colmajor_pad_ == 0).
+   *  Fill metadata for it is stride-1 with base col*colmajor_pad_. */
   CUDAVector<uint8_t> colmajor_bin_;
   size_t colmajor_pad_ = 0;
   /*! \brief L2 persistence carve-out (cuda_plan key l2_policy; 0 = inactive) */

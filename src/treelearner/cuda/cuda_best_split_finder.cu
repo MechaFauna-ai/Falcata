@@ -5077,14 +5077,18 @@ __device__ __forceinline__ void WarpFindBest(
   const uint32_t fnb = task->num_bin - task->mfb_offset;
   const uint32_t na = static_cast<uint32_t>(task->na_as_missing);
   const uint32_t base = lane * 8u;
+  // Forward scan with a NaN bin AND an unstored most-frequent bin 0 (the block kernel's na_as_missing &&
+  // mfb_offset == 1 case): position t holds bin t, read from hist[t - 1] for t >= 1, and bin 0 is synthesised
+  // from the leaf total below.
+  const uint32_t shift = (!REVERSE && task->na_as_missing && task->mfb_offset == 1) ? 1u : 0u;
 
   UT v[8];
 #pragma unroll
   for (int i = 0; i < 8; ++i) {
     const uint32_t t = base + i;
     UT x = 0;
-    if (REVERSE ? (t >= na && t < fnb) : (t < fnb)) {
-      x = static_cast<UT>(hist[REVERSE ? (fnb - 1 - t) : t]);
+    if (REVERSE ? (t >= na && t < fnb) : (t >= shift && t - shift < fnb)) {
+      x = static_cast<UT>(hist[REVERSE ? (fnb - 1 - t) : (t - shift)]);
     }
     v[i] = x;
   }
@@ -5100,7 +5104,23 @@ __device__ __forceinline__ void WarpFindBest(
     const UT y = __shfl_up_sync(0xffffffffu, incl, d);
     if (lane >= d) incl += y;
   }
-  const UT excl = incl - run;
+  UT excl = incl - run;
+  if (shift != 0) {
+    // bin 0 = leaf total - sum of the stored bins, through the block kernel's packed conversions; it sits at
+    // position 0, so it adds to every prefix
+    const ACC_T sum_non_default = static_cast<ACC_T>(__shfl_sync(0xffffffffu, incl, 31));
+    const int64_t non_default_packed = B16 ?
+      ((static_cast<int64_t>(static_cast<int16_t>(sum_non_default >> 16)) << 32) |
+       static_cast<int64_t>(sum_non_default & 0x0000ffff)) :
+      static_cast<int64_t>(sum_non_default);
+    const int64_t default_bin_packed = sum_gradients_hessians - non_default_packed;
+    const ACC_T bin0 = B16 ?
+      static_cast<ACC_T>(static_cast<int32_t>(
+        (static_cast<uint32_t>(static_cast<int32_t>(default_bin_packed >> 32)) << 16) |
+        (static_cast<uint32_t>(default_bin_packed) & 0x0000ffffu))) :
+      static_cast<ACC_T>(default_bin_packed);
+    excl += static_cast<UT>(bin0);
+  }
 
   // the block kernel's unpack and validity gates for one threshold
   auto prep = [&](UT accu, WarpFindCandidate& o) -> bool {
@@ -5144,7 +5164,7 @@ __device__ __forceinline__ void WarpFindBest(
 #pragma unroll
   for (int i = 0; i < 8; ++i) {
     const uint32_t t = base + i;
-    const bool candidate = REVERSE ? (t >= na && t <= task->num_bin - 2) : (t + 2 <= fnb);
+    const bool candidate = REVERSE ? (t >= na && t <= task->num_bin - 2) : (t + 2 <= fnb + shift);
     if (candidate) vmask |= (1u << i);
     up[i] = INFINITY;
   }
@@ -5217,7 +5237,7 @@ __device__ __forceinline__ void WarpFindBest(
     // this lane's local best is the global best: its candidate values are in `best`
     out->is_valid = true;
     out->threshold = REVERSE ? static_cast<uint32_t>(task->num_bin - 2 - best_t) :
-                               static_cast<uint32_t>(best_t + task->mfb_offset);
+                               static_cast<uint32_t>(best_t + task->mfb_offset - shift);
     out->gain = best_gain * task->penalty;
     out->default_left = task->assume_out_default_left;
     const double left_output = CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(best.sl_g,
