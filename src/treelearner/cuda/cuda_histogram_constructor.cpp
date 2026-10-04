@@ -1439,8 +1439,9 @@ void CUDAHistogramConstructor::MaybeBuildColMajorDense3() {
     LaunchColMajorAnyAtLeast6(colmajor_bin_.RawDataReadOnly(), colmajor_bin_.Size(), flags.RawData() + num_columns);
     CopyFromCUDADeviceToHost<int>(&any_wide6, flags.RawDataReadOnly() + num_columns, 1, __FILE__, __LINE__);
   }
-  const int codec = any_wide6 == 0 ? 6 : 3;
-  const int radix = codec == 6 ? 6 : 8;
+  // cuda_plan key colmajor_dense6_frac: base 6 as fractions (codec 7)
+  const int codec = any_wide6 != 0 ? 3 : FalcataPlan::Get().colmajor_dense6_frac ? 7 : 6;
+  const int radix = codec == 3 ? 8 : 6;
   const size_t pitch = ColMajorDensePitchWords(num_data_, codec);
   const size_t bytes = static_cast<size_t>(num_columns) * pitch * sizeof(uint32_t);
   const CompactRegimeBytes need = CompactRegimeNeed(view_one_byte_split_view_);

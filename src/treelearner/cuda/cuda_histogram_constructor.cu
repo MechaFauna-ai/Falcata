@@ -480,7 +480,8 @@ constexpr int kFusedRootThreads = 512;
 // DENSE (cuda_plan key colmajor_dense3): 0 reads the 4-bit store; 3 or 6 its dense copy in that codec (see
 // EncodeColMajorDenseKernel), s_nib0/s_nib1 converted to its column word offsets. A work item is a slot's 32-row group
 // (codec 3: 3 + 3 words) or 12-row word (codec 6: 1 + 1 words), decoded to the same nibbles the 4-bit store holds,
-// so the tile is staged byte for byte the same.
+// so the tile is staged byte for byte the same. 7: codec 6's layout with fraction words (cuda_plan key
+// colmajor_dense6_frac).
 template <bool SLOT_MAJOR, int DENSE>
 __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitTiledRootHistKernel(
   const uint8_t* __restrict__ src_data,
@@ -602,8 +603,8 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
   // of group q), so the 4 items of a slot read 16 contiguous bytes per plane. Codec 6: a tile is 11 words of 12 rows
   // (the last holds 8). Prefetched one tile ahead in registers as the word path's words.
   constexpr bool DENSE3 = DENSE == 3;
-  constexpr int kItemsPerSlot = DENSE == 6 ? 11 : 4;
-  constexpr int kWordsPerItem = DENSE == 6 ? 1 : 3;
+  constexpr int kItemsPerSlot = DENSE == 6 || DENSE == 7 ? 11 : 4;
+  constexpr int kWordsPerItem = DENSE == 6 || DENSE == 7 ? 1 : 3;
   constexpr int kTileWords = kItemsPerSlot * kWordsPerItem;
   constexpr int kDenseItems = (kFill4BitTiledMaxSlots * kItemsPerSlot + kFusedRootThreads - 1) / kFusedRootThreads;
   const int dense_items = num_slots * kItemsPerSlot;
@@ -679,6 +680,30 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
               const int row = 32 * q + 8 * m + 2 * e;
               tile_rows[row * tile_stride + i] = static_cast<uint8_t>(even >> (8 * e));
               tile_rows[(row + 1) * tile_stride + i] = static_cast<uint8_t>(odd >> (8 * e));
+            }
+          }
+        }
+      }
+    }
+    if (DENSE == 7) {
+      // word q holds rows 12q + j as digit j of an MSB-first base-6 fraction: f * 6^j (mod 2^32) is f after j digits,
+      // its digit the multiply-high by 6 (see EncodeColMajorDenseKernel); low column | high column << 4
+#pragma unroll
+      for (int u = 0; u < kDenseItems; ++u) {
+        const int t = tid + u * kFusedRootThreads;
+        if (t < dense_items) {
+          const int i = t / kItemsPerSlot;
+          const int q = t - i * kItemsPerSlot;
+          const uint32_t f0 = dense0[u][0];
+          const uint32_t f1 = dense1[u][0];
+          uint8_t* dst = tile_rows + (12 * q) * tile_stride + i;
+          uint32_t p = 1u;  // 6^j (mod 2^32), folded by the unrolling
+#pragma unroll
+          for (int j = 0; j < 12; ++j) {
+            const uint32_t v = __umulhi(f0 * p, 6u) | (__umulhi(f1 * p, 6u) << 4);
+            p *= 6u;
+            if (j < 8 || q < kItemsPerSlot - 1) {
+              dst[j * tile_stride] = static_cast<uint8_t>(v);
             }
           }
         }
@@ -935,7 +960,9 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
   // cuda_plan key colmajor_dense3: the host passes the dense copy only where every slot's columns are in it
   const int codec = dense_data == nullptr ? 0 : dense_codec;
   if (slot_major) {
-    if (codec == 6) {
+    if (codec == 7) {
+      FALCATA_FUSED_FILL_LAUNCH(true, 7);
+    } else if (codec == 6) {
       FALCATA_FUSED_FILL_LAUNCH(true, 6);
     } else if (codec == 3) {
       FALCATA_FUSED_FILL_LAUNCH(true, 3);
@@ -943,7 +970,9 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
       FALCATA_FUSED_FILL_LAUNCH(true, 0);
     }
   } else {
-    if (codec == 6) {
+    if (codec == 7) {
+      FALCATA_FUSED_FILL_LAUNCH(false, 7);
+    } else if (codec == 6) {
       FALCATA_FUSED_FILL_LAUNCH(false, 6);
     } else if (codec == 3) {
       FALCATA_FUSED_FILL_LAUNCH(false, 3);
@@ -1005,15 +1034,19 @@ void LaunchFillCompactData4BitKernel(
 //  3: 12 words per tile; word 4k + q is plane word k of 32-row group q, whose nibble j holds row 8k + j's value
 //     (bits 0-2) and bit k of row 24 + j's value (bit 3); values below 8.
 //  6: 11 words per tile; word q holds rows 12q + j (j < 12, below the tile's 128) as base-6 digit j; values below 6.
+//  7: codec 6's layout, word q the MSB-first fraction ceil(x * 2^32 / 6^12) of x = sum_j d_j 6^(11 - j), d_j row
+//     12q + j's value (0 past the tile or num_data). As 6^12 < 2^32, the rounding stays below 6^-12, so after j steps
+//     of f *= 6 (mod 2^32) the multiply-high by 6 is exactly d_j.
 template <int CODEC>
 __global__ void EncodeColMajorDenseKernel(const uint8_t* __restrict__ colmajor, const size_t column_bytes,
                                           const int num_columns, const data_size_t num_data,
                                           uint32_t* __restrict__ dense, const size_t pitch_words,
                                           int* __restrict__ column_wide) {
-  constexpr uint32_t kRadix = CODEC == 6 ? 6 : 8;
-  constexpr int kItems = CODEC == 6 ? 11 : 4;           // items per tile
-  constexpr int kRows = CODEC == 6 ? 12 : 32;           // rows per item
-  const data_size_t num_items = static_cast<data_size_t>(pitch_words / (CODEC == 6 ? 11 : 12)) * kItems;
+  constexpr bool kBase6 = CODEC == 6 || CODEC == 7;
+  constexpr uint32_t kRadix = kBase6 ? 6 : 8;
+  constexpr int kItems = kBase6 ? 11 : 4;           // items per tile
+  constexpr int kRows = kBase6 ? 12 : 32;           // rows per item
+  const data_size_t num_items = static_cast<data_size_t>(pitch_words / (kBase6 ? 11 : 12)) * kItems;
   for (int c = blockIdx.y; c < num_columns; c += gridDim.y) {
     const uint8_t* col = colmajor + static_cast<size_t>(c) * column_bytes;
     uint32_t* out = dense + static_cast<size_t>(c) * pitch_words;
@@ -1024,10 +1057,18 @@ __global__ void EncodeColMajorDenseKernel(const uint8_t* __restrict__ colmajor, 
       const data_size_t first = tile * 128 + q * kRows;
       uint32_t w[3] = {0u, 0u, 0u};
       uint32_t scale = 1;
+      uint64_t frac = 0;  // codec 7: the digits MSB first
       bool wide = false;
       for (int r = 0; r < kRows; ++r) {
         const data_size_t row = first + r;
-        if (q * kRows + r >= 128 || row >= num_data) break;
+        const bool in_data = q * kRows + r < 128 && row < num_data;
+        if (CODEC == 7) {
+          const uint32_t v = in_data ? (col[row >> 1] >> ((row & 1) * 4)) & 0xf : 0u;
+          wide |= v >= kRadix;
+          frac = frac * 6 + v;
+          continue;
+        }
+        if (!in_data) break;
         const uint32_t v = (col[row >> 1] >> ((row & 1) * 4)) & 0xf;
         wide |= v >= kRadix;
         if (CODEC == 6) {
@@ -1045,8 +1086,11 @@ __global__ void EncodeColMajorDenseKernel(const uint8_t* __restrict__ colmajor, 
       if (wide) {
         atomicOr(column_wide + c, 1);  // a column holding a value the codec cannot: not served from the copy
       }
-      const size_t tile_word = static_cast<size_t>(tile) * (CODEC == 6 ? 11 : 12);
-      if (CODEC == 6) {
+      const size_t tile_word = static_cast<size_t>(tile) * (kBase6 ? 11 : 12);
+      if (CODEC == 7) {
+        constexpr uint64_t kSixPow12 = 2176782336ull;  // 6^12
+        out[tile_word + q] = static_cast<uint32_t>(((frac << 32) + kSixPow12 - 1) / kSixPow12);
+      } else if (CODEC == 6) {
         out[tile_word + q] = w[0];
       } else {
 #pragma unroll
@@ -1097,16 +1141,19 @@ size_t ColMajorDensePitchWords(data_size_t num_data, int codec) {
 #if !defined(__HIP_PLATFORM_AMD__)
   static_assert(kFill4BitTiledRows == 128, "the dense copy is laid out in the fill's 128-row tiles");
 #endif
-  return static_cast<size_t>((num_data + 127) / 128) * (codec == 6 ? 11 : 12);
+  return static_cast<size_t>((num_data + 127) / 128) * (codec == 6 || codec == 7 ? 11 : 12);
 }
 
 void LaunchEncodeColMajorDense(const uint8_t* colmajor, size_t column_bytes, int num_columns, data_size_t num_data,
                                uint32_t* dense, size_t pitch_words, int codec, int* column_wide) {
-  const size_t items = pitch_words / (codec == 6 ? 1 : 3);
+  const size_t items = pitch_words / (codec == 6 || codec == 7 ? 1 : 3);
   const int block = 256;
   const int grid_x = static_cast<int>(std::min<size_t>((items + block - 1) / block, 4096));
   const dim3 grid(grid_x, std::min(num_columns, 65535));
-  if (codec == 6) {
+  if (codec == 7) {
+    EncodeColMajorDenseKernel<7><<<grid, block>>>(colmajor, column_bytes, num_columns, num_data, dense, pitch_words,
+                                                  column_wide);
+  } else if (codec == 6) {
     EncodeColMajorDenseKernel<6><<<grid, block>>>(colmajor, column_bytes, num_columns, num_data, dense, pitch_words,
                                                   column_wide);
   } else {

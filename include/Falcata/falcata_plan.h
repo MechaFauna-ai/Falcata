@@ -297,6 +297,10 @@ struct FalcataPlan {
   // colmajor_dense3's copy in base 6 (12 rows per 32-bit word, 11 words per 128 rows instead of 12) where every
   // value of the store is below 6, instead of 3 bits per row
   bool colmajor_dense6 = true;      // key: colmajor_dense6
+  // colmajor_dense6's words as MSB-first 32-bit base-6 fractions ceil(x * 2^32 / 6^12) of their 12 digits instead
+  // of integers: row j's digit is one multiply and one multiply-high, umulhi(f * 6^j, 6), instead of a division and
+  // a multiply-subtract per row
+  bool colmajor_dense6_frac = true; // key: colmajor_dense6_frac
   // colmajor_dense3's fill also prefetches the tile after next of every sampled column into L2
   bool colmajor_dense3_l2 = true;   // key: colmajor_dense3_l2
   // pair_hist joint tables laid out with odd per-byte strides (an even span
@@ -446,6 +450,7 @@ struct FalcataPlan {
     if (key == "colmajor_dense3") return &colmajor_dense3;
     if (key == "colmajor_dense3_l2") return &colmajor_dense3_l2;
     if (key == "colmajor_dense6") return &colmajor_dense6;
+    if (key == "colmajor_dense6_frac") return &colmajor_dense6_frac;
     if (key == "pair_pad") return &pair_pad;
     if (key == "level_row_blocks") return &level_row_blocks;
     if (key == "all_rows_direct") return &all_rows_direct;
