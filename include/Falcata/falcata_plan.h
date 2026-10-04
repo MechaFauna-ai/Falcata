@@ -343,6 +343,20 @@ struct FalcataPlan {
   // two-rows-per-byte column, not one sector of the row matrix per row. Used
   // whenever the store exists. Bit-identical (same nibbles).
   bool colmajor_split = true;       // key: colmajor_split
+  // host-launched level flow: a leaf whose row count n cannot give both children min_data_in_leaf rows
+  // (n + 2 + n / 2^20 < 2 * min_data_in_leaf) is not split-searched, and a pair whose two leaves are both such leaves
+  // (or fail the existing min_data / min_sum_hessian gates) is not constructed. Every finder count gate needs left
+  // and right counts of at least min_data_in_leaf, and the two counts of a threshold sum to n (one is n minus the
+  // other) or, rounded separately from hessian sums, to at most n + 1 plus their floating-point error: no threshold
+  // of such a leaf passes, the finder would report no split, and its histogram has no other reader. Off with forced
+  // splits. Bit-identical.
+  bool skip_unsplittable = true;    // key: skip_unsplittable
+  // the leaf-wise tail's first best-of-all-leaves search (two kernels, two device syncs and a readback at every
+  // tree end) is not run when the level prefix ended on a final level that split every candidate leaf with the
+  // leaf budget not binding and every child at max_depth: the children's cached candidates were invalidated and
+  // every other leaf's candidate was already invalid (otherwise it would have been a candidate of that level), so
+  // the search can only report no split. Same tree: bit-identical.
+  bool skip_empty_tail = true;      // key: skip_empty_tail
   // runtime tier-1 tuner: bandit over the batched-construct saturation floor,
   // timed per tree; quantized training only (integer hists keep results
   // schedule-invariant, so retuning cannot change the model). The probe phase
@@ -444,6 +458,8 @@ struct FalcataPlan {
     if (key == "root_sums_warp") return &root_sums_warp;
     if (key == "minmax_warp") return &minmax_warp;
     if (key == "colmajor_split") return &colmajor_split;
+    if (key == "skip_unsplittable") return &skip_unsplittable;
+    if (key == "skip_empty_tail") return &skip_empty_tail;
     if (key == "tuner") return &tuner;
     if (key == "wide_partitions") return &wide_partitions;
     return nullptr;

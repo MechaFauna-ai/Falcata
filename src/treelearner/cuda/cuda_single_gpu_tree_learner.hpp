@@ -636,6 +636,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
    *  tree-end materialize covers only hybrid_map_residual_leaves_ */
   bool hybrid_map_final_written_ = false;
   std::vector<int> hybrid_map_residual_leaves_;
+  /*! \brief cuda_plan key skip_empty_tail: ArbitrateLevelBudget's last level splits every candidate leaf, the leaf
+   *  budget does not bind and every child sits at max_depth; set by the level prefix when it ended on such a level */
+  bool level_completes_tree_ = false;
+  bool prefix_completes_tree_ = false;
   // hybrid growth: single-sync (speculative) level pipeline
   // (FALCATA_HYBRID_ONE_SYNC, default on; "0" keeps the classic two-sync flow)
   bool use_hybrid_one_sync_ = false;

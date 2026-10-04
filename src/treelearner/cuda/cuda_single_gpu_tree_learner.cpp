@@ -1682,6 +1682,8 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
   host_hybrid_pair_descs_.resize(static_cast<size_t>(num_pairs));
   data_size_t max_num_data_in_smaller_leaf = 0;
   bool any_bit_change_copy = false;
+  const bool skip_unsplittable = FalcataPlan::Get().skip_unsplittable && config_->forcedsplits_filename.empty() &&
+    (forced_split_json_ == nullptr || forced_split_json_->is_null());
   for (int i = 0; i < num_pairs; ++i) {
     const HybridPendingPair& pair = pairs[i];
     CUDAHybridPairDescriptor& desc = host_hybrid_pair_descs_[i];
@@ -1709,22 +1711,33 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
                    pair.larger < 0 ? 0 : leaf_num_data_[pair.larger],
                    global_num_data_);
     }
+    // cuda_plan key skip_unsplittable: a leaf of n rows cannot be split when n + 2 + n / 2^20 < 2 * min_data_in_leaf:
+    // both children need min_data_in_leaf rows, and a threshold's left and right counts sum to n (one is n minus the
+    // other) or, rounded separately from hessian sums, to at most n + 1 plus the floating-point error of those sums
+    // (the n / 2^20 margin covers fp32 gains). Such a leaf gets no split search and, when its partner is also
+    // unsplittable, no histogram.
+    const auto unsplittable_by_count = [&](const data_size_t n) {
+      const int64_t n64 = static_cast<int64_t>(n);
+      return skip_unsplittable && n64 + 2 + (n64 >> 20) < 2 * static_cast<int64_t>(config_->min_data_in_leaf);
+    };
+    const bool smaller_unsplittable = unsplittable_by_count(num_data_in_smaller_leaf);
+    const bool larger_unsplittable = unsplittable_by_count(num_data_in_larger_leaf);
     // mirror of ConstructHistogramForLeaf's min_data/min_hessian early return
     desc.construct_valid =
-      ((num_data_in_smaller_leaf <= config_->min_data_in_leaf ||
+      ((num_data_in_smaller_leaf <= config_->min_data_in_leaf || smaller_unsplittable ||
         sum_hessians_in_smaller_leaf <= config_->min_sum_hessian_in_leaf) &&
-       (num_data_in_larger_leaf <= config_->min_data_in_leaf ||
+       (num_data_in_larger_leaf <= config_->min_data_in_leaf || larger_unsplittable ||
         sum_hessians_in_larger_leaf <= config_->min_sum_hessian_in_leaf)) ? 0 : 1;
     // mirror of CUDABestSplitFinder::FindBestSplitsForLeaf's leaf validity checks
     const bool smaller_below_max_depth =
       config_->max_depth <= 0 || GrowthLeafDepth(tree, pair.smaller) < config_->max_depth;
     const bool larger_below_max_depth = pair.larger < 0 ||
       config_->max_depth <= 0 || GrowthLeafDepth(tree, pair.larger) < config_->max_depth;
-    desc.smaller_valid = (num_data_in_smaller_leaf > config_->min_data_in_leaf &&
+    desc.smaller_valid = (num_data_in_smaller_leaf > config_->min_data_in_leaf && !smaller_unsplittable &&
                           sum_hessians_in_smaller_leaf > config_->min_sum_hessian_in_leaf &&
                           smaller_below_max_depth) ? 1 : 0;
     desc.larger_valid = (pair.larger >= 0 &&
-                         num_data_in_larger_leaf > config_->min_data_in_leaf &&
+                         num_data_in_larger_leaf > config_->min_data_in_leaf && !larger_unsplittable &&
                          sum_hessians_in_larger_leaf > config_->min_sum_hessian_in_leaf &&
                          larger_below_max_depth) ? 1 : 0;
     if (config_->use_quantized_grad) {
@@ -1981,6 +1994,7 @@ bool CUDASingleGPUTreeLearner::ArbitrateLevelBudget(const CUDATree* tree,
   // defer to the leaf-wise tail, which selects among the cached candidates in
   // exact best-gain order.
   *final_partial_level = false;
+  level_completes_tree_ = false;
   bool all_children_depth_capped = config_->max_depth > 0 && !splittable->empty();
   if (all_children_depth_capped) {
     for (const int leaf : *splittable) {
@@ -1996,9 +2010,13 @@ bool CUDASingleGPUTreeLearner::ArbitrateLevelBudget(const CUDATree* tree,
     // flagging it skips a whole wasted next-level search AND lets the apply
     // write the leaf map inline (see ApplyLevelBatched).
     *final_partial_level = all_children_depth_capped;
+    level_completes_tree_ = all_children_depth_capped;  // every candidate leaf is split (cuda_plan key skip_empty_tail)
     if (FalcataDebug().maxsplits >= 0) {
       const size_t cap = static_cast<size_t>(FalcataDebug().maxsplits);
-      if (splittable->size() > cap) splittable->resize(cap);
+      if (splittable->size() > cap) {
+        splittable->resize(cap);
+        level_completes_tree_ = false;
+      }
     }
     return true;
   }
@@ -2525,6 +2543,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
     if (final_partial_level) {
       // the tree is full and every child sits at max_depth: nothing is left
       // for the leaf-wise tail to search or split
+      prefix_completes_tree_ = level_completes_tree_;
       break;
     }
   }
@@ -2615,6 +2634,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefixOneSync(CUDATree* tree) {
       // search, so read the apply info back immediately and stop
       cuda_data_partition_->FinishSplitBatch(static_cast<int>(applied.size()), &batch_info);
       FinishLevelBookkeeping(applied, batch_info, nullptr, &num_splits);
+      prefix_completes_tree_ = level_completes_tree_;
       break;
     }
     // speculative: the children's search goes out before their statistics are
@@ -4060,6 +4080,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     // deferred them (async_tree_start; TrainLevelWisePrefix reads them back itself)
     EnsureRootSumsReadBack(tree.get());
   }
+  prefix_completes_tree_ = false;
   if (num_splits_done == 0 && HybridGrowthUsable()) {
     if (UseSelectiveGrowth()) {
       // budget-limited exact grow-then-prune: builds the COMPLETE tree
@@ -4076,7 +4097,15 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
       pair_search_cached = num_splits_done > 0;
     }
   }
-  for (int i = num_splits_done; !selective_handled && i < config_->num_leaves - 1; ++i) {
+  // cuda_plan key skip_empty_tail: after a level prefix that ended on a complete final level the tail's search can
+  // only find every cached candidate invalid; report the stop it would report without running it. Only with the
+  // batched apply, which invalidates the final level's children (the per-split apply of batch_apply:off does not)
+  const bool tail_known_empty = FalcataPlan::Get().skip_empty_tail && batched_apply_ran && use_hybrid_batch_apply_ &&
+    prefix_completes_tree_;
+  if (tail_known_empty && !selective_handled && num_splits_done < config_->num_leaves - 1) {
+    Log::Warning("No further splits with positive gain, training stopped with %d leaves.", (num_splits_done + 1));
+  }
+  for (int i = num_splits_done; !selective_handled && !tail_known_empty && i < config_->num_leaves - 1; ++i) {
     if (!pair_search_cached) {
       if (fp_merge_state_ != nullptr) {
         // The leaf-wise tail's fresh per-pair searches are not winner-merged
