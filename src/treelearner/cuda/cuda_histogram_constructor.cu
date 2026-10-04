@@ -477,10 +477,11 @@ constexpr int kFusedRootThreads = 512;
 // slots of a row, so every atomic hits a distinct bank; with first_bin + nibble the cells of neighbouring slots sit a
 // column pair's bin count apart and collide several ways. The flush maps (half, nibble, slot) back to the same local
 // bin, so each bin receives the same rows' sum.
-// DENSE3 (cuda_plan key colmajor_dense3): the source is the 3-bit copy of the column-major store (see
-// EncodeColMajorDense3Kernel), s_nib0/s_nib1 converted to its column word offsets; a work item is a slot's 32-row
-// group, 3 + 3 words decoded to the same nibbles the 4-bit store holds, so the tile is staged byte for byte the same.
-template <bool SLOT_MAJOR, bool DENSE3>
+// DENSE (cuda_plan key colmajor_dense3): 0 reads the 4-bit store; 3 or 6 its dense copy in that codec (see
+// EncodeColMajorDenseKernel), s_nib0/s_nib1 converted to its column word offsets. A work item is a slot's 32-row group
+// (codec 3: 3 + 3 words) or 12-row word (codec 6: 1 + 1 words), decoded to the same nibbles the 4-bit store holds,
+// so the tile is staged byte for byte the same.
+template <bool SLOT_MAJOR, int DENSE>
 __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitTiledRootHistKernel(
   const uint8_t* __restrict__ src_data,
   uint8_t* __restrict__ compact_data,
@@ -527,7 +528,7 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
   const int padded_slots = Fill4BitTiledPaddedSlots(num_slots);
   const size_t kNoCol = ~static_cast<size_t>(0);
   for (int i = tid; i < num_slots; i += kFusedRootThreads) {
-    if (DENSE3) {
+    if (DENSE != 0) {
       // column c of the 4-bit store starts at nibble c * dense_column_nibbles, of the 3-bit copy at word
       // c * dense_pitch_words (the host checked every slot's columns start on a column)
       const size_t n1 = bs_src_nib1[i];
@@ -597,44 +598,48 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
       }
     }
   };
-  // DENSE3: a tile is 4 groups of 32 rows per column, its 12 words stored plane-major (word 4k + q is plane word k
-  // of group q), so the 4 items of a slot read 16 contiguous bytes per plane. Prefetched one tile ahead in registers
-  // as the word path's words.
-  constexpr int kDenseItems = kFill4BitTiledMaxSlots * 4 / kFusedRootThreads;
-  const int dense_items = num_slots * 4;
-  uint32_t dense0[DENSE3 ? kDenseItems : 1][3];
-  uint32_t dense1[DENSE3 ? kDenseItems : 1][3];
+  // codec 3: a tile is 4 groups of 32 rows per column, its 12 words stored plane-major (word 4k + q is plane word k
+  // of group q), so the 4 items of a slot read 16 contiguous bytes per plane. Codec 6: a tile is 11 words of 12 rows
+  // (the last holds 8). Prefetched one tile ahead in registers as the word path's words.
+  constexpr bool DENSE3 = DENSE == 3;
+  constexpr int kItemsPerSlot = DENSE == 6 ? 11 : 4;
+  constexpr int kWordsPerItem = DENSE == 6 ? 1 : 3;
+  constexpr int kTileWords = kItemsPerSlot * kWordsPerItem;
+  constexpr int kDenseItems = (kFill4BitTiledMaxSlots * kItemsPerSlot + kFusedRootThreads - 1) / kFusedRootThreads;
+  const int dense_items = num_slots * kItemsPerSlot;
+  uint32_t dense0[DENSE != 0 ? kDenseItems : 1][kWordsPerItem];
+  uint32_t dense1[DENSE != 0 ? kDenseItems : 1][kWordsPerItem];
   auto load_dense = [&](data_size_t tile_index) {
-    const size_t tile_word = static_cast<size_t>(tile_index) * 12;
+    const size_t tile_word = static_cast<size_t>(tile_index) * kTileWords;
 #pragma unroll
     for (int u = 0; u < kDenseItems; ++u) {
       const int t = tid + u * kFusedRootThreads;
 #pragma unroll
-      for (int k = 0; k < 3; ++k) {
+      for (int k = 0; k < kWordsPerItem; ++k) {
         dense0[u][k] = 0;
         dense1[u][k] = 0;
       }
       if (t < dense_items) {
-        const int i = t >> 2;
-        const int q = t & 3;
+        const int i = t / kItemsPerSlot;
+        const int q = t - i * kItemsPerSlot;
         // every tile of the copy is whole (rows past num_data hold 0), so no row bound
 #pragma unroll
-        for (int k = 0; k < 3; ++k) {
-          dense0[u][k] = __ldg(dense_data + s_nib0[i] + tile_word + 4 * k + q);
+        for (int k = 0; k < kWordsPerItem; ++k) {
+          dense0[u][k] = __ldg(dense_data + s_nib0[i] + tile_word + kItemsPerSlot * k + q);
         }
         if (s_nib1[i] != kNoCol) {
 #pragma unroll
-          for (int k = 0; k < 3; ++k) {
-            dense1[u][k] = __ldg(dense_data + s_nib1[i] + tile_word + 4 * k + q);
+          for (int k = 0; k < kWordsPerItem; ++k) {
+            dense1[u][k] = __ldg(dense_data + s_nib1[i] + tile_word + kItemsPerSlot * k + q);
           }
         }
       }
     }
   };
-  if (DENSE3 && tile_first < num_tiles) {
+  if (DENSE != 0 && tile_first < num_tiles) {
     load_dense(tile_first);
   }
-  if (!DENSE3 && word_prefetch && tile_first < num_tiles) {
+  if (DENSE == 0 && word_prefetch && tile_first < num_tiles) {
     load_words(tile_first);
   }
   for (int step = 0; step < tiles_per_block; ++step) {
@@ -658,13 +663,13 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
           uint32_t hi[4];
 #pragma unroll
           for (int k = 0; k < 3; ++k) {
-            lo[k] = dense0[u][k] & 0x77777777u;
-            hi[k] = dense1[u][k] & 0x77777777u;
+            lo[k] = dense0[u][k < kWordsPerItem ? k : 0] & 0x77777777u;
+            hi[k] = dense1[u][k < kWordsPerItem ? k : 0] & 0x77777777u;
           }
-          lo[3] = ((dense0[u][0] >> 3) & 0x11111111u) | ((dense0[u][1] >> 2) & 0x22222222u) |
-                  ((dense0[u][2] >> 1) & 0x44444444u);
-          hi[3] = ((dense1[u][0] >> 3) & 0x11111111u) | ((dense1[u][1] >> 2) & 0x22222222u) |
-                  ((dense1[u][2] >> 1) & 0x44444444u);
+          lo[3] = ((dense0[u][0] >> 3) & 0x11111111u) | ((dense0[u][kWordsPerItem > 1 ? 1 : 0] >> 2) & 0x22222222u) |
+                  ((dense0[u][kWordsPerItem - 1] >> 1) & 0x44444444u);
+          hi[3] = ((dense1[u][0] >> 3) & 0x11111111u) | ((dense1[u][kWordsPerItem > 1 ? 1 : 0] >> 2) & 0x22222222u) |
+                  ((dense1[u][kWordsPerItem - 1] >> 1) & 0x44444444u);
 #pragma unroll
           for (int m = 0; m < 4; ++m) {
             const uint32_t even = (lo[m] & 0x0f0f0f0fu) | ((hi[m] & 0x0f0f0f0fu) << 4);
@@ -679,7 +684,32 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
         }
       }
     }
-    if (!DENSE3 && word_prefetch) {
+    if (DENSE == 6) {
+      // word q holds rows 12q + j as base-6 digit j (row 12q + j < 128): low column | high column << 4
+#pragma unroll
+      for (int u = 0; u < kDenseItems; ++u) {
+        const int t = tid + u * kFusedRootThreads;
+        if (t < dense_items) {
+          const int i = t / kItemsPerSlot;
+          const int q = t - i * kItemsPerSlot;
+          uint32_t x0 = dense0[u][0];
+          uint32_t x1 = dense1[u][0];
+          uint8_t* dst = tile_rows + (12 * q) * tile_stride + i;
+#pragma unroll
+          for (int j = 0; j < 12; ++j) {
+            const uint32_t q0 = __umulhi(x0, 0xAAAAAAABu) >> 2;
+            const uint32_t q1 = __umulhi(x1, 0xAAAAAAABu) >> 2;
+            const uint32_t v = (x0 - 6u * q0) | ((x1 - 6u * q1) << 4);
+            x0 = q0;
+            x1 = q1;
+            if (j < 8 || q < kItemsPerSlot - 1) {
+              dst[j * tile_stride] = static_cast<uint8_t>(v);
+            }
+          }
+        }
+      }
+    }
+    if (DENSE == 0 && word_prefetch) {
       // the same tile bytes as the byte staging below: byte q of word w holds rows 8w + 2q (low) and 8w + 2q + 1
 #pragma unroll
       for (int u = 0; u < kPrefetchWords; ++u) {
@@ -700,7 +730,7 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
     }
     // stage the tile exactly as CUDAFillCompactData4BitTiledKernel does
     const size_t half_row_start = static_cast<size_t>(row_start >> 1);
-    for (int base = tid; !DENSE3 && !word_prefetch && base < tile_bytes;
+    for (int base = tid; DENSE == 0 && !word_prefetch && base < tile_bytes;
          base += kFusedRootThreads * kFill4BitTiledUnroll) {
       uint8_t b0[kFill4BitTiledUnroll];
       uint8_t b1[kFill4BitTiledUnroll];
@@ -730,22 +760,22 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
       }
     }
     __syncthreads();
-    if (DENSE3 && step + 1 < tiles_per_block && tile_index + tile_step < num_tiles) {
+    if (DENSE != 0 && step + 1 < tiles_per_block && tile_index + tile_step < num_tiles) {
       load_dense(tile_index + tile_step);
-      // cuda_plan key colmajor_dense3_l2: the tile after next into L2 (its 48 bytes per column span two sectors)
+      // cuda_plan key colmajor_dense3_l2: the tile after next into L2 (its 44 or 48 bytes per column span two sectors)
       if (dense_l2_lead && step + 2 < tiles_per_block && tile_index + 2 * tile_step < num_tiles) {
-        const size_t lead_word = static_cast<size_t>(tile_index + 2 * tile_step) * 12;
+        const size_t lead_word = static_cast<size_t>(tile_index + 2 * tile_step) * kTileWords;
         for (int t = tid; t < num_slots * 4; t += kFusedRootThreads) {
           const int i = t >> 2;
           const size_t col = (t & 2) ? s_nib1[i] : s_nib0[i];
           if (col != kNoCol) {
-            const uint32_t* p = dense_data + col + lead_word + ((t & 1) ? 11 : 0);
+            const uint32_t* p = dense_data + col + lead_word + ((t & 1) ? kTileWords - 1 : 0);
             asm volatile("prefetch.global.L2 [%0];" :: "l"(p));
           }
         }
       }
     }
-    if (!DENSE3 && word_prefetch && step + 1 < tiles_per_block && tile_index + tile_step < num_tiles) {
+    if (DENSE == 0 && word_prefetch && step + 1 < tiles_per_block && tile_index + tile_step < num_tiles) {
       load_words(tile_index + tile_step);
     }
 
@@ -879,7 +909,8 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
   size_t root_hist_scratch_bytes,
   const uint32_t* dense_data,
   size_t dense_column_nibbles,
-  size_t dense_pitch_words) {
+  size_t dense_pitch_words,
+  int dense_codec) {
 #if !defined(__HIP_PLATFORM_AMD__)
   // the packed per-block row bound, and the default dynamic shared-memory limit (the slot-major table where it
   // was requested and fits, else one cell per local bin)
@@ -901,19 +932,23 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
       slot_first_bin, local_bin_hist_pos, num_local_bins, SM ? slot_major_span : 0, tiles_per_block, strided_tiles, \
       run_copy, word_prefetch, grad_and_hess, hist_16bit, root_hist_scratch, dense_data, dense_column_nibbles, \
       dense_pitch_words, FalcataPlan::Get().colmajor_dense3_l2)
-  // cuda_plan key colmajor_dense3: the host passes the 3-bit copy only where every slot's columns are in it
-  const bool dense3 = dense_data != nullptr;
+  // cuda_plan key colmajor_dense3: the host passes the dense copy only where every slot's columns are in it
+  const int codec = dense_data == nullptr ? 0 : dense_codec;
   if (slot_major) {
-    if (dense3) {
-      FALCATA_FUSED_FILL_LAUNCH(true, true);
+    if (codec == 6) {
+      FALCATA_FUSED_FILL_LAUNCH(true, 6);
+    } else if (codec == 3) {
+      FALCATA_FUSED_FILL_LAUNCH(true, 3);
     } else {
-      FALCATA_FUSED_FILL_LAUNCH(true, false);
+      FALCATA_FUSED_FILL_LAUNCH(true, 0);
     }
   } else {
-    if (dense3) {
-      FALCATA_FUSED_FILL_LAUNCH(false, true);
+    if (codec == 6) {
+      FALCATA_FUSED_FILL_LAUNCH(false, 6);
+    } else if (codec == 3) {
+      FALCATA_FUSED_FILL_LAUNCH(false, 3);
     } else {
-      FALCATA_FUSED_FILL_LAUNCH(false, false);
+      FALCATA_FUSED_FILL_LAUNCH(false, 0);
     }
   }
 #undef FALCATA_FUSED_FILL_LAUNCH
@@ -925,7 +960,7 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
   (void)num_local_bins; (void)slot_major_span; (void)strided_tiles; (void)run_copy; (void)word_prefetch;
   (void)max_rows_per_block; (void)grad_and_hess; (void)hist_16bit;
   (void)root_hist_scratch; (void)root_hist_scratch_bytes; (void)dense_data; (void)dense_column_nibbles;
-  (void)dense_pitch_words;
+  (void)dense_pitch_words; (void)dense_codec;
   return false;
 #endif
 }
@@ -965,68 +1000,120 @@ void LaunchFillCompactData4BitKernel(
     bs_dst_byte, bs_dst_stride, total_byte_slots, num_data);
 }
 
-// cuda_plan key colmajor_dense3: the 3-bit copy of the column-major 4-bit store, read by the fused fill only. A
-// column is whole 128-row tiles of 12 words; word 4k + q of a tile is plane word k of its 32-row group q, whose
-// nibble j holds row 8k + j's value (bits 0-2) and bit k of row 24 + j's value (bit 3). Rows past num_data are 0. A
-// column holding a value >= 8 sets its flag (the fill then reads the 4-bit store for any tree that samples it).
-__global__ void EncodeColMajorDense3Kernel(const uint8_t* __restrict__ colmajor, const size_t column_bytes,
-                                           const int num_columns, const data_size_t num_data,
-                                           uint32_t* __restrict__ dense, const size_t pitch_words,
-                                           int* __restrict__ column_wide) {
-  const data_size_t num_groups = (num_data + 31) / 32;
-  const data_size_t padded_groups = static_cast<data_size_t>(pitch_words / 3);
+// cuda_plan key colmajor_dense3: the dense copy of the column-major 4-bit store, read by the fused fill only, in
+// whole 128-row tiles per column (rows past num_data are 0), one of two codecs:
+//  3: 12 words per tile; word 4k + q is plane word k of 32-row group q, whose nibble j holds row 8k + j's value
+//     (bits 0-2) and bit k of row 24 + j's value (bit 3); values below 8.
+//  6: 11 words per tile; word q holds rows 12q + j (j < 12, below the tile's 128) as base-6 digit j; values below 6.
+template <int CODEC>
+__global__ void EncodeColMajorDenseKernel(const uint8_t* __restrict__ colmajor, const size_t column_bytes,
+                                          const int num_columns, const data_size_t num_data,
+                                          uint32_t* __restrict__ dense, const size_t pitch_words,
+                                          int* __restrict__ column_wide) {
+  constexpr uint32_t kRadix = CODEC == 6 ? 6 : 8;
+  constexpr int kItems = CODEC == 6 ? 11 : 4;           // items per tile
+  constexpr int kRows = CODEC == 6 ? 12 : 32;           // rows per item
+  const data_size_t num_items = static_cast<data_size_t>(pitch_words / (CODEC == 6 ? 11 : 12)) * kItems;
   for (int c = blockIdx.y; c < num_columns; c += gridDim.y) {
     const uint8_t* col = colmajor + static_cast<size_t>(c) * column_bytes;
     uint32_t* out = dense + static_cast<size_t>(c) * pitch_words;
-    for (data_size_t g = blockIdx.x * blockDim.x + threadIdx.x; g < padded_groups;
+    for (data_size_t g = blockIdx.x * blockDim.x + threadIdx.x; g < num_items;
          g += static_cast<data_size_t>(gridDim.x) * blockDim.x) {
+      const data_size_t tile = g / kItems;
+      const int q = static_cast<int>(g - tile * kItems);
+      const data_size_t first = tile * 128 + q * kRows;
       uint32_t w[3] = {0u, 0u, 0u};
-      uint32_t any_wide = 0;
-      if (g < num_groups) {
-        for (int r = 0; r < 32; ++r) {
-          const data_size_t row = g * 32 + r;
-          if (row >= num_data) break;
-          const uint32_t v = (col[row >> 1] >> ((row & 1) * 4)) & 0xf;
-          any_wide |= v & 8u;
-          if (r < 24) {
-            w[r >> 3] |= v << (4 * (r & 7));
-          } else {
+      uint32_t scale = 1;
+      bool wide = false;
+      for (int r = 0; r < kRows; ++r) {
+        const data_size_t row = first + r;
+        if (q * kRows + r >= 128 || row >= num_data) break;
+        const uint32_t v = (col[row >> 1] >> ((row & 1) * 4)) & 0xf;
+        wide |= v >= kRadix;
+        if (CODEC == 6) {
+          w[0] += v * scale;
+          scale *= 6;
+        } else if (r < 24) {
+          w[r >> 3] |= v << (4 * (r & 7));
+        } else {
 #pragma unroll
-            for (int k = 0; k < 3; ++k) {
-              w[k] |= ((v >> k) & 1u) << (4 * (r - 24) + 3);
-            }
+          for (int k = 0; k < 3; ++k) {
+            w[k] |= ((v >> k) & 1u) << (4 * (r - 24) + 3);
           }
         }
       }
-      if (any_wide) {
-        atomicOr(column_wide + c, 1);
+      if (wide) {
+        atomicOr(column_wide + c, 1);  // a column holding a value the codec cannot: not served from the copy
       }
-      const size_t tile_word = static_cast<size_t>(g >> 2) * 12;
+      const size_t tile_word = static_cast<size_t>(tile) * (CODEC == 6 ? 11 : 12);
+      if (CODEC == 6) {
+        out[tile_word + q] = w[0];
+      } else {
 #pragma unroll
-      for (int k = 0; k < 3; ++k) {
-        out[tile_word + 4 * k + (g & 3)] = w[k];
+        for (int k = 0; k < 3; ++k) {
+          out[tile_word + 4 * k + q] = w[k];
+        }
       }
     }
   }
 }
 
-void LaunchEncodeColMajorDense3(const uint8_t* colmajor, size_t column_bytes, int num_columns, data_size_t num_data,
-                                uint32_t* dense, size_t pitch_words, int* column_wide) {
-  const data_size_t padded_groups = static_cast<data_size_t>(pitch_words / 3);
-  const int block = 256;
-  const int grid_x = static_cast<int>(std::min<data_size_t>((padded_groups + block - 1) / block, 4096));
-  const int grid_y = std::min(num_columns, 65535);
-  EncodeColMajorDense3Kernel<<<dim3(grid_x, grid_y), block>>>(colmajor, column_bytes, num_columns, num_data, dense,
-                                                               pitch_words, column_wide);
+// whether any nibble of the 4-bit store (num_bytes from a 16-byte aligned base; pad nibbles hold 0) is 6 or more
+__global__ void ColMajorAnyAtLeast6Kernel(const uint8_t* __restrict__ store, const size_t num_bytes,
+                                          int* __restrict__ found) {
+  const size_t num_vec = num_bytes / 16;
+  uint32_t hit = 0;
+  for (size_t v = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x; v < num_vec;
+       v += static_cast<size_t>(gridDim.x) * blockDim.x) {
+    const uint4 x = __ldg(reinterpret_cast<const uint4*>(store) + v);
+    const uint32_t w[4] = {x.x, x.y, x.z, x.w};
+#pragma unroll
+    for (int k = 0; k < 4; ++k) {
+      // a nibble is >= 6 iff bit 3 is set, or bits 2 and 1 both are
+      hit |= (w[k] & 0x88888888u) | ((w[k] & 0x44444444u) & ((w[k] & 0x22222222u) << 1));
+    }
+  }
+  for (size_t b = num_vec * 16 + static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x; b < num_bytes;
+       b += static_cast<size_t>(gridDim.x) * blockDim.x) {
+    const uint32_t x = store[b];
+    hit |= (x & 0x88u) | ((x & 0x44u) & ((x & 0x22u) << 1));
+  }
+  if (__syncthreads_or(hit != 0) && threadIdx.x == 0) {
+    atomicOr(found, 1);
+  }
+}
+
+void LaunchColMajorAnyAtLeast6(const uint8_t* store, size_t num_bytes, int* found) {
+  int device = 0;
+  int num_sms = 0;
+  CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
+  CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, device));
+  ColMajorAnyAtLeast6Kernel<<<4 * num_sms, 512>>>(store, num_bytes, found);
   CUDASUCCESS_OR_FATAL(cudaGetLastError());
 }
 
-// words per column of the 3-bit copy: 12 per 128-row tile
-size_t ColMajorDense3PitchWords(data_size_t num_data) {
+// words per column of the dense copy: 12 (codec 3) or 11 (codec 6) per 128-row tile
+size_t ColMajorDensePitchWords(data_size_t num_data, int codec) {
 #if !defined(__HIP_PLATFORM_AMD__)
-  static_assert(kFill4BitTiledRows == 128, "the 3-bit copy is laid out in the fill's 128-row tiles");
+  static_assert(kFill4BitTiledRows == 128, "the dense copy is laid out in the fill's 128-row tiles");
 #endif
-  return static_cast<size_t>((num_data + 127) / 128) * 12;
+  return static_cast<size_t>((num_data + 127) / 128) * (codec == 6 ? 11 : 12);
+}
+
+void LaunchEncodeColMajorDense(const uint8_t* colmajor, size_t column_bytes, int num_columns, data_size_t num_data,
+                               uint32_t* dense, size_t pitch_words, int codec, int* column_wide) {
+  const size_t items = pitch_words / (codec == 6 ? 1 : 3);
+  const int block = 256;
+  const int grid_x = static_cast<int>(std::min<size_t>((items + block - 1) / block, 4096));
+  const dim3 grid(grid_x, std::min(num_columns, 65535));
+  if (codec == 6) {
+    EncodeColMajorDenseKernel<6><<<grid, block>>>(colmajor, column_bytes, num_columns, num_data, dense, pitch_words,
+                                                  column_wide);
+  } else {
+    EncodeColMajorDenseKernel<3><<<grid, block>>>(colmajor, column_bytes, num_columns, num_data, dense, pitch_words,
+                                                  column_wide);
+  }
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
 }
 
 // colmajor_direct: with an odd row count the high nibble of each column's last byte lies past the last row.

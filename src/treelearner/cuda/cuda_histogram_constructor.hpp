@@ -1081,6 +1081,7 @@ class CUDAHistogramConstructor {
    *  its words per column, and per column whether it holds a value >= 8 (not servable from the copy) */
   CUDAVector<uint32_t> colmajor_dense3_;
   size_t colmajor_dense3_pitch_ = 0;
+  int colmajor_dense3_codec_ = 0;  // 3: 3 bits per row; 6: base 6, 12 rows per word
   std::vector<int> colmajor_dense3_wide_;
   /*! \brief the last ChooseViewRegime's reserve and split-view need, for the 3-bit copy's memory check */
   size_t view_reserve_bytes_ = 0;
