@@ -256,6 +256,24 @@ struct FalcataPlan {
   // floor scales by the partitions a block covers (a block carries all their
   // tables' zeroing and flush). Bit-identical (integer sums).
   bool pair_hist_rows = true;       // key: pair_hist_rows
+  // pair_hist_rows block height: as many rows as keep the block's warps within
+  // what one SM's register file holds for the pair-joint kernel (it runs one
+  // block per SM), instead of the per-partition kernel's 504-thread rows
+  // (Numerai v5.3's 178-byte row: 5 rows, 28 warps, instead of 4 rows, 23
+  // warps). Ties keep the fewer rows. The grid is re-derived for that height
+  // by the same formula and packed-cell guard. Bit-identical (integer sums).
+  bool pair_block_rows = true;      // key: pair_block_rows
+  // pair_hist_rows blocks on a register-capped build of the pair-joint kernel
+  // (fewer rows in flight per thread), at the whole-row block height that
+  // keeps strictly more warps resident per SM than the default build by the
+  // occupancy API (registers and joint-table shared memory): two or three
+  // shorter blocks per SM instead of one, with the kernel's shared-memory
+  // carveout fitted to the resident blocks' tables (only where they need at
+  // most 64% of the SM's shared memory, so the gathers keep their L1). The
+  // grid is re-derived for that height by the same formula and packed-cell
+  // guard. Needs CUDA 12.4 (__maxnreg__). Bit-identical (same rows, integer
+  // sums).
+  bool pair_capped_rows = true;     // key: pair_capped_rows
   // pair_hist joint tables laid out with odd per-byte strides (an even span
   // product gets one pad cell), so the same cell of neighbouring threads' tables
   // falls in distinct shared-memory banks. Bit-identical (layout only).
@@ -397,6 +415,8 @@ struct FalcataPlan {
     if (key == "per_pair_rows") return &per_pair_rows;
     if (key == "compact_row_interleave") return &compact_row_interleave;
     if (key == "pair_hist_rows") return &pair_hist_rows;
+    if (key == "pair_block_rows") return &pair_block_rows;
+    if (key == "pair_capped_rows") return &pair_capped_rows;
     if (key == "pair_pad") return &pair_pad;
     if (key == "level_row_blocks") return &level_row_blocks;
     if (key == "all_rows_direct") return &all_rows_direct;
