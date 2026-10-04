@@ -350,7 +350,13 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
   const int32_t* grad_and_hess,
   bool hist_16bit,
   hist_t* root_hist_scratch,
-  size_t root_hist_scratch_bytes);
+  size_t root_hist_scratch_bytes,
+  const uint32_t* dense_data,
+  size_t dense_column_nibbles,
+  size_t dense_pitch_words);
+void LaunchEncodeColMajorDense3(const uint8_t* colmajor, size_t column_bytes, int num_columns, data_size_t num_data,
+                                uint32_t* dense, size_t pitch_words, int* column_wide);
+size_t ColMajorDense3PitchWords(data_size_t num_data);
 
 // The tiled 4-bit fill needs a column-major source (stride-1 nibble runs with even bases) and every partition laid
 // out as a run of W consecutive byte slots whose destination bytes are contiguous with stride W.
@@ -1042,6 +1048,24 @@ void CUDAHistogramConstructor::LaunchCompactFill(
           word_prefetch = bs_src_nib0_h[i] % colmajor_pad_ == 0 &&
                           (bs_src_nib1_h[i] == ~static_cast<size_t>(0) || bs_src_nib1_h[i] % colmajor_pad_ == 0);
         }
+        // cuda_plan key colmajor_dense3: the fill reads the 3-bit copy of the store when every slot's columns
+        // start on a column of the store and hold only values below 8
+        const uint32_t* dense3 = nullptr;
+        if (FalcataPlan::Get().colmajor_dense3 && colmajor_dense3_.Size() > 0 && colmajor_pad_ > 0) {
+          bool dense_ok = true;
+          auto narrow_column = [&](size_t nib) {
+            if (nib % colmajor_pad_ != 0) return false;
+            const size_t c = nib / colmajor_pad_;
+            return c < colmajor_dense3_wide_.size() && colmajor_dense3_wide_[c] == 0;
+          };
+          for (int i = 0; dense_ok && i < total_byte_slots; ++i) {
+            dense_ok = narrow_column(bs_src_nib0_h[i]) &&
+                       (bs_src_nib1_h[i] == ~static_cast<size_t>(0) || narrow_column(bs_src_nib1_h[i]));
+          }
+          if (dense_ok) {
+            dense3 = colmajor_dense3_.RawDataReadOnly();
+          }
+        }
         if (fused_root_scratch_.Size() < static_cast<size_t>(num_total_bin_)) {
           fused_root_scratch_.Resize(static_cast<size_t>(num_total_bin_));
         }
@@ -1073,7 +1097,8 @@ void CUDAHistogramConstructor::LaunchCompactFill(
           reinterpret_cast<const int32_t*>(cuda_gradients_),
           fused_root_request_16bit_,
           fused_root_scratch_.RawData(),
-          static_cast<size_t>(num_total_bin_) * sizeof(hist_t));
+          static_cast<size_t>(num_total_bin_) * sizeof(hist_t),
+          dense3, colmajor_pad_, colmajor_dense3_pitch_);
         fused_root_ready_ = fused_root;
         fused_root_bits16_ = fused_root_request_16bit_;
       }
@@ -1291,6 +1316,7 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   // learner chooses the regime and its view is built from the Dataset's columns (ChooseViewRegime) at the end of its
   // Init; otherwise the tree learner calls InitColMajorFill before its second tree.
   colmajor_bin_.Clear();
+  ClearColMajorDense3();
   colmajor_pad_ = 0;
   full_view_.Clear();
   colmajor_direct_ = cuda_row_data_->dense_4bit_columns_only();
@@ -1378,7 +1404,61 @@ CUDAHistogramConstructor::CompactRegimeBytes CUDAHistogramConstructor::CompactRe
 }
 
 size_t CUDAHistogramConstructor::HeldViewBytes() const {
-  return colmajor_bin_.Size() + full_view_.Size() + compact_data_uint8_t_.Size() + compact_data_uint8_t_alt_.Size();
+  return colmajor_bin_.Size() + full_view_.Size() + compact_data_uint8_t_.Size() + compact_data_uint8_t_alt_.Size() +
+         colmajor_dense3_.Size() * sizeof(uint32_t);
+}
+
+void CUDAHistogramConstructor::ClearColMajorDense3() {
+  colmajor_dense3_.Clear();
+  colmajor_dense3_pitch_ = 0;
+  colmajor_dense3_wide_.clear();
+}
+
+// cuda_plan key colmajor_dense3: the store's 3-bit copy (3 words per 32 rows instead of 4), read by the fused fill
+// only. The fill reads the store once per tree, so the denser copy cuts its source bytes by a quarter for one ALU
+// decode per 32 rows; the per-level split reads and the compact view (the construct's hot path) keep the nibbles.
+// Built when it fits next to the compact regime's views and the tree learner's reserve; else the fill reads the
+// 4-bit store as before. Same nibbles staged: bit-identical.
+void CUDAHistogramConstructor::MaybeBuildColMajorDense3() {
+  ClearColMajorDense3();
+  if (!FalcataPlan::Get().colmajor_dense3 || !use_quantized_grad_ || !FalcataPlan::Get().fused_root_hist ||
+      colmajor_pad_ == 0 || view_mask_) {
+    return;
+  }
+  const int num_columns = cuda_row_data_->host_feature_partition_column_index_offsets().back();
+  const size_t pitch = ColMajorDense3PitchWords(num_data_);
+  const size_t bytes = static_cast<size_t>(num_columns) * pitch * sizeof(uint32_t);
+  const CompactRegimeBytes need = CompactRegimeNeed(view_one_byte_split_view_);
+  size_t free_b = 0, total_b = 0;
+  CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_b, &total_b));
+  const int64_t cap_mib = FalcataDebug().vramfree_mib;
+  if (cap_mib >= 0) {
+    free_b = std::min(free_b, static_cast<size_t>(cap_mib) << 20);
+  }
+  // the compact view and the split view are not allocated yet on entering the regime
+  if (bytes + need.view + need.column_view + view_reserve_bytes_ > free_b) {
+    LogDirectView("colmajor_dense3: the 3-bit copy (%zu MiB) does not fit (%zu MiB free)", ToMiB(bytes),
+                  free_b / kMiB);
+    return;
+  }
+  if (!colmajor_dense3_.TryResizeDiscard(bytes / sizeof(uint32_t))) {
+    colmajor_dense3_.Clear();
+    return;
+  }
+  CUDAVector<int> wide(static_cast<size_t>(num_columns));
+  SetCUDAMemory<int>(wide.RawData(), 0, static_cast<size_t>(num_columns), __FILE__, __LINE__);
+  LaunchEncodeColMajorDense3(colmajor_bin_.RawDataReadOnly(), colmajor_pad_ / 2, num_columns, num_data_,
+                             colmajor_dense3_.RawData(), pitch, wide.RawData());
+  colmajor_dense3_wide_.resize(static_cast<size_t>(num_columns));
+  CopyFromCUDADeviceToHost<int>(colmajor_dense3_wide_.data(), wide.RawDataReadOnly(), static_cast<size_t>(num_columns),
+                                __FILE__, __LINE__);
+  colmajor_dense3_pitch_ = pitch;
+  const size_t narrow = static_cast<size_t>(std::count(colmajor_dense3_wide_.begin(), colmajor_dense3_wide_.end(), 0));
+  if (narrow == 0) {
+    ClearColMajorDense3();
+  }
+  LogDirectView("colmajor_dense3: 3-bit copy of the store for the fill, %zu of %d columns below 8 (%zu MiB)", narrow,
+                num_columns, ToMiB(bytes));
 }
 
 void CUDAHistogramConstructor::ChooseViewRegime(const size_t reserve_bytes, const bool one_byte_split_view,
@@ -1400,6 +1480,8 @@ void CUDAHistogramConstructor::ChooseViewRegime(const size_t reserve_bytes, cons
   }
   const size_t available = free_b + HeldViewBytes();
   compact_fits_ = need.total() + reserve_bytes <= available;
+  view_reserve_bytes_ = reserve_bytes;  // for the 3-bit copy (MaybeBuildColMajorDense3)
+  view_one_byte_split_view_ = one_byte_split_view;
   LogDirectView("colmajor_direct: the compact regime needs store %zu + compact view %zu + split view %zu + reserve %zu "
                 "MiB, %zu MiB available", ToMiB(need.store), ToMiB(need.view), ToMiB(need.column_view),
                 ToMiB(reserve_bytes), available / kMiB);
@@ -1463,6 +1545,7 @@ void CUDAHistogramConstructor::EnterCompactRegime(const char* why) {
   view_mask_ = false;
   const size_t view_bytes = full_view_.Size();
   full_view_.Clear();
+  ClearColMajorDense3();
   const int num_columns = cuda_row_data_->host_feature_partition_column_index_offsets().back();
   const size_t column_bytes = cuda_row_data_->colmajor_column_bytes();
   const size_t bytes = static_cast<size_t>(num_columns) * column_bytes;
@@ -1481,6 +1564,7 @@ void CUDAHistogramConstructor::EnterCompactRegime(const char* why) {
                 "column-major store built from the Dataset's columns, %d columns (%zu MiB); no row-major matrix on "
                 "the device%s", why, feature_fraction_, ViewModeName(), FalcataPlan::Get().view_mask_ff, num_columns,
                 ToMiB(bytes), view_bytes > 0 ? "; full view released" : "");
+  MaybeBuildColMajorDense3();
 }
 
 void CUDAHistogramConstructor::EnterMaskRegime(const char* why) {
@@ -1488,6 +1572,7 @@ void CUDAHistogramConstructor::EnterMaskRegime(const char* why) {
   view_mask_ = true;
   const size_t store_bytes = colmajor_bin_.Size();
   colmajor_bin_.Clear();
+  ClearColMajorDense3();
   colmajor_pad_ = 0;
   // no tree builds a compact view in this regime: its buffers go too
   compact_data_uint8_t_.Clear();
@@ -1951,6 +2036,7 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   // read the old store.
   InvalidateCompactPrefill();
   colmajor_bin_.Clear();
+  ClearColMajorDense3();
   colmajor_pad_ = 0;
   full_view_.Clear();
   colmajor_direct_ = false;

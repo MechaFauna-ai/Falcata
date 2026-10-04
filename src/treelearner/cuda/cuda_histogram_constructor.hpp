@@ -1077,6 +1077,16 @@ class CUDAHistogramConstructor {
    *  Fill metadata for it is stride-1 with base col*colmajor_pad_. */
   CUDAVector<uint8_t> colmajor_bin_;
   size_t colmajor_pad_ = 0;
+  /*! \brief cuda_plan key colmajor_dense3: 3-bit copy of colmajor_bin_ read by the fused fill (empty = none),
+   *  its words per column, and per column whether it holds a value >= 8 (not servable from the copy) */
+  CUDAVector<uint32_t> colmajor_dense3_;
+  size_t colmajor_dense3_pitch_ = 0;
+  std::vector<int> colmajor_dense3_wide_;
+  /*! \brief the last ChooseViewRegime's reserve and split-view need, for the 3-bit copy's memory check */
+  size_t view_reserve_bytes_ = 0;
+  bool view_one_byte_split_view_ = false;
+  void MaybeBuildColMajorDense3();
+  void ClearColMajorDense3();
   /*! \brief colmajor_direct engaged: the row data has no row-major matrix; colmajor_bin_ (compact regime) or
    *  full_view_ (mask regime) is the one device copy of the bin matrix, built from the Dataset's columns */
   bool colmajor_direct_ = false;
