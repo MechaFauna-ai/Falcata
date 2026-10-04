@@ -2300,6 +2300,16 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
         hybrid_map_residual_leaves_.push_back(leaf);
       }
     }
+    // cuda_plan key early_leaf_map: the residual leaves' windows (in the main index array the apply kernels above
+    // finalize, ordered before this default-stream launch) and their leaf indices are final now, and nothing up
+    // to the tree end writes the map or those windows, so the map pass goes out here and runs while the host
+    // reads the level back and finalizes the tree, instead of after those readbacks
+    hybrid_map_early_written_ = false;
+    if (FalcataPlan::Get().early_leaf_map && AsyncTreeStart()) {
+      cuda_data_partition_->MaterializeHybridLeafMapSubset(hybrid_map_residual_leaves_);
+      hybrid_map_early_written_ = true;
+      hybrid_map_early_num_leaves_ = tree->num_leaves();
+    }
   }
 }
 
@@ -4250,12 +4260,17 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     // When the final level's split-inner already wrote the map inline
     // (final_partial_level), only earlier-finalized leaves remain.
     if (hybrid_map_final_written_) {
-      cuda_data_partition_->MaterializeHybridLeafMapSubset(hybrid_map_residual_leaves_);
+      // cuda_plan key early_leaf_map: already written with the final level, unless the leaf-wise tail split since
+      // (its classic splits wrote their rows inline; the pass then runs here as without the key)
+      if (!hybrid_map_early_written_ || tree->num_leaves() != hybrid_map_early_num_leaves_) {
+        cuda_data_partition_->MaterializeHybridLeafMapSubset(hybrid_map_residual_leaves_);
+      }
     } else {
       cuda_data_partition_->MaterializeHybridLeafMap(tree->num_leaves());
     }
   }
   hybrid_map_final_written_ = false;
+  hybrid_map_early_written_ = false;
   if (config_->use_quantized_grad && config_->quant_train_renew_leaf &&
       nccl_communicator_ != nullptr) {
     static bool warned_renew = false;

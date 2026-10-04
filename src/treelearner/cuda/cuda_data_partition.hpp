@@ -13,6 +13,7 @@
 #include <Falcata/meta.h>
 #include <Falcata/tree.h>
 
+#include <utility>
 #include <vector>
 
 #include <Falcata/cuda/cuda_column_data.hpp>
@@ -290,8 +291,14 @@ class CUDADataPartition: public NCCLInfo {
 
   /*! \brief current main / out index buffers, written into the loop state
    *  before every graph launch (the controller swaps them per level) */
-  data_size_t* hybrid_graph_main_indices() { return cuda_data_indices_.RawData(); }
-  data_size_t* hybrid_graph_out_indices() { return cuda_out_data_indices_in_leaf_.RawData(); }
+  data_size_t* hybrid_graph_main_indices() {
+    level_shared_gaps_valid_ = false;  // a writer outside the batched level apply
+    return cuda_data_indices_.RawData();
+  }
+  data_size_t* hybrid_graph_out_indices() {
+    level_shared_gaps_valid_ = false;
+    return cuda_out_data_indices_in_leaf_.RawData();
+  }
 
   /*! \brief graphs L1 host bookkeeping after a graph prefix: accounts the
    *  applied splits and realigns the host index-buffer wrappers with the
@@ -654,6 +661,14 @@ class CUDADataPartition: public NCCLInfo {
   CUDAVector<data_size_t> cuda_block_data_to_right_offset_;
   /*! \brief buffer for splitting data indices, will be copied back to cuda_data_indices_ after split */
   CUDAVector<data_size_t> cuda_out_data_indices_in_leaf_;
+  /*! \brief cuda_plan key gap_copy_once: the last batched level's gap ranges (start, num), sorted, which both index
+   *  buffers hold identically; valid only while nothing else has written either buffer since that level */
+  std::vector<std::pair<data_size_t, data_size_t>> level_shared_gaps_;
+  bool level_shared_gaps_valid_ = false;
+  /*! \brief threads per block of the host-launched gap copy (cuda_plan key leaf_map_small_blocks) */
+  static int GapCopyBlockDim() {
+    return FalcataPlan::Get().leaf_map_small_blocks ? 256 : SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+  }
   /*! \brief device copy of one level's batched apply descriptors */
   CUDAVector<CUDAHybridApplyDescriptor> cuda_apply_descs_;
   /*! \brief per-level INNER-bitset arena for batched categorical applies:

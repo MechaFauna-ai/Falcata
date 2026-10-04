@@ -640,6 +640,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
    *  budget does not bind and every child sits at max_depth; set by the level prefix when it ended on such a level */
   bool level_completes_tree_ = false;
   bool prefix_completes_tree_ = false;
+  /*! \brief cuda_plan key early_leaf_map: the residual leaves' map pass was launched with the final level, when
+   *  the tree had hybrid_map_early_num_leaves_ leaves (a leaf-wise tail split after it re-runs the pass) */
+  bool hybrid_map_early_written_ = false;
+  int hybrid_map_early_num_leaves_ = 0;
   // hybrid growth: single-sync (speculative) level pipeline
   // (FALCATA_HYBRID_ONE_SYNC, default on; "0" keeps the classic two-sync flow)
   bool use_hybrid_one_sync_ = false;

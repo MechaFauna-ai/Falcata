@@ -357,6 +357,25 @@ struct FalcataPlan {
   // every other leaf's candidate was already invalid (otherwise it would have been a candidate of that level), so
   // the search can only report no split. Same tree: bit-identical.
   bool skip_empty_tail = true;      // key: skip_empty_tail
+  // batched level apply: the out index buffer becomes the main one after each level, so every leaf not split at a
+  // level (a gap of the split regions) has its index range carried from the old main into the out buffer. After
+  // that copy both buffers hold the level's gap ranges, and at the next level the out buffer is that old main,
+  // untouched there: only the parts of the gaps that were not gaps of the previous batched level (ranges that
+  // became terminal now) are copied; the rest already holds the same indices. Tracked on the host, valid only
+  // between consecutive batched levels of one tree (every other writer of either buffer resets it). Same values in
+  // the same buffers: bit-identical. (Port of c043.)
+  bool gap_copy_once = true;        // key: gap_copy_once
+  // the host-launched tree-end row -> leaf map pass (MaterializeLeafMap*, 64 blocks per leaf as before) and the
+  // batched level apply's gap copy (blocks per gap from its rows) use 256-thread blocks instead of 1024-thread ones:
+  // a deep tree's leaves and gaps hold a few thousand rows each, so most of a 1024-thread block had no row while it
+  // held a whole SM. Same rows, each written once with the same value: bit-identical. (Port of c043.)
+  bool leaf_map_small_blocks = true;  // key: leaf_map_small_blocks
+  // final batched level (every child at max_depth): the row -> leaf map pass over the leaves NOT split at that level
+  // is launched right after the level's apply kernels instead of after the tree end's readbacks and leaf-wise tail
+  // check: its inputs (those leaves' index windows and the leaf list) are final then, and nothing between writes the
+  // map or those windows, so the GPU writes the map while the host finalizes the tree. If the leaf-wise tail still
+  // splits after it, the tree end writes the whole map again as before. Same kernel, same values: bit-identical.
+  bool early_leaf_map = true;       // key: early_leaf_map
   // runtime tier-1 tuner: bandit over the batched-construct saturation floor,
   // timed per tree; quantized training only (integer hists keep results
   // schedule-invariant, so retuning cannot change the model). The probe phase
@@ -460,6 +479,9 @@ struct FalcataPlan {
     if (key == "colmajor_split") return &colmajor_split;
     if (key == "skip_unsplittable") return &skip_unsplittable;
     if (key == "skip_empty_tail") return &skip_empty_tail;
+    if (key == "gap_copy_once") return &gap_copy_once;
+    if (key == "leaf_map_small_blocks") return &leaf_map_small_blocks;
+    if (key == "early_leaf_map") return &early_leaf_map;
     if (key == "tuner") return &tuner;
     if (key == "wide_partitions") return &wide_partitions;
     return nullptr;
