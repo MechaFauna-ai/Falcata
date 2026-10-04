@@ -7,10 +7,12 @@ set -euo pipefail
 
 VENV="${GATES_VENV:-.gates-venv}"
 
-# Pin the validated CUDA toolchain (12.9): the box has several toolkits and
+# Pin the validated CUDA toolchain (13.3): the box has several toolkits and
 # the runner's service environment has none of them on PATH. /usr/local/cuda
-# may point at a newer, unvalidated toolkit -- do not use it.
-CUDA_HOME="${FALCATA_CUDA_HOME:-/usr/local/cuda-12.9}"
+# may point at a different, unvalidated toolkit -- do not use it. 12.9 does not
+# compile against this box's glibc (its math headers clash on cospi/sinpi) or
+# with gcc 15; 13.3 builds, and the lattice and canonical locks match under it.
+CUDA_HOME="${FALCATA_CUDA_HOME:-/usr/local/cuda-13.3}"
 export PATH="$CUDA_HOME/bin:$PATH"
 export CUDACXX="$CUDA_HOME/bin/nvcc"
 
