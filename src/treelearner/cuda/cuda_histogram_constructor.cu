@@ -503,7 +503,8 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
   hist_t* __restrict__ root_hist_scratch,
   const uint32_t* __restrict__ dense_data,
   const size_t dense_column_nibbles,
-  const size_t dense_pitch_words) {
+  const size_t dense_pitch_words,
+  const bool dense_l2_lead) {
   extern __shared__ __align__(16) unsigned char fill_smem[];
   size_t* s_nib0 = reinterpret_cast<size_t*>(fill_smem);
   size_t* s_nib1 = s_nib0 + num_slots;
@@ -731,6 +732,18 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
     __syncthreads();
     if (DENSE3 && step + 1 < tiles_per_block && tile_index + tile_step < num_tiles) {
       load_dense(tile_index + tile_step);
+      // cuda_plan key colmajor_dense3_l2: the tile after next into L2 (its 48 bytes per column span two sectors)
+      if (dense_l2_lead && step + 2 < tiles_per_block && tile_index + 2 * tile_step < num_tiles) {
+        const size_t lead_word = static_cast<size_t>(tile_index + 2 * tile_step) * 12;
+        for (int t = tid; t < num_slots * 4; t += kFusedRootThreads) {
+          const int i = t >> 2;
+          const size_t col = (t & 2) ? s_nib1[i] : s_nib0[i];
+          if (col != kNoCol) {
+            const uint32_t* p = dense_data + col + lead_word + ((t & 1) ? 11 : 0);
+            asm volatile("prefetch.global.L2 [%0];" :: "l"(p));
+          }
+        }
+      }
     }
     if (!DENSE3 && word_prefetch && step + 1 < tiles_per_block && tile_index + tile_step < num_tiles) {
       load_words(tile_index + tile_step);
@@ -887,7 +900,7 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
       src_data, compact_data, bs_src_nib0, bs_src_nib1, bs_dst_byte, bs_dst_stride, total_byte_slots, num_data, \
       slot_first_bin, local_bin_hist_pos, num_local_bins, SM ? slot_major_span : 0, tiles_per_block, strided_tiles, \
       run_copy, word_prefetch, grad_and_hess, hist_16bit, root_hist_scratch, dense_data, dense_column_nibbles, \
-      dense_pitch_words)
+      dense_pitch_words, FalcataPlan::Get().colmajor_dense3_l2)
   // cuda_plan key colmajor_dense3: the host passes the 3-bit copy only where every slot's columns are in it
   const bool dense3 = dense_data != nullptr;
   if (slot_major) {

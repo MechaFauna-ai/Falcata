@@ -294,6 +294,8 @@ struct FalcataPlan {
   // sampled column holds only values below 8. The split reads and the compact view keep the 4-bit layout. Same
   // nibbles staged: bit-identical.
   bool colmajor_dense3 = true;      // key: colmajor_dense3
+  // colmajor_dense3's fill also prefetches the tile after next of every sampled column into L2
+  bool colmajor_dense3_l2 = true;   // key: colmajor_dense3_l2
   // pair_hist joint tables laid out with odd per-byte strides (an even span
   // product gets one pad cell), so the same cell of neighbouring threads' tables
   // falls in distinct shared-memory banks. Bit-identical (layout only).
@@ -439,6 +441,7 @@ struct FalcataPlan {
     if (key == "pair_capped_rows") return &pair_capped_rows;
     if (key == "async_tree_start") return &async_tree_start;
     if (key == "colmajor_dense3") return &colmajor_dense3;
+    if (key == "colmajor_dense3_l2") return &colmajor_dense3_l2;
     if (key == "pair_pad") return &pair_pad;
     if (key == "level_row_blocks") return &level_row_blocks;
     if (key == "all_rows_direct") return &all_rows_direct;
