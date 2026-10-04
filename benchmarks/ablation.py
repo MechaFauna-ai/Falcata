@@ -62,6 +62,14 @@ ALL_KEYS = {
     "colmajor_direct": True,
     "warp_find": True,
     "row_batch": True,
+    "pair_block_rows": True,
+    "pair_capped_rows": True,
+    "async_tree_start": True,
+    "skip_unsplittable": True,
+    "skip_empty_tail": True,
+    "early_leaf_map": True,
+    "gap_copy_once": True,
+    "leaf_map_small_blocks": True,
 }
 
 #: growth-strategy keys: changing them changes WHICH tree is built (legit),
@@ -97,6 +105,10 @@ DEEP_KEYS = [
     "warp_find",
     # at this cell's 300 rounds the off flip re-enables the JIT (master's long-run behaviour)
     "row_batch",
+    "pair_capped_rows",
+    "async_tree_start",
+    "skip_unsplittable",
+    "gap_copy_once",
 ]
 
 BASE = {

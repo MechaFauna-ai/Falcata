@@ -198,6 +198,12 @@ def build_cells():
         ("fewbin", "row_batch", {}, {"cuda_plan": "auto,row_batch:off"}),
         ("int8wide", "rowdata_4bit", {}, {"cuda_plan": "auto,rowdata_4bit:off"}),
         ("int8wide", "fast_rowdata", {}, {"cuda_plan": "auto,fast_rowdata:off"}),
+        # async_tree_start: the host-launched quantized flow with and without a compact view
+        ("dense", "async_tree_start", {}, {"cuda_plan": "auto,async_tree_start:off"}),
+        ("sampled", "async_tree_start", {}, {"cuda_plan": "auto,async_tree_start:off"}),
+        ("sampledwide", "async_tree_start", {}, {"cuda_plan": "auto,async_tree_start:off"}),
+        ("int8wide", "async_tree_start", {}, {"cuda_plan": "auto,async_tree_start:off"}),
+        ("dense", "leaf_map_small_blocks", {}, {"cuda_plan": "auto,leaf_map_small_blocks:off"}),
     ]
     for profile, key, base_params, flip_params in flips:
         base_id = f"{profile}/quant" if not base_params else f"{profile}/flipbase-{key}"
@@ -413,6 +419,92 @@ def build_cells():
         "missing-mfb0-wide/nonquant",
         "missing-mfb0-wide",
         {"quant_mode": "none", "num_leaves": 255, "max_depth": 12, "min_data_in_leaf": 5},
+    )
+
+    # --- tree boundary, level pruning, level apply bookkeeping --------------- #
+    # A full tree: num_leaves = 2^max_depth, so the leaf budget never binds and the level prefix ends on a complete
+    # final level (skip_empty_tail skips the tail search, early_leaf_map writes the residual leaf map with that
+    # level); min_data_in_leaf 40 leaves 40-80-row leaves that cannot split before it (skip_unsplittable) and
+    # terminal index ranges that later levels used to copy again (gap_copy_once). The sampled profile's compact view
+    # takes the pair-joint construct (one partition: not the whole-row launch the pair_* keys reshape, see ff15
+    # below). Each key off, and all eight off, must train the same model.
+    full = {"num_leaves": 64, "max_depth": 6, "min_data_in_leaf": 40}
+    night2_keys = [
+        "pair_block_rows",
+        "pair_capped_rows",
+        "async_tree_start",
+        "skip_unsplittable",
+        "skip_empty_tail",
+        "early_leaf_map",
+        "gap_copy_once",
+        "leaf_map_small_blocks",
+    ]
+    for profile in ["sampled", "dense"]:
+        cell(f"{profile}/quant-fulltree", profile, full)
+        for key in night2_keys:
+            cell(
+                f"{profile}/flip-{key}-fulltree",
+                profile,
+                {**full, "cuda_plan": f"auto,{key}:off"},
+                equal_to=f"{profile}/quant-fulltree",
+            )
+        cell(
+            f"{profile}/flip-night2-fulltree",
+            profile,
+            {**full, "cuda_plan": "auto," + ",".join(f"{k}:off" for k in night2_keys)},
+            equal_to=f"{profile}/quant-fulltree",
+        )
+    # whole-row pair-joint construct: sampledwide at feature_fraction 0.15 samples ~180 nibble columns over two
+    # partitions, a 90-byte interleaved row. The default build launches 3-row blocks; pair_block_rows takes 11 rows
+    # (more resident warps at 64 registers) and pair_capped_rows the 48-register build in 7-row blocks (nsys).
+    # (At the profiles' own feature fractions neither key changes the launch: those blocks already fill the SM.)
+    ff15 = {"feature_fraction": 0.15}
+    cell("sampledwide/quant-ff15", "sampledwide", ff15)
+    for name, plan in [
+        ("pair_capped_rows", "pair_capped_rows:off"),
+        ("pair_block_rows", "pair_block_rows:off"),
+        ("pair_both", "pair_block_rows:off,pair_capped_rows:off"),
+    ]:
+        cell(
+            f"sampledwide/flip-{name}-ff15",
+            "sampledwide",
+            {**ff15, "cuda_plan": f"auto,{plan}"},
+            equal_to="sampledwide/quant-ff15",
+        )
+    # deep trees over tiny leaves, the tiny-gradient regime's 500-row leaves (150 rounds), bagged multiclass, and the
+    # quantized graph prefix, which reads the root sums async_tree_start defers (the search's lattice caught it)
+    for key in ["skip_unsplittable", "gap_copy_once", "early_leaf_map"]:
+        cell(
+            f"dense/flip-{key}-deep",
+            "dense",
+            {"num_leaves": 255, "max_depth": 12, "min_data_in_leaf": 5, "cuda_plan": f"auto,{key}:off"},
+            equal_to="dense/quant-deep",
+        )
+    for key in ["skip_unsplittable", "gap_copy_once", "async_tree_start"]:
+        cell(
+            f"tinygrad/flip-{key}", "tinygrad", {"cuda_plan": f"auto,{key}:off"}, rounds=150, equal_to="tinygrad/quant"
+        )
+    cell(
+        "categorical-mc/flip-async_tree_start-bagged",
+        "categorical-mc",
+        {
+            "quant_mode": "fixedpoint",
+            "quant_bins": 16,
+            "bagging_fraction": 0.7,
+            "bagging_freq": 1,
+            "num_leaves": 255,
+            "max_depth": 10,
+            "min_data_in_leaf": 5,
+            "cuda_plan": "auto,async_tree_start:off",
+        },
+        rounds=50,
+        equal_to="categorical-mc/quant-bagged",
+    )
+    cell(
+        "graph/flip-async_tree_start-graph_quant",
+        "graph",
+        {"cuda_plan": "auto,graph_quant:on,async_tree_start:off"},
+        equal_to="graph/flipbase-graph_loop",
     )
 
     ids = [c["id"] for c in cells]
