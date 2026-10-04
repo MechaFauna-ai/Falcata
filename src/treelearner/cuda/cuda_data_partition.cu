@@ -2248,14 +2248,17 @@ void CUDADataPartition::MaterializeHybridLeafMapSubset(const std::vector<int>& l
   if (cuda_materialize_leaf_list_.Size() < leaves.size()) {
     cuda_materialize_leaf_list_.Resize(leaves.size());
   }
-  CopyFromHostToCUDADevice<int>(cuda_materialize_leaf_list_.RawData(), leaves.data(),
-                                leaves.size(), __FILE__, __LINE__);
+  UploadTreeStartMeta<int>(cuda_materialize_leaf_list_.RawData(), leaves.data(), leaves.size());
   dim3 grid(64, static_cast<unsigned int>(leaves.size()));
   MaterializeLeafMapSubsetKernel<<<grid, FILL_INDICES_BLOCK_SIZE_DATA_PARTITION>>>(
     cuda_data_indices_.RawData(), cuda_leaf_data_start_.RawData(),
     cuda_leaf_num_data_.RawData(), cuda_materialize_leaf_list_.RawData(),
     cuda_data_index_to_leaf_index_.RawData());
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  // cuda_plan key async_tree_start: the map's readers (score update, refit, linear trees) are later GPU work or
+  // synchronous copies, ordered behind this default-stream kernel
+  if (!AsyncTreeStart()) {
+    SynchronizeCUDADevice(__FILE__, __LINE__);
+  }
   global_timer.Stop("CUDADataPartition::MaterializeHybridLeafMap");
 }
 
@@ -2269,7 +2272,9 @@ void CUDADataPartition::MaterializeHybridLeafMap(const int num_leaves) {
   MaterializeLeafMapKernel<<<grid, FILL_INDICES_BLOCK_SIZE_DATA_PARTITION>>>(
     cuda_data_indices_.RawData(), cuda_leaf_data_start_.RawData(),
     cuda_leaf_num_data_.RawData(), cuda_data_index_to_leaf_index_.RawData());
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  if (!AsyncTreeStart()) {  // see MaterializeHybridLeafMapSubset
+    SynchronizeCUDADevice(__FILE__, __LINE__);
+  }
   global_timer.Stop("CUDADataPartition::MaterializeHybridLeafMap");
 }
 
@@ -2331,7 +2336,11 @@ void CUDADataPartition::LaunchAddPredictionToScoreKernel(const double* leaf_valu
     AddPredictionToScoreKernel<false><<<num_blocks, FILL_INDICES_BLOCK_SIZE_DATA_PARTITION>>>(
       cuda_data_indices_.RawData(), leaf_value, cuda_scores, cuda_data_index_to_leaf_index_.RawData(), num_data_in_root);
   }
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  // cuda_plan key async_tree_start: the score's consumers (the next gradients, any host copy) are stream-ordered
+  // behind this default-stream kernel, so the host need not wait for it
+  if (!AsyncTreeStart()) {
+    SynchronizeCUDADevice(__FILE__, __LINE__);
+  }
   global_timer.Stop("CUDADataPartition::AddPredictionToScoreKernel");
 }
 

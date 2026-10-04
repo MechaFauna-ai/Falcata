@@ -24,6 +24,24 @@
 
 namespace Falcata {
 
+// cuda_plan key async_tree_start: the tree start's KB-scale host -> device metadata uploads go on the default stream
+// the synchronous cudaMemcpy used, without the host wait for the device (cudaMemcpyAsync stages a pageable source
+// before it returns, so the host vector may be freed or reused at once; GPU order is unchanged). Not with
+// compact_prefill: its fill on a non-blocking stream shares the fill metadata and relies on the host order.
+inline bool AsyncTreeStart() {
+  return FalcataPlan::Get().async_tree_start && !FalcataPlan::Get().compact_prefill;
+}
+template <typename T>
+inline void UploadTreeStartMeta(T* device_dst, const T* host_src, const size_t count) {
+  if (AsyncTreeStart()) {
+    CopyFromHostToCUDADeviceAsync<T>(device_dst, host_src, count, 0, __FILE__, __LINE__);
+  } else {
+    CopyFromHostToCUDADevice<T>(device_dst, host_src, count, __FILE__, __LINE__);
+  }
+}
+
+
+
 /*! \brief kill switch for the wide-shape batched level support (many split-find
  *  tasks and/or compact-column-view histogram data): cuda_plan=auto,batch_wide:off
  *  restores the previous fallback to the per-pair kernels for those shapes */
@@ -94,7 +112,7 @@ class CUDALeafSplits: public NCCLInfo {
     const data_size_t* cuda_bagging_data_indices,
     const data_size_t* cuda_data_indices_in_leaf, const data_size_t num_used_indices,
     hist_t* cuda_hist_in_leaf, double* root_sum_gradients, double* root_sum_hessians,
-    const score_t* grad_scale, const score_t* hess_scale);
+    const score_t* grad_scale, const score_t* hess_scale, const bool defer_root_sum_readback = false);
 
   void InitValues();
 

@@ -123,10 +123,11 @@ void CUDADataPartition::BeforeTrain() {
     CopyFromCUDADeviceToCUDADevice<data_size_t>(cuda_leaf_num_data_.RawData(), cuda_num_data_.RawData(), 1, __FILE__, __LINE__);
     CopyFromCUDADeviceToCUDADevice<data_size_t>(cuda_leaf_data_end_.RawData(), cuda_num_data_.RawData(), 1, __FILE__, __LINE__);
   } else {
-    CopyFromHostToCUDADevice<data_size_t>(cuda_leaf_num_data_.RawData(), &num_used_indices_, 1, __FILE__, __LINE__);
-    CopyFromHostToCUDADevice<data_size_t>(cuda_leaf_data_end_.RawData(), &num_used_indices_, 1, __FILE__, __LINE__);
+    UploadTreeStartMeta<data_size_t>(cuda_leaf_num_data_.RawData(), &num_used_indices_, 1);
+    UploadTreeStartMeta<data_size_t>(cuda_leaf_data_end_.RawData(), &num_used_indices_, 1);
   }
-  CopyFromHostToCUDADevice<hist_t*>(cuda_hist_pool_.RawData(), &cuda_hist_, 1, __FILE__, __LINE__);
+  // cuda_plan key async_tree_start: no host wait for the index fill above
+  UploadTreeStartMeta<hist_t*>(cuda_hist_pool_.RawData(), &cuda_hist_, 1);
 }
 
 void CUDADataPartition::Split(
@@ -651,6 +652,10 @@ void CUDADataPartition::UpdateTrainScore(const Tree* tree, double* scores) {
                                            cuda_tree->leaf_value_dim(), scores);
   } else {
     LaunchAddPredictionToScoreKernel(cuda_tree->cuda_leaf_value(), scores);
+    if (cuda_tree_ptr != nullptr && AsyncTreeStart()) {
+      // the temporary device tree is freed on return: let the kernel finish reading its leaf values first
+      SynchronizeCUDADevice(__FILE__, __LINE__);
+    }
   }
 }
 

@@ -271,6 +271,23 @@ struct FalcataPlan {
   // height by the same formula and packed-cell guard. Bit-identical (same
   // rows, integer sums).
   bool pair_capped_rows = true;     // key: pair_capped_rows
+  // tree boundary without host waits the computation does not need: the
+  // tree start's KB-scale metadata (live compact fill, split slot tables,
+  // feature masks, used tasks, hist pool pointer) is uploaded with
+  // cudaMemcpyAsync on the default stream the synchronous cudaMemcpy used (a
+  // pageable source is staged before the call returns; stream order is
+  // unchanged); the host blocks neither on the live fill nor on the train-score
+  // update; the gradient discretizer does not synchronize the device between
+  // its default-stream kernels; and the quantized root-sum readback moves from
+  // InitValues to the level prefix's EnsureRootSumsReadBack (every other
+  // quantized flow reads them back before it starts); at the tree end the
+  // tree's host copy and exact leaf counts are read back before the leaf-map
+  // pass, which then runs without a host wait. The host samples columns and
+  // launches the fill while the GPU still discretizes, prepares the root level
+  // while the fill runs, and finalizes the tree while the leaf map is written. Off with compact_prefill (its non-blocking
+  // stream shares the fill metadata). Same kernels, same GPU order and inputs:
+  // bit-identical.
+  bool async_tree_start = true;     // key: async_tree_start
   // pair_hist joint tables laid out with odd per-byte strides (an even span
   // product gets one pad cell), so the same cell of neighbouring threads' tables
   // falls in distinct shared-memory banks. Bit-identical (layout only).
@@ -414,6 +431,7 @@ struct FalcataPlan {
     if (key == "pair_hist_rows") return &pair_hist_rows;
     if (key == "pair_block_rows") return &pair_block_rows;
     if (key == "pair_capped_rows") return &pair_capped_rows;
+    if (key == "async_tree_start") return &async_tree_start;
     if (key == "pair_pad") return &pair_pad;
     if (key == "level_row_blocks") return &level_row_blocks;
     if (key == "all_rows_direct") return &all_rows_direct;

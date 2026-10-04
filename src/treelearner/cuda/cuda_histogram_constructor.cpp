@@ -230,9 +230,8 @@ void CUDAHistogramConstructor::SetFeatureUsedBytree(const std::vector<int8_t>& i
   if (cuda_is_feature_used_bytree_.Size() != is_feature_used_bytree.size()) {
     cuda_is_feature_used_bytree_.Resize(is_feature_used_bytree.size());
   }
-  CopyFromHostToCUDADevice<int8_t>(cuda_is_feature_used_bytree_.RawData(),
-                                   is_feature_used_bytree.data(),
-                                   is_feature_used_bytree.size(), __FILE__, __LINE__);
+  UploadTreeStartMeta<int8_t>(cuda_is_feature_used_bytree_.RawData(), is_feature_used_bytree.data(),
+                              is_feature_used_bytree.size());
   // per-tree bin-level used mask for the batched fix/subtract/construct-merge
   // kernels: with feature_fraction sampling, ~ (1 - fraction) of every leaf
   // histogram belongs to features no kernel of this tree will ever read, so the
@@ -262,9 +261,8 @@ void CUDAHistogramConstructor::SetFeatureUsedBytree(const std::vector<int8_t>& i
     if (cuda_bin_used_bytree_.Size() < static_cast<size_t>(num_total_bin_)) {
       cuda_bin_used_bytree_.Resize(static_cast<size_t>(num_total_bin_));
     }
-    CopyFromHostToCUDADevice<uint8_t>(cuda_bin_used_bytree_.RawData(),
-                                      host_bin_used_bytree_.data(),
-                                      host_bin_used_bytree_.size(), __FILE__, __LINE__);
+    UploadTreeStartMeta<uint8_t>(cuda_bin_used_bytree_.RawData(), host_bin_used_bytree_.data(),
+                                 host_bin_used_bytree_.size());
   }
 }
 
@@ -589,9 +587,8 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
     if (layout.row_interleave) {
       device_packed_offsets[0] = -compact_packed_part_offsets[num_partitions];
     }
-    CopyFromHostToCUDADevice<int>(compact_packed_partition_byte_offsets_.RawData(),
-                                  device_packed_offsets.data(),
-                                  device_packed_offsets.size(), __FILE__, __LINE__);
+    UploadTreeStartMeta<int>(compact_packed_partition_byte_offsets_.RawData(), device_packed_offsets.data(),
+                             device_packed_offsets.size());
   }
 
   // Upload metadata.
@@ -606,9 +603,8 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
   if (compact_feature_partition_column_index_offsets_.Size() < compact_part_col_offsets.size()) {
     compact_feature_partition_column_index_offsets_.Resize(compact_part_col_offsets.size());
   }
-  CopyFromHostToCUDADevice<int>(compact_feature_partition_column_index_offsets_.RawData(),
-                                compact_part_col_offsets.data(),
-                                compact_part_col_offsets.size(), __FILE__, __LINE__);
+  UploadTreeStartMeta(compact_feature_partition_column_index_offsets_.RawData(), compact_part_col_offsets.data(),
+                      compact_part_col_offsets.size());
 
   // Nibble view: the same upload also carries the pair-joint construct layout
   // (cuda_plan key pair_hist) behind the T hist offsets: [T, 2T) each slot's
@@ -676,18 +672,15 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
   if (compact_column_hist_offsets_.Size() < compact_col_meta_h.size()) {
     compact_column_hist_offsets_.Resize(compact_col_meta_h.size());
   }
-  CopyFromHostToCUDADevice<uint32_t>(compact_column_hist_offsets_.RawData(),
-                                     compact_col_meta_h.data(),
-                                     compact_col_meta_h.size(), __FILE__, __LINE__);
+  UploadTreeStartMeta(compact_column_hist_offsets_.RawData(), compact_col_meta_h.data(), compact_col_meta_h.size());
 
   // Same partition_hist_offsets as the source (used for global hist write-back position per partition).
   const std::vector<uint32_t>& src_part_hist_offsets = cuda_row_data_->host_partition_hist_offsets();
   if (compact_partition_hist_offsets_.Size() < src_part_hist_offsets.size()) {
     compact_partition_hist_offsets_.Resize(src_part_hist_offsets.size());
   }
-  CopyFromHostToCUDADevice<uint32_t>(compact_partition_hist_offsets_.RawData(),
-                                     src_part_hist_offsets.data(),
-                                     src_part_hist_offsets.size(), __FILE__, __LINE__);
+  UploadTreeStartMeta(compact_partition_hist_offsets_.RawData(), src_part_hist_offsets.data(),
+                      src_part_hist_offsets.size());
 
   // When the source is host-pinned (zero-copy), the GPU fill kernel does
   // ~1-byte strided PCIe loads which are extremely inefficient (~1 GB/s effective).
@@ -768,7 +761,13 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
   } else {
     prefill_valid_ = false;
     LaunchCompactFill(layout, compact_data_uint8_t_.RawData(), cuda_stream_, /*async_meta=*/false);
-    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
+    // cuda_plan key async_tree_start: the host reads nothing the fill writes, so it goes on preparing the root
+    // level meanwhile. Every consumer is a later GPU operation: on this stream (construct, root apply), on the
+    // legacy default stream (uploads, readbacks, the column gather), which waits for this blocking stream, or on
+    // another blocking stream behind such a legacy operation (split kernels follow the best-split readback)
+    if (!AsyncTreeStart()) {
+      CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
+    }
   }
 
 
@@ -801,9 +800,17 @@ void CUDAHistogramConstructor::LaunchCompactFill(
   // synchronizing default stream and stall behind the current tree's kernels.
   auto upload = [&](void* device_dst, const void* host_src, size_t bytes, size_t* pin_off) {
     if (!async_meta) {
-      CopyFromHostToCUDADevice<uint8_t>(static_cast<uint8_t*>(device_dst),
-                                        static_cast<const uint8_t*>(host_src), bytes,
-                                        __FILE__, __LINE__);
+      if (AsyncTreeStart()) {
+        // cuda_plan key async_tree_start: the same default stream as cudaMemcpy, without the host wait (the
+        // pageable source is staged before the call returns, so host_src may go out of scope)
+        CopyFromHostToCUDADeviceAsync<uint8_t>(static_cast<uint8_t*>(device_dst),
+                                               static_cast<const uint8_t*>(host_src), bytes, 0,
+                                               __FILE__, __LINE__);
+      } else {
+        CopyFromHostToCUDADevice<uint8_t>(static_cast<uint8_t*>(device_dst),
+                                          static_cast<const uint8_t*>(host_src), bytes,
+                                          __FILE__, __LINE__);
+      }
       return;
     }
     if (*pin_off + bytes > prefill_pinned_bytes_) {

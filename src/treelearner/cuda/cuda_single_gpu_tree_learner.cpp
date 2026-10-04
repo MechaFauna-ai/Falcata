@@ -628,6 +628,12 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     }
     cuda_histogram_constructor_->BeforeTrain(
       reinterpret_cast<const score_t*>(cuda_gradient_discretizer_->discretized_gradients_and_hessians()), nullptr);
+    // cuda_plan key async_tree_start: the root sums are first needed by the level prefix
+    // (TrainLevelWisePrefix's EnsureRootSumsReadBack; Train reads them back itself before any other flow), so
+    // the synchronous readback -- which waits for the histogram zeroing and the root sum kernels -- moves behind
+    // the column sample, the metadata uploads and the fill launch instead of holding them back
+    root_sums_deferred_ = AsyncTreeStart() && vec_num_targets_ <= 1 && nccl_communicator_ == nullptr &&
+                          fp_merge_state_ == nullptr && HybridGrowthUsable() && !UseSelectiveGrowth();
     cuda_smaller_leaf_splits_->InitValues(
       config_->lambda_l1,
       config_->lambda_l2,
@@ -640,7 +646,8 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
       &leaf_sum_gradients_[0],
       &leaf_sum_hessians_[0],
       cuda_gradient_discretizer_->grad_scale_ptr(),
-      cuda_gradient_discretizer_->hess_scale_ptr());
+      cuda_gradient_discretizer_->hess_scale_ptr(),
+      root_sums_deferred_);
       cuda_gradient_discretizer_->SetNumBitsInHistogramBin<false>(0, -1, root_num_data, 0);
       if (nccl_communicator_ != nullptr) {
         cuda_gradient_discretizer_->SetNumBitsInHistogramBin<true>(0, -1, global_num_data_, 0);
@@ -957,12 +964,10 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
     cuda_slot_p_stride_.Resize(num_compact_cols);
     cuda_slot_col_in_p_.Resize(num_compact_cols);
   }
-  CopyFromHostToCUDADevice<size_t>(cuda_slot_p_byte_.RawData(), slot_p_byte_h.data(),
-                                   num_compact_cols, __FILE__, __LINE__);
-  CopyFromHostToCUDADevice<int>(cuda_slot_p_stride_.RawData(), slot_p_stride_h.data(),
-                                num_compact_cols, __FILE__, __LINE__);
-  CopyFromHostToCUDADevice<int>(cuda_slot_col_in_p_.RawData(), slot_col_in_p_h.data(),
-                                num_compact_cols, __FILE__, __LINE__);
+  // cuda_plan key async_tree_start: no host wait (the live fill may still be running)
+  UploadTreeStartMeta<size_t>(cuda_slot_p_byte_.RawData(), slot_p_byte_h.data(), num_compact_cols);
+  UploadTreeStartMeta<int>(cuda_slot_p_stride_.RawData(), slot_p_stride_h.data(), num_compact_cols);
+  UploadTreeStartMeta<int>(cuda_slot_col_in_p_.RawData(), slot_col_in_p_h.data(), num_compact_cols);
 
   compact_packed_view_active_ = false;
   if (gather_src_is_4bit && PackedSplitReadUsable()) {
@@ -2434,6 +2439,9 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   if (config_->use_quantized_grad && use_hybrid_one_sync_ &&
       use_batched_level_kernels && use_batched_level_apply &&
       HybridGraphPrefixUsable()) {
+    // the quantized graph prefix reads the host root sums like the classic flow: a no-op unless BeforeTrain
+    // deferred them (async_tree_start)
+    EnsureRootSumsReadBack(tree);
     const int graph_splits = TrainLevelWisePrefixGraph(tree);
     if (graph_splits >= 0) {
       return graph_splits;
@@ -4046,6 +4054,11 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
         "config: 2^max_depth <= num_leaves + 1, no forced splits). "
         "Set quant_mode=none, adjust max_depth/num_leaves, or use num_gpu=1.");
   }
+  if (config_->use_quantized_grad && !(num_splits_done == 0 && HybridGrowthUsable() && !UseSelectiveGrowth())) {
+    // every quantized flow but the level prefix reads the root sums on the host: a no-op unless BeforeTrain
+    // deferred them (async_tree_start; TrainLevelWisePrefix reads them back itself)
+    EnsureRootSumsReadBack(tree.get());
+  }
   if (num_splits_done == 0 && HybridGrowthUsable()) {
     if (UseSelectiveGrowth()) {
       // budget-limited exact grow-then-prune: builds the COMPLETE tree
@@ -4178,6 +4191,24 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     global_timer.Stop("CUDASingleGPUTreeLearner::Split");
   }
   SynchronizeCUDADevice(__FILE__, __LINE__);
+  // The counts the split finder recorded are estimates (see below): the data partition's exact per-leaf counts
+  const auto sync_node_counts = [&]() {
+    if (nccl_communicator_ == nullptr && tree->num_leaves() > 0) {
+      std::vector<data_size_t> leaf_num_data(static_cast<size_t>(tree->num_leaves()));
+      CopyFromCUDADeviceToHost<data_size_t>(leaf_num_data.data(),
+        cuda_data_partition_->cuda_leaf_num_data(), leaf_num_data.size(), __FILE__, __LINE__);
+      tree->SyncNodeCountsFromPartition(leaf_num_data);
+    }
+  };
+  // cuda_plan key async_tree_start: the tree's host copy and the exact counts read nothing the leaf-map pass
+  // writes, so they are read back first and the pass runs while the host finalizes the tree (the readbacks
+  // would otherwise wait for it); not with leaf renewal or linear trees, which use the map before the copy
+  const bool early_to_host = AsyncTreeStart() && batched_apply_ran && !selective_handled &&
+    !(config_->use_quantized_grad && config_->quant_train_renew_leaf) && !config_->linear_tree;
+  if (early_to_host) {
+    tree->ToHost();
+    sync_node_counts();
+  }
   if (batched_apply_ran) {
     // the batched apply defers the per-level row -> leaf map scatter; write the
     // map once from the final leaf windows before any tree-end consumer
@@ -4211,7 +4242,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     }
     global_timer.Stop("CUDASingleGPUTreeLearner::RenewDiscretizedTreeLeaves");
   }
-  if (!selective_handled) {
+  if (!selective_handled && !early_to_host) {
     // the selective path rebuilt the host tree from captured split info and
     // released the device arrays in RebuildFromHostSplits already
     tree->ToHost();
@@ -4229,11 +4260,8 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   //
   // Rank-local under multi-GPU, where the partition holds only this rank's
   // rows, so the estimate stays in force there.
-  if (nccl_communicator_ == nullptr && tree->num_leaves() > 0) {
-    std::vector<data_size_t> leaf_num_data(static_cast<size_t>(tree->num_leaves()));
-    CopyFromCUDADeviceToHost<data_size_t>(leaf_num_data.data(),
-      cuda_data_partition_->cuda_leaf_num_data(), leaf_num_data.size(), __FILE__, __LINE__);
-    tree->SyncNodeCountsFromPartition(leaf_num_data);
+  if (!early_to_host) {
+    sync_node_counts();
   }
   // only the leaf histogram slots this tree used can be dirty; the next
   // BeforeTrain zeroes just that prefix (single-GPU only: the NCCL path keeps
