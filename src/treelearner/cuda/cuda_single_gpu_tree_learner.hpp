@@ -696,6 +696,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // readback (plus the root leaf-output init) then happens lazily in
   // EnsureRootSumsReadBack on the paths that need host root sums
   bool root_sums_deferred_ = false;
+  /*! \brief cuda_plan key async_tree_start: kept host copies of BuildCompactColumnView's local slot tables */
+  TreeStartUploads tree_start_uploads_;
   // data partition that partitions data indices into different leaves
   std::unique_ptr<CUDADataPartition> cuda_data_partition_;
   // for histogram construction
