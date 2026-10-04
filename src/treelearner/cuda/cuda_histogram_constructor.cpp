@@ -1424,8 +1424,9 @@ void CUDAHistogramConstructor::ClearColMajorDense3() {
 // 4-bit store as before. Same nibbles staged: bit-identical.
 void CUDAHistogramConstructor::MaybeBuildColMajorDense3() {
   ClearColMajorDense3();
+  // only the fused fill reads it, which takes at most kFill4BitTiledMaxSlots byte slots (two columns each)
   if (!FalcataPlan::Get().colmajor_dense3 || !use_quantized_grad_ || !FalcataPlan::Get().fused_root_hist ||
-      colmajor_pad_ == 0 || view_mask_) {
+      colmajor_pad_ == 0 || view_mask_ || SampledColumns() > 2 * static_cast<size_t>(kFill4BitTiledMaxSlots)) {
     return;
   }
   const int num_columns = cuda_row_data_->host_feature_partition_column_index_offsets().back();
