@@ -1528,6 +1528,13 @@ void CUDAHistogramConstructor::ChooseViewRegime(const size_t reserve_bytes, cons
     } else {
       EnterCompactRegime(reason);
     }
+  } else if (!view_mask_ && colmajor_dense3_.Size() > 0 &&
+             need.total() + reserve_bytes + colmajor_dense3_.Size() * sizeof(uint32_t) > available) {
+    // the regime stays compact, but its dense copy (counted as held above) no longer fits next to the regime's need
+    // and the reserve (a grown one, say): release it, the fill reads the 4-bit store
+    LogDirectView("colmajor_dense3: dense copy released (%zu MiB), it no longer fits next to the reserve",
+                  ToMiB(colmajor_dense3_.Size() * sizeof(uint32_t)));
+    ClearColMajorDense3();
   }
 }
 
