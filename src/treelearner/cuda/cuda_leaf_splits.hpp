@@ -16,13 +16,63 @@
 #include <Falcata/falcata_plan.h>
 #include <Falcata/meta.h>
 
+#include <cstdint>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 #define NUM_THREADS_PER_BLOCK_LEAF_SPLITS (1024)
 #define NUM_DATA_THREAD_ADD_LEAF_SPLITS (6)
 
 namespace Falcata {
+
+// cuda_plan key async_tree_start: the tree start's KB-scale host -> device metadata uploads go on the legacy default
+// stream the synchronous cudaMemcpy used, without the host wait for the device; GPU order is unchanged. Not with
+// compact_prefill: its fill on a non-blocking stream shares the fill metadata and relies on the host order.
+inline bool AsyncTreeStart() {
+  return FalcataPlan::Get().async_tree_start && !FalcataPlan::Get().compact_prefill;
+}
+// For a pageable source the CUDA documentation promises staging before return only for the synchronous cudaMemcpy;
+// cudaMemcpyAsync "might be synchronous". So the source of an async upload must stay unmodified until a host
+// synchronization ordered after the copy. UploadTreeStartMeta is for sources that do: members next written at a later
+// tree's start or after a later synchronous readback, both after Train()'s tree-end cudaDeviceSynchronize (and the
+// objective's per-iteration device sync). A source that dies with its function goes through TreeStartUploads.
+template <typename T>
+inline void UploadTreeStartMeta(T* device_dst, const T* host_src, const size_t count) {
+  if (AsyncTreeStart()) {
+    CopyFromHostToCUDADeviceAsync<T>(device_dst, host_src, count, 0, __FILE__, __LINE__);
+  } else {
+    CopyFromHostToCUDADevice<T>(device_dst, host_src, count, __FILE__, __LINE__);
+  }
+}
+
+/*! \brief cuda_plan key async_tree_start: tree-start uploads from host buffers local to the calling function. The
+ *  bytes are copied into storage kept until Release(), which the tree learner calls right after the tree-end
+ *  cudaDeviceSynchronize, so every kept source outlives its copy whenever the driver reads it. Off: the synchronous
+ *  cudaMemcpy, nothing kept. */
+class TreeStartUploads {
+ public:
+  void UploadBytes(void* device_dst, const void* host_src, const size_t bytes) {
+    if (!AsyncTreeStart()) {
+      CopyFromHostToCUDADevice<uint8_t>(static_cast<uint8_t*>(device_dst), static_cast<const uint8_t*>(host_src),
+                                        bytes, __FILE__, __LINE__);
+      return;
+    }
+    const uint8_t* src = static_cast<const uint8_t*>(host_src);
+    kept_.emplace_back(src, src + bytes);  // a moved std::vector keeps its buffer: earlier copies stay valid
+    CopyFromHostToCUDADeviceAsync<uint8_t>(static_cast<uint8_t*>(device_dst), kept_.back().data(), bytes, 0,
+                                           __FILE__, __LINE__);
+  }
+  template <typename T>
+  void Upload(T* device_dst, const T* host_src, const size_t count) {
+    UploadBytes(static_cast<void*>(device_dst), static_cast<const void*>(host_src), count * sizeof(T));
+  }
+  /*! \brief only after a host synchronization that follows every upload made so far */
+  void Release() { kept_.clear(); }
+
+ private:
+  std::vector<std::vector<uint8_t>> kept_;
+};
 
 /*! \brief kill switch for the wide-shape batched level support (many split-find
  *  tasks and/or compact-column-view histogram data): cuda_plan=auto,batch_wide:off
@@ -94,7 +144,7 @@ class CUDALeafSplits: public NCCLInfo {
     const data_size_t* cuda_bagging_data_indices,
     const data_size_t* cuda_data_indices_in_leaf, const data_size_t num_used_indices,
     hist_t* cuda_hist_in_leaf, double* root_sum_gradients, double* root_sum_hessians,
-    const score_t* grad_scale, const score_t* hess_scale);
+    const score_t* grad_scale, const score_t* hess_scale, const bool defer_root_sum_readback = false);
 
   void InitValues();
 

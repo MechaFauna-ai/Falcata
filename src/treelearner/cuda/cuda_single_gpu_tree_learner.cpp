@@ -628,6 +628,12 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     }
     cuda_histogram_constructor_->BeforeTrain(
       reinterpret_cast<const score_t*>(cuda_gradient_discretizer_->discretized_gradients_and_hessians()), nullptr);
+    // cuda_plan key async_tree_start: the root sums are first needed by the level prefix
+    // (TrainLevelWisePrefix's EnsureRootSumsReadBack; Train reads them back itself before any other flow), so
+    // the synchronous readback -- which waits for the histogram zeroing and the root sum kernels -- moves behind
+    // the column sample, the metadata uploads and the fill launch instead of holding them back
+    root_sums_deferred_ = AsyncTreeStart() && vec_num_targets_ <= 1 && nccl_communicator_ == nullptr &&
+                          fp_merge_state_ == nullptr && HybridGrowthUsable() && !UseSelectiveGrowth();
     cuda_smaller_leaf_splits_->InitValues(
       config_->lambda_l1,
       config_->lambda_l2,
@@ -640,7 +646,8 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
       &leaf_sum_gradients_[0],
       &leaf_sum_hessians_[0],
       cuda_gradient_discretizer_->grad_scale_ptr(),
-      cuda_gradient_discretizer_->hess_scale_ptr());
+      cuda_gradient_discretizer_->hess_scale_ptr(),
+      root_sums_deferred_);
       cuda_gradient_discretizer_->SetNumBitsInHistogramBin<false>(0, -1, root_num_data, 0);
       if (nccl_communicator_ != nullptr) {
         cuda_gradient_discretizer_->SetNumBitsInHistogramBin<true>(0, -1, global_num_data_, 0);
@@ -957,12 +964,11 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
     cuda_slot_p_stride_.Resize(num_compact_cols);
     cuda_slot_col_in_p_.Resize(num_compact_cols);
   }
-  CopyFromHostToCUDADevice<size_t>(cuda_slot_p_byte_.RawData(), slot_p_byte_h.data(),
-                                   num_compact_cols, __FILE__, __LINE__);
-  CopyFromHostToCUDADevice<int>(cuda_slot_p_stride_.RawData(), slot_p_stride_h.data(),
-                                num_compact_cols, __FILE__, __LINE__);
-  CopyFromHostToCUDADevice<int>(cuda_slot_col_in_p_.RawData(), slot_col_in_p_h.data(),
-                                num_compact_cols, __FILE__, __LINE__);
+  // cuda_plan key async_tree_start: no host wait (the live fill may still be running); the sources are local, so
+  // their bytes are kept until the tree end
+  tree_start_uploads_.Upload<size_t>(cuda_slot_p_byte_.RawData(), slot_p_byte_h.data(), num_compact_cols);
+  tree_start_uploads_.Upload<int>(cuda_slot_p_stride_.RawData(), slot_p_stride_h.data(), num_compact_cols);
+  tree_start_uploads_.Upload<int>(cuda_slot_col_in_p_.RawData(), slot_col_in_p_h.data(), num_compact_cols);
 
   compact_packed_view_active_ = false;
   if (gather_src_is_4bit && PackedSplitReadUsable()) {
@@ -1676,6 +1682,8 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
   host_hybrid_pair_descs_.resize(static_cast<size_t>(num_pairs));
   data_size_t max_num_data_in_smaller_leaf = 0;
   bool any_bit_change_copy = false;
+  const bool skip_unsplittable = FalcataPlan::Get().skip_unsplittable && config_->forcedsplits_filename.empty() &&
+    (forced_split_json_ == nullptr || forced_split_json_->is_null());
   for (int i = 0; i < num_pairs; ++i) {
     const HybridPendingPair& pair = pairs[i];
     CUDAHybridPairDescriptor& desc = host_hybrid_pair_descs_[i];
@@ -1703,22 +1711,33 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
                    pair.larger < 0 ? 0 : leaf_num_data_[pair.larger],
                    global_num_data_);
     }
+    // cuda_plan key skip_unsplittable: a leaf of n rows cannot be split when n + 2 + n / 2^20 < 2 * min_data_in_leaf:
+    // both children need min_data_in_leaf rows, and a threshold's left and right counts sum to n (one is n minus the
+    // other) or, rounded separately from hessian sums, to at most n + 1 plus the floating-point error of those sums
+    // (the n / 2^20 margin covers fp32 gains). Such a leaf gets no split search and, when its partner is also
+    // unsplittable, no histogram.
+    const auto unsplittable_by_count = [&](const data_size_t n) {
+      const int64_t n64 = static_cast<int64_t>(n);
+      return skip_unsplittable && n64 + 2 + (n64 >> 20) < 2 * static_cast<int64_t>(config_->min_data_in_leaf);
+    };
+    const bool smaller_unsplittable = unsplittable_by_count(num_data_in_smaller_leaf);
+    const bool larger_unsplittable = unsplittable_by_count(num_data_in_larger_leaf);
     // mirror of ConstructHistogramForLeaf's min_data/min_hessian early return
     desc.construct_valid =
-      ((num_data_in_smaller_leaf <= config_->min_data_in_leaf ||
+      ((num_data_in_smaller_leaf <= config_->min_data_in_leaf || smaller_unsplittable ||
         sum_hessians_in_smaller_leaf <= config_->min_sum_hessian_in_leaf) &&
-       (num_data_in_larger_leaf <= config_->min_data_in_leaf ||
+       (num_data_in_larger_leaf <= config_->min_data_in_leaf || larger_unsplittable ||
         sum_hessians_in_larger_leaf <= config_->min_sum_hessian_in_leaf)) ? 0 : 1;
     // mirror of CUDABestSplitFinder::FindBestSplitsForLeaf's leaf validity checks
     const bool smaller_below_max_depth =
       config_->max_depth <= 0 || GrowthLeafDepth(tree, pair.smaller) < config_->max_depth;
     const bool larger_below_max_depth = pair.larger < 0 ||
       config_->max_depth <= 0 || GrowthLeafDepth(tree, pair.larger) < config_->max_depth;
-    desc.smaller_valid = (num_data_in_smaller_leaf > config_->min_data_in_leaf &&
+    desc.smaller_valid = (num_data_in_smaller_leaf > config_->min_data_in_leaf && !smaller_unsplittable &&
                           sum_hessians_in_smaller_leaf > config_->min_sum_hessian_in_leaf &&
                           smaller_below_max_depth) ? 1 : 0;
     desc.larger_valid = (pair.larger >= 0 &&
-                         num_data_in_larger_leaf > config_->min_data_in_leaf &&
+                         num_data_in_larger_leaf > config_->min_data_in_leaf && !larger_unsplittable &&
                          sum_hessians_in_larger_leaf > config_->min_sum_hessian_in_leaf &&
                          larger_below_max_depth) ? 1 : 0;
     if (config_->use_quantized_grad) {
@@ -1975,6 +1994,7 @@ bool CUDASingleGPUTreeLearner::ArbitrateLevelBudget(const CUDATree* tree,
   // defer to the leaf-wise tail, which selects among the cached candidates in
   // exact best-gain order.
   *final_partial_level = false;
+  level_completes_tree_ = false;
   bool all_children_depth_capped = config_->max_depth > 0 && !splittable->empty();
   if (all_children_depth_capped) {
     for (const int leaf : *splittable) {
@@ -1990,9 +2010,13 @@ bool CUDASingleGPUTreeLearner::ArbitrateLevelBudget(const CUDATree* tree,
     // flagging it skips a whole wasted next-level search AND lets the apply
     // write the leaf map inline (see ApplyLevelBatched).
     *final_partial_level = all_children_depth_capped;
+    level_completes_tree_ = all_children_depth_capped;  // every candidate leaf is split (cuda_plan key skip_empty_tail)
     if (FalcataDebug().maxsplits >= 0) {
       const size_t cap = static_cast<size_t>(FalcataDebug().maxsplits);
-      if (splittable->size() > cap) splittable->resize(cap);
+      if (splittable->size() > cap) {
+        splittable->resize(cap);
+        level_completes_tree_ = false;
+      }
     }
     return true;
   }
@@ -2276,6 +2300,16 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
         hybrid_map_residual_leaves_.push_back(leaf);
       }
     }
+    // cuda_plan key early_leaf_map: the residual leaves' windows (in the main index array the apply kernels above
+    // finalize, ordered before this default-stream launch) and their leaf indices are final now, and nothing up
+    // to the tree end writes the map or those windows, so the map pass goes out here and runs while the host
+    // reads the level back and finalizes the tree, instead of after those readbacks
+    hybrid_map_early_written_ = false;
+    if (FalcataPlan::Get().early_leaf_map && AsyncTreeStart()) {
+      cuda_data_partition_->MaterializeHybridLeafMapSubset(hybrid_map_residual_leaves_);
+      hybrid_map_early_written_ = true;
+      hybrid_map_early_num_leaves_ = tree->num_leaves();
+    }
   }
 }
 
@@ -2434,6 +2468,9 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   if (config_->use_quantized_grad && use_hybrid_one_sync_ &&
       use_batched_level_kernels && use_batched_level_apply &&
       HybridGraphPrefixUsable()) {
+    // the quantized graph prefix reads the host root sums like the classic flow: a no-op unless BeforeTrain
+    // deferred them (async_tree_start)
+    EnsureRootSumsReadBack(tree);
     const int graph_splits = TrainLevelWisePrefixGraph(tree);
     if (graph_splits >= 0) {
       return graph_splits;
@@ -2516,6 +2553,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
     if (final_partial_level) {
       // the tree is full and every child sits at max_depth: nothing is left
       // for the leaf-wise tail to search or split
+      prefix_completes_tree_ = level_completes_tree_;
       break;
     }
   }
@@ -2606,6 +2644,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefixOneSync(CUDATree* tree) {
       // search, so read the apply info back immediately and stop
       cuda_data_partition_->FinishSplitBatch(static_cast<int>(applied.size()), &batch_info);
       FinishLevelBookkeeping(applied, batch_info, nullptr, &num_splits);
+      prefix_completes_tree_ = level_completes_tree_;
       break;
     }
     // speculative: the children's search goes out before their statistics are
@@ -4046,6 +4085,12 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
         "config: 2^max_depth <= num_leaves + 1, no forced splits). "
         "Set quant_mode=none, adjust max_depth/num_leaves, or use num_gpu=1.");
   }
+  if (config_->use_quantized_grad && !(num_splits_done == 0 && HybridGrowthUsable() && !UseSelectiveGrowth())) {
+    // every quantized flow but the level prefix reads the root sums on the host: a no-op unless BeforeTrain
+    // deferred them (async_tree_start; TrainLevelWisePrefix reads them back itself)
+    EnsureRootSumsReadBack(tree.get());
+  }
+  prefix_completes_tree_ = false;
   if (num_splits_done == 0 && HybridGrowthUsable()) {
     if (UseSelectiveGrowth()) {
       // budget-limited exact grow-then-prune: builds the COMPLETE tree
@@ -4062,7 +4107,15 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
       pair_search_cached = num_splits_done > 0;
     }
   }
-  for (int i = num_splits_done; !selective_handled && i < config_->num_leaves - 1; ++i) {
+  // cuda_plan key skip_empty_tail: after a level prefix that ended on a complete final level the tail's search can
+  // only find every cached candidate invalid; report the stop it would report without running it. Only with the
+  // batched apply, which invalidates the final level's children (the per-split apply of batch_apply:off does not)
+  const bool tail_known_empty = FalcataPlan::Get().skip_empty_tail && batched_apply_ran && use_hybrid_batch_apply_ &&
+    prefix_completes_tree_;
+  if (tail_known_empty && !selective_handled && num_splits_done < config_->num_leaves - 1) {
+    Log::Warning("No further splits with positive gain, training stopped with %d leaves.", (num_splits_done + 1));
+  }
+  for (int i = num_splits_done; !selective_handled && !tail_known_empty && i < config_->num_leaves - 1; ++i) {
     if (!pair_search_cached) {
       if (fp_merge_state_ != nullptr) {
         // The leaf-wise tail's fresh per-pair searches are not winner-merged
@@ -4178,6 +4231,27 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     global_timer.Stop("CUDASingleGPUTreeLearner::Split");
   }
   SynchronizeCUDADevice(__FILE__, __LINE__);
+  // cuda_plan key async_tree_start: every upload this tree made from a function-local buffer has completed
+  cuda_histogram_constructor_->ReleaseTreeStartUploads();
+  tree_start_uploads_.Release();
+  // The counts the split finder recorded are estimates (see below): the data partition's exact per-leaf counts
+  const auto sync_node_counts = [&]() {
+    if (nccl_communicator_ == nullptr && tree->num_leaves() > 0) {
+      std::vector<data_size_t> leaf_num_data(static_cast<size_t>(tree->num_leaves()));
+      CopyFromCUDADeviceToHost<data_size_t>(leaf_num_data.data(),
+        cuda_data_partition_->cuda_leaf_num_data(), leaf_num_data.size(), __FILE__, __LINE__);
+      tree->SyncNodeCountsFromPartition(leaf_num_data);
+    }
+  };
+  // cuda_plan key async_tree_start: the tree's host copy and the exact counts read nothing the leaf-map pass
+  // writes, so they are read back first and the pass runs while the host finalizes the tree (the readbacks
+  // would otherwise wait for it); not with leaf renewal or linear trees, which use the map before the copy
+  const bool early_to_host = AsyncTreeStart() && batched_apply_ran && !selective_handled &&
+    !(config_->use_quantized_grad && config_->quant_train_renew_leaf) && !config_->linear_tree;
+  if (early_to_host) {
+    tree->ToHost();
+    sync_node_counts();
+  }
   if (batched_apply_ran) {
     // the batched apply defers the per-level row -> leaf map scatter; write the
     // map once from the final leaf windows before any tree-end consumer
@@ -4186,12 +4260,17 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     // When the final level's split-inner already wrote the map inline
     // (final_partial_level), only earlier-finalized leaves remain.
     if (hybrid_map_final_written_) {
-      cuda_data_partition_->MaterializeHybridLeafMapSubset(hybrid_map_residual_leaves_);
+      // cuda_plan key early_leaf_map: already written with the final level, unless the leaf-wise tail split since
+      // (its classic splits wrote their rows inline; the pass then runs here as without the key)
+      if (!hybrid_map_early_written_ || tree->num_leaves() != hybrid_map_early_num_leaves_) {
+        cuda_data_partition_->MaterializeHybridLeafMapSubset(hybrid_map_residual_leaves_);
+      }
     } else {
       cuda_data_partition_->MaterializeHybridLeafMap(tree->num_leaves());
     }
   }
   hybrid_map_final_written_ = false;
+  hybrid_map_early_written_ = false;
   if (config_->use_quantized_grad && config_->quant_train_renew_leaf &&
       nccl_communicator_ != nullptr) {
     static bool warned_renew = false;
@@ -4211,7 +4290,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     }
     global_timer.Stop("CUDASingleGPUTreeLearner::RenewDiscretizedTreeLeaves");
   }
-  if (!selective_handled) {
+  if (!selective_handled && !early_to_host) {
     // the selective path rebuilt the host tree from captured split info and
     // released the device arrays in RebuildFromHostSplits already
     tree->ToHost();
@@ -4229,11 +4308,8 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   //
   // Rank-local under multi-GPU, where the partition holds only this rank's
   // rows, so the estimate stays in force there.
-  if (nccl_communicator_ == nullptr && tree->num_leaves() > 0) {
-    std::vector<data_size_t> leaf_num_data(static_cast<size_t>(tree->num_leaves()));
-    CopyFromCUDADeviceToHost<data_size_t>(leaf_num_data.data(),
-      cuda_data_partition_->cuda_leaf_num_data(), leaf_num_data.size(), __FILE__, __LINE__);
-    tree->SyncNodeCountsFromPartition(leaf_num_data);
+  if (!early_to_host) {
+    sync_node_counts();
   }
   // only the leaf histogram slots this tree used can be dirty; the next
   // BeforeTrain zeroes just that prefix (single-GPU only: the NCCL path keeps

@@ -567,6 +567,10 @@ class CUDAHistogramConstructor {
    *  after resets, and kept on the NCCL path) zeroes everything. */
   void SetNumDirtyLeaves(const int num_dirty_leaves) { num_dirty_leaves_ = num_dirty_leaves; }
 
+  /*! \brief cuda_plan key async_tree_start: drops the kept upload sources; only after a host synchronization that
+   *  follows every upload so far (Train()'s tree-end device sync) */
+  void ReleaseTreeStartUploads() { tree_start_uploads_.Release(); }
+
   // Per-tree feature sampling mask (host-side vector, length == num_features_).
   // Copied to cuda_is_feature_used_bytree_ so the histogram kernel can skip
   // features not selected by feature_fraction sampling.
@@ -1129,6 +1133,8 @@ class CUDAHistogramConstructor {
   /*! \brief pinned staging for async metadata uploads (grown on demand) */
   void* prefill_pinned_ = nullptr;
   size_t prefill_pinned_bytes_ = 0;
+  /*! \brief cuda_plan key async_tree_start: kept host copies of this tree's function-local metadata uploads */
+  TreeStartUploads tree_start_uploads_;
   /*! \brief number of columns in the compact view (sum across partitions) */
   int num_compact_columns_;
   /*! \brief max compact cols per partition (sets block_dim_x for compact launches) */

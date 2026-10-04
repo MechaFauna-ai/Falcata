@@ -845,6 +845,71 @@ its CUDA deviating from its own CPU spec (inflated split gains, first-tree
 divergence analysis; our engine matches lightgbm-CPU node for node) -- at
 equal wall time the outlier disappears.
 
+## 10b. The Numerai round after the pair-joint construct: occupancy, the tree boundary, level pruning
+
+After the pair-joint construct and the fused root fill, a numerai53 benchmark-split round (5.46M rows, 3,555 4-bit
+features, `feature_fraction` 0.1, 1024 leaves at depth 10, `min_data_in_leaf` 10k) was about 6.0 ms: the pair-joint
+construct 2.5 ms (40%), the fused fill 1.5 ms (DRAM-bound at ~1.3 TB/s), the small level kernels ~1.3 ms, and
+0.7-0.8 ms of GPU idle. A second overnight agentic search took about 9% off that round with eight `cuda_plan` keys,
+all default on, each bit-identical (identity keys in `ablation.py`, flip cells in the lattice), none adding device
+memory.
+
+**Construct occupancy (`pair_block_rows`, `pair_capped_rows`).** The whole-row construct is latency-bound: 57% of
+its stall samples wait on the index -> gradient / packed-byte gather. At 64 registers its block took the
+per-partition kernel's 4 rows of the 178-byte interleaved row (712 threads, 23 warps), the only block on its SM.
+- `pair_block_rows` sizes the whole-row block by resident warps at the kernel's register count: 5 rows, 28 warps
+  (construct -5.6% in nsys).
+- `pair_capped_rows` adds a `__maxnreg__(48)` build of the same body with 15 rows in flight (12 for the root's
+  direct-read instantiation, both spill-free) and takes it, in 2-row blocks three per SM (36 warps, 34.5 measured),
+  where the occupancy API says it keeps strictly more warps resident. Left alone, the driver gave those blocks the
+  100 KB shared-memory carveout their tables could use, cutting the gathers' L1 to a quarter and making every
+  variant slower; the carveout is now set to the resident blocks' tables (the 64 KB tier), and shapes that would need
+  more than 64% of the SM's shared memory keep the default build. Construct -5.6% again. Needs CUDA 12.4.
+- Measured and not kept: a 40-register cap (48 warps) spills; `__launch_bounds__(768, 2)` with an 8-row batch (92%
+  occupancy) is 4% slower, the same loads in flight with less L1; 1-row blocks are capped at 30 warps by the tables.
+
+**The tree boundary (`async_tree_start`).** About 0.2 ms of the idle sat at the tree start and end: ~13 synchronous
+pageable `cudaMemcpy` of KB-scale fill metadata before the fill, a `cudaStreamSynchronize` on the 1.5 ms fill before
+the root level was prepared, device syncs between the gradient discretizer's default-stream kernels, the quantized
+root-sum readback in `InitValues`, and host waits after the leaf-map pass and the score update. None of these waits
+was needed where it stood: the uploads became `cudaMemcpyAsync` on the same legacy default stream (GPU order
+unchanged), the fill's readers are ordered by the stream or by the legacy stream's implicit synchronization, the root
+sums are read where the level prefix first needs them, and the tree's host copy is read before the leaf-map pass.
+Function-local upload sources are copied and kept until the tree end (the CUDA documentation promises a staged
+pageable source on return only for `cudaMemcpy`). nsys: GPU idle 715 -> 545 us per round. Off with
+`compact_prefill`.
+
+**Level pruning (`skip_unsplittable`, `skip_empty_tail`).** With `min_data_in_leaf` 10k, deep levels hold many leaves
+whose `n` rows cannot give both children `min_data_in_leaf` rows; every split-finder count gate needs both, so their
+histograms and split searches have no reader. They are no longer constructed or searched (4% of the construct's rows,
+16% at depth 9; construct -4.3%). And when the level prefix ends on a complete final level, the leaf-wise tail's
+best-of-all-leaves search can only report no split, so it does not run.
+
+**Level apply bookkeeping (`gap_copy_once`, `early_leaf_map`, `leaf_map_small_blocks`).** Leaves that stop early
+become terminal index ranges. The batched apply swaps its two index buffers every level, so a range copied into the
+out buffer at level k-1 is still in what is the out buffer again at level k: each terminal range is now copied once
+(gap copy 64 -> 22 us per round). The residual-leaf map pass goes out with the final level's apply instead of after
+the tree end's readbacks, and the map and gap kernels use 256-thread blocks (most of a 1024-thread block had no row).
+
+| step (cumulative) | numerai53 benchmark split, 30k trees | peak device memory |
+|---|---|---|
+| master (4befcfb2) | 160.2 trees/s | 11,422 MiB |
+| + `pair_block_rows` | 166.0 | 11,422 MiB |
+| + `pair_capped_rows` | 170.0 | 11,422 MiB |
+| + `async_tree_start` | 169.5 | 11,422 MiB |
+| + `skip_unsplittable` | 174.6 | 11,422 MiB |
+| + `skip_empty_tail`, `gap_copy_once`, `early_leaf_map`, `leaf_map_small_blocks` | 175.6 (1.096x) | 11,422 MiB |
+
+Single 30k-tree runs of the search's candidates (master itself spanned 157-163 trees/s over the session; the
+`async_tree_start` step is inside that noise there and measured 1.028x in a same-binary A/B); every run trained the
+identical model (holdout corr 0.0239, sharpe 1.40). With the tuner on, 500 rounds timed from round 200 and 6
+interleaved fresh-process pairs, the merged keys take a numerai53 benchmark-split round from 5.95 to 5.38 ms
+(1.105x [1.099, 1.111]); switching any one key off, or all eight, trains the same model. Of the eight, `async_tree_start`
+(+2.7% when off), `pair_capped_rows` (+2.3%) and `skip_unsplittable` (+2.0%) carry most of it; `pair_block_rows`
+is inert where the capped build is taken and remains the fallback where it is not. The benchmark's other cells
+(`falcata-stoch`, 500 rounds) gain 1.01-1.07x with identical models: covtype 1.05x deep / 1.07x shallow, year
+1.04x / 1.04x, fraud 1.05x / 1.06x, higgs 1.02x / 1.01x, epsilon 1.02x / 1.01x.
+
 ---
 
 ## Multi-GPU: level-batched NCCL all-reduce

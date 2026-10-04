@@ -256,6 +256,42 @@ struct FalcataPlan {
   // floor scales by the partitions a block covers (a block carries all their
   // tables' zeroing and flush). Bit-identical (integer sums).
   bool pair_hist_rows = true;       // key: pair_hist_rows
+  // pair_hist_rows block height: as many rows as keep the block's warps within
+  // what one SM's register file holds for the pair-joint kernel (it runs one
+  // block per SM), instead of the per-partition kernel's 504-thread rows
+  // (Numerai v5.3's 178-byte row: 5 rows, 28 warps, instead of 4 rows, 23
+  // warps). Ties keep the fewer rows. The grid is re-derived for that height
+  // by the same formula and packed-cell guard. Bit-identical (integer sums).
+  bool pair_block_rows = true;      // key: pair_block_rows
+  // pair_hist_rows blocks on a register-capped build of the pair-joint kernel
+  // (fewer rows in flight per thread), at the whole-row block height that
+  // keeps strictly more warps resident per SM than the default build by the
+  // occupancy API (registers and joint-table shared memory): two or three
+  // shorter blocks per SM instead of one, with the kernel's shared-memory
+  // carveout fitted to the resident blocks' tables (only where they need at
+  // most 64% of the SM's shared memory, so the gathers keep their L1). The
+  // grid is re-derived for that height by the same formula and packed-cell
+  // guard. Needs CUDA 12.4 (__maxnreg__). Bit-identical (same rows, integer
+  // sums).
+  bool pair_capped_rows = true;     // key: pair_capped_rows
+  // tree boundary without host waits the computation does not need: the
+  // tree start's KB-scale metadata (live compact fill, split slot tables,
+  // feature masks, used tasks, hist pool pointer) is uploaded with
+  // cudaMemcpyAsync on the legacy default stream the synchronous cudaMemcpy
+  // used (stream order unchanged; a source local to its function is copied
+  // and kept until the tree end, so it outlives the copy however the driver
+  // stages it); the host blocks neither on the live fill nor on the leaf-map
+  // pass or the train-score update; the gradient discretizer does not
+  // synchronize the device between its default-stream kernels; the quantized
+  // root-sum readback moves from InitValues to the level prefix's
+  // EnsureRootSumsReadBack (every other quantized flow reads them back before
+  // it starts); and at the tree end the tree's host copy and exact leaf
+  // counts are read back before the leaf-map pass. The host samples columns
+  // and launches the fill while the GPU still discretizes, prepares the root
+  // level while the fill runs, and finalizes the tree while the leaf map is
+  // written. Off with compact_prefill (its non-blocking stream shares the
+  // fill metadata). Same kernels, same GPU order and inputs: bit-identical.
+  bool async_tree_start = true;     // key: async_tree_start
   // pair_hist joint tables laid out with odd per-byte strides (an even span
   // product gets one pad cell), so the same cell of neighbouring threads' tables
   // falls in distinct shared-memory banks. Bit-identical (layout only).
@@ -307,6 +343,39 @@ struct FalcataPlan {
   // two-rows-per-byte column, not one sector of the row matrix per row. Used
   // whenever the store exists. Bit-identical (same nibbles).
   bool colmajor_split = true;       // key: colmajor_split
+  // host-launched level flow: a leaf whose row count n cannot give both children min_data_in_leaf rows
+  // (n + 2 + n / 2^20 < 2 * min_data_in_leaf) is not split-searched, and a pair whose two leaves are both such leaves
+  // (or fail the existing min_data / min_sum_hessian gates) is not constructed. Every finder count gate needs left
+  // and right counts of at least min_data_in_leaf, and the two counts of a threshold sum to n (one is n minus the
+  // other) or, rounded separately from hessian sums, to at most n + 1 plus their floating-point error: no threshold
+  // of such a leaf passes, the finder would report no split, and its histogram has no other reader. Off with forced
+  // splits. Bit-identical.
+  bool skip_unsplittable = true;    // key: skip_unsplittable
+  // the leaf-wise tail's first best-of-all-leaves search (two kernels, two device syncs and a readback at every
+  // tree end) is not run when the level prefix ended on a final level that split every candidate leaf with the
+  // leaf budget not binding and every child at max_depth: the children's cached candidates were invalidated and
+  // every other leaf's candidate was already invalid (otherwise it would have been a candidate of that level), so
+  // the search can only report no split. Same tree: bit-identical.
+  bool skip_empty_tail = true;      // key: skip_empty_tail
+  // batched level apply: the out index buffer becomes the main one after each level, so every leaf not split at a
+  // level (a gap of the split regions) has its index range carried from the old main into the out buffer. After
+  // that copy both buffers hold the level's gap ranges, and at the next level the out buffer is that old main,
+  // untouched there: only the parts of the gaps that were not gaps of the previous batched level (ranges that
+  // became terminal now) are copied; the rest already holds the same indices. Tracked on the host, valid only
+  // between consecutive batched levels of one tree (every other writer of either buffer resets it). Same values in
+  // the same buffers: bit-identical. (Port of c043.)
+  bool gap_copy_once = true;        // key: gap_copy_once
+  // the host-launched tree-end row -> leaf map pass (MaterializeLeafMap*, 64 blocks per leaf as before) and the
+  // batched level apply's gap copy (blocks per gap from its rows) use 256-thread blocks instead of 1024-thread ones:
+  // a deep tree's leaves and gaps hold a few thousand rows each, so most of a 1024-thread block had no row while it
+  // held a whole SM. Same rows, each written once with the same value: bit-identical. (Port of c043.)
+  bool leaf_map_small_blocks = true;  // key: leaf_map_small_blocks
+  // final batched level (every child at max_depth): the row -> leaf map pass over the leaves NOT split at that level
+  // is launched right after the level's apply kernels instead of after the tree end's readbacks and leaf-wise tail
+  // check: its inputs (those leaves' index windows and the leaf list) are final then, and nothing between writes the
+  // map or those windows, so the GPU writes the map while the host finalizes the tree. If the leaf-wise tail still
+  // splits after it, the tree end writes the whole map again as before. Same kernel, same values: bit-identical.
+  bool early_leaf_map = true;       // key: early_leaf_map
   // runtime tier-1 tuner: bandit over the batched-construct saturation floor,
   // timed per tree; quantized training only (integer hists keep results
   // schedule-invariant, so retuning cannot change the model). The probe phase
@@ -397,6 +466,9 @@ struct FalcataPlan {
     if (key == "per_pair_rows") return &per_pair_rows;
     if (key == "compact_row_interleave") return &compact_row_interleave;
     if (key == "pair_hist_rows") return &pair_hist_rows;
+    if (key == "pair_block_rows") return &pair_block_rows;
+    if (key == "pair_capped_rows") return &pair_capped_rows;
+    if (key == "async_tree_start") return &async_tree_start;
     if (key == "pair_pad") return &pair_pad;
     if (key == "level_row_blocks") return &level_row_blocks;
     if (key == "all_rows_direct") return &all_rows_direct;
@@ -405,6 +477,11 @@ struct FalcataPlan {
     if (key == "root_sums_warp") return &root_sums_warp;
     if (key == "minmax_warp") return &minmax_warp;
     if (key == "colmajor_split") return &colmajor_split;
+    if (key == "skip_unsplittable") return &skip_unsplittable;
+    if (key == "skip_empty_tail") return &skip_empty_tail;
+    if (key == "gap_copy_once") return &gap_copy_once;
+    if (key == "leaf_map_small_blocks") return &leaf_map_small_blocks;
+    if (key == "early_leaf_map") return &early_leaf_map;
     if (key == "tuner") return &tuner;
     if (key == "wide_partitions") return &wide_partitions;
     return nullptr;

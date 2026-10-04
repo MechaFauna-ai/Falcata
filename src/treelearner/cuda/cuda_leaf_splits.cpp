@@ -75,14 +75,17 @@ void CUDALeafSplits::InitValues(
   const data_size_t* cuda_bagging_data_indices,
   const data_size_t* cuda_data_indices_in_leaf, const data_size_t num_used_indices,
   hist_t* cuda_hist_in_leaf, double* root_sum_gradients, double* root_sum_hessians,
-  const score_t* grad_scale, const score_t* hess_scale) {
+  const score_t* grad_scale, const score_t* hess_scale, const bool defer_root_sum_readback) {
   cuda_gradients_ = reinterpret_cast<const score_t*>(cuda_gradients_and_hessians);
   cuda_hessians_ = nullptr;
   LaunchInitValuesKernel(lambda_l1, lambda_l2, max_delta_step, cuda_bagging_data_indices, cuda_data_indices_in_leaf, num_used_indices, cuda_hist_in_leaf, grad_scale, hess_scale);
-  // the synchronous D2H copies block until the kernels above complete; no
-  // extra device sync is needed
-  CopyFromCUDADeviceToHost<double>(root_sum_gradients, cuda_sum_of_gradients_buffer_.RawData(), 1, __FILE__, __LINE__);
-  CopyFromCUDADeviceToHost<double>(root_sum_hessians, cuda_sum_of_hessians_buffer_.RawData(), 1, __FILE__, __LINE__);
+  if (!defer_root_sum_readback) {
+    // the synchronous D2H copies block until the kernels above complete; no
+    // extra device sync is needed (deferred: CopyRootSumsToHost, as in the
+    // non-quantized overload)
+    CopyFromCUDADeviceToHost<double>(root_sum_gradients, cuda_sum_of_gradients_buffer_.RawData(), 1, __FILE__, __LINE__);
+    CopyFromCUDADeviceToHost<double>(root_sum_hessians, cuda_sum_of_hessians_buffer_.RawData(), 1, __FILE__, __LINE__);
+  }
 }
 
 void CUDALeafSplits::Resize(const data_size_t num_data) {

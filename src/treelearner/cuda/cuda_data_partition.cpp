@@ -71,6 +71,7 @@ CUDADataPartition::~CUDADataPartition() {
 }
 
 void CUDADataPartition::Init() {
+  level_shared_gaps_valid_ = false;  // cuda_plan key gap_copy_once: writes outside the batched level apply
   // allocate CUDA memory
   cuda_data_indices_.Resize(static_cast<size_t>(num_data_));
   cuda_leaf_data_start_.Resize(static_cast<size_t>(num_leaves_));
@@ -111,6 +112,7 @@ void CUDADataPartition::Init() {
 }
 
 void CUDADataPartition::BeforeTrain() {
+  level_shared_gaps_valid_ = false;  // a new tree: the index fill writes the main buffer only
   if (!use_bagging_) {
     LaunchFillDataIndicesBeforeTrain();
   }
@@ -123,10 +125,11 @@ void CUDADataPartition::BeforeTrain() {
     CopyFromCUDADeviceToCUDADevice<data_size_t>(cuda_leaf_num_data_.RawData(), cuda_num_data_.RawData(), 1, __FILE__, __LINE__);
     CopyFromCUDADeviceToCUDADevice<data_size_t>(cuda_leaf_data_end_.RawData(), cuda_num_data_.RawData(), 1, __FILE__, __LINE__);
   } else {
-    CopyFromHostToCUDADevice<data_size_t>(cuda_leaf_num_data_.RawData(), &num_used_indices_, 1, __FILE__, __LINE__);
-    CopyFromHostToCUDADevice<data_size_t>(cuda_leaf_data_end_.RawData(), &num_used_indices_, 1, __FILE__, __LINE__);
+    UploadTreeStartMeta<data_size_t>(cuda_leaf_num_data_.RawData(), &num_used_indices_, 1);
+    UploadTreeStartMeta<data_size_t>(cuda_leaf_data_end_.RawData(), &num_used_indices_, 1);
   }
-  CopyFromHostToCUDADevice<hist_t*>(cuda_hist_pool_.RawData(), &cuda_hist_, 1, __FILE__, __LINE__);
+  // cuda_plan key async_tree_start: no host wait for the index fill above
+  UploadTreeStartMeta<hist_t*>(cuda_hist_pool_.RawData(), &cuda_hist_, 1);
 }
 
 void CUDADataPartition::Split(
@@ -300,6 +303,7 @@ void CUDADataPartition::ReadPrefetchedSplitBatch(const int num_splits, std::vect
 void CUDADataPartition::SetLeafDataLayout(const std::vector<data_size_t>& leaf_num_data,
                                           const std::vector<data_size_t>& leaf_data_start,
                                           int num_leaves) {
+  level_shared_gaps_valid_ = false;  // cuda_plan key gap_copy_once: writes outside the batched level apply
   if (num_leaves <= 0) {
     return;
   }
@@ -505,28 +509,63 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
     std::sort(regions.begin(), regions.end());
     data_size_t cursor = 0;
     const data_size_t num_data_total = root_num_data();
-    auto append_gap = [this, &num_gaps, &max_gap_blocks](const data_size_t start, const data_size_t num) {
+    // cuda_plan key leaf_map_small_blocks: the gap copy runs gap_block_dim-thread blocks (see the launch)
+    const int gap_block_dim = GapCopyBlockDim();
+    auto append_gap = [this, &num_gaps, &max_gap_blocks, gap_block_dim](const data_size_t start,
+                                                                        const data_size_t num) {
       CUDAHybridApplyDescriptor desc;
       std::memset(&desc, 0, sizeof(desc));
       desc.leaf_data_start = start;
       desc.num_data_in_leaf = num;
-      desc.num_blocks = (num + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) /
-        SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+      desc.num_blocks = (num + gap_block_dim - 1) / gap_block_dim;
       if (desc.num_blocks > max_gap_blocks) {
         max_gap_blocks = desc.num_blocks;
       }
       host_apply_descs_.push_back(desc);
       ++num_gaps;
     };
+    std::vector<std::pair<data_size_t, data_size_t>> gaps;  // (start, num), sorted
+    gaps.reserve(regions.size() + 1);
     for (const std::pair<data_size_t, data_size_t>& region : regions) {
       if (region.first > cursor) {
-        append_gap(cursor, region.first - cursor);
+        gaps.emplace_back(cursor, region.first - cursor);
       }
       cursor = region.first + region.second;
     }
     if (cursor < num_data_total) {
-      append_gap(cursor, num_data_total - cursor);
+      gaps.emplace_back(cursor, num_data_total - cursor);
     }
+    // cuda_plan key gap_copy_once: the out buffer is the previous batched level's main array, which kept that
+    // level's gap ranges while the copy put them into the other buffer: copy only what was not a gap then
+    const bool copy_new_only = FalcataPlan::Get().gap_copy_once && level_shared_gaps_valid_;
+    size_t shared = 0;
+    for (const std::pair<data_size_t, data_size_t>& gap : gaps) {
+      data_size_t start = gap.first;
+      const data_size_t end = gap.first + gap.second;
+      if (copy_new_only) {
+        while (shared < level_shared_gaps_.size() &&
+               level_shared_gaps_[shared].first + level_shared_gaps_[shared].second <= start) {
+          ++shared;
+        }
+        for (size_t j = shared; j < level_shared_gaps_.size() && level_shared_gaps_[j].first < end; ++j) {
+          const data_size_t held_start = level_shared_gaps_[j].first;
+          const data_size_t held_end = held_start + level_shared_gaps_[j].second;
+          if (held_start > start) {
+            append_gap(start, held_start - start);
+          }
+          start = std::max(start, held_end);
+          if (start >= end) {
+            break;
+          }
+        }
+      }
+      if (start < end) {
+        append_gap(start, end - start);
+      }
+    }
+    // after this level's copies both buffers hold every gap range of this level
+    level_shared_gaps_.swap(gaps);
+    level_shared_gaps_valid_ = true;
   }
   // The packed-bit hand-off reinterprets cuda_block_to_left_offset_ as uint32
   // warp-ballot words indexed by CHUNK SLOT: (block_offset_start + block) *
@@ -610,6 +649,7 @@ void CUDADataPartition::SplitInner(
   const bool point_structs_at_main,
   const int deferred_slot,
   const data_size_t leaf_data_start_for_copy) {
+  level_shared_gaps_valid_ = false;  // the per-split path writes both index buffers
   LaunchSplitInnerKernel(
     num_data_in_leaf,
     best_split_info,
@@ -651,6 +691,10 @@ void CUDADataPartition::UpdateTrainScore(const Tree* tree, double* scores) {
                                            cuda_tree->leaf_value_dim(), scores);
   } else {
     LaunchAddPredictionToScoreKernel(cuda_tree->cuda_leaf_value(), scores);
+    if (cuda_tree_ptr != nullptr && AsyncTreeStart()) {
+      // the temporary device tree is freed on return: let the kernel finish reading its leaf values first
+      SynchronizeCUDADevice(__FILE__, __LINE__);
+    }
   }
 }
 
@@ -682,6 +726,7 @@ void CUDADataPartition::CalcBlockDim(const data_size_t num_data_in_leaf) {
 }
 
 void CUDADataPartition::SetUsedDataIndices(const data_size_t* used_indices, const data_size_t num_used_indices) {
+  level_shared_gaps_valid_ = false;  // cuda_plan key gap_copy_once: writes outside the batched level apply
   use_bagging_ = true;
   num_used_indices_ = num_used_indices;
   used_indices_ = used_indices;
@@ -690,6 +735,7 @@ void CUDADataPartition::SetUsedDataIndices(const data_size_t* used_indices, cons
 }
 
 void CUDADataPartition::ResetTrainingData(const Dataset* train_data, const int num_total_bin, hist_t* cuda_hist) {
+  level_shared_gaps_valid_ = false;  // cuda_plan key gap_copy_once: writes outside the batched level apply
   const data_size_t old_num_data = num_data_;
   num_data_ = train_data->num_data();
   num_features_ = train_data->num_features();
@@ -735,6 +781,7 @@ void CUDADataPartition::ResetConfig(const Config* config, hist_t* cuda_hist) {
 }
 
 void CUDADataPartition::ResetByLeafPred(const std::vector<int>& leaf_pred, int num_leaves) {
+  level_shared_gaps_valid_ = false;  // cuda_plan key gap_copy_once: writes outside the batched level apply
   if (leaf_pred.size() != static_cast<size_t>(num_data_)) {
     cuda_data_index_to_leaf_index_.Clear();
     cuda_data_index_to_leaf_index_.InitFromHostVector(leaf_pred);

@@ -504,7 +504,12 @@ void CUDAGradientDiscretizer::DiscretizeGradientsForPlane(
       hess_min_block_buffer_.RawData(),
       hess_max_block_buffer_.RawData());
   }
+  // cuda_plan key async_tree_start: these kernels share the legacy default stream and the host reads none of
+  // their outputs in between, so the device syncs between them only add launch gaps
+  const bool device_syncs = !AsyncTreeStart();
+  if (device_syncs) {
     SynchronizeCUDADevice(__FILE__, __LINE__);
+  }
   ReduceBlockMinMaxKernel<<<1, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(
     num_reduce_blocks_,
     num_grad_quant_bins_,
@@ -512,7 +517,9 @@ void CUDAGradientDiscretizer::DiscretizeGradientsForPlane(
     grad_max_block_buffer_.RawData(),
     hess_min_block_buffer_.RawData(),
     hess_max_block_buffer_.RawData());
+  if (device_syncs) {
     SynchronizeCUDADevice(__FILE__, __LINE__);
+  }
 
   if (nccl_communicator_ != nullptr) {
     SynchronizeCUDADevice(__FILE__, __LINE__);
@@ -620,7 +627,9 @@ void CUDAGradientDiscretizer::DiscretizeGradientsForPlane(
     hess_max_block_buffer_.RawDataReadOnly(),
     plane_grad_scale_.RawData() + plane,
     copy_hess ? nullptr : plane_hess_scale_.RawData());
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  if (device_syncs) {
+    SynchronizeCUDADevice(__FILE__, __LINE__);
+  }
   ++iter_;
 }
 

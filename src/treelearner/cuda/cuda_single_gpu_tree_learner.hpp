@@ -636,6 +636,14 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
    *  tree-end materialize covers only hybrid_map_residual_leaves_ */
   bool hybrid_map_final_written_ = false;
   std::vector<int> hybrid_map_residual_leaves_;
+  /*! \brief cuda_plan key skip_empty_tail: ArbitrateLevelBudget's last level splits every candidate leaf, the leaf
+   *  budget does not bind and every child sits at max_depth; set by the level prefix when it ended on such a level */
+  bool level_completes_tree_ = false;
+  bool prefix_completes_tree_ = false;
+  /*! \brief cuda_plan key early_leaf_map: the residual leaves' map pass was launched with the final level, when
+   *  the tree had hybrid_map_early_num_leaves_ leaves (a leaf-wise tail split after it re-runs the pass) */
+  bool hybrid_map_early_written_ = false;
+  int hybrid_map_early_num_leaves_ = 0;
   // hybrid growth: single-sync (speculative) level pipeline
   // (FALCATA_HYBRID_ONE_SYNC, default on; "0" keeps the classic two-sync flow)
   bool use_hybrid_one_sync_ = false;
@@ -696,6 +704,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // readback (plus the root leaf-output init) then happens lazily in
   // EnsureRootSumsReadBack on the paths that need host root sums
   bool root_sums_deferred_ = false;
+  /*! \brief cuda_plan key async_tree_start: kept host copies of BuildCompactColumnView's local slot tables */
+  TreeStartUploads tree_start_uploads_;
   // data partition that partitions data indices into different leaves
   std::unique_ptr<CUDADataPartition> cuda_data_partition_;
   // for histogram construction

@@ -532,9 +532,8 @@ void CUDABestSplitFinder::BeforeTrain(const std::vector<int8_t>& is_feature_used
   // CPU path it accumulates across the whole model (cleared only once, at session
   // init), so the coupled penalty for a feature is paid once for the entire model.
 
-  CopyFromHostToCUDADevice<int8_t>(cuda_is_feature_used_bytree_.RawData(),
-                                   is_feature_used_bytree.data(),
-                                   is_feature_used_bytree.size(), __FILE__, __LINE__);
+  UploadTreeStartMeta<int8_t>(cuda_is_feature_used_bytree_.RawData(), is_feature_used_bytree.data(),
+                              is_feature_used_bytree.size());
   // hybrid batched find: compact the task grid to this tree's feature sample
   // (see host_used_task_indices_); only rebuilt/uploaded when sampling is active
   host_used_task_indices_.clear();
@@ -548,9 +547,8 @@ void CUDABestSplitFinder::BeforeTrain(const std::vector<int8_t>& is_feature_used
     if (cuda_used_task_indices_.Size() < static_cast<size_t>(num_tasks_)) {
       cuda_used_task_indices_.Resize(static_cast<size_t>(num_tasks_));
     }
-    CopyFromHostToCUDADevice<int>(cuda_used_task_indices_.RawData(),
-                                  host_used_task_indices_.data(),
-                                  host_used_task_indices_.size(), __FILE__, __LINE__);
+    UploadTreeStartMeta<int>(cuda_used_task_indices_.RawData(), host_used_task_indices_.data(),
+                             host_used_task_indices_.size());
   }
 }
 
