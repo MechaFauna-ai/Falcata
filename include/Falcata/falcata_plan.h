@@ -316,6 +316,17 @@ struct FalcataPlan {
   // guard. Needs CUDA 12.4 (__maxnreg__). Bit-identical (same rows, integer
   // sums).
   bool pair_capped_rows = true;     // key: pair_capped_rows
+  // pair-joint construct (pair_hist) of a host-launched level with several
+  // pairs: the grid is sized for the level's largest smaller leaf, and
+  // with level_row_blocks every leaf runs at that leaf's rows per thread, so a
+  // pair of n rows has rows in only about grid_y x n / n_max of its grid_y
+  // blocks; the others are dispatched, read the pair's descriptor and leaf
+  // struct, and exit. Instead the launch holds only the blocks that have rows:
+  // the host counts each pair's by the device's own per-pair formula (host leaf
+  // counts are the device's, read back by the level's apply) and passes the
+  // pairs' first-block prefix as a kernel parameter; a block finds its pair and
+  // its block row there. Same blocks with the same rows: bit-identical.
+  bool pair_block_map = true;       // key: pair_block_map
   // tree boundary without host waits the computation does not need: the
   // tree start's KB-scale metadata (live compact fill, split slot tables,
   // feature masks, used tasks, hist pool pointer) is uploaded with
@@ -604,6 +615,7 @@ struct FalcataPlan {
     if (key == "pair_hist_rows") return &pair_hist_rows;
     if (key == "pair_block_rows") return &pair_block_rows;
     if (key == "pair_capped_rows") return &pair_capped_rows;
+    if (key == "pair_block_map") return &pair_block_map;
     if (key == "async_tree_start") return &async_tree_start;
     if (key == "tree_meta_batch") return &tree_meta_batch;
     if (key == "pair_pad") return &pair_pad;

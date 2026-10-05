@@ -2653,10 +2653,11 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointInner(
   const int dim_y,
   const int whole_row_partitions,
   const uint32_t whole_row_joint,
-  const data_size_t min_rows_per_thread) {
+  const data_size_t min_rows_per_thread,
+  const int block_y) {
   const data_size_t num_data_in_smaller_leaf = smaller_leaf_splits->num_data_in_leaf;
   const data_size_t num_data_per_thread = max((num_data_in_smaller_leaf + dim_y - 1) / dim_y, min_rows_per_thread);
-  const size_t block_start_wide = (static_cast<size_t>(blockIdx.y) * blockDim.y) * static_cast<size_t>(num_data_per_thread);
+  const size_t block_start_wide = (static_cast<size_t>(block_y) * blockDim.y) * static_cast<size_t>(num_data_per_thread);
   if (block_start_wide >= static_cast<size_t>(num_data_in_smaller_leaf)) {
     return;
   }
@@ -2819,6 +2820,19 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointInner(
 // Dynamic shared memory: the largest partition joint table.
 // ALL_ROWS (cuda_plan key all_rows_direct; the host takes it for a single-pair level whose leaf holds every row):
 // a separate instantiation, so the code of the hot per-level kernel is untouched; it still checks the leaf size.
+// cuda_plan key pair_block_map: num_pairs > 0 when the launch holds only the block rows with rows, start[num_pairs]
+// of them in y (x and blockDim unchanged): block row b belongs to the pair p with start[p] <= b < start[p + 1] (pairs
+// without rows have equal starts) and is that pair's block row b - start[p] of the level grid (grid_y rows per pair,
+// num_pairs pairs) it stands for.
+// num_pairs == 0: blockIdx.z is the pair and blockIdx.y the block row. Passed by value (kernel parameter space,
+// ~2 KB); starts fit 16 bits because a launch holds at most 65535 block rows.
+struct PairJointBlockPrefix {
+  static constexpr int kMaxPairs = 1024;
+  int num_pairs;
+  int grid_y;
+  uint16_t start[kMaxPairs + 1];
+};
+
 #define FALCATA_PAIR_JOINT_BATCHED_PARAMS \
   const CUDAHybridPairDescriptor* pair_descs, \
   const int32_t* cuda_gradients_and_hessians, \
@@ -2837,16 +2851,38 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointInner(
   const int num_grad_quant_bins, \
   const int whole_row_partitions, \
   const uint32_t whole_row_joint, \
-  const data_size_t level_min_rows_per_thread
+  const data_size_t level_min_rows_per_thread, \
+  const PairJointBlockPrefix block_prefix
 #define FALCATA_PAIR_JOINT_BATCHED_ARGS \
   pair_descs, cuda_gradients_and_hessians, data, column_meta, num_compact_columns, column_hist_offsets_full, \
   feature_partition_column_index_offsets, packed_partition_byte_offsets, num_data, min_data_in_leaf, \
   min_sum_hessian_in_leaf, per_pair_min_grid_dim_y, min_rows_per_thread, saturation_floor_total, \
-  num_grad_quant_bins, whole_row_partitions, whole_row_joint, level_min_rows_per_thread
+  num_grad_quant_bins, whole_row_partitions, whole_row_joint, level_min_rows_per_thread, block_prefix
 template <bool ALL_ROWS, int BATCH>
 __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_PARAMS) {
   extern __shared__ int32_t shared_joint[];
-  const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.z;
+  // cuda_plan key pair_block_map: the pair and block row this block stands for (see PairJointBlockPrefix)
+  unsigned int pair_index = blockIdx.z;
+  int block_y = static_cast<int>(blockIdx.y);
+  int level_grid_y = static_cast<int>(gridDim.y);
+  int level_num_pairs = static_cast<int>(gridDim.z);
+  if (block_prefix.num_pairs > 0) {
+    int lo = 0;
+    int hi = block_prefix.num_pairs - 1;
+    while (lo < hi) {
+      const int mid = (lo + hi + 1) >> 1;
+      if (static_cast<unsigned int>(block_prefix.start[mid]) <= blockIdx.y) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    pair_index = static_cast<unsigned int>(lo);
+    block_y = static_cast<int>(blockIdx.y - block_prefix.start[lo]);
+    level_grid_y = block_prefix.grid_y;
+    level_num_pairs = block_prefix.num_pairs;
+  }
+  const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
   if (!desc->construct_valid) {
     return;
   }
@@ -2865,13 +2901,13 @@ __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_
   // level's LARGEST smaller leaf; each pair instead groups its rows by the same formula at its OWN size (never more
   // blocks, as the formula is monotone in the size), so a small leaf of a deep level is not cut into many blocks of
   // a few rows each paying the full joint-table zeroing and flush. The formula keeps the packed-cell row cap.
-  int pair_grid_y = static_cast<int>(gridDim.y);
+  int pair_grid_y = level_grid_y;
   if (per_pair_min_grid_dim_y > 0) {
     const int y = HybridBatchedConstructGridDimYQuant(
-      num_data_smaller, static_cast<int>(gridDim.z), static_cast<int>(blockDim.y), per_pair_min_grid_dim_y,
+      num_data_smaller, level_num_pairs, static_cast<int>(blockDim.y), per_pair_min_grid_dim_y,
       min_rows_per_thread, saturation_floor_total, num_grad_quant_bins);
     pair_grid_y = max(1, min(pair_grid_y, y));
-    if (static_cast<int>(blockIdx.y) >= pair_grid_y) {
+    if (block_y >= pair_grid_y) {
       return;
     }
   }
@@ -2882,7 +2918,7 @@ __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_
     ConstructDiscretizedHistogramPairJointInner<B16, DIRECT, BATCH>( \
       smaller_struct, shared_joint, cuda_gradients_and_hessians, data, column_meta, num_compact_columns, \
       column_hist_offsets_full, feature_partition_column_index_offsets, packed_partition_byte_offsets, \
-      num_data, dim_y, whole_row_partitions, whole_row_joint, level_min_rows_per_thread)
+      num_data, dim_y, whole_row_partitions, whole_row_joint, level_min_rows_per_thread, block_y)
   if (desc->smaller_num_bits <= 16) {
     if (direct) {
       FALCATA_PAIR_JOINT_INNER(true, ALL_ROWS);
@@ -2962,7 +2998,7 @@ static int PairJointResidentWarps(const int threads) {
 
 using PairJointKernelFn = void (*)(const CUDAHybridPairDescriptor*, const int32_t*, const uint8_t*, const uint32_t*,
                                    int, const uint32_t*, const int*, const int*, data_size_t, data_size_t, double, int,
-                                   int, int, int, int, uint32_t, data_size_t);
+                                   int, int, int, int, uint32_t, data_size_t, PairJointBlockPrefix);
 
 // cuda_plan key pair_capped_rows: the register-capped build. 48 registers fit three 12-warp blocks in a 64K register
 // file. Rows in flight per thread: 15 for the per-level (gathering) instantiation and 12 for the root's direct-read
@@ -5148,8 +5184,46 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         // all_rows_direct: the level's one leaf holds every row (the root without bagging)
         const bool all_rows = FalcataPlan::Get().all_rows_direct && num_pairs == 1 &&
           max_num_data_in_smaller_leaf == num_data_;
+        // cuda_plan key pair_block_map: launch only the blocks with rows. Each pair's count follows the kernel's own
+        // per-pair sizing (per_pair_rows' formula at the pair's size, level_row_blocks' rows-per-thread floor, then
+        // the blocks whose first row is inside the leaf), from the host copy of the leaf counts the kernel reads
+        PairJointBlockPrefix block_prefix{};  // num_pairs 0: the plain grid
+        dim3 launch_grid_dim = pair_grid_dim;
+        if (FalcataPlan::Get().pair_block_map && num_pairs > 1 &&
+            num_pairs <= PairJointBlockPrefix::kMaxPairs && level_host_pair_descs_ != nullptr &&
+            level_host_num_pairs_ == num_pairs) {
+          // the kernel arguments below: per_pair_rows' grid floor and its rows-per-thread floor
+          const int per_pair_min_grid = FalcataPlan::Get().per_pair_rows ? min_grid_dim_y_ : 0;
+          const int per_pair_min_rows = BatchConstructMinRowsPerThread() * (whole_rows ? static_cast<int>(grid_dim.x) : 1);
+          int64_t total = 0;
+          for (int p = 0; p < num_pairs; ++p) {
+            block_prefix.start[p] = static_cast<uint16_t>(std::min<int64_t>(total, 65535));
+            const CUDAHybridPairDescriptor& d = level_host_pair_descs_[p];
+            const data_size_t n = d.num_data_in_smaller_leaf;
+            if (!d.construct_valid || n <= 0) {
+              continue;
+            }
+            int pgy = pair_grid_y;
+            if (per_pair_min_grid > 0) {
+              const int yy = HybridBatchedConstructGridDimYQuant(
+                n, num_pairs, pair_y, per_pair_min_grid, per_pair_min_rows, BatchConstructSaturationFloor(),
+                use_quantized_grad_ ? num_grad_quant_bins_ : 0);
+              pgy = std::max(1, std::min(pgy, yy));
+            }
+            const data_size_t dim_y = pgy * pair_y;
+            const data_size_t rows_per_thread = std::max((n + dim_y - 1) / dim_y, pair_min_rows_per_thread);
+            const int64_t block_rows = static_cast<int64_t>(pair_y) * rows_per_thread;
+            total += std::min(static_cast<int64_t>(pgy), (static_cast<int64_t>(n) + block_rows - 1) / block_rows);
+          }
+          block_prefix.start[num_pairs] = static_cast<uint16_t>(std::min<int64_t>(total, 65535));
+          if (total > 0 && total <= 65535) {
+            block_prefix.num_pairs = num_pairs;
+            block_prefix.grid_y = pair_grid_y;
+            launch_grid_dim = dim3(pair_grid_dim.x, static_cast<unsigned int>(total), 1);
+          }
+        }
 #define FALCATA_LAUNCH_PAIR_JOINT(KERNEL) \
-        KERNEL<<<pair_grid_dim, pair_block_dim, pair_smem_bytes, cuda_stream_>>>( \
+        KERNEL<<<launch_grid_dim, pair_block_dim, pair_smem_bytes, cuda_stream_>>>( \
           pair_descs, \
           reinterpret_cast<const int32_t*>(cuda_gradients_), \
           compact_data_uint8_t_.RawData(), \
@@ -5167,7 +5241,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           use_quantized_grad_ ? num_grad_quant_bins_ : 0, \
           whole_rows ? static_cast<int>(grid_dim.x) : 0, \
           whole_rows ? static_cast<uint32_t>(compact_pair_joint_total_) : 0u, \
-          pair_min_rows_per_thread)
+          pair_min_rows_per_thread, \
+          block_prefix)
         // a whole-row block does the work of grid_dim.x partition blocks and zeroes / flushes all their joint
         // tables, so its per_pair_rows rows-per-thread floor scales by the partitions it covers to keep the same
         // share of fixed per-block cost (a larger floor only lowers the formula, so the launched grid still bounds it)

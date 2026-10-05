@@ -1842,12 +1842,17 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
     nccl_communicator_ == nullptr && config_->use_quantized_grad &&
     host_hybrid_pair_descs_[0].num_data_in_smaller_leaf == num_data_ &&
     cuda_histogram_constructor_->ConsumeFusedRootHist(host_hybrid_pair_descs_[0].smaller_num_bits <= 16);
+  // cuda_plan key pair_block_map: the host leaf counts are the device structs' (under NCCL the descriptors hold
+  // global counts, so the constructor gets none)
+  cuda_histogram_constructor_->SetLevelHostPairDescs(
+    nccl_communicator_ == nullptr ? host_hybrid_pair_descs_.data() : nullptr, num_pairs);
   cuda_histogram_constructor_->ConstructHistogramsForLevel(
     cuda_hybrid_pair_descs_.RawDataReadOnly(), num_pairs,
     max_num_data_in_smaller_leaf, any_bit_change_copy,
     /*level_smaller_num_data=*/nullptr,
     /*defer_subtract=*/nccl_communicator_ != nullptr,
     use_fused_root);
+  cuda_histogram_constructor_->SetLevelHostPairDescs(nullptr, 0);
   if (nccl_communicator_ != nullptr) {
     // ONE collective for the level instead of one per split
     NCCLReduceLevelHistograms(num_pairs);

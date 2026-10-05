@@ -342,6 +342,13 @@ class CUDAHistogramConstructor {
    *  launch grid, and the construct kernel derives the exact per-thread row
    *  grouping on-device from the array so histograms are bit-identical to the
    *  classic sizing (non-quantized dense path only). */
+  /*! \brief cuda_plan key pair_block_map: the host copy of the next ConstructHistogramsForLevel's pair descriptors
+   *  (num_pairs of them, the leaf counts the device structs hold; nullptr: unknown), valid for that one call */
+  void SetLevelHostPairDescs(const CUDAHybridPairDescriptor* host_pair_descs, const int num_pairs) {
+    level_host_pair_descs_ = host_pair_descs;
+    level_host_num_pairs_ = num_pairs;
+  }
+
   void ConstructHistogramsForLevel(
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
@@ -910,6 +917,9 @@ class CUDAHistogramConstructor {
   std::vector<uint32_t> need_fix_histogram_features_num_bin_aligend_;
   /*! \brief minimum number of blocks allowed in the y dimension */
   const int min_grid_dim_y_ = 160;
+  // cuda_plan key pair_block_map: see SetLevelHostPairDescs
+  const CUDAHybridPairDescriptor* level_host_pair_descs_ = nullptr;
+  int level_host_num_pairs_ = 0;
   /*! \brief leaf histogram slots dirtied by the previous tree (-1 = all) */
   int num_dirty_leaves_ = -1;
   /*! \brief dataset has categorical features (their find kernel reads hist_t;
