@@ -485,8 +485,8 @@ struct FalcataPlan {
   // the buffer. Same bytes: bit-identical.
   bool readback_kernel = true;      // key: readback_kernel
   // the final batched level's invalidation of its children's cached split candidates (InvalidateLeafCandidates):
-  // the leaf list goes up with cudaMemcpyAsync on the default stream the synchronous cudaMemcpy used (a pageable
-  // source is staged before the call returns) and the kernel is not followed by a device synchronize. The host
+  // the leaf list goes up with cudaMemcpyAsync on the default stream the synchronous cudaMemcpy used (from a member
+  // copy, kept until the next tree) and the kernel is not followed by a device synchronize. The host
   // reads nothing the kernel writes; every reader of those candidates (the leaf-wise tail's search, the next tree's
   // level syncs and readbacks) is ordered after it on the GPU. The host no longer waits for the final level's apply
   // to drain before it launches the residual-leaf map pass and the tree-end readbacks. Off with compact_prefill (as

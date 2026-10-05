@@ -6511,8 +6511,12 @@ void CUDABestSplitFinder::InvalidateLeafCandidates(const std::vector<int>& leave
   // cuda_plan key invalidate_async: no host wait (see the key); the upload and the kernel stay on the default stream
   const bool async = FalcataPlan::Get().invalidate_async && AsyncTreeStart();
   if (async) {
-    CopyFromHostToCUDADeviceAsync<int>(cuda_invalidate_leaves_.RawData(), leaves.data(),
-                                       leaves.size(), 0, __FILE__, __LINE__);
+    // the caller's list is local to it, and a pageable source is promised to be staged on return only by the
+    // synchronous cudaMemcpy: the copy reads a member instead, next rewritten at the next tree's final level, after
+    // Train()'s tree-end device sync
+    invalidate_leaves_host_.assign(leaves.begin(), leaves.end());
+    CopyFromHostToCUDADeviceAsync<int>(cuda_invalidate_leaves_.RawData(), invalidate_leaves_host_.data(),
+                                       invalidate_leaves_host_.size(), 0, __FILE__, __LINE__);
   } else {
     CopyFromHostToCUDADevice<int>(cuda_invalidate_leaves_.RawData(), leaves.data(),
                                   leaves.size(), __FILE__, __LINE__);

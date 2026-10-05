@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 namespace Falcata {
@@ -43,9 +44,13 @@ class TreeStartMetaBatch {
     }
     if (bytes > kMetaBatchDirectBytes) {
       // large enough that a copy of its own costs no more than the scatter: as without the batch (it lands before
-      // the batch's readers too, which all follow the next flush)
-      CopyFromHostToCUDADeviceAsync<uint8_t>(static_cast<uint8_t*>(device_dst), static_cast<const uint8_t*>(host_src),
-                                             bytes, 0, __FILE__, __LINE__);
+      // the batch's readers too, which all follow the next flush), from a kept copy of the bytes (the source may be
+      // local to the caller; see Flush)
+      const uint8_t* src = static_cast<const uint8_t*>(host_src);
+      std::vector<uint8_t>& kept = NextKept();
+      kept.assign(src, src + bytes);
+      CopyFromHostToCUDADeviceAsync<uint8_t>(static_cast<uint8_t*>(device_dst), kept.data(), bytes, 0,
+                                             __FILE__, __LINE__);
       return;
     }
     if (segments_.count == kMetaBatchMaxSegments) {
@@ -59,9 +64,10 @@ class TreeStartMetaBatch {
     segments_.bytes[segments_.count] = static_cast<uint32_t>(bytes);
     ++segments_.count;
   }
-  // one H2D copy of the staged bytes (a pageable source is staged before cudaMemcpyAsync returns, so the host buffer
-  // is reusable at once) and one scatter kernel, both on the legacy default stream; the arena is only rewritten by
-  // the next flush's copy, which the stream orders behind this scatter
+  // one H2D copy of the staged bytes and one scatter kernel, both on the legacy default stream; the arena is only
+  // rewritten by the next flush's copy, which the stream orders behind this scatter. For a pageable source the CUDA
+  // documentation promises staging before return only for the synchronous cudaMemcpy, so the staged bytes are kept
+  // unmodified until Release() (as TreeStartUploads keeps its copies) and the next flush stages into another buffer.
   void Flush() {
     if (segments_.count == 0) {
       return;
@@ -71,8 +77,12 @@ class TreeStartMetaBatch {
     }
     CopyFromHostToCUDADeviceAsync<uint8_t>(device_.RawData(), host_.data(), host_.size(), 0, __FILE__, __LINE__);
     LaunchMetaBatchScatter(device_.RawDataReadOnly(), segments_);
+    std::swap(host_, NextKept());  // a swap keeps both heap buffers: the copy's source stays where it is
     Discard();
   }
+  // only after a host synchronization that follows every flush so far (Train()'s tree-end device sync): the kept
+  // buffers are reused from then on
+  void Release() { num_kept_ = 0; }
   // drops what has not been flushed (a tree start abandoned by an exception)
   void Discard() {
     host_.clear();
@@ -80,7 +90,16 @@ class TreeStartMetaBatch {
   }
 
  private:
+  // the next buffer to keep until Release() (a moved std::vector keeps its buffer: earlier ones stay valid)
+  std::vector<uint8_t>& NextKept() {
+    if (num_kept_ == kept_.size()) {
+      kept_.emplace_back();
+    }
+    return kept_[num_kept_++];
+  }
   std::vector<uint8_t> host_;
+  std::vector<std::vector<uint8_t>> kept_;
+  size_t num_kept_ = 0;
   CUDAVector<uint8_t> device_;
   MetaBatchSegments segments_;
 };

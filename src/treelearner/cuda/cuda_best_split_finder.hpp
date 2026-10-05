@@ -710,6 +710,8 @@ class CUDABestSplitFinder {
   CUDAVector<double> cuda_vec_payload_task_;
   CUDAVector<double> cuda_vec_payload_leaf_;
   CUDAVector<int> cuda_invalidate_leaves_;
+  /*! \brief cuda_plan key invalidate_async: the host source of the last asynchronous upload of the leaf list */
+  std::vector<int> invalidate_leaves_host_;
   CUDAVector<int> cuda_cat_threshold_real_leaf_;
   CUDAVector<uint32_t> cuda_cat_threshold_feature_;
   CUDAVector<int> cuda_cat_threshold_real_feature_;

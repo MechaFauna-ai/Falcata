@@ -4368,6 +4368,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   // cuda_plan key async_tree_start: every upload this tree made from a function-local buffer has completed
   cuda_histogram_constructor_->ReleaseTreeStartUploads();
   tree_start_uploads_.Release();
+  tree_meta_batch_.Release();
   // The counts the split finder recorded are estimates (see below): the data partition's exact per-leaf counts
   // cuda_plan key readback_kernel: when the exact counts were already copied into the staging buffer behind the
   // tree's slab (one stream synchronize for both, see early_to_host below), their offset there; 0 = not prefetched
