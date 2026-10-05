@@ -3053,6 +3053,35 @@ static int PairJointCappedRows(const int row_bytes, const size_t smem_bytes, con
     return memo.y;
   }
   const PairJointCappedBuild capped = PairJointCapped();
+  // cuda_plan key shape_memo: every shape's choice is kept (the joint-table bytes change with the column sample, so
+  // the one-entry memo above missed at nearly every tree); a hit re-sets the capped build's carveout only when it
+  // is not the one this shape chose (the attribute is per kernel, shared by all shapes)
+  struct ShapeEntry {
+    Entry key;
+    int percent = cudaSharedmemCarveoutDefault;
+  };
+  static thread_local std::vector<ShapeEntry> shapes;
+  static thread_local int set_device = -1;
+  static thread_local int set_percent = cudaSharedmemCarveoutDefault;
+  const bool shape_memo = FalcataPlan::Get().shape_memo;
+  if (shape_memo) {
+    for (const ShapeEntry& e : shapes) {
+      if (e.key.device == device && e.key.row_bytes == row_bytes && e.key.smem_bytes == smem_bytes &&
+          e.key.default_y == default_y && e.key.bins == num_grad_quant_bins) {
+        if (e.key.y > 0 && (set_device != device || set_percent != e.percent)) {
+          CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(capped.gather, cudaFuncAttributePreferredSharedMemoryCarveout,
+                                                    e.percent));
+          CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(capped.direct, cudaFuncAttributePreferredSharedMemoryCarveout,
+                                                    e.percent));
+          set_device = device;
+          set_percent = e.percent;
+        }
+        memo = e.key;
+        return e.key.y;
+      }
+    }
+  }
+  int chosen_percent = cudaSharedmemCarveoutDefault;
   // occupancy at the default carveout (a previous shape's carveout must not bound this one's choice)
   CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(capped.gather, cudaFuncAttributePreferredSharedMemoryCarveout,
                                             cudaSharedmemCarveoutDefault));
@@ -3092,9 +3121,16 @@ static int PairJointCappedRows(const int row_bytes, const size_t smem_bytes, con
     } else {
       CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(capped.gather, cudaFuncAttributePreferredSharedMemoryCarveout, percent));
       CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(capped.direct, cudaFuncAttributePreferredSharedMemoryCarveout, percent));
+      chosen_percent = percent;
     }
   }
   memo = {device, row_bytes, smem_bytes, default_y, num_grad_quant_bins, best_y};
+  set_device = device;
+  set_percent = chosen_percent;
+  if (shape_memo) {
+    if (shapes.size() >= 256) shapes.clear();
+    shapes.push_back({memo, chosen_percent});
+  }
   return best_y;
 }
 

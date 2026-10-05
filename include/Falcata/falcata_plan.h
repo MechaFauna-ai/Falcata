@@ -529,6 +529,21 @@ struct FalcataPlan {
   // reuses the index array), linear trees, quantized leaf renewal, multi-GPU, vector leaves and selective growth.
   // Same map, same counts, same tree: bit-identical.
   bool final_map_only = true;       // key: final_map_only
+  // tree end without host waits on work the readbacks do not need. With early_leaf_map, the final batched level's
+  // residual-leaf map pass is not launched with the level (there the level's split batch readback and the tree
+  // end's readbacks queued behind it on the default stream, the host waiting for the whole pass each time) but at
+  // the tree end, after the exact leaf counts are read back (with the slab's copy under readback_kernel), right
+  // after ToHost's copy of the tree: it runs while the host scatters the copy (its inputs, the residual leaves'
+  // windows, are final then; it reads none of the tree's arrays). A pooled tree's ToHost does not synchronize the
+  // device (its arrays are views of the learner's slab: nothing is freed; the retained leaf values are copied out on
+  // the default stream). Same kernels, same values: bit-identical.
+  bool final_readback_first = true;  // key: final_readback_first
+  // the register-capped pair-joint construct's block height (pair_capped_rows) memoised per launch shape (row bytes,
+  // joint-table bytes, default height, gradient bins) instead of for the last shape only: the joint-table bytes
+  // change with every tree's column sample, so every tree re-ran the occupancy queries and re-set the kernels'
+  // shared-memory carveout before its first construct. The carveout is re-set only when the chosen value changes.
+  // Same block height per shape: bit-identical.
+  bool shape_memo = true;           // key: shape_memo
   // runtime tier-1 tuner: bandit over the batched-construct saturation floor,
   // timed per tree; quantized training only (integer hists keep results
   // schedule-invariant, so retuning cannot change the model). The probe phase
@@ -652,6 +667,8 @@ struct FalcataPlan {
     if (key == "gradients_no_sync") return &gradients_no_sync;
     if (key == "tree_end_prealloc") return &tree_end_prealloc;
     if (key == "final_map_only") return &final_map_only;
+    if (key == "final_readback_first") return &final_readback_first;
+    if (key == "shape_memo") return &shape_memo;
     if (key == "tuner") return &tuner;
     if (key == "wide_partitions") return &wide_partitions;
     return nullptr;

@@ -651,6 +651,17 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
    *  the tree had hybrid_map_early_num_leaves_ leaves (a leaf-wise tail split after it re-runs the pass) */
   bool hybrid_map_early_written_ = false;
   int hybrid_map_early_num_leaves_ = 0;
+  /*! \brief cuda_plan key final_readback_first: the early map pass is due, launched by FlushEarlyLeafMap from the
+   *  tree end's ToHost right after the tree's device copy (if no flush runs, the tree end writes the residual leaves
+   *  as without early_leaf_map) */
+  bool hybrid_map_early_pending_ = false;
+  void FlushEarlyLeafMap(const CUDATree* tree);
+  /*! \brief cuda_plan key final_readback_first: the tree end's slab and leaf-count readbacks launched ahead of the
+   *  final level's split batch readback (PrefetchTreeReadback): the tree's leaf count then (0: none), and whether
+   *  the counts were copied too (behind the slab in readback_staging_, as in Train's early_to_host) */
+  int prefetched_tree_num_leaves_ = 0;
+  bool prefetched_tree_counts_ = false;
+  void PrefetchTreeReadback(const CUDATree* tree);
   // hybrid growth: single-sync (speculative) level pipeline
   // (FALCATA_HYBRID_ONE_SYNC, default on; "0" keeps the classic two-sync flow)
   bool use_hybrid_one_sync_ = false;

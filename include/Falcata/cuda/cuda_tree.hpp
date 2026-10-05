@@ -12,6 +12,7 @@
 #include <Falcata/bin.h>
 #include <Falcata/tree.h>
 
+#include <functional>
 #include <vector>
 
 #include <Falcata/cuda/cuda_column_data.hpp>
@@ -242,9 +243,22 @@ class CUDATree : public Tree {
   /*! \brief read the tree back to the host vectors and release the per-tree device arrays. readback_staging_*
    *  (cuda_plan key readback_kernel, optional): a caller-owned mapped pinned buffer of readback_staging_bytes bytes
    *  and its device alias; when it holds the pooled slab, the slab is copied into it by a kernel on the default
-   *  stream (CopyFromCUDADeviceToMappedHost) instead of a cudaMemcpy into a pageable staging vector. */
+   *  stream (CopyFromCUDADeviceToMappedHost) instead of a cudaMemcpy into a pageable staging vector.
+   *  after_device_copy (cuda_plan key final_readback_first, optional) is called right after the device arrays are
+   *  read back and before the host-side scatter and the device release: GPU work that reads none of the tree's
+   *  arrays can be queued there and run while the host finishes the copy. slab_in_staging (cuda_plan key
+   *  final_readback_first): the staging buffer already holds this pooled tree's final slab (LaunchSlabReadback,
+   *  followed by a synchronize of the default stream), so no copy is issued. */
   void ToHost(void* readback_staging_host = nullptr, void* readback_staging_device = nullptr,
-              size_t readback_staging_bytes = 0);
+              size_t readback_staging_bytes = 0,
+              const std::function<void()>& after_device_copy = std::function<void()>(),
+              bool slab_in_staging = false);
+
+  /*! \brief cuda_plan key final_readback_first: launch, without a synchronize, the copy kernel ToHost would launch
+   *  for a pooled tree's slab into readback_staging_device (the device alias of a mapped pinned buffer of
+   *  readback_staging_bytes bytes) on the default stream; false, with nothing launched, if the tree is not pooled
+   *  or the buffer is too small */
+  bool LaunchSlabReadback(void* readback_staging_device, size_t readback_staging_bytes) const;
 
   void SyncLeafOutputFromHostToCUDA();
 

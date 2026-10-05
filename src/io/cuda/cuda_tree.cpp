@@ -7,6 +7,7 @@
 #ifdef USE_CUDA
 
 #include <Falcata/cuda/cuda_tree.hpp>
+#include <Falcata/falcata_plan.h>
 
 #include <algorithm>
 #include <cstring>
@@ -290,8 +291,19 @@ inline void CUDATree::AddBias(double val) {
   LaunchAddBiasKernel(val);
 }
 
+bool CUDATree::LaunchSlabReadback(void* readback_staging_device, size_t readback_staging_bytes) const {
+  const size_t slab_bytes = PooledDeviceBufferSize(max_leaves_);
+  if (!pooled_ || readback_staging_device == nullptr || readback_staging_bytes < slab_bytes) {
+    return false;
+  }
+  // cuda_threshold_ is the first view carved from the slab (see InitCUDAMemory)
+  LaunchCopyToMappedHost(readback_staging_device, cuda_threshold_.RawDataReadOnly(), slab_bytes, __FILE__, __LINE__);
+  return true;
+}
+
 void CUDATree::ToHost(void* readback_staging_host, void* readback_staging_device,
-                      size_t readback_staging_bytes) {
+                      size_t readback_staging_bytes, const std::function<void()>& after_device_copy,
+                      bool slab_in_staging) {
   left_child_.resize(max_leaves_ - 1);
   right_child_.resize(max_leaves_ - 1);
   split_feature_inner_.resize(max_leaves_ - 1);
@@ -322,14 +334,18 @@ void CUDATree::ToHost(void* readback_staging_host, void* readback_staging_device
     const uint8_t* p = nullptr;
     if (readback_staging_device != nullptr && readback_staging_bytes >= slab_bytes) {
       // cuda_plan key readback_kernel: copy kernel on the default stream into the caller's mapped pinned buffer
-      CopyFromCUDADeviceToMappedHost(readback_staging_device, readback_staging_host, slab, slab_bytes,
-                                     __FILE__, __LINE__);
+      // (cuda_plan key final_readback_first: already copied there and synchronized, see LaunchSlabReadback)
+      if (!slab_in_staging) {
+        CopyFromCUDADeviceToMappedHost(readback_staging_device, readback_staging_host, slab, slab_bytes,
+                                       __FILE__, __LINE__);
+      }
       p = static_cast<const uint8_t*>(readback_staging_host);
     } else {
       staging.resize(slab_bytes);
       CopyFromCUDADeviceToHost<uint8_t>(staging.data(), slab, slab_bytes, __FILE__, __LINE__);
       p = staging.data();
     }
+    if (after_device_copy) after_device_copy();
     const auto scatter = [&p](void* dst, const size_t bytes, const size_t stride) {
       if (bytes > 0) std::memcpy(dst, p, bytes);
       p += stride;
@@ -372,6 +388,7 @@ void CUDATree::ToHost(void* readback_staging_host, void* readback_staging_device
   CopyFromCUDADeviceToHost<double>(internal_weight_.data(), cuda_internal_weight_.RawData(), num_leaves_size - 1, __FILE__, __LINE__);
   CopyFromCUDADeviceToHost<data_size_t>(internal_count_.data(), cuda_internal_count_.RawData(), num_leaves_size - 1, __FILE__, __LINE__);
   CopyFromCUDADeviceToHost<int>(leaf_depth_.data(), cuda_leaf_depth_.RawData(), num_leaves_size, __FILE__, __LINE__);
+  if (after_device_copy) after_device_copy();
   }
 
   if (num_cat_ > 0) {
@@ -421,7 +438,13 @@ void CUDATree::ShrinkHostVectorsAndReleaseDevice() {
     }
   }
 
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  // cuda_plan key final_readback_first: a pooled tree's device arrays are views of the learner's slab, so nothing
+  // below frees device memory (the retained leaf values are copied out on the default stream, ahead of the next
+  // tree's writes to the slab): the host need not wait for the device, e.g. for a leaf-map pass queued after the
+  // tree's copy (CUDASingleGPUTreeLearner::FlushEarlyLeafMap)
+  if (!(pooled_ && FalcataPlan::Get().final_readback_first)) {
+    SynchronizeCUDADevice(__FILE__, __LINE__);
+  }
 
   // Free per-tree GPU buffers no longer needed after ToHost. Without this,
   // accumulated per-tree GPU memory OOMs a 32GB device after ~6k trees on
