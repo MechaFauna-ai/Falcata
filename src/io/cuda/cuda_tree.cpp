@@ -51,6 +51,22 @@ CUDATree::~CUDATree() {
   if (cuda_stream_ != nullptr) {
     gpuAssert(cudaStreamDestroy(cuda_stream_), __FILE__, __LINE__);
   }
+  if (prepared_leaf_value_ != nullptr) {
+    gpuAssert(cudaFree(prepared_leaf_value_), __FILE__, __LINE__);
+  }
+}
+
+void CUDATree::PrepareRetainedLeafValues(const int num_leaves) {
+  if (num_leaves <= 0 || num_leaves >= max_leaves_ || !cuda_leaf_value_.IsView()) {
+    return;
+  }
+  if (prepared_leaf_value_ != nullptr && prepared_leaf_value_size_ == static_cast<size_t>(num_leaves)) {
+    return;
+  }
+  DeallocateCUDAMemory<double>(&prepared_leaf_value_, __FILE__, __LINE__);
+  prepared_leaf_value_size_ = 0;
+  AllocateCUDAMemory<double>(&prepared_leaf_value_, static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+  prepared_leaf_value_size_ = static_cast<size_t>(num_leaves);
 }
 
 void CUDATree::InitCUDAMemory(uint8_t* pooled_device_buffer) {
@@ -414,6 +430,21 @@ void CUDATree::ShrinkHostVectorsAndReleaseDevice() {
   // For pooled trees the slab is reused by the next tree, so the retained leaf
   // values must be materialized into owned memory in every case (Resize on a
   // view copies-then-owns; Materialize covers num_leaves_ == max_leaves_).
+  if (prepared_leaf_value_ != nullptr) {
+    if (cuda_leaf_value_.IsView() && num_leaves_ > 0 && num_leaves_ < max_leaves_ &&
+        cuda_leaf_value_.Size() >= static_cast<size_t>(num_leaves_) &&
+        prepared_leaf_value_size_ == static_cast<size_t>(num_leaves_)) {
+      // cuda_plan key tree_end_prealloc: the bytes Resize would copy, into the buffer allocated at the final level,
+      // on the same legacy default stream without the host wait (the readers are later work on that stream)
+      CopyFromCUDADeviceToCUDADeviceAsync<double>(prepared_leaf_value_, cuda_leaf_value_.RawData(),
+                                                  static_cast<size_t>(num_leaves_), __FILE__, __LINE__);
+      cuda_leaf_value_.Adopt(prepared_leaf_value_, static_cast<size_t>(num_leaves_));
+    } else {
+      DeallocateCUDAMemory<double>(&prepared_leaf_value_, __FILE__, __LINE__);
+    }
+    prepared_leaf_value_ = nullptr;
+    prepared_leaf_value_size_ = 0;
+  }
   if (num_leaves_ > 0 && num_leaves_ < max_leaves_ && cuda_leaf_value_.Size() > 0) {
     cuda_leaf_value_.Resize(static_cast<size_t>(num_leaves_));
   }

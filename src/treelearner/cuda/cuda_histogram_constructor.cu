@@ -22,7 +22,35 @@
 
 #include <Falcata/cuda/cuda_driver_shim.hpp>
 
+#include "cuda_meta_batch.hpp"
+
 namespace Falcata {
+
+// cuda_plan key tree_meta_batch: block row y copies segment y of the staged arena to its destination
+__global__ void MetaBatchScatterKernel(const uint8_t* __restrict__ staged, const MetaBatchSegments segments) {
+  const int s = static_cast<int>(blockIdx.y);
+  uint8_t* dst = segments.dst[s];
+  const uint8_t* src = staged + segments.src_offset[s];
+  const uint32_t bytes = segments.bytes[s];
+  for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < bytes; i += gridDim.x * blockDim.x) {
+    dst[i] = src[i];
+  }
+}
+
+void LaunchMetaBatchScatter(const uint8_t* staged, const MetaBatchSegments& segments) {
+  if (segments.count <= 0) {
+    return;
+  }
+  uint32_t max_bytes = 0;
+  for (int s = 0; s < segments.count; ++s) {
+    max_bytes = std::max(max_bytes, segments.bytes[s]);
+  }
+  constexpr uint32_t kThreads = 256;
+  const uint32_t blocks_x = std::min<uint32_t>(256, (max_bytes + kThreads * 4 - 1) / (kThreads * 4));
+  MetaBatchScatterKernel<<<dim3(std::max<uint32_t>(1, blocks_x), static_cast<unsigned int>(segments.count)), kThreads>>>(
+    staged, segments);
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+}
 
 // =====================================================================
 // Compaction kernel: copies sampled (used) columns from the partitioned

@@ -116,6 +116,12 @@ void CUDADataPartition::BeforeTrain() {
   if (!use_bagging_) {
     LaunchFillDataIndicesBeforeTrain();
   }
+  if (FalcataPlan::Get().tree_meta_batch && AsyncTreeStart()) {
+    // cuda_plan key tree_meta_batch: the memsets, root-count copies and pointer upload below as one kernel on the
+    // same default stream (six copy-engine operations of 4 B .. 4 KB on a GPU-bound tree start)
+    LaunchBeforeTrainLeafInit();
+    return;
+  }
   // async memsets on the default stream (SetCUDAMemory would pay one full
   // device sync each); the synchronous copies below order after them
   CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_leaf_num_data_.RawData()), 0, sizeof(data_size_t) * static_cast<size_t>(num_leaves_)));

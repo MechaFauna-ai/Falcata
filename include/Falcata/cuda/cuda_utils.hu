@@ -327,6 +327,15 @@ class CUDAVector {
 
   bool IsView() const { return !owns_; }
 
+  /*! \brief take ownership of size elements of device memory from AllocateCUDAMemory (the current storage is
+   *  released first, so it must not be the source of copies still in flight unless it is a view) */
+  void Adopt(T* data, size_t size) {
+    ReleaseStorage();
+    data_ = data;
+    size_ = size;
+    owns_ = true;
+  }
+
   void PushBack(const T* values, size_t len) {
     T* new_data = nullptr;
     AllocateCUDAMemory<T>(&new_data, size_ + len, __FILE__, __LINE__);

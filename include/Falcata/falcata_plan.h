@@ -334,6 +334,13 @@ struct FalcataPlan {
   // written. Off with compact_prefill (its non-blocking stream shares the
   // fill metadata). Same kernels, same GPU order and inputs: bit-identical.
   bool async_tree_start = true;     // key: async_tree_start
+  // with async_tree_start: the tree start's KB-scale metadata uploads between the split finder's BeforeTrain and
+  // the compact fill (feature masks, used tasks, bin mask, compact-view layout, fill slot tables, fused-root meta;
+  // ~14 copies of 20 B .. 18 KB) are staged into one host buffer and moved by one H2D copy into a device arena, from
+  // which one kernel scatters each segment to its destination; both on the legacy default stream the copies used,
+  // flushed before any GPU operation issued while the batch collects. ~14 copy-engine operations, each ~1.5 us on
+  // a GPU-bound tree start, become two. Same bytes in the same buffers before the same readers: bit-identical.
+  bool tree_meta_batch = true;      // key: tree_meta_batch
   // pair_hist joint tables laid out with odd per-byte strides (an even span
   // product gets one pad cell), so the same cell of neighbouring threads' tables
   // falls in distinct shared-memory banks. Bit-identical (layout only).
@@ -484,6 +491,22 @@ struct FalcataPlan {
   // record reads) are built after the apply is launched, in the same order with the same values. Same kernels, same
   // streams, same inputs: bit-identical.
   bool level_apply_first = true;    // key: level_apply_first
+  // the CUDA objective's GetGradients (the shared CUDAObjectiveInterface path) does not end with a device
+  // synchronize when the gradients are device memory: its kernel runs on the legacy default stream, every reader of
+  // the gradients is a kernel or a cudaMemcpy on that stream or on a blocking stream (ordered after it), and the
+  // host reads nothing the kernel writes. The host then prepares the tree start (bagging, discretizer launches,
+  // metadata uploads) while the gradients are computed instead of after. Host-memory gradients keep the synchronize.
+  // Off with compact_prefill (its non-blocking stream). Same kernels, same GPU order: bit-identical.
+  bool gradients_no_sync = true;    // key: gradients_no_sync
+  // a pooled CUDA tree's retained device leaf values (the one device array ToHost keeps for shrinkage and score
+  // updates) go into a buffer allocated when the host-launched flow issues a final batched level (the tree's leaf
+  // count after it is known then, and the host would otherwise wait for that level's readback), and the slab's leaf
+  // values are copied into it at the tree end with cudaMemcpyAsync on the legacy default stream the synchronous
+  // cudaMemcpy used (its readers, shrinkage and score updates, are kernels and copies on that stream; the slab is
+  // rewritten only by later work of the next tree). The tree-end allocation and the host wait on the copy leave the
+  // path to the shrinkage kernel. Used only if the tree ends with exactly that leaf count, otherwise freed and the
+  // tree end allocates as before. Same bytes: bit-identical.
+  bool tree_end_prealloc = true;    // key: tree_end_prealloc
   // runtime tier-1 tuner: bandit over the batched-construct saturation floor,
   // timed per tree; quantized training only (integer hists keep results
   // schedule-invariant, so retuning cannot change the model). The probe phase
@@ -582,6 +605,7 @@ struct FalcataPlan {
     if (key == "pair_block_rows") return &pair_block_rows;
     if (key == "pair_capped_rows") return &pair_capped_rows;
     if (key == "async_tree_start") return &async_tree_start;
+    if (key == "tree_meta_batch") return &tree_meta_batch;
     if (key == "pair_pad") return &pair_pad;
     if (key == "level_row_blocks") return &level_row_blocks;
     if (key == "all_rows_direct") return &all_rows_direct;
@@ -602,6 +626,8 @@ struct FalcataPlan {
     if (key == "readback_kernel") return &readback_kernel;
     if (key == "invalidate_async") return &invalidate_async;
     if (key == "level_apply_first") return &level_apply_first;
+    if (key == "gradients_no_sync") return &gradients_no_sync;
+    if (key == "tree_end_prealloc") return &tree_end_prealloc;
     if (key == "tuner") return &tuner;
     if (key == "wide_partitions") return &wide_partitions;
     return nullptr;

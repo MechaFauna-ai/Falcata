@@ -408,6 +408,8 @@ class CUDADataPartition: public NCCLInfo {
   // kernel launch functions
   void LaunchFillDataIndicesBeforeTrain();
 
+  void LaunchBeforeTrainLeafInit();
+
   void LaunchSplitInnerKernel(
     // input best split info
     const data_size_t num_data_in_leaf,

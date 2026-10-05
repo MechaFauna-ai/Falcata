@@ -250,7 +250,15 @@ class CUDATree : public Tree {
 
   void SyncLeafOutputFromCUDAToHost();
 
+  /*! \brief cuda_plan key tree_end_prealloc: allocate the owned device buffer ToHost keeps the leaf values in, for
+   *  a tree expected to end with num_leaves leaves; ToHost uses it only if the tree ends with exactly that many
+   *  leaves on the pooled slab, and frees it otherwise */
+  void PrepareRetainedLeafValues(int num_leaves);
+
  private:
+  double* prepared_leaf_value_ = nullptr;
+  size_t prepared_leaf_value_size_ = 0;
+
   /*! \brief shared tail of ToHost() and RebuildFromHostSplits(): shrink the host
    *  vectors to num_leaves_, materialize the retained device leaf values and
    *  release every other per-tree device array + the per-tree stream */

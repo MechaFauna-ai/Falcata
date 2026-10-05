@@ -717,6 +717,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::unique_ptr<CUDADataPartition> cuda_data_partition_;
   // for histogram construction
   std::unique_ptr<CUDAHistogramConstructor> cuda_histogram_constructor_;
+  // cuda_plan key tree_meta_batch: staging of the tree start's metadata uploads (see cuda_meta_batch.hpp)
+  TreeStartMetaBatch tree_meta_batch_;
   // for best split information finding, given the histograms
   std::unique_ptr<CUDABestSplitFinder> cuda_best_split_finder_;
   // gradient discretizer for quantized training

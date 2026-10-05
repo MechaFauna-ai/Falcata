@@ -720,6 +720,11 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     cuda_histogram_constructor_->SetFeatureUsedBytree(fp_feature_mask_);
     cuda_histogram_constructor_->BuildCompactView(fp_feature_mask_);
   } else {
+    // cuda_plan key tree_meta_batch: the uploads from here to the compact fill go out as one copy and one scatter
+    // (flushed before the fill and any other GPU operation in between, and at the end of this block)
+    TreeStartMetaBatchScope meta_batch_scope(
+      FalcataPlan::Get().tree_meta_batch && AsyncTreeStart() && nccl_communicator_ == nullptr ?
+        &tree_meta_batch_ : nullptr);
     cuda_best_split_finder_->BeforeTrain(col_sampler_.is_feature_used_bytree());
     cuda_histogram_constructor_->SetFeatureUsedBytree(col_sampler_.is_feature_used_bytree());
     // fused root histogram: the fill sees every row, which is the root leaf only without bagging; the root level
@@ -731,6 +736,7 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
       config_->use_quantized_grad && cuda_gradient_discretizer_->GetHistBitsInLeaf<false>(0) <= 16);
     cuda_histogram_constructor_->BuildCompactView(col_sampler_.is_feature_used_bytree());
     cuda_histogram_constructor_->RequestFusedRootHist(false, false);
+    meta_batch_scope.End();
   }
   if (nccl_communicator_ != nullptr) {
     // this tree's feature sample decides which histogram bins the all-reduce
@@ -2364,6 +2370,11 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
       cuda_data_partition_->MaterializeHybridLeafMapSubset(hybrid_map_residual_leaves_);
       hybrid_map_early_written_ = true;
       hybrid_map_early_num_leaves_ = tree->num_leaves();
+    }
+    if (FalcataPlan::Get().tree_end_prealloc && vec_num_targets_ <= 1) {
+      // cuda_plan key tree_end_prealloc: the tree's leaf count after its final level; the allocation runs while
+      // the GPU applies the level
+      tree->PrepareRetainedLeafValues(tree->num_leaves());
     }
   }
 }

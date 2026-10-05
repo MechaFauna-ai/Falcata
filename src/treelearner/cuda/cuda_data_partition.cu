@@ -63,6 +63,32 @@ void CUDADataPartition::LaunchFillDataIndicesBeforeTrain() {
   FillDataIndicesBeforeTrainKernel<<<num_blocks, FILL_INDICES_BLOCK_SIZE_DATA_PARTITION>>>(num_data_in_root, cuda_data_indices_.RawData(), cuda_data_index_to_leaf_index_.RawData());
 }
 
+// cuda_plan key tree_meta_batch: the tree start's leaf window init in one kernel, the bytes the three memsets, the
+// two root-count copies (from the device count, or the host's bagged count) and the hist pool pointer upload wrote
+__global__ void BeforeTrainLeafInitKernel(data_size_t* leaf_num_data, data_size_t* leaf_data_start,
+                                          data_size_t* leaf_data_end, const int num_leaves,
+                                          const data_size_t* root_count_device, const data_size_t root_count_host,
+                                          hist_t** hist_pool, hist_t* hist) {
+  const data_size_t root_count = root_count_device != nullptr ? *root_count_device : root_count_host;
+  for (int i = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x); i < num_leaves;
+       i += static_cast<int>(gridDim.x * blockDim.x)) {
+    leaf_num_data[i] = i == 0 ? root_count : 0;
+    leaf_data_start[i] = 0;
+    leaf_data_end[i] = i == 0 ? root_count : 0;
+  }
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    *hist_pool = hist;
+  }
+}
+
+void CUDADataPartition::LaunchBeforeTrainLeafInit() {
+  const int num_blocks = std::max(1, std::min(64, (num_leaves_ + 255) / 256));
+  BeforeTrainLeafInitKernel<<<num_blocks, 256>>>(
+    cuda_leaf_num_data_.RawData(), cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), num_leaves_,
+    use_bagging_ ? nullptr : cuda_num_data_.RawDataReadOnly(), num_used_indices_, cuda_hist_pool_.RawData(),
+    cuda_hist_);
+}
+
 void CUDADataPartition::LaunchFillDataIndexToLeafIndex() {
   const data_size_t num_data_in_root = root_num_data();
   const int num_blocks = (num_data_in_root + FILL_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / FILL_INDICES_BLOCK_SIZE_DATA_PARTITION;

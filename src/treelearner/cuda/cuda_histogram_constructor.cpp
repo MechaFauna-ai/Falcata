@@ -750,6 +750,7 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
   // Per-tree fill: when source is host (column-major), do one cudaMemcpy per sampled column.
   // Each is a contiguous num_data byte transfer at ~20 GB/s → ~85 ms for f=0.1 / 6.7M rows.
   if (cuda_row_data_->is_data_host_mapped()) {
+    FlushTreeStartMetaBatch();  // cuda_plan key tree_meta_batch: the staging transpose reads the layout above
     const uint8_t* src_col_major = cuda_row_data_->host_partitioned_data_uint8_t();
     // Compact GPU layout: row-major-in-partition (matches histogram kernel expectation).
     // For each compact col c in partition p, we need to write num_data bytes to
@@ -862,6 +863,8 @@ void CUDAHistogramConstructor::LaunchCompactFill(
     if (!async_meta) {
       // cuda_plan key async_tree_start: the same default stream as cudaMemcpy, without the host wait; host_src is
       // local to this function, so the bytes are kept until the tree end (TreeStartUploads). Off: cudaMemcpy.
+      // cuda_plan key tree_meta_batch: while the batch collects they are staged in it, flushed before the fill
+      // launch below
       tree_start_uploads_.UploadBytes(device_dst, host_src, bytes);
       return;
     }
@@ -946,6 +949,7 @@ void CUDAHistogramConstructor::LaunchCompactFill(
     upload(cuda_ws_dst_stride_.RawData(), ws_dst_stride_h.data(), sizeof(int) * total_word_slots, &pin_off);
     upload(cuda_ws_first_col_.RawData(), ws_first_col_h.data(), sizeof(int) * total_word_slots, &pin_off);
     upload(cuda_ws_ndig_.RawData(), ws_ndig_h.data(), sizeof(uint8_t) * total_word_slots, &pin_off);
+    FlushTreeStartMetaBatch();  // cuda_plan key tree_meta_batch: the fill reads the batched metadata
     LaunchFillCompactCodecKernel(
       stream, layout.codec,
       colmajor_direct_ ? colmajor_bin_.RawDataReadOnly() : RowMajorBin<uint8_t>(),
@@ -1097,6 +1101,7 @@ void CUDAHistogramConstructor::LaunchCompactFill(
         if (fused_root_scratch_.Size() < static_cast<size_t>(num_total_bin_)) {
           fused_root_scratch_.Resize(static_cast<size_t>(num_total_bin_));
         }
+        FlushTreeStartMetaBatch();  // cuda_plan key tree_meta_batch: the fill reads the batched metadata
         fused_root = LaunchFillCompactData4BitTiledRootHistKernel(
           stream,
           // the same source as the plain tiled fill below: the column-major store (colmajor_direct's compact
@@ -1133,6 +1138,7 @@ void CUDAHistogramConstructor::LaunchCompactFill(
       }
     }
     if (!fused_root) {
+    FlushTreeStartMetaBatch();  // cuda_plan key tree_meta_batch
     LaunchFillCompactData4BitKernel(
       stream,
       colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : RowMajorBin<uint8_t>(),
@@ -1179,6 +1185,7 @@ void CUDAHistogramConstructor::LaunchCompactFill(
     upload(cuda_slot_src_stride_.RawData(), slot_src_stride_h.data(), sizeof(int) * total_compact, &pin_off);
     upload(cuda_slot_dst_byte_.RawData(), slot_dst_byte_h.data(), sizeof(size_t) * total_compact, &pin_off);
     upload(cuda_slot_dst_stride_.RawData(), slot_dst_stride_h.data(), sizeof(int) * total_compact, &pin_off);
+    FlushTreeStartMetaBatch();  // cuda_plan key tree_meta_batch
     // NOTE: a fused column-major second output here was measured SLOWER than
     // the tree learner's separate tile-transposed gather from the compact
     // matrix (the fill's slot-major warps write the column-major layout one
