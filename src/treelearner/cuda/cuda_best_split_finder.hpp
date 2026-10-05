@@ -601,6 +601,9 @@ class CUDABestSplitFinder {
    *  CUDASplitInfo is never constructed/destructed in it) */
   mutable CUDASplitInfo* pinned_leaf_best_split_info_ = nullptr;
   mutable size_t pinned_leaf_best_split_info_size_ = 0;
+  /*! \brief device alias of pinned_leaf_best_split_info_ (mapped allocation; nullptr where the device cannot map
+   *  it), written by SyncAllLeafBestSplitsToHost's copy kernel (cuda_plan key readback_kernel) */
+  mutable CUDASplitInfo* pinned_leaf_best_split_info_device_ = nullptr;
   /*! \brief grow the pinned best-split staging buffer to >= num_leaves slots */
   void EnsurePinnedLeafBestSplitCapacity(const int num_leaves) const;
   int max_num_bin_in_feature_;
@@ -707,6 +710,8 @@ class CUDABestSplitFinder {
   CUDAVector<double> cuda_vec_payload_task_;
   CUDAVector<double> cuda_vec_payload_leaf_;
   CUDAVector<int> cuda_invalidate_leaves_;
+  /*! \brief cuda_plan key invalidate_async: the host source of the last asynchronous upload of the leaf list */
+  std::vector<int> invalidate_leaves_host_;
   CUDAVector<int> cuda_cat_threshold_real_leaf_;
   CUDAVector<uint32_t> cuda_cat_threshold_feature_;
   CUDAVector<int> cuda_cat_threshold_real_feature_;

@@ -7,6 +7,7 @@
 #ifdef USE_CUDA
 
 #include <Falcata/cuda/cuda_tree.hpp>
+#include <Falcata/falcata_plan.h>
 
 #include <algorithm>
 #include <cstring>
@@ -51,6 +52,22 @@ CUDATree::~CUDATree() {
   if (cuda_stream_ != nullptr) {
     gpuAssert(cudaStreamDestroy(cuda_stream_), __FILE__, __LINE__);
   }
+  if (prepared_leaf_value_ != nullptr) {
+    gpuAssert(cudaFree(prepared_leaf_value_), __FILE__, __LINE__);
+  }
+}
+
+void CUDATree::PrepareRetainedLeafValues(const int num_leaves) {
+  if (num_leaves <= 0 || num_leaves >= max_leaves_ || !cuda_leaf_value_.IsView()) {
+    return;
+  }
+  if (prepared_leaf_value_ != nullptr && prepared_leaf_value_size_ == static_cast<size_t>(num_leaves)) {
+    return;
+  }
+  DeallocateCUDAMemory<double>(&prepared_leaf_value_, __FILE__, __LINE__);
+  prepared_leaf_value_size_ = 0;
+  AllocateCUDAMemory<double>(&prepared_leaf_value_, static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+  prepared_leaf_value_size_ = static_cast<size_t>(num_leaves);
 }
 
 void CUDATree::InitCUDAMemory(uint8_t* pooled_device_buffer) {
@@ -274,7 +291,19 @@ inline void CUDATree::AddBias(double val) {
   LaunchAddBiasKernel(val);
 }
 
-void CUDATree::ToHost() {
+bool CUDATree::LaunchSlabReadback(void* readback_staging_device, size_t readback_staging_bytes) const {
+  const size_t slab_bytes = PooledDeviceBufferSize(max_leaves_);
+  if (!pooled_ || readback_staging_device == nullptr || readback_staging_bytes < slab_bytes) {
+    return false;
+  }
+  // cuda_threshold_ is the first view carved from the slab (see InitCUDAMemory)
+  LaunchCopyToMappedHost(readback_staging_device, cuda_threshold_.RawDataReadOnly(), slab_bytes, __FILE__, __LINE__);
+  return true;
+}
+
+void CUDATree::ToHost(void* readback_staging_host, void* readback_staging_device,
+                      size_t readback_staging_bytes, const std::function<void()>& after_device_copy,
+                      bool slab_in_staging) {
   left_child_.resize(max_leaves_ - 1);
   right_child_.resize(max_leaves_ - 1);
   split_feature_inner_.resize(max_leaves_ - 1);
@@ -299,11 +328,24 @@ void CUDATree::ToHost() {
     // round trip). The scatter into the host vectors is plain host memcpy.
     const size_t L = static_cast<size_t>(max_leaves_);
     const size_t slab_bytes = PooledDeviceBufferSize(max_leaves_);
-    std::vector<uint8_t> staging(slab_bytes);
+    std::vector<uint8_t> staging;
     // cuda_threshold_ is the first view carved from the slab (see InitCUDAMemory)
-    CopyFromCUDADeviceToHost<uint8_t>(staging.data(),
-      reinterpret_cast<const uint8_t*>(cuda_threshold_.RawData()), slab_bytes, __FILE__, __LINE__);
-    const uint8_t* p = staging.data();
+    const uint8_t* slab = reinterpret_cast<const uint8_t*>(cuda_threshold_.RawData());
+    const uint8_t* p = nullptr;
+    if (readback_staging_device != nullptr && readback_staging_bytes >= slab_bytes) {
+      // cuda_plan key readback_kernel: copy kernel on the default stream into the caller's mapped pinned buffer
+      // (cuda_plan key final_readback_first: already copied there and synchronized, see LaunchSlabReadback)
+      if (!slab_in_staging) {
+        CopyFromCUDADeviceToMappedHost(readback_staging_device, readback_staging_host, slab, slab_bytes,
+                                       __FILE__, __LINE__);
+      }
+      p = static_cast<const uint8_t*>(readback_staging_host);
+    } else {
+      staging.resize(slab_bytes);
+      CopyFromCUDADeviceToHost<uint8_t>(staging.data(), slab, slab_bytes, __FILE__, __LINE__);
+      p = staging.data();
+    }
+    if (after_device_copy) after_device_copy();
     const auto scatter = [&p](void* dst, const size_t bytes, const size_t stride) {
       if (bytes > 0) std::memcpy(dst, p, bytes);
       p += stride;
@@ -346,6 +388,7 @@ void CUDATree::ToHost() {
   CopyFromCUDADeviceToHost<double>(internal_weight_.data(), cuda_internal_weight_.RawData(), num_leaves_size - 1, __FILE__, __LINE__);
   CopyFromCUDADeviceToHost<data_size_t>(internal_count_.data(), cuda_internal_count_.RawData(), num_leaves_size - 1, __FILE__, __LINE__);
   CopyFromCUDADeviceToHost<int>(leaf_depth_.data(), cuda_leaf_depth_.RawData(), num_leaves_size, __FILE__, __LINE__);
+  if (after_device_copy) after_device_copy();
   }
 
   if (num_cat_ > 0) {
@@ -395,7 +438,13 @@ void CUDATree::ShrinkHostVectorsAndReleaseDevice() {
     }
   }
 
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  // cuda_plan key final_readback_first: a pooled tree's device arrays are views of the learner's slab, so nothing
+  // below frees device memory (the retained leaf values are copied out on the default stream, ahead of the next
+  // tree's writes to the slab): the host need not wait for the device, e.g. for a leaf-map pass queued after the
+  // tree's copy (CUDASingleGPUTreeLearner::FlushEarlyLeafMap)
+  if (!(pooled_ && FalcataPlan::Get().final_readback_first)) {
+    SynchronizeCUDADevice(__FILE__, __LINE__);
+  }
 
   // Free per-tree GPU buffers no longer needed after ToHost. Without this,
   // accumulated per-tree GPU memory OOMs a 32GB device after ~6k trees on
@@ -404,6 +453,21 @@ void CUDATree::ShrinkHostVectorsAndReleaseDevice() {
   // For pooled trees the slab is reused by the next tree, so the retained leaf
   // values must be materialized into owned memory in every case (Resize on a
   // view copies-then-owns; Materialize covers num_leaves_ == max_leaves_).
+  if (prepared_leaf_value_ != nullptr) {
+    if (cuda_leaf_value_.IsView() && num_leaves_ > 0 && num_leaves_ < max_leaves_ &&
+        cuda_leaf_value_.Size() >= static_cast<size_t>(num_leaves_) &&
+        prepared_leaf_value_size_ == static_cast<size_t>(num_leaves_)) {
+      // cuda_plan key tree_end_prealloc: the bytes Resize would copy, into the buffer allocated at the final level,
+      // on the same legacy default stream without the host wait (the readers are later work on that stream)
+      CopyFromCUDADeviceToCUDADeviceAsync<double>(prepared_leaf_value_, cuda_leaf_value_.RawData(),
+                                                  static_cast<size_t>(num_leaves_), __FILE__, __LINE__);
+      cuda_leaf_value_.Adopt(prepared_leaf_value_, static_cast<size_t>(num_leaves_));
+    } else {
+      DeallocateCUDAMemory<double>(&prepared_leaf_value_, __FILE__, __LINE__);
+    }
+    prepared_leaf_value_ = nullptr;
+    prepared_leaf_value_size_ = 0;
+  }
   if (num_leaves_ > 0 && num_leaves_ < max_leaves_ && cuda_leaf_value_.Size() > 0) {
     cuda_leaf_value_.Resize(static_cast<size_t>(num_leaves_));
   }

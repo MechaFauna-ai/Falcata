@@ -21,6 +21,8 @@
 #include <string>
 #include <vector>
 
+#include "cuda_meta_batch.hpp"
+
 #define NUM_THREADS_PER_BLOCK_LEAF_SPLITS (1024)
 #define NUM_DATA_THREAD_ADD_LEAF_SPLITS (6)
 
@@ -39,7 +41,10 @@ inline bool AsyncTreeStart() {
 // objective's per-iteration device sync). A source that dies with its function goes through TreeStartUploads.
 template <typename T>
 inline void UploadTreeStartMeta(T* device_dst, const T* host_src, const size_t count) {
-  if (AsyncTreeStart()) {
+  if (CurrentTreeStartMetaBatch() != nullptr) {
+    // cuda_plan key tree_meta_batch: one copy and one scatter for the whole tree start (see cuda_meta_batch.hpp)
+    CurrentTreeStartMetaBatch()->Add(device_dst, host_src, count * sizeof(T));
+  } else if (AsyncTreeStart()) {
     CopyFromHostToCUDADeviceAsync<T>(device_dst, host_src, count, 0, __FILE__, __LINE__);
   } else {
     CopyFromHostToCUDADevice<T>(device_dst, host_src, count, __FILE__, __LINE__);
@@ -49,10 +54,16 @@ inline void UploadTreeStartMeta(T* device_dst, const T* host_src, const size_t c
 /*! \brief cuda_plan key async_tree_start: tree-start uploads from host buffers local to the calling function. The
  *  bytes are copied into storage kept until Release(), which the tree learner calls right after the tree-end
  *  cudaDeviceSynchronize, so every kept source outlives its copy whenever the driver reads it. Off: the synchronous
- *  cudaMemcpy, nothing kept. */
+ *  cudaMemcpy, nothing kept. While a tree_meta_batch collects, the batch takes the bytes instead (it copies them
+ *  into its own staging at once), as in UploadTreeStartMeta. */
 class TreeStartUploads {
  public:
   void UploadBytes(void* device_dst, const void* host_src, const size_t bytes) {
+    if (CurrentTreeStartMetaBatch() != nullptr) {
+      // cuda_plan key tree_meta_batch: one copy and one scatter for the whole tree start (see cuda_meta_batch.hpp)
+      CurrentTreeStartMetaBatch()->Add(device_dst, host_src, bytes);
+      return;
+    }
     if (!AsyncTreeStart()) {
       CopyFromHostToCUDADevice<uint8_t>(static_cast<uint8_t*>(device_dst), static_cast<const uint8_t*>(host_src),
                                         bytes, __FILE__, __LINE__);
@@ -137,6 +148,10 @@ class CUDALeafSplits: public NCCLInfo {
 
   /*! \brief deferred counterpart of InitValues' root-sum readback (see there) */
   void CopyRootSumsToHost(double* root_sum_gradients, double* root_sum_hessians) const;
+  /*! \brief cuda_plan key readback_kernel: the same two values copied by kernels on the default stream into a
+   *  mapped pinned staging buffer of at least two doubles (staging_device: its device alias), one synchronize */
+  void CopyRootSumsToHost(double* root_sum_gradients, double* root_sum_hessians, void* staging_host,
+                          void* staging_device) const;
 
   void InitValues(
     const double lambda_l1, const double lambda_l2, const double max_delta_step,

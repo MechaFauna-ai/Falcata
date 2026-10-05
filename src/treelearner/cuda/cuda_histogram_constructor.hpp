@@ -342,6 +342,13 @@ class CUDAHistogramConstructor {
    *  launch grid, and the construct kernel derives the exact per-thread row
    *  grouping on-device from the array so histograms are bit-identical to the
    *  classic sizing (non-quantized dense path only). */
+  /*! \brief cuda_plan key pair_block_map: the host copy of the next ConstructHistogramsForLevel's pair descriptors
+   *  (num_pairs of them, the leaf counts the device structs hold; nullptr: unknown), valid for that one call */
+  void SetLevelHostPairDescs(const CUDAHybridPairDescriptor* host_pair_descs, const int num_pairs) {
+    level_host_pair_descs_ = host_pair_descs;
+    level_host_num_pairs_ = num_pairs;
+  }
+
   void ConstructHistogramsForLevel(
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
@@ -910,6 +917,9 @@ class CUDAHistogramConstructor {
   std::vector<uint32_t> need_fix_histogram_features_num_bin_aligend_;
   /*! \brief minimum number of blocks allowed in the y dimension */
   const int min_grid_dim_y_ = 160;
+  // cuda_plan key pair_block_map: see SetLevelHostPairDescs
+  const CUDAHybridPairDescriptor* level_host_pair_descs_ = nullptr;
+  int level_host_num_pairs_ = 0;
   /*! \brief leaf histogram slots dirtied by the previous tree (-1 = all) */
   int num_dirty_leaves_ = -1;
   /*! \brief dataset has categorical features (their find kernel reads hist_t;
@@ -981,6 +991,16 @@ class CUDAHistogramConstructor {
   std::vector<uint8_t> host_bin_used_bytree_;
   CUDAVector<uint8_t> cuda_bin_used_bytree_;
   bool any_feature_unused_bytree_ = false;
+  /*! \brief cuda_plan key fix_subtract_fused: this tree's sampled features (the same features and bin ranges as
+   *  host_bin_used_bytree_), two words each: the first histogram bin, and the bin span | num_bin << 8 |
+   *  most-frequent bin << 16 | 1 << 24 for a feature whose most-frequent bin is fixed (need_fix_histogram_features_).
+   *  used_feature_info_ok_: built and uploaded for this tree, at most 512 features, every span at most 8 bins and
+   *  every fixed feature's bins and most-frequent bin within its span. */
+  std::vector<uint32_t> host_used_feature_info_;
+  CUDAVector<uint32_t> cuda_used_feature_info_;
+  std::vector<uint8_t> need_fix_by_feature_;
+  int num_used_feature_info_ = 0;
+  bool used_feature_info_ok_ = false;
   /*! \brief every feature fits the register-accumulation bin cap (<= 8 bins);
    *  selects the contention-free construct body on the batched compact path
    *  (non-quantized only; FALCATA_BATCH_REGHIST=0 disables) */

@@ -11,6 +11,7 @@
 #ifdef USE_CUDA
 
 #include <Falcata/cuda/cuda_utils.hu>
+#include <Falcata/falcata_plan.h>
 #include <Falcata/objective_function.h>
 #include <Falcata/meta.h>
 
@@ -63,7 +64,9 @@ class CUDAObjectiveInterface: public HOST_OBJECTIVE, public NCCLInfo {
 
   void GetGradients(const double* scores, score_t* gradients, score_t* hessians) const override {
     LaunchGetGradientsKernel(scores, gradients, hessians);
-    SynchronizeCUDADevice(__FILE__, __LINE__);
+    if (!GradientsNeedNoSync(gradients, hessians)) {
+      SynchronizeCUDADevice(__FILE__, __LINE__);
+    }
   }
 
   void GetGradientsWithSampledQueries(const double* scores, const data_size_t /*num_sampled_queries*/, const data_size_t* /*sampled_query_indices*/, score_t* gradients, score_t* hessians) const override {
@@ -80,6 +83,26 @@ class CUDAObjectiveInterface: public HOST_OBJECTIVE, public NCCLInfo {
   }
 
  protected:
+  /*! \brief cuda_plan key gradients_no_sync: true when both outputs are device memory (the host cannot read them
+   *  without a stream-ordered copy) and the plan allows it */
+  static bool GradientsNeedNoSync(const score_t* gradients, const score_t* hessians) {
+    const FalcataPlan& plan = FalcataPlan::Get();
+    if (!plan.gradients_no_sync || plan.compact_prefill) {
+      return false;
+    }
+    for (const score_t* ptr : {gradients, hessians}) {
+      cudaPointerAttributes attributes;
+      if (cudaPointerGetAttributes(&attributes, ptr) != cudaSuccess) {
+        cudaGetLastError();
+        return false;
+      }
+      if (attributes.type != cudaMemoryTypeDevice) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   virtual void LaunchGetGradientsKernel(const double* scores, score_t* gradients, score_t* hessians) const = 0;
 
   virtual double LaunchCalcInitScoreKernel(const int class_id) const {

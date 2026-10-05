@@ -640,10 +640,28 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
    *  budget does not bind and every child sits at max_depth; set by the level prefix when it ended on such a level */
   bool level_completes_tree_ = false;
   bool prefix_completes_tree_ = false;
+  /*! \brief cuda_plan key readback_kernel: mapped pinned staging of the tree end's readbacks (the tree's pooled slab
+   *  in CUDATree::ToHost, the exact leaf counts), its device alias (nullptr where the device cannot map it) and size */
+  void* readback_staging_ = nullptr;
+  void* readback_staging_device_ = nullptr;
+  size_t readback_staging_bytes_ = 0;
+  /*! \brief readback_staging_ of at least `bytes` bytes, or false (key off or no mapping: use cudaMemcpy) */
+  bool EnsureReadbackStaging(size_t bytes);
   /*! \brief cuda_plan key early_leaf_map: the residual leaves' map pass was launched with the final level, when
    *  the tree had hybrid_map_early_num_leaves_ leaves (a leaf-wise tail split after it re-runs the pass) */
   bool hybrid_map_early_written_ = false;
   int hybrid_map_early_num_leaves_ = 0;
+  /*! \brief cuda_plan key final_readback_first: the early map pass is due, launched by FlushEarlyLeafMap from the
+   *  tree end's ToHost right after the tree's device copy (if no flush runs, the tree end writes the residual leaves
+   *  as without early_leaf_map) */
+  bool hybrid_map_early_pending_ = false;
+  void FlushEarlyLeafMap(const CUDATree* tree);
+  /*! \brief cuda_plan key final_readback_first: the tree end's slab and leaf-count readbacks launched ahead of the
+   *  final level's split batch readback (PrefetchTreeReadback): the tree's leaf count then (0: none), and whether
+   *  the counts were copied too (behind the slab in readback_staging_, as in Train's early_to_host) */
+  int prefetched_tree_num_leaves_ = 0;
+  bool prefetched_tree_counts_ = false;
+  void PrefetchTreeReadback(const CUDATree* tree);
   // hybrid growth: single-sync (speculative) level pipeline
   // (FALCATA_HYBRID_ONE_SYNC, default on; "0" keeps the classic two-sync flow)
   bool use_hybrid_one_sync_ = false;
@@ -710,6 +728,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::unique_ptr<CUDADataPartition> cuda_data_partition_;
   // for histogram construction
   std::unique_ptr<CUDAHistogramConstructor> cuda_histogram_constructor_;
+  // cuda_plan key tree_meta_batch: staging of the tree start's metadata uploads (see cuda_meta_batch.hpp)
+  TreeStartMetaBatch tree_meta_batch_;
   // for best split information finding, given the histograms
   std::unique_ptr<CUDABestSplitFinder> cuda_best_split_finder_;
   // gradient discretizer for quantized training

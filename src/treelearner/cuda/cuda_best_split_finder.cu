@@ -4831,6 +4831,158 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
   }
 }
 
+// CUDASplitInfo::operator= with every field it copies unconditionally loaded before the first store (cuda_plan key
+// sync_copy_batched). The operator's field-by-field order compiles to load, store, load, store, ...: a store to dst
+// may alias the next field of src, so each load waits for the previous store's data, one global round trip per
+// field (~23 in a row). Here the fields are loaded into registers first (one round trip), then stored; the
+// categorical and vector-leaf slab copies run exactly as operator= runs them, from the same counts. Callers pass
+// structs of two distinct split-info arrays (no overlap), so the stored values are operator='s.
+struct SplitInfoFields {
+  bool is_valid;
+  int leaf_index;
+  double gain;
+  int inner_feature_index;
+  uint32_t threshold;
+  bool default_left;
+  double left_sum_gradients;
+  double left_sum_hessians;
+  int64_t left_sum_of_gradients_hessians;
+  data_size_t left_count;
+  double left_gain;
+  double left_value;
+  double right_sum_gradients;
+  double right_sum_hessians;
+  int64_t right_sum_of_gradients_hessians;
+  data_size_t right_count;
+  double right_gain;
+  double right_value;
+  int num_cat_threshold;
+  int num_vec_targets;
+};
+
+__device__ __forceinline__ SplitInfoFields LoadSplitInfoFields(const CUDASplitInfo* src) {
+  SplitInfoFields f;
+  f.is_valid = src->is_valid;
+  f.leaf_index = src->leaf_index;
+  f.gain = src->gain;
+  f.inner_feature_index = src->inner_feature_index;
+  f.threshold = src->threshold;
+  f.default_left = src->default_left;
+  f.left_sum_gradients = src->left_sum_gradients;
+  f.left_sum_hessians = src->left_sum_hessians;
+  f.left_sum_of_gradients_hessians = src->left_sum_of_gradients_hessians;
+  f.left_count = src->left_count;
+  f.left_gain = src->left_gain;
+  f.left_value = src->left_value;
+  f.right_sum_gradients = src->right_sum_gradients;
+  f.right_sum_hessians = src->right_sum_hessians;
+  f.right_sum_of_gradients_hessians = src->right_sum_of_gradients_hessians;
+  f.right_count = src->right_count;
+  f.right_gain = src->right_gain;
+  f.right_value = src->right_value;
+  f.num_cat_threshold = src->num_cat_threshold;
+  f.num_vec_targets = src->num_vec_targets;
+  return f;
+}
+
+// *dst = *src given f = LoadSplitInfoFields(src)
+__device__ __forceinline__ void StoreSplitInfoFields(CUDASplitInfo* dst, const SplitInfoFields& f,
+                                                     const CUDASplitInfo* src) {
+  dst->is_valid = f.is_valid;
+  dst->leaf_index = f.leaf_index;
+  dst->gain = f.gain;
+  dst->inner_feature_index = f.inner_feature_index;
+  dst->threshold = f.threshold;
+  dst->default_left = f.default_left;
+  dst->left_sum_gradients = f.left_sum_gradients;
+  dst->left_sum_hessians = f.left_sum_hessians;
+  dst->left_sum_of_gradients_hessians = f.left_sum_of_gradients_hessians;
+  dst->left_count = f.left_count;
+  dst->left_gain = f.left_gain;
+  dst->left_value = f.left_value;
+  dst->right_sum_gradients = f.right_sum_gradients;
+  dst->right_sum_hessians = f.right_sum_hessians;
+  dst->right_sum_of_gradients_hessians = f.right_sum_of_gradients_hessians;
+  dst->right_count = f.right_count;
+  dst->right_gain = f.right_gain;
+  dst->right_value = f.right_value;
+  dst->num_cat_threshold = f.num_cat_threshold;
+  if (f.num_cat_threshold > 0 && dst->cat_threshold != nullptr) {
+    if (src->cat_threshold != nullptr) {
+      for (int i = 0; i < f.num_cat_threshold; ++i) {
+        dst->cat_threshold[i] = src->cat_threshold[i];
+      }
+      if (dst->cat_threshold_real != nullptr && src->cat_threshold_real != nullptr) {
+        for (int i = 0; i < f.num_cat_threshold; ++i) {
+          dst->cat_threshold_real[i] = src->cat_threshold_real[i];
+        }
+      }
+    } else {
+      dst->num_cat_threshold = 0;
+    }
+  }
+  dst->num_vec_targets = f.num_vec_targets;
+  if (f.num_vec_targets > 0 && dst->vec_payload != nullptr) {
+    if (src->vec_payload != nullptr) {
+      for (int i = 0; i < kNumVecPayloadFields * f.num_vec_targets; ++i) {
+        dst->vec_payload[i] = src->vec_payload[i];
+      }
+    } else {
+      dst->num_vec_targets = 0;
+    }
+  }
+}
+
+// sync_copy_batched's block reduction for the used-task sync when every found gain is finite: there
+// OtherIsBetterWithTieBreak<double> (tolerance fmax(|a|, |b|) * 0 = 0) is "higher gain, or equal gain and lower
+// index", and found beats not found. The key maps a finite gain to an unsigned integer of the same order (-0 shares
+// +0's key: they compare equal), not found to 0, below every finite gain's key; the reduction is the maximum of
+// (key, then lower index) in integer compares instead of a chain of fp64 compares. Found entries have distinct
+// indices (distinct tasks), so the order is strict and the maximum is the original's winner; not-found entries
+// all carry the same index (position 0's slot), as in the original.
+__device__ __forceinline__ uint64_t FiniteGainOrderKey(const bool found, const double gain) {
+  uint64_t bits = static_cast<uint64_t>(__double_as_longlong(gain));
+  if (bits == 0x8000000000000000ull) bits = 0;
+  const uint64_t key = (bits >> 63) != 0 ? ~bits : (bits | 0x8000000000000000ull);
+  return found ? key : 0ull;
+}
+
+// blockDim.x a multiple of 32, at most 32 warps; the result is valid in thread 0
+__device__ __forceinline__ uint32_t ReduceBestKeyBlock(uint64_t key, uint32_t index, uint64_t* shared_key,
+                                                       uint32_t* shared_index) {
+  const uint32_t lane = threadIdx.x % WARPSIZE;
+  const uint32_t warp_id = threadIdx.x / WARPSIZE;
+  const uint32_t num_warps = blockDim.x / WARPSIZE;
+#pragma unroll
+  for (uint32_t offset = WARPSIZE / 2; offset > 0; offset >>= 1) {
+    const uint64_t other_key = __shfl_down_sync(0xffffffffu, key, offset);
+    const uint32_t other_index = __shfl_down_sync(0xffffffffu, index, offset);
+    if (other_key > key || (other_key == key && other_index < index)) {
+      key = other_key;
+      index = other_index;
+    }
+  }
+  if (lane == 0) {
+    shared_key[warp_id] = key;
+    shared_index[warp_id] = index;
+  }
+  __syncthreads();
+  if (warp_id == 0) {
+    key = lane < num_warps ? shared_key[lane] : 0ull;
+    index = lane < num_warps ? shared_index[lane] : 0xffffffffu;
+#pragma unroll
+    for (uint32_t offset = WARPSIZE / 2; offset > 0; offset >>= 1) {
+      const uint64_t other_key = __shfl_down_sync(0xffffffffu, key, offset);
+      const uint32_t other_index = __shfl_down_sync(0xffffffffu, index, offset);
+      if (other_key > key || (other_key == key && other_index < index)) {
+        key = other_key;
+        index = other_index;
+      }
+    }
+  }
+  return index;
+}
+
 // Batched reduction over the per-pair task regions: blockIdx.x = 0 (smaller) / 1
 // (larger), blockIdx.y = pair, blockIdx.z = task block (num_tasks may exceed one
 // sync block for wide datasets). Each block reduces its slice of one leaf's
@@ -4840,6 +4992,11 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
 // leaf + z * num_leaves, exactly like the per-pair kernel); leaves of different
 // pairs are disjoint, so no conflicts. Multi-block leaves are merged afterwards
 // by SyncBestSplitForLevelKernelAllBlocks (the per-pair AllBlocks replica).
+// BATCHED (cuda_plan key sync_copy_batched, host-launched flow): when every found gain of the block is finite, the
+// block reduction is ReduceBestKeyBlock (the same winner: found entries have distinct slots; not-found entries tie on
+// key 0 and the lowest index, thread 0's own slot, as ReduceBestGain keeps it) and thread 0 copies the winner with
+// LoadSplitInfoFields / StoreSplitInfoFields; otherwise ReduceBestGain as before.
+template <bool BATCHED = false>
 __global__ void SyncBestSplitForLevelKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   CUDASplitInfo* cuda_leaf_best_split_info,
@@ -4927,9 +5084,21 @@ __global__ void SyncBestSplitForLevelKernel(
     best_gain = pair_split_info[read_index].gain;
     shared_read_index = read_index;
   }
-  __syncthreads();
-  const uint32_t best_read_index = ReduceBestGain(best_gain, best_found, shared_read_index,
-      shared_gain_buffer, shared_found_buffer, shared_thread_index_buffer);
+  bool finite_keys = false;
+  if (BATCHED) {
+    finite_keys = !__syncthreads_or(best_found && !isfinite(best_gain));
+  } else {
+    __syncthreads();
+  }
+  uint32_t best_read_index;
+  if (BATCHED && finite_keys) {
+    __shared__ uint64_t shared_key_buffer[BATCHED ? WARPSIZE : 1];
+    best_read_index = ReduceBestKeyBlock(FiniteGainOrderKey(best_found, best_gain), shared_read_index,
+                                         shared_key_buffer, shared_thread_index_buffer);
+  } else {
+    best_read_index = ReduceBestGain(best_gain, best_found, shared_read_index,
+        shared_gain_buffer, shared_found_buffer, shared_thread_index_buffer);
+  }
   if (threadIdx.x == 0) {
     CUDASplitInfo* cuda_split_info = cuda_leaf_best_split_info +
       static_cast<unsigned int>(leaf_index) + leaf_block_index * static_cast<unsigned int>(num_leaves);
@@ -4940,7 +5109,19 @@ __global__ void SyncBestSplitForLevelKernel(
     const bool best_task_used = is_feature_used_bytree == nullptr ||
       is_feature_used_bytree[tasks[best_task_index].inner_feature_index];
     const CUDASplitInfo* best_split_info = pair_split_info + best_read_index;
-    if (best_task_used && best_split_info->is_valid) {
+    if (BATCHED) {
+      // best_task_index is a task index whatever the slot holds: both loads in bounds
+      const int best_feature = tasks[best_task_index].inner_feature_index;
+      const SplitInfoFields best = LoadSplitInfoFields(best_split_info);
+      if (best_task_used && best.is_valid) {
+        StoreSplitInfoFields(cuda_split_info, best, best_split_info);
+        cuda_split_info->inner_feature_index = best_feature;
+        cuda_split_info->is_valid = true;
+      } else {
+        cuda_split_info->gain = kMinScore;
+        cuda_split_info->is_valid = false;
+      }
+    } else if (best_task_used && best_split_info->is_valid) {
       *cuda_split_info = *best_split_info;
       cuda_split_info->inner_feature_index = tasks[best_task_index].inner_feature_index;
       cuda_split_info->is_valid = true;
@@ -5012,7 +5193,10 @@ __global__ void SyncBestSplitForLevelKernelAllBlocks(
 // mask, then the merge's sequential fold over blocks. Only slot leaf_index is written, with the value the
 // original leaves there; the per-block slots leaf + z * num_leaves are scratch of the merge.
 // The used-task reads do not depend on the leaf, so they are issued before the leaf's validity loads.
+// BATCHED (cuda_plan key sync_copy_batched): the winner's slot, its validity and its task's feature index are
+// loaded in one batch before any store (LoadSplitInfoFields / StoreSplitInfoFields), the same values written.
 // blockDim.x: a multiple of 32, at most NUM_TASKS_PER_SYNC_BLOCK.
+template <bool BATCHED>
 __global__ void SyncBestSplitForLevelUsedTasksKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   CUDASplitInfo* cuda_leaf_best_split_info,
@@ -5040,32 +5224,102 @@ __global__ void SyncBestSplitForLevelUsedTasksKernel(
   // a thread that finds nothing keeps the slot of position 0, which thread 0 reads and finds invalid, so a
   // reduction that finds nothing returns an invalid slot
   uint32_t read_index = role_offset + static_cast<uint32_t>(used_task_indices != nullptr ? used_task_indices[0] : 0);
-  for (int pos = static_cast<int>(threadIdx.x); pos < num_used_tasks; pos += static_cast<int>(blockDim.x)) {
-    const uint32_t task_read_index = role_offset +
-      static_cast<uint32_t>(used_task_indices != nullptr ? used_task_indices[pos] : pos);
-    if (pair_split_info[task_read_index].is_valid) {
-      const double task_gain = pair_split_info[task_read_index].gain;
-      non_finite = non_finite || !isfinite(task_gain);
-      if (!found || task_gain > gain) {
-        found = true;
-        gain = task_gain;
-        read_index = task_read_index;
+  const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
+  const CUDALeafSplitsStruct* leaf_splits;
+  int leaf_index;
+  bool leaf_valid;
+  if (BATCHED) {
+    // the fold in chunks of kFold positions per thread (pos, pos + blockDim.x, ...: the same ascending order):
+    // a chunk's task-index loads, then its validity and gain loads (the gain is loaded whatever the validity, so it
+    // does not wait for it), then its compares; the leaf descriptor's loads go out with the first chunk's
+    constexpr int kFold = 4;
+    const int stride = static_cast<int>(blockDim.x);
+    uint32_t idx[kFold];
+    bool valid[kFold];
+    double task_gain[kFold];
+    auto load_indices = [&](const int first) {
+#pragma unroll
+      for (int k = 0; k < kFold; ++k) {
+        const int pos = first + k * stride;
+        idx[k] = role_offset + static_cast<uint32_t>(
+          pos < num_used_tasks ? (used_task_indices != nullptr ? used_task_indices[pos] : pos) : 0);
+      }
+    };
+    // a leaf the descriptor marks invalid is written invalid below whatever the fold finds: its slots are not read
+    // (the flag arrives with the task indices, so the slot loads wait no longer)
+    bool fold_slots = true;
+    auto load_slots = [&](const int first) {
+#pragma unroll
+      for (int k = 0; k < kFold; ++k) {
+        valid[k] = false;
+        task_gain[k] = 0.0;
+        if (fold_slots && first + k * stride < num_used_tasks) {
+          valid[k] = pair_split_info[idx[k]].is_valid;
+          task_gain[k] = pair_split_info[idx[k]].gain;
+        }
+      }
+    };
+    auto fold = [&]() {
+#pragma unroll
+      for (int k = 0; k < kFold; ++k) {
+        if (valid[k]) {
+          non_finite = non_finite || !isfinite(task_gain[k]);
+          if (!found || task_gain[k] > gain) {
+            found = true;
+            gain = task_gain[k];
+            read_index = idx[k];
+          }
+        }
+      }
+    };
+    const int first = static_cast<int>(threadIdx.x);
+    load_indices(first);
+    leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
+    const bool desc_valid = is_larger ? (desc->larger_valid != 0) : (desc->smaller_valid != 0);
+    const data_size_t desc_num_data = is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf;
+    fold_slots = desc_valid;
+    load_slots(first);
+    leaf_index = leaf_splits->leaf_index;
+    // same NCCL local-vs-global count distinction as SyncBestSplitForLevelKernel
+    const data_size_t gate_num_data = gate_on_desc_counts ? desc_num_data : leaf_splits->num_data_in_leaf;
+    const double leaf_sum_hessians = leaf_splits->sum_of_hessians;
+    fold();
+    for (int next = first + kFold * stride; next < num_used_tasks; next += kFold * stride) {
+      load_indices(next);
+      load_slots(next);
+      fold();
+    }
+    if (leaf_index < 0) {
+      return;
+    }
+    leaf_valid = desc_valid && gate_num_data > min_data_in_leaf && leaf_sum_hessians > min_sum_hessian_in_leaf;
+  } else {
+    for (int pos = static_cast<int>(threadIdx.x); pos < num_used_tasks; pos += static_cast<int>(blockDim.x)) {
+      const uint32_t task_read_index = role_offset +
+        static_cast<uint32_t>(used_task_indices != nullptr ? used_task_indices[pos] : pos);
+      if (pair_split_info[task_read_index].is_valid) {
+        const double task_gain = pair_split_info[task_read_index].gain;
+        non_finite = non_finite || !isfinite(task_gain);
+        if (!found || task_gain > gain) {
+          found = true;
+          gain = task_gain;
+          read_index = task_read_index;
+        }
       }
     }
+    leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
+    leaf_index = leaf_splits->leaf_index;
+    if (leaf_index < 0) {
+      return;
+    }
+    leaf_valid = is_larger ? (desc->larger_valid != 0) : (desc->smaller_valid != 0);
+    // same NCCL local-vs-global count distinction as SyncBestSplitForLevelKernel
+    const data_size_t gate_num_data = gate_on_desc_counts ?
+      (is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf) :
+      leaf_splits->num_data_in_leaf;
+    leaf_valid = leaf_valid && gate_num_data > min_data_in_leaf &&
+      leaf_splits->sum_of_hessians > min_sum_hessian_in_leaf;
   }
-  const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
-  const CUDALeafSplitsStruct* leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
-  const int leaf_index = leaf_splits->leaf_index;
-  if (leaf_index < 0) {
-    return;
-  }
-  bool leaf_valid = is_larger ? (desc->larger_valid != 0) : (desc->smaller_valid != 0);
-  // same NCCL local-vs-global count distinction as SyncBestSplitForLevelKernel
-  const data_size_t gate_num_data = gate_on_desc_counts ?
-    (is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf) :
-    leaf_splits->num_data_in_leaf;
-  leaf_valid = leaf_valid && gate_num_data > min_data_in_leaf &&
-    leaf_splits->sum_of_hessians > min_sum_hessian_in_leaf;
   CUDASplitInfo* cuda_split_info = cuda_leaf_best_split_info + leaf_index;
   if (!leaf_valid) {
     if (threadIdx.x == 0) {
@@ -5074,11 +5328,26 @@ __global__ void SyncBestSplitForLevelUsedTasksKernel(
     return;
   }
   if (!__syncthreads_or(non_finite)) {
-    const uint32_t best_read_index = ReduceBestGain(gain, found, read_index,
-        shared_gain_buffer, shared_found_buffer, shared_thread_index_buffer);
+    __shared__ uint64_t shared_key_buffer[BATCHED ? kReplayWarps : 1];
+    const uint32_t best_read_index = BATCHED ?
+      ReduceBestKeyBlock(FiniteGainOrderKey(found, gain), read_index, shared_key_buffer, shared_thread_index_buffer) :
+      ReduceBestGain(gain, found, read_index, shared_gain_buffer, shared_found_buffer, shared_thread_index_buffer);
     if (threadIdx.x == 0) {
       const CUDASplitInfo* best_split_info = pair_split_info + best_read_index;
-      if (best_split_info->is_valid) {
+      if (BATCHED) {
+        // best_read_index - role_offset is always a task index (a used task, or position 0's), so both loads are
+        // in bounds whatever the slot holds
+        const int best_feature = tasks[best_read_index - role_offset].inner_feature_index;
+        const SplitInfoFields best = LoadSplitInfoFields(best_split_info);
+        if (best.is_valid) {
+          StoreSplitInfoFields(cuda_split_info, best, best_split_info);
+          cuda_split_info->inner_feature_index = best_feature;
+          cuda_split_info->is_valid = true;
+        } else {
+          cuda_split_info->gain = kMinScore;
+          cuda_split_info->is_valid = false;
+        }
+      } else if (best_split_info->is_valid) {
         *cuda_split_info = *best_split_info;
         cuda_split_info->inner_feature_index = tasks[best_read_index - role_offset].inner_feature_index;
         cuda_split_info->is_valid = true;
@@ -5219,7 +5488,12 @@ struct WarpFindCandidate {
 // exact first-maximum across the group's lanes is the same winner.
 // G = 8 (with PPL = 1, cuda_plan key warp_find_narrow, every task of at most 8 bins): one group of 8 lanes per
 // (task, leaf), four per warp, one position per lane; the same exact first maximum across the group's lanes.
-template <bool REVERSE, bool B16, typename ACC_T, int PPL, int G>
+// STRIDED (G = 4, cuda_plan key warp_find_strided): lane l's slot i holds position i * G + l instead of l * PPL + i,
+// so the (at most 4) candidates of a 5-bin task all sit in slot 0 and a warp whose items all fit skips slot 1's
+// fp64 work. Each slot's positions are scanned across the group and offset by the earlier slots' totals (the same
+// wrapping integer prefixes); a lane's slots stay in ascending position order and the group reduction is the
+// exact first maximum of (gain, then lower position), so which lane holds a candidate does not change the winner.
+template <bool REVERSE, bool B16, typename ACC_T, int PPL, int G, bool STRIDED = false>
 __device__ __forceinline__ void WarpFindBest(
     const ACC_T* hist, const SplitFindTask* task,
     const double lambda_l2, const double max_delta_step, const data_size_t min_data_in_leaf,
@@ -5231,6 +5505,7 @@ __device__ __forceinline__ void WarpFindBest(
   constexpr uint32_t kNoThreshold = 0xffffffffu;
   static_assert(G == 32 || (G == 4 && PPL == 2) || (G == 8 && PPL == 1),
                 "4-lane groups own 2 positions per lane, 8-lane groups one");
+  static_assert(!STRIDED || G == 4, "strided positions: 4-lane groups only");
   const uint32_t lane = threadIdx.x & static_cast<uint32_t>(G - 1);
   const unsigned int mask = G == 32 ? 0xffffffffu : (((1u << G) - 1u) << ((threadIdx.x & 31u) & ~(G - 1u)));
   // the level kernel only runs without L1 and path smoothing (SupportsBatchedLevel)
@@ -5243,6 +5518,10 @@ __device__ __forceinline__ void WarpFindBest(
   const uint32_t fnb = task->num_bin - task->mfb_offset;
   const uint32_t na = static_cast<uint32_t>(task->na_as_missing);
   const uint32_t base = lane * static_cast<uint32_t>(PPL);
+  // scan position of the lane's slot i
+  auto position = [&](const int i) -> uint32_t {
+    return STRIDED ? static_cast<uint32_t>(i) * static_cast<uint32_t>(G) + lane : base + static_cast<uint32_t>(i);
+  };
   // Forward scan with a NaN bin AND an unstored most-frequent bin 0 (the block kernel's na_as_missing &&
   // mfb_offset == 1 case): position t holds bin t, read from hist[t - 1] for t >= 1, and bin 0 is synthesised
   // from the leaf total below.
@@ -5251,30 +5530,48 @@ __device__ __forceinline__ void WarpFindBest(
   UT v[PPL];
 #pragma unroll
   for (int i = 0; i < PPL; ++i) {
-    const uint32_t t = base + i;
+    const uint32_t t = position(i);
     UT x = 0;
     if (REVERSE ? (t >= na && t < fnb) : (t >= shift && t - shift < fnb)) {
       x = static_cast<UT>(hist[REVERSE ? (fnb - 1 - t) : (t - shift)]);
     }
     v[i] = x;
   }
-  UT run = 0;
+  UT excl = 0;
+  UT total = 0;  // sum of every position of the group
+  if (STRIDED) {
+    // slot i: inclusive scan of positions i * G .. i * G + G - 1 across the group, plus every earlier slot's total
 #pragma unroll
-  for (int i = 0; i < PPL; ++i) {
-    run += v[i];
-    v[i] = run;
-  }
-  UT incl = run;
+    for (int i = 0; i < PPL; ++i) {
+      UT incl_i = v[i];
 #pragma unroll
-  for (uint32_t d = 1; d < static_cast<uint32_t>(G); d <<= 1) {
-    const UT y = __shfl_up_sync(mask, incl, d, G);
-    if (lane >= d) incl += y;
+      for (uint32_t d = 1; d < static_cast<uint32_t>(G); d <<= 1) {
+        const UT y = __shfl_up_sync(mask, incl_i, d, G);
+        if (lane >= d) incl_i += y;
+      }
+      v[i] = total + incl_i;
+      total += __shfl_sync(mask, incl_i, G - 1, G);
+    }
+  } else {
+    UT run = 0;
+#pragma unroll
+    for (int i = 0; i < PPL; ++i) {
+      run += v[i];
+      v[i] = run;
+    }
+    UT incl = run;
+#pragma unroll
+    for (uint32_t d = 1; d < static_cast<uint32_t>(G); d <<= 1) {
+      const UT y = __shfl_up_sync(mask, incl, d, G);
+      if (lane >= d) incl += y;
+    }
+    excl = incl - run;
+    if (shift != 0) total = __shfl_sync(mask, incl, G - 1, G);
   }
-  UT excl = incl - run;
   if (shift != 0) {
     // bin 0 = leaf total - sum of the stored bins, through the block kernel's packed conversions; it sits at
     // position 0, so it adds to every prefix
-    const ACC_T sum_non_default = static_cast<ACC_T>(__shfl_sync(mask, incl, G - 1, G));
+    const ACC_T sum_non_default = static_cast<ACC_T>(total);
     const int64_t non_default_packed = B16 ?
       ((static_cast<int64_t>(static_cast<int16_t>(sum_non_default >> 16)) << 32) |
        static_cast<int64_t>(sum_non_default & 0x0000ffff)) :
@@ -5326,10 +5623,12 @@ __device__ __forceinline__ void WarpFindBest(
   constexpr float kRel = 2.0e-4f;
   constexpr float kAbs = 1.0e-30f;
   float up[PPL];
+  // STRIDED: the prune's unpack of each slot, reused by the gain loop (prep is a pure function of the prefix)
+  WarpFindCandidate pre[STRIDED ? PPL : 1];  // NOLINT(runtime/arrays): a compile-time size
   uint32_t vmask = 0;
 #pragma unroll
   for (int i = 0; i < PPL; ++i) {
-    const uint32_t t = base + i;
+    const uint32_t t = position(i);
     const bool candidate = REVERSE ? (t >= na && t <= task->num_bin - 2) : (t + 2 <= fnb + shift);
     if (candidate) vmask |= (1u << i);
     up[i] = INFINITY;
@@ -5341,7 +5640,8 @@ __device__ __forceinline__ void WarpFindBest(
 #pragma unroll
     for (int i = 0; i < PPL; ++i) {
       if ((vmask >> i) & 1u) {
-        WarpFindCandidate o;
+        WarpFindCandidate o_local;
+        WarpFindCandidate& o = STRIDED ? pre[STRIDED ? i : 0] : o_local;
         if (!prep(v[i] + excl, o)) {
           vmask &= ~(1u << i);
           continue;
@@ -5374,18 +5674,39 @@ __device__ __forceinline__ void WarpFindBest(
   for (int i = 0; i < PPL; ++i) {
     if ((vmask >> i) & 1u) {
       WarpFindCandidate o;
-      if (!prep(v[i] + excl, o)) continue;
+      if (STRIDED && prune) {
+        o = pre[STRIDED ? i : 0];  // passed prep in the prune (a failing slot left vmask there)
+      } else if (!prep(v[i] + excl, o)) {
+        continue;
+      }
       const double current_gain = CUDALeafSplits::GetSplitGains<false, false, double>(
           o.sl_g, o.sl_h + kEpsilon, o.sr_g, o.sr_h + kEpsilon, lambda_l1,
           lambda_l2, path_smooth, max_delta_step, o.lc, o.rc, parent_output);
       if (current_gain > min_gain_shift && (best_t == kNoThreshold || current_gain - min_gain_shift > best_gain)) {
         best_gain = current_gain - min_gain_shift;
-        best_t = base + i;
+        best_t = position(i);
         best = o;
       }
     }
   }
-  if (G < 32 || PPL == 1) {
+  if (STRIDED) {
+    // the same exact first maximum in integer compares: a lane holding a threshold has best_gain =
+    // current_gain - min_gain_shift with current_gain > min_gain_shift, so best_gain > 0 and not NaN (x > y gives
+    // x - y > 0 with gradual underflow; +inf only from overflow), and positive doubles order and compare equal
+    // exactly as their bit patterns do as unsigned integers; lanes without one are excluded by kNoThreshold
+    uint64_t best_bits = static_cast<uint64_t>(__double_as_longlong(best_gain));
+#pragma unroll
+    for (uint32_t off = G / 2; off > 0; off >>= 1) {
+      const uint64_t other_bits = __shfl_xor_sync(mask, best_bits, off);
+      const uint32_t other_t = __shfl_xor_sync(mask, best_t, off);
+      if (other_t != kNoThreshold &&
+          (best_t == kNoThreshold || other_bits > best_bits || (other_bits == best_bits && other_t < best_t))) {
+        best_bits = other_bits;
+        best_t = other_t;
+      }
+    }
+    best_gain = __longlong_as_double(static_cast<long long>(best_bits));  // NOLINT(runtime/int): the intrinsic's type
+  } else if (G < 32 || PPL == 1) {
     // exact first maximum of (gain, then lowest threshold) within each group of 8 positions
 #pragma unroll
     for (uint32_t off = (G < 32 ? G / 2 : 4u); off > 0; off >>= 1) {
@@ -5411,6 +5732,46 @@ __device__ __forceinline__ void WarpFindBest(
   }
   if (best_t == kNoThreshold) {
     if (lane == 0) out->is_valid = false;
+    return;
+  }
+  if (STRIDED) {
+    // the winner lane (every lane of the group holds best_t) computes the left child's output and leaf gain and
+    // its partner lane the right child's from the winner's candidate values: the same expressions on the same
+    // inputs, issued once for both children instead of one after the other in one lane
+    const uint32_t winner = best_t % static_cast<uint32_t>(G);
+    const double right_g = __shfl_sync(mask, best.sr_g, winner, G);
+    const double right_h = __shfl_sync(mask, best.sr_h, winner, G);
+    const data_size_t right_c = __shfl_sync(mask, best.rc, winner, G);
+    const bool is_winner = lane == winner;
+    if (is_winner || lane == (winner ^ 1u)) {
+      const double child_g = is_winner ? best.sl_g : right_g;
+      const double child_h = is_winner ? best.sl_h : right_h;
+      const data_size_t child_c = is_winner ? best.lc : right_c;
+      const double child_output = CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(child_g,
+        child_h, lambda_l1, lambda_l2, path_smooth, max_delta_step, child_c, parent_output);
+      const double child_gain = CUDALeafSplits::GetLeafGainGivenOutput<false>(child_g, child_h, lambda_l1,
+                                                                             lambda_l2, child_output);
+      if (is_winner) {
+        out->is_valid = true;
+        out->threshold = REVERSE ? static_cast<uint32_t>(task->num_bin - 2 - best_t) :
+                                   static_cast<uint32_t>(best_t + task->mfb_offset - shift);
+        out->gain = best_gain * task->penalty;
+        out->default_left = task->assume_out_default_left;
+        out->left_sum_gradients = best.sl_g;
+        out->left_sum_hessians = best.sl_h;
+        out->left_sum_of_gradients_hessians = best.slgh;
+        out->left_count = best.lc;
+        out->right_sum_gradients = best.sr_g;
+        out->right_sum_hessians = best.sr_h;
+        out->right_sum_of_gradients_hessians = best.srgh;
+        out->right_count = best.rc;
+        out->left_value = child_output;
+        out->left_gain = child_gain;
+      } else {
+        out->right_value = child_output;
+        out->right_gain = child_gain;
+      }
+    }
     return;
   }
   if (lane == best_t / static_cast<uint32_t>(PPL)) {
@@ -5443,7 +5804,11 @@ __device__ __forceinline__ void WarpFindBest(
 
 // G = 32: one warp per (task, leaf); G = 4: one 4-lane group per (task, leaf), every task at most 8 positions;
 // G = 8 (warp_find_narrow without warp_find_spread): one 8-lane group per (task, leaf), every task at most 8 bins
-template <int G>
+// BATCHED (cuda_plan key find_loads_batched): the item's loads go out in dependency levels -- the pair descriptor,
+// the used-task index and both scales together, then the task and the leaf's sums together (the leaf's only when
+// it is valid), then the feature-used flag -- instead of one round trip per load behind each early exit (leaf
+// validity, then the task index, the task, the flag, the scales, the leaf). Same values, same exits and writes.
+template <int G, bool STRIDED = false, bool BATCHED = false>
 __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKernel(
   const int8_t* is_feature_used_bytree,
   const int num_tasks,
@@ -5472,33 +5837,81 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   const bool is_larger = (rest & 1u) != 0;
   const double lambda_l2 = quant_bagging_ridge ? lambda_l2_in + static_cast<double>(*hess_scale) : lambda_l2_in;
   const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
-  if (is_larger ? !desc->larger_valid : !desc->smaller_valid) {
-    return;
+  const CUDALeafSplitsStruct* leaf_splits;
+  data_size_t num_data;
+  unsigned int task_index;
+  const SplitFindTask* task;
+  CUDASplitInfo* out;
+  double parent_gain;
+  int64_t sum_gradients_hessians;
+  double parent_output;
+  uint8_t leaf_num_bits;
+  double gscale;
+  double hscale;
+  const hist_t* hist_in_leaf;
+  if (BATCHED) {
+    // level 1: the descriptor, the used-task index (slot < num_used_tasks), both scales
+    const bool leaf_valid = is_larger ? desc->larger_valid : desc->smaller_valid;
+    leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
+    num_data = is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf;
+    leaf_num_bits = is_larger ? desc->larger_num_bits : desc->smaller_num_bits;
+    task_index = used_task_indices == nullptr ? slot : static_cast<unsigned int>(used_task_indices[slot]);
+    gscale = *grad_scale;
+    hscale = *hess_scale;
+    // level 2: the task and, for a valid leaf only, its sums and histogram
+    task = tasks + task_index;
+    const int feature = task->inner_feature_index;
+    parent_gain = 0.0;
+    sum_gradients_hessians = 0;
+    parent_output = 0.0;
+    hist_in_leaf = nullptr;
+    if (leaf_valid) {
+      parent_gain = leaf_splits->gain;
+      sum_gradients_hessians = leaf_splits->sum_of_gradients_hessians;
+      parent_output = leaf_splits->leaf_value;
+      hist_in_leaf = leaf_splits->hist_in_leaf;
+    }
+    if (!leaf_valid) {
+      return;
+    }
+    // level 3: the feature-used flag
+    const unsigned int output_offset = pair_index * (2 * static_cast<unsigned int>(num_tasks)) +
+      (is_larger ? task_index + num_tasks : task_index);
+    out = cuda_best_split_info + output_offset;
+    if (!is_feature_used_bytree[feature]) {
+      if ((threadIdx.x & (G - 1u)) == 0) out->is_valid = false;
+      return;
+    }
+  } else {
+    if (is_larger ? !desc->larger_valid : !desc->smaller_valid) {
+      return;
+    }
+    leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
+    num_data = is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf;
+    task_index = used_task_indices == nullptr ? slot : static_cast<unsigned int>(used_task_indices[slot]);
+    task = tasks + task_index;
+    const unsigned int output_offset = pair_index * (2 * static_cast<unsigned int>(num_tasks)) +
+      (is_larger ? task_index + num_tasks : task_index);
+    out = cuda_best_split_info + output_offset;
+    if (!is_feature_used_bytree[task->inner_feature_index]) {
+      if ((threadIdx.x & (G - 1u)) == 0) out->is_valid = false;
+      return;
+    }
+    parent_gain = leaf_splits->gain;
+    sum_gradients_hessians = leaf_splits->sum_of_gradients_hessians;
+    parent_output = leaf_splits->leaf_value;
+    leaf_num_bits = is_larger ? desc->larger_num_bits : desc->smaller_num_bits;
+    gscale = *grad_scale;
+    hscale = *hess_scale;
+    hist_in_leaf = leaf_splits->hist_in_leaf;
   }
-  const CUDALeafSplitsStruct* leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
-  const data_size_t num_data = is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf;
-  const unsigned int task_index = used_task_indices == nullptr ? slot : static_cast<unsigned int>(used_task_indices[slot]);
-  const SplitFindTask* task = tasks + task_index;
-  const unsigned int output_offset = pair_index * (2 * static_cast<unsigned int>(num_tasks)) +
-    (is_larger ? task_index + num_tasks : task_index);
-  CUDASplitInfo* out = cuda_best_split_info + output_offset;
-  if (!is_feature_used_bytree[task->inner_feature_index]) {
-    if ((threadIdx.x & (G - 1u)) == 0) out->is_valid = false;
-    return;
-  }
-  const double parent_gain = leaf_splits->gain;
-  const int64_t sum_gradients_hessians = leaf_splits->sum_of_gradients_hessians;
-  const double parent_output = leaf_splits->leaf_value;
-  const uint8_t leaf_num_bits = is_larger ? desc->larger_num_bits : desc->smaller_num_bits;
-  const double gscale = *grad_scale;
-  const double hscale = *hess_scale;
   // scan positions 0 .. fnb + shift - 1 (see WarpFindBest); at most 32 fit one per lane
   const uint32_t num_positions = static_cast<uint32_t>(task->num_bin - task->mfb_offset) +
     ((!task->reverse && task->na_as_missing && task->mfb_offset == 1) ? 1u : 0u);
   // warp_find_narrow: a task with at most 8 bins has at most 8 positions
   const bool one_per_lane = (spread && num_positions <= 32u) || (narrow_bins && task->num_bin <= 8);
 #define FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, PPL) \
-  WarpFindBest<REV, B16, ACC_T, (G == 4 ? 2 : G == 8 ? 1 : PPL), G>(reinterpret_cast<const ACC_T*>(leaf_splits->hist_in_leaf) + task->hist_offset, \
+  WarpFindBest<REV, B16, ACC_T, (G == 4 ? 2 : G == 8 ? 1 : PPL), G, STRIDED && G == 4>(reinterpret_cast<const ACC_T*>(hist_in_leaf) + task->hist_offset, \
     task, lambda_l2, max_delta_step, min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split, parent_gain, \
     sum_gradients_hessians, num_data, parent_output, gscale, hscale, out)
 #define FALCATA_WARP_FIND(REV, B16, ACC_T) \
@@ -5553,7 +5966,19 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
       compact_tasks ? cuda_used_task_indices_.RawDataReadOnly() : nullptr, pair_descs, num_pairs, min_data_in_leaf_, \
       min_sum_hessian_in_leaf_, min_gain_to_split_, lambda_l2_, max_delta_step_, grad_scale, hess_scale, \
       quant_bagging_ridge_, spread, narrow, cuda_best_split_info_.RawData()
-    if (spread && warp_find_max_positions_ <= 8) {
+    if (spread && warp_find_max_positions_ <= 8 && FalcataPlan::Get().warp_find_strided &&
+        FalcataPlan::Get().find_loads_batched) {
+      // cuda_plan keys warp_find_strided (the 4-lane groups' positions strided over the lanes) and
+      // find_loads_batched (the item's loads in dependency levels)
+      FindBestSplitsDiscretizedForLevelWarpKernel<4, true, true><<<static_cast<unsigned int>((items + 31) / 32), 128,
+                                                                   0, cuda_streams_[0]>>>(
+        FindBestSplitsDiscretizedForLevelWarpKernel_ARGS);
+    } else if (spread && warp_find_max_positions_ <= 8 && FalcataPlan::Get().warp_find_strided) {
+      // cuda_plan key warp_find_strided: the 4-lane groups' positions strided over the lanes
+      FindBestSplitsDiscretizedForLevelWarpKernel<4, true><<<static_cast<unsigned int>((items + 31) / 32), 128, 0,
+                                                             cuda_streams_[0]>>>(
+        FindBestSplitsDiscretizedForLevelWarpKernel_ARGS);
+    } else if (spread && warp_find_max_positions_ <= 8) {
       FindBestSplitsDiscretizedForLevelWarpKernel<4><<<static_cast<unsigned int>((items + 31) / 32), 128, 0,
                                                        cuda_streams_[0]>>>(
         FindBestSplitsDiscretizedForLevelWarpKernel_ARGS);
@@ -5679,33 +6104,43 @@ void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
     dim3 used_grid_dim(2, num_pairs);
     // a few hundred used tasks per leaf: 256 threads fold about two each (measured 10 us vs 14 us at 1024)
     constexpr int kSyncUsedTasksThreads = 256;
-    SyncBestSplitForLevelUsedTasksKernel<<<used_grid_dim, kSyncUsedTasksThreads, 0, cuda_streams_[0]>>>(
-      pair_descs,
-      cuda_leaf_best_split_info_.RawData(),
-      cuda_split_find_tasks_.RawData(),
-      compact_tasks ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
-      used_list ? cuda_used_task_indices_.RawDataReadOnly() : nullptr,
-      used_list ? num_used_tasks_ : num_tasks_,
-      cuda_best_split_info_.RawData(),
-      num_tasks_,
-      min_data_in_leaf_,
-      min_sum_hessian_in_leaf_,
-      gate_on_desc_counts);
+    #define SyncBestSplitForLevelUsedTasksKernel_ARGS \
+      pair_descs, cuda_leaf_best_split_info_.RawData(), cuda_split_find_tasks_.RawData(), \
+      compact_tasks ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr, \
+      used_list ? cuda_used_task_indices_.RawDataReadOnly() : nullptr, used_list ? num_used_tasks_ : num_tasks_, \
+      cuda_best_split_info_.RawData(), num_tasks_, min_data_in_leaf_, min_sum_hessian_in_leaf_, gate_on_desc_counts
+#if !defined(__HIP_PLATFORM_AMD__)
+    const bool sync_copy_batched = FalcataPlan::Get().sync_copy_batched;
+#else
+    const bool sync_copy_batched = false;  // the integer-key reduction assumes 32-lane warps
+#endif
+    if (sync_copy_batched) {
+      SyncBestSplitForLevelUsedTasksKernel<true><<<used_grid_dim, kSyncUsedTasksThreads, 0, cuda_streams_[0]>>>(
+        SyncBestSplitForLevelUsedTasksKernel_ARGS);
+    } else {
+      SyncBestSplitForLevelUsedTasksKernel<false><<<used_grid_dim, kSyncUsedTasksThreads, 0, cuda_streams_[0]>>>(
+        SyncBestSplitForLevelUsedTasksKernel_ARGS);
+    }
+    #undef SyncBestSplitForLevelUsedTasksKernel_ARGS
     return;
   }
   dim3 grid_dim(2, num_pairs, num_blocks_per_leaf);
-  SyncBestSplitForLevelKernel<<<grid_dim, NUM_TASKS_PER_SYNC_BLOCK, 0, cuda_streams_[0]>>>(
-    pair_descs,
-    cuda_leaf_best_split_info_.RawData(),
-    cuda_split_find_tasks_.RawData(),
-    compact_tasks ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
-    cuda_best_split_info_.RawData(),
-    num_tasks_,
-    num_leaves_,
-    min_data_in_leaf_,
-    min_sum_hessian_in_leaf_,
-    gate_on_desc_counts,
-    nullptr);
+#if !defined(__HIP_PLATFORM_AMD__)
+  const bool sync_copy_batched = FalcataPlan::Get().sync_copy_batched;
+#else
+  const bool sync_copy_batched = false;  // the integer-key reduction assumes 32-lane warps
+#endif
+  if (sync_copy_batched) {
+    SyncBestSplitForLevelKernel<true><<<grid_dim, NUM_TASKS_PER_SYNC_BLOCK, 0, cuda_streams_[0]>>>(
+      pair_descs, cuda_leaf_best_split_info_.RawData(), cuda_split_find_tasks_.RawData(),
+      compact_tasks ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr, cuda_best_split_info_.RawData(),
+      num_tasks_, num_leaves_, min_data_in_leaf_, min_sum_hessian_in_leaf_, gate_on_desc_counts, nullptr);
+  } else {
+    SyncBestSplitForLevelKernel<<<grid_dim, NUM_TASKS_PER_SYNC_BLOCK, 0, cuda_streams_[0]>>>(
+      pair_descs, cuda_leaf_best_split_info_.RawData(), cuda_split_find_tasks_.RawData(),
+      compact_tasks ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr, cuda_best_split_info_.RawData(),
+      num_tasks_, num_leaves_, min_data_in_leaf_, min_sum_hessian_in_leaf_, gate_on_desc_counts, nullptr);
+  }
   if (num_blocks_per_leaf > 1) {
     // stream-ordered after the sync kernel above; same stream as the batched
     // find, so no extra synchronization is needed
@@ -6073,12 +6508,27 @@ void CUDABestSplitFinder::InvalidateLeafCandidates(const std::vector<int>& leave
   if (cuda_invalidate_leaves_.Size() < leaves.size()) {
     cuda_invalidate_leaves_.Resize(leaves.size());
   }
-  CopyFromHostToCUDADevice<int>(cuda_invalidate_leaves_.RawData(), leaves.data(),
-                                leaves.size(), __FILE__, __LINE__);
+  // cuda_plan key invalidate_async: no host wait (see the key); the upload and the kernel stay on the default stream
+  const bool async = FalcataPlan::Get().invalidate_async && AsyncTreeStart();
+  if (async) {
+    // the caller's list is local to it, and a pageable source is promised to be staged on return only by the
+    // synchronous cudaMemcpy: the copy reads a member instead, next rewritten at the next tree's final level, after
+    // Train()'s tree-end device sync
+    invalidate_leaves_host_.assign(leaves.begin(), leaves.end());
+    CopyFromHostToCUDADeviceAsync<int>(cuda_invalidate_leaves_.RawData(), invalidate_leaves_host_.data(),
+                                       invalidate_leaves_host_.size(), 0, __FILE__, __LINE__);
+  } else {
+    CopyFromHostToCUDADevice<int>(cuda_invalidate_leaves_.RawData(), leaves.data(),
+                                  leaves.size(), __FILE__, __LINE__);
+  }
   const int num = static_cast<int>(leaves.size());
   InvalidateLeafCandidatesKernel<<<(num + 255) / 256, 256>>>(
     cuda_invalidate_leaves_.RawDataReadOnly(), num, cuda_leaf_best_split_info_.RawData());
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  if (async) {
+    CUDASUCCESS_OR_FATAL(cudaGetLastError());
+  } else {
+    SynchronizeCUDADevice(__FILE__, __LINE__);
+  }
 }
 
 __global__ void FindBestFromAllSplitsKernel(const int cur_num_leaves,
@@ -6166,8 +6616,10 @@ void CUDABestSplitFinder::EnsurePinnedLeafBestSplitCapacity(const int num_leaves
     CUDASUCCESS_OR_FATAL(cudaFreeHost(pinned_leaf_best_split_info_));
   }
   pinned_leaf_best_split_info_size_ = static_cast<size_t>(num_leaves_ > num_leaves ? num_leaves_ : num_leaves);
-  CUDASUCCESS_OR_FATAL(cudaHostAlloc(reinterpret_cast<void**>(&pinned_leaf_best_split_info_),
-    pinned_leaf_best_split_info_size_ * sizeof(CUDASplitInfo), cudaHostAllocDefault));
+  AllocatePinnedMappedHost(reinterpret_cast<void**>(&pinned_leaf_best_split_info_),
+    pinned_leaf_best_split_info_size_ * sizeof(CUDASplitInfo), __FILE__, __LINE__);
+  pinned_leaf_best_split_info_device_ =
+    static_cast<CUDASplitInfo*>(MappedHostDevicePointer(pinned_leaf_best_split_info_));
 }
 
 void CUDABestSplitFinder::ReadPrefetchedLeafBestSplits(const int num_leaves, std::vector<CUDASplitInfo>* out) const {
@@ -6200,8 +6652,15 @@ void CUDABestSplitFinder::SyncAllLeafBestSplitsToHost(const int num_leaves, std:
   // hybrid critical path, and a pageable sync D2H pays an extra driver staging
   // round trip; the host-to-host memcpy of a few KB afterwards is negligible.
   EnsurePinnedLeafBestSplitCapacity(num_leaves);
-  CopyFromCUDADeviceToHost<CUDASplitInfo>(pinned_leaf_best_split_info_, cuda_leaf_best_split_info_.RawDataReadOnly(),
-    static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+  if (FalcataPlan::Get().readback_kernel && pinned_leaf_best_split_info_device_ != nullptr) {
+    // cuda_plan key readback_kernel: a copy kernel on the same default stream, then that stream's sync (see the key)
+    CopyFromCUDADeviceToMappedHost(pinned_leaf_best_split_info_device_, pinned_leaf_best_split_info_,
+                                   cuda_leaf_best_split_info_.RawDataReadOnly(),
+                                   static_cast<size_t>(num_leaves) * sizeof(CUDASplitInfo), __FILE__, __LINE__);
+  } else {
+    CopyFromCUDADeviceToHost<CUDASplitInfo>(pinned_leaf_best_split_info_, cuda_leaf_best_split_info_.RawDataReadOnly(),
+      static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+  }
   ReadPrefetchedLeafBestSplits(num_leaves, out);
 }
 

@@ -110,6 +110,25 @@ struct FalcataPlan {
   // is staged, so those loads overlap the tile's write and histogram phases.
   // Same tile bytes: bit-identical.
   bool root_hist_prefetch = true;    // key: root_hist_prefetch
+  // root_hist_prefetch with an L2 lead: right after a block issues the register
+  // loads of its next tile, it also prefetches into L2 the source sectors (rows
+  // below num_data only) and gradients of the tile after that, so a second tile
+  // per block is in flight from DRAM and the next register loads hit L2 instead
+  // of stalling the unpack. A cache hint only: bit-identical.
+  bool root_hist_l2_prefetch = true;  // key: root_hist_l2_prefetch
+  // colmajor_direct's column-major store with each column's start rounded up
+  // to a 32-byte sector (instead of (num_data + 1) / 2 bytes apart, an odd
+  // pitch for odd half row counts): every column then starts on a 4-byte word,
+  // which the fused fill's word staging (root_hist_prefetch) requires, and its
+  // 64-byte tile chunks are whole sectors. Pad bytes are never read as rows:
+  // same column bytes, bit-identical.
+  bool colmajor_align = true;        // key: colmajor_align
+  // fused_root_hist's blocks sized from the shape instead of always 16 tiles: the
+  // tiles over root_hist_block_rounds rounds of the blocks resident on the device
+  // (occupancy API x SMs), 2 to 16 tiles each (the packed row bound still caps
+  // it). Blocks of equal work end up to a block's lifetime apart, so shorter
+  // blocks shorten the kernel's tail. Integer sums regrouped: bit-identical.
+  bool root_hist_short_blocks = true;  // key: root_hist_short_blocks
   // true when the user wrote construct_jit:on/off -- bypasses the >=300
   // rounds auto-gate (mirrors tuner_explicit)
   bool construct_jit_explicit = false;
@@ -194,6 +213,9 @@ struct FalcataPlan {
   // 16% at 0.8, mask ahead by 9-15% from 0.85 to 0.99.
   double view_probe_lo = 0.5;
   double view_probe_hi = 0.95;
+  // root_hist_short_blocks: rounds of the resident blocks the fused fill's grid
+  // is sized for (cuda_plan key root_hist_block_rounds:<number>; below 1: off)
+  double root_hist_block_rounds = 48.0;
   // 4-bit compact fill through a shared-memory [row][slot] tile: coalesced
   // column reads, 16-byte streaming writes of each partition's contiguous
   // destination run. The host takes it for column-major sources with at most
@@ -224,6 +246,26 @@ struct FalcataPlan {
   // 8 positions, then the same tolerance tie-break between 8-position groups
   // in the same order). Bit-identical.
   bool warp_find_spread = true;     // key: warp_find_spread
+  // warp_find_spread's 4-lane groups (every task at most 8 scan positions)
+  // with the positions strided over the lanes (lane l holds positions l and
+  // l + 4) instead of blocked (2l and 2l + 1): a task with at most 4
+  // candidate thresholds (a 5-bin feature) then has all of them in the first
+  // of the two per-lane slots, so a warp whose eight items all fit skips the
+  // second slot's fp64 unpack and gain math instead of issuing it with half
+  // its lanes masked off. The gain loop reuses the prune's unpack of each
+  // slot, and the winner's left and right child outputs are computed side by
+  // side in two lanes. Prefixes are the same wrapping integer sums, every
+  // value comes from the same expressions on the same inputs, and the winner
+  // is the same exact first maximum (gain, then lower threshold).
+  // Bit-identical.
+  bool warp_find_strided = true;    // key: warp_find_strided
+  // warp_find_strided's level kernel with each (task, leaf) item's loads
+  // issued in three dependency levels (pair descriptor + used-task index +
+  // gradient/hessian scales; then the task and the valid leaf's sums and
+  // histogram pointer; then the feature-used flag) instead of one global
+  // round trip per load behind each early exit. Same values, same exits and
+  // writes: bit-identical.
+  bool find_loads_batched = true;   // key: find_loads_batched
   // 4-bit compact quantized construct with one thread per packed byte: the two
   // nibbles of a byte index one cell of a joint (lo, hi) shared histogram, so a
   // row costs one shared atomic per byte instead of one per column; each
@@ -274,6 +316,17 @@ struct FalcataPlan {
   // guard. Needs CUDA 12.4 (__maxnreg__). Bit-identical (same rows, integer
   // sums).
   bool pair_capped_rows = true;     // key: pair_capped_rows
+  // pair-joint construct (pair_hist) of a host-launched level with several
+  // pairs: the grid is sized for the level's largest smaller leaf, and
+  // with level_row_blocks every leaf runs at that leaf's rows per thread, so a
+  // pair of n rows has rows in only about grid_y x n / n_max of its grid_y
+  // blocks; the others are dispatched, read the pair's descriptor and leaf
+  // struct, and exit. Instead the launch holds only the blocks that have rows:
+  // the host counts each pair's by the device's own per-pair formula (host leaf
+  // counts are the device's, read back by the level's apply) and passes the
+  // pairs' first-block prefix as a kernel parameter; a block finds its pair and
+  // its block row there. Same blocks with the same rows: bit-identical.
+  bool pair_block_map = true;       // key: pair_block_map
   // tree boundary without host waits the computation does not need: the
   // tree start's KB-scale metadata (live compact fill, split slot tables,
   // feature masks, used tasks, hist pool pointer) is uploaded with
@@ -292,6 +345,13 @@ struct FalcataPlan {
   // written. Off with compact_prefill (its non-blocking stream shares the
   // fill metadata). Same kernels, same GPU order and inputs: bit-identical.
   bool async_tree_start = true;     // key: async_tree_start
+  // with async_tree_start: the tree start's KB-scale metadata uploads between the split finder's BeforeTrain and
+  // the compact fill (feature masks, used tasks, bin mask, compact-view layout, fill slot tables, fused-root meta;
+  // ~14 copies of 20 B .. 18 KB) are staged into one host buffer and moved by one H2D copy into a device arena, from
+  // which one kernel scatters each segment to its destination; both on the legacy default stream the copies used,
+  // flushed before any GPU operation issued while the batch collects. ~14 copy-engine operations, each ~1.5 us on
+  // a GPU-bound tree start, become two. Same bytes in the same buffers before the same readers: bit-identical.
+  bool tree_meta_batch = true;      // key: tree_meta_batch
   // pair_hist joint tables laid out with odd per-byte strides (an even span
   // product gets one pad cell), so the same cell of neighbouring threads' tables
   // falls in distinct shared-memory banks. Bit-identical (layout only).
@@ -324,6 +384,45 @@ struct FalcataPlan {
   // not finite, the block replays the original per-1024-task reductions and
   // merge exactly. Bit-identical.
   bool sync_used_tasks = true;      // key: sync_used_tasks
+  // host-launched level best-split sync (the used-task kernel of
+  // sync_used_tasks and the per-1024-task kernel): the winner copy (thread 0
+  // copies the winning task's split info into the leaf's slot) with every
+  // field loaded before the first store, instead of CUDASplitInfo::operator='s
+  // alternating load / store per field (a store may alias the next source
+  // field: one global round trip per field in a row); the used-task fold's
+  // slot loads batched per thread and skipped for a leaf the descriptor marks
+  // invalid; and, when every found gain of the block is finite, the block
+  // reduction on integer keys of the gains (same order as the fp64 tie-break,
+  // whose zero tolerance makes it gain-then-lower-index) instead of a chain of
+  // fp64 compares. Same winner, same values in the same fields: bit-identical.
+  bool sync_copy_batched = true;    // key: sync_copy_batched
+  // quantized host-launched level fix + subtract with a feature sample: one
+  // thread per (pair, sampled feature) fixes the smaller leaf's most-frequent
+  // bin and subtracts that feature's bins into the larger leaf (or the pair's
+  // bit-change buffer), instead of a fix kernel with a block per (pair,
+  // feature needing a fix) and a subtract kernel with a thread per (pair,
+  // histogram bin) whose unsampled features' blocks and threads exit at once.
+  // Taken when every sampled feature spans at most 8 histogram bins (and at
+  // most 512 features are sampled). The same
+  // integer expressions per bin in the same bit-width cases, the fixed bin's
+  // value used by its own subtract: bit-identical.
+  bool fix_subtract_fused = true;   // key: fix_subtract_fused
+  // host-launched batched level apply: each split's tree-structure update (child
+  // leaf outputs, split info slots, hist pool pointers, smaller/larger leaf
+  // structs) is written by warp 0 of one extra block of the partition kernel's
+  // flat grid (the first num_splits flat ids, so its short dependent chain
+  // overlaps the partition) instead of by a separate 32-thread-per-split kernel
+  // after the partition. Its inputs (the aggregate's child counts and starts, the
+  // level's split infos) are final before the partition kernel, and the
+  // partition neither reads nor writes what it writes. Same expressions, same
+  // values, same stream: bit-identical.
+  bool apply_struct_fused = true;   // key: apply_struct_fused
+  // host-launched batched level apply: the gap copy (terminal leaves' index
+  // ranges carried from the old main array into the out buffer) runs as extra
+  // 1024-row chunks at the end of the partition kernel's flat grid instead of a
+  // separate (largest gap x gaps) kernel. The ranges are disjoint from every
+  // split window the partition reads or writes. Same copies: bit-identical.
+  bool gap_copy_fused = true;       // key: gap_copy_fused
   // quantized root sums (gradient/hessian totals of the tree's rows): one warp
   // per 1024-row chunk sums 32 rows per lane, instead of one 1024-thread block
   // per chunk with one row per thread and two block reductions. Each chunk's
@@ -376,6 +475,75 @@ struct FalcataPlan {
   // map or those windows, so the GPU writes the map while the host finalizes the tree. If the leaf-wise tail still
   // splits after it, the tree end writes the whole map again as before. Same kernel, same values: bit-identical.
   bool early_leaf_map = true;       // key: early_leaf_map
+  // the two synchronous readbacks of every host-launched level (the level's best splits, SyncAllLeafBestSplitsToHost;
+  // the applied splits' child counts and sums, FinishSplitBatch) and the tree's own readbacks (the deferred root sums,
+  // the tree's pooled slab in CUDATree::ToHost, the exact leaf counts) are copied by a small kernel on the default
+  // stream into pinned staging buffers allocated mapped, followed by a synchronize of that stream, instead of a
+  // cudaMemcpy D2H on that stream: same stream, so the copy waits for the same preceding work, and the host blocks
+  // until the bytes are in host memory as before, but the copy starts about as soon as the producing kernel ends
+  // instead of 2-6 us later when the copy engine picks it up. Falls back to cudaMemcpy where the device cannot map
+  // the buffer. Same bytes: bit-identical.
+  bool readback_kernel = true;      // key: readback_kernel
+  // the final batched level's invalidation of its children's cached split candidates (InvalidateLeafCandidates):
+  // the leaf list goes up with cudaMemcpyAsync on the default stream the synchronous cudaMemcpy used (from a member
+  // copy, kept until the next tree) and the kernel is not followed by a device synchronize. The host
+  // reads nothing the kernel writes; every reader of those candidates (the leaf-wise tail's search, the next tree's
+  // level syncs and readbacks) is ordered after it on the GPU. The host no longer waits for the final level's apply
+  // to drain before it launches the residual-leaf map pass and the tree-end readbacks. Off with compact_prefill (as
+  // async_tree_start). Same kernel, same GPU order: bit-identical.
+  bool invalidate_async = true;     // key: invalidate_async
+  // host-launched batched level without categorical splits or vector leaves: the data partition's apply (descriptor
+  // upload and the gen-bit / aggregate / split-inner / tree-structure kernels on its stream) is issued before the
+  // tree's record of the same splits (CUDATree::SplitBatch: upload and SplitBatchKernel on the tree's stream). The two
+  // touch disjoint buffers (the tree's arrays vs the partition's; both only read the level's cached split infos),
+  // there is no event between those streams, and every later reader waits for both (the level's readback on the
+  // default stream), so the level's long kernel chain no longer starts behind the record's upload, launch and host
+  // bookkeeping. The record's entries (real feature index and threshold, missing type: per-feature lookups only the
+  // record reads) are built after the apply is launched, in the same order with the same values. Same kernels, same
+  // streams, same inputs: bit-identical.
+  bool level_apply_first = true;    // key: level_apply_first
+  // the CUDA objective's GetGradients (the shared CUDAObjectiveInterface path) does not end with a device
+  // synchronize when the gradients are device memory: its kernel runs on the legacy default stream, every reader of
+  // the gradients is a kernel or a cudaMemcpy on that stream or on a blocking stream (ordered after it), and the
+  // host reads nothing the kernel writes. The host then prepares the tree start (bagging, discretizer launches,
+  // metadata uploads) while the gradients are computed instead of after. Host-memory gradients keep the synchronize.
+  // Off with compact_prefill (its non-blocking stream). Same kernels, same GPU order: bit-identical.
+  bool gradients_no_sync = true;    // key: gradients_no_sync
+  // a pooled CUDA tree's retained device leaf values (the one device array ToHost keeps for shrinkage and score
+  // updates) go into a buffer allocated when the host-launched flow issues a final batched level (the tree's leaf
+  // count after it is known then, and the host would otherwise wait for that level's readback), and the slab's leaf
+  // values are copied into it at the tree end with cudaMemcpyAsync on the legacy default stream the synchronous
+  // cudaMemcpy used (its readers, shrinkage and score updates, are kernels and copies on that stream; the slab is
+  // rewritten only by later work of the next tree). The tree-end allocation and the host wait on the copy leave the
+  // path to the shrinkage kernel. Used only if the tree ends with exactly that leaf count, otherwise freed and the
+  // tree end allocates as before. Same bytes: bit-identical.
+  bool tree_end_prealloc = true;    // key: tree_end_prealloc
+  // final batched level of a level prefix that completes the tree (every child at max_depth, every candidate split,
+  // budget not binding: the skip_empty_tail condition, which must be on): the children's index windows have no
+  // reader -- the tail is known empty, the tree end reads exact counts and the map, and the residual leaves'
+  // windows are gaps that stay in the main index array -- so the split-inner pass writes only the row -> leaf map
+  // (same rows, same values), after a full-sector clear of the map that keeps its scatter in L2 (every entry is
+  // rewritten by this pass or the residual-leaf map pass), and the gap copy and index buffer swap are not run. A
+  // reader of the windows that turns up after all (an objective's leaf renewal, refit, any later apply) completes
+  // the partition first from the level's untouched descriptors and direction bits. Off with bagging (the next tree
+  // reuses the index array), linear trees, quantized leaf renewal, multi-GPU, vector leaves and selective growth.
+  // Same map, same counts, same tree: bit-identical.
+  bool final_map_only = true;       // key: final_map_only
+  // tree end without host waits on work the readbacks do not need. With early_leaf_map, the final batched level's
+  // residual-leaf map pass is not launched with the level (there the level's split batch readback and the tree
+  // end's readbacks queued behind it on the default stream, the host waiting for the whole pass each time) but at
+  // the tree end, after the exact leaf counts are read back (with the slab's copy under readback_kernel), right
+  // after ToHost's copy of the tree: it runs while the host scatters the copy (its inputs, the residual leaves'
+  // windows, are final then; it reads none of the tree's arrays). A pooled tree's ToHost does not synchronize the
+  // device (its arrays are views of the learner's slab: nothing is freed; the retained leaf values are copied out on
+  // the default stream). Same kernels, same values: bit-identical.
+  bool final_readback_first = true;  // key: final_readback_first
+  // the register-capped pair-joint construct's block height (pair_capped_rows) memoised per launch shape (row bytes,
+  // joint-table bytes, default height, gradient bins) instead of for the last shape only: the joint-table bytes
+  // change with every tree's column sample, so every tree re-ran the occupancy queries and re-set the kernels'
+  // shared-memory carveout before its first construct. The carveout is re-set only when the chosen value changes.
+  // Same block height per shape: bit-identical.
+  bool shape_memo = true;           // key: shape_memo
   // runtime tier-1 tuner: bandit over the batched-construct saturation floor,
   // timed per tree; quantized training only (integer hists keep results
   // schedule-invariant, so retuning cannot change the model). The probe phase
@@ -434,6 +602,9 @@ struct FalcataPlan {
     if (key == "root_hist_tile_stride") return &root_hist_tile_stride;
     if (key == "root_hist_run_copy") return &root_hist_run_copy;
     if (key == "root_hist_prefetch") return &root_hist_prefetch;
+    if (key == "root_hist_l2_prefetch") return &root_hist_l2_prefetch;
+    if (key == "colmajor_align") return &colmajor_align;
+    if (key == "root_hist_short_blocks") return &root_hist_short_blocks;
     if (key == "fast_rowdata") return &fast_rowdata;
     if (key == "rowdata_4bit") return &rowdata_4bit;
     if (key == "gpu_construct") return &gpu_construct;
@@ -462,18 +633,26 @@ struct FalcataPlan {
     if (key == "warp_find") return &warp_find;
     if (key == "warp_find_narrow") return &warp_find_narrow;
     if (key == "warp_find_spread") return &warp_find_spread;
+    if (key == "warp_find_strided") return &warp_find_strided;
+    if (key == "find_loads_batched") return &find_loads_batched;
     if (key == "pair_hist") return &pair_hist;
     if (key == "per_pair_rows") return &per_pair_rows;
     if (key == "compact_row_interleave") return &compact_row_interleave;
     if (key == "pair_hist_rows") return &pair_hist_rows;
     if (key == "pair_block_rows") return &pair_block_rows;
     if (key == "pair_capped_rows") return &pair_capped_rows;
+    if (key == "pair_block_map") return &pair_block_map;
     if (key == "async_tree_start") return &async_tree_start;
+    if (key == "tree_meta_batch") return &tree_meta_batch;
     if (key == "pair_pad") return &pair_pad;
     if (key == "level_row_blocks") return &level_row_blocks;
     if (key == "all_rows_direct") return &all_rows_direct;
     if (key == "apply_row_batch") return &apply_row_batch;
     if (key == "sync_used_tasks") return &sync_used_tasks;
+    if (key == "sync_copy_batched") return &sync_copy_batched;
+    if (key == "fix_subtract_fused") return &fix_subtract_fused;
+    if (key == "apply_struct_fused") return &apply_struct_fused;
+    if (key == "gap_copy_fused") return &gap_copy_fused;
     if (key == "root_sums_warp") return &root_sums_warp;
     if (key == "minmax_warp") return &minmax_warp;
     if (key == "colmajor_split") return &colmajor_split;
@@ -482,6 +661,14 @@ struct FalcataPlan {
     if (key == "gap_copy_once") return &gap_copy_once;
     if (key == "leaf_map_small_blocks") return &leaf_map_small_blocks;
     if (key == "early_leaf_map") return &early_leaf_map;
+    if (key == "readback_kernel") return &readback_kernel;
+    if (key == "invalidate_async") return &invalidate_async;
+    if (key == "level_apply_first") return &level_apply_first;
+    if (key == "gradients_no_sync") return &gradients_no_sync;
+    if (key == "tree_end_prealloc") return &tree_end_prealloc;
+    if (key == "final_map_only") return &final_map_only;
+    if (key == "final_readback_first") return &final_readback_first;
+    if (key == "shape_memo") return &shape_memo;
     if (key == "tuner") return &tuner;
     if (key == "wide_partitions") return &wide_partitions;
     return nullptr;
@@ -530,7 +717,8 @@ struct FalcataPlan {
       }
       double* number = kv[0] == std::string("view_mask_ff") ? &plan.view_mask_ff :
                        kv[0] == std::string("view_probe_lo") ? &plan.view_probe_lo :
-                       kv[0] == std::string("view_probe_hi") ? &plan.view_probe_hi : nullptr;
+                       kv[0] == std::string("view_probe_hi") ? &plan.view_probe_hi :
+                       kv[0] == std::string("root_hist_block_rounds") ? &plan.root_hist_block_rounds : nullptr;
       if (number != nullptr) {
         char* end = nullptr;
         const double value = std::strtod(kv[1].c_str(), &end);

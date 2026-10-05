@@ -115,10 +115,13 @@ class CUDARowData {
    *  (column c is the colmajor_column_bytes() run at dst + (c - col_begin) * colmajor_column_bytes(), even row in
    *  the low nibble): the bytes of the Dataset's 4-bit column buffers; 8-bit columns are nibble-packed on the way.
    *  The nibble past the last row (odd row counts) is left as the Dataset has it. Only when
-   *  dense_4bit_columns_only(). */
-  void UploadDense4BitColumnsColMajor(uint8_t* dst, int col_begin, int col_end) const;
-  /*! \brief FALCATA_VERIFY=1: fatal unless device holds every column in that layout (pad nibbles zero) */
-  void VerifyDense4BitColMajor(const uint8_t* device) const;
+   *  dense_4bit_columns_only(). column_stride (0: colmajor_column_bytes()) is the distance between the columns'
+   *  starts, at least colmajor_column_bytes(); the bytes between a column's end and the next start are zero
+   *  where the columns are gathered on the host, and left unwritten where a column is copied straight. */
+  void UploadDense4BitColumnsColMajor(uint8_t* dst, int col_begin, int col_end, size_t column_stride = 0) const;
+  /*! \brief FALCATA_VERIFY=1: fatal unless device holds every column in that layout (pad nibbles zero), the
+   *  columns column_stride bytes apart (0: colmajor_column_bytes()) */
+  void VerifyDense4BitColMajor(const uint8_t* device, size_t column_stride = 0) const;
   /*! \brief FALCATA_VERIFY=1: fatal unless device holds exactly the 4-bit row-major matrix Init would have built
    *  (the host pack of the same columns); what names it in the log */
   void VerifyDense4BitRowMajor(const uint8_t* device, const char* what) const;

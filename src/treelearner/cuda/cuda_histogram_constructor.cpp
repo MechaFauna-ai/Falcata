@@ -100,6 +100,7 @@ CUDAHistogramConstructor::~CUDAHistogramConstructor() {
 void CUDAHistogramConstructor::InitFeatureMetaInfo(const Dataset* train_data, const std::vector<uint32_t>& feature_hist_offsets) {
   need_fix_histogram_features_.clear();
   need_fix_histogram_features_num_bin_aligend_.clear();
+  need_fix_by_feature_.clear();  // fix_subtract_fused's per-feature copy, rebuilt from the list below
   feature_num_bins_.clear();
   feature_most_freq_bins_.clear();
   has_categorical_feature_ = false;
@@ -264,6 +265,52 @@ void CUDAHistogramConstructor::SetFeatureUsedBytree(const std::vector<int8_t>& i
     UploadTreeStartMeta<uint8_t>(cuda_bin_used_bytree_.RawData(), host_bin_used_bytree_.data(),
                                  host_bin_used_bytree_.size());
   }
+  // cuda_plan key fix_subtract_fused: the sampled features' bin ranges (exactly the bins of the mask above) and
+  // most-frequent-bin fix data, for the quantized level fix + subtract with one thread per (pair, feature)
+  used_feature_info_ok_ = false;
+  num_used_feature_info_ = 0;
+  if (any_feature_unused_bytree_ && use_quantized_grad_ && FalcataPlan::Get().fix_subtract_fused &&
+      mask_features == num_features_ && static_cast<int>(feature_num_bins_.size()) == num_features_ &&
+      static_cast<int>(feature_most_freq_bins_.size()) == num_features_) {
+    if (static_cast<int>(need_fix_by_feature_.size()) != num_features_) {
+      need_fix_by_feature_.assign(static_cast<size_t>(num_features_), 0);
+      for (const int f : need_fix_histogram_features_) {
+        if (f >= 0 && f < num_features_) need_fix_by_feature_[f] = 1;
+      }
+    }
+    constexpr uint32_t kMaxSpan = 8;          // the fused kernel's per-thread bins (kFixSubtractMaxSpan)
+    constexpr size_t kMaxUsedFeatures = 512;  // one thread per feature in a block of at most 512
+    host_used_feature_info_.clear();
+    bool ok = true;
+    for (int f = 0; f < mask_features && ok; ++f) {
+      if (!is_feature_used_bytree[f]) {
+        continue;
+      }
+      const uint32_t bin_start = feature_hist_offsets_[f];
+      uint32_t bin_end = f + 1 < static_cast<int>(feature_hist_offsets_.size()) ?
+        feature_hist_offsets_[f + 1] : static_cast<uint32_t>(num_total_bin_);
+      bin_end = std::min(bin_end, static_cast<uint32_t>(num_total_bin_));
+      const uint32_t span = bin_end > bin_start ? bin_end - bin_start : 0;
+      const bool need_fix = need_fix_by_feature_[f] != 0;
+      const uint32_t num_bin = feature_num_bins_[f];
+      const uint32_t mfb = feature_most_freq_bins_[f];
+      if (span > kMaxSpan || (need_fix && (num_bin > span || mfb >= num_bin))) {
+        ok = false;
+        break;
+      }
+      host_used_feature_info_.push_back(bin_start);
+      host_used_feature_info_.push_back(span | (need_fix ? ((num_bin << 8) | (mfb << 16) | (1u << 24)) : 0u));
+    }
+    if (ok && !host_used_feature_info_.empty() && host_used_feature_info_.size() / 2 <= kMaxUsedFeatures) {
+      if (cuda_used_feature_info_.Size() < static_cast<size_t>(2 * num_features_)) {
+        cuda_used_feature_info_.Resize(static_cast<size_t>(2 * num_features_));
+      }
+      UploadTreeStartMeta<uint32_t>(cuda_used_feature_info_.RawData(), host_used_feature_info_.data(),
+                                    host_used_feature_info_.size());
+      num_used_feature_info_ = static_cast<int>(host_used_feature_info_.size() / 2);
+      used_feature_info_ok_ = true;
+    }
+  }
 }
 
 void LaunchTransposeColMajorToRowMajor(
@@ -300,7 +347,15 @@ void LaunchTransposeToColMajorNibbleKernel(
   size_t num_data_pad);
 
 // Implemented in cuda_histogram_constructor.cu: zero the nibble past the last row of each column (odd row counts).
-void LaunchClearColMajorPadNibbles(uint8_t* colmajor, int num_columns, size_t column_bytes);
+void LaunchClearColMajorPadNibbles(uint8_t* colmajor, int num_columns, size_t column_stride, size_t column_bytes);
+
+// colmajor_direct's column-major store: the distance between its columns' starts. cuda_plan key colmajor_align:
+// the column bytes rounded up to a whole 32-byte sector, so every column (and every 64-byte tile chunk the fused
+// root-histogram fill reads) starts on a sector and on a 4-byte word, which the fill's word staging
+// (root_hist_prefetch) requires; otherwise the columns are back to back ((num_data + 1) / 2 bytes apart).
+static size_t ColMajorStoreStride(const size_t column_bytes) {
+  return FalcataPlan::Get().colmajor_align ? (column_bytes + 31) / 32 * 32 : column_bytes;
+}
 
 void LaunchFillCompactCodecKernel(
   cudaStream_t stream,
@@ -346,6 +401,7 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
   bool strided_tiles,
   bool run_copy,
   bool word_prefetch,
+  bool l2_lead,
   int max_rows_per_block,
   const int32_t* grad_and_hess,
   bool hist_16bit,
@@ -694,6 +750,7 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
   // Per-tree fill: when source is host (column-major), do one cudaMemcpy per sampled column.
   // Each is a contiguous num_data byte transfer at ~20 GB/s → ~85 ms for f=0.1 / 6.7M rows.
   if (cuda_row_data_->is_data_host_mapped()) {
+    FlushTreeStartMetaBatch();  // cuda_plan key tree_meta_batch: the staging transpose reads the layout above
     const uint8_t* src_col_major = cuda_row_data_->host_partitioned_data_uint8_t();
     // Compact GPU layout: row-major-in-partition (matches histogram kernel expectation).
     // For each compact col c in partition p, we need to write num_data bytes to
@@ -806,6 +863,8 @@ void CUDAHistogramConstructor::LaunchCompactFill(
     if (!async_meta) {
       // cuda_plan key async_tree_start: the same default stream as cudaMemcpy, without the host wait; host_src is
       // local to this function, so the bytes are kept until the tree end (TreeStartUploads). Off: cudaMemcpy.
+      // cuda_plan key tree_meta_batch: while the batch collects they are staged in it, flushed before the fill
+      // launch below
       tree_start_uploads_.UploadBytes(device_dst, host_src, bytes);
       return;
     }
@@ -890,6 +949,7 @@ void CUDAHistogramConstructor::LaunchCompactFill(
     upload(cuda_ws_dst_stride_.RawData(), ws_dst_stride_h.data(), sizeof(int) * total_word_slots, &pin_off);
     upload(cuda_ws_first_col_.RawData(), ws_first_col_h.data(), sizeof(int) * total_word_slots, &pin_off);
     upload(cuda_ws_ndig_.RawData(), ws_ndig_h.data(), sizeof(uint8_t) * total_word_slots, &pin_off);
+    FlushTreeStartMetaBatch();  // cuda_plan key tree_meta_batch: the fill reads the batched metadata
     LaunchFillCompactCodecKernel(
       stream, layout.codec,
       colmajor_direct_ ? colmajor_bin_.RawDataReadOnly() : RowMajorBin<uint8_t>(),
@@ -1041,6 +1101,7 @@ void CUDAHistogramConstructor::LaunchCompactFill(
         if (fused_root_scratch_.Size() < static_cast<size_t>(num_total_bin_)) {
           fused_root_scratch_.Resize(static_cast<size_t>(num_total_bin_));
         }
+        FlushTreeStartMetaBatch();  // cuda_plan key tree_meta_batch: the fill reads the batched metadata
         fused_root = LaunchFillCompactData4BitTiledRootHistKernel(
           stream,
           // the same source as the plain tiled fill below: the column-major store (colmajor_direct's compact
@@ -1063,6 +1124,8 @@ void CUDAHistogramConstructor::LaunchCompactFill(
           // one partition: stage the tile as a byte copy of its output run, written with aligned vector copies
           FalcataPlan::Get().root_hist_run_copy,
           word_prefetch,
+          // L2 lead for the word path: the tile after the next one prefetched into L2
+          word_prefetch && FalcataPlan::Get().root_hist_l2_prefetch,
           // the packed per-block row bound of the gradients as discretized (the effective quant bins, which the
           // learner may raise above the configured count), exactly the construct's 65534 / bins rule
           65534 / std::max(1, num_grad_quant_bins_),
@@ -1075,6 +1138,7 @@ void CUDAHistogramConstructor::LaunchCompactFill(
       }
     }
     if (!fused_root) {
+    FlushTreeStartMetaBatch();  // cuda_plan key tree_meta_batch
     LaunchFillCompactData4BitKernel(
       stream,
       colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : RowMajorBin<uint8_t>(),
@@ -1121,6 +1185,7 @@ void CUDAHistogramConstructor::LaunchCompactFill(
     upload(cuda_slot_src_stride_.RawData(), slot_src_stride_h.data(), sizeof(int) * total_compact, &pin_off);
     upload(cuda_slot_dst_byte_.RawData(), slot_dst_byte_h.data(), sizeof(size_t) * total_compact, &pin_off);
     upload(cuda_slot_dst_stride_.RawData(), slot_dst_stride_h.data(), sizeof(int) * total_compact, &pin_off);
+    FlushTreeStartMetaBatch();  // cuda_plan key tree_meta_batch
     // NOTE: a fused column-major second output here was measured SLOWER than
     // the tree learner's separate tile-transposed gather from the compact
     // matrix (the fill's slot-major warps write the column-major layout one
@@ -1357,7 +1422,7 @@ CUDAHistogramConstructor::CompactRegimeBytes CUDAHistogramConstructor::CompactRe
   const size_t num_data = static_cast<size_t>(num_data_);
   const size_t num_columns = static_cast<size_t>(part_cols.back());
   const size_t num_partitions = part_cols.size() - 1;
-  need.store = num_columns * cuda_row_data_->colmajor_column_bytes();
+  need.store = num_columns * ColMajorStoreStride(cuda_row_data_->colmajor_column_bytes());
   // The compact view (ScanCompactLayout's arithmetic): a partition's s_p sampled columns take ceil(s_p / 2) bytes
   // per row, at most (S + P) / 2 rounded up over the P partitions for S sampled columns.
   const size_t sampled = SampledColumns();
@@ -1461,17 +1526,18 @@ void CUDAHistogramConstructor::EnterCompactRegime(const char* why) {
   full_view_.Clear();
   const int num_columns = cuda_row_data_->host_feature_partition_column_index_offsets().back();
   const size_t column_bytes = cuda_row_data_->colmajor_column_bytes();
-  const size_t bytes = static_cast<size_t>(num_columns) * column_bytes;
+  const size_t column_stride = ColMajorStoreStride(column_bytes);
+  const size_t bytes = static_cast<size_t>(num_columns) * column_stride;
   colmajor_bin_.ResizeDiscard(bytes);
-  cuda_row_data_->UploadDense4BitColumnsColMajor(colmajor_bin_.RawData(), 0, num_columns);
+  cuda_row_data_->UploadDense4BitColumnsColMajor(colmajor_bin_.RawData(), 0, num_columns, column_stride);
   if ((num_data_ & 1) != 0) {
     // the nibble past the last row: the Dataset's byte may hold anything, the transpose this replaces wrote 0
-    LaunchClearColMajorPadNibbles(colmajor_bin_.RawData(), num_columns, column_bytes);
+    LaunchClearColMajorPadNibbles(colmajor_bin_.RawData(), num_columns, column_stride, column_bytes);
   }
   SynchronizeCUDADevice(__FILE__, __LINE__);
-  colmajor_pad_ = 2 * column_bytes;
+  colmajor_pad_ = 2 * column_stride;
   if (FalcataVerifyEnabled()) {
-    cuda_row_data_->VerifyDense4BitColMajor(colmajor_bin_.RawDataReadOnly());
+    cuda_row_data_->VerifyDense4BitColMajor(colmajor_bin_.RawDataReadOnly(), column_stride);
   }
   LogDirectView("colmajor_direct: compact regime (%s; feature_fraction %g, view_mode %s, view_mask_ff %g): "
                 "column-major store built from the Dataset's columns, %d columns (%zu MiB); no row-major matrix on "
