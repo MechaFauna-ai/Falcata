@@ -100,6 +100,7 @@ CUDAHistogramConstructor::~CUDAHistogramConstructor() {
 void CUDAHistogramConstructor::InitFeatureMetaInfo(const Dataset* train_data, const std::vector<uint32_t>& feature_hist_offsets) {
   need_fix_histogram_features_.clear();
   need_fix_histogram_features_num_bin_aligend_.clear();
+  need_fix_by_feature_.clear();  // fix_subtract_fused's per-feature copy, rebuilt from the list below
   feature_num_bins_.clear();
   feature_most_freq_bins_.clear();
   has_categorical_feature_ = false;
@@ -263,6 +264,52 @@ void CUDAHistogramConstructor::SetFeatureUsedBytree(const std::vector<int8_t>& i
     }
     UploadTreeStartMeta<uint8_t>(cuda_bin_used_bytree_.RawData(), host_bin_used_bytree_.data(),
                                  host_bin_used_bytree_.size());
+  }
+  // cuda_plan key fix_subtract_fused: the sampled features' bin ranges (exactly the bins of the mask above) and
+  // most-frequent-bin fix data, for the quantized level fix + subtract with one thread per (pair, feature)
+  used_feature_info_ok_ = false;
+  num_used_feature_info_ = 0;
+  if (any_feature_unused_bytree_ && use_quantized_grad_ && FalcataPlan::Get().fix_subtract_fused &&
+      mask_features == num_features_ && static_cast<int>(feature_num_bins_.size()) == num_features_ &&
+      static_cast<int>(feature_most_freq_bins_.size()) == num_features_) {
+    if (static_cast<int>(need_fix_by_feature_.size()) != num_features_) {
+      need_fix_by_feature_.assign(static_cast<size_t>(num_features_), 0);
+      for (const int f : need_fix_histogram_features_) {
+        if (f >= 0 && f < num_features_) need_fix_by_feature_[f] = 1;
+      }
+    }
+    constexpr uint32_t kMaxSpan = 8;          // the fused kernel's per-thread bins (kFixSubtractMaxSpan)
+    constexpr size_t kMaxUsedFeatures = 512;  // one thread per feature in a block of at most 512
+    host_used_feature_info_.clear();
+    bool ok = true;
+    for (int f = 0; f < mask_features && ok; ++f) {
+      if (!is_feature_used_bytree[f]) {
+        continue;
+      }
+      const uint32_t bin_start = feature_hist_offsets_[f];
+      uint32_t bin_end = f + 1 < static_cast<int>(feature_hist_offsets_.size()) ?
+        feature_hist_offsets_[f + 1] : static_cast<uint32_t>(num_total_bin_);
+      bin_end = std::min(bin_end, static_cast<uint32_t>(num_total_bin_));
+      const uint32_t span = bin_end > bin_start ? bin_end - bin_start : 0;
+      const bool need_fix = need_fix_by_feature_[f] != 0;
+      const uint32_t num_bin = feature_num_bins_[f];
+      const uint32_t mfb = feature_most_freq_bins_[f];
+      if (span > kMaxSpan || (need_fix && (num_bin > span || mfb >= num_bin))) {
+        ok = false;
+        break;
+      }
+      host_used_feature_info_.push_back(bin_start);
+      host_used_feature_info_.push_back(span | (need_fix ? ((num_bin << 8) | (mfb << 16) | (1u << 24)) : 0u));
+    }
+    if (ok && !host_used_feature_info_.empty() && host_used_feature_info_.size() / 2 <= kMaxUsedFeatures) {
+      if (cuda_used_feature_info_.Size() < static_cast<size_t>(2 * num_features_)) {
+        cuda_used_feature_info_.Resize(static_cast<size_t>(2 * num_features_));
+      }
+      UploadTreeStartMeta<uint32_t>(cuda_used_feature_info_.RawData(), host_used_feature_info_.data(),
+                                    host_used_feature_info_.size());
+      num_used_feature_info_ = static_cast<int>(host_used_feature_info_.size() / 2);
+      used_feature_info_ok_ = true;
+    }
   }
 }
 

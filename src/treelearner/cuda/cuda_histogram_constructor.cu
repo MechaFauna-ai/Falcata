@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <type_traits>
 #include <vector>
 
 #include <Falcata/cuda/cuda_driver_shim.hpp>
@@ -4279,6 +4280,241 @@ __global__ void FixHistogramDiscretizedBatchedKernel(
   }
 }
 
+// cuda_plan key fix_subtract_fused: one sampled feature (at most kFixSubtractMaxSpan bins) of one pair, for a pair whose
+// bit widths type the smaller leaf's bins the same way in the fix and in the subtract (SUB_CASE: 0 parent <= 16 bits,
+// 1 parent > 16 and larger <= 16 (into the change buffer), 2 only the smaller <= 16, 3 none; the fix types them int32
+// iff the smaller is <= 16 bits, i.e. in cases 0-2). Every bin of the feature is loaded first; the fix (as
+// FixHistogramDiscretizedInner: the leaf total minus the wrapping sum of the other bins below num_bin) replaces the
+// most-frequent bin in registers and in the smaller histogram, and the subtract (as SubtractHistogramDiscretizedInner)
+// uses that value. No other thread reads or writes this feature's bins.
+constexpr uint32_t kFixSubtractMaxSpan = 8;
+// Returns whether it did the change-buffer copy (case 1 with copy_changed, which is block-uniform: every thread of
+// the block calls this with the same SUB_CASE, larger_exists and copy_changed): from the values it just wrote to the
+// buffer, after a barrier behind every subtract read of the pair's 32-bit view.
+template <int SUB_CASE>
+__device__ __forceinline__ bool FixSubtractUsedFeature(
+  const uint2 item, const CUDALeafSplitsStruct* smaller, const CUDALeafSplitsStruct* larger,
+  const bool larger_exists, const bool copy_changed, int32_t* buffer) {
+  typedef typename std::conditional<SUB_CASE == 3, int64_t, int32_t>::type SmallerT;
+  typedef typename std::conditional<SUB_CASE == 0, int32_t, int64_t>::type LargerT;
+  typedef typename std::conditional<SUB_CASE == 3, uint64_t, uint32_t>::type SumT;
+  const uint32_t span = item.y & 0xffu;
+  const bool need_fix = (item.y >> 24) != 0;
+  const uint32_t num_bin = (item.y >> 8) & 0xffu;
+  const uint32_t most_freq_bin = (item.y >> 16) & 0xffu;
+  SmallerT* smaller_hist = reinterpret_cast<SmallerT*>(smaller->hist_in_leaf) + item.x;
+  const int64_t leaf_sum_gradients_hessians_int64 = smaller->sum_of_gradients_hessians;
+  SmallerT s[kFixSubtractMaxSpan];
+  LargerT l[kFixSubtractMaxSpan];
+#pragma unroll
+  for (uint32_t k = 0; k < kFixSubtractMaxSpan; ++k) {
+    s[k] = k < span ? smaller_hist[k] : 0;
+  }
+  if (larger_exists) {
+    const LargerT* larger_hist = reinterpret_cast<const LargerT*>(larger->hist_in_leaf) + item.x;
+#pragma unroll
+    for (uint32_t k = 0; k < kFixSubtractMaxSpan; ++k) {
+      l[k] = k < span ? larger_hist[k] : 0;
+    }
+  }
+  if (need_fix) {
+    SumT sum_gradient_hessian = 0;
+#pragma unroll
+    for (uint32_t k = 0; k < kFixSubtractMaxSpan; ++k) {
+      if (k < num_bin && k != most_freq_bin) {
+        sum_gradient_hessian += static_cast<SumT>(s[k]);
+      }
+    }
+    SmallerT leaf_sum_gradients_hessians;
+    if (SUB_CASE == 3) {
+      leaf_sum_gradients_hessians = static_cast<SmallerT>(leaf_sum_gradients_hessians_int64);
+    } else {
+      leaf_sum_gradients_hessians = static_cast<SmallerT>(
+        (static_cast<int32_t>(leaf_sum_gradients_hessians_int64 >> 32) << 16) | static_cast<int32_t>(leaf_sum_gradients_hessians_int64 & 0x000000000000ffff));
+    }
+    const SmallerT fixed = static_cast<SmallerT>(static_cast<SumT>(leaf_sum_gradients_hessians) - sum_gradient_hessian);
+#pragma unroll
+    for (uint32_t k = 0; k < kFixSubtractMaxSpan; ++k) {
+      if (k == most_freq_bin) s[k] = fixed;
+    }
+    smaller_hist[most_freq_bin] = fixed;
+  }
+  if (!larger_exists) {
+    return false;
+  }
+  if (SUB_CASE == 1) {
+    int32_t* out = buffer + item.x;
+    int32_t o[kFixSubtractMaxSpan];
+#pragma unroll
+    for (uint32_t k = 0; k < kFixSubtractMaxSpan; ++k) {
+      const int64_t parent_hist_item = static_cast<int64_t>(l[k]);
+      const int32_t smaller_hist_item = static_cast<int32_t>(s[k]);
+      const int64_t smaller_hist_item_int64 = (static_cast<int64_t>(static_cast<int16_t>(smaller_hist_item >> 16)) << 32) |
+        static_cast<int64_t>(smaller_hist_item & 0x0000ffff);
+      const int64_t larger_hist_item = parent_hist_item - smaller_hist_item_int64;
+      o[k] = static_cast<int32_t>(static_cast<int16_t>(larger_hist_item >> 32) << 16) |
+        static_cast<int32_t>(larger_hist_item & 0x000000000000ffff);
+      if (k < span) {
+        out[k] = o[k];
+      }
+    }
+    if (copy_changed) {
+      __syncthreads();
+      int32_t* hist_dst = reinterpret_cast<int32_t*>(larger->hist_in_leaf) + item.x;
+#pragma unroll
+      for (uint32_t k = 0; k < kFixSubtractMaxSpan; ++k) {
+        if (k < span) {
+          hist_dst[k] = o[k];
+        }
+      }
+      return true;
+    }
+  } else {
+    LargerT* larger_hist = reinterpret_cast<LargerT*>(larger->hist_in_leaf) + item.x;
+#pragma unroll
+    for (uint32_t k = 0; k < kFixSubtractMaxSpan; ++k) {
+      if (k < span) {
+        if (SUB_CASE == 2) {
+          const int64_t parent_hist_item = static_cast<int64_t>(l[k]);
+          const int32_t smaller_hist_item = static_cast<int32_t>(s[k]);
+          const int64_t smaller_hist_item_int64 = (static_cast<int64_t>(static_cast<int16_t>(smaller_hist_item >> 16)) << 32) |
+            static_cast<int64_t>(smaller_hist_item & 0x0000ffff);
+          larger_hist[k] = static_cast<LargerT>(parent_hist_item - smaller_hist_item_int64);
+        } else {
+          // cases 0 and 3: larger -= smaller in the shared type
+          LargerT v = l[k];
+          v -= static_cast<LargerT>(s[k]);
+          larger_hist[k] = v;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+// cuda_plan key fix_subtract_fused (quantized, host-launched level, feature sample active): block = pair, thread =
+// sampled feature (blockDim >= the number of sampled features). FixHistogramDiscretizedBatchedKernel for the pair's
+// sampled features that need a fix, SubtractHistogramDiscretizedBatchedKernel for their bins and
+// CopyChangedNumBitHistogramBatchedKernel's copy of them, in one launch: the same integer expressions on the same
+// inputs under the same conditions. Every fix of the pair is written before any of its subtracts reads it (within a
+// thread when the bit widths type the smaller leaf's bins alike in both; else in two phases with a barrier between
+// them, as across the two kernels), and the copy into the larger leaf's 16-bit view (which overlaps other bins of
+// its 32-bit view) starts after a barrier behind every subtract read of the pair. Pairs touch disjoint histograms
+// and change-buffer regions. used_feature_info: two words per sampled feature (see host_used_feature_info_).
+__global__ void __launch_bounds__(512) FixSubtractUsedFeaturesBatchedKernel(
+  const uint32_t* used_feature_info,
+  const int num_used_features,
+  const int num_total_bin,
+  const CUDAHybridPairDescriptor* pair_descs,
+  hist_t* num_bit_change_buffer) {
+  const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.x;
+  const CUDALeafSplitsStruct* smaller = desc->smaller_struct;
+  const CUDALeafSplitsStruct* larger = desc->larger_struct;
+  const uint8_t parent_num_bits = desc->parent_num_bits;
+  const uint8_t smaller_num_bits = desc->smaller_num_bits;
+  const uint8_t larger_num_bits = desc->larger_num_bits;
+  const int sub_case = parent_num_bits <= 16 ? 0 : (larger_num_bits <= 16 ? 1 : (smaller_num_bits <= 16 ? 2 : 3));
+  // the subtract's gate (the larger struct) and the copy's (the descriptor), as in the two kernels
+  const bool larger_exists = larger->leaf_index >= 0;
+  const bool copy_changed = desc->larger_leaf_index >= 0 && parent_num_bits > 16 && larger_num_bits <= 16;
+  const int u = static_cast<int>(threadIdx.x);
+  const uint2 item = u < num_used_features ? reinterpret_cast<const uint2*>(used_feature_info)[u] : make_uint2(0u, 0u);
+  int32_t* buffer = reinterpret_cast<int32_t*>(num_bit_change_buffer) +
+    static_cast<size_t>(blockIdx.x) * static_cast<size_t>(num_total_bin);
+  const uint32_t span = item.y & 0xffu;  // 0 for threads past the sampled features
+  bool copied = false;  // block-uniform
+  if ((smaller_num_bits <= 16) == (sub_case != 3)) {
+    switch (sub_case) {
+      case 0: copied = FixSubtractUsedFeature<0>(item, smaller, larger, larger_exists, copy_changed, buffer); break;
+      case 1: copied = FixSubtractUsedFeature<1>(item, smaller, larger, larger_exists, copy_changed, buffer); break;
+      case 2: copied = FixSubtractUsedFeature<2>(item, smaller, larger, larger_exists, copy_changed, buffer); break;
+      default: copied = FixSubtractUsedFeature<3>(item, smaller, larger, larger_exists, copy_changed, buffer); break;
+    }
+  } else {
+    // the fix and the subtract type the smaller leaf's bins differently: the two phases of the original kernels
+    if ((item.y >> 24) != 0) {
+      const uint32_t num_bin = (item.y >> 8) & 0xffu;
+      const uint32_t most_freq_bin = (item.y >> 16) & 0xffu;
+      if (smaller_num_bits <= 16) {
+        const int64_t leaf_sum_gradients_hessians_int64 = smaller->sum_of_gradients_hessians;
+        const int32_t leaf_sum_gradients_hessians =
+          (static_cast<int32_t>(leaf_sum_gradients_hessians_int64 >> 32) << 16) | static_cast<int32_t>(leaf_sum_gradients_hessians_int64 & 0x000000000000ffff);
+        int32_t* feature_hist = reinterpret_cast<int32_t*>(smaller->hist_in_leaf) + item.x;
+        uint32_t sum_gradient_hessian = 0;  // the block reduction's wrapping int32 sum
+        for (uint32_t bin = 0; bin < num_bin; ++bin) {
+          if (bin != most_freq_bin) {
+            sum_gradient_hessian += static_cast<uint32_t>(feature_hist[bin]);
+          }
+        }
+        feature_hist[most_freq_bin] = static_cast<int32_t>(
+          static_cast<uint32_t>(leaf_sum_gradients_hessians) - sum_gradient_hessian);
+      } else {
+        const int64_t leaf_sum_gradients_hessians = smaller->sum_of_gradients_hessians;
+        int64_t* feature_hist = reinterpret_cast<int64_t*>(smaller->hist_in_leaf) + item.x;
+        uint64_t sum_gradient_hessian = 0;  // the block reduction's wrapping int64 sum
+        for (uint32_t bin = 0; bin < num_bin; ++bin) {
+          if (bin != most_freq_bin) {
+            sum_gradient_hessian += static_cast<uint64_t>(feature_hist[bin]);
+          }
+        }
+        feature_hist[most_freq_bin] = static_cast<int64_t>(
+          static_cast<uint64_t>(leaf_sum_gradients_hessians) - sum_gradient_hessian);
+      }
+    }
+    __syncthreads();
+    if (larger_exists) {
+      const uint32_t bin_start = item.x;
+      const uint32_t bin_end = item.x + span;
+      if (sub_case == 0) {
+        const int32_t* smaller_leaf_hist = reinterpret_cast<const int32_t*>(smaller->hist_in_leaf);
+        int32_t* larger_leaf_hist = reinterpret_cast<int32_t*>(larger->hist_in_leaf);
+        for (uint32_t i = bin_start; i < bin_end; ++i) {
+          larger_leaf_hist[i] -= smaller_leaf_hist[i];
+        }
+      } else if (sub_case == 1) {
+        const int32_t* smaller_leaf_hist = reinterpret_cast<const int32_t*>(smaller->hist_in_leaf);
+        const int64_t* larger_leaf_hist = reinterpret_cast<const int64_t*>(larger->hist_in_leaf);
+        for (uint32_t i = bin_start; i < bin_end; ++i) {
+          const int64_t parent_hist_item = larger_leaf_hist[i];
+          const int32_t smaller_hist_item = smaller_leaf_hist[i];
+          const int64_t smaller_hist_item_int64 = (static_cast<int64_t>(static_cast<int16_t>(smaller_hist_item >> 16)) << 32) |
+            static_cast<int64_t>(smaller_hist_item & 0x0000ffff);
+          const int64_t larger_hist_item = parent_hist_item - smaller_hist_item_int64;
+          buffer[i] = static_cast<int32_t>(static_cast<int16_t>(larger_hist_item >> 32) << 16) |
+            static_cast<int32_t>(larger_hist_item & 0x000000000000ffff);
+        }
+      } else if (sub_case == 2) {
+        const int32_t* smaller_leaf_hist = reinterpret_cast<const int32_t*>(smaller->hist_in_leaf);
+        int64_t* larger_leaf_hist = reinterpret_cast<int64_t*>(larger->hist_in_leaf);
+        for (uint32_t i = bin_start; i < bin_end; ++i) {
+          const int64_t parent_hist_item = larger_leaf_hist[i];
+          const int32_t smaller_hist_item = smaller_leaf_hist[i];
+          const int64_t smaller_hist_item_int64 = (static_cast<int64_t>(static_cast<int16_t>(smaller_hist_item >> 16)) << 32) |
+            static_cast<int64_t>(smaller_hist_item & 0x0000ffff);
+          const int64_t larger_hist_item = parent_hist_item - smaller_hist_item_int64;
+          larger_leaf_hist[i] = larger_hist_item;
+        }
+      } else {
+        const int64_t* smaller_leaf_hist = reinterpret_cast<const int64_t*>(smaller->hist_in_leaf);
+        int64_t* larger_leaf_hist = reinterpret_cast<int64_t*>(larger->hist_in_leaf);
+        for (uint32_t i = bin_start; i < bin_end; ++i) {
+          larger_leaf_hist[i] -= smaller_leaf_hist[i];
+        }
+      }
+    }
+  }
+  if (copy_changed && !copied) {
+    // CopyChangedNumBitHistogramBatchedKernel: this thread's bins of the change buffer (its own writes above, or
+    // what the buffer held if the subtract was gated off) into the larger leaf's 16-bit view, after every subtract
+    // read of the pair's 32-bit view
+    __syncthreads();
+    int32_t* hist_dst = reinterpret_cast<int32_t*>(larger->hist_in_leaf);
+    for (uint32_t i = item.x; i < item.x + span; ++i) {
+      hist_dst[i] = buffer[i];
+    }
+  }
+}
+
 void CUDAHistogramConstructor::LaunchSubtractHistogramKernel(
   const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,
   const CUDALeafSplitsStruct* cuda_larger_leaf_splits,
@@ -5460,28 +5696,42 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
   } else {
     const int num_subtract_threads = num_total_bin_;
     const int num_subtract_blocks = (num_subtract_threads + SUBTRACT_BLOCK_SIZE - 1) / SUBTRACT_BLOCK_SIZE;
-    if (need_fix_histogram_features_.size() > 0) {
-      dim3 fix_grid(static_cast<unsigned int>(need_fix_histogram_features_.size()), num_pairs);
-      FixHistogramDiscretizedBatchedKernel<<<fix_grid, FIX_HISTOGRAM_BLOCK_SIZE, 0, cuda_stream_>>>(
-        cuda_feature_num_bins_.RawData(),
-        cuda_feature_hist_offsets_.RawData(),
-        cuda_feature_most_freq_bins_.RawData(),
-        cuda_need_fix_histogram_features_.RawData(),
-        cuda_need_fix_histogram_features_num_bin_aligned_.RawData(),
+    dim3 subtract_grid(num_subtract_blocks, num_pairs);
+    bool fused_fix_subtract = false;
+    if (gstate == nullptr && any_feature_unused_bytree_ && used_feature_info_ok_ &&
+        FalcataPlan::Get().fix_subtract_fused) {
+      // cuda_plan key fix_subtract_fused: fix + subtract of the sampled features, one block per pair
+      const int threads = std::max(32, (num_used_feature_info_ + 31) / 32 * 32);  // <= 512 (host gate)
+      FixSubtractUsedFeaturesBatchedKernel<<<num_pairs, threads, 0, cuda_stream_>>>(
+        cuda_used_feature_info_.RawDataReadOnly(),
+        num_used_feature_info_,
+        num_total_bin_,
         pair_descs,
-        any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
+        hist_buffer_for_num_bit_change_.RawData());
+      fused_fix_subtract = true;  // the kernel also did CopyChangedNumBitHistogramBatchedKernel's copies
+    } else {
+      if (need_fix_histogram_features_.size() > 0) {
+        dim3 fix_grid(static_cast<unsigned int>(need_fix_histogram_features_.size()), num_pairs);
+        FixHistogramDiscretizedBatchedKernel<<<fix_grid, FIX_HISTOGRAM_BLOCK_SIZE, 0, cuda_stream_>>>(
+          cuda_feature_num_bins_.RawData(),
+          cuda_feature_hist_offsets_.RawData(),
+          cuda_feature_most_freq_bins_.RawData(),
+          cuda_need_fix_histogram_features_.RawData(),
+          cuda_need_fix_histogram_features_num_bin_aligned_.RawData(),
+          pair_descs,
+          any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
+          gstate);
+      }
+      SubtractHistogramDiscretizedBatchedKernel<<<subtract_grid, SUBTRACT_BLOCK_SIZE, 0, cuda_stream_>>>(
+        num_total_bin_,
+        pair_descs,
+        hist_buffer_for_num_bit_change_.RawData(),
+        any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
         gstate);
     }
-    dim3 subtract_grid(num_subtract_blocks, num_pairs);
-    SubtractHistogramDiscretizedBatchedKernel<<<subtract_grid, SUBTRACT_BLOCK_SIZE, 0, cuda_stream_>>>(
-      num_total_bin_,
-      pair_descs,
-      hist_buffer_for_num_bit_change_.RawData(),
-      any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
-      gstate);
     // graph capture always includes the copy node (the device-derived per-pair
     // bit widths gate it); the host path launches it only on bit-change levels
-    if (any_pair_needs_bit_change_copy || gstate != nullptr) {
+    if ((any_pair_needs_bit_change_copy && !fused_fix_subtract) || gstate != nullptr) {
       CopyChangedNumBitHistogramBatchedKernel<<<subtract_grid, SUBTRACT_BLOCK_SIZE, 0, cuda_stream_>>>(
         num_total_bin_,
         pair_descs,

@@ -500,6 +500,7 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
   // fraction of the data, so this replaces a full-size copy with a sparse one.
   int num_gaps = 0;
   int max_gap_blocks = 0;
+  int gap_flat_blocks = 0;
   {
     std::vector<std::pair<data_size_t, data_size_t>> regions;  // (start, num)
     regions.reserve(splits.size());
@@ -511,13 +512,16 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
     const data_size_t num_data_total = root_num_data();
     // cuda_plan key leaf_map_small_blocks: the gap copy runs gap_block_dim-thread blocks (see the launch)
     const int gap_block_dim = GapCopyBlockDim();
-    auto append_gap = [this, &num_gaps, &max_gap_blocks, gap_block_dim](const data_size_t start,
-                                                                        const data_size_t num) {
+    auto append_gap = [this, &num_gaps, &max_gap_blocks, &gap_flat_blocks, total_flat_blocks,
+                       gap_block_dim](const data_size_t start, const data_size_t num) {
       CUDAHybridApplyDescriptor desc;
       std::memset(&desc, 0, sizeof(desc));
       desc.leaf_data_start = start;
       desc.num_data_in_leaf = num;
       desc.num_blocks = (num + gap_block_dim - 1) / gap_block_dim;
+      // cuda_plan key gap_copy_fused: the gap's chunks in the partition kernel's flat grid, after the splits'
+      desc.flat_block_start = total_flat_blocks + gap_flat_blocks;
+      gap_flat_blocks += (num + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
       if (desc.num_blocks > max_gap_blocks) {
         max_gap_blocks = desc.num_blocks;
       }
@@ -620,7 +624,8 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
                                     cat_desc_indices, cat_mfb_bins);
   }
   LaunchSplitLevelBatchedKernels(num_splits, max_num_blocks, num_gaps, max_gap_blocks,
-                                 total_flat_blocks, write_leaf_map);
+                                 total_flat_blocks, FalcataPlan::Get().gap_copy_fused ? gap_flat_blocks : 0,
+                                 write_leaf_map);
   // the out buffer now holds every leaf's indices at the main layout positions:
   // promote it to the main index array (the old main becomes the next scratch)
   cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);

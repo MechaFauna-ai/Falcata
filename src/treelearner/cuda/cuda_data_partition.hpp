@@ -361,9 +361,13 @@ class CUDADataPartition: public NCCLInfo {
    *  MFB-membership (the classic flow needs a host D2H for this) */
   void LaunchBuildCatBitsetArenaKernel(const int num_splits, const std::vector<int>& cat_desc_indices,
                                        const std::vector<uint32_t>& cat_mfb_bins);
+  /*! \brief gap_flat_blocks > 0 (cuda_plan key gap_copy_fused): the gap descriptors' 1024-row chunks, numbered by
+   *  their flat_block_start from total_flat_blocks on, run in the partition kernel's flat grid instead of the separate
+   *  gap copy kernel */
   void LaunchSplitLevelBatchedKernels(const int num_splits, const int max_num_blocks,
                                       const int num_gaps, const int max_gap_blocks,
                                       const int total_flat_blocks,
+                                      const int gap_flat_blocks,
                                       const bool write_leaf_map);
 
   void GenDataToLeftBitVector(

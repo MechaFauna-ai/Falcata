@@ -378,6 +378,33 @@ struct FalcataPlan {
   // whose zero tolerance makes it gain-then-lower-index) instead of a chain of
   // fp64 compares. Same winner, same values in the same fields: bit-identical.
   bool sync_copy_batched = true;    // key: sync_copy_batched
+  // quantized host-launched level fix + subtract with a feature sample: one
+  // thread per (pair, sampled feature) fixes the smaller leaf's most-frequent
+  // bin and subtracts that feature's bins into the larger leaf (or the pair's
+  // bit-change buffer), instead of a fix kernel with a block per (pair,
+  // feature needing a fix) and a subtract kernel with a thread per (pair,
+  // histogram bin) whose unsampled features' blocks and threads exit at once.
+  // Taken when every sampled feature spans at most 8 histogram bins (and at
+  // most 512 features are sampled). The same
+  // integer expressions per bin in the same bit-width cases, the fixed bin's
+  // value used by its own subtract: bit-identical.
+  bool fix_subtract_fused = true;   // key: fix_subtract_fused
+  // host-launched batched level apply: each split's tree-structure update (child
+  // leaf outputs, split info slots, hist pool pointers, smaller/larger leaf
+  // structs) is written by warp 0 of one extra block of the partition kernel's
+  // flat grid (the first num_splits flat ids, so its short dependent chain
+  // overlaps the partition) instead of by a separate 32-thread-per-split kernel
+  // after the partition. Its inputs (the aggregate's child counts and starts, the
+  // level's split infos) are final before the partition kernel, and the
+  // partition neither reads nor writes what it writes. Same expressions, same
+  // values, same stream: bit-identical.
+  bool apply_struct_fused = true;   // key: apply_struct_fused
+  // host-launched batched level apply: the gap copy (terminal leaves' index
+  // ranges carried from the old main array into the out buffer) runs as extra
+  // 1024-row chunks at the end of the partition kernel's flat grid instead of a
+  // separate (largest gap x gaps) kernel. The ranges are disjoint from every
+  // split window the partition reads or writes. Same copies: bit-identical.
+  bool gap_copy_fused = true;       // key: gap_copy_fused
   // quantized root sums (gradient/hessian totals of the tree's rows): one warp
   // per 1024-row chunk sums 32 rows per lane, instead of one 1024-thread block
   // per chunk with one row per thread and two block reductions. Each chunk's
@@ -534,6 +561,9 @@ struct FalcataPlan {
     if (key == "apply_row_batch") return &apply_row_batch;
     if (key == "sync_used_tasks") return &sync_used_tasks;
     if (key == "sync_copy_batched") return &sync_copy_batched;
+    if (key == "fix_subtract_fused") return &fix_subtract_fused;
+    if (key == "apply_struct_fused") return &apply_struct_fused;
+    if (key == "gap_copy_fused") return &gap_copy_fused;
     if (key == "root_sums_warp") return &root_sums_warp;
     if (key == "minmax_warp") return &minmax_warp;
     if (key == "colmajor_split") return &colmajor_split;

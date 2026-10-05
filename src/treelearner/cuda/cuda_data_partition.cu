@@ -1761,36 +1761,26 @@ __global__ void HybridSplitInnerBatchKernel(
 // USE_NCCL_REDUCE mirrors SplitTreeStructureKernel: slots 16/17 carry the
 // GLOBAL child counts and the smaller/larger role assignment reads the
 // global counts from the split info, so every rank makes the same choice.
+// the per-split body of HybridSplitTreeStructureBatchKernel (global_thread_index in [0, 32)); also run by warp 0
+// of the split's struct block in HybridSplitInnerFusedBatchKernel (cuda_plan key apply_struct_fused)
 template <bool USE_NCCL_REDUCE, bool USE_GRAD_DISCRETIZED>
-__global__ void HybridSplitTreeStructureBatchKernel(
-  const CUDAHybridApplyDescriptor* descs,
+__device__ __forceinline__ void HybridSplitTreeStructureSplit(
+  const CUDAHybridApplyDescriptor& d,
+  const unsigned int global_thread_index,
   data_size_t* cuda_leaf_data_start,
   data_size_t* cuda_leaf_num_data,
-  const data_size_t* cuda_data_indices_main_param,
+  const data_size_t* cuda_data_indices_main,
   const int num_total_bin,
   hist_t* cuda_hist, hist_t** cuda_hist_pool,
   double* cuda_leaf_output,
-  int* cuda_split_info_buffer_base,
-  const CUDAHybridGraphLoopStateOpt gstate) {
-  // graphs A2 idle-block guard (pow2-frozen grid; see the gen-bit-vector kernel)
-  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.x)) {
-    return;
-  }
-  const CUDAHybridApplyDescriptor d = descs[blockIdx.x];
+  int* cuda_split_info_buffer) {
   const int left_leaf_index = d.left_leaf_index;
   const int right_leaf_index = d.right_leaf_index;
   const CUDASplitInfo* best_split_info = d.best_split_info;
   CUDALeafSplitsStruct* smaller_leaf_splits = d.smaller_leaf_splits;
   CUDALeafSplitsStruct* larger_leaf_splits = d.larger_leaf_splits;
-  // graphs L1: the level's new main array is the loop's out buffer, and the
-  // deferred split info lands in the level's own slab region
-  const data_size_t* cuda_data_indices_main =
-    HybridGraphOutIndices(gstate, const_cast<data_size_t*>(cuda_data_indices_main_param));
-  int* cuda_split_info_buffer = cuda_split_info_buffer_base +
-    18 * (HybridGraphSplitInfoBase(gstate) + blockIdx.x);
   const unsigned int to_left_total_cnt = cuda_leaf_num_data[left_leaf_index];
   double* cuda_split_info_buffer_for_hessians = reinterpret_cast<double*>(cuda_split_info_buffer + 8);
-  const unsigned int global_thread_index = threadIdx.x;
   if (global_thread_index == 0) {
     cuda_leaf_output[left_leaf_index] = best_split_info->left_value;
   } else if (global_thread_index == 1) {
@@ -1923,6 +1913,33 @@ __global__ void HybridSplitTreeStructureBatchKernel(
   }
 }
 
+template <bool USE_NCCL_REDUCE, bool USE_GRAD_DISCRETIZED>
+__global__ void HybridSplitTreeStructureBatchKernel(
+  const CUDAHybridApplyDescriptor* descs,
+  data_size_t* cuda_leaf_data_start,
+  data_size_t* cuda_leaf_num_data,
+  const data_size_t* cuda_data_indices_main_param,
+  const int num_total_bin,
+  hist_t* cuda_hist, hist_t** cuda_hist_pool,
+  double* cuda_leaf_output,
+  int* cuda_split_info_buffer_base,
+  const CUDAHybridGraphLoopStateOpt gstate) {
+  // graphs A2 idle-block guard (pow2-frozen grid; see the gen-bit-vector kernel)
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.x)) {
+    return;
+  }
+  const CUDAHybridApplyDescriptor d = descs[blockIdx.x];
+  // graphs L1: the level's new main array is the loop's out buffer, and the
+  // deferred split info lands in the level's own slab region
+  const data_size_t* cuda_data_indices_main =
+    HybridGraphOutIndices(gstate, const_cast<data_size_t*>(cuda_data_indices_main_param));
+  int* cuda_split_info_buffer = cuda_split_info_buffer_base +
+    18 * (HybridGraphSplitInfoBase(gstate) + blockIdx.x);
+  HybridSplitTreeStructureSplit<USE_NCCL_REDUCE, USE_GRAD_DISCRETIZED>(
+    d, threadIdx.x, cuda_leaf_data_start, cuda_leaf_num_data, cuda_data_indices_main, num_total_bin,
+    cuda_hist, cuda_hist_pool, cuda_leaf_output, cuda_split_info_buffer);
+}
+
 // selective grow-then-prune: rewrite the data-index-to-leaf-index entries of the
 // collapsed subtree windows (blockIdx.y indexes windows; blocks beyond a window's
 // own row count exit early). The window rows in the main index array are exactly
@@ -2000,6 +2017,102 @@ void CUDADataPartition::RemapDataIndexToLeafIndex(const std::vector<int>& leaf_m
     cuda_data_index_to_leaf_index_.RawData());
 }
 
+// cuda_plan keys apply_struct_fused / gap_copy_fused: HybridSplitInnerBatchKernel's host-launched flat grid with two
+// more kinds of flat id. [0, num_struct_blocks): HybridSplitTreeStructureBatchKernel's body for split flat in warp 0
+// (its inputs, the aggregate's child counts and starts and the level's split infos, are final before this kernel; it
+// writes the tree-structure outputs nobody here reads), first so its short dependent chain overlaps the partition.
+// Then the splits' chunks; then, from num_struct_blocks + total_flat_blocks on, gap_flat_blocks ROWS * blockDim.x-row
+// chunks of the gap descriptors (descs + num_split_descs, flat_block_start counted from total_flat_blocks), each row
+// copied from the old main array to the out buffer at the same offset (HybridCopyDataIndicesBatchKernel's copy). Gap
+// ranges are disjoint from every split window, so the order of the kinds does not matter.
+template <int ROWS, bool USE_NCCL_REDUCE, bool USE_GRAD_DISCRETIZED>
+__global__ void __launch_bounds__(SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION) HybridSplitInnerFusedBatchKernel(
+  const CUDAHybridApplyDescriptor* descs,
+  const data_size_t* cuda_data_indices,
+  const data_size_t* block_to_left_offset_buffer_base,
+  const data_size_t* block_to_right_offset_buffer_base,
+  const uint16_t* block_to_left_offset,
+  data_size_t* out_data_indices,
+  const int num_split_descs,
+  const int total_flat_blocks,
+  int* cuda_data_index_to_leaf_index,
+  const int write_leaf_map,
+  const int num_gap_descs,
+  const int gap_flat_blocks,
+  const int num_struct_blocks,
+  data_size_t* cuda_leaf_data_start,
+  data_size_t* cuda_leaf_num_data,
+  const int num_total_bin,
+  hist_t* cuda_hist, hist_t** cuda_hist_pool,
+  double* cuda_leaf_output,
+  int* cuda_split_info_buffer_base) {
+  __shared__ uint16_t shared_warp_scan[WARPSIZE];
+  const int all_flat_blocks = num_struct_blocks + total_flat_blocks + gap_flat_blocks;
+  for (int id = static_cast<int>(blockIdx.x); id < all_flat_blocks; id += static_cast<int>(gridDim.x)) {
+    if (id < num_struct_blocks) {
+      if (threadIdx.x < 32) {
+        HybridSplitTreeStructureSplit<USE_NCCL_REDUCE, USE_GRAD_DISCRETIZED>(
+          descs[id], threadIdx.x, cuda_leaf_data_start, cuda_leaf_num_data, out_data_indices, num_total_bin,
+          cuda_hist, cuda_hist_pool, cuda_leaf_output, cuda_split_info_buffer_base + 18 * id);
+      }
+      continue;
+    }
+    const int flat = id - num_struct_blocks;
+    if (flat >= total_flat_blocks) {
+      const CUDAHybridApplyDescriptor* gap_descs = descs + num_split_descs;
+      const CUDAHybridApplyDescriptor& d = gap_descs[HybridFlatBlockDesc(gap_descs, num_gap_descs, flat)];
+      const data_size_t leaf_data_start = d.leaf_data_start;
+      const data_size_t num_data_in_leaf = d.num_data_in_leaf;
+      const data_size_t chunk_start = static_cast<data_size_t>(flat - d.flat_block_start) *
+        static_cast<data_size_t>(ROWS * blockDim.x);
+      data_size_t value[ROWS];
+#pragma unroll
+      for (int k = 0; k < ROWS; ++k) {
+        const data_size_t pos = chunk_start + static_cast<data_size_t>(k * blockDim.x + threadIdx.x);
+        value[k] = pos < num_data_in_leaf ? cuda_data_indices[leaf_data_start + pos] : 0;
+      }
+#pragma unroll
+      for (int k = 0; k < ROWS; ++k) {
+        const data_size_t pos = chunk_start + static_cast<data_size_t>(k * blockDim.x + threadIdx.x);
+        if (pos < num_data_in_leaf) {
+          out_data_indices[leaf_data_start + pos] = value[k];
+        }
+      }
+      continue;
+    }
+    const int desc_index = HybridFlatBlockDesc(descs, num_split_descs, flat);
+    const CUDAHybridApplyDescriptor d = descs[desc_index];
+    if (write_leaf_map != 0) {
+      HybridSplitInnerChunk<true, ROWS>(d, static_cast<unsigned int>(flat - d.flat_block_start),
+        cuda_data_indices, block_to_left_offset_buffer_base,
+        block_to_right_offset_buffer_base, block_to_left_offset,
+        out_data_indices, cuda_data_index_to_leaf_index, shared_warp_scan);
+    } else {
+      HybridSplitInnerChunk<false, ROWS>(d, static_cast<unsigned int>(flat - d.flat_block_start),
+        cuda_data_indices, block_to_left_offset_buffer_base,
+        block_to_right_offset_buffer_base, block_to_left_offset,
+        out_data_indices, cuda_data_index_to_leaf_index, shared_warp_scan);
+    }
+  }
+}
+
+template <int ROWS, bool USE_NCCL_REDUCE, bool USE_GRAD_DISCRETIZED>
+void LaunchHybridSplitInnerFusedBatchKernel(
+  const unsigned int grid, const int block, cudaStream_t stream,
+  const CUDAHybridApplyDescriptor* descs, const data_size_t* cuda_data_indices,
+  const data_size_t* block_to_left_offset_buffer_base, const data_size_t* block_to_right_offset_buffer_base,
+  const uint16_t* block_to_left_offset, data_size_t* out_data_indices, const int num_split_descs,
+  const int total_flat_blocks, int* cuda_data_index_to_leaf_index, const int write_leaf_map,
+  const int num_gap_descs, const int gap_flat_blocks, const int num_struct_blocks,
+  data_size_t* cuda_leaf_data_start, data_size_t* cuda_leaf_num_data, const int num_total_bin,
+  hist_t* cuda_hist, hist_t** cuda_hist_pool, double* cuda_leaf_output, int* cuda_split_info_buffer_base) {
+  HybridSplitInnerFusedBatchKernel<ROWS, USE_NCCL_REDUCE, USE_GRAD_DISCRETIZED><<<grid, block, 0, stream>>>(
+    descs, cuda_data_indices, block_to_left_offset_buffer_base, block_to_right_offset_buffer_base,
+    block_to_left_offset, out_data_indices, num_split_descs, total_flat_blocks, cuda_data_index_to_leaf_index,
+    write_leaf_map, num_gap_descs, gap_flat_blocks, num_struct_blocks, cuda_leaf_data_start, cuda_leaf_num_data,
+    num_total_bin, cuda_hist, cuda_hist_pool, cuda_leaf_output, cuda_split_info_buffer_base);
+}
+
 // region copy at identical offsets (src and dst share the main array layout);
 // used to carry terminal (non-split) leaves' regions from the old main index
 // array into the out buffer before it is swapped in as the new main array
@@ -2030,6 +2143,7 @@ __global__ void HybridCopyDataIndicesBatchKernel(
 void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, const int max_num_blocks,
                                                        const int num_gaps, const int max_gap_blocks,
                                                        const int total_flat_blocks,
+                                                       const int gap_flat_blocks,
                                                        const bool write_leaf_map) {
   const CUDAHybridApplyDescriptor* descs = cuda_apply_descs_.RawDataReadOnly();
   (void)max_num_blocks;
@@ -2065,7 +2179,48 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
     descs, cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
     cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
     cuda_level_smaller_counts_.RawData(), nullptr);
-  if (apply_row_batch) {
+  // cuda_plan keys apply_struct_fused / gap_copy_fused: the tree-structure update and the gap copy as extra flat ids
+  // of the partition kernel
+  const bool struct_fused = FalcataPlan::Get().apply_struct_fused;
+  const bool gap_fused = num_gaps > 0 && gap_flat_blocks > 0;
+  if (struct_fused || gap_fused) {
+    const int num_struct_blocks = struct_fused ? num_splits : 0;
+    const int fused_gap_flat_blocks = gap_fused ? gap_flat_blocks : 0;
+    const int all_flat_blocks = num_struct_blocks + total_flat_blocks + fused_gap_flat_blocks;
+    const unsigned int fused_grid = static_cast<unsigned int>(all_flat_blocks < 8192 ? all_flat_blocks : 8192);
+    const int rows = apply_row_batch ? kApplyRows : 1;
+    const bool nccl = nccl_communicator_ != nullptr;
+    auto launch = [&](auto launcher) {
+      launcher(fused_grid, block_dim / rows, cuda_streams_[0], descs, cuda_data_indices_.RawData(),
+               cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
+               cuda_block_to_left_offset_.RawData(), new_main_indices, num_splits, total_flat_blocks,
+               cuda_data_index_to_leaf_index_.RawData(), write_leaf_map ? 1 : 0, num_gaps, fused_gap_flat_blocks,
+               num_struct_blocks, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(), num_total_bin_,
+               cuda_hist_, cuda_hist_pool_.RawData(), cuda_leaf_output_.RawData(),
+               cuda_split_info_buffer_.RawData());
+    };
+    if (apply_row_batch) {
+      if (nccl && use_quantized_grad_) {
+        launch(LaunchHybridSplitInnerFusedBatchKernel<kApplyRows, true, true>);
+      } else if (nccl) {
+        launch(LaunchHybridSplitInnerFusedBatchKernel<kApplyRows, true, false>);
+      } else if (use_quantized_grad_) {
+        launch(LaunchHybridSplitInnerFusedBatchKernel<kApplyRows, false, true>);
+      } else {
+        launch(LaunchHybridSplitInnerFusedBatchKernel<kApplyRows, false, false>);
+      }
+    } else {
+      if (nccl && use_quantized_grad_) {
+        launch(LaunchHybridSplitInnerFusedBatchKernel<1, true, true>);
+      } else if (nccl) {
+        launch(LaunchHybridSplitInnerFusedBatchKernel<1, true, false>);
+      } else if (use_quantized_grad_) {
+        launch(LaunchHybridSplitInnerFusedBatchKernel<1, false, true>);
+      } else {
+        launch(LaunchHybridSplitInnerFusedBatchKernel<1, false, false>);
+      }
+    }
+  } else if (apply_row_batch) {
     HybridSplitInnerBatchKernel<kApplyRows><<<flat_grid, block_dim / kApplyRows, 0, cuda_streams_[0]>>>(
       descs, cuda_data_indices_.RawData(), cuda_block_data_to_left_offset_.RawData(),
       cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
@@ -2078,7 +2233,9 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
       new_main_indices, nullptr, num_splits, total_flat_blocks,
       cuda_data_index_to_leaf_index_.RawData(), write_leaf_map ? 1 : 0);
   }
-  if (nccl_communicator_ != nullptr && use_quantized_grad_) {
+  if (struct_fused) {
+    // written by the partition kernel above
+  } else if (nccl_communicator_ != nullptr && use_quantized_grad_) {
     HybridSplitTreeStructureBatchKernel<true, true><<<num_splits, 32, 0, cuda_streams_[0]>>>(
       descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
       new_main_indices, num_total_bin_, cuda_hist_, cuda_hist_pool_.RawData(),
@@ -2099,7 +2256,7 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
       new_main_indices, num_total_bin_, cuda_hist_, cuda_hist_pool_.RawData(),
       cuda_leaf_output_.RawData(), cuda_split_info_buffer_.RawData(), nullptr);
   }
-  if (num_gaps > 0) {
+  if (num_gaps > 0 && !gap_fused) {
     // gap descriptors follow the split descriptors in cuda_apply_descs_; gap_copy_once can split a gap into several
     // descriptors, so their count is checked against the grid's y limit here, not only the split count
     CHECK_LE(num_gaps, 65535);

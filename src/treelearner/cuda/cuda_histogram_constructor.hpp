@@ -981,6 +981,16 @@ class CUDAHistogramConstructor {
   std::vector<uint8_t> host_bin_used_bytree_;
   CUDAVector<uint8_t> cuda_bin_used_bytree_;
   bool any_feature_unused_bytree_ = false;
+  /*! \brief cuda_plan key fix_subtract_fused: this tree's sampled features (the same features and bin ranges as
+   *  host_bin_used_bytree_), two words each: the first histogram bin, and the bin span | num_bin << 8 |
+   *  most-frequent bin << 16 | 1 << 24 for a feature whose most-frequent bin is fixed (need_fix_histogram_features_).
+   *  used_feature_info_ok_: built and uploaded for this tree, at most 512 features, every span at most 8 bins and
+   *  every fixed feature's bins and most-frequent bin within its span. */
+  std::vector<uint32_t> host_used_feature_info_;
+  CUDAVector<uint32_t> cuda_used_feature_info_;
+  std::vector<uint8_t> need_fix_by_feature_;
+  int num_used_feature_info_ = 0;
+  bool used_feature_info_ok_ = false;
   /*! \brief every feature fits the register-accumulation bin cap (<= 8 bins);
    *  selects the contention-free construct body on the batched compact path
    *  (non-quantized only; FALCATA_BATCH_REGHIST=0 disables) */
