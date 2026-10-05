@@ -910,6 +910,55 @@ is inert where the capped build is taken and remains the fallback where it is no
 (`falcata-stoch`, 500 rounds) gain 1.01-1.07x with identical models: covtype 1.05x deep / 1.07x shallow, year
 1.04x / 1.04x, fraud 1.05x / 1.06x, higgs 1.02x / 1.01x, epsilon 1.02x / 1.01x.
 
+## 10c. The Numerai round after #56: the fill engages, the level kernels shrink, the host round trips go
+
+After §10b a numerai53 benchmark-split round was about 5.5 ms on the GPU timeline, of which:
+- the pair-joint construct 2.1 ms (40%) and the fused root fill 1.5 ms (27%), both near their DRAM ceilings;
+- the small level kernels (split finder, level sync, fix/subtract, the apply chain) about 0.9 ms;
+- 0.5 ms of GPU idle, mostly the host round trips of every level and of the tree boundary.
+
+A third overnight agentic search took about 12% off that round with nineteen `cuda_plan` keys and one number. All are default on and bit-identical: identity keys in `ablation.py`, flip cells in the lattice. None adds device memory beyond a few KB of staging.
+
+**The fill engages its fast path (`colmajor_align`, `root_hist_l2_prefetch`, `root_hist_short_blocks`, `root_hist_block_rounds`).**
+- `root_hist_prefetch`'s word staging needs every column of the column-major store to start on a 4-byte word. With an odd half row count (Numerai's 5,463,797 rows) the store's pitch was odd, so the fill silently ran its byte path.
+- Columns now start on 32-byte sectors (at most 31 pad bytes each), and a block prefetches the tile after its next one into L2.
+- Blocks take the tiles over 48 rounds of the resident blocks (3 tiles here) instead of always 16, which shortens the kernel's tail.
+- Fill 1.50 → 1.33 ms per round, at 83% of DRAM: the rate a plain device-to-device copy of the same bytes reaches.
+
+**Level split search (`warp_find_strided`, `find_loads_batched`, `sync_copy_batched`).**
+- The 4-lane quantized finder holds positions `l` and `l + 4` per lane, so a 5-bin task's candidates fill one fp64 slot and warps skip the other; it reuses the prune's unpack and splits the child outputs over two lanes. Find 161 → 94 µs per round.
+- The level sync, a single block's latency chain, loads its winner whole before storing it. When every gain is finite, it reduces on integer keys in the fp64 tie-break's order (the tie tolerance is 0). Sync 82 → 28 µs per round.
+
+**Fewer level kernels (`fix_subtract_fused`, `apply_struct_fused`, `gap_copy_fused`).**
+- Under feature sampling one kernel (a thread per sampled feature) fixes, subtracts and copies the changed-bit histograms. The old kernels launched mostly empty blocks for the unsampled features: 88 → 35 µs per round.
+- The batched apply's tree-structure update and gap copy run as extra flat ids of the partition kernel: two launches fewer per level, −55 µs per round.
+
+**Host round trips (`readback_kernel`, `level_apply_first`, `invalidate_async`, `gradients_no_sync`, `tree_meta_batch`, `tree_end_prealloc`).**
+- Each level's two synchronous readbacks are copied by a small default-stream kernel into mapped pinned memory, so the copy starts as the producing kernel ends.
+- The partition's apply chain is issued before the tree's short split record.
+- No host waits remain on the final level's invalidation or on the CUDA objective's gradients.
+- The tree start's ~14 metadata uploads become one copy and one scatter.
+- A pooled tree's retained leaf values are preallocated while the GPU applies the final level.
+- In the search's profiles, steady GPU idle went 476 → 336 µs per round from the level round trips and 362 → 298 µs from the tree boundary.
+
+**Construct launch and the final level (`pair_block_map`, `final_map_only`, `final_readback_first`, `shape_memo`).**
+- A multi-pair level's pair-joint construct launches only the blocks that hold rows (85% of the deep levels' blocks had none): construct −3.8%.
+- A tree-completing final level writes only the row → leaf map, with no partition, gap copy or buffer swap.
+- The tree end issues its readbacks ahead of the residual map pass.
+- The capped construct's block height is memoised per launch shape.
+- Tree end 67 → 41 µs.
+
+| | master (f00d9b1a) | this branch | |
+|---|---|---|---|
+| ms per round (numerai53 benchmark split, tuner on, 500 rounds timed from 200, 12 interleaved pairs) | 5.82 | 5.09 | 1.143x [1.130, 1.156] |
+| trees/s at 30k trees (`bench.py` numerai-deep cell, 2 × ABBA) | 163.3 | 185.6 | 1.137x |
+| peak device memory (per process) | 11,348 MiB | 11,348 MiB | |
+
+- **Same model, every run:** tree md5 `1c68bf82…` at 30k trees, holdout corr 0.0239, sharpe 1.40; switching any one key off, or all twenty, trains the same model.
+- **The 30k number is noisier than the per-round one.** The runtime tuner's saturation floor varied between 80 and 2560 across runs, moving a 30k run by ±5%.
+- **Guard workloads:** the evaluator's five guard workloads gain 1.08-1.28x per round (covtype deep 1.28x, missing deep 1.23x, year deep 1.12x, higgs deep 1.10x, numerai53-example 1.08x), all with identical models.
+- **The search's lineage:** c053 (fill) 1.141x against the previous master 4befcfb2, c056 + c058 (finder, sync) 1.163x, c060 + c062 (fused level kernels) 1.196x, c059 + c061 (round trips) 1.207x, and c066 (merged, with `pair_block_map` and the final-level keys) 1.281x. #56's own keys are 1.105x of that.
+
 ---
 
 ## Multi-GPU: level-batched NCCL all-reduce
