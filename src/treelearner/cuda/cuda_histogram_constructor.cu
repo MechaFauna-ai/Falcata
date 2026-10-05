@@ -2962,38 +2962,55 @@ CUDAConstructDiscretizedHistogramPairJointCappedKernel(FALCATA_PAIR_JOINT_BATCHE
 #undef FALCATA_PAIR_JOINT_BATCHED_ARGS
 #undef FALCATA_PAIR_JOINT_BATCHED_PARAMS
 
-// Largest block both pair-joint instantiations can launch (register-limited; the whole-row block of
-// pair_hist_rows can exceed the per-partition shapes this kernel was otherwise launched with).
-static int PairJointMaxThreadsPerBlock() {
-  static const int max_threads = [] {
+// The default pair-joint build's limits on the current device: the largest block both instantiations can launch
+// (register-limited; the whole-row block of pair_hist_rows can exceed the per-partition shapes this kernel was
+// otherwise launched with), and the warps one SM holds by its register file at the kernels' register count (the
+// larger of the two instantiations, allocated per warp in 256-register units) and by its warp limit. Memoised per
+// device, like the capped build's choice (PairJointCappedRows): a process can train on devices whose register file,
+// warp limit or kernel image differ, and the device is whichever one is current at the launch.
+struct PairJointLimits {
+  bool ready = false;
+  int max_threads = 0;
+  int warps_by_regs = 0;
+  int warps_per_sm = 0;
+};
+static const PairJointLimits& PairJointDeviceLimits() {
+  static thread_local std::vector<PairJointLimits> by_device;
+  int device = 0;
+  CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
+  if (static_cast<size_t>(device) >= by_device.size()) {
+    by_device.resize(static_cast<size_t>(device) + 1);
+  }
+  PairJointLimits& limits = by_device[device];
+  if (!limits.ready) {
     cudaFuncAttributes attr_gather, attr_direct;
     CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attr_gather, CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false>));
     CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attr_direct, CUDAConstructDiscretizedHistogramPairJointBatchedKernel<true>));
-    return std::min(attr_gather.maxThreadsPerBlock, attr_direct.maxThreadsPerBlock);
-  }();
-  return max_threads;
-}
-
-// Warps of a pair-joint block of `threads` threads resident on one SM: whole blocks, as many as the register file
-// holds at the kernels' register count (the larger of the two instantiations, allocated per warp in 256-register
-// units) and the SM's warp limit allow.
-static int PairJointResidentWarps(const int threads) {
-  static const int2 limits = [] {
-    cudaFuncAttributes attr_gather, attr_direct;
-    CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attr_gather, CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false>));
-    CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attr_direct, CUDAConstructDiscretizedHistogramPairJointBatchedKernel<true>));
-    int device = 0;
     int regs_per_sm = 0;
     int threads_per_sm = 0;
-    CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
     CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&regs_per_sm, cudaDevAttrMaxRegistersPerMultiprocessor, device));
     CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&threads_per_sm, cudaDevAttrMaxThreadsPerMultiProcessor, device));
     const int regs = std::max(1, std::max(attr_gather.numRegs, attr_direct.numRegs));
     const int regs_per_warp = (regs * 32 + 255) / 256 * 256;
-    return make_int2(std::max(1, regs_per_sm / regs_per_warp), std::max(1, threads_per_sm / 32));
-  }();
+    limits.warps_by_regs = std::max(1, regs_per_sm / regs_per_warp);
+    limits.warps_per_sm = std::max(1, threads_per_sm / 32);
+    limits.max_threads = std::min(attr_gather.maxThreadsPerBlock, attr_direct.maxThreadsPerBlock);
+    limits.ready = true;
+  }
+  return limits;
+}
+
+// Largest block both pair-joint instantiations can launch on the current device.
+static int PairJointMaxThreadsPerBlock() {
+  return PairJointDeviceLimits().max_threads;
+}
+
+// Warps of a pair-joint block of `threads` threads resident on one SM of the current device: whole blocks, as many as
+// the register file and the SM's warp limit allow (PairJointDeviceLimits).
+static int PairJointResidentWarps(const int threads) {
+  const PairJointLimits& limits = PairJointDeviceLimits();
   const int block_warps = std::max(1, (threads + 31) / 32);
-  return std::min(limits.x / block_warps, limits.y / block_warps) * block_warps;
+  return std::min(limits.warps_by_regs / block_warps, limits.warps_per_sm / block_warps) * block_warps;
 }
 
 using PairJointKernelFn = void (*)(const CUDAHybridPairDescriptor*, const int32_t*, const uint8_t*, const uint32_t*,
