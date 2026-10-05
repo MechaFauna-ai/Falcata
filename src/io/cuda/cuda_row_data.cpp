@@ -741,7 +741,8 @@ bool CUDARowData::InitDense4BitColumnsOnly(const Dataset* train_data) {
   return true;
 }
 
-void CUDARowData::UploadDense4BitColumnsColMajor(uint8_t* dst, const int col_begin, const int col_end) const {
+void CUDARowData::UploadDense4BitColumnsColMajor(uint8_t* dst, const int col_begin, const int col_end,
+                                                 const size_t column_stride) const {
   CHECK(dense_4bit_columns_only_);
   CHECK(0 <= col_begin && col_begin <= col_end && col_end <= feature_partition_column_index_offsets_.back());
   // A 4-bit Dataset column is (num_data + 1) / 2 bytes, two rows per byte, even row in the low nibble: exactly one
@@ -749,18 +750,21 @@ void CUDARowData::UploadDense4BitColumnsColMajor(uint8_t* dst, const int col_beg
   // straight from the Dataset; smaller ones, and every 8-bit column (nibble-packed here), are gathered on the host
   // into runs of up to 16 MiB first, because each pageable copy has a fixed cost of tens of microseconds.
   const size_t column_bytes = colmajor_column_bytes();
+  const size_t stride = column_stride == 0 ? column_bytes : column_stride;
+  CHECK_GE(stride, column_bytes);
   constexpr size_t kDirectCopyBytes = size_t{1} << 20;
-  const size_t gather_bytes = std::max(size_t{16} << 20, column_bytes);
+  const size_t gather_bytes = std::max(size_t{16} << 20, stride);
   std::unique_ptr<uint8_t[]> gather;
   std::vector<int> run_columns;
-  auto out_of = [&](int c) { return dst + static_cast<size_t>(c - col_begin) * column_bytes; };
+  auto out_of = [&](int c) { return dst + static_cast<size_t>(c - col_begin) * stride; };
   auto flush_run = [&]() {
     if (run_columns.empty()) return;
     if (gather == nullptr) gather.reset(new uint8_t[gather_bytes]);
     Threading::For<int>(0, static_cast<int>(run_columns.size()), 1, [&](int, int start, int end) {
       for (int i = start; i < end; ++i) {
         const int c = run_columns[i];
-        uint8_t* out = gather.get() + static_cast<size_t>(i) * column_bytes;
+        uint8_t* out = gather.get() + static_cast<size_t>(i) * stride;
+        std::memset(out + column_bytes, 0, stride - column_bytes);
         if (dense_column_bit_types_[c] == 4) {
           std::memcpy(out, dense_column_data_[c], column_bytes);
         } else {
@@ -773,7 +777,7 @@ void CUDARowData::UploadDense4BitColumnsColMajor(uint8_t* dst, const int col_beg
         }
       }
     });
-    CopyFromHostToCUDADevice<uint8_t>(out_of(run_columns.front()), gather.get(), run_columns.size() * column_bytes,
+    CopyFromHostToCUDADevice<uint8_t>(out_of(run_columns.front()), gather.get(), run_columns.size() * stride,
                                       __FILE__, __LINE__);
     run_columns.clear();
   };
@@ -783,16 +787,17 @@ void CUDARowData::UploadDense4BitColumnsColMajor(uint8_t* dst, const int col_beg
       CopyFromHostToCUDADevice<uint8_t>(out_of(c), reinterpret_cast<const uint8_t*>(dense_column_data_[c]),
                                         column_bytes, __FILE__, __LINE__);
     } else {
-      if ((run_columns.size() + 1) * column_bytes > gather_bytes) flush_run();
+      if ((run_columns.size() + 1) * stride > gather_bytes) flush_run();
       run_columns.push_back(c);
     }
   }
   flush_run();
 }
 
-void CUDARowData::VerifyDense4BitColMajor(const uint8_t* device) const {
+void CUDARowData::VerifyDense4BitColMajor(const uint8_t* device, const size_t column_stride) const {
   const int num_columns = feature_partition_column_index_offsets_.back();
   const size_t column_bytes = colmajor_column_bytes();
+  const size_t stride = column_stride == 0 ? column_bytes : column_stride;
   const size_t total = static_cast<size_t>(num_columns) * column_bytes;
   std::unique_ptr<uint8_t[]> expected(new uint8_t[total]);
   Threading::For<int>(0, num_columns, 1, [&](int, int start, int end) {
@@ -807,7 +812,10 @@ void CUDARowData::VerifyDense4BitColMajor(const uint8_t* device) const {
     }
   });
   std::unique_ptr<uint8_t[]> got(new uint8_t[total]);
-  CopyFromCUDADeviceToHost<uint8_t>(got.get(), device, total, __FILE__, __LINE__);
+  for (int c = 0; c < num_columns; ++c) {
+    CopyFromCUDADeviceToHost<uint8_t>(got.get() + static_cast<size_t>(c) * column_bytes,
+                                      device + static_cast<size_t>(c) * stride, column_bytes, __FILE__, __LINE__);
+  }
   if (std::memcmp(expected.get(), got.get(), total) != 0) {
     Log::Fatal("FALCATA_VERIFY: the column-major 4-bit store differs from the Dataset's columns.");
   }

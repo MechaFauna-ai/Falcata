@@ -110,6 +110,25 @@ struct FalcataPlan {
   // is staged, so those loads overlap the tile's write and histogram phases.
   // Same tile bytes: bit-identical.
   bool root_hist_prefetch = true;    // key: root_hist_prefetch
+  // root_hist_prefetch with an L2 lead: right after a block issues the register
+  // loads of its next tile, it also prefetches into L2 the source sectors (rows
+  // below num_data only) and gradients of the tile after that, so a second tile
+  // per block is in flight from DRAM and the next register loads hit L2 instead
+  // of stalling the unpack. A cache hint only: bit-identical.
+  bool root_hist_l2_prefetch = true;  // key: root_hist_l2_prefetch
+  // colmajor_direct's column-major store with each column's start rounded up
+  // to a 32-byte sector (instead of (num_data + 1) / 2 bytes apart, an odd
+  // pitch for odd half row counts): every column then starts on a 4-byte word,
+  // which the fused fill's word staging (root_hist_prefetch) requires, and its
+  // 64-byte tile chunks are whole sectors. Pad bytes are never read as rows:
+  // same column bytes, bit-identical.
+  bool colmajor_align = true;        // key: colmajor_align
+  // fused_root_hist's blocks sized from the shape instead of always 16 tiles: the
+  // tiles over root_hist_block_rounds rounds of the blocks resident on the device
+  // (occupancy API x SMs), 2 to 16 tiles each (the packed row bound still caps
+  // it). Blocks of equal work end up to a block's lifetime apart, so shorter
+  // blocks shorten the kernel's tail. Integer sums regrouped: bit-identical.
+  bool root_hist_short_blocks = true;  // key: root_hist_short_blocks
   // true when the user wrote construct_jit:on/off -- bypasses the >=300
   // rounds auto-gate (mirrors tuner_explicit)
   bool construct_jit_explicit = false;
@@ -194,6 +213,9 @@ struct FalcataPlan {
   // 16% at 0.8, mask ahead by 9-15% from 0.85 to 0.99.
   double view_probe_lo = 0.5;
   double view_probe_hi = 0.95;
+  // root_hist_short_blocks: rounds of the resident blocks the fused fill's grid
+  // is sized for (cuda_plan key root_hist_block_rounds:<number>; below 1: off)
+  double root_hist_block_rounds = 48.0;
   // 4-bit compact fill through a shared-memory [row][slot] tile: coalesced
   // column reads, 16-byte streaming writes of each partition's contiguous
   // destination run. The host takes it for column-major sources with at most
@@ -434,6 +456,9 @@ struct FalcataPlan {
     if (key == "root_hist_tile_stride") return &root_hist_tile_stride;
     if (key == "root_hist_run_copy") return &root_hist_run_copy;
     if (key == "root_hist_prefetch") return &root_hist_prefetch;
+    if (key == "root_hist_l2_prefetch") return &root_hist_l2_prefetch;
+    if (key == "colmajor_align") return &colmajor_align;
+    if (key == "root_hist_short_blocks") return &root_hist_short_blocks;
     if (key == "fast_rowdata") return &fast_rowdata;
     if (key == "rowdata_4bit") return &rowdata_4bit;
     if (key == "gpu_construct") return &gpu_construct;
@@ -530,7 +555,8 @@ struct FalcataPlan {
       }
       double* number = kv[0] == std::string("view_mask_ff") ? &plan.view_mask_ff :
                        kv[0] == std::string("view_probe_lo") ? &plan.view_probe_lo :
-                       kv[0] == std::string("view_probe_hi") ? &plan.view_probe_hi : nullptr;
+                       kv[0] == std::string("view_probe_hi") ? &plan.view_probe_hi :
+                       kv[0] == std::string("root_hist_block_rounds") ? &plan.root_hist_block_rounds : nullptr;
       if (number != nullptr) {
         char* end = nullptr;
         const double value = std::strtod(kv[1].c_str(), &end);

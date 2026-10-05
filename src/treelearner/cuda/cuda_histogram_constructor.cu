@@ -16,6 +16,7 @@
 #include <cuda.h>
 
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 #include <Falcata/cuda/cuda_driver_shim.hpp>
@@ -495,6 +496,7 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
   const bool strided_tiles,
   const bool run_copy,
   const bool word_prefetch,
+  const bool l2_lead,
   const int32_t* __restrict__ grad_and_hess,
   const bool hist_16bit,
   hist_t* __restrict__ root_hist_scratch) {
@@ -581,8 +583,32 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
       }
     }
   };
+  // L2 lead (cuda_plan key root_hist_l2_prefetch, word path only): a tile's source chunk of every column, cut to
+  // the bytes holding rows below num_data (the bytes its word loads read), and its gradients are prefetched into
+  // L2 one tile before the register loads of that tile are issued. A chunk is at most 64 bytes from a 4-byte
+  // aligned start, so the sectors of its bytes 0, 32 and its last byte cover it.
+  auto prefetch_l2 = [&](data_size_t tile_index) {
+    const data_size_t row_start = tile_index * kFill4BitTiledRows;
+    const int rows = static_cast<int>(min(static_cast<data_size_t>(kFill4BitTiledRows), num_data - row_start));
+    const int last_byte = (rows - 1) >> 1;
+    const size_t half_row_start = static_cast<size_t>(row_start >> 1);
+    for (int t = tid; t < 6 * num_slots; t += kFusedRootThreads) {
+      const int c = t / 3;  // slot c >> 1, low (even c) or high (odd c) column
+      const int k = t - 3 * c;
+      const size_t nib = (c & 1) ? s_nib1[c >> 1] : s_nib0[c >> 1];
+      if (nib == kNone) continue;
+      const int off = k == 0 ? 0 : (k == 1 ? min(32, last_byte) : last_byte);
+      asm volatile("prefetch.global.L2 [%0];" :: "l"(__cvta_generic_to_global(src_data + (nib >> 1) + half_row_start + off)));
+    }
+    for (int t = tid; 8 * t < rows; t += kFusedRootThreads) {
+      asm volatile("prefetch.global.L2 [%0];" :: "l"(__cvta_generic_to_global(grad_and_hess + row_start + 8 * t)));
+    }
+  };
   if (word_prefetch && tile_first < num_tiles) {
     load_words(tile_first);
+    if (l2_lead && tiles_per_block > 1 && tile_first + tile_step < num_tiles) {
+      prefetch_l2(tile_first + tile_step);
+    }
   }
   for (int step = 0; step < tiles_per_block; ++step) {
     const data_size_t tile_index = tile_first + step * tile_step;
@@ -644,6 +670,9 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
     __syncthreads();
     if (word_prefetch && step + 1 < tiles_per_block && tile_index + tile_step < num_tiles) {
       load_words(tile_index + tile_step);
+      if (l2_lead && step + 2 < tiles_per_block && tile_index + 2 * tile_step < num_tiles) {
+        prefetch_l2(tile_index + 2 * tile_step);
+      }
     }
 
     // write the tile exactly as CUDAFillCompactData4BitTiledKernel does
@@ -769,6 +798,7 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
   bool strided_tiles,
   bool run_copy,
   bool word_prefetch,
+  bool l2_lead,
   int max_rows_per_block,
   const int32_t* grad_and_hess,
   bool hist_16bit,
@@ -777,35 +807,76 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
 #if !defined(__HIP_PLATFORM_AMD__)
   // the packed per-block row bound, and the default dynamic shared-memory limit (the slot-major table where it
   // was requested and fits, else one cell per local bin)
-  const int tiles_per_block = std::min(16, max_rows_per_block / kFill4BitTiledRows);
+  const int max_tiles_per_block = std::min(16, max_rows_per_block / kFill4BitTiledRows);
   const size_t slot_major_bytes = FusedRootHistFillSharedBytes(
     total_byte_slots, 2 * slot_major_span * FusedRootHistSlotStride(total_byte_slots));
   const bool slot_major = slot_major_span > 0 && slot_major_bytes <= 48 * 1024;
   const size_t shared_bytes = slot_major ? slot_major_bytes
                                          : FusedRootHistFillSharedBytes(total_byte_slots, num_local_bins);
-  if (tiles_per_block < 1 || shared_bytes > 48 * 1024) {
+  if (max_tiles_per_block < 1 || shared_bytes > 48 * 1024) {
     return false;
   }
-  CUDASUCCESS_OR_FATAL(cudaMemsetAsync(root_hist_scratch, 0, root_hist_scratch_bytes, stream));
   const data_size_t num_tiles = (num_data + kFill4BitTiledRows - 1) / kFill4BitTiledRows;
+  int tiles_per_block = max_tiles_per_block;
+  const double block_rounds = FalcataPlan::Get().root_hist_block_rounds;
+  if (FalcataPlan::Get().root_hist_short_blocks && block_rounds >= 1.0) {
+    // cuda_plan keys root_hist_short_blocks / root_hist_block_rounds: blocks of equal work start as resident slots
+    // free up, so the last ones end up to a block's lifetime apart and the kernel's tail idles about half a block
+    // per slot. Size the blocks from the shape (tiles over block_rounds rounds of the blocks resident on the device,
+    // by the occupancy API) instead of a fixed count, at least kFusedRootMinTiles: the word path overlaps a tile's
+    // loads with the previous tile's work only inside a block, and the block's setup, zeroing and histogram flush
+    // stay amortized (1-tile blocks: +37% fill here; 2-4 tiles within 1%). The packed row bound still caps it.
+    constexpr int kFusedRootMinTiles = 2;
+    // the resident block count, queried once per (device, variant, shared bytes): the launch runs every tree
+    struct ResidentQuery {
+      int device = -1;
+      bool slot_major = false;
+      size_t shared_bytes = 0;
+      int resident_blocks = 0;
+    };
+    static thread_local ResidentQuery cached;
+    int device = 0;
+    CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
+    if (cached.device != device || cached.slot_major != slot_major || cached.shared_bytes != shared_bytes) {
+      int num_sms = 0;
+      int blocks_per_sm = 0;
+      CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, device));
+      if (slot_major) {
+        CUDASUCCESS_OR_FATAL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+          &blocks_per_sm, CUDAFillCompactData4BitTiledRootHistKernel<true>, kFusedRootThreads, shared_bytes));
+      } else {
+        CUDASUCCESS_OR_FATAL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+          &blocks_per_sm, CUDAFillCompactData4BitTiledRootHistKernel<false>, kFusedRootThreads, shared_bytes));
+      }
+      cached.device = device;
+      cached.slot_major = slot_major;
+      cached.shared_bytes = shared_bytes;
+      cached.resident_blocks = std::max(1, num_sms * blocks_per_sm);
+    }
+    const double target_blocks = static_cast<double>(cached.resident_blocks) * block_rounds;
+    const int64_t wanted = static_cast<int64_t>(std::ceil(static_cast<double>(num_tiles) / target_blocks));
+    tiles_per_block = static_cast<int>(std::min<int64_t>(
+      max_tiles_per_block, std::max<int64_t>(std::min(kFusedRootMinTiles, max_tiles_per_block), wanted)));
+  }
+  CUDASUCCESS_OR_FATAL(cudaMemsetAsync(root_hist_scratch, 0, root_hist_scratch_bytes, stream));
   const int grid = static_cast<int>((num_tiles + tiles_per_block - 1) / tiles_per_block);
   if (slot_major) {
     CUDAFillCompactData4BitTiledRootHistKernel<true><<<grid, kFusedRootThreads, shared_bytes, stream>>>(
       src_data, compact_data, bs_src_nib0, bs_src_nib1, bs_dst_byte, bs_dst_stride, total_byte_slots, num_data,
       slot_first_bin, local_bin_hist_pos, num_local_bins, slot_major_span, tiles_per_block, strided_tiles,
-      run_copy, word_prefetch, grad_and_hess,
+      run_copy, word_prefetch, l2_lead, grad_and_hess,
       hist_16bit, root_hist_scratch);
   } else {
     CUDAFillCompactData4BitTiledRootHistKernel<false><<<grid, kFusedRootThreads, shared_bytes, stream>>>(
       src_data, compact_data, bs_src_nib0, bs_src_nib1, bs_dst_byte, bs_dst_stride, total_byte_slots, num_data,
       slot_first_bin, local_bin_hist_pos, num_local_bins, 0, tiles_per_block, strided_tiles, run_copy,
-      word_prefetch, grad_and_hess, hist_16bit, root_hist_scratch);
+      word_prefetch, l2_lead, grad_and_hess, hist_16bit, root_hist_scratch);
   }
   return true;
 #else
   (void)stream; (void)src_data; (void)compact_data; (void)bs_src_nib0; (void)bs_src_nib1; (void)bs_dst_byte;
   (void)bs_dst_stride; (void)total_byte_slots; (void)num_data; (void)slot_first_bin; (void)local_bin_hist_pos;
-  (void)num_local_bins; (void)slot_major_span; (void)strided_tiles; (void)run_copy; (void)word_prefetch;
+  (void)num_local_bins; (void)slot_major_span; (void)strided_tiles; (void)run_copy; (void)word_prefetch; (void)l2_lead;
   (void)max_rows_per_block; (void)grad_and_hess; (void)hist_16bit;
   (void)root_hist_scratch; (void)root_hist_scratch_bytes;
   return false;
@@ -848,17 +919,21 @@ void LaunchFillCompactData4BitKernel(
 }
 
 // colmajor_direct: with an odd row count the high nibble of each column's last byte lies past the last row.
-__global__ void ClearColMajorPadNibblesKernel(uint8_t* colmajor, const int num_columns, const size_t column_bytes) {
+// Columns start column_stride bytes apart (column_stride >= column_bytes).
+__global__ void ClearColMajorPadNibblesKernel(uint8_t* colmajor, const int num_columns, const size_t column_stride,
+                                              const size_t column_bytes) {
   const int c = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
   if (c < num_columns) {
-    colmajor[(static_cast<size_t>(c) + 1) * column_bytes - 1] &= 0x0f;
+    colmajor[static_cast<size_t>(c) * column_stride + column_bytes - 1] &= 0x0f;
   }
 }
 
-void LaunchClearColMajorPadNibbles(uint8_t* colmajor, const int num_columns, const size_t column_bytes) {
+void LaunchClearColMajorPadNibbles(uint8_t* colmajor, const int num_columns, const size_t column_stride,
+                                   const size_t column_bytes) {
   if (num_columns <= 0) return;
   const int block = 256;
-  ClearColMajorPadNibblesKernel<<<(num_columns + block - 1) / block, block>>>(colmajor, num_columns, column_bytes);
+  ClearColMajorPadNibblesKernel<<<(num_columns + block - 1) / block, block>>>(colmajor, num_columns, column_stride,
+                                                                               column_bytes);
 }
 
 // One-time nibble transpose: packed row-major bin matrix -> global

@@ -300,7 +300,15 @@ void LaunchTransposeToColMajorNibbleKernel(
   size_t num_data_pad);
 
 // Implemented in cuda_histogram_constructor.cu: zero the nibble past the last row of each column (odd row counts).
-void LaunchClearColMajorPadNibbles(uint8_t* colmajor, int num_columns, size_t column_bytes);
+void LaunchClearColMajorPadNibbles(uint8_t* colmajor, int num_columns, size_t column_stride, size_t column_bytes);
+
+// colmajor_direct's column-major store: the distance between its columns' starts. cuda_plan key colmajor_align:
+// the column bytes rounded up to a whole 32-byte sector, so every column (and every 64-byte tile chunk the fused
+// root-histogram fill reads) starts on a sector and on a 4-byte word, which the fill's word staging
+// (root_hist_prefetch) requires; otherwise the columns are back to back ((num_data + 1) / 2 bytes apart).
+static size_t ColMajorStoreStride(const size_t column_bytes) {
+  return FalcataPlan::Get().colmajor_align ? (column_bytes + 31) / 32 * 32 : column_bytes;
+}
 
 void LaunchFillCompactCodecKernel(
   cudaStream_t stream,
@@ -346,6 +354,7 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
   bool strided_tiles,
   bool run_copy,
   bool word_prefetch,
+  bool l2_lead,
   int max_rows_per_block,
   const int32_t* grad_and_hess,
   bool hist_16bit,
@@ -1063,6 +1072,8 @@ void CUDAHistogramConstructor::LaunchCompactFill(
           // one partition: stage the tile as a byte copy of its output run, written with aligned vector copies
           FalcataPlan::Get().root_hist_run_copy,
           word_prefetch,
+          // L2 lead for the word path: the tile after the next one prefetched into L2
+          word_prefetch && FalcataPlan::Get().root_hist_l2_prefetch,
           // the packed per-block row bound of the gradients as discretized (the effective quant bins, which the
           // learner may raise above the configured count), exactly the construct's 65534 / bins rule
           65534 / std::max(1, num_grad_quant_bins_),
@@ -1357,7 +1368,7 @@ CUDAHistogramConstructor::CompactRegimeBytes CUDAHistogramConstructor::CompactRe
   const size_t num_data = static_cast<size_t>(num_data_);
   const size_t num_columns = static_cast<size_t>(part_cols.back());
   const size_t num_partitions = part_cols.size() - 1;
-  need.store = num_columns * cuda_row_data_->colmajor_column_bytes();
+  need.store = num_columns * ColMajorStoreStride(cuda_row_data_->colmajor_column_bytes());
   // The compact view (ScanCompactLayout's arithmetic): a partition's s_p sampled columns take ceil(s_p / 2) bytes
   // per row, at most (S + P) / 2 rounded up over the P partitions for S sampled columns.
   const size_t sampled = SampledColumns();
@@ -1461,17 +1472,18 @@ void CUDAHistogramConstructor::EnterCompactRegime(const char* why) {
   full_view_.Clear();
   const int num_columns = cuda_row_data_->host_feature_partition_column_index_offsets().back();
   const size_t column_bytes = cuda_row_data_->colmajor_column_bytes();
-  const size_t bytes = static_cast<size_t>(num_columns) * column_bytes;
+  const size_t column_stride = ColMajorStoreStride(column_bytes);
+  const size_t bytes = static_cast<size_t>(num_columns) * column_stride;
   colmajor_bin_.ResizeDiscard(bytes);
-  cuda_row_data_->UploadDense4BitColumnsColMajor(colmajor_bin_.RawData(), 0, num_columns);
+  cuda_row_data_->UploadDense4BitColumnsColMajor(colmajor_bin_.RawData(), 0, num_columns, column_stride);
   if ((num_data_ & 1) != 0) {
     // the nibble past the last row: the Dataset's byte may hold anything, the transpose this replaces wrote 0
-    LaunchClearColMajorPadNibbles(colmajor_bin_.RawData(), num_columns, column_bytes);
+    LaunchClearColMajorPadNibbles(colmajor_bin_.RawData(), num_columns, column_stride, column_bytes);
   }
   SynchronizeCUDADevice(__FILE__, __LINE__);
-  colmajor_pad_ = 2 * column_bytes;
+  colmajor_pad_ = 2 * column_stride;
   if (FalcataVerifyEnabled()) {
-    cuda_row_data_->VerifyDense4BitColMajor(colmajor_bin_.RawDataReadOnly());
+    cuda_row_data_->VerifyDense4BitColMajor(colmajor_bin_.RawDataReadOnly(), column_stride);
   }
   LogDirectView("colmajor_direct: compact regime (%s; feature_fraction %g, view_mode %s, view_mask_ff %g): "
                 "column-major store built from the Dataset's columns, %d columns (%zu MiB); no row-major matrix on "
