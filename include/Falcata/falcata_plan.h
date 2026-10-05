@@ -246,6 +246,26 @@ struct FalcataPlan {
   // 8 positions, then the same tolerance tie-break between 8-position groups
   // in the same order). Bit-identical.
   bool warp_find_spread = true;     // key: warp_find_spread
+  // warp_find_spread's 4-lane groups (every task at most 8 scan positions)
+  // with the positions strided over the lanes (lane l holds positions l and
+  // l + 4) instead of blocked (2l and 2l + 1): a task with at most 4
+  // candidate thresholds (a 5-bin feature) then has all of them in the first
+  // of the two per-lane slots, so a warp whose eight items all fit skips the
+  // second slot's fp64 unpack and gain math instead of issuing it with half
+  // its lanes masked off. The gain loop reuses the prune's unpack of each
+  // slot, and the winner's left and right child outputs are computed side by
+  // side in two lanes. Prefixes are the same wrapping integer sums, every
+  // value comes from the same expressions on the same inputs, and the winner
+  // is the same exact first maximum (gain, then lower threshold).
+  // Bit-identical.
+  bool warp_find_strided = true;    // key: warp_find_strided
+  // warp_find_strided's level kernel with each (task, leaf) item's loads
+  // issued in three dependency levels (pair descriptor + used-task index +
+  // gradient/hessian scales; then the task and the valid leaf's sums and
+  // histogram pointer; then the feature-used flag) instead of one global
+  // round trip per load behind each early exit. Same values, same exits and
+  // writes: bit-identical.
+  bool find_loads_batched = true;   // key: find_loads_batched
   // 4-bit compact quantized construct with one thread per packed byte: the two
   // nibbles of a byte index one cell of a joint (lo, hi) shared histogram, so a
   // row costs one shared atomic per byte instead of one per column; each
@@ -346,6 +366,18 @@ struct FalcataPlan {
   // not finite, the block replays the original per-1024-task reductions and
   // merge exactly. Bit-identical.
   bool sync_used_tasks = true;      // key: sync_used_tasks
+  // host-launched level best-split sync (the used-task kernel of
+  // sync_used_tasks and the per-1024-task kernel): the winner copy (thread 0
+  // copies the winning task's split info into the leaf's slot) with every
+  // field loaded before the first store, instead of CUDASplitInfo::operator='s
+  // alternating load / store per field (a store may alias the next source
+  // field: one global round trip per field in a row); the used-task fold's
+  // slot loads batched per thread and skipped for a leaf the descriptor marks
+  // invalid; and, when every found gain of the block is finite, the block
+  // reduction on integer keys of the gains (same order as the fp64 tie-break,
+  // whose zero tolerance makes it gain-then-lower-index) instead of a chain of
+  // fp64 compares. Same winner, same values in the same fields: bit-identical.
+  bool sync_copy_batched = true;    // key: sync_copy_batched
   // quantized root sums (gradient/hessian totals of the tree's rows): one warp
   // per 1024-row chunk sums 32 rows per lane, instead of one 1024-thread block
   // per chunk with one row per thread and two block reductions. Each chunk's
@@ -487,6 +519,8 @@ struct FalcataPlan {
     if (key == "warp_find") return &warp_find;
     if (key == "warp_find_narrow") return &warp_find_narrow;
     if (key == "warp_find_spread") return &warp_find_spread;
+    if (key == "warp_find_strided") return &warp_find_strided;
+    if (key == "find_loads_batched") return &find_loads_batched;
     if (key == "pair_hist") return &pair_hist;
     if (key == "per_pair_rows") return &per_pair_rows;
     if (key == "compact_row_interleave") return &compact_row_interleave;
@@ -499,6 +533,7 @@ struct FalcataPlan {
     if (key == "all_rows_direct") return &all_rows_direct;
     if (key == "apply_row_batch") return &apply_row_batch;
     if (key == "sync_used_tasks") return &sync_used_tasks;
+    if (key == "sync_copy_batched") return &sync_copy_batched;
     if (key == "root_sums_warp") return &root_sums_warp;
     if (key == "minmax_warp") return &minmax_warp;
     if (key == "colmajor_split") return &colmajor_split;
