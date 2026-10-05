@@ -186,8 +186,17 @@ class CUDADataPartition: public NCCLInfo {
    *  at max_depth or leaf budget exhausted) -- the split-inner scatter writes
    *  data_index_to_leaf_index inline (the row index is already in registers),
    *  letting the tree-end materialize cover only earlier-finalized leaves */
+  /*! \brief map_only (cuda_plan key final_map_only, implies write_leaf_map): the caller guarantees that nothing
+   *  reads this level's child index windows (final level of a tree whose tail is known empty, no reader of the
+   *  windows after the tree) and that the residual leaves' map pass follows: the map is cleared and the split-inner
+   *  writes only the map; the windows are not partitioned (no gap copy, no buffer swap) until EnsureLevelPartitioned;
+   *  the main index array keeps every row of the tree, the split leaves' rows in their parents' ranges */
   void SplitLevelBatched(const std::vector<CUDAHybridApplySplitInput>& splits,
-                         const bool write_leaf_map = false);
+                         const bool write_leaf_map = false, const bool map_only = false);
+
+  /*! \brief cuda_plan key final_map_only: complete a map-only level's index partition (no-op if none is pending);
+   *  every reader of leaf index windows after a batched level calls it first */
+  void EnsureLevelPartitioned();
 
   /*! \brief Selective grow-then-prune: rewrite the data-index-to-leaf-index
    *  entries of the given collapsed subtree windows to their target leaves.
@@ -292,10 +301,12 @@ class CUDADataPartition: public NCCLInfo {
   /*! \brief current main / out index buffers, written into the loop state
    *  before every graph launch (the controller swaps them per level) */
   data_size_t* hybrid_graph_main_indices() {
+    EnsureLevelPartitioned();  // cuda_plan key final_map_only
     level_shared_gaps_valid_ = false;  // a writer outside the batched level apply
     return cuda_data_indices_.RawData();
   }
   data_size_t* hybrid_graph_out_indices() {
+    EnsureLevelPartitioned();  // cuda_plan key final_map_only
     level_shared_gaps_valid_ = false;
     return cuda_out_data_indices_in_leaf_.RawData();
   }
@@ -368,7 +379,12 @@ class CUDADataPartition: public NCCLInfo {
                                       const int num_gaps, const int max_gap_blocks,
                                       const int total_flat_blocks,
                                       const int gap_flat_blocks,
-                                      const bool write_leaf_map);
+                                      const bool write_leaf_map,
+                                      const bool map_only);
+  /*! \brief the batched level's split-inner (index partition into the out buffer) and gap copy launches */
+  void LaunchLevelSplitInnerKernel(const int num_splits, const int total_flat_blocks, const bool write_leaf_map,
+                                   const bool map_only);
+  void LaunchLevelGapCopyKernel(const int num_splits, const int num_gaps, const int max_gap_blocks);
 
   void GenDataToLeftBitVector(
     const data_size_t num_data_in_leaf,
@@ -671,6 +687,13 @@ class CUDADataPartition: public NCCLInfo {
    *  buffers hold identically; valid only while nothing else has written either buffer since that level */
   std::vector<std::pair<data_size_t, data_size_t>> level_shared_gaps_;
   bool level_shared_gaps_valid_ = false;
+  /*! \brief cuda_plan key final_map_only: the last batched level ran map-only; its partition (split-inner, gap
+   *  copy, swap) is run by EnsureLevelPartitioned if a reader of its windows turns up before they are rewritten */
+  bool level_partition_pending_ = false;
+  int pending_num_splits_ = 0;
+  int pending_num_gaps_ = 0;
+  int pending_max_gap_blocks_ = 0;
+  int pending_total_flat_blocks_ = 0;
   /*! \brief threads per block of the host-launched gap copy (cuda_plan key leaf_map_small_blocks) */
   static int GapCopyBlockDim() {
     return FalcataPlan::Get().leaf_map_small_blocks ? 256 : SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;

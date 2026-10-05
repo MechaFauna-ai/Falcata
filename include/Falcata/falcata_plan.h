@@ -518,6 +518,17 @@ struct FalcataPlan {
   // path to the shrinkage kernel. Used only if the tree ends with exactly that leaf count, otherwise freed and the
   // tree end allocates as before. Same bytes: bit-identical.
   bool tree_end_prealloc = true;    // key: tree_end_prealloc
+  // final batched level of a level prefix that completes the tree (every child at max_depth, every candidate split,
+  // budget not binding: the skip_empty_tail condition, which must be on): the children's index windows have no
+  // reader -- the tail is known empty, the tree end reads exact counts and the map, and the residual leaves'
+  // windows are gaps that stay in the main index array -- so the split-inner pass writes only the row -> leaf map
+  // (same rows, same values), after a full-sector clear of the map that keeps its scatter in L2 (every entry is
+  // rewritten by this pass or the residual-leaf map pass), and the gap copy and index buffer swap are not run. A
+  // reader of the windows that turns up after all (an objective's leaf renewal, refit, any later apply) completes
+  // the partition first from the level's untouched descriptors and direction bits. Off with bagging (the next tree
+  // reuses the index array), linear trees, quantized leaf renewal, multi-GPU, vector leaves and selective growth.
+  // Same map, same counts, same tree: bit-identical.
+  bool final_map_only = true;       // key: final_map_only
   // runtime tier-1 tuner: bandit over the batched-construct saturation floor,
   // timed per tree; quantized training only (integer hists keep results
   // schedule-invariant, so retuning cannot change the model). The probe phase
@@ -640,6 +651,7 @@ struct FalcataPlan {
     if (key == "level_apply_first") return &level_apply_first;
     if (key == "gradients_no_sync") return &gradients_no_sync;
     if (key == "tree_end_prealloc") return &tree_end_prealloc;
+    if (key == "final_map_only") return &final_map_only;
     if (key == "tuner") return &tuner;
     if (key == "wide_partitions") return &wide_partitions;
     return nullptr;

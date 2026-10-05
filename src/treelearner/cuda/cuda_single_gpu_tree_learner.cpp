@@ -2114,6 +2114,14 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
       break;
     }
   }
+  // cuda_plan key final_map_only: a final level that completes the tree (the tail is known empty) with no reader of
+  // its children's windows after it: the apply writes the map and leaves the windows unpartitioned (any reader
+  // that turns up after all, e.g. an objective's leaf renewal, completes the partition first)
+  const FalcataPlan& map_plan = FalcataPlan::Get();
+  const bool map_only = final_level && level_completes_tree_ && map_plan.final_map_only && map_plan.skip_empty_tail &&
+    !cuda_data_partition_->use_bagging() && !config_->linear_tree &&
+    !(config_->use_quantized_grad && config_->quant_train_renew_leaf) && nccl_communicator_ == nullptr &&
+    fp_merge_state_ == nullptr && vec_num_targets_ <= 1 && !UseSelectiveGrowth();
   size_t slot_id = 0;
   for (const int leaf : splittable) {
     CUDALeafSplitsStruct* smaller_slot = hybrid_pair_slots_.RawData() + slot_id;
@@ -2167,7 +2175,7 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
   // The data partition still applies EVERYTHING through the batched arena
   // path below.
   if (apply_first) {
-    cuda_data_partition_->SplitLevelBatched(host_apply_split_inputs_, final_level);
+    cuda_data_partition_->SplitLevelBatched(host_apply_split_inputs_, final_level, map_only);
     // the tree record's entries, in level order with the values the loop above would have given them (no split of
     // this level is categorical)
     for (const CUDAHybridApplySplitInput& in : host_apply_split_inputs_) {
@@ -2333,7 +2341,7 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
       }
   }
   if (!apply_first) {
-    cuda_data_partition_->SplitLevelBatched(host_apply_split_inputs_, final_level);
+    cuda_data_partition_->SplitLevelBatched(host_apply_split_inputs_, final_level, map_only);
   }
       if (FalcataDebug().dump) {
         SynchronizeCUDADevice(__FILE__, __LINE__);
@@ -4813,6 +4821,7 @@ void CUDASingleGPUTreeLearner::RenewTreeOutput(Tree* tree, const ObjectiveFuncti
   CUDATree* cuda_tree = reinterpret_cast<CUDATree*>(tree);
   if (obj != nullptr && obj->IsRenewTreeOutput()) {
     CHECK_LE(cuda_tree->num_leaves(), data_partition_->num_leaves());
+    cuda_data_partition_->EnsureLevelPartitioned();  // cuda_plan key final_map_only: reads the leaf windows
     if (boosting_on_cuda_) {
       obj->RenewTreeOutputCUDA(train_score, cuda_data_partition_->cuda_data_indices(),
                                cuda_data_partition_->cuda_leaf_num_data(), cuda_data_partition_->cuda_leaf_data_start(),
@@ -4863,6 +4872,7 @@ Tree* CUDASingleGPUTreeLearner::FitByExistingTree(const Tree* old_tree, const sc
   std::unique_ptr<CUDATree> cuda_tree(new CUDATree(old_tree));
   cuda_leaf_gradient_stat_buffer_.SetValue(0);
   cuda_leaf_hessian_stat_buffer_.SetValue(0);
+  cuda_data_partition_->EnsureLevelPartitioned();  // cuda_plan key final_map_only: reads the leaf windows
   ReduceLeafStat(cuda_tree.get(), gradients, hessians, cuda_data_partition_->cuda_data_indices());
   cuda_tree->SyncLeafOutputFromCUDAToHost();
   return cuda_tree.release();
