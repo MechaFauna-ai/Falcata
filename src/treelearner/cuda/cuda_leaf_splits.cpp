@@ -7,6 +7,9 @@
 
 #ifdef USE_CUDA
 
+#include <cstdint>
+#include <cstring>
+
 #include "cuda_leaf_splits.hpp"
 
 namespace Falcata {
@@ -67,6 +70,19 @@ void CUDALeafSplits::InitValues(
 void CUDALeafSplits::CopyRootSumsToHost(double* root_sum_gradients, double* root_sum_hessians) const {
   CopyFromCUDADeviceToHost<double>(root_sum_gradients, cuda_sum_of_gradients_buffer_.RawDataReadOnly(), 1, __FILE__, __LINE__);
   CopyFromCUDADeviceToHost<double>(root_sum_hessians, cuda_sum_of_hessians_buffer_.RawDataReadOnly(), 1, __FILE__, __LINE__);
+}
+
+void CUDALeafSplits::CopyRootSumsToHost(double* root_sum_gradients, double* root_sum_hessians, void* staging_host,
+                                        void* staging_device) const {
+  uint8_t* staging_device_bytes = static_cast<uint8_t*>(staging_device);
+  const uint8_t* staging_host_bytes = static_cast<const uint8_t*>(staging_host);
+  LaunchCopyToMappedHost(staging_device_bytes, cuda_sum_of_gradients_buffer_.RawDataReadOnly(), sizeof(double),
+                         __FILE__, __LINE__);
+  LaunchCopyToMappedHost(staging_device_bytes + sizeof(double), cuda_sum_of_hessians_buffer_.RawDataReadOnly(),
+                         sizeof(double), __FILE__, __LINE__);
+  CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(0));
+  std::memcpy(root_sum_gradients, staging_host_bytes, sizeof(double));
+  std::memcpy(root_sum_hessians, staging_host_bytes + sizeof(double), sizeof(double));
 }
 
 void CUDALeafSplits::InitValues(

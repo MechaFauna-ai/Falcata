@@ -267,8 +267,8 @@ void CUDADataPartition::EnsurePinnedSplitInfoCapacity(const size_t num_ints) {
     CUDASUCCESS_OR_FATAL(cudaFreeHost(pinned_split_info_));
   }
   const size_t capacity = std::max(num_ints, static_cast<size_t>(num_leaves_ / 2 + 2) * 18);
-  CUDASUCCESS_OR_FATAL(cudaHostAlloc(reinterpret_cast<void**>(&pinned_split_info_),
-    capacity * sizeof(int), cudaHostAllocDefault));
+  AllocatePinnedMappedHost(reinterpret_cast<void**>(&pinned_split_info_), capacity * sizeof(int), __FILE__, __LINE__);
+  pinned_split_info_device_ = static_cast<int*>(MappedHostDevicePointer(pinned_split_info_));
   pinned_split_info_size_ = capacity;
 }
 
@@ -280,8 +280,14 @@ void CUDADataPartition::FinishSplitBatch(const int num_splits, std::vector<int>*
   // pageable sync D2H pays an extra driver staging round trip).
   const size_t num_ints = static_cast<size_t>(num_splits) * 18;
   EnsurePinnedSplitInfoCapacity(num_ints);
-  CopyFromCUDADeviceToHost<int>(pinned_split_info_, cuda_split_info_buffer_.RawData(),
-    num_ints, __FILE__, __LINE__);
+  if (FalcataPlan::Get().readback_kernel && pinned_split_info_device_ != nullptr) {
+    // cuda_plan key readback_kernel: a copy kernel on the same default stream, then that stream's sync (see the key)
+    CopyFromCUDADeviceToMappedHost(pinned_split_info_device_, pinned_split_info_, cuda_split_info_buffer_.RawData(),
+                                   num_ints * sizeof(int), __FILE__, __LINE__);
+  } else {
+    CopyFromCUDADeviceToHost<int>(pinned_split_info_, cuda_split_info_buffer_.RawData(),
+      num_ints, __FILE__, __LINE__);
+  }
   std::memcpy(out->data(), pinned_split_info_, num_ints * sizeof(int));
 }
 

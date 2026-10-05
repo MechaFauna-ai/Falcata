@@ -137,6 +137,10 @@ class CUDALeafSplits: public NCCLInfo {
 
   /*! \brief deferred counterpart of InitValues' root-sum readback (see there) */
   void CopyRootSumsToHost(double* root_sum_gradients, double* root_sum_hessians) const;
+  /*! \brief cuda_plan key readback_kernel: the same two values copied by kernels on the default stream into a
+   *  mapped pinned staging buffer of at least two doubles (staging_device: its device alias), one synchronize */
+  void CopyRootSumsToHost(double* root_sum_gradients, double* root_sum_hessians, void* staging_host,
+                          void* staging_device) const;
 
   void InitValues(
     const double lambda_l1, const double lambda_l2, const double max_delta_step,

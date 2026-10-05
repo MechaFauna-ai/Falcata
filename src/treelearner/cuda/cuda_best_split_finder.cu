@@ -6508,12 +6508,23 @@ void CUDABestSplitFinder::InvalidateLeafCandidates(const std::vector<int>& leave
   if (cuda_invalidate_leaves_.Size() < leaves.size()) {
     cuda_invalidate_leaves_.Resize(leaves.size());
   }
-  CopyFromHostToCUDADevice<int>(cuda_invalidate_leaves_.RawData(), leaves.data(),
-                                leaves.size(), __FILE__, __LINE__);
+  // cuda_plan key invalidate_async: no host wait (see the key); the upload and the kernel stay on the default stream
+  const bool async = FalcataPlan::Get().invalidate_async && AsyncTreeStart();
+  if (async) {
+    CopyFromHostToCUDADeviceAsync<int>(cuda_invalidate_leaves_.RawData(), leaves.data(),
+                                       leaves.size(), 0, __FILE__, __LINE__);
+  } else {
+    CopyFromHostToCUDADevice<int>(cuda_invalidate_leaves_.RawData(), leaves.data(),
+                                  leaves.size(), __FILE__, __LINE__);
+  }
   const int num = static_cast<int>(leaves.size());
   InvalidateLeafCandidatesKernel<<<(num + 255) / 256, 256>>>(
     cuda_invalidate_leaves_.RawDataReadOnly(), num, cuda_leaf_best_split_info_.RawData());
-  SynchronizeCUDADevice(__FILE__, __LINE__);
+  if (async) {
+    CUDASUCCESS_OR_FATAL(cudaGetLastError());
+  } else {
+    SynchronizeCUDADevice(__FILE__, __LINE__);
+  }
 }
 
 __global__ void FindBestFromAllSplitsKernel(const int cur_num_leaves,
@@ -6601,8 +6612,10 @@ void CUDABestSplitFinder::EnsurePinnedLeafBestSplitCapacity(const int num_leaves
     CUDASUCCESS_OR_FATAL(cudaFreeHost(pinned_leaf_best_split_info_));
   }
   pinned_leaf_best_split_info_size_ = static_cast<size_t>(num_leaves_ > num_leaves ? num_leaves_ : num_leaves);
-  CUDASUCCESS_OR_FATAL(cudaHostAlloc(reinterpret_cast<void**>(&pinned_leaf_best_split_info_),
-    pinned_leaf_best_split_info_size_ * sizeof(CUDASplitInfo), cudaHostAllocDefault));
+  AllocatePinnedMappedHost(reinterpret_cast<void**>(&pinned_leaf_best_split_info_),
+    pinned_leaf_best_split_info_size_ * sizeof(CUDASplitInfo), __FILE__, __LINE__);
+  pinned_leaf_best_split_info_device_ =
+    static_cast<CUDASplitInfo*>(MappedHostDevicePointer(pinned_leaf_best_split_info_));
 }
 
 void CUDABestSplitFinder::ReadPrefetchedLeafBestSplits(const int num_leaves, std::vector<CUDASplitInfo>* out) const {
@@ -6635,8 +6648,15 @@ void CUDABestSplitFinder::SyncAllLeafBestSplitsToHost(const int num_leaves, std:
   // hybrid critical path, and a pageable sync D2H pays an extra driver staging
   // round trip; the host-to-host memcpy of a few KB afterwards is negligible.
   EnsurePinnedLeafBestSplitCapacity(num_leaves);
-  CopyFromCUDADeviceToHost<CUDASplitInfo>(pinned_leaf_best_split_info_, cuda_leaf_best_split_info_.RawDataReadOnly(),
-    static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+  if (FalcataPlan::Get().readback_kernel && pinned_leaf_best_split_info_device_ != nullptr) {
+    // cuda_plan key readback_kernel: a copy kernel on the same default stream, then that stream's sync (see the key)
+    CopyFromCUDADeviceToMappedHost(pinned_leaf_best_split_info_device_, pinned_leaf_best_split_info_,
+                                   cuda_leaf_best_split_info_.RawDataReadOnly(),
+                                   static_cast<size_t>(num_leaves) * sizeof(CUDASplitInfo), __FILE__, __LINE__);
+  } else {
+    CopyFromCUDADeviceToHost<CUDASplitInfo>(pinned_leaf_best_split_info_, cuda_leaf_best_split_info_.RawDataReadOnly(),
+      static_cast<size_t>(num_leaves), __FILE__, __LINE__);
+  }
   ReadPrefetchedLeafBestSplits(num_leaves, out);
 }
 

@@ -239,7 +239,12 @@ class CUDATree : public Tree {
 
   inline void AddBias(double val) override;
 
-  void ToHost();
+  /*! \brief read the tree back to the host vectors and release the per-tree device arrays. readback_staging_*
+   *  (cuda_plan key readback_kernel, optional): a caller-owned mapped pinned buffer of readback_staging_bytes bytes
+   *  and its device alias; when it holds the pooled slab, the slab is copied into it by a kernel on the default
+   *  stream (CopyFromCUDADeviceToMappedHost) instead of a cudaMemcpy into a pageable staging vector. */
+  void ToHost(void* readback_staging_host = nullptr, void* readback_staging_device = nullptr,
+              size_t readback_staging_bytes = 0);
 
   void SyncLeafOutputFromHostToCUDA();
 

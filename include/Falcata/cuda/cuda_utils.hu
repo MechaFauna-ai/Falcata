@@ -150,6 +150,26 @@ void CopyFromCUDADeviceToHostAsync(T* dst_ptr, const T* src_ptr, size_t size, cu
   CUDASUCCESS_OR_FATAL_OUTER(cudaMemcpyAsync(void_dst_ptr, void_src_ptr, size_in_bytes, cudaMemcpyDeviceToHost, stream));
 }
 
+/*!
+ * \brief Synchronous device -> host copy into MAPPED pinned memory (cuda_plan key readback_kernel): a copy kernel on
+ *  the default stream writes the bytes through dst_device (the device alias of the host buffer, see
+ *  MappedHostDevicePointer), then the default stream is synchronized. Same stream and same blocking point as a
+ *  cudaMemcpy D2H: the copy waits for the same preceding work and the call returns once the bytes are in host
+ *  memory. A zero-byte copy is passed to cudaMemcpy unchanged.
+ */
+void CopyFromCUDADeviceToMappedHost(void* dst_device, void* dst_host, const void* src, size_t size_in_bytes,
+                                    const char* file, const int line);
+
+/*! \brief the copy kernel of CopyFromCUDADeviceToMappedHost without the synchronize (several copies, one sync);
+ *  size_in_bytes > 0 */
+void LaunchCopyToMappedHost(void* dst_device, const void* src, size_t size_in_bytes, const char* file, const int line);
+
+/*! \brief device alias of a cudaHostAllocMapped pinned allocation, or nullptr where the device cannot map it */
+void* MappedHostDevicePointer(void* host_ptr);
+
+/*! \brief pinned host allocation, mapped into the device address space where the device supports it */
+void AllocatePinnedMappedHost(void** host_ptr, size_t size_in_bytes, const char* file, const int line);
+
 template <typename T>
 void CopyFromCUDADeviceToCUDADevice(T* dst_ptr, const T* src_ptr, size_t size, const char* file, const int line) {
   void* void_dst_ptr = reinterpret_cast<void*>(dst_ptr);

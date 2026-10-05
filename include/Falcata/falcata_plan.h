@@ -457,6 +457,33 @@ struct FalcataPlan {
   // map or those windows, so the GPU writes the map while the host finalizes the tree. If the leaf-wise tail still
   // splits after it, the tree end writes the whole map again as before. Same kernel, same values: bit-identical.
   bool early_leaf_map = true;       // key: early_leaf_map
+  // the two synchronous readbacks of every host-launched level (the level's best splits, SyncAllLeafBestSplitsToHost;
+  // the applied splits' child counts and sums, FinishSplitBatch) and the tree's own readbacks (the deferred root sums,
+  // the tree's pooled slab in CUDATree::ToHost, the exact leaf counts) are copied by a small kernel on the default
+  // stream into pinned staging buffers allocated mapped, followed by a synchronize of that stream, instead of a
+  // cudaMemcpy D2H on that stream: same stream, so the copy waits for the same preceding work, and the host blocks
+  // until the bytes are in host memory as before, but the copy starts about as soon as the producing kernel ends
+  // instead of 2-6 us later when the copy engine picks it up. Falls back to cudaMemcpy where the device cannot map
+  // the buffer. Same bytes: bit-identical.
+  bool readback_kernel = true;      // key: readback_kernel
+  // the final batched level's invalidation of its children's cached split candidates (InvalidateLeafCandidates):
+  // the leaf list goes up with cudaMemcpyAsync on the default stream the synchronous cudaMemcpy used (a pageable
+  // source is staged before the call returns) and the kernel is not followed by a device synchronize. The host
+  // reads nothing the kernel writes; every reader of those candidates (the leaf-wise tail's search, the next tree's
+  // level syncs and readbacks) is ordered after it on the GPU. The host no longer waits for the final level's apply
+  // to drain before it launches the residual-leaf map pass and the tree-end readbacks. Off with compact_prefill (as
+  // async_tree_start). Same kernel, same GPU order: bit-identical.
+  bool invalidate_async = true;     // key: invalidate_async
+  // host-launched batched level without categorical splits or vector leaves: the data partition's apply (descriptor
+  // upload and the gen-bit / aggregate / split-inner / tree-structure kernels on its stream) is issued before the
+  // tree's record of the same splits (CUDATree::SplitBatch: upload and SplitBatchKernel on the tree's stream). The two
+  // touch disjoint buffers (the tree's arrays vs the partition's; both only read the level's cached split infos),
+  // there is no event between those streams, and every later reader waits for both (the level's readback on the
+  // default stream), so the level's long kernel chain no longer starts behind the record's upload, launch and host
+  // bookkeeping. The record's entries (real feature index and threshold, missing type: per-feature lookups only the
+  // record reads) are built after the apply is launched, in the same order with the same values. Same kernels, same
+  // streams, same inputs: bit-identical.
+  bool level_apply_first = true;    // key: level_apply_first
   // runtime tier-1 tuner: bandit over the batched-construct saturation floor,
   // timed per tree; quantized training only (integer hists keep results
   // schedule-invariant, so retuning cannot change the model). The probe phase
@@ -572,6 +599,9 @@ struct FalcataPlan {
     if (key == "gap_copy_once") return &gap_copy_once;
     if (key == "leaf_map_small_blocks") return &leaf_map_small_blocks;
     if (key == "early_leaf_map") return &early_leaf_map;
+    if (key == "readback_kernel") return &readback_kernel;
+    if (key == "invalidate_async") return &invalidate_async;
+    if (key == "level_apply_first") return &level_apply_first;
     if (key == "tuner") return &tuner;
     if (key == "wide_partitions") return &wide_partitions;
     return nullptr;

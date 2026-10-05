@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <string>
 
 #include <Falcata/cuda/cuda_algorithms.hpp>
@@ -545,6 +546,69 @@ void CheckCUDADeviceSupportsThisBuild(const int device_id) {
 #else
   (void)device_id;
 #endif
+}
+
+// cuda_plan key readback_kernel (see CopyFromCUDADeviceToMappedHost): 16-byte body plus byte tail
+__global__ void CopyToMappedHostKernel(const int4* __restrict__ src16, int4* __restrict__ dst16, const size_t num16,
+                                       const uint8_t* __restrict__ src_tail, uint8_t* __restrict__ dst_tail,
+                                       const size_t num_tail) {
+  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i < num16) {
+    dst16[i] = src16[i];
+  }
+  if (i < num_tail) {
+    dst_tail[i] = src_tail[i];
+  }
+}
+
+void CopyFromCUDADeviceToMappedHost(void* dst_device, void* dst_host, const void* src, size_t size_in_bytes,
+                                    const char* file, const int line) {
+  if (size_in_bytes == 0 || dst_device == nullptr) {
+    CUDASUCCESS_OR_FATAL_OUTER(cudaMemcpy(dst_host, src, size_in_bytes, cudaMemcpyDeviceToHost));
+    return;
+  }
+  LaunchCopyToMappedHost(dst_device, src, size_in_bytes, file, line);
+  CUDASUCCESS_OR_FATAL_OUTER(cudaStreamSynchronize(0));
+}
+
+void LaunchCopyToMappedHost(void* dst_device, const void* src, size_t size_in_bytes, const char* file,
+                            const int line) {
+  const bool aligned = ((reinterpret_cast<uintptr_t>(src) | reinterpret_cast<uintptr_t>(dst_device)) & 15u) == 0;
+  const size_t num16 = aligned ? size_in_bytes / 16 : 0;
+  const size_t body_bytes = num16 * 16;
+  const size_t num_tail = size_in_bytes - body_bytes;
+  constexpr int kThreads = 256;
+  const size_t num_items = num16 > num_tail ? num16 : num_tail;
+  const unsigned int num_blocks = static_cast<unsigned int>((num_items + kThreads - 1) / kThreads);
+  CopyToMappedHostKernel<<<num_blocks, kThreads>>>(
+    reinterpret_cast<const int4*>(src), reinterpret_cast<int4*>(dst_device), num16,
+    reinterpret_cast<const uint8_t*>(src) + body_bytes, reinterpret_cast<uint8_t*>(dst_device) + body_bytes, num_tail);
+  CUDASUCCESS_OR_FATAL_OUTER(cudaGetLastError());
+}
+
+void* MappedHostDevicePointer(void* host_ptr) {
+#ifndef USE_ROCM
+  void* device_ptr = nullptr;
+  if (host_ptr == nullptr || cudaHostGetDevicePointer(&device_ptr, host_ptr, 0) != cudaSuccess) {
+    cudaGetLastError();  // not mapped: the caller keeps the cudaMemcpy readback
+    return nullptr;
+  }
+  return device_ptr;
+#else
+  (void)host_ptr;
+  return nullptr;
+#endif
+}
+
+void AllocatePinnedMappedHost(void** host_ptr, size_t size_in_bytes, const char* file, const int line) {
+#ifndef USE_ROCM
+  // portable: pinned and mapped for every device context (multi-GPU ranks), not only the allocating one
+  if (cudaHostAlloc(host_ptr, size_in_bytes, cudaHostAllocMapped | cudaHostAllocPortable) == cudaSuccess) {
+    return;
+  }
+  cudaGetLastError();  // the device cannot map host memory: a plain pinned buffer (MappedHostDevicePointer fails)
+#endif
+  CUDASUCCESS_OR_FATAL_OUTER(cudaHostAlloc(host_ptr, size_in_bytes, cudaHostAllocDefault));
 }
 
 }  // namespace Falcata

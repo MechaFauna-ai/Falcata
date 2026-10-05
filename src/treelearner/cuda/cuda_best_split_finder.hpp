@@ -601,6 +601,9 @@ class CUDABestSplitFinder {
    *  CUDASplitInfo is never constructed/destructed in it) */
   mutable CUDASplitInfo* pinned_leaf_best_split_info_ = nullptr;
   mutable size_t pinned_leaf_best_split_info_size_ = 0;
+  /*! \brief device alias of pinned_leaf_best_split_info_ (mapped allocation; nullptr where the device cannot map
+   *  it), written by SyncAllLeafBestSplitsToHost's copy kernel (cuda_plan key readback_kernel) */
+  mutable CUDASplitInfo* pinned_leaf_best_split_info_device_ = nullptr;
   /*! \brief grow the pinned best-split staging buffer to >= num_leaves slots */
   void EnsurePinnedLeafBestSplitCapacity(const int num_leaves) const;
   int max_num_bin_in_feature_;

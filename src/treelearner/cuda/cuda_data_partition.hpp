@@ -697,6 +697,9 @@ class CUDADataPartition: public NCCLInfo {
    *  PrefetchSplitBatchAsync */
   int* pinned_split_info_ = nullptr;
   size_t pinned_split_info_size_ = 0;
+  /*! \brief device alias of pinned_split_info_ (mapped allocation; nullptr where the device cannot map it),
+   *  written by FinishSplitBatch's copy kernel (cuda_plan key readback_kernel) */
+  int* pinned_split_info_device_ = nullptr;
   /*! \brief grow the pinned split-info staging buffer to >= num_ints ints */
   void EnsurePinnedSplitInfoCapacity(const size_t num_ints);
   /*! \brief per-split smaller-child size of the current level's batched apply

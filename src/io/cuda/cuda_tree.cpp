@@ -274,7 +274,8 @@ inline void CUDATree::AddBias(double val) {
   LaunchAddBiasKernel(val);
 }
 
-void CUDATree::ToHost() {
+void CUDATree::ToHost(void* readback_staging_host, void* readback_staging_device,
+                      size_t readback_staging_bytes) {
   left_child_.resize(max_leaves_ - 1);
   right_child_.resize(max_leaves_ - 1);
   split_feature_inner_.resize(max_leaves_ - 1);
@@ -299,11 +300,20 @@ void CUDATree::ToHost() {
     // round trip). The scatter into the host vectors is plain host memcpy.
     const size_t L = static_cast<size_t>(max_leaves_);
     const size_t slab_bytes = PooledDeviceBufferSize(max_leaves_);
-    std::vector<uint8_t> staging(slab_bytes);
+    std::vector<uint8_t> staging;
     // cuda_threshold_ is the first view carved from the slab (see InitCUDAMemory)
-    CopyFromCUDADeviceToHost<uint8_t>(staging.data(),
-      reinterpret_cast<const uint8_t*>(cuda_threshold_.RawData()), slab_bytes, __FILE__, __LINE__);
-    const uint8_t* p = staging.data();
+    const uint8_t* slab = reinterpret_cast<const uint8_t*>(cuda_threshold_.RawData());
+    const uint8_t* p = nullptr;
+    if (readback_staging_device != nullptr && readback_staging_bytes >= slab_bytes) {
+      // cuda_plan key readback_kernel: copy kernel on the default stream into the caller's mapped pinned buffer
+      CopyFromCUDADeviceToMappedHost(readback_staging_device, readback_staging_host, slab, slab_bytes,
+                                     __FILE__, __LINE__);
+      p = static_cast<const uint8_t*>(readback_staging_host);
+    } else {
+      staging.resize(slab_bytes);
+      CopyFromCUDADeviceToHost<uint8_t>(staging.data(), slab, slab_bytes, __FILE__, __LINE__);
+      p = staging.data();
+    }
     const auto scatter = [&p](void* dst, const size_t bytes, const size_t stride) {
       if (bytes > 0) std::memcpy(dst, p, bytes);
       p += stride;
