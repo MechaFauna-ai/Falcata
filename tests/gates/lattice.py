@@ -507,6 +507,156 @@ def build_cells():
         equal_to="graph/flipbase-graph_loop",
     )
 
+    # --- fused fill, level find/sync/fix/apply kernels, host round trips ------ #
+    # Every key below is default on and exact by contract; each off (and all of them off) must train the base cell's
+    # model. On the full trees (nsys, key on vs off): the sampled profile's 4-bit compact view takes the fused root
+    # fill (root_hist_short_blocks; root_hist_block_rounds:0 is 16-tile blocks; the L2 lead runs on its word path),
+    # the strided 4-lane level finder (5 thresholds per task), the used-task sync, the fused fix + subtract over the
+    # sampled features and the pair-joint construct of multi-pair levels (pair_block_map); dense takes the
+    # per-1024-task sync; both run the batched apply with gaps (min_data_in_leaf 40), the level readbacks, the tree
+    # boundary and the tree-completing final level (final_map_only, final_readback_first). The fill, finder and
+    # construct keys are inert on dense (no compact view, 255 bins), colmajor_align on both (an aligned pitch) and
+    # shape_memo on both (no whole-row construct): sampled-oddrows below reaches the first, sampledwide-ff15 the
+    # second (gdb: 30 carveout calls with the memo, 52 without). nsys does not see the L2 lead (an argument of the
+    # same fill kernel); ncu does: the fill's instructions per launch drop by 2.5% with root_hist_l2_prefetch off.
+    night3_keys = [
+        "root_hist_l2_prefetch",
+        "colmajor_align",
+        "root_hist_short_blocks",
+        "warp_find_strided",
+        "find_loads_batched",
+        "sync_copy_batched",
+        "fix_subtract_fused",
+        "apply_struct_fused",
+        "gap_copy_fused",
+        "readback_kernel",
+        "invalidate_async",
+        "level_apply_first",
+        "gradients_no_sync",
+        "tree_meta_batch",
+        "tree_end_prealloc",
+        "pair_block_map",
+        "final_map_only",
+        "final_readback_first",
+        "shape_memo",
+    ]
+    night3_off = "auto," + ",".join(f"{k}:off" for k in night3_keys) + ",root_hist_block_rounds:0"
+    for profile in ["sampled", "dense"]:
+        for key in night3_keys:
+            cell(
+                f"{profile}/flip-{key}-fulltree",
+                profile,
+                {**full, "cuda_plan": f"auto,{key}:off"},
+                equal_to=f"{profile}/quant-fulltree",
+            )
+        cell(
+            f"{profile}/flip-night3-fulltree",
+            profile,
+            {**full, "cuda_plan": night3_off},
+            equal_to=f"{profile}/quant-fulltree",
+        )
+    cell(
+        "sampled/flip-root_hist_block_rounds0-fulltree",
+        "sampled",
+        {**full, "cuda_plan": "auto,root_hist_block_rounds:0"},
+        equal_to="sampled/quant-fulltree",
+    )
+    # an odd column pitch: master's fill reads bytes there, colmajor_align's aligned store engages the word staging
+    # and with it the L2 lead (the other profiles' 6400 training rows already give an aligned pitch)
+    cell("sampled-oddrows/quant", "sampled-oddrows")
+    for key in ["colmajor_align", "root_hist_l2_prefetch", "root_hist_short_blocks"]:
+        cell(
+            f"sampled-oddrows/flip-{key}",
+            "sampled-oddrows",
+            {"cuda_plan": f"auto,{key}:off"},
+            equal_to="sampled-oddrows/quant",
+        )
+    cell("sampled-oddrows/flip-night3", "sampled-oddrows", {"cuda_plan": night3_off}, equal_to="sampled-oddrows/quant")
+    # the whole-row pair-joint construct on two partitions: the capped build's per-shape memo (shape_memo; every
+    # tree's column sample is a new joint-table size) and the block map of the interleaved row's launches
+    for key in ["pair_block_map", "shape_memo", "fix_subtract_fused", "tree_meta_batch", "colmajor_align"]:
+        cell(
+            f"sampledwide/flip-{key}-ff15",
+            "sampledwide",
+            {**ff15, "cuda_plan": f"auto,{key}:off"},
+            equal_to="sampledwide/quant-ff15",
+        )
+    cell(
+        "sampledwide/flip-night3-ff15",
+        "sampledwide",
+        {**ff15, "cuda_plan": night3_off},
+        equal_to="sampledwide/quant-ff15",
+    )
+    # features of 3 to 6 values: the whole-row construct sees another joint-table size nearly every tree, so the
+    # capped build's memo holds many shapes (whose saving shows where shapes repeat, sampledwide-ff15 above)
+    cell("sampledwide-mixbins/quant-ff15", "sampledwide-mixbins", ff15)
+    for key in ["shape_memo", "pair_block_map"]:
+        cell(
+            f"sampledwide-mixbins/flip-{key}-ff15",
+            "sampledwide-mixbins",
+            {**ff15, "cuda_plan": f"auto,{key}:off"},
+            equal_to="sampledwide-mixbins/quant-ff15",
+        )
+    cell(
+        "sampledwide-mixbins/flip-night3-ff15",
+        "sampledwide-mixbins",
+        {**ff15, "cuda_plan": night3_off},
+        equal_to="sampledwide-mixbins/quant-ff15",
+    )
+    # the tiny-gradient regime (4-bit, 5 bins, feature_fraction 0.1, 500-row leaves) over 150 rounds, and the NaN
+    # scans with an unstored bin 0 (the strided finder's shifted position mapping), shallow and deep
+    for key in ["warp_find_strided", "find_loads_batched", "fix_subtract_fused", "sync_copy_batched"]:
+        cell(
+            f"tinygrad/flip-{key}", "tinygrad", {"cuda_plan": f"auto,{key}:off"}, rounds=150, equal_to="tinygrad/quant"
+        )
+    cell("tinygrad/flip-night3", "tinygrad", {"cuda_plan": night3_off}, rounds=150, equal_to="tinygrad/quant")
+    for key in ["warp_find_strided", "find_loads_batched"]:
+        cell(
+            f"missing-mfb0-dense/flip-{key}",
+            "missing-mfb0-dense",
+            {"cuda_plan": f"auto,{key}:off"},
+            equal_to="missing-mfb0-dense/quant",
+        )
+        cell(
+            f"missing-mfb0-dense/flip-{key}-deep",
+            "missing-mfb0-dense",
+            {**deep, "cuda_plan": f"auto,{key}:off"},
+            equal_to="missing-mfb0-dense/quant-deep",
+        )
+    # deep trees with a binding leaf budget (no tree-completing level), the bagged multiclass categorical cell
+    # (level_apply_first keeps the record first for categorical splits; final_map_only is off with bagging) and the
+    # quantized graph prefix
+    for key in ["apply_struct_fused", "gap_copy_fused", "readback_kernel"]:
+        cell(
+            f"dense/flip-{key}-deep",
+            "dense",
+            {**deep, "cuda_plan": f"auto,{key}:off"},
+            equal_to="dense/quant-deep",
+        )
+    cell("sampled/flip-night3-deep", "sampled", {**deep, "cuda_plan": night3_off}, equal_to="sampled/quant-deep")
+    cell(
+        "categorical-mc/flip-night3-bagged",
+        "categorical-mc",
+        {
+            "quant_mode": "fixedpoint",
+            "quant_bins": 16,
+            "bagging_fraction": 0.7,
+            "bagging_freq": 1,
+            "num_leaves": 255,
+            "max_depth": 10,
+            "min_data_in_leaf": 5,
+            "cuda_plan": night3_off,
+        },
+        rounds=50,
+        equal_to="categorical-mc/quant-bagged",
+    )
+    cell(
+        "graph/flip-night3-graph_quant",
+        "graph",
+        {"cuda_plan": "auto,graph_quant:on," + night3_off.removeprefix("auto,")},
+        equal_to="graph/flipbase-graph_loop",
+    )
+
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "duplicate cell ids"
     by_id = {c["id"]: c for c in cells}
@@ -556,6 +706,21 @@ def build_profile(name):
         # ~120 sampled byte slots over several feature partitions: the multi-partition tiled compact fill
         m = 1200
         X = rng.integers(0, 6, size=(n, m)).astype(np.float64)
+        y = X[:, :40] @ rng.standard_normal(40) + rng.standard_normal(n)
+        base.update({"max_bin": 15, "feature_fraction": 0.2})
+    elif name == "sampled-oddrows":
+        # sampled with 8002 rows, 6401 of them trained: a column of the column-major store is 3201 bytes, an odd pitch,
+        # so the fused root fill's word staging runs only with colmajor_align (6400 rows, 3200 bytes, are
+        # sector-aligned already)
+        n, m = 8002, 600
+        X = rng.integers(0, 6, size=(n, m)).astype(np.float64)
+        y = X @ rng.standard_normal(m) + rng.standard_normal(n)
+        base.update({"max_bin": 15, "feature_fraction": 0.2})
+    elif name == "sampledwide-mixbins":
+        # sampledwide with 3 to 6 distinct values per feature: every tree's column sample gives the whole-row
+        # pair-joint construct another joint-table size (sampledwide's equal features always give the same one)
+        m = 1200
+        X = np.floor(rng.random((n, m)) * rng.integers(3, 7, size=m)).astype(np.float64)
         y = X[:, :40] @ rng.standard_normal(40) + rng.standard_normal(n)
         base.update({"max_bin": 15, "feature_fraction": 0.2})
     elif name == "graph":
