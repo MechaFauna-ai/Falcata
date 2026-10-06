@@ -46,6 +46,9 @@ struct FalcataPlan {
   static constexpr int kViewModeAuto = 0;
   static constexpr int kViewModeCompact = 1;
   static constexpr int kViewModeMask = 2;
+  static constexpr int kPinBinsAuto = 0;
+  static constexpr int kPinBinsAlways = 1;
+  static constexpr int kPinBinsNever = 2;
   // --- shape-conditional decisions (cuda_plan override keys) ---------------
   // hybrid level-batched growth (off = classic one-split-at-a-time leaf-wise)
   bool hybrid = true;               // key: hybrid
@@ -144,6 +147,16 @@ struct FalcataPlan {
   bool construct_staging_pool = true;  // key: construct_staging_pool
   // GPU binning: the chunk upload runs on its own stream, overlapping the bin kernel
   bool construct_h2d_overlap = true;  // key: construct_h2d_overlap
+  // page-locking of the Dataset's host bin storage on CUDA (key pin_bins):
+  //  - auto: only where CUDAColumnData copies it per column, i.e. when
+  //    num_groups x num_data <= kCUDAPerColumnMaxBytes. Above that bound only
+  //    the column-major store upload of the first train() reads the bins
+  //    (slower from pageable memory), while page-locking thousands of group
+  //    buffers costs seconds of construct time;
+  //  - always: at every size (the behaviour before the key);
+  //  - never: pageable at every size (per-column copies from pageable memory;
+  //    reaches the pageable path at test scale).
+  int pin_bins = kPinBinsAuto;
   // cheap host precheck that skips EFB bundling on provably-unbundlable data
   bool efb_precheck = true;         // key: efb_precheck
 
@@ -709,7 +722,20 @@ struct FalcataPlan {
       if (kv.size() != 2) {
         Log::Fatal("cuda_plan: bad token \"%s\" (expected key:on|off)", token.c_str());
       }
-      // the non-boolean keys: view_mode and the view_* numbers
+      // the non-boolean keys: view_mode, pin_bins and the view_* numbers
+      if (kv[0] == std::string("pin_bins")) {
+        if (kv[1] == std::string("auto")) {
+          plan.pin_bins = kPinBinsAuto;
+        } else if (kv[1] == std::string("always")) {
+          plan.pin_bins = kPinBinsAlways;
+        } else if (kv[1] == std::string("never")) {
+          plan.pin_bins = kPinBinsNever;
+        } else {
+          Log::Fatal("cuda_plan: bad value \"%s\" for key \"pin_bins\" (expected auto|always|never)", kv[1].c_str());
+        }
+        overridden = true;
+        continue;
+      }
       if (kv[0] == std::string("view_mode")) {
         if (kv[1] == std::string("auto")) {
           plan.view_mode = kViewModeAuto;

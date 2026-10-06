@@ -639,8 +639,12 @@ void Dataset::Construct(std::vector<std::unique_ptr<BinMapper>>* bin_mappers,
   // upload reads them (~0.3 s slower from pageable memory on the Numerai
   // split), while page-locking thousands of group buffers costs seconds of
   // construct time. The GPU binner fills the bins with memcpy either way.
+  // cuda_plan key pin_bins (auto|always|never).
+  const int pin_bins = FalcataPlan::Get().pin_bins;
   FLC_config_::pin_host_allocs =
-      static_cast<size_t>(num_groups_) * static_cast<size_t>(num_data_) <= kCUDAPerColumnMaxBytes;
+      pin_bins == FalcataPlan::kPinBinsAlways ||
+      (pin_bins == FalcataPlan::kPinBinsAuto &&
+       static_cast<size_t>(num_groups_) * static_cast<size_t>(num_data_) <= kCUDAPerColumnMaxBytes);
 #endif  // USE_CUDA
   OMP_INIT_EX();
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(dynamic)
