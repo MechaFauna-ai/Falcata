@@ -371,6 +371,13 @@ struct FalcataPlan {
   // kernel adds the same packed gradient to the same cell of the same table
   // per row: bit-identical.
   bool pair_code5 = true;           // key: pair_code5
+  // pair_code5: the code-view construct with one thread per 32-bit code
+  // word (six byte slots) instead of one per byte, so one warp covers a
+  // row of up to 32 words and issues one index, gradient and coalesced code
+  // load per row (the per-byte build: six warps, one of each per warp).
+  // Block rows by the occupancy API. Same rows, same cells, same flush
+  // rule: bit-identical.
+  bool pair_code5_words = true;     // key: pair_code5_words
   // pair_hist on levels with several leaf pairs: every leaf takes the largest
   // leaf's rows per thread, so small leaves fill a few whole blocks instead of
   // spreading a few rows over every block row (each block zeroes and flushes
@@ -661,6 +668,7 @@ struct FalcataPlan {
     if (key == "tree_meta_batch") return &tree_meta_batch;
     if (key == "pair_pad") return &pair_pad;
     if (key == "pair_code5") return &pair_code5;
+    if (key == "pair_code5_words") return &pair_code5_words;
     if (key == "level_row_blocks") return &level_row_blocks;
     if (key == "all_rows_direct") return &all_rows_direct;
     if (key == "apply_row_batch") return &apply_row_batch;
