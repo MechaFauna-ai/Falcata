@@ -1269,6 +1269,11 @@ _KILL_SWITCH_CASES = [
     ("dense", {}, {"cuda_plan": "auto,fast_rowdata:off"}, "fast_rowdata"),
     ("dense", {}, {"cuda_plan": "auto,gpu_construct:off"}, "gpu_construct"),
     ("dense", {}, {"cuda_plan": "auto,efb_precheck:off"}, "efb_precheck"),
+    # construction's host buffers: pageable bins at every size, fresh staging blocks per construct, the chunk
+    # upload on the kernel's stream (4-bit bins on fewbin)
+    ("dense", {}, {"cuda_plan": "auto,pin_bins:never"}, "pin_bins"),
+    ("fewbin", {}, {"cuda_plan": "auto,construct_staging_pool:off"}, "construct_staging_pool"),
+    ("fewbin", {}, {"cuda_plan": "auto,construct_h2d_overlap:off"}, "construct_h2d_overlap"),
     # compact column view for QUANT construct: default ON (materializes only the
     # sampled columns and feeds the same discretized kernel); ff<1 engages it, so
     # the model must be bit-identical to the full-column path.

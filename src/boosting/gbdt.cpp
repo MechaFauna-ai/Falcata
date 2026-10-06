@@ -131,6 +131,7 @@ void GBDT::CheckGradientNormForDivergence(const score_t* gradients) {
 }
 
 int FLC_config_::current_device = lgbm_device_cpu;
+bool FLC_config_::pin_host_allocs = true;
 int FLC_config_::current_learner = use_cpu_learner;
 
 GBDT::GBDT()

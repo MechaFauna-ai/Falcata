@@ -630,6 +630,22 @@ void Dataset::Construct(std::vector<std::unique_ptr<BinMapper>>* bin_mappers,
   // creating the groups zero-fills (and on CUDA page-locks) the full bin
   // storage; do it in parallel, the groups are independent
   feature_groups_ = std::vector<std::unique_ptr<FeatureGroup>>(num_groups_);
+#ifdef USE_CUDA
+  // Page-locked bins speed up the synchronous device copies that read them:
+  // CUDAColumnData's per-column copies, made only at or below
+  // kCUDAPerColumnMaxBytes, and the column-major store uploaded at the first
+  // train(). Every group becomes at least one column of at least one byte per
+  // row there, so when num_groups x num_data exceeds the bound only the store
+  // upload reads them (~0.3 s slower from pageable memory on the Numerai
+  // split), while page-locking thousands of group buffers costs seconds of
+  // construct time. The GPU binner fills the bins with memcpy either way.
+  // cuda_plan key pin_bins (auto|always|never).
+  const int pin_bins = FalcataPlan::Get().pin_bins;
+  FLC_config_::pin_host_allocs =
+      pin_bins == FalcataPlan::kPinBinsAlways ||
+      (pin_bins == FalcataPlan::kPinBinsAuto &&
+       static_cast<size_t>(num_groups_) * static_cast<size_t>(num_data_) <= kCUDAPerColumnMaxBytes);
+#endif  // USE_CUDA
   OMP_INIT_EX();
   #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(dynamic)
   for (int i = 0; i < num_groups_; ++i) {
@@ -639,6 +655,9 @@ void Dataset::Construct(std::vector<std::unique_ptr<BinMapper>>* bin_mappers,
         &group_bin_mappers[i], num_data_, i));
     OMP_LOOP_EX_END();
   }
+#ifdef USE_CUDA
+  FLC_config_::pin_host_allocs = true;
+#endif  // USE_CUDA
   OMP_THROW_EX();
   for (int i = 0; i < num_groups_; ++i) {
     num_total_bin += feature_groups_[i]->num_total_bin_;

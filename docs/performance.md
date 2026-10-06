@@ -308,6 +308,40 @@ training backend — 3.4× slower than our GPU-native construct. Catboost's
 low bar is partly an accounting artifact — its Pool build is a host copy,
 with quantization deferred into `fit()` where it lands in the train timer.
 
+**Construction from host arrays: host memory, not binning (`pin_bins`, `construct_staging_pool`, `construct_h2d_overlap`).**
+A construct of the Numerai benchmark split from its in-RAM int8 matrix (5.46M rows × 3,555 features, 3,525 feature
+groups, 9.6 GB of 4-bit bins) took 5.6 s, with the GPU busy for 1.9 s of it (the binning kernel 1.04 s, uploads
+0.84 s, downloads 0.37 s). Most of the rest was host memory management:
+- **Page-locking the bins (`pin_bins`).** Every group's bin buffer came from `cudaHostAlloc`: 3,525 buffers, about
+  2 s. Page-locked bins only speed up the device copies that read them. CUDAColumnData's per-column copies are skipped
+  above `kCUDAPerColumnMaxBytes` (8 GB), which leaves the column-major store uploaded at the first `train()`.
+  `pin_bins:auto` (the default) page-locks the bins only when groups × rows ≤ 8 GB; larger ones are pageable and
+  aligned to the kernel's transparent huge page. The store upload then reads pageable memory: about +0.35 s at the
+  first `train()` on Numerai. `pin_bins:always` page-locks at every size, as before.
+- **A zero-filled buffer the GPU path never uses.** A 4-bit bin also allocated an odd-nibble buffer of its own size for
+  the host binning path, and zero-filled it: another 9.6 GB of memset and page faults before the binner started. It is
+  calloc'd now, so its zero pages arrive on first touch, and the GPU path touches none of them. The binary-file loader
+  never frees it, so there it was 9.6 GB of resident zeros for the Dataset's lifetime: loading the Numerai binary
+  now takes 4.4 s instead of 5.5 s and holds 11.2 GB resident instead of 18.3 GB.
+- **The staging ring, page-locked per construct (`construct_staging_pool`).** The binner page-locked and freed its
+  ring (2 × 512 MB in, 2 × 265 MB out) in every construct: 0.35 s. The blocks now stay in a process-wide pool (best
+  fit) for the next construct, so the ring stays page-locked for the rest of the process.
+- **One stream for upload and kernel (`construct_h2d_overlap`).** Each chunk's upload waited for the previous chunk's
+  bin kernel. It now runs on its own stream.
+
+| numerai53bench-construct (in-RAM int8, 5.46M × 3,555) | master | this | |
+|---|---|---|---|
+| construct, 2nd–4th in a process (6 interleaved pairs) | 5.72 s | 4.06 s | 1.41x [1.31, 1.52] |
+| first construct in a process | 6.31 s | 4.84 s | 1.30x [1.15, 1.51] |
+| construct + 500-round train (numerai53bench-deep-stoch params) | 8.49 s | 7.13 s | 1.19x [1.16, 1.22] |
+| covtype-construct (581k × 54 float32), 2nd–6th / first construct | 0.135 / 0.206 s | 0.079 / 0.195 s | 1.70x / 1.06x |
+
+Every construct saves the same binary and trains the same model as master's. Each key off restores master's handling
+of that buffer. `pin_bins:always` alone keeps 1.11x and master's first `train()`. With all three keys off only the
+calloc is left, and it measures 1.01x [0.95, 1.08]: the zero-fill costs construct time only once the bins are pageable
+(presumably because page-locking kept the group-creation threads waiting anyway). The upload stream is worth 1.03x
+[1.01, 1.04] on top of the rest.
+
 ## 5. Quantized training: `quant_mode` (the speed/quality dial)
 
 **The problem.** Histogram accumulation is the hot loop, and accumulating
