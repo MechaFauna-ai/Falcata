@@ -556,7 +556,9 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
   hist_t* __restrict__ root_hist_scratch,
   uint32_t* __restrict__ code_view,
   const uint8_t* __restrict__ code_table,
-  const int code_row_words) {
+  const int code_row_words,
+  const bool code_pack2,
+  const bool code_evict_first) {
   extern __shared__ __align__(16) unsigned char fill_smem[];
   size_t* s_nib0 = reinterpret_cast<size_t*>(fill_smem);
   size_t* s_nib1 = s_nib0 + num_slots;
@@ -791,9 +793,81 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
       }
     }
 
-    if (CODE5 && kFusedRootThreads % code_row_words == 0) {
-      // the block's threads cover whole rows: thread tid always packs word tid % code_row_words, with its six slots'
-      // multipliers in registers
+    if (CODE5 && code_pack2 && code_row_words / 2 <= kFusedRootThreads) {
+      // cuda_plan key pair_code5_pack2: the block's first whole rows' worth of threads: thread tid always packs words
+      // 2m and 2m + 1 (m = tid % (words / 2)) of its rows, with their twelve slots' multipliers in registers, and
+      // stores them as one 8-byte pair (code_row_words is a multiple of 8); the remaining threads (fewer than a row's)
+      // skip the pack
+      uint32_t* code_out = code_view + static_cast<size_t>(row_start) * static_cast<size_t>(code_row_words);
+      const int half_words = code_row_words / 2;
+      const int m = tid % half_words;
+      // slot 12m + 6w + j's code c_j = lo * span(hi) + hi (< 32) at bits 5j of word 2m + w: codes 2p and 2p + 1 as
+      // one dot product of the bytes' low nibbles with (span(hi)_2p, 32 span(hi)_2p+1) plus their high nibbles with
+      // (has_hi, 32 has_hi), = c_2p + 32 c_2p+1, at the pair's byte lanes of the 32-bit source word holding it (bytes
+      // 6w + 2p and 6w + 2p + 1 of the twelve share one: 6w + 2p is even); the host keeps 32 span(hi) of an odd slot
+      // below 256; all 0 for a slot past num_slots, whose byte is not used
+      uint32_t lo_mul[6];
+      uint32_t hi_mul[6];
+#pragma unroll
+      for (int wp = 0; wp < 6; ++wp) {
+        lo_mul[wp] = 0;
+        hi_mul[wp] = 0;
+        const int b0 = 6 * (wp / 3) + 2 * (wp % 3);
+#pragma unroll
+        for (int q = 0; q < 2; ++q) {
+          const int slot = 12 * m + b0 + q;
+          const uint32_t e = slot < num_slots ? __ldg(code_table + slot) : 0u;
+          const int byte_lane = (b0 & 3) + q;
+          lo_mul[wp] |= ((e & 31u) << (5 * q)) << (8 * byte_lane);
+          hi_mul[wp] |= ((e & 32u) != 0 ? (1u << (5 * q)) : 0u) << (8 * byte_lane);
+        }
+      }
+      const int rows_per_pass = kFusedRootThreads / half_words;
+      const int tile_row_offset = static_cast<int>(tile_rows - fill_smem);
+      for (int r = tid < rows_per_pass * half_words ? tid / half_words : rows_valid; r < rows_valid;
+           r += rows_per_pass) {
+        uint2 w = make_uint2(0u, 0u);
+        if (12 * m < num_slots) {
+          // the twelve bytes from the four aligned 32-bit words holding them (a row starts on any byte when num_slots
+          // is odd); the bytes past the row's last slot are read (up to 15, within the block's shared slack) but
+          // multiplied by 0
+          // (addressed from the shared array's 16-byte aligned base, so the loads stay shared-memory loads)
+          const int o = tile_row_offset + r * tile_stride + 12 * m;
+          const uint32_t* a = reinterpret_cast<const uint32_t*>(fill_smem) + (o >> 2);
+          const uint32_t shift = static_cast<uint32_t>(o & 3) * 8u;
+          const uint32_t a1 = a[1];
+          const uint32_t a2 = a[2];
+          uint32_t lx[3];
+          uint32_t hx[3];
+          lx[0] = Code5Funnel(a[0], a1, shift);
+          lx[1] = Code5Funnel(a1, a2, shift);
+          lx[2] = Code5Funnel(a2, a[3], shift);
+#pragma unroll
+          for (int i = 0; i < 3; ++i) {
+            hx[i] = (lx[i] >> 4) & 0x0f0f0f0fu;
+            lx[i] &= 0x0f0f0f0fu;
+          }
+          uint32_t c[6];
+#pragma unroll
+          for (int wp = 0; wp < 6; ++wp) {
+            const int src = (6 * (wp / 3) + 2 * (wp % 3)) >> 2;
+            c[wp] = Code5Dot4(hx[src], hi_mul[wp], Code5Dot4(lx[src], lo_mul[wp], 0u));
+          }
+          w.x = c[0] | (c[1] << 10) | (c[2] << 20);
+          w.y = c[3] | (c[4] << 10) | (c[5] << 20);
+        }
+        // cuda_plan key pair_code5_l2_store: a plain store, not evict-first, keeps the view's last written rows in L2
+        // for the first level's construct
+        uint2* const dst = reinterpret_cast<uint2*>(code_out + r * code_row_words + 2 * m);
+        if (code_evict_first) {
+          __stcs(dst, w);
+        } else {
+          *dst = w;
+        }
+      }
+    } else if (CODE5 && kFusedRootThreads % code_row_words == 0) {
+      // one word per thread where the block's threads cover whole rows: thread tid always packs word
+      // tid % code_row_words, with its six slots' multipliers in registers
       uint32_t* code_out = code_view + static_cast<size_t>(row_start) * static_cast<size_t>(code_row_words);
       const int k = tid % code_row_words;
       // slot 6k + j's code c_j = lo * span(hi) + hi (< 32) at bits 5j: codes 2p and 2p + 1 as one dot product of
@@ -837,7 +911,11 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
           const uint32_t c45 = Code5Dot4(h1, hi_mul[2], Code5Dot4(l1, lo_mul[2], 0u));
           w = c01 | (c23 << 10) | (c45 << 20);
         }
-        __stcs(code_out + r * code_row_words + k, w);
+        if (code_evict_first) {
+          __stcs(code_out + r * code_row_words + k, w);
+        } else {
+          code_out[r * code_row_words + k] = w;
+        }
       }
     } else if (CODE5) {
       // the tile's rows as code words: consecutive threads write consecutive words of the tile's contiguous run
@@ -858,7 +936,11 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
             w |= (code & 31u) << (5 * j);
           }
         }
-        __stcs(code_out + t, w);
+        if (code_evict_first) {
+          __stcs(code_out + t, w);
+        } else {
+          code_out[t] = w;
+        }
       }
     }
 
@@ -950,13 +1032,13 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
   if (max_tiles_per_block < 1 || base_shared_bytes > 48 * 1024) {
     return false;
   }
-  // cuda_plan key pair_code5: the code pack reads up to 12 bytes past a row's last slot (three aligned words), kept
+  // cuda_plan key pair_code5: the code pack reads up to 15 bytes past a row's last slot (four aligned words), kept
   // inside the block's shared memory; where that slack does not fit, the fill writes the nibble view instead
   const bool code5 = code_view != nullptr && base_shared_bytes + 16 <= 48 * 1024;
   const size_t shared_bytes = base_shared_bytes + (code5 ? 16 : 0);
   using FusedFillKernel = void (*)(const uint8_t*, uint8_t*, const size_t*, const size_t*, const size_t*, const int*,
                                    int, data_size_t, const int*, const uint32_t*, int, int, int, bool, bool, bool, bool,
-                                   const int32_t*, bool, hist_t*, uint32_t*, const uint8_t*, int);
+                                   const int32_t*, bool, hist_t*, uint32_t*, const uint8_t*, int, bool, bool);
   const FusedFillKernel kernel = slot_major ?
     (code5 ? CUDAFillCompactData4BitTiledRootHistKernel<true, true> : CUDAFillCompactData4BitTiledRootHistKernel<true, false>) :
     (code5 ? CUDAFillCompactData4BitTiledRootHistKernel<false, true> : CUDAFillCompactData4BitTiledRootHistKernel<false, false>);
@@ -1003,7 +1085,8 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
     src_data, compact_data, bs_src_nib0, bs_src_nib1, bs_dst_byte, bs_dst_stride, total_byte_slots, num_data,
     slot_first_bin, local_bin_hist_pos, num_local_bins, slot_major ? slot_major_span : 0, tiles_per_block,
     strided_tiles, run_copy, word_prefetch, l2_lead, grad_and_hess, hist_16bit, root_hist_scratch,
-    code5 ? code_view : nullptr, code_table, code_row_words);
+    code5 ? code_view : nullptr, code_table, code_row_words, FalcataPlan::Get().pair_code5_pack2,
+    !FalcataPlan::Get().pair_code5_l2_store);
   if (code5) {
     // a new variant: a rejected launch must not leave the code view (and the root histogram) unwritten silently
     CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());

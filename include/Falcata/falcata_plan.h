@@ -378,6 +378,15 @@ struct FalcataPlan {
   // Block rows by the occupancy API. Same rows, same cells, same flush
   // rule: bit-identical.
   bool pair_code5_words = true;     // key: pair_code5_words
+  // pair_code5: the fused fill packs two adjacent code words per thread
+  // (four aligned shared loads for their twelve bytes, one 8-byte store)
+  // instead of one word per thread (three loads, one 4-byte store). Same
+  // words: bit-identical.
+  bool pair_code5_pack2 = true;     // key: pair_code5_pack2
+  // pair_code5: the fused fill writes the code view with plain stores, so
+  // its last written rows stay in L2 for the first level's construct (off:
+  // evict-first streaming stores). Same words: bit-identical.
+  bool pair_code5_l2_store = true;  // key: pair_code5_l2_store
   // pair_hist on levels with several leaf pairs: every leaf takes the largest
   // leaf's rows per thread, so small leaves fill a few whole blocks instead of
   // spreading a few rows over every block row (each block zeroes and flushes
@@ -669,6 +678,8 @@ struct FalcataPlan {
     if (key == "pair_pad") return &pair_pad;
     if (key == "pair_code5") return &pair_code5;
     if (key == "pair_code5_words") return &pair_code5_words;
+    if (key == "pair_code5_pack2") return &pair_code5_pack2;
+    if (key == "pair_code5_l2_store") return &pair_code5_l2_store;
     if (key == "level_row_blocks") return &level_row_blocks;
     if (key == "all_rows_direct") return &all_rows_direct;
     if (key == "apply_row_batch") return &apply_row_batch;
