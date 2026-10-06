@@ -948,13 +948,27 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
     for (int r = warp; r < rows_valid; r += kWarps) {
       const int32_t grad_hess = s_grad[r];
       const uint8_t* tile_row = tile_rows + r * tile_stride;
-      for (int s = lane; s < num_slots; s += 32) {
-        const uint32_t b = tile_row[s];
-        if (SLOT_MAJOR) {
-          // a slot without a high column stages nibble 0 there; the flush skips that cell
-          atomicAdd_block(s_hist + (b & 0xf) * hist_stride + s, grad_hess);
-          atomicAdd_block(s_hist + hist_half + (b >> 4) * hist_stride + s, grad_hess);
-        } else {
+      if (SLOT_MAJOR) {
+        // a slot without a high column stages nibble 0 there; the flush skips that cell. A lane's slots
+        // s = lane + 32 i have the same nibble-0 cells (s_hist + s, + hist_half for the high nibble) in every row, so
+        // a slot's cells are those plus nibble * hist_stride cells: one multiply-add per cell. A lane has at most
+        // kFill4BitTiledMaxSlots / 32 slots: the loop is unrolled whole (no remainder blocks for a lane's few slots)
+        unsigned char* lo_cell = reinterpret_cast<unsigned char*>(s_hist + lane);
+        unsigned char* hi_cell = reinterpret_cast<unsigned char*>(s_hist + hist_half + lane);
+        const uint32_t cell_stride_bytes = static_cast<uint32_t>(hist_stride) * sizeof(int32_t);
+#pragma unroll
+        for (int i = 0; i < kFill4BitTiledMaxSlots / 32; ++i) {
+          const int s = lane + 32 * i;
+          if (s >= num_slots) break;
+          const uint32_t b = tile_row[s];
+          atomicAdd_block(reinterpret_cast<int32_t*>(lo_cell + 32 * sizeof(int32_t) * i + (b & 0xf) * cell_stride_bytes),
+                          grad_hess);
+          atomicAdd_block(reinterpret_cast<int32_t*>(hi_cell + 32 * sizeof(int32_t) * i + (b >> 4) * cell_stride_bytes),
+                          grad_hess);
+        }
+      } else {
+        for (int s = lane; s < num_slots; s += 32) {
+          const uint32_t b = tile_row[s];
           const uint32_t bins = s_bins[s];
           atomicAdd_block(s_hist + (bins & 0xffff) + (b & 0xf), grad_hess);
           if ((bins >> 16) != 0xffff) {
