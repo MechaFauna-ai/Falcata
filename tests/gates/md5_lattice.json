@@ -250,6 +250,21 @@
    "metric": 9.250257,
    "metric_name": "rmse"
   },
+  "sampledwide5/quant": {
+   "md5": "caf01b5b7a6698f0ac4bd352f7d8bec4",
+   "metric": 6.514117,
+   "metric_name": "rmse"
+  },
+  "sampledwide5/quant-deep": {
+   "md5": "33fff6642df3a37690ec363d274d094a",
+   "metric": 7.219279,
+   "metric_name": "rmse"
+  },
+  "sampledwide5/quant-ff15": {
+   "md5": "0cbea50d4f29545425470c133675ad49",
+   "metric": 7.270889,
+   "metric_name": "rmse"
+  },
   "sparse-mc/quant-deep": {
    "md5": "f2b9785f595e9513f76093ce51a6bc84",
    "metric": 0.085856,

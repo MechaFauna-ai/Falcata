@@ -657,6 +657,55 @@ def build_cells():
         equal_to="graph/flipbase-graph_loop",
     )
 
+    # --- the 5-bit pair-code view (pair_code5) ------------------------------- #
+    # sampledwide5 is sampledwide with 5 values per feature: every byte's joint table is 5 x 5 = 25 cells, within the
+    # 5-bit code, so the fused fill writes the code view and the whole-row construct reads it (sampledwide's 6-value
+    # columns give 36-cell tables, which decline it, as does every other profile). Its base cells' fingerprints were
+    # recorded with master's build, which writes and reads the nibble view throughout. At feature_fraction 0.15 a row
+    # is ~90 bytes, 16 code words: the one-word pack's block covers whole rows (pair_code5_pack2:off); at the profile's
+    # own 0.2 it is ~120 bytes, 24 words, where pair_code5_pack2:off takes the per-byte pack. pair_code5_words:off
+    # takes the per-byte code kernel (capped, or uncapped with pair_capped_rows:off); compact_prefill and
+    # construct_jit turn the view off at the fill. Deep trees (a binding leaf budget) run the code-word kernel on
+    # multi-pair levels, with and without the block map and level_row_blocks' shared rows per thread. Each key off,
+    # and all four off, must train the base cell's model. (FALCATA_DEBUG=diag: every tree of the three bases writes
+    # the code view and every gathering level reads it; pair_code5_pack2 and pair_code5_l2_store are an argument of
+    # the same fill launch, invisible to nsys, which ncu and the kernel's SASS see.)
+    night4_keys = ["pair_code5", "pair_code5_words", "pair_code5_pack2", "pair_code5_l2_store"]
+    night4_off = "auto," + ",".join(f"{k}:off" for k in night4_keys)
+    cell("sampledwide5/quant-ff15", "sampledwide5", ff15)
+    for name, plan in [
+        *[(key, f"{key}:off") for key in night4_keys],
+        ("night4", night4_off.removeprefix("auto,")),
+        ("code5_bytes_uncapped", "pair_code5_words:off,pair_capped_rows:off"),
+        ("compact_prefill", "compact_prefill:on"),
+        ("construct_jit", "construct_jit:on"),
+    ]:
+        cell(
+            f"sampledwide5/flip-{name}-ff15",
+            "sampledwide5",
+            {**ff15, "cuda_plan": f"auto,{plan}"},
+            equal_to="sampledwide5/quant-ff15",
+        )
+    cell("sampledwide5/quant", "sampledwide5")
+    for key in ["pair_code5", "pair_code5_pack2"]:
+        cell(
+            f"sampledwide5/flip-{key}", "sampledwide5", {"cuda_plan": f"auto,{key}:off"}, equal_to="sampledwide5/quant"
+        )
+    cell("sampledwide5/flip-night4", "sampledwide5", {"cuda_plan": night4_off}, equal_to="sampledwide5/quant")
+    cell("sampledwide5/quant-deep", "sampledwide5", deep)
+    for name, plan in [
+        ("pair_code5", "pair_code5:off"),
+        ("pair_code5_words", "pair_code5_words:off"),
+        ("code5_plain_grid", "pair_block_map:off,level_row_blocks:off,per_pair_rows:off"),
+        ("night4", night4_off.removeprefix("auto,")),
+    ]:
+        cell(
+            f"sampledwide5/flip-{name}-deep",
+            "sampledwide5",
+            {**deep, "cuda_plan": f"auto,{plan}"},
+            equal_to="sampledwide5/quant-deep",
+        )
+
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "duplicate cell ids"
     by_id = {c["id"]: c for c in cells}
@@ -715,6 +764,13 @@ def build_profile(name):
         n, m = 8002, 600
         X = rng.integers(0, 6, size=(n, m)).astype(np.float64)
         y = X @ rng.standard_normal(m) + rng.standard_normal(n)
+        base.update({"max_bin": 15, "feature_fraction": 0.2})
+    elif name == "sampledwide5":
+        # sampledwide with 5 values per feature: every byte's joint table is 5 x 5 = 25 cells, so the fused fill
+        # writes the 5-bit pair-code view (pair_code5), which sampledwide's 6 x 6 = 36-cell tables decline
+        m = 1200
+        X = rng.integers(0, 5, size=(n, m)).astype(np.float64)
+        y = X[:, :40] @ rng.standard_normal(40) + rng.standard_normal(n)
         base.update({"max_bin": 15, "feature_fraction": 0.2})
     elif name == "sampledwide-mixbins":
         # sampledwide with 3 to 6 distinct values per feature: every tree's column sample gives the whole-row
