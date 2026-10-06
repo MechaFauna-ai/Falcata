@@ -356,6 +356,21 @@ struct FalcataPlan {
   // product gets one pad cell), so the same cell of neighbouring threads' tables
   // falls in distinct shared-memory banks. Bit-identical (layout only).
   bool pair_pad = true;             // key: pair_pad
+  // pair_hist_rows (whole-row pair-joint construct) reading a code view of
+  // the compact rows that the fused fill (fused_root_hist, one-run
+  // row-interleaved layout) writes INSTEAD of the 4-bit view, in the same
+  // buffer: each byte slot's joint-table cell lo * span(hi) + hi as a 5-bit
+  // code, six codes per 32-bit word, a row padded to whole 32-byte sectors
+  // (178 byte slots: 30 words -> 128 B instead of 178 B, 4 sectors per
+  // gathered row instead of ~6.6; the fill writes 28% fewer bytes). Taken only
+  // when every byte's span(lo) * span(hi) <= 32, the split reads use the
+  // column-major store (colmajor_split), without compact_prefill or
+  // graph_quant. Any other reader of the 4-bit view (other construct kernels,
+  // the row->column gathers) first writes it with the plain tiled fill from
+  // the code fill's own copy of the byte-slot tables, over the code view. The
+  // kernel adds the same packed gradient to the same cell of the same table
+  // per row: bit-identical.
+  bool pair_code5 = true;           // key: pair_code5
   // pair_hist on levels with several leaf pairs: every leaf takes the largest
   // leaf's rows per thread, so small leaves fill a few whole blocks instead of
   // spreading a few rows over every block row (each block zeroes and flushes
@@ -645,6 +660,7 @@ struct FalcataPlan {
     if (key == "async_tree_start") return &async_tree_start;
     if (key == "tree_meta_batch") return &tree_meta_batch;
     if (key == "pair_pad") return &pair_pad;
+    if (key == "pair_code5") return &pair_code5;
     if (key == "level_row_blocks") return &level_row_blocks;
     if (key == "all_rows_direct") return &all_rows_direct;
     if (key == "apply_row_batch") return &apply_row_batch;

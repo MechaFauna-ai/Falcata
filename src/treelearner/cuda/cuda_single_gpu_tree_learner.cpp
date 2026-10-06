@@ -1016,6 +1016,10 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   // The gather is the buffer's only consumer on this path, so this is where it
   // gets allocated (moved down from the top of the function).
   EnsureCompactColumnBuffer(needed_bytes, num_compact_cols, num_data);
+  if (compact_src) {
+    // cuda_plan key pair_code5: the compact view's nibbles may not be written yet
+    cuda_histogram_constructor_->EnsureNibbleView();
+  }
 
   LaunchRowToColCompactKernel(
       0,
@@ -1076,6 +1080,10 @@ void CUDASingleGPUTreeLearner::EnsureClassicColumnView() {
   const int num_compact_cols = static_cast<int>(compact_column_to_orig_.size());
   const size_t needed_bytes = static_cast<size_t>(num_compact_cols) * static_cast<size_t>(num_data);
   EnsureCompactColumnBuffer(needed_bytes, num_compact_cols, num_data);
+  if (compact_gather_src_ == cuda_histogram_constructor_->compact_data_device()) {
+    // cuda_plan key pair_code5: the compact view's nibbles may not be written yet
+    cuda_histogram_constructor_->EnsureNibbleView();
+  }
   LaunchRowToColCompactKernel(
       0,
       compact_gather_src_,

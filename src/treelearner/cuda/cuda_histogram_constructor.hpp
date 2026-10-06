@@ -291,7 +291,12 @@ class CUDAHistogramConstructor {
   /*! \brief whether the compact matrix is 4-bit packed (two columns per byte,
    *  per-partition even-column padding; mirrors CUDARowData::is_4bit_packed) */
   bool compact_src_is_4bit() const { return compact_is_4bit_; }
+  /*! \brief the live compact view's address; its bytes may still be pending (cuda_plan key pair_code5): a reader
+   *  calls EnsureNibbleView() before its kernels read them */
   const uint8_t* compact_data_device() const { return compact_data_uint8_t_.RawDataReadOnly(); }
+  /*! \brief cuda_plan key pair_code5: when this tree's fused fill wrote only the code view, write the live nibble
+   *  view now (the plain tiled fill from the code fill's own byte-slot tables, on the fill's stream); no-op otherwise */
+  void EnsureNibbleView();
   /*! \brief whether this tree's compact build also produced the column-major
    *  view (compact_col_major_device()[slot * num_data + row]); the tree learner
    *  then uses it directly instead of gathering its own copy */
@@ -1144,6 +1149,30 @@ class CUDAHistogramConstructor {
   bool fused_root_request_16bit_ = false;
   bool fused_root_ready_ = false;
   bool fused_root_bits16_ = false;
+  /*! \brief cuda_plan key pair_code5: whether the live compact buffer holds this tree's code view, written by the
+   *  fused fill instead of the nibble view (code5_row_words_ 32-bit words per row); cleared when EnsureNibbleView
+   *  writes the nibble view over it or the next fill rewrites the live buffer */
+  bool code5_valid_ = false;
+  int code5_row_words_ = 0;
+  /*! \brief the live nibble view was not written by this tree's fused fill (it wrote the code view instead):
+   *  EnsureNibbleView writes it with the plain tiled fill from nibble_pending_src_ and the code fill's own byte-slot
+   *  tables code5_bs_* (nibble_pending_slots_ slots, on nibble_pending_stream_). Only the code fill of the live
+   *  buffer writes those tables, and it resets this state first, so they are always the pending view's. */
+  bool nibble_pending_ = false;
+  int nibble_pending_slots_ = 0;
+  const uint8_t* nibble_pending_src_ = nullptr;
+  cudaStream_t nibble_pending_stream_ = nullptr;
+  /*! \brief the live nibble view for a kernel about to read it (materialized first if pending) */
+  uint8_t* NibbleViewData() {
+    EnsureNibbleView();
+    return compact_data_uint8_t_.RawData();
+  }
+  CUDAVector<uint8_t> code5_table_;
+  CUDAVector<size_t> code5_bs_src_nib0_;
+  CUDAVector<size_t> code5_bs_src_nib1_;
+  CUDAVector<int> code5_bs_src_stride_nib_;
+  CUDAVector<size_t> code5_bs_dst_byte_;
+  CUDAVector<int> code5_bs_dst_stride_;
   CUDAVector<hist_t> fused_root_scratch_;
   CUDAVector<int> fused_root_meta_;
   void LaunchApplyFusedRootHistogram(const CUDAHybridPairDescriptor* pair_descs);
