@@ -138,6 +138,10 @@ struct FalcataPlan {
   bool rowdata_4bit = true;         // key: rowdata_4bit
   // GPU dense-matrix binning during dataset construction
   bool gpu_construct = true;        // key: gpu_construct
+  // GPU binning: the page-locked staging blocks stay in a process-wide pool for
+  // the next construct (off: page-locked and freed by every construct). Holds
+  // the ring (~1.5 GB on the Numerai split) after the first construct.
+  bool construct_staging_pool = true;  // key: construct_staging_pool
   // cheap host precheck that skips EFB bundling on provably-unbundlable data
   bool efb_precheck = true;         // key: efb_precheck
 
@@ -608,6 +612,7 @@ struct FalcataPlan {
     if (key == "fast_rowdata") return &fast_rowdata;
     if (key == "rowdata_4bit") return &rowdata_4bit;
     if (key == "gpu_construct") return &gpu_construct;
+    if (key == "construct_staging_pool") return &construct_staging_pool;
     if (key == "efb_precheck") return &efb_precheck;
     if (key == "split_packed_read") return &split_packed_read;
     if (key == "batch_kernels") return &batch_kernels;
