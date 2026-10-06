@@ -1122,6 +1122,7 @@ void CUDAHistogramConstructor::LaunchCompactFill(
         // where the split reads do not take it (the column-major store serves them), no prefill swaps the live
         // buffer and no quantized level graph captures a construct
         const uint8_t* fill_src = colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : RowMajorBin<uint8_t>();
+        const DeviceLaunchLimits device_limits = CurrentDeviceLaunchLimits();
         bool code5 = code5_allowed_ && !FalcataPlan::Get().construct_jit &&
                      FalcataPlan::Get().pair_code5 && FalcataPlan::Get().pair_hist &&
                      FalcataPlan::Get().pair_hist_rows && FalcataPlan::Get().colmajor_split &&
@@ -1129,9 +1130,11 @@ void CUDAHistogramConstructor::LaunchCompactFill(
                      !FalcataPlan::Get().compact_prefill && !FalcataPlan::Get().graph_quant &&
                      layout.row_interleave && compact_codec_ == PackCodecId::kNibble4 &&
                      compact_pair_joint_total_ > 0 && total_byte_slots > 0 && total_byte_slots == compact_row_bytes_ &&
-                     // the whole-row construct's shape conditions known before a level (its joint tables fit 48 KB, a
-                     // row fits a block): otherwise no level could read the code view and every tree would refill
-                     compact_pair_joint_total_ * sizeof(int32_t) <= 48 * 1024 && total_byte_slots <= 1024;
+                     // the whole-row construct's shape conditions known before a level (its joint tables fit a
+                     // block's default shared memory, a row fits a block; the device's limits): otherwise no level
+                     // could read the code view and every tree would refill
+                     compact_pair_joint_total_ * sizeof(int32_t) <= device_limits.shared_bytes_per_block &&
+                     total_byte_slots <= device_limits.max_threads_per_block;
         std::vector<uint8_t> code_table_h(code5 ? total_byte_slots : 0);
         for (int k = 0; code5 && k < total_byte_slots; ++k) {
           code5 = bs_dst_byte_h[k] == static_cast<size_t>(k) && bs_dst_stride_h[k] == total_byte_slots;
@@ -1148,8 +1151,8 @@ void CUDAHistogramConstructor::LaunchCompactFill(
             code_table_h[k] = static_cast<uint8_t>(hi_span | (has_hi ? 32 : 0));
           }
         }
-        // the construct derives the same count from the row bytes (Code5RowWords)
-        const int code_row_words = ((total_byte_slots + 5) / 6 + 7) / 8 * 8;
+        // the code row's words (Code5RowWords; the construct derives the same count from the row bytes)
+        const int code_row_words = Code5RowWords(total_byte_slots);
         const size_t code_view_words = static_cast<size_t>(num_data) * static_cast<size_t>(code_row_words);
         // the code view is written into the live compact buffer itself (the nibble view is not written while the
         // code view is valid, and EnsureNibbleView overwrites it): only where it takes fewer bytes than the nibble

@@ -81,6 +81,18 @@ namespace Falcata {
 // Byte slots (pairs of compact columns) the tiled 4-bit compact fill handles in one shared-memory tile.
 constexpr int kFill4BitTiledMaxSlots = 256;
 
+/*! \brief the current device's launch limits that the pair-code view's shape rules read (cuda_plan key pair_code5:
+ *  the code-view gate, the fused fill's code-pack slack, the code-word construct's block rows and grid), from the
+ *  device's attributes instead of literals: the dynamic shared memory a block gets without the opt-in attribute, the
+ *  largest block, the grid's y extent and the warp width. Memoised per device (CurrentDeviceLaunchLimits). */
+struct DeviceLaunchLimits {
+  size_t shared_bytes_per_block = 0;
+  int max_threads_per_block = 0;
+  int max_grid_dim_y = 0;
+  int warp_size = 0;
+};
+DeviceLaunchLimits CurrentDeviceLaunchLimits();
+
 /*! \brief fp32-pair global histogram storage for the non-quantized CUDA path
  *  (config cuda_precision=fp32 requests; default fp64 = hist_t/double pairs,
  *  the historical behavior). The actual engagement additionally requires the
@@ -156,6 +168,16 @@ __host__ __device__ inline int HybridQuantConstructBlockDimY(
   const int max_rows_per_block = 65534 / (num_grad_quant_bins > 1 ? num_grad_quant_bins : 1);
   const int capped = max_rows_per_block > 1 ? max_rows_per_block : 1;
   return block_dim_y < capped ? block_dim_y : capped;
+}
+
+/*! \brief cuda_plan key pair_code5: 32-bit words of a code-view row of row_bytes byte slots (six 5-bit codes per
+ *  word), padded to whole kCode5RowWordAlign-word units: 32 bytes, the sector of the gathers' L2 and DRAM accesses,
+ *  and an even count for the fill's 8-byte stores (pair_code5_pack2). The fused fill writes rows of this many words
+ *  (LaunchCompactFill) and the construct reads them. */
+inline constexpr int kCode5RowWordAlign = 8;
+static_assert(kCode5RowWordAlign % 2 == 0, "pair_code5_pack2 stores word pairs as one aligned 8-byte store");
+__host__ __device__ inline int Code5RowWords(const int row_bytes) {
+  return ((row_bytes + 5) / 6 + kCode5RowWordAlign - 1) / kCode5RowWordAlign * kCode5RowWordAlign;
 }
 
 /*! \brief quantized-training y-grid sizing of the batched construct kernel:

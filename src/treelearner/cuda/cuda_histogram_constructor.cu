@@ -1005,6 +1005,28 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
 }
 #endif  // !defined(__HIP_PLATFORM_AMD__)
 
+DeviceLaunchLimits CurrentDeviceLaunchLimits() {
+  struct Entry {
+    int device;
+    DeviceLaunchLimits limits;
+  };
+  static thread_local std::vector<Entry> entries;
+  int device = 0;
+  CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
+  for (const Entry& e : entries) {
+    if (e.device == device) return e.limits;
+  }
+  DeviceLaunchLimits limits;
+  int shared_bytes = 0;
+  CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&shared_bytes, cudaDevAttrMaxSharedMemoryPerBlock, device));
+  limits.shared_bytes_per_block = static_cast<size_t>(shared_bytes);
+  CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&limits.max_threads_per_block, cudaDevAttrMaxThreadsPerBlock, device));
+  CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&limits.max_grid_dim_y, cudaDevAttrMaxGridDimY, device));
+  CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&limits.warp_size, cudaDevAttrWarpSize, device));
+  entries.push_back({device, limits});
+  return limits;
+}
+
 // Host wrapper of the fused fill; false (nothing launched) where the tiled kernel does not exist.
 bool LaunchFillCompactData4BitTiledRootHistKernel(
   cudaStream_t stream,
@@ -1036,19 +1058,20 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
   *code_view_written = false;
 #if !defined(__HIP_PLATFORM_AMD__)
   // the packed per-block row bound, and the default dynamic shared-memory limit (the slot-major table where it
-  // was requested and fits, else one cell per local bin)
+  // was requested and fits, else one cell per local bin): the device's, as the launch does not opt in to more
   const int max_tiles_per_block = std::min(16, max_rows_per_block / kFill4BitTiledRows);
+  const size_t max_shared_bytes = CurrentDeviceLaunchLimits().shared_bytes_per_block;
   const size_t slot_major_bytes = FusedRootHistFillSharedBytes(
     total_byte_slots, 2 * slot_major_span * FusedRootHistSlotStride(total_byte_slots));
-  const bool slot_major = slot_major_span > 0 && slot_major_bytes <= 48 * 1024;
+  const bool slot_major = slot_major_span > 0 && slot_major_bytes <= max_shared_bytes;
   const size_t base_shared_bytes = slot_major ? slot_major_bytes
                                               : FusedRootHistFillSharedBytes(total_byte_slots, num_local_bins);
-  if (max_tiles_per_block < 1 || base_shared_bytes > 48 * 1024) {
+  if (max_tiles_per_block < 1 || base_shared_bytes > max_shared_bytes) {
     return false;
   }
   // cuda_plan key pair_code5: the code pack reads up to 15 bytes past a row's last slot (four aligned words), kept
   // inside the block's shared memory; where that slack does not fit, the fill writes the nibble view instead
-  const bool code5 = code_view != nullptr && base_shared_bytes + 16 <= 48 * 1024;
+  const bool code5 = code_view != nullptr && base_shared_bytes + 16 <= max_shared_bytes;
   const size_t shared_bytes = base_shared_bytes + (code5 ? 16 : 0);
   using FusedFillKernel = void (*)(const uint8_t*, uint8_t*, const size_t*, const size_t*, const size_t*, const int*,
                                    int, data_size_t, const int*, const uint32_t*, int, int, int, bool, bool, bool, bool,
@@ -2805,12 +2828,6 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
 
 // One batch of the pair-joint construct: as ConstructRowBatch, with the byte of the thread's column pair as the
 // value and the cell (lo * hi_span + hi) of the pair's joint histogram as the bin.
-// cuda_plan key pair_code5: 32-bit words of a code-view row of row_bytes byte slots (six 5-bit codes per word),
-// padded to whole 32-byte sectors; the fused fill writes rows of this many words
-__host__ __device__ constexpr int Code5RowWords(const int row_bytes) {
-  return ((row_bytes + 5) / 6 + 7) / 8 * 8;
-}
-
 // CODE5 (cuda_plan key pair_code5): data_ptr is the code view's word of this byte (word byte_idx / 6 of row 0, the
 // byte_idx argument 0), row_stride the code row's bytes, hi_span the code's bit offset; the cell is the 5-bit code
 template <int N, bool PREFETCH, bool CODE5 = false>
@@ -3478,14 +3495,16 @@ static int PairJointCode5WordRows(const int row_words, const size_t smem_bytes, 
   const PairJointKernelFn kernel = PairJointCode5WordKernel();
   cudaFuncAttributes attr;
   CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attr, kernel));
-  const int max_threads = std::min(1024, attr.maxThreadsPerBlock);
+  // the kernel's largest block on this device (registers included), in warps of the device's width
+  const int max_threads = attr.maxThreadsPerBlock;
+  const int warp_size = CurrentDeviceLaunchLimits().warp_size;
   int best_rows = 0;
   int best_warps = 0;
   for (int c = 1; row_words > 0 && row_words * c <= max_threads &&
        HybridQuantConstructBlockDimY(c, num_grad_quant_bins) == c; ++c) {
     int blocks = 0;
     CUDASUCCESS_OR_FATAL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks, kernel, row_words * c, smem_bytes));
-    const int warps = blocks * ((row_words * c + 31) / 32);
+    const int warps = blocks * ((row_words * c + warp_size - 1) / warp_size);
     if (blocks > 0 && warps >= best_warps) {
       best_warps = warps;
       best_rows = c;
@@ -5711,7 +5730,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
               max_num_data_in_smaller_leaf, num_pairs, code5_word_rows, min_grid_dim_y_,
               BatchConstructMinRowsPerThread(), BatchConstructSaturationFloor(),
               use_quantized_grad_ ? num_grad_quant_bins_ : 0);
-            if (word_grid_y <= 65535) {
+            if (word_grid_y <= CurrentDeviceLaunchLimits().max_grid_dim_y) {
               pair_y = code5_word_rows;
               pair_grid_y = word_grid_y;
             } else {
