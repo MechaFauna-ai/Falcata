@@ -959,6 +959,34 @@ A third overnight agentic search took about 12% off that round with nineteen `cu
 - **Guard workloads:** the evaluator's five guard workloads gain 1.08-1.28x per round (covtype deep 1.28x, missing deep 1.23x, year deep 1.12x, higgs deep 1.10x, numerai53-example 1.08x), all with identical models.
 - **The search's lineage:** c053 (fill) 1.141x against the previous master 4befcfb2, c056 + c058 (finder, sync) 1.163x, c060 + c062 (fused level kernels) 1.196x, c059 + c061 (round trips) 1.207x, and c066 (merged, with `pair_block_map` and the final-level keys) 1.281x. #56's own keys are 1.105x of that.
 
+## 10d. The Numerai round after #58: a 5-bit pair-code view of the compact rows
+
+After §10c a numerai53 benchmark-split round was about 4.7 ms on the GPU timeline, of which the whole-row pair-joint
+construct took 2.0 ms (43%) and the fused root fill 1.3 ms (28%).
+- The construct gathers each leaf's rows of the per-tree compact view, 178 bytes per row on Numerai (two 4-bit columns per byte, ~6.6 32-byte sectors), and adds each row's packed gradient to the joint-table cell lo × span(hi) + hi of every byte.
+- It looked DRAM-bound (70% of DRAM in ncu), but reading 36% fewer bytes made it only 2-3% faster: it was bound by load/store issue (77% of the LSU pipe), six warps per row each issuing an index, a gradient and a data load.
+
+A fourth overnight agentic search took about 18% off that round with four `cuda_plan` keys, all default on and bit-identical (identity keys in `ablation.py`, flip cells in the lattice), and one keyless change to the fill. None adds device memory beyond a few KB.
+
+**The code view (`pair_code5`).**
+- Where every byte's joint table has at most 32 cells (Numerai's 5-value columns: 25), the fused fill writes each byte's cell index as a 5-bit code, six to a 32-bit word, rows padded to whole 32-byte sectors: 128 bytes per row instead of 178, written into the same buffer instead of the nibble view (28% fewer bytes written).
+- The whole-row construct reads the word holding a byte and shifts its code out: the same cell gets the same gradient.
+- Any other reader of the nibble view (the other construct kernels, the row → column gathers) first rewrites the nibble view over it, from the fill's own copy of its tables. The view is off where the split path reads the nibble view anyway, and with `construct_jit`, `compact_prefill` or `graph_quant`.
+
+**One thread per code word (`pair_code5_words`).** A thread takes one code word (six bytes) of a row instead of one byte, so one warp covers a row of up to 32 words and issues one index, one gradient and one coalesced 128-byte load per row, where six warps issued one of each: 63% fewer load/store instructions. Same rows, same cells, same flush; 4 rows in flight at 48 registers, block rows by the occupancy API. Construct 2.05 → 1.27 ms per round.
+
+**The fill (`pair_code5_pack2`, `pair_code5_l2_store`, the slot loop).** With the view the fill had become issue-limited. A thread now packs two code words with four aligned shared loads and one 8-byte store; the code words are written with plain stores, so the last rows stay in L2 for the first construct; and the slot-major root histogram's loop is unrolled whole over hoisted cell pointers (−15% fill instructions). Fill 1.33 → 1.12 ms per round, about 82% of the RTX 5090's DRAM peak.
+
+| | master (0e1a0277) | this branch | |
+|---|---|---|---|
+| ms per round (numerai53 benchmark split, tuner on, 500 rounds timed from 200, 12 interleaved pairs) | 4.67 | 3.84 | 1.217x [1.211, 1.223] |
+| trees/s at 30k trees (`bench.py` numerai-deep cell, ABBA) | 202.1 | 246.4 | 1.219x |
+| peak device memory (per process) | 11,348 MiB | 11,348 MiB | |
+
+- **Same model, every run:** tree md5 `1c68bf82…` at 30k trees, holdout corr 0.0239, sharpe 1.40; switching any one key off, or all four, trains the same model.
+- **Only Numerai-shaped data takes the view:** a 4-bit compact view under feature sampling with at most 32 cells per byte pair. Of the evaluator's five guard workloads, covtype, year, higgs and missing build no compact view and numerai53-example's trees decline the view; all five run at master's speed (0.994-1.003x per round, 3 pairs each; covtype's 0.996x came from the two arms' different tuner picks: 0.999x with the tuner off in both).
+- **The search's lineage:** c079 (the view and the code-word construct) 1.194x against master cf10b79a, c077 (an independent implementation of the view on master) 1.058x, c088 (c077's fill pack, stores and gate ported into c079, the fill's slot loop) 1.224x; at 30k trees c079 238.8 and c088 251.4 trees/s against master's 202.2 in the search's single runs.
+
 ---
 
 ## Multi-GPU: level-batched NCCL all-reduce
