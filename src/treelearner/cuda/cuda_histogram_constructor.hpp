@@ -81,6 +81,18 @@ namespace Falcata {
 // Byte slots (pairs of compact columns) the tiled 4-bit compact fill handles in one shared-memory tile.
 constexpr int kFill4BitTiledMaxSlots = 256;
 
+/*! \brief the current device's launch limits that the pair-code view's shape rules read (cuda_plan key pair_code5:
+ *  the code-view gate, the fused fill's code-pack slack, the code-word construct's block rows and grid), from the
+ *  device's attributes instead of literals: the dynamic shared memory a block gets without the opt-in attribute, the
+ *  largest block, the grid's y extent and the warp width. Memoised per device (CurrentDeviceLaunchLimits). */
+struct DeviceLaunchLimits {
+  size_t shared_bytes_per_block = 0;
+  int max_threads_per_block = 0;
+  int max_grid_dim_y = 0;
+  int warp_size = 0;
+};
+DeviceLaunchLimits CurrentDeviceLaunchLimits();
+
 /*! \brief fp32-pair global histogram storage for the non-quantized CUDA path
  *  (config cuda_precision=fp32 requests; default fp64 = hist_t/double pairs,
  *  the historical behavior). The actual engagement additionally requires the
@@ -156,6 +168,16 @@ __host__ __device__ inline int HybridQuantConstructBlockDimY(
   const int max_rows_per_block = 65534 / (num_grad_quant_bins > 1 ? num_grad_quant_bins : 1);
   const int capped = max_rows_per_block > 1 ? max_rows_per_block : 1;
   return block_dim_y < capped ? block_dim_y : capped;
+}
+
+/*! \brief cuda_plan key pair_code5: 32-bit words of a code-view row of row_bytes byte slots (six 5-bit codes per
+ *  word), padded to whole kCode5RowWordAlign-word units: 32 bytes, the sector of the gathers' L2 and DRAM accesses,
+ *  and an even count for the fill's 8-byte stores (pair_code5_pack2). The fused fill writes rows of this many words
+ *  (LaunchCompactFill) and the construct reads them. */
+inline constexpr int kCode5RowWordAlign = 8;
+static_assert(kCode5RowWordAlign % 2 == 0, "pair_code5_pack2 stores word pairs as one aligned 8-byte store");
+__host__ __device__ inline int Code5RowWords(const int row_bytes) {
+  return ((row_bytes + 5) / 6 + kCode5RowWordAlign - 1) / kCode5RowWordAlign * kCode5RowWordAlign;
 }
 
 /*! \brief quantized-training y-grid sizing of the batched construct kernel:
@@ -291,7 +313,12 @@ class CUDAHistogramConstructor {
   /*! \brief whether the compact matrix is 4-bit packed (two columns per byte,
    *  per-partition even-column padding; mirrors CUDARowData::is_4bit_packed) */
   bool compact_src_is_4bit() const { return compact_is_4bit_; }
+  /*! \brief the live compact view's address; its bytes may still be pending (cuda_plan key pair_code5): a reader
+   *  calls EnsureNibbleView() before its kernels read them */
   const uint8_t* compact_data_device() const { return compact_data_uint8_t_.RawDataReadOnly(); }
+  /*! \brief cuda_plan key pair_code5: when this tree's fused fill wrote only the code view, write the live nibble
+   *  view now (the plain tiled fill from the code fill's own byte-slot tables, on the fill's stream); no-op otherwise */
+  void EnsureNibbleView();
   /*! \brief whether this tree's compact build also produced the column-major
    *  view (compact_col_major_device()[slot * num_data + row]); the tree learner
    *  then uses it directly instead of gathering its own copy */
@@ -366,6 +393,10 @@ class CUDAHistogramConstructor {
     fused_root_requested_ = request;
     fused_root_request_16bit_ = root_hist_16bit;
   }
+  /*! \brief cuda_plan key pair_code5: whether this tree's fused fill may write the code view instead of the nibble
+   *  view; the learner clears it for trees whose split path reads the nibble view anyway (the one-byte split view
+   *  built at tree start, the per-split apply of batch_apply:off), which would only rewrite it right after */
+  void AllowCode5View(const bool allow) { code5_allowed_ = allow; }
 
   /*! \brief true once per tree when this tree's fill accumulated the root histogram in the format of a root with
    *  root_hist_16bit; the root level then passes use_fused_root to ConstructHistogramsForLevel. */
@@ -1144,6 +1175,31 @@ class CUDAHistogramConstructor {
   bool fused_root_request_16bit_ = false;
   bool fused_root_ready_ = false;
   bool fused_root_bits16_ = false;
+  /*! \brief cuda_plan key pair_code5: whether the live compact buffer holds this tree's code view, written by the
+   *  fused fill instead of the nibble view (code5_row_words_ 32-bit words per row); cleared when EnsureNibbleView
+   *  writes the nibble view over it or the next fill rewrites the live buffer */
+  bool code5_valid_ = false;
+  bool code5_allowed_ = true;
+  int code5_row_words_ = 0;
+  /*! \brief the live nibble view was not written by this tree's fused fill (it wrote the code view instead):
+   *  EnsureNibbleView writes it with the plain tiled fill from nibble_pending_src_ and the code fill's own byte-slot
+   *  tables code5_bs_* (nibble_pending_slots_ slots, on nibble_pending_stream_). Only the code fill of the live
+   *  buffer writes those tables, and it resets this state first, so they are always the pending view's. */
+  bool nibble_pending_ = false;
+  int nibble_pending_slots_ = 0;
+  const uint8_t* nibble_pending_src_ = nullptr;
+  cudaStream_t nibble_pending_stream_ = nullptr;
+  /*! \brief the live nibble view for a kernel about to read it (materialized first if pending) */
+  uint8_t* NibbleViewData() {
+    EnsureNibbleView();
+    return compact_data_uint8_t_.RawData();
+  }
+  CUDAVector<uint8_t> code5_table_;
+  CUDAVector<size_t> code5_bs_src_nib0_;
+  CUDAVector<size_t> code5_bs_src_nib1_;
+  CUDAVector<int> code5_bs_src_stride_nib_;
+  CUDAVector<size_t> code5_bs_dst_byte_;
+  CUDAVector<int> code5_bs_dst_stride_;
   CUDAVector<hist_t> fused_root_scratch_;
   CUDAVector<int> fused_root_meta_;
   void LaunchApplyFusedRootHistogram(const CUDAHybridPairDescriptor* pair_descs);

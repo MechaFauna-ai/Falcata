@@ -406,7 +406,11 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
   const int32_t* grad_and_hess,
   bool hist_16bit,
   hist_t* root_hist_scratch,
-  size_t root_hist_scratch_bytes);
+  size_t root_hist_scratch_bytes,
+  uint32_t* code_view,
+  const uint8_t* code_table,
+  int code_row_words,
+  bool* code_view_written);
 
 // The tiled 4-bit fill needs a column-major source (stride-1 nibble runs with even bases) and every partition laid
 // out as a run of W consecutive byte slots whose destination bytes are contiguous with stride W.
@@ -555,6 +559,8 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
   use_compact_view_ = false;
   compact_col_major_filled_ = false;
   fused_root_ready_ = false;
+  code5_valid_ = false;
+  nibble_pending_ = false;
   full_view_used_ = false;
   if (view_mask_regime()) {
     // mask regime: no per-tree copy; every kernel reads the resident full view under this tree's column masks
@@ -855,6 +861,12 @@ void CUDAHistogramConstructor::LaunchCompactFill(
   const int num_partitions = layout.num_partitions;
   const int total_compact = layout.total_compact;
   const data_size_t num_data = cuda_row_data_->num_data();
+  if (dst == compact_data_uint8_t_.RawData()) {
+    // cuda_plan key pair_code5: the live view is rewritten; its code view is valid again (and its nibbles pending)
+    // only if the fused fill below writes the code view instead
+    code5_valid_ = false;
+    nibble_pending_ = false;
+  }
 
   // Async metadata upload path (prefill): stage through pinned memory and
   // cudaMemcpyAsync on `stream`. A plain cudaMemcpy here would enqueue on the
@@ -1047,6 +1059,7 @@ void CUDAHistogramConstructor::LaunchCompactFill(
       const std::vector<uint32_t>& src_col_hist_offsets = cuda_row_data_->host_column_hist_offsets();
       const std::vector<uint32_t>& part_hist_offsets = cuda_row_data_->host_partition_hist_offsets();
       std::vector<int> col_first_bin(total_compact);
+      std::vector<int> col_span(total_compact);
       std::vector<int> meta(2 * static_cast<size_t>(total_byte_slots));
       std::vector<int> bin_pos;
       int num_local_bins = 0;
@@ -1063,6 +1076,7 @@ void CUDAHistogramConstructor::LaunchCompactFill(
           break;
         }
         max_span = std::max(max_span, span);
+        col_span[s] = span;
         col_first_bin[s] = static_cast<int>(bin_pos.size());
         for (int b = 0; b < span; ++b) {
           bin_pos.push_back(static_cast<int>(part_hist_offsets[p] + src_col_hist_offsets[c] + b));
@@ -1101,7 +1115,79 @@ void CUDAHistogramConstructor::LaunchCompactFill(
         if (fused_root_scratch_.Size() < static_cast<size_t>(num_total_bin_)) {
           fused_root_scratch_.Resize(static_cast<size_t>(num_total_bin_));
         }
+        // cuda_plan key pair_code5: the whole-row pair-joint construct's code view, written instead of the nibble
+        // view, when byte slot k is byte k of the interleaved row (one run, as the construct's whole-row blocks
+        // index it) and every byte's joint cell lo * span(hi) + hi fits 5 bits; per byte: span(hi) (1 without a
+        // high column) | has-high << 5. The nibble view is then pending (EnsureNibbleView at its readers), so only
+        // where the split reads do not take it (the column-major store serves them), no prefill swaps the live
+        // buffer and no quantized level graph captures a construct
+        const uint8_t* fill_src = colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : RowMajorBin<uint8_t>();
+        const DeviceLaunchLimits device_limits = CurrentDeviceLaunchLimits();
+        bool code5 = code5_allowed_ && !FalcataPlan::Get().construct_jit &&
+                     FalcataPlan::Get().pair_code5 && FalcataPlan::Get().pair_hist &&
+                     FalcataPlan::Get().pair_hist_rows && FalcataPlan::Get().colmajor_split &&
+                     colmajor_bin() != nullptr && fill_src == colmajor_bin() &&
+                     !FalcataPlan::Get().compact_prefill && !FalcataPlan::Get().graph_quant &&
+                     layout.row_interleave && compact_codec_ == PackCodecId::kNibble4 &&
+                     compact_pair_joint_total_ > 0 && total_byte_slots > 0 && total_byte_slots == compact_row_bytes_ &&
+                     // the whole-row construct's shape conditions known before a level (its joint tables fit a
+                     // block's default shared memory, a row fits a block; the device's limits): otherwise no level
+                     // could read the code view and every tree would refill
+                     compact_pair_joint_total_ * sizeof(int32_t) <= device_limits.shared_bytes_per_block &&
+                     total_byte_slots <= device_limits.max_threads_per_block;
+        std::vector<uint8_t> code_table_h(code5 ? total_byte_slots : 0);
+        for (int k = 0; code5 && k < total_byte_slots; ++k) {
+          code5 = bs_dst_byte_h[k] == static_cast<size_t>(k) && bs_dst_stride_h[k] == total_byte_slots;
+        }
+        for (int p = 0, k = 0; code5 && p < num_partitions; ++p) {
+          const int compact_part_start = compact_part_col_offsets[p];
+          const int used_in_p = compact_part_col_offsets[p + 1] - compact_part_start;
+          for (int m = 0; code5 && m < ((used_in_p + 1) >> 1); ++m, ++k) {
+            const bool has_hi = (2 * m + 1) < used_in_p;
+            const int lo_span = col_span[compact_part_start + 2 * m];
+            const int hi_span = has_hi ? col_span[compact_part_start + 2 * m + 1] : 1;
+            // the fill packs an odd slot of a code word through 32 * span(hi) as an 8-bit factor
+            code5 = lo_span * hi_span <= 32 && ((k % 6) % 2 == 0 || hi_span <= 7);
+            code_table_h[k] = static_cast<uint8_t>(hi_span | (has_hi ? 32 : 0));
+          }
+        }
+        // the code row's words (Code5RowWords; the construct derives the same count from the row bytes)
+        const int code_row_words = Code5RowWords(total_byte_slots);
+        const size_t code_view_words = static_cast<size_t>(num_data) * static_cast<size_t>(code_row_words);
+        // the code view is written into the live compact buffer itself (the nibble view is not written while the
+        // code view is valid, and EnsureNibbleView overwrites it): only where it takes fewer bytes than the nibble
+        // rows it replaces, so it fits and no second view of the rows is allocated
+        code5 = code5 && code_view_words * sizeof(uint32_t) <
+                         static_cast<size_t>(total_byte_slots) * static_cast<size_t>(num_data) &&
+                code_view_words * sizeof(uint32_t) <= compact_data_uint8_t_.Size();
+        if (code5) {
+          // the code table, and the code fill's own copy of the byte-slot tables for EnsureNibbleView: the shared
+          // cuda_bs_* tables are rewritten by any later fill (the full view's, a prefill) while the nibbles may
+          // still be pending
+          if (code5_table_.Size() < code_table_h.size()) {
+            code5_table_.Resize(code_table_h.size());
+          }
+          if (code5_bs_src_nib0_.Size() < static_cast<size_t>(total_byte_slots)) {
+            code5_bs_src_nib0_.Resize(total_byte_slots);
+            code5_bs_src_nib1_.Resize(total_byte_slots);
+            code5_bs_src_stride_nib_.Resize(total_byte_slots);
+            code5_bs_dst_byte_.Resize(total_byte_slots);
+            code5_bs_dst_stride_.Resize(total_byte_slots);
+          }
+          upload(code5_table_.RawData(), code_table_h.data(), code_table_h.size(), &pin_off);
+          upload(code5_bs_src_nib0_.RawData(), bs_src_nib0_h.data(), sizeof(size_t) * total_byte_slots, &pin_off);
+          upload(code5_bs_src_nib1_.RawData(), bs_src_nib1_h.data(), sizeof(size_t) * total_byte_slots, &pin_off);
+          upload(code5_bs_src_stride_nib_.RawData(), bs_src_stride_nib_h.data(), sizeof(int) * total_byte_slots,
+                 &pin_off);
+          upload(code5_bs_dst_byte_.RawData(), bs_dst_byte_h.data(), sizeof(size_t) * total_byte_slots, &pin_off);
+          upload(code5_bs_dst_stride_.RawData(), bs_dst_stride_h.data(), sizeof(int) * total_byte_slots, &pin_off);
+        }
+        if (FalcataDebug().diag) {
+          Log::Info("compact fill: pair_code5 %s (%d byte slots, %d words per row)", code5 ? "on" : "off",
+                    total_byte_slots, code_row_words);
+        }
         FlushTreeStartMetaBatch();  // cuda_plan key tree_meta_batch: the fill reads the batched metadata
+        bool code5_written = false;
         fused_root = LaunchFillCompactData4BitTiledRootHistKernel(
           stream,
           // the same source as the plain tiled fill below: the column-major store (colmajor_direct's compact
@@ -1132,9 +1218,19 @@ void CUDAHistogramConstructor::LaunchCompactFill(
           reinterpret_cast<const int32_t*>(cuda_gradients_),
           fused_root_request_16bit_,
           fused_root_scratch_.RawData(),
-          static_cast<size_t>(num_total_bin_) * sizeof(hist_t));
+          static_cast<size_t>(num_total_bin_) * sizeof(hist_t),
+          code5 ? reinterpret_cast<uint32_t*>(compact_data_uint8_t_.RawData()) : nullptr,
+          code5 ? code5_table_.RawDataReadOnly() : nullptr,
+          code_row_words,
+          &code5_written);
         fused_root_ready_ = fused_root;
         fused_root_bits16_ = fused_root_request_16bit_;
+        code5_valid_ = fused_root && code5_written;
+        code5_row_words_ = code_row_words;
+        nibble_pending_ = code5_valid_;
+        nibble_pending_slots_ = total_byte_slots;
+        nibble_pending_src_ = fill_src;
+        nibble_pending_stream_ = stream;
       }
     }
     if (!fused_root) {
@@ -1202,6 +1298,33 @@ void CUDAHistogramConstructor::LaunchCompactFill(
       num_data,
       nullptr);
   }
+}
+
+void CUDAHistogramConstructor::EnsureNibbleView() {
+  if (!nibble_pending_) {
+    return;
+  }
+  nibble_pending_ = false;
+  // the nibble rows overwrite the code view in the same buffer: later constructs of this tree read the nibbles
+  code5_valid_ = false;
+  if (FalcataDebug().diag) {
+    Log::Info("compact fill: pair_code5 nibble view materialized for another reader");
+  }
+  // the source the code fill read (the column-major store, kept for the whole tree)
+  CHECK(nibble_pending_src_ == colmajor_bin());
+  // the plain tiled fill the fused one replaced: same source and destination, the code fill's own byte-slot tables
+  LaunchFillCompactData4BitKernel(
+    nibble_pending_stream_,
+    nibble_pending_src_,
+    compact_data_uint8_t_.RawData(),
+    code5_bs_src_nib0_.RawData(),
+    code5_bs_src_nib1_.RawData(),
+    code5_bs_src_stride_nib_.RawData(),
+    code5_bs_dst_byte_.RawData(),
+    code5_bs_dst_stride_.RawData(),
+    nibble_pending_slots_,
+    cuda_row_data_->num_data(),
+    /*tiled=*/true);
 }
 
 void CUDAHistogramConstructor::PrefillNextCompactView(
@@ -1522,6 +1645,9 @@ const char* ViewModeName() {
 void CUDAHistogramConstructor::EnterCompactRegime(const char* why) {
   InvalidateCompactPrefill();
   view_mask_ = false;
+  // cuda_plan key pair_code5: the column-major store a pending nibble view would be written from is replaced
+  code5_valid_ = false;
+  nibble_pending_ = false;
   const size_t view_bytes = full_view_.Size();
   full_view_.Clear();
   const int num_columns = cuda_row_data_->host_feature_partition_column_index_offsets().back();
@@ -1551,9 +1677,12 @@ void CUDAHistogramConstructor::EnterMaskRegime(const char* why) {
   const size_t store_bytes = colmajor_bin_.Size();
   colmajor_bin_.Clear();
   colmajor_pad_ = 0;
-  // no tree builds a compact view in this regime: its buffers go too
+  // no tree builds a compact view in this regime: its buffers go too (with them any pair_code5 code view and its
+  // pending nibble view, whose source store is released above)
   compact_data_uint8_t_.Clear();
   compact_data_uint8_t_alt_.Clear();
+  code5_valid_ = false;
+  nibble_pending_ = false;
   full_view_.Clear();
   FillFullViewFromColumns();
   if (FalcataVerifyEnabled()) {

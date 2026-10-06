@@ -734,6 +734,8 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
         !cuda_data_partition_->use_bagging() && root_num_data == num_data_ && vec_num_targets_ <= 1 &&
         nccl_communicator_ == nullptr,
       config_->use_quantized_grad && cuda_gradient_discretizer_->GetHistBitsInLeaf<false>(0) <= 16);
+    // cuda_plan key pair_code5: no code view for a tree whose split path reads the nibble view anyway
+    cuda_histogram_constructor_->AllowCode5View(!BuildsOneByteSplitView() && use_hybrid_batch_apply_);
     cuda_histogram_constructor_->BuildCompactView(col_sampler_.is_feature_used_bytree());
     cuda_histogram_constructor_->RequestFusedRootHist(false, false);
     meta_batch_scope.End();
@@ -1016,6 +1018,10 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   // The gather is the buffer's only consumer on this path, so this is where it
   // gets allocated (moved down from the top of the function).
   EnsureCompactColumnBuffer(needed_bytes, num_compact_cols, num_data);
+  if (compact_src) {
+    // cuda_plan key pair_code5: the compact view's nibbles may not be written yet
+    cuda_histogram_constructor_->EnsureNibbleView();
+  }
 
   LaunchRowToColCompactKernel(
       0,
@@ -1076,6 +1082,10 @@ void CUDASingleGPUTreeLearner::EnsureClassicColumnView() {
   const int num_compact_cols = static_cast<int>(compact_column_to_orig_.size());
   const size_t needed_bytes = static_cast<size_t>(num_compact_cols) * static_cast<size_t>(num_data);
   EnsureCompactColumnBuffer(needed_bytes, num_compact_cols, num_data);
+  if (compact_gather_src_ == cuda_histogram_constructor_->compact_data_device()) {
+    // cuda_plan key pair_code5: the compact view's nibbles may not be written yet
+    cuda_histogram_constructor_->EnsureNibbleView();
+  }
   LaunchRowToColCompactKernel(
       0,
       compact_gather_src_,

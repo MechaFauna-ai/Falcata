@@ -91,6 +91,10 @@ ALL_KEYS = {
     "final_map_only": True,
     "final_readback_first": True,
     "shape_memo": True,
+    "pair_code5": True,
+    "pair_code5_words": True,
+    "pair_code5_pack2": True,
+    "pair_code5_l2_store": True,
 }
 
 #: growth-strategy keys: changing them changes WHICH tree is built (legit),
@@ -142,6 +146,9 @@ DEEP_KEYS = [
     "pair_block_map",
     "final_map_only",
     "final_readback_first",
+    "pair_code5",
+    "pair_code5_words",
+    "pair_code5_pack2",
 ]
 
 BASE = {
