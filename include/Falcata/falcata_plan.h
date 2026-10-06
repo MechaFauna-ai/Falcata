@@ -142,6 +142,8 @@ struct FalcataPlan {
   // the next construct (off: page-locked and freed by every construct). Holds
   // the ring (~1.5 GB on the Numerai split) after the first construct.
   bool construct_staging_pool = true;  // key: construct_staging_pool
+  // GPU binning: the chunk upload runs on its own stream, overlapping the bin kernel
+  bool construct_h2d_overlap = true;  // key: construct_h2d_overlap
   // cheap host precheck that skips EFB bundling on provably-unbundlable data
   bool efb_precheck = true;         // key: efb_precheck
 
@@ -613,6 +615,7 @@ struct FalcataPlan {
     if (key == "rowdata_4bit") return &rowdata_4bit;
     if (key == "gpu_construct") return &gpu_construct;
     if (key == "construct_staging_pool") return &construct_staging_pool;
+    if (key == "construct_h2d_overlap") return &construct_h2d_overlap;
     if (key == "efb_precheck") return &efb_precheck;
     if (key == "split_packed_read") return &split_packed_read;
     if (key == "batch_kernels") return &batch_kernels;
