@@ -145,8 +145,11 @@ class CUDADenseBinnerCtx {
   uint8_t* d_out_[2] = {nullptr, nullptr};
   cudaStream_t stream_ = nullptr;
   cudaStream_t d2h_stream_ = nullptr;
+  cudaStream_t h2d_stream_ = nullptr;
+  bool h2d_overlap_ = false;  // uploads on h2d_stream_ instead of stream_
   cudaEvent_t kernel_done_[2] = {nullptr, nullptr};
   cudaEvent_t d2h_done_[2] = {nullptr, nullptr};
+  cudaEvent_t h2d_done_[2] = {nullptr, nullptr};
   // session stats
   data_size_t rows_binned_ = 0;
   double seconds_ = 0.0;

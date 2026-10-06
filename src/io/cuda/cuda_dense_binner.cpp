@@ -36,7 +36,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -153,6 +155,80 @@ int64_t GroupTotalBytes(int width, data_size_t num_data) {
   return width == 0 ? (static_cast<int64_t>(num_data) + 1) / 2
                     : static_cast<int64_t>(width) * num_data;
 }
+
+// The binner's page-locked staging blocks, kept across constructs (cuda_plan
+// key construct_staging_pool): page-locking and freeing the ring (2 input and
+// 2 output blocks, ~1.5 GB on the Numerai split) cost ~0.35 s of host time per
+// construct. Only allocations are reused, never contents: a chunk reads back
+// only the bytes it wrote. Best fit; a request no free block fits frees one
+// free block (all are too small for it) before allocating, so the pool never
+// holds more blocks than were in use at once. Never destroyed: at process exit
+// the CUDA runtime may already be gone, and the driver releases the memory.
+class PinnedStagingPool {
+ public:
+  static PinnedStagingPool& Get() {
+    static PinnedStagingPool* pool = new PinnedStagingPool();
+    return *pool;
+  }
+
+  // a page-locked block of at least `bytes`: from the pool if `pooled`, else a
+  // new one that Release frees again
+  uint8_t* Acquire(int64_t bytes, bool pooled) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (pooled) {
+      size_t best = free_.size();
+      size_t smallest = free_.size();
+      for (size_t i = 0; i < free_.size(); ++i) {
+        const int64_t cap = capacity_.at(free_[i]);
+        if (cap >= bytes && (best == free_.size() || cap < capacity_.at(free_[best]))) {
+          best = i;
+        }
+        if (smallest == free_.size() || cap < capacity_.at(free_[smallest])) {
+          smallest = i;
+        }
+      }
+      if (best < free_.size()) {
+        uint8_t* ptr = free_[best];
+        free_[best] = free_.back();
+        free_.pop_back();
+        return ptr;
+      }
+      if (smallest < free_.size()) {
+        CUDASUCCESS_OR_FATAL(cudaFreeHost(free_[smallest]));
+        capacity_.erase(free_[smallest]);
+        free_[smallest] = free_.back();
+        free_.pop_back();
+      }
+    }
+    void* ptr = nullptr;
+    CUDASUCCESS_OR_FATAL(cudaHostAlloc(&ptr, static_cast<size_t>(bytes),
+                                       cudaHostAllocDefault));
+    if (pooled) {
+      capacity_[static_cast<uint8_t*>(ptr)] = bytes;
+    }
+    return static_cast<uint8_t*>(ptr);
+  }
+
+  // back to the pool if it came from there, else freed; the caller made sure
+  // no copy still uses it
+  void Release(uint8_t* ptr) {
+    if (ptr == nullptr) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(mu_);
+    if (capacity_.count(ptr) != 0) {
+      free_.push_back(ptr);
+    } else {
+      CUDASUCCESS_OR_FATAL(cudaFreeHost(ptr));
+    }
+  }
+
+ private:
+  PinnedStagingPool() = default;
+  std::mutex mu_;
+  std::unordered_map<uint8_t*, int64_t> capacity_;  // every pooled block
+  std::vector<uint8_t*> free_;                      // the idle ones
+};
 
 }  // anonymous namespace
 
@@ -363,6 +439,7 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
   ctx->gpu_device_id_ = gpu_device_id_;
   ctx->num_threads_ = OMP_NUM_THREADS();
   ctx->verify_ = verify;
+  ctx->h2d_overlap_ = FalcataPlan::Get().construct_h2d_overlap;
   ctx->dtype_code_ = DTypeCode(dtype);
   ctx->elem_size_ = elem_size;
   ctx->row_bytes_ = row_bytes;
@@ -405,10 +482,12 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
   ctx->tables_.col_lut_off = ctx->d_col_lut_off_;
   ctx->tables_.bounds = ctx->d_bounds_;
   ctx->tables_.col_meta = ctx->d_col_meta_;
-  // staging ring: H2D + kernel on one stream, bulk D2H on a second stream so
-  // uploads and downloads overlap; the host scatters chunk k-2 while the GPU
-  // works on chunk k-1. Input staging (host sources only) is allocated
-  // lazily in EnsureInputStaging.
+  // staging ring: H2D on its own stream (construct_h2d_overlap; else on the
+  // kernel's), the bin kernel on stream_, the bulk D2H on a third stream, so
+  // the upload of chunk k, the kernel of chunk k-1 and the download of chunk
+  // k-2 overlap; the host scatters chunk k-2 while the GPU works on chunk k-1.
+  // Input staging (host sources only) is allocated lazily in
+  // EnsureInputStaging.
   ctx->chunk_rows_ = chunk_rows;
   ctx->chunk_in_bytes_ = static_cast<int64_t>(chunk_rows) * row_bytes;
   // +1 pair: a chunk starting at an odd dataset row spans one extra pair
@@ -416,10 +495,10 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
   ctx->chunk_out_bytes_ = ctx->chunk_pairs_max_ * bytes_per_pair_total;
   CUDASUCCESS_OR_FATAL(cudaStreamCreate(&ctx->stream_));
   CUDASUCCESS_OR_FATAL(cudaStreamCreate(&ctx->d2h_stream_));
+  CUDASUCCESS_OR_FATAL(cudaStreamCreate(&ctx->h2d_stream_));
   for (int b = 0; b < 2; ++b) {
-    CUDASUCCESS_OR_FATAL(cudaHostAlloc(
-        reinterpret_cast<void**>(&ctx->h_out_[b]),
-        static_cast<size_t>(ctx->chunk_out_bytes_), cudaHostAllocDefault));
+    ctx->h_out_[b] = PinnedStagingPool::Get().Acquire(
+        ctx->chunk_out_bytes_, FalcataPlan::Get().construct_staging_pool);
     AllocateCUDAMemory<uint8_t>(&ctx->d_out_[b],
                                 static_cast<size_t>(ctx->chunk_out_bytes_),
                                 __FILE__, __LINE__);
@@ -427,6 +506,8 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
         &ctx->kernel_done_[b], cudaEventDisableTiming));
     CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(
         &ctx->d2h_done_[b], cudaEventDisableTiming | cudaEventBlockingSync));
+    CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(
+        &ctx->h2d_done_[b], cudaEventDisableTiming));
   }
   // scatter destinations: the live bin storage, or capture buffers in
   // verify mode (the host path then also runs and FinishLoad compares)
@@ -457,9 +538,8 @@ void CUDADenseBinnerCtx::EnsureInputStaging() {
     return;
   }
   for (int b = 0; b < 2; ++b) {
-    CUDASUCCESS_OR_FATAL(cudaHostAlloc(
-        reinterpret_cast<void**>(&h_in_[b]),
-        static_cast<size_t>(chunk_in_bytes_), cudaHostAllocDefault));
+    h_in_[b] = PinnedStagingPool::Get().Acquire(
+        chunk_in_bytes_, FalcataPlan::Get().construct_staging_pool);
     AllocateCUDAMemory<uint8_t>(&d_in_[b],
                                 static_cast<size_t>(chunk_in_bytes_),
                                 __FILE__, __LINE__);
@@ -564,10 +644,19 @@ void CUDADenseBinnerCtx::BinChunk(const void* data, data_size_t nrow,
                        static_cast<size_t>(seg));
         }
       }
+      // with h2d_overlap_, the upload runs on its own stream and overlaps the
+      // kernel of chunk k-1. h_in_[b] and d_in_[b] are free: the host waited
+      // for chunk k-2's download, which waited for its kernel, which waited
+      // for its upload (h2d_done_[b])
+      cudaStream_t h2d_stream = h2d_overlap_ ? h2d_stream_ : stream_;
       CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(
           d_in_[b], h_in_[b],
           static_cast<size_t>(static_cast<int64_t>(desc.rows) * row_bytes_),
-          cudaMemcpyHostToDevice, stream_));
+          cudaMemcpyHostToDevice, h2d_stream));
+      if (h2d_overlap_) {
+        CUDASUCCESS_OR_FATAL(cudaEventRecord(h2d_done_[b], h2d_stream_));
+        CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(stream_, h2d_done_[b], 0));
+      }
       kernel_in = d_in_[b];
       in_stride = is_row_major ? ncol_ : desc.rows;
     }
@@ -597,6 +686,7 @@ void CUDADenseBinnerCtx::BinChunk(const void* data, data_size_t nrow,
       pending[b].valid = false;
     }
   }
+  CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(h2d_stream_));
   CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(stream_));
   CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(d2h_stream_));
   rows_binned_ += nrow;
@@ -619,13 +709,16 @@ void CUDADenseBinnerCtx::Finalize() {
 }
 
 CUDADenseBinnerCtx::~CUDADenseBinnerCtx() {
+  // BinChunk returns with its streams idle, but one that threw may have left
+  // copies in flight: a staging block goes back to the pool only once idle
+  for (cudaStream_t stream : {h2d_stream_, stream_, d2h_stream_}) {
+    if (stream != nullptr) {
+      CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(stream));
+    }
+  }
   for (int b = 0; b < 2; ++b) {
-    if (h_in_[b] != nullptr) {
-      CUDASUCCESS_OR_FATAL(cudaFreeHost(h_in_[b]));
-    }
-    if (h_out_[b] != nullptr) {
-      CUDASUCCESS_OR_FATAL(cudaFreeHost(h_out_[b]));
-    }
+    PinnedStagingPool::Get().Release(h_in_[b]);
+    PinnedStagingPool::Get().Release(h_out_[b]);
     if (d_in_[b] != nullptr) {
       DeallocateCUDAMemory<uint8_t>(&d_in_[b], __FILE__, __LINE__);
     }
@@ -638,6 +731,12 @@ CUDADenseBinnerCtx::~CUDADenseBinnerCtx() {
     if (d2h_done_[b] != nullptr) {
       CUDASUCCESS_OR_FATAL(cudaEventDestroy(d2h_done_[b]));
     }
+    if (h2d_done_[b] != nullptr) {
+      CUDASUCCESS_OR_FATAL(cudaEventDestroy(h2d_done_[b]));
+    }
+  }
+  if (h2d_stream_ != nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaStreamDestroy(h2d_stream_));
   }
   if (stream_ != nullptr) {
     CUDASUCCESS_OR_FATAL(cudaStreamDestroy(stream_));

@@ -657,6 +657,31 @@ def build_cells():
         equal_to="graph/flipbase-graph_loop",
     )
 
+    # --- construction's host buffers ------------------------------------------ #
+    # pin_bins, construct_staging_pool and construct_h2d_overlap only decide how construction from host arrays
+    # allocates and copies; each must build the base cell's Dataset and so train its model. The lattice's 6,400
+    # training rows are far below pin_bins:auto's bound, where the bins are page-locked as before: pin_bins:never
+    # makes them pageable (and the per-column copies read pageable memory). The cells run 30 to a worker process, so
+    # pooled staging blocks are reused across cells of other shapes. gpu_construct:off on the 4-bit profiles fills
+    # the calloc'd odd-nibble buffer on the host (dense's flip above covers 8-bit bins). Profiles: dense (float64,
+    # 8-bit bins), int8wide (the int8 LUT kernel, 4-bit), sampled (float64, 4-bit, a compact view).
+    construct_off = "auto,pin_bins:always,construct_staging_pool:off,construct_h2d_overlap:off"
+    for profile in ["dense", "int8wide", "sampled"]:
+        for name, plan in [
+            ("pin_bins_never", "auto,pin_bins:never"),
+            ("construct_staging_pool", "auto,construct_staging_pool:off"),
+            ("construct_h2d_overlap", "auto,construct_h2d_overlap:off"),
+            ("construct_buffers", construct_off),
+        ]:
+            cell(f"{profile}/flip-{name}", profile, {"cuda_plan": plan}, equal_to=f"{profile}/quant")
+    for profile in ["int8wide", "sampled", "fewbin"]:
+        cell(
+            f"{profile}/flip-gpu_construct",
+            profile,
+            {"cuda_plan": "auto,gpu_construct:off"},
+            equal_to=f"{profile}/quant",
+        )
+
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "duplicate cell ids"
     by_id = {c["id"]: c for c in cells}

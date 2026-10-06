@@ -99,7 +99,7 @@ void CUDAColumnData::Init(const int num_columns,
     int bytes_per = (bt == 4 || bt == 8) ? 1 : (bt == 16 ? 2 : 4);
     expected_total_bytes += static_cast<size_t>(num_data_) * bytes_per;
   }
-  init_skipped_per_column_alloc_ = (expected_total_bytes > static_cast<size_t>(8) * 1024 * 1024 * 1024);
+  init_skipped_per_column_alloc_ = (expected_total_bytes > kCUDAPerColumnMaxBytes);
   if (init_skipped_per_column_alloc_) {
     Log::Warning("CUDAColumnData: skipping per-column allocation (would be %.2f GB). "
                  "Caller must invoke SetCompactColumnView per tree.", expected_total_bytes / 1e9);

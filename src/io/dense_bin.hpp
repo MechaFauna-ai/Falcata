@@ -11,7 +11,10 @@
 #include <Falcata/cuda/vector_cudahost.h>
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <new>
 #include <vector>
 
 namespace Falcata {
@@ -59,7 +62,14 @@ class DenseBin : public Bin {
     if (IS_4BIT) {
       CHECK_EQ(sizeof(VAL_T), 1);
       data_.resize((num_data_ + 1) / 2, static_cast<uint8_t>(0));
-      buf_.resize((num_data_ + 1) / 2, static_cast<uint8_t>(0));
+      // zeroed by calloc: the kernel supplies the zero pages on first touch,
+      // and a construct that never writes the odd nibbles (the GPU binner
+      // writes the packed bins itself) never touches them
+      const size_t buf_bytes = (static_cast<size_t>(num_data_) + 1) / 2;
+      buf_.reset(static_cast<uint8_t*>(std::calloc(buf_bytes, 1)));
+      if (buf_ == nullptr && buf_bytes > 0) {
+        throw std::bad_alloc();
+      }
     } else {
       data_.resize(num_data_, static_cast<VAL_T>(0));
     }
@@ -75,7 +85,7 @@ class DenseBin : public Bin {
       if (i2 == 0) {
         data_[i1] = val;
       } else {
-        buf_[i1] = val;
+        buf_.get()[i1] = val;
       }
     } else {
       data_[idx] = static_cast<VAL_T>(value);
@@ -106,8 +116,7 @@ class DenseBin : public Bin {
     if (IS_4BIT) {
       // both nibbles were written directly into data_; drop the odd-nibble
       // accumulation buffer so FinishLoad skips the merge
-      buf_.clear();
-      buf_.shrink_to_fit();
+      buf_.reset();
     }
   }
 
@@ -528,14 +537,14 @@ class DenseBin : public Bin {
 
   void FinishLoad() override {
     if (IS_4BIT) {
-      if (buf_.empty()) {
+      if (buf_ == nullptr) {
         return;
       }
       int len = (num_data_ + 1) / 2;
       for (int i = 0; i < len; ++i) {
-        data_[i] |= buf_[i];
+        data_[i] |= buf_.get()[i];
       }
-      buf_.clear();
+      buf_.reset();
     }
   }
 
@@ -631,7 +640,8 @@ class DenseBin : public Bin {
 #else
   std::vector<VAL_T, Common::AlignmentAllocator<VAL_T, kAlignedSize>> data_;
 #endif
-  std::vector<uint8_t> buf_;
+  // odd-nibble accumulation (4-bit only), calloc'd: see the constructor
+  std::unique_ptr<uint8_t, void (*)(void*)> buf_{nullptr, std::free};
 
   DenseBin(const DenseBin<VAL_T, IS_4BIT>& other)
       : num_data_(other.num_data_), data_(other.data_) {}
