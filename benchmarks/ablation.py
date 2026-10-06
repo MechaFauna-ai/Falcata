@@ -50,6 +50,8 @@ ALL_KEYS = {
     "fast_rowdata": True,
     "rowdata_4bit": True,
     "gpu_construct": True,
+    "construct_staging_pool": True,
+    "construct_h2d_overlap": True,
     "efb_precheck": True,
     "batch_reghist": True,
     "batch_wide": True,
