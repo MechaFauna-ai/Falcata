@@ -734,6 +734,8 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
         !cuda_data_partition_->use_bagging() && root_num_data == num_data_ && vec_num_targets_ <= 1 &&
         nccl_communicator_ == nullptr,
       config_->use_quantized_grad && cuda_gradient_discretizer_->GetHistBitsInLeaf<false>(0) <= 16);
+    // cuda_plan key pair_code5: no code view for a tree whose split path reads the nibble view anyway
+    cuda_histogram_constructor_->AllowCode5View(!BuildsOneByteSplitView() && use_hybrid_batch_apply_);
     cuda_histogram_constructor_->BuildCompactView(col_sampler_.is_feature_used_bytree());
     cuda_histogram_constructor_->RequestFusedRootHist(false, false);
     meta_batch_scope.End();

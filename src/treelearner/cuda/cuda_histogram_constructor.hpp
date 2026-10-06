@@ -371,6 +371,10 @@ class CUDAHistogramConstructor {
     fused_root_requested_ = request;
     fused_root_request_16bit_ = root_hist_16bit;
   }
+  /*! \brief cuda_plan key pair_code5: whether this tree's fused fill may write the code view instead of the nibble
+   *  view; the learner clears it for trees whose split path reads the nibble view anyway (the one-byte split view
+   *  built at tree start, the per-split apply of batch_apply:off), which would only rewrite it right after */
+  void AllowCode5View(const bool allow) { code5_allowed_ = allow; }
 
   /*! \brief true once per tree when this tree's fill accumulated the root histogram in the format of a root with
    *  root_hist_16bit; the root level then passes use_fused_root to ConstructHistogramsForLevel. */
@@ -1153,6 +1157,7 @@ class CUDAHistogramConstructor {
    *  fused fill instead of the nibble view (code5_row_words_ 32-bit words per row); cleared when EnsureNibbleView
    *  writes the nibble view over it or the next fill rewrites the live buffer */
   bool code5_valid_ = false;
+  bool code5_allowed_ = true;
   int code5_row_words_ = 0;
   /*! \brief the live nibble view was not written by this tree's fused fill (it wrote the code view instead):
    *  EnsureNibbleView writes it with the plain tiled fill from nibble_pending_src_ and the code fill's own byte-slot

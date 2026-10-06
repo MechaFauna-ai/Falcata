@@ -1122,7 +1122,8 @@ void CUDAHistogramConstructor::LaunchCompactFill(
         // where the split reads do not take it (the column-major store serves them), no prefill swaps the live
         // buffer and no quantized level graph captures a construct
         const uint8_t* fill_src = colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : RowMajorBin<uint8_t>();
-        bool code5 = FalcataPlan::Get().pair_code5 && FalcataPlan::Get().pair_hist &&
+        bool code5 = code5_allowed_ && !FalcataPlan::Get().construct_jit &&
+                     FalcataPlan::Get().pair_code5 && FalcataPlan::Get().pair_hist &&
                      FalcataPlan::Get().pair_hist_rows && FalcataPlan::Get().colmajor_split &&
                      colmajor_bin() != nullptr && fill_src == colmajor_bin() &&
                      !FalcataPlan::Get().compact_prefill && !FalcataPlan::Get().graph_quant &&
@@ -1641,6 +1642,9 @@ const char* ViewModeName() {
 void CUDAHistogramConstructor::EnterCompactRegime(const char* why) {
   InvalidateCompactPrefill();
   view_mask_ = false;
+  // cuda_plan key pair_code5: the column-major store a pending nibble view would be written from is replaced
+  code5_valid_ = false;
+  nibble_pending_ = false;
   const size_t view_bytes = full_view_.Size();
   full_view_.Clear();
   const int num_columns = cuda_row_data_->host_feature_partition_column_index_offsets().back();
