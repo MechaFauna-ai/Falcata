@@ -33,6 +33,11 @@ namespace Falcata {
  */
 constexpr uint8_t kNibbleColumnBitType = 5;
 
+// CUDAColumnData skips its per-column device copies (the tree learner uses a
+// compact view per tree) once the dense columns would exceed this many bytes.
+// Dataset::Construct page-locks the host bins only at or below it.
+constexpr size_t kCUDAPerColumnMaxBytes = static_cast<size_t>(8) * 1024 * 1024 * 1024;
+
 class CUDAColumnData {
  public:
   CUDAColumnData(const data_size_t num_data, const int gpu_device_id);
