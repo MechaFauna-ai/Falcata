@@ -18,9 +18,17 @@ PYTHON="${FALCATA_GATES_PYTHON:-$REPO/.gates-venv/bin/python}"
 
 # Same pinned toolchain as ci_build.sh: the box has several CUDA toolkits and
 # /usr/local/cuda may point at an unvalidated one.
-CUDA_HOME="${FALCATA_CUDA_HOME:-/usr/local/cuda-12.9}"
+CUDA_HOME="${FALCATA_CUDA_HOME:-/usr/local/cuda-13.3}"
 export PATH="$CUDA_HOME/bin:$PATH"
 export CUDACXX="$CUDA_HOME/bin/nvcc"
+
+# The kept build tree caches the CUDA compiler path, and CMake keeps the cached
+# one over CUDACXX, so a toolkit change would otherwise never reach this build:
+# start the tree over when the cache names another nvcc.
+if [ -f "$BUILD/CMakeCache.txt" ] && ! grep -q "^CMAKE_CUDA_COMPILER:[A-Z]*=$CUDACXX\$" "$BUILD/CMakeCache.txt"; then
+  echo "cpp_suite: cached CUDA compiler differs from $CUDACXX -- rebuilding $BUILD from scratch"
+  rm -rf "$BUILD"
+fi
 
 cmake_args=(
   -S "$REPO" -B "$BUILD"
