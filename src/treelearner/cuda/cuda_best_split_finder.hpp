@@ -64,6 +64,10 @@ struct SplitFindTask {
   double penalty;
 };
 
+// cuda_plan key find_pack_narrow: flag on a warp unit's first task index marking a packed unit (narrow tasks run as
+// 8-lane groups); see CUDABestSplitFinder::BeforeTrain and FindBestSplitsDiscretizedForLevelWarpKernel
+constexpr int kFindUnitPacked = 1 << 30;
+
 class CUDABestSplitFinder {
  public:
   CUDABestSplitFinder(
@@ -661,6 +665,14 @@ class CUDABestSplitFinder {
   bool warp_find_all_narrow_ = false;
   // longest warp-finder scan over all tasks, in positions (UpdateWarpFindEligibility)
   int warp_find_max_positions_ = 256;
+  // cuda_plan key find_pack_narrow: per task, whether its scan has at most 8 positions (an 8-lane group's worth),
+  // their count, and the tree's unit list (4 task indices per warp unit: one wide task and -1s, or up to four
+  // narrow tasks, -1 for an empty group), rebuilt from the tree's used tasks at BeforeTrain
+  std::vector<uint8_t> warp_find_task_narrow_;
+  int warp_find_num_narrow_ = 0;
+  std::vector<int> host_find_units_;
+  CUDAVector<int> cuda_find_units_;
+  int num_find_units_ = 0;
   // number of total bins in the dataset
   const int num_total_bin_;
   // has categorical feature

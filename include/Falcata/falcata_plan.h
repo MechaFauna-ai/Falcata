@@ -318,6 +318,14 @@ struct FalcataPlan {
   // computed once from the same prefix, the same exact first maximum of (gain, then lowest position) across the
   // warp (the winner lane is found by ballot): bit-identical.
   bool find_compact_survivors = true;  // key: find_compact_survivors
+  // the G=32 generic warp-find launch on a dataset mixing narrow and wide tasks (e.g. 2-bin indicator columns next
+  // to 255-bin numeric ones): the items of tasks with at most 8 scan positions run four per warp as 8-lane groups
+  // (the existing G=8 WarpFindBest path: one position per lane, the same exact first maximum) inside the same
+  // launch, through a per-tree unit list (one wide task, or up to four narrow ones, per warp) built from the
+  // tree's used tasks; a wide task keeps the whole warp. A one-position item's fixed fp64 work (the per-leaf
+  // divide, unpack, gain, child outputs) is then issued once per four items instead of once per warp with one
+  // active lane. Same per-item scan and selection, outputs at the same task-indexed slots: bit-identical.
+  bool find_pack_narrow = true;     // key: find_pack_narrow
   // 4-bit compact quantized construct with one thread per packed byte: the two
   // nibbles of a byte index one cell of a joint (lo, hi) shared histogram, so a
   // row costs one shared atomic per byte instead of one per column; each
@@ -724,6 +732,7 @@ struct FalcataPlan {
     if (key == "find_prune_fp32") return &find_prune_fp32;
     if (key == "find_select_int") return &find_select_int;
     if (key == "find_compact_survivors") return &find_compact_survivors;
+    if (key == "find_pack_narrow") return &find_pack_narrow;
     if (key == "pair_hist") return &pair_hist;
     if (key == "per_pair_rows") return &per_pair_rows;
     if (key == "compact_row_interleave") return &compact_row_interleave;

@@ -177,9 +177,18 @@ void CUDABestSplitFinder::UpdateWarpFindEligibility() {
   // longest scan (WarpFindBest's positions 0 .. num_bin - mfb_offset + shift - 1): warp_find_spread packs four
   // (task, leaf) items per warp when every task fits 8 positions
   warp_find_max_positions_ = 0;
-  for (const SplitFindTask& t : split_find_tasks_) {
+  warp_find_task_narrow_.assign(split_find_tasks_.size(), 0);
+  warp_find_num_narrow_ = 0;
+  for (size_t k = 0; k < split_find_tasks_.size(); ++k) {
+    const SplitFindTask& t = split_find_tasks_[k];
     const int shift = (!t.reverse && t.na_as_missing && t.mfb_offset == 1) ? 1 : 0;
-    warp_find_max_positions_ = std::max(warp_find_max_positions_, static_cast<int>(t.num_bin) - t.mfb_offset + shift);
+    const int positions = static_cast<int>(t.num_bin) - t.mfb_offset + shift;
+    warp_find_max_positions_ = std::max(warp_find_max_positions_, positions);
+    // find_pack_narrow: the kernel classifies a unit's first task by the same count (WarpFindBest's num_positions)
+    if (positions <= 8) {
+      warp_find_task_narrow_[k] = 1;
+      ++warp_find_num_narrow_;
+    }
   }
 #endif
 }
@@ -549,6 +558,36 @@ void CUDABestSplitFinder::BeforeTrain(const std::vector<int8_t>& is_feature_used
     }
     UploadTreeStartMeta<int>(cuda_used_task_indices_.RawData(), host_used_task_indices_.data(),
                              host_used_task_indices_.size());
+  }
+  // cuda_plan key find_pack_narrow: this tree's warp units for the generic (G=32) warp finder on a dataset that
+  // mixes narrow (<= 8 scan positions) and wide tasks: every used wide task is one unit, used narrow tasks are
+  // packed four per unit (-1 pads an unfilled group). The kernel maps each warp to (leaf, unit) and keeps writing
+  // every item at its original task index.
+  num_find_units_ = 0;
+  if (FalcataPlan::Get().find_pack_narrow && warp_find_eligible_ && warp_find_num_narrow_ > 0 &&
+      warp_find_num_narrow_ < num_tasks_ && num_used_tasks_ > 0) {
+    host_find_units_.clear();
+    int narrow_in_unit = 4;
+    for (int k = 0; k < num_used_tasks_; ++k) {
+      const int task_index = host_used_task_indices_[k];
+      if (warp_find_task_narrow_[task_index]) {
+        if (narrow_in_unit == 4) {
+          host_find_units_.insert(host_find_units_.end(), {-1, -1, -1, -1});
+          narrow_in_unit = 0;
+        }
+        host_find_units_[host_find_units_.size() - 4 + narrow_in_unit] =
+          narrow_in_unit == 0 ? (task_index | kFindUnitPacked) : task_index;
+        ++narrow_in_unit;
+      } else {
+        host_find_units_.insert(host_find_units_.end(), {task_index, -1, -1, -1});
+        narrow_in_unit = 4;  // the next narrow task opens a new group
+      }
+    }
+    num_find_units_ = static_cast<int>(host_find_units_.size() / 4);
+    if (cuda_find_units_.Size() < static_cast<size_t>(4 * num_tasks_)) {
+      cuda_find_units_.Resize(static_cast<size_t>(4 * num_tasks_));
+    }
+    UploadTreeStartMeta<int>(cuda_find_units_.RawData(), host_find_units_.data(), host_find_units_.size());
   }
 }
 
