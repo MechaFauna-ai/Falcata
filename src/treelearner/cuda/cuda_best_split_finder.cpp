@@ -566,6 +566,12 @@ void CUDABestSplitFinder::BeforeTrain(const std::vector<int8_t>& is_feature_used
   num_find_units_ = 0;
   if (FalcataPlan::Get().find_pack_narrow && warp_find_eligible_ && warp_find_num_narrow_ > 0 &&
       warp_find_num_narrow_ < num_tasks_ && num_used_tasks_ > 0) {
+    if (num_used_tasks_ == num_tasks_ && find_units_all_tasks_ > 0) {
+      // every task used: the list is a function of the task list alone (shape metadata, like the tasks
+      // themselves) and was uploaded by an earlier tree
+      num_find_units_ = find_units_all_tasks_;
+      return;
+    }
     host_find_units_.clear();
     int narrow_in_unit = 4;
     for (int k = 0; k < num_used_tasks_; ++k) {
@@ -588,6 +594,7 @@ void CUDABestSplitFinder::BeforeTrain(const std::vector<int8_t>& is_feature_used
       cuda_find_units_.Resize(static_cast<size_t>(4 * num_tasks_));
     }
     UploadTreeStartMeta<int>(cuda_find_units_.RawData(), host_find_units_.data(), host_find_units_.size());
+    find_units_all_tasks_ = num_used_tasks_ == num_tasks_ ? num_find_units_ : 0;
   }
 }
 

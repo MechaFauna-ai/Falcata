@@ -673,6 +673,8 @@ class CUDABestSplitFinder {
   std::vector<int> host_find_units_;
   CUDAVector<int> cuda_find_units_;
   int num_find_units_ = 0;
+  // units of the all-tasks list currently on the device (0: none; a sampled tree's list overwrites it)
+  int find_units_all_tasks_ = 0;
   // number of total bins in the dataset
   const int num_total_bin_;
   // has categorical feature

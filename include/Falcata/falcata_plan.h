@@ -325,7 +325,10 @@ struct FalcataPlan {
   // tree's used tasks; a wide task keeps the whole warp. A one-position item's fixed fp64 work (the per-leaf
   // divide, unpack, gain, child outputs) is then issued once per four items instead of once per warp with one
   // active lane. Same per-item scan and selection, outputs at the same task-indexed slots: bit-identical.
-  bool find_pack_narrow = true;     // key: find_pack_narrow
+  // Default off: on a 54-column mixed dataset (44 two-bin columns) the deep-level find launches shed 23% of
+  // their time but the round did not move (same-binary A/B 0.996-0.998: those levels are host-issue-bound);
+  // selectable for shapes whose deep-level find stays on the GPU's critical path.
+  bool find_pack_narrow = false;    // key: find_pack_narrow
   // 4-bit compact quantized construct with one thread per packed byte: the two
   // nibbles of a byte index one cell of a joint (lo, hi) shared histogram, so a
   // row costs one shared atomic per byte instead of one per column; each

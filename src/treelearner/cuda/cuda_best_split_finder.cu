@@ -5889,6 +5889,22 @@ __device__ __forceinline__ void WarpFindBest(
       }
     }
     best_gain = __longlong_as_double(static_cast<long long>(best_bits));  // NOLINT(runtime/int): the intrinsic's type
+  } else if (G < 32 && select_int) {
+    // find_select_int for the 4- and 8-lane groups (find_pack_narrow's packed units, warp_find_narrow): the same
+    // exact first maximum of (gain, then lowest position) in integer compares of the positive gain bits (see the
+    // STRIDED branch)
+    uint64_t best_bits = static_cast<uint64_t>(__double_as_longlong(best_gain));
+#pragma unroll
+    for (uint32_t off = G / 2; off > 0; off >>= 1) {
+      const uint64_t other_bits = __shfl_xor_sync(mask, best_bits, off);
+      const uint32_t other_t = __shfl_xor_sync(mask, best_t, off);
+      if (other_t != kNoThreshold &&
+          (best_t == kNoThreshold || other_bits > best_bits || (other_bits == best_bits && other_t < best_t))) {
+        best_bits = other_bits;
+        best_t = other_t;
+      }
+    }
+    best_gain = __longlong_as_double(static_cast<long long>(best_bits));  // NOLINT(runtime/int): the intrinsic's type
   } else if (G < 32 || PPL == 1) {
     // exact first maximum of (gain, then lowest threshold) within each group of 8 positions
 #pragma unroll
@@ -5917,11 +5933,12 @@ __device__ __forceinline__ void WarpFindBest(
     if (lane == 0) out->is_valid = false;
     return;
   }
-  if (STRIDED || (G == 32 && select_int)) {
+  if (STRIDED || select_int) {
     // the winner lane (every lane of the group holds best_t) computes the left child's output and leaf gain and
     // its partner lane the right child's from the winner's candidate values: the same expressions on the same
-    // inputs, issued once for both children instead of one after the other in one lane (G == 32: cuda_plan key
-    // find_select_int, the winner is the lane owning best_t's slot)
+    // inputs, issued once for both children instead of one after the other in one lane (non-strided: cuda_plan
+    // key find_select_int, the winner is the lane owning best_t's slot, lane * PPL + i, or the compaction's
+    // ballot; G even, so the partner lane winner ^ 1 is in the group)
     const uint32_t winner = STRIDED ? best_t % static_cast<uint32_t>(G) :
       compacted ? static_cast<uint32_t>(__ffs(__ballot_sync(mask, local_best_t == best_t)) - 1) :
       best_t / static_cast<uint32_t>(PPL);
