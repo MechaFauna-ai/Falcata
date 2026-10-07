@@ -552,6 +552,18 @@ struct FalcataPlan {
   // instead of 2-6 us later when the copy engine picks it up. Falls back to cudaMemcpy where the device cannot map
   // the buffer. Same bytes: bit-identical.
   bool readback_kernel = true;      // key: readback_kernel
+  // with readback_kernel, the classic host-launched quantized/plain level loop (single GPU, no feature-parallel
+  // merge, scalar leaves, no compact_prefill side stream): the level's two readbacks are written into their mapped
+  // pinned staging by the kernels that produce them instead of by a copy kernel on the default stream after them.
+  // SyncBestSplitForLevelUsedTasksKernel copies each leaf entry it has just written (the whole struct, as the device
+  // holds it) into the best-split staging; the split tree-structure body copies its split's 18 ints into the
+  // split-info staging. The host then waits with one device synchronize (every stream, a superset of what the
+  // default-stream copy waited for) and reads the staging as before. Within the loop every leaf the level readback
+  // returns was written by a mirrored sync kernel of this tree (each child is in exactly one pair of the next level)
+  // and nothing else writes those entries before the readback, so the staging holds the same bytes the copy kernel
+  // would have copied; a level whose sync kernel did not mirror falls back to the full copy. Removes the copy kernel
+  // and its wait on the producer's stream from both per-level round trips. Same bytes: bit-identical.
+  bool readback_fused = true;       // key: readback_fused
   // the final batched level's invalidation of its children's cached split candidates (InvalidateLeafCandidates):
   // the leaf list goes up with cudaMemcpyAsync on the default stream the synchronous cudaMemcpy used (from a member
   // copy, kept until the next tree) and the kernel is not followed by a device synchronize. The host
@@ -586,6 +598,22 @@ struct FalcataPlan {
   // path to the shrinkage kernel. Used only if the tree ends with exactly that leaf count, otherwise freed and the
   // tree end allocates as before. Same bytes: bit-identical.
   bool tree_end_prealloc = true;    // key: tree_end_prealloc
+  // quantized gradient discretizer with constant hessians (the objective reports IsConstantHessian, no GOSS, and the
+  // dataset has no weights, so every row's hessian is the value the objective writes for all rows): the per-chunk
+  // min/max (minmax_warp) and the discretize kernel take row 0's hessian for every row instead of reading the whole
+  // hessian array (5.5 M floats, twice per tree on numerai). Same value in the same expressions: bit-identical.
+  bool const_hess_reads = true;     // key: const_hess_reads
+  // histogram pool zeroing at the tree start: after a tree whose level prefix ended on a final level that completed
+  // it (skip_empty_tail ran no tail), only the slots of the leaves that existed before that level can hold sums --
+  // the slots the final level hands its new children are never written (no histogram is built after it) -- so the
+  // next tree zeroes that prefix of slots instead of the tree's num_leaves. The pool is all zero at every tree start
+  // as before: bit-identical.
+  bool dirty_final_slots = true;    // key: dirty_final_slots
+  // quantized training: the tree start's histogram pool zeroing covers only the first half of each dirty slot (a
+  // quantized bin is an int32 or int64 at its bin index: num_total_bin * 8 of the slot's num_total_bin * 16 bytes),
+  // with one 2D memset on the same stream; the other half, zeroed by the first full zeroing after the pool was set
+  // up or reset, is never written by a quantized kernel and stays zero. Same zero pool: bit-identical.
+  bool hist_zero_quant_half = true;  // key: hist_zero_quant_half
   // final batched level of a level prefix that completes the tree (every child at max_depth, every candidate split,
   // budget not binding: the skip_empty_tail condition, which must be on): the children's index windows have no
   // reader -- the tail is known empty, the tree end reads exact counts and the map, and the residual leaves'
@@ -739,10 +767,14 @@ struct FalcataPlan {
     if (key == "leaf_map_small_blocks") return &leaf_map_small_blocks;
     if (key == "early_leaf_map") return &early_leaf_map;
     if (key == "readback_kernel") return &readback_kernel;
+    if (key == "readback_fused") return &readback_fused;
     if (key == "invalidate_async") return &invalidate_async;
     if (key == "level_apply_first") return &level_apply_first;
     if (key == "gradients_no_sync") return &gradients_no_sync;
     if (key == "tree_end_prealloc") return &tree_end_prealloc;
+    if (key == "const_hess_reads") return &const_hess_reads;
+    if (key == "dirty_final_slots") return &dirty_final_slots;
+    if (key == "hist_zero_quant_half") return &hist_zero_quant_half;
     if (key == "final_map_only") return &final_map_only;
     if (key == "final_readback_first") return &final_readback_first;
     if (key == "shape_memo") return &shape_memo;
