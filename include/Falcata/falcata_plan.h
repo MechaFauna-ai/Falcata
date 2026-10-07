@@ -406,6 +406,12 @@ struct FalcataPlan {
   // its last written rows stay in L2 for the first level's construct (off:
   // evict-first streaming stores). Same words: bit-identical.
   bool pair_code5_l2_store = true;  // key: pair_code5_l2_store
+  // pair_code5_words: the code-word construct's level grid sized to the kernel's resident block slots (blocks per
+  // SM by the occupancy API at its block and joint tables, times the device's SMs) instead of the generic formula
+  // (whose per-pair cap predates two such blocks per SM): one rows-per-thread for all the level's pairs, the
+  // smallest whose blocks fit the slots, at least the min-rows-per-thread knob and within the packed-cell row cap.
+  // Same rows, other block grouping; integer sums: bit-identical.
+  bool pair_code5_slots = true;     // key: pair_code5_slots
   // pair_hist on levels with several leaf pairs: every leaf takes the largest
   // leaf's rows per thread, so small leaves fill a few whole blocks instead of
   // spreading a few rows over every block row (each block zeroes and flushes
@@ -701,6 +707,7 @@ struct FalcataPlan {
     if (key == "pair_code5_words") return &pair_code5_words;
     if (key == "pair_code5_pack2") return &pair_code5_pack2;
     if (key == "pair_code5_l2_store") return &pair_code5_l2_store;
+    if (key == "pair_code5_slots") return &pair_code5_slots;
     if (key == "level_row_blocks") return &level_row_blocks;
     if (key == "all_rows_direct") return &all_rows_direct;
     if (key == "apply_row_batch") return &apply_row_batch;

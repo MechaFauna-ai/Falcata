@@ -3476,20 +3476,27 @@ static int PairJointCode5MaxThreads(const PairJointKernelFn kernel) {
 static PairJointKernelFn PairJointCode5WordKernel() {
   return CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<4>;
 }
-static int PairJointCode5WordRows(const int row_words, const size_t smem_bytes, const int num_grad_quant_bins) {
+// The block rows below, and (cuda_plan key pair_code5_slots) the resident blocks of that shape on the whole device:
+// blocks per SM at that height by the occupancy API, times the device's SMs (0 when no height launches).
+struct PairJointCode5WordShape {
+  int rows;
+  int device_slots;
+};
+static PairJointCode5WordShape PairJointCode5WordShapeFor(const int row_words, const size_t smem_bytes,
+                                                          const int num_grad_quant_bins) {
   struct Entry {
     int device;
     int row_words;
     size_t smem_bytes;
     int bins;
-    int rows;
+    PairJointCode5WordShape shape;
   };
   static thread_local std::vector<Entry> entries;
   int device = 0;
   CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
   for (const Entry& e : entries) {
     if (e.device == device && e.row_words == row_words && e.smem_bytes == smem_bytes && e.bins == num_grad_quant_bins) {
-      return e.rows;
+      return e.shape;
     }
   }
   const PairJointKernelFn kernel = PairJointCode5WordKernel();
@@ -3500,6 +3507,7 @@ static int PairJointCode5WordRows(const int row_words, const size_t smem_bytes, 
   const int warp_size = CurrentDeviceLaunchLimits().warp_size;
   int best_rows = 0;
   int best_warps = 0;
+  int best_blocks = 0;
   for (int c = 1; row_words > 0 && row_words * c <= max_threads &&
        HybridQuantConstructBlockDimY(c, num_grad_quant_bins) == c; ++c) {
     int blocks = 0;
@@ -3508,10 +3516,39 @@ static int PairJointCode5WordRows(const int row_words, const size_t smem_bytes, 
     if (blocks > 0 && warps >= best_warps) {
       best_warps = warps;
       best_rows = c;
+      best_blocks = blocks;
     }
   }
-  entries.push_back({device, row_words, smem_bytes, num_grad_quant_bins, best_rows});
-  return best_rows;
+  int num_sms = 0;
+  CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, device));
+  const PairJointCode5WordShape shape{best_rows, best_rows > 0 ? best_blocks * std::max(1, num_sms) : 0};
+  entries.push_back({device, row_words, smem_bytes, num_grad_quant_bins, shape});
+  return shape;
+}
+
+// cuda_plan key pair_code5_slots: the rows per thread R of a level of code-word blocks of block_rows rows whose
+// smaller leaves hold counts[0..n) rows: the smallest R in [min_rows, max_rows] whose blocks (sum of
+// ceil(count / (block_rows * R))) fit `slots`, max_rows when none does
+static data_size_t PairJointSlotRowsPerThread(const std::vector<data_size_t>& counts, const int block_rows,
+                                              const int slots, const data_size_t min_rows, const data_size_t max_rows) {
+  const auto blocks_at = [&](const data_size_t r) {
+    const int64_t block_span = static_cast<int64_t>(block_rows) * r;
+    int64_t total = 0;
+    for (const data_size_t n : counts) total += (static_cast<int64_t>(n) + block_span - 1) / block_span;
+    return total;
+  };
+  data_size_t lo = std::max<data_size_t>(1, std::min(min_rows, max_rows));
+  data_size_t hi = std::max<data_size_t>(lo, max_rows);
+  if (blocks_at(hi) > slots) return hi;
+  while (lo < hi) {
+    const data_size_t mid = lo + (hi - lo) / 2;
+    if (blocks_at(mid) <= slots) {
+      hi = mid;
+    } else {
+      lo = mid + 1;
+    }
+  }
+  return lo;
 }
 
 // resident warps per SM of a pair-joint block of `threads` threads and `smem_bytes` dynamic shared memory, the
@@ -5720,21 +5757,57 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         const bool level_all_rows = FalcataPlan::Get().all_rows_direct && num_pairs == 1 &&
           max_num_data_in_smaller_leaf == num_data_;
         int code5_word_rows = 0;
+        // cuda_plan key pair_code5_slots: the code-word level's one rows-per-thread (0: the generic sizing)
+        data_size_t slot_rows_per_thread = 0;
         if (whole_rows && !level_all_rows && code5_valid_ && FalcataPlan::Get().pair_code5 &&
             FalcataPlan::Get().pair_code5_words &&
             Code5RowWords(compact_row_bytes_) == code5_row_words_) {
-          code5_word_rows = PairJointCode5WordRows(code5_row_words_, pair_smem_bytes,
-                                                   use_quantized_grad_ ? num_grad_quant_bins_ : 0);
+          const PairJointCode5WordShape word_shape = PairJointCode5WordShapeFor(
+            code5_row_words_, pair_smem_bytes, use_quantized_grad_ ? num_grad_quant_bins_ : 0);
+          code5_word_rows = word_shape.rows;
           if (code5_word_rows > 0) {
-            const int word_grid_y = HybridBatchedConstructGridDimYQuant(
+            int word_grid_y = HybridBatchedConstructGridDimYQuant(
               max_num_data_in_smaller_leaf, num_pairs, code5_word_rows, min_grid_dim_y_,
               BatchConstructMinRowsPerThread(), BatchConstructSaturationFloor(),
               use_quantized_grad_ ? num_grad_quant_bins_ : 0);
+            // cuda_plan key pair_code5_slots: the level's smaller leaves (the pairs the kernel constructs, from the host
+            // copy of the counts it reads) take one rows-per-thread R, the smallest whose blocks fill no more than the
+            // kernel's resident slots on this device, at least the min-rows-per-thread knob and at most the packed-cell
+            // cap; the grid is the largest leaf's blocks at R, so every leaf's blocks run R rows per thread
+            if (FalcataPlan::Get().pair_code5_slots && word_shape.device_slots > 0 && max_num_data_in_smaller_leaf > 0 &&
+                (num_pairs == 1 || (level_host_pair_descs_ != nullptr && level_host_num_pairs_ == num_pairs))) {
+              std::vector<data_size_t> counts;
+              if (num_pairs == 1) {
+                counts.push_back(max_num_data_in_smaller_leaf);
+              } else {
+                for (int p = 0; p < num_pairs; ++p) {
+                  const CUDAHybridPairDescriptor& d = level_host_pair_descs_[p];
+                  if (d.construct_valid && d.num_data_in_smaller_leaf > 0) {
+                    counts.push_back(d.num_data_in_smaller_leaf);
+                  }
+                }
+              }
+              const int bins = use_quantized_grad_ ? num_grad_quant_bins_ : 0;
+              const data_size_t max_rows = bins > 0 ?
+                static_cast<data_size_t>(HybridQuantConstructMaxRowsPerThread(bins, code5_word_rows)) :
+                max_num_data_in_smaller_leaf;
+              const data_size_t r = PairJointSlotRowsPerThread(
+                counts, code5_word_rows, word_shape.device_slots,
+                static_cast<data_size_t>(std::max(1, BatchConstructMinRowsPerThread())), max_rows);
+              const int64_t r_grid_y = (static_cast<int64_t>(max_num_data_in_smaller_leaf) +
+                                        static_cast<int64_t>(code5_word_rows) * r - 1) /
+                                       (static_cast<int64_t>(code5_word_rows) * r);
+              if (!counts.empty() && r_grid_y <= CurrentDeviceLaunchLimits().max_grid_dim_y) {
+                slot_rows_per_thread = r;
+                word_grid_y = static_cast<int>(r_grid_y);
+              }
+            }
             if (word_grid_y <= CurrentDeviceLaunchLimits().max_grid_dim_y) {
               pair_y = code5_word_rows;
               pair_grid_y = word_grid_y;
             } else {
               code5_word_rows = 0;
+              slot_rows_per_thread = 0;
             }
           }
         }
@@ -5743,8 +5816,12 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
                                   whole_rows ? compact_row_bytes_ : (cc + 1) / 2, pair_y);
         // level_row_blocks: every leaf at the largest leaf's rows per thread (within the grid's overflow guard)
         const int64_t pair_dim_y = static_cast<int64_t>(pair_grid_y) * pair_y;
-        const data_size_t pair_min_rows_per_thread = FalcataPlan::Get().level_row_blocks && num_pairs > 1 ?
+        // (pair_code5_slots: every leaf at the level's slot-fitted R, no per-pair grid re-sizing in the kernel)
+        const data_size_t pair_min_rows_per_thread = slot_rows_per_thread > 0 ? slot_rows_per_thread :
+          FalcataPlan::Get().level_row_blocks && num_pairs > 1 ?
           static_cast<data_size_t>((static_cast<int64_t>(max_num_data_in_smaller_leaf) + pair_dim_y - 1) / pair_dim_y) : 0;
+        const int pair_per_pair_min_grid = slot_rows_per_thread > 0 ? 0 :
+          FalcataPlan::Get().per_pair_rows ? min_grid_dim_y_ : 0;
         // all_rows_direct: the level's one leaf holds every row (the root without bagging)
         const bool all_rows = FalcataPlan::Get().all_rows_direct && num_pairs == 1 &&
           max_num_data_in_smaller_leaf == num_data_;
@@ -5757,7 +5834,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
             num_pairs <= PairJointBlockPrefix::kMaxPairs && level_host_pair_descs_ != nullptr &&
             level_host_num_pairs_ == num_pairs) {
           // the kernel arguments below: per_pair_rows' grid floor and its rows-per-thread floor
-          const int per_pair_min_grid = FalcataPlan::Get().per_pair_rows ? min_grid_dim_y_ : 0;
+          const int per_pair_min_grid = pair_per_pair_min_grid;
           const int per_pair_min_rows = BatchConstructMinRowsPerThread() * (whole_rows ? static_cast<int>(grid_dim.x) : 1);
           int64_t total = 0;
           for (int p = 0; p < num_pairs; ++p) {
@@ -5799,7 +5876,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           num_data_, \
           static_cast<data_size_t>(min_data_in_leaf_), \
           min_sum_hessian_in_leaf_, \
-          FalcataPlan::Get().per_pair_rows ? min_grid_dim_y_ : 0, \
+          pair_per_pair_min_grid, \
           BatchConstructMinRowsPerThread() * (whole_rows ? static_cast<int>(grid_dim.x) : 1), \
           BatchConstructSaturationFloor(), \
           use_quantized_grad_ ? num_grad_quant_bins_ : 0, \
