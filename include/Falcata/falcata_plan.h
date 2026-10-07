@@ -309,6 +309,15 @@ struct FalcataPlan {
   // left and the right child's output and leaf gain side by side (as the strided 4-lane path does). Same winner,
   // same expressions on the same inputs: bit-identical.
   bool find_select_int = true;      // key: find_select_int
+  // the G=32 warp-find template's exact gain loop on tasks of more than 32 scan positions (find_prune_fp32's
+  // per-lane work list): the survivors of every lane are compacted into one warp-wide list (a warp prefix count
+  // and a per-warp shared-memory list), and each round every lane takes the next survivor, so the warp runs
+  // ceil(survivors / 32) rounds of the exact fp64 prep + gain (one, usually) instead of as many as its busiest
+  // lane holds (the near-optimal positions are adjacent, i.e. in one lane's consecutive slots; each fp64 warp
+  // instruction costs its issue slots whether one lane or 32 are active). Same survivors, each exact gain
+  // computed once from the same prefix, the same exact first maximum of (gain, then lowest position) across the
+  // warp (the winner lane is found by ballot): bit-identical.
+  bool find_compact_survivors = true;  // key: find_compact_survivors
   // 4-bit compact quantized construct with one thread per packed byte: the two
   // nibbles of a byte index one cell of a joint (lo, hi) shared histogram, so a
   // row costs one shared atomic per byte instead of one per column; each
@@ -714,6 +723,7 @@ struct FalcataPlan {
     if (key == "warp_find_mid_ppl") return &warp_find_mid_ppl;
     if (key == "find_prune_fp32") return &find_prune_fp32;
     if (key == "find_select_int") return &find_select_int;
+    if (key == "find_compact_survivors") return &find_compact_survivors;
     if (key == "pair_hist") return &pair_hist;
     if (key == "per_pair_rows") return &per_pair_rows;
     if (key == "compact_row_interleave") return &compact_row_interleave;
