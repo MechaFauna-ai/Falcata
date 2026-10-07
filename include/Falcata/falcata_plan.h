@@ -301,6 +301,14 @@ struct FalcataPlan {
   // rejected by the gain loop's exact unpack. Only which hopeless positions skip the exact gain changes, never the
   // winner: bit-identical. Engaged where min_sum_hessian_in_leaf > 0 (every valid side's denominator positive).
   bool find_prune_fp32 = true;      // key: find_prune_fp32
+  // the G=32 warp-find template's cross-lane best-split reduction (every task through it, e.g. 2-bin and 255-bin
+  // columns alike) in integer compares of the gains' bit patterns instead of fp64 compares, fmax and the zero-
+  // tolerance multiply (fp64 pipe work per item on parts with 1/64-rate fp64): a lane holding a threshold has a
+  // positive, non-NaN gain, and positive doubles order as their bits; OtherIsBetterWithTieBreak's NaN tolerance
+  // for an infinite gain (never better) is kept explicitly. The winner's lane and its partner then compute the
+  // left and the right child's output and leaf gain side by side (as the strided 4-lane path does). Same winner,
+  // same expressions on the same inputs: bit-identical.
+  bool find_select_int = true;      // key: find_select_int
   // 4-bit compact quantized construct with one thread per packed byte: the two
   // nibbles of a byte index one cell of a joint (lo, hi) shared histogram, so a
   // row costs one shared atomic per byte instead of one per column; each
@@ -705,6 +713,7 @@ struct FalcataPlan {
     if (key == "find_loads_batched") return &find_loads_batched;
     if (key == "warp_find_mid_ppl") return &warp_find_mid_ppl;
     if (key == "find_prune_fp32") return &find_prune_fp32;
+    if (key == "find_select_int") return &find_select_int;
     if (key == "pair_hist") return &pair_hist;
     if (key == "per_pair_rows") return &per_pair_rows;
     if (key == "compact_row_interleave") return &compact_row_interleave;
