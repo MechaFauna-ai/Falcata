@@ -1046,6 +1046,32 @@ A fifth overnight agentic search added three `cuda_plan` keys, all default on an
 - **Same reach as §10d:** only the code view takes these paths, i.e. a 4-bit compact view under feature sampling with at most 32 joint cells per byte pair (lo_span × hi_span ≤ 32, the 5-bit code). Bytes pairing 6-bin or NaN-carrying columns decline the view and run master's nibble kernels. The guard workloads run at master's speed (0.997-1.001x per round).
 - **Not included:** lane-major joint tables (`pair_code5_lane_major`, the search's c093). Shared-atomic bank conflicts disappeared, but the construct did not get faster (1.007x [0.930, 1.097] against master on its own; 0.991x on top of the branch-free adds, where the combined kernel needs 56 registers).
 
+## 10f. The Numerai round after #62: the code-word flush, the level readbacks, the tree start and the level apply's row builds
+
+After §10e the code-word construct was about 1.12 ms of a numerai53 benchmark-split round, the code-view fill 1.11 ms, the batched apply's gen-bit kernel 0.35 ms and its fused partition kernel 0.18 ms. A sixth overnight agentic search added seven more bit-identical `cuda_plan` keys on top of §10e's three, six of them default on and one off by default (identity keys in `ablation.py`, flip cells in the lattice). None adds device memory.
+
+**The code-word flush (`pair_code5_epilogue`, off by default).** Every (slot, marginal) item of a thread's six byte slots on one flat `threadIdx.y`-strided index, instead of six serial passes in which most of the block's 32 y-warps had no marginal to add; composed only with `pair_code5_flat`. The search measured it only together with the slot grid and tall blocks; switched on alone against off in this stack it made a round 0.5% slower (0.995x [0.994, 0.996], 8 of 8 pairs), so it stays a key for other block shapes and GPUs.
+
+**The level readbacks (`readback_fused`).** In the host-launched level loop (single GPU, scalar leaves), the level sync kernel copies each leaf entry it writes into the best-split readback's mapped pinned staging, and the split tree-structure body copies its split's 18 ints into the split-info staging. The default-stream copy kernels after them and their waits go; the host waits with one device synchronize and reads the staging as before.
+
+**The tree start (`const_hess_reads`, `dirty_final_slots`, `hist_zero_quant_half`).**
+- With a constant hessian (the objective's `IsConstantHessian`, no GOSS, no weights) the discretizer's min/max and discretize kernels take row 0's hessian instead of reading the hessian array (5.5M floats, twice per tree on Numerai).
+- After a tree whose level prefix ended on a complete final level, the next tree zeroes only the histogram slots of the leaves that existed before that level.
+- Quantized single-plane training zeroes only the half of each slot that quantized kernels write.
+
+**The level apply's row builds (`apply_inner_rows`, `apply_genbit_rows`).** The batched apply's fused partition and gen-bit kernels (4 rows per thread in 256-thread blocks, compiled under a 1024-thread launch bound at 64 and 40 registers) get second builds at 8 rows per thread in 128-thread blocks, with the block size a compile-time constant: 56 and 34 registers, 9 and 12 blocks per SM, 2.25x and 2x the rows in flight. The host takes them only where the occupancy API gives strictly more rows in flight per SM. Split-inner 0.176 → 0.118 ms per round, gen-bit 0.347 → 0.336 ms (nsys).
+
+| | master (3d72b5c5) | §10e + §10f | |
+|---|---|---|---|
+| ms per round (numerai53 benchmark split, tuner on, 30000 rounds timed from 200, 3 interleaved pairs) | 3.950 | 3.607 | 1.095x [1.053, 1.141] |
+| trees/s at 30k trees (`bench.py` numerai-deep cell, ABCCBA; with `pair_code5_epilogue` on) | 246.2 | 268.2 | 1.090x |
+| peak device memory (per process) | 11,348 MiB | 11,348 MiB | |
+
+- **Measured on the same keys' other branch** (`cuda/numerai-night6`, which carries §10e's three keys in the search's own port); this branch's build matched it within noise (0.999x over two 30000-round pairs, one in each order, both builds with the epilogue on).
+- **The same model on every run:** tree md5 `1c68bf82…` at 30k trees, holdout corr 0.0239, sharpe 1.40. Switching any one key, any group, or all ten trains the same model.
+- **What each key is worth**, switched off alone (same binary, 3000 rounds timed from 200, 3 pairs; measured while `pair_code5_epilogue` was still on): `apply_inner_rows` 1.019x, `readback_fused` 1.017x, the three tree-start keys together 1.011x, `apply_genbit_rows` 1.006x.
+- **Reach:** `pair_code5_epilogue` runs only on the code view. The other six run on every hybrid level-batched training: the evaluator's five guard workloads, none of which takes the code view, were 1.02-1.07x faster per round (3 pairs each).
+
 ---
 
 ## Multi-GPU: level-batched NCCL all-reduce
