@@ -293,6 +293,16 @@ void CUDADataPartition::FinishSplitBatch(const int num_splits, std::vector<int>*
   // needed. Staged through a PINNED buffer (once-per-level critical path; a
   // pageable sync D2H pays an extra driver staging round trip).
   const size_t num_ints = static_cast<size_t>(num_splits) * 18;
+  split_info_mirror_requested_ = false;
+  if (split_info_mirror_written_) {
+    // cuda_plan key readback_fused: the level's tree-structure kernel wrote these ints into the mapped staging; one
+    // device synchronize (every stream, as the default-stream copy waited for) and the host reads them
+    split_info_mirror_written_ = false;
+    CHECK_GE(pinned_split_info_size_, num_ints);
+    SynchronizeCUDADevice(__FILE__, __LINE__);
+    std::memcpy(out->data(), pinned_split_info_, num_ints * sizeof(int));
+    return;
+  }
   EnsurePinnedSplitInfoCapacity(num_ints);
   if (FalcataPlan::Get().readback_kernel && pinned_split_info_device_ != nullptr) {
     // cuda_plan key readback_kernel: a copy kernel on the same default stream, then that stream's sync (see the key)

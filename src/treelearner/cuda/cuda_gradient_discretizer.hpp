@@ -52,6 +52,11 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
 
   int num_planes() const { return num_planes_; }
 
+  /*! \brief cuda_plan key const_hess_reads: true only when every row's hessian of every following discretization
+   *  equals row 0's (the learner sets it from the objective's IsConstantHessian, which excludes GOSS, and the
+   *  absence of dataset weights); the min/max and discretize kernels then read row 0's hessian for every row */
+  void SetHessiansConstant(const bool hessians_constant) { hessians_constant_ = hessians_constant; }
+
   /*! \brief discretize target \p plane's gradients into its own plane region.
    *  Plane 0 must run first each tree: planes 1..T-1 copy its quantized
    *  hessians. */
@@ -175,6 +180,7 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
   mutable CUDAVector<uint8_t> ef_inbag_mask_;
   int num_reduce_blocks_;
   int num_planes_ = 1;
+  bool hessians_constant_ = false;
   data_size_t num_data_planes_ = 0;
   bool robust_scale_ = false;
   bool error_feedback_ = false;

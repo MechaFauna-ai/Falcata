@@ -198,6 +198,18 @@ void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score
   const size_t num_slots_to_zero = num_dirty_leaves_ < 0 ?
     static_cast<size_t>(num_leaves_) :
     std::min(static_cast<size_t>(num_dirty_leaves_), static_cast<size_t>(num_leaves_));
+  // cuda_plan key hist_zero_quant_half: a quantized histogram keeps a bin in an int32 (16-bit packed) or an int64
+  // (32-bit packed) at its bin index, so every quantized kernel writes only the first num_total_bin * 8 bytes of a
+  // slot's 2 * num_total_bin hist_t. The rest of each slot was zeroed by the full zeroing of the first tree after
+  // the pool was set up or reset (num_dirty_leaves_ < 0; a switch to or from quantized training is a reset) and
+  // stays zero, so only that first half is zeroed: one 2D memset on the same stream, the same zero pool.
+  if (FalcataPlan::Get().hist_zero_quant_half && use_quantized_grad_ && num_hist_planes_ == 1 &&
+      num_dirty_leaves_ >= 0) {
+    CUDASUCCESS_OR_FATAL(cudaMemset2D(reinterpret_cast<void*>(cuda_hist_.RawData()),
+      static_cast<size_t>(2 * num_total_bin_) * sizeof(hist_t), 0,
+      static_cast<size_t>(num_total_bin_) * sizeof(hist_t), num_slots_to_zero));
+    return;
+  }
   CUDASUCCESS_OR_FATAL(cudaMemset(reinterpret_cast<void*>(cuda_hist_.RawData()), 0,
     num_slots_to_zero * static_cast<size_t>(2 * num_total_bin_) *
     static_cast<size_t>(num_hist_planes_) * sizeof(hist_t)));

@@ -624,6 +624,12 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     } else {
       cuda_gradient_discretizer_->SetBagForThisTree(nullptr, 0);
     }
+    // cuda_plan key const_hess_reads: the objective's IsConstantHessian (false under GOSS, which rescales
+    // hessians) promises one hessian value for every row; dataset weights would scale it per row (MAPE reports a
+    // constant hessian even then), and vector leaves share the array across planes
+    cuda_gradient_discretizer_->SetHessiansConstant(share_state_->is_constant_hessian &&
+                                                    train_data_->metadata().weights() == nullptr &&
+                                                    vec_num_targets_ <= 1);
     cuda_gradient_discretizer_->DiscretizeGradients(num_data_, gradients_, hessians_);
     for (int t = 1; t < vec_num_targets_; ++t) {
       // plane t: target t's gradients at their own scale, plane 0's hessians
@@ -2629,10 +2635,23 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   // reads the per-slot slab the plane fan-out writes
   CUDALeafSplitsStruct* vec_plane_slab =
     vec_num_targets_ > 1 ? vec_plane_structs_.RawData() : nullptr;
+  // cuda_plan key readback_fused: the level's two readbacks written by their producing kernels into the mapped
+  // staging (single GPU: the host reads its own device; no feature-parallel merge rewriting the device cache; scalar
+  // leaves; no compact prefill on the non-blocking side stream, which the device synchronize would wait for)
+  const FalcataPlan& readback_plan = FalcataPlan::Get();
+  const bool readback_fused = readback_plan.readback_fused && readback_plan.readback_kernel &&
+    !readback_plan.compact_prefill && nccl_communicator_ == nullptr && fp_merge_state_ == nullptr &&
+    vec_num_targets_ <= 1 && use_batched_level_kernels && use_batched_level_apply;
+  // per leaf of this tree: the best-split staging holds the device cache's bytes (written by a mirrored level sync
+  // kernel or a full copy of this tree's loop; nothing else writes those entries inside the loop)
+  std::vector<char> leaf_staging_coherent;
   int num_splits = 0;
   while (true) {
     // enqueue histogram + best-split search for every pair of this level; device
     // work only, ordered per pair by the histogram-completion events
+    if (readback_fused) {
+      cuda_best_split_finder_->RequestLeafBestSplitMirror();
+    }
     if (use_batched_level_kernels) {
       EnqueueLevelBestSplitSearch(tree, pairs, vec_plane_slab);
     } else {
@@ -2646,7 +2665,31 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
       }
     }
     // one device synchronization + one transfer for the whole level
-    cuda_best_split_finder_->SyncAllLeafBestSplitsToHost(tree->num_leaves(), &host_leaf_best_splits_);
+    if (readback_fused) {
+      const int level_num_leaves = tree->num_leaves();
+      if (leaf_staging_coherent.size() < static_cast<size_t>(level_num_leaves)) {
+        leaf_staging_coherent.resize(static_cast<size_t>(level_num_leaves), 0);
+      }
+      bool staging_coherent = cuda_best_split_finder_->LeafBestSplitMirrorWritten();
+      if (staging_coherent) {
+        // the level sync kernel wrote (and mirrored) both leaves of every pair
+        for (const HybridPendingPair& pair : pairs) {
+          leaf_staging_coherent[pair.smaller] = 1;
+          if (pair.larger >= 0) {
+            leaf_staging_coherent[pair.larger] = 1;
+          }
+        }
+        for (int leaf = 0; staging_coherent && leaf < level_num_leaves; ++leaf) {
+          staging_coherent = leaf_staging_coherent[leaf] != 0;
+        }
+      }
+      cuda_best_split_finder_->SyncLevelLeafBestSplitsToHost(level_num_leaves, staging_coherent,
+                                                             &host_leaf_best_splits_);
+      // either way the staging now holds the device entries of leaves [0, level_num_leaves)
+      std::fill(leaf_staging_coherent.begin(), leaf_staging_coherent.begin() + level_num_leaves, 1);
+    } else {
+      cuda_best_split_finder_->SyncAllLeafBestSplitsToHost(tree->num_leaves(), &host_leaf_best_splits_);
+    }
     if (fp_merge_state_ != nullptr) {
       FeatureParallelMergeLevel(tree->num_leaves());
     }
@@ -2660,11 +2703,15 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
       break;
     }
     pairs.clear();
+    const int leaves_before_level = tree->num_leaves();
     // apply the whole level without any device synchronization: every launch
     // parameter is host-known from the previous level, and split info is read
     // back once for the whole level below (FinishSplitBatch synchronizes)
     std::vector<HybridAppliedSplit> applied;
     if (use_batched_level_apply) {
+      if (readback_fused) {
+        cuda_data_partition_->RequestSplitInfoMirror();
+      }
       ApplyLevelBatched(tree, splittable, &applied, final_partial_level);
     } else {
       applied.reserve(splittable.size());
@@ -2696,6 +2743,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
       // the tree is full and every child sits at max_depth: nothing is left
       // for the leaf-wise tail to search or split
       prefix_completes_tree_ = level_completes_tree_;
+      prefix_final_leaves_before_ = leaves_before_level;
       break;
     }
   }
@@ -2780,6 +2828,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefixOneSync(CUDATree* tree) {
       // already has a valid cached best-split candidate
       break;
     }
+    const int leaves_before_level = tree->num_leaves();
     ApplyLevelBatched(tree, splittable, &applied, final_partial_level);
     if (final_partial_level) {
       // the tree is full and every child sits at max_depth: nothing is left to
@@ -2787,6 +2836,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefixOneSync(CUDATree* tree) {
       cuda_data_partition_->FinishSplitBatch(static_cast<int>(applied.size()), &batch_info);
       FinishLevelBookkeeping(applied, batch_info, nullptr, &num_splits);
       prefix_completes_tree_ = level_completes_tree_;
+      prefix_final_leaves_before_ = leaves_before_level;
       break;
     }
     // speculative: the children's search goes out before their statistics are
@@ -4235,6 +4285,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     EnsureRootSumsReadBack(tree.get());
   }
   prefix_completes_tree_ = false;
+  prefix_final_leaves_before_ = -1;
   if (num_splits_done == 0 && HybridGrowthUsable()) {
     if (UseSelectiveGrowth()) {
       // budget-limited exact grow-then-prune: builds the COMPLETE tree
@@ -4523,9 +4574,17 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   // the conservative full zeroing). Selective growth dirties every hybrid slot
   // it ever allocated (recycled slots are re-zeroed on the fly, but the last
   // occupants remain), so it reports its allocation peak instead.
+  // cuda_plan key dirty_final_slots: when the level prefix ended on a final level that completed the tree and the
+  // tail was skipped, every histogram of the tree was built before that level, into the slots of the leaves that
+  // existed then (a slot is handed to a leaf at its creation, by its index); the slots the final level handed to
+  // its children were never written, so the prefix of the leaves before it is all that can be dirty
   if (nccl_communicator_ == nullptr) {
-    cuda_histogram_constructor_->SetNumDirtyLeaves(
-      selective_handled ? sel_last_peak_ : tree->num_leaves());
+    int num_dirty = selective_handled ? sel_last_peak_ : tree->num_leaves();
+    if (!selective_handled && tail_known_empty && prefix_final_leaves_before_ > 0 &&
+        FalcataPlan::Get().dirty_final_slots) {
+      num_dirty = std::min(num_dirty, prefix_final_leaves_before_);
+    }
+    cuda_histogram_constructor_->SetNumDirtyLeaves(num_dirty);
   }
   last_tree_is_linear_ = false;
   if (config_->linear_tree) {
