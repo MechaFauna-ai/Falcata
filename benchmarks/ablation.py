@@ -95,6 +95,9 @@ ALL_KEYS = {
     "pair_code5_words": True,
     "pair_code5_pack2": True,
     "pair_code5_l2_store": True,
+    "pair_code5_slots": True,
+    "pair_code5_tall": True,
+    "pair_code5_flat": True,
 }
 
 #: growth-strategy keys: changing them changes WHICH tree is built (legit),
@@ -149,6 +152,9 @@ DEEP_KEYS = [
     "pair_code5",
     "pair_code5_words",
     "pair_code5_pack2",
+    "pair_code5_slots",
+    "pair_code5_tall",
+    "pair_code5_flat",
 ]
 
 BASE = {

@@ -706,6 +706,47 @@ def build_cells():
             equal_to="sampledwide5/quant-deep",
         )
 
+    # --- the code-word construct's grid, block and adds ------------------------ #
+    # pair_code5_slots sizes a code-word level's grid to the kernel's resident blocks (one rows-per-thread for all
+    # its pairs; the block map and the kernel's per-pair grid follow it), pair_code5_tall takes the tallest
+    # launchable block where the grid is slot-sized, pair_code5_flat the branch-free adds (a slot without columns
+    # adds into dummy cells past the tables; 5 rows in flight, a thread's last rows as one batch). Each key off and
+    # all three off must train the base cell's model; the deep base runs multi-pair levels, also on the plain grid
+    # (slot-sized, without the block map and level_row_blocks' or per_pair_rows' sizing). The partword base
+    # (feature_fraction 0.1375, 165 columns: 83 byte slots in 14 code words) ends every tree's rows inside a code
+    # word, so the flat adds' dummy cells take the slots without columns on every tree (the other bases' rows end
+    # inside a word only on some trees, at 91 or 121 byte slots; a whole padding word takes no rows), and has a byte
+    # with a low column only; its fingerprint was recorded with master's build.
+    night5_keys = ["pair_code5_slots", "pair_code5_tall", "pair_code5_flat"]
+    night5_flips = [
+        *[(key, f"{key}:off") for key in night5_keys],
+        ("night5", ",".join(f"{k}:off" for k in night5_keys)),
+    ]
+    partword = {"feature_fraction": 0.1375}
+    cell("sampledwide5/quant-partword", "sampledwide5", partword)
+    for suffix, base_params, base in [
+        ("-ff15", ff15, "sampledwide5/quant-ff15"),
+        ("", {}, "sampledwide5/quant"),
+        ("-partword", partword, "sampledwide5/quant-partword"),
+    ]:
+        for name, plan in night5_flips:
+            cell(
+                f"sampledwide5/flip-{name}{suffix}",
+                "sampledwide5",
+                {**base_params, "cuda_plan": f"auto,{plan}"},
+                equal_to=base,
+            )
+    for name, plan in [
+        *night5_flips,
+        ("code5_slots_plain_grid", "pair_block_map:off,level_row_blocks:off,per_pair_rows:off"),
+    ]:
+        cell(
+            f"sampledwide5/flip-{name}-deep",
+            "sampledwide5",
+            {**deep, "cuda_plan": f"auto,{plan}"},
+            equal_to="sampledwide5/quant-deep",
+        )
+
     # --- construction's host buffers ------------------------------------------ #
     # pin_bins, construct_staging_pool and construct_h2d_overlap only decide how construction from host arrays
     # allocates and copies; each must build the base cell's Dataset and so train its model. The lattice's 6,400
