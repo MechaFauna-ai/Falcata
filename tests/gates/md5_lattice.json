@@ -265,6 +265,11 @@
    "metric": 7.270889,
    "metric_name": "rmse"
   },
+  "sampledwide5/quant-partword": {
+   "md5": "1f5f7a2343804348543403da30932e17",
+   "metric": 7.437578,
+   "metric_name": "rmse"
+  },
   "sparse-mc/quant-deep": {
    "md5": "f2b9785f595e9513f76093ce51a6bc84",
    "metric": 0.085856,
