@@ -5637,7 +5637,11 @@ __device__ __forceinline__ void WarpFindBest(
     const float l2e = static_cast<float>(lambda_l2 + kEpsilon);
     const float mg = static_cast<float>(min_gain_shift);
     float threshold = mg - fabsf(mg) * kRel - kAbs;
-    if (G == 32 && PPL >= 2 && !STRIDED && prune_fp32 && min_sum_hessian_in_leaf > 0.0) {
+    // (float)hess_scale normal and |int32| * it finite in fp32, so every fp32 hessian below is within a few 1e-7
+    // relative of prep's (a too-small or too-large scale keeps the exact per-position prune below)
+    const float hs_f32 = static_cast<float>(hess_scale);
+    if (G == 32 && PPL >= 2 && !STRIDED && prune_fp32 && min_sum_hessian_in_leaf > 0.0 && hs_f32 >= FLT_MIN &&
+        hs_f32 <= FLT_MAX / 4.3e9f) {
       // cuda_plan key find_prune_fp32: the bounds from the int32 halves in fp32 (the int->float converts and the
       // product round three times instead of once: a few 1e-7 relative, far inside kRel; a valid side's hessian
       // is >= min_sum_hessian_in_leaf > 0, so both denominators are positive and the terms do not cancel). A
@@ -5645,7 +5649,7 @@ __device__ __forceinline__ void WarpFindBest(
       // lower bound must come from a valid position, so each lane offers one: the largest lower bound among its
       // positions passing approximate gates (a choice only), verified with the exact prep.
       const float gs_f = static_cast<float>(grad_scale);
-      const float hs_f = static_cast<float>(hess_scale);
+      const float hs_f = hs_f32;
       const float cf_f = static_cast<float>(cnt_factor);
       const float msh_f = static_cast<float>(min_sum_hessian_in_leaf);
       const float md_f = static_cast<float>(min_data_in_leaf) - 0.5f;
@@ -5655,7 +5659,7 @@ __device__ __forceinline__ void WarpFindBest(
       // sl_h, sr_h >= min_sum_hessian_in_leaf and, with x = (rounded side's hessian) * cnt_factor and that side's
       // count (int)(x + 0.5): x >= min_data - 0.5 and x < num_data - min_data + 0.5 (the other side's count is
       // num_data minus it); both count bounds are positive where the screen is on, so the margins point inward.
-      const bool screen = hess_scale > 0.0 && hs_f >= FLT_MIN && msh_f >= 1.0e-30f;
+      const bool screen = msh_f >= 1.0e-30f;  // hess_scale > 0: (float) of it >= FLT_MIN above
       const float scr_h = msh_f * (1.0f - 1.0e-5f);
       const bool screen_cnt = screen && min_data_in_leaf >= 1 && num_data - min_data_in_leaf >= min_data_in_leaf &&
                               cf_f >= FLT_MIN && cf_f <= FLT_MAX;
