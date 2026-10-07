@@ -3066,7 +3066,8 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointInner(
 // joint table (joint_base[j]) when slot j of the thread's word is a byte with columns (bit j of valid_mask).
 // FLAT (cuda_plan key pair_code5_flat): joint_base[j] is the table's BYTE offset, a slot without columns points at the
 // kCode5DummyCells cells past the joint tables (never zeroed, never flushed; a code is < 32), and all six adds are
-// unconditional: no branch or predicate per slot, the cell's byte offset in one shift, mask and add.
+// unconditional: no branch or predicate per slot, the cell's byte offset in one shift, mask and add. Takes no more
+// registers than the branchy adds' 48 (40 at 4-6 rows in flight), so the occupancy API can take taller blocks.
 constexpr uint32_t kCode5DummyCells = 32;
 template <bool FLAT>
 __device__ __forceinline__ void Code5WordAdd(int32_t* shared_joint, const uint32_t (&joint_base)[6],
@@ -3148,7 +3149,8 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
     }
     if (FLAT) {
       // byte offsets; a slot without columns adds into the dummy cells past the tables
-      joint_base[j] = static_cast<uint32_t>(sizeof(int32_t)) * (((valid_mask >> j) & 1u) ? joint_base[j] : whole_row_joint);
+      joint_base[j] = static_cast<uint32_t>(sizeof(int32_t)) *
+                      (((valid_mask >> j) & 1u) ? joint_base[j] : whole_row_joint);
     }
   }
   __syncthreads();
@@ -3182,6 +3184,25 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
         for (int j = 0; j < kB; ++j) Code5WordAdd<FLAT>(shared_joint, joint_base, valid_mask, w[j], g[j]);
         inner_data_index += kB * by;
       }
+    }
+    if (FLAT && i < num_iteration_this) {
+      // the last (fewer than kB) rows as one batch: a position past them repeats the first and adds a zero gradient
+      // (adding 0 changes no cell), so the tail costs one round trip instead of one per row
+      const data_size_t rest = num_iteration_this - i;
+      data_size_t idx[kB];
+#pragma unroll
+      for (int j = 0; j < kB; ++j) {
+        idx[j] = __ldg(data_indices_ref_this_block + inner_data_index + (j < rest ? j * by : 0));
+      }
+      int32_t g[kB];
+      uint32_t w[kB];
+#pragma unroll
+      for (int j = 0; j < kB; ++j) g[j] = j < rest ? __ldg(cuda_gradients_and_hessians + idx[j]) : 0;
+#pragma unroll
+      for (int j = 0; j < kB; ++j) w[j] = __ldcs(code_ptr + static_cast<size_t>(idx[j]) * row_words);
+#pragma unroll
+      for (int j = 0; j < kB; ++j) Code5WordAdd<FLAT>(shared_joint, joint_base, valid_mask, w[j], g[j]);
+      i = num_iteration_this;
     }
     for (; i < num_iteration_this; ++i) {
       const data_size_t row = __ldg(data_indices_ref_this_block + inner_data_index);
@@ -3492,9 +3513,11 @@ static int PairJointCode5MaxThreads(const PairJointKernelFn kernel) {
 // height launches. Memoised per device and shape.
 // 4 rows in flight per thread: the kernel then needs 48 registers, and the occupancy it buys outweighs deeper
 // batches (construct per round, 60 rounds: 4 rows 78 ms, 8 rows 89 ms at 64 registers, 12 / 16 rows 90 / 89 ms;
-// 3 or 5 rows under a 40-register cap 80 / 78 ms)
+// 3 or 5 rows under a 40-register cap 80 / 78 ms). cuda_plan key pair_code5_flat: the branch-free build needs 40
+// registers at 4, 5 or 6 rows (48 warps per SM in 24-row blocks); construct per round, same binary, flat off 1.305 ms:
+// 4 rows 1.275, 5 rows 1.242 (with the batched tail), 6 rows 1.330, 8 rows (48 registers) 1.298.
 static PairJointKernelFn PairJointCode5WordKernel(const bool flat) {
-  return flat ? CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<4, true> :
+  return flat ? CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true> :
                 CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<4, false>;
 }
 static int PairJointCode5WordRows(const int row_words, const size_t smem_bytes, const int num_grad_quant_bins,

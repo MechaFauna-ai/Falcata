@@ -408,8 +408,10 @@ struct FalcataPlan {
   bool pair_code5_l2_store = true;  // key: pair_code5_l2_store
   // pair_code5_words: the six adds of a code word without a branch per byte slot: a slot without columns adds into
   // 32 dummy cells past the joint tables (never flushed; 128 more bytes of shared memory, taken only where the block
-  // still fits the device's default), and the cells are addressed by precomputed byte offsets. Same cells of the
-  // flushed tables, same adds: bit-identical.
+  // still fits the device's default), and the cells are addressed by precomputed byte offsets. The build needs fewer
+  // registers (40 instead of 48 here), so the occupancy API takes taller blocks; 5 rows in flight per thread, the
+  // thread's last rows as one batch (unused positions add a zero gradient). Same cells of the flushed tables, same
+  // nonzero adds: bit-identical.
   bool pair_code5_flat = true;      // key: pair_code5_flat
   // pair_hist on levels with several leaf pairs: every leaf takes the largest
   // leaf's rows per thread, so small leaves fill a few whole blocks instead of
