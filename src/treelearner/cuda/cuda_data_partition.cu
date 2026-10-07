@@ -1453,7 +1453,8 @@ __device__ __forceinline__ int HybridFlatBlockDesc(
 // handled by thread r % blockDim.x in pass r / blockDim.x, so pass k's warp w produces ballot word
 // k * (blockDim.x / 32) + w -- the same rows per word, the same words and block totals as ROWS = 1 with a block of
 // the full chunk. All of a thread's index loads are issued before its bin loads.
-template <int ROWS>
+// BLOCK > 0 (cuda_plan key apply_genbit_rows): the launch's blockDim.x as a compile-time constant; 0: blockDim.x
+template <int ROWS, int BLOCK = 0>
 __device__ __forceinline__ void HybridGenBitChunk(
   const CUDAHybridApplyDescriptor& d,
   const unsigned int block_x,
@@ -1462,14 +1463,15 @@ __device__ __forceinline__ void HybridGenBitChunk(
   data_size_t* block_to_left_offset_buffer,
   data_size_t* block_to_right_offset_buffer,
   uint16_t* shared_mem_buffer) {
-  const unsigned int chunk_rows = ROWS * blockDim.x;
-  const unsigned int words_per_pass = blockDim.x / WARPSIZE;
+  const unsigned int block_dim = BLOCK > 0 ? static_cast<unsigned int>(BLOCK) : blockDim.x;
+  const unsigned int chunk_rows = ROWS * block_dim;
+  const unsigned int words_per_pass = block_dim / WARPSIZE;
   const unsigned int chunk_words = chunk_rows / WARPSIZE;
   const data_size_t chunk_start = static_cast<data_size_t>(block_x * chunk_rows);
   data_size_t global_data_index[ROWS];
 #pragma unroll
   for (int k = 0; k < ROWS; ++k) {
-    const data_size_t local_data_index = chunk_start + static_cast<data_size_t>(k * blockDim.x + threadIdx.x);
+    const data_size_t local_data_index = chunk_start + static_cast<data_size_t>(k * block_dim + threadIdx.x);
     global_data_index[k] = local_data_index < d.num_data_in_leaf ?
       cuda_data_indices[d.leaf_data_start + local_data_index] : -1;
   }
@@ -1560,6 +1562,32 @@ __global__ void HybridGenBitVectorUpdateLeafIndexBatchKernel(
   }
   HybridGenBitChunk<ROWS>(d, blockIdx.x, cuda_data_indices, block_to_left_offset,
     block_to_left_offset_buffer, block_to_right_offset_buffer, shared_mem_buffer);
+}
+
+// cuda_plan key apply_genbit_rows: the host-launched flat path of HybridGenBitVectorUpdateLeafIndexBatchKernel with each
+// 1024-row chunk taken by SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS threads whose count is a compile-time constant
+// (the per-row offsets become immediates instead of per-row address registers) and that block's launch bound. Chunk
+// row r stays in ballot word r / 32, bit r % 32 at any rows per thread, and each chunk's left / right totals are the
+// same: bit-identical.
+template <int ROWS>
+__global__ void __launch_bounds__(SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS) HybridGenBitVectorFlatRowsKernel(
+  const CUDAHybridApplyDescriptor* descs,
+  const data_size_t* cuda_data_indices_param,
+  uint16_t* block_to_left_offset,
+  data_size_t* block_to_left_offset_buffer,
+  data_size_t* block_to_right_offset_buffer,
+  const int num_split_descs,
+  const int total_flat_blocks) {
+  constexpr int kBlock = SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS;
+  __shared__ uint16_t shared_mem_buffer[WARPSIZE];
+  for (int flat = static_cast<int>(blockIdx.x); flat < total_flat_blocks; flat += static_cast<int>(gridDim.x)) {
+    const int desc_index = HybridFlatBlockDesc(descs, num_split_descs, flat);
+    const CUDAHybridApplyDescriptor d = descs[desc_index];
+    HybridGenBitChunk<ROWS, kBlock>(d, static_cast<unsigned int>(flat - d.flat_block_start),
+      cuda_data_indices_param, block_to_left_offset,
+      block_to_left_offset_buffer, block_to_right_offset_buffer, shared_mem_buffer);
+    __syncthreads();
+  }
 }
 
 // per-split block-offset prefix sum + children leaf metadata update; one block
@@ -2214,13 +2242,13 @@ HybridSplitInnerFusedBatchRowsKernel(
                                                                                  shared_warp_scan);
 }
 
-// cuda_plan key apply_inner_rows: whether the wide build (wide_rows rows per thread, wide_block threads) keeps
-// strictly more rows in flight per SM than the default build (rows, block) on the current device (occupancy API,
-// memoized per device, kernel and block size)
-template <typename KernelFn>
-bool ApplyInnerRowsTakes(const KernelFn wide, const int wide_block, const int wide_rows, const KernelFn base,
-                         const int block, const int rows) {
-  if (!FalcataPlan::Get().apply_inner_rows || wide_block < WARPSIZE || wide_block * wide_rows != block * rows) {
+// cuda_plan keys apply_inner_rows / apply_genbit_rows: whether the wide build (wide_rows rows per thread, wide_block
+// threads) keeps strictly more rows in flight per SM than the default build (rows, block) on the current device
+// (occupancy API, memoized per device, kernel and block size)
+template <typename WideFn, typename BaseFn>
+bool ApplyRowsTakes(const WideFn wide, const int wide_block, const int wide_rows, const BaseFn base,
+                    const int block, const int rows) {
+  if (wide_block < WARPSIZE || wide_block * wide_rows != block * rows) {
     return false;
   }
   int device = 0;
@@ -2265,7 +2293,7 @@ void LaunchHybridSplitInnerFusedBatchKernel(
     constexpr int kWideRows = 2 * ROWS;
     auto* wide = HybridSplitInnerFusedBatchRowsKernel<kWideRows, USE_NCCL_REDUCE, USE_GRAD_DISCRETIZED>;
     const int wide_block = block * ROWS / kWideRows;
-    if (ApplyInnerRowsTakes(wide, wide_block, kWideRows, kernel, block, ROWS)) {
+    if (FalcataPlan::Get().apply_inner_rows && ApplyRowsTakes(wide, wide_block, kWideRows, kernel, block, ROWS)) {
       wide<<<grid, wide_block, 0, stream>>>(FALCATA_SPLIT_INNER_FUSED_ARGS);
       return;
     }
@@ -2336,7 +2364,17 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
   // cuda_plan key apply_row_batch: each chunk of block_dim rows taken by block_dim / 4 threads of 4 rows
   constexpr int kApplyRows = 4;
   const bool apply_row_batch = FalcataPlan::Get().apply_row_batch;
-  if (apply_row_batch) {
+  // cuda_plan key apply_genbit_rows: the flat gen-bit at twice apply_row_batch's rows per thread with a compile-time
+  // block, where the occupancy API gives it strictly more rows in flight per SM than the default build
+  constexpr int kGenBitWideRows = 2 * kApplyRows;
+  if (apply_row_batch && FalcataPlan::Get().apply_genbit_rows &&
+      ApplyRowsTakes(HybridGenBitVectorFlatRowsKernel<kGenBitWideRows>, block_dim / kGenBitWideRows, kGenBitWideRows,
+                     HybridGenBitVectorUpdateLeafIndexBatchKernel<kApplyRows>, block_dim / kApplyRows, kApplyRows)) {
+    HybridGenBitVectorFlatRowsKernel<kGenBitWideRows><<<flat_grid, block_dim / kGenBitWideRows, 0, cuda_streams_[0]>>>(
+      descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
+      cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(), num_splits,
+      total_flat_blocks);
+  } else if (apply_row_batch) {
     HybridGenBitVectorUpdateLeafIndexBatchKernel<kApplyRows><<<flat_grid, block_dim / kApplyRows, 0, cuda_streams_[0]>>>(
       descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
       cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
