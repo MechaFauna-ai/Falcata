@@ -424,6 +424,12 @@ struct FalcataPlan {
   // SM) instead of the height with the most resident warps. Same rows, other block grouping; integer sums:
   // bit-identical.
   bool pair_code5_tall = true;      // key: pair_code5_tall
+  // pair_code5_words: the code-word construct's flush maps every (slot, marginal) item of a thread's 6 byte slots
+  // onto one flat threadIdx.y-strided index instead of 6 serial per-slot passes (most of blockDim.y's warps have no
+  // marginal to add for a given slot with few bins per feature). Composed only with pair_code5_flat (the branch-free
+  // adds this was measured on); a template choice, not a runtime branch (keeps the unchosen path's registers out of
+  // the allocation). Same cells, same per-cell wrapping sum, same visitation order: bit-identical.
+  bool pair_code5_epilogue = true;  // key: pair_code5_epilogue
   // pair_hist on levels with several leaf pairs: every leaf takes the largest
   // leaf's rows per thread, so small leaves fill a few whole blocks instead of
   // spreading a few rows over every block row (each block zeroes and flushes
@@ -750,6 +756,7 @@ struct FalcataPlan {
     if (key == "pair_code5_flat") return &pair_code5_flat;
     if (key == "pair_code5_slots") return &pair_code5_slots;
     if (key == "pair_code5_tall") return &pair_code5_tall;
+    if (key == "pair_code5_epilogue") return &pair_code5_epilogue;
     if (key == "level_row_blocks") return &level_row_blocks;
     if (key == "all_rows_direct") return &all_rows_direct;
     if (key == "apply_row_batch") return &apply_row_batch;
