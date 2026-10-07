@@ -1021,6 +1021,40 @@ A fourth overnight agentic search took about 18% off that round with four `cuda_
 - **Only Numerai-shaped data takes the view:** a 4-bit compact view under feature sampling with at most 32 cells per byte pair. Of the evaluator's five guard workloads, covtype, year, higgs and missing build no compact view and numerai53-example's trees decline the view; all five run at master's speed (0.994-1.003x per round, 3 pairs each; covtype's 0.996x came from the two arms' different tuner picks: 0.999x with the tuner off in both).
 - **The search's lineage:** c079 (the view and the code-word construct) 1.194x against master cf10b79a, c077 (an independent implementation of the view on master) 1.058x, c088 (c077's fill pack, stores and gate ported into c079, the fill's slot loop) 1.224x; at 30k trees c079 238.8 and c088 251.4 trees/s against master's 202.2 in the search's single runs.
 
+## 10e. The Numerai round after #61: the code-word construct's grid, adds and flush, the level readbacks, the tree start and the level apply's row builds
+
+After §10d a numerai53 benchmark-split round was about 3.8 ms on the GPU timeline (the sixth search's nsys profile of master):
+- the code-word construct (`pair_code5_words`) 1.27 ms (33%) and the code-view fill 1.11 ms (29%);
+- the batched apply's gen-bit kernel 0.35 ms and its fused partition kernel 0.18 ms;
+- the small level kernels, the level readbacks and the tree start.
+
+A sixth overnight agentic search took about 8% off that round with nine `cuda_plan` keys, all default on and bit-identical, and a tenth that is off by default (identity keys in `ablation.py`, flip cells in the lattice). None adds device memory.
+
+**The code-word construct (`pair_code5_flat`, `pair_code5_slots`, `pair_code5_tall`, `pair_code5_epilogue`).**
+- Branch-free adds: a slot without columns adds into 32 dummy cells past the joint tables, which are never zeroed or flushed (128 bytes of shared memory, taken where the block still fits the device's default), and cells are byte offsets. The kernel needs 40 registers instead of 48; 5 rows are in flight per thread, a thread's last rows added as one batch with zero gradients at the unused positions.
+- The level grid sized to the kernel's resident block slots: one rows-per-thread for all of a level's pairs, the smallest whose blocks fit the occupancy API's blocks per SM times the SM count; each block the tallest the kernel can launch (32 × 32 threads, one per SM).
+- The flush (`pair_code5_epilogue`, **off by default**): every (slot, marginal) item of a thread's six byte slots on one flat `threadIdx.y`-strided index, instead of six serial passes in which most of the block's 32 y-warps had no marginal to add. The search measured it only together with the slot grid and tall blocks; switched on alone against off in this build it made a round 0.5% slower (0.995x [0.994, 0.996], 8 of 8 pairs), so it stays a key for other block shapes and GPUs.
+- Construct 1.25 → 1.12 ms per round with the slot grid and tall blocks on the branch-free kernel (nsys, same binary).
+
+**The level readbacks (`readback_fused`).** In the host-launched level loop (single GPU, scalar leaves), the level sync kernel copies each leaf entry it writes into the best-split readback's mapped pinned staging, and the split tree-structure body copies its split's 18 ints into the split-info staging. The default-stream copy kernels after them and their waits go; the host waits with one device synchronize and reads the staging as before.
+
+**The tree start (`const_hess_reads`, `dirty_final_slots`, `hist_zero_quant_half`).**
+- With a constant hessian (the objective's `IsConstantHessian`, no GOSS, no weights) the discretizer's min/max and discretize kernels take row 0's hessian instead of reading the hessian array (5.5M floats, twice per tree on Numerai).
+- After a tree whose level prefix ended on a complete final level, the next tree zeroes only the histogram slots of the leaves that existed before that level.
+- Quantized single-plane training zeroes only the half of each slot that quantized kernels write.
+
+**The level apply's row builds (`apply_inner_rows`, `apply_genbit_rows`).** The batched apply's fused partition and gen-bit kernels (4 rows per thread in 256-thread blocks, compiled under a 1024-thread launch bound at 64 and 40 registers) get second builds at 8 rows per thread in 128-thread blocks, with the block size a compile-time constant: 56 and 34 registers, 9 and 12 blocks per SM, 2.25x and 2x the rows in flight. The host takes them only where the occupancy API gives strictly more rows in flight per SM. Split-inner 0.176 → 0.118 ms per round, gen-bit 0.347 → 0.336 ms (nsys).
+
+| | master (3d72b5c5) | this branch | |
+|---|---|---|---|
+| ms per round (numerai53 benchmark split, tuner on, 30000 rounds timed from 200, 3 interleaved pairs) | 3.950 | 3.607 | 1.095x [1.053, 1.141] |
+| trees/s at 30k trees (`bench.py` numerai-deep cell, ABCCBA; with `pair_code5_epilogue` on) | 246.2 | 268.2 | 1.090x |
+| peak device memory (per process) | 11,348 MiB | 11,348 MiB | |
+
+- **The same model on every run:** tree md5 `1c68bf82…` at 30k trees, holdout corr 0.0239, sharpe 1.40. Switching any one key, any group, or all ten trains the same model.
+- **What each key is worth**, switched off alone in this branch's build (same binary, 3000 rounds timed from 200, 3 pairs; measured while `pair_code5_epilogue` was still on): `pair_code5_slots` (and with it `pair_code5_tall`) 1.042x, `apply_inner_rows` 1.019x, `pair_code5_flat` (and with it the epilogue) 1.017x, `readback_fused` 1.017x, the three tree-start keys together 1.011x, `pair_code5_tall` 1.008x, `apply_genbit_rows` 1.006x.
+- **Reach:** the four construct keys run only on the code view (§10d: a 4-bit compact view under feature sampling with at most 32 joint cells per byte pair). The other six run on every hybrid level-batched training: the evaluator's five guard workloads, none of which takes the code view, were 1.02-1.07x faster per round (3 pairs each).
+
 ---
 
 ## Multi-GPU: level-batched NCCL all-reduce
