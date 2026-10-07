@@ -286,13 +286,21 @@ struct FalcataPlan {
   // writes: bit-identical.
   bool find_loads_batched = true;   // key: find_loads_batched
   // the G=32 generic warp-find template (one dataset-wide task fails the all-narrow / all-spread tests, e.g. a
-  // mix of 2-bin and 200-bin columns): WarpFindBest's per-task runtime PPL choice adds two intermediate tiers
-  // (PPL=2 for num_positions <= 64, PPL=4 for <= 128) between the existing PPL=1 (<= 32) and PPL=8 (<= 256), so a
-  // task whose real scan width is, say, 90 positions runs the 4-slot unrolled prefix/prune/gain loop instead of
-  // the 8-slot one. WarpFindBest is already generic in PPL (its loops are `for (i < PPL)`, and the cross-lane
+  // mix of 2-bin and 200-bin columns): WarpFindBest's per-task runtime PPL choice adds one tier per 32 positions
+  // (PPL = ceil(num_positions / 32), 2..7) between the existing PPL=1 (<= 32) and PPL=8 (<= 256), so a task whose
+  // real scan width is, say, 90 positions runs the 3-slot unrolled prefix/prune/gain loop instead of the 8-slot
+  // one. WarpFindBest is already generic in PPL (its loops are `for (i < PPL)`, and the cross-lane
   // reduction already covers any PPL); only the dispatch and this gate are new. Same positions, same exact
   // first-maximum selection: bit-identical.
   bool warp_find_mid_ppl = true;    // key: warp_find_mid_ppl
+  // the G=32 warp-find template's prune on tasks of more than 32 scan positions (several per lane, e.g. 255-bin
+  // continuous columns): the fp32 gain bounds come straight from the prefix's int32 halves (fp32 converts and
+  // multiplies) instead of the exact fp64 unpack per position, which on a part with 1/64-rate fp64 dominated the
+  // kernel; the lower bound that prunes others is taken from one position per lane (the largest bound among those
+  // passing approximate gates), verified with the exact fp64 gates. Positions failing the exact gates are still
+  // rejected by the gain loop's exact unpack. Only which hopeless positions skip the exact gain changes, never the
+  // winner: bit-identical. Engaged where min_sum_hessian_in_leaf > 0 (every valid side's denominator positive).
+  bool find_prune_fp32 = true;      // key: find_prune_fp32
   // 4-bit compact quantized construct with one thread per packed byte: the two
   // nibbles of a byte index one cell of a joint (lo, hi) shared histogram, so a
   // row costs one shared atomic per byte instead of one per column; each
@@ -696,6 +704,7 @@ struct FalcataPlan {
     if (key == "warp_find_strided") return &warp_find_strided;
     if (key == "find_loads_batched") return &find_loads_batched;
     if (key == "warp_find_mid_ppl") return &warp_find_mid_ppl;
+    if (key == "find_prune_fp32") return &find_prune_fp32;
     if (key == "pair_hist") return &pair_hist;
     if (key == "per_pair_rows") return &per_pair_rows;
     if (key == "compact_row_interleave") return &compact_row_interleave;
