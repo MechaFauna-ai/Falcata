@@ -1021,6 +1021,31 @@ A fourth overnight agentic search took about 18% off that round with four `cuda_
 - **Only Numerai-shaped data takes the view:** a 4-bit compact view under feature sampling with at most 32 cells per byte pair. Of the evaluator's five guard workloads, covtype, year, higgs and missing build no compact view and numerai53-example's trees decline the view; all five run at master's speed (0.994-1.003x per round, 3 pairs each; covtype's 0.996x came from the two arms' different tuner picks: 0.999x with the tuner off in both).
 - **The search's lineage:** c079 (the view and the code-word construct) 1.194x against master cf10b79a, c077 (an independent implementation of the view on master) 1.058x, c088 (c077's fill pack, stores and gate ported into c079, the fill's slot loop) 1.224x; at 30k trees c079 238.8 and c088 251.4 trees/s against master's 202.2 in the search's single runs.
 
+## 10e. The Numerai round after #61: the code-word construct's grid, block and adds
+
+After §10d a numerai53 benchmark-split round was about 3.8 ms on the GPU timeline, and the code-word construct (`pair_code5_words`) was 1.27 ms of it (33%).
+- Its level grid came from the generic formula, whose per-pair cap of 160 blocks predates two of these blocks per SM. Level 1 launched 160 blocks and levels 2-9 launched 186-409 blocks of 32 × 20 threads, against 340 resident slots: partial second waves and SMs running a single block (ncu: achieved occupancy 68-72% of a theoretical 83%).
+- Each of a word's six shared atomics took about 8 instructions: a branch per byte slot, predicate re-derivation, shift, mask, add, address and the atomic.
+
+A fifth overnight agentic search added three `cuda_plan` keys, all default on and bit-identical (identity keys in `ablation.py`, flip cells in the lattice). None of them adds device memory.
+
+**The grid sized to the resident slots (`pair_code5_slots`).** A level takes one rows-per-thread R for all its leaf pairs: the smallest R whose blocks fit the kernel's resident slots (blocks per SM by the occupancy API, times the SM count), at least the min-rows-per-thread knob and within the packed-cell rows cap. The block map and the kernel's per-pair grid follow it.
+
+**The tallest block (`pair_code5_tall`).** Where the grid is slot-sized, a block is the tallest the kernel can launch: 32 × 32 threads, one per SM, 170 per level. Every block zeroes and finally flushes all of the row's joint tables, so fewer blocks beat more resident warps. Together the two keys took the construct from 1.264 to 1.089 ms per round (nsys) and raised its DRAM throughput from 59-78% to 83% of peak.
+
+**Branch-free adds (`pair_code5_flat`).** A slot without columns adds into 32 dummy cells past the joint tables, which are never zeroed or flushed (128 bytes of shared memory, taken where the block still fits the device's default), and cells are byte offsets. This halves the kernel's instructions (−51%) and drops its registers from 48 to 40. Five rows are in flight per thread, and a thread's last rows are added as one batch with zero gradients at the unused positions.
+
+| | master (3d72b5c5) | this branch | |
+|---|---|---|---|
+| ms per round (numerai53 benchmark split, tuner on, 30000 rounds timed from 200, 3 interleaved pairs) | 3.974 | 3.791 | 1.048x [1.037, 1.060] |
+| trees/s at 30k trees (`bench.py` numerai-deep cell, ABBA) | 245.1 | 255.8 | 1.044x |
+| peak device memory (per process) | 11,348 MiB | 11,348 MiB | |
+
+- **The same model on every run:** tree md5 `1c68bf82…` at 30k trees, holdout corr 0.0239, sharpe 1.40. Switching off any one key, or all three, trains the same model.
+- **What each key is worth**, switched off alone in the branch's build (same binary, 3000 rounds timed from 200, 3 pairs): `pair_code5_slots` (and with it `pair_code5_tall`) 1.039x, `pair_code5_flat` 1.019x, `pair_code5_tall` 1.008x.
+- **Same reach as §10d:** only the code view takes these paths, i.e. a 4-bit compact view under feature sampling with at most 32 joint cells per byte pair (lo_span × hi_span ≤ 32, the 5-bit code). Bytes pairing 6-bin or NaN-carrying columns decline the view and run master's nibble kernels. The guard workloads run at master's speed (0.997-1.001x per round).
+- **Not included:** lane-major joint tables (`pair_code5_lane_major`, the search's c093). Shared-atomic bank conflicts disappeared, but the construct did not get faster (1.007x [0.930, 1.097] against master on its own; 0.991x on top of the branch-free adds, where the combined kernel needs 56 registers).
+
 ---
 
 ## Multi-GPU: level-batched NCCL all-reduce
