@@ -428,8 +428,9 @@ struct FalcataPlan {
   // onto one flat threadIdx.y-strided index instead of 6 serial per-slot passes (most of blockDim.y's warps have no
   // marginal to add for a given slot with few bins per feature). Composed only with pair_code5_flat (the branch-free
   // adds this was measured on); a template choice, not a runtime branch (keeps the unchosen path's registers out of
-  // the allocation). Same cells, same per-cell wrapping sum, same visitation order: bit-identical.
-  bool pair_code5_epilogue = true;  // key: pair_code5_epilogue
+  // the allocation). Same cells, same per-cell wrapping sum, same visitation order: bit-identical. Off by default:
+  // with pair_code5_slots / pair_code5_tall's tall blocks the flat flush made a Numerai round 0.5% slower (RTX 5090).
+  bool pair_code5_epilogue = false;  // key: pair_code5_epilogue
   // pair_hist on levels with several leaf pairs: every leaf takes the largest
   // leaf's rows per thread, so small leaves fill a few whole blocks instead of
   // spreading a few rows over every block row (each block zeroes and flushes
