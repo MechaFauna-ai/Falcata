@@ -1564,11 +1564,11 @@ __global__ void HybridGenBitVectorUpdateLeafIndexBatchKernel(
     block_to_left_offset_buffer, block_to_right_offset_buffer, shared_mem_buffer);
 }
 
-// cuda_plan key apply_genbit_rows: the host-launched flat path of HybridGenBitVectorUpdateLeafIndexBatchKernel with each
-// 1024-row chunk taken by SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS threads whose count is a compile-time constant
-// (the per-row offsets become immediates instead of per-row address registers) and that block's launch bound. Chunk
-// row r stays in ballot word r / 32, bit r % 32 at any rows per thread, and each chunk's left / right totals are the
-// same: bit-identical.
+// cuda_plan key apply_genbit_rows: the host-launched flat path of HybridGenBitVectorUpdateLeafIndexBatchKernel with
+// each 1024-row chunk taken by SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS threads whose count is a compile-time
+// constant (the per-row offsets become immediates instead of per-row address registers) and that block's launch
+// bound. Chunk row r stays in ballot word r / 32, bit r % 32 at any rows per thread, and each chunk's left / right
+// totals are the same: bit-identical.
 template <int ROWS>
 __global__ void __launch_bounds__(SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS) HybridGenBitVectorFlatRowsKernel(
   const CUDAHybridApplyDescriptor* descs,
@@ -2229,7 +2229,7 @@ __global__ void __launch_bounds__(SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION) Hybri
 // flight in registers. The default build's bound (a 1024-thread block) caps it at 64 registers, which with
 // apply_row_batch's 4-row, 256-thread blocks leaves fewer blocks resident than the SM's thread limit allows; the
 // host takes the wider build only where the occupancy API gives it strictly more rows in flight per SM (resident
-// blocks x threads x rows) at the launch's block size (ApplyInnerRowsTakes). The chunk -> (pass, thread) mapping
+// blocks x threads x rows) at the launch's block size (ApplyRowsTakes). The chunk -> (pass, thread) mapping
 // keeps ballot word r / 32 and bit r % 32 for chunk row r at any rows per thread (the gen-bit kernel's layout), and
 // the same rows, positions and stores: bit-identical.
 template <int ROWS, bool USE_NCCL_REDUCE, bool USE_GRAD_DISCRETIZED>
@@ -2293,7 +2293,9 @@ void LaunchHybridSplitInnerFusedBatchKernel(
     constexpr int kWideRows = 2 * ROWS;
     auto* wide = HybridSplitInnerFusedBatchRowsKernel<kWideRows, USE_NCCL_REDUCE, USE_GRAD_DISCRETIZED>;
     const int wide_block = block * ROWS / kWideRows;
-    if (FalcataPlan::Get().apply_inner_rows && ApplyRowsTakes(wide, wide_block, kWideRows, kernel, block, ROWS)) {
+    // the wide build's compile-time block size must be the launch's
+    if (FalcataPlan::Get().apply_inner_rows && wide_block == SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / kWideRows &&
+        ApplyRowsTakes(wide, wide_block, kWideRows, kernel, block, ROWS)) {
       wide<<<grid, wide_block, 0, stream>>>(FALCATA_SPLIT_INNER_FUSED_ARGS);
       return;
     }
