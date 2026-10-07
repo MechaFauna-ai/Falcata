@@ -285,6 +285,14 @@ struct FalcataPlan {
   // round trip per load behind each early exit. Same values, same exits and
   // writes: bit-identical.
   bool find_loads_batched = true;   // key: find_loads_batched
+  // the G=32 generic warp-find template (one dataset-wide task fails the all-narrow / all-spread tests, e.g. a
+  // mix of 2-bin and 200-bin columns): WarpFindBest's per-task runtime PPL choice adds two intermediate tiers
+  // (PPL=2 for num_positions <= 64, PPL=4 for <= 128) between the existing PPL=1 (<= 32) and PPL=8 (<= 256), so a
+  // task whose real scan width is, say, 90 positions runs the 4-slot unrolled prefix/prune/gain loop instead of
+  // the 8-slot one. WarpFindBest is already generic in PPL (its loops are `for (i < PPL)`, and the cross-lane
+  // reduction already covers any PPL); only the dispatch and this gate are new. Same positions, same exact
+  // first-maximum selection: bit-identical.
+  bool warp_find_mid_ppl = true;    // key: warp_find_mid_ppl
   // 4-bit compact quantized construct with one thread per packed byte: the two
   // nibbles of a byte index one cell of a joint (lo, hi) shared histogram, so a
   // row costs one shared atomic per byte instead of one per column; each
@@ -687,6 +695,7 @@ struct FalcataPlan {
     if (key == "warp_find_spread") return &warp_find_spread;
     if (key == "warp_find_strided") return &warp_find_strided;
     if (key == "find_loads_batched") return &find_loads_batched;
+    if (key == "warp_find_mid_ppl") return &warp_find_mid_ppl;
     if (key == "pair_hist") return &pair_hist;
     if (key == "per_pair_rows") return &per_pair_rows;
     if (key == "compact_row_interleave") return &compact_row_interleave;

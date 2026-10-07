@@ -5827,6 +5827,7 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   const bool quant_bagging_ridge,
   const bool spread,
   const bool narrow_bins,
+  const bool mid_ppl,
   CUDASplitInfo* cuda_best_split_info) {
   const unsigned int item = blockIdx.x * (128u / G) + threadIdx.x / G;
   const unsigned int nt = static_cast<unsigned int>(num_used_tasks);
@@ -5910,6 +5911,11 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
     ((!task->reverse && task->na_as_missing && task->mfb_offset == 1) ? 1u : 0u);
   // warp_find_narrow: a task with at most 8 bins has at most 8 positions
   const bool one_per_lane = (spread && num_positions <= 32u) || (narrow_bins && task->num_bin <= 8);
+  // warp_find_mid_ppl (G == 32 only; the G == 4 / G == 8 templates always force PPL to 2 / 1 below regardless of
+  // which tier is picked here): a task whose real scan width is 33..128 positions does not need the full 8-slot
+  // unrolled loop PPL=8 reaches for every width up to 256.
+  const bool mid64 = G == 32 && mid_ppl && num_positions <= 64u;
+  const bool mid128 = G == 32 && mid_ppl && num_positions <= 128u;
 #define FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, PPL) \
   WarpFindBest<REV, B16, ACC_T, (G == 4 ? 2 : G == 8 ? 1 : PPL), G, STRIDED && G == 4>(reinterpret_cast<const ACC_T*>(hist_in_leaf) + task->hist_offset, \
     task, lambda_l2, max_delta_step, min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split, parent_gain, \
@@ -5917,6 +5923,10 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
 #define FALCATA_WARP_FIND(REV, B16, ACC_T) \
   if (G < 32 || one_per_lane) { \
     FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, 1); \
+  } else if (mid64) { \
+    FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, 2); \
+  } else if (mid128) { \
+    FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, 4); \
   } else { \
     FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, 8); \
   }
@@ -5961,11 +5971,12 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
     // warp_find_narrow with every task at most 8 bins: four
     const bool spread = FalcataPlan::Get().warp_find_spread;
     const bool narrow = FalcataPlan::Get().warp_find_narrow;
+    const bool mid_ppl = FalcataPlan::Get().warp_find_mid_ppl;
     #define FindBestSplitsDiscretizedForLevelWarpKernel_ARGS \
       cuda_is_feature_used_bytree_.RawData(), num_tasks_, num_launch_tasks, cuda_split_find_tasks_.RawData(), \
       compact_tasks ? cuda_used_task_indices_.RawDataReadOnly() : nullptr, pair_descs, num_pairs, min_data_in_leaf_, \
       min_sum_hessian_in_leaf_, min_gain_to_split_, lambda_l2_, max_delta_step_, grad_scale, hess_scale, \
-      quant_bagging_ridge_, spread, narrow, cuda_best_split_info_.RawData()
+      quant_bagging_ridge_, spread, narrow, mid_ppl, cuda_best_split_info_.RawData()
     if (spread && warp_find_max_positions_ <= 8 && FalcataPlan::Get().warp_find_strided &&
         FalcataPlan::Get().find_loads_batched) {
       // cuda_plan keys warp_find_strided (the 4-lane groups' positions strided over the lanes) and
