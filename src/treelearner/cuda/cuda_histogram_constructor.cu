@@ -3064,12 +3064,26 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointInner(
 
 // One row of the code-word construct (cuda_plan key pair_code5_words): the six codes of word w, each to its byte's
 // joint table (joint_base[j]) when slot j of the thread's word is a byte with columns (bit j of valid_mask).
+// FLAT (cuda_plan key pair_code5_flat): joint_base[j] is the table's BYTE offset, a slot without columns points at the
+// kCode5DummyCells cells past the joint tables (never zeroed, never flushed; a code is < 32), and all six adds are
+// unconditional: no branch or predicate per slot, the cell's byte offset in one shift, mask and add.
+constexpr uint32_t kCode5DummyCells = 32;
+template <bool FLAT>
 __device__ __forceinline__ void Code5WordAdd(int32_t* shared_joint, const uint32_t (&joint_base)[6],
                                              const uint32_t valid_mask, const uint32_t w, const int32_t g) {
+  if (FLAT) {
+    char* const joint_bytes = reinterpret_cast<char*>(shared_joint);
 #pragma unroll
-  for (int j = 0; j < 6; ++j) {
-    if ((valid_mask >> j) & 1u) {
-      atomicAdd_block(shared_joint + joint_base[j] + ((w >> (5 * j)) & 31u), g);
+    for (int j = 0; j < 6; ++j) {
+      const uint32_t cell_bytes = (j == 0 ? (w << 2) : (w >> (5 * j - 2))) & (31u << 2);
+      atomicAdd_block(reinterpret_cast<int32_t*>(joint_bytes + (joint_base[j] + cell_bytes)), g);
+    }
+  } else {
+#pragma unroll
+    for (int j = 0; j < 6; ++j) {
+      if ((valid_mask >> j) & 1u) {
+        atomicAdd_block(shared_joint + joint_base[j] + ((w >> (5 * j)) & 31u), g);
+      }
     }
   }
 }
@@ -3082,7 +3096,7 @@ __device__ __forceinline__ void Code5WordAdd(int32_t* shared_joint, const uint32
 // in ConstructDiscretizedHistogramPairJointInner (same dim_y, per-block extents and per-thread rows by threadIdx.y),
 // every byte's cells get the same packed gradient per row in the same joint tables, and the flush is the same
 // marginal rule per byte: wrapping integer sums do not depend on grouping, so the histogram is the same.
-template <bool USE_16BIT_HIST, int kB>
+template <bool USE_16BIT_HIST, int kB, bool FLAT>
 __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordInner(
   const CUDALeafSplitsStruct* smaller_leaf_splits,
   int32_t* shared_joint,
@@ -3132,6 +3146,10 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
         valid_mask |= 1u << j;
       }
     }
+    if (FLAT) {
+      // byte offsets; a slot without columns adds into the dummy cells past the tables
+      joint_base[j] = static_cast<uint32_t>(sizeof(int32_t)) * (((valid_mask >> j) & 1u) ? joint_base[j] : whole_row_joint);
+    }
   }
   __syncthreads();
   const data_size_t* data_indices_ref_this_block = smaller_leaf_splits->data_indices_in_leaf + block_start;
@@ -3161,7 +3179,7 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
 #pragma unroll
         for (int j = 0; j < kB; ++j) idx[j] = __ldg(next_src + j * (has_next ? by : 0));
 #pragma unroll
-        for (int j = 0; j < kB; ++j) Code5WordAdd(shared_joint, joint_base, valid_mask, w[j], g[j]);
+        for (int j = 0; j < kB; ++j) Code5WordAdd<FLAT>(shared_joint, joint_base, valid_mask, w[j], g[j]);
         inner_data_index += kB * by;
       }
     }
@@ -3169,7 +3187,7 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
       const data_size_t row = __ldg(data_indices_ref_this_block + inner_data_index);
       const int32_t g = __ldg(cuda_gradients_and_hessians + row);
       const uint32_t w = __ldcs(code_ptr + static_cast<size_t>(row) * row_words);
-      Code5WordAdd(shared_joint, joint_base, valid_mask, w, g);
+      Code5WordAdd<FLAT>(shared_joint, joint_base, valid_mask, w, g);
       inner_data_index += by;
     }
   }
@@ -3187,7 +3205,8 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
     const uint32_t lo_span = spans[lo_col];
     const uint32_t hi_span = has_hi ? spans[lo_col + 1] : 1u;
     const uint32_t partition_hist_start = column_hist_offsets_full[part];
-    const int32_t* joint = shared_joint + joint_base[j];
+    // (FLAT: the table's cell offset read again, so the adds keep only the byte offsets)
+    const int32_t* joint = shared_joint + (FLAT ? joint_offsets[lo_col] : joint_base[j]);
     const uint32_t num_marginal = lo_span + (has_hi ? hi_span : 0u);
     for (uint32_t m = threadIdx.y; m < num_marginal; m += blockDim.y) {
       const bool is_lo = m < lo_span;
@@ -3255,7 +3274,7 @@ struct PairJointBlockPrefix {
   feature_partition_column_index_offsets, packed_partition_byte_offsets, num_data, min_data_in_leaf, \
   min_sum_hessian_in_leaf, per_pair_min_grid_dim_y, min_rows_per_thread, saturation_floor_total, \
   num_grad_quant_bins, whole_row_partitions, whole_row_joint, level_min_rows_per_thread, block_prefix
-template <bool ALL_ROWS, int BATCH, bool CODE5 = false, bool WORDS = false>
+template <bool ALL_ROWS, int BATCH, bool CODE5 = false, bool WORDS = false, bool FLAT = false>
 __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_PARAMS) {
   extern __shared__ int32_t shared_joint[];
   // cuda_plan key pair_block_map: the pair and block row this block stands for (see PairJointBlockPrefix)
@@ -3313,7 +3332,7 @@ __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_
   const bool direct = ALL_ROWS && num_data_smaller == num_data;
 #define FALCATA_PAIR_JOINT_INNER(B16, DIRECT) \
     if (WORDS) { \
-      ConstructDiscretizedHistogramPairJointCode5WordInner<B16, BATCH>( \
+      ConstructDiscretizedHistogramPairJointCode5WordInner<B16, BATCH, FLAT>( \
         smaller_struct, shared_joint, cuda_gradients_and_hessians, data, column_meta, num_compact_columns, \
         column_hist_offsets_full, feature_partition_column_index_offsets, packed_partition_byte_offsets, \
         dim_y, whole_row_partitions, whole_row_joint, level_min_rows_per_thread, block_y); \
@@ -3366,10 +3385,11 @@ CUDAConstructDiscretizedHistogramPairJointCappedKernel(FALCATA_PAIR_JOINT_BATCHE
 #undef FALCATA_PAIR_JOINT_MAXNREG
 
 // cuda_plan key pair_code5_words: the code-word construct (see ConstructDiscretizedHistogramPairJointCode5WordInner),
-// BATCH rows in flight per thread; gathering (per-level) launches only.
-template <int BATCH>
+// BATCH rows in flight per thread; gathering (per-level) launches only. FLAT (cuda_plan key pair_code5_flat): the
+// branch-free adds, with kCode5DummyCells more cells of dynamic shared memory past the joint tables.
+template <int BATCH, bool FLAT>
 __global__ void CUDAConstructDiscretizedHistogramPairJointCode5WordKernel(FALCATA_PAIR_JOINT_BATCHED_PARAMS) {
-  PairJointBatchedBody<false, BATCH, true, true>(FALCATA_PAIR_JOINT_BATCHED_ARGS);
+  PairJointBatchedBody<false, BATCH, true, true, FLAT>(FALCATA_PAIR_JOINT_BATCHED_ARGS);
 }
 #undef FALCATA_PAIR_JOINT_BATCHED_ARGS
 #undef FALCATA_PAIR_JOINT_BATCHED_PARAMS
@@ -3473,12 +3493,15 @@ static int PairJointCode5MaxThreads(const PairJointKernelFn kernel) {
 // 4 rows in flight per thread: the kernel then needs 48 registers, and the occupancy it buys outweighs deeper
 // batches (construct per round, 60 rounds: 4 rows 78 ms, 8 rows 89 ms at 64 registers, 12 / 16 rows 90 / 89 ms;
 // 3 or 5 rows under a 40-register cap 80 / 78 ms)
-static PairJointKernelFn PairJointCode5WordKernel() {
-  return CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<4>;
+static PairJointKernelFn PairJointCode5WordKernel(const bool flat) {
+  return flat ? CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<4, true> :
+                CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<4, false>;
 }
-static int PairJointCode5WordRows(const int row_words, const size_t smem_bytes, const int num_grad_quant_bins) {
+static int PairJointCode5WordRows(const int row_words, const size_t smem_bytes, const int num_grad_quant_bins,
+                                  const bool flat) {
   struct Entry {
     int device;
+    bool flat;
     int row_words;
     size_t smem_bytes;
     int bins;
@@ -3488,11 +3511,12 @@ static int PairJointCode5WordRows(const int row_words, const size_t smem_bytes, 
   int device = 0;
   CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
   for (const Entry& e : entries) {
-    if (e.device == device && e.row_words == row_words && e.smem_bytes == smem_bytes && e.bins == num_grad_quant_bins) {
+    if (e.device == device && e.flat == flat && e.row_words == row_words && e.smem_bytes == smem_bytes &&
+        e.bins == num_grad_quant_bins) {
       return e.rows;
     }
   }
-  const PairJointKernelFn kernel = PairJointCode5WordKernel();
+  const PairJointKernelFn kernel = PairJointCode5WordKernel(flat);
   cudaFuncAttributes attr;
   CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attr, kernel));
   // the kernel's largest block on this device (registers included), in warps of the device's width
@@ -3510,7 +3534,7 @@ static int PairJointCode5WordRows(const int row_words, const size_t smem_bytes, 
       best_rows = c;
     }
   }
-  entries.push_back({device, row_words, smem_bytes, num_grad_quant_bins, best_rows});
+  entries.push_back({device, flat, row_words, smem_bytes, num_grad_quant_bins, best_rows});
   return best_rows;
 }
 
@@ -5720,11 +5744,17 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         const bool level_all_rows = FalcataPlan::Get().all_rows_direct && num_pairs == 1 &&
           max_num_data_in_smaller_leaf == num_data_;
         int code5_word_rows = 0;
+        // cuda_plan key pair_code5_flat: the branch-free adds' dummy cells past the joint tables, where the larger
+        // block still fits the device's default dynamic shared memory
+        const size_t code5_flat_smem_bytes = pair_smem_bytes + kCode5DummyCells * sizeof(int32_t);
+        const bool code5_flat = FalcataPlan::Get().pair_code5_flat &&
+                                code5_flat_smem_bytes <= CurrentDeviceLaunchLimits().shared_bytes_per_block;
+        const size_t code5_word_smem_bytes = code5_flat ? code5_flat_smem_bytes : pair_smem_bytes;
         if (whole_rows && !level_all_rows && code5_valid_ && FalcataPlan::Get().pair_code5 &&
             FalcataPlan::Get().pair_code5_words &&
             Code5RowWords(compact_row_bytes_) == code5_row_words_) {
-          code5_word_rows = PairJointCode5WordRows(code5_row_words_, pair_smem_bytes,
-                                                   use_quantized_grad_ ? num_grad_quant_bins_ : 0);
+          code5_word_rows = PairJointCode5WordRows(code5_row_words_, code5_word_smem_bytes,
+                                                   use_quantized_grad_ ? num_grad_quant_bins_ : 0, code5_flat);
           if (code5_word_rows > 0) {
             const int word_grid_y = HybridBatchedConstructGridDimYQuant(
               max_num_data_in_smaller_leaf, num_pairs, code5_word_rows, min_grid_dim_y_,
@@ -5786,8 +5816,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
             launch_grid_dim = dim3(pair_grid_dim.x, static_cast<unsigned int>(total), 1);
           }
         }
-#define FALCATA_LAUNCH_PAIR_JOINT_DATA(KERNEL, DATA) \
-        KERNEL<<<launch_grid_dim, pair_block_dim, pair_smem_bytes, cuda_stream_>>>( \
+#define FALCATA_PAIR_JOINT_LAUNCH_ARGS(DATA) \
           pair_descs, \
           reinterpret_cast<const int32_t*>(cuda_gradients_), \
           DATA, \
@@ -5806,7 +5835,9 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           whole_rows ? static_cast<int>(grid_dim.x) : 0, \
           whole_rows ? static_cast<uint32_t>(compact_pair_joint_total_) : 0u, \
           pair_min_rows_per_thread, \
-          block_prefix)
+          block_prefix
+#define FALCATA_LAUNCH_PAIR_JOINT_DATA(KERNEL, DATA) \
+        KERNEL<<<launch_grid_dim, pair_block_dim, pair_smem_bytes, cuda_stream_>>>(FALCATA_PAIR_JOINT_LAUNCH_ARGS(DATA))
         // a whole-row block does the work of grid_dim.x partition blocks and zeroes / flushes all their joint
         // tables, so its per_pair_rows rows-per-thread floor scales by the partitions it covers to keep the same
         // share of fixed per-block cost (a larger floor only lowers the formula, so the launched grid still bounds it)
@@ -5821,7 +5852,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
             static_cast<int>(pair_block_dim.x * pair_block_dim.y) <= PairJointCode5MaxThreads(code5_kernel);
         if (code5_word_rows > 0) {
           DiagConstructKernel("pair_code5_words");
-          FALCATA_LAUNCH_PAIR_JOINT_DATA(PairJointCode5WordKernel(), compact_data_uint8_t_.RawDataReadOnly());
+          PairJointCode5WordKernel(code5_flat)<<<launch_grid_dim, pair_block_dim, code5_word_smem_bytes, cuda_stream_>>>(
+            FALCATA_PAIR_JOINT_LAUNCH_ARGS(compact_data_uint8_t_.RawDataReadOnly()));
           // a new launch shape: a rejected launch must not leave the histogram unbuilt silently
           CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());
         } else if (code5) {
@@ -5842,6 +5874,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         }
 #undef FALCATA_LAUNCH_PAIR_JOINT
 #undef FALCATA_LAUNCH_PAIR_JOINT_DATA
+#undef FALCATA_PAIR_JOINT_LAUNCH_ARGS
       } else if (compact_is_4bit_) {
         DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
 #define FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PACKT) \

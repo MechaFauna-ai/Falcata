@@ -406,6 +406,11 @@ struct FalcataPlan {
   // its last written rows stay in L2 for the first level's construct (off:
   // evict-first streaming stores). Same words: bit-identical.
   bool pair_code5_l2_store = true;  // key: pair_code5_l2_store
+  // pair_code5_words: the six adds of a code word without a branch per byte slot: a slot without columns adds into
+  // 32 dummy cells past the joint tables (never flushed; 128 more bytes of shared memory, taken only where the block
+  // still fits the device's default), and the cells are addressed by precomputed byte offsets. Same cells of the
+  // flushed tables, same adds: bit-identical.
+  bool pair_code5_flat = true;      // key: pair_code5_flat
   // pair_hist on levels with several leaf pairs: every leaf takes the largest
   // leaf's rows per thread, so small leaves fill a few whole blocks instead of
   // spreading a few rows over every block row (each block zeroes and flushes
@@ -701,6 +706,7 @@ struct FalcataPlan {
     if (key == "pair_code5_words") return &pair_code5_words;
     if (key == "pair_code5_pack2") return &pair_code5_pack2;
     if (key == "pair_code5_l2_store") return &pair_code5_l2_store;
+    if (key == "pair_code5_flat") return &pair_code5_flat;
     if (key == "level_row_blocks") return &level_row_blocks;
     if (key == "all_rows_direct") return &all_rows_direct;
     if (key == "apply_row_batch") return &apply_row_batch;
