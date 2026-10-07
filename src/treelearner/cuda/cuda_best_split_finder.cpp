@@ -159,6 +159,9 @@ void CUDABestSplitFinder::SetTaskFeaturePenalties() {
 }
 
 void CUDABestSplitFinder::UpdateWarpFindEligibility() {
+  // find_pack_narrow: a device unit list cached for the all-tasks tree describes the task list being (re)built here;
+  // the next all-tasks tree rebuilds and uploads it
+  find_units_all_tasks_ = 0;
 #if defined(__HIP_PLATFORM_AMD__)
   warp_find_eligible_ = false;
 #else
