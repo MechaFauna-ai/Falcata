@@ -497,6 +497,13 @@ struct FalcataPlan {
   // separate (largest gap x gaps) kernel. The ranges are disjoint from every
   // split window the partition reads or writes. Same copies: bit-identical.
   bool gap_copy_fused = true;       // key: gap_copy_fused
+  // the batched level apply's fused partition kernel (apply_struct_fused / gap_copy_fused) with apply_row_batch at
+  // twice its rows per thread (8, 128-thread blocks for each 1024-row chunk) under that block's launch bound, so all
+  // of a thread's rows stay in flight in registers: the default build's bound (a 1024-thread block) caps it at 64
+  // registers, at which fewer 256-thread blocks fit an SM than its thread limit allows. Taken only where the
+  // occupancy API gives the wide build strictly more rows in flight per SM. Same chunk rows, ballot bits, positions
+  // and stores: bit-identical.
+  bool apply_inner_rows = true;     // key: apply_inner_rows
   // quantized root sums (gradient/hessian totals of the tree's rows): one warp
   // per 1024-row chunk sums 32 rows per lane, instead of one 1024-thread block
   // per chunk with one row per thread and two block reductions. Each chunk's
@@ -765,6 +772,7 @@ struct FalcataPlan {
     if (key == "fix_subtract_fused") return &fix_subtract_fused;
     if (key == "apply_struct_fused") return &apply_struct_fused;
     if (key == "gap_copy_fused") return &gap_copy_fused;
+    if (key == "apply_inner_rows") return &apply_inner_rows;
     if (key == "root_sums_warp") return &root_sums_warp;
     if (key == "minmax_warp") return &minmax_warp;
     if (key == "colmajor_split") return &colmajor_split;
