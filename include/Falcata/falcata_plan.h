@@ -412,6 +412,11 @@ struct FalcataPlan {
   // smallest whose blocks fit the slots, at least the min-rows-per-thread knob and within the packed-cell row cap.
   // Same rows, other block grouping; integer sums: bit-identical.
   bool pair_code5_slots = true;     // key: pair_code5_slots
+  // pair_code5_slots: the code-word blocks are the tallest the kernel can launch (fewest blocks per level, each
+  // zeroing and flushing all of the row's joint tables once; on a 48-register kernel one block of 32 warps per SM)
+  // instead of the height with the most resident warps. Same rows, other block grouping; integer sums:
+  // bit-identical.
+  bool pair_code5_tall = true;      // key: pair_code5_tall
   // pair_hist on levels with several leaf pairs: every leaf takes the largest
   // leaf's rows per thread, so small leaves fill a few whole blocks instead of
   // spreading a few rows over every block row (each block zeroes and flushes
@@ -708,6 +713,7 @@ struct FalcataPlan {
     if (key == "pair_code5_pack2") return &pair_code5_pack2;
     if (key == "pair_code5_l2_store") return &pair_code5_l2_store;
     if (key == "pair_code5_slots") return &pair_code5_slots;
+    if (key == "pair_code5_tall") return &pair_code5_tall;
     if (key == "level_row_blocks") return &level_row_blocks;
     if (key == "all_rows_direct") return &all_rows_direct;
     if (key == "apply_row_batch") return &apply_row_batch;

@@ -3478,24 +3478,31 @@ static PairJointKernelFn PairJointCode5WordKernel() {
 }
 // The block rows below, and (cuda_plan key pair_code5_slots) the resident blocks of that shape on the whole device:
 // blocks per SM at that height by the occupancy API, times the device's SMs (0 when no height launches).
+// cuda_plan key pair_code5_tall (tallest): the tallest block the kernel can launch instead of the most resident warps.
+// Every block zeroes, and at its end flushes, all of the row's joint tables (the flush's marginal atomics of every
+// block of a leaf meet on the leaf's same bins), so with the level's grid sized to the slots a block per SM of the
+// tallest height (rows 1024 / row_words: 32 warps at 48 registers) beat two blocks of the most-warps height (40
+// warps) by 2.4% per round on Numerai, and half-size blocks (two waves) lost 3.2%.
 struct PairJointCode5WordShape {
   int rows;
   int device_slots;
 };
 static PairJointCode5WordShape PairJointCode5WordShapeFor(const int row_words, const size_t smem_bytes,
-                                                          const int num_grad_quant_bins) {
+                                                          const int num_grad_quant_bins, const bool tallest) {
   struct Entry {
     int device;
     int row_words;
     size_t smem_bytes;
     int bins;
+    bool tallest;
     PairJointCode5WordShape shape;
   };
   static thread_local std::vector<Entry> entries;
   int device = 0;
   CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
   for (const Entry& e : entries) {
-    if (e.device == device && e.row_words == row_words && e.smem_bytes == smem_bytes && e.bins == num_grad_quant_bins) {
+    if (e.device == device && e.row_words == row_words && e.smem_bytes == smem_bytes &&
+        e.bins == num_grad_quant_bins && e.tallest == tallest) {
       return e.shape;
     }
   }
@@ -3513,7 +3520,7 @@ static PairJointCode5WordShape PairJointCode5WordShapeFor(const int row_words, c
     int blocks = 0;
     CUDASUCCESS_OR_FATAL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks, kernel, row_words * c, smem_bytes));
     const int warps = blocks * ((row_words * c + warp_size - 1) / warp_size);
-    if (blocks > 0 && warps >= best_warps) {
+    if (blocks > 0 && (tallest || warps >= best_warps)) {
       best_warps = warps;
       best_rows = c;
       best_blocks = blocks;
@@ -3522,7 +3529,7 @@ static PairJointCode5WordShape PairJointCode5WordShapeFor(const int row_words, c
   int num_sms = 0;
   CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, device));
   const PairJointCode5WordShape shape{best_rows, best_rows > 0 ? best_blocks * std::max(1, num_sms) : 0};
-  entries.push_back({device, row_words, smem_bytes, num_grad_quant_bins, shape});
+  entries.push_back({device, row_words, smem_bytes, num_grad_quant_bins, tallest, shape});
   return shape;
 }
 
@@ -5762,8 +5769,10 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         if (whole_rows && !level_all_rows && code5_valid_ && FalcataPlan::Get().pair_code5 &&
             FalcataPlan::Get().pair_code5_words &&
             Code5RowWords(compact_row_bytes_) == code5_row_words_) {
+          // cuda_plan key pair_code5_tall: the tallest block where the grid is sized to the slots
           const PairJointCode5WordShape word_shape = PairJointCode5WordShapeFor(
-            code5_row_words_, pair_smem_bytes, use_quantized_grad_ ? num_grad_quant_bins_ : 0);
+            code5_row_words_, pair_smem_bytes, use_quantized_grad_ ? num_grad_quant_bins_ : 0,
+            FalcataPlan::Get().pair_code5_slots && FalcataPlan::Get().pair_code5_tall);
           code5_word_rows = word_shape.rows;
           if (code5_word_rows > 0) {
             int word_grid_y = HybridBatchedConstructGridDimYQuant(
