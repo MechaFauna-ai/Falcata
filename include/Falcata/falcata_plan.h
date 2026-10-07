@@ -504,6 +504,11 @@ struct FalcataPlan {
   // occupancy API gives the wide build strictly more rows in flight per SM. Same chunk rows, ballot bits, positions
   // and stores: bit-identical.
   bool apply_inner_rows = true;     // key: apply_inner_rows
+  // with apply_row_batch, the batched level apply's host-launched gen-bit kernel at twice its rows per thread (8,
+  // 128-thread blocks for each 1024-row chunk) with the block size a compile-time constant and that block's launch
+  // bound. Taken only where the occupancy API gives it strictly more rows in flight per SM than the default build.
+  // Same chunk rows, ballot words and chunk totals: bit-identical.
+  bool apply_genbit_rows = true;    // key: apply_genbit_rows
   // quantized root sums (gradient/hessian totals of the tree's rows): one warp
   // per 1024-row chunk sums 32 rows per lane, instead of one 1024-thread block
   // per chunk with one row per thread and two block reductions. Each chunk's
@@ -773,6 +778,7 @@ struct FalcataPlan {
     if (key == "apply_struct_fused") return &apply_struct_fused;
     if (key == "gap_copy_fused") return &gap_copy_fused;
     if (key == "apply_inner_rows") return &apply_inner_rows;
+    if (key == "apply_genbit_rows") return &apply_genbit_rows;
     if (key == "root_sums_warp") return &root_sums_warp;
     if (key == "minmax_warp") return &minmax_warp;
     if (key == "colmajor_split") return &colmajor_split;
