@@ -31,6 +31,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -1062,6 +1063,39 @@ static inline std::vector<int32_t> CreateSampleIndices(int32_t total_nrow, const
   return rand.Sample(total_nrow, sample_cnt);
 }
 
+#ifdef USE_CUDA
+// Creates the CUDA context of the device a device_type=cuda construct uses
+// (gpu_device_id, else device 0 as training does) on a helper thread, so the
+// one-time context creation overlaps the construct's host work (sampling, bin
+// finding, bundling) instead of stalling its first CUDA call. Joins on
+// destruction. Errors stay on the helper thread; a construct that cannot use
+// the device fails at its own first CUDA call as before.
+class CUDAContextWarmup {
+ public:
+  explicit CUDAContextWarmup(const Config& config) {
+    if (config.device_type != std::string("cuda")) {
+      return;
+    }
+    const int device = config.gpu_device_id >= 0 ? config.gpu_device_id : 0;
+    thread_ = std::thread([device]() {
+      if (cudaSetDevice(device) == cudaSuccess) {
+        cudaFree(nullptr);
+      }
+    });
+  }
+  ~CUDAContextWarmup() {
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+  }
+  CUDAContextWarmup(const CUDAContextWarmup&) = delete;
+  CUDAContextWarmup& operator=(const CUDAContextWarmup&) = delete;
+
+ private:
+  std::thread thread_;
+};
+#endif  // USE_CUDA
+
 // Parses and validates the missing_sentinel dataset parameter for a dense
 // matrix input of the given C API dtype. Returns NaN when the parameter is
 // unset (NaN compares unequal to every value, so all sentinel rewrites
@@ -1471,6 +1505,9 @@ int FLC_DatasetCreateFromMats(int32_t nmat,
   Config config;
   config.Set(param);
   OMP_SET_NUM_THREADS(config.num_threads);
+#ifdef USE_CUDA
+  const CUDAContextWarmup cuda_warmup(config);
+#endif  // USE_CUDA
   const double missing_sentinel = DenseMissingSentinel(config, data_type);
   std::unique_ptr<Dataset> ret;
   int32_t total_nrow = 0;
