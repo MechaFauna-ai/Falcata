@@ -202,6 +202,31 @@ def curve_metric_ok(task, curve_pts, metrics):
     return abs(final - auc) < 0.02
 
 
+#: rows per predict() call on wide test sets: 200k rows x 3555 features is a
+#: 2.8 GB float32 slab, so the host->device staging stays small
+PREDICT_CHUNK_ROWS = 200_000
+
+
+def predict_in_chunks(bst, x_te, chunk_rows=PREDICT_CHUNK_ROWS):
+    """``bst.predict`` over row slabs, each a contiguous float32 copy.
+
+    A whole-matrix predict on the numerai test split hands FIL an 18 GB
+    float32 matrix (the int8 twin is first widened on the host, the memmap is
+    staged on the device in one piece) and takes minutes; 2.8 GB slabs keep
+    both the host copy and the device staging small, and the FIL model is
+    built once and cached on the booster, so the per-call cost is only the
+    slab transfer. Small inputs go through unchanged.
+    """
+    n = x_te.shape[0]
+    if n <= chunk_rows:
+        return bst.predict(x_te)
+    out = []
+    for start in range(0, n, chunk_rows):
+        slab = np.ascontiguousarray(x_te[start : start + chunk_rows], dtype=np.float32)
+        out.append(bst.predict(slab))
+    return np.concatenate(out)
+
+
 def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=None, shared=None):
     """One LightGBM-API cell.
 
@@ -305,7 +330,7 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=Non
     train_s = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    preds = bst.predict(x_te)
+    preds = predict_in_chunks(bst, x_te)
     predict_s = time.perf_counter() - t0
     # falcata predicts through cuML's Forest Inference Library when cuML is
     # installed in the venv and FALCATA_FIL is not 0; otherwise on the CPU,
