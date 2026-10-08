@@ -1382,6 +1382,8 @@ def test_cuda_precision_auto_resolution(name, params, expected):
     # Partial resets preserve both automatic precision and an explicit quant_mode
     # under deterministic=true. They also preserve explicit fp32/fp64 choices.
     mode = [line for line in bst.model_to_string().splitlines() if line.startswith("[quant_mode: ")]
+    device = [line for line in bst.model_to_string().splitlines() if line.startswith("[device_type: ")]
+    assert device == [f"[device_type: {train_params['device_type']}]"], f"{name}: {device}"
     for learning_rate in (0.05, 0.025):
         bst.reset_parameter({"learning_rate": learning_rate})
         bst.update()
@@ -1389,6 +1391,8 @@ def test_cuda_precision_auto_resolution(name, params, expected):
         assert again == resolved, f"{name}: {again} after reset_parameter"
         again_mode = [line for line in bst.model_to_string().splitlines() if line.startswith("[quant_mode: ")]
         assert again_mode == mode, f"{name}: {again_mode} after reset_parameter"
+        again_device = [line for line in bst.model_to_string().splitlines() if line.startswith("[device_type: ")]
+        assert again_device == device, f"{name}: {again_device} after reset_parameter"
 
 
 @_REQUIRES_CUDA

@@ -1238,6 +1238,11 @@ struct Config {
   // SaveModelToString: a model trained wherever stays device-portable)
   bool device_type_from_auto = false;
 
+  // NOT a parameter: a previously explicit device remains pinned when a
+  // partial reset_parameter map omits device_type. The unset-means-auto
+  // probe applies only while no device has been explicitly selected.
+  bool device_type_from_user = false;
+
   // NOT a parameter: cuda_precision is (or was) "auto", so every Set() resolves
   // it again from the current training mode -- a later Set() with a partial
   // parameter map (Booster.reset_parameter) must not freeze a choice that

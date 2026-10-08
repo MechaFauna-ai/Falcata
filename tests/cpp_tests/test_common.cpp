@@ -31,6 +31,27 @@ TEST(ConfigResolutionTest, AutomaticCudaPrecisionTracksPartialResets) {
   EXPECT_EQ(config.cuda_precision, "fp32");
 }
 
+TEST(ConfigResolutionTest, ExplicitDeviceSurvivesPartialResets) {
+  Falcata::Config config;
+  // The initial automatic backend depends on CUDA availability. Pinning CPU
+  // clears its portability marker and survives resets on either build type.
+  config.Set(Falcata::Config::Str2Map("quant_mode=none"));
+  config.Set(Falcata::Config::Str2Map("device_type=cpu"));
+  EXPECT_FALSE(config.device_type_from_auto);
+  EXPECT_TRUE(config.device_type_from_user);
+  for (int i = 0; i < 2; ++i) {
+    config.Set(Falcata::Config::Str2Map("learning_rate=0.05"));
+    EXPECT_EQ(config.device_type, "cpu");
+    EXPECT_EQ(config.cuda_precision, "fp64");
+    EXPECT_FALSE(config.device_type_from_auto);
+  }
+  config.Set(Falcata::Config::Str2Map("device_type=cuda"));
+  config.Set(Falcata::Config::Str2Map("learning_rate=0.025"));
+  EXPECT_EQ(config.device_type, "cuda");
+  EXPECT_EQ(config.cuda_precision, "fp32");
+  EXPECT_FALSE(config.device_type_from_auto);
+}
+
 TEST(ConfigResolutionTest, ExplicitQuantModeSurvivesPartialResets) {
   Falcata::Config config;
   config.Set(Falcata::Config::Str2Map("device_type=cuda deterministic=true quant_mode=none"));

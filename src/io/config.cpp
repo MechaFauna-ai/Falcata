@@ -291,6 +291,10 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
   GetObjectiveType(params, &objective);
   GetMetricType(params, objective, &metric);
   GetDeviceType(params, &device_type);
+  if (params.count("device_type") > 0) {
+    device_type_from_user = true;
+    device_type_from_auto = false;
+  }
 #ifdef USE_CUDA
   // See CUDASideSizeOfConfig(): if nvcc and the host compiler disagree about
   // Config's layout, every class holding one by value has its members shifted
@@ -313,7 +317,7 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
   // device_type keeps LightGBM's "cpu" spelling in parameter files, but in
   // this library UNSET means auto: a CUDA build with a usable GPU trains on
   // it. Passing device_type explicitly (either value) pins the choice.
-  if (params.count("device_type") == 0 && CUDADeviceUsableByDefault()) {
+  if (!device_type_from_user && CUDADeviceUsableByDefault()) {
     device_type = "cuda";
     device_type_from_auto = true;
     static std::once_flag auto_cuda_logged;
