@@ -9,7 +9,13 @@ Usage::
 
     python benchmarks/orchestrate.py                 # everything available
     python benchmarks/orchestrate.py --only higgs,epsilon
+    python benchmarks/orchestrate.py --libraries falcata-stoch,falcata-fixed --results results/runs_rerun.jsonl
     python benchmarks/orchestrate.py --dry-run
+
+``--libraries`` restricts the matrix to a comma-separated subset of the library
+arms; ``--results`` writes to (and resumes from) another results file than
+``<workspace>/results/runs.jsonl``, so a rerun of one library leaves the
+baseline file untouched.
 """
 
 import argparse
@@ -60,10 +66,11 @@ TIMEOUT_S = {
 }
 
 
-def load_done():
+def load_done(results):
+    """(library, dataset, regime, kind) -> status of every cell recorded in ``results``."""
     done = {}
-    if os.path.exists(RUNS_JSONL):
-        with open(RUNS_JSONL) as f:
+    if os.path.exists(results):
+        with open(results) as f:
             for line in f:
                 try:
                     r = json.loads(line)
@@ -73,8 +80,8 @@ def load_done():
     return done
 
 
-def record(status, lib, ds, reg, kind, **extra):
-    with open(RUNS_JSONL, "a") as f:
+def record(results, status, lib, ds, reg, kind, **extra):
+    with open(results, "a") as f:
         f.write(
             json.dumps(
                 {
@@ -93,9 +100,18 @@ def record(status, lib, ds, reg, kind, **extra):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default=None, help="comma-separated dataset subset")
+    ap.add_argument("--libraries", default=None, help="comma-separated library subset (default: every arm)")
+    ap.add_argument("--results", default=None, help=f"results file to append to and resume from (default {RUNS_JSONL})")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     datasets = args.only.split(",") if args.only else DATASET_ORDER
+    libraries = ALL_LIBRARIES
+    if args.libraries:
+        libraries = args.libraries.split(",")
+        unknown = [lib for lib in libraries if lib not in ALL_LIBRARIES]
+        if unknown:
+            sys.exit(f"unknown libraries {unknown}; known: {ALL_LIBRARIES}")
+    results = os.path.abspath(args.results) if args.results else RUNS_JSONL
 
     cells = []
     for ds in datasets:
@@ -106,13 +122,13 @@ def main():
             )
             continue
         for reg in regimes_for(ds):
-            for lib in ALL_LIBRARIES:
+            for lib in libraries:
                 if not library_runs_cell(lib, ds, reg):
                     continue
                 for kind in REGIME_KINDS.get(reg, KINDS):
                     cells.append((lib, ds, reg, kind))
 
-    done = load_done()
+    done = load_done(results)
     todo = [c for c in cells if c not in done]
     print(
         f"matrix: {len(cells)} cells, {len(cells) - len(todo)} done, {len(todo)} to run",
@@ -123,15 +139,15 @@ def main():
             print(c)
         return
 
-    os.makedirs(os.path.dirname(RUNS_JSONL), exist_ok=True)
+    os.makedirs(os.path.dirname(results), exist_ok=True)
     for i, (lib, ds, reg, kind) in enumerate(todo):
-        done = load_done()
+        done = load_done(results)
         if (lib, ds, reg, kind) in done:
             continue
         # if the warmup for this combo failed, don't waste time on the rest
         if kind != "warmup" and done.get((lib, ds, reg, "warmup")) == "failed":
             print(f"SKIP {lib}/{ds}/{reg}/{kind} (warmup failed)", flush=True)
-            record("skipped_warmup_failed", lib, ds, reg, kind)
+            record(results, "skipped_warmup_failed", lib, ds, reg, kind)
             continue
         cmd = [
             venv_python(lib),
@@ -144,6 +160,8 @@ def main():
             reg,
             "--kind",
             kind,
+            "--out",
+            results,
         ]
         t0 = time.time()
         print(f"[{i + 1}/{len(todo)}] RUN {lib}/{ds}/{reg}/{kind}", flush=True)
@@ -160,10 +178,11 @@ def main():
                 text=True,
             )
             status = "ok" if p.returncode == 0 else "failed"
-            if p.returncode != 0 and (lib, ds, reg, kind) not in load_done():
+            if p.returncode != 0 and (lib, ds, reg, kind) not in load_done(results):
                 # the child died before writing its record (e.g. segfault);
                 # record the failure so resume doesn't retry it forever
                 record(
+                    results,
                     "failed",
                     lib,
                     ds,
@@ -175,7 +194,7 @@ def main():
                 sys.stderr.write(p.stdout[-2000:] + p.stderr[-2000:] + "\n")
         except subprocess.TimeoutExpired:
             status = "timeout"
-            record("timeout", lib, ds, reg, kind)
+            record(results, "timeout", lib, ds, reg, kind)
         print(f"    -> {status} ({time.time() - t0:.0f}s)", flush=True)
 
 
