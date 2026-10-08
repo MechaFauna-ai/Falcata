@@ -27,7 +27,7 @@ import time
 import traceback
 
 import numpy as np
-from common import CACHE_DIR, DATASETS, LIBRARIES, REGIMES, RUNS_JSONL, SEED
+from common import ALL_LIBRARIES, CACHE_DIR, DATASETS, REGIMES, RUNS_JSONL, SEED
 
 NUM_THREADS = int(os.environ.get("FALCATA_BENCH_THREADS", "0")) or os.cpu_count()
 
@@ -510,7 +510,7 @@ def run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve, cat_cols=None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--library", required=True, choices=LIBRARIES)
+    ap.add_argument("--library", required=True, choices=ALL_LIBRARIES)
     ap.add_argument("--dataset", required=True, choices=list(DATASETS))
     ap.add_argument("--regime", required=True, choices=list(REGIMES))
     ap.add_argument(
