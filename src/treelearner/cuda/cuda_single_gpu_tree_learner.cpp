@@ -703,6 +703,10 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     }
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
     cuda_histogram_constructor_->SetDetBatchedAllowed(det_batched_allowed);
+    // a tree that may not run the deterministic construct builds every
+    // histogram with the order-dependent atomic kernel: no prefix fold order
+    // reproduces CPU's bits there, so its fp64 finds take the parallel scans
+    cuda_best_split_finder_->SetCPUOrderScan(det_batched_allowed);
     cuda_smaller_leaf_splits_->InitValues(
       config_->lambda_l1,
       config_->lambda_l2,
@@ -3093,6 +3097,9 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
     1 << std::min(num_level_bodies - 1, 10), kHybridGraphMaxSplitsPerLevel);
   const bool graph_det =
     cuda_histogram_constructor_->DetDenseGraphEligible(det_widest_level_pairs);
+  // the captured find nodes fold their prefixes in CPU order exactly when the
+  // captured construct is the deterministic one (see SetCPUOrderScan)
+  cuda_best_split_finder_->SetCPUOrderScan(graph_det);
   for (int body = 0; body < num_level_bodies; ++body) {
     const size_t body_node_start = nodes.size();
     CaptureHybridGraphControllerKernel(hist_stream, instance->state_dev, body);
