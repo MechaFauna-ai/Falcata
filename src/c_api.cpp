@@ -3909,14 +3909,16 @@ void SampleDenseSmallInt(const void** data, const std::vector<int32_t>& sample_i
       break;
     }
   }
-  std::vector<T> gathered;
+  // every element is copied in below before anything reads it, so the block
+  // skips value-initialization (a single-threaded pass over n x ncol values)
+  std::unique_ptr<T[]> gathered;
   if (all_row_major) {
-    gathered.resize(n * static_cast<size_t>(ncol));
+    gathered.reset(new T[n * static_cast<size_t>(ncol)]);
     const int64_t n_signed = static_cast<int64_t>(n);
     #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
     for (int64_t i = 0; i < n_signed; ++i) {
       const T* mat = reinterpret_cast<const T*>(data[mat_of[i]]);
-      std::memcpy(gathered.data() + static_cast<size_t>(i) * ncol,
+      std::memcpy(gathered.get() + static_cast<size_t>(i) * ncol,
                   mat + static_cast<size_t>(row_of[i]) * ncol,
                   sizeof(T) * ncol);
     }
@@ -3932,7 +3934,7 @@ void SampleDenseSmallInt(const void** data, const std::vector<int32_t>& sample_i
     // count first and reserve: the appends below dominate without it
     std::vector<int> counts(col_hi - col_lo, 0);
     for (size_t i = 0; i < n; ++i) {
-      const T* mat = all_row_major ? gathered.data()
+      const T* mat = all_row_major ? gathered.get()
                                    : reinterpret_cast<const T*>(data[mat_of[i]]);
       const size_t r = all_row_major ? i : static_cast<size_t>(row_of[i]);
       for (int col = col_lo; col < col_hi; ++col) {
@@ -3949,7 +3951,7 @@ void SampleDenseSmallInt(const void** data, const std::vector<int32_t>& sample_i
       (*sample_idx)[col].reserve(counts[col - col_lo]);
     }
     for (size_t i = 0; i < n; ++i) {
-      const T* mat = all_row_major ? gathered.data()
+      const T* mat = all_row_major ? gathered.get()
                                    : reinterpret_cast<const T*>(data[mat_of[i]]);
       const size_t r = all_row_major ? i : static_cast<size_t>(row_of[i]);
       for (int col = col_lo; col < col_hi; ++col) {
@@ -4000,14 +4002,14 @@ void SampleDenseFloat(const void** data, const std::vector<int32_t>& sample_indi
       break;
     }
   }
-  std::vector<T> gathered;
+  std::unique_ptr<T[]> gathered;  // uninitialized, as in SampleDenseSmallInt
   if (all_row_major) {
-    gathered.resize(n * static_cast<size_t>(ncol));
+    gathered.reset(new T[n * static_cast<size_t>(ncol)]);
     const int64_t n_signed = static_cast<int64_t>(n);
     #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
     for (int64_t i = 0; i < n_signed; ++i) {
       const T* mat = reinterpret_cast<const T*>(data[mat_of[i]]);
-      std::memcpy(gathered.data() + static_cast<size_t>(i) * ncol,
+      std::memcpy(gathered.get() + static_cast<size_t>(i) * ncol,
                   mat + static_cast<size_t>(row_of[i]) * ncol,
                   sizeof(T) * ncol);
     }
@@ -4020,7 +4022,7 @@ void SampleDenseFloat(const void** data, const std::vector<int32_t>& sample_indi
     // count first and reserve: the appends below dominate without it
     std::vector<int> counts(col_hi - col_lo, 0);
     for (size_t i = 0; i < n; ++i) {
-      const T* mat = all_row_major ? gathered.data()
+      const T* mat = all_row_major ? gathered.get()
                                    : reinterpret_cast<const T*>(data[mat_of[i]]);
       const size_t r = all_row_major ? i : static_cast<size_t>(row_of[i]);
       for (int col = col_lo; col < col_hi; ++col) {
@@ -4038,7 +4040,7 @@ void SampleDenseFloat(const void** data, const std::vector<int32_t>& sample_indi
       (*sample_idx)[col].reserve(counts[col - col_lo]);
     }
     for (size_t i = 0; i < n; ++i) {
-      const T* mat = all_row_major ? gathered.data()
+      const T* mat = all_row_major ? gathered.get()
                                    : reinterpret_cast<const T*>(data[mat_of[i]]);
       const size_t r = all_row_major ? i : static_cast<size_t>(row_of[i]);
       for (int col = col_lo; col < col_hi; ++col) {
