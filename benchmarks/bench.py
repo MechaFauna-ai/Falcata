@@ -208,23 +208,40 @@ PREDICT_CHUNK_ROWS = 200_000
 
 
 def predict_in_chunks(bst, x_te, chunk_rows=PREDICT_CHUNK_ROWS):
-    """``bst.predict`` over row slabs, each a contiguous float32 copy.
+    """``bst.predict`` over row slabs; returns ``(preds, backend)``.
 
-    A whole-matrix predict on the numerai test split hands FIL an 18 GB
-    float32 matrix (the int8 twin is first widened on the host, the memmap is
-    staged on the device in one piece) and takes minutes; 2.8 GB slabs keep
-    both the host copy and the device staging small, and the FIL model is
-    built once and cached on the booster, so the per-call cost is only the
-    slab transfer. Small inputs go through unchanged.
+    Each slab is a contiguous float32 copy. A whole-matrix predict on the
+    numerai test split hands FIL an 18 GB float32 matrix (the int8 twin is
+    first widened on the host, the memmap is staged on the device in one
+    piece), takes minutes, and at 4.6e9 elements returned wrong rows; 2.8 GB
+    slabs keep both the host copy and the device staging small, and the FIL
+    model is built once and cached on the booster, so the per-call cost is
+    only the slab transfer.
+
+    ``backend`` is "fil" when cuML's Forest Inference Library served the
+    predictions and "cpu" otherwise. Falcata falls back to the CPU predictor
+    silently (FIL off, cuML missing, or a conversion failure), so the first
+    slab is sent through the FIL entry point directly to learn which one ran.
     """
     n = x_te.shape[0]
-    if n <= chunk_rows:
-        return bst.predict(x_te)
+    first = np.ascontiguousarray(x_te[: min(n, chunk_rows)], dtype=np.float32)
+    backend = "cpu"
     out = []
-    for start in range(0, n, chunk_rows):
+    fil_predict = getattr(bst, "_fil_predict", None)
+    if fil_predict is not None:
+        num_iteration = bst.best_iteration if bst.best_iteration > 0 else -1
+        probe = fil_predict(data=first, start_iteration=0, num_iteration=num_iteration, raw_score=False)
+        if probe is not None:
+            backend = "fil"
+            out.append(probe)
+    if not out:
+        out.append(bst.predict(first))
+    if n <= chunk_rows:
+        return out[0], backend
+    for start in range(chunk_rows, n, chunk_rows):
         slab = np.ascontiguousarray(x_te[start : start + chunk_rows], dtype=np.float32)
         out.append(bst.predict(slab))
-    return np.concatenate(out)
+    return np.concatenate(out), backend
 
 
 def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=None, shared=None):
@@ -330,20 +347,12 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=Non
     train_s = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    preds = predict_in_chunks(bst, x_te)
-    predict_s = time.perf_counter() - t0
     # falcata predicts through cuML's Forest Inference Library when cuML is
     # installed in the venv and FALCATA_FIL is not 0; otherwise on the CPU,
     # which on the 30k-tree numerai cells costs 10 minutes per predict. The
     # record says which one ran so overhead comparisons are not misread.
-    predict_backend = "cpu"
-    if library.startswith("falcata") and os.environ.get("FALCATA_FIL", "1") != "0":
-        try:
-            from falcata.basic import _load_fil_modules  # noqa: PLC0415
-
-            predict_backend = "fil" if _load_fil_modules() is not None else "cpu"
-        except Exception:
-            pass
+    preds, predict_backend = predict_in_chunks(bst, x_te)
+    predict_s = time.perf_counter() - t0
     return {
         "construct_s": construct_s,
         "construct_shared": construct_shared,
