@@ -3011,6 +3011,8 @@ bool CUDASingleGPUTreeLearner::SetupHybridGraphStatics() {
   st.unsplittable_min_data = FalcataPlan::Get().graph_skip_unsplittable && FalcataPlan::Get().skip_unsplittable &&
     config_->forcedsplits_filename.empty() && (forced_split_json_ == nullptr || forced_split_json_->is_null()) ?
     config_->min_data_in_leaf : 0;
+  st.apply_fuse_struct = FalcataPlan::Get().graph_apply_fused && FalcataPlan::Get().apply_struct_fused ? 1 : 0;
+  st.apply_fuse_gaps = FalcataPlan::Get().graph_apply_fused && FalcataPlan::Get().gap_copy_fused ? 1 : 0;
   // construct grid x / block dims are filled per instance at build time (the
   // compact view's block shape follows the per-tree sampled column count and
   // is part of the graph key)
@@ -3150,7 +3152,7 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
   cudaEventDestroy(join_event);
   if (end_err != cudaSuccess || !capture_ok ||
       nodes.size() != roles.size() || roles.size() != role_static_x.size() ||
-      nodes_per_level > static_cast<size_t>(kHybridGraphMaxNodes) || nodes_per_level < 10) {
+      nodes_per_level > static_cast<size_t>(kHybridGraphMaxNodes) || nodes_per_level < 8) {
     Log::Warning("graphs L1: body capture failed (%s); falling back to the host level loop",
                  cudaGetErrorString(end_err));
     return false;

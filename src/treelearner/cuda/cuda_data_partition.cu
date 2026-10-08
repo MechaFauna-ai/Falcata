@@ -16,6 +16,7 @@
 #include <Falcata/tree.h>
 
 #include <algorithm>
+#include <type_traits>
 #include <vector>
 
 namespace Falcata {
@@ -2585,6 +2586,56 @@ HybridSplitInnerGraphRowsKernel(
     right_offsets, block_bits, HybridGraphOutIndices(gstate, out_indices_param), leaf_map, scan);
 }
 
+// The struct block consumes only aggregate metadata, while partition and gap
+// blocks write disjoint row windows. No block in this kernel reads their outputs.
+template <int ROWS, bool USE_GRAD_DISCRETIZED>
+__global__ void __launch_bounds__(SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS)
+HybridApplyGraphFusedKernel(
+    const CUDAHybridApplyDescriptor* descs, const data_size_t* indices_param,
+    const data_size_t* left_offsets, const data_size_t* right_offsets,
+    const uint16_t* block_bits, data_size_t* out_indices_param,
+    const CUDAHybridGraphLoopState* gstate, int* leaf_map,
+    data_size_t* leaf_starts, data_size_t* leaf_counts, const int num_total_bin,
+    hist_t* hist, hist_t** hist_pool, double* leaf_output, int* split_info) {
+  constexpr unsigned int kBlock = SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS;
+  const int split = static_cast<int>(blockIdx.y);
+  const int num_splits = gstate->cur_num_splits;
+  const data_size_t* indices = HybridGraphMainIndices(gstate, indices_param);
+  data_size_t* out_indices = HybridGraphOutIndices(gstate, out_indices_param);
+  if (split >= num_splits) {
+    const int gap = split - num_splits;
+    if (!gstate->apply_fuse_gaps || gap >= gstate->cur_num_gaps) return;
+    const CUDAHybridApplyDescriptor d = descs[kHybridGraphGapDescBase + gap];
+    if (static_cast<int>(blockIdx.x) >= d.num_blocks) return;
+    const data_size_t start = static_cast<data_size_t>(blockIdx.x * ROWS * kBlock);
+    data_size_t value[ROWS];
+#pragma unroll
+    for (int k = 0; k < ROWS; ++k) {
+      const data_size_t pos = start + static_cast<data_size_t>(k * kBlock + threadIdx.x);
+      value[k] = pos < d.num_data_in_leaf ? indices[d.leaf_data_start + pos] : 0;
+    }
+#pragma unroll
+    for (int k = 0; k < ROWS; ++k) {
+      const data_size_t pos = start + static_cast<data_size_t>(k * kBlock + threadIdx.x);
+      if (pos < d.num_data_in_leaf) out_indices[d.leaf_data_start + pos] = value[k];
+    }
+    return;
+  }
+  const CUDAHybridApplyDescriptor d = descs[split];
+  if (gstate->apply_fuse_struct && static_cast<int>(blockIdx.x) == d.num_blocks) {
+    if (threadIdx.x < WARPSIZE) {
+      HybridSplitTreeStructureSplit<false, USE_GRAD_DISCRETIZED>(
+        d, threadIdx.x, leaf_starts, leaf_counts, out_indices, num_total_bin, hist, hist_pool,
+        leaf_output, split_info + 18 * (HybridGraphSplitInfoBase(gstate) + split), nullptr);
+    }
+    return;
+  }
+  if (static_cast<int>(blockIdx.x) >= d.num_blocks) return;
+  __shared__ uint16_t scan[WARPSIZE];
+  HybridSplitInnerChunk<false, ROWS, kBlock>(d, blockIdx.x, indices, left_offsets, right_offsets,
+                                           block_bits, out_indices, leaf_map, scan);
+}
+
 void CUDADataPartition::CaptureHybridGraphApplyKernels(
     const CUDAHybridGraphLoopState* gstate,
     std::vector<cudaGraphNode_t>* nodes,
@@ -2603,6 +2654,8 @@ void CUDADataPartition::CaptureHybridGraphApplyKernels(
   constexpr int kRows = 4;
   constexpr int kWideRows = 2 * kRows;
   const bool rows = plan.graph_apply_rows && plan.apply_row_batch;
+  const bool struct_fused = plan.graph_apply_fused && plan.apply_struct_fused;
+  const bool gaps_fused = plan.graph_apply_fused && plan.gap_copy_fused;
   if (rows && plan.apply_genbit_rows &&
       ApplyRowsTakes(HybridGenBitVectorGraphRowsKernel<kWideRows>, block_dim / kWideRows, kWideRows,
                      HybridGenBitVectorUpdateLeafIndexBatchKernel<kRows>, block_dim / kRows, kRows)) {
@@ -2628,7 +2681,31 @@ void CUDADataPartition::CaptureHybridGraphApplyKernels(
     cuda_level_smaller_counts_.RawData(), gstate);
   if (!AppendCapturedNode(stream, nodes)) return;
   roles->push_back(kHybridGraphNodeAggregate);
-  if (rows && plan.apply_inner_rows &&
+  if (struct_fused || gaps_fused) {
+    auto capture_fused = [&](auto quant_tag) {
+      constexpr bool kQuant = decltype(quant_tag)::value;
+      auto launch = [&](auto row_tag) {
+        constexpr int kLaunchRows = decltype(row_tag)::value;
+        HybridApplyGraphFusedKernel<kLaunchRows, kQuant><<<dim3(1, 1), block_dim / kLaunchRows, 0, stream>>>(
+          descs, cuda_data_indices_.RawData(), cuda_block_data_to_left_offset_.RawData(),
+          cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
+          cuda_out_data_indices_in_leaf_.RawData(), gstate, cuda_data_index_to_leaf_index_.RawData(),
+          cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(), num_total_bin_, cuda_hist_,
+          cuda_hist_pool_.RawData(), cuda_leaf_output_.RawData(), cuda_split_info_buffer_.RawData());
+      };
+      if (rows && plan.apply_inner_rows &&
+          ApplyRowsTakes(HybridApplyGraphFusedKernel<kWideRows, kQuant>, block_dim / kWideRows, kWideRows,
+                         HybridApplyGraphFusedKernel<kRows, kQuant>, block_dim / kRows, kRows)) {
+        launch(std::integral_constant<int, kWideRows>{});
+      } else if (rows) {
+        launch(std::integral_constant<int, kRows>{});
+      } else {
+        launch(std::integral_constant<int, 1>{});
+      }
+    };
+    if (use_quantized_grad_) capture_fused(std::true_type{});
+    else capture_fused(std::false_type{});
+  } else if (rows && plan.apply_inner_rows &&
       ApplyRowsTakes(HybridSplitInnerGraphRowsKernel<kWideRows>, block_dim / kWideRows, kWideRows,
                      HybridSplitInnerBatchKernel<kRows>, block_dim / kRows, kRows)) {
     HybridSplitInnerGraphRowsKernel<kWideRows><<<dim3(1, 1), block_dim / kWideRows, 0, stream>>>(
@@ -2647,30 +2724,34 @@ void CUDADataPartition::CaptureHybridGraphApplyKernels(
       cuda_out_data_indices_in_leaf_.RawData(), gstate, 0, 0, cuda_data_index_to_leaf_index_.RawData(), 0);
   }
   if (!AppendCapturedNode(stream, nodes)) return;
-  roles->push_back(kHybridGraphNodeSplitInner);
+  roles->push_back(struct_fused || gaps_fused ? kHybridGraphNodeApplyFused : kHybridGraphNodeSplitInner);
   // template selection mirrors LaunchSplitLevelBatchedKernels (the quantized
   // variant also writes the child structs' packed int64 gradient/hessian sums)
-  if (use_quantized_grad_) {
+  if (!struct_fused && use_quantized_grad_) {
     // graph flow is single-GPU only (HybridGraphPrefixUsable), no NCCL variant
     HybridSplitTreeStructureBatchKernel<false, true><<<1, 32, 0, stream>>>(
       descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
       cuda_out_data_indices_in_leaf_.RawData(), num_total_bin_, cuda_hist_,
       cuda_hist_pool_.RawData(), cuda_leaf_output_.RawData(),
       cuda_split_info_buffer_.RawData(), nullptr, gstate);
-  } else {
+  } else if (!struct_fused) {
     HybridSplitTreeStructureBatchKernel<false, false><<<1, 32, 0, stream>>>(
       descs, cuda_leaf_data_start_.RawData(), cuda_leaf_num_data_.RawData(),
       cuda_out_data_indices_in_leaf_.RawData(), num_total_bin_, cuda_hist_,
       cuda_hist_pool_.RawData(), cuda_leaf_output_.RawData(),
       cuda_split_info_buffer_.RawData(), nullptr, gstate);
   }
-  if (!AppendCapturedNode(stream, nodes)) return;
-  roles->push_back(kHybridGraphNodeTreeStructure);
-  HybridCopyDataIndicesBatchKernel<<<dim3(1, 1), block_dim, 0, stream>>>(
-    descs + kHybridGraphGapDescBase, cuda_data_indices_.RawData(),
-    cuda_out_data_indices_in_leaf_.RawData(), gstate);
-  if (!AppendCapturedNode(stream, nodes)) return;
-  roles->push_back(kHybridGraphNodeCopyGaps);
+  if (!struct_fused) {
+    if (!AppendCapturedNode(stream, nodes)) return;
+    roles->push_back(kHybridGraphNodeTreeStructure);
+  }
+  if (!gaps_fused) {
+    HybridCopyDataIndicesBatchKernel<<<dim3(1, 1), block_dim, 0, stream>>>(
+      descs + kHybridGraphGapDescBase, cuda_data_indices_.RawData(),
+      cuda_out_data_indices_in_leaf_.RawData(), gstate);
+    if (!AppendCapturedNode(stream, nodes)) return;
+    roles->push_back(kHybridGraphNodeCopyGaps);
+  }
 }
 
 void CUDADataPartition::EnsureHybridGraphCapacity(const data_size_t max_root_num_data) {

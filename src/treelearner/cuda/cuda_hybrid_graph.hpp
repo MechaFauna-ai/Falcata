@@ -100,6 +100,7 @@ enum CUDAHybridGraphNodeRole : int {
   kHybridGraphNodeSplitInner,      // grid (p2(max_blocks), p2(n))
   kHybridGraphNodeTreeStructure,   // grid (p2(n), 1, 1)
   kHybridGraphNodeCopyGaps,        // grid (p2(max_gap_blocks), p2(num_gaps)); disabled when no gaps
+  kHybridGraphNodeApplyFused,      // grid (p2(max(split blocks + struct, gap blocks)), p2(splits + gaps))
   kHybridGraphNodeConstruct,       // grid (static_x, p2(formula_y), p2(n))
   kHybridGraphNodeSearchPairY,     // grid (static_x, p2(n)): fix/subtract family
   /*! \brief deterministic dense construct (non-quant det runs): grid
@@ -181,6 +182,9 @@ struct CUDAHybridGraphLoopState {
   /*! \brief count-only leaf pruning after aggregate (0 disables it); uses the
    *  host skip_unsplittable bound including its fp32 rounding margin */
   data_size_t unsplittable_min_data;
+  /*! \brief captured apply includes independent struct/gap work when enabled */
+  int apply_fuse_struct;
+  int apply_fuse_gaps;
   // construct grid-y formula constants (see HybridBatchedConstructGridDimY)
   int construct_grid_x;
   int construct_block_dim_y;

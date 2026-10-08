@@ -498,6 +498,9 @@ struct FalcataPlan {
   // host path, with apply_row_batch / apply_genbit_rows / apply_inner_rows
   // selecting multiple rows per thread. Index partitions retain their order.
   bool graph_apply_rows = true;     // key: graph_apply_rows
+  // Captured partition blocks also carry the independent child-struct writes
+  // and terminal-window copies selected by apply_struct_fused / gap_copy_fused.
+  bool graph_apply_fused = true;    // key: graph_apply_fused
   // batched level best-split sync over the tree's feature sample (or over a
   // task list wider than one 1024-task block): one block per leaf reads only
   // the used tasks' slots and folds them in task order, instead of one block
@@ -830,6 +833,7 @@ struct FalcataPlan {
     if (key == "all_rows_direct") return &all_rows_direct;
     if (key == "apply_row_batch") return &apply_row_batch;
     if (key == "graph_apply_rows") return &graph_apply_rows;
+    if (key == "graph_apply_fused") return &graph_apply_fused;
     if (key == "sync_used_tasks") return &sync_used_tasks;
     if (key == "sync_copy_batched") return &sync_copy_batched;
     if (key == "fix_subtract_fused") return &fix_subtract_fused;
