@@ -210,21 +210,37 @@ PREDICT_CHUNK_ROWS = 200_000
 def predict_in_chunks(bst, x_te, chunk_rows=PREDICT_CHUNK_ROWS):
     """``bst.predict`` over row slabs; returns ``(preds, backend)``.
 
-    Each slab is a contiguous float32 copy. A whole-matrix predict on the
-    numerai test split hands FIL an 18 GB float32 matrix (the int8 twin is
-    first widened on the host, the memmap is staged on the device in one
-    piece), takes minutes, and at 4.6e9 elements returned wrong rows; 2.8 GB
-    slabs keep both the host copy and the device staging small, and the FIL
-    model is built once and cached on the booster, so the per-call cost is
-    only the slab transfer.
+    Each slab is a contiguous float32 copy, staged on the device with CuPy
+    when CuPy is importable (FIL then reads it in place: 4.7 s for a 30k-tree
+    numerai model against 24 s for host slabs) and kept on the host otherwise.
+    A whole-matrix predict on the numerai test split hands FIL an 18 GB
+    matrix, takes minutes, and past 2**32 cells returned wrong rows; 2.8 GB
+    slabs avoid all three, and the FIL model is built once and cached on the
+    booster, so the per-call cost is only the slab transfer.
 
     ``backend`` is "fil" when cuML's Forest Inference Library served the
     predictions and "cpu" otherwise. Falcata falls back to the CPU predictor
     silently (FIL off, cuML missing, or a conversion failure), so the first
     slab is sent through the FIL entry point directly to learn which one ran.
     """
+    try:
+        import cupy as cp  # noqa: PLC0415
+
+        to_device = cp.asarray
+        to_host = cp.asnumpy
+    except Exception:
+        cp = None
+        to_device = to_host = None
     n = x_te.shape[0]
-    first = np.ascontiguousarray(x_te[: min(n, chunk_rows)], dtype=np.float32)
+
+    def slab(start):
+        host = np.ascontiguousarray(x_te[start : start + chunk_rows], dtype=np.float32)
+        return to_device(host) if cp is not None else host
+
+    def as_numpy(preds):
+        return to_host(preds) if cp is not None and not isinstance(preds, np.ndarray) else preds
+
+    first = slab(0)
     backend = "cpu"
     out = []
     fil_predict = getattr(bst, "_fil_predict", None)
@@ -233,15 +249,14 @@ def predict_in_chunks(bst, x_te, chunk_rows=PREDICT_CHUNK_ROWS):
         probe = fil_predict(data=first, start_iteration=0, num_iteration=num_iteration, raw_score=False)
         if probe is not None:
             backend = "fil"
-            out.append(probe)
+            out.append(as_numpy(probe))
     if not out:
-        out.append(bst.predict(first))
-    if n <= chunk_rows:
-        return out[0], backend
+        # the CPU predictor reads host memory; a device slab would be a round trip
+        out.append(bst.predict(as_numpy(first) if cp is not None else first))
+        cp = None
     for start in range(chunk_rows, n, chunk_rows):
-        slab = np.ascontiguousarray(x_te[start : start + chunk_rows], dtype=np.float32)
-        out.append(bst.predict(slab))
-    return np.concatenate(out), backend
+        out.append(as_numpy(bst.predict(slab(start))))
+    return (out[0] if len(out) == 1 else np.concatenate(out), backend)
 
 
 def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=None, shared=None):
