@@ -1061,9 +1061,10 @@ def build_profile(name):
             X[rng.random(n) < 0.15, j] = np.nan
     elif name == "graph-boundary":
         # All four 1600-row groups appear evenly in the 6400-row train prefix.
-        # The two exact binary drivers make the min_data boundary predictable.
+        # Exact binary drivers make the min_data boundary predictable. Dense
+        # distractors keep the shared row view out of the sparse fallback.
         row = np.arange(n)
-        X = np.column_stack((row % 2, (row // 2) % 2, (row // 4) % 2)).astype(np.float64)
+        X = np.column_stack((row % 2, (row // 2) % 2, (row // 4) % 2, rng.standard_normal((n, 17))))
         y = 4.0 * X[:, 0] + X[:, 1] + 0.125 * X[:, 2]
         base["max_bin"] = 15
     elif name == "graph":

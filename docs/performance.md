@@ -948,6 +948,12 @@ tree bytes across their plan flips; prior fingerprint entries are unchanged. Com
 not use the deterministic graph histogram path and are therefore covered by validity and numerical quality
 checks rather than new exact fingerprints.
 
+`tests/python_package_test/test_graph_apply.py` checks graph-instance success and fused node counts with
+existing diagnostics, then compares model and prediction bits across the independent keys. Its 23 cases
+cover final 1024-row tails, terminal-window gaps, resets of config and training data, exact child-count
+boundaries, and the forced-split and low-leaf-budget host fallbacks. Dense boundary distractors ensure that
+the count-margin cases run the captured path rather than a sparse fallback.
+
 ## 8. GPU inference via NVIDIA FIL
 
 `Booster.predict()` on a CUDA-trained model routes through cuML's Forest

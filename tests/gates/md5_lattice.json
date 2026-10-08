@@ -108,42 +108,42 @@
    "metric_name": "rmse"
   },
   "graph-boundary/fp64det-min1599": {
-   "md5": "cf246c3df80078b3ef7f835525d7e2c7",
+   "md5": "d3eda2345bc4ab9dc7ec51d51165c67e",
    "metric": 0.889629,
    "metric_name": "rmse"
   },
   "graph-boundary/fp64det-min1600": {
-   "md5": "cf246c3df80078b3ef7f835525d7e2c7",
+   "md5": "d3eda2345bc4ab9dc7ec51d51165c67e",
    "metric": 0.889629,
    "metric_name": "rmse"
   },
   "graph-boundary/fp64det-min1601": {
-   "md5": "3f562c0d9f63c9177d1ad323c0fb48d1",
+   "md5": "3d46a5c9bc4dee09b891943c77d3d932",
    "metric": 0.997554,
    "metric_name": "rmse"
   },
   "graph-boundary/fp64det-min1602": {
-   "md5": "3f562c0d9f63c9177d1ad323c0fb48d1",
+   "md5": "3d46a5c9bc4dee09b891943c77d3d932",
    "metric": 0.997554,
    "metric_name": "rmse"
   },
   "graph-boundary/stoch-min1599": {
-   "md5": "24ddd0b543a388f210103242dd4e1d18",
+   "md5": "6a7be9eb76d5eada0969a8ef2d4db84a",
    "metric": 0.890046,
    "metric_name": "rmse"
   },
   "graph-boundary/stoch-min1600": {
-   "md5": "24ddd0b543a388f210103242dd4e1d18",
+   "md5": "6a7be9eb76d5eada0969a8ef2d4db84a",
    "metric": 0.890046,
    "metric_name": "rmse"
   },
   "graph-boundary/stoch-min1601": {
-   "md5": "c180545d564c24285dc282c59d595c8c",
+   "md5": "d823a898408aec43cee7bbf45927611e",
    "metric": 0.997389,
    "metric_name": "rmse"
   },
   "graph-boundary/stoch-min1602": {
-   "md5": "c180545d564c24285dc282c59d595c8c",
+   "md5": "d823a898408aec43cee7bbf45927611e",
    "metric": 0.997389,
    "metric_name": "rmse"
   },
