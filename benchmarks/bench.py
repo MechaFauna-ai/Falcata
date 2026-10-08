@@ -307,11 +307,24 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=Non
     t0 = time.perf_counter()
     preds = bst.predict(x_te)
     predict_s = time.perf_counter() - t0
+    # falcata predicts through cuML's Forest Inference Library when cuML is
+    # installed in the venv and FALCATA_FIL is not 0; otherwise on the CPU,
+    # which on the 30k-tree numerai cells costs 10 minutes per predict. The
+    # record says which one ran so overhead comparisons are not misread.
+    predict_backend = "cpu"
+    if library.startswith("falcata") and os.environ.get("FALCATA_FIL", "1") != "0":
+        try:
+            from falcata.basic import _load_fil_modules  # noqa: PLC0415
+
+            predict_backend = "fil" if _load_fil_modules() is not None else "cpu"
+        except Exception:
+            pass
     return {
         "construct_s": construct_s,
         "construct_shared": construct_shared,
         "train_s": train_s,
         "predict_s": predict_s,
+        "predict_backend": predict_backend,
         "preds": preds,
         "version": lgb.__version__,
         "curve": curve_pts,
