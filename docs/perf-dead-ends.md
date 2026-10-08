@@ -433,6 +433,10 @@ overhead is ~2% of a vector tree and was never the mechanism.
 
 ## Shuffle-order threshold scans on the atomic-construct graph path (2026-10-08)
 
+**Reopened 2026-10-09:** the default atomic-construct noquant path now accepts parallel threshold scans and
+equal-gain split choices. The deterministic fp64 paths retain CPU-order scans and exact split parity. The
+measurements and reason for the original deferral below describe that earlier decision.
+
 - **Tried:** on trees whose level prefix constructs with the atomic kernel (the default graph loop, `graph_det`
   off), the non-quantized finder's threshold prefixes as the tree-shaped shuffle scans of 1.0.0 instead of the
   CPU-order sequential folds.

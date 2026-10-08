@@ -1350,12 +1350,15 @@ def test_cuda_explicit_default_reproduces_plain_quant(name, params):
 _PRECISION_CASES = [
     ("noquant-default", {"quant_mode": "none"}, "fp32"),
     ("noquant-explicit-fp64", {"quant_mode": "none", "cuda_precision": "fp64"}, "fp64"),
+    ("noquant-explicit-fp32", {"quant_mode": "none", "cuda_precision": "fp32"}, "fp32"),
     ("noquant-explicit-auto", {"quant_mode": "none", "cuda_precision": "auto"}, "fp32"),
     ("noquant-gpu_use_dp", {"quant_mode": "none", "gpu_use_dp": True}, "fp64"),
+    ("noquant-gpu_use_dp-explicit-fp32", {"quant_mode": "none", "gpu_use_dp": True, "cuda_precision": "fp32"}, "fp32"),
     ("noquant-deterministic", {"quant_mode": "none", "deterministic": True}, "fp64"),
     ("stochastic", {"quant_mode": "stochastic"}, "fp64"),
     ("fixedpoint", {"quant_mode": "fixedpoint"}, "fp64"),
     ("deterministic-maps-to-fixedpoint", {"deterministic": True}, "fp64"),
+    ("deterministic-auto-maps-to-fixedpoint", {"deterministic": True, "quant_mode": "auto"}, "fp64"),
     ("quant-explicit-fp32", {"quant_mode": "stochastic", "cuda_precision": "fp32"}, "fp32"),
     ("cpu", {"quant_mode": "none", "device_type": "cpu"}, "fp64"),
 ]
@@ -1373,15 +1376,19 @@ def test_cuda_precision_auto_resolution(name, params, expected):
     """
     X, y = _make_regression_for_parity(n=300, seed=5)
     train_params = {"objective": "regression", "device_type": "cuda", "verbose": -1, "num_leaves": 7, **params}
-    bst = lgb.train(train_params, lgb.Dataset(X, label=y), num_boost_round=1)
+    bst = lgb.train(train_params, lgb.Dataset(X, label=y), num_boost_round=1, keep_training_booster=True)
     resolved = [line for line in bst.model_to_string().splitlines() if line.startswith("[cuda_precision: ")]
     assert resolved == [f"[cuda_precision: {expected}]"], f"{name}: {resolved}"
-    # a later reset_parameter with a partial map re-resolves auto from the current mode
-    if "cuda_precision" not in params and params.get("device_type", "cuda") == "cuda":
-        bst.reset_parameter({"learning_rate": 0.05})
+    # Partial resets preserve both automatic precision and an explicit quant_mode
+    # under deterministic=true. They also preserve explicit fp32/fp64 choices.
+    mode = [line for line in bst.model_to_string().splitlines() if line.startswith("[quant_mode: ")]
+    for learning_rate in (0.05, 0.025):
+        bst.reset_parameter({"learning_rate": learning_rate})
         bst.update()
         again = [line for line in bst.model_to_string().splitlines() if line.startswith("[cuda_precision: ")]
         assert again == resolved, f"{name}: {again} after reset_parameter"
+        again_mode = [line for line in bst.model_to_string().splitlines() if line.startswith("[quant_mode: ")]
+        assert again_mode == mode, f"{name}: {again_mode} after reset_parameter"
 
 
 @_REQUIRES_CUDA
@@ -2448,7 +2455,7 @@ def _make_regression_for_parity(n=200, d=8, seed=0):
     return X, y
 
 
-def _train_cpu_and_cuda(params_overrides, X, y, num_round):
+def _train_cpu_and_cuda(params_overrides, X, y, num_round, cuda_plan=None):
     out = {}
     for device_type in ("cpu", "cuda"):
         params = {
@@ -2471,34 +2478,59 @@ def _train_cpu_and_cuda(params_overrides, X, y, num_round):
             "min_sum_hessian_in_leaf": 1e-3,
             **params_overrides,
         }
+        if cuda_plan is not None and device_type == "cuda":
+            params["cuda_plan"] = cuda_plan
         ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False})
         out[device_type] = lgb.train(params, ds, num_boost_round=num_round)
     return out
 
 
+def _tree_nodes(booster):
+    """Each tree's nodes in pre-order: ("split", feature, threshold, gain) or ("leaf",)."""
+    trees = []
+    for info in booster.dump_model()["tree_info"]:
+        nodes, stack = [], [info["tree_structure"]]
+        while stack:
+            node = stack.pop()
+            if "split_index" in node:
+                nodes.append(("split", node["split_feature"], node["threshold"], node["split_gain"]))
+                stack.extend((node["right_child"], node["left_child"]))
+            else:
+                nodes.append(("leaf",))
+        trees.append(nodes)
+    return trees
+
+
+_TIE_BREAK_CASES = [
+    # Regression test for the gain-plateau argmax bug. Bagging configuration
+    # was the original failure: max|Δ|=0.39 at round 3, structurally
+    # divergent trees from round 3 onward. With the fix, all 5 rounds
+    # match at fp64 epsilon and trees are bit-identical.
+    # Plain dense regression: predictions matched at fp64 epsilon prior
+    # to the fix but the encoded tree thresholds differed cosmetically
+    # (CPU and CUDA picked different bins from a true gain plateau).
+    # After the fix, trees are bit-identical.
+    ("dense", {}, 1, 5),
+    # max_depth regression: another configuration where round-1 trees
+    # had cosmetic threshold-encoding differences before the fix.
+    ("max_depth", {"max_depth": 3}, 12, 5),
+    # L2 regularisation: same family.
+    ("l2", {"lambda_l2": 1.0}, 7, 5),
+    # a depth-limited tree with an exact-gain plateau (empty bins between two
+    # thresholds of one feature) in round 4: the default plan's parallel
+    # scans may take either end of it
+    ("max_depth_plateau", {"max_depth": 3}, 4, 5),
+]
+
+
 @_REQUIRES_CUDA
 @pytest.mark.parametrize(
-    ("name", "params_overrides", "seed", "num_round"),
-    [
-        # Regression test for the gain-plateau argmax bug. Bagging configuration
-        # was the original failure: max|Δ|=0.39 at round 3, structurally
-        # divergent trees from round 3 onward. With the fix, all 5 rounds
-        # match at fp64 epsilon and trees are bit-identical.
-        # Plain dense regression: predictions matched at fp64 epsilon prior
-        # to the fix but the encoded tree thresholds differed cosmetically
-        # (CPU and CUDA picked different bins from a true gain plateau).
-        # After the fix, trees are bit-identical.
-        ("dense", {}, 1, 5),
-        # max_depth regression: another configuration where round-1 trees
-        # had cosmetic threshold-encoding differences before the fix.
-        ("max_depth", {"max_depth": 3}, 12, 5),
-        # L2 regularisation: same family.
-        ("l2", {"lambda_l2": 1.0}, 7, 5),
-    ],
+    ("name", "params_overrides", "seed", "num_round"), _TIE_BREAK_CASES, ids=[c[0] for c in _TIE_BREAK_CASES]
 )
 def test_cuda_split_gain_tie_break_matches_cpu(name, params_overrides, seed, num_round):
     """CUDA must match CPU at fp64 epsilon when the best-split argmax has a
-    gain plateau (multiple bins with truly equal gain).
+    gain plateau (multiple bins with truly equal gain), on the deterministic
+    construct path.
 
     Prior to the tolerance-based tie-break in cuda_best_split_finder.cu's
     ReduceBestGain* helpers, ULP-level FP noise in the parallel histogram
@@ -2509,14 +2541,102 @@ def test_cuda_split_gain_tie_break_matches_cpu(name, params_overrides, seed, num
     cosmetic for predictions (data routed identically), but compounded
     through score updates and surfaced as structural tree divergence by
     round 3 in cases like reg_bagging.
+
+    That parity needs bit-exact histograms and CPU's fold order in the
+    threshold prefixes, which only the deterministic constructs and the
+    CPU-order scans that serve them provide, so this pins the deterministic
+    host level loop (cuda_plan graph_loop:off): every split on the same
+    feature and bin as CPU's. The default plan is pinned by
+    test_cuda_default_plan_split_gains_match_cpu.
     """
     X, y = _make_regression_for_parity(seed=seed)
-    pair = _train_cpu_and_cuda(params_overrides, X, y, num_round=num_round)
+    pair = _train_cpu_and_cuda(params_overrides, X, y, num_round=num_round, cuda_plan="auto,graph_loop:off")
     pred_cpu = pair["cpu"].predict(X, raw_score=True)
     pred_cuda = pair["cuda"].predict(X, raw_score=True)
     # fp64 epsilon ≈ 2.2e-16; allow a generous 1e-10 to absorb any
     # remaining round-by-round drift from sources unrelated to this fix.
     np.testing.assert_allclose(pred_cuda, pred_cpu, atol=1e-10)
+    cpu_splits = [[node[:3] for node in tree] for tree in _tree_nodes(pair["cpu"])]
+    cuda_splits = [[node[:3] for node in tree] for tree in _tree_nodes(pair["cuda"])]
+    assert cuda_splits == cpu_splits, f"{name}: a CUDA split took another feature or bin than CPU's"
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(
+    ("name", "params_overrides", "seed", "num_round"), _TIE_BREAK_CASES, ids=[c[0] for c in _TIE_BREAK_CASES]
+)
+def test_cuda_default_plan_split_gains_match_cpu(name, params_overrides, seed, num_round):
+    """On the default plan CUDA's splits are as good as CPU's: equal gains,
+    not necessarily equal bins.
+
+    The default graph level loop builds its histograms with the atomic
+    construct (low-bit noise run to run), so its fp64 finds fold the threshold
+    prefixes with parallel scans instead of CPU's sequential order. On an
+    exact-gain plateau their low bits can then pick another bin than CPU's
+    lowest-index one -- the same partition of the training rows when the bins
+    between are empty, a different one when two splits merely tie. Either way
+    the chosen split's gain is CPU's best gain.
+
+    Gains are recomputed from the same regression gradients and the actual row
+    partitions in fp64; the model's float32 split_gain alone could hide a worse
+    split. Every shared node is checked, including a node whose splits route
+    different rows. A different encoded threshold that routes the same rows
+    does not stop the comparison. Descendants with different row sets, and later
+    rounds with different residuals, are no longer directly comparable.
+    """
+    X, y = _make_regression_for_parity(seed=seed)
+    pair = _train_cpu_and_cuda(params_overrides, X, y, num_round=num_round)
+    labels = y.astype(np.float32).astype(np.float64)
+    lambda_l2 = params_overrides.get("lambda_l2", 0.0)
+    cpu_trees = pair["cpu"].dump_model()["tree_info"]
+    cuda_trees = pair["cuda"].dump_model()["tree_info"]
+
+    def leaf_gain(gradients, rows):
+        return gradients[rows].sum() ** 2 / (np.count_nonzero(rows) + lambda_l2)
+
+    for t, (cpu_tree, cuda_tree) in enumerate(zip(cpu_trees, cuda_trees, strict=True)):
+        scores = labels.mean() if t == 0 else pair["cpu"].predict(X, raw_score=True, num_iteration=t)
+        # RegressionL2 and the Dataset label plane both use float32. The sums
+        # below are fp64, independently of the model's rounded gain fields.
+        gradients = (scores - labels).astype(np.float32).astype(np.float64)
+
+        stack = [(cpu_tree["tree_structure"], cuda_tree["tree_structure"], np.ones(len(y), dtype=bool))]
+        different_partitions = False
+        while stack:
+            cpu_node, cuda_node, rows = stack.pop()
+            assert ("split_index" in cpu_node) == ("split_index" in cuda_node), (
+                f"{name}: tree {t}: one device split a common node the other left a leaf"
+            )
+            if "split_index" not in cpu_node:
+                continue
+            cpu_left = rows & (X[:, cpu_node["split_feature"]] <= cpu_node["threshold"])
+            cuda_left = rows & (X[:, cuda_node["split_feature"]] <= cuda_node["threshold"])
+            cpu_gain = (
+                leaf_gain(gradients, cpu_left) + leaf_gain(gradients, rows & ~cpu_left) - leaf_gain(gradients, rows)
+            )
+            cuda_gain = (
+                leaf_gain(gradients, cuda_left) + leaf_gain(gradients, rows & ~cuda_left) - leaf_gain(gradients, rows)
+            )
+            assert cuda_gain == pytest.approx(cpu_gain, rel=64 * np.finfo(np.float64).eps), (
+                f"{name}: tree {t}: CUDA chosen partition gain {cuda_gain!r} != CPU's {cpu_gain!r}"
+            )
+            # Verify the independently reconstructed gradients/gain against
+            # CPU's stored float32 gain before trusting that oracle.
+            assert cpu_gain == pytest.approx(cpu_node["split_gain"], rel=2.0**-22)
+            if not np.array_equal(cpu_left, cuda_left):
+                different_partitions = True
+                continue
+            stack.extend(
+                (
+                    (cpu_node["left_child"], cuda_node["left_child"], cpu_left),
+                    (cpu_node["right_child"], cuda_node["right_child"], rows & ~cpu_left),
+                )
+            )
+        if different_partitions:
+            return
+    np.testing.assert_allclose(
+        pair["cuda"].predict(X, raw_score=True), pair["cpu"].predict(X, raw_score=True), atol=1e-10
+    )
 
 
 @_REQUIRES_CUDA

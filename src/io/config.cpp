@@ -339,6 +339,17 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
 
   GetMembersFromString(params);
 
+  if (params.count("quant_mode") > 0) {
+    std::string mode = Common::Trim(quant_mode);
+    std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c){ return std::tolower(c); });
+    quant_mode_from_user = mode != std::string("auto");
+  } else if (!quant_mode_from_user && params.count("use_quantized_grad") > 0) {
+    // An automatic mode follows a new compatibility flag. Other partial
+    // maps keep the effective mode, including deterministic's fixedpoint
+    // resolution, rather than reinterpreting it as stochastic.
+    quant_mode = std::string("auto");
+  }
+
   ResolveFalcataParams();
 
   GetAucMuWeights();
@@ -676,7 +687,7 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
     // means quant_mode=none cannot be asked for at all while deterministic is
     // set -- which silently turns any CPU-vs-CUDA comparison into a comparison
     // of two different algorithms.
-    const bool quant_mode_chosen_by_user = params.count("quant_mode") > 0;
+    const bool quant_mode_chosen_by_user = quant_mode_from_user;
     if (deterministic && quant_incompatible_request != nullptr &&
         !quant_mode_chosen_by_user &&
         ResolvedQuantMode() == QuantMode::kNone) {

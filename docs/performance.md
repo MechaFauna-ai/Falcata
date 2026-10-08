@@ -854,7 +854,8 @@ generator) added four `cuda_plan` keys to that kernel, all default on and bit-id
 
 ## 7d. The non-quantized finder and fix after CPU bit-parity
 
-`quant_mode=none` finds splits with one 256-thread block per (feature, leaf) over fp64 histograms. The 1.0.4
+`quant_mode=none` finds splits with one 256-thread block per (feature, leaf). Its default precision is fp32 (§6);
+the fp64 reference path uses fp64 histograms. The 1.0.4
 CPU-bit-parity merge (`d53aa45c`) made two of its folds CPU-order sequential: the finder's gradient and hessian
 threshold prefixes, and FixHistogram's sum of the non-most-frequent bins. Each is a dependent chain of up to 255
 fp64 adds in one or two lanes while the rest of the block waits, and on the RTX 5090 fp64 runs at 1/64 of fp32 with
@@ -899,8 +900,13 @@ chain per lane 4.32 / 77.2; + integer keys 4.06 / 68.9; + fp32 bounds 3.65 / 66.
 3.52 / 57.9. On the 100-round year profile the find kernel drops back to 227 ms and the fix + subtract to 86 ms
 before the last change.
 
-Not taken: tree-shaped shuffle scans for the threshold prefixes on trees whose level construct is the
-order-dependent atomic one (the default graph loop); see `perf-dead-ends.md`.
+On the default graph loop, trees whose histograms use the order-dependent atomic construct also use
+tree-shaped shuffle scans for the threshold prefixes. Atomic histogram sums already carry low-bit noise,
+and a CPU-order prefix cannot restore CPU's split choices from those sums. The parallel scan may choose a
+different bin on an equal-gain plateau; split quality, rather than bin identity, is the contract on this path.
+The deterministic constructs (`graph_det:on`, the host level loop with `graph_loop:off`, and the classic
+per-leaf flow) retain CPU-order fp64 prefixes and CPU split parity. fp32 and quantized prefixes use parallel
+scans in either case.
 
 ## 8. GPU inference via NVIDIA FIL
 

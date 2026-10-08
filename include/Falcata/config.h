@@ -1209,7 +1209,7 @@ struct Config {
   // desc = CUDA execution-plan override string (Falcata)
   // desc = ``auto`` resolves every shape-conditional kernel choice from the data/params via the built-in planner; the resolved plan is logged at startup
   // desc = experts can pin individual decisions with comma-separated ``key:on|off`` overrides after ``auto``, e.g. ``auto,graph_loop:off,tuner:on``
-  // desc = nearly all plan decisions are perf-only and bit-identical: they never change the trained model, only how fast it is produced. Exceptions: ``robust_scale`` (an accuracy guard for ``quant_mode=fixedpoint`` on extreme label imbalance) changes the model when it fires, and ``batch_kernels`` may break exact-gain ties in a different order
+  // desc = nearly all plan decisions are perf-only and bit-identical: they never change the trained model, only how fast it is produced. Exceptions: ``robust_scale`` (an accuracy guard for ``quant_mode=fixedpoint`` on extreme label imbalance) changes the model when it fires, and ``batch_kernels`` may break exact-gain ties in a different order. For non-quantized training, ``graph_loop`` and ``graph_det`` also select the histogram accumulation and threshold scan order, which can change low bits and exact-gain tie choices
   // desc = **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
   std::string cuda_plan = "auto";
 
@@ -1243,6 +1243,11 @@ struct Config {
   // parameter map (Booster.reset_parameter) must not freeze a choice that
   // depended on parameters it changes. An explicit fp64/fp32 clears it.
   bool cuda_precision_from_auto = false;
+
+  // NOT a parameter: an explicit non-auto quant_mode remains authoritative when a
+  // partial reset_parameter map omits it. In particular, deterministic=true
+  // must not switch an existing quant_mode=none learner to fixedpoint.
+  bool quant_mode_from_user = false;
 
   size_t file_load_progress_interval_bytes = size_t(10) * 1024 * 1024 * 1024;
 

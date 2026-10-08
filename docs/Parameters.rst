@@ -1479,7 +1479,7 @@ GPU Parameters
 
    -  experts can pin individual decisions with comma-separated ``key:on|off`` overrides after ``auto``, e.g. ``auto,graph_loop:off,tuner:on``
 
-   -  nearly all plan decisions are perf-only and bit-identical: they never change the trained model, only how fast it is produced. Exceptions: ``robust_scale`` (an accuracy guard for ``quant_mode=fixedpoint`` on extreme label imbalance) changes the model when it fires, and ``batch_kernels`` may break exact-gain ties in a different order
+   -  nearly all plan decisions are perf-only and bit-identical: they never change the trained model, only how fast it is produced. Exceptions: ``robust_scale`` (an accuracy guard for ``quant_mode=fixedpoint`` on extreme label imbalance) changes the model when it fires, and ``batch_kernels`` may break exact-gain ties in a different order. For non-quantized training, ``graph_loop`` and ``graph_det`` also select the histogram accumulation and threshold scan order, which can change low bits and exact-gain tie choices
 
    -  **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
 

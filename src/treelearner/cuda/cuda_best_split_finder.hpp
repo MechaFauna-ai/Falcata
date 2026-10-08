@@ -32,7 +32,7 @@
 namespace Falcata {
 
 /*! \brief fp32 per-bin gain arithmetic in the best-split find kernels
- *  (config cuda_precision=fp32 enables; default fp64, the historical behavior).
+ *  (config cuda_precision=fp32 enables; auto selects it for noquant CUDA).
  *  Leaf-level sums stay double and are converted once per task; results are
  *  quality-gated, not bit-identical. Process-global, set from Config by the
  *  tree learner's Init before any consumer reads it (concurrent in-process
