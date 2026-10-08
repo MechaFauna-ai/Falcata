@@ -62,6 +62,10 @@
    "metric": 1.593959,
    "metric_name": "rmse"
   },
+  "dense/nonquant-fp64": {
+   "metric": 1.594167,
+   "metric_name": "rmse"
+  },
   "dense/nonquant-widebin": {
    "md5": "a0da80196a363759cf8c38021b7236c0",
    "metric": 1.86005,
