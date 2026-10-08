@@ -242,33 +242,35 @@ __device__ __forceinline__ T SequentialPrefixSum(T value, T* row_buffer) {
   return row_buffer[threadIdx.x];
 }
 
-// Two CPU-order scans in one pass: the a/b accumulator chains are
-// independent, so interleaving them hides each other's add latency and the
-// pair costs about as much as one scan. len bounds the fold at the lanes the
-// caller actually reads (trailing lanes then keep their own deposit, which
-// the callers' bin-range guards never read); row_buffer holds 2 * blockDim.x
-// elements.
+// Two CPU-order scans in one pass, one chain per lane: lane 0 folds a and
+// lane 1 folds b, so every fold step is ONE warp instruction serving both
+// chains. A reduced-rate fp64 pipe (1/64 of fp32 on consumer parts) charges a
+// warp instruction its full issue cost however few lanes are active, so the
+// pair costs what one chain does. The staging interleaves the chains (a at
+// [2i], b at [2i + 1]) so the two lanes' accesses of a step fall in distinct
+// banks. len bounds the fold at the lanes the caller actually reads (trailing
+// lanes then keep their own deposit, which the callers' bin-range guards
+// never read); row_buffer holds 2 * blockDim.x elements.
 template <typename T>
 __device__ __forceinline__ void SequentialPrefixSumPair(
     T* value_a, T* value_b, T* row_buffer, const unsigned int len) {
   __syncthreads();  // previous users of row_buffer may still be reading
-  row_buffer[threadIdx.x] = *value_a;
-  row_buffer[blockDim.x + threadIdx.x] = *value_b;
+  row_buffer[2 * threadIdx.x] = *value_a;
+  row_buffer[2 * threadIdx.x + 1] = *value_b;
   __syncthreads();
-  if (threadIdx.x == 0) {
-    T acc_a = row_buffer[0];
-    T acc_b = row_buffer[blockDim.x];
+  if (threadIdx.x < 2) {
+    T* chain = row_buffer + threadIdx.x;
+    T acc = chain[0];
     const unsigned int bound = len < blockDim.x ? len : blockDim.x;
+    #pragma unroll 4
     for (unsigned int i = 1; i < bound; ++i) {
-      acc_a += row_buffer[i];
-      row_buffer[i] = acc_a;
-      acc_b += row_buffer[blockDim.x + i];
-      row_buffer[blockDim.x + i] = acc_b;
+      acc += chain[2 * i];
+      chain[2 * i] = acc;
     }
   }
   __syncthreads();
-  *value_a = row_buffer[threadIdx.x];
-  *value_b = row_buffer[blockDim.x + threadIdx.x];
+  *value_a = row_buffer[2 * threadIdx.x];
+  *value_b = row_buffer[2 * threadIdx.x + 1];
 }
 
 // CPU-order in-place inclusive scan over a global-memory row (the
@@ -423,6 +425,69 @@ __device__ uint32_t ReduceBestGain(GAIN_T gain, bool found, uint32_t thread_inde
   return thread_index;
 }
 
+// ReduceBestGain for the numerical threshold scan. A found gain there is
+// current_gain - min_gain_shift with current_gain > min_gain_shift, so it is
+// positive. When every found gain of the block is also finite, the fp64
+// reduction's zero tie tolerance makes its result the exact maximum of (found,
+// gain, then lower thread index), and positive finite doubles order as their
+// bit patterns: the fp64 specialization reduces 64-bit integer keys of the same
+// order instead of issuing fp64 compares, fmax and the tolerance multiply at
+// every shuffle step (fp64 pipe work on parts with 1/64-rate fp64). A block
+// holding a non-finite found gain keeps the fp64 reduction and its NaN-tolerance
+// semantics. The fp32 gain mode keeps its tolerance band through ReduceBestGain.
+// Like ReduceBestGain, the result is valid in thread 0; the caller keeps the
+// leading barrier.
+template <typename GAIN_T>
+__device__ __forceinline__ uint32_t ReduceBestThresholdGain(GAIN_T gain, bool found, uint32_t thread_index,
+    GAIN_T* shared_gain_buffer, bool* shared_found_buffer, uint32_t* shared_thread_index_buffer) {
+  return ReduceBestGain(gain, found, thread_index, shared_gain_buffer, shared_found_buffer, shared_thread_index_buffer);
+}
+
+template <>
+__device__ __forceinline__ uint32_t ReduceBestThresholdGain<double>(double gain, bool found, uint32_t thread_index,
+    double* shared_gain_buffer, bool* shared_found_buffer, uint32_t* shared_thread_index_buffer) {
+  constexpr uint64_t kExponentMask = 0x7ff0000000000000ULL;
+  const uint64_t bits = static_cast<uint64_t>(__double_as_longlong(gain));
+  if (__syncthreads_or(found && (bits & kExponentMask) == kExponentMask)) {
+    return ReduceBestGain(gain, found, thread_index, shared_gain_buffer, shared_found_buffer,
+                          shared_thread_index_buffer);
+  }
+  // not found -> key 0, below every positive gain's bit pattern
+  uint64_t key = found ? bits : 0ULL;
+  uint32_t index = thread_index;
+  const uint32_t mask = 0xffffffff;
+  for (uint32_t offset = warpSize / 2; offset > 0; offset >>= 1) {
+    const uint64_t other_key = __shfl_down_sync(mask, key, offset);
+    const uint32_t other_index = __shfl_down_sync(mask, index, offset);
+    if (other_key > key || (other_key == key && other_index < index)) {
+      key = other_key;
+      index = other_index;
+    }
+  }
+  const uint32_t warpID = threadIdx.x / warpSize;
+  const uint32_t warpLane = threadIdx.x % warpSize;
+  uint64_t* shared_key_buffer = reinterpret_cast<uint64_t*>(shared_gain_buffer);
+  if (warpLane == 0) {
+    shared_key_buffer[warpID] = key;
+    shared_thread_index_buffer[warpID] = index;
+  }
+  __syncthreads();
+  if (warpID == 0) {
+    const uint32_t num_warp = blockDim.x / warpSize;
+    key = warpLane < num_warp ? shared_key_buffer[warpLane] : 0ULL;
+    index = warpLane < num_warp ? shared_thread_index_buffer[warpLane] : 0;
+    for (uint32_t offset = warpSize / 2; offset > 0; offset >>= 1) {
+      const uint64_t other_key = __shfl_down_sync(mask, key, offset);
+      const uint32_t other_index = __shfl_down_sync(mask, index, offset);
+      if (other_key > key || (other_key == key && other_index < index)) {
+        key = other_key;
+        index = other_index;
+      }
+    }
+  }
+  return index;
+}
+
 __device__ void ReduceBestGainForLeaves(double* gain, int* leaves, int cuda_cur_num_leaves) {
   const unsigned int tid = threadIdx.x;
   for (unsigned int s = 1; s < cuda_cur_num_leaves; s *= 2) {
@@ -500,6 +565,72 @@ __device__ int ReduceBestGainForLeaves(double gain, int leaf_index, double* shar
   return leaf_index;
 }
 
+// fp32 bounds of the fp64 split gain sl_g^2 / (sl_h + l2) + sr_g^2 / (sr_h + l2)
+// (GetSplitGains without L1, smoothing or max_delta_step): lo <= the fp64 gain
+// <= hi. Every input is rounded to fp32 once and the gain is evaluated in fp32
+// with IEEE operations; within the guarded range (each gradient sum zero or of
+// magnitude in [2^-40, 2^40], each hessian sum and l2 + hessian sum in
+// [2^-40, 2^40]) every intermediate is a normal fp32 value, so the fp32 gain is
+// within ~9 ulp (relative 2^-20.8) of the exact one and the fp64 gain within
+// 2^-50 of it; the bounds take a 2^-16 relative margin. Outside the range the
+// bounds stay (-inf, inf): no prune.
+__device__ __forceinline__ bool GainBoundOperandF32(const double g, float* g32) {
+  const uint64_t magnitude = static_cast<uint64_t>(__double_as_longlong(g)) & 0x7fffffffffffffffULL;
+  *g32 = __double2float_rn(g);
+  const float a = fabsf(*g32);
+  return magnitude == 0 || (a >= 0x1p-40f && a <= 0x1p40f);
+}
+
+__device__ __forceinline__ bool GainBoundDenominatorF32(const double h, const float l2, float* d32) {
+  const float h32 = __double2float_rn(h);
+  *d32 = __fadd_rn(h32, l2);
+  return h32 >= 0x1p-40f && h32 <= 0x1p40f && *d32 <= 0x1p40f;
+}
+
+__device__ __forceinline__ void SplitGainBoundsF32(
+    const double sl_g, const double sl_h, const double sr_g, const double sr_h, const double l2,
+    float* lo, float* hi) {
+  constexpr float kRelMargin = 0x1p-16f;
+  const float l2_32 = __double2float_rn(l2);
+  float gl, gr, dl, dr;
+  if (!(l2 >= 0.0) || l2_32 > 0x1p40f ||
+      !GainBoundOperandF32(sl_g, &gl) || !GainBoundOperandF32(sr_g, &gr) ||
+      !GainBoundDenominatorF32(sl_h, l2_32, &dl) || !GainBoundDenominatorF32(sr_h, l2_32, &dr)) {
+    return;
+  }
+  const float gain = __fadd_rn(__fdiv_rn(__fmul_rn(gl, gl), dl), __fdiv_rn(__fmul_rn(gr, gr), dr));
+  const float margin = __fmul_rn(gain, kRelMargin);
+  *lo = __fsub_rn(gain, margin);
+  *hi = __fadd_rn(gain, margin);
+}
+
+// Relative cut below the best lower bound: a pruned threshold's fp64 gain is
+// below (1 - 2^-21) times the maximum's, which keeps the two distinct after
+// both subtract min_gain_shift (each subtraction rounds by at most 2^-53 of
+// the maximum).
+constexpr float kSplitGainCutMargin = 0x1p-20f;
+
+// Block-wide fp32 maximum, broadcast to every thread; block-uniform call.
+__device__ __forceinline__ float BlockMaxF32(float value, float* shared_buffer) {
+  const uint32_t mask = 0xffffffff;
+  for (uint32_t offset = warpSize / 2; offset > 0; offset >>= 1) {
+    value = fmaxf(value, __shfl_xor_sync(mask, value, offset));
+  }
+  const uint32_t warpID = threadIdx.x / warpSize;
+  const uint32_t warpLane = threadIdx.x % warpSize;
+  __syncthreads();  // previous readers of shared_buffer
+  if (warpLane == 0) {
+    shared_buffer[warpID] = value;
+  }
+  __syncthreads();
+  const uint32_t num_warp = blockDim.x / warpSize;
+  value = warpLane < num_warp ? shared_buffer[warpLane] : -INFINITY;
+  for (uint32_t offset = warpSize / 2; offset > 0; offset >>= 1) {
+    value = fmaxf(value, __shfl_xor_sync(mask, value, offset));
+  }
+  return value;
+}
+
 template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, bool REVERSE, typename GAIN_T, bool USE_MC>
 __device__ void FindBestSplitsForLeafKernelInner(
   // input feature information
@@ -557,6 +688,7 @@ __device__ void FindBestSplitsForLeafKernelInner(
   __shared__ GAIN_T shared_gain_buffer[WARPSIZE];
   __shared__ bool shared_bool_buffer[WARPSIZE];
   __shared__ uint32_t shared_int_buffer[WARPSIZE];
+  __shared__ float shared_prune_buffer[WARPSIZE];
   const unsigned int threadIdx_x = threadIdx.x;
   const bool skip_sum = REVERSE ?
     (task->skip_default_bin && (task->num_bin - 1 - threadIdx_x) == static_cast<int>(task->default_bin)) :
@@ -613,18 +745,23 @@ __device__ void FindBestSplitsForLeafKernelInner(
       if (threadIdx_x == 0) {
         local_bin_cnt = num_data - cnt_non_default;
       }
-      seq_prefix_buffer[threadIdx_x] = local_grad_hist;
-      seq_prefix_buffer[blockDim.x + threadIdx_x] = local_hess_hist;
+      // one chain per lane, interleaved staging (see SequentialPrefixSumPair):
+      // lane 0 folds the gradient, lane 1 the hessian
+      seq_prefix_buffer[2 * threadIdx_x] = local_grad_hist;
+      seq_prefix_buffer[2 * threadIdx_x + 1] = local_hess_hist;
       __syncthreads();
-      if (threadIdx_x == 0) {
-        GAIN_T acc_g = static_cast<GAIN_T>(sum_gradients);
-        GAIN_T acc_h = static_cast<GAIN_T>(sum_hessians) - static_cast<GAIN_T>(kEpsilon);
+      if (threadIdx_x < 2) {
+        GAIN_T acc = threadIdx_x == 0 ?
+          static_cast<GAIN_T>(sum_gradients) :
+          static_cast<GAIN_T>(sum_hessians) - static_cast<GAIN_T>(kEpsilon);
         for (unsigned int i = 1; i < blockDim.x; ++i) {
-          acc_g -= seq_prefix_buffer[i];
-          acc_h -= seq_prefix_buffer[blockDim.x + i];
+          acc -= seq_prefix_buffer[2 * i + threadIdx_x];
         }
-        local_grad_hist = acc_g;
-        local_hess_hist = acc_h;
+        const GAIN_T acc_h = __shfl_down_sync(0x3u, acc, 1);
+        if (threadIdx_x == 0) {
+          local_grad_hist = acc;
+          local_hess_hist = acc_h;
+        }
       }
     } else if (threadIdx_x == 0) {
       local_hess_hist += kEpsilon;
@@ -652,74 +789,92 @@ __device__ void FindBestSplitsForLeafKernelInner(
     __syncthreads();
     local_hess_hist = ShufflePrefixSum(local_hess_hist, shared_gain_buffer);
   }
+  // Each thread's threshold: its child sums and counts and whether it passes
+  // the split gates (min_sum_hessian, min_data, the extra_trees draw).
+  bool candidate = false;
+  GAIN_T cand_sum_left_gradient = 0.0f;
+  GAIN_T cand_sum_left_hessian = 0.0f;
+  GAIN_T cand_sum_right_gradient = 0.0f;
+  GAIN_T cand_sum_right_hessian = 0.0f;
+  data_size_t cand_left_count = 0;
+  data_size_t cand_right_count = 0;
+  uint32_t candidate_threshold = 0;
   if (REVERSE) {
     if (threadIdx_x >= static_cast<unsigned int>(task->na_as_missing) && threadIdx_x <= task->num_bin - 2 && !skip_sum) {
-      const GAIN_T sum_right_gradient = local_grad_hist;
-      const GAIN_T sum_right_hessian = local_hess_hist;
-      const data_size_t right_count = sizeof(GAIN_T) == sizeof(double) ?
+      cand_sum_right_gradient = local_grad_hist;
+      cand_sum_right_hessian = local_hess_hist;
+      cand_right_count = sizeof(GAIN_T) == sizeof(double) ?
         local_cnt_prefix :
-        static_cast<data_size_t>(CUDARoundInt(sum_right_hessian * cnt_factor));
-      const GAIN_T sum_left_gradient = sum_gradients_acc - sum_right_gradient;
-      const GAIN_T sum_left_hessian = sum_hessians_acc - sum_right_hessian;
-      const data_size_t left_count = num_data - right_count;
-      if (sum_left_hessian >= min_sum_hessian_acc && left_count >= min_data_in_leaf &&
-        sum_right_hessian >= min_sum_hessian_acc && right_count >= min_data_in_leaf &&
-        (!USE_RAND || static_cast<int>(task->num_bin - 2 - threadIdx_x) == rand_threshold)) {
-        GAIN_T current_gain = USE_MC ?
-          static_cast<GAIN_T>(CUDALeafSplits::GetSplitGainsMC<USE_L1, USE_SMOOTHING>(
-            sum_left_gradient, sum_left_hessian, sum_right_gradient,
-            sum_right_hessian, lambda_l1_acc,
-            lambda_l2_acc, path_smooth_acc, static_cast<double>(max_delta_step), left_count, right_count, parent_output_acc,
-            leaf_constraint_min, leaf_constraint_max, monotone_constraint)) :
-          CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING, GAIN_T>(
-            sum_left_gradient, sum_left_hessian, sum_right_gradient,
-            sum_right_hessian, lambda_l1_acc,
-            lambda_l2_acc, path_smooth_acc, static_cast<GAIN_T>(max_delta_step), left_count, right_count, parent_output_acc);
-        // gain with split is worse than without split
-        if (current_gain > min_gain_shift) {
-          local_gain = current_gain - min_gain_shift;
-          threshold_value = static_cast<uint32_t>(task->num_bin - 2 - threadIdx_x);
-          threshold_found = true;
-        }
-      }
+        static_cast<data_size_t>(CUDARoundInt(cand_sum_right_hessian * cnt_factor));
+      cand_sum_left_gradient = sum_gradients_acc - cand_sum_right_gradient;
+      cand_sum_left_hessian = sum_hessians_acc - cand_sum_right_hessian;
+      cand_left_count = num_data - cand_right_count;
+      candidate = cand_sum_left_hessian >= min_sum_hessian_acc && cand_left_count >= min_data_in_leaf &&
+        cand_sum_right_hessian >= min_sum_hessian_acc && cand_right_count >= min_data_in_leaf &&
+        (!USE_RAND || static_cast<int>(task->num_bin - 2 - threadIdx_x) == rand_threshold);
+      candidate_threshold = static_cast<uint32_t>(task->num_bin - 2 - threadIdx_x);
     }
   } else {
     const uint32_t end = (task->na_as_missing && task->mfb_offset == 1) ? static_cast<uint32_t>(task->num_bin - 2) : feature_num_bin_minus_offset - 2;
     if (threadIdx_x <= end && !skip_sum) {
-      const GAIN_T sum_left_gradient = local_grad_hist;
-      const GAIN_T sum_left_hessian = local_hess_hist;
-      const data_size_t left_count = sizeof(GAIN_T) == sizeof(double) ?
+      cand_sum_left_gradient = local_grad_hist;
+      cand_sum_left_hessian = local_hess_hist;
+      cand_left_count = sizeof(GAIN_T) == sizeof(double) ?
         local_cnt_prefix :
-        static_cast<data_size_t>(CUDARoundInt(sum_left_hessian * cnt_factor));
-      const GAIN_T sum_right_gradient = sum_gradients_acc - sum_left_gradient;
-      const GAIN_T sum_right_hessian = sum_hessians_acc - sum_left_hessian;
-      const data_size_t right_count = num_data - left_count;
-      if (sum_left_hessian >= min_sum_hessian_acc && left_count >= min_data_in_leaf &&
-        sum_right_hessian >= min_sum_hessian_acc && right_count >= min_data_in_leaf &&
-        (!USE_RAND || static_cast<int>(threadIdx_x + task->mfb_offset) == rand_threshold)) {
-        GAIN_T current_gain = USE_MC ?
-          static_cast<GAIN_T>(CUDALeafSplits::GetSplitGainsMC<USE_L1, USE_SMOOTHING>(
-            sum_left_gradient, sum_left_hessian, sum_right_gradient,
-            sum_right_hessian, lambda_l1_acc,
-            lambda_l2_acc, path_smooth_acc, static_cast<double>(max_delta_step), left_count, right_count, parent_output_acc,
-            leaf_constraint_min, leaf_constraint_max, monotone_constraint)) :
-          CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING, GAIN_T>(
-            sum_left_gradient, sum_left_hessian, sum_right_gradient,
-            sum_right_hessian, lambda_l1_acc,
-            lambda_l2_acc, path_smooth_acc, static_cast<GAIN_T>(max_delta_step), left_count, right_count, parent_output_acc);
-        // gain with split is worse than without split
-        if (current_gain > min_gain_shift) {
-          local_gain = current_gain - min_gain_shift;
-          threshold_value = (task->na_as_missing && task->mfb_offset == 1) ?
-            static_cast<uint32_t>(threadIdx_x) :
-            static_cast<uint32_t>(threadIdx_x + task->mfb_offset);
-          threshold_found = true;
-        }
-      }
+        static_cast<data_size_t>(CUDARoundInt(cand_sum_left_hessian * cnt_factor));
+      cand_sum_right_gradient = sum_gradients_acc - cand_sum_left_gradient;
+      cand_sum_right_hessian = sum_hessians_acc - cand_sum_left_hessian;
+      cand_right_count = num_data - cand_left_count;
+      candidate = cand_sum_left_hessian >= min_sum_hessian_acc && cand_left_count >= min_data_in_leaf &&
+        cand_sum_right_hessian >= min_sum_hessian_acc && cand_right_count >= min_data_in_leaf &&
+        (!USE_RAND || static_cast<int>(threadIdx_x + task->mfb_offset) == rand_threshold);
+      candidate_threshold = (task->na_as_missing && task->mfb_offset == 1) ?
+        static_cast<uint32_t>(threadIdx_x) :
+        static_cast<uint32_t>(threadIdx_x + task->mfb_offset);
+    }
+  }
+  if (sizeof(GAIN_T) == sizeof(double) && !USE_RAND && !USE_MC && !USE_L1 && !USE_SMOOTHING &&
+      !(max_delta_step > 0.0) && min_gain_shift >= static_cast<GAIN_T>(0)) {
+    // The fp64 gain below costs dozens of fp64 instructions per threshold
+    // (two divisions), issued by every warp that holds a candidate. fp32
+    // bounds rule out the thresholds that cannot be the block's winner, so the
+    // exact gain runs only for the rest (see SplitGainBoundsF32): a threshold
+    // whose upper bound lies below the best lower bound by more than the cut's
+    // margin has an exact gain strictly below the maximum's, also after both
+    // subtract min_gain_shift, so it is neither the winner nor tied with it.
+    // Same survivors' expressions, same winner: bit-identical.
+    float bound_lo = -INFINITY;
+    float bound_hi = INFINITY;
+    if (candidate) {
+      SplitGainBoundsF32(static_cast<double>(cand_sum_left_gradient), static_cast<double>(cand_sum_left_hessian),
+                         static_cast<double>(cand_sum_right_gradient), static_cast<double>(cand_sum_right_hessian),
+                         lambda_l2, &bound_lo, &bound_hi);
+    }
+    const float best_lo = BlockMaxF32(candidate ? bound_lo : -INFINITY, shared_prune_buffer);
+    if (best_lo > 0.0f && bound_hi < best_lo - best_lo * kSplitGainCutMargin) {
+      candidate = false;
+    }
+  }
+  if (candidate) {
+    GAIN_T current_gain = USE_MC ?
+      static_cast<GAIN_T>(CUDALeafSplits::GetSplitGainsMC<USE_L1, USE_SMOOTHING>(
+        cand_sum_left_gradient, cand_sum_left_hessian, cand_sum_right_gradient,
+        cand_sum_right_hessian, lambda_l1_acc,
+        lambda_l2_acc, path_smooth_acc, static_cast<double>(max_delta_step), cand_left_count, cand_right_count, parent_output_acc,
+        leaf_constraint_min, leaf_constraint_max, monotone_constraint)) :
+      CUDALeafSplits::GetSplitGains<USE_L1, USE_SMOOTHING, GAIN_T>(
+        cand_sum_left_gradient, cand_sum_left_hessian, cand_sum_right_gradient,
+        cand_sum_right_hessian, lambda_l1_acc,
+        lambda_l2_acc, path_smooth_acc, static_cast<GAIN_T>(max_delta_step), cand_left_count, cand_right_count, parent_output_acc);
+    // gain with split is worse than without split
+    if (current_gain > min_gain_shift) {
+      local_gain = current_gain - min_gain_shift;
+      threshold_value = candidate_threshold;
+      threshold_found = true;
     }
   }
   __syncthreads();
-  const uint32_t result = ReduceBestGain(local_gain, threshold_found, threadIdx_x, shared_gain_buffer, shared_bool_buffer, shared_int_buffer);
+  const uint32_t result = ReduceBestThresholdGain(local_gain, threshold_found, threadIdx_x, shared_gain_buffer, shared_bool_buffer, shared_int_buffer);
   if (threadIdx_x == 0) {
     best_thread_index = result;
   }

@@ -4620,11 +4620,13 @@ __device__ __forceinline__ void FixHistogramInner(
   // the non-mfb bins in bin order, and the reconstructed most-frequent bin
   // must be bit-equal to CPU's or every threshold prefix crossing it inherits
   // the ulp difference. Bins are STAGED into shared memory cooperatively
-  // (coalesced) so thread 0's order-exact fold reads shared, not a dependent
-  // chain of global loads; chunking keeps it exact for any bin count. (The
-  // discretized fix keeps its parallel reduction: integer sums are
-  // order-invariant. shared_mem_buffer stays a parameter for that variant's
-  // shared call signature.)
+  // (coalesced) so the order-exact folds read shared, not a dependent chain of
+  // global loads; chunking keeps them exact for any bin count. Lane 0 folds
+  // the gradient and lane 1 the hessian, so each fold step is one warp
+  // instruction for both sums (the staging interleaves them, so the two
+  // lanes' reads fall in distinct banks). (The discretized fix keeps its
+  // parallel reduction: integer sums are order-invariant. shared_mem_buffer
+  // stays a parameter for that variant's shared call signature.)
   (void)shared_mem_buffer;
   constexpr uint32_t kFixStageChunk = 256;
   __shared__ double fix_stage[2 * kFixStageChunk];
@@ -4638,14 +4640,22 @@ __device__ __forceinline__ void FixHistogramInner(
       fix_stage[i] = hist_fp32 ? static_cast<hist_t>(feature_hist32[pos]) : feature_hist[pos];
     }
     __syncthreads();
-    if (threadIdx_x == 0) {
+    if (threadIdx_x < 2) {
+      hist_t acc = threadIdx_x == 0 ? sum_gradient : sum_hessian;
       for (uint32_t b = 0; b < chunk; ++b) {
         if (chunk_start + b != most_freq_bin) {
-          sum_gradient += fix_stage[b << 1];
-          sum_hessian += fix_stage[(b << 1) + 1];
+          acc += fix_stage[(b << 1) + threadIdx_x];
         }
       }
+      if (threadIdx_x == 0) {
+        sum_gradient = acc;
+      } else {
+        sum_hessian = acc;
+      }
     }
+  }
+  if (threadIdx_x < 2) {
+    sum_hessian = __shfl_sync(0x3u, sum_hessian, 1);
   }
   if (threadIdx_x == 0) {
     const hist_t fixed_gradient = leaf_sum_gradients - sum_gradient;
@@ -4714,15 +4724,128 @@ __global__ void FixHistogramBatchedKernel(
     shared_mem_buffer, hist_fp32);
 }
 
+// The most-frequent-bin fix of the need-fix features [first, first +
+// kFixGroupFeatures) of one smaller leaf, with the subtraction into the larger
+// leaf at those entries: FixHistogramInner's arithmetic for each feature of the
+// group. Lane 2k folds feature k's gradient and lane 2k + 1 its hessian, so one
+// warp instruction per fold step serves every chain of the group (a 1/64-rate
+// fp64 pipe charges a warp instruction its full cost however few lanes are
+// active, and the fold is a dependent chain, so one feature per block left its
+// other threads idle through it). Each chain sums its feature's non-most-
+// frequent bins in ascending bin order starting from zero, the fold
+// FixHistogramInner performs: bit-identical. The bins are staged
+// kFixGroupChunk per feature per round, thread t holding element
+// t % (2 * kFixGroupChunk) of feature t / (2 * kFixGroupChunk), so the block
+// has 2 * kFixGroupChunk * kFixGroupFeatures threads. Block-uniform call.
+__device__ __forceinline__ void FixHistogramGroupInner(
+  const uint32_t* cuda_feature_num_bins,
+  const uint32_t* cuda_feature_hist_offsets,
+  const uint32_t* cuda_feature_most_freq_bins,
+  const int* cuda_need_fix_histogram_features,
+  const int num_need_fix,
+  const int first,
+  const int8_t* feature_used,
+  const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,
+  const CUDALeafSplitsStruct* larger_for_subtract,
+  const bool hist_fp32) {
+  __shared__ double fix_group_stage[kFixGroupFeatures][2 * kFixGroupChunk];
+  __shared__ uint32_t fix_group_bins;
+  constexpr uint32_t kStageWidth = 2 * kFixGroupChunk;
+  // the feature this thread stages (every thread stages one element a round)
+  const uint32_t stage_k = threadIdx.x / kStageWidth;
+  const uint32_t stage_e = threadIdx.x % kStageWidth;
+  bool stage_active = false;
+  uint32_t stage_offset = 0;
+  uint32_t stage_num_bin = 0;
+  if (first + static_cast<int>(stage_k) < num_need_fix) {
+    const int feature_index = cuda_need_fix_histogram_features[first + stage_k];
+    stage_active = feature_used == nullptr || feature_used[feature_index];
+    stage_offset = cuda_feature_hist_offsets[feature_index];
+    stage_num_bin = cuda_feature_num_bins[feature_index];
+  }
+  // the feature this lane folds (lanes 0 .. 2 * kFixGroupFeatures - 1)
+  const uint32_t fold_k = threadIdx.x >> 1;
+  const uint32_t fold_c = threadIdx.x & 1;
+  bool fold_active = false;
+  uint32_t fold_offset = 0;
+  uint32_t fold_num_bin = 0;
+  uint32_t fold_mfb = 0;
+  if (threadIdx.x < 2 * kFixGroupFeatures && first + static_cast<int>(fold_k) < num_need_fix) {
+    const int feature_index = cuda_need_fix_histogram_features[first + fold_k];
+    fold_active = feature_used == nullptr || feature_used[feature_index];
+    fold_offset = cuda_feature_hist_offsets[feature_index];
+    fold_num_bin = cuda_feature_num_bins[feature_index];
+    fold_mfb = cuda_feature_most_freq_bins[feature_index];
+  }
+  if (threadIdx.x == 0) {
+    fix_group_bins = 0;
+  }
+  __syncthreads();
+  if (fold_active && fold_c == 0) {
+    atomicMax(&fix_group_bins, fold_num_bin);
+  }
+  __syncthreads();
+  const uint32_t group_bins = fix_group_bins;
+  const hist_t* smaller_hist = cuda_smaller_leaf_splits->hist_in_leaf;
+  const float* smaller_hist32 = reinterpret_cast<const float*>(smaller_hist);
+  hist_t acc = 0.0f;
+  for (uint32_t chunk_start = 0; chunk_start < group_bins; chunk_start += kFixGroupChunk) {
+    const uint32_t stage_bin = chunk_start + (stage_e >> 1);
+    if (stage_active && stage_bin < stage_num_bin) {
+      const uint32_t pos = ((stage_offset + stage_bin) << 1) + (stage_e & 1);
+      fix_group_stage[stage_k][stage_e] = hist_fp32 ? static_cast<hist_t>(smaller_hist32[pos]) : smaller_hist[pos];
+    }
+    __syncthreads();
+    if (fold_active) {
+      for (uint32_t b = 0; b < kFixGroupChunk; ++b) {
+        const uint32_t bin = chunk_start + b;
+        if (bin < fold_num_bin && bin != fold_mfb) {
+          acc += fix_group_stage[fold_k][(b << 1) + fold_c];
+        }
+      }
+    }
+    __syncthreads();
+  }
+  if (threadIdx.x < 2 * kFixGroupFeatures) {
+    const hist_t sum_hessian = __shfl_down_sync((1u << (2 * kFixGroupFeatures)) - 1, acc, 1);
+    if (fold_active && fold_c == 0) {
+      const hist_t sum_gradient = acc;
+      const double leaf_sum_gradients = cuda_smaller_leaf_splits->sum_of_gradients;
+      const double leaf_sum_hessians = cuda_smaller_leaf_splits->sum_of_hessians;
+      const hist_t fixed_gradient = leaf_sum_gradients - sum_gradient;
+      const hist_t fixed_hessian = leaf_sum_hessians - sum_hessian;
+      if (hist_fp32) {
+        float* feature_hist32 = reinterpret_cast<float*>(cuda_smaller_leaf_splits->hist_in_leaf) + fold_offset * 2;
+        feature_hist32[fold_mfb << 1] = static_cast<float>(fixed_gradient);
+        feature_hist32[(fold_mfb << 1) + 1] = static_cast<float>(fixed_hessian);
+        if (larger_for_subtract != nullptr && larger_for_subtract->leaf_index >= 0) {
+          float* larger_feature_hist = reinterpret_cast<float*>(larger_for_subtract->hist_in_leaf) + fold_offset * 2;
+          larger_feature_hist[fold_mfb << 1] -= static_cast<float>(fixed_gradient);
+          larger_feature_hist[(fold_mfb << 1) + 1] -= static_cast<float>(fixed_hessian);
+        }
+      } else {
+        hist_t* feature_hist = cuda_smaller_leaf_splits->hist_in_leaf + fold_offset * 2;
+        feature_hist[fold_mfb << 1] = fixed_gradient;
+        feature_hist[(fold_mfb << 1) + 1] = fixed_hessian;
+        if (larger_for_subtract != nullptr && larger_for_subtract->leaf_index >= 0) {
+          hist_t* larger_feature_hist = larger_for_subtract->hist_in_leaf + fold_offset * 2;
+          larger_feature_hist[fold_mfb << 1] -= fixed_gradient;
+          larger_feature_hist[(fold_mfb << 1) + 1] -= fixed_hessian;
+        }
+      }
+    }
+  }
+}
+
 // Fused fix + subtract of the small-leaf level path (hybrid growth,
 // non-quantized only): one launch replaces the sequential FixHistogramBatched +
 // SubtractHistogramBatched pair. blockIdx.y selects the pair. Blocks with
 // blockIdx.x < num_subtract_blocks perform the elementwise larger -= smaller
 // subtraction but SKIP the entries flagged in fix_mfb_mask (the most-frequent-
 // bin gradient/hessian slots of the need-fix features); the remaining blocks
-// (one per need-fix feature) run the most-frequent-bin fix of the smaller leaf
-// and apply the subtraction at exactly those skipped entries from the fixed
-// values. Every histogram entry is therefore written by exactly one block with
+// (one per kFixGroupFeatures need-fix features, FixHistogramGroupInner) run the
+// most-frequent-bin fix of the smaller leaf and apply the subtraction at exactly
+// those skipped entries from the fixed values. Every histogram entry is therefore written by exactly one block with
 // the identical arithmetic of the sequential launches (bit-identical result);
 // the subtraction reads no entry the fix writes and vice versa, so no
 // cross-block ordering is needed.
@@ -4733,7 +4856,7 @@ __global__ void FixSubtractHistogramSmallLeafBatchedKernel(
   const uint32_t* cuda_feature_hist_offsets,
   const uint32_t* cuda_feature_most_freq_bins,
   const int* cuda_need_fix_histogram_features,
-  const uint32_t* cuda_need_fix_histogram_features_num_bin_aligned,
+  const int num_need_fix,
   const uint8_t* fix_mfb_mask,
   const CUDAHybridPairDescriptor* pair_descs,
   const uint8_t* bin_used,
@@ -4761,17 +4884,12 @@ __global__ void FixSubtractHistogramSmallLeafBatchedKernel(
       }
     }
   } else {
-    if (feature_used != nullptr &&
-        !feature_used[cuda_need_fix_histogram_features[
-          static_cast<int>(blockIdx.x) - num_subtract_blocks]]) {
-      return;  // most-frequent bin of an unused feature: dead storage this tree
-    }
-    __shared__ hist_t shared_mem_buffer[WARPSIZE];
-    FixHistogramInner(cuda_feature_num_bins, cuda_feature_hist_offsets,
-      cuda_feature_most_freq_bins, cuda_need_fix_histogram_features,
-      cuda_need_fix_histogram_features_num_bin_aligned, desc->smaller_struct,
-      shared_mem_buffer, hist_fp32, static_cast<int>(blockIdx.x) - num_subtract_blocks,
-      desc->larger_struct);
+    // features outside this tree's sample are skipped inside (their most-
+    // frequent bin is dead storage this tree)
+    FixHistogramGroupInner(cuda_feature_num_bins, cuda_feature_hist_offsets,
+      cuda_feature_most_freq_bins, cuda_need_fix_histogram_features, num_need_fix,
+      (static_cast<int>(blockIdx.x) - num_subtract_blocks) * kFixGroupFeatures,
+      feature_used, desc->smaller_struct, desc->larger_struct, hist_fp32);
   }
 }
 
@@ -6334,14 +6452,12 @@ void CUDAHistogramConstructor::LaunchFixSubtractHistogramSmallLeafBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,
   const CUDAHybridGraphLoopStateOpt gstate) {
-  // block size FIX_HISTOGRAM_BLOCK_SIZE so the fix blocks reduce exactly like
-  // the standalone fix kernel (bit-identical); the subtract role is elementwise
-  // and block-size invariant
-  const int num_subtract_threads = 2 * num_total_bin_;
-  const int num_subtract_blocks =
-    (num_subtract_threads + FIX_HISTOGRAM_BLOCK_SIZE - 1) / FIX_HISTOGRAM_BLOCK_SIZE;
-  const int num_fix_blocks = static_cast<int>(need_fix_histogram_features_.size());
-  dim3 grid_dim(num_subtract_blocks + num_fix_blocks, num_pairs);
+  // the subtract role is elementwise and block-size invariant; the fix role
+  // stages one bin entry per thread (FixHistogramGroupInner)
+  static_assert(2 * kFixGroupChunk * kFixGroupFeatures == FIX_HISTOGRAM_BLOCK_SIZE,
+                "FixHistogramGroupInner stages one element per thread of the block");
+  const int num_subtract_blocks = FixSubtractSmallLeafSubtractBlocks();
+  dim3 grid_dim(FixSubtractSmallLeafGridX(), num_pairs);
   FixSubtractHistogramSmallLeafBatchedKernel<<<grid_dim, FIX_HISTOGRAM_BLOCK_SIZE, 0, cuda_stream_>>>(
     num_total_bin_,
     num_subtract_blocks,
@@ -6349,7 +6465,7 @@ void CUDAHistogramConstructor::LaunchFixSubtractHistogramSmallLeafBatchedKernel(
     cuda_feature_hist_offsets_.RawData(),
     cuda_feature_most_freq_bins_.RawData(),
     cuda_need_fix_histogram_features_.RawData(),
-    cuda_need_fix_histogram_features_num_bin_aligned_.RawData(),
+    static_cast<int>(need_fix_histogram_features_.size()),
     cuda_fix_mfb_mask_.RawDataReadOnly(),
     pair_descs,
     any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
@@ -6524,10 +6640,7 @@ void CUDAHistogramConstructor::CaptureHybridGraphSearchKernels(
     LaunchFixSubtractHistogramSmallLeafBatchedKernel(pair_descs, 1, gstate);
     if (!AppendCapturedNode(cuda_stream_, nodes)) return;
     roles->push_back(kHybridGraphNodeSearchPairY);
-    const int num_subtract_threads = 2 * num_total_bin_;
-    const int num_subtract_blocks =
-      (num_subtract_threads + FIX_HISTOGRAM_BLOCK_SIZE - 1) / FIX_HISTOGRAM_BLOCK_SIZE;
-    role_static_x->push_back(num_subtract_blocks + static_cast<int>(need_fix_histogram_features_.size()));
+    role_static_x->push_back(FixSubtractSmallLeafGridX());
   } else {
     // mirror of LaunchSubtractHistogramBatchedKernel's non-quantized branch,
     // one collected node per launch
