@@ -19,6 +19,7 @@ with an understood, approved behavior change. A lock of None means
 
 Usage:
   python tests/gates/canonical.py covtype [--classic]
+  python tests/gates/canonical.py covtype-fixedpoint
   python tests/gates/canonical.py numerai
   python tests/gates/canonical.py all
 """
@@ -63,6 +64,9 @@ LOCKS = {
     # (covtype 0.91883, numerai unchanged) with only the root value moving.
     "covtype": "1d718eb58f25",
     "covtype-classic": "362c835d1d06",
+    # the benchmark's covtype-deep fixedpoint cell (see run_covtype_fixedpoint):
+    # accuracy 0.96873, multi_logloss 0.09922, max |leaf value| 254.5
+    "covtype-fixedpoint": "f430db6d8277",
     # Re-baselined 2026-08-10 for the DATA, not a code change. The bench cache's
     # numerai build was regenerated on 2026-08-07 (the 1224 -> 1226 source bump,
     # which is explicitly not comparable to older archives); the old lock was set
@@ -112,6 +116,76 @@ def run_covtype(classic=False):
     quality = float((pred == y_te).mean())
     name = "covtype-classic" if classic else "covtype"
     return name, md5, f"train={t:.2f}s quality={quality:.5f}"
+
+
+# covtype-fixedpoint quality bounds: they hold whatever the lock says, so a
+# re-baseline cannot record a collapsed model. A healthy model sits near
+# accuracy 0.968 / multi_logloss 0.10 with leaf |value| in the hundreds; the
+# collapse this cell guards against reads 0.88 / 1.8 with leaves near 2e5.
+COVTYPE_FIXEDPOINT_MIN_ACCURACY = 0.96
+COVTYPE_FIXEDPOINT_MAX_LOGLOSS = 0.15
+COVTYPE_FIXEDPOINT_MAX_LEAF = 5000.0
+
+
+def run_covtype_fixedpoint():
+    """The benchmark's covtype-deep fixedpoint cell, at the benchmark's own params.
+
+    Unbagged fixedpoint multiclass with lambda_l2 = 0 and min_data_in_leaf at
+    its default: the objective starts every row at its log class prior, so
+    the first trees take large Newton steps on covtype's rare classes, rows
+    pushed past their class saturate (|g| near 1, h near 0), and children of
+    such rows record a few quanta of hessian against far more true hessian
+    mass. Without the discretized finders' hessian-quantum ridge the leaf
+    outputs run away. Fails on a lock mismatch AND on any quality bound,
+    independently.
+    """
+    import numpy as np
+
+    import falcata as lgb
+
+    d = CACHE / "covtype"
+    X_tr, y_tr = np.load(d / "X_train.npy"), np.load(d / "y_train.npy")
+    X_te, y_te = np.load(d / "X_test.npy"), np.load(d / "y_test.npy")
+    p = {
+        "objective": "multiclass",
+        "num_class": 7,
+        "learning_rate": 0.1,
+        "num_leaves": 1023,
+        "max_depth": 10,
+        "max_bin": 255,
+        "device_type": "cuda",
+        "seed": 42,
+        "verbose": -1,
+        "metric": "None",
+        "num_threads": 32,
+        "quant_mode": "fixedpoint",
+    }
+    ds = lgb.Dataset(X_tr, label=y_tr, params=p)
+    ds.construct()
+    t0 = time.time()
+    bst = lgb.train(p, ds, num_boost_round=500)
+    t = time.time() - t0
+    model_str = bst.model_to_string()
+    md5 = _tree_md5(model_str)
+    prob = bst.predict(X_te)
+    accuracy = float((prob.argmax(axis=1) == y_te).mean())
+    p_true = np.clip(prob[np.arange(len(y_te)), y_te.astype(np.int64)], 1e-15, 1.0)
+    logloss = float(-np.mean(np.log(p_true)))
+    leaf_max = max(
+        abs(float(v))
+        for line in model_str.split("\nparameters:")[0].splitlines()
+        if line.startswith("leaf_value=")
+        for v in line[len("leaf_value=") :].split()
+    )
+    problems = []
+    if accuracy < COVTYPE_FIXEDPOINT_MIN_ACCURACY:
+        problems.append(f"accuracy {accuracy:.5f} < {COVTYPE_FIXEDPOINT_MIN_ACCURACY}")
+    if logloss > COVTYPE_FIXEDPOINT_MAX_LOGLOSS:
+        problems.append(f"multi_logloss {logloss:.5f} > {COVTYPE_FIXEDPOINT_MAX_LOGLOSS}")
+    if leaf_max > COVTYPE_FIXEDPOINT_MAX_LEAF:
+        problems.append(f"max |leaf value| {leaf_max:.4g} > {COVTYPE_FIXEDPOINT_MAX_LEAF}")
+    info = f"train={t:.2f}s accuracy={accuracy:.5f} multi_logloss={logloss:.5f} leaf_max={leaf_max:.4g}"
+    return "covtype-fixedpoint", md5, info, problems
 
 
 def run_numerai():
@@ -225,7 +299,7 @@ def run_numerai_treecount():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("gate", choices=["covtype", "numerai", "numerai-treecount", "all"])
+    ap.add_argument("gate", choices=["covtype", "covtype-fixedpoint", "numerai", "numerai-treecount", "all"])
     ap.add_argument("--classic", action="store_true", help="covtype with cuda_plan=auto,hybrid:off")
     args = ap.parse_args()
 
@@ -234,11 +308,17 @@ def main():
         runs.append(run_covtype(classic=args.classic))
         if args.gate == "all" and not args.classic:
             runs.append(run_covtype(classic=True))
+    if args.gate in ("covtype-fixedpoint", "all"):
+        runs.append(run_covtype_fixedpoint())
     if args.gate in ("numerai", "all"):
         runs.append(run_numerai())
 
     failed = False
-    for name, md5, info in runs:
+    for name, md5, info, *rest in runs:
+        problems = rest[0] if rest else []
+        for problem in problems:
+            print(f"FAIL {name}: {problem} ({info})")
+        failed |= bool(problems)
         want = LOCKS[name]
         if want is None:
             print(f"BASELINE {name}: tree_md5={md5} {info} -- record in LOCKS after cross-build verification")

@@ -612,12 +612,30 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     cuda_data_partition_->use_bagging() ? cuda_data_partition_->cuda_data_indices() : nullptr;
   cuda_data_partition_->BeforeTrain();
   if (config_->use_quantized_grad) {
-    // bagged quantized training gets one hessian quantum of l2 ridge in every
-    // discretized find kernel -- scalar (FindBestSplitsDiscretizedForLeafKernel,
+    // l2 ridge in hessian quanta in every discretized find kernel -- scalar
+    // (FindBestSplitsDiscretizedForLeafKernel,
     // FindBestSplitsDiscretizedForLevelKernel) and vector
-    // (FindBestSplitsDiscretizedVectorInner) alike; unbagged quantized models
-    // are bit-identical with the flag off
-    cuda_best_split_finder_->SetQuantBaggingRidge(cuda_data_partition_->use_bagging());
+    // (FindBestSplitsDiscretizedVectorInner) alike -- wherever a child's
+    // quantized hessian sum can fall far below its true hessian mass:
+    //  - fixedpoint training whose hessians vary per row (softmax, logistic,
+    //    weighted rows), bagged or not: kFixedpointHessianRidgeQuanta. Each
+    //    subquantum hessian arrives as error-feedback quanta that are off by
+    //    up to one quantum apiece, so a child's recorded H is uncertain by
+    //    several quanta, not one; four is the size that keeps lambda_l2 = 0
+    //    softmax training with saturating rare classes out of the collapse
+    //    (tests/gates/canonical.py covtype-fixedpoint holds it);
+    //  - other bagged training: one quantum, against the per-bag redraw of
+    //    the rounding noise;
+    //  - otherwise none: a constant unweighted hessian quantizes to exactly
+    //    quant_bins per row, and unbagged stochastic training keeps the
+    //    unridged math, so those models are bit-identical.
+    constexpr double kFixedpointHessianRidgeQuanta = 4.0;
+    constexpr double kBaggedHessianRidgeQuanta = 1.0;
+    const bool hessians_exact = share_state_->is_constant_hessian &&
+                                train_data_->metadata().weights() == nullptr;
+    cuda_best_split_finder_->SetHessianRidgeQuanta(
+        fixedpoint_quant_ && !hessians_exact ? kFixedpointHessianRidgeQuanta :
+        cuda_data_partition_->use_bagging() ? kBaggedHessianRidgeQuanta : 0.0);
     if (cuda_data_partition_->use_bagging()) {
       cuda_gradient_discretizer_->SetBagForThisTree(
           cuda_data_partition_->cuda_data_indices(), cuda_data_partition_->root_num_data());

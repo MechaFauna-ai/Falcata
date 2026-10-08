@@ -67,6 +67,7 @@ def build_cells():
         equal_to=None,
         fingerprint=True,
         perf=False,
+        leaf_bound=None,
     ):
         cells.append(
             {
@@ -77,6 +78,7 @@ def build_cells():
                 "equal_to": equal_to,
                 "fingerprint": fingerprint and equal_to is None,
                 "perf": perf,
+                "leaf_bound": leaf_bound,
             }
         )
 
@@ -373,6 +375,27 @@ def build_cells():
         },
         rounds=80,
     )
+
+    # unbagged fixedpoint multiclass at the benchmark's own defaults (lambda_l2 0,
+    # min_data_in_leaf 20, 64 quant bins) on covtype's class mix, rare classes
+    # included. The objective starts every row at the log class prior, so the
+    # first trees take large Newton steps on the rare classes; rows pushed past
+    # their class saturate (|g| near 1, h near 0), and a child of such rows plus
+    # well-fit rows records a few quanta of hessian against many quanta of true
+    # hessian mass. Without the hessian-quantum ridge the gain argmax harvests
+    # those children and the leaf outputs run away by orders of magnitude (the
+    # covtype fixedpoint collapse). The md5 pins the model; leaf_bound pins the
+    # property, so re-baselining the md5 cannot wave a collapse through. Two
+    # draws of the one shape (the profile name seeds the data): each reaches
+    # the collapse without the ridge, through a different first leaf.
+    for profile in ["rare-mc-b", "rare-mc-c"]:
+        cell(
+            f"{profile}/fixedpoint-deep",
+            profile,
+            {"quant_mode": "fixedpoint", "num_leaves": 255, "max_depth": 10},
+            rounds=80,
+            leaf_bound=500.0,
+        )
 
     # --- wide features: the GLOBAL-MEMORY split finder ---------------------- #
     # Once a feature's histogram exceeds one block
@@ -1114,6 +1137,26 @@ def build_profile(name):
                      "boost_from_average": False,
                      "max_bin": 5, "num_leaves": 31, "max_depth": 10,
                      "min_data_in_leaf": 20})
+    elif name in ("rare-mc-b", "rare-mc-c"):
+        # covtype's class frequencies, its rarest class (0.47%) living in a
+        # corner of feature space it shares with the common classes: six
+        # common classes from a linear 12-feature score (six of the features
+        # binary) with Gumbel label noise and per-class biases solved to the
+        # frequencies, then 85% of the rows past feature 0's 99.5th percentile
+        # relabelled to the rare class
+        n, m = 40000, 12
+        common_priors = np.array([0.365, 0.488, 0.0615, 0.0163, 0.030, 0.035])
+        X = rng.standard_normal((n, m))
+        X[:, -6:] = (rng.random((n, 6)) < 0.2).astype(np.float64)
+        z = 3.0 * (X @ rng.standard_normal((m, 6))) / np.sqrt(m) + 0.5 * rng.gumbel(size=(n, 6))
+        bias = np.zeros(6)
+        for _ in range(200):
+            freq = np.bincount((z + bias).argmax(axis=1), minlength=6) / n
+            bias += 0.5 * (np.log(common_priors) - np.log(np.maximum(freq, 1e-6)))
+        y = np.array([0, 1, 2, 4, 5, 6])[(z + bias).argmax(axis=1)]
+        corner = X[:, 0] > np.quantile(X[:, 0], 0.995)
+        y[corner & (rng.random(n) < 0.85)] = 3
+        base.update({"objective": "multiclass", "num_class": 7, "metric": "multi_logloss"})
     elif name == "sparse-mc":
         # five 80%-zero integer columns binned to 5 bins, against a SEPARABLE
         # 6-class argmax label. Few features x few bins means the tree keeps
@@ -1178,6 +1221,16 @@ def run_cell(cell):
     reloaded = lgb.Booster(model_str=model_str)
     pred2 = reloaded.predict(X_te)
     assert np.array_equal(pred, pred2), "reloaded model predicts differently"
+    if cell.get("leaf_bound") is not None:
+        leaf_abs_max = max(
+            abs(float(v))
+            for line in model_str.split("\nparameters:")[0].splitlines()
+            if line.startswith("leaf_value=")
+            for v in line[len("leaf_value="):].split()
+        )
+        assert leaf_abs_max <= cell["leaf_bound"], (
+            f"max |leaf value| {leaf_abs_max:.4g} exceeds the cell's bound {cell['leaf_bound']}"
+        )
     metric, metric_name, higher_better = eval_metric(params, pred, y_te)
     return {"id": cell["id"], "ok": True, "md5": md5, "metric": metric,
             "metric_name": metric_name, "higher_better": higher_better,

@@ -6,8 +6,8 @@
    "metric_name": "rmse"
   },
   "categorical-mc/quant-bagged": {
-   "md5": "765f9284abac034d73b7054147efba29",
-   "metric": 0.26946,
+   "md5": "2c0a3af0e5280dba7301be33566d4429",
+   "metric": 0.263751,
    "metric_name": "mlogloss"
   },
   "categorical/nonquant": {
@@ -117,8 +117,8 @@
    "metric_name": "mlogloss"
   },
   "imbalanced/fixedpoint": {
-   "md5": "91cde06bf054860872551aa4b201e0f3",
-   "metric": 0.90683,
+   "md5": "6eb04d9f8e18adb1cc3a1006c905ba40",
+   "metric": 0.953177,
    "metric_name": "auc"
   },
   "imbalanced/nonquant": {
@@ -215,6 +215,16 @@
    "metric": 2.048681,
    "metric_name": "rmse"
   },
+  "rare-mc-b/fixedpoint-deep": {
+   "md5": "049c777e22119ec2ef6d5549e2f06b7e",
+   "metric": 0.458682,
+   "metric_name": "mlogloss"
+  },
+  "rare-mc-c/fixedpoint-deep": {
+   "md5": "1d244e0b8dc0ea38e8e4f64ddc53df8c",
+   "metric": 0.495432,
+   "metric_name": "mlogloss"
+  },
   "sampled-oddrows/quant": {
    "md5": "84f88a78959802d5f8d4b39f819e39d4",
    "metric": 39.23652,
@@ -281,8 +291,8 @@
    "metric_name": "rmse"
   },
   "sparse-mc/quant-deep": {
-   "md5": "f2b9785f595e9513f76093ce51a6bc84",
-   "metric": 0.085856,
+   "md5": "013bde1d7c06085d9d5c544f7fdb9bb7",
+   "metric": 0.079057,
    "metric_name": "mlogloss"
   },
   "tinygrad/fixedpoint": {
