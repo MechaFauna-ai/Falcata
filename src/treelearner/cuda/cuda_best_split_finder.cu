@@ -425,6 +425,69 @@ __device__ uint32_t ReduceBestGain(GAIN_T gain, bool found, uint32_t thread_inde
   return thread_index;
 }
 
+// ReduceBestGain for the numerical threshold scan. A found gain there is
+// current_gain - min_gain_shift with current_gain > min_gain_shift, so it is
+// positive. When every found gain of the block is also finite, the fp64
+// reduction's zero tie tolerance makes its result the exact maximum of (found,
+// gain, then lower thread index), and positive finite doubles order as their
+// bit patterns: the fp64 specialization reduces 64-bit integer keys of the same
+// order instead of issuing fp64 compares, fmax and the tolerance multiply at
+// every shuffle step (fp64 pipe work on parts with 1/64-rate fp64). A block
+// holding a non-finite found gain keeps the fp64 reduction and its NaN-tolerance
+// semantics. The fp32 gain mode keeps its tolerance band through ReduceBestGain.
+// Like ReduceBestGain, the result is valid in thread 0; the caller keeps the
+// leading barrier.
+template <typename GAIN_T>
+__device__ __forceinline__ uint32_t ReduceBestThresholdGain(GAIN_T gain, bool found, uint32_t thread_index,
+    GAIN_T* shared_gain_buffer, bool* shared_found_buffer, uint32_t* shared_thread_index_buffer) {
+  return ReduceBestGain(gain, found, thread_index, shared_gain_buffer, shared_found_buffer, shared_thread_index_buffer);
+}
+
+template <>
+__device__ __forceinline__ uint32_t ReduceBestThresholdGain<double>(double gain, bool found, uint32_t thread_index,
+    double* shared_gain_buffer, bool* shared_found_buffer, uint32_t* shared_thread_index_buffer) {
+  constexpr uint64_t kExponentMask = 0x7ff0000000000000ULL;
+  const uint64_t bits = static_cast<uint64_t>(__double_as_longlong(gain));
+  if (__syncthreads_or(found && (bits & kExponentMask) == kExponentMask)) {
+    return ReduceBestGain(gain, found, thread_index, shared_gain_buffer, shared_found_buffer,
+                          shared_thread_index_buffer);
+  }
+  // not found -> key 0, below every positive gain's bit pattern
+  uint64_t key = found ? bits : 0ULL;
+  uint32_t index = thread_index;
+  const uint32_t mask = 0xffffffff;
+  for (uint32_t offset = warpSize / 2; offset > 0; offset >>= 1) {
+    const uint64_t other_key = __shfl_down_sync(mask, key, offset);
+    const uint32_t other_index = __shfl_down_sync(mask, index, offset);
+    if (other_key > key || (other_key == key && other_index < index)) {
+      key = other_key;
+      index = other_index;
+    }
+  }
+  const uint32_t warpID = threadIdx.x / warpSize;
+  const uint32_t warpLane = threadIdx.x % warpSize;
+  uint64_t* shared_key_buffer = reinterpret_cast<uint64_t*>(shared_gain_buffer);
+  if (warpLane == 0) {
+    shared_key_buffer[warpID] = key;
+    shared_thread_index_buffer[warpID] = index;
+  }
+  __syncthreads();
+  if (warpID == 0) {
+    const uint32_t num_warp = blockDim.x / warpSize;
+    key = warpLane < num_warp ? shared_key_buffer[warpLane] : 0ULL;
+    index = warpLane < num_warp ? shared_thread_index_buffer[warpLane] : 0;
+    for (uint32_t offset = warpSize / 2; offset > 0; offset >>= 1) {
+      const uint64_t other_key = __shfl_down_sync(mask, key, offset);
+      const uint32_t other_index = __shfl_down_sync(mask, index, offset);
+      if (other_key > key || (other_key == key && other_index < index)) {
+        key = other_key;
+        index = other_index;
+      }
+    }
+  }
+  return index;
+}
+
 __device__ void ReduceBestGainForLeaves(double* gain, int* leaves, int cuda_cur_num_leaves) {
   const unsigned int tid = threadIdx.x;
   for (unsigned int s = 1; s < cuda_cur_num_leaves; s *= 2) {
@@ -726,7 +789,7 @@ __device__ void FindBestSplitsForLeafKernelInner(
     }
   }
   __syncthreads();
-  const uint32_t result = ReduceBestGain(local_gain, threshold_found, threadIdx_x, shared_gain_buffer, shared_bool_buffer, shared_int_buffer);
+  const uint32_t result = ReduceBestThresholdGain(local_gain, threshold_found, threadIdx_x, shared_gain_buffer, shared_bool_buffer, shared_int_buffer);
   if (threadIdx_x == 0) {
     best_thread_index = result;
   }
