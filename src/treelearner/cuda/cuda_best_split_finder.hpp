@@ -102,10 +102,11 @@ class CUDABestSplitFinder {
    *  decided by the histogram constructor, wired in by the tree learner */
   void SetHistFP32(const bool hist_fp32) { hist_fp32_ = hist_fp32; }
 
-  /*! \brief bagged quantized training adds one hessian quantum of l2 ridge in
-   *  the discretized find kernels (bounds gains/outputs against the per-bag
-   *  redraw of hessian rounding noise); wired in by the tree learner */
-  void SetQuantBaggingRidge(const bool on) { quant_bagging_ridge_ = on; }
+  /*! \brief l2 ridge of this many hessian quanta in the discretized find
+   *  kernels (0 = none): bounds gains/outputs by the quantized hessian's
+   *  resolution (see FindBestSplitsDiscretizedForLeafKernel); the tree learner
+   *  decides the size */
+  void SetHessianRidgeQuanta(const double quanta) { hessian_ridge_quanta_ = quanta; }
 
   void UpdateWarpFindEligibility();
 
@@ -669,10 +670,10 @@ class CUDABestSplitFinder {
   bool use_global_memory_;
   // non-quantized histograms stored as float pairs (FALCATA_FP32_HIST)
   bool hist_fp32_ = false;
-  // bagged quantized training: one hessian quantum of l2 ridge in the
-  // discretized find kernels, scalar (FindBestSplitsDiscretizedForLeafKernel)
-  // and vector (FindBestSplitsDiscretizedVectorInner) alike
-  bool quant_bagging_ridge_ = false;
+  // l2 ridge in hessian quanta in the discretized find kernels, scalar
+  // (FindBestSplitsDiscretizedForLeafKernel) and vector
+  // (FindBestSplitsDiscretizedVectorInner) alike; 0 = none
+  double hessian_ridge_quanta_ = 0.0;
   // every task fits the warp-per-task quantized level finder (see UpdateWarpFindEligibility)
   bool warp_find_eligible_ = false;
   // ... and every task has at most 8 bins: the warp_find_narrow launch packs four tasks per warp (8-lane groups)

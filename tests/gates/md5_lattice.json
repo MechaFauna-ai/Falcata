@@ -215,6 +215,16 @@
    "metric": 2.048681,
    "metric_name": "rmse"
   },
+  "rare-mc-b/fixedpoint-deep": {
+   "md5": "049c777e22119ec2ef6d5549e2f06b7e",
+   "metric": 0.458682,
+   "metric_name": "mlogloss"
+  },
+  "rare-mc-c/fixedpoint-deep": {
+   "md5": "1d244e0b8dc0ea38e8e4f64ddc53df8c",
+   "metric": 0.495432,
+   "metric_name": "mlogloss"
+  },
   "sampled-oddrows/quant": {
    "md5": "84f88a78959802d5f8d4b39f819e39d4",
    "metric": 39.23652,

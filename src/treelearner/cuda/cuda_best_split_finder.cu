@@ -1896,7 +1896,7 @@ __global__ void FindBestSplitsDiscretizedForLeafKernel(
   // gradient scale
   const score_t* grad_scale,
   const score_t* hess_scale,
-  const bool quant_bagging_ridge,
+  const double hessian_ridge_quanta,
   // output
   CUDASplitInfo* cuda_best_split_info,
   // global num data in leaf
@@ -1905,17 +1905,23 @@ __global__ void FindBestSplitsDiscretizedForLeafKernel(
   // CEGB
   const double* cuda_task_cegb_penalty,
   const double cegb_tradeoff_times_penalty_split) {
-  // Bagged quantized training: a child's integer hessian sum carries O(1)
-  // quanta of rounding noise, and bagging redraws that noise every iteration.
-  // The gain argmax then harvests children whose noisy |G| is large while
-  // noisy H is near zero; with lambda_l2 == 0 their gains and outputs explode
-  // far beyond what the leaf's true gradient mass supports (the compounding
-  // multiclass-deep-tree quality collapse). One hessian quantum of ridge
-  // bounds 1/H against exactly that noise. Unbagged training keeps the exact
-  // math: its rounding noise is drawn once and fitted once, which stays
-  // within quantization tolerance -- and keeps those models bit-identical.
-  const double lambda_l2 = quant_bagging_ridge ?
-    lambda_l2_in + static_cast<double>(*hess_scale) : lambda_l2_in;
+  // Hessian-quantum ridge. A child's integer hessian sum is known only to O(1)
+  // quanta: a row whose hessian is a fraction of one quantum contributes it as
+  // an occasional whole quantum (fixedpoint error feedback, stochastic
+  // rounding) or as nothing at all (round to nearest), so a child made of
+  // such rows -- well-fit rows, and softmax/logistic rows saturated on the
+  // wrong side, whose |g| is near 1 while h is near 0 -- can record a few
+  // quanta of H against many quanta of true hessian mass. The gain argmax
+  // harvests exactly those children, and with lambda_l2 == 0 their gains and
+  // Newton outputs -G/H explode far beyond what the leaf's true gradient mass
+  // supports; the overshoot saturates more rows and the run collapses. A
+  // ridge of a few hessian quanta bounds 1/H by the hessian's resolution. The
+  // tree learner sizes it (CUDASingleGPUTreeLearner::BeforeTrain): fixedpoint
+  // training whose hessians vary per row, bagged training, or none -- a
+  // constant hessian quantizes exactly and unbagged stochastic training keeps
+  // the unridged math, so both stay bit-identical.
+  const double lambda_l2 = hessian_ridge_quanta > 0.0 ?
+    lambda_l2_in + hessian_ridge_quanta * static_cast<double>(*hess_scale) : lambda_l2_in;
   const unsigned int task_index = blockIdx.x;
   const SplitFindTask* task = tasks + task_index;
   const int inner_feature_index = task->inner_feature_index;
@@ -3873,7 +3879,7 @@ __device__ void FindBestSplitsDiscretizedVectorInner(
   const data_size_t num_data,
   const score_t* grad_scales,
   const score_t* hess_scale_ptr,
-  const bool quant_bagging_ridge,
+  const double hessian_ridge_quanta,
   CUDASplitInfo* out) {
   __shared__ double shared_gain_buffer[WARPSIZE];
   __shared__ bool shared_bool_buffer[WARPSIZE];
@@ -3881,11 +3887,11 @@ __device__ void FindBestSplitsDiscretizedVectorInner(
   __shared__ uint32_t best_thread_index;
 
   const double hess_scale = static_cast<double>(*hess_scale_ptr);
-  // one hessian quantum of ridge under bagging: bagged quantized training
-  // redraws the hessian rounding noise every iteration, and the gain argmax
-  // harvests children whose noisy |G| is large while noisy H is near zero.
-  // Vector mode sums T such gains, so the same noise enters T times over.
-  const double lambda_l2 = quant_bagging_ridge ? lambda_l2_in + hess_scale : lambda_l2_in;
+  // the tree learner's hessian-quantum ridge (see the per-leaf discretized
+  // kernel for the noise argument). Vector mode sums T such gains, so the same
+  // noise enters T times over.
+  const double lambda_l2 =
+    hessian_ridge_quanta > 0.0 ? lambda_l2_in + hessian_ridge_quanta * hess_scale : lambda_l2_in;
   const int64_t parent_gh_hess = leaf_splits_planes[0].sum_of_gradients_hessians;
   const double sum_hessians =
     static_cast<double>(static_cast<int32_t>(parent_gh_hess & 0x00000000ffffffff)) * hess_scale;
@@ -4091,31 +4097,31 @@ __device__ void FindBestSplitsDiscretizedVectorDispatch(
   const data_size_t num_data,
   const score_t* grad_scales,
   const score_t* hess_scale,
-  const bool quant_bagging_ridge,
+  const double hessian_ridge_quanta,
   CUDASplitInfo* out) {
   if (use_16bit_bin) {
     if (task->reverse) {
       FindBestSplitsDiscretizedVectorInner<true, int32_t, true>(
         leaf_splits_planes, num_targets, task, min_data_in_leaf, min_sum_hessian_in_leaf,
         min_gain_to_split, lambda_l2, num_data, grad_scales, hess_scale,
-        quant_bagging_ridge, out);
+        hessian_ridge_quanta, out);
     } else {
       FindBestSplitsDiscretizedVectorInner<false, int32_t, true>(
         leaf_splits_planes, num_targets, task, min_data_in_leaf, min_sum_hessian_in_leaf,
         min_gain_to_split, lambda_l2, num_data, grad_scales, hess_scale,
-        quant_bagging_ridge, out);
+        hessian_ridge_quanta, out);
     }
   } else {
     if (task->reverse) {
       FindBestSplitsDiscretizedVectorInner<true, int64_t, false>(
         leaf_splits_planes, num_targets, task, min_data_in_leaf, min_sum_hessian_in_leaf,
         min_gain_to_split, lambda_l2, num_data, grad_scales, hess_scale,
-        quant_bagging_ridge, out);
+        hessian_ridge_quanta, out);
     } else {
       FindBestSplitsDiscretizedVectorInner<false, int64_t, false>(
         leaf_splits_planes, num_targets, task, min_data_in_leaf, min_sum_hessian_in_leaf,
         min_gain_to_split, lambda_l2, num_data, grad_scales, hess_scale,
-        quant_bagging_ridge, out);
+        hessian_ridge_quanta, out);
     }
   }
 }
@@ -4134,7 +4140,7 @@ __global__ void FindBestSplitsDiscretizedForLeafKernelVector(
   const double lambda_l2,
   const score_t* grad_scales,
   const score_t* hess_scale,
-  const bool quant_bagging_ridge,
+  const double hessian_ridge_quanta,
   CUDASplitInfo* cuda_best_split_info,
   const data_size_t global_num_data_in_leaf) {
   const unsigned int task_index = blockIdx.x;
@@ -4150,7 +4156,7 @@ __global__ void FindBestSplitsDiscretizedForLeafKernelVector(
   FindBestSplitsDiscretizedVectorDispatch(leaf_splits_planes, num_targets, task,
     num_bits_in_histogram_bin <= 16, min_data_in_leaf, min_sum_hessian_in_leaf,
     min_gain_to_split, lambda_l2, global_num_data_in_leaf, grad_scales, hess_scale,
-    quant_bagging_ridge, out);
+    hessian_ridge_quanta, out);
 }
 
 // Batched per-level quantized vector find: grid and output layout mirror
@@ -4169,7 +4175,7 @@ __global__ void FindBestSplitsDiscretizedForLevelKernelVector(
   const double lambda_l2,
   const score_t* grad_scales,
   const score_t* hess_scale,
-  const bool quant_bagging_ridge,
+  const double hessian_ridge_quanta,
   CUDASplitInfo* cuda_best_split_info) {
   const unsigned int pair_index = blockIdx.y;
   const bool is_larger = (blockIdx.z == 1);
@@ -4199,7 +4205,7 @@ __global__ void FindBestSplitsDiscretizedForLevelKernelVector(
   const uint8_t num_bits = is_larger ? desc->larger_num_bits : desc->smaller_num_bits;
   FindBestSplitsDiscretizedVectorDispatch(leaf_splits_planes, num_targets, task,
     num_bits <= 16, min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
-    lambda_l2, num_data, grad_scales, hess_scale, quant_bagging_ridge, out);
+    lambda_l2, num_data, grad_scales, hess_scale, hessian_ridge_quanta, out);
 }
 
 __global__ void FindBestSplitsForLeafKernelVector(
@@ -4321,7 +4327,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernelVector(
         lambda_l2_,
         quant.grad_scales,
         quant.hess_scale,
-        quant_bagging_ridge_,
+        hessian_ridge_quanta_,
         cuda_best_split_info_.RawData());
     return;
   }
@@ -4366,7 +4372,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelVector(
         cuda_is_feature_used_bytree_.RawData(), num_tasks_, cuda_split_find_tasks_.RawData(),
         smaller_leaf_splits_planes, vec_num_targets_, false, quant.smaller_num_bits,
         min_data_in_leaf_, min_sum_hessian_in_leaf_, min_gain_to_split_, lambda_l2_,
-        quant.grad_scales, quant.hess_scale, quant_bagging_ridge_,
+        quant.grad_scales, quant.hess_scale, hessian_ridge_quanta_,
         cuda_best_split_info_.RawData(), global_num_data_in_smaller_leaf);
     }
     if (is_larger_leaf_valid) {
@@ -4376,7 +4382,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelVector(
         cuda_is_feature_used_bytree_.RawData(), num_tasks_, cuda_split_find_tasks_.RawData(),
         larger_leaf_splits_planes, vec_num_targets_, true, quant.larger_num_bits,
         min_data_in_leaf_, min_sum_hessian_in_leaf_, min_gain_to_split_, lambda_l2_,
-        quant.grad_scales, quant.hess_scale, quant_bagging_ridge_,
+        quant.grad_scales, quant.hess_scale, hessian_ridge_quanta_,
         cuda_best_split_info_.RawData(), global_num_data_in_larger_leaf);
     }
     return;
@@ -4480,7 +4486,7 @@ void CUDABestSplitFinder::LaunchAssignVecPayloadKernel(
     max_cat_to_onehot_, \
     grad_scale, \
     hess_scale, \
-    quant_bagging_ridge_, \
+    hessian_ridge_quanta_, \
     cuda_best_split_info_.RawData(), \
     global_num_data_in_smaller_leaf, \
     global_num_data_in_larger_leaf, \
@@ -4697,7 +4703,7 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
   const int min_data_per_group,
   const score_t* grad_scale,
   const score_t* hess_scale,
-  const bool quant_bagging_ridge,
+  const double hessian_ridge_quanta,
   CUDASplitInfo* cuda_best_split_info,
   const CUDAHybridGraphLoopStateOpt gstate) {
   // graphs A2: the graph-frozen grid is a pow2 bucket of the live pair count;
@@ -4705,10 +4711,10 @@ __global__ void FindBestSplitsDiscretizedForLevelKernel(
   if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
     return;
   }
-  // one hessian quantum of ridge under bagging (see the per-leaf discretized
-  // kernel for the noise argument; unbagged models stay bit-identical)
-  const double lambda_l2 = quant_bagging_ridge ?
-    lambda_l2_in + static_cast<double>(*hess_scale) : lambda_l2_in;
+  // the tree learner's hessian-quantum ridge (see the per-leaf discretized
+  // kernel for the noise argument)
+  const double lambda_l2 = hessian_ridge_quanta > 0.0 ?
+    lambda_l2_in + hessian_ridge_quanta * static_cast<double>(*hess_scale) : lambda_l2_in;
   const unsigned int pair_index = blockIdx.y;
   const bool is_larger = (blockIdx.z == 1);
   const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
@@ -6052,7 +6058,7 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   const double max_delta_step,
   const score_t* grad_scale,
   const score_t* hess_scale,
-  const bool quant_bagging_ridge,
+  const double hessian_ridge_quanta,
   const bool spread,
   const bool narrow_bins,
   const bool mid_ppl,
@@ -6091,7 +6097,8 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   }
   // lanes of this item's group: a packed unit's 8-lane group, else the template's G
   const unsigned int gl = packed ? 8u : static_cast<unsigned int>(G);
-  const double lambda_l2 = quant_bagging_ridge ? lambda_l2_in + static_cast<double>(*hess_scale) : lambda_l2_in;
+  const double lambda_l2 = hessian_ridge_quanta > 0.0 ?
+    lambda_l2_in + hessian_ridge_quanta * static_cast<double>(*hess_scale) : lambda_l2_in;
   const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
   const CUDALeafSplitsStruct* leaf_splits;
   data_size_t num_data;
@@ -6260,7 +6267,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
       cuda_is_feature_used_bytree_.RawData(), num_tasks_, num_launch_tasks, cuda_split_find_tasks_.RawData(), \
       compact_tasks ? cuda_used_task_indices_.RawDataReadOnly() : nullptr, pair_descs, num_pairs, min_data_in_leaf_, \
       min_sum_hessian_in_leaf_, min_gain_to_split_, lambda_l2_, max_delta_step_, grad_scale, hess_scale, \
-      quant_bagging_ridge_, spread, narrow, mid_ppl, prune_fp32, select_int, compact_survivors, \
+      hessian_ridge_quanta_, spread, narrow, mid_ppl, prune_fp32, select_int, compact_survivors, \
       pack_units, num_find_units_, cuda_best_split_info_.RawData()
     if (spread && warp_find_max_positions_ <= 8 && FalcataPlan::Get().warp_find_strided &&
         FalcataPlan::Get().find_loads_batched) {
@@ -6319,7 +6326,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
       min_data_per_group_, \
       grad_scale, \
       hess_scale, \
-      quant_bagging_ridge_, \
+      hessian_ridge_quanta_, \
       cuda_best_split_info_.RawData(), \
       gstate
   if (FalcataFP32GainEnabled()) {

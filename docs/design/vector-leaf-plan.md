@@ -204,9 +204,10 @@ vector search covers numerical tasks only) and `quant_train_renew_leaf` (it
 reduces one exact gradient stream and overwrites a scalar leaf value).
 
 Under bagging the discretized find kernels add one hessian quantum of L2
-ridge, for the winner's-curse reason documented in the scalar quantized
-finder — vector mode sums T such gains, so the same noise enters T times over.
-One member, one setter (`SetQuantBaggingRidge`) and one call site serve the
+ridge (four in fixedpoint training whose hessians vary per row), for the
+winner's-curse reason documented in the scalar quantized finder — vector mode
+sums T such gains, so the same noise enters T times over.
+One member, one setter (`SetHessianRidgeQuanta`) and one call site serve the
 scalar and the vector discretized kernels alike.
 
 Both two-sync level prefixes carry quantization, because both reach the planes
