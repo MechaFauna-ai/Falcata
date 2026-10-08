@@ -908,6 +908,34 @@ The deterministic constructs (`graph_det:on`, the host level loop with `graph_lo
 per-leaf flow) retain CPU-order fp64 prefixes and CPU split parity. fp32 and quantized prefixes use parallel
 scans in either case.
 
+### Captured level apply and count pruning
+
+The captured level loop uses the same row and metadata operations as the host-launched apply. Three plan keys
+control the graph ports independently; the existing host keys still select their corresponding components.
+
+- **`graph_apply_rows`** uses `apply_row_batch`'s four rows per thread in captured gen-bit and partition kernels.
+  `apply_genbit_rows` and `apply_inner_rows` may select bounded eight-row builds when the occupancy API reports
+  more rows in flight per SM. Every descriptor retains its 1024-row chunk, each row retains ballot word `r / 32`
+  and bit `r % 32`, and partition output positions preserve row order. The controller's grids and offset buffers
+  retain their chunk units.
+- **`graph_apply_fused`** places `apply_struct_fused`'s child-struct writes and `gap_copy_fused`'s terminal-window
+  copies into additional blocks of the captured partition kernel. Struct blocks consume the aggregate's final
+  counts and starts, and write metadata that partition blocks do not read. Gap and split windows are disjoint.
+  The controller sizes its grid for the live split/gap suffix and the optional struct block; deferred split
+  information retains its per-level slab offset. Fusion removes two separate apply launches when both
+  components are enabled.
+- **`graph_skip_unsplittable`** applies `skip_unsplittable`'s conservative count bound after aggregate produces
+  actual child sizes: a leaf of `n` rows is skipped only when `n + 2 + (n >> 20) < 2 * min_data_in_leaf`. Its
+  rounding margin and forced-split exclusion match the host rule. Invalidating both siblings also suppresses
+  their histogram work, and the best-split sync invalidates their leaf candidates. Max-depth validity remains
+  part of the descriptor gate.
+
+The final index partition still runs at every applied level. The captured loop's buffer swapping and later
+window readers do not yet share the host `final_map_only` pending-partition protocol; the audit is recorded in
+[perf-dead-ends.md](perf-dead-ends.md). Float row batching, fused-root and pair-joint regrouping are recorded
+there separately because preserving floating accumulation order requires a different implementation or an
+explicit numerical mode.
+
 ## 8. GPU inference via NVIDIA FIL
 
 `Booster.predict()` on a CUDA-trained model routes through cuML's Forest
