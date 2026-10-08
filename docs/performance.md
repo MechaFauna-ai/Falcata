@@ -33,13 +33,19 @@ competitor; quality in parentheses):
 | dataset | falcata | vs XGBoost | vs upstream LightGBM (CUDA) | vs CatBoost |
 |---|---|---|---|---|
 | fraud (fixed) | 0.6 s, AUC .9846 | 1.2× (.9747) | diverged³ | 10.5× (.9785) |
-| covtype (fixed) | 5.7 s, acc .971 | 1.5× (.963) | 21× (acc .535³) | 1.7× (.918) |
+| covtype (fixed) | 5.7 s, acc .969⁶ | 1.5× (.963) | 21× (acc .535³) | 1.7× (.918) |
 | year (fixed) | 2.0 s, RMSE 8.97 | 2.9× (9.01) | 30× (9.03) | 2.7× (8.93⁴) |
 | higgs (stoch) | 4.2 s, AUC .8489 | 2.3× (.8484) | 12× (.8505⁵) | 4.6× (.8373) |
 | epsilon (fixed) | 39 s, AUC .9429 | 1.3× (.9440) | 12× (.9432) | 2.6× (.9507⁴) |
 | airline (stoch) | 30 s, AUC .8640 | 1.3× (.8633) | 3.9× (.8782⁵) | 4.7× (.8223) |
 
 ³ upstream's CUDA learner produced diverged/garbage models on those cells.
+⁶ covtype fixedpoint quality is the ridge build's (PR #68: a four-quanta
+hessian ridge for fixedpoint training with per-row hessians). The sweep's
+.971 came from a robust-scale guard that misfired on softmax and clipped the
+rare-class gradients; without that accident the cell collapses to .88 (and
+the full-precision CPU reference to .89), so .969 is the honest figure. The
+timing column stays the sweep's; the ridge does not change speed.
 ⁴ CatBoost reaches slightly better endpoint quality on year and epsilon at
 2.6–2.7× the time; falcata-noquant closes most of the year gap. On epsilon,
 most of CatBoost's lead is default regularization, not the algorithm: the
@@ -432,6 +438,9 @@ what makes fixedpoint safe on imbalanced data: without it, fraud/deep AUC
 drops 0.9825 → 0.8001. Across every deep cell of the sweep:
 
 ![quant modes](perf-plots/quant_modes.png)
+
+The covtype rows of this snapshot (all three Falcata modes, both regimes)
+are re-measured on the ridge build 0b170e0a; every other row is the sweep's.
 
 The suite exposed one real stochastic defect, since fixed: at a flat
 4-bin auto default, big datasets driving many small leaves
