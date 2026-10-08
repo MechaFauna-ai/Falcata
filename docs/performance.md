@@ -480,7 +480,7 @@ for other training configurations or boosting budgets.
 `cuda_precision=auto`, the default, resolves to `fp32` for
 `quant_mode=none` on CUDA. It resolves to `fp64` where fp32 would contradict
 another request: `gpu_use_dp=true` (double-precision histograms),
-`deterministic=true` (the reproducible reference path) and vector-leaf
+`deterministic=true` with unquantized training and vector-leaf
 multi-target trees (fp64 only). An explicit `cuda_precision=fp64` keeps the
 fp64 reference mode, whose deterministic-construct paths choose the CPU
 learner's splits. Quantized modes resolve `auto` to `fp64` and are untouched:
@@ -488,6 +488,12 @@ their histograms are integer sums. fp32 changes predictions and can change
 validation quality, so validate the chosen precision on your workload and use
 explicit `cuda_precision=fp64` for the double-precision reference mode. The
 precision choice is a model parameter rather than a bit-identical plan key.
+With explicitly unquantized training, `deterministic=true` preserves fp64
+arithmetic; repeatability still depends on histogram-construction eligibility
+and the execution plan. A live CUDA learner cannot change precision,
+`gpu_use_dp`, or quantization state through `Booster.reset_parameter`; train a
+new booster for those choices. An ordinary learning-rate reset or a precision
+setting that resolves to the current value remains supported.
 
 A second, separately-measured mechanism: on DEEP trees the
 histogram pool halves from ~248MB (doesn't fit the 5090's 96MB L2) to
@@ -909,9 +915,10 @@ On the default graph loop, trees whose histograms use the order-dependent atomic
 tree-shaped shuffle scans for the threshold prefixes. Atomic histogram sums already carry low-bit noise,
 and a CPU-order prefix cannot restore CPU's split choices from those sums. The parallel scan may choose a
 different bin on an equal-gain plateau; exact bin identity with CPU is not guaranteed on this path.
-The deterministic constructs (`graph_det:on`, the host level loop with `graph_loop:off`, and the classic
-per-leaf flow) retain CPU-order fp64 prefixes and CPU split parity. fp32 and quantized prefixes use parallel
-scans in either case.
+Eligible deterministic histogram constructs retain CPU-order fp64 prefixes and CPU split parity. The graph
+can use them with `graph_det:on` when its shape supports them. Host-level and classic flows retain CPU-order
+scans, but an atomic fallback does not guarantee CPU parity. fp32 and quantized prefixes use parallel scans
+in either case.
 
 ### Captured level apply and count pruning
 

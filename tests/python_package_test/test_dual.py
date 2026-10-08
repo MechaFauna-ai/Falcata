@@ -1396,6 +1396,76 @@ def test_cuda_precision_auto_resolution(name, params, expected):
 
 
 @_REQUIRES_CUDA
+@pytest.mark.parametrize(
+    ("initial_params", "reset_params", "rejected_parameter"),
+    [
+        ({"quant_mode": "none"}, {"cuda_precision": "fp64"}, "cuda_precision"),
+        ({"quant_mode": "none"}, {"deterministic": True}, "cuda_precision"),
+        ({"quant_mode": "none", "cuda_precision": "fp32"}, {"gpu_use_dp": True}, "gpu_use_dp"),
+        ({"quant_mode": "none"}, {"quant_mode": "fixedpoint"}, "quant_mode"),
+        ({"quant_mode": "stochastic", "quant_bins": 4}, {"quant_mode": "fixedpoint"}, "quant_mode"),
+        ({"quant_mode": "stochastic", "quant_bins": 4}, {"quant_bins": 8}, "quant_bins"),
+        ({"quant_mode": "stochastic", "quant_bins": 4}, {"quant_bins": 0}, "quant_bins"),
+        ({"quant_mode": "stochastic", "quant_bins": 4}, {"stochastic_rounding": False}, "stochastic_rounding"),
+        ({"quant_mode": "none"}, {"device_type": "cpu"}, "device_type"),
+    ],
+    ids=[
+        "precision",
+        "automatic_precision",
+        "storage",
+        "enable_quant",
+        "quant_scheme",
+        "bins",
+        "auto_bins",
+        "rounding",
+        "backend",
+    ],
+)
+def test_cuda_rejected_mode_reset_is_transactional(initial_params, reset_params, rejected_parameter):
+    """Init-only CUDA choices cannot be changed through a live learner reset.
+
+    Rejection leaves the complete model/parameters unchanged, including other
+    parameters in the same map. An ordinary reset and continued training still
+    work, as do explicit precision and automatic precision no-ops.
+    """
+    X, y = _make_regression_for_parity(n=300, seed=5)
+    params = {"objective": "regression", "device_type": "cuda", "verbose": -1, "num_leaves": 7, **initial_params}
+    bst = lgb.train(params, lgb.Dataset(X, label=y), num_boost_round=1, keep_training_booster=True)
+    model_before = bst.model_to_string()
+    params_before = dict(bst.params)
+    with pytest.raises(lgb.basic.FalcataError, match=f"Cannot change {rejected_parameter}"):
+        bst.reset_parameter({"learning_rate": 0.025, **reset_params})
+    assert bst.model_to_string() == model_before
+    assert bst.params == params_before
+    explicit_precision = next(
+        line.removeprefix("[cuda_precision: ").removesuffix("]")
+        for line in model_before.splitlines()
+        if line.startswith("[cuda_precision: ")
+    )
+    bst.reset_parameter({"cuda_precision": explicit_precision})
+    bst.reset_parameter({"cuda_precision": "auto", "learning_rate": 0.05})
+    if "quant_bins" in initial_params:
+        bst.reset_parameter({"quant_bins": initial_params["quant_bins"]})
+    bst.update()
+    assert bst.current_iteration() == 2
+    assert np.isfinite(bst.predict(X)).all()
+
+
+@_REQUIRES_CUDA
+def test_cpu_precision_parameter_reset_remains_allowed():
+    """CUDA precision metadata does not change a CPU learner's arithmetic."""
+    X, y = _make_regression_for_parity(n=300, seed=5)
+    params = {"objective": "regression", "device_type": "cpu", "verbose": -1, "num_leaves": 7}
+    bst = lgb.train(params, lgb.Dataset(X, label=y, params=params), num_boost_round=1, keep_training_booster=True)
+    bst.reset_parameter({"cuda_precision": "fp32"})
+    bst.update()
+    assert bst.current_iteration() == 2
+    assert "[device_type: cpu]" in bst.model_to_string()
+    assert "[cuda_precision: fp32]" in bst.model_to_string()
+    assert np.isfinite(bst.predict(X)).all()
+
+
+@_REQUIRES_CUDA
 def test_cuda_quant_training_is_deterministic():
     """The same quant config trained twice must produce an identical model.
 

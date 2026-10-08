@@ -783,9 +783,13 @@ Learning Control Parameters
 
    -  **Note**: ``stochastic`` and ``fixedpoint`` work only with ``cuda`` device type; use ``none`` for CPU training
 
+   -  a live CUDA learner cannot change its quantization mode through ``Booster.reset_parameter``; create a new booster for another mode
+
 -  ``num_grad_quant_bins`` :raw-html:`<a id="num_grad_quant_bins" title="Permalink to this parameter" href="#num_grad_quant_bins">&#x1F517;&#xFE0E;</a>`, default = ``0``, type = int, aliases: ``quant_bins``, constraints: ``num_grad_quant_bins >= 0``
 
    -  used only when quantized training is active (``quant_mode`` = ``stochastic`` or ``fixedpoint``)
+
+   -  a live quantized CUDA learner cannot change its bin count or switch between automatic and explicit bin resolution through ``Booster.reset_parameter``
 
    -  number of bins to quantization gradients and hessians
 
@@ -1468,6 +1472,8 @@ GPU Parameters
    -  ``fp32``: single-precision histogram storage and gain math: less histogram bandwidth and cheaper arithmetic, but predictions and validation quality can change; results are non-deterministic across runs
 
    -  validate the chosen precision on your workload; set ``cuda_precision=fp64`` explicitly to use the double-precision reference mode
+
+   -  a live CUDA learner cannot change its resolved precision or ``gpu_use_dp`` histogram layout through ``Booster.reset_parameter``; create a new booster for another precision
 
    -  quantized training (``quant_mode=stochastic`` or ``fixedpoint``) resolves ``auto`` to ``fp64``: its histograms are integer sums
 

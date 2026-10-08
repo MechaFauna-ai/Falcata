@@ -670,11 +670,13 @@ struct Config {
   // desc = ``stochastic``: Falcata-native quantized training (same as ``use_quantized_grad=true``): stochastic rounding into ``quant_bins`` bins; aggressive speed end of the trade-off
   // desc = ``fixedpoint``: XGBoost-style deterministic fixed-point quantization with an outlier-robust, gap-gated gradient scale; near-lossless at the default 64 bins
   // desc = **Note**: ``stochastic`` and ``fixedpoint`` work only with ``cuda`` device type; use ``none`` for CPU training
+  // desc = a live CUDA learner cannot change its quantization mode through ``Booster.reset_parameter``; create a new booster for another mode
   std::string quant_mode = "auto";
 
   // alias = quant_bins
   // check = >=0
   // desc = used only when quantized training is active (``quant_mode`` = ``stochastic`` or ``fixedpoint``)
+  // desc = a live quantized CUDA learner cannot change its bin count or switch between automatic and explicit bin resolution through ``Booster.reset_parameter``
   // desc = number of bins to quantization gradients and hessians
   // desc = with more bins, the quantized training will be closer to full precision training
   // desc = ``0`` means auto: ``4`` for ``stochastic`` (Falcata default), ``64`` for ``fixedpoint``
@@ -1203,6 +1205,7 @@ struct Config {
   // desc = ``fp64``: double-precision histogram accumulation and gain math (the reference mode)
   // desc = ``fp32``: single-precision histogram storage and gain math: less histogram bandwidth and cheaper arithmetic, but predictions and validation quality can change; results are non-deterministic across runs
   // desc = validate the chosen precision on your workload; set ``cuda_precision=fp64`` explicitly to use the double-precision reference mode
+  // desc = a live CUDA learner cannot change its resolved precision or ``gpu_use_dp`` histogram layout through ``Booster.reset_parameter``; create a new booster for another precision
   // desc = quantized training (``quant_mode=stochastic`` or ``fixedpoint``) resolves ``auto`` to ``fp64``: its histograms are integer sums
   // desc = **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
   std::string cuda_precision = "auto";

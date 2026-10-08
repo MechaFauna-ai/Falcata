@@ -443,8 +443,8 @@ void Config::ResolveFalcataParams() {
 // training, fp64 everywhere else. Runs after CheckParamConflict, whose
 // deterministic=true mapping can still turn quant_mode=none into fixedpoint.
 // fp64 stays where fp32 would contradict another request: gpu_use_dp asks
-// for double-precision histograms, deterministic=true for the reproducible
-// reference path, and vector-leaf multi-target training supports only fp64.
+// for double-precision histograms, deterministic=true keeps reference fp64
+// arithmetic for unquantized training, and vector-leaf multi-target supports only fp64.
 // Quantized modes keep fp64: the process-global fp32 gain switch also
 // retypes the discretized finders.
 void Config::ResolveCudaPrecision(const std::unordered_map<std::string, std::string>& params) {
