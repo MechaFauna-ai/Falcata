@@ -2481,7 +2481,9 @@ def _train_cpu_and_cuda(params_overrides, X, y, num_round, cuda_plan=None):
         if cuda_plan is not None and device_type == "cuda":
             params["cuda_plan"] = cuda_plan
         ds = lgb.Dataset(X, label=y, params={"verbose": -1, "feature_pre_filter": False})
-        out[device_type] = lgb.train(params, ds, num_boost_round=num_round)
+        # Preserve the actual float32 gains: text-model roundtrips serialize
+        # split_gain with fewer decimal digits and would weaken the gain oracle.
+        out[device_type] = lgb.train(params, ds, num_boost_round=num_round, keep_training_booster=True)
     return out
 
 
