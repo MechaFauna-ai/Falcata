@@ -4620,11 +4620,13 @@ __device__ __forceinline__ void FixHistogramInner(
   // the non-mfb bins in bin order, and the reconstructed most-frequent bin
   // must be bit-equal to CPU's or every threshold prefix crossing it inherits
   // the ulp difference. Bins are STAGED into shared memory cooperatively
-  // (coalesced) so thread 0's order-exact fold reads shared, not a dependent
-  // chain of global loads; chunking keeps it exact for any bin count. (The
-  // discretized fix keeps its parallel reduction: integer sums are
-  // order-invariant. shared_mem_buffer stays a parameter for that variant's
-  // shared call signature.)
+  // (coalesced) so the order-exact folds read shared, not a dependent chain of
+  // global loads; chunking keeps them exact for any bin count. Lane 0 folds
+  // the gradient and lane 1 the hessian, so each fold step is one warp
+  // instruction for both sums (the staging interleaves them, so the two
+  // lanes' reads fall in distinct banks). (The discretized fix keeps its
+  // parallel reduction: integer sums are order-invariant. shared_mem_buffer
+  // stays a parameter for that variant's shared call signature.)
   (void)shared_mem_buffer;
   constexpr uint32_t kFixStageChunk = 256;
   __shared__ double fix_stage[2 * kFixStageChunk];
@@ -4638,14 +4640,22 @@ __device__ __forceinline__ void FixHistogramInner(
       fix_stage[i] = hist_fp32 ? static_cast<hist_t>(feature_hist32[pos]) : feature_hist[pos];
     }
     __syncthreads();
-    if (threadIdx_x == 0) {
+    if (threadIdx_x < 2) {
+      hist_t acc = threadIdx_x == 0 ? sum_gradient : sum_hessian;
       for (uint32_t b = 0; b < chunk; ++b) {
         if (chunk_start + b != most_freq_bin) {
-          sum_gradient += fix_stage[b << 1];
-          sum_hessian += fix_stage[(b << 1) + 1];
+          acc += fix_stage[(b << 1) + threadIdx_x];
         }
       }
+      if (threadIdx_x == 0) {
+        sum_gradient = acc;
+      } else {
+        sum_hessian = acc;
+      }
     }
+  }
+  if (threadIdx_x < 2) {
+    sum_hessian = __shfl_sync(0x3u, sum_hessian, 1);
   }
   if (threadIdx_x == 0) {
     const hist_t fixed_gradient = leaf_sum_gradients - sum_gradient;

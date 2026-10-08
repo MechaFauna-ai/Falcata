@@ -242,33 +242,35 @@ __device__ __forceinline__ T SequentialPrefixSum(T value, T* row_buffer) {
   return row_buffer[threadIdx.x];
 }
 
-// Two CPU-order scans in one pass: the a/b accumulator chains are
-// independent, so interleaving them hides each other's add latency and the
-// pair costs about as much as one scan. len bounds the fold at the lanes the
-// caller actually reads (trailing lanes then keep their own deposit, which
-// the callers' bin-range guards never read); row_buffer holds 2 * blockDim.x
-// elements.
+// Two CPU-order scans in one pass, one chain per lane: lane 0 folds a and
+// lane 1 folds b, so every fold step is ONE warp instruction serving both
+// chains. A reduced-rate fp64 pipe (1/64 of fp32 on consumer parts) charges a
+// warp instruction its full issue cost however few lanes are active, so the
+// pair costs what one chain does. The staging interleaves the chains (a at
+// [2i], b at [2i + 1]) so the two lanes' accesses of a step fall in distinct
+// banks. len bounds the fold at the lanes the caller actually reads (trailing
+// lanes then keep their own deposit, which the callers' bin-range guards
+// never read); row_buffer holds 2 * blockDim.x elements.
 template <typename T>
 __device__ __forceinline__ void SequentialPrefixSumPair(
     T* value_a, T* value_b, T* row_buffer, const unsigned int len) {
   __syncthreads();  // previous users of row_buffer may still be reading
-  row_buffer[threadIdx.x] = *value_a;
-  row_buffer[blockDim.x + threadIdx.x] = *value_b;
+  row_buffer[2 * threadIdx.x] = *value_a;
+  row_buffer[2 * threadIdx.x + 1] = *value_b;
   __syncthreads();
-  if (threadIdx.x == 0) {
-    T acc_a = row_buffer[0];
-    T acc_b = row_buffer[blockDim.x];
+  if (threadIdx.x < 2) {
+    T* chain = row_buffer + threadIdx.x;
+    T acc = chain[0];
     const unsigned int bound = len < blockDim.x ? len : blockDim.x;
+    #pragma unroll 4
     for (unsigned int i = 1; i < bound; ++i) {
-      acc_a += row_buffer[i];
-      row_buffer[i] = acc_a;
-      acc_b += row_buffer[blockDim.x + i];
-      row_buffer[blockDim.x + i] = acc_b;
+      acc += chain[2 * i];
+      chain[2 * i] = acc;
     }
   }
   __syncthreads();
-  *value_a = row_buffer[threadIdx.x];
-  *value_b = row_buffer[blockDim.x + threadIdx.x];
+  *value_a = row_buffer[2 * threadIdx.x];
+  *value_b = row_buffer[2 * threadIdx.x + 1];
 }
 
 // CPU-order in-place inclusive scan over a global-memory row (the
@@ -613,18 +615,23 @@ __device__ void FindBestSplitsForLeafKernelInner(
       if (threadIdx_x == 0) {
         local_bin_cnt = num_data - cnt_non_default;
       }
-      seq_prefix_buffer[threadIdx_x] = local_grad_hist;
-      seq_prefix_buffer[blockDim.x + threadIdx_x] = local_hess_hist;
+      // one chain per lane, interleaved staging (see SequentialPrefixSumPair):
+      // lane 0 folds the gradient, lane 1 the hessian
+      seq_prefix_buffer[2 * threadIdx_x] = local_grad_hist;
+      seq_prefix_buffer[2 * threadIdx_x + 1] = local_hess_hist;
       __syncthreads();
-      if (threadIdx_x == 0) {
-        GAIN_T acc_g = static_cast<GAIN_T>(sum_gradients);
-        GAIN_T acc_h = static_cast<GAIN_T>(sum_hessians) - static_cast<GAIN_T>(kEpsilon);
+      if (threadIdx_x < 2) {
+        GAIN_T acc = threadIdx_x == 0 ?
+          static_cast<GAIN_T>(sum_gradients) :
+          static_cast<GAIN_T>(sum_hessians) - static_cast<GAIN_T>(kEpsilon);
         for (unsigned int i = 1; i < blockDim.x; ++i) {
-          acc_g -= seq_prefix_buffer[i];
-          acc_h -= seq_prefix_buffer[blockDim.x + i];
+          acc -= seq_prefix_buffer[2 * i + threadIdx_x];
         }
-        local_grad_hist = acc_g;
-        local_hess_hist = acc_h;
+        const GAIN_T acc_h = __shfl_down_sync(0x3u, acc, 1);
+        if (threadIdx_x == 0) {
+          local_grad_hist = acc;
+          local_hess_hist = acc_h;
+        }
       }
     } else if (threadIdx_x == 0) {
       local_hess_hist += kEpsilon;
