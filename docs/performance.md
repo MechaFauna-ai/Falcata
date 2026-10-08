@@ -778,6 +778,56 @@ generator) added four `cuda_plan` keys to that kernel, all default on and bit-id
   kernel and run at master's speed. The guard workloads: year deep 1.32x, missing deep 1.23x, covtype 1.20x, higgs
   1.09x, numerai53-example 1.00x per round.
 
+## 7d. The non-quantized finder and fix after CPU bit-parity
+
+`quant_mode=none` finds splits with one 256-thread block per (feature, leaf) over fp64 histograms. The 1.0.4
+CPU-bit-parity merge (`d53aa45c`) made two of its folds CPU-order sequential: the finder's gradient and hessian
+threshold prefixes, and FixHistogram's sum of the non-most-frequent bins. Each is a dependent chain of up to 255
+fp64 adds in one or two lanes while the rest of the block waits, and on the RTX 5090 fp64 runs at 1/64 of fp32 with
+every warp instruction costing its issue slots however few lanes are active. The 2026-10-08 sweep had
+`falcata-noquant` at 0.60–0.81× of 1.0.0 on the deep fraud, epsilon, year and covtype cells (the quantized arms
+were unaffected), and all of it lands at the parity merge: year deep 3.41 → 4.64 s, epsilon deep 59.6 → 99.2 s.
+nsys on year deep (100 rounds) has the level find kernel at 212 → 419 ms and the fused fix + subtract at
+57 → 136 ms, with every other kernel unchanged.
+
+Four changes, all bit-identical (the lattice's non-quant deterministic cells and the canonical locks pin them, and
+a 30-round year model on the deterministic host loop keeps its md5), none a plan key:
+
+- **One chain per lane.** The paired CPU-order folds (gradient and hessian prefixes, the NaN-missing head's
+  subtraction chains, FixHistogram's two sums) run in lanes 0 and 1 of one warp instead of interleaved in thread
+  0, so one warp instruction per fold step serves both chains.
+- **Integer keys for the best-threshold reduction.** A found gain is positive, and with every found gain finite the
+  fp64 tie-break's zero tolerance makes the block reduction the exact maximum of (gain, then lower thread): 64-bit
+  keys of the gains' bit patterns give the same winner without the fp64 compares, fmax and tolerance multiply at
+  every shuffle step (the counterpart of the quantized finder's `find_select_int`).
+- **fp32 bounds before the fp64 gain.** Where the gain is sl_g² / (sl_h + λ) + sr_g² / (sr_h + λ) (no L1,
+  smoothing, `max_delta_step`, monotone constraints or extra_trees), each candidate threshold first bounds its gain
+  in fp32 inside a range where every intermediate is a normal fp32 value (worst observed error 2^-21.5 of the gain
+  against a 2^-16 margin). A candidate whose upper bound lies below the block's best lower bound by more than 2^-20
+  of it can neither win nor tie the winner, also after both subtract `min_gain_shift`, and skips the two fp64
+  divisions (the counterpart of `find_prune_fp32`).
+- **Eight need-fix features per fix block.** The fused small-leaf fix + subtract stages eight need-fix features 32
+  bins at a time and folds their 16 sums in 16 lanes of one warp, instead of one feature per 512-thread block.
+
+| (median of timed1-3, exclusive gpuq class, `train_s`) | 1.0.0 | master `b4da8135` | this | vs master | vs 1.0.0 |
+|---|---|---|---|---|---|
+| year deep, noquant | 3.60 s | 5.07 s | 3.85 s | 1.32x | 0.93x |
+| epsilon deep, noquant | 60.2 s | 98.2 s | 58.7 s | 1.67x | 1.03x |
+| year deep, stoch | 2.28 s | 1.44 s | 1.52 s | (spread 1.31-1.54 vs 1.44-1.57) | |
+| epsilon deep, stoch | 37.6 s | 11.73 s | 11.76 s | 1.00x | |
+
+The three builds ran interleaved per cell, on a host shared with a 22-core CPU job that inflates the short year
+cells (stoch on master 1.31-1.54 s here, 1.00 s in the sweep); a quieter run had year deep noquant at 3.45 / 4.69 /
+3.52 s. The quantized kernels are not touched. Quality is unchanged (epsilon AUC 0.94331 on master and here).
+
+Cumulative, one relaxed-class run each (year deep / epsilon deep noquant `train_s`): master 4.69 / 97.3 s; one
+chain per lane 4.32 / 77.2; + integer keys 4.06 / 68.9; + fp32 bounds 3.65 / 66.8; + eight features per fix block
+3.52 / 57.9. On the 100-round year profile the find kernel drops back to 227 ms and the fix + subtract to 86 ms
+before the last change.
+
+Not taken: tree-shaped shuffle scans for the threshold prefixes on trees whose level construct is the
+order-dependent atomic one (the default graph loop); see `perf-dead-ends.md`.
+
 ## 8. GPU inference via NVIDIA FIL
 
 `Booster.predict()` on a CUDA-trained model routes through cuML's Forest
