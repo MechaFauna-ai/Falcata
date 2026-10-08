@@ -27,7 +27,7 @@ import time
 import traceback
 
 import numpy as np
-from common import CACHE_DIR, DATASETS, LIBRARIES, REGIMES, RUNS_JSONL, SEED
+from common import ALL_LIBRARIES, CACHE_DIR, DATASETS, REGIMES, RUNS_JSONL, SEED
 
 NUM_THREADS = int(os.environ.get("FALCATA_BENCH_THREADS", "0")) or os.cpu_count()
 
@@ -98,14 +98,21 @@ class ResourceMonitor:
         self._thread.join(timeout=5)
 
 
-def load_data(name):
+def load_data(name, input_dtype="f32"):
+    """Memory-map the preprocessed cache of ``name``.
+
+    ``input_dtype`` picks the numerai matrix: ``f32`` is the float32 twin every
+    engine reads, ``i8`` the int8 twin (same rows and values, a quarter of the
+    bytes) that Falcata bins natively. Other datasets have one dtype only.
+    """
     d = os.path.join(CACHE_DIR, name)
     if name == "numerai":
         with open(os.path.join(d, "meta.json")) as fh:
             meta = json.load(fh)
+        fname, dtype = {"f32": ("X.f32.mem", np.float32), "i8": ("X.i8.mem", np.int8)}[input_dtype]
         x = np.memmap(
-            os.path.join(d, "X.f32.mem"),
-            dtype=np.float32,
+            os.path.join(d, fname),
+            dtype=dtype,
             mode="r",
             shape=(meta["n_rows"], meta["n_features"]),
         )
@@ -195,7 +202,72 @@ def curve_metric_ok(task, curve_pts, metrics):
     return abs(final - auc) < 0.02
 
 
-def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=None):
+#: rows per predict() call on wide test sets: 200k rows x 3555 features is a
+#: 2.8 GB float32 slab, so the host->device staging stays small
+PREDICT_CHUNK_ROWS = 200_000
+
+
+def predict_in_chunks(bst, x_te, chunk_rows=PREDICT_CHUNK_ROWS):
+    """``bst.predict`` over row slabs; returns ``(preds, backend)``.
+
+    Each slab is a contiguous float32 copy, staged on the device with CuPy
+    when CuPy is importable (FIL then reads it in place: 4.7 s for a 30k-tree
+    numerai model against 24 s for host slabs) and kept on the host otherwise.
+    A whole-matrix predict on the numerai test split hands FIL an 18 GB
+    matrix, takes minutes, and past 2**32 cells returned wrong rows; 2.8 GB
+    slabs avoid all three, and the FIL model is built once and cached on the
+    booster, so the per-call cost is only the slab transfer.
+
+    ``backend`` is "fil" when cuML's Forest Inference Library served the
+    predictions and "cpu" otherwise. Falcata falls back to the CPU predictor
+    silently (FIL off, cuML missing, or a conversion failure), so the first
+    slab is sent through the FIL entry point directly to learn which one ran.
+    """
+    try:
+        import cupy as cp  # noqa: PLC0415
+
+        to_device = cp.asarray
+        to_host = cp.asnumpy
+    except Exception:
+        cp = None
+        to_device = to_host = None
+    n = x_te.shape[0]
+
+    def slab(start):
+        host = np.ascontiguousarray(x_te[start : start + chunk_rows], dtype=np.float32)
+        return to_device(host) if cp is not None else host
+
+    def as_numpy(preds):
+        return to_host(preds) if cp is not None and not isinstance(preds, np.ndarray) else preds
+
+    first = slab(0)
+    backend = "cpu"
+    out = []
+    fil_predict = getattr(bst, "_fil_predict", None)
+    if fil_predict is not None:
+        num_iteration = bst.best_iteration if bst.best_iteration > 0 else -1
+        probe = fil_predict(data=first, start_iteration=0, num_iteration=num_iteration, raw_score=False)
+        if probe is not None:
+            backend = "fil"
+            out.append(as_numpy(probe))
+    if not out:
+        # the CPU predictor reads host memory; a device slab would be a round trip
+        out.append(bst.predict(as_numpy(first) if cp is not None else first))
+        cp = None
+    for start in range(chunk_rows, n, chunk_rows):
+        out.append(as_numpy(bst.predict(slab(start))))
+    return (out[0] if len(out) == 1 else np.concatenate(out), backend)
+
+
+def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=None, shared=None):
+    """One LightGBM-API cell.
+
+    ``shared`` is a per-regime dict the caller keeps across the kinds of one
+    regime: the constructed ``lgb.Dataset`` (binning + the CUDA column store)
+    is built once, timed once, and reused by every kind, so the five kinds of
+    a regime cost one construct instead of five. Training never mutates a
+    constructed Dataset, so the reuse leaves ``train_s`` untouched.
+    """
     # falcata* variants import falcata, lightgbm* import upstream lightgbm --
     # the two install under different venvs (both own the ``lgb`` API surface).
     if library.startswith("falcata"):
@@ -247,17 +319,23 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=Non
     elif library == "lightgbm-quant":
         params["use_quantized_grad"] = True
 
-    t0 = time.perf_counter()
-    # the Dataset must be built with the final params (incl. device_type);
-    # non-memmap inputs are made contiguous so binning does not pay for strides
-    dtrain = lgb.Dataset(
-        x_tr if isinstance(x_tr, np.memmap) else np.ascontiguousarray(x_tr),
-        label=y_tr,
-        params=params,
-        categorical_feature=cat_cols if cat_cols else "auto",
-    )
-    dtrain.construct()
-    construct_s = time.perf_counter() - t0
+    shared = {} if shared is None else shared
+    construct_shared = "dtrain" in shared
+    if construct_shared:
+        dtrain, construct_s = shared["dtrain"], shared["construct_s"]
+    else:
+        t0 = time.perf_counter()
+        # the Dataset must be built with the final params (incl. device_type);
+        # non-memmap inputs are made contiguous so binning does not pay for strides
+        dtrain = lgb.Dataset(
+            x_tr if isinstance(x_tr, np.memmap) else np.ascontiguousarray(x_tr),
+            label=y_tr,
+            params=params,
+            categorical_feature=cat_cols if cat_cols else "auto",
+        )
+        dtrain.construct()
+        construct_s = time.perf_counter() - t0
+        shared["dtrain"], shared["construct_s"] = dtrain, construct_s
 
     curve_pts = []
     t0 = time.perf_counter()
@@ -283,10 +361,19 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=Non
         bst = lgb.train(params, dtrain, num_boost_round=reg["rounds"])
     train_s = time.perf_counter() - t0
 
-    preds = bst.predict(x_te)
+    t0 = time.perf_counter()
+    # falcata predicts through cuML's Forest Inference Library when cuML is
+    # installed in the venv and FALCATA_FIL is not 0; otherwise on the CPU,
+    # which on the 30k-tree numerai cells costs 10 minutes per predict. The
+    # record says which one ran so overhead comparisons are not misread.
+    preds, predict_backend = predict_in_chunks(bst, x_te)
+    predict_s = time.perf_counter() - t0
     return {
         "construct_s": construct_s,
+        "construct_shared": construct_shared,
         "train_s": train_s,
+        "predict_s": predict_s,
+        "predict_backend": predict_backend,
         "preds": preds,
         "version": lgb.__version__,
         "curve": curve_pts,
@@ -508,35 +595,48 @@ def run_catboost(task, x_tr, y_tr, x_te, y_te, reg, curve, cat_cols=None):
     }
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--library", required=True, choices=LIBRARIES)
-    ap.add_argument("--dataset", required=True, choices=list(DATASETS))
-    ap.add_argument("--regime", required=True, choices=list(REGIMES))
-    ap.add_argument(
-        "--align-l2",
-        action="store_true",
-        help="set lambda_l2/lambda/l2_leaf_reg to 1.0 on every engine. Off by "
-        "default because the engines' own defaults differ (0/1/3) and the "
-        "published numbers were measured that way; on, the comparison is "
-        "stricter but will NOT match docs/performance.md.",
-    )
-    ap.add_argument(
-        "--set",
-        dest="overrides",
-        action="append",
-        default=[],
-        metavar="KEY=VAL",
-        help="override a regime knob (l2, min_data, colsample, rounds, ...) for "
-        "one-off experiments; repeatable. Overridden runs are stamped with an "
-        "'overrides' field so they can never be mistaken for published cells.",
-    )
-    ap.add_argument("--kind", required=True)  # warmup | timed1..3 | curve
-    ap.add_argument("--out", default=RUNS_JSONL)
-    args = ap.parse_args()
+def parse_cells(args):
+    """Return the (regime, kind) cells this process runs, in matrix order."""
+    if args.cells:
+        cells = []
+        for item in args.cells.split(","):
+            reg, kind = item.split(":")
+            if reg not in REGIMES:
+                raise SystemExit(f"unknown regime {reg!r}; known: {list(REGIMES)}")
+            cells.append((reg, kind))
+        return cells
+    if not (args.regime and args.kind):
+        raise SystemExit("pass --cells REGIME:KIND,... or both --regime and --kind")
+    return [(args.regime, args.kind)]
 
-    task = DATASETS[args.dataset]["task"]
-    reg = dict(REGIMES[args.regime])
+
+def recorded_cells(path, library, dataset):
+    """(regime, kind) -> status of every cell of this library/dataset already in ``path``."""
+    done = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if r.get("library") == library and r.get("dataset") == dataset:
+                    done[(r["regime"], r["kind"])] = r["status"]
+    return done
+
+
+def write_record(path, rec):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a") as f:
+        f.write(json.dumps(rec) + "\n")
+    shown = {k: v for k, v in rec.items() if k not in ("curve", "error")}
+    print(json.dumps(shown)[:2000], flush=True)
+
+
+def run_cell(args, task, reg_name, kind, data, shared):
+    """Run one (regime, kind) cell on already-loaded ``data``; returns its record."""
+    x_tr, y_tr, x_te, y_te, extra = data
+    reg = dict(REGIMES[reg_name])
     if args.align_l2:
         reg["l2"] = 1.0
     overrides = {}
@@ -545,20 +645,21 @@ def main():
         x = float(v)
         overrides[k] = int(x) if x.is_integer() else x
     reg.update(overrides)
-    curve = args.kind == "curve"
+    curve = kind == "curve"
 
     rec = {
         "library": args.library,
         "dataset": args.dataset,
-        "regime": args.regime,
-        "kind": args.kind,
+        "regime": reg_name,
+        "kind": kind,
         "status": "ok",
+        "input_dtype": str(np.asarray(x_tr[:1]).dtype) if hasattr(x_tr, "dtype") else None,
+        "n_train": int(x_tr.shape[0]),
+        "n_features": int(x_tr.shape[1]),
     }
     if overrides:
         rec["overrides"] = overrides
     try:
-        x_tr, y_tr, x_te, y_te, extra = load_data(args.dataset)
-        rec["n_train"], rec["n_features"] = int(x_tr.shape[0]), int(x_tr.shape[1])
         cat_cols = DATASETS[args.dataset].get("cat_cols")
         with ResourceMonitor() as mon:
             t_total = time.perf_counter()
@@ -573,6 +674,7 @@ def main():
                     args.library,
                     curve,
                     cat_cols=cat_cols,
+                    shared=shared,
                 )
             elif args.library.startswith("xgboost"):
                 r = run_xgboost(
@@ -595,7 +697,9 @@ def main():
         rec["trees_per_s"] = reg["rounds"] / r["train_s"]
         rec["gpu_mem_peak_mb"] = mon.gpu_peak_mb
         rec["rss_peak_mb"] = mon.rss_peak_mb
+        t0 = time.perf_counter()
         rec["metrics"] = quality_metrics(task, np.asarray(preds), y_te, extra)
+        rec["eval_s"] = time.perf_counter() - t0
         # a run that trains but produces a garbage model is a FAILURE, not a
         # fast run -- its timings must never enter the report tables
         if not rec["metrics"].get("sane", True):
@@ -612,12 +716,90 @@ def main():
     except Exception:
         rec["status"] = "failed"
         rec["error"] = traceback.format_exc()[-3000:]
+    return rec
 
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    with open(args.out, "a") as f:
-        f.write(json.dumps(rec) + "\n")
-    print(json.dumps({k: v for k, v in rec.items() if k != "curve"})[:2000])
-    sys.exit(0 if rec["status"] == "ok" else 1)
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--library", required=True, choices=ALL_LIBRARIES)
+    ap.add_argument("--dataset", required=True, choices=list(DATASETS))
+    ap.add_argument("--regime", choices=list(REGIMES), help="one cell: its regime (with --kind)")
+    ap.add_argument("--kind", help="one cell: warmup | timed1..3 | curve (with --regime)")
+    ap.add_argument(
+        "--cells",
+        default=None,
+        metavar="REGIME:KIND,...",
+        help="several cells of this library/dataset in one process: the data is "
+        "loaded once and each regime's Dataset is constructed once; cells already "
+        "recorded in --out are skipped",
+    )
+    ap.add_argument(
+        "--input-dtype",
+        choices=["auto", "f32", "i8"],
+        default="auto",
+        help="numerai matrix twin to read; auto = i8 for the falcata arms (native "
+        "int8 binning, a quarter of the bytes), f32 for every other engine",
+    )
+    ap.add_argument(
+        "--align-l2",
+        action="store_true",
+        help="set lambda_l2/lambda/l2_leaf_reg to 1.0 on every engine. Off by "
+        "default because the engines' own defaults differ (0/1/3) and the "
+        "published numbers were measured that way; on, the comparison is "
+        "stricter but will NOT match docs/performance.md.",
+    )
+    ap.add_argument(
+        "--set",
+        dest="overrides",
+        action="append",
+        default=[],
+        metavar="KEY=VAL",
+        help="override a regime knob (l2, min_data, colsample, rounds, ...) for "
+        "one-off experiments; repeatable. Overridden runs are stamped with an "
+        "'overrides' field so they can never be mistaken for published cells.",
+    )
+    ap.add_argument("--out", default=RUNS_JSONL)
+    args = ap.parse_args()
+
+    task = DATASETS[args.dataset]["task"]
+    cells = parse_cells(args)
+    done = recorded_cells(args.out, args.library, args.dataset) if args.cells else {}
+    todo = [c for c in cells if c not in done]
+    if not todo:
+        print("nothing to run: every requested cell is recorded", flush=True)
+        return
+
+    input_dtype = args.input_dtype
+    if input_dtype == "auto":
+        input_dtype = "i8" if args.library.startswith("falcata") else "f32"
+    if args.dataset != "numerai":
+        input_dtype = "f32"
+    t0 = time.perf_counter()
+    data = load_data(args.dataset, input_dtype)
+    load_s = time.perf_counter() - t0
+
+    all_ok = True
+    shared_by_regime = {}
+    for reg_name, kind in todo:
+        # a regime whose warmup failed in this process is not worth its timed kinds
+        if kind != "warmup" and done.get((reg_name, "warmup")) == "failed":
+            rec = {
+                "library": args.library,
+                "dataset": args.dataset,
+                "regime": reg_name,
+                "kind": kind,
+                "status": "skipped_warmup_failed",
+            }
+        else:
+            t0 = time.perf_counter()
+            shared = shared_by_regime.setdefault(reg_name, {})
+            rec = run_cell(args, task, reg_name, kind, data, shared)
+            rec["load_s"] = load_s
+            rec["cell_s"] = time.perf_counter() - t0
+        done[(reg_name, kind)] = rec["status"]
+        all_ok = all_ok and rec["status"] == "ok"
+        write_record(args.out, rec)
+    sys.exit(0 if all_ok else 1)
 
 
 if __name__ == "__main__":

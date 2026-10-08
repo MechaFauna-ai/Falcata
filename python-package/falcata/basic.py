@@ -3756,6 +3756,62 @@ def _falcata_env(name: str, default: str) -> str:
     return environ.get(f"FALCATA_{name}", default)
 
 
+#: largest host input (in matrix cells) handed to FIL in one call: 2**29 float32
+#: cells is a 2 GB slab, far below the 2**32-cell offset FIL can address
+_FIL_HOST_SLAB_ELEMENTS = 2**29
+
+
+def _fil_run_device(model: Any, data: Any) -> Optional[Any]:
+    """Score a device-resident matrix with a FIL model; the result stays on the device."""
+    import cupy  # noqa: PLC0415
+
+    data = cupy.asarray(data)
+    if data.dtype not in (np.float32, np.float64):
+        data = data.astype(np.float32)
+    try:
+        return model.predict_proba(data) if model.is_classifier else model.predict(data)
+    except Exception:
+        return None
+
+
+def _fil_run_host_slabs(model: Any, data: np.ndarray) -> Optional[np.ndarray]:
+    """Score a host matrix with a FIL model, slab by slab, into a host array.
+
+    FIL addresses a host input with 32-bit cell offsets: on a matrix of more
+    than 2**32 cells every row past cell 2**32 is scored from the wrong data
+    and comes back wrong without any error (1.29M x 3555 rows: the first bad
+    row was 2**32 // 3555). Slabs of at most _FIL_HOST_SLAB_ELEMENTS cells
+    also keep the float32 copy of a non-float input and FIL's device staging
+    to one slab instead of the whole matrix, which for an 18 GB input turned a
+    multi-minute predict into seconds.
+    """
+    n_rows = data.shape[0]
+    slab_rows = max(1, min(n_rows, _FIL_HOST_SLAB_ELEMENTS // max(1, data.shape[1])))
+    out = []
+    for start in range(0, n_rows, slab_rows):
+        slab = data[start : start + slab_rows]
+        if slab.dtype not in (np.float32, np.float64):
+            slab = slab.astype(np.float32)
+        try:
+            preds = model.predict_proba(slab) if model.is_classifier else model.predict(slab)
+        except Exception:
+            return None
+        if not isinstance(preds, np.ndarray):
+            import cupy  # noqa: PLC0415
+
+            preds = cupy.asnumpy(preds)
+        out.append(preds)
+    try:
+        import cupy  # noqa: PLC0415
+
+        # FIL staged each slab in the CuPy pool; hand the free blocks back to
+        # the driver so they do not starve non-pool CUDA allocations (training)
+        cupy.get_default_memory_pool().free_all_blocks()
+    except Exception:
+        pass
+    return out[0] if len(out) == 1 else np.concatenate(out, axis=0)
+
+
 def _load_fil_modules() -> Optional[Tuple[Any, Any]]:
     """Lazily import the GPU forest-inference stack.
 
@@ -5240,26 +5296,11 @@ class Booster:
         model = self._fil_model(max(start_iteration, 0), num_iteration, raw_score)
         if model is None:
             return None
-        if not is_host:
-            import cupy  # noqa: PLC0415
-
-            data = cupy.asarray(data)
-        if data.dtype not in (np.float32, np.float64):
-            data = data.astype(np.float32)
-        try:
-            preds = model.predict_proba(data) if model.is_classifier else model.predict(data)
-        except Exception:
+        preds = _fil_run_device(model, data) if not is_host else _fil_run_host_slabs(model, data)
+        if preds is None:
             return None
         if preds.ndim == 2 and preds.shape[1] == 1:
             preds = preds.reshape(-1)
-        if is_host and not isinstance(preds, np.ndarray):
-            import cupy  # noqa: PLC0415
-
-            preds = cupy.asnumpy(preds)
-            # FIL staged the host input in the CuPy pool (input-sized, i.e.
-            # potentially many GB); hand the free blocks back to the driver so
-            # they do not starve non-pool CUDA allocations (e.g. training)
-            cupy.get_default_memory_pool().free_all_blocks()
         return preds.astype(np.float64, copy=False)
 
     def predict(

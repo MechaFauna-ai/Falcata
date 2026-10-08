@@ -75,6 +75,11 @@ inline constexpr int kDetDenseDyCap = 32;
 // run-to-run identity of the whole model -- so this covers every level of a
 // num_leaves <= 2048 prefix rather than being a small tuning constant.
 inline constexpr int kDetDenseBatchedPairCap = 1024;
+// Fused small-leaf fix + subtract (FixHistogramGroupInner): need-fix features
+// per fix block, and the bins each staging round holds per feature
+// (2 * kFixGroupChunk * kFixGroupFeatures == FIX_HISTOGRAM_BLOCK_SIZE).
+inline constexpr int kFixGroupFeatures = 8;
+inline constexpr uint32_t kFixGroupChunk = 32;
 
 namespace Falcata {
 
@@ -884,6 +889,17 @@ class CUDAHistogramConstructor {
    *  most-frequent-bin entries (cuda_fix_mfb_mask_); the fix blocks write those
    *  for both leaves with the identical arithmetic, so the result is
    *  bit-identical to the sequential fix -> subtract launches. */
+  /*! \brief grid.x of the fused small-leaf fix + subtract: its subtract blocks
+   *  (one element per thread) and its fix blocks (kFixGroupFeatures need-fix
+   *  features each) */
+  int FixSubtractSmallLeafSubtractBlocks() const {
+    return (2 * num_total_bin_ + FIX_HISTOGRAM_BLOCK_SIZE - 1) / FIX_HISTOGRAM_BLOCK_SIZE;
+  }
+  int FixSubtractSmallLeafGridX() const {
+    const int num_need_fix = static_cast<int>(need_fix_histogram_features_.size());
+    return FixSubtractSmallLeafSubtractBlocks() + (num_need_fix + kFixGroupFeatures - 1) / kFixGroupFeatures;
+  }
+
   void LaunchFixSubtractHistogramSmallLeafBatchedKernel(
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,

@@ -414,3 +414,20 @@ Re-open when: the histogram layout changes so a leaf's T planes share ONE slot
 row (an interleaved `[bin][target]` cell layout), which is the term the
 measurement indicts. Fusing purely to save launches is settled -- launch
 overhead is ~2% of a vector tree and was never the mechanism.
+
+## Shuffle-order threshold scans on the atomic-construct graph path (2026-10-08)
+
+- **Tried:** on trees whose level prefix constructs with the atomic kernel (the default graph loop, `graph_det`
+  off), the non-quantized finder's threshold prefixes as the tree-shaped shuffle scans of 1.0.0 instead of the
+  CPU-order sequential folds.
+- **Promising because:** atomic-construct histograms differ run to run in their low bits on real data (three
+  default-plan year runs, three model md5s), so no fold order reproduces CPU there, and the sequential fold is the
+  finder's largest fp64 cost once the folds run one chain per lane and the gains are pruned in fp32 (§7d).
+- **Measured** (relaxed class, one run each, on top of the lane-split folds, integer reduction and fp32 prune):
+  year deep 3.65 → 3.34 s, epsilon deep 66.8 → 57.4 s.
+- **Why not taken:** it changes default-plan models. Where the atomic sums happen to be exact (small data) the
+  default graph path reproduces CPU's split choices today, which
+  `test_cuda_split_gain_tie_break_matches_cpu[max_depth]` pins with an exact tie-break; giving that up is a
+  product decision, not a performance one.
+- **Re-open when:** CPU bit-parity is dropped for the default graph path (it already trades run-to-run determinism
+  for speed there), or the shuffle scan comes with a tie-break that keeps that test's contract.
