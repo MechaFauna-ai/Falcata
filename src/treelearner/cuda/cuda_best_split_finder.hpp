@@ -334,6 +334,17 @@ class CUDABestSplitFinder {
   // and must not be dereferenced on the host.
   void SyncAllLeafBestSplitsToHost(const int num_leaves, std::vector<CUDASplitInfo>* out) const;
 
+  /*! \brief cuda_plan key readback_fused: the next level sync kernel (SyncBestSplitForLevelUsedTasksKernel) also
+   *  copies every leaf entry it writes into the mapped best-split staging */
+  void RequestLeafBestSplitMirror() { leaf_mirror_requested_ = true; }
+  /*! \brief whether the last level sync kernel mirrored its entries (see RequestLeafBestSplitMirror) */
+  bool LeafBestSplitMirrorWritten() const { return leaf_mirror_written_; }
+  /*! \brief SyncAllLeafBestSplitsToHost for a level whose sync kernel mirrored its entries: when the caller knows
+   *  the staging holds the device's bytes for every other leaf in [0, num_leaves) (staging_coherent), one device
+   *  synchronize and the staging is read; otherwise the full copy of SyncAllLeafBestSplitsToHost */
+  void SyncLevelLeafBestSplitsToHost(const int num_leaves, const bool staging_coherent,
+                                     std::vector<CUDASplitInfo>* out);
+
   /*! \brief graphs L2: stream-ordered async prefetch of leaves
    *  [0, num_leaves) of the device per-leaf best-split cache into the pinned
    *  staging buffer, so the learner's single post-graph stream sync covers
@@ -606,6 +617,9 @@ class CUDABestSplitFinder {
   mutable CUDASplitInfo* pinned_leaf_best_split_info_device_ = nullptr;
   /*! \brief grow the pinned best-split staging buffer to >= num_leaves slots */
   void EnsurePinnedLeafBestSplitCapacity(const int num_leaves) const;
+  /*! \brief cuda_plan key readback_fused: mirror requested for the next level sync kernel / written by the last */
+  bool leaf_mirror_requested_ = false;
+  bool leaf_mirror_written_ = false;
   int max_num_bin_in_feature_;
   std::vector<uint32_t> feature_hist_offsets_;
   std::vector<uint8_t> feature_mfb_offsets_;

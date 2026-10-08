@@ -640,6 +640,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
    *  budget does not bind and every child sits at max_depth; set by the level prefix when it ended on such a level */
   bool level_completes_tree_ = false;
   bool prefix_completes_tree_ = false;
+  /*! \brief cuda_plan key dirty_final_slots: the tree's leaf count before the final level that completed the level
+   *  prefix (prefix_completes_tree_), -1 otherwise */
+  int prefix_final_leaves_before_ = -1;
   /*! \brief cuda_plan key readback_kernel: mapped pinned staging of the tree end's readbacks (the tree's pooled slab
    *  in CUDATree::ToHost, the exact leaf counts), its device alias (nullptr where the device cannot map it) and size */
   void* readback_staging_ = nullptr;

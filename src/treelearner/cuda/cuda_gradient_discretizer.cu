@@ -59,6 +59,12 @@ __global__ void ReduceMinMaxKernel(
 // 32 warp results. Here the warp runs warp w's trees on rows 32 w .. 32 w + 31 (same lanes, same shuffles, same
 // operand order), lane w keeps their lane-0 results, and the warp then runs the cross-warp tree, so every
 // partial is the same value, NaN and signed zero included. CUDA only.
+// CONST_HESS (cuda_plan key const_hess_reads): every row's hessian equals row 0's (see
+// CUDAGradientDiscretizer::SetHessiansConstant), so each valid row takes that value instead of loading its own. In
+// a chunk of only valid rows (every chunk but a partial last one) the hessian trees would reduce copies of that one
+// value, and fmaxf / fminf of equal non-NaN operands return that operand: such a warp runs only the gradient trees
+// and stores that value as both hessian partials (a NaN hessian or the partial chunk runs every tree as before).
+template <bool CONST_HESS>
 __global__ void ReduceMinMaxChunkWarpKernel(
   const data_size_t num_data,
   const int num_chunks,
@@ -77,6 +83,30 @@ __global__ void ReduceMinMaxChunkWarpKernel(
   }
   const int lane = static_cast<int>(threadIdx.x % WARPSIZE);
   const data_size_t chunk_start = static_cast<data_size_t>(chunk) * CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE;
+  const score_t hess_row0 = CONST_HESS ? input_hessians[0] : 0.0f;
+  if (CONST_HESS && chunk_start + CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE <= num_data && hess_row0 == hess_row0) {
+    score_t grad_min_known = 0.0f;
+    score_t grad_max_known = 0.0f;
+#pragma unroll 4
+    for (int w = 0; w < kRowsPerWarpTree; ++w) {
+      const score_t grad = input_gradients[chunk_start + static_cast<data_size_t>(w * kRowsPerWarpTree + lane)];
+      const score_t grad_min_val = __shfl_sync(0xffffffff, ShuffleReduceMinWarp<score_t>(grad, kRowsPerWarpTree), 0);
+      const score_t grad_max_val = __shfl_sync(0xffffffff, ShuffleReduceMaxWarp<score_t>(grad, kRowsPerWarpTree), 0);
+      if (lane == w) {
+        grad_min_known = grad_min_val;
+        grad_max_known = grad_max_val;
+      }
+    }
+    grad_min_known = ShuffleReduceMinWarp<score_t>(grad_min_known, kRowsPerWarpTree);
+    grad_max_known = ShuffleReduceMaxWarp<score_t>(grad_max_known, kRowsPerWarpTree);
+    if (lane == 0) {
+      grad_min_block_buffer[chunk] = grad_min_known;
+      grad_max_block_buffer[chunk] = grad_max_known;
+      hess_min_block_buffer[chunk] = hess_row0;
+      hess_max_block_buffer[chunk] = hess_row0;
+    }
+    return;
+  }
   score_t grad_min_warp = 0.0f;
   score_t grad_max_warp = 0.0f;
   score_t hess_min_warp = 0.0f;
@@ -91,8 +121,8 @@ __global__ void ReduceMinMaxChunkWarpKernel(
     if (index < num_data) {
       grad_max_val = input_gradients[index];
       grad_min_val = input_gradients[index];
-      hess_max_val = input_hessians[index];
-      hess_min_val = input_hessians[index];
+      hess_max_val = CONST_HESS ? hess_row0 : input_hessians[index];
+      hess_min_val = hess_max_val;
     }
     grad_min_val = __shfl_sync(0xffffffff, ShuffleReduceMinWarp<score_t>(grad_min_val, kRowsPerWarpTree), 0);
     grad_max_val = __shfl_sync(0xffffffff, ShuffleReduceMaxWarp<score_t>(grad_max_val, kRowsPerWarpTree), 0);
@@ -327,7 +357,9 @@ __global__ void BuildInbagMaskKernel(
 // COPY_HESS: vector-leaf plane t >= 1. The hessian is target-independent and
 // every consumer reads it from plane 0, so the plane copies plane 0's already
 // quantized hessian instead of re-rounding it under an independent dither.
-template <bool STOCHASTIC_ROUNDING, bool CLAMP, bool COPY_HESS = false>
+// CONST_HESS (cuda_plan key const_hess_reads): every row's hessian equals row 0's,
+// which each row takes instead of loading its own.
+template <bool STOCHASTIC_ROUNDING, bool CLAMP, bool COPY_HESS = false, bool CONST_HESS = false>
 __global__ void DiscretizeGradientsKernel(
   const data_size_t num_data,
   const score_t* input_gradients,
@@ -352,7 +384,7 @@ __global__ void DiscretizeGradientsKernel(
   if (index < num_data) {
     if (STOCHASTIC_ROUNDING) {
       const score_t gradient = input_gradients[index];
-      const score_t hessian = input_hessians[index];
+      const score_t hessian = input_hessians[CONST_HESS ? 0 : index];
       const uint4 rnd = Philox4x32_10(
         make_uint4(static_cast<uint32_t>(index), static_cast<uint32_t>(iter),
                    0x9E3779B9u, 0xBB67AE85u),
@@ -375,7 +407,7 @@ __global__ void DiscretizeGradientsKernel(
       // the double 0.5 is deliberate: a double add cannot be contracted with
       // the float multiply, keeping the rounding sequence arch-stable
       const score_t gv = input_gradients[index] * grad_scale;
-      const score_t hv = input_hessians[index] * hess_scale;
+      const score_t hv = input_hessians[CONST_HESS ? 0 : index] * hess_scale;
       // out-of-bag residuals must not move: nothing consumes those values
       const bool ef_active = ef_residuals != nullptr &&
           (ef_inbag_mask == nullptr || ef_inbag_mask[index] != 0);
@@ -479,6 +511,8 @@ void CUDAGradientDiscretizer::DiscretizeGradientsForPlane(
   const data_size_t num_data,
   const score_t* input_gradients,
   const score_t* input_hessians) {
+  // cuda_plan key const_hess_reads: see SetHessiansConstant
+  const bool const_hess = hessians_constant_ && FalcataPlan::Get().const_hess_reads && num_data > 0;
 #if !defined(__HIP_PLATFORM_AMD__)
   const bool chunk_warp = FalcataPlan::Get().minmax_warp;
 #else
@@ -489,12 +523,21 @@ void CUDAGradientDiscretizer::DiscretizeGradientsForPlane(
     // one warp per chunk, eight chunks per 256-thread block
     constexpr int kChunkWarpThreads = 256;
     const int chunk_grid = (num_reduce_blocks_ * WARPSIZE + kChunkWarpThreads - 1) / kChunkWarpThreads;
-    ReduceMinMaxChunkWarpKernel<<<chunk_grid, kChunkWarpThreads>>>(
-      num_data, num_reduce_blocks_, input_gradients, input_hessians,
-      grad_min_block_buffer_.RawData(),
-      grad_max_block_buffer_.RawData(),
-      hess_min_block_buffer_.RawData(),
-      hess_max_block_buffer_.RawData());
+    if (const_hess) {
+      ReduceMinMaxChunkWarpKernel<true><<<chunk_grid, kChunkWarpThreads>>>(
+        num_data, num_reduce_blocks_, input_gradients, input_hessians,
+        grad_min_block_buffer_.RawData(),
+        grad_max_block_buffer_.RawData(),
+        hess_min_block_buffer_.RawData(),
+        hess_max_block_buffer_.RawData());
+    } else {
+      ReduceMinMaxChunkWarpKernel<false><<<chunk_grid, kChunkWarpThreads>>>(
+        num_data, num_reduce_blocks_, input_gradients, input_hessians,
+        grad_min_block_buffer_.RawData(),
+        grad_max_block_buffer_.RawData(),
+        hess_min_block_buffer_.RawData(),
+        hess_max_block_buffer_.RawData());
+    }
 #endif
   } else {
     ReduceMinMaxKernel<<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(
@@ -604,18 +647,24 @@ void CUDAGradientDiscretizer::DiscretizeGradientsForPlane(
     // Stochastic path never uses the robust scale (it is a fixed-point-only mode).
     if (copy_hess) {
       DiscretizeGradientsKernel<true, false, true><<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(DiscretizeGradientsKernel_ARGS);
+    } else if (const_hess) {
+      DiscretizeGradientsKernel<true, false, false, true><<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(DiscretizeGradientsKernel_ARGS);
     } else {
       DiscretizeGradientsKernel<true, false, false><<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(DiscretizeGradientsKernel_ARGS);
     }
   } else if (robust_scale_) {
     if (copy_hess) {
       DiscretizeGradientsKernel<false, true, true><<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(DiscretizeGradientsKernel_ARGS);
+    } else if (const_hess) {
+      DiscretizeGradientsKernel<false, true, false, true><<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(DiscretizeGradientsKernel_ARGS);
     } else {
       DiscretizeGradientsKernel<false, true, false><<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(DiscretizeGradientsKernel_ARGS);
     }
   } else {
     if (copy_hess) {
       DiscretizeGradientsKernel<false, false, true><<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(DiscretizeGradientsKernel_ARGS);
+    } else if (const_hess) {
+      DiscretizeGradientsKernel<false, false, false, true><<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(DiscretizeGradientsKernel_ARGS);
     } else {
       DiscretizeGradientsKernel<false, false, false><<<num_reduce_blocks_, CUDA_GRADIENT_DISCRETIZER_BLOCK_SIZE>>>(DiscretizeGradientsKernel_ARGS);
     }

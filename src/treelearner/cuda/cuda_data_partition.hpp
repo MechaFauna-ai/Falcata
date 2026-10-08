@@ -173,6 +173,11 @@ class CUDADataPartition: public NCCLInfo {
   // sum_gradients.
   void FinishSplitBatch(const int num_splits, std::vector<int>* out);
 
+  /*! \brief cuda_plan key readback_fused: the next batched level apply (SplitLevelBatched) writes the split info
+   *  FinishSplitBatch reads straight into its mapped staging, and FinishSplitBatch then waits with one device
+   *  synchronize instead of a copy kernel; needs the mapped staging (readback_kernel) */
+  void RequestSplitInfoMirror() { split_info_mirror_requested_ = true; }
+
   /*! \brief Batched apply phase for the hybrid level-batched growth: applies ALL
    *  numerical splits of a level with one launch per kernel family (gen bit
    *  vector, update data-index-to-leaf-index, aggregate block offsets, split
@@ -725,6 +730,10 @@ class CUDADataPartition: public NCCLInfo {
   /*! \brief device alias of pinned_split_info_ (mapped allocation; nullptr where the device cannot map it),
    *  written by FinishSplitBatch's copy kernel (cuda_plan key readback_kernel) */
   int* pinned_split_info_device_ = nullptr;
+  /*! \brief cuda_plan key readback_fused: the next batched level apply writes its split info into the mapped staging
+   *  too (set by RequestSplitInfoMirror, consumed by that launch), and whether the last one did (FinishSplitBatch) */
+  bool split_info_mirror_requested_ = false;
+  bool split_info_mirror_written_ = false;
   /*! \brief grow the pinned split-info staging buffer to >= num_ints ints */
   void EnsurePinnedSplitInfoCapacity(const size_t num_ints);
   /*! \brief per-split smaller-child size of the current level's batched apply

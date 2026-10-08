@@ -5196,6 +5196,24 @@ __global__ void SyncBestSplitForLevelKernelAllBlocks(
 // BATCHED (cuda_plan key sync_copy_batched): the winner's slot, its validity and its task's feature index are
 // loaded in one batch before any store (LoadSplitInfoFields / StoreSplitInfoFields), the same values written.
 // blockDim.x: a multiple of 32, at most NUM_TASKS_PER_SYNC_BLOCK.
+// cuda_plan key readback_fused: warp 0 of the block copies the leaf entry its thread 0 has just written (the whole
+// struct, exactly the bytes a copy of the device array would carry) into the mapped host staging; the caller is the
+// whole block, after thread 0's stores (no-op without a staging pointer)
+__device__ __forceinline__ void MirrorLeafBestSplitEntry(const CUDASplitInfo* entry, CUDASplitInfo* mirror_entry) {
+  static_assert(sizeof(CUDASplitInfo) % sizeof(uint64_t) == 0, "CUDASplitInfo is copied in 8-byte words");
+  constexpr int kWords = static_cast<int>(sizeof(CUDASplitInfo) / sizeof(uint64_t));
+  if (mirror_entry == nullptr || threadIdx.x >= WARPSIZE) {
+    return;
+  }
+  // thread 0's stores to the entry are visible to its warp after the warp barrier
+  __syncwarp();
+  const volatile uint64_t* src = reinterpret_cast<const volatile uint64_t*>(entry);
+  uint64_t* dst = reinterpret_cast<uint64_t*>(mirror_entry);
+  for (int w = static_cast<int>(threadIdx.x); w < kWords; w += WARPSIZE) {
+    dst[w] = src[w];
+  }
+}
+
 template <bool BATCHED>
 __global__ void SyncBestSplitForLevelUsedTasksKernel(
   const CUDAHybridPairDescriptor* pair_descs,
@@ -5208,7 +5226,8 @@ __global__ void SyncBestSplitForLevelUsedTasksKernel(
   const int num_tasks,
   const data_size_t min_data_in_leaf,
   const double min_sum_hessian_in_leaf,
-  const bool gate_on_desc_counts) {
+  const bool gate_on_desc_counts,
+  CUDASplitInfo* leaf_best_split_mirror) {
   constexpr int kReplayWarps = NUM_TASKS_PER_SYNC_BLOCK / WARPSIZE;
   __shared__ double shared_gain_buffer[kReplayWarps];
   __shared__ bool shared_found_buffer[kReplayWarps];
@@ -5321,10 +5340,12 @@ __global__ void SyncBestSplitForLevelUsedTasksKernel(
       leaf_splits->sum_of_hessians > min_sum_hessian_in_leaf;
   }
   CUDASplitInfo* cuda_split_info = cuda_leaf_best_split_info + leaf_index;
+  CUDASplitInfo* mirror_entry = leaf_best_split_mirror != nullptr ? leaf_best_split_mirror + leaf_index : nullptr;
   if (!leaf_valid) {
     if (threadIdx.x == 0) {
       cuda_split_info->is_valid = false;
     }
+    MirrorLeafBestSplitEntry(cuda_split_info, mirror_entry);
     return;
   }
   if (!__syncthreads_or(non_finite)) {
@@ -5356,6 +5377,7 @@ __global__ void SyncBestSplitForLevelUsedTasksKernel(
         cuda_split_info->is_valid = false;
       }
     }
+    MirrorLeafBestSplitEntry(cuda_split_info, mirror_entry);
     return;
   }
   // exact replay of SyncBestSplitForLevelKernel (blocks of NUM_TASKS_PER_SYNC_BLOCK threads: warp w, lane l holds
@@ -5419,6 +5441,7 @@ __global__ void SyncBestSplitForLevelUsedTasksKernel(
       cuda_split_info->is_valid = false;
     }
   }
+  MirrorLeafBestSplitEntry(cuda_split_info, mirror_entry);
 }
 
 void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
@@ -6100,7 +6123,18 @@ void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
   // sync_used_tasks: a feature-sampled tree (the used-task list is on the device) or a task list wider than one
   // sync block takes one block per leaf over the used tasks only, with no merge kernel
   const bool used_list = compact_tasks && num_used_tasks_ > 0;
+  // cuda_plan key readback_fused: only the used-task kernel mirrors, and only into staging already allocated at its
+  // full size (never reallocated after, so entries mirrored by earlier levels stay in place)
+  const bool mirror_requested = leaf_mirror_requested_;
+  leaf_mirror_requested_ = false;
+  leaf_mirror_written_ = false;
   if (FalcataPlan::Get().sync_used_tasks && (used_list || (!compact_tasks && num_blocks_per_leaf > 1))) {
+    CUDASplitInfo* leaf_mirror = nullptr;
+    if (mirror_requested && pinned_leaf_best_split_info_device_ != nullptr &&
+        pinned_leaf_best_split_info_size_ >= static_cast<size_t>(num_leaves_)) {
+      leaf_mirror = pinned_leaf_best_split_info_device_;
+    }
+    leaf_mirror_written_ = leaf_mirror != nullptr;
     dim3 used_grid_dim(2, num_pairs);
     // a few hundred used tasks per leaf: 256 threads fold about two each (measured 10 us vs 14 us at 1024)
     constexpr int kSyncUsedTasksThreads = 256;
@@ -6108,7 +6142,8 @@ void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
       pair_descs, cuda_leaf_best_split_info_.RawData(), cuda_split_find_tasks_.RawData(), \
       compact_tasks ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr, \
       used_list ? cuda_used_task_indices_.RawDataReadOnly() : nullptr, used_list ? num_used_tasks_ : num_tasks_, \
-      cuda_best_split_info_.RawData(), num_tasks_, min_data_in_leaf_, min_sum_hessian_in_leaf_, gate_on_desc_counts
+      cuda_best_split_info_.RawData(), num_tasks_, min_data_in_leaf_, min_sum_hessian_in_leaf_, gate_on_desc_counts, \
+      leaf_mirror
 #if !defined(__HIP_PLATFORM_AMD__)
     const bool sync_copy_batched = FalcataPlan::Get().sync_copy_batched;
 #else
@@ -6661,6 +6696,23 @@ void CUDABestSplitFinder::SyncAllLeafBestSplitsToHost(const int num_leaves, std:
     CopyFromCUDADeviceToHost<CUDASplitInfo>(pinned_leaf_best_split_info_, cuda_leaf_best_split_info_.RawDataReadOnly(),
       static_cast<size_t>(num_leaves), __FILE__, __LINE__);
   }
+  ReadPrefetchedLeafBestSplits(num_leaves, out);
+}
+
+void CUDABestSplitFinder::SyncLevelLeafBestSplitsToHost(const int num_leaves, const bool staging_coherent,
+                                                        std::vector<CUDASplitInfo>* out) {
+  const bool mirrored = leaf_mirror_written_;
+  leaf_mirror_requested_ = false;
+  leaf_mirror_written_ = false;
+  if (!mirrored || !staging_coherent) {
+    // the full copy also overwrites the entries the sync kernel mirrored, with the same bytes
+    SyncAllLeafBestSplitsToHost(num_leaves, out);
+    return;
+  }
+  // cuda_plan key readback_fused: the staging already holds every leaf's entry; one device synchronize covers the
+  // sync kernel's mapped stores and every stream the default-stream copy would have waited for
+  CHECK_GE(pinned_leaf_best_split_info_size_, static_cast<size_t>(num_leaves));
+  SynchronizeCUDADevice(__FILE__, __LINE__);
   ReadPrefetchedLeafBestSplits(num_leaves, out);
 }
 
