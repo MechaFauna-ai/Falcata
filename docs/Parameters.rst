@@ -1461,7 +1461,7 @@ GPU Parameters
 
    -  in distributed learning application, each machine can use different number of GPUs
 
--  ``cuda_precision`` :raw-html:`<a id="cuda_precision" title="Permalink to this parameter" href="#cuda_precision">&#x1F517;&#xFE0E;</a>`, default = ``auto``, type = string
+-  ``cuda_precision`` :raw-html:`<a id="cuda_precision" title="Permalink to this parameter" href="#cuda_precision">&#x1F517;&#xFE0E;</a>`, default = ``fp64``, type = string
 
    -  floating-point precision of CUDA histogram accumulation and split-gain math for non-quantized training (Falcata)
 
@@ -1471,7 +1471,7 @@ GPU Parameters
 
    -  ``fp32``: single-precision histogram storage and gain math: less histogram bandwidth and cheaper arithmetic, but predictions and validation quality can change; results are non-deterministic across runs
 
-   -  validate the chosen precision on your workload; set ``cuda_precision=fp64`` explicitly to use the double-precision reference mode
+   -  the default is ``fp64``; opting into ``auto`` or ``fp32`` can change predictions and validation quality, so validate the chosen precision on your workload
 
    -  a live CUDA learner cannot change its resolved precision or ``gpu_use_dp`` histogram layout through ``Booster.reset_parameter``; create a new booster for another precision
 

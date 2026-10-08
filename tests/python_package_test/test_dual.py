@@ -1337,7 +1337,7 @@ def test_cuda_explicit_default_reproduces_plain_quant(name, params):
     model bit-for-bit.
 
     Guards that cuda_precision=fp32 / quant_mode=fixedpoint are opt-IN for
-    quantized training: the defaults (cuda_precision=auto resolving to fp64;
+    quantized training: the defaults (cuda_precision=fp64;
     auto->stochastic under use_quantized_grad=True; auto bins=4) must yield the
     identical model whether stated or implied. A divergence would mean the
     default state silently activates the alternate path.
@@ -1348,27 +1348,32 @@ def test_cuda_explicit_default_reproduces_plain_quant(name, params):
 
 
 _PRECISION_CASES = [
-    ("noquant-default", {"quant_mode": "none"}, "fp32"),
+    ("noquant-default", {"quant_mode": "none"}, "fp64"),
     ("noquant-explicit-fp64", {"quant_mode": "none", "cuda_precision": "fp64"}, "fp64"),
     ("noquant-explicit-fp32", {"quant_mode": "none", "cuda_precision": "fp32"}, "fp32"),
     ("noquant-explicit-auto", {"quant_mode": "none", "cuda_precision": "auto"}, "fp32"),
-    ("noquant-gpu_use_dp", {"quant_mode": "none", "gpu_use_dp": True}, "fp64"),
+    ("noquant-gpu_use_dp", {"quant_mode": "none", "gpu_use_dp": True, "cuda_precision": "auto"}, "fp64"),
     ("noquant-gpu_use_dp-explicit-fp32", {"quant_mode": "none", "gpu_use_dp": True, "cuda_precision": "fp32"}, "fp32"),
-    ("noquant-deterministic", {"quant_mode": "none", "deterministic": True}, "fp64"),
-    ("stochastic", {"quant_mode": "stochastic"}, "fp64"),
-    ("fixedpoint", {"quant_mode": "fixedpoint"}, "fp64"),
+    ("noquant-deterministic", {"quant_mode": "none", "deterministic": True, "cuda_precision": "auto"}, "fp64"),
+    ("stochastic", {"quant_mode": "stochastic", "cuda_precision": "auto"}, "fp64"),
+    ("fixedpoint", {"quant_mode": "fixedpoint", "cuda_precision": "auto"}, "fp64"),
     ("deterministic-maps-to-fixedpoint", {"deterministic": True}, "fp64"),
-    ("deterministic-auto-maps-to-fixedpoint", {"deterministic": True, "quant_mode": "auto"}, "fp64"),
+    (
+        "deterministic-auto-maps-to-fixedpoint",
+        {"deterministic": True, "quant_mode": "auto", "cuda_precision": "auto"},
+        "fp64",
+    ),
     ("quant-explicit-fp32", {"quant_mode": "stochastic", "cuda_precision": "fp32"}, "fp32"),
-    ("cpu", {"quant_mode": "none", "device_type": "cpu"}, "fp64"),
+    ("cpu", {"quant_mode": "none", "device_type": "cpu", "cuda_precision": "auto"}, "fp64"),
 ]
 
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize(("name", "params", "expected"), _PRECISION_CASES, ids=[c[0] for c in _PRECISION_CASES])
 def test_cuda_precision_auto_resolution(name, params, expected):
-    """cuda_precision=auto (the default) is fp32 for non-quantized CUDA training
-    and fp64 everywhere else; an explicit value is kept as given.
+    """The default is fp64. Explicit cuda_precision=auto selects fp32 for
+    eligible non-quantized CUDA training and fp64 otherwise; explicit values
+    are kept as given.
 
     The resolved value is what the trained model records in its parameters.
     deterministic=true without quant_mode maps to fixedpoint, and the
@@ -1431,7 +1436,14 @@ def test_cuda_rejected_mode_reset_is_transactional(initial_params, reset_params,
     work, as do explicit precision and automatic precision no-ops.
     """
     X, y = _make_regression_for_parity(n=300, seed=5)
-    params = {"objective": "regression", "device_type": "cuda", "verbose": -1, "num_leaves": 7, **initial_params}
+    params = {
+        "objective": "regression",
+        "device_type": "cuda",
+        "verbose": -1,
+        "num_leaves": 7,
+        "cuda_precision": "auto",
+        **initial_params,
+    }
     bst = lgb.train(params, lgb.Dataset(X, label=y), num_boost_round=1, keep_training_booster=True)
     # Ordinary resets must retain the intent behind automatic bin counts even
     # when the live learner raised the default to suit the dataset.

@@ -477,11 +477,11 @@ those measured cells: epsilon-deep −36%, year −18%, covtype −16%, fraud-de
 historical measurements for that comparison, rather than a quality guarantee
 for other training configurations or boosting budgets.
 
-`cuda_precision=auto`, the default, resolves to `fp32` for
+The default is `cuda_precision=fp64`. Opting into `cuda_precision=auto` resolves to `fp32` for
 `quant_mode=none` on CUDA. It resolves to `fp64` where fp32 would contradict
 another request: `gpu_use_dp=true` (double-precision histograms),
 `deterministic=true` with unquantized training and vector-leaf
-multi-target trees (fp64 only). An explicit `cuda_precision=fp64` keeps the
+multi-target trees (fp64 only). `cuda_precision=fp64` keeps the
 fp64 reference mode, whose deterministic-construct paths choose the CPU
 learner's splits. Quantized modes resolve `auto` to `fp64` and are untouched:
 their histograms are integer sums. fp32 changes predictions and can change
@@ -865,8 +865,8 @@ generator) added four `cuda_plan` keys to that kernel, all default on and bit-id
 
 ## 7d. The non-quantized finder and fix after CPU bit-parity
 
-`quant_mode=none` finds splits with one 256-thread block per (feature, leaf). Its default precision is fp32 (§6);
-the fp64 reference path uses fp64 histograms. The 1.0.4
+`quant_mode=none` finds splits with one 256-thread block per (feature, leaf). Its default precision is fp64 (§6);
+`cuda_precision=auto` can opt into fp32 where supported. The 1.0.4
 CPU-bit-parity merge (`d53aa45c`) made two of its folds CPU-order sequential: the finder's gradient and hessian
 threshold prefixes, and FixHistogram's sum of the non-most-frequent bins. Each is a dependent chain of up to 255
 fp64 adds in one or two lanes while the rest of the block waits, and on the RTX 5090 fp64 runs at 1/64 of fp32 with

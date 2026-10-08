@@ -1204,11 +1204,11 @@ struct Config {
   // desc = ``auto``: ``fp32`` for non-quantized training (``quant_mode=none``) on ``device_type=cuda``, ``fp64`` otherwise; non-quantized training also stays ``fp64`` under ``gpu_use_dp=true``, under ``deterministic=true`` and for vector-leaf multi-target trees (which need fp64)
   // desc = ``fp64``: double-precision histogram accumulation and gain math (the reference mode)
   // desc = ``fp32``: single-precision histogram storage and gain math: less histogram bandwidth and cheaper arithmetic, but predictions and validation quality can change; results are non-deterministic across runs
-  // desc = validate the chosen precision on your workload; set ``cuda_precision=fp64`` explicitly to use the double-precision reference mode
+  // desc = the default is ``fp64``; opting into ``auto`` or ``fp32`` can change predictions and validation quality, so validate the chosen precision on your workload
   // desc = a live CUDA learner cannot change its resolved precision or ``gpu_use_dp`` histogram layout through ``Booster.reset_parameter``; create a new booster for another precision
   // desc = quantized training (``quant_mode=stochastic`` or ``fixedpoint``) resolves ``auto`` to ``fp64``: its histograms are integer sums
   // desc = **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
-  std::string cuda_precision = "auto";
+  std::string cuda_precision = "fp64";
 
   // desc = CUDA execution-plan override string (Falcata)
   // desc = ``auto`` resolves every shape-conditional kernel choice from the data/params via the built-in planner; the resolved plan is logged at startup
