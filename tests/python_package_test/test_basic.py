@@ -1461,6 +1461,34 @@ def test_fil_cache_invalidated_on_model_change(fil_cuda_booster):
     np.testing.assert_allclose(changed, changed_cpu, rtol=1e-4, atol=1e-6)
 
 
+def test_fil_host_input_is_scored_in_slabs(fil_cuda_booster, monkeypatch):
+    """FIL scores a host matrix slab by slab, and the slabs agree with the engine.
+
+    FIL addresses a host input with 32-bit cell offsets, so a matrix of more
+    than 2**32 cells is scored wrongly past that point (1.29M x 3555 rows:
+    every row from 2**32 // 3555 on came back wrong, silently). The slab size
+    is forced down here so a 1000-row input takes the multi-slab path,
+    including a ragged last slab, and the result is compared with the engine
+    predictor and with the unslabbed FIL result.
+    """
+    booster, X = fil_cuda_booster
+    booster._invalidate_fil_cache()
+    whole = booster.predict(X)
+    if not _fil_was_used(booster):
+        pytest.skip("FIL could not serve this model on this machine")
+    monkeypatch.setattr(lgb.basic, "_FIL_HOST_SLAB_ELEMENTS", 37 * X.shape[1])
+    slabbed = booster.predict(X)
+    raw_slabbed = booster.predict(X, raw_score=True)
+    np.testing.assert_array_equal(slabbed, whole)
+    np.testing.assert_allclose(slabbed, booster.predict(X, use_fil=False), rtol=1e-4, atol=1e-6)
+    np.testing.assert_allclose(raw_slabbed, booster.predict(X, raw_score=True, use_fil=False), rtol=1e-4, atol=1e-5)
+    # an int8 host input is widened per slab, never as a whole copy
+    slabbed_int = booster.predict((X * 100).astype(np.int8))
+    np.testing.assert_allclose(
+        slabbed_int, booster.predict((X * 100).astype(np.int8), use_fil=False), rtol=1e-4, atol=1e-6
+    )
+
+
 def test_fil_leaf_and_contrib_stay_on_cpu(fil_cuda_booster):
     booster, X = fil_cuda_booster
     booster._invalidate_fil_cache()
