@@ -3150,6 +3150,9 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
   cudaEventDestroy(fork_event);
   cudaEventDestroy(apply_event);
   cudaEventDestroy(join_event);
+  // The shortest collected body is tree split, gen-bit, aggregate, fused
+  // apply, atomic construct, fused fix/subtract, find and one sync: eight
+  // nodes. Controllers are captured separately, not in the update-node list.
   if (end_err != cudaSuccess || !capture_ok ||
       nodes.size() != roles.size() || roles.size() != role_static_x.size() ||
       nodes_per_level > static_cast<size_t>(kHybridGraphMaxNodes) || nodes_per_level < 8) {
