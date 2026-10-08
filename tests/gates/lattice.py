@@ -623,6 +623,33 @@ def build_cells():
             {**deep, "cuda_plan": f"auto,{key}:off"},
             equal_to="missing-mfb0-dense/quant-deep",
         )
+    # --- the generic warp split finder on mixed and wide scans ------------------------------------------------ #
+    # warp_find_mid_ppl runs a task of 33..256 scan positions at ceil(positions / 32) per lane instead of 8;
+    # find_prune_fp32 prunes from fp32 bounds of the integer prefix (one exact verify per lane, an exact screen, a
+    # per-lane work list); find_compact_survivors hands the warp's surviving positions out 32 at a time;
+    # find_select_int reduces the best split in integer compares of the gain bits (also on the one-position-per-lane
+    # path: fewbin's 12-bin tasks); find_pack_narrow (default off) runs tasks of at most 8 positions four per warp
+    # inside the same launch. Each key off and all four off must train the base cell's model on mixwidth (every
+    # tier, packed units, NaN scans; its base fingerprints were recorded with master's build), dense (255-bin scans)
+    # and missing (NaN scans); on mixwidth, which has tasks of at most 8 positions, so must find_pack_narrow on.
+    finder_keys = ["warp_find_mid_ppl", "find_prune_fp32", "find_select_int", "find_compact_survivors"]
+    finder_flips = [
+        *[(key, f"{key}:off") for key in finder_keys],
+        ("find_pack_narrow_on", "find_pack_narrow:on"),
+        ("jit1-finder", ",".join(f"{k}:off" for k in finder_keys)),
+    ]
+    cell("mixwidth/quant", "mixwidth")
+    cell("mixwidth/quant-deep", "mixwidth", deep)
+    for suffix, base_params, base in [("", {}, "mixwidth/quant"), ("-deep", deep, "mixwidth/quant-deep")]:
+        for name, plan in finder_flips:
+            cell(
+                f"mixwidth/flip-{name}{suffix}", "mixwidth", {**base_params, "cuda_plan": f"auto,{plan}"}, equal_to=base
+            )
+    for name, plan in [f for f in finder_flips if f[0] != "find_pack_narrow_on"]:  # no task of <= 8 positions there
+        cell(f"dense/flip-{name}-deep", "dense", {**deep, "cuda_plan": f"auto,{plan}"}, equal_to="dense/quant-deep")
+        cell(f"missing/flip-{name}", "missing", {"cuda_plan": f"auto,{plan}"}, equal_to="missing/quant")
+    cell("fewbin/flip-find_select_int", "fewbin", {"cuda_plan": "auto,find_select_int:off"}, equal_to="fewbin/quant")
+
     # deep trees with a binding leaf budget (no tree-completing level), the bagged multiclass categorical cell
     # (level_apply_first keeps the record first for categorical splits; final_map_only is off with bagging) and the
     # quantized graph prefix
@@ -933,6 +960,23 @@ def build_profile(name):
         X = np.floor(rng.random((n, m)) * rng.integers(3, 7, size=m)).astype(np.float64)
         y = X[:, :40] @ rng.standard_normal(40) + rng.standard_normal(n)
         base.update({"max_bin": 15, "feature_fraction": 0.2})
+    elif name == "mixwidth":
+        # one dataset with every scan width of the generic (G=32) warp split finder: 2-bin indicators and 6-value
+        # columns (at most 8 scan positions: find_pack_narrow's packed units), columns of 40, 70, 100, 130, 160 and
+        # 200 values (warp_find_mid_ppl's tiers of 2, 3, 4, 5, 5 and 7 positions per lane) and continuous columns
+        # (255 bins, 8 per lane), NaN in 15% of the rows of four wide columns (the NaN scans). One task wider than 8
+        # positions makes the whole dataset take the G=32 launch, where find_prune_fp32, find_compact_survivors and
+        # find_select_int run.
+        cols = [rng.integers(0, 2, size=n) for _ in range(10)]
+        cols += [rng.integers(0, 6, size=n) for _ in range(6)]
+        cols += [rng.integers(0, k, size=n) for k in (40, 70, 100, 130, 160, 200)]
+        cols += [rng.standard_normal(n) for _ in range(4)]
+        X = np.column_stack(cols).astype(np.float64)
+        m = X.shape[1]
+        Z = (X - X.mean(axis=0)) / X.std(axis=0)
+        y = Z @ rng.standard_normal(m) + 0.5 * np.sin(2 * Z[:, 18]) + 0.3 * rng.standard_normal(n)
+        for j in (17, 19, 21, 23):
+            X[rng.random(n) < 0.15, j] = np.nan
     elif name == "graph":
         m = 20
         X = rng.standard_normal((n, m))

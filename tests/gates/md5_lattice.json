@@ -205,6 +205,16 @@
    "metric": 3.312701,
    "metric_name": "rmse"
   },
+  "mixwidth/quant": {
+   "md5": "1898521fa15757603e6b4179ffb66162",
+   "metric": 2.204867,
+   "metric_name": "rmse"
+  },
+  "mixwidth/quant-deep": {
+   "md5": "d639f255ca449d280e6c646ce44253dd",
+   "metric": 2.048681,
+   "metric_name": "rmse"
+  },
   "sampled-oddrows/quant": {
    "md5": "84f88a78959802d5f8d4b39f819e39d4",
    "metric": 39.23652,
