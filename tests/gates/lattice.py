@@ -244,8 +244,8 @@ def build_cells():
     cell("tinygrad/fixedpoint", "tinygrad", {"quant_mode": "fixedpoint"}, rounds=150)
 
     # --- nondeterministic tiers: validity + metric floor only --------------- #
-    # non-quant float-atomic path -- fp32 under the default cuda_precision=auto
-    # and stated explicitly, and fp64 -- exactly the paths md5 cannot cover.
+    # Non-quant float-atomic paths: default fp64 and explicit fp32/fp64.
+    # Their accumulation order is exactly what md5 cannot cover.
     fp64 = {"quant_mode": "none", "cuda_precision": "fp64"}
     cell(
         "dense/nonquant",
