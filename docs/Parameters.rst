@@ -1465,7 +1465,9 @@ GPU Parameters
 
    -  ``fp64``: double-precision histogram accumulation and gain math (the reference mode)
 
-   -  ``fp32``: single-precision histogram storage and gain math: less histogram bandwidth and a cheaper split search at equal quality on the benchmark datasets; results are non-deterministic across runs
+   -  ``fp32``: single-precision histogram storage and gain math: less histogram bandwidth and cheaper arithmetic, but predictions and validation quality can change; results are non-deterministic across runs
+
+   -  validate the chosen precision on your workload; set ``cuda_precision=fp64`` explicitly to use the double-precision reference mode
 
    -  quantized training (``quant_mode=stochastic`` or ``fixedpoint``) resolves ``auto`` to ``fp64``: its histograms are integer sums
 

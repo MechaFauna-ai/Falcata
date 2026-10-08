@@ -470,27 +470,32 @@ wrap.
 For NON-quantized training, storing global histograms as float pairs instead
 of double pairs halves their bandwidth, and fp32 gain math takes the split
 finder off the GPU's fp64 pipe (1/64 of the fp32 rate on the RTX 5090), where
-its prefix scans and gain divisions otherwise run. Measured per-tree wins at
-equal-or-better quality: epsilon-deep −36% time, year −18%, covtype −16%,
-fraud-deep −14%, higgs-deep −12%; numerai neutral (sampling-dominated).
+its prefix scans and gain divisions otherwise run. The earlier precision-mode
+comparison recorded per-tree time reductions at equal-or-better quality in
+those measured cells: epsilon-deep −36%, year −18%, covtype −16%, fraud-deep
+−14%, higgs-deep −12%; numerai was neutral (sampling-dominated). These are
+historical measurements for that comparison, rather than a quality guarantee
+for other training configurations or boosting budgets.
 
-That is why `cuda_precision=auto`, the default, resolves to `fp32` for
+`cuda_precision=auto`, the default, resolves to `fp32` for
 `quant_mode=none` on CUDA. It resolves to `fp64` where fp32 would contradict
 another request: `gpu_use_dp=true` (double-precision histograms),
 `deterministic=true` (the reproducible reference path) and vector-leaf
 multi-target trees (fp64 only). An explicit `cuda_precision=fp64` keeps the
 fp64 reference mode, whose deterministic-construct paths choose the CPU
 learner's splits. Quantized modes resolve `auto` to `fp64` and are untouched:
-their histograms are integer sums. The choice is quality-gated rather than
-bit-identical, hence a config parameter and not a plan key.
+their histograms are integer sums. fp32 changes predictions and can change
+validation quality, so validate the chosen precision on your workload and use
+explicit `cuda_precision=fp64` for the double-precision reference mode. The
+precision choice is a model parameter rather than a bit-identical plan key.
 
 A second, separately-measured mechanism: on DEEP trees the
 histogram pool halves from ~248MB (doesn't fit the 5090's 96MB L2) to
 ~124MB (mostly fits), so subtraction's parent-histogram re-reads start
 hitting cache. Isolated on covtype non-quant: fp32 gains **+26% deep** vs
 +1.7% shallow — the cache cliff, not bandwidth, dominates the deep win.
-On deep non-quantized configs it is the single highest-leverage switch,
-which is the other reason it is the default.
+This explains the speed benefit in that measured configuration; the quality
+tradeoff still needs validation on the intended workload.
 
 ## 7. Memory-layout micro-optimizations (each small, all free)
 
@@ -903,7 +908,7 @@ before the last change.
 On the default graph loop, trees whose histograms use the order-dependent atomic construct also use
 tree-shaped shuffle scans for the threshold prefixes. Atomic histogram sums already carry low-bit noise,
 and a CPU-order prefix cannot restore CPU's split choices from those sums. The parallel scan may choose a
-different bin on an equal-gain plateau; split quality, rather than bin identity, is the contract on this path.
+different bin on an equal-gain plateau; exact bin identity with CPU is not guaranteed on this path.
 The deterministic constructs (`graph_det:on`, the host level loop with `graph_loop:off`, and the classic
 per-leaf flow) retain CPU-order fp64 prefixes and CPU split parity. fp32 and quantized prefixes use parallel
 scans in either case.

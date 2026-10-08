@@ -89,8 +89,10 @@ Bin counts default to 4 and 64 respectively and can be overridden with
 ``quant_bins``. Both modes are bit-reproducible run to run;
 ``quant_mode=none`` trains on unquantized gradients; on CUDA its histograms
 and gains default to fp32 (``cuda_precision=auto``), which halves
-global-histogram bandwidth (quality-gated, not bit-identical), and
-``cuda_precision=fp64`` selects the double-precision reference mode.
+global-histogram storage, unless double precision is requested or required.
+Precision can change predictions and validation quality: validate the chosen
+precision on your workload. Explicit ``cuda_precision=fp64`` selects the
+double-precision reference mode.
 
 .. _The Execution Planner:
 

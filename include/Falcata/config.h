@@ -40,7 +40,7 @@ const int kDefaultNumLeaves = 31;
 
 // Gradient/hessian quantization mode (resolved from the ``quant_mode`` param).
 enum class QuantMode : int {
-  kNone = 0,        // full-precision fp64 accumulation
+  kNone = 0,        // unquantized gradients and hessians
   kStochastic = 1,  // Falcata-native quantized training (stochastic rounding)
   kFixedPoint = 2,  // deterministic fixed-point quant with gap-gated robust scale
 };
@@ -1201,7 +1201,8 @@ struct Config {
   // desc = floating-point precision of CUDA histogram accumulation and split-gain math for non-quantized training (Falcata)
   // desc = ``auto``: ``fp32`` for non-quantized training (``quant_mode=none``) on ``device_type=cuda``, ``fp64`` otherwise; non-quantized training also stays ``fp64`` under ``gpu_use_dp=true``, under ``deterministic=true`` and for vector-leaf multi-target trees (which need fp64)
   // desc = ``fp64``: double-precision histogram accumulation and gain math (the reference mode)
-  // desc = ``fp32``: single-precision histogram storage and gain math: less histogram bandwidth and a cheaper split search at equal quality on the benchmark datasets; results are non-deterministic across runs
+  // desc = ``fp32``: single-precision histogram storage and gain math: less histogram bandwidth and cheaper arithmetic, but predictions and validation quality can change; results are non-deterministic across runs
+  // desc = validate the chosen precision on your workload; set ``cuda_precision=fp64`` explicitly to use the double-precision reference mode
   // desc = quantized training (``quant_mode=stochastic`` or ``fixedpoint``) resolves ``auto`` to ``fp64``: its histograms are integer sums
   // desc = **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
   std::string cuda_precision = "auto";
