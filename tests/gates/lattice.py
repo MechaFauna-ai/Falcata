@@ -913,6 +913,62 @@ def build_cells():
                 equal_to=base,
             )
 
+    # Captured apply ports: deterministic fp64 pins arithmetic, while graph_quant
+    # exercises compact views and the quantized child structs under the same ports.
+    graph_keys = ("graph_apply_rows", "graph_apply_fused", "graph_skip_unsplittable")
+    graph_modes = {
+        "fp64det": {"quant_mode": "none", "cuda_precision": "fp64", "cuda_plan": "auto,graph_det:on"},
+        "stoch": {"quant_mode": "stochastic", "cuda_plan": "auto,graph_quant:on"},
+    }
+    for profile, mode in [
+        ("dense", "fp64det"),
+        ("missing", "fp64det"),
+        ("dense", "stoch"),
+        ("missing", "stoch"),
+        ("sampledwide", "stoch"),
+    ]:
+        params = {**graph_modes[mode], "min_data_in_leaf": 200}
+        base_id = f"{profile}/graph-ports-{mode}"
+        cell(base_id, profile, params)
+        for key in graph_keys:
+            cell(
+                f"{profile}/flip-{key}-{mode}",
+                profile,
+                {**params, "cuda_plan": params["cuda_plan"] + f",{key}:off"},
+                equal_to=base_id,
+            )
+        if (profile, mode) in [("dense", "fp64det"), ("sampledwide", "stoch")]:
+            for key in (
+                "apply_row_batch",
+                "apply_genbit_rows",
+                "apply_inner_rows",
+                "apply_struct_fused",
+                "gap_copy_fused",
+                "skip_unsplittable",
+            ):
+                cell(
+                    f"{profile}/flip-graph-legacy-{key}-{mode}",
+                    profile,
+                    {**params, "cuda_plan": params["cuda_plan"] + f",{key}:off"},
+                    equal_to=base_id,
+                )
+
+    # The first split has 3200 rows per child. 1599/1600 allow a second split;
+    # 1601 cannot, but is inside the rounding margin; 1602 takes the early skip.
+    for mode, params in graph_modes.items():
+        for min_data in (1599, 1600, 1601, 1602):
+            base = {**params, "min_data_in_leaf": min_data}
+            cid = f"graph-boundary/{mode}-min{min_data}"
+            cell(cid, "graph-boundary", base, rounds=8)
+            for key in ("graph_skip_unsplittable", "skip_unsplittable"):
+                cell(
+                    f"graph-boundary/flip-{key}-{mode}-min{min_data}",
+                    "graph-boundary",
+                    {**base, "cuda_plan": base["cuda_plan"] + f",{key}:off"},
+                    rounds=8,
+                    equal_to=cid,
+                )
+
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "duplicate cell ids"
     by_id = {c["id"]: c for c in cells}
@@ -1003,6 +1059,13 @@ def build_profile(name):
         y = Z @ rng.standard_normal(m) + 0.5 * np.sin(2 * Z[:, 18]) + 0.3 * rng.standard_normal(n)
         for j in (17, 19, 21, 23):
             X[rng.random(n) < 0.15, j] = np.nan
+    elif name == "graph-boundary":
+        # All four 1600-row groups appear evenly in the 6400-row train prefix.
+        # The two exact binary drivers make the min_data boundary predictable.
+        row = np.arange(n)
+        X = np.column_stack((row % 2, (row // 2) % 2, (row // 4) % 2)).astype(np.float64)
+        y = 4.0 * X[:, 0] + X[:, 1] + 0.125 * X[:, 2]
+        base["max_bin"] = 15
     elif name == "graph":
         m = 20
         X = rng.standard_normal((n, m))

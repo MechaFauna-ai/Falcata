@@ -941,6 +941,13 @@ window readers do not yet share the host `final_map_only` pending-partition prot
 there separately because preserving floating accumulation order requires a different implementation or an
 explicit numerical mode.
 
+The regression lattice adds 56 cells with 13 new fingerprint bases for these ports: each graph key and the
+corresponding host switches are ablated independently, including explicit deterministic fp64, missing values,
+compact quantized views, and child-count boundaries at `min_data_in_leaf` 1599–1602. All 56 pass with identical
+tree bytes across their plan flips; prior fingerprint entries are unchanged. Compact non-quantized views do
+not use the deterministic graph histogram path and are therefore covered by validity and numerical quality
+checks rather than new exact fingerprints.
+
 ## 8. GPU inference via NVIDIA FIL
 
 `Booster.predict()` on a CUDA-trained model routes through cuML's Forest

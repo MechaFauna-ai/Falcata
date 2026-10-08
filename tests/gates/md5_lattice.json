@@ -43,6 +43,16 @@
    "metric": 1.585247,
    "metric_name": "rmse"
   },
+  "dense/graph-ports-fp64det": {
+   "md5": "d6619c1839d570cfb7a547c508830831",
+   "metric": 2.222023,
+   "metric_name": "rmse"
+  },
+  "dense/graph-ports-stoch": {
+   "md5": "38f87ca925850fc77a6d1f002e79f03c",
+   "metric": 2.136941,
+   "metric_name": "rmse"
+  },
   "dense/nonquant": {
    "metric": 1.594167,
    "metric_name": "rmse"
@@ -95,6 +105,46 @@
   "fewbin/quant": {
    "md5": "5dc7f02bd797d3c1f7d11aad5c338028",
    "metric": 4.002929,
+   "metric_name": "rmse"
+  },
+  "graph-boundary/fp64det-min1599": {
+   "md5": "cf246c3df80078b3ef7f835525d7e2c7",
+   "metric": 0.889629,
+   "metric_name": "rmse"
+  },
+  "graph-boundary/fp64det-min1600": {
+   "md5": "cf246c3df80078b3ef7f835525d7e2c7",
+   "metric": 0.889629,
+   "metric_name": "rmse"
+  },
+  "graph-boundary/fp64det-min1601": {
+   "md5": "3f562c0d9f63c9177d1ad323c0fb48d1",
+   "metric": 0.997554,
+   "metric_name": "rmse"
+  },
+  "graph-boundary/fp64det-min1602": {
+   "md5": "3f562c0d9f63c9177d1ad323c0fb48d1",
+   "metric": 0.997554,
+   "metric_name": "rmse"
+  },
+  "graph-boundary/stoch-min1599": {
+   "md5": "24ddd0b543a388f210103242dd4e1d18",
+   "metric": 0.890046,
+   "metric_name": "rmse"
+  },
+  "graph-boundary/stoch-min1600": {
+   "md5": "24ddd0b543a388f210103242dd4e1d18",
+   "metric": 0.890046,
+   "metric_name": "rmse"
+  },
+  "graph-boundary/stoch-min1601": {
+   "md5": "c180545d564c24285dc282c59d595c8c",
+   "metric": 0.997389,
+   "metric_name": "rmse"
+  },
+  "graph-boundary/stoch-min1602": {
+   "md5": "c180545d564c24285dc282c59d595c8c",
+   "metric": 0.997389,
    "metric_name": "rmse"
   },
   "graph/flipbase-graph_loop": {
@@ -190,6 +240,16 @@
    "metric": 4.038961,
    "metric_name": "rmse"
   },
+  "missing/graph-ports-fp64det": {
+   "md5": "1855f2952445497632d121918f445da4",
+   "metric": 3.473662,
+   "metric_name": "rmse"
+  },
+  "missing/graph-ports-stoch": {
+   "md5": "4711ecf618551648f6e8224ab7ffcf92",
+   "metric": 3.412311,
+   "metric_name": "rmse"
+  },
   "missing/nonquant-det": {
    "md5": "43993ddcfadc45fe226264df6d56e7ad",
    "metric": 3.062735,
@@ -258,6 +318,11 @@
   "sampledwide-mixbins/quant-ff15": {
    "md5": "1666db7ece178048f5226b7fb9e8b7fc",
    "metric": 6.51153,
+   "metric_name": "rmse"
+  },
+  "sampledwide/graph-ports-stoch": {
+   "md5": "ee256820893c7954d349d5bece996e59",
+   "metric": 8.402441,
    "metric_name": "rmse"
   },
   "sampledwide/quant": {
