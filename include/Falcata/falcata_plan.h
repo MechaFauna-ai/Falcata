@@ -581,6 +581,9 @@ struct FalcataPlan {
   // of such a leaf passes, the finder would report no split, and its histogram has no other reader. Off with forced
   // splits. Bit-identical.
   bool skip_unsplittable = true;    // key: skip_unsplittable
+  // Apply the conservative skip_unsplittable count bound after the graph's
+  // aggregate produces the actual child sizes, before histogram and search.
+  bool graph_skip_unsplittable = true;  // key: graph_skip_unsplittable
   // the leaf-wise tail's first best-of-all-leaves search (two kernels, two device syncs and a readback at every
   // tree end) is not run when the level prefix ended on a final level that split every candidate leaf with the
   // leaf budget not binding and every child at max_depth: the children's cached candidates were invalidated and
@@ -833,6 +836,7 @@ struct FalcataPlan {
     if (key == "minmax_warp") return &minmax_warp;
     if (key == "colmajor_split") return &colmajor_split;
     if (key == "skip_unsplittable") return &skip_unsplittable;
+    if (key == "graph_skip_unsplittable") return &graph_skip_unsplittable;
     if (key == "skip_empty_tail") return &skip_empty_tail;
     if (key == "gap_copy_once") return &gap_copy_once;
     if (key == "leaf_map_small_blocks") return &leaf_map_small_blocks;

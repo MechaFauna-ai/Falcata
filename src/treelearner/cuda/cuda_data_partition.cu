@@ -1673,6 +1673,21 @@ __global__ void HybridAggregateBlockOffsetBatchKernel(
     // actual smaller-child size of this split, consumed by the speculative
     // batched construct kernel's device row-grouping (single-sync flow)
     level_smaller_counts[blockIdx.x] = left_count < right_count ? left_count : right_count;
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+    if (gstate != nullptr && gstate->unsplittable_min_data > 0) {
+      // Pair roles are decided by the struct kernel below. Use the same count
+      // comparison here, preserving the descriptor's max-depth validity bits.
+      const int64_t smaller = min(left_count, right_count);
+      const int64_t larger = max(left_count, right_count);
+      const int64_t limit = 2 * static_cast<int64_t>(gstate->unsplittable_min_data);
+      const bool smaller_unsplittable = smaller + 2 + (smaller >> 20) < limit;
+      const bool larger_unsplittable = larger + 2 + (larger >> 20) < limit;
+      CUDAHybridPairDescriptor& pair = gstate->pair_descs[blockIdx.x];
+      if (smaller_unsplittable) pair.smaller_valid = 0;
+      if (larger_unsplittable) pair.larger_valid = 0;
+      if (smaller_unsplittable && larger_unsplittable) pair.construct_valid = 0;
+    }
+#endif
   }
 }
 

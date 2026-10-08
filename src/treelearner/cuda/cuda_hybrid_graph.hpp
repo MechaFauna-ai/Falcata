@@ -178,6 +178,9 @@ struct CUDAHybridGraphLoopState {
   // ---- static config (host-written once at graph build) ----
   int max_depth;
   int num_leaves_budget;
+  /*! \brief count-only leaf pruning after aggregate (0 disables it); uses the
+   *  host skip_unsplittable bound including its fp32 rounding margin */
+  data_size_t unsplittable_min_data;
   // construct grid-y formula constants (see HybridBatchedConstructGridDimY)
   int construct_grid_x;
   int construct_block_dim_y;

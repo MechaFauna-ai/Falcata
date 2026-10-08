@@ -3008,6 +3008,9 @@ bool CUDASingleGPUTreeLearner::SetupHybridGraphStatics() {
   std::memset(&st, 0, sizeof(st));
   st.max_depth = config_->max_depth;
   st.num_leaves_budget = config_->num_leaves;
+  st.unsplittable_min_data = FalcataPlan::Get().graph_skip_unsplittable && FalcataPlan::Get().skip_unsplittable &&
+    config_->forcedsplits_filename.empty() && (forced_split_json_ == nullptr || forced_split_json_->is_null()) ?
+    config_->min_data_in_leaf : 0;
   // construct grid x / block dims are filled per instance at build time (the
   // compact view's block shape follows the per-tree sampled column count and
   // is part of the graph key)
