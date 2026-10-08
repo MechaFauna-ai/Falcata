@@ -1,7 +1,9 @@
 """Resumable benchmark matrix runner.
 
-Executes bench.py cells sequentially (each run gets the GPU exclusively),
-skipping cells already recorded in ``<workspace>/results/runs.jsonl``, so it
+Executes bench.py sequentially, one process per (library, dataset) that runs
+every pending cell of the pair -- the data is mapped once and each regime's
+Dataset is constructed once for all of its kinds; each run still has the GPU
+to itself -- skipping cells already recorded in ``<workspace>/results/runs.jsonl``, so it
 is safe to interrupt and relaunch at any time. Datasets whose preprocessed
 cache is missing are skipped with a note (run datasets.py first).
 
@@ -80,6 +82,14 @@ def load_done(results):
     return done
 
 
+def summarize(statuses):
+    """'4 ok, 1 insane' style count of a group's cell statuses."""
+    counts = {}
+    for st in statuses:
+        counts[st] = counts.get(st, 0) + 1
+    return ", ".join(f"{n} {st}" for st, n in counts.items())
+
+
 def record(results, status, lib, ds, reg, kind, **extra):
     with open(results, "a") as f:
         f.write(
@@ -140,14 +150,19 @@ def main():
         return
 
     os.makedirs(os.path.dirname(results), exist_ok=True)
-    for i, (lib, ds, reg, kind) in enumerate(todo):
+    # one bench.py process per (library, dataset): the data is mapped once and
+    # each regime's Dataset is constructed once for all of its kinds, instead of
+    # once per cell. Cells keep their own records, so a crash mid-group loses
+    # nothing already recorded and a relaunch resumes at the first missing cell.
+    by_pair = {}
+    for lib, ds, reg, kind in todo:
+        by_pair.setdefault((lib, ds), []).append((reg, kind))
+    groups = list(by_pair.items())
+    n_run = 0
+    for (lib, ds), group_cells in groups:
         done = load_done(results)
-        if (lib, ds, reg, kind) in done:
-            continue
-        # if the warmup for this combo failed, don't waste time on the rest
-        if kind != "warmup" and done.get((lib, ds, reg, "warmup")) == "failed":
-            print(f"SKIP {lib}/{ds}/{reg}/{kind} (warmup failed)", flush=True)
-            record(results, "skipped_warmup_failed", lib, ds, reg, kind)
+        pending = [(reg, kind) for reg, kind in group_cells if (lib, ds, reg, kind) not in done]
+        if not pending:
             continue
         cmd = [
             venv_python(lib),
@@ -156,46 +171,62 @@ def main():
             lib,
             "--dataset",
             ds,
-            "--regime",
-            reg,
-            "--kind",
-            kind,
+            "--cells",
+            ",".join(f"{reg}:{kind}" for reg, kind in pending),
             "--out",
             results,
         ]
+        timeout = sum(REGIME_TIMEOUT_S.get(reg, TIMEOUT_S.get(ds, 7200)) for reg, _ in pending)
         t0 = time.time()
-        print(f"[{i + 1}/{len(todo)}] RUN {lib}/{ds}/{reg}/{kind}", flush=True)
+        print(
+            f"[{n_run + 1}-{n_run + len(pending)}/{len(todo)}] RUN {lib}/{ds} "
+            f"({len(pending)} cells: {' '.join(f'{r}:{k}' for r, k in pending)})",
+            flush=True,
+        )
+        n_run += len(pending)
         try:
+            # the child prints one JSON line per finished cell straight to this log
             p = subprocess.run(
                 cmd,
                 check=False,
-                timeout=REGIME_TIMEOUT_S.get(reg, TIMEOUT_S.get(ds, 7200)),
+                timeout=timeout,
                 env={
                     **os.environ,
                     "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES", "0"),
                 },
-                capture_output=True,
+                stderr=subprocess.PIPE,
                 text=True,
             )
             status = "ok" if p.returncode == 0 else "failed"
-            if p.returncode != 0 and (lib, ds, reg, kind) not in load_done(results):
-                # the child died before writing its record (e.g. segfault);
-                # record the failure so resume doesn't retry it forever
-                record(
-                    results,
-                    "failed",
-                    lib,
-                    ds,
-                    reg,
-                    kind,
-                    error=f"exit code {p.returncode}: {p.stderr[-500:]}",
-                )
-            if p.returncode != 0:
-                sys.stderr.write(p.stdout[-2000:] + p.stderr[-2000:] + "\n")
-        except subprocess.TimeoutExpired:
+            stderr_tail = p.stderr[-2000:]
+        except subprocess.TimeoutExpired as e:
             status = "timeout"
-            record(results, "timeout", lib, ds, reg, kind)
-        print(f"    -> {status} ({time.time() - t0:.0f}s)", flush=True)
+            stderr_tail = (e.stderr or b"")[-2000:] if isinstance(e.stderr, bytes) else str(e.stderr or "")[-2000:]
+        done = load_done(results)
+        missing = [(reg, kind) for reg, kind in pending if (lib, ds, reg, kind) not in done]
+        if missing:
+            # the child died (segfault, OOM kill, timeout) on the first missing
+            # cell before writing its record; record that one so a resume does
+            # not retry it forever, and leave the rest for the relaunch
+            reg, kind = missing[0]
+            record(
+                results,
+                status if status == "timeout" else "failed",
+                lib,
+                ds,
+                reg,
+                kind,
+                error=f"process {status}: {stderr_tail[-500:]}",
+            )
+            print(
+                f"    cell {reg}:{kind} left no record ({status}); {len(missing) - 1} cells of this group remain for a relaunch",
+                flush=True,
+            )
+        if status != "ok" and stderr_tail.strip():
+            sys.stderr.write(stderr_tail + "\n")
+        done = load_done(results)
+        statuses = [done.get((lib, ds, reg, kind), "missing") for reg, kind in pending]
+        print(f"    -> {status} ({time.time() - t0:.0f}s): {summarize(statuses)}", flush=True)
 
 
 if __name__ == "__main__":
