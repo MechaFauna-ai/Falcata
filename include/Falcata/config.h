@@ -1227,6 +1227,7 @@ struct Config {
   // before ResolveFalcataParams resolved it to a concrete default, so the
   // CUDA learner can distinguish "clamp the auto default to the dataset-safe
   // ceiling" from "the user explicitly asked for an unsafe value" (Fatal).
+  // Partial parameter maps preserve this intent until the bins are set again.
   //
   // MUST live outside the #ifndef __NVCC__ region above. Anything declared in
   // there is invisible to nvcc, so Config would have one layout in .cu objects

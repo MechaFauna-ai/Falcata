@@ -1406,6 +1406,7 @@ def test_cuda_precision_auto_resolution(name, params, expected):
         ({"quant_mode": "stochastic", "quant_bins": 4}, {"quant_mode": "fixedpoint"}, "quant_mode"),
         ({"quant_mode": "stochastic", "quant_bins": 4}, {"quant_bins": 8}, "quant_bins"),
         ({"quant_mode": "stochastic", "quant_bins": 4}, {"quant_bins": 0}, "quant_bins"),
+        ({"quant_mode": "stochastic"}, {"quant_bins": 4}, "quant_bins"),
         ({"quant_mode": "stochastic", "quant_bins": 4}, {"stochastic_rounding": False}, "stochastic_rounding"),
         ({"quant_mode": "none"}, {"device_type": "cpu"}, "device_type"),
     ],
@@ -1417,6 +1418,7 @@ def test_cuda_precision_auto_resolution(name, params, expected):
         "quant_scheme",
         "bins",
         "auto_bins",
+        "auto_to_explicit_bins",
         "rounding",
         "backend",
     ],
@@ -1431,6 +1433,10 @@ def test_cuda_rejected_mode_reset_is_transactional(initial_params, reset_params,
     X, y = _make_regression_for_parity(n=300, seed=5)
     params = {"objective": "regression", "device_type": "cuda", "verbose": -1, "num_leaves": 7, **initial_params}
     bst = lgb.train(params, lgb.Dataset(X, label=y), num_boost_round=1, keep_training_booster=True)
+    # Ordinary resets must retain the intent behind automatic bin counts even
+    # when the live learner raised the default to suit the dataset.
+    for learning_rate in (0.075, 0.05):
+        bst.reset_parameter({"learning_rate": learning_rate})
     model_before = bst.model_to_string()
     params_before = dict(bst.params)
     with pytest.raises(lgb.basic.FalcataError, match=f"Cannot change {rejected_parameter}"):

@@ -343,6 +343,13 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
 
   GetMembersFromString(params);
 
+  if (params.count("num_grad_quant_bins") > 0 || num_grad_quant_bins == 0) {
+    // Resolving the auto sentinel replaces it with a numeric default. Keep
+    // the original intent across partial maps so a live learner can reject
+    // an auto-to-explicit bin change even after ordinary parameter resets.
+    quant_bins_from_auto = (num_grad_quant_bins == 0);
+  }
+
   if (params.count("quant_mode") > 0) {
     std::string mode = Common::Trim(quant_mode);
     std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c){ return std::tolower(c); });
@@ -421,7 +428,6 @@ void Config::ResolveFalcataParams() {
   // quant_bins: 0 means auto (the Falcata-historical 4 for stochastic; 64 for
   // fixedpoint, whose deterministic rounding needs the finer scale). The int16
   // discretized gradient holds +/-(bins/2), so cap well inside that range.
-  quant_bins_from_auto = (num_grad_quant_bins == 0);
   if (num_grad_quant_bins == 0) {
     num_grad_quant_bins = (mode == std::string("fixedpoint")) ? 64 : 4;
   } else if (num_grad_quant_bins < 2 || num_grad_quant_bins > 65534) {
