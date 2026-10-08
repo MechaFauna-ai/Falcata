@@ -737,6 +737,47 @@ is off under `auto`; with `row_batch:off` it engages for quantized runs of
 unsupported shapes (graph capture, speculative levels, masked trees, wide
 partitions) fall back to AOT automatically.
 
+## 7c. The generic warp split finder on mixed-bin and wide-bin data
+
+`warp_find` (§7) splits a dataset's quantized levels one warp per (feature, leaf). Where every task fits 8 scan
+positions (Numerai's 5- and 6-bin columns) the 4- and 8-lane kernels run; one task wider than that sends the whole
+dataset to the generic 32-lane kernel: covtype's 2-bin and 255-bin columns, higgs- and year-like continuous floats,
+an epsilon-like 40-bin shape. There the cost was fp64 work per scan position, at 1/64 rate on the RTX 5090:
+covtype's find kernel was 41% of its round, higgs' 16% (nsys).
+
+An agentic search scored across eight datasets and training regimes (`jit1`: four named, four drawn from a
+generator) added four `cuda_plan` keys to that kernel, all default on and bit-identical (identity keys in
+`ablation.py`, flip cells in the lattice):
+
+- **`warp_find_mid_ppl`:** a task runs ceil(positions / 32) positions per lane (1 to 8) instead of 8 for every task
+  over 32 positions.
+- **`find_prune_fp32`:** the prune bounds come from the prefix's int32 halves in fp32; each lane offers one lower
+  bound, verified exactly before it prunes; an exact-safe screen drops positions that fail a gate by a margin, an
+  empty bin is skipped (it cannot beat its neighbour), and the exact fp64 gains run over a per-lane work list of
+  the survivors.
+- **`find_select_int`:** the cross-lane best-split reductions compare the gains' bit patterns as integers, and the
+  winner's lane and its partner compute the two children side by side.
+- **`find_compact_survivors`:** every lane's survivors go into one per-warp shared list (9 KB of static shared
+  memory per 128-thread block) and the warp takes them 32 at a time: usually one round of the exact gain instead of
+  as many as its busiest lane holds.
+- `find_pack_narrow` (default off) runs tasks of at most 8 positions four per warp inside the same launch:
+  covtype's deep-level find launches shed 23%, but those levels are bound by host issue, so the round did not move.
+
+| (default plan, tuner on, rounds 100.. timed; per round) | master (3d72b5c5) | this branch | |
+|---|---|---|---|
+| covtype deep (fixedpoint, 581k × 54, 1000 rounds, 3 pairs) | 4.94 ms | 4.27 ms | 1.157x |
+| higgs-like deep (stochastic, 4M × 28) | 2.89 ms | 2.63 ms | 1.094x |
+| epsilon-like (388k × 2,321, 40 values, 255 leaves) | 9.41 ms | 6.44 ms | 1.459x |
+| year-like (fixedpoint, 3.4M × 93 floats) | 4.34 ms | 3.91 ms | 1.109x |
+| numerai53 benchmark split (30000 rounds timed from 200, 4 pairs) | 3.964 ms | 3.976 ms | 0.997x |
+
+- **The same model on every run**, with any one key off and with all four off.
+- **Per commit** (covtype, same job): `find_prune_fp32` is most of it (1.13x), the integer selection +1%, survivor
+  compaction +2.4%. On the 40-bin shape the PPL tiers alone are 1.27x, but on top of the work list they add 0.6%.
+- **Datasets whose tasks all fit 8 positions** (Numerai, the 4- and 6-bin generator shapes) never reach this
+  kernel and run at master's speed. The guard workloads: year deep 1.32x, missing deep 1.23x, covtype 1.20x, higgs
+  1.09x, numerai53-example 1.00x per round.
+
 ## 8. GPU inference via NVIDIA FIL
 
 `Booster.predict()` on a CUDA-trained model routes through cuML's Forest
