@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include "dense_bin.hpp"
@@ -22,6 +23,63 @@
 #include "sparse_bin.hpp"
 
 namespace Falcata {
+
+namespace {
+
+// below this many values std::stable_sort is as fast as the radix passes
+constexpr int kRadixSortMinValues = 512;
+
+// Sorts n NaN-free doubles ascending with an LSD radix sort over their
+// order-preserving 64-bit keys (positives with the sign bit set, negatives
+// with every bit flipped), one byte per pass, skipping the bytes all keys
+// share. Distinct bit patterns of NaN-free values never compare equal except
+// +0.0 and -0.0, so without zeros the ascending order is unique and this
+// writes exactly what std::stable_sort would. Returns false, leaving the
+// values untouched, when a zero of either sign is present.
+bool RadixSortNonZero(double* values, int n) {
+  std::vector<uint64_t> keys(n);
+  std::vector<uint64_t> buffer(n);
+  size_t count[8][256];
+  std::memset(count, 0, sizeof(count));
+  for (int i = 0; i < n; ++i) {
+    uint64_t bits;
+    std::memcpy(&bits, values + i, sizeof(bits));
+    if ((bits << 1) == 0) {
+      return false;
+    }
+    const uint64_t key = (bits >> 63) ? ~bits : (bits | (uint64_t{1} << 63));
+    keys[i] = key;
+    for (int pass = 0; pass < 8; ++pass) {
+      ++count[pass][(key >> (8 * pass)) & 255];
+    }
+  }
+  uint64_t* src = keys.data();
+  uint64_t* dst = buffer.data();
+  for (int pass = 0; pass < 8; ++pass) {
+    const int shift = 8 * pass;
+    if (count[pass][(src[0] >> shift) & 255] == static_cast<size_t>(n)) {
+      continue;
+    }
+    size_t offset[256];
+    size_t sum = 0;
+    for (int b = 0; b < 256; ++b) {
+      offset[b] = sum;
+      sum += count[pass][b];
+    }
+    for (int i = 0; i < n; ++i) {
+      dst[offset[(src[i] >> shift) & 255]++] = src[i];
+    }
+    std::swap(src, dst);
+  }
+  for (int i = 0; i < n; ++i) {
+    const uint64_t key = src[i];
+    const uint64_t bits = (key >> 63) ? (key & ~(uint64_t{1} << 63)) : ~key;
+    std::memcpy(values + i, &bits, sizeof(bits));
+  }
+  return true;
+}
+
+}  // namespace
 
 BinMapper::BinMapper(): num_bin_(1), is_trivial_(true), bin_type_(BinType::NumericalBin) {
   bin_upper_bound_.clear();
@@ -345,7 +403,12 @@ void BinMapper::FindBin(double* values, int num_sample_values, size_t total_samp
   std::vector<double> distinct_values;
   std::vector<int> counts;  // count of data points for each distinct feature value.
 
-  std::stable_sort(values, values + num_sample_values);
+  // the samplers count zeros instead of collecting them, so the radix sort
+  // nearly always applies; either sort leaves the same array
+  if (num_sample_values < kRadixSortMinValues ||
+      !RadixSortNonZero(values, num_sample_values)) {
+    std::stable_sort(values, values + num_sample_values);
+  }
 
   // push zero in the front
   if (num_sample_values == 0 || (values[0] > 0.0f && zero_cnt > 0)) {
