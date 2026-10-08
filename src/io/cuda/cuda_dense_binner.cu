@@ -48,6 +48,20 @@ __device__ __forceinline__ uint32_t DeviceValueToBin(
   return static_cast<uint32_t>(l);
 }
 
+// exact device replica of BinMapper::ValueToBin for categorical bins. The
+// host truncates the value to int: NaN, values at or below -1 (negative after
+// truncation) and categories it never saw (at or above the table end, which
+// includes values beyond the int range) go to bin 0; the table holds the host
+// result for every category below cat_size.
+__device__ __forceinline__ uint32_t DeviceCategoryToBin(
+    double value, const uint32_t* __restrict__ cat_bins,
+    const CUDADenseBinnerColMeta& meta) {
+  if (!(value > -1.0) || value >= static_cast<double>(meta.cat_size)) {
+    return 0;
+  }
+  return cat_bins[meta.cat_offset + static_cast<int>(value)];
+}
+
 // exact device replica of FeatureGroup::EncodeBinForPush (non multi-val)
 __device__ __forceinline__ uint32_t DeviceEncodeBin(
     uint32_t bin, const CUDADenseBinnerColMeta& meta) {
@@ -118,8 +132,11 @@ __global__ void CUDADenseBinChunkKernel(const T* __restrict__ in,
         enc = tables.lut[tables.col_lut_off[col] + DeviceLutIndex<T>(raw)];
       } else {
         const CUDADenseBinnerColMeta meta = tables.col_meta[col];
+        const double value = static_cast<double>(raw);
         enc = DeviceEncodeBin(
-            DeviceValueToBin(static_cast<double>(raw), tables.bounds, meta),
+            meta.cat_size > 0
+                ? DeviceCategoryToBin(value, tables.cat_bins, meta)
+                : DeviceValueToBin(value, tables.bounds, meta),
             meta);
       }
       if (enc != kDeviceSkipBin) {

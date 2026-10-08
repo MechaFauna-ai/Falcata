@@ -640,8 +640,9 @@ class Dataset {
    *        staging ring (host input) or reads the device matrix directly.
    *        Falls back (returns false) whenever the host path is required:
    *        non-CUDA dataset, FALCATA_GPU_CONSTRUCT=0, multi-val or sparse
-   *        bins, linear-tree raw data, categorical features on the
-   *        float/double path, or insufficient device memory.
+   *        bins, linear-tree raw data, categorical ids too large for the
+   *        float/double path's category tables, or insufficient device
+   *        memory.
    * \param data Pointer to the matrix values (host or device)
    * \param dtype Element type of the matrix
    * \param nrow Number of rows; must equal num_data()
