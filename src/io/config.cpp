@@ -366,6 +366,8 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
 
   // check for conflicts
   CheckParamConflict(params);
+
+  ResolveCudaPrecision(params);
 }
 
 void Config::ResolveFalcataParams() {
@@ -411,13 +413,39 @@ void Config::ResolveFalcataParams() {
     Log::Fatal("quant_bins=%d is out of range: must be 0 (auto) or in [2, 65534]",
                num_grad_quant_bins);
   }
-  // cuda_precision
+  // cuda_precision: validated here, "auto" resolved by ResolveCudaPrecision
+  // once CheckParamConflict has settled quant_mode
   std::string precision = Common::Trim(cuda_precision);
   std::transform(precision.begin(), precision.end(), precision.begin(), [](unsigned char c){ return std::tolower(c); });
-  if (precision != std::string("fp64") && precision != std::string("fp32")) {
-    Log::Fatal("Unknown cuda_precision \"%s\": must be fp64 or fp32", cuda_precision.c_str());
+  if (precision != std::string("auto") && precision != std::string("fp64") &&
+      precision != std::string("fp32")) {
+    Log::Fatal("Unknown cuda_precision \"%s\": must be auto, fp64 or fp32", cuda_precision.c_str());
   }
   cuda_precision = precision;
+}
+
+// cuda_precision=auto: fp32 histograms and gains for non-quantized CUDA
+// training, fp64 everywhere else. Runs after CheckParamConflict, whose
+// deterministic=true mapping can still turn quant_mode=none into fixedpoint.
+// fp64 stays where fp32 would contradict another request: gpu_use_dp asks
+// for double-precision histograms, deterministic=true for the reproducible
+// reference path, and vector-leaf multi-target training supports only fp64.
+// Quantized modes keep fp64: the process-global fp32 gain switch also
+// retypes the discretized finders.
+void Config::ResolveCudaPrecision(const std::unordered_map<std::string, std::string>& params) {
+  if (cuda_precision == std::string("auto")) {
+    cuda_precision_from_auto = true;
+  } else if (params.count("cuda_precision") > 0) {
+    cuda_precision_from_auto = false;
+  }
+  if (!cuda_precision_from_auto) {
+    return;
+  }
+  const bool vector_multi_target = tree_mode == std::string("vector_leaf") &&
+                                   objective == std::string("multi_regression") && num_class > 1;
+  const bool fp32 = device_type == std::string("cuda") && ResolvedQuantMode() == QuantMode::kNone &&
+                    !gpu_use_dp && !deterministic && !vector_multi_target;
+  cuda_precision = fp32 ? "fp32" : "fp64";
 }
 
 bool CheckMultiClassObjective(const std::string& objective) {

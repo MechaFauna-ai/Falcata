@@ -1336,14 +1336,52 @@ def test_cuda_explicit_default_reproduces_plain_quant(name, params):
     """Explicitly stating a default param value must reproduce the plain quant
     model bit-for-bit.
 
-    Guards that cuda_precision=fp32 / quant_mode=fixedpoint are opt-IN: the
-    defaults (fp64; auto->stochastic under use_quantized_grad=True; auto bins=4)
-    must yield the identical model whether stated or implied. A divergence would
-    mean the default state silently activates the alternate path.
+    Guards that cuda_precision=fp32 / quant_mode=fixedpoint are opt-IN for
+    quantized training: the defaults (cuda_precision=auto resolving to fp64;
+    auto->stochastic under use_quantized_grad=True; auto bins=4) must yield the
+    identical model whether stated or implied. A divergence would mean the
+    default state silently activates the alternate path.
     """
     plain = _quant_model_md5("dense")
     explicit = _quant_model_md5("dense", params)
     assert plain == explicit, f"{name} changed the model (plain={plain}, explicit={explicit}); not a clean no-op"
+
+
+_PRECISION_CASES = [
+    ("noquant-default", {"quant_mode": "none"}, "fp32"),
+    ("noquant-explicit-fp64", {"quant_mode": "none", "cuda_precision": "fp64"}, "fp64"),
+    ("noquant-explicit-auto", {"quant_mode": "none", "cuda_precision": "auto"}, "fp32"),
+    ("noquant-gpu_use_dp", {"quant_mode": "none", "gpu_use_dp": True}, "fp64"),
+    ("noquant-deterministic", {"quant_mode": "none", "deterministic": True}, "fp64"),
+    ("stochastic", {"quant_mode": "stochastic"}, "fp64"),
+    ("fixedpoint", {"quant_mode": "fixedpoint"}, "fp64"),
+    ("deterministic-maps-to-fixedpoint", {"deterministic": True}, "fp64"),
+    ("quant-explicit-fp32", {"quant_mode": "stochastic", "cuda_precision": "fp32"}, "fp32"),
+    ("cpu", {"quant_mode": "none", "device_type": "cpu"}, "fp64"),
+]
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(("name", "params", "expected"), _PRECISION_CASES, ids=[c[0] for c in _PRECISION_CASES])
+def test_cuda_precision_auto_resolution(name, params, expected):
+    """cuda_precision=auto (the default) is fp32 for non-quantized CUDA training
+    and fp64 everywhere else; an explicit value is kept as given.
+
+    The resolved value is what the trained model records in its parameters.
+    deterministic=true without quant_mode maps to fixedpoint, and the
+    resolution follows that mapping rather than the quant_mode it replaced.
+    """
+    X, y = _make_regression_for_parity(n=300, seed=5)
+    train_params = {"objective": "regression", "device_type": "cuda", "verbose": -1, "num_leaves": 7, **params}
+    bst = lgb.train(train_params, lgb.Dataset(X, label=y), num_boost_round=1)
+    resolved = [line for line in bst.model_to_string().splitlines() if line.startswith("[cuda_precision: ")]
+    assert resolved == [f"[cuda_precision: {expected}]"], f"{name}: {resolved}"
+    # a later reset_parameter with a partial map re-resolves auto from the current mode
+    if "cuda_precision" not in params and params.get("device_type", "cuda") == "cuda":
+        bst.reset_parameter({"learning_rate": 0.05})
+        bst.update()
+        again = [line for line in bst.model_to_string().splitlines() if line.startswith("[cuda_precision: ")]
+        assert again == resolved, f"{name}: {again} after reset_parameter"
 
 
 @_REQUIRES_CUDA

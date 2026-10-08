@@ -775,7 +775,7 @@ Learning Control Parameters
 
    -  ``auto``: resolves to ``stochastic`` if ``use_quantized_grad=true``, otherwise ``none``
 
-   -  ``none``: full-precision (fp64) gradient/hessian accumulation
+   -  ``none``: full-precision (unquantized) gradients and hessians; on ``cuda`` the histogram and gain precision is ``cuda_precision``
 
    -  ``stochastic``: Falcata-native quantized training (same as ``use_quantized_grad=true``): stochastic rounding into ``quant_bins`` bins; aggressive speed end of the trade-off
 
@@ -1443,7 +1443,7 @@ GPU Parameters
 
    -  set this to ``true`` to use double precision math on the legacy OpenCL backend (``device_type=gpu``), which accumulates in single precision by default
 
-   -  **Note**: with ``device_type=cuda``, histogram/gain precision is controlled by ``cuda_precision`` instead; setting ``gpu_use_dp=true`` there forces double-precision histograms even if ``cuda_precision=fp32``
+   -  **Note**: with ``device_type=cuda``, histogram/gain precision is controlled by ``cuda_precision`` instead; setting ``gpu_use_dp=true`` there resolves ``cuda_precision=auto`` to ``fp64`` and forces double-precision histograms even if ``cuda_precision=fp32``
 
 -  ``num_gpu`` :raw-html:`<a id="num_gpu" title="Permalink to this parameter" href="#num_gpu">&#x1F517;&#xFE0E;</a>`, default = ``1``, type = int, constraints: ``num_gpu > 0``
 
@@ -1457,13 +1457,17 @@ GPU Parameters
 
    -  in distributed learning application, each machine can use different number of GPUs
 
--  ``cuda_precision`` :raw-html:`<a id="cuda_precision" title="Permalink to this parameter" href="#cuda_precision">&#x1F517;&#xFE0E;</a>`, default = ``fp64``, type = string
+-  ``cuda_precision`` :raw-html:`<a id="cuda_precision" title="Permalink to this parameter" href="#cuda_precision">&#x1F517;&#xFE0E;</a>`, default = ``auto``, type = string
 
-   -  floating-point precision of CUDA histogram accumulation and split-gain math (Falcata)
+   -  floating-point precision of CUDA histogram accumulation and split-gain math for non-quantized training (Falcata)
 
-   -  ``fp64``: double-precision accumulation (bit-stable reference)
+   -  ``auto``: ``fp32`` for non-quantized training (``quant_mode=none``) on ``device_type=cuda``, ``fp64`` otherwise; non-quantized training also stays ``fp64`` under ``gpu_use_dp=true``, under ``deterministic=true`` and for vector-leaf multi-target trees (which need fp64)
 
-   -  ``fp32``: single-precision histogram atomics and gain math; measurably faster on high-bin workloads at <=0.1pp quality cost, results are non-deterministic across runs
+   -  ``fp64``: double-precision histogram accumulation and gain math (the reference mode)
+
+   -  ``fp32``: single-precision histogram storage and gain math: less histogram bandwidth and a cheaper split search at equal quality on the benchmark datasets; results are non-deterministic across runs
+
+   -  quantized training (``quant_mode=stochastic`` or ``fixedpoint``) resolves ``auto`` to ``fp64``: its histograms are integer sums
 
    -  **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
 

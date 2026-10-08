@@ -666,7 +666,7 @@ struct Config {
 
   // desc = quantization mode for gradients and hessians (Falcata)
   // desc = ``auto``: resolves to ``stochastic`` if ``use_quantized_grad=true``, otherwise ``none``
-  // desc = ``none``: full-precision (fp64) gradient/hessian accumulation
+  // desc = ``none``: full-precision (unquantized) gradients and hessians; on ``cuda`` the histogram and gain precision is ``cuda_precision``
   // desc = ``stochastic``: Falcata-native quantized training (same as ``use_quantized_grad=true``): stochastic rounding into ``quant_bins`` bins; aggressive speed end of the trade-off
   // desc = ``fixedpoint``: XGBoost-style deterministic fixed-point quantization with an outlier-robust, gap-gated gradient scale; near-lossless at the default 64 bins
   // desc = **Note**: ``stochastic`` and ``fixedpoint`` work only with ``cuda`` device type; use ``none`` for CPU training
@@ -1187,7 +1187,7 @@ struct Config {
   std::string gpu_device_id_list = "";
 
   // desc = set this to ``true`` to use double precision math on the legacy OpenCL backend (``device_type=gpu``), which accumulates in single precision by default
-  // desc = **Note**: with ``device_type=cuda``, histogram/gain precision is controlled by ``cuda_precision`` instead; setting ``gpu_use_dp=true`` there forces double-precision histograms even if ``cuda_precision=fp32``
+  // desc = **Note**: with ``device_type=cuda``, histogram/gain precision is controlled by ``cuda_precision`` instead; setting ``gpu_use_dp=true`` there resolves ``cuda_precision=auto`` to ``fp64`` and forces double-precision histograms even if ``cuda_precision=fp32``
   bool gpu_use_dp = false;
 
   // check = >0
@@ -1198,11 +1198,13 @@ struct Config {
   // desc = in distributed learning application, each machine can use different number of GPUs
   int num_gpu = 1;
 
-  // desc = floating-point precision of CUDA histogram accumulation and split-gain math (Falcata)
-  // desc = ``fp64``: double-precision accumulation (bit-stable reference)
-  // desc = ``fp32``: single-precision histogram atomics and gain math; measurably faster on high-bin workloads at <=0.1pp quality cost, results are non-deterministic across runs
+  // desc = floating-point precision of CUDA histogram accumulation and split-gain math for non-quantized training (Falcata)
+  // desc = ``auto``: ``fp32`` for non-quantized training (``quant_mode=none``) on ``device_type=cuda``, ``fp64`` otherwise; non-quantized training also stays ``fp64`` under ``gpu_use_dp=true``, under ``deterministic=true`` and for vector-leaf multi-target trees (which need fp64)
+  // desc = ``fp64``: double-precision histogram accumulation and gain math (the reference mode)
+  // desc = ``fp32``: single-precision histogram storage and gain math: less histogram bandwidth and a cheaper split search at equal quality on the benchmark datasets; results are non-deterministic across runs
+  // desc = quantized training (``quant_mode=stochastic`` or ``fixedpoint``) resolves ``auto`` to ``fp64``: its histograms are integer sums
   // desc = **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
-  std::string cuda_precision = "fp64";
+  std::string cuda_precision = "auto";
 
   // desc = CUDA execution-plan override string (Falcata)
   // desc = ``auto`` resolves every shape-conditional kernel choice from the data/params via the built-in planner; the resolved plan is logged at startup
@@ -1236,6 +1238,12 @@ struct Config {
   // SaveModelToString: a model trained wherever stays device-portable)
   bool device_type_from_auto = false;
 
+  // NOT a parameter: cuda_precision is (or was) "auto", so every Set() resolves
+  // it again from the current training mode -- a later Set() with a partial
+  // parameter map (Booster.reset_parameter) must not freeze a choice that
+  // depended on parameters it changes. An explicit fp64/fp32 clears it.
+  bool cuda_precision_from_auto = false;
+
   size_t file_load_progress_interval_bytes = size_t(10) * 1024 * 1024 * 1024;
 
   bool is_parallel = false;
@@ -1244,8 +1252,9 @@ struct Config {
   static const std::unordered_map<std::string, std::string>& alias_table();
   static const std::unordered_map<std::string, std::vector<std::string>>& parameter2aliases();
 
-  // Falcata typed accessors. Valid only after Set() has run (quant_mode "auto"
-  // and num_grad_quant_bins 0 are resolved to concrete values there).
+  // Falcata typed accessors. Valid only after Set() has run (quant_mode "auto",
+  // cuda_precision "auto" and num_grad_quant_bins 0 are resolved to concrete
+  // values there).
   QuantMode ResolvedQuantMode() const {
     if (quant_mode == "fixedpoint") return QuantMode::kFixedPoint;
     if (quant_mode == "stochastic") return QuantMode::kStochastic;
@@ -1263,6 +1272,7 @@ struct Config {
  private:
   void CheckParamConflict(const std::unordered_map<std::string, std::string>& params);
   void ResolveFalcataParams();
+  void ResolveCudaPrecision(const std::unordered_map<std::string, std::string>& params);
   void GetMembersFromString(const std::unordered_map<std::string, std::string>& params);
   std::string SaveMembersToString() const;
   void GetAucMuWeights();

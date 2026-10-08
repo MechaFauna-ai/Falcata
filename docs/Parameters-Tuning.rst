@@ -48,8 +48,10 @@ training loop was built for it (see `Features
   quantizing gradients into 4 bins; on suitable data it reaches quality
   parity with full precision. ``quant_mode=fixedpoint`` is the near-lossless
   alternative. Both are bit-reproducible.
-- ``cuda_precision=fp32`` halves global-histogram bandwidth for
-  *non-quantized* training (quality-gated, not bit-identical).
+- *Non-quantized* training already runs ``cuda_precision=fp32`` under the
+  default ``cuda_precision=auto``: half the global-histogram bandwidth and
+  fp32 gain math (quality-gated, not bit-identical). ``cuda_precision=fp64``
+  restores the double-precision reference mode.
 - Leave ``cuda_plan=auto`` alone: the planner already resolves the fastest
   kernel choices from your data shape; the override keys exist for
   experiments, not tuning.

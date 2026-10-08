@@ -244,8 +244,9 @@ def build_cells():
     cell("tinygrad/fixedpoint", "tinygrad", {"quant_mode": "fixedpoint"}, rounds=150)
 
     # --- nondeterministic tiers: validity + metric floor only --------------- #
-    # non-quant float-atomic path and the fp32 opt-in (cuda_precision) --
-    # exactly the paths md5 cannot cover.
+    # non-quant float-atomic path -- fp32 under the default cuda_precision=auto
+    # and stated explicitly, and fp64 -- exactly the paths md5 cannot cover.
+    fp64 = {"quant_mode": "none", "cuda_precision": "fp64"}
     cell(
         "dense/nonquant",
         "dense",
@@ -262,30 +263,31 @@ def build_cells():
         fingerprint=False,
         perf=True,
     )
+    cell("dense/nonquant-fp64", "dense", fp64, rounds=50, fingerprint=False)
     # Non-quant DETERMINISTIC cells: on these shapes every construct runs the
     # deterministic kernels (per-leaf, batched-level, compact view, sparse
-    # fallback), so their models fingerprint like quant cells do. The graph
+    # fallback), so their models fingerprint like quant cells do. They pin
+    # cuda_precision=fp64: the deterministic constructs build fp64 histograms
+    # only, and cuda_precision=auto is fp32 for non-quant training. The graph
     # loop now captures the det construct+merge node pair too (per-level
     # extents come from the controller and the kernels' device layout
     # replica), so DEFAULT-plan cells on graph-eligible shapes fingerprint as
     # well -- graph/nonquant-det and imbalanced/nonquant-det below pin
     # exactly that path; the graph_loop:off det cells pin the host loop.
-    cell("dense/nonquant-det", "dense", {"quant_mode": "none", "cuda_plan": "auto,graph_loop:off"}, rounds=50)
+    cell("dense/nonquant-det", "dense", {**fp64, "cuda_plan": "auto,graph_loop:off"}, rounds=50)
     # hybrid:off -- the BATCHED level flow keeps the atomic kernel for compact
     # views (per-leaf det covers them; batched does not yet), so the compact
     # det lock pins the per-leaf flow.
-    cell("sampled/nonquant-det", "sampled", {"quant_mode": "none", "cuda_plan": "auto,hybrid:off"}, rounds=50)
-    cell("missing/nonquant-det", "missing", {"quant_mode": "none", "cuda_plan": "auto,graph_loop:off"}, rounds=50)
-    cell(
-        "categorical/nonquant-det", "categorical", {"quant_mode": "none", "cuda_plan": "auto,graph_loop:off"}, rounds=50
-    )
+    cell("sampled/nonquant-det", "sampled", {**fp64, "cuda_plan": "auto,hybrid:off"}, rounds=50)
+    cell("missing/nonquant-det", "missing", {**fp64, "cuda_plan": "auto,graph_loop:off"}, rounds=50)
+    cell("categorical/nonquant-det", "categorical", {**fp64, "cuda_plan": "auto,graph_loop:off"}, rounds=50)
     # graph_det:on -- the captured det construct+merge nodes inside the graph
     # loop (opt-in; the DEFAULT graph plan keeps the atomic construct for
     # speed). graph/nonquant-det replaces the old unfingerprinted
     # graph/nonquant cell; imbalanced is the shape whose atomic/det mix raced
     # in the 2026-08-19 lattice, so its graph-det model is pinned too.
-    cell("graph/nonquant-det", "graph", {"quant_mode": "none", "cuda_plan": "auto,graph_det:on"}, rounds=50)
-    cell("imbalanced/nonquant-det", "imbalanced", {"quant_mode": "none", "cuda_plan": "auto,graph_det:on"}, rounds=50)
+    cell("graph/nonquant-det", "graph", {**fp64, "cuda_plan": "auto,graph_det:on"}, rounds=50)
+    cell("imbalanced/nonquant-det", "imbalanced", {**fp64, "cuda_plan": "auto,graph_det:on"}, rounds=50)
     # the DEFAULT plan stays atomic in the graph: metric-only coverage
     cell("graph/nonquant", "graph", {"quant_mode": "none"}, rounds=50, fingerprint=False)
     # ... and the graph det loop must be BIT-IDENTICAL to the host det loop:
@@ -295,7 +297,7 @@ def build_cells():
     cell(
         "graph/flip-graph_loop-det",
         "graph",
-        {"quant_mode": "none", "cuda_plan": "auto,graph_loop:off"},
+        {**fp64, "cuda_plan": "auto,graph_loop:off"},
         rounds=50,
         equal_to="graph/nonquant-det",
     )
@@ -417,7 +419,8 @@ def build_cells():
     # variant), and the tree learner also disables the whole hybrid family and
     # the fp32 histogram layout there, so a wide shape always runs the classic
     # loop over the deterministic per-leaf constructs -- bit-stable, no
-    # graph_loop:off needed.
+    # graph_loop:off needed. They pin cuda_precision=fp64, the precision whose
+    # scans and gains match CPU's (auto would run fp32 gains here).
     #
     # Three cells because the wide kernel has three distinct entries and one
     # shape covers only one of them (task counts confirmed against the tasks
@@ -431,17 +434,17 @@ def build_cells():
     cell(
         "dense/nonquant-widebin",
         "dense",
-        {"quant_mode": "none", "max_bin": 511, "num_leaves": 255, "max_depth": 12, "min_data_in_leaf": 5},
+        {**fp64, "max_bin": 511, "num_leaves": 255, "max_depth": 12, "min_data_in_leaf": 5},
     )
     cell(
         "missing/nonquant-widebin",
         "missing",
-        {"quant_mode": "none", "max_bin": 511, "num_leaves": 255, "max_depth": 12, "min_data_in_leaf": 5},
+        {**fp64, "max_bin": 511, "num_leaves": 255, "max_depth": 12, "min_data_in_leaf": 5},
     )
     cell(
         "missing-mfb0-wide/nonquant",
         "missing-mfb0-wide",
-        {"quant_mode": "none", "num_leaves": 255, "max_depth": 12, "min_data_in_leaf": 5},
+        {**fp64, "num_leaves": 255, "max_depth": 12, "min_data_in_leaf": 5},
     )
 
     # --- tree boundary, level pruning, level apply bookkeeping --------------- #

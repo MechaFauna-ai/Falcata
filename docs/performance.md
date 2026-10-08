@@ -465,22 +465,32 @@ with a warning (airline's 92M rows → 23 bins) instead of refusing; an
 explicitly-set unsafe `quant_bins` still fails loudly rather than silently
 wrap.
 
-## 6. Precision modes (`cuda_precision=fp32`)
+## 6. Precision modes (`cuda_precision`)
 
 For NON-quantized training, storing global histograms as float pairs instead
-of double pairs halves their bandwidth. Measured per-tree wins at
+of double pairs halves their bandwidth, and fp32 gain math takes the split
+finder off the GPU's fp64 pipe (1/64 of the fp32 rate on the RTX 5090), where
+its prefix scans and gain divisions otherwise run. Measured per-tree wins at
 equal-or-better quality: epsilon-deep −36% time, year −18%, covtype −16%,
 fraud-deep −14%, higgs-deep −12%; numerai neutral (sampling-dominated).
-Quality-gated rather than bit-identical, hence a config parameter and not a
-plan key.
+
+That is why `cuda_precision=auto`, the default, resolves to `fp32` for
+`quant_mode=none` on CUDA. It resolves to `fp64` where fp32 would contradict
+another request: `gpu_use_dp=true` (double-precision histograms),
+`deterministic=true` (the reproducible reference path) and vector-leaf
+multi-target trees (fp64 only). An explicit `cuda_precision=fp64` keeps the
+fp64 reference mode, whose deterministic-construct paths choose the CPU
+learner's splits. Quantized modes resolve `auto` to `fp64` and are untouched:
+their histograms are integer sums. The choice is quality-gated rather than
+bit-identical, hence a config parameter and not a plan key.
 
 A second, separately-measured mechanism: on DEEP trees the
 histogram pool halves from ~248MB (doesn't fit the 5090's 96MB L2) to
 ~124MB (mostly fits), so subtraction's parent-histogram re-reads start
 hitting cache. Isolated on covtype non-quant: fp32 gains **+26% deep** vs
 +1.7% shallow — the cache cliff, not bandwidth, dominates the deep win.
-Practical guidance: on deep non-quantized configs, `cuda_precision=fp32` is
-the single highest-leverage switch available.
+On deep non-quantized configs it is the single highest-leverage switch,
+which is the other reason it is the default.
 
 ## 7. Memory-layout micro-optimizations (each small, all free)
 

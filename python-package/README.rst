@@ -101,7 +101,7 @@ Quick start
             "device_type": "cuda",
             "num_leaves": 255,
             "quant_mode": "stochastic",   # none | stochastic | fixedpoint
-            "cuda_precision": "fp32",     # fp64 (default) | fp32
+            "cuda_precision": "auto",     # auto (default) | fp64 | fp32
             "cuda_plan": "auto",          # the planner picks the kernels
         },
         ds,
