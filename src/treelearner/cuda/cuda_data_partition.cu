@@ -2552,6 +2552,39 @@ void CUDADataPartition::EnsureLevelPartitioned() {
 }
 
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+// Bounded multi-row builds of the graph's 2D apply kernels. The controller's
+// descriptor still denotes a 1024-row chunk; only its thread assignment changes.
+template <int ROWS>
+__global__ void __launch_bounds__(SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS)
+HybridGenBitVectorGraphRowsKernel(
+    const CUDAHybridApplyDescriptor* descs, const data_size_t* indices_param,
+    uint16_t* block_bits, data_size_t* left_offsets, data_size_t* right_offsets,
+    const CUDAHybridGraphLoopState* gstate) {
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) return;
+  const CUDAHybridApplyDescriptor d = descs[blockIdx.y];
+  if (static_cast<int>(blockIdx.x) >= d.num_blocks) return;
+  __shared__ uint16_t counts[WARPSIZE];
+  HybridGenBitChunk<ROWS, SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS>(
+    d, blockIdx.x, HybridGraphMainIndices(gstate, indices_param), block_bits,
+    left_offsets, right_offsets, counts);
+}
+
+template <int ROWS>
+__global__ void __launch_bounds__(SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS)
+HybridSplitInnerGraphRowsKernel(
+    const CUDAHybridApplyDescriptor* descs, const data_size_t* indices_param,
+    const data_size_t* left_offsets, const data_size_t* right_offsets,
+    const uint16_t* block_bits, data_size_t* out_indices_param,
+    const CUDAHybridGraphLoopState* gstate, int* leaf_map) {
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) return;
+  const CUDAHybridApplyDescriptor d = descs[blockIdx.y];
+  if (static_cast<int>(blockIdx.x) >= d.num_blocks) return;
+  __shared__ uint16_t scan[WARPSIZE];
+  HybridSplitInnerChunk<false, ROWS, SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS>(
+    d, blockIdx.x, HybridGraphMainIndices(gstate, indices_param), left_offsets,
+    right_offsets, block_bits, HybridGraphOutIndices(gstate, out_indices_param), leaf_map, scan);
+}
+
 void CUDADataPartition::CaptureHybridGraphApplyKernels(
     const CUDAHybridGraphLoopState* gstate,
     std::vector<cudaGraphNode_t>* nodes,
@@ -2566,11 +2599,27 @@ void CUDADataPartition::CaptureHybridGraphApplyKernels(
   const CUDAHybridApplyDescriptor* descs = cuda_apply_descs_.RawDataReadOnly();
   constexpr int block_dim = SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
   cudaStream_t stream = cuda_streams_[0];
-  HybridGenBitVectorUpdateLeafIndexBatchKernel<1><<<dim3(1, 1), block_dim, 0, stream>>>(
-    descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
-    cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
-    cuda_data_index_to_leaf_index_.RawData(), gstate, /*num_split_descs=*/0,
-    /*total_flat_blocks=*/0);
+  const FalcataPlan& plan = FalcataPlan::Get();
+  constexpr int kRows = 4;
+  constexpr int kWideRows = 2 * kRows;
+  const bool rows = plan.graph_apply_rows && plan.apply_row_batch;
+  if (rows && plan.apply_genbit_rows &&
+      ApplyRowsTakes(HybridGenBitVectorGraphRowsKernel<kWideRows>, block_dim / kWideRows, kWideRows,
+                     HybridGenBitVectorUpdateLeafIndexBatchKernel<kRows>, block_dim / kRows, kRows)) {
+    HybridGenBitVectorGraphRowsKernel<kWideRows><<<dim3(1, 1), block_dim / kWideRows, 0, stream>>>(
+      descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
+      cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(), gstate);
+  } else if (rows) {
+    HybridGenBitVectorUpdateLeafIndexBatchKernel<kRows><<<dim3(1, 1), block_dim / kRows, 0, stream>>>(
+      descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
+      cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
+      cuda_data_index_to_leaf_index_.RawData(), gstate, 0, 0);
+  } else {
+    HybridGenBitVectorUpdateLeafIndexBatchKernel<1><<<dim3(1, 1), block_dim, 0, stream>>>(
+      descs, cuda_data_indices_.RawData(), cuda_block_to_left_offset_.RawData(),
+      cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
+      cuda_data_index_to_leaf_index_.RawData(), gstate, 0, 0);
+  }
   if (!AppendCapturedNode(stream, nodes)) return;
   roles->push_back(kHybridGraphNodeGenBitVector);
   HybridAggregateBlockOffsetBatchKernel<<<1, AGGREGATE_BLOCK_SIZE_DATA_PARTITION, 0, stream>>>(
@@ -2579,12 +2628,24 @@ void CUDADataPartition::CaptureHybridGraphApplyKernels(
     cuda_level_smaller_counts_.RawData(), gstate);
   if (!AppendCapturedNode(stream, nodes)) return;
   roles->push_back(kHybridGraphNodeAggregate);
-  HybridSplitInnerBatchKernel<1><<<dim3(1, 1), block_dim, 0, stream>>>(
-    descs, cuda_data_indices_.RawData(), cuda_block_data_to_left_offset_.RawData(),
-    cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
-    cuda_out_data_indices_in_leaf_.RawData(), gstate, /*num_split_descs=*/0,
-    /*total_flat_blocks=*/0, cuda_data_index_to_leaf_index_.RawData(),
-    /*write_leaf_map=*/0);
+  if (rows && plan.apply_inner_rows &&
+      ApplyRowsTakes(HybridSplitInnerGraphRowsKernel<kWideRows>, block_dim / kWideRows, kWideRows,
+                     HybridSplitInnerBatchKernel<kRows>, block_dim / kRows, kRows)) {
+    HybridSplitInnerGraphRowsKernel<kWideRows><<<dim3(1, 1), block_dim / kWideRows, 0, stream>>>(
+      descs, cuda_data_indices_.RawData(), cuda_block_data_to_left_offset_.RawData(),
+      cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
+      cuda_out_data_indices_in_leaf_.RawData(), gstate, cuda_data_index_to_leaf_index_.RawData());
+  } else if (rows) {
+    HybridSplitInnerBatchKernel<kRows><<<dim3(1, 1), block_dim / kRows, 0, stream>>>(
+      descs, cuda_data_indices_.RawData(), cuda_block_data_to_left_offset_.RawData(),
+      cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
+      cuda_out_data_indices_in_leaf_.RawData(), gstate, 0, 0, cuda_data_index_to_leaf_index_.RawData(), 0);
+  } else {
+    HybridSplitInnerBatchKernel<1><<<dim3(1, 1), block_dim, 0, stream>>>(
+      descs, cuda_data_indices_.RawData(), cuda_block_data_to_left_offset_.RawData(),
+      cuda_block_data_to_right_offset_.RawData(), cuda_block_to_left_offset_.RawData(),
+      cuda_out_data_indices_in_leaf_.RawData(), gstate, 0, 0, cuda_data_index_to_leaf_index_.RawData(), 0);
+  }
   if (!AppendCapturedNode(stream, nodes)) return;
   roles->push_back(kHybridGraphNodeSplitInner);
   // template selection mirrors LaunchSplitLevelBatchedKernels (the quantized

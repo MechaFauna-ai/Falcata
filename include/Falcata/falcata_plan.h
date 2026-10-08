@@ -494,6 +494,10 @@ struct FalcataPlan {
   // Same chunks, same ballot words, same block totals and output positions.
   // Bit-identical (only the thread -> row mapping changes).
   bool apply_row_batch = true;      // key: apply_row_batch
+  // Captured level apply uses the same 1024-row chunks and ballot words as the
+  // host path, with apply_row_batch / apply_genbit_rows / apply_inner_rows
+  // selecting multiple rows per thread. Index partitions retain their order.
+  bool graph_apply_rows = true;     // key: graph_apply_rows
   // batched level best-split sync over the tree's feature sample (or over a
   // task list wider than one 1024-task block): one block per leaf reads only
   // the used tasks' slots and folds them in task order, instead of one block
@@ -825,6 +829,7 @@ struct FalcataPlan {
     if (key == "level_row_blocks") return &level_row_blocks;
     if (key == "all_rows_direct") return &all_rows_direct;
     if (key == "apply_row_batch") return &apply_row_batch;
+    if (key == "graph_apply_rows") return &graph_apply_rows;
     if (key == "sync_used_tasks") return &sync_used_tasks;
     if (key == "sync_copy_batched") return &sync_copy_batched;
     if (key == "fix_subtract_fused") return &fix_subtract_fused;
