@@ -389,6 +389,22 @@ much deeper trees (the walk is O(depth) per row, and these were depth 10) or a
 shape where scoring dominates histogram construction. Even then, bound the level
 loop by the tree's real depth from `leaf_depth_`, not by `num_leaves - 1`.
 
+## Prefetching a file-backed input ahead of the dense binner (madvise WILLNEED)
+
+- **Tried:** `madvise(MADV_WILLNEED)` on the next 2, 4 or 8 staging chunks (512 MB each) of a row-major host matrix,
+  while the binner copies the current chunk into the staging ring.
+- **Promising because:** the Numerai float32 memmap's train range (77.7 GB) rarely stays fully in the page cache next
+  to the process. The benchmark sweep ran with 80-87% of it resident, and construct took 12-15 s instead of 8.1 s. The
+  binner's copy faults the missing pages in through the kernel's fault-driven readahead.
+- **Measured:** every fifth 64 MB block of the train range was evicted before each run (80% resident). Base
+  12.6 / 12.8 s; lead 2 chunks 12.7 s; lead 4 12.6 / 12.9 s; lead 8 12.7 s. The copy stage was 6.4-6.6 s in every
+  arm, against 4.1 s fully resident.
+- **Why it failed:** the fault-driven reads already move the missing ~15 GB at about 6.5 GB/s. The binner's 32
+  copy threads fault in parallel, so the device is already busy. A hint can only start the same reads earlier, and
+  the copy is waiting on the disk either way.
+- **Re-open when:** inputs come from storage that needs deep queues the fault path does not build (network or
+  striped volumes). The same applies if the copy stops being parallel.
+
 ## Fused all-T-planes vector-leaf histogram construct (2026-08-28)
 
 One construct that reads each bin row once and accumulates all T gradient

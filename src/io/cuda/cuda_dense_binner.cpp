@@ -133,6 +133,11 @@ double LutIndexToValue(Dataset::DenseBinnerDType dtype, int64_t v) {
   }
 }
 
+// float/double binning: the category->bin tables of all categorical columns
+// together hold at most this many entries (one per category id below each
+// column's largest; larger ids leave the dataset to the host path)
+constexpr int64_t kMaxCategoryTableEntries = int64_t{1} << 24;
+
 // bytes each value of a group's dense bin occupies; 0 means 4-bit packed
 int GroupElemWidth(uint8_t bit_type) {
   switch (bit_type) {
@@ -150,6 +155,12 @@ int GroupElemWidth(uint8_t bit_type) {
 }
 
 int64_t GroupBytesPerPair(int width) { return width == 0 ? 1 : 2 * width; }
+
+// entries of a categorical column's category->bin table: every category id
+// from 0 to the largest one the bin mapper knows (at least one entry)
+int64_t CategoryTableSize(const BinMapper& mapper) {
+  return std::max<int64_t>(1, static_cast<int64_t>(mapper.MaxCatValue()) + 1);
+}
 
 int64_t GroupTotalBytes(int width, data_size_t num_data) {
   return width == 0 ? (static_cast<int64_t>(num_data) + 1) / 2
@@ -291,14 +302,18 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
   }
   // columns of each group in ascending column order (the host push order)
   std::vector<std::vector<std::pair<int, int>>> group_col_sub(num_groups_);
+  int64_t category_table_entries = 0;
   for (int fidx = 0; fidx < num_features_; ++fidx) {
     const int col = real_feature_idx_[fidx];
     if (col >= ncol) {
       continue;  // never pushed by the host path either
     }
     if (!use_lut &&
-        FeatureBinMapper(fidx)->bin_type() != BinType::NumericalBin) {
-      return fallback("categorical feature on the float/double path");
+        FeatureBinMapper(fidx)->bin_type() == BinType::CategoricalBin) {
+      category_table_entries += CategoryTableSize(*FeatureBinMapper(fidx));
+      if (category_table_entries > kMaxCategoryTableEntries) {
+        return fallback("categorical values too large for the device category table");
+      }
     }
     group_col_sub[feature2group_[fidx]].emplace_back(
         col, feature2subfeature_[fidx]);
@@ -343,6 +358,7 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
   std::vector<uint32_t> lut;
   std::vector<int64_t> col_lut_off;
   std::vector<double> bounds;
+  std::vector<uint32_t> cat_bins;
   std::vector<CUDADenseBinnerColMeta> col_meta;
   const int64_t lut_size = DTypeLutSize(dtype);
   std::vector<std::pair<int, int>> used_cols;  // (column, feature index)
@@ -384,17 +400,33 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
       const BinMapper* mapper = FeatureBinMapper(fidx);
       CUDADenseBinnerColMeta meta;
       meta.bounds_offset = static_cast<int64_t>(bounds.size());
+      meta.cat_offset = static_cast<int64_t>(cat_bins.size());
       meta.num_bin = mapper->num_bin();
+      meta.cat_size = 0;
       meta.most_freq_bin = mapper->GetMostFreqBin();
       meta.sub_offset = feature_groups_[feature2group_[fidx]]
                             ->bin_offsets_[feature2subfeature_[fidx]];
       meta.missing_is_nan = mapper->missing_type() == MissingType::NaN;
-      const std::vector<double>& ub = mapper->bin_upper_bound();
-      bounds.insert(bounds.end(), ub.begin(), ub.end());
+      if (mapper->bin_type() == BinType::CategoricalBin) {
+        // the host bin of every category id below the table end; the
+        // eligibility check bounded the total size
+        const int64_t size = CategoryTableSize(*mapper);
+        meta.cat_size = static_cast<int>(size);
+        for (int64_t v = 0; v < size; ++v) {
+          cat_bins.push_back(mapper->ValueToBin(static_cast<double>(v)));
+        }
+      } else {
+        const std::vector<double>& ub = mapper->bin_upper_bound();
+        bounds.insert(bounds.end(), ub.begin(), ub.end());
+      }
       col_meta[cf.first] = meta;
     }
+    // keep the device uploads well-defined
     if (bounds.empty()) {
-      bounds.push_back(0.0);  // keep the device upload well-defined
+      bounds.push_back(0.0);
+    }
+    if (cat_bins.empty()) {
+      cat_bins.push_back(0);
     }
   }
   // chunk sizing and device memory budget
@@ -404,6 +436,7 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
       static_cast<int64_t>(lut.size() * sizeof(uint32_t)) +
       static_cast<int64_t>(col_lut_off.size() * sizeof(int64_t)) +
       static_cast<int64_t>(bounds.size() * sizeof(double)) +
+      static_cast<int64_t>(cat_bins.size() * sizeof(uint32_t)) +
       static_cast<int64_t>(col_meta.size() * sizeof(CUDADenseBinnerColMeta)) +
       static_cast<int64_t>((group_cols.size() + group_col_ptr.size() +
                             group_pair_off.size()) * sizeof(int64_t)) +
@@ -470,6 +503,9 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
   } else {
     InitCUDAMemoryFromHostMemory<double>(&ctx->d_bounds_, bounds.data(),
                                          bounds.size(), __FILE__, __LINE__);
+    InitCUDAMemoryFromHostMemory<uint32_t>(&ctx->d_cat_bins_, cat_bins.data(),
+                                           cat_bins.size(), __FILE__,
+                                           __LINE__);
     InitCUDAMemoryFromHostMemory<CUDADenseBinnerColMeta>(
         &ctx->d_col_meta_, col_meta.data(), col_meta.size(), __FILE__,
         __LINE__);
@@ -481,6 +517,7 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
   ctx->tables_.lut = ctx->d_lut_;
   ctx->tables_.col_lut_off = ctx->d_col_lut_off_;
   ctx->tables_.bounds = ctx->d_bounds_;
+  ctx->tables_.cat_bins = ctx->d_cat_bins_;
   ctx->tables_.col_meta = ctx->d_col_meta_;
   // staging ring: H2D on its own stream (construct_h2d_overlap; else on the
   // kernel's), the bin kernel on stream_, the bulk D2H on a third stream, so
@@ -756,6 +793,9 @@ CUDADenseBinnerCtx::~CUDADenseBinnerCtx() {
   }
   if (d_bounds_ != nullptr) {
     DeallocateCUDAMemory<double>(&d_bounds_, __FILE__, __LINE__);
+  }
+  if (d_cat_bins_ != nullptr) {
+    DeallocateCUDAMemory<uint32_t>(&d_cat_bins_, __FILE__, __LINE__);
   }
   if (d_col_meta_ != nullptr) {
     DeallocateCUDAMemory<CUDADenseBinnerColMeta>(&d_col_meta_, __FILE__,

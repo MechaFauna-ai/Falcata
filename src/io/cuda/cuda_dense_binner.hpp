@@ -23,8 +23,10 @@ class Dataset;
 // per-column metadata for the on-device float/double binning
 // (replicates BinMapper::ValueToBin + FeatureGroup::EncodeBinForPush)
 struct CUDADenseBinnerColMeta {
-  int64_t bounds_offset;   // into the flattened bin_upper_bound_ array
+  int64_t bounds_offset;   // numerical: into the flattened bin_upper_bound_ array
+  int64_t cat_offset;      // categorical: into the flattened category->bin table
   int num_bin;
+  int cat_size;            // categorical: entries of its category->bin table; 0 for numerical
   uint32_t most_freq_bin;
   uint32_t sub_offset;     // FeatureGroup bin offset of the subfeature (0 pre-decrement)
   uint8_t missing_is_nan;  // missing_type == MissingType::NaN
@@ -39,6 +41,7 @@ struct CUDADenseBinnerTables {
   const uint32_t* lut;           // LUT mode: encoded bins (kSkipBin sentinel)
   const int64_t* col_lut_off;    // LUT mode: per-column offset into lut
   const double* bounds;          // float mode: flattened bin upper bounds
+  const uint32_t* cat_bins;      // float mode: flattened category->bin tables
   const CUDADenseBinnerColMeta* col_meta;  // float mode
 };
 
@@ -132,6 +135,7 @@ class CUDADenseBinnerCtx {
   uint32_t* d_lut_ = nullptr;
   int64_t* d_col_lut_off_ = nullptr;
   double* d_bounds_ = nullptr;
+  uint32_t* d_cat_bins_ = nullptr;
   CUDADenseBinnerColMeta* d_col_meta_ = nullptr;
   CUDADenseBinnerTables tables_;
   // staging ring

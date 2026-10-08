@@ -342,6 +342,61 @@ calloc is left, and it measures 1.01x [0.95, 1.08]: the zero-fill costs construc
 (presumably because page-locking kept the group-creation threads waiting anyway). The upload stream is worth 1.03x
 [1.01, 1.04] on top of the rest.
 
+**Construction from host arrays: the host work around the binner.** A first construct in a process of epsilon
+(400k × 2,000 float32, in the page cache) took 2.8-3.4 s, and the binner was 0.43 s of it: sampling took 0.9 s, bin
+finding 1.1-1.5 s, and the first CUDA call, which creates the context, 0.13-0.2 s. A float matrix with a categorical
+column (airline-cat, 92M × 13 float32, three categorical columns) never reached the binner at all.
+- **Categorical columns of float matrices bin on the device.** The float/double kernel bins numerical columns only, so
+  one categorical column sent the whole matrix to the host push loops: 2.9 s for airline-cat against 1.0 s for the
+  same matrix without the categorical declaration. The kernel now looks categorical columns up in a per-column table
+  holding the host `BinMapper::ValueToBin` of every category id up to the column's largest. NaN, values at or below -1,
+  and ids past the table's end go to bin 0, and fractional values truncate toward zero, as on the host. Category ids
+  that would need more than 2^24 table entries keep the host path.
+- **Bin finding uses a radix sort.** `BinMapper::FindBin` stable-sorted each column's 200,000 sampled doubles. It
+  drops NaN before the sort and the samplers leave zeros out. Without NaN and ±0, no two distinct bit patterns compare
+  equal, so the ascending order is unique, and an LSD radix sort over the order-preserving 64-bit keys writes the same
+  array. It skips the byte positions all keys share, which are most of them for float32-sourced and small-int data.
+  If a zero does reach the sort, `std::stable_sort` runs as before. Epsilon's bin finding went from 1.1-1.5 s to
+  0.6-0.7 s; Numerai's (four distinct non-zero values per column) from 0.55-0.7 s to 0.42-0.54 s.
+- **The CUDA context is created while the construct samples.** The construct's first CUDA call (the page-locked bins,
+  or the binner) created the context: 0.13 s on fraud, about 0.2 s on epsilon. A helper thread now creates it as the
+  construct starts, overlapping sampling, bin finding and bundling. The first CUDA call of fraud's construct went from
+  0.135 s to 0.068 s, epsilon's from 0.42 s to 0.19 s. Freeing epsilon's sample also became cheap (0.13-0.16 s before,
+  0 after) once the context existed before the sample was allocated. The mechanism, glibc's raised mmap threshold
+  after the driver's own allocations, is inferred and not measured.
+- **The sampler's gathered rows are not zero-filled.** Both dense samplers copy the sampled rows into one block before
+  their column passes. The block was a value-initialized `std::vector`, a single-threaded pass over n × ncol values
+  that the copy then overwrote: 0.37 s for epsilon's 1.6 GB block, 0.7 s for the Numerai float32 split's 2.8 GB one.
+
+| first construct in a process (5 interleaved pairs; numerai 3-4), exclusive GPU, inputs in the page cache | master | this | |
+|---|---|---|---|
+| fraud (228k × 29 float32) | 0.233 s | 0.171 s | 1.36x |
+| covtype (465k × 54 float32) | 0.250 s | 0.189 s | 1.32x |
+| year (464k × 90 float32) | 0.394 s | 0.265 s | 1.48x |
+| higgs (10.5M × 28 float32) | 0.548 s | 0.461 s | 1.19x |
+| epsilon (400k × 2,000 float32) | 2.800 s | 1.939 s | 1.44x |
+| airline (92M × 13 float32) | 1.004 s | 0.887 s | 1.13x |
+| airline-cat (same, 3 categorical columns) | 2.851 s | 0.890 s | 3.20x |
+| numerai split, int8 (5.46M × 3,555) | 4.082 s | 3.678 s | 1.11x |
+| numerai split, float32 | 8.091 s | 7.388 s | 1.10x |
+
+These are medians. Every dataset saves the same binary as master's (saved-binary md5), the CUDA lattice passes under
+`FALCATA_VERIFY=1` (which also byte-compares the device bins with the host path's), and the canonical locks hold. In
+`bench.py` cells the train times did not move (epsilon 2.54-2.55 s, airline-cat 15.55-15.58 s), so no work moved into
+`train()`.
+
+What is left on the Numerai split is mostly memory traffic. The float32 binner copies 77.7 GB from the memmap into the
+staging ring at about 19 GB/s (4.1 s). With the GPU's reads of the ring and the scatter of the 9.6 GB of bins
+(1.1-1.4 s), that comes to an estimated 50-57 GB/s of host memory traffic, close to what this two-channel DDR5 host
+sustains. The int8 twin moves a quarter of the bytes (copy 1.0 s). The other remaining items:
+- creating the feature groups, most of it zero-filling the pageable bins the binner then overwrites: 0.65 s
+  float32, 0.7-1.1 s int8;
+- sampling's column passes: 0.7-1.0 s;
+- page-locking the staging ring in a process's first construct: about 0.4 s.
+
+A float32 memmap that does not fit in the page cache next to the process is a different regime. With 80-87% of the
+train range resident, construct took 12-15 s; at 29%, 23.5 s.
+
 ## 5. Quantized training: `quant_mode` (the speed/quality dial)
 
 **The problem.** Histogram accumulation is the hot loop, and accumulating
