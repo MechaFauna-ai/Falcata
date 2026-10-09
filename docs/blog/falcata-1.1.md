@@ -1,309 +1,235 @@
-# Falcata 1.1: keeping the GPU busy, from the first row to the last tree
+# Falcata 1.1: widening the gap
 
-> **Release article draft, 9 October 2026.** This is a preview of the proposed
-> 1.1 release, including the pending non-quantized training changes in
-> [PR #71](https://github.com/MechaFauna-ai/Falcata/pull/71). Version 1.1 has not
-> been published. Features already shipped in the 1.0 series are identified below.
+> **Release article draft, 9 October 2026.** An overview of the work since our
+> first release, including features shipped in 1.0.x and the pending changes in
+> [PR #71](https://github.com/MechaFauna-ai/Falcata/pull/71). Version 1.1 is proposed;
+> it has not been published.
 
 When we [introduced Falcata](https://www.mechafauna.ai/blog/falcata-gpu-gradient-boosting),
-the main idea was to change how a tree asks the GPU for work. A conventional
-leaf-wise learner grows the most promising leaf, waits, then does it again.
-Falcata batches split work across a level while the growth constraints permit it,
-and handles a binding leaf budget separately. That gives the GPU more useful work
-between conversations with the CPU.
+we showed what happens when gradient boosting gives the GPU a whole level of tree
+work at a time. That architecture opened a substantial lead. Since then, we have
+been working through the bottlenecks it exposed: redundant data movement, tiny
+histogram tasks, repeated loads and conversations with the CPU.
 
-That made the training loop much faster. It also made the next bottlenecks easier
-to see: moving the same columns twice, issuing a dozen tiny copies, searching
-thresholds in a serial chain, and preparing histograms that no split would ever
-use. Once a tree takes milliseconds, small costs repeated thousands of times
-become the costs that matter.
+The accumulated progress is substantial. **The 30,000-round Numerai-deep workload
+fell from 12.4 minutes at launch to 1.85 minutes: about 6.7× faster.** Numerai
+example now takes **5.6 seconds instead of 31**, a 5.5× improvement; Epsilon deep
+takes **11.2 seconds instead of 39.3**, a 3.5× improvement. These are quantized
+workloads. The latest changes also reduce non-quantized training time by as much
+as **39.4%** in the measured October comparisons.
 
-The work towards 1.1 follows those costs from dataset construction to prediction.
-It also strengthens the contracts around model round trips, live parameter
-changes, and detecting a fast model that has stopped being useful.
+These numbers describe different comparisons. The quantized results compare a
+historical launch snapshot with strict, quiet-machine October runs; the FP64 result
+compares two October development builds. The configurations, quality scores and full results
+are in the [benchmark companion](falcata-1.1/benchmarks.md).
 
-## The new measurements
+## The gap, then and now
 
-The latest quiet-machine comparison targets **non-quantized training**:
-`quant_mode="none"`, with **FP64 still the default**. Here, non-quantized means
-the gradients and Hessians are not packed into small integer values; feature
-values still use the tree learner's bins. FP64 means 64-bit floating
-point for histogram storage and split arithmetic. Objective gradients and Hessians
-still use their established representation; these gains come from organizing
-the FP64 work more efficiently.
+![Training times for the latest strict Falcata runs beside launch Falcata and the original competitor measurements](falcata-1.1/framework-comparison.png)
 
-Both builds ran on the same RTX 5090, using the same cached data, configuration,
-seed and 32 CPU threads. GPUQ admitted them serially under its strict quiet-machine
-policy. Short workloads use three interleaved timed runs per build after warmup.
-Dataset construction and prediction are outside the training times below.
+On the deep Numerai workload, the October quantized measurement is about **63×
+faster than the launch XGBoost time, 47× faster than CatBoost and 94× faster than
+LightGBM OpenCL**. The launch ratios were roughly 9×, 7× and 14×.
+On Numerai example, the latest Falcata time is about **51× shorter than the
+launch XGBoost time and 20× shorter than the launch CatBoost time**. On Epsilon,
+the corresponding ratios are **4.7× and 9.0×**. These are training-budget
+comparisons against the original competitor measurements, which have **not**
+been rerun. Quality differs: for example, Epsilon AUC is 0.94243 for the new
+Falcata run and 0.9508 for the launch CatBoost run. They are not claims about
+equal-quality training or today's versions of those engines.
 
-| Workload | Before | After | Less training time |
-| --- | ---: | ---: | ---: |
-| Year, deep | 3.50 s | 2.74 s | **21.8%** |
-| Epsilon, deep | 57.77 s | 46.64 s | **19.3%** |
-| Higgs, deep | 15.93 s | 9.66 s | **39.4%** |
-| Numerai example, 2,000 rounds | 54.81 s | 53.81 s | **1.8%** |
-| Numerai deep, 30,000 rounds | 22.88 min | 20.61 min | **9.9%** |
+The deep result is one full 30,000-requested-round run on the October 8 quantized
+build, with holdout CORR 0.02385. The example and Epsilon results are medians of
+three timed runs on the October 9 selected build. All ran on one RTX 5090, admitted
+serially by GPUQ's strict policy with no recorded contention. Times exclude dataset
+construction and prediction. The workload sizes and training budgets match the
+launch cases; deep Numerai used float32 in both snapshots, while the new example
+uses native int8. The launch artifact predates the actual v1.0.0 tag. These are
+dated benchmark comparisons, not a controlled tagged-release comparison.
 
-![FP64 non-quantized training takes less time on the five measured workloads, comparing October development builds](falcata-1.1/fp64-training-time.png)
+Most of this progress comes from the quantized path. Here are the three changes
+that best explain it.
 
-The [chart data](falcata-1.1/training-time-data.json) and
-[plotting script](falcata-1.1/plot_training_time.py) reproduce this figure.
+## 1. Give each tree the data it will actually use
 
-The full Numerai-deep result is **one complete run per build**: two minutes and
-sixteen seconds saved, with holdout CORR moving from 0.0238562 to 0.0238004.
-One pair cannot establish repeatability or equivalent quality. Year and Epsilon's
-quality ranges overlap; Higgs has a similar median AUC and one lower-scoring draw.
+Numerai is an unusually wide workload: 3,555 features, each with only a few values.
+A tree that samples 10% of those features should not stream all 3,555 columns
+through memory every time it builds a histogram.
 
-**What “before” means matters.** This table compares development commit
-`09b6be97` with `d0bb8c47`. The former already contains the public October
-optimizations described later in this article. The table measures the additional
-work in PR #71. Tagged 1.0 and competing engines were not rerun; the launch post's
-cross-library numbers belong to its original experiment.
+Falcata already had a **compact view** at launch: a smaller matrix containing the
+columns sampled by that tree. The newer work makes that view cheaper to obtain.
+The GPU keeps one persistent **column-major** store, where values from one feature
+sit together. A tiled gather fills the per-tree view from contiguous reads;
+when almost all features are used, a measured layout choice can instead retain a
+full row-major view and apply a feature mask.
 
-The [dated timing report](https://github.com/MechaFauna-ai/Falcata/blob/a478c3f613f838e952b163c16e38c500cedc2a64/docs/2026-10-09_noquant-timings.md)
-retains configurations, loaded-library hashes, endpoints and failures. All 35
-strict queue jobs finished: 33 done, two failed, zero recorded contention.
+This removes a surprisingly expensive detour: keeping both full layouts, packing
+the matrix on the CPU, uploading it, then transposing it. In the documented
+6.79-million-row experiment at `feature_fraction=0.1`, steady peak device memory
+above idle fell from **25.0 to 13.7 GiB**, and first-round setup fell from
+**2.49 to 0.64 seconds**. The layout probe can temporarily use more memory while
+testing its candidates.
 
-## Faster split search without a precision shortcut
+Making the intended fast paths eligible at the real wide shape mattered too.
+Tiled fill and warp split search took the measured deep round from **29.6 to
+18.3 ms**, and the example round from **17.0 to 9.0 ms**, with the same models.
+Those are local, interleaved experiments, not factors to multiply into the launch
+comparison.
 
-A decision tree chooses a split by asking which feature threshold reduces the
-loss most. To answer efficiently, it builds a **histogram**: for each feature bin,
-it sums gradients, which say which way predictions should move, and Hessians,
-which describe the local curvature of the loss.
+For CUDA readers: the later fill aligns column pitches to 32-byte sectors, so
+word staging also works with odd row counts. It prefetches upcoming tiles into L2,
+the GPU's shared cache. The profiled fill reached **83% of peak DRAM bandwidth**;
+at that point, reducing bytes and passes matters more than adding threads.
 
-Testing successive thresholds requires **prefix sums**. The first threshold gets
-bin 1; the next gets bins 1 and 2; the next gets bins 1, 2 and 3. A literal loop
-makes each result wait for the previous addition.
+Code: [direct layout](https://github.com/MechaFauna-ai/Falcata/commit/3d659149c3fd6744f415b0397d5f1d06f9755da5),
+[tiled fill](https://github.com/MechaFauna-ai/Falcata/commit/be92c00500901b4ee63ee4a990142d87b83acd50),
+[alignment and prefetch](https://github.com/MechaFauna-ai/Falcata/commit/06ef5a46e4107ebbc745acf48edf2609ce79e1eb).
 
-The new FP64 path uses parallel scans, exchanging partial sums within a **warp**,
-a group of 32 GPU threads. A short tree of steps makes more thresholds ready
-together. The arithmetic stays FP64, but a parallel sum
-can add values in a different order. Floating-point addition is not associative,
-so “same precision” does not mean “identical bits.”
+## 2. One load, six feature pairs
 
-That is why the change is restricted to the graph route that already builds
-histograms with floating-point atomics, whose accumulation order can vary.
-Eligible deterministic histogram routes retain CPU-order scans. Host-launched
-and classic routes also retain those scans, although an atomic histogram fallback
-still prevents a general CPU-parity guarantee.
+A tree chooses a threshold using **histograms**: sums of gradients and Hessians
+for each feature bin. Gradients describe the direction a prediction should move;
+Hessians describe the local curvature of the loss. Quantized training represents
+these contributions with small integers, making accumulation cheaper and
+independent of its execution order. The quantization resolution remains a
+speed/quality choice.
 
-Earlier work in the development line sped up the CPU-order finder while keeping
-its arithmetic order: independent serial chains run in separate lanes, finite
-gain comparisons use ordered integer keys, and cheap FP32 bounds screen candidates
-before expensive exact work. A bound is a filter, not the final answer: candidates
-that can win still receive the FP64 calculation. These changes were already in
-the baseline of the new table.
+Low-cardinality features offer another opportunity. For two five-valued features,
+there are only **25 joint states**. Instead of constructing two separate
+histograms, we accumulate one joint table. Summing its rows or columns recovers
+the two ordinary histograms exactly, for the same quantized contributions.
+One joint-cell update replaces two feature updates; split search still sees the
+original features, rather than a new interaction feature. In its same-build
+ablation, turning joint construction OFF added **45.6% to round time**.
 
-## Giving captured graphs the same efficient bookkeeping
+![Two five-valued features form 25 joint cells; six five-bit cell indices share one word and reuse row and gradient loads](falcata-1.1/joint-histogram-codewords.png)
 
-A **CUDA graph** records a sequence of GPU operations and replays it with less CPU
-launch overhead. Recording an efficient sequence matters just as much as replaying
-it efficiently.
+That joint-state index needs only **five bits**. Six indices fit in a 32-bit word,
+with two spare bits. For the sampled Numerai view, sector-padded rows shrink from
+**178 to 128 bytes** within the existing allocation: 28% fewer bytes to write.
 
-Three existing optimizations now also serve the captured level loop:
+But compression alone was not the big win. An earlier experiment read 36% fewer
+bytes and gained only 2–3%. The profiler showed a **load/store issue bottleneck**:
+the GPU was busy issuing requests, not simply exhausting memory bandwidth.
 
-- **Process more rows per thread.** Row-partition kernels can keep more rows in
-  flight. The planner uses the GPU's occupancy calculation to choose suitable
-  builds: enough work resident on a compute unit can hide memory waits.
-- **Fuse apply bookkeeping.** Applying a split means routing rows, recording the
-  tree structure and preserving rows in terminal leaves. Combining compatible
-  work removes intermediate launches and passes over those rows.
-- **Skip leaves that cannot split.** A conservative row-count bound identifies
-  leaves too small for two legal children, allowing for count rounding. Forced
-  splits keep their established path. Unusable histograms and searches are skipped.
+The decisive change was assigning one thread a whole code word. One row-index
+load and one packed gradient/Hessian load now serve **six feature pairs**. A warp,
+the GPU's group of 32 threads, covers a compact row with coalesced word reads.
+The six histogram updates still happen; their shared inputs are fetched once.
 
-The ablations put limits on the story. On Numerai example, the row-kernel port
-saves about 1.9% in a same-build ON/OFF comparison; the fused apply port is
-effectively unchanged. Count pruning saves about 7% of elapsed time in the
-declared 500-round Numerai-deep probe. That probe is not a prediction of a
-30,000-round gain.
+The construct kernel issued **63% fewer load/store instructions** and fell from
+**2.05 to 1.27 ms**. Across 12 interleaved pairs, the complete measured round fell
+from **4.67 to 3.84 ms: 1.217× faster**, with identical model fingerprints.
+Full 30,000-tree comparisons in that experiment measured **202.1 to 246.4 trees/s**.
+This specialization engages only on eligible sampled, packed views whose feature
+pairs have at most 32 joint cells.
 
-Forced `graph_quant:on` was slower than OFF in all seven historical quantized
-cases we reran, despite matching timed model and prediction fingerprints.
-Quantized graph mode stays opt-in: the stopwatch decides whether fewer launches
-help the complete workload.
+Treating missing values as a sixth bin can exceed that limit. Pair-joint
+histograms still support six-by-six tables; the five-bit view declines when a
+sampled pair needs more than 32 cells. A faithful six-state throughput comparison
+is [being measured separately](falcata-1.1/benchmarks.md#five-values-versus-five-values-plus-missing).
 
-## Moving less data, and making each load do more
+Code: [joint histograms](https://github.com/MechaFauna-ai/Falcata/commit/4da13ec904d51eb851eba7ec5187ff69a78fd1c1),
+[five-bit view](https://github.com/MechaFauna-ai/Falcata/commit/4767ce8bc1ee358d50e51fd5098db1b3e7005e27),
+[one thread per word](https://github.com/MechaFauna-ai/Falcata/commit/f8417c77906b85ddd1dc8a3b17467c46eff353e5).
 
-Much of the work since the launch concerns wide, low-cardinality data such as
-Numerai: thousands of columns, but only a few values per column.
+## 3. Keep useful work in flight
 
-### One persistent matrix, with a view that fits the tree
+A fast histogram kernel can still spend much of its time waiting for scattered
+memory reads. **Occupancy** describes how much thread work can remain resident on
+a GPU multiprocessor. Enough independent work lets it execute another warp while
+the first waits for data.
 
-**Column sampling** means a tree uses only a fraction of the features. Reading a
-full row anyway wastes bandwidth on columns the tree will never inspect.
-Falcata's compact view gathers the selected columns once, then uses that smaller
-matrix throughout the tree.
+Our earlier pair construct used 64 registers and could keep only one block
+resident. A spill-free 48-register variant, selected using CUDA's occupancy API,
+kept **36 warps resident** in the measured shape. Shared-memory allocation was
+also constrained so those blocks did not needlessly squeeze the L1 cache.
+A 40-register version of that kernel spilled into local memory and lost; it was
+rejected. A later, different code-word body reached 40 registers by removing
+branches and changing the work, rather than imposing the same losing cap.
 
-The development line keeps either a column-major store plus a compact per-tree
-view, or a full row-major view with a feature mask when almost every column is
-used. A runtime probe chooses the crossover and caches its decision.
+Work scheduling extends beyond the kernel. Roughly fourteen tiny metadata uploads
+became one upload and a GPU scatter. Compatible partition, tree-update and gap-copy
+work share a launch. Producing kernels write their own mapped host staging, and
+stream dependencies order work without making the CPU wait at every intermediate
+step. **Required host reads still synchronize.**
 
-In the documented 6.79-million-row, 3,555-feature experiment at
-`feature_fraction=0.1`, peak device memory over idle went from **25.0 to 13.7 GiB**.
-The live layout probe can temporarily use the larger candidate layout; this
-specific comparison describes steady training memory.
+![Before and after schematic of stream ordering, metadata batching, launch fusion and producer readback](falcata-1.1/gpu-coordination.png)
 
-### Histograms for pairs of columns
+We also stop preparing answers nobody can use: leaves too small to form two legal
+children skip histogram construction and split search; constant-Hessian objectives
+avoid rereading a constant array; completed levels skip unnecessary partitioning.
 
-The quantized path can accumulate a **joint histogram** for each pair of feature
-columns. Each cell describes one combination of their bins; summing rows or
-columns recovers the ordinary per-feature histograms used by split search.
+One measured optimization package reduced a round from **5.82 to 5.09 ms** over
+12 interleaved pairs, with identical models. Its profile cut split search from
+**161 to 94 µs** and a level synchronization kernel from **82 to 28 µs**.
+The [performance notes](../performance.md#10c-the-numerai-round-after-56-the-fill-engages-the-level-kernels-shrink-the-host-round-trips-go)
+separate these kernel observations from complete training results.
 
-For two five-valued columns there are only 25 combinations. Their joint-table
-index therefore fits in **five bits**. The newer compact representation stores six
-such indices in a 32-bit word. On the documented Numerai shape that makes a
-compact row 128 bytes instead of 178 bytes, within the same allocated buffer.
+Code: [resident work](https://github.com/MechaFauna-ai/Falcata/commit/be446048d326c0382ef067cca6c9bfe568f67d14),
+[metadata batching](https://github.com/MechaFauna-ai/Falcata/commit/0199a6a30fb7aa70ec1b3d1fba7eb932332bc558),
+[producer readback](https://github.com/MechaFauna-ai/Falcata/commit/3e6fcdf369134c3347315586ebeb139a3515d64c).
 
-The larger gain comes from how it is read: one thread handles a code word, so a
-single row index and gradient load serve six column pairs. The measured construct
-kernel used 63% fewer load/store instructions and fell from 2.05 to 1.27 ms per
-round. This is an example of an **issue bottleneck**: the GPU was spending too
-many instructions requesting data, even before the memory bandwidth was exhausted.
+## Beyond the quantized hot loop
 
-The [documented pair-code experiment](../performance.md#10d-the-numerai-round-after-58-a-5-bit-pair-code-view-of-the-compact-rows)
-measured 4.67 to 3.84 ms per training round with identical models. It used the
-5.46-million-row benchmark split and a quantized configuration. These earlier
-gains are already represented in the baseline of the FP64 table above.
+The same iteration has improved the rest of the library:
 
-### Removing waits around useful work
+- **Split search on broader data.** Warp-sized tasks, conservative FP32 screening
+  and compacted candidate lists reduce expensive exact work while preserving the
+  winning split. The documented 40-bin synthetic workload improved **1.459×**;
+  the low-bin Numerai route was unchanged by that particular package.
+  [Commit](https://github.com/MechaFauna-ai/Falcata/commit/c35442a0892187111f0514b9a6b824f6a6a49b0e).
+- **Non-quantized training.** The pending FP64 scans and graph bookkeeping reduce
+  training time by **21.8% on Year, 19.3% on Epsilon and 39.4% on Higgs** versus
+  the October baseline. Numerai example improves 1.8%; a single full deep pair
+  improves 9.9%, from 22.88 to 20.61 minutes. Parallel scans change addition order;
+  deterministic routes retain their CPU-order scans. **FP64 remains default**;
+  FP32 remains explicit. [Code and evidence](https://github.com/MechaFauna-ai/Falcata/pull/71).
+- **Faster preparation and bounded prediction.** Reused page-locked staging buffers
+  overlap chunk transfers with binning; CPU sampling uses radix sorting and avoids
+  redundant initialization. FIL now predicts wide host inputs in bounded slabs.
+  Native int8 construction measured **3.89 s versus 31.34 s for float32**, with
+  **32.3 versus 64.9 GiB** peak host RSS. That is an input-representation comparison,
+  separate from the training speedups.
+  [Transfer overlap](https://github.com/MechaFauna-ai/Falcata/commit/566a0cff3743f1042b0724f3726a3395af5982da),
+  [prediction slabs](https://github.com/MechaFauna-ai/Falcata/commit/f88b34ad996c2b1f9cf35cd7472909e5f766941a).
+- **More expressive models, already in 1.0.5.** Vector leaves predict up to 16
+  targets from one shared tree; ObliquePool adds sparse projections for slanted
+  decision boundaries; seeded random categorical subsets offer another search
+  strategy. Chunked device input and packed storage broaden the data interfaces.
+  Benefits depend on shape rather than one universal multi-target multiplier.
+  [Release and implementation links](https://github.com/MechaFauna-ai/Falcata/releases/tag/v1.0.5).
+- **Stronger contracts.** Model round trips, importer ordering, live parameter
+  updates and CPU-only imports have been hardened. Quantization-scale Hessian
+  regularization prevents tiny rounded denominators from producing extreme
+  updates; affected models intentionally change.
+  [Lifecycle fixes](https://github.com/MechaFauna-ai/Falcata/commit/116f8b54d74f6c494cb05d47636df16e10fb24e2),
+  [Hessian ridge](https://github.com/MechaFauna-ai/Falcata/commit/ef8203fbf33eaee6b76a147e3b86f997c47882ab).
 
-The same series batches small tree metadata uploads, overlaps safe transfers,
-starts row partitioning before host bookkeeping, and lets producing kernels write
-their own readback buffers. Constant-Hessian objectives avoid reading an array
-whose entries are all the same, and terminal levels avoid partition work that
-only a later level would use.
+## Speed has to survive the checks
 
-Stream dependencies keep the ordering intact; waits move to where their answers
-are needed. The [performance notes](../performance.md#10b-the-numerai-round-after-the-pair-joint-construct-occupancy-the-tree-boundary-level-pruning)
-record profiles and ablations, including optimizations that lost and remained off.
+The selected runtime passed four canonical model gates and a 357-cell verification
+lattice. The touched CUDA suite passed 284 cases, with ten skips and four expected
+failures. Mechanical optimizations have identity checks; numerical changes also
+need fresh quality evidence.
 
-## Starting sooner, and predicting without a giant allocation
+That discipline keeps losing experiments visible. Forced quantized CUDA graphs
+were slower in all seven historical cases rerun, so they remain opt-in. Uncapped
+FP64 fraud runs produced extreme leaf updates and saturated probabilities; their
+failures remain recorded. Explicitly capping updates with `max_delta_step=1`
+passed all ten strict follow-up endpoints at AUC around 0.979, as a separately
+labelled configuration. Covtype's unstable draws stay outside the headline claims.
 
-Training time begins after a dataset has been built. For a large input, that
-preparation can be substantial, so it deserves its own measurements.
+The [companion](falcata-1.1/benchmarks.md) includes all quantization modes, earlier
+measurements, exclusions and links to raw evidence. Fresh October 9 Numerai scores
+use `NumeraiEvaluator(cpu)` on a pinned historical benchmark cache; its target label
+is unidentified, so this is implementation evidence rather than production model
+selection. The [dead ends](../perf-dead-ends.md) record ideas that did not earn a
+place in the defaults.
 
-Dataset construction reuses **page-locked staging buffers**, host memory prepared
-for GPU transfers, so chunk uploads can overlap binning. CPU preparation uses radix
-sorting where appropriate, skips redundant initialization, and creates the CUDA
-context during sampling. Numerical matrices with categorical columns can bin
-those columns on the device too.
+The familiar `falcata.train()` API remains. The largest gains came from asking
+more useful questions of the same hardware: which bytes does this tree need,
+which loads can its features share, and which waits does the algorithm require?
 
-Native int8 ingestion remains useful for five-valued data. Our latest isolated
-probe measured median construction of **3.89 s for int8 versus 31.34 s for
-float32**, with peak host RSS **32.3 versus 64.9 GiB**. That is a comparison of input
-representations within the selected build, without held-out quality evaluation.
-Older grouped runs reused datasets and cannot establish a construction speedup
-against these fresh-process measurements.
-
-Prediction through NVIDIA's **Forest Inference Library (FIL)** now scores large
-host inputs in bounded slabs, avoiding an allocation for the entire wide test
-matrix. The benchmark records the actual backend and stages device slabs when
-CuPy is available. The overnight table measures training; inference speed needs
-its own comparison.
-
-## More kinds of trees, with clearer contracts
-
-The 1.0 series has also grown beyond single-output numerical trees. These features
-already shipped in **1.0.5** and form part of what has changed since the first post:
-
-- **Vector leaves** put several target predictions in each leaf of one shared
-  tree. Low-cardinality, sampled features benefit most from shared work;
-  continuous-feature histogram construction can dominate. CUDA multi-regression
-  supports up to 16 targets, with documented precision and multi-GPU restrictions
-  and a CPU fallback for FIL prediction.
-- **ObliquePool** supplies sparse random projections as ordinary features. A
-  threshold on a projection can describe a slanted boundary across several
-  original features. The fitted pool can be saved beside the model and must be
-  applied again at prediction time.
-- **Random categorical search** tries seeded random subsets of categories instead
-  of only the sorted search. It offers another regularization choice for features
-  with many categories; `cat_random_search=0` keeps the existing search.
-- **Packed four-bit storage and chunked CUDA input** reduce representation costs
-  and let datasets arrive as a list of device arrays.
-
-The [1.0.5 release notes](https://github.com/MechaFauna-ai/Falcata/releases/tag/v1.0.5)
-also document correctness repairs: round trips now preserve model statistics and
-handle constant trees; quantized training gets protection against tiny Hessians
-under bagging and synchronized rounding errors. Those quantization repairs
-intentionally change affected trained models.
-
-More recent development hardens model lifecycle and importer behavior, loads the
-CUDA driver lazily so CPU use can import without an NVIDIA driver, and adds
-vector-leaf gate coverage. Fixedpoint training with per-row Hessians also gets a
-small, quantization-scale **ridge**: a stabilizing denominator term that prevents
-tiny rounded Hessians from producing unreasonable split gains and leaf updates.
-Its covtype quality change is intentional and has updated regression fingerprints.
-
-PR #71 also makes live parameter changes safer. A CUDA learner allocates resources
-for its precision and quantization mode when training starts. Changing those modes
-without rebuilding the learner could make the configuration disagree with its
-actual buffers. Unsupported changes now fail before altering the live state;
-ordinary learning-rate updates and settings that resolve to the current mode
-remain supported. Partial updates preserve the original backend and automatic
-quantization intent.
-
-## What the failures taught us
-
-Covtype accuracy varies between draws. Fraud's unregularized binary configuration
-produced near-random probability AUC in several runs; both learning curves were
-rejected by the existing harness. Those records remain excluded from the headline
-table.
-
-The follow-up diagnostics explain both problems. On severely imbalanced data,
-tiny Hessians let uncapped Newton updates become huge while remaining finite.
-Uncapped shallow and deep runs reached margins above 550,000, with almost every
-holdout probability rounded to 0 or 1. Native AUC matched CPU raw-margin AUC;
-cached probabilities matched CPU tree predictions exactly. The apparent curve
-disagreement came from comparing raw-margin ranks with saturated probabilities.
-
-With explicit `max_delta_step=1`, both diagnostic runs completed all 500 trees,
-had no saturated probabilities, and reached AUC 0.97926 shallow and 0.97916 deep.
-The subsequent strict rerun passed **all ten endpoints**: a warmup, three timed
-draws and a curve for each capped configuration. All accepted 500 trees, with
-AUC remaining around 0.979 and no recorded contention. This is a separately
-labelled [follow-up experiment](https://github.com/MechaFauna-ai/Falcata/blob/523ed775ad2eec9eeca147c4815c39a8f9400f70/docs/2026-10-09_fraud-followup.md);
-the archived uncapped failures remain unchanged. The harness correction compares
-AUC on the same representation and records actual completed trees when training
-stops. The cap bounds each leaf update before applying the learning rate; it
-repairs this unstable configuration without changing the library's defaults.
-
-**FP64 stays the default.** Fresh precision checks found small Epsilon AUC changes
-and unstable covtype outcomes. Explicit `cuda_precision="fp32"` remains available;
-`"auto"` opts into FP32 on eligible non-quantized CUDA routes and retains FP64 for
-deterministic, double-precision histogram and vector-leaf requirements.
-
-## How we keep the claims testable
-
-The measured runtime passed four canonical model gates, a 357-cell verification
-lattice and the touched CUDA suite: 284 passed, 10 skipped, four expected failures.
-Graph ports have separate identity and lifecycle tests; numerical changes have
-fresh-seed quality evidence, including failed seeds.
-
-Much of this work is agent-assisted: separate coding agents inspect profiles,
-implement candidates and review the evidence. Their proposals go through the
-same identity, validity and performance gates. A profile can suggest an idea;
-an interleaved experiment and a regression test decide whether it earns a place
-in the library.
-
-Matching fingerprints establish identity on a tested route. Overlapping quality
-ranges and uncontended timings answer different questions. The Numerai cache is
-a pinned historical reproduction with an unidentified label, scored with
-`NumeraiEvaluator(cpu)`; it compares implementations on fixed data rather than
-selecting a current target or production model.
-
-The proposed release keeps the familiar `falcata.train()` API. Across the pipeline,
-the goal is consistent: give GPU operations useful work, move only the data they
-need, and wait where the algorithm needs an answer.
-
-The code is MIT licensed at [MechaFauna-ai/Falcata](https://github.com/MechaFauna-ai/Falcata).
-The [performance notes](../performance.md),
-[dead ends](../perf-dead-ends.md) and
-[latest quality report](https://github.com/MechaFauna-ai/Falcata/blob/a478c3f613f838e952b163c16e38c500cedc2a64/docs/2026-10-09_noquant-validation.md)
-contain the detailed experiments. Workloads that disagree with these results are
-welcome: they are how we find the next bottleneck, or the next broken assumption.
-
-Falcata derives from LightGBM (MIT, Microsoft Corporation and the LightGBM
-developers). The measurements above are for a single RTX 5090 and the stated
-data splits and configurations.
+Falcata is MIT licensed and derives from LightGBM (Microsoft Corporation and the
+LightGBM developers). [Code and contributions](https://github.com/MechaFauna-ai/Falcata).
