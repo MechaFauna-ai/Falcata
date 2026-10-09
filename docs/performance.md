@@ -961,6 +961,11 @@ cover final 1024-row tails, terminal-window gaps, resets of config and training 
 boundaries, and the forced-split and low-leaf-budget host fallbacks. Dense boundary distractors ensure that
 the count-margin cases run the captured path rather than a sparse fallback.
 
+The immutable [2026-10-09 correctness and quality verdict](2026-10-09_noquant-validation.md) records the
+selected FP64 runtime, unchanged locks, complete fresh paired seed results and retained sanity failures.
+It does not claim quality improvement or a cost-free tradeoff. Strict timing jobs await admission and will
+receive a separate report.
+
 ## 8. GPU inference via NVIDIA FIL
 
 `Booster.predict()` on a CUDA-trained model routes through cuML's Forest

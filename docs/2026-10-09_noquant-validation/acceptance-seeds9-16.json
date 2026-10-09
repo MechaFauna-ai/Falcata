@@ -1,0 +1,872 @@
+{
+    "datasets": {
+        "covtype": {
+            "cells": {
+                "baseline": {
+                    "10": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "gpuq_job_id": 3621,
+                        "input_dtype": "float32",
+                        "kind": "seed10",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "accuracy": 0.9695446761271224,
+                            "mlogloss": 0.09453458157258153,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 10,
+                        "status": "ok"
+                    },
+                    "11": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "gpuq_job_id": 3621,
+                        "input_dtype": "float32",
+                        "kind": "seed11",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "accuracy": 0.8547455745548738,
+                            "mlogloss": 2.789442336008305,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 11,
+                        "status": "ok"
+                    },
+                    "12": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "gpuq_job_id": 3621,
+                        "input_dtype": "float32",
+                        "kind": "seed12",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "accuracy": 0.8547369689250708,
+                            "mlogloss": 2.7416215726997266,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 12,
+                        "status": "ok"
+                    },
+                    "13": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "gpuq_job_id": 3621,
+                        "input_dtype": "float32",
+                        "kind": "seed13",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "accuracy": 0.8424911577153774,
+                            "mlogloss": 3.0639105487753637,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 13,
+                        "status": "ok"
+                    },
+                    "14": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "gpuq_job_id": 3621,
+                        "input_dtype": "float32",
+                        "kind": "seed14",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "accuracy": 0.7058767845924804,
+                            "mlogloss": 9.199559723471578,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 14,
+                        "status": "ok"
+                    },
+                    "15": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "gpuq_job_id": 3621,
+                        "input_dtype": "float32",
+                        "kind": "seed15",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "accuracy": 0.8664922592359922,
+                            "mlogloss": 2.395877313212003,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 15,
+                        "status": "ok"
+                    },
+                    "16": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "gpuq_job_id": 3621,
+                        "input_dtype": "float32",
+                        "kind": "seed16",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "accuracy": 0.8585234460383984,
+                            "mlogloss": 2.732955240908972,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 16,
+                        "status": "ok"
+                    },
+                    "9": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "gpuq_job_id": 3621,
+                        "input_dtype": "float32",
+                        "kind": "seed9",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "accuracy": 0.8083182017675964,
+                            "mlogloss": 4.773129884871464,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 9,
+                        "status": "ok"
+                    }
+                },
+                "candidate": {
+                    "10": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "gpuq_job_id": 3622,
+                        "input_dtype": "float32",
+                        "kind": "seed10",
+                        "library": "falcata-noquant",
+                        "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                        "metrics": {
+                            "accuracy": 0.8680498782303383,
+                            "mlogloss": 2.374050842031566,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                        "seed": 10,
+                        "status": "ok"
+                    },
+                    "11": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "gpuq_job_id": 3622,
+                        "input_dtype": "float32",
+                        "kind": "seed11",
+                        "library": "falcata-noquant",
+                        "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                        "metrics": {
+                            "accuracy": 0.8594528540571241,
+                            "mlogloss": 3.0609330215479025,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                        "seed": 11,
+                        "status": "ok"
+                    },
+                    "12": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "gpuq_job_id": 3622,
+                        "input_dtype": "float32",
+                        "kind": "seed12",
+                        "library": "falcata-noquant",
+                        "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                        "metrics": {
+                            "accuracy": 0.8479987607893084,
+                            "mlogloss": 3.2252965389196615,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                        "seed": 12,
+                        "status": "ok"
+                    },
+                    "13": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "gpuq_job_id": 3622,
+                        "input_dtype": "float32",
+                        "kind": "seed13",
+                        "library": "falcata-noquant",
+                        "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                        "metrics": {
+                            "accuracy": 0.841320792062167,
+                            "mlogloss": 3.4120922710676185,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                        "seed": 13,
+                        "status": "ok"
+                    },
+                    "14": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "gpuq_job_id": 3622,
+                        "input_dtype": "float32",
+                        "kind": "seed14",
+                        "library": "falcata-noquant",
+                        "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                        "metrics": {
+                            "accuracy": 0.8729895097372701,
+                            "mlogloss": 2.204415592526859,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                        "seed": 14,
+                        "status": "ok"
+                    },
+                    "15": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "gpuq_job_id": 3622,
+                        "input_dtype": "float32",
+                        "kind": "seed15",
+                        "library": "falcata-noquant",
+                        "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                        "metrics": {
+                            "accuracy": 0.8386960749722469,
+                            "mlogloss": 3.2280440491578903,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                        "seed": 15,
+                        "status": "ok"
+                    },
+                    "16": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "gpuq_job_id": 3622,
+                        "input_dtype": "float32",
+                        "kind": "seed16",
+                        "library": "falcata-noquant",
+                        "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                        "metrics": {
+                            "accuracy": 0.8315620078655457,
+                            "mlogloss": 3.7053676501469885,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                        "seed": 16,
+                        "status": "ok"
+                    },
+                    "9": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "gpuq_job_id": 3622,
+                        "input_dtype": "float32",
+                        "kind": "seed9",
+                        "library": "falcata-noquant",
+                        "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                        "metrics": {
+                            "accuracy": 0.9695102536079103,
+                            "mlogloss": 0.09370128330513391,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                        "seed": 9,
+                        "status": "ok"
+                    }
+                }
+            },
+            "metrics": {
+                "accuracy": {
+                    "baseline": {
+                        "failed": [],
+                        "max": 0.9695446761271224,
+                        "mean": 0.845091133619614,
+                        "min": 0.7058767845924804,
+                        "missing": [],
+                        "n": 8,
+                        "sanity_failure_count": 0,
+                        "std": 0.07275498330746714,
+                        "unscored_infrastructure_or_training_errors": []
+                    },
+                    "candidate": {
+                        "failed": [],
+                        "max": 0.9695102536079103,
+                        "mean": 0.8661975164152389,
+                        "min": 0.8315620078655457,
+                        "missing": [],
+                        "n": 8,
+                        "sanity_failure_count": 0,
+                        "std": 0.0441985268160389,
+                        "unscored_infrastructure_or_training_errors": []
+                    },
+                    "paired_candidate_minus_baseline": {
+                        "candidate_larger": 3,
+                        "max": 0.1671127251447897,
+                        "mean": 0.021106382795624892,
+                        "median": -0.003954286894486403,
+                        "min": -0.10149479789678406,
+                        "n": 8,
+                        "std": 0.09427571874721048
+                    }
+                },
+                "mlogloss": {
+                    "baseline": {
+                        "failed": [],
+                        "max": 9.199559723471578,
+                        "mean": 3.4738789001899995,
+                        "min": 0.09453458157258153,
+                        "missing": [],
+                        "n": 8,
+                        "sanity_failure_count": 0,
+                        "std": 2.6396759968571124,
+                        "unscored_infrastructure_or_training_errors": []
+                    },
+                    "candidate": {
+                        "failed": [],
+                        "max": 3.7053676501469885,
+                        "mean": 2.6629876560879526,
+                        "min": 0.09370128330513391,
+                        "missing": [],
+                        "n": 8,
+                        "sanity_failure_count": 0,
+                        "std": 1.1549000935463318,
+                        "unscored_infrastructure_or_training_errors": []
+                    },
+                    "paired_candidate_minus_baseline": {
+                        "candidate_larger": 6,
+                        "max": 2.2795162604589843,
+                        "mean": -0.8108912441020468,
+                        "median": 0.4159283442560948,
+                        "min": -6.99514413094472,
+                        "n": 8,
+                        "std": 3.225609521592764
+                    }
+                }
+            },
+            "seeds": [
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16
+            ]
+        },
+        "fraud": {
+            "cells": {
+                "baseline": {
+                    "10": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "gpuq_job_id": 3623,
+                        "input_dtype": "float32",
+                        "kind": "seed10",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "auc": 0.6424900837515648,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 10,
+                        "status": "ok"
+                    },
+                    "11": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "gpuq_job_id": 3623,
+                        "input_dtype": "float32",
+                        "kind": "seed11",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "auc": 0.5654651843855157,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 11,
+                        "status": "ok"
+                    },
+                    "12": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "gpuq_job_id": 3623,
+                        "input_dtype": "float32",
+                        "kind": "seed12",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "auc": 0.6729215356654761,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 12,
+                        "status": "ok"
+                    },
+                    "13": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "gpuq_job_id": 3623,
+                        "input_dtype": "float32",
+                        "kind": "seed13",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "auc": 0.5546551995164977,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 13,
+                        "status": "ok"
+                    },
+                    "14": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "gpuq_job_id": 3623,
+                        "input_dtype": "float32",
+                        "kind": "seed14",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "auc": 0.5910464495308534,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 14,
+                        "status": "ok"
+                    },
+                    "15": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "error": "quality sanity check failed: {'auc': 0.5348500683334674, 'sane': False}",
+                        "gpuq_job_id": 3623,
+                        "input_dtype": "float32",
+                        "kind": "seed15",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "auc": 0.5348500683334674,
+                            "sane": false
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 15,
+                        "status": "insane"
+                    },
+                    "16": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "gpuq_job_id": 3623,
+                        "input_dtype": "float32",
+                        "kind": "seed16",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "auc": 0.6325434190277124,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 16,
+                        "status": "ok"
+                    },
+                    "9": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "gpuq_job_id": 3623,
+                        "input_dtype": "float32",
+                        "kind": "seed9",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "auc": 0.8155446794643575,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 9,
+                        "status": "ok"
+                    }
+                },
+                "candidate": {
+                    "10": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "error": "quality sanity check failed: {'auc': 0.5250745961721774, 'sane': False}",
+                        "gpuq_job_id": 3624,
+                        "input_dtype": "float32",
+                        "kind": "seed10",
+                        "library": "falcata-noquant",
+                        "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                        "metrics": {
+                            "auc": 0.5250745961721774,
+                            "sane": false
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                        "seed": 10,
+                        "status": "insane"
+                    },
+                    "11": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "gpuq_job_id": 3624,
+                        "input_dtype": "float32",
+                        "kind": "seed11",
+                        "library": "falcata-noquant",
+                        "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                        "metrics": {
+                            "auc": 0.5914127011243439,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                        "seed": 11,
+                        "status": "ok"
+                    },
+                    "12": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "error": "quality sanity check failed: {'auc': 0.4993141530669668, 'sane': False}",
+                        "gpuq_job_id": 3624,
+                        "input_dtype": "float32",
+                        "kind": "seed12",
+                        "library": "falcata-noquant",
+                        "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                        "metrics": {
+                            "auc": 0.4993141530669668,
+                            "sane": false
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                        "seed": 12,
+                        "status": "insane"
+                    },
+                    "13": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "gpuq_job_id": 3624,
+                        "input_dtype": "float32",
+                        "kind": "seed13",
+                        "library": "falcata-noquant",
+                        "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                        "metrics": {
+                            "auc": 0.6219287623603184,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                        "seed": 13,
+                        "status": "ok"
+                    },
+                    "14": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "gpuq_job_id": 3624,
+                        "input_dtype": "float32",
+                        "kind": "seed14",
+                        "library": "falcata-noquant",
+                        "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                        "metrics": {
+                            "auc": 0.7902693716766392,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                        "seed": 14,
+                        "status": "ok"
+                    },
+                    "15": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "gpuq_job_id": 3624,
+                        "input_dtype": "float32",
+                        "kind": "seed15",
+                        "library": "falcata-noquant",
+                        "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                        "metrics": {
+                            "auc": 0.8056545405866342,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                        "seed": 15,
+                        "status": "ok"
+                    },
+                    "16": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "gpuq_job_id": 3624,
+                        "input_dtype": "float32",
+                        "kind": "seed16",
+                        "library": "falcata-noquant",
+                        "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                        "metrics": {
+                            "auc": 0.7497098339898706,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                        "seed": 16,
+                        "status": "ok"
+                    },
+                    "9": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "gpuq_job_id": 3624,
+                        "input_dtype": "float32",
+                        "kind": "seed9",
+                        "library": "falcata-noquant",
+                        "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                        "metrics": {
+                            "auc": 0.779129204087375,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                        "seed": 9,
+                        "status": "ok"
+                    }
+                }
+            },
+            "metrics": {
+                "auc": {
+                    "baseline": {
+                        "failed": [
+                            15
+                        ],
+                        "max": 0.8155446794643575,
+                        "mean": 0.6261895774594306,
+                        "min": 0.5348500683334674,
+                        "missing": [],
+                        "n": 8,
+                        "sanity_failure_count": 1,
+                        "std": 0.0900221186240808,
+                        "unscored_infrastructure_or_training_errors": []
+                    },
+                    "candidate": {
+                        "failed": [
+                            10,
+                            12
+                        ],
+                        "max": 0.8056545405866342,
+                        "mean": 0.6703116453830407,
+                        "min": 0.4993141530669668,
+                        "missing": [],
+                        "n": 8,
+                        "sanity_failure_count": 2,
+                        "std": 0.12521568730601815,
+                        "unscored_infrastructure_or_training_errors": []
+                    },
+                    "paired_candidate_minus_baseline": {
+                        "candidate_larger": 5,
+                        "max": 0.27080447225316684,
+                        "mean": 0.044122067923610064,
+                        "median": 0.0466105397913244,
+                        "min": -0.17360738259850927,
+                        "n": 8,
+                        "std": 0.15195382824050616
+                    }
+                }
+            },
+            "seeds": [
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16
+            ]
+        }
+    },
+    "source_summary_sha256": "dcec25a52884cf9f40ad87bdf96d23ba2fa4f356f00e7a35277c786b38be3748"
+}
