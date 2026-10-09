@@ -1,0 +1,120 @@
+{
+    "baseline": {
+        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2"
+    },
+    "build": {
+        "USE_CUDA": true,
+        "cmake": "4.2.3",
+        "cuda": "13.0.88",
+        "cuda_architectures": "120-real",
+        "cxx": "GCC 15.2.0",
+        "python": "3.12.13"
+    },
+    "cache": {
+        "covtype": {
+            "input_dtype": "float32",
+            "n_features": 54,
+            "n_train": 464809
+        },
+        "fraud": {
+            "input_dtype": "float32",
+            "n_features": 29,
+            "n_train": 227845
+        },
+        "machine_path": "/home/felixjk/Documents/exaboost-bench/data/cache",
+        "numerai": {
+            "embargo_eras": 10,
+            "label": "unidentified legacy cache label",
+            "n_features": 3555,
+            "n_rows": 6753184,
+            "n_test_eras": 200,
+            "source_build": "1226.parquet",
+            "test_start": 5463797,
+            "train_end": 5463797
+        }
+    },
+    "environment": {
+        "clear": [
+            "PYTHONPATH",
+            "LD_LIBRARY_PATH"
+        ],
+        "pin": [
+            "artifact interpreter",
+            "runtime/library digest",
+            "resolved precision",
+            "seed",
+            "plan overrides",
+            "same benchmark cache and regimes"
+        ]
+    },
+    "evaluation": {
+        "numerai": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+        "numerai_limit": "fixed-cache implementation comparison; not production/prequential selection",
+        "other_metrics": "existing benchmarks/bench.py evaluator"
+    },
+    "gpu": "RTX 5090, single GPU, GPUQ serialized",
+    "harness_sha256": {
+        "benchmarks/bench.py": "441454600959eae9217b9ebee96ac375cf78af367d4c04f201e1f5e417f14f21",
+        "benchmarks/common.py": "d0ce598bab8ab548531317d2883896234a051d55f947bd9e3a910fdb84a53f55",
+        "tests/gates/canonical.py": "5e283fbbc1cef2bae520034bf5d1381eea20d7b899eef3ddf8b7cd80aeec4783",
+        "tests/gates/lattice.py": "cec1a137273c89a673cf888e29fcc64b44068f53e6e352c4721d0fbdd2ca73d4"
+    },
+    "numerai_evaluator_sha256": "b60d20aa9f81d5462d0dd43d3b0e142ae61974b8b9a381df6f62a89869c89ad5",
+    "numerai_metrics_sha256": "d9a8e8f3773341b540d22e7821d0576278f59a82f2113fbda9c96a049e5daa47",
+    "quality": {
+        "admission": "relaxed",
+        "num_threads": 32,
+        "objectives": {
+            "covtype": {
+                "num_class": 7,
+                "objective": "multiclass"
+            },
+            "fraud": {
+                "objective": "binary"
+            }
+        },
+        "predict_backend": "cpu",
+        "regime": {
+            "device_type": "cuda",
+            "learning_rate": 0.1,
+            "max_bin": 255,
+            "max_depth": 10,
+            "metric": "None",
+            "num_leaves": 1023,
+            "other_parameters": "runtime defaults, no aligned-L2 override",
+            "quant_mode": "none",
+            "rounds": 500
+        },
+        "seeds": {
+            "acceptance": [
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16
+            ],
+            "attribution": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8
+            ]
+        }
+    },
+    "recorded_source": "63a1fc93f6985eb8017a54bd54121c4269ea4f56",
+    "selected": {
+        "cuda_precision_default": "fp64",
+        "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+        "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2"
+    },
+    "summary_script_sha256": "6a6c50ab4144cdfe5691371bf26a1fcf9d66a3b910807b610bf7234a67d545e7",
+    "validation_wrapper_sha256": "8d02e38b1b6ac96dfc3f0f55ac4843e95d60df9d1e1ff3ab76a1dcd7be439da0"
+}

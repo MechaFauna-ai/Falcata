@@ -80,7 +80,7 @@ model = flc.train(
         "device_type": "cuda",
         "num_leaves": 255,
         "quant_mode": "stochastic",   # none | stochastic | fixedpoint
-        "cuda_precision": "fp32",     # fp64 (default) | fp32
+        "cuda_precision": "fp64",     # fp64 (default) | auto | fp32
         "cuda_plan": "auto",          # the planner picks the kernels
     },
     ds,

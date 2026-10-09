@@ -392,7 +392,7 @@ class Booster {
   void ResetConfig(const char* parameters) {
     UNIQUE_LOCK(mutex_)
     auto param = Config::Str2Map(parameters);
-    Config new_config;
+    Config new_config = config_;
     new_config.Set(param);
     if (train_data_ == nullptr && !new_config.forcedsplits_filename.empty()) {
       Log::Fatal("forcedsplits_filename can only be changed for a booster with training data");
@@ -406,9 +406,37 @@ class Booster {
     if (param.count("metric") && new_config.metric != config_.metric) {
       Log::Fatal("Cannot change metric during training");
     }
+    if (train_data_ != nullptr && new_config.device_type != config_.device_type) {
+      Log::Fatal("Cannot change device_type during training");
+    }
+    if (train_data_ != nullptr && config_.device_type == std::string("cuda")) {
+      // Init fixes the CUDA learner's histogram layout, precision switches
+      // and discretizer. ResetConfig does not rebuild those resources.
+      if (new_config.ResolvedQuantMode() != config_.ResolvedQuantMode() ||
+          new_config.use_quantized_grad != config_.use_quantized_grad) {
+        Log::Fatal("Cannot change quant_mode during CUDA training");
+      }
+      if (new_config.ResolvedCudaPrecision() != config_.ResolvedCudaPrecision()) {
+        Log::Fatal("Cannot change cuda_precision during CUDA training");
+      }
+      if (new_config.gpu_use_dp != config_.gpu_use_dp) {
+        Log::Fatal("Cannot change gpu_use_dp during CUDA training");
+      }
+      if (config_.use_quantized_grad) {
+        if (param.count("num_grad_quant_bins") > 0 &&
+            (new_config.num_grad_quant_bins != config_.num_grad_quant_bins ||
+             new_config.quant_bins_from_auto != config_.quant_bins_from_auto)) {
+          Log::Fatal("Cannot change quant_bins during CUDA training");
+        }
+        if (config_.ResolvedQuantMode() == QuantMode::kStochastic &&
+            new_config.stochastic_rounding != config_.stochastic_rounding) {
+          Log::Fatal("Cannot change stochastic_rounding during CUDA training");
+        }
+      }
+    }
     CheckDatasetResetConfig(config_, param);
 
-    config_.Set(param);
+    config_ = std::move(new_config);
 
     OMP_SET_NUM_THREADS(config_.num_threads);
 

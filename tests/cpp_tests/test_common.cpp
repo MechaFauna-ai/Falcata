@@ -4,9 +4,120 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 #include <gtest/gtest.h>
+#include <Falcata/config.h>
 #include <Falcata/utils/common.h>
 
 #include <limits>
+
+
+TEST(ConfigResolutionTest, AutomaticCudaPrecisionTracksPartialResets) {
+  Falcata::Config config;
+  config.Set(Falcata::Config::Str2Map("device_type=cuda quant_mode=none cuda_precision=auto"));
+  EXPECT_EQ(config.cuda_precision, "fp32");
+  config.Set(Falcata::Config::Str2Map("learning_rate=0.05"));
+  EXPECT_EQ(config.cuda_precision, "fp32");
+  config.Set(Falcata::Config::Str2Map("gpu_use_dp=true"));
+  EXPECT_EQ(config.cuda_precision, "fp64");
+  config.Set(Falcata::Config::Str2Map("gpu_use_dp=false"));
+  EXPECT_EQ(config.cuda_precision, "fp32");
+  config.Set(Falcata::Config::Str2Map("cuda_precision=fp64"));
+  config.Set(Falcata::Config::Str2Map("learning_rate=0.025"));
+  EXPECT_EQ(config.cuda_precision, "fp64");
+  config.Set(Falcata::Config::Str2Map("cuda_precision=auto"));
+  EXPECT_EQ(config.cuda_precision, "fp32");
+  config.Set(Falcata::Config::Str2Map("quant_mode=stochastic"));
+  EXPECT_EQ(config.cuda_precision, "fp64");
+  config.Set(Falcata::Config::Str2Map("quant_mode=none"));
+  EXPECT_EQ(config.cuda_precision, "fp32");
+}
+
+TEST(ConfigResolutionTest, CudaPrecisionDefaultsToFp64) {
+  Falcata::Config config;
+  config.Set(Falcata::Config::Str2Map("device_type=cuda quant_mode=none"));
+  EXPECT_EQ(config.cuda_precision, "fp64");
+  EXPECT_FALSE(config.cuda_precision_from_auto);
+  for (int i = 0; i < 2; ++i) {
+    config.Set(Falcata::Config::Str2Map("learning_rate=0.05"));
+    EXPECT_EQ(config.cuda_precision, "fp64");
+    EXPECT_FALSE(config.cuda_precision_from_auto);
+  }
+}
+
+TEST(ConfigResolutionTest, ExplicitDeviceSurvivesPartialResets) {
+  Falcata::Config config;
+  // The initial automatic backend depends on CUDA availability. Pinning CPU
+  // clears its portability marker and survives resets on either build type.
+  config.Set(Falcata::Config::Str2Map("quant_mode=none cuda_precision=auto"));
+  config.Set(Falcata::Config::Str2Map("device_type=cpu"));
+  EXPECT_FALSE(config.device_type_from_auto);
+  EXPECT_TRUE(config.device_type_from_user);
+  for (int i = 0; i < 2; ++i) {
+    config.Set(Falcata::Config::Str2Map("learning_rate=0.05"));
+    EXPECT_EQ(config.device_type, "cpu");
+    EXPECT_EQ(config.cuda_precision, "fp64");
+    EXPECT_FALSE(config.device_type_from_auto);
+  }
+  config.Set(Falcata::Config::Str2Map("device_type=cuda"));
+  config.Set(Falcata::Config::Str2Map("learning_rate=0.025"));
+  EXPECT_EQ(config.device_type, "cuda");
+  EXPECT_EQ(config.cuda_precision, "fp32");
+  EXPECT_FALSE(config.device_type_from_auto);
+}
+
+TEST(ConfigResolutionTest, ExplicitQuantModeSurvivesPartialResets) {
+  Falcata::Config config;
+  config.Set(Falcata::Config::Str2Map("device_type=cuda deterministic=true quant_mode=none cuda_precision=auto"));
+  for (int i = 0; i < 2; ++i) {
+    config.Set(Falcata::Config::Str2Map("learning_rate=0.05"));
+    EXPECT_EQ(config.quant_mode, "none");
+    EXPECT_FALSE(config.use_quantized_grad);
+    EXPECT_EQ(config.cuda_precision, "fp64");
+  }
+  // Returning to auto restores deterministic's fixedpoint inference.
+  config.Set(Falcata::Config::Str2Map("quant_mode=auto"));
+  EXPECT_EQ(config.quant_mode, "fixedpoint");
+  config.Set(Falcata::Config::Str2Map("learning_rate=0.025"));
+  EXPECT_EQ(config.quant_mode, "fixedpoint");
+}
+
+TEST(ConfigResolutionTest, AutomaticQuantBinsSurvivePartialResets) {
+  Falcata::Config config;
+  config.Set(Falcata::Config::Str2Map("device_type=cuda quant_mode=stochastic"));
+  EXPECT_EQ(config.num_grad_quant_bins, 4);
+  EXPECT_TRUE(config.quant_bins_from_auto);
+  for (int i = 0; i < 2; ++i) {
+    config.Set(Falcata::Config::Str2Map("learning_rate=0.05"));
+    EXPECT_EQ(config.num_grad_quant_bins, 4);
+    EXPECT_TRUE(config.quant_bins_from_auto);
+  }
+  config.Set(Falcata::Config::Str2Map("quant_bins=4"));
+  EXPECT_EQ(config.num_grad_quant_bins, 4);
+  EXPECT_FALSE(config.quant_bins_from_auto);
+  config.Set(Falcata::Config::Str2Map("learning_rate=0.025"));
+  EXPECT_FALSE(config.quant_bins_from_auto);
+  config.Set(Falcata::Config::Str2Map("quant_bins=0"));
+  EXPECT_EQ(config.num_grad_quant_bins, 4);
+  EXPECT_TRUE(config.quant_bins_from_auto);
+  config.Set(Falcata::Config::Str2Map("learning_rate=0.05"));
+  EXPECT_TRUE(config.quant_bins_from_auto);
+}
+
+TEST(ConfigResolutionTest, AutomaticQuantModeFollowsCompatibilityFlag) {
+  Falcata::Config config;
+  config.Set(Falcata::Config::Str2Map("device_type=cuda quant_mode=auto use_quantized_grad=false cuda_precision=auto"));
+  EXPECT_EQ(config.quant_mode, "none");
+  EXPECT_EQ(config.cuda_precision, "fp32");
+  config.Set(Falcata::Config::Str2Map("use_quantized_grad=true"));
+  EXPECT_EQ(config.quant_mode, "stochastic");
+  EXPECT_EQ(config.cuda_precision, "fp64");
+  config.Set(Falcata::Config::Str2Map("use_quantized_grad=false"));
+  EXPECT_EQ(config.quant_mode, "none");
+  EXPECT_EQ(config.cuda_precision, "fp32");
+  config.Set(Falcata::Config::Str2Map("quant_mode=none"));
+  config.Set(Falcata::Config::Str2Map("use_quantized_grad=true"));
+  EXPECT_EQ(config.quant_mode, "none");
+  EXPECT_FALSE(config.use_quantized_grad);
+}
 
 
 // This is a basic test for floating number parsing.

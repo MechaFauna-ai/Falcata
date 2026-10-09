@@ -1,0 +1,1185 @@
+{
+  "schema": 1,
+  "source": "/tmp/falcata-noquant-20261009",
+  "cache_root": "/home/felixjk/Documents/exaboost-bench",
+  "runtime": {
+    "build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+    "python": "/home/felixjk/falcata-noquant-builds-20261009/d0bb8c47789e062acbf6b770918a0589a74ae9b2/venv/bin/python",
+    "library_path": "/home/felixjk/falcata-noquant-builds-20261009/d0bb8c47789e062acbf6b770918a0589a74ae9b2/venv/lib/python3.12/site-packages/falcata/lib/lib_falcata.so",
+    "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c"
+  },
+  "library": "falcata-noquant",
+  "seed": 42,
+  "threads": 32,
+  "precision": "default-fp64",
+  "semantics": {
+    "quant_mode": "none",
+    "cuda_precision_parameter": "omitted (FP64 default)",
+    "max_bin": 255,
+    "metric_timed": "None",
+    "lambda_l2": "omitted (library default 0)",
+    "curve_metrics": {
+      "binary": "auc",
+      "multiclass": "multi_logloss",
+      "regression": "l2",
+      "numerai": "l2"
+    }
+  },
+  "groups": [
+    "fraud-shallow",
+    "fraud-deep",
+    "covtype-shallow",
+    "covtype-deep",
+    "year-shallow",
+    "year-deep",
+    "higgs-shallow",
+    "higgs-deep",
+    "epsilon-shallow",
+    "epsilon-deep",
+    "airline-shallow",
+    "airline-deep",
+    "numerai-numerai",
+    "numerai-numerai-deep"
+  ],
+  "cells": [
+    {
+      "id": "fraud-shallow/warmup",
+      "group": "fraud-shallow",
+      "dataset": "fraud",
+      "regime": "shallow",
+      "kind": "warmup",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "fraud-shallow/timed1",
+      "group": "fraud-shallow",
+      "dataset": "fraud",
+      "regime": "shallow",
+      "kind": "timed1",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "fraud-shallow/timed2",
+      "group": "fraud-shallow",
+      "dataset": "fraud",
+      "regime": "shallow",
+      "kind": "timed2",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "fraud-shallow/timed3",
+      "group": "fraud-shallow",
+      "dataset": "fraud",
+      "regime": "shallow",
+      "kind": "timed3",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "fraud-shallow/curve",
+      "group": "fraud-shallow",
+      "dataset": "fraud",
+      "regime": "shallow",
+      "kind": "curve",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "fraud-deep/warmup",
+      "group": "fraud-deep",
+      "dataset": "fraud",
+      "regime": "deep",
+      "kind": "warmup",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-fraud-noquant-candidate.jsonl",
+      "origin_job_id": 3578
+    },
+    {
+      "id": "fraud-deep/timed1",
+      "group": "fraud-deep",
+      "dataset": "fraud",
+      "regime": "deep",
+      "kind": "timed1",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-fraud-noquant-candidate.jsonl",
+      "origin_job_id": 3578
+    },
+    {
+      "id": "fraud-deep/timed2",
+      "group": "fraud-deep",
+      "dataset": "fraud",
+      "regime": "deep",
+      "kind": "timed2",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-fraud-noquant-candidate.jsonl",
+      "origin_job_id": 3578
+    },
+    {
+      "id": "fraud-deep/timed3",
+      "group": "fraud-deep",
+      "dataset": "fraud",
+      "regime": "deep",
+      "kind": "timed3",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-fraud-noquant-candidate.jsonl",
+      "origin_job_id": 3578
+    },
+    {
+      "id": "fraud-deep/curve",
+      "group": "fraud-deep",
+      "dataset": "fraud",
+      "regime": "deep",
+      "kind": "curve",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "covtype-shallow/warmup",
+      "group": "covtype-shallow",
+      "dataset": "covtype",
+      "regime": "shallow",
+      "kind": "warmup",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "covtype-shallow/timed1",
+      "group": "covtype-shallow",
+      "dataset": "covtype",
+      "regime": "shallow",
+      "kind": "timed1",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "covtype-shallow/timed2",
+      "group": "covtype-shallow",
+      "dataset": "covtype",
+      "regime": "shallow",
+      "kind": "timed2",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "covtype-shallow/timed3",
+      "group": "covtype-shallow",
+      "dataset": "covtype",
+      "regime": "shallow",
+      "kind": "timed3",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "covtype-shallow/curve",
+      "group": "covtype-shallow",
+      "dataset": "covtype",
+      "regime": "shallow",
+      "kind": "curve",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "covtype-deep/warmup",
+      "group": "covtype-deep",
+      "dataset": "covtype",
+      "regime": "deep",
+      "kind": "warmup",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-covtype-noquant-candidate.jsonl",
+      "origin_job_id": 3577
+    },
+    {
+      "id": "covtype-deep/timed1",
+      "group": "covtype-deep",
+      "dataset": "covtype",
+      "regime": "deep",
+      "kind": "timed1",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-covtype-noquant-candidate.jsonl",
+      "origin_job_id": 3577
+    },
+    {
+      "id": "covtype-deep/timed2",
+      "group": "covtype-deep",
+      "dataset": "covtype",
+      "regime": "deep",
+      "kind": "timed2",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-covtype-noquant-candidate.jsonl",
+      "origin_job_id": 3577
+    },
+    {
+      "id": "covtype-deep/timed3",
+      "group": "covtype-deep",
+      "dataset": "covtype",
+      "regime": "deep",
+      "kind": "timed3",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-covtype-noquant-candidate.jsonl",
+      "origin_job_id": 3577
+    },
+    {
+      "id": "covtype-deep/curve",
+      "group": "covtype-deep",
+      "dataset": "covtype",
+      "regime": "deep",
+      "kind": "curve",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "year-shallow/warmup",
+      "group": "year-shallow",
+      "dataset": "year",
+      "regime": "shallow",
+      "kind": "warmup",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "year-shallow/timed1",
+      "group": "year-shallow",
+      "dataset": "year",
+      "regime": "shallow",
+      "kind": "timed1",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "year-shallow/timed2",
+      "group": "year-shallow",
+      "dataset": "year",
+      "regime": "shallow",
+      "kind": "timed2",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "year-shallow/timed3",
+      "group": "year-shallow",
+      "dataset": "year",
+      "regime": "shallow",
+      "kind": "timed3",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "year-shallow/curve",
+      "group": "year-shallow",
+      "dataset": "year",
+      "regime": "shallow",
+      "kind": "curve",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "year-deep/warmup",
+      "group": "year-deep",
+      "dataset": "year",
+      "regime": "deep",
+      "kind": "warmup",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-year-noquant-candidate.jsonl",
+      "origin_job_id": 3574
+    },
+    {
+      "id": "year-deep/timed1",
+      "group": "year-deep",
+      "dataset": "year",
+      "regime": "deep",
+      "kind": "timed1",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-year-noquant-candidate.jsonl",
+      "origin_job_id": 3574
+    },
+    {
+      "id": "year-deep/timed2",
+      "group": "year-deep",
+      "dataset": "year",
+      "regime": "deep",
+      "kind": "timed2",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-year-noquant-candidate.jsonl",
+      "origin_job_id": 3574
+    },
+    {
+      "id": "year-deep/timed3",
+      "group": "year-deep",
+      "dataset": "year",
+      "regime": "deep",
+      "kind": "timed3",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-year-noquant-candidate.jsonl",
+      "origin_job_id": 3574
+    },
+    {
+      "id": "year-deep/curve",
+      "group": "year-deep",
+      "dataset": "year",
+      "regime": "deep",
+      "kind": "curve",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "higgs-shallow/warmup",
+      "group": "higgs-shallow",
+      "dataset": "higgs",
+      "regime": "shallow",
+      "kind": "warmup",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "higgs-shallow/timed1",
+      "group": "higgs-shallow",
+      "dataset": "higgs",
+      "regime": "shallow",
+      "kind": "timed1",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "higgs-shallow/timed2",
+      "group": "higgs-shallow",
+      "dataset": "higgs",
+      "regime": "shallow",
+      "kind": "timed2",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "higgs-shallow/timed3",
+      "group": "higgs-shallow",
+      "dataset": "higgs",
+      "regime": "shallow",
+      "kind": "timed3",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "higgs-shallow/curve",
+      "group": "higgs-shallow",
+      "dataset": "higgs",
+      "regime": "shallow",
+      "kind": "curve",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "higgs-deep/warmup",
+      "group": "higgs-deep",
+      "dataset": "higgs",
+      "regime": "deep",
+      "kind": "warmup",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-higgs-noquant-candidate.jsonl",
+      "origin_job_id": 3576
+    },
+    {
+      "id": "higgs-deep/timed1",
+      "group": "higgs-deep",
+      "dataset": "higgs",
+      "regime": "deep",
+      "kind": "timed1",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-higgs-noquant-candidate.jsonl",
+      "origin_job_id": 3576
+    },
+    {
+      "id": "higgs-deep/timed2",
+      "group": "higgs-deep",
+      "dataset": "higgs",
+      "regime": "deep",
+      "kind": "timed2",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-higgs-noquant-candidate.jsonl",
+      "origin_job_id": 3576
+    },
+    {
+      "id": "higgs-deep/timed3",
+      "group": "higgs-deep",
+      "dataset": "higgs",
+      "regime": "deep",
+      "kind": "timed3",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-higgs-noquant-candidate.jsonl",
+      "origin_job_id": 3576
+    },
+    {
+      "id": "higgs-deep/curve",
+      "group": "higgs-deep",
+      "dataset": "higgs",
+      "regime": "deep",
+      "kind": "curve",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "epsilon-shallow/warmup",
+      "group": "epsilon-shallow",
+      "dataset": "epsilon",
+      "regime": "shallow",
+      "kind": "warmup",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "epsilon-shallow/timed1",
+      "group": "epsilon-shallow",
+      "dataset": "epsilon",
+      "regime": "shallow",
+      "kind": "timed1",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "epsilon-shallow/timed2",
+      "group": "epsilon-shallow",
+      "dataset": "epsilon",
+      "regime": "shallow",
+      "kind": "timed2",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "epsilon-shallow/timed3",
+      "group": "epsilon-shallow",
+      "dataset": "epsilon",
+      "regime": "shallow",
+      "kind": "timed3",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "epsilon-shallow/curve",
+      "group": "epsilon-shallow",
+      "dataset": "epsilon",
+      "regime": "shallow",
+      "kind": "curve",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "epsilon-deep/warmup",
+      "group": "epsilon-deep",
+      "dataset": "epsilon",
+      "regime": "deep",
+      "kind": "warmup",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-epsilon-noquant-candidate.jsonl",
+      "origin_job_id": 3575
+    },
+    {
+      "id": "epsilon-deep/timed1",
+      "group": "epsilon-deep",
+      "dataset": "epsilon",
+      "regime": "deep",
+      "kind": "timed1",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-epsilon-noquant-candidate.jsonl",
+      "origin_job_id": 3575
+    },
+    {
+      "id": "epsilon-deep/timed2",
+      "group": "epsilon-deep",
+      "dataset": "epsilon",
+      "regime": "deep",
+      "kind": "timed2",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-epsilon-noquant-candidate.jsonl",
+      "origin_job_id": 3575
+    },
+    {
+      "id": "epsilon-deep/timed3",
+      "group": "epsilon-deep",
+      "dataset": "epsilon",
+      "regime": "deep",
+      "kind": "timed3",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-epsilon-noquant-candidate.jsonl",
+      "origin_job_id": 3575
+    },
+    {
+      "id": "epsilon-deep/curve",
+      "group": "epsilon-deep",
+      "dataset": "epsilon",
+      "regime": "deep",
+      "kind": "curve",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "airline-shallow/warmup",
+      "group": "airline-shallow",
+      "dataset": "airline",
+      "regime": "shallow",
+      "kind": "warmup",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "airline-shallow/timed1",
+      "group": "airline-shallow",
+      "dataset": "airline",
+      "regime": "shallow",
+      "kind": "timed1",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "airline-shallow/timed2",
+      "group": "airline-shallow",
+      "dataset": "airline",
+      "regime": "shallow",
+      "kind": "timed2",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "airline-shallow/timed3",
+      "group": "airline-shallow",
+      "dataset": "airline",
+      "regime": "shallow",
+      "kind": "timed3",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "airline-shallow/curve",
+      "group": "airline-shallow",
+      "dataset": "airline",
+      "regime": "shallow",
+      "kind": "curve",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 6,
+        "leaves": 63,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "airline-deep/warmup",
+      "group": "airline-deep",
+      "dataset": "airline",
+      "regime": "deep",
+      "kind": "warmup",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "airline-deep/timed1",
+      "group": "airline-deep",
+      "dataset": "airline",
+      "regime": "deep",
+      "kind": "timed1",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "airline-deep/timed2",
+      "group": "airline-deep",
+      "dataset": "airline",
+      "regime": "deep",
+      "kind": "timed2",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "airline-deep/timed3",
+      "group": "airline-deep",
+      "dataset": "airline",
+      "regime": "deep",
+      "kind": "timed3",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "airline-deep/curve",
+      "group": "airline-deep",
+      "dataset": "airline",
+      "regime": "deep",
+      "kind": "curve",
+      "regime_parameters": {
+        "rounds": 500,
+        "lr": 0.1,
+        "depth": 10,
+        "leaves": 1023,
+        "eval_every": 25
+      },
+      "input_dtype": "f32",
+      "record_input_dtype": "float32"
+    },
+    {
+      "id": "numerai-numerai/warmup",
+      "group": "numerai-numerai",
+      "dataset": "numerai",
+      "regime": "numerai",
+      "kind": "warmup",
+      "regime_parameters": {
+        "rounds": 2000,
+        "lr": 0.01,
+        "depth": 5,
+        "leaves": 32,
+        "colsample": 0.1,
+        "eval_every": 250
+      },
+      "input_dtype": "i8",
+      "record_input_dtype": "int8",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-numerai-noquant-candidate.jsonl",
+      "origin_job_id": 3579
+    },
+    {
+      "id": "numerai-numerai/timed1",
+      "group": "numerai-numerai",
+      "dataset": "numerai",
+      "regime": "numerai",
+      "kind": "timed1",
+      "regime_parameters": {
+        "rounds": 2000,
+        "lr": 0.01,
+        "depth": 5,
+        "leaves": 32,
+        "colsample": 0.1,
+        "eval_every": 250
+      },
+      "input_dtype": "i8",
+      "record_input_dtype": "int8",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-numerai-noquant-candidate.jsonl",
+      "origin_job_id": 3579
+    },
+    {
+      "id": "numerai-numerai/timed2",
+      "group": "numerai-numerai",
+      "dataset": "numerai",
+      "regime": "numerai",
+      "kind": "timed2",
+      "regime_parameters": {
+        "rounds": 2000,
+        "lr": 0.01,
+        "depth": 5,
+        "leaves": 32,
+        "colsample": 0.1,
+        "eval_every": 250
+      },
+      "input_dtype": "i8",
+      "record_input_dtype": "int8",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-numerai-noquant-candidate.jsonl",
+      "origin_job_id": 3579
+    },
+    {
+      "id": "numerai-numerai/timed3",
+      "group": "numerai-numerai",
+      "dataset": "numerai",
+      "regime": "numerai",
+      "kind": "timed3",
+      "regime_parameters": {
+        "rounds": 2000,
+        "lr": 0.01,
+        "depth": 5,
+        "leaves": 32,
+        "colsample": 0.1,
+        "eval_every": 250
+      },
+      "input_dtype": "i8",
+      "record_input_dtype": "int8",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-numerai-noquant-candidate.jsonl",
+      "origin_job_id": 3579
+    },
+    {
+      "id": "numerai-numerai/curve",
+      "group": "numerai-numerai",
+      "dataset": "numerai",
+      "regime": "numerai",
+      "kind": "curve",
+      "regime_parameters": {
+        "rounds": 2000,
+        "lr": 0.01,
+        "depth": 5,
+        "leaves": 32,
+        "colsample": 0.1,
+        "eval_every": 250
+      },
+      "input_dtype": "i8",
+      "record_input_dtype": "int8"
+    },
+    {
+      "id": "numerai-numerai-deep/timed1",
+      "group": "numerai-numerai-deep",
+      "dataset": "numerai",
+      "regime": "numerai-deep",
+      "kind": "timed1",
+      "regime_parameters": {
+        "rounds": 30000,
+        "lr": 0.001,
+        "depth": 10,
+        "leaves": 1024,
+        "colsample": 0.1,
+        "min_data": 10000,
+        "eval_every": 3000
+      },
+      "input_dtype": "i8",
+      "record_input_dtype": "int8",
+      "origin_path": "/tmp/falcata-noquant-validation-20261009/strict-numerai-deep-candidate.jsonl",
+      "origin_job_id": 3583,
+      "origin_kind": "timed1"
+    }
+  ],
+  "source_sha256": {
+    "/tmp/falcata-noquant-20261009/benchmarks/bench.py": "441454600959eae9217b9ebee96ac375cf78af367d4c04f201e1f5e417f14f21",
+    "/tmp/falcata-noquant-20261009/benchmarks/common.py": "d0ce598bab8ab548531317d2883896234a051d55f947bd9e3a910fdb84a53f55",
+    "/tmp/falcata-noquant-20261009/benchmarks/orchestrate.py": "0e54af6e571fd316ec0971aefb4a532e30867922b26661ff305cb33ec23dc210",
+    "/tmp/falcata-noquant-validation-20261009/bench_with_evaluator.py": "8d02e38b1b6ac96dfc3f0f55ac4843e95d60df9d1e1ff3ab76a1dcd7be439da0",
+    "/tmp/falcata-noquant-overnight-20261009/curve_wrapper.py": "ef2e17c623d8dd79280a5123f24910cc24d2ffbecec5cf275440871f78a91629",
+    "/tmp/falcata-noquant-overnight-20261009/affected_runner.py": "c0c8decd305be546871182779b0a668305855e6854c777a8b51b8456fd831386",
+    "/home/felixjk/falcata-noquant-builds-20261009/d0bb8c47789e062acbf6b770918a0589a74ae9b2/venv/lib/python3.12/site-packages/falcata/__init__.py": "ae8ec6a6e6d4c7c903a5ad3a01211ce1086a4934559d97845e4e8c6c286dc7a0",
+    "/home/felixjk/falcata-noquant-builds-20261009/d0bb8c47789e062acbf6b770918a0589a74ae9b2/venv/lib/python3.12/site-packages/falcata/basic.py": "72e71def21cb2b001dc6add1b82b1d4f74b5ccbacc96b292be8aaab007dbfc9b",
+    "/home/felixjk/falcata-noquant-builds-20261009/d0bb8c47789e062acbf6b770918a0589a74ae9b2/venv/lib/python3.12/site-packages/falcata/engine.py": "14626da008f45c432f83a3fd2a7fc6a914ee2bfafe22f61e3f4e818a3483f75c",
+    "/home/felixjk/falcata-noquant-builds-20261009/d0bb8c47789e062acbf6b770918a0589a74ae9b2/venv/lib/python3.12/site-packages/falcata/compat.py": "d4ef09a5e05583d70a6053ee5ed003ddf7deb3fc3ed7c609ba836fcdc9104d8d"
+  },
+  "scope_counts": {
+    "groups": 14,
+    "records": 66,
+    "reserved_existing": 25,
+    "new": 41,
+    "kinds": {
+      "warmup": 13,
+      "timed1": 14,
+      "timed2": 13,
+      "timed3": 13,
+      "curve": 13
+    }
+  }
+}

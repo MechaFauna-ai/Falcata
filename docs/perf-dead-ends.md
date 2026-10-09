@@ -433,6 +433,10 @@ overhead is ~2% of a vector tree and was never the mechanism.
 
 ## Shuffle-order threshold scans on the atomic-construct graph path (2026-10-08)
 
+**Reopened 2026-10-09:** the default atomic-construct noquant path now accepts parallel threshold scans and
+equal-gain split choices. The deterministic fp64 paths retain CPU-order scans and exact split parity. The
+measurements and reason for the original deferral below describe that earlier decision.
+
 - **Tried:** on trees whose level prefix constructs with the atomic kernel (the default graph loop, `graph_det`
   off), the non-quantized finder's threshold prefixes as the tree-shaped shuffle scans of 1.0.0 instead of the
   CPU-order sequential folds.
@@ -447,3 +451,41 @@ overhead is ~2% of a vector tree and was never the mechanism.
   product decision, not a performance one.
 - **Re-open when:** CPU bit-parity is dropped for the default graph path (it already trades run-to-run determinism
   for speed there), or the shuffle scan comes with a tie-break that keeps that test's contract.
+
+## Floating histogram batching and fused-root regrouping (2026-10-09)
+
+- **Tried:** recovered `fd124044` batches the float construct's row loads before accumulation; `d5b65976` fuses
+  float root histograms into the tiled compact fill. Both were interrupted WIP, with no prior fidelity evidence.
+- **Measured:** an isolated-process probe uses 16,384 rows by 1,200 int8 features, feature fraction 0.2 and max
+  bin 15, at explicit fp32 and fp64. Three repetitions of each key separately, both keys, and both off are
+  model-identical for an exact-integer one-round objective. With continuous gradients over 40 rounds, models
+  differ on every arm, including every repeat with both keys off. The largest prediction difference from the
+  first off run is 6.25e-6 off versus 1.04e-5 with fused-root on at fp32; at fp64 it is 2.89e-7 off versus
+  8.46e-7 with both keys on. RMSE spans remain below 1e-7 and 1e-8 respectively. These relaxed-class small
+  timings do not establish a speedup, and the native atomic variability prevents attributing every model
+  difference to one key.
+- **Why not taken:** row batching preserves each thread's arithmetic order, but cannot preserve the order of
+  float atomics across threads. Fused-root changes both the row groups and the precision of their partials.
+  Integer-only identity does not prove the plan-key contract for general continuous gradients. The WIP builds
+  remain available for investigation; their keys and defaults are absent from the accepted mechanical changes.
+- **Same obstacle for float pair-joint / code-word histograms:** reducing a joint table to each feature's
+  marginal groups additions differently from directly accumulating that feature's bins. Floating addition is
+  not distributive: at fp32, accumulating 2^24, 1, -2^24 in that order yields 0, while placing the first and last
+  into one joint cell and the middle into another yields a marginal of 1. This is a code/arithmetic inference,
+  not a measured benchmark. No float pair-joint speedup is claimed.
+- **Re-open when:** a declared numerical mode allows alternate floating reductions with a representative
+  quality gate, or an implementation preserves each existing reduction's arithmetic. Run-to-run atomic noise
+  alone is not permission to label an arithmetic change bit-identical.
+
+## Map-only final levels inside captured graphs (2026-10-09)
+
+- **Audited:** the host apply's `final_map_only` path leaves index partition work pending and completes it before
+  any later window reader. The graph controller instead swaps its main/out pointers at each level, and
+  `FinishHybridGraphLevels` aligns the host buffers by applied-level parity. Final leaf-map materialization and
+  refit operations then consume the final leaf windows.
+- **Why deferred:** skipping the final partition requires device-visible pending state and compatible buffer
+  ownership, map completion and reader recovery; copying the host key into capture alone would leave stale
+  final windows. This is a state transition redesign rather than a cheap kernel port. The row, struct and gap
+  graph ports retain the existing partition and swap semantics.
+- **Re-open when:** graph and host paths share the pending-partition protocol, including tree reset, prediction,
+  refit and any fallback to leaf-wise growth. No runtime saving has been measured for a graph map-only path.

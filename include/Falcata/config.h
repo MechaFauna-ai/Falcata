@@ -40,7 +40,7 @@ const int kDefaultNumLeaves = 31;
 
 // Gradient/hessian quantization mode (resolved from the ``quant_mode`` param).
 enum class QuantMode : int {
-  kNone = 0,        // full-precision fp64 accumulation
+  kNone = 0,        // unquantized gradients and hessians
   kStochastic = 1,  // Falcata-native quantized training (stochastic rounding)
   kFixedPoint = 2,  // deterministic fixed-point quant with gap-gated robust scale
 };
@@ -666,15 +666,17 @@ struct Config {
 
   // desc = quantization mode for gradients and hessians (Falcata)
   // desc = ``auto``: resolves to ``stochastic`` if ``use_quantized_grad=true``, otherwise ``none``
-  // desc = ``none``: full-precision (fp64) gradient/hessian accumulation
+  // desc = ``none``: full-precision (unquantized) gradients and hessians; on ``cuda`` the histogram and gain precision is ``cuda_precision``
   // desc = ``stochastic``: Falcata-native quantized training (same as ``use_quantized_grad=true``): stochastic rounding into ``quant_bins`` bins; aggressive speed end of the trade-off
   // desc = ``fixedpoint``: XGBoost-style deterministic fixed-point quantization with an outlier-robust, gap-gated gradient scale; near-lossless at the default 64 bins
   // desc = **Note**: ``stochastic`` and ``fixedpoint`` work only with ``cuda`` device type; use ``none`` for CPU training
+  // desc = a live CUDA learner cannot change its quantization mode through ``Booster.reset_parameter``; create a new booster for another mode
   std::string quant_mode = "auto";
 
   // alias = quant_bins
   // check = >=0
   // desc = used only when quantized training is active (``quant_mode`` = ``stochastic`` or ``fixedpoint``)
+  // desc = a live quantized CUDA learner cannot change its bin count or switch between automatic and explicit bin resolution through ``Booster.reset_parameter``
   // desc = number of bins to quantization gradients and hessians
   // desc = with more bins, the quantized training will be closer to full precision training
   // desc = ``0`` means auto: ``4`` for ``stochastic`` (Falcata default), ``64`` for ``fixedpoint``
@@ -1187,7 +1189,7 @@ struct Config {
   std::string gpu_device_id_list = "";
 
   // desc = set this to ``true`` to use double precision math on the legacy OpenCL backend (``device_type=gpu``), which accumulates in single precision by default
-  // desc = **Note**: with ``device_type=cuda``, histogram/gain precision is controlled by ``cuda_precision`` instead; setting ``gpu_use_dp=true`` there forces double-precision histograms even if ``cuda_precision=fp32``
+  // desc = **Note**: with ``device_type=cuda``, histogram/gain precision is controlled by ``cuda_precision`` instead; setting ``gpu_use_dp=true`` there resolves ``cuda_precision=auto`` to ``fp64`` and forces double-precision histograms even if ``cuda_precision=fp32``
   bool gpu_use_dp = false;
 
   // check = >0
@@ -1198,16 +1200,20 @@ struct Config {
   // desc = in distributed learning application, each machine can use different number of GPUs
   int num_gpu = 1;
 
-  // desc = floating-point precision of CUDA histogram accumulation and split-gain math (Falcata)
-  // desc = ``fp64``: double-precision accumulation (bit-stable reference)
-  // desc = ``fp32``: single-precision histogram atomics and gain math; measurably faster on high-bin workloads at <=0.1pp quality cost, results are non-deterministic across runs
+  // desc = floating-point precision of CUDA histogram accumulation and split-gain math for non-quantized training (Falcata)
+  // desc = ``auto``: ``fp32`` for non-quantized training (``quant_mode=none``) on ``device_type=cuda``, ``fp64`` otherwise; non-quantized training also stays ``fp64`` under ``gpu_use_dp=true``, under ``deterministic=true`` and for vector-leaf multi-target trees (which need fp64)
+  // desc = ``fp64``: double-precision histogram accumulation and gain math (the reference mode)
+  // desc = ``fp32``: single-precision histogram storage and gain math: less histogram bandwidth and cheaper arithmetic, but predictions and validation quality can change; results are non-deterministic across runs
+  // desc = the default is ``fp64``; opting into ``auto`` or ``fp32`` can change predictions and validation quality, so validate the chosen precision on your workload
+  // desc = a live CUDA learner cannot change its resolved precision or ``gpu_use_dp`` histogram layout through ``Booster.reset_parameter``; create a new booster for another precision
+  // desc = quantized training (``quant_mode=stochastic`` or ``fixedpoint``) resolves ``auto`` to ``fp64``: its histograms are integer sums
   // desc = **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
   std::string cuda_precision = "fp64";
 
   // desc = CUDA execution-plan override string (Falcata)
   // desc = ``auto`` resolves every shape-conditional kernel choice from the data/params via the built-in planner; the resolved plan is logged at startup
   // desc = experts can pin individual decisions with comma-separated ``key:on|off`` overrides after ``auto``, e.g. ``auto,graph_loop:off,tuner:on``
-  // desc = nearly all plan decisions are perf-only and bit-identical: they never change the trained model, only how fast it is produced. Exceptions: ``robust_scale`` (an accuracy guard for ``quant_mode=fixedpoint`` on extreme label imbalance) changes the model when it fires, and ``batch_kernels`` may break exact-gain ties in a different order
+  // desc = nearly all plan decisions are perf-only and bit-identical: they never change the trained model, only how fast it is produced. Exceptions: ``robust_scale`` (an accuracy guard for ``quant_mode=fixedpoint`` on extreme label imbalance) changes the model when it fires, and ``batch_kernels`` may break exact-gain ties in a different order. For non-quantized training, ``graph_loop`` and ``graph_det`` also select the histogram accumulation and threshold scan order, which can change low bits and exact-gain tie choices
   // desc = **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
   std::string cuda_plan = "auto";
 
@@ -1221,6 +1227,7 @@ struct Config {
   // before ResolveFalcataParams resolved it to a concrete default, so the
   // CUDA learner can distinguish "clamp the auto default to the dataset-safe
   // ceiling" from "the user explicitly asked for an unsafe value" (Fatal).
+  // Partial parameter maps preserve this intent until the bins are set again.
   //
   // MUST live outside the #ifndef __NVCC__ region above. Anything declared in
   // there is invisible to nvcc, so Config would have one layout in .cu objects
@@ -1236,6 +1243,22 @@ struct Config {
   // SaveModelToString: a model trained wherever stays device-portable)
   bool device_type_from_auto = false;
 
+  // NOT a parameter: a previously explicit device remains pinned when a
+  // partial reset_parameter map omits device_type. The unset-means-auto
+  // probe applies only while no device has been explicitly selected.
+  bool device_type_from_user = false;
+
+  // NOT a parameter: cuda_precision is (or was) "auto", so every Set() resolves
+  // it again from the current training mode -- a later Set() with a partial
+  // parameter map (Booster.reset_parameter) must not freeze a choice that
+  // depended on parameters it changes. An explicit fp64/fp32 clears it.
+  bool cuda_precision_from_auto = false;
+
+  // NOT a parameter: an explicit non-auto quant_mode remains authoritative when a
+  // partial reset_parameter map omits it. In particular, deterministic=true
+  // must not switch an existing quant_mode=none learner to fixedpoint.
+  bool quant_mode_from_user = false;
+
   size_t file_load_progress_interval_bytes = size_t(10) * 1024 * 1024 * 1024;
 
   bool is_parallel = false;
@@ -1244,8 +1267,9 @@ struct Config {
   static const std::unordered_map<std::string, std::string>& alias_table();
   static const std::unordered_map<std::string, std::vector<std::string>>& parameter2aliases();
 
-  // Falcata typed accessors. Valid only after Set() has run (quant_mode "auto"
-  // and num_grad_quant_bins 0 are resolved to concrete values there).
+  // Falcata typed accessors. Valid only after Set() has run (quant_mode "auto",
+  // cuda_precision "auto" and num_grad_quant_bins 0 are resolved to concrete
+  // values there).
   QuantMode ResolvedQuantMode() const {
     if (quant_mode == "fixedpoint") return QuantMode::kFixedPoint;
     if (quant_mode == "stochastic") return QuantMode::kStochastic;
@@ -1263,6 +1287,7 @@ struct Config {
  private:
   void CheckParamConflict(const std::unordered_map<std::string, std::string>& params);
   void ResolveFalcataParams();
+  void ResolveCudaPrecision(const std::unordered_map<std::string, std::string>& params);
   void GetMembersFromString(const std::unordered_map<std::string, std::string>& params);
   std::string SaveMembersToString() const;
   void GetAucMuWeights();

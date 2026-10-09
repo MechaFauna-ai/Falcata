@@ -703,6 +703,10 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     }
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
     cuda_histogram_constructor_->SetDetBatchedAllowed(det_batched_allowed);
+    // a tree that may not run the deterministic construct builds every
+    // histogram with the order-dependent atomic kernel: no prefix fold order
+    // reproduces CPU's bits there, so its fp64 finds take the parallel scans
+    cuda_best_split_finder_->SetCPUOrderScan(det_batched_allowed);
     cuda_smaller_leaf_splits_->InitValues(
       config_->lambda_l1,
       config_->lambda_l2,
@@ -3004,6 +3008,11 @@ bool CUDASingleGPUTreeLearner::SetupHybridGraphStatics() {
   std::memset(&st, 0, sizeof(st));
   st.max_depth = config_->max_depth;
   st.num_leaves_budget = config_->num_leaves;
+  st.unsplittable_min_data = FalcataPlan::Get().graph_skip_unsplittable && FalcataPlan::Get().skip_unsplittable &&
+    config_->forcedsplits_filename.empty() && (forced_split_json_ == nullptr || forced_split_json_->is_null()) ?
+    config_->min_data_in_leaf : 0;
+  st.apply_fuse_struct = FalcataPlan::Get().graph_apply_fused && FalcataPlan::Get().apply_struct_fused ? 1 : 0;
+  st.apply_fuse_gaps = FalcataPlan::Get().graph_apply_fused && FalcataPlan::Get().gap_copy_fused ? 1 : 0;
   // construct grid x / block dims are filled per instance at build time (the
   // compact view's block shape follows the per-tree sampled column count and
   // is part of the graph key)
@@ -3093,6 +3102,9 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
     1 << std::min(num_level_bodies - 1, 10), kHybridGraphMaxSplitsPerLevel);
   const bool graph_det =
     cuda_histogram_constructor_->DetDenseGraphEligible(det_widest_level_pairs);
+  // the captured find nodes fold their prefixes in CPU order exactly when the
+  // captured construct is the deterministic one (see SetCPUOrderScan)
+  cuda_best_split_finder_->SetCPUOrderScan(graph_det);
   for (int body = 0; body < num_level_bodies; ++body) {
     const size_t body_node_start = nodes.size();
     CaptureHybridGraphControllerKernel(hist_stream, instance->state_dev, body);
@@ -3138,9 +3150,12 @@ bool CUDASingleGPUTreeLearner::BuildHybridGraphInstance(CUDATree* tree,
   cudaEventDestroy(fork_event);
   cudaEventDestroy(apply_event);
   cudaEventDestroy(join_event);
+  // The shortest collected body is tree split, gen-bit, aggregate, fused
+  // apply, atomic construct, fused fix/subtract, find and one sync: eight
+  // nodes. Controllers are captured separately, not in the update-node list.
   if (end_err != cudaSuccess || !capture_ok ||
       nodes.size() != roles.size() || roles.size() != role_static_x.size() ||
-      nodes_per_level > static_cast<size_t>(kHybridGraphMaxNodes) || nodes_per_level < 10) {
+      nodes_per_level > static_cast<size_t>(kHybridGraphMaxNodes) || nodes_per_level < 8) {
     Log::Warning("graphs L1: body capture failed (%s); falling back to the host level loop",
                  cudaGetErrorString(end_err));
     return false;

@@ -291,6 +291,10 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
   GetObjectiveType(params, &objective);
   GetMetricType(params, objective, &metric);
   GetDeviceType(params, &device_type);
+  if (params.count("device_type") > 0) {
+    device_type_from_user = true;
+    device_type_from_auto = false;
+  }
 #ifdef USE_CUDA
   // See CUDASideSizeOfConfig(): if nvcc and the host compiler disagree about
   // Config's layout, every class holding one by value has its members shifted
@@ -313,7 +317,7 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
   // device_type keeps LightGBM's "cpu" spelling in parameter files, but in
   // this library UNSET means auto: a CUDA build with a usable GPU trains on
   // it. Passing device_type explicitly (either value) pins the choice.
-  if (params.count("device_type") == 0 && CUDADeviceUsableByDefault()) {
+  if (!device_type_from_user && CUDADeviceUsableByDefault()) {
     device_type = "cuda";
     device_type_from_auto = true;
     static std::once_flag auto_cuda_logged;
@@ -338,6 +342,24 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
   GetTreeLearnerType(params, &tree_learner);
 
   GetMembersFromString(params);
+
+  if (params.count("num_grad_quant_bins") > 0 || num_grad_quant_bins == 0) {
+    // Resolving the auto sentinel replaces it with a numeric default. Keep
+    // the original intent across partial maps so a live learner can reject
+    // an auto-to-explicit bin change even after ordinary parameter resets.
+    quant_bins_from_auto = (num_grad_quant_bins == 0);
+  }
+
+  if (params.count("quant_mode") > 0) {
+    std::string mode = Common::Trim(quant_mode);
+    std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c){ return std::tolower(c); });
+    quant_mode_from_user = mode != std::string("auto");
+  } else if (!quant_mode_from_user && params.count("use_quantized_grad") > 0) {
+    // An automatic mode follows a new compatibility flag. Other partial
+    // maps keep the effective mode, including deterministic's fixedpoint
+    // resolution, rather than reinterpreting it as stochastic.
+    quant_mode = std::string("auto");
+  }
 
   ResolveFalcataParams();
 
@@ -366,6 +388,8 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
 
   // check for conflicts
   CheckParamConflict(params);
+
+  ResolveCudaPrecision(params);
 }
 
 void Config::ResolveFalcataParams() {
@@ -404,20 +428,45 @@ void Config::ResolveFalcataParams() {
   // quant_bins: 0 means auto (the Falcata-historical 4 for stochastic; 64 for
   // fixedpoint, whose deterministic rounding needs the finer scale). The int16
   // discretized gradient holds +/-(bins/2), so cap well inside that range.
-  quant_bins_from_auto = (num_grad_quant_bins == 0);
   if (num_grad_quant_bins == 0) {
     num_grad_quant_bins = (mode == std::string("fixedpoint")) ? 64 : 4;
   } else if (num_grad_quant_bins < 2 || num_grad_quant_bins > 65534) {
     Log::Fatal("quant_bins=%d is out of range: must be 0 (auto) or in [2, 65534]",
                num_grad_quant_bins);
   }
-  // cuda_precision
+  // cuda_precision: validated here, "auto" resolved by ResolveCudaPrecision
+  // once CheckParamConflict has settled quant_mode
   std::string precision = Common::Trim(cuda_precision);
   std::transform(precision.begin(), precision.end(), precision.begin(), [](unsigned char c){ return std::tolower(c); });
-  if (precision != std::string("fp64") && precision != std::string("fp32")) {
-    Log::Fatal("Unknown cuda_precision \"%s\": must be fp64 or fp32", cuda_precision.c_str());
+  if (precision != std::string("auto") && precision != std::string("fp64") &&
+      precision != std::string("fp32")) {
+    Log::Fatal("Unknown cuda_precision \"%s\": must be auto, fp64 or fp32", cuda_precision.c_str());
   }
   cuda_precision = precision;
+}
+
+// cuda_precision=auto: fp32 histograms and gains for non-quantized CUDA
+// training, fp64 everywhere else. Runs after CheckParamConflict, whose
+// deterministic=true mapping can still turn quant_mode=none into fixedpoint.
+// fp64 stays where fp32 would contradict another request: gpu_use_dp asks
+// for double-precision histograms, deterministic=true keeps reference fp64
+// arithmetic for unquantized training, and vector-leaf multi-target supports only fp64.
+// Quantized modes keep fp64: the process-global fp32 gain switch also
+// retypes the discretized finders.
+void Config::ResolveCudaPrecision(const std::unordered_map<std::string, std::string>& params) {
+  if (cuda_precision == std::string("auto")) {
+    cuda_precision_from_auto = true;
+  } else if (params.count("cuda_precision") > 0) {
+    cuda_precision_from_auto = false;
+  }
+  if (!cuda_precision_from_auto) {
+    return;
+  }
+  const bool vector_multi_target = tree_mode == std::string("vector_leaf") &&
+                                   objective == std::string("multi_regression") && num_class > 1;
+  const bool fp32 = device_type == std::string("cuda") && ResolvedQuantMode() == QuantMode::kNone &&
+                    !gpu_use_dp && !deterministic && !vector_multi_target;
+  cuda_precision = fp32 ? "fp32" : "fp64";
 }
 
 bool CheckMultiClassObjective(const std::string& objective) {
@@ -648,7 +697,7 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
     // means quant_mode=none cannot be asked for at all while deterministic is
     // set -- which silently turns any CPU-vs-CUDA comparison into a comparison
     // of two different algorithms.
-    const bool quant_mode_chosen_by_user = params.count("quant_mode") > 0;
+    const bool quant_mode_chosen_by_user = quant_mode_from_user;
     if (deterministic && quant_incompatible_request != nullptr &&
         !quant_mode_chosen_by_user &&
         ResolvedQuantMode() == QuantMode::kNone) {

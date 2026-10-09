@@ -1,0 +1,84 @@
+"""Fresh-process fraud reruns; preserve failed draws and pin the corrected harness."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+
+ROOT = Path(__file__).parent
+SOURCE = Path("/tmp/falcata-noquant-20261009")
+WRAPPER = Path("/tmp/falcata-noquant-overnight-20261009/curve_wrapper.py")
+
+
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--regime", choices=["shallow", "deep"], required=True)
+    parser.add_argument("--manifest-sha", required=True)
+    args = parser.parse_args()
+    manifest_path = ROOT / "capped-rerun-manifest.json"
+    if sha(manifest_path) != args.manifest_sha:
+        raise RuntimeError("Manifest hash mismatch")
+    manifest = json.loads(manifest_path.read_text())
+    if not os.environ.get("GPUQ_JOB_ID"):
+        raise RuntimeError("Only run through GPUQ")
+    if Path(sys.prefix).parent.name != manifest["runtime_build"]:
+        raise RuntimeError("Runtime build mismatch")
+    # The installed package path is recorded explicitly: do not resolve the
+    # venv Python symlink, which would escape its package environment.
+    if sha(manifest["library_path"]) != manifest["library_sha256"]:
+        raise RuntimeError("Library hash mismatch")
+    for relative, expected in manifest["source_files"].items():
+        if sha(SOURCE / relative) != expected:
+            raise RuntimeError(f"Frozen source changed: {relative}")
+    if sha(WRAPPER) != manifest["wrapper_sha256"]:
+        raise RuntimeError("Wrapper hash mismatch")
+    if sha(__file__) != manifest["runner_sha256"]:
+        raise RuntimeError("Runner hash mismatch")
+    for filename, expected in manifest["cache_files"].items():
+        if sha(Path(manifest["cache_root"]) / "data/cache/fraud" / filename) != expected:
+            raise RuntimeError(f"Frozen cache changed: {filename}")
+    output = ROOT / "capped-reruns"
+    output.mkdir(exist_ok=True)
+    failed = []
+    for kind in ["warmup", "timed1", "timed2", "timed3", "curve"]:
+        cell = f"fraud-{args.regime}-cap1-{kind}"
+        raw_path = output / f"{cell}.jsonl"
+        log_path = output / f"{cell}.log"
+        if raw_path.exists() or log_path.exists():
+            raise RuntimeError(f"Refusing to replace an existing draw: {cell}")
+        command = [
+            sys.executable, str(WRAPPER), "--source", str(SOURCE),
+            "--manifest-sha", args.manifest_sha, "--affected-cell-id", cell,
+            "--cuda-precision", "fp64", "--library", "falcata-noquant",
+            "--dataset", "fraud", "--regime", args.regime, "--kind", kind,
+            "--set", "max_delta_step=1", "--out", str(raw_path),
+        ]
+        env = dict(os.environ)
+        env.pop("PYTHONPATH", None)
+        env.pop("LD_LIBRARY_PATH", None)
+        env.update(FALCATA_BENCH_ROOT=manifest["cache_root"],
+                   FALCATA_BENCH_THREADS="32", FALCATA_FIL="0")
+        with log_path.open("x") as log:
+            run = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT, check=False)
+        records = [json.loads(line) for line in raw_path.read_text().splitlines()] if raw_path.exists() else []
+        record = records[-1] if len(records) == 1 else None
+        status = record.get("status") if record else "missing_or_multiple_records"
+        if run.returncode != 0 or status != "ok":
+            failed.append(cell)
+        print(json.dumps({"cell": cell, "exit_code": run.returncode,
+                          "status": status, "metrics": record.get("metrics") if record else None,
+                          "train_s": record.get("train_s") if record else None}), flush=True)
+    if failed:
+        raise SystemExit(f"Retained failed cells: {failed}")
+
+
+if __name__ == "__main__":
+    main()

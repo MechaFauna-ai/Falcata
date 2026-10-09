@@ -1,0 +1,111 @@
+{
+    "gpu_execution": false,
+    "frozen_source_hash_errors": {},
+    "strict": {
+        "jobs_expected": 13,
+        "jobs_recorded": 13,
+        "files_expected": 24,
+        "files_recorded": 24,
+        "records_expected": 90,
+        "records_recorded": 90,
+        "kinds": {
+            "warmup": 22,
+            "timed1": 24,
+            "timed2": 22,
+            "timed3": 22
+        },
+        "artifacts": {
+            "09b6be9724f330f947c86de6e819654b077f70f2": 33,
+            "d0bb8c47789e062acbf6b770918a0589a74ae9b2": 57
+        }
+    },
+    "strict_statuses": {
+        "ok": 90
+    },
+    "main": {
+        "records": 66,
+        "reused": 25,
+        "new": 41,
+        "statuses": {
+            "insane": 4,
+            "ok": 61,
+            "bad_curve": 1
+        },
+        "kinds": {
+            "warmup": 13,
+            "timed1": 14,
+            "timed2": 13,
+            "timed3": 13,
+            "curve": 13
+        },
+        "curves": 13,
+        "curve_statuses": {
+            "insane": 1,
+            "bad_curve": 1,
+            "ok": 11
+        }
+    },
+    "limitations": [
+        "Original strict series recorded endpoint metrics but no tree/prediction hashes",
+        "Full Numerai-deep is one actual 30000-round run per build, not median3",
+        "Main has 40 timed endpoints, 13 warmups, and 13 curves; table populations must be labelled separately"
+    ],
+    "auxiliary_graph": {
+        "covtype-deep-quant": {
+            "headline_eligible": true,
+            "off_over_on": 0.6492103633558151,
+            "fingerprints_identical": {
+                "tree_md5": true,
+                "prediction_sha256": true
+            }
+        },
+        "covtype-shallow-quant": {
+            "headline_eligible": true,
+            "off_over_on": 0.8322244317050945,
+            "fingerprints_identical": {
+                "tree_md5": true,
+                "prediction_sha256": true
+            }
+        },
+        "year-shallow-quant": {
+            "headline_eligible": true,
+            "off_over_on": 0.8284541787827795,
+            "fingerprints_identical": {
+                "tree_md5": true,
+                "prediction_sha256": true
+            }
+        },
+        "fraud-deep-quant": {
+            "headline_eligible": true,
+            "off_over_on": 0.9346034948973709,
+            "fingerprints_identical": {
+                "tree_md5": true,
+                "prediction_sha256": true
+            }
+        },
+        "higgs-shallow-quant": {
+            "headline_eligible": true,
+            "off_over_on": 0.9592320340351741,
+            "fingerprints_identical": {
+                "tree_md5": true,
+                "prediction_sha256": true
+            }
+        },
+        "epsilon-shallow-quant": {
+            "headline_eligible": true,
+            "off_over_on": 0.699014918247491,
+            "fingerprints_identical": {
+                "tree_md5": true,
+                "prediction_sha256": true
+            }
+        },
+        "numerai-example-quant": {
+            "headline_eligible": true,
+            "off_over_on": 0.644078497589231,
+            "fingerprints_identical": {
+                "tree_md5": true,
+                "prediction_sha256": true
+            }
+        }
+    }
+}

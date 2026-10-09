@@ -1,0 +1,1249 @@
+{
+    "datasets": {
+        "covtype": {
+            "cells": {
+                "baseline": {
+                    "1": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "seed1",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "accuracy": 0.8358045833584331,
+                            "mlogloss": 3.4938427802674945,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 1,
+                        "status": "ok"
+                    },
+                    "2": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "seed2",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "accuracy": 0.8334208239029973,
+                            "mlogloss": 3.824206728354182,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 2,
+                        "status": "ok"
+                    },
+                    "3": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "seed3",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "accuracy": 0.8220011531543936,
+                            "mlogloss": 4.423138903804826,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 3,
+                        "status": "ok"
+                    },
+                    "4": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "seed4",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "accuracy": 0.8532481949691488,
+                            "mlogloss": 2.8240804092685274,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 4,
+                        "status": "ok"
+                    },
+                    "5": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "seed5",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "accuracy": 0.850821407364698,
+                            "mlogloss": 2.9719269922647813,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 5,
+                        "status": "ok"
+                    },
+                    "6": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "seed6",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "accuracy": 0.8656058793662814,
+                            "mlogloss": 2.647794847250872,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 6,
+                        "status": "ok"
+                    },
+                    "7": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "seed7",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "accuracy": 0.8473619441838851,
+                            "mlogloss": 2.9334899143311426,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 7,
+                        "status": "ok"
+                    },
+                    "8": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "seed8",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "accuracy": 0.8504943934321834,
+                            "mlogloss": 3.1519437260451437,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 8,
+                        "status": "ok"
+                    }
+                },
+                "candidate": {
+                    "1": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "seed1",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "accuracy": 0.8278357701608392,
+                            "mlogloss": 3.9921751907603333,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp32",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 1,
+                        "status": "ok"
+                    },
+                    "2": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "seed2",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "accuracy": 0.856896982005628,
+                            "mlogloss": 2.8344104895440627,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp32",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 2,
+                        "status": "ok"
+                    },
+                    "3": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "seed3",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "accuracy": 0.8333089507155581,
+                            "mlogloss": 3.583437469202046,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp32",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 3,
+                        "status": "ok"
+                    },
+                    "4": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "seed4",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "accuracy": 0.8207963649819712,
+                            "mlogloss": 4.217678081766584,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp32",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 4,
+                        "status": "ok"
+                    },
+                    "5": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "seed5",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "accuracy": 0.8531105048923006,
+                            "mlogloss": 3.041063085998574,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp32",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 5,
+                        "status": "ok"
+                    },
+                    "6": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "seed6",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "accuracy": 0.7523041573797579,
+                            "mlogloss": 7.050660996190752,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp32",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 6,
+                        "status": "ok"
+                    },
+                    "7": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "seed7",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "accuracy": 0.8344448938495563,
+                            "mlogloss": 3.637136542145287,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp32",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 7,
+                        "status": "ok"
+                    },
+                    "8": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "seed8",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "accuracy": 0.8379904133283994,
+                            "mlogloss": 3.5481793321060713,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp32",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 8,
+                        "status": "ok"
+                    }
+                },
+                "candidate_fp64": {
+                    "1": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": "fp64",
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "fp64seed1",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "accuracy": 0.8362951042572051,
+                            "mlogloss": 3.596940250906333,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 1,
+                        "status": "ok"
+                    },
+                    "2": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": "fp64",
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "fp64seed2",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "accuracy": 0.8099962995791847,
+                            "mlogloss": 5.124991993413106,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 2,
+                        "status": "ok"
+                    },
+                    "3": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": "fp64",
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "fp64seed3",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "accuracy": 0.8489367744378372,
+                            "mlogloss": 3.2468018255671782,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 3,
+                        "status": "ok"
+                    },
+                    "4": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": "fp64",
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "fp64seed4",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "accuracy": 0.8626111201948314,
+                            "mlogloss": 2.5537031151907335,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 4,
+                        "status": "ok"
+                    },
+                    "5": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": "fp64",
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "fp64seed5",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "accuracy": 0.8439282978924812,
+                            "mlogloss": 3.149890405087243,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 5,
+                        "status": "ok"
+                    },
+                    "6": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": "fp64",
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "fp64seed6",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "accuracy": 0.8574649535726272,
+                            "mlogloss": 2.956915589329913,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 6,
+                        "status": "ok"
+                    },
+                    "7": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": "fp64",
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "fp64seed7",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "accuracy": 0.8702529194599107,
+                            "mlogloss": 2.2247824688292672,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 7,
+                        "status": "ok"
+                    },
+                    "8": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": "fp64",
+                        "dataset": "covtype",
+                        "input_dtype": "float32",
+                        "kind": "fp64seed8",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "accuracy": 0.8640912885209504,
+                            "mlogloss": 2.453641407321648,
+                            "sane": true
+                        },
+                        "n_features": 54,
+                        "n_train": 464809,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 8,
+                        "status": "ok"
+                    }
+                }
+            },
+            "metrics": {
+                "accuracy": {
+                    "baseline": {
+                        "failed": [],
+                        "max": 0.8656058793662814,
+                        "mean": 0.8448447974665025,
+                        "min": 0.8220011531543936,
+                        "missing": [],
+                        "n": 8,
+                        "sanity_failure_count": 0,
+                        "std": 0.013678336197076823,
+                        "unscored_infrastructure_or_training_errors": []
+                    },
+                    "candidate": {
+                        "failed": [],
+                        "max": 0.856896982005628,
+                        "mean": 0.8270860046642513,
+                        "min": 0.7523041573797579,
+                        "missing": [],
+                        "n": 8,
+                        "sanity_failure_count": 0,
+                        "std": 0.032536133357492426,
+                        "unscored_infrastructure_or_training_errors": []
+                    },
+                    "candidate_fp64": {
+                        "failed": [],
+                        "max": 0.8702529194599107,
+                        "mean": 0.8491970947393785,
+                        "min": 0.8099962995791847,
+                        "missing": [],
+                        "n": 8,
+                        "sanity_failure_count": 0,
+                        "std": 0.019436600298471107,
+                        "unscored_infrastructure_or_training_errors": []
+                    },
+                    "paired_candidate_fp64_minus_baseline": {
+                        "candidate_larger": 5,
+                        "max": 0.026935621283443623,
+                        "mean": 0.004352297272875907,
+                        "min": -0.02342452432381259,
+                        "n": 8,
+                        "std": 0.017043067367115583
+                    },
+                    "paired_candidate_minus_baseline": {
+                        "candidate_larger": 3,
+                        "max": 0.023476158102630706,
+                        "mean": -0.01775879280225126,
+                        "min": -0.11330172198652355,
+                        "n": 8,
+                        "std": 0.04215336225239292
+                    }
+                },
+                "mlogloss": {
+                    "baseline": {
+                        "failed": [],
+                        "max": 4.423138903804826,
+                        "mean": 3.2838030376983713,
+                        "min": 2.647794847250872,
+                        "missing": [],
+                        "n": 8,
+                        "sanity_failure_count": 0,
+                        "std": 0.5961139873888549,
+                        "unscored_infrastructure_or_training_errors": []
+                    },
+                    "candidate": {
+                        "failed": [],
+                        "max": 7.050660996190752,
+                        "mean": 3.988092648464214,
+                        "min": 2.8344104895440627,
+                        "missing": [],
+                        "n": 8,
+                        "sanity_failure_count": 0,
+                        "std": 1.3169411673269167,
+                        "unscored_infrastructure_or_training_errors": []
+                    },
+                    "candidate_fp64": {
+                        "failed": [],
+                        "max": 5.124991993413106,
+                        "mean": 3.1634583819556776,
+                        "min": 2.2247824688292672,
+                        "missing": [],
+                        "n": 8,
+                        "sanity_failure_count": 0,
+                        "std": 0.9135538827701599,
+                        "unscored_infrastructure_or_training_errors": []
+                    },
+                    "paired_candidate_fp64_minus_baseline": {
+                        "candidate_larger": 4,
+                        "max": 1.300785265058924,
+                        "mean": -0.12034465574269348,
+                        "min": -1.176337078237648,
+                        "n": 8,
+                        "std": 0.7709734559856091
+                    },
+                    "paired_candidate_minus_baseline": {
+                        "candidate_larger": 6,
+                        "max": 4.40286614893988,
+                        "mean": 0.7042896107658425,
+                        "min": -0.9897962388101194,
+                        "n": 8,
+                        "std": 1.688159829450685
+                    }
+                }
+            },
+            "seeds": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8
+            ]
+        },
+        "fraud": {
+            "cells": {
+                "baseline": {
+                    "1": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "error": "quality sanity check failed: {'auc': 0.5132649113387617, 'sane': False}",
+                        "input_dtype": "float32",
+                        "kind": "seed1",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "auc": 0.5132649113387617,
+                            "sane": false
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 1,
+                        "status": "insane"
+                    },
+                    "2": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "input_dtype": "float32",
+                        "kind": "seed2",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "auc": 0.7241824029837033,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 2,
+                        "status": "ok"
+                    },
+                    "3": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "input_dtype": "float32",
+                        "kind": "seed3",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "auc": 0.8619094215485857,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 3,
+                        "status": "ok"
+                    },
+                    "4": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "input_dtype": "float32",
+                        "kind": "seed4",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "auc": 0.5650116317630035,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 4,
+                        "status": "ok"
+                    },
+                    "5": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "input_dtype": "float32",
+                        "kind": "seed5",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "auc": 0.7446863910167332,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 5,
+                        "status": "ok"
+                    },
+                    "6": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "error": "quality sanity check failed: {'auc': 0.4994372537985369, 'sane': False}",
+                        "input_dtype": "float32",
+                        "kind": "seed6",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "auc": 0.4994372537985369,
+                            "sane": false
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 6,
+                        "status": "insane"
+                    },
+                    "7": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "error": "quality sanity check failed: {'auc': 0.49900640123804163, 'sane': False}",
+                        "input_dtype": "float32",
+                        "kind": "seed7",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "auc": 0.49900640123804163,
+                            "sane": false
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 7,
+                        "status": "insane"
+                    },
+                    "8": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "input_dtype": "float32",
+                        "kind": "seed8",
+                        "library": "falcata-noquant",
+                        "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+                        "metrics": {
+                            "auc": 0.7342761246310567,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+                        "seed": 8,
+                        "status": "ok"
+                    }
+                },
+                "candidate": {
+                    "1": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "input_dtype": "float32",
+                        "kind": "seed1",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "auc": 0.6630567885567282,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp32",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 1,
+                        "status": "ok"
+                    },
+                    "2": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "input_dtype": "float32",
+                        "kind": "seed2",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "auc": 0.6629715511697082,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp32",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 2,
+                        "status": "ok"
+                    },
+                    "3": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "input_dtype": "float32",
+                        "kind": "seed3",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "auc": 0.5752620107553432,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp32",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 3,
+                        "status": "ok"
+                    },
+                    "4": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "input_dtype": "float32",
+                        "kind": "seed4",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "auc": 0.8362444443168375,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp32",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 4,
+                        "status": "ok"
+                    },
+                    "5": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "input_dtype": "float32",
+                        "kind": "seed5",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "auc": 0.5657101297187418,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp32",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 5,
+                        "status": "ok"
+                    },
+                    "6": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "input_dtype": "float32",
+                        "kind": "seed6",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "auc": 0.6264293861185442,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp32",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 6,
+                        "status": "ok"
+                    },
+                    "7": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "input_dtype": "float32",
+                        "kind": "seed7",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "auc": 0.7240645062189198,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp32",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 7,
+                        "status": "ok"
+                    },
+                    "8": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": null,
+                        "dataset": "fraud",
+                        "error": "quality sanity check failed: {'auc': 0.5135031274045915, 'sane': False}",
+                        "input_dtype": "float32",
+                        "kind": "seed8",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "auc": 0.5135031274045915,
+                            "sane": false
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp32",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 8,
+                        "status": "insane"
+                    }
+                },
+                "candidate_fp64": {
+                    "1": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": "fp64",
+                        "dataset": "fraud",
+                        "input_dtype": "float32",
+                        "kind": "fp64seed1",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "auc": 0.7444884608317159,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 1,
+                        "status": "ok"
+                    },
+                    "2": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": "fp64",
+                        "dataset": "fraud",
+                        "input_dtype": "float32",
+                        "kind": "fp64seed2",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "auc": 0.6882252355781929,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 2,
+                        "status": "ok"
+                    },
+                    "3": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": "fp64",
+                        "dataset": "fraud",
+                        "input_dtype": "float32",
+                        "kind": "fp64seed3",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "auc": 0.8007602995475059,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 3,
+                        "status": "ok"
+                    },
+                    "4": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": "fp64",
+                        "dataset": "fraud",
+                        "input_dtype": "float32",
+                        "kind": "fp64seed4",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "auc": 0.7693985039851619,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 4,
+                        "status": "ok"
+                    },
+                    "5": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": "fp64",
+                        "dataset": "fraud",
+                        "input_dtype": "float32",
+                        "kind": "fp64seed5",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "auc": 0.555472042854846,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 5,
+                        "status": "ok"
+                    },
+                    "6": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": "fp64",
+                        "dataset": "fraud",
+                        "error": "quality sanity check failed: {'auc': 0.5497321572129134, 'sane': False}",
+                        "input_dtype": "float32",
+                        "kind": "fp64seed6",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "auc": 0.5497321572129134,
+                            "sane": false
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 6,
+                        "status": "insane"
+                    },
+                    "7": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": "fp64",
+                        "dataset": "fraud",
+                        "error": "quality sanity check failed: {'auc': 0.5354103022751024, 'sane': False}",
+                        "input_dtype": "float32",
+                        "kind": "fp64seed7",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "auc": 0.5354103022751024,
+                            "sane": false
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 7,
+                        "status": "insane"
+                    },
+                    "8": {
+                        "cuda_plan_override": null,
+                        "cuda_precision_override": "fp64",
+                        "dataset": "fraud",
+                        "input_dtype": "float32",
+                        "kind": "fp64seed8",
+                        "library": "falcata-noquant",
+                        "library_sha256": "6dd9db79100ed31b474560841881cb60b6a4408a87e5ad98e620481f171df613",
+                        "metrics": {
+                            "auc": 0.8414547814764624,
+                            "sane": true
+                        },
+                        "n_features": 29,
+                        "n_train": 227845,
+                        "predict_backend": "cpu",
+                        "regime": "deep",
+                        "resolved_cuda_precision": "fp64",
+                        "runtime_build": "f38de5c49d6adb4d80491ab7388807676767f59a",
+                        "seed": 8,
+                        "status": "ok"
+                    }
+                }
+            },
+            "metrics": {
+                "auc": {
+                    "baseline": {
+                        "failed": [
+                            1,
+                            6,
+                            7
+                        ],
+                        "max": 0.8619094215485857,
+                        "mean": 0.6427218172898028,
+                        "min": 0.49900640123804163,
+                        "missing": [],
+                        "n": 8,
+                        "sanity_failure_count": 3,
+                        "std": 0.14012267520650265,
+                        "unscored_infrastructure_or_training_errors": []
+                    },
+                    "candidate": {
+                        "failed": [
+                            8
+                        ],
+                        "max": 0.8362444443168375,
+                        "mean": 0.6459052430324268,
+                        "min": 0.5135031274045915,
+                        "missing": [],
+                        "n": 8,
+                        "sanity_failure_count": 1,
+                        "std": 0.10159771372987063,
+                        "unscored_infrastructure_or_training_errors": []
+                    },
+                    "candidate_fp64": {
+                        "failed": [
+                            6,
+                            7
+                        ],
+                        "max": 0.8414547814764624,
+                        "mean": 0.6856177229702376,
+                        "min": 0.5354103022751024,
+                        "missing": [],
+                        "n": 8,
+                        "sanity_failure_count": 2,
+                        "std": 0.12305622302504199,
+                        "unscored_infrastructure_or_training_errors": []
+                    },
+                    "paired_candidate_fp64_minus_baseline": {
+                        "candidate_larger": 5,
+                        "max": 0.2312235494929542,
+                        "mean": 0.04289590568043476,
+                        "min": -0.1892143481618872,
+                        "n": 8,
+                        "std": 0.13974167082091205
+                    },
+                    "paired_candidate_minus_baseline": {
+                        "candidate_larger": 4,
+                        "max": 0.271232812553834,
+                        "mean": 0.003183425742623966,
+                        "min": -0.2866474107932425,
+                        "n": 8,
+                        "std": 0.21692284628617547
+                    }
+                }
+            },
+            "seeds": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8
+            ]
+        }
+    },
+    "source_summary_sha256": "3516c1060b3394c2ee5900e515f487929619531e64fbefa784a8b9abd7327a40"
+}
