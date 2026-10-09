@@ -91,8 +91,10 @@ A tree chooses a threshold using **histograms**: sums of gradients and Hessians
 for each feature bin. Gradients describe the direction a prediction should move;
 Hessians describe the local curvature of the loss. Quantized training represents
 these contributions with small integers, making accumulation cheaper and
-independent of its execution order. The quantization resolution remains a
-speed/quality choice.
+independent of its execution order. Stochastic mode uses seeded randomized
+rounding; fixedpoint uses deterministic rounding with an outlier-robust scale.
+`quant_mode="none"` retains floating-point histograms. Gradient quantization is
+separate from feature binning and remains a speed/quality choice.
 
 Low-cardinality features offer another opportunity. For two five-valued features,
 there are only **25 joint states**. Instead of constructing two separate
@@ -114,7 +116,8 @@ the GPU was busy issuing requests, not simply exhausting memory bandwidth.
 
 The decisive change was assigning one thread a whole code word. One row-index
 load and one packed gradient/Hessian load now serve **six feature pairs**. A warp,
-the GPU's group of 32 threads, covers a compact row with coalesced word reads.
+the GPU's group of 32 threads, covers a compact row with **coalesced reads**:
+neighboring threads access adjacent words, which combine into efficient requests.
 The six histogram updates still happen; their shared inputs are fetched once.
 
 The construct kernel issued **63% fewer load/store instructions** and fell from
@@ -140,17 +143,19 @@ memory reads. **Occupancy** describes how much thread work can remain resident o
 a GPU multiprocessor. Enough independent work lets it execute another warp while
 the first waits for data.
 
-Our earlier pair construct used 64 registers and could keep only one block
+Our earlier pair construct used 64 registers, the fast storage private to each
+thread, and could keep only one block
 resident. A spill-free 48-register variant, selected using CUDA's occupancy API,
 kept **36 warps resident** in the measured shape. Shared-memory allocation was
 also constrained so those blocks did not needlessly squeeze the L1 cache.
-A 40-register version of that kernel spilled into local memory and lost; it was
+A 40-register version spilled temporary values into slower memory and lost; it was
 rejected. A later, different code-word body reached 40 registers by removing
 branches and changing the work, rather than imposing the same losing cap.
 
 Work scheduling extends beyond the kernel. Roughly fourteen tiny metadata uploads
 became one upload and a GPU scatter. Compatible partition, tree-update and gap-copy
-work share a launch. Producing kernels write their own mapped host staging, and
+work share a launch. Producing kernels write their own mapped host staging
+(CPU-visible transfer buffers), and
 stream dependencies order work without making the CPU wait at every intermediate
 step. **Required host reads still synchronize.**
 
