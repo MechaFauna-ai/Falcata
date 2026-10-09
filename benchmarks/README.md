@@ -80,6 +80,21 @@ A run whose held-out quality fails a sanity floor is recorded with status
 `insane` rather than `ok`, so a model that trained fast by learning nothing can
 never enter the speed tables.
 
+LightGBM-family binary curves use native AUC on raw margins. The harness records
+`curve_auc_raw` from CPU raw-score predictions for the integrity check, separately
+from probability AUC and its unchanged sanity floor. Extreme sigmoid scores can
+round to identical probabilities and lose raw-margin ranks. The extra raw scoring
+is outside `train_s` and recorded as `score_s`. Curves stop when an update returns
+finished; their iteration axis and throughput use accepted iterations/trees,
+with the requested budget and stop reason recorded separately.
+
+The uncapped, zero-L2 fraud recipe can diverge on severe class imbalance. An
+explicit LightGBM-family `--set max_delta_step=1` gives a separately capped
+experiment; it does not alter the default regimes. Use a fresh `--out` path for
+each changed configuration, preserve failed draws and compare capped quality
+and timing as their own evidence. The [dated fraud follow-up](../docs/2026-10-09_fraud-followup.md)
+records the diagnosis and strict reruns.
+
 **Timings are only as quiet as the machine.** Contention on the host moved
 medians by 18–55% in our own measurements, which is larger than most of the
 effects being measured. Run the suite on an otherwise idle box.

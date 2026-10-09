@@ -1,0 +1,258 @@
+"""Diagnose fraud scoring without changing the frozen benchmark evidence.
+
+Run only through gpuq. This deliberately evaluates CPU predictions during
+training and is a correctness probe, not a performance measurement.
+"""
+
+import argparse
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import traceback
+
+
+BUILD = "d0bb8c47789e062acbf6b770918a0589a74ae9b2"
+LIBRARY_SHA256 = "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c"
+CACHE_ROOT = "/home/felixjk/Documents/exaboost-bench"
+
+
+def digest(path):
+    result = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            result.update(block)
+    return result.hexdigest()
+
+
+def append_json(path, record):
+    with path.open("a") as stream:
+        stream.write(json.dumps(record, allow_nan=False, sort_keys=True) + "\n")
+
+
+def actual_parameters(model):
+    parameters = {}
+    for line in model.model_to_string(num_iteration=1).splitlines():
+        if line.startswith("[") and line.endswith("]") and ": " in line:
+            key, value = line[1:-1].split(": ", 1)
+            parameters[key] = value
+    return parameters
+
+
+def leaf_values(model):
+    values = []
+    stack = [tree["tree_structure"] for tree in model.dump_model()["tree_info"]]
+    while stack:
+        node = stack.pop()
+        if "leaf_value" in node:
+            values.append(float(node["leaf_value"]))
+        else:
+            stack.extend([node["left_child"], node["right_child"]])
+    return values
+
+
+def describe(args):
+    return {
+        "source": str(Path(args.source).resolve()),
+        "expected_build": args.expected_build,
+        "expected_library_sha256": args.expected_library_sha256,
+        "dataset": "fraud",
+        "cache_root": args.cache_root,
+        "regime": args.regime,
+        "rounds": 500,
+        "eval_every": 25,
+        "seed": 42,
+        "num_threads": 32,
+        "cuda_precision": "fp64",
+        "quant_mode": "none",
+        "lambda_l2": 0,
+        "max_delta_step": args.max_delta_step,
+        "configuration_changed_from_frozen": args.max_delta_step != 0,
+        "out": str(Path(args.out).resolve()),
+        "raw_validation_cache_available": False,
+        "cache_api_semantics": "GetPredictAt applies the binary sigmoid; private __inner_predict exposes probabilities",
+        "timing_scope": "Correctness diagnostic with additional CPU predictions; not a benchmark timing",
+    }
+
+
+def run(args):
+    if not os.environ.get("GPUQ_JOB_ID"):
+        raise RuntimeError("Run this GPU diagnostic through gpuq; GPUQ_JOB_ID is missing")
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    if any(out.iterdir()):
+        raise RuntimeError(f"Refusing to overwrite existing diagnostic evidence: {out}")
+    os.environ["FALCATA_BENCH_ROOT"] = args.cache_root
+    os.environ["FALCATA_BENCH_THREADS"] = "32"
+    os.environ["FALCATA_FIL"] = "0"
+    sys.path.insert(0, str(Path(args.source) / "benchmarks"))
+    import bench
+    import falcata as lgb
+    import numpy as np
+    from sklearn.metrics import roc_auc_score
+
+    library_path = Path(lgb.__file__).parent / "lib" / "lib_falcata.so"
+    runtime_build = Path(sys.prefix).parent.name
+    library_sha = digest(library_path)
+    if runtime_build != args.expected_build or library_sha != args.expected_library_sha256:
+        raise RuntimeError(f"Runtime pin mismatch: build={runtime_build}, sha256={library_sha}")
+    x_train, y_train, x_valid, y_valid, _ = bench.load_data("fraud", input_dtype="f32")
+    reg = dict(bench.REGIMES[args.regime])
+    if reg["rounds"] != 500 or reg["eval_every"] != 25:
+        raise RuntimeError(f"Frozen regime semantics changed: {reg}")
+    params = {
+        "objective": "binary", "metric": "auc", "learning_rate": reg["lr"],
+        "num_leaves": reg["leaves"], "max_depth": reg["depth"], "max_bin": 255,
+        "device_type": "cuda", "num_threads": 32, "seed": 42, "verbose": -1,
+        "quant_mode": "none", "cuda_precision": "fp64", "lambda_l2": 0,
+        "max_delta_step": args.max_delta_step,
+    }
+    metadata = describe(args)
+    metadata.update({
+        "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "gpuq_job_id": int(os.environ["GPUQ_JOB_ID"]),
+        "runtime_build": runtime_build, "library_path": str(library_path),
+        "library_sha256": library_sha, "package_version": lgb.__version__,
+        "source_git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=args.source, text=True).strip(),
+        "script_sha256": digest(__file__),
+        "harness_sha256": digest(Path(args.source) / "benchmarks" / "bench.py"),
+        "regime_source_sha256": digest(Path(args.source) / "benchmarks" / "common.py"),
+        "regime_parameters": reg, "requested_parameters": params,
+        "input_dtype": str(x_train.dtype), "train_shape": list(x_train.shape),
+        "valid_shape": list(x_valid.shape),
+        "cache_files": {name: digest(Path(args.cache_root) / "data" / "cache" / "fraud" / name)
+                        for name in ["X_train.npy", "y_train.npy", "X_test.npy", "y_test.npy"]},
+    })
+    (out / "metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+    dtrain = lgb.Dataset(x_train if isinstance(x_train, np.memmap) else np.ascontiguousarray(x_train), label=y_train, params=params)
+    dtrain.construct()
+    dvalid = lgb.Dataset(x_valid, label=y_valid, reference=dtrain)
+    model = lgb.Booster(params=params, train_set=dtrain)
+    model.add_valid(dvalid, "test")
+    metadata["actual_booster_parameters"] = actual_parameters(model)
+    (out / "metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+
+    def array_summary(values):
+        finite = np.isfinite(values)
+        subset = values[finite]
+        return {"count": int(values.size), "nonfinite": int((~finite).sum()),
+                "min": float(subset.min()) if subset.size else None,
+                "max": float(subset.max()) if subset.size else None,
+                "max_abs": float(np.abs(subset).max()) if subset.size else None,
+                "unique": int(np.unique(values).size)}
+
+    def auc(values, labels=y_valid):
+        return float(roc_auc_score(labels, values)) if np.isfinite(values).all() else None
+
+    def checkpoint(call, reason):
+        raw = model.predict(x_valid, raw_score=True, use_fil=False, num_threads=32)
+        probability = model.predict(x_valid, raw_score=False, use_fil=False, num_threads=32)
+        cached = model._Booster__inner_predict(data_idx=1).copy()
+        native = next((float(value) for _, name, value, _ in model.eval_valid() if name == "auc"), None)
+        unsaturated = (cached > 0) & (cached < 1) & np.isfinite(cached) & np.isfinite(raw)
+        sigmoid = float(actual_parameters(model)["sigmoid"])
+        # Only an approximate reconstruction on unsaturated rows. It cannot
+        # establish raw-cache parity where sigmoid rounded to zero or one.
+        recovered = (np.log(cached[unsaturated]) - np.log1p(-cached[unsaturated])) / sigmoid
+        leaves = np.asarray(leaf_values(model))
+        raw_auc, probability_auc = auc(raw), auc(probability)
+        record = {
+            "update_calls": call, "reason": reason, "num_trees": model.num_trees(),
+            "current_iteration": model.current_iteration(),
+            "model_sha256": hashlib.sha256(model.model_to_string().encode()).hexdigest(),
+            "native_cached_margin_auc": native, "cpu_raw_margin_auc": raw_auc,
+            "cpu_probability_auc": probability_auc, "cached_probability_auc": auc(cached),
+            "native_minus_cpu_raw_auc": native - raw_auc if native is not None and raw_auc is not None else None,
+            "native_minus_cpu_probability_auc": native - probability_auc if native is not None and probability_auc is not None else None,
+            "cache_cpu_probability_allclose_1e12": bool(np.allclose(cached, probability, rtol=1e-12, atol=1e-12)),
+            "cache_cpu_probability_max_abs_difference": float(np.abs(cached - probability).max()) if np.isfinite(cached - probability).all() else None,
+            "cpu_probability_zero_count": int((probability == 0).sum()),
+            "cpu_probability_one_count": int((probability == 1).sum()),
+            "cached_probability_zero_count": int((cached == 0).sum()),
+            "cached_probability_one_count": int((cached == 1).sum()),
+            "unsaturated_cached_probability_count": int(unsaturated.sum()),
+            "inverse_sigmoid_vs_cpu_raw_max_abs_difference": float(np.abs(recovered - raw[unsaturated]).max()) if recovered.size else None,
+            "raw_cache_parity_directly_tested": False,
+            "raw_margin": array_summary(raw), "cpu_probability": array_summary(probability),
+            "cached_probability": array_summary(cached), "leaf_value": array_summary(leaves),
+            "cpu_probability_quality": bench.quality_metrics("binary", probability, y_valid, {}) if np.isfinite(probability).all() else None,
+        }
+        append_json(out / "checkpoints.jsonl", record)
+        print(json.dumps(record, sort_keys=True), flush=True)
+        return record, raw, probability, cached
+
+    first_finished = None
+    finished_count = 0
+    final = None
+    for call in range(1, reg["rounds"] + 1):
+        before = model.num_trees()
+        finished = bool(model.update())
+        after = model.num_trees()
+        append_json(out / "updates.jsonl", {"update_calls": call, "finished": finished,
+                    "num_trees_before": before, "num_trees_after": after,
+                    "current_iteration": model.current_iteration()})
+        if finished:
+            finished_count += 1
+            if first_finished is None:
+                first_finished = call
+                first_record, _, _, _ = checkpoint(call, "first_finished_update")
+                model.save_model(str(out / "first-finished-model.txt"))
+        if call % reg["eval_every"] == 0 or call == reg["rounds"]:
+            final = checkpoint(call, "scheduled_checkpoint")
+    final_record, raw, probability, cached = final
+    model.save_model(str(out / "final-model.txt"))
+    train_probability = model.predict(x_train, use_fil=False, num_threads=32)
+    train_cached = model._Booster__inner_predict(data_idx=0).copy()
+    np.savez_compressed(out / "final-predictions.npz", valid_raw_cpu=raw,
+                        valid_probability_cpu=probability, valid_probability_cache=cached,
+                        valid_labels=y_valid, train_probability_cpu=train_probability,
+                        train_probability_cache=train_cached, train_labels=y_train)
+    summary = {
+        "status": "complete", "runtime_build": runtime_build, "library_sha256": library_sha,
+        "regime": args.regime, "max_delta_step": args.max_delta_step,
+        "configuration_changed_from_frozen": args.max_delta_step != 0,
+        "update_calls": reg["rounds"], "accepted_trees": model.num_trees(),
+        "first_finished_update_call": first_finished, "finished_update_calls": finished_count,
+        "first_finished_model_sha256": first_record["model_sha256"] if first_finished is not None else None,
+        "final_model_sha256": final_record["model_sha256"],
+        "model_unchanged_since_first_finished": first_record["model_sha256"] == final_record["model_sha256"] if first_finished is not None else None,
+        "train_probability_cache_cpu_allclose_1e12": bool(np.allclose(train_cached, train_probability, rtol=1e-12, atol=1e-12)),
+        "train_probability_cache_cpu_max_abs_difference": float(np.abs(train_cached - train_probability).max()) if np.isfinite(train_cached - train_probability).all() else None,
+        "final": final_record,
+        "finished_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "timing_scope": "Correctness diagnostic; extra CPU scoring invalidates benchmark timing comparisons",
+    }
+    (out / "summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False, sort_keys=True) + "\n")
+    print(json.dumps({"summary": summary}, sort_keys=True), flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", default="/tmp/falcata-noquant-20261009")
+    parser.add_argument("--cache-root", default=CACHE_ROOT)
+    parser.add_argument("--regime", required=True, choices=["shallow", "deep"])
+    parser.add_argument("--max-delta-step", type=float, choices=[0.0, 1.0], default=0.0)
+    parser.add_argument("--expected-build", default=BUILD)
+    parser.add_argument("--expected-library-sha256", default=LIBRARY_SHA256)
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--describe", action="store_true", help="Print the CPU-only run plan; do not import the GPU library")
+    args = parser.parse_args()
+    if args.describe:
+        print(json.dumps(describe(args), indent=2, sort_keys=True))
+        return
+    try:
+        run(args)
+    except Exception as error:
+        out = Path(args.out)
+        # Preserve any partial diagnostic; never mask the original exception.
+        if out.is_dir() and not (out / "summary.json").exists():
+            (out / "failure.json").write_text(json.dumps({"status": "failed", "error": str(error),
+                "traceback": traceback.format_exc()}, indent=2) + "\n")
+        raise
+
+
+if __name__ == "__main__":
+    main()

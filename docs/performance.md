@@ -972,6 +972,14 @@ are essentially unchanged. Forced quantized graph mode is slower in all seven sa
 remains opt-in. These timing observations do not establish quality equivalence; the dated report
 retains each metric, failure, learning curve and scope limit.
 
+The separate [fraud follow-up](2026-10-09_fraud-followup.md) diagnoses uncapped
+Newton-step collapse and sigmoid saturation in fresh strict probes. Native AUC
+matches CPU raw-margin AUC, and cached probabilities match CPU model predictions
+exactly. The harness now compares the same AUC representation and records actual
+accepted trees on no-split termination. Explicit `max_delta_step=1` shallow/deep
+reruns pass all ten endpoints at AUC about 0.979; their capped configurations and
+absolute timings are separate evidence, preserving every original failed draw.
+
 ## 8. GPU inference via NVIDIA FIL
 
 `Booster.predict()` on a CUDA-trained model routes through cuML's Forest

@@ -182,21 +182,24 @@ def quality_metrics(task, preds, y, extra):
     raise ValueError(task)
 
 
-def curve_metric_ok(task, curve_pts, metrics):
-    """Cross-check a curve's final point against the predict()-based metric.
+def curve_metric_ok(task, curve_pts, metrics, curve_auc_raw=None):
+    """Cross-check a binary curve against AUC on the same score representation.
 
     The curve's last evaluation and the end-of-run quality are computed on the
     same model and test set, so they must agree closely. A large gap means the
     curve recorded the WRONG SERIES -- exactly what happened when catboost's
     evals_result was read by position and yielded Logloss on an AUC axis.
-    Binary only: that is where every engine reports the same metric (AUC);
+    LightGBM-family native AUC ranks raw margins. Sigmoid probabilities can
+    round to exact zero/one and lose that ordering, so those curves are checked
+    against separately scored CPU raw margins. Probability quality and sanity
+    remain unchanged. Other engines retain their probability-based comparison;
     elsewhere the curve metric legitimately differs from the recorded one
     (lightgbm regression curves carry l2 = MSE, metrics carry RMSE).
     """
     if task != "binary" or not curve_pts:
         return True
     final = curve_pts[-1][2]
-    auc = (metrics or {}).get("auc")
+    auc = curve_auc_raw if curve_auc_raw is not None else (metrics or {}).get("auc")
     if final is None or auc is None:
         return True
     return abs(final - auc) < 0.02
@@ -259,6 +262,24 @@ def predict_in_chunks(bst, x_te, chunk_rows=PREDICT_CHUNK_ROWS):
     return (out[0] if len(out) == 1 else np.concatenate(out), backend)
 
 
+def binary_curve_auc_raw(bst, x_te, y_te, library):
+    """Score native LightGBM-family AUC using CPU margins, outside train timing."""
+    from sklearn.metrics import roc_auc_score
+
+    t0 = time.perf_counter()
+    kwargs = {"raw_score": True}
+    if library.startswith("falcata"):
+        kwargs["use_fil"] = False
+    raw = np.concatenate(
+        [
+            bst.predict(np.ascontiguousarray(x_te[start : start + PREDICT_CHUNK_ROWS]), **kwargs)
+            for start in range(0, x_te.shape[0], PREDICT_CHUNK_ROWS)
+        ]
+    )
+    auc = float(roc_auc_score(y_te, raw))
+    return auc, time.perf_counter() - t0
+
+
 def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=None, shared=None):
     """One LightGBM-API cell.
 
@@ -305,6 +326,8 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=Non
         params["lambda_l2"] = reg["l2"]
     if "min_data" in reg:
         params["min_data_in_leaf"] = reg["min_data"]
+    if "max_delta_step" in reg:
+        params["max_delta_step"] = reg["max_delta_step"]
     if library == "falcata-stoch":
         params["quant_mode"] = "stochastic"
     elif library == "falcata-stoch64":
@@ -338,6 +361,8 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=Non
         shared["dtrain"], shared["construct_s"] = dtrain, construct_s
 
     curve_pts = []
+    update_calls = None
+    stop_reason = "requested_rounds"
     t0 = time.perf_counter()
     if curve:
         # without a real metric eval_valid() returns nothing and the curve
@@ -351,15 +376,29 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=Non
         dvalid = lgb.Dataset(x_te, label=y_te, reference=dtrain)
         bst = lgb.Booster(params=params, train_set=dtrain)
         bst.add_valid(dvalid, "test")
+        update_calls = 0
         for i in range(reg["rounds"]):
-            bst.update()
-            if (i + 1) % reg["eval_every"] == 0 or i + 1 == reg["rounds"]:
+            produced_empty_tree = bst.update()
+            update_calls = i + 1
+            if produced_empty_tree or update_calls % reg["eval_every"] == 0 or update_calls == reg["rounds"]:
                 t_now = time.perf_counter() - t0
                 res = bst.eval_valid()
-                curve_pts.append([i + 1, t_now, res[0][2] if res else None])
+                point = [bst.current_iteration(), t_now, res[0][2] if res else None]
+                if curve_pts and curve_pts[-1][0] == point[0]:
+                    curve_pts[-1] = point
+                else:
+                    curve_pts.append(point)
+            if produced_empty_tree:
+                stop_reason = "empty_tree"
+                break
     else:
         bst = lgb.train(params, dtrain, num_boost_round=reg["rounds"])
     train_s = time.perf_counter() - t0
+    current_iteration = bst.current_iteration()
+    num_trees = bst.num_trees()
+    if not curve and current_iteration < reg["rounds"]:
+        # lgb.train does not expose how many update calls it made.
+        stop_reason = "fewer_iterations_than_requested"
 
     t0 = time.perf_counter()
     # falcata predicts through cuML's Forest Inference Library when cuML is
@@ -368,7 +407,7 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=Non
     # record says which one ran so overhead comparisons are not misread.
     preds, predict_backend = predict_in_chunks(bst, x_te)
     predict_s = time.perf_counter() - t0
-    return {
+    result = {
         "construct_s": construct_s,
         "construct_shared": construct_shared,
         "train_s": train_s,
@@ -377,7 +416,17 @@ def run_lightgbm(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=Non
         "preds": preds,
         "version": lgb.__version__,
         "curve": curve_pts,
+        "requested_rounds": reg["rounds"],
+        "update_calls": update_calls,
+        "current_iteration": current_iteration,
+        "num_trees": num_trees,
+        "stop_reason": stop_reason,
     }
+    if curve and task == "binary":
+        result["curve_auc_raw"], result["score_s"] = binary_curve_auc_raw(bst, x_te, y_te, library)
+        result["curve_metric_representation"] = "raw_margin"
+        result["curve_metric_axis_label"] = "AUC on raw margins"
+    return result
 
 
 def run_xgboost(task, x_tr, y_tr, x_te, y_te, reg, library, curve, cat_cols=None):
@@ -660,6 +709,8 @@ def run_cell(args, task, reg_name, kind, data, shared):
     if overrides:
         rec["overrides"] = overrides
     try:
+        if "max_delta_step" in overrides and not args.library.startswith(("falcata", "lightgbm")):
+            raise ValueError("--set max_delta_step is supported only for LightGBM-family libraries")
         cat_cols = DATASETS[args.dataset].get("cat_cols")
         with ResourceMonitor() as mon:
             t_total = time.perf_counter()
@@ -694,7 +745,9 @@ def run_cell(args, task, reg_name, kind, data, shared):
         preds = r.pop("preds")
         rec.update(r)
         rec["total_s"] = total_s
-        rec["trees_per_s"] = reg["rounds"] / r["train_s"]
+        rec["trees_per_s"] = r.get("num_trees", reg["rounds"]) / r["train_s"]
+        if "current_iteration" in r:
+            rec["iterations_per_s"] = r["current_iteration"] / r["train_s"]
         rec["gpu_mem_peak_mb"] = mon.gpu_peak_mb
         rec["rss_peak_mb"] = mon.rss_peak_mb
         t0 = time.perf_counter()
@@ -705,12 +758,13 @@ def run_cell(args, task, reg_name, kind, data, shared):
         if not rec["metrics"].get("sane", True):
             rec["status"] = "insane"
             rec["error"] = f"quality sanity check failed: {rec['metrics']}"
-        elif curve and not curve_metric_ok(task, rec.get("curve"), rec["metrics"]):
+        elif curve and not curve_metric_ok(task, rec.get("curve"), rec["metrics"], rec.get("curve_auc_raw")):
             # wrong-series curves must never reach the time-to-quality plot
             rec["status"] = "bad_curve"
             rec["error"] = (
                 f"curve final point {rec['curve'][-1][2]} disagrees with "
-                f"recomputed auc {rec['metrics']['auc']} -- the curve recorded "
+                f"recomputed auc {rec.get('curve_auc_raw', rec['metrics']['auc'])} "
+                f"on {rec.get('curve_metric_representation', 'probability')} scores -- the curve recorded "
                 "a different metric than the one it claims"
             )
     except Exception:
@@ -754,7 +808,8 @@ def main():
         action="append",
         default=[],
         metavar="KEY=VAL",
-        help="override a regime knob (l2, min_data, colsample, rounds, ...) for "
+        help="override a regime knob (l2, min_data, colsample, rounds, ...; "
+        "max_delta_step for LightGBM-family libraries only) for "
         "one-off experiments; repeatable. Overridden runs are stamped with an "
         "'overrides' field so they can never be mistaken for published cells.",
     )

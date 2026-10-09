@@ -1,0 +1,44 @@
+{
+    "admission": "strict serialized GPUQ; no model retries",
+    "cache_files": {
+        "X_test.npy": "62d6f05dd6cfd2e360d3b125678e73e0c067d5f2cfb9b99164eb00776c5a33ca",
+        "X_train.npy": "fef23f9a32fa262a30c5097f799b6ae9d42388d0d9acad2f29a5679417605a70",
+        "y_test.npy": "1218baabfb0282a9bc2234761bf2ff0bb611d832c1726fc3617014f4af0e9ef2",
+        "y_train.npy": "b2d07995ff1c762ba347df133b188d321df8c7e29d862fc9b083ddd9dd55a865"
+    },
+    "cache_root": "/home/felixjk/Documents/exaboost-bench",
+    "configuration_changed": {
+        "max_delta_step": {
+            "new": 1,
+            "old": 0
+        }
+    },
+    "cuda_precision": "fp64",
+    "dataset": "fraud",
+    "defaults_unchanged": true,
+    "input_dtype": "float32",
+    "kinds": [
+        "warmup",
+        "timed1",
+        "timed2",
+        "timed3",
+        "curve"
+    ],
+    "library_path": "/home/felixjk/falcata-noquant-builds-20261009/d0bb8c47789e062acbf6b770918a0589a74ae9b2/venv/lib/python3.12/site-packages/falcata/lib/lib_falcata.so",
+    "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+    "purpose": "User-authorized repair/rerun, separately capped configuration; retain old failures",
+    "quant_mode": "none",
+    "regimes": [
+        "shallow",
+        "deep"
+    ],
+    "runner_sha256": "e8a763f6dfad06c6a045eae3bf916763e38b82eec7fda2a443b0af09a18985d9",
+    "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+    "seed": 42,
+    "source_files": {
+        "benchmarks/bench.py": "07d2ddbbb6474404a70b8f52c99f6729bdd06ce3a6df5badec865a01bcec32d8",
+        "benchmarks/common.py": "d0ce598bab8ab548531317d2883896234a051d55f947bd9e3a910fdb84a53f55"
+    },
+    "threads": 32,
+    "wrapper_sha256": "ef2e17c623d8dd79280a5123f24910cc24d2ffbecec5cf275440871f78a91629"
+}
