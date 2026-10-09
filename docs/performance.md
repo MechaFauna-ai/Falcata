@@ -963,8 +963,14 @@ the count-margin cases run the captured path rather than a sparse fallback.
 
 The immutable [2026-10-09 correctness and quality verdict](2026-10-09_noquant-validation.md) records the
 selected FP64 runtime, unchanged locks, complete fresh paired seed results and retained sanity failures.
-It does not claim quality improvement or a cost-free tradeoff. Strict timing jobs await admission and will
-receive a separate report.
+It does not claim quality improvement or a cost-free tradeoff. The separate immutable
+[2026-10-09 strict overnight timing verdict](2026-10-09_noquant-timings.md) records all 35 jobs,
+complete affected coverage and retained fraud failures. With FP64 defaults, Year/Epsilon/Higgs
+deep training takes about 22%/19%/39% less time; full 30,000-round Numerai-deep takes 9.9% less
+time in one complete run per build. Numerai example improves about 1.8%, while stochastic controls
+are essentially unchanged. Forced quantized graph mode is slower in all seven same-build tests and
+remains opt-in. These timing observations do not establish quality equivalence; the dated report
+retains each metric, failure, learning curve and scope limit.
 
 ## 8. GPU inference via NVIDIA FIL
 
