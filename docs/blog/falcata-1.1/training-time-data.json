@@ -1,0 +1,312 @@
+{
+    "schema": 1,
+    "baseline_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+    "selected_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+    "source_evidence": {
+        "file": "strict-timing-evidence.json",
+        "sha256": "e9efa723a6da2a385524349acda0a53428ef11d2cecf2e6f5556fca159d0cff4",
+        "repository_path": "docs/2026-10-09_noquant-timings/strict-timing-evidence.json"
+    },
+    "device": "RTX 5090",
+    "precision": "fp64",
+    "admission": "strict quiet GPUQ",
+    "statistic": "100 * (1 - candidate_train_s / baseline_train_s); first four are medians of three timed draws",
+    "quality_limits": [
+        "Timing reductions do not establish equivalent model quality.",
+        "Higgs includes one lower candidate AUC draw.",
+        "Numerai deep is one complete run per build; no uncertainty estimate or extrapolation.",
+        "Numerai uses a fixed historical build1226 cache with an unidentified label; CORR comes from NumeraiEvaluator."
+    ],
+    "rows": [
+        {
+            "workload": "year-noquant",
+            "label": "Year",
+            "detail": "500 rounds \u00b7 deep",
+            "timed_runs_per_build": 3,
+            "baseline_train_s": 3.501219403988216,
+            "baseline_library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "baseline_gpuq_job_ids": [
+                3574
+            ],
+            "baseline_metrics": {
+                "rmse": {
+                    "min": 8.973423134842042,
+                    "median": 8.974403522994315,
+                    "max": 8.974431757414575
+                }
+            },
+            "candidate_train_s": 2.738359684997704,
+            "candidate_library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "candidate_gpuq_job_ids": [
+                3574
+            ],
+            "candidate_metrics": {
+                "rmse": {
+                    "min": 8.973396300117015,
+                    "median": 8.974337518168458,
+                    "max": 8.974416398150833
+                }
+            }
+        },
+        {
+            "workload": "epsilon-noquant",
+            "label": "Epsilon",
+            "detail": "500 rounds \u00b7 deep",
+            "timed_runs_per_build": 3,
+            "baseline_train_s": 57.76554983400274,
+            "baseline_library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "baseline_gpuq_job_ids": [
+                3575
+            ],
+            "baseline_metrics": {
+                "auc": {
+                    "min": 0.9433099180810336,
+                    "median": 0.9433108384817792,
+                    "max": 0.9433108452817847
+                }
+            },
+            "candidate_train_s": 46.63613747499767,
+            "candidate_library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "candidate_gpuq_job_ids": [
+                3575
+            ],
+            "candidate_metrics": {
+                "auc": {
+                    "min": 0.9433095492807348,
+                    "median": 0.9433101360812102,
+                    "max": 0.9433110624819605
+                }
+            }
+        },
+        {
+            "workload": "higgs-noquant",
+            "label": "Higgs",
+            "detail": "500 rounds \u00b7 deep",
+            "timed_runs_per_build": 3,
+            "baseline_train_s": 15.933554571995046,
+            "baseline_library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "baseline_gpuq_job_ids": [
+                3576
+            ],
+            "baseline_metrics": {
+                "auc": {
+                    "min": 0.8486394870327656,
+                    "median": 0.8486396190934467,
+                    "max": 0.8486396191576628
+                }
+            },
+            "candidate_train_s": 9.655266374000348,
+            "candidate_library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "candidate_gpuq_job_ids": [
+                3576
+            ],
+            "candidate_metrics": {
+                "auc": {
+                    "min": 0.8485671069590502,
+                    "median": 0.8486396325788554,
+                    "max": 0.8486398430475559
+                }
+            }
+        },
+        {
+            "workload": "numerai-noquant",
+            "label": "Numerai example",
+            "detail": "2,000 rounds",
+            "timed_runs_per_build": 3,
+            "baseline_train_s": 54.80883998298668,
+            "baseline_library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "baseline_gpuq_job_ids": [
+                3579
+            ],
+            "baseline_metrics": {
+                "corr_mean": {
+                    "min": 0.01931161968594782,
+                    "median": 0.019311621315782897,
+                    "max": 0.019311623036388528
+                },
+                "corr_std": {
+                    "min": 0.015986927087965435,
+                    "median": 0.01598692737646081,
+                    "max": 0.01598692854862343
+                },
+                "corr_sharpe": {
+                    "min": 1.2079631833683249,
+                    "median": 1.207963304374146,
+                    "max": 1.207963307114862
+                },
+                "max_drawdown": {
+                    "min": -0.0602880349716634,
+                    "median": -0.06028803497166263,
+                    "max": -0.060287995571479396
+                },
+                "n_eras": {
+                    "min": 200,
+                    "median": 200,
+                    "max": 200
+                },
+                "evaluator": {
+                    "min": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                    "median": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                    "max": "evaluation.evaluator.NumeraiEvaluator(cpu)"
+                },
+                "target_provenance": {
+                    "min": "unidentified label in historical build1226 benchmark cache",
+                    "median": "unidentified label in historical build1226 benchmark cache",
+                    "max": "unidentified label in historical build1226 benchmark cache"
+                },
+                "rmse": {
+                    "min": 0.22364410352984426,
+                    "median": 0.2236441035299029,
+                    "max": 0.22364410353005598
+                }
+            },
+            "candidate_train_s": 53.807147262996295,
+            "candidate_library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "candidate_gpuq_job_ids": [
+                3579
+            ],
+            "candidate_metrics": {
+                "corr_mean": {
+                    "min": 0.019311619829830602,
+                    "median": 0.019311621449020912,
+                    "max": 0.01931163511899532
+                },
+                "corr_std": {
+                    "min": 0.01598692656742903,
+                    "median": 0.015986930048468212,
+                    "max": 0.01598694206396118
+                },
+                "corr_sharpe": {
+                    "min": 1.207963038943444,
+                    "median": 1.2079630917551463,
+                    "max": 1.2079632534983389
+                },
+                "max_drawdown": {
+                    "min": -0.060288034971662664,
+                    "median": -0.06028799557147917,
+                    "max": -0.06028798080439316
+                },
+                "n_eras": {
+                    "min": 200,
+                    "median": 200,
+                    "max": 200
+                },
+                "evaluator": {
+                    "min": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                    "median": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                    "max": "evaluation.evaluator.NumeraiEvaluator(cpu)"
+                },
+                "target_provenance": {
+                    "min": "unidentified label in historical build1226 benchmark cache",
+                    "median": "unidentified label in historical build1226 benchmark cache",
+                    "max": "unidentified label in historical build1226 benchmark cache"
+                },
+                "rmse": {
+                    "min": 0.22364410352988337,
+                    "median": 0.22364410352992276,
+                    "max": 0.22364410352993266
+                }
+            }
+        },
+        {
+            "workload": "numerai-deep",
+            "label": "Numerai deep",
+            "detail": "30,000 rounds \u00b7 single pair",
+            "timed_runs_per_build": 1,
+            "baseline_train_s": 1372.5285235699848,
+            "baseline_library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "baseline_gpuq_job_ids": [
+                3582
+            ],
+            "baseline_metrics": {
+                "corr_mean": {
+                    "min": 0.02385615348376414,
+                    "median": 0.02385615348376414,
+                    "max": 0.02385615348376414
+                },
+                "corr_std": {
+                    "min": 0.01707823360582251,
+                    "median": 0.01707823360582251,
+                    "max": 0.01707823360582251
+                },
+                "corr_sharpe": {
+                    "min": 1.396874760843582,
+                    "median": 1.396874760843582,
+                    "max": 1.396874760843582
+                },
+                "max_drawdown": {
+                    "min": -0.03855716480149909,
+                    "median": -0.03855716480149909,
+                    "max": -0.03855716480149909
+                },
+                "n_eras": {
+                    "min": 200,
+                    "median": 200,
+                    "max": 200
+                },
+                "evaluator": {
+                    "min": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                    "median": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                    "max": "evaluation.evaluator.NumeraiEvaluator(cpu)"
+                },
+                "target_provenance": {
+                    "min": "unidentified label in historical build1226 benchmark cache",
+                    "median": "unidentified label in historical build1226 benchmark cache",
+                    "max": "unidentified label in historical build1226 benchmark cache"
+                },
+                "rmse": {
+                    "min": 0.22369569190674551,
+                    "median": 0.22369569190674551,
+                    "max": 0.22369569190674551
+                }
+            },
+            "candidate_train_s": 1236.5093722750025,
+            "candidate_library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "candidate_gpuq_job_ids": [
+                3583
+            ],
+            "candidate_metrics": {
+                "corr_mean": {
+                    "min": 0.023800354442240622,
+                    "median": 0.023800354442240622,
+                    "max": 0.023800354442240622
+                },
+                "corr_std": {
+                    "min": 0.016978802161682224,
+                    "median": 0.016978802161682224,
+                    "max": 0.016978802161682224
+                },
+                "corr_sharpe": {
+                    "min": 1.4017687593977202,
+                    "median": 1.4017687593977202,
+                    "max": 1.4017687593977202
+                },
+                "max_drawdown": {
+                    "min": -0.04142066278007694,
+                    "median": -0.04142066278007694,
+                    "max": -0.04142066278007694
+                },
+                "n_eras": {
+                    "min": 200,
+                    "median": 200,
+                    "max": 200
+                },
+                "evaluator": {
+                    "min": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                    "median": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                    "max": "evaluation.evaluator.NumeraiEvaluator(cpu)"
+                },
+                "target_provenance": {
+                    "min": "unidentified label in historical build1226 benchmark cache",
+                    "median": "unidentified label in historical build1226 benchmark cache",
+                    "max": "unidentified label in historical build1226 benchmark cache"
+                },
+                "rmse": {
+                    "min": 0.22369615920847666,
+                    "median": 0.22369615920847666,
+                    "max": 0.22369615920847666
+                }
+            }
+        }
+    ]
+}
