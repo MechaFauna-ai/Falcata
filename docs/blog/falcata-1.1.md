@@ -127,10 +127,13 @@ Full 30,000-tree comparisons in that experiment measured **202.1 to 246.4 trees/
 This specialization engages only on eligible sampled, packed views whose feature
 pairs have at most 32 joint cells.
 
-Treating missing values as a sixth bin can exceed that limit. Pair-joint
-histograms still support six-by-six tables; the five-bit view declines when a
-sampled pair needs more than 32 cells. A faithful six-state throughput comparison
-is [being measured separately](falcata-1.1/benchmarks.md#five-values-versus-five-values-plus-missing).
+Treating missing values as a sixth bin can exceed that limit: six-by-six pairs
+need 36 cells. In a separate paired Numerai run, the standard recipe still trained
+30,000 trees at **193 trees/s**, versus **266** with five states. Configuration
+matters: a larger declared leaf budget crossed a memory threshold and selected
+a slower full-width view, reaching **10.3 trees/s** in short probes. The
+[paired measurements and diagnosis](falcata-1.1/benchmarks.md#five-values-versus-five-values-plus-missing)
+explain where the remaining fast paths engage.
 
 Code: [joint histograms](https://github.com/MechaFauna-ai/Falcata/commit/4da13ec904d51eb851eba7ec5187ff69a78fd1c1),
 [five-bit view](https://github.com/MechaFauna-ai/Falcata/commit/4767ce8bc1ee358d50e51fd5098db1b3e7005e27),

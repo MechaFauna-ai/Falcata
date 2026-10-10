@@ -172,19 +172,54 @@ in v1.0.0. Their original ablations should not be marketed as newly added gains.
 
 ## Five values versus five values plus missing
 
-The headline Numerai benchmark retains the original imputed values. The user's
-Numerai pipeline detects a feature constant at 2 over an entire era, stores that
-as int8 -1, and restores it to NaN for modeling. It does not replace ordinary
-2s or zeros. This gives numeric values 0..4 plus a missing state.
+The historical headline benchmark retains the original imputed values. This
+separate paired comparison uses the Numerai pipeline's exact conversion:
+features constant at 2 over a complete source era become native int8 -1, then
+real NaN for CPU prediction. Ordinary twos and zeros stay numeric. Build 1230
+was frozen because the historical full build 1226 source is no longer available.
+Both arms have the same 5,502,748 training rows, 3,555 features and named Ender20
+target. These times must not be compared as a release speedup against the old cache.
 
-Six-bin pairs can need 36 joint cells, exceeding the five-bit code view's limit of
-32. The gate checks actual stored spans for every selected pair; one oversized
-pair declines that tree's code view. Six-by-five pairs need only 30 cells.
-The nibble representation, pair-joint histograms, tiled fill, root fusion and
-narrow warp finder remain available. NaN search also considers missing routing.
-These source conditions establish eligibility, not a measured throughput ratio.
+| Recipe | Trees per draw | Five-state trees/s | Six-state trees/s | Six/five training time |
+| --- | ---: | ---: | ---: | ---: |
+| Standard stochastic, FP64 | 2,000; median of 3 | 246.28 | 180.36 | 1.365× |
+| Standard fixed point, FP64 | 2,000; median of 3 | 211.77 | 174.99 | 1.210× |
+| Current recipe, fixed point, explicit FP32 | 2,000; median of 3 | 88.21 | 10.29 | 8.576× |
+| Standard stochastic, FP64 | 30,000; one pair | 266.19 | 192.65 | 1.382× |
 
-A new strict paired experiment is being prepared against an available, frozen
-Numerai data build, using the exact era-wise conversion and named target. It is
-separate from the historical benchmark: its trees/s will be reported after the
-queue runs, not inferred from the five-bit ablation.
+![Measured five-state and six-state training throughput](six-state-throughput.png)
+
+The full six-state run accepted all 30,000 trees in **155.721 s**, versus
+**112.702 s** with five states: 38.2% more training time. Construction, CPU
+prediction and canonical metric evaluation are measured separately. All 27
+frozen records passed under terminal, uncontended strict GPUQ job 3653; failed,
+pending, blocked and contended/excluded counts are zero. The prerequisite gate
+established exact trees/bin metadata/prediction parity for native int8 sentinel,
+float16 NaN and float32 NaN.
+
+The standard six-state warmups retain compact sampled columns, tiled fill,
+pair-joint histograms and FP64 warp split finding. Six-by-six pairs need 36
+joint cells, beyond the five-bit view's 32-cell limit; six-by-five needs 30.
+The five-state standard warmups engage code5 in 191/200 trees, versus 0/200
+with missing values. Warmup observations do not trace every timed launch.
+
+The current recipe's much larger penalty has a different explanation. Its
+16,384-leaf declared capacity raises the future-allocation reserve from 10,701
+to 15,922 MiB when missing-routing tasks are added. Diagnostic logs show the
+six-state compact view no longer fits; the planner falls back to a full-width
+masked view and `row_batch` histogram construction. The five-state arm uses
+compact `pair_hist`. Neither recipe arm engages code5. This observed branch
+change strongly explains the cliff, but no new ablation assigns its exact share
+of the slowdown or demonstrates a fix. The 2,000-round probes do not predict
+the recipe's full 15,000-round training time.
+
+Canonical `NumeraiEvaluator(cpu)` metrics use only complete held-out eras
+1226–1230 as finite/nonconstant sanity checks. The models differ across arms;
+these scores establish neither equal quality nor a production or prequential
+selection verdict. FP64 remains the library default.
+
+[Dated report](../../2026-10-10_numerai-six-state-throughput.md),
+[compact endpoint evidence](six-state-data.json), and
+[portable chart generator](plot_six_state.py) preserve all draws, actual bin
+counts, parameters, fingerprints, separate timings and the source-linked
+memory diagnosis.
