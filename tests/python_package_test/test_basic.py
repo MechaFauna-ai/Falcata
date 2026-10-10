@@ -2,6 +2,8 @@
 import filecmp
 import numbers
 import re
+import subprocess
+import sys
 import warnings
 from copy import deepcopy
 from pathlib import Path
@@ -1536,3 +1538,18 @@ def test_tree_sizes_must_account_for_every_tree_in_the_text():
     empty_text = empty.model_to_string()
     assert "\ntree_sizes=\n" in empty_text
     assert lgb.Booster(model_str=empty_text).num_trees() == 0
+
+
+def test_import_succeeds_when_sklearn_module_is_unavailable():
+    # The optional scikit-learn API (and its LGBM* aliases) must not take
+    # `import falcata` down with it when falcata.sklearn cannot be imported.
+    code = (
+        "import sys\n"
+        "sys.modules['falcata.sklearn'] = None\n"
+        "import falcata\n"
+        "assert callable(falcata.train)\n"
+        "assert not hasattr(falcata, 'FalcataModel')\n"
+        "assert not hasattr(falcata, 'LGBMModel')\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr

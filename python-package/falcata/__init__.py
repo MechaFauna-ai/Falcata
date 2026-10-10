@@ -16,6 +16,14 @@ from .oblique import ObliquePool
 
 try:
     from .sklearn import FalcataClassifier, FalcataModel, FalcataRanker, FalcataRegressor
+
+    # Backwards-compatible aliases for the pre-rename class names. Falcata's
+    # estimators are Falcata*; these keep code written against the LightGBM-era
+    # spelling working. They are the same objects, not subclasses.
+    LGBMModel = FalcataModel
+    LGBMRegressor = FalcataRegressor
+    LGBMClassifier = FalcataClassifier
+    LGBMRanker = FalcataRanker
 except ImportError:
     pass
 try:
@@ -74,11 +82,3 @@ __all__ = [
     "plot_tree",
     "create_tree_digraph",
 ]
-
-# Backwards-compatible aliases for the pre-rename class names. Falcata's
-# estimators are Falcata*; these keep code written against the LightGBM-era
-# spelling working. They are the same objects, not subclasses.
-LGBMModel = FalcataModel
-LGBMRegressor = FalcataRegressor
-LGBMClassifier = FalcataClassifier
-LGBMRanker = FalcataRanker
