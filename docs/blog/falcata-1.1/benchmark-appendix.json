@@ -1,0 +1,3463 @@
+{
+    "schema": 1,
+    "matrix_sha256": "08c095b64f2cd1bc585e16ca1974830a6a4038ad95c8a730ad97f7b03ba9dcb2",
+    "selection_rule": "Latest relevant actual measurement, not the fastest record/build. Historical duplicate kinds use the last record to reconstruct the figure while retaining prior failures. All finite timed endpoints, including failed models, enter displayed intervals. Warmups/curves are preserved but excluded from timing medians.",
+    "sources": {
+        "launch": {
+            "path": "/tmp/falcata-1.1-blog-audit-20261009/launch-original-8c28184f.jsonl",
+            "sha256": "7473993c77a5d0213baf35e0d251279a25087cd09f9badbb86eb4d27d8f49b6a",
+            "records": 628,
+            "origin_git_commit": "8c28184f25564f786d9ef042a6af4acdd680bdc3",
+            "origin_git_path": "docs/perf-plots/data/runs.jsonl",
+            "measurement_identity": "Falcata 1.0.0 launch sweep plus explicitly retained historical retries",
+            "quiet_provenance": "not recorded in individual rows",
+            "caveats": [
+                "historical_binary_unpinned",
+                "launch_retries",
+                "historical_cache_unpinned",
+                "quantization_defaults_change",
+                "launch_snapshot_not_tag"
+            ]
+        },
+        "corrected_snapshot": {
+            "path": "/tmp/falcata-noquant-20261009/docs/perf-plots/data/runs.jsonl",
+            "sha256": "910c142e50d217eb5dbb5e4d0d3d83fa3910dc5593ed8fc9ddb7d5fa86845d7a",
+            "records": 628,
+            "measurement_identity": "Mixed snapshot: launch rows except all six covtype Falcata groups replaced after PR68",
+            "replacement_runtime": "0b170e0a",
+            "replacement_commit": "7ef7067a",
+            "quiet_provenance": "not recorded in individual rows",
+            "caveats": [
+                "mixed_snapshot",
+                "ridge_changes_model",
+                "historical_binary_unpinned"
+            ]
+        },
+        "oct8": {
+            "path": "/home/felixjk/Documents/exaboost-bench/results/runs_2026-10-08_b4da8135.jsonl",
+            "sha256": "3e6896ba9d3518d1f8bf1fdfd2961f5d92d8b7dabc288b820348ed647901c2ce",
+            "records": 232,
+            "measurement_identity": "Oct8 Falcata-only sweep; before PR68 fixedpoint Hessian ridge",
+            "runtime_build_inferred_from_build_path": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+            "runtime_build_verified_by_contemporaneous_build_record": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+            "library_md5_contemporaneous_and_current_match": "58897acd3df952c1989b8e354ed09a17",
+            "library_sha256_observed_current": "c35e3fbd265d60932c7f78cec698e112c2dca871c7e2096b007401c70d8a4fd1",
+            "harness_git_commit_from_sweep_log": "386898d66ba4e7cd3ba0fe030fec3f01d04f0dbf",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "run_id_from_source": 3494,
+            "shipped_default_pair_code5_epilogue": false,
+            "caveats": [
+                "pre_ridge_fixedpoint",
+                "historical_cache_unpinned",
+                "quantization_defaults_change"
+            ]
+        },
+        "d0_noquant": {
+            "path": "/tmp/falcata-noquant-overnight-20261009/main-results.jsonl",
+            "sha256": "94e38baa729812d83de32de47a441dceb94450ceeec44d1f2908b70158f66858",
+            "records": 66,
+            "measurement_identity": "Selected FP64 noquant default, fourteen affected groups",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "caveats": [
+                "numerai_dtype_change",
+                "fraud_uncapped_failures",
+                "atomic_noquant_variation"
+            ]
+        },
+        "strict_year-noquant_baseline": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-year-noquant-baseline.jsonl",
+            "sha256": "88b7496affe9321b5962ce340e749db2f0ff59b0292fae6461d6661e093c3c7a",
+            "records": 4,
+            "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_year-noquant_candidate": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-year-noquant-candidate.jsonl",
+            "sha256": "f8877093d70a197e3aa5426a1af61c2e49d084b36430502252812f0921030182",
+            "records": 4,
+            "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_epsilon-noquant_baseline": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-epsilon-noquant-baseline.jsonl",
+            "sha256": "37b3896d64608cde6b35176a705d516554d336ce64fa803f9fe6bb088d0414bf",
+            "records": 4,
+            "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_epsilon-noquant_candidate": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-epsilon-noquant-candidate.jsonl",
+            "sha256": "e1e2e51925bb30e27c2d10ee73adad3bfb81ce93f328f22a38227bd03c1ced77",
+            "records": 4,
+            "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_higgs-noquant_baseline": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-higgs-noquant-baseline.jsonl",
+            "sha256": "bf9d9b9c067287cb6ae135452dcc43a7b0a8e527fddf167418a359fba4597680",
+            "records": 4,
+            "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_higgs-noquant_candidate": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-higgs-noquant-candidate.jsonl",
+            "sha256": "511042fcec747656df79e2cc9fec11fb1bf611e23625699045c135fad02f0fc8",
+            "records": 4,
+            "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_covtype-noquant_baseline": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-covtype-noquant-baseline.jsonl",
+            "sha256": "a36675cc82170992d323619c9afd074d13f78b35845bca643e70b9db21e8a5df",
+            "records": 4,
+            "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_covtype-noquant_candidate": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-covtype-noquant-candidate.jsonl",
+            "sha256": "b46a72dcc4662db8ef849a57c2642222722436cd1ec5313047c6b647bd26e35e",
+            "records": 4,
+            "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_fraud-noquant_baseline": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-fraud-noquant-baseline.jsonl",
+            "sha256": "32b1b79e63b85d1aea2c0cef1f67643532323c851e8b9c2c8e9bff3f05223828",
+            "records": 4,
+            "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_fraud-noquant_candidate": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-fraud-noquant-candidate.jsonl",
+            "sha256": "bd8c4ba1bc0018284a01427ba4677d8773b8d07896957c70038d51c3218526d4",
+            "records": 4,
+            "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_numerai-noquant_baseline": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-numerai-noquant-baseline.jsonl",
+            "sha256": "82d9dbc250f261b46240aada431530dafc037ec6f668d09949ea9ebf49ea5318",
+            "records": 4,
+            "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_numerai-noquant_candidate": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-numerai-noquant-candidate.jsonl",
+            "sha256": "ec314bb4ad03f97922b6c3be38d5d2fdd11382aaf717537d809976950e07f36f",
+            "records": 4,
+            "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_epsilon-stoch_baseline": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-epsilon-stoch-baseline.jsonl",
+            "sha256": "4517dde508816cf258850b1eb12a9bf3ea61fb32d9e9361079522673427229f0",
+            "records": 4,
+            "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_epsilon-stoch_candidate": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-epsilon-stoch-candidate.jsonl",
+            "sha256": "ef55a285eb85883ba4c19b9799b488a43364cb0e519b575d9cedad4c7dffe153",
+            "records": 4,
+            "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_numerai-stoch_baseline": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-numerai-stoch-baseline.jsonl",
+            "sha256": "4c5ec9bfb0accf55686424483a2c50fbcdb44e71ee2f5d44bd798ae1a14c2376",
+            "records": 4,
+            "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_numerai-stoch_candidate": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-numerai-stoch-candidate.jsonl",
+            "sha256": "8b7ba531d3f7c8d55d75002115cf974d60d90c0704bf50b2397d075b70c9168f",
+            "records": 4,
+            "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_numerai-deep_baseline": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-numerai-deep-baseline.jsonl",
+            "sha256": "300e3c5a4f33d8d70535a68f18b6b9b9c07d62f28e9d9f25c05a251b137a0046",
+            "records": 1,
+            "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": [
+                "single_draw_deep"
+            ]
+        },
+        "strict_numerai-deep_candidate": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-numerai-deep-candidate.jsonl",
+            "sha256": "73b3b77b42df1ff64d738a3118890ad0b57463ca601322cf1b2207fa5750220a",
+            "records": 1,
+            "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": [
+                "single_draw_deep"
+            ]
+        }
+    },
+    "global_caveats": [
+        "historical_competitors_only",
+        "l2_defaults_differ",
+        "training_only",
+        "historical_cache_unpinned"
+    ],
+    "caveat_definitions": {
+        "historical_binary_unpinned": "Old version fields do not pin an exact loaded shared-library hash. Launch/0b170 identities lack a recorded binary digest. Oct8 b4da binary identity is separately recovered from contemporaneous MD5 plus matching installed library; newer strict records pin actual runtime and SHA256 in every endpoint.",
+        "launch_snapshot_not_tag": "The launch snapshot prints version1.0.0 but is not a controlled tagged-v1.0.0 runtime comparison; Covtype history identifies a pre-tag source. Ratios describe the archived launch measurements.",
+        "quantization_defaults_change": "The benchmark explicitly chooses quant_mode but leaves quant_bins automatic. Quantization defaults/numerical safeguards evolved; matching recipe names does not prove identical effective bins or model.",
+        "historical_cache_unpinned": "Shapes agree, but historical rows do not pin data bytes, labels, or split hashes; current cache metadata cannot prove historical byte identity.",
+        "mixed_snapshot": "The current runs.jsonl is not a frozen launch corpus: PR68 refreshed all three Falcata covtype modes in both regimes. Original launch is recovered from git8c28184f.",
+        "pre_ridge_fixedpoint": "b4da predates the four-Hessian-quanta fixedpoint ridge. Its row-varying-Hessian fixedpoint quality is not final-build quality.",
+        "ridge_changes_model": "The fixedpoint ridge changes gains/leaf denominators, repairing low-quality multiclass output; it is a numerical safeguard, not bit-identical optimization.",
+        "latest_fixedpoint_quality_not_measured_here": "Final ridge affects nonconstant Hessians, including binary workloads; no later full exact-regime fixedpoint timing/quality endpoint was found here.",
+        "quiet_unverified": "Oct8 script documents intended strict/exclusive submission, but selected raw rows lack actual admission/contended flags. Host load alone does not establish GPU contention.",
+        "launch_retries": "Historical duplicate timed kinds exist. Last-record-per-kind recreates published figures; earlier failed/skipped attempts stay explicitly retained, not silently discarded as fresh seeds.",
+        "historical_accidental_robust_scale": "Launch covtype fixedpoint used a robust-scale path later identified as unintended and removed; endpoint quality/time is a historical model, not a model-identity baseline.",
+        "numerai_dtype_change": "Launch and first Oct8 sweep load float32 memmaps in contemporaneous source; selected strict Numerai uses int8. Same row/feature counts do not make ingestion or timing regimes identical.",
+        "historical_numerai_label_unknown": "Historical build1226 cache metadata omits label identity. It is a fixed-cache implementation workload, not evidence for production/current target selection or honest configuration selection.",
+        "numerai_metric_implementation": "Launch/Oct8 used the historical benchmark CORR helper; strict wrapper uses NumeraiEvaluator. This audit copies recorded endpoints and does not recompute corr, Sharpe, or payouts.",
+        "upstream_cuda_depth_semantics": "Upstream LightGBM CUDA ignores the depth cap in this corpus, so comparisons are not identical tree capacity; pathological quality/crashes remain failures.",
+        "l2_defaults_differ": "Benchmark uses each framework\u2019s default L2: Falcata/LightGBM0, XGBoost1, CatBoost3. This is not a fully aligned configuration or quality-equivalence experiment.",
+        "historical_competitors_only": "No contemporary competitor run is included. Ratios versus launch competitors are descriptive archive comparisons, not evidence that the gap to today\u2019s frameworks widened.",
+        "single_draw_deep": "Numerai-deep/leaf use one full timed draw per build; no repeated-run precision or quality equivalence is established.",
+        "fraud_uncapped_failures": "L2=0/max_delta_step=0 fraud noquant has numerical collapse, saturated probabilities, and early no-split termination; old requested-round throughput is misleading. Retain failures. Later cap1 follow-up changes configuration and is not a default speed comparison.",
+        "atomic_noquant_variation": "FP64 noquant can vary by floating atomic reduction order at the same seed; finite covtype/fraud metric ranges and failed endpoints are retained.",
+        "epsilon_quality_lower_than_competitors": "Epsilon strict stochastic AUC\u2248.94243 versus archived XGBoost\u2248.94401 and CatBoost\u2248.95076: do not label the speed bars matched-quality.",
+        "training_only": "train_s excludes Dataset construction and post-training prediction/scoring. Default CatBoost train timer also includes its configured per-round metric work; see frozen harness."
+    },
+    "rows": [
+        {
+            "dataset": "fraud",
+            "regime": "shallow",
+            "library": "falcata-stoch",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 0.3891164190135896,
+                    "min": 0.38722468400374055,
+                    "max": 0.4244736770633608
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.9225406591308443,
+                        "min": 0.9225406591308443,
+                        "max": 0.9225406591308443
+                    }
+                },
+                "records": [
+                    "launch:606",
+                    "launch:607",
+                    "launch:608"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 0.394485534998239,
+                    "min": 0.3740209789975779,
+                    "max": 0.4055630529910559
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.9365029917425608,
+                        "min": 0.9365029917425608,
+                        "max": 0.9365029917425608
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:2",
+                    "oct8:3",
+                    "oct8:4"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 0.986389574500689,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "fraud",
+            "regime": "shallow",
+            "library": "falcata-fixed",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 0.445615877979435,
+                    "min": 0.4426632650429383,
+                    "max": 0.44655493402387947
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.9750572077452253,
+                        "min": 0.9750572077452253,
+                        "max": 0.9750572077452253
+                    }
+                },
+                "records": [
+                    "launch:2",
+                    "launch:3",
+                    "launch:4"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 0.4589466080069542,
+                    "min": 0.4460006790031912,
+                    "max": 0.46283751699957065
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.9807736755366188,
+                        "min": 0.9807736755366188,
+                        "max": 0.9807736755366188
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:7",
+                    "oct8:8",
+                    "oct8:9"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 0.970953636447146,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "latest_fixedpoint_quality_not_measured_here",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "fraud",
+            "regime": "shallow",
+            "library": "falcata-noquant",
+            "launch": {
+                "train_s": null,
+                "metrics": {},
+                "records": [
+                    "launch:7",
+                    "launch:8",
+                    "launch:9"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 0.34653709997655824,
+                    "min": 0.32340964701143093,
+                    "max": 0.4816550450050272
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.5146485384390109,
+                        "min": 0.5047945581580972,
+                        "max": 0.7534060859853227
+                    }
+                },
+                "source": "d0_noquant",
+                "runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                "records": [
+                    "d0_noquant:2",
+                    "d0_noquant:3",
+                    "d0_noquant:4"
+                ],
+                "failures": [
+                    "d0_noquant:1",
+                    "d0_noquant:2",
+                    "d0_noquant:3",
+                    "d0_noquant:5"
+                ],
+                "all_timed_sane": false,
+                "strict_quiet_verified": false
+            },
+            "descriptive_launch_div_latest_time_ratio": null,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "fraud",
+            "regime": "deep",
+            "library": "falcata-stoch",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 0.37682866596151143,
+                    "min": 0.3761492900084704,
+                    "max": 0.3854831480421126
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.9563813373548631,
+                        "min": 0.9563813373548631,
+                        "max": 0.9563813373548631
+                    }
+                },
+                "records": [
+                    "launch:611",
+                    "launch:612",
+                    "launch:613"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 0.39192336799169425,
+                    "min": 0.39053656700707506,
+                    "max": 0.4045118289941456
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.9629731482491702,
+                        "min": 0.9629731482491702,
+                        "max": 0.9629731482491702
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:17",
+                    "oct8:18",
+                    "oct8:19"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 0.9614855778885256,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "fraud",
+            "regime": "deep",
+            "library": "falcata-fixed",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 0.5580548000289127,
+                    "min": 0.5554657028988004,
+                    "max": 0.5606087400810793
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.9845935666050325,
+                        "min": 0.9845935666050325,
+                        "max": 0.9845935666050325
+                    }
+                },
+                "records": [
+                    "launch:42",
+                    "launch:43",
+                    "launch:44"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 0.5528739959991071,
+                    "min": 0.5491862759954529,
+                    "max": 0.5727474279992748
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.9658289596086043,
+                        "min": 0.9658289596086043,
+                        "max": 0.9658289596086043
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:22",
+                    "oct8:23",
+                    "oct8:24"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.0093706777082965,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "latest_fixedpoint_quality_not_measured_here",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "fraud",
+            "regime": "deep",
+            "library": "falcata-noquant",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 0.3788996720686555,
+                    "min": 0.3365934550529346,
+                    "max": 0.3866404270520434
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.5858739757157787,
+                        "min": 0.5145699405958218,
+                        "max": 0.7647470549136931
+                    }
+                },
+                "records": [
+                    "launch:47",
+                    "launch:48",
+                    "launch:49"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 0.4538492129941005,
+                    "min": 0.44274505600333214,
+                    "max": 0.5386687729915138
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.7385082057583866,
+                        "min": 0.6679896107289286,
+                        "max": 0.8159916822666039
+                    }
+                },
+                "source": "d0_noquant",
+                "runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                "records": [
+                    "d0_noquant:7",
+                    "d0_noquant:8",
+                    "d0_noquant:9"
+                ],
+                "failures": [
+                    "d0_noquant:10"
+                ],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 0.8348580568621162,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "covtype",
+            "regime": "shallow",
+            "library": "falcata-stoch",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 2.351753424038179,
+                    "min": 2.3512231769273058,
+                    "max": 2.3518938719062135
+                },
+                "metrics": {
+                    "accuracy": {
+                        "n": 3,
+                        "median": 0.9204237412115006,
+                        "min": 0.9204237412115006,
+                        "max": 0.9204237412115006
+                    },
+                    "mlogloss": {
+                        "n": 3,
+                        "median": 0.22961298591329238,
+                        "min": 0.22961298591329238,
+                        "max": 0.22961298591329238
+                    }
+                },
+                "records": [
+                    "launch:82",
+                    "launch:83",
+                    "launch:84"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 1.4438301369955298,
+                    "min": 1.4344638740003575,
+                    "max": 1.452794107986847
+                },
+                "metrics": {
+                    "accuracy": {
+                        "n": 3,
+                        "median": 0.9204065299518945,
+                        "min": 0.9204065299518945,
+                        "max": 0.9204065299518945
+                    },
+                    "mlogloss": {
+                        "n": 3,
+                        "median": 0.23062118783447524,
+                        "min": 0.23062118783447524,
+                        "max": 0.23062118783447524
+                    }
+                },
+                "source": "corrected_snapshot",
+                "runtime": "0b170e0a",
+                "records": [
+                    "corrected_snapshot:600",
+                    "corrected_snapshot:601",
+                    "corrected_snapshot:602"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": false
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.6288297104893168,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "mixed_snapshot",
+                "quantization_defaults_change",
+                "ridge_changes_model"
+            ]
+        },
+        {
+            "dataset": "covtype",
+            "regime": "shallow",
+            "library": "falcata-fixed",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 2.587464169948362,
+                    "min": 2.5810551210306585,
+                    "max": 2.587753618019633
+                },
+                "metrics": {
+                    "accuracy": {
+                        "n": 3,
+                        "median": 0.9242016126950251,
+                        "min": 0.9242016126950251,
+                        "max": 0.9242016126950251
+                    },
+                    "mlogloss": {
+                        "n": 3,
+                        "median": 0.21012047587578536,
+                        "min": 0.21012047587578536,
+                        "max": 0.21012047587578536
+                    }
+                },
+                "records": [
+                    "launch:87",
+                    "launch:88",
+                    "launch:89"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 1.4978846670128405,
+                    "min": 1.4967931439750828,
+                    "max": 1.5191985319834203
+                },
+                "metrics": {
+                    "accuracy": {
+                        "n": 3,
+                        "median": 0.922101839023089,
+                        "min": 0.922101839023089,
+                        "max": 0.922101839023089
+                    },
+                    "mlogloss": {
+                        "n": 3,
+                        "median": 0.2126235167651894,
+                        "min": 0.2126235167651894,
+                        "max": 0.2126235167651894
+                    }
+                },
+                "source": "corrected_snapshot",
+                "runtime": "0b170e0a",
+                "records": [
+                    "corrected_snapshot:610",
+                    "corrected_snapshot:611",
+                    "corrected_snapshot:612"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": false
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.727412147898154,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_accidental_robust_scale",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "mixed_snapshot",
+                "quantization_defaults_change",
+                "ridge_changes_model"
+            ]
+        },
+        {
+            "dataset": "covtype",
+            "regime": "shallow",
+            "library": "falcata-noquant",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 2.7107918919064105,
+                    "min": 2.6390610879752785,
+                    "max": 2.7162920229602605
+                },
+                "metrics": {
+                    "accuracy": {
+                        "n": 3,
+                        "median": 0.8742975654673287,
+                        "min": 0.8490744645146855,
+                        "max": 0.8867327005326885
+                    },
+                    "mlogloss": {
+                        "n": 3,
+                        "median": 0.7569461051460752,
+                        "min": 0.580017627341256,
+                        "max": 1.426567861567144
+                    }
+                },
+                "records": [
+                    "launch:92",
+                    "launch:93",
+                    "launch:94"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 2.427205336978659,
+                    "min": 2.4179603310185485,
+                    "max": 2.480278410977917
+                },
+                "metrics": {
+                    "accuracy": {
+                        "n": 3,
+                        "median": 0.8788843661523369,
+                        "min": 0.8629811622763612,
+                        "max": 0.8835830400247842
+                    },
+                    "mlogloss": {
+                        "n": 3,
+                        "median": 0.5933281509250992,
+                        "min": 0.5685157483061197,
+                        "max": 0.9485367494235097
+                    }
+                },
+                "source": "d0_noquant",
+                "runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                "records": [
+                    "d0_noquant:12",
+                    "d0_noquant:13",
+                    "d0_noquant:14"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.1168366559710827,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "covtype",
+            "regime": "deep",
+            "library": "falcata-stoch",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 5.156186189036816,
+                    "min": 5.14847094588913,
+                    "max": 5.310993631137535
+                },
+                "metrics": {
+                    "accuracy": {
+                        "n": 3,
+                        "median": 0.964871819144084,
+                        "min": 0.964871819144084,
+                        "max": 0.964871819144084
+                    },
+                    "mlogloss": {
+                        "n": 3,
+                        "median": 0.11283285081157124,
+                        "min": 0.11283285081157124,
+                        "max": 0.11283285081157124
+                    }
+                },
+                "records": [
+                    "launch:591",
+                    "launch:592",
+                    "launch:593"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 2.5040347920148633,
+                    "min": 2.491947867994895,
+                    "max": 2.506041604996426
+                },
+                "metrics": {
+                    "accuracy": {
+                        "n": 3,
+                        "median": 0.9581336110083216,
+                        "min": 0.9581336110083216,
+                        "max": 0.9581336110083216
+                    },
+                    "mlogloss": {
+                        "n": 3,
+                        "median": 0.13685258157533747,
+                        "min": 0.13685258157533747,
+                        "max": 0.13685258157533747
+                    }
+                },
+                "source": "corrected_snapshot",
+                "runtime": "0b170e0a",
+                "records": [
+                    "corrected_snapshot:605",
+                    "corrected_snapshot:606",
+                    "corrected_snapshot:607"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": false
+            },
+            "descriptive_launch_div_latest_time_ratio": 2.0591511769243063,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "mixed_snapshot",
+                "quantization_defaults_change",
+                "ridge_changes_model"
+            ]
+        },
+        {
+            "dataset": "covtype",
+            "regime": "deep",
+            "library": "falcata-fixed",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 5.688914877944626,
+                    "min": 5.662153618992306,
+                    "max": 5.70141683309339
+                },
+                "metrics": {
+                    "accuracy": {
+                        "n": 3,
+                        "median": 0.9709732106744232,
+                        "min": 0.9709732106744232,
+                        "max": 0.9709732106744232
+                    },
+                    "mlogloss": {
+                        "n": 3,
+                        "median": 0.08338060118999069,
+                        "min": 0.08338060118999069,
+                        "max": 0.08338060118999069
+                    }
+                },
+                "records": [
+                    "launch:127",
+                    "launch:128",
+                    "launch:129"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 2.7980212819820736,
+                    "min": 2.7961721920000855,
+                    "max": 2.809525234013563
+                },
+                "metrics": {
+                    "accuracy": {
+                        "n": 3,
+                        "median": 0.9687271412958357,
+                        "min": 0.9687271412958357,
+                        "max": 0.9687271412958357
+                    },
+                    "mlogloss": {
+                        "n": 3,
+                        "median": 0.09936702766674609,
+                        "min": 0.09936702766674609,
+                        "max": 0.09936702766674609
+                    }
+                },
+                "source": "corrected_snapshot",
+                "runtime": "0b170e0a",
+                "records": [
+                    "corrected_snapshot:615",
+                    "corrected_snapshot:616",
+                    "corrected_snapshot:617"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": false
+            },
+            "descriptive_launch_div_latest_time_ratio": 2.0331921399520914,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_accidental_robust_scale",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "mixed_snapshot",
+                "quantization_defaults_change",
+                "ridge_changes_model"
+            ]
+        },
+        {
+            "dataset": "covtype",
+            "regime": "deep",
+            "library": "falcata-noquant",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 5.0961565600009635,
+                    "min": 5.015879488084465,
+                    "max": 5.143614238942973
+                },
+                "metrics": {
+                    "accuracy": {
+                        "n": 3,
+                        "median": 0.8557352219822207,
+                        "min": 0.8271645310362039,
+                        "max": 0.8597712623598358
+                    },
+                    "mlogloss": {
+                        "n": 3,
+                        "median": 2.8766928454595506,
+                        "min": 2.749310978237042,
+                        "max": 4.070566445335919
+                    }
+                },
+                "records": [
+                    "launch:132",
+                    "launch:133",
+                    "launch:134"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 4.219613576977281,
+                    "min": 4.182448622013908,
+                    "max": 4.273044983012369
+                },
+                "metrics": {
+                    "accuracy": {
+                        "n": 3,
+                        "median": 0.8549951378191613,
+                        "min": 0.8078621033880364,
+                        "max": 0.8628176553101039
+                    },
+                    "mlogloss": {
+                        "n": 3,
+                        "median": 2.9572803679922726,
+                        "min": 2.6589403474581466,
+                        "max": 4.750236908967821
+                    }
+                },
+                "source": "d0_noquant",
+                "runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                "records": [
+                    "d0_noquant:17",
+                    "d0_noquant:18",
+                    "d0_noquant:19"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.2077306291282706,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "year",
+            "regime": "shallow",
+            "library": "falcata-stoch",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 0.5706848819972947,
+                    "min": 0.5701292349258438,
+                    "max": 0.585886296001263
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 3,
+                        "median": 9.005581842019703,
+                        "min": 9.005581842019703,
+                        "max": 9.005581842019703
+                    }
+                },
+                "records": [
+                    "launch:167",
+                    "launch:168",
+                    "launch:169"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 0.4814810419920832,
+                    "min": 0.46757104199787136,
+                    "max": 0.49866097200720105
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 3,
+                        "median": 8.999646635229224,
+                        "min": 8.999646635229224,
+                        "max": 8.999646635229224
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:62",
+                    "oct8:63",
+                    "oct8:64"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.1852696829684901,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "year",
+            "regime": "shallow",
+            "library": "falcata-fixed",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 0.5763806389877573,
+                    "min": 0.5643992050318047,
+                    "max": 0.5847318569431081
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 3,
+                        "median": 8.966745397374837,
+                        "min": 8.966745397374837,
+                        "max": 8.966745397374837
+                    }
+                },
+                "records": [
+                    "launch:172",
+                    "launch:173",
+                    "launch:174"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 0.48668303099111654,
+                    "min": 0.4757119730056729,
+                    "max": 0.4895413320045918
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 3,
+                        "median": 8.971445097997275,
+                        "min": 8.971445097997275,
+                        "max": 8.971445097997275
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:67",
+                    "oct8:68",
+                    "oct8:69"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.1843039561374762,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "year",
+            "regime": "shallow",
+            "library": "falcata-noquant",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 0.7364535960368812,
+                    "min": 0.7352299260674044,
+                    "max": 0.7417247430421412
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 3,
+                        "median": 8.961208588960028,
+                        "min": 8.96120713639948,
+                        "max": 8.961264719842363
+                    }
+                },
+                "records": [
+                    "launch:177",
+                    "launch:178",
+                    "launch:179"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 0.7673308459925465,
+                    "min": 0.7667899829975795,
+                    "max": 0.7723063869925682
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 3,
+                        "median": 8.961212539203714,
+                        "min": 8.96120937653659,
+                        "max": 8.961214040312202
+                    }
+                },
+                "source": "d0_noquant",
+                "runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                "records": [
+                    "d0_noquant:22",
+                    "d0_noquant:23",
+                    "d0_noquant:24"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 0.9597601867344125,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "year",
+            "regime": "deep",
+            "library": "falcata-stoch",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 2.1541215060278773,
+                    "min": 2.1296165008097887,
+                    "max": 2.166852202033624
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 3,
+                        "median": 8.963318948624824,
+                        "min": 8.963318948624824,
+                        "max": 8.963318948624824
+                    }
+                },
+                "records": [
+                    "launch:596",
+                    "launch:597",
+                    "launch:598"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 0.999961235007504,
+                    "min": 0.9991028309887042,
+                    "max": 1.0044964789994992
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 3,
+                        "median": 8.97161968782209,
+                        "min": 8.97161968782209,
+                        "max": 8.97161968782209
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:77",
+                    "oct8:78",
+                    "oct8:79"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 2.154205013769071,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "year",
+            "regime": "deep",
+            "library": "falcata-fixed",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 1.9792485530488193,
+                    "min": 1.976536395959556,
+                    "max": 1.9795568089466542
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 3,
+                        "median": 8.970139075773108,
+                        "min": 8.970139075773108,
+                        "max": 8.970139075773108
+                    }
+                },
+                "records": [
+                    "launch:212",
+                    "launch:213",
+                    "launch:214"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 1.0188864049996482,
+                    "min": 1.0045198430016171,
+                    "max": 1.0305314140132396
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 3,
+                        "median": 8.97136240740313,
+                        "min": 8.97136240740313,
+                        "max": 8.97136240740313
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:82",
+                    "oct8:83",
+                    "oct8:84"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.9425605674358788,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "year",
+            "regime": "deep",
+            "library": "falcata-noquant",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 3.338843545061536,
+                    "min": 3.3338632920058444,
+                    "max": 3.3427041929680854
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 3,
+                        "median": 8.973331586383056,
+                        "min": 8.973243749410717,
+                        "max": 8.973341781759832
+                    }
+                },
+                "records": [
+                    "launch:217",
+                    "launch:218",
+                    "launch:219"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 2.738359684997704,
+                    "min": 2.7320370630186517,
+                    "max": 2.7438381770043634
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 3,
+                        "median": 8.974337518168458,
+                        "min": 8.973396300117015,
+                        "max": 8.974416398150833
+                    }
+                },
+                "source": "d0_noquant",
+                "runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                "records": [
+                    "d0_noquant:27",
+                    "d0_noquant:28",
+                    "d0_noquant:29"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.2192859701205891,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "higgs",
+            "regime": "shallow",
+            "library": "falcata-stoch",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 2.36564133700449,
+                    "min": 2.3627108819782734,
+                    "max": 2.3718892069300637
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8309839337845597,
+                        "min": 0.8309839337845597,
+                        "max": 0.8309839337845597
+                    }
+                },
+                "records": [
+                    "launch:252",
+                    "launch:253",
+                    "launch:254"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 1.6935866780113429,
+                    "min": 1.6872771790076513,
+                    "max": 1.6938064889982343
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8309534729754372,
+                        "min": 0.8309534729754372,
+                        "max": 0.8309534729754372
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:92",
+                    "oct8:93",
+                    "oct8:94"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.3968233027094266,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "higgs",
+            "regime": "shallow",
+            "library": "falcata-fixed",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 2.543549594003707,
+                    "min": 2.537281355005689,
+                    "max": 2.544573018909432
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8305813601871032,
+                        "min": 0.8305813601871032,
+                        "max": 0.8305813601871032
+                    }
+                },
+                "records": [
+                    "launch:257",
+                    "launch:258",
+                    "launch:259"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 1.9566332769900328,
+                    "min": 1.9458058160089422,
+                    "max": 1.9582780600030674
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.830734060446867,
+                        "min": 0.830734060446867,
+                        "max": 0.830734060446867
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:97",
+                    "oct8:98",
+                    "oct8:99"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.2999623505926217,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "latest_fixedpoint_quality_not_measured_here",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "higgs",
+            "regime": "shallow",
+            "library": "falcata-noquant",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 3.8648675529984757,
+                    "min": 3.856728131067939,
+                    "max": 3.8681430609431118
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.830772775465968,
+                        "min": 0.8307727753535896,
+                        "max": 0.8307727754659682
+                    }
+                },
+                "records": [
+                    "launch:262",
+                    "launch:263",
+                    "launch:264"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 3.157845628011273,
+                    "min": 3.144968851993326,
+                    "max": 3.161356586002512
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8306352657806474,
+                        "min": 0.830635265684323,
+                        "max": 0.8306352658448637
+                    }
+                },
+                "source": "d0_noquant",
+                "runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                "records": [
+                    "d0_noquant:32",
+                    "d0_noquant:33",
+                    "d0_noquant:34"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.223893758046832,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "higgs",
+            "regime": "deep",
+            "library": "falcata-stoch",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 4.237259183079004,
+                    "min": 4.235146415070631,
+                    "max": 4.239101529004984
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8489081828223363,
+                        "min": 0.8489081828223363,
+                        "max": 0.8489081828223363
+                    }
+                },
+                "records": [
+                    "launch:297",
+                    "launch:298",
+                    "launch:299"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 2.6982400599954417,
+                    "min": 2.6890610690024914,
+                    "max": 2.7176946500112535
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8486426575005191,
+                        "min": 0.8486426575005191,
+                        "max": 0.8486426575005191
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:107",
+                    "oct8:108",
+                    "oct8:109"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.5703788724736978,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "higgs",
+            "regime": "deep",
+            "library": "falcata-fixed",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 4.994402670999989,
+                    "min": 4.986063903081231,
+                    "max": 5.000952129950747
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8484433335271121,
+                        "min": 0.8484433335271121,
+                        "max": 0.8484433335271121
+                    }
+                },
+                "records": [
+                    "launch:302",
+                    "launch:303",
+                    "launch:304"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 3.3253984129987657,
+                    "min": 3.29811873199651,
+                    "max": 3.350730324003962
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8485873919837751,
+                        "min": 0.8485873919837751,
+                        "max": 0.8485873919837751
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:112",
+                    "oct8:113",
+                    "oct8:114"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.501896028902039,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "latest_fixedpoint_quality_not_measured_here",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "higgs",
+            "regime": "deep",
+            "library": "falcata-noquant",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 15.302733696065843,
+                    "min": 15.292083595995791,
+                    "max": 15.428817252046429
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8485097303336783,
+                        "min": 0.8482586593953666,
+                        "max": 0.848510222342394
+                    }
+                },
+                "records": [
+                    "launch:307",
+                    "launch:308",
+                    "launch:309"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 9.655266374000348,
+                    "min": 9.555799352005124,
+                    "max": 9.672897461015964
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8486396325788554,
+                        "min": 0.8485671069590502,
+                        "max": 0.8486398430475559
+                    }
+                },
+                "source": "d0_noquant",
+                "runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                "records": [
+                    "d0_noquant:37",
+                    "d0_noquant:38",
+                    "d0_noquant:39"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.5849105662452738,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "epsilon",
+            "regime": "shallow",
+            "library": "falcata-stoch",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 4.972702669096179,
+                    "min": 4.961835818947293,
+                    "max": 4.973090697079897
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.9489042106124106,
+                        "min": 0.9489042106124106,
+                        "max": 0.9489042106124106
+                    }
+                },
+                "records": [
+                    "launch:342",
+                    "launch:343",
+                    "launch:344"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 2.5488505139946938,
+                    "min": 2.5376198000012664,
+                    "max": 2.5608553539932473
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.9488517477699158,
+                        "min": 0.9488517477699158,
+                        "max": 0.9488517477699158
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:122",
+                    "oct8:123",
+                    "oct8:124"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.950958929051785,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "epsilon",
+            "regime": "shallow",
+            "library": "falcata-fixed",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 5.353242710931227,
+                    "min": 5.352512380108237,
+                    "max": 5.355940191075206
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.9486337267933187,
+                        "min": 0.9486337267933187,
+                        "max": 0.9486337267933187
+                    }
+                },
+                "records": [
+                    "launch:347",
+                    "launch:348",
+                    "launch:349"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 2.9688410939997993,
+                    "min": 2.947752179999952,
+                    "max": 2.9742812379990937
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.9485420811190858,
+                        "min": 0.9485420811190858,
+                        "max": 0.9485420811190858
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:127",
+                    "oct8:128",
+                    "oct8:129"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.8031422165876245,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "latest_fixedpoint_quality_not_measured_here",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "epsilon",
+            "regime": "shallow",
+            "library": "falcata-noquant",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 8.733231298974715,
+                    "min": 8.711092047044076,
+                    "max": 8.75763954303693
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.9485362427143564,
+                        "min": 0.9485362427143564,
+                        "max": 0.9485362427143564
+                    }
+                },
+                "records": [
+                    "launch:352",
+                    "launch:353",
+                    "launch:354"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 8.021514767984627,
+                    "min": 8.019272920006188,
+                    "max": 8.029020768997725
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.948484725872628,
+                        "min": 0.9484847254726276,
+                        "max": 0.948484725872628
+                    }
+                },
+                "source": "d0_noquant",
+                "runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                "records": [
+                    "d0_noquant:42",
+                    "d0_noquant:43",
+                    "d0_noquant:44"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.0887259515909242,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "epsilon",
+            "regime": "deep",
+            "library": "falcata-stoch",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 39.28229938400909,
+                    "min": 37.30593523290008,
+                    "max": 39.728343853959814
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.9426312571313182,
+                        "min": 0.9426312571313182,
+                        "max": 0.9426312571313182
+                    }
+                },
+                "records": [
+                    "launch:601",
+                    "launch:602",
+                    "launch:603"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 11.220135102019412,
+                    "min": 11.192825931997504,
+                    "max": 11.241658764018212
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.942429523367914,
+                        "min": 0.942429523367914,
+                        "max": 0.942429523367914
+                    }
+                },
+                "source": "strict_epsilon-stoch_candidate",
+                "runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                "records": [
+                    "strict_epsilon-stoch_candidate:2",
+                    "strict_epsilon-stoch_candidate:3",
+                    "strict_epsilon-stoch_candidate:4"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 3.5010540449676957,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "epsilon",
+            "regime": "deep",
+            "library": "falcata-fixed",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 39.22756447293796,
+                    "min": 39.21379843400791,
+                    "max": 39.228971273987554
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.9429226805673712,
+                        "min": 0.9429226805673712,
+                        "max": 0.9429226805673712
+                    }
+                },
+                "records": [
+                    "launch:387",
+                    "launch:388",
+                    "launch:389"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 12.417504817000008,
+                    "min": 12.41584723899723,
+                    "max": 12.432249505000073
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.9435359766641411,
+                        "min": 0.9435359766641411,
+                        "max": 0.9435359766641411
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:142",
+                    "oct8:143",
+                    "oct8:144"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 3.1590536948481,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "latest_fixedpoint_quality_not_measured_here",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "epsilon",
+            "regime": "deep",
+            "library": "falcata-noquant",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 59.127069565001875,
+                    "min": 59.08832556696143,
+                    "max": 59.137910202960484
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.9430660502835008,
+                        "min": 0.9430646686823817,
+                        "max": 0.9430861806998064
+                    }
+                },
+                "records": [
+                    "launch:392",
+                    "launch:393",
+                    "launch:394"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 46.63613747499767,
+                    "min": 46.605321607989026,
+                    "max": 46.66690848500002
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.9433101360812102,
+                        "min": 0.9433095492807348,
+                        "max": 0.9433110624819605
+                    }
+                },
+                "source": "d0_noquant",
+                "runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                "records": [
+                    "d0_noquant:47",
+                    "d0_noquant:48",
+                    "d0_noquant:49"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.2678380493389012,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "airline",
+            "regime": "shallow",
+            "library": "falcata-stoch",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 18.086548291845247,
+                    "min": 18.07163312099874,
+                    "max": 18.101888473145664
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8263572881835699,
+                        "min": 0.8263572881835699,
+                        "max": 0.8263572881835699
+                    }
+                },
+                "records": [
+                    "launch:490",
+                    "launch:491",
+                    "launch:492"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 15.440120860992465,
+                    "min": 15.066834047000157,
+                    "max": 15.96212826599367
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8263211989093822,
+                        "min": 0.8263211989093822,
+                        "max": 0.8263211989093822
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:173",
+                    "oct8:174",
+                    "oct8:175"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.1713993986626523,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "airline",
+            "regime": "shallow",
+            "library": "falcata-fixed",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 19.51050525601022,
+                    "min": 19.452097206143662,
+                    "max": 19.78243062994443
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8265219918717982,
+                        "min": 0.8265219918717982,
+                        "max": 0.8265219918717982
+                    }
+                },
+                "records": [
+                    "launch:581",
+                    "launch:582",
+                    "launch:583"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 15.550531732005766,
+                    "min": 15.522321092998027,
+                    "max": 17.512391030002618
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8261674141467396,
+                        "min": 0.8261674141467396,
+                        "max": 0.8261674141467396
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:178",
+                    "oct8:179",
+                    "oct8:180"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.2546519689647733,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "latest_fixedpoint_quality_not_measured_here",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "airline",
+            "regime": "shallow",
+            "library": "falcata-noquant",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 27.894321170868352,
+                    "min": 27.88005698681809,
+                    "max": 27.917782502016053
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8261246135183363,
+                        "min": 0.8260335868007249,
+                        "max": 0.8261246303131796
+                    }
+                },
+                "records": [
+                    "launch:500",
+                    "launch:501",
+                    "launch:502"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 19.97133741201833,
+                    "min": 19.962018697988242,
+                    "max": 19.973608052998316
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8263474328551506,
+                        "min": 0.8263474316040683,
+                        "max": 0.8263474343171857
+                    }
+                },
+                "source": "d0_noquant",
+                "runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                "records": [
+                    "d0_noquant:52",
+                    "d0_noquant:53",
+                    "d0_noquant:54"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.3967177357928038,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "airline",
+            "regime": "deep",
+            "library": "falcata-stoch",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 29.47202450898476,
+                    "min": 28.957200407981873,
+                    "max": 31.74250208796002
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8640470735630015,
+                        "min": 0.8640470735630015,
+                        "max": 0.8640470735630015
+                    }
+                },
+                "records": [
+                    "launch:535",
+                    "launch:536",
+                    "launch:537"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 23.731697758994414,
+                    "min": 23.730020115996012,
+                    "max": 23.732375440988108
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8641163352048453,
+                        "min": 0.8641163352048453,
+                        "max": 0.8641163352048453
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:188",
+                    "oct8:189",
+                    "oct8:190"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.2418843695164934,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "airline",
+            "regime": "deep",
+            "library": "falcata-fixed",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 31.957561939023435,
+                    "min": 30.046796503011137,
+                    "max": 32.53563625179231
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.864205513792747,
+                        "min": 0.864205513792747,
+                        "max": 0.864205513792747
+                    }
+                },
+                "records": [
+                    "launch:586",
+                    "launch:587",
+                    "launch:588"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 25.849110807990655,
+                    "min": 24.75137394700141,
+                    "max": 25.853080225002486
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.863893959642118,
+                        "min": 0.863893959642118,
+                        "max": 0.863893959642118
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:193",
+                    "oct8:194",
+                    "oct8:195"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.2363118474908814,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "latest_fixedpoint_quality_not_measured_here",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "airline",
+            "regime": "deep",
+            "library": "falcata-noquant",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 145.05331379384734,
+                    "min": 136.44652659189887,
+                    "max": 146.65737126604654
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8638204149763951,
+                        "min": 0.8636883376683528,
+                        "max": 0.8639522307429272
+                    }
+                },
+                "records": [
+                    "launch:545",
+                    "launch:546",
+                    "launch:547"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 64.58398364699678,
+                    "min": 64.51955722799175,
+                    "max": 64.77129506599158
+                },
+                "metrics": {
+                    "auc": {
+                        "n": 3,
+                        "median": 0.8639959614939636,
+                        "min": 0.8639114902232088,
+                        "max": 0.8640030430601269
+                    }
+                },
+                "source": "d0_noquant",
+                "runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                "records": [
+                    "d0_noquant:57",
+                    "d0_noquant:58",
+                    "d0_noquant:59"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 2.245964178776582,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "numerai",
+            "regime": "numerai",
+            "library": "falcata-stoch",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 30.981288715964183,
+                    "min": 30.8483672629809,
+                    "max": 32.701580916997045
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 3,
+                        "median": 0.22364269367216263,
+                        "min": 0.22364269367216263,
+                        "max": 0.22364269367216263
+                    },
+                    "corr_mean": {
+                        "n": 3,
+                        "median": 0.019426601611107142,
+                        "min": 0.019426601611107142,
+                        "max": 0.019426601611107142
+                    },
+                    "corr_sharpe": {
+                        "n": 3,
+                        "median": 1.2069876897746332,
+                        "min": 1.2069876897746332,
+                        "max": 1.2069876897746332
+                    }
+                },
+                "records": [
+                    "launch:427",
+                    "launch:428",
+                    "launch:429"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 5.615935137000633,
+                    "min": 5.6122681309934705,
+                    "max": 5.642379928991431
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 3,
+                        "median": 0.22364269367216263,
+                        "min": 0.22364269367216263,
+                        "max": 0.22364269367216263
+                    },
+                    "corr_mean": {
+                        "n": 3,
+                        "median": 0.019426601611107146,
+                        "min": 0.019426601611107146,
+                        "max": 0.019426601611107146
+                    },
+                    "corr_sharpe": {
+                        "n": 3,
+                        "median": 1.2069876897746332,
+                        "min": 1.2069876897746332,
+                        "max": 1.2069876897746332
+                    }
+                },
+                "source": "strict_numerai-stoch_candidate",
+                "runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                "records": [
+                    "strict_numerai-stoch_candidate:2",
+                    "strict_numerai-stoch_candidate:3",
+                    "strict_numerai-stoch_candidate:4"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 5.5166749544245475,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "historical_numerai_label_unknown",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "numerai_metric_implementation",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "numerai",
+            "regime": "numerai",
+            "library": "falcata-fixed",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 31.118418089929037,
+                    "min": 31.089450262952596,
+                    "max": 32.03370259900112
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 3,
+                        "median": 0.2236496578269744,
+                        "min": 0.2236496578269744,
+                        "max": 0.2236496578269744
+                    },
+                    "corr_mean": {
+                        "n": 3,
+                        "median": 0.019314664264928894,
+                        "min": 0.019314664264928894,
+                        "max": 0.019314664264928894
+                    },
+                    "corr_sharpe": {
+                        "n": 3,
+                        "median": 1.2300912873688856,
+                        "min": 1.2300912873688856,
+                        "max": 1.2300912873688856
+                    }
+                },
+                "records": [
+                    "launch:432",
+                    "launch:433",
+                    "launch:434"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 6.261794023987022,
+                    "min": 6.243981692008674,
+                    "max": 6.266217949989368
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 3,
+                        "median": 0.22364769331003115,
+                        "min": 0.22364769331003115,
+                        "max": 0.22364769331003115
+                    },
+                    "corr_mean": {
+                        "n": 3,
+                        "median": 0.018963988192664653,
+                        "min": 0.018963988192664653,
+                        "max": 0.018963988192664653
+                    },
+                    "corr_sharpe": {
+                        "n": 3,
+                        "median": 1.160608074800925,
+                        "min": 1.160608074800925,
+                        "max": 1.160608074800925
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:157",
+                    "oct8:158",
+                    "oct8:159"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 4.969569099642031,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "historical_numerai_label_unknown",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_metric_implementation",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "numerai",
+            "regime": "numerai",
+            "library": "falcata-noquant",
+            "launch": {
+                "train_s": {
+                    "n": 3,
+                    "median": 65.69249915308319,
+                    "min": 64.35715861991048,
+                    "max": 66.22175568901002
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 3,
+                        "median": 0.22364410352995123,
+                        "min": 0.2236441035298676,
+                        "max": 0.22364410353009623
+                    },
+                    "corr_mean": {
+                        "n": 3,
+                        "median": 0.019311617650279663,
+                        "min": 0.01931161675489779,
+                        "max": 0.019311619670717935
+                    },
+                    "corr_sharpe": {
+                        "n": 3,
+                        "median": 1.2079630277241376,
+                        "min": 1.2079629972065486,
+                        "max": 1.2079632464260168
+                    }
+                },
+                "records": [
+                    "launch:437",
+                    "launch:438",
+                    "launch:439"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 3,
+                    "median": 53.807147262996295,
+                    "min": 53.75861015400733,
+                    "max": 53.8218575460196
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 3,
+                        "median": 0.22364410352992276,
+                        "min": 0.22364410352988337,
+                        "max": 0.22364410352993266
+                    },
+                    "corr_mean": {
+                        "n": 3,
+                        "median": 0.019311621449020912,
+                        "min": 0.019311619829830602,
+                        "max": 0.01931163511899532
+                    },
+                    "corr_sharpe": {
+                        "n": 3,
+                        "median": 1.2079630917551463,
+                        "min": 1.207963038943444,
+                        "max": 1.2079632534983389
+                    }
+                },
+                "source": "d0_noquant",
+                "runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                "records": [
+                    "d0_noquant:62",
+                    "d0_noquant:63",
+                    "d0_noquant:64"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.220887976684476,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "historical_numerai_label_unknown",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "numerai_metric_implementation",
+                "quantization_defaults_change"
+            ]
+        },
+        {
+            "dataset": "numerai",
+            "regime": "numerai-deep",
+            "library": "falcata-stoch",
+            "launch": {
+                "train_s": {
+                    "n": 1,
+                    "median": 742.769228468067,
+                    "min": 742.769228468067,
+                    "max": 742.769228468067
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 1,
+                        "median": 0.22369560010444925,
+                        "min": 0.22369560010444925,
+                        "max": 0.22369560010444925
+                    },
+                    "corr_mean": {
+                        "n": 1,
+                        "median": 0.023762843089416393,
+                        "min": 0.023762843089416393,
+                        "max": 0.023762843089416393
+                    },
+                    "corr_sharpe": {
+                        "n": 1,
+                        "median": 1.4067744785321605,
+                        "min": 1.4067744785321605,
+                        "max": 1.4067744785321605
+                    }
+                },
+                "records": [
+                    "launch:471"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 1,
+                    "median": 110.7989681600011,
+                    "min": 110.7989681600011,
+                    "max": 110.7989681600011
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 1,
+                        "median": 0.22369592048342113,
+                        "min": 0.22369592048342113,
+                        "max": 0.22369592048342113
+                    },
+                    "corr_mean": {
+                        "n": 1,
+                        "median": 0.02385128225200414,
+                        "min": 0.02385128225200414,
+                        "max": 0.02385128225200414
+                    },
+                    "corr_sharpe": {
+                        "n": 1,
+                        "median": 1.4041818010578597,
+                        "min": 1.4041818010578597,
+                        "max": 1.4041818010578597
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:166"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 6.703755827359861,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "historical_numerai_label_unknown",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_metric_implementation",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change",
+                "single_draw_deep"
+            ]
+        },
+        {
+            "dataset": "numerai",
+            "regime": "numerai-deep",
+            "library": "falcata-fixed",
+            "launch": {
+                "train_s": {
+                    "n": 1,
+                    "median": 763.6352590760216,
+                    "min": 763.6352590760216,
+                    "max": 763.6352590760216
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 1,
+                        "median": 0.22369783279557337,
+                        "min": 0.22369783279557337,
+                        "max": 0.22369783279557337
+                    },
+                    "corr_mean": {
+                        "n": 1,
+                        "median": 0.023715664778049338,
+                        "min": 0.023715664778049338,
+                        "max": 0.023715664778049338
+                    },
+                    "corr_sharpe": {
+                        "n": 1,
+                        "median": 1.4048657591671085,
+                        "min": 1.4048657591671085,
+                        "max": 1.4048657591671085
+                    }
+                },
+                "records": [
+                    "launch:472"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 1,
+                    "median": 129.2801683209982,
+                    "min": 129.2801683209982,
+                    "max": 129.2801683209982
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 1,
+                        "median": 0.2237018810779163,
+                        "min": 0.2237018810779163,
+                        "max": 0.2237018810779163
+                    },
+                    "corr_mean": {
+                        "n": 1,
+                        "median": 0.023324283933313747,
+                        "min": 0.023324283933313747,
+                        "max": 0.023324283933313747
+                    },
+                    "corr_sharpe": {
+                        "n": 1,
+                        "median": 1.3702053429251275,
+                        "min": 1.3702053429251275,
+                        "max": 1.3702053429251275
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:167"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 5.906824449516043,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "historical_numerai_label_unknown",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_metric_implementation",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change",
+                "single_draw_deep"
+            ]
+        },
+        {
+            "dataset": "numerai",
+            "regime": "numerai-deep",
+            "library": "falcata-noquant",
+            "launch": {
+                "train_s": {
+                    "n": 1,
+                    "median": 1566.1985590589466,
+                    "min": 1566.1985590589466,
+                    "max": 1566.1985590589466
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 1,
+                        "median": 0.22369749294754013,
+                        "min": 0.22369749294754013,
+                        "max": 0.22369749294754013
+                    },
+                    "corr_mean": {
+                        "n": 1,
+                        "median": 0.02376443868170767,
+                        "min": 0.02376443868170767,
+                        "max": 0.02376443868170767
+                    },
+                    "corr_sharpe": {
+                        "n": 1,
+                        "median": 1.401680096898316,
+                        "min": 1.401680096898316,
+                        "max": 1.401680096898316
+                    }
+                },
+                "records": [
+                    "launch:473"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 1,
+                    "median": 1236.5093722750025,
+                    "min": 1236.5093722750025,
+                    "max": 1236.5093722750025
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 1,
+                        "median": 0.22369615920847666,
+                        "min": 0.22369615920847666,
+                        "max": 0.22369615920847666
+                    },
+                    "corr_mean": {
+                        "n": 1,
+                        "median": 0.023800354442240622,
+                        "min": 0.023800354442240622,
+                        "max": 0.023800354442240622
+                    },
+                    "corr_sharpe": {
+                        "n": 1,
+                        "median": 1.4017687593977202,
+                        "min": 1.4017687593977202,
+                        "max": 1.4017687593977202
+                    }
+                },
+                "source": "d0_noquant",
+                "runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                "records": [
+                    "d0_noquant:66"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.2666289428743776,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "atomic_noquant_variation",
+                "fraud_uncapped_failures",
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "historical_numerai_label_unknown",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_dtype_change",
+                "numerai_metric_implementation",
+                "quantization_defaults_change",
+                "single_draw_deep"
+            ]
+        },
+        {
+            "dataset": "numerai",
+            "regime": "numerai-leaf",
+            "library": "falcata-stoch",
+            "launch": {
+                "train_s": {
+                    "n": 1,
+                    "median": 1808.8384845729452,
+                    "min": 1808.8384845729452,
+                    "max": 1808.8384845729452
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 1,
+                        "median": 0.22391652440323326,
+                        "min": 0.22391652440323326,
+                        "max": 0.22391652440323326
+                    },
+                    "corr_mean": {
+                        "n": 1,
+                        "median": 0.020086892751653915,
+                        "min": 0.020086892751653915,
+                        "max": 0.020086892751653915
+                    },
+                    "corr_sharpe": {
+                        "n": 1,
+                        "median": 1.2632815773236916,
+                        "min": 1.2632815773236916,
+                        "max": 1.2632815773236916
+                    }
+                },
+                "records": [
+                    "launch:481"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 1,
+                    "median": 263.8137378679967,
+                    "min": 263.8137378679967,
+                    "max": 263.8137378679967
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 1,
+                        "median": 0.22391740506035326,
+                        "min": 0.22391740506035326,
+                        "max": 0.22391740506035326
+                    },
+                    "corr_mean": {
+                        "n": 1,
+                        "median": 0.019990811192615476,
+                        "min": 0.019990811192615476,
+                        "max": 0.019990811192615476
+                    },
+                    "corr_sharpe": {
+                        "n": 1,
+                        "median": 1.23137326610624,
+                        "min": 1.23137326610624,
+                        "max": 1.23137326610624
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:169"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 6.8564984492127765,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "historical_numerai_label_unknown",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_metric_implementation",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change",
+                "single_draw_deep"
+            ]
+        },
+        {
+            "dataset": "numerai",
+            "regime": "numerai-leaf",
+            "library": "falcata-fixed",
+            "launch": {
+                "train_s": {
+                    "n": 1,
+                    "median": 1964.1378673019353,
+                    "min": 1964.1378673019353,
+                    "max": 1964.1378673019353
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 1,
+                        "median": 0.22390592364967551,
+                        "min": 0.22390592364967551,
+                        "max": 0.22390592364967551
+                    },
+                    "corr_mean": {
+                        "n": 1,
+                        "median": 0.020009213284710028,
+                        "min": 0.020009213284710028,
+                        "max": 0.020009213284710028
+                    },
+                    "corr_sharpe": {
+                        "n": 1,
+                        "median": 1.2791289417446425,
+                        "min": 1.2791289417446425,
+                        "max": 1.2791289417446425
+                    }
+                },
+                "records": [
+                    "launch:482"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 1,
+                    "median": 289.56424485199386,
+                    "min": 289.56424485199386,
+                    "max": 289.56424485199386
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 1,
+                        "median": 0.22390854920204079,
+                        "min": 0.22390854920204079,
+                        "max": 0.22390854920204079
+                    },
+                    "corr_mean": {
+                        "n": 1,
+                        "median": 0.019792928709034718,
+                        "min": 0.019792928709034718,
+                        "max": 0.019792928709034718
+                    },
+                    "corr_sharpe": {
+                        "n": 1,
+                        "median": 1.2437042255130764,
+                        "min": 1.2437042255130764,
+                        "max": 1.2437042255130764
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:170"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 6.783081482680546,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "historical_numerai_label_unknown",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_metric_implementation",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change",
+                "single_draw_deep"
+            ]
+        },
+        {
+            "dataset": "numerai",
+            "regime": "numerai-leaf",
+            "library": "falcata-noquant",
+            "launch": {
+                "train_s": {
+                    "n": 1,
+                    "median": 3037.9685566120315,
+                    "min": 3037.9685566120315,
+                    "max": 3037.9685566120315
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 1,
+                        "median": 0.22390348600589755,
+                        "min": 0.22390348600589755,
+                        "max": 0.22390348600589755
+                    },
+                    "corr_mean": {
+                        "n": 1,
+                        "median": 0.020053827616200205,
+                        "min": 0.020053827616200205,
+                        "max": 0.020053827616200205
+                    },
+                    "corr_sharpe": {
+                        "n": 1,
+                        "median": 1.2705816492388469,
+                        "min": 1.2705816492388469,
+                        "max": 1.2705816492388469
+                    }
+                },
+                "records": [
+                    "launch:483"
+                ]
+            },
+            "latest_measured": {
+                "train_s": {
+                    "n": 1,
+                    "median": 2789.3922689509927,
+                    "min": 2789.3922689509927,
+                    "max": 2789.3922689509927
+                },
+                "metrics": {
+                    "rmse": {
+                        "n": 1,
+                        "median": 0.22390406167563875,
+                        "min": 0.22390406167563875,
+                        "max": 0.22390406167563875
+                    },
+                    "corr_mean": {
+                        "n": 1,
+                        "median": 0.020082122772101096,
+                        "min": 0.020082122772101096,
+                        "max": 0.020082122772101096
+                    },
+                    "corr_sharpe": {
+                        "n": 1,
+                        "median": 1.2696064801254978,
+                        "min": 1.2696064801254978,
+                        "max": 1.2696064801254978
+                    }
+                },
+                "source": "oct8",
+                "runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+                "records": [
+                    "oct8:171"
+                ],
+                "failures": [],
+                "all_timed_sane": true,
+                "strict_quiet_verified": true
+            },
+            "descriptive_launch_div_latest_time_ratio": 1.089114855027013,
+            "causal_paired_speedup_established": false,
+            "quality_equivalence_established": false,
+            "caveats": [
+                "historical_binary_unpinned",
+                "historical_cache_unpinned",
+                "historical_numerai_label_unknown",
+                "launch_retries",
+                "launch_snapshot_not_tag",
+                "numerai_metric_implementation",
+                "pre_ridge_fixedpoint",
+                "quantization_defaults_change",
+                "single_draw_deep"
+            ]
+        }
+    ]
+}

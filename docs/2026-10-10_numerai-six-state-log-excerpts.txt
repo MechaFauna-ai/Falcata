@@ -1,0 +1,131 @@
+[standard-stoch-five] /tmp/falcata-six-values-20261009/logs/standard-stoch-five-warmup.log
+SHA256 617ec303a69a40b77beac3951291c84b7d10e2c8280dbd1b5531cd22a0ba2acb
+2: [Falcata] [Info] Sparse columns are stored dense on CUDA; memory use may be higher than the CPU path for this dataset.
+3: [Falcata] [Info] Total Bins 17625
+4: [Falcata] [Info] Number of data points in the train set: 5502748, number of used features: 3525
+5: [Falcata] [Info] CUDARowData: 4-bit packed row data, 9.03 GiB on the device.
+6: [Falcata] [Warning] CUDAColumnData: skipping per-column allocation (would be 19.40 GB). Caller must invoke SetCompactColumnView per tree.
+7: [Falcata] [Info] colmajor_direct: the compact regime needs store 9250 + compact view 940 + split view 0 + reserve 990 MiB, 28928 MiB available
+8: [Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.1, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9250 MiB); no row-major matrix on the device
+9: [Falcata] [Info] Start training from score 0.499954
+10: [Falcata] [Info] compact fill: tiled 4-bit kernel, 178 byte slots in 4 partitions
+11: [Falcata] [Info] compact fill: pair_code5 on (178 byte slots, 32 words per row)
+12: [hybrid-diag] prefix: batched_level_kernels=1 batch_kernels_env=1 one_sync=0
+13: [hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1
+14: [hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=3525 (cap 1024, batch_wide=1)
+15: [Falcata] [Info] split finder: warp kernel for this tree's quantized levels
+16: [Falcata] [Info] quantized construct: pair_hist kernel
+17: [Falcata] [Info] quantized construct: pair_code5_words kernel
+18: [Falcata] [Info] split finder: warp kernel for this tree's quantized levels
+19: [Falcata] [Info] quantized construct: pair_hist kernel
+20: [Falcata] [Info] quantized construct: pair_code5_words kernel
+
+[standard-stoch-six] /tmp/falcata-six-values-20261009/logs/standard-stoch-six-warmup.log
+SHA256 2dedd4bc438aad96d148c4256e4d26e80155c1a09dd623176f04b9a734fe6ef3
+2: [Falcata] [Info] Sparse columns are stored dense on CUDA; memory use may be higher than the CPU path for this dataset.
+3: [Falcata] [Info] Total Bins 19567
+4: [Falcata] [Info] Number of data points in the train set: 5502748, number of used features: 3525
+5: [Falcata] [Info] CUDARowData: 4-bit packed row data, 9.03 GiB on the device.
+6: [Falcata] [Warning] CUDAColumnData: skipping per-column allocation (would be 19.40 GB). Caller must invoke SetCompactColumnView per tree.
+7: [Falcata] [Info] colmajor_direct: the compact regime needs store 9250 + compact view 940 + split view 0 + reserve 1318 MiB, 28882 MiB available
+8: [Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.1, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9250 MiB); no row-major matrix on the device
+9: [Falcata] [Info] Start training from score 0.499954
+10: [Falcata] [Info] compact fill: tiled 4-bit kernel, 178 byte slots in 4 partitions
+11: [Falcata] [Info] compact fill: pair_code5 off (178 byte slots, 32 words per row)
+12: [hybrid-diag] prefix: batched_level_kernels=1 batch_kernels_env=1 one_sync=0
+13: [hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1
+14: [hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=5467 (cap 1024, batch_wide=1)
+15: [Falcata] [Info] split finder: warp kernel for this tree's quantized levels
+16: [Falcata] [Info] quantized construct: pair_hist kernel
+17: [Falcata] [Info] split finder: warp kernel for this tree's quantized levels
+18: [Falcata] [Warning] No further splits with positive gain, training stopped with 259 leaves.
+19: [Falcata] [Info] compact fill: tiled 4-bit kernel, 178 byte slots in 4 partitions
+20: [Falcata] [Info] compact fill: pair_code5 off (178 byte slots, 32 words per row)
+
+[standard-fixed-five] /tmp/falcata-six-values-20261009/logs/standard-fixed-five-warmup.log
+SHA256 dddb59c66c368fb232c390dd42d3afeb19eed5cc2120c921151465be4cdd05f7
+2: [Falcata] [Info] Sparse columns are stored dense on CUDA; memory use may be higher than the CPU path for this dataset.
+3: [Falcata] [Info] Total Bins 17625
+4: [Falcata] [Info] Number of data points in the train set: 5502748, number of used features: 3525
+5: [Falcata] [Info] quant_mode=fixedpoint: non-stochastic quant with 64 bins
+6: [Falcata] [Info] CUDARowData: 4-bit packed row data, 9.03 GiB on the device.
+7: [Falcata] [Warning] CUDAColumnData: skipping per-column allocation (would be 19.40 GB). Caller must invoke SetCompactColumnView per tree.
+8: [Falcata] [Info] colmajor_direct: the compact regime needs store 9250 + compact view 940 + split view 0 + reserve 990 MiB, 28947 MiB available
+9: [Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.1, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9250 MiB); no row-major matrix on the device
+10: [Falcata] [Info] Start training from score 0.499954
+11: [Falcata] [Info] compact fill: tiled 4-bit kernel, 178 byte slots in 4 partitions
+12: [Falcata] [Info] compact fill: pair_code5 on (178 byte slots, 32 words per row)
+13: [hybrid-diag] prefix: batched_level_kernels=1 batch_kernels_env=1 one_sync=0
+14: [hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1
+15: [hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=3525 (cap 1024, batch_wide=1)
+16: [Falcata] [Info] split finder: warp kernel for this tree's quantized levels
+17: [Falcata] [Info] quantized construct: pair_hist kernel
+18: [Falcata] [Info] quantized construct: pair_code5_words kernel
+19: [Falcata] [Info] split finder: warp kernel for this tree's quantized levels
+20: [Falcata] [Info] quantized construct: pair_hist kernel
+
+[standard-fixed-six] /tmp/falcata-six-values-20261009/logs/standard-fixed-six-warmup.log
+SHA256 25e801d2ac70ab21587adfabe5465d860a29b1d4832745e914a37face49094c7
+2: [Falcata] [Info] Sparse columns are stored dense on CUDA; memory use may be higher than the CPU path for this dataset.
+3: [Falcata] [Info] Total Bins 19567
+4: [Falcata] [Info] Number of data points in the train set: 5502748, number of used features: 3525
+5: [Falcata] [Info] quant_mode=fixedpoint: non-stochastic quant with 64 bins
+6: [Falcata] [Info] CUDARowData: 4-bit packed row data, 9.03 GiB on the device.
+7: [Falcata] [Warning] CUDAColumnData: skipping per-column allocation (would be 19.40 GB). Caller must invoke SetCompactColumnView per tree.
+8: [Falcata] [Info] colmajor_direct: the compact regime needs store 9250 + compact view 940 + split view 0 + reserve 1318 MiB, 28901 MiB available
+9: [Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.1, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9250 MiB); no row-major matrix on the device
+10: [Falcata] [Info] Start training from score 0.499954
+11: [Falcata] [Info] compact fill: tiled 4-bit kernel, 178 byte slots in 4 partitions
+12: [Falcata] [Info] compact fill: pair_code5 off (178 byte slots, 32 words per row)
+13: [hybrid-diag] prefix: batched_level_kernels=1 batch_kernels_env=1 one_sync=0
+14: [hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1
+15: [hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=5467 (cap 1024, batch_wide=1)
+16: [Falcata] [Info] split finder: warp kernel for this tree's quantized levels
+17: [Falcata] [Info] quantized construct: pair_hist kernel
+18: [Falcata] [Info] split finder: warp kernel for this tree's quantized levels
+19: [Falcata] [Warning] No further splits with positive gain, training stopped with 260 leaves.
+20: [Falcata] [Info] compact fill: tiled 4-bit kernel, 178 byte slots in 4 partitions
+
+[recipe-fixed-fp32-five] /tmp/falcata-six-values-20261009/logs/recipe-fixed-fp32-five-warmup.log
+SHA256 6e467c587613c83dbfc5ec6c218eb2364f18ae09c6f157544b72ae21cdd9fa75
+2: [Falcata] [Info] Sparse columns are stored dense on CUDA; memory use may be higher than the CPU path for this dataset.
+3: [Falcata] [Info] Total Bins 17625
+4: [Falcata] [Info] Number of data points in the train set: 5502748, number of used features: 3525
+5: [Falcata] [Info] quant_mode=fixedpoint: non-stochastic quant with 64 bins
+6: [Falcata] [Info] CUDARowData: 4-bit packed row data, 9.03 GiB on the device.
+7: [Falcata] [Warning] CUDAColumnData: skipping per-column allocation (would be 19.40 GB). Caller must invoke SetCompactColumnView per tree.
+8: [Falcata] [Info] colmajor_direct: the compact regime needs store 9250 + compact view 1402 + split view 0 + reserve 10701 MiB, 24784 MiB available
+9: [Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.15, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9250 MiB); no row-major matrix on the device
+10: [Falcata] [Info] Start training from score 0.499954
+11: [Falcata] [Info] compact fill: per-cell 4-bit kernel, 265 byte slots in 4 partitions
+12: [hybrid-diag] selective-two-sync: batched_level_kernels=1 batch_kernels_env=1
+13: [hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1
+14: [hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=3525 (cap 1024, batch_wide=1)
+15: [Falcata] [Info] quantized construct: pair_hist kernel
+16: [Falcata] [Info] split finder: block kernel for this tree's quantized levels
+17: [Falcata] [Info] split finder: block kernel for this tree's quantized levels
+18: [Falcata] [Info] split finder: block kernel for this tree's quantized levels
+19: [Falcata] [Info] split finder: block kernel for this tree's quantized levels
+20: [Falcata] [Warning] No further splits with positive gain, training stopped with 41 leaves.
+
+[recipe-fixed-fp32-six] /tmp/falcata-six-values-20261009/logs/recipe-fixed-fp32-six-warmup.log
+SHA256 129b22f7032e86136f7f12727c668c208b3245e4832f9a14edf40c2f722b87b5
+2: [Falcata] [Info] Sparse columns are stored dense on CUDA; memory use may be higher than the CPU path for this dataset.
+3: [Falcata] [Info] Total Bins 19567
+4: [Falcata] [Info] Number of data points in the train set: 5502748, number of used features: 3525
+5: [Falcata] [Info] quant_mode=fixedpoint: non-stochastic quant with 64 bins
+6: [Falcata] [Info] CUDARowData: 4-bit packed row data, 9.03 GiB on the device.
+7: [Falcata] [Warning] CUDAColumnData: skipping per-column allocation (would be 19.40 GB). Caller must invoke SetCompactColumnView per tree.
+8: [Falcata] [Info] colmajor_direct: the compact regime needs store 9250 + compact view 1402 + split view 0 + reserve 15922 MiB, 24281 MiB available
+9: [Falcata] [Info] colmajor_direct: the compact regime does not fit (store 9250 + compact view 1402 + split view 0 + reserve 15922 MiB > 24281 MiB available): mask regime
+10: [Falcata] [Info] colmajor_direct: mask regime (the compact regime does not fit; feature_fraction 0.15, view_mode auto, view_mask_ff 0.85): full view filled from the Dataset's columns (9252 MiB); no column-major store on the device
+11: [Falcata] [Info] Start training from score 0.499954
+12: [hybrid-diag] selective-two-sync: batched_level_kernels=1 batch_kernels_env=1
+13: [hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=0 bit_type=8 batch_wide=1
+14: [hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=5467 (cap 1024, batch_wide=1)
+15: [Falcata] [Info] quantized construct: row_batch kernel
+16: [Falcata] [Info] split finder: block kernel for this tree's quantized levels
+17: [Falcata] [Info] split finder: block kernel for this tree's quantized levels
+18: [Falcata] [Info] split finder: block kernel for this tree's quantized levels
+19: [Falcata] [Warning] No further splits with positive gain, training stopped with 42 leaves.
+20: [Falcata] [Info] split finder: block kernel for this tree's quantized levels

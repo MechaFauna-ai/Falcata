@@ -1,0 +1,665 @@
+{
+    "schema_version": 1,
+    "source_commit": "a5f4b4bd30c2d0466c96d7933479d8d88228788c",
+    "sources": [
+        {
+            "id": "night1 archive",
+            "sha256": "febe81b9585592ebf13d7717be6519ac490f7ac967531031be2ce27bc1c5817d"
+        },
+        {
+            "id": "night1 campaign summary",
+            "sha256": "ed2cf6fa44392cc81d6c166f9274941364f6d002f71782de227ed1a7d14c8167"
+        },
+        {
+            "id": "night2 archive",
+            "sha256": "1aed0dba5306552cd7957bfba2209a893a7f11f59f92855f9f2c74cf4d1c27aa"
+        },
+        {
+            "id": "night2 campaign summary",
+            "sha256": "9609ce74b638701b3518b8ad83ef146f6a62576002764073e89fa80b4b3782ea"
+        },
+        {
+            "id": "night2 candidate c028 hypothesis document",
+            "sha256": "115a01f4f5f8644122db382b7b8e5642d21ee783e0636da314e7a9e6a0535eda"
+        },
+        {
+            "id": "night2 candidate c029 hypothesis document",
+            "sha256": "2f9d1c20fb26d43bae18d2fa0e9e75d9e732a18101cdf9e3c49b774a0a5baf1e"
+        },
+        {
+            "id": "night2 candidate c030 hypothesis document",
+            "sha256": "02ba15ece73dd5284880086b7f92f4b77fe5203af1a4494d2218728afc8663e4"
+        },
+        {
+            "id": "night2 candidate c031 hypothesis document",
+            "sha256": "13d8e757e1c4a35cb5863486d5642f895088b4b5a25a33db96e889caeefe80e3"
+        },
+        {
+            "id": "night2 candidate c032 hypothesis document",
+            "sha256": "40b9beb6c20229f08b7ac54203805ab2264050da1aed3cc2f9445f3bfdb50ba3"
+        },
+        {
+            "id": "night2 candidate c033 hypothesis document",
+            "sha256": "825d991cbb092b77dc7d4e200349cec86f1e3e01e25a3f515a4956e807e78702"
+        },
+        {
+            "id": "night2 candidate c035 hypothesis document",
+            "sha256": "66e83b15d4c6ec64e9bce3605126dd10a76de0e10edc5017b856d4d5dcf44bcf"
+        },
+        {
+            "id": "night2 candidate c034 hypothesis document",
+            "sha256": "9f6d8365f24bacf2ddacbe736ebdff470cd40e591b3ef63e1250c55e36857217"
+        },
+        {
+            "id": "night2 candidate c037 hypothesis document",
+            "sha256": "3b0727d744f06daa168bfa1904133ecf8a74e08c583ecc3af4805292d71b3b8b"
+        },
+        {
+            "id": "night2 candidate c036 hypothesis document",
+            "sha256": "ca6ef2be4785d1b88cf867591452bf88871e80fd1401fb14e33e8e0dcdd1de34"
+        },
+        {
+            "id": "night2 candidate c038 hypothesis document",
+            "sha256": "1c3704d490c01677fff4f0915232d81e02086df29f5af0bbd6bf375695dae057"
+        },
+        {
+            "id": "night2 candidate c039 hypothesis document",
+            "sha256": "1f8cc1b8c8c0dffa804b1f0af0989f5b059411e9ae5bbaff1816c56a5c77fe3a"
+        },
+        {
+            "id": "night2 candidate c041 hypothesis document",
+            "sha256": "24cbf47426c6ef9c6db64fa03099d78d69af435aa9a979807f9d7309e10cf751"
+        },
+        {
+            "id": "night2 candidate c040 hypothesis document",
+            "sha256": "146c9502743a6584f8225f19d80b3782949f5fadfc12860ffbc09fc30b0029ef"
+        },
+        {
+            "id": "night2 candidate c042 hypothesis document",
+            "sha256": "83b8a8969394ba77456fb0af7b8fe381ad39a56f199af391a980f8c68880c0eb"
+        },
+        {
+            "id": "night2 candidate c043 hypothesis document",
+            "sha256": "b5132a21cb2cd94b5cc6d9d15bcef8e061e2de43344ee89532a684a493a20f2f"
+        },
+        {
+            "id": "night2 candidate c044 hypothesis document",
+            "sha256": "2d3bdbaebe68537bde5d1b9ec4665378f2942502dc63ae81fab9e09c16ac08e7"
+        },
+        {
+            "id": "night2 candidate c045 hypothesis document",
+            "sha256": "049e60a8d7eb9941e8b3fe7f74ba2659210315fffa61cfae3e9f218675a7767d"
+        },
+        {
+            "id": "night2 candidate c046 hypothesis document",
+            "sha256": "b82f52f09a442cb4d36d0542e80c6a05246cb5c69081a7c2044dc8c2815cb4f3"
+        },
+        {
+            "id": "night2 candidate c047 hypothesis document",
+            "sha256": "f115143c1cd2b37ebf4cd08addabe431107cb76e0902d3d930c70fc8fc3f10f6"
+        },
+        {
+            "id": "night2 candidate c048 hypothesis document",
+            "sha256": "1cadf96e58741d3db60478ca64175cc359cf31d208528b077c4ff438d95e64a5"
+        },
+        {
+            "id": "night2 candidate c049 hypothesis document",
+            "sha256": "329efd38ddf779f02c14efc928fcb94ab4260887bcc9d16a73686966662beb22"
+        },
+        {
+            "id": "night2 candidate c050 hypothesis document",
+            "sha256": "92305a3b3440a629cd814efa6f174b9db3c03adc49d1a0de25473a0ff7b34261"
+        },
+        {
+            "id": "night3 archive",
+            "sha256": "84466cc9ebee498beaeb5d1071399c2d9956047d4ceffb717af4a6875f1c1788"
+        },
+        {
+            "id": "night3 campaign summary",
+            "sha256": "c441d8883358d0b8ce672aa0966055663fd21681bfc3e24b161acab102e2dc4a"
+        },
+        {
+            "id": "night3 candidate c051 hypothesis document",
+            "sha256": "cae4fdd46f573b65d6b163585bdf82f58b8997dcf0ad8107d06caa097cc592c1"
+        },
+        {
+            "id": "night3 candidate c052 hypothesis document",
+            "sha256": "e4fc1bcc06f6dc24c7ceb6e585b95e66f60cf70ec18abf7f3edf563c2351dabc"
+        },
+        {
+            "id": "night3 candidate c053 hypothesis document",
+            "sha256": "8430eb6cd3f9eff8053e95e1439ae7b98e4d99e3a230fdf0c52127716a127fd5"
+        },
+        {
+            "id": "night3 candidate c054 hypothesis document",
+            "sha256": "c177ce47adb8d2c57045a4fb50f913390e06ed42cb940e1463c94f8c05845f42"
+        },
+        {
+            "id": "night3 candidate c055 hypothesis document",
+            "sha256": "01ed438b61e4bca142f8191f7f4c977d4e93d5af1e8fc73a79c39c95080abfca"
+        },
+        {
+            "id": "night3 candidate c056 hypothesis document",
+            "sha256": "dd4d7a377a21d913c4a9dfc6892ae929178e93cd5c15cbfc23e1c1e038dc78b8"
+        },
+        {
+            "id": "night3 candidate c057 hypothesis document",
+            "sha256": "16cf13b675825e8596eca097d6e3088d4f71fa87b88415f45d6d96fae101c006"
+        },
+        {
+            "id": "night3 candidate c058 hypothesis document",
+            "sha256": "66bc96c75d28338d3410a7f7605f756f235828bda964c343ca4393322c2e30f6"
+        },
+        {
+            "id": "night3 candidate c059 hypothesis document",
+            "sha256": "f88503b5838c7d2e3ee03fdb4e67b9344247dcaec3c2c4db6b3b8da676aa73f8"
+        },
+        {
+            "id": "night3 candidate c060 hypothesis document",
+            "sha256": "04216f8ed68011a76759f2e96de4fff79e662d0502199915c1ffe83b7e30a45c"
+        },
+        {
+            "id": "night3 candidate c061 hypothesis document",
+            "sha256": "45c716937c7bf41c5ca47c20dccf449f4a5dcb19691dc78857a419fad5d3e02b"
+        },
+        {
+            "id": "night3 c061",
+            "sha256": "40b176635f1f6e26b12b461267421bd4e2cce52eff93bb8b7f64c3393e47eee9"
+        },
+        {
+            "id": "night3 candidate c062 hypothesis document",
+            "sha256": "2ae49472eab754207ac9dd2af1764c0d6bad0f8f334a18083315235ca86025db"
+        },
+        {
+            "id": "night3 candidate c063 hypothesis document",
+            "sha256": "0ced3df6407467932c6f885ea4da37352210a00e77ede6b377da646d039dbc99"
+        },
+        {
+            "id": "night3 candidate c064 hypothesis document",
+            "sha256": "4723116c1a4d6e9f0c6f5895884492c237932aad31cc9dc0d7e5f38b1561dbb7"
+        },
+        {
+            "id": "night3 candidate c066 hypothesis document",
+            "sha256": "a1f07c86590962ef2607a1459eab1bce434b35a20116fbcb72b63a3f2cddfda0"
+        },
+        {
+            "id": "night3 c066",
+            "sha256": "4095d4cb36ce9c87bd32955906e597f1c4d6ce1968984aea3059d8ba254e48be"
+        },
+        {
+            "id": "night3 candidate c065 hypothesis document",
+            "sha256": "e49758e6eb4b88b9a7e66456bb410d4e4a07165baab8cc4048263f5a6a8b9706"
+        },
+        {
+            "id": "night3 candidate c068 hypothesis document",
+            "sha256": "b05a4a98e03f2d092d08464b1bcec94840c9057b0363b4672f4aae48ba2c8905"
+        },
+        {
+            "id": "night3 candidate c067 hypothesis document",
+            "sha256": "024993d9cde74462e125b0ae01f402515461638990854452ee4611003ebcbe98"
+        },
+        {
+            "id": "night3 candidate c069 hypothesis document",
+            "sha256": "829b8ff2afdded492d02625d45b8d9ed8fd426bfbf09d724c50077b4a1156df0"
+        },
+        {
+            "id": "night3 candidate c070 hypothesis document",
+            "sha256": "c79fbfd9a3e2a54dff3041ed4dd334c5633dd1afc196ae6674e6f6b733be1003"
+        },
+        {
+            "id": "night3 candidate c072 hypothesis document",
+            "sha256": "efb39d91aac3fcb0c8b69bb1782caab283a8678faa82410abf6e818efe5a28de"
+        },
+        {
+            "id": "night3 candidate c071 hypothesis document",
+            "sha256": "3a7e669c9da1d6848c05779c38949fa2301babcb48d2248490e962432890a908"
+        },
+        {
+            "id": "night3 candidate c073 hypothesis document",
+            "sha256": "2a422756034ff513b58fd4de2a22c8fb38421e68af20df16e2351dc81f33adac"
+        },
+        {
+            "id": "night3 candidate c074 hypothesis document",
+            "sha256": "3b1c7feec3b54bfb6a9a029288c4d54270f3412de284203f62e6e66d59bf2270"
+        },
+        {
+            "id": "night3 candidate c076 hypothesis document",
+            "sha256": "4edcb7113f7a227b7e32d836f8b8d10fda364d6fbaf6af143f3812e8898acfa2"
+        },
+        {
+            "id": "night3 candidate c075 hypothesis document",
+            "sha256": "7283d0fc96a5376fc022a99efc8e5c739db7e87bd5b79b9eaa7f6014114c75a3"
+        },
+        {
+            "id": "night4 archive",
+            "sha256": "de42ad82fefc09c69b46bacdff253034d79ef539fc91c6f1901d99683133f5f8"
+        },
+        {
+            "id": "night4 campaign summary",
+            "sha256": "a1db75d11460d42b692dd60c9a49c2c8f6dc63fc79c4d2c9ebba4683a0293e8a"
+        },
+        {
+            "id": "night4 candidate c078 hypothesis document",
+            "sha256": "9c219ed6692831aa8124600f7c8bc559cb43ce317b0b3ee65a38a4b884737387"
+        },
+        {
+            "id": "night4 candidate c080 hypothesis document",
+            "sha256": "7a1d5f01a8a2d6758ac687431f3bf0268ed2fba14e2cd53f9da0bbdc53b5933e"
+        },
+        {
+            "id": "night4 candidate c081 hypothesis document",
+            "sha256": "6a37eb84c513b2e20cff40a6711d55cdfed7c1aab43be6523dc5adde93f74102"
+        },
+        {
+            "id": "night4 candidate c079 hypothesis document",
+            "sha256": "959d6bfbe4856cb2bda29258167a665b7a14593131aadeb99e503a2b763d25af"
+        },
+        {
+            "id": "night4 c079",
+            "sha256": "5c40a07ae5947b6f0c5b7172ea25d9ca04107b06d2481aea4f4d3d437ef99fdd"
+        },
+        {
+            "id": "night4 candidate c077 hypothesis document",
+            "sha256": "ba6b98a357397d20de7f97b19637520020bf1e324c2afa1b00bbfc837e237d20"
+        },
+        {
+            "id": "night4 candidate c082 hypothesis document",
+            "sha256": "b0f9df33ead0a81321da093a6bfe5bd564ef4840d53c74ff9e75705897454e44"
+        },
+        {
+            "id": "night4 candidate c085 hypothesis document",
+            "sha256": "92ca0f62f0e45fed98a4993435d5e34bc060f147a2c275a1417b579471319f41"
+        },
+        {
+            "id": "night4 candidate c083 hypothesis document",
+            "sha256": "48b85dc1bf978632ab30c7cb176e4fc302b20a983584489303fba6d483d37a58"
+        },
+        {
+            "id": "night4 candidate c086 hypothesis document",
+            "sha256": "fb1eda6396f6d3c1376ad6b5e27357dae7c6e144cfa9a6ab9c4bca2f5ebb632d"
+        },
+        {
+            "id": "night4 candidate c084 hypothesis document",
+            "sha256": "8e3e835a243e20166d17bc68908269662d003e337f00bdcefecc2b3739c9f713"
+        },
+        {
+            "id": "night4 candidate c089 hypothesis document",
+            "sha256": "4d02021322e56ec6750f2b8b6a03485f4fee282d016e2d685d88651a9007d06d"
+        },
+        {
+            "id": "night4 candidate c087 hypothesis document",
+            "sha256": "e55ebf714fb34b5213bc61678730a7ff77fdb5ebed8ad0ead19522294cb8c772"
+        },
+        {
+            "id": "night4 candidate c088 hypothesis document",
+            "sha256": "22ade7006b14de9f6157e89273c5866b4415c323d20a22942789d71d71322e38"
+        },
+        {
+            "id": "night4 c088",
+            "sha256": "5cfba314a2a69df8600f0728f81aa714307feb645957c5d52b9417abc0a328ff"
+        },
+        {
+            "id": "night4 candidate c090 hypothesis document",
+            "sha256": "2e33b87beaf4bfa49b55b91d5eb5dab9dd0a083284078f03ae82e588dbed6c43"
+        },
+        {
+            "id": "night4 candidate c091 hypothesis document",
+            "sha256": "418625d2e3c461cee4433b38b2a80103855842b3a804b929ef4e62c3fc659d3a"
+        },
+        {
+            "id": "night4 candidate c092 hypothesis document",
+            "sha256": "3805d289aa41a24d61f4d0bf5f9efb1b0f2dec63ca2c5932c0ee55c57c6145b4"
+        },
+        {
+            "id": "night5 archive",
+            "sha256": "386c1ff9238e2d6699ef74bfbcf30b69da0872955bd1b9c4a639760eaf0d424f"
+        },
+        {
+            "id": "night5 campaign summary",
+            "sha256": "64fd3105976af075127eb1219c63f8b3fbcb9028cacd19475daa6c1f4d3b00dd"
+        },
+        {
+            "id": "night5 candidate c093 hypothesis document",
+            "sha256": "8ed5f50089277d34b6d0718858f172c515409554f4310fc3dd60aa9448d6b0db"
+        },
+        {
+            "id": "night5 candidate c096 hypothesis document",
+            "sha256": "f705411802335b8e3a761b2503496c8e246c258977d5c38e07dc68b2ceada84f"
+        },
+        {
+            "id": "night5 candidate c095 hypothesis document",
+            "sha256": "9514a797dfa0a5b26bd8d09fba2ff5046532462fb3d1289ec3ada0daedba5975"
+        },
+        {
+            "id": "night5 candidate c094 hypothesis document",
+            "sha256": "4502266e0111f83a6ea2a2529706541f63f37a7b6bf580ffd33c19e1e23a90aa"
+        },
+        {
+            "id": "night5 candidate c099 hypothesis document",
+            "sha256": "bca70ca317dd4e6e2c3bd678e920f4e0cf5905508c2828f5ed7ad236abf2d9b7"
+        },
+        {
+            "id": "night5 candidate c097 hypothesis document",
+            "sha256": "55f467fb9f4ad2f981dbde8056e41cc22c74e8753514f905b0ac052f068d790d"
+        },
+        {
+            "id": "night6 archive",
+            "sha256": "7fd8714219e090396d89660b4c6b7e55aab351df349d67e9a30626d6f46578e8"
+        },
+        {
+            "id": "night6 campaign summary",
+            "sha256": "93f7c838fc700b8d1d397086a7c8917ac1a5fc1fed3a620bf143d63a24cfee31"
+        },
+        {
+            "id": "night6 candidate c102 hypothesis document",
+            "sha256": "97bdd1b274401b1a7449b975433b3244c525604299cd88eafee1abfb61105f49"
+        },
+        {
+            "id": "night6 candidate c100 hypothesis document",
+            "sha256": "0b67900534271eb87e2471903b70e8e3ef7d8f995b86f18de9e8fbdd9018a869"
+        },
+        {
+            "id": "night6 candidate c101 hypothesis document",
+            "sha256": "3bea6a1642dac4ccd184eadf4183646222f12e958cd2c789c80bfa1106a338d6"
+        },
+        {
+            "id": "night6 candidate c105 hypothesis document",
+            "sha256": "df4e3eb21693580de3586b1240b43beff96d207e1c2ddbaed1fa6a3bdb714f3c"
+        },
+        {
+            "id": "night6 candidate c103 hypothesis document",
+            "sha256": "bb50c43b3700b756fa72f1d4aace1cec994a09723f5c055ab7f89624dd6c248b"
+        },
+        {
+            "id": "night6 candidate c104 hypothesis document",
+            "sha256": "0a91c064b766624e53901b404bf1ccd0a0b322f2bac088447d2564673b7af02e"
+        },
+        {
+            "id": "night6 candidate c106 hypothesis document",
+            "sha256": "3b41712f502097e827f4cea195f0366dccdc550b5bb523c4775fdb6c6afe95e6"
+        },
+        {
+            "id": "night6 candidate c107 hypothesis document",
+            "sha256": "2155b86fb7308c6e75f059f22d6aa0e413d34b60f59e5c609d9148b3a823ebcc"
+        },
+        {
+            "id": "night6 candidate c109 hypothesis document",
+            "sha256": "9c2f7f4c763e989dc59aae9bfd8c9d032f53aeaad9a4280b01f04eb12d9bd050"
+        },
+        {
+            "id": "night6 candidate c108 hypothesis document",
+            "sha256": "927d207dccf3a1e04198ab74d9526e4ab2355f1a01351a2d8ae02013fcba216e"
+        },
+        {
+            "id": "night6 candidate c110 hypothesis document",
+            "sha256": "9ebcca42d5b9410b305104f1794f42d015eace5760e09a4e82538a80c91a3ec2"
+        },
+        {
+            "id": "night6 candidate c113 hypothesis document",
+            "sha256": "c0eea8370f3796d80f2312602755794498da9e469173ae79965b65dd04a8fe7a"
+        },
+        {
+            "id": "night6 candidate c111 hypothesis document",
+            "sha256": "3162381ed3c3e616be5c1ae5fc7da3be75e8ecc7e1cc068c04a42bfe55aa13d4"
+        },
+        {
+            "id": "night6 candidate c112 hypothesis document",
+            "sha256": "147b5227cd6ef58c096e5e26d5f4f21fb2a3f340eb76a00cf07ab056bcc14ce4"
+        },
+        {
+            "id": "night6 candidate c115 hypothesis document",
+            "sha256": "b126ebb04f889b6405ace1c732864ffe58961ec0a71505bb3694e016b72e9d95"
+        },
+        {
+            "id": "night6 candidate c116 hypothesis document",
+            "sha256": "5d3123551f9a062ec21d087b40de25265604d5abe6b971c35b69184bdfca143b"
+        },
+        {
+            "id": "night6 candidate c114 hypothesis document",
+            "sha256": "202057156ae76ec06eae0403dbf383b9a5e6f980a919632f09389979ac285499"
+        },
+        {
+            "id": "night6 candidate c117 hypothesis document",
+            "sha256": "4a97a166724f8d4d5b875070f63e2fa2abddbc6d4e5877bf8c4279526732bc01"
+        },
+        {
+            "id": "night6 candidate c119 hypothesis document",
+            "sha256": "0a0d3642efe8362d70b08da369c3057476202423c9beeab93deb83e2921b5538"
+        },
+        {
+            "id": "night6 candidate c120 hypothesis document",
+            "sha256": "8f8df7cb4338465a68eab3d3d1846db2977eaacae67dab800019093052d20451"
+        },
+        {
+            "id": "night6 candidate c118 hypothesis document",
+            "sha256": "ac29924a5ff9372a4d6371101901eee1bac79ae95b12701b6b4a49181219555d"
+        },
+        {
+            "id": "construct1 archive",
+            "sha256": "e9cdf255a35e6e861a5519a184f0598a89a719c32382b07ac6d9073df726d3ac"
+        },
+        {
+            "id": "construct1 campaign summary",
+            "sha256": "a319cd2c56ff2e4ce3b4a34b6c57c0aac70d081273653578e76754a67c1d3bfd"
+        },
+        {
+            "id": "construct1 candidate k001 hypothesis document",
+            "sha256": "86f0fd03e064ca77cd2a39447f408054526c36712475bd771b8b0075e6d05306"
+        },
+        {
+            "id": "construct1 candidate k002 hypothesis document",
+            "sha256": "0325c22457b433bdda0d480edd460794d1451034ef51e52be75dbb1540e6c0d2"
+        },
+        {
+            "id": "construct1 candidate k003 hypothesis document",
+            "sha256": "3d7d7c9e19a48b367aa69693acb46273656f766a8d2def27ccef4db663f6ab8b"
+        },
+        {
+            "id": "construct1 candidate k005 hypothesis document",
+            "sha256": "15c05195c845058113ec827440e7de1ad41c1c098bc0a416bf1dffc97a9589ee"
+        },
+        {
+            "id": "construct1 candidate k006 hypothesis document",
+            "sha256": "16736c2310cbf7f2f2edb49c7c91cecd1de376fcc2c300055b30a75ba7711eca"
+        },
+        {
+            "id": "construct1 candidate k004 hypothesis document",
+            "sha256": "e38a5f8522b7bee0953f174621f019bd57d3779590d99ab3a6545eae83b18800"
+        },
+        {
+            "id": "construct1 candidate k008 hypothesis document",
+            "sha256": "c30c8db3350bdc8a418679d83cdef4c76d7e825fe2c82d17aa1f3880ced8dba8"
+        },
+        {
+            "id": "construct1 candidate k007 hypothesis document",
+            "sha256": "3ea9450a7314150426b70631abcdd1a33683d0386f183bc5c921beffc5c8dbc5"
+        },
+        {
+            "id": "construct1 candidate k010 hypothesis document",
+            "sha256": "e747acd5ec3c9fc08fa93246c9f52fe73af5eadab79d6d00d29976ed867567b7"
+        },
+        {
+            "id": "construct1 candidate k009 hypothesis document",
+            "sha256": "8c92d39794eba422d0d06ff6de4b54d5187615820c044008ab5c95a4f9787443"
+        },
+        {
+            "id": "construct2 archive",
+            "sha256": "3d954b38d587d0bd5fb93c219169d5a9efe9c1cc1d4da21383188f13dfa5a384"
+        },
+        {
+            "id": "construct2 campaign summary",
+            "sha256": "a45893e9bb75ded233a0662732de707a09bbeca1177379e7c366730ebb37d193"
+        },
+        {
+            "id": "construct2 candidate k011 hypothesis document",
+            "sha256": "ae346292fbb0631fa479f823b22208be8dc84e39e39d0869efad7fa126f288a5"
+        },
+        {
+            "id": "construct2 candidate k012 hypothesis document",
+            "sha256": "ee322102fa051a449ff37f2cb9cdedf52f5b4202f51c83caf6ed47386cd9b271"
+        },
+        {
+            "id": "construct3 campaign summary",
+            "sha256": "ff9b7b36d5000825079261e69f177fc7a51510ee403a19fa68064248e4174c10"
+        },
+        {
+            "id": "construct3 explicit start/interruption event",
+            "sha256": "c981cfe0fdc10fbf4d997c64b8e1a6ee31bf6902aedc0e683745f899b1b5561a"
+        },
+        {
+            "id": "construct3 candidate k014 hypothesis document",
+            "sha256": "7dd2017638b3793f0a56569c28fc23cf646205bd8b014f0d62e460007ef39f28"
+        },
+        {
+            "id": "jit1 archive",
+            "sha256": "2706936c6daf321ee031f9ebcdbb7f4dab55f9d25467ff3d5a6546276c11731e"
+        },
+        {
+            "id": "jit1 campaign summary",
+            "sha256": "f01848758c5420f03f34154b30f07fe98450ebbf3c05fa261c781ecffbea34f6"
+        },
+        {
+            "id": "jit1 candidate j003 hypothesis document",
+            "sha256": "2d812eac2df90f58606890266bca056a5d1ea08e14f0f855d638a4818cb1a6ba"
+        },
+        {
+            "id": "jit1 candidate j002 hypothesis document",
+            "sha256": "26f9f3926fb36465eb0f90a08aea35433c08571f2730e4af8f2ff84f1eb59037"
+        },
+        {
+            "id": "jit1 candidate j004 hypothesis document",
+            "sha256": "0f803ec23389a6e268247684c1be7f32925e296e3733a658ec5dea98ad00db22"
+        },
+        {
+            "id": "jit1 candidate j005 hypothesis document",
+            "sha256": "f266d5be24d754ba11d9b097dc4a281ce5b140161c9014004ec7dfa59d3b35a9"
+        },
+        {
+            "id": "jit1 candidate j006 hypothesis document",
+            "sha256": "f74f07fc8785162d16ebf14e1b8911c0c1a1ce540f48fd329e8e118e7351ef4c"
+        },
+        {
+            "id": "jit1 candidate j007 hypothesis document",
+            "sha256": "f3b6951c0317e064d4953cf5150ff14a233332ebc5958f519fd41eaf83c06838"
+        },
+        {
+            "id": "jit1 candidate j008 hypothesis document",
+            "sha256": "8c9db8b2e7425551ecba273459b9b96ad89008e6ce7ee76cfdc1a91782fb3459"
+        },
+        {
+            "id": "jit1 candidate j009 hypothesis document",
+            "sha256": "5b296194ddf8c391cbf7a4bb4078b077ff461bac939b50e21dfac442d3c5496a"
+        },
+        {
+            "id": "fill_main replay evaluations",
+            "sha256": "1264d5041b2e45efd20b74110c0c2d8667e44a791ef3ea4451250cbb9f1feee1"
+        },
+        {
+            "id": "fill_main verification",
+            "sha256": "14b942bdddb9c2dbd897aa6780d3a98ea35ad5033f78ef8adc3f1da22b88f075"
+        },
+        {
+            "id": "fill_main best program info",
+            "sha256": "c4e4309f8fd4b7d104d92d94a104ca63ac181bb36d86d20a0cd51d18f00d955f"
+        },
+        {
+            "id": "find_main replay evaluations",
+            "sha256": "f76805624198f7b9ded9c081ae0dd59d93bf32e7eb744047ba78ab7386ec98c6"
+        },
+        {
+            "id": "find_main verification",
+            "sha256": "33b373a314917432eb040cf40f5987800525bb94fc477e9c0c8e22fa5a185c82"
+        },
+        {
+            "id": "find_main best program info",
+            "sha256": "1e872a2884e01a350d30cfac7f5401c1ab427f10acfef2d95ca684a74d5c5177"
+        },
+        {
+            "id": "construct_main replay evaluations",
+            "sha256": "81e34086974f59fe094c884068a953c2810d32d86ae7ff3656de2d7a188dd649"
+        },
+        {
+            "id": "construct_main verification",
+            "sha256": "0f01fceb12999acce01afa5906992fe22a0abcbc2226a59c74877e1ff2248618"
+        },
+        {
+            "id": "construct_main best program info",
+            "sha256": "b50087e99150e830f39af24de8e666d3a72d7cfeb22b0568c3c75be94d176384"
+        },
+        {
+            "id": "agentic_dev archive",
+            "sha256": "43751da842083b7e87131e3b9b760190447f1dd433a39fe6f5891fc536d0479f"
+        },
+        {
+            "id": "jitdry archive",
+            "sha256": "54a581d8e5fa8674117fda8b5efc4614f3a257ec95cb368622ad5c5698eda925"
+        },
+        {
+            "id": "night2_smoke archive",
+            "sha256": "30d78bdac820cfb363bbd6b8b1d91b840b7459c77cc17c4581606ea5159c6482"
+        }
+    ],
+    "campaign_counts": [
+        {
+            "id": "night1",
+            "record_count": 18
+        },
+        {
+            "id": "night2",
+            "record_count": 27
+        },
+        {
+            "id": "night3",
+            "record_count": 27
+        },
+        {
+            "id": "night4",
+            "record_count": 16
+        },
+        {
+            "id": "night5",
+            "record_count": 8
+        },
+        {
+            "id": "night6",
+            "record_count": 24
+        },
+        {
+            "id": "construct1",
+            "record_count": 10
+        },
+        {
+            "id": "construct2",
+            "record_count": 3
+        },
+        {
+            "id": "construct3",
+            "record_count": 1
+        },
+        {
+            "id": "jit1",
+            "record_count": 8
+        },
+        {
+            "id": "fill_main",
+            "record_count": 134
+        },
+        {
+            "id": "find_main",
+            "record_count": 82
+        },
+        {
+            "id": "construct_main",
+            "record_count": 175
+        }
+    ],
+    "node_count": 567,
+    "edge_count": 264,
+    "dataset_sha256": "e361ff2893e562b82c7edbc0909e02b4aaa4a895888e397376f479ca6b36e3dc",
+    "private_repository_links_exported": false,
+    "reader_wording": {
+        "description": "Expand device queue terminology to device-command-queue-bound for clarity. Original source hashes are retained; measurements, outcomes and relationships are unchanged.",
+        "expanded_text_fields": 5,
+        "public_archive_sha256": "a1cc8968dd21f1af93dfcdef7f39e173375f890d9719f2caea4070beec9cf802"
+    }
+}

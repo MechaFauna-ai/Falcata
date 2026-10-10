@@ -1,0 +1,1986 @@
+{
+    "schema": 1,
+    "matrix_sha256": "08c095b64f2cd1bc585e16ca1974830a6a4038ad95c8a730ad97f7b03ba9dcb2",
+    "timer": "Whole training call, excluding Dataset construction and CPU prediction/scoring",
+    "hardware": "One RTX 5090; measurements made on an otherwise idle GPU, with no recorded contention",
+    "framework_comparison": "Archived August 2026 competitor endpoints, not current framework reruns",
+    "quality_contract": "Shown endpoint values are not quality-equivalence or identical-model claims",
+    "baseline_contract": "Launch snapshot printed version1.0.0; not a controlled tagged-v1.0.0 runtime comparison",
+    "numerai_data_contract": "Historical cache:5463797 train rows \u00d73555 features; target label unidentified. Oct8 deep uses float32; Oct9 example int8. Both launch panels use float32 per contemporaneous loader.",
+    "l2_contract": "Framework defaults retained: Falcata/LightGBM0, XGBoost1, CatBoost3",
+    "upstream_cuda_contract": "Archived LightGBM CUDA does not enforce the requested depth cap; its Epsilon model capacity differs",
+    "sources": {
+        "launch": {
+            "path": "/tmp/falcata-1.1-blog-audit-20261009/launch-original-8c28184f.jsonl",
+            "sha256": "7473993c77a5d0213baf35e0d251279a25087cd09f9badbb86eb4d27d8f49b6a",
+            "records": 628,
+            "origin_git_commit": "8c28184f25564f786d9ef042a6af4acdd680bdc3",
+            "origin_git_path": "docs/perf-plots/data/runs.jsonl",
+            "measurement_identity": "Falcata 1.0.0 launch sweep plus explicitly retained historical retries",
+            "quiet_provenance": "not recorded in individual rows",
+            "caveats": [
+                "historical_binary_unpinned",
+                "launch_retries",
+                "historical_cache_unpinned",
+                "quantization_defaults_change",
+                "launch_snapshot_not_tag"
+            ]
+        },
+        "corrected_snapshot": {
+            "path": "/tmp/falcata-noquant-20261009/docs/perf-plots/data/runs.jsonl",
+            "sha256": "910c142e50d217eb5dbb5e4d0d3d83fa3910dc5593ed8fc9ddb7d5fa86845d7a",
+            "records": 628,
+            "measurement_identity": "Mixed snapshot: launch rows except all six covtype Falcata groups replaced after PR68",
+            "replacement_runtime": "0b170e0a",
+            "replacement_commit": "7ef7067a",
+            "quiet_provenance": "not recorded in individual rows",
+            "caveats": [
+                "mixed_snapshot",
+                "ridge_changes_model",
+                "historical_binary_unpinned"
+            ]
+        },
+        "oct8": {
+            "path": "/home/felixjk/Documents/exaboost-bench/results/runs_2026-10-08_b4da8135.jsonl",
+            "sha256": "3e6896ba9d3518d1f8bf1fdfd2961f5d92d8b7dabc288b820348ed647901c2ce",
+            "records": 232,
+            "measurement_identity": "Oct8 Falcata-only sweep; before PR68 fixedpoint Hessian ridge",
+            "runtime_build_inferred_from_build_path": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+            "runtime_build_verified_by_contemporaneous_build_record": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+            "library_md5_contemporaneous_and_current_match": "58897acd3df952c1989b8e354ed09a17",
+            "library_sha256_observed_current": "c35e3fbd265d60932c7f78cec698e112c2dca871c7e2096b007401c70d8a4fd1",
+            "harness_git_commit_from_sweep_log": "386898d66ba4e7cd3ba0fe030fec3f01d04f0dbf",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "run_id_from_source": 3494,
+            "shipped_default_pair_code5_epilogue": false,
+            "caveats": [
+                "pre_ridge_fixedpoint",
+                "historical_cache_unpinned",
+                "quantization_defaults_change"
+            ]
+        },
+        "d0_noquant": {
+            "path": "/tmp/falcata-noquant-overnight-20261009/main-results.jsonl",
+            "sha256": "94e38baa729812d83de32de47a441dceb94450ceeec44d1f2908b70158f66858",
+            "records": 66,
+            "measurement_identity": "Selected FP64 noquant default, fourteen affected groups",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "caveats": [
+                "numerai_dtype_change",
+                "fraud_uncapped_failures",
+                "atomic_noquant_variation"
+            ]
+        },
+        "strict_year-noquant_baseline": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-year-noquant-baseline.jsonl",
+            "sha256": "88b7496affe9321b5962ce340e749db2f0ff59b0292fae6461d6661e093c3c7a",
+            "records": 4,
+            "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_year-noquant_candidate": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-year-noquant-candidate.jsonl",
+            "sha256": "f8877093d70a197e3aa5426a1af61c2e49d084b36430502252812f0921030182",
+            "records": 4,
+            "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_epsilon-noquant_baseline": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-epsilon-noquant-baseline.jsonl",
+            "sha256": "37b3896d64608cde6b35176a705d516554d336ce64fa803f9fe6bb088d0414bf",
+            "records": 4,
+            "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_epsilon-noquant_candidate": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-epsilon-noquant-candidate.jsonl",
+            "sha256": "e1e2e51925bb30e27c2d10ee73adad3bfb81ce93f328f22a38227bd03c1ced77",
+            "records": 4,
+            "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_higgs-noquant_baseline": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-higgs-noquant-baseline.jsonl",
+            "sha256": "bf9d9b9c067287cb6ae135452dcc43a7b0a8e527fddf167418a359fba4597680",
+            "records": 4,
+            "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_higgs-noquant_candidate": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-higgs-noquant-candidate.jsonl",
+            "sha256": "511042fcec747656df79e2cc9fec11fb1bf611e23625699045c135fad02f0fc8",
+            "records": 4,
+            "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_covtype-noquant_baseline": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-covtype-noquant-baseline.jsonl",
+            "sha256": "a36675cc82170992d323619c9afd074d13f78b35845bca643e70b9db21e8a5df",
+            "records": 4,
+            "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_covtype-noquant_candidate": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-covtype-noquant-candidate.jsonl",
+            "sha256": "b46a72dcc4662db8ef849a57c2642222722436cd1ec5313047c6b647bd26e35e",
+            "records": 4,
+            "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_fraud-noquant_baseline": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-fraud-noquant-baseline.jsonl",
+            "sha256": "32b1b79e63b85d1aea2c0cef1f67643532323c851e8b9c2c8e9bff3f05223828",
+            "records": 4,
+            "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_fraud-noquant_candidate": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-fraud-noquant-candidate.jsonl",
+            "sha256": "bd8c4ba1bc0018284a01427ba4677d8773b8d07896957c70038d51c3218526d4",
+            "records": 4,
+            "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_numerai-noquant_baseline": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-numerai-noquant-baseline.jsonl",
+            "sha256": "82d9dbc250f261b46240aada431530dafc037ec6f668d09949ea9ebf49ea5318",
+            "records": 4,
+            "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_numerai-noquant_candidate": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-numerai-noquant-candidate.jsonl",
+            "sha256": "ec314bb4ad03f97922b6c3be38d5d2fdd11382aaf717537d809976950e07f36f",
+            "records": 4,
+            "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_epsilon-stoch_baseline": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-epsilon-stoch-baseline.jsonl",
+            "sha256": "4517dde508816cf258850b1eb12a9bf3ea61fb32d9e9361079522673427229f0",
+            "records": 4,
+            "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_epsilon-stoch_candidate": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-epsilon-stoch-candidate.jsonl",
+            "sha256": "ef55a285eb85883ba4c19b9799b488a43364cb0e519b575d9cedad4c7dffe153",
+            "records": 4,
+            "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_numerai-stoch_baseline": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-numerai-stoch-baseline.jsonl",
+            "sha256": "4c5ec9bfb0accf55686424483a2c50fbcdb44e71ee2f5d44bd798ae1a14c2376",
+            "records": 4,
+            "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_numerai-stoch_candidate": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-numerai-stoch-candidate.jsonl",
+            "sha256": "8b7ba531d3f7c8d55d75002115cf974d60d90c0704bf50b2397d075b70c9168f",
+            "records": 4,
+            "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": []
+        },
+        "strict_numerai-deep_baseline": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-numerai-deep-baseline.jsonl",
+            "sha256": "300e3c5a4f33d8d70535a68f18b6b9b9c07d62f28e9d9f25c05a251b137a0046",
+            "records": 1,
+            "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": [
+                "single_draw_deep"
+            ]
+        },
+        "strict_numerai-deep_candidate": {
+            "path": "/tmp/falcata-noquant-validation-20261009/strict-numerai-deep-candidate.jsonl",
+            "sha256": "73b3b77b42df1ff64d738a3118890ad0b57463ca601322cf1b2207fa5750220a",
+            "records": 1,
+            "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
+            "caveats": [
+                "single_draw_deep"
+            ]
+        }
+    },
+    "caveat_definitions": {
+        "historical_binary_unpinned": "Old version fields do not pin an exact loaded shared-library hash. Launch/0b170 identities lack a recorded binary digest. Oct8 b4da binary identity is separately recovered from contemporaneous MD5 plus matching installed library; newer strict records pin actual runtime and SHA256 in every endpoint.",
+        "launch_snapshot_not_tag": "The launch snapshot prints version1.0.0 but is not a controlled tagged-v1.0.0 runtime comparison; Covtype history identifies a pre-tag source. Ratios describe the archived launch measurements.",
+        "quantization_defaults_change": "The benchmark explicitly chooses quant_mode but leaves quant_bins automatic. Quantization defaults/numerical safeguards evolved; matching recipe names does not prove identical effective bins or model.",
+        "historical_cache_unpinned": "Shapes agree, but historical rows do not pin data bytes, labels, or split hashes; current cache metadata cannot prove historical byte identity.",
+        "mixed_snapshot": "The current runs.jsonl is not a frozen launch corpus: PR68 refreshed all three Falcata covtype modes in both regimes. Original launch is recovered from git8c28184f.",
+        "pre_ridge_fixedpoint": "b4da predates the four-Hessian-quanta fixedpoint ridge. Its row-varying-Hessian fixedpoint quality is not final-build quality.",
+        "ridge_changes_model": "The fixedpoint ridge changes gains/leaf denominators, repairing low-quality multiclass output; it is a numerical safeguard, not bit-identical optimization.",
+        "latest_fixedpoint_quality_not_measured_here": "Final ridge affects nonconstant Hessians, including binary workloads; no later full exact-regime fixedpoint timing/quality endpoint was found here.",
+        "quiet_unverified": "Oct8 script documents intended strict/exclusive submission, but selected raw rows lack actual admission/contended flags. Host load alone does not establish GPU contention.",
+        "launch_retries": "Historical duplicate timed kinds exist. Last-record-per-kind recreates published figures; earlier failed/skipped attempts stay explicitly retained, not silently discarded as fresh seeds.",
+        "historical_accidental_robust_scale": "Launch covtype fixedpoint used a robust-scale path later identified as unintended and removed; endpoint quality/time is a historical model, not a model-identity baseline.",
+        "numerai_dtype_change": "Launch and first Oct8 sweep load float32 memmaps in contemporaneous source; selected strict Numerai uses int8. Same row/feature counts do not make ingestion or timing regimes identical.",
+        "historical_numerai_label_unknown": "Historical build1226 cache metadata omits label identity. It is a fixed-cache implementation workload, not evidence for production/current target selection or honest configuration selection.",
+        "numerai_metric_implementation": "Launch/Oct8 used the historical benchmark CORR helper; strict wrapper uses NumeraiEvaluator. This audit copies recorded endpoints and does not recompute corr, Sharpe, or payouts.",
+        "upstream_cuda_depth_semantics": "Upstream LightGBM CUDA ignores the depth cap in this corpus, so comparisons are not identical tree capacity; pathological quality/crashes remain failures.",
+        "l2_defaults_differ": "Benchmark uses each framework\u2019s default L2: Falcata/LightGBM0, XGBoost1, CatBoost3. This is not a fully aligned configuration or quality-equivalence experiment.",
+        "historical_competitors_only": "No contemporary competitor run is included. Ratios versus launch competitors are descriptive archive comparisons, not evidence that the gap to today\u2019s frameworks widened.",
+        "single_draw_deep": "Numerai-deep/leaf use one full timed draw per build; no repeated-run precision or quality equivalence is established.",
+        "fraud_uncapped_failures": "L2=0/max_delta_step=0 fraud noquant has numerical collapse, saturated probabilities, and early no-split termination; old requested-round throughput is misleading. Retain failures. Later cap1 follow-up changes configuration and is not a default speed comparison.",
+        "atomic_noquant_variation": "FP64 noquant can vary by floating atomic reduction order at the same seed; finite covtype/fraud metric ranges and failed endpoints are retained.",
+        "epsilon_quality_lower_than_competitors": "Epsilon strict stochastic AUC\u2248.94243 versus archived XGBoost\u2248.94401 and CatBoost\u2248.95076: do not label the speed bars matched-quality.",
+        "training_only": "train_s excludes Dataset construction and post-training prediction/scoring. Default CatBoost train timer also includes its configured per-round metric work; see frozen harness."
+    },
+    "panels": [
+        {
+            "dataset": "numerai",
+            "regime": "numerai-deep",
+            "label": "Numerai deep",
+            "detail": "30,000 requested rounds \u00b7 one timed draw",
+            "metric_label": "CORR",
+            "modern_measurement_date": "2026-10-08",
+            "modern_runtime": "b4da81352d5f9528699af9ea46a05ebbbeb091f3",
+            "modern_library_identity": {
+                "library_md5_contemporaneous_and_current_match": "58897acd3df952c1989b8e354ed09a17",
+                "library_sha256_observed_current": "c35e3fbd265d60932c7f78cec698e112c2dca871c7e2096b007401c70d8a4fd1"
+            },
+            "archived_measurement_date": "August 2026",
+            "launch_snapshot_div_modern_ratio": 6.703755827359861,
+            "contemporary_framework_gap_established": false,
+            "quality_equivalence_established": false,
+            "rows": [
+                {
+                    "role": "modern_falcata",
+                    "library": "falcata-stoch",
+                    "label": "Falcata \u00b7 modern measured build",
+                    "train_s": 110.7989681600011,
+                    "training_seconds": {
+                        "n": 1,
+                        "median": 110.7989681600011,
+                        "min": 110.7989681600011,
+                        "max": 110.7989681600011
+                    },
+                    "timed_draws": 1,
+                    "metric_name": "corr_mean",
+                    "metric": {
+                        "n": 1,
+                        "median": 0.02385128225200414,
+                        "min": 0.02385128225200414,
+                        "max": 0.02385128225200414
+                    },
+                    "package_versions": [
+                        "1.0.6"
+                    ],
+                    "source": "oct8",
+                    "records": [
+                        "oct8:166"
+                    ],
+                    "recorded_endpoints": [
+                        {
+                            "source": "oct8",
+                            "line": 166,
+                            "library": "falcata-stoch",
+                            "dataset": "numerai",
+                            "regime": "numerai-deep",
+                            "kind": "timed1",
+                            "status": "ok",
+                            "version": "1.0.6",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "train_s": 110.7989681600011,
+                            "construct_s": 10.376802578000934,
+                            "total_s": 709.6606673070055,
+                            "metrics": {
+                                "corr_mean": 0.02385128225200414,
+                                "corr_std": 0.016985893303869518,
+                                "corr_sharpe": 1.4041818010578597,
+                                "max_drawdown": -0.040056446351020666,
+                                "n_eras": 200,
+                                "rmse": 0.22369592048342113,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32",
+                            "run_id_from_source": 3494,
+                            "execution": {
+                                "adm_class": "strict",
+                                "contended": 0,
+                                "state": "done",
+                                "exit_code": 0
+                            }
+                        }
+                    ],
+                    "strict_quiet_verified": true,
+                    "caveats": [
+                        "historical_cache_unpinned",
+                        "historical_numerai_label_unknown",
+                        "numerai_metric_implementation",
+                        "pre_ridge_fixedpoint",
+                        "quantization_defaults_change",
+                        "single_draw_deep"
+                    ]
+                },
+                {
+                    "role": "launch_falcata",
+                    "library": "falcata-stoch",
+                    "label": "Falcata \u00b7 launch snapshot",
+                    "train_s": 742.769228468067,
+                    "training_seconds": {
+                        "n": 1,
+                        "median": 742.769228468067,
+                        "min": 742.769228468067,
+                        "max": 742.769228468067
+                    },
+                    "timed_draws": 1,
+                    "metric_name": "corr_mean",
+                    "metric": {
+                        "n": 1,
+                        "median": 0.023762843089416393,
+                        "min": 0.023762843089416393,
+                        "max": 0.023762843089416393
+                    },
+                    "package_versions": [
+                        "1.0.0"
+                    ],
+                    "source": "launch",
+                    "records": [
+                        "launch:471"
+                    ],
+                    "recorded_endpoints": [
+                        {
+                            "source": "launch",
+                            "line": 471,
+                            "library": "falcata-stoch",
+                            "dataset": "numerai",
+                            "regime": "numerai-deep",
+                            "kind": "timed1",
+                            "status": "ok",
+                            "version": "1.0.0",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "train_s": 742.769228468067,
+                            "construct_s": 9.994918102049269,
+                            "total_s": 1326.7787807710702,
+                            "metrics": {
+                                "corr_mean": 0.023762843089416393,
+                                "corr_std": 0.01689172177349331,
+                                "corr_sharpe": 1.4067744785321605,
+                                "max_drawdown": -0.040769511979308025,
+                                "n_eras": 200,
+                                "rmse": 0.22369560010444925,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        }
+                    ],
+                    "strict_quiet_verified": false,
+                    "caveats": [
+                        "historical_binary_unpinned",
+                        "historical_cache_unpinned",
+                        "historical_numerai_label_unknown",
+                        "launch_retries",
+                        "launch_snapshot_not_tag",
+                        "numerai_metric_implementation",
+                        "quantization_defaults_change",
+                        "single_draw_deep"
+                    ]
+                },
+                {
+                    "role": "archived_competitor",
+                    "library": "xgboost",
+                    "label": "XGBoost",
+                    "train_s": 7006.688118729973,
+                    "training_seconds": {
+                        "n": 1,
+                        "median": 7006.688118729973,
+                        "min": 7006.688118729973,
+                        "max": 7006.688118729973
+                    },
+                    "timed_draws": 1,
+                    "metric_name": "corr_mean",
+                    "metric": {
+                        "n": 1,
+                        "median": 0.023447450773864315,
+                        "min": 0.023447450773864315,
+                        "max": 0.023447450773864315
+                    },
+                    "package_versions": [
+                        "3.3.0"
+                    ],
+                    "source": "launch",
+                    "records": [
+                        "launch:477"
+                    ],
+                    "recorded_endpoints": [
+                        {
+                            "source": "launch",
+                            "line": 477,
+                            "library": "xgboost",
+                            "dataset": "numerai",
+                            "regime": "numerai-deep",
+                            "kind": "timed1",
+                            "status": "ok",
+                            "version": "3.3.0",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "train_s": 7006.688118729973,
+                            "construct_s": 53.04509310796857,
+                            "total_s": 7106.027098710067,
+                            "metrics": {
+                                "corr_mean": 0.023447450773864315,
+                                "corr_std": 0.016783497576378634,
+                                "corr_sharpe": 1.3970539017364674,
+                                "max_drawdown": -0.035527817405398315,
+                                "n_eras": 200,
+                                "rmse": 0.22369976341724396,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        }
+                    ],
+                    "strict_quiet_verified": false,
+                    "caveats": [
+                        "historical_binary_unpinned",
+                        "historical_cache_unpinned",
+                        "historical_numerai_label_unknown",
+                        "launch_retries",
+                        "launch_snapshot_not_tag",
+                        "numerai_metric_implementation",
+                        "quantization_defaults_change",
+                        "single_draw_deep"
+                    ]
+                },
+                {
+                    "role": "archived_competitor",
+                    "library": "catboost",
+                    "label": "CatBoost",
+                    "train_s": 5240.0950200699735,
+                    "training_seconds": {
+                        "n": 1,
+                        "median": 5240.0950200699735,
+                        "min": 5240.0950200699735,
+                        "max": 5240.0950200699735
+                    },
+                    "timed_draws": 1,
+                    "metric_name": "corr_mean",
+                    "metric": {
+                        "n": 1,
+                        "median": 0.02170572948180543,
+                        "min": 0.02170572948180543,
+                        "max": 0.02170572948180543
+                    },
+                    "package_versions": [
+                        "1.2.10"
+                    ],
+                    "source": "launch",
+                    "records": [
+                        "launch:579"
+                    ],
+                    "recorded_endpoints": [
+                        {
+                            "source": "launch",
+                            "line": 579,
+                            "library": "catboost",
+                            "dataset": "numerai",
+                            "regime": "numerai-deep",
+                            "kind": "timed1",
+                            "status": "ok",
+                            "version": "1.2.10",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "train_s": 5240.0950200699735,
+                            "construct_s": 25.527035139035434,
+                            "total_s": 5279.048317700159,
+                            "metrics": {
+                                "corr_mean": 0.02170572948180543,
+                                "corr_std": 0.016985155534184355,
+                                "corr_sharpe": 1.277923504328261,
+                                "max_drawdown": -0.029259596969854033,
+                                "n_eras": 200,
+                                "rmse": 0.22363604960367478,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        }
+                    ],
+                    "strict_quiet_verified": false,
+                    "caveats": [
+                        "historical_binary_unpinned",
+                        "historical_cache_unpinned",
+                        "historical_numerai_label_unknown",
+                        "launch_retries",
+                        "launch_snapshot_not_tag",
+                        "numerai_metric_implementation",
+                        "quantization_defaults_change",
+                        "single_draw_deep"
+                    ]
+                },
+                {
+                    "role": "archived_competitor",
+                    "library": "lightgbm-ocl",
+                    "label": "LightGBM OpenCL",
+                    "train_s": 10361.845932046068,
+                    "training_seconds": {
+                        "n": 1,
+                        "median": 10361.845932046068,
+                        "min": 10361.845932046068,
+                        "max": 10361.845932046068
+                    },
+                    "timed_draws": 1,
+                    "metric_name": "corr_mean",
+                    "metric": {
+                        "n": 1,
+                        "median": 0.023844045241991588,
+                        "min": 0.023844045241991588,
+                        "max": 0.023844045241991588
+                    },
+                    "package_versions": [
+                        "4.6.0"
+                    ],
+                    "source": "launch",
+                    "records": [
+                        "launch:476"
+                    ],
+                    "recorded_endpoints": [
+                        {
+                            "source": "launch",
+                            "line": 476,
+                            "library": "lightgbm-ocl",
+                            "dataset": "numerai",
+                            "regime": "numerai-deep",
+                            "kind": "timed1",
+                            "status": "ok",
+                            "version": "4.6.0",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "train_s": 10361.845932046068,
+                            "construct_s": 34.41033777198754,
+                            "total_s": 10960.164811060997,
+                            "metrics": {
+                                "corr_mean": 0.023844045241991588,
+                                "corr_std": 0.016794376393077532,
+                                "corr_sharpe": 1.4197636568285952,
+                                "max_drawdown": -0.03655982710086623,
+                                "n_eras": 200,
+                                "rmse": 0.22369623420018586,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        }
+                    ],
+                    "strict_quiet_verified": false,
+                    "caveats": [
+                        "historical_binary_unpinned",
+                        "historical_cache_unpinned",
+                        "historical_numerai_label_unknown",
+                        "launch_retries",
+                        "launch_snapshot_not_tag",
+                        "numerai_metric_implementation",
+                        "quantization_defaults_change",
+                        "single_draw_deep"
+                    ]
+                }
+            ],
+            "omitted_frameworks": [
+                {
+                    "library": "lightgbm",
+                    "reason": "No complete sanity-passing archived timed set; no bar or artificial time assigned",
+                    "statuses": {
+                        "crashed": 1
+                    },
+                    "failure_records": [
+                        "launch:474"
+                    ],
+                    "records": [
+                        {
+                            "source": "launch",
+                            "line": 474,
+                            "library": "lightgbm",
+                            "dataset": "numerai",
+                            "regime": "numerai-deep",
+                            "kind": "timed1",
+                            "status": "crashed",
+                            "error": "[LightGBM] [Fatal] [CUDA] out of memory /tmp/pip-install-ujimgfyq/lightgbm_74adba1d9de34f2c97040f187b2ce088/include/LightGBM/cuda/cuda_utils.hu 152\n\n",
+                            "metrics": {},
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "dataset": "numerai",
+            "regime": "numerai",
+            "label": "Numerai example",
+            "detail": "2,000 rounds \u00b7 median of three timed draws",
+            "metric_label": "CORR",
+            "modern_measurement_date": "2026-10-09",
+            "modern_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "modern_library_identity": {
+                "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c"
+            },
+            "archived_measurement_date": "August 2026",
+            "launch_snapshot_div_modern_ratio": 5.5166749544245475,
+            "contemporary_framework_gap_established": false,
+            "quality_equivalence_established": false,
+            "rows": [
+                {
+                    "role": "modern_falcata",
+                    "library": "falcata-stoch",
+                    "label": "Falcata \u00b7 modern measured build",
+                    "train_s": 5.615935137000633,
+                    "training_seconds": {
+                        "n": 3,
+                        "median": 5.615935137000633,
+                        "min": 5.6122681309934705,
+                        "max": 5.642379928991431
+                    },
+                    "timed_draws": 3,
+                    "metric_name": "corr_mean",
+                    "metric": {
+                        "n": 3,
+                        "median": 0.019426601611107146,
+                        "min": 0.019426601611107146,
+                        "max": 0.019426601611107146
+                    },
+                    "package_versions": [
+                        "1.0.6"
+                    ],
+                    "source": "strict_numerai-stoch_candidate",
+                    "records": [
+                        "strict_numerai-stoch_candidate:2",
+                        "strict_numerai-stoch_candidate:3",
+                        "strict_numerai-stoch_candidate:4"
+                    ],
+                    "recorded_endpoints": [
+                        {
+                            "source": "strict_numerai-stoch_candidate",
+                            "line": 2,
+                            "library": "falcata-stoch",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "timed1",
+                            "status": "ok",
+                            "version": "1.0.6",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "train_s": 5.615935137000633,
+                            "construct_s": 3.9468873549776617,
+                            "construct_shared": false,
+                            "total_s": 15.675544359022751,
+                            "predict_s": 6.112705417006509,
+                            "input_dtype": "int8",
+                            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                            "seed": 42,
+                            "run_id": 3581,
+                            "resolved_cuda_precision": "fp64",
+                            "cuda_precision_override": null,
+                            "cuda_plan_override": null,
+                            "metrics": {
+                                "corr_mean": 0.019426601611107146,
+                                "corr_std": 0.0160951116367512,
+                                "corr_sharpe": 1.2069876897746332,
+                                "max_drawdown": -0.06426842487962052,
+                                "n_eras": 200,
+                                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                                "target_provenance": "unidentified label in historical build1226 benchmark cache",
+                                "rmse": 0.22364269367216263,
+                                "sane": true
+                            },
+                            "execution": {
+                                "adm_class": "strict",
+                                "contended": 0,
+                                "state": "done",
+                                "exit_code": 0
+                            }
+                        },
+                        {
+                            "source": "strict_numerai-stoch_candidate",
+                            "line": 3,
+                            "library": "falcata-stoch",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "timed2",
+                            "status": "ok",
+                            "version": "1.0.6",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "train_s": 5.642379928991431,
+                            "construct_s": 3.9064176800020505,
+                            "construct_shared": false,
+                            "total_s": 15.914767858979758,
+                            "predict_s": 6.36595470199245,
+                            "input_dtype": "int8",
+                            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                            "seed": 42,
+                            "run_id": 3581,
+                            "resolved_cuda_precision": "fp64",
+                            "cuda_precision_override": null,
+                            "cuda_plan_override": null,
+                            "metrics": {
+                                "corr_mean": 0.019426601611107146,
+                                "corr_std": 0.0160951116367512,
+                                "corr_sharpe": 1.2069876897746332,
+                                "max_drawdown": -0.06426842487962052,
+                                "n_eras": 200,
+                                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                                "target_provenance": "unidentified label in historical build1226 benchmark cache",
+                                "rmse": 0.22364269367216263,
+                                "sane": true
+                            },
+                            "execution": {
+                                "adm_class": "strict",
+                                "contended": 0,
+                                "state": "done",
+                                "exit_code": 0
+                            }
+                        },
+                        {
+                            "source": "strict_numerai-stoch_candidate",
+                            "line": 4,
+                            "library": "falcata-stoch",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "timed3",
+                            "status": "ok",
+                            "version": "1.0.6",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "train_s": 5.6122681309934705,
+                            "construct_s": 3.8937676289933734,
+                            "construct_shared": false,
+                            "total_s": 15.602843386004679,
+                            "predict_s": 6.096791124989977,
+                            "input_dtype": "int8",
+                            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                            "seed": 42,
+                            "run_id": 3581,
+                            "resolved_cuda_precision": "fp64",
+                            "cuda_precision_override": null,
+                            "cuda_plan_override": null,
+                            "metrics": {
+                                "corr_mean": 0.019426601611107146,
+                                "corr_std": 0.0160951116367512,
+                                "corr_sharpe": 1.2069876897746332,
+                                "max_drawdown": -0.06426842487962052,
+                                "n_eras": 200,
+                                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                                "target_provenance": "unidentified label in historical build1226 benchmark cache",
+                                "rmse": 0.22364269367216263,
+                                "sane": true
+                            },
+                            "execution": {
+                                "adm_class": "strict",
+                                "contended": 0,
+                                "state": "done",
+                                "exit_code": 0
+                            }
+                        }
+                    ],
+                    "strict_quiet_verified": true,
+                    "caveats": [
+                        "historical_numerai_label_unknown",
+                        "numerai_dtype_change",
+                        "numerai_metric_implementation"
+                    ]
+                },
+                {
+                    "role": "launch_falcata",
+                    "library": "falcata-stoch",
+                    "label": "Falcata \u00b7 launch snapshot",
+                    "train_s": 30.981288715964183,
+                    "training_seconds": {
+                        "n": 3,
+                        "median": 30.981288715964183,
+                        "min": 30.8483672629809,
+                        "max": 32.701580916997045
+                    },
+                    "timed_draws": 3,
+                    "metric_name": "corr_mean",
+                    "metric": {
+                        "n": 3,
+                        "median": 0.019426601611107142,
+                        "min": 0.019426601611107142,
+                        "max": 0.019426601611107142
+                    },
+                    "package_versions": [
+                        "1.0.0"
+                    ],
+                    "source": "launch",
+                    "records": [
+                        "launch:427",
+                        "launch:428",
+                        "launch:429"
+                    ],
+                    "recorded_endpoints": [
+                        {
+                            "source": "launch",
+                            "line": 427,
+                            "library": "falcata-stoch",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "timed1",
+                            "status": "ok",
+                            "version": "1.0.0",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "train_s": 30.981288715964183,
+                            "construct_s": 10.116979213082232,
+                            "total_s": 49.18756158801261,
+                            "metrics": {
+                                "corr_mean": 0.019426601611107142,
+                                "corr_std": 0.016095111636751196,
+                                "corr_sharpe": 1.2069876897746332,
+                                "max_drawdown": -0.06426842487962074,
+                                "n_eras": 200,
+                                "rmse": 0.22364269367216263,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 428,
+                            "library": "falcata-stoch",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "timed2",
+                            "status": "ok",
+                            "version": "1.0.0",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "train_s": 32.701580916997045,
+                            "construct_s": 11.750170610030182,
+                            "total_s": 50.81237525702454,
+                            "metrics": {
+                                "corr_mean": 0.019426601611107142,
+                                "corr_std": 0.016095111636751196,
+                                "corr_sharpe": 1.2069876897746332,
+                                "max_drawdown": -0.06426842487962074,
+                                "n_eras": 200,
+                                "rmse": 0.22364269367216263,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 429,
+                            "library": "falcata-stoch",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "timed3",
+                            "status": "ok",
+                            "version": "1.0.0",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "train_s": 30.8483672629809,
+                            "construct_s": 10.056396176922135,
+                            "total_s": 47.235594745958224,
+                            "metrics": {
+                                "corr_mean": 0.019426601611107142,
+                                "corr_std": 0.016095111636751196,
+                                "corr_sharpe": 1.2069876897746332,
+                                "max_drawdown": -0.06426842487962074,
+                                "n_eras": 200,
+                                "rmse": 0.22364269367216263,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        }
+                    ],
+                    "strict_quiet_verified": false,
+                    "caveats": [
+                        "historical_binary_unpinned",
+                        "historical_cache_unpinned",
+                        "historical_numerai_label_unknown",
+                        "launch_retries",
+                        "launch_snapshot_not_tag",
+                        "numerai_metric_implementation",
+                        "quantization_defaults_change"
+                    ]
+                },
+                {
+                    "role": "archived_competitor",
+                    "library": "xgboost",
+                    "label": "XGBoost",
+                    "train_s": 286.3513214359991,
+                    "training_seconds": {
+                        "n": 3,
+                        "median": 286.3513214359991,
+                        "min": 286.09940172499046,
+                        "max": 286.63889762701
+                    },
+                    "timed_draws": 3,
+                    "metric_name": "corr_mean",
+                    "metric": {
+                        "n": 3,
+                        "median": 0.019719652661774337,
+                        "min": 0.019719652661774337,
+                        "max": 0.019719652661774337
+                    },
+                    "package_versions": [
+                        "3.3.0"
+                    ],
+                    "source": "launch",
+                    "records": [
+                        "launch:457",
+                        "launch:458",
+                        "launch:459"
+                    ],
+                    "recorded_endpoints": [
+                        {
+                            "source": "launch",
+                            "line": 457,
+                            "library": "xgboost",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "timed1",
+                            "status": "ok",
+                            "version": "3.3.0",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "train_s": 286.09940172499046,
+                            "construct_s": 54.27002737100702,
+                            "total_s": 366.9689519960666,
+                            "metrics": {
+                                "corr_mean": 0.019719652661774337,
+                                "corr_std": 0.015950370584563247,
+                                "corr_sharpe": 1.2363131349975653,
+                                "max_drawdown": -0.04133139000273257,
+                                "n_eras": 200,
+                                "rmse": 0.22364148497581482,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 458,
+                            "library": "xgboost",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "timed2",
+                            "status": "ok",
+                            "version": "3.3.0",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "train_s": 286.3513214359991,
+                            "construct_s": 63.19003887102008,
+                            "total_s": 366.6710077750031,
+                            "metrics": {
+                                "corr_mean": 0.019719652661774337,
+                                "corr_std": 0.015950370584563247,
+                                "corr_sharpe": 1.2363131349975653,
+                                "max_drawdown": -0.04133139000273257,
+                                "n_eras": 200,
+                                "rmse": 0.22364148497581482,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 459,
+                            "library": "xgboost",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "timed3",
+                            "status": "ok",
+                            "version": "3.3.0",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "train_s": 286.63889762701,
+                            "construct_s": 50.69323371199425,
+                            "total_s": 357.4916328189429,
+                            "metrics": {
+                                "corr_mean": 0.019719652661774337,
+                                "corr_std": 0.015950370584563247,
+                                "corr_sharpe": 1.2363131349975653,
+                                "max_drawdown": -0.04133139000273257,
+                                "n_eras": 200,
+                                "rmse": 0.22364148497581482,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        }
+                    ],
+                    "strict_quiet_verified": false,
+                    "caveats": [
+                        "historical_binary_unpinned",
+                        "historical_cache_unpinned",
+                        "historical_numerai_label_unknown",
+                        "launch_retries",
+                        "launch_snapshot_not_tag",
+                        "numerai_metric_implementation",
+                        "quantization_defaults_change"
+                    ]
+                },
+                {
+                    "role": "archived_competitor",
+                    "library": "catboost",
+                    "label": "CatBoost",
+                    "train_s": 112.10250947903842,
+                    "training_seconds": {
+                        "n": 3,
+                        "median": 112.10250947903842,
+                        "min": 110.79989501403179,
+                        "max": 117.72840641997755
+                    },
+                    "timed_draws": 3,
+                    "metric_name": "corr_mean",
+                    "metric": {
+                        "n": 3,
+                        "median": 0.018001535702313446,
+                        "min": 0.018001535702313446,
+                        "max": 0.018001535702313446
+                    },
+                    "package_versions": [
+                        "1.2.10"
+                    ],
+                    "source": "launch",
+                    "records": [
+                        "launch:467",
+                        "launch:468",
+                        "launch:469"
+                    ],
+                    "recorded_endpoints": [
+                        {
+                            "source": "launch",
+                            "line": 467,
+                            "library": "catboost",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "timed1",
+                            "status": "ok",
+                            "version": "1.2.10",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "train_s": 110.79989501403179,
+                            "construct_s": 21.34248908306472,
+                            "total_s": 142.50697938597295,
+                            "metrics": {
+                                "corr_mean": 0.018001535702313446,
+                                "corr_std": 0.016199563192887432,
+                                "corr_sharpe": 1.1112358702497107,
+                                "max_drawdown": -0.052358959549090804,
+                                "n_eras": 200,
+                                "rmse": 0.22363748875054076,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 468,
+                            "library": "catboost",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "timed2",
+                            "status": "ok",
+                            "version": "1.2.10",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "train_s": 117.72840641997755,
+                            "construct_s": 21.353665441973135,
+                            "total_s": 145.4142796159722,
+                            "metrics": {
+                                "corr_mean": 0.018001535702313446,
+                                "corr_std": 0.016199563192887432,
+                                "corr_sharpe": 1.1112358702497107,
+                                "max_drawdown": -0.052358959549090804,
+                                "n_eras": 200,
+                                "rmse": 0.22363748875054076,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 469,
+                            "library": "catboost",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "timed3",
+                            "status": "ok",
+                            "version": "1.2.10",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "train_s": 112.10250947903842,
+                            "construct_s": 20.655317445052788,
+                            "total_s": 139.01664826192427,
+                            "metrics": {
+                                "corr_mean": 0.018001535702313446,
+                                "corr_std": 0.016199563192887432,
+                                "corr_sharpe": 1.1112358702497107,
+                                "max_drawdown": -0.052358959549090804,
+                                "n_eras": 200,
+                                "rmse": 0.22363748875054076,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        }
+                    ],
+                    "strict_quiet_verified": false,
+                    "caveats": [
+                        "historical_binary_unpinned",
+                        "historical_cache_unpinned",
+                        "historical_numerai_label_unknown",
+                        "launch_retries",
+                        "launch_snapshot_not_tag",
+                        "numerai_metric_implementation",
+                        "quantization_defaults_change"
+                    ]
+                }
+            ],
+            "omitted_frameworks": [
+                {
+                    "library": "lightgbm",
+                    "reason": "No complete sanity-passing archived timed set; no bar or artificial time assigned",
+                    "statuses": {
+                        "skipped_warmup_failed": 3
+                    },
+                    "failure_records": [
+                        "launch:441",
+                        "launch:442",
+                        "launch:443",
+                        "launch:444",
+                        "launch:445"
+                    ],
+                    "records": [
+                        {
+                            "source": "launch",
+                            "line": 441,
+                            "library": "lightgbm",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "warmup",
+                            "status": "crashed",
+                            "error": "[LightGBM] [Fatal] [CUDA] out of memory /tmp/pip-install-ujimgfyq/lightgbm_74adba1d9de34f2c97040f187b2ce088/include/LightGBM/cuda/cuda_utils.hu 152\n\n",
+                            "metrics": {},
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 442,
+                            "library": "lightgbm",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "timed1",
+                            "status": "skipped_warmup_failed",
+                            "metrics": {},
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 443,
+                            "library": "lightgbm",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "timed2",
+                            "status": "skipped_warmup_failed",
+                            "metrics": {},
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 444,
+                            "library": "lightgbm",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "timed3",
+                            "status": "skipped_warmup_failed",
+                            "metrics": {},
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 445,
+                            "library": "lightgbm",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "curve",
+                            "status": "skipped_warmup_failed",
+                            "metrics": {},
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        }
+                    ]
+                },
+                {
+                    "library": "lightgbm-ocl",
+                    "reason": "No complete sanity-passing archived timed set; no bar or artificial time assigned",
+                    "statuses": {
+                        "skipped_warmup_failed": 3
+                    },
+                    "failure_records": [
+                        "launch:451",
+                        "launch:452",
+                        "launch:453",
+                        "launch:454",
+                        "launch:455"
+                    ],
+                    "records": [
+                        {
+                            "source": "launch",
+                            "line": 451,
+                            "library": "lightgbm-ocl",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "warmup",
+                            "status": "failed",
+                            "n_train": 5463797,
+                            "n_features": 3555,
+                            "error": "Traceback (most recent call last):\n  File \"/home/felixjk/Documents/exaboost-bench/scripts/bench.py\", line 436, in main\n    r = run_lightgbm(task, Xtr, ytr, Xte, yte, reg,\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/felixjk/Documents/exaboost-bench/scripts/bench.py\", line 258, in run_lightgbm\n    bst = lgb.train(params, dtrain, num_boost_round=reg[\"rounds\"])\n          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/felixjk/Documents/exaboost-bench/env-lightgbm-ocl/lib/python3.12/site-packages/lightgbm/engine.py\", line 297, in train\n    booster = Booster(params=params, train_set=train_set)\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/felixjk/Documents/exaboost-bench/env-lightgbm-ocl/lib/python3.12/site-packages/lightgbm/basic.py\", line 3660, in __init__\n    _safe_call(\n  File \"/home/felixjk/Documents/exaboost-bench/env-lightgbm-ocl/lib/python3.12/site-packages/lightgbm/basic.py\", line 313, in _safe_call\n    raise LightGBMError(_LIB.LGBM_GetLastError().decode(\"utf-8\"))\nlightgbm.basic.LightGBMError: Unknown OpenCL Error (-9999)\n",
+                            "metrics": {},
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 452,
+                            "library": "lightgbm-ocl",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "timed1",
+                            "status": "skipped_warmup_failed",
+                            "metrics": {},
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 453,
+                            "library": "lightgbm-ocl",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "timed2",
+                            "status": "skipped_warmup_failed",
+                            "metrics": {},
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 454,
+                            "library": "lightgbm-ocl",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "timed3",
+                            "status": "skipped_warmup_failed",
+                            "metrics": {},
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 455,
+                            "library": "lightgbm-ocl",
+                            "dataset": "numerai",
+                            "regime": "numerai",
+                            "kind": "curve",
+                            "status": "skipped_warmup_failed",
+                            "metrics": {},
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "dataset": "epsilon",
+            "regime": "deep",
+            "label": "Epsilon deep",
+            "detail": "500 rounds \u00b7 median of three timed draws",
+            "metric_label": "AUC",
+            "modern_measurement_date": "2026-10-09",
+            "modern_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "modern_library_identity": {
+                "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c"
+            },
+            "archived_measurement_date": "August 2026",
+            "launch_snapshot_div_modern_ratio": 3.5010540449676957,
+            "contemporary_framework_gap_established": false,
+            "quality_equivalence_established": false,
+            "rows": [
+                {
+                    "role": "modern_falcata",
+                    "library": "falcata-stoch",
+                    "label": "Falcata \u00b7 modern measured build",
+                    "train_s": 11.220135102019412,
+                    "training_seconds": {
+                        "n": 3,
+                        "median": 11.220135102019412,
+                        "min": 11.192825931997504,
+                        "max": 11.241658764018212
+                    },
+                    "timed_draws": 3,
+                    "metric_name": "auc",
+                    "metric": {
+                        "n": 3,
+                        "median": 0.942429523367914,
+                        "min": 0.942429523367914,
+                        "max": 0.942429523367914
+                    },
+                    "package_versions": [
+                        "1.0.6"
+                    ],
+                    "source": "strict_epsilon-stoch_candidate",
+                    "records": [
+                        "strict_epsilon-stoch_candidate:2",
+                        "strict_epsilon-stoch_candidate:3",
+                        "strict_epsilon-stoch_candidate:4"
+                    ],
+                    "recorded_endpoints": [
+                        {
+                            "source": "strict_epsilon-stoch_candidate",
+                            "line": 2,
+                            "library": "falcata-stoch",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "timed1",
+                            "status": "ok",
+                            "version": "1.0.6",
+                            "n_train": 400000,
+                            "n_features": 2000,
+                            "train_s": 11.220135102019412,
+                            "construct_s": 1.9832447149965446,
+                            "construct_shared": false,
+                            "total_s": 13.459959456027718,
+                            "predict_s": 0.2565651320037432,
+                            "input_dtype": "float32",
+                            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                            "seed": 42,
+                            "run_id": 3580,
+                            "resolved_cuda_precision": "fp64",
+                            "cuda_precision_override": null,
+                            "cuda_plan_override": null,
+                            "metrics": {
+                                "auc": 0.942429523367914,
+                                "sane": true
+                            },
+                            "execution": {
+                                "adm_class": "strict",
+                                "contended": 0,
+                                "state": "done",
+                                "exit_code": 0
+                            }
+                        },
+                        {
+                            "source": "strict_epsilon-stoch_candidate",
+                            "line": 3,
+                            "library": "falcata-stoch",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "timed2",
+                            "status": "ok",
+                            "version": "1.0.6",
+                            "n_train": 400000,
+                            "n_features": 2000,
+                            "train_s": 11.192825931997504,
+                            "construct_s": 1.9773260579968337,
+                            "construct_shared": false,
+                            "total_s": 13.457362212007865,
+                            "predict_s": 0.28719712802558206,
+                            "input_dtype": "float32",
+                            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                            "seed": 42,
+                            "run_id": 3580,
+                            "resolved_cuda_precision": "fp64",
+                            "cuda_precision_override": null,
+                            "cuda_plan_override": null,
+                            "metrics": {
+                                "auc": 0.942429523367914,
+                                "sane": true
+                            },
+                            "execution": {
+                                "adm_class": "strict",
+                                "contended": 0,
+                                "state": "done",
+                                "exit_code": 0
+                            }
+                        },
+                        {
+                            "source": "strict_epsilon-stoch_candidate",
+                            "line": 4,
+                            "library": "falcata-stoch",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "timed3",
+                            "status": "ok",
+                            "version": "1.0.6",
+                            "n_train": 400000,
+                            "n_features": 2000,
+                            "train_s": 11.241658764018212,
+                            "construct_s": 2.0174276509787887,
+                            "construct_shared": false,
+                            "total_s": 13.588863520999439,
+                            "predict_s": 0.32976190699264407,
+                            "input_dtype": "float32",
+                            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+                            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+                            "seed": 42,
+                            "run_id": 3580,
+                            "resolved_cuda_precision": "fp64",
+                            "cuda_precision_override": null,
+                            "cuda_plan_override": null,
+                            "metrics": {
+                                "auc": 0.942429523367914,
+                                "sane": true
+                            },
+                            "execution": {
+                                "adm_class": "strict",
+                                "contended": 0,
+                                "state": "done",
+                                "exit_code": 0
+                            }
+                        }
+                    ],
+                    "strict_quiet_verified": true,
+                    "caveats": []
+                },
+                {
+                    "role": "launch_falcata",
+                    "library": "falcata-stoch",
+                    "label": "Falcata \u00b7 launch snapshot",
+                    "train_s": 39.28229938400909,
+                    "training_seconds": {
+                        "n": 3,
+                        "median": 39.28229938400909,
+                        "min": 37.30593523290008,
+                        "max": 39.728343853959814
+                    },
+                    "timed_draws": 3,
+                    "metric_name": "auc",
+                    "metric": {
+                        "n": 3,
+                        "median": 0.9426312571313182,
+                        "min": 0.9426312571313182,
+                        "max": 0.9426312571313182
+                    },
+                    "package_versions": [
+                        "1.0.0"
+                    ],
+                    "source": "launch",
+                    "records": [
+                        "launch:601",
+                        "launch:602",
+                        "launch:603"
+                    ],
+                    "recorded_endpoints": [
+                        {
+                            "source": "launch",
+                            "line": 601,
+                            "library": "falcata-stoch",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "timed1",
+                            "status": "ok",
+                            "version": "1.0.0",
+                            "n_train": 400000,
+                            "n_features": 2000,
+                            "train_s": 37.30593523290008,
+                            "construct_s": 3.339080670848489,
+                            "total_s": 41.67750374879688,
+                            "metrics": {
+                                "auc": 0.9426312571313182,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 602,
+                            "library": "falcata-stoch",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "timed2",
+                            "status": "ok",
+                            "version": "1.0.0",
+                            "n_train": 400000,
+                            "n_features": 2000,
+                            "train_s": 39.728343853959814,
+                            "construct_s": 3.1889428570866585,
+                            "total_s": 43.89595288899727,
+                            "metrics": {
+                                "auc": 0.9426312571313182,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 603,
+                            "library": "falcata-stoch",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "timed3",
+                            "status": "ok",
+                            "version": "1.0.0",
+                            "n_train": 400000,
+                            "n_features": 2000,
+                            "train_s": 39.28229938400909,
+                            "construct_s": 3.2484766840934753,
+                            "total_s": 43.47153083700687,
+                            "metrics": {
+                                "auc": 0.9426312571313182,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        }
+                    ],
+                    "strict_quiet_verified": false,
+                    "caveats": [
+                        "historical_binary_unpinned",
+                        "historical_cache_unpinned",
+                        "launch_retries",
+                        "launch_snapshot_not_tag",
+                        "quantization_defaults_change"
+                    ]
+                },
+                {
+                    "role": "archived_competitor",
+                    "library": "xgboost",
+                    "label": "XGBoost",
+                    "train_s": 52.258887100964785,
+                    "training_seconds": {
+                        "n": 3,
+                        "median": 52.258887100964785,
+                        "min": 52.25698833388742,
+                        "max": 52.268026821897365
+                    },
+                    "timed_draws": 3,
+                    "metric_name": "auc",
+                    "metric": {
+                        "n": 3,
+                        "median": 0.9440113860492227,
+                        "min": 0.9440113860492227,
+                        "max": 0.9440113860492227
+                    },
+                    "package_versions": [
+                        "3.3.0"
+                    ],
+                    "source": "launch",
+                    "records": [
+                        "launch:412",
+                        "launch:413",
+                        "launch:414"
+                    ],
+                    "recorded_endpoints": [
+                        {
+                            "source": "launch",
+                            "line": 412,
+                            "library": "xgboost",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "timed1",
+                            "status": "ok",
+                            "version": "3.3.0",
+                            "n_train": 400000,
+                            "n_features": 2000,
+                            "train_s": 52.268026821897365,
+                            "construct_s": 4.793669753009453,
+                            "total_s": 58.26899529702496,
+                            "metrics": {
+                                "auc": 0.9440113860492227,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 413,
+                            "library": "xgboost",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "timed2",
+                            "status": "ok",
+                            "version": "3.3.0",
+                            "n_train": 400000,
+                            "n_features": 2000,
+                            "train_s": 52.25698833388742,
+                            "construct_s": 4.757684935000725,
+                            "total_s": 58.23731209500693,
+                            "metrics": {
+                                "auc": 0.9440113860492227,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 414,
+                            "library": "xgboost",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "timed3",
+                            "status": "ok",
+                            "version": "3.3.0",
+                            "n_train": 400000,
+                            "n_features": 2000,
+                            "train_s": 52.258887100964785,
+                            "construct_s": 4.765581461950205,
+                            "total_s": 58.25178438494913,
+                            "metrics": {
+                                "auc": 0.9440113860492227,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        }
+                    ],
+                    "strict_quiet_verified": false,
+                    "caveats": [
+                        "historical_binary_unpinned",
+                        "historical_cache_unpinned",
+                        "launch_retries",
+                        "launch_snapshot_not_tag",
+                        "quantization_defaults_change"
+                    ]
+                },
+                {
+                    "role": "archived_competitor",
+                    "library": "catboost",
+                    "label": "CatBoost",
+                    "train_s": 101.48003594297916,
+                    "training_seconds": {
+                        "n": 3,
+                        "median": 101.48003594297916,
+                        "min": 101.45832720003091,
+                        "max": 101.53272368898615
+                    },
+                    "timed_draws": 3,
+                    "metric_name": "auc",
+                    "metric": {
+                        "n": 3,
+                        "median": 0.9507560253123806,
+                        "min": 0.9506982300655663,
+                        "max": 0.9507560569124058
+                    },
+                    "package_versions": [
+                        "1.2.10"
+                    ],
+                    "source": "launch",
+                    "records": [
+                        "launch:422",
+                        "launch:423",
+                        "launch:424"
+                    ],
+                    "recorded_endpoints": [
+                        {
+                            "source": "launch",
+                            "line": 422,
+                            "library": "catboost",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "timed1",
+                            "status": "ok",
+                            "version": "1.2.10",
+                            "n_train": 400000,
+                            "n_features": 2000,
+                            "train_s": 101.48003594297916,
+                            "construct_s": 0.3850357410265133,
+                            "total_s": 102.16940034797881,
+                            "metrics": {
+                                "auc": 0.9506982300655663,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 423,
+                            "library": "catboost",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "timed2",
+                            "status": "ok",
+                            "version": "1.2.10",
+                            "n_train": 400000,
+                            "n_features": 2000,
+                            "train_s": 101.53272368898615,
+                            "construct_s": 0.38444922294002026,
+                            "total_s": 102.22268670296762,
+                            "metrics": {
+                                "auc": 0.9507560253123806,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 424,
+                            "library": "catboost",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "timed3",
+                            "status": "ok",
+                            "version": "1.2.10",
+                            "n_train": 400000,
+                            "n_features": 2000,
+                            "train_s": 101.45832720003091,
+                            "construct_s": 0.3816162139410153,
+                            "total_s": 102.14631361700594,
+                            "metrics": {
+                                "auc": 0.9507560569124058,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        }
+                    ],
+                    "strict_quiet_verified": false,
+                    "caveats": [
+                        "historical_binary_unpinned",
+                        "historical_cache_unpinned",
+                        "launch_retries",
+                        "launch_snapshot_not_tag",
+                        "quantization_defaults_change"
+                    ]
+                },
+                {
+                    "role": "archived_competitor",
+                    "library": "lightgbm",
+                    "label": "LightGBM CUDA",
+                    "train_s": 462.83454972610343,
+                    "training_seconds": {
+                        "n": 3,
+                        "median": 462.83454972610343,
+                        "min": 462.78993295494,
+                        "max": 462.8578614140861
+                    },
+                    "timed_draws": 3,
+                    "metric_name": "auc",
+                    "metric": {
+                        "n": 3,
+                        "median": 0.9431997875918279,
+                        "min": 0.9431996899917489,
+                        "max": 0.9432002663922158
+                    },
+                    "package_versions": [
+                        "4.7.0"
+                    ],
+                    "source": "launch",
+                    "records": [
+                        "launch:397",
+                        "launch:398",
+                        "launch:399"
+                    ],
+                    "recorded_endpoints": [
+                        {
+                            "source": "launch",
+                            "line": 397,
+                            "library": "lightgbm",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "timed1",
+                            "status": "ok",
+                            "version": "4.7.0",
+                            "n_train": 400000,
+                            "n_features": 2000,
+                            "train_s": 462.83454972610343,
+                            "construct_s": 7.685534396092407,
+                            "total_s": 471.50165523402393,
+                            "metrics": {
+                                "auc": 0.9431996899917489,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 398,
+                            "library": "lightgbm",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "timed2",
+                            "status": "ok",
+                            "version": "4.7.0",
+                            "n_train": 400000,
+                            "n_features": 2000,
+                            "train_s": 462.78993295494,
+                            "construct_s": 7.629010610980913,
+                            "total_s": 471.36795997503214,
+                            "metrics": {
+                                "auc": 0.9431997875918279,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 399,
+                            "library": "lightgbm",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "timed3",
+                            "status": "ok",
+                            "version": "4.7.0",
+                            "n_train": 400000,
+                            "n_features": 2000,
+                            "train_s": 462.8578614140861,
+                            "construct_s": 7.604805793962441,
+                            "total_s": 471.4599412869429,
+                            "metrics": {
+                                "auc": 0.9432002663922158,
+                                "sane": true
+                            },
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        }
+                    ],
+                    "strict_quiet_verified": false,
+                    "caveats": [
+                        "historical_binary_unpinned",
+                        "historical_cache_unpinned",
+                        "launch_retries",
+                        "launch_snapshot_not_tag",
+                        "quantization_defaults_change",
+                        "upstream_cuda_depth_semantics"
+                    ]
+                }
+            ],
+            "omitted_frameworks": [
+                {
+                    "library": "lightgbm-ocl",
+                    "reason": "No complete sanity-passing archived timed set; no bar or artificial time assigned",
+                    "statuses": {
+                        "skipped_warmup_failed": 3
+                    },
+                    "failure_records": [
+                        "launch:406",
+                        "launch:407",
+                        "launch:408",
+                        "launch:409",
+                        "launch:410"
+                    ],
+                    "records": [
+                        {
+                            "source": "launch",
+                            "line": 406,
+                            "library": "lightgbm-ocl",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "warmup",
+                            "status": "failed",
+                            "n_train": 400000,
+                            "n_features": 2000,
+                            "error": "Traceback (most recent call last):\n  File \"/home/felixjk/Documents/exaboost-bench/scripts/bench.py\", line 436, in main\n    r = run_lightgbm(task, Xtr, ytr, Xte, yte, reg,\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/felixjk/Documents/exaboost-bench/scripts/bench.py\", line 258, in run_lightgbm\n    bst = lgb.train(params, dtrain, num_boost_round=reg[\"rounds\"])\n          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/felixjk/Documents/exaboost-bench/env-lightgbm-ocl/lib/python3.12/site-packages/lightgbm/engine.py\", line 297, in train\n    booster = Booster(params=params, train_set=train_set)\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/felixjk/Documents/exaboost-bench/env-lightgbm-ocl/lib/python3.12/site-packages/lightgbm/basic.py\", line 3660, in __init__\n    _safe_call(\n  File \"/home/felixjk/Documents/exaboost-bench/env-lightgbm-ocl/lib/python3.12/site-packages/lightgbm/basic.py\", line 313, in _safe_call\n    raise LightGBMError(_LIB.LGBM_GetLastError().decode(\"utf-8\"))\nlightgbm.basic.LightGBMError: Unknown OpenCL Error (-9999)\n",
+                            "metrics": {},
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 407,
+                            "library": "lightgbm-ocl",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "timed1",
+                            "status": "skipped_warmup_failed",
+                            "metrics": {},
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 408,
+                            "library": "lightgbm-ocl",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "timed2",
+                            "status": "skipped_warmup_failed",
+                            "metrics": {},
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 409,
+                            "library": "lightgbm-ocl",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "timed3",
+                            "status": "skipped_warmup_failed",
+                            "metrics": {},
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        },
+                        {
+                            "source": "launch",
+                            "line": 410,
+                            "library": "lightgbm-ocl",
+                            "dataset": "epsilon",
+                            "regime": "deep",
+                            "kind": "curve",
+                            "status": "skipped_warmup_failed",
+                            "metrics": {},
+                            "input_dtype_inferred_from_contemporaneous_harness": "float32"
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}

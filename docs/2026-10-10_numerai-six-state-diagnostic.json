@@ -1,0 +1,3151 @@
+{
+    "records": {
+        "standard-stoch-five-warmup": {
+            "status": "ok",
+            "train_s": 1.8404035790008493,
+            "construct_s": 5.595850673009409,
+            "predict_s": 0.7452760640007909,
+            "eval_s": 0.0171036510146223,
+            "total_s": null,
+            "cell_core_s": 8.182524144998752,
+            "num_trees": 200,
+            "current_iteration": 200,
+            "requested_rounds": 200,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "e9289ae8b4a8bf05fec6a4e14ee4795fea53000db2c42282b21a4d1d3c2796ed",
+            "prediction_sha256": "cdd64efd9d7a2040dd098a78be8882e9f13aa5f99f5c9975c1fdb0d1d2c69dd4",
+            "resolved_cuda_precision": "fp64",
+            "gpu_mem_peak_mb": 13583,
+            "rss_peak_mb": 43061,
+            "feature_bin_distribution": {
+                "5": 3525,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.02396608036066184,
+                "corr_std": 0.006570076945241258,
+                "corr_sharpe": 3.6477625087816667,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.03135015048428684,
+                    "1227": 0.01669054205448436,
+                    "1228": 0.026952583397831586,
+                    "1229": 0.029298344373559517,
+                    "1230": 0.015538781493146905
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "verbose": 1,
+                "metric": "None",
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "quant_mode": "stochastic",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": "diag",
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "32",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-stoch-five-warmup.json",
+            "raw_sha256": "3ec172a814d409603035ea52c7728897564bf93f0d967aea6491e57bc9b38b74",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096"
+            ]
+        },
+        "standard-stoch-five-timed1": {
+            "status": "ok",
+            "train_s": 8.120793362002587,
+            "construct_s": 4.424777484004153,
+            "predict_s": 1.0074444740021136,
+            "eval_s": 0.01281201298115775,
+            "total_s": null,
+            "cell_core_s": 13.553483004012378,
+            "num_trees": 2000,
+            "current_iteration": 2000,
+            "requested_rounds": 2000,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "6ee464be0d1a1b6b72023d872001cad0866e679b3d4c310d879a50543e83c632",
+            "prediction_sha256": "df24a788073135258f6f848aea0d731ac9add9861edb795a9de8cec8a52030bd",
+            "resolved_cuda_precision": "fp64",
+            "gpu_mem_peak_mb": 13574,
+            "rss_peak_mb": 42788,
+            "feature_bin_distribution": {
+                "5": 3525,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.025126010358016555,
+                "corr_std": 0.008461464515177439,
+                "corr_sharpe": 2.9694635382501104,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.03770906803232718,
+                    "1227": 0.017845549161735377,
+                    "1228": 0.027866227846494215,
+                    "1229": 0.028411833797719818,
+                    "1230": 0.01379737295180617
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "verbose": -1,
+                "metric": "None",
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "quant_mode": "stochastic",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": null,
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "32",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-stoch-five-timed1.json",
+            "raw_sha256": "d2b2a4b70cedd24b2fee882b2595441c8b06fbcae9cc7dda279b0ea9e296b341",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024"
+            ]
+        },
+        "standard-stoch-five-timed2": {
+            "status": "ok",
+            "train_s": 8.222470190987224,
+            "construct_s": 4.1583829509909265,
+            "predict_s": 0.42378221100079827,
+            "eval_s": 0.013132299995049834,
+            "total_s": null,
+            "cell_core_s": 12.805066339002224,
+            "num_trees": 2000,
+            "current_iteration": 2000,
+            "requested_rounds": 2000,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "6ee464be0d1a1b6b72023d872001cad0866e679b3d4c310d879a50543e83c632",
+            "prediction_sha256": "df24a788073135258f6f848aea0d731ac9add9861edb795a9de8cec8a52030bd",
+            "resolved_cuda_precision": "fp64",
+            "gpu_mem_peak_mb": 13559,
+            "rss_peak_mb": 42691,
+            "feature_bin_distribution": {
+                "5": 3525,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.025126010358016555,
+                "corr_std": 0.008461464515177439,
+                "corr_sharpe": 2.9694635382501104,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.03770906803232718,
+                    "1227": 0.017845549161735377,
+                    "1228": 0.027866227846494215,
+                    "1229": 0.028411833797719818,
+                    "1230": 0.01379737295180617
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "verbose": -1,
+                "metric": "None",
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "quant_mode": "stochastic",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": null,
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "32",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-stoch-five-timed2.json",
+            "raw_sha256": "76f88a49bb3f1cf47880b9fac3e1dd033c5baf648064571df35ff31d36bac8bd",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024"
+            ]
+        },
+        "standard-stoch-five-timed3": {
+            "status": "ok",
+            "train_s": 8.059350591007387,
+            "construct_s": 3.987806613004068,
+            "predict_s": 0.4060762760054786,
+            "eval_s": 0.013363803009269759,
+            "total_s": null,
+            "cell_core_s": 12.453791914012982,
+            "num_trees": 2000,
+            "current_iteration": 2000,
+            "requested_rounds": 2000,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "6ee464be0d1a1b6b72023d872001cad0866e679b3d4c310d879a50543e83c632",
+            "prediction_sha256": "df24a788073135258f6f848aea0d731ac9add9861edb795a9de8cec8a52030bd",
+            "resolved_cuda_precision": "fp64",
+            "gpu_mem_peak_mb": 13559,
+            "rss_peak_mb": 42620,
+            "feature_bin_distribution": {
+                "5": 3525,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.025126010358016555,
+                "corr_std": 0.008461464515177439,
+                "corr_sharpe": 2.9694635382501104,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.03770906803232718,
+                    "1227": 0.017845549161735377,
+                    "1228": 0.027866227846494215,
+                    "1229": 0.028411833797719818,
+                    "1230": 0.01379737295180617
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "verbose": -1,
+                "metric": "None",
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "quant_mode": "stochastic",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": null,
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "32",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-stoch-five-timed3.json",
+            "raw_sha256": "d6bbc3f7315bf7f23e7baaff33ee41ac1a7bc8b74c23245b572914a76c00f052",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024"
+            ]
+        },
+        "standard-stoch-six-warmup": {
+            "status": "ok",
+            "train_s": 1.9740639989904594,
+            "construct_s": 5.859483760024887,
+            "predict_s": 0.32371153999702074,
+            "eval_s": 0.017021756997564808,
+            "total_s": null,
+            "cell_core_s": 8.157701305026421,
+            "num_trees": 200,
+            "current_iteration": 200,
+            "requested_rounds": 200,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "7fc6220ab153cfd9bad2403e7dffbe55c270135347b6bf48b0fe85d3b9660d4b",
+            "prediction_sha256": "a2ecb58216b69d26a88dfb78492467e285fbb7ac6ad9468626e0017ac12742ef",
+            "resolved_cuda_precision": "fp64",
+            "gpu_mem_peak_mb": 13666,
+            "rss_peak_mb": 42767,
+            "feature_bin_distribution": {
+                "5": 1583,
+                "6": 1942,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.0228948630186222,
+                "corr_std": 0.007652454090968022,
+                "corr_sharpe": 2.991832782851238,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.031894132814321095,
+                    "1227": 0.014940297907600512,
+                    "1228": 0.029208861068334393,
+                    "1229": 0.025602861679893136,
+                    "1230": 0.01282816162296187
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "verbose": 1,
+                "metric": "None",
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "quant_mode": "stochastic",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": "diag",
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "32",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-stoch-six-warmup.json",
+            "raw_sha256": "5b7f61d226027854080878096ba2304c2dc25e68b24f64bb1577f8699bd3a959",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096"
+            ]
+        },
+        "standard-stoch-six-timed1": {
+            "status": "ok",
+            "train_s": 11.120480399986263,
+            "construct_s": 4.478432003990747,
+            "predict_s": 0.927135368983727,
+            "eval_s": 0.01321018801536411,
+            "total_s": null,
+            "cell_core_s": 16.526603753009113,
+            "num_trees": 2000,
+            "current_iteration": 2000,
+            "requested_rounds": 2000,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "db88fce761ecbc41b879d5dcec493ede4f0a2d39b5603a8a374b7c404a829c33",
+            "prediction_sha256": "cb4ec69c7274b9fd43bb00ad9b72d1ae15c158cbaffc046bdb66d4f86f22a3a4",
+            "resolved_cuda_precision": "fp64",
+            "gpu_mem_peak_mb": 13663,
+            "rss_peak_mb": 42679,
+            "feature_bin_distribution": {
+                "5": 1583,
+                "6": 1942,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.026633996477571337,
+                "corr_std": 0.009361748251759379,
+                "corr_sharpe": 2.844981061370235,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.042093640495415335,
+                    "1227": 0.018402366158863016,
+                    "1228": 0.030349626747808323,
+                    "1229": 0.02653636005048191,
+                    "1230": 0.015787988935288093
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "verbose": -1,
+                "metric": "None",
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "quant_mode": "stochastic",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": null,
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "32",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-stoch-six-timed1.json",
+            "raw_sha256": "a42db3decf0f3ac3a57c83b735cfe01f9aa723f51c4732727e8f0dd086442cdb",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024"
+            ]
+        },
+        "standard-stoch-six-timed2": {
+            "status": "ok",
+            "train_s": 11.088747189991409,
+            "construct_s": 4.12081825901987,
+            "predict_s": 0.9141492529888637,
+            "eval_s": 0.01327636098721996,
+            "total_s": null,
+            "cell_core_s": 16.12678484400385,
+            "num_trees": 2000,
+            "current_iteration": 2000,
+            "requested_rounds": 2000,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "db88fce761ecbc41b879d5dcec493ede4f0a2d39b5603a8a374b7c404a829c33",
+            "prediction_sha256": "cb4ec69c7274b9fd43bb00ad9b72d1ae15c158cbaffc046bdb66d4f86f22a3a4",
+            "resolved_cuda_precision": "fp64",
+            "gpu_mem_peak_mb": 13659,
+            "rss_peak_mb": 42739,
+            "feature_bin_distribution": {
+                "5": 1583,
+                "6": 1942,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.026633996477571337,
+                "corr_std": 0.009361748251759379,
+                "corr_sharpe": 2.844981061370235,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.042093640495415335,
+                    "1227": 0.018402366158863016,
+                    "1228": 0.030349626747808323,
+                    "1229": 0.02653636005048191,
+                    "1230": 0.015787988935288093
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "verbose": -1,
+                "metric": "None",
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "quant_mode": "stochastic",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": null,
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "32",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-stoch-six-timed2.json",
+            "raw_sha256": "859d85a8f64339bf71a283c6a7ed384fef73ed6747fb6c92a8035a83ec9fbae7",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024"
+            ]
+        },
+        "standard-stoch-six-timed3": {
+            "status": "ok",
+            "train_s": 10.974232714012032,
+            "construct_s": 4.122826870996505,
+            "predict_s": 0.4113117369997781,
+            "eval_s": 0.013140225026290864,
+            "total_s": null,
+            "cell_core_s": 15.50885039899731,
+            "num_trees": 2000,
+            "current_iteration": 2000,
+            "requested_rounds": 2000,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "db88fce761ecbc41b879d5dcec493ede4f0a2d39b5603a8a374b7c404a829c33",
+            "prediction_sha256": "cb4ec69c7274b9fd43bb00ad9b72d1ae15c158cbaffc046bdb66d4f86f22a3a4",
+            "resolved_cuda_precision": "fp64",
+            "gpu_mem_peak_mb": 13662,
+            "rss_peak_mb": 42657,
+            "feature_bin_distribution": {
+                "5": 1583,
+                "6": 1942,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.026633996477571337,
+                "corr_std": 0.009361748251759379,
+                "corr_sharpe": 2.844981061370235,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.042093640495415335,
+                    "1227": 0.018402366158863016,
+                    "1228": 0.030349626747808323,
+                    "1229": 0.02653636005048191,
+                    "1230": 0.015787988935288093
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "verbose": -1,
+                "metric": "None",
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "quant_mode": "stochastic",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": null,
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "32",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-stoch-six-timed3.json",
+            "raw_sha256": "90e007ffecbef6bd7277b9c68affe6e54515fa86b4892757f5c0ed1291e7bf04",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024"
+            ]
+        },
+        "standard-fixed-five-warmup": {
+            "status": "ok",
+            "train_s": 1.6865526490146294,
+            "construct_s": 3.957415270997444,
+            "predict_s": 0.10529689598479308,
+            "eval_s": 0.013192862999858335,
+            "total_s": null,
+            "cell_core_s": 5.750516176020028,
+            "num_trees": 200,
+            "current_iteration": 200,
+            "requested_rounds": 200,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "6cd28e417a038a0c5acb6ad7106fa56080625bd0694311457cef7910f79ae040",
+            "prediction_sha256": "af53a727c8d76c03195713b48233941686882cefd91c2ea0430753ef0b402b5d",
+            "resolved_cuda_precision": "fp64",
+            "gpu_mem_peak_mb": 13546,
+            "rss_peak_mb": 42652,
+            "feature_bin_distribution": {
+                "5": 3525,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.024700065085393415,
+                "corr_std": 0.006576207382719669,
+                "corr_sharpe": 3.7559741729401495,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.028623520710970265,
+                    "1227": 0.014462318022412999,
+                    "1228": 0.02857250516248435,
+                    "1229": 0.03216800755549268,
+                    "1230": 0.019673973975606777
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "verbose": 1,
+                "metric": "None",
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "quant_mode": "fixedpoint",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": "diag",
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "32",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-fixed-five-warmup.json",
+            "raw_sha256": "46b5ad0c097eaaeaf26ec5ad022b0b02a80649a8d59e1c49da62e3db5927c293",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024"
+            ]
+        },
+        "standard-fixed-five-timed1": {
+            "status": "ok",
+            "train_s": 9.444340575981187,
+            "construct_s": 4.012621197005501,
+            "predict_s": 0.4159470169979613,
+            "eval_s": 0.01281636898056604,
+            "total_s": null,
+            "cell_core_s": 13.87683965099859,
+            "num_trees": 2000,
+            "current_iteration": 2000,
+            "requested_rounds": 2000,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "7fd4ff78ce88b7aadf524543ce53fbf9c1ea2d9ac55735feb0f76d9c516a5baa",
+            "prediction_sha256": "89ea041ca58e90fd8c011f6ad14a0b258e48b2ec51ff41270cd9ea315f3c76c8",
+            "resolved_cuda_precision": "fp64",
+            "gpu_mem_peak_mb": 13566,
+            "rss_peak_mb": 42705,
+            "feature_bin_distribution": {
+                "5": 3525,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.024808716327172086,
+                "corr_std": 0.008800409630705445,
+                "corr_sharpe": 2.819041086520811,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.03883785865618542,
+                    "1227": 0.018924729435463958,
+                    "1228": 0.026450854761602593,
+                    "1229": 0.0271678527469501,
+                    "1230": 0.012662286035658365
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "verbose": -1,
+                "metric": "None",
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "quant_mode": "fixedpoint",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": null,
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "32",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-fixed-five-timed1.json",
+            "raw_sha256": "8574e706223e84857b24f884158ade74ff4f83ccea8d44286fd13dd7dfd96ec4",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024"
+            ]
+        },
+        "standard-fixed-five-timed2": {
+            "status": "ok",
+            "train_s": 9.442923914000858,
+            "construct_s": 3.937919290008722,
+            "predict_s": 0.42376327599049546,
+            "eval_s": 0.013337812997633591,
+            "total_s": null,
+            "cell_core_s": 13.808722096990095,
+            "num_trees": 2000,
+            "current_iteration": 2000,
+            "requested_rounds": 2000,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "7fd4ff78ce88b7aadf524543ce53fbf9c1ea2d9ac55735feb0f76d9c516a5baa",
+            "prediction_sha256": "89ea041ca58e90fd8c011f6ad14a0b258e48b2ec51ff41270cd9ea315f3c76c8",
+            "resolved_cuda_precision": "fp64",
+            "gpu_mem_peak_mb": 13567,
+            "rss_peak_mb": 42683,
+            "feature_bin_distribution": {
+                "5": 3525,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.024808716327172086,
+                "corr_std": 0.008800409630705445,
+                "corr_sharpe": 2.819041086520811,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.03883785865618542,
+                    "1227": 0.018924729435463958,
+                    "1228": 0.026450854761602593,
+                    "1229": 0.0271678527469501,
+                    "1230": 0.012662286035658365
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "verbose": -1,
+                "metric": "None",
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "quant_mode": "fixedpoint",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": null,
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "32",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-fixed-five-timed2.json",
+            "raw_sha256": "f321dc2d5ade061969153a6a31a4c7cd4b4fafd7a66fcd586beaca13449c9455",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024"
+            ]
+        },
+        "standard-fixed-five-timed3": {
+            "status": "ok",
+            "train_s": 9.587410837993957,
+            "construct_s": 3.948077970009763,
+            "predict_s": 0.41540974500821903,
+            "eval_s": 0.013189085002522916,
+            "total_s": null,
+            "cell_core_s": 13.962539122003363,
+            "num_trees": 2000,
+            "current_iteration": 2000,
+            "requested_rounds": 2000,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "7fd4ff78ce88b7aadf524543ce53fbf9c1ea2d9ac55735feb0f76d9c516a5baa",
+            "prediction_sha256": "89ea041ca58e90fd8c011f6ad14a0b258e48b2ec51ff41270cd9ea315f3c76c8",
+            "resolved_cuda_precision": "fp64",
+            "gpu_mem_peak_mb": 13567,
+            "rss_peak_mb": 42612,
+            "feature_bin_distribution": {
+                "5": 3525,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.024808716327172086,
+                "corr_std": 0.008800409630705445,
+                "corr_sharpe": 2.819041086520811,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.03883785865618542,
+                    "1227": 0.018924729435463958,
+                    "1228": 0.026450854761602593,
+                    "1229": 0.0271678527469501,
+                    "1230": 0.012662286035658365
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "verbose": -1,
+                "metric": "None",
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "quant_mode": "fixedpoint",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": null,
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "32",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-fixed-five-timed3.json",
+            "raw_sha256": "04dfefe1af123de157d11b69ea4afbbe28406c87601aa38c594c496dc6163eca",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024"
+            ]
+        },
+        "standard-fixed-six-warmup": {
+            "status": "ok",
+            "train_s": 1.8704442619928159,
+            "construct_s": 4.065443230007077,
+            "predict_s": 0.10585006899782456,
+            "eval_s": 0.013091303000692278,
+            "total_s": null,
+            "cell_core_s": 6.042200657975627,
+            "num_trees": 200,
+            "current_iteration": 200,
+            "requested_rounds": 200,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "bf062823491ea85f88429a232213aacd7027c25112194afa0aa064f5e26fc108",
+            "prediction_sha256": "d77bcbdf0d34cb75e25f5eaa90543e3d1683e093afd731bff75e6dc00dd52f15",
+            "resolved_cuda_precision": "fp64",
+            "gpu_mem_peak_mb": 13652,
+            "rss_peak_mb": 42399,
+            "feature_bin_distribution": {
+                "5": 1583,
+                "6": 1942,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.024344220145098037,
+                "corr_std": 0.006525529865094415,
+                "corr_sharpe": 3.730612019005113,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.02962892567097045,
+                    "1227": 0.015110360159069016,
+                    "1228": 0.027478367427659724,
+                    "1229": 0.03144371222110418,
+                    "1230": 0.018059735246686828
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "verbose": 1,
+                "metric": "None",
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "quant_mode": "fixedpoint",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": "diag",
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "32",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-fixed-six-warmup.json",
+            "raw_sha256": "080ce74b0038e8bc81590a4a441bb5aebb2fbcc08ec1b70259e435b1d9ea54d1",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024"
+            ]
+        },
+        "standard-fixed-six-timed1": {
+            "status": "ok",
+            "train_s": 11.51604416401824,
+            "construct_s": 4.104831314005423,
+            "predict_s": 0.5486818789795507,
+            "eval_s": 0.017597169004147872,
+            "total_s": null,
+            "cell_core_s": 16.170010753994575,
+            "num_trees": 2000,
+            "current_iteration": 2000,
+            "requested_rounds": 2000,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "f16aa9c6e95bcee90788f8fb17e19f47291642a193e8c3a160bd320b0934fd8d",
+            "prediction_sha256": "65dda5c3a5cb5cc50ff63a41419a9546f4404c6cb70338669454e416067c758f",
+            "resolved_cuda_precision": "fp64",
+            "gpu_mem_peak_mb": 13661,
+            "rss_peak_mb": 42671,
+            "feature_bin_distribution": {
+                "5": 1583,
+                "6": 1942,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.026003718655339382,
+                "corr_std": 0.009026304472654416,
+                "corr_sharpe": 2.880882063542038,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.040907631632924345,
+                    "1227": 0.017644782272891308,
+                    "1228": 0.028210527351445726,
+                    "1229": 0.02763638428782593,
+                    "1230": 0.015619267731609574
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "verbose": -1,
+                "metric": "None",
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "quant_mode": "fixedpoint",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": null,
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "32",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-fixed-six-timed1.json",
+            "raw_sha256": "e06f1e532fc5e9c1641547a63421dd614931737cafee24a9c216e80fa9cb5f2c",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024"
+            ]
+        },
+        "standard-fixed-six-timed2": {
+            "status": "ok",
+            "train_s": 11.42899328499334,
+            "construct_s": 4.093934150994755,
+            "predict_s": 0.4018463469983544,
+            "eval_s": 0.013018064986681566,
+            "total_s": null,
+            "cell_core_s": 15.936957388999872,
+            "num_trees": 2000,
+            "current_iteration": 2000,
+            "requested_rounds": 2000,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "f16aa9c6e95bcee90788f8fb17e19f47291642a193e8c3a160bd320b0934fd8d",
+            "prediction_sha256": "65dda5c3a5cb5cc50ff63a41419a9546f4404c6cb70338669454e416067c758f",
+            "resolved_cuda_precision": "fp64",
+            "gpu_mem_peak_mb": 13661,
+            "rss_peak_mb": 42674,
+            "feature_bin_distribution": {
+                "5": 1583,
+                "6": 1942,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.026003718655339382,
+                "corr_std": 0.009026304472654416,
+                "corr_sharpe": 2.880882063542038,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.040907631632924345,
+                    "1227": 0.017644782272891308,
+                    "1228": 0.028210527351445726,
+                    "1229": 0.02763638428782593,
+                    "1230": 0.015619267731609574
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "verbose": -1,
+                "metric": "None",
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "quant_mode": "fixedpoint",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": null,
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "32",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-fixed-six-timed2.json",
+            "raw_sha256": "b0a82e515c480618b60b96d3a782515ad7a72de56bc81b1e88b6b312fe9b541a",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024"
+            ]
+        },
+        "standard-fixed-six-timed3": {
+            "status": "ok",
+            "train_s": 11.335305079992395,
+            "construct_s": 4.01017183100339,
+            "predict_s": 0.40746783500071615,
+            "eval_s": 0.012908889999380335,
+            "total_s": null,
+            "cell_core_s": 15.753384396986803,
+            "num_trees": 2000,
+            "current_iteration": 2000,
+            "requested_rounds": 2000,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "f16aa9c6e95bcee90788f8fb17e19f47291642a193e8c3a160bd320b0934fd8d",
+            "prediction_sha256": "65dda5c3a5cb5cc50ff63a41419a9546f4404c6cb70338669454e416067c758f",
+            "resolved_cuda_precision": "fp64",
+            "gpu_mem_peak_mb": 13661,
+            "rss_peak_mb": 42633,
+            "feature_bin_distribution": {
+                "5": 1583,
+                "6": 1942,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.026003718655339382,
+                "corr_std": 0.009026304472654416,
+                "corr_sharpe": 2.880882063542038,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.040907631632924345,
+                    "1227": 0.017644782272891308,
+                    "1228": 0.028210527351445726,
+                    "1229": 0.02763638428782593,
+                    "1230": 0.015619267731609574
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.001,
+                "num_leaves": 1024,
+                "max_depth": 10,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 32,
+                "seed": 42,
+                "verbose": -1,
+                "metric": "None",
+                "feature_fraction": 0.1,
+                "min_data_in_leaf": 10000,
+                "quant_mode": "fixedpoint",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": null,
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "32",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-fixed-six-timed3.json",
+            "raw_sha256": "1a17938b2a11935705185bf36f1bc993ed73752ef11b4a720dd3f5deeee566e9",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024"
+            ]
+        },
+        "recipe-fixed-fp32-five-warmup": {
+            "status": "ok",
+            "train_s": 3.511226151982555,
+            "construct_s": 3.6566324029990938,
+            "predict_s": 0.09598350198939443,
+            "eval_s": 0.012872391991550103,
+            "total_s": null,
+            "cell_core_s": 7.268137348990422,
+            "num_trees": 200,
+            "current_iteration": 200,
+            "requested_rounds": 200,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "8b791cd0c6e104485705194643e1d1b43c97787f30081af84b6d3615be61e11d",
+            "prediction_sha256": "052bbac7115493276f26ca3334706ec01bc5f21679070512e249e6f48b066b59",
+            "resolved_cuda_precision": "fp32",
+            "gpu_mem_peak_mb": 18115,
+            "rss_peak_mb": 45862,
+            "feature_bin_distribution": {
+                "5": 3525,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.02294406772785847,
+                "corr_std": 0.00783300454775063,
+                "corr_sharpe": 2.929152866947743,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.03281933073652597,
+                    "1227": 0.012133461677517356,
+                    "1228": 0.023796753298650244,
+                    "1229": 0.029755156050906572,
+                    "1230": 0.016215636875692194
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.003375,
+                "num_leaves": 16384,
+                "max_depth": 15,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 16,
+                "seed": 42,
+                "verbose": 1,
+                "metric": "None",
+                "feature_fraction": 0.15,
+                "min_data_in_leaf": 101079,
+                "quant_mode": "fixedpoint",
+                "boosting_type": "gbdt",
+                "bagging_freq": 1,
+                "cuda_precision": "fp32",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": "diag",
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "16",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/recipe-fixed-fp32-five-warmup.json",
+            "raw_sha256": "70997825046d347d3b9b74784e626930c32af23ca280457dd263eb161b01a0cf",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024"
+            ]
+        },
+        "recipe-fixed-fp32-five-timed1": {
+            "status": "ok",
+            "train_s": 22.63660580999567,
+            "construct_s": 3.7419828809797764,
+            "predict_s": 0.3037718770210631,
+            "eval_s": 0.013293497991980985,
+            "total_s": null,
+            "cell_core_s": 26.68282052798895,
+            "num_trees": 2000,
+            "current_iteration": 2000,
+            "requested_rounds": 2000,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "e5791c8c07d6e9918fb9f06340fbb0464de7e6e32e7b956e592973d109bc4c32",
+            "prediction_sha256": "4d7d389c639b9c88dd4170a7d3273088b96b702d92fd1fcddf2dd8ca8e6c1ea9",
+            "resolved_cuda_precision": "fp32",
+            "gpu_mem_peak_mb": 18106,
+            "rss_peak_mb": 46063,
+            "feature_bin_distribution": {
+                "5": 3525,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.025468642078990533,
+                "corr_std": 0.01091530999921196,
+                "corr_sharpe": 2.3332953512845043,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.0443783642311713,
+                    "1227": 0.019005542727404685,
+                    "1228": 0.025074692174091466,
+                    "1229": 0.0273030326426997,
+                    "1230": 0.011581578619585507
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.003375,
+                "num_leaves": 16384,
+                "max_depth": 15,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 16,
+                "seed": 42,
+                "verbose": -1,
+                "metric": "None",
+                "feature_fraction": 0.15,
+                "min_data_in_leaf": 101079,
+                "quant_mode": "fixedpoint",
+                "boosting_type": "gbdt",
+                "bagging_freq": 1,
+                "cuda_precision": "fp32",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": null,
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "16",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/recipe-fixed-fp32-five-timed1.json",
+            "raw_sha256": "96ea9b3f2054db5d5e08af434284ab3897eb3e09a63519e58708d45687cf21e2",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024",
+                "v2:5502748:3525:16384:15:64:170:1 160 256"
+            ]
+        },
+        "recipe-fixed-fp32-five-timed2": {
+            "status": "ok",
+            "train_s": 22.70009550699615,
+            "construct_s": 3.7154813559900504,
+            "predict_s": 0.2924354790011421,
+            "eval_s": 0.012872346997028217,
+            "total_s": null,
+            "cell_core_s": 26.708451582991984,
+            "num_trees": 2000,
+            "current_iteration": 2000,
+            "requested_rounds": 2000,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "e5791c8c07d6e9918fb9f06340fbb0464de7e6e32e7b956e592973d109bc4c32",
+            "prediction_sha256": "4d7d389c639b9c88dd4170a7d3273088b96b702d92fd1fcddf2dd8ca8e6c1ea9",
+            "resolved_cuda_precision": "fp32",
+            "gpu_mem_peak_mb": 18073,
+            "rss_peak_mb": 46154,
+            "feature_bin_distribution": {
+                "5": 3525,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.025468642078990533,
+                "corr_std": 0.01091530999921196,
+                "corr_sharpe": 2.3332953512845043,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.0443783642311713,
+                    "1227": 0.019005542727404685,
+                    "1228": 0.025074692174091466,
+                    "1229": 0.0273030326426997,
+                    "1230": 0.011581578619585507
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.003375,
+                "num_leaves": 16384,
+                "max_depth": 15,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 16,
+                "seed": 42,
+                "verbose": -1,
+                "metric": "None",
+                "feature_fraction": 0.15,
+                "min_data_in_leaf": 101079,
+                "quant_mode": "fixedpoint",
+                "boosting_type": "gbdt",
+                "bagging_freq": 1,
+                "cuda_precision": "fp32",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": null,
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "16",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/recipe-fixed-fp32-five-timed2.json",
+            "raw_sha256": "3ce44b77d4891d44d8f0ef85560bf22a1021cece0015bcd8aa7fa240f7de9fad",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024",
+                "v2:5502748:3525:16384:15:64:170:1 160 256"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024",
+                "v2:5502748:3525:16384:15:64:170:1 160 256"
+            ]
+        },
+        "recipe-fixed-fp32-five-timed3": {
+            "status": "ok",
+            "train_s": 22.67373993000365,
+            "construct_s": 3.689868679008214,
+            "predict_s": 0.29034702098579146,
+            "eval_s": 0.013382611010456458,
+            "total_s": null,
+            "cell_core_s": 26.65552494599251,
+            "num_trees": 2000,
+            "current_iteration": 2000,
+            "requested_rounds": 2000,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "e5791c8c07d6e9918fb9f06340fbb0464de7e6e32e7b956e592973d109bc4c32",
+            "prediction_sha256": "4d7d389c639b9c88dd4170a7d3273088b96b702d92fd1fcddf2dd8ca8e6c1ea9",
+            "resolved_cuda_precision": "fp32",
+            "gpu_mem_peak_mb": 18072,
+            "rss_peak_mb": 46086,
+            "feature_bin_distribution": {
+                "5": 3525,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.025468642078990533,
+                "corr_std": 0.01091530999921196,
+                "corr_sharpe": 2.3332953512845043,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.0443783642311713,
+                    "1227": 0.019005542727404685,
+                    "1228": 0.025074692174091466,
+                    "1229": 0.0273030326426997,
+                    "1230": 0.011581578619585507
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.003375,
+                "num_leaves": 16384,
+                "max_depth": 15,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 16,
+                "seed": 42,
+                "verbose": -1,
+                "metric": "None",
+                "feature_fraction": 0.15,
+                "min_data_in_leaf": 101079,
+                "quant_mode": "fixedpoint",
+                "boosting_type": "gbdt",
+                "bagging_freq": 1,
+                "cuda_precision": "fp32",
+                "use_missing": true,
+                "zero_as_missing": false
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": null,
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "16",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/recipe-fixed-fp32-five-timed3.json",
+            "raw_sha256": "b83ee8704350df39812aee0b387611215d79825c0ec14cbeb57feeab61cb75f4",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024",
+                "v2:5502748:3525:16384:15:64:170:1 160 256"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024",
+                "v2:5502748:3525:16384:15:64:170:1 160 256"
+            ]
+        },
+        "recipe-fixed-fp32-six-warmup": {
+            "status": "ok",
+            "train_s": 20.617524436005624,
+            "construct_s": 3.8043787139758933,
+            "predict_s": 0.0915620310115628,
+            "eval_s": 0.01287533700815402,
+            "total_s": null,
+            "cell_core_s": 24.51433003897546,
+            "num_trees": 200,
+            "current_iteration": 200,
+            "requested_rounds": 200,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "760f118d497bcfd1972fc0f8cb1e821888d35c03231a9abc63065de73fe532d1",
+            "prediction_sha256": "48c62eef87be0f6ddb65d34ca6b5d868eb2d416a93d3469f90bd008ab63dc58d",
+            "resolved_cuda_precision": "fp32",
+            "gpu_mem_peak_mb": 17370,
+            "rss_peak_mb": 46232,
+            "feature_bin_distribution": {
+                "5": 1583,
+                "6": 1942,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.024170136561944857,
+                "corr_std": 0.007490595752086668,
+                "corr_sharpe": 3.226730871868468,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.03569167812713119,
+                    "1227": 0.013516307386940214,
+                    "1228": 0.022911744014716056,
+                    "1229": 0.028404985285212323,
+                    "1230": 0.020325967995724507
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.003375,
+                "num_leaves": 16384,
+                "max_depth": 15,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 16,
+                "seed": 42,
+                "verbose": 1,
+                "metric": "None",
+                "feature_fraction": 0.15,
+                "min_data_in_leaf": 101079,
+                "quant_mode": "fixedpoint",
+                "boosting_type": "gbdt",
+                "bagging_freq": 1,
+                "cuda_precision": "fp32",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": "diag",
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "16",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/recipe-fixed-fp32-six-warmup.json",
+            "raw_sha256": "1333caf138d0d869340af6de1022999d86a827362fc669655b7fac96d29e308f",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024"
+            ]
+        },
+        "recipe-fixed-fp32-six-timed1": {
+            "status": "ok",
+            "train_s": 194.39087607097463,
+            "construct_s": 3.8233391999965534,
+            "predict_s": 0.29330234799999744,
+            "eval_s": 0.013075880007818341,
+            "total_s": null,
+            "cell_core_s": 198.51088044699281,
+            "num_trees": 2000,
+            "current_iteration": 2000,
+            "requested_rounds": 2000,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "b36120bec0fd572837b8ba59a76cfe99c40ce92987e9c97be44923eaa867e331",
+            "prediction_sha256": "90907a7b6f6199131467b2da8e45ef7df9bdccfff81dc43249f309a29206704d",
+            "resolved_cuda_precision": "fp32",
+            "gpu_mem_peak_mb": 17362,
+            "rss_peak_mb": 46321,
+            "feature_bin_distribution": {
+                "5": 1583,
+                "6": 1942,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.026005091879993853,
+                "corr_std": 0.011664667004835472,
+                "corr_sharpe": 2.2293899919486515,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.047693010133761725,
+                    "1227": 0.019373717729855,
+                    "1228": 0.023589096528736524,
+                    "1229": 0.02601934946952573,
+                    "1230": 0.013350285538090275
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.003375,
+                "num_leaves": 16384,
+                "max_depth": 15,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 16,
+                "seed": 42,
+                "verbose": -1,
+                "metric": "None",
+                "feature_fraction": 0.15,
+                "min_data_in_leaf": 101079,
+                "quant_mode": "fixedpoint",
+                "boosting_type": "gbdt",
+                "bagging_freq": 1,
+                "cuda_precision": "fp32",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": null,
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "16",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/recipe-fixed-fp32-six-timed1.json",
+            "raw_sha256": "8e37a63025fd7949d649ccd18844f635bc3f37375f84cbc39223aee4097997f6",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024",
+                "v2:5502748:3525:16384:15:64:170:1 160 256"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024",
+                "v2:5502748:3525:16384:15:64:170:1 160 256"
+            ]
+        },
+        "recipe-fixed-fp32-six-timed2": {
+            "status": "ok",
+            "train_s": 194.56860469799722,
+            "construct_s": 3.859568179002963,
+            "predict_s": 0.30512029997771606,
+            "eval_s": 0.01291297297575511,
+            "total_s": null,
+            "cell_core_s": 198.73381959099788,
+            "num_trees": 2000,
+            "current_iteration": 2000,
+            "requested_rounds": 2000,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "b36120bec0fd572837b8ba59a76cfe99c40ce92987e9c97be44923eaa867e331",
+            "prediction_sha256": "90907a7b6f6199131467b2da8e45ef7df9bdccfff81dc43249f309a29206704d",
+            "resolved_cuda_precision": "fp32",
+            "gpu_mem_peak_mb": 17362,
+            "rss_peak_mb": 46341,
+            "feature_bin_distribution": {
+                "5": 1583,
+                "6": 1942,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.026005091879993853,
+                "corr_std": 0.011664667004835472,
+                "corr_sharpe": 2.2293899919486515,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.047693010133761725,
+                    "1227": 0.019373717729855,
+                    "1228": 0.023589096528736524,
+                    "1229": 0.02601934946952573,
+                    "1230": 0.013350285538090275
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.003375,
+                "num_leaves": 16384,
+                "max_depth": 15,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 16,
+                "seed": 42,
+                "verbose": -1,
+                "metric": "None",
+                "feature_fraction": 0.15,
+                "min_data_in_leaf": 101079,
+                "quant_mode": "fixedpoint",
+                "boosting_type": "gbdt",
+                "bagging_freq": 1,
+                "cuda_precision": "fp32",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": null,
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "16",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/recipe-fixed-fp32-six-timed2.json",
+            "raw_sha256": "2cba010b02f62aa916026256faad9088f64c21183af73aafac76aeca48f1eec0",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024",
+                "v2:5502748:3525:16384:15:64:170:1 160 256"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024",
+                "v2:5502748:3525:16384:15:64:170:1 160 256"
+            ]
+        },
+        "recipe-fixed-fp32-six-timed3": {
+            "status": "ok",
+            "train_s": 194.4461969640106,
+            "construct_s": 3.8694485079904553,
+            "predict_s": 0.30291164200752974,
+            "eval_s": 0.01312936597969383,
+            "total_s": null,
+            "cell_core_s": 198.6387980050058,
+            "num_trees": 2000,
+            "current_iteration": 2000,
+            "requested_rounds": 2000,
+            "stop_reason": "requested_rounds",
+            "model_complete": true,
+            "tree_sha256": "b36120bec0fd572837b8ba59a76cfe99c40ce92987e9c97be44923eaa867e331",
+            "prediction_sha256": "90907a7b6f6199131467b2da8e45ef7df9bdccfff81dc43249f309a29206704d",
+            "resolved_cuda_precision": "fp32",
+            "gpu_mem_peak_mb": 17328,
+            "rss_peak_mb": 46241,
+            "feature_bin_distribution": {
+                "5": 1583,
+                "6": 1942,
+                "0": 30
+            },
+            "metrics": {
+                "corr_mean": 0.026005091879993853,
+                "corr_std": 0.011664667004835472,
+                "corr_sharpe": 2.2293899919486515,
+                "max_drawdown": -0.0,
+                "nonfinite_scalar_metrics": {},
+                "per_era_corr": {
+                    "1226": 0.047693010133761725,
+                    "1227": 0.019373717729855,
+                    "1228": 0.023589096528736524,
+                    "1229": 0.02601934946952573,
+                    "1230": 0.013350285538090275
+                },
+                "n_eras": 5,
+                "predictions_finite": true,
+                "sane": true,
+                "evaluator": "evaluation.evaluator.NumeraiEvaluator(cpu)",
+                "target_properties": {
+                    "name": "target_ender_20",
+                    "horizon": 20,
+                    "hac_lag": 4,
+                    "embargo": 8
+                },
+                "scope": "declared last five complete held-out eras; finite/nonconstant sanity only, no model-selection evidence"
+            },
+            "parameters": {
+                "objective": "regression",
+                "learning_rate": 0.003375,
+                "num_leaves": 16384,
+                "max_depth": 15,
+                "max_bin": 255,
+                "device_type": "cuda",
+                "num_threads": 16,
+                "seed": 42,
+                "verbose": -1,
+                "metric": "None",
+                "feature_fraction": 0.15,
+                "min_data_in_leaf": 101079,
+                "quant_mode": "fixedpoint",
+                "boosting_type": "gbdt",
+                "bagging_freq": 1,
+                "cuda_precision": "fp32",
+                "use_missing": true,
+                "zero_as_missing": false,
+                "missing_sentinel": -1
+            },
+            "execution_environment": {
+                "HOME": "/home/felixjk",
+                "FALCATA_DEBUG": null,
+                "FALCATA_PLAN": null,
+                "FALCATA_FIL": "0",
+                "FALCATA_BENCH_THREADS": "16",
+                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+            },
+            "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+            "raw_path": "/tmp/falcata-six-values-20261009/raw/recipe-fixed-fp32-six-timed3.json",
+            "raw_sha256": "fd26307f3f096afdae79e2b2ec30155e473a5fa18173b7a5afbdb07b70782d01",
+            "contended_before": 0,
+            "contended_after": 0,
+            "relevant_wisdom_before": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024",
+                "v2:5502748:3525:16384:15:64:170:1 160 256"
+            ],
+            "relevant_wisdom_after": [
+                "v1:5451008:3525:8192:13:64:170 160 256",
+                "v1:5463797:3525:1024:-1:4:170 160 256",
+                "v1:5463797:3525:1024:-1:64:170 1280 0",
+                "v1:5463797:3525:1024:10:4:170 160 1024",
+                "v1:5463797:3525:1024:10:64:170 160 256",
+                "v2:5463797:3525:1024:10:4:170:0 320 256",
+                "v2:5463797:3525:1024:10:4:170:1 5120 4096",
+                "v2:5502748:3525:1024:10:4:170:1 160 1024",
+                "v2:5502748:3525:1024:10:64:170:1 40 1024",
+                "v2:5502748:3525:16384:15:64:170:1 160 256"
+            ]
+        }
+    },
+    "warmup_diagnostics": {
+        "standard-stoch-five": {
+            "log_path": "/tmp/falcata-six-values-20261009/logs/standard-stoch-five-warmup.log",
+            "log_sha256": "617ec303a69a40b77beac3951291c84b7d10e2c8280dbd1b5531cd22a0ba2acb",
+            "warmup_warned_tree_count": 200,
+            "warmup_leaf_min": 200,
+            "warmup_leaf_max": 299,
+            "warmup_leaf_mean": 248.02,
+            "warmup_leaf_histogram": {
+                "200": 1,
+                "203": 1,
+                "213": 1,
+                "214": 2,
+                "216": 1,
+                "218": 1,
+                "220": 3,
+                "221": 4,
+                "222": 1,
+                "223": 2,
+                "224": 2,
+                "225": 3,
+                "226": 3,
+                "227": 1,
+                "228": 4,
+                "229": 2,
+                "230": 3,
+                "231": 3,
+                "232": 3,
+                "233": 2,
+                "234": 3,
+                "235": 2,
+                "236": 1,
+                "237": 1,
+                "238": 3,
+                "239": 5,
+                "240": 8,
+                "241": 8,
+                "242": 6,
+                "243": 7,
+                "244": 6,
+                "245": 5,
+                "246": 6,
+                "247": 4,
+                "248": 2,
+                "249": 3,
+                "250": 1,
+                "251": 4,
+                "252": 3,
+                "253": 2,
+                "254": 3,
+                "255": 7,
+                "256": 2,
+                "257": 5,
+                "258": 5,
+                "259": 1,
+                "260": 3,
+                "261": 1,
+                "262": 4,
+                "263": 1,
+                "264": 2,
+                "265": 5,
+                "266": 4,
+                "267": 5,
+                "268": 1,
+                "269": 3,
+                "270": 1,
+                "271": 3,
+                "272": 4,
+                "273": 4,
+                "274": 1,
+                "275": 2,
+                "276": 2,
+                "279": 1,
+                "280": 1,
+                "282": 1,
+                "285": 1,
+                "286": 1,
+                "289": 1,
+                "293": 1,
+                "299": 1
+            },
+            "construct_kernel_transitions": {
+                "pair_hist": 1719,
+                "pair_code5_words": 1719
+            },
+            "finder_kernel_messages": {
+                "warp": 400
+            },
+            "code5_on": 191,
+            "code5_off": 9,
+            "compact_fill_slot_distribution": {
+                "178": 97,
+                "177": 103
+            },
+            "important_lines": [
+                {
+                    "line": 3,
+                    "text": "[Falcata] [Info] Total Bins 17625"
+                },
+                {
+                    "line": 7,
+                    "text": "[Falcata] [Info] colmajor_direct: the compact regime needs store 9250 + compact view 940 + split view 0 + reserve 990 MiB, 28928 MiB available"
+                },
+                {
+                    "line": 8,
+                    "text": "[Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.1, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9250 MiB); no row-major matrix on the device"
+                },
+                {
+                    "line": 13,
+                    "text": "[hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1"
+                },
+                {
+                    "line": 14,
+                    "text": "[hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=3525 (cap 1024, batch_wide=1)"
+                }
+            ]
+        },
+        "standard-stoch-six": {
+            "log_path": "/tmp/falcata-six-values-20261009/logs/standard-stoch-six-warmup.log",
+            "log_sha256": "2dedd4bc438aad96d148c4256e4d26e80155c1a09dd623176f04b9a734fe6ef3",
+            "warmup_warned_tree_count": 200,
+            "warmup_leaf_min": 213,
+            "warmup_leaf_max": 313,
+            "warmup_leaf_mean": 255.73,
+            "warmup_leaf_histogram": {
+                "213": 2,
+                "216": 1,
+                "217": 1,
+                "219": 3,
+                "220": 1,
+                "224": 4,
+                "226": 1,
+                "227": 2,
+                "228": 2,
+                "229": 3,
+                "230": 3,
+                "231": 2,
+                "232": 2,
+                "233": 2,
+                "234": 2,
+                "235": 3,
+                "236": 4,
+                "237": 4,
+                "238": 4,
+                "239": 1,
+                "240": 5,
+                "241": 6,
+                "242": 1,
+                "243": 1,
+                "244": 4,
+                "245": 4,
+                "246": 2,
+                "247": 2,
+                "248": 3,
+                "249": 3,
+                "250": 5,
+                "251": 3,
+                "252": 6,
+                "253": 2,
+                "254": 3,
+                "255": 2,
+                "256": 5,
+                "257": 2,
+                "258": 2,
+                "259": 2,
+                "260": 3,
+                "261": 7,
+                "262": 6,
+                "263": 9,
+                "264": 2,
+                "265": 3,
+                "266": 1,
+                "267": 3,
+                "268": 2,
+                "269": 3,
+                "271": 4,
+                "272": 2,
+                "273": 3,
+                "274": 2,
+                "275": 1,
+                "276": 4,
+                "277": 3,
+                "278": 2,
+                "279": 2,
+                "280": 2,
+                "281": 3,
+                "282": 2,
+                "283": 2,
+                "284": 1,
+                "285": 4,
+                "286": 2,
+                "287": 1,
+                "288": 1,
+                "289": 1,
+                "290": 1,
+                "291": 2,
+                "292": 1,
+                "296": 1,
+                "300": 1,
+                "302": 2,
+                "313": 1
+            },
+            "construct_kernel_transitions": {
+                "pair_hist": 1
+            },
+            "finder_kernel_messages": {
+                "warp": 400
+            },
+            "code5_on": 0,
+            "code5_off": 200,
+            "compact_fill_slot_distribution": {
+                "178": 97,
+                "177": 103
+            },
+            "important_lines": [
+                {
+                    "line": 3,
+                    "text": "[Falcata] [Info] Total Bins 19567"
+                },
+                {
+                    "line": 7,
+                    "text": "[Falcata] [Info] colmajor_direct: the compact regime needs store 9250 + compact view 940 + split view 0 + reserve 1318 MiB, 28882 MiB available"
+                },
+                {
+                    "line": 8,
+                    "text": "[Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.1, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9250 MiB); no row-major matrix on the device"
+                },
+                {
+                    "line": 13,
+                    "text": "[hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1"
+                },
+                {
+                    "line": 14,
+                    "text": "[hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=5467 (cap 1024, batch_wide=1)"
+                }
+            ]
+        },
+        "standard-fixed-five": {
+            "log_path": "/tmp/falcata-six-values-20261009/logs/standard-fixed-five-warmup.log",
+            "log_sha256": "dddb59c66c368fb232c390dd42d3afeb19eed5cc2120c921151465be4cdd05f7",
+            "warmup_warned_tree_count": 200,
+            "warmup_leaf_min": 205,
+            "warmup_leaf_max": 302,
+            "warmup_leaf_mean": 248.005,
+            "warmup_leaf_histogram": {
+                "205": 1,
+                "211": 1,
+                "212": 1,
+                "213": 1,
+                "214": 1,
+                "215": 3,
+                "219": 4,
+                "220": 4,
+                "221": 1,
+                "222": 1,
+                "224": 5,
+                "225": 2,
+                "226": 1,
+                "227": 1,
+                "228": 2,
+                "229": 2,
+                "230": 3,
+                "231": 3,
+                "232": 1,
+                "233": 3,
+                "234": 2,
+                "235": 3,
+                "236": 3,
+                "237": 4,
+                "238": 6,
+                "239": 4,
+                "240": 3,
+                "241": 6,
+                "242": 3,
+                "243": 7,
+                "244": 5,
+                "245": 5,
+                "246": 3,
+                "247": 5,
+                "248": 6,
+                "249": 6,
+                "250": 3,
+                "251": 7,
+                "252": 2,
+                "253": 2,
+                "254": 1,
+                "255": 7,
+                "256": 2,
+                "258": 6,
+                "259": 3,
+                "260": 3,
+                "261": 3,
+                "262": 2,
+                "263": 4,
+                "264": 1,
+                "265": 5,
+                "266": 5,
+                "267": 4,
+                "268": 2,
+                "269": 2,
+                "270": 1,
+                "271": 1,
+                "272": 4,
+                "273": 3,
+                "274": 1,
+                "275": 3,
+                "276": 3,
+                "277": 1,
+                "280": 1,
+                "281": 2,
+                "283": 1,
+                "286": 1,
+                "287": 1,
+                "302": 1
+            },
+            "construct_kernel_transitions": {
+                "pair_hist": 1719,
+                "pair_code5_words": 1719
+            },
+            "finder_kernel_messages": {
+                "warp": 400
+            },
+            "code5_on": 191,
+            "code5_off": 9,
+            "compact_fill_slot_distribution": {
+                "178": 97,
+                "177": 103
+            },
+            "important_lines": [
+                {
+                    "line": 3,
+                    "text": "[Falcata] [Info] Total Bins 17625"
+                },
+                {
+                    "line": 8,
+                    "text": "[Falcata] [Info] colmajor_direct: the compact regime needs store 9250 + compact view 940 + split view 0 + reserve 990 MiB, 28947 MiB available"
+                },
+                {
+                    "line": 9,
+                    "text": "[Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.1, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9250 MiB); no row-major matrix on the device"
+                },
+                {
+                    "line": 14,
+                    "text": "[hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1"
+                },
+                {
+                    "line": 15,
+                    "text": "[hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=3525 (cap 1024, batch_wide=1)"
+                }
+            ]
+        },
+        "standard-fixed-six": {
+            "log_path": "/tmp/falcata-six-values-20261009/logs/standard-fixed-six-warmup.log",
+            "log_sha256": "25e801d2ac70ab21587adfabe5465d860a29b1d4832745e914a37face49094c7",
+            "warmup_warned_tree_count": 200,
+            "warmup_leaf_min": 213,
+            "warmup_leaf_max": 305,
+            "warmup_leaf_mean": 254.8,
+            "warmup_leaf_histogram": {
+                "213": 1,
+                "215": 1,
+                "216": 1,
+                "217": 1,
+                "220": 1,
+                "221": 2,
+                "222": 1,
+                "223": 1,
+                "224": 1,
+                "225": 2,
+                "226": 2,
+                "228": 4,
+                "229": 2,
+                "230": 3,
+                "231": 2,
+                "232": 4,
+                "233": 3,
+                "234": 3,
+                "235": 1,
+                "236": 4,
+                "237": 2,
+                "238": 8,
+                "239": 5,
+                "240": 2,
+                "241": 2,
+                "242": 3,
+                "243": 3,
+                "244": 2,
+                "245": 2,
+                "246": 2,
+                "247": 3,
+                "248": 5,
+                "249": 5,
+                "250": 3,
+                "251": 2,
+                "252": 6,
+                "253": 1,
+                "254": 2,
+                "255": 4,
+                "256": 4,
+                "257": 5,
+                "258": 7,
+                "259": 2,
+                "260": 6,
+                "262": 4,
+                "263": 2,
+                "264": 2,
+                "265": 6,
+                "266": 4,
+                "267": 3,
+                "268": 3,
+                "269": 1,
+                "270": 4,
+                "271": 2,
+                "272": 2,
+                "273": 1,
+                "274": 3,
+                "275": 5,
+                "276": 1,
+                "277": 1,
+                "278": 2,
+                "279": 1,
+                "280": 6,
+                "282": 1,
+                "283": 2,
+                "284": 3,
+                "285": 2,
+                "286": 3,
+                "287": 1,
+                "288": 1,
+                "290": 2,
+                "291": 1,
+                "296": 1,
+                "298": 1,
+                "302": 1,
+                "303": 1,
+                "305": 1
+            },
+            "construct_kernel_transitions": {
+                "pair_hist": 1
+            },
+            "finder_kernel_messages": {
+                "warp": 400
+            },
+            "code5_on": 0,
+            "code5_off": 200,
+            "compact_fill_slot_distribution": {
+                "178": 97,
+                "177": 103
+            },
+            "important_lines": [
+                {
+                    "line": 3,
+                    "text": "[Falcata] [Info] Total Bins 19567"
+                },
+                {
+                    "line": 8,
+                    "text": "[Falcata] [Info] colmajor_direct: the compact regime needs store 9250 + compact view 940 + split view 0 + reserve 1318 MiB, 28901 MiB available"
+                },
+                {
+                    "line": 9,
+                    "text": "[Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.1, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9250 MiB); no row-major matrix on the device"
+                },
+                {
+                    "line": 14,
+                    "text": "[hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1"
+                },
+                {
+                    "line": 15,
+                    "text": "[hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=5467 (cap 1024, batch_wide=1)"
+                }
+            ]
+        },
+        "recipe-fixed-fp32-five": {
+            "log_path": "/tmp/falcata-six-values-20261009/logs/recipe-fixed-fp32-five-warmup.log",
+            "log_sha256": "6e467c587613c83dbfc5ec6c218eb2364f18ae09c6f157544b72ae21cdd9fa75",
+            "warmup_warned_tree_count": 200,
+            "warmup_leaf_min": 37,
+            "warmup_leaf_max": 45,
+            "warmup_leaf_mean": 40.935,
+            "warmup_leaf_histogram": {
+                "37": 1,
+                "38": 6,
+                "39": 18,
+                "40": 58,
+                "41": 44,
+                "42": 52,
+                "43": 14,
+                "44": 5,
+                "45": 2
+            },
+            "construct_kernel_transitions": {
+                "pair_hist": 1
+            },
+            "finder_kernel_messages": {
+                "block": 641
+            },
+            "code5_on": 0,
+            "code5_off": 0,
+            "compact_fill_slot_distribution": {
+                "265": 111,
+                "266": 89
+            },
+            "important_lines": [
+                {
+                    "line": 3,
+                    "text": "[Falcata] [Info] Total Bins 17625"
+                },
+                {
+                    "line": 8,
+                    "text": "[Falcata] [Info] colmajor_direct: the compact regime needs store 9250 + compact view 1402 + split view 0 + reserve 10701 MiB, 24784 MiB available"
+                },
+                {
+                    "line": 9,
+                    "text": "[Falcata] [Info] colmajor_direct: compact regime (train(); feature_fraction 0.15, view_mode auto, view_mask_ff 0.85): column-major store built from the Dataset's columns, 3525 columns (9250 MiB); no row-major matrix on the device"
+                },
+                {
+                    "line": 13,
+                    "text": "[hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=1 bit_type=8 batch_wide=1"
+                },
+                {
+                    "line": 14,
+                    "text": "[hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=3525 (cap 1024, batch_wide=1)"
+                }
+            ]
+        },
+        "recipe-fixed-fp32-six": {
+            "log_path": "/tmp/falcata-six-values-20261009/logs/recipe-fixed-fp32-six-warmup.log",
+            "log_sha256": "129b22f7032e86136f7f12727c668c208b3245e4832f9a14edf40c2f722b87b5",
+            "warmup_warned_tree_count": 200,
+            "warmup_leaf_min": 38,
+            "warmup_leaf_max": 45,
+            "warmup_leaf_mean": 40.785,
+            "warmup_leaf_histogram": {
+                "38": 8,
+                "39": 26,
+                "40": 54,
+                "41": 49,
+                "42": 44,
+                "43": 15,
+                "44": 3,
+                "45": 1
+            },
+            "construct_kernel_transitions": {
+                "row_batch": 1
+            },
+            "finder_kernel_messages": {
+                "block": 602
+            },
+            "code5_on": 0,
+            "code5_off": 0,
+            "compact_fill_slot_distribution": {},
+            "important_lines": [
+                {
+                    "line": 3,
+                    "text": "[Falcata] [Info] Total Bins 19567"
+                },
+                {
+                    "line": 8,
+                    "text": "[Falcata] [Info] colmajor_direct: the compact regime needs store 9250 + compact view 1402 + split view 0 + reserve 15922 MiB, 24281 MiB available"
+                },
+                {
+                    "line": 9,
+                    "text": "[Falcata] [Info] colmajor_direct: the compact regime does not fit (store 9250 + compact view 1402 + split view 0 + reserve 15922 MiB > 24281 MiB available): mask regime"
+                },
+                {
+                    "line": 10,
+                    "text": "[Falcata] [Info] colmajor_direct: mask regime (the compact regime does not fit; feature_fraction 0.15, view_mode auto, view_mask_ff 0.85): full view filled from the Dataset's columns (9252 MiB); no column-major store on the device"
+                },
+                {
+                    "line": 13,
+                    "text": "[hybrid-diag] hist: row_data=1 sparse=0 large_bin_parts=0 compact_view=0 bit_type=8 batch_wide=1"
+                },
+                {
+                    "line": 14,
+                    "text": "[hybrid-diag] finder: extra_trees=0 cat_random_search=0 l1=0.000000 smoothing=0 global_mem=0 by_node=0 categorical=0 num_tasks=5467 (cap 1024, batch_wide=1)"
+                }
+            ]
+        }
+    },
+    "comparisons": {
+        "standard-stoch": {
+            "arms": {
+                "five": {
+                    "train_seconds": [
+                        8.120793362002587,
+                        8.222470190987224,
+                        8.059350591007387
+                    ],
+                    "median": 8.120793362002587,
+                    "range": [
+                        8.059350591007387,
+                        8.222470190987224
+                    ],
+                    "distinct_model_hashes": [
+                        "6ee464be0d1a1b6b72023d872001cad0866e679b3d4c310d879a50543e83c632"
+                    ]
+                },
+                "six": {
+                    "train_seconds": [
+                        11.120480399986263,
+                        11.088747189991409,
+                        10.974232714012032
+                    ],
+                    "median": 11.088747189991409,
+                    "range": [
+                        10.974232714012032,
+                        11.120480399986263
+                    ],
+                    "distinct_model_hashes": [
+                        "db88fce761ecbc41b879d5dcec493ede4f0a2d39b5603a8a374b7c404a829c33"
+                    ]
+                }
+            },
+            "six_time_divided_by_five_time": 1.3654758464703656
+        },
+        "standard-fixed": {
+            "arms": {
+                "five": {
+                    "train_seconds": [
+                        9.444340575981187,
+                        9.442923914000858,
+                        9.587410837993957
+                    ],
+                    "median": 9.444340575981187,
+                    "range": [
+                        9.442923914000858,
+                        9.587410837993957
+                    ],
+                    "distinct_model_hashes": [
+                        "7fd4ff78ce88b7aadf524543ce53fbf9c1ea2d9ac55735feb0f76d9c516a5baa"
+                    ]
+                },
+                "six": {
+                    "train_seconds": [
+                        11.51604416401824,
+                        11.42899328499334,
+                        11.335305079992395
+                    ],
+                    "median": 11.42899328499334,
+                    "range": [
+                        11.335305079992395,
+                        11.51604416401824
+                    ],
+                    "distinct_model_hashes": [
+                        "f16aa9c6e95bcee90788f8fb17e19f47291642a193e8c3a160bd320b0934fd8d"
+                    ]
+                }
+            },
+            "six_time_divided_by_five_time": 1.2101420097089166
+        },
+        "recipe-fixed-fp32": {
+            "arms": {
+                "five": {
+                    "train_seconds": [
+                        22.63660580999567,
+                        22.70009550699615,
+                        22.67373993000365
+                    ],
+                    "median": 22.67373993000365,
+                    "range": [
+                        22.63660580999567,
+                        22.70009550699615
+                    ],
+                    "distinct_model_hashes": [
+                        "e5791c8c07d6e9918fb9f06340fbb0464de7e6e32e7b956e592973d109bc4c32"
+                    ]
+                },
+                "six": {
+                    "train_seconds": [
+                        194.39087607097463,
+                        194.56860469799722,
+                        194.4461969640106
+                    ],
+                    "median": 194.4461969640106,
+                    "range": [
+                        194.39087607097463,
+                        194.56860469799722
+                    ],
+                    "distinct_model_hashes": [
+                        "b36120bec0fd572837b8ba59a76cfe99c40ce92987e9c97be44923eaa867e331"
+                    ]
+                }
+            },
+            "six_time_divided_by_five_time": 8.575832551854594
+        }
+    },
+    "runtime_commit": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+    "measurement_manifest_sha256": "067b3f7e3ebb55c7a9e0652f52cc415e3b1256fdbdbf880ef3ca6017125492c0",
+    "scope": "CPU-only audit of saved records and warmup logs; no new GPU measurement",
+    "shape_limitation": "Per-tree leaf counts are available only for 200-round diagnostic warmups, not the 2000-round models"
+}

@@ -1,7 +1,13 @@
 # Standalone perf-probe microbenchmarks use terse local names (nd = num_data)
 # that trip the dictionary; they are not library source.
 [files]
-extend-exclude = ["benchmarks/construct_find_jit_probe/"]
+# Frozen historical notes retain quoted identifiers and truncated sentences;
+# the HTML bundle embeds those same notes. Check the UI sources separately.
+extend-exclude = [
+  "benchmarks/construct_find_jit_probe/",
+  "docs/blog/falcata-1.1/lineage-data.json",
+  "docs/blog/falcata-1.1/lineage-explorer.html",
+]
 
 [default]
 extend-ignore-re = [
