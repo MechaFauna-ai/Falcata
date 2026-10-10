@@ -174,7 +174,7 @@ class ChunkedArray {
      * @param index_within_chunk index within chunk
      * @param on_fail_value sentinel value. If out of bounds returns that value.
      *
-     * @return pointer or nullptr if index is out of bounds.
+     * @return the value, or on_fail_value if the index is out of bounds.
      */
     T getitem(size_t chunk_index, size_t index_within_chunk, T on_fail_value) const noexcept {
         if (within_bounds(chunk_index, index_within_chunk))
