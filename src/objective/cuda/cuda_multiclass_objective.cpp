@@ -52,7 +52,8 @@ void CUDAMulticlassOVA::GetGradients(const double* score, score_t* gradients, sc
 
 const double* CUDAMulticlassOVA::ConvertOutputCUDA(const data_size_t num_data, const double* input, double* output) const {
   for (int i = 0; i < num_class_; ++i) {
-    cuda_binary_loss_[i]->ConvertOutputCUDA(num_data, input + i * num_data, output + i * num_data);
+    const int64_t offset = static_cast<int64_t>(num_data) * i;
+    cuda_binary_loss_[i]->ConvertOutputCUDA(num_data, input + offset, output + offset);
   }
   return output;
 }

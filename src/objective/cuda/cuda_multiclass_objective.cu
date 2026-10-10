@@ -34,10 +34,10 @@ __global__ void GetGradientsKernel_MulticlassSoftmax(
   double* cuda_softmax_buffer, score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
   const data_size_t data_index = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
   if (data_index < num_data) {
-    const data_size_t offset = data_index * num_class;
+    const size_t offset = static_cast<size_t>(data_index) * num_class;
     double* softmax_result = cuda_softmax_buffer + offset;
     for (int k = 0; k < num_class; ++k) {
-      softmax_result[k] = cuda_scores[k * num_data + data_index];
+      softmax_result[k] = cuda_scores[static_cast<size_t>(num_data) * k + data_index];
     }
     SoftmaxCUDA(softmax_result, num_class);
     if (!USE_WEIGHT) {
@@ -84,14 +84,14 @@ __global__ void ConvertOutputCUDAKernel_MulticlassSoftmax(
   const int num_class, const data_size_t num_data, const double* input, double* cuda_softmax_buffer, double* output) {
   const data_size_t data_index = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
   if (data_index < num_data) {
-    const data_size_t offset = data_index * num_class;
+    const size_t offset = static_cast<size_t>(data_index) * num_class;
     double* cuda_softmax_buffer_ptr = cuda_softmax_buffer + offset;
     for (int class_index = 0; class_index < num_class; ++class_index) {
-      cuda_softmax_buffer_ptr[class_index] = input[class_index * num_data + data_index];
+      cuda_softmax_buffer_ptr[class_index] = input[static_cast<size_t>(num_data) * class_index + data_index];
     }
     SoftmaxCUDA(cuda_softmax_buffer_ptr, num_class);
     for (int class_index = 0; class_index < num_class; ++class_index) {
-      output[class_index * num_data + data_index] = cuda_softmax_buffer_ptr[class_index];
+      output[static_cast<size_t>(num_data) * class_index + data_index] = cuda_softmax_buffer_ptr[class_index];
     }
   }
 }
