@@ -198,9 +198,13 @@ their later combination are all part of that history.
 [![Explore the connected kernel-evolution history and a candidate's hypothesis](falcata-1.1/lineage-preview.jpg)](falcata-1.1/lineage-explorer.html)
 
 The [interactive explorer](falcata-1.1/lineage-explorer.html) brings **13 campaigns
-and 533 candidate/replay records** into one view. Start with the three mechanisms,
-then click through hypotheses, verdicts and public implementation commits. Losing
-and unfinished attempts remain visible; missing early ancestry is marked.
+and 533 candidate/replay records** into one view. A short guide explains the
+evolutionary search loop; campaign views let you follow hypotheses, inherited
+code, combinations and public implementation commits.
+Speed, checks and parent-relative verdicts have separate filters: a 2× kernel
+replay can be faster than its baseline without becoming a release improvement.
+Repeated replay sources are grouped; every original result remains inspectable.
+Losing and unfinished attempts remain visible; missing early ancestry is marked.
 Download the single HTML file and open it in a browser to interact with it;
 GitHub's file view shows its source. The [coverage notes](falcata-1.1/benchmarks.md#kernel-evolution-history)
 explain the different measurements and recorded relationships.
