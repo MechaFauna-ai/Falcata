@@ -23,10 +23,14 @@
         incoming.get(edge.target).push(edge);
     }
     const state = {
-        mode: "route",
+        mode: "all",
         campaign: "all",
         query: "",
         outcome: "all",
+        speed: "all",
+        checks: "all",
+        grouped: true,
+        page: 0,
         selected: null,
         ancestry: false,
         zoom: 1,
@@ -50,9 +54,9 @@
         "integration",
     ]);
     const labels = {
-        improved: "Improved",
-        neutral: "Neutral",
-        regressed: "Regressed",
+        improved: "Improved vs parent",
+        neutral: "Neutral vs parent",
+        regressed: "Regressed vs parent",
         rejected: "Review rejected",
         refuted: "Refuted",
         failed: "Failed checks / build",
@@ -74,6 +78,154 @@
     const noteText = (notes) => (Array.isArray(notes) ? notes.join(" ") : notes || "");
     const publicCommits = new Set(data.public_commits || (data.milestones || []).map((milestone) => milestone.commit));
     const ratio = (node) => (finite(node.ratio) ? `${node.ratio.toFixed(3)}×` : "Unscored");
+    const candidates = data.nodes.filter((node) => node.kind === "candidate");
+    const pageSize = 12;
+    const isReplay = (node) => Boolean(node.source_hash);
+    const replayCampaign = (id) => candidates.some((node) => node.campaign === id && isReplay(node));
+    const speedClass = (node) => (!finite(node.ratio) ? "unscored" : node.ratio > 1 ? "faster" : "slower");
+    function assessment(node) {
+        const checks = node.checks || {};
+        const reasons = [];
+        if (checks.later_expanded_coverage_passed === false) reasons.push("Later coverage failed");
+        if (checks.review === "reject" || node.outcome === "rejected") reasons.push("Review rejected");
+        if (checks.byte_exact_valid === false) reasons.push("Byte-exact check failed");
+        if (checks.md5_ok === false) reasons.push("Identity gate not passed");
+        if (checks.lattice_ok !== null && checks.lattice_ok !== undefined && checks.lattice_ok !== "ok")
+            reasons.push("Broader checks failed");
+        if (checks.suspect === true) reasons.push("Timing marked suspect");
+        if (node.outcome === "failed" && !reasons.length) reasons.push("Archived checks / build failure");
+        if (reasons.length)
+            return {
+                status: "blocked",
+                reasons,
+            };
+        const passed =
+            (node.status === "valid" && checks.byte_exact_valid === true) ||
+            ([
+                "ok",
+                "regressed",
+            ].includes(node.status) &&
+                checks.md5_ok === true &&
+                checks.lattice_ok === "ok");
+        return {
+            status: passed ? "passed" : "unknown",
+            reasons: [],
+        };
+    }
+    function presentationKind(node) {
+        if (node.kind !== "candidate") return node.kind;
+        if (assessment(node).status === "blocked") return "failed";
+        if (speedClass(node) === "unscored") return "noresult";
+        return speedClass(node) === "faster" && assessment(node).status === "passed" ? "improved" : "neutral";
+    }
+    const cached = (node) => node.outcome === "reused" || node.checks?.duplicate_reused === true;
+    const metricLabel = (node) => (isReplay(node) ? "vs kernel baseline" : "vs measurement baseline");
+    function checkLabel(node) {
+        const result = assessment(node);
+        return result.status === "blocked"
+            ? result.reasons.join(" · ")
+            : result.status === "passed"
+              ? "Recorded checks passed"
+              : "Checks not established";
+    }
+    function matchesFilters(node) {
+        return (
+            (state.campaign === "all" || node.campaign === state.campaign) &&
+            (state.outcome === "all" || kind(node) === state.outcome) &&
+            (state.speed === "all" || speedClass(node) === state.speed) &&
+            (state.checks === "all" || assessment(node).status === state.checks) &&
+            (!state.query ||
+                [
+                    node.id,
+                    node.title,
+                    node.hypothesis,
+                    node.observation,
+                    node.commit,
+                    node.source_hash,
+                    node.verdict_text,
+                    JSON.stringify(node.hypotheses || []),
+                ]
+                    .join(" ")
+                    .toLowerCase()
+                    .includes(state.query))
+        );
+    }
+    const groupKey = (node) =>
+        isReplay(node)
+            ? JSON.stringify([
+                  node.campaign,
+                  node.source_hash,
+                  node.measurement_source || {
+                      baseline: campaigns.get(node.campaign)?.base_commit,
+                      metric: campaigns.get(node.campaign)?.metric,
+                  },
+              ])
+            : node.id;
+    const allGroups = new Map();
+    for (const node of candidates) {
+        const key = groupKey(node);
+        if (!allGroups.has(key)) allGroups.set(key, []);
+        allGroups.get(key).push(node);
+    }
+    function matchingRecords() {
+        return candidates.filter((node) => matchesFilters(node) && (state.mode !== "route" || route.has(node.id)));
+    }
+    function matchingGroups(records) {
+        const groups = new Map();
+        for (const node of records) {
+            const key = state.grouped ? groupKey(node) : node.id;
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push(node);
+        }
+        return [
+            ...groups.values(),
+        ];
+    }
+    function syncControls() {
+        for (const [id, value] of [
+            [
+                "campaign",
+                state.campaign,
+            ],
+            [
+                "search",
+                state.query,
+            ],
+            [
+                "outcome",
+                state.outcome,
+            ],
+            [
+                "speed",
+                state.speed,
+            ],
+            [
+                "check-filter",
+                state.checks,
+            ],
+        ])
+            $(id).value = value;
+        $("ancestry").checked = state.ancestry;
+        $("group-replays").checked = state.grouped;
+    }
+    function saveHash() {
+        const hash = new URLSearchParams({
+            view: state.mode,
+        });
+        if (state.selected) hash.set("candidate", state.selected);
+        hash.set("campaign", state.campaign);
+        for (const key of [
+            "query",
+            "outcome",
+            "speed",
+            "checks",
+        ])
+            if (state[key] && state[key] !== "all") hash.set(key, state[key]);
+        if (!state.grouped) hash.set("grouped", "false");
+        if (state.page) hash.set("page", String(state.page));
+        if (state.ancestry) hash.set("ancestry", "true");
+        history.replaceState(null, "", `#${hash}`);
+    }
     const commitLink = (commit, text = null) =>
         /^[0-9a-f]{7,40}$/.test(commit || "") && publicCommits.has(commit)
             ? `<a href="https://github.com/MechaFauna-ai/Falcata/commit/${commit}" target="_blank" rel="noreferrer">${esc(text || commit.slice(0, 10))}</a>`
@@ -99,7 +251,6 @@
     }
 
     const milestones = data.milestones || [];
-    const highlightData = data.highlights || milestones.slice(0, 3);
     const routeSeeds = [
         ...new Set(
             milestones
@@ -115,24 +266,10 @@
     );
 
     function visibleNodes() {
-        let nodes = state.mode === "route" && route.size ? data.nodes.filter((node) => route.has(node.id)) : data.nodes;
-        if (state.campaign !== "all") nodes = nodes.filter((node) => node.campaign === state.campaign);
-        if (state.query)
-            nodes = nodes.filter((node) =>
-                [
-                    node.id,
-                    node.title,
-                    node.hypothesis,
-                    node.observation,
-                    node.commit,
-                    node.verdict_text,
-                    JSON.stringify(node.hypotheses || []),
-                ]
-                    .join(" ")
-                    .toLowerCase()
-                    .includes(state.query),
-            );
-        if (state.outcome !== "all") nodes = nodes.filter((node) => kind(node) === state.outcome);
+        const scoped = data.nodes.filter((node) =>
+            state.mode === "route" ? route.has(node.id) : node.campaign === state.campaign,
+        );
+        let nodes = scoped.filter(matchesFilters);
         if (state.ancestry && state.selected) {
             const selectedAncestry = ancestors(
                 [
@@ -142,35 +279,53 @@
             );
             nodes = nodes.filter((node) => selectedAncestry.has(node.id));
         }
-        // Preserve the context of every match. A filter must never silently turn
-        // an ancestral node into a root or imply a different code parent.
         const matches = new Set(nodes.map((node) => node.id));
-        const context = ancestors([
+        const allowed = new Set(scoped.map((node) => node.id));
+        const context = new Set(matches);
+        const pending = [
             ...matches,
-        ]);
+        ];
+        while (pending.length)
+            for (const edge of incoming.get(pending.pop()) || []) {
+                if (codeKinds.has(edge.kind) && allowed.has(edge.source) && !context.has(edge.source)) {
+                    context.add(edge.source);
+                    pending.push(edge.source);
+                }
+            }
+        // Local context stays inside this campaign. Immediate external parents
+        // are marked boundary references instead of recursively opening history.
+        nodes = scoped.filter((node) => context.has(node.id));
+        const omitted = Math.max(0, nodes.length - 80);
+        nodes = nodes.slice(0, 80);
+        const external = new Set();
+        for (const node of nodes)
+            for (const edge of incoming.get(node.id) || []) {
+                if (codeKinds.has(edge.kind) && !context.has(edge.source)) external.add(edge.source);
+            }
+        const references = [
+            ...external,
+        ]
+            .slice(0, 12)
+            .map((id) => ({
+                ...byId.get(id),
+                boundary: true,
+                kind: "reference",
+                ratio: null,
+                title: `Outside view: ${byId.get(id).title}`,
+            }));
         return {
-            nodes: data.nodes.filter((node) => context.has(node.id)),
+            nodes: [
+                ...references,
+                ...nodes,
+            ],
             matches,
+            omitted: omitted + Math.max(0, external.size - 12),
         };
     }
 
     function setSelection(id, focus = false) {
         if (!byId.has(id)) return;
         state.selected = id;
-        if (state.campaign !== "all" && byId.get(id).campaign !== state.campaign) {
-            state.campaign = "all";
-            $("campaign").value = "all";
-        }
-        state.query = "";
-        state.outcome = "all";
-        $("search").value = "";
-        $("outcome").value = "all";
-        const hash = new URLSearchParams({
-            candidate: id,
-            view: state.mode,
-        });
-        if (state.campaign !== "all") hash.set("campaign", state.campaign);
-        location.hash = hash.toString();
         render();
         const selected = $("graph").querySelector(`[data-node="${CSS.escape(id)}"]`);
         selected?.scrollIntoView({
@@ -267,30 +422,30 @@
             const pos = positions.get(node.id);
             const campaign = campaigns.get(node.campaign);
             const scoreCampaign = campaigns.get(node.measurement_source?.campaign) || campaign;
-            const metric = finite(node.ratio)
-                ? ratio(node)
-                : node.kind === "baseline"
-                  ? "base"
-                  : node.kind === "milestone"
-                    ? "code"
-                    : "—";
-            marks += `<g class="node ${esc(kind(node))}${state.selected === node.id ? " selected" : ""}" transform="translate(${pos.x},${pos.y})" role="button" tabindex="0" data-node="${esc(node.id)}" aria-label="${esc(`${node.id}: ${node.title}. ${label(node)}`)}"><title>${esc(`${node.id} · ${node.title}\n${label(node)}${finite(node.ratio) ? ` · ${ratio(node)} measured within ${scoreCampaign?.label || node.campaign}` : ""}${matches.has(node.id) ? "" : " · ancestor context"}`)}</title><rect class="box" width="${boxWidth}" height="65" rx="7"/><circle cx="13" cy="16" r="3.5"/><text class="name" x="23" y="20">${esc(short(node.local_id || node.id, 16))}</text><text x="185" y="20" text-anchor="end">${esc(metric)}</text><text x="12" y="38">${esc(short(node.title, 30))}</text><text class="campaign" x="12" y="54">${esc(short(campaign?.label || node.campaign || "release", 32))}${matches.has(node.id) ? "" : " · context"}</text></g>`;
+            const metric = node.boundary
+                ? "external"
+                : finite(node.ratio)
+                  ? `${ratio(node)} / base`
+                  : node.kind === "baseline"
+                    ? "base"
+                    : node.kind === "milestone"
+                      ? "code"
+                      : "—";
+            marks += `<g class="node ${esc(presentationKind(node))}${node.boundary ? " boundary" : ""}${state.selected === node.id ? " selected" : ""}" transform="translate(${pos.x},${pos.y})" role="button" tabindex="0" data-node="${esc(node.id)}" aria-label="${esc(`${node.id}: ${node.title}. ${label(node)}. ${checkLabel(node)}`)}"><title>${esc(`${node.id} · ${node.title}\n${label(node)} · ${checkLabel(node)}${finite(node.ratio) ? ` · ${ratio(node)} ${metricLabel(node)} within ${scoreCampaign?.label || node.campaign}` : ""}${matches.has(node.id) ? "" : " · context"}`)}</title><rect class="box" width="${boxWidth}" height="65" rx="7"/><circle cx="13" cy="16" r="3.5"/><text class="name" x="23" y="20">${esc(short(node.local_id || node.id, 13))}</text><text x="185" y="20" text-anchor="end">${esc(metric)}</text><text x="12" y="38">${esc(short(node.title, 30))}</text><text class="campaign" x="12" y="54">${esc(node.boundary ? `Outside view · ${short(campaign?.label || node.campaign, 23)}` : short(checkLabel(node), 34))}${!node.boundary && !matches.has(node.id) ? " · context" : ""}</text></g>`;
         }
         const width = (Math.max(0, ...columns.keys()) + 1) * columnWidth;
         $("graph").innerHTML = nodes.length
             ? `<svg width="${width * state.zoom}" height="${height * state.zoom}" viewBox="0 0 ${width} ${height}" aria-label="Kernel evolution lineage">${paths}${marks}</svg>`
             : '<p class="empty">No candidates match these filters. Try another campaign or search term.</p>';
         $("graph-count").textContent =
-            `${matches.size} matches · ${nodes.length - matches.size} ancestor nodes · ${links.length} edges`;
-        $("records-title").textContent =
-            `Browse ${nodes.filter((node) => node.kind === "candidate" && matches.has(node.id)).length} matching candidates`;
+            `${matches.size} matches · ${nodes.filter((node) => node.boundary).length} outside references · ${links.length} edges`;
     }
 
     function renderDetail() {
         const node = byId.get(state.selected);
         if (!node) {
             $("detail").innerHTML =
-                '<p class="eyebrow">SELECT A CANDIDATE</p><h3>What was the idea?<br>Did it survive?</h3><p class="lead">Pick a highlight or a graph node to read its observation, hypothesis, test and verdict.</p><p class="muted">Solid lines track code. Violet edges track ideas. Dashed green edges identify a verified link to integrated release code.</p>';
+                '<p class="eyebrow">EXPLORE A BRANCH</p><h3>What changed?<br>What happened next?</h3><p class="lead">Open a campaign and select a candidate, or follow the release lineage. Its detail shows the hypothesis, test, verdict and connected experiments.</p><p class="muted">Solid lines track code inheritance. Violet edges track ideas. Dashed green edges identify a verified link to integrated release code.</p>';
             return;
         }
         const campaign = campaigns.get(node.campaign);
@@ -334,7 +489,30 @@
                         .join("")}</details>`,
             )
             .join("");
-        const badges = `<span class="badge ${esc(kind(node))}">${esc(label(node))}</span>${node.hyp_verdict ? `<span class="badge">Latest hypothesis: ${esc(node.hyp_verdict)}</span>` : ""}${node.archive_hyp_verdict && node.archive_hyp_verdict !== node.hyp_verdict ? `<span class="badge">Archive summary: ${esc(node.archive_hyp_verdict)}</span>` : ""}${node.accepted ? '<span class="badge">Accepted in search</span>' : ""}`;
+        const badges = `<span class="badge ${esc(presentationKind(node))}">${esc(checkLabel(node))}</span>${label(node) !== checkLabel(node) ? `<span class="badge">${esc(label(node))}</span>` : ""}${cached(node) ? '<span class="badge cached">Cached / reused result</span>' : ""}${node.hyp_verdict ? `<span class="badge">Latest hypothesis: ${esc(node.hyp_verdict)}</span>` : ""}${node.archive_hyp_verdict && node.archive_hyp_verdict !== node.hyp_verdict ? `<span class="badge">Archive summary: ${esc(node.archive_hyp_verdict)}</span>` : ""}${node.accepted ? '<span class="badge">Accepted in search</span>' : ""}`;
+        const integrated =
+            (incoming.get(node.id) || []).some((edge) => edge.kind === "integration") ||
+            edges.some((edge) => edge.source === node.id && edge.kind === "integration");
+        const interpretation =
+            node.kind === "candidate"
+                ? `<div class="interpretation"><p>${
+                      finite(node.ratio)
+                          ? `${ratio(node)} ${metricLabel(node)} is ${node.ratio > 1 ? "a faster point estimate" : "at or below baseline speed"}. ${Array.isArray(node.ci) && node.ci[0] <= 1 && node.ci[1] >= 1 ? "Its interval includes 1×." : ""}`
+                          : "No scored timing supports a speed claim for this record."
+                  }</p><p>${esc(checkLabel(node))}. ${cached(node) ? "This is reused evidence, not a fresh timing draw. " : ""}${isReplay(node) ? "An isolated kernel result does not measure full training speed." : "The search decision and review are separate from the baseline ratio."}</p><p>${integrated ? "A verified integration connection is recorded below." : "No release integration connection is recorded for this candidate."}${!isReplay(node) && !node.checks?.review ? " Independent review is unrecorded." : ""}</p></div>`
+                : "";
+        const members = allGroups.get(groupKey(node)) || [];
+        const groupDetail =
+            members.length > 1
+                ? `<div class="group-detail"><label>Original records in this source group<select id="group-member">${members.map((member) => `<option value="${esc(member.id)}"${member.id === node.id ? " selected" : ""}>${esc(`${short(member.id, 48)} · ${ratio(member)} · ${label(member)}${cached(member) ? " · cached" : ""}`)}</option>`).join("")}</select></label><p>${members.length} original records, including those outside the current filters. No best-only selection.</p></div>`
+                : "";
+        const outside = !matchesFilters(node)
+            ? '<p class="selection-note">Selected record is outside the current filters. Your filters are preserved.</p>'
+            : "";
+        const openCampaign =
+            campaign && (state.campaign !== node.campaign || state.mode === "route")
+                ? `<button type="button" data-campaign="${esc(node.campaign)}">Open this campaign ↗</button>`
+                : "";
         let measurementHtml = "";
         if (finite(node.ratio)) {
             measurementHtml = `<div class="measurement"><strong>${ratio(node)}</strong><p>${esc(measurement.metric || "Archived ratio vs campaign baseline")}</p>${Array.isArray(node.ci) && node.ci.length === 2 ? `<p>95% interval ${node.ci.map((value) => (finite(value) ? value.toFixed(3) : "unknown")).join("–")}×</p>` : ""}<p class="muted">${esc(measurementCampaign?.workload || "")}${measurement.rounds ? ` · ${esc(measurement.rounds)} requested rounds` : ""}${measurement.pairs ? ` · ${esc(measurement.pairs)} configured pairs` : ""}</p>${node.measurement_note ? `<p>${esc(node.measurement_note)}</p>` : ""}<p class="muted">Baseline ${esc((measurement.base_commit || measurementCampaign?.base_commit || "unknown").slice(0, 12))}. Search evidence; compare only within this protocol. ${esc(noteText(measurementCampaign?.notes))}</p></div>`;
@@ -362,7 +540,7 @@
             ? `<h4>Separate full benchmark</h4><p>${full.trees_per_s.toFixed(1)} trees/s${finite(full.train_s) ? ` · ${full.train_s.toFixed(2)} s training` : ""}${full.rounds ? ` · ${esc(full.rounds)} requested rounds` : ""}</p><p class="muted">A separate measurement. Refer to the benchmark companion for timing and quality scope.</p>`
             : "";
         $("detail").innerHTML =
-            `<div class="detail-id"><span>${esc(node.id)}</span></div><p class="muted">${esc(campaign?.label || "release")}</p><h3>${esc(short(node.title, 100))}</h3>${node.title.length > 100 ? `<details><summary>Full implementation title</summary><p>${esc(node.title)}</p></details>` : ""}<div>${badges}</div>${measurementHtml}${sections
+            `<div class="detail-id"><span>${esc(node.id)}</span></div><p class="muted">${esc(campaign?.label || "release")}</p>${openCampaign}${outside}<h3>${esc(short(node.title, 100))}</h3>${node.title.length > 100 ? `<details><summary>Full implementation title</summary><p>${esc(node.title)}</p></details>` : ""}<div>${badges}</div>${interpretation}${measurementHtml}${groupDetail}${sections
                 .filter(([, value]) => value)
                 .map(([heading, value]) => `<h4>${heading}</h4><p>${esc(value)}</p>`)
                 .join(
@@ -370,26 +548,107 @@
                 )}${earlier}${node.reason ? `<h4>Recorded status</h4><p>${esc(node.reason)}</p>` : ""}${checks ? `<details><summary>Checks and review</summary>${checks}</details>` : ""}${fullEvidence}<h4>Code</h4><p>${commitLink(node.commit)}</p>${node.parent_commit ? `<p class="muted">Recorded code parent: ${commitLink(node.parent_commit)}</p>` : ""}${node.source_hash ? `<p class="muted">Archived source SHA256: ${esc(node.source_hash)}</p>` : ""}${node.evidence ? `<h4>Archive reference</h4><p>${esc(node.evidence)}</p>` : ""}${relations ? `<h4>Connected experiments</h4><div class="relations">${relations}</div>` : ""}`;
     }
 
-    function render() {
-        const { nodes, matches } = visibleNodes();
-        renderGraph(nodes, matches);
-        renderDetail();
-        $("candidate-list").innerHTML = nodes
-            .filter((node) => node.kind === "candidate" && matches.has(node.id))
-            .map(
-                (node) =>
-                    `<div class="candidate-list"><button type="button" data-select="${esc(node.id)}">${esc(node.id)}</button><small>${esc(label(node))}</small><span>${esc(node.title)}</span><span>${esc(ratio(node))}</span></div>`,
-            )
+    function renderOverview(records) {
+        const cards = data.campaigns
+            .map((campaign) => {
+                const local = records.filter((node) => node.campaign === campaign.id);
+                const total = candidates.filter((node) => node.campaign === campaign.id);
+                const faster = local.filter(
+                    (node) => speedClass(node) === "faster" && assessment(node).status === "passed",
+                ).length;
+                const blocked = local.filter((node) => assessment(node).status === "blocked").length;
+                const unscored = local.filter((node) => !finite(node.ratio)).length;
+                return `<article class="campaign-card${local.length ? "" : " no-matches"}"><div class="campaign-kicker">${replayCampaign(campaign.id) ? "ISOLATED KERNEL REPLAY" : "LIBRARY SEARCH"}</div><h3>${esc(campaign.label)}</h3><p>${local.length} / ${total.length} matching records${replayCampaign(campaign.id) ? ` · ${matchingGroups(local).length} source groups` : ""}</p><div class="campaign-counts"><span>${faster} faster + checks passed</span><span>${blocked} failed / rejected</span><span>${unscored} unscored</span></div><button type="button" data-campaign="${esc(campaign.id)}">Open campaign ↗</button></article>`;
+            })
             .join("");
+        $("graph").innerHTML = `<div class="campaign-grid">${cards}</div>`;
+        $("graph-count").textContent = `${data.campaigns.length} campaigns · ${records.length} matching records`;
+        $("graph-help").textContent =
+            "Campaigns have different baselines and timing protocols. Open one to explore its local lineage or replay sources. Counts are not a cross-campaign speed ranking.";
+    }
+    function renderReplay(records) {
+        const campaign = campaigns.get(state.campaign);
+        const groups = matchingGroups(records);
+        $("graph").innerHTML =
+            `<div class="replay-summary"><p class="eyebrow">ISOLATED KERNEL REPLAY</p><h3>${esc(campaign.label)}</h3><p>${records.length} matching records in ${groups.length} ${state.grouped ? "source groups" : "individual entries"}. These replay records have no archived code-parent edges; the grouped list below preserves every original result.</p><p>${esc(campaign.metric)}. ${esc(campaign.workload)}</p><p class="muted">Exact source hashes are grouped only within the same campaign and measurement protocol. Score ranges show the recorded spread, not a selected best or a new average. Reused results are identified individually.</p><a href="#records-panel">Browse replay sources ↓</a></div>`;
+        $("graph-count").textContent = `${groups.length} entries · ${records.length} matching records`;
+        $("graph-help").textContent =
+            "Select a source group below, then use its original-record selector to inspect fresh, cached and failed records separately.";
+    }
+    function renderRecords(records) {
+        const groups = matchingGroups(records);
+        const pageCount = Math.max(1, Math.ceil(groups.length / pageSize));
+        state.page = Math.min(state.page, pageCount - 1);
+        $("candidate-list").innerHTML =
+            groups
+                .slice(state.page * pageSize, (state.page + 1) * pageSize)
+                .map((matching) => {
+                    const first =
+                        matching.find((node) => !cached(node) && assessment(node).status === "passed") || matching[0];
+                    const members = state.grouped ? allGroups.get(groupKey(first)) : matching;
+                    const scores = members.filter((node) => finite(node.ratio)).map((node) => node.ratio);
+                    const min = Math.min(...scores),
+                        max = Math.max(...scores);
+                    const score = !scores.length
+                        ? "Unscored"
+                        : min === max
+                          ? `${min.toFixed(3)}×`
+                          : `${min.toFixed(3)}–${max.toFixed(3)}×`;
+                    const blocked = members.filter((node) => assessment(node).status === "blocked").length;
+                    const reused = members.filter(cached).length;
+                    const campaign = campaigns.get(first.campaign);
+                    return `<article class="result-row${members.some((node) => node.id === state.selected) ? " selected" : ""}"><div class="result-name"><small>${esc(campaign.label)}</small><button type="button" data-select="${esc(first.id)}">${esc(short(first.title, 100))}</button><span class="muted result-id">${esc(isReplay(first) && state.grouped ? `Source ${first.source_hash.slice(0, 12)}` : first.id)}</span></div><div class="result-status"><span class="badge ${esc(presentationKind(first))}">${esc(checkLabel(first))}</span>${!isReplay(first) && label(first) !== checkLabel(first) ? `<span class="badge">${esc(label(first))}</span>` : ""}${blocked && members.length > 1 ? `<span class="badge failed">${blocked} failed / rejected record${blocked === 1 ? "" : "s"}</span>` : ""}${reused ? `<span class="badge cached">${reused} cached / reused</span>` : ""}<p>${members.length > 1 ? `${matching.length} matching / ${members.length} original records` : "1 original record"}</p></div><div class="result-score"><strong>${score}</strong><span>${esc(metricLabel(first))}</span>${members.length > 1 && scores.length ? "<small>All original scores in this group</small>" : ""}</div></article>`;
+                })
+                .join("") || '<p class="empty">No records match these filters.</p>';
+        $("records-title").textContent =
+            `Browse ${groups.length} ${state.grouped ? "grouped entries" : "individual entries"} · ${records.length} matching records`;
+        $("page-status").textContent = groups.length
+            ? `Page ${state.page + 1} of ${pageCount} · entries ${state.page * pageSize + 1}–${Math.min((state.page + 1) * pageSize, groups.length)}`
+            : "No matching entries";
+        $("page-prev").disabled = state.page === 0;
+        $("page-next").disabled = state.page >= pageCount - 1;
+    }
+    function render() {
+        const records = matchingRecords();
+        const overview = state.mode === "all" && state.campaign === "all";
+        const replay = state.mode === "all" && replayCampaign(state.campaign);
+        $("workspace").className = `workspace${overview ? " overview" : replay ? " replay" : ""}`;
+        $("ancestry-control").hidden = overview || replay;
+        $("zoom-in").hidden = overview || replay;
+        $("zoom-out").hidden = overview || replay;
+        $("legend").hidden = overview || replay;
+        if (overview) renderOverview(records);
+        else if (replay) renderReplay(records);
+        else {
+            const { nodes, matches, omitted } = visibleNodes();
+            renderGraph(nodes, matches);
+            $("graph-help").textContent =
+                `Only local ancestor context is expanded. Dashed boundary nodes mark parents outside this view; their complete relationships remain in the detail panel.${omitted ? ` ${omitted} additional context nodes are omitted from this bounded graph.` : ""}`;
+        }
+        renderDetail();
+        renderRecords(records);
+        if (replay || state.query || state.speed !== "all" || state.checks !== "all" || state.outcome !== "all")
+            $("records-panel").open = true;
         $("route-view").setAttribute("aria-pressed", String(state.mode === "route"));
         $("all-view").setAttribute("aria-pressed", String(state.mode === "all"));
         $("scope").textContent =
             state.campaign === "all"
-                ? "Ratios use different campaign baselines. Select a campaign or candidate for the metric and protocol; no cross-campaign ranking is implied."
-                : `${noteText(campaigns.get(state.campaign)?.notes)} Ancestors from other campaigns remain visible as context.`;
+                ? "Speed, recorded checks, parent-relative outcomes and integration are separate. Ratios from different campaigns are not directly comparable."
+                : `${noteText(campaigns.get(state.campaign)?.notes)} Ratios use this measurement's baseline; imported timing evidence retains its original protocol in the detail panel.`;
+        syncControls();
+        saveHash();
     }
 
     function selectFromEvent(event) {
+        const campaignControl = event.target.closest("[data-campaign]");
+        if (campaignControl) {
+            clearAncestryFocus();
+            state.mode = "all";
+            state.campaign = campaignControl.dataset.campaign;
+            state.page = 0;
+            render();
+            return;
+        }
         const control = event.target.closest("[data-select], [data-node]");
         if (control) setSelection(control.dataset.select || control.dataset.node, window.innerWidth < 761);
     }
@@ -405,23 +664,58 @@
         }
     });
     $("detail").addEventListener("click", selectFromEvent);
+    $("detail").addEventListener("change", (event) => {
+        if (event.target.id === "group-member") setSelection(event.target.value);
+    });
     $("candidate-list").addEventListener("click", selectFromEvent);
     $("campaign").addEventListener("change", (event) => {
         clearAncestryFocus();
         state.campaign = event.target.value;
         state.mode = "all";
+        state.page = 0;
         render();
     });
     $("outcome").addEventListener("change", (event) => {
         clearAncestryFocus();
         state.outcome = event.target.value;
         state.mode = "all";
+        state.page = 0;
         render();
     });
     $("search").addEventListener("input", (event) => {
         clearAncestryFocus();
         state.query = event.target.value.trim().toLowerCase();
         state.mode = "all";
+        state.page = 0;
+        render();
+    });
+    for (const [id, key] of [
+        [
+            "speed",
+            "speed",
+        ],
+        [
+            "check-filter",
+            "checks",
+        ],
+    ])
+        $(id).addEventListener("change", (event) => {
+            clearAncestryFocus();
+            state[key] = event.target.value;
+            state.page = 0;
+            render();
+        });
+    $("group-replays").addEventListener("change", (event) => {
+        state.grouped = event.target.checked;
+        state.page = 0;
+        render();
+    });
+    $("page-prev").addEventListener("click", () => {
+        state.page = Math.max(0, state.page - 1);
+        render();
+    });
+    $("page-next").addEventListener("click", () => {
+        state.page++;
         render();
     });
     $("ancestry").addEventListener("change", (event) => {
@@ -433,6 +727,9 @@
         state.mode = "route";
         state.campaign = "all";
         state.outcome = "all";
+        state.speed = "all";
+        state.checks = "all";
+        state.page = 0;
         state.query = "";
         $("campaign").value = "all";
         $("outcome").value = "all";
@@ -442,6 +739,9 @@
     $("all-view").addEventListener("click", () => {
         clearAncestryFocus();
         state.mode = "all";
+        state.campaign = "all";
+        state.page = 0;
+        $("records-panel").open = false;
         render();
     });
     $("zoom-in").addEventListener("click", () => {
@@ -454,10 +754,14 @@
     });
     $("reset").addEventListener("click", () => {
         Object.assign(state, {
-            mode: "route",
+            mode: "all",
             campaign: "all",
             query: "",
             outcome: "all",
+            speed: "all",
+            checks: "all",
+            grouped: true,
+            page: 0,
             selected: null,
             ancestry: false,
             zoom: 1,
@@ -466,7 +770,7 @@
         $("outcome").value = "all";
         $("search").value = "";
         $("ancestry").checked = false;
-        location.hash = "";
+        $("records-panel").open = false;
         render();
         $("graph-scroll").scrollTo(0, 0);
     });
@@ -481,7 +785,6 @@
             "beforeend",
             `<option value="${esc(campaign.id)}">${esc(campaign.label)}</option>`,
         );
-    const candidates = data.nodes.filter((node) => node.kind === "candidate");
     const stats = [
         [
             candidates.length,
@@ -492,54 +795,60 @@
             "search campaigns",
         ],
         [
-            candidates.filter((node) => node.accepted).length,
-            "accepted in search",
+            allGroups.size,
+            "entries after source grouping",
         ],
         [
-            candidates.filter((node) => !finite(node.ratio)).length,
-            "without scored ratios",
+            milestones.length,
+            "integration milestones",
         ],
     ];
     $("stats").innerHTML = stats
         .map(([value, text]) => `<div class="stat"><strong>${value}</strong><span>${text}</span></div>`)
         .join("");
-    $("highlights").innerHTML = highlightData
-        .slice(0, 3)
-        .map(
-            (highlight, index) =>
-                `<article class="highlight"><span class="number">0${index + 1} / MECHANISM</span><h3>${esc(highlight.title)}</h3><p>${esc(highlight.summary)}</p><button type="button" data-highlight="${index}">Follow this idea ↗</button></article>`,
-        )
-        .join("");
-    $("highlights").addEventListener("click", (event) => {
-        const button = event.target.closest("[data-highlight]");
-        if (!button) return;
-        const highlight = highlightData[Number(button.dataset.highlight)];
-        const id = highlight.focus_id || highlight.node_ids?.find((candidate) => byId.has(candidate));
-        if (!id) return;
-        state.mode = "all";
-        state.campaign = "all";
-        state.outcome = "all";
-        state.query = "";
-        state.ancestry = true;
-        $("campaign").value = "all";
-        $("outcome").value = "all";
-        $("search").value = "";
-        $("ancestry").checked = true;
-        setSelection(id, window.innerWidth < 761);
-        $("explorer-title").scrollIntoView({
-            behavior: "smooth",
-            block: "start",
-        });
-    });
     $("limits").innerHTML = (data.limitations || []).map((limit) => `<li>${esc(limit)}</li>`).join("");
-    const hash = new URLSearchParams(location.hash.slice(1));
-    if (byId.has(hash.get("candidate"))) {
-        state.selected = hash.get("candidate");
+    function restoreHash() {
+        const hash = new URLSearchParams(location.hash.slice(1));
+        state.selected = byId.has(hash.get("candidate")) ? hash.get("candidate") : null;
         state.mode = hash.get("view") === "route" ? "route" : "all";
+        state.campaign = campaigns.has(hash.get("campaign"))
+            ? hash.get("campaign")
+            : state.selected && state.mode === "all" && !hash.has("campaign")
+              ? byId.get(state.selected).campaign || "all"
+              : "all";
+        state.query = (hash.get("query") || "").toLowerCase();
+        for (const [key, values] of [
+            [
+                "speed",
+                [
+                    "faster",
+                    "slower",
+                    "unscored",
+                ],
+            ],
+            [
+                "checks",
+                [
+                    "passed",
+                    "blocked",
+                    "unknown",
+                ],
+            ],
+            [
+                "outcome",
+                Object.keys(labels),
+            ],
+        ])
+            state[key] = values.includes(hash.get(key)) ? hash.get(key) : "all";
+        state.page = Math.max(0, Number.parseInt(hash.get("page"), 10) || 0);
+        state.grouped = hash.get("grouped") !== "false";
+        state.ancestry = hash.get("ancestry") === "true";
     }
-    if (campaigns.has(hash.get("campaign"))) {
-        state.campaign = hash.get("campaign");
-        $("campaign").value = state.campaign;
-    }
+    window.addEventListener("hashchange", () => {
+        if (location.hash === "#records-panel") return;
+        restoreHash();
+        render();
+    });
+    restoreHash();
     render();
 })();

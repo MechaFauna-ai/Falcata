@@ -233,6 +233,14 @@ live experiment controls. GitHub displays HTML source rather than running this
 interface. The same artifact can be served alongside the article when it is
 published later.
 
+The page explains the evolutionary loop—inherit, vary, evaluate, select and
+repeat—before opening its lineage. Early replay searches used parent and
+inspiration sampling in OpenEvolve; later whole-library searches used a scripted
+operator, isolated coding branches, written hypotheses and independent review.
+The page focuses on how those searches developed; the article explains the
+resulting CUDA optimizations. A combined-parent edge identifies a second branch
+offered to the worker, without asserting that every change was incorporated.
+
 The frozen export contains **532 archived records**: 141 whole-library search
 records and 391 isolated replay evaluations. One started, interrupted worker
 without a final archive brings the attempt-record count to **533**. These are
@@ -257,6 +265,30 @@ a candidate with its parent; displayed ratios compare it with the measurement
 baseline. Imported `night3:c047`, `night5:c088` and `construct2:k007` retain earlier
 measurements, explicitly scoped to their source campaigns. No cross-campaign
 ratios are multiplied or ranked as release speedups.
+
+The overview shows thirteen campaign cards rather than drawing every archive
+node at once. Library campaigns expand only local ancestor context, with marked
+boundary references for external code parents; the release-lineage view joins
+the documented integration paths. Replay campaigns use source groups and
+twelve-entry pages because their retained evaluations lack parent edges.
+Grouping by exact source hash within a campaign and measurement protocol reduces
+391 replay records to 319 entries, without merging distinct normalized sources.
+All 533 attempt records remain available in 461 grouped entries. A group's ratio
+range includes every scored original record, including any outside an active
+filter; its member selector exposes the cached and failed records individually.
+No best draw is selected or new aggregate speed statistic calculated.
+
+The **Speed vs baseline** filter uses only scored ratios, separately from
+**Checks / review** and the original archive outcome. There are 399 above-baseline
+point estimates, of which 347 have no original `improved` label: 308 are valid or
+reused replays, 25 parent-neutral, five parent-regressed and nine review-rejected.
+389 above-baseline records passed the recorded checks; nine were review-rejected
+and one later failed expanded coverage. Passing these recorded checks establishes
+neither release integration nor a full-training speedup. Worker quick-check
+proxies stay outside the primary speed filter. Among all attempts, 434 have
+recorded passing checks, 54 have a failed gate or rejection, and 45 lack sufficient
+check evidence. A stopped identity gate is labeled as not passed rather than
+presented as a completed incorrect-model verdict.
 
 Full hypothesis sets are retained. In `night4:c079`, the first hypothesis is
 refuted and the second confirmed. A worker's archived summary claim, latest
