@@ -2,6 +2,8 @@
 import filecmp
 import numbers
 import re
+import subprocess
+import sys
 import warnings
 from copy import deepcopy
 from pathlib import Path
@@ -1553,3 +1555,18 @@ def test_multiclass_init_score_file_is_parsed_exactly(tmp_path, rng):
             str(data_path), params={"objective": "multiclass", "num_class": n_class, "num_threads": 16, "verbose": -1}
         ).construct()
         np_assert_array_equal(ds.get_field("init_score"), init, strict=True)
+
+
+def test_import_succeeds_when_sklearn_module_is_unavailable():
+    # The optional scikit-learn API (and its LGBM* aliases) must not take
+    # `import falcata` down with it when falcata.sklearn cannot be imported.
+    code = (
+        "import sys\n"
+        "sys.modules['falcata.sklearn'] = None\n"
+        "import falcata\n"
+        "assert callable(falcata.train)\n"
+        "assert not hasattr(falcata, 'FalcataModel')\n"
+        "assert not hasattr(falcata, 'LGBMModel')\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr

@@ -384,7 +384,7 @@ class FeatureHistogram {
 #undef TEMPLATE_PREFIX_INT
 #undef LAMBDA_ARGUMENTS_INT
 #undef BEFORE_ARGUMENTS_INT
-#undef FUNC_ARGURMENTS_INT
+#undef FUNC_ARGUMENTS_INT
   } else {
 #define TEMPLATE_PREFIX USE_RAND, USE_MC, USE_L1, USE_MAX_OUTPUT, USE_SMOOTHING
 #define LAMBDA_ARGUMENTS                                         \
@@ -444,7 +444,7 @@ class FeatureHistogram {
 #undef TEMPLATE_PREFIX
 #undef LAMBDA_ARGUMENTS
 #undef BEFORE_ARGUMENTS
-#undef FUNC_ARGURMENTS
+#undef FUNC_ARGUMENTS
     }
   }
 
