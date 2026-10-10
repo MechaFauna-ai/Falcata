@@ -147,7 +147,7 @@ void FeatureHistogram::FuncForCategoricalL2() {
         };
       }
     }
-#undef LAMBDA_ARGUMENTS_INT
+#undef LAMBDA_PARAMS_INT
 #undef ARGUMENTS_INT
   } else {
 #define ARGUMENTS                                                      \

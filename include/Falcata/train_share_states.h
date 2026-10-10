@@ -359,7 +359,7 @@ struct TrainingShareStates {
   std::unique_ptr<MultiValBinWrapper> multi_val_bin_wrapper_;
   std::vector<hist_t, Common::AlignmentAllocator<hist_t, kAlignedSize>> hist_buf_;
   int num_total_bin_ = 0;
-  double num_elements_per_row_ = 0.0f;
+  double num_elements_per_row_ = 0.0;
 };
 
 }  // namespace Falcata
