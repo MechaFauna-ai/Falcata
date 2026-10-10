@@ -1,6 +1,7 @@
 # coding: utf-8
 import filecmp
 import numbers
+import pickle
 import re
 import warnings
 from copy import deepcopy
@@ -1536,3 +1537,37 @@ def test_tree_sizes_must_account_for_every_tree_in_the_text():
     empty_text = empty.model_to_string()
     assert "\ntree_sizes=\n" in empty_text
     assert lgb.Booster(model_str=empty_text).num_trees() == 0
+
+
+def _count_categorical_splits(node):
+    if "split_index" not in node:
+        return 0
+    return (
+        (node["decision_type"] == "==")
+        + _count_categorical_splits(node["left_child"])
+        + _count_categorical_splits(node["right_child"])
+    )
+
+
+def test_falb_round_trip_keeps_categorical_split_indices_above_255(rng):
+    # The binary (FALB) model stores a categorical node's cat_threshold index in
+    # the threshold-index array; its width must cover the largest such index,
+    # not only the numeric thresholds. Pickle uses FALB by default.
+    n_cat = 2000
+    X = rng.integers(0, n_cat, size=(40_000, 3)).astype(np.float64)
+    y = sum(rng.normal(size=n_cat)[X[:, j].astype(int)] for j in range(3))
+    params = {
+        "objective": "regression",
+        "num_leaves": 600,
+        "max_bin": 4000,
+        "min_data_in_leaf": 1,
+        "min_data_per_group": 1,
+        "min_sum_hessian_in_leaf": 0,
+        "cat_smooth": 0,
+        "cat_l2": 0,
+        "verbose": -1,
+    }
+    bst = lgb.train(params, lgb.Dataset(X, y, categorical_feature=[0, 1, 2]), num_boost_round=1)
+    assert _count_categorical_splits(bst.dump_model()["tree_info"][0]["tree_structure"]) > 256
+    restored = pickle.loads(pickle.dumps(bst))
+    np_assert_array_equal(restored.predict(X), bst.predict(X), strict=True)

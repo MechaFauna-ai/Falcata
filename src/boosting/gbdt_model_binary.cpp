@@ -412,11 +412,19 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
   bool any_cat = false;
   int max_feature = 0;
   int max_children_mag = 0;
+  uint64_t max_cat_idx = 0;
   for (int i = start_model; i < num_used_model; ++i) {
     const Tree& t = *models_[i];
     any_cat = any_cat || TreeIO::NumCat(t) > 0;
     const size_t n_node = NodeCount(TreeIO::NumLeaves(t));
     const auto& feats = TreeIO::SplitFeature(t);
+    const auto& thr = TreeIO::Threshold(t);
+    const auto& dtypes = TreeIO::DecisionType(t);
+    for (size_t n = 0; n < n_node && n < thr.size() && n < dtypes.size(); ++n) {
+      if ((dtypes[n] & kCategoricalMask) > 0) {
+        max_cat_idx = std::max(max_cat_idx, static_cast<uint64_t>(thr[n]));
+      }
+    }
     const auto& lc = TreeIO::LeftChild(t);
     const auto& rc = TreeIO::RightChild(t);
     for (size_t n = 0; n < n_node && n < feats.size(); ++n) {
@@ -434,8 +442,9 @@ std::string GBDT::SaveModelToBinary(int start_iteration, int num_iteration,
   dict.Build(models_, start_model, num_used_model, max_feature_idx_ + 1);
 
   const uint32_t feat_dtype = NarrowestUnsigned(static_cast<uint64_t>(max_feature));
-  const uint32_t thr_idx_dtype =
-      NarrowestUnsigned(dict.max_per_feature() == 0 ? 0 : dict.max_per_feature() - 1);
+  // categorical nodes store their cat_threshold index in the same array
+  const uint32_t thr_idx_dtype = NarrowestUnsigned(std::max<uint64_t>(
+      dict.max_per_feature() == 0 ? 0 : dict.max_per_feature() - 1, max_cat_idx));
   // children are signed (leaves are encoded as ~leaf), so pick by magnitude:
   // i8 covers the common shallow tree (<=127 leaves) at half the width
   const uint32_t child_dtype = (max_children_mag <= INT8_MAX)
