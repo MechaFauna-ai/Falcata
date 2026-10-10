@@ -2,6 +2,8 @@
 import filecmp
 import numbers
 import re
+import subprocess
+import sys
 import warnings
 from copy import deepcopy
 from pathlib import Path
@@ -1604,3 +1606,18 @@ def test_two_round_multichunk_file_pushes_zeros_at_the_right_rows(tmp_path, rng_
         lgb.Dataset(str(path), params=params).construct()._dump_text(dump)
         dumps.append(dump)
     assert filecmp.cmp(*dumps, shallow=False)
+
+
+def test_import_succeeds_when_sklearn_module_is_unavailable():
+    # The optional scikit-learn API (and its LGBM* aliases) must not take
+    # `import falcata` down with it when falcata.sklearn cannot be imported.
+    code = (
+        "import sys\n"
+        "sys.modules['falcata.sklearn'] = None\n"
+        "import falcata\n"
+        "assert callable(falcata.train)\n"
+        "assert not hasattr(falcata, 'FalcataModel')\n"
+        "assert not hasattr(falcata, 'LGBMModel')\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
