@@ -144,21 +144,20 @@ void Metadata::Init(const Metadata& fullset, const data_size_t* used_indices, da
   if (!fullset.query_boundaries_.empty()) {
     std::vector<data_size_t> used_query;
     data_size_t data_idx = 0;
-    for (data_size_t qid = 0; qid < num_queries_ && data_idx < num_used_indices; ++qid) {
+    for (data_size_t qid = 0; qid < fullset.num_queries_ && data_idx < num_used_indices; ++qid) {
       data_size_t start = fullset.query_boundaries_[qid];
       data_size_t end = fullset.query_boundaries_[qid + 1];
       data_size_t len = end - start;
       if (used_indices[data_idx] > start) {
         continue;
-      } else if (used_indices[data_idx] == start) {
-        if (num_used_indices >= data_idx + len && used_indices[data_idx + len - 1] == end - 1) {
-          used_query.push_back(qid);
-          data_idx += len;
-        } else {
-          Log::Fatal("Data partition error, data didn't match queries");
-        }
+      } else if (used_indices[data_idx] == start &&
+                 num_used_indices >= data_idx + len && used_indices[data_idx + len - 1] == end - 1) {
+        used_query.push_back(qid);
+        data_idx += len;
       } else {
-        Log::Fatal("Data partition error, data didn't match queries");
+        // the rows cut through a query; callers (e.g. the Python package) set the group afterwards
+        used_query.clear();
+        break;
       }
     }
     query_boundaries_ = std::vector<data_size_t>(used_query.size() + 1);
