@@ -19,7 +19,7 @@ workloads. The latest changes also reduce non-quantized training time by as much
 as **39.4%** in the measured October comparisons.
 
 These numbers describe different comparisons. The quantized results compare a
-historical launch snapshot with strict, quiet-machine October runs; the FP64 result
+historical launch snapshot with idle-GPU October runs; the FP64 result
 compares two October development builds. The configurations, quality scores and full results
 are in the [benchmark companion](falcata-1.1/benchmarks.md).
 
@@ -40,8 +40,8 @@ equal-quality training or today's versions of those engines.
 
 The deep result is one full 30,000-requested-round run on the October 8 quantized
 build, with holdout CORR 0.02385. The example and Epsilon results are medians of
-three timed runs on the October 9 selected build. All ran on one RTX 5090, admitted
-serially by GPUQ's strict policy with no recorded contention. Times exclude dataset
+three timed runs on the October 9 selected build. All ran serially on one
+otherwise idle RTX 5090, with no recorded GPU contention. Times exclude dataset
 construction and prediction. The workload sizes and training budgets match the
 launch cases; deep Numerai used float32 in both snapshots, while the new example
 uses native int8. The launch artifact predates the actual v1.0.0 tag. These are

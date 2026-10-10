@@ -13,8 +13,8 @@ accompanies a much larger timing penalty than the standard recipe's path change.
 
 All **27 expected records passed**: one representation-equivalence gate, six
 diagnostic warmups, eighteen short timed draws and two full-length draws.
-Failed, pending, blocked and contended/excluded counts are **zero**. Strict
-GPUQ job 3653 finished successfully; its contention log is empty. No failed
+Failed, pending, blocked and contended/excluded counts are **zero**. All runs
+finished successfully on an otherwise idle GPU, with no recorded contention. No failed
 draw, seed or configuration was replaced.
 
 ![Paired training throughput with five states and a distinct missing state](blog/falcata-1.1/six-state-throughput.png)
@@ -174,4 +174,4 @@ data manifest SHA256 `6a5943f3657fe126886e3626021c30672f5627db48514ca21959ae0c5e
 [chart data](blog/falcata-1.1/six-state-data.json), and
 [chart generator](blog/falcata-1.1/plot_six_state.py) preserve the endpoint
 identities and reproduce the chart. The measurements were made on one RTX 5090
-under strict GPUQ admission on 2026-10-10, Europe/Zurich.
+with no recorded GPU contention on 2026-10-10, Europe/Zurich.

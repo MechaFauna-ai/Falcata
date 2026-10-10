@@ -3,19 +3,16 @@
 Reproduce with the checked-in training-time-data.json:
     python docs/blog/falcata-1.1/plot_training_time.py
 
-Refresh the compact values from the original strict JSON evidence:
-    python plot_training_time.py --evidence PATH/strict-timing-evidence.json
+The checked-in values reproduce the figure without private orchestration dependencies.
 No training, GPU access, or benchmark execution occurs here.
 """
 
 # Standalone plotting program: stdout reports its output files.
 # ruff: noqa: D103, T201
 import argparse
-import hashlib
 import json
 import math
 import os
-import statistics
 from pathlib import Path
 
 BASELINE = "09b6be9724f330f947c86de6e819654b077f70f2"
@@ -29,83 +26,9 @@ WORKLOADS = (
 )
 
 
-def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def ensure(condition, message):
     if not condition:
         raise ValueError(message)
-
-
-def compact_values(evidence_path):
-    evidence = json.loads(evidence_path.read_text())
-    jobs = {job["id"]: job for job in evidence["jobs"]}
-    rows = []
-    for name, label, detail, count in WORKLOADS:
-        row = {"workload": name, "label": label, "detail": detail, "timed_runs_per_build": count}
-        for arm, runtime in (("baseline", BASELINE), ("candidate", SELECTED)):
-            filename = f"strict-{name}-{arm}.jsonl"
-            ensure(not evidence["provenance_issues"][filename], f"Provenance issue: {filename}")
-            records = [
-                record
-                for record in evidence["raw_files"][filename]["records"]
-                if record.get("kind", "").startswith("timed")
-            ]
-            ensure(len(records) == count, f"Incorrect timed count: {filename}")
-            ensure(
-                {record["kind"] for record in records} == {f"timed{n}" for n in range(1, count + 1)},
-                "Duplicate or missing timed draw",
-            )
-            for record in records:
-                job = jobs[record["gpuq_job_id"]]
-                ensure(
-                    job["state"] == "done"
-                    and job["exit_code"] == 0
-                    and job["adm_class"] == "strict"
-                    and job["contended"] == 0,
-                    "Timing was not successful strict uncontended work",
-                )
-                ensure(record["status"] == "ok" and record["metrics"]["sane"] is True, "Nonpassing model endpoint")
-                ensure(
-                    record["runtime_build"] == runtime and record["resolved_cuda_precision"] == "fp64",
-                    "Unexpected runtime/precision",
-                )
-                ensure(math.isfinite(record["train_s"]) and record["train_s"] > 0, "Invalid training time")
-            row[f"{arm}_train_s"] = statistics.median(record["train_s"] for record in records)
-            row[f"{arm}_library_sha256"] = records[0]["library_sha256"]
-            row[f"{arm}_gpuq_job_ids"] = sorted({record["gpuq_job_id"] for record in records})
-            row[f"{arm}_metrics"] = {
-                key: {
-                    "min": min(record["metrics"][key] for record in records),
-                    "median": statistics.median(record["metrics"][key] for record in records),
-                    "max": max(record["metrics"][key] for record in records),
-                }
-                for key in records[0]["metrics"]
-                if key != "sane"
-            }
-        rows.append(row)
-    return {
-        "schema": 1,
-        "baseline_build": BASELINE,
-        "selected_build": SELECTED,
-        "source_evidence": {
-            "file": evidence_path.name,
-            "sha256": digest(evidence_path),
-            "repository_path": "docs/2026-10-09_noquant-timings/strict-timing-evidence.json",
-        },
-        "device": "RTX 5090",
-        "precision": "fp64",
-        "admission": "strict quiet GPUQ",
-        "statistic": "100 * (1 - candidate_train_s / baseline_train_s); first four are medians of three timed draws",
-        "quality_limits": [
-            "Timing reductions do not establish equivalent model quality.",
-            "Higgs includes one lower candidate AUC draw.",
-            "Numerai deep is one complete run per build; no uncertainty estimate or extrapolation.",
-            "Numerai uses a fixed historical build1226 cache with an unidentified label; CORR comes from NumeraiEvaluator.",
-        ],
-        "rows": rows,
-    }
 
 
 def render(data, output):
@@ -190,7 +113,7 @@ def render(data, output):
     baseline_corr = deep["baseline_metrics"]["corr_mean"]["median"]
     selected_corr = deep["candidate_metrics"]["corr_mean"]["median"]
     captions = (
-        "09b6be97 → d0bb8c47  ·  RTX 5090  ·  FP64  ·  strict quiet GPUQ",
+        "09b6be97 → d0bb8c47  ·  RTX 5090  ·  FP64  ·  idle GPU; no recorded contention",
         "First four: medians of 3 timed runs per build. Numerai deep: one complete run per build; warmups excluded.",
         "Timing reductions do not establish equivalent quality. Higgs included one lower candidate AUC draw.",
         f"Numerai deep CORR: {baseline_corr:.6f} → {selected_corr:.6f} (historical cache; unidentified label).",
@@ -231,18 +154,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, default=folder / "training-time-data.json")
     parser.add_argument(
-        "--evidence", type=Path, help="optionally rebuild compact values from finalized strict JSON evidence"
-    )
-    parser.add_argument(
         "--output", type=Path, default=folder / "fp64-training-time", help="output filename prefix without extension"
     )
     args = parser.parse_args()
-    if args.evidence:
-        data = compact_values(args.evidence)
-        args.data.parent.mkdir(parents=True, exist_ok=True)
-        args.data.write_text(json.dumps(data, indent=2, allow_nan=False) + "\n")
-    else:
-        data = json.loads(args.data.read_text())
+    data = json.loads(args.data.read_text())
     print(json.dumps(render(data, args.output), indent=2))
 
 

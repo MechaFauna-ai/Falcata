@@ -495,7 +495,7 @@ L 652.063297 370.5552
    <text style="font-size: 9px; font-family: 'DejaVu Sans'; fill: #586774" transform="translate(696.168 97.488)">throughput</text>
   </g>
   <g id="text_42">
-   <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #586774" x="10.8" y="479.5344" transform="rotate(-0 10.8 479.5344)">2026-10-10 · RTX 5090 · Falcata d0bb8c47 · strict GPUQ; terminal, uncontended</text>
+   <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #586774" x="10.8" y="479.5344" transform="rotate(-0 10.8 479.5344)">2026-10-10 · RTX 5090 · Falcata d0bb8c47 · idle GPU; no recorded contention</text>
   </g>
   <g id="text_43">
    <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #586774" x="10.8" y="503.064" transform="rotate(-0 10.8 503.064)">Build 1230 · 5,502,748 training rows × 3,555 features · max_bin=255 · Ender20 target</text>

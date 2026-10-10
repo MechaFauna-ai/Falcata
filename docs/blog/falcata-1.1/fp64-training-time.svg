@@ -191,7 +191,7 @@ z
    <text style="font-size: 12px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #586774" x="10.8" y="48.646125" transform="rotate(-0 10.8 48.646125)">Selected runtime versus the October 8 baseline</text>
   </g>
   <g id="text_24">
-   <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #586774" x="10.8" y="321.348642" transform="rotate(-0 10.8 321.348642)">09b6be97 → d0bb8c47  ·  RTX 5090  ·  FP64  ·  strict quiet GPUQ</text>
+   <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #586774" x="10.8" y="321.348642" transform="rotate(-0 10.8 321.348642)">09b6be97 → d0bb8c47  ·  RTX 5090  ·  FP64  ·  idle GPU; no recorded contention</text>
   </g>
   <g id="text_25">
    <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #586774" x="10.8" y="342.689442" transform="rotate(-0 10.8 342.689442)">First four: medians of 3 timed runs per build. Numerai deep: one complete run per build; warmups excluded.</text>
