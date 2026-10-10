@@ -1,6 +1,6 @@
 {
     "schema": 1,
-    "matrix_sha256": "adf86bc824e2c2e2b65c1900bb16cb6ef61726676cd70b7b305e25d399b625ad",
+    "matrix_sha256": "08c095b64f2cd1bc585e16ca1974830a6a4038ad95c8a730ad97f7b03ba9dcb2",
     "selection_rule": "Latest relevant actual measurement, not the fastest record/build. Historical duplicate kinds use the last record to reconstruct the figure while retaining prior failures. All finite timed endpoints, including failed models, enter displayed intervals. Warmups/curves are preserved but excluded from timing medians.",
     "sources": {
         "launch": {
@@ -43,8 +43,8 @@
             "library_md5_contemporaneous_and_current_match": "58897acd3df952c1989b8e354ed09a17",
             "library_sha256_observed_current": "c35e3fbd265d60932c7f78cec698e112c2dca871c7e2096b007401c70d8a4fd1",
             "harness_git_commit_from_sweep_log": "386898d66ba4e7cd3ba0fe030fec3f01d04f0dbf",
-            "quiet_provenance": "GPUQ3494 actual state done, exit0, strict admission, no recorded contention; scheduler log and zero-byte contention file verified",
-            "gpuq_job_id_from_sweep_provenance": 3494,
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
+            "run_id_from_source": 3494,
             "shipped_default_pair_code5_epilogue": false,
             "caveats": [
                 "pre_ridge_fixedpoint",
@@ -59,7 +59,7 @@
             "measurement_identity": "Selected FP64 noquant default, fourteen affected groups",
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "quiet_provenance": "saved actual strict GPUQ jobs and contention flags",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
             "caveats": [
                 "numerai_dtype_change",
                 "fraud_uncapped_failures",
@@ -73,7 +73,7 @@
             "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
             "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
             "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
-            "quiet_provenance": "saved actual strict GPUQ jobs and contention flags",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
             "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
             "caveats": []
         },
@@ -84,7 +84,7 @@
             "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "quiet_provenance": "saved actual strict GPUQ jobs and contention flags",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
             "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
             "caveats": []
         },
@@ -95,7 +95,7 @@
             "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
             "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
             "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
-            "quiet_provenance": "saved actual strict GPUQ jobs and contention flags",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
             "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
             "caveats": []
         },
@@ -106,7 +106,7 @@
             "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "quiet_provenance": "saved actual strict GPUQ jobs and contention flags",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
             "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
             "caveats": []
         },
@@ -117,7 +117,7 @@
             "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
             "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
             "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
-            "quiet_provenance": "saved actual strict GPUQ jobs and contention flags",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
             "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
             "caveats": []
         },
@@ -128,7 +128,7 @@
             "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "quiet_provenance": "saved actual strict GPUQ jobs and contention flags",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
             "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
             "caveats": []
         },
@@ -139,7 +139,7 @@
             "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
             "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
             "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
-            "quiet_provenance": "saved actual strict GPUQ jobs and contention flags",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
             "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
             "caveats": []
         },
@@ -150,7 +150,7 @@
             "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "quiet_provenance": "saved actual strict GPUQ jobs and contention flags",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
             "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
             "caveats": []
         },
@@ -161,7 +161,7 @@
             "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
             "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
             "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
-            "quiet_provenance": "saved actual strict GPUQ jobs and contention flags",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
             "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
             "caveats": []
         },
@@ -172,7 +172,7 @@
             "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "quiet_provenance": "saved actual strict GPUQ jobs and contention flags",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
             "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
             "caveats": []
         },
@@ -183,7 +183,7 @@
             "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
             "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
             "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
-            "quiet_provenance": "saved actual strict GPUQ jobs and contention flags",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
             "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
             "caveats": []
         },
@@ -194,7 +194,7 @@
             "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "quiet_provenance": "saved actual strict GPUQ jobs and contention flags",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
             "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
             "caveats": []
         },
@@ -205,7 +205,7 @@
             "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
             "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
             "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
-            "quiet_provenance": "saved actual strict GPUQ jobs and contention flags",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
             "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
             "caveats": []
         },
@@ -216,7 +216,7 @@
             "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "quiet_provenance": "saved actual strict GPUQ jobs and contention flags",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
             "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
             "caveats": []
         },
@@ -227,7 +227,7 @@
             "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
             "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
             "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
-            "quiet_provenance": "saved actual strict GPUQ jobs and contention flags",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
             "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
             "caveats": []
         },
@@ -238,7 +238,7 @@
             "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "quiet_provenance": "saved actual strict GPUQ jobs and contention flags",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
             "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
             "caveats": []
         },
@@ -249,7 +249,7 @@
             "measurement_identity": "Strict baseline; paired interleaving for short workloads, one full Numerai-deep draw per build",
             "runtime_build": "09b6be9724f330f947c86de6e819654b077f70f2",
             "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
-            "quiet_provenance": "saved actual strict GPUQ jobs and contention flags",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
             "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
             "caveats": [
                 "single_draw_deep"
@@ -262,7 +262,7 @@
             "measurement_identity": "Strict candidate; paired interleaving for short workloads, one full Numerai-deep draw per build",
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "quiet_provenance": "saved actual strict GPUQ jobs and contention flags",
+            "quiet_provenance": "Completed on an otherwise idle GPU, with no recorded contention; retained execution records verified.",
             "evidence_path": "/tmp/falcata-noquant-validation-20261009/strict-timing-evidence.json",
             "caveats": [
                 "single_draw_deep"

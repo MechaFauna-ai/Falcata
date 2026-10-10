@@ -24,9 +24,9 @@ Cells show training seconds and primary held-out quality. Short workloads use th
 
 ## Build and source legend
 
-- **B:** Oct 8 runtime `b4da8135`, package version 1.0.6, GPUQ3494 strict admission with no recorded contention. Its runtime/lib identity is recovered from the contemporaneous build record and matching library MD5 `58897acd3df952c1989b8e354ed09a17`. It predates PR68’s fixedpoint Hessian ridge.
+- **B:** Oct 8 runtime `b4da8135`, package version 1.0.6, measured on an otherwise idle GPU with no recorded contention. Its runtime/lib identity is recovered from the contemporaneous build record and matching library MD5 `58897acd3df952c1989b8e354ed09a17`. It predates PR68’s fixedpoint Hessian ridge.
 - **R:** Post-PR68 Covtype refresh on runtime `0b170e0a`. All three Falcata Covtype modes and both regimes were refreshed. This build has no archived library digest or recorded quiet-admission flags in those raw rows.
-- **D:** Oct 9 selected runtime `d0bb8c47`, unoverridden FP64 default, actual library SHA256 `e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c`. Strict GPUQ endpoint provenance is recorded. The two stochastic controls use this build; the remaining D cells are noquant.
+- **D:** Oct 9 selected runtime `d0bb8c47`, unoverridden FP64 default, actual library SHA256 `e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c`. Idle-GPU conditions and absence of contention are recorded. The two stochastic controls use this build; the remaining D cells are noquant.
 - **L / competitor archive:** August 2026 snapshot. Recorded versions: XGBoost 3.3.0, CatBoost 1.2.10, upstream LightGBM CUDA/quant 4.7.0 and OpenCL 4.6.0. Falcata’s original snapshot prints 1.0.0 but is not a controlled tagged-v1.0.0 binary measurement. Exact record IDs, versions and hashes remain in the [matrix](benchmark-matrix.json).
 
 A dagger (†) means another endpoint in that selected group failed, despite a complete sane timed set. In particular, Fraud deep noquant has a rejected curve and unstable finite quality; its timed median must not imply that all 500 requested updates produced valid trees. Original uncapped failures stay in this table. The separately labelled cap-1 follow-up changes the configuration and is not substituted here.

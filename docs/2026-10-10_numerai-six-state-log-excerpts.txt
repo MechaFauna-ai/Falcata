@@ -1,6 +1,5 @@
 [standard-stoch-five] /tmp/falcata-six-values-20261009/logs/standard-stoch-five-warmup.log
 SHA256 617ec303a69a40b77beac3951291c84b7d10e2c8280dbd1b5531cd22a0ba2acb
-1: {"command": ["/home/felixjk/falcata-noquant-builds-20261009/d0bb8c47789e062acbf6b770918a0589a74ae9b2/venv/bin/python", "/tmp/falcata-six-values-20261009/run_cell.py", "--cell", "standard-stoch-five-warmup"], "gpuq_job_id": "3653"}
 2: [Falcata] [Info] Sparse columns are stored dense on CUDA; memory use may be higher than the CPU path for this dataset.
 3: [Falcata] [Info] Total Bins 17625
 4: [Falcata] [Info] Number of data points in the train set: 5502748, number of used features: 3525
@@ -23,7 +22,6 @@ SHA256 617ec303a69a40b77beac3951291c84b7d10e2c8280dbd1b5531cd22a0ba2acb
 
 [standard-stoch-six] /tmp/falcata-six-values-20261009/logs/standard-stoch-six-warmup.log
 SHA256 2dedd4bc438aad96d148c4256e4d26e80155c1a09dd623176f04b9a734fe6ef3
-1: {"command": ["/home/felixjk/falcata-noquant-builds-20261009/d0bb8c47789e062acbf6b770918a0589a74ae9b2/venv/bin/python", "/tmp/falcata-six-values-20261009/run_cell.py", "--cell", "standard-stoch-six-warmup"], "gpuq_job_id": "3653"}
 2: [Falcata] [Info] Sparse columns are stored dense on CUDA; memory use may be higher than the CPU path for this dataset.
 3: [Falcata] [Info] Total Bins 19567
 4: [Falcata] [Info] Number of data points in the train set: 5502748, number of used features: 3525
@@ -46,7 +44,6 @@ SHA256 2dedd4bc438aad96d148c4256e4d26e80155c1a09dd623176f04b9a734fe6ef3
 
 [standard-fixed-five] /tmp/falcata-six-values-20261009/logs/standard-fixed-five-warmup.log
 SHA256 dddb59c66c368fb232c390dd42d3afeb19eed5cc2120c921151465be4cdd05f7
-1: {"command": ["/home/felixjk/falcata-noquant-builds-20261009/d0bb8c47789e062acbf6b770918a0589a74ae9b2/venv/bin/python", "/tmp/falcata-six-values-20261009/run_cell.py", "--cell", "standard-fixed-five-warmup"], "gpuq_job_id": "3653"}
 2: [Falcata] [Info] Sparse columns are stored dense on CUDA; memory use may be higher than the CPU path for this dataset.
 3: [Falcata] [Info] Total Bins 17625
 4: [Falcata] [Info] Number of data points in the train set: 5502748, number of used features: 3525
@@ -69,7 +66,6 @@ SHA256 dddb59c66c368fb232c390dd42d3afeb19eed5cc2120c921151465be4cdd05f7
 
 [standard-fixed-six] /tmp/falcata-six-values-20261009/logs/standard-fixed-six-warmup.log
 SHA256 25e801d2ac70ab21587adfabe5465d860a29b1d4832745e914a37face49094c7
-1: {"command": ["/home/felixjk/falcata-noquant-builds-20261009/d0bb8c47789e062acbf6b770918a0589a74ae9b2/venv/bin/python", "/tmp/falcata-six-values-20261009/run_cell.py", "--cell", "standard-fixed-six-warmup"], "gpuq_job_id": "3653"}
 2: [Falcata] [Info] Sparse columns are stored dense on CUDA; memory use may be higher than the CPU path for this dataset.
 3: [Falcata] [Info] Total Bins 19567
 4: [Falcata] [Info] Number of data points in the train set: 5502748, number of used features: 3525
@@ -92,7 +88,6 @@ SHA256 25e801d2ac70ab21587adfabe5465d860a29b1d4832745e914a37face49094c7
 
 [recipe-fixed-fp32-five] /tmp/falcata-six-values-20261009/logs/recipe-fixed-fp32-five-warmup.log
 SHA256 6e467c587613c83dbfc5ec6c218eb2364f18ae09c6f157544b72ae21cdd9fa75
-1: {"command": ["/home/felixjk/falcata-noquant-builds-20261009/d0bb8c47789e062acbf6b770918a0589a74ae9b2/venv/bin/python", "/tmp/falcata-six-values-20261009/run_cell.py", "--cell", "recipe-fixed-fp32-five-warmup"], "gpuq_job_id": "3653"}
 2: [Falcata] [Info] Sparse columns are stored dense on CUDA; memory use may be higher than the CPU path for this dataset.
 3: [Falcata] [Info] Total Bins 17625
 4: [Falcata] [Info] Number of data points in the train set: 5502748, number of used features: 3525
@@ -115,7 +110,6 @@ SHA256 6e467c587613c83dbfc5ec6c218eb2364f18ae09c6f157544b72ae21cdd9fa75
 
 [recipe-fixed-fp32-six] /tmp/falcata-six-values-20261009/logs/recipe-fixed-fp32-six-warmup.log
 SHA256 129b22f7032e86136f7f12727c668c208b3245e4832f9a14edf40c2f722b87b5
-1: {"command": ["/home/felixjk/falcata-noquant-builds-20261009/d0bb8c47789e062acbf6b770918a0589a74ae9b2/venv/bin/python", "/tmp/falcata-six-values-20261009/run_cell.py", "--cell", "recipe-fixed-fp32-six-warmup"], "gpuq_job_id": "3653"}
 2: [Falcata] [Info] Sparse columns are stored dense on CUDA; memory use may be higher than the CPU path for this dataset.
 3: [Falcata] [Info] Total Bins 19567
 4: [Falcata] [Info] Number of data points in the train set: 5502748, number of used features: 3525

@@ -125,7 +125,7 @@ def compact_data(matrix_path):
         "schema": 1,
         "matrix_sha256": digest(matrix_path),
         "timer": "Whole training call, excluding Dataset construction and CPU prediction/scoring",
-        "hardware": "One RTX 5090; recorded modern endpoints strict GPUQ, no recorded contention",
+        "hardware": "One RTX 5090; measurements made on an otherwise idle GPU, with no recorded contention",
         "framework_comparison": "Archived August 2026 competitor endpoints, not current framework reruns",
         "quality_contract": "Shown endpoint values are not quality-equivalence or identical-model claims",
         "baseline_contract": "Launch snapshot printed version1.0.0; not a controlled tagged-v1.0.0 runtime comparison",

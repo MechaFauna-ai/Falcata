@@ -9,7 +9,7 @@
     },
     "device": "RTX 5090",
     "precision": "fp64",
-    "admission": "strict quiet GPUQ",
+    "admission": "Otherwise idle GPU; no recorded contention",
     "statistic": "100 * (1 - candidate_train_s / baseline_train_s); first four are medians of three timed draws",
     "quality_limits": [
         "Timing reductions do not establish equivalent model quality.",
@@ -25,7 +25,7 @@
             "timed_runs_per_build": 3,
             "baseline_train_s": 3.501219403988216,
             "baseline_library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
-            "baseline_gpuq_job_ids": [
+            "baseline_run_ids": [
                 3574
             ],
             "baseline_metrics": {
@@ -37,7 +37,7 @@
             },
             "candidate_train_s": 2.738359684997704,
             "candidate_library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "candidate_gpuq_job_ids": [
+            "candidate_run_ids": [
                 3574
             ],
             "candidate_metrics": {
@@ -55,7 +55,7 @@
             "timed_runs_per_build": 3,
             "baseline_train_s": 57.76554983400274,
             "baseline_library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
-            "baseline_gpuq_job_ids": [
+            "baseline_run_ids": [
                 3575
             ],
             "baseline_metrics": {
@@ -67,7 +67,7 @@
             },
             "candidate_train_s": 46.63613747499767,
             "candidate_library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "candidate_gpuq_job_ids": [
+            "candidate_run_ids": [
                 3575
             ],
             "candidate_metrics": {
@@ -85,7 +85,7 @@
             "timed_runs_per_build": 3,
             "baseline_train_s": 15.933554571995046,
             "baseline_library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
-            "baseline_gpuq_job_ids": [
+            "baseline_run_ids": [
                 3576
             ],
             "baseline_metrics": {
@@ -97,7 +97,7 @@
             },
             "candidate_train_s": 9.655266374000348,
             "candidate_library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "candidate_gpuq_job_ids": [
+            "candidate_run_ids": [
                 3576
             ],
             "candidate_metrics": {
@@ -115,7 +115,7 @@
             "timed_runs_per_build": 3,
             "baseline_train_s": 54.80883998298668,
             "baseline_library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
-            "baseline_gpuq_job_ids": [
+            "baseline_run_ids": [
                 3579
             ],
             "baseline_metrics": {
@@ -162,7 +162,7 @@
             },
             "candidate_train_s": 53.807147262996295,
             "candidate_library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "candidate_gpuq_job_ids": [
+            "candidate_run_ids": [
                 3579
             ],
             "candidate_metrics": {
@@ -215,7 +215,7 @@
             "timed_runs_per_build": 1,
             "baseline_train_s": 1372.5285235699848,
             "baseline_library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
-            "baseline_gpuq_job_ids": [
+            "baseline_run_ids": [
                 3582
             ],
             "baseline_metrics": {
@@ -262,7 +262,7 @@
             },
             "candidate_train_s": 1236.5093722750025,
             "candidate_library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "candidate_gpuq_job_ids": [
+            "candidate_run_ids": [
                 3583
             ],
             "candidate_metrics": {

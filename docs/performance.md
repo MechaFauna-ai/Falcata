@@ -6,7 +6,7 @@ with a distinct missing state**, versus **266 trees/s with five numeric states**
 (155.721 vs 112.702 s). Standard six-state warmups retain compact views and
 pair-joint histograms. The current 16,384-leaf FP32 recipe instead crosses a
 memory-admission threshold and reaches **10.29 vs 88.21 trees/s** in 2,000-round
-probes. All 27 records passed strict, uncontended admission. This is a paired
+probes. All 27 records passed on an otherwise idle GPU, with no recorded contention. This is a paired
 representation benchmark, separate from the historical launch snapshot below;
 five-era sanity is not equal-quality or deployment evidence.
 [Measured results and diagnosis](2026-10-10_numerai-six-state-throughput.md).
@@ -887,7 +887,7 @@ a 30-round year model on the deterministic host loop keeps its md5), none a plan
 - **Eight need-fix features per fix block.** The fused small-leaf fix + subtract stages eight need-fix features 32
   bins at a time and folds their 16 sums in 16 lanes of one warp, instead of one feature per 512-thread block.
 
-| (median of timed1-3, exclusive gpuq class, `train_s`) | 1.0.0 | master `b4da8135` | this | vs master | vs 1.0.0 |
+| (median of timed1-3, idle GPU, `train_s`) | 1.0.0 | master `b4da8135` | this | vs master | vs 1.0.0 |
 |---|---|---|---|---|---|
 | year deep, noquant | 3.60 s | 5.07 s | 3.85 s | 1.32x | 0.93x |
 | epsilon deep, noquant | 60.2 s | 98.2 s | 58.7 s | 1.67x | 1.03x |

@@ -48,8 +48,8 @@ learning rate 0.001, depth 10, 1,024 leaves, feature fraction 0.1,
 Stochastic quantization resolves to four gradient bins. The October 8 time is
 110.798968 seconds, one complete timed draw, on runtime
 [`b4da8135`](https://github.com/MechaFauna-ai/Falcata/commit/b4da81352d5f9528699af9ea46a05ebbbeb091f3).
-GPUQ job 3494 completed with strict admission, desktop dark at dispatch, no
-recorded contention and an empty contention log. The contemporaneous library
+The run completed on an otherwise idle GPU, with no recorded contention.
+The contemporaneous library
 MD5 `58897acd3df952c1989b8e354ed09a17` matches the retained installed binary.
 No plan overrides were supplied; `pair_code5_epilogue` was OFF. Both launch and
 October deep inputs were float32. The old harness omits an accepted-tree counter,
@@ -59,13 +59,13 @@ Archived CORR is 0.0238513. Total cell time including CPU prediction was about
 
 **Numerai example:** same training shape, 2,000 rounds, learning rate 0.01,
 32 leaves, depth 5 and feature fraction 0.1. October 9 selected stochastic
-median: 5.615935 seconds; CORR 0.0194266. Three timed draws, job 3581,
-strict and uncontended. The new input is int8; the historical input was float32.
+median: 5.615935 seconds; CORR 0.0194266. Three timed draws on an otherwise
+idle GPU, with no recorded contention. The new input is int8; the historical input was float32.
 
 **Epsilon deep:** 400,000 training rows × 2,000 features, 500 rounds,
 learning rate 0.1, 1,023 leaves and depth 10. Selected stochastic median:
-11.220135 seconds, AUC 0.9424295; three timed draws, job 3580,
-strict and uncontended. Both snapshots use float32. Archived competitor AUCs
+11.220135 seconds, AUC 0.9424295; three timed draws on an otherwise idle GPU,
+with no recorded contention. Both snapshots use float32. Archived competitor AUCs
 differ, particularly CatBoost's 0.9507561. Do not describe these bars as an
 equal-quality result.
 
@@ -192,7 +192,7 @@ target. These times must not be compared as a release speedup against the old ca
 The full six-state run accepted all 30,000 trees in **155.721 s**, versus
 **112.702 s** with five states: 38.2% more training time. Construction, CPU
 prediction and canonical metric evaluation are measured separately. All 27
-frozen records passed under terminal, uncontended strict GPUQ job 3653; failed,
+frozen records completed on an otherwise idle GPU with no recorded contention; failed,
 pending, blocked and contended/excluded counts are zero. The prerequisite gate
 established exact trees/bin metadata/prediction parity for native int8 sentinel,
 float16 NaN and float32 NaN.
