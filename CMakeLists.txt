@@ -965,6 +965,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_serialize.cpp
       tests/cpp_tests/test_single_row.cpp
       tests/cpp_tests/test_stream.cpp
+      tests/cpp_tests/test_xentropy_lambda.cpp
       tests/cpp_tests/testutils.cpp
     )
   if(MSVC)
