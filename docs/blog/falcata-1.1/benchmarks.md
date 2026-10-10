@@ -223,3 +223,58 @@ selection verdict. FP64 remains the library default.
 [portable chart generator](plot_six_state.py) preserve all draws, actual bin
 counts, parameters, fingerprints, separate timings and the source-linked
 memory diagnosis.
+
+## Kernel evolution history
+
+The [offline lineage explorer](lineage-explorer.html) is a reader view of the
+search history behind the article. Download the HTML file and open it in a
+browser; its data, styles and scripts are embedded, with no network requests or
+live experiment controls. GitHub displays HTML source rather than running this
+interface. The same artifact can be served alongside the article when it is
+published later.
+
+The frozen export contains **532 archived records**: 141 whole-library search
+records and 391 isolated replay evaluations. One started, interrupted worker
+without a final archive brings the attempt-record count to **533**. These are
+records, including duplicates, imported seeds and re-evaluations, rather than
+533 unique implementations. Thirteen campaign baselines, fourteen documented
+integration milestones and seven explicit references bring the graph to 567
+nodes. The references cover three retained best-program metadata records, three
+unavailable early parents and the missing predecessor named by the interrupted
+worker. Seven smoke/development/dry archive records are excluded; unrelated
+GEMM experiments and measurement-only folders are outside this Falcata scope.
+
+The 264 edges distinguish recorded starting-state parents, combinations, idea
+continuations, cross-branch reuse and documented integration. Twenty-three
+integration edges connect public implementation commits to later campaign
+baselines through verified Git ancestry. These establish code presence; they
+do not assign a share of a performance gain. Original candidate hashes can be
+local search objects, so only verified public hashes receive GitHub links.
+
+Training timings, dataset construction, kernel replays and multi-shape split
+search use separate metric labels. Outcomes such as improved or regressed compare
+a candidate with its parent; displayed ratios compare it with the measurement
+baseline. Imported `night3:c047`, `night5:c088` and `construct2:k007` retain earlier
+measurements, explicitly scoped to their source campaigns. No cross-campaign
+ratios are multiplied or ranked as release speedups.
+
+Full hypothesis sets are retained. In `night4:c079`, the first hypothesis is
+refuted and the second confirmed. A worker's archived summary claim, latest
+written hypothesis verdict, measured outcome and reviewer decision are separate.
+The original replay construct champion's later expanded-coverage failure remains
+visible. Missing early evolution traces prevent a complete reconstruction of
+their parents; evaluation chronology is never substituted for those edges.
+
+[Public archive](lineage-data.json) and [source hash manifest](lineage-source-manifest.json)
+preserve the coverage and logical evidence references. The public view omits
+operational timestamps, worker budgets/costs, transcripts and local locations.
+Device command-queue terminology is expanded for clarity; the manifest records
+this wording change and retains the original source hashes.
+It leaves the existing live dashboard and experiment records intact.
+The [builder](build_lineage.py), [UI script](lineage-explorer.js),
+[styles](lineage-explorer.css) and [template](lineage-template.html) reproduce the
+single-file explorer from the frozen archive:
+
+```bash
+python docs/blog/falcata-1.1/build_lineage.py
+```

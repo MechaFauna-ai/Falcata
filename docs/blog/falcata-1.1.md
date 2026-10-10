@@ -178,6 +178,33 @@ Code: [resident work](https://github.com/MechaFauna-ai/Falcata/commit/be446048d3
 [metadata batching](https://github.com/MechaFauna-ai/Falcata/commit/0199a6a30fb7aa70ec1b3d1fba7eb932332bc558),
 [producer readback](https://github.com/MechaFauna-ai/Falcata/commit/3e6fcdf369134c3347315586ebeb139a3515d64c).
 
+## How we found the gains
+
+We used **kernel evolution** in two forms. Early searches replayed real GPU
+launches, letting AI workers explore one kernel at a time. Later, Claude Code
+workers edited separate branches of the library. Each began with a profiler
+observation, a hypothesis and a test that could refute it. An operator measured
+candidates, checked model identity and broader correctness, and requested
+independent review. Useful ideas could continue on a new branch or combine
+with another branch's work.
+
+The code-word optimization shows why that loop matters. Its first hypothesis
+was that fewer bytes would make the construct faster. The measurements refuted
+the expected gain and exposed the load/store issue bottleneck. Its second
+hypothesis shared the repeated loads across six feature pairs—and survived the
+checks. A rejected earlier implementation, the independent packing branch and
+their later combination are all part of that history.
+
+[![Explore the connected kernel-evolution history and a candidate's hypothesis](falcata-1.1/lineage-preview.jpg)](falcata-1.1/lineage-explorer.html)
+
+The [interactive explorer](falcata-1.1/lineage-explorer.html) brings **13 campaigns
+and 533 candidate/replay records** into one view. Start with the three mechanisms,
+then click through hypotheses, verdicts and public implementation commits. Losing
+and unfinished attempts remain visible; missing early ancestry is marked.
+Download the single HTML file and open it in a browser to interact with it;
+GitHub's file view shows its source. The [coverage notes](falcata-1.1/benchmarks.md#kernel-evolution-history)
+explain the different measurements and recorded relationships.
+
 ## Beyond the quantized hot loop
 
 The same iteration has improved the rest of the library:

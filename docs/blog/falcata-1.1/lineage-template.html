@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Explore the hypotheses, branches and failed experiments behind Falcata's faster GPU tree training.">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; connect-src 'none'">
+  <title>Falcata 1.1 — Kernel evolution</title>
+  <style>/* INLINE_STYLE */</style>
+</head>
+<body>
+  <header>
+    <div class="masthead"><a href="https://github.com/MechaFauna-ai/Falcata" target="_blank" rel="noreferrer">Falcata <span>1.1</span></a><span>KERNEL EVOLUTION</span><button type="button" id="theme" aria-label="Switch to dark theme">Dark theme</button></div>
+    <div class="intro"><div><p class="eyebrow">A SEARCH YOU CAN EXPLORE</p><h1>The path to<br>faster trees.</h1></div><div class="intro-copy"><p>Profile a bottleneck. Write a hypothesis. Build a candidate. Try to prove it wrong.</p><p class="muted">Explore the branches behind the release, including ideas that lost, failed or never reached a scored result. Recorded code parents and idea reuse have their own edges.</p></div></div>
+    <div class="stats" id="stats" aria-label="Archive coverage"></div>
+  </header>
+  <main>
+    <section aria-labelledby="highlights-title"><div class="section-heading"><h2 id="highlights-title">Three ideas worth following</h2><span class="muted">Start with a mechanism, then explore its branches.</span></div><div id="highlights" class="highlights"></div></section>
+    <section class="explorer" aria-labelledby="explorer-title">
+      <div class="section-heading"><h2 id="explorer-title">Follow the evidence</h2><div class="view-tabs" role="group" aria-label="Graph view"><button id="route-view" type="button" aria-pressed="true">Release paths</button><button id="all-view" type="button" aria-pressed="false">All candidates</button></div></div>
+      <div class="filters"><label>Campaign<select id="campaign"><option value="all">All campaigns</option></select></label><label class="search">Search candidates<input id="search" type="search" placeholder="Try code5, occupancy, c088…"></label><label>Outcome<select id="outcome"><option value="all">All outcomes</option><option value="improved">Improved</option><option value="neutral">Neutral</option><option value="regressed">Regressed</option><option value="refuted">Refuted</option><option value="rejected">Review rejected</option><option value="failed">Failed checks / build</option><option value="interrupted">Interrupted</option><option value="noresult">No scored result</option><option value="valid_unclassified">Valid replay</option><option value="reused">Reused replay</option><option value="unknown">Outcome unavailable</option></select></label></div>
+      <div class="legend"><span><i class="dot improved"></i>Improved</span><span><i class="dot neutral"></i>Neutral</span><span><i class="dot failed"></i>Failed / slower</span><span><i class="dot open"></i>Unscored / refuted</span><span><i class="line"></i>Recorded parent</span><span><i class="line combine"></i>Combined parent</span><span><i class="line idea"></i>Idea reuse</span><span><i class="line integration"></i>Verified integration</span></div>
+      <div class="workspace"><div class="graph-panel"><div class="graph-tools"><p id="graph-count" role="status" aria-live="polite"></p><div><label class="ancestry"><input id="ancestry" type="checkbox">Focus selected ancestry</label><button id="zoom-out" type="button" aria-label="Zoom out">−</button><button id="zoom-in" type="button" aria-label="Zoom in">+</button><button id="reset" type="button">Reset</button></div></div><div class="graph-scroll" id="graph-scroll"><div id="graph"></div></div><p class="graph-help">Columns follow recorded parent and integration edges. Click a node to inspect its hypothesis and evidence. Scroll to explore the graph.</p></div><aside id="detail" aria-label="Selected candidate" tabindex="-1"></aside></div>
+      <p class="scope" id="scope"></p>
+      <details class="records"><summary id="records-title">Browse the candidate list</summary><div id="candidate-list"></div></details>
+    </section>
+    <section class="method" aria-labelledby="method-title"><div><p class="eyebrow">WHAT A NODE MEANS</p><h2 id="method-title">A candidate is an experiment,<br>not a promise.</h2></div><div><p>Workers explored separate code branches. The operator tested candidates, checked model identity and broader correctness, and sought independent review. A faster local kernel still had to improve a useful workload.</p><p>Each ratio belongs to its own campaign baseline and timing protocol. Outcome labels such as “improved” compare a candidate with its parent; the displayed ratio compares it with the campaign baseline. A candidate can beat the baseline and still regress from its parent.</p><p>Early replay scores, short probes, construction timings and full training are different measurements. They are never multiplied into a release speedup here. “Accepted” means eligible in that search; the article links separately identify integrated code.</p><details><summary>Coverage and limits</summary><ul id="limits"></ul></details></div></section>
+  </main>
+  <footer><span>Falcata · GPU gradient boosting · MIT licensed</span><span>A frozen, offline view. No live runs, telemetry or external scripts.</span></footer>
+  <script id="lineage-data" type="application/json">"__INLINE_DATA__"</script>
+  <script>/* INLINE_SCRIPT */</script>
+</body>
+</html>
