@@ -144,7 +144,7 @@ template <typename VAL_T, typename REDUCE_T>
 __global__ void ShuffleReduceMinGlobalKernel(const VAL_T* values, const data_size_t num_value, REDUCE_T* block_buffer) {
   __shared__ REDUCE_T shared_buffer[WARPSIZE];
   const data_size_t data_index = static_cast<data_size_t>(blockIdx.x * blockDim.x + threadIdx.x);
-  const REDUCE_T value = (data_index < num_value ? static_cast<REDUCE_T>(values[data_index]) : 0.0f);
+  const REDUCE_T value = (data_index < num_value ? static_cast<REDUCE_T>(values[data_index]) : static_cast<REDUCE_T>(INFINITY));
   const REDUCE_T reduce_value = ShuffleReduceMin<REDUCE_T>(value, shared_buffer, blockDim.x);
   if (threadIdx.x == 0) {
     block_buffer[blockIdx.x] = reduce_value;
@@ -154,7 +154,7 @@ __global__ void ShuffleReduceMinGlobalKernel(const VAL_T* values, const data_siz
 template <typename T>
 __global__ void ShuffleBlockReduceMin(T* block_buffer, const data_size_t num_blocks) {
   __shared__ T shared_buffer[WARPSIZE];
-  T thread_min = 0;
+  T thread_min = static_cast<T>(INFINITY);
   for (data_size_t block_index = static_cast<data_size_t>(threadIdx.x); block_index < num_blocks; block_index += static_cast<data_size_t>(blockDim.x)) {
     const T value = block_buffer[block_index];
     if (value < thread_min) {
