@@ -1,5 +1,19 @@
 # What makes Falcata fast — and how we know
 
+**Latest paired representation measurement, 2026-10-10:** on frozen Numerai
+build 1230, the standard stochastic recipe trains 30,000 trees at **193 trees/s
+with a distinct missing state**, versus **266 trees/s with five numeric states**
+(155.721 vs 112.702 s). Standard six-state warmups retain compact views and
+pair-joint histograms. The current 16,384-leaf FP32 recipe instead crosses a
+memory-admission threshold and reaches **10.29 vs 88.21 trees/s** in 2,000-round
+probes. All 27 records passed strict, uncontended admission. This is a paired
+representation benchmark, separate from the historical launch snapshot below;
+five-era sanity is not equal-quality or deployment evidence.
+[Measured results and diagnosis](2026-10-10_numerai-six-state-throughput.md).
+For accumulated improvements since launch, see the
+[proposed 1.1 article](blog/falcata-1.1.md) and its
+[complete benchmark companion](blog/falcata-1.1/benchmarks.md).
+
 **2.4× faster than XGBoost. 14× faster than LightGBM. 4.7× faster than
 CatBoost.** All libraries training on the same GPU via CUDA; geometric mean
 over the seven deep workloads at matched-or-better held-out quality — and
