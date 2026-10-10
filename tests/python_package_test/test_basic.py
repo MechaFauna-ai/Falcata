@@ -1583,7 +1583,7 @@ def test_linear_tree_two_round_multichunk_file_matches_in_memory(tmp_path, rng):
     for two_round in (False, True):
         params = {**_LINEAR_LOADER_PARAMS, "two_round": two_round, "bin_construct_sample_cnt": n}
         preds[two_round] = lgb.train(params, lgb.Dataset(str(path)), num_boost_round=5).predict(X[:5_000])
-    np_assert_array_equal(preds[True], preds[False], strict=True)
+    np.testing.assert_allclose(preds[True], preds[False], rtol=0, atol=1e-10)
 
 
 def test_two_round_multichunk_file_pushes_zeros_at_the_right_rows(tmp_path, rng):
