@@ -1550,13 +1550,13 @@ _LINEAR_LOADER_PARAMS = {
 
 
 @pytest.mark.parametrize("two_round", [False, True])
-def test_linear_tree_sparse_file_matches_numpy(tmp_path, rng, two_round):
+def test_linear_tree_sparse_file_matches_numpy(tmp_path, rng_fixed_seed, two_round):
     # Features absent from a libsvm row are 0. The raw values kept for linear
     # trees must not inherit the previous row's value for absent features.
     n = 2_000
-    X = rng.uniform(1, 2, size=(n, 3))
-    X[rng.uniform(size=X.shape) < 0.5] = 0.0
-    y = 3 * X[:, 0] - 2 * X[:, 1] + X[:, 2] + rng.normal(scale=0.01, size=n)
+    X = rng_fixed_seed.uniform(1, 2, size=(n, 3))
+    X[rng_fixed_seed.uniform(size=X.shape) < 0.5] = 0.0
+    y = 3 * X[:, 0] - 2 * X[:, 1] + X[:, 2] + rng_fixed_seed.normal(scale=0.01, size=n)
     path = tmp_path / "sparse.svm"
     dump_svmlight_file(X, y, str(path), zero_based=True)
     expected = lgb.train(_LINEAR_LOADER_PARAMS, lgb.Dataset(X, y), num_boost_round=5).predict(X)
@@ -1573,9 +1573,9 @@ def _write_large_csv(path, X, y):
     assert path.stat().st_size > 16 * 1024 * 1024
 
 
-def test_linear_tree_two_round_multichunk_file_matches_in_memory(tmp_path, rng):
+def test_linear_tree_two_round_multichunk_file_matches_in_memory(tmp_path, rng_fixed_seed):
     n = 700_000
-    X = rng.uniform(size=(n, 2))
+    X = rng_fixed_seed.uniform(size=(n, 2))
     y = 3 * X[:, 0] - 2 * X[:, 1]
     path = tmp_path / "dense.csv"
     _write_large_csv(path, X, y)
@@ -1586,12 +1586,12 @@ def test_linear_tree_two_round_multichunk_file_matches_in_memory(tmp_path, rng):
     np.testing.assert_allclose(preds[True], preds[False], rtol=0, atol=1e-10)
 
 
-def test_two_round_multichunk_file_pushes_zeros_at_the_right_rows(tmp_path, rng):
+def test_two_round_multichunk_file_pushes_zeros_at_the_right_rows(tmp_path, rng_fixed_seed):
     # Feature 0 is 1 in ~90% of rows, so its most-frequent bin is not its zero
     # bin and absent (zero) entries are pushed explicitly row by row.
     n = 700_000
-    X = rng.uniform(1, 2, size=(n, 2))
-    u = rng.uniform(size=n)
+    X = rng_fixed_seed.uniform(1, 2, size=(n, 2))
+    u = rng_fixed_seed.uniform(size=n)
     X[:, 0] = np.where(u < 0.05, 0.0, np.where(u < 0.10, 2.0, 1.0))
     y = 3 * X[:, 0] - 2 * X[:, 1]
     path = tmp_path / "mostly_ones.svm"
