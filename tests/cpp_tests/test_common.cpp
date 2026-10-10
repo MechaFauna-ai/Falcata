@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 #include <Falcata/utils/common.h>
 
+#include <cmath>
 #include <limits>
 
 
@@ -124,7 +125,7 @@ TEST_F(AtofPreciseTest, NaN) {
     double got = TestAtofPrecise(test.data, test.expected, false);
 
     EXPECT_TRUE(std::isnan(got)) << "not parsed as NaN: " << test.data;
-    if (got > 0) {
+    if (!std::signbit(test.expected)) {
       // See comment in test_cases.
       EXPECT_EQ(memcmp(&got, &test.expected, sizeof(test.expected)), 0)
                 << "parsed NaN is not the same for every bit: " << test.data;
