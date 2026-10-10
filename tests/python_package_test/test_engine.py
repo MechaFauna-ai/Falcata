@@ -582,6 +582,35 @@ def test_cat_random_search_cuda(n_cat, quantized):
 
 
 @pytest.mark.skipif(getenv("TASK", "") != "cuda", reason="CUDA-only regression test")
+def test_rank_xendcg_cuda_singleton_query_does_not_clobber_next_query(rng):
+    # The CUDA rank_xendcg kernels assign NUM_QUERY_PER_BLOCK (10) queries to
+    # each block. A singleton query must zero only its own item; the first item
+    # of the following query (owned by another block) must keep its gradient.
+    groups = []
+    for _ in range(50):
+        groups += [64] * 9 + [1]
+    groups += [64]
+    bounds = np.concatenate([[0], np.cumsum(groups)])
+    marked = np.zeros(bounds[-1], dtype=bool)
+    marked[bounds[10:-1:10]] = True
+    X = np.column_stack([marked.astype(np.float64), rng.uniform(size=marked.size)])
+    y = np.where(marked, 3, rng.integers(0, 2, size=marked.size))
+    params = {
+        "objective": "rank_xendcg",
+        "device_type": "cuda",
+        "num_leaves": 3,
+        "min_data_in_leaf": 1,
+        "min_sum_hessian_in_leaf": 0,
+        "learning_rate": 0.5,
+        "verbose": -1,
+    }
+    bst = lgb.train(params, lgb.Dataset(X, y, group=groups), num_boost_round=3)
+    raw = bst.predict(X, raw_score=True)
+    assert bst.feature_importance("gain")[0] > 0
+    assert raw[marked].mean() > raw[~marked].mean() + 1.0
+
+
+@pytest.mark.skipif(getenv("TASK", "") != "cuda", reason="CUDA-only regression test")
 def test_min_data_per_group_cuda_matches_cpu():
     # Regression test for the categorical kernels in cuda_best_split_finder.cu
     # ignoring min_data_per_group entirely. Dataset has 200 rows split across
