@@ -1536,3 +1536,20 @@ def test_tree_sizes_must_account_for_every_tree_in_the_text():
     empty_text = empty.model_to_string()
     assert "\ntree_sizes=\n" in empty_text
     assert lgb.Booster(model_str=empty_text).num_trees() == 0
+
+
+def test_multiclass_init_score_file_is_parsed_exactly(tmp_path, rng):
+    # Rows of a multi-column .init file are parsed in parallel; each thread
+    # must use its own split buffer or rows read each other's values.
+    n_rows, n_class = 50_000, 4
+    X = rng.uniform(size=(n_rows, 3))
+    y = rng.integers(0, n_class, size=n_rows)
+    data_path = tmp_path / "train.csv"
+    np.savetxt(data_path, np.column_stack([y, X]), delimiter=",", fmt="%.6f")
+    init = np.arange(n_rows * n_class, dtype=np.float64).reshape(n_rows, n_class)
+    np.savetxt(f"{data_path}.init", init, delimiter="\t", fmt="%d")
+    for _ in range(5):
+        ds = lgb.Dataset(
+            str(data_path), params={"objective": "multiclass", "num_class": n_class, "num_threads": 16, "verbose": -1}
+        ).construct()
+        np_assert_array_equal(ds.get_field("init_score"), init, strict=True)
