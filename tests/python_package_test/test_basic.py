@@ -1536,3 +1536,71 @@ def test_tree_sizes_must_account_for_every_tree_in_the_text():
     empty_text = empty.model_to_string()
     assert "\ntree_sizes=\n" in empty_text
     assert lgb.Booster(model_str=empty_text).num_trees() == 0
+
+
+_LINEAR_LOADER_PARAMS = {
+    "objective": "regression",
+    "linear_tree": True,
+    "num_leaves": 4,
+    "min_data_in_leaf": 20,
+    "deterministic": True,
+    "num_threads": 4,
+    "verbose": -1,
+}
+
+
+@pytest.mark.parametrize("two_round", [False, True])
+def test_linear_tree_sparse_file_matches_numpy(tmp_path, rng, two_round):
+    # Features absent from a libsvm row are 0. The raw values kept for linear
+    # trees must not inherit the previous row's value for absent features.
+    n = 2_000
+    X = rng.uniform(1, 2, size=(n, 3))
+    X[rng.uniform(size=X.shape) < 0.5] = 0.0
+    y = 3 * X[:, 0] - 2 * X[:, 1] + X[:, 2] + rng.normal(scale=0.01, size=n)
+    path = tmp_path / "sparse.svm"
+    dump_svmlight_file(X, y, str(path), zero_based=True)
+    expected = lgb.train(_LINEAR_LOADER_PARAMS, lgb.Dataset(X, y), num_boost_round=5).predict(X)
+    params = {**_LINEAR_LOADER_PARAMS, "two_round": two_round}
+    actual = lgb.train(params, lgb.Dataset(str(path)), num_boost_round=5).predict(X)
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-9)
+
+
+def _write_large_csv(path, X, y):
+    # two_round loading streams the file in 16 MiB chunks; these tests need
+    # more than one chunk so row indices must be offset by the chunk start.
+    # Callers sample every row for binning so both loaders build identical bins.
+    np.savetxt(path, np.column_stack([y, X]), delimiter=",", fmt="%.8f")
+    assert path.stat().st_size > 16 * 1024 * 1024
+
+
+def test_linear_tree_two_round_multichunk_file_matches_in_memory(tmp_path, rng):
+    n = 700_000
+    X = rng.uniform(size=(n, 2))
+    y = 3 * X[:, 0] - 2 * X[:, 1]
+    path = tmp_path / "dense.csv"
+    _write_large_csv(path, X, y)
+    preds = {}
+    for two_round in (False, True):
+        params = {**_LINEAR_LOADER_PARAMS, "two_round": two_round, "bin_construct_sample_cnt": n}
+        preds[two_round] = lgb.train(params, lgb.Dataset(str(path)), num_boost_round=5).predict(X[:5_000])
+    np_assert_array_equal(preds[True], preds[False], strict=True)
+
+
+def test_two_round_multichunk_file_pushes_zeros_at_the_right_rows(tmp_path, rng):
+    # Feature 0 is 1 in ~90% of rows, so its most-frequent bin is not its zero
+    # bin and absent (zero) entries are pushed explicitly row by row.
+    n = 700_000
+    X = rng.uniform(1, 2, size=(n, 2))
+    u = rng.uniform(size=n)
+    X[:, 0] = np.where(u < 0.05, 0.0, np.where(u < 0.10, 2.0, 1.0))
+    y = 3 * X[:, 0] - 2 * X[:, 1]
+    path = tmp_path / "mostly_ones.svm"
+    dump_svmlight_file(X, y, str(path), zero_based=True)
+    assert path.stat().st_size > 16 * 1024 * 1024
+    dumps = []
+    for two_round in (False, True):
+        params = {"two_round": two_round, "bin_construct_sample_cnt": n, "verbose": -1}
+        dump = tmp_path / f"dump_two_round_{two_round}.txt"
+        lgb.Dataset(str(path), params=params).construct()._dump_text(dump)
+        dumps.append(dump)
+    assert filecmp.cmp(*dumps, shallow=False)
