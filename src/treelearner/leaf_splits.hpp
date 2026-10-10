@@ -184,7 +184,7 @@ class LeafSplits {
       const data_size_t idx = data_indices_[i];
       tmp_sum_gradients += int_gradients_and_hessians[2 * idx + 1] * grad_scale;
       tmp_sum_hessians += int_gradients_and_hessians[2 * idx] * hess_scale;
-      const int16_t packed_int_grad_and_hess = packed_int_gradients_and_hessians[i];
+      const int16_t packed_int_grad_and_hess = packed_int_gradients_and_hessians[idx];
       const int64_t packed_long_int_grad_and_hess =
         (static_cast<int64_t>(static_cast<int8_t>(packed_int_grad_and_hess >> 8)) << 32) |
         (static_cast<int64_t>(packed_int_grad_and_hess & 0x00ff));
