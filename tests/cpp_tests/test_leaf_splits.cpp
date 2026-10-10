@@ -36,7 +36,7 @@ TEST(LeafSplits, DiscretizedInitOnPartitionSumsTheLeafRows) {
     if (leaf_pred[row] == 0) {
       const int8_t hess = grad_hess[2 * row];
       const int8_t grad = grad_hess[2 * row + 1];
-      expected_packed_sum += (static_cast<int64_t>(grad) << 32) | static_cast<int64_t>(static_cast<uint8_t>(hess));
+      expected_packed_sum += (static_cast<int64_t>(grad) * (int64_t{1} << 32)) | static_cast<int64_t>(static_cast<uint8_t>(hess));
       expected_grad_sum += grad;
       expected_hess_sum += hess;
     }
