@@ -1575,6 +1575,23 @@ def test_falb_round_trip_keeps_categorical_split_indices_above_255(rng):
     np_assert_array_equal(restored.predict(X), bst.predict(X), strict=True)
 
 
+def test_multiclass_init_score_file_is_parsed_exactly(tmp_path, rng):
+    # Rows of a multi-column .init file are parsed in parallel; each thread
+    # must use its own split buffer or rows read each other's values.
+    n_rows, n_class = 50_000, 4
+    X = rng.uniform(size=(n_rows, 3))
+    y = rng.integers(0, n_class, size=n_rows)
+    data_path = tmp_path / "train.csv"
+    np.savetxt(data_path, np.column_stack([y, X]), delimiter=",", fmt="%.6f")
+    init = np.arange(n_rows * n_class, dtype=np.float64).reshape(n_rows, n_class)
+    np.savetxt(f"{data_path}.init", init, delimiter="\t", fmt="%d")
+    for _ in range(5):
+        ds = lgb.Dataset(
+            str(data_path), params={"objective": "multiclass", "num_class": n_class, "num_threads": 16, "verbose": -1}
+        ).construct()
+        np_assert_array_equal(ds.get_field("init_score"), init, strict=True)
+
+
 def test_import_succeeds_when_sklearn_module_is_unavailable():
     # The optional scikit-learn API (and its LGBM* aliases) must not take
     # `import falcata` down with it when falcata.sklearn cannot be imported.
@@ -1588,3 +1605,17 @@ def test_import_succeeds_when_sklearn_module_is_unavailable():
     )
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.parametrize("label", ["9.5", "9.649e-05", "250", "-12"])
+@pytest.mark.parametrize("row", [0, 3])
+def test_libsvm_label_only_row_does_not_add_features(tmp_path, label, row):
+    # A row whose features are all zero is just its label; the column count
+    # must come from the feature indices of the other rows only.
+    lines = ["1.5 0:1.0 1:2.0 2:3.0", "0.5 0:2.0 2:1.0", "2.5 1:1.0 2:2.0", "3.5 0:3.0 1:1.0"] * 10
+    lines.insert(row, label)
+    path = tmp_path / "label_only.svm"
+    path.write_text("\n".join(lines) + "\n")
+    ds = lgb.Dataset(str(path), params={"min_data_in_bin": 1, "verbose": -1}).construct()
+    assert ds.num_feature() == 3
+    assert ds.num_data() == len(lines)

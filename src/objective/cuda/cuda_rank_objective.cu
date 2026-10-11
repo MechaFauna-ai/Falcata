@@ -889,7 +889,7 @@ __global__ void GetGradientsKernel_RankXENDCG_SharedMemory(
     __shared__ score_t shared_lambdas[SHARED_MEMORY_SIZE];
     __shared__ double reduce_result;
     if (query_item_count <= 1) {
-      for (data_size_t i = 0; i <= query_item_count; ++i) {
+      for (data_size_t i = 0; i < query_item_count; ++i) {
         cuda_out_gradients_pointer[i] = 0.0f;
         cuda_out_hessians_pointer[i] = 0.0f;
       }
@@ -1005,7 +1005,7 @@ __global__ void GetGradientsKernel_RankXENDCG_GlobalMemory(
     __shared__ double shared_buffer[1024 / WARPSIZE];
     __shared__ double reduce_result;
     if (query_item_count <= 1) {
-      for (data_size_t i = 0; i <= query_item_count; ++i) {
+      for (data_size_t i = 0; i < query_item_count; ++i) {
         cuda_out_gradients_pointer[i] = 0.0f;
         cuda_out_hessians_pointer[i] = 0.0f;
       }
