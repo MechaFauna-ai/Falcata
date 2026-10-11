@@ -7,6 +7,7 @@
 #include <Falcata/utils/common.h>
 
 #include <limits>
+#include <vector>
 
 
 // This is a basic test for floating number parsing.
@@ -150,4 +151,16 @@ TEST_F(AtofPreciseTest, Inf) {
     EXPECT_EQ(memcmp(&got, &test.expected, sizeof(test.expected)), 0)
               << "parsed infinite is not the same for every bit: " << test.data;
   }
+}
+
+TEST(SortForPair, SortsOnlyTheSuffixFromStart) {
+  std::vector<int> keys = {9, 8, 3, 1, 2};
+  std::vector<int> values = {90, 80, 30, 10, 20};
+  Falcata::Common::SortForPair<int, int>(&keys, &values, 2);
+  EXPECT_EQ(keys, (std::vector<int>{9, 8, 1, 2, 3}));
+  EXPECT_EQ(values, (std::vector<int>{90, 80, 10, 20, 30}));
+
+  Falcata::Common::SortForPair<int, int>(&keys, &values, 1, true);
+  EXPECT_EQ(keys, (std::vector<int>{9, 8, 3, 2, 1}));
+  EXPECT_EQ(values, (std::vector<int>{90, 80, 30, 20, 10}));
 }
