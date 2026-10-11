@@ -483,7 +483,7 @@ Learning Control Parameters
 
    -  used to limit the max output of tree leaves
 
-   -  negative values select automatic stabilization: for non-quantized ``binary``, ``multiclass`` and ``multiclassova`` with GBDT (including GOSS) or DART, each tree's training step (excluding the initial class-prior offset) is limited to one unit of the sigmoid-scaled score (binary / OVA) or raw score (softmax)
+   -  negative values select automatic stabilization: for non-quantized ``binary``, ``multiclass`` and ``multiclassova`` with GBDT (including GOSS) or DART, each constant-leaf tree's training step (excluding the initial class-prior offset) is limited to one unit of the sigmoid-scaled score (binary / OVA) or raw score (softmax)
 
    -  automatic stabilization prevents enormous Newton updates when classification Hessians approach zero; it is applied in both leaf outputs and split gains, on CPU and CUDA
 
@@ -492,6 +492,8 @@ Learning Control Parameters
    -  positive values specify a raw leaf-output limit, with final max output ``learning_rate * max_delta_step``, and override automatic stabilization
 
    -  automatic stabilization leaves quantized training, regression, custom objectives, other objectives and random forests unconstrained
+
+   -  with ``linear_tree=true``, the limit applies to constant split outputs; fitted linear leaf predictions are not bounded
 
    -  **Note**: this changes non-quantized classification training defaults; large steps may be reduced and more iterations may be needed. It does not guarantee monotonically decreasing loss
 

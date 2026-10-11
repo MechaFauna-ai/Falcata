@@ -118,11 +118,12 @@ make that step appropriate.
 
 Falcata now defaults to `max_delta_step=-1` (automatic). For non-quantized binary, softmax
 multiclass and one-vs-all classification with GBDT (including GOSS) or DART,
-it bounds the learned score update to one unit, scaled by `sigmoid` for binary
+it bounds the learned score update in constant-leaf trees to one unit, scaled by `sigmoid` for binary
 and OVA. The initial class-prior offset is excluded. Existing constrained
 leaf-output and split-gain math applies the policy on CPU and CUDA; partial
 learning-rate resets recompute the raw cap, and model serialization preserves
-the automatic policy. Quantized training, regression, custom objectives and random forests remain
+the automatic policy. Fitted linear leaf predictions are not bounded by this constant-output limit.
+Quantized training, regression, custom objectives and random forests remain
 unconstrained. Explicit `0` restores historical behavior; positive values keep
 their existing manual raw-output-cap meaning.
 
