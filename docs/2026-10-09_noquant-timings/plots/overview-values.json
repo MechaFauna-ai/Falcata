@@ -1,0 +1,561 @@
+{
+    "sources": {
+        "strict": {
+            "file": "strict-timing-evidence.json",
+            "sha256": "de41c6a0a332cd966e5498c05f99aad8f94a1f91378346832fd4a59b77ac4a6f"
+        },
+        "auxiliary": {
+            "file": "auxiliary-timing-evidence.json",
+            "sha256": "3ae8fe7ead5f0fd7d28f3b5714b04b54a3376fb6866ee94c4a8e2fa11e78f5c4"
+        }
+    },
+    "plot_generator_sha256": "7fbed38275c25bd1b079fe13c8c1e3998b820352a4e8ad0c76ae707bc48372f0",
+    "matplotlib_version": "3.11.2",
+    "python_version": "3.14.4",
+    "runtime_library_sha256": {
+        "09b6be9724f330f947c86de6e819654b077f70f2": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+        "d0bb8c47789e062acbf6b770918a0589a74ae9b2": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c"
+    },
+    "central_statistic": "ratio of arm medians",
+    "repeated_range": "min/max of three matched timed-draw ratios; not a confidence interval",
+    "noquant": [
+        {
+            "name": "year-noquant",
+            "label": "Year \u00b7 deep (500 rounds)",
+            "draws_per_arm": 3,
+            "ratio_of_arm_medians": 1.2785827308114024,
+            "matched_timed_draws": [
+                {
+                    "kind": "timed1",
+                    "reference_train_s": 3.501219403988216,
+                    "optimized_train_s": 2.7438381770043634,
+                    "ratio": 1.2760298451021401
+                },
+                {
+                    "kind": "timed2",
+                    "reference_train_s": 3.4987517579866108,
+                    "optimized_train_s": 2.738359684997704,
+                    "ratio": 1.277681590608702
+                },
+                {
+                    "kind": "timed3",
+                    "reference_train_s": 3.50525621700217,
+                    "optimized_train_s": 2.7320370630186517,
+                    "ratio": 1.2830192768794952
+                }
+            ],
+            "observed_matched_ratio_min": 1.2760298451021401,
+            "observed_matched_ratio_max": 1.2830192768794952,
+            "reference_train_s": [
+                3.501219403988216,
+                3.4987517579866108,
+                3.50525621700217
+            ],
+            "optimized_train_s": [
+                2.7438381770043634,
+                2.738359684997704,
+                2.7320370630186517
+            ],
+            "gpuq_job_ids": [
+                3574
+            ],
+            "reference_runtime": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "optimized_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2"
+        },
+        {
+            "name": "epsilon-noquant",
+            "label": "Epsilon \u00b7 deep (500)",
+            "draws_per_arm": 3,
+            "ratio_of_arm_medians": 1.2386435275642567,
+            "matched_timed_draws": [
+                {
+                    "kind": "timed1",
+                    "reference_train_s": 57.70422681898344,
+                    "optimized_train_s": 46.605321607989026,
+                    "ratio": 1.2381467357816034
+                },
+                {
+                    "kind": "timed2",
+                    "reference_train_s": 57.76554983400274,
+                    "optimized_train_s": 46.66690848500002,
+                    "ratio": 1.2378267965312104
+                },
+                {
+                    "kind": "timed3",
+                    "reference_train_s": 57.77800677798223,
+                    "optimized_train_s": 46.63613747499767,
+                    "ratio": 1.2389106368201672
+                }
+            ],
+            "observed_matched_ratio_min": 1.2378267965312104,
+            "observed_matched_ratio_max": 1.2389106368201672,
+            "reference_train_s": [
+                57.70422681898344,
+                57.76554983400274,
+                57.77800677798223
+            ],
+            "optimized_train_s": [
+                46.605321607989026,
+                46.66690848500002,
+                46.63613747499767
+            ],
+            "gpuq_job_ids": [
+                3575
+            ],
+            "reference_runtime": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "optimized_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2"
+        },
+        {
+            "name": "higgs-noquant",
+            "label": "HIGGS \u00b7 deep (500)",
+            "draws_per_arm": 3,
+            "ratio_of_arm_medians": 1.6502449497303193,
+            "matched_timed_draws": [
+                {
+                    "kind": "timed1",
+                    "reference_train_s": 15.92767671000911,
+                    "optimized_train_s": 9.672897461015964,
+                    "ratio": 1.6466293346126502
+                },
+                {
+                    "kind": "timed2",
+                    "reference_train_s": 15.933554571995046,
+                    "optimized_train_s": 9.555799352005124,
+                    "ratio": 1.6674224714284793
+                },
+                {
+                    "kind": "timed3",
+                    "reference_train_s": 15.940881565009477,
+                    "optimized_train_s": 9.655266374000348,
+                    "ratio": 1.6510038094790425
+                }
+            ],
+            "observed_matched_ratio_min": 1.6466293346126502,
+            "observed_matched_ratio_max": 1.6674224714284793,
+            "reference_train_s": [
+                15.92767671000911,
+                15.933554571995046,
+                15.940881565009477
+            ],
+            "optimized_train_s": [
+                9.672897461015964,
+                9.555799352005124,
+                9.655266374000348
+            ],
+            "gpuq_job_ids": [
+                3576
+            ],
+            "reference_runtime": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "optimized_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2"
+        },
+        {
+            "name": "numerai-noquant",
+            "label": "Numerai \u00b7 example (2,000)",
+            "draws_per_arm": 3,
+            "ratio_of_arm_medians": 1.0186163506326467,
+            "matched_timed_draws": [
+                {
+                    "kind": "timed1",
+                    "reference_train_s": 54.73284968800726,
+                    "optimized_train_s": 53.807147262996295,
+                    "ratio": 1.0172040792366552
+                },
+                {
+                    "kind": "timed2",
+                    "reference_train_s": 54.918212275981205,
+                    "optimized_train_s": 53.75861015400733,
+                    "ratio": 1.0215705376060105
+                },
+                {
+                    "kind": "timed3",
+                    "reference_train_s": 54.80883998298668,
+                    "optimized_train_s": 53.8218575460196,
+                    "ratio": 1.0183379482234178
+                }
+            ],
+            "observed_matched_ratio_min": 1.0172040792366552,
+            "observed_matched_ratio_max": 1.0215705376060105,
+            "reference_train_s": [
+                54.73284968800726,
+                54.918212275981205,
+                54.80883998298668
+            ],
+            "optimized_train_s": [
+                53.807147262996295,
+                53.75861015400733,
+                53.8218575460196
+            ],
+            "gpuq_job_ids": [
+                3579
+            ],
+            "reference_runtime": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "optimized_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2"
+        },
+        {
+            "name": "numerai-deep",
+            "label": "Numerai \u00b7 deep (30,000)\nsingle run per build",
+            "draws_per_arm": 1,
+            "ratio_of_arm_medians": 1.1100025235107813,
+            "matched_timed_draws": [
+                {
+                    "kind": "timed1",
+                    "reference_train_s": 1372.5285235699848,
+                    "optimized_train_s": 1236.5093722750025,
+                    "ratio": 1.1100025235107813
+                }
+            ],
+            "observed_matched_ratio_min": null,
+            "observed_matched_ratio_max": null,
+            "reference_train_s": [
+                1372.5285235699848
+            ],
+            "optimized_train_s": [
+                1236.5093722750025
+            ],
+            "gpuq_job_ids": [
+                3582,
+                3583
+            ],
+            "reference_runtime": "09b6be9724f330f947c86de6e819654b077f70f2",
+            "optimized_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2"
+        }
+    ],
+    "graph_quant": [
+        {
+            "name": "covtype-deep-quant",
+            "label": "Covtype \u00b7 deep (100 rounds)",
+            "draws_per_arm": 3,
+            "ratio_of_arm_medians": 0.6492103633558151,
+            "matched_timed_draws": [
+                {
+                    "kind": "timed1",
+                    "reference_train_s": 0.7081333579844795,
+                    "optimized_train_s": 1.0959880189911928,
+                    "ratio": 0.6461141414997256
+                },
+                {
+                    "kind": "timed2",
+                    "reference_train_s": 0.718072548013879,
+                    "optimized_train_s": 1.1094298439857084,
+                    "ratio": 0.6472446652725246
+                },
+                {
+                    "kind": "timed3",
+                    "reference_train_s": 0.7180662760220002,
+                    "optimized_train_s": 1.1060610189742874,
+                    "ratio": 0.6492103633558151
+                }
+            ],
+            "observed_matched_ratio_min": 0.6461141414997256,
+            "observed_matched_ratio_max": 0.6492103633558151,
+            "reference_train_s": [
+                0.7081333579844795,
+                0.718072548013879,
+                0.7180662760220002
+            ],
+            "optimized_train_s": [
+                1.0959880189911928,
+                1.1094298439857084,
+                1.1060610189742874
+            ],
+            "gpuq_job_ids": [
+                3638
+            ],
+            "reference_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "optimized_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "observed_all_timed_fingerprints_identical": {
+                "prediction_sha256": true,
+                "tree_md5": true
+            },
+            "on_warmup_graph_capture_observed": true
+        },
+        {
+            "name": "covtype-shallow-quant",
+            "label": "Covtype \u00b7 shallow (100)",
+            "draws_per_arm": 3,
+            "ratio_of_arm_medians": 0.8322244317050945,
+            "matched_timed_draws": [
+                {
+                    "kind": "timed1",
+                    "reference_train_s": 0.481836340011796,
+                    "optimized_train_s": 0.5713071179925464,
+                    "ratio": 0.843392852700432
+                },
+                {
+                    "kind": "timed2",
+                    "reference_train_s": 0.46387106901966035,
+                    "optimized_train_s": 0.5598796829872299,
+                    "ratio": 0.8285192035272346
+                },
+                {
+                    "kind": "timed3",
+                    "reference_train_s": 0.46594555099727586,
+                    "optimized_train_s": 0.537631375977071,
+                    "ratio": 0.866663613429339
+                }
+            ],
+            "observed_matched_ratio_min": 0.8285192035272346,
+            "observed_matched_ratio_max": 0.866663613429339,
+            "reference_train_s": [
+                0.481836340011796,
+                0.46387106901966035,
+                0.46594555099727586
+            ],
+            "optimized_train_s": [
+                0.5713071179925464,
+                0.5598796829872299,
+                0.537631375977071
+            ],
+            "gpuq_job_ids": [
+                3639
+            ],
+            "reference_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "optimized_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "observed_all_timed_fingerprints_identical": {
+                "prediction_sha256": true,
+                "tree_md5": true
+            },
+            "on_warmup_graph_capture_observed": true
+        },
+        {
+            "name": "year-shallow-quant",
+            "label": "Year \u00b7 shallow (100)",
+            "draws_per_arm": 3,
+            "ratio_of_arm_medians": 0.8284541787827795,
+            "matched_timed_draws": [
+                {
+                    "kind": "timed1",
+                    "reference_train_s": 0.24819417597609572,
+                    "optimized_train_s": 0.2936318899737671,
+                    "ratio": 0.8452562015599506
+                },
+                {
+                    "kind": "timed2",
+                    "reference_train_s": 0.2409231399942655,
+                    "optimized_train_s": 0.27989258800516836,
+                    "ratio": 0.8607699893425429
+                },
+                {
+                    "kind": "timed3",
+                    "reference_train_s": 0.2376717250153888,
+                    "optimized_train_s": 0.2908104590023868,
+                    "ratio": 0.8172736490658272
+                }
+            ],
+            "observed_matched_ratio_min": 0.8172736490658272,
+            "observed_matched_ratio_max": 0.8607699893425429,
+            "reference_train_s": [
+                0.24819417597609572,
+                0.2409231399942655,
+                0.2376717250153888
+            ],
+            "optimized_train_s": [
+                0.2936318899737671,
+                0.27989258800516836,
+                0.2908104590023868
+            ],
+            "gpuq_job_ids": [
+                3640
+            ],
+            "reference_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "optimized_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "observed_all_timed_fingerprints_identical": {
+                "prediction_sha256": true,
+                "tree_md5": true
+            },
+            "on_warmup_graph_capture_observed": true
+        },
+        {
+            "name": "fraud-deep-quant",
+            "label": "Fraud \u00b7 deep (100)",
+            "draws_per_arm": 3,
+            "ratio_of_arm_medians": 0.9346034948973709,
+            "matched_timed_draws": [
+                {
+                    "kind": "timed1",
+                    "reference_train_s": 0.23601724798209034,
+                    "optimized_train_s": 0.26315696799429134,
+                    "ratio": 0.8968687007642157
+                },
+                {
+                    "kind": "timed2",
+                    "reference_train_s": 0.24594742199406028,
+                    "optimized_train_s": 0.2801545179972891,
+                    "ratio": 0.8778991813240727
+                },
+                {
+                    "kind": "timed3",
+                    "reference_train_s": 0.2465679930173792,
+                    "optimized_train_s": 0.2543015459959861,
+                    "ratio": 0.9695890445796623
+                }
+            ],
+            "observed_matched_ratio_min": 0.8778991813240727,
+            "observed_matched_ratio_max": 0.9695890445796623,
+            "reference_train_s": [
+                0.23601724798209034,
+                0.24594742199406028,
+                0.2465679930173792
+            ],
+            "optimized_train_s": [
+                0.26315696799429134,
+                0.2801545179972891,
+                0.2543015459959861
+            ],
+            "gpuq_job_ids": [
+                3641
+            ],
+            "reference_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "optimized_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "observed_all_timed_fingerprints_identical": {
+                "prediction_sha256": true,
+                "tree_md5": true
+            },
+            "on_warmup_graph_capture_observed": true
+        },
+        {
+            "name": "higgs-shallow-quant",
+            "label": "HIGGS \u00b7 shallow (100)",
+            "draws_per_arm": 3,
+            "ratio_of_arm_medians": 0.9592320340351741,
+            "matched_timed_draws": [
+                {
+                    "kind": "timed1",
+                    "reference_train_s": 0.6378894710214809,
+                    "optimized_train_s": 0.6809418209886644,
+                    "ratio": 0.9367752888129627
+                },
+                {
+                    "kind": "timed2",
+                    "reference_train_s": 0.653181208006572,
+                    "optimized_train_s": 0.6776877800002694,
+                    "ratio": 0.9638379609062927
+                },
+                {
+                    "kind": "timed3",
+                    "reference_train_s": 0.6736507349996828,
+                    "optimized_train_s": 0.684578386018984,
+                    "ratio": 0.9840373998909773
+                }
+            ],
+            "observed_matched_ratio_min": 0.9367752888129627,
+            "observed_matched_ratio_max": 0.9840373998909773,
+            "reference_train_s": [
+                0.6378894710214809,
+                0.653181208006572,
+                0.6736507349996828
+            ],
+            "optimized_train_s": [
+                0.6809418209886644,
+                0.6776877800002694,
+                0.684578386018984
+            ],
+            "gpuq_job_ids": [
+                3642
+            ],
+            "reference_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "optimized_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "observed_all_timed_fingerprints_identical": {
+                "prediction_sha256": true,
+                "tree_md5": true
+            },
+            "on_warmup_graph_capture_observed": true
+        },
+        {
+            "name": "epsilon-shallow-quant",
+            "label": "Epsilon \u00b7 shallow (100)",
+            "draws_per_arm": 3,
+            "ratio_of_arm_medians": 0.699014918247491,
+            "matched_timed_draws": [
+                {
+                    "kind": "timed1",
+                    "reference_train_s": 0.8904733220115304,
+                    "optimized_train_s": 1.308635459979996,
+                    "ratio": 0.6804594168838602
+                },
+                {
+                    "kind": "timed2",
+                    "reference_train_s": 0.9116171509958804,
+                    "optimized_train_s": 1.2896226489974651,
+                    "ratio": 0.7068867406326641
+                },
+                {
+                    "kind": "timed3",
+                    "reference_train_s": 0.9217296649876516,
+                    "optimized_train_s": 1.3041454870253801,
+                    "ratio": 0.7067690485131539
+                }
+            ],
+            "observed_matched_ratio_min": 0.6804594168838602,
+            "observed_matched_ratio_max": 0.7068867406326641,
+            "reference_train_s": [
+                0.8904733220115304,
+                0.9116171509958804,
+                0.9217296649876516
+            ],
+            "optimized_train_s": [
+                1.308635459979996,
+                1.2896226489974651,
+                1.3041454870253801
+            ],
+            "gpuq_job_ids": [
+                3643
+            ],
+            "reference_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "optimized_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "observed_all_timed_fingerprints_identical": {
+                "prediction_sha256": true,
+                "tree_md5": true
+            },
+            "on_warmup_graph_capture_observed": true
+        },
+        {
+            "name": "numerai-example-quant",
+            "label": "Numerai \u00b7 example (200)",
+            "draws_per_arm": 3,
+            "ratio_of_arm_medians": 0.644078497589231,
+            "matched_timed_draws": [
+                {
+                    "kind": "timed1",
+                    "reference_train_s": 1.3449257440224756,
+                    "optimized_train_s": 2.0783314549771603,
+                    "ratio": 0.647118023836701
+                },
+                {
+                    "kind": "timed2",
+                    "reference_train_s": 1.3340980999928433,
+                    "optimized_train_s": 2.072016987018287,
+                    "ratio": 0.643864460741059
+                },
+                {
+                    "kind": "timed3",
+                    "reference_train_s": 1.3386086010141298,
+                    "optimized_train_s": 2.113019889977295,
+                    "ratio": 0.6335049695289492
+                }
+            ],
+            "observed_matched_ratio_min": 0.6335049695289492,
+            "observed_matched_ratio_max": 0.647118023836701,
+            "reference_train_s": [
+                1.3449257440224756,
+                1.3340980999928433,
+                1.3386086010141298
+            ],
+            "optimized_train_s": [
+                2.0783314549771603,
+                2.072016987018287,
+                2.113019889977295
+            ],
+            "gpuq_job_ids": [
+                3644
+            ],
+            "reference_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "optimized_runtime": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+            "observed_all_timed_fingerprints_identical": {
+                "prediction_sha256": true,
+                "tree_md5": true
+            },
+            "on_warmup_graph_capture_observed": true
+        }
+    ]
+}

@@ -1,0 +1,27 @@
+{
+  "protocol": "historical_graph_quant_v1",
+  "harness_source": "/tmp/falcata-noquant-20261009",
+  "required_admission_class": "strict",
+  "files_sha256": {
+    "/tmp/falcata-noquant-overnight-20261009/graph-quant/guard.py": "7d7e3df8b5c2dee71f77b640067ff9af66bf687f139d150c8289543f7f3c3886",
+    "/tmp/falcata-noquant-overnight-20261009/graph-quant/run_cell.py": "c02f7cae62d9245e392a21db81a6f6b1f46e1366b27d669ce06df598dd3dd65d",
+    "/tmp/falcata-noquant-overnight-20261009/graph-quant/run_pair.sh": "fd74be32029eba3ec805b1ccdee94b44ae8f184c0b0ef89507cec579ce3fc52b",
+    "/tmp/falcata-noquant-overnight-20261009/graph-quant/PROTOCOL.md": "c0100630d7ae1f0e7c4e6e37c222a688588e40df78867fcba8a372864f701f28",
+    "/tmp/falcata-noquant-20261009/benchmarks/ablation.py": "87634091f9b64a7d8205d47328b541575ed02060d27669c26a4a081a297c4361",
+    "/tmp/falcata-noquant-20261009/benchmarks/bench.py": "441454600959eae9217b9ebee96ac375cf78af367d4c04f201e1f5e417f14f21",
+    "/tmp/falcata-noquant-20261009/benchmarks/common.py": "d0ce598bab8ab548531317d2883896234a051d55f947bd9e3a910fdb84a53f55",
+    "/tmp/falcata-noquant-validation-20261009/bench_with_evaluator.py": "8d02e38b1b6ac96dfc3f0f55ac4843e95d60df9d1e1ff3ab76a1dcd7be439da0"
+  },
+  "allowed_runtimes": {
+    "/home/felixjk/falcata-noquant-builds-20261009/d0bb8c47789e062acbf6b770918a0589a74ae9b2/venv/bin/python": {
+      "build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
+      "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
+      "role": "selected_candidate"
+    },
+    "/home/felixjk/bisect-builds/09b6be9724f330f947c86de6e819654b077f70f2/venv/bin/python": {
+      "build": "09b6be9724f330f947c86de6e819654b077f70f2",
+      "library_sha256": "cb6de00388a1d85e32c8a8d1144310777d73767e1e56a8b32ab810e47d636e08",
+      "role": "known_baseline"
+    }
+  }
+}

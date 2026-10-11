@@ -636,6 +636,8 @@ __device__ void FindBestSplitsForLeafKernelInner(
   // input feature information
   const hist_t* feature_hist_ptr,
   const bool fp32_hist,
+  // fp64 gains: fold the threshold prefixes in CPU order (see the fp64 branch)
+  const bool cpu_order_scan,
   // input task information
   const SplitFindTask* task,
   CUDARandom* cuda_random,
@@ -722,14 +724,21 @@ __device__ void FindBestSplitsForLeafKernelInner(
   local_gain = kMinScore;
   data_size_t local_cnt_prefix = 0;
   if (sizeof(GAIN_T) == sizeof(double)) {
-    // fp64 gains: CPU-order scans (see SequentialPrefixSum) -- plateau
-    // (cancellation-noise) gains rank by their low bits, so the prefix must
-    // carry CPU's exact fold order. The count prefix sums PER-BIN roundings
-    // like CPU's scan (right_count += RoundInt(hess * cnt_factor) each bin,
-    // feature_histogram.hpp) -- rounding the summed hessian instead can
-    // differ by a count, and the count feeds min_data_in_leaf gating and the
-    // stored child counts; integer addends are order-invariant, so the
-    // shuffle scan serves them bit-exactly. (Bin 0's kEpsilon shifts its
+    // fp64 gains. With cpu_order_scan the gradient/hessian prefixes are
+    // CPU-order scans (see SequentialPrefixSum): plateau (cancellation-noise)
+    // gains rank by their low bits, so choosing CPU's split needs CPU's exact
+    // fold order -- and histograms that are bit-exact themselves, which only
+    // the deterministic constructs build. A tree built by the order-dependent
+    // atomic construct carries run-to-run low-bit noise in every histogram, so
+    // no fold order reproduces CPU there, and its finds take the tree-shaped
+    // shuffle scans (cpu_order_scan false, see SetCPUOrderScan): a sequential
+    // fold issues one fp64 add per bin in one lane, at a reduced-rate fp64
+    // pipe's full warp cost. The count prefix sums PER-BIN roundings like
+    // CPU's scan (right_count += RoundInt(hess * cnt_factor) each bin,
+    // feature_histogram.hpp) -- rounding the summed hessian instead can differ
+    // by a count, and the count feeds min_data_in_leaf gating and the stored
+    // child counts; integer addends are order-invariant, so the shuffle scan
+    // serves them bit-exactly in either mode. (Bin 0's kEpsilon shifts its
     // product by ~1e-15, which never moves RoundInt in practice.)
     __shared__ GAIN_T seq_prefix_buffer[2 * NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER];
     data_size_t local_bin_cnt = static_cast<data_size_t>(
@@ -745,22 +754,32 @@ __device__ void FindBestSplitsForLeafKernelInner(
       if (threadIdx_x == 0) {
         local_bin_cnt = num_data - cnt_non_default;
       }
-      // one chain per lane, interleaved staging (see SequentialPrefixSumPair):
-      // lane 0 folds the gradient, lane 1 the hessian
-      seq_prefix_buffer[2 * threadIdx_x] = local_grad_hist;
-      seq_prefix_buffer[2 * threadIdx_x + 1] = local_hess_hist;
-      __syncthreads();
-      if (threadIdx_x < 2) {
-        GAIN_T acc = threadIdx_x == 0 ?
-          static_cast<GAIN_T>(sum_gradients) :
-          static_cast<GAIN_T>(sum_hessians) - static_cast<GAIN_T>(kEpsilon);
-        for (unsigned int i = 1; i < blockDim.x; ++i) {
-          acc -= seq_prefix_buffer[2 * i + threadIdx_x];
+      if (cpu_order_scan) {
+        // one chain per lane, interleaved staging (see SequentialPrefixSumPair):
+        // lane 0 folds the gradient, lane 1 the hessian
+        seq_prefix_buffer[2 * threadIdx_x] = local_grad_hist;
+        seq_prefix_buffer[2 * threadIdx_x + 1] = local_hess_hist;
+        __syncthreads();
+        if (threadIdx_x < 2) {
+          GAIN_T acc = threadIdx_x == 0 ?
+            static_cast<GAIN_T>(sum_gradients) :
+            static_cast<GAIN_T>(sum_hessians) - static_cast<GAIN_T>(kEpsilon);
+          for (unsigned int i = 1; i < blockDim.x; ++i) {
+            acc -= seq_prefix_buffer[2 * i + threadIdx_x];
+          }
+          const GAIN_T acc_h = __shfl_down_sync(0x3u, acc, 1);
+          if (threadIdx_x == 0) {
+            local_grad_hist = acc;
+            local_hess_hist = acc_h;
+          }
         }
-        const GAIN_T acc_h = __shfl_down_sync(0x3u, acc, 1);
+      } else {
+        // the same missing mass from tree-shaped bin sums (lane 0 holds no bin)
+        const GAIN_T grad_non_default = ShuffleReduceSum<GAIN_T>(local_grad_hist, shared_gain_buffer, blockDim.x);
+        const GAIN_T hess_non_default = ShuffleReduceSum<GAIN_T>(local_hess_hist, shared_gain_buffer, blockDim.x);
         if (threadIdx_x == 0) {
-          local_grad_hist = acc;
-          local_hess_hist = acc_h;
+          local_grad_hist = static_cast<GAIN_T>(sum_gradients) - grad_non_default;
+          local_hess_hist = static_cast<GAIN_T>(sum_hessians) - static_cast<GAIN_T>(kEpsilon) - hess_non_default;
         }
       }
     } else if (threadIdx_x == 0) {
@@ -768,8 +787,13 @@ __device__ void FindBestSplitsForLeafKernelInner(
     }
     local_cnt_prefix = ShufflePrefixSum<data_size_t>(
       local_bin_cnt, reinterpret_cast<data_size_t*>(shared_gain_buffer));
-    SequentialPrefixSumPair<GAIN_T>(&local_grad_hist, &local_hess_hist,
-      seq_prefix_buffer, static_cast<unsigned int>(task->num_bin));
+    if (cpu_order_scan) {
+      SequentialPrefixSumPair<GAIN_T>(&local_grad_hist, &local_hess_hist,
+        seq_prefix_buffer, static_cast<unsigned int>(task->num_bin));
+    } else {
+      local_grad_hist = ShufflePrefixSum<GAIN_T>(local_grad_hist, shared_gain_buffer);
+      local_hess_hist = ShufflePrefixSum<GAIN_T>(local_hess_hist, shared_gain_buffer);
+    }
   } else {
     // fp32 gain mode: the parallel missing-mass reduce and shuffle scans
     // (no bit-parity contract).
@@ -1851,6 +1875,7 @@ __global__ void FindBestSplitsForLeafKernel(
   // input feature information
   const int8_t* is_feature_used_bytree,
   const bool fp32_hist,
+  const bool cpu_order_scan,
   // input task information
   const int num_tasks,
   const SplitFindTask* tasks,
@@ -1950,6 +1975,7 @@ __global__ void FindBestSplitsForLeafKernel(
           // input feature information
           hist_ptr,
           fp32_hist,
+          cpu_order_scan,
           // input task information
           task,
           cuda_random,
@@ -1977,6 +2003,7 @@ __global__ void FindBestSplitsForLeafKernel(
           // input feature information
           hist_ptr,
           fp32_hist,
+          cpu_order_scan,
           // input task information
           task,
           cuda_random,
@@ -3337,11 +3364,11 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelInner3(LaunchFindBest
       if (use_monotone_constraints_) {
         FindBestSplitsForLeafKernel<USE_RAND, USE_L1, USE_SMOOTHING, false, GAIN_T, true>
           <<<num_tasks_, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>
-          (is_feature_used_by_smaller_node, hist_fp32_, FindBestSplitsForLeafKernel_ARGS, FindBestSplitsForLeafKernel_CONSTRAINT_ARGS);
+          (is_feature_used_by_smaller_node, hist_fp32_, cpu_order_scan_, FindBestSplitsForLeafKernel_ARGS, FindBestSplitsForLeafKernel_CONSTRAINT_ARGS);
       } else {
         FindBestSplitsForLeafKernel<USE_RAND, USE_L1, USE_SMOOTHING, false, GAIN_T, false>
           <<<num_tasks_, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[0]>>>
-          (is_feature_used_by_smaller_node, hist_fp32_, FindBestSplitsForLeafKernel_ARGS, FindBestSplitsForLeafKernel_CONSTRAINT_ARGS);
+          (is_feature_used_by_smaller_node, hist_fp32_, cpu_order_scan_, FindBestSplitsForLeafKernel_ARGS, FindBestSplitsForLeafKernel_CONSTRAINT_ARGS);
       }
     }
     // No device sync here: the larger-leaf launch below waits on subtract_done_event via
@@ -3350,11 +3377,11 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelInner3(LaunchFindBest
       if (use_monotone_constraints_) {
         FindBestSplitsForLeafKernel<USE_RAND, USE_L1, USE_SMOOTHING, true, GAIN_T, true>
           <<<num_tasks_, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[1]>>>
-          (is_feature_used_by_larger_node, hist_fp32_, FindBestSplitsForLeafKernel_ARGS, FindBestSplitsForLeafKernel_CONSTRAINT_ARGS);
+          (is_feature_used_by_larger_node, hist_fp32_, cpu_order_scan_, FindBestSplitsForLeafKernel_ARGS, FindBestSplitsForLeafKernel_CONSTRAINT_ARGS);
       } else {
         FindBestSplitsForLeafKernel<USE_RAND, USE_L1, USE_SMOOTHING, true, GAIN_T, false>
           <<<num_tasks_, NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, 0, cuda_streams_[1]>>>
-          (is_feature_used_by_larger_node, hist_fp32_, FindBestSplitsForLeafKernel_ARGS, FindBestSplitsForLeafKernel_CONSTRAINT_ARGS);
+          (is_feature_used_by_larger_node, hist_fp32_, cpu_order_scan_, FindBestSplitsForLeafKernel_ARGS, FindBestSplitsForLeafKernel_CONSTRAINT_ARGS);
       }
     }
   } else {
@@ -4727,6 +4754,7 @@ template <bool USE_RAND, bool USE_L1, bool USE_SMOOTHING, typename GAIN_T>
 __global__ void FindBestSplitsForLevelKernel(
   const int8_t* is_feature_used_bytree,
   const bool fp32_hist,
+  const bool cpu_order_scan,
   const int num_tasks,
   const SplitFindTask* tasks,
   const int* used_task_indices,
@@ -4813,7 +4841,7 @@ __global__ void FindBestSplitsForLevelKernel(
         /*sum_gradients_hessians_total=*/0, out);
     } else if (!task->reverse) {
       FindBestSplitsForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, false, GAIN_T, /*USE_MC=*/false>(
-        hist_ptr, fp32_hist, task, cuda_random,
+        hist_ptr, fp32_hist, cpu_order_scan, task, cuda_random,
         lambda_l1, lambda_l2, path_smooth, max_delta_step,
         min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
         parent_gain, sum_gradients, sum_hessians, num_data, parent_output,
@@ -4823,7 +4851,7 @@ __global__ void FindBestSplitsForLevelKernel(
         out);
     } else {
       FindBestSplitsForLeafKernelInner<USE_RAND, USE_L1, USE_SMOOTHING, true, GAIN_T, /*USE_MC=*/false>(
-        hist_ptr, fp32_hist, task, cuda_random,
+        hist_ptr, fp32_hist, cpu_order_scan, task, cuda_random,
         lambda_l1, lambda_l2, path_smooth, max_delta_step,
         min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split,
         parent_gain, sum_gradients, sum_hessians, num_data, parent_output,
@@ -5618,6 +5646,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
   #define FindBestSplitsForLevelKernel_ARGS \
       cuda_is_feature_used_bytree_.RawData(), \
       hist_fp32_, \
+      cpu_order_scan_, \
       num_tasks_, \
       cuda_split_find_tasks_.RawData(), \
       compact_tasks ? cuda_used_task_indices_.RawDataReadOnly() : nullptr, \

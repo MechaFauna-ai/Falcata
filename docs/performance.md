@@ -465,22 +465,43 @@ with a warning (airline's 92M rows → 23 bins) instead of refusing; an
 explicitly-set unsafe `quant_bins` still fails loudly rather than silently
 wrap.
 
-## 6. Precision modes (`cuda_precision=fp32`)
+## 6. Precision modes (`cuda_precision`)
 
 For NON-quantized training, storing global histograms as float pairs instead
-of double pairs halves their bandwidth. Measured per-tree wins at
-equal-or-better quality: epsilon-deep −36% time, year −18%, covtype −16%,
-fraud-deep −14%, higgs-deep −12%; numerai neutral (sampling-dominated).
-Quality-gated rather than bit-identical, hence a config parameter and not a
-plan key.
+of double pairs halves their bandwidth, and fp32 gain math takes the split
+finder off the GPU's fp64 pipe (1/64 of the fp32 rate on the RTX 5090), where
+its prefix scans and gain divisions otherwise run. The earlier precision-mode
+comparison recorded per-tree time reductions at equal-or-better quality in
+those measured cells: epsilon-deep −36%, year −18%, covtype −16%, fraud-deep
+−14%, higgs-deep −12%; numerai was neutral (sampling-dominated). These are
+historical measurements for that comparison, rather than a quality guarantee
+for other training configurations or boosting budgets.
+
+The default is `cuda_precision=fp64`. Opting into `cuda_precision=auto` resolves to `fp32` for
+`quant_mode=none` on CUDA. It resolves to `fp64` where fp32 would contradict
+another request: `gpu_use_dp=true` (double-precision histograms),
+`deterministic=true` with unquantized training and vector-leaf
+multi-target trees (fp64 only). `cuda_precision=fp64` keeps the
+fp64 reference mode, whose deterministic-construct paths choose the CPU
+learner's splits. Quantized modes resolve `auto` to `fp64` and are untouched:
+their histograms are integer sums. fp32 changes predictions and can change
+validation quality, so validate the chosen precision on your workload and use
+explicit `cuda_precision=fp64` for the double-precision reference mode. The
+precision choice is a model parameter rather than a bit-identical plan key.
+With explicitly unquantized training, `deterministic=true` preserves fp64
+arithmetic; repeatability still depends on histogram-construction eligibility
+and the execution plan. A live CUDA learner cannot change precision,
+`gpu_use_dp`, or quantization state through `Booster.reset_parameter`; train a
+new booster for those choices. An ordinary learning-rate reset or a precision
+setting that resolves to the current value remains supported.
 
 A second, separately-measured mechanism: on DEEP trees the
 histogram pool halves from ~248MB (doesn't fit the 5090's 96MB L2) to
 ~124MB (mostly fits), so subtraction's parent-histogram re-reads start
 hitting cache. Isolated on covtype non-quant: fp32 gains **+26% deep** vs
 +1.7% shallow — the cache cliff, not bandwidth, dominates the deep win.
-Practical guidance: on deep non-quantized configs, `cuda_precision=fp32` is
-the single highest-leverage switch available.
+This explains the speed benefit in that measured configuration; the quality
+tradeoff still needs validation on the intended workload.
 
 ## 7. Memory-layout micro-optimizations (each small, all free)
 
@@ -844,7 +865,8 @@ generator) added four `cuda_plan` keys to that kernel, all default on and bit-id
 
 ## 7d. The non-quantized finder and fix after CPU bit-parity
 
-`quant_mode=none` finds splits with one 256-thread block per (feature, leaf) over fp64 histograms. The 1.0.4
+`quant_mode=none` finds splits with one 256-thread block per (feature, leaf). Its default precision is fp64 (§6);
+`cuda_precision=auto` can opt into fp32 where supported. The 1.0.4
 CPU-bit-parity merge (`d53aa45c`) made two of its folds CPU-order sequential: the finder's gradient and hessian
 threshold prefixes, and FixHistogram's sum of the non-most-frequent bins. Each is a dependent chain of up to 255
 fp64 adds in one or two lanes while the rest of the block waits, and on the RTX 5090 fp64 runs at 1/64 of fp32 with
@@ -889,8 +911,74 @@ chain per lane 4.32 / 77.2; + integer keys 4.06 / 68.9; + fp32 bounds 3.65 / 66.
 3.52 / 57.9. On the 100-round year profile the find kernel drops back to 227 ms and the fix + subtract to 86 ms
 before the last change.
 
-Not taken: tree-shaped shuffle scans for the threshold prefixes on trees whose level construct is the
-order-dependent atomic one (the default graph loop); see `perf-dead-ends.md`.
+On the default graph loop, trees whose histograms use the order-dependent atomic construct also use
+tree-shaped shuffle scans for the threshold prefixes. Atomic histogram sums already carry low-bit noise,
+and a CPU-order prefix cannot restore CPU's split choices from those sums. The parallel scan may choose a
+different bin on an equal-gain plateau; exact bin identity with CPU is not guaranteed on this path.
+Eligible deterministic histogram constructs retain CPU-order fp64 prefixes and CPU split parity. The graph
+can use them with `graph_det:on` when its shape supports them. Host-level and classic flows retain CPU-order
+scans, but an atomic fallback does not guarantee CPU parity. fp32 and quantized prefixes use parallel scans
+in either case.
+
+### Captured level apply and count pruning
+
+The captured level loop uses the same row and metadata operations as the host-launched apply. Three plan keys
+control the graph ports independently; the existing host keys still select their corresponding components.
+
+- **`graph_apply_rows`** uses `apply_row_batch`'s four rows per thread in captured gen-bit and partition kernels.
+  `apply_genbit_rows` and `apply_inner_rows` may select bounded eight-row builds when the occupancy API reports
+  more rows in flight per SM. Every descriptor retains its 1024-row chunk, each row retains ballot word `r / 32`
+  and bit `r % 32`, and partition output positions preserve row order. The controller's grids and offset buffers
+  retain their chunk units.
+- **`graph_apply_fused`** places `apply_struct_fused`'s child-struct writes and `gap_copy_fused`'s terminal-window
+  copies into additional blocks of the captured partition kernel. Struct blocks consume the aggregate's final
+  counts and starts, and write metadata that partition blocks do not read. Gap and split windows are disjoint.
+  The controller sizes its grid for the live split/gap suffix and the optional struct block; deferred split
+  information retains its per-level slab offset. Fusion removes two separate apply launches when both
+  components are enabled.
+- **`graph_skip_unsplittable`** applies `skip_unsplittable`'s conservative count bound after aggregate produces
+  actual child sizes: a leaf of `n` rows is skipped only when `n + 2 + (n >> 20) < 2 * min_data_in_leaf`. Its
+  rounding margin and forced-split exclusion match the host rule. Invalidating both siblings also suppresses
+  their histogram work, and the best-split sync invalidates their leaf candidates. Max-depth validity remains
+  part of the descriptor gate.
+
+The final index partition still runs at every applied level. The captured loop's buffer swapping and later
+window readers do not yet share the host `final_map_only` pending-partition protocol; the audit is recorded in
+[perf-dead-ends.md](perf-dead-ends.md). Float row batching, fused-root and pair-joint regrouping are recorded
+there separately because preserving floating accumulation order requires a different implementation or an
+explicit numerical mode.
+
+The regression lattice adds 56 cells with 13 new fingerprint bases for these ports: each graph key and the
+corresponding host switches are ablated independently, including explicit deterministic fp64, missing values,
+compact quantized views, and child-count boundaries at `min_data_in_leaf` 1599–1602. All 56 pass with identical
+tree bytes across their plan flips; prior fingerprint entries are unchanged. Compact non-quantized views do
+not use the deterministic graph histogram path and are therefore covered by validity and numerical quality
+checks rather than new exact fingerprints.
+
+`tests/python_package_test/test_graph_apply.py` checks graph-instance success and fused node counts with
+existing diagnostics, then compares model and prediction bits across the independent keys. Its 23 cases
+cover final 1024-row tails, terminal-window gaps, resets of config and training data, exact child-count
+boundaries, and the forced-split and low-leaf-budget host fallbacks. Dense boundary distractors ensure that
+the count-margin cases run the captured path rather than a sparse fallback.
+
+The immutable [2026-10-09 correctness and quality verdict](2026-10-09_noquant-validation.md) records the
+selected FP64 runtime, unchanged locks, complete fresh paired seed results and retained sanity failures.
+It does not claim quality improvement or a cost-free tradeoff. The separate immutable
+[2026-10-09 strict overnight timing verdict](2026-10-09_noquant-timings.md) records all 35 jobs,
+complete affected coverage and retained fraud failures. With FP64 defaults, Year/Epsilon/Higgs
+deep training takes about 22%/19%/39% less time; full 30,000-round Numerai-deep takes 9.9% less
+time in one complete run per build. Numerai example improves about 1.8%, while stochastic controls
+are essentially unchanged. Forced quantized graph mode is slower in all seven same-build tests and
+remains opt-in. These timing observations do not establish quality equivalence; the dated report
+retains each metric, failure, learning curve and scope limit.
+
+The separate [fraud follow-up](2026-10-09_fraud-followup.md) diagnoses uncapped
+Newton-step collapse and sigmoid saturation in fresh strict probes. Native AUC
+matches CPU raw-margin AUC, and cached probabilities match CPU model predictions
+exactly. The harness now compares the same AUC representation and records actual
+accepted trees on no-split termination. Explicit `max_delta_step=1` shallow/deep
+reruns pass all ten endpoints at AUC about 0.979; their capped configurations and
+absolute timings are separate evidence, preserving every original failed draw.
 
 ## 8. GPU inference via NVIDIA FIL
 

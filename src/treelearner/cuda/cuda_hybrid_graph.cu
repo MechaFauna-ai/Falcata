@@ -544,6 +544,11 @@ __global__ void HybridGraphLevelControllerKernel(CUDAHybridGraphLoopState* st,
                static_cast<unsigned int>(NextPow2(num_gaps)), 1) :
           dim3(1, 1, 1);
         break;
+      case kHybridGraphNodeApplyFused:
+        grid = dim3(static_cast<unsigned int>(NextPow2(max(max_num_blocks + st->apply_fuse_struct,
+                                                         st->apply_fuse_gaps ? max_gap_blocks : 0))),
+                    static_cast<unsigned int>(NextPow2(n + (st->apply_fuse_gaps ? num_gaps : 0))), 1);
+        break;
       case kHybridGraphNodeConstruct:
         // pow2 bucket like the rest: the kernel computes its exact row
         // grouping from the level's actual sizes (using the loop state's live

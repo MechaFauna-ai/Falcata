@@ -32,7 +32,7 @@
 namespace Falcata {
 
 /*! \brief fp32 per-bin gain arithmetic in the best-split find kernels
- *  (config cuda_precision=fp32 enables; default fp64, the historical behavior).
+ *  (config cuda_precision=fp32 enables; auto selects it for noquant CUDA).
  *  Leaf-level sums stay double and are converted once per task; results are
  *  quality-gated, not bit-identical. Process-global, set from Config by the
  *  tree learner's Init before any consumer reads it (concurrent in-process
@@ -101,6 +101,16 @@ class CUDABestSplitFinder {
   /*! \brief non-quantized histogram storage is float pairs (FALCATA_FP32_HIST);
    *  decided by the histogram constructor, wired in by the tree learner */
   void SetHistFP32(const bool hist_fp32) { hist_fp32_ = hist_fp32; }
+
+  /*! \brief fp64 non-quantized finds fold the gradient/hessian threshold
+   *  prefixes in CPU's sequential order when true, with the parallel shuffle
+   *  scans when false. CPU's order reproduces the CPU learner's splits only on
+   *  histograms that are bit-exact themselves (the deterministic constructs);
+   *  a tree built by the order-dependent atomic construct carries run-to-run
+   *  low-bit noise in every histogram, so the tree learner selects the
+   *  parallel scans for it. Read at launch, and at capture by a graph's find
+   *  nodes. */
+  void SetCPUOrderScan(const bool cpu_order_scan) { cpu_order_scan_ = cpu_order_scan; }
 
   /*! \brief l2 ridge of this many hessian quanta in the discretized find
    *  kernels (0 = none): bounds gains/outputs by the quantized hessian's
@@ -670,6 +680,8 @@ class CUDABestSplitFinder {
   bool use_global_memory_;
   // non-quantized histograms stored as float pairs (FALCATA_FP32_HIST)
   bool hist_fp32_ = false;
+  // fp64 non-quantized finds fold their threshold prefixes in CPU order (see SetCPUOrderScan)
+  bool cpu_order_scan_ = true;
   // l2 ridge in hessian quanta in the discretized find kernels, scalar
   // (FindBestSplitsDiscretizedForLeafKernel) and vector
   // (FindBestSplitsDiscretizedVectorInner) alike; 0 = none

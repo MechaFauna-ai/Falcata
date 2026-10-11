@@ -775,7 +775,7 @@ Learning Control Parameters
 
    -  ``auto``: resolves to ``stochastic`` if ``use_quantized_grad=true``, otherwise ``none``
 
-   -  ``none``: full-precision (fp64) gradient/hessian accumulation
+   -  ``none``: full-precision (unquantized) gradients and hessians; on ``cuda`` the histogram and gain precision is ``cuda_precision``
 
    -  ``stochastic``: Falcata-native quantized training (same as ``use_quantized_grad=true``): stochastic rounding into ``quant_bins`` bins; aggressive speed end of the trade-off
 
@@ -783,9 +783,13 @@ Learning Control Parameters
 
    -  **Note**: ``stochastic`` and ``fixedpoint`` work only with ``cuda`` device type; use ``none`` for CPU training
 
+   -  a live CUDA learner cannot change its quantization mode through ``Booster.reset_parameter``; create a new booster for another mode
+
 -  ``num_grad_quant_bins`` :raw-html:`<a id="num_grad_quant_bins" title="Permalink to this parameter" href="#num_grad_quant_bins">&#x1F517;&#xFE0E;</a>`, default = ``0``, type = int, aliases: ``quant_bins``, constraints: ``num_grad_quant_bins >= 0``
 
    -  used only when quantized training is active (``quant_mode`` = ``stochastic`` or ``fixedpoint``)
+
+   -  a live quantized CUDA learner cannot change its bin count or switch between automatic and explicit bin resolution through ``Booster.reset_parameter``
 
    -  number of bins to quantization gradients and hessians
 
@@ -1443,7 +1447,7 @@ GPU Parameters
 
    -  set this to ``true`` to use double precision math on the legacy OpenCL backend (``device_type=gpu``), which accumulates in single precision by default
 
-   -  **Note**: with ``device_type=cuda``, histogram/gain precision is controlled by ``cuda_precision`` instead; setting ``gpu_use_dp=true`` there forces double-precision histograms even if ``cuda_precision=fp32``
+   -  **Note**: with ``device_type=cuda``, histogram/gain precision is controlled by ``cuda_precision`` instead; setting ``gpu_use_dp=true`` there resolves ``cuda_precision=auto`` to ``fp64`` and forces double-precision histograms even if ``cuda_precision=fp32``
 
 -  ``num_gpu`` :raw-html:`<a id="num_gpu" title="Permalink to this parameter" href="#num_gpu">&#x1F517;&#xFE0E;</a>`, default = ``1``, type = int, constraints: ``num_gpu > 0``
 
@@ -1459,11 +1463,19 @@ GPU Parameters
 
 -  ``cuda_precision`` :raw-html:`<a id="cuda_precision" title="Permalink to this parameter" href="#cuda_precision">&#x1F517;&#xFE0E;</a>`, default = ``fp64``, type = string
 
-   -  floating-point precision of CUDA histogram accumulation and split-gain math (Falcata)
+   -  floating-point precision of CUDA histogram accumulation and split-gain math for non-quantized training (Falcata)
 
-   -  ``fp64``: double-precision accumulation (bit-stable reference)
+   -  ``auto``: ``fp32`` for non-quantized training (``quant_mode=none``) on ``device_type=cuda``, ``fp64`` otherwise; non-quantized training also stays ``fp64`` under ``gpu_use_dp=true``, under ``deterministic=true`` and for vector-leaf multi-target trees (which need fp64)
 
-   -  ``fp32``: single-precision histogram atomics and gain math; measurably faster on high-bin workloads at <=0.1pp quality cost, results are non-deterministic across runs
+   -  ``fp64``: double-precision histogram accumulation and gain math (the reference mode)
+
+   -  ``fp32``: single-precision histogram storage and gain math: less histogram bandwidth and cheaper arithmetic, but predictions and validation quality can change; results are non-deterministic across runs
+
+   -  the default is ``fp64``; opting into ``auto`` or ``fp32`` can change predictions and validation quality, so validate the chosen precision on your workload
+
+   -  a live CUDA learner cannot change its resolved precision or ``gpu_use_dp`` histogram layout through ``Booster.reset_parameter``; create a new booster for another precision
+
+   -  quantized training (``quant_mode=stochastic`` or ``fixedpoint``) resolves ``auto`` to ``fp64``: its histograms are integer sums
 
    -  **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
 
@@ -1475,7 +1487,7 @@ GPU Parameters
 
    -  experts can pin individual decisions with comma-separated ``key:on|off`` overrides after ``auto``, e.g. ``auto,graph_loop:off,tuner:on``
 
-   -  nearly all plan decisions are perf-only and bit-identical: they never change the trained model, only how fast it is produced. Exceptions: ``robust_scale`` (an accuracy guard for ``quant_mode=fixedpoint`` on extreme label imbalance) changes the model when it fires, and ``batch_kernels`` may break exact-gain ties in a different order
+   -  nearly all plan decisions are perf-only and bit-identical: they never change the trained model, only how fast it is produced. Exceptions: ``robust_scale`` (an accuracy guard for ``quant_mode=fixedpoint`` on extreme label imbalance) changes the model when it fires, and ``batch_kernels`` may break exact-gain ties in a different order. For non-quantized training, ``graph_loop`` and ``graph_det`` also select the histogram accumulation and threshold scan order, which can change low bits and exact-gain tie choices
 
    -  **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
 

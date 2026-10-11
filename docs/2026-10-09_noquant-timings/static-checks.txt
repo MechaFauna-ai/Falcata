@@ -1,0 +1,23 @@
+check toml...........................................(no files to check)Skipped
+check xml................................................................Passed
+fix end of files.........................................................Passed
+trim trailing whitespace.................................................Passed
+CMake Lint...........................................(no files to check)Skipped
+cpplint..............................................(no files to check)Skipped
+check-omp-pragmas........................................................Passed
+yamllint.............................................(no files to check)Skipped
+regenerate-parameters....................................................Passed
+rstcheck.............................................(no files to check)Skipped
+ruff check...............................................................Passed
+ruff format..............................................................Passed
+biome ci.................................................................Passed
+shellcheck...........................................(no files to check)Skipped
+typos....................................................................Passed
+Validate pyproject.toml..............................(no files to check)Skipped
+mypy.....................................................................Passed
+- hook id: mypy
+- duration: 0.08s
+
+Success: no issues found in 12 source files
+
+zizmor...............................................(no files to check)Skipped
