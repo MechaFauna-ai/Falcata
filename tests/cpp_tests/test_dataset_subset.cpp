@@ -6,10 +6,12 @@
 #include <gtest/gtest.h>
 #include <testutils.h>
 #include <Falcata/c_api.h>
+#include <Falcata/dataset.h>
 
 #include <cstdint>
 #include <vector>
 
+using Falcata::Dataset;
 using Falcata::TestUtils;
 
 // FLC_DatasetGetSubset must carry over the query boundaries of the queries
@@ -53,6 +55,34 @@ TEST(DatasetSubset, PartialQuerySubsetCarriesNoQueries) {
   int out_type = 0;
   ASSERT_EQ(0, FLC_DatasetGetField(subset, "group", &out_len, &out_ptr, &out_type));
   EXPECT_EQ(1, out_len);
+
+  EXPECT_EQ(0, FLC_DatasetFree(subset));
+  EXPECT_EQ(0, FLC_DatasetFree(full));
+}
+
+// With row weights, the carried-over queries also get their query weights
+// (mean row weight per query), as for any dataset with weights and queries.
+TEST(DatasetSubset, KeptQueriesGetQueryWeights) {
+  DatasetHandle full;
+  ASSERT_EQ(0, TestUtils::LoadDatasetFromExamples("lambdarank/rank.train", "max_bin=15 verbose=-1", &full));
+  int32_t num_data = 0;
+  ASSERT_EQ(0, FLC_DatasetGetNumData(full, &num_data));
+  std::vector<float> weights(num_data);
+  for (int32_t i = 0; i < num_data; ++i) {
+    weights[i] = static_cast<float>(i + 1);
+  }
+  ASSERT_EQ(0, FLC_DatasetSetField(full, "weight", weights.data(), num_data, C_API_DTYPE_FLOAT32));
+
+  std::vector<int32_t> used = {0, 14, 15, 16, 17, 18};
+  DatasetHandle subset;
+  ASSERT_EQ(0, FLC_DatasetGetSubset(full, used.data(), static_cast<int32_t>(used.size()), "verbose=-1", &subset));
+
+  const auto& metadata = static_cast<Dataset*>(subset)->metadata();
+  ASSERT_EQ(2, metadata.num_queries());
+  const float* query_weights = metadata.query_weights();
+  ASSERT_NE(nullptr, query_weights);
+  EXPECT_FLOAT_EQ(1.0f, query_weights[0]);
+  EXPECT_FLOAT_EQ(17.0f, query_weights[1]);  // rows 14..18 have weights 15..19
 
   EXPECT_EQ(0, FLC_DatasetFree(subset));
   EXPECT_EQ(0, FLC_DatasetFree(full));
