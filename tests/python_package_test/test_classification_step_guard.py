@@ -1,5 +1,6 @@
 """End-to-end coverage for automatic classification Newton-step stabilization."""
 
+import json
 from os import getenv
 
 import numpy as np
@@ -276,3 +277,90 @@ def test_deterministic_cuda_promotion_keeps_quantized_steps_unconstrained():
     legacy = lgb.train({**params, "max_delta_step": 0}, dataset, num_boost_round=1)
     assert "[quant_mode: fixedpoint]" in automatic.model_to_string()
     assert automatic.dump_model()["tree_info"] == legacy.dump_model()["tree_info"]
+
+
+def _empty_cpu_split_problem():
+    rng = np.random.default_rng(4002)
+    y = np.zeros(40, dtype=np.int32)
+    y[rng.choice(len(y), 2, replace=False)] = 1
+    columns = []
+    for column in range(4):
+        values = rng.normal(size=len(y))
+        if column == 0:
+            values[rng.random(len(y)) < 0.5] = 0.0
+        elif column == 1:
+            values = rng.integers(0, 8, size=len(y)).astype(float)
+        elif column == 2:
+            values = (rng.random(len(y)) < 0.1).astype(float)
+        else:
+            values += 2 * y
+        columns.append(values)
+    return np.column_stack(columns), y
+
+
+@pytest.mark.parametrize("histogram_layout", ["force_row_wise", "force_col_wise"])
+@pytest.mark.parametrize("minimum_hessian", [0.0, 1e-20])
+@pytest.mark.parametrize(
+    "extra_params",
+    [
+        {},
+        {"linear_tree": True},
+        {"cegb_tradeoff": 0.05, "cegb_penalty_feature_lazy": [0.01, 0.02, 0.03, 0.04]},
+        {"cegb_tradeoff": 0.05, "cegb_penalty_feature_coupled": [0.01, 0.02, 0.03, 0.04]},
+    ],
+    ids=["constant", "linear", "cegb_lazy", "cegb_coupled"],
+)
+def test_tiny_hessian_minimum_does_not_create_empty_cpu_children(histogram_layout, minimum_hessian, extra_params):
+    # Hessian-derived counts can admit empty bins because of roundoff.
+    # The actual partition must be checked before changing tree or cost state.
+    X, y = _empty_cpu_split_problem()
+    params = {
+        "objective": "binary",
+        "device_type": "cpu",
+        "quant_mode": "none",
+        "learning_rate": 0.1,
+        "num_leaves": 64,
+        "max_depth": 10,
+        "min_data_in_leaf": 1,
+        "min_sum_hessian_in_leaf": minimum_hessian,
+        "num_threads": 1,
+        histogram_layout: True,
+        "verbosity": -1,
+        **extra_params,
+    }
+    model = lgb.train(params, lgb.Dataset(X, label=y), num_boost_round=30)
+    raw = model.predict(X, raw_score=True)
+    assert np.isfinite(raw).all()
+    prior = np.full(len(y), np.log(y.mean() / (1 - y.mean())))
+    assert _binary_logloss(y, raw) < _binary_logloss(y, prior)
+
+    def check_counts(node):
+        if "leaf_count" in node:
+            assert node["leaf_count"] > 0
+            return node["leaf_count"]
+        return check_counts(node["left_child"]) + check_counts(node["right_child"])
+
+    for tree in model.dump_model()["tree_info"]:
+        assert check_counts(tree["tree_structure"]) == len(y)
+
+
+def test_forced_empty_cpu_split_preserves_all_rows(tmp_path):
+    X, y = _empty_cpu_split_problem()
+    forced = tmp_path / "forced.json"
+    forced.write_text(json.dumps({"feature": 0, "threshold": 1e100}))
+    params = {
+        "objective": "binary",
+        "device_type": "cpu",
+        "quant_mode": "none",
+        "num_leaves": 64,
+        "min_data_in_leaf": 1,
+        "min_sum_hessian_in_leaf": 0.0,
+        "forcedsplits_filename": forced,
+        "num_threads": 1,
+        "verbosity": -1,
+    }
+    model = lgb.train(params, lgb.Dataset(X, label=y), num_boost_round=10)
+    assert np.isfinite(model.predict(X, raw_score=True)).all()
+    tree = model.dump_model()["tree_info"][0]
+    assert tree["num_leaves"] == 1
+    assert tree["tree_structure"]["leaf_count"] == len(y)

@@ -231,24 +231,35 @@ Tree* SerialTreeLearner::Train(const score_t* gradients, const score_t *hessians
       // find best threshold for every feature
       FindBestSplits(tree_ptr);
     }
-    // Get a leaf with max split gain
-    int best_leaf = static_cast<int>(ArrayArgs<SplitInfo>::ArgMax(best_split_per_leaf_));
-    // Get split information for best leaf
-    const SplitInfo& best_leaf_SplitInfo = best_split_per_leaf_[best_leaf];
-    if (std::getenv("FALCATA_DEBUG_SPLITS") != nullptr) {
-      fprintf(stderr, "CPUSPLIT leaf=%d feat=%d thr=%u gain=%.17g slg=%.17g slh=%.17g lc=%d rc=%d\n",
-              best_leaf, best_leaf_SplitInfo.feature, best_leaf_SplitInfo.threshold,
-              best_leaf_SplitInfo.gain, best_leaf_SplitInfo.left_sum_gradient,
-              best_leaf_SplitInfo.left_sum_hessian,
-              best_leaf_SplitInfo.left_count, best_leaf_SplitInfo.right_count);
+    bool did_split = false;
+    while (true) {
+      // Get a leaf with max split gain
+      int best_leaf = static_cast<int>(ArrayArgs<SplitInfo>::ArgMax(best_split_per_leaf_));
+      // Get split information for best leaf
+      const SplitInfo& best_leaf_SplitInfo = best_split_per_leaf_[best_leaf];
+      if (std::getenv("FALCATA_DEBUG_SPLITS") != nullptr) {
+        fprintf(stderr, "CPUSPLIT leaf=%d feat=%d thr=%u gain=%.17g slg=%.17g slh=%.17g lc=%d rc=%d\n",
+                best_leaf, best_leaf_SplitInfo.feature, best_leaf_SplitInfo.threshold,
+                best_leaf_SplitInfo.gain, best_leaf_SplitInfo.left_sum_gradient,
+                best_leaf_SplitInfo.left_sum_hessian,
+                best_leaf_SplitInfo.left_count, best_leaf_SplitInfo.right_count);
+      }
+      // cannot split, quit
+      if (best_leaf_SplitInfo.gain <= 0.0) {
+        Log::Warning("No further splits with positive gain, best gain: %f", best_leaf_SplitInfo.gain);
+        break;
+      }
+      if (Split(tree_ptr, best_leaf, &left_leaf, &right_leaf)) {
+        did_split = true;
+        break;
+      }
+      // Counts inferred from Hessians can admit an actually empty child.
+      // Keep this leaf terminal and try the remaining leaves in this tree.
+      best_split_per_leaf_[best_leaf].gain = kMinScore;
     }
-    // cannot split, quit
-    if (best_leaf_SplitInfo.gain <= 0.0) {
-      Log::Warning("No further splits with positive gain, best gain: %f", best_leaf_SplitInfo.gain);
+    if (!did_split) {
       break;
     }
-    // split tree with best leaf
-    Split(tree_ptr, best_leaf, &left_leaf, &right_leaf);
     cur_depth = std::max(cur_depth, tree->leaf_depth(left_leaf));
   }
 
@@ -718,7 +729,11 @@ int32_t SerialTreeLearner::ForceSplits(Tree* tree, int* left_leaf,
         break;
     }
     best_split_per_leaf_[current_leaf] = forceSplitMap[current_leaf];
-    Split(tree, current_leaf, left_leaf, right_leaf);
+    if (!Split(tree, current_leaf, left_leaf, right_leaf)) {
+      best_split_per_leaf_[current_leaf].gain = kMinScore;
+      abort_last_forced_split = true;
+      break;
+    }
     left_smaller = best_split_per_leaf_[current_leaf].left_count <
                    best_split_per_leaf_[current_leaf].right_count;
     left = Json();
@@ -739,17 +754,22 @@ int32_t SerialTreeLearner::ForceSplits(Tree* tree, int* left_leaf,
     *(cur_depth) = std::max(*(cur_depth), tree->leaf_depth(*left_leaf));
   }
   if (abort_last_forced_split) {
-    int best_leaf =
-        static_cast<int>(ArrayArgs<SplitInfo>::ArgMax(best_split_per_leaf_));
-    const SplitInfo& best_leaf_SplitInfo = best_split_per_leaf_[best_leaf];
-    if (best_leaf_SplitInfo.gain <= 0.0) {
-      Log::Warning("No further splits with positive gain, best gain: %f",
-                   best_leaf_SplitInfo.gain);
-      return config_->num_leaves;
+    while (true) {
+      int best_leaf =
+          static_cast<int>(ArrayArgs<SplitInfo>::ArgMax(best_split_per_leaf_));
+      const SplitInfo& best_leaf_SplitInfo = best_split_per_leaf_[best_leaf];
+      if (best_leaf_SplitInfo.gain <= 0.0) {
+        Log::Warning("No further splits with positive gain, best gain: %f",
+                     best_leaf_SplitInfo.gain);
+        return config_->num_leaves;
+      }
+      if (Split(tree, best_leaf, left_leaf, right_leaf)) {
+        *(cur_depth) = std::max(*(cur_depth), tree->leaf_depth(*left_leaf));
+        ++result_count;
+        break;
+      }
+      best_split_per_leaf_[best_leaf].gain = kMinScore;
     }
-    Split(tree, best_leaf, left_leaf, right_leaf);
-    *(cur_depth) = std::max(*(cur_depth), tree->leaf_depth(*left_leaf));
-    ++result_count;
   }
   return result_count;
 }
@@ -780,22 +800,36 @@ std::set<int> SerialTreeLearner::FindAllForceFeatures(Json force_split_leaf_sett
   return force_features;
 }
 
-void SerialTreeLearner::SplitInner(Tree* tree, int best_leaf, int* left_leaf,
+bool SerialTreeLearner::SplitInner(Tree* tree, int best_leaf, int* left_leaf,
                                    int* right_leaf, bool update_cnt) {
   Common::FunctionTimer fun_timer("SerialTreeLearner::SplitInner", global_timer);
   SplitInfo& best_split_info = best_split_per_leaf_[best_leaf];
   const int inner_feature_index =
       train_data_->InnerFeatureIndex(best_split_info.feature);
-  if (cegb_ != nullptr) {
-    cegb_->UpdateLeafBestSplits(tree, best_leaf, &best_split_info,
-                                &best_split_per_leaf_);
-  }
   *left_leaf = best_leaf;
   auto next_leaf_id = tree->NextLeafId();
 
-  // update before tree split
-  constraints_->BeforeSplit(best_leaf, next_leaf_id,
-                            best_split_info.monotone_type);
+  // Partition first; inferred counts need not equal actual child counts.
+  // Do not commit tree, constraint, or feature-cost state for an empty child.
+  auto commit_partition = [&]() {
+    if (update_cnt) {
+      best_split_info.left_count = data_partition_->leaf_count(best_leaf);
+      best_split_info.right_count = data_partition_->leaf_count(next_leaf_id);
+      if (best_split_info.left_count == 0 || best_split_info.right_count == 0) {
+        data_partition_->UndoEmptySplit(best_leaf, next_leaf_id);
+        *right_leaf = -1;
+        return false;
+      }
+    }
+    // Distributed learners retain global counts: a local empty child is valid.
+    if (cegb_ != nullptr) {
+      cegb_->UpdateLeafBestSplits(tree, best_leaf, &best_split_info,
+                                  &best_split_per_leaf_, next_leaf_id);
+    }
+    constraints_->BeforeSplit(best_leaf, next_leaf_id,
+                              best_split_info.monotone_type);
+    return true;
+  };
 
   bool is_numerical_split =
       train_data_->FeatureBinMapper(inner_feature_index)->bin_type() ==
@@ -806,10 +840,8 @@ void SerialTreeLearner::SplitInner(Tree* tree, int best_leaf, int* left_leaf,
     data_partition_->Split(best_leaf, train_data_, inner_feature_index,
                            &best_split_info.threshold, 1,
                            best_split_info.default_left, next_leaf_id);
-    if (update_cnt) {
-      // don't need to update this in data-based parallel model
-      best_split_info.left_count = data_partition_->leaf_count(*left_leaf);
-      best_split_info.right_count = data_partition_->leaf_count(next_leaf_id);
+    if (!commit_partition()) {
+      return false;
     }
     // split tree, will return right leaf
     *right_leaf = tree->Split(
@@ -842,10 +874,8 @@ void SerialTreeLearner::SplitInner(Tree* tree, int best_leaf, int* left_leaf,
                            static_cast<int>(cat_bitset_inner.size()),
                            best_split_info.default_left, next_leaf_id);
 
-    if (update_cnt) {
-      // don't need to update this in data-based parallel model
-      best_split_info.left_count = data_partition_->leaf_count(*left_leaf);
-      best_split_info.right_count = data_partition_->leaf_count(next_leaf_id);
+    if (!commit_partition()) {
+      return false;
     }
 
     *right_leaf = tree->SplitCategorical(
@@ -936,6 +966,7 @@ void SerialTreeLearner::SplitInner(Tree* tree, int best_leaf, int* left_leaf,
   for (auto leaf : leaves_need_update) {
     RecomputeBestSplitForLeaf(tree, leaf, &best_split_per_leaf_[leaf]);
   }
+  return true;
 }
 
 void SerialTreeLearner::RenewTreeOutput(Tree* tree, const ObjectiveFunction* obj, std::function<double(const label_t*, int)> residual_getter,

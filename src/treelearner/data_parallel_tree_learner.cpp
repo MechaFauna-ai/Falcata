@@ -451,7 +451,7 @@ void DataParallelTreeLearner<TREELEARNER_T>::FindBestSplitsFromHistograms(const 
 }
 
 template <typename TREELEARNER_T>
-void DataParallelTreeLearner<TREELEARNER_T>::Split(Tree* tree, int best_Leaf, int* left_leaf, int* right_leaf) {
+bool DataParallelTreeLearner<TREELEARNER_T>::Split(Tree* tree, int best_Leaf, int* left_leaf, int* right_leaf) {
   TREELEARNER_T::SplitInner(tree, best_Leaf, left_leaf, right_leaf, false);
   const SplitInfo& best_split_info = this->best_split_per_leaf_[best_Leaf];
   // need update global number of data in leaf
@@ -461,6 +461,7 @@ void DataParallelTreeLearner<TREELEARNER_T>::Split(Tree* tree, int best_Leaf, in
   if (this->config_->use_quantized_grad) {
     this->gradient_discretizer_->template SetNumBitsInHistogramBin<true>(*left_leaf, *right_leaf, GetGlobalDataCountInLeaf(*left_leaf), GetGlobalDataCountInLeaf(*right_leaf));
   }
+  return true;
 }
 
 // instantiate template classes, otherwise linker cannot find the code
