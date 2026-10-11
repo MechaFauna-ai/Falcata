@@ -362,5 +362,16 @@ def test_forced_empty_cpu_split_preserves_all_rows(tmp_path):
     model = lgb.train(params, lgb.Dataset(X, label=y), num_boost_round=10)
     assert np.isfinite(model.predict(X, raw_score=True)).all()
     tree = model.dump_model()["tree_info"][0]
-    assert tree["num_leaves"] == 1
-    assert tree["tree_structure"]["leaf_count"] == len(y)
+    assert tree["num_leaves"] > 1
+
+    def check_counts(node):
+        if "leaf_count" in node:
+            assert node["leaf_count"] > 0
+            return node["leaf_count"]
+        return check_counts(node["left_child"]) + check_counts(node["right_child"])
+
+    for tree in model.dump_model()["tree_info"]:
+        assert check_counts(tree["tree_structure"]) == len(y)
+    raw = model.predict(X, raw_score=True)
+    prior = np.full(len(y), np.log(y.mean() / (1 - y.mean())))
+    assert _binary_logloss(y, raw) < _binary_logloss(y, prior)

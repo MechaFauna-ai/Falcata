@@ -728,9 +728,11 @@ int32_t SerialTreeLearner::ForceSplits(Tree* tree, int* left_leaf,
         abort_last_forced_split = true;
         break;
     }
+    const SplitInfo ordinary_split = best_split_per_leaf_[current_leaf];
     best_split_per_leaf_[current_leaf] = forceSplitMap[current_leaf];
     if (!Split(tree, current_leaf, left_leaf, right_leaf)) {
-      best_split_per_leaf_[current_leaf].gain = kMinScore;
+      // Ignore the invalid forced partition and fall back to ordinary search.
+      best_split_per_leaf_[current_leaf] = ordinary_split;
       abort_last_forced_split = true;
       break;
     }
