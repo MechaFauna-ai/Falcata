@@ -339,6 +339,9 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
 
   GetMembersFromString(params);
 
+  if (params.count("max_delta_step") != 0 || max_delta_step < 0.0) {
+    max_delta_step_from_auto = max_delta_step < 0.0;
+  }
   ResolveFalcataParams();
 
   GetAucMuWeights();
@@ -366,6 +369,31 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
 
   // check for conflicts
   CheckParamConflict(params);
+
+  // Resolve the step policy after GOSS normalization and deterministic CUDA
+  // quantization promotion, so the policy follows the final training mode.
+  if (max_delta_step_from_auto) {
+    max_delta_step = 0.0;
+    const bool sigmoid_objective = objective == "binary" || objective == "multiclassova";
+    const bool classification = sigmoid_objective || objective == "multiclass";
+    if (!use_quantized_grad && classification &&
+        (boosting == "gbdt" || boosting == "dart")) {
+      // Bound the applied score step, rather than imposing the same raw leaf
+      // cap at every learning rate or sigmoid scale. The existing constrained
+      // split math measures gains at this usable output on every backend.
+      const double score_scale = sigmoid_objective ? sigmoid : 1.0;
+      const double scaled_rate = learning_rate * score_scale;
+      if (scaled_rate > 0.0 && std::isfinite(scaled_rate)) {
+        max_delta_step = std::min(std::numeric_limits<double>::max(), 1.0 / scaled_rate);
+      } else {
+        // Handle underflow/overflow of the product without silently disabling
+        // the guard for otherwise representable parameter combinations.
+        const double log_cap = -std::log(learning_rate) - std::log(score_scale);
+        max_delta_step = std::exp(std::min(std::log(std::numeric_limits<double>::max()), log_cap));
+        CHECK_GT(max_delta_step, 0.0);
+      }
+    }
+  }
 }
 
 void Config::ResolveFalcataParams() {

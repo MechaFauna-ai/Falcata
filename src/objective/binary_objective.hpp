@@ -91,8 +91,8 @@ class BinaryLogloss: public ObjectiveFunction {
     // model degrades as training continues. Capping the per-leaf output is
     // the standard remedy (XGBoost documents max_delta_step=1 for exactly
     // this); measured here it repairs fraud from collapsing runs to AUC
-    // ~0.978 at no cost. Warn rather than changing the default: defaults
-    // must not silently alter trained models.
+    // ~0.978. Automatic classification step limits guard new training by
+    // default; keep this warning for training that remains unconstrained.
     if (max_delta_step_zero_ && cnt_positive > 0 && cnt_negative > 0) {
       const double imbalance = cnt_positive > cnt_negative ?
           static_cast<double>(cnt_positive) / cnt_negative :
@@ -219,7 +219,7 @@ class BinaryLogloss: public ObjectiveFunction {
   const label_t* label_;
   /*! \brief True if using unbalance training */
   bool is_unbalance_;
-  /*! \brief true when the user left max_delta_step unset (imbalance warning) */
+  /*! \brief true when max_delta_step is unconstrained (imbalance warning) */
   bool max_delta_step_zero_ = true;
   /*! \brief Sigmoid parameter */
   double sigmoid_;

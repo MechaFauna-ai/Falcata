@@ -817,8 +817,13 @@ def test_auc_mu(rng):
     results_unweighted = {}
     results_weighted = {}
     params = dict(params, num_classes=10, num_leaves=5)
-    lgb.train(
-        params, lgb_X, num_boost_round=10, valid_sets=[lgb_X], callbacks=[lgb.record_evaluation(results_unweighted)]
+    unweighted_model = lgb.train(
+        params,
+        lgb_X,
+        num_boost_round=10,
+        valid_sets=[lgb_X],
+        callbacks=[lgb.record_evaluation(results_unweighted)],
+        keep_training_booster=True,
     )
     lgb.train(
         params,
@@ -829,18 +834,15 @@ def test_auc_mu(rng):
     )
     assert results_weighted["training"]["auc_mu"][-1] < 1
     assert results_unweighted["training"]["auc_mu"][-1] != results_weighted["training"]["auc_mu"][-1]
-    # test that equal data weights give same auc_mu as unweighted data
-    lgb_X_weighted = lgb.Dataset(X, label=y, weight=np.ones(y.shape) * 0.5)
-    lgb.train(
-        params,
-        lgb_X_weighted,
-        num_boost_round=10,
-        valid_sets=[lgb_X_weighted],
-        callbacks=[lgb.record_evaluation(results_weighted)],
-    )
-    assert results_unweighted["training"]["auc_mu"][-1] == pytest.approx(
-        results_weighted["training"]["auc_mu"][-1], abs=1e-5
-    )
+    # Equal data weights must give the same metric for the same predictions.
+    # Training separate models can change split ties or Hessian thresholds under
+    # uniform weight scaling, so evaluate one model on both validation sets.
+    unweighted_valid = lgb.Dataset(X, label=y, reference=lgb_X)
+    uniform_weight_valid = lgb.Dataset(X, label=y, weight=np.full(y.shape, 0.5), reference=lgb_X)
+    unweighted_model.add_valid(unweighted_valid, "unweighted")
+    unweighted_model.add_valid(uniform_weight_valid, "uniform_weight")
+    same_model_auc = {name: value for name, _, value, _ in unweighted_model.eval_valid()}
+    assert same_model_auc["unweighted"] == pytest.approx(same_model_auc["uniform_weight"], rel=1e-12, abs=1e-12)
     # should give 1 when accuracy = 1
     X = X[:10, :]
     y = y[:10]
@@ -1903,7 +1905,7 @@ def test_all_expected_params_are_written_out_to_model_text(tmp_path):
         "[early_stopping_round: 0]",
         "[early_stopping_min_delta: 0]",
         "[first_metric_only: 0]",
-        "[max_delta_step: 0]",
+        "[max_delta_step: -1]",
         "[lambda_l1: 0]",
         "[lambda_l2: 0]",
         "[linear_lambda: 0]",
