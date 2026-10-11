@@ -2836,7 +2836,7 @@ def test_metrics():
     params_obj_metric_none_verbose = {"objective": "binary", "metric": "None", "verbose": -1}
     params_dummy_obj_metric_log_verbose = {"objective": dummy_obj, "metric": "binary_logloss", "verbose": -1}
     params_dummy_obj_metric_err_verbose = {"objective": dummy_obj, "metric": "binary_error", "verbose": -1}
-    params_dummy_obj_metric_inv_verbose = {"objective": dummy_obj, "metric_types": "invalid_metric", "verbose": -1}
+    params_dummy_obj_metric_inv_verbose = {"objective": dummy_obj, "metric": "invalid_metric", "verbose": -1}
     params_dummy_obj_metric_multi_verbose = {
         "objective": dummy_obj,
         "metric": ["binary_logloss", "binary_error"],

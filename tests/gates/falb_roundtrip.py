@@ -186,6 +186,9 @@ CASES = [
     ),
 ]
 
+# f32 leaves only round leaf values to float32; anything larger is a bug
+F32_REL_TOL = 1e-6
+
 #: name -> what the trained model must LOOK like for the case to be covering
 #: what it is named for. A recipe that quietly stops producing constant trees
 #: would leave the gate green while testing nothing.
@@ -235,7 +238,7 @@ for name, kw, params in CASES:
 
     ok_text = text == text2 and ok_raw
     maxdiff = float(np.max(np.abs(p1 - p2)))
-    ok_pred = maxdiff == 0.0
+    ok_pred = maxdiff == 0.0 and f32_rel <= F32_REL_TOL
     want, holds = REQUIRED_SHAPE.get(name, ("", None))
     if holds is not None and not holds(leaf_counts(text)):
         print(f"  SHAPE FAIL {name}: no longer trains {want} -- {leaf_counts(text)}")
