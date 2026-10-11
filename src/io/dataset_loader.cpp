@@ -1300,6 +1300,9 @@ void DatasetLoader::ExtractFeaturesFromMemory(std::vector<std::string>* text_dat
       // shrink_to_fit will be very slow in linux, and seems not free memory, disable for now
       // text_reader_->Lines()[i].shrink_to_fit();
       std::vector<bool> is_feature_added(dataset->num_features_, false);
+      if (dataset->has_raw()) {
+        std::fill(feature_row.begin(), feature_row.end(), 0.0f);
+      }
       // push data
       for (auto& inner_data : oneline_features) {
         if (inner_data.first >= dataset->num_total_features_) {
@@ -1360,6 +1363,9 @@ void DatasetLoader::ExtractFeaturesFromMemory(std::vector<std::string>* text_dat
       // text_reader_->Lines()[i].shrink_to_fit();
       // push data
       std::vector<bool> is_feature_added(dataset->num_features_, false);
+      if (dataset->has_raw()) {
+        std::fill(feature_row.begin(), feature_row.end(), 0.0f);
+      }
       for (auto& inner_data : oneline_features) {
         if (inner_data.first >= dataset->num_total_features_) {
           continue;
@@ -1434,6 +1440,9 @@ void DatasetLoader::ExtractFeaturesFromFile(const char* filename, const Parser* 
       // set label
       dataset->metadata_.SetLabelAt(start_idx + i, static_cast<label_t>(tmp_label));
       std::vector<bool> is_feature_added(dataset->num_features_, false);
+      if (dataset->has_raw()) {
+        std::fill(feature_row.begin(), feature_row.end(), 0.0f);
+      }
       // push data
       for (auto& inner_data : oneline_features) {
         if (inner_data.first >= dataset->num_total_features_) {
@@ -1461,11 +1470,11 @@ void DatasetLoader::ExtractFeaturesFromFile(const char* filename, const Parser* 
         for (size_t j = 0; j < feature_row.size(); ++j) {
           int feat_ind = dataset->numeric_feature_map_[j];
           if (feat_ind >= 0) {
-            dataset->raw_data_[feat_ind][i] = feature_row[j];
+            dataset->raw_data_[feat_ind][start_idx + i] = feature_row[j];
           }
         }
       }
-      dataset->FinishOneRow(tid, i, is_feature_added);
+      dataset->FinishOneRow(tid, start_idx + i, is_feature_added);
       OMP_LOOP_EX_END();
     }
     OMP_THROW_EX();
