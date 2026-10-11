@@ -735,7 +735,7 @@ def _train(
     for part in parts:
         if part.status == "error":  # type: ignore
             # trigger error locally
-            return part  # type: ignore[return-value]
+            part.result()  # type: ignore[attr-defined]
 
     # Find locations of all parts and map them to particular Dask workers
     key_to_part_dict = {part.key: part for part in parts}  # type: ignore

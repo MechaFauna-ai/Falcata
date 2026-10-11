@@ -635,9 +635,9 @@ inline static void SortForPair(std::vector<T1>* keys, std::vector<T2>* values, s
       return a.first > b.first;
     });
   }
-  for (size_t i = start; i < arr.size(); ++i) {
-    ref_key[i] = arr[i].first;
-    ref_value[i] = arr[i].second;
+  for (size_t i = 0; i < arr.size(); ++i) {
+    ref_key[start + i] = arr[i].first;
+    ref_value[start + i] = arr[i].second;
   }
 }
 

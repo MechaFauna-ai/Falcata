@@ -147,7 +147,7 @@ def test_dataset_construct_fuzzy_boolean(tmp_path):
 def test_dataset_construct_fields_fuzzy():
     polars_frame = generate_random_polars_frame(3, 1000, 42)
     polars_labels = generate_random_polars_series(1000, 42, generate_nulls=False)
-    polars_weights = generate_random_polars_series(1000, 42, generate_nulls=False)
+    polars_weights = generate_random_polars_series(1000, 43, generate_nulls=False)
     polars_groups = pl.Series("group", [300, 400, 50, 250], dtype=pl.Int32)
 
     polars_dataset = lgb.Dataset(polars_frame, label=polars_labels, weight=polars_weights, group=polars_groups)

@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 /*
@@ -238,6 +239,14 @@ class CrossEntropyLambda: public ObjectiveFunction {
         const double y = label_[i];
         const double epf = std::exp(score[i]);
         const double hhat = std::log1p(epf);
+        const double u = w * hhat;
+        if (u < kMinReliableU || u > kMaxReliableU || score[i] > kMaxReliableScore) {
+          double grad, hess;
+          StableWeightedGradHess(score[i], w, y, &grad, &hess);
+          gradients[i] = static_cast<score_t>(grad);
+          hessians[i] = static_cast<score_t>(hess);
+          continue;
+        }
         const double z = 1.0f - std::exp(-w*hhat);
         const double enf = 1.0f / epf;  // = std::exp(-score[i]);
         gradients[i] = static_cast<score_t>((1.0f - y / z) * w / (1.0f + enf));
@@ -299,6 +308,41 @@ class CrossEntropyLambda: public ObjectiveFunction {
   }
 
  private:
+  // z = 1 - exp(-u) with u = w * log1p(exp(s)) loses about -log10(u) digits as
+  // u -> 0 and log10(e) * u digits as u grows, until it rounds to 0 or 1; the
+  // expression in GetGradients is only used where u keeps it accurate.
+  // (1 + exp(s))^2 also overflows for large s.
+  static constexpr double kMinReliableU = 1e-3;
+  static constexpr double kMaxReliableU = 20.0;
+  static constexpr double kMaxReliableScore = 50.0;
+
+  // Cancellation-free form of the weighted gradient and Hessian.
+  static void StableWeightedGradHess(double s, double w, double y, double* grad, double* hess) {
+    const double p = s >= 0.0 ? 1.0 / (1.0 + std::exp(-s)) : std::exp(s) / (1.0 + std::exp(s));
+    const double one_minus_p = s >= 0.0 ? std::exp(-s) / (1.0 + std::exp(-s)) : 1.0 / (1.0 + std::exp(s));
+    const double hhat = s > 0.0 ? s + std::log1p(std::exp(-s)) : std::log1p(std::exp(s));
+    const double u = w * hhat;
+    const double z = -std::expm1(-u);
+    const double q = std::exp(-u);  // 1 - z
+    const double wp = w * p;
+    const double a = wp * one_minus_p;
+    if (z < std::numeric_limits<double>::min()) {
+      // limits as u -> 0, where w * p / z -> 1
+      *grad = wp - y;
+      *hess = a * (1.0 + y * (1.0 - w) / (2.0 * w));
+      return;
+    }
+    // 1 - y / z, with z - y formed without cancellation
+    const double one_minus_y_over_z = (u < 1.0 ? z - y : (1.0 - y) - q) / z;
+    *grad = wp * one_minus_y_over_z;
+    if (u < 1e-8) {
+      // leading term of the series in u; the closed form below cancels here
+      *hess = a * (1.0 + y * (1.0 - w) / (2.0 * w));
+    } else {
+      *hess = a * one_minus_y_over_z + y * wp * wp * q / (z * z);
+    }
+  }
+
   /*! \brief Number of data points */
   data_size_t num_data_;
   /*! \brief Pointer for label */
