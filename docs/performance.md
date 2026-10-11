@@ -132,7 +132,7 @@ rate `0.1`, depth `10`, 1023 leaves, 255 bins, no sampling and zero L2:
 | backend (non-quantized) | fraud raw-score AUC | covtype accuracy | covtype logloss |
 |---|---:|---:|---:|
 | CPU, automatic step limit | 0.97481 | 0.96991 | 0.08894 |
-| FP64 CUDA, automatic step limit | 0.97491 | 0.96925 | 0.08929 |
+| FP64 CUDA, automatic step limit | 0.97560 | 0.96932 | 0.08943 |
 
 These are stability checks, not a replacement for the repeated performance
 sweep above. Large steps can be reduced and more rounds may be needed; this
