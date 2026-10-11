@@ -168,6 +168,7 @@ void Metadata::Init(const Metadata& fullset, const data_size_t* used_indices, da
       data_size_t len = fullset.query_boundaries_[qid + 1] - fullset.query_boundaries_[qid];
       query_boundaries_[i + 1] = query_boundaries_[i] + len;
     }
+    CalculateQueryWeights();
   } else {
     num_queries_ = 0;
   }
