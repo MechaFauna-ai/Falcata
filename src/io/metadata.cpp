@@ -787,11 +787,10 @@ void Metadata::LoadInitialScore(const std::string& data_filename) {
       init_score_[i] = Common::AvoidInf(static_cast<double>(tmp));
     }
   } else {
-    std::vector<std::string> oneline_init_score;
     #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
     for (data_size_t i = 0; i < num_line; ++i) {
       double tmp = 0.0f;
-      oneline_init_score = Common::Split(reader.Lines()[i].c_str(), '\t');
+      const std::vector<std::string> oneline_init_score = Common::Split(reader.Lines()[i].c_str(), '\t');
       if (static_cast<int>(oneline_init_score.size()) != num_class) {
         Log::Fatal("Invalid initial score file. Redundant or insufficient columns");
       }

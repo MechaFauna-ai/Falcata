@@ -402,7 +402,7 @@ def test_classifier_pred_contrib(output, task, cluster):
         else:
             for i in range(num_classes):
                 base_value_col = num_features * (i + 1) + i
-                assert len(np.unique(preds_with_contrib[:, base_value_col]) == 1)
+                assert len(np.unique(preds_with_contrib[:, base_value_col])) == 1
 
 
 @pytest.mark.parametrize("output", data_output)
@@ -1248,7 +1248,7 @@ def test_errors(cluster):
         df = df.map_partitions(f, meta=df._meta)
         with pytest.raises(Exception) as info:  # noqa: PT011, PT012 # error message needs to be coerced to a string
             lgb.dask._train(client=client, data=df, label=df.x, params={}, model_factory=lgb.FalcataClassifier)
-            assert "foo" in str(info.value)
+        assert "foo" in str(info.value)
 
 
 @pytest.mark.parametrize("task", tasks)
@@ -1603,8 +1603,7 @@ def test_predict_returns_expected_dtypes(task, output, cluster):
         if output.startswith("dataframe"):
             dX_sample = dX.sample(frac=0.001)
         else:
-            dX_sample = dX[:1,]
-            dX_sample.persist()
+            dX_sample = dX[:1,].persist()
 
         # default predictions:
         #

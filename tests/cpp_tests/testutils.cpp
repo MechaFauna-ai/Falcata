@@ -86,7 +86,7 @@ void TestUtils::CreateRandomSparseData(
         values->push_back(rand.NextFloat());
       }
     }
-    indptr->push_back(static_cast<int32_t>(indices->size() - 1));
+    indptr->push_back(static_cast<int32_t>(indices->size()));
   }
 
   CreateRandomMetadata(nrows, nclasses, labels, weights, init_scores, groups);

@@ -628,6 +628,7 @@ void PercentileGlobal(const VAL_T* values,
                       VAL_T* cuda_out_value) {
   if (len <= 1) {
     CopyFromCUDADeviceToCUDADevice<VAL_T>(cuda_out_value, values, 1, __FILE__, __LINE__);
+    return;
   }
   BitonicArgSortGlobal<VAL_T, INDEX_T, ASCENDING>(values, indices, len);
   SynchronizeCUDADevice(__FILE__, __LINE__);
