@@ -347,7 +347,8 @@ def gen_parameter_code(
                 else:
                     str_to_write += f'  str_buf << "[{name}: " << Common::Join({name}, ",") << "]\\n";\n'
             else:
-                str_to_write += f'  str_buf << "[{name}: " << {name} << "]\\n";\n'
+                save_value = f"({y['save-as'][0]})" if "save-as" in y else name
+                str_to_write += f'  str_buf << "[{name}: " << {save_value} << "]\\n";\n'
     # tails
     str_to_write += "  return str_buf.str();\n"
     str_to_write += "}\n\n"

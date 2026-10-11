@@ -429,10 +429,15 @@ struct Config {
   bool first_metric_only = false;
 
   // alias = max_tree_output, max_leaf_output
+  // save-as = max_delta_step_from_auto ? -1.0 : max_delta_step
   // desc = used to limit the max output of tree leaves
-  // desc = ``<= 0`` means no constraint
-  // desc = the final max output of leaves is ``learning_rate * max_delta_step``
-  double max_delta_step = 0.0;
+  // desc = negative values select automatic stabilization: for ``binary``, ``multiclass`` and ``multiclassova`` with GBDT (including GOSS) or DART, each tree's training step (excluding the initial class-prior offset) is limited to one unit of the sigmoid-scaled score (binary / OVA) or raw score (softmax)
+  // desc = automatic stabilization prevents enormous Newton updates when classification Hessians approach zero; it is applied in both leaf outputs and split gains, on CPU and CUDA
+  // desc = ``0`` disables the constraint and restores the historical unbounded Newton update; use this explicitly to reproduce older classification benchmarks
+  // desc = positive values specify a raw leaf-output limit, with final max output ``learning_rate * max_delta_step``, and override automatic stabilization
+  // desc = automatic stabilization leaves regression, custom objectives, other objectives and random forests unconstrained
+  // desc = **Note**: this changes classification training defaults; large steps may be reduced and more iterations may be needed. It does not guarantee monotonically decreasing loss
+  double max_delta_step = -1.0;
 
   // alias = reg_alpha, l1_regularization
   // check = >=0.0
@@ -1230,6 +1235,10 @@ struct Config {
   // the parameter-doc generator scans for and nvcc warns about, belong inside
   // the guard.
   bool quant_bins_from_auto = false;
+
+  // Preserve the automatic step-limit policy across partial parameter resets;
+  // serialize the policy (-1), not the learning-rate-specific resolved cap.
+  bool max_delta_step_from_auto = false;
 
   // device_type was resolved by the unset-means-auto probe rather than set by
   // the user; model files must not inherit the machine-local choice (see

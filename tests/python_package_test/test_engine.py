@@ -1903,7 +1903,7 @@ def test_all_expected_params_are_written_out_to_model_text(tmp_path):
         "[early_stopping_round: 0]",
         "[early_stopping_min_delta: 0]",
         "[first_metric_only: 0]",
-        "[max_delta_step: 0]",
+        "[max_delta_step: -1]",
         "[lambda_l1: 0]",
         "[lambda_l2: 0]",
         "[linear_lambda: 0]",
