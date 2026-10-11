@@ -99,17 +99,23 @@ Tree* LinearTreeLearner<TREE_LEARNER_TYPE>::Train(const score_t* gradients, cons
       // find best threshold for every feature
       this->FindBestSplits(tree_ptr);
     }
-    // Get a leaf with max split gain
-    int best_leaf = static_cast<int>(ArrayArgs<SplitInfo>::ArgMax(this->best_split_per_leaf_));
-    // Get split information for best leaf
-    const SplitInfo& best_leaf_SplitInfo = this->best_split_per_leaf_[best_leaf];
-    // cannot split, quit
-    if (best_leaf_SplitInfo.gain <= 0.0) {
-      Log::Warning("No further splits with positive gain, best gain: %f", best_leaf_SplitInfo.gain);
+    bool did_split = false;
+    while (true) {
+      int best_leaf = static_cast<int>(ArrayArgs<SplitInfo>::ArgMax(this->best_split_per_leaf_));
+      const SplitInfo& best_leaf_SplitInfo = this->best_split_per_leaf_[best_leaf];
+      if (best_leaf_SplitInfo.gain <= 0.0) {
+        Log::Warning("No further splits with positive gain, best gain: %f", best_leaf_SplitInfo.gain);
+        break;
+      }
+      if (this->Split(tree_ptr, best_leaf, &left_leaf, &right_leaf)) {
+        did_split = true;
+        break;
+      }
+      this->best_split_per_leaf_[best_leaf].gain = kMinScore;
+    }
+    if (!did_split) {
       break;
     }
-    // split tree with best leaf
-    this->Split(tree_ptr, best_leaf, &left_leaf, &right_leaf);
     cur_depth = std::max(cur_depth, tree->leaf_depth(left_leaf));
   }
 
