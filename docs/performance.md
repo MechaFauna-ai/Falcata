@@ -116,13 +116,13 @@ formula `-G / (H + lambda_l2)` becomes unsafe when confident classification
 predictions have tiny curvature. Additional floating-point precision does not
 make that step appropriate.
 
-Falcata now defaults to `max_delta_step=-1` (automatic). For binary, softmax
+Falcata now defaults to `max_delta_step=-1` (automatic). For non-quantized binary, softmax
 multiclass and one-vs-all classification with GBDT (including GOSS) or DART,
 it bounds the learned score update to one unit, scaled by `sigmoid` for binary
 and OVA. The initial class-prior offset is excluded. Existing constrained
 leaf-output and split-gain math applies the policy on CPU and CUDA; partial
 learning-rate resets recompute the raw cap, and model serialization preserves
-the automatic policy. Regression, custom objectives and random forests remain
+the automatic policy. Quantized training, regression, custom objectives and random forests remain
 unconstrained. Explicit `0` restores historical behavior; positive values keep
 their existing manual raw-output-cap meaning.
 
@@ -137,7 +137,7 @@ rate `0.1`, depth `10`, 1023 leaves, 255 bins, no sampling and zero L2:
 These are stability checks, not a replacement for the repeated performance
 sweep above. Large steps can be reduced and more rounds may be needed; this
 bounded update does not guarantee monotonically decreasing loss. It changes
-classification models and can change split ties even when the cap is inactive.
+non-quantized classification models and can change split ties even when the cap is inactive.
 Historical benchmark reproduction therefore requires explicit
 `--set max_delta_step=0`; new benchmark runs must record their step policy.
 

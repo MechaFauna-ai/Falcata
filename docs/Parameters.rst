@@ -483,7 +483,7 @@ Learning Control Parameters
 
    -  used to limit the max output of tree leaves
 
-   -  negative values select automatic stabilization: for ``binary``, ``multiclass`` and ``multiclassova`` with GBDT (including GOSS) or DART, each tree's training step (excluding the initial class-prior offset) is limited to one unit of the sigmoid-scaled score (binary / OVA) or raw score (softmax)
+   -  negative values select automatic stabilization: for non-quantized ``binary``, ``multiclass`` and ``multiclassova`` with GBDT (including GOSS) or DART, each tree's training step (excluding the initial class-prior offset) is limited to one unit of the sigmoid-scaled score (binary / OVA) or raw score (softmax)
 
    -  automatic stabilization prevents enormous Newton updates when classification Hessians approach zero; it is applied in both leaf outputs and split gains, on CPU and CUDA
 
@@ -491,9 +491,9 @@ Learning Control Parameters
 
    -  positive values specify a raw leaf-output limit, with final max output ``learning_rate * max_delta_step``, and override automatic stabilization
 
-   -  automatic stabilization leaves regression, custom objectives, other objectives and random forests unconstrained
+   -  automatic stabilization leaves quantized training, regression, custom objectives, other objectives and random forests unconstrained
 
-   -  **Note**: this changes classification training defaults; large steps may be reduced and more iterations may be needed. It does not guarantee monotonically decreasing loss
+   -  **Note**: this changes non-quantized classification training defaults; large steps may be reduced and more iterations may be needed. It does not guarantee monotonically decreasing loss
 
 -  ``lambda_l1`` :raw-html:`<a id="lambda_l1" title="Permalink to this parameter" href="#lambda_l1">&#x1F517;&#xFE0E;</a>`, default = ``0.0``, type = double, aliases: ``reg_alpha``, ``l1_regularization``, constraints: ``lambda_l1 >= 0.0``
 

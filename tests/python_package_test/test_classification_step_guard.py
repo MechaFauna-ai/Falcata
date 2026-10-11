@@ -251,3 +251,28 @@ def test_legacy_goss_alias_retains_automatic_guard(device_params):
     model = lgb.train({**params, "boosting": "goss"}, dataset, num_boost_round=1)
     assert model.dump_model()["tree_info"][0]["num_leaves"] == 2
     assert np.max(np.abs(model.predict(X, raw_score=True))) == pytest.approx(1.0)
+
+
+@pytest.mark.skipif(getenv("TASK", "") != "cuda", reason="CUDA-only validation")
+@pytest.mark.parametrize("quant_mode", ["stochastic", "fixedpoint"])
+def test_auto_guard_preserves_quantized_training_math(quant_mode):
+    X, _, _, dataset, params = _binary_problem()
+    params.update({"device_type": "cuda", "cuda_precision": "fp64", "quant_mode": quant_mode})
+    automatic = lgb.train(params, dataset, num_boost_round=1)
+    legacy = lgb.train({**params, "max_delta_step": 0}, dataset, num_boost_round=1)
+    # Policy serialization changes, but the trained tree must be identical.
+    assert automatic.dump_model()["tree_info"] == legacy.dump_model()["tree_info"]
+    np.testing.assert_array_equal(automatic.predict(X, raw_score=True), legacy.predict(X, raw_score=True))
+    assert "[max_delta_step: -1]" in automatic.model_to_string()
+    manual = lgb.train({**params, "max_delta_step": 0.25}, dataset, num_boost_round=1)
+    assert np.max(np.abs(manual.predict(X, raw_score=True))) <= 0.1 * 0.25
+
+
+@pytest.mark.skipif(getenv("TASK", "") != "cuda", reason="CUDA-only validation")
+def test_deterministic_cuda_promotion_keeps_quantized_steps_unconstrained():
+    _, _, _, dataset, params = _binary_problem()
+    params.update({"device_type": "cuda", "cuda_precision": "fp64", "deterministic": True})
+    automatic = lgb.train(params, dataset, num_boost_round=1)
+    legacy = lgb.train({**params, "max_delta_step": 0}, dataset, num_boost_round=1)
+    assert "[quant_mode: fixedpoint]" in automatic.model_to_string()
+    assert automatic.dump_model()["tree_info"] == legacy.dump_model()["tree_info"]

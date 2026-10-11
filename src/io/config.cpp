@@ -369,14 +369,15 @@ void Config::Set(const std::unordered_map<std::string, std::string>& params) {
 
   // check for conflicts
   CheckParamConflict(params);
-}
 
-void Config::ResolveFalcataParams() {
+  // Resolve the step policy after GOSS normalization and deterministic CUDA
+  // quantization promotion, so the policy follows the final training mode.
   if (max_delta_step_from_auto) {
     max_delta_step = 0.0;
     const bool sigmoid_objective = objective == "binary" || objective == "multiclassova";
     const bool classification = sigmoid_objective || objective == "multiclass";
-    if (classification && (boosting == "gbdt" || boosting == "dart" || boosting == "goss")) {
+    if (!use_quantized_grad && classification &&
+        (boosting == "gbdt" || boosting == "dart")) {
       // Bound the applied score step, rather than imposing the same raw leaf
       // cap at every learning rate or sigmoid scale. The existing constrained
       // split math measures gains at this usable output on every backend.
@@ -393,6 +394,9 @@ void Config::ResolveFalcataParams() {
       }
     }
   }
+}
+
+void Config::ResolveFalcataParams() {
   std::string resolved_tree_mode = Common::Trim(tree_mode);
   std::transform(resolved_tree_mode.begin(), resolved_tree_mode.end(),
                  resolved_tree_mode.begin(), [](unsigned char c){ return std::tolower(c); });
