@@ -68,7 +68,7 @@ There are two distinct products here, and they are *not* the same model:
   (https://catboost.ai/docs/en/concepts/loss-functions-multiregression).
 - **But CatBoost trees are symmetric / oblivious** — the same (feature,
   threshold) is applied at every node of a level
-  (https://catboost.ai/news/catboost-enables-fast-gradient-boosting-on-decision-trees-using-gpus).
+  (https://catboost.ai/docs/en/concepts/parameter-tuning).
   Symmetric trees make a vector leaf trivial (leaf = a level-path bitmask, values
   are just a table) but sacrifice the accuracy of asymmetric leaf-wise growth.
 
