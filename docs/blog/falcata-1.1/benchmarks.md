@@ -1,16 +1,20 @@
 # Falcata 1.1 article: measurements and release scope
 
-Editorial companion, 9 October 2026. The [article](../falcata-1.1.md) keeps the
+Editorial companion, updated 12 October 2026. The [article](../falcata-1.1.md) keeps the
 main narrative short; this file keeps the comparisons and limits inspectable.
 The proposed 1.1 release has not been published. These measurements span the
-launch snapshot, subsequent 1.0.x development and pending [PR #71](https://github.com/MechaFauna-ai/Falcata/pull/71).
+launch snapshot and subsequent 1.0.x development. Merged scope is pinned to
+[`a65d34e8`](https://github.com/MechaFauna-ai/Falcata/commit/a65d34e80a7c337342fba6886d0a1cbd69eda079).
+The unmerged [PR #71](https://github.com/MechaFauna-ai/Falcata/pull/71) prototype
+remains a separate historical experiment, excluded from that scope.
 
 ## Which comparisons the article makes
 
 | Comparison | Before | After | Interpretation |
 | --- | --- | --- | --- |
 | Launch → October quantized | August launch benchmark, labelled 1.0.0; covtype forensics identify the pre-tag artifact `724e9358` | October 8 `b4da8135`, or October 9 `d0bb8c47` where a matching strict control exists | Dated workload snapshots, not a controlled tagged-v1.0.0 → tagged-v1.1 experiment |
-| Latest non-quantized work | October `09b6be97` | Selected `d0bb8c47` | New PR #71 work beyond the already optimized October baseline |
+| Non-quantized prototype | October `09b6be97` | October 9 `d0bb8c47` | Historical PR #71 experiment, unmerged; predates the automatic classification constraint |
+| Classification stability | Unbounded controls and automatic-limit master `aa5f00e7` | Per-case builds through final PR #93 `08c37d95`, merged as `a65d34e8` | 140 guarded 500-round configurations; quality and stability evidence, no timing comparison |
 | Mechanism experiments | Each documented preceding development build, or a same-binary key OFF | The corresponding key/package ON | Local effects with their own shapes and timing windows; do not multiply them into a release claim |
 | Other frameworks | August benchmark versions and configurations | No new competitor measurement | Archived reference bars, not claims about current engine releases |
 
@@ -88,7 +92,18 @@ October 9 quality records use `NumeraiEvaluator(cpu)`. Their cache's label ident
 is unidentified; these are reproduction metrics, not target selection,
 prequential evidence or a production release.
 
-## Non-quantized measurements
+Published evidence normalizes machine-specific paths to portable source identifiers
+or repository paths. Original-source SHA256 values still identify the unmodified
+source bytes; a normalized excerpt is not byte-identical to its source. The matrix
+hash in derived chart/appendix data identifies the published matrix itself.
+
+## Historical non-quantized prototype measurements
+
+These October 9 timings belong to the unmerged PR #71 prototype. They are retained
+with their original quality records and do not describe the current classification
+default. The automatic positive raw cap used by the new classification policy
+disables PR #71's unbounded split-gain pruning shortcut. Fresh integration and
+controlled timings are needed before claiming these gains for that combination.
 
 | Workload | October baseline | Selected FP64 | Less time | Timed draws per build |
 | --- | ---: | ---: | ---: | ---: |
@@ -105,7 +120,7 @@ Exact medians, source identities and quality ranges are in the
 [plot_training_time.py](plot_training_time.py). The deep pair's CORR moves from
 0.0238562 to 0.0238004; one pair does not establish repeatability or equivalent
 quality. Year/Epsilon ranges overlap; Higgs includes a lower-scoring draw.
-Covtype and uncapped fraud remain outside headline speed claims because of
+Historical covtype and uncapped fraud remain outside headline speed claims because of
 unstable/failed models. Parallel FP64 scans can alter addition order; eligible
 deterministic routes retain their CPU-order scans. FP64 remains default; FP32 and
 conditional `auto` are opt-in.
@@ -123,6 +138,24 @@ and CPU probabilities matched cached probabilities. With explicit
 and AUC was around 0.979. This is a changed, separately labelled configuration;
 it does not replace the uncapped failures. See the
 [diagnosis and rerun](https://github.com/MechaFauna-ai/Falcata/blob/523ed775ad2eec9eeca147c4815c39a8f9400f70/docs/2026-10-09_fraud-followup.md).
+
+## Current classification stability and split correctness
+
+Merged [PR #91](https://github.com/MechaFauna-ai/Falcata/pull/91) adds the automatic
+classification step policy; [PR #93](https://github.com/MechaFauna-ai/Falcata/pull/93)
+fixes the separate actual empty-child partition failure exposed by broad coverage.
+The [stability report](stability.md) and [portable evidence](stability-data.json)
+record 132 guarded full-data configurations plus eight extra CPU tiny-leaf seed
+runs, all 500 rounds, and four reproduced uncapped controls. The final candidate
+also passed 1,195 CPU/C API CI tests and 39 focused CPU/CUDA regressions. This
+updates the older single-seed diagnosis without replacing historical timing rows.
+
+[PR #90](https://github.com/MechaFauna-ai/Falcata/pull/90) separately corrects
+benchmark accounting for stopped/saturated runs. Older harness records lacking
+accepted-tree counts retain that limitation; the new accounting cannot certify
+those counts retroactively. [PR #92](https://github.com/MechaFauna-ai/Falcata/pull/92)
+restores CI dependency downloads using a verified mirror of the same pinned Eigen
+source. All five triggered master workflows passed after the PR #93 merge.
 
 ## Mechanism measurements
 

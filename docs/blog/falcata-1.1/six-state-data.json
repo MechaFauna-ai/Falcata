@@ -25,57 +25,57 @@
         "sha256": "9e82a74dc4297113f250e9f632b84d549403cc6450273f02080dc68ed1b9d471"
     },
     "frozen_helper_and_harness_sha256": {
-        "/tmp/falcata-six-values-20261009/manifest.json": "6a5943f3657fe126886e3626021c30672f5627db48514ca21959ae0c5e80c972",
-        "/tmp/falcata-six-values-20261009/PROTOCOL.md": "28cc2eb5dc4b794ee2241463cb6957cf6fe3d3a9dd3ca7dc06b4f3106564c011",
-        "/home/felixjk/Documents/numerai/data/falcata_six_values_20261009/five/meta.json": "37beb6ad4bd0e89c0df13df4b45771e8c7d3058d5ed43e5653e95d94df4d3217",
-        "/home/felixjk/Documents/numerai/data/falcata_six_values_20261009/six/meta.json": "f37eba6130c49573697b5897c982a5e4f96c3a209214a280b276d5c77ed07b80",
-        "/tmp/falcata-six-values-20261009/complete-test-eras.json": "9e82a74dc4297113f250e9f632b84d549403cc6450273f02080dc68ed1b9d471",
-        "/tmp/falcata-six-values-20261009/measurement_guard.py": "c217d611c39fde6139c80d322d20741d5e49c4c541268733ba81055004a21c99",
-        "/tmp/falcata-six-values-20261009/measure_plan.py": "3b0a5b20afffef20cd0c9d146a650205db42bc1e87e352378f3d7573ad39c253",
-        "/tmp/falcata-six-values-20261009/run_cell.py": "e1e797e57b0cf8946084a2e58b6b64997a5dbdd6a41661c61be8023a3a6e7da3",
-        "/tmp/falcata-six-values-20261009/run_group.py": "c5ccf7d432d2b93f41c04ec6b2dccff47d6e8f4ddaa3a40dceb456f7c9d2ce9a",
-        "/tmp/falcata-six-values-20261009/bootstrap.py": "c63f243aa9c107c7dd86072a0c23e93a925428c385fabb894aacfd1f2ae7f83b",
-        "/tmp/falcata-six-values-20261009/write_summary.py": "cee5dd5a94f2146d0ff1b21e255900e820c60dbd06b42dfac4683ec201724383",
-        "/tmp/falcata-six-values-20261009/audit_complete_eras.py": "ec512944a6b67d4f78e114e1585f2d09ab25a5b0ab5f4c6a0ed8021280b6cb01",
-        "/tmp/falcata-six-values-20261009/prepare_data.py": "b912e3e9430662a59bcb68942daf6a67ed420cc0ffd1097ec2ac7bfdfd713b15",
-        "/tmp/falcata-six-values-20261009/blueprint.json": "0f6eaf8fc6a8404fcdc501070bdad93b61af22c67ecc2031dbfed97f09312b49",
-        "/tmp/falcata-six-values-20261009/blueprint.sha256": "3dec8d6ee71ef891ab4c0023e12b595cac7aa9d9524b7b36d238e2ba4884d3c1",
-        "/tmp/falcata-noquant-20261009/benchmarks/bench.py": "07d2ddbbb6474404a70b8f52c99f6729bdd06ce3a6df5badec865a01bcec32d8",
-        "/tmp/falcata-noquant-20261009/benchmarks/common.py": "d0ce598bab8ab548531317d2883896234a051d55f947bd9e3a910fdb84a53f55",
-        "/home/felixjk/Documents/numerai/evaluation/evaluator.py": "b60d20aa9f81d5462d0dd43d3b0e142ae61974b8b9a381df6f62a89869c89ad5",
-        "/home/felixjk/Documents/numerai/evaluation/metrics.py": "d9a8e8f3773341b540d22e7821d0576278f59a82f2113fbda9c96a049e5daa47",
-        "/home/felixjk/Documents/numerai/evaluation/payout.py": "a3558f97e54ae72431ef2e76db4dc171ce0325c1bbd19a2b01ee5d8a7a9b571f",
-        "/home/felixjk/Documents/numerai/targets.py": "4f901fbf938064c27b0f680620c19617e3da7d308c8007040206669788be6221",
-        "/home/felixjk/Documents/numerai/proto/loader.py": "0ba671c9670f3bc95cadf27c070f1f841bb8ca483117bf6b4f668c5d19112030",
-        "/home/felixjk/Documents/numerai/methods/gbdt/train.py": "5198b2f89f628df4621b2476c5fec5ebde843a3387806687b9540f00aad4b5a6",
-        "/home/felixjk/Documents/numerai/methods/gbdt/numerics.py": "3ece06877c5266c46d1705f549058e001e89fa2b71ae1bd8a4966df0dcf00138",
-        "/home/felixjk/Documents/numerai/methods/gbdt/best.textproto": "d257da4ac89c90c7156d4130f756caf0a7421d6d338e5cdec4e82985862fd201"
+        "evidence://falcata-six-values-20261009/manifest.json": "6a5943f3657fe126886e3626021c30672f5627db48514ca21959ae0c5e80c972",
+        "evidence://falcata-six-values-20261009/PROTOCOL.md": "28cc2eb5dc4b794ee2241463cb6957cf6fe3d3a9dd3ca7dc06b4f3106564c011",
+        "external://numerai/data/falcata_six_values_20261009/five/meta.json": "37beb6ad4bd0e89c0df13df4b45771e8c7d3058d5ed43e5653e95d94df4d3217",
+        "external://numerai/data/falcata_six_values_20261009/six/meta.json": "f37eba6130c49573697b5897c982a5e4f96c3a209214a280b276d5c77ed07b80",
+        "evidence://falcata-six-values-20261009/complete-test-eras.json": "9e82a74dc4297113f250e9f632b84d549403cc6450273f02080dc68ed1b9d471",
+        "evidence://falcata-six-values-20261009/measurement_guard.py": "c217d611c39fde6139c80d322d20741d5e49c4c541268733ba81055004a21c99",
+        "evidence://falcata-six-values-20261009/measure_plan.py": "3b0a5b20afffef20cd0c9d146a650205db42bc1e87e352378f3d7573ad39c253",
+        "evidence://falcata-six-values-20261009/run_cell.py": "e1e797e57b0cf8946084a2e58b6b64997a5dbdd6a41661c61be8023a3a6e7da3",
+        "evidence://falcata-six-values-20261009/run_group.py": "c5ccf7d432d2b93f41c04ec6b2dccff47d6e8f4ddaa3a40dceb456f7c9d2ce9a",
+        "evidence://falcata-six-values-20261009/bootstrap.py": "c63f243aa9c107c7dd86072a0c23e93a925428c385fabb894aacfd1f2ae7f83b",
+        "evidence://falcata-six-values-20261009/write_summary.py": "cee5dd5a94f2146d0ff1b21e255900e820c60dbd06b42dfac4683ec201724383",
+        "evidence://falcata-six-values-20261009/audit_complete_eras.py": "ec512944a6b67d4f78e114e1585f2d09ab25a5b0ab5f4c6a0ed8021280b6cb01",
+        "evidence://falcata-six-values-20261009/prepare_data.py": "b912e3e9430662a59bcb68942daf6a67ed420cc0ffd1097ec2ac7bfdfd713b15",
+        "evidence://falcata-six-values-20261009/blueprint.json": "0f6eaf8fc6a8404fcdc501070bdad93b61af22c67ecc2031dbfed97f09312b49",
+        "evidence://falcata-six-values-20261009/blueprint.sha256": "3dec8d6ee71ef891ab4c0023e12b595cac7aa9d9524b7b36d238e2ba4884d3c1",
+        "evidence://falcata-noquant-20261009/benchmarks/bench.py": "07d2ddbbb6474404a70b8f52c99f6729bdd06ce3a6df5badec865a01bcec32d8",
+        "evidence://falcata-noquant-20261009/benchmarks/common.py": "d0ce598bab8ab548531317d2883896234a051d55f947bd9e3a910fdb84a53f55",
+        "external://numerai/evaluation/evaluator.py": "b60d20aa9f81d5462d0dd43d3b0e142ae61974b8b9a381df6f62a89869c89ad5",
+        "external://numerai/evaluation/metrics.py": "d9a8e8f3773341b540d22e7821d0576278f59a82f2113fbda9c96a049e5daa47",
+        "external://numerai/evaluation/payout.py": "a3558f97e54ae72431ef2e76db4dc171ce0325c1bbd19a2b01ee5d8a7a9b571f",
+        "external://numerai/targets.py": "4f901fbf938064c27b0f680620c19617e3da7d308c8007040206669788be6221",
+        "external://numerai/proto/loader.py": "0ba671c9670f3bc95cadf27c070f1f841bb8ca483117bf6b4f668c5d19112030",
+        "external://numerai/methods/gbdt/train.py": "5198b2f89f628df4621b2476c5fec5ebde843a3387806687b9540f00aad4b5a6",
+        "external://numerai/methods/gbdt/numerics.py": "3ece06877c5266c46d1705f549058e001e89fa2b71ae1bd8a4966df0dcf00138",
+        "external://numerai/methods/gbdt/best.textproto": "d257da4ac89c90c7156d4130f756caf0a7421d6d338e5cdec4e82985862fd201"
     },
     "blueprint_helper_and_harness_sha256": {
-        "/tmp/falcata-six-values-20261009/bootstrap.py": "c63f243aa9c107c7dd86072a0c23e93a925428c385fabb894aacfd1f2ae7f83b",
-        "/tmp/falcata-six-values-20261009/measurement_guard.py": "c217d611c39fde6139c80d322d20741d5e49c4c541268733ba81055004a21c99",
-        "/tmp/falcata-six-values-20261009/measure_plan.py": "3b0a5b20afffef20cd0c9d146a650205db42bc1e87e352378f3d7573ad39c253",
-        "/tmp/falcata-six-values-20261009/run_cell.py": "e1e797e57b0cf8946084a2e58b6b64997a5dbdd6a41661c61be8023a3a6e7da3",
-        "/tmp/falcata-six-values-20261009/run_group.py": "c5ccf7d432d2b93f41c04ec6b2dccff47d6e8f4ddaa3a40dceb456f7c9d2ce9a",
-        "/tmp/falcata-six-values-20261009/write_summary.py": "cee5dd5a94f2146d0ff1b21e255900e820c60dbd06b42dfac4683ec201724383",
-        "/tmp/falcata-six-values-20261009/PROTOCOL.md": "28cc2eb5dc4b794ee2241463cb6957cf6fe3d3a9dd3ca7dc06b4f3106564c011",
-        "/tmp/falcata-six-values-20261009/audit_complete_eras.py": "ec512944a6b67d4f78e114e1585f2d09ab25a5b0ab5f4c6a0ed8021280b6cb01",
-        "/tmp/falcata-six-values-20261009/prepare_data.py": "b912e3e9430662a59bcb68942daf6a67ed420cc0ffd1097ec2ac7bfdfd713b15",
-        "/tmp/falcata-six-values-20261009/manifest.json": "6a5943f3657fe126886e3626021c30672f5627db48514ca21959ae0c5e80c972",
-        "/tmp/falcata-noquant-20261009/benchmarks/bench.py": "07d2ddbbb6474404a70b8f52c99f6729bdd06ce3a6df5badec865a01bcec32d8",
-        "/tmp/falcata-noquant-20261009/benchmarks/common.py": "d0ce598bab8ab548531317d2883896234a051d55f947bd9e3a910fdb84a53f55",
-        "/home/felixjk/Documents/numerai/evaluation/evaluator.py": "b60d20aa9f81d5462d0dd43d3b0e142ae61974b8b9a381df6f62a89869c89ad5",
-        "/home/felixjk/Documents/numerai/evaluation/metrics.py": "d9a8e8f3773341b540d22e7821d0576278f59a82f2113fbda9c96a049e5daa47",
-        "/home/felixjk/Documents/numerai/evaluation/payout.py": "a3558f97e54ae72431ef2e76db4dc171ce0325c1bbd19a2b01ee5d8a7a9b571f",
-        "/home/felixjk/Documents/numerai/targets.py": "4f901fbf938064c27b0f680620c19617e3da7d308c8007040206669788be6221",
-        "/home/felixjk/Documents/numerai/proto/loader.py": "0ba671c9670f3bc95cadf27c070f1f841bb8ca483117bf6b4f668c5d19112030",
-        "/home/felixjk/Documents/numerai/proto/best_config_pb2.py": "ba9a0f6f287a7aabc1b3d02327c7d70df7cb4614ccb2c61d41908d3208d99899",
-        "/home/felixjk/Documents/numerai/methods/gbdt/train.py": "5198b2f89f628df4621b2476c5fec5ebde843a3387806687b9540f00aad4b5a6",
-        "/home/felixjk/Documents/numerai/methods/gbdt/numerics.py": "3ece06877c5266c46d1705f549058e001e89fa2b71ae1bd8a4966df0dcf00138",
-        "/home/felixjk/Documents/numerai/methods/gbdt/best.textproto": "d257da4ac89c90c7156d4130f756caf0a7421d6d338e5cdec4e82985862fd201",
-        "/home/felixjk/Documents/numerai/DataLoader.py": "d62b88205e83812b53c495c710c7dd017ac07cdea1c48c9d38e96450f598c9f9",
-        "/home/felixjk/Documents/numerai/data/falcata_six_values_20261009/five/meta.json": "37beb6ad4bd0e89c0df13df4b45771e8c7d3058d5ed43e5653e95d94df4d3217",
-        "/home/felixjk/Documents/numerai/data/falcata_six_values_20261009/six/meta.json": "f37eba6130c49573697b5897c982a5e4f96c3a209214a280b276d5c77ed07b80"
+        "evidence://falcata-six-values-20261009/bootstrap.py": "c63f243aa9c107c7dd86072a0c23e93a925428c385fabb894aacfd1f2ae7f83b",
+        "evidence://falcata-six-values-20261009/measurement_guard.py": "c217d611c39fde6139c80d322d20741d5e49c4c541268733ba81055004a21c99",
+        "evidence://falcata-six-values-20261009/measure_plan.py": "3b0a5b20afffef20cd0c9d146a650205db42bc1e87e352378f3d7573ad39c253",
+        "evidence://falcata-six-values-20261009/run_cell.py": "e1e797e57b0cf8946084a2e58b6b64997a5dbdd6a41661c61be8023a3a6e7da3",
+        "evidence://falcata-six-values-20261009/run_group.py": "c5ccf7d432d2b93f41c04ec6b2dccff47d6e8f4ddaa3a40dceb456f7c9d2ce9a",
+        "evidence://falcata-six-values-20261009/write_summary.py": "cee5dd5a94f2146d0ff1b21e255900e820c60dbd06b42dfac4683ec201724383",
+        "evidence://falcata-six-values-20261009/PROTOCOL.md": "28cc2eb5dc4b794ee2241463cb6957cf6fe3d3a9dd3ca7dc06b4f3106564c011",
+        "evidence://falcata-six-values-20261009/audit_complete_eras.py": "ec512944a6b67d4f78e114e1585f2d09ab25a5b0ab5f4c6a0ed8021280b6cb01",
+        "evidence://falcata-six-values-20261009/prepare_data.py": "b912e3e9430662a59bcb68942daf6a67ed420cc0ffd1097ec2ac7bfdfd713b15",
+        "evidence://falcata-six-values-20261009/manifest.json": "6a5943f3657fe126886e3626021c30672f5627db48514ca21959ae0c5e80c972",
+        "evidence://falcata-noquant-20261009/benchmarks/bench.py": "07d2ddbbb6474404a70b8f52c99f6729bdd06ce3a6df5badec865a01bcec32d8",
+        "evidence://falcata-noquant-20261009/benchmarks/common.py": "d0ce598bab8ab548531317d2883896234a051d55f947bd9e3a910fdb84a53f55",
+        "external://numerai/evaluation/evaluator.py": "b60d20aa9f81d5462d0dd43d3b0e142ae61974b8b9a381df6f62a89869c89ad5",
+        "external://numerai/evaluation/metrics.py": "d9a8e8f3773341b540d22e7821d0576278f59a82f2113fbda9c96a049e5daa47",
+        "external://numerai/evaluation/payout.py": "a3558f97e54ae72431ef2e76db4dc171ce0325c1bbd19a2b01ee5d8a7a9b571f",
+        "external://numerai/targets.py": "4f901fbf938064c27b0f680620c19617e3da7d308c8007040206669788be6221",
+        "external://numerai/proto/loader.py": "0ba671c9670f3bc95cadf27c070f1f841bb8ca483117bf6b4f668c5d19112030",
+        "external://numerai/proto/best_config_pb2.py": "ba9a0f6f287a7aabc1b3d02327c7d70df7cb4614ccb2c61d41908d3208d99899",
+        "external://numerai/methods/gbdt/train.py": "5198b2f89f628df4621b2476c5fec5ebde843a3387806687b9540f00aad4b5a6",
+        "external://numerai/methods/gbdt/numerics.py": "3ece06877c5266c46d1705f549058e001e89fa2b71ae1bd8a4966df0dcf00138",
+        "external://numerai/methods/gbdt/best.textproto": "d257da4ac89c90c7156d4130f756caf0a7421d6d338e5cdec4e82985862fd201",
+        "external://numerai/DataLoader.py": "d62b88205e83812b53c495c710c7dd017ac07cdea1c48c9d38e96450f598c9f9",
+        "external://numerai/data/falcata_six_values_20261009/five/meta.json": "37beb6ad4bd0e89c0df13df4b45771e8c7d3058d5ed43e5653e95d94df4d3217",
+        "external://numerai/data/falcata_six_values_20261009/six/meta.json": "f37eba6130c49573697b5897c982a5e4f96c3a209214a280b276d5c77ed07b80"
     },
     "runtime": {
         "build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
@@ -309,13 +309,13 @@
     },
     "sources": {
         "raw": {
-            "path": "/home/felixjk/Documents/numerai/data/1230.parquet",
+            "path": "external://numerai/data/1230.parquet",
             "bytes": 8886887983,
             "mtime_ns": 1788264388784172802,
             "sha256": "e84d9280592f2adeac03424fcfb1e2a3a6a564ca7e2eccdbcdc12790fe56657c"
         },
         "converted": {
-            "path": "/home/felixjk/Documents/numerai/data/1230_int8nan.parquet",
+            "path": "external://numerai/data/1230_int8nan.parquet",
             "bytes": 8886907502,
             "mtime_ns": 1788265839571447202,
             "sha256": "211fe6769c604ca66989f0acba8546456f493b499765aeff3b00dc7e8d6b1dba"
@@ -323,19 +323,19 @@
     },
     "shared": {
         "y.npy": {
-            "path": "/home/felixjk/Documents/numerai/data/falcata_six_values_20261009/y.npy",
+            "path": "external://numerai/data/falcata_six_values_20261009/y.npy",
             "bytes": 27180584,
             "mtime_ns": 1791569311791529826,
             "sha256": "4a1383dc17f2070966798f44f058c0bc59d55fbeb20eb66ace2c4c91af3614d5"
         },
         "era_codes.npy": {
-            "path": "/home/felixjk/Documents/numerai/data/falcata_six_values_20261009/era_codes.npy",
+            "path": "external://numerai/data/falcata_six_values_20261009/era_codes.npy",
             "bytes": 27180584,
             "mtime_ns": 1791569311803529739,
             "sha256": "69e26a3416934f40dc64b86241a22419bdcf16d3c4f8ab3451522afaf5e22148"
         },
         "feature_names.json": {
-            "path": "/home/felixjk/Documents/numerai/data/falcata_six_values_20261009/feature_names.json",
+            "path": "external://numerai/data/falcata_six_values_20261009/feature_names.json",
             "bytes": 141067,
             "mtime_ns": 1791569311805468013,
             "sha256": "b6537159abe8cafcd1e34dc62ed574443d097c1626e266dbf27eca76c6d90dde"
@@ -344,7 +344,7 @@
     "representations": {
         "five": {
             "X": {
-                "path": "/home/felixjk/Documents/numerai/data/falcata_six_values_20261009/five/X.i8.mem",
+                "path": "external://numerai/data/falcata_six_values_20261009/five/X.i8.mem",
                 "bytes": 24156630270,
                 "mtime_ns": 1791569864982527006,
                 "sha256": "a276cab825fbbc8fd0194b2f4c634b4f1340b055296ac4ecd97fdc7e2adc22d5"
@@ -362,8 +362,8 @@
                     6795114,
                     3555
                 ],
-                "source": "/home/felixjk/Documents/numerai/data/1230.parquet",
-                "representation": "raw0\u20134",
+                "source": "external://numerai/data/1230.parquet",
+                "representation": "raw0–4",
                 "dataset_params": {
                     "use_missing": true,
                     "zero_as_missing": false,
@@ -381,7 +381,7 @@
         },
         "six": {
             "X": {
-                "path": "/home/felixjk/Documents/numerai/data/falcata_six_values_20261009/six/X.i8.mem",
+                "path": "external://numerai/data/falcata_six_values_20261009/six/X.i8.mem",
                 "bytes": 24156630270,
                 "mtime_ns": 1791569864985526988,
                 "sha256": "24e4e139931b5ca69fff8548420bee896d8ea57568d7a573efc2451128e8f322"
@@ -399,8 +399,8 @@
                     6795114,
                     3555
                 ],
-                "source": "/home/felixjk/Documents/numerai/data/1230.parquet",
-                "representation": "era-constant2\u2192-1; model missing_sentinel=-1",
+                "source": "external://numerai/data/1230.parquet",
+                "representation": "era-constant2→-1; model missing_sentinel=-1",
                 "dataset_params": {
                     "use_missing": true,
                     "zero_as_missing": false,
@@ -422,7 +422,7 @@
         "all_source_rows_verified": 6846250,
         "complete_era_converter_exact": true,
         "raw_converted_ids_eras_named_labels_equal": true,
-        "only_changes": "2\u2192-1",
+        "only_changes": "2→-1",
         "source_changed_values": 1555901657,
         "retained_changed_values": 1554367577,
         "zero_preserved": true,
@@ -7429,9 +7429,9 @@
         {
             "group": "standard-stoch",
             "label": "Standard stochastic",
-            "detail": "FP64 \u00b7 4 gradient levels \u00b7 depth 10",
+            "detail": "FP64 · 4 gradient levels · depth 10",
             "rounds": 2000,
-            "statistic": "median of three timed draws; range is observed min\u2013max",
+            "statistic": "median of three timed draws; range is observed min–max",
             "arms": {
                 "five": {
                     "eligible": true,
@@ -7474,9 +7474,9 @@
         {
             "group": "standard-fixed",
             "label": "Standard fixed point",
-            "detail": "FP64 \u00b7 64 gradient levels \u00b7 depth 10",
+            "detail": "FP64 · 64 gradient levels · depth 10",
             "rounds": 2000,
-            "statistic": "median of three timed draws; range is observed min\u2013max",
+            "statistic": "median of three timed draws; range is observed min–max",
             "arms": {
                 "five": {
                     "eligible": true,
@@ -7519,9 +7519,9 @@
         {
             "group": "recipe-fixed-fp32",
             "label": "Current recipe probe",
-            "detail": "FP32 \u00b7 fixed point 64 \u00b7 depth 15",
+            "detail": "FP32 · fixed point 64 · depth 15",
             "rounds": 2000,
-            "statistic": "median of three timed draws; range is observed min\u2013max",
+            "statistic": "median of three timed draws; range is observed min–max",
             "arms": {
                 "five": {
                     "eligible": true,
@@ -7564,7 +7564,7 @@
         {
             "group": "full30000",
             "label": "Full stochastic run",
-            "detail": "FP64 \u00b7 4 gradient levels \u00b7 depth 10",
+            "detail": "FP64 · 4 gradient levels · depth 10",
             "rounds": 30000,
             "statistic": "one complete draw per arm; no uncertainty estimate",
             "arms": {
@@ -7596,7 +7596,7 @@
     "warmup_observed": {
         "standard-stoch": {
             "five": {
-                "log": "/tmp/falcata-six-values-20261009/logs/standard-stoch-five-warmup.log",
+                "log": "evidence://falcata-six-values-20261009/logs/standard-stoch-five-warmup.log",
                 "code5_on": 191,
                 "code5_off": 9,
                 "construct": {
@@ -7611,7 +7611,7 @@
                 }
             },
             "six": {
-                "log": "/tmp/falcata-six-values-20261009/logs/standard-stoch-six-warmup.log",
+                "log": "evidence://falcata-six-values-20261009/logs/standard-stoch-six-warmup.log",
                 "code5_on": 0,
                 "code5_off": 200,
                 "construct": {
@@ -7627,7 +7627,7 @@
         },
         "standard-fixed": {
             "five": {
-                "log": "/tmp/falcata-six-values-20261009/logs/standard-fixed-five-warmup.log",
+                "log": "evidence://falcata-six-values-20261009/logs/standard-fixed-five-warmup.log",
                 "code5_on": 191,
                 "code5_off": 9,
                 "construct": {
@@ -7642,7 +7642,7 @@
                 }
             },
             "six": {
-                "log": "/tmp/falcata-six-values-20261009/logs/standard-fixed-six-warmup.log",
+                "log": "evidence://falcata-six-values-20261009/logs/standard-fixed-six-warmup.log",
                 "code5_on": 0,
                 "code5_off": 200,
                 "construct": {
@@ -7658,7 +7658,7 @@
         },
         "recipe-fixed-fp32": {
             "five": {
-                "log": "/tmp/falcata-six-values-20261009/logs/recipe-fixed-fp32-five-warmup.log",
+                "log": "evidence://falcata-six-values-20261009/logs/recipe-fixed-fp32-five-warmup.log",
                 "code5_on": 0,
                 "code5_off": 0,
                 "construct": {
@@ -7672,7 +7672,7 @@
                 }
             },
             "six": {
-                "log": "/tmp/falcata-six-values-20261009/logs/recipe-fixed-fp32-six-warmup.log",
+                "log": "evidence://falcata-six-values-20261009/logs/recipe-fixed-fp32-six-warmup.log",
                 "code5_on": 0,
                 "code5_off": 0,
                 "construct": {
@@ -7707,7 +7707,7 @@
         "status": "ready",
         "data_manifest_sha256": "6a5943f3657fe126886e3626021c30672f5627db48514ca21959ae0c5e80c972",
         "raw_source_identity": {
-            "path": "/home/felixjk/Documents/numerai/data/1230.parquet",
+            "path": "external://numerai/data/1230.parquet",
             "bytes": 8886887983,
             "mtime_ns": 1788264388784172802,
             "sha256": "e84d9280592f2adeac03424fcfb1e2a3a6a564ca7e2eccdbcdc12790fe56657c"
@@ -7941,5 +7941,6 @@
         "definition": "Named target non-null count equals full source-era row count before filtering",
         "gpu_access": false
     },
-    "chart_eligible": true
+    "chart_eligible": true,
+    "path_normalization_note": "Absolute machine paths are normalized to portable logical references (external://, evidence://, and build-artifact://). Any source SHA-256 values in this artifact identify the original, unmodified source bytes before path normalization."
 }

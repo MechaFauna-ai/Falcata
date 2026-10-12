@@ -65,16 +65,16 @@
                 "zero_as_missing": false
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": "diag",
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "32",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-stoch-five-warmup.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/standard-stoch-five-warmup.json",
             "raw_sha256": "3ec172a814d409603035ea52c7728897564bf93f0d967aea6491e57bc9b38b74",
             "contended_before": 0,
             "contended_after": 0,
@@ -162,16 +162,16 @@
                 "zero_as_missing": false
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": null,
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "32",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-stoch-five-timed1.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/standard-stoch-five-timed1.json",
             "raw_sha256": "d2b2a4b70cedd24b2fee882b2595441c8b06fbcae9cc7dda279b0ea9e296b341",
             "contended_before": 0,
             "contended_after": 0,
@@ -260,16 +260,16 @@
                 "zero_as_missing": false
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": null,
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "32",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-stoch-five-timed2.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/standard-stoch-five-timed2.json",
             "raw_sha256": "76f88a49bb3f1cf47880b9fac3e1dd033c5baf648064571df35ff31d36bac8bd",
             "contended_before": 0,
             "contended_after": 0,
@@ -359,16 +359,16 @@
                 "zero_as_missing": false
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": null,
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "32",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-stoch-five-timed3.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/standard-stoch-five-timed3.json",
             "raw_sha256": "d6bbc3f7315bf7f23e7baaff33ee41ac1a7bc8b74c23245b572914a76c00f052",
             "contended_before": 0,
             "contended_after": 0,
@@ -460,16 +460,16 @@
                 "missing_sentinel": -1
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": "diag",
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "32",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-stoch-six-warmup.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/standard-stoch-six-warmup.json",
             "raw_sha256": "5b7f61d226027854080878096ba2304c2dc25e68b24f64bb1577f8699bd3a959",
             "contended_before": 0,
             "contended_after": 0,
@@ -559,16 +559,16 @@
                 "missing_sentinel": -1
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": null,
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "32",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-stoch-six-timed1.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/standard-stoch-six-timed1.json",
             "raw_sha256": "a42db3decf0f3ac3a57c83b735cfe01f9aa723f51c4732727e8f0dd086442cdb",
             "contended_before": 0,
             "contended_after": 0,
@@ -660,16 +660,16 @@
                 "missing_sentinel": -1
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": null,
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "32",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-stoch-six-timed2.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/standard-stoch-six-timed2.json",
             "raw_sha256": "859d85a8f64339bf71a283c6a7ed384fef73ed6747fb6c92a8035a83ec9fbae7",
             "contended_before": 0,
             "contended_after": 0,
@@ -761,16 +761,16 @@
                 "missing_sentinel": -1
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": null,
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "32",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-stoch-six-timed3.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/standard-stoch-six-timed3.json",
             "raw_sha256": "90e007ffecbef6bd7277b9c68affe6e54515fa86b4892757f5c0ed1291e7bf04",
             "contended_before": 0,
             "contended_after": 0,
@@ -860,16 +860,16 @@
                 "zero_as_missing": false
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": "diag",
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "32",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-fixed-five-warmup.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/standard-fixed-five-warmup.json",
             "raw_sha256": "46b5ad0c097eaaeaf26ec5ad022b0b02a80649a8d59e1c49da62e3db5927c293",
             "contended_before": 0,
             "contended_after": 0,
@@ -959,16 +959,16 @@
                 "zero_as_missing": false
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": null,
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "32",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-fixed-five-timed1.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/standard-fixed-five-timed1.json",
             "raw_sha256": "8574e706223e84857b24f884158ade74ff4f83ccea8d44286fd13dd7dfd96ec4",
             "contended_before": 0,
             "contended_after": 0,
@@ -1059,16 +1059,16 @@
                 "zero_as_missing": false
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": null,
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "32",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-fixed-five-timed2.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/standard-fixed-five-timed2.json",
             "raw_sha256": "f321dc2d5ade061969153a6a31a4c7cd4b4fafd7a66fcd586beaca13449c9455",
             "contended_before": 0,
             "contended_after": 0,
@@ -1160,16 +1160,16 @@
                 "zero_as_missing": false
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": null,
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "32",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-fixed-five-timed3.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/standard-fixed-five-timed3.json",
             "raw_sha256": "04dfefe1af123de157d11b69ea4afbbe28406c87601aa38c594c496dc6163eca",
             "contended_before": 0,
             "contended_after": 0,
@@ -1263,16 +1263,16 @@
                 "missing_sentinel": -1
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": "diag",
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "32",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-fixed-six-warmup.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/standard-fixed-six-warmup.json",
             "raw_sha256": "080ce74b0038e8bc81590a4a441bb5aebb2fbcc08ec1b70259e435b1d9ea54d1",
             "contended_before": 0,
             "contended_after": 0,
@@ -1364,16 +1364,16 @@
                 "missing_sentinel": -1
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": null,
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "32",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-fixed-six-timed1.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/standard-fixed-six-timed1.json",
             "raw_sha256": "e06f1e532fc5e9c1641547a63421dd614931737cafee24a9c216e80fa9cb5f2c",
             "contended_before": 0,
             "contended_after": 0,
@@ -1467,16 +1467,16 @@
                 "missing_sentinel": -1
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": null,
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "32",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-fixed-six-timed2.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/standard-fixed-six-timed2.json",
             "raw_sha256": "b0a82e515c480618b60b96d3a782515ad7a72de56bc81b1e88b6b312fe9b541a",
             "contended_before": 0,
             "contended_after": 0,
@@ -1570,16 +1570,16 @@
                 "missing_sentinel": -1
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": null,
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "32",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/standard-fixed-six-timed3.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/standard-fixed-six-timed3.json",
             "raw_sha256": "1a17938b2a11935705185bf36f1bc993ed73752ef11b4a720dd3f5deeee566e9",
             "contended_before": 0,
             "contended_after": 0,
@@ -1674,16 +1674,16 @@
                 "zero_as_missing": false
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": "diag",
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "16",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/recipe-fixed-fp32-five-warmup.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/recipe-fixed-fp32-five-warmup.json",
             "raw_sha256": "70997825046d347d3b9b74784e626930c32af23ca280457dd263eb161b01a0cf",
             "contended_before": 0,
             "contended_after": 0,
@@ -1778,16 +1778,16 @@
                 "zero_as_missing": false
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": null,
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "16",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/recipe-fixed-fp32-five-timed1.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/recipe-fixed-fp32-five-timed1.json",
             "raw_sha256": "96ea9b3f2054db5d5e08af434284ab3897eb3e09a63519e58708d45687cf21e2",
             "contended_before": 0,
             "contended_after": 0,
@@ -1883,16 +1883,16 @@
                 "zero_as_missing": false
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": null,
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "16",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/recipe-fixed-fp32-five-timed2.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/recipe-fixed-fp32-five-timed2.json",
             "raw_sha256": "3ce44b77d4891d44d8f0ef85560bf22a1021cece0015bcd8aa7fa240f7de9fad",
             "contended_before": 0,
             "contended_after": 0,
@@ -1989,16 +1989,16 @@
                 "zero_as_missing": false
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": null,
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "16",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/recipe-fixed-fp32-five-timed3.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/recipe-fixed-fp32-five-timed3.json",
             "raw_sha256": "b83ee8704350df39812aee0b387611215d79825c0ec14cbeb57feeab61cb75f4",
             "contended_before": 0,
             "contended_after": 0,
@@ -2097,16 +2097,16 @@
                 "missing_sentinel": -1
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": "diag",
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "16",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/recipe-fixed-fp32-six-warmup.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/recipe-fixed-fp32-six-warmup.json",
             "raw_sha256": "1333caf138d0d869340af6de1022999d86a827362fc669655b7fac96d29e308f",
             "contended_before": 0,
             "contended_after": 0,
@@ -2203,16 +2203,16 @@
                 "missing_sentinel": -1
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": null,
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "16",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/recipe-fixed-fp32-six-timed1.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/recipe-fixed-fp32-six-timed1.json",
             "raw_sha256": "8e37a63025fd7949d649ccd18844f635bc3f37375f84cbc39223aee4097997f6",
             "contended_before": 0,
             "contended_after": 0,
@@ -2311,16 +2311,16 @@
                 "missing_sentinel": -1
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": null,
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "16",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/recipe-fixed-fp32-six-timed2.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/recipe-fixed-fp32-six-timed2.json",
             "raw_sha256": "2cba010b02f62aa916026256faad9088f64c21183af73aafac76aeca48f1eec0",
             "contended_before": 0,
             "contended_after": 0,
@@ -2419,16 +2419,16 @@
                 "missing_sentinel": -1
             },
             "execution_environment": {
-                "HOME": "/home/felixjk",
+                "HOME": "<local-home>",
                 "FALCATA_DEBUG": null,
                 "FALCATA_PLAN": null,
                 "FALCATA_FIL": "0",
                 "FALCATA_BENCH_THREADS": "16",
-                "CUDA_CACHE_PATH": "/home/felixjk/.nv/ComputeCache"
+                "CUDA_CACHE_PATH": "<local-cuda-cache>"
             },
             "runtime_build": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
             "library_sha256": "e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c",
-            "raw_path": "/tmp/falcata-six-values-20261009/raw/recipe-fixed-fp32-six-timed3.json",
+            "raw_path": "evidence://falcata-six-values-20261009/raw/recipe-fixed-fp32-six-timed3.json",
             "raw_sha256": "fd26307f3f096afdae79e2b2ec30155e473a5fa18173b7a5afbdb07b70782d01",
             "contended_before": 0,
             "contended_after": 0,
@@ -2460,7 +2460,7 @@
     },
     "warmup_diagnostics": {
         "standard-stoch-five": {
-            "log_path": "/tmp/falcata-six-values-20261009/logs/standard-stoch-five-warmup.log",
+            "log_path": "evidence://falcata-six-values-20261009/logs/standard-stoch-five-warmup.log",
             "log_sha256": "617ec303a69a40b77beac3951291c84b7d10e2c8280dbd1b5531cd22a0ba2acb",
             "warmup_warned_tree_count": 200,
             "warmup_leaf_min": 200,
@@ -2576,7 +2576,7 @@
             ]
         },
         "standard-stoch-six": {
-            "log_path": "/tmp/falcata-six-values-20261009/logs/standard-stoch-six-warmup.log",
+            "log_path": "evidence://falcata-six-values-20261009/logs/standard-stoch-six-warmup.log",
             "log_sha256": "2dedd4bc438aad96d148c4256e4d26e80155c1a09dd623176f04b9a734fe6ef3",
             "warmup_warned_tree_count": 200,
             "warmup_leaf_min": 213,
@@ -2696,7 +2696,7 @@
             ]
         },
         "standard-fixed-five": {
-            "log_path": "/tmp/falcata-six-values-20261009/logs/standard-fixed-five-warmup.log",
+            "log_path": "evidence://falcata-six-values-20261009/logs/standard-fixed-five-warmup.log",
             "log_sha256": "dddb59c66c368fb232c390dd42d3afeb19eed5cc2120c921151465be4cdd05f7",
             "warmup_warned_tree_count": 200,
             "warmup_leaf_min": 205,
@@ -2810,7 +2810,7 @@
             ]
         },
         "standard-fixed-six": {
-            "log_path": "/tmp/falcata-six-values-20261009/logs/standard-fixed-six-warmup.log",
+            "log_path": "evidence://falcata-six-values-20261009/logs/standard-fixed-six-warmup.log",
             "log_sha256": "25e801d2ac70ab21587adfabe5465d860a29b1d4832745e914a37face49094c7",
             "warmup_warned_tree_count": 200,
             "warmup_leaf_min": 213,
@@ -2931,7 +2931,7 @@
             ]
         },
         "recipe-fixed-fp32-five": {
-            "log_path": "/tmp/falcata-six-values-20261009/logs/recipe-fixed-fp32-five-warmup.log",
+            "log_path": "evidence://falcata-six-values-20261009/logs/recipe-fixed-fp32-five-warmup.log",
             "log_sha256": "6e467c587613c83dbfc5ec6c218eb2364f18ae09c6f157544b72ae21cdd9fa75",
             "warmup_warned_tree_count": 200,
             "warmup_leaf_min": 37,
@@ -2984,7 +2984,7 @@
             ]
         },
         "recipe-fixed-fp32-six": {
-            "log_path": "/tmp/falcata-six-values-20261009/logs/recipe-fixed-fp32-six-warmup.log",
+            "log_path": "evidence://falcata-six-values-20261009/logs/recipe-fixed-fp32-six-warmup.log",
             "log_sha256": "129b22f7032e86136f7f12727c668c208b3245e4832f9a14edf40c2f722b87b5",
             "warmup_warned_tree_count": 200,
             "warmup_leaf_min": 38,
@@ -3147,5 +3147,6 @@
     "runtime_commit": "d0bb8c47789e062acbf6b770918a0589a74ae9b2",
     "measurement_manifest_sha256": "067b3f7e3ebb55c7a9e0652f52cc415e3b1256fdbdbf880ef3ca6017125492c0",
     "scope": "CPU-only audit of saved records and warmup logs; no new GPU measurement",
-    "shape_limitation": "Per-tree leaf counts are available only for 200-round diagnostic warmups, not the 2000-round models"
+    "shape_limitation": "Per-tree leaf counts are available only for 200-round diagnostic warmups, not the 2000-round models",
+    "path_normalization_note": "Machine-local paths are normalized to portable logical references or local placeholders such as external://, evidence://, <local-home>, and <local-cuda-cache>. SHA-256 values refer to the original, unmodified source bytes before path normalization."
 }

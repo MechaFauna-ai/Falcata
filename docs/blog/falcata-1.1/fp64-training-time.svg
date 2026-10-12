@@ -10,7 +10,7 @@
     <dc:format>image/svg+xml</dc:format>
     <dc:creator>
      <cc:Agent>
-      <dc:title>Matplotlib v3.11.2, https://matplotlib.org/</dc:title>
+      <dc:title>Matplotlib v3.11.1, https://matplotlib.org/</dc:title>
      </cc:Agent>
     </dc:creator>
    </cc:Work>
@@ -185,10 +185,10 @@ z
    </g>
   </g>
   <g id="text_22">
-   <text style="font-weight: 700; font-size: 21px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #192a36" x="10.8" y="26.756719" transform="rotate(-0 10.8 26.756719)">Less time for FP64 training</text>
+   <text style="font-weight: 700; font-size: 21px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #192a36" x="10.8" y="26.756719" transform="rotate(-0 10.8 26.756719)">Historical FP64 prototype timings</text>
   </g>
   <g id="text_23">
-   <text style="font-size: 12px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #586774" x="10.8" y="48.646125" transform="rotate(-0 10.8 48.646125)">Selected runtime versus the October 8 baseline</text>
+   <text style="font-size: 12px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #586774" x="10.8" y="48.646125" transform="rotate(-0 10.8 48.646125)">October 9 PR #71 experiment · before automatic classification limits</text>
   </g>
   <g id="text_24">
    <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #586774" x="10.8" y="321.348642" transform="rotate(-0 10.8 321.348642)">09b6be97 → d0bb8c47  ·  RTX 5090  ·  FP64  ·  idle GPU; no recorded contention</text>

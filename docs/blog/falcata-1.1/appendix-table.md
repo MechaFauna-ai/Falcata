@@ -1,3 +1,10 @@
+# Historical mode appendix
+
+Dated measurements from the [benchmark matrix](benchmark-matrix.json). Non-quantized
+rows retain the earlier unbounded, unmerged PR #71 prototype. They are not timings
+for the new automatic classification default; [guarded results](stability.md) are
+reported separately. Original quality and timing pairs are preserved.
+
 | Dataset / regime | Mode | Launch s | Latest measured s | Metric median | Source/build | Timed failures |
 |---|---|---:|---:|---|---|---|
 | fraud/shallow | falcata-stoch | 0.389116 | 0.394486 | auc 0.936503 | oct8 / b4da8135 | False |

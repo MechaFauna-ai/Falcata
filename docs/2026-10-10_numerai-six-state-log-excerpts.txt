@@ -1,4 +1,5 @@
-[standard-stoch-five] /tmp/falcata-six-values-20261009/logs/standard-stoch-five-warmup.log
+# Portable excerpt note: machine-local paths use logical references or placeholders; original source hashes refer to unmodified source bytes.
+[standard-stoch-five] evidence://falcata-six-values-20261009/logs/standard-stoch-five-warmup.log
 SHA256 617ec303a69a40b77beac3951291c84b7d10e2c8280dbd1b5531cd22a0ba2acb
 2: [Falcata] [Info] Sparse columns are stored dense on CUDA; memory use may be higher than the CPU path for this dataset.
 3: [Falcata] [Info] Total Bins 17625
@@ -20,7 +21,7 @@ SHA256 617ec303a69a40b77beac3951291c84b7d10e2c8280dbd1b5531cd22a0ba2acb
 19: [Falcata] [Info] quantized construct: pair_hist kernel
 20: [Falcata] [Info] quantized construct: pair_code5_words kernel
 
-[standard-stoch-six] /tmp/falcata-six-values-20261009/logs/standard-stoch-six-warmup.log
+[standard-stoch-six] evidence://falcata-six-values-20261009/logs/standard-stoch-six-warmup.log
 SHA256 2dedd4bc438aad96d148c4256e4d26e80155c1a09dd623176f04b9a734fe6ef3
 2: [Falcata] [Info] Sparse columns are stored dense on CUDA; memory use may be higher than the CPU path for this dataset.
 3: [Falcata] [Info] Total Bins 19567
@@ -42,7 +43,7 @@ SHA256 2dedd4bc438aad96d148c4256e4d26e80155c1a09dd623176f04b9a734fe6ef3
 19: [Falcata] [Info] compact fill: tiled 4-bit kernel, 178 byte slots in 4 partitions
 20: [Falcata] [Info] compact fill: pair_code5 off (178 byte slots, 32 words per row)
 
-[standard-fixed-five] /tmp/falcata-six-values-20261009/logs/standard-fixed-five-warmup.log
+[standard-fixed-five] evidence://falcata-six-values-20261009/logs/standard-fixed-five-warmup.log
 SHA256 dddb59c66c368fb232c390dd42d3afeb19eed5cc2120c921151465be4cdd05f7
 2: [Falcata] [Info] Sparse columns are stored dense on CUDA; memory use may be higher than the CPU path for this dataset.
 3: [Falcata] [Info] Total Bins 17625
@@ -64,7 +65,7 @@ SHA256 dddb59c66c368fb232c390dd42d3afeb19eed5cc2120c921151465be4cdd05f7
 19: [Falcata] [Info] split finder: warp kernel for this tree's quantized levels
 20: [Falcata] [Info] quantized construct: pair_hist kernel
 
-[standard-fixed-six] /tmp/falcata-six-values-20261009/logs/standard-fixed-six-warmup.log
+[standard-fixed-six] evidence://falcata-six-values-20261009/logs/standard-fixed-six-warmup.log
 SHA256 25e801d2ac70ab21587adfabe5465d860a29b1d4832745e914a37face49094c7
 2: [Falcata] [Info] Sparse columns are stored dense on CUDA; memory use may be higher than the CPU path for this dataset.
 3: [Falcata] [Info] Total Bins 19567
@@ -86,7 +87,7 @@ SHA256 25e801d2ac70ab21587adfabe5465d860a29b1d4832745e914a37face49094c7
 19: [Falcata] [Warning] No further splits with positive gain, training stopped with 260 leaves.
 20: [Falcata] [Info] compact fill: tiled 4-bit kernel, 178 byte slots in 4 partitions
 
-[recipe-fixed-fp32-five] /tmp/falcata-six-values-20261009/logs/recipe-fixed-fp32-five-warmup.log
+[recipe-fixed-fp32-five] evidence://falcata-six-values-20261009/logs/recipe-fixed-fp32-five-warmup.log
 SHA256 6e467c587613c83dbfc5ec6c218eb2364f18ae09c6f157544b72ae21cdd9fa75
 2: [Falcata] [Info] Sparse columns are stored dense on CUDA; memory use may be higher than the CPU path for this dataset.
 3: [Falcata] [Info] Total Bins 17625
@@ -108,7 +109,7 @@ SHA256 6e467c587613c83dbfc5ec6c218eb2364f18ae09c6f157544b72ae21cdd9fa75
 19: [Falcata] [Info] split finder: block kernel for this tree's quantized levels
 20: [Falcata] [Warning] No further splits with positive gain, training stopped with 41 leaves.
 
-[recipe-fixed-fp32-six] /tmp/falcata-six-values-20261009/logs/recipe-fixed-fp32-six-warmup.log
+[recipe-fixed-fp32-six] evidence://falcata-six-values-20261009/logs/recipe-fixed-fp32-six-warmup.log
 SHA256 129b22f7032e86136f7f12727c668c208b3245e4832f9a14edf40c2f722b87b5
 2: [Falcata] [Info] Sparse columns are stored dense on CUDA; memory use may be higher than the CPU path for this dataset.
 3: [Falcata] [Info] Total Bins 19567

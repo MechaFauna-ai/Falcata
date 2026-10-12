@@ -170,6 +170,7 @@ def plot(data, output):
             "axes.labelcolor": MUTED,
             "xtick.color": MUTED,
             "svg.fonttype": "none",
+            "svg.hashsalt": "falcata-1.1-framework-comparison",
             "axes.unicode_minus": False,
         }
     )
@@ -300,6 +301,7 @@ def plot(data, output):
     svg = output.with_suffix(".svg")
     fig.savefig(png, dpi=200, bbox_inches="tight", pad_inches=0.1)
     fig.savefig(svg, bbox_inches="tight", pad_inches=0.1, metadata={"Date": None})
+    svg.write_text("\n".join(line.rstrip() for line in svg.read_text().splitlines()) + "\n")
     plt.close(fig)
     return [str(png), str(svg)]
 

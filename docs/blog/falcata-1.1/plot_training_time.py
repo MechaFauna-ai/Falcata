@@ -107,8 +107,15 @@ def render(data, output):
     ax.set_axisbelow(True)
     for spine in ax.spines.values():
         spine.set_visible(False)
-    fig.text(0.055, 0.945, "Less time for FP64 training", fontsize=21, weight="bold", color="#192A36", va="top")
-    fig.text(0.055, 0.875, "Selected runtime versus the October 8 baseline", fontsize=12, color=muted, va="top")
+    fig.text(0.055, 0.945, "Historical FP64 prototype timings", fontsize=21, weight="bold", color="#192A36", va="top")
+    fig.text(
+        0.055,
+        0.875,
+        "October 9 PR #71 experiment · before automatic classification limits",
+        fontsize=12,
+        color=muted,
+        va="top",
+    )
     deep = rows[-1]
     baseline_corr = deep["baseline_metrics"]["corr_mean"]["median"]
     selected_corr = deep["candidate_metrics"]["corr_mean"]["median"]
@@ -141,6 +148,7 @@ def render(data, output):
             "Description": "FP64 training reductions versus October baseline; single-pair Numerai deep is explicitly labelled.",
         },
     )
+    paths[".svg"].write_text("\n".join(line.rstrip() for line in paths[".svg"].read_text().splitlines()) + "\n")
     plt.close(fig)
     return {
         "png": str(paths[".png"]),
