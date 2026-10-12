@@ -307,6 +307,7 @@ def replace_reference_to_r_docs(app: Sphinx) -> None:
         content = RTD_R_REF_REGEX.sub(rf"\g<begin>{RTD_VERSION}\g<end>", content)
         index_doc.seek(0)
         index_doc.write(content)
+        index_doc.truncate()
 
 
 def setup(app: Sphinx) -> None:
@@ -327,7 +328,8 @@ def setup(app: Sphinx) -> None:
     if first_run:
         app.connect("builder-inited", generate_r_docs)
     app.connect(
-        "build-finished", lambda app, _: copytree(CURR_PATH.parent / "R-package" / "docs", Path(app.outdir) / "R")
+        "build-finished",
+        lambda app, _: copytree(CURR_PATH.parent / "R-package" / "docs", Path(app.outdir) / "R", dirs_exist_ok=True),
     )
     app.connect("builder-inited", replace_reference_to_r_docs)
     app.add_transform(InternalRefTransform)

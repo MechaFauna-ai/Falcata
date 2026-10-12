@@ -329,3 +329,92 @@ TEST(SingleRow, StartIterationChangesPrediction) {
     result = FLC_DatasetFree(train_dataset);
     EXPECT_EQ(0, result) << "FLC_DatasetFree result code: " << result;
 }
+
+// FLC_BoosterPredictForCSRSingleRowFastInit must forward predict_type,
+// start_iteration and num_iteration in that order; the CSR fast path must
+// agree with FLC_BoosterPredictForMat for non-default values of all three.
+void test_csr_fast_matches_mat(int predict_type, int start_iteration, int num_iteration) {
+    int result;
+
+    DatasetHandle train_dataset;
+    result = TestUtils::LoadDatasetFromExamples("binary_classification/binary.train", "max_bin=15", &train_dataset);
+    ASSERT_EQ(0, result) << "LoadDatasetFromExamples train result code: " << result;
+
+    BoosterHandle booster_handle;
+    result = FLC_BoosterCreate(train_dataset, "app=binary metric=auc num_leaves=31 verbose=0", &booster_handle);
+    ASSERT_EQ(0, result) << "FLC_BoosterCreate result code: " << result;
+
+    for (int i = 0; i < 30; i++) {
+        int produced_empty_tree;
+        result = FLC_BoosterUpdateOneIter(booster_handle, &produced_empty_tree);
+        ASSERT_EQ(0, result) << "FLC_BoosterUpdateOneIter result code: " << result;
+    }
+
+    int n_features;
+    result = FLC_BoosterGetNumFeature(booster_handle, &n_features);
+    ASSERT_EQ(0, result) << "FLC_BoosterGetNumFeature result code: " << result;
+
+    std::ifstream test_file("examples/binary_classification/binary.test");
+    std::vector<double> rows;
+    double x;
+    int field = 0;
+    const int kNumRows = 20;
+    while (test_file >> x && static_cast<int>(rows.size()) < kNumRows * n_features) {
+        if (field % (n_features + 1) != 0) {
+            rows.push_back(x);
+        }
+        field++;
+    }
+    ASSERT_EQ(static_cast<int>(rows.size()), kNumRows * n_features) << "Failed to parse test rows";
+
+    int64_t output_size;
+    result = FLC_BoosterCalcNumPredict(booster_handle, 1, predict_type, start_iteration, num_iteration, &output_size);
+    ASSERT_EQ(0, result) << "FLC_BoosterCalcNumPredict result code: " << result;
+
+    std::vector<double> mat_output(output_size * kNumRows, -1);
+    int64_t written;
+    result = FLC_BoosterPredictForMat(
+        booster_handle, &rows[0], C_API_DTYPE_FLOAT64, kNumRows, n_features, 1,
+        predict_type, start_iteration, num_iteration, "", &written, &mat_output[0]);
+    ASSERT_EQ(0, result) << "FLC_BoosterPredictForMat result code: " << result;
+
+    FastConfigHandle fast_config;
+    result = FLC_BoosterPredictForCSRSingleRowFastInit(
+        booster_handle, predict_type, start_iteration, num_iteration,
+        C_API_DTYPE_FLOAT64, n_features, "", &fast_config);
+    ASSERT_EQ(0, result) << "FLC_BoosterPredictForCSRSingleRowFastInit result code: " << result;
+
+    std::vector<int32_t> indptr = {0, n_features};
+    std::vector<int32_t> indices(n_features);
+    for (int j = 0; j < n_features; ++j) {
+        indices[j] = j;
+    }
+    std::vector<double> csr_output(output_size * kNumRows, -1);
+    for (int r = 0; r < kNumRows; ++r) {
+        result = FLC_BoosterPredictForCSRSingleRowFast(
+            fast_config, &indptr[0], C_API_DTYPE_INT32, &indices[0], &rows[r * n_features],
+            2, n_features, &written, &csr_output[r * output_size]);
+        ASSERT_EQ(0, result) << "FLC_BoosterPredictForCSRSingleRowFast result code: " << result;
+        ASSERT_EQ(written, output_size) << "FLC_BoosterPredictForCSRSingleRowFast unexpected written output size";
+    }
+
+    EXPECT_EQ(csr_output, mat_output)
+        << "FLC_BoosterPredictForCSRSingleRowFast disagrees with FLC_BoosterPredictForMat for predict_type="
+        << predict_type << " start_iteration=" << start_iteration << " num_iteration=" << num_iteration;
+
+    EXPECT_EQ(0, FLC_FastConfigFree(fast_config));
+    EXPECT_EQ(0, FLC_BoosterFree(booster_handle));
+    EXPECT_EQ(0, FLC_DatasetFree(train_dataset));
+}
+
+TEST(SingleRow, CSRFastRawScoreIterationWindow) {
+    test_csr_fast_matches_mat(C_API_PREDICT_RAW_SCORE, 5, 10);
+}
+
+TEST(SingleRow, CSRFastLeafIndex) {
+    test_csr_fast_matches_mat(C_API_PREDICT_LEAF_INDEX, 0, -1);
+}
+
+TEST(SingleRow, CSRFastContribIterationWindow) {
+    test_csr_fast_matches_mat(C_API_PREDICT_CONTRIB, 3, 7);
+}

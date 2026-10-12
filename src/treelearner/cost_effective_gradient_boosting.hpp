@@ -99,7 +99,7 @@ class CostEfficientGradientBoosting {
 
   void UpdateLeafBestSplits(Tree* tree, int best_leaf,
                             const SplitInfo* best_split_info,
-                            std::vector<SplitInfo>* best_split_per_leaf) {
+                            std::vector<SplitInfo>* best_split_per_leaf, int right_leaf) {
     auto config = tree_learner_->config_;
     auto train_data = tree_learner_->train_data_;
     const int inner_feature_index =
@@ -124,14 +124,18 @@ class CostEfficientGradientBoosting {
       }
     }
     if (!config->cegb_penalty_feature_lazy.empty()) {
-      data_size_t cnt_leaf_data = 0;
-      auto tmp_idx = tree_learner_->data_partition_->GetIndexOnLeaf(
-          best_leaf, &cnt_leaf_data);
-      for (data_size_t i_input = 0; i_input < cnt_leaf_data; ++i_input) {
-        int real_idx = tmp_idx[i_input];
-        Common::InsertBitset(
-            &feature_used_in_data_,
-            train_data->num_data() * inner_feature_index + real_idx);
+      // The proposed split has already partitioned the parent. Charge the
+      // feature to both children, covering exactly the original parent rows.
+      for (int leaf : {best_leaf, right_leaf}) {
+        data_size_t cnt_leaf_data = 0;
+        auto tmp_idx = tree_learner_->data_partition_->GetIndexOnLeaf(
+            leaf, &cnt_leaf_data);
+        for (data_size_t i_input = 0; i_input < cnt_leaf_data; ++i_input) {
+          int real_idx = tmp_idx[i_input];
+          Common::InsertBitset(
+              &feature_used_in_data_,
+              train_data->num_data() * inner_feature_index + real_idx);
+        }
       }
     }
   }

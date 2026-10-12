@@ -119,6 +119,43 @@ display-driver regression. CatBoost's 30k-round cells fight the display watchdog
 702). Falcata's own airline fixedpoint cells run at the auto-clamped 23
 bins — the int32 histogram guard bounds the bin count on 92M rows (§5).
 
+### Classification Newton-step stability
+
+The historical unbounded, non-quantized deep recipe also collapses in Falcata
+on CPU and FP64 CUDA, and in upstream LightGBM on CPU. Recomputing gradients
+and Hessians from the actual rows of failing leaves reproduces the enormous
+outputs: on fraud at iteration 2, `G=27.9989`, `H=0.00112228` gives the stored
+update of approximately `-2494.82` after the `0.1` learning rate. The Newton
+formula `-G / (H + lambda_l2)` becomes unsafe when confident classification
+predictions have tiny curvature. Additional floating-point precision does not
+make that step appropriate.
+
+Falcata now defaults to `max_delta_step=-1` (automatic). For non-quantized binary, softmax
+multiclass and one-vs-all classification with GBDT (including GOSS) or DART,
+it bounds the learned score update in constant-leaf trees to one unit, scaled by `sigmoid` for binary
+and OVA. The initial class-prior offset is excluded. Existing constrained
+leaf-output and split-gain math applies the policy on CPU and CUDA; partial
+learning-rate resets recompute the raw cap, and model serialization preserves
+the automatic policy. Fitted linear leaf predictions are not bounded by this constant-output limit.
+Quantized training, regression, custom objectives and random forests remain
+unconstrained. Explicit `0` restores historical behavior; positive values keep
+their existing manual raw-output-cap meaning.
+
+Single-seed validation on the cached stratified splits, 500 rounds, learning
+rate `0.1`, depth `10`, 1023 leaves, 255 bins, no sampling and zero L2:
+
+| backend (non-quantized) | fraud raw-score AUC | covtype accuracy | covtype logloss |
+|---|---:|---:|---:|
+| CPU, automatic step limit | 0.97481 | 0.96991 | 0.08894 |
+| FP64 CUDA, automatic step limit | 0.97560 | 0.96932 | 0.08943 |
+
+These are stability checks, not a replacement for the repeated performance
+sweep above. Large steps can be reduced and more rounds may be needed; this
+bounded update does not guarantee monotonically decreasing loss. It changes
+non-quantized classification models and can change split ties even when the cap is inactive.
+Historical benchmark reproduction therefore requires explicit
+`--set max_delta_step=0`; new benchmark runs must record their step policy.
+
 ---
 
 ## How this was measured

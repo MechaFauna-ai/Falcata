@@ -1711,10 +1711,6 @@ void Dataset::DumpTextFile(const char* text_filename) {
   for (auto i : max_bin_by_feature_) {
     fprintf(file, "%d, ", i);
   }
-  fprintf(file, "\n");
-  for (auto n : feature_names_) {
-    fprintf(file, "%s, ", n.c_str());
-  }
   fprintf(file, "\nforced_bins: ");
   for (int i = 0; i < num_total_features_; ++i) {
     fprintf(file, "\nfeature %d: ", i);

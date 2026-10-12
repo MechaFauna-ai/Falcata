@@ -162,7 +162,9 @@ int GetNumColFromLIBSVMFile(const char* filename, bool header) {
       auto space_pos = cur_line.find_last_of(" \f\t\v");
       auto sub_str = cur_line.substr(space_pos + 1, space_pos - colon_pos - 1);
       int cur_idx = 0;
-      Common::Atoi(sub_str.c_str(), &cur_idx);
+      if (colon_pos != std::string::npos) {
+        Common::Atoi(sub_str.c_str(), &cur_idx);
+      }
       if (cur_idx > max_col_idx) {
         max_col_idx = cur_idx;
         max_line_idx = i;

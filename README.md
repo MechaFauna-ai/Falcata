@@ -14,6 +14,9 @@ Falcata is a CUDA-native GBDT library: a leaf-wise learner whose training loop
 was rebuilt around batched, level-parallel GPU kernels rather than one split at
 a time.
 
+For the story behind the design, see [Falcata: GPU gradient boosting](https://mechafauna.ai/blog/falcata-gpu-gradient-boosting)
+on the MechaFauna blog.
+
 What makes it fast
 ------------------
 

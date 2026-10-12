@@ -120,6 +120,14 @@ class DataPartition {
     leaf_count_[right_leaf] = cnt - left_cnt;
   }
 
+  // The two partitions occupy the original leaf's contiguous index range.
+  // Restore that leaf when a proposed split leaves one child empty.
+  void UndoEmptySplit(int leaf, int right_leaf) {
+    CHECK(leaf_count_[leaf] == 0 || leaf_count_[right_leaf] == 0);
+    leaf_count_[leaf] += leaf_count_[right_leaf];
+    leaf_count_[right_leaf] = 0;
+  }
+
   /*!
   * \brief SetLabelAt used data indices before training, used for bagging
   * \param used_data_indices indices of used data

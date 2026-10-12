@@ -731,7 +731,7 @@ std::string Config::SaveMembersToString() const {
   str_buf << "[early_stopping_round: " << early_stopping_round << "]\n";
   str_buf << "[early_stopping_min_delta: " << early_stopping_min_delta << "]\n";
   str_buf << "[first_metric_only: " << first_metric_only << "]\n";
-  str_buf << "[max_delta_step: " << max_delta_step << "]\n";
+  str_buf << "[max_delta_step: " << (max_delta_step_from_auto ? -1.0 : max_delta_step) << "]\n";
   str_buf << "[lambda_l1: " << lambda_l1 << "]\n";
   str_buf << "[lambda_l2: " << lambda_l2 << "]\n";
   str_buf << "[linear_lambda: " << linear_lambda << "]\n";

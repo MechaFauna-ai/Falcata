@@ -161,13 +161,14 @@ class SerialTreeLearner: public TreeLearner {
   * \param best_leaf The index of leaf that will be splitted.
   * \param left_leaf The index of left leaf after splitted.
   * \param right_leaf The index of right leaf after splitted.
+  * \return False if the actual partition would create an empty child.
   */
-  inline virtual void Split(Tree* tree, int best_leaf, int* left_leaf,
+  inline virtual bool Split(Tree* tree, int best_leaf, int* left_leaf,
     int* right_leaf) {
-    SplitInner(tree, best_leaf, left_leaf, right_leaf, true);
+    return SplitInner(tree, best_leaf, left_leaf, right_leaf, true);
   }
 
-  void SplitInner(Tree* tree, int best_leaf, int* left_leaf, int* right_leaf,
+  bool SplitInner(Tree* tree, int best_leaf, int* left_leaf, int* right_leaf,
                   bool update_cnt);
 
   /* Force splits with forced_split_json dict and then return num splits forced.*/

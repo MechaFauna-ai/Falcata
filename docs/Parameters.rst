@@ -479,13 +479,23 @@ Learning Control Parameters
 
    -  Falcata allows you to provide multiple evaluation metrics. Set this to ``true``, if you want to use only the first metric for early stopping
 
--  ``max_delta_step`` :raw-html:`<a id="max_delta_step" title="Permalink to this parameter" href="#max_delta_step">&#x1F517;&#xFE0E;</a>`, default = ``0.0``, type = double, aliases: ``max_tree_output``, ``max_leaf_output``
+-  ``max_delta_step`` :raw-html:`<a id="max_delta_step" title="Permalink to this parameter" href="#max_delta_step">&#x1F517;&#xFE0E;</a>`, default = ``-1.0``, type = double, aliases: ``max_tree_output``, ``max_leaf_output``
 
    -  used to limit the max output of tree leaves
 
-   -  ``<= 0`` means no constraint
+   -  negative values select automatic stabilization: for non-quantized ``binary``, ``multiclass`` and ``multiclassova`` with GBDT (including GOSS) or DART, each constant-leaf tree's training step (excluding the initial class-prior offset) is limited to one unit of the sigmoid-scaled score (binary / OVA) or raw score (softmax)
 
-   -  the final max output of leaves is ``learning_rate * max_delta_step``
+   -  automatic stabilization prevents enormous Newton updates when classification Hessians approach zero; it is applied in both leaf outputs and split gains, on CPU and CUDA
+
+   -  ``0`` disables the constraint and restores the historical unbounded Newton update; use this explicitly to reproduce older classification benchmarks
+
+   -  positive values specify a raw leaf-output limit, with final max output ``learning_rate * max_delta_step``, and override automatic stabilization
+
+   -  automatic stabilization leaves quantized training, regression, custom objectives, other objectives and random forests unconstrained
+
+   -  with ``linear_tree=true``, the limit applies to constant split outputs; fitted linear leaf predictions are not bounded
+
+   -  **Note**: this changes non-quantized classification training defaults; large steps may be reduced and more iterations may be needed. It does not guarantee monotonically decreasing loss
 
 -  ``lambda_l1`` :raw-html:`<a id="lambda_l1" title="Permalink to this parameter" href="#lambda_l1">&#x1F517;&#xFE0E;</a>`, default = ``0.0``, type = double, aliases: ``reg_alpha``, ``l1_regularization``, constraints: ``lambda_l1 >= 0.0``
 

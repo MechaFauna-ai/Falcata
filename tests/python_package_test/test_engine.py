@@ -582,6 +582,35 @@ def test_cat_random_search_cuda(n_cat, quantized):
 
 
 @pytest.mark.skipif(getenv("TASK", "") != "cuda", reason="CUDA-only regression test")
+def test_rank_xendcg_cuda_singleton_query_does_not_clobber_next_query(rng):
+    # The CUDA rank_xendcg kernels assign NUM_QUERY_PER_BLOCK (10) queries to
+    # each block. A singleton query must zero only its own item; the first item
+    # of the following query (owned by another block) must keep its gradient.
+    groups = []
+    for _ in range(50):
+        groups += [64] * 9 + [1]
+    groups += [64]
+    bounds = np.concatenate([[0], np.cumsum(groups)])
+    marked = np.zeros(bounds[-1], dtype=bool)
+    marked[bounds[10:-1:10]] = True
+    X = np.column_stack([marked.astype(np.float64), rng.uniform(size=marked.size)])
+    y = np.where(marked, 3, rng.integers(0, 2, size=marked.size))
+    params = {
+        "objective": "rank_xendcg",
+        "device_type": "cuda",
+        "num_leaves": 3,
+        "min_data_in_leaf": 1,
+        "min_sum_hessian_in_leaf": 0,
+        "learning_rate": 0.5,
+        "verbose": -1,
+    }
+    bst = lgb.train(params, lgb.Dataset(X, y, group=groups), num_boost_round=3)
+    raw = bst.predict(X, raw_score=True)
+    assert bst.feature_importance("gain")[0] > 0
+    assert raw[marked].mean() > raw[~marked].mean() + 1.0
+
+
+@pytest.mark.skipif(getenv("TASK", "") != "cuda", reason="CUDA-only regression test")
 def test_min_data_per_group_cuda_matches_cpu():
     # Regression test for the categorical kernels in cuda_best_split_finder.cu
     # ignoring min_data_per_group entirely. Dataset has 200 rows split across
@@ -788,8 +817,13 @@ def test_auc_mu(rng):
     results_unweighted = {}
     results_weighted = {}
     params = dict(params, num_classes=10, num_leaves=5)
-    lgb.train(
-        params, lgb_X, num_boost_round=10, valid_sets=[lgb_X], callbacks=[lgb.record_evaluation(results_unweighted)]
+    unweighted_model = lgb.train(
+        params,
+        lgb_X,
+        num_boost_round=10,
+        valid_sets=[lgb_X],
+        callbacks=[lgb.record_evaluation(results_unweighted)],
+        keep_training_booster=True,
     )
     lgb.train(
         params,
@@ -800,18 +834,15 @@ def test_auc_mu(rng):
     )
     assert results_weighted["training"]["auc_mu"][-1] < 1
     assert results_unweighted["training"]["auc_mu"][-1] != results_weighted["training"]["auc_mu"][-1]
-    # test that equal data weights give same auc_mu as unweighted data
-    lgb_X_weighted = lgb.Dataset(X, label=y, weight=np.ones(y.shape) * 0.5)
-    lgb.train(
-        params,
-        lgb_X_weighted,
-        num_boost_round=10,
-        valid_sets=[lgb_X_weighted],
-        callbacks=[lgb.record_evaluation(results_weighted)],
-    )
-    assert results_unweighted["training"]["auc_mu"][-1] == pytest.approx(
-        results_weighted["training"]["auc_mu"][-1], abs=1e-5
-    )
+    # Equal data weights must give the same metric for the same predictions.
+    # Training separate models can change split ties or Hessian thresholds under
+    # uniform weight scaling, so evaluate one model on both validation sets.
+    unweighted_valid = lgb.Dataset(X, label=y, reference=lgb_X)
+    uniform_weight_valid = lgb.Dataset(X, label=y, weight=np.full(y.shape, 0.5), reference=lgb_X)
+    unweighted_model.add_valid(unweighted_valid, "unweighted")
+    unweighted_model.add_valid(uniform_weight_valid, "uniform_weight")
+    same_model_auc = {name: value for name, _, value, _ in unweighted_model.eval_valid()}
+    assert same_model_auc["unweighted"] == pytest.approx(same_model_auc["uniform_weight"], rel=1e-12, abs=1e-12)
     # should give 1 when accuracy = 1
     X = X[:10, :]
     y = y[:10]
@@ -1874,7 +1905,7 @@ def test_all_expected_params_are_written_out_to_model_text(tmp_path):
         "[early_stopping_round: 0]",
         "[early_stopping_min_delta: 0]",
         "[first_metric_only: 0]",
-        "[max_delta_step: 0]",
+        "[max_delta_step: -1]",
         "[lambda_l1: 0]",
         "[lambda_l2: 0]",
         "[linear_lambda: 0]",
@@ -2807,7 +2838,7 @@ def test_metrics():
     params_obj_metric_none_verbose = {"objective": "binary", "metric": "None", "verbose": -1}
     params_dummy_obj_metric_log_verbose = {"objective": dummy_obj, "metric": "binary_logloss", "verbose": -1}
     params_dummy_obj_metric_err_verbose = {"objective": dummy_obj, "metric": "binary_error", "verbose": -1}
-    params_dummy_obj_metric_inv_verbose = {"objective": dummy_obj, "metric_types": "invalid_metric", "verbose": -1}
+    params_dummy_obj_metric_inv_verbose = {"objective": dummy_obj, "metric": "invalid_metric", "verbose": -1}
     params_dummy_obj_metric_multi_verbose = {
         "objective": dummy_obj,
         "metric": ["binary_logloss", "binary_error"],

@@ -6,7 +6,11 @@
 #include <gtest/gtest.h>
 #include <Falcata/utils/common.h>
 
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <limits>
+#include <vector>
 
 
 // This is a basic test for floating number parsing.
@@ -124,10 +128,12 @@ TEST_F(AtofPreciseTest, NaN) {
     double got = TestAtofPrecise(test.data, test.expected, false);
 
     EXPECT_TRUE(std::isnan(got)) << "not parsed as NaN: " << test.data;
-    if (got > 0) {
-      // See comment in test_cases.
-      EXPECT_EQ(memcmp(&got, &test.expected, sizeof(test.expected)), 0)
-                << "parsed NaN is not the same for every bit: " << test.data;
+    if (!std::signbit(test.expected)) {
+      // See comment in test_cases. The payload is implementation-defined too.
+      uint64_t bits;
+      memcpy(&bits, &got, sizeof(got));
+      EXPECT_FALSE(std::signbit(got)) << "parsed NaN is negative: " << test.data;
+      EXPECT_NE(bits & (uint64_t{1} << 51), 0u) << "parsed NaN is not quiet: " << test.data;
     }
   }
 }
@@ -150,4 +156,16 @@ TEST_F(AtofPreciseTest, Inf) {
     EXPECT_EQ(memcmp(&got, &test.expected, sizeof(test.expected)), 0)
               << "parsed infinite is not the same for every bit: " << test.data;
   }
+}
+
+TEST(SortForPair, SortsOnlyTheSuffixFromStart) {
+  std::vector<int> keys = {9, 8, 3, 1, 2};
+  std::vector<int> values = {90, 80, 30, 10, 20};
+  Falcata::Common::SortForPair<int, int>(&keys, &values, 2);
+  EXPECT_EQ(keys, (std::vector<int>{9, 8, 1, 2, 3}));
+  EXPECT_EQ(values, (std::vector<int>{90, 80, 10, 20, 30}));
+
+  Falcata::Common::SortForPair<int, int>(&keys, &values, 1, true);
+  EXPECT_EQ(keys, (std::vector<int>{9, 8, 3, 2, 1}));
+  EXPECT_EQ(values, (std::vector<int>{90, 80, 30, 20, 10}));
 }

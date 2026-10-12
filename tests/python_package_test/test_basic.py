@@ -1,7 +1,10 @@
 # coding: utf-8
 import filecmp
 import numbers
+import pickle
 import re
+import subprocess
+import sys
 import warnings
 from copy import deepcopy
 from pathlib import Path
@@ -1536,3 +1539,151 @@ def test_tree_sizes_must_account_for_every_tree_in_the_text():
     empty_text = empty.model_to_string()
     assert "\ntree_sizes=\n" in empty_text
     assert lgb.Booster(model_str=empty_text).num_trees() == 0
+
+
+def _count_categorical_splits(node):
+    if "split_index" not in node:
+        return 0
+    return (
+        (node["decision_type"] == "==")
+        + _count_categorical_splits(node["left_child"])
+        + _count_categorical_splits(node["right_child"])
+    )
+
+
+def test_falb_round_trip_keeps_categorical_split_indices_above_255(rng):
+    # The binary (FALB) model stores a categorical node's cat_threshold index in
+    # the threshold-index array; its width must cover the largest such index,
+    # not only the numeric thresholds. Pickle uses FALB by default.
+    n_cat = 2000
+    X = rng.integers(0, n_cat, size=(40_000, 3)).astype(np.float64)
+    y = sum(rng.normal(size=n_cat)[X[:, j].astype(int)] for j in range(3))
+    params = {
+        "objective": "regression",
+        "num_leaves": 600,
+        "max_bin": 4000,
+        "min_data_in_leaf": 1,
+        "min_data_per_group": 1,
+        "min_sum_hessian_in_leaf": 0,
+        "cat_smooth": 0,
+        "cat_l2": 0,
+        "verbose": -1,
+    }
+    bst = lgb.train(params, lgb.Dataset(X, y, categorical_feature=[0, 1, 2]), num_boost_round=1)
+    assert _count_categorical_splits(bst.dump_model()["tree_info"][0]["tree_structure"]) > 256
+    restored = pickle.loads(pickle.dumps(bst))
+    np_assert_array_equal(restored.predict(X), bst.predict(X), strict=True)
+
+
+_LINEAR_LOADER_PARAMS = {
+    "objective": "regression",
+    "linear_tree": True,
+    "num_leaves": 4,
+    "min_data_in_leaf": 20,
+    "deterministic": True,
+    "num_threads": 4,
+    "verbose": -1,
+}
+
+
+@pytest.mark.parametrize("two_round", [False, True])
+def test_linear_tree_sparse_file_matches_numpy(tmp_path, rng_fixed_seed, two_round):
+    # Features absent from a libsvm row are 0. The raw values kept for linear
+    # trees must not inherit the previous row's value for absent features.
+    n = 2_000
+    X = rng_fixed_seed.uniform(1, 2, size=(n, 3))
+    X[rng_fixed_seed.uniform(size=X.shape) < 0.5] = 0.0
+    y = 3 * X[:, 0] - 2 * X[:, 1] + X[:, 2] + rng_fixed_seed.normal(scale=0.01, size=n)
+    path = tmp_path / "sparse.svm"
+    dump_svmlight_file(X, y, str(path), zero_based=True)
+    expected = lgb.train(_LINEAR_LOADER_PARAMS, lgb.Dataset(X, y), num_boost_round=5).predict(X)
+    params = {**_LINEAR_LOADER_PARAMS, "two_round": two_round}
+    actual = lgb.train(params, lgb.Dataset(str(path)), num_boost_round=5).predict(X)
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-9)
+
+
+def _write_large_csv(path, X, y):
+    # two_round loading streams the file in 16 MiB chunks; these tests need
+    # more than one chunk so row indices must be offset by the chunk start.
+    # Callers sample every row for binning so both loaders build identical bins.
+    np.savetxt(path, np.column_stack([y, X]), delimiter=",", fmt="%.8f")
+    assert path.stat().st_size > 16 * 1024 * 1024
+
+
+def test_linear_tree_two_round_multichunk_file_matches_in_memory(tmp_path, rng_fixed_seed):
+    n = 700_000
+    X = rng_fixed_seed.uniform(size=(n, 2))
+    y = 3 * X[:, 0] - 2 * X[:, 1]
+    path = tmp_path / "dense.csv"
+    _write_large_csv(path, X, y)
+    preds = {}
+    for two_round in (False, True):
+        params = {**_LINEAR_LOADER_PARAMS, "two_round": two_round, "bin_construct_sample_cnt": n}
+        preds[two_round] = lgb.train(params, lgb.Dataset(str(path)), num_boost_round=5).predict(X[:5_000])
+    np.testing.assert_allclose(preds[True], preds[False], rtol=0, atol=1e-10)
+
+
+def test_two_round_multichunk_file_pushes_zeros_at_the_right_rows(tmp_path, rng_fixed_seed):
+    # Feature 0 is 1 in ~90% of rows, so its most-frequent bin is not its zero
+    # bin and absent (zero) entries are pushed explicitly row by row.
+    n = 700_000
+    X = rng_fixed_seed.uniform(1, 2, size=(n, 2))
+    u = rng_fixed_seed.uniform(size=n)
+    X[:, 0] = np.where(u < 0.05, 0.0, np.where(u < 0.10, 2.0, 1.0))
+    y = 3 * X[:, 0] - 2 * X[:, 1]
+    path = tmp_path / "mostly_ones.svm"
+    dump_svmlight_file(X, y, str(path), zero_based=True)
+    assert path.stat().st_size > 16 * 1024 * 1024
+    dumps = []
+    for two_round in (False, True):
+        params = {"two_round": two_round, "bin_construct_sample_cnt": n, "verbose": -1}
+        dump = tmp_path / f"dump_two_round_{two_round}.txt"
+        lgb.Dataset(str(path), params=params).construct()._dump_text(dump)
+        dumps.append(dump)
+    assert filecmp.cmp(*dumps, shallow=False)
+
+
+def test_multiclass_init_score_file_is_parsed_exactly(tmp_path, rng):
+    # Rows of a multi-column .init file are parsed in parallel; each thread
+    # must use its own split buffer or rows read each other's values.
+    n_rows, n_class = 50_000, 4
+    X = rng.uniform(size=(n_rows, 3))
+    y = rng.integers(0, n_class, size=n_rows)
+    data_path = tmp_path / "train.csv"
+    np.savetxt(data_path, np.column_stack([y, X]), delimiter=",", fmt="%.6f")
+    init = np.arange(n_rows * n_class, dtype=np.float64).reshape(n_rows, n_class)
+    np.savetxt(f"{data_path}.init", init, delimiter="\t", fmt="%d")
+    for _ in range(5):
+        ds = lgb.Dataset(
+            str(data_path), params={"objective": "multiclass", "num_class": n_class, "num_threads": 16, "verbose": -1}
+        ).construct()
+        np_assert_array_equal(ds.get_field("init_score"), init, strict=True)
+
+
+def test_import_succeeds_when_sklearn_module_is_unavailable():
+    # The optional scikit-learn API (and its LGBM* aliases) must not take
+    # `import falcata` down with it when falcata.sklearn cannot be imported.
+    code = (
+        "import sys\n"
+        "sys.modules['falcata.sklearn'] = None\n"
+        "import falcata\n"
+        "assert callable(falcata.train)\n"
+        "assert not hasattr(falcata, 'FalcataModel')\n"
+        "assert not hasattr(falcata, 'LGBMModel')\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.parametrize("label", ["9.5", "9.649e-05", "250", "-12"])
+@pytest.mark.parametrize("row", [0, 3])
+def test_libsvm_label_only_row_does_not_add_features(tmp_path, label, row):
+    # A row whose features are all zero is just its label; the column count
+    # must come from the feature indices of the other rows only.
+    lines = ["1.5 0:1.0 1:2.0 2:3.0", "0.5 0:2.0 2:1.0", "2.5 1:1.0 2:2.0", "3.5 0:3.0 1:1.0"] * 10
+    lines.insert(row, label)
+    path = tmp_path / "label_only.svm"
+    path.write_text("\n".join(lines) + "\n")
+    ds = lgb.Dataset(str(path), params={"min_data_in_bin": 1, "verbose": -1}).construct()
+    assert ds.num_feature() == 3
+    assert ds.num_data() == len(lines)
