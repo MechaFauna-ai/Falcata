@@ -2,6 +2,11 @@
 
 Each Falcata column reports the latest relevant **measured** build, not the fastest mode or a fresh measurement of every final-build cell. Competitor columns retain the original August 2026 launch-snapshot measurements. This is a descriptive historical table, not a rerun against current competing releases or a matched-quality experiment.
 
+The FP64 noquant rows retain the earlier unbounded PR #71 prototype, which is
+unmerged. They do not describe the new automatic classification default. The
+[guarded CPU/FP64 CUDA results](stability.md) are separate stability measurements
+with no replacement timings. Historical failed models remain visible here.
+
 Cells show training seconds and primary held-out quality. Short workloads use the median of three timed endpoints; Numerai deep/leaf use one complete requested-round endpoint. Ranges appear where repeated quality endpoints materially vary. Every finite endpoint, including failed models, contributes to its interval; `FAIL` bars are unsuitable for timing headlines. Warmups and curves do not enter medians.
 
 | Workload | Falcata stochastic | Falcata fixedpoint | Falcata FP64 noquant | XGBoost | CatBoost | LightGBM CUDA | LightGBM OpenCL |

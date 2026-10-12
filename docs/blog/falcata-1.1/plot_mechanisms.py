@@ -81,6 +81,7 @@ def save(plt, fig, output):
     svg = output.with_suffix(".svg")
     fig.savefig(png, dpi=200, bbox_inches="tight", pad_inches=0.12)
     fig.savefig(svg, bbox_inches="tight", pad_inches=0.12, metadata={"Date": None})
+    svg.write_text("\n".join(line.rstrip() for line in svg.read_text().splitlines()) + "\n")
     plt.close(fig)
     return [str(png), str(svg)]
 

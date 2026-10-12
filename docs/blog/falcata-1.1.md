@@ -1,9 +1,11 @@
 # Falcata 1.1: widening the gap
 
-> **Release article draft, 9 October 2026.** An overview of the work since our
-> first release, including features shipped in 1.0.x and the pending changes in
-> [PR #71](https://github.com/MechaFauna-ai/Falcata/pull/71). Version 1.1 is proposed;
-> it has not been published.
+> **Release article draft, updated 12 October 2026.** Merged work through
+> [`a65d34e8`](https://github.com/MechaFauna-ai/Falcata/commit/a65d34e80a7c337342fba6886d0a1cbd69eda079),
+> including features shipped in 1.0.x. Version 1.1 is proposed and unpublished.
+> October 8–10 benchmarks retain their original builds and dates. The separately
+> labelled [PR #71](https://github.com/MechaFauna-ai/Falcata/pull/71) prototype is
+> unmerged and excluded from the merged release scope.
 
 When we [introduced Falcata](https://www.mechafauna.ai/blog/falcata-gpu-gradient-boosting),
 we showed what happens when gradient boosting gives the GPU a whole level of tree
@@ -12,15 +14,17 @@ been working through the bottlenecks it exposed: redundant data movement, tiny
 histogram tasks, repeated loads and conversations with the CPU.
 
 The accumulated progress is substantial. **The 30,000-round Numerai-deep workload
-fell from 12.4 minutes at launch to 1.85 minutes: about 6.7× faster.** Numerai
-example now takes **5.6 seconds instead of 31**, a 5.5× improvement; Epsilon deep
-takes **11.2 seconds instead of 39.3**, a 3.5× improvement. These are quantized
-workloads. The latest changes also reduce non-quantized training time by as much
-as **39.4%** in the measured October comparisons.
+fell from 12.4 minutes in the launch archive to 1.85 minutes in the October 8
+measurement: about 6.7× faster.** October 9 Numerai example takes **5.6 seconds
+instead of 31**, a 5.5× improvement; Epsilon deep takes **11.2 seconds instead of
+39.3**, a 3.5× improvement. These are dated quantized workloads. Merged master
+also fixes the non-quantized deep classification collapse on CPU and FP64 CUDA;
+140 guarded configurations completed 500 rounds with the checks described below.
 
 These numbers describe different comparisons. The quantized results compare a
-historical launch snapshot with idle-GPU October runs; the FP64 result
-compares two October development builds. The configurations, quality scores and full results
+historical launch snapshot with idle-GPU October runs. The separate FP64 prototype
+compares two earlier development builds, before the classification fix. The
+configurations, quality scores and full results
 are in the [benchmark companion](falcata-1.1/benchmarks.md).
 
 ## The gap, then and now
@@ -30,7 +34,7 @@ are in the [benchmark companion](falcata-1.1/benchmarks.md).
 On the deep Numerai workload, the October quantized measurement is about **63×
 faster than the launch XGBoost time, 47× faster than CatBoost and 94× faster than
 LightGBM OpenCL**. The launch ratios were roughly 9×, 7× and 14×.
-On Numerai example, the latest Falcata time is about **51× shorter than the
+On Numerai example, the October 9 Falcata time is about **51× shorter than the
 launch XGBoost time and 20× shorter than the launch CatBoost time**. On Epsilon,
 the corresponding ratios are **4.7× and 9.0×**. These are training-budget
 comparisons against the original competitor measurements, which have **not**
@@ -218,12 +222,6 @@ The same iteration has improved the rest of the library:
   winning split. The documented 40-bin synthetic workload improved **1.459×**;
   the low-bin Numerai route was unchanged by that particular package.
   [Commit](https://github.com/MechaFauna-ai/Falcata/commit/c35442a0892187111f0514b9a6b824f6a6a49b0e).
-- **Non-quantized training.** The pending FP64 scans and graph bookkeeping reduce
-  training time by **21.8% on Year, 19.3% on Epsilon and 39.4% on Higgs** versus
-  the October baseline. Numerai example improves 1.8%; a single full deep pair
-  improves 9.9%, from 22.88 to 20.61 minutes. Parallel scans change addition order;
-  deterministic routes retain their CPU-order scans. **FP64 remains default**;
-  FP32 remains explicit. [Code and evidence](https://github.com/MechaFauna-ai/Falcata/pull/71).
 - **Faster preparation and bounded prediction.** Reused page-locked staging buffers
   overlap chunk transfers with binning; CPU sampling uses radix sorting and avoids
   redundant initialization. FIL now predicts wide host inputs in bounded slabs.
@@ -245,19 +243,61 @@ The same iteration has improved the rest of the library:
   [Lifecycle fixes](https://github.com/MechaFauna-ai/Falcata/commit/116f8b54d74f6c494cb05d47636df16e10fb24e2),
   [Hessian ridge](https://github.com/MechaFauna-ai/Falcata/commit/ef8203fbf33eaee6b76a147e3b86f997c47882ab).
 
+## Stable classification on CPU and FP64 CUDA
+
+The older unbounded deep recipe could produce huge Newton updates when confident
+classification predictions left tiny Hessians. Fraud probabilities saturated and
+covtype quality collapsed; FP64 arithmetic did not solve the underlying step size.
+[PR #91](https://github.com/MechaFauna-ai/Falcata/pull/91) makes
+`max_delta_step=-1` automatic for non-quantized binary, softmax and one-vs-all
+classification with GBDT, GOSS or DART. It limits learned constant-leaf updates
+to one unit of the linked score, accounting for the learning rate and sigmoid.
+The initial class prior is excluded. Quantized training keeps its existing policy.
+
+The broader sweep also exposed two CPU empty-child assertions with one-row leaves
+and zero Hessian floor. [PR #93](https://github.com/MechaFauna-ai/Falcata/pull/93)
+checks the actual row partition before committing a split and recovers an ordinary
+candidate when a forced split is invalid. The audited coverage cohort contains
+**132 full-data configurations across CPU and FP64 CUDA plus eight extra CPU
+tiny-leaf seed cases, all passing 500 rounds** on fraud and covtype. It retains
+the original build observations and separate fix reruns. Four explicit uncapped controls
+reproduced runaway margins. This covers 20 training seeds, five fresh stratified
+splits and eight stress profiles per dataset/backend, with finite losses and
+predictions, bounded learned leaf steps and held-out quality checks.
+
+The policy changes non-quantized classification models and can require more trees.
+Positive manual limits retain their old raw-leaf meaning; `0` restores unbounded
+behavior. Regression, custom objectives, random forests and fitted linear-leaf
+predictions are outside this automatic bound. Stability here does not imply
+monotonic loss or success for every dataset. The [stability report](falcata-1.1/stability.md)
+records exact recipes, per-build provenance, quality ranges and retained failures.
+
 ## Speed has to survive the checks
 
-The selected runtime passed four canonical model gates and a 357-cell verification
-lattice. The touched CUDA suite passed 284 cases, with ten skips and four expected
-failures. Mechanical optimizations have identity checks; numerical changes also
-need fresh quality evidence.
+The October 9 selected runtime passed four canonical model gates and a 357-cell
+verification lattice; its touched CUDA suite passed 284 cases, with ten skips and
+four expected failures. The final PR #93 candidate separately passed 1,195 CPU/C
+API CI tests and 39 focused CPU/CUDA regressions, including 12 CUDA cases. All 21
+PR checks and all five triggered post-merge master workflows passed. Mechanical
+optimizations have identity checks; numerical changes need fresh quality evidence.
 
 That discipline keeps losing experiments visible. Forced quantized CUDA graphs
 were slower in all seven historical cases rerun, so they remain opt-in. Uncapped
 FP64 fraud runs produced extreme leaf updates and saturated probabilities; their
 failures remain recorded. Explicitly capping updates with `max_delta_step=1`
 passed all ten strict follow-up endpoints at AUC around 0.979, as a separately
-labelled configuration. Covtype's unstable draws stay outside the headline claims.
+labelled historical configuration: at learning rate 0.1, manual `1` bounds raw
+leaf updates before shrinkage and is not equivalent to the new automatic limit.
+Covtype's old unstable draws stay outside headline claims; the fresh guarded
+quality results are reported separately from those old timings.
+
+The unmerged [PR #71](https://github.com/MechaFauna-ai/Falcata/pull/71) prototype
+measured 21.8% less FP64 training time on Year, 19.3% on Epsilon and 39.4% on Higgs
+against its October baseline; Numerai example improved 1.8% and one deep pair
+9.9%. These are historical prototype results, excluded from the merged release
+scope. The new classification constraint disables one of its split-search
+shortcuts, so those classification timings cannot establish performance with the
+new default. That combination needs integration and fresh timed validation.
 
 The [companion](falcata-1.1/benchmarks.md) includes all quantization modes, earlier
 measurements, exclusions and links to raw evidence. Fresh October 9 Numerai scores
