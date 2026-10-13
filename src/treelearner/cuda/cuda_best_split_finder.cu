@@ -5677,7 +5677,7 @@ struct WarpFindCandidate {
 // fp64 work. Each slot's positions are scanned across the group and offset by the earlier slots' totals (the same
 // wrapping integer prefixes); a lane's slots stay in ascending position order and the group reduction is the
 // exact first maximum of (gain, then lower position), so which lane holds a candidate does not change the winner.
-template <bool REVERSE, bool B16, typename ACC_T, int PPL, int G, bool STRIDED = false>
+template <bool REVERSE, bool B16, typename ACC_T, int PPL, int G>
 __device__ __forceinline__ void WarpFindBest(
     const ACC_T* hist, const SplitFindTask* task,
     const double lambda_l2, const double max_delta_step, const data_size_t min_data_in_leaf,
@@ -5689,7 +5689,8 @@ __device__ __forceinline__ void WarpFindBest(
   using UT = std::make_unsigned_t<ACC_T>;
   constexpr uint32_t kNoThreshold = 0xffffffffu;
   static_assert((G == 32 && PPL >= 2) || (G == 4 && PPL == 2), "a warp owns at least 2 positions per lane, 4-lane groups 2");
-  static_assert(!STRIDED || G == 4, "strided positions: 4-lane groups only");
+  // the 4-lane groups' positions are strided over the lanes (see above), a warp's are blocked
+  constexpr bool STRIDED = G == 4;
   const uint32_t lane = threadIdx.x & static_cast<uint32_t>(G - 1);
   const unsigned int mask = G == 32 ? 0xffffffffu : (((1u << G) - 1u) << ((threadIdx.x & 31u) & ~(G - 1u)));
   // the level kernel only runs without L1 and path smoothing (SupportsBatchedLevel)
@@ -5824,7 +5825,7 @@ __device__ __forceinline__ void WarpFindBest(
     // (float)hess_scale normal and |int32| * it finite in fp32, so every fp32 hessian below is within a few 1e-7
     // relative of prep's (a too-small or too-large scale keeps the exact per-position prune below)
     const float hs_f32 = static_cast<float>(hess_scale);
-    if (G == 32 && PPL >= 2 && !STRIDED && prune_fp32 && min_sum_hessian_in_leaf > 0.0 && hs_f32 >= FLT_MIN &&
+    if (G == 32 && prune_fp32 && min_sum_hessian_in_leaf > 0.0 && hs_f32 >= FLT_MIN &&
         hs_f32 <= FLT_MAX / 4.3e9f) {
       // cuda_plan key find_prune_fp32: the bounds from the int32 halves in fp32 (the int->float converts and the
       // product round three times instead of once: a few 1e-7 relative, far inside kRel; a valid side's hessian
@@ -5954,8 +5955,29 @@ __device__ __forceinline__ void WarpFindBest(
   double best_gain = kMinScore;
   uint32_t best_t = kNoThreshold;
   WarpFindCandidate best{};
+  // the exact gain of one valid candidate at position t; a lane's candidates arrive in ascending position order, so
+  // the strict > keeps the lowest position among equal gains
+  auto consider = [&](const WarpFindCandidate& o, const uint32_t t) {
+    const double current_gain = CUDALeafSplits::GetSplitGains<false, false, double>(
+        o.sl_g, o.sl_h + kEpsilon, o.sr_g, o.sr_h + kEpsilon, lambda_l1,
+        lambda_l2, path_smooth, max_delta_step, o.lc, o.rc, parent_output);
+    if (current_gain > min_gain_shift && (best_t == kNoThreshold || current_gain - min_gain_shift > best_gain)) {
+      best_gain = current_gain - min_gain_shift;
+      best_t = t;
+      best = o;
+    }
+  };
+  // slot i's prefix for a runtime i (the survivor walks below): a select over the unrolled slots
+  auto value_at = [&](const int i) -> UT {
+    UT val = v[0];
+#pragma unroll
+    for (int j = 1; j < PPL; ++j) {
+      if (i == j) val = v[j];
+    }
+    return val;
+  };
   // find_compact_survivors: the lane that processed best_t is found by ballot (any lane may hold any position)
-  const bool compacted = G == 32 && PPL >= 2 && !STRIDED && prune_fp32 && compact;
+  const bool compacted = G == 32 && prune_fp32 && compact;
   if (compacted) {
     // cuda_plan key find_compact_survivors: the warp's survivors in one list, in ascending position order (lane
     // by lane, each lane's slots ascending), and round r hands survivor r * 32 + lane to each lane: a lane's
@@ -5978,12 +6000,7 @@ __device__ __forceinline__ void WarpFindBest(
     while (rem != 0u) {
       const int i = __ffs(rem) - 1;
       rem &= rem - 1u;
-      UT val = v[0];
-#pragma unroll
-      for (int j = 1; j < PPL; ++j) {
-        if (i == j) val = v[j];
-      }
-      s_val[w] = val + excl;  // the owner lane's prefix: the consuming lane adds nothing
+      s_val[w] = value_at(i) + excl;  // the owner lane's prefix: the consuming lane adds nothing
       s_pos[w] = static_cast<uint8_t>(base + static_cast<uint32_t>(i));  // positions < 256
       ++w;
     }
@@ -5994,40 +6011,18 @@ __device__ __forceinline__ void WarpFindBest(
         const UT val = s_val[idx];
         const uint32_t t = s_pos[idx];
         WarpFindCandidate o;
-        if (prep(val, o)) {
-          const double current_gain = CUDALeafSplits::GetSplitGains<false, false, double>(
-              o.sl_g, o.sl_h + kEpsilon, o.sr_g, o.sr_h + kEpsilon, lambda_l1,
-              lambda_l2, path_smooth, max_delta_step, o.lc, o.rc, parent_output);
-          if (current_gain > min_gain_shift && (best_t == kNoThreshold || current_gain - min_gain_shift > best_gain)) {
-            best_gain = current_gain - min_gain_shift;
-            best_t = t;
-            best = o;
-          }
-        }
+        if (prep(val, o)) consider(o, t);
       }
     }
-  } else if (G == 32 && PPL >= 2 && !STRIDED && prune_fp32) {
+  } else if (G == 32 && prune_fp32) {
     // find_prune_fp32: the lane's surviving positions in ascending order as a work list, so the warp runs as many
     // exact prep + gain rounds as its busiest lane has survivors instead of one per slot any lane holds
     uint32_t rem = vmask;
     while (rem != 0u) {
       const int i = __ffs(rem) - 1;
       rem &= rem - 1u;
-      UT val = v[0];
-#pragma unroll
-      for (int j = 1; j < PPL; ++j) {
-        if (i == j) val = v[j];
-      }
       WarpFindCandidate o;
-      if (!prep(val + excl, o)) continue;
-      const double current_gain = CUDALeafSplits::GetSplitGains<false, false, double>(
-          o.sl_g, o.sl_h + kEpsilon, o.sr_g, o.sr_h + kEpsilon, lambda_l1,
-          lambda_l2, path_smooth, max_delta_step, o.lc, o.rc, parent_output);
-      if (current_gain > min_gain_shift && (best_t == kNoThreshold || current_gain - min_gain_shift > best_gain)) {
-        best_gain = current_gain - min_gain_shift;
-        best_t = base + static_cast<uint32_t>(i);
-        best = o;
-      }
+      if (prep(value_at(i) + excl, o)) consider(o, base + static_cast<uint32_t>(i));
     }
   } else {
 #pragma unroll
@@ -6039,14 +6034,7 @@ __device__ __forceinline__ void WarpFindBest(
       } else if (!prep(v[i] + excl, o)) {
         continue;
       }
-      const double current_gain = CUDALeafSplits::GetSplitGains<false, false, double>(
-          o.sl_g, o.sl_h + kEpsilon, o.sr_g, o.sr_h + kEpsilon, lambda_l1,
-          lambda_l2, path_smooth, max_delta_step, o.lc, o.rc, parent_output);
-      if (current_gain > min_gain_shift && (best_t == kNoThreshold || current_gain - min_gain_shift > best_gain)) {
-        best_gain = current_gain - min_gain_shift;
-        best_t = position(i);
-        best = o;
-      }
+      consider(o, position(i));
     }
   }
   }
@@ -6306,7 +6294,7 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   // <= 8).
   const uint32_t mid_tier = mid_ppl ? (num_positions + 31u) / 32u : 8u;
 #define FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, PPL, G) \
-  WarpFindBest<REV, B16, ACC_T, PPL, G, G == 4>(reinterpret_cast<const ACC_T*>(hist_in_leaf) + task->hist_offset, \
+  WarpFindBest<REV, B16, ACC_T, PPL, G>(reinterpret_cast<const ACC_T*>(hist_in_leaf) + task->hist_offset, \
     task, lambda_l2, max_delta_step, min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split, parent_gain, \
     sum_gradients_hessians, num_data, parent_output, gscale, hscale, prune_fp32, select_int, compact_survivors, \
     prune_sure, s_compact_warp, out)
