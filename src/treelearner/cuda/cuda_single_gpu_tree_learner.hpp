@@ -192,8 +192,13 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // construct grid is sized by the parents' sizes (smaller child <= parent / 2)
   // and the kernel restores the exact row grouping from the device-side actual
   // sizes, so results are bit-identical to the classic two-sync flow.
+  // tree_record_done: an event recorded on the tree stream after the level's
+  // tree record (nullptr: the flow records nothing on the tree stream before
+  // its readback); the find/sync stream waits on it, since the record reads the
+  // split leaves' cached best splits that the children's sync overwrites.
   void EnqueueLevelBestSplitSearchSpeculative(const CUDATree* tree,
-    const std::vector<HybridAppliedSplit>& applied);
+    const std::vector<HybridAppliedSplit>& applied,
+    cudaEvent_t tree_record_done);
   // Collect all leaves with a valid cached best-split candidate, mirroring the
   // device cache into the host split arrays (the leaf-wise tail may apply any of
   // them later).
@@ -819,6 +824,11 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
    *  threshold deep-copies cannot overwrite entries still being consumed */
   cudaEvent_t cat_consumed_default_event_ = nullptr;
   cudaEvent_t cat_consumed_tree_event_ = nullptr;
+  /*! \brief recorded on the tree stream after a level's tree record (SplitBatch / SplitCategorical) where no device
+   *  synchronize separates it from the next level's sync kernel (the one-sync prefix's speculative search); the
+   *  next level's find/sync stream waits on it: the record reads the cuda_leaf_best_split_info_ entries that sync
+   *  kernel overwrites */
+  cudaEvent_t tree_record_done_event_ = nullptr;
   /*! \brief index map from leaf index to histogram index */
   std::vector<int> leaf_to_hist_index_map_;
   /*! \brief number of total histogram bins */
