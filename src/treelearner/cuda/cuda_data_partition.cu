@@ -1590,6 +1590,34 @@ __global__ void __launch_bounds__(SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS
   }
 }
 
+// cuda_plan key split_counts_early: the split's 18 ints FinishSplitBatch reads, written by the level's aggregate kernel
+// (the producer of the children's counts and starts) instead of by the tree-structure body
+// (HybridSplitTreeStructureSplit) after it: the same counts and starts (the left child keeps its parent's start, the
+// right one starts after the left's rows), the same CUDASplitInfo sums, the same smaller/larger count comparison;
+// single GPU only (slots 16/17 are only read under NCCL, where they carry the global counts)
+__device__ __forceinline__ void HybridWriteSplitCountsMirror(int* mirror, const CUDAHybridApplyDescriptor& d,
+                                                             const data_size_t left_start,
+                                                             const data_size_t left_count,
+                                                             const data_size_t right_count) {
+  double* mirror_sums = reinterpret_cast<double*>(mirror + 8);
+  const CUDASplitInfo* best_split_info = d.best_split_info;
+  mirror[0] = d.left_leaf_index;
+  mirror[1] = left_count;
+  mirror[2] = left_start;
+  mirror[3] = d.right_leaf_index;
+  mirror[4] = right_count;
+  mirror[5] = left_start + left_count;
+  mirror_sums[0] = best_split_info->left_sum_hessians;
+  mirror_sums[1] = best_split_info->right_sum_hessians;
+  mirror_sums[2] = best_split_info->left_sum_gradients;
+  mirror_sums[3] = best_split_info->right_sum_gradients;
+  const bool left_is_smaller = left_count < right_count;
+  mirror[6] = left_is_smaller ? d.left_leaf_index : d.right_leaf_index;
+  mirror[7] = left_is_smaller ? d.right_leaf_index : d.left_leaf_index;
+  mirror[16] = left_count;
+  mirror[17] = right_count;
+}
+
 // per-split block-offset prefix sum + children leaf metadata update; one block
 // per split, generalizing AggregateBlockOffsetKernel0 to arbitrary num_blocks.
 // The split's region slot 0 is zeroed explicitly (a slot that held a non-zero
@@ -1602,6 +1630,7 @@ __global__ void HybridAggregateBlockOffsetBatchKernel(
   data_size_t* cuda_leaf_data_end,
   data_size_t* cuda_leaf_num_data,
   data_size_t* level_smaller_counts,
+  int* split_info_mirror_base,
   const CUDAHybridGraphLoopStateOpt gstate) {
   // graphs A2 idle-block guard (pow2-frozen grid; see the gen-bit-vector kernel)
   if (HybridGraphBeyondLiveSplits(gstate, blockIdx.x)) {
@@ -1673,6 +1702,99 @@ __global__ void HybridAggregateBlockOffsetBatchKernel(
     // actual smaller-child size of this split, consumed by the speculative
     // batched construct kernel's device row-grouping (single-sync flow)
     level_smaller_counts[blockIdx.x] = left_count < right_count ? left_count : right_count;
+    if (split_info_mirror_base != nullptr) {
+      HybridWriteSplitCountsMirror(split_info_mirror_base + 18 * blockIdx.x, d,
+                                   cuda_leaf_data_start[left_leaf_index], left_count, right_count);
+    }
+  }
+}
+
+// cuda_plan key aggregate_load_first: HybridAggregateBlockOffsetBatchKernel's values with every load issued before
+// any store. Each thread takes a contiguous run of at most kPerThread of the split's num_blocks + 1 entries (entry 0
+// counts as 0, as the original zeroes it), loads its left and right counts into registers, forms their running sums
+// there, and one block scan of the per-thread (left, right) totals packed in 64 bits gives each run its offsets (a
+// split's right sums stay below 2^32, so no carry crosses into the left word); every entry is then stored once:
+// left[e] = left counts 0..e summed, right[e] = right counts 0..e summed + the split's left total -- the original's
+// final values (unsigned wrapping adds of the same integers in any grouping). The block is sized on the host to the
+// level's largest split (a multiple of 32 threads, at most AGGREGATE_BLOCK_SIZE_DATA_PARTITION), so a deep level's
+// few-entry splits do not run a full-width scan. The child leaf metadata is written from registers with the same
+// values. Host-launched path only (the graph-captured aggregate keeps HybridAggregateBlockOffsetBatchKernel).
+template <int kPerThread>
+__global__ void __launch_bounds__(AGGREGATE_BLOCK_SIZE_DATA_PARTITION) HybridAggregateBlockOffsetLoadFirstKernel(
+  const CUDAHybridApplyDescriptor* descs,
+  data_size_t* block_to_left_offset_buffer_base,
+  data_size_t* block_to_right_offset_buffer_base,
+  data_size_t* cuda_leaf_data_start,
+  data_size_t* cuda_leaf_data_end,
+  data_size_t* cuda_leaf_num_data,
+  data_size_t* level_smaller_counts,
+  int* split_info_mirror_base) {
+  __shared__ uint64_t shared_mem_buffer[WARPSIZE];
+  __shared__ uint32_t totals[1];
+  const CUDAHybridApplyDescriptor& d = descs[blockIdx.x];
+  const int left_leaf_index = d.left_leaf_index;
+  const int right_leaf_index = d.right_leaf_index;
+  const data_size_t num_data_in_leaf = d.num_data_in_leaf;
+  const uint32_t num_entries = static_cast<uint32_t>(d.num_blocks) + 1u;
+  data_size_t* left_buf = block_to_left_offset_buffer_base + d.block_offset_start;
+  data_size_t* right_buf = block_to_right_offset_buffer_base + d.block_offset_start;
+  const uint32_t per_thread = (num_entries + blockDim.x - 1) / blockDim.x;  // <= kPerThread (host gate)
+  const uint32_t begin = threadIdx.x * per_thread;
+  uint32_t left_sum[kPerThread];
+  uint32_t right_sum[kPerThread];
+#pragma unroll
+  for (int j = 0; j < kPerThread; ++j) {
+    const uint32_t e = begin + static_cast<uint32_t>(j);
+    const bool valid = static_cast<uint32_t>(j) < per_thread && e < num_entries && e > 0;
+    left_sum[j] = valid ? static_cast<uint32_t>(left_buf[e]) : 0u;
+    right_sum[j] = valid ? static_cast<uint32_t>(right_buf[e]) : 0u;
+  }
+  data_size_t old_left_start = 0;
+  data_size_t old_left_end = 0;
+  if (threadIdx.x == 0) {
+    old_left_start = cuda_leaf_data_start[left_leaf_index];
+    old_left_end = cuda_leaf_data_end[left_leaf_index];
+  }
+#pragma unroll
+  for (int j = 1; j < kPerThread; ++j) {
+    left_sum[j] += left_sum[j - 1];
+    right_sum[j] += right_sum[j - 1];
+  }
+  const uint32_t left_total = left_sum[kPerThread - 1];
+  const uint32_t right_total = right_sum[kPerThread - 1];
+  const uint64_t inclusive = ShufflePrefixSum<uint64_t>(
+    (static_cast<uint64_t>(left_total) << 32) | static_cast<uint64_t>(right_total), shared_mem_buffer);
+  const uint32_t left_inclusive = static_cast<uint32_t>(inclusive >> 32);
+  const uint32_t right_inclusive = static_cast<uint32_t>(inclusive);
+  if (threadIdx.x == blockDim.x - 1) {
+    totals[0] = left_inclusive;
+  }
+  __syncthreads();
+  const uint32_t to_left_total_count = totals[0];
+  const uint32_t left_offset = left_inclusive - left_total;
+  const uint32_t right_offset = right_inclusive - right_total + to_left_total_count;
+#pragma unroll
+  for (int j = 0; j < kPerThread; ++j) {
+    const uint32_t e = begin + static_cast<uint32_t>(j);
+    if (static_cast<uint32_t>(j) < per_thread && e < num_entries) {
+      left_buf[e] = static_cast<data_size_t>(left_sum[j] + left_offset);
+      right_buf[e] = static_cast<data_size_t>(right_sum[j] + right_offset);
+    }
+  }
+  if (threadIdx.x == 0) {
+    const data_size_t left_count = static_cast<data_size_t>(to_left_total_count);
+    const data_size_t right_count = num_data_in_leaf - left_count;
+    const data_size_t new_left_end = old_left_start + left_count;
+    cuda_leaf_data_end[left_leaf_index] = new_left_end;
+    cuda_leaf_num_data[left_leaf_index] = left_count;
+    cuda_leaf_data_start[right_leaf_index] = new_left_end;
+    cuda_leaf_data_end[right_leaf_index] = old_left_end;
+    cuda_leaf_num_data[right_leaf_index] = right_count;
+    level_smaller_counts[blockIdx.x] = left_count < right_count ? left_count : right_count;
+    if (split_info_mirror_base != nullptr) {
+      HybridWriteSplitCountsMirror(split_info_mirror_base + 18 * blockIdx.x, d, old_left_start, left_count,
+                                   right_count);
+    }
   }
 }
 
@@ -2339,7 +2461,6 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
                                                        const bool write_leaf_map,
                                                        const bool map_only) {
   const CUDAHybridApplyDescriptor* descs = cuda_apply_descs_.RawDataReadOnly();
-  (void)max_num_blocks;
   // flat 1D grid over the level's REAL chunk count (grid-stride in-kernel):
   // the old (largest leaf's blocks x num_splits) grid is mostly empty blocks
   // at skewed deep levels
@@ -2348,9 +2469,9 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
   constexpr int block_dim = SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
   // out buffer of this level == new main array after the caller's swap
   data_size_t* new_main_indices = cuda_out_data_indices_in_leaf_.RawData();
-  // the level is bracketed by device synchronizations (best-split readback before,
-  // FinishSplitBatch after), but wait on the last recorded copy event anyway so a
-  // still-in-flight per-split CopyDataIndicesKernel can never race the scratch
+  // the level is preceded by the best-split readback's device synchronize (and followed by FinishSplitBatch's,
+  // or, under split_counts_early, by its aggregate-event wait), but wait on the last recorded copy event anyway so
+  // a still-in-flight per-split CopyDataIndicesKernel can never race the scratch
   if (indices_copy_done_event_ != nullptr) {
     CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], indices_copy_done_event_, 0));
   }
@@ -2363,6 +2484,15 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
     split_info_mirror = pinned_split_info_device_;
   }
   split_info_mirror_written_ = split_info_mirror != nullptr;
+  // cuda_plan key split_counts_early: the aggregate kernel writes the staging instead of the tree-structure body
+  // (single GPU only: slots 16/17 are the global counts under NCCL)
+  int* aggregate_mirror = nullptr;
+  if (split_info_early_requested_ && split_info_mirror != nullptr && nccl_communicator_ == nullptr) {
+    aggregate_mirror = split_info_mirror;
+    split_info_mirror = nullptr;
+  }
+  split_info_early_requested_ = false;
+  split_info_early_written_ = aggregate_mirror != nullptr;
   // cuda_plan key apply_row_batch: each chunk of block_dim rows taken by block_dim / 4 threads of 4 rows
   constexpr int kApplyRows = 4;
   const bool apply_row_batch = FalcataPlan::Get().apply_row_batch;
@@ -2387,10 +2517,38 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
       cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
       cuda_data_index_to_leaf_index_.RawData(), nullptr, num_splits, total_flat_blocks);
   }
-  HybridAggregateBlockOffsetBatchKernel<<<num_splits, AGGREGATE_BLOCK_SIZE_DATA_PARTITION, 0, cuda_streams_[0]>>>(
-    descs, cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
-    cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
-    cuda_level_smaller_counts_.RawData(), nullptr);
+  // cuda_plan key aggregate_load_first: block sized to the largest split's num_blocks + 1 entries at most
+  // kAggregatePerThread per thread (a multiple of 32 threads up to AGGREGATE_BLOCK_SIZE_DATA_PARTITION); larger
+  // splits keep the original kernel. The fewest entries per thread whose block covers the largest split: 3 (more
+  // loads in flight, shorter add chains), else 6 (12 measured slower on the sibling lineage: more registers, half
+  // the threads)
+  constexpr int kAggregatePerThreadShort = 3;
+  constexpr int kAggregatePerThread = 6;
+  const int64_t max_entries = static_cast<int64_t>(max_num_blocks) + 1;
+  if (FalcataPlan::Get().aggregate_load_first &&
+      max_entries <= static_cast<int64_t>(AGGREGATE_BLOCK_SIZE_DATA_PARTITION) * kAggregatePerThread) {
+    const bool short_runs =
+      max_entries <= static_cast<int64_t>(AGGREGATE_BLOCK_SIZE_DATA_PARTITION) * kAggregatePerThreadShort;
+    const int per_thread = short_runs ? kAggregatePerThreadShort : kAggregatePerThread;
+    const int64_t needed = (max_entries + per_thread - 1) / per_thread;
+    const int threads = static_cast<int>(std::min<int64_t>(AGGREGATE_BLOCK_SIZE_DATA_PARTITION,
+      std::max<int64_t>(WARPSIZE, (needed + WARPSIZE - 1) / WARPSIZE * WARPSIZE)));
+    const auto kernel = short_runs ? HybridAggregateBlockOffsetLoadFirstKernel<kAggregatePerThreadShort> :
+                                     HybridAggregateBlockOffsetLoadFirstKernel<kAggregatePerThread>;
+    kernel<<<num_splits, threads, 0, cuda_streams_[0]>>>(
+      descs, cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
+      cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
+      cuda_level_smaller_counts_.RawData(), aggregate_mirror);
+  } else {
+    HybridAggregateBlockOffsetBatchKernel<<<num_splits, AGGREGATE_BLOCK_SIZE_DATA_PARTITION, 0, cuda_streams_[0]>>>(
+      descs, cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
+      cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
+      cuda_level_smaller_counts_.RawData(), aggregate_mirror, nullptr);
+  }
+  if (aggregate_mirror != nullptr) {
+    // FinishSplitBatch waits on this instead of the device (split_counts_early)
+    CUDASUCCESS_OR_FATAL(cudaEventRecord(aggregate_done_event_, cuda_streams_[0]));
+  }
   // cuda_plan keys apply_struct_fused / gap_copy_fused: the tree-structure update and the gap copy as extra flat ids
   // of the partition kernel. cuda_plan key final_map_only (map_only): only the row -> leaf map is written, not the
   // children's index windows (no partition, no gap copy below; the caller guarantees nothing reads them), by the
@@ -2561,7 +2719,7 @@ void CUDADataPartition::CaptureHybridGraphApplyKernels(
   HybridAggregateBlockOffsetBatchKernel<<<1, AGGREGATE_BLOCK_SIZE_DATA_PARTITION, 0, stream>>>(
     descs, cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
     cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
-    cuda_level_smaller_counts_.RawData(), gstate);
+    cuda_level_smaller_counts_.RawData(), nullptr, gstate);
   if (!AppendCapturedNode(stream, nodes)) return;
   roles->push_back(kHybridGraphNodeAggregate);
   HybridSplitInnerBatchKernel<1><<<dim3(1, 1), block_dim, 0, stream>>>(

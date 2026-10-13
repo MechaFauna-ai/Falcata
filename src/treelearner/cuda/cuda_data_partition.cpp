@@ -65,6 +65,9 @@ CUDADataPartition::~CUDADataPartition() {
   if (indices_copy_done_event_ != nullptr) {
     CUDASUCCESS_OR_FATAL(cudaEventDestroy(indices_copy_done_event_));
   }
+  if (aggregate_done_event_ != nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaEventDestroy(aggregate_done_event_));
+  }
   if (pinned_split_info_ != nullptr) {
     CUDASUCCESS_OR_FATAL(cudaFreeHost(pinned_split_info_));
   }
@@ -106,6 +109,7 @@ void CUDADataPartition::Init() {
   gpuAssert(cudaStreamCreate(&cuda_streams_[2]), __FILE__, __LINE__);
   gpuAssert(cudaStreamCreate(&cuda_streams_[3]), __FILE__, __LINE__);
   CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&indices_copy_done_event_, cudaEventDisableTiming));
+  CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&aggregate_done_event_, cudaEventDisableTiming));
 
   cuda_num_data_.InitFromHostVector(std::vector<data_size_t>{num_data_});
   use_bagging_ = false;
@@ -294,15 +298,27 @@ void CUDADataPartition::FinishSplitBatch(const int num_splits, std::vector<int>*
   // pageable sync D2H pays an extra driver staging round trip).
   const size_t num_ints = static_cast<size_t>(num_splits) * 18;
   split_info_mirror_requested_ = false;
+  split_info_early_requested_ = false;
   if (split_info_mirror_written_) {
     // cuda_plan key readback_fused: the level's tree-structure kernel wrote these ints into the mapped staging; one
     // device synchronize (every stream, as the default-stream copy waited for) and the host reads them
     split_info_mirror_written_ = false;
     CHECK_GE(pinned_split_info_size_, num_ints);
-    SynchronizeCUDADevice(__FILE__, __LINE__);
+    if (split_info_early_written_) {
+      // cuda_plan key split_counts_early: the aggregate kernel wrote them; wait for it alone (the partition kernel
+      // behind it may still run: ApplyInFlight tells the next consumer to wait on apply_done_event())
+      split_info_early_written_ = false;
+      CUDASUCCESS_OR_FATAL(cudaEventSynchronize(aggregate_done_event_));
+      apply_in_flight_ = true;
+    } else {
+      SynchronizeCUDADevice(__FILE__, __LINE__);
+      apply_in_flight_ = false;
+    }
     std::memcpy(out->data(), pinned_split_info_, num_ints * sizeof(int));
     return;
   }
+  split_info_early_written_ = false;
+  apply_in_flight_ = false;
   EnsurePinnedSplitInfoCapacity(num_ints);
   if (FalcataPlan::Get().readback_kernel && pinned_split_info_device_ != nullptr) {
     // cuda_plan key readback_kernel: a copy kernel on the same default stream, then that stream's sync (see the key)
