@@ -6039,166 +6039,82 @@ __device__ __forceinline__ void WarpFindBest(
   }
   }
   const uint32_t local_best_t = best_t;
-  if (STRIDED) {
-    // the same exact first maximum in integer compares: a lane holding a threshold has best_gain =
-    // current_gain - min_gain_shift with current_gain > min_gain_shift, so best_gain > 0 and not NaN (x > y gives
-    // x - y > 0 with gradual underflow; +inf only from overflow), and positive doubles order and compare equal
-    // exactly as their bit patterns do as unsigned integers; lanes without one are excluded by kNoThreshold
-    uint64_t best_bits = static_cast<uint64_t>(__double_as_longlong(best_gain));
+  // Cross-lane selection over the group's lanes (offsets G/2 .. 1). A 4-lane group's positions are one 8-position
+  // lane of the reference scan: the exact first maximum of (gain, then lower position). A warp's lanes are the
+  // reference's 8-position lanes, compared through OtherIsBetterWithTieBreak in the same pairing order. In integer
+  // compares (the 4-lane groups always, the warp with cuda_plan key find_select_int): a lane holding a threshold has
+  // best_gain = current_gain - min_gain_shift with current_gain > min_gain_shift, so best_gain > 0 and not NaN
+  // (x > y gives x - y > 0 with gradual underflow; +inf only from overflow), and positive doubles order and compare
+  // equal exactly as their bit patterns do as unsigned integers; lanes without one are excluded by kNoThreshold.
+  // OtherIsBetterWithTieBreak's tolerance is fmax(|a|, |b|) * 0, NaN when either gain is +inf, which makes it
+  // return false: kept as the kInfBits test on the warp.
+  const bool int_keys = STRIDED || select_int;
+  constexpr uint64_t kInfBits = 0x7ff0000000000000ull;
+  uint64_t best_bits = static_cast<uint64_t>(__double_as_longlong(best_gain));
 #pragma unroll
-    for (uint32_t off = G / 2; off > 0; off >>= 1) {
+  for (uint32_t off = G / 2; off > 0; off >>= 1) {
+    const uint32_t other_t = __shfl_xor_sync(mask, best_t, off);
+    if (int_keys) {
       const uint64_t other_bits = __shfl_xor_sync(mask, best_bits, off);
-      const uint32_t other_t = __shfl_xor_sync(mask, best_t, off);
       if (other_t != kNoThreshold &&
-          (best_t == kNoThreshold || other_bits > best_bits || (other_bits == best_bits && other_t < best_t))) {
-        best_bits = other_bits;
-        best_t = other_t;
-      }
-    }
-    best_gain = __longlong_as_double(static_cast<long long>(best_bits));  // NOLINT(runtime/int): the intrinsic's type
-  } else if (G == 32 && select_int) {
-    // cuda_plan key find_select_int: the two reductions below in integer compares (see the STRIDED branch: a lane
-    // holding a threshold has a positive non-NaN gain). OtherIsBetterWithTieBreak's tolerance is
-    // fmax(|a|, |b|) * 0, NaN when either gain is +inf, which makes it return false: kept as the kInfBits test.
-    constexpr uint64_t kInfBits = 0x7ff0000000000000ull;
-    uint64_t best_bits = static_cast<uint64_t>(__double_as_longlong(best_gain));
-#pragma unroll
-    for (uint32_t off = 4u; PPL == 1 && off > 0; off >>= 1) {
-      const uint64_t other_bits = __shfl_xor_sync(mask, best_bits, off);
-      const uint32_t other_t = __shfl_xor_sync(mask, best_t, off);
-      if (other_t != kNoThreshold &&
-          (best_t == kNoThreshold || other_bits > best_bits || (other_bits == best_bits && other_t < best_t))) {
-        best_bits = other_bits;
-        best_t = other_t;
-      }
-    }
-#pragma unroll
-    for (uint32_t off = 16; off >= (PPL == 1 ? 8u : 1u); off >>= 1) {
-      const uint64_t other_bits = __shfl_xor_sync(mask, best_bits, off);
-      const uint32_t other_t = __shfl_xor_sync(mask, best_t, off);
-      if (other_t != kNoThreshold &&
-          (best_t == kNoThreshold || (other_bits != kInfBits && best_bits != kInfBits &&
+          (best_t == kNoThreshold || ((G < 32 || (other_bits != kInfBits && best_bits != kInfBits)) &&
                                       (other_bits > best_bits || (other_bits == best_bits && other_t < best_t))))) {
         best_bits = other_bits;
         best_t = other_t;
       }
-    }
-    best_gain = __longlong_as_double(static_cast<long long>(best_bits));  // NOLINT(runtime/int): the intrinsic's type
-  } else if (G < 32 && select_int) {
-    // find_select_int for the 4- and 8-lane groups (find_pack_narrow's packed units, warp_find_narrow): the same
-    // exact first maximum of (gain, then lowest position) in integer compares of the positive gain bits (see the
-    // STRIDED branch)
-    uint64_t best_bits = static_cast<uint64_t>(__double_as_longlong(best_gain));
-#pragma unroll
-    for (uint32_t off = G / 2; off > 0; off >>= 1) {
-      const uint64_t other_bits = __shfl_xor_sync(mask, best_bits, off);
-      const uint32_t other_t = __shfl_xor_sync(mask, best_t, off);
-      if (other_t != kNoThreshold &&
-          (best_t == kNoThreshold || other_bits > best_bits || (other_bits == best_bits && other_t < best_t))) {
-        best_bits = other_bits;
-        best_t = other_t;
-      }
-    }
-    best_gain = __longlong_as_double(static_cast<long long>(best_bits));  // NOLINT(runtime/int): the intrinsic's type
-  } else if (G < 32 || PPL == 1) {
-    // exact first maximum of (gain, then lowest threshold) within each group of 8 positions
-#pragma unroll
-    for (uint32_t off = (G < 32 ? G / 2 : 4u); off > 0; off >>= 1) {
+    } else {
       const double other_gain = __shfl_xor_sync(mask, best_gain, off);
-      const uint32_t other_t = __shfl_xor_sync(mask, best_t, off);
       if (other_t != kNoThreshold &&
-          (best_t == kNoThreshold || other_gain > best_gain || (other_gain == best_gain && other_t < best_t))) {
+          (best_t == kNoThreshold || OtherIsBetterWithTieBreak<double>(other_gain, best_gain, other_t, best_t))) {
         best_gain = other_gain;
         best_t = other_t;
       }
     }
   }
-  // PPL == 1: groups g and g ^ 2, then g and g ^ 1 -- the 8-per-lane order with its empty lanes 4..31 skipped
-#pragma unroll
-  for (uint32_t off = 16; G == 32 && !select_int && off >= (PPL == 1 ? 8u : 1u); off >>= 1) {
-    const double other_gain = __shfl_xor_sync(mask, best_gain, off);
-    const uint32_t other_t = __shfl_xor_sync(mask, best_t, off);
-    if (other_t != kNoThreshold &&
-        (best_t == kNoThreshold || OtherIsBetterWithTieBreak<double>(other_gain, best_gain, other_t, best_t))) {
-      best_gain = other_gain;
-      best_t = other_t;
-    }
-  }
+  if (int_keys) best_gain = __longlong_as_double(static_cast<long long>(best_bits));  // NOLINT(runtime/int)
   if (best_t == kNoThreshold) {
     if (lane == 0) out->is_valid = false;
     return;
   }
-  if (STRIDED || select_int) {
-    // the winner lane (every lane of the group holds best_t) computes the left child's output and leaf gain and
-    // its partner lane the right child's from the winner's candidate values: the same expressions on the same
-    // inputs, issued once for both children instead of one after the other in one lane (non-strided: cuda_plan
-    // key find_select_int, the winner is the lane owning best_t's slot, lane * PPL + i, or the compaction's
-    // ballot; G even, so the partner lane winner ^ 1 is in the group)
-    const uint32_t winner = STRIDED ? best_t % static_cast<uint32_t>(G) :
-      compacted ? static_cast<uint32_t>(__ffs(__ballot_sync(mask, local_best_t == best_t)) - 1) :
-      best_t / static_cast<uint32_t>(PPL);
-    const double right_g = __shfl_sync(mask, best.sr_g, winner, G);
-    const double right_h = __shfl_sync(mask, best.sr_h, winner, G);
-    const data_size_t right_c = __shfl_sync(mask, best.rc, winner, G);
-    const bool is_winner = lane == winner;
-    if (is_winner || lane == (winner ^ 1u)) {
-      const double child_g = is_winner ? best.sl_g : right_g;
-      const double child_h = is_winner ? best.sl_h : right_h;
-      const data_size_t child_c = is_winner ? best.lc : right_c;
-      const double child_output = CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(child_g,
-        child_h, lambda_l1, lambda_l2, path_smooth, max_delta_step, child_c, parent_output);
-      const double child_gain = CUDALeafSplits::GetLeafGainGivenOutput<false>(child_g, child_h, lambda_l1,
-                                                                             lambda_l2, child_output);
-      if (is_winner) {
-        out->is_valid = true;
-        out->threshold = REVERSE ? static_cast<uint32_t>(task->num_bin - 2 - best_t) :
-                                   static_cast<uint32_t>(best_t + task->mfb_offset - shift);
-        out->gain = best_gain * task->penalty;
-        out->default_left = task->assume_out_default_left;
-        out->left_sum_gradients = best.sl_g;
-        out->left_sum_hessians = best.sl_h;
-        out->left_sum_of_gradients_hessians = best.slgh;
-        out->left_count = best.lc;
-        out->right_sum_gradients = best.sr_g;
-        out->right_sum_hessians = best.sr_h;
-        out->right_sum_of_gradients_hessians = best.srgh;
-        out->right_count = best.rc;
-        out->left_value = child_output;
-        out->left_gain = child_gain;
-      } else {
-        out->right_value = child_output;
-        out->right_gain = child_gain;
-      }
+  // The output record: the winner lane (the one holding best_t's slot: position % G strided, position / PPL
+  // blocked, or the compaction's ballot) computes the left child's output and leaf gain and its partner lane
+  // winner ^ 1 (G even, so in the group) the right child's from the winner's candidate values: the same expressions
+  // on the same inputs, issued once for both children instead of one after the other in one lane.
+  const uint32_t winner = STRIDED ? best_t % static_cast<uint32_t>(G) :
+    compacted ? static_cast<uint32_t>(__ffs(__ballot_sync(mask, local_best_t == best_t)) - 1) :
+    best_t / static_cast<uint32_t>(PPL);
+  const double right_g = __shfl_sync(mask, best.sr_g, winner, G);
+  const double right_h = __shfl_sync(mask, best.sr_h, winner, G);
+  const data_size_t right_c = __shfl_sync(mask, best.rc, winner, G);
+  const bool is_winner = lane == winner;
+  if (is_winner || lane == (winner ^ 1u)) {
+    const double child_g = is_winner ? best.sl_g : right_g;
+    const double child_h = is_winner ? best.sl_h : right_h;
+    const data_size_t child_c = is_winner ? best.lc : right_c;
+    const double child_output = CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(child_g,
+      child_h, lambda_l1, lambda_l2, path_smooth, max_delta_step, child_c, parent_output);
+    const double child_gain = CUDALeafSplits::GetLeafGainGivenOutput<false>(child_g, child_h, lambda_l1,
+                                                                           lambda_l2, child_output);
+    if (is_winner) {
+      out->is_valid = true;
+      out->threshold = REVERSE ? static_cast<uint32_t>(task->num_bin - 2 - best_t) :
+                                 static_cast<uint32_t>(best_t + task->mfb_offset - shift);
+      out->gain = best_gain * task->penalty;
+      out->default_left = task->assume_out_default_left;
+      out->left_sum_gradients = best.sl_g;
+      out->left_sum_hessians = best.sl_h;
+      out->left_sum_of_gradients_hessians = best.slgh;
+      out->left_count = best.lc;
+      out->right_sum_gradients = best.sr_g;
+      out->right_sum_hessians = best.sr_h;
+      out->right_sum_of_gradients_hessians = best.srgh;
+      out->right_count = best.rc;
+      out->left_value = child_output;
+      out->left_gain = child_gain;
+    } else {
+      out->right_value = child_output;
+      out->right_gain = child_gain;
     }
-    return;
-  }
-  const uint32_t winner_lane = compacted ?
-    static_cast<uint32_t>(__ffs(__ballot_sync(mask, local_best_t == best_t)) - 1) : best_t / static_cast<uint32_t>(PPL);
-  if (lane == winner_lane) {
-    // this lane's local best is the global best: its candidate values are in `best`
-    out->is_valid = true;
-    out->threshold = REVERSE ? static_cast<uint32_t>(task->num_bin - 2 - best_t) :
-                               static_cast<uint32_t>(best_t + task->mfb_offset - shift);
-    out->gain = best_gain * task->penalty;
-    out->default_left = task->assume_out_default_left;
-    const double left_output = CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(best.sl_g,
-      best.sl_h, lambda_l1, lambda_l2, path_smooth, max_delta_step, best.lc, parent_output);
-    const double right_output = CUDALeafSplits::CalculateSplittedLeafOutput<false, false>(best.sr_g,
-      best.sr_h, lambda_l1, lambda_l2, path_smooth, max_delta_step, best.rc, parent_output);
-    out->left_sum_gradients = best.sl_g;
-    out->left_sum_hessians = best.sl_h;
-    out->left_sum_of_gradients_hessians = best.slgh;
-    out->left_count = best.lc;
-    out->right_sum_gradients = best.sr_g;
-    out->right_sum_hessians = best.sr_h;
-    out->right_sum_of_gradients_hessians = best.srgh;
-    out->right_count = best.rc;
-    out->left_value = left_output;
-    out->left_gain = CUDALeafSplits::GetLeafGainGivenOutput<false>(best.sl_g, best.sl_h, lambda_l1, lambda_l2,
-                                                                  left_output);
-    out->right_value = right_output;
-    out->right_gain = CUDALeafSplits::GetLeafGainGivenOutput<false>(best.sr_g, best.sr_h, lambda_l1, lambda_l2,
-                                                                   right_output);
   }
 }
 
