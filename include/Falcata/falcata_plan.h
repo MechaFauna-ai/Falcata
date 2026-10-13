@@ -251,33 +251,6 @@ struct FalcataPlan {
   // the block kernel. CUDA only. Bit-identical. Measured:
   // +6.3% numerai-deep, +22.7% year-deep.
   bool warp_find = true;            // key: warp_find
-  // warp_find on tasks with at most 8 bins: one scan position per lane instead
-  // of eight in lane 0, so the threshold unpack and fp64 gain of all positions
-  // issue once per warp, not once per position. Bit-identical (same positions,
-  // same expressions, same first-maximum selection as lane 0's strict scan).
-  bool warp_find_narrow = true;     // key: warp_find_narrow
-  // warp_find for tasks of at most 32 scan positions (few-bin features): one
-  // position per lane instead of 8, so the fp64 unpack and gain math of a
-  // feature with a handful of bins runs across lanes rather than serially in
-  // lane 0; when every task fits 8 positions, a warp instead serves eight
-  // (task, leaf) items with 4 lanes x 2 positions each. The selection
-  // reproduces the 8-per-lane winner exactly (exact first maximum within each
-  // 8 positions, then the same tolerance tie-break between 8-position groups
-  // in the same order). Bit-identical.
-  bool warp_find_spread = true;     // key: warp_find_spread
-  // warp_find_spread's 4-lane groups (every task at most 8 scan positions)
-  // with the positions strided over the lanes (lane l holds positions l and
-  // l + 4) instead of blocked (2l and 2l + 1): a task with at most 4
-  // candidate thresholds (a 5-bin feature) then has all of them in the first
-  // of the two per-lane slots, so a warp whose eight items all fit skips the
-  // second slot's fp64 unpack and gain math instead of issuing it with half
-  // its lanes masked off. The gain loop reuses the prune's unpack of each
-  // slot, and the winner's left and right child outputs are computed side by
-  // side in two lanes. Prefixes are the same wrapping integer sums, every
-  // value comes from the same expressions on the same inputs, and the winner
-  // is the same exact first maximum (gain, then lower threshold).
-  // Bit-identical.
-  bool warp_find_strided = true;    // key: warp_find_strided
   // the G=32 generic warp-find template (one dataset-wide task fails the all-narrow / all-spread tests, e.g. a
   // mix of 2-bin and 200-bin columns): WarpFindBest's per-task runtime PPL choice adds one tier per 32 positions
   // (PPL = ceil(num_positions / 32), 2..7) between the existing PPL=1 (<= 32) and PPL=8 (<= 256), so a task whose
@@ -793,9 +766,6 @@ struct FalcataPlan {
     if (key == "colmajor_direct") return &colmajor_direct;
     if (key == "tiled_fill") return &tiled_fill;
     if (key == "warp_find") return &warp_find;
-    if (key == "warp_find_narrow") return &warp_find_narrow;
-    if (key == "warp_find_spread") return &warp_find_spread;
-    if (key == "warp_find_strided") return &warp_find_strided;
     if (key == "warp_find_mid_ppl") return &warp_find_mid_ppl;
     if (key == "find_prune_fp32") return &find_prune_fp32;
     if (key == "find_select_int") return &find_select_int;

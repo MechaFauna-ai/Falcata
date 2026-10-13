@@ -175,10 +175,8 @@ void CUDABestSplitFinder::UpdateWarpFindEligibility() {
       if (t.is_categorical || t.skip_default_bin || t.num_bin > 256 || t.mfb_offset > 1) return false;
       return t.reverse || t.na_as_missing;
     });
-  warp_find_all_narrow_ = warp_find_eligible_ &&
-    std::all_of(split_find_tasks_.begin(), split_find_tasks_.end(), [](const SplitFindTask& t) { return t.num_bin <= 8; });
-  // longest scan (WarpFindBest's positions 0 .. num_bin - mfb_offset + shift - 1): warp_find_spread packs four
-  // (task, leaf) items per warp when every task fits 8 positions
+  // longest scan (WarpFindBest's positions 0 .. num_bin - mfb_offset + shift - 1): the level launch packs eight
+  // (task, leaf) items per warp (4-lane groups) when every task fits 8 positions
   warp_find_max_positions_ = 0;
   warp_find_task_narrow_.assign(split_find_tasks_.size(), 0);
   warp_find_num_narrow_ = 0;

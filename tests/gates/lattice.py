@@ -546,7 +546,6 @@ def build_cells():
         "root_hist_l2_prefetch",
         "colmajor_align",
         "root_hist_short_blocks",
-        "warp_find_strided",
         "sync_copy_batched",
         "fix_subtract_fused",
         "apply_struct_fused",
@@ -625,26 +624,12 @@ def build_cells():
         {**ff15, "cuda_plan": night3_off},
         equal_to="sampledwide-mixbins/quant-ff15",
     )
-    # the tiny-gradient regime (4-bit, 5 bins, feature_fraction 0.1, 500-row leaves) over 150 rounds, and the NaN
-    # scans with an unstored bin 0 (the strided finder's shifted position mapping), shallow and deep
-    for key in ["warp_find_strided", "fix_subtract_fused", "sync_copy_batched"]:
+    # the tiny-gradient regime (4-bit, 5 bins, feature_fraction 0.1, 500-row leaves) over 150 rounds
+    for key in ["fix_subtract_fused", "sync_copy_batched"]:
         cell(
             f"tinygrad/flip-{key}", "tinygrad", {"cuda_plan": f"auto,{key}:off"}, rounds=150, equal_to="tinygrad/quant"
         )
     cell("tinygrad/flip-night3", "tinygrad", {"cuda_plan": night3_off}, rounds=150, equal_to="tinygrad/quant")
-    for key in ["warp_find_strided"]:
-        cell(
-            f"missing-mfb0-dense/flip-{key}",
-            "missing-mfb0-dense",
-            {"cuda_plan": f"auto,{key}:off"},
-            equal_to="missing-mfb0-dense/quant",
-        )
-        cell(
-            f"missing-mfb0-dense/flip-{key}-deep",
-            "missing-mfb0-dense",
-            {**deep, "cuda_plan": f"auto,{key}:off"},
-            equal_to="missing-mfb0-dense/quant-deep",
-        )
     # --- the generic warp split finder on mixed and wide scans ------------------------------------------------ #
     # warp_find_mid_ppl runs a task of 33..256 scan positions at ceil(positions / 32) per lane instead of 8;
     # find_prune_fp32 prunes from fp32 bounds of the integer prefix (one exact verify per lane, an exact screen, a
