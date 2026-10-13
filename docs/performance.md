@@ -1247,6 +1247,22 @@ A sixth overnight agentic search took about 8% off that round with nine `cuda_pl
 - **What each key is worth**, switched off alone in this branch's build (same binary, 3000 rounds timed from 200, 3 pairs; measured while `pair_code5_epilogue` was still on): `pair_code5_slots` (and with it `pair_code5_tall`) 1.042x, `apply_inner_rows` 1.019x, `pair_code5_flat` (and with it the epilogue) 1.017x, `readback_fused` 1.017x, the three tree-start keys together 1.011x, `pair_code5_tall` 1.008x, `apply_genbit_rows` 1.006x.
 - **Reach:** the four construct keys run only on the code view (§10d: a 4-bit compact view under feature sampling with at most 32 joint cells per byte pair). The other six run on every hybrid level-batched training: the evaluator's five guard workloads, none of which takes the code view, were 1.02-1.07x faster per round (3 pairs each).
 
+## 10g. The pair-code view at 6 bits (`pair_code_wide`)
+
+The code view of §10d (and the code-word construct of §10e over it) is taken only where every byte's joint table has at most 32 cells. A 6-bin column (5 values and a missing-value bin, as in Numerai's data with NaNs) paired with another gives 36 cells, and such a tree used to fall back to the nibble view and the per-byte construct.
+
+**The 6-bit view (`pair_code_wide`, default on, bit-identical).** Where the largest joint table of the tree's sampled columns has at most 64 cells and the 5-bit view does not apply, the fused fill writes each byte's cell index as a 6-bit code, five to a word, through its generic scalar pack (the dp4a packs stay 5-bit). It is taken only where the padded 6-bit row is still smaller than the nibble row (rows of more than ~150 bytes; at ~120 bytes the 32-byte padding makes it larger). The code-word construct, its branch-free adds (the dummy cells past the joint tables are sized to the width) and its flat flush are compiled for both widths; the per-byte code gather stays 5-bit only (a 6-bit tree reads the nibble view there). Same cell per byte, same gradient, same marginal rule. Lattice: sampledwide and sampledwide-mixbins at feature fraction 0.3 (every tree takes the 6-bit view), fingerprints recorded with master's nibble-view build, with the key off, the branchy adds and the per-slot flush.
+
+Switched off against on in the same build (T = first call + steady ms × 29999; 2 interleaved pairs, 3 for the second figures):
+
+| cell | `pair_code_wide` |
+|---|---|
+| numerai53 with NaNs, deep, stochastic | 1.106, 1.157 (3 pairs; 4.99 → 4.49 ms per round) |
+| numerai53 example, stochastic (shallow, with NaNs; 300 rounds timed from 100) | 1.065 (3 pairs) |
+| numerai53 benchmark split, covtype, higgs, few-bin, NaN-bin, epsilon-like | 0.998-1.002 (not engaged) |
+
+Against master (a65d34e8; 8 cells, 2 pairs + 1 re-timed pair each): 1.010x over the cells, numerai53 with NaNs 1.103x, no cell below its band; the models are md5-identical on every run.
+
 ---
 
 ## Multi-GPU: level-batched NCCL all-reduce
