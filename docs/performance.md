@@ -679,7 +679,9 @@ bit-identical in every cell):
   are covered whether or not their most-frequent bin is stored; when bin 0 is
   not (non-negative data), the forward scan rebuilds it from the leaf total
   as the block kernel does. One ineligible feature keeps the whole dataset on
-  the block kernel. CUDA only. Bit-identical.
+  the block kernel. CUDA only. Bit-identical. Two tiers by scan width, chosen
+  per task with no key (§7c): tasks of at most 8 scan positions run eight per
+  warp as 4-lane groups, wider tasks a warp each.
 - **`row_batch`** — the batched quantized construct walks a leaf's rows
   through a dependent chain (row index, then the packed gradient and the bin
   byte at that index) and was latency-bound on it: ~92% occupancy but ~20% of
@@ -838,20 +840,33 @@ is off under `auto`; with `row_batch:off` it engages for quantized runs of
 unsupported shapes (graph capture, speculative levels, masked trees, wide
 partitions) fall back to AOT automatically.
 
-## 7c. The generic warp split finder on mixed-bin and wide-bin data
+## 7c. The warp split finder's two tiers, on mixed-bin and wide-bin data
 
-`warp_find` (§7) splits a dataset's quantized levels one warp per (feature, leaf). Where every task fits 8 scan
-positions (Numerai's 5- and 6-bin columns) the 4- and 8-lane kernels run; one task wider than that sends the whole
-dataset to the generic 32-lane kernel: covtype's 2-bin and 255-bin columns, higgs- and year-like continuous floats,
-an epsilon-like 40-bin shape. There the cost was fp64 work per scan position, at 1/64 rate on the RTX 5090:
-covtype's find kernel was 41% of its round, higgs' 16% (nsys).
+`warp_find` (§7) splits a dataset's quantized levels with one 32-lane kernel family, `WarpFindBest`, in two tiers
+picked per task by its scan width (positions 0 .. bins − stored-most-frequent-bin offset + NaN shift − 1), with no
+`cuda_plan` key:
 
-An agentic search scored across eight datasets and training regimes (`jit1`: four named, four drawn from a
-generator) added five `cuda_plan` keys to that kernel, all default on and bit-identical (identity keys in
-`ablation.py`, flip cells in the lattice):
+- **Few-position tier** (at most 8 positions: Numerai's 5- and 6-bin columns, 2-bin indicators): eight tasks per
+  warp as 4-lane groups, 2 positions per lane, strided over the lanes (lane `l` holds `l` and `l + 4`), so a 5-bin
+  task's candidates fill one fp64 slot and warps skip the other; the exact prune's unpack is reused by the gain loop;
+  the selection is an exact first maximum in integer compares of the gain bits.
+- **Wide tier** (more than 8 positions: covtype's 255-bin columns, higgs- and year-like floats, an epsilon-like 40-bin
+  shape, a 12-bin column): one warp per task, `warp_find_mid_ppl`'s ceil(positions / 32) positions per lane (at
+  least 2), with the five keys below.
+- A dataset that mixes both (covtype: 44 binary and 10 numeric columns) runs them in **one launch**: per tree the
+  used tasks are ordered narrow first (eight per warp), then wide (a warp each); a dataset of one kind keeps its
+  used-task list as is. The level kernel is instantiated twice (with and without wide units, so the few-position
+  datasets do not carry the wide code's registers and shared memory), `WarpFindBest` 32 times (scan direction ×
+  16/32-bit histograms × 8 tier/PPL shapes), down from 5 kernels and 44 `WarpFindBest` instances.
+  `FALCATA_DEBUG=diag` names the tier: `split finder: warp kernel for this tree's quantized levels (tier: wide)`.
 
-- **`warp_find_mid_ppl`:** a task runs ceil(positions / 32) positions per lane (1 to 8) instead of 8 for every task
-  over 32 positions.
+In the wide tier the cost was fp64 work per scan position, at 1/64 rate on the RTX 5090: covtype's find kernel was
+41% of its round, higgs' 16% (nsys). An agentic search scored across eight datasets and training regimes (`jit1`: four
+named, four drawn from a generator) added keys to that tier, all default on and bit-identical (identity keys in
+`ablation.py`, flip cells in the lattice, flip tests in `test_warp_find.py`):
+
+- **`warp_find_mid_ppl`:** a task runs ceil(positions / 32) positions per lane (2 to 8) instead of 8 for every
+  task.
 - **`find_prune_fp32`:** the prune bounds come from the prefix's int32 halves in fp32; each lane offers one lower
   bound, verified exactly before it prunes; an exact-safe screen drops positions that fail a gate by a margin, an
   empty bin is skipped (it cannot beat its neighbour), and the exact fp64 gains run over a per-lane work list of
@@ -861,13 +876,28 @@ generator) added five `cuda_plan` keys to that kernel, all default on and bit-id
   fp32 values are within 2^-22 of the exact doubles), instead of one position per lane verified with the exact fp64
   unpack: the prune issues no fp64 at all and its threshold is the largest valid bound of the warp. A position that
   is not sure sets no bound; the exact gain loop decides it as before.
-- **`find_select_int`:** the cross-lane best-split reductions compare the gains' bit patterns as integers, and the
-  winner's lane and its partner compute the two children side by side.
+- **`find_select_int`:** the cross-lane best-split reduction compares the gains' bit patterns as integers (keeping
+  the fp64 tie-break's rule that an infinite gain never wins).
 - **`find_compact_survivors`:** every lane's survivors go into one per-warp shared list (9 KB of static shared
   memory per 128-thread block) and the warp takes them 32 at a time: usually one round of the exact gain instead of
   as many as its busiest lane holds.
-- `find_pack_narrow` (default off) runs tasks of at most 8 positions four per warp inside the same launch:
-  covtype's deep-level find launches shed 23%, but those levels are bound by host issue, so the round did not move.
+
+Both tiers share one body per piece: one exact gain-and-compare block, one cross-lane reduction (offsets G/2 .. 1,
+integer or fp64 keys), one output record (the winner lane and its partner compute the two children side by side),
+one load routine; the strided layout is a compile-time property of the 4-lane tier's scan and prune.
+
+**Removed keys** (2026-10, `kevo/unify_find`; each removal measured on the build before it, same binary, key off vs
+on, ratio = T(off) / T(on) at 30000 rounds, 2 pairs unless noted, models identical in every run):
+
+| key | what it switched | decision | measurement |
+|---|---|---|---|
+| `warp_find_narrow` | 8-lane groups (one position per lane) for datasets whose tasks all have ≤ 8 bins | removed: the few-position tier covers them | reachable only with `warp_find_spread` off; that launch measured below |
+| `warp_find_spread` | the 4-lane tier for ≤ 8 positions; one position per lane for ≤ 32 on the 32-lane kernel | the 4-lane tier is the tier choice; the one-per-lane wide tier is gone (2 per lane) | numerai-deep 1.012, numerai-nan 1.011 (vs the 8-lane launch); ≤ 32-position tasks, T(2 per lane) / T(1 per lane): covtype 1.006, mixwide 0.990, a 24-bin generator cell 1.000 |
+| `warp_find_strided` | the 4-lane groups' positions strided instead of blocked | strided kept as the only layout | numerai-deep 1.007, numerai-nan 1.011 |
+| `find_loads_batched` | the 4-lane tier's loads in dependency levels | removed: one load routine for both tiers | numerai-deep 0.9985, numerai-nan 0.9981 (neutral) |
+| `find_pack_narrow` | (default off) a mixed dataset's ≤ 8-position tasks as 8-lane groups, four per warp | made the default with no key, as the 4-lane tier's groups (eight per warp) | key on vs off: mixwide 1.056, and 1.038 at 4 pairs (every on-run faster), covtype 1.006, a hidden#1-like 4-value shape with 10% float columns 0.999; the 4-lane version vs no packing: mixwide 1.033 (4 pairs) |
+
+(mixwide: the lattice's `mixwidth` columns ×4, 1M rows, 1023 leaves; `runs/integrate_master/unify_find_cells.py`.)
 
 | (default plan, tuner on, rounds 100.. timed; per round) | master (3d72b5c5) | this branch | |
 |---|---|---|---|
@@ -887,8 +917,8 @@ generator) added five `cuda_plan` keys to that kernel, all default on and bit-id
   code: its per-lane gain work list is `find_prune_fp32`'s, `find_compact_survivors` goes further; a tighter bound
   margin (2^-16 instead of 2e-4) was 1.000x on the 40-bin shape (5 pairs) and the sure prune on tasks of at most
   32 positions (covtype's binary columns) 1.002x on covtype; neither is a key.
-- **Datasets whose tasks all fit 8 positions** (Numerai, the 4- and 6-bin generator shapes) never reach this
-  kernel and run at master's speed. The guard workloads: year deep 1.32x, missing deep 1.23x, covtype 1.20x, higgs
+- **Datasets whose tasks all fit 8 positions** (Numerai, the 4- and 6-bin generator shapes) never reach the wide
+  tier and run at master's speed. The guard workloads: year deep 1.32x, missing deep 1.23x, covtype 1.20x, higgs
   1.09x, numerai53-example 1.00x per round.
 
 ## 7d. The non-quantized finder and fix after CPU bit-parity
@@ -1164,7 +1194,7 @@ A third overnight agentic search took about 12% off that round with nineteen `cu
 - Fill 1.50 → 1.33 ms per round, at 83% of DRAM: the rate a plain device-to-device copy of the same bytes reaches.
 
 **Level split search (`warp_find_strided`, `find_loads_batched`, `sync_copy_batched`).**
-- The 4-lane quantized finder holds positions `l` and `l + 4` per lane, so a 5-bin task's candidates fill one fp64 slot and warps skip the other; it reuses the prune's unpack and splits the child outputs over two lanes. Find 161 → 94 µs per round.
+- The 4-lane quantized finder holds positions `l` and `l + 4` per lane, so a 5-bin task's candidates fill one fp64 slot and warps skip the other; it reuses the prune's unpack and splits the child outputs over two lanes. Find 161 → 94 µs per round. (Both finder keys are gone since: the strided layout is the few-position tier itself, and the batched loads measured neutral per round; §7c.)
 - The level sync, a single block's latency chain, loads its winner whole before storing it. When every gain is finite, it reduces on integer keys in the fp64 tie-break's order (the tie tolerance is 0). Sync 82 → 28 µs per round.
 
 **Fewer level kernels (`fix_subtract_fused`, `apply_struct_fused`, `gap_copy_fused`).**
