@@ -50,6 +50,9 @@ CUDASingleGPUTreeLearner::~CUDASingleGPUTreeLearner() {
   if (readback_staging_ != nullptr) {
     cudaFreeHost(readback_staging_);
   }
+  if (tree_record_done_event_ != nullptr) {
+    cudaEventDestroy(tree_record_done_event_);
+  }
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   hybrid_graph_cache_.clear();
   if (pinned_hybrid_graph_state_ != nullptr) {
@@ -1738,11 +1741,39 @@ void CUDASingleGPUTreeLearner::EnqueueLevelHistogramsAndFindVector(
     cuda_hybrid_pair_descs_.RawDataReadOnly(), num_pairs, plane_slab, quant);
 }
 
+void CUDASingleGPUTreeLearner::WaitForInFlightApply() {
+  if (!cuda_data_partition_->ApplyInFlight()) {
+    return;
+  }
+  // cuda_plan key split_counts_early: the previous level's readback waited only for its aggregate kernel, so two
+  // orderings its device synchronize gave are restored by events here. (1) The histogram stream (construct, fix,
+  // subtract; the level's find and sync kernels wait on its subtract_done event) waits for the partition kernels
+  // (apply_done_event, recorded after the level's last apply kernel). (2) The best-split finder's stream waits for the
+  // previous level's tree record (tree_record_done_event_, recorded on the tree stream after its last SplitBatch /
+  // SplitCategorical): the record reads the split leaves' cuda_leaf_best_split_info_ entries, which this level's
+  // sync kernel overwrites for the same left-child leaf indices.
+  CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_histogram_constructor_->hist_stream(),
+                                           cuda_data_partition_->apply_done_event(), 0));
+  CHECK(tree_record_done_event_ != nullptr);
+  cuda_best_split_finder_->WaitOnCatSlabConsumers(nullptr, tree_record_done_event_);
+  cuda_data_partition_->ClearApplyInFlight();
+}
+
+void CUDASingleGPUTreeLearner::RecordTreeRecordDone(const CUDATree* tree) {
+  if (tree_record_done_event_ == nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&tree_record_done_event_, cudaEventDisableTiming));
+  }
+  CUDASUCCESS_OR_FATAL(cudaEventRecord(tree_record_done_event_, tree->tree_stream()));
+}
+
 void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
     const std::vector<HybridPendingPair>& pairs,
     CUDALeafSplitsStruct* vec_plane_slab) {
   const int num_pairs = static_cast<int>(pairs.size());
   if (num_pairs <= 0) {
+    // nothing to search, but an in-flight apply is still consumed here (a non-final level always yields pairs today,
+    // so this only keeps apply_in_flight_ from outliving the level if that changes)
+    WaitForInFlightApply();
     return;
   }
   global_timer.Start("CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch");
@@ -1859,6 +1890,9 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
     cuda_hybrid_pair_descs_.RawData(), host_hybrid_pair_descs_.data(),
     static_cast<size_t>(num_pairs), cuda_histogram_constructor_->hist_stream(),
     __FILE__, __LINE__);
+  // the previous level's partition and tree record, where its readback did not wait for them (split_counts_early);
+  // after the descriptor upload above, which reads no partition output and so goes ahead of the wait
+  WaitForInFlightApply();
   if (vec_num_targets_ > 1) {
     CHECK(vec_plane_slab != nullptr);
     EnqueueLevelHistogramsAndFindVector(num_pairs, max_num_data_in_smaller_leaf,
@@ -1929,7 +1963,7 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
 }
 
 void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearchSpeculative(const CUDATree* tree,
-    const std::vector<HybridAppliedSplit>& applied) {
+    const std::vector<HybridAppliedSplit>& applied, cudaEvent_t tree_record_done) {
   const int num_pairs = static_cast<int>(applied.size());
   if (num_pairs <= 0) {
     return;
@@ -1991,6 +2025,11 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearchSpeculative(const CUDA
     max_smaller_leaf_bound, /*any_pair_needs_bit_change_copy=*/false,
     cuda_data_partition_->level_smaller_leaf_counts());
   cuda_best_split_finder_->WaitOnCatSlabConsumers(cat_consumed_default_event_, cat_consumed_tree_event_);
+  // the level's tree record (SplitBatchKernel on the tree stream) reads cuda_leaf_best_split_info_[parent], and the
+  // sync kernel FindBestSplitsForLevel launches on the finder's stream overwrites that entry for the left child (the
+  // parent's index); the cat_consumed_* events above are re-recorded only on categorical levels, and no device
+  // synchronize separates the two in this flow, so the finder's stream waits for the record here
+  cuda_best_split_finder_->WaitOnCatSlabConsumers(nullptr, tree_record_done);
   cuda_best_split_finder_->FindBestSplitsForLevel(
     cuda_hybrid_pair_descs_.RawDataReadOnly(), num_pairs, nullptr, nullptr);
   global_timer.Stop("CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch");
@@ -2728,9 +2767,22 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
     std::vector<HybridAppliedSplit> applied;
     if (use_batched_level_apply) {
       if (readback_fused) {
-        cuda_data_partition_->RequestSplitInfoMirror();
+        // cuda_plan key split_counts_early: a level followed by another level's search (the readback's only consumer
+        // before the next device synchronize is EnqueueLevelBestSplitSearch, which orders the histogram stream
+        // behind the partition); the final level keeps the full synchronize (its tree readback prefetch and the
+        // tree end rely on it)
+        if (readback_plan.split_counts_early && !final_partial_level) {
+          cuda_data_partition_->RequestSplitInfoEarly();
+        } else {
+          cuda_data_partition_->RequestSplitInfoMirror();
+        }
       }
       ApplyLevelBatched(tree, splittable, &applied, final_partial_level);
+      if (readback_fused && readback_plan.split_counts_early && !final_partial_level) {
+        // cuda_plan key split_counts_early: every record kernel of the level is on the tree stream by now; the next
+        // level's search orders the finder's stream behind this (EnqueueLevelBestSplitSearch)
+        RecordTreeRecordDone(tree);
+      }
     } else {
       applied.reserve(splittable.size());
       size_t slot_id = 0;
@@ -2857,9 +2909,12 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefixOneSync(CUDATree* tree) {
       prefix_final_leaves_before_ = leaves_before_level;
       break;
     }
+    // every record kernel of the level (SplitBatch, SplitCategorical) is on the
+    // tree stream by now: the children's sync kernel waits for them
+    RecordTreeRecordDone(tree);
     // speculative: the children's search goes out before their statistics are
     // host-known; the next iteration's readback collects both
-    EnqueueLevelBestSplitSearchSpeculative(tree, applied);
+    EnqueueLevelBestSplitSearchSpeculative(tree, applied, tree_record_done_event_);
     pending.swap(applied);
   }
   if (num_splits == 0) {
@@ -3746,8 +3801,10 @@ void CUDASingleGPUTreeLearner::TrainSelectiveOneSync(CUDATree* tree) {
     }
     ApplyLevelBatchedSelective(&applied);
     // speculative: the children's search goes out before their statistics are
-    // host-known; the next iteration's readback collects both
-    EnqueueLevelBestSplitSearchSpeculative(tree, applied);
+    // host-known; the next iteration's readback collects both. Nothing is
+    // recorded on the tree stream here (SelectiveFinalize records the tree
+    // after the loop), so the sync kernel has no record to wait for.
+    EnqueueLevelBestSplitSearchSpeculative(tree, applied, nullptr);
     pending.swap(applied);
   }
 }

@@ -385,6 +385,21 @@ calloc is left, and it measures 1.01x [0.95, 1.08]: the zero-fill costs construc
 (presumably because page-locking kept the group-creation threads waiting anyway). The upload stream is worth 1.03x
 [1.01, 1.04] on top of the rest.
 
+**The int8 binning kernel's reads (`construct_tile_bin`, default on).** The bin kernel reads row-major input one
+element per thread at a row stride (one thread per row pair and feature group), so on int8 input a warp fetched 32
+sectors for 32 useful bytes: about 1.04 s of GPU time per Numerai construct for 19.4 GB of input. For row-major int8 /
+uint8 input whose feature groups are one column each (the LUT encode), a block of 256 threads now stages 64 rows × 128
+columns in shared memory with coalesced reads (a warp walks consecutive columns of one row), then encodes each
+(column, row pair) from shared memory and writes the group's output exactly as the gather kernel does; other inputs keep
+the gather kernel. Kernel 1.04 s → 0.04 s (the search's nsys). Same binary, key off against on, numerai53bench-construct
+(in-RAM int8, 5.46M × 3,555; constructs 2-4 of each process timed, 3 interleaved pairs): 3.77 s → 3.63 s, 1.038x; the
+saved binary and the 50-round model are md5-identical in every construct and to master's. Lattice: int8wide (400
+columns: three full tiles and a partial one) with the key off. The tile's rows and the block's threads are keys,
+`construct_tile_rows` (default 64, an even number up to 384: the tile is 128 × rows bytes of shared memory, within the
+48 KB every device grants without opt-in) and `construct_tile_threads` (default 256, a power of two in [32, 1024]);
+the 128 columns are not: one 128-byte line of an int8 input row, the unit the coalesced reads fetch. Every value bins
+the same bytes (each (column, row pair) is encoded once, whatever the tile).
+
 **Construction from host arrays: the host work around the binner.** A first construct in a process of epsilon
 (400k × 2,000 float32, in the page cache) took 2.8-3.4 s, and the binner was 0.43 s of it: sampling took 0.9 s, bin
 finding 1.1-1.5 s, and the first CUDA call, which creates the context, 0.13-0.2 s. A float matrix with a categorical
@@ -1292,6 +1307,47 @@ A sixth overnight agentic search took about 8% off that round with nine `cuda_pl
 - **The same model on every run:** tree md5 `1c68bf82…` at 30k trees, holdout corr 0.0239, sharpe 1.40. Switching any one key, any group, or all ten trains the same model.
 - **What each key is worth**, switched off alone in this branch's build (same binary, 3000 rounds timed from 200, 3 pairs; measured while `pair_code5_epilogue` was still on): `pair_code5_slots` (and with it `pair_code5_tall`) 1.042x, `apply_inner_rows` 1.019x, `pair_code5_flat` (and with it the epilogue) 1.017x, `readback_fused` 1.017x, the three tree-start keys together 1.011x, `pair_code5_tall` 1.008x, `apply_genbit_rows` 1.006x.
 - **Reach:** the four construct keys run only on the code view (§10d: a 4-bit compact view under feature sampling with at most 32 joint cells per byte pair). The other six run on every hybrid level-batched training: the evaluator's five guard workloads, none of which takes the code view, were 1.02-1.07x faster per round (3 pairs each).
+
+## 10f. The level apply's aggregate and split-info readback (`aggregate_load_first`, `split_counts_early`)
+
+Two keys from the sixth search's partition candidates, ported onto the master after §10e and kept because a same-binary key-off A/B gains beyond the noise band on at least one shape without losing on any other. Both are default on and bit-identical (lattice flip cells: each key off and both off, on full trees, a binding leaf budget and the bagged multiclass categorical cell). Neither adds device memory.
+
+**The per-split aggregate (`aggregate_load_first`).** The host-launched batched level apply's block-offset prefix (`HybridAggregateBlockOffsetBatchKernel`: one 1024-thread block per split whose local prefix and offset add are global load → add → store chains: the left and right buffers are separate allocations, but the compiler cannot batch loads past stores through the kernel's unqualified pointers) gets a load-first build: each thread loads its run of at most 3 (or 6) chunk counts into registers before any store, sums them there, one block scan of the per-thread (left, right) totals packed in 64 bits gives each run its offsets, and every entry is stored once. The block is sized to the level's largest split (32-1024 threads), so a deep level's few-chunk splits do not run a full-width scan. Splits of more than 6143 chunks and the graph-captured aggregate keep the original kernel. Same integer prefix sums and child metadata.
+
+**The level's split-info readback (`split_counts_early`).** With `readback_fused`, on a non-final level of the classic level loop (single GPU, scalar leaves), the split's 18 ints for the host (child leaf indices, counts and starts, the four sums, smaller/larger by count) are written into the mapped staging by the aggregate kernel, which produces the counts, instead of by the tree-structure body after the partition; the host waits on an event after the aggregate instead of a device synchronize, so its bookkeeping, the next level's descriptor upload and the construct launch overlap the partition kernel. The two orderings the device synchronize gave are kept with events: the histogram stream waits for the partition's completion event before the next level's construct, and the best-split finder's stream waits for an event recorded on the tree stream after the level's tree record (the record reads the cached split infos that the next level's sync kernel overwrites). Final levels keep the full synchronize.
+
+What each key is worth, switched off against on in the same build (500 rounds, 1000 for covtype; T = first call + steady ms × 29999; 2 interleaved pairs, 3 for the later figures; the first figures were measured on a build that also held the two dropped keys below, on in both arms):
+
+| cell | `aggregate_load_first` | `split_counts_early` |
+|---|---|---|
+| numerai53 benchmark split, deep, stochastic | 1.001 | 1.013 (3 pairs) |
+| numerai53 with NaNs | 0.999 | 1.013 |
+| covtype, deep, fixedpoint | 1.023, 1.015, 1.020 (3 pairs) | 1.008, 1.044 (3 pairs) |
+| higgs, deep, stochastic | 1.002 | 1.015 |
+| few-bin 2M × 450 regression | 1.000 | 0.994 |
+| NaN-bin 3.5M × 210 binary | 1.008, 1.006 (3 pairs) | 1.009 |
+| epsilon-like 388k × 2321 binary | 1.000 | 1.010 |
+| year-like 3.4M × 93 regression | 1.002 | 1.017, 1.017 (3 pairs) |
+
+Together against master (a65d34e8; the same 8 cells, 2 pairs + 1 re-timed pair each): 1.013x over the cells, covtype 1.044x, higgs 1.016x, Numerai 1.014x, no cell below its band; the models are md5-identical on every run.
+
+Dropped in the same port (neutral or worse in the same-binary A/B): `root_apply_direct` (the root level's apply computes rows instead of loading the identity index array: 0.993-1.009 on every cell) and `apply_evict_first` (the level apply's split-column loads at evict-first L2 priority: up to 1.025 on deep trees over large data, but 0.98 and 0.91 on covtype, whose data fits in L2 and is reused across levels).
+
+## 10g. The pair-code view at 6 bits (`pair_code_wide`)
+
+The code view of §10d (and the code-word construct of §10e over it) is taken only where every byte's joint table has at most 32 cells. A 6-bin column (5 values and a missing-value bin, as in Numerai's data with NaNs) paired with another gives 36 cells, and such a tree used to fall back to the nibble view and the per-byte construct.
+
+**The 6-bit view (`pair_code_wide`, default on, bit-identical).** Where the largest joint table of the tree's sampled columns has at most 64 cells and the 5-bit view does not apply, the fused fill writes each byte's cell index as a 6-bit code, five to a word, through its generic scalar pack (the dp4a packs stay 5-bit). It is taken only where the padded 6-bit row is still smaller than the nibble row: 32 * ceil(B / 40) < B for a row of B byte slots (five codes per word, rows padded to 32-byte units), i.e. every row of 129 bytes or more, and below that only rows of 33-40, 65-80 and 97-120 bytes (at 121-128 bytes, e.g. sampledwide at feature fraction 0.2, the padding makes it larger). The code-word construct, its branch-free adds (the dummy cells past the joint tables are sized to the width) and its flat flush are compiled for both widths; the per-byte code gather stays 5-bit only (a 6-bit tree reads the nibble view there). Same cell per byte, same gradient, same marginal rule. Lattice: sampledwide and sampledwide-mixbins at feature fraction 0.3 (every tree takes the 6-bit view), fingerprints recorded with master's nibble-view build, with the key off, the branchy adds and the per-slot flush.
+
+Switched off against on in the same build (T = first call + steady ms × 29999; 2 interleaved pairs, 3 for the second figures):
+
+| cell | `pair_code_wide` |
+|---|---|
+| numerai53 with NaNs, deep, stochastic | 1.106, 1.157 (3 pairs; 4.99 → 4.49 ms per round) |
+| numerai53 example, stochastic (shallow, with NaNs; 300 rounds timed from 100) | 1.065 (3 pairs) |
+| numerai53 benchmark split, covtype, higgs, few-bin, NaN-bin, epsilon-like | 0.998-1.002 (not engaged) |
+
+Against master (a65d34e8; 8 cells, 2 pairs + 1 re-timed pair each): 1.010x over the cells, numerai53 with NaNs 1.103x, no cell below its band; the models are md5-identical on every run.
 
 ---
 

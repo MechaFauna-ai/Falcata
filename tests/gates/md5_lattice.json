@@ -107,7 +107,7 @@
    "metric_name": "mlogloss"
   },
   "graph/nonquant-det": {
-   "md5": "18adb66ff4391be5667464bf2c02943e",
+   "md5": "69bdc16fd0e2c827be57e9395fb7426d",
    "metric": 0.608904,
    "metric_name": "mlogloss"
   },
@@ -126,8 +126,8 @@
    "metric_name": "auc"
   },
   "imbalanced/nonquant-det": {
-   "md5": "1d5c6ed3ac299ed545b588a86e2ceaa1",
-   "metric": 0.990074,
+   "md5": "9efad1e004f19bcd611e2d603b0a924b",
+   "metric": 0.987982,
    "metric_name": "auc"
   },
   "imbalanced/posweight": {
@@ -260,6 +260,11 @@
    "metric": 6.51153,
    "metric_name": "rmse"
   },
+  "sampledwide-mixbins/quant-ff30": {
+   "md5": "5e868b08f179de3d85fefa95302200f4",
+   "metric": 5.777655,
+   "metric_name": "rmse"
+  },
   "sampledwide/quant": {
    "md5": "da493bbfa4aa5898ca776b27eba01218",
    "metric": 8.550376,
@@ -268,6 +273,16 @@
   "sampledwide/quant-ff15": {
    "md5": "27b752d6b88919ab7e9186b8bd6b4aed",
    "metric": 9.250257,
+   "metric_name": "rmse"
+  },
+  "sampledwide/quant-ff30": {
+   "md5": "a9b565b2a4461ff6b8f9ed65048c6758",
+   "metric": 7.876109,
+   "metric_name": "rmse"
+  },
+  "sampledwide/quant-ff30-deep": {
+   "md5": "46a1b3cb6929a256197a34bd78d7fac1",
+   "metric": 8.958093,
    "metric_name": "rmse"
   },
   "sampledwide5/quant": {

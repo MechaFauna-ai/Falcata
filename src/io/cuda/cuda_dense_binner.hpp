@@ -43,6 +43,7 @@ struct CUDADenseBinnerTables {
   const double* bounds;          // float mode: flattened bin upper bounds
   const uint32_t* cat_bins;      // float mode: flattened category->bin tables
   const CUDADenseBinnerColMeta* col_meta;  // float mode
+  const int* col_group;          // tile mode: the group of each column, -1 if none
 };
 
 // bins one chunk of a dense matrix into per-group packed column bins.
@@ -56,6 +57,18 @@ void LaunchCUDADenseBinChunkKernel(const void* in, int dtype_code,
                                    int parity, int num_groups,
                                    const CUDADenseBinnerTables& tables,
                                    uint8_t* out, cudaStream_t stream);
+
+// the same bins as LaunchCUDADenseBinChunkKernel, for row-major int8/uint8
+// input when every group is one column (tables.col_group is set); tile_rows
+// rows x 128 columns per block of tile_threads threads (cuda_plan keys
+// construct_tile_rows, construct_tile_threads)
+void LaunchCUDADenseBinTileKernel(const void* in, int dtype_code,
+                                  int64_t in_stride, int ncol,
+                                  data_size_t rows, data_size_t pairs,
+                                  int parity, int tile_rows,
+                                  int tile_threads,
+                                  const CUDADenseBinnerTables& tables,
+                                  uint8_t* out, cudaStream_t stream);
 
 /*!
  * \brief One device dense-binning session over a Dataset whose bin mappers
@@ -137,6 +150,12 @@ class CUDADenseBinnerCtx {
   double* d_bounds_ = nullptr;
   uint32_t* d_cat_bins_ = nullptr;
   CUDADenseBinnerColMeta* d_col_meta_ = nullptr;
+  int* d_col_group_ = nullptr;
+  // one-column groups on the int8/uint8 LUT path: BinChunk uses the tile kernel
+  bool tiled_ = false;
+  // the tile kernel's rows per block and threads (cuda_plan keys construct_tile_rows, construct_tile_threads)
+  int tile_rows_ = 64;
+  int tile_threads_ = 256;
   CUDADenseBinnerTables tables_;
   // staging ring
   data_size_t chunk_rows_ = 0;

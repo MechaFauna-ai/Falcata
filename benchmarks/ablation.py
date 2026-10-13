@@ -52,6 +52,7 @@ ALL_KEYS = {
     "gpu_construct": True,
     "construct_staging_pool": True,
     "construct_h2d_overlap": True,
+    "construct_tile_bin": True,
     "efb_precheck": True,
     "batch_reghist": True,
     "batch_wide": True,
@@ -86,8 +87,10 @@ ALL_KEYS = {
     "gap_copy_fused": True,
     "apply_inner_rows": True,
     "apply_genbit_rows": True,
+    "aggregate_load_first": True,
     "readback_kernel": True,
     "readback_fused": True,
+    "split_counts_early": True,
     "invalidate_async": True,
     "level_apply_first": True,
     "gradients_no_sync": True,
@@ -108,6 +111,7 @@ ALL_KEYS = {
     "pair_code5_slots": True,
     "pair_code5_tall": True,
     "pair_code5_flat": True,
+    "pair_code_wide": True,
 }
 
 #: growth-strategy keys: changing them changes WHICH tree is built (legit),
@@ -154,8 +158,10 @@ DEEP_KEYS = [
     "apply_struct_fused",
     "apply_inner_rows",
     "apply_genbit_rows",
+    "aggregate_load_first",
     "readback_kernel",
     "readback_fused",
+    "split_counts_early",
     "level_apply_first",
     "tree_meta_batch",
     "const_hess_reads",
@@ -171,6 +177,7 @@ DEEP_KEYS = [
     "pair_code5_slots",
     "pair_code5_tall",
     "pair_code5_flat",
+    "pair_code_wide",
 ]
 
 BASE = {
