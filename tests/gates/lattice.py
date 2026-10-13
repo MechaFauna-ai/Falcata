@@ -637,7 +637,7 @@ def build_cells():
         )
     cell("tinygrad/flip-night3", "tinygrad", {"cuda_plan": night3_off}, rounds=150, equal_to="tinygrad/quant")
     # --- the generic warp split finder on mixed and wide scans ------------------------------------------------ #
-    # warp_find_mid_ppl runs a task of 33..256 scan positions at ceil(positions / 32) per lane instead of 8;
+    # warp_find_mid_ppl runs a wide task at 2, 4 or 8 positions per lane (up to 64, 128, 256) instead of 8;
     # find_prune_fp32 prunes from fp32 bounds of the integer prefix (one exact verify per lane, an exact screen, a
     # per-lane work list); find_prune_sure takes its lower bound from every position passing the gates with a sure
     # fp32 margin instead of the exact verify; find_compact_survivors hands the warp's surviving positions out 32 at
@@ -988,7 +988,7 @@ def build_profile(name):
     elif name == "mixwidth":
         # one dataset with every scan width of the generic (G=32) warp split finder: 2-bin indicators and 6-value
         # columns (at most 8 scan positions: 4-lane groups, eight per warp), columns of 40, 70, 100, 130, 160 and
-        # 200 values (warp_find_mid_ppl's tiers of 2, 3, 4, 5, 5 and 7 positions per lane) and continuous columns
+        # 200 values (warp_find_mid_ppl's tiers of 2, 4, 4, 8, 8 and 8 positions per lane) and continuous columns
         # (255 bins, 8 per lane), NaN in 15% of the rows of four wide columns (the NaN scans). One task wider than 8
         # positions makes the whole dataset take the G=32 launch, where find_prune_fp32, find_compact_survivors and
         # find_select_int run.

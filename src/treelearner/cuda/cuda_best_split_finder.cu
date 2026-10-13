@@ -5663,7 +5663,7 @@ struct WarpFindCandidate {
 //    position i * 4 + l (strided), so the (at most 4) candidates of a 5-bin task all sit in slot 0 and a warp whose
 //    items all fit skips slot 1's fp64 work. Each slot's positions are scanned across the group and offset by the
 //    earlier slots' totals.
-//  - wide tier (G = 32, PPL = 2..8: warp_find_mid_ppl's ceil(positions / 32), else 8): one warp per task, lane l's
+//  - wide tier (G = 32, PPL = 2, 4 or 8: warp_find_mid_ppl's power-of-two slots, else 8): one warp per task, lane l's
 //    slots hold positions l * PPL .. l * PPL + PPL - 1 (blocked): a per-lane register scan plus a warp shuffle scan
 //    of the lane totals.
 // Both are the block kernel's wrapping packed-integer prefixes; the per-threshold unpack, gates and gain are the
@@ -6202,9 +6202,9 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   const uint32_t num_positions = static_cast<uint32_t>(task->num_bin - task->mfb_offset) +
     ((!task->reverse && task->na_as_missing && task->mfb_offset == 1) ? 1u : 0u);
   // warp_find_mid_ppl (wide units only): a task does not need the full 8-slot unrolled loop PPL=8 reaches for every
-  // width up to 256: one tier per 32 positions, PPL = ceil(num_positions / 32), at least 2 (num_bin <= 256 keeps it
-  // <= 8).
-  const uint32_t mid_tier = mid_ppl ? (num_positions + 31u) / 32u : 8u;
+  // width up to 256: 2 slots up to 64 positions, 4 up to 128, else 8 (num_bin <= 256). Powers of two rather than one
+  // tier per 32 positions: a launch mixing widths runs fewer distinct WarpFindBest bodies at once.
+  const uint32_t mid_ppl_slots = !mid_ppl ? 8u : num_positions <= 64u ? 2u : num_positions <= 128u ? 4u : 8u;
 #define FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, PPL, G) \
   WarpFindBest<REV, B16, ACC_T, PPL, G>(reinterpret_cast<const ACC_T*>(hist_in_leaf) + task->hist_offset, \
     task, lambda_l2, max_delta_step, min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split, parent_gain, \
@@ -6213,18 +6213,10 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
 #define FALCATA_WARP_FIND(REV, B16, ACC_T) \
   if (!WIDE || narrow) { \
     FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, 2, 4); \
-  } else if (mid_tier <= 2u) { \
+  } else if (mid_ppl_slots == 2u) { \
     FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, 2, 32); \
-  } else if (mid_tier == 3u) { \
-    FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, 3, 32); \
-  } else if (mid_tier == 4u) { \
+  } else if (mid_ppl_slots == 4u) { \
     FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, 4, 32); \
-  } else if (mid_tier == 5u) { \
-    FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, 5, 32); \
-  } else if (mid_tier == 6u) { \
-    FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, 6, 32); \
-  } else if (mid_tier == 7u) { \
-    FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, 7, 32); \
   } else { \
     FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, 8, 32); \
   }

@@ -255,11 +255,12 @@ struct FalcataPlan {
   // both runs them in one launch, the narrow tasks first.
   bool warp_find = true;            // key: warp_find
   // warp_find's wide tier (tasks of more than 8 scan positions, one warp each): WarpFindBest's per-task runtime
-  // PPL choice is one tier per 32 positions (PPL = ceil(num_positions / 32), at least 2) instead of PPL=8 (<= 256)
-  // for every width, so a task whose real scan width is, say, 90 positions runs the 3-slot unrolled
-  // prefix/prune/gain loop instead of the 8-slot one. WarpFindBest is generic in PPL (its loops are
-  // `for (i < PPL)`, and the cross-lane reduction covers any PPL). Same positions, same exact first-maximum
-  // selection: bit-identical.
+  // PPL choice is 2 slots per lane up to 64 positions, 4 up to 128, else 8, instead of PPL=8 (<= 256) for every
+  // width, so a 40-bin task runs the 2-slot unrolled prefix/prune/gain loop instead of the 8-slot one. Powers of
+  // two, not one tier per 32 positions: a launch that mixes widths runs fewer distinct bodies at once (measured on
+  // the full ladder: the lattice's mixwidth shape at scale 1.10x per round, covtype 1.009x; uniform 70- and 150-bin
+  // shapes 0.996x and 0.995x). WarpFindBest is generic in PPL (its loops are `for (i < PPL)`, and the cross-lane
+  // reduction covers any PPL). Same positions, same exact first-maximum selection: bit-identical.
   bool warp_find_mid_ppl = true;    // key: warp_find_mid_ppl
   // warp_find's wide tier's prune (tasks of more than 8 scan positions, several per lane, e.g. 255-bin
   // continuous columns): the fp32 gain bounds come straight from the prefix's int32 halves (fp32 converts and

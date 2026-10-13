@@ -851,13 +851,13 @@ picked per task by its scan width (positions 0 .. bins − stored-most-frequent-
   task's candidates fill one fp64 slot and warps skip the other; the exact prune's unpack is reused by the gain loop;
   the selection is an exact first maximum in integer compares of the gain bits.
 - **Wide tier** (more than 8 positions: covtype's 255-bin columns, higgs- and year-like floats, an epsilon-like 40-bin
-  shape, a 12-bin column): one warp per task, `warp_find_mid_ppl`'s ceil(positions / 32) positions per lane (at
-  least 2), with the five keys below.
+  shape, a 12-bin column): one warp per task, `warp_find_mid_ppl`'s 2, 4 or 8 positions per lane, with the five
+  keys below.
 - A dataset that mixes both (covtype: 44 binary and 10 numeric columns) runs them in **one launch**: per tree the
   used tasks are ordered narrow first (eight per warp), then wide (a warp each); a dataset of one kind keeps its
   used-task list as is. The level kernel is instantiated twice (with and without wide units, so the few-position
-  datasets do not carry the wide code's registers and shared memory), `WarpFindBest` 32 times (scan direction ×
-  16/32-bit histograms × 8 tier/PPL shapes), down from 5 kernels and 44 `WarpFindBest` instances.
+  datasets do not carry the wide code's registers and shared memory), `WarpFindBest` 16 times (scan direction ×
+  16/32-bit histograms × 4 tier/PPL shapes), down from 5 kernels and 44 `WarpFindBest` instances.
   `FALCATA_DEBUG=diag` names the tier: `split finder: warp kernel for this tree's quantized levels (tier: wide)`.
 
 In the wide tier the cost was fp64 work per scan position, at 1/64 rate on the RTX 5090: covtype's find kernel was
@@ -865,8 +865,12 @@ In the wide tier the cost was fp64 work per scan position, at 1/64 rate on the R
 named, four drawn from a generator) added keys to that tier, all default on and bit-identical (identity keys in
 `ablation.py`, flip cells in the lattice, flip tests in `test_warp_find.py`):
 
-- **`warp_find_mid_ppl`:** a task runs ceil(positions / 32) positions per lane (2 to 8) instead of 8 for every
-  task.
+- **`warp_find_mid_ppl`:** a task runs 2 positions per lane up to 64 positions, 4 up to 128, else 8, instead of 8
+  for every task. The search's ladder was ceil(positions / 32) (2 to 8); powers of two run fewer distinct bodies in a
+  launch that mixes widths, which matters more than the slots saved. Same binary, power-of-two vs the full ladder,
+  3 pairs: the lattice's mixwidth columns at scale 1.10x per round (find kernel 559 → 330 µs per round, CUPTI),
+  covtype 1.009x (find 832 → 800 µs), uniform 70- and 150-value generator shapes 0.996x and 0.995x (find +1.5%,
+  +4%); every other cell has one tier only.
 - **`find_prune_fp32`:** the prune bounds come from the prefix's int32 halves in fp32; each lane offers one lower
   bound, verified exactly before it prunes; an exact-safe screen drops positions that fail a gate by a margin, an
   empty bin is skipped (it cannot beat its neighbour), and the exact fp64 gains run over a per-lane work list of
