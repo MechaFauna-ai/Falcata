@@ -55,7 +55,8 @@ METRIC_TOLERANCE = 0.02  # relative; only applied to non-fingerprinted (nondeter
 #   fingerprint  False for nondeterministic (non-quant) cells: validity+metric only
 #   perf     True -> wall time tracked by perf_gate.py
 #   finder_tier  the quantized level split finder every tree must take, as the
-#            FALCATA_DEBUG=diag line names it ("warp (tier: ...)" or "block");
+#            FALCATA_DEBUG=diag line names it ("warp (tier: ...)" or "block"),
+#            or a list: the set of finders the run's trees must log, exactly;
 #            such a cell runs alone in a worker with FALCATA_DEBUG=diag
 # --------------------------------------------------------------------------- #
 
@@ -677,6 +678,23 @@ def build_cells():
         ("mixwidth", "warp (tier: few-position + wide)"),
     ]:
         cell(f"{profile}/finder-tier", profile, {"verbose": 1}, equal_to=f"{profile}/quant", finder_tier=tier)
+    # the tier boundaries: boundwidth's columns have 8-11, 64-67, 128-131 and 255 bins (k values as 0..k-1, 1..k and
+    # 1..k with NaN, for k = 8, 9, 64, 65, 128, 129), so tasks sit at 8 and 9, 64 and 65, 128 and 129 scan positions:
+    # the few-position tier's last width, the wide tier's first, and warp_find_mid_ppl's 2/4 and 4/8 per-lane steps.
+    # Its base fingerprints were recorded with this branch's build; the block kernel (warp_find off) and the five
+    # finder keys off must train the same model. narrowplus (57 columns of at most 6 values and one 33-value column at
+    # feature_fraction 0.2) has trees that draw only narrow tasks of a mixed dataset: those take the launch without
+    # wide units over the narrow-first order list (no key forces the wide launch there, so the block kernel is the
+    # equality), and both tiers appear in one run.
+    for profile, base_params, suffix in [("boundwidth", {}, ""), ("boundwidth", deep, "-deep"), ("narrowplus", {}, "")]:
+        base = f"{profile}/quant{suffix}"
+        cell(base, profile, base_params)
+        for name, plan in [("warp_find", "warp_find:off"), finder_flips[-1]]:
+            cell(f"{profile}/flip-{name}{suffix}", profile, {**base_params, "cuda_plan": f"auto,{plan}"}, equal_to=base)
+    cell("boundwidth/finder-tier", "boundwidth", {"verbose": 1}, equal_to="boundwidth/quant",
+         finder_tier="warp (tier: few-position + wide)")
+    cell("narrowplus/finder-tier", "narrowplus", {"verbose": 1}, equal_to="narrowplus/quant",
+         finder_tier=["warp (tier: few-position)", "warp (tier: few-position + wide)"])
 
     # deep trees with a binding leaf budget (no tree-completing level), the bagged multiclass categorical cell
     # (level_apply_first keeps the record first for categorical splits; final_map_only is off with bagging) and the
@@ -948,6 +966,39 @@ def build_cells():
         rounds=50,
         equal_to="categorical-mc/quant-bagged",
     )
+    # split_counts_early on the non-quantized classic loop (one_sync off; non-quantized training takes the one-sync
+    # prefix by default): the deterministic host loop over 255-bin columns, and the categorical twin (level_apply_first
+    # keeps the record first for categorical splits, and the tree record runs SplitCategorical). Bases fingerprinted
+    # with this branch's build; the key off, and both integration keys off, must train the base cell's model.
+    for profile in ["dense", "categorical"]:
+        base = f"{profile}/nonquant-det-twosync"
+        cell(base, profile, {"quant_mode": "none", "cuda_plan": "auto,graph_loop:off,one_sync:off"}, rounds=50)
+        for name, plan in [
+            ("split_counts_early", "split_counts_early:off"),
+            ("integ", integ_flip.removeprefix("auto,")),
+        ]:
+            cell(
+                f"{profile}/flip-{name}-nonquant-twosync",
+                profile,
+                {"quant_mode": "none", "cuda_plan": f"auto,graph_loop:off,one_sync:off,{plan}"},
+                rounds=50,
+                equal_to=base,
+            )
+
+    # --- the int8 tile binning's knobs (construct_tile_rows, construct_tile_threads) ------------------------- #
+    # Values other than the default 64 rows take the run-time-rows instantiation, and each block size its own build.
+    # int8wide (6000 x 400: three full 128-column tiles and a 16-column one) at 2 rows and 32 threads; int8odd (6002
+    # x 131, 4801 training rows: an odd row count, a 3-column partial tile) at 384 rows and 1024 threads (the 48 KB
+    # tile) and at 6 rows and 64 threads, and with the tile kernel off. Each must bin the base cell's bytes and so
+    # train its model; int8odd's base fingerprint was recorded with this branch's build.
+    cell("int8odd/quant", "int8odd")
+    for profile, name, plan in [
+        ("int8wide", "construct_tile_2_32", "construct_tile_rows:2,construct_tile_threads:32"),
+        ("int8odd", "construct_tile_384_1024", "construct_tile_rows:384,construct_tile_threads:1024"),
+        ("int8odd", "construct_tile_6_64", "construct_tile_rows:6,construct_tile_threads:64"),
+        ("int8odd", "construct_tile_bin", "construct_tile_bin:off"),
+    ]:
+        cell(f"{profile}/flip-{name}", profile, {"cuda_plan": f"auto,{plan}"}, equal_to=f"{profile}/quant")
 
     # --- the 6-bit pair-code view (pair_code_wide) -------------------------------------------------------- #
     # sampledwide's 6 x 6 = 36-cell joint tables do not fit the 5-bit code. At feature_fraction 0.3 a row is ~180
@@ -1052,12 +1103,12 @@ def build_profile(name):
         y = X[:, :40] @ rng.standard_normal(40) + rng.standard_normal(n)
         base.update({"max_bin": 15, "feature_fraction": 0.2})
     elif name == "mixwidth":
-        # one dataset with every scan width of the generic (G=32) warp split finder: 2-bin indicators and 6-value
-        # columns (at most 8 scan positions: 4-lane groups, eight per warp), columns of 40, 70, 100, 130, 160 and
-        # 200 values (warp_find_mid_ppl's tiers of 2, 4, 4, 8, 8 and 8 positions per lane) and continuous columns
-        # (255 bins, 8 per lane), NaN in 15% of the rows of four wide columns (the NaN scans). One task wider than 8
-        # positions makes the whole dataset take the G=32 launch, where find_prune_fp32, find_compact_survivors and
-        # find_select_int run.
+        # one dataset with both tiers of the warp split finder: 2-bin indicators and 6-value columns (at most 8 scan
+        # positions: the few-position tier, 4-lane groups, eight per warp), columns of 40, 70, 100, 130, 160 and 200
+        # values (the wide tier, a warp per task: warp_find_mid_ppl's 2, 4, 4, 8, 8 and 8 positions per lane) and
+        # continuous columns (255 bins, 8 per lane), NaN in 15% of the rows of four wide columns (the NaN scans). Each
+        # tree's used tasks go out in one launch, narrow first, then wide; the wide tasks run find_prune_fp32,
+        # find_prune_sure, find_compact_survivors and find_select_int.
         cols = [rng.integers(0, 2, size=n) for _ in range(10)]
         cols += [rng.integers(0, 6, size=n) for _ in range(6)]
         cols += [rng.integers(0, k, size=n) for k in (40, 70, 100, 130, 160, 200)]
@@ -1068,6 +1119,36 @@ def build_profile(name):
         y = Z @ rng.standard_normal(m) + 0.5 * np.sin(2 * Z[:, 18]) + 0.3 * rng.standard_normal(n)
         for j in (17, 19, 21, 23):
             X[rng.random(n) < 0.15, j] = np.nan
+    elif name == "boundwidth":
+        # columns at the warp finder's tier boundaries: k values as 0..k-1, 1..k and 1..k with NaN in 15% of the rows,
+        # for k = 8, 9, 64, 65, 128, 129 (8-11, 64-67, 128-131 bins: scan widths on both sides of 8, 64 and 128), and
+        # two continuous columns (255 bins, one with NaN)
+        cols, nan_cols = [], []
+        for k in (8, 9, 64, 65, 128, 129):
+            cols.append(rng.integers(0, k, size=n).astype(np.float64))
+            cols.append(rng.integers(1, k + 1, size=n).astype(np.float64))
+            nan_cols.append(len(cols))
+            cols.append(rng.integers(1, k + 1, size=n).astype(np.float64))
+        cols.append(rng.standard_normal(n))
+        cols.append(rng.standard_normal(n))
+        nan_cols.append(len(cols) - 1)
+        X = np.column_stack(cols)
+        m = X.shape[1]
+        Z = (X - X.mean(axis=0)) / X.std(axis=0)
+        y = Z @ rng.standard_normal(m) + 0.5 * np.sin(2 * Z[:, 4]) + 0.3 * rng.standard_normal(n)
+        for j in nan_cols:
+            X[rng.random(n) < 0.15, j] = np.nan
+    elif name == "narrowplus":
+        # 19 columns each of 2, 4 and 6 values (1..v: no zeros, so the row data stays dense) and one 33-value column;
+        # at feature_fraction 0.2 most trees draw only the narrow columns (the warp finder's launch without wide
+        # units, over a mixed dataset's narrow-first order list), the rest the 33-value one too
+        cols = [rng.integers(1, v + 1, size=n) for v in (2, 4, 6) for _ in range(19)]
+        cols.append(rng.integers(1, 34, size=n))
+        X = np.column_stack(cols).astype(np.float64)
+        m = X.shape[1]
+        Z = (X - X.mean(axis=0)) / X.std(axis=0)
+        y = Z @ rng.standard_normal(m) + 1.5 * Z[:, -1] + 0.3 * rng.standard_normal(n)
+        base["feature_fraction"] = 0.2
     elif name == "graph":
         m = 20
         X = rng.standard_normal((n, m))
@@ -1075,6 +1156,13 @@ def build_profile(name):
         base.update({"objective": "multiclass", "num_class": 5, "metric": "multi_logloss"})
     elif name == "int8wide":
         n, m = 6000, 400
+        X = rng.integers(-6, 7, size=(n, m)).astype(np.int8)
+        y = X.astype(np.float64) @ rng.standard_normal(m) + rng.standard_normal(n)
+        base["max_bin"] = 15
+    elif name == "int8odd":
+        # int8wide's values at 6002 x 131: 4801 training rows (an odd count: a half row pair) and a partial tile of
+        # 3 columns after one full 128-column tile
+        n, m = 6002, 131
         X = rng.integers(-6, 7, size=(n, m)).astype(np.int8)
         y = X.astype(np.float64) @ rng.standard_normal(m) + rng.standard_normal(n)
         base["max_bin"] = 15
@@ -1329,9 +1417,10 @@ def run_tier_cell(cell):
     rec = recs[0]
     finders = re.findall(r"split finder: (.*) kernel for this tree's quantized levels(.*)", proc.stdout)
     finders = sorted({f"{kernel}{rest}".strip() for kernel, rest in finders})
-    if rec.get("ok") and finders != [cell["finder_tier"]]:
+    expected = sorted(cell["finder_tier"]) if isinstance(cell["finder_tier"], list) else [cell["finder_tier"]]
+    if rec.get("ok") and finders != expected:
         rec = {"id": cell["id"], "ok": False,
-               "error": f"split finder {finders} logged, expected only {cell['finder_tier']!r}"}
+               "error": f"split finder {finders} logged, expected exactly {expected!r}"}
     return rec
 
 

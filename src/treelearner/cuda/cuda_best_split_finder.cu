@@ -5858,7 +5858,10 @@ __device__ __forceinline__ void WarpFindBest(
       constexpr float kGateRel = 9.5367431640625e-7f;  // 2^-20
       constexpr float kGateAbs = 0.00390625f;           // 2^-8
       const int64_t k64 = static_cast<int64_t>(num_data) - static_cast<int64_t>(min_data_in_leaf);
-      const bool sure = prune_sure && k64 >= 0 && cf_f >= FLT_MIN && cf_f <= FLT_MAX;
+      // msh_f must be a normal float too: below FLT_MIN it is subnormal or 0 and sure_h no longer bounds
+      // min_sum_hessian_in_leaf with the margin (config.cpp's min_data_in_leaf >= 1 rule for a tiny
+      // min_sum_hessian_in_leaf made that case safe through the count gate; this keeps the proof local).
+      const bool sure = prune_sure && k64 >= 0 && cf_f >= FLT_MIN && cf_f <= FLT_MAX && msh_f >= FLT_MIN;
       const float sure_h = msh_f + msh_f * kGateRel;
       const float sure_c_lo = md_f + fabsf(md_f) * kGateRel + kGateAbs;
       const float k_half = static_cast<float>(k64) + 0.5f;
@@ -6044,6 +6047,13 @@ __device__ __forceinline__ void WarpFindBest(
   // equal exactly as their bit patterns do as unsigned integers; lanes without one are excluded by kNoThreshold.
   // OtherIsBetterWithTieBreak's tolerance is fmax(|a|, |b|) * 0, NaN when either gain is +inf, which makes it
   // return false: kept as the kInfBits test on the warp.
+  // No gain that reaches this reduction is +inf (or NaN), so that rule never decides, and the result is the same
+  // whatever the lane grouping (PPL, 4-lane groups or a warp): every gradient sum is an int32 times grad_scale, a
+  // finite float, so |g| <= 2^31 * FLT_MAX, about 7.3e47, and g^2 about 5.3e95; consider() only sees positions that
+  // passed prep, whose hessian sums are >= min_sum_hessian_in_leaf >= 0 (config: check >= 0, as lambda_l2 >= 0), so
+  // each denominator (h + kEpsilon + lambda_l2) is >= kEpsilon = 1e-15 and each side's term is at most about 5.3e110
+  // (with max_delta_step the output is clamped only where |g| / (h + l2) exceeds it, which keeps the term below the
+  // same bound), far below DBL_MAX. A +inf gain would need a negative hessian floor, which the config rejects.
   const bool int_keys = STRIDED || select_int;
   constexpr uint64_t kInfBits = 0x7ff0000000000000ull;
   uint64_t best_bits = static_cast<uint64_t>(__double_as_longlong(best_gain));

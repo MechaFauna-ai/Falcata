@@ -49,6 +49,14 @@ struct FalcataPlan {
   static constexpr int kPinBinsAuto = 0;
   static constexpr int kPinBinsAlways = 1;
   static constexpr int kPinBinsNever = 2;
+  // the int8 tile binning's fixed shape (construct_tile_bin; rule 2: portable hardware guarantees, not tuned):
+  // a tile is 128 columns wide, one 128-byte line of an int8 input row (the unit its coalesced reads fetch), and
+  // at most 48 KB of shared memory, the dynamic shared memory every CUDA device grants a block without opt-in
+  // (cudaFuncAttributeMaxDynamicSharedMemorySize), so no launch needs a device query or attribute call; the
+  // construct_tile_rows knob is bounded by their quotient
+  static constexpr int kConstructTileCols = 128;
+  static constexpr int kConstructTileSmemBytes = 48 * 1024;
+  static constexpr int kConstructTileMaxRows = kConstructTileSmemBytes / kConstructTileCols;
   // --- shape-conditional decisions (cuda_plan override keys) ---------------
   // hybrid level-batched growth (off = classic one-split-at-a-time leaf-wise)
   bool hybrid = true;               // key: hybrid
@@ -161,8 +169,9 @@ struct FalcataPlan {
   // coalesced shared-memory tile kernel (off: the per-thread gather kernel)
   bool construct_tile_bin = true;   // key: construct_tile_bin
   // key construct_tile_rows: the tile kernel's input rows per block, an even number in [2, 384] (the tile is
-  // 128 x rows bytes of shared memory, within the 48 KB every device grants a block without opt-in). The tile's
-  // 128 columns are not a knob: one 128-byte line of an int8 input row, the unit its coalesced reads fetch.
+  // kConstructTileCols (128) x rows bytes of shared memory, within kConstructTileSmemBytes (48 KB), the shared
+  // memory every device grants a block without opt-in). The tile's 128 columns are not a knob: one 128-byte line
+  // of an int8 input row, the unit its coalesced reads fetch.
   int construct_tile_rows = 64;     // key: construct_tile_rows
   // key construct_tile_threads: the tile kernel's threads per block, a power of two in [32, 1024]
   int construct_tile_threads = 256;  // key: construct_tile_threads
@@ -915,7 +924,7 @@ struct FalcataPlan {
         char* end = nullptr;
         const long value = std::strtol(kv[1].c_str(), &end, 10);  // NOLINT(runtime/int)
         const bool valid = end != kv[1].c_str() && *end == '\0' &&
-          (tile_rows_key ? (value >= 2 && value <= 384 && value % 2 == 0)
+          (tile_rows_key ? (value >= 2 && value <= kConstructTileMaxRows && value % 2 == 0)
                          : (value >= 32 && value <= 1024 && (value & (value - 1)) == 0));
         if (!valid) {
           Log::Fatal("cuda_plan: bad value \"%s\" for key \"%s\" (expected %s)", kv[1].c_str(), kv[0].c_str(),

@@ -318,7 +318,10 @@ void CUDADataPartition::FinishSplitBatch(const int num_splits, std::vector<int>*
     return;
   }
   split_info_early_written_ = false;
-  apply_in_flight_ = false;
+  // an apply left in flight by an early level (split_counts_early) is consumed by the next level's search
+  // (EnqueueLevelBestSplitSearch -> WaitForInFlightApply) before any later FinishSplitBatch; a flow reaching the
+  // copy path with it still set would drop the apply_done and tree-record waits, so it is an error, not a reset
+  CHECK(!apply_in_flight_);
   EnsurePinnedSplitInfoCapacity(num_ints);
   if (FalcataPlan::Get().readback_kernel && pinned_split_info_device_ != nullptr) {
     // cuda_plan key readback_kernel: a copy kernel on the same default stream, then that stream's sync (see the key)
@@ -649,9 +652,13 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
   }
   // single async H2D per level on cuda_streams_[0]: ordered after any batched
   // apply kernel of a previous level still reading the descriptor buffer (same
-  // stream) and before the launches below. The host staging buffer is only
-  // rewritten after the next FinishSplitBatch full sync, and a pageable async
-  // H2D returns only once the data is staged, so reuse is safe.
+  // stream) and before the launches below. Reusing host_apply_descs_ next
+  // level is safe because it is a pageable std::vector: a pageable async H2D
+  // copies it into the driver's staging before it returns. No full sync is
+  // needed for that (under split_counts_early a non-final level's
+  // FinishSplitBatch waits for the aggregate kernel only, with this level's
+  // partition still in flight); moving this buffer to pinned memory would need
+  // an event wait before the rewrite.
   if (cat_arena_cursor > 0) {
     if (cuda_cat_bitset_arena_.Size() < static_cast<size_t>(cat_arena_cursor)) {
       cuda_cat_bitset_arena_.Resize(static_cast<size_t>(cat_arena_cursor) * 2);

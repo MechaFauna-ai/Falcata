@@ -5,6 +5,16 @@
    "metric": 0.218733,
    "metric_name": "rmse"
   },
+  "boundwidth/quant": {
+   "md5": "4cebd20fdcda294754d458c1022b9493",
+   "metric": 2.541222,
+   "metric_name": "rmse"
+  },
+  "boundwidth/quant-deep": {
+   "md5": "7fae492fb06674ec3db53e4e7914d6ab",
+   "metric": 2.287023,
+   "metric_name": "rmse"
+  },
   "categorical-mc/quant-bagged": {
    "md5": "2c0a3af0e5280dba7301be33566d4429",
    "metric": 0.263751,
@@ -17,6 +27,11 @@
   "categorical/nonquant-det": {
    "md5": "2ceab72d48e50f1a841e04202af78234",
    "metric": 1.46986,
+   "metric_name": "rmse"
+  },
+  "categorical/nonquant-det-twosync": {
+   "md5": "868f9298bec05e51cf5bd6bb0f80a01c",
+   "metric": 1.469859,
    "metric_name": "rmse"
   },
   "categorical/quant": {
@@ -49,6 +64,11 @@
   },
   "dense/nonquant-det": {
    "md5": "5d5153509c6aef803586d7740377f5ec",
+   "metric": 1.593959,
+   "metric_name": "rmse"
+  },
+  "dense/nonquant-det-twosync": {
+   "md5": "4968591ff5adab822147ae545cb7a511",
    "metric": 1.593959,
    "metric_name": "rmse"
   },
@@ -145,6 +165,11 @@
    "metric": 0.948448,
    "metric_name": "auc"
   },
+  "int8odd/quant": {
+   "md5": "21d609bfb0bfb0c1b84358c5875a80be",
+   "metric": 31.801303,
+   "metric_name": "rmse"
+  },
   "int8wide/quant": {
    "md5": "5c2463c90304967aa5b3aff3f45b72af",
    "metric": 69.899107,
@@ -213,6 +238,11 @@
   "mixwidth/quant-deep": {
    "md5": "d639f255ca449d280e6c646ce44253dd",
    "metric": 2.048681,
+   "metric_name": "rmse"
+  },
+  "narrowplus/quant": {
+   "md5": "a307a55ba58dbc2a0eca98cd7a0ea687",
+   "metric": 5.515651,
    "metric_name": "rmse"
   },
   "rare-mc-b/fixedpoint-deep": {
