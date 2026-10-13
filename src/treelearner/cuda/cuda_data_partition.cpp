@@ -652,9 +652,13 @@ void CUDADataPartition::SplitLevelBatched(const std::vector<CUDAHybridApplySplit
   }
   // single async H2D per level on cuda_streams_[0]: ordered after any batched
   // apply kernel of a previous level still reading the descriptor buffer (same
-  // stream) and before the launches below. The host staging buffer is only
-  // rewritten after the next FinishSplitBatch full sync, and a pageable async
-  // H2D returns only once the data is staged, so reuse is safe.
+  // stream) and before the launches below. Reusing host_apply_descs_ next
+  // level is safe because it is a pageable std::vector: a pageable async H2D
+  // copies it into the driver's staging before it returns. No full sync is
+  // needed for that (under split_counts_early a non-final level's
+  // FinishSplitBatch waits for the aggregate kernel only, with this level's
+  // partition still in flight); moving this buffer to pinned memory would need
+  // an event wait before the rewrite.
   if (cat_arena_cursor > 0) {
     if (cuda_cat_bitset_arena_.Size() < static_cast<size_t>(cat_arena_cursor)) {
       cuda_cat_bitset_arena_.Resize(static_cast<size_t>(cat_arena_cursor) * 2);

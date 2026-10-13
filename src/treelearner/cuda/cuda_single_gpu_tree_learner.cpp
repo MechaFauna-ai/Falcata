@@ -1883,9 +1883,12 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
   }
   // single async H2D per level on the histogram stream: ordered before the
   // construct kernel on the same stream, and before the find/sync kernels via
-  // subtract_done_events_[0]. The host staging buffer is only rewritten after
-  // the next FinishSplitBatch/SyncAllLeafBestSplitsToHost full sync, and a
-  // pageable async H2D returns only once the data is staged, so reuse is safe.
+  // subtract_done_events_[0]. Reusing host_hybrid_pair_descs_ next level is
+  // safe because it is a pageable std::vector: a pageable async H2D copies it
+  // into the driver's staging before it returns. No full sync is needed for
+  // that (under split_counts_early a non-final level's FinishSplitBatch waits
+  // for the aggregate kernel only, with the partition still in flight); moving
+  // this buffer to pinned memory would need an event wait before the rewrite.
   CopyFromHostToCUDADeviceAsync<CUDAHybridPairDescriptor>(
     cuda_hybrid_pair_descs_.RawData(), host_hybrid_pair_descs_.data(),
     static_cast<size_t>(num_pairs), cuda_histogram_constructor_->hist_stream(),
