@@ -159,9 +159,9 @@ void CUDABestSplitFinder::SetTaskFeaturePenalties() {
 }
 
 void CUDABestSplitFinder::UpdateWarpFindEligibility() {
-  // find_pack_narrow: a device unit list cached for the all-tasks tree describes the task list being (re)built here;
-  // the next all-tasks tree rebuilds and uploads it
-  find_units_all_tasks_ = 0;
+  // a launch order cached for the all-tasks tree describes the task list being (re)built here; the next all-tasks
+  // tree rebuilds and uploads it
+  warp_find_order_all_tasks_ = false;
 #if defined(__HIP_PLATFORM_AMD__)
   warp_find_eligible_ = false;
 #else
@@ -185,7 +185,7 @@ void CUDABestSplitFinder::UpdateWarpFindEligibility() {
     const int shift = (!t.reverse && t.na_as_missing && t.mfb_offset == 1) ? 1 : 0;
     const int positions = static_cast<int>(t.num_bin) - t.mfb_offset + shift;
     warp_find_max_positions_ = std::max(warp_find_max_positions_, positions);
-    // find_pack_narrow: the kernel classifies a unit's first task by the same count (WarpFindBest's num_positions)
+    // the narrow tasks of a mixed dataset run as 4-lane groups (the kernel's tiers count positions the same way)
     if (positions <= 8) {
       warp_find_task_narrow_[k] = 1;
       ++warp_find_num_narrow_;
@@ -560,42 +560,33 @@ void CUDABestSplitFinder::BeforeTrain(const std::vector<int8_t>& is_feature_used
     UploadTreeStartMeta<int>(cuda_used_task_indices_.RawData(), host_used_task_indices_.data(),
                              host_used_task_indices_.size());
   }
-  // cuda_plan key find_pack_narrow: this tree's warp units for the generic (G=32) warp finder on a dataset that
-  // mixes narrow (<= 8 scan positions) and wide tasks: every used wide task is one unit, used narrow tasks are
-  // packed four per unit (-1 pads an unfilled group). The kernel maps each warp to (leaf, unit) and keeps writing
-  // every item at its original task index.
-  num_find_units_ = 0;
-  if (FalcataPlan::Get().find_pack_narrow && warp_find_eligible_ && warp_find_num_narrow_ > 0 &&
-      warp_find_num_narrow_ < num_tasks_ && num_used_tasks_ > 0) {
-    if (num_used_tasks_ == num_tasks_ && find_units_all_tasks_ > 0) {
-      // every task used: the list is a function of the task list alone (shape metadata, like the tasks
+  // the level warp finder's launch order on a dataset that mixes narrow (<= 8 scan positions) and wide tasks: the
+  // used narrow tasks first (eight per warp as 4-lane groups), then the used wide ones (a warp each). Every item
+  // still writes at its own task index. On a dataset of one kind the used-task list is already in launch order.
+  warp_find_num_narrow_used_ = 0;
+  warp_find_order_used_ = false;
+  if (warp_find_eligible_ && warp_find_num_narrow_ > 0 && warp_find_num_narrow_ < num_tasks_ && num_used_tasks_ > 0) {
+    warp_find_order_used_ = true;
+    if (num_used_tasks_ == num_tasks_ && warp_find_order_all_tasks_) {
+      // every task used: the order is a function of the task list alone (shape metadata, like the tasks
       // themselves) and was uploaded by an earlier tree
-      num_find_units_ = find_units_all_tasks_;
+      warp_find_num_narrow_used_ = warp_find_num_narrow_;
       return;
     }
-    host_find_units_.clear();
-    int narrow_in_unit = 4;
-    for (int k = 0; k < num_used_tasks_; ++k) {
-      const int task_index = host_used_task_indices_[k];
-      if (warp_find_task_narrow_[task_index]) {
-        if (narrow_in_unit == 4) {
-          host_find_units_.insert(host_find_units_.end(), {-1, -1, -1, -1});
-          narrow_in_unit = 0;
-        }
-        host_find_units_[host_find_units_.size() - 4 + narrow_in_unit] =
-          narrow_in_unit == 0 ? (task_index | kFindUnitPacked) : task_index;
-        ++narrow_in_unit;
-      } else {
-        host_find_units_.insert(host_find_units_.end(), {task_index, -1, -1, -1});
-        narrow_in_unit = 4;  // the next narrow task opens a new group
+    host_warp_find_order_.clear();
+    for (const int narrow : {1, 0}) {
+      for (int k = 0; k < num_used_tasks_; ++k) {
+        const int task_index = host_used_task_indices_[k];
+        if (warp_find_task_narrow_[task_index] == narrow) host_warp_find_order_.push_back(task_index);
       }
+      if (narrow) warp_find_num_narrow_used_ = static_cast<int>(host_warp_find_order_.size());
     }
-    num_find_units_ = static_cast<int>(host_find_units_.size() / 4);
-    if (cuda_find_units_.Size() < static_cast<size_t>(4 * num_tasks_)) {
-      cuda_find_units_.Resize(static_cast<size_t>(4 * num_tasks_));
+    if (cuda_warp_find_order_.Size() < static_cast<size_t>(num_tasks_)) {
+      cuda_warp_find_order_.Resize(static_cast<size_t>(num_tasks_));
     }
-    UploadTreeStartMeta<int>(cuda_find_units_.RawData(), host_find_units_.data(), host_find_units_.size());
-    find_units_all_tasks_ = num_used_tasks_ == num_tasks_ ? num_find_units_ : 0;
+    UploadTreeStartMeta<int>(cuda_warp_find_order_.RawData(), host_warp_find_order_.data(),
+                             host_warp_find_order_.size());
+    warp_find_order_all_tasks_ = num_used_tasks_ == num_tasks_;
   }
 }
 

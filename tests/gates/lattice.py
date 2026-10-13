@@ -636,17 +636,15 @@ def build_cells():
     # per-lane work list); find_prune_sure takes its lower bound from every position passing the gates with a sure
     # fp32 margin instead of the exact verify; find_compact_survivors hands the warp's surviving positions out 32 at
     # a time;
-    # find_select_int reduces the best split in integer compares of the gain bits (also on the one-position-per-lane
-    # path: fewbin's 12-bin tasks); find_pack_narrow (default off) runs tasks of at most 8 positions four per warp
-    # inside the same launch. Each key off and all five off must train the base cell's model on mixwidth (every
-    # tier, packed units, NaN scans; its base fingerprints were recorded with master's build), dense (255-bin scans)
-    # and missing (NaN scans); on mixwidth, which has tasks of at most 8 positions, so must find_pack_narrow on.
+    # find_select_int reduces the best split in integer compares of the gain bits (also on the 2-per-lane tier:
+    # fewbin's 12-bin tasks). Each key off and all five off must train the base cell's model on mixwidth (every
+    # tier, its narrow tasks as 4-lane groups in the same launch, NaN scans; its base fingerprints were recorded with
+    # master's build), dense (255-bin scans) and missing (NaN scans).
     finder_keys = [
         "warp_find_mid_ppl", "find_prune_fp32", "find_prune_sure", "find_select_int", "find_compact_survivors"
     ]
     finder_flips = [
         *[(key, f"{key}:off") for key in finder_keys],
-        ("find_pack_narrow_on", "find_pack_narrow:on"),
         ("jit1-finder", ",".join(f"{k}:off" for k in finder_keys)),
     ]
     cell("mixwidth/quant", "mixwidth")
@@ -656,7 +654,7 @@ def build_cells():
             cell(
                 f"mixwidth/flip-{name}{suffix}", "mixwidth", {**base_params, "cuda_plan": f"auto,{plan}"}, equal_to=base
             )
-    for name, plan in [f for f in finder_flips if f[0] != "find_pack_narrow_on"]:  # no task of <= 8 positions there
+    for name, plan in finder_flips:
         cell(f"dense/flip-{name}-deep", "dense", {**deep, "cuda_plan": f"auto,{plan}"}, equal_to="dense/quant-deep")
         cell(f"missing/flip-{name}", "missing", {"cuda_plan": f"auto,{plan}"}, equal_to="missing/quant")
     cell("fewbin/flip-find_select_int", "fewbin", {"cuda_plan": "auto,find_select_int:off"}, equal_to="fewbin/quant")
@@ -973,7 +971,7 @@ def build_profile(name):
         base.update({"max_bin": 15, "feature_fraction": 0.2})
     elif name == "mixwidth":
         # one dataset with every scan width of the generic (G=32) warp split finder: 2-bin indicators and 6-value
-        # columns (at most 8 scan positions: find_pack_narrow's packed units), columns of 40, 70, 100, 130, 160 and
+        # columns (at most 8 scan positions: 4-lane groups, eight per warp), columns of 40, 70, 100, 130, 160 and
         # 200 values (warp_find_mid_ppl's tiers of 2, 3, 4, 5, 5 and 7 positions per lane) and continuous columns
         # (255 bins, 8 per lane), NaN in 15% of the rows of four wide columns (the NaN scans). One task wider than 8
         # positions makes the whole dataset take the G=32 launch, where find_prune_fp32, find_compact_survivors and
