@@ -128,6 +128,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
                  CUDALeafSplitsStruct* smaller_slot = nullptr,
                  CUDALeafSplitsStruct* larger_slot = nullptr,
                  int deferred_slot = -1);
+  // cuda_plan key split_counts_early: when the previous level's readback returned before its partition kernels and
+  // tree record finished (ApplyInFlight), order the histogram stream after the partition and the finder's stream
+  // after the record, and clear the flag; nothing otherwise
+  void WaitForInFlightApply();
 
   // ---- hybrid growth: depth-wise (level-batched) prefix + leaf-wise tail ----
   // While the leaf budget cannot bind, every positive-gain frontier leaf will be

@@ -583,8 +583,9 @@ struct FalcataPlan {
   // each thread's (at most 6) left / right chunk counts loaded into registers before any store, summed there, scanned
   // once as one 64-bit (left, right) pair across the block, and stored once, in a block sized to the level's largest
   // split (32-1024 threads), instead of a 1024-thread block whose local prefix and offset add are global load -> add ->
-  // store chains (the two buffers may alias, so nothing is batched). Splits of more than 6143 chunks keep the original
-  // kernel. The same integer prefix sums and child leaf metadata: bit-identical.
+  // store chains (the left and right buffers are separate allocations, but the kernel's unqualified pointers do not let
+  // the compiler batch the loads past the stores). Splits of more than 6143 chunks keep the original kernel. The same
+  // integer prefix sums and child leaf metadata: bit-identical.
   bool aggregate_load_first = true;  // key: aggregate_load_first
   // quantized root sums (gradient/hessian totals of the tree's rows): one warp
   // per 1024-row chunk sums 32 rows per lane, instead of one 1024-thread block
@@ -683,10 +684,10 @@ struct FalcataPlan {
   // tree's record of the same splits (CUDATree::SplitBatch: upload and SplitBatchKernel on the tree's stream). The two
   // touch disjoint buffers (the tree's arrays vs the partition's; both only read the level's cached split infos),
   // there is no event between those streams, and every later reader waits for both (the level's readback; under
-  // split_counts_early the next level's search, through apply_done_event and the tree-record event), so the level's long kernel chain no longer starts behind the record's upload, launch and host
-  // bookkeeping. The record's entries (real feature index and threshold, missing type: per-feature lookups only the
-  // record reads) are built after the apply is launched, in the same order with the same values. Same kernels, same
-  // streams, same inputs: bit-identical.
+  // split_counts_early the next level's search, through apply_done_event and the tree-record event), so the level's
+  // long kernel chain no longer starts behind the record's upload, launch and host bookkeeping. The record's entries
+  // (real feature index and threshold, missing type: per-feature lookups only the record reads) are built after the
+  // apply is launched, in the same order with the same values. Same kernels, same streams, same inputs: bit-identical.
   bool level_apply_first = true;    // key: level_apply_first
   // the CUDA objective's GetGradients (the shared CUDAObjectiveInterface path) does not end with a device
   // synchronize when the gradients are device memory: its kernel runs on the legacy default stream, every reader of
