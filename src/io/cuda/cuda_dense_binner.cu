@@ -6,6 +6,7 @@
 #ifdef USE_CUDA
 
 #include <Falcata/cuda/cuda_utils.hu>
+#include <Falcata/falcata_plan.h>
 
 #include <cstdint>
 
@@ -196,8 +197,10 @@ void LaunchTyped(const void* in, bool is_row_major, int64_t in_stride,
 // threads are cuda_plan knobs (construct_tile_rows, default 64, and
 // construct_tile_threads, default 256); the tile's width is not a knob:
 // kTileCols int8 values are one 128-byte line of an input row, the unit the
-// coalesced reads fetch, so it is fixed by the memory system, not tuned.
-constexpr int kTileCols = 128;  // one 128-byte line of an input row (architectural)
+// coalesced reads fetch, so it is fixed by the memory system, not tuned (the
+// int8 row's 128-byte line; FalcataPlan::kConstructTileCols, shared with the
+// knob's validation).
+constexpr int kTileCols = FalcataPlan::kConstructTileCols;
 
 // kFixedRows > 0: the rows per tile as a compile-time constant (the default
 // construct_tile_rows); 0: tile_rows at run time (any other knob value)
@@ -306,10 +309,13 @@ void LaunchTileTyped(const void* in, int64_t in_stride, int ncol,
                      const CUDADenseBinnerTables& tables, uint8_t* out,
                      cudaStream_t stream) {
   // the knob values the plan accepts (FalcataPlan::ResolveFromConfig): an even
-  // tile_rows within the 48 KB of shared memory every device grants a block
-  // without opt-in, a power-of-two block of 32-1024 threads
+  // tile_rows within FalcataPlan::kConstructTileSmemBytes (48 KB), the dynamic
+  // shared memory every CUDA device grants a block without opt-in (so the
+  // launch needs no device query or attribute call), a power-of-two block of
+  // 32-1024 threads
   CHECK(tile_rows >= 2 && tile_rows % 2 == 0 &&
-        static_cast<size_t>(kTileCols) * static_cast<size_t>(tile_rows) * sizeof(T) <= 48 * 1024);
+        static_cast<size_t>(kTileCols) * static_cast<size_t>(tile_rows) * sizeof(T) <=
+          static_cast<size_t>(FalcataPlan::kConstructTileSmemBytes));
   switch (tile_threads) {
     case 32:
       LaunchTileThreads<T, 32>(in, in_stride, ncol, rows, pairs, parity, tile_rows, tables, out, stream);
