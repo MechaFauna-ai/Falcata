@@ -910,6 +910,40 @@ def build_cells():
                 equal_to=base,
             )
 
+    # --- the integration of night6's partition keys onto master ------------------------------------------- #
+    # aggregate_load_first: the batched level apply's load-first per-split block-offset prefix; split_counts_early:
+    # a non-final classic level's split-info readback written by the aggregate kernel and waited on by its event
+    # (the next level's search orders the histogram stream behind the partition and the finder's stream behind the
+    # tree record). Each key off, and both off, must train the base cell's model: full trees, a binding leaf budget,
+    # the bagged multiclass categorical cell (categorical levels: the tree record also runs SplitCategorical).
+    integ_keys = ["aggregate_load_first", "split_counts_early"]
+    integ_flip = "auto," + ",".join(f"{k}:off" for k in integ_keys)
+    for key, plan in [*((k, f"auto,{k}:off") for k in integ_keys), ("integ", integ_flip)]:
+        for profile in ["sampled", "dense"]:
+            cell(
+                f"{profile}/flip-{key}-fulltree",
+                profile,
+                {**full, "cuda_plan": plan},
+                equal_to=f"{profile}/quant-fulltree",
+            )
+        cell(f"dense/flip-{key}-deep", "dense", {**deep, "cuda_plan": plan}, equal_to="dense/quant-deep")
+    cell(
+        "categorical-mc/flip-integ-bagged",
+        "categorical-mc",
+        {
+            "quant_mode": "fixedpoint",
+            "quant_bins": 16,
+            "bagging_fraction": 0.7,
+            "bagging_freq": 1,
+            "num_leaves": 255,
+            "max_depth": 10,
+            "min_data_in_leaf": 5,
+            "cuda_plan": integ_flip,
+        },
+        rounds=50,
+        equal_to="categorical-mc/quant-bagged",
+    )
+
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "duplicate cell ids"
     by_id = {c["id"]: c for c in cells}
