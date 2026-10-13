@@ -554,6 +554,13 @@ struct FalcataPlan {
   // bound. Taken only where the occupancy API gives it strictly more rows in flight per SM than the default build.
   // Same chunk rows, ballot words and chunk totals: bit-identical.
   bool apply_genbit_rows = true;    // key: apply_genbit_rows
+  // host-launched batched level apply: the per-split block-offset prefix (HybridAggregateBlockOffsetBatchKernel) with
+  // each thread's (at most 6) left / right chunk counts loaded into registers before any store, summed there, scanned
+  // once as one 64-bit (left, right) pair across the block, and stored once, in a block sized to the level's largest
+  // split (32-1024 threads), instead of a 1024-thread block whose local prefix and offset add are global load -> add ->
+  // store chains (the two buffers may alias, so nothing is batched). Splits of more than 6143 chunks keep the original
+  // kernel. The same integer prefix sums and child leaf metadata: bit-identical.
+  bool aggregate_load_first = true;  // key: aggregate_load_first
   // quantized root sums (gradient/hessian totals of the tree's rows): one warp
   // per 1024-row chunk sums 32 rows per lane, instead of one 1024-thread block
   // per chunk with one row per thread and two block reductions. Each chunk's
@@ -829,6 +836,7 @@ struct FalcataPlan {
     if (key == "gap_copy_fused") return &gap_copy_fused;
     if (key == "apply_inner_rows") return &apply_inner_rows;
     if (key == "apply_genbit_rows") return &apply_genbit_rows;
+    if (key == "aggregate_load_first") return &aggregate_load_first;
     if (key == "root_sums_warp") return &root_sums_warp;
     if (key == "minmax_warp") return &minmax_warp;
     if (key == "colmajor_split") return &colmajor_split;
