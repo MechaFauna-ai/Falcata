@@ -160,6 +160,12 @@ struct FalcataPlan {
   // GPU binning of row-major int8/uint8 input whose groups are one column each:
   // coalesced shared-memory tile kernel (off: the per-thread gather kernel)
   bool construct_tile_bin = true;   // key: construct_tile_bin
+  // key construct_tile_rows: the tile kernel's input rows per block, an even number in [2, 384] (the tile is
+  // 128 x rows bytes of shared memory, within the 48 KB every device grants a block without opt-in). The tile's
+  // 128 columns are not a knob: one 128-byte line of an int8 input row, the unit its coalesced reads fetch.
+  int construct_tile_rows = 64;     // key: construct_tile_rows
+  // key construct_tile_threads: the tile kernel's threads per block, a power of two in [32, 1024]
+  int construct_tile_threads = 256;  // key: construct_tile_threads
   // cheap host precheck that skips EFB bundling on provably-unbundlable data
   bool efb_precheck = true;         // key: efb_precheck
 
@@ -947,6 +953,22 @@ struct FalcataPlan {
         } else {
           Log::Fatal("cuda_plan: bad value \"%s\" for key \"view_mode\" (expected auto|compact|mask)", kv[1].c_str());
         }
+        overridden = true;
+        continue;
+      }
+      // the integer keys: construct_tile_rows (even, [2, 384]) and construct_tile_threads (power of two, [32, 1024])
+      const bool tile_rows_key = kv[0] == std::string("construct_tile_rows");
+      if (tile_rows_key || kv[0] == std::string("construct_tile_threads")) {
+        char* end = nullptr;
+        const long value = std::strtol(kv[1].c_str(), &end, 10);  // NOLINT(runtime/int)
+        const bool valid = end != kv[1].c_str() && *end == '\0' &&
+          (tile_rows_key ? (value >= 2 && value <= 384 && value % 2 == 0)
+                         : (value >= 32 && value <= 1024 && (value & (value - 1)) == 0));
+        if (!valid) {
+          Log::Fatal("cuda_plan: bad value \"%s\" for key \"%s\" (expected %s)", kv[1].c_str(), kv[0].c_str(),
+                     tile_rows_key ? "an even number in [2, 384]" : "a power of two in [32, 1024]");
+        }
+        (tile_rows_key ? plan.construct_tile_rows : plan.construct_tile_threads) = static_cast<int>(value);
         overridden = true;
         continue;
       }

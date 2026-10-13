@@ -502,6 +502,8 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
                 single_col_groups &&
                 (ctx->dtype_code_ == 2 || ctx->dtype_code_ == 4);
   if (ctx->tiled_) {
+    ctx->tile_rows_ = FalcataPlan::Get().construct_tile_rows;
+    ctx->tile_threads_ = FalcataPlan::Get().construct_tile_threads;
     std::vector<int> col_group(ncol, -1);
     for (int gid = 0; gid < num_groups_; ++gid) {
       col_group[group_col_sub[gid][0].first] = gid;
@@ -717,7 +719,8 @@ void CUDADenseBinnerCtx::BinChunk(const void* data, data_size_t nrow,
     if (tiled_ && is_row_major) {
       LaunchCUDADenseBinTileKernel(kernel_in, dtype_code_, in_stride, ncol_,
                                    desc.rows, desc.pairs, desc.parity,
-                                   tables_, d_out_[b], stream_);
+                                   tile_rows_, tile_threads_, tables_,
+                                   d_out_[b], stream_);
     } else {
       LaunchCUDADenseBinChunkKernel(kernel_in, dtype_code_, is_row_major,
                                     in_stride, desc.rows, desc.pairs,

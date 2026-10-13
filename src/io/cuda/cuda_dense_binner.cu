@@ -189,25 +189,32 @@ void LaunchTyped(const void* in, bool is_row_major, int64_t in_stride,
 }
 
 // row-major int8/uint8 input with one column per group (LUT encode): the tile
-// kernel below stages kTileRows rows x kTileCols columns in shared memory with
+// kernel below stages tile_rows rows x kTileCols columns in shared memory with
 // coalesced reads (a warp walks consecutive columns of one row), then encodes
 // from shared memory. Output is written exactly as CUDADenseBinChunkKernel
-// writes it, so the bytes are identical.
-constexpr int kTileCols = 128;             // one 128-byte line of an input row
-constexpr int kTilePairs = 32;             // row pairs per block
-constexpr int kTileRows = 2 * kTilePairs;  // rows per block
-constexpr int kTileThreads = 256;
+// writes it, so the bytes are identical. The rows per tile and the block's
+// threads are cuda_plan knobs (construct_tile_rows, default 64, and
+// construct_tile_threads, default 256); the tile's width is not a knob:
+// kTileCols int8 values are one 128-byte line of an input row, the unit the
+// coalesced reads fetch, so it is fixed by the memory system, not tuned.
+constexpr int kTileCols = 128;  // one 128-byte line of an input row (architectural)
 
-template <typename T>
-__global__ void __launch_bounds__(kTileThreads)
+// kFixedRows > 0: the rows per tile as a compile-time constant (the default
+// construct_tile_rows); 0: tile_rows at run time (any other knob value)
+template <typename T, int kThreads, int kFixedRows>
+__global__ void __launch_bounds__(kThreads)
 CUDADenseBinTileKernel(const T* __restrict__ in, int64_t in_stride, int ncol,
                        data_size_t rows, data_size_t pairs, int parity,
-                       CUDADenseBinnerTables tables, uint8_t* __restrict__ out) {
-  __shared__ T tile[kTileCols * kTileRows];  // [column][row in block]
-  const data_size_t pair_base = static_cast<data_size_t>(blockIdx.x) * kTilePairs;
+                       int runtime_tile_rows, CUDADenseBinnerTables tables,
+                       uint8_t* __restrict__ out) {
+  extern __shared__ __align__(16) unsigned char tile_bytes[];
+  T* tile = reinterpret_cast<T*>(tile_bytes);  // [column][row in block]
+  const int tile_rows = kFixedRows > 0 ? kFixedRows : runtime_tile_rows;
+  const int tile_pairs = tile_rows / 2;  // row pairs per block
+  const data_size_t pair_base = static_cast<data_size_t>(blockIdx.x) * tile_pairs;
   const int col_base = static_cast<int>(blockIdx.y) * kTileCols;
   const data_size_t row_base = pair_base * 2 - static_cast<data_size_t>(parity);
-  for (int i = threadIdx.x; i < kTileCols * kTileRows; i += kTileThreads) {
+  for (int i = threadIdx.x; i < kTileCols * tile_rows; i += kThreads) {
     const int r = i / kTileCols;  // consecutive threads: consecutive columns
     const int j = i - r * kTileCols;
     const data_size_t row = row_base + r;
@@ -216,12 +223,12 @@ CUDADenseBinTileKernel(const T* __restrict__ in, int64_t in_stride, int ncol,
     if (row >= 0 && row < rows && col < ncol) {
       v = in[static_cast<int64_t>(row) * in_stride + col];
     }
-    tile[j * kTileRows + r] = v;
+    tile[j * tile_rows + r] = v;
   }
   __syncthreads();
-  for (int i = threadIdx.x; i < kTileCols * kTilePairs; i += kTileThreads) {
-    const int p = i % kTilePairs;  // consecutive threads: consecutive pairs
-    const int j = i / kTilePairs;
+  for (int i = threadIdx.x; i < kTileCols * tile_pairs; i += kThreads) {
+    const int p = i % tile_pairs;  // consecutive threads: consecutive pairs
+    const int j = i / tile_pairs;
     const int col = col_base + j;
     const data_size_t pair = pair_base + p;
     if (col >= ncol || pair >= pairs) {
@@ -239,7 +246,7 @@ CUDADenseBinTileKernel(const T* __restrict__ in, int64_t in_stride, int ncol,
         continue;
       }
       const uint32_t enc = tables.lut[tables.col_lut_off[col] +
-                                      DeviceLutIndex<T>(tile[j * kTileRows + 2 * p + t])];
+                                      DeviceLutIndex<T>(tile[j * tile_rows + 2 * p + t])];
       if (enc != kDeviceSkipBin) {
         vals[t] = enc;
       }
@@ -269,17 +276,63 @@ CUDADenseBinTileKernel(const T* __restrict__ in, int64_t in_stride, int ncol,
   }
 }
 
+constexpr int kTileDefaultRows = 64;  // construct_tile_rows' default, compiled as a constant
+
+template <typename T, int kThreads>
+void LaunchTileThreads(const void* in, int64_t in_stride, int ncol,
+                       data_size_t rows, data_size_t pairs, int parity,
+                       int tile_rows, const CUDADenseBinnerTables& tables,
+                       uint8_t* out, cudaStream_t stream) {
+  const int tile_pairs = tile_rows / 2;
+  const dim3 grid(static_cast<unsigned int>((pairs + tile_pairs - 1) / tile_pairs),
+                  static_cast<unsigned int>((ncol + kTileCols - 1) / kTileCols));
+  const size_t smem_bytes = static_cast<size_t>(kTileCols) * static_cast<size_t>(tile_rows) * sizeof(T);
+  if (tile_rows == kTileDefaultRows) {
+    CUDADenseBinTileKernel<T, kThreads, kTileDefaultRows><<<grid, kThreads, smem_bytes, stream>>>(
+        reinterpret_cast<const T*>(in), in_stride, ncol, rows, pairs, parity,
+        tile_rows, tables, out);
+  } else {
+    CUDADenseBinTileKernel<T, kThreads, 0><<<grid, kThreads, smem_bytes, stream>>>(
+        reinterpret_cast<const T*>(in), in_stride, ncol, rows, pairs, parity,
+        tile_rows, tables, out);
+  }
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+}
+
 template <typename T>
 void LaunchTileTyped(const void* in, int64_t in_stride, int ncol,
                      data_size_t rows, data_size_t pairs, int parity,
+                     int tile_rows, int tile_threads,
                      const CUDADenseBinnerTables& tables, uint8_t* out,
                      cudaStream_t stream) {
-  const dim3 grid(static_cast<unsigned int>((pairs + kTilePairs - 1) / kTilePairs),
-                  static_cast<unsigned int>((ncol + kTileCols - 1) / kTileCols));
-  CUDADenseBinTileKernel<T><<<grid, kTileThreads, 0, stream>>>(
-      reinterpret_cast<const T*>(in), in_stride, ncol, rows, pairs, parity,
-      tables, out);
-  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+  // the knob values the plan accepts (FalcataPlan::ResolveFromConfig): an even
+  // tile_rows within the 48 KB of shared memory every device grants a block
+  // without opt-in, a power-of-two block of 32-1024 threads
+  CHECK(tile_rows >= 2 && tile_rows % 2 == 0 &&
+        static_cast<size_t>(kTileCols) * static_cast<size_t>(tile_rows) * sizeof(T) <= 48 * 1024);
+  switch (tile_threads) {
+    case 32:
+      LaunchTileThreads<T, 32>(in, in_stride, ncol, rows, pairs, parity, tile_rows, tables, out, stream);
+      break;
+    case 64:
+      LaunchTileThreads<T, 64>(in, in_stride, ncol, rows, pairs, parity, tile_rows, tables, out, stream);
+      break;
+    case 128:
+      LaunchTileThreads<T, 128>(in, in_stride, ncol, rows, pairs, parity, tile_rows, tables, out, stream);
+      break;
+    case 256:
+      LaunchTileThreads<T, 256>(in, in_stride, ncol, rows, pairs, parity, tile_rows, tables, out, stream);
+      break;
+    case 512:
+      LaunchTileThreads<T, 512>(in, in_stride, ncol, rows, pairs, parity, tile_rows, tables, out, stream);
+      break;
+    case 1024:
+      LaunchTileThreads<T, 1024>(in, in_stride, ncol, rows, pairs, parity, tile_rows, tables, out, stream);
+      break;
+    default:
+      Log::Fatal("CUDADenseBinner: tile kernel block of %d threads (expected a power of two in [32, 1024])",
+                 tile_threads);
+  }
 }
 
 template <typename T>
@@ -403,7 +456,8 @@ void LaunchCUDADenseBinChunkKernel(const void* in, int dtype_code,
 void LaunchCUDADenseBinTileKernel(const void* in, int dtype_code,
                                   int64_t in_stride, int ncol,
                                   data_size_t rows, data_size_t pairs,
-                                  int parity,
+                                  int parity, int tile_rows,
+                                  int tile_threads,
                                   const CUDADenseBinnerTables& tables,
                                   uint8_t* out, cudaStream_t stream) {
   if (pairs <= 0) {
@@ -411,12 +465,12 @@ void LaunchCUDADenseBinTileKernel(const void* in, int dtype_code,
   }
   switch (dtype_code) {
     case 2:
-      LaunchTileTyped<int8_t>(in, in_stride, ncol, rows, pairs, parity, tables,
-                              out, stream);
+      LaunchTileTyped<int8_t>(in, in_stride, ncol, rows, pairs, parity,
+                              tile_rows, tile_threads, tables, out, stream);
       break;
     case 4:
       LaunchTileTyped<uint8_t>(in, in_stride, ncol, rows, pairs, parity,
-                               tables, out, stream);
+                               tile_rows, tile_threads, tables, out, stream);
       break;
     default:
       Log::Fatal("CUDADenseBinner: no tile kernel for dtype code %d", dtype_code);

@@ -59,11 +59,14 @@ void LaunchCUDADenseBinChunkKernel(const void* in, int dtype_code,
                                    uint8_t* out, cudaStream_t stream);
 
 // the same bins as LaunchCUDADenseBinChunkKernel, for row-major int8/uint8
-// input when every group is one column (tables.col_group is set)
+// input when every group is one column (tables.col_group is set); tile_rows
+// rows x 128 columns per block of tile_threads threads (cuda_plan keys
+// construct_tile_rows, construct_tile_threads)
 void LaunchCUDADenseBinTileKernel(const void* in, int dtype_code,
                                   int64_t in_stride, int ncol,
                                   data_size_t rows, data_size_t pairs,
-                                  int parity,
+                                  int parity, int tile_rows,
+                                  int tile_threads,
                                   const CUDADenseBinnerTables& tables,
                                   uint8_t* out, cudaStream_t stream);
 
@@ -150,6 +153,9 @@ class CUDADenseBinnerCtx {
   int* d_col_group_ = nullptr;
   // one-column groups on the int8/uint8 LUT path: BinChunk uses the tile kernel
   bool tiled_ = false;
+  // the tile kernel's rows per block and threads (cuda_plan keys construct_tile_rows, construct_tile_threads)
+  int tile_rows_ = 64;
+  int tile_threads_ = 256;
   CUDADenseBinnerTables tables_;
   // staging ring
   data_size_t chunk_rows_ = 0;

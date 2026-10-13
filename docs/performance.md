@@ -394,7 +394,11 @@ columns in shared memory with coalesced reads (a warp walks consecutive columns 
 the gather kernel. Kernel 1.04 s → 0.04 s (the search's nsys). Same binary, key off against on, numerai53bench-construct
 (in-RAM int8, 5.46M × 3,555; constructs 2-4 of each process timed, 3 interleaved pairs): 3.77 s → 3.63 s, 1.038x; the
 saved binary and the 50-round model are md5-identical in every construct and to master's. Lattice: int8wide (400
-columns: three full tiles and a partial one) with the key off.
+columns: three full tiles and a partial one) with the key off. The tile's rows and the block's threads are keys,
+`construct_tile_rows` (default 64, an even number up to 384: the tile is 128 × rows bytes of shared memory, within the
+48 KB every device grants without opt-in) and `construct_tile_threads` (default 256, a power of two in [32, 1024]);
+the 128 columns are not: one 128-byte line of an int8 input row, the unit the coalesced reads fetch. Every value bins
+the same bytes (each (column, row pair) is encoded once, whatever the tile).
 
 **Construction from host arrays: the host work around the binner.** A first construct in a process of epsilon
 (400k × 2,000 float32, in the page cache) took 2.8-3.4 s, and the binner was 0.43 s of it: sampling took 0.9 s, bin
