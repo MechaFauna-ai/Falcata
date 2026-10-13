@@ -8,7 +8,8 @@ trained model must be byte-identical whichever runs. The sweep covers what the w
 handling, the forward scan then rebuilds bin 0 from the leaf total), unused features, the bagging ridge, the
 parameters that switch its fp32 pruning off (max_delta_step) or move the min-gain cutoff, objectives with
 non-constant hessians (imbalanced binary, multiclass), and both tiers of the warp kernel (tasks of at most 8 scan
-positions as 4-lane groups, wider ones a warp each, and a dataset mixing both in one launch). Every cuda_plan key of
+positions as 4-lane groups, wider ones a warp each, and a dataset mixing both in one launch), their boundary widths
+(8/9, 64/65 and 128/129 positions) and a mixed dataset's trees that draw only narrow tasks. Every cuda_plan key of
 the warp kernel, flipped off, must train the default's model too. Only the deterministic (quantized) modes are
 compared.
 """
@@ -60,6 +61,21 @@ def _data(kind, rows, seed, objective="regression"):
             + [rng.standard_normal((rows, 6))]
         ).astype(np.float32)
         X[:, 16:][rng.random((rows, X.shape[1] - 16)) < 0.1] = np.nan
+    elif kind == "boundwidth":  # the tier boundaries: k values as 0..k-1, 1..k and 1..k with NaN, for k = 8, 9,
+        # 64, 65, 128, 129 (8-11, 64-67, 128-131 bins: tasks of 8 and 9, 64 and 65, 128 and 129 scan positions), then
+        # two floats
+        cols = []
+        for k in (8, 9, 64, 65, 128, 129):
+            nan_col = rng.integers(1, k + 1, size=rows).astype(np.float32)
+            nan_col[rng.random(rows) < 0.15] = np.nan
+            cols += [rng.integers(0, k, size=rows), rng.integers(1, k + 1, size=rows), nan_col]
+        X = np.column_stack(cols + [rng.standard_normal((rows, 2))]).astype(np.float32)
+    elif kind == "narrowplus":  # 57 columns of 2, 4 or 6 values (1..v, dense rows) and one of 33 values: sampled at
+        # feature_fraction 0.2, most trees draw only narrow tasks of this mixed dataset (the launch without wide units
+        # over the narrow-first order list), some the 33-value one too
+        X = np.column_stack(
+            [rng.integers(1, k + 1, size=(rows, 19)) for k in (2, 4, 6)] + [rng.integers(1, 34, size=(rows, 1))]
+        ).astype(np.float32)
     else:
         raise ValueError(kind)
     w = rng.standard_normal(min(8, X.shape[1]))
@@ -92,7 +108,7 @@ CONFIGS = [
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("quant", ["stochastic", "fixedpoint"])
-@pytest.mark.parametrize("kind", ["dense", "fewbin", "nan", "nan-mfb0", "mixed"])
+@pytest.mark.parametrize("kind", ["dense", "fewbin", "nan", "nan-mfb0", "mixed", "boundwidth"])
 @pytest.mark.parametrize("config", CONFIGS)
 def test_warp_find_is_bit_identical_cuda(kind, config, quant):
     params = {"quant_mode": quant, **config}
@@ -131,7 +147,7 @@ WARP_FIND_KEYS = [
 
 
 @_REQUIRES_CUDA
-@pytest.mark.parametrize("kind", ["dense", "nan", "mixed"])
+@pytest.mark.parametrize("kind", ["dense", "nan", "mixed", "boundwidth"])
 @pytest.mark.parametrize(
     "plan",
     [pytest.param(f"{key}:off", id=key) for key in WARP_FIND_KEYS]
@@ -144,6 +160,16 @@ def test_warp_find_keys_are_bit_identical_cuda(kind, plan):
     default = _train(kind, rows, {**params, "cuda_plan": "auto"}, rounds=8)
     flipped = _train(kind, rows, {**params, "cuda_plan": f"auto,{plan}"}, rounds=8)
     assert default == flipped
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("quant", ["stochastic", "fixedpoint"])
+def test_warp_find_narrow_only_trees_are_bit_identical_cuda(quant):
+    """A mixed dataset's trees that draw only narrow tasks take the launch without wide units over the order list."""
+    params = {"quant_mode": quant, "feature_fraction": 0.2}
+    warp = _train("narrowplus", 60_001, {**params, "cuda_plan": "auto"}, rounds=16)
+    block = _train("narrowplus", 60_001, {**params, "cuda_plan": "auto,warp_find:off"}, rounds=16)
+    assert warp == block
 
 
 @_REQUIRES_CUDA
@@ -165,13 +191,17 @@ params = {{"quant_mode": "stochastic", "verbosity": 1, **{params!r}}}
 if {categorical!r}:
     X = np.column_stack([X, np.random.default_rng(1).integers(0, 6, size=len(y))]).astype(np.float32)
     params["categorical_feature"] = [X.shape[1] - 1]
-_train(None, 0, params, X=X, y=y, rounds=2)
+_train(None, 0, params, X=X, y=y, rounds={rounds!r})
 """
 
 
-def _finder_kernels(kind, categorical, params):
+def _finder_kernels(kind, categorical, params, rounds=2):
     code = _PROBE.format(
-        here=os.path.dirname(os.path.abspath(__file__)), kind=kind, categorical=categorical, params=params
+        here=os.path.dirname(os.path.abspath(__file__)),
+        kind=kind,
+        categorical=categorical,
+        params=params,
+        rounds=rounds,
     )
     env = {**os.environ, "FALCATA_DEBUG": "diag"}
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, check=True).stdout
@@ -190,6 +220,7 @@ def _finder_kernels(kind, categorical, params):
         pytest.param("nan-mfb0", False, {}, "warp (tier: few-position)", id="nan-mfb0"),
         pytest.param("mixed", False, {}, "warp (tier: few-position + wide)", id="mixed"),
         pytest.param("mixed", False, {"feature_fraction": 0.5}, "warp (tier: few-position + wide)", id="mixed-sampled"),
+        pytest.param("boundwidth", False, {}, "warp (tier: few-position + wide)", id="boundwidth"),
         pytest.param("dense", False, {"objective": "binary"}, "warp (tier: wide)", id="binary"),
         pytest.param("dense", False, {"objective": "multiclass", "num_class": 3}, "warp (tier: wide)", id="multiclass"),
         pytest.param("dense", False, {"cuda_plan": "auto,warp_find:off"}, "block", id="warp_find-off"),
@@ -202,3 +233,10 @@ def test_datasets_reach_the_intended_finder_cuda(kind, categorical, params, kern
     kernels = _finder_kernels(kind, categorical, params)
     assert kernels, "no split-finder launch was logged"
     assert all(k == kernel for k in kernels), kernels
+
+
+@_REQUIRES_CUDA
+def test_narrow_only_trees_take_the_narrow_launch_cuda():
+    """narrowplus at feature_fraction 0.2: both launches of the mixed dataset occur, the narrow-only one included."""
+    kernels = _finder_kernels("narrowplus", False, {"feature_fraction": 0.2}, rounds=16)
+    assert set(kernels) == {"warp (tier: few-position)", "warp (tier: few-position + wide)"}, kernels
