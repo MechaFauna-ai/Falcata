@@ -819,6 +819,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
    *  threshold deep-copies cannot overwrite entries still being consumed */
   cudaEvent_t cat_consumed_default_event_ = nullptr;
   cudaEvent_t cat_consumed_tree_event_ = nullptr;
+  /*! \brief cuda_plan key split_counts_early: recorded on the tree stream after a non-final level's tree record; the
+   *  next level's find/sync stream waits on it (the record reads the cuda_leaf_best_split_info_ entries that the
+   *  next level's sync kernel overwrites, and no device synchronize separates them any more) */
+  cudaEvent_t tree_record_done_event_ = nullptr;
   /*! \brief index map from leaf index to histogram index */
   std::vector<int> leaf_to_hist_index_map_;
   /*! \brief number of total histogram bins */

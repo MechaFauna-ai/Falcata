@@ -1590,6 +1590,34 @@ __global__ void __launch_bounds__(SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS
   }
 }
 
+// cuda_plan key split_counts_early: the split's 18 ints FinishSplitBatch reads, written by the level's aggregate kernel
+// (the producer of the children's counts and starts) instead of by the tree-structure body
+// (HybridSplitTreeStructureSplit) after it: the same counts and starts (the left child keeps its parent's start, the
+// right one starts after the left's rows), the same CUDASplitInfo sums, the same smaller/larger count comparison;
+// single GPU only (slots 16/17 are only read under NCCL, where they carry the global counts)
+__device__ __forceinline__ void HybridWriteSplitCountsMirror(int* mirror, const CUDAHybridApplyDescriptor& d,
+                                                             const data_size_t left_start,
+                                                             const data_size_t left_count,
+                                                             const data_size_t right_count) {
+  double* mirror_sums = reinterpret_cast<double*>(mirror + 8);
+  const CUDASplitInfo* best_split_info = d.best_split_info;
+  mirror[0] = d.left_leaf_index;
+  mirror[1] = left_count;
+  mirror[2] = left_start;
+  mirror[3] = d.right_leaf_index;
+  mirror[4] = right_count;
+  mirror[5] = left_start + left_count;
+  mirror_sums[0] = best_split_info->left_sum_hessians;
+  mirror_sums[1] = best_split_info->right_sum_hessians;
+  mirror_sums[2] = best_split_info->left_sum_gradients;
+  mirror_sums[3] = best_split_info->right_sum_gradients;
+  const bool left_is_smaller = left_count < right_count;
+  mirror[6] = left_is_smaller ? d.left_leaf_index : d.right_leaf_index;
+  mirror[7] = left_is_smaller ? d.right_leaf_index : d.left_leaf_index;
+  mirror[16] = left_count;
+  mirror[17] = right_count;
+}
+
 // per-split block-offset prefix sum + children leaf metadata update; one block
 // per split, generalizing AggregateBlockOffsetKernel0 to arbitrary num_blocks.
 // The split's region slot 0 is zeroed explicitly (a slot that held a non-zero
@@ -1602,6 +1630,7 @@ __global__ void HybridAggregateBlockOffsetBatchKernel(
   data_size_t* cuda_leaf_data_end,
   data_size_t* cuda_leaf_num_data,
   data_size_t* level_smaller_counts,
+  int* split_info_mirror_base,
   const CUDAHybridGraphLoopStateOpt gstate) {
   // graphs A2 idle-block guard (pow2-frozen grid; see the gen-bit-vector kernel)
   if (HybridGraphBeyondLiveSplits(gstate, blockIdx.x)) {
@@ -1673,6 +1702,10 @@ __global__ void HybridAggregateBlockOffsetBatchKernel(
     // actual smaller-child size of this split, consumed by the speculative
     // batched construct kernel's device row-grouping (single-sync flow)
     level_smaller_counts[blockIdx.x] = left_count < right_count ? left_count : right_count;
+    if (split_info_mirror_base != nullptr) {
+      HybridWriteSplitCountsMirror(split_info_mirror_base + 18 * blockIdx.x, d,
+                                   cuda_leaf_data_start[left_leaf_index], left_count, right_count);
+    }
   }
 }
 
@@ -1694,7 +1727,8 @@ __global__ void __launch_bounds__(AGGREGATE_BLOCK_SIZE_DATA_PARTITION) HybridAgg
   data_size_t* cuda_leaf_data_start,
   data_size_t* cuda_leaf_data_end,
   data_size_t* cuda_leaf_num_data,
-  data_size_t* level_smaller_counts) {
+  data_size_t* level_smaller_counts,
+  int* split_info_mirror_base) {
   __shared__ uint64_t shared_mem_buffer[WARPSIZE];
   __shared__ uint32_t totals[1];
   const CUDAHybridApplyDescriptor& d = descs[blockIdx.x];
@@ -1757,6 +1791,10 @@ __global__ void __launch_bounds__(AGGREGATE_BLOCK_SIZE_DATA_PARTITION) HybridAgg
     cuda_leaf_data_end[right_leaf_index] = old_left_end;
     cuda_leaf_num_data[right_leaf_index] = right_count;
     level_smaller_counts[blockIdx.x] = left_count < right_count ? left_count : right_count;
+    if (split_info_mirror_base != nullptr) {
+      HybridWriteSplitCountsMirror(split_info_mirror_base + 18 * blockIdx.x, d, old_left_start, left_count,
+                                   right_count);
+    }
   }
 }
 
@@ -2431,9 +2469,9 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
   constexpr int block_dim = SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
   // out buffer of this level == new main array after the caller's swap
   data_size_t* new_main_indices = cuda_out_data_indices_in_leaf_.RawData();
-  // the level is bracketed by device synchronizations (best-split readback before,
-  // FinishSplitBatch after), but wait on the last recorded copy event anyway so a
-  // still-in-flight per-split CopyDataIndicesKernel can never race the scratch
+  // the level is preceded by the best-split readback's device synchronize (and followed by FinishSplitBatch's,
+  // or, under split_counts_early, by its aggregate-event wait), but wait on the last recorded copy event anyway so
+  // a still-in-flight per-split CopyDataIndicesKernel can never race the scratch
   if (indices_copy_done_event_ != nullptr) {
     CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], indices_copy_done_event_, 0));
   }
@@ -2446,6 +2484,15 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
     split_info_mirror = pinned_split_info_device_;
   }
   split_info_mirror_written_ = split_info_mirror != nullptr;
+  // cuda_plan key split_counts_early: the aggregate kernel writes the staging instead of the tree-structure body
+  // (single GPU only: slots 16/17 are the global counts under NCCL)
+  int* aggregate_mirror = nullptr;
+  if (split_info_early_requested_ && split_info_mirror != nullptr && nccl_communicator_ == nullptr) {
+    aggregate_mirror = split_info_mirror;
+    split_info_mirror = nullptr;
+  }
+  split_info_early_requested_ = false;
+  split_info_early_written_ = aggregate_mirror != nullptr;
   // cuda_plan key apply_row_batch: each chunk of block_dim rows taken by block_dim / 4 threads of 4 rows
   constexpr int kApplyRows = 4;
   const bool apply_row_batch = FalcataPlan::Get().apply_row_batch;
@@ -2491,12 +2538,16 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
     kernel<<<num_splits, threads, 0, cuda_streams_[0]>>>(
       descs, cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
       cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
-      cuda_level_smaller_counts_.RawData());
+      cuda_level_smaller_counts_.RawData(), aggregate_mirror);
   } else {
     HybridAggregateBlockOffsetBatchKernel<<<num_splits, AGGREGATE_BLOCK_SIZE_DATA_PARTITION, 0, cuda_streams_[0]>>>(
       descs, cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
       cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
-      cuda_level_smaller_counts_.RawData(), nullptr);
+      cuda_level_smaller_counts_.RawData(), aggregate_mirror, nullptr);
+  }
+  if (aggregate_mirror != nullptr) {
+    // FinishSplitBatch waits on this instead of the device (split_counts_early)
+    CUDASUCCESS_OR_FATAL(cudaEventRecord(aggregate_done_event_, cuda_streams_[0]));
   }
   // cuda_plan keys apply_struct_fused / gap_copy_fused: the tree-structure update and the gap copy as extra flat ids
   // of the partition kernel. cuda_plan key final_map_only (map_only): only the row -> leaf map is written, not the
@@ -2668,7 +2719,7 @@ void CUDADataPartition::CaptureHybridGraphApplyKernels(
   HybridAggregateBlockOffsetBatchKernel<<<1, AGGREGATE_BLOCK_SIZE_DATA_PARTITION, 0, stream>>>(
     descs, cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
     cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
-    cuda_level_smaller_counts_.RawData(), gstate);
+    cuda_level_smaller_counts_.RawData(), nullptr, gstate);
   if (!AppendCapturedNode(stream, nodes)) return;
   roles->push_back(kHybridGraphNodeAggregate);
   HybridSplitInnerBatchKernel<1><<<dim3(1, 1), block_dim, 0, stream>>>(
