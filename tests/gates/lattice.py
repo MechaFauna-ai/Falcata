@@ -1103,12 +1103,12 @@ def build_profile(name):
         y = X[:, :40] @ rng.standard_normal(40) + rng.standard_normal(n)
         base.update({"max_bin": 15, "feature_fraction": 0.2})
     elif name == "mixwidth":
-        # one dataset with every scan width of the generic (G=32) warp split finder: 2-bin indicators and 6-value
-        # columns (at most 8 scan positions: 4-lane groups, eight per warp), columns of 40, 70, 100, 130, 160 and
-        # 200 values (warp_find_mid_ppl's tiers of 2, 4, 4, 8, 8 and 8 positions per lane) and continuous columns
-        # (255 bins, 8 per lane), NaN in 15% of the rows of four wide columns (the NaN scans). One task wider than 8
-        # positions makes the whole dataset take the G=32 launch, where find_prune_fp32, find_compact_survivors and
-        # find_select_int run.
+        # one dataset with both tiers of the warp split finder: 2-bin indicators and 6-value columns (at most 8 scan
+        # positions: the few-position tier, 4-lane groups, eight per warp), columns of 40, 70, 100, 130, 160 and 200
+        # values (the wide tier, a warp per task: warp_find_mid_ppl's 2, 4, 4, 8, 8 and 8 positions per lane) and
+        # continuous columns (255 bins, 8 per lane), NaN in 15% of the rows of four wide columns (the NaN scans). Each
+        # tree's used tasks go out in one launch, narrow first, then wide; the wide tasks run find_prune_fp32,
+        # find_prune_sure, find_compact_survivors and find_select_int.
         cols = [rng.integers(0, 2, size=n) for _ in range(10)]
         cols += [rng.integers(0, 6, size=n) for _ in range(6)]
         cols += [rng.integers(0, k, size=n) for k in (40, 70, 100, 130, 160, 200)]

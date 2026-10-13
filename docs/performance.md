@@ -908,7 +908,10 @@ integer or fp64 keys), one output record (the winner lane and its partner comput
 one load routine; the strided layout is a compile-time property of the 4-lane tier's scan and prune.
 
 **Removed keys** (2026-10, `kevo/unify_find`; each removal measured on the build before it, same binary, key off vs
-on, ratio = T(off) / T(on) at 30000 rounds, 2 pairs unless noted, models identical in every run):
+on, ratio = T(off) / T(on) at 30000 rounds, 2 pairs unless noted, models identical in every run). A `cuda_plan`
+string that still names one of them (`warp_find_narrow`, `warp_find_spread`, `warp_find_strided`,
+`find_loads_batched`, `find_pack_narrow`) now stops Dataset or Booster construction with the fatal error
+`cuda_plan: unknown key "<key>"`; every value of these keys trained the same model, so such a plan can drop the entry.
 
 | key | what it switched | decision | measurement |
 |---|---|---|---|
@@ -936,8 +939,13 @@ on, ratio = T(off) / T(on) at 30000 rounds, 2 pairs unless noted, models identic
   (median of 4 pairs, 1.03x; the cells score vs master 1.030x [1.023, 1.036]); covtype, higgs-like, year-like and
   the Numerai shapes within ±0.7% (noise). The rest of that lineage was already here or did not gain on this
   code: its per-lane gain work list is `find_prune_fp32`'s, `find_compact_survivors` goes further; a tighter bound
-  margin (2^-16 instead of 2e-4) was 1.000x on the 40-bin shape (5 pairs) and the sure prune on tasks of at most
-  32 positions (covtype's binary columns) 1.002x on covtype; neither is a key.
+  margin (2^-16 instead of 2e-4) was 1.000x on the 40-bin shape (5 pairs) and is not a key. (The lineage's sure
+  prune on tasks of at most 32 positions, then one position per lane under `warp_find_spread`, measured 1.002x on
+  covtype and was not adopted then. Since `kevo/unify_find` those tasks of 9 to 32 positions run 2 per lane like
+  every wide task, with `find_prune_fp32`, `find_prune_sure` and `find_compact_survivors` engaged. The winner is
+  the same: the fp64 tie tolerance is 0 (`GainTieRelTol<double>()`), so every grouping of positions into lanes picks
+  the exact (maximum gain, then lowest position) first maximum, and the prune drops only positions that cannot win
+  or tie. covtype's binary columns, which that measurement cited, are in the few-position tier now.)
 - **Datasets whose tasks all fit 8 positions** (Numerai, the 4- and 6-bin generator shapes) never reach the wide
   tier and run at master's speed. The guard workloads: year deep 1.32x, missing deep 1.23x, covtype 1.20x, higgs
   1.09x, numerai53-example 1.00x per round.

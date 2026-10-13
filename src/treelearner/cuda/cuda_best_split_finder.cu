@@ -6047,6 +6047,13 @@ __device__ __forceinline__ void WarpFindBest(
   // equal exactly as their bit patterns do as unsigned integers; lanes without one are excluded by kNoThreshold.
   // OtherIsBetterWithTieBreak's tolerance is fmax(|a|, |b|) * 0, NaN when either gain is +inf, which makes it
   // return false: kept as the kInfBits test on the warp.
+  // No gain that reaches this reduction is +inf (or NaN), so that rule never decides, and the result is the same
+  // whatever the lane grouping (PPL, 4-lane groups or a warp): every gradient sum is an int32 times grad_scale, a
+  // finite float, so |g| <= 2^31 * FLT_MAX, about 7.3e47, and g^2 about 5.3e95; consider() only sees positions that
+  // passed prep, whose hessian sums are >= min_sum_hessian_in_leaf >= 0 (config: check >= 0, as lambda_l2 >= 0), so
+  // each denominator (h + kEpsilon + lambda_l2) is >= kEpsilon = 1e-15 and each side's term is at most about 5.3e110
+  // (with max_delta_step the output is clamped only where |g| / (h + l2) exceeds it, which keeps the term below the
+  // same bound), far below DBL_MAX. A +inf gain would need a negative hessian floor, which the config rejects.
   const bool int_keys = STRIDED || select_int;
   constexpr uint64_t kInfBits = 0x7ff0000000000000ull;
   uint64_t best_bits = static_cast<uint64_t>(__double_as_longlong(best_gain));
