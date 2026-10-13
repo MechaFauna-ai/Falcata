@@ -278,13 +278,6 @@ struct FalcataPlan {
   // is the same exact first maximum (gain, then lower threshold).
   // Bit-identical.
   bool warp_find_strided = true;    // key: warp_find_strided
-  // warp_find_strided's level kernel with each (task, leaf) item's loads
-  // issued in three dependency levels (pair descriptor + used-task index +
-  // gradient/hessian scales; then the task and the valid leaf's sums and
-  // histogram pointer; then the feature-used flag) instead of one global
-  // round trip per load behind each early exit. Same values, same exits and
-  // writes: bit-identical.
-  bool find_loads_batched = true;   // key: find_loads_batched
   // the G=32 generic warp-find template (one dataset-wide task fails the all-narrow / all-spread tests, e.g. a
   // mix of 2-bin and 200-bin columns): WarpFindBest's per-task runtime PPL choice adds one tier per 32 positions
   // (PPL = ceil(num_positions / 32), 2..7) between the existing PPL=1 (<= 32) and PPL=8 (<= 256), so a task whose
@@ -803,7 +796,6 @@ struct FalcataPlan {
     if (key == "warp_find_narrow") return &warp_find_narrow;
     if (key == "warp_find_spread") return &warp_find_spread;
     if (key == "warp_find_strided") return &warp_find_strided;
-    if (key == "find_loads_batched") return &find_loads_batched;
     if (key == "warp_find_mid_ppl") return &warp_find_mid_ppl;
     if (key == "find_prune_fp32") return &find_prune_fp32;
     if (key == "find_select_int") return &find_select_int;

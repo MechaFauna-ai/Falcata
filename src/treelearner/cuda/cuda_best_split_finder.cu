@@ -6217,11 +6217,7 @@ __device__ __forceinline__ void WarpFindBest(
 
 // G = 32: one warp per (task, leaf); G = 4: one 4-lane group per (task, leaf), every task at most 8 positions;
 // G = 8 (warp_find_narrow without warp_find_spread): one 8-lane group per (task, leaf), every task at most 8 bins
-// BATCHED (cuda_plan key find_loads_batched): the item's loads go out in dependency levels -- the pair descriptor,
-// the used-task index and both scales together, then the task and the leaf's sums together (the leaf's only when
-// it is valid), then the feature-used flag -- instead of one round trip per load behind each early exit (leaf
-// validity, then the task index, the task, the flag, the scales, the leaf). Same values, same exits and writes.
-template <int G, bool STRIDED = false, bool BATCHED = false>
+template <int G, bool STRIDED = false>
 __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKernel(
   const int8_t* is_feature_used_bytree,
   const int num_tasks,
@@ -6292,70 +6288,31 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   double gscale;
   double hscale;
   const hist_t* hist_in_leaf;
-  if (BATCHED) {
-    // level 1: the descriptor, the used-task index (slot < num_used_tasks), both scales
-    const bool leaf_valid = is_larger ? desc->larger_valid : desc->smaller_valid;
-    leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
-    num_data = is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf;
-    leaf_num_bits = is_larger ? desc->larger_num_bits : desc->smaller_num_bits;
-    task_index = units ? static_cast<unsigned int>(unit_task) :
-      used_task_indices == nullptr ? slot : static_cast<unsigned int>(used_task_indices[slot]);
-    gscale = *grad_scale;
-    hscale = *hess_scale;
-    if (units && unit_task < 0) {
-      return;  // an empty group of a packed unit
-    }
-    // level 2: the task and, for a valid leaf only, its sums and histogram
-    task = tasks + task_index;
-    const int feature = task->inner_feature_index;
-    parent_gain = 0.0;
-    sum_gradients_hessians = 0;
-    parent_output = 0.0;
-    hist_in_leaf = nullptr;
-    if (leaf_valid) {
-      parent_gain = leaf_splits->gain;
-      sum_gradients_hessians = leaf_splits->sum_of_gradients_hessians;
-      parent_output = leaf_splits->leaf_value;
-      hist_in_leaf = leaf_splits->hist_in_leaf;
-    }
-    if (!leaf_valid) {
-      return;
-    }
-    // level 3: the feature-used flag
-    const unsigned int output_offset = pair_index * (2 * static_cast<unsigned int>(num_tasks)) +
-      (is_larger ? task_index + num_tasks : task_index);
-    out = cuda_best_split_info + output_offset;
-    if (!is_feature_used_bytree[feature]) {
-      if ((threadIdx.x & (gl - 1u)) == 0) out->is_valid = false;
-      return;
-    }
-  } else {
-    if (is_larger ? !desc->larger_valid : !desc->smaller_valid) {
-      return;
-    }
-    leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
-    num_data = is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf;
-    if (units && unit_task < 0) {
-      return;  // an empty group of a packed unit
-    }
-    task_index = units ? static_cast<unsigned int>(unit_task) :
-      used_task_indices == nullptr ? slot : static_cast<unsigned int>(used_task_indices[slot]);
-    task = tasks + task_index;
-    const unsigned int output_offset = pair_index * (2 * static_cast<unsigned int>(num_tasks)) +
-      (is_larger ? task_index + num_tasks : task_index);
-    out = cuda_best_split_info + output_offset;
-    if (!is_feature_used_bytree[task->inner_feature_index]) {
-      if ((threadIdx.x & (gl - 1u)) == 0) out->is_valid = false;
-      return;
-    }
-    parent_gain = leaf_splits->gain;
-    sum_gradients_hessians = leaf_splits->sum_of_gradients_hessians;
-    parent_output = leaf_splits->leaf_value;
-    leaf_num_bits = is_larger ? desc->larger_num_bits : desc->smaller_num_bits;
-    gscale = *grad_scale;
-    hscale = *hess_scale;
-    hist_in_leaf = leaf_splits->hist_in_leaf;
+  if (is_larger ? !desc->larger_valid : !desc->smaller_valid) {
+    return;
   }
+  leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
+  num_data = is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf;
+  if (units && unit_task < 0) {
+    return;  // an empty group of a packed unit
+  }
+  task_index = units ? static_cast<unsigned int>(unit_task) :
+    used_task_indices == nullptr ? slot : static_cast<unsigned int>(used_task_indices[slot]);
+  task = tasks + task_index;
+  const unsigned int output_offset = pair_index * (2 * static_cast<unsigned int>(num_tasks)) +
+    (is_larger ? task_index + num_tasks : task_index);
+  out = cuda_best_split_info + output_offset;
+  if (!is_feature_used_bytree[task->inner_feature_index]) {
+    if ((threadIdx.x & (gl - 1u)) == 0) out->is_valid = false;
+    return;
+  }
+  parent_gain = leaf_splits->gain;
+  sum_gradients_hessians = leaf_splits->sum_of_gradients_hessians;
+  parent_output = leaf_splits->leaf_value;
+  leaf_num_bits = is_larger ? desc->larger_num_bits : desc->smaller_num_bits;
+  gscale = *grad_scale;
+  hscale = *hess_scale;
+  hist_in_leaf = leaf_splits->hist_in_leaf;
   // scan positions 0 .. fnb + shift - 1 (see WarpFindBest); at most 32 fit one per lane
   const uint32_t num_positions = static_cast<uint32_t>(task->num_bin - task->mfb_offset) +
     ((!task->reverse && task->na_as_missing && task->mfb_offset == 1) ? 1u : 0u);
@@ -6450,14 +6407,7 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
       min_sum_hessian_in_leaf_, min_gain_to_split_, lambda_l2_, max_delta_step_, grad_scale, hess_scale, \
       hessian_ridge_quanta_, spread, narrow, mid_ppl, prune_fp32, select_int, compact_survivors, prune_sure, \
       pack_units, num_find_units_, cuda_best_split_info_.RawData()
-    if (spread && warp_find_max_positions_ <= 8 && FalcataPlan::Get().warp_find_strided &&
-        FalcataPlan::Get().find_loads_batched) {
-      // cuda_plan keys warp_find_strided (the 4-lane groups' positions strided over the lanes) and
-      // find_loads_batched (the item's loads in dependency levels)
-      FindBestSplitsDiscretizedForLevelWarpKernel<4, true, true><<<static_cast<unsigned int>((items + 31) / 32), 128,
-                                                                   0, cuda_streams_[0]>>>(
-        FindBestSplitsDiscretizedForLevelWarpKernel_ARGS);
-    } else if (spread && warp_find_max_positions_ <= 8 && FalcataPlan::Get().warp_find_strided) {
+    if (spread && warp_find_max_positions_ <= 8 && FalcataPlan::Get().warp_find_strided) {
       // cuda_plan key warp_find_strided: the 4-lane groups' positions strided over the lanes
       FindBestSplitsDiscretizedForLevelWarpKernel<4, true><<<static_cast<unsigned int>((items + 31) / 32), 128, 0,
                                                              cuda_streams_[0]>>>(

@@ -547,7 +547,6 @@ def build_cells():
         "colmajor_align",
         "root_hist_short_blocks",
         "warp_find_strided",
-        "find_loads_batched",
         "sync_copy_batched",
         "fix_subtract_fused",
         "apply_struct_fused",
@@ -628,12 +627,12 @@ def build_cells():
     )
     # the tiny-gradient regime (4-bit, 5 bins, feature_fraction 0.1, 500-row leaves) over 150 rounds, and the NaN
     # scans with an unstored bin 0 (the strided finder's shifted position mapping), shallow and deep
-    for key in ["warp_find_strided", "find_loads_batched", "fix_subtract_fused", "sync_copy_batched"]:
+    for key in ["warp_find_strided", "fix_subtract_fused", "sync_copy_batched"]:
         cell(
             f"tinygrad/flip-{key}", "tinygrad", {"cuda_plan": f"auto,{key}:off"}, rounds=150, equal_to="tinygrad/quant"
         )
     cell("tinygrad/flip-night3", "tinygrad", {"cuda_plan": night3_off}, rounds=150, equal_to="tinygrad/quant")
-    for key in ["warp_find_strided", "find_loads_batched"]:
+    for key in ["warp_find_strided"]:
         cell(
             f"missing-mfb0-dense/flip-{key}",
             "missing-mfb0-dense",
