@@ -894,7 +894,9 @@ named, four drawn from a generator) added keys to that tier, all default on and 
   gates with a sure margin (2^-20 relative on the hessians and the rounded count, 2^-8 absolute on the count; the
   fp32 values are within 2^-22 of the exact doubles), instead of one position per lane verified with the exact fp64
   unpack: the prune issues no fp64 at all and its threshold is the largest valid bound of the warp. A position that
-  is not sure sets no bound; the exact gain loop decides it as before.
+  is not sure sets no bound; the exact gain loop decides it as before. The sure test runs only when the float
+  `min_sum_hessian_in_leaf` and the count factor are normal floats (≥ FLT_MIN), so the margin proof holds in the
+  kernel itself; otherwise the per-lane verified bound is used.
 - **`find_select_int`:** the cross-lane best-split reduction compares the gains' bit patterns as integers (keeping
   the fp64 tie-break's rule that an infinite gain never wins).
 - **`find_compact_survivors`:** every lane's survivors go into one per-warp shared list (9 KB of static shared
