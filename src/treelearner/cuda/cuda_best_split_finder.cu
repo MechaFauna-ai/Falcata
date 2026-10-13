@@ -5688,8 +5688,8 @@ __device__ __forceinline__ void WarpFindBest(
     CUDASplitInfo* out) {
   using UT = std::make_unsigned_t<ACC_T>;
   constexpr uint32_t kNoThreshold = 0xffffffffu;
-  static_assert(G == 32 || (G == 4 && PPL == 2) || (G == 8 && PPL == 1),
-                "4-lane groups own 2 positions per lane, 8-lane groups one");
+  static_assert((G == 32 && PPL >= 2) || (G == 4 && PPL == 2) || (G == 8 && PPL == 1),
+                "a warp owns at least 2 positions per lane, 4-lane groups 2, 8-lane groups one");
   static_assert(!STRIDED || G == 4, "strided positions: 4-lane groups only");
   const uint32_t lane = threadIdx.x & static_cast<uint32_t>(G - 1);
   const unsigned int mask = G == 32 ? 0xffffffffu : (((1u << G) - 1u) << ((threadIdx.x & 31u) & ~(G - 1u)));
@@ -6314,7 +6314,6 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   // scan positions 0 .. fnb + shift - 1 (see WarpFindBest); at most 32 fit one per lane
   const uint32_t num_positions = static_cast<uint32_t>(task->num_bin - task->mfb_offset) +
     ((!task->reverse && task->na_as_missing && task->mfb_offset == 1) ? 1u : 0u);
-  const bool one_per_lane = num_positions <= 32u;
   // warp_find_mid_ppl (G == 32 only; the G == 4 template and a packed unit's 8-lane groups always force PPL to 2 / 1
   // below regardless of which tier is picked here): a task does not need the full 8-slot unrolled loop PPL=8 reaches for every width
   // up to 256: one tier per 32 positions, PPL = ceil(num_positions / 32), at least 2 (num_bin <= 256 keeps it <= 8).
@@ -6332,9 +6331,7 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
 #define FALCATA_WARP_FIND(REV, B16, ACC_T) \
   if (G == 32 && packed) { \
     FALCATA_WARP_FIND_G8(REV, B16, ACC_T); \
-  } else if (G < 32 || one_per_lane) { \
-    FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, 1); \
-  } else if (mid_tier <= 2u) { \
+  } else if (G < 32 || mid_tier <= 2u) { \
     FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, 2); \
   } else if (mid_tier == 3u) { \
     FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, 3); \
