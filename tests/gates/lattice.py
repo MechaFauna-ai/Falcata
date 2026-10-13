@@ -32,6 +32,7 @@ crashing cell fails alone and the runner respawns for the rest).
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -53,6 +54,9 @@ METRIC_TOLERANCE = 0.02  # relative; only applied to non-fingerprinted (nondeter
 #            such cells are NOT in the fingerprint file
 #   fingerprint  False for nondeterministic (non-quant) cells: validity+metric only
 #   perf     True -> wall time tracked by perf_gate.py
+#   finder_tier  the quantized level split finder every tree must take, as the
+#            FALCATA_DEBUG=diag line names it ("warp (tier: ...)" or "block");
+#            such a cell runs alone in a worker with FALCATA_DEBUG=diag
 # --------------------------------------------------------------------------- #
 
 
@@ -68,6 +72,7 @@ def build_cells():
         fingerprint=True,
         perf=False,
         leaf_bound=None,
+        finder_tier=None,
     ):
         cells.append(
             {
@@ -79,6 +84,7 @@ def build_cells():
                 "fingerprint": fingerprint and equal_to is None,
                 "perf": perf,
                 "leaf_bound": leaf_bound,
+                "finder_tier": finder_tier,
             }
         )
 
@@ -549,8 +555,6 @@ def build_cells():
         "root_hist_l2_prefetch",
         "colmajor_align",
         "root_hist_short_blocks",
-        "warp_find_strided",
-        "find_loads_batched",
         "sync_copy_batched",
         "fix_subtract_fused",
         "apply_struct_fused",
@@ -629,43 +633,27 @@ def build_cells():
         {**ff15, "cuda_plan": night3_off},
         equal_to="sampledwide-mixbins/quant-ff15",
     )
-    # the tiny-gradient regime (4-bit, 5 bins, feature_fraction 0.1, 500-row leaves) over 150 rounds, and the NaN
-    # scans with an unstored bin 0 (the strided finder's shifted position mapping), shallow and deep
-    for key in ["warp_find_strided", "find_loads_batched", "fix_subtract_fused", "sync_copy_batched"]:
+    # the tiny-gradient regime (4-bit, 5 bins, feature_fraction 0.1, 500-row leaves) over 150 rounds
+    for key in ["fix_subtract_fused", "sync_copy_batched"]:
         cell(
             f"tinygrad/flip-{key}", "tinygrad", {"cuda_plan": f"auto,{key}:off"}, rounds=150, equal_to="tinygrad/quant"
         )
     cell("tinygrad/flip-night3", "tinygrad", {"cuda_plan": night3_off}, rounds=150, equal_to="tinygrad/quant")
-    for key in ["warp_find_strided", "find_loads_batched"]:
-        cell(
-            f"missing-mfb0-dense/flip-{key}",
-            "missing-mfb0-dense",
-            {"cuda_plan": f"auto,{key}:off"},
-            equal_to="missing-mfb0-dense/quant",
-        )
-        cell(
-            f"missing-mfb0-dense/flip-{key}-deep",
-            "missing-mfb0-dense",
-            {**deep, "cuda_plan": f"auto,{key}:off"},
-            equal_to="missing-mfb0-dense/quant-deep",
-        )
     # --- the generic warp split finder on mixed and wide scans ------------------------------------------------ #
-    # warp_find_mid_ppl runs a task of 33..256 scan positions at ceil(positions / 32) per lane instead of 8;
+    # warp_find_mid_ppl runs a wide task at 2, 4 or 8 positions per lane (up to 64, 128, 256) instead of 8;
     # find_prune_fp32 prunes from fp32 bounds of the integer prefix (one exact verify per lane, an exact screen, a
     # per-lane work list); find_prune_sure takes its lower bound from every position passing the gates with a sure
     # fp32 margin instead of the exact verify; find_compact_survivors hands the warp's surviving positions out 32 at
     # a time;
-    # find_select_int reduces the best split in integer compares of the gain bits (also on the one-position-per-lane
-    # path: fewbin's 12-bin tasks); find_pack_narrow (default off) runs tasks of at most 8 positions four per warp
-    # inside the same launch. Each key off and all five off must train the base cell's model on mixwidth (every
-    # tier, packed units, NaN scans; its base fingerprints were recorded with master's build), dense (255-bin scans)
-    # and missing (NaN scans); on mixwidth, which has tasks of at most 8 positions, so must find_pack_narrow on.
+    # find_select_int reduces the best split in integer compares of the gain bits (also on the 2-per-lane tier:
+    # fewbin's 12-bin tasks). Each key off and all five off must train the base cell's model on mixwidth (every
+    # tier, its narrow tasks as 4-lane groups in the same launch, NaN scans; its base fingerprints were recorded with
+    # master's build), dense (255-bin scans) and missing (NaN scans).
     finder_keys = [
         "warp_find_mid_ppl", "find_prune_fp32", "find_prune_sure", "find_select_int", "find_compact_survivors"
     ]
     finder_flips = [
         *[(key, f"{key}:off") for key in finder_keys],
-        ("find_pack_narrow_on", "find_pack_narrow:on"),
         ("jit1-finder", ",".join(f"{k}:off" for k in finder_keys)),
     ]
     cell("mixwidth/quant", "mixwidth")
@@ -675,10 +663,20 @@ def build_cells():
             cell(
                 f"mixwidth/flip-{name}{suffix}", "mixwidth", {**base_params, "cuda_plan": f"auto,{plan}"}, equal_to=base
             )
-    for name, plan in [f for f in finder_flips if f[0] != "find_pack_narrow_on"]:  # no task of <= 8 positions there
+    for name, plan in finder_flips:
         cell(f"dense/flip-{name}-deep", "dense", {**deep, "cuda_plan": f"auto,{plan}"}, equal_to="dense/quant-deep")
         cell(f"missing/flip-{name}", "missing", {"cuda_plan": f"auto,{plan}"}, equal_to="missing/quant")
     cell("fewbin/flip-find_select_int", "fewbin", {"cuda_plan": "auto,find_select_int:off"}, equal_to="fewbin/quant")
+    # the warp finder's tiers by scan width (no keys): tasks of at most 8 positions as 4-lane groups (sampled's
+    # 6-value columns), wider ones a warp each (dense's 255 bins, fewbin's 12 values), both in one launch (mixwidth);
+    # FALCATA_DEBUG=diag names the tier on every tree's single-pair levels, and the model is the base cell's
+    for profile, tier in [
+        ("sampled", "warp (tier: few-position)"),
+        ("dense", "warp (tier: wide)"),
+        ("fewbin", "warp (tier: wide)"),
+        ("mixwidth", "warp (tier: few-position + wide)"),
+    ]:
+        cell(f"{profile}/finder-tier", profile, {"verbose": 1}, equal_to=f"{profile}/quant", finder_tier=tier)
 
     # deep trees with a binding leaf budget (no tree-completing level), the bagged multiclass categorical cell
     # (level_apply_first keeps the record first for categorical splits; final_map_only is off with bagging) and the
@@ -1055,8 +1053,8 @@ def build_profile(name):
         base.update({"max_bin": 15, "feature_fraction": 0.2})
     elif name == "mixwidth":
         # one dataset with every scan width of the generic (G=32) warp split finder: 2-bin indicators and 6-value
-        # columns (at most 8 scan positions: find_pack_narrow's packed units), columns of 40, 70, 100, 130, 160 and
-        # 200 values (warp_find_mid_ppl's tiers of 2, 3, 4, 5, 5 and 7 positions per lane) and continuous columns
+        # columns (at most 8 scan positions: 4-lane groups, eight per warp), columns of 40, 70, 100, 130, 160 and
+        # 200 values (warp_find_mid_ppl's tiers of 2, 4, 4, 8, 8 and 8 positions per lane) and continuous columns
         # (255 bins, 8 per lane), NaN in 15% of the rows of four wide columns (the NaN scans). One task wider than 8
         # positions makes the whole dataset take the G=32 launch, where find_prune_fp32, find_compact_survivors and
         # find_select_int run.
@@ -1315,10 +1313,32 @@ for cell in json.loads(sys.argv[1]):
 """
 
 
+def run_tier_cell(cell):
+    """A finder_tier cell, alone in a worker with FALCATA_DEBUG=diag: its result, failed unless every logged level
+    split finder is the expected one."""
+    proc = subprocess.run(
+        [sys.executable, "-c", _WORKER_SOURCE, json.dumps([cell])],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "FALCATA_DEBUG": "diag"},
+    )
+    recs = [json.loads(line[5:]) for line in proc.stdout.splitlines() if line.startswith("CELL ")]
+    if not recs:
+        return {"id": cell["id"], "ok": False, "error": f"worker exited {proc.returncode}: {proc.stderr[-800:]}"}
+    rec = recs[0]
+    finders = re.findall(r"split finder: (.*) kernel for this tree's quantized levels(.*)", proc.stdout)
+    finders = sorted({f"{kernel}{rest}".strip() for kernel, rest in finders})
+    if rec.get("ok") and finders != [cell["finder_tier"]]:
+        rec = {"id": cell["id"], "ok": False,
+               "error": f"split finder {finders} logged, expected only {cell['finder_tier']!r}"}
+    return rec
+
+
 def run_cells(cells):
     """Run cells in chunked subprocesses; crash-isolate and collect results."""
-    results = {}
-    pending = list(cells)
+    results = {c["id"]: run_tier_cell(c) for c in cells if c.get("finder_tier")}
+    pending = [c for c in cells if not c.get("finder_tier")]
     while pending:
         chunk, pending = pending[:WORKER_CHUNK], pending[WORKER_CHUNK:]
         proc = subprocess.run(

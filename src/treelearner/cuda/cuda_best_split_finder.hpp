@@ -64,9 +64,6 @@ struct SplitFindTask {
   double penalty;
 };
 
-// cuda_plan key find_pack_narrow: flag on a warp unit's first task index marking a packed unit (narrow tasks run as
-// 8-lane groups); see CUDABestSplitFinder::BeforeTrain and FindBestSplitsDiscretizedForLevelWarpKernel
-constexpr int kFindUnitPacked = 1 << 30;
 
 class CUDABestSplitFinder {
  public:
@@ -676,20 +673,19 @@ class CUDABestSplitFinder {
   double hessian_ridge_quanta_ = 0.0;
   // every task fits the warp-per-task quantized level finder (see UpdateWarpFindEligibility)
   bool warp_find_eligible_ = false;
-  // ... and every task has at most 8 bins: the warp_find_narrow launch packs four tasks per warp (8-lane groups)
-  bool warp_find_all_narrow_ = false;
   // longest warp-finder scan over all tasks, in positions (UpdateWarpFindEligibility)
   int warp_find_max_positions_ = 256;
-  // cuda_plan key find_pack_narrow: per task, whether its scan has at most 8 positions (an 8-lane group's worth),
-  // their count, and the tree's unit list (4 task indices per warp unit: one wide task and -1s, or up to four
-  // narrow tasks, -1 for an empty group), rebuilt from the tree's used tasks at BeforeTrain
+  // per task, whether its scan has at most 8 positions (a 4-lane group's worth), and their count; on a dataset
+  // mixing narrow and wide tasks, the tree's launch order (used narrow tasks first, then the wide ones) and the
+  // number of narrow tasks in it, rebuilt from the tree's used tasks at BeforeTrain
   std::vector<uint8_t> warp_find_task_narrow_;
   int warp_find_num_narrow_ = 0;
-  std::vector<int> host_find_units_;
-  CUDAVector<int> cuda_find_units_;
-  int num_find_units_ = 0;
-  // units of the all-tasks list currently on the device (0: none; a sampled tree's list overwrites it)
-  int find_units_all_tasks_ = 0;
+  std::vector<int> host_warp_find_order_;
+  CUDAVector<int> cuda_warp_find_order_;
+  bool warp_find_order_used_ = false;
+  int warp_find_num_narrow_used_ = 0;
+  // the all-tasks launch order is on the device (a sampled tree's order overwrites it)
+  bool warp_find_order_all_tasks_ = false;
   // number of total bins in the dataset
   const int num_total_bin_;
   // has categorical feature
