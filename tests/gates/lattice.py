@@ -649,13 +649,17 @@ def build_cells():
     # --- the generic warp split finder on mixed and wide scans ------------------------------------------------ #
     # warp_find_mid_ppl runs a task of 33..256 scan positions at ceil(positions / 32) per lane instead of 8;
     # find_prune_fp32 prunes from fp32 bounds of the integer prefix (one exact verify per lane, an exact screen, a
-    # per-lane work list); find_compact_survivors hands the warp's surviving positions out 32 at a time;
+    # per-lane work list); find_prune_sure takes its lower bound from every position passing the gates with a sure
+    # fp32 margin instead of the exact verify; find_compact_survivors hands the warp's surviving positions out 32 at
+    # a time;
     # find_select_int reduces the best split in integer compares of the gain bits (also on the one-position-per-lane
     # path: fewbin's 12-bin tasks); find_pack_narrow (default off) runs tasks of at most 8 positions four per warp
-    # inside the same launch. Each key off and all four off must train the base cell's model on mixwidth (every
+    # inside the same launch. Each key off and all five off must train the base cell's model on mixwidth (every
     # tier, packed units, NaN scans; its base fingerprints were recorded with master's build), dense (255-bin scans)
     # and missing (NaN scans); on mixwidth, which has tasks of at most 8 positions, so must find_pack_narrow on.
-    finder_keys = ["warp_find_mid_ppl", "find_prune_fp32", "find_select_int", "find_compact_survivors"]
+    finder_keys = [
+        "warp_find_mid_ppl", "find_prune_fp32", "find_prune_sure", "find_select_int", "find_compact_survivors"
+    ]
     finder_flips = [
         *[(key, f"{key}:off") for key in finder_keys],
         ("find_pack_narrow_on", "find_pack_narrow:on"),

@@ -847,7 +847,7 @@ an epsilon-like 40-bin shape. There the cost was fp64 work per scan position, at
 covtype's find kernel was 41% of its round, higgs' 16% (nsys).
 
 An agentic search scored across eight datasets and training regimes (`jit1`: four named, four drawn from a
-generator) added four `cuda_plan` keys to that kernel, all default on and bit-identical (identity keys in
+generator) added five `cuda_plan` keys to that kernel, all default on and bit-identical (identity keys in
 `ablation.py`, flip cells in the lattice):
 
 - **`warp_find_mid_ppl`:** a task runs ceil(positions / 32) positions per lane (1 to 8) instead of 8 for every task
@@ -856,6 +856,11 @@ generator) added four `cuda_plan` keys to that kernel, all default on and bit-id
   bound, verified exactly before it prunes; an exact-safe screen drops positions that fail a gate by a margin, an
   empty bin is skipped (it cannot beat its neighbour), and the exact fp64 gains run over a per-lane work list of
   the survivors.
+- **`find_prune_sure`:** `find_prune_fp32`'s lower bound comes from every position whose fp32 sums pass the exact
+  gates with a sure margin (2^-20 relative on the hessians and the rounded count, 2^-8 absolute on the count; the
+  fp32 values are within 2^-22 of the exact doubles), instead of one position per lane verified with the exact fp64
+  unpack: the prune issues no fp64 at all and its threshold is the largest valid bound of the warp. A position that
+  is not sure sets no bound; the exact gain loop decides it as before.
 - **`find_select_int`:** the cross-lane best-split reductions compare the gains' bit patterns as integers, and the
   winner's lane and its partner compute the two children side by side.
 - **`find_compact_survivors`:** every lane's survivors go into one per-warp shared list (9 KB of static shared
@@ -872,9 +877,16 @@ generator) added four `cuda_plan` keys to that kernel, all default on and bit-id
 | year-like (fixedpoint, 3.4M × 93 floats) | 4.34 ms | 3.91 ms | 1.109x |
 | numerai53 benchmark split (30000 rounds timed from 200, 4 pairs) | 3.964 ms | 3.976 ms | 0.997x |
 
-- **The same model on every run**, with any one key off and with all four off.
+- **The same model on every run**, with any one key off and with all of them off.
 - **Per commit** (covtype, same job): `find_prune_fp32` is most of it (1.13x), the integer selection +1%, survivor
   compaction +2.4%. On the 40-bin shape the PPL tiers alone are 1.27x, but on top of the work list they add 0.6%.
+- **`find_prune_sure`** (ported from the search's second split-finder lineage, `j007`, onto the four keys above;
+  master `a65d34e8`): same binary, key off vs on, the epsilon-like 40-bin shape 6.475 → 6.280 ms per round
+  (median of 4 pairs, 1.03x; the cells score vs master 1.030x [1.023, 1.036]); covtype, higgs-like, year-like and
+  the Numerai shapes within ±0.7% (noise). The rest of that lineage was already here or did not gain on this
+  code: its per-lane gain work list is `find_prune_fp32`'s, `find_compact_survivors` goes further; a tighter bound
+  margin (2^-16 instead of 2e-4) was 1.000x on the 40-bin shape (5 pairs) and the sure prune on tasks of at most
+  32 positions (covtype's binary columns) 1.002x on covtype; neither is a key.
 - **Datasets whose tasks all fit 8 positions** (Numerai, the 4- and 6-bin generator shapes) never reach this
   kernel and run at master's speed. The guard workloads: year deep 1.32x, missing deep 1.23x, covtype 1.20x, higgs
   1.09x, numerai53-example 1.00x per round.

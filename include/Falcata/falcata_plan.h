@@ -318,6 +318,14 @@ struct FalcataPlan {
   // computed once from the same prefix, the same exact first maximum of (gain, then lowest position) across the
   // warp (the winner lane is found by ballot): bit-identical.
   bool find_compact_survivors = true;  // key: find_compact_survivors
+  // find_prune_fp32's lower bound (the G=32 warp-find template on tasks of more than 32 scan positions, e.g.
+  // 40-bin or 255-bin columns): every position whose fp32 sums pass the exact gates with a sure margin (2^-20
+  // relative on the hessians and the rounded count, 2^-8 absolute on the count; the fp32 values are within 2^-22
+  // of the exact doubles) sets a lower bound, instead of one position per lane verified with the exact fp64
+  // unpack, so the prune issues no fp64 at all and its threshold is the largest valid bound of the warp. A
+  // position that is not sure sets none and keeps its upper bound; the gain loop's exact unpack decides it. Only
+  // which hopeless positions skip the exact gain changes, never the winner: bit-identical.
+  bool find_prune_sure = true;      // key: find_prune_sure
   // the G=32 generic warp-find launch on a dataset mixing narrow and wide tasks (e.g. 2-bin indicator columns next
   // to 255-bin numeric ones): the items of tasks with at most 8 scan positions run four per warp as 8-lane groups
   // (the existing G=8 WarpFindBest path: one position per lane, the same exact first maximum) inside the same
@@ -800,6 +808,7 @@ struct FalcataPlan {
     if (key == "find_prune_fp32") return &find_prune_fp32;
     if (key == "find_select_int") return &find_select_int;
     if (key == "find_compact_survivors") return &find_compact_survivors;
+    if (key == "find_prune_sure") return &find_prune_sure;
     if (key == "find_pack_narrow") return &find_pack_narrow;
     if (key == "pair_hist") return &pair_hist;
     if (key == "per_pair_rows") return &per_pair_rows;
