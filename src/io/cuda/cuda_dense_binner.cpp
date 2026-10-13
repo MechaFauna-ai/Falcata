@@ -493,6 +493,23 @@ CUDADenseBinnerCtx* Dataset::GPUDenseBinnerBegin(DenseBinnerDType dtype,
                                         ctx->group_pair_off_.data(),
                                         ctx->group_pair_off_.size(), __FILE__,
                                         __LINE__);
+  // tile kernel (int8/uint8 LUT, every group one column): the group of each column
+  bool single_col_groups = true;
+  for (const auto& cols : group_col_sub) {
+    single_col_groups = single_col_groups && cols.size() == 1;
+  }
+  ctx->tiled_ = FalcataPlan::Get().construct_tile_bin && use_lut &&
+                single_col_groups &&
+                (ctx->dtype_code_ == 2 || ctx->dtype_code_ == 4);
+  if (ctx->tiled_) {
+    std::vector<int> col_group(ncol, -1);
+    for (int gid = 0; gid < num_groups_; ++gid) {
+      col_group[group_col_sub[gid][0].first] = gid;
+    }
+    InitCUDAMemoryFromHostMemory<int>(&ctx->d_col_group_, col_group.data(),
+                                      col_group.size(), __FILE__, __LINE__);
+    ctx->tables_.col_group = ctx->d_col_group_;
+  }
   if (use_lut) {
     InitCUDAMemoryFromHostMemory<uint32_t>(&ctx->d_lut_, lut.data(),
                                            lut.size(), __FILE__, __LINE__);
@@ -697,10 +714,16 @@ void CUDADenseBinnerCtx::BinChunk(const void* data, data_size_t nrow,
       kernel_in = d_in_[b];
       in_stride = is_row_major ? ncol_ : desc.rows;
     }
-    LaunchCUDADenseBinChunkKernel(kernel_in, dtype_code_, is_row_major,
-                                  in_stride, desc.rows, desc.pairs,
-                                  desc.parity, num_groups_, tables_,
-                                  d_out_[b], stream_);
+    if (tiled_ && is_row_major) {
+      LaunchCUDADenseBinTileKernel(kernel_in, dtype_code_, in_stride, ncol_,
+                                   desc.rows, desc.pairs, desc.parity,
+                                   tables_, d_out_[b], stream_);
+    } else {
+      LaunchCUDADenseBinChunkKernel(kernel_in, dtype_code_, is_row_major,
+                                    in_stride, desc.rows, desc.pairs,
+                                    desc.parity, num_groups_, tables_,
+                                    d_out_[b], stream_);
+    }
     CUDASUCCESS_OR_FATAL(cudaEventRecord(kernel_done_[b], stream_));
     CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(d2h_stream_, kernel_done_[b],
                                              0));
@@ -783,6 +806,9 @@ CUDADenseBinnerCtx::~CUDADenseBinnerCtx() {
   }
   DeallocateCUDAMemory<int>(&d_group_col_ptr_, __FILE__, __LINE__);
   DeallocateCUDAMemory<int>(&d_group_cols_, __FILE__, __LINE__);
+  if (d_col_group_ != nullptr) {
+    DeallocateCUDAMemory<int>(&d_col_group_, __FILE__, __LINE__);
+  }
   DeallocateCUDAMemory<uint8_t>(&d_group_width_, __FILE__, __LINE__);
   DeallocateCUDAMemory<int64_t>(&d_group_pair_off_, __FILE__, __LINE__);
   if (d_lut_ != nullptr) {

@@ -157,6 +157,9 @@ struct FalcataPlan {
   //  - never: pageable at every size (per-column copies from pageable memory;
   //    reaches the pageable path at test scale).
   int pin_bins = kPinBinsAuto;
+  // GPU binning of row-major int8/uint8 input whose groups are one column each:
+  // coalesced shared-memory tile kernel (off: the per-thread gather kernel)
+  bool construct_tile_bin = true;   // key: construct_tile_bin
   // cheap host precheck that skips EFB bundling on provably-unbundlable data
   bool efb_precheck = true;         // key: efb_precheck
 
@@ -458,6 +461,14 @@ struct FalcataPlan {
   // its last written rows stay in L2 for the first level's construct (off:
   // evict-first streaming stores). Same words: bit-identical.
   bool pair_code5_l2_store = true;  // key: pair_code5_l2_store
+  // pair_code5 on columns whose joint cells do not fit the 5-bit code (span(lo) * span(hi) > 32, e.g. a 6-bin
+  // missing-value column paired with another 6-bin column: 36 cells): a 6-bit code (five per word) where the
+  // tree's largest joint cell count is still <= 64, instead of falling back to the nibble view and the generic
+  // per-byte construct for the whole tree. The fused fill's scalar per-slot pack writes it and the code-word
+  // construct (pair_code5_words, with pair_code5_flat's dummy cells sized to the width) reads the width the fill
+  // chose; the per-byte code gather stays 5-bit only (a 6-bit tree falls back to the nibble view there). Same joint
+  // cell per slot, same marginal rule: bit-identical.
+  bool pair_code_wide = true;       // key: pair_code_wide
   // pair_code5_words: the six adds of a code word without a branch per byte slot: a slot without columns adds into
   // 32 dummy cells past the joint tables (never flushed; 128 more bytes of shared memory, taken only where the block
   // still fits the device's default), and the cells are addressed by precomputed byte offsets. The build needs fewer
@@ -795,6 +806,7 @@ struct FalcataPlan {
     if (key == "gpu_construct") return &gpu_construct;
     if (key == "construct_staging_pool") return &construct_staging_pool;
     if (key == "construct_h2d_overlap") return &construct_h2d_overlap;
+    if (key == "construct_tile_bin") return &construct_tile_bin;
     if (key == "efb_precheck") return &efb_precheck;
     if (key == "split_packed_read") return &split_packed_read;
     if (key == "batch_kernels") return &batch_kernels;
@@ -842,6 +854,7 @@ struct FalcataPlan {
     if (key == "pair_code5_words") return &pair_code5_words;
     if (key == "pair_code5_pack2") return &pair_code5_pack2;
     if (key == "pair_code5_l2_store") return &pair_code5_l2_store;
+    if (key == "pair_code_wide") return &pair_code_wide;
     if (key == "pair_code5_flat") return &pair_code5_flat;
     if (key == "pair_code5_slots") return &pair_code5_slots;
     if (key == "pair_code5_tall") return &pair_code5_tall;

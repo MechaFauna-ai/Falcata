@@ -385,6 +385,17 @@ calloc is left, and it measures 1.01x [0.95, 1.08]: the zero-fill costs construc
 (presumably because page-locking kept the group-creation threads waiting anyway). The upload stream is worth 1.03x
 [1.01, 1.04] on top of the rest.
 
+**The int8 binning kernel's reads (`construct_tile_bin`, default on).** The bin kernel reads row-major input one
+element per thread at a row stride (one thread per row pair and feature group), so on int8 input a warp fetched 32
+sectors for 32 useful bytes: about 1.04 s of GPU time per Numerai construct for 19.4 GB of input. For row-major int8 /
+uint8 input whose feature groups are one column each (the LUT encode), a block of 256 threads now stages 64 rows × 128
+columns in shared memory with coalesced reads (a warp walks consecutive columns of one row), then encodes each
+(column, row pair) from shared memory and writes the group's output exactly as the gather kernel does; other inputs keep
+the gather kernel. Kernel 1.04 s → 0.04 s (the search's nsys). Same binary, key off against on, numerai53bench-construct
+(in-RAM int8, 5.46M × 3,555; constructs 2-4 of each process timed, 3 interleaved pairs): 3.77 s → 3.63 s, 1.038x; the
+saved binary and the 50-round model are md5-identical in every construct and to master's. Lattice: int8wide (400
+columns: three full tiles and a partial one) with the key off.
+
 **Construction from host arrays: the host work around the binner.** A first construct in a process of epsilon
 (400k × 2,000 float32, in the page cache) took 2.8-3.4 s, and the binner was 0.43 s of it: sampling took 0.9 s, bin
 finding 1.1-1.5 s, and the first CUDA call, which creates the context, 0.13-0.2 s. A float matrix with a categorical
@@ -1283,6 +1294,22 @@ What each key is worth, switched off against on in the same build (500 rounds, 1
 Together against master (a65d34e8; the same 8 cells, 2 pairs + 1 re-timed pair each): 1.013x over the cells, covtype 1.044x, higgs 1.016x, Numerai 1.014x, no cell below its band; the models are md5-identical on every run.
 
 Dropped in the same port (neutral or worse in the same-binary A/B): `root_apply_direct` (the root level's apply computes rows instead of loading the identity index array: 0.993-1.009 on every cell) and `apply_evict_first` (the level apply's split-column loads at evict-first L2 priority: up to 1.025 on deep trees over large data, but 0.98 and 0.91 on covtype, whose data fits in L2 and is reused across levels).
+
+## 10g. The pair-code view at 6 bits (`pair_code_wide`)
+
+The code view of §10d (and the code-word construct of §10e over it) is taken only where every byte's joint table has at most 32 cells. A 6-bin column (5 values and a missing-value bin, as in Numerai's data with NaNs) paired with another gives 36 cells, and such a tree used to fall back to the nibble view and the per-byte construct.
+
+**The 6-bit view (`pair_code_wide`, default on, bit-identical).** Where the largest joint table of the tree's sampled columns has at most 64 cells and the 5-bit view does not apply, the fused fill writes each byte's cell index as a 6-bit code, five to a word, through its generic scalar pack (the dp4a packs stay 5-bit). It is taken only where the padded 6-bit row is still smaller than the nibble row (rows of more than ~150 bytes; at ~120 bytes the 32-byte padding makes it larger). The code-word construct, its branch-free adds (the dummy cells past the joint tables are sized to the width) and its flat flush are compiled for both widths; the per-byte code gather stays 5-bit only (a 6-bit tree reads the nibble view there). Same cell per byte, same gradient, same marginal rule. Lattice: sampledwide and sampledwide-mixbins at feature fraction 0.3 (every tree takes the 6-bit view), fingerprints recorded with master's nibble-view build, with the key off, the branchy adds and the per-slot flush.
+
+Switched off against on in the same build (T = first call + steady ms × 29999; 2 interleaved pairs, 3 for the second figures):
+
+| cell | `pair_code_wide` |
+|---|---|
+| numerai53 with NaNs, deep, stochastic | 1.106, 1.157 (3 pairs; 4.99 → 4.49 ms per round) |
+| numerai53 example, stochastic (shallow, with NaNs; 300 rounds timed from 100) | 1.065 (3 pairs) |
+| numerai53 benchmark split, covtype, higgs, few-bin, NaN-bin, epsilon-like | 0.998-1.002 (not engaged) |
+
+Against master (a65d34e8; 8 cells, 2 pairs + 1 re-timed pair each): 1.010x over the cells, numerai53 with NaNs 1.103x, no cell below its band; the models are md5-identical on every run.
 
 ---
 

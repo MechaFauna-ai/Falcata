@@ -200,6 +200,9 @@ def build_cells():
         ("fewbin", "row_batch", {}, {"cuda_plan": "auto,row_batch:off"}),
         ("int8wide", "rowdata_4bit", {}, {"cuda_plan": "auto,rowdata_4bit:off"}),
         ("int8wide", "fast_rowdata", {}, {"cuda_plan": "auto,fast_rowdata:off"}),
+        # construct_tile_bin: the int8 LUT binning of one-column groups through the shared-memory tile kernel (400
+        # columns: three full 128-column tiles and a partial one)
+        ("int8wide", "construct_tile_bin", {}, {"cuda_plan": "auto,construct_tile_bin:off"}),
         # async_tree_start: the host-launched quantized flow with and without a compact view
         ("dense", "async_tree_start", {}, {"cuda_plan": "auto,async_tree_start:off"}),
         ("sampled", "async_tree_start", {}, {"cuda_plan": "auto,async_tree_start:off"}),
@@ -947,6 +950,35 @@ def build_cells():
         rounds=50,
         equal_to="categorical-mc/quant-bagged",
     )
+
+    # --- the 6-bit pair-code view (pair_code_wide) -------------------------------------------------------- #
+    # sampledwide's 6 x 6 = 36-cell joint tables do not fit the 5-bit code. At feature_fraction 0.3 a row is ~180
+    # bytes, and the 6-bit code view (five codes per word, 40 words) is smaller than the nibble view, so the fused fill
+    # writes it and the code-word construct reads it (FALCATA_DEBUG=diag: every tree; at the ff15 and 0.2 rows the
+    # 6-bit row's 32-byte padding makes it larger and the nibble view stays). sampledwide-mixbins' 3-6 value columns
+    # give it trees of either width. The base cells' fingerprints were recorded with master's build (a65d34e8), which
+    # reads the nibble view. pair_code_wide off (the nibble view again), the branchy adds (pair_code5_flat off) and
+    # the per-slot flush (pair_code5_epilogue on) over the 6-bit view must train the base cell's model; deep trees run
+    # it on multi-pair levels.
+    ff30 = {"feature_fraction": 0.3}
+    code6_flips = [
+        ("pair_code_wide", "pair_code_wide:off"),
+        ("code6_branchy", "pair_code5_flat:off"),
+        ("code6_epilogue", "pair_code5_epilogue:on"),
+    ]
+    for base_profile, suffix, base_params in [
+        ("sampledwide", "ff30", ff30),
+        ("sampledwide-mixbins", "ff30", ff30),
+        ("sampledwide", "ff30-deep", {**ff30, **deep}),
+    ]:
+        cell(f"{base_profile}/quant-{suffix}", base_profile, base_params)
+        for name, plan in code6_flips:
+            cell(
+                f"{base_profile}/flip-{name}-{suffix}",
+                base_profile,
+                {**base_params, "cuda_plan": f"auto,{plan}"},
+                equal_to=f"{base_profile}/quant-{suffix}",
+            )
 
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "duplicate cell ids"

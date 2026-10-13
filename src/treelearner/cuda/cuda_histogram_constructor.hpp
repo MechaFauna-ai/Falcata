@@ -175,14 +175,17 @@ __host__ __device__ inline int HybridQuantConstructBlockDimY(
   return block_dim_y < capped ? block_dim_y : capped;
 }
 
-/*! \brief cuda_plan key pair_code5: 32-bit words of a code-view row of row_bytes byte slots (six 5-bit codes per
- *  word), padded to whole kCode5RowWordAlign-word units: 32 bytes, the sector of the gathers' L2 and DRAM accesses,
- *  and an even count for the fill's 8-byte stores (pair_code5_pack2). The fused fill writes rows of this many words
- *  (LaunchCompactFill) and the construct reads them. */
+/*! \brief cuda_plan key pair_code5 / pair_code_wide: 32-bit words of a code-view row of row_bytes byte slots
+ *  (32 / code_bits codes per word: six 5-bit codes, or five 6-bit codes where a tree's largest joint cell count
+ *  needs the wider code), padded to whole kCode5RowWordAlign-word units: 32 bytes, the sector of the gathers' L2
+ *  and DRAM accesses, and an even count for the fill's 8-byte stores (pair_code5_pack2, 5-bit only). The fused
+ *  fill writes rows of this many words (LaunchCompactFill) and the construct reads them. */
 inline constexpr int kCode5RowWordAlign = 8;
 static_assert(kCode5RowWordAlign % 2 == 0, "pair_code5_pack2 stores word pairs as one aligned 8-byte store");
-__host__ __device__ inline int Code5RowWords(const int row_bytes) {
-  return ((row_bytes + 5) / 6 + kCode5RowWordAlign - 1) / kCode5RowWordAlign * kCode5RowWordAlign;
+__host__ __device__ inline int Code5RowWords(const int row_bytes, const int code_bits = 5) {
+  const int codes_per_word = 32 / code_bits;
+  return ((row_bytes + codes_per_word - 1) / codes_per_word + kCode5RowWordAlign - 1) / kCode5RowWordAlign *
+         kCode5RowWordAlign;
 }
 
 /*! \brief quantized-training y-grid sizing of the batched construct kernel:
@@ -1197,6 +1200,9 @@ class CUDAHistogramConstructor {
   bool code5_valid_ = false;
   bool code5_allowed_ = true;
   int code5_row_words_ = 0;
+  /*! \brief cuda_plan key pair_code_wide: the code width (bits per joint cell) the live code view was written at
+   *  (5 or 6; meaningless while code5_valid_ is false) */
+  int code5_bits_ = 5;
   /*! \brief the live nibble view was not written by this tree's fused fill (it wrote the code view instead):
    *  EnsureNibbleView writes it with the plain tiled fill from nibble_pending_src_ and the code fill's own byte-slot
    *  tables code5_bs_* (nibble_pending_slots_ slots, on nibble_pending_stream_). Only the code fill of the live
