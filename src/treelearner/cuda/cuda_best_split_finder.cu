@@ -5657,26 +5657,21 @@ struct WarpFindCandidate {
   int64_t slgh, srgh;
 };
 
-// One warp scans one (task, leaf): each lane owns 8 consecutive scan positions. The prefix sum is a per-lane
-// register scan plus a warp shuffle scan of the lane totals (the block kernel's wrapping packed-integer adds);
-// the per-threshold unpack, gates and gain are the block kernel's expressions; the best threshold is a strict
-// ascending scan per lane followed by a shuffle reduction through OtherIsBetterWithTieBreak.
-// PPL = 1 (cuda_plan key warp_find_spread, scans of at most 32 positions): each lane owns one position, so the
-// fp64 unpack and gain math of a few-bin feature runs once across lanes instead of serially in lane 0. The
-// selection then reproduces the 8-per-lane result exactly: an exact first-maximum within each group of 8 lanes
-// (what one lane's strict ascending scan of those 8 positions yields), then the same tolerance tie-break between
-// the groups in the same pairing order as between 8-position lanes 0..3 (lanes 4..31 own no position there).
-// G = 4 (with PPL = 2, every task of at most 8 positions): one group of 4 lanes per (task, leaf), eight per warp;
-// at most 8 positions all sit in 8-position lane 0, whose strict ascending scan is the exact first maximum and
-// meets no other candidate in the tolerance reduction, so each lane's strict scan of its 2 positions plus an
-// exact first-maximum across the group's lanes is the same winner.
-// G = 8 (with PPL = 1, cuda_plan key warp_find_narrow, every task of at most 8 bins): one group of 8 lanes per
-// (task, leaf), four per warp, one position per lane; the same exact first maximum across the group's lanes.
-// STRIDED (G = 4, cuda_plan key warp_find_strided): lane l's slot i holds position i * G + l instead of l * PPL + i,
-// so the (at most 4) candidates of a 5-bin task all sit in slot 0 and a warp whose items all fit skips slot 1's
-// fp64 work. Each slot's positions are scanned across the group and offset by the earlier slots' totals (the same
-// wrapping integer prefixes); a lane's slots stay in ascending position order and the group reduction is the
-// exact first maximum of (gain, then lower position), so which lane holds a candidate does not change the winner.
+// One group of G lanes scans one (task, leaf), PPL positions per lane, in two tiers chosen per task by its scan width
+// (positions 0 .. num_bin - mfb_offset + shift - 1; the level launch sorts the tasks into them):
+//  - few-position tier (G = 4, PPL = 2): a task of at most 8 positions, eight per warp. Lane l's slot i holds
+//    position i * 4 + l (strided), so the (at most 4) candidates of a 5-bin task all sit in slot 0 and a warp whose
+//    items all fit skips slot 1's fp64 work. Each slot's positions are scanned across the group and offset by the
+//    earlier slots' totals.
+//  - wide tier (G = 32, PPL = 2..8: warp_find_mid_ppl's ceil(positions / 32), else 8): one warp per task, lane l's
+//    slots hold positions l * PPL .. l * PPL + PPL - 1 (blocked): a per-lane register scan plus a warp shuffle scan
+//    of the lane totals.
+// Both are the block kernel's wrapping packed-integer prefixes; the per-threshold unpack, gates and gain are the
+// block kernel's expressions. The reference result is the 8-positions-per-lane scan: a strict ascending scan per
+// 8-position lane followed by a shuffle reduction through OtherIsBetterWithTieBreak. A few-position task sits
+// entirely in that scan's lane 0, so the group's exact first maximum of (gain, then lower position) is its winner;
+// the wide tier's lanes keep ascending slots and are reduced in the reference's pairing order. The prune (fp32
+// bounds, see below) only drops positions that can neither win nor tie.
 template <bool REVERSE, bool B16, typename ACC_T, int PPL, int G>
 __device__ __forceinline__ void WarpFindBest(
     const ACC_T* hist, const SplitFindTask* task,
@@ -5688,7 +5683,8 @@ __device__ __forceinline__ void WarpFindBest(
     CUDASplitInfo* out) {
   using UT = std::make_unsigned_t<ACC_T>;
   constexpr uint32_t kNoThreshold = 0xffffffffu;
-  static_assert((G == 32 && PPL >= 2) || (G == 4 && PPL == 2), "a warp owns at least 2 positions per lane, 4-lane groups 2");
+  static_assert((G == 32 && PPL >= 2) || (G == 4 && PPL == 2),
+                "a warp owns at least 2 positions per lane, a 4-lane group 2");
   // the 4-lane groups' positions are strided over the lanes (see above), a warp's are blocked
   constexpr bool STRIDED = G == 4;
   const uint32_t lane = threadIdx.x & static_cast<uint32_t>(G - 1);
@@ -6202,7 +6198,7 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   gscale = *grad_scale;
   hscale = *hess_scale;
   hist_in_leaf = leaf_splits->hist_in_leaf;
-  // scan positions 0 .. fnb + shift - 1 (see WarpFindBest); at most 32 fit one per lane
+  // scan positions 0 .. fnb + shift - 1 (see WarpFindBest)
   const uint32_t num_positions = static_cast<uint32_t>(task->num_bin - task->mfb_offset) +
     ((!task->reverse && task->na_as_missing && task->mfb_offset == 1) ? 1u : 0u);
   // warp_find_mid_ppl (wide units only): a task does not need the full 8-slot unrolled loop PPL=8 reaches for every
@@ -6261,16 +6257,18 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
     return;  // no usable feature this tree; the sync masks every lane not-found
   }
   const bool use_warp = warp_find_eligible_ && gstate == nullptr && !FalcataFP32GainEnabled();
+  const int num_launch_tasks = compact_tasks ? num_used_tasks_ : num_tasks_;
+  // the warp launch's order (BeforeTrain): the narrow tasks first, eight per warp, then the wide ones, one per warp
+  const int num_narrow = warp_find_max_positions_ <= 8 ? num_launch_tasks : warp_find_num_narrow_used_;
+  const int num_wide = num_launch_tasks - num_narrow;
   if (FalcataDebug().diag && num_pairs == 1) {
-    // single-pair levels: each tree logs at least its root
-    Log::Info("split finder: %s kernel for this tree's quantized levels", use_warp ? "warp" : "block");
+    // single-pair levels: each tree logs at least its root, and the warp kernel's tiers this tree
+    Log::Info("split finder: %s kernel for this tree's quantized levels%s", use_warp ? "warp" : "block",
+              !use_warp ? "" : num_wide == 0 ? " (tier: few-position)" :
+              num_narrow == 0 ? " (tier: wide)" : " (tier: few-position + wide)");
   }
 #if !defined(__HIP_PLATFORM_AMD__)
   if (use_warp) {
-    const int num_launch_tasks = compact_tasks ? num_used_tasks_ : num_tasks_;
-    // launch order (BeforeTrain): the narrow tasks first, eight per warp, then the wide ones, one per warp
-    const int num_narrow = warp_find_max_positions_ <= 8 ? num_launch_tasks : warp_find_num_narrow_used_;
-    const int num_wide = num_launch_tasks - num_narrow;
     const int* task_order = warp_find_order_used_ ? cuda_warp_find_order_.RawDataReadOnly() :
                             compact_tasks ? cuda_used_task_indices_.RawDataReadOnly() : nullptr;
     const uint64_t warps = (static_cast<uint64_t>((num_narrow + 7) / 8) + static_cast<uint64_t>(num_wide)) *

@@ -6,8 +6,11 @@ cuda_plan key warp_find switches the quantized per-level split finder between on
 trained model must be byte-identical whichever runs. The sweep covers what the warp kernel branches on: 16- and
 32-bit leaf histograms, forward and reverse scans, NaN handling, a stored or unstored most-frequent bin (with NaN
 handling, the forward scan then rebuilds bin 0 from the leaf total), unused features, the bagging ridge, the
-parameters that switch its fp32 pruning off (max_delta_step) or move the min-gain cutoff, and objectives with
-non-constant hessians (imbalanced binary, multiclass). Only the deterministic (quantized) modes are compared.
+parameters that switch its fp32 pruning off (max_delta_step) or move the min-gain cutoff, objectives with
+non-constant hessians (imbalanced binary, multiclass), and both tiers of the warp kernel (tasks of at most 8 scan
+positions as 4-lane groups, wider ones a warp each, and a dataset mixing both in one launch). Every cuda_plan key of
+the warp kernel, flipped off, must train the default's model too. Only the deterministic (quantized) modes are
+compared.
 """
 
 import os
@@ -51,6 +54,12 @@ def _data(kind, rows, seed, objective="regression"):
         X = rng.integers(0, 5, size=(rows, 40)).astype(np.float32)
         X[rng.random(X.shape) < 0.04] = 0.0
         X[:, :20][rng.random((rows, 20)) < 0.2] = np.nan
+    elif kind == "mixed":  # both tiers in one launch: 2- and 5-value columns, 12-, 40- and 100-value ones, floats
+        X = np.column_stack(
+            [rng.integers(0, k, size=(rows, n)) for k, n in ((2, 6), (5, 6), (12, 4), (40, 2), (100, 2))]
+            + [rng.standard_normal((rows, 6))]
+        ).astype(np.float32)
+        X[:, 16:][rng.random((rows, X.shape[1] - 16)) < 0.1] = np.nan
     else:
         raise ValueError(kind)
     w = rng.standard_normal(min(8, X.shape[1]))
@@ -83,7 +92,7 @@ CONFIGS = [
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("quant", ["stochastic", "fixedpoint"])
-@pytest.mark.parametrize("kind", ["dense", "fewbin", "nan", "nan-mfb0"])
+@pytest.mark.parametrize("kind", ["dense", "fewbin", "nan", "nan-mfb0", "mixed"])
 @pytest.mark.parametrize("config", CONFIGS)
 def test_warp_find_is_bit_identical_cuda(kind, config, quant):
     params = {"quant_mode": quant, **config}
@@ -110,6 +119,31 @@ def test_warp_find_is_bit_identical_with_non_constant_hessians_cuda(kind, object
     warp = _train(kind, rows, {**params, "cuda_plan": "auto"}, rounds=8)
     block = _train(kind, rows, {**params, "cuda_plan": "auto,warp_find:off"}, rounds=8)
     assert warp == block
+
+
+WARP_FIND_KEYS = [
+    "warp_find_mid_ppl",
+    "find_prune_fp32",
+    "find_prune_sure",
+    "find_select_int",
+    "find_compact_survivors",
+]
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("kind", ["dense", "nan", "mixed"])
+@pytest.mark.parametrize(
+    "plan",
+    [pytest.param(f"{key}:off", id=key) for key in WARP_FIND_KEYS]
+    + [pytest.param(",".join(f"{key}:off" for key in WARP_FIND_KEYS), id="all-off")],
+)
+def test_warp_find_keys_are_bit_identical_cuda(kind, plan):
+    """Each cuda_plan key of the warp kernel's wide tier, and all of them, off: the default's model."""
+    params = {"quant_mode": "stochastic", "objective": "binary"}
+    rows = 60_001
+    default = _train(kind, rows, {**params, "cuda_plan": "auto"}, rounds=8)
+    flipped = _train(kind, rows, {**params, "cuda_plan": f"auto,{plan}"}, rounds=8)
+    assert default == flipped
 
 
 @_REQUIRES_CUDA
@@ -141,20 +175,23 @@ def _finder_kernels(kind, categorical, params):
     )
     env = {**os.environ, "FALCATA_DEBUG": "diag"}
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, check=True).stdout
-    return re.findall(r"split finder: (\S+) kernel for this tree's quantized levels", out)
+    found = re.findall(r"split finder: (\S+) kernel for this tree's quantized levels(.*)", out)
+    return [f"{kernel}{tier}" for kernel, tier in found]
 
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize(
     ("kind", "categorical", "params", "kernel"),
     [
-        pytest.param("dense", False, {}, "warp", id="dense"),
-        pytest.param("fewbin", False, {}, "warp", id="fewbin"),
-        pytest.param("nan", False, {}, "warp", id="nan"),
+        pytest.param("dense", False, {}, "warp (tier: wide)", id="dense"),
+        pytest.param("fewbin", False, {}, "warp (tier: few-position)", id="fewbin"),
+        pytest.param("nan", False, {}, "warp (tier: wide)", id="nan"),
         # every other task of this dataset is eligible too, so one unsupported scan would turn the whole run "block"
-        pytest.param("nan-mfb0", False, {}, "warp", id="nan-mfb0"),
-        pytest.param("dense", False, {"objective": "binary"}, "warp", id="binary"),
-        pytest.param("dense", False, {"objective": "multiclass", "num_class": 3}, "warp", id="multiclass"),
+        pytest.param("nan-mfb0", False, {}, "warp (tier: few-position)", id="nan-mfb0"),
+        pytest.param("mixed", False, {}, "warp (tier: few-position + wide)", id="mixed"),
+        pytest.param("mixed", False, {"feature_fraction": 0.5}, "warp (tier: few-position + wide)", id="mixed-sampled"),
+        pytest.param("dense", False, {"objective": "binary"}, "warp (tier: wide)", id="binary"),
+        pytest.param("dense", False, {"objective": "multiclass", "num_class": 3}, "warp (tier: wide)", id="multiclass"),
         pytest.param("dense", False, {"cuda_plan": "auto,warp_find:off"}, "block", id="warp_find-off"),
         pytest.param("dense", False, {"cuda_precision": "fp32"}, "block", id="fp32-gain"),
         pytest.param("dense", True, {}, "block", id="categorical"),

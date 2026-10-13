@@ -249,17 +249,19 @@ struct FalcataPlan {
   // the dataset is numerical with at most 256 bins and none is a zero-as-missing
   // scan (NaN handling with or without a stored most-frequent bin); otherwise
   // the block kernel. CUDA only. Bit-identical. Measured:
-  // +6.3% numerai-deep, +22.7% year-deep.
+  // +6.3% numerai-deep, +22.7% year-deep. Two tiers by scan width, no key:
+  // tasks of at most 8 scan positions run eight per warp as strided 4-lane
+  // groups, wider tasks one per warp (see WarpFindBest); a dataset mixing
+  // both runs them in one launch, the narrow tasks first.
   bool warp_find = true;            // key: warp_find
-  // the G=32 generic warp-find template (one dataset-wide task fails the all-narrow / all-spread tests, e.g. a
-  // mix of 2-bin and 200-bin columns): WarpFindBest's per-task runtime PPL choice adds one tier per 32 positions
-  // (PPL = ceil(num_positions / 32), 2..7) between the existing PPL=1 (<= 32) and PPL=8 (<= 256), so a task whose
-  // real scan width is, say, 90 positions runs the 3-slot unrolled prefix/prune/gain loop instead of the 8-slot
-  // one. WarpFindBest is already generic in PPL (its loops are `for (i < PPL)`, and the cross-lane
-  // reduction already covers any PPL); only the dispatch and this gate are new. Same positions, same exact
-  // first-maximum selection: bit-identical.
+  // warp_find's wide tier (tasks of more than 8 scan positions, one warp each): WarpFindBest's per-task runtime
+  // PPL choice is one tier per 32 positions (PPL = ceil(num_positions / 32), at least 2) instead of PPL=8 (<= 256)
+  // for every width, so a task whose real scan width is, say, 90 positions runs the 3-slot unrolled
+  // prefix/prune/gain loop instead of the 8-slot one. WarpFindBest is generic in PPL (its loops are
+  // `for (i < PPL)`, and the cross-lane reduction covers any PPL). Same positions, same exact first-maximum
+  // selection: bit-identical.
   bool warp_find_mid_ppl = true;    // key: warp_find_mid_ppl
-  // the G=32 warp-find template's prune on tasks of more than 32 scan positions (several per lane, e.g. 255-bin
+  // warp_find's wide tier's prune (tasks of more than 8 scan positions, several per lane, e.g. 255-bin
   // continuous columns): the fp32 gain bounds come straight from the prefix's int32 halves (fp32 converts and
   // multiplies) instead of the exact fp64 unpack per position, which on a part with 1/64-rate fp64 dominated the
   // kernel; the lower bound that prunes others is taken from one position per lane (the largest bound among those
@@ -267,15 +269,14 @@ struct FalcataPlan {
   // rejected by the gain loop's exact unpack. Only which hopeless positions skip the exact gain changes, never the
   // winner: bit-identical. Engaged where min_sum_hessian_in_leaf > 0 (every valid side's denominator positive).
   bool find_prune_fp32 = true;      // key: find_prune_fp32
-  // the G=32 warp-find template's cross-lane best-split reduction (every task through it, e.g. 2-bin and 255-bin
-  // columns alike) in integer compares of the gains' bit patterns instead of fp64 compares, fmax and the zero-
-  // tolerance multiply (fp64 pipe work per item on parts with 1/64-rate fp64): a lane holding a threshold has a
-  // positive, non-NaN gain, and positive doubles order as their bits; OtherIsBetterWithTieBreak's NaN tolerance
-  // for an infinite gain (never better) is kept explicitly. The winner's lane and its partner then compute the
-  // left and the right child's output and leaf gain side by side (as the strided 4-lane path does). Same winner,
-  // same expressions on the same inputs: bit-identical.
+  // warp_find's wide tier's cross-lane best-split reduction (every task of more than 8 scan positions, e.g. 12-bin
+  // and 255-bin columns alike) in integer compares of the gains' bit patterns instead of fp64 compares, fmax and
+  // the zero-tolerance multiply (fp64 pipe work per item on parts with 1/64-rate fp64): a lane holding a threshold
+  // has a positive, non-NaN gain, and positive doubles order as their bits; OtherIsBetterWithTieBreak's NaN
+  // tolerance for an infinite gain (never better) is kept explicitly. (The few-position tier always selects in
+  // integer compares, with exact ties.) Same winner: bit-identical.
   bool find_select_int = true;      // key: find_select_int
-  // the G=32 warp-find template's exact gain loop on tasks of more than 32 scan positions (find_prune_fp32's
+  // warp_find's wide tier's exact gain loop (tasks of more than 8 scan positions, find_prune_fp32's
   // per-lane work list): the survivors of every lane are compacted into one warp-wide list (a warp prefix count
   // and a per-warp shared-memory list), and each round every lane takes the next survivor, so the warp runs
   // ceil(survivors / 32) rounds of the exact fp64 prep + gain (one, usually) instead of as many as its busiest
@@ -284,7 +285,7 @@ struct FalcataPlan {
   // computed once from the same prefix, the same exact first maximum of (gain, then lowest position) across the
   // warp (the winner lane is found by ballot): bit-identical.
   bool find_compact_survivors = true;  // key: find_compact_survivors
-  // find_prune_fp32's lower bound (the G=32 warp-find template on tasks of more than 32 scan positions, e.g.
+  // find_prune_fp32's lower bound (warp_find's wide tier, tasks of more than 8 scan positions, e.g.
   // 40-bin or 255-bin columns): every position whose fp32 sums pass the exact gates with a sure margin (2^-20
   // relative on the hessians and the rounded count, 2^-8 absolute on the count; the fp32 values are within 2^-22
   // of the exact doubles) sets a lower bound, instead of one position per lane verified with the exact fp64

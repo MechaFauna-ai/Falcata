@@ -32,6 +32,7 @@ crashing cell fails alone and the runner respawns for the rest).
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -53,6 +54,9 @@ METRIC_TOLERANCE = 0.02  # relative; only applied to non-fingerprinted (nondeter
 #            such cells are NOT in the fingerprint file
 #   fingerprint  False for nondeterministic (non-quant) cells: validity+metric only
 #   perf     True -> wall time tracked by perf_gate.py
+#   finder_tier  the quantized level split finder every tree must take, as the
+#            FALCATA_DEBUG=diag line names it ("warp (tier: ...)" or "block");
+#            such a cell runs alone in a worker with FALCATA_DEBUG=diag
 # --------------------------------------------------------------------------- #
 
 
@@ -68,6 +72,7 @@ def build_cells():
         fingerprint=True,
         perf=False,
         leaf_bound=None,
+        finder_tier=None,
     ):
         cells.append(
             {
@@ -79,6 +84,7 @@ def build_cells():
                 "fingerprint": fingerprint and equal_to is None,
                 "perf": perf,
                 "leaf_bound": leaf_bound,
+                "finder_tier": finder_tier,
             }
         )
 
@@ -658,6 +664,16 @@ def build_cells():
         cell(f"dense/flip-{name}-deep", "dense", {**deep, "cuda_plan": f"auto,{plan}"}, equal_to="dense/quant-deep")
         cell(f"missing/flip-{name}", "missing", {"cuda_plan": f"auto,{plan}"}, equal_to="missing/quant")
     cell("fewbin/flip-find_select_int", "fewbin", {"cuda_plan": "auto,find_select_int:off"}, equal_to="fewbin/quant")
+    # the warp finder's tiers by scan width (no keys): tasks of at most 8 positions as 4-lane groups (sampled's
+    # 6-value columns), wider ones a warp each (dense's 255 bins, fewbin's 12 values), both in one launch (mixwidth);
+    # FALCATA_DEBUG=diag names the tier on every tree's single-pair levels, and the model is the base cell's
+    for profile, tier in [
+        ("sampled", "warp (tier: few-position)"),
+        ("dense", "warp (tier: wide)"),
+        ("fewbin", "warp (tier: wide)"),
+        ("mixwidth", "warp (tier: few-position + wide)"),
+    ]:
+        cell(f"{profile}/finder-tier", profile, {"verbose": 1}, equal_to=f"{profile}/quant", finder_tier=tier)
 
     # deep trees with a binding leaf budget (no tree-completing level), the bagged multiclass categorical cell
     # (level_apply_first keeps the record first for categorical splits; final_map_only is off with bagging) and the
@@ -1231,10 +1247,32 @@ for cell in json.loads(sys.argv[1]):
 """
 
 
+def run_tier_cell(cell):
+    """A finder_tier cell, alone in a worker with FALCATA_DEBUG=diag: its result, failed unless every logged level
+    split finder is the expected one."""
+    proc = subprocess.run(
+        [sys.executable, "-c", _WORKER_SOURCE, json.dumps([cell])],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "FALCATA_DEBUG": "diag"},
+    )
+    recs = [json.loads(line[5:]) for line in proc.stdout.splitlines() if line.startswith("CELL ")]
+    if not recs:
+        return {"id": cell["id"], "ok": False, "error": f"worker exited {proc.returncode}: {proc.stderr[-800:]}"}
+    rec = recs[0]
+    finders = re.findall(r"split finder: (.*) kernel for this tree's quantized levels(.*)", proc.stdout)
+    finders = sorted({f"{kernel}{rest}".strip() for kernel, rest in finders})
+    if rec.get("ok") and finders != [cell["finder_tier"]]:
+        rec = {"id": cell["id"], "ok": False,
+               "error": f"split finder {finders} logged, expected only {cell['finder_tier']!r}"}
+    return rec
+
+
 def run_cells(cells):
     """Run cells in chunked subprocesses; crash-isolate and collect results."""
-    results = {}
-    pending = list(cells)
+    results = {c["id"]: run_tier_cell(c) for c in cells if c.get("finder_tier")}
+    pending = [c for c in cells if not c.get("finder_tier")]
     while pending:
         chunk, pending = pending[:WORKER_CHUNK], pending[WORKER_CHUNK:]
         proc = subprocess.run(
