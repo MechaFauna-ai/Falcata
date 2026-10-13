@@ -260,6 +260,11 @@
    "metric": 6.51153,
    "metric_name": "rmse"
   },
+  "sampledwide-mixbins/quant-ff30": {
+   "md5": "5e868b08f179de3d85fefa95302200f4",
+   "metric": 5.777655,
+   "metric_name": "rmse"
+  },
   "sampledwide/quant": {
    "md5": "da493bbfa4aa5898ca776b27eba01218",
    "metric": 8.550376,
@@ -268,6 +273,16 @@
   "sampledwide/quant-ff15": {
    "md5": "27b752d6b88919ab7e9186b8bd6b4aed",
    "metric": 9.250257,
+   "metric_name": "rmse"
+  },
+  "sampledwide/quant-ff30": {
+   "md5": "a9b565b2a4461ff6b8f9ed65048c6758",
+   "metric": 7.876109,
+   "metric_name": "rmse"
+  },
+  "sampledwide/quant-ff30-deep": {
+   "md5": "46a1b3cb6929a256197a34bd78d7fac1",
+   "metric": 8.958093,
    "metric_name": "rmse"
   },
   "sampledwide5/quant": {

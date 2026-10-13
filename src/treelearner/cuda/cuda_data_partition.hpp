@@ -177,6 +177,15 @@ class CUDADataPartition: public NCCLInfo {
    *  FinishSplitBatch reads straight into its mapped staging, and FinishSplitBatch then waits with one device
    *  synchronize instead of a copy kernel; needs the mapped staging (readback_kernel) */
   void RequestSplitInfoMirror() { split_info_mirror_requested_ = true; }
+  /*! \brief cuda_plan key split_counts_early: like RequestSplitInfoMirror, but the aggregate kernel writes the
+   *  staging and FinishSplitBatch waits only for it (an event recorded after the aggregate), leaving the partition
+   *  kernel in flight: the caller must order every later reader of the partition's outputs after apply_done_event()
+   *  (see ApplyInFlight), and every later writer of what the level's tree record reads after that record */
+  void RequestSplitInfoEarly() { split_info_mirror_requested_ = true; split_info_early_requested_ = true; }
+  /*! \brief whether the last FinishSplitBatch returned with the batched apply still in flight (split_counts_early):
+   *  the next consumer of the partition's outputs on another stream waits on apply_done_event() and clears it */
+  bool ApplyInFlight() const { return apply_in_flight_; }
+  void ClearApplyInFlight() { apply_in_flight_ = false; }
 
   /*! \brief Batched apply phase for the hybrid level-batched growth: applies ALL
    *  numerical splits of a level with one launch per kernel family (gen bit
@@ -734,6 +743,13 @@ class CUDADataPartition: public NCCLInfo {
    *  too (set by RequestSplitInfoMirror, consumed by that launch), and whether the last one did (FinishSplitBatch) */
   bool split_info_mirror_requested_ = false;
   bool split_info_mirror_written_ = false;
+  /*! \brief cuda_plan key split_counts_early: requested for the next batched apply / written by the last one's
+   *  aggregate kernel (then FinishSplitBatch waits on aggregate_done_event_ only) */
+  bool split_info_early_requested_ = false;
+  bool split_info_early_written_ = false;
+  bool apply_in_flight_ = false;
+  /*! \brief recorded on the apply stream after the batched aggregate kernel (split_counts_early) */
+  cudaEvent_t aggregate_done_event_ = nullptr;
   /*! \brief grow the pinned split-info staging buffer to >= num_ints ints */
   void EnsurePinnedSplitInfoCapacity(const size_t num_ints);
   /*! \brief per-split smaller-child size of the current level's batched apply

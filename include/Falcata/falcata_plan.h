@@ -157,6 +157,15 @@ struct FalcataPlan {
   //  - never: pageable at every size (per-column copies from pageable memory;
   //    reaches the pageable path at test scale).
   int pin_bins = kPinBinsAuto;
+  // GPU binning of row-major int8/uint8 input whose groups are one column each:
+  // coalesced shared-memory tile kernel (off: the per-thread gather kernel)
+  bool construct_tile_bin = true;   // key: construct_tile_bin
+  // key construct_tile_rows: the tile kernel's input rows per block, an even number in [2, 384] (the tile is
+  // 128 x rows bytes of shared memory, within the 48 KB every device grants a block without opt-in). The tile's
+  // 128 columns are not a knob: one 128-byte line of an int8 input row, the unit its coalesced reads fetch.
+  int construct_tile_rows = 64;     // key: construct_tile_rows
+  // key construct_tile_threads: the tile kernel's threads per block, a power of two in [32, 1024]
+  int construct_tile_threads = 256;  // key: construct_tile_threads
   // cheap host precheck that skips EFB bundling on provably-unbundlable data
   bool efb_precheck = true;         // key: efb_precheck
 
@@ -318,6 +327,14 @@ struct FalcataPlan {
   // computed once from the same prefix, the same exact first maximum of (gain, then lowest position) across the
   // warp (the winner lane is found by ballot): bit-identical.
   bool find_compact_survivors = true;  // key: find_compact_survivors
+  // find_prune_fp32's lower bound (the G=32 warp-find template on tasks of more than 32 scan positions, e.g.
+  // 40-bin or 255-bin columns): every position whose fp32 sums pass the exact gates with a sure margin (2^-20
+  // relative on the hessians and the rounded count, 2^-8 absolute on the count; the fp32 values are within 2^-22
+  // of the exact doubles) sets a lower bound, instead of one position per lane verified with the exact fp64
+  // unpack, so the prune issues no fp64 at all and its threshold is the largest valid bound of the warp. A
+  // position that is not sure sets none and keeps its upper bound; the gain loop's exact unpack decides it. Only
+  // which hopeless positions skip the exact gain changes, never the winner: bit-identical.
+  bool find_prune_sure = true;      // key: find_prune_sure
   // the G=32 generic warp-find launch on a dataset mixing narrow and wide tasks (e.g. 2-bin indicator columns next
   // to 255-bin numeric ones): the items of tasks with at most 8 scan positions run four per warp as 8-lane groups
   // (the existing G=8 WarpFindBest path: one position per lane, the same exact first maximum) inside the same
@@ -450,6 +467,14 @@ struct FalcataPlan {
   // its last written rows stay in L2 for the first level's construct (off:
   // evict-first streaming stores). Same words: bit-identical.
   bool pair_code5_l2_store = true;  // key: pair_code5_l2_store
+  // pair_code5 on columns whose joint cells do not fit the 5-bit code (span(lo) * span(hi) > 32, e.g. a 6-bin
+  // missing-value column paired with another 6-bin column: 36 cells): a 6-bit code (five per word) where the
+  // tree's largest joint cell count is still <= 64, instead of falling back to the nibble view and the generic
+  // per-byte construct for the whole tree. The fused fill's scalar per-slot pack writes it and the code-word
+  // construct (pair_code5_words, with pair_code5_flat's dummy cells sized to the width) reads the width the fill
+  // chose; the per-byte code gather stays 5-bit only (a 6-bit tree falls back to the nibble view there). Same joint
+  // cell per slot, same marginal rule: bit-identical.
+  bool pair_code_wide = true;       // key: pair_code_wide
   // pair_code5_words: the six adds of a code word without a branch per byte slot: a slot without columns adds into
   // 32 dummy cells past the joint tables (never flushed; 128 more bytes of shared memory, taken only where the block
   // still fits the device's default), and the cells are addressed by precomputed byte offsets. The build needs fewer
@@ -554,6 +579,14 @@ struct FalcataPlan {
   // bound. Taken only where the occupancy API gives it strictly more rows in flight per SM than the default build.
   // Same chunk rows, ballot words and chunk totals: bit-identical.
   bool apply_genbit_rows = true;    // key: apply_genbit_rows
+  // host-launched batched level apply: the per-split block-offset prefix (HybridAggregateBlockOffsetBatchKernel) with
+  // each thread's (at most 6) left / right chunk counts loaded into registers before any store, summed there, scanned
+  // once as one 64-bit (left, right) pair across the block, and stored once, in a block sized to the level's largest
+  // split (32-1024 threads), instead of a 1024-thread block whose local prefix and offset add are global load -> add ->
+  // store chains (the left and right buffers are separate allocations, but the kernel's unqualified pointers do not let
+  // the compiler batch the loads past the stores). Splits of more than 6143 chunks keep the original kernel. The same
+  // integer prefix sums and child leaf metadata: bit-identical.
+  bool aggregate_load_first = true;  // key: aggregate_load_first
   // quantized root sums (gradient/hessian totals of the tree's rows): one warp
   // per 1024-row chunk sums 32 rows per lane, instead of one 1024-thread block
   // per chunk with one row per thread and two block reductions. Each chunk's
@@ -627,6 +660,17 @@ struct FalcataPlan {
   // would have copied; a level whose sync kernel did not mirror falls back to the full copy. Removes the copy kernel
   // and its wait on the producer's stream from both per-level round trips. Same bytes: bit-identical.
   bool readback_fused = true;       // key: readback_fused
+  // with readback_fused, a non-final level of the classic level loop (single GPU, scalar leaves): the level's 18-int
+  // split info is written into the mapped staging by the aggregate kernel (either aggregate_load_first build,
+  // the producer of the children's counts and data starts; the four sums come from the same CUDASplitInfo entry the
+  // tree-structure body copies them from) instead of by the tree-structure body of the partition kernel after it,
+  // and FinishSplitBatch waits on an event recorded after the aggregate instead of on the whole device. The host's
+  // bookkeeping, descriptor upload and construct launch then overlap the partition kernel. The two orderings the
+  // device synchronize gave are kept by events: the histogram stream waits on the partition's completion event
+  // before the next level's construct, and the best-split finder's stream waits on an event recorded on the tree
+  // stream after the level's tree record (the record reads the cached split infos that the next level's sync kernel
+  // overwrites). Same ints, same bytes, same order of every dependent kernel: bit-identical.
+  bool split_counts_early = true;   // key: split_counts_early
   // the final batched level's invalidation of its children's cached split candidates (InvalidateLeafCandidates):
   // the leaf list goes up with cudaMemcpyAsync on the default stream the synchronous cudaMemcpy used (from a member
   // copy, kept until the next tree) and the kernel is not followed by a device synchronize. The host
@@ -639,11 +683,11 @@ struct FalcataPlan {
   // upload and the gen-bit / aggregate / split-inner / tree-structure kernels on its stream) is issued before the
   // tree's record of the same splits (CUDATree::SplitBatch: upload and SplitBatchKernel on the tree's stream). The two
   // touch disjoint buffers (the tree's arrays vs the partition's; both only read the level's cached split infos),
-  // there is no event between those streams, and every later reader waits for both (the level's readback on the
-  // default stream), so the level's long kernel chain no longer starts behind the record's upload, launch and host
-  // bookkeeping. The record's entries (real feature index and threshold, missing type: per-feature lookups only the
-  // record reads) are built after the apply is launched, in the same order with the same values. Same kernels, same
-  // streams, same inputs: bit-identical.
+  // there is no event between those streams, and every later reader waits for both (the level's readback; under
+  // split_counts_early the next level's search, through apply_done_event and the tree-record event), so the level's
+  // long kernel chain no longer starts behind the record's upload, launch and host bookkeeping. The record's entries
+  // (real feature index and threshold, missing type: per-feature lookups only the record reads) are built after the
+  // apply is launched, in the same order with the same values. Same kernels, same streams, same inputs: bit-identical.
   bool level_apply_first = true;    // key: level_apply_first
   // the CUDA objective's GetGradients (the shared CUDAObjectiveInterface path) does not end with a device
   // synchronize when the gradients are device memory: its kernel runs on the legacy default stream, every reader of
@@ -769,6 +813,7 @@ struct FalcataPlan {
     if (key == "gpu_construct") return &gpu_construct;
     if (key == "construct_staging_pool") return &construct_staging_pool;
     if (key == "construct_h2d_overlap") return &construct_h2d_overlap;
+    if (key == "construct_tile_bin") return &construct_tile_bin;
     if (key == "efb_precheck") return &efb_precheck;
     if (key == "split_packed_read") return &split_packed_read;
     if (key == "batch_kernels") return &batch_kernels;
@@ -800,6 +845,7 @@ struct FalcataPlan {
     if (key == "find_prune_fp32") return &find_prune_fp32;
     if (key == "find_select_int") return &find_select_int;
     if (key == "find_compact_survivors") return &find_compact_survivors;
+    if (key == "find_prune_sure") return &find_prune_sure;
     if (key == "find_pack_narrow") return &find_pack_narrow;
     if (key == "pair_hist") return &pair_hist;
     if (key == "per_pair_rows") return &per_pair_rows;
@@ -815,6 +861,7 @@ struct FalcataPlan {
     if (key == "pair_code5_words") return &pair_code5_words;
     if (key == "pair_code5_pack2") return &pair_code5_pack2;
     if (key == "pair_code5_l2_store") return &pair_code5_l2_store;
+    if (key == "pair_code_wide") return &pair_code_wide;
     if (key == "pair_code5_flat") return &pair_code5_flat;
     if (key == "pair_code5_slots") return &pair_code5_slots;
     if (key == "pair_code5_tall") return &pair_code5_tall;
@@ -829,6 +876,7 @@ struct FalcataPlan {
     if (key == "gap_copy_fused") return &gap_copy_fused;
     if (key == "apply_inner_rows") return &apply_inner_rows;
     if (key == "apply_genbit_rows") return &apply_genbit_rows;
+    if (key == "aggregate_load_first") return &aggregate_load_first;
     if (key == "root_sums_warp") return &root_sums_warp;
     if (key == "minmax_warp") return &minmax_warp;
     if (key == "colmajor_split") return &colmajor_split;
@@ -839,6 +887,7 @@ struct FalcataPlan {
     if (key == "early_leaf_map") return &early_leaf_map;
     if (key == "readback_kernel") return &readback_kernel;
     if (key == "readback_fused") return &readback_fused;
+    if (key == "split_counts_early") return &split_counts_early;
     if (key == "invalidate_async") return &invalidate_async;
     if (key == "level_apply_first") return &level_apply_first;
     if (key == "gradients_no_sync") return &gradients_no_sync;
@@ -905,6 +954,22 @@ struct FalcataPlan {
         } else {
           Log::Fatal("cuda_plan: bad value \"%s\" for key \"view_mode\" (expected auto|compact|mask)", kv[1].c_str());
         }
+        overridden = true;
+        continue;
+      }
+      // the integer keys: construct_tile_rows (even, [2, 384]) and construct_tile_threads (power of two, [32, 1024])
+      const bool tile_rows_key = kv[0] == std::string("construct_tile_rows");
+      if (tile_rows_key || kv[0] == std::string("construct_tile_threads")) {
+        char* end = nullptr;
+        const long value = std::strtol(kv[1].c_str(), &end, 10);  // NOLINT(runtime/int)
+        const bool valid = end != kv[1].c_str() && *end == '\0' &&
+          (tile_rows_key ? (value >= 2 && value <= 384 && value % 2 == 0)
+                         : (value >= 32 && value <= 1024 && (value & (value - 1)) == 0));
+        if (!valid) {
+          Log::Fatal("cuda_plan: bad value \"%s\" for key \"%s\" (expected %s)", kv[1].c_str(), kv[0].c_str(),
+                     tile_rows_key ? "an even number in [2, 384]" : "a power of two in [32, 1024]");
+        }
+        (tile_rows_key ? plan.construct_tile_rows : plan.construct_tile_threads) = static_cast<int>(value);
         overridden = true;
         continue;
       }

@@ -200,6 +200,9 @@ def build_cells():
         ("fewbin", "row_batch", {}, {"cuda_plan": "auto,row_batch:off"}),
         ("int8wide", "rowdata_4bit", {}, {"cuda_plan": "auto,rowdata_4bit:off"}),
         ("int8wide", "fast_rowdata", {}, {"cuda_plan": "auto,fast_rowdata:off"}),
+        # construct_tile_bin: the int8 LUT binning of one-column groups through the shared-memory tile kernel (400
+        # columns: three full 128-column tiles and a partial one)
+        ("int8wide", "construct_tile_bin", {}, {"cuda_plan": "auto,construct_tile_bin:off"}),
         # async_tree_start: the host-launched quantized flow with and without a compact view
         ("dense", "async_tree_start", {}, {"cuda_plan": "auto,async_tree_start:off"}),
         ("sampled", "async_tree_start", {}, {"cuda_plan": "auto,async_tree_start:off"}),
@@ -649,13 +652,17 @@ def build_cells():
     # --- the generic warp split finder on mixed and wide scans ------------------------------------------------ #
     # warp_find_mid_ppl runs a task of 33..256 scan positions at ceil(positions / 32) per lane instead of 8;
     # find_prune_fp32 prunes from fp32 bounds of the integer prefix (one exact verify per lane, an exact screen, a
-    # per-lane work list); find_compact_survivors hands the warp's surviving positions out 32 at a time;
+    # per-lane work list); find_prune_sure takes its lower bound from every position passing the gates with a sure
+    # fp32 margin instead of the exact verify; find_compact_survivors hands the warp's surviving positions out 32 at
+    # a time;
     # find_select_int reduces the best split in integer compares of the gain bits (also on the one-position-per-lane
     # path: fewbin's 12-bin tasks); find_pack_narrow (default off) runs tasks of at most 8 positions four per warp
-    # inside the same launch. Each key off and all four off must train the base cell's model on mixwidth (every
+    # inside the same launch. Each key off and all five off must train the base cell's model on mixwidth (every
     # tier, packed units, NaN scans; its base fingerprints were recorded with master's build), dense (255-bin scans)
     # and missing (NaN scans); on mixwidth, which has tasks of at most 8 positions, so must find_pack_narrow on.
-    finder_keys = ["warp_find_mid_ppl", "find_prune_fp32", "find_select_int", "find_compact_survivors"]
+    finder_keys = [
+        "warp_find_mid_ppl", "find_prune_fp32", "find_prune_sure", "find_select_int", "find_compact_survivors"
+    ]
     finder_flips = [
         *[(key, f"{key}:off") for key in finder_keys],
         ("find_pack_narrow_on", "find_pack_narrow:on"),
@@ -908,6 +915,69 @@ def build_cells():
                 "sampledwide5",
                 {**base_params, "cuda_plan": plan},
                 equal_to=base,
+            )
+
+    # --- the integration of night6's partition keys onto master ------------------------------------------- #
+    # aggregate_load_first: the batched level apply's load-first per-split block-offset prefix; split_counts_early:
+    # a non-final classic level's split-info readback written by the aggregate kernel and waited on by its event
+    # (the next level's search orders the histogram stream behind the partition and the finder's stream behind the
+    # tree record). Each key off, and both off, must train the base cell's model: full trees, a binding leaf budget,
+    # the bagged multiclass categorical cell (categorical levels: the tree record also runs SplitCategorical).
+    integ_keys = ["aggregate_load_first", "split_counts_early"]
+    integ_flip = "auto," + ",".join(f"{k}:off" for k in integ_keys)
+    for key, plan in [*((k, f"auto,{k}:off") for k in integ_keys), ("integ", integ_flip)]:
+        for profile in ["sampled", "dense"]:
+            cell(
+                f"{profile}/flip-{key}-fulltree",
+                profile,
+                {**full, "cuda_plan": plan},
+                equal_to=f"{profile}/quant-fulltree",
+            )
+        cell(f"dense/flip-{key}-deep", "dense", {**deep, "cuda_plan": plan}, equal_to="dense/quant-deep")
+    cell(
+        "categorical-mc/flip-integ-bagged",
+        "categorical-mc",
+        {
+            "quant_mode": "fixedpoint",
+            "quant_bins": 16,
+            "bagging_fraction": 0.7,
+            "bagging_freq": 1,
+            "num_leaves": 255,
+            "max_depth": 10,
+            "min_data_in_leaf": 5,
+            "cuda_plan": integ_flip,
+        },
+        rounds=50,
+        equal_to="categorical-mc/quant-bagged",
+    )
+
+    # --- the 6-bit pair-code view (pair_code_wide) -------------------------------------------------------- #
+    # sampledwide's 6 x 6 = 36-cell joint tables do not fit the 5-bit code. At feature_fraction 0.3 a row is ~180
+    # bytes, and the 6-bit code view (five codes per word, 40 words) is smaller than the nibble view, so the fused fill
+    # writes it and the code-word construct reads it (FALCATA_DEBUG=diag: every tree; at the ff15 and 0.2 rows the
+    # 6-bit row's 32-byte padding makes it larger and the nibble view stays). sampledwide-mixbins' 3-6 value columns
+    # give it trees of either width. The base cells' fingerprints were recorded with master's build (a65d34e8), which
+    # reads the nibble view. pair_code_wide off (the nibble view again), the branchy adds (pair_code5_flat off) and
+    # the per-slot flush (pair_code5_epilogue on) over the 6-bit view must train the base cell's model; deep trees run
+    # it on multi-pair levels.
+    ff30 = {"feature_fraction": 0.3}
+    code6_flips = [
+        ("pair_code_wide", "pair_code_wide:off"),
+        ("code6_branchy", "pair_code5_flat:off"),
+        ("code6_epilogue", "pair_code5_epilogue:on"),
+    ]
+    for base_profile, suffix, base_params in [
+        ("sampledwide", "ff30", ff30),
+        ("sampledwide-mixbins", "ff30", ff30),
+        ("sampledwide", "ff30-deep", {**ff30, **deep}),
+    ]:
+        cell(f"{base_profile}/quant-{suffix}", base_profile, base_params)
+        for name, plan in code6_flips:
+            cell(
+                f"{base_profile}/flip-{name}-{suffix}",
+                base_profile,
+                {**base_params, "cuda_plan": f"auto,{plan}"},
+                equal_to=f"{base_profile}/quant-{suffix}",
             )
 
     ids = [c["id"] for c in cells]
