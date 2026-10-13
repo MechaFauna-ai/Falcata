@@ -1759,6 +1759,13 @@ void CUDASingleGPUTreeLearner::WaitForInFlightApply() {
   cuda_data_partition_->ClearApplyInFlight();
 }
 
+void CUDASingleGPUTreeLearner::RecordTreeRecordDone(const CUDATree* tree) {
+  if (tree_record_done_event_ == nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&tree_record_done_event_, cudaEventDisableTiming));
+  }
+  CUDASUCCESS_OR_FATAL(cudaEventRecord(tree_record_done_event_, tree->tree_stream()));
+}
+
 void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
     const std::vector<HybridPendingPair>& pairs,
     CUDALeafSplitsStruct* vec_plane_slab) {
@@ -1956,7 +1963,7 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
 }
 
 void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearchSpeculative(const CUDATree* tree,
-    const std::vector<HybridAppliedSplit>& applied) {
+    const std::vector<HybridAppliedSplit>& applied, cudaEvent_t tree_record_done) {
   const int num_pairs = static_cast<int>(applied.size());
   if (num_pairs <= 0) {
     return;
@@ -2018,6 +2025,11 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearchSpeculative(const CUDA
     max_smaller_leaf_bound, /*any_pair_needs_bit_change_copy=*/false,
     cuda_data_partition_->level_smaller_leaf_counts());
   cuda_best_split_finder_->WaitOnCatSlabConsumers(cat_consumed_default_event_, cat_consumed_tree_event_);
+  // the level's tree record (SplitBatchKernel on the tree stream) reads cuda_leaf_best_split_info_[parent], and the
+  // sync kernel FindBestSplitsForLevel launches on the finder's stream overwrites that entry for the left child (the
+  // parent's index); the cat_consumed_* events above are re-recorded only on categorical levels, and no device
+  // synchronize separates the two in this flow, so the finder's stream waits for the record here
+  cuda_best_split_finder_->WaitOnCatSlabConsumers(nullptr, tree_record_done);
   cuda_best_split_finder_->FindBestSplitsForLevel(
     cuda_hybrid_pair_descs_.RawDataReadOnly(), num_pairs, nullptr, nullptr);
   global_timer.Stop("CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch");
@@ -2769,10 +2781,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
       if (readback_fused && readback_plan.split_counts_early && !final_partial_level) {
         // cuda_plan key split_counts_early: every record kernel of the level is on the tree stream by now; the next
         // level's search orders the finder's stream behind this (EnqueueLevelBestSplitSearch)
-        if (tree_record_done_event_ == nullptr) {
-          CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&tree_record_done_event_, cudaEventDisableTiming));
-        }
-        CUDASUCCESS_OR_FATAL(cudaEventRecord(tree_record_done_event_, tree->tree_stream()));
+        RecordTreeRecordDone(tree);
       }
     } else {
       applied.reserve(splittable.size());
@@ -2900,9 +2909,12 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefixOneSync(CUDATree* tree) {
       prefix_final_leaves_before_ = leaves_before_level;
       break;
     }
+    // every record kernel of the level (SplitBatch, SplitCategorical) is on the
+    // tree stream by now: the children's sync kernel waits for them
+    RecordTreeRecordDone(tree);
     // speculative: the children's search goes out before their statistics are
     // host-known; the next iteration's readback collects both
-    EnqueueLevelBestSplitSearchSpeculative(tree, applied);
+    EnqueueLevelBestSplitSearchSpeculative(tree, applied, tree_record_done_event_);
     pending.swap(applied);
   }
   if (num_splits == 0) {
@@ -3789,8 +3801,10 @@ void CUDASingleGPUTreeLearner::TrainSelectiveOneSync(CUDATree* tree) {
     }
     ApplyLevelBatchedSelective(&applied);
     // speculative: the children's search goes out before their statistics are
-    // host-known; the next iteration's readback collects both
-    EnqueueLevelBestSplitSearchSpeculative(tree, applied);
+    // host-known; the next iteration's readback collects both. Nothing is
+    // recorded on the tree stream here (SelectiveFinalize records the tree
+    // after the loop), so the sync kernel has no record to wait for.
+    EnqueueLevelBestSplitSearchSpeculative(tree, applied, nullptr);
     pending.swap(applied);
   }
 }
