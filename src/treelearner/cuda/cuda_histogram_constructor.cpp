@@ -1259,7 +1259,10 @@ void CUDAHistogramConstructor::LaunchCompactFill(
         fused_root_bits16_ = fused_root_request_16bit_;
         code5_valid_ = fused_root && code5_written;
         code5_row_words_ = code_row_words;
-        code5_bits_ = code_bits;
+        // only a valid width is stored (code_bits is 0 where the view is not taken): every reader evaluates
+        // Code5RowWords(row bytes, code5_bits_), which divides by 32 / code5_bits_
+        code5_bits_ = code5 ? code_bits : 5;
+        CHECK(code5_bits_ == 5 || code5_bits_ == 6);
         nibble_pending_ = code5_valid_;
         nibble_pending_slots_ = total_byte_slots;
         nibble_pending_src_ = fill_src;

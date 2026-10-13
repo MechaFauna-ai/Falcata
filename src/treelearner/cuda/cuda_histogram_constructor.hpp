@@ -1201,7 +1201,8 @@ class CUDAHistogramConstructor {
   bool code5_allowed_ = true;
   int code5_row_words_ = 0;
   /*! \brief cuda_plan key pair_code_wide: the code width (bits per joint cell) the live code view was written at
-   *  (5 or 6; meaningless while code5_valid_ is false) */
+   *  (5 or 6, never anything else: Code5RowWords divides by 32 / code_bits; 5 and meaningless while code5_valid_
+   *  is false) */
   int code5_bits_ = 5;
   /*! \brief the live nibble view was not written by this tree's fused fill (it wrote the code view instead):
    *  EnsureNibbleView writes it with the plain tiled fill from nibble_pending_src_ and the code fill's own byte-slot
