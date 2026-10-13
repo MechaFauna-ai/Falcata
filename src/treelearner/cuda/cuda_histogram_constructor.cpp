@@ -422,6 +422,7 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
   uint32_t* code_view,
   const uint8_t* code_table,
   int code_row_words,
+  int code_bits,
   bool* code_view_written);
 
 // The tiled 4-bit fill needs a column-major source (stride-1 nibble runs with even bases) and every partition laid
@@ -1151,20 +1152,38 @@ void CUDAHistogramConstructor::LaunchCompactFill(
         for (int k = 0; code5 && k < total_byte_slots; ++k) {
           code5 = bs_dst_byte_h[k] == static_cast<size_t>(k) && bs_dst_stride_h[k] == total_byte_slots;
         }
+        // cuda_plan key pair_code_wide: the largest joint cell count of any slot, and whether every odd slot's
+        // span(hi) fits the 5-bit pack2/word-per-thread dp4a tricks' 8-bit factor (<= 7). code_bits is the
+        // narrowest width that fits every slot: 5 (today's dp4a-eligible code) where both hold, else 6 (the fill's
+        // generic scalar pack, gated by pair_code_wide) where every cell still fits 64, else the view is not taken
+        // (nibble fallback, as before pair_code_wide existed).
+        int max_cells = 0;
+        bool odd_hi_ok = true;
         for (int p = 0, k = 0; code5 && p < num_partitions; ++p) {
           const int compact_part_start = compact_part_col_offsets[p];
           const int used_in_p = compact_part_col_offsets[p + 1] - compact_part_start;
-          for (int m = 0; code5 && m < ((used_in_p + 1) >> 1); ++m, ++k) {
+          for (int m = 0; m < ((used_in_p + 1) >> 1); ++m, ++k) {
             const bool has_hi = (2 * m + 1) < used_in_p;
             const int lo_span = col_span[compact_part_start + 2 * m];
             const int hi_span = has_hi ? col_span[compact_part_start + 2 * m + 1] : 1;
-            // the fill packs an odd slot of a code word through 32 * span(hi) as an 8-bit factor
-            code5 = lo_span * hi_span <= 32 && ((k % 6) % 2 == 0 || hi_span <= 7);
+            max_cells = std::max(max_cells, lo_span * hi_span);
+            // the fill's dp4a pack2/word-per-thread paths pack an odd slot's span(hi) through a 32 * span(hi)
+            // 8-bit factor, so it must stay below 8
+            if (!((k % 6) % 2 == 0 || hi_span <= 7)) {
+              odd_hi_ok = false;
+            }
             code_table_h[k] = static_cast<uint8_t>(hi_span | (has_hi ? 32 : 0));
           }
         }
-        // the code row's words (Code5RowWords; the construct derives the same count from the row bytes)
-        const int code_row_words = Code5RowWords(total_byte_slots);
+        int code_bits = 0;
+        if (code5 && max_cells <= 32 && odd_hi_ok) {
+          code_bits = 5;
+        } else if (code5 && FalcataPlan::Get().pair_code_wide && max_cells <= 64) {
+          code_bits = 6;
+        }
+        code5 = code_bits > 0;
+        // the code row's words (Code5RowWords; the construct derives the same count from the row bytes and width)
+        const int code_row_words = Code5RowWords(total_byte_slots, code5 ? code_bits : 5);
         const size_t code_view_words = static_cast<size_t>(num_data) * static_cast<size_t>(code_row_words);
         // the code view is written into the live compact buffer itself (the nibble view is not written while the
         // code view is valid, and EnsureNibbleView overwrites it): only where it takes fewer bytes than the nibble
@@ -1195,8 +1214,8 @@ void CUDAHistogramConstructor::LaunchCompactFill(
           upload(code5_bs_dst_stride_.RawData(), bs_dst_stride_h.data(), sizeof(int) * total_byte_slots, &pin_off);
         }
         if (FalcataDebug().diag) {
-          Log::Info("compact fill: pair_code5 %s (%d byte slots, %d words per row)", code5 ? "on" : "off",
-                    total_byte_slots, code_row_words);
+          Log::Info("compact fill: pair_code5 %s (%d byte slots, %d words per row, %d bits per code)",
+                    code5 ? "on" : "off", total_byte_slots, code_row_words, code5 ? code_bits : 0);
         }
         FlushTreeStartMetaBatch();  // cuda_plan key tree_meta_batch: the fill reads the batched metadata
         bool code5_written = false;
@@ -1234,11 +1253,13 @@ void CUDAHistogramConstructor::LaunchCompactFill(
           code5 ? reinterpret_cast<uint32_t*>(compact_data_uint8_t_.RawData()) : nullptr,
           code5 ? code5_table_.RawDataReadOnly() : nullptr,
           code_row_words,
+          code5 ? code_bits : 0,
           &code5_written);
         fused_root_ready_ = fused_root;
         fused_root_bits16_ = fused_root_request_16bit_;
         code5_valid_ = fused_root && code5_written;
         code5_row_words_ = code_row_words;
+        code5_bits_ = code_bits;
         nibble_pending_ = code5_valid_;
         nibble_pending_slots_ = total_byte_slots;
         nibble_pending_src_ = fill_src;
