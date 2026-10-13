@@ -385,6 +385,17 @@ calloc is left, and it measures 1.01x [0.95, 1.08]: the zero-fill costs construc
 (presumably because page-locking kept the group-creation threads waiting anyway). The upload stream is worth 1.03x
 [1.01, 1.04] on top of the rest.
 
+**The int8 binning kernel's reads (`construct_tile_bin`, default on).** The bin kernel reads row-major input one
+element per thread at a row stride (one thread per row pair and feature group), so on int8 input a warp fetched 32
+sectors for 32 useful bytes: about 1.04 s of GPU time per Numerai construct for 19.4 GB of input. For row-major int8 /
+uint8 input whose feature groups are one column each (the LUT encode), a block of 256 threads now stages 64 rows × 128
+columns in shared memory with coalesced reads (a warp walks consecutive columns of one row), then encodes each
+(column, row pair) from shared memory and writes the group's output exactly as the gather kernel does; other inputs keep
+the gather kernel. Kernel 1.04 s → 0.04 s (the search's nsys). Same binary, key off against on, numerai53bench-construct
+(in-RAM int8, 5.46M × 3,555; constructs 2-4 of each process timed, 3 interleaved pairs): 3.77 s → 3.63 s, 1.038x; the
+saved binary and the 50-round model are md5-identical in every construct and to master's. Lattice: int8wide (400
+columns: three full tiles and a partial one) with the key off.
+
 **Construction from host arrays: the host work around the binner.** A first construct in a process of epsilon
 (400k × 2,000 float32, in the page cache) took 2.8-3.4 s, and the binner was 0.43 s of it: sampling took 0.9 s, bin
 finding 1.1-1.5 s, and the first CUDA call, which creates the context, 0.13-0.2 s. A float matrix with a categorical

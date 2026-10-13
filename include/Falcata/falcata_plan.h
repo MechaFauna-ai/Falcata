@@ -157,6 +157,9 @@ struct FalcataPlan {
   //  - never: pageable at every size (per-column copies from pageable memory;
   //    reaches the pageable path at test scale).
   int pin_bins = kPinBinsAuto;
+  // GPU binning of row-major int8/uint8 input whose groups are one column each:
+  // coalesced shared-memory tile kernel (off: the per-thread gather kernel)
+  bool construct_tile_bin = true;   // key: construct_tile_bin
   // cheap host precheck that skips EFB bundling on provably-unbundlable data
   bool efb_precheck = true;         // key: efb_precheck
 
@@ -777,6 +780,7 @@ struct FalcataPlan {
     if (key == "gpu_construct") return &gpu_construct;
     if (key == "construct_staging_pool") return &construct_staging_pool;
     if (key == "construct_h2d_overlap") return &construct_h2d_overlap;
+    if (key == "construct_tile_bin") return &construct_tile_bin;
     if (key == "efb_precheck") return &efb_precheck;
     if (key == "split_packed_read") return &split_packed_read;
     if (key == "batch_kernels") return &batch_kernels;

@@ -188,6 +188,100 @@ void LaunchTyped(const void* in, bool is_row_major, int64_t in_stride,
   CUDASUCCESS_OR_FATAL(cudaGetLastError());
 }
 
+// row-major int8/uint8 input with one column per group (LUT encode): the tile
+// kernel below stages kTileRows rows x kTileCols columns in shared memory with
+// coalesced reads (a warp walks consecutive columns of one row), then encodes
+// from shared memory. Output is written exactly as CUDADenseBinChunkKernel
+// writes it, so the bytes are identical.
+constexpr int kTileCols = 128;             // one 128-byte line of an input row
+constexpr int kTilePairs = 32;             // row pairs per block
+constexpr int kTileRows = 2 * kTilePairs;  // rows per block
+constexpr int kTileThreads = 256;
+
+template <typename T>
+__global__ void __launch_bounds__(kTileThreads)
+CUDADenseBinTileKernel(const T* __restrict__ in, int64_t in_stride, int ncol,
+                       data_size_t rows, data_size_t pairs, int parity,
+                       CUDADenseBinnerTables tables, uint8_t* __restrict__ out) {
+  __shared__ T tile[kTileCols * kTileRows];  // [column][row in block]
+  const data_size_t pair_base = static_cast<data_size_t>(blockIdx.x) * kTilePairs;
+  const int col_base = static_cast<int>(blockIdx.y) * kTileCols;
+  const data_size_t row_base = pair_base * 2 - static_cast<data_size_t>(parity);
+  for (int i = threadIdx.x; i < kTileCols * kTileRows; i += kTileThreads) {
+    const int r = i / kTileCols;  // consecutive threads: consecutive columns
+    const int j = i - r * kTileCols;
+    const data_size_t row = row_base + r;
+    const int col = col_base + j;
+    T v = 0;
+    if (row >= 0 && row < rows && col < ncol) {
+      v = in[static_cast<int64_t>(row) * in_stride + col];
+    }
+    tile[j * kTileRows + r] = v;
+  }
+  __syncthreads();
+  for (int i = threadIdx.x; i < kTileCols * kTilePairs; i += kTileThreads) {
+    const int p = i % kTilePairs;  // consecutive threads: consecutive pairs
+    const int j = i / kTilePairs;
+    const int col = col_base + j;
+    const data_size_t pair = pair_base + p;
+    if (col >= ncol || pair >= pairs) {
+      continue;
+    }
+    const int group = tables.col_group[col];
+    if (group < 0) {
+      continue;
+    }
+    uint32_t vals[2] = {0, 0};
+    #pragma unroll
+    for (int t = 0; t < 2; ++t) {
+      const data_size_t row = pair * 2 - static_cast<data_size_t>(parity) + t;
+      if (row < 0 || row >= rows) {
+        continue;
+      }
+      const uint32_t enc = tables.lut[tables.col_lut_off[col] +
+                                      DeviceLutIndex<T>(tile[j * kTileRows + 2 * p + t])];
+      if (enc != kDeviceSkipBin) {
+        vals[t] = enc;
+      }
+    }
+    const uint8_t width = tables.group_width[group];
+    uint8_t* group_out = out + tables.group_pair_off[group] * pairs;
+    if (width == 0) {
+      group_out[pair] = static_cast<uint8_t>(vals[0] | (vals[1] << 4));
+      continue;
+    }
+    #pragma unroll
+    for (int t = 0; t < 2; ++t) {
+      const data_size_t row = pair * 2 - static_cast<data_size_t>(parity) + t;
+      if (row < 0 || row >= rows) {
+        continue;
+      }
+      const data_size_t elem = pair * 2 + t;
+      if (width == 1) {
+        group_out[elem] = static_cast<uint8_t>(vals[t]);
+      } else if (width == 2) {
+        reinterpret_cast<uint16_t*>(group_out)[elem] =
+            static_cast<uint16_t>(vals[t]);
+      } else {
+        reinterpret_cast<uint32_t*>(group_out)[elem] = vals[t];
+      }
+    }
+  }
+}
+
+template <typename T>
+void LaunchTileTyped(const void* in, int64_t in_stride, int ncol,
+                     data_size_t rows, data_size_t pairs, int parity,
+                     const CUDADenseBinnerTables& tables, uint8_t* out,
+                     cudaStream_t stream) {
+  const dim3 grid(static_cast<unsigned int>((pairs + kTilePairs - 1) / kTilePairs),
+                  static_cast<unsigned int>((ncol + kTileCols - 1) / kTileCols));
+  CUDADenseBinTileKernel<T><<<grid, kTileThreads, 0, stream>>>(
+      reinterpret_cast<const T*>(in), in_stride, ncol, rows, pairs, parity,
+      tables, out);
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+}
+
 template <typename T>
 __global__ void CUDAGatherRowsKernel(const T* __restrict__ in,
                                      bool is_row_major, data_size_t nrow,
@@ -303,6 +397,29 @@ void LaunchCUDADenseBinChunkKernel(const void* in, int dtype_code,
       break;
     default:
       Log::Fatal("CUDADenseBinner: unsupported dtype code %d", dtype_code);
+  }
+}
+
+void LaunchCUDADenseBinTileKernel(const void* in, int dtype_code,
+                                  int64_t in_stride, int ncol,
+                                  data_size_t rows, data_size_t pairs,
+                                  int parity,
+                                  const CUDADenseBinnerTables& tables,
+                                  uint8_t* out, cudaStream_t stream) {
+  if (pairs <= 0) {
+    return;
+  }
+  switch (dtype_code) {
+    case 2:
+      LaunchTileTyped<int8_t>(in, in_stride, ncol, rows, pairs, parity, tables,
+                              out, stream);
+      break;
+    case 4:
+      LaunchTileTyped<uint8_t>(in, in_stride, ncol, rows, pairs, parity,
+                               tables, out, stream);
+      break;
+    default:
+      Log::Fatal("CUDADenseBinner: no tile kernel for dtype code %d", dtype_code);
   }
 }
 

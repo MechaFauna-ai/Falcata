@@ -200,6 +200,9 @@ def build_cells():
         ("fewbin", "row_batch", {}, {"cuda_plan": "auto,row_batch:off"}),
         ("int8wide", "rowdata_4bit", {}, {"cuda_plan": "auto,rowdata_4bit:off"}),
         ("int8wide", "fast_rowdata", {}, {"cuda_plan": "auto,fast_rowdata:off"}),
+        # construct_tile_bin: the int8 LUT binning of one-column groups through the shared-memory tile kernel (400
+        # columns: three full 128-column tiles and a partial one)
+        ("int8wide", "construct_tile_bin", {}, {"cuda_plan": "auto,construct_tile_bin:off"}),
         # async_tree_start: the host-launched quantized flow with and without a compact view
         ("dense", "async_tree_start", {}, {"cuda_plan": "auto,async_tree_start:off"}),
         ("sampled", "async_tree_start", {}, {"cuda_plan": "auto,async_tree_start:off"}),
