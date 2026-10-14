@@ -1472,6 +1472,8 @@ Measured (cells harness, T = first call + steady ms x 29999, 2 interleaved pairs
 
 Together with §10i (`gradient_fp64_lean`, `softmax_registers`; different kernels, the gains add), against master (2330477a), two quick checks of 2 pairs per cell: numerai53bench 1.000 / 1.003, numerai53bench with NaNs 1.000 / 0.997, covtype 1.040 / 1.037, higgs 1.246 / 1.250 (2.46 -> 1.97 ms per round); bagged (fraction 0.6, 400 rounds, 2 pairs): higgs 2.197 -> 1.823 ms per round, covtype 4.868 -> 4.485. md5-identical everywhere; lattice 341/341.
 
+With `fix_subtract_masked` (§ quantized fix + subtract in one launch; again a different kernel) and the chunked `dense_block_map` for levels of more than 256 pairs (the visible cells never reach it), against master (2330477a), two quick checks of 2 pairs per cell: numerai53bench 1.005 / 1.000, numerai53bench with NaNs 1.000 / 0.995, covtype 1.065 / 1.071 (4.25 -> 3.99 ms per round), higgs 1.266 / 1.264 (2.47 -> 1.95); bagged (fraction 0.6, 400 rounds, 2 pairs): higgs 2.200 -> 1.781 ms per round, covtype 4.820 -> 4.392. md5-identical everywhere; lattice 341/341.
+
 ---
 
 ## Multi-GPU: level-batched NCCL all-reduce
