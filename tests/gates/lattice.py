@@ -118,6 +118,18 @@ def build_cells():
     cell("missing-mfb0/quant-deep", "missing-mfb0", {"num_leaves": 255, "max_depth": 12, "min_data_in_leaf": 5})
     cell("missing-mfb0/quant-classic", "missing-mfb0", {"cuda_plan": "auto,hybrid:off"})
     cell("missing-mfb0/fixedpoint", "missing-mfb0", {"quant_mode": "fixedpoint"})
+    cell(
+        "missing-mfb0/flip-dense_rowdata-deep",
+        "missing-mfb0",
+        {"num_leaves": 255, "max_depth": 12, "min_data_in_leaf": 5, "cuda_plan": "auto,dense_rowdata:off"},
+        equal_to="missing-mfb0/quant-deep",
+    )
+    cell(
+        "missing-mfb0/flip-dense_rowdata-fixedpoint",
+        "missing-mfb0",
+        {"quant_mode": "fixedpoint", "cuda_plan": "auto,dense_rowdata:off"},
+        equal_to="missing-mfb0/fixedpoint",
+    )
     # missing-mfb0's rows are sparse (bin 0 holds over a quarter of the values), so its quantized levels never
     # reach the batched level finder. The dense twin does, and every task of it is a NaN scan with an unstored
     # bin 0: warp_find's forward scan has to rebuild bin 0 from the leaf total there. Shallow and deep, each
@@ -222,6 +234,10 @@ def build_cells():
         ("sampledwide", "async_tree_start", {}, {"cuda_plan": "auto,async_tree_start:off"}),
         ("int8wide", "async_tree_start", {}, {"cuda_plan": "auto,async_tree_start:off"}),
         ("dense", "leaf_map_small_blocks", {}, {"cuda_plan": "auto,leaf_map_small_blocks:off"}),
+        # dense_rowdata: quantized sparse-ish data (average sparse rate >= 0.25: efb 0.93, missing-mfb0 0.32) on the
+        # dense row-wise bin and the batched level kernels; off, the sparse bin and the per-leaf kernels
+        ("efb", "dense_rowdata", {}, {"cuda_plan": "auto,dense_rowdata:off"}),
+        ("missing-mfb0", "dense_rowdata", {}, {"cuda_plan": "auto,dense_rowdata:off"}),
     ]
     for profile, key, base_params, flip_params in flips:
         base_id = f"{profile}/quant" if not base_params else f"{profile}/flipbase-{key}"
@@ -391,6 +407,21 @@ def build_cells():
         },
         rounds=80,
     )
+    # dense_rowdata off: the 81%-zero columns on the sparse row-wise bin (per-leaf kernels)
+    cell(
+        "sparse-mc/flip-dense_rowdata-deep",
+        "sparse-mc",
+        {
+            "quant_mode": "fixedpoint",
+            "quant_bins": 16,
+            "num_leaves": 63,
+            "max_depth": 10,
+            "min_data_in_leaf": 5,
+            "cuda_plan": "auto,dense_rowdata:off",
+        },
+        rounds=80,
+        equal_to="sparse-mc/quant-deep",
+    )
 
     # unbagged fixedpoint multiclass at the benchmark's own defaults (lambda_l2 0,
     # min_data_in_leaf 20, 64 quant bins) on covtype's class mix, rare classes
@@ -411,6 +442,15 @@ def build_cells():
             {"quant_mode": "fixedpoint", "num_leaves": 255, "max_depth": 10},
             rounds=80,
             leaf_bound=500.0,
+        )
+        # dense_rowdata off: the six 80%-zero binary columns put the average sparse rate at 0.40 (sparse row-wise bin)
+        cell(
+            f"{profile}/flip-dense_rowdata-fixedpoint-deep",
+            profile,
+            {"quant_mode": "fixedpoint", "num_leaves": 255, "max_depth": 10, "cuda_plan": "auto,dense_rowdata:off"},
+            rounds=80,
+            leaf_bound=500.0,
+            equal_to=f"{profile}/fixedpoint-deep",
         )
 
     # --- wide features: the GLOBAL-MEMORY split finder ---------------------- #

@@ -145,6 +145,13 @@ struct FalcataPlan {
   bool construct_jit_explicit = false;
   // dense row-data build from column bins (skips host multi-val bin)
   bool fast_rowdata = true;         // key: fast_rowdata
+  // quantized training of sparse-ish data (average sparse rate of the features at least the host's 0.25) on the dense
+  // row-wise bin: the batched level kernels need it, the sparse bin falls back to per-leaf kernels. Taken while the
+  // dense bin needs at most a quarter of the total memory of the Dataset's device (its gpu_device_id_, not the Booster's;
+  // Dataset::RowWiseSparseThreshold); multi-GPU decides once for all ranks (largest rank's rows, smallest card:
+  // NCCLGBDT::Init -> Dataset::SetDenseRowDataFits); non-quantized training keeps the sparse bin (its deterministic
+  // float construct)
+  bool dense_rowdata = true;        // key: dense_rowdata
   // 4-bit packed row data for <=16-bin features
   bool rowdata_4bit = true;         // key: rowdata_4bit
   // GPU dense-matrix binning during dataset construction
@@ -836,6 +843,7 @@ struct FalcataPlan {
     if (key == "colmajor_align") return &colmajor_align;
     if (key == "root_hist_short_blocks") return &root_hist_short_blocks;
     if (key == "fast_rowdata") return &fast_rowdata;
+    if (key == "dense_rowdata") return &dense_rowdata;
     if (key == "rowdata_4bit") return &rowdata_4bit;
     if (key == "gpu_construct") return &gpu_construct;
     if (key == "construct_staging_pool") return &construct_staging_pool;

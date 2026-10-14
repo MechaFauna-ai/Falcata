@@ -946,7 +946,8 @@ MultiValBin* Dataset::GetMultiBinFromSparseFeatures(const std::vector<uint32_t>&
   return ret.release();
 }
 
-MultiValBin* Dataset::GetMultiBinFromAllFeatures(const std::vector<uint32_t>& offsets) const {
+MultiValBin* Dataset::GetMultiBinFromAllFeatures(const std::vector<uint32_t>& offsets,
+                                                 double sparse_threshold) const {
   Common::FunctionTimer fun_time("Dataset::GetMultiBinFromAllFeatures",
                                  global_timer);
   int num_threads = OMP_NUM_THREADS();
@@ -991,14 +992,85 @@ MultiValBin* Dataset::GetMultiBinFromAllFeatures(const std::vector<uint32_t>& of
              1.0 - sum_dense_ratio);
   ret.reset(MultiValBin::CreateMultiValBin(
       num_data_, offsets.back(), static_cast<int>(most_freq_bins.size()),
-      1.0 - sum_dense_ratio, offsets));
+      1.0 - sum_dense_ratio, offsets, sparse_threshold));
   PushDataToMultiValBin(num_data_, most_freq_bins, offsets, &iters, ret.get());
   ret->FinishLoad();
   return ret.release();
 }
 
+namespace {
+// cuda_plan key dense_rowdata: the dense row-wise bin is taken while it needs at most this share of the device's TOTAL
+// memory (the training matrix is one of several per-tree device buffers: compact views, histograms, partitions).
+// Total, not free, memory: the layout must not depend on what else runs on the GPU.
+constexpr double kDenseRowDataMaxDeviceShare = 0.25;
+}  // namespace
+
+double Dataset::DenseRowWiseBytes(int64_t num_rows) const {
+  int max_num_bin = 0;
+  int64_t num_columns = 0;
+  for (int gid = 0; gid < num_groups_; ++gid) {
+    const FeatureGroup* group = feature_groups_[gid].get();
+    num_columns += group->is_multi_val_ ? group->num_feature_ : 1;
+    for (int fid = 0; fid < group->num_feature_; ++fid) {
+      max_num_bin = std::max(max_num_bin, group->bin_mappers_[fid]->num_bin());
+    }
+  }
+  const double value_bytes = max_num_bin <= 256 ? 1.0 : (max_num_bin <= 65536 ? 2.0 : 4.0);
+  return static_cast<double>(num_rows) * static_cast<double>(num_columns) * value_bytes;
+}
+
+bool Dataset::DenseRowDataFits(double dense_bytes, size_t device_total_memory) {
+  return device_total_memory > 0 &&
+         dense_bytes <= kDenseRowDataMaxDeviceShare * static_cast<double>(device_total_memory);
+}
+
+size_t Dataset::DeviceTotalMemory(int device_id) {
 #ifdef USE_CUDA
-bool Dataset::CanSkipHostMultiValBinForCUDA() const {
+  cudaDeviceProp prop;
+  if (cudaGetDeviceProperties(&prop, device_id) != cudaSuccess) {
+    cudaGetLastError();
+    return 0;
+  }
+  return prop.totalGlobalMem;
+#else
+  (void)device_id;
+  return 0;
+#endif  // USE_CUDA
+}
+
+double Dataset::RowWiseSparseThreshold(bool use_quantized_grad, bool is_cuda_tree_learner) const {
+  const double host_threshold = MultiValBin::multi_val_bin_sparse_threshold;
+#ifdef USE_CUDA
+  // cuda_plan key dense_rowdata: the GPU's batched level kernels read the dense row-wise bin; the sparse one trains
+  // through the per-leaf kernels (2-8x the time per round on 25%-99.8% sparse features). Quantized training only:
+  // its integer histograms sum to the same values on either layout, so the model is the same; the non-quantized
+  // sparse construct is the deterministic float kernel, which the dense batched flow does not replace everywhere.
+  // The dense bin's size (rows x columns at the widest column's width) against kDenseRowDataMaxDeviceShare of the
+  // device's total memory decides; a dataset above it keeps the sparse bin (same model, per-leaf kernels).
+  if (!use_quantized_grad || !is_cuda_tree_learner || device_type_ != std::string("cuda") ||
+      !FalcataPlan::Get().dense_rowdata) {
+    return host_threshold;
+  }
+  // One GPU: this Dataset's rows on the total memory of this Dataset's gpu_device_id_ (unreadable memory: 0, the
+  // sparse bin, the same model on the per-leaf kernels). Multi-GPU ranks: the outcome decided once for the whole
+  // training (NCCLGBDT::Init -> SetDenseRowDataFits), because every rank must lay out the same row-wise bin: the
+  // histogram all-reduce exchanges num_total_bin_ values per rank, and the dense and sparse layouts run different
+  // collective sequences (batched level flow vs per-leaf).
+  const bool fits = dense_rowdata_fits_ >= 0
+      ? dense_rowdata_fits_ == 1
+      : DenseRowDataFits(DenseRowWiseBytes(num_data_), DeviceTotalMemory(gpu_device_id_ >= 0 ? gpu_device_id_ : 0));
+  if (fits) {
+    return std::numeric_limits<double>::infinity();
+  }
+#else
+  (void)use_quantized_grad;
+  (void)is_cuda_tree_learner;
+#endif  // USE_CUDA
+  return host_threshold;
+}
+
+#ifdef USE_CUDA
+bool Dataset::CanSkipHostMultiValBinForCUDA(double row_wise_sparse_threshold) const {
   if (!FalcataPlan::Get().fast_rowdata) {
     return false;
   }
@@ -1031,7 +1103,7 @@ bool Dataset::CanSkipHostMultiValBinForCUDA() const {
     }
   }
   sum_dense_ratio /= ncol;
-  return (1.0 - sum_dense_ratio) < MultiValBin::multi_val_bin_sparse_threshold;
+  return (1.0 - sum_dense_ratio) < row_wise_sparse_threshold;
 }
 #endif  // USE_CUDA
 
@@ -1043,6 +1115,8 @@ TrainingShareStates* Dataset::GetShareStates(
     const int num_grad_quant_bins, bool is_cuda_tree_learner) const {
   Common::FunctionTimer fun_timer("Dataset::TestMultiThreadingMethod",
                                   global_timer);
+  // one row-wise layout decision for the offsets, the host bin and the skip below (cuda_plan key dense_rowdata)
+  const double row_wise_sparse_threshold = RowWiseSparseThreshold(USE_QUANT_GRAD, is_cuda_tree_learner);
   if (force_col_wise && force_row_wise) {
     Log::Fatal(
         "Cannot set both of `force_col_wise` and `force_row_wise` to `true` at "
@@ -1068,22 +1142,22 @@ TrainingShareStates* Dataset::GetShareStates(
     TrainingShareStates* share_state = new TrainingShareStates();
     std::vector<uint32_t> offsets;
     share_state->CalcBinOffsets(
-      feature_groups_, &offsets, false);
+      feature_groups_, &offsets, false, row_wise_sparse_threshold);
     #ifdef USE_CUDA
     // On the CUDA path the host multi-val bin exists only to feed
     // CUDARowData::Init, which can build the row-wise data directly from the
     // column bins; skip the expensive (and memory-hungry) host build then.
     const bool skip_multi_val_bin = is_cuda_tree_learner &&
-      device_type_ == std::string("cuda") && CanSkipHostMultiValBinForCUDA();
+      device_type_ == std::string("cuda") && CanSkipHostMultiValBinForCUDA(row_wise_sparse_threshold);
     if (skip_multi_val_bin) {
       Log::Debug("Dataset::GetShareStates: skipping host multi-val bin build for CUDA (disable with FALCATA_FAST_ROWDATA=0)");
     } else {
-      share_state->SetMultiValBin(GetMultiBinFromAllFeatures(offsets), num_data_,
+      share_state->SetMultiValBin(GetMultiBinFromAllFeatures(offsets, row_wise_sparse_threshold), num_data_,
         feature_groups_, false, false, num_grad_quant_bins);
     }
     #else
     (void)is_cuda_tree_learner;
-    share_state->SetMultiValBin(GetMultiBinFromAllFeatures(offsets), num_data_,
+    share_state->SetMultiValBin(GetMultiBinFromAllFeatures(offsets, row_wise_sparse_threshold), num_data_,
       feature_groups_, false, false, num_grad_quant_bins);
     #endif  // USE_CUDA
     share_state->is_col_wise = false;
@@ -1107,8 +1181,8 @@ TrainingShareStates* Dataset::GetShareStates(
 
     start_time = std::chrono::steady_clock::now();
     std::vector<uint32_t> row_wise_offsets;
-    row_wise_state->CalcBinOffsets(feature_groups_, &row_wise_offsets, false);
-    row_wise_state->SetMultiValBin(GetMultiBinFromAllFeatures(row_wise_offsets), num_data_,
+    row_wise_state->CalcBinOffsets(feature_groups_, &row_wise_offsets, false, row_wise_sparse_threshold);
+    row_wise_state->SetMultiValBin(GetMultiBinFromAllFeatures(row_wise_offsets, row_wise_sparse_threshold), num_data_,
       feature_groups_, false, false, num_grad_quant_bins);
     row_wise_init_time = std::chrono::steady_clock::now() - start_time;
 
