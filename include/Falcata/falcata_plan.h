@@ -486,7 +486,9 @@ struct FalcataPlan {
   // level with several pairs launches only the block rows that have rows
   // (counted on the host by the kernel's own row grouping, incl.
   // dense_level_row_blocks), mapped back to their pair and block row through
-  // the pairs' first-block prefix. Same blocks with the same rows: bit-identical.
+  // the pairs' first-block prefix; a level with more pairs than one prefix
+  // holds launches one mapped grid per prefix-full of pairs. Same blocks with
+  // the same rows: bit-identical.
   bool dense_block_map = true;      // key: dense_block_map
   // pair_hist on a leaf that holds every row (the root without bagging): its
   // index list is a permutation of all rows, so each position is read as that
