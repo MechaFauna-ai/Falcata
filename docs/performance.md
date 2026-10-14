@@ -1474,6 +1474,8 @@ Together with §10i (`gradient_fp64_lean`, `softmax_registers`; different kernel
 
 With `fix_subtract_masked` (§ quantized fix + subtract in one launch; again a different kernel) and the chunked `dense_block_map` for levels of more than 256 pairs (the visible cells never reach it), against master (2330477a), two quick checks of 2 pairs per cell: numerai53bench 1.005 / 1.000, numerai53bench with NaNs 1.000 / 0.995, covtype 1.065 / 1.071 (4.25 -> 3.99 ms per round), higgs 1.266 / 1.264 (2.47 -> 1.95); bagged (fraction 0.6, 400 rounds, 2 pairs): higgs 2.200 -> 1.781 ms per round, covtype 4.820 -> 4.392. md5-identical everywhere; lattice 341/341.
 
+Measured and dropped (no code left): balancing the row data's column partitions for quantized training (`partition_balance`: the greedy division fills every partition but the last, so on 4M x 28 255-bin columns it is 24 + 4 and the 24-wide blocks of the second partition run 4 active columns through the whole row gather; re-divided to ceil(columns / partitions) = 14 + 14). Same-binary A/B, 2 pairs, md5-identical: higgs 1.010 (1.949 -> 1.929 ms per round; the construct 955 -> 951 us: the root level 157 -> 120 us, level 1-2 -6 us, but levels 4-9 +4..11 us each, their block rows now 36 x 64 rows instead of 21 x 64), numerai53bench 1.005, numerai53bench with NaNs 0.994, covtype 1.002 (one partition, unchanged). Keeping the old block rows (narrower 14 x 21 blocks): higgs 0.990. A lower rows-per-thread floor with the balanced blocks was not monotone (40: 1.018, 32: 0.94).
+
 ---
 
 ## Multi-GPU: level-batched NCCL all-reduce
