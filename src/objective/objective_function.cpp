@@ -70,6 +70,8 @@ ObjectiveFunction* ObjectiveFunction::CreateObjectiveFunctionCUDA(const std::str
     Log::Warning("Using customized objective with cuda. This requires copying gradients from CPU to GPU, which can be slow.");
     return nullptr;
   }
+  Log::Fatal("Unknown objective type name: %s", type.c_str());
+  return nullptr;
 }
 #endif  // USE_CUDA
 

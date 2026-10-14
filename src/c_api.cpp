@@ -22,6 +22,7 @@
 #include <Falcata/utils/threading.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -240,17 +241,24 @@ class Booster {
     }
 
     // create training metric
-    train_metric_.clear();
+    train_metric_ = CreateMetrics(train_data_);
+  }
+
+  // the metrics of config_.metric on data. Metric::CreateMetric picks the CUDA or the host metrics by
+  // ObjectiveFunction::BoostsOnDevice(config_), the predicate the objective factory uses: build the metrics from the
+  // config the objective was built from.
+  std::vector<std::unique_ptr<Metric>> CreateMetrics(const Dataset* data) const {
+    std::vector<std::unique_ptr<Metric>> metrics;
     for (auto metric_type : config_.metric) {
-      auto metric = std::unique_ptr<Metric>(
-        Metric::CreateMetric(metric_type, config_));
+      auto metric = std::unique_ptr<Metric>(Metric::CreateMetric(metric_type, config_));
       if (metric == nullptr) {
         continue;
       }
-      metric->Init(train_data_->metadata(), train_data_->num_data());
-      train_metric_.push_back(std::move(metric));
+      metric->Init(data->metadata(), data->num_data());
+      metrics.push_back(std::move(metric));
     }
-    train_metric_.shrink_to_fit();
+    metrics.shrink_to_fit();
+    return metrics;
   }
 
   void ResetTrainingData(const Dataset* train_data) {
@@ -392,6 +400,16 @@ class Booster {
   void ResetConfig(const char* parameters) {
     UNIQUE_LOCK(mutex_)
     auto param = Config::Str2Map(parameters);
+    // Config::Set reads an unset device_type as "auto" (cuda when a GPU is usable), and a reset's map holds only the
+    // reset keys: carry the booster's device, or a reset of a device_type=cpu booster would build CUDA objects (an
+    // objective-named reset then builds a CUDA objective for a CPU booster and its cpu Dataset). The other keys
+    // Config::Set resolves from absence (max_delta_step, num_leaves under max_depth, quant_mode under deterministic)
+    // resolve the same way again from the values config_ already holds.
+    // Only for a booster with training data: its config_ was Set from its parameters at construction (a
+    // model-loaded booster's config_ never was, and keeps the previous behaviour).
+    if (param.count("device_type") == 0 && train_data_ != nullptr) {
+      param["device_type"] = config_.device_type;
+    }
     Config new_config;
     new_config.Set(param);
     if (train_data_ == nullptr && !new_config.forcedsplits_filename.empty()) {
@@ -406,30 +424,53 @@ class Booster {
     if (param.count("metric") && new_config.metric != config_.metric) {
       Log::Fatal("Cannot change metric during training");
     }
+    // GBDT::Init builds the sample strategy object (bagging or GOSS) once and a reset only reconfigures it, while the
+    // objective and metric factories read config_.data_sample_strategy: a changed strategy would leave the two
+    // disagreeing. boosting=goss is the legacy spelling of data_sample_strategy=goss.
+    std::string boosting_value = param.count("boosting") > 0 ? param.at("boosting") : std::string();
+    std::transform(boosting_value.begin(), boosting_value.end(), boosting_value.begin(),
+                   [](unsigned char c) { return std::tolower(c); });  // as GetBoostingType reads it
+    const bool names_sample_strategy = param.count("data_sample_strategy") > 0 || boosting_value == std::string("goss");
+    if (names_sample_strategy && new_config.data_sample_strategy != config_.data_sample_strategy) {
+      Log::Fatal("Cannot change data_sample_strategy during training");
+    }
     CheckDatasetResetConfig(config_, param);
 
     config_.Set(param);
 
     OMP_SET_NUM_THREADS(config_.num_threads);
 
+    // The objective and the metrics are built from one config: a CUDA metric converts the score only through a
+    // CUDA objective, so a new objective needs new metrics (train and every valid set) when it moves between the
+    // device and the host (binary <-> cross_entropy, update(fobj=...) resetting the objective to "none").
     if (param.count("objective")) {
       // recreating the objective requires training data to initialize
       // against; a model-loaded booster has none
       if (train_data_ == nullptr) {
         Log::Fatal("Cannot change objective for a Booster with no training data.");
       }
-      // create objective function
-      objective_fun_.reset(ObjectiveFunction::CreateObjectiveFunction(config_.objective,
-                                                                      config_));
-      if (objective_fun_ == nullptr) {
+      // build and initialize everything first (objective and metric Init can Fatal), so a Fatal here leaves the
+      // booster and GBDT on the previous objective and metrics
+      std::unique_ptr<ObjectiveFunction> objective(
+          ObjectiveFunction::CreateObjectiveFunction(config_.objective, config_));
+      if (objective == nullptr) {
         Log::Info("Using self-defined objective function");
+      } else {
+        objective->Init(train_data_->metadata(), train_data_->num_data());
       }
-      // initialize the objective function
-      if (objective_fun_ != nullptr) {
-        objective_fun_->Init(train_data_->metadata(), train_data_->num_data());
+      auto train_metric = CreateMetrics(train_data_);
+      std::vector<std::vector<std::unique_ptr<Metric>>> valid_metrics;
+      for (const Dataset* valid_data : valid_data_) {
+        valid_metrics.push_back(CreateMetrics(valid_data));
       }
-      boosting_->ResetTrainingData(train_data_,
-                                   objective_fun_.get(), Common::ConstPtrInVectorWrapper<Metric>(train_metric_));
+      // then commit: the new objects replace the old ones only after GBDT holds the new pointers
+      boosting_->ResetTrainingData(train_data_, objective.get(), Common::ConstPtrInVectorWrapper<Metric>(train_metric));
+      for (size_t i = 0; i < valid_metrics.size(); ++i) {
+        boosting_->ResetValidMetrics(static_cast<int>(i), Common::ConstPtrInVectorWrapper<Metric>(valid_metrics[i]));
+      }
+      objective_fun_ = std::move(objective);
+      train_metric_ = std::move(train_metric);
+      valid_metrics_ = std::move(valid_metrics);
     }
 
     boosting_->ResetConfig(&config_);
@@ -437,16 +478,8 @@ class Booster {
 
   void AddValidData(const Dataset* valid_data) {
     UNIQUE_LOCK(mutex_)
-    valid_metrics_.emplace_back();
-    for (auto metric_type : config_.metric) {
-      auto metric = std::unique_ptr<Metric>(Metric::CreateMetric(metric_type, config_));
-      if (metric == nullptr) {
-        continue;
-      }
-      metric->Init(valid_data->metadata(), valid_data->num_data());
-      valid_metrics_.back().push_back(std::move(metric));
-    }
-    valid_metrics_.back().shrink_to_fit();
+    valid_data_.push_back(valid_data);
+    valid_metrics_.push_back(CreateMetrics(valid_data));
     boosting_->AddValidDataset(valid_data,
                                Common::ConstPtrInVectorWrapper<Metric>(valid_metrics_.back()));
   }
@@ -947,6 +980,8 @@ class Booster {
   std::vector<std::unique_ptr<Metric>> train_metric_;
   /*! \brief Metrics for validation data */
   std::vector<std::vector<std::unique_ptr<Metric>>> valid_metrics_;
+  /*! \brief Validation data, one per valid_metrics_ entry (their metrics are rebuilt when the objective changes) */
+  std::vector<const Dataset*> valid_data_;
   /*! \brief Training objective function */
   std::unique_ptr<ObjectiveFunction> objective_fun_;
   /*! \brief mutex for threading safe call */

@@ -653,12 +653,16 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
     // force row-wise for cuda version
     force_col_wise = false;
     force_row_wise = true;
-    // Quantized CUDA training supports neither forced splits nor monotone
-    // constraints, so mapping deterministic onto it would silently drop
-    // whichever one was asked for --
-    // forced splits used to vanish this way, with the tree learner's warning
-    // hidden by the verbosity most callers run at. An explicitly requested
-    // feature outranks an inferred execution mode.
+    // Requests that keep deterministic off the quantized path. Quantized CUDA
+    // training ignores forced splits (a tree-learner warning) and refuses
+    // monotone constraints (a Fatal below), so mapping deterministic onto it
+    // would silently drop the first or fail on the second -- forced splits
+    // used to vanish this way, with the warning hidden by the verbosity most
+    // callers run at. Interaction constraints do run quantized (per-node
+    // masks since the bynodequant fix) but stay on the non-quantized path,
+    // which matches CPU; single-target vector-leaf trees do not run
+    // quantized. An explicitly requested feature outranks an inferred
+    // execution mode.
     const char* quant_incompatible_request = nullptr;
     if (!forcedsplits_filename.empty()) {
       quant_incompatible_request = "forced splits";

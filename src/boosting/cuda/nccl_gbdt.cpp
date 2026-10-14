@@ -48,6 +48,12 @@ void NCCLGBDT<GBDT_T>::Init(
   this->tree_learner_.reset();
 
   nccl_topology_.reset(new NCCLTopology(this->config_->gpu_device_id, this->config_->num_gpu, this->config_->gpu_device_id_list, train_data->num_data()));
+  if (!feature_parallel_ && NCCLAnyEmptyRank(train_data->num_data(), nccl_topology_->num_gpu())) {
+    // data-parallel: an empty rank would divide by its zero row count (CUDAScoreUpdater) and launch empty grids
+    Log::Fatal("Multi-GPU (data-parallel) training of %d rows over %d GPUs leaves a GPU without rows (each takes "
+               "ceil(rows / GPUs) consecutive rows). Use fewer GPUs (num_gpu) or num_gpu=1.",
+               train_data->num_data(), nccl_topology_->num_gpu());
+  }
 
   nccl_topology_->InitNCCL();
 
@@ -86,6 +92,11 @@ void NCCLGBDT<GBDT_T>::Init(
       gbdt_config, train_data, this->num_tree_per_iteration_, this->boosting_on_gpu_, this->is_constant_hessian_,
       dense_rowdata_fits, nccl_topology_->num_gpu(), this->fp_merge_state_.get());
   });
+  // the flow requirements the rank learners' Train enforces, checked here on the caller's thread: Train runs on one
+  // std::thread per rank (DispatchPerDevice), where a Log::Fatal cannot reach the caller and terminates the process
+  for (const auto& nccl_gbdt_component : nccl_gbdt_components_) {
+    nccl_gbdt_component->tree_learner()->CheckMultiGPUFlowUsable(0);
+  }
 }
 
 template <typename GBDT_T>
@@ -243,6 +254,19 @@ std::vector<double> NCCLGBDT<GBDT_T>::EvalOneMetric(const Metric* metric, const 
       }
     });
 
+    if (metric->IsCUDAMetric()) {
+      // a CUDA metric reads device memory: hand it a device copy of the gathered score (GBDT::EvalOneMetric's
+      // host-to-device branch). The copy is made on the caller's device, the master device after RunPerDevice /
+      // DispatchPerDevice. That is the device the metric was initialized on only when gpu_device_id is one of the
+      // ranks' devices; with a gpu_device_id_list that does not contain it (or gpu_device_id -1 with a list), the
+      // metric's own buffers may live on another device than this copy.
+      if (tmp_score.size() > this->cuda_score_.Size()) {
+        this->cuda_score_.Resize(tmp_score.size());
+      }
+      CopyFromHostToCUDADevice<double>(this->cuda_score_.RawData(), tmp_score.data(), tmp_score.size(), __FILE__,
+                                       __LINE__);
+      return metric->Eval(this->cuda_score_.RawData(), this->objective_function_);
+    }
     return metric->Eval(tmp_score.data(), this->objective_function_);
   } else {
     return GBDT_T::EvalOneMetric(metric, score, num_data);

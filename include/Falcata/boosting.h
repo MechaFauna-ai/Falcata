@@ -71,6 +71,13 @@ class FALCATA_EXPORT Boosting {
   virtual void AddValidDataset(const Dataset* valid_data,
                                const std::vector<const Metric*>& valid_metrics) = 0;
 
+  /*!
+  * \brief Replace the metrics of a validation dataset (the caller rebuilt them after an objective change)
+  * \param valid_idx Index of the validation dataset, in AddValidDataset order
+  * \param valid_metrics New metrics, as many as before
+  */
+  virtual void ResetValidMetrics(int valid_idx, const std::vector<const Metric*>& valid_metrics) = 0;
+
   virtual void Train(int snapshot_freq, const std::string& model_output_path) = 0;
 
   /*!

@@ -74,6 +74,12 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     fp_merge_state_ = state;
   }
 
+  /*! \brief Log::Fatal unless the multi-GPU flows can train this config: feature-parallel and quantized data-parallel
+   *  ride the hybrid level flow only. Train checks it per tree (num_splits_done: the forced splits it applied);
+   *  NCCLGBDT::Init checks it once after Init on the caller's thread, since a Fatal inside Train runs on a per-rank
+   *  std::thread and terminates the process instead of raising. A no-op for single-GPU training. */
+  void CheckMultiGPUFlowUsable(int num_splits_done) const;
+
  protected:
   bool IsCUDATreeLearner() const override { return true; }
 

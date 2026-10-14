@@ -429,7 +429,6 @@ class NCCLInfo {
     nccl_gpu_rank_ = -1;
     local_gpu_rank_ = -1;
     gpu_device_id_ = -1;
-    num_gpu_in_node_ = 0;
     global_num_data_ = 0;
   }
 
@@ -451,7 +450,6 @@ class NCCLInfo {
   int nccl_gpu_rank_ = -1;
   int local_gpu_rank_ = -1;
   int gpu_device_id_ = -1;
-  int num_gpu_in_node_ = 0;
   data_size_t global_num_data_ = 0;
 };
 

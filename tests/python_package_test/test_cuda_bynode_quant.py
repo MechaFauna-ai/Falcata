@@ -93,9 +93,20 @@ def test_bynode_changes_quantized_model(quant_mode):
 
 @pytest.mark.parametrize("quant_mode", QUANT_MODES)
 def test_bynode_root_feature_varies_with_seed(quant_mode):
+    # Under stochastic rounding the seed alone moves the root (8 seeds gave 5 roots before the fix, bynode 0.3 and
+    # 1.0 alike), so a root that varies with the seed does not show the node sample at work. Compare each seed's root
+    # with the bynode 1.0 root of the same seed too: before the fix bynode 0.3 trained the bynode 1.0 model, and
+    # every seed gave the same root both ways.
     X, y = _data()
-    roots = {_root_feature(_train(_params(quant_mode, 0.3, seed=s), X, y, rounds=1)) for s in range(8)}
-    assert len(roots) > 1, roots
+    roots = {
+        s: (
+            _root_feature(_train(_params(quant_mode, 0.3, seed=s), X, y, rounds=1)),
+            _root_feature(_train(_params(quant_mode, 1.0, seed=s), X, y, rounds=1)),
+        )
+        for s in range(8)
+    }
+    assert len({sampled for sampled, _ in roots.values()}) > 1, roots
+    assert any(sampled != full for sampled, full in roots.values()), roots
 
 
 @pytest.mark.parametrize("quant_mode", QUANT_MODES)

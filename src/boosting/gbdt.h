@@ -149,6 +149,13 @@ class GBDT : public GBDTBase {
                        const std::vector<const Metric*>& valid_metrics) override;
 
   /*!
+  * \brief Replace the metrics of a validation dataset
+  * \param valid_idx Index of the validation dataset
+  * \param valid_metrics New metrics, as many as before
+  */
+  void ResetValidMetrics(int valid_idx, const std::vector<const Metric*>& valid_metrics) override;
+
+  /*!
   * \brief Perform a full training procedure
   * \param snapshot_freq frequency of snapshot
   * \param model_output_path path of model file
@@ -588,6 +595,15 @@ class GBDT : public GBDTBase {
   * \brief Reset gradient buffers, must be called after sample strategy is reset
   */
   void ResetGradientBuffers();
+
+  #ifdef USE_CUDA
+  /*!
+  * \brief ResetTrainingData changed boosting_on_gpu_ (a new objective): switch the CUDA score updaters to hand out
+  * the device or the host score, and (same training data) move the gradient buffers
+  * \param train_data_changes Whether ResetTrainingData rebuilds the train score updater and buffers itself
+  */
+  void OnBoostingOnGPUChanged(bool train_data_changes);
+  #endif  // USE_CUDA
 
   /*! \brief current iteration */
   int iter_;
