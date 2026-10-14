@@ -569,6 +569,36 @@ struct FalcataPlan {
   // the compiler batch the loads past the stores). Splits of more than 6143 chunks keep the original kernel. The same
   // integer prefix sums and child leaf metadata: bit-identical.
   bool aggregate_load_first = true;  // key: aggregate_load_first
+  // out-of-bag score pass of a tree whose device structure was freed by ToHost (bagging; DART re-scoring): every
+  // internal node's routing values (column, bin range and offset, most-frequent bin, missing bin, threshold, children,
+  // default direction) packed on the host into one record per node and uploaded with one copy into a buffer the
+  // dataset keeps, instead of five per-array allocations, copies and frees per pass; the traversal reads one record
+  // per level instead of chasing split feature -> column -> per-feature tables. Scalar-leaf trees without
+  // categorical splits, on the per-column view or the tree's packed view. The same bins, the same branch rule, the same leaf value added:
+  // bit-identical.
+  bool oob_node_table = true;  // key: oob_node_table
+  // bagged training on the 4-bit compact view: the tiled fill runs its fused variant although the root (the bag) is
+  // not every row, only for the pair-joint code view it writes (pair_code5, pair_code_wide); the histogram of every
+  // row it accumulates is discarded and the root level builds the bag's histogram like any gathered level. Without
+  // it a bagged tree's fill writes the nibble view and every level takes the capped nibble pair-joint kernel. The
+  // same rows and integer sums per histogram: bit-identical.
+  bool bagged_code_view = true;  // key: bagged_code_view
+  // the device bagging sample (cuda_bagging.cu) in three kernels instead of a flag pass, a three-kernel global prefix
+  // sum and a scatter: per-block kept counts (__syncthreads_count), one block's scan of the counts (and the bag count),
+  // and a scatter that recomputes each row's Philox draw and ranks it in its block by warp ballots. The same draws
+  // and the same [in-bag ascending | out-of-bag from the tail] index layout: bit-identical.
+  bool bagging_fused_scan = true;  // key: bagging_fused_scan
+  // multiclass softmax gradients (CUDAMulticlassSoftmax, num_class <= 32): the row's class scores stay in registers
+  // (a class capacity of 8, 16 or 32, the runtime class count guarding every unrolled step) instead of the row-major
+  // global scratch the kernel staged them in (num_class doubles per thread, uncoalesced, six passes). The same max,
+  // the same exponentials summed in class order, one division per class: bit-identical.
+  bool softmax_registers = true;  // key: softmax_registers
+  // binary logloss gradients (with or without sample and label weights): the response and hessian evaluated with ~16 FP64 operations per row (the
+  // exponential's tail in fp32, an fp32 reciprocal refined by one double Newton step) instead of ~50 (libdevice exp, a
+  // correctly rounded division), to a proven relative error bound; a row's floats are stored from it only when every
+  // double within the bound rounds to the same float (its distance to the nearest float rounding midpoint), otherwise
+  // the original double expression runs. The same stored floats: bit-identical.
+  bool gradient_fp64_lean = true;  // key: gradient_fp64_lean
   // quantized root sums (gradient/hessian totals of the tree's rows): one warp
   // per 1024-row chunk sums 32 rows per lane, instead of one 1024-thread block
   // per chunk with one row per thread and two block reductions. Each chunk's
@@ -856,6 +886,11 @@ struct FalcataPlan {
     if (key == "apply_inner_rows") return &apply_inner_rows;
     if (key == "apply_genbit_rows") return &apply_genbit_rows;
     if (key == "aggregate_load_first") return &aggregate_load_first;
+    if (key == "oob_node_table") return &oob_node_table;
+    if (key == "bagged_code_view") return &bagged_code_view;
+    if (key == "bagging_fused_scan") return &bagging_fused_scan;
+    if (key == "softmax_registers") return &softmax_registers;
+    if (key == "gradient_fp64_lean") return &gradient_fp64_lean;
     if (key == "root_sums_warp") return &root_sums_warp;
     if (key == "minmax_warp") return &minmax_warp;
     if (key == "colmajor_split") return &colmajor_split;

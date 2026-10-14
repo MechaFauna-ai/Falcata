@@ -92,6 +92,10 @@ class CUDAColumnData {
 
   uint8_t* const* cuda_data_by_column() const { return cuda_data_by_column_.RawData(); }
 
+  /*! \brief Device scratch for the out-of-bag score pass's per-node table (cuda_plan key oob_node_table): grown
+   *  on demand, rewritten by every pass (the pass synchronizes before returning), never read across passes. */
+  CUDAVector<uint8_t>* score_node_scratch() const { return &score_node_scratch_; }
+
   uint32_t feature_min_bin(const int feature_index) const { return feature_min_bin_[feature_index]; }
 
   uint32_t feature_max_bin(const int feature_index) const { return feature_max_bin_[feature_index]; }
@@ -320,6 +324,7 @@ class CUDAColumnData {
   CUDAVector<uint8_t> cuda_packed_column_bit_type_;
   uint64_t packed_view_device_generation_ = 0;
 
+  mutable CUDAVector<uint8_t> score_node_scratch_;
   CUDAVector<uint8_t> cuda_column_bit_type_;
   CUDAVector<uint32_t> cuda_feature_min_bin_;
   CUDAVector<uint32_t> cuda_feature_max_bin_;

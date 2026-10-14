@@ -1361,7 +1361,103 @@ Against master (a65d34e8; 8 cells, 2 pairs + 1 re-timed pair each): 1.010x over 
 
 ---
 
-## 10h. The per-column quantized construct on deep levels (`dense_level_row_blocks`, `dense_block_map`)
+## 10h. Bagged training (`bagged_code_view`, `oob_node_table`, `bagging_fused_scan`)
+
+The first profile of a bagged CUDA training (`bagging_fraction` < 1, `bagging_freq: 1`; the visible cells' data with
+the two bagging parameters added) found two costs that only bagging pays.
+
+**The code view under bagging (`bagged_code_view`).** The pair-joint code view (§10d, `pair_code5`, `pair_code_wide`)
+is written by the fused root-histogram fill only, and that fill was requested only when the root leaf is every row,
+i.e. never under bagging. A bagged tree's fill therefore wrote the nibble view, and every level ran the capped
+nibble pair-joint kernel (`CUDAConstructDiscretizedHistogramPairJointCappedKernel`): on the 5-value Numerai data at
+`bagging_fraction` 0.5, 2.98 ms per round of construct against 0.78 ms with the code-word kernel. With the key the
+bagged tree still runs the fused fill for the code view it writes; the histogram of every row it accumulates is
+discarded (the root is the bag, built by the root level's gathering construct like any later level). Same rows, same
+integer sums per histogram: md5-identical (the lattice's bagged cells, and key on/off on every shape below).
+
+**The out-of-bag pass (`oob_node_table`).** `GBDT::UpdateScore` scores the out-of-bag rows by walking the tree, after
+`ToHost` has freed the tree's device arrays; the walk re-uploaded the five structure arrays (five allocations,
+five synchronous copies, five frees: 3-4 us of host gap each) and chased split feature -> column -> per-feature tables
+per level. The key packs each node's routing values (column, bin range and offset, most-frequent bin, missing bin,
+threshold, children, default direction) on the host into one 48-byte record, uploads the table with one copy into a
+buffer the dataset keeps, and reads one record per level (28 registers instead of 48, so twice the resident threads
+of the 1024-thread blocks). Scalar-leaf trees without categorical splits, on the per-column view and the packed view.
+
+**The bagging sample (`bagging_fused_scan`).** The device bag (`cuda_bagging.cu`) was a flag pass, a three-kernel
+global prefix sum over the flags and a scatter (~60 us per round at 4M rows, five launches and ~32 bytes of traffic
+per row). With the key it is three kernels and no flag array: per-block kept counts (`__syncthreads_count`), one
+block's scan of the block counts (which also holds the bag count the host reads), and a scatter that recomputes each
+row's Philox draw (a pure function of seed, iteration and row) and ranks it in its block by warp ballots: ~38 us at
+4M rows. The same draws and the same [in-bag ascending | out-of-bag from the tail] layout. CUDA builds only (32-lane
+ballots); ROCm keeps the global scan. higgs, bagging 0.5, 63 leaves depth 6 (3 pairs): 1.148 -> 1.125 ms per round
+(1.020, spread 0.002); at 1023 leaves (2 pairs): 2.061 -> 2.045 (1.008).
+
+Same-binary A/B, key off vs on (steady ms per round, median of rounds 150..300 (400 for higgs), tuner on, one
+`$HOME` per run, 2 interleaved pairs; md5-identical in every pair):
+
+| data (bagging_fraction) | `bagged_code_view` off -> on | `oob_node_table` off -> on |
+|---|---|---|
+| numerai53 benchmark split, deep, stochastic (0.5) | 5.576 -> 3.182 (1.75x) | 5.619 -> 5.573 (1.008) |
+| numerai53 with NaNs (0.7, 1 pair) | 5.069 -> 4.558 (1.11x) | |
+| covtype, deep, fixedpoint (0.7) | (not 4-bit) | 4.891 -> 4.751 (1.029) |
+| higgs, deep, stochastic (0.5) | (not 4-bit) | 2.073 -> 2.035 (1.019) |
+| higgs, deep, stochastic (0.3) | (not 4-bit) | 1.815 -> 1.759 (1.032) |
+
+Measured neutral and dropped (no code left): skipping the discarded all-rows histogram in the code-only fill (fill
+1158 -> 1164 us: the fill is bound by its gather and stores); two rows per thread in the node-table walk (215 -> 214
+us on the packed view, 124.5 -> 123.7 on the per-column view: the walk is bound by its scattered bin reads, not by
+the dependent chain); `final_map_only` under bagging (the in-bag score's restore copy dropping the pending partition:
+3.134 vs 3.143 and 1.2436 vs 1.2418 ms per round).
+
+Unbagged training takes none of these paths (cells quick check: 0.998-1.001 on the four visible cells, md5-identical).
+
+## 10i. Objective gradients (`gradient_fp64_lean`, `softmax_registers`)
+
+The objective's gradient kernel runs once per round over every row (once per class for multiclass), in double
+precision, and stores only the float casts of the gradient and hessian. On consumer GPUs the FP64 pipe runs at 1/64 of
+the FP32 rate, so these kernels are FP64-bound, not memory-bound: higgs (4M rows, binary) spent 173 us per round in
+`GetGradientsKernel_BinaryLogloss` (~50 FP64 instructions per row: libdevice exp, a correctly rounded division),
+covtype (581k rows x 7 classes) 223 us in `GetGradientsKernel_MulticlassSoftmax` (178 DFMA + 48 DADD + 36 DMUL per row).
+
+**`gradient_fp64_lean` (binary logloss, with or without sample and label weights).** The response -s/(1 + e^x) (x = label *
+sigmoid * score) and the hessian |r| (s - |r|) are evaluated with 12 FP64 instructions per row: e^x = 2^m 2^(j/64) e^r
+(a 64-entry table, Cody-Waite reduction with ln2/64 split in two doubles, |r| <= 0.0054), e^r's head in double Horner
+and its r^3 tail in fp32, the quotient from an fp32 reciprocal refined by one double Newton step. The derivation in
+`cuda_binary_objective.cu` bounds the response's error by 2^-44.2 (the original's double is within 2^-50 of the true
+value); the hessian's bound is that times s / (s - |r|) (the cancellation in s - |r|). Only the floats are stored, and
+round-to-nearest is monotone: if the approximation's distance to the nearest float rounding midpoint (its low 29
+mantissa bits against 2^28) exceeds the bound (margin 2^-42: 2^11 double ulps), every double within the bound, the
+original's included, rounds to the same float, which is then produced by integer rounding. Otherwise (|x| > 80, float
+subnormal or overflow results, s - |r| < 2^-15 s, a near-midpoint value) the row runs the original double expression.
+Sample and label weights multiply both arms' values in the original's order (each rounded product adds 2^-52 to
+the bound; intermediate products must stay in double's normal range). Fallback share: ~0.002% of rows for |x| <= 5; the hessian check sends rows with x < -10 (confidently wrong) to the
+original path. A standalone check over 5.6 G random (score, label, sigmoid) triples found no float mismatch at the
+2^-42 margin nor at 2^-45 (3.2 G more with random label and sample weights: none); mismatches start at 2^-49, consistent with the 2^-44 bound.
+
+**`softmax_registers` (multiclass softmax, at most 32 classes).** The kernel staged each row's class scores in a
+row-major global double scratch (num_class doubles per thread, uncoalesced, six passes) for `SoftmaxCUDA`; with the key
+they stay in registers (capacity 8, 16 or 32, the runtime class count guarding every unrolled step: 44 / 60 / 64
+registers, `__launch_bounds__(1024)`; at 32 part of the array spills to thread-interleaved local memory, 120 bytes,
+which stays coalesced), with the same operations in the same order. More classes keep the scratch kernel. 24 classes,
+1M rows (nsys, 30 rounds): the kernel 1645 -> 1063 us per round, md5-identical.
+A lean softmax was examined and not built: the hessian factor p (1 - p) and the label's p - 1 cancel when p -> 1, and
+on covtype 59% of warps hold such a row (1 - p_max < 3e-5) by round 300, 100% by round 600, so the fallback would run
+in nearly every warp.
+
+Same-binary A/B (key off vs on, the cells protocol, 3 interleaved pairs, tuner on, md5-identical in every run):
+
+| cell | key | kernel us/round off -> on (nsys) | steady ms/round off -> on | 30000-round ratio |
+|---|---|---|---|---|
+| higgs-deep-stoch (binary) | `gradient_fp64_lean` | 173 -> 92 | 2.483 -> 2.380 | 1.059 |
+| covtype-deep-fixed (7 classes) | `softmax_registers` | 223 -> 191 | 4.285 -> 4.167 | 1.025 |
+| higgs-deep-stoch, `bagging_fraction` 0.5 (2 pairs in one process, rounds 150..400) | `gradient_fp64_lean` | | 2.027 -> 1.951 | 1.039 |
+
+covtype's gain exceeds the kernel's own 32 us: the 32 MB scratch no longer passes through L2 every round. Regression
+objectives (the Numerai cells) take neither path.
+
+---
+
+## 10j. The per-column quantized construct on deep levels (`dense_level_row_blocks`, `dense_block_map`)
 
 Where the pair-joint construct does not run (8-bit columns, i.e. more than 16 bins, and 4-bit data outside `pair_hist`), a quantized level's histograms come from the per-column dense batched kernel. Its grid is sized for the level's largest smaller leaf, and every leaf used to spread its rows over all of that grid's block rows (ceil(rows / grid rows) per thread). On a deep level with hundreds of pairs each block then zeroed and flushed a whole partition table for a few dozen rows, and most launched blocks of the small leaves had nothing to do: on higgs (4M x 28, 255 bins, 1023 leaves, depth 10) the construct cost grew with depth, from 160 us at the root to 324 us at level 9 (2 x 98 x 246 blocks) for at most half the rows.
 

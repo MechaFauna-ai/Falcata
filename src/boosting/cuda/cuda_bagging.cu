@@ -8,6 +8,7 @@
 #include <Falcata/cuda/cuda_algorithms.hpp>
 #include <Falcata/cuda/cuda_bagging.hpp>
 #include <Falcata/cuda/cuda_utils.hu>
+#include <Falcata/falcata_plan.h>
 
 namespace Falcata {
 
@@ -80,6 +81,107 @@ __global__ void BaggingScatterKernel(const data_size_t num_data,
   }
 }
 
+// cuda_plan key bagging_fused_scan: the same flags and the same [in-bag | out-of-bag] layout in three kernels without
+// the flag array: each block counts its kept rows, one block turns the counts into block bases (and the total), and
+// each block recomputes its flags (the Philox draw is a pure function of seed, iteration and row) and scatters every
+// row from its block base plus its rank in the block.
+// 32-lane warp ballots and scans: CUDA only (ROCm builds keep the flag pass and the global prefix sum)
+#if !defined(__HIP_PLATFORM_AMD__)
+constexpr int kBagFusedBlock = GLOBAL_PREFIX_SUM_BLOCK_SIZE;
+static_assert(kBagFusedBlock % 32 == 0 && kBagFusedBlock <= 1024, "whole warps, at most 32 of them");
+
+__device__ __forceinline__ bool BagKeep(const data_size_t i, const float bagging_fraction, const int iter,
+                                        const uint32_t seed) {
+  const uint4 rand = BagPhilox10(make_uint4(static_cast<uint32_t>(i), static_cast<uint32_t>(iter), 0u, 0u),
+                                 make_uint2(seed, 0x9E3779B9u));
+  return BagPhiloxUniform(rand.x) < bagging_fraction;
+}
+
+__global__ void BaggingBlockCountKernel(const data_size_t num_data, const float bagging_fraction, const int iter,
+                                        const uint32_t seed, data_size_t* block_counts) {
+  const data_size_t i = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
+  const bool keep = i < num_data && BagKeep(i, bagging_fraction, iter, seed);
+  const int count = __syncthreads_count(keep);
+  if (threadIdx.x == 0) {
+    block_counts[blockIdx.x] = static_cast<data_size_t>(count);
+  }
+}
+
+// one block: block_counts[b] -> exclusive base of block b, in place; block_counts[num_blocks] = the bag count
+__global__ void BaggingBlockBaseKernel(const int num_blocks, data_size_t* block_counts) {
+  __shared__ data_size_t warp_sums[kBagFusedBlock / 32];
+  __shared__ data_size_t carry;
+  if (threadIdx.x == 0) {
+    carry = 0;
+  }
+  __syncthreads();
+  const int lane = static_cast<int>(threadIdx.x) & 31;
+  const int warp = static_cast<int>(threadIdx.x) >> 5;
+  for (int start = 0; start < num_blocks; start += kBagFusedBlock) {
+    const int b = start + static_cast<int>(threadIdx.x);
+    const data_size_t v = b < num_blocks ? block_counts[b] : 0;
+    data_size_t incl = v;
+#pragma unroll
+    for (int o = 1; o < 32; o <<= 1) {
+      const data_size_t n = __shfl_up_sync(0xffffffffu, incl, o);
+      if (lane >= o) incl += n;
+    }
+    if (lane == 31) warp_sums[warp] = incl;
+    __syncthreads();
+    if (warp == 0) {
+      data_size_t w = lane < kBagFusedBlock / 32 ? warp_sums[lane] : 0;
+#pragma unroll
+      for (int o = 1; o < 32; o <<= 1) {
+        const data_size_t n = __shfl_up_sync(0xffffffffu, w, o);
+        if (lane >= o) w += n;
+      }
+      if (lane < kBagFusedBlock / 32) warp_sums[lane] = w;  // inclusive warp prefix
+    }
+    __syncthreads();
+    const data_size_t warp_base = warp > 0 ? warp_sums[warp - 1] : 0;
+    const data_size_t base = carry;
+    if (b < num_blocks) {
+      block_counts[b] = base + warp_base + incl - v;
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+      carry = base + warp_sums[kBagFusedBlock / 32 - 1];
+    }
+    __syncthreads();
+  }
+  if (threadIdx.x == 0) {
+    block_counts[num_blocks] = carry;
+  }
+}
+
+__global__ void BaggingBlockScatterKernel(const data_size_t num_data, const float bagging_fraction, const int iter,
+                                          const uint32_t seed, const data_size_t* block_bases,
+                                          data_size_t* out_indices) {
+  __shared__ data_size_t warp_counts[kBagFusedBlock / 32];
+  const data_size_t i = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
+  const bool keep = i < num_data && BagKeep(i, bagging_fraction, iter, seed);
+  const int lane = static_cast<int>(threadIdx.x) & 31;
+  const int warp = static_cast<int>(threadIdx.x) >> 5;
+  const uint32_t ballot = __ballot_sync(0xffffffffu, keep);
+  if (lane == 0) warp_counts[warp] = __popc(ballot);
+  __syncthreads();
+  data_size_t warp_base = 0;
+  for (int w = 0; w < warp; ++w) warp_base += warp_counts[w];
+  // the inclusive kept count through row i, as the global scan's prefix[i]
+  const data_size_t kept_through_i = block_bases[blockIdx.x] + warp_base +
+    static_cast<data_size_t>(__popc(ballot & (0xffffffffu >> (31 - lane))));
+  if (i >= num_data) {
+    return;
+  }
+  if (keep) {
+    out_indices[kept_through_i - 1] = i;
+  } else {
+    const data_size_t dropped_through_i = (i + 1) - kept_through_i;
+    out_indices[num_data - dropped_through_i] = i;
+  }
+}
+#endif  // !defined(__HIP_PLATFORM_AMD__)
+
 data_size_t CUDABaggingSample(const data_size_t num_data,
                               const double bagging_fraction,
                               const int iter,
@@ -87,6 +189,24 @@ data_size_t CUDABaggingSample(const data_size_t num_data,
                               CUDAVector<data_size_t>* scratch,
                               CUDAVector<data_size_t>* block_buffer,
                               data_size_t* out_indices) {
+#if !defined(__HIP_PLATFORM_AMD__)
+  if (FalcataPlan::Get().bagging_fused_scan) {
+    const int fused_blocks = (num_data + kBagFusedBlock - 1) / kBagFusedBlock;
+    if (block_buffer->Size() < static_cast<size_t>(fused_blocks) + 1) {
+      block_buffer->Resize(static_cast<size_t>(fused_blocks) + 1);
+    }
+    data_size_t* block_counts = block_buffer->RawData();
+    BaggingBlockCountKernel<<<fused_blocks, kBagFusedBlock>>>(num_data, static_cast<float>(bagging_fraction), iter,
+                                                              static_cast<uint32_t>(seed), block_counts);
+    BaggingBlockBaseKernel<<<1, kBagFusedBlock>>>(fused_blocks, block_counts);
+    BaggingBlockScatterKernel<<<fused_blocks, kBagFusedBlock>>>(num_data, static_cast<float>(bagging_fraction), iter,
+                                                                static_cast<uint32_t>(seed), block_counts,
+                                                                out_indices);
+    data_size_t fused_bag_cnt = 0;
+    CopyFromCUDADeviceToHost<data_size_t>(&fused_bag_cnt, block_counts + fused_blocks, 1, __FILE__, __LINE__);
+    return fused_bag_cnt;
+  }
+#endif  // !defined(__HIP_PLATFORM_AMD__)
   constexpr int kBlock = GLOBAL_PREFIX_SUM_BLOCK_SIZE;
   const int num_blocks = (num_data + kBlock - 1) / kBlock;
   // ShufflePrefixSumGlobalKernel writes values[index] without a bounds check,
