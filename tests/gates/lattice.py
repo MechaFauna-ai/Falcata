@@ -697,7 +697,11 @@ def build_cells():
     # tier, its narrow tasks as 4-lane groups in the same launch, NaN scans; its base fingerprints were recorded with
     # master's build), dense (255-bin scans) and missing (NaN scans).
     finder_keys = [
-        "warp_find_mid_ppl", "find_prune_fp32", "find_prune_sure", "find_select_int", "find_compact_survivors"
+        "warp_find_mid_ppl",
+        "find_prune_fp32",
+        "find_prune_sure",
+        "find_select_int",
+        "find_compact_survivors",
     ]
     finder_flips = [
         *[(key, f"{key}:off") for key in finder_keys],
@@ -737,10 +741,20 @@ def build_cells():
         cell(base, profile, base_params)
         for name, plan in [("warp_find", "warp_find:off"), finder_flips[-1]]:
             cell(f"{profile}/flip-{name}{suffix}", profile, {**base_params, "cuda_plan": f"auto,{plan}"}, equal_to=base)
-    cell("boundwidth/finder-tier", "boundwidth", {"verbose": 1}, equal_to="boundwidth/quant",
-         finder_tier="warp (tier: few-position + wide)")
-    cell("narrowplus/finder-tier", "narrowplus", {"verbose": 1}, equal_to="narrowplus/quant",
-         finder_tier=["warp (tier: few-position)", "warp (tier: few-position + wide)"])
+    cell(
+        "boundwidth/finder-tier",
+        "boundwidth",
+        {"verbose": 1},
+        equal_to="boundwidth/quant",
+        finder_tier="warp (tier: few-position + wide)",
+    )
+    cell(
+        "narrowplus/finder-tier",
+        "narrowplus",
+        {"verbose": 1},
+        equal_to="narrowplus/quant",
+        finder_tier=["warp (tier: few-position)", "warp (tier: few-position + wide)"],
+    )
 
     # deep trees with a binding leaf budget (no tree-completing level), the bagged multiclass categorical cell
     # (level_apply_first keeps the record first for categorical splits; final_map_only is off with bagging) and the
@@ -1180,8 +1194,13 @@ def build_cells():
         "max_depth": 10,
         "min_data_in_leaf": 5,
     }
-    sparse_deep = {"quant_mode": "fixedpoint", "quant_bins": 16, "num_leaves": 63, "max_depth": 10,
-                   "min_data_in_leaf": 5}
+    sparse_deep = {
+        "quant_mode": "fixedpoint",
+        "quant_bins": 16,
+        "num_leaves": 63,
+        "max_depth": 10,
+        "min_data_in_leaf": 5,
+    }
     for base, profile, base_params, rounds in [
         ("graph/quant", "graph", {}, 25),
         ("sparse-mc/quant-deep", "sparse-mc", sparse_deep, 80),
@@ -1291,8 +1310,14 @@ def build_cells():
     # device, no host score mirror, the CUDA metrics) and the deferred train score (rf_lazy_train_score) against the
     # host objective path, on binary stochastic, 5-class fixedpoint and L1 (leaf renewal against the init score
     # column) bagged forests. The bases are fingerprinted on the build before the keys (the host objective path).
-    rf_bag = {"boosting": "rf", "bagging_fraction": 0.632, "bagging_freq": 1, "num_leaves": 127, "max_depth": 8,
-              "min_data_in_leaf": 5}
+    rf_bag = {
+        "boosting": "rf",
+        "bagging_fraction": 0.632,
+        "bagging_freq": 1,
+        "num_leaves": 127,
+        "max_depth": 8,
+        "min_data_in_leaf": 5,
+    }
     for base, profile, base_params in [
         ("imbalanced/rf-bagged", "imbalanced", rf_bag),
         ("graph/rf-fixedpoint-bagged", "graph", {**rf_bag, "quant_mode": "fixedpoint"}),
@@ -1713,14 +1738,17 @@ def run_tier_cell(cell):
         pattern, values = cell["diag_set"]
         seen = sorted(set(re.findall(pattern, proc.stdout)))
         if rec.get("ok") and seen != sorted(values):
-            rec = {"id": cell["id"], "ok": False, "error": f"diag {pattern!r}: logged {seen}, expected exactly {values}"}
+            rec = {
+                "id": cell["id"],
+                "ok": False,
+                "error": f"diag {pattern!r}: logged {seen}, expected exactly {values}",
+            }
         return rec
     finders = re.findall(r"split finder: (.*) kernel for this tree's quantized levels(.*)", proc.stdout)
     finders = sorted({f"{kernel}{rest}".strip() for kernel, rest in finders})
     expected = sorted(cell["finder_tier"]) if isinstance(cell["finder_tier"], list) else [cell["finder_tier"]]
     if rec.get("ok") and finders != expected:
-        rec = {"id": cell["id"], "ok": False,
-               "error": f"split finder {finders} logged, expected exactly {expected!r}"}
+        rec = {"id": cell["id"], "ok": False, "error": f"split finder {finders} logged, expected exactly {expected!r}"}
     return rec
 
 

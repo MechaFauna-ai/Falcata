@@ -35,7 +35,7 @@ def _model_md5(params, X, y, rounds, weight=None):
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize(
-    "objective, extra, quantized, weighted",
+    ("objective", "extra", "quantized", "weighted"),
     [
         ("binary", {}, True, False),
         ("binary", {}, False, False),
