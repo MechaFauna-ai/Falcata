@@ -14,6 +14,7 @@
 #include <Falcata/falcata_plan.h>
 
 #include <algorithm>
+#include <type_traits>
 
 namespace Falcata {
 
@@ -203,10 +204,12 @@ __device__ const double kLeanExp2Table[64] = {  // 2^(j/64), j = 0..63, rounded 
 // The lean evaluation for |x| <= 80, x = label * sigmoid * score (the original's double): e^x = 2^m 2^(j/64) e^r with
 // k = 64 m + j = rint(x 64 / ln2) (from x's truncated float: |k| <= 7400) and r = x - k ln2/64 by two FMAs with ln2/64's
 // double split (|r| <= 0.00543, error < 2^-60 absolute); e^r = 1 + r (1 + r (1/2 + r t)), t = 1/3! + r/4! + r^2/5! +
-// r^3/6! in fp32 (|r^3 t| < 2.7e-8; t's error incl. the truncated r < 2^-21 relative: < 2^-47 of e^r; the series
+// r^3/6! in fp32 (|r^3 t| < 2.7e-8; t's error incl. the truncated r about 2^-23 relative: about 2^-48 of e^r, < 2^-46.2
+// with a loose 2^-21 on t; the series
 // truncated after r^6: < 2^-60), the head in double Horner; the table's 2^(j/64) (rounded, 2^-53) and the exact
 // power of two: e^x to < 2^-46.5 relative. 1 + e^x in double; the quotient from an fp32 reciprocal of the truncated
-// 1 + e^x (< 1.5 * 2^-23 relative) and one double Newton step (< 2^-44.8). The response is within 2^-44.2 of the true
+// 1 + e^x (< 1.5 * 2^-23 relative: the correctly rounded __frcp_rn, whatever the build's -prec-div / fast-math
+// flags) and one double Newton step (< 2^-44.8). The response is within 2^-44.2 of the true
 // value, the original's double (libdevice exp, 1 ulp; the rounded sum and division) within 2^-50: margin eps_r =
 // 2^-42, i.e. eps_r * 2^53 = 2^11 double ulps of the response's binade (|v| < 2^(e+1)). The hessian A (s - A), A =
 // |response|, inherits A's error amplified by s / (s - A) (the cancellation in s - A); both arms round s - A and the
@@ -215,6 +218,11 @@ __device__ const double kLeanExp2Table[64] = {  // 2^(j/64), j = 0..63, rounded 
 // Weights (USE_LABEL_WEIGHT: label_weight, USE_WEIGHT: sample_weight) multiply the response and the hessian in the
 // original's order; each product is rounded in both arms (2^-52 more per product, inside the margins' slack) and must
 // stay in double's normal range (LeanWideNormal), where rounding is relative.
+// The lean path stores the response and hessian rounded to float, i.e. the original's static_cast<score_t> only when
+// score_t is float; with SCORE_T_USE_DOUBLE (meta.h) the original stores the unrounded double, so the key is compiled
+// out there (every row runs the original expression) rather than training a different model.
+constexpr bool kLeanScoreIsFloat = std::is_same<score_t, float>::value;
+
 __device__ __forceinline__ bool LeanWideNormal(const double v) {
   const int biased = static_cast<int>((static_cast<unsigned long long>(__double_as_longlong(v)) >> 52) & 0x7ffu);
   return biased >= 64 && biased <= 2047 - 64;
@@ -247,7 +255,7 @@ __device__ __forceinline__ bool BinaryLoglossLean(const double score, const bool
   const double scaled = p * kLeanExp2Table[k & 63];  // in [0.99, 2.01): 2^m keeps it normal for |m| <= 116
   const double e = __longlong_as_double(__double_as_longlong(scaled) + (static_cast<long long>(k >> 6) << 52));
   const double d = 1.0 + e;
-  const double inv0 = LeanFloatToDouble(1.0f / LeanApproxFloat(d));
+  const double inv0 = LeanFloatToDouble(__frcp_rn(LeanApproxFloat(d)));  // IEEE round-to-nearest: the bound's premise
   const double num = -ls;
   const double q0 = num * inv0;
   const double q = fma(fma(-d, q0, num), inv0, q0);
@@ -292,7 +300,7 @@ __global__ void GetGradientsKernel_BinaryLogloss(const double* cuda_scores, cons
   if (data_index < num_data) {
     const label_t cuda_label = static_cast<int>(cuda_labels[data_index]);
     const int is_pos = cuda_label > 0 ? 1 : 0;
-    if (lean) {
+    if (kLeanScoreIsFloat && lean) {
       float lean_gradient, lean_hessian;
       const double lean_label_weight = USE_LABEL_WEIGHT ? cuda_label_weights[is_pos] : 1.0;
       const double lean_sample_weight = USE_WEIGHT ? static_cast<double>(cuda_weights[data_index]) : 1.0;
