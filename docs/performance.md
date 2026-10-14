@@ -1448,6 +1448,7 @@ Same-binary A/B (key off vs on, the cells protocol, 3 interleaved pairs, tuner o
 |---|---|---|---|---|
 | higgs-deep-stoch (binary) | `gradient_fp64_lean` | 173 -> 92 | 2.483 -> 2.380 | 1.059 |
 | covtype-deep-fixed (7 classes) | `softmax_registers` | 223 -> 191 | 4.285 -> 4.167 | 1.025 |
+| higgs-deep-stoch, `bagging_fraction` 0.5 (2 pairs in one process, rounds 150..400) | `gradient_fp64_lean` | | 2.027 -> 1.951 | 1.039 |
 
 covtype's gain exceeds the kernel's own 32 us: the 32 MB scratch no longer passes through L2 every round. Regression
 objectives (the Numerai cells) take neither path.
