@@ -680,6 +680,12 @@ struct FalcataPlan {
   // would have copied; a level whose sync kernel did not mirror falls back to the full copy. Removes the copy kernel
   // and its wait on the producer's stream from both per-level round trips. Same bytes: bit-identical.
   bool readback_fused = true;       // key: readback_fused
+  // sync_used_tasks for a level whose task list fits one sync block (up to NUM_TASKS_PER_SYNC_BLOCK tasks: narrow
+  // data such as 28 or 54 features): the used-task sync kernel (one block per leaf role and pair, every task) replaces
+  // SyncBestSplitForLevelKernel there too, so that readback_fused's mirror of the leaf entries into the host staging
+  // engages on these shapes and the level's separate copy kernel (and its stream hand-off) goes. The same winner
+  // (see the kernel): bit-identical.
+  bool sync_used_narrow = true;     // key: sync_used_narrow
   // with readback_fused, a non-final level of the classic level loop (single GPU, scalar leaves): the level's 18-int
   // split info is written into the mapped staging by the aggregate kernel (either aggregate_load_first build,
   // the producer of the children's counts and data starts; the four sums come from the same CUDASplitInfo entry the
@@ -910,6 +916,7 @@ struct FalcataPlan {
     if (key == "early_leaf_map") return &early_leaf_map;
     if (key == "readback_kernel") return &readback_kernel;
     if (key == "readback_fused") return &readback_fused;
+    if (key == "sync_used_narrow") return &sync_used_narrow;
     if (key == "split_counts_early") return &split_counts_early;
     if (key == "invalidate_async") return &invalidate_async;
     if (key == "level_apply_first") return &level_apply_first;

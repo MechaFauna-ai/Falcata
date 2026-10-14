@@ -1478,6 +1478,23 @@ Measured and dropped (no code left): balancing the row data's column partitions 
 
 ---
 
+## 10k. The level sync of narrow data (`sync_used_narrow`)
+
+`readback_fused` makes the used-task level sync kernel (`SyncBestSplitForLevelUsedTasksKernel`) mirror each leaf entry it writes into the host's mapped staging, so that the level's separate copy kernel and its cross-stream hand-off go. That kernel was chosen only for a feature-sampled tree or a task list wider than one sync block (1024 tasks): on narrow data (higgs 28 features, covtype 54) the level still ran `SyncBestSplitForLevelKernel` (no mirror) followed by `CopyToMappedHostKernel` on another stream, about 5 us of GPU idle per level (one event hand-off plus the copy), 10 levels per tree.
+
+**`sync_used_narrow` (default on, bit-identical).** A task list that fits one sync block takes the used-task kernel as well (one block per leaf role and pair over every task; the kernel documents why any fold order returns the original's unique winner and replays the original on a non-finite gain), so the mirror engages on these shapes. Shapes with more than one sync block, or with feature sampling, already ran it and are unchanged.
+
+Measured (cells harness, same binary, key off against on, T = first call + steady ms x 29999, interleaved pairs): higgs 1.022 (3 pairs, 2.397 -> 2.344 ms per round), covtype 1.055 (4 pairs, 4.18 -> 3.95 ms per round, every pair 5-6%). Models md5-identical; `tests/python_package_test/test_sync_used_narrow.py` (one feature to 1200 features, multiclass, bagged, feature sampled, non-quantized).
+
+Launch-bound levels (covtype: 70 levels per round, kernels of 1-4 us, about 45 us of host API calls per level) are where this pays most: the level's chain from the sync kernel to the next gen-bit launch is the host's, and the mirror takes the copy kernel and an event hand-off out of it. Full quick check against master (with the parent's gradient keys): covtype 1.078, higgs 1.050, the numerai cells 1.003 and 1.001 (they already ran the used-task kernel), lattice 341/341, guards md5-identical.
+
+Measured and dropped on the same profile (same-binary A/Bs, md5-identical, no key kept):
+- **Aggregate folded into the gen-bit kernel** (a ticket per split, the block finishing a split's last chunk runs the aggregate body, one launch less per level): covtype 0.985 and, with the kernel capped to 40 registers, 0.961; higgs 0.997 / 0.994. The fused kernel needs 48-56 registers against 34 (occupancy of the bandwidth-bound gen-bit kernel) and the last block's scan runs at the gen-bit block size; the saved launch does not pay it back.
+- **The tree-structure splits of a small level as a kernel argument** (no host-to-device copy on the tree stream): covtype 1.000 (4 pairs): that copy is not on the level's critical path.
+- **Two rows per thread and occupancy-sized blocks in the out-of-bag score traversal** (bagged higgs, 95 us of a 2.3 ms round): 94 us, 0%: the pass is bound by its gathers, not by the dependent-load chain.
+
+---
+
 ## Multi-GPU: level-batched NCCL all-reduce
 
 The classic data-parallel path all-reduces one leaf histogram per split
