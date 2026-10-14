@@ -297,6 +297,11 @@ class RF : public GBDT {
     GBDT::MergeFrom(other);
   }
 
+  void ShuffleModels(int start_iter, int end_iter) override {
+    FlushDeferredTrainTrees();
+    GBDT::ShuffleModels(start_iter, end_iter);
+  }
+
   bool LoadModelFromString(const char* buffer, size_t len) override {
     FlushDeferredTrainTrees();
     return GBDT::LoadModelFromString(buffer, len);
@@ -311,6 +316,8 @@ class RF : public GBDT {
   bool EvalAndCheckEarlyStopping() override {
     if (!training_metrics_.empty()) {
       SyncTrainScore();
+    } else if (early_stopping_round_ > 0) {
+      FlushDeferredTrainTrees();  // early stopping pops trees the queue may point to
     }
     return GBDT::EvalAndCheckEarlyStopping();
   }

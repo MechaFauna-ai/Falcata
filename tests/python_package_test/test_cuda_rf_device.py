@@ -198,3 +198,73 @@ def test_rf_lazy_train_score_readers_cuda(objective, kind, extra):
     _assert_same(_run_plans(dict(params), X, y, 14, read_train_at=(6, 7, 14), rollback_at=10))
     # read once at the end: every tree replayed
     _assert_same(_run_plans(dict(params), X, y, 14, read_train_at=(14,)))
+
+
+def _numpy_metric(metric, y, pred):
+    if metric in ("binary_logloss", "cross_entropy"):
+        pred = np.clip(pred, 1e-15, 1 - 1e-15)
+        return float(-np.mean(y * np.log(pred) + (1 - y) * np.log(1 - pred)))
+    return float(np.mean((y - pred) ** 2))
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(
+    "objective, label, metric, extra",
+    [
+        ("binary", "binary", "binary_logloss", {"data_sample_strategy": "goss"}),
+        ("tweedie", "count", "l2", {"bagging_fraction": 0.632, "bagging_freq": 1}),
+        # (binary_logloss binarizes the label; the cross_entropy metric takes it as a probability)
+        ("cross_entropy", "prob", "cross_entropy", {"bagging_fraction": 0.632, "bagging_freq": 1}),
+        ("binary", "binary", "binary_logloss", {"bagging_fraction": 0.632, "bagging_freq": 1}),
+    ],
+)
+def test_rf_metrics_follow_the_objective_cuda(objective, label, metric, extra):
+    # GOSS and objectives without a CUDA kernel keep the host objective, and with it the host metrics: a CUDA metric
+    # beside a host objective would evaluate the raw scores. Train and valid metrics must match the key-off values
+    # and the metric computed from predict.
+    rng = np.random.default_rng(3)
+    rows = 30011
+    X = rng.standard_normal((rows, 12))
+    z = X[:, 0] - 0.5 * X[:, 1] + np.sin(X[:, 2]) + 0.3 * rng.standard_normal(rows)
+    y = {"binary": (z > 0).astype(float), "prob": 1 / (1 + np.exp(-z)),
+         "count": rng.poisson(np.exp(0.3 * z)).astype(float)}[label]
+    results = {}
+    for name, plan in PLANS.items():
+        params = {"boosting": "rf", "device_type": "cuda", "objective": objective, "metric": metric,
+                  "num_leaves": 31, "verbose": -1, "seed": 7, "cuda_plan": plan, **extra}
+        ds = flc.Dataset(X, label=y, free_raw_data=False)
+        valid = flc.Dataset(X[:5000], label=y[:5000], reference=ds)
+        booster = flc.Booster(params, ds)
+        booster.add_valid(valid, "valid")
+        for _ in range(10):
+            booster.update()
+        pred = booster.predict(X)
+        results[name] = (booster.eval_train()[0][2], booster.eval_valid()[0][2])
+        np.testing.assert_allclose(results[name][0], _numpy_metric(metric, y, pred), rtol=1e-6, err_msg=name)
+        np.testing.assert_allclose(results[name][1], _numpy_metric(metric, y[:5000], pred[:5000]), rtol=1e-6,
+                                   err_msg=name)
+    for name, values in results.items():
+        np.testing.assert_allclose(values, results["off"], rtol=1e-9, err_msg=name)
+
+
+@_REQUIRES_CUDA
+def test_rf_shuffle_models_with_deferred_trees_cuda():
+    # shuffle_models replaces the trees (copies): the deferred ones are added to the train score first
+    X, y = _data("binary", 30011, seed=3)
+    runs = {}
+    for name, plan in PLANS.items():
+        params = {**_params("binary", "stochastic"), "cuda_plan": plan}
+        ds = flc.Dataset(X, label=y, params={"device_type": "cuda", "max_bin": 63, "verbose": -1}, free_raw_data=False)
+        booster = flc.Booster(params, ds)
+        for _ in range(6):
+            booster.update()
+        booster.shuffle_models()
+        for _ in range(2):
+            booster.update()
+        runs[name] = (np.array(booster._Booster__inner_predict(data_idx=0), dtype=np.float64),
+                      np.asarray(booster.predict(X[:5000]), dtype=np.float64),
+                      hashlib.md5(_strip_parameters(booster.model_to_string()).encode()).hexdigest())
+    for name, (train, pred, model) in runs.items():
+        np.testing.assert_array_equal(train, runs["off"][0], err_msg=name)
+        np.testing.assert_array_equal(pred, runs["off"][1], err_msg=name)
+        assert model == runs["off"][2], name

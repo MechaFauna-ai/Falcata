@@ -1540,9 +1540,11 @@ buffers for every tree; the train and validation score updaters keep no host mir
 path (`Metric::CreateMetric` now gives rf the CUDA metrics too; metrics without a CUDA kernel read one host copy of
 the score per evaluation, as for gbdt). Leaf renewal (L1, quantile) renews against the init score, not the train
 score: the device path hands `RenewTreeOutputCUDA` a device column holding the init score (kept only for the
-objectives that renew). Objectives without a CUDA kernel, and GOSS, keep the host objective as before. The key is
-read where the objective and the metrics are created, before the learner's `Init` resolves the plan
-(`FalcataPlan::FromConfig` parses a plan without installing it). The init score and the gradients come out the same
+objectives that renew). Objectives without a CUDA kernel, and GOSS, keep the host objective and the host metrics as
+before: the objective and metric factories decide by one predicate, `ObjectiveFunction::RFBoostsOnDevice` (a CUDA
+metric converts the score only through a CUDA objective, so a CUDA metric beside a host objective would evaluate raw
+scores). The key is read where the objective and the metrics are created, before the learner's `Init` resolves the
+plan (`FalcataPlan::FromConfig` parses a plan without installing it). The init score and the gradients come out the same
 as the host objective's on the shapes below (binary: an exact label count; multiclass: exact class counts;
 regression: labels whose sum is exact, e.g. Numerai's multiples of 0.25). With continuous regression labels the host
 objective's init score is an OpenMP reduction, so the host path itself changes from run to run in the last bits

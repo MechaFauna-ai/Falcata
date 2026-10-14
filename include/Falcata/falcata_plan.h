@@ -621,8 +621,9 @@ struct FalcataPlan {
   // upload of both arrays per tree), the train and validation scores live on the device only (the host mirror cost a
   // full-column copy back after each of the four score operations per tree), and the metrics take the CUDA metric
   // path as gbdt does. Leaf renewal (L1, quantile) reads a device column holding the init score, the residual base
-  // rf renews against. Read at objective and metric creation, before the learner's Init resolves the plan. Objectives
-  // without a CUDA kernel, and GOSS, keep the host objective as before. Same init score, gradients and trees where the
+  // rf renews against. Read at objective and metric creation (one predicate, ObjectiveFunction::RFBoostsOnDevice),
+  // before the learner's Init resolves the plan. Objectives without a CUDA kernel, and GOSS, keep the host objective
+  // and the host metrics as before. Same init score, gradients and trees where the
   // objective's kernel and the host objective round alike: the rf section of docs/performance.md lists the shapes.
   bool rf_device_objective = true;  // key: rf_device_objective
   // random forest with the device objective (rf_device_objective): the train score (the running average of the trees,

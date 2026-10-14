@@ -4,7 +4,7 @@
  * Licensed under the MIT License. See LICENSE file in the project root for license information.
  */
 #include <Falcata/metric.h>
-#include <Falcata/falcata_plan.h>
+#include <Falcata/objective_function.h>
 
 #include <string>
 
@@ -22,10 +22,10 @@ namespace Falcata {
 
 Metric* Metric::CreateMetric(const std::string& type, const Config& config) {
   #ifdef USE_CUDA
-  // cuda_plan key rf_device_objective: a random forest's scores are device memory too, as gbdt's
+  // cuda_plan key rf_device_objective: a random forest that boosts on the device (the objective factory's own
+  // predicate) has device scores and a CUDA objective, as gbdt
   if (config.device_type == std::string("cuda") &&
-      (config.boosting == std::string("gbdt") ||
-       (config.boosting == std::string("rf") && FalcataPlan::FromConfig(config).rf_device_objective))) {
+      (config.boosting == std::string("gbdt") || ObjectiveFunction::RFBoostsOnDevice(config))) {
     if (type == std::string("l2")) {
       return new CUDAL2Metric(config);
     } else if (type == std::string("rmse")) {
