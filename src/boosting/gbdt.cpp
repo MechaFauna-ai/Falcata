@@ -305,6 +305,13 @@ void GBDT::CheckForcedSplitFeatures() {
   }
 }
 
+void GBDT::ResetValidMetrics(int valid_idx, const std::vector<const Metric*>& valid_metrics) {
+  CHECK(valid_idx >= 0 && valid_idx < static_cast<int>(valid_metrics_.size()));
+  // the early-stopping state (best_iter_, best_score_, best_msg_) is sized by the metric count
+  CHECK_EQ(valid_metrics.size(), valid_metrics_[valid_idx].size());
+  valid_metrics_[valid_idx] = valid_metrics;
+}
+
 void GBDT::AddValidDataset(const Dataset* valid_data,
                            const std::vector<const Metric*>& valid_metrics) {
   if (!train_data_->CheckAlign(*valid_data)) {
@@ -964,9 +971,17 @@ void GBDT::ResetTrainingData(const Dataset* train_data, const ObjectiveFunction*
   training_metrics_.shrink_to_fit();
 
   #ifdef USE_CUDA
+  const bool was_boosting_on_gpu = boosting_on_gpu_;
   boosting_on_gpu_ = objective_function_ != nullptr && objective_function_->IsCUDAObjective() &&
                     !data_sample_strategy_->IsHessianChange();  // for sample strategy with Hessian change, fall back to boosting on CPU
   tree_learner_->ResetBoostingOnGPU(boosting_on_gpu_);
+  if (boosting_on_gpu_ != was_boosting_on_gpu && config_->device_type == std::string("cuda")) {
+    // a new objective moved boosting between the device and the host (binary <-> cross_entropy, or "none" for a
+    // Python objective). The score updaters hand out the device score only while boosting on the device, and the
+    // gradient buffers live where the objective writes them: switch both. A new train_data rebuilds its updater and
+    // buffers below anyway.
+    OnBoostingOnGPUChanged(train_data != train_data_);
+  }
   #endif  // USE_CUDA
 
   if (train_data != train_data_) {
@@ -1008,6 +1023,24 @@ void GBDT::ResetTrainingData(const Dataset* train_data, const ObjectiveFunction*
     tree_learner_->ResetIsConstantHessian(is_constant_hessian_);
   }
 }
+
+#ifdef USE_CUDA
+void GBDT::OnBoostingOnGPUChanged(bool train_data_changes) {
+  const bool objective_on_cuda = objective_function_ != nullptr && objective_function_->IsCUDAObjective();
+  if (!train_data_changes) {
+    auto cuda_score_updater = dynamic_cast<CUDAScoreUpdater*>(train_score_updater_.get());
+    CHECK(cuda_score_updater != nullptr);
+    cuda_score_updater->SetBoostingOnCUDA(boosting_on_gpu_);
+    ResetGradientBuffers();
+  }
+  // AddValidDataset builds the validation updaters by the objective alone
+  for (auto& score_updater : valid_score_updater_) {
+    auto cuda_score_updater = dynamic_cast<CUDAScoreUpdater*>(score_updater.get());
+    CHECK(cuda_score_updater != nullptr);
+    cuda_score_updater->SetBoostingOnCUDA(objective_on_cuda);
+  }
+}
+#endif  // USE_CUDA
 
 void GBDT::ResetConfig(const Config* config) {
   auto new_config = std::unique_ptr<Config>(new Config(*config));

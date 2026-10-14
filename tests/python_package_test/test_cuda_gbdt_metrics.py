@@ -5,7 +5,8 @@ The CUDA metrics convert the raw score only through a CUDA objective (ConvertOut
 CUDA kernel (cross_entropy, tweedie, ...) and custom objectives keep the host objective, and with it the host
 metrics; a CUDA metric beside a host objective evaluated the raw scores (binary_logloss 0.999 for 0.324). Each case
 trains on CUDA and on the CPU, and the train and valid metrics of both must match the metric computed with numpy
-from predict().
+from predict(). The reset cases change the objective of a live booster (reset_parameter, and update(fobj=...), which
+resets the objective to "none") between a device and a host objective: the metrics must follow the new objective.
 """
 
 import os
@@ -32,6 +33,8 @@ def _labels(kind, z, rng):
         return 1 / (1 + np.exp(-z))
     if kind == "count":
         return rng.poisson(np.exp(0.3 * z)).astype(float)
+    if kind == "gamma":
+        return rng.gamma(2.0, np.exp(0.3 * z) / 2.0)
     if kind in ("multi", "rank"):
         return np.digitize(z, [-1.0, 0.0, 1.0]).astype(float)
     return z + 0.5 * rng.standard_normal(len(z))
@@ -70,6 +73,21 @@ def _poisson(y, pred):
     return np.mean(pred - y * np.log(pred))
 
 
+def _gamma(y, pred):
+    # GammaMetric with psi 1: label / pred + log(pred)
+    return np.mean(y / pred + np.log(pred))
+
+
+def _xentlambda(y, pred):
+    # CrossEntropyLambdaMetric: predict() gives hhat = log1p(exp(score)), the loss is the cross entropy of 1 - exp(-hhat)
+    prob = 1 - np.exp(-pred)
+    return -np.mean(y * np.log(np.maximum(prob, 1e-12)) + (1 - y) * np.log(np.maximum(1 - prob, 1e-12)))
+
+
+def _l2_fobj(preds, train_data):
+    return preds - train_data.get_label(), np.ones_like(preds)
+
+
 def _tweedie(y, pred):
     # variance power 1.5
     pred = np.maximum(pred, 1e-10)
@@ -86,6 +104,8 @@ _NUMPY_METRICS = {
     "huber": _huber,
     "poisson": _poisson,
     "tweedie": _tweedie,
+    "gamma": _gamma,
+    "cross_entropy_lambda": _xentlambda,
 }
 
 
@@ -114,6 +134,12 @@ def _numpy_metric(metric, y, pred, groups):
         ("none", "cross_entropy", "binary", "binary_logloss"),
         ("none", "tweedie", "count", "tweedie"),
         ("none", "tweedie", "count", "l2"),
+        ("none", "gamma", "gamma", "gamma"),
+        ("none", "gamma", "gamma", "l2"),
+        ("none", "cross_entropy_lambda", "prob", "cross_entropy_lambda"),
+        # a Python objective (fobj): no objective in the library, the host metrics on the raw score
+        ("none", "custom", "reg", "l2"),
+        ("goss", "custom", "reg", "l2"),
         # the device objective and the CUDA metrics, unchanged
         ("none", "binary", "binary", "binary_logloss"),
         ("none", "regression", "reg", "l2"),
@@ -135,13 +161,16 @@ def test_gbdt_metrics_match_numpy_cuda(sample, objective, label, metric):
         params["num_class"] = 4
     if metric == "ndcg":
         params["eval_at"] = [5]
+    fobj = None
+    if objective == "custom":
+        params["objective"], fobj = "none", _l2_fobj
     for device in ("cuda", "cpu"):
         ds = flc.Dataset(X, label=y, group=groups, free_raw_data=False)
         valid = flc.Dataset(X[:_VALID], label=y[:_VALID], group=valid_groups, reference=ds)
         booster = flc.Booster({**params, "device_type": device}, ds)
         booster.add_valid(valid, "valid")
         for _ in range(10):
-            booster.update()
+            booster.update(fobj=fobj)
         pred = booster.predict(X)
         np.testing.assert_allclose(
             booster.eval_train()[0][2], _numpy_metric(metric, y, pred, groups), rtol=1e-6, err_msg=f"{device} train"
@@ -152,3 +181,51 @@ def test_gbdt_metrics_match_numpy_cuda(sample, objective, label, metric):
             rtol=1e-6,
             err_msg=f"{device} valid",
         )
+
+
+def _check_metrics(booster, X, y, metric, tag):
+    pred = booster.predict(X)
+    np.testing.assert_allclose(
+        booster.eval_train()[0][2], _numpy_metric(metric, y, pred, None), rtol=1e-6, err_msg=f"{tag} train"
+    )
+    np.testing.assert_allclose(
+        booster.eval_valid()[0][2],
+        _numpy_metric(metric, y[:_VALID], pred[:_VALID], None),
+        rtol=1e-6,
+        err_msg=f"{tag} valid",
+    )
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(
+    ("first", "second", "label", "metric"),
+    [
+        # device objective -> host objective, and back
+        ("binary", "cross_entropy", "binary", "binary_logloss"),
+        ("cross_entropy", "binary", "binary", "binary_logloss"),
+        # update(fobj=...) resets the objective to "none" (host): the device regression objective before it
+        ("regression", "custom", "reg", "l2"),
+    ],
+)
+def test_reset_objective_rebuilds_metrics_cuda(first, second, label, metric):
+    rng = np.random.default_rng(5)
+    X = rng.standard_normal((_ROWS, 12))
+    z = X[:, 0] - 0.5 * X[:, 1] + np.sin(X[:, 2]) + 0.3 * rng.standard_normal(_ROWS)
+    y = _labels(label, z, rng)
+    params = {"boosting": "gbdt", "objective": first, "metric": metric, "num_leaves": 31, "seed": 7, "verbose": -1}
+    for device in ("cuda", "cpu"):
+        ds = flc.Dataset(X, label=y, free_raw_data=False)
+        valid = flc.Dataset(X[:_VALID], label=y[:_VALID], reference=ds)
+        booster = flc.Booster({**params, "device_type": device}, ds)
+        booster.add_valid(valid, "valid")
+        for _ in range(5):
+            booster.update()
+        _check_metrics(booster, X, y, metric, f"{device} {first}")
+        fobj = None
+        if second == "custom":
+            fobj = _l2_fobj
+        else:
+            booster.reset_parameter({"objective": second})
+        for _ in range(5):
+            booster.update(fobj=fobj)
+        _check_metrics(booster, X, y, metric, f"{device} {first} -> {second}")

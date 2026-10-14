@@ -119,10 +119,11 @@ class ObjectiveFunction {
   FALCATA_EXPORT static bool RFBoostsOnDevice(const Config& config);
 
   /*!
-  * \brief Whether gbdt or rf gets a CUDA objective from CreateObjectiveFunction: device cuda, no GOSS, an objective
-  * with a CUDA kernel, and for rf RFBoostsOnDevice. The metric factory gives the CUDA metrics exactly then: a CUDA
-  * metric converts the score only through a CUDA objective (ConvertOutputCUDA), so beside a host objective (GOSS,
-  * objectives without a CUDA kernel, custom) it would evaluate the raw scores.
+  * \brief Whether gbdt or rf (not dart) gets a CUDA objective from CreateObjectiveFunction: device cuda, no GOSS, an
+  * objective with a CUDA kernel, and for rf RFBoostsOnDevice. The metric factory gives the CUDA metrics exactly then:
+  * a CUDA metric converts the score only through a CUDA objective (ConvertOutputCUDA), so beside a host objective
+  * (GOSS, objectives without a CUDA kernel, custom) it would evaluate the raw scores. Booster::ResetConfig rebuilds
+  * the objective and all metrics together when a reset changes the objective or this predicate.
   */
   FALCATA_EXPORT static bool BoostsOnDevice(const Config& config);
 

@@ -45,6 +45,20 @@ void CUDAScoreUpdater::InitCUDA(const size_t total_size) {
 
 CUDAScoreUpdater::~CUDAScoreUpdater() {}
 
+void CUDAScoreUpdater::SetBoostingOnCUDA(bool boosting_on_cuda) {
+  if (boosting_on_cuda == boosting_on_cuda_) {
+    return;
+  }
+  boosting_on_cuda_ = boosting_on_cuda;
+  if (boosting_on_cuda_) {
+    score_.clear();
+    score_.shrink_to_fit();
+  } else {
+    score_.resize(cuda_score_.Size());
+    CopyFromCUDADeviceToHost<double>(score_.data(), cuda_score_.RawData(), cuda_score_.Size(), __FILE__, __LINE__);
+  }
+}
+
 inline void CUDAScoreUpdater::AddScore(double val, int cur_tree_id) {
   Common::FunctionTimer fun_timer("CUDAScoreUpdater::AddScore", global_timer);
   const size_t offset = static_cast<size_t>(num_data_) * cur_tree_id;

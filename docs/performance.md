@@ -1546,8 +1546,11 @@ metric converts the score only through a CUDA objective, so a CUDA metric beside
 scores). gbdt follows the same rule: the metric factory gives the CUDA metrics only when
 `ObjectiveFunction::BoostsOnDevice` (no GOSS, an objective with a CUDA kernel), so gbdt with GOSS, with cross_entropy,
 tweedie, gamma, mape or a custom objective evaluates on the host (before, its CUDA metrics read the raw scores there,
-e.g. GOSS binary_logloss 0.999 for 0.324). The key is read where the objective and the metrics are created, before the learner's `Init` resolves the
-plan (`FalcataPlan::FromConfig` parses a plan without installing it). The init score and the gradients come out the same
+e.g. GOSS binary_logloss 0.999 for 0.324). A `reset_parameter` that changes the objective (or `update(fobj=...)`,
+which resets it to `none`) rebuilds the objective and the train and valid metrics together, and switches the score
+updaters and gradient buffers when boosting moves between the device and the host. The key is read where the
+objective and the metrics are created, before the learner's `Init` resolves the plan (`FalcataPlan::FromConfig`
+parses a plan without installing it). The init score and the gradients come out the same
 as the host objective's on the shapes below (binary: an exact label count; multiclass: exact class counts;
 regression: labels whose sum is exact, e.g. Numerai's multiples of 0.25). With continuous regression labels the host
 objective's init score is an OpenMP reduction, so the host path itself changes from run to run in the last bits

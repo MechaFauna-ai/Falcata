@@ -32,6 +32,13 @@ class CUDAScoreUpdater: public ScoreUpdater {
 
   inline void MultiplyScore(double val, int cur_tree_id) override;
 
+  /*!
+  * \brief Switch where score() points (the objective moved between the device and the host). cuda_score_ is always
+  * current (every update runs on the device and mirrors to the host only when not boosting on CUDA), so the host
+  * mirror is filled from it, or dropped.
+  */
+  void SetBoostingOnCUDA(bool boosting_on_cuda);
+
   inline const double* score() const override {
     if (boosting_on_cuda_) {
       return cuda_score_.RawData();
@@ -62,7 +69,7 @@ class CUDAScoreUpdater: public ScoreUpdater {
 
   const int num_threads_per_block_;
 
-  const bool boosting_on_cuda_;
+  bool boosting_on_cuda_;
 };
 
 }  // namespace Falcata
