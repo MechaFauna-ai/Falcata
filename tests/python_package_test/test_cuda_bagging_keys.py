@@ -8,7 +8,8 @@ key off. The sweep covers 4-bit columns with and without NaN, 8-bit columns, a c
 per byte slot, feature_fraction (the per-tree views), the regression, binary and multiclass objectives, small and
 large bags, and a row count that is not a multiple of the scan block. These small datasets do not take the code view
 (it engages with the column-major 4-bit store of wide data, as on the Numerai benchmark, where key on/off was compared
-by md5), so bagged_code_view is a no-op here.
+by md5), so bagged_code_view is a no-op here. test_bagging_fused_scan_multi_pass_carry_cuda runs a bag of more than
+1024 scan blocks.
 """
 
 import hashlib
@@ -87,3 +88,31 @@ def test_bagging_keys_are_bit_identical_cuda(kind, cols, objective, frac, featur
         assert _model_md5({**params, "cuda_plan": f"auto,{key}:off"}, X, y, rounds=20) == reference, key
     off = ",".join(f"{key}:off" for key in KEYS)
     assert _model_md5({**params, "cuda_plan": f"auto,{off}"}, X, y, rounds=20) == reference
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("frac", [0.3, 0.9])
+def test_bagging_fused_scan_multi_pass_carry_cuda(frac):
+    """bagging_fused_scan's block-base kernel scans the per-block kept counts in passes of 1024 blocks, carrying the
+    running total from pass to pass. 3 * 2^20 + 517 rows are 3073 blocks of 1024 rows: four passes, the last one
+    partial, so every carry and the partial tail are exercised (the sweep above has 20 blocks, one pass). A wrong
+    carry or tail puts rows in the wrong half of the [in-bag | out-of-bag] index array, which changes the bag and so
+    the model; the reference is the flag pass + global prefix sum (key off)."""
+    rows = 3 * 1024 * 1024 + 517
+    rng = np.random.default_rng(9)
+    X = rng.standard_normal((rows, 4)).astype(np.float32)
+    y = X @ np.array([1.0, -2.0, 0.5, 0.25]) + rng.normal(size=rows)
+    params = {
+        "device_type": "cuda",
+        "objective": "regression",
+        "num_leaves": 63,
+        "max_depth": 6,
+        "bagging_fraction": frac,
+        "bagging_freq": 1,
+        "use_quantized_grad": True,
+        "verbosity": -1,
+        "seed": 11,
+    }
+    reference = _model_md5({**params, "cuda_plan": "auto,bagging_fused_scan:off"}, X, y, rounds=6)
+    assert _model_md5({**params, "cuda_plan": "auto"}, X, y, rounds=6) == reference
+
