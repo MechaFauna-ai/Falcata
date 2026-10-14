@@ -396,10 +396,12 @@ class CUDAHistogramConstructor {
   /*! \brief cuda_plan key fused_root_hist: ask the next BuildCompactView to accumulate the root histogram inside
    *  the tiled 4-bit fill (the caller guarantees the root leaf is every row: no bagging), in the root's bit format
    *  (root_hist_16bit) and under the packed per-block row bound of the constructor's (effective) quant bins. false
-   *  clears the request. */
-  void RequestFusedRootHist(const bool request, const bool root_hist_16bit) {
+   *  clears the request. code_view_only (cuda_plan key bagged_code_view): the root leaf is NOT every row (bagging);
+   *  the fused fill runs only for the code view it writes, and its all-rows histogram is never used. */
+  void RequestFusedRootHist(const bool request, const bool root_hist_16bit, const bool code_view_only = false) {
     fused_root_requested_ = request;
     fused_root_request_16bit_ = root_hist_16bit;
+    fused_root_code_view_only_ = request && code_view_only;
   }
   /*! \brief cuda_plan key pair_code5: whether this tree's fused fill may write the code view instead of the nibble
    *  view; the learner clears it for trees whose split path reads the nibble view anyway (the one-byte split view
@@ -1191,6 +1193,7 @@ class CUDAHistogramConstructor {
    *  fill produced the scratch (and in which format), the scratch (num_total_bin_ int64 or int32 entries) and the
    *  fused fill's per-tree metadata (first local bin of each slot's two columns, then each local bin's position). */
   bool fused_root_requested_ = false;
+  bool fused_root_code_view_only_ = false;
   bool fused_root_request_16bit_ = false;
   bool fused_root_ready_ = false;
   bool fused_root_bits16_ = false;

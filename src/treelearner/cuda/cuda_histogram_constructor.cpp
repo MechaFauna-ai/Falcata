@@ -1255,7 +1255,8 @@ void CUDAHistogramConstructor::LaunchCompactFill(
           code_row_words,
           code5 ? code_bits : 0,
           &code5_written);
-        fused_root_ready_ = fused_root;
+        // cuda_plan key bagged_code_view: the histogram of every row is not the bagged root's; only the code view is kept
+        fused_root_ready_ = fused_root && !fused_root_code_view_only_;
         fused_root_bits16_ = fused_root_request_16bit_;
         code5_valid_ = fused_root && code5_written;
         code5_row_words_ = code_row_words;
