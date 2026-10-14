@@ -681,7 +681,7 @@ struct FalcataPlan {
   // and its wait on the producer's stream from both per-level round trips. Same bytes: bit-identical.
   bool readback_fused = true;       // key: readback_fused
   // sync_used_tasks for a level whose task list fits one sync block (up to NUM_TASKS_PER_SYNC_BLOCK tasks: narrow
-  // data such as 28 or 54 features): the used-task sync kernel (one block per leaf role and pair, every task) replaces
+  // data, a few dozen features): the used-task sync kernel (one block per leaf role and pair, every task) replaces
   // SyncBestSplitForLevelKernel there too, so that readback_fused's mirror of the leaf entries into the host staging
   // engages on these shapes and the level's separate copy kernel (and its stream hand-off) goes. The same winner
   // (see the kernel): bit-identical.
