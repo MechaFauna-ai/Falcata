@@ -1596,6 +1596,25 @@ forests (every row the same p) still takes the per-row hessian path.
 
 ---
 
+## 10n. Per-node feature sampling under quantized gradients (`feature_fraction_bynode`, `interaction_constraints`)
+
+Per-node feature masks (`feature_fraction_bynode < 1`, `interaction_constraints`) are drawn on the host by the
+column sampler (`ColSampler::GetByNode`, the CPU learner's RNG stream) once per searched leaf and uploaded per leaf
+pair (`CUDASingleGPUTreeLearner::SelectFeatureByNode`). Only the per-split loop draws and uploads them: the
+level-batched flows (hybrid prefix, selective grow-then-prune, one-sync, graph loop) are gated off by
+`select_features_by_node_`, which is why such configurations cost 5-40x per round (`runs/forest/REPORT_rf_smoke.md`).
+
+Until this fix the quantized (discretized) leaf finder read the per-tree mask for both leaves regardless, so under
+`quant_mode=stochastic` or `fixedpoint` a `feature_fraction_bynode < 1` model was bit-identical to the `= 1` model
+(silently), and interaction constraints, which ride the same masks, were refused with a `Log::Fatal` under quantized
+gradients (since 162e4fdd; that check is lifted now, and `deterministic=true` still keeps interaction constraints on
+the non-quantized path, which matches CPU). The non-quantized finder always selected the per-node masks. The
+discretized launcher now selects them the same way (smaller leaf: smaller node's mask, larger leaf: larger node's
+mask). Without per-node masks both pointers stay the per-tree mask, so every other configuration is bit-identical and
+does no extra work. `FALCATA_DEBUG=bynode` prints, per split of the per-split loop, the split leaf, its inner feature
+and the mask the leaf was searched with (`tests/python_package_test/test_cuda_bynode_quant.py` checks every chosen
+feature against it).
+
 ## Multi-GPU: level-batched NCCL all-reduce
 
 The classic data-parallel path all-reduces one leaf histogram per split
