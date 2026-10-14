@@ -279,3 +279,71 @@ def test_reset_data_sample_strategy_is_refused():
         booster.reset_parameter({"data_sample_strategy": "bagging"})
     booster.reset_parameter({"data_sample_strategy": "goss", "learning_rate": 0.05})  # unchanged: accepted
     booster.update()
+    # the legacy spelling boosting=goss, in any case, is a strategy change too
+    bagging = flc.Booster({"device_type": "cuda", "objective": "binary", "verbose": -1}, flc.Dataset(X, label=y))
+    bagging.update()
+    with pytest.raises(flc.basic.FalcataError, match="Cannot change data_sample_strategy during training"):
+        bagging.reset_parameter({"boosting": "GOSS"})
+    bagging.update()
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(
+    ("first", "second", "label", "metric"),
+    [
+        ("binary", "cross_entropy", "binary", "binary_logloss"),
+        ("regression", "regression_l1", "reg", "l1"),
+    ],
+)
+def test_reset_objective_on_cpu_booster(first, second, label, metric, capfd):
+    # An objective-named reset without device_type on a device_type=cpu booster: the reset's config must keep the
+    # booster's device (unset device_type means auto, i.e. cuda here), so the new objective and metrics are host ones
+    # and a cpu Dataset is fine. Before, the reset built the cuda factory's objective: for cross_entropy its host
+    # fallback with a "not implemented in cuda version" warning, for l1 a CUDA objective that refuses a cpu Dataset.
+    rng = np.random.default_rng(3)
+    X = rng.standard_normal((_ROWS, 10))
+    z = X[:, 0] - X[:, 1] + 0.5 * rng.standard_normal(_ROWS)
+    y = _labels(label, z, rng)
+    ds = flc.Dataset(X, label=y, params={"device_type": "cpu", "verbose": -1}, free_raw_data=False)
+    booster = flc.Booster({"device_type": "cpu", "objective": first, "metric": metric, "seed": 1, "verbose": 0}, ds)
+    booster.add_valid(flc.Dataset(X[:_VALID], label=y[:_VALID], reference=ds), "valid")
+    for _ in range(3):
+        booster.update()
+    booster.reset_parameter({"objective": second})
+    for _ in range(3):
+        booster.update()
+    _check_metrics(booster, X, y, metric, f"cpu booster {first} -> {second}")
+    out = capfd.readouterr()
+    assert "not implemented in cuda version" not in out.out + out.err
+
+
+@_REQUIRES_CUDA
+def test_failed_objective_reset_keeps_the_old_objective():
+    # GBDT::ResetTrainingData refuses a renew-output objective (l1) beside monotone constraints. The refused objective
+    # is freed while the error unwinds, so GBDT must not have taken it: training on after the caught error must
+    # continue on the old objective (this segfaulted when GBDT took the objective before its checks).
+    rng = np.random.default_rng(5)
+    X = rng.standard_normal((3000, 5))
+    y = X[:, 0] + 0.5 * X[:, 1] + 0.1 * rng.standard_normal(3000)
+    params = {
+        "device_type": "cpu",
+        "objective": "regression",
+        "monotone_constraints": [1, 0, 0, 0, 0],
+        "seed": 1,
+        "verbose": -1,
+    }
+
+    def booster():
+        return flc.Booster(params, flc.Dataset(X, label=y, params={"device_type": "cpu", "verbose": -1}))
+
+    reset, never = booster(), booster()
+    for b in (reset, never):
+        b.update()
+        b.update()
+    with pytest.raises(flc.basic.FalcataError, match="monotone_constraints"):
+        reset.reset_parameter({"objective": "l1", "device_type": "cpu"})
+    for b in (reset, never):
+        for _ in range(3):
+            b.update()
+    np.testing.assert_array_equal(reset.predict(X), never.predict(X))
+    assert _model_md5(reset) == _model_md5(never)

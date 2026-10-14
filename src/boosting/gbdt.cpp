@@ -953,14 +953,16 @@ void GBDT::ResetTrainingData(const Dataset* train_data, const ObjectiveFunction*
     Log::Fatal("Cannot reset training data, since new training data has different bin mappers");
   }
 
-  objective_function_ = objective_function;
-  data_sample_strategy_->UpdateObjectiveFunction(objective_function);
-  if (objective_function_ != nullptr) {
-    CHECK_EQ(num_tree_per_iteration_, objective_function_->NumModelPerIteration());
-    if (objective_function_->IsRenewTreeOutput() && !config_->monotone_constraints.empty()) {
-      Log::Fatal("Cannot use ``monotone_constraints`` in %s objective, please disable it.", objective_function_->GetName());
+  // check the incoming objective before taking it: a Fatal here must leave GBDT on its previous objective (the
+  // caller still owns that one, and frees the rejected one while unwinding)
+  if (objective_function != nullptr) {
+    CHECK_EQ(num_tree_per_iteration_, objective_function->NumModelPerIteration());
+    if (objective_function->IsRenewTreeOutput() && !config_->monotone_constraints.empty()) {
+      Log::Fatal("Cannot use ``monotone_constraints`` in %s objective, please disable it.", objective_function->GetName());
     }
   }
+  objective_function_ = objective_function;
+  data_sample_strategy_->UpdateObjectiveFunction(objective_function);
   is_constant_hessian_ = GetIsConstHessian(objective_function);
 
   // push training metrics

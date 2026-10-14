@@ -22,6 +22,7 @@
 #include <Falcata/utils/threading.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -399,6 +400,16 @@ class Booster {
   void ResetConfig(const char* parameters) {
     UNIQUE_LOCK(mutex_)
     auto param = Config::Str2Map(parameters);
+    // Config::Set reads an unset device_type as "auto" (cuda when a GPU is usable), and a reset's map holds only the
+    // reset keys: carry the booster's device, or a reset of a device_type=cpu booster would build CUDA objects (an
+    // objective-named reset then builds a CUDA objective for a CPU booster and its cpu Dataset). The other keys
+    // Config::Set resolves from absence (max_delta_step, num_leaves under max_depth, quant_mode under deterministic)
+    // resolve the same way again from the values config_ already holds.
+    // Only for a booster with training data: its config_ was Set from its parameters at construction (a
+    // model-loaded booster's config_ never was, and keeps the previous behaviour).
+    if (param.count("device_type") == 0 && train_data_ != nullptr) {
+      param["device_type"] = config_.device_type;
+    }
     Config new_config;
     new_config.Set(param);
     if (train_data_ == nullptr && !new_config.forcedsplits_filename.empty()) {
@@ -416,8 +427,10 @@ class Booster {
     // GBDT::Init builds the sample strategy object (bagging or GOSS) once and a reset only reconfigures it, while the
     // objective and metric factories read config_.data_sample_strategy: a changed strategy would leave the two
     // disagreeing. boosting=goss is the legacy spelling of data_sample_strategy=goss.
-    const bool names_sample_strategy = param.count("data_sample_strategy") > 0 ||
-        (param.count("boosting") > 0 && param.at("boosting") == std::string("goss"));
+    std::string boosting_value = param.count("boosting") > 0 ? param.at("boosting") : std::string();
+    std::transform(boosting_value.begin(), boosting_value.end(), boosting_value.begin(),
+                   [](unsigned char c) { return std::tolower(c); });  // as GetBoostingType reads it
+    const bool names_sample_strategy = param.count("data_sample_strategy") > 0 || boosting_value == std::string("goss");
     if (names_sample_strategy && new_config.data_sample_strategy != config_.data_sample_strategy) {
       Log::Fatal("Cannot change data_sample_strategy during training");
     }
