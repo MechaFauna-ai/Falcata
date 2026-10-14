@@ -1403,7 +1403,13 @@ Same-binary A/B, key off vs on (steady ms per round, median of rounds 150..300 (
 | higgs, deep, stochastic (0.5) | (not 4-bit) | 2.073 -> 2.035 (1.019) |
 | higgs, deep, stochastic (0.3) | (not 4-bit) | 1.815 -> 1.759 (1.032) |
 
-Unbagged training takes neither path (cells quick check: 0.998-1.001 on the four visible cells, md5-identical).
+Measured neutral and dropped (no code left): skipping the discarded all-rows histogram in the code-only fill (fill
+1158 -> 1164 us: the fill is bound by its gather and stores); two rows per thread in the node-table walk (215 -> 214
+us on the packed view, 124.5 -> 123.7 on the per-column view: the walk is bound by its scattered bin reads, not by
+the dependent chain); `final_map_only` under bagging (the in-bag score's restore copy dropping the pending partition:
+3.134 vs 3.143 and 1.2436 vs 1.2418 ms per round).
+
+Unbagged training takes none of these paths (cells quick check: 0.998-1.001 on the four visible cells, md5-identical).
 
 ## Multi-GPU: level-batched NCCL all-reduce
 
