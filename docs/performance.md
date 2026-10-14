@@ -1361,6 +1361,41 @@ Against master (a65d34e8; 8 cells, 2 pairs + 1 re-timed pair each): 1.010x over 
 
 ---
 
+## 10h. Bagged training (`bagged_code_view`, `oob_node_table`)
+
+The first profile of a bagged CUDA training (`bagging_fraction` < 1, `bagging_freq: 1`; the visible cells' data with
+the two bagging parameters added) found two costs that only bagging pays.
+
+**The code view under bagging (`bagged_code_view`).** The pair-joint code view (§10d, `pair_code5`, `pair_code_wide`)
+is written by the fused root-histogram fill only, and that fill was requested only when the root leaf is every row,
+i.e. never under bagging. A bagged tree's fill therefore wrote the nibble view, and every level ran the capped
+nibble pair-joint kernel (`CUDAConstructDiscretizedHistogramPairJointCappedKernel`): on the 5-value Numerai data at
+`bagging_fraction` 0.5, 2.98 ms per round of construct against 0.78 ms with the code-word kernel. With the key the
+bagged tree still runs the fused fill for the code view it writes; the histogram of every row it accumulates is
+discarded (the root is the bag, built by the root level's gathering construct like any later level). Same rows, same
+integer sums per histogram: md5-identical (the lattice's bagged cells, and key on/off on every shape below).
+
+**The out-of-bag pass (`oob_node_table`).** `GBDT::UpdateScore` scores the out-of-bag rows by walking the tree, after
+`ToHost` has freed the tree's device arrays; the walk re-uploaded the five structure arrays (five allocations,
+five synchronous copies, five frees: 3-4 us of host gap each) and chased split feature -> column -> per-feature tables
+per level. The key packs each node's routing values (column, bin range and offset, most-frequent bin, missing bin,
+threshold, children, default direction) on the host into one 48-byte record, uploads the table with one copy into a
+buffer the dataset keeps, and reads one record per level (28 registers instead of 48, so twice the resident threads
+of the 1024-thread blocks). Scalar-leaf trees without categorical splits, on the per-column view and the packed view.
+
+Same-binary A/B, key off vs on (steady ms per round, median of rounds 150..300 (400 for higgs), tuner on, one
+`$HOME` per run, 2 interleaved pairs; md5-identical in every pair):
+
+| data (bagging_fraction) | `bagged_code_view` off -> on | `oob_node_table` off -> on |
+|---|---|---|
+| numerai53 benchmark split, deep, stochastic (0.5) | 5.576 -> 3.182 (1.75x) | 5.619 -> 5.573 (1.008) |
+| numerai53 with NaNs (0.7, 1 pair) | 5.069 -> 4.558 (1.11x) | |
+| covtype, deep, fixedpoint (0.7) | (not 4-bit) | 4.891 -> 4.751 (1.029) |
+| higgs, deep, stochastic (0.5) | (not 4-bit) | 2.073 -> 2.035 (1.019) |
+| higgs, deep, stochastic (0.3) | (not 4-bit) | 1.815 -> 1.759 (1.032) |
+
+Unbagged training takes neither path (cells quick check: 0.998-1.001 on the four visible cells, md5-identical).
+
 ## Multi-GPU: level-batched NCCL all-reduce
 
 The classic data-parallel path all-reduces one leaf histogram per split
