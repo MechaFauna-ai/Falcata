@@ -375,7 +375,8 @@ void MultiValBinWrapper::CopyMultiValBinSubset(
 }
 
 void TrainingShareStates::CalcBinOffsets(const std::vector<std::unique_ptr<FeatureGroup>>& feature_groups,
-  std::vector<uint32_t>* offsets, bool in_is_col_wise) {
+  std::vector<uint32_t>* offsets, bool in_is_col_wise,
+  double row_wise_sparse_threshold) {
   offsets->clear();
   feature_hist_offsets_.clear();
   if (in_is_col_wise) {
@@ -444,7 +445,7 @@ void TrainingShareStates::CalcBinOffsets(const std::vector<std::unique_ptr<Featu
     }
     sum_dense_ratio /= ncol;
     const bool is_sparse_row_wise = (1.0f - sum_dense_ratio) >=
-      MultiValBin::multi_val_bin_sparse_threshold ? 1 : 0;
+      row_wise_sparse_threshold ? 1 : 0;
     if (is_sparse_row_wise) {
       int cur_num_bin = 1;
       uint32_t hist_cur_num_bin = 1;

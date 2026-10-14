@@ -294,7 +294,8 @@ struct TrainingShareStates {
     bool dense_only, bool sparse_only, const int num_grad_quant_bins);
 
   void CalcBinOffsets(const std::vector<std::unique_ptr<FeatureGroup>>& feature_groups,
-    std::vector<uint32_t>* offsets, bool is_col_wise);
+    std::vector<uint32_t>* offsets, bool is_col_wise,
+    double row_wise_sparse_threshold = MultiValBin::multi_val_bin_sparse_threshold);
 
   void InitTrain(const std::vector<int>& group_feature_start,
         const std::vector<std::unique_ptr<FeatureGroup>>& feature_groups,

@@ -767,7 +767,14 @@ class Dataset {
 
   MultiValBin* GetMultiBinFromSparseFeatures(const std::vector<uint32_t>& offsets) const;
 
-  MultiValBin* GetMultiBinFromAllFeatures(const std::vector<uint32_t>& offsets) const;
+  MultiValBin* GetMultiBinFromAllFeatures(const std::vector<uint32_t>& offsets,
+                                          double sparse_threshold = MultiValBin::multi_val_bin_sparse_threshold) const;
+
+  /*! \brief the average sparse rate from which the row-wise bin is sparse: MultiValBin::multi_val_bin_sparse_threshold,
+   *  or +infinity (always dense) for quantized training on the CUDA learner when the dense bin is small enough
+   *  (cuda_plan key dense_rowdata). A pure function of the features' bin layout, num_data, the device's TOTAL memory
+   *  and the arguments, so the sites that lay out the row-wise offsets and fill the bin always agree. */
+  double RowWiseSparseThreshold(bool use_quantized_grad, bool is_cuda_tree_learner) const;
 
   template <bool USE_QUANT_GRAD, int HIST_BITS>
   TrainingShareStates* GetShareStates(
@@ -1174,7 +1181,7 @@ class Dataset {
   /*! \brief Whether the CUDA row data can be built directly from column bins,
    *  making the host multi-val bin build in GetShareStates unnecessary
    *  (FALCATA_FAST_ROWDATA). */
-  bool CanSkipHostMultiValBinForCUDA() const;
+  bool CanSkipHostMultiValBinForCUDA(double row_wise_sparse_threshold) const;
   #endif  // USE_CUDA
 
   void CopySubrowHostPart(const Dataset* fullset, const data_size_t* used_indices, data_size_t num_used_indices, bool need_meta_data);

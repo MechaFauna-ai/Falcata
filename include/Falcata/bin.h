@@ -621,7 +621,8 @@ class MultiValBin {
   virtual bool IsSparse() = 0;
 
   static MultiValBin* CreateMultiValBin(data_size_t num_data, int num_bin,
-                                        int num_feature, double sparse_rate, const std::vector<uint32_t>& offsets);
+                                        int num_feature, double sparse_rate, const std::vector<uint32_t>& offsets,
+                                        double sparse_threshold = multi_val_bin_sparse_threshold);
 
   static MultiValBin* CreateMultiValDenseBin(data_size_t num_data, int num_bin,
                                              int num_feature, const std::vector<uint32_t>& offsets);
