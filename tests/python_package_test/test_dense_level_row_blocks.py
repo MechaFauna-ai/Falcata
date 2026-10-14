@@ -6,7 +6,8 @@ cuda_plan key dense_level_row_blocks runs every leaf of a level at the largest l
 grid; dense_block_map launches only the block rows that have rows and maps each back to its pair and block row. Both
 change only which block adds which row to the packed integer histogram, so every model must be byte-identical with
 either key off. The shapes cover 8-bit columns (the kernel's main user), 4-bit columns with pair_hist off, bagging,
-high quant_bins (the packed partials' overflow guard), a level with more pairs than the block map's prefix holds,
+high quant_bins (the packed partials' overflow guard), a level with more pairs than the block map's prefix holds
+(launched as one mapped grid per prefix-full of pairs),
 a 3-leaf tree (one pair per level: neither key engages) and the graph level loop (graph_quant).
 """
 
