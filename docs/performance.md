@@ -1411,6 +1411,46 @@ the dependent chain); `final_map_only` under bagging (the in-bag score's restore
 
 Unbagged training takes none of these paths (cells quick check: 0.998-1.001 on the four visible cells, md5-identical).
 
+## 10i. Objective gradients (`gradient_fp64_lean`, `softmax_registers`)
+
+The objective's gradient kernel runs once per round over every row (once per class for multiclass), in double
+precision, and stores only the float casts of the gradient and hessian. On consumer GPUs the FP64 pipe runs at 1/64 of
+the FP32 rate, so these kernels are FP64-bound, not memory-bound: higgs (4M rows, binary) spent 173 us per round in
+`GetGradientsKernel_BinaryLogloss` (~50 FP64 instructions per row: libdevice exp, a correctly rounded division),
+covtype (581k rows x 7 classes) 223 us in `GetGradientsKernel_MulticlassSoftmax` (178 DFMA + 48 DADD + 36 DMUL per row).
+
+**`gradient_fp64_lean` (binary logloss, unweighted, without label weights).** The response -s/(1 + e^x) (x = label *
+sigmoid * score) and the hessian |r| (s - |r|) are evaluated with 12 FP64 instructions per row: e^x = 2^m 2^(j/64) e^r
+(a 64-entry table, Cody-Waite reduction with ln2/64 split in two doubles, |r| <= 0.0054), e^r's head in double Horner
+and its r^3 tail in fp32, the quotient from an fp32 reciprocal refined by one double Newton step. The derivation in
+`cuda_binary_objective.cu` bounds the response's error by 2^-44.2 (the original's double is within 2^-50 of the true
+value); the hessian's bound is that times s / (s - |r|) (the cancellation in s - |r|). Only the floats are stored, and
+round-to-nearest is monotone: if the approximation's distance to the nearest float rounding midpoint (its low 29
+mantissa bits against 2^28) exceeds the bound (margin 2^-42: 2^11 double ulps), every double within the bound, the
+original's included, rounds to the same float, which is then produced by integer rounding. Otherwise (|x| > 80, float
+subnormal or overflow results, s - |r| < 2^-15 s, a near-midpoint value) the row runs the original double expression.
+Fallback share: ~0.002% of rows for |x| <= 5; the hessian check sends rows with x < -10 (confidently wrong) to the
+original path. A standalone check over 5.6 G random (score, label, sigmoid) triples found no float mismatch at the
+2^-42 margin nor at 2^-45; mismatches start at 2^-49, consistent with the 2^-44 bound.
+
+**`softmax_registers` (multiclass softmax, at most 16 classes).** The kernel staged each row's class scores in a
+row-major global double scratch (num_class doubles per thread, uncoalesced, six passes) for `SoftmaxCUDA`; with the key
+they stay in registers (capacity 8 or 16, the runtime class count guarding every unrolled step: 44 / 60 registers,
+`__launch_bounds__(1024)`), with the same operations in the same order. More classes keep the scratch kernel.
+A lean softmax was examined and not built: the hessian factor p (1 - p) and the label's p - 1 cancel when p -> 1, and
+on covtype 59% of warps hold such a row (1 - p_max < 3e-5) by round 300, 100% by round 600, so the fallback would run
+in nearly every warp.
+
+Same-binary A/B (key off vs on, the cells protocol, 3 interleaved pairs, tuner on, md5-identical in every run):
+
+| cell | key | kernel us/round off -> on (nsys) | steady ms/round off -> on | 30000-round ratio |
+|---|---|---|---|---|
+| higgs-deep-stoch (binary) | `gradient_fp64_lean` | 173 -> 92 | 2.483 -> 2.380 | 1.059 |
+| covtype-deep-fixed (7 classes) | `softmax_registers` | 223 -> 191 | 4.285 -> 4.167 | 1.025 |
+
+covtype's gain exceeds the kernel's own 32 us: the 32 MB scratch no longer passes through L2 every round. Regression
+objectives (the Numerai cells) take neither path.
+
 ## Multi-GPU: level-batched NCCL all-reduce
 
 The classic data-parallel path all-reduces one leaf histogram per split
