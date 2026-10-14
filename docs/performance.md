@@ -1361,6 +1361,18 @@ Against master (a65d34e8; 8 cells, 2 pairs + 1 re-timed pair each): 1.010x over 
 
 ---
 
+## 10h. The per-column quantized construct on deep levels (`dense_level_row_blocks`, `dense_block_map`)
+
+Where the pair-joint construct does not run (8-bit columns, i.e. more than 16 bins, and 4-bit data outside `pair_hist`), a quantized level's histograms come from the per-column dense batched kernel. Its grid is sized for the level's largest smaller leaf, and every leaf used to spread its rows over all of that grid's block rows (ceil(rows / grid rows) per thread). On a deep level with hundreds of pairs each block then zeroed and flushed a whole partition table for a few dozen rows, and most launched blocks of the small leaves had nothing to do: on higgs (4M x 28, 255 bins, 1023 leaves, depth 10) the construct cost grew with depth, from 160 us at the root to 324 us at level 9 (2 x 98 x 246 blocks) for at most half the rows.
+
+**`dense_level_row_blocks` (default on, bit-identical).** As `level_row_blocks` for the pair-joint kernel: on a level with several pairs every leaf takes the largest leaf's rows per thread of the launched grid, so a small leaf fills a few whole blocks and its other block rows exit before zeroing their table. No block holds more rows than the largest leaf's blocks, which the grid's packed 16+16-bit overflow guard already bounds. The host passes the value; the speculative (graph) flow derives it on the device from the level's sizes.
+
+**`dense_block_map` (default on, bit-identical).** As `pair_block_map`: a host-launched level with several pairs launches only the block rows with rows, counted on the host per pair by the kernel's own row grouping from the host copy of the leaf counts, and each block finds its pair and block row in the pairs' first-block prefix (`PairJointBlockPrefix`, now shared by both kernels). On higgs level 9 goes from 48k launched blocks to 1.7k.
+
+Both keys off against on in the same build (cells harness, T = first call + steady ms x 29999, 2 interleaved pairs): higgs 1.196 (2.48 -> 2.08 ms per round; the construct 1.37 -> 0.97 ms per round, level 9 324 -> 104 us), covtype 1.023. `dense_level_row_blocks` alone against master: higgs 1.094, covtype 1.000. Against master (2330477a, 2 pairs): numerai53bench 0.998, numerai53bench with NaNs 1.000 (pair-joint construct: not engaged), covtype 1.011, higgs 1.180. Bagged (fraction 0.6, 400 rounds): higgs 2.22 -> 1.98 ms per round, covtype 4.82 -> 4.78. Other shapes: 1M x 120 16-value columns with NaNs, regression, 255 leaves, fixedpoint, bagging 0.8: 1.56 -> 1.52 ms; 300k x 40 continuous, 5-class, 63 leaves: 1.854 -> 1.835 ms; 2M x 300 3-value columns (pair-joint): unchanged. Models md5-identical everywhere; lattice green. Non-quantized training keeps its grouping (float partial sums depend on it).
+
+---
+
 ## Multi-GPU: level-batched NCCL all-reduce
 
 The classic data-parallel path all-reduces one leaf histogram per split
