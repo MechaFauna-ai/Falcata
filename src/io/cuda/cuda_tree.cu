@@ -11,6 +11,8 @@
 #include <Falcata/cuda/cuda_tree.hpp>
 #include <Falcata/falcata_plan.h>
 
+#include <vector>
+
 namespace Falcata {
 
 // Decision-type bit helpers, used only by the kernels below. They stay in this
