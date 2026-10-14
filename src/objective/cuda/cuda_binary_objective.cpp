@@ -45,6 +45,9 @@ void CUDABinaryLogloss::Init(const Metadata& metadata, data_size_t num_data) {
   SetCUDAMemory<double>(cuda_boost_from_score_.RawData(), 0, 1, __FILE__, __LINE__);
   cuda_sum_weights_.Resize(1);
   SetCUDAMemory<double>(cuda_sum_weights_.RawData(), 0, 1, __FILE__, __LINE__);
+  // the init score's per-block partial sums (labels, then weights; LaunchCalcInitScoreKernel)
+  cuda_init_block_sums_.Resize(
+    2 * static_cast<size_t>((num_data + CALC_INIT_SCORE_BLOCK_SIZE_BINARY - 1) / CALC_INIT_SCORE_BLOCK_SIZE_BINARY));
   if (label_weights_[0] != 1.0f || label_weights_[1] != 1.0f) {
     cuda_label_weights_.Resize(2);
     CopyFromHostToCUDADevice<double>(cuda_label_weights_.RawData(), label_weights_, 2, __FILE__, __LINE__);
