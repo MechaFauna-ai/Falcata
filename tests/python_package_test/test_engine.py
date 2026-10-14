@@ -3979,14 +3979,18 @@ def test_interaction_constraints():
     train_data = lgb.Dataset(X, label=y)
     # check that constraint containing all features is equivalent to no constraint
     #
-    # Runs on the default device (cpu). The quant_mode=none pin this test used to carry is gone: it kept a
-    # constrained CUDA run comparable while the quantized CUDA finder ignored per-node masks, and since the
-    # bynodequant fix that finder applies them (test_cuda_bynode_quant.py covers interaction constraints there).
+    # Runs on the default device: device_type unset means auto, i.e. CUDA in a CUDA build with a usable GPU (the
+    # TASK=cuda runs), else cpu; quant_mode defaults to none on both. The quant_mode=none pin this test used to
+    # carry is gone: it kept a constrained CUDA run comparable while the quantized CUDA finder ignored per-node
+    # masks, and since the bynodequant fix that finder applies them (test_cuda_bynode_quant.py covers interaction
+    # constraints there).
     params = {"verbose": -1, "seed": 0}
     est = lgb.train(params, train_data, num_boost_round=10)
     pred1 = est.predict(X)
     est = lgb.train(dict(params, interaction_constraints=[list(range(num_features))]), train_data, num_boost_round=10)
     pred2 = est.predict(X)
+    # not exact on CUDA: the non-quantized path accumulates histograms with float atomics, so two runs of the same
+    # configuration differ in the last bits.
     np.testing.assert_allclose(pred1, pred2, rtol=1e-5, atol=1e-6)
     # check that constraint partitioning the features reduces train accuracy
     est = lgb.train(dict(params, interaction_constraints=[[0, 2], [1, 3]]), train_data, num_boost_round=10)

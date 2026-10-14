@@ -256,7 +256,10 @@ std::vector<double> NCCLGBDT<GBDT_T>::EvalOneMetric(const Metric* metric, const 
 
     if (metric->IsCUDAMetric()) {
       // a CUDA metric reads device memory: hand it a device copy of the gathered score (GBDT::EvalOneMetric's
-      // host-to-device branch), on the caller's device, where the metric was initialized
+      // host-to-device branch). The copy is made on the caller's device, the master device after RunPerDevice /
+      // DispatchPerDevice. That is the device the metric was initialized on only when gpu_device_id is one of the
+      // ranks' devices; with a gpu_device_id_list that does not contain it (or gpu_device_id -1 with a list), the
+      // metric's own buffers may live on another device than this copy.
       if (tmp_score.size() > this->cuda_score_.Size()) {
         this->cuda_score_.Resize(tmp_score.size());
       }

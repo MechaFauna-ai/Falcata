@@ -123,7 +123,7 @@ class ObjectiveFunction {
   * objective with a CUDA kernel, and for rf RFBoostsOnDevice. The metric factory gives the CUDA metrics exactly then:
   * a CUDA metric converts the score only through a CUDA objective (ConvertOutputCUDA), so beside a host objective
   * (GOSS, objectives without a CUDA kernel, custom) it would evaluate the raw scores. Booster::ResetConfig rebuilds
-  * the objective and all metrics together when a reset changes the objective or this predicate.
+  * the objective and all metrics together when a reset names the objective (data_sample_strategy cannot change).
   */
   FALCATA_EXPORT static bool BoostsOnDevice(const Config& config);
 

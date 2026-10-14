@@ -1031,6 +1031,8 @@ void GBDT::OnBoostingOnGPUChanged(bool train_data_changes) {
     auto cuda_score_updater = dynamic_cast<CUDAScoreUpdater*>(train_score_updater_.get());
     CHECK(cuda_score_updater != nullptr);
     cuda_score_updater->SetBoostingOnCUDA(boosting_on_gpu_);
+    // with no objective (fobj) this may leave gradients_pointer_ on cuda_gradients_: harmless, the fobj path trains
+    // on the caller's host arrays and TrainOneIter re-points the buffers under a bagging subset
     ResetGradientBuffers();
   }
   // AddValidDataset builds the validation updaters by the objective alone

@@ -413,32 +413,51 @@ class Booster {
     if (param.count("metric") && new_config.metric != config_.metric) {
       Log::Fatal("Cannot change metric during training");
     }
+    // GBDT::Init builds the sample strategy object (bagging or GOSS) once and a reset only reconfigures it, while the
+    // objective and metric factories read config_.data_sample_strategy: a changed strategy would leave the two
+    // disagreeing. boosting=goss is the legacy spelling of data_sample_strategy=goss.
+    const bool names_sample_strategy = param.count("data_sample_strategy") > 0 ||
+        (param.count("boosting") > 0 && param.at("boosting") == std::string("goss"));
+    if (names_sample_strategy && new_config.data_sample_strategy != config_.data_sample_strategy) {
+      Log::Fatal("Cannot change data_sample_strategy during training");
+    }
     CheckDatasetResetConfig(config_, param);
 
-    const bool boosted_on_device = ObjectiveFunction::BoostsOnDevice(config_);
     config_.Set(param);
 
     OMP_SET_NUM_THREADS(config_.num_threads);
 
     // The objective and the metrics are built from one config: a CUDA metric converts the score only through a
     // CUDA objective, so a new objective needs new metrics (train and every valid set) when it moves between the
-    // device and the host (binary <-> cross_entropy, update(fobj=...) resetting the objective to "none"). The
-    // objective is rebuilt too when a reset flips the predicate without naming it.
-    if (param.count("objective") ||
-        (train_data_ != nullptr && ObjectiveFunction::BoostsOnDevice(config_) != boosted_on_device)) {
+    // device and the host (binary <-> cross_entropy, update(fobj=...) resetting the objective to "none").
+    if (param.count("objective")) {
       // recreating the objective requires training data to initialize
       // against; a model-loaded booster has none
       if (train_data_ == nullptr) {
         Log::Fatal("Cannot change objective for a Booster with no training data.");
       }
-      CreateObjectiveAndMetrics();
-      boosting_->ResetTrainingData(train_data_,
-                                   objective_fun_.get(), Common::ConstPtrInVectorWrapper<Metric>(train_metric_));
-      for (size_t i = 0; i < valid_data_.size(); ++i) {
-        auto metrics = CreateMetrics(valid_data_[i]);
-        boosting_->ResetValidMetrics(static_cast<int>(i), Common::ConstPtrInVectorWrapper<Metric>(metrics));
-        valid_metrics_[i] = std::move(metrics);
+      // build and initialize everything first (objective and metric Init can Fatal), so a Fatal here leaves the
+      // booster and GBDT on the previous objective and metrics
+      std::unique_ptr<ObjectiveFunction> objective(
+          ObjectiveFunction::CreateObjectiveFunction(config_.objective, config_));
+      if (objective == nullptr) {
+        Log::Info("Using self-defined objective function");
+      } else {
+        objective->Init(train_data_->metadata(), train_data_->num_data());
       }
+      auto train_metric = CreateMetrics(train_data_);
+      std::vector<std::vector<std::unique_ptr<Metric>>> valid_metrics;
+      for (const Dataset* valid_data : valid_data_) {
+        valid_metrics.push_back(CreateMetrics(valid_data));
+      }
+      // then commit: the new objects replace the old ones only after GBDT holds the new pointers
+      boosting_->ResetTrainingData(train_data_, objective.get(), Common::ConstPtrInVectorWrapper<Metric>(train_metric));
+      for (size_t i = 0; i < valid_metrics.size(); ++i) {
+        boosting_->ResetValidMetrics(static_cast<int>(i), Common::ConstPtrInVectorWrapper<Metric>(valid_metrics[i]));
+      }
+      objective_fun_ = std::move(objective);
+      train_metric_ = std::move(train_metric);
+      valid_metrics_ = std::move(valid_metrics);
     }
 
     boosting_->ResetConfig(&config_);

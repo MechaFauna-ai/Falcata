@@ -9,6 +9,7 @@ from predict(). The reset cases change the objective of a live booster (reset_pa
 resets the objective to "none") between a device and a host objective: the metrics must follow the new objective.
 """
 
+import hashlib
 import os
 
 import numpy as np
@@ -229,3 +230,52 @@ def test_reset_objective_rebuilds_metrics_cuda(first, second, label, metric):
         for _ in range(5):
             booster.update(fobj=fobj)
         _check_metrics(booster, X, y, metric, f"{device} {first} -> {second}")
+
+
+def _model_md5(booster):
+    return hashlib.md5(booster.model_to_string().split("\nparameters:")[0].encode()).hexdigest()
+
+
+@_REQUIRES_CUDA
+def test_reset_learning_rate_keeps_cpu_booster_on_cpu(capfd):
+    # A reset that does not name the objective leaves the objective and the metrics alone. The reset's config gets
+    # only the reset keys, and with device_type unset the auto rule reads it as cuda on a machine with a GPU, so a
+    # rebuild there would give a device_type=cpu booster a CUDA objective and CUDA metrics (with a cpu Dataset: a
+    # FalcataError). The model must be the one of the same reset with device_type stated.
+    rng = np.random.default_rng(3)
+    X = rng.standard_normal((4000, 10))
+    y = (X[:, 0] - X[:, 1] + 0.5 * rng.standard_normal(4000) > 0).astype(float)
+    params = {"device_type": "cpu", "objective": "binary", "metric": "auc", "seed": 1, "verbose": 0}
+    md5s = []
+    for reset in ({"learning_rate": 0.05}, {"learning_rate": 0.05, "device_type": "cpu"}):
+        ds = flc.Dataset(X, label=y, params={"device_type": "cpu", "verbose": 0}, free_raw_data=False)
+        booster = flc.Booster(params, ds)
+        booster.add_valid(flc.Dataset(X[:500], label=y[:500], reference=ds), "valid")
+        for _ in range(3):
+            booster.update()
+        booster.reset_parameter(reset)
+        for _ in range(3):
+            booster.update()
+        booster.eval_train()
+        booster.eval_valid()
+        md5s.append(_model_md5(booster))
+    out = capfd.readouterr()
+    assert "not implemented in cuda version" not in out.out + out.err
+    assert md5s[0] == md5s[1]
+
+
+@_REQUIRES_CUDA
+def test_reset_data_sample_strategy_is_refused():
+    # the sample strategy object is built once; the objective and metric factories read the config's strategy
+    rng = np.random.default_rng(3)
+    X = rng.standard_normal((4000, 10))
+    y = (X[:, 0] > 0).astype(float)
+    booster = flc.Booster(
+        {"device_type": "cuda", "objective": "binary", "data_sample_strategy": "goss", "verbose": -1},
+        flc.Dataset(X, label=y),
+    )
+    booster.update()
+    with pytest.raises(flc.basic.FalcataError, match="Cannot change data_sample_strategy during training"):
+        booster.reset_parameter({"data_sample_strategy": "bagging"})
+    booster.reset_parameter({"data_sample_strategy": "goss", "learning_rate": 0.05})  # unchanged: accepted
+    booster.update()
