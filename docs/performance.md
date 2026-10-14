@@ -1543,7 +1543,10 @@ score: the device path hands `RenewTreeOutputCUDA` a device column holding the i
 objectives that renew). Objectives without a CUDA kernel, and GOSS, keep the host objective and the host metrics as
 before: the objective and metric factories decide by one predicate, `ObjectiveFunction::RFBoostsOnDevice` (a CUDA
 metric converts the score only through a CUDA objective, so a CUDA metric beside a host objective would evaluate raw
-scores). The key is read where the objective and the metrics are created, before the learner's `Init` resolves the
+scores). gbdt follows the same rule: the metric factory gives the CUDA metrics only when
+`ObjectiveFunction::BoostsOnDevice` (no GOSS, an objective with a CUDA kernel), so gbdt with GOSS, with cross_entropy,
+tweedie, gamma, mape or a custom objective evaluates on the host (before, its CUDA metrics read the raw scores there,
+e.g. GOSS binary_logloss 0.999 for 0.324). The key is read where the objective and the metrics are created, before the learner's `Init` resolves the
 plan (`FalcataPlan::FromConfig` parses a plan without installing it). The init score and the gradients come out the same
 as the host objective's on the shapes below (binary: an exact label count; multiclass: exact class counts;
 regression: labels whose sum is exact, e.g. Numerai's multiples of 0.25). With continuous regression labels the host
