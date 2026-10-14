@@ -1,12 +1,12 @@
 # coding: utf-8
 """CUDA objective gradients must train the same model with or without their fast paths.
 
-cuda_plan keys gradient_fp64_lean (binary logloss: a reduced-FP64 evaluation whose floats are stored only where every
+cuda_plan keys gradient_fp64_lean (binary logloss, weighted or not: a reduced-FP64 evaluation whose floats are stored only where every
 double within its error bound rounds to the same float, else the original double expression) and softmax_registers
 (multiclass: the row's class scores in registers instead of a global scratch) change only how the same stored floats
 are computed, so the trained model must be byte-identical with each key off. The sweep covers sigmoid values that
 move many rows into the lean path's fallbacks (large |x|, the hessian's cancellation), un-quantized and quantized
-gradients, sample weights and is_unbalance (the original kernels), and class counts on both register capacities and
+gradients, sample weights and is_unbalance (the weighted lean variants), and class counts on both register capacities and
 above them (the scratch kernel).
 """
 

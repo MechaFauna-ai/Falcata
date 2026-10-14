@@ -577,7 +577,7 @@ struct FalcataPlan {
   // global scratch the kernel staged them in (num_class doubles per thread, uncoalesced, six passes). The same max,
   // the same exponentials summed in class order, one division per class: bit-identical.
   bool softmax_registers = true;  // key: softmax_registers
-  // binary logloss gradients (unweighted): the response and hessian evaluated with ~16 FP64 operations per row (the
+  // binary logloss gradients (with or without sample and label weights): the response and hessian evaluated with ~16 FP64 operations per row (the
   // exponential's tail in fp32, an fp32 reciprocal refined by one double Newton step) instead of ~50 (libdevice exp, a
   // correctly rounded division), to a proven relative error bound; a row's floats are stored from it only when every
   // double within the bound rounds to the same float (its distance to the nearest float rounding midpoint), otherwise

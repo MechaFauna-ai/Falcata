@@ -1419,7 +1419,7 @@ the FP32 rate, so these kernels are FP64-bound, not memory-bound: higgs (4M rows
 `GetGradientsKernel_BinaryLogloss` (~50 FP64 instructions per row: libdevice exp, a correctly rounded division),
 covtype (581k rows x 7 classes) 223 us in `GetGradientsKernel_MulticlassSoftmax` (178 DFMA + 48 DADD + 36 DMUL per row).
 
-**`gradient_fp64_lean` (binary logloss, unweighted, without label weights).** The response -s/(1 + e^x) (x = label *
+**`gradient_fp64_lean` (binary logloss, with or without sample and label weights).** The response -s/(1 + e^x) (x = label *
 sigmoid * score) and the hessian |r| (s - |r|) are evaluated with 12 FP64 instructions per row: e^x = 2^m 2^(j/64) e^r
 (a 64-entry table, Cody-Waite reduction with ln2/64 split in two doubles, |r| <= 0.0054), e^r's head in double Horner
 and its r^3 tail in fp32, the quotient from an fp32 reciprocal refined by one double Newton step. The derivation in
@@ -1429,9 +1429,10 @@ round-to-nearest is monotone: if the approximation's distance to the nearest flo
 mantissa bits against 2^28) exceeds the bound (margin 2^-42: 2^11 double ulps), every double within the bound, the
 original's included, rounds to the same float, which is then produced by integer rounding. Otherwise (|x| > 80, float
 subnormal or overflow results, s - |r| < 2^-15 s, a near-midpoint value) the row runs the original double expression.
-Fallback share: ~0.002% of rows for |x| <= 5; the hessian check sends rows with x < -10 (confidently wrong) to the
+Sample and label weights multiply both arms' values in the original's order (each rounded product adds 2^-52 to
+the bound; intermediate products must stay in double's normal range). Fallback share: ~0.002% of rows for |x| <= 5; the hessian check sends rows with x < -10 (confidently wrong) to the
 original path. A standalone check over 5.6 G random (score, label, sigmoid) triples found no float mismatch at the
-2^-42 margin nor at 2^-45; mismatches start at 2^-49, consistent with the 2^-44 bound.
+2^-42 margin nor at 2^-45 (3.2 G more with random label and sample weights: none); mismatches start at 2^-49, consistent with the 2^-44 bound.
 
 **`softmax_registers` (multiclass softmax, at most 16 classes).** The kernel staged each row's class scores in a
 row-major global double scratch (num_class doubles per thread, uncoalesced, six passes) for `SoftmaxCUDA`; with the key

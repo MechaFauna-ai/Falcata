@@ -210,9 +210,19 @@ __device__ const double kLeanExp2Table[64] = {  // 2^(j/64), j = 0..63, rounded 
 // value, the original's double (libdevice exp, 1 ulp; the rounded sum and division) within 2^-50: margin eps_r =
 // 2^-42, i.e. eps_r * 2^53 = 2^11 double ulps of the response's binade (|v| < 2^(e+1)). The hessian A (s - A), A =
 // |response|, inherits A's error amplified by s / (s - A) (the cancellation in s - A); both arms round s - A and the
-// product: eps_h = 1.02 eps_r s / (s - A) + 2^-49. Returns false (the caller evaluates the original expression)
+// product: eps_h = 1.02 eps_r s / (s - A) + 2^-49 (2^-48 with weights). Returns false (the caller evaluates the original expression)
 // whenever a check fails.
+// Weights (USE_LABEL_WEIGHT: label_weight, USE_WEIGHT: sample_weight) multiply the response and the hessian in the
+// original's order; each product is rounded in both arms (2^-52 more per product, inside the margins' slack) and must
+// stay in double's normal range (LeanWideNormal), where rounding is relative.
+__device__ __forceinline__ bool LeanWideNormal(const double v) {
+  const int biased = static_cast<int>((static_cast<unsigned long long>(__double_as_longlong(v)) >> 52) & 0x7ffu);
+  return biased >= 64 && biased <= 2047 - 64;
+}
+
+template <bool USE_LABEL_WEIGHT, bool USE_WEIGHT>
 __device__ __forceinline__ bool BinaryLoglossLean(const double score, const bool is_pos, const double sigmoid,
+                                                  const double label_weight, const double sample_weight,
                                                   float* out_gradient, float* out_hessian) {
   const double ls = is_pos ? sigmoid : -sigmoid;  // label * sigmoid, label = +-1: exact
   const double x = ls * score;
@@ -243,14 +253,29 @@ __device__ __forceinline__ bool BinaryLoglossLean(const double score, const bool
   const double q = fma(fma(-d, q0, num), inv0, q0);
   const double a = fabs(q);
   const double gap = sigmoid - a;
-  const double h = a * gap;
+  double g = q;
+  double h = a * gap;
+  if (USE_LABEL_WEIGHT) {
+    if (!LeanWideNormal(g) || !LeanWideNormal(h)) {
+      return false;
+    }
+    g = g * label_weight;
+    h = h * label_weight;
+  }
+  if (USE_WEIGHT) {
+    if (!LeanWideNormal(g) || !LeanWideNormal(h)) {
+      return false;
+    }
+    g = g * sample_weight;
+    h = h * sample_weight;
+  }
   const float gap_f = LeanApproxFloat(gap);
   if (!(gap_f > 0.0f)) {
     return false;
   }
   const float ratio = LeanApproxFloat(sigmoid) / gap_f;
   float g_out, h_out;
-  if (!LeanSettledFloat(q, 2048.0f, &g_out) || !LeanSettledFloat(h, 1.03f * 2048.0f * ratio + 16.0f, &h_out)) {
+  if (!LeanSettledFloat(g, 2048.0f + 16.0f, &g_out) || !LeanSettledFloat(h, 1.03f * 2048.0f * ratio + 32.0f, &h_out)) {
     return false;
   }
   *out_gradient = g_out;
@@ -267,9 +292,13 @@ __global__ void GetGradientsKernel_BinaryLogloss(const double* cuda_scores, cons
   if (data_index < num_data) {
     const label_t cuda_label = static_cast<int>(cuda_labels[data_index]);
     const int is_pos = cuda_label > 0 ? 1 : 0;
-    if (!USE_WEIGHT && !USE_LABEL_WEIGHT && lean) {
+    if (lean) {
       float lean_gradient, lean_hessian;
-      if (BinaryLoglossLean(cuda_scores[data_index], is_pos != 0, sigmoid, &lean_gradient, &lean_hessian)) {
+      const double lean_label_weight = USE_LABEL_WEIGHT ? cuda_label_weights[is_pos] : 1.0;
+      const double lean_sample_weight = USE_WEIGHT ? static_cast<double>(cuda_weights[data_index]) : 1.0;
+      if (BinaryLoglossLean<USE_LABEL_WEIGHT, USE_WEIGHT>(cuda_scores[data_index], is_pos != 0, sigmoid,
+                                                          lean_label_weight, lean_sample_weight, &lean_gradient,
+                                                          &lean_hessian)) {
         cuda_out_gradients[data_index] = lean_gradient;
         cuda_out_hessians[data_index] = lean_hessian;
         return;
