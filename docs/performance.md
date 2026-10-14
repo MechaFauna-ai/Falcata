@@ -1455,6 +1455,16 @@ Same-binary A/B (key off vs on, the cells protocol, 3 interleaved pairs, tuner o
 covtype's gain exceeds the kernel's own 32 us: the 32 MB scratch no longer passes through L2 every round. Regression
 objectives (the Numerai cells) take neither path.
 
+## 10j. The level sync of narrow data (`sync_used_narrow`)
+
+`readback_fused` makes the used-task level sync kernel (`SyncBestSplitForLevelUsedTasksKernel`) mirror each leaf entry it writes into the host's mapped staging, so that the level's separate copy kernel and its cross-stream hand-off go. That kernel was chosen only for a feature-sampled tree or a task list wider than one sync block (1024 tasks): on narrow data (higgs 28 features, covtype 54) the level still ran `SyncBestSplitForLevelKernel` (no mirror) followed by `CopyToMappedHostKernel` on another stream, about 5 us of GPU idle per level (one event hand-off plus the copy), 10 levels per tree.
+
+**`sync_used_narrow` (default on, bit-identical).** A task list that fits one sync block takes the used-task kernel as well (one block per leaf role and pair over every task; the kernel documents why any fold order returns the original's unique winner and replays the original on a non-finite gain), so the mirror engages on these shapes. Shapes with more than one sync block, or with feature sampling, already ran it and are unchanged.
+
+Measured (cells harness, same binary, key off against on, T = first call + steady ms x 29999, interleaved pairs): higgs 1.022 (3 pairs, 2.397 -> 2.344 ms per round), covtype 1.055 (4 pairs, 4.18 -> 3.95 ms per round, every pair 5-6%). Models md5-identical; `tests/python_package_test/test_sync_used_narrow.py` (one feature to 1200 features, multiclass, bagged, feature sampled, non-quantized).
+
+---
+
 ## Multi-GPU: level-batched NCCL all-reduce
 
 The classic data-parallel path all-reduces one leaf histogram per split

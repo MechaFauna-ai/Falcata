@@ -6408,7 +6408,11 @@ void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
   const bool mirror_requested = leaf_mirror_requested_;
   leaf_mirror_requested_ = false;
   leaf_mirror_written_ = false;
-  if (FalcataPlan::Get().sync_used_tasks && (used_list || (!compact_tasks && num_blocks_per_leaf > 1))) {
+  // cuda_plan key sync_used_narrow: a task list that fits one sync block (few features) takes the same kernel, which
+  // is the only one that mirrors the leaf entries into the readback staging (readback_fused): the separate copy
+  // kernel and its cross-stream hand-off of every level go
+  const bool all_tasks_one_block = !compact_tasks && num_blocks_per_leaf == 1 && FalcataPlan::Get().sync_used_narrow;
+  if (FalcataPlan::Get().sync_used_tasks && (used_list || all_tasks_one_block || (!compact_tasks && num_blocks_per_leaf > 1))) {
     CUDASplitInfo* leaf_mirror = nullptr;
     if (mirror_requested && pinned_leaf_best_split_info_device_ != nullptr &&
         pinned_leaf_best_split_info_size_ >= static_cast<size_t>(num_leaves_)) {
