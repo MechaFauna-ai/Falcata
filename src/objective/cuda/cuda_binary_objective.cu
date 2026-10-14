@@ -11,6 +11,7 @@
 #include "cuda_binary_objective.hpp"
 
 #include <Falcata/cuda/cuda_rocm_interop.h>
+#include <Falcata/falcata_plan.h>
 
 #include <algorithm>
 
@@ -128,15 +129,132 @@ double CUDABinaryLogloss::LaunchCalcInitScoreKernel(const int /*class_id*/) cons
   return boost_from_score;
 }
 
+// cuda_plan key gradient_fp64_lean: the logloss response and hessian with ~16 FP64 operations per row instead of ~50
+// (libdevice exp + a correctly rounded division), stored only where the floats provably equal the original's.
+// Only the float casts of the double response and hessian are stored, and round-to-nearest is monotone: if every double
+// within the evaluation's error bound of an approximation rounds to the same float, the original double does too.
+//
+// Normal-range double <-> float by bit manipulation (integer pipe): ApproxFloatBits truncates the mantissa (relative
+// error < 2^-23; zero below float's normal range, infinite above it), FloatToDoubleBits is exact for normal floats.
+__device__ __forceinline__ float LeanApproxFloat(const double v) {
+  const unsigned long long bits = static_cast<unsigned long long>(__double_as_longlong(v));
+  const int biased = static_cast<int>((bits >> 52) & 0x7ffu);
+  if (biased <= 1023 - 127) {
+    return 0.0f;
+  }
+  if (biased >= 1023 + 128) {
+    return (bits >> 63) ? -INFINITY : INFINITY;
+  }
+  const unsigned int sign = static_cast<unsigned int>(bits >> 63) << 31;
+  const unsigned int fbits = sign | (static_cast<unsigned int>(biased - 1023 + 127) << 23) |
+                             static_cast<unsigned int>((bits >> 29) & 0x7fffffu);
+  return __int_as_float(static_cast<int>(fbits));
+}
+
+__device__ __forceinline__ double LeanFloatToDouble(const float f) {
+  const unsigned int fbits = static_cast<unsigned int>(__float_as_int(f));
+  const unsigned long long sign = static_cast<unsigned long long>(fbits >> 31) << 63;
+  const unsigned long long biased = ((fbits >> 23) & 0xffu) - 127 + 1023;
+  return __longlong_as_double(static_cast<long long>(sign | (biased << 52) |
+                                                     (static_cast<unsigned long long>(fbits & 0x7fffffu) << 29)));
+}
+
+// v's float rounding when every double within margin_ulps of v's double ulps rounds to it: v's distance to the
+// nearest float rounding midpoint (|low 29 mantissa bits - 2^28| ulps) exceeds the margin, and v and its rounding lie
+// in float's normal range (2^-125 <= |v| < 2^127). Then round-to-nearest is add half an ulp and truncate.
+__device__ __forceinline__ bool LeanSettledFloat(const double v, const float margin_ulps, float* out) {
+  const unsigned long long bits = static_cast<unsigned long long>(__double_as_longlong(v));
+  const int biased = static_cast<int>((bits >> 52) & 0x7ffu);
+  const int low = static_cast<int>(bits & ((1ull << 29) - 1));
+  const int dist = low >= (1 << 28) ? low - (1 << 28) : (1 << 28) - low;
+  if (biased < 1023 - 125 || biased > 1023 + 126 || !(margin_ulps < static_cast<float>(1 << 27)) ||
+      dist <= static_cast<int>(margin_ulps) + 1) {
+    return false;
+  }
+  const unsigned long long magnitude = (bits & 0x7fffffffffffffffull) + (1ull << 28);
+  const unsigned int fbits = static_cast<unsigned int>(bits >> 63) << 31 |
+                             (static_cast<unsigned int>(magnitude >> 29) - (static_cast<unsigned int>(1023 - 127) << 23));
+  *out = __int_as_float(static_cast<int>(fbits));
+  return true;
+}
+
+// The lean evaluation for |x| <= 80, x = label * sigmoid * score (the original's double): e^x = 2^k e^r with Cody-Waite
+// r = x - k ln2 (|r| <= 0.3466; two FMAs with ln2's double split: error < 2^-54 absolute), e^r's head
+// 1 + r + ... + r^5/120 + r^6 u in double Horner and its tail u = 1/6! + ... + r^5/11! in fp32 (|r^6 u| < 2.6e-6, the
+// fp32 tail's error incl. the truncated r (< 2^-23 relative) < 2^-38.7, the series truncated after r^11: < 2^-46), so
+// e^x to < 2^-38.5 relative; 1 + e^x in double; the quotient from an fp32 reciprocal (< 2^-22 relative) and one
+// double Newton step (< 2^-43). The response is within 2^-38.3 of the true value, the original's double (libdevice
+// exp, 1 ulp; the rounded sum and division) within 2^-50: margin eps_r = 2^-36, i.e. eps_r * 2^53 = 2^17 double ulps
+// of the response's binade (|v| < 2^(e+1)). The hessian A (s - A), A = |response|, inherits A's error amplified by
+// s / (s - A) (the cancellation in s - A); both arms round s - A and the product: eps_h = 1.02 eps_r s / (s - A) +
+// 2^-49. Returns false (the caller evaluates the original expression) whenever a check fails.
+__device__ __forceinline__ bool BinaryLoglossLean(const double score, const bool is_pos, const double sigmoid,
+                                                  float* out_gradient, float* out_hessian) {
+  const double ls = is_pos ? sigmoid : -sigmoid;  // label * sigmoid, label = +-1: exact
+  const double x = ls * score;
+  const unsigned long long x_magnitude =
+    static_cast<unsigned long long>(__double_as_longlong(x)) & 0x7fffffffffffffffull;
+  if (!(x_magnitude <= 0x4054000000000000ull)) {  // |x| <= 80 (NaN fails)
+    return false;
+  }
+  const float kf = rintf(LeanApproxFloat(x) * 1.44269504088896341f);
+  const int k = static_cast<int>(kf);  // |k| <= 116
+  const double kd = static_cast<double>(k);
+  double r = fma(-kd, 6.93147180559945286e-01, x);
+  r = fma(-kd, 2.31904681384629956e-17, r);
+  const float rf = LeanApproxFloat(r);
+  float u = 2.50521083854417188e-08f;            // 1/11!
+  u = fmaf(u, rf, 2.75573192239858907e-07f);     // 1/10!
+  u = fmaf(u, rf, 2.75573192239858907e-06f);     // 1/9!
+  u = fmaf(u, rf, 2.48015873015873016e-05f);     // 1/8!
+  u = fmaf(u, rf, 1.98412698412698413e-04f);     // 1/7!
+  u = fmaf(u, rf, 1.38888888888888889e-03f);     // 1/6!
+  double p = fma(LeanFloatToDouble(u), r, 8.33333333333333333e-03);
+  p = fma(p, r, 4.16666666666666667e-02);
+  p = fma(p, r, 1.66666666666666667e-01);
+  p = fma(p, r, 0.5);
+  p = fma(p, r, 1.0);
+  p = fma(p, r, 1.0);
+  const double e = p * __longlong_as_double(static_cast<long long>(k + 1023) << 52);
+  const double d = 1.0 + e;
+  const double inv0 = LeanFloatToDouble(1.0f / LeanApproxFloat(d));
+  const double num = -ls;
+  const double q0 = num * inv0;
+  const double q = fma(fma(-d, q0, num), inv0, q0);
+  const double a = fabs(q);
+  const double gap = sigmoid - a;
+  const double h = a * gap;
+  const float gap_f = LeanApproxFloat(gap);
+  if (!(gap_f > 0.0f)) {
+    return false;
+  }
+  const float ratio = LeanApproxFloat(sigmoid) / gap_f;
+  float g_out, h_out;
+  if (!LeanSettledFloat(q, 131072.0f, &g_out) || !LeanSettledFloat(h, 1.03f * 131072.0f * ratio + 16.0f, &h_out)) {
+    return false;
+  }
+  *out_gradient = g_out;
+  *out_hessian = h_out;
+  return true;
+}
+
 template <bool USE_LABEL_WEIGHT, bool USE_WEIGHT>
 __global__ void GetGradientsKernel_BinaryLogloss(const double* cuda_scores, const label_t* cuda_labels,
   const double* cuda_label_weights, const label_t* cuda_weights,
   const double sigmoid, const data_size_t num_data,
-  score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
+  score_t* cuda_out_gradients, score_t* cuda_out_hessians, const bool lean) {
   const data_size_t data_index = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
   if (data_index < num_data) {
     const label_t cuda_label = static_cast<int>(cuda_labels[data_index]);
     const int is_pos = cuda_label > 0 ? 1 : 0;
+    if (!USE_WEIGHT && !USE_LABEL_WEIGHT && lean) {
+      float lean_gradient, lean_hessian;
+      if (BinaryLoglossLean(cuda_scores[data_index], is_pos != 0, sigmoid, &lean_gradient, &lean_hessian)) {
+        cuda_out_gradients[data_index] = lean_gradient;
+        cuda_out_hessians[data_index] = lean_hessian;
+        return;
+      }
+    }
     const int label = is_pos ? 1 : -1;
     const double response = -label * sigmoid / (1.0f + exp(label * sigmoid * cuda_scores[data_index]));
     const double abs_response = fabs(response);
@@ -175,7 +293,8 @@ __global__ void GetGradientsKernel_BinaryLogloss(const double* cuda_scores, cons
   sigmoid_, \
   num_data_, \
   gradients, \
-  hessians
+  hessians, \
+  FalcataPlan::Get().gradient_fp64_lean
 
 void CUDABinaryLogloss::LaunchGetGradientsKernel(const double* scores, score_t* gradients, score_t* hessians) const {
   const int num_blocks = (num_data_ + GET_GRADIENTS_BLOCK_SIZE_BINARY - 1) / GET_GRADIENTS_BLOCK_SIZE_BINARY;

@@ -572,6 +572,17 @@ struct FalcataPlan {
   // and a scatter that recomputes each row's Philox draw and ranks it in its block by warp ballots. The same draws
   // and the same [in-bag ascending | out-of-bag from the tail] index layout: bit-identical.
   bool bagging_fused_scan = true;  // key: bagging_fused_scan
+  // multiclass softmax gradients (CUDAMulticlassSoftmax, num_class <= 16): the row's class scores stay in registers
+  // (a class capacity of 8 or 16, the runtime class count guarding every unrolled step) instead of the row-major
+  // global scratch the kernel staged them in (num_class doubles per thread, uncoalesced, six passes). The same max,
+  // the same exponentials summed in class order, one division per class: bit-identical.
+  bool softmax_registers = true;  // key: softmax_registers
+  // binary logloss gradients (unweighted): the response and hessian evaluated with ~16 FP64 operations per row (the
+  // exponential's tail in fp32, an fp32 reciprocal refined by one double Newton step) instead of ~50 (libdevice exp, a
+  // correctly rounded division), to a proven relative error bound; a row's floats are stored from it only when every
+  // double within the bound rounds to the same float (its distance to the nearest float rounding midpoint), otherwise
+  // the original double expression runs. The same stored floats: bit-identical.
+  bool gradient_fp64_lean = true;  // key: gradient_fp64_lean
   // quantized root sums (gradient/hessian totals of the tree's rows): one warp
   // per 1024-row chunk sums 32 rows per lane, instead of one 1024-thread block
   // per chunk with one row per thread and two block reductions. Each chunk's
@@ -860,6 +871,8 @@ struct FalcataPlan {
     if (key == "oob_node_table") return &oob_node_table;
     if (key == "bagged_code_view") return &bagged_code_view;
     if (key == "bagging_fused_scan") return &bagging_fused_scan;
+    if (key == "softmax_registers") return &softmax_registers;
+    if (key == "gradient_fp64_lean") return &gradient_fp64_lean;
     if (key == "root_sums_warp") return &root_sums_warp;
     if (key == "minmax_warp") return &minmax_warp;
     if (key == "colmajor_split") return &colmajor_split;
