@@ -5235,6 +5235,64 @@ __device__ __forceinline__ void SubtractDiscretizedBin(
 // FixHistogramDiscretizedBatchedKernel's block for one need-fix feature, whose thread 0 then subtracts the fixed value
 // at exactly that skipped bin. Each bin is written by one block with the sequential launches' integer arithmetic in
 // the same bit-width case, and no subtract block reads a bin a fix block writes: bit-identical, no cross-block order.
+// The body for one (smaller, larger) pair; the bit widths are the ones the sequential kernels use for this pair.
+__device__ __forceinline__ void FixSubtractDiscretizedMaskedPair(
+  const int num_total_bin,
+  const int num_subtract_blocks,
+  const uint32_t* cuda_feature_num_bins,
+  const uint32_t* cuda_feature_hist_offsets,
+  const uint32_t* cuda_feature_most_freq_bins,
+  const int* cuda_need_fix_histogram_features,
+  const uint32_t* cuda_need_fix_histogram_features_num_bin_aligned,
+  const uint8_t* fix_mfb_mask,
+  const CUDALeafSplitsStruct* smaller_struct,
+  const CUDALeafSplitsStruct* larger_struct,
+  const bool larger_exists,
+  const uint8_t parent_num_bits,
+  const uint8_t smaller_num_bits,
+  const uint8_t larger_num_bits,
+  int32_t* buffer,
+  const uint8_t* bin_used,
+  const int8_t* feature_used) {
+  const int sub_case = parent_num_bits <= 16 ? 0 : (larger_num_bits <= 16 ? 1 : (smaller_num_bits <= 16 ? 2 : 3));
+  const hist_t* smaller_hist = smaller_struct->hist_in_leaf;
+  if (static_cast<int>(blockIdx.x) < num_subtract_blocks) {
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (!larger_exists || i >= static_cast<uint32_t>(num_total_bin) || fix_mfb_mask[2 * static_cast<size_t>(i)] ||
+        (bin_used != nullptr && !bin_used[i])) {
+      return;
+    }
+    const int32_t s32 = sub_case == 3 ? 0 : reinterpret_cast<const int32_t*>(smaller_hist)[i];
+    const int64_t s64 = sub_case == 3 ? reinterpret_cast<const int64_t*>(smaller_hist)[i] : 0;
+    SubtractDiscretizedBin(sub_case, i, s32, s64, larger_struct->hist_in_leaf, buffer);
+    return;
+  }
+  const unsigned int fix_index = blockIdx.x - static_cast<unsigned int>(num_subtract_blocks);
+  const int feature_index = cuda_need_fix_histogram_features[fix_index];
+  if (feature_used != nullptr && !feature_used[feature_index]) {
+    return;  // most-frequent bin of an unused feature: dead storage this tree (its subtract is masked too)
+  }
+  __shared__ int64_t shared_mem_buffer[WARPSIZE];
+  if (smaller_num_bits <= 16) {
+    FixHistogramDiscretizedInner<true>(
+      cuda_feature_num_bins, cuda_feature_hist_offsets, cuda_feature_most_freq_bins,
+      cuda_need_fix_histogram_features, cuda_need_fix_histogram_features_num_bin_aligned,
+      smaller_struct, shared_mem_buffer, fix_index);
+  } else {
+    FixHistogramDiscretizedInner<false>(
+      cuda_feature_num_bins, cuda_feature_hist_offsets, cuda_feature_most_freq_bins,
+      cuda_need_fix_histogram_features, cuda_need_fix_histogram_features_num_bin_aligned,
+      smaller_struct, shared_mem_buffer, fix_index);
+  }
+  if (threadIdx.x == 0 && larger_exists) {
+    // thread 0 wrote the fixed value; the subtract of that bin reads it back (own write, visible)
+    const uint32_t i = cuda_feature_hist_offsets[feature_index] + cuda_feature_most_freq_bins[feature_index];
+    const int32_t s32 = sub_case == 3 ? 0 : reinterpret_cast<const int32_t*>(smaller_hist)[i];
+    const int64_t s64 = sub_case == 3 ? reinterpret_cast<const int64_t*>(smaller_hist)[i] : 0;
+    SubtractDiscretizedBin(sub_case, i, s32, s64, larger_struct->hist_in_leaf, buffer);
+  }
+}
+
 __global__ void FixSubtractDiscretizedMaskedBatchedKernel(
   const int num_total_bin,
   const int num_subtract_blocks,
@@ -5266,46 +5324,35 @@ __global__ void FixSubtractDiscretizedMaskedBatchedKernel(
     larger_num_bits = HybridGraphQuantHistBits(gstate, num_data_larger);
     parent_num_bits = HybridGraphQuantHistBits(gstate, num_data_smaller + num_data_larger);
   }
-  const int sub_case = parent_num_bits <= 16 ? 0 : (larger_num_bits <= 16 ? 1 : (smaller_num_bits <= 16 ? 2 : 3));
-  int32_t* buffer = reinterpret_cast<int32_t*>(num_bit_change_buffer) +
-    static_cast<size_t>(blockIdx.y) * static_cast<size_t>(num_total_bin);
-  if (static_cast<int>(blockIdx.x) < num_subtract_blocks) {
-    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (!larger_exists || i >= static_cast<uint32_t>(num_total_bin) || fix_mfb_mask[2 * static_cast<size_t>(i)] ||
-        (bin_used != nullptr && !bin_used[i])) {
-      return;
-    }
-    const hist_t* smaller_hist = desc->smaller_struct->hist_in_leaf;
-    const int32_t s32 = sub_case == 3 ? 0 : reinterpret_cast<const int32_t*>(smaller_hist)[i];
-    const int64_t s64 = sub_case == 3 ? reinterpret_cast<const int64_t*>(smaller_hist)[i] : 0;
-    SubtractDiscretizedBin(sub_case, i, s32, s64, desc->larger_struct->hist_in_leaf, buffer);
-    return;
-  }
-  const unsigned int fix_index = blockIdx.x - static_cast<unsigned int>(num_subtract_blocks);
-  const int feature_index = cuda_need_fix_histogram_features[fix_index];
-  if (feature_used != nullptr && !feature_used[feature_index]) {
-    return;  // most-frequent bin of an unused feature: dead storage this tree (its subtract is masked too)
-  }
-  __shared__ int64_t shared_mem_buffer[WARPSIZE];
-  if (smaller_num_bits <= 16) {
-    FixHistogramDiscretizedInner<true>(
-      cuda_feature_num_bins, cuda_feature_hist_offsets, cuda_feature_most_freq_bins,
-      cuda_need_fix_histogram_features, cuda_need_fix_histogram_features_num_bin_aligned,
-      desc->smaller_struct, shared_mem_buffer, fix_index);
-  } else {
-    FixHistogramDiscretizedInner<false>(
-      cuda_feature_num_bins, cuda_feature_hist_offsets, cuda_feature_most_freq_bins,
-      cuda_need_fix_histogram_features, cuda_need_fix_histogram_features_num_bin_aligned,
-      desc->smaller_struct, shared_mem_buffer, fix_index);
-  }
-  if (threadIdx.x == 0 && larger_exists) {
-    // thread 0 wrote the fixed value; the subtract of that bin reads it back (own write, visible)
-    const uint32_t i = cuda_feature_hist_offsets[feature_index] + cuda_feature_most_freq_bins[feature_index];
-    const hist_t* smaller_hist = desc->smaller_struct->hist_in_leaf;
-    const int32_t s32 = sub_case == 3 ? 0 : reinterpret_cast<const int32_t*>(smaller_hist)[i];
-    const int64_t s64 = sub_case == 3 ? reinterpret_cast<const int64_t*>(smaller_hist)[i] : 0;
-    SubtractDiscretizedBin(sub_case, i, s32, s64, desc->larger_struct->hist_in_leaf, buffer);
-  }
+  FixSubtractDiscretizedMaskedPair(
+    num_total_bin, num_subtract_blocks, cuda_feature_num_bins, cuda_feature_hist_offsets, cuda_feature_most_freq_bins,
+    cuda_need_fix_histogram_features, cuda_need_fix_histogram_features_num_bin_aligned, fix_mfb_mask,
+    desc->smaller_struct, desc->larger_struct, larger_exists, parent_num_bits, smaller_num_bits, larger_num_bits,
+    reinterpret_cast<int32_t*>(num_bit_change_buffer) + static_cast<size_t>(blockIdx.y) * static_cast<size_t>(num_total_bin),
+    bin_used, feature_used);
+}
+
+// The per-leaf (classic leaf-wise loop) launch: one pair, host bit widths (as LaunchSubtractHistogramKernel's).
+__global__ void FixSubtractDiscretizedMaskedKernel(
+  const int num_total_bin,
+  const int num_subtract_blocks,
+  const uint32_t* cuda_feature_num_bins,
+  const uint32_t* cuda_feature_hist_offsets,
+  const uint32_t* cuda_feature_most_freq_bins,
+  const int* cuda_need_fix_histogram_features,
+  const uint32_t* cuda_need_fix_histogram_features_num_bin_aligned,
+  const uint8_t* fix_mfb_mask,
+  const CUDALeafSplitsStruct* smaller_struct,
+  const CUDALeafSplitsStruct* larger_struct,
+  const uint8_t parent_num_bits,
+  const uint8_t smaller_num_bits,
+  const uint8_t larger_num_bits,
+  hist_t* num_bit_change_buffer) {
+  FixSubtractDiscretizedMaskedPair(
+    num_total_bin, num_subtract_blocks, cuda_feature_num_bins, cuda_feature_hist_offsets, cuda_feature_most_freq_bins,
+    cuda_need_fix_histogram_features, cuda_need_fix_histogram_features_num_bin_aligned, fix_mfb_mask,
+    smaller_struct, larger_struct, larger_struct->leaf_index >= 0, parent_num_bits, smaller_num_bits, larger_num_bits,
+    reinterpret_cast<int32_t*>(num_bit_change_buffer), nullptr, nullptr);
 }
 
 // cuda_plan key fix_subtract_fused: one sampled feature (at most kFixSubtractMaxSpan bins) of one pair, for a pair whose
@@ -5575,6 +5622,40 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramKernel(
     } else {
       const int num_subtract_threads = num_total_bin_;
       const int num_subtract_blocks = (num_subtract_threads + SUBTRACT_BLOCK_SIZE - 1) / SUBTRACT_BLOCK_SIZE;
+      if (FixSubtractMaskedEnabled()) {
+        // cuda_plan key fix_subtract_masked: fix + subtract in one launch (this pipeline's bit-change region, as below)
+        hist_t* change_buffer = reinterpret_cast<hist_t*>(
+          reinterpret_cast<int32_t*>(hist_buffer_for_num_bit_change_.RawData()) +
+          static_cast<size_t>(active_pipeline_) * static_cast<size_t>(num_total_bin_));
+        if (parent_num_bits_in_histogram_bins <= 16) {
+          CHECK_LE(smaller_num_bits_in_histogram_bins, 16);
+          CHECK_LE(larger_num_bits_in_histogram_bins, 16);
+        } else if (larger_num_bits_in_histogram_bins <= 16) {
+          CHECK_LE(smaller_num_bits_in_histogram_bins, 16);
+        }
+        FixSubtractDiscretizedMaskedKernel<<<FixSubtractMaskedGridX(), FIX_HISTOGRAM_BLOCK_SIZE, 0, current_stream()>>>(
+          num_total_bin_,
+          FixSubtractMaskedSubtractBlocks(),
+          cuda_feature_num_bins_.RawData(),
+          cuda_feature_hist_offsets_.RawData(),
+          cuda_feature_most_freq_bins_.RawData(),
+          cuda_need_fix_histogram_features_.RawData(),
+          cuda_need_fix_histogram_features_num_bin_aligned_.RawData(),
+          cuda_fix_mfb_mask_.RawDataReadOnly(),
+          cuda_smaller_leaf_splits,
+          cuda_larger_leaf_splits,
+          parent_num_bits_in_histogram_bins,
+          smaller_num_bits_in_histogram_bins,
+          larger_num_bits_in_histogram_bins,
+          change_buffer);
+        if (parent_num_bits_in_histogram_bins > 16 && larger_num_bits_in_histogram_bins <= 16) {
+          CopyChangedNumBitHistogram<<<num_subtract_blocks, SUBTRACT_BLOCK_SIZE, 0, current_stream()>>>(
+            num_total_bin_,
+            cuda_larger_leaf_splits,
+            change_buffer);
+        }
+        return;
+      }
       global_timer.Start("CUDAHistogramConstructor::FixHistogramDiscretizedKernel");
       if (need_fix_histogram_features_.size() > 0) {
         if (smaller_num_bits_in_histogram_bins <= 16) {
