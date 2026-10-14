@@ -586,8 +586,9 @@ struct FalcataPlan {
   // bit-identical.
   bool oob_node_table = true;  // key: oob_node_table
   // bagged training on the 4-bit compact view: the tiled fill runs its fused variant although the root (the bag) is
-  // not every row, only for the pair-joint code view it writes (pair_code5, pair_code_wide); the histogram of every
-  // row it accumulates is discarded and the root level builds the bag's histogram like any gathered level. Without
+  // not every row, only for the pair-joint code view it writes (pair_code5, pair_code_wide), and only for trees whose
+  // columns take that view (else the plain tiled fill); the histogram of every row it accumulates is discarded and
+  // the root level builds the bag's histogram like any gathered level. Without
   // it a bagged tree's fill writes the nibble view and every level takes the capped nibble pair-joint kernel. The
   // same rows and integer sums per histogram: bit-identical.
   bool bagged_code_view = true;  // key: bagged_code_view

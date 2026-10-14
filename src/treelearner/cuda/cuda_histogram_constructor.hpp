@@ -397,7 +397,8 @@ class CUDAHistogramConstructor {
    *  the tiled 4-bit fill (the caller guarantees the root leaf is every row: no bagging), in the root's bit format
    *  (root_hist_16bit) and under the packed per-block row bound of the constructor's (effective) quant bins. false
    *  clears the request. code_view_only (cuda_plan key bagged_code_view): the root leaf is NOT every row (bagging);
-   *  the fused fill runs only for the code view it writes, and its all-rows histogram is never used. */
+   *  the fused fill runs only for the code view it writes (and not at all where the tree's columns decline the
+   *  view: the plain tiled fill then), and its all-rows histogram is never used. */
   void RequestFusedRootHist(const bool request, const bool root_hist_16bit, const bool code_view_only = false) {
     fused_root_requested_ = request;
     fused_root_request_16bit_ = root_hist_16bit;
