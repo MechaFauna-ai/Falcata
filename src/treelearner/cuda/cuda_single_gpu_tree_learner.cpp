@@ -1248,6 +1248,29 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
   return depth_limited || HybridAggressiveEnv() || UseSelectiveGrowth();
 }
 
+void CUDASingleGPUTreeLearner::CheckMultiGPUFlowUsable(int num_splits_done) const {
+  if (fp_merge_state_ != nullptr &&
+      (num_splits_done != 0 || !HybridGrowthUsable() || has_categorical_feature_)) {
+    Log::Fatal(
+        "feature-parallel multi-GPU (tree_learner=feature) currently requires "
+        "the hybrid level flow: a depth-limited config "
+        "(2^max_depth <= num_leaves + 1), no categorical features and no "
+        "forced splits. Use tree_learner=serial (data-parallel) or num_gpu=1 "
+        "for this configuration.");
+  }
+  if (nccl_communicator_ != nullptr && config_->use_quantized_grad &&
+      (num_splits_done != 0 || !HybridGrowthUsable())) {
+    // quantized multi-GPU is only wired through the hybrid level flow (integer
+    // level all-reduce + global bit-width table); the classic per-split loop's
+    // quantized reduce is unverified and historically hung. Refuse clearly.
+    Log::Fatal(
+        "multi-GPU + quantized gradients requires the hybrid level flow, "
+        "which is unavailable for this configuration (needs a depth-limited "
+        "config: 2^max_depth <= num_leaves + 1, no forced splits). "
+        "Set quant_mode=none, adjust max_depth/num_leaves, or use num_gpu=1.");
+  }
+}
+
 bool CUDASingleGPUTreeLearner::UseSelectiveGrowth() const {
   // multi-GPU: selective grow-then-prune keeps its own host-side leaf bookkeeping, none of which is global
   if (nccl_communicator_ != nullptr) {
@@ -4349,26 +4372,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   bool pair_search_cached = false;
   bool selective_handled = false;
   bool batched_apply_ran = false;
-  if (fp_merge_state_ != nullptr &&
-      (num_splits_done != 0 || !HybridGrowthUsable() || has_categorical_feature_)) {
-    Log::Fatal(
-        "feature-parallel multi-GPU (tree_learner=feature) currently requires "
-        "the hybrid level flow: a depth-limited config "
-        "(2^max_depth <= num_leaves + 1), no categorical features and no "
-        "forced splits. Use tree_learner=serial (data-parallel) or num_gpu=1 "
-        "for this configuration.");
-  }
-  if (nccl_communicator_ != nullptr && config_->use_quantized_grad &&
-      (num_splits_done != 0 || !HybridGrowthUsable())) {
-    // quantized multi-GPU is only wired through the hybrid level flow (integer
-    // level all-reduce + global bit-width table); the classic per-split loop's
-    // quantized reduce is unverified and historically hung. Refuse clearly.
-    Log::Fatal(
-        "multi-GPU + quantized gradients requires the hybrid level flow, "
-        "which is unavailable for this configuration (needs a depth-limited "
-        "config: 2^max_depth <= num_leaves + 1, no forced splits). "
-        "Set quant_mode=none, adjust max_depth/num_leaves, or use num_gpu=1.");
-  }
+  CheckMultiGPUFlowUsable(num_splits_done);
   if (config_->use_quantized_grad && !(num_splits_done == 0 && HybridGrowthUsable() && !UseSelectiveGrowth())) {
     // every quantized flow but the level prefix reads the root sums on the host: a no-op unless BeforeTrain
     // deferred them (async_tree_start; TrainLevelWisePrefix reads them back itself)

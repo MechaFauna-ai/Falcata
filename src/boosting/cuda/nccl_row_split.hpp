@@ -39,6 +39,18 @@ inline NCCLRowRange NCCLRankRowRange(const data_size_t num_data, const int num_r
   return {static_cast<data_size_t>(start), static_cast<data_size_t>(end)};
 }
 
+// Whether the split leaves some rank without rows (num_data < num_ranks, or 9 rows over 4 ranks: 3, 3, 3, 0). An
+// empty rank cannot train: its score updater divides by its row count and its kernels launch empty grids, so
+// NCCLGBDT::Init refuses such a split.
+inline bool NCCLAnyEmptyRank(const data_size_t num_data, const int num_ranks) {
+  for (int rank = 0; rank < num_ranks; ++rank) {
+    if (NCCLRankRowRange(num_data, num_ranks, rank).num_data() == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace Falcata
 
 #endif  // FALCATA_SRC_BOOSTING_CUDA_NCCL_ROW_SPLIT_HPP_

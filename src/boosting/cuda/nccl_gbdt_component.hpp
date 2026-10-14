@@ -46,7 +46,6 @@ class NCCLGBDTComponent: public NCCLInfo {
   // num_ranks: the ranks that train on this machine (NCCLTopology::num_gpu()), over which the rows are split.
   void Init(const Config* config, const Dataset* train_data, const int num_tree_per_iteration, const bool boosting_on_gpu, const bool is_constant_hessian,
             const bool dense_rowdata_fits, const int num_ranks, FeatureParallelMergeState* fp_state = nullptr) {
-    num_gpu_in_node_ = num_ranks;
     if (fp_state != nullptr) {
       // feature-parallel: every rank holds the FULL row set; the parallelism
       // is over feature stripes inside the tree learner

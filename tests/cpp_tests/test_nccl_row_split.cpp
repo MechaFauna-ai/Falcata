@@ -11,6 +11,7 @@
 #include "../../src/boosting/cuda/nccl_row_split.hpp"
 
 using Falcata::data_size_t;
+using Falcata::NCCLAnyEmptyRank;
 using Falcata::NCCLMaxNumDataPerRank;
 using Falcata::NCCLRankRowRange;
 using Falcata::NCCLRowRange;
@@ -96,6 +97,30 @@ TEST(NCCLRowSplit, RanksPastTheLastRowAreEmptyNotNegative) {
   EXPECT_EQ(ranges[3].num_data(), 0);
   CheckedSplit(9, 4);  // chunk 3: 3, 3, 3, 0
   CheckedSplit(2, 8);
+}
+
+TEST(NCCLRowSplit, AnyEmptyRankFindsTheTailRanks) {
+  // the splits NCCLGBDT::Init refuses: some rank gets no rows
+  EXPECT_TRUE(NCCLAnyEmptyRank(5, 4));  // 2, 2, 1, 0
+  EXPECT_TRUE(NCCLAnyEmptyRank(9, 4));  // 3, 3, 3, 0
+  EXPECT_TRUE(NCCLAnyEmptyRank(2, 8));  // fewer rows than ranks
+  EXPECT_TRUE(NCCLAnyEmptyRank(0, 1));
+  // and the ones it accepts: every rank has rows
+  EXPECT_FALSE(NCCLAnyEmptyRank(10, 4));  // 3, 3, 3, 1
+  EXPECT_FALSE(NCCLAnyEmptyRank(4, 4));
+  EXPECT_FALSE(NCCLAnyEmptyRank(1, 1));
+  EXPECT_FALSE(NCCLAnyEmptyRank(1000001, 3));
+  EXPECT_FALSE(NCCLAnyEmptyRank(2147483000, 8));
+  // agrees with the ranges themselves
+  for (data_size_t n = 0; n <= 64; ++n) {
+    for (int ranks = 1; ranks <= 9; ++ranks) {
+      bool empty = false;
+      for (int rank = 0; rank < ranks; ++rank) {
+        empty = empty || NCCLRankRowRange(n, ranks, rank).num_data() == 0;
+      }
+      EXPECT_EQ(NCCLAnyEmptyRank(n, ranks), empty) << n << " rows, " << ranks << " ranks";
+    }
+  }
 }
 
 TEST(NCCLRowSplit, LargeRowCountsDoNotOverflow) {
