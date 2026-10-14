@@ -472,6 +472,24 @@ struct FalcataPlan {
   // a whole table). Blocks never exceed the largest leaf's row count, which
   // the overflow guard bounds. Bit-identical (integer sums).
   bool level_row_blocks = true;     // key: level_row_blocks
+  // level_row_blocks for the quantized dense batched construct (the per-column
+  // kernel: 8-bit columns, and 4-bit data where pair_hist does not run): on a
+  // level with several leaf pairs a thin leaf takes the largest leaf's rows per
+  // thread of the launched grid, capped at the grid formula's own target
+  // (batch_construct_min_rows_per_thread), instead of ceil(rows / grid rows), so
+  // it fills a few whole blocks and the others exit before zeroing their table;
+  // the large leaves of a shallow level keep their spread. Blocks never exceed
+  // the largest leaf's row count, which the grid's overflow guard bounds.
+  // Bit-identical (integer sums).
+  bool dense_level_row_blocks = true;  // key: dense_level_row_blocks
+  // pair_block_map for the quantized dense batched construct: a host-launched
+  // level with several pairs launches only the block rows that have rows
+  // (counted on the host by the kernel's own row grouping, incl.
+  // dense_level_row_blocks), mapped back to their pair and block row through
+  // the pairs' first-block prefix; a level with more pairs than one prefix
+  // holds launches one mapped grid per prefix-full of pairs. Same blocks with
+  // the same rows: bit-identical.
+  bool dense_block_map = true;      // key: dense_block_map
   // pair_hist on a leaf that holds every row (the root without bagging): its
   // index list is a permutation of all rows, so each position is read as that
   // row number without the index gather. Same rows per block, same rows in
@@ -517,6 +535,12 @@ struct FalcataPlan {
   // integer expressions per bin in the same bit-width cases, the fixed bin's
   // value used by its own subtract: bit-identical.
   bool fix_subtract_fused = true;   // key: fix_subtract_fused
+  // quantized level fix + subtract (where fix_subtract_fused does not run and some feature needs its most-frequent
+  // bin fixed): one launch whose subtract blocks skip the need-fix features' most-frequent bins and whose fix blocks
+  // (one per need-fix feature, as the fix kernel) fix that bin of the smaller leaf and subtract it into the larger
+  // leaf (or the bit-change buffer), instead of a fix kernel then a subtract kernel reading the same histograms.
+  // The same integer expressions per bin in the same bit-width cases: bit-identical.
+  bool fix_subtract_masked = true;  // key: fix_subtract_masked
   // host-launched batched level apply: each split's tree-structure update (child
   // leaf outputs, split info slots, hist pool pointers, smaller/larger leaf
   // structs) is written by warp 0 of one extra block of the partition kernel's
@@ -553,6 +577,36 @@ struct FalcataPlan {
   // the compiler batch the loads past the stores). Splits of more than 6143 chunks keep the original kernel. The same
   // integer prefix sums and child leaf metadata: bit-identical.
   bool aggregate_load_first = true;  // key: aggregate_load_first
+  // out-of-bag score pass of a tree whose device structure was freed by ToHost (bagging; DART re-scoring): every
+  // internal node's routing values (column, bin range and offset, most-frequent bin, missing bin, threshold, children,
+  // default direction) packed on the host into one record per node and uploaded with one copy into a buffer the
+  // dataset keeps, instead of five per-array allocations, copies and frees per pass; the traversal reads one record
+  // per level instead of chasing split feature -> column -> per-feature tables. Scalar-leaf trees without
+  // categorical splits, on the per-column view or the tree's packed view. The same bins, the same branch rule, the same leaf value added:
+  // bit-identical.
+  bool oob_node_table = true;  // key: oob_node_table
+  // bagged training on the 4-bit compact view: the tiled fill runs its fused variant although the root (the bag) is
+  // not every row, only for the pair-joint code view it writes (pair_code5, pair_code_wide); the histogram of every
+  // row it accumulates is discarded and the root level builds the bag's histogram like any gathered level. Without
+  // it a bagged tree's fill writes the nibble view and every level takes the capped nibble pair-joint kernel. The
+  // same rows and integer sums per histogram: bit-identical.
+  bool bagged_code_view = true;  // key: bagged_code_view
+  // the device bagging sample (cuda_bagging.cu) in three kernels instead of a flag pass, a three-kernel global prefix
+  // sum and a scatter: per-block kept counts (__syncthreads_count), one block's scan of the counts (and the bag count),
+  // and a scatter that recomputes each row's Philox draw and ranks it in its block by warp ballots. The same draws
+  // and the same [in-bag ascending | out-of-bag from the tail] index layout: bit-identical.
+  bool bagging_fused_scan = true;  // key: bagging_fused_scan
+  // multiclass softmax gradients (CUDAMulticlassSoftmax, num_class <= 32): the row's class scores stay in registers
+  // (a class capacity of 8, 16 or 32, the runtime class count guarding every unrolled step) instead of the row-major
+  // global scratch the kernel staged them in (num_class doubles per thread, uncoalesced, six passes). The same max,
+  // the same exponentials summed in class order, one division per class: bit-identical.
+  bool softmax_registers = true;  // key: softmax_registers
+  // binary logloss gradients (with or without sample and label weights): the response and hessian evaluated with ~16 FP64 operations per row (the
+  // exponential's tail in fp32, an fp32 reciprocal refined by one double Newton step) instead of ~50 (libdevice exp, a
+  // correctly rounded division), to a proven relative error bound; a row's floats are stored from it only when every
+  // double within the bound rounds to the same float (its distance to the nearest float rounding midpoint), otherwise
+  // the original double expression runs. The same stored floats: bit-identical.
+  bool gradient_fp64_lean = true;  // key: gradient_fp64_lean
   // quantized root sums (gradient/hessian totals of the tree's rows): one warp
   // per 1024-row chunk sums 32 rows per lane, instead of one 1024-thread block
   // per chunk with one row per thread and two block reductions. Each chunk's
@@ -626,6 +680,12 @@ struct FalcataPlan {
   // would have copied; a level whose sync kernel did not mirror falls back to the full copy. Removes the copy kernel
   // and its wait on the producer's stream from both per-level round trips. Same bytes: bit-identical.
   bool readback_fused = true;       // key: readback_fused
+  // sync_used_tasks for a level whose task list fits one sync block (up to NUM_TASKS_PER_SYNC_BLOCK tasks: narrow
+  // data, a few dozen features): the used-task sync kernel (one block per leaf role and pair, every task) replaces
+  // SyncBestSplitForLevelKernel there too, so that readback_fused's mirror of the leaf entries into the host staging
+  // engages on these shapes and the level's separate copy kernel (and its stream hand-off) goes. The same winner
+  // (see the kernel): bit-identical.
+  bool sync_used_narrow = true;     // key: sync_used_narrow
   // with readback_fused, a non-final level of the classic level loop (single GPU, scalar leaves): the level's 18-int
   // split info is written into the mapped staging by the aggregate kernel (either aggregate_load_first build,
   // the producer of the children's counts and data starts; the four sums come from the same CUDASplitInfo entry the
@@ -828,16 +888,24 @@ struct FalcataPlan {
     if (key == "pair_code5_tall") return &pair_code5_tall;
     if (key == "pair_code5_epilogue") return &pair_code5_epilogue;
     if (key == "level_row_blocks") return &level_row_blocks;
+    if (key == "dense_level_row_blocks") return &dense_level_row_blocks;
+    if (key == "dense_block_map") return &dense_block_map;
     if (key == "all_rows_direct") return &all_rows_direct;
     if (key == "apply_row_batch") return &apply_row_batch;
     if (key == "sync_used_tasks") return &sync_used_tasks;
     if (key == "sync_copy_batched") return &sync_copy_batched;
     if (key == "fix_subtract_fused") return &fix_subtract_fused;
+    if (key == "fix_subtract_masked") return &fix_subtract_masked;
     if (key == "apply_struct_fused") return &apply_struct_fused;
     if (key == "gap_copy_fused") return &gap_copy_fused;
     if (key == "apply_inner_rows") return &apply_inner_rows;
     if (key == "apply_genbit_rows") return &apply_genbit_rows;
     if (key == "aggregate_load_first") return &aggregate_load_first;
+    if (key == "oob_node_table") return &oob_node_table;
+    if (key == "bagged_code_view") return &bagged_code_view;
+    if (key == "bagging_fused_scan") return &bagging_fused_scan;
+    if (key == "softmax_registers") return &softmax_registers;
+    if (key == "gradient_fp64_lean") return &gradient_fp64_lean;
     if (key == "root_sums_warp") return &root_sums_warp;
     if (key == "minmax_warp") return &minmax_warp;
     if (key == "colmajor_split") return &colmajor_split;
@@ -848,6 +916,7 @@ struct FalcataPlan {
     if (key == "early_leaf_map") return &early_leaf_map;
     if (key == "readback_kernel") return &readback_kernel;
     if (key == "readback_fused") return &readback_fused;
+    if (key == "sync_used_narrow") return &sync_used_narrow;
     if (key == "split_counts_early") return &split_counts_early;
     if (key == "invalidate_async") return &invalidate_async;
     if (key == "level_apply_first") return &level_apply_first;

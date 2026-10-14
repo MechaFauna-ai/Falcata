@@ -9,6 +9,7 @@
 
 #include <Falcata/cuda/cuda_column_data.hpp>
 #include <Falcata/cuda/cuda_tree.hpp>
+#include <Falcata/falcata_plan.h>
 
 namespace Falcata {
 
@@ -658,6 +659,100 @@ __global__ void AddPredictionToScoreKernel(
   }
 }
 
+// cuda_plan key oob_node_table: one internal node's routing values, packed on the host from the tree's host arrays
+// and the dataset's per-feature tables (the values AddPredictionToScoreKernel reads through split feature -> column ->
+// per-feature arrays). Three 16-byte words, read with three vector loads per level.
+struct alignas(16) CUDAScoreNode {
+  int column;              // index into the per-column data pointers and bit types
+  uint32_t min_bin;        // the feature's bin range in the (possibly bundled) column
+  uint32_t max_bin;
+  uint32_t delta;          // offset - min_bin: bin - min_bin + offset == bin + delta (uint32 wrap)
+  uint32_t most_freq_bin;  // the feature-local bin of a row outside the range
+  uint32_t missing_bin;    // default_bin (missing type zero) or the feature-local max bin (missing type NaN)
+  uint32_t threshold;
+  uint32_t flags;          // kScoreNodeHasMissing | kScoreNodeDefaultLeft
+  int left_child;
+  int right_child;
+  int pad0;
+  int pad1;
+};
+static_assert(sizeof(CUDAScoreNode) == 48, "CUDAScoreNode is read as three 16-byte words");
+constexpr uint32_t kScoreNodeHasMissing = 1u;
+constexpr uint32_t kScoreNodeDefaultLeft = 2u;
+
+// AddPredictionToScoreKernel's scalar numerical traversal, reading one CUDAScoreNode per
+// level: the same bin, the same feature-local conversion, the same branch rule and the same leaf value.
+// USE_PACKED: the per-tree packed view (row-matrix nibbles, column-major nibbles or a sparse column's own buffer),
+// read exactly as AddPredictionToScoreKernel's packed variant reads it.
+template <bool USE_INDICES, bool USE_PACKED>
+__global__ void AddPredictionToScoreNodeTableKernel(
+  const data_size_t num_data,
+  uint8_t* const* cuda_data_by_column,
+  const uint8_t* cuda_column_bit_type,
+  const uint8_t* const* cuda_packed_column_ptr,
+  const int* cuda_packed_column_stride,
+  const uint8_t* cuda_packed_column_shift,
+  const uint8_t* cuda_packed_column_bit_type,
+  const data_size_t* cuda_used_indices,
+  const CUDAScoreNode* nodes,
+  const double* cuda_leaf_value,
+  double* score) {
+  const data_size_t inner_data_index = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
+  if (inner_data_index >= num_data) {
+    return;
+  }
+  const data_size_t data_index = USE_INDICES ? cuda_used_indices[inner_data_index] : inner_data_index;
+  const int4* words = reinterpret_cast<const int4*>(nodes);
+  int node = 0;
+  while (node >= 0) {
+    const int4 w0 = __ldg(words + 3 * node);
+    const int4 w1 = __ldg(words + 3 * node + 1);
+    const int4 w2 = __ldg(words + 3 * node + 2);
+    const int column = w0.x;
+    uint32_t bin = 0;
+    if (USE_PACKED) {
+      const uint8_t* base = cuda_packed_column_ptr[column];
+      const uint8_t packed_bit_type = cuda_packed_column_bit_type[column];
+      if (packed_bit_type == 4) {
+        const size_t byte_index = static_cast<size_t>(data_index) * static_cast<size_t>(cuda_packed_column_stride[column]);
+        bin = static_cast<uint32_t>((base[byte_index] >> cuda_packed_column_shift[column]) & 0xf);
+      } else if (packed_bit_type == kNibbleColumnBitType) {
+        bin = static_cast<uint32_t>((base[data_index >> 1] >> ((data_index & 1) << 2)) & 0xf);
+      } else if (packed_bit_type == 8) {
+        bin = static_cast<uint32_t>(base[data_index]);
+      } else if (packed_bit_type == 16) {
+        bin = static_cast<uint32_t>((reinterpret_cast<const uint16_t*>(base))[data_index]);
+      } else {
+        bin = static_cast<uint32_t>((reinterpret_cast<const uint32_t*>(base))[data_index]);
+      }
+    } else {
+      const uint8_t column_bit_type = cuda_column_bit_type[column];
+      const uint8_t* column_data = cuda_data_by_column[column];
+      if (column_bit_type == 8) {
+        bin = static_cast<uint32_t>(column_data[data_index]);
+      } else if (column_bit_type == kNibbleColumnBitType) {
+        bin = static_cast<uint32_t>((column_data[data_index >> 1] >> ((data_index & 1) << 2)) & 0xf);
+      } else if (column_bit_type == 16) {
+        bin = static_cast<uint32_t>((reinterpret_cast<const uint16_t*>(column_data))[data_index]);
+      } else if (column_bit_type == 32) {
+        bin = static_cast<uint32_t>((reinterpret_cast<const uint32_t*>(column_data))[data_index]);
+      }
+    }
+    const uint32_t min_bin = static_cast<uint32_t>(w0.y);
+    const uint32_t max_bin = static_cast<uint32_t>(w0.z);
+    bin = (bin >= min_bin && bin <= max_bin) ? bin + static_cast<uint32_t>(w0.w) : static_cast<uint32_t>(w1.x);
+    const uint32_t flags = static_cast<uint32_t>(w1.w);
+    bool go_left;
+    if ((flags & kScoreNodeHasMissing) != 0 && bin == static_cast<uint32_t>(w1.y)) {
+      go_left = (flags & kScoreNodeDefaultLeft) != 0;
+    } else {
+      go_left = bin <= static_cast<uint32_t>(w1.z);
+    }
+    node = go_left ? w2.x : w2.y;
+  }
+  score[data_index] += cuda_leaf_value[~node];
+}
+
 void CUDATree::LaunchAddPredictionToScoreKernel(
   const Dataset* data,
   const data_size_t* used_data_indices,
@@ -724,8 +819,70 @@ void CUDATree::LaunchAddPredictionToScoreKernel(
   // (still-populated, shrunk-to-n_internal) host arrays for the duration of this
   // launch, then free it again so the memory optimization is preserved. Stumps
   // (num_leaves_ <= 1) have no internal nodes and never enter the traversal.
-  const bool restore_tree_structure =
+  bool restore_tree_structure =
     num_leaves_ > 1 && cuda_split_feature_inner_.Size() == 0;
+  // cuda_plan key oob_node_table: a scalar numerical tree whose structure lives on the host only (the out-of-bag pass
+  // under bagging, DART re-scoring) is traversed from one packed node table instead of the five re-uploaded arrays
+  std::vector<CUDAScoreNode> host_score_nodes;
+  if (restore_tree_structure && FalcataPlan::Get().oob_node_table && num_cat_ == 0 &&
+      leaf_value_dim_ <= 1 && static_cast<int>(split_feature_inner_.size()) >= num_leaves_ - 1) {
+    const int num_nodes = num_leaves_ - 1;
+    host_score_nodes.resize(static_cast<size_t>(num_nodes));
+    for (int node = 0; node < num_nodes; ++node) {
+      const int8_t decision_type = decision_type_[node];
+      if ((decision_type & kCategoricalMask) > 0) {
+        host_score_nodes.clear();
+        break;
+      }
+      const int feature = split_feature_inner_[node];
+      const uint32_t min_bin = cuda_column_data->feature_min_bin(feature);
+      const uint32_t max_bin = cuda_column_data->feature_max_bin(feature);
+      const uint32_t offset = cuda_column_data->feature_offset(feature);
+      const int8_t missing_type = (decision_type >> 2) & 3;
+      CUDAScoreNode& rec = host_score_nodes[node];
+      rec.column = cuda_column_data->feature_to_column(feature);
+      rec.min_bin = min_bin;
+      rec.max_bin = max_bin;
+      rec.delta = offset - min_bin;
+      rec.most_freq_bin = cuda_column_data->feature_most_freq_bin(feature);
+      rec.missing_bin = missing_type == 1 ? cuda_column_data->feature_default_bin(feature) :
+                        (missing_type == 2 ? max_bin - min_bin + offset : 0u);
+      rec.threshold = threshold_in_bin_[node];
+      rec.flags = ((missing_type == 1 || missing_type == 2) ? kScoreNodeHasMissing : 0u) |
+                  ((decision_type & kDefaultLeftMask) > 0 ? kScoreNodeDefaultLeft : 0u);
+      rec.left_child = left_child_[node];
+      rec.right_child = right_child_[node];
+      rec.pad0 = 0;
+      rec.pad1 = 0;
+    }
+  }
+  if (!host_score_nodes.empty()) {
+    restore_tree_structure = false;
+    CUDAVector<uint8_t>* scratch = cuda_column_data->score_node_scratch();
+    const size_t table_bytes = host_score_nodes.size() * sizeof(CUDAScoreNode);
+    if (scratch->Size() < table_bytes) {
+      scratch->Resize(table_bytes);
+    }
+    CopyFromHostToCUDADevice<uint8_t>(scratch->RawData(), reinterpret_cast<const uint8_t*>(host_score_nodes.data()),
+                                      table_bytes, __FILE__, __LINE__);
+    const CUDAScoreNode* nodes = reinterpret_cast<const CUDAScoreNode*>(scratch->RawData());
+    if (packed_serves_oob) {
+      AddPredictionToScoreNodeTableKernel<true, true><<<num_blocks, num_threads_per_block_add_prediction_to_score_>>>(
+        num_data, nullptr, nullptr, cuda_column_data->cuda_packed_column_ptr(),
+        cuda_column_data->cuda_packed_column_stride(), cuda_column_data->cuda_packed_column_shift(),
+        cuda_column_data->cuda_packed_column_bit_type(), used_data_indices, nodes, cuda_leaf_value_.RawData(), score);
+    } else if (used_data_indices == nullptr) {
+      AddPredictionToScoreNodeTableKernel<false, false><<<num_blocks, num_threads_per_block_add_prediction_to_score_>>>(
+        num_data, cuda_column_data->cuda_data_by_column(), cuda_column_data->cuda_column_bit_type(), nullptr, nullptr,
+        nullptr, nullptr, nullptr, nodes, cuda_leaf_value_.RawData(), score);
+    } else {
+      AddPredictionToScoreNodeTableKernel<true, false><<<num_blocks, num_threads_per_block_add_prediction_to_score_>>>(
+        num_data, cuda_column_data->cuda_data_by_column(), cuda_column_data->cuda_column_bit_type(), nullptr, nullptr,
+        nullptr, nullptr, used_data_indices, nodes, cuda_leaf_value_.RawData(), score);
+    }
+    SynchronizeCUDADevice(__FILE__, __LINE__);
+    return;
+  }
   // Same treatment for the categorical arrays, on their own trigger: the
   // selective flow builds trees on host and leaves the device copies empty,
   // and a categorical decision would dereference the null bases. The classic

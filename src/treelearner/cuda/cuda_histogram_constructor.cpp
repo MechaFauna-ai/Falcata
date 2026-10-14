@@ -1255,7 +1255,8 @@ void CUDAHistogramConstructor::LaunchCompactFill(
           code_row_words,
           code5 ? code_bits : 0,
           &code5_written);
-        fused_root_ready_ = fused_root;
+        // cuda_plan key bagged_code_view: the histogram of every row is not the bagged root's; only the code view is kept
+        fused_root_ready_ = fused_root && !fused_root_code_view_only_;
         fused_root_bits16_ = fused_root_request_16bit_;
         code5_valid_ = fused_root && code5_written;
         code5_row_words_ = code_row_words;
@@ -2057,6 +2058,12 @@ void CUDAHistogramConstructor::InitFixMFBMask() {
     host_mask[pos + 1] = 1;
   }
   cuda_fix_mfb_mask_.InitFromHostVector(host_mask);
+  uint32_t widest_aligned = 0;
+  for (const uint32_t num_bin_aligned : need_fix_histogram_features_num_bin_aligend_) {
+    widest_aligned = std::max(widest_aligned, num_bin_aligned);
+  }
+  fix_subtract_masked_block_ = std::min<int>(FIX_HISTOGRAM_BLOCK_SIZE,
+    std::max<int>(kFixSubtractMaskedMinBlock, static_cast<int>(widest_aligned)));
 }
 
 void CUDAHistogramConstructor::SubtractHistogramForLeaf(

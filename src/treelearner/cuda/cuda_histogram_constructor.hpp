@@ -396,10 +396,12 @@ class CUDAHistogramConstructor {
   /*! \brief cuda_plan key fused_root_hist: ask the next BuildCompactView to accumulate the root histogram inside
    *  the tiled 4-bit fill (the caller guarantees the root leaf is every row: no bagging), in the root's bit format
    *  (root_hist_16bit) and under the packed per-block row bound of the constructor's (effective) quant bins. false
-   *  clears the request. */
-  void RequestFusedRootHist(const bool request, const bool root_hist_16bit) {
+   *  clears the request. code_view_only (cuda_plan key bagged_code_view): the root leaf is NOT every row (bagging);
+   *  the fused fill runs only for the code view it writes, and its all-rows histogram is never used. */
+  void RequestFusedRootHist(const bool request, const bool root_hist_16bit, const bool code_view_only = false) {
     fused_root_requested_ = request;
     fused_root_request_16bit_ = root_hist_16bit;
+    fused_root_code_view_only_ = request && code_view_only;
   }
   /*! \brief cuda_plan key pair_code5: whether this tree's fused fill may write the code view instead of the nibble
    *  view; the learner clears it for trees whose split path reads the nibble view anyway (the one-byte split view
@@ -903,6 +905,23 @@ class CUDAHistogramConstructor {
     return FixSubtractSmallLeafSubtractBlocks() + (num_need_fix + kFixGroupFeatures - 1) / kFixGroupFeatures;
   }
 
+  /*! \brief cuda_plan key fix_subtract_masked: the quantized level fix + subtract as one launch (subtract blocks
+   *  skip the need-fix features' most-frequent bins, cuda_fix_mfb_mask_; one fix block per need-fix feature fixes
+   *  the smaller leaf's bin and subtracts it). Only where some feature needs a fix: otherwise it is the subtract. */
+  bool FixSubtractMaskedEnabled() const {
+    return use_quantized_grad_ && !need_fix_histogram_features_.empty() && FalcataPlan::Get().fix_subtract_masked;
+  }
+  int FixSubtractMaskedSubtractBlocks() const {
+    return (num_total_bin_ + fix_subtract_masked_block_ - 1) / fix_subtract_masked_block_;
+  }
+  int FixSubtractMaskedGridX() const {
+    return FixSubtractMaskedSubtractBlocks() + static_cast<int>(need_fix_histogram_features_.size());
+  }
+  void LaunchFixSubtractDiscretizedMaskedKernel(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    const CUDAHybridGraphLoopStateOpt gstate);
+
   void LaunchFixSubtractHistogramSmallLeafBatchedKernel(
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
@@ -1033,6 +1052,10 @@ class CUDAHistogramConstructor {
    *  fused small-leaf fix+subtract kernel's subtract blocks skip these (the fix
    *  blocks own them) */
   CUDAVector<uint8_t> cuda_fix_mfb_mask_;
+  /*! \brief fix_subtract_masked's block size: the widest need-fix feature's power-of-two bin count, at least
+   *  kFixSubtractMaskedMinBlock and at most FIX_HISTOGRAM_BLOCK_SIZE (the fix loop strides over wider features) */
+  static constexpr int kFixSubtractMaskedMinBlock = 128;
+  int fix_subtract_masked_block_ = FIX_HISTOGRAM_BLOCK_SIZE;
   /*! \brief per-tree bin-level used mask (1 = bin belongs to a feature in this
    *  tree's feature_fraction sample). The batched fix/subtract kernels and the
    *  batched construct's shared-histogram zero/merge skip unused bins: nothing
@@ -1191,6 +1214,7 @@ class CUDAHistogramConstructor {
    *  fill produced the scratch (and in which format), the scratch (num_total_bin_ int64 or int32 entries) and the
    *  fused fill's per-tree metadata (first local bin of each slot's two columns, then each local bin's position). */
   bool fused_root_requested_ = false;
+  bool fused_root_code_view_only_ = false;
   bool fused_root_request_16bit_ = false;
   bool fused_root_ready_ = false;
   bool fused_root_bits16_ = false;
