@@ -1434,10 +1434,12 @@ the bound; intermediate products must stay in double's normal range). Fallback s
 original path. A standalone check over 5.6 G random (score, label, sigmoid) triples found no float mismatch at the
 2^-42 margin nor at 2^-45 (3.2 G more with random label and sample weights: none); mismatches start at 2^-49, consistent with the 2^-44 bound.
 
-**`softmax_registers` (multiclass softmax, at most 16 classes).** The kernel staged each row's class scores in a
+**`softmax_registers` (multiclass softmax, at most 32 classes).** The kernel staged each row's class scores in a
 row-major global double scratch (num_class doubles per thread, uncoalesced, six passes) for `SoftmaxCUDA`; with the key
-they stay in registers (capacity 8 or 16, the runtime class count guarding every unrolled step: 44 / 60 registers,
-`__launch_bounds__(1024)`), with the same operations in the same order. More classes keep the scratch kernel.
+they stay in registers (capacity 8, 16 or 32, the runtime class count guarding every unrolled step: 44 / 60 / 64
+registers, `__launch_bounds__(1024)`; at 32 part of the array spills to thread-interleaved local memory, 120 bytes,
+which stays coalesced), with the same operations in the same order. More classes keep the scratch kernel. 24 classes,
+1M rows (nsys, 30 rounds): the kernel 1645 -> 1063 us per round, md5-identical.
 A lean softmax was examined and not built: the hessian factor p (1 - p) and the label's p - 1 cancel when p -> 1, and
 on covtype 59% of warps hold such a row (1 - p_max < 3e-5) by round 300, 100% by round 600, so the fallback would run
 in nearly every warp.

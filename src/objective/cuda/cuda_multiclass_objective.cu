@@ -138,15 +138,20 @@ static bool LaunchMulticlassSoftmaxRegisters(const int num_blocks, const double*
 void CUDAMulticlassSoftmax::LaunchGetGradientsKernel(const double* scores, score_t* gradients, score_t* hessians) const {
   const int num_blocks = (num_data_ + GET_GRADIENTS_BLOCK_SIZE_MULTICLASS - 1) / GET_GRADIENTS_BLOCK_SIZE_MULTICLASS;
   if (FalcataPlan::Get().softmax_registers) {
-    // class capacities 8 / 16: wider class counts keep the scratch kernel (register pressure)
+    // class capacities 8 / 16 / 32 (at 32 the 64-register cap of __launch_bounds__(1024) spills part of the array to
+    // thread-interleaved local memory, still coalesced); wider class counts keep the scratch kernel
     const bool launched = cuda_weights_ == nullptr ?
       (LaunchMulticlassSoftmaxRegisters<false, 8>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_, num_class_,
                                                   num_data_, gradients, hessians) ||
        LaunchMulticlassSoftmaxRegisters<false, 16>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_, num_class_,
+                                                   num_data_, gradients, hessians) ||
+       LaunchMulticlassSoftmaxRegisters<false, 32>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_, num_class_,
                                                    num_data_, gradients, hessians)) :
       (LaunchMulticlassSoftmaxRegisters<true, 8>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_, num_class_,
                                                  num_data_, gradients, hessians) ||
        LaunchMulticlassSoftmaxRegisters<true, 16>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_, num_class_,
+                                                  num_data_, gradients, hessians) ||
+       LaunchMulticlassSoftmaxRegisters<true, 32>(num_blocks, scores, cuda_labels_, cuda_weights_, factor_, num_class_,
                                                   num_data_, gradients, hessians));
     if (launched) {
       return;

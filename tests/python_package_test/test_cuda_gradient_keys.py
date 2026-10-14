@@ -6,7 +6,7 @@ double within its error bound rounds to the same float, else the original double
 (multiclass: the row's class scores in registers instead of a global scratch) change only how the same stored floats
 are computed, so the trained model must be byte-identical with each key off. The sweep covers sigmoid values that
 move many rows into the lean path's fallbacks (large |x|, the hessian's cancellation), un-quantized and quantized
-gradients, sample weights and is_unbalance (the weighted lean variants), and class counts on both register capacities and
+gradients, sample weights and is_unbalance (the weighted lean variants), and class counts on every register capacity and
 above them (the scratch kernel).
 """
 
@@ -47,6 +47,7 @@ def _model_md5(params, X, y, rounds, weight=None):
         ("multiclass", {"num_class": 7}, False, True),
         ("multiclass", {"num_class": 12}, True, False),
         ("multiclass", {"num_class": 20}, True, False),
+        ("multiclass", {"num_class": 40}, True, False),
     ],
 )
 def test_gradient_keys_are_bit_identical_cuda(objective, extra, quantized, weighted):
