@@ -244,6 +244,9 @@ class CUDADataPartition: public NCCLInfo {
 
   void UpdateTrainScore(const Tree* tree, double* cuda_scores);
 
+  /*! \brief The bag's rows back in bag order in the index array (the next bagged tree starts from that order) */
+  void RestoreBagOrder();
+
   void SetUsedDataIndices(const data_size_t* used_indices, const data_size_t num_used_indices);
 
 

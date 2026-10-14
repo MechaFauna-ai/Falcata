@@ -1157,6 +1157,10 @@ void CUDASingleGPUTreeLearner::AddPredictionToScore(const Tree* tree, double* ou
   cuda_data_partition_->UpdateTrainScore(tree, out_score);
 }
 
+void CUDASingleGPUTreeLearner::RestoreBagOrder() {
+  cuda_data_partition_->RestoreBagOrder();
+}
+
 namespace {
 
 // FALCATA_DEBUG=aggressive opts into plain level batching in budget-limited

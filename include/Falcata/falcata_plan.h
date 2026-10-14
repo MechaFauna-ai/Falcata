@@ -615,6 +615,28 @@ struct FalcataPlan {
   // double within the bound rounds to the same float (its distance to the nearest float rounding midpoint), otherwise
   // the original double expression runs. The same stored floats: bit-identical.
   bool gradient_fp64_lean = true;  // key: gradient_fp64_lean
+  // random forest (boosting=rf) on the CUDA device with the CUDA objective (ObjectiveFunction::CreateObjectiveFunction
+  // excluded rf from it), so the forest boosts on the device like gbdt: the constant gradients and hessians are
+  // computed once at Init by the objective's kernel from the init score and stay in device memory (no synchronous
+  // upload of both arrays per tree), the train and validation scores live on the device only (the host mirror cost a
+  // full-column copy back after each of the four score operations per tree), and the metrics take the CUDA metric
+  // path as gbdt does. Leaf renewal (L1, quantile) reads a device column holding the init score, the residual base
+  // rf renews against. Read at objective and metric creation, before the learner's Init resolves the plan. Objectives
+  // without a CUDA kernel, and GOSS, keep the host objective as before. Same init score, gradients and trees where the
+  // objective's kernel and the host objective round alike: the rf section of docs/performance.md lists the shapes.
+  bool rf_device_objective = true;  // key: rf_device_objective
+  // random forest with the device objective (rf_device_objective): the train score (the running average of the trees,
+  // which only metrics, predictions on the training data and rollback read; a forest's gradients never do) is not
+  // updated per tree. The trees are queued and replayed into it in order -- rescale to the sum, every row walked
+  // through the tree, rescale to the average -- when a reader asks for it (training metrics, GetPredictAt(0),
+  // GetTrainingScore, rollback, refit, reset of the training data); from the first such read on, the trees are added
+  // per tree as before. The in-bag rows take the same leaf by the walk as by the learner's partition (both route on
+  // the same bins), so the same values are added in the same order: bit-identical scores. The in-bag update also put
+  // the bag's rows back in bag order, which the next tree of the same bag (the other classes, bagging_freq > 1)
+  // starts its partition from: that copy still runs per tree (TreeLearner::RestoreBagOrder). Off on data whose
+  // per-column view was not kept (the walk of an older tree needs it), multi-GPU, linear trees and for stumps
+  // (added at once).
+  bool rf_lazy_train_score = true;  // key: rf_lazy_train_score
   // quantized root sums (gradient/hessian totals of the tree's rows): one warp
   // per 1024-row chunk sums 32 rows per lane, instead of one 1024-thread block
   // per chunk with one row per thread and two block reductions. Each chunk's
@@ -915,6 +937,8 @@ struct FalcataPlan {
     if (key == "bagging_fused_scan") return &bagging_fused_scan;
     if (key == "softmax_registers") return &softmax_registers;
     if (key == "gradient_fp64_lean") return &gradient_fp64_lean;
+    if (key == "rf_device_objective") return &rf_device_objective;
+    if (key == "rf_lazy_train_score") return &rf_lazy_train_score;
     if (key == "root_sums_warp") return &root_sums_warp;
     if (key == "minmax_warp") return &minmax_warp;
     if (key == "colmajor_split") return &colmajor_split;
@@ -956,6 +980,29 @@ struct FalcataPlan {
    * both parse the same string so the plan is consistent across phases.
    */
   static void ResolveFromConfig(const Config& config) {
+    bool overridden = false;
+    const FalcataPlan plan = FromConfig(config, &overridden);
+    Mutable() = plan;
+    if (overridden) {
+      Log::Info("cuda_plan: hybrid=%d selective=%d one_sync=%d graph_loop=%d graph_quant=%d "
+                "compact_quant=%d construct_jit=%d row_batch=%d fast_rowdata=%d rowdata_4bit=%d "
+                "gpu_construct=%d efb_precheck=%d batch_kernels=%d batch_apply=%d "
+                "batch_reghist=%d batch_wide=%d gh_interleave=%d split_packed_read=%d "
+                "small_leaf_construct=%d",
+                plan.hybrid, plan.selective, plan.one_sync, plan.graph_loop, plan.graph_quant,
+                plan.compact_quant, plan.construct_jit, plan.row_batch, plan.fast_rowdata, plan.rowdata_4bit,
+                plan.gpu_construct, plan.efb_precheck, plan.batch_kernels, plan.batch_apply,
+                plan.batch_reghist, plan.batch_wide, plan.gh_interleave, plan.split_packed_read,
+                plan.small_leaf_construct);
+    }
+  }
+
+  /*!
+   * \brief The plan a Config's ``cuda_plan`` resolves to, without installing it as the global plan: for the
+   * decisions taken before the learner's Init resolves it (the objective and metric factories, rf_device_objective).
+   * \param overridden_out set to whether any key was given (may be nullptr)
+   */
+  static FalcataPlan FromConfig(const Config& config, bool* overridden_out = nullptr) {
     FalcataPlan plan;  // defaults = the auto plan
     plan.quant_training = config.ResolvedQuantMode() != QuantMode::kNone;
     std::string spec = Common::Trim(config.cuda_plan);
@@ -1035,7 +1082,7 @@ struct FalcataPlan {
       } else {
         Log::Fatal("cuda_plan: bad value \"%s\" for key \"%s\" (expected on|off)",
                    kv[1].c_str(), kv[0].c_str());
-        return;
+        return plan;
       }
       bool* slot = plan.KeySlot(kv[0]);
       if (slot == nullptr) {
@@ -1054,19 +1101,10 @@ struct FalcataPlan {
         plan.construct_jit = false;
       }
     }
-    Mutable() = plan;
-    if (overridden) {
-      Log::Info("cuda_plan: hybrid=%d selective=%d one_sync=%d graph_loop=%d graph_quant=%d "
-                "compact_quant=%d construct_jit=%d row_batch=%d fast_rowdata=%d rowdata_4bit=%d "
-                "gpu_construct=%d efb_precheck=%d batch_kernels=%d batch_apply=%d "
-                "batch_reghist=%d batch_wide=%d gh_interleave=%d split_packed_read=%d "
-                "small_leaf_construct=%d",
-                plan.hybrid, plan.selective, plan.one_sync, plan.graph_loop, plan.graph_quant,
-                plan.compact_quant, plan.construct_jit, plan.row_batch, plan.fast_rowdata, plan.rowdata_4bit,
-                plan.gpu_construct, plan.efb_precheck, plan.batch_kernels, plan.batch_apply,
-                plan.batch_reghist, plan.batch_wide, plan.gh_interleave, plan.split_packed_read,
-                plan.small_leaf_construct);
+    if (overridden_out != nullptr) {
+      *overridden_out = overridden;
     }
+    return plan;
   }
 };
 

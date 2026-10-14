@@ -1287,6 +1287,26 @@ def build_cells():
         equal_to="bigrow/quant64-bagged",
     )
 
+    # random forest (boosting=rf): the device objective (rf_device_objective: constant gradients computed once on the
+    # device, no host score mirror, the CUDA metrics) and the deferred train score (rf_lazy_train_score) against the
+    # host objective path, on binary stochastic, 5-class fixedpoint and L1 (leaf renewal against the init score
+    # column) bagged forests. The bases are fingerprinted on the build before the keys (the host objective path).
+    rf_bag = {"boosting": "rf", "bagging_fraction": 0.632, "bagging_freq": 1, "num_leaves": 127, "max_depth": 8,
+              "min_data_in_leaf": 5}
+    for base, profile, base_params in [
+        ("imbalanced/rf-bagged", "imbalanced", rf_bag),
+        ("graph/rf-fixedpoint-bagged", "graph", {**rf_bag, "quant_mode": "fixedpoint"}),
+        ("dense/rf-l1-bagged", "dense", {**rf_bag, "objective": "regression_l1"}),
+    ]:
+        cell(base, profile, base_params)
+        for key in ["rf_device_objective", "rf_lazy_train_score"]:
+            cell(
+                f"{profile}/flip-{key}-{base.split('/', 1)[1]}",
+                profile,
+                {**base_params, "cuda_plan": f"auto,{key}:off"},
+                equal_to=base,
+            )
+
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "duplicate cell ids"
     by_id = {c["id"]: c for c in cells}

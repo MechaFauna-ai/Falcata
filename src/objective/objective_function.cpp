@@ -5,6 +5,7 @@
  */
 
 #include <Falcata/objective_function.h>
+#include <Falcata/falcata_plan.h>
 
 #include <string>
 
@@ -74,9 +75,11 @@ ObjectiveFunction* ObjectiveFunction::CreateObjectiveFunctionCUDA(const std::str
 
 ObjectiveFunction* ObjectiveFunction::CreateObjectiveFunction(const std::string& type, const Config& config) {
   #ifdef USE_CUDA
+  // cuda_plan key rf_device_objective: a random forest boosts on the device too (its constant gradients from the
+  // objective's kernel, once); off, rf keeps the host objective
   if (config.device_type == std::string("cuda") &&
       config.data_sample_strategy != std::string("goss") &&
-      config.boosting != std::string("rf")) {
+      (config.boosting != std::string("rf") || FalcataPlan::FromConfig(config).rf_device_objective)) {
     return CreateObjectiveFunctionCUDA(type, config);
   } else {
   #endif  // USE_CUDA
