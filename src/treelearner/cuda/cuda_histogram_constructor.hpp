@@ -903,6 +903,23 @@ class CUDAHistogramConstructor {
     return FixSubtractSmallLeafSubtractBlocks() + (num_need_fix + kFixGroupFeatures - 1) / kFixGroupFeatures;
   }
 
+  /*! \brief cuda_plan key fix_subtract_masked: the quantized level fix + subtract as one launch (subtract blocks
+   *  skip the need-fix features' most-frequent bins, cuda_fix_mfb_mask_; one fix block per need-fix feature fixes
+   *  the smaller leaf's bin and subtracts it). Only where some feature needs a fix: otherwise it is the subtract. */
+  bool FixSubtractMaskedEnabled() const {
+    return use_quantized_grad_ && !need_fix_histogram_features_.empty() && FalcataPlan::Get().fix_subtract_masked;
+  }
+  int FixSubtractMaskedSubtractBlocks() const {
+    return (num_total_bin_ + FIX_HISTOGRAM_BLOCK_SIZE - 1) / FIX_HISTOGRAM_BLOCK_SIZE;
+  }
+  int FixSubtractMaskedGridX() const {
+    return FixSubtractMaskedSubtractBlocks() + static_cast<int>(need_fix_histogram_features_.size());
+  }
+  void LaunchFixSubtractDiscretizedMaskedKernel(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    const CUDAHybridGraphLoopStateOpt gstate);
+
   void LaunchFixSubtractHistogramSmallLeafBatchedKernel(
     const CUDAHybridPairDescriptor* pair_descs,
     const int num_pairs,
