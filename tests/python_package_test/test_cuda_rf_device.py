@@ -70,12 +70,21 @@ def _train(params, X, y, rounds, valid=None, eval_train=False, read_train_at=(),
     train_reads = []
     callbacks = [flc.record_evaluation(evals)] if valid_sets else []
     if read_train_at:
+
         def read_train(env):
             if env.iteration + 1 in read_train_at:
                 train_reads.append(np.array(env.model._Booster__inner_predict(data_idx=0), dtype=np.float64))
+
         callbacks.append(read_train)
-    booster = flc.train(params, ds, num_boost_round=rounds, valid_sets=valid_sets or None,
-                        valid_names=valid_names or None, callbacks=callbacks, keep_training_booster=True)
+    booster = flc.train(
+        params,
+        ds,
+        num_boost_round=rounds,
+        valid_sets=valid_sets or None,
+        valid_names=valid_names or None,
+        callbacks=callbacks,
+        keep_training_booster=True,
+    )
     if rollback_at is not None:
         while booster.current_iteration() > rollback_at:
             booster.rollback_one_iter()
@@ -126,7 +135,7 @@ def _assert_same(runs):
         assert run["model"] == ref["model"], name
         np.testing.assert_array_equal(run["pred"], ref["pred"], err_msg=name)
         assert len(run["train_reads"]) == len(ref["train_reads"]), name
-        for got, want in zip(run["train_reads"], ref["train_reads"]):
+        for got, want in zip(run["train_reads"], ref["train_reads"], strict=True):
             np.testing.assert_array_equal(got, want, err_msg=name)
     # the device paths evaluate with the CUDA metrics where there is one, the host path with the host metrics: same
     # scores, sums in another order (the host metrics' OpenMP reductions are not run-to-run fixed either)
@@ -140,7 +149,7 @@ def _assert_same(runs):
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize(
-    "objective, kind, quant_mode, extra",
+    ("objective", "kind", "quant_mode", "extra"),
     [
         ("binary", "binary", "stochastic", None),
         ("binary", "binary", "fixedpoint", {"feature_fraction": 0.7}),
@@ -165,7 +174,7 @@ def test_rf_device_objective_same_forest_cuda(objective, kind, quant_mode, extra
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize(
-    "objective, kind, metric",
+    ("objective", "kind", "metric"),
     [
         ("binary", "binary", "binary_logloss,auc"),
         ("multiclass", "multiclass", "multi_logloss,multi_error"),
@@ -178,13 +187,14 @@ def test_rf_device_objective_metric_and_valid_cuda(objective, kind, metric):
     params = _params(objective, "stochastic", {"metric": metric})
     _assert_same(_run_plans(params, X, y, 12, valid=valid))
     # the training metrics read the (deferred) train score every round
-    _assert_same(_run_plans(_params(objective, "stochastic", {"metric": metric}), X, y, 12, valid=valid,
-                            eval_train=True))
+    _assert_same(
+        _run_plans(_params(objective, "stochastic", {"metric": metric}), X, y, 12, valid=valid, eval_train=True)
+    )
 
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize(
-    "objective, kind, extra",
+    ("objective", "kind", "extra"),
     [
         ("binary", "binary", {"feature_fraction": 0.6}),
         ("multiclass", "multiclass", {"quant_mode": "fixedpoint"}),
@@ -209,7 +219,7 @@ def _numpy_metric(metric, y, pred):
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize(
-    "objective, label, metric, extra",
+    ("objective", "label", "metric", "extra"),
     [
         ("binary", "binary", "binary_logloss", {"data_sample_strategy": "goss"}),
         ("tweedie", "count", "l2", {"bagging_fraction": 0.632, "bagging_freq": 1}),
@@ -226,12 +236,24 @@ def test_rf_metrics_follow_the_objective_cuda(objective, label, metric, extra):
     rows = 30011
     X = rng.standard_normal((rows, 12))
     z = X[:, 0] - 0.5 * X[:, 1] + np.sin(X[:, 2]) + 0.3 * rng.standard_normal(rows)
-    y = {"binary": (z > 0).astype(float), "prob": 1 / (1 + np.exp(-z)),
-         "count": rng.poisson(np.exp(0.3 * z)).astype(float)}[label]
+    y = {
+        "binary": (z > 0).astype(float),
+        "prob": 1 / (1 + np.exp(-z)),
+        "count": rng.poisson(np.exp(0.3 * z)).astype(float),
+    }[label]
     results = {}
     for name, plan in PLANS.items():
-        params = {"boosting": "rf", "device_type": "cuda", "objective": objective, "metric": metric,
-                  "num_leaves": 31, "verbose": -1, "seed": 7, "cuda_plan": plan, **extra}
+        params = {
+            "boosting": "rf",
+            "device_type": "cuda",
+            "objective": objective,
+            "metric": metric,
+            "num_leaves": 31,
+            "verbose": -1,
+            "seed": 7,
+            "cuda_plan": plan,
+            **extra,
+        }
         ds = flc.Dataset(X, label=y, free_raw_data=False)
         valid = flc.Dataset(X[:5000], label=y[:5000], reference=ds)
         booster = flc.Booster(params, ds)
@@ -241,8 +263,9 @@ def test_rf_metrics_follow_the_objective_cuda(objective, label, metric, extra):
         pred = booster.predict(X)
         results[name] = (booster.eval_train()[0][2], booster.eval_valid()[0][2])
         np.testing.assert_allclose(results[name][0], _numpy_metric(metric, y, pred), rtol=1e-6, err_msg=name)
-        np.testing.assert_allclose(results[name][1], _numpy_metric(metric, y[:5000], pred[:5000]), rtol=1e-6,
-                                   err_msg=name)
+        np.testing.assert_allclose(
+            results[name][1], _numpy_metric(metric, y[:5000], pred[:5000]), rtol=1e-6, err_msg=name
+        )
     for name, values in results.items():
         np.testing.assert_allclose(values, results["off"], rtol=1e-9, err_msg=name)
 
@@ -261,9 +284,11 @@ def test_rf_shuffle_models_with_deferred_trees_cuda():
         booster.shuffle_models()
         for _ in range(2):
             booster.update()
-        runs[name] = (np.array(booster._Booster__inner_predict(data_idx=0), dtype=np.float64),
-                      np.asarray(booster.predict(X[:5000]), dtype=np.float64),
-                      hashlib.md5(_strip_parameters(booster.model_to_string()).encode()).hexdigest())
+        runs[name] = (
+            np.array(booster._Booster__inner_predict(data_idx=0), dtype=np.float64),
+            np.asarray(booster.predict(X[:5000]), dtype=np.float64),
+            hashlib.md5(_strip_parameters(booster.model_to_string()).encode()).hexdigest(),
+        )
     for name, (train, pred, model) in runs.items():
         np.testing.assert_array_equal(train, runs["off"][0], err_msg=name)
         np.testing.assert_array_equal(pred, runs["off"][1], err_msg=name)

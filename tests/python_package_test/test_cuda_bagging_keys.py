@@ -52,7 +52,7 @@ def _data(kind, rows, cols, seed):
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize(
-    "kind, cols, objective, frac, feature_fraction, leaves, depth",
+    ("kind", "cols", "objective", "frac", "feature_fraction", "leaves", "depth"),
     [
         ("fewbin", 7, "regression", 0.3, 1.0, 31, 5),
         ("fewbin", 120, "regression", 0.6, 0.2, 255, 8),

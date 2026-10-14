@@ -37,8 +37,9 @@ def _wide_sparse_rows(num_uniform, num_rows, num_sparse=200, seed=0):
     rng = np.random.default_rng(seed)
     X = np.empty((num_rows, num_uniform + num_sparse), np.float32)
     X[:, :num_uniform] = rng.integers(0, 5, size=(num_rows, num_uniform))
-    X[:, num_uniform:] = np.where(rng.random((num_rows, num_sparse)) < 0.95, 2,
-                                  rng.choice(np.array([0, 1, 3, 4]), size=(num_rows, num_sparse)))
+    X[:, num_uniform:] = np.where(
+        rng.random((num_rows, num_sparse)) < 0.95, 2, rng.choice(np.array([0, 1, 3, 4]), size=(num_rows, num_sparse))
+    )
     y = 0.5 + 0.05 * (X[:, 0] - 2) + 0.05 * (X[:, num_uniform - 1] - 2) + 0.1 * rng.standard_normal(num_rows)
     return X, np.clip(y, 0, 1).astype(np.float32)
 
@@ -76,8 +77,17 @@ TOLERANCE = {"fixedpoint": 0.005, "stochastic": 0.1}
 @pytest.mark.parametrize("shape", [(700, 5_000), (600, 20_000)])
 def test_quantized_wide_sparse_rows_match_data(shape, quant_mode, plan):
     X, y = _wide_sparse_rows(*shape)
-    params = {"objective": "regression", "device_type": "cuda", "quant_mode": quant_mode, "num_leaves": 15,
-              "min_data_in_leaf": 100, "learning_rate": 1.0, "verbosity": -1, "seed": 7, "cuda_plan": plan}
+    params = {
+        "objective": "regression",
+        "device_type": "cuda",
+        "quant_mode": quant_mode,
+        "num_leaves": 15,
+        "min_data_in_leaf": 100,
+        "learning_rate": 1.0,
+        "verbosity": -1,
+        "seed": 7,
+        "cuda_plan": plan,
+    }
     errors = _node_errors(_train(params, X, y, 1), X, y, 1.0)
     assert max(errors) < TOLERANCE[quant_mode], sorted(errors)[-5:]
 
@@ -86,8 +96,17 @@ def test_quantized_wide_sparse_rows_match_data(shape, quant_mode, plan):
 @pytest.mark.parametrize("quant_mode", ["stochastic", "fixedpoint"])
 def test_quantized_wide_sparse_rows_bounded_predictions(quant_mode, plan):
     X, y = _wide_sparse_rows(700, 5_000)
-    params = {"objective": "regression", "device_type": "cuda", "quant_mode": quant_mode, "num_leaves": 31,
-              "min_data_in_leaf": 20, "learning_rate": 0.1, "verbosity": -1, "seed": 7, "cuda_plan": plan}
+    params = {
+        "objective": "regression",
+        "device_type": "cuda",
+        "quant_mode": quant_mode,
+        "num_leaves": 31,
+        "min_data_in_leaf": 20,
+        "learning_rate": 0.1,
+        "verbosity": -1,
+        "seed": 7,
+        "cuda_plan": plan,
+    }
     for boosting in ["gbdt", "rf"]:
         p = dict(params, boosting=boosting)
         if boosting == "rf":
@@ -95,11 +114,20 @@ def test_quantized_wide_sparse_rows_bounded_predictions(quant_mode, plan):
         bst = _train(p, X, y, 20)
         assert bst.num_trees() == 20
         pred = bst.predict(X)
-        assert -0.5 < pred.min() and pred.max() < 1.5, (boosting, pred.min(), pred.max())
+        assert -0.5 < pred.min(), (boosting, pred.min(), pred.max())
+        assert pred.max() < 1.5, (boosting, pred.min(), pred.max())
 
 
 def test_non_quantized_wide_sparse_rows_match_data():
     X, y = _wide_sparse_rows(700, 5_000)
-    params = {"objective": "regression", "device_type": "cuda", "quant_mode": "none", "num_leaves": 15,
-              "min_data_in_leaf": 100, "learning_rate": 1.0, "verbosity": -1, "seed": 7}
+    params = {
+        "objective": "regression",
+        "device_type": "cuda",
+        "quant_mode": "none",
+        "num_leaves": 15,
+        "min_data_in_leaf": 100,
+        "learning_rate": 1.0,
+        "verbosity": -1,
+        "seed": 7,
+    }
     assert max(_node_errors(_train(params, X, y, 1), X, y, 1.0)) < 1e-6

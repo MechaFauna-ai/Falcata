@@ -44,8 +44,15 @@ SHAPES = {
     "zeros_and_nans": (40_001, 40, 0.5, 0.8, 0.3, 0, {"feature_fraction": 0.5}),
     "four_bit": (40_001, 50, 0.6, 0.8, 0.0, 4, {"quant_mode": "fixedpoint"}),
     "few_values": (40_001, 60, 0.2, 0.6, 0.0, 4, {"num_leaves": 255, "max_depth": 8, "feature_fraction": 0.5}),
-    "bagged_multiclass": (30_001, 30, 0.7, 0.7, 0.0, 12, {"objective": "multiclass", "num_class": 3,
-                                                          "bagging_fraction": 0.7, "bagging_freq": 1}),
+    "bagged_multiclass": (
+        30_001,
+        30,
+        0.7,
+        0.7,
+        0.0,
+        12,
+        {"objective": "multiclass", "num_class": 3, "bagging_fraction": 0.7, "bagging_freq": 1},
+    ),
 }
 
 # the non-quantized checks: the fp64 default, bagged, and feature-sampled
@@ -56,8 +63,11 @@ _ROW_DATA_LINE = re.compile(r"CUDARowData: \d+-bit row data|CUDARowData: 4-bit p
 
 def _data(rows, cols, sparse_cols, zero_frac, nan_frac, levels):
     rng = np.random.default_rng(23)
-    X = (rng.integers(0, levels, size=(rows, cols)).astype(np.float32) if levels
-         else rng.standard_normal((rows, cols)).astype(np.float32))
+    X = (
+        rng.integers(0, levels, size=(rows, cols)).astype(np.float32)
+        if levels
+        else rng.standard_normal((rows, cols)).astype(np.float32)
+    )
     n_sparse = int(round(sparse_cols * cols))
     X[:, :n_sparse][rng.random((rows, n_sparse)) < zero_frac] = 0.0
     if nan_frac:
@@ -135,8 +145,11 @@ def test_dense_rowdata_multi_gpu_decided_once(capfd):
     if "needs the NCCL library" in log:
         pytest.skip("NCCL library not loadable")
     # one decision for the whole training; the rank's dense row data (the parent's single-GPU learner reports too)
-    decisions = re.findall(r"dense_rowdata \(multi-GPU\): (\d+) rows per rank, smallest device (\d+) bytes: "
-                           r"dense row-wise bin (fits|does not fit)", log)
+    decisions = re.findall(
+        r"dense_rowdata \(multi-GPU\): (\d+) rows per rank, smallest device (\d+) bytes: "
+        r"dense row-wise bin (fits|does not fit)",
+        log,
+    )
     assert len(decisions) == 1
     assert decisions[0][2] == "fits"
     n_ranks = re.search(r"Using GPU devices (\d+(?:,\d+)*)", log).group(1).count(",") + 1
