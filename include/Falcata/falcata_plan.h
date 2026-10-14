@@ -553,6 +553,14 @@ struct FalcataPlan {
   // the compiler batch the loads past the stores). Splits of more than 6143 chunks keep the original kernel. The same
   // integer prefix sums and child leaf metadata: bit-identical.
   bool aggregate_load_first = true;  // key: aggregate_load_first
+  // out-of-bag score pass of a tree whose device structure was freed by ToHost (bagging; DART re-scoring): every
+  // internal node's routing values (column, bin range and offset, most-frequent bin, missing bin, threshold, children,
+  // default direction) packed on the host into one record per node and uploaded with one copy into a buffer the
+  // dataset keeps, instead of five per-array allocations, copies and frees per pass; the traversal reads one record
+  // per level instead of chasing split feature -> column -> per-feature tables. Scalar-leaf trees without
+  // categorical splits, on the per-column view or the tree's packed view. The same bins, the same branch rule, the same leaf value added:
+  // bit-identical.
+  bool oob_node_table = true;  // key: oob_node_table
   // quantized root sums (gradient/hessian totals of the tree's rows): one warp
   // per 1024-row chunk sums 32 rows per lane, instead of one 1024-thread block
   // per chunk with one row per thread and two block reductions. Each chunk's
@@ -838,6 +846,7 @@ struct FalcataPlan {
     if (key == "apply_inner_rows") return &apply_inner_rows;
     if (key == "apply_genbit_rows") return &apply_genbit_rows;
     if (key == "aggregate_load_first") return &aggregate_load_first;
+    if (key == "oob_node_table") return &oob_node_table;
     if (key == "root_sums_warp") return &root_sums_warp;
     if (key == "minmax_warp") return &minmax_warp;
     if (key == "colmajor_split") return &colmajor_split;
