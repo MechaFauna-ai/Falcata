@@ -18,9 +18,15 @@
 
 namespace Falcata {
 
+// The label (and weight) sums of the init score: each block's partial sum goes to its own slot of block_sums
+// (labels in [0, num_blocks), weights in [num_blocks, 2 * num_blocks)), and BoostFromScoreKernel_Sum_BinaryLogloss
+// adds the slots in block order. (The blocks used to atomicAdd their partials into one double, in whatever order they
+// finished: with weights whose sums are not exact in double, e.g. exp(U(-20, 20)), the init score, and with it the
+// whole model, changed from run to run. Block order is one of the orders the atomics could take, so every exact sum
+// -- labels, unweighted counts, weights of a few binades -- is unchanged.)
 template <bool USE_WEIGHT>
-__global__ void BoostFromScoreKernel_1_BinaryLogloss(const label_t* cuda_labels, const data_size_t num_data, double* out_cuda_sum_labels,
-                                                     double* out_cuda_sum_weights, const label_t* cuda_weights) {
+__global__ void BoostFromScoreKernel_1_BinaryLogloss(const label_t* cuda_labels, const data_size_t num_data,
+                                                     double* block_sums, const label_t* cuda_weights) {
   __shared__ double shared_buffer[WARPSIZE];
   const uint32_t mask = 0xffffffff;
   const uint32_t warpLane = threadIdx.x % warpSize;
@@ -72,10 +78,28 @@ __global__ void BoostFromScoreKernel_1_BinaryLogloss(const label_t* cuda_labels,
     __syncthreads();
   }
   if (threadIdx.x == 0) {
-    atomicAdd_system(out_cuda_sum_labels, label_value);
+    block_sums[blockIdx.x] = label_value;
     if (USE_WEIGHT) {
-      atomicAdd_system(out_cuda_sum_weights, weight_value);
+      block_sums[gridDim.x + blockIdx.x] = weight_value;
     }
+  }
+}
+
+// one thread: the block partials added in block order, from 0.0 like the atomics they replace
+template <bool USE_WEIGHT>
+__global__ void BoostFromScoreKernel_Sum_BinaryLogloss(const double* block_sums, const int num_blocks,
+                                                       double* out_cuda_sum_labels, double* out_cuda_sum_weights) {
+  double suml = 0.0;
+  double sumw = 0.0;
+  for (int b = 0; b < num_blocks; ++b) {
+    suml += block_sums[b];
+    if (USE_WEIGHT) {
+      sumw += block_sums[num_blocks + b];
+    }
+  }
+  *out_cuda_sum_labels = suml;
+  if (USE_WEIGHT) {
+    *out_cuda_sum_weights = sumw;
   }
 }
 
@@ -94,13 +118,19 @@ __global__ void BoostFromScoreKernel_2_BinaryLogloss(double* out_cuda_sum_labels
 
 double CUDABinaryLogloss::LaunchCalcInitScoreKernel(const int /*class_id*/) const {
   const int num_blocks = (num_data_ + CALC_INIT_SCORE_BLOCK_SIZE_BINARY - 1) / CALC_INIT_SCORE_BLOCK_SIZE_BINARY;
-  SetCUDAMemory<double>(cuda_boost_from_score_.RawData(), 0, 1, __FILE__, __LINE__);
+  CHECK_GE(cuda_init_block_sums_.Size(), 2 * static_cast<size_t>(num_blocks));
   if (cuda_weights_ == nullptr) {
     BoostFromScoreKernel_1_BinaryLogloss<false><<<num_blocks, CALC_INIT_SCORE_BLOCK_SIZE_BINARY>>>
-      (cuda_label_, num_data_, cuda_boost_from_score_.RawData(), cuda_sum_weights_.RawData(), cuda_weights_);
+      (cuda_label_, num_data_, cuda_init_block_sums_.RawData(), cuda_weights_);
+    BoostFromScoreKernel_Sum_BinaryLogloss<false><<<1, 1>>>(cuda_init_block_sums_.RawData(), num_blocks,
+                                                            cuda_boost_from_score_.RawData(),
+                                                            cuda_sum_weights_.RawData());
   } else {
     BoostFromScoreKernel_1_BinaryLogloss<true><<<num_blocks, CALC_INIT_SCORE_BLOCK_SIZE_BINARY>>>
-      (cuda_label_, num_data_, cuda_boost_from_score_.RawData(), cuda_sum_weights_.RawData(), cuda_weights_);
+      (cuda_label_, num_data_, cuda_init_block_sums_.RawData(), cuda_weights_);
+    BoostFromScoreKernel_Sum_BinaryLogloss<true><<<1, 1>>>(cuda_init_block_sums_.RawData(), num_blocks,
+                                                           cuda_boost_from_score_.RawData(),
+                                                           cuda_sum_weights_.RawData());
   }
   SynchronizeCUDADevice(__FILE__, __LINE__);
   if (cuda_weights_ == nullptr) {

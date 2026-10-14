@@ -58,6 +58,10 @@ METRIC_TOLERANCE = 0.02  # relative; only applied to non-fingerprinted (nondeter
 #            FALCATA_DEBUG=diag line names it ("warp (tier: ...)" or "block"),
 #            or a list: the set of finders the run's trees must log, exactly;
 #            such a cell runs alone in a worker with FALCATA_DEBUG=diag
+#   diag_set     (regex with one group, [values]): under FALCATA_DEBUG=diag the
+#            set of the group's captures over the run must be exactly these
+#            values (e.g. every tree's compact fill logs "pair_code5 on"); such a
+#            cell runs alone in a worker like a finder_tier cell
 # --------------------------------------------------------------------------- #
 
 
@@ -74,6 +78,7 @@ def build_cells():
         perf=False,
         leaf_bound=None,
         finder_tier=None,
+        diag_set=None,
     ):
         cells.append(
             {
@@ -86,6 +91,7 @@ def build_cells():
                 "perf": perf,
                 "leaf_bound": leaf_bound,
                 "finder_tier": finder_tier,
+                "diag_set": diag_set,
             }
         )
 
@@ -1029,6 +1035,218 @@ def build_cells():
                 equal_to=f"{base_profile}/quant-{suffix}",
             )
 
+    # --- the open1 lineage's nine keys (PR #99) ------------------------------------------------------------ #
+    # Each key off must train the base cell's model. Bases added here (quant-deep2047, flipbase-pair_hist,
+    # flipbase-fix_subtract_fused, sigmoid03, quant-ova, the graph<k> and weighted profiles, the bagged bases) had
+    # their fingerprints recorded with master's build (d919b841).
+    #
+    # dense_level_row_blocks / dense_block_map: the quantized per-column dense batched construct. dense's 255-bin deep
+    # trees; 2047 leaves at depth 12 with 1-row leaves give levels of more than 256 pairs (the chunked block map, one
+    # mapped grid per 256 pairs); fewbin with pair_hist off puts 4-bit data on the dense kernel.
+    dense_keys = ["dense_level_row_blocks", "dense_block_map"]
+    dense_flips = [*((k, f"{k}:off") for k in dense_keys), ("dense_both", ",".join(f"{k}:off" for k in dense_keys))]
+    for name, plan in dense_flips:
+        cell(f"dense/flip-{name}-deep", "dense", {**deep, "cuda_plan": f"auto,{plan}"}, equal_to="dense/quant-deep")
+    deep2047 = {"num_leaves": 2047, "max_depth": 12, "min_data_in_leaf": 1}
+    cell("dense/quant-deep2047", "dense", deep2047)
+    for name, plan in dense_flips:
+        cell(
+            f"dense/flip-{name}-deep2047",
+            "dense",
+            {**deep2047, "cuda_plan": f"auto,{plan}"},
+            equal_to="dense/quant-deep2047",
+        )
+    cell("fewbin/flipbase-pair_hist", "fewbin", {"cuda_plan": "auto,pair_hist:off"})
+    for name, plan in dense_flips:
+        cell(
+            f"fewbin/flip-{name}-nopair",
+            "fewbin",
+            {"cuda_plan": f"auto,pair_hist:off,{plan}"},
+            equal_to="fewbin/flipbase-pair_hist",
+        )
+    # the quantized graph prefix: the row floor derived on the device, the captured masked fix + subtract node
+    for key in ["dense_level_row_blocks", "fix_subtract_masked"]:
+        cell(
+            f"graph/flip-{key}-graph_quant",
+            "graph",
+            {"cuda_plan": f"auto,graph_quant:on,{key}:off"},
+            equal_to="graph/flipbase-graph_loop",
+        )
+    # fix_subtract_masked: need-fix features (missing-mfb0's synthesised bin 0, efb's bundles), the classic flow's
+    # per-leaf launch (hybrid off), 32-bit leaf bins (bigrow, sub_case 3), and the masked kernel's bin_used /
+    # feature_used skip with the fused fix + subtract off (sampled's feature-sampled trees)
+    for base, profile, base_params, rounds in [
+        ("missing-mfb0/quant", "missing-mfb0", {}, 25),
+        ("efb/quant", "efb", {}, 25),
+        ("missing-mfb0/quant-classic", "missing-mfb0", {"cuda_plan": "auto,hybrid:off"}, 25),
+        ("bigrow/quant64", "bigrow", {}, 40),
+        ("sampled/quant", "sampled", {}, 25),
+        ("dense/quant-fulltree", "dense", full, 25),
+    ]:
+        plan = base_params.get("cuda_plan", "auto")
+        suffix = base.split("/", 1)[1].removeprefix("quant").removeprefix("-")
+        cell(
+            f"{profile}/flip-fix_subtract_masked" + (f"-{suffix}" if suffix else ""),
+            profile,
+            {**base_params, "cuda_plan": f"{plan},fix_subtract_masked:off"},
+            rounds=rounds,
+            equal_to=base,
+        )
+    cell("sampled/flipbase-fix_subtract_fused", "sampled", {"cuda_plan": "auto,fix_subtract_fused:off"})
+    cell(
+        "sampled/flip-fix_subtract_masked-nofused",
+        "sampled",
+        {"cuda_plan": "auto,fix_subtract_fused:off,fix_subtract_masked:off"},
+        equal_to="sampled/flipbase-fix_subtract_fused",
+    )
+    # gradient_fp64_lean: the binary logloss gradients, plain, deterministic non-quantized (graph_det), with label
+    # weights (is_unbalance, scale_pos_weight), mild sample weights (uniform 0.5-2: wide ones make master's model
+    # nondeterministic, see the init score), another sigmoid, fixedpoint, and one-vs-all multiclass (the binary
+    # kernel per class)
+    sig03 = {"sigmoid": 0.3}
+    cell("imbalanced/sigmoid03", "imbalanced", sig03)
+    cell("imbalanced-w/quant", "imbalanced-w")
+    ova = {"objective": "multiclassova", "metric": "None"}
+    cell("graph/quant-ova", "graph", ova)
+    for base, profile, base_params, rounds in [
+        ("imbalanced/quant", "imbalanced", {}, 25),
+        ("imbalanced/nonquant-det", "imbalanced", {"quant_mode": "none", "cuda_plan": "auto,graph_det:on"}, 50),
+        ("imbalanced/unbalance", "imbalanced", {"is_unbalance": True}, 25),
+        ("imbalanced/posweight", "imbalanced", {"scale_pos_weight": 10.0}, 25),
+        ("imbalanced/fixedpoint", "imbalanced", {"quant_mode": "fixedpoint"}, 25),
+        ("imbalanced/sigmoid03", "imbalanced", sig03, 25),
+        ("imbalanced-w/quant", "imbalanced-w", {}, 25),
+        ("graph/quant-ova", "graph", ova, 25),
+    ]:
+        plan = base_params.get("cuda_plan", "auto")
+        cell(
+            f"{profile}/flip-gradient_fp64_lean-{base.split('/', 1)[1]}",
+            profile,
+            {**base_params, "cuda_plan": f"{plan},gradient_fp64_lean:off"},
+            rounds=rounds,
+            equal_to=base,
+        )
+    # softmax_registers: class capacities 8 (graph's 5 classes, sparse-mc's 6, categorical-mc's 4 bagged), 16 (12
+    # classes), 32 (24 classes) and the scratch fallback (40 classes), and a weighted multiclass
+    for k in (12, 24, 40):
+        cell(f"graph{k}/quant", f"graph{k}")
+    cell("graph-w/quant", "graph-w")
+    mc_bagged = {
+        "quant_mode": "fixedpoint",
+        "quant_bins": 16,
+        "bagging_fraction": 0.7,
+        "bagging_freq": 1,
+        "num_leaves": 255,
+        "max_depth": 10,
+        "min_data_in_leaf": 5,
+    }
+    sparse_deep = {"quant_mode": "fixedpoint", "quant_bins": 16, "num_leaves": 63, "max_depth": 10,
+                   "min_data_in_leaf": 5}
+    for base, profile, base_params, rounds in [
+        ("graph/quant", "graph", {}, 25),
+        ("sparse-mc/quant-deep", "sparse-mc", sparse_deep, 80),
+        ("categorical-mc/quant-bagged", "categorical-mc", mc_bagged, 50),
+        ("graph12/quant", "graph12", {}, 25),
+        ("graph24/quant", "graph24", {}, 25),
+        ("graph40/quant", "graph40", {}, 25),
+        ("graph-w/quant", "graph-w", {}, 25),
+    ]:
+        cell(
+            f"{profile}/flip-softmax_registers-{base.split('/', 1)[1]}",
+            profile,
+            {**base_params, "cuda_plan": "auto,softmax_registers:off"},
+            rounds=rounds,
+            equal_to=base,
+        )
+    # sync_used_narrow: the full tree (readback_fused's mirror engages), dense, missing, and sampled (a no-op control:
+    # feature-sampled trees already take the used-task kernel)
+    for base, profile, base_params in [
+        ("dense/quant-fulltree", "dense", full),
+        ("dense/quant", "dense", {}),
+        ("missing/quant", "missing", {}),
+        ("sampled/quant", "sampled", {}),
+    ]:
+        suffix = base.split("/", 1)[1].removeprefix("quant").removeprefix("-")
+        cell(
+            f"{profile}/flip-sync_used_narrow" + (f"-{suffix}" if suffix else ""),
+            profile,
+            {**base_params, "cuda_plan": "auto,sync_used_narrow:off"},
+            equal_to=base,
+        )
+    # bagged_code_view: sampledwide5 bagged takes the code view on every tree (the diag cell asserts it), with a bag
+    # drawn every round and one reused for five; sampled's columns decline it on every tree, where the bagged tree
+    # takes the plain tiled fill (no fused fill for a view it does not write); sampledwide's trees do either (the
+    # 6-bit view on some 120-byte rows, not on 121-byte ones). Each key off, and all three bagging keys off, must
+    # train the base cell's model.
+    bag_keys = ["bagged_code_view", "oob_node_table", "bagging_fused_scan"]
+    bag_off = ",".join(f"{k}:off" for k in bag_keys)
+    bag = {"bagging_fraction": 0.7, "bagging_freq": 1}
+    plain = "bagged tree without the code view: plain tiled fill"
+    for name, profile, bag_params, expect in [
+        ("quant-bagged", "sampledwide5", {"bagging_fraction": 0.6, "bagging_freq": 1}, ["pair_code5 on"]),
+        ("quant-bagged5", "sampledwide5", {"bagging_fraction": 0.6, "bagging_freq": 5}, ["pair_code5 on"]),
+        ("quant-bagged", "sampled", bag, [plain]),
+        ("quant-bagged", "sampledwide", {"bagging_fraction": 0.6, "bagging_freq": 1}, ["pair_code5 on", plain]),
+    ]:
+        base = f"{profile}/{name}"
+        cell(base, profile, bag_params)
+        for key, plan in [("bagged_code_view", "bagged_code_view:off"), ("bagging", bag_off)]:
+            cell(f"{profile}/flip-{key}-{name}", profile, {**bag_params, "cuda_plan": f"auto,{plan}"}, equal_to=base)
+        cell(
+            f"{profile}/codeview-{name}",
+            profile,
+            {**bag_params, "verbose": 1},
+            equal_to=base,
+            diag_set=(r"compact fill: (pair_code5 on|bagged tree without the code view: plain tiled fill)", expect),
+        )
+    # oob_node_table: the out-of-bag pass on the per-column view (dense), the packed view (sampled), NaN default-left
+    # (missing), bundled columns (efb), synthesised bin 0 (missing-mfb0); categorical-mc and vector-leaf bagged are
+    # controls (they keep the re-upload path), dart re-scores after ToHost
+    vl_bagged = {"quant_mode": "fixedpoint", "quant_bins": 16, **bag}
+    for profile in ["dense", "missing", "efb", "missing-mfb0"]:
+        cell(f"{profile}/quant-bagged", profile, bag)
+    cell("vector-leaf/fixedpoint-bagged", "vector-leaf", vl_bagged, rounds=30)
+    dart = {"boosting": "dart", **bag}
+    cell("dense/quant-dart-bagged", "dense", dart)
+    for base, profile, base_params, rounds in [
+        *((f"{p}/quant-bagged", p, bag, 25) for p in ["dense", "sampled", "missing", "efb", "missing-mfb0"]),
+        ("categorical-mc/quant-bagged", "categorical-mc", mc_bagged, 50),
+        ("vector-leaf/fixedpoint-bagged", "vector-leaf", vl_bagged, 30),
+        ("dense/quant-dart-bagged", "dense", dart, 25),
+    ]:
+        cell(
+            f"{profile}/flip-oob_node_table-{base.split('/', 1)[1]}",
+            profile,
+            {**base_params, "cuda_plan": "auto,oob_node_table:off"},
+            rounds=rounds,
+            equal_to=base,
+        )
+    # bagging_fused_scan: small and large bags, a bag reused for three rounds, and bigrow's 1.6M training rows: 1563
+    # blocks of 1024, more than one block of the base kernel's scan, so its carry runs across passes
+    for name, bag_params in [
+        ("quant-bagged", bag),
+        ("quant-bag05", {"bagging_fraction": 0.05, "bagging_freq": 1}),
+        ("quant-bag95", {"bagging_fraction": 0.95, "bagging_freq": 1}),
+        ("quant-bagfreq3", {"bagging_fraction": 0.7, "bagging_freq": 3}),
+    ]:
+        if name != "quant-bagged":
+            cell(f"dense/{name}", "dense", bag_params)
+        cell(
+            f"dense/flip-bagging_fused_scan-{name}",
+            "dense",
+            {**bag_params, "cuda_plan": "auto,bagging_fused_scan:off"},
+            equal_to=f"dense/{name}",
+        )
+    bigbag = {"bagging_fraction": 0.5, "bagging_freq": 1}
+    cell("bigrow/quant64-bagged", "bigrow", bigbag, rounds=20)
+    cell(
+        "bigrow/flip-bagging_fused_scan-bagged",
+        "bigrow",
+        {**bigbag, "cuda_plan": "auto,bagging_fused_scan:off"},
+        rounds=20,
+        equal_to="bigrow/quant64-bagged",
+    )
+
     ids = [c["id"] for c in cells]
     assert len(ids) == len(set(ids)), "duplicate cell ids"
     by_id = {c["id"]: c for c in cells}
@@ -1055,6 +1273,7 @@ def _split(X, y, frac=0.2):
 def build_profile(name):
     # stable seed: builtin hash() is per-process randomized (PYTHONHASHSEED)
     rng = np.random.default_rng(int(hashlib.md5(name.encode()).hexdigest()[:8], 16))
+    sample_w = None  # sample weights (weighted profiles only)
     base = {"objective": "regression", "num_leaves": 63, "max_depth": 6,
             "learning_rate": 0.1, "max_bin": 255, "use_quantized_grad": True,
             "device_type": "cuda", "seed": 42, "verbose": -1, "metric": "None",
@@ -1149,11 +1368,16 @@ def build_profile(name):
         Z = (X - X.mean(axis=0)) / X.std(axis=0)
         y = Z @ rng.standard_normal(m) + 1.5 * Z[:, -1] + 0.3 * rng.standard_normal(n)
         base["feature_fraction"] = 0.2
-    elif name == "graph":
+    elif name in ("graph", "graph12", "graph24", "graph40", "graph-w"):
+        # graph<k>: the same shape with k classes (the register softmax's class capacities 16 and 32, and the
+        # scratch fallback past 32); graph-w: 5 classes with uniform(0.5, 2) sample weights
+        k = int(name[5:]) if name[5:].isdigit() else 5
         m = 20
         X = rng.standard_normal((n, m))
-        y = (X @ rng.standard_normal((m, 5))).argmax(axis=1).astype(np.float64)
-        base.update({"objective": "multiclass", "num_class": 5, "metric": "multi_logloss"})
+        y = (X @ rng.standard_normal((m, k))).argmax(axis=1).astype(np.float64)
+        base.update({"objective": "multiclass", "num_class": k, "metric": "multi_logloss"})
+        if name == "graph-w":
+            sample_w = rng.uniform(0.5, 2.0, size=n)
     elif name == "int8wide":
         n, m = 6000, 400
         X = rng.integers(-6, 7, size=(n, m)).astype(np.int8)
@@ -1173,12 +1397,16 @@ def build_profile(name):
         X[np.arange(n), hot] = 1.0
         X[:, m // 3:] = rng.standard_normal((n, m - m // 3)) * (rng.random((n, m - m // 3)) < 0.05)
         y = X @ rng.standard_normal(m) + 0.1 * rng.standard_normal(n)
-    elif name == "imbalanced":
+    elif name in ("imbalanced", "imbalanced-w"):
+        # imbalanced-w: uniform(0.5, 2) sample weights (mild: their sums are not exact in double, but they are far
+        # from the wide weights that make the weighted init score order-dependent)
         n, m = 12000, 20
         X = rng.standard_normal((n, m))
         score = X @ rng.standard_normal(m)
         y = (score > np.quantile(score, 0.99)).astype(np.float64)
         base.update({"objective": "binary", "metric": "auc"})
+        if name == "imbalanced-w":
+            sample_w = rng.uniform(0.5, 2.0, size=n)
     elif name == "missing":
         m = 20
         X = rng.standard_normal((n, m))
@@ -1329,7 +1557,7 @@ def build_profile(name):
                      "metric": "multi_logloss", "max_bin": 5})
     else:
         raise ValueError(f"unknown profile {name}")
-    return X, np.asarray(y, dtype=np.float64), base
+    return X, np.asarray(y, dtype=np.float64), base, sample_w
 
 def eval_metric(params, pred, y_test):
     if params.get("objective") == "multi_regression":
@@ -1341,6 +1569,10 @@ def eval_metric(params, pred, y_test):
     if params.get("objective") == "binary":
         from sklearn.metrics import roc_auc_score
         return float(roc_auc_score(y_test, pred)), "auc", True
+    if params.get("objective") == "multiclassova":
+        # one-vs-all scores do not sum to 1: the mean negative log of the true class's score
+        p_true = pred[np.arange(len(y_test)), y_test.astype(int)]
+        return float(-np.mean(np.log(np.clip(p_true, 1e-15, 1.0)))), "ova_logloss", False
     if params.get("objective") == "multiclass":
         from sklearn.metrics import log_loss
         return float(log_loss(y_test, pred, labels=list(range(params["num_class"])))), "mlogloss", False
@@ -1348,11 +1580,12 @@ def eval_metric(params, pred, y_test):
     return rmse, "rmse", False
 
 def run_cell(cell):
-    X, y, params = build_profile(cell["profile"])
+    X, y, params, w = build_profile(cell["profile"])
     params.update(cell["params"])
     X_tr, y_tr, X_te, y_te = _split(X, y)
+    w_tr = None if w is None else w[:len(y_tr)]
     t0 = time.monotonic()
-    ds = lgb.Dataset(X_tr, label=y_tr, params=params)
+    ds = lgb.Dataset(X_tr, label=y_tr, weight=w_tr, params=params)
     ds.construct()
     t_construct = time.monotonic() - t0
     t1 = time.monotonic()
@@ -1402,8 +1635,9 @@ for cell in json.loads(sys.argv[1]):
 
 
 def run_tier_cell(cell):
-    """A finder_tier cell, alone in a worker with FALCATA_DEBUG=diag: its result, failed unless every logged level
-    split finder is the expected one."""
+    """A finder_tier or diag_set cell, alone in a worker with FALCATA_DEBUG=diag: its result, failed unless every
+    logged level split finder is the expected one (finder_tier), or the set of the diag pattern's captures is exactly
+    the expected one (diag_set)."""
     proc = subprocess.run(
         [sys.executable, "-c", _WORKER_SOURCE, json.dumps([cell])],
         capture_output=True,
@@ -1415,6 +1649,12 @@ def run_tier_cell(cell):
     if not recs:
         return {"id": cell["id"], "ok": False, "error": f"worker exited {proc.returncode}: {proc.stderr[-800:]}"}
     rec = recs[0]
+    if cell.get("diag_set"):
+        pattern, values = cell["diag_set"]
+        seen = sorted(set(re.findall(pattern, proc.stdout)))
+        if rec.get("ok") and seen != sorted(values):
+            rec = {"id": cell["id"], "ok": False, "error": f"diag {pattern!r}: logged {seen}, expected exactly {values}"}
+        return rec
     finders = re.findall(r"split finder: (.*) kernel for this tree's quantized levels(.*)", proc.stdout)
     finders = sorted({f"{kernel}{rest}".strip() for kernel, rest in finders})
     expected = sorted(cell["finder_tier"]) if isinstance(cell["finder_tier"], list) else [cell["finder_tier"]]
@@ -1426,8 +1666,8 @@ def run_tier_cell(cell):
 
 def run_cells(cells):
     """Run cells in chunked subprocesses; crash-isolate and collect results."""
-    results = {c["id"]: run_tier_cell(c) for c in cells if c.get("finder_tier")}
-    pending = [c for c in cells if not c.get("finder_tier")]
+    results = {c["id"]: run_tier_cell(c) for c in cells if c.get("finder_tier") or c.get("diag_set")}
+    pending = [c for c in cells if not (c.get("finder_tier") or c.get("diag_set"))]
     while pending:
         chunk, pending = pending[:WORKER_CHUNK], pending[WORKER_CHUNK:]
         proc = subprocess.run(

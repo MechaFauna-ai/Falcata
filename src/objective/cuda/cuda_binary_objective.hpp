@@ -53,6 +53,8 @@ class CUDABinaryLogloss : public CUDAObjectiveInterface<BinaryLogloss> {
   // CUDA memory, held by this object
   CUDAVector<double> cuda_boost_from_score_;
   CUDAVector<double> cuda_sum_weights_;
+  // the init score's per-block label and weight sums (BoostFromScoreKernel_1_BinaryLogloss), added in block order
+  CUDAVector<double> cuda_init_block_sums_;
   CUDAVector<double> cuda_label_weights_;
   const int ova_class_id_ = -1;
 };

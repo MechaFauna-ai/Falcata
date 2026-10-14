@@ -1217,57 +1217,70 @@ void CUDAHistogramConstructor::LaunchCompactFill(
           Log::Info("compact fill: pair_code5 %s (%d byte slots, %d words per row, %d bits per code)",
                     code5 ? "on" : "off", total_byte_slots, code_row_words, code5 ? code_bits : 0);
         }
-        FlushTreeStartMetaBatch();  // cuda_plan key tree_meta_batch: the fill reads the batched metadata
-        bool code5_written = false;
-        fused_root = LaunchFillCompactData4BitTiledRootHistKernel(
-          stream,
-          // the same source as the plain tiled fill below: the column-major store (colmajor_direct's compact
-          // regime, or colmajor_fill's copy), else the row-major matrix through the one accessor
-          colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : RowMajorBin<uint8_t>(),
-          dst,
-          cuda_bs_src_nib0_.RawData(),
-          cuda_bs_src_nib1_.RawData(),
-          cuda_bs_dst_byte_.RawData(),
-          cuda_bs_dst_stride_.RawData(),
-          total_byte_slots,
-          num_data,
-          fused_root_meta_.RawData(),
-          reinterpret_cast<const uint32_t*>(fused_root_meta_.RawData() + 2 * static_cast<size_t>(total_byte_slots)),
-          num_local_bins,
-          // slot-major block histogram rows: every column's nibbles lie below the widest span
-          FalcataPlan::Get().root_hist_slot_major ? max_span : 0,
-          // each block's tiles a grid apart, so the resident blocks stage neighbouring tiles of every column
-          FalcataPlan::Get().root_hist_tile_stride,
-          // one partition: stage the tile as a byte copy of its output run, written with aligned vector copies
-          FalcataPlan::Get().root_hist_run_copy,
-          word_prefetch,
-          // L2 lead for the word path: the tile after the next one prefetched into L2
-          word_prefetch && FalcataPlan::Get().root_hist_l2_prefetch,
-          // the packed per-block row bound of the gradients as discretized (the effective quant bins, which the
-          // learner may raise above the configured count), exactly the construct's 65534 / bins rule
-          65534 / std::max(1, num_grad_quant_bins_),
-          reinterpret_cast<const int32_t*>(cuda_gradients_),
-          fused_root_request_16bit_,
-          fused_root_scratch_.RawData(),
-          static_cast<size_t>(num_total_bin_) * sizeof(hist_t),
-          code5 ? reinterpret_cast<uint32_t*>(compact_data_uint8_t_.RawData()) : nullptr,
-          code5 ? code5_table_.RawDataReadOnly() : nullptr,
-          code_row_words,
-          code5 ? code_bits : 0,
-          &code5_written);
-        // cuda_plan key bagged_code_view: the histogram of every row is not the bagged root's; only the code view is kept
-        fused_root_ready_ = fused_root && !fused_root_code_view_only_;
-        fused_root_bits16_ = fused_root_request_16bit_;
-        code5_valid_ = fused_root && code5_written;
-        code5_row_words_ = code_row_words;
-        // only a valid width is stored (code_bits is 0 where the view is not taken): every reader evaluates
-        // Code5RowWords(row bytes, code5_bits_), which divides by 32 / code5_bits_
-        code5_bits_ = code5 ? code_bits : 5;
-        CHECK(code5_bits_ == 5 || code5_bits_ == 6);
-        nibble_pending_ = code5_valid_;
-        nibble_pending_slots_ = total_byte_slots;
-        nibble_pending_src_ = fill_src;
-        nibble_pending_stream_ = stream;
+        // cuda_plan key bagged_code_view: a bagged tree runs the fused fill only for the code view (its all-rows
+        // histogram is not the bagged root's); where the view is not taken, the plain tiled fill below writes the
+        // same nibble view without the discarded histogram
+        const bool fused_launch = code5 || !fused_root_code_view_only_;
+        if (FalcataDebug().diag && !fused_launch) {
+          Log::Info("compact fill: bagged tree without the code view: plain tiled fill");
+        }
+        if (fused_launch) {
+          FlushTreeStartMetaBatch();  // cuda_plan key tree_meta_batch: the fill reads the batched metadata
+          bool code5_written = false;
+          fused_root = LaunchFillCompactData4BitTiledRootHistKernel(
+            stream,
+            // the same source as the plain tiled fill below: the column-major store (colmajor_direct's compact
+            // regime, or colmajor_fill's copy), else the row-major matrix through the one accessor
+            colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : RowMajorBin<uint8_t>(),
+            dst,
+            cuda_bs_src_nib0_.RawData(),
+            cuda_bs_src_nib1_.RawData(),
+            cuda_bs_dst_byte_.RawData(),
+            cuda_bs_dst_stride_.RawData(),
+            total_byte_slots,
+            num_data,
+            fused_root_meta_.RawData(),
+            reinterpret_cast<const uint32_t*>(fused_root_meta_.RawData() +
+                                              2 * static_cast<size_t>(total_byte_slots)),
+            num_local_bins,
+            // slot-major block histogram rows: every column's nibbles lie below the widest span
+            FalcataPlan::Get().root_hist_slot_major ? max_span : 0,
+            // each block's tiles a grid apart, so the resident blocks stage neighbouring tiles of every column
+            FalcataPlan::Get().root_hist_tile_stride,
+            // one partition: stage the tile as a byte copy of its output run, written with aligned vector copies
+            FalcataPlan::Get().root_hist_run_copy,
+            word_prefetch,
+            // L2 lead for the word path: the tile after the next one prefetched into L2
+            word_prefetch && FalcataPlan::Get().root_hist_l2_prefetch,
+            // the packed per-block row bound of the gradients as discretized (the effective quant bins, which the
+            // learner may raise above the configured count), exactly the construct's 65534 / bins rule
+            65534 / std::max(1, num_grad_quant_bins_),
+            reinterpret_cast<const int32_t*>(cuda_gradients_),
+            fused_root_request_16bit_,
+            fused_root_scratch_.RawData(),
+            static_cast<size_t>(num_total_bin_) * sizeof(hist_t),
+            code5 ? reinterpret_cast<uint32_t*>(compact_data_uint8_t_.RawData()) : nullptr,
+            code5 ? code5_table_.RawDataReadOnly() : nullptr,
+            code_row_words,
+            code5 ? code_bits : 0,
+            &code5_written);
+          // cuda_plan key bagged_code_view: the histogram of every row is not the bagged root's; only the code view
+          // is kept
+          fused_root_ready_ = fused_root && !fused_root_code_view_only_;
+          fused_root_bits16_ = fused_root_request_16bit_;
+          code5_valid_ = fused_root && code5_written;
+          code5_row_words_ = code_row_words;
+          // only a valid width is stored (code_bits is 0 where the view is not taken): every reader evaluates
+          // Code5RowWords(row bytes, code5_bits_), which divides by 32 / code5_bits_
+          code5_bits_ = code5 ? code_bits : 5;
+          CHECK(code5_bits_ == 5 || code5_bits_ == 6);
+          nibble_pending_ = code5_valid_;
+          nibble_pending_slots_ = total_byte_slots;
+          nibble_pending_src_ = fill_src;
+          nibble_pending_stream_ = stream;
+        } else {
+          fused_root_ready_ = false;
+        }
       }
     }
     if (!fused_root) {

@@ -2772,7 +2772,9 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
     const int leaves_before_level = tree->num_leaves();
     // apply the whole level without any device synchronization: every launch
     // parameter is host-known from the previous level, and split info is read
-    // back once for the whole level below (FinishSplitBatch synchronizes)
+    // back once for the whole level below (FinishSplitBatch waits for it: a device
+    // synchronize or the copy's stream sync, or, for a non-final level under
+    // split_counts_early, only the aggregate kernel's event)
     std::vector<HybridAppliedSplit> applied;
     if (use_batched_level_apply) {
       if (readback_fused) {

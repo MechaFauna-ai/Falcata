@@ -76,3 +76,44 @@ def test_gradient_keys_are_bit_identical_cuda(objective, extra, quantized, weigh
     reference = _model_md5({**params, "cuda_plan": "auto"}, X, y, rounds=30, weight=weight)
     for key in KEYS:
         assert _model_md5({**params, "cuda_plan": f"auto,{key}:off"}, X, y, rounds=30, weight=weight) == reference, key
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"use_quantized_grad": True, "bagging_fraction": 0.6, "bagging_freq": 1},
+        {"use_quantized_grad": False, "cuda_plan": "auto,graph_loop:off"},
+        {"use_quantized_grad": True, "objective": "multiclassova", "num_class": 4},
+    ],
+)
+def test_wide_weight_binary_training_is_deterministic_cuda(extra):
+    """Sample weights over 2^58 (exp(U(-20, 20)) as float32) do not sum exactly in double, so the binary init score's
+    label and weight sums depend on the order the per-block partials are added. That order is now the block order
+    (it was the order of the blocks' atomicAdds, which made three trainings give three models): the same data must
+    train the same model every time, quantized and bagged, non-quantized, and one-vs-all (the binary init per class)."""
+    rows = 100_000
+    rng = np.random.default_rng(1)
+    X = rng.standard_normal((rows, 20)).astype(np.float32)
+    signal = X[:, :8] @ rng.standard_normal(8)
+    weight = np.exp(rng.uniform(-20, 20, size=rows)).astype(np.float32)
+    params = {
+        "device_type": "cuda",
+        "objective": "binary",
+        "is_unbalance": True,
+        "sigmoid": 1.7,
+        "num_leaves": 63,
+        "max_depth": 7,
+        "min_data_in_leaf": 5,
+        "learning_rate": 0.2,
+        "verbosity": -1,
+        "seed": 3,
+        **extra,
+    }
+    if params["objective"] == "multiclassova":
+        params.pop("is_unbalance")
+        y = np.digitize(signal, np.quantile(signal, [0.25, 0.5, 0.75])).astype(float)
+    else:
+        y = (signal + rng.standard_normal(rows) > np.median(signal)).astype(float)
+    md5s = {_model_md5(params, X, y, rounds=20, weight=weight) for _ in range(3)}
+    assert len(md5s) == 1, md5s

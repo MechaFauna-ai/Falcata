@@ -299,6 +299,10 @@ void CUDADataPartition::FinishSplitBatch(const int num_splits, std::vector<int>*
   const size_t num_ints = static_cast<size_t>(num_splits) * 18;
   split_info_mirror_requested_ = false;
   split_info_early_requested_ = false;
+  // an apply left in flight by an early level (split_counts_early) is consumed by the next level's search
+  // (EnqueueLevelBestSplitSearch -> WaitForInFlightApply) before any later FinishSplitBatch; a flow reaching either
+  // path with it still set would drop the apply_done and tree-record waits, so it is an error, not a reset
+  CHECK(!apply_in_flight_);
   if (split_info_mirror_written_) {
     // cuda_plan key readback_fused: the level's tree-structure kernel wrote these ints into the mapped staging; one
     // device synchronize (every stream, as the default-stream copy waited for) and the host reads them
@@ -312,16 +316,11 @@ void CUDADataPartition::FinishSplitBatch(const int num_splits, std::vector<int>*
       apply_in_flight_ = true;
     } else {
       SynchronizeCUDADevice(__FILE__, __LINE__);
-      apply_in_flight_ = false;
     }
     std::memcpy(out->data(), pinned_split_info_, num_ints * sizeof(int));
     return;
   }
   split_info_early_written_ = false;
-  // an apply left in flight by an early level (split_counts_early) is consumed by the next level's search
-  // (EnqueueLevelBestSplitSearch -> WaitForInFlightApply) before any later FinishSplitBatch; a flow reaching the
-  // copy path with it still set would drop the apply_done and tree-record waits, so it is an error, not a reset
-  CHECK(!apply_in_flight_);
   EnsurePinnedSplitInfoCapacity(num_ints);
   if (FalcataPlan::Get().readback_kernel && pinned_split_info_device_ != nullptr) {
     // cuda_plan key readback_kernel: a copy kernel on the same default stream, then that stream's sync (see the key)
