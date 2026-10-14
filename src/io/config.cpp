@@ -653,8 +653,9 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
     // force row-wise for cuda version
     force_col_wise = false;
     force_row_wise = true;
-    // Quantized CUDA training supports neither of these, so mapping
-    // deterministic onto it would silently drop whichever one was asked for --
+    // Quantized CUDA training supports neither forced splits nor monotone
+    // constraints, so mapping deterministic onto it would silently drop
+    // whichever one was asked for --
     // forced splits used to vanish this way, with the tree learner's warning
     // hidden by the verbosity most callers run at. An explicitly requested
     // feature outranks an inferred execution mode.
@@ -664,6 +665,9 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
     } else if (!monotone_constraints.empty()) {
       quant_incompatible_request = "monotone constraints";
     } else if (!interaction_constraints_vector.empty()) {
+      // the quantized finder honours interaction constraints (per-node masks)
+      // since the bynodequant fix; deterministic still keeps them on the
+      // non-quantized path, which matches CPU exactly
       quant_incompatible_request = "interaction constraints";
     } else if (tree_mode == std::string("vector_leaf") &&
                !(objective == std::string("multi_regression") && num_class > 1)) {
@@ -681,10 +685,9 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
         !quant_mode_chosen_by_user &&
         ResolvedQuantMode() == QuantMode::kNone) {
       Log::Warning("deterministic=true with device_type=cuda normally switches to "
-                   "quant_mode=fixedpoint, which does not support %s. Keeping the "
-                   "non-quantized path so that stays in effect; results may differ "
-                   "slightly between runs. Set quant_mode=fixedpoint explicitly to "
-                   "prefer reproducibility instead.",
+                   "quant_mode=fixedpoint; with %s it keeps the non-quantized path "
+                   "instead; results may differ slightly between runs. Set "
+                   "quant_mode=fixedpoint explicitly to prefer reproducibility instead.",
                    quant_incompatible_request);
     } else if (deterministic && !quant_mode_chosen_by_user &&
                ResolvedQuantMode() == QuantMode::kNone) {
@@ -765,14 +768,6 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
       Log::Fatal("monotone_constraints is not supported with use_quantized_grad on "
                  "device_type=cuda. Disable one of them or use device_type=cpu.");
     }
-  }
-  if (device_type == std::string("cuda") && use_quantized_grad && !interaction_constraints_vector.empty()) {
-    // The quantized split finder takes one feature mask for the whole tree, so
-    // the per-node mask that carries interaction constraints never reaches it:
-    // the constraint was silently dropped and the model was free to violate it.
-    // The non-quantized CUDA path applies it correctly and matches CPU exactly.
-    Log::Fatal("interaction_constraints is not supported with use_quantized_grad on "
-               "device_type=cuda. Disable one of them or use device_type=cpu.");
   }
   if (min_data_in_leaf <= 0 && min_sum_hessian_in_leaf <= kEpsilon) {
     Log::Warning(

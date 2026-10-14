@@ -1134,6 +1134,10 @@ inline bool FalcataVerifyEnabled() {
  *  - ``vramfree=N`` treat at most N MiB of device memory as free when
  *    colmajor_fill decides whether its copy fits (tests the decline path
  *    without filling the GPU); does not change any result
+ *  - ``bynode``     per-split stderr line ``BYNODE`` with the split leaf, its
+ *    inner feature and the per-node feature mask that leaf was searched with
+ *    (feature_fraction_bynode < 1 or interaction constraints; classic loop
+ *    only, which is where per-node masks run); does not change any result
  * The growth tokens (debug, syncpairs, maxsplits) also disable the CUDA-graph
  * controller path (the device controller does not replicate these hooks).
  */
@@ -1143,6 +1147,7 @@ struct FalcataDebugOptions {
   bool dump = false;
   bool syncpairs = false;
   bool aggressive = false;
+  bool bynode = false;
   int maxsplits = -1;  // -1 = uncapped
   int64_t vramfree_mib = -1;  // -1 = the real free memory
   bool any_growth_hook() const { return debug || syncpairs || maxsplits >= 0; }
@@ -1165,6 +1170,8 @@ inline const FalcataDebugOptions& FalcataDebug() {
         o.syncpairs = true;
       } else if (token == std::string("aggressive")) {
         o.aggressive = true;
+      } else if (token == std::string("bynode")) {
+        o.bynode = true;
       } else if (token.rfind("maxsplits=", 0) == 0) {
         o.maxsplits = std::atoi(token.c_str() + 10);
       } else if (token.rfind("vramfree=", 0) == 0) {

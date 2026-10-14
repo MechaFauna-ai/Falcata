@@ -753,6 +753,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::unique_ptr<CUDAGradientDiscretizer> cuda_gradient_discretizer_;
 
   std::vector<int> leaf_best_split_feature_;
+  // FALCATA_DEBUG=bynode only: the per-node feature mask each leaf was last searched with
+  std::vector<std::vector<int8_t>> debug_bynode_masks_;
   std::vector<uint32_t> leaf_best_split_threshold_;
   std::vector<uint8_t> leaf_best_split_default_left_;
   std::vector<data_size_t> leaf_num_data_;

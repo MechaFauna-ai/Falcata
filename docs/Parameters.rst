@@ -443,6 +443,8 @@ Learning Control Parameters
 
    -  **Note**: if both ``feature_fraction`` and ``feature_fraction_bynode`` are smaller than ``1.0``, the final fraction of each node is ``feature_fraction * feature_fraction_bynode``
 
+   -  **Note**: on ``device_type=cuda`` a value below ``1.0`` (like ``interaction_constraints``) grows every tree with the per-split loop instead of the level-batched flows, with and without quantized gradients; this costs several times per round (5-40x measured on forest-like shapes)
+
 -  ``feature_fraction_seed`` :raw-html:`<a id="feature_fraction_seed" title="Permalink to this parameter" href="#feature_fraction_seed">&#x1F517;&#xFE0E;</a>`, default = ``2``, type = int
 
    -  random seed for ``feature_fraction``

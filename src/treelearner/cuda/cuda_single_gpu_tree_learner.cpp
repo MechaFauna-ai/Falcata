@@ -4475,6 +4475,16 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
               dbg.left_sum_gradients, dbg.left_sum_hessians, dbg.left_count, dbg.right_count);
     }
 
+    if (FalcataDebug().bynode && select_features_by_node_ &&
+        best_leaf_index_ < static_cast<int>(debug_bynode_masks_.size())) {
+      const std::vector<int8_t>& mask = debug_bynode_masks_[best_leaf_index_];
+      std::string bits(mask.size(), '0');
+      for (size_t f = 0; f < mask.size(); ++f) {
+        bits[f] = mask[f] ? '1' : '0';
+      }
+      fprintf(stderr, "BYNODE leaf=%d feat=%d mask=%s\n", best_leaf_index_,
+              leaf_best_split_feature_[best_leaf_index_], bits.c_str());
+    }
     global_timer.Start("CUDASingleGPUTreeLearner::Split");
     if (num_cat_threshold_ > 0) {
       ConstructBitsetForCategoricalSplit(best_split_info);
@@ -5240,6 +5250,15 @@ void CUDASingleGPUTreeLearner::SelectFeatureByNode(const Tree* tree) {
       is_feature_used_by_larger_node = col_sampler_.GetByNode(tree, larger_leaf_index_);
     }
     cuda_best_split_finder_->SetUsedFeatureByNode(is_feature_used_by_smaller_node, is_feature_used_by_larger_node);
+    if (FalcataDebug().bynode) {
+      if (static_cast<int>(debug_bynode_masks_.size()) < config_->num_leaves) {
+        debug_bynode_masks_.resize(config_->num_leaves);
+      }
+      debug_bynode_masks_[smaller_leaf_index_] = is_feature_used_by_smaller_node;
+      if (larger_leaf_index_ >= 0) {
+        debug_bynode_masks_[larger_leaf_index_] = is_feature_used_by_larger_node;
+      }
+    }
   }
 }
 
