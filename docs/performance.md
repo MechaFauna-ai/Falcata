@@ -1361,7 +1361,7 @@ Against master (a65d34e8; 8 cells, 2 pairs + 1 re-timed pair each): 1.010x over 
 
 ---
 
-## 10h. Bagged training (`bagged_code_view`, `oob_node_table`)
+## 10h. Bagged training (`bagged_code_view`, `oob_node_table`, `bagging_fused_scan`)
 
 The first profile of a bagged CUDA training (`bagging_fraction` < 1, `bagging_freq: 1`; the visible cells' data with
 the two bagging parameters added) found two costs that only bagging pays.
@@ -1382,6 +1382,15 @@ per level. The key packs each node's routing values (column, bin range and offse
 threshold, children, default direction) on the host into one 48-byte record, uploads the table with one copy into a
 buffer the dataset keeps, and reads one record per level (28 registers instead of 48, so twice the resident threads
 of the 1024-thread blocks). Scalar-leaf trees without categorical splits, on the per-column view and the packed view.
+
+**The bagging sample (`bagging_fused_scan`).** The device bag (`cuda_bagging.cu`) was a flag pass, a three-kernel
+global prefix sum over the flags and a scatter (~60 us per round at 4M rows, five launches and ~32 bytes of traffic
+per row). With the key it is three kernels and no flag array: per-block kept counts (`__syncthreads_count`), one
+block's scan of the block counts (which also holds the bag count the host reads), and a scatter that recomputes each
+row's Philox draw (a pure function of seed, iteration and row) and ranks it in its block by warp ballots: ~38 us at
+4M rows. The same draws and the same [in-bag ascending | out-of-bag from the tail] layout. CUDA builds only (32-lane
+ballots); ROCm keeps the global scan. higgs, bagging 0.5, 63 leaves depth 6 (3 pairs): 1.148 -> 1.125 ms per round
+(1.020, spread 0.002); at 1023 leaves (2 pairs): 2.061 -> 2.045 (1.008).
 
 Same-binary A/B, key off vs on (steady ms per round, median of rounds 150..300 (400 for higgs), tuner on, one
 `$HOME` per run, 2 interleaved pairs; md5-identical in every pair):
