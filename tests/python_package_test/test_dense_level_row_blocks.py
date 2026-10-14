@@ -7,7 +7,7 @@ grid; dense_block_map launches only the block rows that have rows and maps each 
 change only which block adds which row to the packed integer histogram, so every model must be byte-identical with
 either key off. The shapes cover 8-bit columns (the kernel's main user), 4-bit columns with pair_hist off, bagging,
 high quant_bins (the packed partials' overflow guard), a level with more pairs than the block map's prefix holds,
-and a 3-leaf tree (one pair per level: neither key engages).
+a 3-leaf tree (one pair per level: neither key engages) and the graph level loop (graph_quant).
 """
 
 import os
@@ -44,6 +44,8 @@ SHAPES = {
     "bins15_no_pair": (40_001, 40, {"max_bin": 15, "feature_fraction": 0.5, "cuda_plan": "pair_hist:off"}),
     "pairs_over_prefix": (90_001, 6, {"num_leaves": 4095, "max_depth": 12, "min_data_in_leaf": 1}),
     "three_leaves": (5_001, 4, {"num_leaves": 3, "max_depth": 2}),
+    # the graph level loop: the rows-per-thread floor is derived on the device from the level's sizes
+    "graph_loop": (60_001, 30, {"num_leaves": 63, "max_depth": 6, "cuda_plan": "graph_quant:on"}),
 }
 
 OFF = "dense_level_row_blocks:off,dense_block_map:off"
