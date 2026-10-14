@@ -2583,12 +2583,14 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
   const int8_t* is_feature_used_bytree = nullptr,
   const uint8_t* bin_used = nullptr,
   const bool row_batch = false,
-  const data_size_t min_rows_per_thread = 0) {
+  const data_size_t min_rows_per_thread = 0,
+  const int block_y = -1) {
   const data_size_t num_data_in_smaller_leaf = smaller_leaf_splits->num_data_in_leaf;
   // min_rows_per_thread (cuda_plan key dense_level_row_blocks; 0 = off): as level_row_blocks in the pair-joint
   // body, a small leaf of a many-pair level fills a few whole blocks instead of a few rows in every block row
   const data_size_t num_data_per_thread = max((num_data_in_smaller_leaf + dim_y - 1) / dim_y, min_rows_per_thread);
-  const unsigned int blockIdx_y = blockIdx.y;
+  // the block row in the level grid (block_y >= 0: a block-mapped launch's, see PairJointBlockPrefix)
+  const unsigned int blockIdx_y = block_y >= 0 ? static_cast<unsigned int>(block_y) : blockIdx.y;
   const data_size_t block_start = (static_cast<size_t>(blockIdx_y) * blockDim.y) * num_data_per_thread;
   if (block_start >= num_data_in_smaller_leaf) {
     return;
@@ -2746,6 +2748,36 @@ __global__ void CUDAConstructDiscretizedHistogramDenseKernel(
     num_data, static_cast<int>(gridDim.y * blockDim.y));
 }
 
+// cuda_plan keys pair_block_map / dense_block_map: num_pairs > 0 when the launch holds only the block rows with rows,
+// start[num_pairs] of them in y (x and blockDim unchanged): block row b belongs to the pair p with
+// start[p] <= b < start[p + 1] (pairs without rows have equal starts) and is that pair's block row b - start[p] of
+// the level grid (grid_y rows per pair, num_pairs pairs) it stands for.
+// num_pairs == 0: blockIdx.z is the pair and blockIdx.y the block row. Passed by value (kernel parameter space,
+// ~2 KB); starts fit 16 bits because a launch holds at most 65535 block rows.
+struct PairJointBlockPrefix {
+  static constexpr int kMaxPairs = 1024;
+  int num_pairs;
+  int grid_y;
+  uint16_t start[kMaxPairs + 1];
+};
+
+// the pair and block row of a block-mapped launch's block row blockIdx.y (see PairJointBlockPrefix)
+__device__ __forceinline__ void PairJointBlockPrefixLookup(const PairJointBlockPrefix& block_prefix,
+                                                           unsigned int* pair_index, int* block_y) {
+  int lo = 0;
+  int hi = block_prefix.num_pairs - 1;
+  while (lo < hi) {
+    const int mid = (lo + hi + 1) >> 1;
+    if (static_cast<unsigned int>(block_prefix.start[mid]) <= blockIdx.y) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  *pair_index = static_cast<unsigned int>(lo);
+  *block_y = static_cast<int>(blockIdx.y - block_prefix.start[lo]);
+}
+
 // Batched per-level variant (hybrid growth): blockIdx.z selects the pair. The
 // per-pair histogram bit width is a runtime (block-uniform) branch so pairs with
 // 16-bit and 32-bit histograms share a single launch. On the host-launched
@@ -2772,16 +2804,25 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
   const CUDAHybridGraphLoopStateOpt gstate,
   const bool row_batch,
   const data_size_t host_min_rows_per_thread,
-  const bool level_row_blocks) {
+  const bool level_row_blocks,
+  const PairJointBlockPrefix block_prefix) {
   // packed grad<<16|hess slots. SHARED_HIST_SIZE counts the 16-bit slots of the
   // budget shared with the non-quantized kernels, so the int32 array holds half
   // as many entries in the same bytes, at the alignment its atomics require.
   __shared__ int32_t shared_hist_packed[SHARED_HIST_SIZE / 2];
+  // cuda_plan key dense_block_map (classic flow only): the pair and block row this block stands for
+  unsigned int pair_index = blockIdx.z;
+  int block_y = static_cast<int>(blockIdx.y);
+  int level_grid_y = static_cast<int>(gridDim.y);
+  if (block_prefix.num_pairs > 0) {
+    PairJointBlockPrefixLookup(block_prefix, &pair_index, &block_y);
+    level_grid_y = block_prefix.grid_y;
+  }
   // graphs A2 idle-block guard (pow2-frozen grid; see the non-quantized kernel)
-  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.z)) {
+  if (HybridGraphBeyondLiveSplits(gstate, pair_index)) {
     return;
   }
-  const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.z;
+  const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
   if (!desc->construct_valid) {
     return;
   }
@@ -2809,7 +2850,7 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
   // grid's overflow guard bounds (the host's value in the classic flow, the device's replica below otherwise)
   data_size_t min_rows_per_thread = host_min_rows_per_thread;
   if (level_smaller_num_data == nullptr) {
-    dim_y = static_cast<int>(gridDim.y * blockDim.y);
+    dim_y = level_grid_y * static_cast<int>(blockDim.y);
   } else {
     data_size_t max_num_data = 0;
     const int num_pairs = HybridGraphLivePairCount(gstate, static_cast<int>(gridDim.z));
@@ -2837,13 +2878,13 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
       smaller_struct, shared_hist_packed, cuda_gradients_and_hessians, data,
       column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
       packed_partition_byte_offsets,
-      num_data, dim_y, is_feature_used_bytree, bin_used, row_batch, min_rows_per_thread);
+      num_data, dim_y, is_feature_used_bytree, bin_used, row_batch, min_rows_per_thread, block_y);
   } else {
     ConstructDiscretizedHistogramDenseInner<BIN_TYPE, false, PACK>(
       smaller_struct, shared_hist_packed, cuda_gradients_and_hessians, data,
       column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
       packed_partition_byte_offsets,
-      num_data, dim_y, is_feature_used_bytree, bin_used, row_batch, min_rows_per_thread);
+      num_data, dim_y, is_feature_used_bytree, bin_used, row_batch, min_rows_per_thread, block_y);
   }
 }
 
@@ -3362,18 +3403,7 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
 // Dynamic shared memory: the largest partition joint table.
 // ALL_ROWS (cuda_plan key all_rows_direct; the host takes it for a single-pair level whose leaf holds every row):
 // a separate instantiation, so the code of the hot per-level kernel is untouched; it still checks the leaf size.
-// cuda_plan key pair_block_map: num_pairs > 0 when the launch holds only the block rows with rows, start[num_pairs]
-// of them in y (x and blockDim unchanged): block row b belongs to the pair p with start[p] <= b < start[p + 1] (pairs
-// without rows have equal starts) and is that pair's block row b - start[p] of the level grid (grid_y rows per pair,
-// num_pairs pairs) it stands for.
-// num_pairs == 0: blockIdx.z is the pair and blockIdx.y the block row. Passed by value (kernel parameter space,
-// ~2 KB); starts fit 16 bits because a launch holds at most 65535 block rows.
-struct PairJointBlockPrefix {
-  static constexpr int kMaxPairs = 1024;
-  int num_pairs;
-  int grid_y;
-  uint16_t start[kMaxPairs + 1];
-};
+// cuda_plan key pair_block_map: see PairJointBlockPrefix.
 
 #define FALCATA_PAIR_JOINT_BATCHED_PARAMS \
   const CUDAHybridPairDescriptor* pair_descs, \
@@ -3410,18 +3440,7 @@ __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_
   int level_grid_y = static_cast<int>(gridDim.y);
   int level_num_pairs = static_cast<int>(gridDim.z);
   if (block_prefix.num_pairs > 0) {
-    int lo = 0;
-    int hi = block_prefix.num_pairs - 1;
-    while (lo < hi) {
-      const int mid = (lo + hi + 1) >> 1;
-      if (static_cast<unsigned int>(block_prefix.start[mid]) <= blockIdx.y) {
-        lo = mid;
-      } else {
-        hi = mid - 1;
-      }
-    }
-    pair_index = static_cast<unsigned int>(lo);
-    block_y = static_cast<int>(blockIdx.y - block_prefix.start[lo]);
+    PairJointBlockPrefixLookup(block_prefix, &pair_index, &block_y);
     level_grid_y = block_prefix.grid_y;
     level_num_pairs = block_prefix.num_pairs;
   }
@@ -5897,6 +5916,35 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
   const data_size_t dense_min_rows_per_thread =
     FalcataPlan::Get().dense_level_row_blocks && num_pairs > 1 && level_smaller_num_data == nullptr && dense_dim_y > 0 ?
     static_cast<data_size_t>((static_cast<int64_t>(max_num_data_in_smaller_leaf) + dense_dim_y - 1) / dense_dim_y) : 0;
+  // cuda_plan key dense_block_map (classic flow, as pair_block_map): launch only the block rows that have rows, each
+  // pair's count by the kernel's own row grouping (dense_level_row_blocks' floor) from the host copy of the leaf
+  // counts the kernel reads; blocks map back to their pair and block row through the prefix. Same blocks with the
+  // same rows: bit-identical.
+  PairJointBlockPrefix dense_block_prefix{};  // num_pairs 0: the plain grid
+  dim3 dense_grid_dim = grid_dim;
+  if (FalcataPlan::Get().dense_block_map && num_pairs > 1 && num_pairs <= PairJointBlockPrefix::kMaxPairs &&
+      level_smaller_num_data == nullptr && hybrid_graph_capture_gstate_ == nullptr && dense_dim_y > 0 &&
+      level_host_pair_descs_ != nullptr && level_host_num_pairs_ == num_pairs) {
+    int64_t total = 0;
+    for (int p = 0; p < num_pairs; ++p) {
+      dense_block_prefix.start[p] = static_cast<uint16_t>(std::min<int64_t>(total, 65535));
+      const CUDAHybridPairDescriptor& d = level_host_pair_descs_[p];
+      const data_size_t n = d.num_data_in_smaller_leaf;
+      if (!d.construct_valid || n <= 0) {
+        continue;
+      }
+      const int64_t rows_per_thread = std::max<int64_t>((static_cast<int64_t>(n) + dense_dim_y - 1) / dense_dim_y,
+                                                        dense_min_rows_per_thread);
+      const int64_t block_rows = static_cast<int64_t>(block_dim_y) * rows_per_thread;
+      total += std::min<int64_t>(grid_dim_y, (static_cast<int64_t>(n) + block_rows - 1) / block_rows);
+    }
+    dense_block_prefix.start[num_pairs] = static_cast<uint16_t>(std::min<int64_t>(total, 65535));
+    if (total > 0 && total <= std::min(65535, CurrentDeviceLaunchLimits().max_grid_dim_y)) {
+      dense_block_prefix.num_pairs = num_pairs;
+      dense_block_prefix.grid_y = grid_dim_y;
+      dense_grid_dim = dim3(grid_dim.x, static_cast<unsigned int>(total), 1);
+    }
+  }
   const bool det_batched = DetDenseBatchedEligible(num_pairs);
   const int* level_dim_y = nullptr;
   const data_size_t* level_sizes_for_kernel = nullptr;
@@ -6239,7 +6287,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       } else if (compact_is_4bit_) {
         DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
 #define FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PACKT) \
-        CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE, PACKT><<<grid_dim, block_dim, 0, cuda_stream_>>>( \
+        CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE, PACKT><<<dense_grid_dim, block_dim, 0, cuda_stream_>>>( \
           pair_descs, \
           reinterpret_cast<const int32_t*>(cuda_gradients_), \
           reinterpret_cast<const BIN_TYPE*>(NibbleViewData()), \
@@ -6254,7 +6302,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           min_sum_hessian_in_leaf_, \
           level_smaller_num_data, \
           hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch, \
-          dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks)
+          dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks, dense_block_prefix)
         switch (compact_codec_) {
           case PackCodecId::kBit3x32:
             FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PackBit3x32);
@@ -6275,7 +6323,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
 #undef FALCATA_LAUNCH_BATCHED_COMPACT_QUANT
       } else {
         DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
-        CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE><<<grid_dim, block_dim, 0, cuda_stream_>>>(
+        CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE><<<dense_grid_dim, block_dim, 0, cuda_stream_>>>(
           pair_descs,
           reinterpret_cast<const int32_t*>(cuda_gradients_),
           reinterpret_cast<const BIN_TYPE*>(NibbleViewData()),
@@ -6290,7 +6338,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           min_sum_hessian_in_leaf_,
           level_smaller_num_data,
           hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch,
-        dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks);
+        dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks, dense_block_prefix);
       }
     } else if (cuda_row_data_->is_4bit_packed()) {
       if (TryLaunchConstructJITBatchedRowDataQuant(
@@ -6300,7 +6348,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         DiagConstructKernel("jit");
       } else {
         DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
-        CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE, PackNibble4><<<grid_dim, block_dim, 0, cuda_stream_>>>(
+        CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE, PackNibble4><<<dense_grid_dim, block_dim, 0, cuda_stream_>>>(
           pair_descs,
           reinterpret_cast<const int32_t*>(cuda_gradients_),
           RowMajorBin<BIN_TYPE>(),
@@ -6315,7 +6363,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           min_sum_hessian_in_leaf_,
           level_smaller_num_data,
           hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch,
-        dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks);
+        dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks, dense_block_prefix);
       }
     } else {
       if (TryLaunchConstructJITBatchedRowDataQuant(
@@ -6325,7 +6373,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         return;  // JIT launched (validated module; mask-free shape)
       }
       DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
-      CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE><<<grid_dim, block_dim, 0, cuda_stream_>>>(
+      CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE><<<dense_grid_dim, block_dim, 0, cuda_stream_>>>(
         pair_descs,
         reinterpret_cast<const int32_t*>(cuda_gradients_),
         RowMajorBin<BIN_TYPE>(),
@@ -6340,7 +6388,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         min_sum_hessian_in_leaf_,
         level_smaller_num_data,
         hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch,
-        dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks);
+        dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks, dense_block_prefix);
     }
   } else if (det_batched) {
     // Deterministic float construct for the level batch: the same fixed-order
