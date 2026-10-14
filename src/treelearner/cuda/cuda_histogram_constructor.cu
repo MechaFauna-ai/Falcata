@@ -6338,7 +6338,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           min_sum_hessian_in_leaf_,
           level_smaller_num_data,
           hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch,
-        dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks, dense_block_prefix);
+          dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks, dense_block_prefix);
       }
     } else if (cuda_row_data_->is_4bit_packed()) {
       if (TryLaunchConstructJITBatchedRowDataQuant(
@@ -6363,7 +6363,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           min_sum_hessian_in_leaf_,
           level_smaller_num_data,
           hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch,
-        dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks, dense_block_prefix);
+          dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks, dense_block_prefix);
       }
     } else {
       if (TryLaunchConstructJITBatchedRowDataQuant(
