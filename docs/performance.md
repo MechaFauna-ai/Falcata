@@ -941,8 +941,8 @@ string that still names one of them (`warp_find_narrow`, `warp_find_spread`, `wa
   code: its per-lane gain work list is `find_prune_fp32`'s, `find_compact_survivors` goes further; a tighter bound
   margin (2^-16 instead of 2e-4) was 1.000x on the 40-bin shape (5 pairs) and is not a key. (The lineage's sure
   prune on tasks of at most 32 positions, then one position per lane under `warp_find_spread`, measured 1.002x on
-  covtype and was not adopted then. Since `kevo/unify_find` those tasks of 9 to 32 positions run 2 per lane like
-  every wide task, with `find_prune_fp32`, `find_prune_sure` and `find_compact_survivors` engaged. The winner is
+  covtype and was not adopted then. Since `kevo/unify_find` those tasks of 9 to 32 positions run 2 per lane, like
+  every wide task of at most 64 positions (`warp_find_mid_ppl`), with `find_prune_fp32`, `find_prune_sure` and `find_compact_survivors` engaged. The winner is
   the same: the fp64 tie tolerance is 0 (`GainTieRelTol<double>()`), so every grouping of positions into lanes picks
   the exact (maximum gain, then lowest position) first maximum, and the prune drops only positions that cannot win
   or tie. covtype's binary columns, which that measurement cited, are in the few-position tier now.)

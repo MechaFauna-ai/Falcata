@@ -5982,8 +5982,9 @@ __device__ __forceinline__ void WarpFindBest(
     // by lane, each lane's slots ascending), and round r hands survivor r * 32 + lane to each lane: a lane's
     // positions still arrive in ascending order, so the strict > below keeps the lowest position among equal
     // gains within a lane, and the cross-lane reduction's exact (gain, then lowest position) first maximum does
-    // not depend on which lane computed which position (every gain is finite: |g| <= 2^31 * grad_scale with a
-    // finite float scale, and the denominator is at least kEpsilon, so no +inf reaches the reduction's inf rule)
+    // not depend on which lane computed which position (for finite gradients every gain is finite: |g| <= 2^31 *
+    // grad_scale with a finite float scale, and the denominator is at least kEpsilon, so no +inf reaches the
+    // reduction's inf rule; see the reduction below)
     UT* s_val = reinterpret_cast<UT*>(s_compact);
     uint8_t* s_pos = reinterpret_cast<uint8_t*>(s_val + 32 * PPL);
     const int cnt = __popc(vmask);
@@ -6047,9 +6048,11 @@ __device__ __forceinline__ void WarpFindBest(
   // equal exactly as their bit patterns do as unsigned integers; lanes without one are excluded by kNoThreshold.
   // OtherIsBetterWithTieBreak's tolerance is fmax(|a|, |b|) * 0, NaN when either gain is +inf, which makes it
   // return false: kept as the kInfBits test on the warp.
-  // No gain that reaches this reduction is +inf (or NaN), so that rule never decides, and the result is the same
-  // whatever the lane grouping (PPL, 4-lane groups or a warp): every gradient sum is an int32 times grad_scale, a
-  // finite float, so |g| <= 2^31 * FLT_MAX, about 7.3e47, and g^2 about 5.3e95; consider() only sees positions that
+  // For finite gradients no gain that reaches this reduction is +inf (or NaN), so that rule never decides, and the
+  // result is the same whatever the lane grouping (PPL, 4-lane groups or a warp): every gradient sum is an int32 times
+  // grad_scale, a finite float (the discretizer derives it from the max |gradient|; an objective that returns an inf
+  // gradient makes it inf, and the gains inf or NaN, a garbage model on every build), so |g| <= 2^31 * FLT_MAX, about
+  // 7.3e47, and g^2 about 5.3e95; consider() only sees positions that
   // passed prep, whose hessian sums are >= min_sum_hessian_in_leaf >= 0 (config: check >= 0, as lambda_l2 >= 0), so
   // each denominator (h + kEpsilon + lambda_l2) is >= kEpsilon = 1e-15 and each side's term is at most about 5.3e110
   // (with max_delta_step the output is clamped only where |g| / (h + l2) exceeds it, which keeps the term below the
