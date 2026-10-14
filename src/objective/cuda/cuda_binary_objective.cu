@@ -135,7 +135,7 @@ double CUDABinaryLogloss::LaunchCalcInitScoreKernel(const int /*class_id*/) cons
 // within the evaluation's error bound of an approximation rounds to the same float, the original double does too.
 //
 // Normal-range double <-> float by bit manipulation (integer pipe): ApproxFloatBits truncates the mantissa (relative
-// error < 2^-23; zero below float's normal range, infinite above it), FloatToDoubleBits is exact for normal floats.
+// error < 2^-23; zero below float's normal range, infinite above it), LeanFloatToDouble is exact for normal floats and zeros.
 __device__ __forceinline__ float LeanApproxFloat(const double v) {
   const unsigned long long bits = static_cast<unsigned long long>(__double_as_longlong(v));
   const int biased = static_cast<int>((bits >> 52) & 0x7ffu);
@@ -154,6 +154,9 @@ __device__ __forceinline__ float LeanApproxFloat(const double v) {
 __device__ __forceinline__ double LeanFloatToDouble(const float f) {
   const unsigned int fbits = static_cast<unsigned int>(__float_as_int(f));
   const unsigned long long sign = static_cast<unsigned long long>(fbits >> 31) << 63;
+  if ((fbits & 0x7fffffffu) == 0) {
+    return __longlong_as_double(static_cast<long long>(sign));
+  }
   const unsigned long long biased = ((fbits >> 23) & 0xffu) - 127 + 1023;
   return __longlong_as_double(static_cast<long long>(sign | (biased << 52) |
                                                      (static_cast<unsigned long long>(fbits & 0x7fffffu) << 29)));
@@ -178,16 +181,37 @@ __device__ __forceinline__ bool LeanSettledFloat(const double v, const float mar
   return true;
 }
 
-// The lean evaluation for |x| <= 80, x = label * sigmoid * score (the original's double): e^x = 2^k e^r with Cody-Waite
-// r = x - k ln2 (|r| <= 0.3466; two FMAs with ln2's double split: error < 2^-54 absolute), e^r's head
-// 1 + r + ... + r^5/120 + r^6 u in double Horner and its tail u = 1/6! + ... + r^5/11! in fp32 (|r^6 u| < 2.6e-6, the
-// fp32 tail's error incl. the truncated r (< 2^-23 relative) < 2^-38.7, the series truncated after r^11: < 2^-46), so
-// e^x to < 2^-38.5 relative; 1 + e^x in double; the quotient from an fp32 reciprocal (< 2^-22 relative) and one
-// double Newton step (< 2^-43). The response is within 2^-38.3 of the true value, the original's double (libdevice
-// exp, 1 ulp; the rounded sum and division) within 2^-50: margin eps_r = 2^-36, i.e. eps_r * 2^53 = 2^17 double ulps
-// of the response's binade (|v| < 2^(e+1)). The hessian A (s - A), A = |response|, inherits A's error amplified by
-// s / (s - A) (the cancellation in s - A); both arms round s - A and the product: eps_h = 1.02 eps_r s / (s - A) +
-// 2^-49. Returns false (the caller evaluates the original expression) whenever a check fails.
+__device__ const double kLeanExp2Table[64] = {  // 2^(j/64), j = 0..63, rounded to nearest double
+  0x1.0000000000000p+0, 0x1.02c9a3e778061p+0, 0x1.059b0d3158574p+0, 0x1.0874518759bc8p+0,
+  0x1.0b5586cf9890fp+0, 0x1.0e3ec32d3d1a2p+0, 0x1.11301d0125b51p+0, 0x1.1429aaea92de0p+0,
+  0x1.172b83c7d517bp+0, 0x1.1a35beb6fcb75p+0, 0x1.1d4873168b9aap+0, 0x1.2063b88628cd6p+0,
+  0x1.2387a6e756238p+0, 0x1.26b4565e27cddp+0, 0x1.29e9df51fdee1p+0, 0x1.2d285a6e4030bp+0,
+  0x1.306fe0a31b715p+0, 0x1.33c08b26416ffp+0, 0x1.371a7373aa9cbp+0, 0x1.3a7db34e59ff7p+0,
+  0x1.3dea64c123422p+0, 0x1.4160a21f72e2ap+0, 0x1.44e086061892dp+0, 0x1.486a2b5c13cd0p+0,
+  0x1.4bfdad5362a27p+0, 0x1.4f9b2769d2ca7p+0, 0x1.5342b569d4f82p+0, 0x1.56f4736b527dap+0,
+  0x1.5ab07dd485429p+0, 0x1.5e76f15ad2148p+0, 0x1.6247eb03a5585p+0, 0x1.6623882552225p+0,
+  0x1.6a09e667f3bcdp+0, 0x1.6dfb23c651a2fp+0, 0x1.71f75e8ec5f74p+0, 0x1.75feb564267c9p+0,
+  0x1.7a11473eb0187p+0, 0x1.7e2f336cf4e62p+0, 0x1.82589994cce13p+0, 0x1.868d99b4492edp+0,
+  0x1.8ace5422aa0dbp+0, 0x1.8f1ae99157736p+0, 0x1.93737b0cdc5e5p+0, 0x1.97d829fde4e50p+0,
+  0x1.9c49182a3f090p+0, 0x1.a0c667b5de565p+0, 0x1.a5503b23e255dp+0, 0x1.a9e6b5579fdbfp+0,
+  0x1.ae89f995ad3adp+0, 0x1.b33a2b84f15fbp+0, 0x1.b7f76f2fb5e47p+0, 0x1.bcc1e904bc1d2p+0,
+  0x1.c199bdd85529cp+0, 0x1.c67f12e57d14bp+0, 0x1.cb720dcef9069p+0, 0x1.d072d4a07897cp+0,
+  0x1.d5818dcfba487p+0, 0x1.da9e603db3285p+0, 0x1.dfc97337b9b5fp+0, 0x1.e502ee78b3ff6p+0,
+  0x1.ea4afa2a490dap+0, 0x1.efa1bee615a27p+0, 0x1.f50765b6e4540p+0, 0x1.fa7c1819e90d8p+0
+};
+
+// The lean evaluation for |x| <= 80, x = label * sigmoid * score (the original's double): e^x = 2^m 2^(j/64) e^r with
+// k = 64 m + j = rint(x 64 / ln2) (from x's truncated float: |k| <= 7400) and r = x - k ln2/64 by two FMAs with ln2/64's
+// double split (|r| <= 0.00543, error < 2^-60 absolute); e^r = 1 + r (1 + r (1/2 + r t)), t = 1/3! + r/4! + r^2/5! +
+// r^3/6! in fp32 (|r^3 t| < 2.7e-8; t's error incl. the truncated r < 2^-21 relative: < 2^-47 of e^r; the series
+// truncated after r^6: < 2^-60), the head in double Horner; the table's 2^(j/64) (rounded, 2^-53) and the exact
+// power of two: e^x to < 2^-46.5 relative. 1 + e^x in double; the quotient from an fp32 reciprocal of the truncated
+// 1 + e^x (< 1.5 * 2^-23 relative) and one double Newton step (< 2^-44.8). The response is within 2^-44.2 of the true
+// value, the original's double (libdevice exp, 1 ulp; the rounded sum and division) within 2^-50: margin eps_r =
+// 2^-42, i.e. eps_r * 2^53 = 2^11 double ulps of the response's binade (|v| < 2^(e+1)). The hessian A (s - A), A =
+// |response|, inherits A's error amplified by s / (s - A) (the cancellation in s - A); both arms round s - A and the
+// product: eps_h = 1.02 eps_r s / (s - A) + 2^-49. Returns false (the caller evaluates the original expression)
+// whenever a check fails.
 __device__ __forceinline__ bool BinaryLoglossLean(const double score, const bool is_pos, const double sigmoid,
                                                   float* out_gradient, float* out_hessian) {
   const double ls = is_pos ? sigmoid : -sigmoid;  // label * sigmoid, label = +-1: exact
@@ -197,25 +221,21 @@ __device__ __forceinline__ bool BinaryLoglossLean(const double score, const bool
   if (!(x_magnitude <= 0x4054000000000000ull)) {  // |x| <= 80 (NaN fails)
     return false;
   }
-  const float kf = rintf(LeanApproxFloat(x) * 1.44269504088896341f);
-  const int k = static_cast<int>(kf);  // |k| <= 116
-  const double kd = static_cast<double>(k);
-  double r = fma(-kd, 6.93147180559945286e-01, x);
-  r = fma(-kd, 2.31904681384629956e-17, r);
+  const float kf = rintf(LeanApproxFloat(x) * 92.3324826168936f);  // 64 / ln2
+  const int k = static_cast<int>(kf);
+  const double kd = LeanFloatToDouble(kf);
+  double r = fma(-kd, 0x1.62e42fefa39efp-7, x);  // ln2/64, high and low parts
+  r = fma(-kd, 0x1.abc9e3b39803fp-62, r);
   const float rf = LeanApproxFloat(r);
-  float u = 2.50521083854417188e-08f;            // 1/11!
-  u = fmaf(u, rf, 2.75573192239858907e-07f);     // 1/10!
-  u = fmaf(u, rf, 2.75573192239858907e-06f);     // 1/9!
-  u = fmaf(u, rf, 2.48015873015873016e-05f);     // 1/8!
-  u = fmaf(u, rf, 1.98412698412698413e-04f);     // 1/7!
-  u = fmaf(u, rf, 1.38888888888888889e-03f);     // 1/6!
-  double p = fma(LeanFloatToDouble(u), r, 8.33333333333333333e-03);
-  p = fma(p, r, 4.16666666666666667e-02);
-  p = fma(p, r, 1.66666666666666667e-01);
-  p = fma(p, r, 0.5);
+  float t = 1.38888888888888889e-03f;  // 1/6!
+  t = fmaf(t, rf, 8.33333333333333333e-03f);  // 1/5!
+  t = fmaf(t, rf, 4.16666666666666667e-02f);  // 1/4!
+  t = fmaf(t, rf, 1.66666666666666667e-01f);  // 1/3!
+  double p = fma(LeanFloatToDouble(t), r, 0.5);
   p = fma(p, r, 1.0);
   p = fma(p, r, 1.0);
-  const double e = p * __longlong_as_double(static_cast<long long>(k + 1023) << 52);
+  const double scaled = p * kLeanExp2Table[k & 63];  // in [0.99, 2.01): 2^m keeps it normal for |m| <= 116
+  const double e = __longlong_as_double(__double_as_longlong(scaled) + (static_cast<long long>(k >> 6) << 52));
   const double d = 1.0 + e;
   const double inv0 = LeanFloatToDouble(1.0f / LeanApproxFloat(d));
   const double num = -ls;
@@ -230,7 +250,7 @@ __device__ __forceinline__ bool BinaryLoglossLean(const double score, const bool
   }
   const float ratio = LeanApproxFloat(sigmoid) / gap_f;
   float g_out, h_out;
-  if (!LeanSettledFloat(q, 131072.0f, &g_out) || !LeanSettledFloat(h, 1.03f * 131072.0f * ratio + 16.0f, &h_out)) {
+  if (!LeanSettledFloat(q, 2048.0f, &g_out) || !LeanSettledFloat(h, 1.03f * 2048.0f * ratio + 16.0f, &h_out)) {
     return false;
   }
   *out_gradient = g_out;
