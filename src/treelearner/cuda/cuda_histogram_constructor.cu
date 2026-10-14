@@ -2589,7 +2589,7 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramDenseInner(
   // min_rows_per_thread (cuda_plan key dense_level_row_blocks; 0 = off): as level_row_blocks in the pair-joint
   // body, a small leaf of a many-pair level fills a few whole blocks instead of a few rows in every block row
   const data_size_t num_data_per_thread = max((num_data_in_smaller_leaf + dim_y - 1) / dim_y, min_rows_per_thread);
-  // the block row in the level grid (block_y >= 0: a block-mapped launch's, see PairJointBlockPrefix)
+  // the block row in the level grid (block_y >= 0: a block-mapped launch's, see BlockPrefix)
   const unsigned int blockIdx_y = block_y >= 0 ? static_cast<unsigned int>(block_y) : blockIdx.y;
   const data_size_t block_start = (static_cast<size_t>(blockIdx_y) * blockDim.y) * num_data_per_thread;
   if (block_start >= num_data_in_smaller_leaf) {
@@ -2752,17 +2752,23 @@ __global__ void CUDAConstructDiscretizedHistogramDenseKernel(
 // start[num_pairs] of them in y (x and blockDim unchanged): block row b belongs to the pair p with
 // start[p] <= b < start[p + 1] (pairs without rows have equal starts) and is that pair's block row b - start[p] of
 // the level grid (grid_y rows per pair, num_pairs pairs) it stands for.
-// num_pairs == 0: blockIdx.z is the pair and blockIdx.y the block row. Passed by value (kernel parameter space,
-// ~2 KB); starts fit 16 bits because a launch holds at most 65535 block rows.
-struct PairJointBlockPrefix {
-  static constexpr int kMaxPairs = 1024;
+// num_pairs == 0: blockIdx.z is the pair and blockIdx.y the block row. Passed by value (kernel parameter space:
+// ~2 KB for the pair-joint kernel's 1024 pairs; the dense kernel's launches, many of them on shapes whose rounds are
+// launch-bound, carry a 256-pair one, a depth-10 tree's last level); starts fit 16 bits because a launch holds at
+// most 65535 block rows.
+template <int MAX_PAIRS>
+struct BlockPrefix {
+  static constexpr int kMaxPairs = MAX_PAIRS;
   int num_pairs;
   int grid_y;
   uint16_t start[kMaxPairs + 1];
 };
+using PairJointBlockPrefix = BlockPrefix<1024>;
+using DenseBlockPrefix = BlockPrefix<256>;
 
-// the pair and block row of a block-mapped launch's block row blockIdx.y (see PairJointBlockPrefix)
-__device__ __forceinline__ void PairJointBlockPrefixLookup(const PairJointBlockPrefix& block_prefix,
+// the pair and block row of a block-mapped launch's block row blockIdx.y (see BlockPrefix)
+template <int MAX_PAIRS>
+__device__ __forceinline__ void PairJointBlockPrefixLookup(const BlockPrefix<MAX_PAIRS>& block_prefix,
                                                            unsigned int* pair_index, int* block_y) {
   int lo = 0;
   int hi = block_prefix.num_pairs - 1;
@@ -2816,7 +2822,7 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
   const bool row_batch,
   const data_size_t host_min_rows_per_thread,
   const bool level_row_blocks,
-  const PairJointBlockPrefix block_prefix) {
+  const DenseBlockPrefix block_prefix) {
   // packed grad<<16|hess slots. SHARED_HIST_SIZE counts the 16-bit slots of the
   // budget shared with the non-quantized kernels, so the int32 array holds half
   // as many entries in the same bytes, at the alignment its atomics require.
@@ -3415,7 +3421,7 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
 // Dynamic shared memory: the largest partition joint table.
 // ALL_ROWS (cuda_plan key all_rows_direct; the host takes it for a single-pair level whose leaf holds every row):
 // a separate instantiation, so the code of the hot per-level kernel is untouched; it still checks the leaf size.
-// cuda_plan key pair_block_map: see PairJointBlockPrefix.
+// cuda_plan key pair_block_map: see BlockPrefix.
 
 #define FALCATA_PAIR_JOINT_BATCHED_PARAMS \
   const CUDAHybridPairDescriptor* pair_descs, \
@@ -3446,7 +3452,7 @@ template <bool ALL_ROWS, int BATCH, bool CODE5 = false, bool WORDS = false, bool
           int CODE_BITS = 5>
 __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_PARAMS) {
   extern __shared__ int32_t shared_joint[];
-  // cuda_plan key pair_block_map: the pair and block row this block stands for (see PairJointBlockPrefix)
+  // cuda_plan key pair_block_map: the pair and block row this block stands for (see BlockPrefix)
   unsigned int pair_index = blockIdx.z;
   int block_y = static_cast<int>(blockIdx.y);
   int level_grid_y = static_cast<int>(gridDim.y);
@@ -5932,9 +5938,9 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
   // pair's count by the kernel's own row grouping (dense_level_row_blocks' floor) from the host copy of the leaf
   // counts the kernel reads; blocks map back to their pair and block row through the prefix. Same blocks with the
   // same rows: bit-identical.
-  PairJointBlockPrefix dense_block_prefix{};  // num_pairs 0: the plain grid
+  DenseBlockPrefix dense_block_prefix{};  // num_pairs 0: the plain grid
   dim3 dense_grid_dim = grid_dim;
-  if (FalcataPlan::Get().dense_block_map && num_pairs > 1 && num_pairs <= PairJointBlockPrefix::kMaxPairs &&
+  if (FalcataPlan::Get().dense_block_map && num_pairs > 1 && num_pairs <= DenseBlockPrefix::kMaxPairs &&
       level_smaller_num_data == nullptr && hybrid_graph_capture_gstate_ == nullptr && dense_dim_y > 0 &&
       level_host_pair_descs_ != nullptr && level_host_num_pairs_ == num_pairs) {
     int64_t total = 0;
