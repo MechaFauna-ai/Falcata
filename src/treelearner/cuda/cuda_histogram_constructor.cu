@@ -5648,6 +5648,7 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramKernel(
           smaller_num_bits_in_histogram_bins,
           larger_num_bits_in_histogram_bins,
           change_buffer);
+        CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());  // a new launch shape: its launch errors surface
         if (parent_num_bits_in_histogram_bins > 16 && larger_num_bits_in_histogram_bins <= 16) {
           CopyChangedNumBitHistogram<<<num_subtract_blocks, SUBTRACT_BLOCK_SIZE, 0, current_stream()>>>(
             num_total_bin_,
@@ -6683,6 +6684,7 @@ void CUDAHistogramConstructor::LaunchFixSubtractDiscretizedMaskedKernel(
     any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
     any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
     gstate);
+  CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());  // a new launch shape: its launch errors surface
 }
 
 void CUDAHistogramConstructor::LaunchFixSubtractHistogramSmallLeafBatchedKernel(
