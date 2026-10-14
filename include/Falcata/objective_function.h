@@ -105,6 +105,20 @@ class ObjectiveFunction {
   FALCATA_EXPORT static ObjectiveFunction* CreateObjectiveFunction(const std::string& str);
 
   /*!
+  * \brief Whether CreateObjectiveFunctionCUDA builds a CUDA objective for this type (the others fall back to the
+  * host class there)
+  */
+  FALCATA_EXPORT static bool HasCUDAObjective(const std::string& type);
+
+  /*!
+  * \brief Whether a random forest (boosting=rf) boosts on the CUDA device: device cuda, cuda_plan key
+  * rf_device_objective, no GOSS, and an objective with a CUDA kernel. The objective factory and the metric factory
+  * both decide by it, so rf gets the CUDA metrics exactly when its objective is a CUDA objective (the CUDA metrics
+  * convert the score only through a CUDA objective).
+  */
+  FALCATA_EXPORT static bool RFBoostsOnDevice(const Config& config);
+
+  /*!
   * \brief Whether boosting is done on CUDA
   */
   virtual bool IsCUDAObjective() const { return false; }

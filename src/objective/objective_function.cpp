@@ -5,6 +5,7 @@
  */
 
 #include <Falcata/objective_function.h>
+#include <Falcata/falcata_plan.h>
 
 #include <string>
 
@@ -72,12 +73,41 @@ ObjectiveFunction* ObjectiveFunction::CreateObjectiveFunctionCUDA(const std::str
 }
 #endif  // USE_CUDA
 
+bool ObjectiveFunction::HasCUDAObjective(const std::string& type) {
+  // the types CreateObjectiveFunctionCUDA builds a CUDA class for
+  for (const char* cuda_type : {"regression", "regression_l1", "quantile", "huber", "fair", "poisson", "binary",
+                                "lambdarank", "rank_xendcg", "multi_regression", "multiclass", "multiclassova"}) {
+    if (type == std::string(cuda_type)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool ObjectiveFunction::RFBoostsOnDevice(const Config& config) {
+  #ifdef USE_CUDA
+  return config.boosting == std::string("rf") && config.device_type == std::string("cuda") &&
+         config.data_sample_strategy != std::string("goss") && HasCUDAObjective(config.objective) &&
+         FalcataPlan::FromConfig(config).rf_device_objective;
+  #else
+  (void)config;
+  return false;
+  #endif  // USE_CUDA
+}
+
 ObjectiveFunction* ObjectiveFunction::CreateObjectiveFunction(const std::string& type, const Config& config) {
   #ifdef USE_CUDA
+  // cuda_plan key rf_device_objective: a random forest boosts on the device too (its constant gradients from the
+  // objective's kernel, once) when RFBoostsOnDevice; otherwise rf keeps the host objective
   if (config.device_type == std::string("cuda") &&
       config.data_sample_strategy != std::string("goss") &&
-      config.boosting != std::string("rf")) {
-    return CreateObjectiveFunctionCUDA(type, config);
+      (config.boosting != std::string("rf") || RFBoostsOnDevice(config))) {
+    ObjectiveFunction* objective = CreateObjectiveFunctionCUDA(type, config);
+    if (config.boosting == std::string("rf")) {
+      // the metric factory gave rf the CUDA metrics by the same predicate: the factory must agree with it
+      CHECK(objective != nullptr && objective->IsCUDAObjective());
+    }
+    return objective;
   } else {
   #endif  // USE_CUDA
     if (type == std::string("regression")) {

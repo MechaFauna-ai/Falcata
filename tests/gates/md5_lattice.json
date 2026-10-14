@@ -137,6 +137,11 @@
    "metric": 2.000753,
    "metric_name": "rmse"
   },
+  "dense/rf-l1-bagged": {
+   "md5": "526a5c5b627f944f6033e1e0365cfd5e",
+   "metric": 2.543691,
+   "metric_name": "rmse"
+  },
   "efb/quant": {
    "md5": "40620d5a015947e5921674efa2d30ab5",
    "metric": 1.281376,
@@ -191,6 +196,11 @@
    "metric": 0.859558,
    "metric_name": "ova_logloss"
   },
+  "graph/rf-fixedpoint-bagged": {
+   "md5": "f5a76cfa40d12c6bb58d3fc92ffcbdbe",
+   "metric": 0.848742,
+   "metric_name": "mlogloss"
+  },
   "graph12/quant": {
    "md5": "864550515874c8852178d4fa3579fe2c",
    "metric": 1.008945,
@@ -233,6 +243,11 @@
   "imbalanced/quant": {
    "md5": "966358cd405ca04acd0fe90656781bc8",
    "metric": 0.961106,
+   "metric_name": "auc"
+  },
+  "imbalanced/rf-bagged": {
+   "md5": "7ac8e646379b8470225c41d546e17090",
+   "metric": 0.971071,
    "metric_name": "auc"
   },
   "imbalanced/sigmoid03": {

@@ -92,6 +92,13 @@ class TreeLearner {
   */
   virtual void AddPredictionToScore(const Tree* tree, double* out_score) const = 0;
 
+  /*!
+  * \brief Put the rows of the bag back in bag order, as AddPredictionToScore does on the CUDA learner (the next tree's
+  * partition starts from the index order the last one left), for a caller that does not add the last tree's
+  * predictions (rf's deferred train score, cuda_plan key rf_lazy_train_score)
+  */
+  virtual void RestoreBagOrder() {}
+
   virtual void RenewTreeOutput(Tree* tree, const ObjectiveFunction* obj, std::function<double(const label_t*, int)> residual_getter,
                                data_size_t total_num_data, const data_size_t* bag_indices, data_size_t bag_cnt, const double* train_score) const = 0;
 
