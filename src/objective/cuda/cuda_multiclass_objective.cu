@@ -6,9 +6,9 @@
 
 #ifdef USE_CUDA
 
-#include <algorithm>
-
 #include <Falcata/falcata_plan.h>
+
+#include <algorithm>
 
 #include "cuda_multiclass_objective.hpp"
 

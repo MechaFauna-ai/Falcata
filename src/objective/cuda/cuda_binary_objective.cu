@@ -168,7 +168,7 @@ double CUDABinaryLogloss::LaunchCalcInitScoreKernel(const int /*class_id*/) cons
 // Normal-range double <-> float by bit manipulation (integer pipe): ApproxFloatBits truncates the mantissa (relative
 // error < 2^-23; zero below float's normal range, infinite above it), LeanFloatToDouble is exact for normal floats and zeros.
 __device__ __forceinline__ float LeanApproxFloat(const double v) {
-  const unsigned long long bits = static_cast<unsigned long long>(__double_as_longlong(v));
+  const unsigned long long bits = static_cast<unsigned long long>(__double_as_longlong(v));  // NOLINT(runtime/int)
   const int biased = static_cast<int>((bits >> 52) & 0x7ffu);
   if (biased <= 1023 - 127) {
     return 0.0f;
@@ -184,20 +184,20 @@ __device__ __forceinline__ float LeanApproxFloat(const double v) {
 
 __device__ __forceinline__ double LeanFloatToDouble(const float f) {
   const unsigned int fbits = static_cast<unsigned int>(__float_as_int(f));
-  const unsigned long long sign = static_cast<unsigned long long>(fbits >> 31) << 63;
+  const unsigned long long sign = static_cast<unsigned long long>(fbits >> 31) << 63;  // NOLINT(runtime/int)
   if ((fbits & 0x7fffffffu) == 0) {
-    return __longlong_as_double(static_cast<long long>(sign));
+    return __longlong_as_double(static_cast<long long>(sign));  // NOLINT(runtime/int)
   }
-  const unsigned long long biased = ((fbits >> 23) & 0xffu) - 127 + 1023;
-  return __longlong_as_double(static_cast<long long>(sign | (biased << 52) |
-                                                     (static_cast<unsigned long long>(fbits & 0x7fffffu) << 29)));
+  const unsigned long long biased = ((fbits >> 23) & 0xffu) - 127 + 1023;  // NOLINT(runtime/int)
+  return __longlong_as_double(static_cast<long long>(sign | (biased << 52) |  // NOLINT(runtime/int)
+                                                     (static_cast<unsigned long long>(fbits & 0x7fffffu) << 29)));  // NOLINT(runtime/int)
 }
 
 // v's float rounding when every double within margin_ulps of v's double ulps rounds to it: v's distance to the
 // nearest float rounding midpoint (|low 29 mantissa bits - 2^28| ulps) exceeds the margin, and v and its rounding lie
 // in float's normal range (2^-125 <= |v| < 2^127). Then round-to-nearest is add half an ulp and truncate.
 __device__ __forceinline__ bool LeanSettledFloat(const double v, const float margin_ulps, float* out) {
-  const unsigned long long bits = static_cast<unsigned long long>(__double_as_longlong(v));
+  const unsigned long long bits = static_cast<unsigned long long>(__double_as_longlong(v));  // NOLINT(runtime/int)
   const int biased = static_cast<int>((bits >> 52) & 0x7ffu);
   const int low = static_cast<int>(bits & ((1ull << 29) - 1));
   const int dist = low >= (1 << 28) ? low - (1 << 28) : (1 << 28) - low;
@@ -205,7 +205,7 @@ __device__ __forceinline__ bool LeanSettledFloat(const double v, const float mar
       dist <= static_cast<int>(margin_ulps) + 1) {
     return false;
   }
-  const unsigned long long magnitude = (bits & 0x7fffffffffffffffull) + (1ull << 28);
+  const unsigned long long magnitude = (bits & 0x7fffffffffffffffull) + (1ull << 28);  // NOLINT(runtime/int)
   const unsigned int fbits = static_cast<unsigned int>(bits >> 63) << 31 |
                              (static_cast<unsigned int>(magnitude >> 29) - (static_cast<unsigned int>(1023 - 127) << 23));
   *out = __int_as_float(static_cast<int>(fbits));
@@ -254,7 +254,7 @@ __device__ const double kLeanExp2Table[64] = {  // 2^(j/64), j = 0..63, rounded 
 constexpr bool kLeanScoreIsFloat = std::is_same<score_t, float>::value;
 
 __device__ __forceinline__ bool LeanWideNormal(const double v) {
-  const int biased = static_cast<int>((static_cast<unsigned long long>(__double_as_longlong(v)) >> 52) & 0x7ffu);
+  const int biased = static_cast<int>((static_cast<unsigned long long>(__double_as_longlong(v)) >> 52) & 0x7ffu);  // NOLINT(runtime/int)
   return biased >= 64 && biased <= 2047 - 64;
 }
 
@@ -264,8 +264,8 @@ __device__ __forceinline__ bool BinaryLoglossLean(const double score, const bool
                                                   float* out_gradient, float* out_hessian) {
   const double ls = is_pos ? sigmoid : -sigmoid;  // label * sigmoid, label = +-1: exact
   const double x = ls * score;
-  const unsigned long long x_magnitude =
-    static_cast<unsigned long long>(__double_as_longlong(x)) & 0x7fffffffffffffffull;
+  const unsigned long long x_magnitude =  // NOLINT(runtime/int)
+    static_cast<unsigned long long>(__double_as_longlong(x)) & 0x7fffffffffffffffull;  // NOLINT(runtime/int)
   if (!(x_magnitude <= 0x4054000000000000ull)) {  // |x| <= 80 (NaN fails)
     return false;
   }
@@ -283,7 +283,7 @@ __device__ __forceinline__ bool BinaryLoglossLean(const double score, const bool
   p = fma(p, r, 1.0);
   p = fma(p, r, 1.0);
   const double scaled = p * kLeanExp2Table[k & 63];  // in [0.99, 2.01): 2^m keeps it normal for |m| <= 116
-  const double e = __longlong_as_double(__double_as_longlong(scaled) + (static_cast<long long>(k >> 6) << 52));
+  const double e = __longlong_as_double(__double_as_longlong(scaled) + (static_cast<long long>(k >> 6) << 52));  // NOLINT(runtime/int)
   const double d = 1.0 + e;
   const double inv0 = LeanFloatToDouble(__frcp_rn(LeanApproxFloat(d)));  // IEEE round-to-nearest: the bound's premise
   const double num = -ls;

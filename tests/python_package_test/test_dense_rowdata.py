@@ -138,7 +138,8 @@ def test_dense_rowdata_multi_gpu_decided_once(capfd):
     decisions = re.findall(r"dense_rowdata \(multi-GPU\): (\d+) rows per rank, smallest device (\d+) bytes: "
                            r"dense row-wise bin (fits|does not fit)", log)
     assert len(decisions) == 1
-    assert 0 < int(decisions[0][0]) <= rows
     assert decisions[0][2] == "fits"
     n_ranks = re.search(r"Using GPU devices (\d+(?:,\d+)*)", log).group(1).count(",") + 1
+    # the rows are split over the ranks that train, not over the node's devices: rank 0's share is ceil(rows / ranks)
+    assert int(decisions[0][0]) == -(-rows // n_ranks)
     assert len(_ROW_DATA_LINE.findall(log)) == 1 + n_ranks
