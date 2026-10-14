@@ -1832,14 +1832,18 @@ __global__ void CUDAConstructHistogramSparseKernel(
     const DATA_PTR_TYPE row_start = block_row_ptr[data_index];
     const DATA_PTR_TYPE row_end = block_row_ptr[data_index + 1];
     const DATA_PTR_TYPE row_size = row_end - row_start;
+    // block-strided over the row's elements: blockDim.x is halved for partitions wider than
+    // NUM_THREADS_PER_BLOCK (CalcConstructHistogramKernelDim), so a row can hold more elements than threads
     if (threadIdx.x < row_size) {
       const score_t grad = cuda_gradients[data_index];
       const score_t hess = cuda_hessians[data_index];
-      const uint32_t bin = static_cast<uint32_t>(data_ptr[row_start + threadIdx.x]);
-      const uint32_t pos = bin << 1;
-      HIST_TYPE* pos_ptr = shared_hist + pos;
-      atomicAdd_block(pos_ptr, grad);
-      atomicAdd_block(pos_ptr + 1, hess);
+      for (DATA_PTR_TYPE e = threadIdx.x; e < row_size; e += blockDim.x) {
+        const uint32_t bin = static_cast<uint32_t>(data_ptr[row_start + e]);
+        const uint32_t pos = bin << 1;
+        HIST_TYPE* pos_ptr = shared_hist + pos;
+        atomicAdd_block(pos_ptr, grad);
+        atomicAdd_block(pos_ptr + 1, hess);
+      }
     }
     inner_data_index += blockDim.y;
   }
@@ -2439,14 +2443,18 @@ __global__ void CUDAConstructHistogramSparseKernel_GlobalMemory(
     const DATA_PTR_TYPE row_start = block_row_ptr[data_index];
     const DATA_PTR_TYPE row_end = block_row_ptr[data_index + 1];
     const DATA_PTR_TYPE row_size = row_end - row_start;
+    // block-strided over the row's elements: blockDim.x is halved for partitions wider than
+    // NUM_THREADS_PER_BLOCK (CalcConstructHistogramKernelDim), so a row can hold more elements than threads
     if (threadIdx.x < row_size) {
       const score_t grad = cuda_gradients[data_index];
       const score_t hess = cuda_hessians[data_index];
-      const uint32_t bin = static_cast<uint32_t>(data_ptr[row_start + threadIdx.x]);
-      const uint32_t pos = bin << 1;
-      HIST_TYPE* pos_ptr = shared_hist + pos;
-      atomicAdd_block(pos_ptr, grad);
-      atomicAdd_block(pos_ptr + 1, hess);
+      for (DATA_PTR_TYPE e = threadIdx.x; e < row_size; e += blockDim.x) {
+        const uint32_t bin = static_cast<uint32_t>(data_ptr[row_start + e]);
+        const uint32_t pos = bin << 1;
+        HIST_TYPE* pos_ptr = shared_hist + pos;
+        atomicAdd_block(pos_ptr, grad);
+        atomicAdd_block(pos_ptr + 1, hess);
+      }
     }
     inner_data_index += blockDim.y;
   }
@@ -3975,11 +3983,16 @@ __global__ void CUDAConstructDiscretizedHistogramSparseKernel(
     const DATA_PTR_TYPE row_start = block_row_ptr[data_index];
     const DATA_PTR_TYPE row_end = block_row_ptr[data_index + 1];
     const DATA_PTR_TYPE row_size = row_end - row_start;
+    // block-strided over the row's elements: blockDim.x is halved for partitions wider than
+    // NUM_THREADS_PER_BLOCK (CalcConstructHistogramKernelDim), so a sparse row can hold more elements
+    // than threads; one element per thread silently dropped the rest from the histogram
     if (threadIdx.x < row_size) {
       const int32_t grad_and_hess = cuda_gradients_and_hessians[data_index];
-      const uint32_t bin = static_cast<uint32_t>(data_ptr[row_start + threadIdx.x]);
-      int32_t* pos_ptr = shared_hist_packed + bin;
-      atomicAdd_block(pos_ptr, grad_and_hess);
+      for (DATA_PTR_TYPE e = threadIdx.x; e < row_size; e += blockDim.x) {
+        const uint32_t bin = static_cast<uint32_t>(data_ptr[row_start + e]);
+        int32_t* pos_ptr = shared_hist_packed + bin;
+        atomicAdd_block(pos_ptr, grad_and_hess);
+      }
     }
     inner_data_index += blockDim.y;
   }
@@ -4108,11 +4121,16 @@ __global__ void CUDAConstructDiscretizedHistogramSparseKernel_GlobalMemory(
     const DATA_PTR_TYPE row_start = block_row_ptr[data_index];
     const DATA_PTR_TYPE row_end = block_row_ptr[data_index + 1];
     const DATA_PTR_TYPE row_size = row_end - row_start;
+    // block-strided over the row's elements: blockDim.x is halved for partitions wider than
+    // NUM_THREADS_PER_BLOCK (CalcConstructHistogramKernelDim), so a sparse row can hold more elements
+    // than threads; one element per thread silently dropped the rest from the histogram
     if (threadIdx.x < row_size) {
       const int32_t grad_and_hess = cuda_gradients_and_hessians[data_index];
-      const uint32_t bin = static_cast<uint32_t>(data_ptr[row_start + threadIdx.x]);
-      int32_t* pos_ptr = shared_hist_packed + bin;
-      atomicAdd_block(pos_ptr, grad_and_hess);
+      for (DATA_PTR_TYPE e = threadIdx.x; e < row_size; e += blockDim.x) {
+        const uint32_t bin = static_cast<uint32_t>(data_ptr[row_start + e]);
+        int32_t* pos_ptr = shared_hist_packed + bin;
+        atomicAdd_block(pos_ptr, grad_and_hess);
+      }
     }
     inner_data_index += blockDim.y;
   }
