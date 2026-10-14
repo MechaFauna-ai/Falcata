@@ -533,6 +533,12 @@ struct FalcataPlan {
   // integer expressions per bin in the same bit-width cases, the fixed bin's
   // value used by its own subtract: bit-identical.
   bool fix_subtract_fused = true;   // key: fix_subtract_fused
+  // quantized level fix + subtract (where fix_subtract_fused does not run and some feature needs its most-frequent
+  // bin fixed): one launch whose subtract blocks skip the need-fix features' most-frequent bins and whose fix blocks
+  // (one per need-fix feature, as the fix kernel) fix that bin of the smaller leaf and subtract it into the larger
+  // leaf (or the bit-change buffer), instead of a fix kernel then a subtract kernel reading the same histograms.
+  // The same integer expressions per bin in the same bit-width cases: bit-identical.
+  bool fix_subtract_masked = true;  // key: fix_subtract_masked
   // host-launched batched level apply: each split's tree-structure update (child
   // leaf outputs, split info slots, hist pool pointers, smaller/larger leaf
   // structs) is written by warp 0 of one extra block of the partition kernel's
@@ -881,6 +887,7 @@ struct FalcataPlan {
     if (key == "sync_used_tasks") return &sync_used_tasks;
     if (key == "sync_copy_batched") return &sync_copy_batched;
     if (key == "fix_subtract_fused") return &fix_subtract_fused;
+    if (key == "fix_subtract_masked") return &fix_subtract_masked;
     if (key == "apply_struct_fused") return &apply_struct_fused;
     if (key == "gap_copy_fused") return &gap_copy_fused;
     if (key == "apply_inner_rows") return &apply_inner_rows;
