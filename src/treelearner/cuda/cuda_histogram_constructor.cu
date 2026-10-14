@@ -5633,7 +5633,7 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramKernel(
         } else if (larger_num_bits_in_histogram_bins <= 16) {
           CHECK_LE(smaller_num_bits_in_histogram_bins, 16);
         }
-        FixSubtractDiscretizedMaskedKernel<<<FixSubtractMaskedGridX(), FIX_HISTOGRAM_BLOCK_SIZE, 0, current_stream()>>>(
+        FixSubtractDiscretizedMaskedKernel<<<FixSubtractMaskedGridX(), fix_subtract_masked_block_, 0, current_stream()>>>(
           num_total_bin_,
           FixSubtractMaskedSubtractBlocks(),
           cuda_feature_num_bins_.RawData(),
@@ -6669,7 +6669,7 @@ void CUDAHistogramConstructor::LaunchFixSubtractDiscretizedMaskedKernel(
   const int num_pairs,
   const CUDAHybridGraphLoopStateOpt gstate) {
   dim3 grid_dim(FixSubtractMaskedGridX(), num_pairs);
-  FixSubtractDiscretizedMaskedBatchedKernel<<<grid_dim, FIX_HISTOGRAM_BLOCK_SIZE, 0, cuda_stream_>>>(
+  FixSubtractDiscretizedMaskedBatchedKernel<<<grid_dim, fix_subtract_masked_block_, 0, cuda_stream_>>>(
     num_total_bin_,
     FixSubtractMaskedSubtractBlocks(),
     cuda_feature_num_bins_.RawData(),

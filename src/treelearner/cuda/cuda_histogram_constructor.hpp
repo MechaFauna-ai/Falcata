@@ -910,7 +910,7 @@ class CUDAHistogramConstructor {
     return use_quantized_grad_ && !need_fix_histogram_features_.empty() && FalcataPlan::Get().fix_subtract_masked;
   }
   int FixSubtractMaskedSubtractBlocks() const {
-    return (num_total_bin_ + FIX_HISTOGRAM_BLOCK_SIZE - 1) / FIX_HISTOGRAM_BLOCK_SIZE;
+    return (num_total_bin_ + fix_subtract_masked_block_ - 1) / fix_subtract_masked_block_;
   }
   int FixSubtractMaskedGridX() const {
     return FixSubtractMaskedSubtractBlocks() + static_cast<int>(need_fix_histogram_features_.size());
@@ -1050,6 +1050,10 @@ class CUDAHistogramConstructor {
    *  fused small-leaf fix+subtract kernel's subtract blocks skip these (the fix
    *  blocks own them) */
   CUDAVector<uint8_t> cuda_fix_mfb_mask_;
+  /*! \brief fix_subtract_masked's block size: the widest need-fix feature's power-of-two bin count, at least
+   *  kFixSubtractMaskedMinBlock and at most FIX_HISTOGRAM_BLOCK_SIZE (the fix loop strides over wider features) */
+  static constexpr int kFixSubtractMaskedMinBlock = 128;
+  int fix_subtract_masked_block_ = FIX_HISTOGRAM_BLOCK_SIZE;
   /*! \brief per-tree bin-level used mask (1 = bin belongs to a feature in this
    *  tree's feature_fraction sample). The batched fix/subtract kernels and the
    *  batched construct's shared-histogram zero/merge skip unused bins: nothing

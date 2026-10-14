@@ -2057,6 +2057,12 @@ void CUDAHistogramConstructor::InitFixMFBMask() {
     host_mask[pos + 1] = 1;
   }
   cuda_fix_mfb_mask_.InitFromHostVector(host_mask);
+  uint32_t widest_aligned = 0;
+  for (const uint32_t num_bin_aligned : need_fix_histogram_features_num_bin_aligend_) {
+    widest_aligned = std::max(widest_aligned, num_bin_aligned);
+  }
+  fix_subtract_masked_block_ = std::min<int>(FIX_HISTOGRAM_BLOCK_SIZE,
+    std::max<int>(kFixSubtractMaskedMinBlock, static_cast<int>(widest_aligned)));
 }
 
 void CUDAHistogramConstructor::SubtractHistogramForLeaf(
