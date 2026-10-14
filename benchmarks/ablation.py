@@ -48,6 +48,7 @@ ALL_KEYS = {
     # under auto, row_batch displaces the JIT; the on flip measures the JIT against row_batch
     "construct_jit": False,
     "fast_rowdata": True,
+    "dense_rowdata": True,
     "rowdata_4bit": True,
     "gpu_construct": True,
     "construct_staging_pool": True,
