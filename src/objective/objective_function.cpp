@@ -95,6 +95,19 @@ bool ObjectiveFunction::RFBoostsOnDevice(const Config& config) {
   #endif  // USE_CUDA
 }
 
+bool ObjectiveFunction::BoostsOnDevice(const Config& config) {
+  #ifdef USE_CUDA
+  if (config.device_type != std::string("cuda") || config.data_sample_strategy == std::string("goss") ||
+      !HasCUDAObjective(config.objective)) {
+    return false;
+  }
+  return config.boosting == std::string("gbdt") || RFBoostsOnDevice(config);
+  #else
+  (void)config;
+  return false;
+  #endif  // USE_CUDA
+}
+
 ObjectiveFunction* ObjectiveFunction::CreateObjectiveFunction(const std::string& type, const Config& config) {
   #ifdef USE_CUDA
   // cuda_plan key rf_device_objective: a random forest boosts on the device too (its constant gradients from the
@@ -106,6 +119,9 @@ ObjectiveFunction* ObjectiveFunction::CreateObjectiveFunction(const std::string&
     if (config.boosting == std::string("rf")) {
       // the metric factory gave rf the CUDA metrics by the same predicate: the factory must agree with it
       CHECK(objective != nullptr && objective->IsCUDAObjective());
+    } else if (objective != nullptr && type == config.objective) {
+      // gbdt: the metric factory decides by HasCUDAObjective (BoostsOnDevice); the list must match the classes
+      CHECK(objective->IsCUDAObjective() == HasCUDAObjective(type));
     }
     return objective;
   } else {

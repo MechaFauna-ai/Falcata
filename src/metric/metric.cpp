@@ -22,10 +22,10 @@ namespace Falcata {
 
 Metric* Metric::CreateMetric(const std::string& type, const Config& config) {
   #ifdef USE_CUDA
-  // cuda_plan key rf_device_objective: a random forest that boosts on the device (the objective factory's own
-  // predicate) has device scores and a CUDA objective, as gbdt
-  if (config.device_type == std::string("cuda") &&
-      (config.boosting == std::string("gbdt") || ObjectiveFunction::RFBoostsOnDevice(config))) {
+  // the CUDA metrics convert the score only through a CUDA objective (ConvertOutputCUDA): gbdt and rf get them
+  // exactly when the objective factory builds a CUDA objective for them (its own predicate). GOSS, the objectives
+  // without a CUDA kernel and custom objectives keep the host objective, and with it the host metrics.
+  if (ObjectiveFunction::BoostsOnDevice(config)) {
     if (type == std::string("l2")) {
       return new CUDAL2Metric(config);
     } else if (type == std::string("rmse")) {
