@@ -2768,8 +2768,8 @@ using DenseBlockPrefix = BlockPrefix<256>;
 
 // the pair and block row of a block-mapped launch's block row blockIdx.y (see BlockPrefix)
 template <int MAX_PAIRS>
-__device__ __forceinline__ void PairJointBlockPrefixLookup(const BlockPrefix<MAX_PAIRS>& block_prefix,
-                                                           unsigned int* pair_index, int* block_y) {
+__device__ __forceinline__ void BlockPrefixLookup(const BlockPrefix<MAX_PAIRS>& block_prefix,
+                                                  unsigned int* pair_index, int* block_y) {
   int lo = 0;
   int hi = block_prefix.num_pairs - 1;
   while (lo < hi) {
@@ -2832,7 +2832,7 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
   int block_y = static_cast<int>(blockIdx.y);
   int level_grid_y = static_cast<int>(gridDim.y);
   if (block_prefix.num_pairs > 0) {
-    PairJointBlockPrefixLookup(block_prefix, &pair_index, &block_y);
+    BlockPrefixLookup(block_prefix, &pair_index, &block_y);
     level_grid_y = block_prefix.grid_y;
   }
   // graphs A2 idle-block guard (pow2-frozen grid; see the non-quantized kernel)
@@ -3458,7 +3458,7 @@ __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_
   int level_grid_y = static_cast<int>(gridDim.y);
   int level_num_pairs = static_cast<int>(gridDim.z);
   if (block_prefix.num_pairs > 0) {
-    PairJointBlockPrefixLookup(block_prefix, &pair_index, &block_y);
+    BlockPrefixLookup(block_prefix, &pair_index, &block_y);
     level_grid_y = block_prefix.grid_y;
     level_num_pairs = block_prefix.num_pairs;
   }
