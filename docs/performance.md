@@ -1,5 +1,19 @@
 # What makes Falcata fast — and how we know
 
+**Latest paired representation measurement, 2026-10-10:** on frozen Numerai
+build 1230, the standard stochastic recipe trains 30,000 trees at **193 trees/s
+with a distinct missing state**, versus **266 trees/s with five numeric states**
+(155.721 vs 112.702 s). Standard six-state warmups retain compact views and
+pair-joint histograms. The current 16,384-leaf FP32 recipe instead crosses a
+memory-admission threshold and reaches **10.29 vs 88.21 trees/s** in 2,000-round
+probes. All 27 records passed on an otherwise idle GPU, with no recorded contention. This is a paired
+representation benchmark, separate from the historical launch snapshot below;
+five-era sanity is not equal-quality or deployment evidence.
+[Measured results and diagnosis](2026-10-10_numerai-six-state-throughput.md).
+For accumulated improvements since launch, see the
+[proposed 1.1 article](blog/falcata-1.1.md) and its
+[complete benchmark companion](blog/falcata-1.1/benchmarks.md).
+
 **2.4× faster than XGBoost. 14× faster than LightGBM. 4.7× faster than
 CatBoost.** All libraries training on the same GPU via CUDA; geometric mean
 over the seven deep workloads at matched-or-better held-out quality — and
@@ -96,9 +110,9 @@ it is 14× slower):
 
 ![gpu memory](perf-plots/gpu_memory.png)
 
-**Competitor failure ledger** (all recorded per-cell in the benchmark
-report): upstream LightGBM 4.7.0's CUDA backend OOMs on every numerai
-regime, diverges on fraud-deep, and produces a garbage covtype-deep model;
+**Archived competitor failure ledger** (all recorded per-cell in the launch
+benchmark report): upstream LightGBM 4.7.0's CUDA backend OOMs on every numerai
+regime, diverges on fraud-deep, and produces a low-quality covtype-deep model;
 its quantized mode is 0-for-sweep (CUDA crashes on higgs/airline, invalid
 models elsewhere); its OpenCL fallback lost most datasets to a
 display-driver regression. CatBoost's 30k-round cells fight the display watchdog (CUDA
@@ -139,6 +153,16 @@ These are stability checks, not a replacement for the repeated performance
 sweep above. Large steps can be reduced and more rounds may be needed; this
 bounded update does not guarantee monotonically decreasing loss. It changes
 non-quantized classification models and can change split ties even when the cap is inactive.
+
+The October 12 [broader stability report](blog/falcata-1.1/stability.md) extends
+this single-seed check to 132 guarded CPU/FP64 CUDA configurations plus eight
+additional CPU tiny-leaf seed cases, all 500 rounds. Four uncapped controls
+reproduce runaway margins. The sweep also exposed two separate CPU empty-child
+assertions; PR #93 fixes them by checking the actual partition before committing
+a split. Per-case native hashes distinguish the original sweep, fix reruns and
+final-build regression checks. These are quality/stability results, not new
+performance measurements.
+
 Historical benchmark reproduction therefore requires explicit
 `--set max_delta_step=0`; new benchmark runs must record their step policy.
 
@@ -981,7 +1005,7 @@ a 30-round year model on the deterministic host loop keeps its md5), none a plan
 - **Eight need-fix features per fix block.** The fused small-leaf fix + subtract stages eight need-fix features 32
   bins at a time and folds their 16 sums in 16 lanes of one warp, instead of one feature per 512-thread block.
 
-| (median of timed1-3, exclusive gpuq class, `train_s`) | 1.0.0 | master `b4da8135` | this | vs master | vs 1.0.0 |
+| (median of timed1-3, idle GPU, `train_s`) | 1.0.0 | master `b4da8135` | this | vs master | vs 1.0.0 |
 |---|---|---|---|---|---|
 | year deep, noquant | 3.60 s | 5.07 s | 3.85 s | 1.32x | 0.93x |
 | epsilon deep, noquant | 60.2 s | 98.2 s | 58.7 s | 1.67x | 1.03x |
