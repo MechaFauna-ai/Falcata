@@ -472,6 +472,14 @@ struct FalcataPlan {
   // a whole table). Blocks never exceed the largest leaf's row count, which
   // the overflow guard bounds. Bit-identical (integer sums).
   bool level_row_blocks = true;     // key: level_row_blocks
+  // level_row_blocks for the quantized dense batched construct (the per-column
+  // kernel: 8-bit columns, and 4-bit data where pair_hist does not run): on a
+  // level with several leaf pairs every leaf takes the largest leaf's rows per
+  // thread of the launched grid instead of ceil(rows / grid rows), so a small
+  // leaf fills a few whole blocks and the others exit before zeroing their
+  // table. Blocks never exceed the largest leaf's row count, which the
+  // grid's overflow guard bounds. Bit-identical (integer sums).
+  bool dense_level_row_blocks = true;  // key: dense_level_row_blocks
   // pair_hist on a leaf that holds every row (the root without bagging): its
   // index list is a permutation of all rows, so each position is read as that
   // row number without the index gather. Same rows per block, same rows in
@@ -828,6 +836,7 @@ struct FalcataPlan {
     if (key == "pair_code5_tall") return &pair_code5_tall;
     if (key == "pair_code5_epilogue") return &pair_code5_epilogue;
     if (key == "level_row_blocks") return &level_row_blocks;
+    if (key == "dense_level_row_blocks") return &dense_level_row_blocks;
     if (key == "all_rows_direct") return &all_rows_direct;
     if (key == "apply_row_batch") return &apply_row_batch;
     if (key == "sync_used_tasks") return &sync_used_tasks;
