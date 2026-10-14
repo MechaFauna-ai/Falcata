@@ -40,6 +40,7 @@ SHAPES = {
     "bagged": (40_001, 12, {"bagging_fraction": 0.6, "bagging_freq": 1}),
     "feature_fraction": (40_001, 30, {"feature_fraction": 0.5}),
     "not_quantized": (30_001, 10, {"use_quantized_grad": False}),
+    "one_block_limit": (2_001, 1_024, {"max_bin": 15, "num_leaves": 7, "min_data_in_leaf": 1}),
     "more_tasks_than_one_block": (3_001, 1_200, {"max_bin": 15, "num_leaves": 15, "min_data_in_leaf": 1}),
 }
 
