@@ -1524,6 +1524,73 @@ Measured (same binary, key off against on, median ms per round over rounds 40..2
 
 ---
 
+## 10m. Random forest on the device (`rf_device_objective`, `rf_lazy_train_score`)
+
+`boosting=rf` on the CUDA device took the host objective (`ObjectiveFunction::CreateObjectiveFunction` excluded rf
+from the CUDA objectives), so `boosting_on_gpu_` was false and the forest paid for it on every tree: the constant
+gradients and hessians went host-to-device synchronously (`CUDASingleGPUTreeLearner::BeforeTrain`, 2 x 16 MB on
+4M rows), and the score updater kept a host mirror, copying the whole score column back after each of the four score
+operations a forest runs per tree (rescale to the sum, in-bag add, out-of-bag add, rescale to the average: 4 x 32 MB
+of pageable copies on 4M rows). On higgs (4M x 28, 1023 leaves, depth 10, bagging 0.632, stochastic) that was 8.4 of
+10.8 ms per round; the kernels themselves took as long as gbdt's.
+
+**`rf_device_objective` (default on).** rf takes the CUDA objective like gbdt. `RF::Boosting` (once, at `Init`) hands
+the objective's kernel a device column of the init score, and the gradients and hessians it writes stay in the device
+buffers for every tree; the train and validation score updaters keep no host mirror; the metrics take the CUDA metric
+path (`Metric::CreateMetric` now gives rf the CUDA metrics too; metrics without a CUDA kernel read one host copy of
+the score per evaluation, as for gbdt). Leaf renewal (L1, quantile) renews against the init score, not the train
+score: the device path hands `RenewTreeOutputCUDA` a device column holding the init score (kept only for the
+objectives that renew). Objectives without a CUDA kernel, and GOSS, keep the host objective as before. The key is
+read where the objective and the metrics are created, before the learner's `Init` resolves the plan
+(`FalcataPlan::FromConfig` parses a plan without installing it). The init score and the gradients come out the same
+as the host objective's on the shapes below (binary: an exact label count; multiclass: exact class counts;
+regression: labels whose sum is exact, e.g. Numerai's multiples of 0.25). With continuous regression labels the host
+objective's init score is an OpenMP reduction, so the host path itself changes from run to run in the last bits
+(regression and huber, 200k rows: two to four model md5s in four runs); the CUDA objective adds its block sums in
+block order and gives one.
+
+**`rf_lazy_train_score` (default on).** A forest's gradients never read the train score; only training metrics,
+predictions on the training data (`GetPredictAt(0)`, e.g. a custom `feval` on the training set), rollback, refit and a
+reset of the training data do. So the train score is not updated per tree: the tree is queued, the validation scores
+are updated as before, and on the first read the queued trees are replayed in order (rescale to the sum, every row
+walked through the tree, rescale to the average). The in-bag rows reach the same leaf by the walk as by the learner's
+partition (both route on the same bins), so the same values are added in the same order. From the first read on the
+trees are added per tree again. The in-bag update also put the bag's rows back in bag order, and the next tree of
+the same bag (the other classes of a round, `bagging_freq` > 1) starts its partition from that order: that copy still
+runs per tree (`TreeLearner::RestoreBagOrder`; without it a root's floating-point sums moved in the last bit).
+Not deferred: stumps, multi-GPU, linear trees, and data whose per-column view was not kept (the replay of an older
+tree needs it).
+
+Same-binary A/B (`runs/rfdev/rf_ab.py`, ABBA, 2 runs per arm, steady ms per round, `feature_fraction_bynode` 1,
+bagging 0.632, std = 1023 leaves depth 10 `min_data_in_leaf` 5, deep = 4095 leaves; model and prediction md5
+identical in every run):
+
+| shape | off (host objective) | `rf_lazy_train_score` off | on | gbdt (lr 0.1) |
+|---|---|---|---|---|
+| higgs (4M x 28, binary) std, stochastic | 10.70 | 2.21 | 2.02 | 1.92 |
+| covtype (581k x 54, 7 classes) std, fixedpoint | 13.92 | 4.45 | 4.16 | 4.35 |
+| higgs deep, stochastic (30 rounds) | 19.21 | 10.66 | 10.81 (10.24, 11.37) | 18.17 |
+| Numerai 500k x 3555, regression, std with `min_data_in_leaf` 10000, stochastic | 6.57 | 5.37 | 5.32 | 5.19 |
+
+nsys, higgs std stochastic, steady rounds 11-100 (`runs/rfdev/nsys/`): off 10.90 ms per round with 4 x 32 MB
+device-to-host (7.46 ms) and 2 x 16 MB host-to-device (0.86 ms) per round; on 2.06 ms per round, no copy of the score
+or the gradients (device-to-host 0 MB, host-to-device 0.2 MB of tree metadata, device-to-device 2 x 10.1 MB: the bag
+indices set and restored), kernels 1.77 ms against 1.92.
+
+The device objective removes the copies; the deferred train score removes the score kernels (the in-bag add, the
+out-of-bag walk and the two rescales: 0.19 ms per round on higgs, 0.29 on covtype's 7 trees). Under `quant_mode`
+none the same models train (with `graph_loop:off`, the deterministic level loop) and the round drops by the copies
+(higgs std 74.4 -> 65.6 ms, covtype std 39.8 -> 30.3, Numerai 478 -> 477; under the default plan the graph level loop
+is not run-to-run deterministic, with the host objective as with the device one). Covered by `tests/python_package_test/test_cuda_rf_device.py` (binary, multiclass, L2, L1, quantile, with
+and without `boost_from_average`, a metric with a validation set, training metrics, train scores read in a callback
+and after a rollback, one bag for several trees) and the lattice's rf cells with both keys flipped.
+
+Not done: the per-tree gradient discretization re-derives the same scale from the constant gradients (ReduceMinMax,
+~20-45 us per round), but its range is taken over the tree's bag; the constant hessian of the binary and softmax
+forests (every row the same p) still takes the per-row hessian path.
+
+---
+
 ## Multi-GPU: level-batched NCCL all-reduce
 
 The classic data-parallel path all-reduces one leaf histogram per split
