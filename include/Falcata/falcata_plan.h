@@ -474,11 +474,13 @@ struct FalcataPlan {
   bool level_row_blocks = true;     // key: level_row_blocks
   // level_row_blocks for the quantized dense batched construct (the per-column
   // kernel: 8-bit columns, and 4-bit data where pair_hist does not run): on a
-  // level with several leaf pairs every leaf takes the largest leaf's rows per
-  // thread of the launched grid instead of ceil(rows / grid rows), so a small
-  // leaf fills a few whole blocks and the others exit before zeroing their
-  // table. Blocks never exceed the largest leaf's row count, which the
-  // grid's overflow guard bounds. Bit-identical (integer sums).
+  // level with several leaf pairs a thin leaf takes the largest leaf's rows per
+  // thread of the launched grid, capped at the grid formula's own target
+  // (batch_construct_min_rows_per_thread), instead of ceil(rows / grid rows), so
+  // it fills a few whole blocks and the others exit before zeroing their table;
+  // the large leaves of a shallow level keep their spread. Blocks never exceed
+  // the largest leaf's row count, which the grid's overflow guard bounds.
+  // Bit-identical (integer sums).
   bool dense_level_row_blocks = true;  // key: dense_level_row_blocks
   // pair_block_map for the quantized dense batched construct: a host-launched
   // level with several pairs launches only the block rows that have rows

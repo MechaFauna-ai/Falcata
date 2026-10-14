@@ -2778,6 +2778,17 @@ __device__ __forceinline__ void PairJointBlockPrefixLookup(const PairJointBlockP
   *block_y = static_cast<int>(blockIdx.y - block_prefix.start[lo]);
 }
 
+// cuda_plan key dense_level_row_blocks: the rows-per-thread floor of a level's leaves in the quantized dense batched
+// construct. A thin leaf gets the largest leaf's rows per thread (so it fills a few whole blocks instead of a few rows
+// in every block row, each block zeroing and flushing a whole table) but no more than the grid formula's own
+// rows-per-thread target (min_rows_per_thread > 0; batch_construct_min_rows_per_thread), so the large leaves of a
+// shallow level keep their spread. Never above the largest leaf's rows per thread, which the overflow guard bounds.
+__host__ __device__ inline data_size_t DenseLevelRowsPerThreadFloor(const data_size_t max_num_data, const int64_t dim_y,
+                                                                    const int min_rows_per_thread) {
+  const data_size_t largest = static_cast<data_size_t>((static_cast<int64_t>(max_num_data) + dim_y - 1) / dim_y);
+  return min_rows_per_thread > 0 && largest > min_rows_per_thread ? min_rows_per_thread : largest;
+}
+
 // Batched per-level variant (hybrid growth): blockIdx.z selects the pair. The
 // per-pair histogram bit width is a runtime (block-uniform) branch so pairs with
 // 16-bit and 32-bit histograms share a single launch. On the host-launched
@@ -2866,10 +2877,11 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
       gstate->construct_min_grid_dim_y, gstate->construct_min_rows_per_thread,
       gstate->construct_saturation_floor, gstate->num_grad_quant_bins) *
       static_cast<int>(blockDim.y);
+    min_rows_per_thread = level_row_blocks && num_pairs > 1 ?
+      DenseLevelRowsPerThreadFloor(max_num_data, dim_y, gstate->construct_min_rows_per_thread) : 0;
 #else
     dim_y = static_cast<int>(gridDim.y * blockDim.y);
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
-    min_rows_per_thread = level_row_blocks && num_pairs > 1 ? (max_num_data + dim_y - 1) / dim_y : 0;
   }
   const uint8_t smaller_num_bits = HybridGraphActive(gstate) ?
     HybridGraphQuantHistBits(gstate, num_data_smaller) : desc->smaller_num_bits;
@@ -5910,12 +5922,12 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
   dim3 grid_dim(grid_dim_x, grid_dim_y, num_pairs);
   dim3 block_dim(block_dim_x, block_dim_y);
   // cuda_plan key dense_level_row_blocks (classic flow; the speculative flow derives it on the device): the
-  // quantized dense batched construct runs every leaf at the largest leaf's rows per thread of this grid, which the
-  // grid's overflow guard bounds
+  // quantized dense batched construct runs every leaf at no fewer rows per thread than the largest leaf's of this
+  // grid (which the grid's overflow guard bounds) or the grid formula's own target, whichever is smaller
   const int64_t dense_dim_y = static_cast<int64_t>(grid_dim_y) * block_dim_y;
   const data_size_t dense_min_rows_per_thread =
     FalcataPlan::Get().dense_level_row_blocks && num_pairs > 1 && level_smaller_num_data == nullptr && dense_dim_y > 0 ?
-    static_cast<data_size_t>((static_cast<int64_t>(max_num_data_in_smaller_leaf) + dense_dim_y - 1) / dense_dim_y) : 0;
+    DenseLevelRowsPerThreadFloor(max_num_data_in_smaller_leaf, dense_dim_y, BatchConstructMinRowsPerThread()) : 0;
   // cuda_plan key dense_block_map (classic flow, as pair_block_map): launch only the block rows that have rows, each
   // pair's count by the kernel's own row grouping (dense_level_row_blocks' floor) from the host copy of the leaf
   // counts the kernel reads; blocks map back to their pair and block row through the prefix. Same blocks with the
