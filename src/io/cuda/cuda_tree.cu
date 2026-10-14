@@ -726,17 +726,17 @@ __global__ void AddPredictionToScoreNodeTableKernel(
         bin = static_cast<uint32_t>((reinterpret_cast<const uint32_t*>(base))[data_index]);
       }
     } else {
-    const uint8_t column_bit_type = cuda_column_bit_type[column];
-    const uint8_t* column_data = cuda_data_by_column[column];
-    if (column_bit_type == 8) {
-      bin = static_cast<uint32_t>(column_data[data_index]);
-    } else if (column_bit_type == kNibbleColumnBitType) {
-      bin = static_cast<uint32_t>((column_data[data_index >> 1] >> ((data_index & 1) << 2)) & 0xf);
-    } else if (column_bit_type == 16) {
-      bin = static_cast<uint32_t>((reinterpret_cast<const uint16_t*>(column_data))[data_index]);
-    } else if (column_bit_type == 32) {
-      bin = static_cast<uint32_t>((reinterpret_cast<const uint32_t*>(column_data))[data_index]);
-    }
+      const uint8_t column_bit_type = cuda_column_bit_type[column];
+      const uint8_t* column_data = cuda_data_by_column[column];
+      if (column_bit_type == 8) {
+        bin = static_cast<uint32_t>(column_data[data_index]);
+      } else if (column_bit_type == kNibbleColumnBitType) {
+        bin = static_cast<uint32_t>((column_data[data_index >> 1] >> ((data_index & 1) << 2)) & 0xf);
+      } else if (column_bit_type == 16) {
+        bin = static_cast<uint32_t>((reinterpret_cast<const uint16_t*>(column_data))[data_index]);
+      } else if (column_bit_type == 32) {
+        bin = static_cast<uint32_t>((reinterpret_cast<const uint32_t*>(column_data))[data_index]);
+      }
     }
     const uint32_t min_bin = static_cast<uint32_t>(w0.y);
     const uint32_t max_bin = static_cast<uint32_t>(w0.z);
