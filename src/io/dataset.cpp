@@ -998,14 +998,45 @@ MultiValBin* Dataset::GetMultiBinFromAllFeatures(const std::vector<uint32_t>& of
   return ret.release();
 }
 
-#ifdef USE_CUDA
 namespace {
 // cuda_plan key dense_rowdata: the dense row-wise bin is taken while it needs at most this share of the device's TOTAL
 // memory (the training matrix is one of several per-tree device buffers: compact views, histograms, partitions).
 // Total, not free, memory: the layout must not depend on what else runs on the GPU.
 constexpr double kDenseRowDataMaxDeviceShare = 0.25;
 }  // namespace
+
+double Dataset::DenseRowWiseBytes(int64_t num_rows) const {
+  int max_num_bin = 0;
+  int64_t num_columns = 0;
+  for (int gid = 0; gid < num_groups_; ++gid) {
+    const FeatureGroup* group = feature_groups_[gid].get();
+    num_columns += group->is_multi_val_ ? group->num_feature_ : 1;
+    for (int fid = 0; fid < group->num_feature_; ++fid) {
+      max_num_bin = std::max(max_num_bin, group->bin_mappers_[fid]->num_bin());
+    }
+  }
+  const double value_bytes = max_num_bin <= 256 ? 1.0 : (max_num_bin <= 65536 ? 2.0 : 4.0);
+  return static_cast<double>(num_rows) * static_cast<double>(num_columns) * value_bytes;
+}
+
+bool Dataset::DenseRowDataFits(double dense_bytes, size_t device_total_memory) {
+  return device_total_memory > 0 &&
+         dense_bytes <= kDenseRowDataMaxDeviceShare * static_cast<double>(device_total_memory);
+}
+
+size_t Dataset::DeviceTotalMemory(int device_id) {
+#ifdef USE_CUDA
+  cudaDeviceProp prop;
+  if (cudaGetDeviceProperties(&prop, device_id) != cudaSuccess) {
+    cudaGetLastError();
+    return 0;
+  }
+  return prop.totalGlobalMem;
+#else
+  (void)device_id;
+  return 0;
 #endif  // USE_CUDA
+}
 
 double Dataset::RowWiseSparseThreshold(bool use_quantized_grad, bool is_cuda_tree_learner) const {
   const double host_threshold = MultiValBin::multi_val_bin_sparse_threshold;
@@ -1020,24 +1051,15 @@ double Dataset::RowWiseSparseThreshold(bool use_quantized_grad, bool is_cuda_tre
       !FalcataPlan::Get().dense_rowdata) {
     return host_threshold;
   }
-  int max_num_bin = 0;
-  int64_t num_columns = 0;
-  for (int gid = 0; gid < num_groups_; ++gid) {
-    const FeatureGroup* group = feature_groups_[gid].get();
-    num_columns += group->is_multi_val_ ? group->num_feature_ : 1;
-    for (int fid = 0; fid < group->num_feature_; ++fid) {
-      max_num_bin = std::max(max_num_bin, group->bin_mappers_[fid]->num_bin());
-    }
-  }
-  const double value_bytes = max_num_bin <= 256 ? 1.0 : (max_num_bin <= 65536 ? 2.0 : 4.0);
-  const double dense_bytes = static_cast<double>(num_data_) * static_cast<double>(num_columns) * value_bytes;
-  const int device_id = gpu_device_id_ >= 0 ? gpu_device_id_ : 0;
-  cudaDeviceProp prop;
-  if (cudaGetDeviceProperties(&prop, device_id) != cudaSuccess) {
-    cudaGetLastError();
-    return host_threshold;  // the sparse bin: the same model on the per-leaf kernels
-  }
-  if (dense_bytes <= kDenseRowDataMaxDeviceShare * static_cast<double>(prop.totalGlobalMem)) {
+  // One GPU: this Dataset's rows on the total memory of this Dataset's gpu_device_id_ (unreadable memory: 0, the
+  // sparse bin, the same model on the per-leaf kernels). Multi-GPU ranks: the outcome decided once for the whole
+  // training (NCCLGBDT::Init -> SetDenseRowDataFits), because every rank must lay out the same row-wise bin: the
+  // histogram all-reduce exchanges num_total_bin_ values per rank, and the dense and sparse layouts run different
+  // collective sequences (batched level flow vs per-leaf).
+  const bool fits = dense_rowdata_fits_ >= 0
+      ? dense_rowdata_fits_ == 1
+      : DenseRowDataFits(DenseRowWiseBytes(num_data_), DeviceTotalMemory(gpu_device_id_ >= 0 ? gpu_device_id_ : 0));
+  if (fits) {
     return std::numeric_limits<double>::infinity();
   }
 #else

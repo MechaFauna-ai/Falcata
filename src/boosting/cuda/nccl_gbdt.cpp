@@ -5,7 +5,10 @@
  */
 
 #include <Falcata/metric.h>
+#include <Falcata/network.h>
 
+#include <algorithm>
+#include <limits>
 #include <set>
 #include <string>
 #include <vector>
@@ -54,11 +57,31 @@ void NCCLGBDT<GBDT_T>::Init(
               "feature stripes, host-side winner merge per level",
               nccl_topology_->num_gpu());
   }
+  // cuda_plan key dense_rowdata: the ranks must lay out the same row-wise bin (the histogram all-reduce exchanges
+  // num_total_bin_ values per rank, and the dense layout runs the batched level flow, the sparse one the per-leaf
+  // flow, i.e. different collectives). Each rank's Dataset would otherwise decide on its own row share and its own
+  // card, so decide once here: the largest rank's rows against the smallest total memory over the ranks' devices
+  // (and over the machines), i.e. dense only if it fits on every rank. Total memory, never free memory.
+  int64_t max_rows_per_rank = NCCLGBDTComponent::MaxNumDataPerRank(train_data->num_data(), feature_parallel_);
+  size_t min_device_memory = std::numeric_limits<size_t>::max();
+  for (const int device_id : nccl_topology_->gpu_list()) {
+    min_device_memory = std::min(min_device_memory, Dataset::DeviceTotalMemory(device_id));
+  }
+  if (Network::num_machines() > 1) {
+    max_rows_per_rank = Network::GlobalSyncUpByMax(max_rows_per_rank);
+    min_device_memory = Network::GlobalSyncUpByMin(min_device_memory);
+  }
+  const bool dense_rowdata_fits = Dataset::DenseRowDataFits(train_data->DenseRowWiseBytes(max_rows_per_rank),
+                                                            min_device_memory);
+  Log::Debug("dense_rowdata (multi-GPU): %lld rows per rank, smallest device %zu bytes: dense row-wise bin %s",
+             static_cast<long long>(max_rows_per_rank), min_device_memory, dense_rowdata_fits ? "fits" : "does not fit");
+
   nccl_topology_->InitPerDevice<NCCLGBDTComponent>(&nccl_gbdt_components_);
-  nccl_topology_->RunPerDevice<NCCLGBDTComponent, void>(nccl_gbdt_components_, [this, gbdt_config, train_data]
+  nccl_topology_->RunPerDevice<NCCLGBDTComponent, void>(nccl_gbdt_components_, [this, gbdt_config, train_data,
+                                                                                dense_rowdata_fits]
     (NCCLGBDTComponent* nccl_gbdt_component) { nccl_gbdt_component->Init(
       gbdt_config, train_data, this->num_tree_per_iteration_, this->boosting_on_gpu_, this->is_constant_hessian_,
-      this->fp_merge_state_.get());
+      dense_rowdata_fits, this->fp_merge_state_.get());
   });
 }
 

@@ -116,3 +116,29 @@ def test_dense_rowdata_nonquantized_untouched(shape):
     first = _train(X, z, params, "")
     assert first == _train(X, z, params, "")
     assert first == _train(X, z, params, "dense_rowdata:off")
+
+
+@_REQUIRES_CUDA
+def test_dense_rowdata_multi_gpu_decided_once(capfd):
+    """num_gpu > 1: NCCLGBDT decides the size rule ONCE for all ranks (the largest rank's rows against the smallest total
+    memory over the ranks' devices) and hands it to every rank's Dataset (Dataset::SetDenseRowDataFits), so the ranks
+    lay out the same row-wise bin and all-reduce histograms of one shape. On a one-GPU box the topology clamps num_gpu
+    to one rank, which still trains through the per-rank Dataset (CopySubrowToDevice) and the decision. Skipped where
+    the NCCL library is not loadable (it is dlopen'ed: put libnccl.so.2 on LD_LIBRARY_PATH to run it)."""
+    rows, cols, sparse_cols, zero_frac, nan_frac, levels, extra = SHAPES["sparse_continuous"]
+    X, z = _data(rows, cols, sparse_cols, zero_frac, nan_frac, levels)
+    params = {**BASE, **extra, "num_gpu": 2, "verbosity": 2}
+    capfd.readouterr()
+    _train(X, z, params, "", rounds=2)
+    out = capfd.readouterr()
+    log = out.out + out.err
+    if "needs the NCCL library" in log:
+        pytest.skip("NCCL library not loadable")
+    # one decision for the whole training; the rank's dense row data (the parent's single-GPU learner reports too)
+    decisions = re.findall(r"dense_rowdata \(multi-GPU\): (\d+) rows per rank, smallest device (\d+) bytes: "
+                           r"dense row-wise bin (fits|does not fit)", log)
+    assert len(decisions) == 1
+    assert 0 < int(decisions[0][0]) <= rows
+    assert decisions[0][2] == "fits"
+    n_ranks = re.search(r"Using GPU devices (\d+(?:,\d+)*)", log).group(1).count(",") + 1
+    assert len(_ROW_DATA_LINE.findall(log)) == 1 + n_ranks

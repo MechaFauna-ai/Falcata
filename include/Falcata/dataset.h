@@ -772,9 +772,29 @@ class Dataset {
 
   /*! \brief the average sparse rate from which the row-wise bin is sparse: MultiValBin::multi_val_bin_sparse_threshold,
    *  or +infinity (always dense) for quantized training on the CUDA learner when the dense bin is small enough
-   *  (cuda_plan key dense_rowdata). A pure function of the features' bin layout, num_data, the device's TOTAL memory
-   *  and the arguments, so the sites that lay out the row-wise offsets and fill the bin always agree. */
+   *  (cuda_plan key dense_rowdata). A pure function of the features' bin layout, the arguments and the size rule's
+   *  outcome, so the sites that lay out the row-wise offsets and fill the bin always agree. The size rule is
+   *  DenseRowDataFits(DenseRowWiseBytes(num_data_), DeviceTotalMemory(this Dataset's gpu_device_id_)) unless a
+   *  caller set it for the whole training with SetDenseRowDataFits (the multi-GPU ranks). */
   double RowWiseSparseThreshold(bool use_quantized_grad, bool is_cuda_tree_learner) const;
+
+  /*! \brief bytes of the dense row-wise bin of this Dataset's features over num_rows rows: rows x columns (one per
+   *  dense group, one per feature of a multi-val group) x the widest feature's width (1, 2 or 4 bytes) */
+  double DenseRowWiseBytes(int64_t num_rows) const;
+
+  /*! \brief dense_rowdata's size rule: the dense row-wise bin is taken iff it needs at most kDenseRowDataMaxDeviceShare
+   *  (0.25) of the device's TOTAL memory; an unknown memory (0) never fits. Pure. */
+  static bool DenseRowDataFits(double dense_bytes, size_t device_total_memory);
+
+  /*! \brief total memory of CUDA device device_id (cudaDeviceProp::totalGlobalMem; never the free memory), 0 when it
+   *  cannot be read or without CUDA */
+  static size_t DeviceTotalMemory(int device_id);
+
+  /*! \brief multi-GPU: the size rule's outcome decided ONCE for the whole training (largest per-rank row count, smallest
+   *  total memory over the ranks' devices) and handed to every rank's Dataset, so all ranks lay out the same row-wise
+   *  bin and all-reduce histograms of one shape. RowWiseSparseThreshold then uses it instead of this Dataset's own
+   *  row count and device. */
+  void SetDenseRowDataFits(bool fits) { dense_rowdata_fits_ = fits ? 1 : 0; }
 
   template <bool USE_QUANT_GRAD, int HIST_BITS>
   TrainingShareStates* GetShareStates(
@@ -1233,6 +1253,8 @@ class Dataset {
   int num_numeric_features_;
   std::string device_type_;
   int gpu_device_id_;
+  /*! \brief dense_rowdata's size rule set by SetDenseRowDataFits (0 no / 1 yes), or -1: decide from this Dataset */
+  int dense_rowdata_fits_ = -1;
   /*! \brief mutex for threading safe call */
   std::mutex mutex_;
 

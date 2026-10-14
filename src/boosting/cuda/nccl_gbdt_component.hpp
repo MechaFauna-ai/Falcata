@@ -29,8 +29,21 @@ class NCCLGBDTComponent: public NCCLInfo {
 
   ~NCCLGBDTComponent() {}
 
+  // Rows of the largest rank's share (rank 0's): the full row set for feature-parallel, else ceil(rows / devices in
+  // the node), the split Init applies. NCCLGBDT::Init sizes the dense_rowdata decision for all ranks with it.
+  static data_size_t MaxNumDataPerRank(const data_size_t num_data, const bool feature_parallel) {
+    if (feature_parallel) {
+      return num_data;
+    }
+    int num_gpu_in_node = 0;
+    CUDASUCCESS_OR_FATAL(cudaGetDeviceCount(&num_gpu_in_node));
+    return (num_data + num_gpu_in_node - 1) / num_gpu_in_node;
+  }
+
+  // dense_rowdata_fits: the dense_rowdata size rule decided once for the whole training by NCCLGBDT::Init; every
+  // rank's Dataset gets the same value, so every rank lays out the same row-wise bin (Dataset::SetDenseRowDataFits).
   void Init(const Config* config, const Dataset* train_data, const int num_tree_per_iteration, const bool boosting_on_gpu, const bool is_constant_hessian,
-            FeatureParallelMergeState* fp_state = nullptr) {
+            const bool dense_rowdata_fits, FeatureParallelMergeState* fp_state = nullptr) {
     CUDASUCCESS_OR_FATAL(cudaGetDeviceCount(&num_gpu_in_node_));
     if (fp_state != nullptr) {
       // feature-parallel: every rank holds the FULL row set; the parallelism
@@ -39,7 +52,7 @@ class NCCLGBDTComponent: public NCCLInfo {
       data_end_index_ = train_data->num_data();
       num_data_in_gpu_ = train_data->num_data();
     } else {
-      const data_size_t num_data_per_gpu = (train_data->num_data() + num_gpu_in_node_ - 1) / num_gpu_in_node_;
+      const data_size_t num_data_per_gpu = MaxNumDataPerRank(train_data->num_data(), false);
       data_start_index_ = num_data_per_gpu * local_gpu_rank_;
       data_end_index_ = std::min<data_size_t>(data_start_index_ + num_data_per_gpu, train_data->num_data());
       num_data_in_gpu_ = data_end_index_ - data_start_index_;
@@ -53,6 +66,8 @@ class NCCLGBDTComponent: public NCCLInfo {
       used_indices[data_index - data_start_index_] = data_index;
     }
     dataset_->CopySubrowToDevice(train_data, used_indices.data(), num_data_in_gpu_, true, gpu_device_id_);
+    // before tree_learner_->Init, whose GetShareStates lays out the row-wise bin
+    dataset_->SetDenseRowDataFits(dense_rowdata_fits);
 
     objective_function_.reset(ObjectiveFunction::CreateObjectiveFunctionCUDA(config->objective, *config));
     if (fp_state == nullptr) {
