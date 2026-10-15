@@ -85,6 +85,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     forest_private_column_view_ = private_column_view;
     forest_row_data_source_ = row_data_source;
   }
+  /*! \brief The level buffers that grow with the widest level seen, sized now for any level (each up to 256 MiB):
+   *  a growth during training is a device synchronize, which stalls every forest slot */
+  void PresizeLevelBuffers();
   /*! \brief The booster learner leaves forest mode (its trainer is gone): graph loop and compact prefill as before */
   void LeaveForest() {
     forest_slot_ = false;

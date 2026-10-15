@@ -656,8 +656,9 @@ class RF : public GBDT {
    * \brief forest_group auto: the group size from measured time per tree. The first group holds one round (its class
    *        trees in parallel); after a group whose time is the steady state (no tree was its slot's first, not the
    *        training's first group) the size doubles while the time per tree drops below 0.85 of the last size's
-   *        and enough rounds are left (four groups of the doubled size), up to kForestGroupMaxTrees trees; a size
-   *        that does not gain settles back to the last one. The model does not depend on the size.
+   *        and enough rounds are left (four groups of the doubled size), up to kForestGroupMaxTrees trees; a
+   *        doubling that gains 5-15 % is kept, one that gains less goes back to the last size. The model does not
+   *        depend on the size.
    */
   void ForestAutoSize(const int rounds, const int per_round, const int num_trees, const double group_ms) {
     const bool first_group = forest_auto_groups_++ == 0;
@@ -667,7 +668,8 @@ class RF : public GBDT {
     }
     const double ms_per_tree = group_ms / num_trees;
     if (forest_auto_last_rounds_ > 0 && ms_per_tree > 0.85 * forest_auto_last_ms_) {
-      forest_auto_rounds_ = ms_per_tree > forest_auto_last_ms_ ? forest_auto_last_rounds_ : rounds;
+      // the doubling gained less than 15 %: keep it if it gained 5 %, else go back (no slot for nothing)
+      forest_auto_rounds_ = ms_per_tree < 0.95 * forest_auto_last_ms_ ? rounds : forest_auto_last_rounds_;
       forest_auto_settled_ = true;
       return;
     }

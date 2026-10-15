@@ -1787,7 +1787,8 @@ void CUDAHistogramConstructor::LaunchZeroHistSlotsKernel(const std::vector<int>&
   static_assert(sizeof(hist_t) == 8, "ZeroHistSlotsKernel zeroes slots of doubles as 16-byte words");
   const int num_slots = static_cast<int>(slots.size());
   if (cuda_zero_slots_.Size() < slots.size()) {
-    cuda_zero_slots_.Resize(slots.size());
+    // every slot of a level at most: one allocation (a growth would synchronize the device)
+    cuda_zero_slots_.Resize(std::max(slots.size(), static_cast<size_t>(num_leaves_) + 2));
   }
   // pageable source: the copy is staged before it returns, so the caller's vector may change at once; the legacy
   // stream orders it before the kernel, as the memsets it replaces were ordered before the next construct
