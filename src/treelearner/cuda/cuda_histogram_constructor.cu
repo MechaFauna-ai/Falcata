@@ -1795,9 +1795,13 @@ void CUDAHistogramConstructor::LaunchZeroHistSlotsKernel(const std::vector<int>&
   constexpr int kThreads = 256;
   const size_t num_words = slot_size / 2;
   const int blocks_x = static_cast<int>(std::max<size_t>(1, std::min<size_t>(64, (num_words + kThreads - 1) / kThreads)));
-  CHECK_LE(num_slots, 65535);
-  ZeroHistSlotsKernel<<<dim3(blocks_x, num_slots), kThreads, 0, 0>>>(cuda_hist_.RawData(), cuda_zero_slots_.RawData(),
-                                                                   slot_size);
+  // grid.y holds at most 65535 slots: more go in further launches over the rest of the list
+  constexpr int kMaxSlotsPerLaunch = 65535;
+  for (int first = 0; first < num_slots; first += kMaxSlotsPerLaunch) {
+    const int count = std::min(kMaxSlotsPerLaunch, num_slots - first);
+    ZeroHistSlotsKernel<<<dim3(blocks_x, count), kThreads, 0, 0>>>(cuda_hist_.RawData(),
+                                                                   cuda_zero_slots_.RawData() + first, slot_size);
+  }
 }
 
 void CUDAHistogramConstructor::LaunchComputeBatchedConstructDimYKernel(

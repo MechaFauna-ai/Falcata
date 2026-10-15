@@ -97,6 +97,11 @@ class Log {
 
   static void ResetCallBack(Callback callback) { GetLogCallBack() = callback; }
 
+  /*! \brief The calling thread's log level and callback (both are per thread): a thread started on behalf of another
+   *  (the CUDA forest trainer's slot threads) installs the starting thread's with ResetLogLevel / ResetCallBack */
+  static LogLevel CurrentLevel() { return GetLevel(); }
+  static Callback CurrentCallBack() { return GetLogCallBack(); }
+
   static void Debug(const char *format, ...) {
     va_list val;
     va_start(val, format);

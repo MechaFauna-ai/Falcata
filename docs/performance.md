@@ -2037,7 +2037,9 @@ GOSS, `bagging_freq` > 1, balanced or by-query bagging, linear trees, forced spl
 from the shared stream, `compact_prefill`. The slots never take the graph loop (another thread's legacy-stream work
 would join its stream capture); sequential training may, so a depth-limited quant-none forest with bynode = 1 matches
 the key off only with `graph_loop:off` (the graph loop is not run-to-run deterministic there either). The extra slots
-are freed once `num_iterations` rounds are trained. `FALCATA_DEBUG=diag` prints `[forest-diag]` lines (slot Init time
+are freed once `num_iterations` rounds are trained, with the per-round bag copies. Slot threads log with the caller's
+level and callback. Not tested: a class absent from the labels (rf on CUDA segfaults there on master too).
+`FALCATA_DEBUG=diag` prints `[forest-diag]` lines (slot Init time
 and memory, each group's rounds, trees, time and free memory, the auto size).
 
 Measured (relaxed gpuq jobs, one RTX 5090, 100 rounds, total `flc.train` seconds, steady ms per round, kernel-evo

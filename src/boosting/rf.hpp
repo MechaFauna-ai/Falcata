@@ -438,6 +438,9 @@ class RF : public GBDT {
         !(config_->ResolvedQuantMode() == QuantMode::kFixedPoint && FalcataPlan::Get().quant_ef)) {
       forest_trainer_.reset();
     }
+    if (forest_rounds_.empty()) {
+      forest_bags_.clear();  // the per-round bag copies (num_data indices each)
+    }
     #endif  // USE_CUDA
   }
 
@@ -619,7 +622,14 @@ class RF : public GBDT {
     }
     std::vector<std::unique_ptr<Tree>> trees;
     const auto group_start = std::chrono::steady_clock::now();
-    forest_trainer_->Train(jobs, &trees);
+    try {
+      forest_trainer_->Train(jobs, &trees);
+    } catch (...) {
+      // no round of a failed group may be popped (its trees are missing): drop them and rewind the counters and the
+      // sampler, so a caller that catches the error and trains on gets the sequential trees
+      ResetForest(true);
+      throw;
+    }
     const double group_ms =
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - group_start).count();
     if (auto_size) {

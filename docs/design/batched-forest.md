@@ -179,7 +179,18 @@ selective level instead of one memset per slot: gbdt's selective growth gains to
 - Thread safety: the slots share only read-only device data and the process-global plan, which `Init` writes (slots
   are initialised on the main thread before any group runs) and `Train` writes only on a change
   (`batch_construct_saturation_floor`, the same value in every slot). Debug statics and `thread_local` caches are
-  benign. Errors in a slot thread are rethrown on the main thread.
+  benign. The log level and log callback are per thread (`Log`): each slot thread installs the caller's, so
+  `verbose` and a registered logger (Python, R) apply to its messages. Errors in a slot thread are rethrown on the main
+  thread after the group's rounds are dropped and the counters and sampler rewound. The once-per-process copy streams
+  of the host-mapped compact path are created under a `std::once_flag`.
+- Known, not caused by this: on master 929fdbea rf on CUDA with a class absent from the labels (`class_need_train_`
+  false) segfaults, key off or on, so the md5 identity under fixedpoint error feedback with a skipped class (where
+  sequential training's residual slot `counter % num_class` drifts across classes and the slots do not) is untested.
+- The memory budget measures footprints with `cudaMemGetInfo` deltas, which other processes on the GPU disturb (the
+  reserve of an eighth of the device absorbs ordinary noise).
+- Speed only: a `reset_parameter` callback that changes a parameter every round drops the group every round (with a
+  fixed `forest_group` the group's other rounds are grown and discarded); `update()` past `num_iterations` makes and
+  frees the slots every round.
 - The GPU-serial floor (§3): the slots' kernels interleave on the legacy default stream. Removing it needs either
   merged launches across slots (§3 (a), the cheap form) or per-slot non-blocking streams throughout the learner.
 - GPU-bound shapes (fp64 deterministic construct) gain nothing: stage 3 (count histograms) is their lever.

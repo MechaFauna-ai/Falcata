@@ -276,3 +276,74 @@ def test_forest_batched_engages_cuda(extra, engaged):
         # 12 rounds in groups of 4 (one tree per round)
         assert len(lines) == 3, lines
         assert all(" 4 trees on 4 slots" in line for line in lines), lines
+
+
+_LOG_CHILD = r"""
+import json, sys
+import numpy as np
+import falcata as flc
+cfg = json.loads(sys.argv[1])
+
+class Logger:
+    def __init__(self):
+        self.lines = []
+    def info(self, msg):
+        self.lines.append(msg)
+    def warning(self, msg):
+        self.lines.append(msg)
+
+logger = Logger()
+if cfg["logger"]:
+    flc.register_logger(logger)
+rng = np.random.default_rng(7)
+X = rng.standard_normal((3000, 8)).astype(np.float32)
+y = np.digitize(X[:, 0] + 0.3 * rng.standard_normal(3000), [-1.0, 0.0, 1.0]).astype(np.float32)
+ds = flc.Dataset(X, label=y, params={"max_bin": 63, "verbose": -1})
+flc.train(cfg["params"], ds, num_boost_round=8)
+print("LOGGER_LINES " + json.dumps(logger.lines), file=sys.stderr)
+"""
+
+
+def _log_run(params, logger):
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    res = subprocess.run(
+        [sys.executable, "-c", _LOG_CHILD, json.dumps({"params": params, "logger": logger})],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=900,
+        check=False,
+    )
+    assert res.returncode == 0, res.stderr[-3000:]
+    lines = next(line for line in res.stderr.splitlines() if line.startswith("LOGGER_LINES "))
+    return res.stdout, json.loads(lines[len("LOGGER_LINES ") :])
+
+
+@pytest.mark.parametrize("plan", [OFF, "auto", "auto,forest_group:12"])
+def test_forest_batched_slot_threads_log_like_the_caller_cuda(plan):
+    # the log level and callback are per thread: the slot threads take the caller's. Trees that stop early (more
+    # leaves than the bagged data supports) warn "No further splits with positive gain" once per tree
+    params = {
+        "boosting": "rf",
+        "device_type": "cuda",
+        "objective": "multiclass",
+        "num_class": 4,
+        "quant_mode": "stochastic",
+        "bagging_fraction": 0.632,
+        "bagging_freq": 1,
+        "num_leaves": 2000,
+        "min_data_in_leaf": 20,
+        "seed": 7,
+        "cuda_plan": plan,
+    }
+    # verbose=-1: nothing on stdout, nothing to a logger
+    stdout, logged = _log_run({**params, "verbose": -1}, logger=True)
+    assert "No further splits" not in stdout, stdout[-2000:]
+    assert not any("No further splits" in line for line in logged), logged[:5]
+    # verbose=0: every warning goes to the registered logger, none to stdout, as many as without the key
+    stdout, logged = _log_run({**params, "verbose": 0}, logger=True)
+    _, logged_off = _log_run({**params, "verbose": 0, "cuda_plan": OFF}, logger=True)
+    assert "No further splits" not in stdout, stdout[-2000:]
+    warned = sorted(line for line in logged if "No further splits" in line)
+    assert warned, logged[:5]
+    assert warned == sorted(line for line in logged_off if "No further splits" in line)

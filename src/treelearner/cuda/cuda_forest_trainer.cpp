@@ -132,7 +132,13 @@ void CUDAForestTrainer::Train(const std::vector<Job>& jobs, std::vector<std::uni
     CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_before, &total));
   }
   std::vector<std::exception_ptr> errors(num_jobs);
+  // the log level and callback are per thread: the slot threads log as this one does (verbosity, the Python or R
+  // logger), not at a new thread's default Info level to stdout
+  const LogLevel log_level = Log::CurrentLevel();
+  const Log::Callback log_callback = Log::CurrentCallBack();
   const auto grow = [&](const int k) {
+    Log::ResetLogLevel(log_level);
+    Log::ResetCallBack(log_callback);
     try {
       const Job& job = jobs[k];
       CUDASingleGPUTreeLearner* const slot = slots_[job.slot];

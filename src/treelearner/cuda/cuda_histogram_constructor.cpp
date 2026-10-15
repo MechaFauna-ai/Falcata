@@ -10,6 +10,7 @@
 #include "cuda_histogram_constructor.hpp"
 
 #include <algorithm>
+#include <mutex>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -798,14 +799,14 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
     static const int N_STREAMS = 4;
     static cudaStream_t copy_streams[N_STREAMS] = {nullptr};
     static cudaEvent_t copy_done[N_STREAMS] = {nullptr};
-    static bool streams_init = false;
-    if (!streams_init) {
+    // once per process, whichever learner gets here first (forest slots train on several threads)
+    static std::once_flag streams_init;
+    std::call_once(streams_init, []() {
       for (int i = 0; i < N_STREAMS; ++i) {
         cudaStreamCreate(&copy_streams[i]);
         cudaEventCreate(&copy_done[i]);
       }
-      streams_init = true;
-    }
+    });
     for (int compact_col = 0; compact_col < total_compact; ++compact_col) {
       const int p = partition_for_compact_h[compact_col];
       const int src_local = src_local_col_for_compact_h[compact_col];
