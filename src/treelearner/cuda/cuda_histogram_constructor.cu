@@ -525,6 +525,17 @@ __device__ __forceinline__ uint32_t Code5Dot4(const uint32_t a, const uint32_t b
   return sum;
 #endif
 }
+// Code5Dot2: the two products of the 16-bit halves of a with bytes 0, 1 (HI_BYTES: 2, 3) of b, plus c (dp2a where the
+// architecture has it)
+template <bool HI_BYTES>
+__device__ __forceinline__ uint32_t Code5Dot2(const uint32_t a, const uint32_t b, const uint32_t c) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 610
+  return HI_BYTES ? __dp2a_hi(a, b, c) : __dp2a_lo(a, b, c);
+#else
+  const uint32_t bb = HI_BYTES ? b >> 16 : b;
+  return c + (a & 0xffffu) * (bb & 0xffu) + (a >> 16) * ((bb >> 8) & 0xffu);
+#endif
+}
 // the 32 bits of hi:lo starting at bit shift (shift < 32)
 __device__ __forceinline__ uint32_t Code5Funnel(const uint32_t lo, const uint32_t hi, const uint32_t shift) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 320
@@ -576,6 +587,69 @@ __device__ __forceinline__ uint32_t Code5RadixPackWord(const uint8_t* tile_row, 
   const uint32_t hi_half = c[3] + n[3] * (c[4] + n[4] * c[5]);
   return lo_half | (hi_half << 16);
 }
+// cuda_plan key pair_code_wide_regs: the 16-bit coefficient pairs of the word whose first slot is slot0, at byte B0 of
+// the nibble words it is read from (see the fill's word-per-thread pack). A group is the slots of one byte pair
+// (lanes 0-1 or 2-3 of a nibble word) that land in one sum: 6 bits, B0 even: slots (0, 1), (2, 3), 4 at bits 0, 12,
+// 24; B0 odd: 0, (1, 2), (3, 4) at bits 0, 6, 18; coefficient x 64 for the second slot of a pair. Mixed radix (B0
+// even): slots (0, 1) and 2 x (1, n0, n0 n1) at bit 0, 3 and (4, 5) x (1, n3, n3 n4) at bit 16. Low nibble
+// span(hi) x place, high nibble has_hi x place
+template <int CODE_BITS, int B0>
+__device__ __forceinline__ void Code5WideCoefs(const uint8_t* __restrict__ code_table, const int num_slots,
+                                               const int slot0, uint32_t (&lo_coef)[4], uint32_t (&hi_coef)[4]) {
+  constexpr bool kRadix = CODE_BITS == kCodeRadix;
+  static_assert(!kRadix || (B0 & 1) == 0, "a radix word starts on an even byte");
+#pragma unroll
+  for (int g = 0; g < 4; ++g) {
+    lo_coef[g] = 0;
+    hi_coef[g] = 0;
+  }
+  uint32_t place = 1;
+#pragma unroll
+  for (int j = 0; j < Code5CodesPerWord(CODE_BITS); ++j) {
+    // slot j's group and its 16-bit lane in the group's coefficient pair (the byte lane of the nibble word)
+    const int g = kRadix ? (j < 2 ? 0 : j == 2 ? 1 : j == 3 ? 2 : 3) : ((B0 & 1) + j) / 2;
+    const int lane16 = (B0 + j) & 1;
+    if (kRadix ? j == 3 : lane16 == 0) {
+      place = 1;
+    }
+    const int slot = slot0 + j;
+    uint32_t count = kRadix ? 1u : 64u;
+    if (slot < num_slots) {
+      const uint32_t e = kRadix ?
+        static_cast<uint32_t>(__ldg(reinterpret_cast<const uint16_t*>(code_table) + slot)) :
+        static_cast<uint32_t>(__ldg(code_table + slot));
+      lo_coef[g] |= (((e & 31u) * place) & 0xffffu) << (16 * lane16);
+      hi_coef[g] |= ((e & 32u) != 0 ? place : 0u) << (16 * lane16);
+      if (kRadix) {
+        count = e >> 8;
+      }
+    }
+    place *= count;
+  }
+}
+// group g's sum: the coefficient pairs against the byte pair at byte p of the nibble words lx / hx (bytes 4i..4i+3 in
+// word i), plus c
+template <int P>
+__device__ __forceinline__ uint32_t Code5WideGroupDot(const uint32_t* lx, const uint32_t* hx, const uint32_t lc,
+                                                      const uint32_t hc, const uint32_t c) {
+  return Code5Dot2<((P >> 1) & 1) != 0>(hc, hx[P >> 2], Code5Dot2<((P >> 1) & 1) != 0>(lc, lx[P >> 2], c));
+}
+// the word whose slots start at byte B0 of the nibble words (Code5WideCoefs' groups)
+template <int CODE_BITS, int B0>
+__device__ __forceinline__ uint32_t Code5WideWordDot(const uint32_t* lx, const uint32_t* hx,
+                                                     const uint32_t (&lc)[4], const uint32_t (&hc)[4]) {
+  if (CODE_BITS == kCodeRadix) {
+    const uint32_t s012 = Code5WideGroupDot<B0 + 2>(lx, hx, lc[1], hc[1], Code5WideGroupDot<B0>(lx, hx, lc[0], hc[0], 0u));
+    const uint32_t s345 = Code5WideGroupDot<B0 + 4>(lx, hx, lc[3], hc[3],
+                                                    Code5WideGroupDot<B0 + 2>(lx, hx, lc[2], hc[2], 0u));
+    return s012 | (s345 << 16);
+  }
+  constexpr int p0 = B0 & ~1;
+  const uint32_t s0 = Code5WideGroupDot<p0>(lx, hx, lc[0], hc[0], 0u);
+  const uint32_t s1 = Code5WideGroupDot<p0 + 2>(lx, hx, lc[1], hc[1], 0u);
+  const uint32_t s2 = Code5WideGroupDot<p0 + 4>(lx, hx, lc[2], hc[2], 0u);
+  return s0 | (s1 << (6 * (p0 + 2 - B0))) | (s2 << (6 * (p0 + 4 - B0)));
+}
 template <bool SLOT_MAJOR, int CODE_BITS>
 __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitTiledRootHistKernel(
   const uint8_t* __restrict__ src_data,
@@ -602,7 +676,8 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
   const uint8_t* __restrict__ code_table,
   const int code_row_words,
   const bool code_pack2,
-  const bool code_evict_first) {
+  const bool code_evict_first,
+  const bool code_wide_regs) {
   constexpr bool CODE5 = CODE_BITS > 0;
   constexpr int kCodesPerWord = CODE_BITS > 0 ? Code5CodesPerWord(CODE_BITS) : 1;
   extern __shared__ __align__(16) unsigned char fill_smem[];
@@ -963,6 +1038,63 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
           code_out[r * code_row_words + k] = w;
         }
       }
+    } else if ((CODE_BITS == 6 || CODE_BITS == kCodeRadix) && code_wide_regs && code_pack2 &&
+               code_row_words / 2 <= kFusedRootThreads) {
+      // cuda_plan keys pair_code_wide_regs, pair_code5_pack2: two words per thread for the 6-bit and the mixed-radix
+      // code: thread tid always packs words 2m and 2m + 1 (m = tid % (words / 2)) of its rows (the block's first whole
+      // rows' worth of threads; the rest skip the pack), their ten or twelve slots from the four aligned shared words
+      // holding them, one 8-byte store (code_row_words is a multiple of kCode5RowWordAlign, even). Either word is
+      // linear in its slots' nibbles: slot j's cell lo * span(hi) + hi times the slot's place value. The word is
+      // summed in groups of 16-bit coefficients, two slots per dp2a (the byte lanes 0-1 or 2-3 of the nibble words),
+      // each group shifted into place:
+      //   6 bits:      slots (0, 1) at bit 0, (2, 3) at bit 12, 4 at bit 24, coefficients x (1, 64) (a word starting
+      //                on an odd byte, the second of a pair: 0 at bit 0, (1, 2) at bit 6, (3, 4) at bit 18)
+      //   mixed radix: slots (0, 1) and 2 at bit 0 (x 1, n0, n0 n1), 3 and (4, 5) at bit 16 (x 1, n3, n3 n4)
+      // a slot's coefficients are span(hi) x place (its low nibble) and has_hi x place (its high nibble), from the
+      // code table once per thread. Every cell is below its slot's count (and below 64) and every radix half below
+      // 2^16, so no group carries into the next: the generic pack's word. A radix low-nibble coefficient span(hi) x
+      // place is at most 2^16 (span(lo) x span(hi) x place <= the half's cell product), equal only where span(lo) is 1,
+      // whose low nibble is always 0: kept mod 2^16, its product is still exact. A slot past the row has coefficients
+      // 0 (cell 0, count 1); its byte is read (within the block's 16-byte shared slack) but not used. With
+      // pair_code5_pack2 off the generic pack below writes the wide views
+      const int tile_row_offset = static_cast<int>(tile_rows - fill_smem);
+      uint32_t* code_out = code_view + static_cast<size_t>(row_start) * static_cast<size_t>(code_row_words);
+      constexpr int kPairSlots = 2 * kCodesPerWord;
+      const int half_words = code_row_words / 2;
+      const int m = tid % half_words;
+      uint32_t lc0[4], hc0[4], lc1[4], hc1[4];
+      Code5WideCoefs<CODE_BITS, 0>(code_table, num_slots, kPairSlots * m, lc0, hc0);
+      Code5WideCoefs<CODE_BITS, kCodesPerWord>(code_table, num_slots, kPairSlots * m + kCodesPerWord, lc1, hc1);
+      const int rows_per_pass = kFusedRootThreads / half_words;
+      for (int r = tid < rows_per_pass * half_words ? tid / half_words : rows_valid; r < rows_valid;
+           r += rows_per_pass) {
+        uint2 w = make_uint2(0u, 0u);
+        if (kPairSlots * m < num_slots) {
+          const int o = tile_row_offset + r * tile_stride + kPairSlots * m;
+          const uint32_t* a = reinterpret_cast<const uint32_t*>(fill_smem) + (o >> 2);
+          const uint32_t shift = static_cast<uint32_t>(o & 3) * 8u;
+          const uint32_t a1 = a[1];
+          const uint32_t a2 = a[2];
+          uint32_t lx[3];
+          uint32_t hx[3];
+          lx[0] = Code5Funnel(a[0], a1, shift);
+          lx[1] = Code5Funnel(a1, a2, shift);
+          lx[2] = Code5Funnel(a2, a[3], shift);
+#pragma unroll
+          for (int i = 0; i < 3; ++i) {
+            hx[i] = (lx[i] >> 4) & 0x0f0f0f0fu;
+            lx[i] &= 0x0f0f0f0fu;
+          }
+          w.x = Code5WideWordDot<CODE_BITS, 0>(lx, hx, lc0, hc0);
+          w.y = Code5WideWordDot<CODE_BITS, kCodesPerWord>(lx, hx, lc1, hc1);
+        }
+        uint2* const dst = reinterpret_cast<uint2*>(code_out + r * code_row_words + 2 * m);
+        if (code_evict_first) {
+          __stcs(dst, w);
+        } else {
+          *dst = w;
+        }
+      }
     } else if (CODE5) {
       // the tile's rows as code words: consecutive threads write consecutive words of the tile's contiguous run
       // (kCodesPerWord codes of CODE_BITS bits per word; the only pack of the 6-bit code, cuda_plan key
@@ -1117,10 +1249,15 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
   // cuda_plan key pair_code_wide: the 6-bit code's scalar pack reads no slot past the row and needs no slack.
   const bool code5 = code_view != nullptr && (code_bits == 6 || code_bits == kCodeRadix ||
                                               (code_bits == 5 && base_shared_bytes + 16 <= max_shared_bytes));
-  const size_t shared_bytes = base_shared_bytes + (code5 && code_bits == 5 ? 16 : 0);
+  // cuda_plan key pair_code_wide_regs: the 6-bit / mixed-radix register pack reads up to 15 bytes past a row's last
+  // slot (four aligned words for a thread's two words): the same 16-byte slack, or the generic scalar pack where it
+  // does not fit
+  const bool code_wide_regs = code5 && (code_bits == 6 || code_bits == kCodeRadix) &&
+                              FalcataPlan::Get().pair_code_wide_regs && base_shared_bytes + 16 <= max_shared_bytes;
+  const size_t shared_bytes = base_shared_bytes + ((code5 && code_bits == 5) || code_wide_regs ? 16 : 0);
   using FusedFillKernel = void (*)(const uint8_t*, uint8_t*, const size_t*, const size_t*, const size_t*, const int*,
                                    int, data_size_t, const int*, const uint32_t*, int, int, int, bool, bool, bool, bool,
-                                   const int32_t*, bool, hist_t*, uint32_t*, const uint8_t*, int, bool, bool);
+                                   const int32_t*, bool, hist_t*, uint32_t*, const uint8_t*, int, bool, bool, bool);
   const int fill_code_bits = code5 ? code_bits : 0;
   const FusedFillKernel kernel = slot_major ?
     (fill_code_bits == kCodeRadix ? CUDAFillCompactData4BitTiledRootHistKernel<true, kCodeRadix> :
@@ -1175,7 +1312,7 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
     slot_first_bin, local_bin_hist_pos, num_local_bins, slot_major ? slot_major_span : 0, tiles_per_block,
     strided_tiles, run_copy, word_prefetch, l2_lead, grad_and_hess, hist_16bit, root_hist_scratch,
     code5 ? code_view : nullptr, code_table, code_row_words, FalcataPlan::Get().pair_code5_pack2,
-    !FalcataPlan::Get().pair_code5_l2_store);
+    !FalcataPlan::Get().pair_code5_l2_store, code_wide_regs);
   if (code5) {
     // a new variant: a rejected launch must not leave the code view (and the root histogram) unwritten silently
     CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());

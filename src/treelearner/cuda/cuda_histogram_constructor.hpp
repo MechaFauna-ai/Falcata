@@ -178,8 +178,8 @@ __host__ __device__ inline int HybridQuantConstructBlockDimY(
 /*! \brief cuda_plan key pair_code5 / pair_code_wide: 32-bit words of a code-view row of row_bytes byte slots
  *  (32 / code_bits codes per word: six 5-bit codes, or five 6-bit codes where a tree's largest joint cell count
  *  needs the wider code), padded to whole kCode5RowWordAlign-word units: 32 bytes, the sector of the gathers' L2
- *  and DRAM accesses, and an even count for the fill's 8-byte stores (pair_code5_pack2, 5-bit only). The fused
- *  fill writes rows of this many words (LaunchCompactFill) and the construct reads them. */
+ *  and DRAM accesses, and an even count for the fill's 8-byte stores (pair_code5_pack2; pair_code_wide_regs).
+ *  The fused fill writes rows of this many words (LaunchCompactFill) and the construct reads them. */
 inline constexpr int kCode5RowWordAlign = 8;
 static_assert(kCode5RowWordAlign % 2 == 0, "pair_code5_pack2 stores word pairs as one aligned 8-byte store");
 /*! \brief cuda_plan key pair_code_radix: the code kind kCodeRadix (in place of a bit width) packs six joint cells per
