@@ -9,6 +9,7 @@
 #include <Falcata/falcata_plan.h>
 
 #include <algorithm>
+#include <cstring>
 #include <vector>
 
 #include "cuda_best_split_finder.hpp"
@@ -70,6 +71,16 @@ CUDABestSplitFinder::~CUDABestSplitFinder() {
   cuda_streams_.shrink_to_fit();
   if (pinned_leaf_best_split_info_ != nullptr) {
     gpuAssert(cudaFreeHost(pinned_leaf_best_split_info_), __FILE__, __LINE__);
+  }
+  if (level_node_masks_copied_ != nullptr) {
+    gpuAssert(cudaEventSynchronize(level_node_masks_copied_), __FILE__, __LINE__);
+    gpuAssert(cudaEventDestroy(level_node_masks_copied_), __FILE__, __LINE__);
+  }
+  if (host_level_node_masks_ != nullptr) {
+    gpuAssert(cudaFreeHost(host_level_node_masks_), __FILE__, __LINE__);
+  }
+  if (host_level_node_tasks_ != nullptr) {
+    gpuAssert(cudaFreeHost(host_level_node_tasks_), __FILE__, __LINE__);
   }
 }
 
@@ -372,6 +383,21 @@ void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
     if (feature_to_task_index_[inner_feature_index] < 0 ||
         !split_find_tasks_[task_index].reverse) {
       feature_to_task_index_[inner_feature_index] = task_index;
+    }
+  }
+  // cuda_plan key level_bynode_masks: every feature's tasks (ascending task index), for the per-leaf task lists
+  feature_task_begin_.assign(static_cast<size_t>(num_features_) + 1, 0);
+  for (int task_index = 0; task_index < num_tasks_; ++task_index) {
+    ++feature_task_begin_[static_cast<size_t>(split_find_tasks_[task_index].inner_feature_index) + 1];
+  }
+  for (int f = 0; f < num_features_; ++f) {
+    feature_task_begin_[f + 1] += feature_task_begin_[f];
+  }
+  feature_task_ids_.assign(static_cast<size_t>(num_tasks_), 0);
+  {
+    std::vector<int> fill(feature_task_begin_.begin(), feature_task_begin_.end() - 1);
+    for (int task_index = 0; task_index < num_tasks_; ++task_index) {
+      feature_task_ids_[fill[split_find_tasks_[task_index].inner_feature_index]++] = task_index;
     }
   }
 
@@ -837,6 +863,112 @@ const CUDASplitInfo* CUDABestSplitFinder::ComputeForcedSplit(
 void CUDABestSplitFinder::InvalidateLeafBestSplit(const int left_leaf_index, const int right_leaf_index) {
   LaunchInvalidateLeafBestSplitKernel(left_leaf_index, right_leaf_index);
   SynchronizeCUDADevice(__FILE__, __LINE__);
+}
+
+void CUDABestSplitFinder::EnsureLevelNodeMaskCapacity() {
+  const size_t slots = static_cast<size_t>(num_leaves_) + 2;
+  const size_t table_bytes = (slots * sizeof(int8_t*) + 255) / 256 * 256;
+  const size_t bytes = table_bytes + slots * static_cast<size_t>(num_features_);
+  if (level_node_masks_capacity_ >= bytes && level_node_masks_table_bytes_ == table_bytes) {
+    return;
+  }
+  if (level_node_masks_copied_ == nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&level_node_masks_copied_, cudaEventDisableTiming));
+  }
+  if (level_node_masks_copy_pending_) {
+    CUDASUCCESS_OR_FATAL(cudaEventSynchronize(level_node_masks_copied_));
+    level_node_masks_copy_pending_ = false;
+  }
+  if (host_level_node_masks_ != nullptr) {
+    CUDASUCCESS_OR_FATAL(cudaFreeHost(host_level_node_masks_));
+    host_level_node_masks_ = nullptr;
+  }
+  CUDASUCCESS_OR_FATAL(cudaMallocHost(reinterpret_cast<void**>(&host_level_node_masks_), bytes));
+  std::memset(host_level_node_masks_, 0, bytes);
+  cuda_level_node_masks_.Resize(bytes);
+  level_node_masks_capacity_ = bytes;
+  level_node_masks_table_bytes_ = table_bytes;
+}
+
+int8_t* CUDABestSplitFinder::LevelNodeMaskRows(const int num_rows) {
+  CHECK(level_node_masks_);
+  EnsureLevelNodeMaskCapacity();
+  CHECK_LE(static_cast<size_t>(num_rows), static_cast<size_t>(num_leaves_) + 2);
+  if (level_node_masks_copy_pending_) {
+    // the previous level's upload reads the same staging bytes (normally long done: a level's readback follows it)
+    CUDASUCCESS_OR_FATAL(cudaEventSynchronize(level_node_masks_copied_));
+    level_node_masks_copy_pending_ = false;
+  }
+  return host_level_node_masks_ + level_node_masks_table_bytes_;
+}
+
+void CUDABestSplitFinder::CommitLevelNodeMasks(const std::vector<int>& leaves,
+                                               const std::vector<int>& row_feature_begin,
+                                               const std::vector<int>& row_features, cudaStream_t stream) {
+  CHECK(level_node_masks_);
+  CHECK(!level_node_masks_copy_pending_);
+  const int num_rows = static_cast<int>(leaves.size());
+  if (num_rows <= 0) {
+    return;
+  }
+  CHECK_EQ(row_feature_begin.size(), leaves.size() + 1);
+  // the per-leaf task lists: (offset, count) per leaf slot, then each row's tasks in ascending task index (the
+  // tasks of its sampled features, which the level finders launch instead of the whole task grid)
+  const size_t slots = static_cast<size_t>(num_leaves_) + 2;
+  size_t total_tasks = 0;
+  for (int i = 0; i < num_rows; ++i) {
+    for (int k = row_feature_begin[i]; k < row_feature_begin[i + 1]; ++k) {
+      const int f = row_features[k];
+      total_tasks += static_cast<size_t>(feature_task_begin_[f + 1] - feature_task_begin_[f]);
+    }
+  }
+  const size_t task_ints = 2 * slots + total_tasks;
+  if (level_node_tasks_capacity_ < task_ints) {
+    if (host_level_node_tasks_ != nullptr) {
+      CUDASUCCESS_OR_FATAL(cudaFreeHost(host_level_node_tasks_));
+    }
+    const size_t capacity = std::max(task_ints, 2 * level_node_tasks_capacity_);
+    CUDASUCCESS_OR_FATAL(cudaMallocHost(reinterpret_cast<void**>(&host_level_node_tasks_), capacity * sizeof(int)));
+    std::memset(host_level_node_tasks_, 0, capacity * sizeof(int));
+    cuda_level_node_tasks_.Resize(capacity);
+    level_node_tasks_capacity_ = capacity;
+  }
+  int* ranges = host_level_node_tasks_;
+  int* list = host_level_node_tasks_ + 2 * slots;
+  int fill = 0;
+  level_node_max_tasks_ = 0;
+  std::vector<int>& row_tasks = level_node_row_tasks_;
+  for (int i = 0; i < num_rows; ++i) {
+    row_tasks.clear();
+    for (int k = row_feature_begin[i]; k < row_feature_begin[i + 1]; ++k) {
+      const int f = row_features[k];
+      for (int t = feature_task_begin_[f]; t < feature_task_begin_[f + 1]; ++t) {
+        row_tasks.push_back(feature_task_ids_[t]);
+      }
+    }
+    std::sort(row_tasks.begin(), row_tasks.end());
+    const int leaf = leaves[i];
+    ranges[2 * leaf] = static_cast<int>(2 * slots) + fill;
+    ranges[2 * leaf + 1] = static_cast<int>(row_tasks.size());
+    std::memcpy(list + fill, row_tasks.data(), row_tasks.size() * sizeof(int));
+    fill += static_cast<int>(row_tasks.size());
+    level_node_max_tasks_ = std::max(level_node_max_tasks_, static_cast<int>(row_tasks.size()));
+  }
+  CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(cuda_level_node_tasks_.RawData(), host_level_node_tasks_,
+                                       (2 * slots + static_cast<size_t>(fill)) * sizeof(int),
+                                       cudaMemcpyHostToDevice, stream));
+  const int8_t** table = reinterpret_cast<const int8_t**>(host_level_node_masks_);
+  const int8_t* device_rows = cuda_level_node_masks_.RawDataReadOnly() + level_node_masks_table_bytes_;
+  for (int i = 0; i < num_rows; ++i) {
+    const int leaf = leaves[i];
+    CHECK(leaf >= 0 && leaf < num_leaves_ + 2);
+    table[leaf] = device_rows + static_cast<size_t>(i) * static_cast<size_t>(num_features_);
+  }
+  const size_t bytes = level_node_masks_table_bytes_ + static_cast<size_t>(num_rows) * static_cast<size_t>(num_features_);
+  CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(cuda_level_node_masks_.RawData(), host_level_node_masks_, bytes,
+                                       cudaMemcpyHostToDevice, stream));
+  CUDASUCCESS_OR_FATAL(cudaEventRecord(level_node_masks_copied_, stream));
+  level_node_masks_copy_pending_ = true;
 }
 
 void CUDABestSplitFinder::SetUsedFeatureByNode(const std::vector<int8_t>& is_feature_used_by_smaller_node,

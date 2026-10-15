@@ -667,6 +667,17 @@ struct FalcataPlan {
   // per-column view was not kept (the walk of an older tree needs it), multi-GPU, linear trees and for stumps
   // (added at once).
   bool rf_lazy_train_score = true;  // key: rf_lazy_train_score
+  // per-node feature sampling (feature_fraction_bynode < 1, without interaction constraints) in the level-batched
+  // flows (hybrid prefix two-sync and one-sync, selective grow-then-prune) instead of the per-split loop. A node's
+  // mask is drawn on the host by ColSampler::GetByNodeKeyed from its own generator, seeded by (feature_fraction_seed,
+  // the learner's tree count, the node's path from the root), so it does not depend on how many masks were drawn
+  // before it, on the flow or on the level batch. Each level uploads one mask row per searched leaf plus a per-leaf
+  // row pointer table (one copy), and the level finders read their leaf's row. Every flow, the per-split loop
+  // included (the leaf-wise tail, flows the batched kernels do not support), draws the keyed masks, so models with
+  // bynode < 1 differ from the shared-stream draws of the per-split loop (off): same sample size, other masks.
+  // Interaction constraints keep the shared stream and the per-split loop. bynode = 1: nothing is drawn or
+  // uploaded and the finders get a null table: bit-identical. Off: the per-split loop with the shared stream.
+  bool level_bynode_masks = true;  // key: level_bynode_masks
   // quantized root sums (gradient/hessian totals of the tree's rows): one warp
   // per 1024-row chunk sums 32 rows per lane, instead of one 1024-thread block
   // per chunk with one row per thread and two block reductions. Each chunk's
@@ -974,6 +985,7 @@ struct FalcataPlan {
     if (key == "gradient_fp64_lean") return &gradient_fp64_lean;
     if (key == "rf_device_objective") return &rf_device_objective;
     if (key == "rf_lazy_train_score") return &rf_lazy_train_score;
+    if (key == "level_bynode_masks") return &level_bynode_masks;
     if (key == "root_sums_warp") return &root_sums_warp;
     if (key == "minmax_warp") return &minmax_warp;
     if (key == "colmajor_split") return &colmajor_split;
@@ -1165,8 +1177,9 @@ inline bool FalcataVerifyEnabled() {
  *    without filling the GPU); does not change any result
  *  - ``bynode``     per-split stderr line ``BYNODE`` with the split leaf, its
  *    inner feature and the per-node feature mask that leaf was searched with
- *    (feature_fraction_bynode < 1 or interaction constraints; classic loop
- *    only, which is where per-node masks run); does not change any result
+ *    (feature_fraction_bynode < 1 or interaction constraints; per-split loop
+ *    and, under level_bynode_masks, every split the level flows apply,
+ *    including selective splits pruned later); does not change any result
  * The growth tokens (debug, syncpairs, maxsplits) also disable the CUDA-graph
  * controller path (the device controller does not replicate these hooks).
  */

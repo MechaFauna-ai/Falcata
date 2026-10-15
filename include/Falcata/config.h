@@ -399,7 +399,7 @@ struct Config {
   // desc = can be used to deal with over-fitting
   // desc = **Note**: unlike ``feature_fraction``, this cannot speed up training
   // desc = **Note**: if both ``feature_fraction`` and ``feature_fraction_bynode`` are smaller than ``1.0``, the final fraction of each node is ``feature_fraction * feature_fraction_bynode``
-  // desc = **Note**: on ``device_type=cuda`` a value below ``1.0`` (like ``interaction_constraints``) grows every tree with the per-split loop instead of the level-batched flows, with and without quantized gradients; this costs several times per round (5-40x measured on forest-like shapes)
+  // desc = **Note**: on ``device_type=cuda`` a value below ``1.0`` (without ``interaction_constraints``) draws each node's sample from a generator of its own, seeded by the seed, the tree and the node's path, so the level-batched flows can search with it; the samples, and so the models, differ from the CPU learner's and from earlier releases (same number of features per node). With ``interaction_constraints``, or the ``cuda_plan`` key ``level_bynode_masks:off``, every tree grows with the per-split loop and the shared random stream as before, several times slower per round (5-40x measured on forest-like shapes)
   double feature_fraction_bynode = 1.0;
 
   // desc = random seed for ``feature_fraction``

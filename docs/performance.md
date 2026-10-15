@@ -1772,24 +1772,62 @@ forests (every row the same p) still takes the per-row hessian path.
 
 ---
 
-## 10n. Per-node feature sampling under quantized gradients (`feature_fraction_bynode`, `interaction_constraints`)
+## 10n. Per-node feature sampling (`feature_fraction_bynode`, `interaction_constraints`; `level_bynode_masks`)
 
-Per-node feature masks (`feature_fraction_bynode < 1`, `interaction_constraints`) are drawn on the host by the
-column sampler (`ColSampler::GetByNode`, the CPU learner's RNG stream) once per searched leaf and uploaded per leaf
-pair (`CUDASingleGPUTreeLearner::SelectFeatureByNode`). Only the per-split loop draws and uploads them: the
-level-batched flows (hybrid prefix, selective grow-then-prune, one-sync, graph loop) are gated off by
-`select_features_by_node_`, which is why such configurations cost 5-40x per round (`runs/forest/REPORT_rf_smoke.md`).
+**History.** Per-node feature masks (`feature_fraction_bynode < 1`, `interaction_constraints`) used to be drawn on the
+host by the column sampler (`ColSampler::GetByNode`, the CPU learner's shared RNG stream, one draw per searched leaf,
+smaller leaf first) and uploaded per leaf pair (`CUDASingleGPUTreeLearner::SelectFeatureByNode`). Only the per-split
+loop drew them, so `select_features_by_node_` gated off every level-batched flow (hybrid prefix, selective
+grow-then-prune, one-sync, graph loop) and such configurations cost 5-40x per round on deep trees
+(`runs/forest/REPORT_rf_smoke.md`): every random-forest benchmark row with the default sqrt(F) per node ran that loop.
+Before PR #107 the quantized (discretized) leaf finder also read the per-tree mask for both leaves, so under
+`quant_mode=stochastic` or `fixedpoint` a `feature_fraction_bynode < 1` model was bit-identical to the `= 1` model, and
+interaction constraints were refused with a `Log::Fatal` under quantized gradients; #107 made the discretized launcher
+select each leaf's own mask and lifted the Fatal.
 
-Until this fix the quantized (discretized) leaf finder read the per-tree mask for both leaves regardless, so under
-`quant_mode=stochastic` or `fixedpoint` a `feature_fraction_bynode < 1` model was bit-identical to the `= 1` model
-(silently), and interaction constraints, which ride the same masks, were refused with a `Log::Fatal` under quantized
-gradients (since 162e4fdd; that check is lifted now, and `deterministic=true` still keeps interaction constraints on
-the non-quantized path, which matches CPU). The non-quantized finder always selected the per-node masks. The
-discretized launcher now selects them the same way (smaller leaf: smaller node's mask, larger leaf: larger node's
-mask). Without per-node masks both pointers stay the per-tree mask, so every other configuration is bit-identical and
-does no extra work. `FALCATA_DEBUG=bynode` prints, per split of the per-split loop, the split leaf, its inner feature
-and the mask the leaf was searched with (`tests/python_package_test/test_cuda_bynode_quant.py` checks every chosen
-feature against it).
+**Now (cuda_plan key `level_bynode_masks`, default on).** With `feature_fraction_bynode < 1` and no interaction
+constraints the level flows run with per-node masks:
+- *Draw.* A node's mask is `ColSampler::GetByNodeKeyed(key)`: the same sample as `GetByNode` (round(fraction x the
+  candidates), out of the tree's `feature_fraction` sample or every valid feature) from a `Random` of its own, seeded by
+  splitmix64 of (`feature_fraction_seed`, key). The key is the node's: the root's names the tree (the learner's tree
+  count), a child's is the parent's mixed with its side (left keeps the parent's leaf index, right takes the new one).
+  So a mask is a function of (seed, tree, path from the root) only: not of the flow, of the order of the draws, of how
+  many leaves a level holds, or of the speculative leaves selective growth searches and prunes (they draw from their
+  own keys and consume nothing shared). The shared stream is untouched (the per-tree draws keep their sequence).
+- *Upload.* Each level draws one row per searched leaf (the host-valid roles of the level's pairs; both children of
+  every applied split in the one-sync flows, whose roles are decided on the device) into a pinned staging buffer and
+  uploads, on the level's histogram stream ahead of its construct, the rows with a per-leaf row-pointer table and
+  per-leaf task lists (the finder tasks of the node's sampled features, ascending), two copies per level.
+- *Find and sync.* The non-quantized and the quantized block level finders launch, per leaf, its own task list (grid
+  x = the level's longest list) instead of the tree's task grid; the quantized warp finder keeps its launch order and
+  writes a masked task not-found. The level syncs fold over the leaf's list (its exact-replay fallback masks with the
+  leaf's row). Without the lists numerai (3555 features, 60 per node) spent 58 ms of a ~140 ms tree in finder blocks
+  that only read the mask and exited (`runs/forest/stage1/nsys`); with them the level find is 3.8 ms per tree.
+- *Per-split loop.* Where it still runs (the leaf-wise tail after a prefix, configurations the batched kernels do not
+  support), it draws the same keyed masks (`SelectFeatureByNode` takes the pair's leaf indices). Under quantized
+  gradients the per-split loop (`hybrid:off`) and the level flows grow the same trees with them
+  (`test_masks_do_not_depend_on_the_flow`).
+- *What stays on the per-split loop:* interaction constraints (their masks depend on the branch's features; shared
+  stream as before), vector leaves, multi-GPU and feature-parallel (single-GPU level flows only), and the graph loop
+  is not used with per-node masks (its device controller assigns the leaves; the host-driven loops run instead).
+- *Models.* bynode < 1 models differ from the shared-stream draws (key off) and from the CPU learner: same sample size
+  per node, other masks; holdout metrics agree within noise (`test_key_on_and_off_same_metric_other_model`, the forest
+  benchmark rows in `runs/forest/REPORT_stage1.md`). They are run-to-run md5-stable under quantized gradients. bynode = 1
+  draws and uploads nothing and the finders get null tables: md5-identical (lattice, guards).
+- `level_bynode_masks:off` restores the per-split loop with the shared stream exactly.
+
+Measured (relaxed gpuq jobs, one RTX 5090, 2 pairs per cell, `runs/forest/REPORT_stage1.md`): the forest cells,
+master c8019697 -> this key, ms per round (T ratio): covtype-rf-deep 2252 -> 119 (18.7x), higgs-rf-deep 543 -> 67
+(7.9x), numerai-rf-deep 461 -> 100 (4.5x), covtype-rf-std 78 -> 21 (3.6x); the same binary with the key off gives the
+master md5 on all four and the same ratios (18.9x, 8.0x, 4.8x, 3.3x). The forest benchmark rows (100 trees, medians of
+3) drop 7-17x on covtype (sqrt(F) forest 185.6 -> 15.2 s), 1.8-26x on higgs (depth 12: 53.3 -> 6.8 s) and 1.4-4.5x
+on numerai (depth 12: 46.1 -> 10.3 s), the 511-leaf rows least; holdout metrics move by at most 0.004 (other masks). The gbdt cells (bynode = 1)
+are md5-identical with ratios 0.999-1.001.
+
+`FALCATA_DEBUG=bynode` prints, per split (the per-split loop's, and every split the level flows apply, selective
+splits pruned later included), the split leaf, its inner feature and the mask the leaf was searched with;
+`FALCATA_DEBUG=diag` prints once `[bynode-diag] masks=keyed|shared-stream flow=...` (`test_cuda_bynode_level.py`,
+`test_cuda_bynode_quant.py` read both).
 
 ## 10o. A 2x shared table for the quantized dense construct (`dense_wide_hist`)
 

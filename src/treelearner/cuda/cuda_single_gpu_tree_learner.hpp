@@ -125,7 +125,29 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
 
   void AllocateBitset();
 
-  void SelectFeatureByNode(const Tree* tree);
+  // per-split loop: draw and upload the per-node masks of the pair's two leaves (shared stream, or the keyed draw
+  // under level_bynode_masks)
+  void SelectFeatureByNode(const Tree* tree, const int smaller_leaf_index, const int larger_leaf_index);
+
+  // ---- cuda_plan key level_bynode_masks ----
+  // the keyed mask of a leaf (ColSampler::GetByNodeKeyed with the leaf's node key) into out (num_features bytes);
+  // FALCATA_DEBUG=bynode keeps a host copy per leaf
+  void DrawKeyedNodeMask(const int leaf, int8_t* out, std::vector<int>* inner_features = nullptr);
+  // level flows: draw one row per leaf (leaves < 0 skipped) and upload them with the per-leaf row table on the
+  // level's histogram stream; a no-op unless bynode_level_masks_
+  void UploadLevelNodeMasks(const std::vector<int>& leaves);
+  // node keys: the left child keeps the parent's leaf index, the right child takes right_leaf; a child's key is the
+  // parent's mixed with its side, so a node's key is a function of its path from the root (no-op unless keyed)
+  void BynodeKeySplit(const int leaf, const int right_leaf) {
+    if (!bynode_keyed_) {
+      return;
+    }
+    const uint64_t parent = bynode_node_key_[leaf];
+    bynode_node_key_[leaf] = ColSampler::MixKey(parent ^ 0x6A09E667F3BCC908ULL);
+    bynode_node_key_[right_leaf] = ColSampler::MixKey(parent ^ 0xBB67AE8584CAA73BULL);
+  }
+  // FALCATA_DEBUG=bynode: the BYNODE line of a split applied at leaf (feature, the mask the leaf was searched with)
+  void DebugPrintBynodeSplit(const int leaf, const int inner_feature) const;
 
   // Apply a split (device CUDASplitInfo + host-known feature/threshold) to the tree
   // and the data partition. Shared by the main loop and the forced-split pre-pass.
@@ -152,6 +174,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // whenever the budget does not bind; the tail preserves exact leaf-wise
   // semantics once it might.
   bool HybridGrowthUsable() const;
+  // cuda_plan key level_bynode_masks: per-node feature masks do not keep the level flows off (single GPU, both
+  // batched phases available); with select_features_by_node_ and this false, the per-split loop runs
+  bool LevelFlowsTakeNodeMasks() const;
   // Whether the hybrid prefix will run the single-sync (speculative) level
   // pipeline (see TrainLevelWisePrefixOneSync); requires both batched phases
   // and non-quantized training.
@@ -730,6 +755,25 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool has_categorical_feature_;
   // whether need to select features by node
   bool select_features_by_node_;
+  // cuda_plan key level_bynode_masks: per-node masks keyed by (feature_fraction_seed, tree count, node path) in
+  // every flow (feature_fraction_bynode < 1, no interaction constraints)
+  bool bynode_keyed_ = false;
+  // ... and the level flows run with them (the batched level kernels and apply are available)
+  bool bynode_level_masks_ = false;
+  // trees this learner has trained (the tree part of the node keys)
+  uint64_t bynode_tree_count_ = 0;
+  // per leaf index: the key of the node the leaf currently is
+  std::vector<uint64_t> bynode_node_key_;
+  // per-split loop: host rows of the keyed masks of the pair's two leaves
+  std::vector<int8_t> bynode_pair_masks_[2];
+  // level flows: the leaves of the level's mask rows
+  std::vector<int> bynode_level_leaves_;
+  // level flows: each row's sampled inner features, rows in bynode_level_leaves_ order (CSR)
+  std::vector<int> bynode_row_feature_begin_;
+  std::vector<int> bynode_row_features_;
+  std::vector<int> bynode_one_row_features_;
+  // level flows: the leaves the level searches, before UploadLevelNodeMasks filters them
+  std::vector<int> level_search_leaves_;
 
   std::vector<int> categorical_bin_to_value_;
   std::vector<int> categorical_bin_offsets_;

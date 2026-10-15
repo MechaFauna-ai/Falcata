@@ -14,6 +14,8 @@
 #include <Falcata/utils/random.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <cstring>
 #include <unordered_set>
 #include <vector>
 
@@ -179,6 +181,42 @@ class ColSampler {
       }
     }
     return ret;
+  }
+
+  /*! \brief splitmix64's finalizer: a bijective 64-bit mix (the node keys of GetByNodeKeyed are built with it) */
+  static uint64_t MixKey(uint64_t z) {
+    z += 0x9E3779B97F4A7C15ULL;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+  }
+
+  /*!
+   * \brief The per-node sample of GetByNode without interaction constraints, drawn from a generator of its own seeded
+   *        by (feature_fraction_seed, key) instead of the shared stream: the same number of features out of the same
+   *        candidates (the tree's sample when feature_fraction < 1, else every valid feature), and a mask that depends
+   *        only on the key, never on the masks drawn before it. Writes num_features() bytes (1 = searched) to out.
+   *        The CUDA learner's level_bynode_masks keys a node by the tree count and the node's path from the root.
+   *        Does not touch the shared stream. inner_features (optional) receives the sampled inner feature indices.
+   */
+  void GetByNodeKeyed(uint64_t key, int8_t* out, std::vector<int>* inner_features = nullptr) const {
+    std::memset(out, 0, sizeof(int8_t) * static_cast<size_t>(train_data_->num_features()));
+    const std::vector<int>& candidates = need_reset_bytree_ ? used_feature_indices_ : valid_feature_indices_;
+    const int used_feature_cnt = GetCnt(candidates.size(), fraction_bynode_);
+    const uint64_t mixed = MixKey(MixKey(static_cast<uint64_t>(static_cast<uint32_t>(seed_))) ^ key);
+    Random random(static_cast<int>(static_cast<uint32_t>(mixed >> 32)));
+    const std::vector<int> sampled = random.Sample(static_cast<int>(candidates.size()), used_feature_cnt);
+    if (inner_features != nullptr) {
+      inner_features->clear();
+    }
+    for (const int i : sampled) {
+      const int used_feature = need_reset_bytree_ ? valid_feature_indices_[candidates[i]] : candidates[i];
+      const int inner_feature = train_data_->InnerFeatureIndex(used_feature);
+      out[inner_feature] = 1;
+      if (inner_features != nullptr) {
+        inner_features->push_back(inner_feature);
+      }
+    }
   }
 
   const std::vector<int8_t>& is_feature_used_bytree() const {
