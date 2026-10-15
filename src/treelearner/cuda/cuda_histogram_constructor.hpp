@@ -178,12 +178,25 @@ __host__ __device__ inline int HybridQuantConstructBlockDimY(
 /*! \brief cuda_plan key pair_code5 / pair_code_wide: 32-bit words of a code-view row of row_bytes byte slots
  *  (32 / code_bits codes per word: six 5-bit codes, or five 6-bit codes where a tree's largest joint cell count
  *  needs the wider code), padded to whole kCode5RowWordAlign-word units: 32 bytes, the sector of the gathers' L2
- *  and DRAM accesses, and an even count for the fill's 8-byte stores (pair_code5_pack2, 5-bit only). The fused
- *  fill writes rows of this many words (LaunchCompactFill) and the construct reads them. */
+ *  and DRAM accesses, and an even count for the fill's 8-byte stores (pair_code5_pack2; pair_code_wide_regs).
+ *  The fused fill writes rows of this many words (LaunchCompactFill) and the construct reads them. */
 inline constexpr int kCode5RowWordAlign = 8;
 static_assert(kCode5RowWordAlign % 2 == 0, "pair_code5_pack2 stores word pairs as one aligned 8-byte store");
+/*! \brief cuda_plan key pair_code_radix: the code kind kCodeRadix (in place of a bit width) packs six joint cells per
+ *  word in mixed radix, three digits in each 16-bit half: c0 + n0 (c1 + n1 c2) with n_j slot j's joint cell count,
+ *  for trees whose every half's three cell counts multiply to at most 2^16 (the 6-bit code's five cells per word
+ *  otherwise). The value is a sentinel, not a bit width. */
+inline constexpr int kCodeRadix = 40;
+/*! \brief pair_code_radix: the most a half's three cell counts may multiply to */
+inline constexpr uint32_t kCodeRadixHalfCells = 1u << 16;
+/*! \brief pair_code_radix: floor(h / n) for h < 2^16 and 1 <= n <= 64 as __umulhi(h << 10, Code5RadixMagic(n)):
+ *  with M = ceil(2^22 / n), M n - 2^22 < n, so h (M n - 2^22) < 2^16 * 64 = 2^22 and the quotient is exact */
+__host__ __device__ inline uint32_t Code5RadixMagic(const uint32_t n) { return ((1u << 22) + n - 1u) / n; }
+__host__ __device__ constexpr int Code5CodesPerWord(const int code_bits) {
+  return code_bits == kCodeRadix ? 6 : 32 / code_bits;
+}
 __host__ __device__ inline int Code5RowWords(const int row_bytes, const int code_bits = 5) {
-  const int codes_per_word = 32 / code_bits;
+  const int codes_per_word = Code5CodesPerWord(code_bits);
   return ((row_bytes + codes_per_word - 1) / codes_per_word + kCode5RowWordAlign - 1) / kCode5RowWordAlign *
          kCode5RowWordAlign;
 }
@@ -1226,7 +1239,7 @@ class CUDAHistogramConstructor {
   bool code5_allowed_ = true;
   int code5_row_words_ = 0;
   /*! \brief cuda_plan key pair_code_wide: the code width (bits per joint cell) the live code view was written at
-   *  (5 or 6, never anything else: Code5RowWords divides by 32 / code_bits; 5 and meaningless while code5_valid_
+   *  (5, 6 or kCodeRadix (pair_code_radix), never anything else: Code5RowWords divides by Code5CodesPerWord; 5 and meaningless while code5_valid_
    *  is false) */
   int code5_bits_ = 5;
   /*! \brief the live nibble view was not written by this tree's fused fill (it wrote the code view instead):

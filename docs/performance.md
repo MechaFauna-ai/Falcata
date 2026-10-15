@@ -1344,7 +1344,7 @@ Together against master (a65d34e8; the same 8 cells, 2 pairs + 1 re-timed pair e
 
 Dropped in the same port (neutral or worse in the same-binary A/B): `root_apply_direct` (the root level's apply computes rows instead of loading the identity index array: 0.993-1.009 on every cell) and `apply_evict_first` (the level apply's split-column loads at evict-first L2 priority: up to 1.025 on deep trees over large data, but 0.98 and 0.91 on covtype, whose data fits in L2 and is reused across levels).
 
-## 10g. The pair-code view at 6 bits (`pair_code_wide`)
+## 10g. The pair-code view at 6 bits (`pair_code_wide`, `pair_code_radix`, `pair_code_wide_regs`)
 
 The code view of §10d (and the code-word construct of §10e over it) is taken only where every byte's joint table has at most 32 cells. A 6-bin column (5 values and a missing-value bin, as in Numerai's data with NaNs) paired with another gives 36 cells, and such a tree used to fall back to the nibble view and the per-byte construct.
 
@@ -1359,6 +1359,78 @@ Switched off against on in the same build (T = first call + steady ms × 29999; 
 | numerai53 benchmark split, covtype, higgs, few-bin, NaN-bin, epsilon-like | 0.998-1.002 (not engaged) |
 
 Against master (a65d34e8; 8 cells, 2 pairs + 1 re-timed pair each): 1.010x over the cells, numerai53 with NaNs 1.103x, no cell below its band; the models are md5-identical on every run.
+
+**Six cells per word in mixed radix (`pair_code_radix`, default on, bit-identical).** A 6-bit row is not only 25% more
+bytes than a 5-bit row of the same slots: at 160 bytes (178 byte slots, 40 words: the NaN-Numerai cell at feature
+fraction 0.1) every row reaches into a second 128-byte line, and the code-word construct ran at twice the 5-bit
+cell's time per round (1.80 vs 0.94 ms; the same NaN data at feature fraction 0.08, 32-word 6-bit rows: 1.14 ms). A
+6 x 7 = 42-cell table (int8nan columns with 6 values plus the missing bin) rules out a fixed radix (40^6 is the most
+six codes can span in 32 bits), so the word holds three digits per 16-bit half in the slots' own radices:
+c0 + n0 (c1 + n1 c2) | (c3 + n3 (c4 + n4 c5)) << 16, with n the slot's joint cell count (lo span x hi span; 1 past
+the row). The fill packs it from 16-bit code table entries (the slot's code byte and its cell count); the construct takes the
+same counts from the column spans it already reads and decodes a half with two exact quotients
+`__umulhi(h << 10, ceil(2^22 / n))` (exact for h < 2^16, n <= 64). It is taken where the 6-bit view is (the padded
+6-bit row smaller than the nibble row), every half's three cell counts multiply to at most 2^16 (e.g. 6 x 6 and
+6 x 7 tables, not three 42-cell slots in a half), and the radix row is shorter: ceil(B / 6) against ceil(B / 5)
+words, padded to 8 (B = 178: 32 against 40 words). The branch-free construct needs 48 registers (40 at 6 bits),
+still one 32-warp block per SM. Same cell per slot, same gradients, same flush: bit-identical. Not extended (yet) to
+trees whose 6-bit row is larger than the nibble row but whose radix row is not (sampledwide at 121 slots: the lattice
+cell asserting which trees decline the view would change).
+
+| cell | `pair_code_radix` off → on |
+|---|---|
+| NaN-Numerai, deep, stochastic (same binary, 3 pairs) | 1.137 (4.38 → 3.85 ms per round; same-arm spread 0.5%) |
+| NaN-Numerai, nsys, 60 rounds, per round | construct 1.73 → 1.22 ms (55 of 60 trees radix, 32 x 32 blocks; 5 keep 6 bits) |
+| NaN-Numerai, nsys, fill per tree (median) | 6 bits 1.48-1.50 ms; radix with the cell counts as a second byte table 1.53 ms, as 16-bit (code, count) entries 1.46 ms |
+| numerai53 benchmark split, covtype, higgs | not engaged (5-bit view, or no code view) |
+
+Cells harness against master 06bb754b (2 pairs; with the search parent's `level_regions_presort`, not kept):
+numerai53bench 1.001, NaN-Numerai 1.116 (4.386 → 3.928 ms per round), covtype 1.008, higgs 1.004; md5-identical on every
+run; lattice 443/443 (sampledwide and sampledwide-mixbins at feature fraction 0.3 now take the radix view on every
+180/181-slot tree and match master's fingerprints, with the branchy adds and the per-slot flush);
+`tests/python_package_test/test_cuda_pair_code_radix.py` trains five shapes (6 x 6, 6 x 7 and mixed 3-8 value tables,
+bagged, both quantization modes) with the key on and off.
+
+**The wide codes packed by register coefficients (`pair_code_wide_regs`, default on, bit-identical).** With the radix
+row as short as the 5-bit row (32 words), NaN-Numerai's code-word construct costs what numerai53's does (~1.15 ms per
+tree), but its fused fill did not: 1.46 ms per tree against the 5-bit fill's 1.18 ms. The 6-bit and radix views were
+packed by the generic scalar loop (per word: six shared byte loads, six code-table loads and a division by the row
+words), the 5-bit view by a word-per-thread pack with its multipliers in registers. Both wide words are linear in their
+slots' nibbles: w = sum_j lo_j LM_j + hi_j HM_j, LM_j = span(hi) x place_j, HM_j = has_hi x place_j, with place 2^6j (6
+bits) or 1, n0, n0 n1, 2^16, 2^16 n3, 2^16 n3 n4 (mixed radix). Every cell is below its slot's count and every radix
+half below 2^16, so no term carries into another and the sum is the generic pack's word. The fill now keeps each thread
+on fixed words of its rows, takes their coefficients from the code table once, reads the bytes as funnel-shifted aligned
+shared words (the 5-bit pack's 16 bytes of shared slack; where they do not fit, the generic pack runs) and sums two
+slots per `__dp2a` (16-bit coefficient pairs against the nibble words' byte lanes, grouped so a group never crosses a
+radix half or a 12-bit 6-bit group: 6-bit (0, 1) (2, 3) 4 at bits 0, 12, 24; radix (0, 1) 2 | 3 (4, 5) at bits 0 and
+16). A radix low-nibble coefficient is at most 2^16, equal only where span(lo) is 1 (its low nibble always 0), so it is
+kept mod 2^16 exactly. A thread packs two words (twelve or ten slots, four shared loads, one 8-byte store) like the
+5-bit pack under `pair_code5_pack2` (off: the generic pack); a 6-bit word starting on an odd byte groups its slots 0 |
+(1, 2) | (3, 4) at bits 0, 6, 18. Rows of any even word count up to twice the block's threads are served (40-word rows:
+25 rows per pass). The one-word-per-thread variants below were measured on the way and removed. The slot-major radix and
+6-bit fills' stack frames went from 24 bytes to 0.
+
+| NaN-Numerai radix fill per tree (nsys, 40 rounds, mean) | ms |
+|---|---|
+| generic scalar pack (parent) | 1.462 |
+| one word per thread, scalar multiply-adds | 1.313 |
+| one word per thread, dp2a | 1.271 |
+| two words per thread, dp2a (default) | 1.224 (5-bit fill on numerai53: 1.178) |
+
+| NaN-Numerai with `pair_code_radix` off: 6-bit fill per tree, 40-word rows (nsys, 30 rounds) | ms |
+|---|---|
+| generic scalar pack (key off) | 1.479 |
+| two words per thread, dp2a (key on) | 1.280 |
+
+Cells harness against master 06bb754b (2 pairs, with the parents' keys, `level_regions_presort` included), final build:
+numerai53bench 0.999, NaN-Numerai 1.218 (4.399 → 3.608 ms per round; the parent measured 1.116-1.134), covtype 1.004,
+higgs 1.011, md5-identical on every run; lattice 443/443. Same binary, key off → on, NaN-Numerai (2 pairs each): first
+variant 1.043; final 1.060 (3.848, 3.841 → 3.631, 3.619 ms per round); with `pair_code_radix` off in both arms (every
+tree on the 6-bit view) 1.041 (4.394, 4.371 → 4.227, 4.195 ms); bagged (`bagging_fraction` 0.5, 200 rounds, final build)
+3.586, 3.583 → 3.362, 3.364 ms per round (1.066). Not engaged on numerai53bench (5-bit), covtype and higgs (no code
+view). `tests/python_package_test/test_cuda_pair_code_wide_regs.py` trains the radix test's five shapes with the key on
+and off under the default plan, with `pair_code5_pack2` off (the generic pack in both arms), with `pair_code_radix` off
+(6-bit trees of 32 and 40 words per row), and with both off.
 
 ---
 

@@ -117,6 +117,8 @@ ALL_KEYS = {
     "pair_code5_tall": True,
     "pair_code5_flat": True,
     "pair_code_wide": True,
+    "pair_code_radix": True,
+    "pair_code_wide_regs": True,
     "softmax_registers": True,
     "gradient_fp64_lean": True,
     "bagged_code_view": True,
@@ -188,6 +190,8 @@ DEEP_KEYS = [
     "pair_code5_tall",
     "pair_code5_flat",
     "pair_code_wide",
+    "pair_code_radix",
+    "pair_code_wide_regs",
 ]
 
 BASE = {
