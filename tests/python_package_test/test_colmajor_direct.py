@@ -84,8 +84,9 @@ def _strip(model):
     return re.sub(r"^\[cuda_plan: .*\]$", "", model, flags=re.M)
 
 
-def _params(shape, quant, plan, **extra):
+def _params(shape, quant, plan, plan_extra="", **extra):
     p = {**BASE, **SHAPES[shape][3], "quant_mode": quant, **extra}
+    plan = plan + plan_extra
     if quant == "none":
         # the deterministic non-quantized kernels make the float histograms run-to-run identical; the batched level
         # flow keeps the atomic kernel for compact views, so the classic loop (as lattice's sampled/nonquant-det)
@@ -485,8 +486,12 @@ NEED_LINE = re.compile(
 )
 
 
+# per-node sampling keeps the per-split loop only with the shared-stream masks (cuda_plan key level_bynode_masks off;
+# on, the level flows take the per-node masks)
 BYNODE_OR_TWO_LEAVES = pytest.mark.parametrize(
-    "config", [{"feature_fraction_bynode": 0.8}, {"num_leaves": 2, "max_depth": 1}], ids=["bynode", "two-leaves"]
+    "config",
+    [{"feature_fraction_bynode": 0.8, "plan_extra": ",level_bynode_masks:off"}, {"num_leaves": 2, "max_depth": 1}],
+    ids=["bynode", "two-leaves"],
 )
 
 

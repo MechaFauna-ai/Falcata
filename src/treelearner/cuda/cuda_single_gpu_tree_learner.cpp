@@ -347,6 +347,14 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   cuda_best_split_finder_.reset(new CUDABestSplitFinder(cuda_histogram_constructor_->cuda_hist(),
     train_data_, this->share_state_->feature_hist_offsets(), select_features_by_node_, config_));
   cuda_best_split_finder_->Init();
+  // cuda_plan key level_bynode_masks: feature_fraction_bynode < 1 without interaction constraints draws keyed
+  // per-node masks in every flow, and the level flows take them (LevelFlowsTakeNodeMasks); interaction constraints
+  // keep the shared-stream draws and the per-split loop
+  bynode_keyed_ = FalcataPlan::Get().level_bynode_masks && config_->feature_fraction_bynode < 1.0 &&
+    config_->interaction_constraints_vector.empty();
+  bynode_level_masks_ = bynode_keyed_ && vec_num_targets_ <= 1;
+  cuda_best_split_finder_->EnableLevelNodeMasks(bynode_level_masks_);
+  bynode_tree_count_ = 0;
   if (config_->use_quantized_grad && cuda_best_split_finder_->use_global_memory()) {
     // The discretized best-split finder has no global-memory variant (upstream
     // left the branch as a TODO that launches NOTHING, silently training on
@@ -1230,7 +1238,7 @@ bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
   const bool base = use_hybrid_growth_ &&
          nccl_ok &&
          vec_ok &&
-         !select_features_by_node_ &&
+         (!select_features_by_node_ || LevelFlowsTakeNodeMasks()) &&
          !cat_threshold_fenced &&
          (cuda_best_split_finder_ == nullptr || !cuda_best_split_finder_->use_global_memory()) &&
          (forced_split_json_ == nullptr || forced_split_json_->is_null()) &&
@@ -1290,9 +1298,19 @@ bool CUDASingleGPUTreeLearner::UseSelectiveGrowth() const {
          use_hybrid_batch_kernels_ &&
          !config_->linear_tree &&
          nccl_communicator_ == nullptr &&
-         !select_features_by_node_ &&
+         (!select_features_by_node_ || LevelFlowsTakeNodeMasks()) &&
          (forced_split_json_ == nullptr || forced_split_json_->is_null()) &&
          config_->num_leaves > 2;
+}
+
+bool CUDASingleGPUTreeLearner::LevelFlowsTakeNodeMasks() const {
+  // the per-pair search and per-split apply fallbacks of the level loops keep one mask pair on the device (the
+  // per-split loop's), so per-node masks ride the level flows only with both batched phases; single GPU only (the
+  // level flows' node masks are not striped for feature-parallel and are not part of the multi-GPU two-sync flow)
+  return bynode_level_masks_ && nccl_communicator_ == nullptr && fp_merge_state_ == nullptr &&
+         vec_num_targets_ <= 1 && use_hybrid_batch_kernels_ && use_hybrid_batch_apply_ &&
+         cuda_histogram_constructor_ != nullptr && cuda_best_split_finder_ != nullptr &&
+         cuda_histogram_constructor_->SupportsBatchedLevel() && cuda_best_split_finder_->SupportsBatchedLevel();
 }
 
 bool CUDASingleGPUTreeLearner::UseOneSyncPrefix() const {
@@ -1430,7 +1448,7 @@ void CUDASingleGPUTreeLearner::EnqueuePairBestSplitSearch(const CUDATree* tree,
     smaller_num_bits_bin,
     larger_num_bits_bin);
 
-  SelectFeatureByNode(tree);
+  SelectFeatureByNode(tree, smaller_leaf_index, larger_leaf_index);
   // monotone constraints for this pair (identity bounds when unused)
   const double smaller_leaf_constraint_min = use_monotone_constraints_ ?
     leaf_constraint_min_[smaller_leaf_index] : -std::numeric_limits<double>::max();
@@ -1919,6 +1937,20 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
     cuda_hybrid_pair_descs_.RawData(), host_hybrid_pair_descs_.data(),
     static_cast<size_t>(num_pairs), cuda_histogram_constructor_->hist_stream(),
     __FILE__, __LINE__);
+  if (bynode_level_masks_) {
+    // cuda_plan key level_bynode_masks: one mask row per leaf the level searches (the host-valid roles; the finder
+    // returns before the mask for the others), in pair order, smaller role first
+    level_search_leaves_.clear();
+    for (const CUDAHybridPairDescriptor& desc : host_hybrid_pair_descs_) {
+      if (desc.smaller_valid) {
+        level_search_leaves_.push_back(desc.smaller_leaf_index);
+      }
+      if (desc.larger_valid) {
+        level_search_leaves_.push_back(desc.larger_leaf_index);
+      }
+    }
+    UploadLevelNodeMasks(level_search_leaves_);
+  }
   // the previous level's partition and tree record, where its readback did not wait for them (split_counts_early);
   // after the descriptor upload above, which reads no partition output and so goes ahead of the wait
   WaitForInFlightApply();
@@ -2042,6 +2074,18 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearchSpeculative(const CUDA
     cuda_hybrid_pair_descs_.RawData(), host_hybrid_pair_descs_.data(),
     static_cast<size_t>(num_pairs), cuda_histogram_constructor_->hist_stream(),
     __FILE__, __LINE__);
+  if (bynode_level_masks_) {
+    // cuda_plan key level_bynode_masks: both children of every applied split (the smaller/larger roles are decided
+    // on the device; the finder reads the row of the leaf index the apply wrote into the struct)
+    level_search_leaves_.clear();
+    for (int i = 0; i < num_pairs; ++i) {
+      if (host_hybrid_pair_descs_[i].smaller_valid) {
+        level_search_leaves_.push_back(applied[i].left);
+        level_search_leaves_.push_back(applied[i].right);
+      }
+    }
+    UploadLevelNodeMasks(level_search_leaves_);
+  }
   // order the whole speculative search phase after this level's batched apply
   // kernels: they write the child structs (and the smaller-count array) the
   // construct/fix/subtract/find/sync kernels read. Everything enqueued before
@@ -2267,6 +2311,8 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
       larger_slot});
     applied->push_back({leaf, right_leaf_index, smaller_slot, larger_slot});
     slot_id += 2;
+    DebugPrintBynodeSplit(leaf, inner_feature_index);
+    BynodeKeySplit(leaf, right_leaf_index);
   }
   // ZeroHistForLeaf is a no-op (BeforeTrain zeroes the full histogram
   // buffer), so the batched path skips the per-split calls entirely.
@@ -2887,6 +2933,11 @@ void CUDASingleGPUTreeLearner::EnqueueRootLevelSearchOneSync() {
   CopyFromHostToCUDADeviceAsync<CUDAHybridPairDescriptor>(
     cuda_hybrid_pair_descs_.RawData(), host_hybrid_pair_descs_.data(), 1,
     cuda_histogram_constructor_->hist_stream(), __FILE__, __LINE__);
+  if (bynode_level_masks_ && desc.smaller_valid) {
+    // cuda_plan key level_bynode_masks: the root's mask row
+    level_search_leaves_.assign(1, 0);
+    UploadLevelNodeMasks(level_search_leaves_);
+  }
   cuda_histogram_constructor_->ConstructHistogramsForLevel(
     cuda_hybrid_pair_descs_.RawDataReadOnly(), 1, leaf_num_data_[0],
     /*any_pair_needs_bit_change_copy=*/false);
@@ -2990,6 +3041,11 @@ CUDASingleGPUTreeLearner::HybridGraphInstance::~HybridGraphInstance() {
 bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
   // multi-GPU: the graph flow builds descriptors on-device; its rank-visible decisions are not global
   if (nccl_communicator_ != nullptr) {
+    return false;
+  }
+  // per-node masks (cuda_plan key level_bynode_masks): the device controller assigns the leaves of a level, the
+  // host draws their masks; the host-driven level loops take them instead
+  if (select_features_by_node_) {
     return false;
   }
   // feature-parallel: the device controller cannot host-merge winners per level
@@ -3763,6 +3819,8 @@ int CUDASingleGPUTreeLearner::RunSelectiveLevel() {
     sel_leaf_live_[right] = 1;
     sel_leaf_depth_[right] = sel_leaf_depth_[f.leaf] + 1;
     ++sel_leaf_depth_[f.leaf];
+    DebugPrintBynodeSplit(f.leaf, host_leaf_best_splits_[f.leaf].inner_feature_index);
+    BynodeKeySplit(f.leaf, right);
     sel_level_apply_.push_back(new_id);
   }
   sel_stat_applied_ += static_cast<int64_t>(sel_level_apply_.size());
@@ -4325,6 +4383,15 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   global_timer.Start("CUDASingleGPUTreeLearner::BeforeTrain");
   BeforeTrain();
   global_timer.Stop("CUDASingleGPUTreeLearner::BeforeTrain");
+  if (bynode_keyed_) {
+    // cuda_plan key level_bynode_masks: the root's node key names the tree (this learner's tree count); every
+    // other node's key follows from its path (BynodeKeySplit)
+    if (bynode_node_key_.size() < static_cast<size_t>(config_->num_leaves) + 2) {
+      bynode_node_key_.resize(static_cast<size_t>(config_->num_leaves) + 2, 0);
+    }
+    bynode_node_key_[0] = ColSampler::MixKey(bynode_tree_count_ ^ 0x3C6EF372FE94F82BULL);
+    ++bynode_tree_count_;
+  }
   hybrid_map_early_pending_ = false;  // cuda_plan key final_readback_first: due only within the tree that set it
   prefetched_tree_num_leaves_ = 0;
   // linear trees need per-leaf branch features to know which features each leaf's
@@ -4373,6 +4440,17 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   }
   prefix_completes_tree_ = false;
   prefix_final_leaves_before_ = -1;
+  if (FalcataDebug().diag && select_features_by_node_) {
+    // per-node masks: which draws and which flow (once per process; tests/python_package_test/test_cuda_bynode_level.py)
+    static bool bynode_diag_logged = false;
+    if (!bynode_diag_logged) {
+      bynode_diag_logged = true;
+      const bool level = num_splits_done == 0 && HybridGrowthUsable();
+      fprintf(stderr, "[bynode-diag] masks=%s flow=%s%s\n", bynode_keyed_ ? "keyed" : "shared-stream",
+              !level ? "per-split" : UseSelectiveGrowth() ? "selective" : "prefix",
+              !level ? "" : UseOneSyncPrefix() ? "-one-sync" : "-two-sync");
+    }
+  }
   if (num_splits_done == 0 && HybridGrowthUsable()) {
     if (UseSelectiveGrowth()) {
       // budget-limited exact grow-then-prune: builds the COMPLETE tree
@@ -4736,6 +4814,7 @@ int CUDASingleGPUTreeLearner::ApplySplit(CUDATree* tree, const CUDASplitInfo* be
     }
   }
 
+  BynodeKeySplit(leaf_index, right_leaf_index);
   // The right leaf is a freshly allocated hist slot that hasn't been zeroed.
   // Zero it now so the next iter's ConstructHistogramForLeaf can atomicAdd into it
   // correctly. (left leaf keeps the parent slot, which already holds the parent hist;
@@ -4837,7 +4916,7 @@ int CUDASingleGPUTreeLearner::ForceSplitsCUDA(CUDATree* tree, int* num_splits_do
       cuda_larger_leaf_splits_->GetCUDAStruct(),
       false, 0, 0, 0);
     // regular best-split search for the active pair: populates the device per-leaf cache
-    SelectFeatureByNode(tree);
+    SelectFeatureByNode(tree, smaller_leaf_index_, larger_leaf_index_);
     // Same monotone constraints the main search applies; without them the splits
     // cached here (and later picked by FindBestFromAllSplits) could violate them.
     const double forced_smaller_constraint_min = use_monotone_constraints_ ?
@@ -5238,22 +5317,83 @@ void CUDASingleGPUTreeLearner::ResetBoostingOnGPU(const bool boosting_on_cuda) {
   }
 }
 
-void CUDASingleGPUTreeLearner::SelectFeatureByNode(const Tree* tree) {
-  if (select_features_by_node_) {
+void CUDASingleGPUTreeLearner::DrawKeyedNodeMask(const int leaf, int8_t* out, std::vector<int>* inner_features) {
+  col_sampler_.GetByNodeKeyed(bynode_node_key_[leaf], out, inner_features);
+  if (FalcataDebug().bynode) {
+    if (static_cast<int>(debug_bynode_masks_.size()) < config_->num_leaves + 2) {
+      debug_bynode_masks_.resize(static_cast<size_t>(config_->num_leaves) + 2);
+    }
+    debug_bynode_masks_[leaf].assign(out, out + train_data_->num_features());
+  }
+}
+
+void CUDASingleGPUTreeLearner::UploadLevelNodeMasks(const std::vector<int>& leaves) {
+  if (!bynode_level_masks_) {
+    return;
+  }
+  bynode_level_leaves_.clear();
+  for (const int leaf : leaves) {
+    if (leaf >= 0) {
+      bynode_level_leaves_.push_back(leaf);
+    }
+  }
+  if (bynode_level_leaves_.empty()) {
+    return;
+  }
+  const size_t num_features = static_cast<size_t>(train_data_->num_features());
+  int8_t* rows = cuda_best_split_finder_->LevelNodeMaskRows(static_cast<int>(bynode_level_leaves_.size()));
+  bynode_row_feature_begin_.assign(1, 0);
+  bynode_row_features_.clear();
+  for (size_t i = 0; i < bynode_level_leaves_.size(); ++i) {
+    DrawKeyedNodeMask(bynode_level_leaves_[i], rows + i * num_features, &bynode_one_row_features_);
+    bynode_row_features_.insert(bynode_row_features_.end(), bynode_one_row_features_.begin(),
+                                bynode_one_row_features_.end());
+    bynode_row_feature_begin_.push_back(static_cast<int>(bynode_row_features_.size()));
+  }
+  cuda_best_split_finder_->CommitLevelNodeMasks(bynode_level_leaves_, bynode_row_feature_begin_, bynode_row_features_,
+                                                cuda_histogram_constructor_->hist_stream());
+}
+
+void CUDASingleGPUTreeLearner::DebugPrintBynodeSplit(const int leaf, const int inner_feature) const {
+  if (!FalcataDebug().bynode || !select_features_by_node_ || leaf >= static_cast<int>(debug_bynode_masks_.size())) {
+    return;
+  }
+  const std::vector<int8_t>& mask = debug_bynode_masks_[leaf];
+  std::string bits(mask.size(), '0');
+  for (size_t f = 0; f < mask.size(); ++f) {
+    bits[f] = mask[f] ? '1' : '0';
+  }
+  fprintf(stderr, "BYNODE leaf=%d feat=%d mask=%s\n", leaf, inner_feature, bits.c_str());
+}
+
+void CUDASingleGPUTreeLearner::SelectFeatureByNode(const Tree* tree, const int smaller_leaf_index,
+                                                   const int larger_leaf_index) {
+  if (select_features_by_node_ && bynode_keyed_) {
+    // cuda_plan key level_bynode_masks: the same keyed masks the level flows draw
+    const size_t num_features = static_cast<size_t>(train_data_->num_features());
+    bynode_pair_masks_[0].resize(num_features);
+    DrawKeyedNodeMask(smaller_leaf_index, bynode_pair_masks_[0].data());
+    bynode_pair_masks_[1].clear();
+    if (larger_leaf_index >= 0) {
+      bynode_pair_masks_[1].resize(num_features);
+      DrawKeyedNodeMask(larger_leaf_index, bynode_pair_masks_[1].data());
+    }
+    cuda_best_split_finder_->SetUsedFeatureByNode(bynode_pair_masks_[0], bynode_pair_masks_[1]);
+  } else if (select_features_by_node_) {
     // use feature interaction constraint or sample features by node
-    const std::vector<int8_t>& is_feature_used_by_smaller_node = col_sampler_.GetByNode(tree, smaller_leaf_index_);
+    const std::vector<int8_t>& is_feature_used_by_smaller_node = col_sampler_.GetByNode(tree, smaller_leaf_index);
     std::vector<int8_t> is_feature_used_by_larger_node;
-    if (larger_leaf_index_ >= 0) {
-      is_feature_used_by_larger_node = col_sampler_.GetByNode(tree, larger_leaf_index_);
+    if (larger_leaf_index >= 0) {
+      is_feature_used_by_larger_node = col_sampler_.GetByNode(tree, larger_leaf_index);
     }
     cuda_best_split_finder_->SetUsedFeatureByNode(is_feature_used_by_smaller_node, is_feature_used_by_larger_node);
     if (FalcataDebug().bynode) {
       if (static_cast<int>(debug_bynode_masks_.size()) < config_->num_leaves) {
         debug_bynode_masks_.resize(config_->num_leaves);
       }
-      debug_bynode_masks_[smaller_leaf_index_] = is_feature_used_by_smaller_node;
-      if (larger_leaf_index_ >= 0) {
-        debug_bynode_masks_[larger_leaf_index_] = is_feature_used_by_larger_node;
+      debug_bynode_masks_[smaller_leaf_index] = is_feature_used_by_smaller_node;
+      if (larger_leaf_index >= 0) {
+        debug_bynode_masks_[larger_leaf_index] = is_feature_used_by_larger_node;
       }
     }
   }

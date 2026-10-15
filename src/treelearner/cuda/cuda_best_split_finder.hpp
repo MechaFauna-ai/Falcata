@@ -230,7 +230,7 @@ class CUDABestSplitFinder {
    *  per-task CUDARandom and their draws would race. */
   bool SupportsBatchedLevel() const {
     return !extra_trees_ && cat_random_search_ == 0 && lambda_l1_ <= 0.0f && !use_smoothing_ &&
-           !use_global_memory_ && !select_features_by_node_ &&
+           !use_global_memory_ && (!select_features_by_node_ || level_node_masks_) &&
            (num_tasks_ <= NUM_TASKS_PER_SYNC_BLOCK || FalcataBatchWideEnabled());
   }
 
@@ -296,6 +296,22 @@ class CUDABestSplitFinder {
 
   void SetUsedFeatureByNode(const std::vector<int8_t>& is_feature_used_by_smaller_node,
                             const std::vector<int8_t>& is_feature_used_by_larger_node);
+
+  // ---- cuda_plan key level_bynode_masks: per-node feature masks in the level finders ----
+  /*! \brief the tree learner draws per-node masks for the level flows (feature_fraction_bynode < 1 without
+   *  interaction constraints): SupportsBatchedLevel no longer refuses select_features_by_node, and every level find
+   *  reads the per-leaf row table of the last CommitLevelNodeMasks */
+  void EnableLevelNodeMasks(const bool enable) { level_node_masks_ = enable && select_features_by_node_; }
+  bool level_node_masks() const { return level_node_masks_; }
+  /*! \brief host rows (num_features bytes each) for num_rows searched leaves of the next level, in the pinned
+   *  staging buffer; waits for the previous level's upload of it first */
+  int8_t* LevelNodeMaskRows(const int num_rows);
+  /*! \brief upload the rows written to LevelNodeMaskRows (row i is leaf leaves[i]'s mask; its sampled inner features
+   *  are row_features[row_feature_begin[i], row_feature_begin[i + 1])) with the per-leaf row pointer table, and each
+   *  leaf's task list (the tasks of its sampled features), two copies on \p stream (the level's histogram stream,
+   *  ahead of its construct: the find kernels wait for that stream's subtract event) */
+  void CommitLevelNodeMasks(const std::vector<int>& leaves, const std::vector<int>& row_feature_begin,
+                            const std::vector<int>& row_features, cudaStream_t stream);
 
   // ---- forced-split support (forcedsplits_filename) ----
   // Compute split information for a FORCED split of the given leaf at the given
@@ -757,6 +773,37 @@ class CUDABestSplitFinder {
   // features used by node
   CUDAVector<int8_t> is_feature_used_by_smaller_node_;
   CUDAVector<int8_t> is_feature_used_by_larger_node_;
+  // cuda_plan key level_bynode_masks: one buffer, host (pinned) and device alike: a table of num_leaves_ + 2 row
+  // pointers (indexed by leaf, device addresses), padded to 256 bytes, then up to num_leaves_ + 2 rows of
+  // num_features_ bytes. The table entries of leaves not searched by the current level are stale and never read.
+  bool level_node_masks_ = false;
+  int8_t* host_level_node_masks_ = nullptr;
+  CUDAVector<int8_t> cuda_level_node_masks_;
+  size_t level_node_masks_capacity_ = 0;
+  size_t level_node_masks_table_bytes_ = 0;
+  cudaEvent_t level_node_masks_copied_ = nullptr;
+  bool level_node_masks_copy_pending_ = false;
+  // per-leaf task lists, host (pinned) and device alike: (offset, count) per leaf slot (num_leaves_ + 2 of them; the
+  // offset counts ints from the buffer start), then the lists; the level finders launch max-count blocks per leaf
+  int* host_level_node_tasks_ = nullptr;
+  CUDAVector<int> cuda_level_node_tasks_;
+  size_t level_node_tasks_capacity_ = 0;
+  int level_node_max_tasks_ = 0;
+  std::vector<int> level_node_row_tasks_;
+  // every inner feature's tasks: feature_task_ids_[feature_task_begin_[f], feature_task_begin_[f + 1])
+  std::vector<int> feature_task_begin_;
+  std::vector<int> feature_task_ids_;
+  void EnsureLevelNodeMaskCapacity();
+  /*! \brief the level finders' node mask table: null unless level_node_masks_ (and never inside a captured graph,
+   *  which the tree learner does not run with per-node masks) */
+  const int8_t* const* LevelNodeMaskTable(const CUDAHybridGraphLoopStateOpt gstate) const {
+    return level_node_masks_ && gstate == nullptr ?
+      reinterpret_cast<const int8_t* const*>(cuda_level_node_masks_.RawDataReadOnly()) : nullptr;
+  }
+  /*! \brief the level finders' and syncs' per-leaf task lists: null unless level_node_masks_ (as the table) */
+  const int* LevelNodeTaskLists(const CUDAHybridGraphLoopStateOpt gstate) const {
+    return level_node_masks_ && gstate == nullptr ? cuda_level_node_tasks_.RawDataReadOnly() : nullptr;
+  }
 
   // CUDA memory, held by other object
   const hist_t* cuda_hist_;
