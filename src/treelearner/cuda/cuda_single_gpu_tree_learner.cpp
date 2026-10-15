@@ -7,8 +7,6 @@
 
 #ifdef USE_CUDA
 
-#include <sys/stat.h>
-
 #include <Falcata/cuda/cuda_utils.hu>
 #include <Falcata/falcata_plan.h>
 #include <Falcata/feature_group.h>
@@ -17,15 +15,12 @@
 
 #include <algorithm>
 #include <array>
-#include <cerrno>
 #include <chrono>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <limits>
-#include <map>
 #include <memory>
 #include <queue>
 #include <string>
@@ -253,8 +248,19 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   if (fixedpoint_quant_) {
     Log::Info("quant_mode=fixedpoint: non-stochastic quant with %d bins", effective_quant_bins_);
   }
-  if (TunerActive()) {
-    TunerInitSeeds();
+  construct_saturation_floor_ = 0;
+  if (config_->use_quantized_grad) {
+    // the batched quantized construct's saturation floor (FalcataPlan::batch_construct_saturation_floor): 160 was
+    // tuned on the RTX 5090's 170 SMs and scales with the device's SM count, clamped to [10, 5120] -- the seed rule
+    // of the runtime tuner removed 2026-10-15, now static. A 170-SM device keeps 160. The quantized small-leaf
+    // threshold keeps its compile-time 1024. Both are schedule-only: any value trains the same model. Set again at
+    // every tree (Train), as the tuner did: a Dataset constructed after this Init re-resolves the plan.
+    int sm_count = 0;
+    if (cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, gpu_device_id_ < 0 ? 0 : gpu_device_id_) ==
+          cudaSuccess && sm_count > 0) {
+      construct_saturation_floor_ = std::max(10, std::min(5120, static_cast<int>(160.0 * sm_count / 170.0 + 0.5)));
+      FalcataPlan::Mutable().batch_construct_saturation_floor = construct_saturation_floor_;
+    }
   }
   // cuda_precision=fp32 engages both fp32 switches (histogram storage + gain
   // math). They were only ever measured -- and only ever win -- together, so
@@ -471,56 +477,13 @@ size_t CUDASingleGPUTreeLearner::DirectViewReserveBytes() const {
   return reserve;
 }
 
-static const char* TunerWisdomPath();  // the tuner's wisdom file (defined with the tuner below)
-
 void CUDASingleGPUTreeLearner::InitViewRegime(const char* why) {
-  view_probe_.pending = false;
   if (!cuda_histogram_constructor_->colmajor_direct()) {
     return;
   }
   view_decided_ff_ = config_->feature_fraction;
-  const FalcataPlan& plan = FalcataPlan::Get();
-  const double fraction = (config_->feature_fraction > 0.0 && config_->feature_fraction < 1.0) ?
-    config_->feature_fraction : 1.0;
-  // the probe band: measured instead of the static rule, while the tuner runs (quantized training) and no knob probe
-  // is in progress (its candidates would confound the comparison). Only under view_pair_rule:off: by default the pair
-  // rule decides from view_mask_ff up and the threshold below it, so there are no probe trees, no switches and no
-  // view1: wisdom entry, read or written (performance.md, colmajor_direct: what that gives up below the threshold).
-  const bool in_band = plan.view_mode == FalcataPlan::kViewModeAuto && !plan.view_pair_rule && TunerActive() &&
-                       plan.compact_quant && fraction >= plan.view_probe_lo && fraction <= plan.view_probe_hi;
-  int prefer = -1;
-  bool probe = false;
-  if (in_band) {
-    std::ifstream in(TunerWisdomPath());
-    const std::string want = TunerViewWisdomKey();
-    std::string key; int regime = 0, unused = 0;
-    while (in >> key >> regime >> unused) {
-      if (key == want) prefer = regime != 0 ? 1 : 0;
-    }
-    probe = prefer < 0 && tuner_.probe_slot < 0;
-  }
   cuda_histogram_constructor_->ChooseViewRegime(DirectViewReserveBytes(), BuildsOneByteSplitView(),
-                                                TreesReadFullMatrix(), prefer,
-                                                prefer >= 0 ? "the tuner's wisdom" : why);
-  if (probe && !cuda_histogram_constructor_->compact_regime_fits()) {
-    probe = false;  // a regime that does not fit is never probed (ChooseViewRegime logged why)
-  }
-  if (probe) {
-    view_probe_.pending = true;
-    view_probe_.start = tuner_.tree_index;
-    view_probe_.first_mask = cuda_histogram_constructor_->view_mask_regime();
-    view_probe_.seconds[0].clear();
-    view_probe_.seconds[1].clear();
-    const char* fmt = "colmajor_direct: tuner probe of the view regime (feature_fraction %g in [%g, %g]): %d trees "
-                      "in each regime, starting in %s";
-    if (FalcataDebug().diag) {
-      Log::Info(fmt, fraction, plan.view_probe_lo, plan.view_probe_hi, ViewProbe::kTreesPerRegime,
-                view_probe_.first_mask ? "mask" : "compact");
-    } else {
-      Log::Debug(fmt, fraction, plan.view_probe_lo, plan.view_probe_hi, ViewProbe::kTreesPerRegime,
-                 view_probe_.first_mask ? "mask" : "compact");
-    }
-  }
+                                                TreesReadFullMatrix(), why);
 }
 
 // colmajor_fill sizing. The column-major copy of the 4-bit row matrix is the largest optional allocation training
@@ -4058,268 +4021,12 @@ void CUDASingleGPUTreeLearner::TrainSelective(CUDATree* tree) {
   global_timer.Stop("CUDASingleGPUTreeLearner::TrainSelective");
 }
 
-bool CUDASingleGPUTreeLearner::TunerActive() const {
-  const auto& plan = FalcataPlan::Get();
-  if (!plan.tuner || !config_->use_quantized_grad) return false;
-  // the probe phase costs ~60 trees per knob; under auto, skip runs too
-  // short to amortize it (measured -1.9% on year @100 rounds, +2.7% @500)
-  if (!plan.tuner_explicit && config_->num_iterations < 300) return false;
-  return true;
-}
-
-// ---- tier-0 seed + tier-3 wisdom -----------------------------------------
-// Seed: scale the floor candidates by the device's SM count relative to the
-// RTX 5090 they were tuned on (the elastic bracket would find the range
-// anyway; seeding just starts the probe near the right octave).
-// Wisdom: persist the chosen knob values keyed by (shape, device) so
-// retrains of the same workload start from the known-best point instead of
-// re-probing from scratch (FFTW-wisdom style; the periodic re-probe still
-// verifies the cached choice against reality).
-static const char* TunerWisdomPath() {
-  static std::string path = []() {
-    const char* home = std::getenv("HOME");
-    return std::string(home ? home : "/tmp") + "/.cache/falcata/wisdom.txt";
-  }();
-  return path.c_str();
-}
-
-// The view regime's wisdom entries live in the same file, as "view1:..." keys with the regime (0 compact, 1 mask)
-// and a reserved 0 as the two value fields, so every reader of the file keeps parsing it as key/value/value lines.
-std::string CUDASingleGPUTreeLearner::TunerViewWisdomKey() const {
-  char buf[192];
-  const double fraction = (config_->feature_fraction > 0.0 && config_->feature_fraction < 1.0) ?
-    config_->feature_fraction : 1.0;
-  snprintf(buf, sizeof(buf), "view1:%d:%d:%d:%d:%d:%d:%d:%d",
-           num_data_, train_data_->num_features(), config_->num_leaves, config_->max_depth, effective_quant_bins_,
-           tuner_device_sm_count_, FalcataPlan::Get().row_batch ? 1 : 0, static_cast<int>(fraction * 1000.0 + 0.5));
-  return std::string(buf);
-}
-
-// read-modify-write of one wisdom entry, with rename for crash safety; best effort (races with a concurrent trainer
-// at worst lose one update)
-static void TunerWisdomStore(const std::string& key, const int a, const int b) {
-  std::map<std::string, std::pair<int, int>> all;
-  {
-    std::ifstream in(TunerWisdomPath());
-    std::string k; int x = 0, y = 0;
-    while (in >> k >> x >> y) all[k] = {x, y};
-  }
-  all[key] = {a, b};
-  const std::string path = TunerWisdomPath();
-  const std::string dir = path.substr(0, path.find_last_of('/'));
-  // create every missing level ($HOME/.cache may not exist yet: a single mkdir of the leaf then fails and the
-  // wisdom was silently never written)
-  for (size_t pos = dir.find('/', 1); ; pos = dir.find('/', pos + 1)) {
-    const std::string level = dir.substr(0, pos);
-    if (::mkdir(level.c_str(), 0755) != 0 && errno != EEXIST) {
-      return;  // cache dir unavailable: wisdom is best-effort
-    }
-    if (pos == std::string::npos) break;
-  }
-  const std::string tmp = path + ".tmp";
-  {
-    std::ofstream out(tmp);
-    for (const auto& kv : all) {
-      out << kv.first << " " << kv.second.first << " " << kv.second.second << "\n";
-    }
-  }
-  ::rename(tmp.c_str(), path.c_str());
-}
-
-std::string CUDASingleGPUTreeLearner::TunerWisdomKey() const {
-  char buf[160];
-  // the last field is the construct kernel family the knobs were tuned against
-  snprintf(buf, sizeof(buf), "v2:%d:%d:%d:%d:%d:%d:%d",
-           num_data_, train_data_->num_features(), config_->num_leaves,
-           config_->max_depth, effective_quant_bins_, tuner_device_sm_count_,
-           FalcataPlan::Get().row_batch ? 1 : 0);
-  return std::string(buf);
-}
-
-void CUDASingleGPUTreeLearner::TunerInitSeeds() {
-  TierOneTuner& t = tuner_;
-  cudaDeviceProp prop{};
-  if (cudaGetDeviceProperties(&prop, gpu_device_id_ < 0 ? 0 : gpu_device_id_) == cudaSuccess) {
-    tuner_device_sm_count_ = prop.multiProcessorCount;
-    if (prop.multiProcessorCount > 0 && prop.multiProcessorCount != 170) {
-      const double scale = prop.multiProcessorCount / 170.0;
-      for (int& cand : t.candidates[0]) {
-        cand = std::max(TierOneTuner::kFloorMin,
-                        std::min(TierOneTuner::kFloorMax,
-                                 static_cast<int>(cand * scale + 0.5)));
-      }
-    }
-  }
-  // wisdom lookup: exact shape+device hit -> adopt the cached values as the
-  // exploited choice and defer the first probe to the periodic re-probe
-  std::ifstream in(TunerWisdomPath());
-  if (!in.good()) return;
-  const std::string want = TunerWisdomKey();
-  std::string key; int floor_v = 0, slr_v = 0;
-  while (in >> key >> floor_v >> slr_v) {
-    if (key != want) continue;
-    auto adopt = [](std::vector<int>* cands, const int v) {
-      auto it = std::find(cands->begin(), cands->end(), v);
-      if (it == cands->end()) {
-        cands->push_back(v);
-        it = cands->end() - 1;
-      }
-      return static_cast<int>(it - cands->begin());
-    };
-    t.chosen[0] = adopt(&t.candidates[0], floor_v);
-    t.chosen[1] = adopt(&t.candidates[1], slr_v);
-    t.next_probe_at = TierOneTuner::kReprobeEvery;
-    t.seeded_from_wisdom = true;
-    Log::Debug("[tuner] wisdom hit: floor=%d small_leaf_rows=%d (re-verify at tree %d)",
-               floor_v, slr_v, t.next_probe_at);
-    return;
-  }
-}
-
-void CUDASingleGPUTreeLearner::TunerSaveWisdom() {
-  const TierOneTuner& t = tuner_;
-  if (t.chosen[0] < 0 || t.chosen[1] < 0) return;
-  const std::string key = TunerWisdomKey();
-  TunerWisdomStore(key, t.candidates[0][t.chosen[0]], t.candidates[1][t.chosen[1]]);
-}
-
-bool CUDASingleGPUTreeLearner::ViewProbeStep() {
-  ViewProbe& v = view_probe_;
-  if (!v.pending) {
-    return false;
-  }
-  const int k = tuner_.tree_index - v.start;  // trees trained since the probe started
-  const int switch_at = ViewProbe::kWarmupTrees + ViewProbe::kTreesPerRegime;
-  const int end_at = switch_at + 1 + ViewProbe::kTreesPerRegime;
-  // a switch between trees never changes the model (CUDAHistogramConstructor::ChooseViewRegime's invariant); it is
-  // made before the tree's clock starts, so its one-time cost is not counted against either regime
-  if (k == switch_at) {
-    cuda_histogram_constructor_->SwitchViewRegime(!v.first_mask, "tuner probe");
-#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-    ReleaseHybridGraphs();  // the captured construct nodes baked the other view's pointers
-#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
-  }
-  if (k < end_at) {
-    return true;
-  }
-  auto median = [](std::vector<double> x) {
-    std::sort(x.begin(), x.end());
-    return x.empty() ? 1e30 : x[x.size() / 2];
-  };
-  const double compact_s = median(v.seconds[0]);
-  const double mask_s = median(v.seconds[1]);
-  const bool mask = mask_s < compact_s;
-  const char* fmt = "colmajor_direct: tuner probe: compact %.2f ms, mask %.2f ms per tree (median of %d) -> %s regime";
-  if (FalcataDebug().diag) {
-    Log::Info(fmt, 1e3 * compact_s, 1e3 * mask_s, ViewProbe::kTreesPerRegime, mask ? "mask" : "compact");
-  } else {
-    Log::Debug(fmt, 1e3 * compact_s, 1e3 * mask_s, ViewProbe::kTreesPerRegime, mask ? "mask" : "compact");
-  }
-  if (mask != cuda_histogram_constructor_->view_mask_regime()) {
-    cuda_histogram_constructor_->SwitchViewRegime(mask, "tuner probe: the faster regime");
-#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-    ReleaseHybridGraphs();
-#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
-  }
-  TunerWisdomStore(TunerViewWisdomKey(), mask ? 1 : 0, 0);
-  v.pending = false;
-  // the knob probes waited for this one
-  tuner_.next_probe_at = std::max(tuner_.next_probe_at, tuner_.tree_index + 1);
-  return false;
-}
-
-void CUDASingleGPUTreeLearner::TunerBeforeTree() {
-  if (!TunerActive()) return;
-  TierOneTuner& t = tuner_;
-  const bool view_probe_running = ViewProbeStep();
-  if (!view_probe_running && t.tree_index >= t.next_probe_at && t.probe_slot < 0) {
-    // start a (re-)probe cycle at knob 0
-    t.knob = 0;
-    t.probe_slot = 0;
-    t.probe_tree = 0;
-    t.cur_best = 1e30;
-    t.best_of_candidate.assign(t.candidates[0].size(), 1e30);
-  }
-  auto& plan = FalcataPlan::Mutable();
-  // knob values: the currently-probed candidate for the active knob, the
-  // exploited choice (or compile-time default) for the other
-  const auto value_for = [&t](const int knob) {
-    if (t.probe_slot >= 0 && t.knob == knob) return t.candidates[knob][t.probe_slot];
-    if (t.chosen[knob] >= 0) return t.candidates[knob][t.chosen[knob]];
-    return knob == 0 ? 160 : 1024;  // pre-first-probe defaults
-  };
-  plan.batch_construct_saturation_floor = value_for(0);
-  plan.quant_small_leaf_rows = value_for(1);
-}
-
-void CUDASingleGPUTreeLearner::TunerAfterTree(double tree_seconds) {
-  if (!TunerActive()) return;
-  TierOneTuner& t = tuner_;
-  if (view_probe_.pending) {
-    // the view probe's timed trees: kTreesPerRegime after the warmup, and as many after the untimed first tree of
-    // the second regime
-    const int k = t.tree_index - view_probe_.start;
-    const int switch_at = ViewProbe::kWarmupTrees + ViewProbe::kTreesPerRegime;
-    const bool first = k >= ViewProbe::kWarmupTrees && k < switch_at;
-    const bool second = k > switch_at && k <= switch_at + ViewProbe::kTreesPerRegime;
-    if (first || second) {
-      const bool mask = first ? view_probe_.first_mask : !view_probe_.first_mask;
-      view_probe_.seconds[mask ? 1 : 0].push_back(tree_seconds);
-    }
-  }
-  ++t.tree_index;
-  if (t.probe_slot < 0) return;
-  // best-of (not mean): robust to interference spikes on a shared GPU
-  t.cur_best = std::min(t.cur_best, tree_seconds);
-  if (++t.probe_tree >= TierOneTuner::kTreesPerCandidate) {
-    t.best_of_candidate[t.probe_slot] = t.cur_best;
-    t.cur_best = 1e30;
-    t.probe_tree = 0;
-    std::vector<int>& cands = t.candidates[t.knob];
-    if (++t.probe_slot >= static_cast<int>(cands.size())) {
-      const int best = static_cast<int>(std::min_element(t.best_of_candidate.begin(),
-        t.best_of_candidate.end()) - t.best_of_candidate.begin());
-      // Elastic bracket (floor knob only): if the winner sits on an edge of
-      // the set, the optimum for this silicon may lie beyond it. Extend
-      // geometrically (bounded) and keep probing instead of settling.
-      if (t.knob == 0) {
-        if (best == static_cast<int>(cands.size()) - 1 &&
-            cands.back() < TierOneTuner::kFloorMax) {
-          cands.push_back(cands.back() * 2);
-          t.best_of_candidate.push_back(1e30);
-          return;  // probe_slot now indexes the appended candidate
-        }
-        if (best == 0 && cands.front() > TierOneTuner::kFloorMin) {
-          cands.insert(cands.begin(), cands.front() / 2);
-          t.best_of_candidate.insert(t.best_of_candidate.begin(), 1e30);
-          t.probe_slot = 0;  // probe the prepended candidate
-          return;
-        }
-      }
-      t.chosen[t.knob] = best;
-      if (t.knob + 1 < TierOneTuner::kNumKnobs) {
-        // coordinate descent: next knob probes with this knob at its best
-        ++t.knob;
-        t.probe_slot = 0;
-        t.best_of_candidate.assign(t.candidates[t.knob].size(), 1e30);
-        return;
-      }
-      // full cycle complete: exploit and persist
-      t.probe_slot = -1;
-      t.next_probe_at = t.tree_index + TierOneTuner::kReprobeEvery;
-      Log::Debug("[tuner] chosen floor=%d small_leaf_rows=%d (re-probe at tree %d)",
-                 t.candidates[0][t.chosen[0]], t.candidates[1][t.chosen[1]], t.next_probe_at);
-      TunerSaveWisdom();
-    }
-  }
-}
-
 Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   const score_t* hessians, bool is_first_tree) {
-  // before the tuner's per-tree clock starts: the one-time transpose is not this tree's work
   MaybeInitColMajorFill();
-  TunerBeforeTree();
-  const auto tuner_t0 = std::chrono::steady_clock::now();
+  if (construct_saturation_floor_ > 0) {
+    FalcataPlan::Mutable().batch_construct_saturation_floor = construct_saturation_floor_;  // see Init
+  }
   gradients_ = gradients;
   hessians_ = hessians;
   global_timer.Start("CUDASingleGPUTreeLearner::BeforeTrain");
@@ -4689,7 +4396,6 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     CalculateLinearCUDA(tree.get(), gradients_, hessians_, is_first_tree);
     last_tree_is_linear_ = true;
   }
-  TunerAfterTree(std::chrono::duration<double>(std::chrono::steady_clock::now() - tuner_t0).count());
   // colmajor_direct, compact regime: the full view stays only while consecutive trees read it (decided after the
   // tree, since the per-leaf construct may first read it mid-tree)
   cuda_histogram_constructor_->ReleaseUnusedFullView();
@@ -5053,7 +4759,7 @@ void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
   ReleaseHybridGraphs();  // captured buffer pointers / budgets may have changed
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   // colmajor_direct: a new feature_fraction may call for the other regime (other config changes keep it, so a
-  // per-round reset_parameter callback does not undo the tuner's choice)
+  // per-round reset_parameter callback does not rebuild the view)
   if (cuda_histogram_constructor_->colmajor_direct() && config_->feature_fraction != view_decided_ff_) {
     InitViewRegime("a feature_fraction change");
   }

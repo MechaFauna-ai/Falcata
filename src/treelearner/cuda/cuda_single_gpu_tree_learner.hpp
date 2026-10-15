@@ -470,23 +470,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   /*! \brief whether every tree runs the quantized per-leaf construct, which reads the whole matrix (see the
    *  definition) */
   bool TreesReadFullMatrix() const;
-  /*! \brief choose the regime for the current data and feature_fraction: the tuner's wisdom or probe inside the
-   *  probe band, the static rule outside it, mask whenever the compact regime does not fit; why goes to the log */
+  /*! \brief choose the regime for the current data and feature_fraction (CUDAHistogramConstructor::ChooseViewRegime:
+   *  the static rule, mask whenever the compact regime does not fit); why goes to the log */
   void InitViewRegime(const char* why);
-  /*! \brief the tuner's view-regime probe, at the start of a tree: switches regimes on schedule and, once both are
-   *  measured, keeps the faster; returns true while the probe runs (the knob probes wait for it) */
-  bool ViewProbeStep();
-  std::string TunerViewWisdomKey() const;
-  /*! \brief the tuner's view-regime probe: a few trees in each regime, timed like the knob candidates */
-  struct ViewProbe {
-    static constexpr int kWarmupTrees = 2;      // the first trees (first allocations) are not timed
-    static constexpr int kTreesPerRegime = 5;   // timed trees per regime (median); one untimed tree after the switch
-    bool pending = false;
-    int start = 0;            // tuner tree index the probe started at
-    bool first_mask = false;  // the regime the probe started in
-    std::vector<double> seconds[2];  // per-tree seconds: [0] compact, [1] mask
-  };
-  ViewProbe view_probe_;
   /*! \brief the feature_fraction the regime was chosen for (ResetConfig re-chooses only when it changes) */
   double view_decided_ff_ = -1.0;
 
@@ -584,47 +570,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // column sample (BeforeTrain must not draw again; cuda_plan compact_prefill)
   bool next_tree_col_sample_ready_ = false;
 
-  // Tier-1 runtime tuner (cuda_plan key tuner, quantized training only):
-  // probes candidate batched-construct saturation floors for a few trees
-  // each, exploits the fastest, re-probes periodically. Quant integer
-  // histograms are schedule-invariant, so retuning cannot change the model.
-  struct TierOneTuner {
-    static constexpr int kWarmupTrees = 10;
-    static constexpr int kTreesPerCandidate = 15;
-    static constexpr int kReprobeEvery = 3000;
-    // elastic-bracket bounds for the floor knob: if a probe round's winner is
-    // an endpoint the candidate set grows geometrically toward it (other GPU
-    // models want floors outside the 5090-tuned initial set)
-    static constexpr int kFloorMin = 10;
-    static constexpr int kFloorMax = 5120;
-    static constexpr int kNumKnobs = 2;
-    // knob 0: batched-construct saturation floor (elastic bracket).
-    // knob 1: quant small-leaf direct-kernel row threshold (0 = off). Both
-    // are behavior-preserving, so retuning cannot change the model.
-    std::vector<int> candidates[kNumKnobs] = {
-      {80, 160, 320, 640},
-      {0, 256, 1024, 4096},
-    };
-    std::vector<double> best_of_candidate;
-    int knob = 0;             // knob currently being probed
-    int tree_index = 0;
-    int probe_slot = -1;      // candidate index being probed; -1 = exploiting
-    int probe_tree = 0;       // trees measured for the current candidate
-    double cur_best = 1e30;   // best per-tree seconds within current candidate
-    int chosen[kNumKnobs] = {-1, -1};  // exploited candidate index per knob
-    int next_probe_at = kWarmupTrees;
-    bool seeded_from_wisdom = false;
-  };
-  TierOneTuner tuner_;
-  bool TunerActive() const;
-  void TunerBeforeTree();
-  void TunerAfterTree(double tree_seconds);
-  // tier-0 seed (device-scaled candidates) + tier-3 wisdom cache (persisted
-  // best-found knob values keyed by shape+device signature)
-  void TunerInitSeeds();
-  std::string TunerWisdomKey() const;
-  void TunerSaveWisdom();
-  int tuner_device_sm_count_ = 0;
+  /*! \brief quantized training: the batched construct's saturation floor for this device (160 x SM count / 170,
+   *  clamped to [10, 5120]; 0 = the plan's value), see Init */
+  int construct_saturation_floor_ = 0;
   int effective_quant_bins_ = 0;
 
   // CUDA components for tree training

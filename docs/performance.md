@@ -676,27 +676,18 @@ bit-identical in every cell):
     construct. Exact for uniform spans. Never served under a pack codec
     (`pack_bit3`, `pack_radix5`–`7`) or `graph_quant`, where the construct
     always declines. A training that samples every column builds no
-    compact view and stays mask.
+    compact view and stays mask. Below the threshold, from 0.5, an unserved
+    view takes mask where every partition has at most 504 columns
+    (calibration below).
     Deterministic, no timing; `FALCATA_DEBUG=diag` logs the prediction
     (partitions, sampled columns, table KB, block threads). Calibration
     below.
-  - *tuner* (only under `view_pair_rule:off`, the earlier behaviour): with
-    the tuner running (quantized training; ≥300 rounds under auto, or
-    `tuner:on`), a `feature_fraction` in [`view_probe_lo`, `view_probe_hi`] =
-    [0.5, 0.95] is measured instead: two warm-up trees, five timed trees in
-    the threshold's regime, one untimed tree after the switch, five timed
-    trees in the other; the regime with the lower median per-tree time is
-    kept and written to the tuner's wisdom (`~/.cache/falcata/wisdom.txt`, a
-    `view1:` entry keyed by shape, device and `feature_fraction`), so the
-    next `train()` of that shape adopts it without probing. The floor and
-    small-leaf knob probes wait for it. A regime that does not fit is never
-    probed. Switches happen between trees, before the tree's clock starts;
-    each frees the old layout before building the new one (store → full
-    view: the staged fill from the columns; full view → store: the
-    re-upload). At or above the threshold the pair rule picked what the
-    probe measured on every shape of the calibration, so by default the
-    probe does not run; below it the rule keeps compact where the probe
-    could pick mask (calibration below).
+  - *probe* (removed 2026-10-15 with the runtime tuner, below): the tuner
+    used to time five trees in each regime for a `feature_fraction` in
+    [0.5, 0.95] and cache the faster one in its wisdom file. At or above the
+    threshold the pair rule picked what the probe measured on every shape of
+    the calibration below; below it, see the low-`feature_fraction` rule in
+    the calibration.
 - **`tiled_fill`** — the 4-bit compact fill stages 128 rows of every byte slot
   in a shared-memory `[row][slot]` tile, reading each source column
   contiguously, then writes each partition's rows as one contiguous run with
@@ -735,29 +726,37 @@ bit-identical in every cell):
   numerai-deep, +16.9% higgs-deep** at 100 rounds; against the construct JIT
   (300 rounds; §7b, since removed) +26.1% numerai-deep, +7.7% higgs-deep. Wide
   partitions (two columns per thread) keep the unbatched loop. Bit-identical.
-- **`tuner`** — a per-tree bandit over behavior-preserving execution knobs,
-  best-of-15 timing, re-probe every 3000 trees: +2.1% numerai-deep, +2.7%
-  year from the saturation-floor knob alone. Quantized training only —
-  integer histograms make the model schedule-invariant, so retuning cannot
-  change results. Under `auto` it engages only at ≥300 rounds;
-  `cuda_plan=auto,tuner:on` forces it. Extended into the full
-  three-tier stack: **tier-0** seeds the candidate sets from the device
-  (floor candidates scale with SM count relative to the 5090 they were tuned
-  on); **tier-1** runs coordinate descent over two knobs (saturation floor
-  with an elastic bracket, and the quant small-leaf row threshold); and
-  **tier-3** persists the chosen values per (shape, device) signature to
-  `~/.cache/falcata/wisdom.txt` — retrains of the same workload skip the
-  ~130-tree probe phase and start at the known-best point (measured: +3% on
-  a numerai-deep 300-round retrain, covtype-deep 83.8 → 88.2 t/s), while the
-  periodic re-probe still verifies the cached choice against reality. Under
-  `colmajor_direct` and `view_pair_rule:off` the tuner also chooses the bin
-  matrix's view regime inside [`view_probe_lo`, `view_probe_hi`] (§7,
-  `colmajor_direct`), once per shape and `feature_fraction`, before the knob
-  probes; that choice is not re-probed. By default the pair rule decides
-  instead (2026-10-15). (A
-  histogram-pipeline-count knob was considered and rejected: it only affects
-  the per-pair fallback path — the batched flow every real workload uses
-  runs on a single stream.)
+- **`tuner`** (removed 2026-10-15) — a per-tree timing bandit over two
+  schedule-only knobs: the batched construct's saturation floor (candidates
+  80–640 with an elastic bracket out to 10–5120) and the quantized
+  small-leaf row threshold (0, 256, 1024, 4096). It took 130+ probe trees
+  per training, re-probed every 3000 trees, cached its picks per (shape,
+  device) in `~/.cache/falcata/wisdom.txt`, and from 2026-10-03 also timed
+  the `colmajor_direct` view regime. Measured at introduction: +2.1%
+  numerai-deep, +2.7% year. An audit on master 43a2e35c (RTX 5090, steady
+  ms per round and total seconds, interleaved pairs, every arm
+  md5-identical) found it within noise of the fixed defaults:
+
+  | cell (rounds) | default (tuner on) | `tuner:off` | tuner on / off, total time |
+  |---|---|---|---|
+  | numerai53bench-deep-stoch (30000) | 108.85 s | 105.89 s | 1.028 (off faster) |
+  | higgs-deep-stoch (30000) | 44.63 s | 44.52 s | 1.002 |
+  | hidden nanbin 3.58M × 238 (30000) | 153.57 s | 159.32 s | 0.964 |
+  | numerai53bench-deep-stoch (3000) | 10.76 s | 10.79 s | 0.997 |
+  | hidden nanbin (3000) | 15.57 s | 15.65 s | 0.995 |
+  | hidden fewbin 2.86M × 315 (3000) | 11.69 s | 11.98 s | 0.976 |
+  | covtype-deep-fixed (1000) | 3.797 ms | — | 1.00 |
+
+  The pair spreads were 2–7% (the nanbin cell ±5% by phase), and the tuner
+  chose floors from 40 to 5120 and small-leaf thresholds from 0 to 4096 for
+  the same cell from run to run: it was choosing among noise. Its view
+  probe was the one real gain, and `view_pair_rule` replaced it. What
+  stays is static: the floor 160, scaled by the device's SM count / 170
+  (the 5090 it was tuned on) and clamped to [10, 5120], the tuner's old
+  seed rule; small-leaf threshold 1024. Plan strings with `tuner:` or
+  `view_probe_lo:` / `view_probe_hi:` log a warning and are ignored. (A
+  histogram-pipeline-count knob was considered and rejected earlier: it
+  only affects the per-pair fallback path.)
 
 **Device memory model of the 4-bit bin matrix under `colmajor_direct`**
 (Numerai v5.3, 6.79M rows × 3,555 features; the matrix is 11.24 GiB in
@@ -805,7 +804,8 @@ memory.
 
 ![colmajor_direct regimes across feature_fraction](perf-plots/view_regime_crossover.png)
 
-**The live choice on numerai53-deep** (RTX 5090, `tuner:on`, 130 rounds, a
+**The live choice on numerai53-deep** (2026-10-03; the probe was removed
+2026-10-15; RTX 5090, `tuner:on`, 130 rounds, a
 fresh wisdom file per run, two pairs; "static" is the same plan with the
 probe band emptied, `view_probe_lo:2`; identical model md5 in every pair):
 
@@ -869,14 +869,35 @@ rule keeps mask. The epsilon-like 473,663 × 1843 shape (40 bins, 8-bit) has
 no view regime. Non-quantized training keeps its own rule (compact unless
 every column is sampled), which this does not touch.
 
-Below the threshold the rule takes compact as before, which is right on
-Numerai-shaped data even where the pair-joint construct does not serve the
-view (300 rounds, compact vs mask: numerai53bench with `pair_hist:off` at
-0.5, 79.4 vs 118.8 ms; the NaN cell at 0.7, at its bound, 114.6 vs 138.6).
-The 15-bin shape is the exception the probe caught and the rule does not:
-compact wins at 0.3 (2.36 vs 4.56 ms) and loses from 0.4 (4.91 vs 4.63),
-0.5 (5.87 vs 4.81) and 0.7 (8.87 vs 6.84); with the tuner running, the
-probe chose mask there at 0.5 and 0.7.
+**Below the threshold** (2026-10-15, with the tuner's removal: the probe
+used to catch these). From `feature_fraction` 0.5 up, where the pair-joint
+construct does not serve the view, both regimes run the per-column
+construct, and what decides is whether the masked full matrix fits one
+column per thread. If every partition has at most 504 columns, it does; the
+compact view then only adds its per-tree fill, so the rule takes mask.
+Wider partitions put two columns per thread on the full matrix, and the
+compact view's narrower rows win, so compact as before. 1M × 1500 shapes
+of one bin count each (the bin budget sets the partition width), master
+36709f05, compact vs mask forced, 300 rounds, two pairs, steady ms per
+round, md5-identical arms:
+
+| values per column (partition columns) | ff 0.5 compact / mask | ff 0.7 compact / mask | rule |
+|---|---|---|---|
+| 8 (768) | **5.38** / 9.65 (partly served) | 10.98 / **10.25** (3 pairs) | compact |
+| 10 (614) | **6.04** / 9.24 | **10.02** / 11.20 | compact |
+| 12 (512) | **5.94** / 10.66 | **8.10** / 11.83 | compact |
+| 13 (472) | 6.07 / **5.51** | 8.74 / **6.88** | mask |
+| 14 (438) | 5.98 / **5.42** | 8.81 / **6.86** | mask |
+| 15 (409) | 5.89 / **4.81** | 8.45 / **6.05** | mask |
+| 16 (384) | 5.83 / **4.91** | 8.52 / **6.40** | mask |
+
+On Numerai-shaped data compact stays right even where the view is not
+served (1008-column partitions: numerai53bench with `pair_hist:off` at 0.5,
+79.4 vs 118.8 ms; the NaN cell at 0.7, 114.6 vs 138.6). The one measured
+miss is 8 values at 0.7 (compact 7% slower; both regimes there run two
+columns per thread). Below 0.5 compact wins even on 15 values (0.3: 2.36
+vs 4.56 ms; 0.4: 4.91 vs 4.63, about even), so the rule starts at 0.5, the
+low edge of the band the probe measured.
 
 Against master (300 rounds, default plan, a fresh wisdom file per run, three
 pairs, identical models): at `feature_fraction` 0.1 steady state is

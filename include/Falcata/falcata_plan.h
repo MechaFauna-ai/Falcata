@@ -33,7 +33,7 @@ namespace Falcata {
  * concurrent in-process boosters with different plans are unsupported.
  *
  * ``cuda_plan`` grammar: ``auto`` (default) optionally followed by
- * comma-separated expert overrides, e.g. ``auto,graph_loop:off,tuner:on``.
+ * comma-separated expert overrides, e.g. ``auto,graph_loop:off,row_batch:off``.
  * Values: ``on``/``off`` (also ``1``/``0``, ``true``/``false``). The separator
  * is ``:`` (not ``=``) because the surrounding parameter string already uses
  * ``=`` -- a nested ``=`` would be split by the parameter tokenizer.
@@ -248,16 +248,11 @@ struct FalcataPlan {
   // md5 identical in every arm): numerai53bench (5 bins, partitions of up to 1008 columns) compact 77-89 vs mask
   // 119-125 ms per round from ff 0.85 to 0.95 (served), 157-166 vs 118-121 from 0.97 to 0.99 (not served);
   // numerai53bench-nan (6-bin columns, 37-cell tables) 169-181 vs 141-145 from 0.85 to 0.99 (not served); a 15-bin
-  // 1M x 1500 shape 9.5-10.8 vs 6.2-6.4 at 0.85 and 0.95 (not served). It replaces the tuner's view probe, which
-  // runs only under view_pair_rule:off.
+  // 1M x 1500 shape 9.5-10.8 vs 6.2-6.4 at 0.85 and 0.95 (not served). Below view_mask_ff, from ff 0.5, an unserved
+  // view takes mask where every partition has at most 504 columns (the full matrix then runs one column per thread;
+  // 1M x 1500 with 13-16 bins: mask 4.8-5.5 vs compact 5.8-6.1 ms at 0.5), compact otherwise. It replaced the runtime
+  // tuner's view probe (timed trees in each regime; removed 2026-10-15 with the tuner). Off: the threshold alone.
   bool view_pair_rule = true;      // key: view_pair_rule
-  // keys view_probe_lo / view_probe_hi: with the tuner active (cuda_plan tuner, quantized training), view_mode auto
-  // and view_pair_rule off, a feature_fraction in [view_probe_lo, view_probe_hi] is decided by measurement instead:
-  // the first trees run in each regime (both train the same model) and the faster one is kept and cached in the
-  // tuner's wisdom. Outside the band, the threshold. The numerai53-deep sweep's margins (2026-10-03): compact ahead
-  // by 39% at 0.5 and 16% at 0.8, mask ahead by 9-15% from 0.85 to 0.99.
-  double view_probe_lo = 0.5;
-  double view_probe_hi = 0.95;
   // root_hist_short_blocks: rounds of the resident blocks the fused fill's grid
   // is sized for (cuda_plan key root_hist_block_rounds:<number>; below 1: off)
   double root_hist_block_rounds = 48.0;
@@ -838,16 +833,6 @@ struct FalcataPlan {
   // shared-memory carveout before its first construct. The carveout is re-set only when the chosen value changes.
   // Same block height per shape: bit-identical.
   bool shape_memo = true;           // key: shape_memo
-  // runtime tier-1 tuner: bandit over the batched-construct saturation floor,
-  // timed per tree; quantized training only (integer hists keep results
-  // schedule-invariant, so retuning cannot change the model). The probe phase
-  // costs ~60 trees, so the learner additionally gates on num_iterations >=
-  // 300 under auto (explicit tuner:on bypasses that gate). Measured: +2.1%
-  // numerai-deep, +2.7% year @500r.
-  bool tuner = true;                // key: tuner
-  // true when the user wrote tuner:on/off themselves -- the learner's
-  // num_iterations >= 300 auto-gate only applies when this is false
-  bool tuner_explicit = false;
   // wide partitions: let few-bin partitions hold up to 2x504 columns (each
   // construct thread handles 2 columns), halving partition count and its
   // per-partition zero/merge overhead on wide low-bin data. Measured: +8.8%
@@ -874,10 +859,11 @@ struct FalcataPlan {
 
   // --- baked tuning constants (no keys) ------------------------------------
   int batch_construct_min_rows_per_thread = 64;
+  // under quantized training the tree learner's Init scales the floor by the device's SM count / 170 (the RTX 5090
+  // it was tuned on), clamped to [10, 5120]; the runtime tuner that probed it per tree was removed 2026-10-15
   int batch_construct_saturation_floor = 160;
   // quant small-leaf direct-kernel row threshold (0 = off). Behavior-
-  // preserving at any value (order-invariant integer atomics), so the
-  // runtime tuner may retune it mid-training like the saturation floor.
+  // preserving at any value (order-invariant integer atomics).
   int quant_small_leaf_rows = 1024;
   int construct_column_cap = -1;    // -1 = auto sizing
 
@@ -1010,7 +996,6 @@ struct FalcataPlan {
     if (key == "final_map_only") return &final_map_only;
     if (key == "final_readback_first") return &final_readback_first;
     if (key == "shape_memo") return &shape_memo;
-    if (key == "tuner") return &tuner;
     if (key == "wide_partitions") return &wide_partitions;
     if (key == "dense_wide_hist") return &dense_wide_hist;
     return nullptr;
@@ -1067,8 +1052,9 @@ struct FalcataPlan {
         Log::Fatal("cuda_plan: bad token \"%s\" (expected key:on|off)", token.c_str());
       }
       // removed keys: accepted with any value and ignored, so old plan strings keep working
-      if (kv[0] == std::string("construct_jit")) {
-        Log::Warning("cuda_plan key construct_jit was removed (2026-10-15): ignored");
+      if (kv[0] == std::string("construct_jit") || kv[0] == std::string("tuner") ||
+          kv[0] == std::string("view_probe_lo") || kv[0] == std::string("view_probe_hi")) {
+        Log::Warning("cuda_plan key %s was removed (2026-10-15): ignored", kv[0].c_str());
         continue;
       }
       // the non-boolean keys: view_mode, pin_bins and the view_* numbers
@@ -1115,8 +1101,6 @@ struct FalcataPlan {
         continue;
       }
       double* number = kv[0] == std::string("view_mask_ff") ? &plan.view_mask_ff :
-                       kv[0] == std::string("view_probe_lo") ? &plan.view_probe_lo :
-                       kv[0] == std::string("view_probe_hi") ? &plan.view_probe_hi :
                        kv[0] == std::string("root_hist_block_rounds") ? &plan.root_hist_block_rounds :
                        kv[0] == std::string("find_split_waves") ? &plan.find_split_waves : nullptr;
       if (number != nullptr) {
@@ -1145,7 +1129,6 @@ struct FalcataPlan {
         Log::Fatal("cuda_plan: unknown key \"%s\"", kv[0].c_str());
       }
       *slot = value;
-      if (kv[0] == std::string("tuner")) plan.tuner_explicit = true;
       overridden = true;
     }
     if (overridden_out != nullptr) {

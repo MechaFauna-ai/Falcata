@@ -89,7 +89,7 @@ and parameters by ``cuda_plan=auto`` -- not from environment variables or
 hidden heuristics scattered through the code. Each decision is guaranteed
 bit-identical (enforced by per-commit regression gates that flip every key
 and require identical models) and individually overridable, e.g.
-``cuda_plan=auto,hybrid:off,tuner:on``, which also makes every
+``cuda_plan=auto,hybrid:off,row_batch:off``, which also makes every
 feature's contribution measurable by leave-one-out ablation.
 
 GPU Inference

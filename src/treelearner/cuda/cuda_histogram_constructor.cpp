@@ -1584,12 +1584,12 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
 //    copies anything, the kernels apply the per-tree sample through their column masks.
 // INVARIANT (quantized training): both regimes feed every kernel the same bin values for the same sampled columns,
 // and the quantized histograms are integer sums (order-invariant), so a tree trains to the same bytes in either
-// regime. Switching regimes between trees -- the tree learner's tuner probe does, as does a feature_fraction change
-// -- is therefore legal at any tree and never changes the model (tests/python_package_test/test_colmajor_direct.py
+// regime. Switching regimes between trees -- a feature_fraction change does -- is therefore legal at any tree and
+// never changes the model (tests/python_package_test/test_colmajor_direct.py
 // checks it). Float histograms are not order-invariant: non-quantized training takes the mask regime only where every
 // tree samples every column (the same kernels either way), see ViewMaskWanted.
-// The tree learner chooses (ChooseViewRegime: FalcataPlan::view_mode / view_mask_ff, the memory check, the tuner's
-// probe or its wisdom) at the end of its Init, on ResetTrainingData and when ResetConfig changes feature_fraction;
+// The tree learner chooses (ChooseViewRegime: FalcataPlan::view_mode / view_mask_ff / view_pair_rule, the memory
+// check) at the end of its Init, on ResetTrainingData and when ResetConfig changes feature_fraction;
 // the row data only says whether the direct build applies.
 bool CUDAHistogramConstructor::ViewMaskWanted() const {
   const FalcataPlan& plan = FalcataPlan::Get();
@@ -1609,7 +1609,23 @@ bool CUDAHistogramConstructor::ViewMaskWanted() const {
     return true;  // compact_quant:off: no tree builds a compact view, so the store would serve nothing
   }
   if (ViewFraction() < plan.view_mask_ff) {
-    return false;
+    // cuda_plan key view_pair_rule below the threshold, from ff kViewPairRuleLowFF up: where the pair-joint
+    // construct cannot serve the compact view, both regimes run the per-column construct, and what decides is whether
+    // the masked full matrix fits one column per thread: with every partition at most NUM_THREADS_PER_BLOCK columns
+    // it does, and the compact view only adds its per-tree fill, so mask (1M x 1500, 13 to 16 bins, whose bin budget
+    // caps partitions at 384-472 columns: mask 4.8-5.5 vs compact 5.8-6.1 ms per round at 0.5, 6.1-6.9 vs 8.5-8.8 at
+    // 0.7); with wider partitions the full matrix takes two columns per thread and the compact view's narrower rows
+    // win (10 and 12 bins, 512-614-column partitions: compact 6.0 / 5.9 vs mask 9.2 / 10.7 at 0.5; the NaN Numerai
+    // cell at 0.7: 114.6 vs 138.6), so compact as before. Below kViewPairRuleLowFF compact always wins.
+    if (!plan.view_pair_rule || ViewFraction() < kViewPairRuleLowFF) {
+      return false;
+    }
+    const std::vector<int>& part_cols = cuda_row_data_->host_feature_partition_column_index_offsets();
+    int widest = 0;
+    for (size_t p = 0; p + 1 < part_cols.size(); ++p) {
+      widest = std::max(widest, part_cols[p + 1] - part_cols[p]);
+    }
+    return widest <= NUM_THREADS_PER_BLOCK && !PairJointServesView();
   }
   // cuda_plan key view_pair_rule: above the threshold the compact regime still wins where the pair-joint construct
   // reads its view (numerai ff 0.95: 89 vs 125 ms per round) and loses where the trees fall back to the per-column
@@ -1658,8 +1674,7 @@ size_t CUDAHistogramConstructor::HeldViewBytes() const {
 }
 
 void CUDAHistogramConstructor::ChooseViewRegime(const size_t reserve_bytes, const bool one_byte_split_view,
-                                                const bool trees_read_full_matrix, const int prefer,
-                                                const char* why) {
+                                                const bool trees_read_full_matrix, const char* why) {
   if (!colmajor_direct_) {
     return;
   }
@@ -1679,14 +1694,14 @@ void CUDAHistogramConstructor::ChooseViewRegime(const size_t reserve_bytes, cons
   LogDirectView("colmajor_direct: the compact regime needs store %zu + compact view %zu + split view %zu + reserve %zu "
                 "MiB, %zu MiB available", ToMiB(need.store), ToMiB(need.view), ToMiB(need.column_view),
                 ToMiB(reserve_bytes), available / kMiB);
-  bool mask = prefer >= 0 ? (prefer == 1) : ViewMaskWanted();
+  bool mask = ViewMaskWanted();
   const char* reason = why;
   const bool forced_compact = FalcataPlan::Get().view_mode == FalcataPlan::kViewModeCompact;
   if (!use_quantized_grad_) {
     // float histograms: the regime is the static rule's (ViewMaskWanted), never the memory check's, since the mask
     // regime would change the model under a strict column sample. The compact regime holds the store and the views
     // the row-major matrix held them next to before, so it needs no more memory than colmajor_direct:off.
-    compact_fits_ = false;  // and no probe (the tuner is quantized-only anyway)
+    compact_fits_ = false;
   } else if (trees_read_full_matrix && !forced_compact) {
     // every tree's per-leaf construct reads the whole matrix row-major: the compact regime would hold the store and
     // the full view and fill a compact view nothing reads
@@ -1708,16 +1723,6 @@ void CUDAHistogramConstructor::ChooseViewRegime(const size_t reserve_bytes, cons
       EnterMaskRegime(reason);
     } else {
       EnterCompactRegime(reason);
-    }
-  }
-}
-
-void CUDAHistogramConstructor::SwitchViewRegime(const bool mask, const char* why) {
-  if (colmajor_direct_ && mask != view_mask_) {
-    if (mask) {
-      EnterMaskRegime(why);
-    } else {
-      EnterCompactRegime(why);
     }
   }
 }

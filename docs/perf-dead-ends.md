@@ -98,7 +98,10 @@ why it actually failed → **re-open when**.
   achieved occupancy — not pure shape. A formula right for one distribution
   is wrong for another.
 - **Re-open when:** as MEASUREMENT (auto-tuner tier 1 bandit), never as a
-  shape formula. This entry is why tier 0 of the planner only decides
+  shape formula. (That bandit existed until 2026-10-15 and was removed: on
+  the RTX 5090 it measured within noise of the fixed floor 160, picking
+  floors from 40 to 5120 for the same cell run to run; performance.md,
+  `tuner`.) This entry is why tier 0 of the planner only decides
   provable layout/capacity questions.
 
 ## Static planner §4 — compact-layout pre-sizing
@@ -243,6 +246,9 @@ constant-fold (check the JIT template is synced to the AOT kernel first —
 it predates wide_partitions/__ldcs).
 
 ## Static planner tier-0: shape-derived knob priors (superseded)
+
+(The runtime tuner and its wisdom cache this entry builds on were removed
+2026-10-15; see performance.md, `tuner`.)
 
 **Hypothesis.** Decide tuner priors at Init from dataset shape (expected
 level geometry → grid configs and speculative bounds; bin-histogram-derived
