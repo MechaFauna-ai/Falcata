@@ -1813,6 +1813,38 @@ Measured (cells harness, median ms per round over rounds 100.., tuner on, each a
   higgs 0.9999) and was removed. The remaining ~7 us floor is the launch (~2 us), the survivor rounds and the output
   stage (fp64), which no further split of the positions shortens.
 
+## 10q. The level warp finder's few-position warps, one scan direction each (`find_group_direction`)
+
+A numerical column with missing values has two split-find tasks, a reverse and a forward scan, next to each other in
+the task list. `warp_find`'s 4-lane tier packs eight (task, leaf) items per warp in task order, so on such data nearly
+every warp held both directions, branched on `task->reverse` and ran both `WarpFindBest` bodies one after the other.
+On numerai53bench-nan-deep-stoch (1942 of 3555 columns with a missing bin) the finder cost 234 us per round against 96
+on the 5-value cell with the same rows (37 vs 14 us at the deepest levels).
+
+**`find_group_direction`** (default on): when the narrow (<= 8 scan positions) tasks include both directions, the
+tree's launch order (`BeforeTrain`, the same order mixed narrow/wide data already uses) lists the narrow reverse tasks,
+then the narrow forward ones, then the wide ones, each in task order; it is also built on data of narrow tasks only.
+The reverse group is padded to whole warps (up to seven slots of -1, which the kernel skips), so no warp mixes: at a
+level of few leaves the launch lasts as long as its slowest warp, and a single mixed warp doubled it. Every item still
+writes at its own task index and the sync reads by task index: bit-identical. Data without missing values (one
+direction) and wide tasks (a warp each) are unchanged.
+
+| numerai53bench-nan-deep-stoch (nsys, 60 rounds) | before | after |
+|---|---|---|
+| finder us per round | 234 | 170 |
+| finder us, levels 0 / 5 / 9 | 14.3 / 24.2 / 37.4 | 11.7 / 16.3 / 26.4 |
+
+Same binary, key off vs on, 2 pairs, 500 rounds: NaN-Numerai 1.0268 with the padding (median ms/round 4.402 -> 4.287;
+1.0160 without it: 4.395 -> 4.326), md5-identical. Synthetic 7-value columns, regression, 255 leaves, depth 8, 300
+rounds, median ms/round off -> on, 3 runs each: 200k rows x 200 columns, missing values in half of them, feature_fraction
+0.5: 0.510 -> 0.468 (+9.0%; +2.1% without the padding); the same with missing values in 2 columns, all features:
+0.527 -> 0.502 (+5.1%); 1M x 100, bagging 0.5: 0.603 -> 0.598; NaN-Numerai bagged (bagging_fraction 0.5,
+bagging_freq 1, 200 rounds, 3 pairs): 3.915 -> 3.814, 3.913 -> 3.831, 3.910 -> 3.792; 500k rows x 60 7-value columns (10% missing in
+half) + 20 standard-normal columns (5% missing; wide tasks), all features: 0.583 -> 0.544 (+7.1%); 2M x 60 with 2 such columns: 0.921 -> 0.921. Cells
+harness vs master 06bb754b (with level_regions_presort): numerai53bench 1.0007, NaN-Numerai 1.0118 / 1.019 / 1.015,
+covtype 1.0045 / 0.996 / 1.005, higgs 1.0069 / 1.009 (the last three cells take no forward tasks: unchanged code path).
+`tests/python_package_test/test_cuda_find_group_direction.py` trains four shapes with the key on and off.
+
 ## Multi-GPU: level-batched NCCL all-reduce
 
 The classic data-parallel path all-reduces one leaf histogram per split

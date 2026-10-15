@@ -6302,7 +6302,11 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   }
   leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
   num_data = is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf;
-  task_index = task_order == nullptr ? slot : static_cast<unsigned int>(task_order[slot]);
+  {
+    const int ordered = task_order == nullptr ? static_cast<int>(slot) : task_order[slot];
+    if (ordered < 0) return;  // find_group_direction: a padding slot of the narrow order
+    task_index = static_cast<unsigned int>(ordered);
+  }
   task = tasks + task_index;
   const unsigned int output_offset = pair_index * (2 * static_cast<unsigned int>(num_tasks)) +
     (is_larger ? task_index + num_tasks : task_index);
@@ -6377,8 +6381,10 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
   const bool use_warp = warp_find_eligible_ && gstate == nullptr && !FalcataFP32GainEnabled();
   const int num_launch_tasks = compact_tasks ? num_used_tasks_ : num_tasks_;
   // the warp launch's order (BeforeTrain): the narrow tasks first, eight per warp, then the wide ones, one per warp
-  const int num_narrow = warp_find_max_positions_ <= 8 ? num_launch_tasks : warp_find_num_narrow_used_;
-  const int num_wide = num_launch_tasks - num_narrow;
+  // (find_group_direction: the order's narrow part may carry padding slots, which are not tasks)
+  const int num_narrow = warp_find_order_used_ ? warp_find_num_narrow_used_ :
+                         warp_find_max_positions_ <= 8 ? num_launch_tasks : warp_find_num_narrow_used_;
+  const int num_wide = num_launch_tasks - (num_narrow - (warp_find_order_used_ ? warp_find_order_pad_ : 0));
   if (FalcataDebug().diag && num_pairs == 1) {
     // single-pair levels: each tree logs at least its root, and the warp kernel's tiers this tree
     Log::Info("split finder: %s kernel for this tree's quantized levels%s", use_warp ? "warp" : "block",

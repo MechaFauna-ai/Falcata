@@ -690,6 +690,13 @@ class CUDABestSplitFinder {
   int warp_find_split_block_cap_ = -1;
   // the all-tasks launch order is on the device (a sampled tree's order overwrites it)
   bool warp_find_order_all_tasks_ = false;
+  // cuda_plan key find_group_direction: the narrow tasks have both scan directions (a column with missing values)
+  bool warp_find_narrow_mixed_direction_ = false;
+  // the padding slots (-1) of the tree's order (the reverse group filled to whole warps), and the all-tasks order's
+  // narrow count (with its padding) and padding, kept with the order on the device
+  int warp_find_order_pad_ = 0;
+  int warp_find_all_num_narrow_ = 0;
+  int warp_find_all_pad_ = 0;
   // number of total bins in the dataset
   const int num_total_bin_;
   // has categorical feature
