@@ -88,6 +88,12 @@ class CUDARowData {
 
   int shared_hist_size() const { return shared_hist_size_; }
 
+  /*! \brief cuda_plan key dense_wide_hist: the 16-bit slot count the quantized dense construct kernels' shared
+   *  histogram (SHARED_HIST_SIZE / 2 packed int32 bins) is instantiated for: shared_hist_size_, or 2x it when the
+   *  feature partitions were divided against the 2x table (dense_wide_hist()) */
+  int quant_hist_slots() const { return quant_hist_slots_; }
+  bool dense_wide_hist() const { return quant_hist_slots_ != shared_hist_size_; }
+
   // Host-side accessors for the CompactView path in CUDAHistogramConstructor.
   const std::vector<int>& host_feature_partition_column_index_offsets() const { return feature_partition_column_index_offsets_; }
   const std::vector<uint32_t>& host_column_hist_offsets() const { return column_hist_offsets_; }
@@ -128,6 +134,11 @@ class CUDARowData {
 
  private:
   void DivideCUDAFeatureGroups(const Dataset* train_data, TrainingShareStates* share_state);
+  /*! \brief one division of the dense columns into feature partitions of at most max_num_bin_per_partition bins
+   *  and column_cap columns (the host vectors; the device copies are made by the caller); returns the partition
+   *  count */
+  int DivideCUDAFeatureGroupsWithCap(const Dataset* train_data, const std::vector<uint32_t>& column_hist_offsets,
+                                     const uint32_t max_num_bin_per_partition, const int column_cap);
 
   /*! \brief Initialize the dense row-wise data. Prefers the fast build directly from
    *  the Dataset's column bins (FALCATA_FAST_ROWDATA, default on); host_data (the
@@ -228,6 +239,8 @@ class CUDARowData {
   std::vector<int> small_bin_partitions_;
   /*! \brief shared memory size used by histogram */
   int shared_hist_size_;
+  /*! \brief see quant_hist_slots() */
+  int quant_hist_slots_ = 0;
   /*! \brief whether to use double precision in histograms per block */
   bool gpu_use_dp_;
   /*! \brief When true, cuda_data_uint8_t_ is a host-pinned, device-mapped pointer

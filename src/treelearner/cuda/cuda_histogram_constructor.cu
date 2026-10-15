@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <type_traits>
 #include <vector>
 
@@ -4471,10 +4472,13 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
   dim3 grid_dim(grid_dim_x, grid_dim_y);
   dim3 block_dim(block_dim_x, block_dim_y);
   if (use_quantized_grad_) {
+    // cuda_plan key dense_wide_hist: see the batched launch
+    auto launch_leaf_quant = [&](auto qhist_tag) {
+    constexpr size_t QHIST = decltype(qhist_tag)::value;
     if (USE_GLOBAL_MEM_BUFFER) {
       if (cuda_row_data_->is_sparse()) {
         if (num_bits_in_histogram_bins <= 16) {
-          CUDAConstructDiscretizedHistogramSparseKernel_GlobalMemory<BIN_TYPE, PTR_TYPE, SHARED_HIST_SIZE, true><<<grid_dim, block_dim, 0, current_stream()>>>(
+          CUDAConstructDiscretizedHistogramSparseKernel_GlobalMemory<BIN_TYPE, PTR_TYPE, QHIST, true><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             reinterpret_cast<const int32_t*>(cuda_gradients_),
             RowMajorBin<BIN_TYPE>(),
@@ -4484,7 +4488,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
             num_data_,
             reinterpret_cast<int32_t*>(cuda_hist_buffer_.RawData()));
         } else {
-          CUDAConstructDiscretizedHistogramSparseKernel_GlobalMemory<BIN_TYPE, PTR_TYPE, SHARED_HIST_SIZE, false><<<grid_dim, block_dim, 0, current_stream()>>>(
+          CUDAConstructDiscretizedHistogramSparseKernel_GlobalMemory<BIN_TYPE, PTR_TYPE, QHIST, false><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             reinterpret_cast<const int32_t*>(cuda_gradients_),
             RowMajorBin<BIN_TYPE>(),
@@ -4496,7 +4500,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
         }
       } else {
         if (num_bits_in_histogram_bins <= 16) {
-          CUDAConstructDiscretizedHistogramDenseKernel_GlobalMemory<BIN_TYPE, SHARED_HIST_SIZE, true><<<grid_dim, block_dim, 0, current_stream()>>>(
+          CUDAConstructDiscretizedHistogramDenseKernel_GlobalMemory<BIN_TYPE, QHIST, true><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             reinterpret_cast<const int32_t*>(cuda_gradients_),
             RowMajorBin<BIN_TYPE>(),
@@ -4506,7 +4510,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
             num_data_,
             reinterpret_cast<int32_t*>(cuda_hist_buffer_.RawData()));
         } else {
-          CUDAConstructDiscretizedHistogramDenseKernel_GlobalMemory<BIN_TYPE, SHARED_HIST_SIZE, false><<<grid_dim, block_dim, 0, current_stream()>>>(
+          CUDAConstructDiscretizedHistogramDenseKernel_GlobalMemory<BIN_TYPE, QHIST, false><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             reinterpret_cast<const int32_t*>(cuda_gradients_),
             RowMajorBin<BIN_TYPE>(),
@@ -4520,7 +4524,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
     } else {
       if (cuda_row_data_->is_sparse()) {
         if (num_bits_in_histogram_bins <= 16) {
-          CUDAConstructDiscretizedHistogramSparseKernel<BIN_TYPE, PTR_TYPE, SHARED_HIST_SIZE, true><<<grid_dim, block_dim, 0, current_stream()>>>(
+          CUDAConstructDiscretizedHistogramSparseKernel<BIN_TYPE, PTR_TYPE, QHIST, true><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             reinterpret_cast<const int32_t*>(cuda_gradients_),
             RowMajorBin<BIN_TYPE>(),
@@ -4529,7 +4533,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
             cuda_row_data_->cuda_partition_hist_offsets(),
             num_data_);
         } else {
-          CUDAConstructDiscretizedHistogramSparseKernel<BIN_TYPE, PTR_TYPE, SHARED_HIST_SIZE, false><<<grid_dim, block_dim, 0, current_stream()>>>(
+          CUDAConstructDiscretizedHistogramSparseKernel<BIN_TYPE, PTR_TYPE, QHIST, false><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             reinterpret_cast<const int32_t*>(cuda_gradients_),
             RowMajorBin<BIN_TYPE>(),
@@ -4541,7 +4545,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
       } else {
         if (cuda_row_data_->is_4bit_packed()) {
           if (num_bits_in_histogram_bins <= 16) {
-            CUDAConstructDiscretizedHistogramDenseKernel<BIN_TYPE, SHARED_HIST_SIZE, true, PackNibble4><<<grid_dim, block_dim, 0, current_stream()>>>(
+            CUDAConstructDiscretizedHistogramDenseKernel<BIN_TYPE, QHIST, true, PackNibble4><<<grid_dim, block_dim, 0, current_stream()>>>(
               cuda_smaller_leaf_splits,
               reinterpret_cast<const int32_t*>(cuda_gradients_),
               RowMajorBin<BIN_TYPE>(),
@@ -4551,7 +4555,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
               cuda_row_data_->cuda_packed_partition_byte_offsets(),
               num_data_);
           } else {
-            CUDAConstructDiscretizedHistogramDenseKernel<BIN_TYPE, SHARED_HIST_SIZE, false, PackNibble4><<<grid_dim, block_dim, 0, current_stream()>>>(
+            CUDAConstructDiscretizedHistogramDenseKernel<BIN_TYPE, QHIST, false, PackNibble4><<<grid_dim, block_dim, 0, current_stream()>>>(
               cuda_smaller_leaf_splits,
               reinterpret_cast<const int32_t*>(cuda_gradients_),
               RowMajorBin<BIN_TYPE>(),
@@ -4562,7 +4566,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
               num_data_);
           }
         } else if (num_bits_in_histogram_bins <= 16) {
-          CUDAConstructDiscretizedHistogramDenseKernel<BIN_TYPE, SHARED_HIST_SIZE, true><<<grid_dim, block_dim, 0, current_stream()>>>(
+          CUDAConstructDiscretizedHistogramDenseKernel<BIN_TYPE, QHIST, true><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             reinterpret_cast<const int32_t*>(cuda_gradients_),
             RowMajorBin<BIN_TYPE>(),
@@ -4572,7 +4576,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
             nullptr,
             num_data_);
         } else {
-          CUDAConstructDiscretizedHistogramDenseKernel<BIN_TYPE, SHARED_HIST_SIZE, false><<<grid_dim, block_dim, 0, current_stream()>>>(
+          CUDAConstructDiscretizedHistogramDenseKernel<BIN_TYPE, QHIST, false><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
             reinterpret_cast<const int32_t*>(cuda_gradients_),
             RowMajorBin<BIN_TYPE>(),
@@ -4584,7 +4588,17 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
         }
       }
     }
+    };
+    if (cuda_row_data_->dense_wide_hist()) {
+      CHECK_EQ(cuda_row_data_->quant_hist_slots(), static_cast<int>(SHARED_HIST_SIZE) * 2);
+      launch_leaf_quant(std::integral_constant<size_t, SHARED_HIST_SIZE * 2>{});
+    } else {
+      CHECK_EQ(cuda_row_data_->quant_hist_slots(), static_cast<int>(SHARED_HIST_SIZE));
+      launch_leaf_quant(std::integral_constant<size_t, SHARED_HIST_SIZE>{});
+    }
   } else {
+    // the non-quantized kernels' tables are not widened (dense_wide_hist divides only under quantized training)
+    CHECK(!cuda_row_data_->dense_wide_hist());
     if (!USE_GLOBAL_MEM_BUFFER) {
       if (cuda_row_data_->is_sparse()) {
         // Deterministic float construct: slot rows sized by the widest
@@ -6430,6 +6444,10 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       level_dim_y = cuda_hybrid_construct_dim_y_.RawDataReadOnly();
     }
   }
+  // the non-quantized kernels' tables are not widened (dense_wide_hist divides only under quantized training)
+  if (!use_quantized_grad_) {
+    CHECK(!cuda_row_data_->dense_wide_hist());
+  }
   if (use_quantized_grad_) {
     // All-small level fast path: when even the level's LARGEST smaller-leaf is
     // under the small-leaf threshold (deep-tree tail levels), launch the
@@ -6496,6 +6514,11 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     // bin_used) is needed; the compact per-column absolute hist offsets and the
     // shared partition hist offsets preserve every used bin's global position ->
     // bit-identical histograms (integer atomics are order-invariant).
+    // cuda_plan key dense_wide_hist: the dense kernels' packed shared table is instantiated for the slot count
+    // the feature partitions were divided against (quant_hist_slots(): SHARED_HIST_SIZE, or 2x it); one body,
+    // two instantiations
+    auto launch_dense_quant = [&](auto qhist_tag) {
+    constexpr size_t QHIST = decltype(qhist_tag)::value;
     if (use_compact_view_) {
       if (compact_is_4bit_ && compact_codec_ == PackCodecId::kNibble4 && FalcataPlan::Get().pair_hist &&
                  compact_pair_joint_max_ > 0 &&
@@ -6746,7 +6769,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
 #define FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PACKT) \
         for (const DenseLaunchChunk& dense_chunk : dense_chunks) \
-        CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE, PACKT><<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>( \
+        CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PACKT><<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>( \
           pair_descs + dense_chunk.pair_base, \
           reinterpret_cast<const int32_t*>(cuda_gradients_), \
           reinterpret_cast<const BIN_TYPE*>(NibbleViewData()), \
@@ -6783,7 +6806,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       } else {
         DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
         for (const DenseLaunchChunk& dense_chunk : dense_chunks) {
-        CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE><<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>(
+        CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST><<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>(
           pair_descs + dense_chunk.pair_base,
           reinterpret_cast<const int32_t*>(cuda_gradients_),
           reinterpret_cast<const BIN_TYPE*>(NibbleViewData()),
@@ -6804,7 +6827,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     } else if (cuda_row_data_->is_4bit_packed()) {
       DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
       for (const DenseLaunchChunk& dense_chunk : dense_chunks) {
-      CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE, PackNibble4><<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>(
+      CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackNibble4><<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>(
         pair_descs + dense_chunk.pair_base,
         reinterpret_cast<const int32_t*>(cuda_gradients_),
         RowMajorBin<BIN_TYPE>(),
@@ -6824,7 +6847,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     } else {
       DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
       for (const DenseLaunchChunk& dense_chunk : dense_chunks) {
-      CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, SHARED_HIST_SIZE><<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>(
+      CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST><<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>(
         pair_descs + dense_chunk.pair_base,
         reinterpret_cast<const int32_t*>(cuda_gradients_),
         RowMajorBin<BIN_TYPE>(),
@@ -6841,6 +6864,14 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch,
         dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks, dense_chunk.prefix);
       }
+    }
+    };
+    if (cuda_row_data_->dense_wide_hist()) {
+      CHECK_EQ(cuda_row_data_->quant_hist_slots(), static_cast<int>(SHARED_HIST_SIZE) * 2);
+      launch_dense_quant(std::integral_constant<size_t, SHARED_HIST_SIZE * 2>{});
+    } else {
+      CHECK_EQ(cuda_row_data_->quant_hist_slots(), static_cast<int>(SHARED_HIST_SIZE));
+      launch_dense_quant(std::integral_constant<size_t, SHARED_HIST_SIZE>{});
     }
   } else if (det_batched) {
     // Deterministic float construct for the level batch: the same fixed-order

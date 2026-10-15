@@ -308,6 +308,25 @@ struct FalcataPlan {
   // position that is not sure sets none and keeps its upper bound; the gain loop's exact unpack decides it. Only
   // which hopeless positions skip the exact gain changes, never the winner: bit-identical.
   bool find_prune_sure = true;      // key: find_prune_sure
+  // the warp finder's wide tier (tasks of more than 8 scan positions) runs one warp per task at up to 8 positions
+  // per lane; at a shallow level the launch has a few blocks and the kernel is the latency of one warp's chain
+  // (loads, the fp32 prune loop, the fp64 survivor rounds). When the launch's blocks times four fit the device's
+  // resident block capacity (SM count times the occupancy API's blocks per SM), a wide task runs on all four warps
+  // of one block instead: each warp scans a 64-position range at 2 positions per lane with the earlier positions'
+  // sum (an order-free integer sum) as its carry-in, and the block merges the four partial winners through shared
+  // memory with the finder's own (gain, then lowest position) order. Same prefixes, same gains, the same unique
+  // maximum: bit-identical. Levels whose launch already fills the device keep one warp per task.
+  bool find_split_small = true;     // key: find_split_small
+  // find_split_small's gate in waves of the device's resident block capacity: a wide launch splits while its blocks
+  // times four fit find_split_waves times that capacity (1: the split launch runs in one wave, a pure latency win)
+  double find_split_waves = 1.0;    // key: find_split_waves (a number >= 0)
+  // warp_find's 4-lane tier packs eight (task, leaf) items per warp, and a numerical column with missing values has
+  // two scan tasks (reverse, then forward) next to each other in the task list, so most warps mixed the two
+  // directions and ran both WarpFindBest bodies one after the other. When the narrow tasks have both directions, the
+  // tree's launch order groups them by direction (reverse first, each in task order) and pads the reverse group to
+  // whole warps (slots of -1 the kernel skips), so every warp holds one direction (a level of few leaves lasts as
+  // long as its slowest warp). Every item still writes at its own task index: bit-identical.
+  bool find_group_direction = true;  // key: find_group_direction
   // 4-bit compact quantized construct with one thread per packed byte: the two
   // nibbles of a byte index one cell of a joint (lo, hi) shared histogram, so a
   // row costs one shared atomic per byte instead of one per column; each
@@ -822,6 +841,16 @@ struct FalcataPlan {
   // per-partition zero/merge overhead on wide low-bin data. Measured: +8.8%
   // numerai-deep; engages only above 504 columns.
   bool wide_partitions = true;      // key: wide_partitions
+  // the quantized dense construct kernels' packed int32 shared histogram holds shared_hist_size/2 bins (6144 =
+  // 24 KB), so 8-bit data whose bins exceed it is split into partitions, every partition gathering every row's
+  // index, gradient and bytes again and the trailing partition's blocks running a few lanes. With this key the
+  // partitions are divided against a 2x table (12288 bins, 48 KB static: the portable static limit) when, under
+  // quantized training on dense row data whose widest column has > 16 bins (not 4-bit packable), that gives fewer
+  // partitions whose construct block keeps >= 2 row lanes and no fewer threads than the standard division's; the
+  // quantized dense kernels are then instantiated with the 2x table.
+  // Otherwise the standard table and partitions. The histogram's layout, bins and integer sums are the same:
+  // bit-identical.
+  bool dense_wide_hist = true;      // key: dense_wide_hist
   // prefill the next tree's compact column view on a side stream during the
   // current tree's training (bit-identical). Default OFF: measured no wall
   // win -- steady-state training is 97% device-busy and the ~41 synchronous
@@ -902,6 +931,8 @@ struct FalcataPlan {
     if (key == "find_select_int") return &find_select_int;
     if (key == "find_compact_survivors") return &find_compact_survivors;
     if (key == "find_prune_sure") return &find_prune_sure;
+    if (key == "find_split_small") return &find_split_small;
+    if (key == "find_group_direction") return &find_group_direction;
     if (key == "pair_hist") return &pair_hist;
     if (key == "per_pair_rows") return &per_pair_rows;
     if (key == "compact_row_interleave") return &compact_row_interleave;
@@ -968,6 +999,7 @@ struct FalcataPlan {
     if (key == "shape_memo") return &shape_memo;
     if (key == "tuner") return &tuner;
     if (key == "wide_partitions") return &wide_partitions;
+    if (key == "dense_wide_hist") return &dense_wide_hist;
     return nullptr;
   }
 
@@ -1072,7 +1104,8 @@ struct FalcataPlan {
       double* number = kv[0] == std::string("view_mask_ff") ? &plan.view_mask_ff :
                        kv[0] == std::string("view_probe_lo") ? &plan.view_probe_lo :
                        kv[0] == std::string("view_probe_hi") ? &plan.view_probe_hi :
-                       kv[0] == std::string("root_hist_block_rounds") ? &plan.root_hist_block_rounds : nullptr;
+                       kv[0] == std::string("root_hist_block_rounds") ? &plan.root_hist_block_rounds :
+                       kv[0] == std::string("find_split_waves") ? &plan.find_split_waves : nullptr;
       if (number != nullptr) {
         char* end = nullptr;
         const double value = std::strtod(kv[1].c_str(), &end);

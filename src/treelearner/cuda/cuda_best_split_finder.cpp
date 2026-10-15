@@ -180,6 +180,7 @@ void CUDABestSplitFinder::UpdateWarpFindEligibility() {
   warp_find_max_positions_ = 0;
   warp_find_task_narrow_.assign(split_find_tasks_.size(), 0);
   warp_find_num_narrow_ = 0;
+  int narrow_reverse = 0;
   for (size_t k = 0; k < split_find_tasks_.size(); ++k) {
     const SplitFindTask& t = split_find_tasks_[k];
     const int shift = (!t.reverse && t.na_as_missing && t.mfb_offset == 1) ? 1 : 0;
@@ -189,8 +190,10 @@ void CUDABestSplitFinder::UpdateWarpFindEligibility() {
     if (positions <= 8) {
       warp_find_task_narrow_[k] = 1;
       ++warp_find_num_narrow_;
+      narrow_reverse += t.reverse ? 1 : 0;
     }
   }
+  warp_find_narrow_mixed_direction_ = narrow_reverse > 0 && narrow_reverse < warp_find_num_narrow_;
 #endif
 }
 
@@ -563,30 +566,52 @@ void CUDABestSplitFinder::BeforeTrain(const std::vector<int8_t>& is_feature_used
   // the level warp finder's launch order on a dataset that mixes narrow (<= 8 scan positions) and wide tasks: the
   // used narrow tasks first (eight per warp as 4-lane groups), then the used wide ones (a warp each). Every item
   // still writes at its own task index. On a dataset of one kind the used-task list is already in launch order.
+  // cuda_plan key find_group_direction: the narrow tasks in the order grouped by scan direction (a warp of eight
+  // 4-lane groups then runs one WarpFindBest body), also on a dataset of narrow tasks only
   warp_find_num_narrow_used_ = 0;
+  warp_find_order_pad_ = 0;
   warp_find_order_used_ = false;
-  if (warp_find_eligible_ && warp_find_num_narrow_ > 0 && warp_find_num_narrow_ < num_tasks_ && num_used_tasks_ > 0) {
+  const bool group_direction = warp_find_narrow_mixed_direction_ && FalcataPlan::Get().find_group_direction;
+  if (warp_find_eligible_ && warp_find_num_narrow_ > 0 && num_used_tasks_ > 0 &&
+      (warp_find_num_narrow_ < num_tasks_ || group_direction)) {
     warp_find_order_used_ = true;
     if (num_used_tasks_ == num_tasks_ && warp_find_order_all_tasks_) {
       // every task used: the order is a function of the task list alone (shape metadata, like the tasks
       // themselves) and was uploaded by an earlier tree
-      warp_find_num_narrow_used_ = warp_find_num_narrow_;
+      warp_find_num_narrow_used_ = warp_find_all_num_narrow_;
+      warp_find_order_pad_ = warp_find_all_pad_;
       return;
     }
+    warp_find_order_pad_ = 0;
     host_warp_find_order_.clear();
-    for (const int narrow : {1, 0}) {
+    // (narrow, reverse) classes in launch order: narrow reverse, narrow forward, then the wide ones (either way)
+    for (const int cls : {3, 2, 0}) {
+      const int narrow = cls >> 1;
       for (int k = 0; k < num_used_tasks_; ++k) {
         const int task_index = host_used_task_indices_[k];
-        if (warp_find_task_narrow_[task_index] == narrow) host_warp_find_order_.push_back(task_index);
+        if (warp_find_task_narrow_[task_index] != narrow) continue;
+        if (narrow && group_direction && static_cast<int>(split_find_tasks_[task_index].reverse) != (cls & 1)) {
+          continue;
+        }
+        if (narrow && !group_direction && cls == 2) continue;  // the narrow tasks went out in the first pass
+        host_warp_find_order_.push_back(task_index);
+      }
+      // the reverse group fills whole warps (eight items each): at a level of few leaves the launch takes as long
+      // as its slowest warp, and one warp with both directions runs both bodies; the padding slots (-1) return
+      while (cls == 3 && group_direction && host_warp_find_order_.size() % 8 != 0) {
+        host_warp_find_order_.push_back(-1);
+        ++warp_find_order_pad_;
       }
       if (narrow) warp_find_num_narrow_used_ = static_cast<int>(host_warp_find_order_.size());
     }
-    if (cuda_warp_find_order_.Size() < static_cast<size_t>(num_tasks_)) {
-      cuda_warp_find_order_.Resize(static_cast<size_t>(num_tasks_));
+    if (cuda_warp_find_order_.Size() < host_warp_find_order_.size()) {
+      cuda_warp_find_order_.Resize(static_cast<size_t>(num_tasks_) + 8);
     }
     UploadTreeStartMeta<int>(cuda_warp_find_order_.RawData(), host_warp_find_order_.data(),
                              host_warp_find_order_.size());
     warp_find_order_all_tasks_ = num_used_tasks_ == num_tasks_;
+    warp_find_all_num_narrow_ = warp_find_num_narrow_used_;
+    warp_find_all_pad_ = warp_find_order_pad_;
   }
 }
 

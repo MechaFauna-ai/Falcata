@@ -1688,6 +1688,182 @@ does no extra work. `FALCATA_DEBUG=bynode` prints, per split of the per-split lo
 and the mask the leaf was searched with (`tests/python_package_test/test_cuda_bynode_quant.py` checks every chosen
 feature against it).
 
+## 10o. A 2x shared table for the quantized dense construct (`dense_wide_hist`)
+
+The quantized dense construct kernels (`CUDAConstructDiscretizedHistogramDense*`: 8/16-bit row data and the compact
+view of it) accumulate a packed int32 (grad << 16 | hess) table in shared memory of SHARED_HIST_SIZE / 2 = 6144 bins
+(24 KB). `DivideCUDAFeatureGroups` splits the columns into feature partitions against that cap, and every partition is a
+block column of the launch: each partition's blocks gather every row's index, gradient (a random 4-byte load, one
+sector) and the row's bytes of their own columns. On higgs-deep-stoch (28 columns x 256 bins = 7168 bins) that gave a
+24-column partition (6144 bins exactly) and a 4-column one: the second partition's blocks are as many as the first's,
+run 4 of 24 lanes, and re-read every index and gradient. The kernel was 48% of the cell's kernel time (95.7 us per
+launch, 10 per round).
+
+**`dense_wide_hist`** (default on): under quantized training, on dense row data whose widest column has more than 16
+bins (not 4-bit packable), when the standard division gives more than one partition, the columns are divided again
+against a 2x table (12288 bins; 48 KB static shared, the portable static limit) with at most 504 columns per partition
+(see below for the row-lane rule) (one column per construct thread); if that gives fewer partitions it is kept and
+`CUDARowData::quant_hist_slots()` reports 2 x `shared_hist_size()`; otherwise the standard division and table. Every
+quantized dense launch (the per-leaf and the batched kernels, row data and compact view, raw 8-bit and the 4-bit codecs,
+the small-leaf kernels are table-free) is instantiated for `quant_hist_slots()` through one generic lambda per launch
+site (one body, two instantiations: 56 registers, no spills, 49 KB vs 25 KB static shared; 504-thread blocks stay at 2
+per SM on a 128 KB SM). The non-quantized branches CHECK the table is not wide (the gate requires quantized training).
+(The search build also made the since-removed construct JIT decline a wide table; that code went with #110.) The
+histogram's global layout (`column_hist_offsets_full`), the bins and the wrapping integer sums are unchanged:
+bit-identical.
+
+Engages on 8/16-bit data with 6144 < total bins and a partition count the 2x table lowers: 25..48 columns at 255 bins in
+one partition instead of two, 49..96 in two instead of three, 97..192 columns at 63 bins (quantized training on CUDA
+rejects columns of more than 256 bins, so a large-bin partition never exists under the gate). Declines on covtype (10 x
+256 + 44 x 2..3 bins: one partition), on numerai (4-bit pair-joint path) and on any data with <= 6144 bins, which keep
+the 24 KB table. It also declines where the wide division's construct block (504 / columns row lanes of the widest
+partition's columns) has fewer than two row lanes or fewer threads than the standard division's: the removed partition's
+per-row chain does not pay for the lost lanes. Same binary off vs on, 2 pairs: 500k x 300 columns at 31 bins, 255 leaves
+(198 x 2 -> 300 x 1 threads) 0.8917, declined 0.9997; 1M x 150 columns at 63 bins, bagged 0.6 (97 x 5 -> 150 x 3)
+0.9766, declined 1.0006; engaging: higgs (24 x 21 -> 28 x 18, 504 threads both), 2M x 100 at 63 bins (97 x 5 -> 100 x 5)
+1.0293, 240 columns at 31 bins (198 x 2 -> 240 x 2) 1.0292 (bagged 0.5 1.0283). The thread rule also declines 40..60
+columns at 255 bins (24 x 21 -> 40 x 12 or 48 x 10 = 480 threads), which gained 1.5..2.2% in the measurements above (the
+1.0225, 1.0156 and 1.0178 shapes), and the 500-column feature_fraction 0.1 shape (1.0398): kept out, because 0.93 of the
+threads already lost. Final build (both rules) vs master, cells harness, 2 pairs, md5 identical, no JIT: numerai53bench
+1.0056, NaN-Numerai 0.9976, covtype 1.0213, higgs 1.0965 (1.914 -> 1.745 ms), score 1.0295.
+
+| | master | dense_wide_hist |
+|---|---|---|
+| higgs construct kernel, avg per launch (nsys, 60 rounds) | 95.7 us (`<uchar, 12288, PackRaw8>`, grid 2 x Y, block 24 x 21) | 75.6 us (`<uchar, 24576, PackRaw8>`, grid 1 x Y, block 28 x 18) |
+| higgs round under nsys | 2.158 ms | 1.943 ms |
+| higgs steady ms/round, cells harness (2 pairs) | 1.874 | 1.728 |
+
+Cells harness vs master 06bb754b, 2 pairs, md5 identical everywhere: numerai53bench 1.0033, NaN-Numerai 1.0022,
+covtype 1.0069, **higgs 1.0840**; score 1.0235. Same binary, key off vs on, higgs: 1.869 / 1.869 -> 1.724 / 1.722 ms
+(1.084). `tests/python_package_test/test_cuda_dense_wide_hist.py` trains seven shapes (engaging and declining, feature
+sampling, bagging, multiclass, both quantized modes) with the key on and off.
+
+On the search branch, on top of `partition_row_lanes` (which re-spread the thin partition's threads but kept its per-row
+chain; not kept, see below) and the search's finder, gen-bit and boundary keys (of those only `find_split_small`, 10p,
+is kept) (nsys, higgs, 60 rounds, construct per level L0..L9 in us): with the
+4-column partition's blocks skipped (a measurement-only build, wrong model) the construct went 897 -> 668 us per round
+(L0 120 -> 107, L9 112 -> 75): the second partition's re-gather of every row's index and gradient was a quarter of the
+kernel at every level but the root. Cells harness vs master 06bb754b, 2 pairs, md5 identical: numerai53bench 0.9992,
+NaN-Numerai 0.9969, covtype 1.0215, higgs 1.0927 (1.9065 -> 1.7446 ms), score 1.0269 (the parent without the key:
+1.0106; numerai, NaN-Numerai and covtype keep one partition or the pair-joint path, so the key does not engage there).
+Same binary, key off vs on, higgs, 3 pairs, tuner on: 1.0438 (steady 1.838 / 1.818 / 1.818 -> 1.755 / 1.745 / 1.745 ms;
+less than the 1.084 measured on master because `partition_row_lanes` already recovered part of the thin partition).
+Same binary, key off vs on, 400 or 300 rounds, median ms per round over rounds 100.., 2 pairs, synthetic standard-normal
+columns, binary 1023 leaves depth 10 unless said: 200k x 28 (255 bins) 0.9957 (launch-bound, 0.567 vs 0.570 ms);
+1M x 40 bagged 0.5 1.0225; 100k x 100 at 63 bins 1.0075; 2M x 100 at 63 bins 1.0306; 1M x 60 feature_fraction 0.5
+1.0156; 500k x 30 multiclass (4 classes, 255 leaves, depth 8) 1.0099; 1M x 32 with 10% missing, bagged 0.7, 63 leaves
+depth 6 1.0250; leaf-wise 1M x 40 255 leaves 1.0077, 2M x 28 511 leaves depth 14 1.0211, 300k x 28 regression 63
+leaves leaf-wise 1.0011. md5 identical in every pair; the guards year-deep-fixed, missing-deep-stoch and
+numerai53-example-stoch md5-identical with master; lattice 443/443. Bagged 4M x 28 (higgs-like, bagging_fraction 0.5,
+binary 1023 leaves): 1.0356. With the row-lane gate, final build vs master (2 pairs): numerai53bench 1.0022, NaN-Numerai
+0.9886 then 1.0019 (replicate; same binary off vs on 1.0019: the key does not engage there), covtype 1.0229, higgs
+1.0937; nsys higgs construct per round 897 -> 774 us (L9 112 -> 84 us; the root 120 -> 125 us, where the thin
+partition's rows were contiguous and cheap).
+
+On master 43a2e35c with `find_split_small` and `find_group_direction` (this build), same binary, key off vs on, tuner
+off, 4 pairs, median steady ms per round: higgs 1.049 (1.795 / 1.809 / 1.799 / 1.804 -> 1.716 / 1.721 / 1.710 / 1.722),
+covtype 0.997 (one partition: not engaged); tuner on, 4 pairs: covtype 1.000, hidden fewbin and nanbin shapes 1.002 /
+1.002 (not engaged); md5 identical. `partition_row_lanes` (the search's trailing-partition row lanes) measured on the
+same build: higgs 0.999, the fewbin shape 1.000, numerai53bench 0.998 (4 pairs): the 2x table leaves higgs one
+partition, so it no longer engaged where it gained, and it was not kept.
+
+## 10p. The quantized warp finder on small levels (`find_split_small`)
+
+The quantized level finder (`FindBestSplitsDiscretizedForLevelWarpKernel<true>`, §7c) runs a wide task (a column of
+more than 8 scan positions, e.g. 255 bins) on one warp at up to 8 positions per lane. At a shallow level the launch has a
+few blocks and the kernel's time is the latency of one warp's chain: the histogram loads and prefix scan, the 8-slot fp32
+prune loop, the fp64 survivor rounds, the output stage. nsys per-level medians (60 rounds): covtype-deep-fixed levels 0-5
+at 7.7, 8.2, 9.3, 10.2, 11.5, 11.5 us (8 to 120 blocks on 170 SMs; level 9 at 816 blocks 17.5 us), higgs-deep-stoch
+levels 1-4 at 8.3, 8.1, 8.0, 11.0 us, while the 1-2-block kernels of the same level take ~2 us. covtype runs 70 levels per
+round, so its finder was 24% of the 3.75 ms round; higgs 10%; the numerai cells 3% (the 4-lane few-position tier: not
+affected).
+
+**`find_split_small`** (default on): when the launch's blocks times four fit the device's resident block capacity (the
+SM count times the occupancy API's blocks per SM for the kernel, computed once at the first wide launch; the gate's
+wave factor is the numeric key `find_split_waves`, default 1), a wide task runs on all four warps of one block. Each warp
+scans a 64-position range at 2 positions per lane; its carry-in is the sum of the earlier positions (and, for the forward
+scan that rebuilds an unstored bin 0 from the leaf total, the sum of every stored position), an order-free wrapping
+integer sum. The fp32 prune bound is shared: each warp's largest valid lower bound goes through shared memory behind a
+block barrier and every warp prunes against the maximum of the four, the bound one warp over all the positions would
+have had, so the task's survivors are the same (a warp pruning against its own 64 positions alone kept every position
+near its local best: on year-deep-fixed, 90 columns with flat gain curves, that cost 3% per round; with the shared bound
+year is 1.000). After the warp's own reduction the four partial winners (gain bits, position) are merged through shared
+memory behind a second block barrier in warp order with the reduction's own predicate, a strict total order on (gain, then
+lowest position) for finite gains, so the merged winner is the same unique maximum whatever the grouping; the warp
+holding it writes the record as before. The layout pads the few-position units to whole blocks so a wide task's four
+warps share a block; the narrow units and the launches past the gate are unchanged. Same prefixes, same exact gains, the
+same first maximum: bit-identical (`tests/python_package_test/test_cuda_find_split_small.py` trains five shapes with the
+key on and off: 255-bin columns, mixed binary and numeric columns, missing values, both quantization modes, bagging,
+multiclass; the lattice gate 443/443; the three md5 guard workloads identical).
+
+| finder median per level (us), covtype-deep-fixed | L0 | L1 | L2 | L3 | L4 | L5 | L6 | L9 |
+|---|---|---|---|---|---|---|---|---|
+| one warp per task | 7.7 | 8.2 | 9.3 | 10.2 | 11.5 | 11.5 | 12.4 | 17.5 |
+| `find_split_small` (levels 0-5 split, 24 .. 360 blocks) | 7.1 | 7.4 | 7.4 | 7.2 | 7.9 | 9.0 | 11.6 | 17.5 |
+
+higgs levels 0-4 (split): 14.3 / 8.3 / 8.1 / 8.0 / 11.0 -> 12.5 / 7.2 / 6.9 / 7.6 / 10.0 us. About 12 us per tree on
+covtype (7 trees per round), 5 us per tree on higgs.
+
+Measured (cells harness, median ms per round over rounds 100.., tuner on, each arm its own wisdom file):
+- Same binary, key off vs on: covtype 1.0088 (3 pairs: +2.2, +1.2, -0.7%; the tuner's construct knob differed between
+  runs), 1.0172 (2 pairs); higgs 1.0091; numerai53bench 0.9998 and NaN-Numerai 1.006 (no wide task: noise); all four
+  cells together 1.008. Shallow trees (63 leaves, depth 6, 300 rounds, 2 pairs): covtype 2.391/2.388 -> 2.318/2.316 ms
+  (+3.1%), higgs 1.052/1.051 -> 1.043/1.043 (+0.85%). Bagged (`bagging_fraction` 0.5, `bagging_freq` 1, 300 rounds):
+  covtype 4.114/4.101 -> 4.029/4.067 (+2.1, +0.8%), higgs 1.684/1.696 -> 1.692/1.676 (-0.5, +1.2%); md5 identical.
+- With the shared prune bound (final build), same binary, key off vs on, 2 pairs: covtype 1.0174, higgs 1.0119,
+  year-deep-fixed (300 rounds) 1.000 (1.2414/1.2495 -> 1.2435/1.2468 ms; the per-warp bound build read 0.968 there),
+  missing-deep-stoch 1.0009; replicate before the shared bound, 3 pairs: covtype 1.0159 (3 of 3 pairs), higgs 1.0019.
+- Build with the per-warp bound vs its search parent 9fba3ea6 (`level_regions_presort`, not ported; 2 pairs): score
+  1.0081: covtype 1.018, higgs 1.011, NaN-Numerai 1.004, numerai53bench 0.9996 (md5 identical, no JIT). An earlier batch
+  of the same build read covtype 0.952 with its stock runs at 3.84-3.91 ms against 3.77 ms elsewhere: a disturbed box,
+  not the key (the same-binary A/Bs above bracket it).
+- Not kept: the gate at two waves (`find_split_waves:2`, levels 6-7 on covtype also split 4-way) 0.996 covtype, 0.994
+  higgs: a launch past one wave is throughput-bound and the split's carry loads and four-warp setup are extra work there;
+  a 2-warp tier for the launches just past the 4-warp gate (128 positions per warp) measured neutral (covtype 1.0012,
+  higgs 0.9999) and was removed. The remaining ~7 us floor is the launch (~2 us), the survivor rounds and the output
+  stage (fp64), which no further split of the positions shortens.
+- On master 43a2e35c with `dense_wide_hist` and `find_group_direction` (this build), same binary, key off vs on, tuner
+  off, 4 pairs, median steady ms per round: covtype 1.025 (3.834 / 3.823 / 3.835 / 3.820 -> 3.725 / 3.746 / 3.736 /
+  3.733), higgs 1.008, numerai53bench 1.001, NaN-Numerai 0.996; tuner on: numerai53bench 1.002, NaN-Numerai 1.000; md5
+  identical.
+
+## 10q. The level warp finder's few-position warps, one scan direction each (`find_group_direction`)
+
+A numerical column with missing values has two split-find tasks, a reverse and a forward scan, next to each other in
+the task list. `warp_find`'s 4-lane tier packs eight (task, leaf) items per warp in task order, so on such data nearly
+every warp held both directions, branched on `task->reverse` and ran both `WarpFindBest` bodies one after the other.
+On numerai53bench-nan-deep-stoch (1942 of 3555 columns with a missing bin) the finder cost 234 us per round against 96
+on the 5-value cell with the same rows (37 vs 14 us at the deepest levels).
+
+**`find_group_direction`** (default on): when the narrow (<= 8 scan positions) tasks include both directions, the
+tree's launch order (`BeforeTrain`, the same order mixed narrow/wide data already uses) lists the narrow reverse tasks,
+then the narrow forward ones, then the wide ones, each in task order; it is also built on data of narrow tasks only.
+The reverse group is padded to whole warps (up to seven slots of -1, which the kernel skips), so no warp mixes: at a
+level of few leaves the launch lasts as long as its slowest warp, and a single mixed warp doubled it. Every item still
+writes at its own task index and the sync reads by task index: bit-identical. Data without missing values (one
+direction) and wide tasks (a warp each) are unchanged.
+
+| numerai53bench-nan-deep-stoch (nsys, 60 rounds) | before | after |
+|---|---|---|
+| finder us per round | 234 | 170 |
+| finder us, levels 0 / 5 / 9 | 14.3 / 24.2 / 37.4 | 11.7 / 16.3 / 26.4 |
+
+Same binary, key off vs on, 2 pairs, 500 rounds: NaN-Numerai 1.0268 with the padding (median ms/round 4.402 -> 4.287;
+1.0160 without it: 4.395 -> 4.326), md5-identical. Synthetic 7-value columns, regression, 255 leaves, depth 8, 300
+rounds, median ms/round off -> on, 3 runs each: 200k rows x 200 columns, missing values in half of them,
+feature_fraction 0.5: 0.510 -> 0.468 (+9.0%; +2.1% without the padding); the same with missing values in 2 columns, all
+features: 0.527 -> 0.502 (+5.1%); 1M x 100, bagging 0.5: 0.603 -> 0.598; NaN-Numerai bagged (bagging_fraction 0.5,
+bagging_freq 1, 200 rounds, 3 pairs): 3.915 -> 3.814, 3.913 -> 3.831, 3.910 -> 3.792; 500k rows x 60 7-value columns
+(10% missing in half) + 20 standard-normal columns (5% missing; wide tasks), all features: 0.583 -> 0.544 (+7.1%); 2M x
+60 with 2 such columns: 0.921 -> 0.921. Cells harness vs master 06bb754b (with level_regions_presort): numerai53bench
+1.0007, NaN-Numerai 1.0118 / 1.019 / 1.015, covtype 1.0045 / 0.996 / 1.005, higgs 1.0069 / 1.009 (the last three cells
+take no forward tasks: unchanged code path). `tests/python_package_test/test_cuda_find_group_direction.py` trains four
+shapes with the key on and off. On master 43a2e35c with `dense_wide_hist` and `find_split_small` (this build), same
+binary, key off vs on, tuner off, 4 pairs, median steady ms per round: NaN-Numerai 1.036 (3.674 / 3.681 / 3.681 -> 3.547
+/ 3.551 / 3.558, a fourth off run at 3.891 disturbed), a 3.6M x 238 nanbin shape (6 bins, 61% of the columns 7% missing,
+binary, 1023 leaves, depth 10, bagging 0.8) 1.048 (5.100 / 5.089 / 5.099 / 5.113 -> 4.887 / 4.870 / 4.849 / 4.868), the
+fewbin and epsilon-like shapes (no missing values) 1.001 / 1.001; md5 identical.
+
 ## Multi-GPU: level-batched NCCL all-reduce
 
 The classic data-parallel path all-reduces one leaf histogram per split

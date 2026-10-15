@@ -5680,7 +5680,12 @@ struct WarpFindCandidate {
 // entirely in that scan's lane 0, so the group's exact first maximum of (gain, then lower position) is its winner;
 // the wide tier's lanes keep ascending slots and are reduced in the reference's pairing order. The prune (fp32
 // bounds, see below) only drops positions that can neither win nor tie.
-template <bool REVERSE, bool B16, typename ACC_T, int PPL, int G>
+// SPLIT (cuda_plan key find_split_small, G = 32 only): the task's positions are spread over the four warps of the
+// block, this warp's range starting at pos0 (lane l's slots hold positions pos0 + l * PPL ..); the sum of the
+// positions before pos0 is the warp's carry-in and the four partial winners are merged through s_merge_bits /
+// s_merge_t (4 entries each) after a block barrier, which every warp of the block must reach (the block's warps
+// share the task and the leaf, so every earlier return is block-uniform).
+template <bool REVERSE, bool B16, typename ACC_T, int PPL, int G, bool SPLIT = false, int S = 4>
 __device__ __forceinline__ void WarpFindBest(
     const ACC_T* hist, const SplitFindTask* task,
     const double lambda_l2, const double max_delta_step, const data_size_t min_data_in_leaf,
@@ -5688,11 +5693,13 @@ __device__ __forceinline__ void WarpFindBest(
     const double parent_gain, const int64_t sum_gradients_hessians, const data_size_t num_data,
     const double parent_output, const double grad_scale, const double hess_scale,
     const bool prune_fp32, const bool select_int, const bool compact, const bool prune_sure, unsigned char* s_compact,
-    CUDASplitInfo* out) {
+    CUDASplitInfo* out, const uint32_t pos0 = 0, uint64_t* s_merge_bits = nullptr, uint32_t* s_merge_t = nullptr,
+    float* s_merge_thr = nullptr) {
   using UT = std::make_unsigned_t<ACC_T>;
   constexpr uint32_t kNoThreshold = 0xffffffffu;
   static_assert((G == 32 && PPL >= 2) || (G == 4 && PPL == 2),
                 "a warp owns at least 2 positions per lane, a 4-lane group 2");
+  static_assert(!SPLIT || (G == 32 && S == 4 && PPL * 32 * S == 256), "a split task runs on the block's 4 warps");
   // the 4-lane groups' positions are strided over the lanes (see above), a warp's are blocked
   constexpr bool STRIDED = G == 4;
   const uint32_t lane = threadIdx.x & static_cast<uint32_t>(G - 1);
@@ -5706,7 +5713,7 @@ __device__ __forceinline__ void WarpFindBest(
 
   const uint32_t fnb = task->num_bin - task->mfb_offset;
   const uint32_t na = static_cast<uint32_t>(task->na_as_missing);
-  const uint32_t base = lane * static_cast<uint32_t>(PPL);
+  const uint32_t base = (SPLIT ? pos0 : 0u) + lane * static_cast<uint32_t>(PPL);
   // scan position of the lane's slot i
   auto position = [&](const int i) -> uint32_t {
     return STRIDED ? static_cast<uint32_t>(i) * static_cast<uint32_t>(G) + lane : base + static_cast<uint32_t>(i);
@@ -5728,6 +5735,27 @@ __device__ __forceinline__ void WarpFindBest(
   }
   UT excl = 0;
   UT total = 0;  // sum of every position of the group
+  if (SPLIT) {
+    // the sum of the positions before this warp's range (its carry-in) and of every position of the task (bin 0 of
+    // the shifted forward scan): wrapping integer sums, the same whatever the order
+    UT carry = 0;
+    UT all = 0;
+    for (uint32_t t = lane; t < fnb + shift; t += 32u) {
+      UT x = 0;
+      if (REVERSE ? (t >= na && t < fnb) : (t >= shift && t - shift < fnb)) {
+        x = static_cast<UT>(hist[REVERSE ? (fnb - 1 - t) : (t - shift)]);
+      }
+      if (t < pos0) carry += x;
+      all += x;
+    }
+#pragma unroll
+    for (uint32_t off = 16; off > 0; off >>= 1) {
+      carry += __shfl_xor_sync(mask, carry, off);
+      all += __shfl_xor_sync(mask, all, off);
+    }
+    excl = carry;
+    total = all;
+  }
   if (STRIDED) {
     // slot i: inclusive scan of positions i * G .. i * G + G - 1 across the group, plus every earlier slot's total
 #pragma unroll
@@ -5754,8 +5782,8 @@ __device__ __forceinline__ void WarpFindBest(
       const UT y = __shfl_up_sync(mask, incl, d, G);
       if (lane >= d) incl += y;
     }
-    excl = incl - run;
-    if (shift != 0) total = __shfl_sync(mask, incl, G - 1, G);
+    excl += incl - run;
+    if (shift != 0 && !SPLIT) total = __shfl_sync(mask, incl, G - 1, G);
   }
   if (shift != 0) {
     // bin 0 = leaf total - sum of the stored bins, through the block kernel's packed conversions; it sits at
@@ -5953,6 +5981,19 @@ __device__ __forceinline__ void WarpFindBest(
     for (uint32_t off = G / 2; off > 0; off >>= 1) {
       threshold = fmaxf(threshold, __shfl_xor_sync(mask, threshold, off));
     }
+    if (SPLIT) {
+      // the task's prune bound is the largest valid lower bound over ALL its positions, as on one warp: a warp
+      // pruning against its own range alone keeps every position near its local best, up to S times the
+      // survivors' fp64 rounds (a block barrier: every warp of the block runs this branch, prune is task-uniform)
+      const uint32_t sub = (threadIdx.x >> 5) & 3u;
+      if (lane == 0) s_merge_thr[sub] = threshold;
+      __syncthreads();
+      const uint32_t group = sub & ~static_cast<uint32_t>(S - 1);
+#pragma unroll
+      for (uint32_t w = 0; w < static_cast<uint32_t>(S); ++w) {
+        threshold = fmaxf(threshold, s_merge_thr[group + w]);
+      }
+    }
 #pragma unroll
     for (int i = 0; i < PPL; ++i) {
       if (up[i] < threshold) vmask &= ~(1u << i);
@@ -6089,7 +6130,48 @@ __device__ __forceinline__ void WarpFindBest(
     }
   }
   if (int_keys) best_gain = __longlong_as_double(static_cast<long long>(best_bits));  // NOLINT(runtime/int)
-  if (best_t == kNoThreshold) {
+  if (SPLIT) {
+    // cuda_plan key find_split_small: the block's four partial winners, merged in warp order with the reduction's
+    // predicate (a strict total order on (gain, then lowest position) for finite gains, so the unique maximum
+    // whatever the grouping); the warp holding it writes the record below, the others are done
+    const uint32_t sub = (threadIdx.x >> 5) & 3u;
+    if (lane == 0) {
+      s_merge_bits[sub] = static_cast<uint64_t>(__double_as_longlong(best_gain));
+      s_merge_t[sub] = best_t;
+    }
+    __syncthreads();
+    uint32_t m_t = kNoThreshold;
+    uint64_t m_bits = 0;
+    uint32_t m_sub = 0;
+    const uint32_t group = sub & ~static_cast<uint32_t>(S - 1);  // the task's S warps
+#pragma unroll
+    for (uint32_t w = group; w < group + static_cast<uint32_t>(S); ++w) {
+      const uint32_t o_t = s_merge_t[w];
+      const uint64_t o_bits = s_merge_bits[w];
+      bool better;
+      if (int_keys) {
+        better = o_t != kNoThreshold &&
+          (m_t == kNoThreshold || ((o_bits != kInfBits && m_bits != kInfBits) &&
+                                   (o_bits > m_bits || (o_bits == m_bits && o_t < m_t))));
+      } else {
+        better = o_t != kNoThreshold &&
+          (m_t == kNoThreshold ||
+           OtherIsBetterWithTieBreak<double>(__longlong_as_double(static_cast<long long>(o_bits)),  // NOLINT(runtime/int)
+                                             __longlong_as_double(static_cast<long long>(m_bits)),  // NOLINT(runtime/int)
+                                             o_t, m_t));
+      }
+      if (better) {
+        m_t = o_t;
+        m_bits = o_bits;
+        m_sub = w;
+      }
+    }
+    if (m_t == kNoThreshold) {
+      if (sub == group && lane == 0) out->is_valid = false;
+      return;
+    }
+    if (sub != m_sub) return;
+  } else if (best_t == kNoThreshold) {
     if (lane == 0) out->is_valid = false;
     return;
   }
@@ -6099,7 +6181,7 @@ __device__ __forceinline__ void WarpFindBest(
   // on the same inputs, issued once for both children instead of one after the other in one lane.
   const uint32_t winner = STRIDED ? best_t % static_cast<uint32_t>(G) :
     compacted ? static_cast<uint32_t>(__ffs(__ballot_sync(mask, local_best_t == best_t)) - 1) :
-    best_t / static_cast<uint32_t>(PPL);
+    (best_t - (SPLIT ? pos0 : 0u)) / static_cast<uint32_t>(PPL);
   const double right_g = __shfl_sync(mask, best.sr_g, winner, G);
   const double right_h = __shfl_sync(mask, best.sr_h, winner, G);
   const data_size_t right_c = __shfl_sync(mask, best.rc, winner, G);
@@ -6146,6 +6228,7 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   const int num_tasks,
   const int num_narrow,
   const int num_wide,
+  const int split,
   const SplitFindTask* tasks,
   const int* task_order,
   const CUDAHybridPairDescriptor* pair_descs,
@@ -6168,18 +6251,34 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   // most) and their positions (one byte each)
   constexpr int kCompactBytesPerWarp = 256 * 8 + 256;
   __shared__ __align__(16) unsigned char s_compact[WIDE ? (128 / 32) * kCompactBytesPerWarp : 16];
+  // find_split_small (wide units only): the block's four partial winners
+  __shared__ uint64_t s_merge_bits[4];
+  __shared__ uint32_t s_merge_t[4];
+  __shared__ float s_merge_thr[4];
   unsigned char* s_compact_warp = s_compact + (WIDE ? (threadIdx.x / 32u) * kCompactBytesPerWarp : 0u);
   const unsigned int narrow_units = (static_cast<unsigned int>(num_narrow) + 7u) / 8u;
-  const unsigned int nu = narrow_units + (WIDE ? static_cast<unsigned int>(num_wide) : 0u);
+  // cuda_plan key find_split_small (split, wide launches): per (pair, side) the narrow units padded to whole
+  // blocks, then four warps (one block) per wide task, so a task's four warps share a block; otherwise the narrow
+  // units then one warp per wide task
+  // split: the warps per wide task (4 = the block's warps, 1 = one warp per task)
+  const bool split_wide = WIDE && split > 1;
+  const unsigned int split_u = split_wide ? 4u : 1u;
+  const unsigned int narrow_pad = split_wide ? (narrow_units + 3u) & ~3u : narrow_units;
+  const unsigned int nu = narrow_pad + (WIDE ? static_cast<unsigned int>(num_wide) * split_u : 0u);
   const unsigned int warp = blockIdx.x * 4u + threadIdx.x / 32u;
   if (warp >= nu * static_cast<unsigned int>(num_pairs) * 2u) return;
   const unsigned int unit = warp % nu;
   const unsigned int rest = warp / nu;
   const unsigned int pair_index = rest >> 1;
   const bool is_larger = (rest & 1u) != 0;
-  const bool narrow = !WIDE || unit < narrow_units;
+  const bool narrow = !WIDE || unit < narrow_pad;
+  if (narrow && unit >= narrow_units) return;  // a padding warp of the split layout
+  const unsigned int wide_unit = narrow ? 0u : unit - narrow_pad;
+  // the wide task's index and, split, this warp's quarter of its positions
+  const unsigned int wide_idx = wide_unit / split_u;
+  const unsigned int sub = wide_unit % split_u;
   const unsigned int slot = narrow ? unit * 8u + ((threadIdx.x & 31u) >> 2) :
-                                     static_cast<unsigned int>(num_narrow) + (unit - narrow_units);
+                                     static_cast<unsigned int>(num_narrow) + wide_idx;
   if (narrow && slot >= static_cast<unsigned int>(num_narrow)) return;  // an empty group of the last narrow unit
   // lanes of this item's group
   const unsigned int gl = narrow ? 4u : 32u;
@@ -6203,13 +6302,17 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   }
   leaf_splits = is_larger ? desc->larger_struct : desc->smaller_struct;
   num_data = is_larger ? desc->num_data_in_larger_leaf : desc->num_data_in_smaller_leaf;
-  task_index = task_order == nullptr ? slot : static_cast<unsigned int>(task_order[slot]);
+  {
+    const int ordered = task_order == nullptr ? static_cast<int>(slot) : task_order[slot];
+    if (ordered < 0) return;  // find_group_direction: a padding slot of the narrow order
+    task_index = static_cast<unsigned int>(ordered);
+  }
   task = tasks + task_index;
   const unsigned int output_offset = pair_index * (2 * static_cast<unsigned int>(num_tasks)) +
     (is_larger ? task_index + num_tasks : task_index);
   out = cuda_best_split_info + output_offset;
   if (!is_feature_used_bytree[task->inner_feature_index]) {
-    if ((threadIdx.x & (gl - 1u)) == 0) out->is_valid = false;
+    if ((threadIdx.x & (gl - 1u)) == 0 && sub == 0u) out->is_valid = false;
     return;
   }
   parent_gain = leaf_splits->gain;
@@ -6234,6 +6337,12 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
 #define FALCATA_WARP_FIND(REV, B16, ACC_T) \
   if (!WIDE || narrow) { \
     FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, 2, 4); \
+  } else if (split_wide) { \
+    /* find_split_small: this warp's 64 positions of the task (2 per lane), merged over the block's 4 warps */ \
+    WarpFindBest<REV, B16, ACC_T, 2, 32, true>(reinterpret_cast<const ACC_T*>(hist_in_leaf) + task->hist_offset, \
+      task, lambda_l2, max_delta_step, min_data_in_leaf, min_sum_hessian_in_leaf, min_gain_to_split, parent_gain, \
+      sum_gradients_hessians, num_data, parent_output, gscale, hscale, prune_fp32, select_int, compact_survivors, \
+      prune_sure, s_compact_warp, out, sub * 64u, s_merge_bits, s_merge_t, s_merge_thr); \
   } else if (mid_ppl_slots == 2u) { \
     FALCATA_WARP_FIND_PPL(REV, B16, ACC_T, 2, 32); \
   } else if (mid_ppl_slots == 4u) { \
@@ -6272,8 +6381,10 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
   const bool use_warp = warp_find_eligible_ && gstate == nullptr && !FalcataFP32GainEnabled();
   const int num_launch_tasks = compact_tasks ? num_used_tasks_ : num_tasks_;
   // the warp launch's order (BeforeTrain): the narrow tasks first, eight per warp, then the wide ones, one per warp
-  const int num_narrow = warp_find_max_positions_ <= 8 ? num_launch_tasks : warp_find_num_narrow_used_;
-  const int num_wide = num_launch_tasks - num_narrow;
+  // (find_group_direction: the order's narrow part may carry padding slots, which are not tasks)
+  const int num_narrow = warp_find_order_used_ ? warp_find_num_narrow_used_ :
+                         warp_find_max_positions_ <= 8 ? num_launch_tasks : warp_find_num_narrow_used_;
+  const int num_wide = num_launch_tasks - (num_narrow - (warp_find_order_used_ ? warp_find_order_pad_ : 0));
   if (FalcataDebug().diag && num_pairs == 1) {
     // single-pair levels: each tree logs at least its root, and the warp kernel's tiers this tree
     Log::Info("split finder: %s kernel for this tree's quantized levels%s", use_warp ? "warp" : "block",
@@ -6284,15 +6395,36 @@ void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLevelKernel(
   if (use_warp) {
     const int* task_order = warp_find_order_used_ ? cuda_warp_find_order_.RawDataReadOnly() :
                             compact_tasks ? cuda_used_task_indices_.RawDataReadOnly() : nullptr;
-    const uint64_t warps = (static_cast<uint64_t>((num_narrow + 7) / 8) + static_cast<uint64_t>(num_wide)) *
-                           static_cast<uint64_t>(num_pairs) * 2;
+    const uint64_t narrow_units = static_cast<uint64_t>((num_narrow + 7) / 8);
+    const uint64_t sides = static_cast<uint64_t>(num_pairs) * 2;
+    const uint64_t warps_plain = (narrow_units + static_cast<uint64_t>(num_wide)) * sides;
+    // cuda_plan key find_split_small: a small wide launch (its blocks times four within the device's resident
+    // block capacity) runs each wide task on the four warps of one block (see the kernel's layout)
+    if (warp_find_split_block_cap_ < 0 && num_wide > 0) {
+      int device = 0;
+      int num_sms = 0;
+      int blocks_per_sm = 0;
+      CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
+      CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, device));
+      CUDASUCCESS_OR_FATAL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+        &blocks_per_sm, FindBestSplitsDiscretizedForLevelWarpKernel<true>, 128, 0));
+      warp_find_split_block_cap_ = std::max(1, num_sms) * std::max(1, blocks_per_sm);
+    }
+    // 4 warps per wide task while the split launch (4x the blocks) fits find_split_waves waves of the capacity,
+    // else one warp per task (a 2-warp tier for the launches just past that gate measured neutral: not kept)
+    const double cap = static_cast<double>(warp_find_split_block_cap_) * FalcataPlan::Get().find_split_waves;
+    const double blocks_plain = static_cast<double>((warps_plain + 3) / 4);
+    const int split = FalcataPlan::Get().find_split_small && num_wide > 0 && blocks_plain * 4.0 <= cap ? 4 : 1;
+    const uint64_t warps = split > 1 ? (((narrow_units + 3) & ~static_cast<uint64_t>(3)) +
+                                        static_cast<uint64_t>(split) * static_cast<uint64_t>(num_wide)) * sides :
+                                       warps_plain;
     const bool mid_ppl = FalcataPlan::Get().warp_find_mid_ppl;
     const bool prune_fp32 = FalcataPlan::Get().find_prune_fp32;
     const bool select_int = FalcataPlan::Get().find_select_int;
     const bool compact_survivors = FalcataPlan::Get().find_compact_survivors;
     const bool prune_sure = FalcataPlan::Get().find_prune_sure;
     #define FindBestSplitsDiscretizedForLevelWarpKernel_ARGS \
-      cuda_is_feature_used_bytree_.RawData(), num_tasks_, num_narrow, num_wide, cuda_split_find_tasks_.RawData(), \
+      cuda_is_feature_used_bytree_.RawData(), num_tasks_, num_narrow, num_wide, split, cuda_split_find_tasks_.RawData(), \
       task_order, pair_descs, num_pairs, min_data_in_leaf_, min_sum_hessian_in_leaf_, min_gain_to_split_, lambda_l2_, \
       max_delta_step_, grad_scale, hess_scale, hessian_ridge_quanta_, mid_ppl, prune_fp32, select_int, \
       compact_survivors, prune_sure, cuda_best_split_info_.RawData()

@@ -139,7 +139,6 @@ void CUDARowData::Init(const Dataset* train_data, TrainingShareStates* train_sha
   if (num_feature_ == 0) {
     return;
   }
-  DivideCUDAFeatureGroups(train_data, train_share_state);
   bit_type_ = 0;
   size_t total_size = 0;
   const void* host_row_ptr = nullptr;
@@ -157,6 +156,8 @@ void CUDARowData::Init(const Dataset* train_data, TrainingShareStates* train_sha
     is_sparse_ = false;
     bit_type_ = max_bin_per_column <= 256 ? 8 : (max_bin_per_column <= 65536 ? 16 : 32);
   }
+  // the feature partitions (after the row-wise data's bit type and sparsity are known: dense_wide_hist reads them)
+  DivideCUDAFeatureGroups(train_data, train_share_state);
   // 4-bit packed row data: eligible when the data is dense uint8 and EVERY
   // column fits in <= 16 bins (bin values index the per-column histogram span,
   // so they are < the column's hist-offset delta <= 16, i.e. nibble-sized).
@@ -293,6 +294,11 @@ void CUDARowData::Init(const Dataset* train_data, TrainingShareStates* train_sha
 
 void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingShareStates* share_state) {
   const uint32_t max_num_bin_per_partition = shared_hist_size_ / 2;
+  const std::vector<uint32_t>& column_hist_offsets = share_state->column_hist_offsets();
+  uint32_t max_bin_per_col = 0;
+  for (size_t i = 0; i + 1 < column_hist_offsets.size(); ++i) {
+    max_bin_per_col = std::max(max_bin_per_col, column_hist_offsets[i + 1] - column_hist_offsets[i]);
+  }
   // Shape-specialized column cap (see ConstructColumnCap): 504 upstream, lower
   // for low-bin many-feature data to raise construct block_dim_y. Auto-trigger:
   // QUANT training AND per-column bins are small (<= kLowBinPerCol) AND there are
@@ -319,18 +325,78 @@ void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingSha
     }
     constexpr uint32_t kLowBinPerCol = 32;  // low-bin regime (numerai ~6)
     constexpr int kAutoCap = 252;           // block_dim_y=2; measured sweet spot
-    const std::vector<uint32_t>& cho = share_state->column_hist_offsets();
-    uint32_t max_bin_per_col = 0;
-    for (size_t i = 0; i + 1 < cho.size(); ++i) {
-      max_bin_per_col = std::max(max_bin_per_col, cho[i + 1] - cho[i]);
-    }
     // Would the 504 cap bind? Only if a partition could hold >504 columns without
     // hitting the bin cap first, i.e. 504 * max_bin_per_col <= shared bin cap.
     const bool col_cap_binds = num_feature_ > 504 &&
       static_cast<uint32_t>(504) * max_bin_per_col <= max_num_bin_per_partition;
     return (max_bin_per_col <= kLowBinPerCol && col_cap_binds) ? kAutoCap : 504;
   }();
-  const std::vector<uint32_t>& column_hist_offsets = share_state->column_hist_offsets();
+  int num_partitions = DivideCUDAFeatureGroupsWithCap(train_data, column_hist_offsets, max_num_bin_per_partition, column_cap);
+  quant_hist_slots_ = shared_hist_size_;
+  // cuda_plan key dense_wide_hist: the quantized dense construct kernels can hold a 2x shared table (48 KB static
+  // at the single-precision budget, the portable static limit); 8-bit data (widest column > 16 bins: not 4-bit
+  // packable) that the standard table splits into several partitions is divided against the 2x table when that
+  // gives fewer partitions, of at most 504 columns (one column per construct thread). Dense row data only (the
+  // sparse kernels keep their table); quantized training only (the non-quantized kernels' tables are not widened).
+  if (FalcataPlan::Get().dense_wide_hist && FalcataPlan::Get().quant_training && !is_sparse_ &&
+      max_bin_per_col > 16 && num_partitions > 1) {
+    const int standard_max_columns = max_num_column_per_partition_;
+    const int wide_num_partitions = DivideCUDAFeatureGroupsWithCap(
+      train_data, column_hist_offsets, max_num_bin_per_partition * 2, std::min(column_cap, 504));
+    // the 504-thread construct block runs 504 / columns row lanes of one column per thread (the widest partition's
+    // columns, see CalcConstructHistogramBatchedKernelDim). The wide division is kept only if its block has at least
+    // two row lanes and at least as many threads as the standard one: with fewer threads per row sweep the removed
+    // partition's per-row chain does not pay for the lost lanes (same binary off vs on: 300 columns at 31 bins, 198 x 2
+    // -> 300 x 1 threads, 0.89x; 150 columns at 63 bins bagged, 97 x 5 -> 150 x 3, 0.977x; higgs' 28 columns,
+    // 24 x 21 -> 28 x 18 = 504 threads, 1.044x)
+    const auto block_threads = [](const int columns) {
+      const int c = std::max(1, columns);
+      return c * std::max(1, 504 / c);
+    };
+    const int wide_max_columns = max_num_column_per_partition_;
+    if (wide_num_partitions < num_partitions && 504 / std::max(1, wide_max_columns) >= 2 &&
+        block_threads(wide_max_columns) >= block_threads(standard_max_columns)) {
+      quant_hist_slots_ = shared_hist_size_ * 2;
+      num_partitions = wide_num_partitions;
+    } else {
+      num_partitions = DivideCUDAFeatureGroupsWithCap(train_data, column_hist_offsets, max_num_bin_per_partition, column_cap);
+    }
+  }
+  CHECK_EQ(num_partitions, num_feature_partitions_);
+
+  cuda_feature_partition_column_index_offsets_.InitFromHostVector(feature_partition_column_index_offsets_);
+  cuda_column_hist_offsets_.InitFromHostVector(column_hist_offsets_);
+  cuda_partition_hist_offsets_.InitFromHostVector(partition_hist_offsets_);
+
+  // Diagnostic-only (perf characterization; behind FALCATA_DEBUG=dump, no
+  // behavior change): report the partitioning + binding constraint per benchmark.
+  if (FalcataDebug().dump) {
+    const uint32_t part_bin_cap = quant_hist_slots_ / 2;
+    uint32_t max_partition_bins = 0, min_partition_bins = 0xffffffffu;
+    int col_capped = 0, bin_capped = 0;
+    for (size_t i = 0; i + 1 < partition_hist_offsets_.size(); ++i) {
+      const uint32_t pb = partition_hist_offsets_[i + 1] - partition_hist_offsets_[i];
+      max_partition_bins = std::max(max_partition_bins, pb);
+      min_partition_bins = std::min(min_partition_bins, pb);
+      const int ncol = feature_partition_column_index_offsets_[i + 1] - feature_partition_column_index_offsets_[i];
+      if (ncol >= column_cap) ++col_capped;
+      if (pb + 8 > part_bin_cap) ++bin_capped;  // near the bin cap
+    }
+    fprintf(stderr, "[DUMP_PARTITIONS] num_feature=%d num_feature_group=%d num_partitions=%d "
+      "max_col_per_part=%d column_cap=%d shared_hist_size=%d(bins=%u) quant_hist_slots=%d max_part_bins=%u min_part_bins=%u "
+      "col_capped_parts=%d bin_capped_parts=%d bit_type=%d is_4bit_packed=%d small_parts=%zu large_parts=%zu\n",
+      num_feature_, num_feature_group_, num_feature_partitions_, max_num_column_per_partition_,
+      column_cap, shared_hist_size_, part_bin_cap, quant_hist_slots_, max_partition_bins,
+      min_partition_bins == 0xffffffffu ? 0 : min_partition_bins,
+      col_capped, bin_capped, static_cast<int>(bit_type_), is_4bit_packed_ ? 1 : 0,
+      small_bin_partitions_.size(), large_bin_partitions_.size());
+    fflush(stderr);
+  }
+}
+
+int CUDARowData::DivideCUDAFeatureGroupsWithCap(const Dataset* train_data,
+                                                const std::vector<uint32_t>& column_hist_offsets,
+                                                const uint32_t max_num_bin_per_partition, const int column_cap) {
   std::vector<int> feature_group_num_feature_offsets;
   int offsets = 0;
   int prev_group_index = -1;
@@ -448,34 +514,7 @@ void CUDARowData::DivideCUDAFeatureGroups(const Dataset* train_data, TrainingSha
   if (max_num_column_per_partition_ == 0) {
     max_num_column_per_partition_ = 1;
   }
-
-  cuda_feature_partition_column_index_offsets_.InitFromHostVector(feature_partition_column_index_offsets_);
-  cuda_column_hist_offsets_.InitFromHostVector(column_hist_offsets_);
-  cuda_partition_hist_offsets_.InitFromHostVector(partition_hist_offsets_);
-
-  // Diagnostic-only (perf characterization; behind FALCATA_DEBUG=dump, no
-  // behavior change): report the partitioning + binding constraint per benchmark.
-  if (FalcataDebug().dump) {
-    uint32_t max_partition_bins = 0, min_partition_bins = 0xffffffffu;
-    int col_capped = 0, bin_capped = 0;
-    for (size_t i = 0; i + 1 < partition_hist_offsets_.size(); ++i) {
-      const uint32_t pb = partition_hist_offsets_[i + 1] - partition_hist_offsets_[i];
-      max_partition_bins = std::max(max_partition_bins, pb);
-      min_partition_bins = std::min(min_partition_bins, pb);
-      const int ncol = feature_partition_column_index_offsets_[i + 1] - feature_partition_column_index_offsets_[i];
-      if (ncol >= column_cap) ++col_capped;
-      if (pb + 8 > max_num_bin_per_partition) ++bin_capped;  // near the bin cap
-    }
-    fprintf(stderr, "[DUMP_PARTITIONS] num_feature=%d num_feature_group=%d num_partitions=%d "
-      "max_col_per_part=%d column_cap=%d shared_hist_size=%d(bins=%u) max_part_bins=%u min_part_bins=%u "
-      "col_capped_parts=%d bin_capped_parts=%d bit_type=%d is_4bit_packed=%d small_parts=%zu large_parts=%zu\n",
-      num_feature_, num_feature_group_, num_feature_partitions_, max_num_column_per_partition_,
-      column_cap, shared_hist_size_, max_num_bin_per_partition, max_partition_bins,
-      min_partition_bins == 0xffffffffu ? 0 : min_partition_bins,
-      col_capped, bin_capped, static_cast<int>(bit_type_), is_4bit_packed_ ? 1 : 0,
-      small_bin_partitions_.size(), large_bin_partitions_.size());
-    fflush(stderr);
-  }
+  return num_feature_partitions_;
 }
 
 template <typename BIN_TYPE>
