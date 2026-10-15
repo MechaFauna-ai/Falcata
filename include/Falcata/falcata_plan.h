@@ -822,6 +822,16 @@ struct FalcataPlan {
   // per-partition zero/merge overhead on wide low-bin data. Measured: +8.8%
   // numerai-deep; engages only above 504 columns.
   bool wide_partitions = true;      // key: wide_partitions
+  // the quantized dense construct kernels' packed int32 shared histogram holds shared_hist_size/2 bins (6144 =
+  // 24 KB), so 8-bit data whose bins exceed it is split into partitions, every partition gathering every row's
+  // index, gradient and bytes again and the trailing partition's blocks running a few lanes. With this key the
+  // partitions are divided against a 2x table (12288 bins, 48 KB static: the portable static limit) when, under
+  // quantized training on dense row data whose widest column has > 16 bins (not 4-bit packable), that gives fewer
+  // partitions whose construct block keeps >= 2 row lanes and no fewer threads than the standard division's; the
+  // quantized dense kernels are then instantiated with the 2x table.
+  // Otherwise the standard table and partitions. The histogram's layout, bins and integer sums are the same:
+  // bit-identical.
+  bool dense_wide_hist = true;      // key: dense_wide_hist
   // prefill the next tree's compact column view on a side stream during the
   // current tree's training (bit-identical). Default OFF: measured no wall
   // win -- steady-state training is 97% device-busy and the ~41 synchronous
@@ -968,6 +978,7 @@ struct FalcataPlan {
     if (key == "shape_memo") return &shape_memo;
     if (key == "tuner") return &tuner;
     if (key == "wide_partitions") return &wide_partitions;
+    if (key == "dense_wide_hist") return &dense_wide_hist;
     return nullptr;
   }
 

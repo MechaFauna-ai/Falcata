@@ -1688,6 +1688,76 @@ does no extra work. `FALCATA_DEBUG=bynode` prints, per split of the per-split lo
 and the mask the leaf was searched with (`tests/python_package_test/test_cuda_bynode_quant.py` checks every chosen
 feature against it).
 
+## 10o. A 2x shared table for the quantized dense construct (`dense_wide_hist`)
+
+The quantized dense construct kernels (`CUDAConstructDiscretizedHistogramDense*`: 8/16-bit row data and the compact
+view of it) accumulate a packed int32 (grad << 16 | hess) table in shared memory of SHARED_HIST_SIZE / 2 = 6144 bins
+(24 KB). `DivideCUDAFeatureGroups` splits the columns into feature partitions against that cap, and every partition is a
+block column of the launch: each partition's blocks gather every row's index, gradient (a random 4-byte load, one
+sector) and the row's bytes of their own columns. On higgs-deep-stoch (28 columns x 256 bins = 7168 bins) that gave a
+24-column partition (6144 bins exactly) and a 4-column one: the second partition's blocks are as many as the first's,
+run 4 of 24 lanes, and re-read every index and gradient. The kernel was 48% of the cell's kernel time (95.7 us per
+launch, 10 per round).
+
+**`dense_wide_hist`** (default on): under quantized training, on dense row data whose widest column has more than 16
+bins (not 4-bit packable), when the standard division gives more than one partition, the columns are divided again
+against a 2x table (12288 bins; 48 KB static shared, the portable static limit) with at most 504 columns per partition (see below for the row-lane rule)
+(one column per construct thread); if that gives fewer partitions it is kept and `CUDARowData::quant_hist_slots()`
+reports 2 x `shared_hist_size()`; otherwise the standard division and table. Every quantized dense launch (the per-leaf
+and the batched kernels, row data and compact view, raw 8-bit and the 4-bit codecs, the small-leaf kernels are
+table-free) is instantiated for `quant_hist_slots()` through one generic lambda per launch site (one body, two
+instantiations: 56 registers, no spills, 49 KB vs 25 KB static shared; 504-thread blocks stay at 2 per SM on a 128 KB
+SM). The non-quantized branches CHECK the table is not wide (the gate requires quantized training); the construct JIT
+declines a wide table (its module bakes the standard one) and prints the fallback line. The histogram's global layout
+(`column_hist_offsets_full`), the bins and the wrapping integer sums are unchanged: bit-identical.
+
+Engages on 8/16-bit data with 6144 < total bins and a partition count the 2x table lowers: 25..48 columns at 255 bins
+in one partition instead of two, 49..96 in two instead of three, 97..192 columns at 63 bins (quantized training on
+CUDA rejects columns of more than 256 bins, so a large-bin partition never exists under the gate). Declines on covtype (10 x 256 + 44 x 2..3 bins: one
+partition), on numerai (4-bit pair-joint path) and on any data with <= 6144 bins, which keep the 24 KB table.
+It also declines where the wide division's construct block (504 / columns row lanes of the widest partition's columns)
+has fewer than two row lanes or fewer threads than the standard division's: the removed partition's per-row chain does
+not pay for the lost lanes. Same binary off vs on, 2 pairs: 500k x 300 columns at 31 bins, 255 leaves (198 x 2 -> 300 x
+1 threads) 0.8917, declined 0.9997; 1M x 150 columns at 63 bins, bagged 0.6 (97 x 5 -> 150 x 3) 0.9766, declined
+1.0006; engaging: higgs (24 x 21 -> 28 x 18, 504 threads both), 2M x 100 at 63 bins (97 x 5 -> 100 x 5) 1.0293, 240
+columns at 31 bins (198 x 2 -> 240 x 2) 1.0292 (bagged 0.5 1.0283). The thread rule also declines 40..60 columns at 255
+bins (24 x 21 -> 40 x 12 or 48 x 10 = 480 threads), which gained 1.5..2.2% in the measurements above (the 1.0225,
+1.0156 and 1.0178 shapes), and the 500-column feature_fraction 0.1 shape (1.0398): kept out, because 0.93 of the threads already lost.
+Final build (both rules) vs master, cells harness, 2 pairs, md5 identical, no JIT: numerai53bench 1.0056, NaN-Numerai
+0.9976, covtype 1.0213, higgs 1.0965 (1.914 -> 1.745 ms), score 1.0295.
+
+| | master | dense_wide_hist |
+|---|---|---|
+| higgs construct kernel, avg per launch (nsys, 60 rounds) | 95.7 us (`<uchar, 12288, PackRaw8>`, grid 2 x Y, block 24 x 21) | 75.6 us (`<uchar, 24576, PackRaw8>`, grid 1 x Y, block 28 x 18) |
+| higgs round under nsys | 2.158 ms | 1.943 ms |
+| higgs steady ms/round, cells harness (2 pairs) | 1.874 | 1.728 |
+
+Cells harness vs master 06bb754b, 2 pairs, md5 identical everywhere: numerai53bench 1.0033, NaN-Numerai 1.0022,
+covtype 1.0069, **higgs 1.0840**; score 1.0235. Same binary, key off vs on, higgs: 1.869 / 1.869 -> 1.724 / 1.722 ms
+(1.084). `tests/python_package_test/test_cuda_dense_wide_hist.py` trains seven shapes (engaging and declining, feature
+sampling, bagging, multiclass, both quantized modes) with the key on and off.
+
+On top of `partition_row_lanes` (10o, which re-spreads the thin partition's threads but keeps its per-row chain) and the
+finder / gen-bit / boundary keys of 10p-10s (nsys, higgs, 60 rounds, construct per level L0..L9 in us): with the
+4-column partition's blocks skipped (a measurement-only build, wrong model) the construct went 897 -> 668 us per round
+(L0 120 -> 107, L9 112 -> 75): the second partition's re-gather of every row's index and gradient was a quarter of the
+kernel at every level but the root. Cells harness vs master 06bb754b, 2 pairs, md5 identical: numerai53bench 0.9992,
+NaN-Numerai 0.9969, covtype 1.0215, higgs 1.0927 (1.9065 -> 1.7446 ms), score 1.0269 (the parent without the key:
+1.0106; numerai, NaN-Numerai and covtype keep one partition or the pair-joint path, so the key does not engage there).
+Same binary, key off vs on, higgs, 3 pairs, tuner on: 1.0438 (steady 1.838 / 1.818 / 1.818 -> 1.755 / 1.745 / 1.745 ms;
+less than the 1.084 measured on master because `partition_row_lanes` already recovered part of the thin partition).
+Same binary, key off vs on, 400 or 300 rounds, median ms per round over rounds 100.., 2 pairs, synthetic standard-normal
+columns, binary 1023 leaves depth 10 unless said: 200k x 28 (255 bins) 0.9957 (launch-bound, 0.567 vs 0.570 ms);
+1M x 40 bagged 0.5 1.0225; 100k x 100 at 63 bins 1.0075; 2M x 100 at 63 bins 1.0306; 1M x 60 feature_fraction 0.5
+1.0156; 500k x 30 multiclass (4 classes, 255 leaves, depth 8) 1.0099; 1M x 32 with 10% missing, bagged 0.7, 63 leaves
+depth 6 1.0250; leaf-wise 1M x 40 255 leaves 1.0077, 2M x 28 511 leaves depth 14 1.0211, 300k x 28 regression 63
+leaves leaf-wise 1.0011. md5 identical in every pair; the guards year-deep-fixed, missing-deep-stoch and
+numerai53-example-stoch md5-identical with master; lattice 443/443. Bagged 4M x 28 (higgs-like, bagging_fraction 0.5,
+binary 1023 leaves): 1.0356. With the row-lane gate, final build vs master (2 pairs): numerai53bench 1.0022, NaN-Numerai
+0.9886 then 1.0019 (replicate; same binary off vs on 1.0019: the key does not engage there), covtype 1.0229, higgs
+1.0937; nsys higgs construct per round 897 -> 774 us (L9 112 -> 84 us; the root 120 -> 125 us, where the thin
+partition's rows were contiguous and cheap).
+
 ## Multi-GPU: level-batched NCCL all-reduce
 
 The classic data-parallel path all-reduces one leaf histogram per split
