@@ -10,6 +10,7 @@
 #include "cuda_histogram_constructor.hpp"
 
 #include <algorithm>
+#include <mutex>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -75,7 +76,7 @@ CUDAHistogramConstructor::CUDAHistogramConstructor(
   max_num_compact_cols_per_partition_ = 0;
   use_compact_view_ = false;
   InitFeatureMetaInfo(train_data, feature_hist_offsets);
-  cuda_row_data_.reset(nullptr);
+  cuda_row_data_.reset();
 }
 
 CUDAHistogramConstructor::~CUDAHistogramConstructor() {
@@ -232,6 +233,10 @@ void CUDAHistogramConstructor::ZeroHistForLeaf(int /*leaf_index*/) {
 void CUDAHistogramConstructor::ZeroHistSlots(const std::vector<int>& slots) {
   const size_t slot_size = static_cast<size_t>(2 * num_total_bin_) *
     static_cast<size_t>(num_hist_planes_);
+  if (slots.size() >= 2 && FalcataPlan::Get().zero_slots_kernel) {
+    LaunchZeroHistSlotsKernel(slots, slot_size);
+    return;
+  }
   for (const int slot : slots) {
     CUDASUCCESS_OR_FATAL(cudaMemsetAsync(
       reinterpret_cast<void*>(cuda_hist_.RawData() + static_cast<size_t>(slot) * slot_size), 0,
@@ -794,14 +799,14 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
     static const int N_STREAMS = 4;
     static cudaStream_t copy_streams[N_STREAMS] = {nullptr};
     static cudaEvent_t copy_done[N_STREAMS] = {nullptr};
-    static bool streams_init = false;
-    if (!streams_init) {
+    // once per process, whichever learner gets here first (forest slots train on several threads)
+    static std::once_flag streams_init;
+    std::call_once(streams_init, []() {
       for (int i = 0; i < N_STREAMS; ++i) {
         cudaStreamCreate(&copy_streams[i]);
         cudaEventCreate(&copy_done[i]);
       }
-      streams_init = true;
-    }
+    });
     for (int compact_col = 0; compact_col < total_compact; ++compact_col) {
       const int p = partition_for_compact_h[compact_col];
       const int src_local = src_local_col_for_compact_h[compact_col];
@@ -1451,10 +1456,15 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   cuda_feature_hist_offsets_.InitFromHostVector(feature_hist_offsets_);
   cuda_feature_most_freq_bins_.InitFromHostVector(feature_most_freq_bins_);
 
-  cuda_row_data_.reset(new CUDARowData(train_data, share_state, gpu_device_id_, gpu_use_dp_));
-  // colmajor_direct: no row-major matrix when the Dataset's columns can serve (the tree learner then builds a view)
-  cuda_row_data_->RequestDense4BitColumnsOnly(FalcataPlan::Get().colmajor_fill && FalcataPlan::Get().colmajor_direct);
-  cuda_row_data_->Init(train_data, share_state);
+  if (shared_row_data_ != nullptr) {
+    // a forest slot (cuda_plan key forest_batched): the booster learner's constructor built it for the same data
+    cuda_row_data_ = shared_row_data_;
+  } else {
+    cuda_row_data_.reset(new CUDARowData(train_data, share_state, gpu_device_id_, gpu_use_dp_));
+    // colmajor_direct: no row-major matrix when the Dataset's columns can serve (the tree learner then builds a view)
+    cuda_row_data_->RequestDense4BitColumnsOnly(FalcataPlan::Get().colmajor_fill && FalcataPlan::Get().colmajor_direct);
+    cuda_row_data_->Init(train_data, share_state);
+  }
 
   // Deterministic dense-construct scratch (same as ResetTrainingData; both
   // entry points size it because either can be the only one a flow calls).

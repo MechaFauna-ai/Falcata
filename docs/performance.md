@@ -2005,6 +2005,62 @@ binary, key off vs on, tuner off, 4 pairs, median steady ms per round: NaN-Numer
 binary, 1023 leaves, depth 10, bagging 0.8) 1.048 (5.100 / 5.089 / 5.099 / 5.113 -> 4.887 / 4.870 / 4.849 / 4.868), the
 fewbin and epsilon-like shapes (no missing values) 1.001 / 1.001; md5 identical.
 
+## 10r. A random forest's trees grown together (`forest_batched`, `forest_group`, `zero_slots_kernel`)
+
+**Before.** `RF::TrainOneIter` trained a round's `num_class` trees one after the other on the booster's learner, and
+the next round after the last. After 10n (stage 1) the deep covtype forest (7 trees per round, 4095 leaves, unlimited
+depth, quant stochastic, sqrt(F) per node) cost ~112 ms per round with the GPU busy 12% of it: per tree ~46 selective
+levels of host work (the greedy simulation in `RunSelectiveLevel`, 30% of the training thread's CPU samples), ~1900
+`cudaMemsetAsync` (one per recycled histogram slot, `ZeroHistSlots`), ~440 launches and ~90 stream syncs. The depth-12
+quant-none forests (higgs, numerai) are GPU-bound in the deterministic fp64 construct instead (90% of their kernel time).
+Design and analysis: `docs/design/batched-forest.md`.
+
+**`zero_slots_kernel` (default on).** A selective level's recycled slots are zeroed by one copy of the slot list and
+one kernel on the legacy default stream (where the memsets ran) instead of one memset per slot: the same zeros,
+bit-identical; gbdt's selective growth takes it too. covtype-rf-deep sequentially 115 -> 96 ms per round.
+
+**`forest_batched` (default on).** For `boosting=rf` on one CUDA device with the device objective, the booster grows
+the class trees of one or more rounds together and hands out one round per `TrainOneIter`. Each tree in flight has its
+own learner ("slot": `CUDAForestTrainer`; slot 0 is the booster's learner; the others have their own partition,
+histograms, split finder, discretizer and tree record, a private view of the dataset's columns and the booster
+learner's bin matrix), and the group's trees run on one host thread each, through the unchanged `Train`: every level
+flow. Each tree gets what sequential training gives it, in tree order: its round's bag (the strategy's sampler, keyed
+by the round, called for the group's rounds in order), its class's gradients, the next per-tree `feature_fraction`
+sample of the booster learner's sampler, and the tree counters of the bynode node keys and of the stochastic rounding.
+So the forest is the sequential forest, md5 for md5, whatever the group size; dropped trees (rollback, a parameter
+reset, early stopping) rewind the counters and the sampler. Group size (`cuda_plan=auto,forest_group:N`, 0 = auto):
+auto starts with one round (its class trees in parallel) and doubles while the time per tree of a steady-state group
+drops below 0.85 of the previous size's, up to 32 trees, capped by `num_iterations` and by device memory (a slot's
+measured footprint, its Init plus its first tree, beside an eighth of the device). Fixedpoint error feedback (a
+residual per class carried from tree to tree) groups one round. Sequential as before: multi-GPU, the host objective,
+GOSS, `bagging_freq` > 1, balanced or by-query bagging, linear trees, forced splits, vector leaves, CEGB, per-node draws
+from the shared stream, `compact_prefill`. The slots never take the graph loop (another thread's legacy-stream work
+would join its stream capture); sequential training may, so a depth-limited quant-none forest with bynode = 1 matches
+the key off only with `graph_loop:off` (the graph loop is not run-to-run deterministic there either). The extra slots
+are freed once `num_iterations` rounds are trained, with the per-round bag copies. Slot threads log with the caller's
+level and callback. Not tested: a class absent from the labels (rf on CUDA segfaults there on master too).
+`FALCATA_DEBUG=diag` prints `[forest-diag]` lines (slot Init time
+and memory, each group's rounds, trees, time and free memory, the auto size).
+
+Measured (relaxed gpuq jobs, one RTX 5090, 100 rounds, total `flc.train` seconds, steady ms per round, kernel-evo
+`runs/forest/stage2/time_t6.jsonl`; key off includes `zero_slots_kernel`):
+
+| shape | key off | key on (auto) | ms per round off -> on (slots) |
+|---|---:|---:|---|
+| covtype-rf-deep (7 trees per round) | 10.13 s | 3.81 s | 93.7 -> 23.7 (28) |
+| higgs d-1, quant stochastic | 1.14 s | 1.07 s | 8.8 -> 4.4 (8) |
+| higgs-rf-deep (depth 12, quant none) | 6.60 s | 6.66 s | 63.5 -> 63.8 (2; GPU-bound) |
+| numerai-rf-deep (depth 12, quant none) | 10.04 s | 9.57 s | 94.5 -> 87.4 (2) |
+
+With the slots the covtype round is bounded by the GPU running the slots' small kernels one after another (the per-level
+readbacks run on the legacy default stream, which the learners' blocking streams synchronize with) and by the CUDA
+driver serializing the threads' API calls (a launch costs 13-37 us under 7-28 threads instead of 2.5 us); merging the
+slots' level launches, or the slots' readbacks moving off the legacy stream, is what would lower it further. The
+GPU-bound shapes need less histogram work (forest stage 3), not more trees in flight.
+`tests/python_package_test/test_cuda_forest_batched.py`: md5, predictions, train score and evaluation records equal the
+key off across objectives, quantization modes, shapes, samplings, group sizes, metrics every round, early stopping, a
+parameter reset with rollbacks; where the key engages.
+
 ## Multi-GPU: level-batched NCCL all-reduce
 
 The classic data-parallel path all-reduces one leaf histogram per split

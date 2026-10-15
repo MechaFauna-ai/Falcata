@@ -678,6 +678,25 @@ struct FalcataPlan {
   // Interaction constraints keep the shared stream and the per-split loop. bynode = 1: nothing is drawn or
   // uploaded and the finders get a null table: bit-identical. Off: the per-split loop with the shared stream.
   bool level_bynode_masks = true;  // key: level_bynode_masks
+  // random forest (boosting=rf) on one CUDA device with the device objective: the trees of several rounds (every
+  // class tree of each round) are grown concurrently, one tree per learner ("slot") and per host thread
+  // (CUDAForestTrainer, docs/design/batched-forest.md), instead of one after the other. Slot 0 is the booster's
+  // learner; each other slot is a learner of the same config with its own partition, histograms and split finder,
+  // a private view of the dataset's columns and the booster learner's bin matrix. The first round of a group trains
+  // the group (whole rounds: forest_group trees, or auto: one round first, then doubling while the measured time per
+  // tree drops by 15%, up to 32 trees; capped by num_iterations and by device memory); the other rounds of the
+  // group take their trees from it. Every tree gets what sequential training gives it, in tree order: its round's
+  // bag, its class's gradients, the next per-tree feature_fraction sample of the booster learner's sampler, and the
+  // tree counters of the bynode node keys and the stochastic rounding noise: the same trees as sequential training,
+  // whatever the group size (the graph loop is off in the slots, whose stream capture other threads' legacy-stream
+  // work would join). Rounds are grouped only without cross-tree state (fixedpoint error feedback groups the class
+  // trees of one round). Off: one tree after another (stage-1 behaviour), also without the conditions (bagging or
+  // no sampling, no GOSS, linear trees, forced splits, CEGB, multi-GPU, vector leaves, compact_prefill).
+  bool forest_batched = true;  // key: forest_batched
+  // selective growth's recycled histogram slots (CUDAHistogramConstructor::ZeroHistSlots, after a level's collapse):
+  // one slot-list copy and one zeroing kernel on the legacy default stream instead of one memset per slot (a deep
+  // tree of thousands of leaves recycles thousands of slots; each memset is an API call). Same zeros: bit-identical.
+  bool zero_slots_kernel = true;  // key: zero_slots_kernel
   // quantized root sums (gradient/hessian totals of the tree's rows): one warp
   // per 1024-row chunk sums 32 rows per lane, instead of one 1024-thread block
   // per chunk with one row per thread and two block reductions. Each chunk's
@@ -877,6 +896,9 @@ struct FalcataPlan {
   // preserving at any value (order-invariant integer atomics).
   int quant_small_leaf_rows = 1024;
   int construct_column_cap = -1;    // -1 = auto sizing
+  // forest_batched: trees per group (key forest_group, cuda_plan=auto,forest_group:N; 0 = auto); every value trains
+  // the same model
+  int forest_group = 0;
 
   // --- resolved facts from Config (no keys; inputs to auto decisions) -------
   // Quantized training active. Shape auto-decisions that only win under the
@@ -986,6 +1008,8 @@ struct FalcataPlan {
     if (key == "rf_device_objective") return &rf_device_objective;
     if (key == "rf_lazy_train_score") return &rf_lazy_train_score;
     if (key == "level_bynode_masks") return &level_bynode_masks;
+    if (key == "forest_batched") return &forest_batched;
+    if (key == "zero_slots_kernel") return &zero_slots_kernel;
     if (key == "root_sums_warp") return &root_sums_warp;
     if (key == "minmax_warp") return &minmax_warp;
     if (key == "colmajor_split") return &colmajor_split;
@@ -1109,6 +1133,17 @@ struct FalcataPlan {
                      tile_rows_key ? "an even number in [2, 384]" : "a power of two in [32, 1024]");
         }
         (tile_rows_key ? plan.construct_tile_rows : plan.construct_tile_threads) = static_cast<int>(value);
+        overridden = true;
+        continue;
+      }
+      if (kv[0] == std::string("forest_group")) {
+        char* end = nullptr;
+        const long value = std::strtol(kv[1].c_str(), &end, 10);  // NOLINT(runtime/int)
+        if (end == kv[1].c_str() || *end != '\0' || value < 0 || value > 1024) {
+          Log::Fatal("cuda_plan: bad value \"%s\" for key \"forest_group\" (expected an integer in [0, 1024])",
+                     kv[1].c_str());
+        }
+        plan.forest_group = static_cast<int>(value);
         overridden = true;
         continue;
       }

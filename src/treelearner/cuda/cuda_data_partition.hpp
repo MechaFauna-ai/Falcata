@@ -134,6 +134,10 @@ class CUDADataPartition: public NCCLInfo {
 
   void Init();
 
+  /*! \brief cuda_plan key forest_batched: read the columns through this view instead of the dataset's (a forest
+   *  learner's private view, CUDAColumnData::InitViewOf); call before Init */
+  void SetColumnData(const CUDAColumnData* column_data) { cuda_column_data_ = column_data; }
+
   void BeforeTrain();
 
   void Split(

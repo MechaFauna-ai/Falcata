@@ -13,6 +13,7 @@
 #include <cstring>
 #include <exception>
 #include <iostream>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 
@@ -97,6 +98,11 @@ class Log {
 
   static void ResetCallBack(Callback callback) { GetLogCallBack() = callback; }
 
+  /*! \brief The calling thread's log level and callback (both are per thread): a thread started on behalf of another
+   *  (the CUDA forest trainer's slot threads) installs the starting thread's with ResetLogLevel / ResetCallBack */
+  static LogLevel CurrentLevel() { return GetLevel(); }
+  static Callback CurrentCallBack() { return GetLogCallBack(); }
+
   static void Debug(const char *format, ...) {
     va_list val;
     va_start(val, format);
@@ -143,6 +149,9 @@ class Log {
   static void Write(LogLevel level, const char *level_str, const char *format,
                     va_list val) {
     if (level <= GetLevel()) {  // omit the message with low level
+      // one message at a time: a message is written in pieces (the callback receives the prefix, the text and the
+      // newline separately and the Python side joins them), and the CUDA forest trainer's slot threads log at once
+      std::lock_guard<std::mutex> lock(WriteMutex());
 // R code should write back to R's output stream,
 // otherwise to stdout
 #ifndef LGB_R_BUILD
@@ -174,6 +183,11 @@ class Log {
   static LogLevel &GetLevel() {
     static THREAD_LOCAL LogLevel level = LogLevel::Info;
     return level;
+  }
+
+  static std::mutex &WriteMutex() {
+    static std::mutex mutex;
+    return mutex;
   }
 
   static Callback &GetLogCallBack() {

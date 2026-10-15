@@ -104,6 +104,11 @@ class CUDAGradientDiscretizer: public GradientDiscretizer, public NCCLInfo {
   // clamps quantized magnitudes to +/-(bins/2) so rare outliers saturate.
   void SetRobustScale(bool robust_scale) { robust_scale_ = robust_scale; }
 
+  /*! \brief The tree counter (advanced by one per DiscretizeGradients): the Philox stream of the stochastic rounding
+   *  noise and, modulo the slot count, the error-feedback slot (cuda_plan key forest_batched sets it per tree) */
+  int iteration() const { return iter_; }
+  void SetIteration(const int iter) { iter_ = iter; }
+
   // Error-feedback accumulation (fixed-point only). num_slots = trees per
   // boosting iteration: iter_ % num_slots addresses this tree's class, so
   // residuals never mix across classes.

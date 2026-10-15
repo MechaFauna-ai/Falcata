@@ -281,6 +281,9 @@ class CUDAHistogramConstructor {
    *  on the legacy default stream: ordered before any subsequently enqueued
    *  construct kernel on the (blocking) histogram streams. */
   void ZeroHistSlots(const std::vector<int>& slots);
+  /*! \brief ZeroHistSlots of two or more slots (cuda_plan key zero_slots_kernel): the slot list in one copy and one
+   *  kernel on the legacy default stream instead of one memset per slot */
+  void LaunchZeroHistSlotsKernel(const std::vector<int>& slots, size_t slot_size);
 
   void ConstructHistogramForLeaf(
     const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,
@@ -669,6 +672,11 @@ class CUDAHistogramConstructor {
   // Expose internal CUDARowData so the tree learner can build a per-tree compact
   // column view from the on-GPU row-major bin matrix.
   const CUDARowData* cuda_row_data_internal() const { return cuda_row_data_.get(); }
+  /*! \brief cuda_plan key forest_batched: the row data (bin matrix), for a forest slot's constructor to share */
+  const std::shared_ptr<CUDARowData>& row_data_shared() const { return cuda_row_data_; }
+  /*! \brief Before Init: take this row data (another constructor's of the same data and config, read-only after its
+   *  Init) instead of building a copy (a forest slot shares the booster learner's) */
+  void ShareRowData(const std::shared_ptr<CUDARowData>& row_data) { shared_row_data_ = row_data; }
 
   /*! \brief The bin matrix in the row-major layout, for every reader that reads it whole (the full-matrix construct
    *  kernels, the split view builder, colmajor_fill's transpose). Without colmajor_direct this is the row data's own
@@ -1015,7 +1023,9 @@ class CUDAHistogramConstructor {
   // CUDA memory, held by this object
 
   /*! \brief CUDA row wise data */
-  std::unique_ptr<CUDARowData> cuda_row_data_;
+  std::shared_ptr<CUDARowData> cuda_row_data_;
+  /*! \brief ShareRowData: the row data Init takes instead of building its own (nullptr: build) */
+  std::shared_ptr<CUDARowData> shared_row_data_;
   /*! \brief number of bins per feature */
   CUDAVector<uint32_t> cuda_feature_num_bins_;
   /*! \brief offsets in histogram of all features */
@@ -1024,6 +1034,8 @@ class CUDAHistogramConstructor {
   CUDAVector<uint32_t> cuda_feature_most_freq_bins_;
   /*! \brief CUDA histograms */
   CUDAVector<hist_t> cuda_hist_;
+  /*! \brief LaunchZeroHistSlotsKernel: the slot list on the device */
+  CUDAVector<int> cuda_zero_slots_;
   /*! \brief CUDA histograms buffer for each block */
   CUDAVector<float> cuda_hist_buffer_;
   /*! \brief Per-row-tile partial histograms for the deterministic float-mode

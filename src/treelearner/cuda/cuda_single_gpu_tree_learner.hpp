@@ -74,6 +74,43 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     fp_merge_state_ = state;
   }
 
+  // ---- cuda_plan key forest_batched: this learner grows trees of a random forest alongside other learners, one tree
+  // per host thread (CUDAForestTrainer) ----
+  /*! \brief Before Init: mark the learner a forest slot. With private_column_view the per-tree column views go to a
+   *  view of the dataset's columns of its own (CUDAColumnData::InitViewOf) instead of the dataset's, which the
+   *  booster's own learner (slot 0) keeps; with row_data_source the bin matrix (CUDARowData) is that learner's,
+   *  not a copy; no compact prefill, no graph loop (its stream capture would forbid the other threads' API calls). */
+  void EnableForestSlot(bool private_column_view, const CUDASingleGPUTreeLearner* row_data_source = nullptr) {
+    forest_slot_ = true;
+    forest_private_column_view_ = private_column_view;
+    forest_row_data_source_ = row_data_source;
+  }
+  /*! \brief The booster learner leaves forest mode (its trainer is gone): graph loop and compact prefill as before */
+  void LeaveForest() {
+    forest_slot_ = false;
+    forest_next_sample_ready_ = false;
+  }
+  /*! \brief The per-tree counters the next Train runs under: the tree part of the bynode node keys (bynode) and the
+   *  quantized discretizer's tree counter (stochastic rounding noise, error-feedback slot). Sequential training
+   *  advances each by one per tree; the forest trainer gives every tree the values sequential training would. */
+  struct TreeCounters {
+    uint64_t bynode = 0;
+    int discretizer = 0;
+  };
+  TreeCounters tree_counters() const;
+  void SetTreeCounters(const TreeCounters& counters);
+  /*! \brief The next Train's feature_fraction sample (ColSampler::SetByTreeSample), drawn in tree order by the
+   *  forest trainer from the booster learner's sampler, instead of this learner's own draw */
+  void SetNextTreeSample(const std::vector<int>& used_feature_indices) {
+    forest_next_sample_ = used_feature_indices;
+    forest_next_sample_ready_ = true;
+  }
+  /*! \brief The sampler whose stream gives every tree its feature_fraction sample (the forest trainer draws from the
+   *  booster learner's, in tree order) */
+  ColSampler* mutable_col_sampler() { return &col_sampler_; }
+  /*! \brief gpu device this learner trains on */
+  int gpu_device_id() const { return gpu_device_id_; }
+
   /*! \brief Log::Fatal unless the multi-GPU flows can train this config: feature-parallel and quantized data-parallel
    *  ride the hybrid level flow only. Train checks it per tree (num_splits_done: the forced splits it applied);
    *  NCCLGBDT::Init checks it once after Init on the caller's thread, since a Fatal inside Train runs on a per-rank
@@ -580,6 +617,21 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   void EnqueueLevelHistogramsAndFindVector(const int num_pairs,
     const data_size_t max_num_data_in_smaller_leaf,
     CUDALeafSplitsStruct* plane_slab);
+
+  // cuda_plan key forest_batched (EnableForestSlot, SetTreeCount, SetNextTreeSample)
+  bool forest_slot_ = false;
+  bool forest_private_column_view_ = false;
+  // the learner whose bin matrix (CUDARowData, read-only after its Init) this slot's histogram constructor shares
+  const CUDASingleGPUTreeLearner* forest_row_data_source_ = nullptr;
+  std::unique_ptr<CUDAColumnData> private_column_view_;
+  std::vector<int> forest_next_sample_;
+  bool forest_next_sample_ready_ = false;
+  /*! \brief the column view this learner installs its per-tree views into: its private one (forest slots) or the
+   *  dataset's */
+  CUDAColumnData* ColumnView() const {
+    return private_column_view_ ? private_column_view_.get() :
+      const_cast<CUDAColumnData*>(train_data_->cuda_column_data());
+  }
 
   // number of threads on CPU
   int num_threads_;

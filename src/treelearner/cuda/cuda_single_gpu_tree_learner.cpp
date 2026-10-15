@@ -288,6 +288,10 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     // one (grad, hess)-pair histogram plane per target within each leaf slot
     cuda_histogram_constructor_->SetNumHistPlanes(vec_num_targets_);
   }
+  if (forest_row_data_source_ != nullptr) {
+    // cuda_plan key forest_batched: a slot reads the booster learner's bin matrix (same data, read-only after Init)
+    cuda_histogram_constructor_->ShareRowData(forest_row_data_source_->cuda_histogram_constructor_->row_data_shared());
+  }
   cuda_histogram_constructor_->Init(train_data_, share_state_.get());
 
   const auto& feature_hist_offsets = share_state_->feature_hist_offsets();
@@ -300,6 +304,13 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     num_threads_, config_->use_quantized_grad,
     cuda_histogram_constructor_->cuda_hist_pointer()));
   cuda_data_partition_->SetNCCLInfo(nccl_communicator_, nccl_gpu_rank_, local_gpu_rank_, gpu_device_id_, global_num_data_);
+  if (forest_private_column_view_) {
+    // cuda_plan key forest_batched: this slot's per-tree views go to a view of its own (the dataset's is the
+    // booster learner's, and the other slots install theirs concurrently)
+    private_column_view_.reset(new CUDAColumnData(num_data_, gpu_device_id_));
+    private_column_view_->InitViewOf(train_data_->cuda_column_data());
+    cuda_data_partition_->SetColumnData(private_column_view_.get());
+  }
   cuda_data_partition_->Init();
 
   select_features_by_node_ = !config_->interaction_constraints_vector.empty() || config_->feature_fraction_bynode < 1.0;
@@ -689,7 +700,11 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
   if (vec_num_targets_ > 1) {
     VectorInitRootPlanes(leaf_splits_init_indices, root_num_data);
   }
-  if (next_tree_col_sample_ready_) {
+  if (forest_next_sample_ready_) {
+    // cuda_plan key forest_batched: the forest trainer drew this tree's sample in tree order
+    col_sampler_.SetByTreeSample(forest_next_sample_);
+    forest_next_sample_ready_ = false;
+  } else if (next_tree_col_sample_ready_) {
     // the previous Train() already drew this tree's column sample (prefill)
     next_tree_col_sample_ready_ = false;
   } else {
@@ -771,7 +786,7 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
   // THIS tree's mask above has already taken its copy. Gated off under by-node
   // feature sampling (GetByNode draws from the same RNG per node; an early
   // by-tree draw would reorder the stream and change models).
-  if (FalcataPlan::Get().compact_prefill && !select_features_by_node_ &&
+  if (FalcataPlan::Get().compact_prefill && !select_features_by_node_ && !forest_slot_ &&
       nccl_communicator_ == nullptr && fp_merge_state_ == nullptr &&
       cuda_histogram_constructor_->compact_view_active()) {
     col_sampler_.ResetByTree();
@@ -863,7 +878,7 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   // -- tree traversal restores the original per-column view (see
   // CUDATree::LaunchAddPredictionToScoreKernel) -- and then an unchanged layout
   // no longer means our view is the one in force.
-  CUDAColumnData* col_data = const_cast<CUDAColumnData*>(train_data_->cuda_column_data());
+  CUDAColumnData* col_data = ColumnView();
   if (sig == compact_col_signature_ && !compact_column_to_orig_.empty() &&
       col_view_generation_seen_ == col_data->column_view_generation()) {
     // Cache hit: layout, source pointers AND published view unchanged.
@@ -1094,7 +1109,7 @@ void CUDASingleGPUTreeLearner::EnsureClassicColumnView() {
       num_data,
       compact_gather_src_is_4bit_);
   CUDASUCCESS_OR_FATAL(cudaDeviceSynchronize());
-  CUDAColumnData* col_data = const_cast<CUDAColumnData*>(train_data_->cuda_column_data());
+  CUDAColumnData* col_data = ColumnView();
   col_data->SetCompactColumnView(orig_column_to_compact_slot_,
                                  compact_column_buffer_.RawData(),
                                  static_cast<size_t>(num_data));
@@ -3015,6 +3030,11 @@ bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
   if (fp_merge_state_ != nullptr) {
     return false;
   }
+  // forest slots (cuda_plan key forest_batched): while one thread captures a graph on its blocking streams, another
+  // thread's legacy-stream work would join the capture
+  if (forest_slot_) {
+    return false;
+  }
   // the per-level debug envs steer the host loop's decisions in ways the
   // device controller does not replicate
   const bool debug_envs = FalcataDebug().any_growth_hook();
@@ -4082,8 +4102,10 @@ void CUDASingleGPUTreeLearner::TrainSelective(CUDATree* tree) {
 Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   const score_t* hessians, bool is_first_tree) {
   MaybeInitColMajorFill();
-  if (construct_saturation_floor_ > 0) {
-    FalcataPlan::Mutable().batch_construct_saturation_floor = construct_saturation_floor_;  // see Init
+  if (construct_saturation_floor_ > 0 &&
+      FalcataPlan::Get().batch_construct_saturation_floor != construct_saturation_floor_) {
+    // see Init; written only on a change (forest slots train concurrently and all hold the same value)
+    FalcataPlan::Mutable().batch_construct_saturation_floor = construct_saturation_floor_;
   }
   gradients_ = gradients;
   hessians_ = hessians;
@@ -4841,6 +4863,20 @@ void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
   // per-round reset_parameter callback does not rebuild the view)
   if (cuda_histogram_constructor_->colmajor_direct() && config_->feature_fraction != view_decided_ff_) {
     InitViewRegime("a feature_fraction change");
+  }
+}
+
+CUDASingleGPUTreeLearner::TreeCounters CUDASingleGPUTreeLearner::tree_counters() const {
+  TreeCounters counters;
+  counters.bynode = bynode_tree_count_;
+  counters.discretizer = cuda_gradient_discretizer_ ? cuda_gradient_discretizer_->iteration() : 0;
+  return counters;
+}
+
+void CUDASingleGPUTreeLearner::SetTreeCounters(const TreeCounters& counters) {
+  bynode_tree_count_ = counters.bynode;
+  if (cuda_gradient_discretizer_) {
+    cuda_gradient_discretizer_->SetIteration(counters.discretizer);
   }
 }
 
