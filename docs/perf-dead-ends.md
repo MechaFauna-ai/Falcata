@@ -450,3 +450,20 @@ overhead is ~2% of a vector tree and was never the mechanism.
   product decision, not a performance one.
 - **Re-open when:** CPU bit-parity is dropped for the default graph path (it already trades run-to-run determinism
   for speed there), or the shuffle scan comes with a tie-break that keeps that test's contract.
+
+## Folding the apply's offset aggregate into the gen-bit kernel (`aggregate_in_genbit`)
+
+- **Tried:** the batched level apply's per-split offset aggregate (1-4 blocks at deep levels, ~2.2 us) run by the last
+  block of each split to finish in `HybridGenBitVectorFlatRowsKernel` (per-split arrival counter after a
+  `__threadfence`, reads through L2, two-pass prefix so no per-entry register arrays), instead of its own launch.
+- **Promising because:** a serial-tail kernel of 1-4 blocks per level, 70 levels per round on covtype.
+- **Measured** (md5 identical everywhere; same-binary key off/on): 55-register fold variant, 2 pairs: covtype 1.025,
+  higgs 1.002, numerai 0.995; replicate at 3 pairs: covtype 0.992, higgs 0.995, numerai 1.013 (steady medians
+  slower on all three). Capping the fold variant at 12 blocks/SM (40 registers, no spill): numerai 0.996, NaN 0.997,
+  covtype 0.985, higgs 0.988. nsys on covtype: the aggregate launch is gone, but the folded gen-bit kernel averages
+  6.7 us against 3.3 + 2.2 us for the two kernels before: the 128-thread last block runs the prefix more slowly than
+  the 160-960-thread kernel did.
+- **Why not taken:** the removed launch was off the critical path (the level is bound by the host readback), and the
+  fold's serial tail inside the gather kernel costs more than the launch saved.
+- **Re-open when:** the fold can use a wider block (e.g. a gen-bit block of 256+ threads), or the host stops being the
+  level's bound.
