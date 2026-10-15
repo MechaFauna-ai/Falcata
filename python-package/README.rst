@@ -18,9 +18,6 @@ What makes it fast
   latency-bound loop into a throughput-bound one, with leaf-wise-identical trees.
 - **CUDA-graph level loops** — the per-level launch sequence is captured once and
   replayed by a device-side controller, removing host round-trips.
-- **NVRTC runtime JIT** — construct kernels are specialized at runtime to the
-  actual data shape, self-tested against the ahead-of-time kernel, and promoted
-  only if bit-identical.
 - **Per-tree compact column view** — with any ``feature_fraction < 1``, only
   the sampled columns are materialized for histogram construction; the win
   scales with the excluded fraction (~3.4× end-to-end at

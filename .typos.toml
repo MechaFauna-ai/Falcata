@@ -1,8 +1,3 @@
-# Standalone perf-probe microbenchmarks use terse local names (nd = num_data)
-# that trip the dictionary; they are not library source.
-[files]
-extend-exclude = ["benchmarks/construct_find_jit_probe/"]
-
 [default]
 extend-ignore-re = [
   "\\b[0-9a-f]{8,40}\\b",

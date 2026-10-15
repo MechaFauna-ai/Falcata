@@ -284,15 +284,6 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   }
   cuda_histogram_constructor_->Init(train_data_, share_state_.get());
 
-  // construct-JIT auto-gate (mirrors the tuner's): the one-time NVRTC
-  // compile + self-test (~230ms) amortizes only on real runs. Vector mode
-  // launches the construct kernels once per gradient plane through swapped
-  // pointers, which the JIT capture does not model -- keep it off there.
-  cuda_histogram_constructor_->SetConstructJITAllowed(
-      vec_num_targets_ <= 1 &&
-      FalcataPlan::Get().construct_jit &&
-      (FalcataPlan::Get().construct_jit_explicit || config_->num_iterations >= 300));
-
   const auto& feature_hist_offsets = share_state_->feature_hist_offsets();
   num_total_bin_ = feature_hist_offsets.empty() ? 0 : static_cast<int>(feature_hist_offsets.back());
   // the partition's bin count is ONLY used for leaf histogram slot arithmetic

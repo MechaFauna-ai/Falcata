@@ -14,10 +14,9 @@ in LICENSE and in the file headers it applies to, as the MIT License requires.
 
 Falcata has since diverged substantially — most visibly in a rewritten CUDA
 training path (hybrid level-batched growth, batched construct/find/apply
-kernels, CUDA-graph level loops, an NVRTC runtime JIT for construct kernels,
-GPU-native dataset construction and ingestion, fixed-point quantization with a
-gap-gated robust gradient scale, an execution planner, and a regression-gate
-suite). The project is developed independently and is not affiliated with,
+kernels, CUDA-graph level loops, GPU-native dataset construction and
+ingestion, fixed-point quantization with a gap-gated robust gradient scale, an
+execution planner, and a regression-gate suite). The project is developed independently and is not affiliated with,
 endorsed by, or supported by Microsoft or the LightGBM maintainers.
 
 Compatibility

@@ -27,9 +27,6 @@ What makes it fast
 - **CUDA-graph level loops.** The per-level launch sequence is captured once and
   replayed by a device-side controller, removing host round-trips from the
   inner loop on shallow trees.
-- **NVRTC runtime JIT.** Construct kernels are specialized at runtime to the
-  actual data shape (bin count, column layout), self-tested against the
-  ahead-of-time kernel, and promoted only if bit-identical.
 - **Per-tree compact column view.** With any `feature_fraction < 1`, only the
   sampled columns are materialized and gathered for histogram construction.
   The win scales with the excluded fraction: ~3.4× end-to-end training at

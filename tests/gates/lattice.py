@@ -197,7 +197,6 @@ def build_cells():
         ("dense", "gpu_construct", {}, {"cuda_plan": "auto,gpu_construct:off"}),
         ("efb", "efb_precheck", {}, {"cuda_plan": "auto,efb_precheck:off"}),
         ("sampled", "compact_quant", {}, {"cuda_plan": "auto,compact_quant:off"}),
-        ("sampled", "construct_jit", {}, {"cuda_plan": "auto,construct_jit:on"}),
         ("sampled", "compact_prefill", {}, {"cuda_plan": "auto,compact_prefill:on"}),
         # the column-major copy is made before the second tree; off, every fill reads the row-major matrix
         ("sampled", "colmajor_fill", {}, {"cuda_plan": "auto,colmajor_fill:off"}),
@@ -244,14 +243,9 @@ def build_cells():
         if base_params:
             cell(base_id, profile, base_params)
         cell(f"{profile}/flip-{key}", profile, flip_params, equal_to=base_id)
-    # 8-bit compact JIT kernel (4-bit disabled): its own base + flip pair
+    # the 8-bit compact construct (4-bit disabled), fingerprint-locked; it was the base of the construct JIT's
+    # 8-bit flip (the JIT was removed 2026-10-15) and keeps its id so the fingerprint carries over
     cell("sampled/flipbase-jit8", "sampled", {"cuda_plan": "auto,rowdata_4bit:off"})
-    cell(
-        "sampled/flip-construct_jit8",
-        "sampled",
-        {"cuda_plan": "auto,construct_jit:on,rowdata_4bit:off"},
-        equal_to="sampled/flipbase-jit8",
-    )
 
     # --- tiny-gradient regime: leaf-collapse / quant-underflow class -------- #
     # 150 rounds gives gradient decay room; tree-count + nonconstant-pred
@@ -797,8 +791,8 @@ def build_cells():
     # recorded with master's build, which writes and reads the nibble view throughout. At feature_fraction 0.15 a row
     # is ~90 bytes, 16 code words: the one-word pack's block covers whole rows (pair_code5_pack2:off); at the profile's
     # own 0.2 it is ~120 bytes, 24 words, where pair_code5_pack2:off takes the per-byte pack. pair_code5_words:off
-    # takes the per-byte code kernel (capped, or uncapped with pair_capped_rows:off); compact_prefill and
-    # construct_jit turn the view off at the fill. Deep trees (a binding leaf budget) run the code-word kernel on
+    # takes the per-byte code kernel (capped, or uncapped with pair_capped_rows:off); compact_prefill turns
+    # the view off at the fill. Deep trees (a binding leaf budget) run the code-word kernel on
     # multi-pair levels, with and without the block map and level_row_blocks' shared rows per thread. Each key off,
     # and all four off, must train the base cell's model. (FALCATA_DEBUG=diag: every tree of the three bases writes
     # the code view and every gathering level reads it; pair_code5_pack2 and pair_code5_l2_store are an argument of
@@ -811,7 +805,6 @@ def build_cells():
         ("night4", night4_off.removeprefix("auto,")),
         ("code5_bytes_uncapped", "pair_code5_words:off,pair_capped_rows:off"),
         ("compact_prefill", "compact_prefill:on"),
-        ("construct_jit", "construct_jit:on"),
     ]:
         cell(
             f"sampledwide5/flip-{name}-ff15",

@@ -17,21 +17,20 @@ cd "$HERE"
 CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=${ARCHS} -DUSE_NCCL=ON -DFALCATA_CUDA_LINEINFO=OFF" \
   sh build-python.sh bdist_wheel --cuda
 
-# manylinux tag + graft libgomp; libcuda comes from the user's driver and
-# libnvrtc from the nvidia-cuda-nvrtc-cu12 wheel this package depends on
+# manylinux tag + graft libgomp; libcuda comes from the user's driver
 RAW=$(find dist -name "falcata-*-py3-none-linux_x86_64.whl" | sort | tail -1)
-auditwheel repair --exclude libcuda.so.1 --exclude "libnvrtc.so.12" "$RAW" -w dist/
+auditwheel repair --exclude libcuda.so.1 "$RAW" -w dist/
 REPAIRED=$(find dist -name "falcata-*manylinux*.whl" | sort | tail -1)
 
-# let the loader find nvrtc inside the nvidia wheel's install location.
+# let the loader find nccl inside the nvidia wheel's install location.
 # The manylinux images ship pip but not the wheel module, and without it the
-# rpath below is never applied -- the wheel then loads no nvrtc and no nccl.
+# rpath below is never applied -- the wheel then loads no nccl.
 python -c 'import wheel' 2>/dev/null || python -m pip install --quiet --user wheel
 python -m wheel unpack "$REPAIRED" -d /tmp/fal-wheel
 LIB=$(ls /tmp/fal-wheel/*/falcata/lib/lib_falcata.so)
 OLD_RPATH=$(patchelf --print-rpath "$LIB")
-# nvrtc for the runtime JIT, nccl for the multi-GPU dlopen (falcata[multigpu])
-patchelf --set-rpath "${OLD_RPATH}:\$ORIGIN/../../nvidia/cuda_nvrtc/lib:\$ORIGIN/../../nvidia/nccl/lib" "$LIB"
+# nccl for the multi-GPU dlopen (falcata[multigpu])
+patchelf --set-rpath "${OLD_RPATH}:\$ORIGIN/../../nvidia/nccl/lib" "$LIB"
 python -m wheel pack /tmp/fal-wheel/* -d dist/
 rm -rf /tmp/fal-wheel
 du -h dist/*manylinux*.whl

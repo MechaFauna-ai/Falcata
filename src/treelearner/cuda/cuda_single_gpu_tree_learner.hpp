@@ -479,7 +479,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::string TunerViewWisdomKey() const;
   /*! \brief the tuner's view-regime probe: a few trees in each regime, timed like the knob candidates */
   struct ViewProbe {
-    static constexpr int kWarmupTrees = 2;      // the first trees (JIT, first allocations) are not timed
+    static constexpr int kWarmupTrees = 2;      // the first trees (first allocations) are not timed
     static constexpr int kTreesPerRegime = 5;   // timed trees per regime (median); one untimed tree after the switch
     bool pending = false;
     int start = 0;            // tuner tree index the probe started at

@@ -436,7 +436,7 @@
         "feature_fraction": 1.0,
         "bagging_fraction": 1.0,
         "max_bin": 63,
-        "cuda_plan": "auto,fast_rowdata:off,gpu_construct:off,construct_jit:on",
+        "cuda_plan": "auto,fast_rowdata:off,gpu_construct:off",
         "rounds": 25,
         "data_seed": 1665996037
     },
@@ -715,7 +715,7 @@
         "feature_fraction": 0.6,
         "bagging_fraction": 1.0,
         "max_bin": 5,
-        "cuda_plan": "auto,graph_loop:off,construct_jit:on",
+        "cuda_plan": "auto,graph_loop:off",
         "rounds": 25,
         "data_seed": 41600325
     },
@@ -784,7 +784,7 @@
         "feature_fraction": 0.6,
         "bagging_fraction": 1.0,
         "max_bin": 5,
-        "cuda_plan": "auto,construct_jit:on",
+        "cuda_plan": "auto",
         "rounds": 10,
         "data_seed": 1845594989
     },
@@ -1171,7 +1171,7 @@
         "feature_fraction": 1.0,
         "bagging_fraction": 1.0,
         "max_bin": 5,
-        "cuda_plan": "auto,efb_precheck:off,construct_jit:on",
+        "cuda_plan": "auto,efb_precheck:off",
         "rounds": 150,
         "data_seed": 832585240
     }

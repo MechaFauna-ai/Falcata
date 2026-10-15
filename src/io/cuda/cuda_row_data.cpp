@@ -40,7 +40,7 @@ bool RowData4BitVerifyEnabled() {
   return FalcataVerifyEnabled();
 }
 
-// Shape-specialized construct prototype (JIT phase 1): for low-bin, many-feature
+// Shape-specialized construct prototype: for low-bin, many-feature
 // data (e.g. numerai ~6 bins/feature) the 504-column-per-partition cap forces
 // block_dim_y = NUM_THREADS_PER_BLOCK / max_col_per_part = 1, i.e. every column
 // thread walks one row at a time with no row-level ILP to hide the scattered bin

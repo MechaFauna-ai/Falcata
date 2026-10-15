@@ -123,13 +123,16 @@ why it actually failed → **re-open when**.
 
 ## construct_jit as a blanket default
 
-- **Status nuance:** the NVRTC JIT infrastructure WORKS (self-test-then-
-  promote, bit-identical) and stays in the tree, but flipping it on measured
+- **Removed 2026-10-15** (performance.md §7b: forced on it was 11-270% slower
+  per round than the default on every audited shape).
+- **Status nuance (before the removal):** the NVRTC JIT infrastructure worked
+  (self-test-then-promote, bit-identical), but flipping it on measured
   −30% on numerai-deep and ~neutral elsewhere — the current JIT specializes
   the wrong thing. The unbuilt "star case" (shared-histogram packing with
   baked bin counts) is a separate, still-open roadmap item.
-- **Re-open when:** the tier-2 shared-hist packing is built; the JIT is its
-  natural delivery vehicle.
+- **Re-open when:** the tier-2 shared-hist packing is built and an AOT
+  instantiation of it cannot cover the shapes (the JIT would have to come back
+  from history: `git log -- src/treelearner/cuda/cuda_construct_jit.cpp`).
 
 ## graph_quant (CUDA-graph level loop for quantized training)
 
@@ -207,7 +210,7 @@ level budget — requires lookahead the greedy stream does not have).
 (2026-08-01: the parity finding was an unsynced template; with __ldcs added
 the same shape measures +4.0%. Kept for the methodology lesson: keep JIT
 templates in lockstep with the AOT kernel before comparing. The general
-tier-2 case LANDED — see performance.md §7b.)
+tier-2 case LANDED — see performance.md §7b; the JIT was removed 2026-10-15.)
 
 **Hypothesis** (from the July JIT arc): numerai's ~5.5-bin features waste
 >90% of the fixed 12288-entry shared histogram; a kernel with per-feature

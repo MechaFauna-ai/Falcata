@@ -1278,20 +1278,6 @@ _KILL_SWITCH_CASES = [
     # sampled columns and feeds the same discretized kernel); ff<1 engages it, so
     # the model must be bit-identical to the full-column path.
     ("sampled", {}, {"cuda_plan": "auto,compact_quant:off"}, "compact_quant"),
-    # NVRTC construct JIT LIVE path: construct_jit:on self-tests then runs the
-    # JIT-compiled construct_jit_batched kernel as the live construct on the
-    # compact-quant path (the "sampled" profile is ff<1 low-bin -> 4-bit
-    # compact -> JIT engages). The trained model must be BIT-IDENTICAL to the
-    # AOT-off default (integer atomics order-invariant): the JIT is a perf-only
-    # fast path that cannot alter results.
-    ("sampled", {}, {"cuda_plan": "auto,construct_jit:on"}, "construct_jit"),
-    # same, forcing the 8-bit (non-4bit) compact JIT kernel via rowdata_4bit:off.
-    (
-        "sampled",
-        {"cuda_plan": "auto,rowdata_4bit:off"},
-        {"cuda_plan": "auto,construct_jit:on,rowdata_4bit:off"},
-        "construct_jit_8bit",
-    ),
 ]
 
 
