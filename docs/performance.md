@@ -604,17 +604,19 @@ bit-identical in every cell):
   an engagement. The first tree always fills from the row-major matrix. This
   decision is `colmajor_direct:off`'s (and that of data whose columns cannot
   be uploaded directly); by default there is no copy to decide on.
-- **`colmajor_direct`** (with `view_mode`, `view_mask_ff`) — the column-major
+- **`colmajor_direct`** (with `view_mode`, `view_mask_ff`, `view_pair_rule`) — the column-major
   copy above holds, byte for byte, the Dataset's 4-bit columns laid end to
   end, so it is uploaded straight from them and the device keeps **one** copy
   of the bin matrix: no row-major matrix at Init, no host pack, no transpose,
   no memory rule. Which copy depends on the training regime, decided per
   `train()` from `feature_fraction` (again on `update(train_set=...)` and on a
   `feature_fraction` reset):
-  - **compact** (`feature_fraction` < `view_mask_ff`, default 0.85): the
-    column-major store; every tree fills its compact view of the sampled
-    columns from it (`tiled_fill` reads it).
-  - **mask** (`feature_fraction` ≥ 0.85, or `compact_quant:off`): one full
+  - **compact** (`feature_fraction` < `view_mask_ff`, default 0.85; above it
+    too wherever the pair-joint construct serves the compact view,
+    `view_pair_rule`, below): the column-major store; every tree fills its
+    compact view of the sampled columns from it (`tiled_fill` reads it).
+  - **mask** (`feature_fraction` ≥ 0.85 where the pair-joint construct cannot
+    serve the view, every column sampled, or `compact_quant:off`): one full
     view in the row-major layout, filled once from the columns through a
     256 MiB staging chunk (never the whole store next to it); no tree copies
     anything, and the kernels apply the per-tree sample through the column
@@ -628,7 +630,8 @@ bit-identical in every cell):
   10.2 GiB at 0.9 (table below).
   `view_mode:compact|mask` forces a regime; `colmajor_direct:off` restores the
   row-major matrix and `colmajor_fill`'s decision. The threshold is the
-  measured crossover below; `feature_fraction_bynode` does not enter (the
+  measured crossover below (2026-10-03, before the pair-joint construct; the
+  2026-10-15 calibration of `view_pair_rule` follows it); `feature_fraction_bynode` does not enter (the
   views hold the per-tree sample, the per-node draw happens in the split
   finder either way). Quantized training is bit-identical in every regime
   (the same bytes, and integer histograms for the masked kernels), so the
@@ -643,7 +646,7 @@ bit-identical in every cell):
   reads every column of the row-major layout, so a compact view would serve
   nothing.
 
-  **Live regime choice.** Two rules on top of the threshold, both under
+  **Live regime choice.** Rules on top of the threshold, all under
   `view_mode:auto`:
   - *memory:* the compact regime is taken only if its store, its compact view
     (sized from `feature_fraction` and the partitions' packed widths, the
@@ -656,19 +659,44 @@ bit-identical in every cell):
     256 MiB) fit in free device memory at decision time; otherwise mask, with
     a diag line saying why. Deterministic: sizes against `cudaMemGetInfo`.
     Quantized training only (see above).
-  - *tuner:* with the tuner running (quantized training; ≥300 rounds under
-    auto, or `tuner:on`), a `feature_fraction` in [`view_probe_lo`,
-    `view_probe_hi`] = [0.5, 0.95] is measured instead: two warm-up trees,
-    five timed trees in the threshold's regime, one untimed tree after the
-    switch, five timed trees in the other; the regime with the lower median
-    per-tree time is kept and written to the tuner's wisdom
-    (`~/.cache/falcata/wisdom.txt`, a `view1:` entry keyed by shape, device
-    and `feature_fraction`), so the next `train()` of that shape adopts it
-    without probing. The floor and small-leaf knob probes wait for it. A
-    regime that does not fit is never probed. Switches happen between trees,
-    before the tree's clock starts; each frees the old layout before
-    building the new one (store → full view: the staged fill from the
-    columns; full view → store: the re-upload).
+  - *pair rule* (`view_pair_rule`, default on): at or above the threshold
+    the compact regime is kept where the pair-joint construct (`pair_hist`
+    and the code views it reads) serves the compact view, since there it
+    wins by a wide margin, and mask is taken where the trees would fall back
+    to the per-column construct, which loses to the masked full matrix. The
+    construct's own gate is a joint table of at most 48 KB of shared memory
+    per partition (span(lo) × span(hi) cells per byte of two columns, odd
+    strides padded) and a block within the kernel's thread limit; the rule
+    predicts both before the first tree from each partition's sampled
+    columns and the table every column would build, scaled to that share.
+    The count is tested at its expectation plus two standard deviations
+    (a tree's count in a partition is hypergeometric, and one partition past
+    the bound sends the whole tree to the per-column construct), so a
+    prediction of "served" means nearly every tree runs the pair-joint
+    construct. Exact for uniform spans. Never served under a pack codec
+    (`pack_bit3`, `pack_radix5`–`7`) or `graph_quant`, where the construct
+    always declines. A training that samples every column builds no
+    compact view and stays mask.
+    Deterministic, no timing; `FALCATA_DEBUG=diag` logs the prediction
+    (partitions, sampled columns, table KB, block threads). Calibration
+    below.
+  - *tuner* (only under `view_pair_rule:off`, the earlier behaviour): with
+    the tuner running (quantized training; ≥300 rounds under auto, or
+    `tuner:on`), a `feature_fraction` in [`view_probe_lo`, `view_probe_hi`] =
+    [0.5, 0.95] is measured instead: two warm-up trees, five timed trees in
+    the threshold's regime, one untimed tree after the switch, five timed
+    trees in the other; the regime with the lower median per-tree time is
+    kept and written to the tuner's wisdom (`~/.cache/falcata/wisdom.txt`, a
+    `view1:` entry keyed by shape, device and `feature_fraction`), so the
+    next `train()` of that shape adopts it without probing. The floor and
+    small-leaf knob probes wait for it. A regime that does not fit is never
+    probed. Switches happen between trees, before the tree's clock starts;
+    each frees the old layout before building the new one (store → full
+    view: the staged fill from the columns; full view → store: the
+    re-upload). At or above the threshold the pair rule picked what the
+    probe measured on every shape of the calibration, so by default the
+    probe does not run; below it the rule keeps compact where the probe
+    could pick mask (calibration below).
 - **`tiled_fill`** — the 4-bit compact fill stages 128 rows of every byte slot
   in a shared-memory `[row][slot]` tile, reading each source column
   contiguously, then writes each partition's rows as one contiguous run with
@@ -722,10 +750,11 @@ bit-identical in every cell):
   ~130-tree probe phase and start at the known-best point (measured: +3% on
   a numerai-deep 300-round retrain, covtype-deep 83.8 → 88.2 t/s), while the
   periodic re-probe still verifies the cached choice against reality. Under
-  `colmajor_direct` the tuner also chooses the bin matrix's view regime
-  inside [`view_probe_lo`, `view_probe_hi`] (§7, `colmajor_direct`), once per
-  shape and `feature_fraction`, before the knob probes; that choice is not
-  re-probed. (A
+  `colmajor_direct` and `view_pair_rule:off` the tuner also chooses the bin
+  matrix's view regime inside [`view_probe_lo`, `view_probe_hi`] (§7,
+  `colmajor_direct`), once per shape and `feature_fraction`, before the knob
+  probes; that choice is not re-probed. By default the pair rule decides
+  instead (2026-10-15). (A
   histogram-pipeline-count knob was considered and rejected: it only affects
   the per-pair fallback path — the batched flow every real workload uses
   runs on a single stream.)
@@ -795,6 +824,59 @@ hold the store plus an 85–90% view (22 GiB); the switch itself never holds
 both layouts (a store plus a full view plus that view would not have fit at
 all). After the first `train()`, wisdom skips the probe and the peak is the
 mask regime's 12.6 GiB.
+
+**`view_pair_rule` calibration** (2026-10-15, master 9cbbfd44, RTX 5090,
+interleaved fresh-process pairs with an empty wisdom file, steady ms per round
+over rounds 100 to R; model md5 identical across the arms of every row).
+The probe it replaces always chose compact on numerai, but not on the NaN
+cell or on a 15-bin shape; forced compact lost wherever the pair-joint
+construct did not run (`FALCATA_DEBUG=diag` names the construct kernel):
+
+| shape, `feature_fraction` | compact | mask | probe (default) | pair-joint | rule |
+|---|---|---|---|---|---|
+| numerai53bench 0.85 (500 r) | **76.8** | 125.3 | 71.5 (compact) | served | compact |
+| numerai53bench 0.95 (500 r) | **89.1** | 125.1 | 89.2 (compact) | served | compact |
+| numerai53bench 0.96 (300 r) | **81.2** | 119.4 | — (static mask) | both kernels (est. ~3/4 pair_hist) | mask (margin) |
+| numerai53bench 0.965 (300 r) | 158.3 | **123.7** | — (static mask) | both kernels (est. mostly row_batch) | mask |
+| numerai53bench 0.97 (300 r) | 157.1 | **119.1** | — (static mask) | not served | mask |
+| numerai53bench 0.99 (500 r) | 165.9 | **121.1** | — (static mask) | not served | mask |
+| numerai53bench 1.0 (500 r) | 118.9 | 119.6 | — (static mask) | no compact view | mask |
+| numerai53bench-nan 0.85 (500 r) | 168.6 | **142.7** | 148.5 (mask) | not served | mask |
+| numerai53bench-nan 0.95 (500 r) | 174.8 | **144.5** | 143.3 (mask) | not served | mask |
+| numerai53bench-nan 0.99 (500 r) | 181.4 | **141.2** | 136.3 (static mask) | not served | mask |
+| numerai53bench-nan 1.0 (500 r) | 129.5 | 131.9 | — (static mask) | no compact view | mask |
+| 15-bin 1M × 1500 0.85 (300 r) | 9.52 | **6.16** | 6.18 (mask) | not served | mask |
+| 15-bin 1M × 1500 0.95 (300 r) | 10.78 | **6.38** | 6.36 (mask) | not served | mask |
+
+The numerai partitions hold up to 1008 five-bin columns, 25-cell joint
+tables per byte: 958 expected sampled columns (ff 0.95) need 47.2 KB, 978
+(0.97) 48.2 KB, past the 48 KB the construct allows. A tree's own count
+varies by about 5 columns per partition, and one partition past the bound
+sends the whole tree to the per-column construct, so the rule tests the
+expected count plus two standard deviations (0.95: 970, 47.8 KB, served;
+0.96: 979, 48.3 KB, not served). That gives up 0.96, where an estimated three
+quarters of the trees still ran the pair-joint construct (compact 85.2 vs
+mask 124.1 ms in a second run), to avoid 0.962 to 0.967, where most trees
+decline (0.965: compact 158.3 vs mask 123.7). The NaN cell's 6-bin columns
+need 37 cells per byte (odd-padded) and pass 48 KB from about 0.69.
+Against the default plan before it (300 rounds, two pairs, same models): numerai ff 0.9 and
+0.95 and NaN 0.9 and 0.95 run at the same steady speed, each `train()`
+0.6–0.8 s shorter (no probe trees) and, on the NaN cell, 8.2 GiB lower in
+peak device memory (the probe no longer builds the compact store to time
+it); 0.1, 0.97 and 0.99 are unchanged. At ff 1.0 the compact regime is the
+full view next to the store (twice the memory, the same kernels), so the
+rule keeps mask. The epsilon-like 473,663 × 1843 shape (40 bins, 8-bit) has
+no view regime. Non-quantized training keeps its own rule (compact unless
+every column is sampled), which this does not touch.
+
+Below the threshold the rule takes compact as before, which is right on
+Numerai-shaped data even where the pair-joint construct does not serve the
+view (300 rounds, compact vs mask: numerai53bench with `pair_hist:off` at
+0.5, 79.4 vs 118.8 ms; the NaN cell at 0.7, at its bound, 114.6 vs 138.6).
+The 15-bin shape is the exception the probe caught and the rule does not:
+compact wins at 0.3 (2.36 vs 4.56 ms) and loses from 0.4 (4.91 vs 4.63),
+0.5 (5.87 vs 4.81) and 0.7 (8.87 vs 6.84); with the tuner running, the
+probe chose mask there at 0.5 and 0.7.
 
 Against master (300 rounds, default plan, a fresh wisdom file per run, three
 pairs, identical models): at `feature_fraction` 0.1 steady state is

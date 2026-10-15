@@ -3846,6 +3846,90 @@ static int PairJointMaxThreadsPerBlock() {
   return PairJointDeviceLimits().max_threads;
 }
 
+// colmajor_direct's view rule (cuda_plan key view_pair_rule; the caller is ViewMaskWanted): whether the pair-joint
+// construct (pair_hist, and the code views it reads) can serve the compact view of this training's feature_fraction.
+// The construct's own gate (the compact launch in the batched construct) needs a 4-bit nibble view whose largest
+// partition joint table fits 48 KB of shared memory and whose block of (columns + 1) / 2 threads per row times its
+// rows fits the kernel's thread limit; this predicts both before any tree has sampled: partition p's n_p columns
+// contribute their sampled share s_p = n_p x S / C (S of C columns sampled, SampledColumns), and its table the same
+// share of the table every column would build, laid out as BuildCompactLayout does (span(lo) x span(hi) cells per
+// byte of two consecutive columns, odd-padded under pair_pad). Exact where the spans are uniform (Numerai's 5 or 6
+// bins); otherwise the average cells per byte. A tree's own count in a partition is hypergeometric around s_p
+// (standard deviation sqrt(s_p (1 - S / C) (C - n_p) / (C - 1))), and the construct declines the whole tree when
+// any partition passes the bound, so the bound is tested at s_p plus two standard deviations: a training predicted
+// "served" has its pair-joint construct in nearly every tree (numerai, 1008-column partitions: up to ff 0.95; at
+// 0.96 about a quarter of the trees would decline, and from about 0.962 most of them). Never served where the gate
+// declines whatever the sample: a pack codec in place of the nibble view (pack_bit3 / pack_radix5-7, which
+// ScanCompactLayout takes whenever the sampled columns fit it) and graph_quant's captured levels.
+bool CUDAHistogramConstructor::PairJointServesView() const {
+  const FalcataPlan& plan = FalcataPlan::Get();
+  if (!plan.pair_hist || !use_quantized_grad_) {
+    return false;
+  }
+  if (plan.pack_bit3 || plan.pack_radix5 || plan.pack_radix6 || plan.pack_radix7 || plan.graph_quant) {
+    return false;
+  }
+  const std::vector<int>& part_cols = cuda_row_data_->host_feature_partition_column_index_offsets();
+  const std::vector<uint32_t>& col_hist_offsets = cuda_row_data_->host_column_hist_offsets();
+  const std::vector<uint32_t>& part_hist_offsets = cuda_row_data_->host_partition_hist_offsets();
+  const int num_columns = part_cols.back();
+  if (num_columns <= 0 || part_hist_offsets.size() < part_cols.size()) {
+    return false;
+  }
+  const double share = static_cast<double>(SampledColumns()) / static_cast<double>(num_columns);
+  double max_cells = 0.0;
+  int max_sampled = 1;
+  int max_part_columns = 0;
+  for (size_t p = 0; p + 1 < part_cols.size(); ++p) {
+    const int n = part_cols[p + 1] - part_cols[p];
+    if (n <= 0) {
+      continue;
+    }
+    const uint32_t part_span = part_hist_offsets[p + 1] - part_hist_offsets[p];
+    uint64_t joint = 0;
+    for (int c = part_cols[p]; c < part_cols[p + 1]; c += 2) {
+      uint32_t spans[2] = {1u, 1u};
+      for (int k = 0; k < 2 && c + k < part_cols[p + 1]; ++k) {
+        const int col = c + k;
+        const uint32_t end = col + 1 < part_cols[p + 1] ? col_hist_offsets[col + 1] : part_span;
+        spans[k] = end - col_hist_offsets[col];
+        if (spans[k] == 0 || spans[k] > static_cast<uint32_t>(PackNibble4::kMaxBins)) {
+          return false;  // not a nibble view: the pair-joint construct never runs on it
+        }
+      }
+      const uint32_t stride = spans[0] * spans[1];
+      joint += stride + ((plan.pair_pad && (stride & 1u) == 0) ? 1u : 0u);
+    }
+    const double mean = share * n;
+    const double spread = num_columns > 1 ?
+      std::sqrt(std::max(0.0, mean * (1.0 - share) * (num_columns - n) / (num_columns - 1.0))) : 0.0;
+    const double sampled = std::min(static_cast<double>(n), mean + 2.0 * spread);
+    const int bytes_full = (n + 1) / 2;
+    const int bytes_sampled = static_cast<int>(std::ceil(sampled / 2.0));
+    max_cells = std::max(max_cells, static_cast<double>(joint) * bytes_sampled / bytes_full);
+    max_sampled = std::max(max_sampled, static_cast<int>(std::ceil(sampled)));
+    max_part_columns = std::max(max_part_columns, n);
+  }
+  // the construct's block for the compact view (the batched launch's sizing)
+  const int block_dim_x = max_sampled > NUM_THREADS_PER_BLOCK ? (max_sampled + 1) / 2 : max_sampled;
+  const int block_dim_y = HybridQuantConstructBlockDimY(std::max(1, NUM_THREADS_PER_BLOCK / block_dim_x),
+                                                        num_grad_quant_bins_);
+  const int threads = (max_sampled + 1) / 2 * block_dim_y;
+  const bool served = max_cells * sizeof(int32_t) <= 48.0 * 1024 && threads <= PairJointMaxThreadsPerBlock();
+  const char* fmt = "colmajor_direct: pair-joint construct for the compact view: %d partitions of up to %d columns, "
+                    "%d sampled (mean + 2 sd), joint table %.1f KB (limit 48), block %d threads (limit %d): %s";
+  if (FalcataDebug().diag) {
+    Log::Info(fmt, static_cast<int>(part_cols.size()) - 1, max_part_columns, max_sampled,
+              max_cells * sizeof(int32_t) / 1024.0, threads, PairJointMaxThreadsPerBlock(),
+              served ? "served" : "not served");
+  } else {
+    Log::Debug(fmt, static_cast<int>(part_cols.size()) - 1, max_part_columns, max_sampled,
+               max_cells * sizeof(int32_t) / 1024.0, threads, PairJointMaxThreadsPerBlock(),
+               served ? "served" : "not served");
+  }
+  return served;
+}
+
 // Warps of a pair-joint block of `threads` threads resident on one SM of the current device: whole blocks, as many as
 // the register file and the SM's warp limit allow (PairJointDeviceLimits).
 static int PairJointResidentWarps(const int threads) {

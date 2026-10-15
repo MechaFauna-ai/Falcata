@@ -1608,7 +1608,14 @@ bool CUDAHistogramConstructor::ViewMaskWanted() const {
   if (!CompactQuantEnabled()) {
     return true;  // compact_quant:off: no tree builds a compact view, so the store would serve nothing
   }
-  return ViewFraction() >= plan.view_mask_ff;
+  if (ViewFraction() < plan.view_mask_ff) {
+    return false;
+  }
+  // cuda_plan key view_pair_rule: above the threshold the compact regime still wins where the pair-joint construct
+  // reads its view (numerai ff 0.95: 89 vs 125 ms per round) and loses where the trees fall back to the per-column
+  // construct (ff 0.99: 166 vs 121); a training that samples every column builds no compact view at all
+  const size_t num_columns = static_cast<size_t>(cuda_row_data_->host_feature_partition_column_index_offsets().back());
+  return !(plan.view_pair_rule && SampledColumns() < num_columns && PairJointServesView());
 }
 
 size_t CUDAHistogramConstructor::SampledColumns() const {
