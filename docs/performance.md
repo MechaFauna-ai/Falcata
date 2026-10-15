@@ -2030,8 +2030,9 @@ sample of the booster learner's sampler, and the tree counters of the bynode nod
 So the forest is the sequential forest, md5 for md5, whatever the group size; dropped trees (rollback, a parameter
 reset, early stopping) rewind the counters and the sampler. Group size (`cuda_plan=auto,forest_group:N`, 0 = auto):
 auto starts with one round (its class trees in parallel) and doubles while the time per tree of a steady-state group
-drops below 0.85 of the previous size's, up to 32 trees, capped by `num_iterations` and by device memory (a slot's
-measured footprint, its Init plus its first tree, beside an eighth of the device). Fixedpoint error feedback (a
+drops below 0.85 of the previous size's, up to 32 trees; a doubling that gains 5-15 % is kept, one that gains less goes
+back (a GPU-bound forest keeps one slot). It is capped by `num_iterations` and by device memory (a slot's measured
+footprint, its Init plus its first tree, beside an eighth of the device). Fixedpoint error feedback (a
 residual per class carried from tree to tree) groups one round. Sequential as before: multi-GPU, the host objective,
 GOSS, `bagging_freq` > 1, balanced or by-query bagging, linear trees, forced splits, vector leaves, CEGB, per-node draws
 from the shared stream, `compact_prefill`. The slots never take the graph loop (another thread's legacy-stream work
@@ -2042,15 +2043,28 @@ level and callback. Not tested: a class absent from the labels (rf on CUDA segfa
 `FALCATA_DEBUG=diag` prints `[forest-diag]` lines (slot Init time
 and memory, each group's rounds, trees, time and free memory, the auto size).
 
-Measured (relaxed gpuq jobs, one RTX 5090, 100 rounds, total `flc.train` seconds, steady ms per round, kernel-evo
-`runs/forest/stage2/time_t6.jsonl`; key off includes `zero_slots_kernel`):
+**No device synchronize in a slot's steady state.** A slot's level buffers (the batched apply's block-offset and
+packed-bit buffers, the level finder's per-task output, the quantized bit-change scratch, the slot list of
+`ZeroHistSlots`) grew to the exact need of the widest level seen, and a deep tree's widest level sets a new record
+every few trees: each growth is an allocation, a copy, a free and a device synchronize, which stalls every slot (nsys
+with API backtraces, covtype-rf-deep at 7 slots, 10 rounds: 164 partition and 125 finder growths). The trainer sizes
+them for any level when it makes a slot (`PresizeLevelBuffers`: the graph loop's worst case for the partition, levels
+of num_leaves / 2 + 2 pairs for the rest, each up to 256 MiB); sequential training presizes nothing. And the
+construct streams' persisting-L2 window is set only when the gradient buffer changes (it was set at every tree with
+the same value; under 28 threads each of those attribute calls took 0.5 ms of driver time).
 
-| shape | key off | key on (auto) | ms per round off -> on (slots) |
+Measured (relaxed gpuq jobs, one RTX 5090, 100 rounds, total `flc.train` seconds and steady ms per round, kernel-evo
+`runs/forest/stage2/time_t8.jsonl`; key off includes `zero_slots_kernel`; an agent search night shared the CPU):
+
+| shape | key off | key on (auto) | ms per round off -> on |
 |---|---:|---:|---|
-| covtype-rf-deep (7 trees per round) | 10.13 s | 3.81 s | 93.7 -> 23.7 (28) |
-| higgs d-1, quant stochastic | 1.14 s | 1.07 s | 8.8 -> 4.4 (8) |
-| higgs-rf-deep (depth 12, quant none) | 6.60 s | 6.66 s | 63.5 -> 63.8 (2; GPU-bound) |
-| numerai-rf-deep (depth 12, quant none) | 10.04 s | 9.57 s | 94.5 -> 87.4 (2) |
+| covtype-rf-deep (7 trees per round, quant stochastic) | 10.04 s | 3.63 s | 94.1 -> 25.0 |
+| covtype d-1, quant none | 14.21 s | 8.42 s | 137.1 -> 77.6 |
+| covtype-rf-std (255 leaves, depth 8) | 2.05 s | 1.97 s | 20.2 -> 18.2 |
+| numerai d-1, quant stochastic | 9.63 s | 5.63 s | 93.0 -> 42.6 |
+| numerai-rf-deep (depth 12, quant none) | 9.82 s | 9.56 s | 94.3 -> 88.6 |
+| higgs d-1, quant stochastic | 1.03 s | 1.08 s | 8.8 -> 6.2 (the slots' ramp-up costs what 100 rounds gain) |
+| higgs-rf-deep (depth 12, quant none) | 6.47 s | 6.63 s | 63.4 -> 63.5 (GPU-bound; the probe of a second slot) |
 
 With the slots the covtype round is bounded by the GPU running the slots' small kernels one after another (the per-level
 readbacks run on the legacy default stream, which the learners' blocking streams synchronize with) and by the CUDA
