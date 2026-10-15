@@ -1159,6 +1159,8 @@ void CUDAHistogramConstructor::LaunchCompactFill(
         // (nibble fallback, as before pair_code_wide existed).
         int max_cells = 0;
         bool odd_hi_ok = true;
+        // cuda_plan key pair_code_radix: every slot's joint cell count (lo span x hi span)
+        std::vector<uint8_t> slot_cells_h(code5 ? total_byte_slots : 0, 1);
         for (int p = 0, k = 0; code5 && p < num_partitions; ++p) {
           const int compact_part_start = compact_part_col_offsets[p];
           const int used_in_p = compact_part_col_offsets[p + 1] - compact_part_start;
@@ -1167,6 +1169,9 @@ void CUDAHistogramConstructor::LaunchCompactFill(
             const int lo_span = col_span[compact_part_start + 2 * m];
             const int hi_span = has_hi ? col_span[compact_part_start + 2 * m + 1] : 1;
             max_cells = std::max(max_cells, lo_span * hi_span);
+            if (k < total_byte_slots) {
+              slot_cells_h[k] = static_cast<uint8_t>(std::min(255, lo_span * hi_span));
+            }
             // the fill's dp4a pack2/word-per-thread paths pack an odd slot's span(hi) through a 32 * span(hi)
             // 8-bit factor, so it must stay below 8
             if (!((k % 6) % 2 == 0 || hi_span <= 7)) {
@@ -1180,6 +1185,25 @@ void CUDAHistogramConstructor::LaunchCompactFill(
           code_bits = 5;
         } else if (code5 && FalcataPlan::Get().pair_code_wide && max_cells <= 64) {
           code_bits = 6;
+          // cuda_plan key pair_code_radix: six cells per word in mixed radix (kCodeRadix) where that takes fewer row
+          // words than five 6-bit codes and every half's three slots' cell counts multiply to at most 2^16; only
+          // in place of a 6-bit view the tree takes (its row smaller than the nibble row, the size rule below), so
+          // the trees that keep the nibble view keep it
+          if (FalcataPlan::Get().pair_code_radix &&
+              4 * Code5RowWords(total_byte_slots, 6) < total_byte_slots &&
+              Code5RowWords(total_byte_slots, kCodeRadix) < Code5RowWords(total_byte_slots, 6)) {
+            bool halves_fit = true;
+            for (int h = 0; halves_fit && 3 * h < total_byte_slots; ++h) {
+              uint32_t cells = 1;
+              for (int j = 3 * h; j < std::min(3 * h + 3, total_byte_slots); ++j) {
+                cells *= slot_cells_h[j];
+              }
+              halves_fit = cells <= kCodeRadixHalfCells;
+            }
+            if (halves_fit) {
+              code_bits = kCodeRadix;
+            }
+          }
         }
         code5 = code_bits > 0;
         // the code row's words (Code5RowWords; the construct derives the same count from the row bytes and width)
@@ -1195,6 +1219,16 @@ void CUDAHistogramConstructor::LaunchCompactFill(
           // the code table, and the code fill's own copy of the byte-slot tables for EnsureNibbleView: the shared
           // cuda_bs_* tables are rewritten by any later fill (the full view's, a prefill) while the nibbles may
           // still be pending
+          if (code_bits == kCodeRadix) {
+            // cuda_plan key pair_code_radix: each slot's entry followed by its cell count (the fill's radix), one
+            // 16-bit load per slot
+            std::vector<uint8_t> interleaved(2 * static_cast<size_t>(total_byte_slots));
+            for (int k = 0; k < total_byte_slots; ++k) {
+              interleaved[2 * static_cast<size_t>(k)] = code_table_h[k];
+              interleaved[2 * static_cast<size_t>(k) + 1] = slot_cells_h[k];
+            }
+            code_table_h.swap(interleaved);
+          }
           if (code5_table_.Size() < code_table_h.size()) {
             code5_table_.Resize(code_table_h.size());
           }
@@ -1214,8 +1248,10 @@ void CUDAHistogramConstructor::LaunchCompactFill(
           upload(code5_bs_dst_stride_.RawData(), bs_dst_stride_h.data(), sizeof(int) * total_byte_slots, &pin_off);
         }
         if (FalcataDebug().diag) {
-          Log::Info("compact fill: pair_code5 %s (%d byte slots, %d words per row, %d bits per code)",
-                    code5 ? "on" : "off", total_byte_slots, code_row_words, code5 ? code_bits : 0);
+          Log::Info("compact fill: pair_code5 %s (%d byte slots, %d words per row, %s)",
+                    code5 ? "on" : "off", total_byte_slots, code_row_words,
+                    !code5 ? "no code" : code_bits == kCodeRadix ? "mixed radix, 6 codes per word" :
+                    code_bits == 6 ? "6 bits per code" : "5 bits per code");
         }
         // cuda_plan key bagged_code_view: a bagged tree runs the fused fill only for the code view (its all-rows
         // histogram is not the bagged root's); where the view is not taken, the plain tiled fill below writes the
@@ -1271,9 +1307,9 @@ void CUDAHistogramConstructor::LaunchCompactFill(
           code5_valid_ = fused_root && code5_written;
           code5_row_words_ = code_row_words;
           // only a valid width is stored (code_bits is 0 where the view is not taken): every reader evaluates
-          // Code5RowWords(row bytes, code5_bits_), which divides by 32 / code5_bits_
+          // Code5RowWords(row bytes, code5_bits_), which divides by Code5CodesPerWord(code5_bits_)
           code5_bits_ = code5 ? code_bits : 5;
-          CHECK(code5_bits_ == 5 || code5_bits_ == 6);
+          CHECK(code5_bits_ == 5 || code5_bits_ == 6 || code5_bits_ == kCodeRadix);
           nibble_pending_ = code5_valid_;
           nibble_pending_slots_ = total_byte_slots;
           nibble_pending_src_ = fill_src;

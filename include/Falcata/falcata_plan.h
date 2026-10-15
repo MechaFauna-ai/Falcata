@@ -448,6 +448,13 @@ struct FalcataPlan {
   // chose; the per-byte code gather stays 5-bit only (a 6-bit tree falls back to the nibble view there). Same joint
   // cell per slot, same marginal rule: bit-identical.
   bool pair_code_wide = true;       // key: pair_code_wide
+  // a tree on the 6-bit code view (pair_code_wide) packs six joint cells per word in mixed radix instead of five 6-bit
+  // codes: three digits per 16-bit half, c0 + n0 (c1 + n1 c2) with n the slots' joint cell counts (lo span x hi
+  // span), where every half's three counts multiply to at most 2^16 (e.g. 6 x 6 and 6 x 7 cells) and that takes fewer
+  // row words (178 byte slots: 32 words, 128-byte rows, instead of 40 words, 160 bytes). The fill writes and every
+  // level's gather reads fewer bytes, and a row no longer reaches into a second 128-byte line. The construct decodes
+  // a half with two exact multiply-high quotients. The same cells receive the same gradients: bit-identical.
+  bool pair_code_radix = true;      // key: pair_code_radix
   // pair_code5_words: the six adds of a code word without a branch per byte slot: a slot without columns adds into
   // 32 dummy cells past the joint tables (never flushed; 128 more bytes of shared memory, taken only where the block
   // still fits the device's default), and the cells are addressed by precomputed byte offsets. The build needs fewer
@@ -915,6 +922,7 @@ struct FalcataPlan {
     if (key == "pair_code5_pack2") return &pair_code5_pack2;
     if (key == "pair_code5_l2_store") return &pair_code5_l2_store;
     if (key == "pair_code_wide") return &pair_code_wide;
+    if (key == "pair_code_radix") return &pair_code_radix;
     if (key == "pair_code5_flat") return &pair_code5_flat;
     if (key == "pair_code5_slots") return &pair_code5_slots;
     if (key == "pair_code5_tall") return &pair_code5_tall;

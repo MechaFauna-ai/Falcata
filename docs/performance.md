@@ -1360,6 +1360,37 @@ Switched off against on in the same build (T = first call + steady ms × 29999; 
 
 Against master (a65d34e8; 8 cells, 2 pairs + 1 re-timed pair each): 1.010x over the cells, numerai53 with NaNs 1.103x, no cell below its band; the models are md5-identical on every run.
 
+**Six cells per word in mixed radix (`pair_code_radix`, default on, bit-identical).** A 6-bit row is not only 25% more
+bytes than a 5-bit row of the same slots: at 160 bytes (178 byte slots, 40 words: the NaN-Numerai cell at feature
+fraction 0.1) every row reaches into a second 128-byte line, and the code-word construct ran at twice the 5-bit
+cell's time per round (1.80 vs 0.94 ms; the same NaN data at feature fraction 0.08, 32-word 6-bit rows: 1.14 ms). A
+6 x 7 = 42-cell table (int8nan columns with 6 values plus the missing bin) rules out a fixed radix (40^6 is the most
+six codes can span in 32 bits), so the word holds three digits per 16-bit half in the slots' own radices:
+c0 + n0 (c1 + n1 c2) | (c3 + n3 (c4 + n4 c5)) << 16, with n the slot's joint cell count (lo span x hi span; 1 past
+the row). The fill packs it from 16-bit code table entries (the slot's code byte and its cell count); the construct takes the
+same counts from the column spans it already reads and decodes a half with two exact quotients
+`__umulhi(h << 10, ceil(2^22 / n))` (exact for h < 2^16, n <= 64). It is taken where the 6-bit view is (the padded
+6-bit row smaller than the nibble row), every half's three cell counts multiply to at most 2^16 (e.g. 6 x 6 and
+6 x 7 tables, not three 42-cell slots in a half), and the radix row is shorter: ceil(B / 6) against ceil(B / 5)
+words, padded to 8 (B = 178: 32 against 40 words). The branch-free construct needs 48 registers (40 at 6 bits),
+still one 32-warp block per SM. Same cell per slot, same gradients, same flush: bit-identical. Not extended (yet) to
+trees whose 6-bit row is larger than the nibble row but whose radix row is not (sampledwide at 121 slots: the lattice
+cell asserting which trees decline the view would change).
+
+| cell | `pair_code_radix` off → on |
+|---|---|
+| NaN-Numerai, deep, stochastic (same binary, 3 pairs) | 1.137 (4.38 → 3.85 ms per round; same-arm spread 0.5%) |
+| NaN-Numerai, nsys, 60 rounds, per round | construct 1.73 → 1.22 ms (55 of 60 trees radix, 32 x 32 blocks; 5 keep 6 bits) |
+| NaN-Numerai, nsys, fill per tree (median) | 6 bits 1.48-1.50 ms; radix with the cell counts as a second byte table 1.53 ms, as 16-bit (code, count) entries 1.46 ms |
+| numerai53 benchmark split, covtype, higgs | not engaged (5-bit view, or no code view) |
+
+Cells harness against master 06bb754b (2 pairs; with `level_regions_presort` from the parent): numerai53bench 1.001,
+NaN-Numerai 1.116 (4.386 → 3.928 ms per round), covtype 1.008, higgs 1.004; md5-identical on every run; lattice
+443/443 (sampledwide and sampledwide-mixbins at feature fraction 0.3 now take the radix view on every 180/181-slot
+tree and match master's fingerprints, with the branchy adds and the per-slot flush);
+`tests/python_package_test/test_cuda_pair_code_radix.py` trains five shapes (6 x 6, 6 x 7 and mixed 3-8 value
+tables, bagged, both quantization modes) with the key on and off.
+
 ---
 
 ## 10h. Bagged training (`bagged_code_view`, `oob_node_table`, `bagging_fused_scan`)

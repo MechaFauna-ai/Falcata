@@ -533,6 +533,49 @@ __device__ __forceinline__ uint32_t Code5Funnel(const uint32_t lo, const uint32_
   return shift == 0 ? lo : ((lo >> shift) | (hi << (32u - shift)));
 #endif
 }
+// the generic scalar pack of one code word: word k of a staged row, kCodesPerWord codes of kCodeShift bits (byte slot
+// kCodesPerWord * k + j at bits kCodeShift * j; slots past the row are 0)
+template <int kCodesPerWord, int kCodeShift>
+__device__ __forceinline__ uint32_t Code5BitsPackWord(const uint8_t* tile_row, const uint8_t* __restrict__ code_table,
+                                                      const int num_slots, const int k) {
+  constexpr uint32_t kCodeMask = (1u << kCodeShift) - 1u;
+  uint32_t w = 0;
+#pragma unroll
+  for (int j = 0; j < kCodesPerWord; ++j) {
+    const int slot = kCodesPerWord * k + j;
+    if (slot < num_slots) {
+      const uint32_t b = tile_row[slot];
+      const uint32_t e = __ldg(code_table + slot);
+      const uint32_t code = (b & 0xfu) * (e & 31u) + ((e & 32u) != 0 ? (b >> 4) : 0u);
+      w |= (code & kCodeMask) << (kCodeShift * j);
+    }
+  }
+  return w;
+}
+// cuda_plan key pair_code_radix: word k's cells c0..c5 of slots with cell counts n0..n5 as
+// (c0 + n0 (c1 + n1 c2)) | (c3 + n3 (c4 + n4 c5)) << 16; a slot past the row is cell 0 of count 1. code_table holds
+// a 16-bit entry per slot here: the code table's byte, then the slot's cell count
+__device__ __forceinline__ uint32_t Code5RadixPackWord(const uint8_t* tile_row, const uint8_t* __restrict__ code_table,
+                                                       const int num_slots, const int k) {
+  uint32_t c[6];
+  uint32_t n[6];
+#pragma unroll
+  for (int j = 0; j < 6; ++j) {
+    const int slot = 6 * k + j;
+    c[j] = 0;
+    n[j] = 1;
+    if (slot < num_slots) {
+      const uint32_t b = tile_row[slot];
+      const uint32_t en = __ldg(reinterpret_cast<const uint16_t*>(code_table) + slot);
+      const uint32_t e = en & 0xffu;
+      c[j] = (b & 0xfu) * (e & 31u) + ((e & 32u) != 0 ? (b >> 4) : 0u);
+      n[j] = en >> 8;
+    }
+  }
+  const uint32_t lo_half = c[0] + n[0] * (c[1] + n[1] * c[2]);
+  const uint32_t hi_half = c[3] + n[3] * (c[4] + n[4] * c[5]);
+  return lo_half | (hi_half << 16);
+}
 template <bool SLOT_MAJOR, int CODE_BITS>
 __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitTiledRootHistKernel(
   const uint8_t* __restrict__ src_data,
@@ -561,7 +604,7 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
   const bool code_pack2,
   const bool code_evict_first) {
   constexpr bool CODE5 = CODE_BITS > 0;
-  constexpr int kCodesPerWord = CODE_BITS > 0 ? 32 / CODE_BITS : 1;
+  constexpr int kCodesPerWord = CODE_BITS > 0 ? Code5CodesPerWord(CODE_BITS) : 1;
   extern __shared__ __align__(16) unsigned char fill_smem[];
   size_t* s_nib0 = reinterpret_cast<size_t*>(fill_smem);
   size_t* s_nib1 = s_nib0 + num_slots;
@@ -926,22 +969,15 @@ __global__ void __launch_bounds__(kFusedRootThreads, 2) CUDAFillCompactData4BitT
       // pair_code_wide)
       uint32_t* code_out = code_view + static_cast<size_t>(row_start) * static_cast<size_t>(code_row_words);
       const int code_words = rows_valid * code_row_words;
-      constexpr uint32_t kCodeMask = (1u << (CODE_BITS > 0 ? CODE_BITS : 1)) - 1u;
+      constexpr int kCodeShift = CODE_BITS > 0 && CODE_BITS < 32 ? CODE_BITS : 1;  // (kCodeRadix: unused)
       for (int t = tid; t < code_words; t += kFusedRootThreads) {
         const int r = t / code_row_words;
         const int k = t - r * code_row_words;
         const uint8_t* tile_row = tile_rows + r * tile_stride;
-        uint32_t w = 0;
-#pragma unroll
-        for (int j = 0; j < kCodesPerWord; ++j) {
-          const int slot = kCodesPerWord * k + j;
-          if (slot < num_slots) {
-            const uint32_t b = tile_row[slot];
-            const uint32_t e = __ldg(code_table + slot);
-            const uint32_t code = (b & 0xfu) * (e & 31u) + ((e & 32u) != 0 ? (b >> 4) : 0u);
-            w |= (code & kCodeMask) << (CODE_BITS * j);
-          }
-        }
+        // (cuda_plan key pair_code_radix: six cells per word in mixed radix)
+        const uint32_t w = CODE_BITS == kCodeRadix ?
+          Code5RadixPackWord(tile_row, code_table, num_slots, k) :
+          Code5BitsPackWord<kCodesPerWord, kCodeShift>(tile_row, code_table, num_slots, k);
         if (code_evict_first) {
           __stcs(code_out + t, w);
         } else {
@@ -1079,17 +1115,20 @@ bool LaunchFillCompactData4BitTiledRootHistKernel(
   // cuda_plan key pair_code5: the 5-bit code pack reads up to 15 bytes past a row's last slot (four aligned words),
   // kept inside the block's shared memory; where that slack does not fit, the fill writes the nibble view instead.
   // cuda_plan key pair_code_wide: the 6-bit code's scalar pack reads no slot past the row and needs no slack.
-  const bool code5 = code_view != nullptr && (code_bits == 6 || (code_bits == 5 && base_shared_bytes + 16 <= max_shared_bytes));
+  const bool code5 = code_view != nullptr && (code_bits == 6 || code_bits == kCodeRadix ||
+                                              (code_bits == 5 && base_shared_bytes + 16 <= max_shared_bytes));
   const size_t shared_bytes = base_shared_bytes + (code5 && code_bits == 5 ? 16 : 0);
   using FusedFillKernel = void (*)(const uint8_t*, uint8_t*, const size_t*, const size_t*, const size_t*, const int*,
                                    int, data_size_t, const int*, const uint32_t*, int, int, int, bool, bool, bool, bool,
                                    const int32_t*, bool, hist_t*, uint32_t*, const uint8_t*, int, bool, bool);
   const int fill_code_bits = code5 ? code_bits : 0;
   const FusedFillKernel kernel = slot_major ?
-    (fill_code_bits == 6 ? CUDAFillCompactData4BitTiledRootHistKernel<true, 6> :
+    (fill_code_bits == kCodeRadix ? CUDAFillCompactData4BitTiledRootHistKernel<true, kCodeRadix> :
+     fill_code_bits == 6 ? CUDAFillCompactData4BitTiledRootHistKernel<true, 6> :
      fill_code_bits == 5 ? CUDAFillCompactData4BitTiledRootHistKernel<true, 5> :
                            CUDAFillCompactData4BitTiledRootHistKernel<true, 0>) :
-    (fill_code_bits == 6 ? CUDAFillCompactData4BitTiledRootHistKernel<false, 6> :
+    (fill_code_bits == kCodeRadix ? CUDAFillCompactData4BitTiledRootHistKernel<false, kCodeRadix> :
+     fill_code_bits == 6 ? CUDAFillCompactData4BitTiledRootHistKernel<false, 6> :
      fill_code_bits == 5 ? CUDAFillCompactData4BitTiledRootHistKernel<false, 5> :
                            CUDAFillCompactData4BitTiledRootHistKernel<false, 0>);
   const data_size_t num_tiles = (num_data + kFill4BitTiledRows - 1) / kFill4BitTiledRows;
@@ -3159,12 +3198,55 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointInner(
 // Code5DummyCells(CODE_BITS) cells past the joint tables (never zeroed, never flushed; a code is < 2^CODE_BITS), and all adds are
 // unconditional: no branch or predicate per slot, the cell's byte offset in one shift, mask and add. Takes no more
 // registers than the branchy adds' 48 (40 at 4-6 rows in flight), so the occupancy API can take taller blocks.
-__host__ __device__ constexpr uint32_t Code5DummyCells(const int code_bits) { return 1u << code_bits; }
+// kCodeRadix (cuda_plan key pair_code_radix): its cells are below the 6-bit code's 64 (the host takes it under the
+// 6-bit gate only), so the same 64 dummy cells cover them
+__host__ __device__ constexpr uint32_t Code5DummyCells(const int code_bits) {
+  return code_bits == kCodeRadix ? 64u : 1u << code_bits;
+}
+// cuda_plan key pair_code_radix: a thread's radices of its word's slots 0, 1, 3, 4 (the cell counts the fill packed
+// with) and their Code5RadixMagic multipliers; unused by the bit-width codes
+struct Code5Radix {
+  uint32_t n[4];
+  uint32_t magic[4];
+};
 template <bool FLAT, int CODE_BITS>
-__device__ __forceinline__ void Code5WordAdd(int32_t* shared_joint, const uint32_t (&joint_base)[32 / CODE_BITS],
-                                             const uint32_t valid_mask, const uint32_t w, const int32_t g) {
-  constexpr int kCodesPerWord = 32 / CODE_BITS;
-  constexpr uint32_t kCodeMask = (1u << CODE_BITS) - 1u;
+__device__ __forceinline__ void Code5WordAdd(int32_t* shared_joint,
+                                             const uint32_t (&joint_base)[Code5CodesPerWord(CODE_BITS)],
+                                             const uint32_t valid_mask, const uint32_t w, const int32_t g,
+                                             const Code5Radix& radix) {
+  constexpr int kCodesPerWord = Code5CodesPerWord(CODE_BITS);
+  constexpr uint32_t kCodeMask = (1u << (CODE_BITS == kCodeRadix ? 6 : CODE_BITS)) - 1u;
+  if (CODE_BITS == kCodeRadix) {
+    // cuda_plan key pair_code_radix: the mixed-radix digits of the two 16-bit halves, exact quotients by multiply
+    const uint32_t lo = w & 0xffffu;
+    const uint32_t hi = w >> 16;
+    const uint32_t lo1 = __umulhi(lo << 10, radix.magic[0]);
+    const uint32_t hi1 = __umulhi(hi << 10, radix.magic[2]);
+    const uint32_t lo2 = __umulhi(lo1 << 10, radix.magic[1]);
+    const uint32_t hi2 = __umulhi(hi1 << 10, radix.magic[3]);
+    uint32_t c[6];
+    c[0] = lo - radix.n[0] * lo1;
+    c[1] = lo1 - radix.n[1] * lo2;
+    c[2] = lo2;
+    c[3] = hi - radix.n[2] * hi1;
+    c[4] = hi1 - radix.n[3] * hi2;
+    c[5] = hi2;
+    if (FLAT) {
+      char* const joint_bytes = reinterpret_cast<char*>(shared_joint);
+#pragma unroll
+      for (int j = 0; j < 6; ++j) {
+        atomicAdd_block(reinterpret_cast<int32_t*>(joint_bytes + (joint_base[j] + (c[j] << 2))), g);
+      }
+    } else {
+#pragma unroll
+      for (int j = 0; j < 6; ++j) {
+        if ((valid_mask >> j) & 1u) {
+          atomicAdd_block(shared_joint + joint_base[j] + c[j], g);
+        }
+      }
+    }
+    return;
+  }
   if (FLAT) {
     char* const joint_bytes = reinterpret_cast<char*>(shared_joint);
 #pragma unroll
@@ -3208,7 +3290,7 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
   const uint32_t whole_row_joint,
   const data_size_t min_rows_per_thread,
   const int block_y) {
-  constexpr int kCodesPerWord = 32 / CODE_BITS;
+  constexpr int kCodesPerWord = Code5CodesPerWord(CODE_BITS);
   const data_size_t num_data_in_smaller_leaf = smaller_leaf_splits->num_data_in_leaf;
   const data_size_t num_data_per_thread = max((num_data_in_smaller_leaf + dim_y - 1) / dim_y, min_rows_per_thread);
   const size_t block_start_wide = (static_cast<size_t>(block_y) * blockDim.y) * static_cast<size_t>(num_data_per_thread);
@@ -3229,9 +3311,13 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
   const int k = static_cast<int>(threadIdx.x);
   uint32_t joint_base[kCodesPerWord];
   uint32_t valid_mask = 0;
+  // cuda_plan key pair_code_radix: the slots' cell counts as the fill computed them (code_table: lo span x hi span
+  // of a slot with columns, 1 for a slot past the row)
+  uint32_t slot_cells[kCodesPerWord];
 #pragma unroll
   for (int j = 0; j < kCodesPerWord; ++j) {
     joint_base[j] = 0;
+    slot_cells[j] = 1;
     const int b = kCodesPerWord * k + j;
     if (b < row_bytes) {
       int part = 0;
@@ -3241,12 +3327,27 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
       if (lo_col < feature_partition_column_index_offsets[part + 1]) {
         joint_base[j] = joint_offsets[lo_col];
         valid_mask |= 1u << j;
+        if (CODE_BITS == kCodeRadix) {
+          const bool has_hi = lo_col + 1 < feature_partition_column_index_offsets[part + 1];
+          slot_cells[j] = spans[lo_col] * (has_hi ? spans[lo_col + 1] : 1u);
+        }
       }
     }
     if (FLAT) {
       // byte offsets; a slot without columns adds into the dummy cells past the tables
       joint_base[j] = static_cast<uint32_t>(sizeof(int32_t)) *
                       (((valid_mask >> j) & 1u) ? joint_base[j] : whole_row_joint);
+    }
+  }
+  Code5Radix radix = {};
+  if (CODE_BITS == kCodeRadix) {
+#pragma unroll
+    for (int h = 0; h < 2; ++h) {
+#pragma unroll
+      for (int d = 0; d < 2; ++d) {
+        radix.n[2 * h + d] = slot_cells[(3 * h + d) % kCodesPerWord];
+        radix.magic[2 * h + d] = Code5RadixMagic(radix.n[2 * h + d]);
+      }
     }
   }
   __syncthreads();
@@ -3277,7 +3378,7 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
 #pragma unroll
         for (int j = 0; j < kB; ++j) idx[j] = __ldg(next_src + j * (has_next ? by : 0));
 #pragma unroll
-        for (int j = 0; j < kB; ++j) Code5WordAdd<FLAT, CODE_BITS>(shared_joint, joint_base, valid_mask, w[j], g[j]);
+        for (int j = 0; j < kB; ++j) Code5WordAdd<FLAT, CODE_BITS>(shared_joint, joint_base, valid_mask, w[j], g[j], radix);
         inner_data_index += kB * by;
       }
     }
@@ -3297,14 +3398,14 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
 #pragma unroll
       for (int j = 0; j < kB; ++j) w[j] = __ldcs(code_ptr + static_cast<size_t>(idx[j]) * row_words);
 #pragma unroll
-      for (int j = 0; j < kB; ++j) Code5WordAdd<FLAT, CODE_BITS>(shared_joint, joint_base, valid_mask, w[j], g[j]);
+      for (int j = 0; j < kB; ++j) Code5WordAdd<FLAT, CODE_BITS>(shared_joint, joint_base, valid_mask, w[j], g[j], radix);
       i = num_iteration_this;
     }
     for (; i < num_iteration_this; ++i) {
       const data_size_t row = __ldg(data_indices_ref_this_block + inner_data_index);
       const int32_t g = __ldg(cuda_gradients_and_hessians + row);
       const uint32_t w = __ldcs(code_ptr + static_cast<size_t>(row) * row_words);
-      Code5WordAdd<FLAT, CODE_BITS>(shared_joint, joint_base, valid_mask, w, g);
+      Code5WordAdd<FLAT, CODE_BITS>(shared_joint, joint_base, valid_mask, w, g, radix);
       inner_data_index += by;
     }
   }
@@ -3676,6 +3777,12 @@ static int PairJointCode5MaxThreads(const PairJointKernelFn kernel) {
 // configuration this was measured on; the non-flat fallback kernel keeps its original epilogue unconditionally.
 // code_bits (cuda_plan key pair_code_wide): the same three builds over the 6-bit code view.
 static PairJointKernelFn PairJointCode5WordKernel(const bool flat, const bool epilogue_flat, const int code_bits) {
+  if (code_bits == kCodeRadix) {
+    return flat ? (epilogue_flat ?
+                   CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, true, kCodeRadix> :
+                   CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, false, kCodeRadix>) :
+                  CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<4, false, false, kCodeRadix>;
+  }
   if (code_bits == 6) {
     return flat ? (epilogue_flat ? CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, true, 6> :
                                     CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, false, 6>) :
@@ -6508,7 +6615,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
             code5_bits_ == 5 && Code5RowWords(compact_row_bytes_) == code5_row_words_ &&
             static_cast<int>(pair_block_dim.x * pair_block_dim.y) <= PairJointCode5MaxThreads(code5_kernel);
         if (code5_word_rows > 0) {
-          DiagConstructKernel("pair_code5_words");
+          // (cuda_plan key pair_code_radix: the mixed-radix code view)
+          DiagConstructKernel(code5_bits_ == kCodeRadix ? "pair_code5_words (mixed radix)" : "pair_code5_words");
           PairJointCode5WordKernel(code5_flat, code5_epilogue_flat, code5_bits_)<<<launch_grid_dim, pair_block_dim, code5_word_smem_bytes, cuda_stream_>>>(
             FALCATA_PAIR_JOINT_LAUNCH_ARGS(compact_data_uint8_t_.RawDataReadOnly()));
           // a new launch shape: a rejected launch must not leave the histogram unbuilt silently
