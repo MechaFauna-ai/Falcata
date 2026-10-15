@@ -451,8 +451,9 @@ class CUDAHistogramConstructor {
 
   /*! \brief device-saturation floor (total y-blocks shared across the level's
    *  pairs) of the batched construct grid sizing
-   *  (baked constant FalcataPlan::batch_construct_saturation_floor;
-   *  default 160 = historical behavior) */
+   *  (FalcataPlan::batch_construct_saturation_floor: 160 at 170 SMs, scaled
+   *  by the device's SM count under quantized training, see the tree
+   *  learner's Init) */
   static int BatchConstructSaturationFloor() {
     return FalcataPlan::Get().batch_construct_saturation_floor;
   }
@@ -482,7 +483,7 @@ class CUDAHistogramConstructor {
    *  reproduction for a measured ~1-2% fraud-deep gain -- not worth it.
    *  Permanently disabled; see the return-0 comment below. */
   // quant small-leaf direct threshold: FalcataPlan::quant_small_leaf_rows
-  // (default 1024; runtime-tunable -- see TierOneTuner's second knob).
+  // (compile-time 1024; any value trains the same model).
 
   static data_size_t SmallLeafRowThreshold() {
     // Permanently 0 (disabled): the direct-add body is not bit-identical
@@ -696,25 +697,21 @@ class CUDAHistogramConstructor {
   bool view_mask_regime() const { return colmajor_direct_ && view_mask_; }
   /*! \brief colmajor_direct: the bin matrix has no row-major copy; ChooseViewRegime decides which view holds it */
   bool colmajor_direct() const { return colmajor_direct_; }
-  /*! \brief colmajor_direct: choose the regime and build its view (freeing the other's first). prefer: -1 for the
-   *  static rule (FalcataPlan::view_mode / view_mask_ff), 0 compact, 1 mask (the tuner's wisdom). Under
-   *  view_mode:auto the compact regime is taken only if its store + compact view (+ the one-byte split view of the
-   *  sampled columns when one_byte_split_view, the tree learner's own predicate) + reserve_bytes fit, and never when
-   *  trees_read_full_matrix (every tree's per-leaf quantized construct reads the whole matrix) in free device memory now (plus what the views hold, freed before the switch);
-   *  otherwise mask, with a diag line. why goes to the log. */
-  void ChooseViewRegime(size_t reserve_bytes, bool one_byte_split_view, bool trees_read_full_matrix, int prefer,
-                        const char* why);
-  /*! \brief whether the compact regime was available at the last ChooseViewRegime (it fit, and the trees read compact
-   *  views); the tuner never probes it otherwise */
-  bool compact_regime_fits() const { return colmajor_direct_ && compact_fits_; }
+  /*! \brief colmajor_direct: choose the regime and build its view (freeing the other's first): the static rule
+   *  (FalcataPlan::view_mode / view_mask_ff / view_pair_rule, ViewMaskWanted). Under view_mode:auto the compact
+   *  regime is taken only if its store + compact view (+ the one-byte split view of the sampled columns when
+   *  one_byte_split_view, the tree learner's own predicate) + reserve_bytes fit in free device memory now (plus what
+   *  the views hold, freed before the switch), and never when trees_read_full_matrix (every tree's per-leaf quantized
+   *  construct reads the whole matrix); otherwise mask, with a diag line. why goes to the log. */
+  void ChooseViewRegime(size_t reserve_bytes, bool one_byte_split_view, bool trees_read_full_matrix, const char* why);
   /*! \brief the regime the static rule picks for the current feature_fraction (true = mask) */
   bool ViewMaskWanted() const;
+  /*! \brief cuda_plan key view_pair_rule below view_mask_ff: the lowest feature_fraction at which the rule may take
+   *  the mask regime (the low edge of the removed tuner probe's band; calibrated 2026-10-15, see ViewMaskWanted) */
+  static constexpr double kViewPairRuleLowFF = 0.5;
   /*! \brief cuda_plan key view_pair_rule: whether the pair-joint construct can serve the compact view of the current
    *  feature_fraction (its 48 KB joint tables and thread limit, predicted from the partitions; see the definition) */
   bool PairJointServesView() const;
-  /*! \brief colmajor_direct: move the bin matrix to the given regime between trees (the tuner's probe); a no-op when
-   *  already there. Legal at any tree: both regimes train the same model (see the definition). */
-  void SwitchViewRegime(bool mask, const char* why);
 
   const hist_t* cuda_hist() const { return cuda_hist_.RawData(); }
 
