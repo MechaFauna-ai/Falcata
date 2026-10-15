@@ -102,6 +102,7 @@ ALL_KEYS = {
     "tree_end_prealloc": True,
     "const_hess_reads": True,
     "dirty_final_slots": True,
+    "zero_slots_kernel": True,
     "hist_zero_quant_half": True,
     "pair_block_map": True,
     "dense_level_row_blocks": True,
