@@ -1758,6 +1758,61 @@ binary 1023 leaves): 1.0356. With the row-lane gate, final build vs master (2 pa
 1.0937; nsys higgs construct per round 897 -> 774 us (L9 112 -> 84 us; the root 120 -> 125 us, where the thin
 partition's rows were contiguous and cheap).
 
+## 10q. The quantized warp finder on small levels (`find_split_small`)
+
+The quantized level finder (`FindBestSplitsDiscretizedForLevelWarpKernel<true>`, §7c) runs a wide task (a column of
+more than 8 scan positions, e.g. 255 bins) on one warp at up to 8 positions per lane. At a shallow level the launch has a
+few blocks and the kernel's time is the latency of one warp's chain: the histogram loads and prefix scan, the 8-slot fp32
+prune loop, the fp64 survivor rounds, the output stage. nsys per-level medians (60 rounds): covtype-deep-fixed levels 0-5
+at 7.7, 8.2, 9.3, 10.2, 11.5, 11.5 us (8 to 120 blocks on 170 SMs; level 9 at 816 blocks 17.5 us), higgs-deep-stoch
+levels 1-4 at 8.3, 8.1, 8.0, 11.0 us, while the 1-2-block kernels of the same level take ~2 us. covtype runs 70 levels per
+round, so its finder was 24% of the 3.75 ms round; higgs 10%; the numerai cells 3% (the 4-lane few-position tier: not
+affected).
+
+**`find_split_small`** (default on): when the launch's blocks times four fit the device's resident block capacity (the
+SM count times the occupancy API's blocks per SM for the kernel, computed once at the first wide launch; the gate's
+wave factor is the numeric key `find_split_waves`, default 1), a wide task runs on all four warps of one block. Each warp
+scans a 64-position range at 2 positions per lane; its carry-in is the sum of the earlier positions (and, for the forward
+scan that rebuilds an unstored bin 0 from the leaf total, the sum of every stored position), an order-free wrapping
+integer sum. The fp32 prune bound is shared: each warp's largest valid lower bound goes through shared memory behind a
+block barrier and every warp prunes against the maximum of the four, the bound one warp over all the positions would
+have had, so the task's survivors are the same (a warp pruning against its own 64 positions alone kept every position
+near its local best: on year-deep-fixed, 90 columns with flat gain curves, that cost 3% per round; with the shared bound
+year is 1.000). After the warp's own reduction the four partial winners (gain bits, position) are merged through shared
+memory behind a second block barrier in warp order with the reduction's own predicate, a strict total order on (gain, then
+lowest position) for finite gains, so the merged winner is the same unique maximum whatever the grouping; the warp
+holding it writes the record as before. The layout pads the few-position units to whole blocks so a wide task's four
+warps share a block; the narrow units and the launches past the gate are unchanged. Same prefixes, same exact gains, the
+same first maximum: bit-identical (`tests/python_package_test/test_cuda_find_split_small.py` trains five shapes with the
+key on and off: 255-bin columns, mixed binary and numeric columns, missing values, both quantization modes, bagging,
+multiclass; the lattice gate 443/443; the three md5 guard workloads identical).
+
+| finder median per level (us), covtype-deep-fixed | L0 | L1 | L2 | L3 | L4 | L5 | L6 | L9 |
+|---|---|---|---|---|---|---|---|---|
+| one warp per task | 7.7 | 8.2 | 9.3 | 10.2 | 11.5 | 11.5 | 12.4 | 17.5 |
+| `find_split_small` (levels 0-5 split, 24 .. 360 blocks) | 7.1 | 7.4 | 7.4 | 7.2 | 7.9 | 9.0 | 11.6 | 17.5 |
+
+higgs levels 0-4 (split): 14.3 / 8.3 / 8.1 / 8.0 / 11.0 -> 12.5 / 7.2 / 6.9 / 7.6 / 10.0 us. About 12 us per tree on
+covtype (7 trees per round), 5 us per tree on higgs.
+
+Measured (cells harness, median ms per round over rounds 100.., tuner on, each arm its own wisdom file):
+- Same binary, key off vs on: covtype 1.0088 (3 pairs: +2.2, +1.2, -0.7%; the tuner's construct knob differed between
+  runs), 1.0172 (2 pairs); higgs 1.0091; numerai53bench 0.9998 and NaN-Numerai 1.006 (no wide task: noise); all four
+  cells together 1.008. Shallow trees (63 leaves, depth 6, 300 rounds, 2 pairs): covtype 2.391/2.388 -> 2.318/2.316 ms
+  (+3.1%), higgs 1.052/1.051 -> 1.043/1.043 (+0.85%). Bagged (`bagging_fraction` 0.5, `bagging_freq` 1, 300 rounds):
+  covtype 4.114/4.101 -> 4.029/4.067 (+2.1, +0.8%), higgs 1.684/1.696 -> 1.692/1.676 (-0.5, +1.2%); md5 identical.
+- With the shared prune bound (final build), same binary, key off vs on, 2 pairs: covtype 1.0174, higgs 1.0119,
+  year-deep-fixed (300 rounds) 1.000 (1.2414/1.2495 -> 1.2435/1.2468 ms; the per-warp bound build read 0.968 there),
+  missing-deep-stoch 1.0009; replicate before the shared bound, 3 pairs: covtype 1.0159 (3 of 3 pairs), higgs 1.0019.
+- Build with the per-warp bound vs master 9fba3ea6 (2 pairs): score 1.0081: covtype 1.018, higgs 1.011, NaN-Numerai 1.004, numerai53bench
+  0.9996 (md5 identical, no JIT). An earlier batch of the same build read covtype 0.952 with its stock runs at 3.84-3.91
+  ms against 3.77 ms elsewhere: a disturbed box, not the key (the same-binary A/Bs above bracket it).
+- Not kept: the gate at two waves (`find_split_waves:2`, levels 6-7 on covtype also split 4-way) 0.996 covtype, 0.994
+  higgs: a launch past one wave is throughput-bound and the split's carry loads and four-warp setup are extra work there;
+  a 2-warp tier for the launches just past the 4-warp gate (128 positions per warp) measured neutral (covtype 1.0012,
+  higgs 0.9999) and was removed. The remaining ~7 us floor is the launch (~2 us), the survivor rounds and the output
+  stage (fp64), which no further split of the positions shortens.
+
 ## Multi-GPU: level-batched NCCL all-reduce
 
 The classic data-parallel path all-reduces one leaf histogram per split

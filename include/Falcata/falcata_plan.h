@@ -308,6 +308,18 @@ struct FalcataPlan {
   // position that is not sure sets none and keeps its upper bound; the gain loop's exact unpack decides it. Only
   // which hopeless positions skip the exact gain changes, never the winner: bit-identical.
   bool find_prune_sure = true;      // key: find_prune_sure
+  // the warp finder's wide tier (tasks of more than 8 scan positions) runs one warp per task at up to 8 positions
+  // per lane; at a shallow level the launch has a few blocks and the kernel is the latency of one warp's chain
+  // (loads, the fp32 prune loop, the fp64 survivor rounds). When the launch's blocks times four fit the device's
+  // resident block capacity (SM count times the occupancy API's blocks per SM), a wide task runs on all four warps
+  // of one block instead: each warp scans a 64-position range at 2 positions per lane with the earlier positions'
+  // sum (an order-free integer sum) as its carry-in, and the block merges the four partial winners through shared
+  // memory with the finder's own (gain, then lowest position) order. Same prefixes, same gains, the same unique
+  // maximum: bit-identical. Levels whose launch already fills the device keep one warp per task.
+  bool find_split_small = true;     // key: find_split_small
+  // find_split_small's gate in waves of the device's resident block capacity: a wide launch splits while its blocks
+  // times four fit find_split_waves times that capacity (1: the split launch runs in one wave, a pure latency win)
+  double find_split_waves = 1.0;    // key: find_split_waves (a number >= 0)
   // 4-bit compact quantized construct with one thread per packed byte: the two
   // nibbles of a byte index one cell of a joint (lo, hi) shared histogram, so a
   // row costs one shared atomic per byte instead of one per column; each
@@ -912,6 +924,7 @@ struct FalcataPlan {
     if (key == "find_select_int") return &find_select_int;
     if (key == "find_compact_survivors") return &find_compact_survivors;
     if (key == "find_prune_sure") return &find_prune_sure;
+    if (key == "find_split_small") return &find_split_small;
     if (key == "pair_hist") return &pair_hist;
     if (key == "per_pair_rows") return &per_pair_rows;
     if (key == "compact_row_interleave") return &compact_row_interleave;
@@ -1083,7 +1096,8 @@ struct FalcataPlan {
       double* number = kv[0] == std::string("view_mask_ff") ? &plan.view_mask_ff :
                        kv[0] == std::string("view_probe_lo") ? &plan.view_probe_lo :
                        kv[0] == std::string("view_probe_hi") ? &plan.view_probe_hi :
-                       kv[0] == std::string("root_hist_block_rounds") ? &plan.root_hist_block_rounds : nullptr;
+                       kv[0] == std::string("root_hist_block_rounds") ? &plan.root_hist_block_rounds :
+                       kv[0] == std::string("find_split_waves") ? &plan.find_split_waves : nullptr;
       if (number != nullptr) {
         char* end = nullptr;
         const double value = std::strtod(kv[1].c_str(), &end);

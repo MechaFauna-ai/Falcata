@@ -684,6 +684,10 @@ class CUDABestSplitFinder {
   CUDAVector<int> cuda_warp_find_order_;
   bool warp_find_order_used_ = false;
   int warp_find_num_narrow_used_ = 0;
+  // cuda_plan key find_split_small: the device's resident block capacity for the wide warp kernel (SM count times
+  // the occupancy API's blocks per SM), computed at the first wide launch; a launch whose blocks times four fit
+  // runs each wide task on the four warps of one block
+  int warp_find_split_block_cap_ = -1;
   // the all-tasks launch order is on the device (a sampled tree's order overwrites it)
   bool warp_find_order_all_tasks_ = false;
   // number of total bins in the dataset
