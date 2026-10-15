@@ -1701,30 +1701,31 @@ launch, 10 per round).
 
 **`dense_wide_hist`** (default on): under quantized training, on dense row data whose widest column has more than 16
 bins (not 4-bit packable), when the standard division gives more than one partition, the columns are divided again
-against a 2x table (12288 bins; 48 KB static shared, the portable static limit) with at most 504 columns per partition (see below for the row-lane rule)
-(one column per construct thread); if that gives fewer partitions it is kept and `CUDARowData::quant_hist_slots()`
-reports 2 x `shared_hist_size()`; otherwise the standard division and table. Every quantized dense launch (the per-leaf
-and the batched kernels, row data and compact view, raw 8-bit and the 4-bit codecs, the small-leaf kernels are
-table-free) is instantiated for `quant_hist_slots()` through one generic lambda per launch site (one body, two
-instantiations: 56 registers, no spills, 49 KB vs 25 KB static shared; 504-thread blocks stay at 2 per SM on a 128 KB
-SM). The non-quantized branches CHECK the table is not wide (the gate requires quantized training); the construct JIT
-declines a wide table (its module bakes the standard one) and prints the fallback line. The histogram's global layout
-(`column_hist_offsets_full`), the bins and the wrapping integer sums are unchanged: bit-identical.
+against a 2x table (12288 bins; 48 KB static shared, the portable static limit) with at most 504 columns per partition
+(see below for the row-lane rule) (one column per construct thread); if that gives fewer partitions it is kept and
+`CUDARowData::quant_hist_slots()` reports 2 x `shared_hist_size()`; otherwise the standard division and table. Every
+quantized dense launch (the per-leaf and the batched kernels, row data and compact view, raw 8-bit and the 4-bit codecs,
+the small-leaf kernels are table-free) is instantiated for `quant_hist_slots()` through one generic lambda per launch
+site (one body, two instantiations: 56 registers, no spills, 49 KB vs 25 KB static shared; 504-thread blocks stay at 2
+per SM on a 128 KB SM). The non-quantized branches CHECK the table is not wide (the gate requires quantized training).
+(The search build also made the since-removed construct JIT decline a wide table; that code went with #110.) The
+histogram's global layout (`column_hist_offsets_full`), the bins and the wrapping integer sums are unchanged:
+bit-identical.
 
-Engages on 8/16-bit data with 6144 < total bins and a partition count the 2x table lowers: 25..48 columns at 255 bins
-in one partition instead of two, 49..96 in two instead of three, 97..192 columns at 63 bins (quantized training on
-CUDA rejects columns of more than 256 bins, so a large-bin partition never exists under the gate). Declines on covtype (10 x 256 + 44 x 2..3 bins: one
-partition), on numerai (4-bit pair-joint path) and on any data with <= 6144 bins, which keep the 24 KB table.
-It also declines where the wide division's construct block (504 / columns row lanes of the widest partition's columns)
-has fewer than two row lanes or fewer threads than the standard division's: the removed partition's per-row chain does
-not pay for the lost lanes. Same binary off vs on, 2 pairs: 500k x 300 columns at 31 bins, 255 leaves (198 x 2 -> 300 x
-1 threads) 0.8917, declined 0.9997; 1M x 150 columns at 63 bins, bagged 0.6 (97 x 5 -> 150 x 3) 0.9766, declined
-1.0006; engaging: higgs (24 x 21 -> 28 x 18, 504 threads both), 2M x 100 at 63 bins (97 x 5 -> 100 x 5) 1.0293, 240
-columns at 31 bins (198 x 2 -> 240 x 2) 1.0292 (bagged 0.5 1.0283). The thread rule also declines 40..60 columns at 255
-bins (24 x 21 -> 40 x 12 or 48 x 10 = 480 threads), which gained 1.5..2.2% in the measurements above (the 1.0225,
-1.0156 and 1.0178 shapes), and the 500-column feature_fraction 0.1 shape (1.0398): kept out, because 0.93 of the threads already lost.
-Final build (both rules) vs master, cells harness, 2 pairs, md5 identical, no JIT: numerai53bench 1.0056, NaN-Numerai
-0.9976, covtype 1.0213, higgs 1.0965 (1.914 -> 1.745 ms), score 1.0295.
+Engages on 8/16-bit data with 6144 < total bins and a partition count the 2x table lowers: 25..48 columns at 255 bins in
+one partition instead of two, 49..96 in two instead of three, 97..192 columns at 63 bins (quantized training on CUDA
+rejects columns of more than 256 bins, so a large-bin partition never exists under the gate). Declines on covtype (10 x
+256 + 44 x 2..3 bins: one partition), on numerai (4-bit pair-joint path) and on any data with <= 6144 bins, which keep
+the 24 KB table. It also declines where the wide division's construct block (504 / columns row lanes of the widest
+partition's columns) has fewer than two row lanes or fewer threads than the standard division's: the removed partition's
+per-row chain does not pay for the lost lanes. Same binary off vs on, 2 pairs: 500k x 300 columns at 31 bins, 255 leaves
+(198 x 2 -> 300 x 1 threads) 0.8917, declined 0.9997; 1M x 150 columns at 63 bins, bagged 0.6 (97 x 5 -> 150 x 3)
+0.9766, declined 1.0006; engaging: higgs (24 x 21 -> 28 x 18, 504 threads both), 2M x 100 at 63 bins (97 x 5 -> 100 x 5)
+1.0293, 240 columns at 31 bins (198 x 2 -> 240 x 2) 1.0292 (bagged 0.5 1.0283). The thread rule also declines 40..60
+columns at 255 bins (24 x 21 -> 40 x 12 or 48 x 10 = 480 threads), which gained 1.5..2.2% in the measurements above (the
+1.0225, 1.0156 and 1.0178 shapes), and the 500-column feature_fraction 0.1 shape (1.0398): kept out, because 0.93 of the
+threads already lost. Final build (both rules) vs master, cells harness, 2 pairs, md5 identical, no JIT: numerai53bench
+1.0056, NaN-Numerai 0.9976, covtype 1.0213, higgs 1.0965 (1.914 -> 1.745 ms), score 1.0295.
 
 | | master | dense_wide_hist |
 |---|---|---|
@@ -1737,8 +1738,9 @@ covtype 1.0069, **higgs 1.0840**; score 1.0235. Same binary, key off vs on, higg
 (1.084). `tests/python_package_test/test_cuda_dense_wide_hist.py` trains seven shapes (engaging and declining, feature
 sampling, bagging, multiclass, both quantized modes) with the key on and off.
 
-On top of `partition_row_lanes` (10o, which re-spreads the thin partition's threads but keeps its per-row chain) and the
-finder / gen-bit / boundary keys of 10p-10s (nsys, higgs, 60 rounds, construct per level L0..L9 in us): with the
+On the search branch, on top of `partition_row_lanes` (which re-spread the thin partition's threads but kept its per-row
+chain; not kept, see below) and the search's finder, gen-bit and boundary keys (of those only `find_split_small`, 10p,
+is kept) (nsys, higgs, 60 rounds, construct per level L0..L9 in us): with the
 4-column partition's blocks skipped (a measurement-only build, wrong model) the construct went 897 -> 668 us per round
 (L0 120 -> 107, L9 112 -> 75): the second partition's re-gather of every row's index and gradient was a quarter of the
 kernel at every level but the root. Cells harness vs master 06bb754b, 2 pairs, md5 identical: numerai53bench 0.9992,
@@ -1758,7 +1760,14 @@ binary 1023 leaves): 1.0356. With the row-lane gate, final build vs master (2 pa
 1.0937; nsys higgs construct per round 897 -> 774 us (L9 112 -> 84 us; the root 120 -> 125 us, where the thin
 partition's rows were contiguous and cheap).
 
-## 10q. The quantized warp finder on small levels (`find_split_small`)
+On master 43a2e35c with `find_split_small` and `find_group_direction` (this build), same binary, key off vs on, tuner
+off, 4 pairs, median steady ms per round: higgs 1.049 (1.795 / 1.809 / 1.799 / 1.804 -> 1.716 / 1.721 / 1.710 / 1.722),
+covtype 0.997 (one partition: not engaged); tuner on, 4 pairs: covtype 1.000, hidden fewbin and nanbin shapes 1.002 /
+1.002 (not engaged); md5 identical. `partition_row_lanes` (the search's trailing-partition row lanes) measured on the
+same build: higgs 0.999, the fewbin shape 1.000, numerai53bench 0.998 (4 pairs): the 2x table leaves higgs one
+partition, so it no longer engaged where it gained, and it was not kept.
+
+## 10p. The quantized warp finder on small levels (`find_split_small`)
 
 The quantized level finder (`FindBestSplitsDiscretizedForLevelWarpKernel<true>`, §7c) runs a wide task (a column of
 more than 8 scan positions, e.g. 255 bins) on one warp at up to 8 positions per lane. At a shallow level the launch has a
@@ -1804,14 +1813,19 @@ Measured (cells harness, median ms per round over rounds 100.., tuner on, each a
 - With the shared prune bound (final build), same binary, key off vs on, 2 pairs: covtype 1.0174, higgs 1.0119,
   year-deep-fixed (300 rounds) 1.000 (1.2414/1.2495 -> 1.2435/1.2468 ms; the per-warp bound build read 0.968 there),
   missing-deep-stoch 1.0009; replicate before the shared bound, 3 pairs: covtype 1.0159 (3 of 3 pairs), higgs 1.0019.
-- Build with the per-warp bound vs master 9fba3ea6 (2 pairs): score 1.0081: covtype 1.018, higgs 1.011, NaN-Numerai 1.004, numerai53bench
-  0.9996 (md5 identical, no JIT). An earlier batch of the same build read covtype 0.952 with its stock runs at 3.84-3.91
-  ms against 3.77 ms elsewhere: a disturbed box, not the key (the same-binary A/Bs above bracket it).
+- Build with the per-warp bound vs its search parent 9fba3ea6 (`level_regions_presort`, not ported; 2 pairs): score
+  1.0081: covtype 1.018, higgs 1.011, NaN-Numerai 1.004, numerai53bench 0.9996 (md5 identical, no JIT). An earlier batch
+  of the same build read covtype 0.952 with its stock runs at 3.84-3.91 ms against 3.77 ms elsewhere: a disturbed box,
+  not the key (the same-binary A/Bs above bracket it).
 - Not kept: the gate at two waves (`find_split_waves:2`, levels 6-7 on covtype also split 4-way) 0.996 covtype, 0.994
   higgs: a launch past one wave is throughput-bound and the split's carry loads and four-warp setup are extra work there;
   a 2-warp tier for the launches just past the 4-warp gate (128 positions per warp) measured neutral (covtype 1.0012,
   higgs 0.9999) and was removed. The remaining ~7 us floor is the launch (~2 us), the survivor rounds and the output
   stage (fp64), which no further split of the positions shortens.
+- On master 43a2e35c with `dense_wide_hist` and `find_group_direction` (this build), same binary, key off vs on, tuner
+  off, 4 pairs, median steady ms per round: covtype 1.025 (3.834 / 3.823 / 3.835 / 3.820 -> 3.725 / 3.746 / 3.736 /
+  3.733), higgs 1.008, numerai53bench 1.001, NaN-Numerai 0.996; tuner on: numerai53bench 1.002, NaN-Numerai 1.000; md5
+  identical.
 
 ## 10q. The level warp finder's few-position warps, one scan direction each (`find_group_direction`)
 
@@ -1836,14 +1850,19 @@ direction) and wide tasks (a warp each) are unchanged.
 
 Same binary, key off vs on, 2 pairs, 500 rounds: NaN-Numerai 1.0268 with the padding (median ms/round 4.402 -> 4.287;
 1.0160 without it: 4.395 -> 4.326), md5-identical. Synthetic 7-value columns, regression, 255 leaves, depth 8, 300
-rounds, median ms/round off -> on, 3 runs each: 200k rows x 200 columns, missing values in half of them, feature_fraction
-0.5: 0.510 -> 0.468 (+9.0%; +2.1% without the padding); the same with missing values in 2 columns, all features:
-0.527 -> 0.502 (+5.1%); 1M x 100, bagging 0.5: 0.603 -> 0.598; NaN-Numerai bagged (bagging_fraction 0.5,
-bagging_freq 1, 200 rounds, 3 pairs): 3.915 -> 3.814, 3.913 -> 3.831, 3.910 -> 3.792; 500k rows x 60 7-value columns (10% missing in
-half) + 20 standard-normal columns (5% missing; wide tasks), all features: 0.583 -> 0.544 (+7.1%); 2M x 60 with 2 such columns: 0.921 -> 0.921. Cells
-harness vs master 06bb754b (with level_regions_presort): numerai53bench 1.0007, NaN-Numerai 1.0118 / 1.019 / 1.015,
-covtype 1.0045 / 0.996 / 1.005, higgs 1.0069 / 1.009 (the last three cells take no forward tasks: unchanged code path).
-`tests/python_package_test/test_cuda_find_group_direction.py` trains four shapes with the key on and off.
+rounds, median ms/round off -> on, 3 runs each: 200k rows x 200 columns, missing values in half of them,
+feature_fraction 0.5: 0.510 -> 0.468 (+9.0%; +2.1% without the padding); the same with missing values in 2 columns, all
+features: 0.527 -> 0.502 (+5.1%); 1M x 100, bagging 0.5: 0.603 -> 0.598; NaN-Numerai bagged (bagging_fraction 0.5,
+bagging_freq 1, 200 rounds, 3 pairs): 3.915 -> 3.814, 3.913 -> 3.831, 3.910 -> 3.792; 500k rows x 60 7-value columns
+(10% missing in half) + 20 standard-normal columns (5% missing; wide tasks), all features: 0.583 -> 0.544 (+7.1%); 2M x
+60 with 2 such columns: 0.921 -> 0.921. Cells harness vs master 06bb754b (with level_regions_presort): numerai53bench
+1.0007, NaN-Numerai 1.0118 / 1.019 / 1.015, covtype 1.0045 / 0.996 / 1.005, higgs 1.0069 / 1.009 (the last three cells
+take no forward tasks: unchanged code path). `tests/python_package_test/test_cuda_find_group_direction.py` trains four
+shapes with the key on and off. On master 43a2e35c with `dense_wide_hist` and `find_split_small` (this build), same
+binary, key off vs on, tuner off, 4 pairs, median steady ms per round: NaN-Numerai 1.036 (3.674 / 3.681 / 3.681 -> 3.547
+/ 3.551 / 3.558, a fourth off run at 3.891 disturbed), a 3.6M x 238 nanbin shape (6 bins, 61% of the columns 7% missing,
+binary, 1023 leaves, depth 10, bagging 0.8) 1.048 (5.100 / 5.089 / 5.099 / 5.113 -> 4.887 / 4.870 / 4.849 / 4.868), the
+fewbin and epsilon-like shapes (no missing values) 1.001 / 1.001; md5 identical.
 
 ## Multi-GPU: level-batched NCCL all-reduce
 
