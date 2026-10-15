@@ -2029,9 +2029,9 @@ by the round, called for the group's rounds in order), its class's gradients, th
 sample of the booster learner's sampler, and the tree counters of the bynode node keys and of the stochastic rounding.
 So the forest is the sequential forest, md5 for md5, whatever the group size; dropped trees (rollback, a parameter
 reset, early stopping) rewind the counters and the sampler. Group size (`cuda_plan=auto,forest_group:N`, 0 = auto):
-auto starts with one round (its class trees in parallel) and doubles while the time per tree of a steady-state group
-drops below 0.85 of the previous size's, up to 32 trees; a doubling that gains 5-15 % is kept, one that gains less goes
-back (a GPU-bound forest keeps one slot). It is capped by `num_iterations` and by device memory (a slot's measured
+auto starts with one round (its class trees in parallel) and doubles while a size's time per tree (the mean of two
+steady-state groups) drops below 0.85 of the previous size's, up to 32 trees; a doubling that gains less is kept if it
+gained at all, else the size goes back. It is capped by `num_iterations` and by device memory (a slot's measured
 footprint, its Init plus its first tree, beside an eighth of the device). Fixedpoint error feedback (a
 residual per class carried from tree to tree) groups one round. Sequential as before: multi-GPU, the host objective,
 GOSS, `bagging_freq` > 1, balanced or by-query bagging, linear trees, forced splits, vector leaves, CEGB, per-node draws

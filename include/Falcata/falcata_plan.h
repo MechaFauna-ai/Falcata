@@ -684,7 +684,8 @@ struct FalcataPlan {
   // learner; each other slot is a learner of the same config with its own partition, histograms and split finder,
   // a private view of the dataset's columns and the booster learner's bin matrix. The first round of a group trains
   // the group (whole rounds: forest_group trees, or auto: one round first, then doubling while the measured time per
-  // tree drops by 15%, up to 32 trees; capped by num_iterations and by device memory); the other rounds of the
+  // tree, the mean of two steady-state groups, drops by 15%, up to 32 trees; capped by num_iterations and by device
+  // memory); the other rounds of the
   // group take their trees from it. Every tree gets what sequential training gives it, in tree order: its round's
   // bag, its class's gradients, the next per-tree feature_fraction sample of the booster learner's sampler, and the
   // tree counters of the bynode node keys and the stochastic rounding noise: the same trees as sequential training,

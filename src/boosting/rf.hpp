@@ -426,6 +426,8 @@ class RF : public GBDT {
     forest_auto_last_rounds_ = 0;
     forest_auto_last_ms_ = 0.0;
     forest_auto_settled_ = false;
+    forest_auto_size_groups_ = 0;
+    forest_auto_size_ms_ = 0.0;
     #endif  // USE_CUDA
   }
 
@@ -654,11 +656,11 @@ class RF : public GBDT {
 
   /*!
    * \brief forest_group auto: the group size from measured time per tree. The first group holds one round (its class
-   *        trees in parallel); after a group whose time is the steady state (no tree was its slot's first, not the
-   *        training's first group) the size doubles while the time per tree drops below 0.85 of the last size's
-   *        and enough rounds are left (four groups of the doubled size), up to kForestGroupMaxTrees trees; a
-   *        doubling that gains 5-15 % is kept, one that gains less goes back to the last size. The model does not
-   *        depend on the size.
+   *        trees in parallel); a size's time per tree is the mean of its first two groups whose time is the steady
+   *        state (no tree was its slot's first, not the training's first group). The size doubles while that time
+   *        drops below 0.85 of the last size's and enough rounds are left (four groups of the doubled size), up to
+   *        kForestGroupMaxTrees trees; a doubling that gains less is kept if it gained at all, else the size goes
+   *        back. The model does not depend on the size.
    */
   void ForestAutoSize(const int rounds, const int per_round, const int num_trees, const double group_ms) {
     const bool first_group = forest_auto_groups_++ == 0;
@@ -666,10 +668,17 @@ class RF : public GBDT {
         rounds != std::max(1, forest_auto_rounds_)) {
       return;
     }
-    const double ms_per_tree = group_ms / num_trees;
+    // two steady-state groups per size: one group's time moves by several percent from group to group
+    forest_auto_size_ms_ += group_ms / num_trees;
+    if (++forest_auto_size_groups_ < 2) {
+      return;
+    }
+    const double ms_per_tree = forest_auto_size_ms_ / forest_auto_size_groups_;
+    forest_auto_size_ms_ = 0.0;
+    forest_auto_size_groups_ = 0;
     if (forest_auto_last_rounds_ > 0 && ms_per_tree > 0.85 * forest_auto_last_ms_) {
-      // the doubling gained less than 15 %: keep it if it gained 5 %, else go back (no slot for nothing)
-      forest_auto_rounds_ = ms_per_tree < 0.95 * forest_auto_last_ms_ ? rounds : forest_auto_last_rounds_;
+      // the doubling gained less than 15 %: the growth ends, at the doubled size if it gained at all
+      forest_auto_rounds_ = ms_per_tree < forest_auto_last_ms_ ? rounds : forest_auto_last_rounds_;
       forest_auto_settled_ = true;
       return;
     }
@@ -704,6 +713,9 @@ class RF : public GBDT {
   int forest_auto_last_rounds_ = 0;
   double forest_auto_last_ms_ = 0.0;
   bool forest_auto_settled_ = false;
+  /*! \brief the current size's steady-state groups so far and their summed time per tree */
+  int forest_auto_size_groups_ = 0;
+  double forest_auto_size_ms_ = 0.0;
   std::unique_ptr<CUDAForestTrainer> forest_trainer_;
   /*! \brief rounds grown ahead, oldest first */
   std::deque<ForestRound> forest_rounds_;

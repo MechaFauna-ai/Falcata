@@ -102,9 +102,10 @@ the per-tree train score update). Host `Tree` objects are built at each slot's t
 `RebuildFromHostSplits` under selective growth); the train score is replayed lazily (`rf_lazy_train_score`, #103).
 
 Group size (`cuda_plan=auto,forest_group:N`, 0 = auto). Auto starts with one round (its class trees in parallel) and
-doubles the rounds per group while the measured time per tree of a steady-state group (no slot's first tree, not
-the training's first group) drops below 0.85 of the previous size's, up to 32 trees and while four groups of the next
-size fit in the rounds left; a doubling that gains 5-15 % is kept, one that gains less goes back. The model does not
+doubles the rounds per group while a size's measured time per tree (the mean of two steady-state groups: no slot's
+first tree, not the training's first group) drops below 0.85 of the previous size's, up to 32 trees and while four
+groups of the next size fit in the rounds left; a doubling that gains less is kept if it gained at all, else the size
+goes back. The model does not
 depend on the size, so the runtime may choose it. A slot's level buffers are sized for any level when the slot is made
 (`PresizeLevelBuffers`), so a slot's steady state has no allocation and no device synchronize, which would stall every
 slot.
