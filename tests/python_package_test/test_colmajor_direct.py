@@ -4,10 +4,12 @@ the model.
 
 cuda_plan key colmajor_direct (with colmajor_fill) builds no row-major matrix at Init. The training regime picks the
 one copy the device holds:
-  - compact (feature_fraction below view_mask_ff): the column-major store (the Dataset's 4-bit columns end to end),
-    from which every tree fills its compact view of the sampled columns;
-  - mask (feature_fraction at or above view_mask_ff): the full view (the row-major layout, filled once from the
-    columns a chunk at a time), read by every tree under its column masks; no store.
+  - compact (feature_fraction below view_mask_ff, or above it where the pair-joint construct serves the compact view,
+    cuda_plan key view_pair_rule): the column-major store (the Dataset's 4-bit columns end to end), from which every
+    tree fills its compact view of the sampled columns;
+  - mask (feature_fraction at or above view_mask_ff where the pair-joint construct cannot serve the view, or every
+    column sampled): the full view (the row-major layout, filled once from the columns a chunk at a time), read by
+    every tree under its column masks; no store.
 cuda_plan view_mode:compact|mask forces a regime. A compact-regime reader that needs every column (a tree that
 samples every column, the split view of a pack-codec tree) gets the full view, filled from the store and kept while
 trees use it. colmajor_direct:off builds the row-major matrix at Init, as before. Every model must be byte-identical
@@ -58,7 +60,13 @@ SHAPES = {
     # the tuner probe's shape: shallow trees over enough rows that the regimes' per-tree times differ clearly
     # (measured 0.8 vs 2.1 ms at feature_fraction 0.1, 2.6 vs 2.2 ms at 0.99, compact vs mask)
     "probe": (2_000_001, 400, 6, {"feature_fraction": 0.1, "num_leaves": 15, "max_depth": 4}),
+    # 15 bins per column: a pair-joint table holds 225 cells per byte, so 400 columns at feature_fraction 0.9 (about
+    # 180 bytes per partition) are far past its 48 KB, where 6-bin "chunked" at 0.9 (225 bytes of 37 cells) fits
+    "wide15": (100_001, 400, 15, {"feature_fraction": 0.9}),
 }
+
+# view_pair_rule:off, the threshold alone: mask at feature_fraction >= view_mask_ff (0.85)
+THRESHOLD_ONLY = "auto,view_pair_rule:off"
 
 OFF = "auto,colmajor_direct:off"
 
@@ -261,11 +269,12 @@ def test_compact_regime_store_matches_the_columns_cuda(shape):
 
 
 @_REQUIRES_CUDA
-@pytest.mark.parametrize("shape", ["ff1", "chunked"])
-def test_mask_regime_holds_no_store_cuda(shape):
-    """High feature_fraction: the full view is filled once from the columns (several staging chunks on the wide
-    shape), byte-exact, and the store is never on the device."""
-    out, md5 = _child(shape, verify=True)
+@pytest.mark.parametrize(("shape", "plan"), [("ff1", "auto"), ("chunked", THRESHOLD_ONLY), ("wide15", "auto")])
+def test_mask_regime_holds_no_store_cuda(shape, plan):
+    """Every column sampled, or a high feature_fraction the pair-joint construct cannot serve (wide15; chunked under
+    the threshold alone): the full view is filled once from the columns (several staging chunks on the wide shape),
+    byte-exact, and the store is never on the device."""
+    out, md5 = _child(shape, plan=plan, verify=True)
     assert out.count(MASK) == 1, out[-3000:]
     assert "no column-major store on the device" in out
     assert "the full view filled from the Dataset's columns matches the host-packed 4-bit row data" in out
@@ -279,7 +288,7 @@ def test_regime_follows_feature_fraction_changes_cuda():
     """reset_parameter(feature_fraction) moves the matrix to the other regime: compact -> mask releases the store,
     mask -> compact releases the full view; the model matches colmajor_direct:off throughout."""
     steps = (None, 0.95, 0.2)
-    out, md5 = _child("sampled", steps=steps)
+    out, md5 = _child("sampled", plan=THRESHOLD_ONLY, steps=steps)
     lines = [ln for ln in out.splitlines() if "regime (" in ln or ln.startswith("STEP")]
     assert len(lines) == 5, lines
     assert STORE in lines[0], lines
@@ -290,6 +299,55 @@ def test_regime_follows_feature_fraction_changes_cuda():
     assert STORE in lines[4], lines
     assert "full view released" in lines[4], lines
     assert md5 == _md5_off("sampled", steps)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(
+    ("shape", "fraction", "regime"),
+    [("chunked", 0.9, STORE), ("chunked", 0.8, STORE), ("wide15", 0.9, MASK), ("wide15", 0.8, STORE)],
+)
+def test_view_pair_rule_cuda(shape, fraction, regime):
+    """cuda_plan key view_pair_rule (default on): at or above view_mask_ff (0.85) auto keeps the compact regime where
+    the pair-joint construct serves the compact view (6-bin chunked at 0.9) and takes mask where it cannot (15-bin
+    wide15 at 0.9); below the threshold compact either way. Under view_pair_rule:off the threshold alone decides.
+    Every arm trains the colmajor_direct:off model."""
+    out, md5 = _child(shape, feature_fraction=fraction)
+    assert out.count(regime) == 1, out[-3000:]
+    assert out.count(STORE) + out.count(MASK) == 1, out[-3000:]
+    if fraction >= 0.85:
+        # the prediction is the construct's own choice: served runs the pair-joint kernel, not served never does
+        served = "): served" in out and "): not served" not in out
+        assert served == (regime == STORE), out[-3000:]
+        assert ("quantized construct: pair_hist kernel" in out) == (regime == STORE), out[-3000:]
+    off, md5_off_rule = _child(shape, plan=THRESHOLD_ONLY, feature_fraction=fraction)
+    assert off.count(MASK if fraction >= 0.85 else STORE) == 1, off[-3000:]
+    assert md5 == md5_off_rule == _md5_off(shape, (None,), feature_fraction=fraction)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("plan_keys", ["pack_bit3:on", "graph_quant:on"])
+def test_view_pair_rule_declines_where_the_construct_always_does_cuda(plan_keys):
+    """The pair-joint construct never reads a pack-codec view (pack_bit3 takes chunked's 6-bin columns) nor runs on
+    graph_quant's captured levels: there the rule must not keep the compact regime, so chunked at 0.9 takes mask (as
+    the threshold alone did), and trains the colmajor_direct:off model."""
+    plan = f"auto,{plan_keys}"
+    out, md5 = _child("chunked", plan=plan, feature_fraction=0.9)
+    assert out.count(MASK) == 1, out[-3000:]
+    assert STORE not in out, out[-3000:]
+    assert "quantized construct: pair_hist kernel" not in out, out[-3000:]
+    assert md5 == _child("chunked", plan=f"{OFF},{plan_keys}", feature_fraction=0.9)[1]
+
+
+@_REQUIRES_CUDA
+def test_view_pair_rule_skips_the_tuner_probe_cuda(tmp_path):
+    """With the tuner on and feature_fraction inside the probe band, the default rule decides without the probe: no
+    probe trees, no switch, no view1: wisdom entry."""
+    out, md5 = _child("probe", plan="auto,tuner:on", home=tmp_path, rounds=18, feature_fraction=0.9)
+    assert "tuner probe" not in out, out[-3000:]
+    assert out.count(STORE) + out.count(MASK) == 1, out[-3000:]
+    wisdom = tmp_path / ".cache" / "falcata" / "wisdom.txt"
+    assert not wisdom.exists() or "view1:" not in wisdom.read_text()
+    assert md5 == _md5_off("probe", (None,), rounds=18, feature_fraction=0.9)
 
 
 @_REQUIRES_CUDA
@@ -329,10 +387,17 @@ def test_compact_regime_pack_codec_split_view_cuda():
 
 
 def test_view_mode_plan_keys_parse():
-    """view_mode takes auto|compact|mask and view_mask_ff a number; anything else is refused (the plan is resolved
-    at Dataset construction too, so this needs no GPU)."""
+    """view_mode takes auto|compact|mask, view_mask_ff a number and view_pair_rule on|off; anything else is refused
+    (the plan is resolved at Dataset construction too, so this needs no GPU)."""
     X, y = _data("ff1")
-    for bad in ("view_mode:sometimes", "view_mask_ff:high", "view_mask_ff:-1", "view_probe_lo:x", "view_probe_hi:-2"):
+    for bad in (
+        "view_mode:sometimes",
+        "view_mask_ff:high",
+        "view_mask_ff:-1",
+        "view_probe_lo:x",
+        "view_probe_hi:-2",
+        "view_pair_rule:sometimes",
+    ):
         p = {**BASE, "device_type": "cpu", "cuda_plan": f"auto,{bad}"}
         with pytest.raises(flc.basic.FalcataError, match="cuda_plan: bad value"):
             flc.Dataset(X[:2000], label=y[:2000], params=p).construct()
@@ -349,7 +414,8 @@ def test_compact_regime_that_does_not_fit_falls_back_to_mask_cuda():
     assert md5 == _md5_off("sampled", (None,))
 
 
-PROBE_PLAN = "auto,tuner:on,view_probe_lo:0,view_probe_hi:1"
+# the probe runs only under view_pair_rule:off (the default rule replaces it)
+PROBE_PLAN = "auto,tuner:on,view_pair_rule:off,view_probe_lo:0,view_probe_hi:1"
 PROBE_LINE = re.compile(
     r"colmajor_direct: tuner probe: compact ([0-9.]+) ms, mask ([0-9.]+) ms per tree .* -> (\w+) regime"
 )
@@ -409,7 +475,7 @@ def test_tuner_probe_skips_a_regime_that_does_not_fit_cuda(tmp_path):
 @_REQUIRES_CUDA
 def test_tuner_leaves_the_static_rule_outside_the_band_cuda(tmp_path):
     """Outside [view_probe_lo, view_probe_hi] (default [0.5, 0.95]) the static rule decides even with the tuner on."""
-    out, _ = _child("probe", plan="auto,tuner:on", home=tmp_path, rounds=18, feature_fraction=0.1)
+    out, _ = _child("probe", plan="auto,tuner:on,view_pair_rule:off", home=tmp_path, rounds=18, feature_fraction=0.1)
     assert "tuner probe" not in out, out[-3000:]
     assert out.count(STORE) == 1, out[-3000:]
 

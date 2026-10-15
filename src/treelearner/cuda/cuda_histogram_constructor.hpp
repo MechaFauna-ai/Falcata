@@ -709,6 +709,9 @@ class CUDAHistogramConstructor {
   bool compact_regime_fits() const { return colmajor_direct_ && compact_fits_; }
   /*! \brief the regime the static rule picks for the current feature_fraction (true = mask) */
   bool ViewMaskWanted() const;
+  /*! \brief cuda_plan key view_pair_rule: whether the pair-joint construct can serve the compact view of the current
+   *  feature_fraction (its 48 KB joint tables and thread limit, predicted from the partitions; see the definition) */
+  bool PairJointServesView() const;
   /*! \brief colmajor_direct: move the bin matrix to the given regime between trees (the tuner's probe); a no-op when
    *  already there. Legal at any tree: both regimes train the same model (see the definition). */
   void SwitchViewRegime(bool mask, const char* why);

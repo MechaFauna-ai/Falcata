@@ -483,9 +483,11 @@ void CUDASingleGPUTreeLearner::InitViewRegime(const char* why) {
   const double fraction = (config_->feature_fraction > 0.0 && config_->feature_fraction < 1.0) ?
     config_->feature_fraction : 1.0;
   // the probe band: measured instead of the static rule, while the tuner runs (quantized training) and no knob probe
-  // is in progress (its candidates would confound the comparison)
-  const bool in_band = plan.view_mode == FalcataPlan::kViewModeAuto && TunerActive() && plan.compact_quant &&
-                       fraction >= plan.view_probe_lo && fraction <= plan.view_probe_hi;
+  // is in progress (its candidates would confound the comparison). Only under view_pair_rule:off: by default the pair
+  // rule decides from view_mask_ff up and the threshold below it, so there are no probe trees, no switches and no
+  // view1: wisdom entry, read or written (performance.md, colmajor_direct: what that gives up below the threshold).
+  const bool in_band = plan.view_mode == FalcataPlan::kViewModeAuto && !plan.view_pair_rule && TunerActive() &&
+                       plan.compact_quant && fraction >= plan.view_probe_lo && fraction <= plan.view_probe_hi;
   int prefer = -1;
   bool probe = false;
   if (in_band) {

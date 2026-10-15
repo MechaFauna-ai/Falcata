@@ -231,19 +231,31 @@ struct FalcataPlan {
   //  - mask: one full row-major matrix, filled from the columns once, no store,
   //    no per-tree copy; the per-tree sample reaches the kernels as the column
   //    masks they already take.
-  // key view_mode: auto (mask iff feature_fraction >= view_mask_ff, or the
-  // compact view is off for this training) | compact | mask.
+  // key view_mode: auto (mask iff feature_fraction >= view_mask_ff and, under view_pair_rule, the pair-joint
+  // construct cannot serve the compact view; or the compact view is off for this training) | compact | mask.
   int view_mode = kViewModeAuto;
-  // key view_mask_ff: the auto threshold, a number >= 0 (above 1 = never mask). Measured on numerai53-deep
-  // (6.79M x 3555, 200 rounds): compact 189 vs mask 224 ms per round at ff 0.80, 246 vs 224 at 0.85; md5
-  // identical at every ff. The mask regime also holds one matrix where compact holds the store plus an ff-sized
-  // view (13.0 vs 22.2 GB peak at 0.80).
+  // key view_mask_ff: the auto threshold, a number >= 0 (above 1 = never mask). Below it the compact regime; at or
+  // above it the pair rule decides (alone, view_pair_rule:off: mask). Measured on numerai53-deep (6.79M x 3555, 200
+  // rounds, 2026-10-03, before the pair-joint construct): compact 189 vs mask 224 ms per round at ff 0.80, 246 vs
+  // 224 at 0.85; md5 identical at every ff. The mask regime also holds one matrix where compact holds the store plus
+  // an ff-sized view (13.0 vs 22.2 GB peak at 0.80).
   double view_mask_ff = 0.85;
-  // keys view_probe_lo / view_probe_hi: with the tuner active (cuda_plan tuner, quantized training) and view_mode
-  // auto, a feature_fraction in [view_probe_lo, view_probe_hi] is decided by measurement instead: the first trees
-  // run in each regime (both train the same model) and the faster one is kept and cached in the tuner's wisdom.
-  // Outside the band, the static rule above. The numerai53-deep sweep's margins: compact ahead by 39% at 0.5 and
-  // 16% at 0.8, mask ahead by 9-15% from 0.85 to 0.99.
+  // key view_pair_rule: at or above view_mask_ff, auto takes the compact regime exactly where the pair-joint
+  // construct (pair_hist) serves the compact view: every partition's sampled columns (expected count plus two
+  // standard deviations) keep its joint table within 48 KB of shared memory and the block within the kernel's
+  // thread limit, on the nibble view (no pack codec) outside graph_quant (CUDAHistogramConstructor::
+  // PairJointServesView); mask otherwise, and whenever every column is sampled. Calibrated 2026-10-15 (RTX 5090,
+  // md5 identical in every arm): numerai53bench (5 bins, partitions of up to 1008 columns) compact 77-89 vs mask
+  // 119-125 ms per round from ff 0.85 to 0.95 (served), 157-166 vs 118-121 from 0.97 to 0.99 (not served);
+  // numerai53bench-nan (6-bin columns, 37-cell tables) 169-181 vs 141-145 from 0.85 to 0.99 (not served); a 15-bin
+  // 1M x 1500 shape 9.5-10.8 vs 6.2-6.4 at 0.85 and 0.95 (not served). It replaces the tuner's view probe, which
+  // runs only under view_pair_rule:off.
+  bool view_pair_rule = true;      // key: view_pair_rule
+  // keys view_probe_lo / view_probe_hi: with the tuner active (cuda_plan tuner, quantized training), view_mode auto
+  // and view_pair_rule off, a feature_fraction in [view_probe_lo, view_probe_hi] is decided by measurement instead:
+  // the first trees run in each regime (both train the same model) and the faster one is kept and cached in the
+  // tuner's wisdom. Outside the band, the threshold. The numerai53-deep sweep's margins (2026-10-03): compact ahead
+  // by 39% at 0.5 and 16% at 0.8, mask ahead by 9-15% from 0.85 to 0.99.
   double view_probe_lo = 0.5;
   double view_probe_hi = 0.95;
   // root_hist_short_blocks: rounds of the resident blocks the fused fill's grid
@@ -924,6 +936,7 @@ struct FalcataPlan {
     if (key == "l2_policy") return &l2_policy;
     if (key == "colmajor_fill") return &colmajor_fill;
     if (key == "colmajor_direct") return &colmajor_direct;
+    if (key == "view_pair_rule") return &view_pair_rule;
     if (key == "tiled_fill") return &tiled_fill;
     if (key == "warp_find") return &warp_find;
     if (key == "warp_find_mid_ppl") return &warp_find_mid_ppl;
