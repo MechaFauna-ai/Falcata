@@ -183,6 +183,40 @@ void CUDAColumnData::Init(const int num_columns,
   InitColumnMetaInfo();
 }
 
+void CUDAColumnData::InitViewOf(const CUDAColumnData* source) {
+  CHECK(source != nullptr);
+  CHECK(source->view_source_ == nullptr);
+  CHECK(data_by_column_.empty());
+  view_source_ = source;
+  gpu_device_id_ = source->gpu_device_id_;
+  num_threads_ = source->num_threads_;
+  num_data_ = source->num_data_;
+  num_columns_ = source->num_columns_;
+  // the original encodings: this view starts out publishing the original buffers, whatever source publishes now
+  column_bit_type_ = source->original_column_bit_type_;
+  original_column_bit_type_ = source->original_column_bit_type_;
+  column_is_sparse_ = source->column_is_sparse_;
+  feature_min_bin_ = source->feature_min_bin_;
+  feature_max_bin_ = source->feature_max_bin_;
+  feature_offset_ = source->feature_offset_;
+  feature_most_freq_bin_ = source->feature_most_freq_bin_;
+  feature_default_bin_ = source->feature_default_bin_;
+  feature_missing_is_zero_ = source->feature_missing_is_zero_;
+  feature_missing_is_na_ = source->feature_missing_is_na_;
+  feature_mfb_is_zero_ = source->feature_mfb_is_zero_;
+  feature_mfb_is_na_ = source->feature_mfb_is_na_;
+  feature_to_column_ = source->feature_to_column_;
+  init_skipped_per_column_alloc_ = source->init_skipped_per_column_alloc_;
+  if (init_skipped_per_column_alloc_) {
+    compact_column_host_view_.assign(num_columns_, nullptr);
+  }
+  SetCUDADevice(gpu_device_id_, __FILE__, __LINE__);
+  cuda_data_by_column_.InitFromHostVector(OriginalColumnPointers());
+  original_column_view_active_ = !init_skipped_per_column_alloc_;
+  ++column_view_generation_;
+  InitColumnMetaInfo();
+}
+
 void CUDAColumnData::CopySubrow(
   const CUDAColumnData* full_set,
   const data_size_t* used_indices,
@@ -295,7 +329,7 @@ void CUDAColumnData::SetCompactColumnView(const std::vector<int>& column_to_comp
       // which the row matrix spells out). Publishing those bytes would make the
       // split-apply kernels route this feature's rows by the wrong rule, so
       // this column keeps its own buffer.
-      view[c] = data_by_column_[c]->RawData();
+      view[c] = OriginalColumnPointer(c);
       continue;
     }
     if (c < static_cast<int>(column_to_compact_slot.size()) && column_to_compact_slot[c] >= 0) {
@@ -326,7 +360,7 @@ void CUDAColumnData::RestoreOriginalColumnView() {
     return;
   }
   CHECK(has_original_column_view());
-  cuda_data_by_column_.InitFromHostVector(GetDataByColumnPointers(data_by_column_));
+  cuda_data_by_column_.InitFromHostVector(OriginalColumnPointers());
   // The host mirror only ever describes a compact view; with the originals back
   // in place GetColumnData reads data_by_column_ directly.
   compact_column_host_view_.clear();
@@ -363,7 +397,7 @@ void CUDAColumnData::SetCompactPackedColumnView(const std::vector<int>& column_t
         // SparseBin reports 8/16/32, Init Fatals on anything else, and nothing
         // flips a sparse column's published bit type. HybridLoadBin and the
         // packed traversal therefore only ever see 4/8/16/32 here.
-        packed_column_ptr_[c] = data_by_column_[c]->RawData();
+        packed_column_ptr_[c] = OriginalColumnPointer(c);
         packed_column_bit_type_[c] = column_bit_type_[c];
       } else if (colmajor_buf != nullptr) {
         // column-major nibble store of the bin matrix (cuda_plan key

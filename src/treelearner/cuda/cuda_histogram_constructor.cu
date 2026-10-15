@@ -1771,6 +1771,35 @@ __global__ void ComputeBatchedConstructDimYKernel(
   }
 }
 
+// ZeroHistSlots' kernel: blockIdx.y names the slot, the blocks along x zero its 16-byte words (a slot is
+// 2 * num_total_bin * planes doubles, an even count, at a 16-byte aligned offset of the 256-byte aligned buffer)
+__global__ void ZeroHistSlotsKernel(hist_t* hist, const int* slots, const size_t slot_size) {
+  uint4* const slot = reinterpret_cast<uint4*>(hist + static_cast<size_t>(slots[blockIdx.y]) * slot_size);
+  const size_t num_words = slot_size / 2;
+  const uint4 zero = make_uint4(0u, 0u, 0u, 0u);
+  for (size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x; i < num_words;
+       i += static_cast<size_t>(gridDim.x) * blockDim.x) {
+    slot[i] = zero;
+  }
+}
+
+void CUDAHistogramConstructor::LaunchZeroHistSlotsKernel(const std::vector<int>& slots, const size_t slot_size) {
+  static_assert(sizeof(hist_t) == 8, "ZeroHistSlotsKernel zeroes slots of doubles as 16-byte words");
+  const int num_slots = static_cast<int>(slots.size());
+  if (cuda_zero_slots_.Size() < slots.size()) {
+    cuda_zero_slots_.Resize(slots.size());
+  }
+  // pageable source: the copy is staged before it returns, so the caller's vector may change at once; the legacy
+  // stream orders it before the kernel, as the memsets it replaces were ordered before the next construct
+  CopyFromHostToCUDADeviceAsync<int>(cuda_zero_slots_.RawData(), slots.data(), slots.size(), 0, __FILE__, __LINE__);
+  constexpr int kThreads = 256;
+  const size_t num_words = slot_size / 2;
+  const int blocks_x = static_cast<int>(std::max<size_t>(1, std::min<size_t>(64, (num_words + kThreads - 1) / kThreads)));
+  CHECK_LE(num_slots, 65535);
+  ZeroHistSlotsKernel<<<dim3(blocks_x, num_slots), kThreads, 0, 0>>>(cuda_hist_.RawData(), cuda_zero_slots_.RawData(),
+                                                                   slot_size);
+}
+
 void CUDAHistogramConstructor::LaunchComputeBatchedConstructDimYKernel(
   const data_size_t* level_smaller_num_data,
   const int num_pairs,
