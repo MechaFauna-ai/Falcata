@@ -4866,6 +4866,16 @@ void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
   }
 }
 
+void CUDASingleGPUTreeLearner::PresizeLevelBuffers() {
+  constexpr size_t kMaxPresizeBytes = size_t{256} << 20;
+  const int max_pairs = config_->num_leaves / 2 + 2;
+  cuda_data_partition_->PresizeLevelBuffers();
+  cuda_best_split_finder_->PresizeLevelOutput(max_pairs, kMaxPresizeBytes);
+  if (config_->use_quantized_grad) {
+    cuda_histogram_constructor_->PresizeBitChangeScratch(max_pairs, kMaxPresizeBytes);
+  }
+}
+
 CUDASingleGPUTreeLearner::TreeCounters CUDASingleGPUTreeLearner::tree_counters() const {
   TreeCounters counters;
   counters.bynode = bynode_tree_count_;

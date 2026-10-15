@@ -157,14 +157,19 @@ void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score
   cuda_hessians_ = hessians;
   // every tree starts on plane 0, whose hessians are the ones every consumer reads
   grad_only_plane_ = false;
-  if (l2_carveout_bytes_ > 0 && gradients != nullptr) {
+  const size_t l2_window_bytes = std::min(l2_max_window_bytes_,
+    static_cast<size_t>(num_data_) * (use_quantized_grad_ ? sizeof(int32_t) : 2 * sizeof(score_t)));
+  if (l2_carveout_bytes_ > 0 && gradients != nullptr &&
+      (gradients != l2_window_base_ || l2_window_bytes != l2_window_bytes_)) {
     // Pin the per-row gradient buffer (quant: packed int32 grad/hess pairs read
     // once per level per row through data_indices gather) as L2-persisting on
     // every construct stream. One window per stream is the API limit; the
-    // gradient buffer is the highest-reuse scatter target.
+    // gradient buffer is the highest-reuse scatter target. A stream keeps its window until it is set again, so it is
+    // set only when the buffer changes (a forest's slot grows every tree of a class from the same column).
+    l2_window_base_ = gradients;
+    l2_window_bytes_ = l2_window_bytes;
     cudaStreamAttrValue attr{};
-    const size_t bytes = std::min(l2_max_window_bytes_,
-      static_cast<size_t>(num_data_) * (use_quantized_grad_ ? sizeof(int32_t) : 2 * sizeof(score_t)));
+    const size_t bytes = l2_window_bytes;
     attr.accessPolicyWindow.base_ptr = const_cast<score_t*>(gradients);
     attr.accessPolicyWindow.num_bytes = bytes;
     attr.accessPolicyWindow.hitRatio =

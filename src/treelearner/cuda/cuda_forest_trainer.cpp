@@ -31,6 +31,7 @@ CUDAForestTrainer::CUDAForestTrainer(const Config* config, const Dataset* train_
   CUDASingleGPUTreeLearner* main = static_cast<CUDASingleGPUTreeLearner*>(main_learner);
   // slot 0 keeps the dataset's column view: nothing else installs one while the group trains
   main->EnableForestSlot(false);
+  main->PresizeLevelBuffers();
   slots_.push_back(main);
   slot_trained_.push_back(true);
 }
@@ -73,6 +74,7 @@ int CUDAForestTrainer::EnsureSlots(const int wanted) {
     slot->EnableForestSlot(true, slots_[0]);
     const auto init_start = std::chrono::steady_clock::now();
     slot->Init(train_data_, is_constant_hessian_);
+    slot->PresizeLevelBuffers();
     size_t free_after = 0;
     CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_after, &total));
     const size_t init_bytes = free_before > free_after ? free_before - free_after : size_t{0};
