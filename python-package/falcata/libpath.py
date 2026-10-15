@@ -18,8 +18,8 @@ _DLL_DIR_HANDLES: list = []
 def _add_cuda_dll_dirs() -> None:
     """Make the CUDA runtime DLLs discoverable before loading lib_falcata.dll.
 
-    A CUDA-enabled ``lib_falcata.dll`` depends on the CUDA runtime, NVRTC and
-    the CUDA driver. Since Python 3.8, ctypes no longer searches ``%PATH%`` for
+    A CUDA-enabled ``lib_falcata.dll`` depends on the CUDA runtime and the CUDA
+    driver. Since Python 3.8, ctypes no longer searches ``%PATH%`` for
     a DLL's dependencies on Windows, so loading a CUDA build fails with
     "Could not find module ... (or one of its dependencies)" unless the CUDA
     ``bin`` directory is registered explicitly via ``os.add_dll_directory``.

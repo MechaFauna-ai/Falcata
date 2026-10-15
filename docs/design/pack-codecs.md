@@ -27,9 +27,9 @@ as constexpr). Kernels template on the codec (`class PACK`), dispatched once
 per launch — the same pattern as the existing `BIN_TYPE`/`SHARED_HIST_SIZE`
 parameters. Scope of this cut: the QUANTIZED batched compact chain (fill
 transcode + discretized batched construct); the split readers fall back to
-the original nibble row data when a codec view is active; the NVRTC JIT
-declines codec views. Codec choice is UNIFORM per tree: eligible only when
-every sampled column's value bound fits the codec.
+the original nibble row data when a codec view is active. Codec choice is
+UNIFORM per tree: eligible only when every sampled column's value bound fits
+the codec.
 
 Magic division: divisor d = R^i with shift = 32 + ceil(log2 d) is exact for
 every 32-bit dividend unconditionally (error < d <= 2^L); the 33-bit
@@ -113,4 +113,3 @@ Decisions:
   all-or-nothing per-tree eligibility that disengages radix5/6 on numerai.
 - Split readers would need codec-aware packed column views to avoid the ~9%
   fallback penalty.
-- The JIT could bake magic constants as literals per shape.

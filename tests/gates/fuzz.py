@@ -75,8 +75,7 @@ def sample_spec(rng):
     ]:
         if rng.random() < 0.15:
             plan.append(f"{key}:off")
-    if rng.random() < 0.15:
-        plan.append("construct_jit:on")
+    rng.random()  # was the construct_jit:on draw (key removed 2026-10-15); kept so a --seed samples the same specs
     if rng.random() < 0.15:
         plan.append("compact_prefill:on")
     if rng.random() < 0.10:

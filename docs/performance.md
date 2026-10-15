@@ -705,10 +705,8 @@ bit-identical in every cell):
   gradient and bin loads, before their shared atomics, and prefetches the next
   8 indices meanwhile; the flush skips empty bins. **+46.1%
   numerai-deep, +16.9% higgs-deep** at 100 rounds; against the construct JIT
-  (300 rounds) +26.1% numerai-deep, +7.7% higgs-deep. Wide partitions (two columns per
-  thread) keep the unbatched loop. Under `auto` it also replaces the construct
-  JIT on long runs (the JIT body is the unbatched loop); an explicit
-  `construct_jit:on` runs the JIT in its place, with a warning. Bit-identical.
+  (300 rounds; §7b, since removed) +26.1% numerai-deep, +7.7% higgs-deep. Wide
+  partitions (two columns per thread) keep the unbatched loop. Bit-identical.
 - **`tuner`** — a per-tree bandit over behavior-preserving execution knobs,
   best-of-15 timing, re-probe every 3000 trees: +2.1% numerai-deep, +2.7%
   year from the saturation-floor knob alone. Quantized training only —
@@ -828,32 +826,32 @@ features, numerai-deep on that set drops from 29.6 to 18.3 ms per round
 (**1.62x**) and numerai-example from 17.0 to 9.0 ms (**1.90x**), identical
 models (interleaved fresh-process A/B, 300 rounds, RTX 5090).
 
-## 7b. Runtime-JIT construct kernels (`construct_jit`)
+## 7b. Runtime-JIT construct kernels (removed 2026-10-15)
 
-The NVRTC infrastructure (shape-keyed compile cache, AOT fallback,
-self-test-then-promote) serves ALL mask-free quantized dense shapes, not just
-the compact view. The specialized kernel strips the runtime branches the AOT
-kernel must carry (feature/bin masks, graph state, speculative sizing,
-wide-partition predication) — on an issue-bound kernel those branches are the
-remaining fat. It is bit-identical everywhere; the canonical 700-round locks
-reproduce exactly with the JIT live.
+From July to October 2026 an NVRTC JIT (`construct_jit`) compiled the quantized dense and compact construct at
+runtime, self-tested it bit-identical against a synthetic reference and launched it in place of the AOT kernel. It
+baked in only the shared-histogram size and the 4-/8-bit packing, which the AOT kernel already takes as template
+parameters; its body was the unbatched row loop without the mask, graph and wide-partition branches. Once `row_batch`
+(§7) beat it, `auto` resolved it off, and it ran only with `construct_jit:on` or with `row_batch:off` on quantized
+runs of 300+ rounds. An audit (kernel-evo `runs/jit_audit/ANALYSIS.md`, RTX 5090, master 43a2e35c) found it
+slower everywhere when forced: +0.17-0.19 s start-up and 11-270% slower per round, with no break-even round count.
+Default T over forced-JIT T (500 / 1000 / 30000 rounds; models md5-identical in every arm):
 
-**Measured (leave-one-out ablation):** small single-digit effects on the
-big cells — numerai-deep sits inside run-to-run noise (consecutive
-measurements: +8.4% and +0.3%). The one above-noise reading, fraud-deep
-+48%, is a sub-second cell — too swingy to quote as precise (§7 methodology
-note), which is also why this section carries no plot: the honest chart
-would show a single bar of exactly that number.
+| shape | default (first call s / steady ms per round) | JIT forced | ratio |
+|---|---|---|---|
+| higgs 255 leaves d8 | 0.149 / 1.474 | 0.332 / 2.095 | 0.64 / 0.67 / 0.70 |
+| numerai53bench-deep-stoch | 0.404 / 3.507 | 0.590 / 13.013 | 0.30 / 0.29 / 0.27 |
+| numerai53bench-nan-deep-stoch | 0.418 / 4.038 | 0.604 / 13.880 | 0.32 / 0.31 / 0.29 |
+| covtype-deep-fixed | 0.118 / 3.797 | 0.291 / 4.228 | 0.84 / 0.87 / 0.90 |
+| higgs-deep-stoch | 0.155 / 1.897 | 0.338 / 2.753 | 0.64 / 0.66 / 0.69 |
+| hidden1 few-bin (2.86M x 315, 4 bins) | 0.165 / 3.851 | 0.347 / 6.834 | 0.56 / 0.56 / 0.56 |
+| hidden2 NaN-bin (3.58M x 238, 6 bins) | 0.168 / 5.111 | 0.354 / 7.903 | 0.63 / 0.64 / 0.65 |
 
-The original numerai win required syncing the JIT template with the
-evict-first (`__ldcs`) loads first — an unsynced template measured at
-parity, which earlier led to a premature dead-end verdict (since
-corrected). Its body is the unbatched row loop, so since `row_batch` (§7) it
-is off under `auto`; with `row_batch:off` it engages for quantized runs of
-≥300 rounds (the ~230ms one-time compile+self-test amortizes).
-`construct_jit:on` forces it in place of the row-batched AOT kernel;
-unsupported shapes (graph capture, speculative levels, masked trees, wide
-partitions) fall back to AOT automatically.
+Against the unbatched loop it was written to beat (both `row_batch:off`) it still gained 0-19% on higgs-like and
+few-bin dense shapes but lost 73-74% on Numerai (it displaced `pair_code5`). It was removed with the `CUDA::nvrtc`
+link (lib_falcata.so no longer needs libnvrtc) and the `nvidia-cuda-nvrtc-cu12` dependency; a plan string with
+`construct_jit:` logs a warning and is otherwise ignored. `row_batch:off` users on higgs-like and few-bin dense shapes
+lose the 5-19% the JIT had over the unbatched loop there; `row_batch` (the default) is 31-44% faster than either.
 
 ## 7c. The warp split finder's two tiers, on mixed-bin and wide-bin data
 
@@ -1269,7 +1267,7 @@ A fourth overnight agentic search took about 18% off that round with four `cuda_
 **The code view (`pair_code5`).**
 - Where every byte's joint table has at most 32 cells (Numerai's 5-value columns: 25), the fused fill writes each byte's cell index as a 5-bit code, six to a 32-bit word, rows padded to whole 32-byte sectors: 128 bytes per row instead of 178, written into the same buffer instead of the nibble view (28% fewer bytes written).
 - The whole-row construct reads the word holding a byte and shifts its code out: the same cell gets the same gradient.
-- Any other reader of the nibble view (the other construct kernels, the row → column gathers) first rewrites the nibble view over it, from the fill's own copy of its tables. The view is off where the split path reads the nibble view anyway, and with `construct_jit`, `compact_prefill` or `graph_quant`.
+- Any other reader of the nibble view (the other construct kernels, the row → column gathers) first rewrites the nibble view over it, from the fill's own copy of its tables. The view is off where the split path reads the nibble view anyway, and with `compact_prefill` or `graph_quant`.
 
 **One thread per code word (`pair_code5_words`).** A thread takes one code word (six bytes) of a row instead of one byte, so one warp covers a row of up to 32 words and issues one index, one gradient and one coalesced 128-byte load per row, where six warps issued one of each: 63% fewer load/store instructions. Same rows, same cells, same flush; 4 rows in flight at 48 registers, block rows by the occupancy API. Construct 2.05 → 1.27 ms per round.
 

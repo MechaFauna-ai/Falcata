@@ -514,8 +514,8 @@ bool CUDAHistogramConstructor::ScanCompactLayout(
   // per tree; mixed-codec partition grouping is future work). Bit-identical by
   // construction -- packing is lossless.
   layout->codec = PackCodecId::kNibble4;
-  // quant-only in this cut: the non-quantized batched kernels and the JIT read
-  // nibble layout; codec eligibility therefore requires the discretized path
+  // quant-only in this cut: the non-quantized batched kernels read nibble
+  // layout; codec eligibility therefore requires the discretized path
   if (layout->is_4bit && use_quantized_grad_) {
     // The stored value bound of a COLUMN is its hist-offset delta (the same
     // quantity the 4-bit row-data gate uses): with EFB, one column can carry
@@ -1136,8 +1136,7 @@ void CUDAHistogramConstructor::LaunchCompactFill(
         // buffer and no quantized level graph captures a construct
         const uint8_t* fill_src = colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : RowMajorBin<uint8_t>();
         const DeviceLaunchLimits device_limits = CurrentDeviceLaunchLimits();
-        bool code5 = code5_allowed_ && !FalcataPlan::Get().construct_jit &&
-                     FalcataPlan::Get().pair_code5 && FalcataPlan::Get().pair_hist &&
+        bool code5 = code5_allowed_ && FalcataPlan::Get().pair_code5 && FalcataPlan::Get().pair_hist &&
                      FalcataPlan::Get().pair_hist_rows && FalcataPlan::Get().colmajor_split &&
                      colmajor_bin() != nullptr && fill_src == colmajor_bin() &&
                      !FalcataPlan::Get().compact_prefill && !FalcataPlan::Get().graph_quant &&

@@ -680,7 +680,6 @@ set(
       src/treelearner/cuda/cuda_best_split_finder.cpp
       src/treelearner/cuda/cuda_data_partition.cpp
       src/treelearner/cuda/cuda_histogram_constructor.cpp
-      src/treelearner/cuda/cuda_construct_jit.cpp
       src/treelearner/cuda/cuda_leaf_splits.cpp
       src/treelearner/cuda/cuda_single_gpu_tree_learner.cpp
       src/treelearner/cuda/cuda_best_split_finder.cu
@@ -852,16 +851,13 @@ if(USE_GPU)
 endif()
 
 if(USE_CUDA)
-  # NVRTC for the runtime construct-kernel JIT
-  # (src/treelearner/cuda/cuda_construct_jit.cpp); optional at runtime: if the
-  # NVRTC compile fails the construct dispatch falls back to the AOT kernel.
   # The CUDA driver library (libcuda.so.1) is deliberately NOT linked: it
   # ships with the NVIDIA driver rather than the toolkit, so a wheel linked to
-  # it cannot be imported on a machine without the driver. The JIT's driver
-  # entry points and NCCL's are dlopen'ed on first use instead
-  # (src/cuda/cuda_driver_shim.cpp, src/cuda/nccl_shim.cpp), which is why the
-  # build needs neither a driver nor the toolkit's link-time stub.
-  target_link_libraries(falcata_objs PUBLIC CUDA::nvrtc ${CMAKE_DL_LIBS})
+  # it cannot be imported on a machine without the driver. The driver check and
+  # NCCL are dlopen'ed on first use instead (src/cuda/cuda_driver_shim.cpp,
+  # src/cuda/nccl_shim.cpp), which is why the build needs neither a driver nor
+  # the toolkit's link-time stub.
+  target_link_libraries(falcata_objs PUBLIC ${CMAKE_DL_LIBS})
 endif()
 
 if(USE_ROCM)
@@ -882,9 +878,8 @@ if(USE_CUDA)
 
   # Whole-program device compilation. No __device__ function or device global
   # crosses a translation unit here -- every shared device helper is defined in
-  # a header, and the runtime NVRTC path compiles whole-program PTX of its own
-  # -- so nothing needs relocatable device code. Separable compilation would
-  # make each TU emit relocatable device code AND the device link emit the
+  # a header -- so nothing needs relocatable device code. Separable compilation
+  # would make each TU emit relocatable device code AND the device link emit the
   # final cubins, and the linked .so keeps both copies (__nv_relfatbin next to
   # .nv_fatbin), which roughly doubles a nine-architecture wheel.
   set_target_properties(

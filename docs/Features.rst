@@ -41,18 +41,6 @@ host synchronization for the non-quantized path, and a CUDA-graph level loop
 through a device-side controller -- removing host round-trips entirely on
 shallow trees.
 
-NVRTC Runtime JIT
-~~~~~~~~~~~~~~~~~
-
-Histogram-construction kernels can be specialized at runtime (via NVRTC) to
-the actual data shape -- bin counts, column layout -- instead of relying on
-one generic kernel. A JIT kernel is self-tested against the ahead-of-time
-kernel on real data and promoted **only if bit-identical**; otherwise the AOT
-kernel keeps running. Its body is the unbatched row loop, so under ``auto`` it
-is used only with ``cuda_plan=auto,row_batch:off`` (then on runs of 300 or more
-rounds); ``construct_jit:on`` forces it in place of the row-batched AOT
-kernel.
-
 Per-Tree Compact Column View
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
