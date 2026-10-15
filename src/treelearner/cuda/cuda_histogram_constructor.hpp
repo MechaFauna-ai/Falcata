@@ -1042,6 +1042,9 @@ class CUDAHistogramConstructor {
   CUDAVector<uint32_t> cuda_feature_most_freq_bins_;
   /*! \brief CUDA histograms */
   CUDAVector<hist_t> cuda_hist_;
+  /*! \brief the gradient buffer and size of the L2 access-policy window the construct streams hold (BeforeTrain) */
+  const score_t* l2_window_base_ = nullptr;
+  size_t l2_window_bytes_ = 0;
   /*! \brief LaunchZeroHistSlotsKernel: the slot list on the device */
   CUDAVector<int> cuda_zero_slots_;
   /*! \brief CUDA histograms buffer for each block */
