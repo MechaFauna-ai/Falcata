@@ -5681,7 +5681,7 @@ __device__ __forceinline__ void SyncBestSplitForLevelUsedTasksBody(
   MirrorLeafBestSplitEntry(cuda_split_info, mirror_entry);
 }
 
-template <bool BATCHED>
+template <bool BATCHED, bool DL = false>
 __global__ void SyncBestSplitForLevelUsedTasksKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   CUDASplitInfo* cuda_leaf_best_split_info,
@@ -5704,7 +5704,7 @@ __global__ void SyncBestSplitForLevelUsedTasksKernel(
     return;  // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
   }
   SyncBestSplitForLevelUsedTasksBody<BATCHED>(pair_descs, cuda_leaf_best_split_info, tasks, is_feature_used_bytree_arg, used_task_indices_arg, num_used_tasks_arg, node_masks, node_tasks, cuda_best_split_info, num_tasks, min_data_in_leaf, min_sum_hessian_in_leaf, gate_on_desc_counts, leaf_best_split_mirror);
-  if (select_cfg != nullptr) {
+  if constexpr (DL) {
     // cuda_plan key device_levels: the last block of the level's live pairs to write its leaf entry runs the next
     // level's select (DeviceLevelSelectBlock) on every leaf's entry; each block's writes are fenced before it counts
     __shared__ int s_last;
@@ -6717,7 +6717,11 @@ void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
 #endif
     // cuda_plan key pdl_level_chain: a programmatic dependent of the find kernel launched just before on this stream
     LaunchLevelChainKernel(PdlLevelChainEnabled(),
-      sync_copy_batched ? SyncBestSplitForLevelUsedTasksKernel<true> : SyncBestSplitForLevelUsedTasksKernel<false>,
+      device_level_select_cfg_ != nullptr ?
+        (sync_copy_batched ? SyncBestSplitForLevelUsedTasksKernel<true, true> :
+                             SyncBestSplitForLevelUsedTasksKernel<false, true>) :
+        (sync_copy_batched ? SyncBestSplitForLevelUsedTasksKernel<true, false> :
+                             SyncBestSplitForLevelUsedTasksKernel<false, false>),
       used_grid_dim, dim3(kSyncUsedTasksThreads), 0, cuda_streams_[0], SyncBestSplitForLevelUsedTasksKernel_ARGS);
     #undef SyncBestSplitForLevelUsedTasksKernel_ARGS
     last_sync_ran_select_ = device_level_select_cfg_ != nullptr;

@@ -3011,7 +3011,7 @@ __device__ __forceinline__ void BlockPrefixLookup(const BlockPrefix<MAX_PAIRS>& 
 // inside the graph loop (gstate != nullptr) both are derived on-device from the
 // child structs the batched apply kernels wrote (exact leaf counts, exact host
 // thresholds) and the frozen pow2 grid is only an upper bound.
-template <typename BIN_TYPE, int SHARED_HIST_SIZE, class PACK = PackRaw8>
+template <typename BIN_TYPE, int SHARED_HIST_SIZE, class PACK = PackRaw8, bool DL = false>
 __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int32_t* cuda_gradients_and_hessians,
@@ -3037,7 +3037,7 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
   // budget shared with the non-quantized kernels, so the int32 array holds half
   // as many entries in the same bytes, at the alignment its atomics require.
   __shared__ int32_t shared_hist_packed[SHARED_HIST_SIZE / 2];
-  if (dls != nullptr) {
+  if constexpr (DL) {
     // cuda_plan key device_levels: the level's block map, grid y and rows-per-thread floor from the device
     // (DeviceLevelPairsKernel: dense_block_map / dense_level_row_blocks' host math on the host's descriptors); the
     // launch's y extent is a fixed count of block rows that strides over the map's. A mapped block row belongs to
@@ -3816,11 +3816,11 @@ __device__ __forceinline__ void PairJointBatchedBlock(FALCATA_PAIR_JOINT_BATCHED
 }
 
 template <bool ALL_ROWS, int BATCH, bool CODE5 = false, bool WORDS = false, bool FLAT = false, bool EPILOGUE_FLAT = false,
-          int CODE_BITS = 5>  // NOLINT(whitespace/indent_namespace)
+          int CODE_BITS = 5, bool DL = false>  // NOLINT(whitespace/indent_namespace)
 __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_PARAMS) {
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   extern __shared__ int32_t shared_joint[];
-  if (dls != nullptr) {
+  if constexpr (DL) {
     // cuda_plan key device_levels: the level's block map, grid y and rows-per-thread floor from the device
     // (DeviceLevelPairsKernel: the host's pair_block_map / pair_code5_slots / level_row_blocks math on the host's
     // descriptors); the launch's y extent is a fixed count of block rows that strides over the map's
@@ -3854,9 +3854,9 @@ __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_
 }
 
 // CODE5 (cuda_plan key pair_code5; whole-row launches only): `data` is this tree's code view (see the inner body)
-template <bool ALL_ROWS, bool CODE5 = false>
+template <bool ALL_ROWS, bool CODE5 = false, bool DL = false>
 __global__ void CUDAConstructDiscretizedHistogramPairJointBatchedKernel(FALCATA_PAIR_JOINT_BATCHED_PARAMS) {
-  PairJointBatchedBody<ALL_ROWS, 16, CODE5>(FALCATA_PAIR_JOINT_BATCHED_ARGS);
+  PairJointBatchedBody<ALL_ROWS, 16, CODE5, false, false, false, 5, DL>(FALCATA_PAIR_JOINT_BATCHED_ARGS);
 }
 
 // cuda_plan key pair_capped_rows: the same kernel built at most MAXREG registers per thread with BATCH rows in
@@ -3872,10 +3872,10 @@ __global__ void CUDAConstructDiscretizedHistogramPairJointBatchedKernel(FALCATA_
 #define FALCATA_PAIR_JOINT_CAPPED_BUILD 0
 #define FALCATA_PAIR_JOINT_MAXNREG(n)
 #endif
-template <bool ALL_ROWS, int BATCH, int MAXREG, bool CODE5 = false>
+template <bool ALL_ROWS, int BATCH, int MAXREG, bool CODE5 = false, bool DL = false>
 __global__ void FALCATA_PAIR_JOINT_MAXNREG(MAXREG)
 CUDAConstructDiscretizedHistogramPairJointCappedKernel(FALCATA_PAIR_JOINT_BATCHED_PARAMS) {
-  PairJointBatchedBody<ALL_ROWS, BATCH, CODE5>(FALCATA_PAIR_JOINT_BATCHED_ARGS);
+  PairJointBatchedBody<ALL_ROWS, BATCH, CODE5, false, false, false, 5, DL>(FALCATA_PAIR_JOINT_BATCHED_ARGS);
 }
 #undef FALCATA_PAIR_JOINT_MAXNREG
 
@@ -3884,9 +3884,9 @@ CUDAConstructDiscretizedHistogramPairJointCappedKernel(FALCATA_PAIR_JOINT_BATCHE
 // branch-free adds, with Code5DummyCells(CODE_BITS) more cells of dynamic shared memory past the joint tables.
 // EPILOGUE_FLAT (cuda_plan key pair_code5_epilogue): the flat (slot, marginal) flush instead of serial per-slot
 // passes. CODE_BITS (cuda_plan key pair_code_wide): the code view's width, 5 or 6.
-template <int BATCH, bool FLAT, bool EPILOGUE_FLAT, int CODE_BITS>
+template <int BATCH, bool FLAT, bool EPILOGUE_FLAT, int CODE_BITS, bool DL = false>
 __global__ void CUDAConstructDiscretizedHistogramPairJointCode5WordKernel(FALCATA_PAIR_JOINT_BATCHED_PARAMS) {
-  PairJointBatchedBody<false, BATCH, true, true, FLAT, EPILOGUE_FLAT, CODE_BITS>(FALCATA_PAIR_JOINT_BATCHED_ARGS);
+  PairJointBatchedBody<false, BATCH, true, true, FLAT, EPILOGUE_FLAT, CODE_BITS, DL>(FALCATA_PAIR_JOINT_BATCHED_ARGS);
 }
 #undef FALCATA_PAIR_JOINT_BATCHED_ARGS
 #undef FALCATA_PAIR_JOINT_BATCHED_PARAMS
@@ -4047,6 +4047,12 @@ static PairJointCappedBuild PairJointCapped() {
           CUDAConstructDiscretizedHistogramPairJointCappedKernel<true, 12, 48>,
           CUDAConstructDiscretizedHistogramPairJointCappedKernel<false, 12, 48, true>};
 }
+// cuda_plan key device_levels: the capped build's device level instantiations (the gathering ones)
+static PairJointCappedBuild PairJointCappedDL() {
+  return {CUDAConstructDiscretizedHistogramPairJointCappedKernel<false, 15, 48, false, true>,
+          CUDAConstructDiscretizedHistogramPairJointCappedKernel<true, 12, 48, false, true>,
+          CUDAConstructDiscretizedHistogramPairJointCappedKernel<false, 12, 48, true, true>};
+}
 
 // cuda_plan key pair_code5: the largest block the code-view instantiation `kernel` can launch on the current device
 // (register-limited), memoised per device and kernel
@@ -4098,6 +4104,24 @@ static PairJointKernelFn PairJointCode5WordKernel(const bool flat, const bool ep
   return flat ? (epilogue_flat ? CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, true, 5> :
                                   CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, false, 5>) :
                 CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<4, false, false, 5>;
+}
+
+// cuda_plan key device_levels: PairJointCode5WordKernel's device level instantiations
+static PairJointKernelFn PairJointCode5WordKernelDL(const bool flat, const bool epilogue_flat, const int code_bits) {
+  if (code_bits == kCodeRadix) {
+    return flat ? (epilogue_flat ?
+                   CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, true, kCodeRadix, true> :
+                   CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, false, kCodeRadix, true>) :
+                  CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<4, false, false, kCodeRadix, true>;
+  }
+  if (code_bits == 6) {
+    return flat ? (epilogue_flat ? CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, true, 6, true> :
+                                    CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, false, 6, true>) :
+                  CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<4, false, false, 6, true>;
+  }
+  return flat ? (epilogue_flat ? CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, true, 5, true> :
+                                  CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<5, true, false, 5, true>) :
+                CUDAConstructDiscretizedHistogramPairJointCode5WordKernel<4, false, false, 5, true>;
 }
 // The block rows below, and (cuda_plan key pair_code5_slots) the resident blocks of that shape on the whole device:
 // blocks per SM at that height by the occupancy API, times the device's SMs (0 when no height launches).
@@ -6970,7 +6994,9 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
 #define FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PACKT) \
         for (const DenseLaunchChunk& dense_chunk : dense_chunks) \
-        CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PACKT><<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>( \
+        (dense_dls != nullptr ? CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PACKT, true> : \
+                                CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PACKT, false>) \
+          <<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>( \
           pair_descs + dense_chunk.pair_base, \
           reinterpret_cast<const int32_t*>(cuda_gradients_), \
           reinterpret_cast<const BIN_TYPE*>(NibbleViewData()), \
@@ -7007,7 +7033,9 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       } else {
         DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
         for (const DenseLaunchChunk& dense_chunk : dense_chunks) {
-        CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST><<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>(
+        (dense_dls != nullptr ? CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackRaw8, true> :
+                                 CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackRaw8, false>)
+          <<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>(
           pair_descs + dense_chunk.pair_base,
           reinterpret_cast<const int32_t*>(cuda_gradients_),
           reinterpret_cast<const BIN_TYPE*>(NibbleViewData()),
@@ -7028,7 +7056,9 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     } else if (cuda_row_data_->is_4bit_packed()) {
       DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
       for (const DenseLaunchChunk& dense_chunk : dense_chunks) {
-      CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackNibble4><<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>(
+      (dense_dls != nullptr ? CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackNibble4, true> :
+                               CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackNibble4, false>)
+        <<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>(
         pair_descs + dense_chunk.pair_base,
         reinterpret_cast<const int32_t*>(cuda_gradients_),
         RowMajorBin<BIN_TYPE>(),
@@ -7048,7 +7078,9 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     } else {
       DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
       for (const DenseLaunchChunk& dense_chunk : dense_chunks) {
-      CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST><<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>(
+      (dense_dls != nullptr ? CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackRaw8, true> :
+                               CUDAConstructDiscretizedHistogramDenseBatchedKernel<BIN_TYPE, QHIST, PackRaw8, false>)
+        <<<dense_chunk.grid, block_dim, 0, cuda_stream_>>>(
         pair_descs + dense_chunk.pair_base,
         reinterpret_cast<const int32_t*>(cuda_gradients_),
         RowMajorBin<BIN_TYPE>(),
@@ -7366,11 +7398,11 @@ void CUDAHistogramConstructor::LaunchDeviceLevelPairJoint(const CUDAHybridPairDe
   DeviceLevelConstructShape(&sh);
   CHECK_EQ(sh.pair_mode, 1);
   const PairJointKernelFn kernel =
-    sh.kernel_kind == 4 ? PairJointCode5WordKernel(sh.code5_flat != 0, sh.code5_epilogue_flat != 0, code5_bits_) :
-    sh.kernel_kind == 3 ? PairJointCapped().gather_code5 :
-    sh.kernel_kind == 2 ? CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false, true> :
-    sh.kernel_kind == 1 ? PairJointCapped().gather :
-    CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false>;
+    sh.kernel_kind == 4 ? PairJointCode5WordKernelDL(sh.code5_flat != 0, sh.code5_epilogue_flat != 0, code5_bits_) :
+    sh.kernel_kind == 3 ? PairJointCappedDL().gather_code5 :
+    sh.kernel_kind == 2 ? CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false, true, true> :
+    sh.kernel_kind == 1 ? PairJointCappedDL().gather :
+    CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false, false, true>;
   DiagConstructKernel(sh.kernel_kind == 4 ? "pair_code5_words (device levels)" : "pair_hist (device levels)");
   const uint8_t* data = sh.kernel_kind >= 2 ? compact_data_uint8_t_.RawDataReadOnly() : NibbleViewData();
   const int grid_x = std::max(1, sh.grid_x);
