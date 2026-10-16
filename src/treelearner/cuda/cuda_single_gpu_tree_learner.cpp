@@ -3539,6 +3539,11 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
   if (!plan.device_levels || device_levels_disabled_) {
     return 0;
   }
+  // with device_level_graph the levels run only as a replayed graph: where one cannot serve (forest slots, or trees
+  // whose launch layouts keep changing) the host loop is faster than enqueueing the device levels launch by launch
+  if (plan.device_level_graph && (forest_slot_ || device_level_graph_disabled_)) {
+    return 0;
+  }
   // the flow this replaces: the classic quantized prefix with both batched phases, single GPU, scalar leaves, no
   // per-node masks (drawn on the host per level), no categorical splits (their bitsets are built through host
   // readbacks), no debug hooks (they steer the host loop's decisions); the device counts reach only the fused
