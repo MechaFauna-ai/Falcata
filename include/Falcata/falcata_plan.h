@@ -904,10 +904,10 @@ struct FalcataPlan {
   // and blocks past the device's live counts exit. The split records, split infos and leaf best splits are read
   // back once after level K, the host replays its bookkeeping and the classic loop continues. Same descriptors,
   // same kernels' sums: bit-identical.
-  bool device_levels = false;       // key: device_levels
+  bool device_levels = true;        // key: device_levels
   // device_levels' launches as one CUDA graph per tree (captured on the first tree of a pointer key, replayed on the
   // next ones; trees whose keys keep changing fall back to the plain enqueue): the same launches, bit-identical
-  bool device_level_graph = false;  // key: device_level_graph
+  bool device_level_graph = true;   // key: device_level_graph
   // prefill the next tree's compact column view on a side stream during the
   // current tree's training (bit-identical). Default OFF: measured no wall
   // win -- steady-state training is 97% device-busy and the ~41 synchronous
