@@ -136,6 +136,41 @@ def test_nonquant_training_is_run_to_run_deterministic_cuda(name, objective, row
 
 
 @_REQUIRES_CUDA
+@pytest.mark.parametrize("extra", [{}, {"cuda_plan": "auto,graph_loop:off"}, {"feature_fraction": 0.5}])
+def test_nonquant_4bit_matches_unpacked_and_det_cuda(extra):
+    # Review #122: the full-view 4-bit arm used to omit the fixed-word convert.
+    # Its wrong model was repeatable, so a run-to-run equality check missed it.
+    # Keep the reviewer's exact shape: divergence starts in tree 0 at depth 4.
+    rng = np.random.default_rng(1)
+    rows = 50000
+    X = rng.standard_normal((rows, 20)).astype(np.float32)
+    y = (X[:, 0] + 0.5 * X[:, 1] * X[:, 2] + 0.3 * rng.standard_normal(rows)).astype(np.float32)
+    params = {
+        "device_type": "cuda",
+        "objective": "regression",
+        "quant_mode": "none",
+        "num_leaves": 63,
+        "max_depth": 6,
+        "max_bin": 15,
+        "verbose": -1,
+        "seed": 1,
+        "metric": "l2",
+        "cuda_plan": "auto",
+        **extra,
+    }
+    plan = params["cuda_plan"]
+    models = {
+        arm: _model_md5({**params, "cuda_plan": plan + suffix}, X, y, 30)
+        for arm, suffix in [
+            ("default", ""),
+            ("det", ",graph_det:on"),
+            ("unpacked", ",rowdata_4bit:off"),
+        ]
+    }
+    assert len(set(models.values())) == 1, models
+
+
+@_REQUIRES_CUDA
 def test_nonquant_deterministic_off_still_trains_cuda():
     X, y = _data("regression", 20000, 20, seed=5)
     params = {

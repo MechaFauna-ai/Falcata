@@ -7056,6 +7056,43 @@ int CUDAHistogramConstructor::LaunchConvertFixedHistBatched(
   return blocks_x;
 }
 
+void CUDAHistogramConstructor::InitNonquantFixed() {
+  nq_fixed_smem_bytes_ = 0;
+  nq_fixed_smem_set_.clear();
+  nq_fixed_supported_ = true;
+  if (use_quantized_grad_ || !FalcataPlan::Get().nonquant_deterministic) {
+    return;
+  }
+  const std::vector<uint32_t>& offsets = cuda_row_data_->host_partition_hist_offsets();
+  uint32_t max_bins = 1;
+  for (size_t p = 1; p < offsets.size(); ++p) {
+    max_bins = std::max(max_bins, offsets[p] - offsets[p - 1]);
+  }
+  // All fixed specializations share the same static allocations. Query a compiled fixed instantiation instead
+  // of assuming the compiler/architecture keeps their size constant (the histogram itself is dynamic shared memory).
+  cudaFuncAttributes attrs;
+  CUDASUCCESS_OR_FATAL(cudaFuncGetAttributes(&attrs,
+    CUDAConstructHistogramDenseBatchedKernel<uint8_t, nq_fixed_t, SP_SHARED_HIST_SIZE, false, false, true>));
+  const size_t need = static_cast<size_t>(max_bins) * 2 * sizeof(nq_fixed_t) + attrs.sharedSizeBytes;
+  int shared_limit = 0;
+  const int device = gpu_device_id_ < 0 ? 0 : gpu_device_id_;
+  if (cudaDeviceGetAttribute(&shared_limit, cudaDevAttrMaxSharedMemoryPerBlockOptin, device) != cudaSuccess) {
+    shared_limit = 48 * 1024;
+  }
+  nq_fixed_supported_ = need <= static_cast<size_t>(shared_limit);
+  if (!nq_fixed_supported_) {
+    static bool warned = false;  // once per process, across datasets and resets
+    if (!warned) {
+      warned = true;
+      Log::Warning("nonquant_deterministic: the fixed-point histogram construct needs %zu bytes of shared memory per "
+                   "block (widest partition %u bins), this GPU gives %d: the graph level loop takes the deterministic "
+                   "construct instead (graph_det), and levels it cannot serve (compact column views, levels wider than "
+                   "its slot slab) keep the float atomics, so models may vary between runs on this dataset",
+                   need, max_bins, shared_limit);
+    }
+  }
+}
+
 size_t CUDAHistogramConstructor::NqFixedSmem(const void* kernel) {
   if (!nq_fixed_launch_) {
     return 0;
@@ -7365,6 +7402,10 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
   // levels too wide for its slot slab)
   const bool count_batched = CountBatchedEligible();
   const bool det_batched = !count_batched && DetDenseBatchedEligible(num_pairs);
+  // nonquant_deterministic: every non-quantized arm below the count and deterministic ones launches the batched
+  // kernel with this launch's accumulator, so under a fixed-point launch they all leave int64 words for the convert
+  // (set once for the whole region, so no arm can miss it)
+  nq_fixed_kernel_launched_ = nq_fixed_launch_ && !use_quantized_grad_ && !count_batched && !det_batched;
   const int* level_dim_y = nullptr;
   const data_size_t* level_sizes_for_kernel = nullptr;
   if (level_smaller_num_data != nullptr && !det_batched && !count_batched) {
@@ -7825,7 +7866,6 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     // compact data holds only the tree's sampled columns, so no per-column
     // feature mask is needed (mirrors the per-pair compact launch). Few-bin
     // datasets take the register-accumulation body (see USE_REG_BINS).
-    nq_fixed_kernel_launched_ = nq_fixed_launch_;
     if (construct_reg_bins_) {
       if (compact_is_4bit_) {
         CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, true, true, USE_GH2><<<grid_dim, block_dim,
@@ -7957,7 +7997,6 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       hybrid_graph_capture_gstate_,
       nq_fixed_launch_ ? nq_scale_.RawDataReadOnly() : nullptr);
   } else {
-    nq_fixed_kernel_launched_ = nq_fixed_launch_;
     CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, false, USE_GH2><<<grid_dim, block_dim,
           NqFixedSmem(reinterpret_cast<const void*>(&CUDAConstructHistogramDenseBatchedKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, false, false, USE_GH2>)), cuda_stream_>>>(
       pair_descs,

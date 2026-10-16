@@ -2373,10 +2373,11 @@ observation, not a guarantee (a review's poisson, tweedie and binary shapes at 2
 one (up to 96 KB of dynamic shared memory, one block per SM where the float table fits two), so the fixed-point
 construct runs 1008-thread blocks under a launch bound of 1008 (the compiler keeps its instantiations within 64
 registers; 45-64 on sm_120; the float instantiations' code is unchanged). A device whose opt-in shared memory per
-block cannot hold the widest partition's table plus the kernel's 1 KB (sm_75's 64 KB with partitions over ~4000
-bins) does not run it: the graph loop takes the double-slot deterministic construct (`graph_det`) and the levels that
-one cannot take keep the float atomics, with a one-time warning. The per-leaf and host batched deterministic constructs run where they ran (their
-models are unchanged). `cuda_precision=fp32` keeps its fp32 gain math on `hist_t` histograms; its fp32 histogram
+block cannot hold the widest partition's table plus its static shared memory (queried from a compiled fixed-point
+instantiation with `cudaFuncGetAttributes`; 1 KB on sm_120; sm_75's 64 KB cannot hold partitions over ~4000 bins)
+does not run it: the graph loop takes the double-slot deterministic construct (`graph_det`) and the levels that
+one cannot take keep the float atomics, with a warning once per process (across datasets and resets). The per-leaf
+and host batched deterministic constructs run where they ran (their models are unchanged). `cuda_precision=fp32` keeps its fp32 gain math on `hist_t` histograms; its fp32 histogram
 layout runs only with the key off. `nonquant_deterministic:off` restores the float atomics. Not covered, models can
 still vary from run to run: linear trees (their per-leaf least-squares sums use
 double atomics), ranking objectives' gradients (shared float atomics), multi-plane vector-leaf trees (unchanged
