@@ -1498,14 +1498,14 @@ class CUDAHistogramConstructor {
   CUDAVector<int> nq_scale_;
   CUDAVector<double> nq_inv_scale_;
   CUDAVector<uint32_t> nq_absmax_bits_;
-  // set while the batched construct launches its fixed-point instantiation: the launch sites read the scaled
-  // gradients and pass the fixed table's dynamic shared memory
+  // set while the batched construct launches its fixed-point instantiation: the kernel applies the exponents,
+  // and the launch sites pass the fixed table's dynamic shared memory
   bool nq_fixed_launch_ = false;
   // set by the batched launcher when the fixed-point kernel (not a deterministic or count arm) built the level: the
   // only case whose words the convert may rewrite
   bool nq_fixed_kernel_launched_ = false;
-  // the device gives a block the fixed-point table (InitNonquantFixed); otherwise the deterministic construct serves
-  // the graph loop (graph_det) and the levels it cannot take keep the float atomics
+  // the device gives a block the fixed-point table (InitNonquantFixed); otherwise scalar nonquantized training
+  // uses the deterministic classic loop for every layout (NonquantClassicFallback)
   bool nq_fixed_supported_ = true;
   // dynamic shared bytes of the fixed-point table (the widest partition's items x 8) and the kernels whose
   // max-dynamic-shared attribute is already raised to it
