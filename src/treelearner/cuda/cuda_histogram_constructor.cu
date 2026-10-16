@@ -16,7 +16,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <map>
+#include <mutex>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "cuda_meta_batch.hpp"
@@ -2548,6 +2551,225 @@ __global__ void MergeDeterministicHistogramKernel(
   smaller_leaf_splits->hist_in_leaf[i] = acc;
 }
 
+// ---- cuda_plan key forest_count_hist: the count construct (docs/design/forest-count-histograms.md) ----
+// A random forest's gradients are constant per class and take few values: row i's gradient is exactly
+// grad_base + grad_unit * t(code[i]) and every hessian is the same. Each (pair, partition, row tile) block counts its
+// rows per bin in shared memory with integer atomics -- the row count n and the code sum S, one 64-bit word
+// S << 32 | n (packed) or a 64-bit S and a 32-bit n (wide) -- and adds its nonzero bins to the pair's integer scratch
+// row with global integer atomics. The convert kernel then stores each bin of the leaf histogram as the fp64 pair
+// (grad_base * n + grad_unit * S, hessian * n), the exact sums the deterministic construct's fixed-order double
+// merge produces (the codes' bound makes every product and sum exact), and zeroes the scratch it read. Integer sums
+// do not depend on the order of the atomics: deterministic without slot rows or a fixed-order merge.
+// MODE: 0 packed with the codes as their own addends (t = code: binary and per-class trees), 1 packed with a table,
+// 2 wide with a table.
+inline constexpr int kCountRowsPerThread = 16;  // the fewest rows a row lane takes before a leaf gets another tile
+inline constexpr int kCountDyCap = 32;          // row lanes per block (block_dim_x * dy <= 1024)
+
+template <typename BIN_TYPE, bool IS_4BIT, int MODE>
+__device__ __forceinline__ void ConstructHistogramDenseCountInner(
+  const CUDALeafSplitsStruct* leaf,
+  const uint8_t* codes,
+  const uint64_t* code_values,
+  const BIN_TYPE* data,
+  const uint32_t* column_hist_offsets,
+  const uint32_t* partition_hist_offsets,
+  const int* feature_partition_column_index_offsets,
+  const int* packed_partition_byte_offsets,
+  const int8_t* is_feature_used,
+  const data_size_t num_data,
+  uint64_t* scratch,         // this leaf's scratch row: num_total_bin words
+  uint32_t* scratch_n,       // MODE 2: this leaf's 32-bit counts
+  const int max_tiles) {
+  extern __shared__ uint64_t count_shared[];
+  const data_size_t leaf_rows = leaf->num_data_in_leaf;
+  const int dy = static_cast<int>(blockDim.y);
+  const data_size_t rows_per_full_tile = static_cast<data_size_t>(kCountRowsPerThread) * dy;
+  const int tiles = min(max_tiles, static_cast<int>(max(static_cast<data_size_t>(1),
+    (leaf_rows + rows_per_full_tile - 1) / rows_per_full_tile)));
+  if (static_cast<int>(blockIdx.y) >= tiles) {
+    return;  // block-uniform: the grid is sized for the largest leaf of the launch
+  }
+  const data_size_t tile_rows = (leaf_rows + tiles - 1) / tiles;
+  const data_size_t row_begin = static_cast<data_size_t>(blockIdx.y) * tile_rows;
+  const data_size_t row_end = min(leaf_rows, row_begin + tile_rows);
+  const int partition_column_start = feature_partition_column_index_offsets[blockIdx.x];
+  const int partition_column_end = feature_partition_column_index_offsets[blockIdx.x + 1];
+  const int num_columns_in_partition = partition_column_end - partition_column_start;
+  int row_stride = num_columns_in_partition;
+  const BIN_TYPE* data_ptr = data + (IS_4BIT ?
+    PackedPartitionRows(packed_partition_byte_offsets, blockIdx.x, num_data, &row_stride) :
+    static_cast<size_t>(partition_column_start) * num_data);
+  const uint32_t partition_hist_start = partition_hist_offsets[blockIdx.x];
+  const uint32_t partition_bins = partition_hist_offsets[blockIdx.x + 1] - partition_hist_start;
+  uint32_t* shared_n = reinterpret_cast<uint32_t*>(count_shared + partition_bins);
+  const unsigned int num_threads = blockDim.x * blockDim.y;
+  const unsigned int thread_idx = threadIdx.x + threadIdx.y * blockDim.x;
+  for (uint32_t i = thread_idx; i < partition_bins; i += num_threads) {
+    count_shared[i] = 0;
+    if (MODE == 2) {
+      shared_n[i] = 0;
+    }
+  }
+  __syncthreads();
+  const data_size_t* data_indices = leaf->data_indices_in_leaf;
+  for (data_size_t r = row_begin + static_cast<data_size_t>(threadIdx.y); r < row_end; r += dy) {
+    const data_size_t data_index = data_indices[r];
+    const uint32_t code = static_cast<uint32_t>(codes[data_index]);
+    const uint64_t t = MODE == 0 ? static_cast<uint64_t>(code) : __ldg(code_values + code);
+    const uint64_t packed_add = (t << 32) | 1ull;
+    const BIN_TYPE* row = data_ptr + static_cast<size_t>(data_index) * row_stride;
+    for (int c = static_cast<int>(threadIdx.x); c < num_columns_in_partition; c += static_cast<int>(blockDim.x)) {
+      const int column_index = c + partition_column_start;
+      if (is_feature_used != nullptr && !is_feature_used[column_index]) {
+        continue;
+      }
+      const uint32_t pos = column_hist_offsets[column_index] + ReadDenseBin<IS_4BIT>(row, static_cast<unsigned int>(c));
+      if (MODE == 2) {
+        atomicAdd(reinterpret_cast<unsigned long long*>(count_shared + pos), static_cast<unsigned long long>(t));  // NOLINT
+        atomicAdd(shared_n + pos, 1u);
+      } else {
+        atomicAdd(reinterpret_cast<unsigned long long*>(count_shared + pos), static_cast<unsigned long long>(packed_add));  // NOLINT
+      }
+    }
+  }
+  __syncthreads();
+  for (uint32_t i = thread_idx; i < partition_bins; i += num_threads) {
+    if (MODE == 2) {
+      const uint32_t n = shared_n[i];
+      if (n != 0) {
+        atomicAdd(scratch_n + partition_hist_start + i, n);
+        const uint64_t sum = count_shared[i];
+        if (sum != 0) {
+          atomicAdd(reinterpret_cast<unsigned long long*>(scratch + partition_hist_start + i), static_cast<unsigned long long>(sum));  // NOLINT
+        }
+      }
+    } else {
+      const uint64_t v = count_shared[i];
+      if (v != 0) {
+        atomicAdd(reinterpret_cast<unsigned long long*>(scratch + partition_hist_start + i), static_cast<unsigned long long>(v));  // NOLINT
+      }
+    }
+  }
+}
+
+template <typename BIN_TYPE, bool IS_4BIT, int MODE>
+__global__ void CUDAConstructHistogramDenseCountKernel(
+  const CUDALeafSplitsStruct* leaf,
+  const uint8_t* codes,
+  const uint64_t* code_values,
+  const BIN_TYPE* data,
+  const uint32_t* column_hist_offsets,
+  const uint32_t* partition_hist_offsets,
+  const int* feature_partition_column_index_offsets,
+  const int* packed_partition_byte_offsets,
+  const int8_t* is_feature_used,
+  const data_size_t num_data,
+  uint64_t* scratch,
+  uint32_t* scratch_n,
+  const int max_tiles) {
+  ConstructHistogramDenseCountInner<BIN_TYPE, IS_4BIT, MODE>(
+    leaf, codes, code_values, data, column_hist_offsets, partition_hist_offsets,
+    feature_partition_column_index_offsets, packed_partition_byte_offsets, is_feature_used, num_data,
+    scratch, scratch_n, max_tiles);
+}
+
+// Batched per-level variant: blockIdx.z selects the pair (scratch row blockIdx.z), with the deterministic batched
+// construct's skip gates (HybridPairConstructSkipped: a skipped pair's histogram is neither built nor stored).
+template <typename BIN_TYPE, bool IS_4BIT, int MODE>
+__global__ void CUDAConstructHistogramDenseCountBatchedKernel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const uint8_t* codes,
+  const uint64_t* code_values,
+  const BIN_TYPE* data,
+  const uint32_t* column_hist_offsets,
+  const uint32_t* partition_hist_offsets,
+  const int* feature_partition_column_index_offsets,
+  const int* packed_partition_byte_offsets,
+  const int8_t* is_feature_used,
+  const data_size_t num_data,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf,
+  uint64_t* scratch,
+  const size_t scratch_row_words,
+  const uint32_t num_total_bin,
+  const int max_tiles) {
+  const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.z;
+  if (HybridPairConstructSkipped(desc, min_data_in_leaf, min_sum_hessian_in_leaf)) {
+    return;
+  }
+  uint64_t* row = scratch + static_cast<size_t>(blockIdx.z) * scratch_row_words;
+  ConstructHistogramDenseCountInner<BIN_TYPE, IS_4BIT, MODE>(
+    desc->smaller_struct, codes, code_values, data, column_hist_offsets, partition_hist_offsets,
+    feature_partition_column_index_offsets, packed_partition_byte_offsets, is_feature_used, num_data,
+    row, reinterpret_cast<uint32_t*>(row + num_total_bin), max_tiles);
+}
+
+// One bin of the convert: the fp64 pair the deterministic construct stores, from the bin's integer count and code
+// sum (exact; see the design note's bound), and the scratch zeroed for the next launch.
+template <bool WIDE>
+__device__ __forceinline__ void ConvertCountBin(const uint32_t i, uint64_t* scratch, uint32_t* scratch_n,
+                                                const double grad_base, const double grad_unit, const double hessian,
+                                                hist_t* hist) {
+  uint64_t sum;
+  uint32_t n;
+  if (WIDE) {
+    n = scratch_n[i];
+    sum = scratch[i];
+    if (n != 0) {
+      scratch_n[i] = 0;
+      scratch[i] = 0;
+    }
+  } else {
+    const uint64_t v = scratch[i];
+    n = static_cast<uint32_t>(v & 0xffffffffull);
+    sum = v >> 32;
+    if (v != 0) {
+      scratch[i] = 0;
+    }
+  }
+  const double dn = static_cast<double>(n);
+  hist[i << 1] = __dadd_rn(__dmul_rn(grad_base, dn), __dmul_rn(grad_unit, static_cast<double>(sum)));
+  hist[(i << 1) + 1] = __dmul_rn(hessian, dn);
+}
+
+template <bool WIDE>
+__global__ void ConvertCountHistogramKernel(
+  const CUDALeafSplitsStruct* leaf,
+  uint64_t* scratch,
+  uint32_t* scratch_n,
+  const uint32_t num_total_bin,
+  const double grad_base,
+  const double grad_unit,
+  const double hessian) {
+  const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+  if (i < num_total_bin) {
+    ConvertCountBin<WIDE>(i, scratch, scratch_n, grad_base, grad_unit, hessian, leaf->hist_in_leaf);
+  }
+}
+
+template <bool WIDE>
+__global__ void ConvertCountHistogramBatchedKernel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  uint64_t* scratch,
+  const size_t scratch_row_words,
+  const uint32_t num_total_bin,
+  const double grad_base,
+  const double grad_unit,
+  const double hessian,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf) {
+  const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.z;
+  if (HybridPairConstructSkipped(desc, min_data_in_leaf, min_sum_hessian_in_leaf)) {
+    return;
+  }
+  const uint32_t i = threadIdx.x + blockIdx.x * blockDim.x;
+  if (i < num_total_bin) {
+    uint64_t* row = scratch + static_cast<size_t>(blockIdx.z) * scratch_row_words;
+    ConvertCountBin<WIDE>(i, row, reinterpret_cast<uint32_t*>(row + num_total_bin), grad_base, grad_unit, hessian,
+                          desc->smaller_struct->hist_in_leaf);
+  }
+}
+
 template <typename BIN_TYPE, typename HIST_TYPE>
 __global__ void CUDAConstructHistogramDenseKernel_GlobalMemory(
   const CUDALeafSplitsStruct* smaller_leaf_splits,
@@ -4794,6 +5016,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dy));
           // Pipeline-private scratch regions (pipelined pair-constructs run
           // on different pipeline streams; shared regions would race).
+          count_scratch_dirty_ = true;  // cuda_plan key forest_count_hist: the det slab is also the count scratch
           hist_t* det_slots = cuda_det_dense_slots_.RawData() +
             static_cast<size_t>(active_pipeline_) * det_dense_tile_cap_ * det_dense_dy_ * det_dense_slot_stride_;
           hist_t* det_tiles = cuda_det_tile_partials_.RawData() +
@@ -4861,9 +5084,16 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
               compact_is_4bit_ ? compact_packed_partition_byte_offsets_.RawData() : nullptr,
               nullptr,
               compact_is_4bit_};
-            LaunchConstructHistogramDenseDeterministic<BIN_TYPE>(
-              cuda_smaller_leaf_splits, num_data_in_smaller_leaf,
-              grid_dim_x, compact_block_x, &compact_source);
+            if (count_codes_ != nullptr) {
+              // cuda_plan key forest_count_hist: the count construct, same source and offsets
+              LaunchConstructHistogramDenseCount<BIN_TYPE>(
+                cuda_smaller_leaf_splits, num_data_in_smaller_leaf,
+                grid_dim_x, compact_block_x, &compact_source);
+            } else {
+              LaunchConstructHistogramDenseDeterministic<BIN_TYPE>(
+                cuda_smaller_leaf_splits, num_data_in_smaller_leaf,
+                grid_dim_x, compact_block_x, &compact_source);
+            }
           } else if (compact_is_4bit_) {
             CUDAConstructHistogramDenseKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, true><<<compact_grid_dim, compact_block_dim, 0, current_stream()>>>(
               cuda_smaller_leaf_splits,
@@ -4898,8 +5128,14 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           // shapes it does not cover (hist_fp32_ -- the det merge stores
           // hist_t doubles while that mode reinterprets the leaf histogram
           // as float pairs).
-          LaunchConstructHistogramDenseDeterministic<BIN_TYPE>(
-            cuda_smaller_leaf_splits, num_data_in_smaller_leaf, grid_dim_x, block_dim_x);
+          if (count_codes_ != nullptr) {
+            // cuda_plan key forest_count_hist: the count construct
+            LaunchConstructHistogramDenseCount<BIN_TYPE>(
+              cuda_smaller_leaf_splits, num_data_in_smaller_leaf, grid_dim_x, block_dim_x);
+          } else {
+            LaunchConstructHistogramDenseDeterministic<BIN_TYPE>(
+              cuda_smaller_leaf_splits, num_data_in_smaller_leaf, grid_dim_x, block_dim_x);
+          }
         } else if (cuda_row_data_->is_4bit_packed()) {
           CUDAConstructHistogramDenseKernel<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, true><<<grid_dim, block_dim, 0, current_stream()>>>(
             cuda_smaller_leaf_splits,
@@ -4945,6 +5181,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
           dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dy));
           // Pipeline-private scratch regions (pipelined pair-constructs run
           // on different pipeline streams; shared regions would race).
+          count_scratch_dirty_ = true;  // cuda_plan key forest_count_hist: the det slab is also the count scratch
           hist_t* det_slots = cuda_det_dense_slots_.RawData() +
             static_cast<size_t>(active_pipeline_) * det_dense_tile_cap_ * det_dense_dy_ * det_dense_slot_stride_;
           hist_t* det_tiles = cuda_det_tile_partials_.RawData() +
@@ -4986,8 +5223,14 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
         // Deterministic float construct for wide partitions (double slots in
         // global scratch; see CUDAConstructHistogramDenseGMDeterministicKernel).
         // fp32-pair histograms excluded; see the non-GM arm.
-        LaunchConstructHistogramDenseDeterministic<BIN_TYPE>(
-          cuda_smaller_leaf_splits, num_data_in_smaller_leaf, grid_dim_x, block_dim_x);
+        if (count_codes_ != nullptr) {
+          // cuda_plan key forest_count_hist: the count construct (count_supported_: every partition fits its table)
+          LaunchConstructHistogramDenseCount<BIN_TYPE>(
+            cuda_smaller_leaf_splits, num_data_in_smaller_leaf, grid_dim_x, block_dim_x);
+        } else {
+          LaunchConstructHistogramDenseDeterministic<BIN_TYPE>(
+            cuda_smaller_leaf_splits, num_data_in_smaller_leaf, grid_dim_x, block_dim_x);
+        }
       } else {
         CUDAConstructHistogramDenseKernel_GlobalMemory<BIN_TYPE, HIST_TYPE><<<grid_dim, block_dim, 0, current_stream()>>>(
           cuda_smaller_leaf_splits,
@@ -6194,6 +6437,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramDenseDeterministic(
   dim3 det_block(block_dim_x, static_cast<unsigned int>(det_dy));
   // Pipeline-private scratch region (pipelined pair-constructs run on
   // different pipeline streams; a shared region would race).
+  count_scratch_dirty_ = true;  // cuda_plan key forest_count_hist: the det slab is also the count scratch
   hist_t* det_slots = cuda_det_dense_slots_.RawData() +
     static_cast<size_t>(active_pipeline_) * det_dense_tile_cap_ * det_dense_dy_ * det_dense_slot_stride_;
   const bool det_packed_4bit = source != nullptr ?
@@ -6322,6 +6566,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramDenseBatchedDeterministic
   auto det_kernel = det_packed_4bit ?
     &CUDAConstructHistogramDenseGMDeterministicBatchedKernel<BIN_TYPE, true> :
     &CUDAConstructHistogramDenseGMDeterministicBatchedKernel<BIN_TYPE, false>;
+  count_scratch_dirty_ = true;  // cuda_plan key forest_count_hist: the det slab is also the count scratch
   det_kernel<<<det_grid, det_block, 0, cuda_stream_>>>(
       pair_descs,
       cuda_gradients_, cuda_hessians_,
@@ -6353,6 +6598,198 @@ void CUDAHistogramConstructor::LaunchConstructHistogramDenseBatchedDeterministic
     static_cast<data_size_t>(min_data_in_leaf_),
     min_sum_hessian_in_leaf_,
     nullptr);
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+}
+
+// ---- cuda_plan key forest_count_hist: launchers of the count construct ----
+
+namespace {
+
+// The count construct's dynamic shared table (up to the widest partition's bins x 12 bytes) may exceed the 48 KB a
+// kernel gets without opting in: raised once per (kernel, device) to the largest size asked for. A process-wide
+// registry under a mutex (forest slots launch from several host threads).
+template <typename KERNEL>
+void EnsureCountKernelSharedBytes(KERNEL kernel, const size_t bytes) {
+  if (bytes <= 48 * 1024) {
+    return;
+  }
+  static std::mutex mutex;
+  static std::map<std::pair<const void*, int>, size_t> raised;
+  int device = 0;
+  CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
+  const std::pair<const void*, int> key(reinterpret_cast<const void*>(kernel), device);
+  std::lock_guard<std::mutex> lock(mutex);
+  auto it = raised.find(key);
+  if (it != raised.end() && it->second >= bytes) {
+    return;
+  }
+  CUDASUCCESS_OR_FATAL(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                            static_cast<int>(bytes)));
+  raised[key] = bytes;
+}
+
+// Row tiles of a leaf: enough blocks to fill the device (about 4 per SM over the launch's partitions and pairs), at
+// least kCountRowsPerThread rows per row lane (a tile flushes its whole partition table to the scratch).
+int CountMaxTiles(const data_size_t max_rows, const int dy, const int blocks_per_tile, const int num_sms) {
+  const data_size_t per_tile = static_cast<data_size_t>(kCountRowsPerThread) * dy;
+  const int by_rows = static_cast<int>(std::max<data_size_t>(1, (max_rows + per_tile - 1) / per_tile));
+  const int by_device = std::max(1, (4 * std::max(1, num_sms)) / std::max(1, blocks_per_tile));
+  return std::max(1, std::min(by_rows, by_device));
+}
+
+}  // namespace
+
+size_t CUDAHistogramConstructor::CountScratchRowBytes(const bool wide) const {
+  const size_t bins = static_cast<size_t>(num_total_bin_);
+  return wide ? bins * sizeof(uint64_t) + ((bins + 1) / 2) * sizeof(uint64_t) : bins * sizeof(uint64_t);
+}
+
+size_t CUDAHistogramConstructor::CountSharedBytes(const bool wide) const {
+  return static_cast<size_t>(count_max_partition_bins_) * (wide ? sizeof(uint64_t) + sizeof(uint32_t) : sizeof(uint64_t));
+}
+
+uint64_t* CUDAHistogramConstructor::CountScratch(int* rows) {
+  uint64_t* base = reinterpret_cast<uint64_t*>(cuda_det_dense_slots_.RawData());
+  const size_t slab_bytes = cuda_det_dense_slots_.Size() * sizeof(hist_t);
+  *rows = static_cast<int>(slab_bytes / CountScratchRowBytes(count_codes_->wide));
+  if (count_scratch_dirty_) {
+    // the deterministic construct wrote its slot rows here since the last zeroing: the count scratch starts from
+    // zero (on the legacy default stream: the blocking histogram streams order after it)
+    CUDASUCCESS_OR_FATAL(cudaMemsetAsync(base, 0, slab_bytes, 0));
+    count_scratch_dirty_ = false;
+  }
+  return base;
+}
+
+template <typename BIN_TYPE>
+void CUDAHistogramConstructor::LaunchConstructHistogramDenseCount(
+  const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,
+  const data_size_t num_data_in_smaller_leaf,
+  const int grid_dim_x,
+  const int block_dim_x,
+  const DetDenseSource* source) {
+  const CUDACountHistCodes& cc = *count_codes_;
+  int rows = 0;
+  uint64_t* scratch_base = CountScratch(&rows);
+  CHECK_GE(rows, kNumHistPipelines);
+  // pipeline-private scratch row: pipelined pair constructs run on different streams
+  uint64_t* scratch = scratch_base + static_cast<size_t>(active_pipeline_) * (CountScratchRowBytes(cc.wide) / sizeof(uint64_t));
+  uint32_t* scratch_n = reinterpret_cast<uint32_t*>(scratch + num_total_bin_);
+  const int dy = std::max(1, std::min(kCountDyCap, 1024 / std::max(1, block_dim_x)));
+  const int max_tiles = CountMaxTiles(num_data_in_smaller_leaf, dy, grid_dim_x, count_num_sms_);
+  const dim3 grid(grid_dim_x, static_cast<unsigned int>(max_tiles));
+  const dim3 block(block_dim_x, static_cast<unsigned int>(dy));
+  const size_t smem = CountSharedBytes(cc.wide);
+  const bool is_4bit = source != nullptr ? source->is_4bit : cuda_row_data_->is_4bit_packed();
+  const BIN_TYPE* data = source != nullptr ? static_cast<const BIN_TYPE*>(source->data) : RowMajorBin<BIN_TYPE>();
+  const uint32_t* column_offsets = source != nullptr ? source->column_hist_offsets : cuda_row_data_->cuda_column_hist_offsets();
+  const int* partition_columns = source != nullptr ? source->partition_column_offsets :
+    cuda_row_data_->cuda_feature_partition_column_index_offsets();
+  const int* packed_offsets = source != nullptr ? source->packed_byte_offsets :
+    (is_4bit ? cuda_row_data_->cuda_packed_partition_byte_offsets() : nullptr);
+  const int8_t* feature_used = source != nullptr ? source->is_feature_used :
+    (cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr);
+  const int mode = cc.wide ? 2 : (cc.identity ? 0 : 1);
+#define FALCATA_COUNT_LEAF_LAUNCH(IS4, MODE) \
+  do { \
+    auto kernel = &CUDAConstructHistogramDenseCountKernel<BIN_TYPE, IS4, MODE>; \
+    EnsureCountKernelSharedBytes(kernel, smem); \
+    kernel<<<grid, block, smem, current_stream()>>>(cuda_smaller_leaf_splits, cc.codes.RawData(), \
+      cc.values.RawData(), data, column_offsets, cuda_row_data_->cuda_partition_hist_offsets(), partition_columns, \
+      packed_offsets, feature_used, num_data_, scratch, scratch_n, max_tiles); \
+  } while (0)
+  if (is_4bit) {
+    if (mode == 0) { FALCATA_COUNT_LEAF_LAUNCH(true, 0); } else if (mode == 1) { FALCATA_COUNT_LEAF_LAUNCH(true, 1); } else { FALCATA_COUNT_LEAF_LAUNCH(true, 2); }  // NOLINT
+  } else {
+    if (mode == 0) { FALCATA_COUNT_LEAF_LAUNCH(false, 0); } else if (mode == 1) { FALCATA_COUNT_LEAF_LAUNCH(false, 1); } else { FALCATA_COUNT_LEAF_LAUNCH(false, 2); }  // NOLINT
+  }
+#undef FALCATA_COUNT_LEAF_LAUNCH
+  const int convert_threads = 256;
+  const int convert_blocks = (num_total_bin_ + convert_threads - 1) / convert_threads;
+  if (cc.wide) {
+    ConvertCountHistogramKernel<true><<<convert_blocks, convert_threads, 0, current_stream()>>>(
+      cuda_smaller_leaf_splits, scratch, scratch_n, static_cast<uint32_t>(num_total_bin_), cc.grad_base, cc.grad_unit,
+      cc.hessian);
+  } else {
+    ConvertCountHistogramKernel<false><<<convert_blocks, convert_threads, 0, current_stream()>>>(
+      cuda_smaller_leaf_splits, scratch, scratch_n, static_cast<uint32_t>(num_total_bin_), cc.grad_base, cc.grad_unit,
+      cc.hessian);
+  }
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+}
+
+bool CUDAHistogramConstructor::CountBatchedEligible() const {
+  // the deterministic batched arm's gates (DetDenseBatchedEligible) without its slot-slab pair cap: the count scratch
+  // needs one row per pair and the launcher chunks the level by the rows the slab holds
+  // (the compact view too: the per-leaf deterministic arm serves it, the batched one leaves it to the float atomics)
+  return count_codes_ != nullptr && !use_quantized_grad_ && det_dense_dy_ > 0 && !hist_fp32_ &&
+         hybrid_graph_capture_gstate_ == nullptr && det_batched_allowed_;
+}
+
+template <typename BIN_TYPE>
+void CUDAHistogramConstructor::LaunchConstructHistogramDenseBatchedCount(
+  const CUDAHybridPairDescriptor* pair_descs,
+  const int num_pairs,
+  const data_size_t max_num_data_in_smaller_leaf,
+  const int grid_dim_x,
+  const int block_dim_x) {
+  const CUDACountHistCodes& cc = *count_codes_;
+  int rows = 0;
+  uint64_t* scratch = CountScratch(&rows);
+  CHECK_GE(rows, 1);
+  const size_t row_words = CountScratchRowBytes(cc.wide) / sizeof(uint64_t);
+  // the tree's compact view (its sampled columns; offsets of the same convention, global bin positions) or the full
+  // row data with the per-tree feature mask, as the per-leaf arms read them
+  const bool compact = use_compact_view_;
+  const int lanes = compact ? std::max(1, max_num_compact_cols_per_partition_) : block_dim_x;
+  const int dy = std::max(1, std::min(kCountDyCap, 1024 / std::max(1, lanes)));
+  const dim3 block(lanes, static_cast<unsigned int>(dy));
+  const size_t smem = CountSharedBytes(cc.wide);
+  const bool is_4bit = compact ? compact_is_4bit_ : cuda_row_data_->is_4bit_packed();
+  const BIN_TYPE* data = compact ? reinterpret_cast<const BIN_TYPE*>(NibbleViewData()) : RowMajorBin<BIN_TYPE>();
+  const uint32_t* column_offsets = compact ? compact_column_hist_offsets_.RawData() :
+    cuda_row_data_->cuda_column_hist_offsets();
+  const int* partition_columns = compact ? compact_feature_partition_column_index_offsets_.RawData() :
+    cuda_row_data_->cuda_feature_partition_column_index_offsets();
+  const int* packed_offsets = !is_4bit ? nullptr : (compact ? compact_packed_partition_byte_offsets_.RawData() :
+    cuda_row_data_->cuda_packed_partition_byte_offsets());
+  const int8_t* feature_used = compact ? nullptr :
+    (cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr);
+  const int mode = cc.wide ? 2 : (cc.identity ? 0 : 1);
+  const int convert_threads = 256;
+  const int convert_blocks = (num_total_bin_ + convert_threads - 1) / convert_threads;
+  for (int first = 0; first < num_pairs; first += std::min(rows, 65535)) {
+    const int chunk = std::min(std::min(rows, 65535), num_pairs - first);
+    const CUDAHybridPairDescriptor* descs = pair_descs + first;
+    const int max_tiles = CountMaxTiles(max_num_data_in_smaller_leaf, dy, grid_dim_x * chunk, count_num_sms_);
+    const dim3 grid(grid_dim_x, static_cast<unsigned int>(max_tiles), static_cast<unsigned int>(chunk));
+#define FALCATA_COUNT_BATCHED_LAUNCH(IS4, MODE) \
+    do { \
+      auto kernel = &CUDAConstructHistogramDenseCountBatchedKernel<BIN_TYPE, IS4, MODE>; \
+      EnsureCountKernelSharedBytes(kernel, smem); \
+      kernel<<<grid, block, smem, cuda_stream_>>>(descs, cc.codes.RawData(), cc.values.RawData(), \
+        data, column_offsets, cuda_row_data_->cuda_partition_hist_offsets(), partition_columns, \
+        packed_offsets, feature_used, num_data_, \
+        static_cast<data_size_t>(min_data_in_leaf_), min_sum_hessian_in_leaf_, scratch, row_words, \
+        static_cast<uint32_t>(num_total_bin_), max_tiles); \
+    } while (0)
+    if (is_4bit) {
+      if (mode == 0) { FALCATA_COUNT_BATCHED_LAUNCH(true, 0); } else if (mode == 1) { FALCATA_COUNT_BATCHED_LAUNCH(true, 1); } else { FALCATA_COUNT_BATCHED_LAUNCH(true, 2); }  // NOLINT
+    } else {
+      if (mode == 0) { FALCATA_COUNT_BATCHED_LAUNCH(false, 0); } else if (mode == 1) { FALCATA_COUNT_BATCHED_LAUNCH(false, 1); } else { FALCATA_COUNT_BATCHED_LAUNCH(false, 2); }  // NOLINT
+    }
+#undef FALCATA_COUNT_BATCHED_LAUNCH
+    const dim3 convert_grid(convert_blocks, 1, static_cast<unsigned int>(chunk));
+    if (cc.wide) {
+      ConvertCountHistogramBatchedKernel<true><<<convert_grid, convert_threads, 0, cuda_stream_>>>(
+        descs, scratch, row_words, static_cast<uint32_t>(num_total_bin_), cc.grad_base, cc.grad_unit, cc.hessian,
+        static_cast<data_size_t>(min_data_in_leaf_), min_sum_hessian_in_leaf_);
+    } else {
+      ConvertCountHistogramBatchedKernel<false><<<convert_grid, convert_threads, 0, cuda_stream_>>>(
+        descs, scratch, row_words, static_cast<uint32_t>(num_total_bin_), cc.grad_base, cc.grad_unit, cc.hessian,
+        static_cast<data_size_t>(min_data_in_leaf_), min_sum_hessian_in_leaf_);
+    }
+  }
   CUDASUCCESS_OR_FATAL(cudaGetLastError());
 }
 
@@ -6552,10 +6989,13 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
   if (dense_chunks.empty()) {
     dense_chunks.push_back(DenseLaunchChunk{grid_dim, 0, DenseBlockPrefix{}});
   }
-  const bool det_batched = DetDenseBatchedEligible(num_pairs);
+  // cuda_plan key forest_count_hist: the count construct takes every level the deterministic one would (and the
+  // levels too wide for its slot slab)
+  const bool count_batched = CountBatchedEligible();
+  const bool det_batched = !count_batched && DetDenseBatchedEligible(num_pairs);
   const int* level_dim_y = nullptr;
   const data_size_t* level_sizes_for_kernel = nullptr;
-  if (level_smaller_num_data != nullptr && !det_batched) {
+  if (level_smaller_num_data != nullptr && !det_batched && !count_batched) {
     // speculative flow: the grid above was sized from an upper BOUND; the exact
     // row-grouping extent comes from the level's actual sizes. Few-pair levels
     // evaluate the formula inside the construct kernel itself (saves a launch
@@ -6999,6 +7439,9 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       CHECK_EQ(cuda_row_data_->quant_hist_slots(), static_cast<int>(SHARED_HIST_SIZE));
       launch_dense_quant(std::integral_constant<size_t, SHARED_HIST_SIZE>{});
     }
+  } else if (count_batched) {
+    LaunchConstructHistogramDenseBatchedCount<BIN_TYPE>(
+      pair_descs, num_pairs, max_num_data_in_smaller_leaf, grid_dim_x, block_dim_x);
   } else if (det_batched) {
     // Deterministic float construct for the level batch: the same fixed-order
     // double-slot math as the per-leaf det arm, one construct + one merge
@@ -7227,6 +7670,7 @@ void CUDAHistogramConstructor::CaptureHybridGraphDetConstructMergeInner(
   // tile extent for the construct, pow2 pair bucket for both)
   dim3 det_grid(static_cast<unsigned int>(grid_dim_x), 1, 1);
   dim3 det_block(static_cast<unsigned int>(block_dim_x), static_cast<unsigned int>(dy));
+  count_scratch_dirty_ = true;  // cuda_plan key forest_count_hist: the det slab is also the count scratch
   det_kernel<<<det_grid, det_block, 0, cuda_stream_>>>(
       pair_descs,
       cuda_gradients_, cuda_hessians_,

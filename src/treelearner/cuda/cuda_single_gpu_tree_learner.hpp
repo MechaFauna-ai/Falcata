@@ -331,6 +331,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // Static config gate of the graph loop (depth-limited one-sync prefix only,
   // controller capacity limits, no debug modes, the graph_loop plan key).
   bool HybridGraphPrefixUsable() const;
+  // cuda_plan key forest_count_hist: this tree's gradient codes for the count construct (nullptr: not this tree)
+  const CUDACountHistCodes* CountHistCodesForTree();
   // Lazy one-time setup: static feature tables, journal/staging buffers, and
   // worst-case capacity preallocation of every captured device buffer.
   bool SetupHybridGraphStatics();
@@ -781,6 +783,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::unique_ptr<CUDADataPartition> cuda_data_partition_;
   // for histogram construction
   std::unique_ptr<CUDAHistogramConstructor> cuda_histogram_constructor_;
+  // cuda_plan key forest_count_hist: codes per gradient array (shared with the forest slots) and the diag line's state
+  std::shared_ptr<CUDACountHistCache> count_hist_cache_;
+  bool count_hist_logged_ = false;
   // cuda_plan key tree_meta_batch: staging of the tree start's metadata uploads (see cuda_meta_batch.hpp)
   TreeStartMetaBatch tree_meta_batch_;
   // for best split information finding, given the histograms

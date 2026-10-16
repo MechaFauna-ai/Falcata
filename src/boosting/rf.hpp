@@ -117,6 +117,26 @@ class RF : public GBDT {
       init_scores_[cur_tree_id] = BoostFromAverage(cur_tree_id, false);
     }
     size_t total_size = static_cast<size_t>(num_data_) * num_tree_per_iteration_;
+    #ifdef USE_CUDA
+    // cuda_plan key rf_device_objective: the objective's kernel computes the gradients into device memory, where
+    // they stay for every tree; the init score column is kept on the device only for the objectives that renew leaf
+    // outputs (their residual base, see TrainOneIter). The columns are filled on the device, one constant per class
+    // (no host column, no upload; the same doubles)
+    cuda_init_score_.Clear();
+    if (boosting_on_gpu_) {
+      CUDAVector<double> gradient_scores;
+      CUDAVector<double>& cuda_scores = objective_function_->IsRenewTreeOutput() ? cuda_init_score_ : gradient_scores;
+      cuda_scores.Resize(total_size);
+      for (int j = 0; j < num_tree_per_iteration_; ++j) {
+        LaunchFillDoubleKernel(cuda_scores.RawData() + static_cast<size_t>(j) * num_data_, init_scores_[j],
+                               static_cast<size_t>(num_data_));
+      }
+      SynchronizeCUDADevice(__FILE__, __LINE__);  // as the synchronous upload did: the columns before any stream reads
+      objective_function_->GetGradients(cuda_scores.RawData(), gradients_pointer_, hessians_pointer_);
+      SynchronizeCUDADevice(__FILE__, __LINE__);
+      return;
+    }
+    #endif  // USE_CUDA
     std::vector<double> tmp_scores(total_size, 0.0f);
     #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
     for (int j = 0; j < num_tree_per_iteration_; ++j) {
@@ -125,22 +145,6 @@ class RF : public GBDT {
         tmp_scores[offset + i] = init_scores_[j];
       }
     }
-    #ifdef USE_CUDA
-    // cuda_plan key rf_device_objective: the objective's kernel computes the gradients into device memory, where
-    // they stay for every tree; the init score column is kept on the device only for the objectives that renew leaf
-    // outputs (their residual base, see TrainOneIter)
-    cuda_init_score_.Clear();
-    if (boosting_on_gpu_) {
-      CUDAVector<double> cuda_scores;
-      cuda_scores.InitFromHostVector(tmp_scores);
-      objective_function_->GetGradients(cuda_scores.RawData(), gradients_pointer_, hessians_pointer_);
-      SynchronizeCUDADevice(__FILE__, __LINE__);
-      if (objective_function_->IsRenewTreeOutput()) {
-        cuda_init_score_.InitFromHostVector(tmp_scores);
-      }
-      return;
-    }
-    #endif  // USE_CUDA
     objective_function_->
       GetGradients(tmp_scores.data(), gradients_.data(), hessians_.data());
   }

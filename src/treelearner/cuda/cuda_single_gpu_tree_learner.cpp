@@ -293,6 +293,9 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     cuda_histogram_constructor_->ShareRowData(forest_row_data_source_->cuda_histogram_constructor_->row_data_shared());
   }
   cuda_histogram_constructor_->Init(train_data_, share_state_.get());
+  // cuda_plan key forest_count_hist: a forest slot shares the booster learner's codes (same gradient arrays)
+  count_hist_cache_ = forest_row_data_source_ != nullptr && forest_row_data_source_->count_hist_cache_ != nullptr ?
+    forest_row_data_source_->count_hist_cache_ : std::make_shared<CUDACountHistCache>();
 
   const auto& feature_hist_offsets = share_state_->feature_hist_offsets();
   num_total_bin_ = feature_hist_offsets.empty() ? 0 : static_cast<int>(feature_hist_offsets.back());
@@ -681,6 +684,7 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
     }
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
     cuda_histogram_constructor_->SetDetBatchedAllowed(det_batched_allowed);
+    cuda_histogram_constructor_->SetCountCodes(CountHistCodesForTree());
     cuda_smaller_leaf_splits_->InitValues(
       config_->lambda_l1,
       config_->lambda_l2,
@@ -4824,6 +4828,9 @@ void CUDASingleGPUTreeLearner::ResetTrainingData(
   bool is_constant_hessian) {
   SerialTreeLearner::ResetTrainingData(train_data, is_constant_hessian);
   CHECK_EQ(num_features_, train_data_->num_features());
+  if (count_hist_cache_ != nullptr) {
+    count_hist_cache_->Clear();  // cuda_plan key forest_count_hist: the gradient arrays get other values
+  }
   cuda_histogram_constructor_->ResetTrainingData(train_data, share_state_.get());
   cuda_data_partition_->ResetTrainingData(train_data,
     static_cast<int>(share_state_->feature_hist_offsets().back()) * std::max(1, vec_num_targets_),
@@ -4862,6 +4869,10 @@ void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
   if (cuda_data_partition_ != nullptr) {
     cuda_data_partition_->SetLeafMapZeroDead(false);
   }
+  if (count_hist_cache_ != nullptr) {
+    count_hist_cache_->Clear();  // cuda_plan key forest_count_hist: built again on the next tree
+  }
+  count_hist_logged_ = false;
   if (config_->gpu_device_id >= 0 && config_->gpu_device_id != gpu_device_id_) {
     Log::Fatal("Changing gpu device ID by resetting configuration parameter is not allowed for CUDA tree learner.");
   }
@@ -5084,6 +5095,44 @@ void CUDASingleGPUTreeLearner::AllocateBitset() {
   }
   cuda_bitset_len_ = 0;
   cuda_bitset_inner_len_ = 0;
+}
+
+const CUDACountHistCodes* CUDASingleGPUTreeLearner::CountHistCodesForTree() {
+  // cuda_plan key forest_count_hist (docs/design/forest-count-histograms.md): a random forest's constant gradient
+  // array of a qualifying objective, on the deterministic construct's path, whose values pass the exactness check
+  if (!FalcataPlan::Get().forest_count_hist || count_hist_cache_ == nullptr ||
+      config_->boosting != std::string("rf")) {
+    return nullptr;
+  }
+  const std::string& objective = config_->objective;
+  std::string why;
+  if (objective != "binary" && objective != "multiclass" && objective != "multiclassova" && objective != "regression") {
+    why = "objective " + objective;
+  } else if (!boosting_on_cuda_) {
+    why = "host objective";
+  } else if (config_->use_quantized_grad) {
+    why = "quantized gradients";
+  } else if (config_->data_sample_strategy == std::string("goss")) {
+    why = "goss";
+  } else if (train_data_->metadata().weights() != nullptr) {
+    why = "weights";
+  } else if (nccl_communicator_ != nullptr || vec_num_targets_ > 1) {
+    why = "multi-GPU or vector leaves";
+  } else if (HybridGraphPrefixUsable()) {
+    why = "graph loop";
+  } else if (!cuda_histogram_constructor_->CountConstructSupported()) {
+    why = "construct (sparse, large-bin partition, fp32 histograms or the shared table)";
+  }
+  const CUDACountHistCodes* codes = nullptr;
+  if (why.empty()) {
+    codes = count_hist_cache_->Get(gradients_, hessians_, num_data_, &why);
+  }
+  if (FalcataDebug().diag && !count_hist_logged_) {
+    count_hist_logged_ = true;
+    fprintf(stderr, "[count-hist-diag] %s%s\n", codes != nullptr ? "count construct" : "deterministic construct: ",
+            codes != nullptr ? "" : why.c_str());
+  }
+  return codes;
 }
 
 void CUDASingleGPUTreeLearner::ResetBoostingOnGPU(const bool boosting_on_cuda) {

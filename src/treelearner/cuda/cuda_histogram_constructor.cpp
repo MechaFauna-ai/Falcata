@@ -11,10 +11,16 @@
 
 #include <algorithm>
 #include <mutex>
+#include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
+#include <memory>
+#include <numeric>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Falcata {
@@ -155,6 +161,7 @@ void LaunchInterleaveGradHessKernel(
 void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score_t* hessians) {
   cuda_gradients_ = gradients;
   cuda_hessians_ = hessians;
+  count_codes_ = nullptr;  // cuda_plan key forest_count_hist: the learner sets this tree's codes (SetCountCodes)
   // every tree starts on plane 0, whose hessians are the ones every consumer reads
   grad_only_plane_ = false;
   const size_t l2_window_bytes = std::min(l2_max_window_bytes_,
@@ -1578,6 +1585,7 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   colmajor_pad_ = 0;
   full_view_.Clear();
   colmajor_direct_ = cuda_row_data_->dense_4bit_columns_only();
+  InitCountConstruct();
 
   // one int32 region of num_total_bin_ entries per histogram pipeline (the pairs
   // of a level run concurrently on different pipeline streams and must not share
@@ -2303,6 +2311,7 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   InitFixMFBMask();
   // the tree learner chooses the regime for the new data (ChooseViewRegime)
   colmajor_direct_ = cuda_row_data_->dense_4bit_columns_only();
+  InitCountConstruct();
 }
 
 void CUDAHistogramConstructor::ResetConfig(const Config* config) {
@@ -2316,6 +2325,225 @@ void CUDAHistogramConstructor::ResetConfig(const Config* config) {
   cuda_hist_.SetValue(0);
   num_dirty_leaves_ = -1;
   // (colmajor_direct: the tree learner re-chooses the regime when feature_fraction changed)
+}
+
+// ---- cuda_plan key forest_count_hist (docs/design/forest-count-histograms.md) ----
+
+void CUDAHistogramConstructor::InitCountConstruct() {
+  count_supported_ = false;
+  count_codes_ = nullptr;
+  count_scratch_dirty_ = true;
+  count_max_partition_bins_ = 0;
+  if (use_quantized_grad_ || det_dense_dy_ <= 0 || hist_fp32_ || num_hist_planes_ != 1 || num_total_bin_ <= 0 ||
+      cuda_row_data_ == nullptr || cuda_row_data_->is_sparse() || cuda_row_data_->NumLargeBinPartition() > 0) {
+    return;
+  }
+  const std::vector<uint32_t>& offsets = cuda_row_data_->host_partition_hist_offsets();
+  for (size_t p = 0; p + 1 < offsets.size(); ++p) {
+    count_max_partition_bins_ = std::max(count_max_partition_bins_, offsets[p + 1] - offsets[p]);
+  }
+  const int device = gpu_device_id_ < 0 ? 0 : gpu_device_id_;
+  int shared_limit = 0;
+  if (cudaDeviceGetAttribute(&shared_limit, cudaDevAttrMaxSharedMemoryPerBlockOptin, device) != cudaSuccess) {
+    shared_limit = 48 * 1024;
+  }
+  int sms = 0;
+  if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) != cudaSuccess || sms <= 0) {
+    sms = 1;
+  }
+  count_num_sms_ = sms;
+  const size_t slab_bytes = cuda_det_dense_slots_.Size() * sizeof(hist_t);
+  // the wide layout is the larger in both: the shared table must fit a block, and the slab must hold a scratch row
+  // per histogram pipeline (the per-leaf construct's rows)
+  count_supported_ = CountSharedBytes(true) <= static_cast<size_t>(shared_limit) &&
+                     slab_bytes / CountScratchRowBytes(true) >= static_cast<size_t>(kNumHistPipelines);
+}
+
+namespace {
+
+/*! \brief v as M * 2^L with M an odd integer (M = 0 for v = 0); v a finite float widened to double */
+void FloatAsScaledInteger(const double v, int64_t* m, int* l) {
+  if (v == 0.0) {
+    *m = 0;
+    *l = 0;
+    return;
+  }
+  int e = 0;
+  const double frac = std::frexp(v, &e);  // v = frac * 2^e, |frac| in [0.5, 1)
+  int64_t k = static_cast<int64_t>(std::ldexp(frac, 53));  // exact: a float's significand has 24 bits
+  int shift = e - 53;
+  while ((k & 1) == 0) {
+    k /= 2;
+    ++shift;
+  }
+  *m = k;
+  *l = shift;
+}
+
+std::unique_ptr<CUDACountHistCodes> BuildCountHistCodes(const score_t* gradients, const score_t* hessians,
+                                                        const data_size_t num_data, std::string* why) {
+  if (num_data <= 0 || num_data >= (data_size_t{1} << 29)) {
+    *why = "rows outside (0, 2^29)";
+    return nullptr;
+  }
+  const size_t n = static_cast<size_t>(num_data);
+  std::vector<score_t> grad(n), hess(n);
+  CopyFromCUDADeviceToHost<score_t>(grad.data(), gradients, n, __FILE__, __LINE__);
+  CopyFromCUDADeviceToHost<score_t>(hess.data(), hessians, n, __FILE__, __LINE__);
+  const score_t h0 = hess[0];
+  if (!(std::isfinite(h0) && h0 > 0.0f)) {
+    *why = "hessian not finite positive";
+    return nullptr;
+  }
+  for (size_t i = 0; i < n; ++i) {
+    if (hess[i] != h0) {
+      *why = "hessian not constant";
+      return nullptr;
+    }
+  }
+  // distinct gradient values by their float bits (-0 as +0): an open-addressing table of 512 slots, at most 256 values
+  constexpr int kMaxValues = 256;
+  constexpr uint32_t kSlots = 512;
+  std::vector<uint32_t> slot_key(kSlots, 0);
+  std::vector<int> slot_index(kSlots, -1);
+  std::vector<float> values;
+  std::vector<uint8_t> first_index(n);
+  for (size_t i = 0; i < n; ++i) {
+    float g = grad[i];
+    if (!std::isfinite(g)) {
+      *why = "gradient not finite";
+      return nullptr;
+    }
+    if (g == 0.0f) {
+      g = 0.0f;
+    }
+    uint32_t bits;
+    std::memcpy(&bits, &g, sizeof(bits));
+    uint32_t h = (bits * 2654435761u) >> 23;  // 9 bits
+    while (slot_index[h] >= 0 && slot_key[h] != bits) {
+      h = (h + 1) & (kSlots - 1);
+    }
+    if (slot_index[h] < 0) {
+      if (static_cast<int>(values.size()) == kMaxValues) {
+        *why = "more than 256 gradient values";
+        return nullptr;
+      }
+      slot_key[h] = bits;
+      slot_index[h] = static_cast<int>(values.size());
+      values.push_back(g);
+    }
+    first_index[i] = static_cast<uint8_t>(slot_index[h]);
+  }
+  const int m = static_cast<int>(values.size());
+  std::vector<int> order(m);
+  std::iota(order.begin(), order.end(), 0);
+  std::sort(order.begin(), order.end(), [&values](int a, int b) { return values[a] < values[b]; });
+  std::vector<uint8_t> rank(m);
+  for (int r = 0; r < m; ++r) {
+    rank[order[r]] = static_cast<uint8_t>(r);
+  }
+  // every value as an integer multiple of one power of two 2^L
+  std::vector<int64_t> mant(m);
+  std::vector<int> lsb(m);
+  int low = std::numeric_limits<int>::max();
+  for (int r = 0; r < m; ++r) {
+    FloatAsScaledInteger(static_cast<double>(values[order[r]]), &mant[r], &lsb[r]);
+    if (mant[r] != 0) {
+      low = std::min(low, lsb[r]);
+    }
+  }
+  if (low == std::numeric_limits<int>::max()) {
+    low = 0;  // every gradient is zero
+  }
+  std::vector<int64_t> scaled(m);
+  unsigned __int128 max_abs = 0;
+  for (int r = 0; r < m; ++r) {
+    if (mant[r] == 0) {
+      scaled[r] = 0;
+      continue;
+    }
+    const int shift = lsb[r] - low;
+    // a float spans at most 2^(127 + 149) of 2^L units; beyond 62 bits of magnitude the bound below fails anyway
+    if (shift > 62 - 24) {
+      *why = "gradient values span too many binades";
+      return nullptr;
+    }
+    scaled[r] = mant[r] * (int64_t{1} << shift);
+    const unsigned __int128 a = static_cast<unsigned __int128>(scaled[r] < 0 ? -scaled[r] : scaled[r]);
+    max_abs = std::max(max_abs, a);
+  }
+  // the exactness bound (design note section 4): 2 * max |M| * num_data < 2^53
+  if (2 * max_abs * static_cast<unsigned __int128>(n) >= (static_cast<unsigned __int128>(1) << 53)) {
+    *why = "exactness bound (2 max|M| n >= 2^53)";
+    return nullptr;
+  }
+  uint64_t g = 0;
+  for (int r = 1; r < m; ++r) {
+    g = std::gcd(g, static_cast<uint64_t>(scaled[r] - scaled[0]));
+  }
+  if (g == 0) {
+    g = 1;  // one value
+  }
+  std::unique_ptr<CUDACountHistCodes> out(new CUDACountHistCodes());
+  std::vector<uint64_t> table(m);
+  uint64_t max_t = 0;
+  bool identity = true;
+  for (int r = 0; r < m; ++r) {
+    table[r] = static_cast<uint64_t>(scaled[r] - scaled[0]) / g;
+    max_t = std::max(max_t, table[r]);
+    identity = identity && table[r] == static_cast<uint64_t>(r);
+  }
+  out->num_values = m;
+  out->grad_base = static_cast<double>(values[order[0]]);
+  out->grad_unit = std::ldexp(static_cast<double>(g), low);
+  out->hessian = static_cast<double>(h0);
+  out->wide = static_cast<unsigned __int128>(max_t) * n >= (static_cast<unsigned __int128>(1) << 32);
+  out->identity = identity && !out->wide;
+  // every value is reproduced exactly by the affine form (a check of the arithmetic above)
+  for (int r = 0; r < m; ++r) {
+    const double v = out->grad_base + out->grad_unit * static_cast<double>(table[r]);
+    if (v != static_cast<double>(values[order[r]])) {
+      *why = "affine form not exact";
+      return nullptr;
+    }
+  }
+  std::vector<uint8_t> codes(n);
+  for (size_t i = 0; i < n; ++i) {
+    codes[i] = rank[first_index[i]];
+  }
+  out->codes.InitFromHostVector(codes);
+  out->values.InitFromHostVector(table);
+  if (FalcataDebug().diag) {
+    fprintf(stderr, "[count-hist-diag] codes for gradients %p: %d values, base %.17g unit %.17g hessian %.9g, %s%s\n",
+            static_cast<const void*>(gradients), m, out->grad_base, out->grad_unit, out->hessian,
+            out->wide ? "wide" : "packed", out->identity ? " identity" : "");
+  }
+  return out;
+}
+
+}  // namespace
+
+const CUDACountHistCodes* CUDACountHistCache::Get(const score_t* gradients, const score_t* hessians,
+                                                  const data_size_t num_data, std::string* why) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto it = entries_.find(gradients);
+  if (it == entries_.end() || it->second.hessians != hessians || it->second.num_data != num_data) {
+    Entry& entry = entries_[gradients];
+    entry.hessians = hessians;
+    entry.num_data = num_data;
+    entry.why.clear();
+    entry.codes = BuildCountHistCodes(gradients, hessians, num_data, &entry.why);
+    it = entries_.find(gradients);
+  }
+  if (why != nullptr) {
+    *why = it->second.why;
+  }
+  return it->second.codes.get();
+}
+
+void CUDACountHistCache::Clear() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  entries_.clear();
 }
 
 }  // namespace Falcata
