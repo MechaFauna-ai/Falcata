@@ -532,7 +532,10 @@ histogram pool halves from ~248MB (doesn't fit the 5090's 96MB L2) to
 hitting cache. Isolated on covtype non-quant: fp32 gains **+26% deep** vs
 +1.7% shallow — the cache cliff, not bandwidth, dominates the deep win.
 Practical guidance: on deep non-quantized configs, `cuda_precision=fp32` is
-the single highest-leverage switch available.
+the single highest-leverage switch available. (Since `nonquant_deterministic`,
+section 10v, the fp32 histogram layout and its atomics run only with
+`cuda_plan=auto,nonquant_deterministic:off`; by default `fp32` keeps its fp32
+gain math on deterministic fp64 histograms.)
 
 ## 7. Memory-layout micro-optimizations (each small, all free)
 
@@ -1688,7 +1691,7 @@ The host builds the row-wise bin as a sparse multi-value bin when the features' 
 
 **`dense_rowdata` (default on, bit-identical).** For quantized training (`quant_mode` stochastic or fixedpoint) on the CUDA learner, `Dataset::RowWiseSparseThreshold` returns +infinity (always dense) when the dense bin (rows x columns at the widest column's width: 1, 2 or 4 bytes) needs at most a quarter of the total memory of the Dataset's device (`kDenseRowDataMaxDeviceShare`; the device is the Dataset's `gpu_device_id_`, set from the config the Dataset is constructed with, not the Booster's `gpu_device_id`: a Dataset constructed for one card and trained on another reads the first card's memory, which can only change speed or cause an allocation failure, never the model), and the host's 0.25 otherwise. `GetShareStates` computes it once and hands the same value to the row-wise offsets, the host bin and the host-bin skip, so the layout and the fill always agree. It applies to the row-wise bin only: the feature groups keep their layout, and datasets below 0.25 already took the dense bin.
 
-- Quantized only: integer histograms sum to the same values whichever kernel and row grouping builds them, so the model is the same on either layout. Non-quantized training keeps the sparse bin, whose construct is the deterministic float kernel (`CUDAConstructHistogramSparseDeterministicKernel`): the dense batched flow's default plan keeps the atomic float construct, which is not run-to-run deterministic (the lattice's `dense/nonquant` and `graph/nonquant` cells are unfingerprinted for that reason), and even the deterministic dense kernels group the float sums differently from the sparse one.
+- Quantized only: integer histograms sum to the same values whichever kernel and row grouping builds them, so the model is the same on either layout. Non-quantized training keeps the sparse bin, whose construct is the deterministic float kernel (`CUDAConstructHistogramSparseDeterministicKernel`): the dense batched flow's default plan kept the atomic float construct, which was not run-to-run deterministic (the lattice's `dense/nonquant` and `graph/nonquant` cells were unfingerprinted for that reason; since `nonquant_deterministic`, section 10v, those levels accumulate in 64-bit fixed point and the cells are fingerprinted), and the deterministic dense kernels group the float sums differently from the sparse one where the sums are not exact.
 - The size rule reads the device's total memory, never the free memory: the layout is a function of the data, the config and the device, not of what else runs on the GPU. A dataset above the share keeps the sparse bin, which trains the same model on the per-leaf kernels; a dense bin within the share that does not fit next to another process's allocations fails its allocation like any other device buffer, it does not switch layout.
 - Multi-GPU (`num_gpu` > 1): the ranks must lay out the same row-wise bin, since the histogram all-reduce exchanges `num_total_bin_` values per rank and the dense layout runs the batched level flow, the sparse one the per-leaf flow (different collectives; on master and with the key off, quantized multi-GPU on the sparse bin stops with the Fatal "multi-GPU + quantized gradients requires the hybrid level flow"). Each rank trains its own Dataset (`CopySubrowToDevice`: its row share, its card), so the rule is not evaluated per rank: `NCCLGBDT::Init` decides it once, the largest rank's row count (ceil(rows / devices), all rows for feature-parallel) against the smallest total memory over the ranks' devices (and over the machines), and hands the outcome to every rank's Dataset (`Dataset::SetDenseRowDataFits`). Dense on one rank means dense on all. The one-GPU path computes it from the Dataset itself, unchanged. Checked on this one-GPU box through a single NCCL rank (`num_gpu=2` clamps to one device; `test_dense_rowdata_multi_gpu_decided_once`); two ranks not run.
 - Host memory and construct time: very sparse data is where the key gains most, and there the host still builds the row-wise bin (`CanSkipHostMultiValBinForCUDA` is false with a multi-val group or any sparse column bin), now the full dense one, rows x columns bytes and up to a quarter of the device's memory (8 GB on a 32 GB card), where the key off builds a sparse bin of a few MB; the device holds the same dense bin. Measured (same binary, key off vs on, 4 runs each, `runs/e006h/construct_sparse.sh`): `Dataset.construct` is unchanged (the layout is chosen at learner init): 300k x 1000 at 99% zeros 0.59 vs 0.59 s, 300k x 3000 at 99.8% zeros 0.98 vs 1.00 s; the first training round (learner init, host bin, device copy, one tree) is shorter with the key, 0.38 -> 0.21 s and 0.61 -> 0.38 s; the host RSS peak during it (above the RSS after construct, CUDA context included) 683 -> 649 MB and 791 -> 1135 MB, i.e. +0.34 GB host on the 900 MB dense bin of the wider shape.
@@ -2332,6 +2335,75 @@ gbdt), with the model unchanged where it does not; the three code layouts and th
 boundary, the exactness bound, a non-constant hessian, the default plan, a parameter reset rebuilding the codes,
 levels wider than the slot slab (the per-leaf deterministic trees), and a forest group out of device memory grown again
 (same md5).
+
+## 10v. Non-quantized training deterministic by default (`nonquant_deterministic`)
+
+Quantized training sums integer histograms, so its models are the same on every run. Non-quantized training
+(`quant_mode=none`) was not: 4 runs of every depth-limited article shape gave 4 different models on master 307b16e1
+(the first difference in tree 0's leaf values, the same split structure; epsilon in tree 1, whose first tree's
+gradients all have one magnitude). Flipping one plan key at a time located it in the histogram construct alone:
+`graph_det:on` (the graph loop's deterministic construct+merge nodes, nothing else changed) or `graph_loop:off` made
+every shape but three deterministic; those three were the batched level construct on a compact column view
+(`feature_fraction` < 1), levels wider than the deterministic slot slab (epsilon: 8 MB slot rows) and
+`cuda_precision=fp32` (its float histograms bypass every deterministic kernel, even with `hybrid:off`). Everything
+else on the path is already fixed-order: root sums (block partials, one-block reduce), the per-leaf dense, sparse and
+compact constructs (the double-slot deterministic kernels), the fix and subtract kernels, the finder, gradients,
+bagging, leaf outputs and the score update. The existing deterministic batched construct is no answer as a default:
+3.2x on year deep, 7x on higgs deep, 2.8x on covtype shallow (its merge reads every slot row over the full histogram
+width per pair).
+
+**`nonquant_deterministic`** (default on; non-quantized training only, quantized never reads it): the levels the
+float atomics built (the default graph loop, compact views, levels wider than the slab) take the same batched
+kernel with a 64-bit integer accumulator. Per tree, the gradient interleave pass also takes max |g| and max |h|
+(order-free `atomicMax` on the floats' bits); one thread sets S = 62 - e - lg_n (max < 2^e, 2^lg_n >= num_data),
+so no sum of num_data scaled values can overflow 63 bits. The construct multiplies each value by 2^S (exact) and
+rounds once to an integer; the shared table holds 64-bit words, each add two native 32-bit shared atomics (the low
+word's returned old value gives that add's exact carry into the high word; a 64-bit shared `atomicAdd` compiles to
+a compare-and-swap loop), the flush is a 64-bit integer global atomic, and one kernel per level (a pair-on-y node in
+the graph loop) rewrites the words in place as `hist_t` times 2^-S. Integer adds commute, so the histogram is the
+same however the atomics land. Values that are multiples of 2^-S (within 2^(38 - lg_n) of the largest, every row of
+every shape measured) are summed exactly, so the histogram is the exact sum the deterministic double-slot kernels
+compute: the default models equal the `graph_det:on` / `graph_loop:off` deterministic models (the lattice's
+`dense/nonquant` and `graph/nonquant` md5s equal `dense/nonquant-det` and `graph/nonquant-det`). Smaller values are
+off by at most 2^-(S+1), about max * num_data * 2^-63 (2^-39 of the largest at 2^24 rows), below their own float32
+rounding; the float shared partial sums of the atomic path rounded at every add. The 64-bit table is twice the float
+one (up to 96 KB of dynamic shared memory, one block per SM where the float table fits two), so the fixed-point
+construct runs 1008-thread blocks. The per-leaf and host batched deterministic constructs run where they ran (their
+models are unchanged). `cuda_precision=fp32` keeps its fp32 gain math on `hist_t` histograms; its fp32 histogram
+layout runs only with the key off. `nonquant_deterministic:off` restores the float atomics: the only CUDA mode
+whose models vary from run to run. Not covered: linear trees (their per-leaf least-squares sums use double
+atomics), ranking objectives' gradients (shared float atomics), vector-leaf trees (unchanged routing), multi-GPU.
+
+Cost, same binary, key off vs on, 2 interleaved pairs, the article's non-quantized shapes (benchmarks/bench.py's
+speed-cell params, 32 threads, max_bin 255; train s = `lgb.train`, ms/round = median over rounds 100..):
+
+| shape | rounds | off train s | on train s | off ms/round | on ms/round | off trees/s | on trees/s | cost (train s on/off) | cost (ms/round) | md5 on (2 runs) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| fraud/shallow | 500 | 0.454/0.449 | 0.443/0.449 | 0.628 | 0.618 | 1106.5 | 1121.1 | **0.987** | 0.984 | 1 md5 e9a8f4fc (off: 2 md5s) |
+| fraud/deep | 500 | 0.547/0.54 | 0.542/0.543 | 0.513 | 0.513 | 919.7 | 921.7 | **0.998** | 1.000 | 1 md5 ae208136 (off: 2 md5s) |
+| covtype/shallow | 500 | 2.971/3.15 | 3.04/3.08 | 5.603 | 5.412 | 163.4 | 163.4 | **1.000** | 0.966 | 1 md5 b5b028d4 (off: 2 md5s) |
+| covtype/deep | 500 | 7.973/7.924 | 7.617/7.599 | 14.583 | 13.938 | 62.9 | 65.7 | **0.957** | 0.956 | 1 md5 60f22b08 (off: 2 md5s) |
+| year/shallow | 500 | 0.822/0.825 | 0.808/0.808 | 1.368 | 1.348 | 607.2 | 618.7 | **0.981** | 0.986 | 1 md5 2287e5e6 (off: 2 md5s) |
+| year/deep | 500 | 3.626/3.612 | 3.747/3.733 | 6.673 | 6.867 | 138.2 | 133.7 | **1.033** | 1.029 | 1 md5 bf172d37 (off: 2 md5s) |
+| higgs/shallow | 500 | 4.031/3.969 | 4.205/3.958 | 7.438 | 7.344 | 125.0 | 122.5 | **1.020** | 0.987 | 1 md5 183ef7e4 (off: 2 md5s) |
+| higgs/deep | 500 | 15.578/15.827 | 16.94/17.09 | 27.259 | 31.572 | 31.8 | 29.4 | **1.084** | 1.158 | 1 md5 20c6f27a (off: 2 md5s) |
+| epsilon/shallow | 500 | 9.682/9.633 | 9.45/9.437 | 17.985 | 17.684 | 51.8 | 52.9 | **0.978** | 0.983 | 1 md5 b63333ca (off: 2 md5s) |
+| epsilon/deep | 500 | 70.236/70.208 | 72.753/72.732 | 137.131 | 142.193 | 7.1 | 6.9 | **1.036** | 1.037 | 1 md5 8be9edb6 (off: 2 md5s) |
+| airline/shallow | 500 | 26.358/26.359 | 26.881/26.874 | 50.496 | 51.550 | 19.0 | 18.6 | **1.020** | 1.021 | 1 md5 0eadd54d (off: 2 md5s) |
+| airline/deep | 500 | 128.035/132.283 | 133.787/133.786 | 216.796 | 217.759 | 3.8 | 3.7 | **1.028** | 1.004 | 1 md5 c0312132 (off: 2 md5s) |
+| numerai/numerai | 2000 | 54.517/54.578 | 55.337/55.225 | 27.376 | 27.187 | 36.7 | 36.2 | **1.013** | 0.993 | 1 md5 d0aa2a89 (off: 2 md5s) |
+
+Geometric mean 1.010. The cost is under 4% everywhere but higgs deep (1.084 in train s, 1.158 per steady round:
+its smaller leaves on deep levels pay the 64-bit table's zero and flush and the convert pass; 1023 leaves of 28
+255-bin features), and the native 32-bit adds make covtype deep 4.3% faster than the float atomics. Before the native
+adds and the wider blocks (one 504-thread block per SM, compare-and-swap adds) the same construct cost up to 1.38x
+(higgs and epsilon shallow). Quantized cells, key off vs on, same binary, 2 pairs: numerai53bench 3.314 -> 3.315 ms
+per round, higgs 1.702 -> 1.700, md5-identical (the key is read only under non-quantized training). Lattice: 437 of
+440 cells md5-identical to master, `dense/nonquant`, `dense/fp32`, `graph/nonquant` fingerprinted, a metric-only
+`dense/nonquant-atomic` cell keeps the off path covered. `tests/python_package_test/test_cuda_nonquant_deterministic.py`
+trains eleven shapes three times each (graph regression, binary and multiclass, compact view, bagging, sparse input,
+a leaf-wise tree, fp32, a wide shape on the host loop whose deep levels outgrow the slab, monotone and interaction
+constraints): one model per shape; and three quantized shapes key on vs off: md5-identical.
 
 ## Multi-GPU: level-batched NCCL all-reduce
 
