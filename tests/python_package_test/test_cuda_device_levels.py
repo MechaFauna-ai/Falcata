@@ -116,6 +116,18 @@ def test_device_levels_wide_and_goss_cuda(quant):
 
 
 @_REQUIRES_CUDA
+@pytest.mark.parametrize("quant", ["stochastic", "fixedpoint"])
+def test_device_levels_few_values_sampled_cuda(quant):
+    # Numerai-like: many five-value columns, a tenth of them sampled per tree (the compact view, the pair-joint
+    # constructs, per-tree launch layouts that a cached level graph must key on)
+    rng = np.random.default_rng(41)
+    rows, cols = 30011, 400
+    X = rng.integers(0, 5, size=(rows, cols)).astype(np.float32)
+    y = (X[:, :8].sum(axis=1) + rng.normal(size=rows)).astype(np.float32)
+    _same(_params("regression", 1023, 10, quant, feature_fraction=0.1, min_data_in_leaf=20), X, y, 20)
+
+
+@_REQUIRES_CUDA
 @pytest.mark.parametrize(
     "extra",
     [

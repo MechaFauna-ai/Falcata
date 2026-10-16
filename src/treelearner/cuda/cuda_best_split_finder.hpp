@@ -452,6 +452,9 @@ class CUDABestSplitFinder {
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(warp_find_num_narrow_used_)));
     key->push_back(static_cast<const void*>(cuda_warp_find_order_.RawDataReadOnly()));
     key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(warp_find_split_block_cap_)));
+    key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(warp_find_order_pad_)));
+    key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(warp_find_narrow_mixed_direction_ ? 1 : 0)));
+    key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(level_node_max_tasks_)));
   }
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 

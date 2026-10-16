@@ -626,6 +626,13 @@ class CUDAHistogramConstructor {
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(code5_valid_ ? 1 : 0)));
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(use_compact_view_ ? 1 : 0)));
+    // the per-tree layout values the construct and fix/subtract launches pass by value
+    for (const int v : {num_compact_columns_, compact_pair_joint_max_, compact_pair_joint_total_, compact_row_bytes_,
+                        code5_row_words_, code5_bits_, compact_row_interleave_ ? 1 : 0, num_used_feature_info_,
+                        used_feature_info_ok_ ? 1 : 0, any_feature_unused_bytree_ ? 1 : 0,
+                        nibble_pending_ ? 1 : 0}) {
+      key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(v)));
+    }
   }
   /*! \brief cuda_plan key device_level_graph: a level search of this tree launches nothing but its kernels (no
    *  pending rewrite of the compact view, which the first nibble-view reader of a tree launches once) */
