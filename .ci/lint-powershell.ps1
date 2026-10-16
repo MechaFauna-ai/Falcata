@@ -83,14 +83,19 @@ $files = @(
 
 # Invoke-ScriptAnalyzer itself sometimes crashes (non-deterministically) with
 # "Object reference not set to an instance of an object", a NullReferenceException
-# inside the analyzer rather than a lint finding. Retry only that crash; lint
-# findings still end the script immediately through -EnableExit.
+# inside the analyzer rather than a lint finding. Retry only that crash.
+#
+# -EnableExit is deliberately not used: under 'pwsh -file' it does not stop the
+# script, it only records an exit code, so the last linted file would decide the
+# result and findings in every other file would be ignored. Instead, collect each
+# file's findings, print them, and fail after all files have been linted.
 $maxAttempts = 3
+$failed = $false
 foreach ($file in $files) {
     Write-Output "linting '$file'"
     for ($attempt = 1; ; $attempt++) {
         try {
-            Invoke-ScriptAnalyzer -Path $file -EnableExit -Settings $settings
+            $results = @(Invoke-ScriptAnalyzer -Path $file -Settings $settings)
             break
         } catch {
             $isAnalyzerCrash = (
@@ -104,4 +109,13 @@ foreach ($file in $files) {
             Start-Sleep -Seconds 5
         }
     }
+    if ($results.Count -gt 0) {
+        $failed = $true
+        $results | Format-Table -AutoSize -Wrap | Out-String -Width 4096 | Write-Output
+    }
+}
+
+if ($failed) {
+    Write-Output 'PSScriptAnalyzer reported findings, see above.'
+    exit 1
 }
