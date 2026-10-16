@@ -11,9 +11,12 @@
 #include <Falcata/utils/log.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
+#include <stdexcept>
 #include <memory>
 #include <thread>
 #include <utility>
@@ -49,14 +52,20 @@ TreeLearner* CUDAForestTrainer::learner(const int slot) const {
   return slots_[slot];
 }
 
+size_t CUDAForestTrainer::Reserve(const size_t total) const {
+  // the device keeps an eighth free (at least 1 GiB), and at least twice what a slot's first tree allocated (the
+  // transient allocations of a group's trees growing together come out of it)
+  return std::max({size_t{1} << 30, total / 8, 2 * slot_tree_bytes_});
+}
+
 int CUDAForestTrainer::EnsureSlots(const int wanted) {
   SetCUDADevice(slots_[0]->gpu_device_id(), __FILE__, __LINE__);
   while (num_slots() < wanted && !memory_bound_) {
     size_t free_before = 0, total = 0;
     CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_before, &total));
-    // a slot's footprint: what its Init took plus what its first tree allocates (measured once a group grew a
-    // slot's first tree; until then assumed as large again); the device keeps an eighth (at least 1 GiB) free
-    const size_t reserve = std::max<size_t>(size_t{1} << 30, total / 8);
+    // a slot's footprint: what its Init took (its presized level buffers included) plus what its first tree
+    // allocates (measured once a group grew a slot's first tree; until then assumed as large again)
+    const size_t reserve = Reserve(total);
     const size_t tree_bytes = slot_tree_bytes_ > 0 ? slot_tree_bytes_ : slot_init_bytes_;
     // the slots created but not grown yet still have their first tree's allocations to make
     size_t pending = 0;
@@ -134,6 +143,14 @@ void CUDAForestTrainer::Train(const std::vector<Job>& jobs, std::vector<std::uni
     CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_before, &total));
   }
   std::vector<std::exception_ptr> errors(num_jobs);
+  // test hook: FALCATA_TEST_FOREST_OOM_GROUP=n makes the n-th group (0-based, of a group with more than one slot) of
+  // the process fail in its last slot as a device-memory failure would
+  static std::atomic<int> group_counter{0};
+  static const int inject_group = [] {
+    const char* v = std::getenv("FALCATA_TEST_FOREST_OOM_GROUP");
+    return v != nullptr ? std::atoi(v) : -1;
+  }();
+  const bool inject_oom = inject_group >= 0 && num_slots() > 1 && group_counter.fetch_add(1) == inject_group;
   // the log level and callback are per thread: the slot threads log as this one does (verbosity, the Python or R
   // logger), not at a new thread's default Info level to stdout
   const LogLevel log_level = Log::CurrentLevel();
@@ -147,6 +164,11 @@ void CUDAForestTrainer::Train(const std::vector<Job>& jobs, std::vector<std::uni
       SetCUDADevice(slot->gpu_device_id(), __FILE__, __LINE__);
       if (job.bag != nullptr) {
         slot->SetBaggingData(nullptr, job.bag, job.bag_cnt);
+      }
+      if (inject_oom && job.slot == num_slots() - 1) {
+        // test hook (FALCATA_TEST_FOREST_OOM_GROUP): the device-memory failure of a group, as AllocateCUDAMemory
+        // reports it
+        throw std::runtime_error("[CUDA] out of memory allocating 0.00 GiB (injected for a test)");
       }
       (*trees)[k].reset(slot->Train(job.gradients, job.hessians, false));
     } catch (...) {
@@ -173,6 +195,12 @@ void CUDAForestTrainer::Train(const std::vector<Job>& jobs, std::vector<std::uni
   main->SetTreeCounters(next);
   SetCUDADevice(main->gpu_device_id(), __FILE__, __LINE__);
   last_first_trees_ = first_trees;
+  {
+    // the device must keep the reserve after a group: below it, the next group shrinks (RF::GrowForestGroup)
+    size_t free_now = 0, total_now = 0;
+    CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_now, &total_now));
+    memory_low_ = free_now < Reserve(total_now);
+  }
   if (first_trees > 0) {
     size_t free_after = 0;
     CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_after, &total));
@@ -187,6 +215,23 @@ void CUDAForestTrainer::Train(const std::vector<Job>& jobs, std::vector<std::uni
     if (error) {
       std::rethrow_exception(error);
     }
+  }
+}
+
+void CUDAForestTrainer::DropSlots(const int keep) {
+  SetCUDADevice(slots_[0]->gpu_device_id(), __FILE__, __LINE__);
+  const int target = std::max(1, keep);
+  while (num_slots() > target) {
+    owned_.pop_back();  // the learner of the last slot, with its device memory
+    slots_.pop_back();
+    slot_trained_.pop_back();
+  }
+  memory_bound_ = true;
+  memory_low_ = false;
+  if (FalcataDebug().diag) {
+    size_t free_bytes = 0, total = 0;
+    cudaMemGetInfo(&free_bytes, &total);
+    fprintf(stderr, "[forest-diag] slots dropped to %d, %.0f MiB free\n", num_slots(), free_bytes / 1048576.0);
   }
 }
 

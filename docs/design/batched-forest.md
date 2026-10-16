@@ -122,11 +122,19 @@ are measured (`[forest-diag]` lines under `FALCATA_DEBUG=diag`). Measured per sl
 | numerai-rf-deep (400k rows, 3555 features) | 2230 MiB, 180 ms | 1036 MiB | 3.2 GiB | ~8 |
 
 The histogram pool (num_leaves x total bins x 16 B: 1.16 GiB on numerai) and the per-tree column views dominate.
-`EnsureSlots` creates a slot only while the free memory covers the reserve (an eighth of the device, at least
-1 GiB), the first-tree allocations still pending for the slots not yet grown, and the new slot's footprint (its
+`EnsureSlots` creates a slot only while the free memory covers the reserve (max(1 GiB, an eighth of the device, twice
+a slot's first-tree bytes); forest stage 3), the first-tree allocations still pending for the slots not yet grown, and
+the new slot's footprint (its
 first tree assumed as large as its Init until one was measured). The group size is capped by the slots that fit:
 this is the group-of-G fallback; at least one round's class trees must fit, otherwise the round trains sequentially.
 The bag copies are R x num_data x 4 B (higgs, 16 rounds: 205 MB).
+
+Stage 3 (PR #121 review): the measured footprint missed the level buffers that grow after a slot's first tree
+(numerai's level finder output, ~2 GiB, was presized only up to 256 MiB, and a growing Resize holds the old block
+beside the new). With the count construct's faster trees auto settled on 6 numerai slots and peaked at 31.9 GiB of 32
+(one OOM). Now the level buffers are presized up to an eighth of the device (in the Init footprint: numerai 4.56 GiB per
+slot, 5 slots, peak 25.6 GiB); a group that leaves the device below the reserve halves the next group and frees the
+slots beyond it; a group that runs out of device memory is grown again once on one round's slots.
 
 ## 7. Determinism: every tree is the sequential tree
 

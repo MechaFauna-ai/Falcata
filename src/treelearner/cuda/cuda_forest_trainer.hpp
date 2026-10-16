@@ -53,7 +53,7 @@ class CUDAForestTrainer {
 
   /*! \brief Create slots up to wanted (at least the one there is) while device memory allows: a new slot needs its
    *  footprint (what an extra slot's Init took plus what its first tree allocated, that again until measured) free
-   *  beyond an eighth of the device (at least 1 GiB). Returns the number of slots. */
+   *  beyond the reserve (Reserve). Returns the number of slots. */
   int EnsureSlots(int wanted);
 
   int num_slots() const { return static_cast<int>(slots_.size()); }
@@ -78,6 +78,13 @@ class CUDAForestTrainer {
    *  takes it too */
   void ResetConfig(const Config* config);
 
+  /*! \brief Whether the device had less than the reserve free after the last Train (the next group should shrink) */
+  bool memory_low() const { return memory_low_; }
+
+  /*! \brief Free the slots beyond keep (at least slot 0 stays) and create no more: after a group left the device
+   *  below the reserve or failed for device memory. Only between groups (no round of the last group pending). */
+  void DropSlots(int keep);
+
  private:
   const Config* config_;
   const Dataset* train_data_;
@@ -100,6 +107,10 @@ class CUDAForestTrainer {
   std::vector<std::unique_ptr<ColSampler>> job_samplers_;
   /*! \brief whether a slot could not be created for lack of memory (no further attempts) */
   bool memory_bound_ = false;
+  /*! \brief whether the device had less than the reserve free after the last Train */
+  bool memory_low_ = false;
+  /*! \brief free device memory a new slot must leave: max(1 GiB, an eighth of the device, 2 x slot_tree_bytes_) */
+  size_t Reserve(size_t total) const;
 };
 
 }  // namespace Falcata

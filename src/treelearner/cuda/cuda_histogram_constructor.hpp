@@ -17,8 +17,11 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <Falcata/cuda/cuda_row_data.hpp>
@@ -241,6 +244,55 @@ __host__ __device__ inline data_size_t DenseLevelRowsPerThreadFloor(const data_s
 
 struct CUDADeviceLevelState;
 struct CUDADeviceLevelConstructShape;
+/*!
+ * \brief cuda_plan key forest_count_hist: the per-row integer codes of one constant gradient array of a random forest
+ *        (docs/design/forest-count-histograms.md). Every hessian equals hessian, and row i's gradient is exactly
+ *        grad_base + grad_unit * values[codes[i]] (double arithmetic, no rounding); the count construct accumulates,
+ *        per bin, the row count n and the code sum S, and writes the fp64 pair (grad_base * n + grad_unit * S,
+ *        hessian * n), which equals the deterministic construct's exact double sums bit for bit (the bound checked
+ *        when the codes are built).
+ */
+struct CUDACountHistCodes {
+  /*! \brief per row: the index of its gradient value in values */
+  CUDAVector<uint8_t> codes;
+  /*! \brief per gradient value: its integer addend t_j = (v_j - v_0) / b */
+  CUDAVector<uint64_t> values;
+  double grad_base = 0.0;
+  double grad_unit = 0.0;
+  double hessian = 0.0;
+  int num_values = 0;
+  /*! \brief the codes are their own addends (values[j] == j): no table read */
+  bool identity = false;
+  /*! \brief 64-bit code sums and 32-bit counts per bin in the scratch; else one 64-bit word S << 32 | n */
+  bool wide = false;
+  /*! \brief wide with at most 6 values: the shared table counts the rows per value in fields of this many bits of
+   *  one 64-bit word (0: not used) */
+  int field_bits = 0;
+};
+
+/*!
+ * \brief cuda_plan key forest_count_hist: the codes of each constant gradient array a forest's learners train on,
+ *        keyed by the array's device pointer, built on first use (Get) and shared by a booster learner and its forest
+ *        slots (thread-safe). Cleared when the training data or config is reset (the arrays may then hold other values).
+ */
+class CUDACountHistCache {
+ public:
+  /*! \brief the codes of (gradients, hessians) of num_data rows, built on the first call for that pointer; nullptr
+   *  when the array does not qualify (why in *why, also cached) */
+  const CUDACountHistCodes* Get(const score_t* gradients, const score_t* hessians, data_size_t num_data,
+                                std::string* why);
+  void Clear();
+
+ private:
+  struct Entry {
+    std::unique_ptr<CUDACountHistCodes> codes;
+    std::string why;
+  };
+  std::mutex mutex_;
+  /*! \brief by (gradients, hessians, num_data): an entry is never replaced while the cache lives (another slot may
+   *  be reading its codes) */
+  std::map<std::tuple<const score_t*, const score_t*, data_size_t>, Entry> entries_;
+};
 
 class CUDAHistogramConstructor {
  public:
@@ -810,6 +862,22 @@ class CUDAHistogramConstructor {
    *  find, forced splits, NCCL) make the tree learner fall back to fp64 */
   void DisableHistFP32() { hist_fp32_ = false; }
 
+  /*! \brief cuda_plan key forest_count_hist: whether this constructor can run the count construct in place of the
+   *  deterministic one (non-quantized dense row data, no large-bin partition, fp64 histograms, one plane, the
+   *  shared table fits the device) */
+  bool CountConstructSupported() const { return count_supported_; }
+  /*! \brief cuda_plan key forest_count_hist: the codes of this tree's gradients (nullptr: the deterministic construct);
+   *  set per tree after BeforeTrain */
+  void SetCountCodes(const CUDACountHistCodes* codes) {
+    count_codes_ = (count_supported_ && !hist_fp32_ && det_dense_dy_ > 0) ? codes : nullptr;
+    if (count_codes_ == nullptr) {
+      count_scratch_dirty_ = true;  // this tree may run the deterministic construct in the slot slab
+    }
+  }
+  bool count_construct_active() const { return count_codes_ != nullptr; }
+  /*! \brief the count scratch must be zeroed before its next use (an aborted tree may have left sums in it) */
+  void MarkCountScratchDirty() { count_scratch_dirty_ = true; }
+
  private:
   void InitFeatureMetaInfo(const Dataset* train_data, const std::vector<uint32_t>& feature_hist_offsets);
 
@@ -947,6 +1015,41 @@ class CUDAHistogramConstructor {
     const data_size_t max_num_data_in_smaller_leaf,
     const int grid_dim_x,
     const int block_dim_x);
+
+  /*! \brief cuda_plan key forest_count_hist: per-leaf count construct + convert in place of
+   *  LaunchConstructHistogramDenseDeterministic (same arms, same source; pipeline-private scratch row, launched on
+   *  current_stream()) */
+  template <typename BIN_TYPE>
+  void LaunchConstructHistogramDenseCount(
+    const CUDALeafSplitsStruct* cuda_smaller_leaf_splits,
+    const data_size_t num_data_in_smaller_leaf,
+    const int grid_dim_x,
+    const int block_dim_x,
+    const DetDenseSource* source = nullptr);
+
+  /*! \brief cuda_plan key forest_count_hist: whether a level of the batched construct takes the count construct
+   *  (count codes set, no compact view, no graph capture, det batched allowed: the det arm's gates without the slot
+   *  slab's pair cap) */
+  bool CountBatchedEligible() const;
+
+  /*! \brief cuda_plan key forest_count_hist: count construct + convert for a whole hybrid level (blockIdx.z pair
+   *  axis), in chunks of pairs that fit the scratch, on cuda_stream_ */
+  template <typename BIN_TYPE>
+  void LaunchConstructHistogramDenseBatchedCount(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    const data_size_t max_num_data_in_smaller_leaf,
+    const int grid_dim_x,
+    const int block_dim_x);
+
+  /*! \brief the count scratch: its base (zeroed first if a deterministic construct may have written the slab since)
+   *  and the rows it holds in the current codes' layout */
+  uint64_t* CountScratch(int* rows);
+  /*! \brief bytes of one count scratch row and the count construct's dynamic shared bytes (widest partition) */
+  size_t CountScratchRowBytes(bool wide) const;
+  size_t CountSharedBytes(bool wide) const;
+  /*! \brief decide count_supported_ for the current data (end of Init / ResetTrainingData) */
+  void InitCountConstruct();
 
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   /*! \brief captures the deterministic construct + merge kernels as two graph
@@ -1143,6 +1246,17 @@ class CUDAHistogramConstructor {
    *  clamp and slab offset uses THIS, never the raw constant. */
   int det_dense_tile_cap_ = 0;
   uint32_t det_dense_slot_stride_ = 0;
+  /*! \brief cuda_plan key forest_count_hist: whether the count construct can serve this data (InitCountConstruct),
+   *  this tree's codes (nullptr: off) and the widest partition's bins. The integer scratch is the deterministic
+   *  slot slab (cuda_det_dense_slots_, unused while the count construct replaces the deterministic one): rows of
+   *  num_total_bin_ 64-bit words (packed S << 32 | n, or wide S), followed in the wide layout by num_total_bin_
+   *  32-bit counts; zero between launches (the convert zeroes what it read). count_scratch_dirty_: a deterministic
+   *  construct may have written the slab since the last zeroing. */
+  bool count_supported_ = false;
+  const CUDACountHistCodes* count_codes_ = nullptr;
+  uint32_t count_max_partition_bins_ = 0;
+  bool count_scratch_dirty_ = true;
+  int count_num_sms_ = 0;
   /*! \brief Per-tree feature mask (1 = feature in this tree's sample, 0 = skip).
    *  Indexed by column_index (== inner_feature_index for dense single-feature groups). */
   CUDAVector<int8_t> cuda_is_feature_used_bytree_;
@@ -1190,12 +1304,12 @@ class CUDAHistogramConstructor {
     }
   }
 
-  // ========================================================================
+  // =================================================================
   // Compact-view buffers: when feature_fraction < 1.0, build a contiguous
   // bin matrix containing only the sampled columns. Used by the histogram
   // kernel as a drop-in replacement when use_compact_view_ == true.
   // Single-partition layout: compact[row * num_compact_cols + i].
-  // ========================================================================
+  // =================================================================
   /*! \brief uint8 bin matrix containing only used columns (per-partition compact layout).
    *  Double-buffered: while tree N trains using current, we async-fill next for tree N+1.
    *  cuda_stream_ waits on prefetch_event_[current] before starting histograms. */

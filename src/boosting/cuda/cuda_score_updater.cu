@@ -41,6 +41,22 @@ void CUDAScoreUpdater::LaunchMultiplyScoreConstantKernel(const double val, const
   MultiplyScoreConstantKernel<<<num_blocks, num_threads_per_block_>>>(val, num_data_, cuda_score_.RawData() + offset);
 }
 
+__global__ void FillDoubleKernel(double* out, const double val, const size_t n) {
+  const size_t i = static_cast<size_t>(threadIdx.x) + static_cast<size_t>(blockIdx.x) * blockDim.x;
+  if (i < n) {
+    out[i] = val;
+  }
+}
+
+void LaunchFillDoubleKernel(double* out, const double val, const size_t n) {
+  if (n == 0) {
+    return;
+  }
+  const int threads = 256;
+  const size_t blocks = (n + threads - 1) / threads;
+  FillDoubleKernel<<<static_cast<unsigned int>(blocks), threads>>>(out, val, n);
+}
+
 }  // namespace Falcata
 
 #endif  // USE_CUDA

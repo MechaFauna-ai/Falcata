@@ -395,8 +395,18 @@ class CUDABestSplitFinder {
   /*! \brief cuda_plan key forest_batched: the level output sized for levels of up to max_pairs pairs now, unless
    *  that takes more than max_bytes (a growth during training is a device synchronize, which stalls every slot) */
   void PresizeLevelOutput(const int max_pairs, const size_t max_bytes) {
-    if (HybridLevelGrowthBytes(max_pairs) <= max_bytes) {
-      EnsureHybridLevelCapacity(max_pairs);
+    // the most pairs within max_bytes (all of them when they fit): a partial presize still spares the levels up to it
+    int pairs = max_pairs;
+    const size_t full = HybridLevelGrowthBytes(max_pairs);
+    if (full > max_bytes) {
+      pairs = static_cast<int>(static_cast<double>(max_pairs) * static_cast<double>(max_bytes) /
+                               static_cast<double>(full));
+      while (pairs > 0 && HybridLevelGrowthBytes(pairs) > max_bytes) {
+        --pairs;
+      }
+    }
+    if (pairs > 0 && HybridLevelGrowthBytes(pairs) > 0) {
+      EnsureHybridLevelCapacity(pairs);
     }
   }
 
