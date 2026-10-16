@@ -2581,3 +2581,45 @@ it produces is the quantized classic loop's to the bit
 (`test_vector_leaf_cuda_quantized_selective_matches_classic`, with scalar
 quantized training as ground truth in
 `test_vector_leaf_cuda_quantized_selective_duplicated_target_matches_scalar`).
+
+## 10v. A bounded device-driven quantized prefix (`device_levels`, `device_level_graph`)
+
+Eligible quantized, numerical, scalar, single-GPU two-sync depth-limited trees enqueue
+`K = min(floor(log2(num_leaves)), max_depth - 1, 10)` levels without a host readback between those levels
+(`K < 2` keeps the host path). A device selector reproduces the host's ascending-leaf split order and strict
+smaller-child rule; worst-case launches guard on device counts. One prefix-boundary readback replays the journal
+and resumes host growth. Root work, the remaining host levels/tail, score updates, metrics and final tree transfer
+remain. This is a prefix optimization; it does not build an arbitrary whole tree without host synchronization.
+
+`device_level_graph` caches the prefix launches. Cache identity includes resizable buffers, task/layout values,
+packing codec and GOSS's changing ridge. Repeated cache misses switch subsequent trees to the host path. Both
+modes exclude forest slots and legacy single-stream diagnostics. Unsupported kernels, nonquantized training,
+node masks, categorical/vector leaves, constraints, forced splits and selective growth keep their host flows.
+Configuration/data resets invalidate captures and static tables; quantizer row and leaf-budget storage is also
+refreshed, retaining its stochastic tree counter. Empty histogram work returns before claiming rows, and stopped
+levels initialize their claim counters.
+
+Implementation `d3f6812b5c35ddd195c53d6d652774ad02dc7f9f`, CUDA library SHA256
+`afed591fbb25ddf96fb7f28ae37a29ede76e6ac06cb27066c850cec0a0573953`. Two interleaved **relaxed** pairs on
+RTX 5090; these ratios include the first training call in the 30,000-round estimate and compare the same library
+with the prefix disabled versus enabled with graph caching. The pair range is descriptive, not a confidence interval.
+
+| Cell | Speed ratio, off/on | Pair range |
+|---|---:|---:|
+| covtype-deep-fixed | 1.0476x | 1.0466–1.0487x |
+| higgs-deep-stoch | 1.0210x | 1.0206–1.0214x |
+
+The remaining six visible/hidden GBDT cells, graph/plain and current-master comparisons, four forest shapes,
+and current-source tracing are still being measured. This initial table is not evidence of a gain on those cells.
+
+Correctness at this implementation: 60 prefix tests plus 275 other CUDA tests, 141 basic and 181 engine tests
+(the six example-file cases were rerun after restoring snapshot fixtures), 327 CPU Python tests, 54 C++ tests,
+two 440-cell lattice checks and three current-master guards. Both lattice comparisons have 437/440 raw MD5
+matches; only `dense/nonquant`, `dense/fp32` and `graph/nonquant` differ, and their metric gates pass. No fingerprints
+were updated. Regression probes distinguish the old zero-pair counters, GOSS warmup capture and sampled-codec
+capture defects; full-source hidden-shape repetitions retain matching models and tree counts.
+
+The poisoned reset/pairs probe passes initcheck with zero errors. Full-application stump initcheck is not clean:
+unused bulk tree/readback bytes are reported, and an instrumented graph run did not finish within its timeout.
+Historical unknown-source model mismatches and illegal accesses are not proven to have the same cause or to be
+resolved by these fixes. The current results apply to the exact source/library above.
