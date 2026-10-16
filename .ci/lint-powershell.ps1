@@ -4,7 +4,9 @@ $settings = @{
     Severity = @(
         'Information',
         'Warning',
-        'Error'
+        'Error',
+        # syntax errors; without this a .ps1 that does not parse passes
+        'ParseError'
     )
     IncludeDefaultRules = $true
     ExcludeRules = @(
@@ -68,17 +70,14 @@ $settings = @{
 #  * https://github.com/PowerShell/PSScriptAnalyzer/issues/561
 #  * https://github.com/PowerShell/vscode-powershell/issues/3048
 #
-# lint-powershell.ps1 itself is included here because linting this script itself
-# sometimes fails (non-deterministically!) with an error like "Object reference not set to an instance of an object"
+# lint-powershell.ps1 itself is linted too. It used to be excluded because linting it
+# sometimes failed (non-deterministically) with "Object reference not set to an instance
+# of an object"; that analyzer crash is retried below.
 #
+$excludedDirs = '[/\\](bin|external_libs|\.pixi|venv)[/\\]'
 $files = @(
-    Get-ChildItem -Path ./ -Recurse -Force -Filter '*.ps1' |
-        Where-Object { $_.FullName -notmatch '[/\\]bin[/\\]' } |
-        Where-Object { $_.FullName -notmatch '[/\\]external_libs[/\\]' } |
-        Where-Object { $_.FullName -notmatch '[/\\]\.pixi[/\\]' } |
-        Where-Object { $_.FullName -notmatch '[/\\]venv[/\\]' } |
-        Where-Object { $_.Name -ne 'lint-powershell.ps1' } |
-        ForEach-Object { $_.FullName }
+    (Get-ChildItem -Path ./ -Recurse -Force -Filter '*.ps1').FullName |
+        Where-Object { $_ -notmatch $excludedDirs }
 )
 
 # Invoke-ScriptAnalyzer itself sometimes crashes (non-deterministically) with
@@ -93,6 +92,7 @@ $maxAttempts = 3
 $failed = $false
 foreach ($file in $files) {
     Write-Output "linting '$file'"
+    $results = @()
     for ($attempt = 1; ; $attempt++) {
         try {
             $results = @(Invoke-ScriptAnalyzer -Path $file -Settings $settings)
@@ -105,7 +105,8 @@ foreach ($file in $files) {
             if ((-not $isAnalyzerCrash) -or ($attempt -ge $maxAttempts)) {
                 throw
             }
-            Write-Output "Invoke-ScriptAnalyzer crashed on attempt $attempt/$maxAttempts, retrying: $($_.Exception.Message)"
+            $message = $_.Exception.Message
+            Write-Output "Invoke-ScriptAnalyzer crashed on attempt $attempt/$maxAttempts, retrying: $message"
             Start-Sleep -Seconds 5
         }
     }
