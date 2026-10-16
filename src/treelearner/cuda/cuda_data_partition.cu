@@ -2338,18 +2338,20 @@ __device__ __forceinline__ void HybridSplitInnerFusedBatchBody(FALCATA_SPLIT_INN
     cuda_split_info_buffer_base += 18 * dls->split_info_base;
   }
   const int all_flat_blocks = num_struct_blocks + total_flat_blocks + gap_flat_blocks;
-  // cuda_plan key device_levels (dl_cfg != nullptr): the launch's last block writes the children's search
-  // descriptors (DeviceLevelPairsBlock) while the others partition: it reads only the aggregate's counts and the
-  // level's split infos, and the construct after this kernel reads its output
+  // cuda_plan key device_levels (dl_cfg != nullptr): the launch's first block (the first one resident) writes the
+  // children's search descriptors (DeviceLevelPairsBlock) while the others partition: it reads only the aggregate's
+  // counts and the level's split infos, and the construct after this kernel reads its output
+  int id_first = static_cast<int>(blockIdx.x);
   int id_stride = static_cast<int>(gridDim.x);
   if (dl_cfg != nullptr) {
-    id_stride -= 1;
-    if (blockIdx.x == gridDim.x - 1) {
+    if (blockIdx.x == 0) {
       DeviceLevelPairsBlock(*dl_cfg, dls->levels_applied - 1);
       return;
     }
+    id_first -= 1;
+    id_stride -= 1;
   }
-  for (int id = static_cast<int>(blockIdx.x); id < all_flat_blocks; id += id_stride) {
+  for (int id = id_first; id < all_flat_blocks; id += id_stride) {
     if (id < num_struct_blocks) {
       if (threadIdx.x < 32) {
         HybridSplitTreeStructureSplit<USE_NCCL_REDUCE, USE_GRAD_DISCRETIZED>(
