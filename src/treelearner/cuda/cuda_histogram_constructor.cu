@@ -16,6 +16,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -24,6 +26,7 @@
 #include <vector>
 
 #include "cuda_meta_batch.hpp"
+#include "cuda_nonquant_fixed.cuh"
 #include "cuda_pdl_launch.hpp"
 
 namespace Falcata {
@@ -1589,13 +1592,13 @@ __device__ __forceinline__ uint32_t ReadDenseBin(
 // NonquantFixedScaleKernel) is rounded once to the nearest integer, and both the shared and the global sums are integer adds, which commute; the
 // global words are int64 until LaunchConvertFixedHistBatched rewrites them as hist_t.
 template <typename HIST_TYPE>
-__device__ __forceinline__ HIST_TYPE HistAddend(const score_t v, const float /*scale*/) {
+__device__ __forceinline__ HIST_TYPE HistAddend(const score_t v, const int /*exponent*/) {
   return static_cast<HIST_TYPE>(v);
 }
 
 template <>
-__device__ __forceinline__ nq_fixed_t HistAddend<nq_fixed_t>(const score_t v, const float scale) {
-  return static_cast<nq_fixed_t>(__float2ll_rn(v * scale));
+__device__ __forceinline__ nq_fixed_t HistAddend<nq_fixed_t>(const score_t v, const int exponent) {
+  return static_cast<nq_fixed_t>(NonquantFixedAddend(v, exponent));
 }
 
 template <typename HIST_TYPE>
@@ -1650,7 +1653,7 @@ __device__ __forceinline__ void ConstructHistogramDenseInner(
   const int dim_y,
   const bool hist_fp32,
   const uint8_t* bin_used = nullptr,
-  const float* fixed_scale = nullptr) {
+  const int* fixed_scale = nullptr) {
   const data_size_t num_data_in_smaller_leaf = smaller_leaf_splits->num_data_in_leaf;
   const data_size_t num_data_per_thread = (num_data_in_smaller_leaf + dim_y - 1) / dim_y;
   const unsigned int blockIdx_y = blockIdx.y;
@@ -1689,7 +1692,7 @@ __device__ __forceinline__ void ConstructHistogramDenseInner(
   const bool feat_used = (threadIdx.x < static_cast<unsigned int>(num_columns_in_partition)) &&
       (is_feature_used_bytree == nullptr || is_feature_used_bytree[column_index]);
   // the fixed-point accumulator's power-of-two scalings (gradient, hessian) of this tree
-  float scale_g = 1.0f, scale_h = 1.0f;
+  int scale_g = 0, scale_h = 0;
   if (std::is_same<HIST_TYPE, nq_fixed_t>::value) {
     scale_g = fixed_scale[0];
     scale_h = fixed_scale[1];
@@ -1997,7 +2000,7 @@ __device__ __forceinline__ void ConstructHistogramDenseBatchedBody(
   const uint8_t* bin_used,
   const bool hist_fp32,
   const CUDAHybridGraphLoopStateOpt gstate,
-  const float* fixed_scale) {
+  const int* fixed_scale) {
   // the fixed-point table (8 bytes per item over the float table's partitions: up to 96 KB) is dynamic shared
   // memory sized to the widest partition (NqFixedSmem); the float / double tables stay static
   constexpr bool kFixed = std::is_same<HIST_TYPE, nq_fixed_t>::value;
@@ -2109,7 +2112,7 @@ __global__ void CUDAConstructHistogramDenseBatchedKernel(
   const uint8_t* bin_used,
   const bool hist_fp32,
   const CUDAHybridGraphLoopStateOpt gstate,
-  const float* fixed_scale) {
+  const int* fixed_scale) {
   ConstructHistogramDenseBatchedBody<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, USE_REG_BINS, IS_4BIT, USE_GH2>(
     pair_descs, cuda_gradients, cuda_hessians, cuda_gh, data, column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets, packed_partition_byte_offsets, is_feature_used_bytree, num_data, min_data_in_leaf, min_sum_hessian_in_leaf, level_dim_y, level_smaller_num_data, min_grid_dim_y, min_rows_per_thread, saturation_floor_total, small_leaf_threshold, bin_used, hist_fp32, gstate, fixed_scale);
 }
@@ -2138,7 +2141,7 @@ __global__ void __launch_bounds__(2 * NUM_THREADS_PER_BLOCK) CUDAConstructHistog
   const uint8_t* bin_used,
   const bool hist_fp32,
   const CUDAHybridGraphLoopStateOpt gstate,
-  const float* fixed_scale) {
+  const int* fixed_scale) {
   ConstructHistogramDenseBatchedBody<BIN_TYPE, HIST_TYPE, SHARED_HIST_SIZE, USE_REG_BINS, IS_4BIT, USE_GH2>(
     pair_descs, cuda_gradients, cuda_hessians, cuda_gh, data, column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets, packed_partition_byte_offsets, is_feature_used_bytree, num_data, min_data_in_leaf, min_sum_hessian_in_leaf, level_dim_y, level_smaller_num_data, min_grid_dim_y, min_rows_per_thread, saturation_floor_total, small_leaf_threshold, bin_used, hist_fp32, gstate, fixed_scale);
 }
@@ -6693,9 +6696,8 @@ bool CUDAHistogramConstructor::DetDenseBatchedEligible(const int num_pairs) cons
 }
 
 bool CUDAHistogramConstructor::DetDenseGraphEligible(const int max_level_pairs) const {
-  // (nonquant_deterministic on a device without room for the fixed-point table, InitNonquantFixed: the deterministic
-  // construct serves the graph loop instead)
-  if (!FalcataPlan::Get().graph_det && !(NonquantDet() && !nq_fixed_supported_)) {
+  // A device without room for the fixed table uses the deterministic classic loop, never an atomic graph.
+  if (NonquantClassicFallback() || !FalcataPlan::Get().graph_det) {
     // opt-in (cuda_plan=auto,graph_det:on): by default the graph loop does not
     // capture the det construct+merge (~4x on shallow non-quant shapes); under
     // nonquant_deterministic it captures the fixed-point construct + convert
@@ -7079,15 +7081,21 @@ void CUDAHistogramConstructor::InitNonquantFixed() {
   if (cudaDeviceGetAttribute(&shared_limit, cudaDevAttrMaxSharedMemoryPerBlockOptin, device) != cudaSuccess) {
     shared_limit = 48 * 1024;
   }
+  // Testing-only fault injection, deliberately absent from cuda_plan: exercise the 64 KiB-device routing on CI GPUs.
+  const char* force_64k = std::getenv("FALCATA_TEST_FORCE_NONQUANT_64K");
+  if (force_64k != nullptr && std::strcmp(force_64k, "1") == 0) {
+    shared_limit = std::min(shared_limit, 64 * 1024);
+    Log::Info("TEST ONLY: nonquant shared limit 65536 bytes, classic fallback=%d",
+              static_cast<int>(need > static_cast<size_t>(shared_limit)));
+  }
   nq_fixed_supported_ = need <= static_cast<size_t>(shared_limit);
   if (!nq_fixed_supported_) {
     static bool warned = false;  // once per process, across datasets and resets
     if (!warned) {
       warned = true;
       Log::Warning("nonquant_deterministic: the fixed-point histogram construct needs %zu bytes of shared memory per "
-                   "block (widest partition %u bins), this GPU gives %d: the graph level loop takes the deterministic "
-                   "construct instead (graph_det), and levels it cannot serve (compact column views, levels wider than "
-                   "its slot slab) keep the float atomics, so models may vary between runs on this dataset",
+                   "block (widest partition %u bins), this GPU gives %d: using the deterministic classic CUDA "
+                   "training loop for this dataset",
                    need, max_bins, shared_limit);
     }
   }
@@ -7119,8 +7127,8 @@ size_t CUDAHistogramConstructor::NqFixedSmem(const void* kernel) {
 // |g| and max |h| come from the gradient interleave pass (InterleaveGradHessKernel) or, without it,
 // NonquantFixedAbsMaxKernel (order-free atomicMax on the non-negative floats' bit patterns). One thread then sets
 // S = 62 - e - lg_n with max < 2^e and 2^lg_n >= num_data, so every row's |value| * 2^S < 2^62 / num_data and no
-// sum of at most num_data rows can overflow; S is clamped to the float exponent range. The construct multiplies
-// each value by 2^S (exact: a power of two) and rounds once to an integer; integer sums do not depend on the order.
+// sum of at most num_data rows can overflow (including the rounding margin). The construct scales
+// each finite value by 2^S with scalbnf, including subnormals, and rounds once to an integer; integer sums commute.
 // A float32 value with exponent within about 38 - lg_n of the largest's is a multiple of 2^-S and is summed exactly;
 // any other row is off by <= 2^-(S+1) (about max * num_data * 2^-63): below its own float32 rounding only within
 // about 2^(40 - lg_n) of the largest, fewer bits further down, and nothing below max * num_data * 2^-64. Where every
@@ -7144,28 +7152,19 @@ __global__ void NonquantFixedAbsMaxKernel(const score_t* gradients, const score_
   }
 }
 
-__device__ __forceinline__ int NonquantFixedExponent(const uint32_t absmax_bits, const int lg_n) {
-  const float m = __uint_as_float(absmax_bits);
-  if (!(m > 0.0f) || isinf(m)) {
-    return 0;
-  }
-  int e = 0;
-  frexpf(m, &e);  // m = f * 2^e, f in [0.5, 1): m < 2^e
-  return max(-126, min(127, 62 - e - lg_n));
-}
-
-// one thread: the tree's scalings (float, read by the construct) and their inverses (double, read by the convert)
-__global__ void NonquantFixedScaleKernel(const uint32_t* absmax_bits, const int lg_n, float* scale,
+// Integer exponents cover the full finite float range, including subnormals; no float multiplier needs to fit.
+// The convert reads the inverse power of two as double (all finite float exponents fit its range).
+__global__ void NonquantFixedScaleKernel(const uint32_t* absmax_bits, const int lg_n, int* scale,
                                          double* inv_scale) {
   for (int k = 0; k < 2; ++k) {
     const int e = NonquantFixedExponent(absmax_bits[k], lg_n);
-    scale[k] = ldexpf(1.0f, e);
+    scale[k] = e;
     inv_scale[k] = ldexp(1.0, -e);
   }
 }
 
 void LaunchNonquantFixedScale(const score_t* gradients, const score_t* hessians, const data_size_t n,
-                              const bool absmax_ready, uint32_t* absmax_bits, float* scale, double* inv_scale) {
+                              const bool absmax_ready, uint32_t* absmax_bits, int* scale, double* inv_scale) {
   int lg_n = 0;
   while (lg_n < 62 && (static_cast<int64_t>(1) << lg_n) < static_cast<int64_t>(std::max<data_size_t>(n, 1))) {
     ++lg_n;

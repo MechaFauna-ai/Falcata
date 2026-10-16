@@ -376,7 +376,7 @@ class CUDAHistogramConstructor {
    *  supported through the same batched dense kernel fed with the compact
    *  pointers/dims; cuda_plan=auto,batch_wide:off restores the per-pair fallback for it. */
   bool SupportsBatchedLevel() const {
-    return cuda_row_data_ != nullptr &&
+    return !NonquantClassicFallback() && cuda_row_data_ != nullptr &&
            !cuda_row_data_->is_sparse() &&
            cuda_row_data_->NumLargeBinPartition() == 0 &&
            (!use_compact_view_ ||
@@ -548,6 +548,8 @@ class CUDAHistogramConstructor {
     return !use_quantized_grad_ && FalcataPlan::Get().nonquant_deterministic;
   }
 
+  // A scalar nonquantized run must never drop to float atomics when its fixed table cannot fit.
+  bool NonquantClassicFallback() const { return NonquantDet() && num_hist_planes_ == 1 && !nq_fixed_supported_; }
   /*! \brief the batched dense construct accumulates in 64-bit fixed point (nonquant_deterministic, scalar trees;
    *  the levels the deterministic batched construct does not take) */
   bool NonquantFixedActive() const { return NonquantDet() && num_hist_planes_ == 1 && nq_fixed_supported_; }
@@ -1490,10 +1492,10 @@ class CUDAHistogramConstructor {
   /*! \brief per-tree interleaved (gradient, hessian) pairs (see GHInterleaveEnabled);
    *  filled by BeforeTrain, consumed by the non-quantized dense construct kernels */
   CUDAVector<float2> cuda_gradients_hessians_;
-  // nonquant_deterministic (fixed-point batched construct): the tree's power-of-two scalings 2^S_g, 2^S_h (float,
-  // read by the construct), their inverses (double, read by the convert) and the max |g|, |h| bit patterns they come
+  // nonquant_deterministic: the tree's integer power-of-two exponents S_g, S_h (read by the construct), their
+  // inverse powers of two (double, read by the convert) and the max |g|, |h| bit patterns they come
   // from (order-free atomicMax)
-  CUDAVector<float> nq_scale_;
+  CUDAVector<int> nq_scale_;
   CUDAVector<double> nq_inv_scale_;
   CUDAVector<uint32_t> nq_absmax_bits_;
   // set while the batched construct launches its fixed-point instantiation: the launch sites read the scaled

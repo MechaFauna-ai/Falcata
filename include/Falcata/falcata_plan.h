@@ -70,22 +70,24 @@ struct FalcataPlan {
   // det merge costs ~4x on shallow non-quant shapes (covtype-shallow-class);
   // since nonquant_deterministic the default graph loop is deterministic
   // anyway (its fixed-point construct + convert nodes), so this key now only
-  // selects the double-slot kernels inside the graph (and is implied where the
-  // device has no room for the fixed-point table).
+  // selects the double-slot kernels inside the graph. A device without room
+  // for the fixed-point table uses the deterministic classic loop.
   bool graph_det = false;           // key: graph_det
   // non-quantized training (quant_mode=none) deterministic by default: the batched level construct accumulates in
   // 64-bit fixed point wherever it used float atomics (the graph level loop, compact column views, levels wider than
   // the deterministic slot slab): each row's gradient and hessian, scaled by a per-tree power of two (exact), are
   // rounded once to integers and summed with integer atomics, which commute, then converted in place to hist_t.
-  // Integer sums make the histogram the same on every run; a row is rounded by at most 2^-(S+1) (about
-  // max|g| * num_data * 2^-63), which is below the row's own float32 rounding only for values within about
+  // Integer sums make the histogram the same on every run. Finite inputs use S = 62 - e - ceil(log2(n)),
+  // max|v| < 2^e, and scalbnf (no scale clamp, including subnormals). The quantum is 2^-S; a row is rounded
+  // by at most half a quantum, which is below the row's own float32 rounding only for values within about
   // 2^(40 - lg num_data) of the largest (smaller ones keep fewer bits; below max * num_data * 2^-64 they vanish).
   // Where both sums are exact the histogram equals the double-slot deterministic construct's (empirical, not
   // guaranteed: the measured default models equal the graph_det:on ones on the lattice and article shapes, not on
   // wide-range poisson / tweedie / binary shapes). The per-leaf and host batched deterministic constructs and the
   // forest count construct keep running where they ran; cuda_precision=fp32 keeps its fp32 gain math on hist_t
-  // histograms. A device without shared memory for the fixed-point table (InitNonquantFixed) takes graph_det
-  // instead. Off = the float-atomic kernels. Not covered: linear trees, ranking objectives' gradients, multi-plane
+  // histograms. A device without shared memory for the fixed-point table (InitNonquantFixed) takes the
+  // deterministic classic loop, including compact and over-wide layouts. Nonfinite gradients/hessians are unsupported.
+  // Off = the float-atomic kernels. Not covered: linear trees, ranking objectives' gradients, multi-plane
   // vector-leaf trees, multi-GPU. Quantized training never reads the key.
   bool nonquant_deterministic = true;  // key: nonquant_deterministic
   // per-tree compact column view for quantized construct at any

@@ -1157,6 +1157,10 @@ bool HybridAggressiveEnv() {
 }  // anonymous namespace
 
 bool CUDASingleGPUTreeLearner::HybridGrowthUsable() const {
+  // Insufficient fixed shared memory: the existing classic per-pair kernels are deterministic for every layout.
+  if (cuda_histogram_constructor_ != nullptr && cuda_histogram_constructor_->NonquantClassicFallback()) {
+    return false;
+  }
   // Plain level batching is exactly leaf-wise-equivalent only in the
   // depth-limited regime (2^max_depth <= num_leaves + 1): there the budget can
   // only bind at the final (max-depth) level, where the batched top-K-by-gain
@@ -1256,6 +1260,10 @@ void CUDASingleGPUTreeLearner::CheckMultiGPUFlowUsable(int num_splits_done) cons
 }
 
 bool CUDASingleGPUTreeLearner::UseSelectiveGrowth() const {
+  // Insufficient fixed shared memory: the existing classic per-pair kernels are deterministic for every layout.
+  if (cuda_histogram_constructor_ != nullptr && cuda_histogram_constructor_->NonquantClassicFallback()) {
+    return false;
+  }
   // multi-GPU: selective grow-then-prune keeps its own host-side leaf bookkeeping, none of which is global
   if (nccl_communicator_ != nullptr) {
     return false;
@@ -3037,6 +3045,10 @@ CUDASingleGPUTreeLearner::HybridGraphInstance::~HybridGraphInstance() {
 }
 
 bool CUDASingleGPUTreeLearner::HybridGraphPrefixUsable() const {
+  // Insufficient fixed shared memory: the existing classic per-pair kernels are deterministic for every layout.
+  if (cuda_histogram_constructor_ != nullptr && cuda_histogram_constructor_->NonquantClassicFallback()) {
+    return false;
+  }
   // multi-GPU: the graph flow builds descriptors on-device; its rank-visible decisions are not global
   if (nccl_communicator_ != nullptr) {
     return false;

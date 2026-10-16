@@ -2375,13 +2375,23 @@ construct runs 1008-thread blocks under a launch bound of 1008 (the compiler kee
 registers; 45-64 on sm_120; the float instantiations' code is unchanged). A device whose opt-in shared memory per
 block cannot hold the widest partition's table plus its static shared memory (queried from a compiled fixed-point
 instantiation with `cudaFuncGetAttributes`; 1 KB on sm_120; sm_75's 64 KB cannot hold partitions over ~4000 bins)
-does not run it: the graph loop takes the double-slot deterministic construct (`graph_det`) and the levels that
-one cannot take keep the float atomics, with a warning once per process (across datasets and resets). The per-leaf
-and host batched deterministic constructs run where they ran (their models are unchanged). `cuda_precision=fp32` keeps its fp32 gain math on `hist_t` histograms; its fp32 histogram
+does not run it: scalar nonquantized training uses the existing deterministic classic CUDA loop, including
+compact views and levels wider than the batched double-slot slab. Batch, one-sync and graph entry gates all
+decline it. A warning fires once per process (across datasets and resets). The per-leaf and host batched
+deterministic constructs otherwise run where they ran (their models are unchanged). `cuda_precision=fp32` keeps its fp32 gain math on `hist_t` histograms; its fp32 histogram
 layout runs only with the key off. `nonquant_deterministic:off` restores the float atomics. Not covered, models can
 still vary from run to run: linear trees (their per-leaf least-squares sums use
 double atomics), ranking objectives' gradients (shared float atomics), multi-plane vector-leaf trees (unchanged
 routing), multi-GPU.
+
+The scale is stored as an integer exponent and applied with `scalbnf`, so finite normal and subnormal float32
+inputs are covered without requiring `2^S` to fit in a float. For each gradient/hessian channel, with
+`max|v| < 2^e`, `lg_n = ceil(log2(n))` and `S = 62 - e - lg_n`, the exact quantum is `2^-S` and integer rounding
+changes one addend by at most half a quantum. The final int64-to-double conversion can also round when the sum
+exceeds double's exact integer range. Wide relative ranges can lose small addends; this is a deterministic
+fixed-point approximation, with empirical reference-model equality on the measured shapes, not blanket FP64
+exactness. Nonfinite gradients or hessians (including custom-objective output) are unsupported; the finite-input
+overflow/precision bounds do not apply to them.
 
 Cost, same binary, key off vs on, 2 interleaved pairs, the article's non-quantized shapes (benchmarks/bench.py's
 speed-cell params, 32 threads, max_bin 255; train s = `lgb.train`, ms/round = median over rounds 100..):

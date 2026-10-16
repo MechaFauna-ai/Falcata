@@ -161,7 +161,7 @@ void LaunchInterleaveGradHessKernel(
   uint32_t* absmax_bits);
 
 void LaunchNonquantFixedScale(const score_t* gradients, const score_t* hessians, const data_size_t n,
-                              const bool absmax_ready, uint32_t* absmax_bits, float* scale, double* inv_scale);
+                              const bool absmax_ready, uint32_t* absmax_bits, int* scale, double* inv_scale);
 
 void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score_t* hessians) {
   cuda_gradients_ = gradients;

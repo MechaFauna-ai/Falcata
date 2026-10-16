@@ -171,6 +171,36 @@ def test_nonquant_4bit_matches_unpacked_and_det_cuda(extra):
 
 
 @_REQUIRES_CUDA
+@pytest.mark.parametrize("layout", ["compact", "wide"])
+def test_nonquant_forced_64k_uses_deterministic_classic_cuda(layout, monkeypatch, capfd):
+    # Fixed 64 KiB test-only fault injection; never a user-facing cuda_plan knob.
+    monkeypatch.setenv("FALCATA_TEST_FORCE_NONQUANT_64K", "1")
+    rows, cols = (12000, 40) if layout == "compact" else (12000, 1500)
+    X, y = _data("regression", rows, cols, seed=23)
+    params = {
+        "device_type": "cuda",
+        "objective": "regression",
+        "quant_mode": "none",
+        "num_leaves": 255,
+        "max_depth": 8,
+        "max_bin": 255,
+        "min_data_in_leaf": 5,
+        "feature_fraction": 0.5 if layout == "compact" else 1.0,
+        "verbose": 1,
+        "seed": 7,
+        "num_threads": 4,
+    }
+    default = [_model_md5({**params, "cuda_plan": "auto"}, X, y, 12) for _ in range(3)]
+    reference = _model_md5({**params, "cuda_plan": "auto,hybrid:off"}, X, y, 12)
+    assert default == [reference] * 3
+    log = capfd.readouterr()
+    assert "TEST ONLY: nonquant shared limit 65536 bytes, classic fallback=1" in log.out + log.err
+    model = flc.train(params, flc.Dataset(X, label=y, params=params), num_boost_round=12)
+    assert max(tree["num_leaves"] for tree in model.dump_model()["tree_info"]) > 16
+    assert np.corrcoef(model.predict(X), y)[0, 1] > 0.65
+
+
+@_REQUIRES_CUDA
 def test_nonquant_deterministic_off_still_trains_cuda():
     X, y = _data("regression", 20000, 20, seed=5)
     params = {
