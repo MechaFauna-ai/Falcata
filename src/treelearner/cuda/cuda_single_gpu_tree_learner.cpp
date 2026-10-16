@@ -19,6 +19,7 @@
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
+#include <stdexcept>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -2244,6 +2245,7 @@ void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
   applied->clear();
   applied->reserve(splittable.size());
   const int base_num_leaves = tree->num_leaves();
+  MaybeInjectTreeFailure(base_num_leaves);
   host_tree_batch_splits_.clear();
   host_apply_split_inputs_.clear();
   // cuda_plan key level_apply_first: without categorical splits or vector leaves the partition's apply goes out
@@ -4131,6 +4133,16 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   // that round's Train) sees the same verdict
   const bool leaf_map_zero_dead = LeafMapZeroDead();
   cuda_data_partition_->SetLeafMapZeroDead(leaf_map_zero_dead);
+  if (tree_in_progress_) {
+    // the last tree threw mid-way (a device-memory failure, which a forest group retries, or any error a caller
+    // caught): it may have written histogram slots beyond the last completed tree's count, and the accumulating
+    // constructs (quantized, float atomics) would add the leftovers into this tree
+    AbortedTreeReset();
+  }
+  tree_in_progress_ = true;
+  if (forest_slot_ && !forest_private_column_view_) {
+    ++forest_main_trees_started_;
+  }
   global_timer.Start("CUDASingleGPUTreeLearner::BeforeTrain");
   BeforeTrain();
   global_timer.Stop("CUDASingleGPUTreeLearner::BeforeTrain");
@@ -4526,6 +4538,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   // colmajor_direct, compact regime: the full view stays only while consecutive trees read it (decided after the
   // tree, since the per-leaf construct may first read it mid-tree)
   cuda_histogram_constructor_->ReleaseUnusedFullView();
+  tree_in_progress_ = false;
   return tree.release();
 }
 
@@ -5101,6 +5114,32 @@ void CUDASingleGPUTreeLearner::AllocateBitset() {
   }
   cuda_bitset_len_ = 0;
   cuda_bitset_inner_len_ = 0;
+}
+
+void CUDASingleGPUTreeLearner::AbortedTreeReset() {
+  // what the next tree would otherwise take from the last completed one: every histogram slot zeroed (as after
+  // Init), the count scratch zeroed, no selective-growth peak or pending readback carried over
+  SynchronizeCUDADevice(__FILE__, __LINE__);  // the aborted tree's kernels finish before the next tree's zeroing
+  cuda_histogram_constructor_->SetNumDirtyLeaves(-1);
+  cuda_histogram_constructor_->MarkCountScratchDirty();
+  sel_last_peak_ = 0;
+  hybrid_map_early_pending_ = false;
+  prefetched_tree_num_leaves_ = 0;
+}
+
+void CUDASingleGPUTreeLearner::MaybeInjectTreeFailure(const int num_leaves) {
+  // test hook (FALCATA_TEST_FOREST_ABORT_TREE=n): the n-th tree (0-based) the booster's learner grows in forest
+  // mode fails once it has at least 4 leaves, as a device-memory failure inside a tree would
+  static const int inject_tree = [] {
+    const char* v = std::getenv("FALCATA_TEST_FOREST_ABORT_TREE");
+    return v != nullptr ? std::atoi(v) : -1;
+  }();
+  if (inject_tree < 0 || !forest_slot_ || forest_private_column_view_ || num_leaves < 4 || injected_tree_failure_ ||
+      forest_main_trees_started_ - 1 != inject_tree) {
+    return;
+  }
+  injected_tree_failure_ = true;
+  throw std::runtime_error("[CUDA] out of memory allocating 0.00 GiB (injected inside a tree for a test)");
 }
 
 const CUDACountHistCodes* CUDASingleGPUTreeLearner::CountHistCodesForTree() {

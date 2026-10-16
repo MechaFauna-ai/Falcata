@@ -657,6 +657,9 @@ class RF : public GBDT {
         return GrowForestGroup();
       }
       throw;
+    } catch (...) {
+      ResetForest(true);  // as above: no round of the failed group is popped
+      throw;
     }
     const double group_ms =
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - group_start).count();

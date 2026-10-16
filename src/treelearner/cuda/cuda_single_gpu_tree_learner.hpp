@@ -336,6 +336,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool HybridGraphPrefixUsable() const;
   // cuda_plan key forest_count_hist: this tree's gradient codes for the count construct (nullptr: not this tree)
   const CUDACountHistCodes* CountHistCodesForTree();
+  // a tree that threw mid-way (tree_in_progress_ still set at the next Train): reset what the next tree trusts
+  void AbortedTreeReset();
+  // test hook FALCATA_TEST_FOREST_ABORT_TREE (see the definition)
+  void MaybeInjectTreeFailure(int num_leaves);
   // Lazy one-time setup: static feature tables, journal/staging buffers, and
   // worst-case capacity preallocation of every captured device buffer.
   bool SetupHybridGraphStatics();
@@ -789,6 +793,11 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // cuda_plan key forest_count_hist: codes per gradient array (shared with the forest slots) and the diag line's state
   std::shared_ptr<CUDACountHistCache> count_hist_cache_;
   bool count_hist_logged_ = false;
+  // a tree started and not completed (Train threw): the next Train resets what it would take from it
+  bool tree_in_progress_ = false;
+  // FALCATA_TEST_FOREST_ABORT_TREE: trees the booster learner started in forest mode, and whether the hook fired
+  int forest_main_trees_started_ = 0;
+  bool injected_tree_failure_ = false;
   // cuda_plan key tree_meta_batch: staging of the tree start's metadata uploads (see cuda_meta_batch.hpp)
   TreeStartMetaBatch tree_meta_batch_;
   // for best split information finding, given the histograms

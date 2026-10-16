@@ -808,6 +808,8 @@ class CUDAHistogramConstructor {
     }
   }
   bool count_construct_active() const { return count_codes_ != nullptr; }
+  /*! \brief the count scratch must be zeroed before its next use (an aborted tree may have left sums in it) */
+  void MarkCountScratchDirty() { count_scratch_dirty_ = true; }
 
  private:
   void InitFeatureMetaInfo(const Dataset* train_data, const std::vector<uint32_t>& feature_hist_offsets);

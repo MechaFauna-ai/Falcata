@@ -421,10 +421,10 @@ print("MD5", hashlib.md5("\\n".join(out).encode()).hexdigest())
 """
 
 
-def _oom_child(params, inject):
+def _oom_child(params, inject, hook="FALCATA_TEST_FOREST_OOM_GROUP"):
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     if inject is not None:
-        env["FALCATA_TEST_FOREST_OOM_GROUP"] = str(inject)
+        env[hook] = str(inject)
     res = subprocess.run(
         [sys.executable, "-c", _OOM_CHILD, json.dumps(params)],
         env=env,
@@ -460,3 +460,31 @@ def test_forest_group_out_of_memory_retried(quant_mode):
     got, log = _oom_child(params, 1)
     assert got == want
     assert "ran out of device memory" in log, log[-3000:]
+
+
+@pytest.mark.parametrize("quant_mode", ["stochastic", "none"])
+def test_forest_group_out_of_memory_inside_a_tree(quant_mode):
+    # the failure INSIDE a tree of the booster's own learner (slot 0, which the retry keeps), after it wrote histograms
+    # of its first levels; depth-limited trees that grow from tree to tree, so the aborted tree used histogram slots
+    # beyond the last completed tree's: the next tree on that learner zeroes every slot first (the accumulating
+    # quantized construct would add the leftovers), and the forest is the undisturbed one
+    params = {
+        "boosting": "rf",
+        "device_type": "cuda",
+        "objective": "binary",
+        "num_leaves": 255,
+        "max_depth": 8,
+        "min_data_in_leaf": 1,
+        "bagging_fraction": 0.632,
+        "bagging_freq": 1,
+        "feature_fraction_bynode": 0.5,
+        "quant_mode": quant_mode,
+        "metric": "None",
+        "seed": 3,
+        "verbose": 0,
+        "cuda_plan": "auto,forest_group:4",
+    }
+    want, _ = _oom_child(params, None)
+    got, log = _oom_child(params, 5, hook="FALCATA_TEST_FOREST_ABORT_TREE")
+    assert "ran out of device memory" in log, log[-3000:]
+    assert got == want
