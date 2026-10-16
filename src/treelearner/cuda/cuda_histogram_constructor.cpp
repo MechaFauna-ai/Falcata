@@ -2456,7 +2456,7 @@ std::unique_ptr<CUDACountHistCodes> BuildCountHistCodes(const score_t* gradients
     low = 0;  // every gradient is zero
   }
   std::vector<int64_t> scaled(m);
-  unsigned __int128 max_abs = 0;
+  uint64_t max_abs = 0;
   for (int r = 0; r < m; ++r) {
     if (mant[r] == 0) {
       scaled[r] = 0;
@@ -2469,11 +2469,10 @@ std::unique_ptr<CUDACountHistCodes> BuildCountHistCodes(const score_t* gradients
       return nullptr;
     }
     scaled[r] = mant[r] * (int64_t{1} << shift);
-    const unsigned __int128 a = static_cast<unsigned __int128>(scaled[r] < 0 ? -scaled[r] : scaled[r]);
-    max_abs = std::max(max_abs, a);
+    max_abs = std::max(max_abs, static_cast<uint64_t>(scaled[r] < 0 ? -scaled[r] : scaled[r]));
   }
-  // the exactness bound (design note section 4): 2 * max |M| * num_data < 2^53
-  if (2 * max_abs * static_cast<unsigned __int128>(n) >= (static_cast<unsigned __int128>(1) << 53)) {
+  // the exactness bound (design note section 4): 2 * max |M| * num_data < 2^53, i.e. max |M| <= (2^52 - 1) / num_data
+  if (max_abs > ((uint64_t{1} << 52) - 1) / static_cast<uint64_t>(n)) {
     *why = "exactness bound (2 max|M| n >= 2^53)";
     return nullptr;
   }
@@ -2497,7 +2496,7 @@ std::unique_ptr<CUDACountHistCodes> BuildCountHistCodes(const score_t* gradients
   out->grad_base = static_cast<double>(values[order[0]]);
   out->grad_unit = std::ldexp(static_cast<double>(g), low);
   out->hessian = static_cast<double>(h0);
-  out->wide = static_cast<unsigned __int128>(max_t) * n >= (static_cast<unsigned __int128>(1) << 32);
+  out->wide = max_t > ((uint64_t{1} << 32) - 1) / static_cast<uint64_t>(n);  // max_t * num_data >= 2^32
   out->identity = identity && !out->wide;
   if (out->wide && m <= 6) {
     // per-value row counts in one word: 64 / m bits each; a tile of at most 2^bits - 1 rows, at most 65535 tiles
