@@ -364,6 +364,10 @@ void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
   const size_t cuda_best_leaf_split_info_buffer_size = static_cast<size_t>(num_task_blocks) * static_cast<size_t>(num_leaves_);
 
   cuda_leaf_best_split_info_.Resize(cuda_best_leaf_split_info_buffer_size);
+  // Invalid splits leave most fields untouched. Reductions speculatively load gains and mapped readbacks copy
+  // complete structs, so initialize every byte once before assigning the categorical/vector side-band pointers.
+  SetCUDAMemory<CUDASplitInfo>(cuda_leaf_best_split_info_.RawData(), 0, cuda_best_leaf_split_info_buffer_size,
+                              __FILE__, __LINE__);
 
   cuda_split_find_tasks_.Resize(num_tasks_);
   CopyFromHostToCUDADevice<SplitFindTask>(cuda_split_find_tasks_.RawData(),
@@ -403,6 +407,7 @@ void CUDABestSplitFinder::InitCUDAFeatureMetaInfo() {
 
   const size_t output_buffer_size = 2 * static_cast<size_t>(num_tasks_);
   cuda_best_split_info_.Resize(output_buffer_size);
+  SetCUDAMemory<CUDASplitInfo>(cuda_best_split_info_.RawData(), 0, output_buffer_size, __FILE__, __LINE__);
 
   max_num_categories_in_split_ = std::min(max_cat_threshold_, max_num_categorical_bin_ / 2);
   cuda_cat_threshold_feature_.Resize(max_num_categories_in_split_ * output_buffer_size);
@@ -458,7 +463,12 @@ void CUDABestSplitFinder::ResetConfig(const Config* config, const hist_t* cuda_h
 
   const int num_task_blocks = (num_tasks_ + NUM_TASKS_PER_SYNC_BLOCK - 1) / NUM_TASKS_PER_SYNC_BLOCK;
   size_t cuda_best_leaf_split_info_buffer_size = static_cast<size_t>(num_task_blocks) * static_cast<size_t>(num_leaves_);
+  const size_t old_leaf_capacity = cuda_leaf_best_split_info_.Size();
   cuda_leaf_best_split_info_.Resize(cuda_best_leaf_split_info_buffer_size);
+  if (cuda_best_leaf_split_info_buffer_size > old_leaf_capacity) {
+    SetCUDAMemory<CUDASplitInfo>(cuda_leaf_best_split_info_.RawData() + old_leaf_capacity, 0,
+      cuda_best_leaf_split_info_buffer_size - old_leaf_capacity, __FILE__, __LINE__);
+  }
   max_num_categories_in_split_ = std::min(max_cat_threshold_, max_num_categorical_bin_ / 2);
   size_t total_cat_threshold_size = max_num_categories_in_split_ * cuda_best_leaf_split_info_buffer_size;
   cuda_cat_threshold_leaf_.Resize(total_cat_threshold_size);
@@ -735,7 +745,10 @@ void CUDABestSplitFinder::FindBestSplitsForLeafVector(
 void CUDABestSplitFinder::EnsureHybridLevelCapacity(const int num_pairs) {
   const size_t needed = 2 * static_cast<size_t>(num_tasks_) * static_cast<size_t>(num_pairs);
   if (cuda_best_split_info_.Size() < needed) {
+    const size_t old_capacity = cuda_best_split_info_.Size();
     cuda_best_split_info_.Resize(needed);
+    SetCUDAMemory<CUDASplitInfo>(cuda_best_split_info_.RawData() + old_capacity, 0, needed - old_capacity,
+                                __FILE__, __LINE__);
     // (re)initialize the categorical-threshold slab of every slot: the batched
     // level find writes categorical thresholds into the per-slot slabs, so they
     // must grow with the output buffer (numerical-only datasets just get their
