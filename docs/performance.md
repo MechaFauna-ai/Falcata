@@ -2075,43 +2075,6 @@ GPU-bound shapes need less histogram work (forest stage 3), not more trees in fl
 key off across objectives, quantization modes, shapes, samplings, group sizes, metrics every round, early stopping, a
 parameter reset with rollbacks; where the key engages.
 
-## Multi-GPU: level-batched NCCL all-reduce
-
-The classic data-parallel path all-reduces one leaf histogram per split
-(~254 collectives for a 255-leaf tree at ~190us each on 2x3090). Multi-GPU
-now rides the hybrid two-sync flow, whose per-level structure allows ONE
-grouped collective per level: gather every pair's smaller-leaf histogram
-into a contiguous staging buffer (through the colsample-aware used-bin
-index when active), reduce once, scatter back, then run the deferred
-fix/subtract on the globally reduced histograms.
-
-Measured on a rented dual-GPU box (PCIe, host-staged transport), 4M x 400
-int8 `max_bin=5`, 200 trees, `min_data_in_leaf=20k`, depth 11:
-
-| arm | time | trees/s | rmse |
-|---|---|---|---|
-| 1 GPU (hybrid) | 6.86 s | 29.2 | 0.149124 |
-| 2 GPU level-batched | 10.09 s | 19.8 | 0.149141 |
-| 2 GPU per-split (classic) | 15.54 s | 12.9 | 0.149138 |
-
-Level batching is **1.54x faster than the per-split reduce** and produces
-structurally identical trees to single-GPU (81 leaves, same features and
-gains for the first 3 trees; rmse delta is fp32 reduce-order noise). It is
-the multi-GPU default wherever the two-sync flow is usable; one-sync,
-graph and selective flows remain single-GPU.
-
-Correctness notes for future multi-GPU work: `NCCLTopology` silently
-clamps `num_gpu` to the visible device count, so a 2-rank test on a
-1-GPU box is a single-rank no-op — multi-rank semantics can only be
-tested on real multi-GPU hardware. The canonical count-leak failure
-class: struct `num_data_in_leaf` is rank-LOCAL under NCCL, while desc
-counts and histogram sums are GLOBAL.
-`FALCATA_DEBUG=dump` now prints per-level reduce totals, leaf-cache
-entries and bookkeeping counts on NCCL runs — the instrumentation that
-located both bugs.
-
----
-
 ## 10s. The level chain's consumer kernels as programmatic dependents (`pdl_level_chain`)
 
 Every level runs short kernels that consume what the kernel just before them on the same stream wrote: the level
@@ -2209,7 +2172,18 @@ Bagged, same process alternated off / on / off / on: higgs (`bagging_fraction` 0
 year / missing / numerai53-example guards md5-identical. The Numerai cells (94% GPU-busy) gain least: their idle is
 the per-level host round trip (sync -> descriptor copy -> gen-bit), which programmatic launches cannot cover.
 
----
+On master 065ac1eb (with the forest slots of 10r), the final build with `leaf_map_no_zero`, same binary, key off vs
+on, 2 pairs, md5-identical (ms per round): numerai53bench 3.356 / 3.344 -> 3.313 / 3.314 (1.0111), NaN-Numerai 3.526 /
+3.536 -> 3.512 / 3.521 (1.0042), covtype 3.731 / 3.717 -> 3.612 / 3.595 (**1.0334**), higgs 1.734 / 1.733 -> 1.699 /
+1.698 (**1.0204**), the fewbin regression shape (2.96M x 131, four values, 1023 leaves, bagged 0.5) 1.495 / 1.490 ->
+1.456 / 1.459 (**1.0241**), the year-like bagged shape (2.49M x 104 floats, 1023 leaves, bagged 0.5) 1.969 / 1.963 ->
+1.930 / 1.926 (**1.0194**). `test_cuda_forest_batched.py` (the slot threads interleave their launches on the legacy
+default stream; every dependent still waits for the kernel before it) passes with the key on. The tree-boundary
+dependents the open3 search added on top (root init as one kernel, the root sums' one-kernel readback, waiting
+`CopyToMappedHostKernel` readbacks, the tree structure after the split-inner, the construct bodies' late trigger;
+e067) were measured on this base and are not used: vs this build (2 binaries, 4 pairs, every run faster) covtype
+1.0079, NaN-Numerai 1.0073; 2 pairs: numerai53bench 1.0010, higgs 1.0008, fewbin 1.0022, year-like 1.0027: inside
+the cells' noise bands (1.5%).
 
 ## 10t. The tree start's dead row -> leaf map zero store (`leaf_map_no_zero`)
 
@@ -2262,6 +2236,47 @@ covtype disturbed: 3.909 and 4.478 ms; clean runs only): numerai53bench 3.319 / 
 1.708 / 1.706 -> 1.708 / 1.698 (1.0023), NaN-Numerai 3.505 -> 3.513 / 3.516, covtype 3.668 -> 3.688 / 3.687: the gain is
 the Numerai and higgs shapes' (0.2-0.9%), the others are within their noise; covtype, 3 more pairs: 3.586 / 3.574 /
 3.584 -> 3.578 / 3.569 / 3.596 (1.0001).
+
+On master 065ac1eb with `pdl_level_chain`, same binary, key off vs on, 2 pairs, md5-identical (ms per round): the
+fewbin regression shape (2.96M x 131, four values, 1023 leaves, bagged 0.5) 1.492 / 1.498 -> 1.458 / 1.460
+(**1.0246**), the year-like bagged shape (2.49M x 104 floats, 1023 leaves, bagged 0.5) 1.959 / 1.959 -> 1.927 / 1.927
+(**1.0165**), higgs 1.709 / 1.710 -> 1.691 / 1.700 (1.0080), covtype 1.0032, numerai53bench 1.0035, NaN-Numerai
+1.0027: the gain is largest where the round is short and the rows many (the map's stores were a larger share).
+
+## Multi-GPU: level-batched NCCL all-reduce
+
+The classic data-parallel path all-reduces one leaf histogram per split
+(~254 collectives for a 255-leaf tree at ~190us each on 2x3090). Multi-GPU
+now rides the hybrid two-sync flow, whose per-level structure allows ONE
+grouped collective per level: gather every pair's smaller-leaf histogram
+into a contiguous staging buffer (through the colsample-aware used-bin
+index when active), reduce once, scatter back, then run the deferred
+fix/subtract on the globally reduced histograms.
+
+Measured on a rented dual-GPU box (PCIe, host-staged transport), 4M x 400
+int8 `max_bin=5`, 200 trees, `min_data_in_leaf=20k`, depth 11:
+
+| arm | time | trees/s | rmse |
+|---|---|---|---|
+| 1 GPU (hybrid) | 6.86 s | 29.2 | 0.149124 |
+| 2 GPU level-batched | 10.09 s | 19.8 | 0.149141 |
+| 2 GPU per-split (classic) | 15.54 s | 12.9 | 0.149138 |
+
+Level batching is **1.54x faster than the per-split reduce** and produces
+structurally identical trees to single-GPU (81 leaves, same features and
+gains for the first 3 trees; rmse delta is fp32 reduce-order noise). It is
+the multi-GPU default wherever the two-sync flow is usable; one-sync,
+graph and selective flows remain single-GPU.
+
+Correctness notes for future multi-GPU work: `NCCLTopology` silently
+clamps `num_gpu` to the visible device count, so a 2-rank test on a
+1-GPU box is a single-rank no-op — multi-rank semantics can only be
+tested on real multi-GPU hardware. The canonical count-leak failure
+class: struct `num_data_in_leaf` is rank-LOCAL under NCCL, while desc
+counts and histogram sums are GLOBAL.
+`FALCATA_DEBUG=dump` now prints per-level reduce totals, leaf-cache
+entries and bookkeeping counts on NCCL runs — the instrumentation that
+located both bugs.
 
 ---
 
