@@ -58,6 +58,8 @@ struct CUDAHybridApplySplitInput {
  *  the bit vector and out-indices scratch use the split leaf's own
  *  [leaf_data_start, +num_data_in_leaf) window (mirroring the main index array
  *  layout), the block offset buffers use [block_offset_start, +num_blocks+1). */
+struct CUDADeviceLevelState;
+
 struct CUDAHybridApplyDescriptor {
   const void* column_data;
   const CUDASplitInfo* best_split_info;
@@ -157,6 +159,37 @@ class CUDADataPartition: public NCCLInfo {
     }
   }
 
+
+  /*! \brief cuda_plan key device_levels: size every buffer a device-driven level writes for its worst case (the
+   *  host never learns a device level's real counts before the levels are read back) */
+  void EnsureDeviceLevelCapacity() {
+    PresizeLevelBuffers();
+    const size_t desc_capacity = static_cast<size_t>(num_leaves_) + 4;
+    if (cuda_apply_descs_.Size() < desc_capacity) {
+      cuda_apply_descs_.Resize(desc_capacity);
+      SetCUDAMemory<CUDAHybridApplyDescriptor>(cuda_apply_descs_.RawData(), 0, cuda_apply_descs_.Size(),
+                                               __FILE__, __LINE__);
+    }
+  }
+
+  /*! \brief cuda_plan key device_levels: the apply of one device-driven level of at most max_splits splits: the
+   *  SplitLevelBatched kernels at the level's worst-case grids, reading the descriptors and live counts the select
+   *  kernel wrote (DeviceLevelSelectKernel); the index buffers swap as after every host level */
+  void LaunchDeviceLevelApply(const int max_splits, const CUDADeviceLevelState* dls);
+
+  /*! \brief cuda_plan key device_levels: after the device levels' readback: levels_applied of levels_enqueued
+   *  enqueued levels applied total_splits splits (the host swapped the index buffers once per enqueued level) */
+  void FinishDeviceLevels(const int levels_enqueued, const int levels_applied, const int total_splits) {
+    cur_num_leaves_ += total_splits;
+    if (((levels_enqueued - levels_applied) & 1) != 0) {
+      cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);
+    }
+    level_shared_gaps_valid_ = false;  // cuda_plan key gap_copy_once: the device levels copied every gap
+  }
+
+  CUDAHybridApplyDescriptor* device_level_apply_descs() { return cuda_apply_descs_.RawData(); }
+  /*! \brief threads of the gap copy's blocks, the unit of a gap descriptor's num_blocks */
+  static int DeviceLevelGapBlockDim() { return GapCopyBlockDim(); }
 
   void BeforeTrain();
 
@@ -426,7 +459,8 @@ class CUDADataPartition: public NCCLInfo {
                                       const int total_flat_blocks,
                                       const int gap_flat_blocks,
                                       const bool write_leaf_map,
-                                      const bool map_only);
+                                      const bool map_only,
+                                      const CUDADeviceLevelState* dls = nullptr);
   /*! \brief the batched level's split-inner (index partition into the out buffer) and gap copy launches */
   void LaunchLevelSplitInnerKernel(const int num_splits, const int total_flat_blocks, const bool write_leaf_map,
                                    const bool map_only);

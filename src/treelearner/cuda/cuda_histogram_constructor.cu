@@ -9,6 +9,7 @@
 #ifdef USE_CUDA
 
 #include "cuda_histogram_constructor.hpp"
+#include "cuda_device_levels.hpp"
 
 #include <Falcata/cuda/cuda_algorithms.hpp>
 #include <Falcata/cuda/cuda_rocm_interop.h>
@@ -3000,16 +3001,7 @@ __device__ __forceinline__ void BlockPrefixLookup(const BlockPrefix<MAX_PAIRS>& 
   *block_y = static_cast<int>(blockIdx.y - block_prefix.start[lo]);
 }
 
-// cuda_plan key dense_level_row_blocks: the rows-per-thread floor of a level's leaves in the quantized dense batched
-// construct. A thin leaf gets the largest leaf's rows per thread (so it fills a few whole blocks instead of a few rows
-// in every block row, each block zeroing and flushing a whole table) but no more than the grid formula's own
-// rows-per-thread target (min_rows_per_thread > 0; batch_construct_min_rows_per_thread), so the large leaves of a
-// shallow level keep their spread. Never above the largest leaf's rows per thread, which the overflow guard bounds.
-__host__ __device__ inline data_size_t DenseLevelRowsPerThreadFloor(const data_size_t max_num_data, const int64_t dim_y,
-                                                                    const int min_rows_per_thread) {
-  const data_size_t largest = static_cast<data_size_t>((static_cast<int64_t>(max_num_data) + dim_y - 1) / dim_y);
-  return min_rows_per_thread > 0 && largest > min_rows_per_thread ? min_rows_per_thread : largest;
-}
+// (DenseLevelRowsPerThreadFloor: cuda_histogram_constructor.hpp)
 
 // Batched per-level variant (hybrid growth): blockIdx.z selects the pair. The
 // per-pair histogram bit width is a runtime (block-uniform) branch so pairs with
@@ -3038,12 +3030,42 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
   const bool row_batch,
   const data_size_t host_min_rows_per_thread,
   const bool level_row_blocks,
-  const DenseBlockPrefix block_prefix) {
+  const DenseBlockPrefix block_prefix,
+  const CUDADeviceLevelState* dls) {
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   // packed grad<<16|hess slots. SHARED_HIST_SIZE counts the 16-bit slots of the
   // budget shared with the non-quantized kernels, so the int32 array holds half
   // as many entries in the same bytes, at the alignment its atomics require.
   __shared__ int32_t shared_hist_packed[SHARED_HIST_SIZE / 2];
+  if (dls != nullptr) {
+    // cuda_plan key device_levels: the level's block map, grid y and rows-per-thread floor from the device
+    // (DeviceLevelPairsKernel: dense_block_map / dense_level_row_blocks' host math on the host's descriptors); the
+    // launch's y extent is a fixed count of block rows that strides over the map's. A mapped block row belongs to
+    // a pair whose construct is valid and runs exactly the rows the host-launched block row would.
+    const int total = dls->construct_total_blocks;
+    const int dim_y = dls->construct_grid_y * static_cast<int>(blockDim.y);
+    const data_size_t min_rows_per_thread = dls->construct_min_rows;
+    for (int vb = static_cast<int>(blockIdx.y); vb < total; vb += static_cast<int>(gridDim.y)) {
+      const int pair = DeviceLevelBlockPair(dls, vb);
+      const int block_y = vb - dls->construct_block_start[pair];
+      const CUDAHybridPairDescriptor* desc = pair_descs + pair;
+      if (desc->smaller_num_bits <= 16) {
+        ConstructDiscretizedHistogramDenseInner<BIN_TYPE, true, PACK>(
+          desc->smaller_struct, shared_hist_packed, cuda_gradients_and_hessians, data,
+          column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
+          packed_partition_byte_offsets,
+          num_data, dim_y, is_feature_used_bytree, bin_used, row_batch, min_rows_per_thread, block_y);
+      } else {
+        ConstructDiscretizedHistogramDenseInner<BIN_TYPE, false, PACK>(
+          desc->smaller_struct, shared_hist_packed, cuda_gradients_and_hessians, data,
+          column_hist_offsets, column_hist_offsets_full, feature_partition_column_index_offsets,
+          packed_partition_byte_offsets,
+          num_data, dim_y, is_feature_used_bytree, bin_used, row_batch, min_rows_per_thread, block_y);
+      }
+      __syncthreads();  // the next mapped block row reuses the shared table
+    }
+    return;
+  }
   // cuda_plan key dense_block_map (classic flow only): the pair and block row this block stands for
   unsigned int pair_index = blockIdx.z;
   int block_y = static_cast<int>(blockIdx.y);
@@ -3721,27 +3743,18 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
   const int whole_row_partitions, \
   const uint32_t whole_row_joint, \
   const data_size_t level_min_rows_per_thread, \
-  const PairJointBlockPrefix block_prefix
+  const PairJointBlockPrefix block_prefix, \
+  const CUDADeviceLevelState* dls
 #define FALCATA_PAIR_JOINT_BATCHED_ARGS \
   pair_descs, cuda_gradients_and_hessians, data, column_meta, num_compact_columns, column_hist_offsets_full, \
   feature_partition_column_index_offsets, packed_partition_byte_offsets, num_data, min_data_in_leaf, \
   min_sum_hessian_in_leaf, per_pair_min_grid_dim_y, min_rows_per_thread, saturation_floor_total, \
-  num_grad_quant_bins, whole_row_partitions, whole_row_joint, level_min_rows_per_thread, block_prefix
+  num_grad_quant_bins, whole_row_partitions, whole_row_joint, level_min_rows_per_thread, block_prefix, dls
 template <bool ALL_ROWS, int BATCH, bool CODE5 = false, bool WORDS = false, bool FLAT = false, bool EPILOGUE_FLAT = false,
           int CODE_BITS = 5>  // NOLINT(whitespace/indent_namespace)
-__device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_PARAMS) {
-  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
-  extern __shared__ int32_t shared_joint[];
-  // cuda_plan key pair_block_map: the pair and block row this block stands for (see BlockPrefix)
-  unsigned int pair_index = blockIdx.z;
-  int block_y = static_cast<int>(blockIdx.y);
-  int level_grid_y = static_cast<int>(gridDim.y);
-  int level_num_pairs = static_cast<int>(gridDim.z);
-  if (block_prefix.num_pairs > 0) {
-    BlockPrefixLookup(block_prefix, &pair_index, &block_y);
-    level_grid_y = block_prefix.grid_y;
-    level_num_pairs = block_prefix.num_pairs;
-  }
+__device__ __forceinline__ void PairJointBatchedBlock(FALCATA_PAIR_JOINT_BATCHED_PARAMS, int32_t* shared_joint,
+                                                      const unsigned int pair_index, const int block_y,
+                                                      const int level_grid_y, const int level_num_pairs) {
   const CUDAHybridPairDescriptor* desc = pair_descs + pair_index;
   if (!desc->construct_valid) {
     return;
@@ -3800,6 +3813,44 @@ __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_
     }
   }
 #undef FALCATA_PAIR_JOINT_INNER
+}
+
+template <bool ALL_ROWS, int BATCH, bool CODE5 = false, bool WORDS = false, bool FLAT = false, bool EPILOGUE_FLAT = false,
+          int CODE_BITS = 5>  // NOLINT(whitespace/indent_namespace)
+__device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_PARAMS) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
+  extern __shared__ int32_t shared_joint[];
+  if (dls != nullptr) {
+    // cuda_plan key device_levels: the level's block map, grid y and rows-per-thread floor from the device
+    // (DeviceLevelPairsKernel: the host's pair_block_map / pair_code5_slots / level_row_blocks math on the host's
+    // descriptors); the launch's y extent is a fixed count of block rows that strides over the map's
+    const int total = dls->construct_total_blocks;
+    const data_size_t level_min_rows = dls->construct_min_rows;
+    for (int vb = static_cast<int>(blockIdx.y); vb < total; vb += static_cast<int>(gridDim.y)) {
+      const int pair = DeviceLevelBlockPair(dls, vb);
+      PairJointBatchedBlock<ALL_ROWS, BATCH, CODE5, WORDS, FLAT, EPILOGUE_FLAT, CODE_BITS>(
+        pair_descs, cuda_gradients_and_hessians, data, column_meta, num_compact_columns, column_hist_offsets_full,
+        feature_partition_column_index_offsets, packed_partition_byte_offsets, num_data, min_data_in_leaf,
+        min_sum_hessian_in_leaf, per_pair_min_grid_dim_y, min_rows_per_thread, saturation_floor_total,
+        num_grad_quant_bins, whole_row_partitions, whole_row_joint, level_min_rows, block_prefix, dls, shared_joint,
+        static_cast<unsigned int>(pair), vb - dls->construct_block_start[pair], dls->construct_grid_y,
+        dls->live_pairs);
+      __syncthreads();  // the next mapped block row reuses the joint tables
+    }
+    return;
+  }
+  // cuda_plan key pair_block_map: the pair and block row this block stands for (see BlockPrefix)
+  unsigned int pair_index = blockIdx.z;
+  int block_y = static_cast<int>(blockIdx.y);
+  int level_grid_y = static_cast<int>(gridDim.y);
+  int level_num_pairs = static_cast<int>(gridDim.z);
+  if (block_prefix.num_pairs > 0) {
+    BlockPrefixLookup(block_prefix, &pair_index, &block_y);
+    level_grid_y = block_prefix.grid_y;
+    level_num_pairs = block_prefix.num_pairs;
+  }
+  PairJointBatchedBlock<ALL_ROWS, BATCH, CODE5, WORDS, FLAT, EPILOGUE_FLAT, CODE_BITS>(
+    FALCATA_PAIR_JOINT_BATCHED_ARGS, shared_joint, pair_index, block_y, level_grid_y, level_num_pairs);
 }
 
 // CODE5 (cuda_plan key pair_code5; whole-row launches only): `data` is this tree's code view (see the inner body)
@@ -3977,7 +4028,8 @@ static int PairJointResidentWarps(const int threads) {
 
 using PairJointKernelFn = void (*)(const CUDAHybridPairDescriptor*, const int32_t*, const uint8_t*, const uint32_t*,
                                    int, const uint32_t*, const int*, const int*, data_size_t, data_size_t, double, int,
-                                   int, int, int, int, uint32_t, data_size_t, PairJointBlockPrefix);
+                                   int, int, int, int, uint32_t, data_size_t, PairJointBlockPrefix,
+                                   const CUDADeviceLevelState*);
 
 // cuda_plan key pair_capped_rows: the register-capped build. 48 registers fit three 12-warp blocks in a 64K register
 // file. Rows in flight per thread: 15 for the per-level (gathering) instantiation and 12 for the root's direct-read
@@ -5436,9 +5488,10 @@ __global__ void SubtractHistogramDiscretizedBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   hist_t* num_bit_change_buffer,
   const uint8_t* bin_used,
-  const CUDAHybridGraphLoopStateOpt gstate) {
+  const CUDAHybridGraphLoopStateOpt gstate,
+  const CUDADeviceLevelState* dls) {
   // graphs A2 idle-block guard (pow2-frozen grid; see the find kernel)
-  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y) || DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
   }
   // bins of features outside this tree's sample are dead storage: skip (the
@@ -5502,10 +5555,11 @@ __global__ void CopyChangedNumBitHistogramBatchedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   hist_t* num_bit_change_buffer,
   const uint8_t* bin_used,
-  const CUDAHybridGraphLoopStateOpt gstate) {
+  const CUDAHybridGraphLoopStateOpt gstate,
+  const CUDADeviceLevelState* dls) {
   PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the subtract's change buffer is complete and visible
   // graphs A2 idle-block guard (pow2-frozen grid; see the find kernel)
-  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y) || DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
   }
   const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.y;
@@ -5618,9 +5672,10 @@ __global__ void FixHistogramDiscretizedBatchedKernel(
   const uint32_t* cuda_need_fix_histogram_features_num_bin_aligned,
   const CUDAHybridPairDescriptor* pair_descs,
   const int8_t* feature_used,
-  const CUDAHybridGraphLoopStateOpt gstate) {
+  const CUDAHybridGraphLoopStateOpt gstate,
+  const CUDADeviceLevelState* dls) {
   // graphs A2 idle-block guard (pow2-frozen grid; see the find kernel)
-  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y) || DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
   }
   if (feature_used != nullptr &&
@@ -5747,11 +5802,12 @@ __global__ void FixSubtractDiscretizedMaskedBatchedKernel(
   hist_t* num_bit_change_buffer,
   const uint8_t* bin_used,
   const int8_t* feature_used,
-  const CUDAHybridGraphLoopStateOpt gstate) {
+  const CUDAHybridGraphLoopStateOpt gstate,
+  const CUDADeviceLevelState* dls) {
   PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the construct's histograms are complete and visible
   PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   // graphs A2 idle-block guard (pow2-frozen grid; see the find kernel)
-  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
+  if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y) || DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
     return;
   }
   const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.y;
@@ -5924,8 +5980,12 @@ __global__ void __launch_bounds__(512) FixSubtractUsedFeaturesBatchedKernel(
   const int num_used_features,
   const int num_total_bin,
   const CUDAHybridPairDescriptor* pair_descs,
-  hist_t* num_bit_change_buffer) {
+  hist_t* num_bit_change_buffer,
+  const CUDADeviceLevelState* dls) {
   PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the construct's histograms are complete and visible
+  if (DeviceLevelBeyondLivePairs(dls, blockIdx.x)) {
+    return;  // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
+  }
   const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.x;
   const CUDALeafSplitsStruct* smaller = desc->smaller_struct;
   const CUDALeafSplitsStruct* larger = desc->larger_struct;
@@ -6490,12 +6550,22 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
   }
   dim3 grid_dim(grid_dim_x, grid_dim_y, num_pairs);
   dim3 block_dim(block_dim_x, block_dim_y);
+  // cuda_plan key device_levels: a device-driven level's dense construct takes its block map, grid y and rows floor
+  // from the device (DeviceLevelPairsKernel), striding a fixed launch over the map's block rows
+  const CUDADeviceLevelState* dense_dls = device_level_state_;
+  if (dense_dls != nullptr) {
+    CHECK(use_quantized_grad_);
+    const int target_blocks = DeviceLevelConstructTargetBlocks();
+    grid_dim = dim3(grid_dim_x, static_cast<unsigned int>(std::max(1, std::min(65535,
+      (target_blocks + std::max(1, grid_dim_x) - 1) / std::max(1, grid_dim_x)))), 1);
+  }
   // cuda_plan key dense_level_row_blocks (classic flow; the speculative flow derives it on the device): the
   // quantized dense batched construct runs every leaf at no fewer rows per thread than the largest leaf's of this
   // grid (which the grid's overflow guard bounds) or the grid formula's own target, whichever is smaller
   const int64_t dense_dim_y = static_cast<int64_t>(grid_dim_y) * block_dim_y;
   const data_size_t dense_min_rows_per_thread =
-    FalcataPlan::Get().dense_level_row_blocks && num_pairs > 1 && level_smaller_num_data == nullptr && dense_dim_y > 0 ?
+    FalcataPlan::Get().dense_level_row_blocks && num_pairs > 1 && level_smaller_num_data == nullptr && dense_dim_y > 0 &&
+    dense_dls == nullptr ?
     DenseLevelRowsPerThreadFloor(max_num_data_in_smaller_leaf, dense_dim_y, BatchConstructMinRowsPerThread()) : 0;
   // cuda_plan key dense_block_map (classic flow, as pair_block_map): launch only the block rows that have rows, each
   // pair's count by the kernel's own row grouping (dense_level_row_blocks' floor) from the host copy of the leaf
@@ -6510,7 +6580,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     DenseBlockPrefix prefix;  // num_pairs 0: the plain grid
   };
   std::vector<DenseLaunchChunk> dense_chunks;
-  if (FalcataPlan::Get().dense_block_map && num_pairs > 1 &&
+  if (FalcataPlan::Get().dense_block_map && num_pairs > 1 && dense_dls == nullptr &&
       level_smaller_num_data == nullptr && hybrid_graph_capture_gstate_ == nullptr && dense_dim_y > 0 &&
       level_host_pair_descs_ != nullptr && level_host_num_pairs_ == num_pairs) {
     const int64_t max_blocks = std::min(65535, CurrentDeviceLaunchLimits().max_grid_dim_y);
@@ -6586,7 +6656,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
     // (not while this tree's compact buffer holds the pair_code5 code view: the small-leaf kernels read the nibble
     // view, which would cost the tree a second fill; the code-view pair-joint kernel below takes those levels)
     if (SmallLeafConstructEnabled() && small_leaf_rows > 0 &&
-        hybrid_graph_capture_gstate_ == nullptr &&
+        hybrid_graph_capture_gstate_ == nullptr && dense_dls == nullptr &&
         max_num_data_in_smaller_leaf <= small_leaf_rows && !(use_compact_view_ && code5_valid_)) {
       const int8_t* feat_used =
         any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr;
@@ -6652,6 +6722,10 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
                  level_smaller_num_data == nullptr && hybrid_graph_capture_gstate_ == nullptr &&
                  (std::max(1, max_num_compact_cols_per_partition_) + 1) / 2 * static_cast<int>(block_dim.y) <=
                    PairJointMaxThreadsPerBlock()) {
+        if (dense_dls != nullptr) {
+          LaunchDeviceLevelPairJoint(pair_descs);  // cuda_plan key device_levels
+          return;
+        }
         // cuda_plan key pair_hist: one thread per packed byte (two compact columns), same grid and block rows
         DiagConstructKernel("pair_hist");
         const int cc = std::max(1, max_num_compact_cols_per_partition_);
@@ -6850,7 +6924,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           whole_rows ? static_cast<int>(grid_dim.x) : 0, \
           whole_rows ? static_cast<uint32_t>(compact_pair_joint_total_) : 0u, \
           pair_min_rows_per_thread, \
-          block_prefix
+          block_prefix, \
+          static_cast<const CUDADeviceLevelState*>(nullptr)
 #define FALCATA_LAUNCH_PAIR_JOINT_DATA(KERNEL, DATA) \
         KERNEL<<<launch_grid_dim, pair_block_dim, pair_smem_bytes, cuda_stream_>>>(FALCATA_PAIR_JOINT_LAUNCH_ARGS(DATA))
         // a whole-row block does the work of grid_dim.x partition blocks and zeroes / flushes all their joint
@@ -6910,7 +6985,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           min_sum_hessian_in_leaf_, \
           level_smaller_num_data, \
           hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch, \
-          dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks, dense_chunk.prefix)
+          dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks, dense_chunk.prefix, dense_dls)
         switch (compact_codec_) {
           case PackCodecId::kBit3x32:
             FALCATA_LAUNCH_BATCHED_COMPACT_QUANT(PackBit3x32);
@@ -6947,7 +7022,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
           min_sum_hessian_in_leaf_,
           level_smaller_num_data,
           hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch,
-          dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks, dense_chunk.prefix);
+          dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks, dense_chunk.prefix, dense_dls);
         }
       }
     } else if (cuda_row_data_->is_4bit_packed()) {
@@ -6968,7 +7043,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         min_sum_hessian_in_leaf_,
         level_smaller_num_data,
         hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch,
-        dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks, dense_chunk.prefix);
+        dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks, dense_chunk.prefix, dense_dls);
       }
     } else {
       DiagConstructKernel(FalcataPlan::Get().row_batch ? "row_batch" : "unbatched");
@@ -6988,7 +7063,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         min_sum_hessian_in_leaf_,
         level_smaller_num_data,
         hybrid_graph_capture_gstate_, FalcataPlan::Get().row_batch,
-        dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks, dense_chunk.prefix);
+        dense_min_rows_per_thread, FalcataPlan::Get().dense_level_row_blocks, dense_chunk.prefix, dense_dls);
       }
     }
     };
@@ -7156,6 +7231,174 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
   }
 }
 
+int CUDAHistogramConstructor::DeviceLevelConstructBlockDimY() {
+  // LaunchConstructHistogramBatchedKernelInner0's block y (block dims depend on the tree's columns only)
+  int grid_dim_x = 0;
+  int grid_dim_y = 0;
+  int block_dim_x = 0;
+  int block_dim_y = 0;
+  CalcConstructHistogramBatchedKernelDim(&grid_dim_x, &grid_dim_y, &block_dim_x, &block_dim_y, 1, 1);
+  if (use_compact_view_) {
+    const int cc = std::max(1, max_num_compact_cols_per_partition_);
+    block_dim_x = cc > NUM_THREADS_PER_BLOCK ? (cc + 1) / 2 : cc;
+    block_dim_y = std::max(1, NUM_THREADS_PER_BLOCK / block_dim_x);
+    block_dim_y = HybridQuantConstructBlockDimY(block_dim_y, use_quantized_grad_ ? num_grad_quant_bins_ : 0);
+  }
+  return block_dim_y;
+}
+
+bool CUDAHistogramConstructor::DeviceLevelConstructSupported() {
+  // the dense batched kernel and the pair-joint family both take the device block map
+  return use_quantized_grad_ && SupportsBatchedLevel();
+}
+
+void CUDAHistogramConstructor::DeviceLevelConstructShape(CUDADeviceLevelConstructShape* shape) {
+  std::memset(shape, 0, sizeof(*shape));
+  // LaunchConstructHistogramBatchedKernelInner0's tree-constant decisions for a multi-pair level that holds fewer
+  // rows than the matrix (a device level: not the root)
+  int grid_dim_x = 0;
+  int grid_dim_y = 0;
+  int block_dim_x = 0;
+  int block_dim_y = 0;
+  CalcConstructHistogramBatchedKernelDim(&grid_dim_x, &grid_dim_y, &block_dim_x, &block_dim_y, 1, 2);
+  const int cc = std::max(1, max_num_compact_cols_per_partition_);
+  if (use_compact_view_) {
+    block_dim_x = cc > NUM_THREADS_PER_BLOCK ? (cc + 1) / 2 : cc;
+    block_dim_y = std::max(1, NUM_THREADS_PER_BLOCK / block_dim_x);
+    block_dim_y = HybridQuantConstructBlockDimY(block_dim_y, use_quantized_grad_ ? num_grad_quant_bins_ : 0);
+  }
+  shape->block_y = block_dim_y;
+  shape->grid_x = grid_dim_x;
+  shape->block_x = block_dim_x;
+  const int bins = use_quantized_grad_ ? num_grad_quant_bins_ : 0;
+  const FalcataPlan& plan = FalcataPlan::Get();
+  if (!(use_compact_view_ && compact_is_4bit_ && compact_codec_ == PackCodecId::kNibble4 && plan.pair_hist &&
+        compact_pair_joint_max_ > 0 && compact_pair_joint_max_ * sizeof(int32_t) <= 48 * 1024 &&
+        (cc + 1) / 2 * block_dim_y <= PairJointMaxThreadsPerBlock())) {
+    return;  // the dense batched kernel
+  }
+  shape->pair_mode = 1;
+  const bool whole_rows = plan.pair_hist_rows && compact_row_interleave_ &&
+      compact_pair_joint_total_ > 0 && compact_pair_joint_total_ * sizeof(int32_t) <= 48 * 1024 &&
+      compact_row_bytes_ > 0 && compact_row_bytes_ * block_dim_y <= std::min(1024, PairJointMaxThreadsPerBlock());
+  int pair_y = block_dim_y;
+  if (whole_rows && plan.pair_block_rows) {
+    const int max_threads = std::min(1024, PairJointMaxThreadsPerBlock());
+    int y = pair_y;
+    int best_warps = PairJointResidentWarps(compact_row_bytes_ * pair_y);
+    for (int c = pair_y + 1; compact_row_bytes_ * c <= max_threads && HybridQuantConstructBlockDimY(c, bins) == c; ++c) {
+      const int warps = PairJointResidentWarps(compact_row_bytes_ * c);
+      if (warps > best_warps) {
+        best_warps = warps;
+        y = c;
+      }
+    }
+    pair_y = y;
+  }
+  const size_t pair_smem_bytes =
+    static_cast<size_t>(whole_rows ? compact_pair_joint_total_ : compact_pair_joint_max_) * sizeof(int32_t);
+  // (the host keeps the default shape where the capped grid passes CUDA's y limit; a device level strides its
+  // block rows over a fixed launch, so it has no such limit)
+  const int capped_y = whole_rows && plan.pair_capped_rows ?
+    PairJointCappedRows(compact_row_bytes_, pair_smem_bytes, pair_y, bins) : 0;
+  if (capped_y > 0) {
+    pair_y = capped_y;
+  }
+  const size_t code5_flat_smem_bytes = pair_smem_bytes + Code5DummyCells(code5_bits_) * sizeof(int32_t);
+  const bool code5_flat = plan.pair_code5_flat && code5_flat_smem_bytes <= CurrentDeviceLaunchLimits().shared_bytes_per_block;
+  const size_t code5_word_smem_bytes = code5_flat ? code5_flat_smem_bytes : pair_smem_bytes;
+  const bool code5_tall = plan.pair_code5_slots && plan.pair_code5_tall;
+  const bool code5_epilogue_flat = code5_flat && plan.pair_code5_epilogue;
+  int code5_word_rows = 0;
+  if (whole_rows && code5_valid_ && plan.pair_code5 && plan.pair_code5_words &&
+      Code5RowWords(compact_row_bytes_, code5_bits_) == code5_row_words_) {
+    const PairJointCode5WordShape word_shape = PairJointCode5WordShapeFor(
+      code5_row_words_, code5_word_smem_bytes, bins, code5_flat, code5_tall, code5_epilogue_flat, code5_bits_);
+    code5_word_rows = word_shape.rows;
+    if (code5_word_rows > 0) {
+      pair_y = code5_word_rows;
+      shape->kernel_kind = 4;
+      shape->block_x = code5_row_words_;
+      shape->smem_bytes = static_cast<int>(code5_word_smem_bytes);
+      shape->code5_flat = code5_flat ? 1 : 0;
+      shape->code5_epilogue_flat = code5_epilogue_flat ? 1 : 0;
+      if (plan.pair_code5_slots && word_shape.device_slots > 0) {
+        shape->slot = 1;
+        shape->slot_device_slots = word_shape.device_slots;
+        shape->slot_min_rows = std::max(1, BatchConstructMinRowsPerThread());
+        shape->slot_max_rows = bins > 0 ? HybridQuantConstructMaxRowsPerThread(bins, code5_word_rows) : 1 << 30;
+      }
+    }
+  }
+  if (code5_word_rows == 0) {
+    shape->block_x = whole_rows ? compact_row_bytes_ : (cc + 1) / 2;
+    shape->smem_bytes = static_cast<int>(pair_smem_bytes);
+    const PairJointKernelFn code5_kernel = capped_y > 0 ? PairJointCapped().gather_code5 :
+      CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false, true>;
+    const bool code5 = whole_rows && code5_valid_ && plan.pair_code5 && code5_bits_ == 5 &&
+      Code5RowWords(compact_row_bytes_) == code5_row_words_ &&
+      shape->block_x * pair_y <= PairJointCode5MaxThreads(code5_kernel);
+    shape->kernel_kind = code5 ? (capped_y > 0 ? 3 : 2) : (capped_y > 0 ? 1 : 0);
+  }
+  shape->block_y = pair_y;
+  shape->grid_x = whole_rows ? 1 : grid_dim_x;
+  shape->per_pair_min_grid = shape->slot != 0 ? 0 : (plan.per_pair_rows ? min_grid_dim_y_ : 0);
+  shape->per_pair_min_rows = BatchConstructMinRowsPerThread() * (whole_rows ? grid_dim_x : 1);
+  shape->whole_row_partitions = whole_rows ? grid_dim_x : 0;
+  shape->whole_row_joint = whole_rows ? static_cast<uint32_t>(compact_pair_joint_total_) : 0u;
+}
+
+void CUDAHistogramConstructor::LaunchDeviceLevelPairJoint(const CUDAHybridPairDescriptor* pair_descs) {
+  // cuda_plan key device_levels: a device level's pair-joint construct (the pair_hist branch of
+  // LaunchConstructHistogramBatchedKernelInner0 with the device's block map, grid y and rows floor)
+  CUDADeviceLevelConstructShape sh;
+  DeviceLevelConstructShape(&sh);
+  CHECK_EQ(sh.pair_mode, 1);
+  const PairJointKernelFn kernel =
+    sh.kernel_kind == 4 ? PairJointCode5WordKernel(sh.code5_flat != 0, sh.code5_epilogue_flat != 0, code5_bits_) :
+    sh.kernel_kind == 3 ? PairJointCapped().gather_code5 :
+    sh.kernel_kind == 2 ? CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false, true> :
+    sh.kernel_kind == 1 ? PairJointCapped().gather :
+    CUDAConstructDiscretizedHistogramPairJointBatchedKernel<false>;
+  DiagConstructKernel(sh.kernel_kind == 4 ? "pair_code5_words (device levels)" : "pair_hist (device levels)");
+  const uint8_t* data = sh.kernel_kind >= 2 ? compact_data_uint8_t_.RawDataReadOnly() : NibbleViewData();
+  const int grid_x = std::max(1, sh.grid_x);
+  const int grid_y = std::max(1, std::min(65535, (DeviceLevelConstructTargetBlocks() + grid_x - 1) / grid_x));
+  kernel<<<dim3(grid_x, grid_y, 1), dim3(sh.block_x, sh.block_y), static_cast<size_t>(sh.smem_bytes), cuda_stream_>>>(
+    pair_descs,
+    reinterpret_cast<const int32_t*>(cuda_gradients_),
+    data,
+    compact_column_hist_offsets_.RawData(),
+    num_compact_columns_,
+    cuda_row_data_->cuda_partition_hist_offsets(),
+    compact_feature_partition_column_index_offsets_.RawData(),
+    compact_packed_partition_byte_offsets_.RawData(),
+    num_data_,
+    static_cast<data_size_t>(min_data_in_leaf_),
+    min_sum_hessian_in_leaf_,
+    sh.per_pair_min_grid,
+    sh.per_pair_min_rows,
+    BatchConstructSaturationFloor(),
+    use_quantized_grad_ ? num_grad_quant_bins_ : 0,
+    sh.whole_row_partitions,
+    sh.whole_row_joint,
+    static_cast<data_size_t>(0),
+    PairJointBlockPrefix{},
+    device_level_state_);
+  CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());  // a new launch shape: its launch errors surface
+}
+
+int CUDAHistogramConstructor::DeviceLevelConstructTargetBlocks() {
+  static const int target = []() {
+    int device = 0;
+    int num_sms = 0;
+    CUDASUCCESS_OR_FATAL(cudaGetDevice(&device));
+    CUDASUCCESS_OR_FATAL(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, device));
+    return std::max(1, num_sms) * 4;
+  }();
+  return target;
+}
+
 void CUDAHistogramConstructor::LaunchFixSubtractDiscretizedMaskedKernel(
   const CUDAHybridPairDescriptor* pair_descs,
   const int num_pairs,
@@ -7177,7 +7420,7 @@ void CUDAHistogramConstructor::LaunchFixSubtractDiscretizedMaskedKernel(
     hist_buffer_for_num_bit_change_.RawData(),
     any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
     any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
-    gstate);
+    gstate, device_level_state_);
   CUDASUCCESS_OR_FATAL(cudaPeekAtLastError());  // a new launch shape: its launch errors surface
 }
 
@@ -7349,7 +7592,7 @@ void CUDAHistogramConstructor::CaptureHybridGraphSearchKernels(
         cuda_need_fix_histogram_features_num_bin_aligned_.RawData(),
         pair_descs,
         any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
-        gstate);
+        gstate, nullptr);
       if (!AppendCapturedNode(cuda_stream_, nodes)) return;
       roles->push_back(kHybridGraphNodeSearchPairY);
       role_static_x->push_back(static_cast<int>(need_fix_histogram_features_.size()));
@@ -7359,7 +7602,7 @@ void CUDAHistogramConstructor::CaptureHybridGraphSearchKernels(
       pair_descs,
       hist_buffer_for_num_bit_change_.RawData(),
       any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
-      gstate);
+      gstate, nullptr);
     if (!AppendCapturedNode(cuda_stream_, nodes)) return;
     roles->push_back(kHybridGraphNodeSearchPairY);
     role_static_x->push_back(num_subtract_blocks);
@@ -7369,7 +7612,7 @@ void CUDAHistogramConstructor::CaptureHybridGraphSearchKernels(
       pair_descs,
       hist_buffer_for_num_bit_change_.RawData(),
       any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
-      gstate);
+      gstate, nullptr);
     if (!AppendCapturedNode(cuda_stream_, nodes)) return;
     roles->push_back(kHybridGraphNodeSearchPairY);
     role_static_x->push_back(num_subtract_blocks);
@@ -7463,6 +7706,10 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
       hist_fp32_,
       nullptr);
   } else {
+    // cuda_plan key device_levels: a device-driven level's pairs are guarded by the device's live count, and its
+    // bit-change copies are gated per pair inside the copy kernel (the host does not know whether any applies)
+    const CUDADeviceLevelState* dls = device_level_state_;
+    const bool bit_change_copy = any_pair_needs_bit_change_copy || dls != nullptr;
     const int num_subtract_threads = num_total_bin_;
     const int num_subtract_blocks = (num_subtract_threads + SUBTRACT_BLOCK_SIZE - 1) / SUBTRACT_BLOCK_SIZE;
     dim3 subtract_grid(num_subtract_blocks, num_pairs);
@@ -7478,7 +7725,8 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
         num_used_feature_info_,
         num_total_bin_,
         pair_descs,
-        hist_buffer_for_num_bit_change_.RawData());
+        hist_buffer_for_num_bit_change_.RawData(),
+        dls);
       fused_fix_subtract = true;  // the kernel also did CopyChangedNumBitHistogramBatchedKernel's copies
     } else if (FixSubtractMaskedEnabled()) {
       LaunchFixSubtractDiscretizedMaskedKernel(pair_descs, num_pairs, gstate);
@@ -7493,18 +7741,18 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
           cuda_need_fix_histogram_features_num_bin_aligned_.RawData(),
           pair_descs,
           any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
-          gstate);
+          gstate, dls);
       }
       SubtractHistogramDiscretizedBatchedKernel<<<subtract_grid, SUBTRACT_BLOCK_SIZE, 0, cuda_stream_>>>(
         num_total_bin_,
         pair_descs,
         hist_buffer_for_num_bit_change_.RawData(),
         any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
-        gstate);
+        gstate, dls);
     }
     // graph capture always includes the copy node (the device-derived per-pair
     // bit widths gate it); the host path launches it only on bit-change levels
-    if ((any_pair_needs_bit_change_copy && !fused_fix_subtract) || gstate != nullptr) {
+    if ((bit_change_copy && !fused_fix_subtract) || gstate != nullptr) {
       // cuda_plan key pdl_level_chain: a programmatic dependent of the subtract launched just before (host launches)
       LaunchLevelChainKernel(gstate == nullptr && PdlLevelChainEnabled(), CopyChangedNumBitHistogramBatchedKernel,
         subtract_grid, dim3(SUBTRACT_BLOCK_SIZE), 0, cuda_stream_,
@@ -7512,7 +7760,7 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
         pair_descs,
         hist_buffer_for_num_bit_change_.RawData(),
         any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
-        gstate);
+        gstate, dls);
     }
   }
 }

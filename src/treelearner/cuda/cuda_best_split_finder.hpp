@@ -65,6 +65,8 @@ struct SplitFindTask {
 };
 
 
+struct CUDADeviceLevelState;
+
 class CUDABestSplitFinder {
  public:
   CUDABestSplitFinder(
@@ -433,6 +435,10 @@ class CUDABestSplitFinder {
   }
 
   cudaStream_t find_stream() const { return cuda_streams_[0]; }
+
+  /*! \brief cuda_plan key device_levels: the device level state the level find and sync launches read while the
+   *  learner enqueues a device-driven level's search (nullptr otherwise) */
+  void SetDeviceLevelState(const CUDADeviceLevelState* dls) { device_level_state_ = dls; }
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
   // Device pointer to a leaf's cached best split, for passing to CUDATree::Split.
@@ -644,6 +650,8 @@ class CUDABestSplitFinder {
   void EnsurePinnedLeafBestSplitCapacity(const int num_leaves) const;
   /*! \brief cuda_plan key readback_fused: mirror requested for the next level sync kernel / written by the last */
   bool leaf_mirror_requested_ = false;
+  /*! \brief cuda_plan key device_levels: see SetDeviceLevelState */
+  const CUDADeviceLevelState* device_level_state_ = nullptr;
   bool leaf_mirror_written_ = false;
   int max_num_bin_in_feature_;
   std::vector<uint32_t> feature_hist_offsets_;
