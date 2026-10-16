@@ -2405,7 +2405,10 @@ Geometric mean 1.010. The cost is under 4% everywhere but higgs deep (1.084 in t
 the same warps per SM as the float path, but as one 1008-thread block, so a block's zero and flush phases no longer
 overlap another block's accumulation, plus the 64-bit flush atomics and the per-level convert; the levers left are
 splitting a partition's columns so the table fits 48 KB, which restores two blocks per SM, and folding the convert
-into fix/subtract), and the native 32-bit adds make covtype deep 4.3% faster than the float atomics. Before the native
+into fix/subtract), and the native 32-bit adds make covtype deep 4.3% faster than the float atomics. With `cuda_precision=fp32`, covtype deep (same binary,
+2 pairs): key off (fp32 histogram atomics) 7.053 s, 12.95 ms per round; key on (fp32 gain math, fixed-point fp64
+histograms) 6.742 s, 12.31 ms (0.956): the fixed-point construct is faster than the fp32 atomics it replaces on this
+shape, so nothing of section 6's fp32 win is lost there (fp64 with the key on: 7.518 s). Before the native
 adds and the wider blocks (one 504-thread block per SM, compare-and-swap adds) the same construct cost up to 1.38x
 (higgs and epsilon shallow). Quantized cells, key off vs on, same binary, 2 pairs: numerai53bench 3.314 -> 3.315 ms
 per round, higgs 1.702 -> 1.700, md5-identical (the key is read only under non-quantized training). Lattice: 437 of
