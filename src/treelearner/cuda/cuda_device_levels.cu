@@ -52,6 +52,9 @@ __global__ void DeviceLevelResetKernel(const CUDADeviceLevelConfig cfg, const in
   if (threadIdx.x < kDeviceLevelJournalHeader) {
     cfg.journal[threadIdx.x] = 0;
   }
+  for (int c = static_cast<int>(threadIdx.x); c < kDeviceLevelClaimColumns; c += blockDim.x) {
+    st->construct_next_block[c] = 0;
+  }
 }
 
 // One level's host decisions between its search and its apply (DeviceLevelSelectBlock, cuda_device_levels.cuh), as a

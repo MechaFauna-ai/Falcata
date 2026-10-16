@@ -163,9 +163,9 @@ class CUDADataPartition: public NCCLInfo {
 
   /*! \brief cuda_plan key device_levels: size every buffer a device-driven level writes for its worst case (the
    *  host never learns a device level's real counts before the levels are read back) */
-  void EnsureDeviceLevelCapacity() {
+  void EnsureDeviceLevelCapacity(const int max_prefix_leaves) {
     PresizeLevelBuffers();
-    const size_t desc_capacity = static_cast<size_t>(num_leaves_) + 4;
+    const size_t desc_capacity = static_cast<size_t>(max_prefix_leaves) + 4;
     if (cuda_apply_descs_.Size() < desc_capacity) {
       cuda_apply_descs_.Resize(desc_capacity);
       SetCUDAMemory<CUDAHybridApplyDescriptor>(cuda_apply_descs_.RawData(), 0, cuda_apply_descs_.Size(),

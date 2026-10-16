@@ -361,8 +361,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // 2^(L + 1) <= num_leaves (the budget cannot bind) and L + 1 < max_depth (the children are searched), when every
   // kernel of the flow has a device-count variant; 0 = the host loop as before
   int DeviceLevelsToRun(bool batched_level_kernels, bool batched_level_apply);
+  void LogDeviceLevelsFallback(const char* reason);
   // one-time buffers and static tables of the device levels; false disables them
-  bool SetupDeviceLevels();
+  bool SetupDeviceLevels(const int num_levels);
   // after the root level's search is enqueued: num_levels device-driven levels (apply + children's search), one
   // readback, the host bookkeeping replayed; host_leaf_best_splits_ then hold the last search's result and *pairs
   // the last level's pairs, as after the host loop's own readback. Returns the splits applied.
@@ -775,6 +776,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::vector<int> hybrid_graph_batch_info_;
   std::vector<HybridAppliedSplit> hybrid_graph_applied_scratch_;
   // ---- cuda_plan key device_levels state ----
+  bool device_levels_logged_ = false;
+  bool device_levels_fallback_logged_ = false;
   bool device_levels_ready_ = false;
   bool device_levels_disabled_ = false;
   CUDAVector<CUDADeviceLevelState> cuda_device_level_state_;
@@ -789,7 +792,6 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   CUDAVector<double> cuda_device_level_real_thresholds_;
   std::vector<CUDAHybridGraphFeatureSource> host_device_level_feature_source_;
   cudaEvent_t device_level_select_event_ = nullptr;
-  cudaEvent_t device_level_apply_event_ = nullptr;
   std::vector<int> device_level_batch_info_;
   std::vector<int> device_level_batch_slice_;
   std::vector<HybridAppliedSplit> device_level_applied_;

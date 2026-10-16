@@ -51,6 +51,7 @@ CUDASingleGPUTreeLearner::~CUDASingleGPUTreeLearner() {
   }
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   hybrid_graph_cache_.clear();
+  device_level_graphs_.clear();
   if (pinned_hybrid_graph_state_ != nullptr) {
     cudaFreeHost(pinned_hybrid_graph_state_);
   }
@@ -62,9 +63,6 @@ CUDASingleGPUTreeLearner::~CUDASingleGPUTreeLearner() {
   }
   if (device_level_select_event_ != nullptr) {
     cudaEventDestroy(device_level_select_event_);
-  }
-  if (device_level_apply_event_ != nullptr) {
-    cudaEventDestroy(device_level_apply_event_);
   }
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 }
@@ -2790,14 +2788,13 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   bool search_read_back = false;
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   const int device_levels = DeviceLevelsToRun(use_batched_level_kernels, use_batched_level_apply);
-  if (device_levels > 0 && !device_levels_ready_ && !SetupDeviceLevels()) {
+  if (device_levels > 0 && !device_levels_ready_ && !SetupDeviceLevels(device_levels)) {
     device_levels_disabled_ = true;
   }
   if (device_levels > 0 && device_levels_ready_) {
     if (FalcataDebug().diag) {
-      static bool device_levels_logged = false;
-      if (!device_levels_logged) {
-        device_levels_logged = true;
+      if (!device_levels_logged_) {
+        device_levels_logged_ = true;
         fprintf(stderr, "[hybrid-diag] device_levels: %d device-driven levels per tree\n", device_levels);
       }
     }
@@ -3536,6 +3533,20 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefixGraph(CUDATree* tree) {
 void CUDASingleGPUTreeLearner::ReleaseHybridGraphs() {
   hybrid_graph_cache_.clear();
   hybrid_graph_statics_ready_ = false;
+  // ResetConfig / ResetTrainingData can replace every pointer and static feature table captured by the prefix.
+  device_level_graphs_.clear();
+  device_levels_ready_ = false;
+  device_levels_disabled_ = false;
+  device_level_graph_disabled_ = false;
+  device_level_graph_hits_ = 0;
+  device_level_graph_misses_ = 0;
+}
+
+void CUDASingleGPUTreeLearner::LogDeviceLevelsFallback(const char* reason) {
+  if (FalcataDebug().diag && !device_levels_fallback_logged_) {
+    device_levels_fallback_logged_ = true;
+    fprintf(stderr, "[hybrid-diag] device_levels: host fallback (%s)\n", reason);
+  }
 }
 
 // ---- cuda_plan key device_levels (see cuda_device_levels.hpp) ----
@@ -3545,9 +3556,14 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
   if (!plan.device_levels || device_levels_disabled_) {
     return 0;
   }
-  // with device_level_graph the levels run only as a replayed graph: where one cannot serve (forest slots, or trees
-  // whose launch layouts keep changing) the host loop is faster than enqueueing the device levels launch by launch
-  if (plan.device_level_graph && (forest_slot_ || device_level_graph_disabled_)) {
+  // Slot workers use thread-local stream ownership. Neither capture nor the plain device enqueue is supported here.
+  if (forest_slot_ || cuda_best_split_finder_->find_stream() == cudaStreamLegacy) {
+    LogDeviceLevelsFallback(forest_slot_ ? "forest slot" : "legacy single stream");
+    return 0;
+  }
+  // When sampled layouts keep missing the graph cache, use the existing host loop on subsequent trees.
+  if (plan.device_level_graph && device_level_graph_disabled_) {
+    LogDeviceLevelsFallback("changing graph layouts");
     return 0;
   }
   // the flow this replaces: the classic quantized prefix with both batched phases, single GPU, scalar leaves, no
@@ -3560,6 +3576,7 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
       !plan.apply_struct_fused || !plan.gap_copy_fused ||
       !cuda_histogram_constructor_->DeviceLevelConstructSupported() ||
       cuda_best_split_finder_->num_used_tasks() == 0) {
+    LogDeviceLevelsFallback("unsupported prefix kernels or configuration");
     return 0;
   }
   // levels L with 2^(L + 1) <= num_leaves and L + 1 < max_depth: every valid leaf splits and every child is searched
@@ -3580,7 +3597,7 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
   return levels >= 2 ? levels : 0;
 }
 
-bool CUDASingleGPUTreeLearner::SetupDeviceLevels() {
+bool CUDASingleGPUTreeLearner::SetupDeviceLevels(const int num_levels) {
   // static feature tables of the select kernel: SplitLevelBatched's per-feature metadata and the real thresholds
   std::vector<CUDAHybridGraphFeatureMeta> meta;
   cuda_data_partition_->BuildHybridGraphFeatureMeta(&meta);
@@ -3602,8 +3619,9 @@ bool CUDASingleGPUTreeLearner::SetupDeviceLevels() {
   cuda_device_level_feature_source_.Resize(static_cast<size_t>(train_data_->num_features()));
   cuda_device_level_state_.Resize(1);
   cuda_device_level_config_.Resize(1);
+  const int max_prefix_leaves = 1 << num_levels;
   device_level_journal_size_ = static_cast<size_t>(kDeviceLevelJournalHeader) +
-    2 * static_cast<size_t>(config_->num_leaves) + 4;
+    2 * static_cast<size_t>(max_prefix_leaves) + 4;
   cuda_device_level_journal_.Resize(device_level_journal_size_);
   if (pinned_device_level_journal_ != nullptr) {
     cudaFreeHost(pinned_device_level_journal_);
@@ -3615,22 +3633,21 @@ bool CUDASingleGPUTreeLearner::SetupDeviceLevels() {
   }
   if (device_level_select_event_ == nullptr) {
     CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&device_level_select_event_, cudaEventDisableTiming));
-    CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&device_level_apply_event_, cudaEventDisableTiming));
   }
   if (tree_record_done_event_ == nullptr) {
     CUDASUCCESS_OR_FATAL(cudaEventCreateWithFlags(&tree_record_done_event_, cudaEventDisableTiming));
   }
   // every buffer a device level writes, at its worst case: a growth is a device synchronize the enqueue cannot
   // pay mid-level (it would also reallocate under in-flight kernels' pointers)
-  const int max_pairs = config_->num_leaves / 2 + 2;
-  const size_t max_slots = static_cast<size_t>(config_->num_leaves) + 2;
+  const int max_pairs = max_prefix_leaves / 2;
+  const size_t max_slots = static_cast<size_t>(max_prefix_leaves) + 2;
   if (hybrid_pair_slots_.Size() < max_slots) {
     hybrid_pair_slots_.Resize(max_slots);
   }
   if (cuda_hybrid_pair_descs_.Size() < static_cast<size_t>(max_pairs)) {
     cuda_hybrid_pair_descs_.Resize(static_cast<size_t>(max_pairs));
   }
-  cuda_data_partition_->EnsureDeviceLevelCapacity();
+  cuda_data_partition_->EnsureDeviceLevelCapacity(max_prefix_leaves);
   cuda_best_split_finder_->EnsureHybridGraphCapacity(max_pairs);
   cuda_histogram_constructor_->EnsureDeviceLevelCapacity(max_pairs);
   device_levels_ready_ = true;
@@ -3645,6 +3662,21 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
   cudaStream_t find_stream = cuda_best_split_finder_->find_stream();
   cudaStream_t apply_stream_saved = cuda_data_partition_->ExchangeApplyStream(find_stream);
   cudaStream_t hist_stream_saved = cuda_histogram_constructor_->ExchangeHistStream(find_stream);
+  struct RestoreDeviceLevelStreams {
+    CUDADataPartition* partition;
+    CUDAHistogramConstructor* histogram;
+    CUDABestSplitFinder* finder;
+    cudaStream_t apply;
+    cudaStream_t hist;
+    ~RestoreDeviceLevelStreams() {
+      histogram->SetDeviceLevelState(nullptr);
+      finder->SetDeviceLevelState(nullptr);
+      finder->SetDeviceLevelSelect(nullptr);
+      partition->ExchangeApplyStream(apply);
+      histogram->ExchangeHistStream(hist);
+    }
+  } restore{cuda_data_partition_.get(), cuda_histogram_constructor_.get(), cuda_best_split_finder_.get(),
+            apply_stream_saved, hist_stream_saved};
   cudaStream_t tree_stream = tree->tree_stream();
   CUDADeviceLevelState* dls = cfg.state;
   // ordered after the root level's search (its sync kernel ran on the find stream)
@@ -3679,10 +3711,6 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
     select_ran = cuda_best_split_finder_->LastSyncRanSelect();
     cuda_best_split_finder_->SetDeviceLevelSelect(nullptr);
   }
-  cuda_histogram_constructor_->SetDeviceLevelState(nullptr);
-  cuda_best_split_finder_->SetDeviceLevelState(nullptr);
-  cuda_data_partition_->ExchangeApplyStream(apply_stream_saved);
-  cuda_histogram_constructor_->ExchangeHistStream(hist_stream_saved);
 }
 
 bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDADeviceLevelConfig& cfg,
@@ -3728,7 +3756,17 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
   std::unique_ptr<DeviceLevelGraph> graph(new DeviceLevelGraph());
   graph->key = key;
   CUDASUCCESS_OR_FATAL(cudaStreamBeginCapture(find_stream, cudaStreamCaptureModeThreadLocal));
-  EnqueueDeviceLevels(tree, cfg, num_levels);
+  try {
+    EnqueueDeviceLevels(tree, cfg, num_levels);
+  } catch (...) {
+    // End even an invalidated capture before the next tree can use these streams.
+    cudaGraph_t abandoned = nullptr;
+    cudaStreamEndCapture(find_stream, &abandoned);
+    if (abandoned != nullptr) {
+      cudaGraphDestroy(abandoned);
+    }
+    throw;
+  }
   CUDASUCCESS_OR_FATAL(cudaStreamEndCapture(find_stream, &graph->graph));
   CUDASUCCESS_OR_FATAL(cudaGraphInstantiate(&graph->exec, graph->graph, 0));
   CUDASUCCESS_OR_FATAL(cudaGraphUpload(graph->exec, find_stream));
@@ -4562,6 +4600,17 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
               !level ? "" : UseOneSyncPrefix() ? "-one-sync" : "-two-sync");
     }
   }
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+  if (FalcataDebug().diag && FalcataPlan::Get().device_levels) {
+    if (!config_->use_quantized_grad) {
+      LogDeviceLevelsFallback("nonquantized training");
+    } else if (num_splits_done != 0 || !HybridGrowthUsable()) {
+      LogDeviceLevelsFallback("classic per-split growth (constraints, forced splits, or unsupported data)");
+    } else if (UseSelectiveGrowth()) {
+      LogDeviceLevelsFallback("selective growth");
+    }
+  }
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   if (num_splits_done == 0 && HybridGrowthUsable()) {
     if (UseSelectiveGrowth()) {
       // budget-limited exact grow-then-prune: builds the COMPLETE tree

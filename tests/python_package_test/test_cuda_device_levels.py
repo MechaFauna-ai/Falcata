@@ -14,6 +14,7 @@ features, interaction constraints) must still train the same model.
 """
 
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -70,11 +71,13 @@ def _params(objective, leaves, depth, quant, seed=3, **extra):
     return params
 
 
-def _same(params, X, y, rounds, categorical=None):
-    off = _model_md5({**params, "cuda_plan": "auto,device_levels:off"}, X, y, rounds, categorical)
-    on = _model_md5({**params, "cuda_plan": "auto,device_levels:on,device_level_graph:off"}, X, y, rounds, categorical)
+def _same(params, X, y, rounds, categorical=None, base_plan="auto"):
+    off = _model_md5({**params, "cuda_plan": base_plan + ",device_levels:off"}, X, y, rounds, categorical)
+    on = _model_md5(
+        {**params, "cuda_plan": base_plan + ",device_levels:on,device_level_graph:off"}, X, y, rounds, categorical
+    )
     graph = _model_md5(
-        {**params, "cuda_plan": "auto,device_levels:on,device_level_graph:on"}, X, y, rounds, categorical
+        {**params, "cuda_plan": base_plan + ",device_levels:on,device_level_graph:on"}, X, y, rounds, categorical
     )
     assert on == off
     assert graph == off
@@ -163,3 +166,159 @@ def test_device_levels_engage_cuda():
     env = dict(os.environ, FALCATA_DEBUG="diag")
     out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True)
     assert "device_levels: 7 device-driven levels per tree" in out.stderr
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("max_bin", [15, 255])
+@pytest.mark.parametrize("graph", ["off", "on"])
+def test_device_levels_first_tree_stump_cuda(max_bin, graph):
+    # Fresh learner, including both dense and pair-joint constructs: no level ever publishes a nonempty block map.
+    # This also runs under compute-sanitizer initcheck in the source-specific recovery gate.
+    X, y = _data(12000, 24, "regression", 73)
+    p = _params("regression", 255, 8, "fixedpoint", min_gain_to_split=1e12, max_bin=max_bin)
+    models = []
+    for plan in ["auto,device_levels:off", "auto,device_levels:on,device_level_graph:" + graph]:
+        b = flc.train({**p, "cuda_plan": plan}, flc.Dataset(X, label=y, params=p), num_boost_round=3)
+        assert b.num_trees() == 1
+        assert b.dump_model()["tree_info"][0]["num_leaves"] == 1
+        models.append("\n".join(line for line in b.model_to_string().splitlines() if "cuda_plan" not in line))
+    assert models[0] == models[1]
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(
+    "plan",
+    [
+        "pdl_level_chain:off",
+        "sync_used_tasks:off",
+        "sync_copy_batched:off",
+        "warp_find:off",
+        "fix_subtract_fused:off,fix_subtract_masked:off",
+        "apply_row_batch:off,aggregate_load_first:off",
+        "apply_struct_fused:off",
+        "gap_copy_fused:off",
+        "batch_kernels:off",
+        "batch_apply:off",
+        "readback_fused:off",
+        "final_map_only:off,final_readback_first:off",
+    ],
+)
+def test_device_levels_dependencies_cuda(plan):
+    X, y = _data(30011, 24, "regression", 51)
+    _same(_params("regression", 255, 8, "fixedpoint"), X, y, 8, base_plan="auto," + plan)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize(("leaves", "depth"), [(3, 2), (7, 3), (8, 4), (16, 5), (63, 6), (100, 7)])
+def test_device_levels_invalid_leaves_and_ties_cuda(leaves, depth):
+    rng = np.random.default_rng(53)
+    # Duplicate columns have exactly tied gains; repeated rows give equal child counts.
+    x = rng.integers(0, 4, size=(12000, 1)).astype(np.float32)
+    X = np.repeat(x, 12, axis=1)
+    y = ((x[:, 0] == 1) | (x[:, 0] == 2)).astype(np.float32)
+    _same(_params("binary", leaves, depth, "fixedpoint", min_data_in_leaf=2), X, y, 10)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("graph", ["off", "on"])
+@pytest.mark.parametrize("reset", ["budget", "data"])
+def test_device_levels_reset_cuda(graph, reset):
+    X, y = _data(30011, 16, "regression", 64)
+
+    def train(plan):
+        p = _params("regression", 63, 6, "fixedpoint", min_data_in_leaf=3, cuda_plan=plan)
+        ds = flc.Dataset(X, label=y, params=p, free_raw_data=False)
+        b = flc.Booster(p, train_set=ds)
+        for _ in range(4):
+            b.update()
+        if reset == "budget":
+            b.reset_parameter({"num_leaves": 511, "max_depth": 9})
+            for _ in range(8):
+                b.update()
+        else:
+            X2, y2 = _data(50013, 16, "regression", 65)
+            ds2 = flc.Dataset(X2, label=y2, reference=ds, free_raw_data=False)
+            b.update(train_set=ds2)
+            for _ in range(7):
+                b.update()
+        return hashlib.md5(
+            "\n".join(line for line in b.model_to_string().splitlines() if "cuda_plan" not in line).encode()
+        ).hexdigest()
+
+    off = train("auto,device_levels:off")
+    assert train("auto,device_levels:on,device_level_graph:" + graph) == off
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("graph", ["off", "on"])
+def test_device_levels_sampledwide_uncapped_cuda(graph):
+    # Source-specific lattice repro: the uncapped code-byte gather and changing sampled-column layouts.
+    rng = np.random.default_rng(int(hashlib.md5(b"sampledwide5").hexdigest()[:8], 16))
+    X = rng.integers(0, 5, size=(8000, 1200)).astype(np.float64)
+    y = X[:, :40] @ rng.standard_normal(40) + rng.standard_normal(len(X))
+    p = _params("regression", 63, 6, "stochastic", seed=42, num_threads=8, max_bin=15, feature_fraction=0.15)
+    plan = "auto,pair_code5_words:off,pair_capped_rows:off"
+    off = _model_md5({**p, "cuda_plan": plan + ",device_levels:off"}, X, y, 25)
+    for _ in range(3):
+        on = _model_md5({**p, "cuda_plan": plan + ",device_levels:on,device_level_graph:" + graph}, X, y, 25)
+        assert on == off
+
+
+@_REQUIRES_CUDA
+def test_device_levels_forced_splits_cuda(tmp_path):
+    X, y = _data(20011, 16, "regression", 41)
+    forced = tmp_path / "forced.json"
+    forced.write_text(json.dumps({"feature": 0, "threshold": 0.0, "left": {"feature": 1, "threshold": 0.5}}))
+    _same(_params("regression", 255, 8, "stochastic", forcedsplits_filename=str(forced)), X, y, 6)
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("graph", ["off", "on"])
+def test_device_levels_nonquant_fallback_cuda(graph):
+    X, y = _data(12000, 16, "binary", 67)
+    p = _params("binary", 63, 6, "none", num_threads=1)
+    plan = "auto,graph_loop:off"
+    off = _model_md5({**p, "cuda_plan": plan + ",device_levels:off"}, X, y, 6)
+    assert _model_md5({**p, "cuda_plan": plan + ",device_levels:on,device_level_graph:" + graph}, X, y, 6) == off
+
+
+@_REQUIRES_CUDA
+def test_device_levels_forest_slots_fallback_cuda():
+    X, y = _data(30011, 16, "multiclass", 69)
+    _same(
+        _params("multiclass", 63, 6, "fixedpoint", boosting="rf", bagging_fraction=0.632, bagging_freq=1),
+        X,
+        y,
+        12,
+        base_plan="auto,forest_group:3",
+    )
+
+
+@_REQUIRES_CUDA
+def test_device_levels_single_stream_fallback_cuda():
+    code = (
+        "import numpy as np, falcata as flc, hashlib\n"
+        "rng = np.random.default_rng(71)\n"
+        "X = rng.standard_normal((12000, 12)).astype(np.float32)\n"
+        "y = (X[:, 0] + X[:, 1] > 0).astype(np.float32)\n"
+        "p = dict(device_type='cuda', objective='binary', num_leaves=63, max_depth=6, verbose=-1,\n"
+        "         quant_mode='fixedpoint', seed=7)\n"
+        "out = []\n"
+        "for plan in ['auto,device_levels:off', 'auto,device_levels:on,device_level_graph:off',\n"
+        "             'auto,device_levels:on,device_level_graph:on']:\n"
+        " p['cuda_plan'] = plan\n"
+        " b = flc.train(p, flc.Dataset(X, label=y, params=p), num_boost_round=5)\n"
+        " text = '\\n'.join(s for s in b.model_to_string().splitlines() if 'cuda_plan' not in s)\n"
+        " out.append(hashlib.md5(text.encode()).hexdigest())\n"
+        "assert len(set(out)) == 1, out\n"
+    )
+    env = dict(os.environ, FALCATA_SINGLE_STREAM="1", FALCATA_DEBUG="diag")
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True)
+    assert "device_levels: host fallback (legacy single stream)" in out.stderr
+
+
+@_REQUIRES_CUDA
+def test_device_levels_shallow_large_budget_cuda():
+    # The new finder and bit-change scratch allocations must depend on the shallow prefix, not this budget.
+    X, y = _data(12000, 64, "binary", 73)
+    _same(_params("binary", 32767, 3, "fixedpoint"), X, y, 4)

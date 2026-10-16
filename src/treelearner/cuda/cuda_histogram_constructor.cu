@@ -3301,6 +3301,10 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
     // launch's y extent is a fixed count of block rows that strides over the map's. A mapped block row belongs to
     // a pair whose construct is valid and runs exactly the rows the host-launched block row would.
     const int total = dls->construct_total_blocks;
+    // A stopped level has no work. Do not claim rows or inspect stale launch geometry.
+    if (total == 0) {
+      return;
+    }
     const int dim_y = dls->construct_grid_y * static_cast<int>(blockDim.y);
     const data_size_t min_rows_per_thread = dls->construct_min_rows;
     // the map's block rows are claimed one at a time (their row counts differ: a static stride balances worse); the
@@ -4098,6 +4102,9 @@ __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_
     // (DeviceLevelPairsKernel: the host's pair_block_map / pair_code5_slots / level_row_blocks math on the host's
     // descriptors); the launch's y extent is a fixed count of block rows that strides over the map's
     const int total = dls->construct_total_blocks;
+    if (total == 0) {
+      return;
+    }
     const data_size_t level_min_rows = dls->construct_min_rows;
     __shared__ int s_block_row;
     // the map's block rows are claimed one at a time (their row counts differ: a static stride balances worse), one
