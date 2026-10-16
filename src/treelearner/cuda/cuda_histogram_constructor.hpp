@@ -551,12 +551,10 @@ class CUDAHistogramConstructor {
   /*! \brief the batched dense construct accumulates in 64-bit fixed point (nonquant_deterministic, scalar trees;
    *  the levels the deterministic batched construct does not take) */
   bool NonquantFixedActive() const { return NonquantDet() && num_hist_planes_ == 1; }
-  /*! \brief the gradient sources of a batched non-quantized construct launch: the 2^S-scaled copies under a
-   *  fixed-point launch, the tree's gradients otherwise */
-  const score_t* NqConstructGrad() const { return nq_fixed_launch_ ? nq_scaled_grad_.RawDataReadOnly() : cuda_gradients_; }
-  const score_t* NqConstructHess() const { return nq_fixed_launch_ ? nq_scaled_hess_.RawDataReadOnly() : cuda_hessians_; }
-  const float2* NqConstructGH() const {
-    return nq_fixed_launch_ ? nq_scaled_gh_.RawDataReadOnly() : cuda_gradients_hessians_.RawDataReadOnly();
+  /*! \brief threads per block of the batched non-quantized construct: 2 x 504 under the fixed-point accumulator,
+   *  whose 64-bit table (up to 96 KB) leaves room for one block per SM where the float table fits two */
+  int BatchedConstructThreads() const {
+    return !use_quantized_grad_ && NonquantFixedActive() ? 2 * NUM_THREADS_PER_BLOCK : NUM_THREADS_PER_BLOCK;
   }
 
   static bool SmallLeafConstructEnabled() {
@@ -1486,13 +1484,10 @@ class CUDAHistogramConstructor {
   /*! \brief per-tree interleaved (gradient, hessian) pairs (see GHInterleaveEnabled);
    *  filled by BeforeTrain, consumed by the non-quantized dense construct kernels */
   CUDAVector<float2> cuda_gradients_hessians_;
-  // nonquant_deterministic (fixed-point batched construct): the tree's gradients and hessians times 2^S_g / 2^S_h
-  // (exact power-of-two scalings chosen from the tree's max |g|, max |h| and num_data so no sum can overflow 63
-  // bits), separate or as the interleaved pairs; the 1/2^S pair the convert kernel multiplies by; the max |g|, |h|
-  // bit patterns (order-free atomicMax)
-  CUDAVector<score_t> nq_scaled_grad_;
-  CUDAVector<score_t> nq_scaled_hess_;
-  CUDAVector<float2> nq_scaled_gh_;
+  // nonquant_deterministic (fixed-point batched construct): the tree's power-of-two scalings 2^S_g, 2^S_h (float,
+  // read by the construct), their inverses (double, read by the convert) and the max |g|, |h| bit patterns they come
+  // from (order-free atomicMax)
+  CUDAVector<float> nq_scale_;
   CUDAVector<double> nq_inv_scale_;
   CUDAVector<uint32_t> nq_absmax_bits_;
   // set while the batched construct launches its fixed-point instantiation: the launch sites read the scaled
