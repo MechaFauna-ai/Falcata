@@ -748,6 +748,14 @@ struct FalcataPlan {
   // for the producer's completion and memory before its first access to memory the chain writes, so it reads and
   // writes what an ordinary launch would. Bit-identical.
   bool pdl_level_chain = true;      // key: pdl_level_chain
+  // the tree start's zero store of the row -> leaf map (the index fill's second 4-byte store per row; under bagging
+  // the scatter over the bag rows) is skipped where the tree's flow writes every in-bag row's leaf before any reader
+  // of the map: the two-sync level prefix with the batched apply (its tree end materializes the map from the final
+  // leaf windows: the final level's split-inner and the residual leaves' pass), no forced splits, no selective
+  // growth, single GPU, quantized training, no linear trees; a tree that ends without a batched apply (a stump)
+  // writes leaf 0's window through the same materialize pass. Every map entry a reader touches holds the value it
+  // held before: bit-identical.
+  bool leaf_map_no_zero = true;     // key: leaf_map_no_zero
   // the host-launched tree-end row -> leaf map pass (MaterializeLeafMap*, 64 blocks per leaf as before) and the
   // batched level apply's gap copy (blocks per gap from its rows) use 256-thread blocks instead of 1024-thread ones:
   // a deep tree's leaves and gaps hold a few thousand rows each, so most of a 1024-thread block had no row while it
@@ -1027,6 +1035,7 @@ struct FalcataPlan {
     if (key == "skip_empty_tail") return &skip_empty_tail;
     if (key == "gap_copy_once") return &gap_copy_once;
     if (key == "pdl_level_chain") return &pdl_level_chain;
+    if (key == "leaf_map_no_zero") return &leaf_map_no_zero;
     if (key == "leaf_map_small_blocks") return &leaf_map_small_blocks;
     if (key == "early_leaf_map") return &early_leaf_map;
     if (key == "readback_kernel") return &readback_kernel;

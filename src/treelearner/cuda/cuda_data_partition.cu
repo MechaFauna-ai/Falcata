@@ -46,7 +46,9 @@ __global__ void FillDataIndicesBeforeTrainKernel(const data_size_t num_data,
   const unsigned int data_index = threadIdx.x + blockIdx.x * blockDim.x;
   if (data_index < num_data) {
     data_indices[data_index] = data_index;
-    cuda_data_index_to_leaf_index[data_index] = 0;
+    if (cuda_data_index_to_leaf_index != nullptr) {  // cuda_plan key leaf_map_no_zero: null where the store is dead
+      cuda_data_index_to_leaf_index[data_index] = 0;
+    }
   }
 }
 
@@ -70,7 +72,7 @@ void CUDADataPartition::LaunchFillDataIndicesBeforeTrain() {
   // cuda_plan key pdl_level_chain: a programmatic dependent of the kernel before it (the previous tree's score update)
   LaunchLevelChainKernel(PdlLevelChainEnabled(), FillDataIndicesBeforeTrainKernel, dim3(num_blocks),
     dim3(FILL_INDICES_BLOCK_SIZE_DATA_PARTITION), 0, nullptr, num_data_in_root, cuda_data_indices_.RawData(),
-    cuda_data_index_to_leaf_index_.RawData());
+    leaf_map_zero_dead_ ? nullptr : cuda_data_index_to_leaf_index_.RawData());
 }
 
 // cuda_plan key tree_meta_batch: the tree start's leaf window init in one kernel, the bytes the three memsets, the

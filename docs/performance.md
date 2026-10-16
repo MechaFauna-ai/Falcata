@@ -2211,6 +2211,60 @@ the per-level host round trip (sync -> descriptor copy -> gen-bit), which progra
 
 ---
 
+## 10t. The tree start's dead row -> leaf map zero store (`leaf_map_no_zero`)
+
+Every tree start wrote `data_index_to_leaf_index[i] = 0` for every row next to the index fill's `data_indices[i] = i`
+(`FillDataIndicesBeforeTrainKernel`, 8 bytes per row), and under bagging the subset's own scatter launch wrote 0 for
+every bag row (`FillDataIndexToLeafIndexKernel`). With the batched level apply the map is not read during the tree:
+the tree end materializes it from the final leaf windows (the final level's map-only split-inner for the split
+leaves, `MaterializeHybridLeafMapSubset` for the residual ones, a leaf-wise tail's classic splits inline) before any
+reader (score update, refit statistics, linear trees). The zero store was dead.
+
+**`leaf_map_no_zero`** (default on): where the tree's flow is Train's two-sync level prefix with the batched apply
+(`CUDASingleGPUTreeLearner::LeafMapZeroDead`: quantized training, no linear trees, no forced splits, not the
+selective flow, single GPU), the index fill stores only the indices and the bagged subset skips the scatter launch;
+a tree whose prefix splits nothing (a stump) writes leaf 0's window with the existing `MaterializeHybridLeafMap` pass
+instead. The gate
+is config-constant, re-derived every tree and reset by `ResetConfig`, so a bagged subset set before the next tree
+sees the same verdict. Full-precision training and linear trees keep the store: their models differ run to run with or
+without the key, so no md5 check can confirm it there. Key on vs off, 25 rounds, md5-identical: quantized L1 with leaf
+renewal, bagged quantile, DART, a quantized random forest, a categorical column, init scores, bagging every third
+round (multiclass), GOSS (both quantized modes). Every map entry a reader touches holds the value it held before:
+bit-identical.
+
+The saving is more than the 4 bytes per row: the index fill runs between the gradients and the min/max and discretize
+passes that read them back, and the map's stores (22 MB on Numerai, 16 MB on higgs) no longer push those arrays out
+of L2. Same binary, key off vs on (`--plan-stock leaf_map_no_zero:off`), 2 pairs, md5-identical, every on-run faster
+on Numerai and higgs: numerai53bench 3.322 / 3.319 -> 3.299 / 3.310 ms per round (1.0049), higgs 1.704 / 1.709 ->
+1.690 / 1.692 (1.0090), covtype 3.581 / 3.591 -> 3.582 / 3.576 (1.0018). Vs master (quick check, 2 pairs, no JIT):
+numerai53bench 1.0121, NaN-Numerai 1.0056, covtype 1.0333, higgs 1.0347, score 1.0214 (the parent build, section 10s:
+1.0098, 1.0083, 1.0314, 1.0271, score 1.0191). `tests/python_package_test/test_cuda_leaf_map_no_zero.py` trains eight
+shapes key on vs off (both quantized modes, bagging 0.5-0.7, multiclass, a selective-growth leaf budget, all-stump
+trees, trees alternating between stumps and splits): md5-identical (a stump's score update does not read the map, so
+the stump pass only keeps Train's own tree-end readers exact; disabling it left the sweep identical).
+
+Final build, same binary, key off vs on, 2 pairs, md5-identical: numerai53bench 3.317 / 3.328 -> 3.303 / 3.306
+(1.0054), NaN-Numerai 3.527 / 3.526 -> 3.514 / 3.513 (1.0037), higgs 1.707 / 1.710 -> 1.691 / 1.698 (1.0081), covtype
+3.601 / 3.599 -> 3.603 / 3.611 (0.9980: its map is 2.3 MB per tree; within the same-arm spread), score 1.0038. Bagged,
+same process alternated off / on / off / on, md5-identical: higgs (`bagging_fraction` 0.5) 1.577 / 1.577 -> 1.558 /
+1.561 ms (1.0115), numerai53bench (0.5, 200 rounds) 3.081 / 3.090 -> 3.069 / 3.071 (1.0050), covtype (0.7) 4.047 /
+4.079 -> 4.084 / 4.045 (0.9995). nsys, higgs 40 rounds, same binary off -> on:
+gradients end -> index fill end 9.50 -> 6.40 us, gradients end -> scale snapshot end 49.9 -> 46.1 us, the dense
+construct -5 us per round (the bin rows stay in L2), round 1956 -> 1934 us. Lattice 440/440; the year / missing /
+numerai53-example guards md5-identical. Vs master (quick check, 2 pairs, no JIT, first call unchanged): numerai53bench
+1.0164, NaN-Numerai 1.0086, covtype 1.0368, higgs 1.0213, score 1.0207; with linear trees excluded (the committed gate):
+numerai53bench 1.0150, NaN-Numerai 1.0090, higgs 1.0370, covtype 1.0367 (re-run alone after a disturbed batch, both arms
+inflated). Other shapes, key off / on /
+off / on in one process, md5-identical: poisson bagged 0.7 1.0136, 100k x 600 NaN floats `feature_fraction` 0.3
+1.0067, 400k x 120 four-value integers 1.0038, weighted binary 1.0008, bagged 5-class multiclass 1.0000, huber depth
+10 0.9987 (4 pairs x 300 rounds). A second same-binary A/B of the final build (one stock run of NaN-Numerai and of
+covtype disturbed: 3.909 and 4.478 ms; clean runs only): numerai53bench 3.319 / 3.320 -> 3.309 / 3.303 (1.0041), higgs
+1.708 / 1.706 -> 1.708 / 1.698 (1.0023), NaN-Numerai 3.505 -> 3.513 / 3.516, covtype 3.668 -> 3.688 / 3.687: the gain is
+the Numerai and higgs shapes' (0.2-0.9%), the others are within their noise; covtype, 3 more pairs: 3.586 / 3.574 /
+3.584 -> 3.578 / 3.569 / 3.596 (1.0001).
+
+---
+
 ## 11. Vector-leaf multi-target trees on the hybrid level prefix
 
 `tree_mode=vector_leaf` trains ONE shared-structure tree per iteration whose

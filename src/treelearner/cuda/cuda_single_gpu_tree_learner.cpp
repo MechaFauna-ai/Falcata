@@ -1291,6 +1291,20 @@ bool CUDASingleGPUTreeLearner::LevelFlowsTakeNodeMasks() const {
          cuda_histogram_constructor_->SupportsBatchedLevel() && cuda_best_split_finder_->SupportsBatchedLevel();
 }
 
+// cuda_plan key leaf_map_no_zero: the flows whose tree end writes every in-bag row's leaf before the map's first
+// reader: Train's two-sync level prefix (no forced splits, so the prefix starts at the root; not the selective flow)
+// with the batched apply, whose tree end materializes the map from the final windows (every leaf: the final level's
+// split-inner and the residual pass; a leaf-wise tail's classic splits write their rows inline, its leaves' windows
+// are rewritten by the residual pass), or, when the prefix splits nothing, the stump pass in Train. Single GPU,
+// quantized training, no linear trees (the full-precision flows' and linear trees' models differ run to run with or
+// without the key, so no md5 check can confirm them; they keep the zero store).
+bool CUDASingleGPUTreeLearner::LeafMapZeroDead() const {
+  return FalcataPlan::Get().leaf_map_no_zero && config_->use_quantized_grad && !config_->linear_tree &&
+         use_hybrid_batch_apply_ && nccl_communicator_ == nullptr &&
+         fp_merge_state_ == nullptr && (forced_split_json_ == nullptr || forced_split_json_->is_null()) &&
+         HybridGrowthUsable() && !UseSelectiveGrowth();
+}
+
 bool CUDASingleGPUTreeLearner::UseOneSyncPrefix() const {
   // multi-GPU: the one-sync flow derives leaf counts on-device, so ranks cannot agree host-side
   if (nccl_communicator_ != nullptr) {
@@ -4109,6 +4123,10 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   }
   gradients_ = gradients;
   hessians_ = hessians;
+  // cuda_plan key leaf_map_no_zero: the gate is config-constant, so the bagged subset of the next round (set before
+  // that round's Train) sees the same verdict
+  const bool leaf_map_zero_dead = LeafMapZeroDead();
+  cuda_data_partition_->SetLeafMapZeroDead(leaf_map_zero_dead);
   global_timer.Start("CUDASingleGPUTreeLearner::BeforeTrain");
   BeforeTrain();
   global_timer.Stop("CUDASingleGPUTreeLearner::BeforeTrain");
@@ -4428,6 +4446,11 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     } else {
       cuda_data_partition_->MaterializeHybridLeafMap(tree->num_leaves());
     }
+  } else if (leaf_map_zero_dead) {
+    // cuda_plan key leaf_map_no_zero: no batched apply ran (a stump: the level prefix found no split), so the map was
+    // neither zeroed nor written; the pass writes leaf 0's window, every in-bag row, as the zero store did, for the
+    // tree-end readers below (GBDT adds a stump's value without the map)
+    cuda_data_partition_->MaterializeHybridLeafMap(tree->num_leaves());
   }
   hybrid_map_final_written_ = false;
   hybrid_map_early_written_ = false;
@@ -4835,6 +4858,10 @@ void CUDASingleGPUTreeLearner::ResetTrainingData(
 void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
   const int old_num_leaves = config_->num_leaves;
   SerialTreeLearner::ResetConfig(config);
+  // cuda_plan key leaf_map_no_zero: the verdict is re-derived by the next Train; a bagged subset set before it zeroes
+  if (cuda_data_partition_ != nullptr) {
+    cuda_data_partition_->SetLeafMapZeroDead(false);
+  }
   if (config_->gpu_device_id >= 0 && config_->gpu_device_id != gpu_device_id_) {
     Log::Fatal("Changing gpu device ID by resetting configuration parameter is not allowed for CUDA tree learner.");
   }
