@@ -2526,7 +2526,9 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
   // the level is preceded by the best-split readback's device synchronize (and followed by FinishSplitBatch's,
   // or, under split_counts_early, by its aggregate-event wait), but wait on the last recorded copy event anyway so
   // a still-in-flight per-split CopyDataIndicesKernel can never race the scratch
-  if (indices_copy_done_event_ != nullptr) {
+  // (cuda_plan key device_levels: a device level runs on this stream behind the previous one, and its enqueue may be
+  // captured into a graph, where an event recorded outside the capture cannot be waited on)
+  if (indices_copy_done_event_ != nullptr && dls == nullptr) {
     CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(cuda_streams_[0], indices_copy_done_event_, 0));
   }
   // cuda_plan key readback_fused: the tree-structure kernel below also writes the level's split info into the mapped
@@ -2678,7 +2680,10 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
   if (!map_only && !gap_fused) {
     LaunchLevelGapCopyKernel(num_splits, num_gaps, max_gap_blocks);
   }
-  CUDASUCCESS_OR_FATAL(cudaEventRecord(indices_copy_done_event_, cuda_streams_[0]));
+  if (dls == nullptr) {
+    // (a device level's enqueue may be captured: an event recorded inside a capture cannot be waited on outside it)
+    CUDASUCCESS_OR_FATAL(cudaEventRecord(indices_copy_done_event_, cuda_streams_[0]));
+  }
 }
 
 void CUDADataPartition::LaunchDeviceLevelApply(const int max_splits, const CUDADeviceLevelState* dls) {
