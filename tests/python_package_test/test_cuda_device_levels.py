@@ -71,9 +71,13 @@ def _params(objective, leaves, depth, quant, seed=3, **extra):
 
 
 def _same(params, X, y, rounds, categorical=None):
-    on = _model_md5({**params, "cuda_plan": "auto,device_levels:on"}, X, y, rounds, categorical)
     off = _model_md5({**params, "cuda_plan": "auto,device_levels:off"}, X, y, rounds, categorical)
+    on = _model_md5({**params, "cuda_plan": "auto,device_levels:on,device_level_graph:off"}, X, y, rounds, categorical)
+    graph = _model_md5(
+        {**params, "cuda_plan": "auto,device_levels:on,device_level_graph:on"}, X, y, rounds, categorical
+    )
     assert on == off
+    assert graph == off
 
 
 @_REQUIRES_CUDA
