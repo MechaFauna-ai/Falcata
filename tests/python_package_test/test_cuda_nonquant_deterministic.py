@@ -8,7 +8,8 @@ per-leaf and the host batched deterministic constructs keep running where they r
 three times in one process and requires one model: dense depth-limited (graph loop) regression, binary and
 multiclass, feature sampling (compact view), bagging, sparse input, a leaf-wise tree (per-leaf construct),
 cuda_precision=fp32, a wide shape on the host level loop whose deep levels outgrow the deterministic slab, and the
-requests deterministic=true keeps on the non-quantized path (monotone and interaction constraints). The
+requests deterministic=true keeps on the non-quantized path (monotone and interaction constraints), and random
+forests (their count construct, forest_count_hist, takes the levels it serves). The
 key must not touch quantized training: key on and off train the same quantized model.
 """
 
@@ -79,6 +80,28 @@ def _data(objective, rows, cols, seed, sparse=False):
             12000,
             1500,
             {"num_leaves": 255, "max_depth": 8, "cuda_plan": "auto,graph_loop:off"},
+        ),
+        (
+            "rf-binary",
+            "binary",
+            30000,
+            20,
+            {"boosting": "rf", "num_leaves": 63, "max_depth": 6, "bagging_fraction": 0.6, "bagging_freq": 1},
+        ),
+        (
+            "rf-multiclass-deep",
+            "multiclass",
+            30000,
+            20,
+            {
+                "boosting": "rf",
+                "num_leaves": 255,
+                "max_depth": 10,
+                "num_class": 4,
+                "bagging_fraction": 0.6,
+                "bagging_freq": 1,
+                "feature_fraction": 0.7,
+            },
         ),
         (
             "monotone",

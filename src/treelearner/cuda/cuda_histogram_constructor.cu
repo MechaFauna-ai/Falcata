@@ -7138,7 +7138,8 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernel(
   // levels wider than its slot slab, compact views, the default graph loop) accumulates in 64-bit fixed point
   // instead of the float atomics, then its histograms are converted in place (on the host path here; the graph
   // capture appends the convert as its own node, CaptureHybridGraphSearchKernels)
-  if (!use_quantized_grad_ && NonquantFixedActive() && !DetDenseBatchedEligible(num_pairs)) {
+  // (a level the forest's count construct takes, forest_count_hist, keeps it: its convert stores hist_t)
+  if (!use_quantized_grad_ && NonquantFixedActive() && !CountBatchedEligible() && !DetDenseBatchedEligible(num_pairs)) {
     nq_fixed_launch_ = true;
     if (cuda_row_data_->shared_hist_size() == DP_SHARED_HIST_SIZE) {
       LaunchConstructHistogramBatchedKernelInner<nq_fixed_t, DP_SHARED_HIST_SIZE>(
