@@ -46,6 +46,8 @@ struct CUDAHybridGraphFeatureSource;
 
 /*! \brief most pairs of one device level (the select / pairs kernels' block covers 2 * this) */
 constexpr int kDeviceLevelMaxPairs = 512;
+/*! \brief launch columns of a device level's construct that claim block rows dynamically */
+constexpr int kDeviceLevelClaimColumns = 64;
 /*! \brief journal layout (ints): [0] applied levels, [1] total splits, [2] error flags, [3, 5) reserved,
  *  [kDeviceLevelJournalLevels + L] splits of level L, then per split in applied order {left leaf, inner feature} at
  *  kDeviceLevelJournalHeader */
@@ -84,6 +86,9 @@ struct CUDADeviceLevelState {
   int construct_min_rows;
   /*! \brief block rows with rows over all pairs (the block map's total, cuda_plan key dense_block_map) */
   int construct_total_blocks;
+  /*! \brief the construct's next unclaimed block row per launch column (blockIdx.x: a feature partition); its blocks
+   *  claim the map's rows one at a time (launches of more columns stride statically) */
+  int construct_next_block[kDeviceLevelClaimColumns];
   /*! \brief the level's largest smaller leaf (EnqueueLevelBestSplitSearch's max_num_data_in_smaller_leaf) */
   data_size_t max_smaller;
   int padding_;

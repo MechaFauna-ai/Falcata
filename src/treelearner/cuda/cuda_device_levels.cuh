@@ -460,6 +460,9 @@ __device__ __forceinline__ void DeviceLevelPairsBlock(const CUDADeviceLevelConfi
   if (tid == 0) {
     st->construct_block_start[n] = s_total;
     st->construct_total_blocks = s_total;
+    for (int c = 0; c < kDeviceLevelClaimColumns; ++c) {
+      st->construct_next_block[c] = 0;
+    }
     st->construct_grid_y = grid_y;
     st->construct_min_rows = static_cast<int>(min_rows);
     st->max_smaller = max_smaller;

@@ -3045,7 +3045,22 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
     const int total = dls->construct_total_blocks;
     const int dim_y = dls->construct_grid_y * static_cast<int>(blockDim.y);
     const data_size_t min_rows_per_thread = dls->construct_min_rows;
-    for (int vb = static_cast<int>(blockIdx.y); vb < total; vb += static_cast<int>(gridDim.y)) {
+    // the map's block rows are claimed one at a time (their row counts differ: a static stride balances worse); the
+    // claimed row goes to the block through the shared table's first slot, read before the inner body zeroes it
+    // (one counter per launch column: every column of a block row is its own block)
+    int* claim = gridDim.x <= kDeviceLevelClaimColumns ?
+      const_cast<CUDADeviceLevelState*>(dls)->construct_next_block + blockIdx.x : nullptr;
+    for (int k = 0;; ++k) {
+      if (threadIdx.x == 0 && threadIdx.y == 0) {
+        shared_hist_packed[0] = claim != nullptr ? atomicAdd(claim, 1) :
+          static_cast<int>(blockIdx.y) + k * static_cast<int>(gridDim.y);
+      }
+      __syncthreads();
+      const int vb = shared_hist_packed[0];
+      __syncthreads();
+      if (vb >= total) {
+        break;
+      }
       const int pair = DeviceLevelBlockPair(dls, vb);
       const int block_y = vb - dls->construct_block_start[pair];
       const CUDAHybridPairDescriptor* desc = pair_descs + pair;
@@ -3826,7 +3841,21 @@ __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_
     // descriptors); the launch's y extent is a fixed count of block rows that strides over the map's
     const int total = dls->construct_total_blocks;
     const data_size_t level_min_rows = dls->construct_min_rows;
-    for (int vb = static_cast<int>(blockIdx.y); vb < total; vb += static_cast<int>(gridDim.y)) {
+    __shared__ int s_block_row;
+    // the map's block rows are claimed one at a time (their row counts differ: a static stride balances worse), one
+    // counter per launch column (every column of a block row is its own block)
+    int* claim = gridDim.x <= kDeviceLevelClaimColumns ?
+      const_cast<CUDADeviceLevelState*>(dls)->construct_next_block + blockIdx.x : nullptr;
+    for (int k = 0;; ++k) {
+      if (threadIdx.x == 0 && threadIdx.y == 0) {
+        s_block_row = claim != nullptr ? atomicAdd(claim, 1) :
+          static_cast<int>(blockIdx.y) + k * static_cast<int>(gridDim.y);
+      }
+      __syncthreads();
+      const int vb = s_block_row;
+      if (vb >= total) {
+        break;
+      }
       const int pair = DeviceLevelBlockPair(dls, vb);
       PairJointBatchedBlock<ALL_ROWS, BATCH, CODE5, WORDS, FLAT, EPILOGUE_FLAT, CODE_BITS>(
         pair_descs, cuda_gradients_and_hessians, data, column_meta, num_compact_columns, column_hist_offsets_full,
@@ -3835,7 +3864,7 @@ __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_
         num_grad_quant_bins, whole_row_partitions, whole_row_joint, level_min_rows, block_prefix, dls, shared_joint,
         static_cast<unsigned int>(pair), vb - dls->construct_block_start[pair], dls->construct_grid_y,
         dls->live_pairs);
-      __syncthreads();  // the next mapped block row reuses the joint tables
+      __syncthreads();  // the next mapped block row reuses the joint tables (and s_block_row)
     }
     return;
   }
@@ -6579,7 +6608,9 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
   const CUDADeviceLevelState* dense_dls = device_level_state_;
   if (dense_dls != nullptr) {
     CHECK(use_quantized_grad_);
-    const int target_blocks = DeviceLevelConstructTargetBlocks();
+    // (four times the pair-joint launch's block rows: the dense kernel's mapped block rows differ more in their row
+    // counts, and a launch close to their number leaves the hardware scheduler to balance them)
+    const int target_blocks = 4 * DeviceLevelConstructTargetBlocks();
     grid_dim = dim3(grid_dim_x, static_cast<unsigned int>(std::max(1, std::min(65535,
       (target_blocks + std::max(1, grid_dim_x) - 1) / std::max(1, grid_dim_x)))), 1);
   }
