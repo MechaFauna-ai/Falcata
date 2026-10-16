@@ -302,6 +302,11 @@ class CUDADataPartition: public NCCLInfo {
 
   bool use_bagging() const { return use_bagging_; }
 
+  /*! \brief cuda_plan key leaf_map_no_zero: the tree learner's flow writes every in-bag row's leaf before any reader
+   *  of the row -> leaf map (see CUDASingleGPUTreeLearner::LeafMapZeroDead), so the tree start's zero store of the
+   *  map (the index fill's second store, the bagged scatter) is dead and skipped */
+  void SetLeafMapZeroDead(const bool dead) { leaf_map_zero_dead_ = dead; }
+
   /*! \brief recorded on the apply stream after the last batched apply kernel of a
    *  level; the speculative single-sync search phase waits on it before reading
    *  the child leaf-splits structs the apply kernels write */
@@ -731,6 +736,8 @@ class CUDADataPartition: public NCCLInfo {
   /*! \brief cuda_plan key final_map_only: the last batched level ran map-only; its partition (split-inner, gap
    *  copy, swap) is run by EnsureLevelPartitioned if a reader of its windows turns up before they are rewritten */
   bool level_partition_pending_ = false;
+  /*! \brief cuda_plan key leaf_map_no_zero: see SetLeafMapZeroDead */
+  bool leaf_map_zero_dead_ = false;
   int pending_num_splits_ = 0;
   int pending_num_gaps_ = 0;
   int pending_max_gap_blocks_ = 0;

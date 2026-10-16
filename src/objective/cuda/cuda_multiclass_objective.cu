@@ -12,6 +12,8 @@
 
 #include "cuda_multiclass_objective.hpp"
 
+#include "../../treelearner/cuda/cuda_pdl_launch.hpp"
+
 namespace Falcata {
 
 __device__ void SoftmaxCUDA(double* softmax_buffer, int len) {
@@ -34,6 +36,7 @@ __global__ void GetGradientsKernel_MulticlassSoftmax(
   const double* cuda_scores, const label_t* cuda_labels, const label_t* cuda_weights,
   const double factor, const int num_class, const data_size_t num_data,
   double* cuda_softmax_buffer, score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel (index fill, bagging count) may get resident
   const data_size_t data_index = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
   if (data_index < num_data) {
     const size_t offset = static_cast<size_t>(data_index) * num_class;
@@ -79,6 +82,7 @@ __global__ void __launch_bounds__(GET_GRADIENTS_BLOCK_SIZE_MULTICLASS) GetGradie
   const double* cuda_scores, const label_t* cuda_labels, const label_t* cuda_weights,
   const double factor, const int num_class, const data_size_t num_data,
   score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel (index fill, bagging count) may get resident
   const data_size_t data_index = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
   if (data_index >= num_data) {
     return;

@@ -807,7 +807,9 @@ void CUDADataPartition::SetUsedDataIndices(const data_size_t* used_indices, cons
   num_used_indices_ = num_used_indices;
   used_indices_ = used_indices;
   CopyFromCUDADeviceToCUDADevice<data_size_t>(cuda_data_indices_.RawData(), used_indices, static_cast<size_t>(num_used_indices), __FILE__, __LINE__);
-  LaunchFillDataIndexToLeafIndex();
+  if (!leaf_map_zero_dead_) {  // cuda_plan key leaf_map_no_zero: see SetLeafMapZeroDead
+    LaunchFillDataIndexToLeafIndex();
+  }
 }
 
 void CUDADataPartition::ResetTrainingData(const Dataset* train_data, const int num_total_bin, hist_t* cuda_hist) {

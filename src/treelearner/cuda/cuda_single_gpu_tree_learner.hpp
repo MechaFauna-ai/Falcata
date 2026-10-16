@@ -217,6 +217,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // cuda_plan key level_bynode_masks: per-node feature masks do not keep the level flows off (single GPU, both
   // batched phases available); with select_features_by_node_ and this false, the per-split loop runs
   bool LevelFlowsTakeNodeMasks() const;
+  // cuda_plan key leaf_map_no_zero: whether this tree's flow makes the tree start's map zero store dead
+  bool LeafMapZeroDead() const;
   // Whether the hybrid prefix will run the single-sync (speculative) level
   // pipeline (see TrainLevelWisePrefixOneSync); requires both batched phases
   // and non-quantized training.

@@ -8,6 +8,8 @@
 #ifdef USE_CUDA
 
 #include "cuda_regression_objective.hpp"
+
+#include "../../treelearner/cuda/cuda_pdl_launch.hpp"
 #include <Falcata/cuda/cuda_algorithms.hpp>
 
 namespace Falcata {
@@ -82,6 +84,7 @@ const double* CUDARegressionL2loss::LaunchConvertOutputCUDAKernel(const data_siz
 template <bool USE_WEIGHT>
 __global__ void GetGradientsKernel_RegressionL2(const double* cuda_scores, const label_t* cuda_labels, const label_t* cuda_weights, const data_size_t num_data,
   score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel (index fill, bagging count) may get resident
   const data_size_t data_index = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
   if (data_index < num_data) {
     if (!USE_WEIGHT) {
@@ -109,6 +112,7 @@ template <bool USE_WEIGHT>
 __global__ void GetGradientsKernel_MultiRegressionL2(const double* cuda_scores, const label_t* cuda_labels,
   const label_t* cuda_weights, const data_size_t num_data, const data_size_t total,
   score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel (index fill, bagging count) may get resident
   const data_size_t index = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
   if (index < total) {
     if (!USE_WEIGHT) {
@@ -155,6 +159,7 @@ double CUDARegressionL1loss::LaunchCalcInitScoreKernel(const int /*class_id*/) c
 template <bool USE_WEIGHT>
 __global__ void GetGradientsKernel_RegressionL1(const double* cuda_scores, const label_t* cuda_labels, const label_t* cuda_weights, const data_size_t num_data,
   score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel (index fill, bagging count) may get resident
   const data_size_t data_index = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
   if (data_index < num_data) {
     if (!USE_WEIGHT) {
@@ -260,6 +265,7 @@ void CUDARegressionL1loss::LaunchRenewTreeOutputCUDAKernel(
 template <bool USE_WEIGHT>
 __global__ void GetGradientsKernel_Huber(const double* cuda_scores, const label_t* cuda_labels, const label_t* cuda_weights, const data_size_t num_data,
   const double alpha, score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel (index fill, bagging count) may get resident
   const data_size_t data_index = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
   if (data_index < num_data) {
     if (!USE_WEIGHT) {
@@ -298,6 +304,7 @@ void CUDARegressionHuberLoss::LaunchGetGradientsKernel(const double* score, scor
 template <bool USE_WEIGHT>
 __global__ void GetGradientsKernel_Fair(const double* cuda_scores, const label_t* cuda_labels, const label_t* cuda_weights, const data_size_t num_data,
   const double c, score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel (index fill, bagging count) may get resident
   const data_size_t data_index = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
   if (data_index < num_data) {
     if (!USE_WEIGHT) {
@@ -342,6 +349,7 @@ void CUDARegressionPoissonLoss::LaunchCheckLabelKernel() const {
 template <bool USE_WEIGHT>
 __global__ void GetGradientsKernel_Poisson(const double* cuda_scores, const label_t* cuda_labels, const label_t* cuda_weights, const data_size_t num_data,
   const double max_delta_step, score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel (index fill, bagging count) may get resident
   const data_size_t data_index = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
   const double exp_max_delta_step = std::exp(max_delta_step);
   if (data_index < num_data) {
@@ -476,6 +484,7 @@ template <bool USE_WEIGHT>
 __global__ void GetGradientsKernel_RegressionQuantile(const double* cuda_scores, const label_t* cuda_labels,
   const label_t* cuda_weights, const data_size_t num_data, const double alpha,
   score_t* cuda_out_gradients, score_t* cuda_out_hessians) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel (index fill, bagging count) may get resident
   const data_size_t data_index = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
   if (data_index < num_data) {
     if (!USE_WEIGHT) {

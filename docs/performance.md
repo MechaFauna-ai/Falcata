@@ -2075,6 +2075,174 @@ GPU-bound shapes need less histogram work (forest stage 3), not more trees in fl
 key off across objectives, quantization modes, shapes, samplings, group sizes, metrics every round, early stopping, a
 parameter reset with rollbacks; where the key engages.
 
+## 10s. The level chain's consumer kernels as programmatic dependents (`pdl_level_chain`)
+
+Every level runs short kernels that consume what the kernel just before them on the same stream wrote: the level
+sync after the find, the apply's offset aggregate after the gen-bit pass, the split-inner partition after the
+aggregate (an event record between them), and the quantized fix + subtract (masked, or the used-feature one under
+feature sampling) after the construct. With ordinary launches each consumer's grid was set up only after its producer
+had drained: nsys on covtype (70 levels per round, 7 classes x 10) showed a 0.48 us gap before each, and the consumers
+are 1.8-2.2 us long, so a quarter of every consumer was launch ramp.
+
+**`pdl_level_chain`** (default on; off below compute capability 9.0, read with `cudaDevAttrComputeCapabilityMajor`, for
+a library image compiled for a virtual architecture below compute 9.0 (`PdlLevelChainEnabled`: `cudaFuncGetAttributes`
+`ptxVersion` of an empty probe kernel built with the same targets, once per device; there `griddepcontrol.wait` is
+compiled out, so the launches stay ordinary), and in HIP builds): those consumers are launched with
+`cudaLaunchAttributeProgrammaticStreamSerialization`
+(`LaunchLevelChainKernel`, `src/treelearner/cuda/cuda_pdl_launch.hpp`) and their first instruction is
+`griddepcontrol.wait` (`PdlWaitForProducer`), which returns once every prerequisite grid has completed and its memory
+is visible, so they read and write exactly what an ordinary launch gives them: bit-identical. The producers (the
+quantized and the non-quantized level finders, the gen-bit kernels, the dense batched, small-leaf and every
+pair-joint construct, and the aggregate for the split-inner) execute `griddepcontrol.launch_dependents` at their
+start (`PdlLaunchDependents`), so the consumer's blocks become resident once the producer's last blocks are running
+and are released at its completion.
+The same holds for the bit-change copy after the masked fix + subtract on the levels that need it, and for the
+tree-start discretizer chain on the legacy default stream (block min/max after the per-chunk min/max, the
+discretization, the scale snapshot), where no device sync separates them (`async_tree_start`), the root sums'
+block-ordered reduction after the per-chunk sums, the bagging subset's block base and scatter after the block
+count (`bagging_fused_scan`), the leaf window init after the tree start's index fill, and the score update after the
+leaf value shrinkage.
+Both instructions are no-ops without a programmatic dependent; graph-captured launches keep ordinary nodes. A consumer
+whose stream predecessor is a copy or event wait, not a kernel, is ordered as before.
+
+| covtype, nsys 60 rounds: producer end -> consumer end (us, median) | master | consumers PDL | + producer trigger | + split-inner |
+|---|---|---|---|---|
+| fix + subtract after the construct | 2.34 | 2.14 | 1.76 | 1.76 |
+| level sync after the find | 2.69 | 2.43 | 2.21 | 2.24 |
+| offset aggregate after the gen-bit pass | 2.30 | 2.05 | 1.73 | 1.79 |
+| split-inner after the aggregate | 4.32 | - | 4.35 | 4.00 |
+
+With the bit-change copy and the discretizer chain (same nsys run): block min/max 2.37 -> 1.95 us, discretize
+8.77 -> 8.22, scale snapshot 1.15 -> 0.61, bit-change copy 1.54 -> 0.99; with the leaf window init and the score update:
+leaf window init 1.09 -> 0.54, the root sums' reduction 5.38 -> 4.80.
+
+Measured first on master 06bb754b (open2 e032; not merged then). Cells harness (2 pairs, 30000-round T), per step vs
+master: consumers only: numerai53bench 0.980 (one disturbed run,
+first call 0.82 s; same binary key off vs on, 3 pairs: 1.0025), NaN-Numerai 1.009, covtype 1.017, higgs 1.011;
++ producer triggers: 1.0076, 1.0044, 1.0156, 1.0209 (score 1.0121); + split-inner: 1.0089, 1.0041, 1.0216, 1.0183
+(score 1.0132; same binary key off vs on: 1.0097, 1.0061, 1.0227, 1.0144); + bit-change copy and discretizer chain:
+1.0126, 1.0041, 1.0267, 1.0439 (one master run at 1.979 ms per round against 1.86-1.91: inflated); + root sums and
+bagging chain: 1.0107, 1.0083, 1.0287, 1.0285. **Complete key** vs master: numerai53bench 1.0131, NaN-Numerai 1.0060,
+covtype 1.0318, higgs 1.0282, score 1.0197; same binary key off vs on, 2 pairs (every on-run faster than every
+off-run, same-arm spread <= 0.4%): 1.0134, 1.0102, 1.0364, 1.0220, score 1.0205.
+
+Other shapes, median ms per round, key off -> on: bagged higgs (`bagging_fraction` 0.5, `bagging_freq` 1, 400 rounds)
+1.684 -> 1.654, 1.682 -> 1.649; bagged covtype (0.7, 300 rounds) 4.179 -> 4.071; 1.5M x 120 four-value integer
+columns (regression, 255 leaves, stochastic, 300 rounds) 1.193 -> 1.172, 1.179 -> 1.169; 400k x 600 floats with 10%
+missing, `feature_fraction` 0.3, 63 leaves, fixed point: 1.798 -> 1.788, 1.791 -> 1.787; 1M x 40 non-quantized
+binary: 2.704 -> 2.698, 2.699 -> 2.697 (its models differ run to run with the key off as well: the non-quantized
+hybrid flow is not deterministic, see the determinism map). md5-identical everywhere else: the visible cells, the
+year / missing / numerai53-example guards, the bagged runs; lattice 443/443;
+`tests/python_package_test/test_cuda_pdl_level_chain.py` trains five shapes with the key on and off. The gain is
+largest where levels are many and short (covtype's multiclass trees) and smallest where the round is bound by
+DRAM-heavy kernels (the Numerai cells, 94% GPU-busy under nsys). Needs the CUDA 11.8 runtime (`cudaLaunchKernelEx`);
+older toolkits and HIP build the ordinary launches.
+
+Ported to master 36709f05 (open3 e060), with the wait guard by `ptxVersion` and three more tree-start boundaries:
+the index fill after the previous tree's score update, the gradients' min/max reduction after the leaf window init,
+and the larger leaf's empty init after the smaller one's value init (each a waiting consumer; the score update, the
+leaf window init and the value init trigger). Cells harness, 2 pairs, md5-identical, no JIT. The port alone vs master:
+numerai53bench 1.0100, NaN-Numerai 1.0046, covtype 1.0307, higgs 1.0238 (score 1.017). Final build, same binary key
+off vs on (ms per round): numerai53bench 3.363 / 3.323 -> 3.323 / 3.325 (1.0058; the second pair even), NaN-Numerai
+3.556 / 3.527 -> 3.528 / 3.533 (1.0031), covtype 3.726 / 3.730 -> 3.601 / 3.601 (**1.0352**), higgs 1.749 / 1.752 ->
+1.708 / 1.709 (**1.0245**), score 1.0171; final build vs master: 1.0065, 1.0082, 1.0299, 1.0144 (score 1.0147).
+Three more same-binary pairs on the Numerai cells, every on-run faster than every off-run: numerai53bench 3.354 /
+3.359 / 3.361 -> 3.320 / 3.326 / 3.322 ms (1.0106), NaN-Numerai 3.559 / 3.547 / 3.559 -> 3.536 / 3.532 / 3.534 (1.0060).
+nsys, covtype, same binary off -> on, producer end -> consumer end (median us): find -> sync 2.69 -> 2.11, gen-bit ->
+aggregate 2.30 -> 1.76, construct -> fix + subtract 2.37 -> 1.82, fix + subtract -> bit-change copy 1.57 -> 0.99, value
+init -> empty init 0.90 -> 0.32; the tree start's leaf init -> scale snapshot chain 20.86 -> 20.06 us. The host's
+`cudaLaunchKernelEx` costs no more than `cudaLaunchKernel` (median 1.86 vs 2.00 us). Other shapes, same binary off -> on,
+md5-identical: 1M x 200 floats with 10% NaN, 63 bins, `feature_fraction` 0.5, bagging 0.8, binary 1.008; 2M x 50
+six-value integer columns, 5-class multiclass, fixed point 1.025; bagged lambdarank (1M rows in queries of 50, 0.7)
+2.894 -> 2.874 ms (1.007; that path's models already differ run to run on master).
+The bagged subset's kernels read no memory for their per-row draw, so under the key they draw before the wait: the
+block count (now a programmatic dependent of the gradients, whose kernels trigger their dependents) and the scatter
+(its draw and the block's own counts before it waits on the block bases) overlap the kernel before them; nsys, bagged
+higgs (0.5): gradients end -> scatter end 36.3 -> 34.3 us, gradients end -> count end 12.9 -> 11.5 us per tree; the
+same stores after the wait, md5-identical. Final build (with the bagged draws and the gradient triggers) vs master,
+2 pairs, md5-identical, no JIT: numerai53bench 1.0115, NaN-Numerai 0.9979 (master's runs in that batch at 3.513 / 3.520
+ms against 3.547-3.561 in the others), covtype 1.0308, higgs 1.0212, score 1.0153; same binary key off vs on on
+NaN-Numerai, 3 pairs, every on-run faster: 3.534 / 3.553 / 3.552 -> 3.513 / 3.512 / 3.512 ms (1.0097). With the bagged
+index fill a dependent too (index fill end -> leaf init end 1.57 -> 1.34 us, bagged higgs), the final build vs master
+(2 pairs, every candidate run faster than every master run, md5-identical, no JIT): numerai53bench 1.0098 (3.355 /
+3.349 -> 3.320 / 3.319 ms), NaN-Numerai 1.0083 (3.542 / 3.552 -> 3.513 / 3.523), covtype 1.0314 (3.691 / 3.711 ->
+3.591 / 3.586), higgs 1.0271 (1.752 / 1.755 -> 1.710 / 1.704), score 1.0191.
+Bagged, same process alternated off / on / off / on: higgs (`bagging_fraction` 0.5) 1.601 / 1.613 -> 1.567 / 1.572 ms
+(1.024), covtype (0.7) 4.127 / 4.169 -> 4.057 / 4.058 ms (1.022), md5-identical. Lattice 440/440; the
+year / missing / numerai53-example guards md5-identical. The Numerai cells (94% GPU-busy) gain least: their idle is
+the per-level host round trip (sync -> descriptor copy -> gen-bit), which programmatic launches cannot cover.
+
+On master 065ac1eb (with the forest slots of 10r), the final build with `leaf_map_no_zero`, same binary, key off vs
+on, 2 pairs, md5-identical (ms per round): numerai53bench 3.356 / 3.344 -> 3.313 / 3.314 (1.0111), NaN-Numerai 3.526 /
+3.536 -> 3.512 / 3.521 (1.0042), covtype 3.731 / 3.717 -> 3.612 / 3.595 (**1.0334**), higgs 1.734 / 1.733 -> 1.699 /
+1.698 (**1.0204**), the fewbin regression shape (2.96M x 131, four values, 1023 leaves, bagged 0.5) 1.495 / 1.490 ->
+1.456 / 1.459 (**1.0241**), the year-like bagged shape (2.49M x 104 floats, 1023 leaves, bagged 0.5) 1.969 / 1.963 ->
+1.930 / 1.926 (**1.0194**). `test_cuda_forest_batched.py` (the slot threads interleave their launches on the legacy
+default stream; every dependent still waits for the kernel before it) passes with the key on. The tree-boundary
+dependents the open3 search added on top (root init as one kernel, the root sums' one-kernel readback, waiting
+`CopyToMappedHostKernel` readbacks, the tree structure after the split-inner, the construct bodies' late trigger;
+e067) were measured on this base and are not used: vs this build (2 binaries, 4 pairs, every run faster) covtype
+1.0079, NaN-Numerai 1.0073; 2 pairs: numerai53bench 1.0010, higgs 1.0008, fewbin 1.0022, year-like 1.0027: inside
+the cells' noise bands (1.5%).
+
+## 10t. The tree start's dead row -> leaf map zero store (`leaf_map_no_zero`)
+
+Every tree start wrote `data_index_to_leaf_index[i] = 0` for every row next to the index fill's `data_indices[i] = i`
+(`FillDataIndicesBeforeTrainKernel`, 8 bytes per row), and under bagging the subset's own scatter launch wrote 0 for
+every bag row (`FillDataIndexToLeafIndexKernel`). With the batched level apply the map is not read during the tree:
+the tree end materializes it from the final leaf windows (the final level's map-only split-inner for the split
+leaves, `MaterializeHybridLeafMapSubset` for the residual ones, a leaf-wise tail's classic splits inline) before any
+reader (score update, refit statistics, linear trees). The zero store was dead.
+
+**`leaf_map_no_zero`** (default on): where the tree's flow is Train's two-sync level prefix with the batched apply
+(`CUDASingleGPUTreeLearner::LeafMapZeroDead`: quantized training, no linear trees, no forced splits, not the
+selective flow, single GPU), the index fill stores only the indices and the bagged subset skips the scatter launch;
+a tree whose prefix splits nothing (a stump) writes leaf 0's window with the existing `MaterializeHybridLeafMap` pass
+instead. The gate
+is config-constant, re-derived every tree and reset by `ResetConfig`, so a bagged subset set before the next tree
+sees the same verdict. Full-precision training and linear trees keep the store: their models differ run to run with or
+without the key, so no md5 check can confirm it there. Key on vs off, 25 rounds, md5-identical: quantized L1 with leaf
+renewal, bagged quantile, DART, a quantized random forest, a categorical column, init scores, bagging every third
+round (multiclass), GOSS (both quantized modes). Every map entry a reader touches holds the value it held before:
+bit-identical.
+
+The saving is more than the 4 bytes per row: the index fill runs between the gradients and the min/max and discretize
+passes that read them back, and the map's stores (22 MB on Numerai, 16 MB on higgs) no longer push those arrays out
+of L2. Same binary, key off vs on (`--plan-stock leaf_map_no_zero:off`), 2 pairs, md5-identical, every on-run faster
+on Numerai and higgs: numerai53bench 3.322 / 3.319 -> 3.299 / 3.310 ms per round (1.0049), higgs 1.704 / 1.709 ->
+1.690 / 1.692 (1.0090), covtype 3.581 / 3.591 -> 3.582 / 3.576 (1.0018). Vs master (quick check, 2 pairs, no JIT):
+numerai53bench 1.0121, NaN-Numerai 1.0056, covtype 1.0333, higgs 1.0347, score 1.0214 (the parent build, section 10s:
+1.0098, 1.0083, 1.0314, 1.0271, score 1.0191). `tests/python_package_test/test_cuda_leaf_map_no_zero.py` trains eight
+shapes key on vs off (both quantized modes, bagging 0.5-0.7, multiclass, a selective-growth leaf budget, all-stump
+trees, trees alternating between stumps and splits): md5-identical (a stump's score update does not read the map, so
+the stump pass only keeps Train's own tree-end readers exact; disabling it left the sweep identical).
+
+Final build, same binary, key off vs on, 2 pairs, md5-identical: numerai53bench 3.317 / 3.328 -> 3.303 / 3.306
+(1.0054), NaN-Numerai 3.527 / 3.526 -> 3.514 / 3.513 (1.0037), higgs 1.707 / 1.710 -> 1.691 / 1.698 (1.0081), covtype
+3.601 / 3.599 -> 3.603 / 3.611 (0.9980: its map is 2.3 MB per tree; within the same-arm spread), score 1.0038. Bagged,
+same process alternated off / on / off / on, md5-identical: higgs (`bagging_fraction` 0.5) 1.577 / 1.577 -> 1.558 /
+1.561 ms (1.0115), numerai53bench (0.5, 200 rounds) 3.081 / 3.090 -> 3.069 / 3.071 (1.0050), covtype (0.7) 4.047 /
+4.079 -> 4.084 / 4.045 (0.9995). nsys, higgs 40 rounds, same binary off -> on:
+gradients end -> index fill end 9.50 -> 6.40 us, gradients end -> scale snapshot end 49.9 -> 46.1 us, the dense
+construct -5 us per round (the bin rows stay in L2), round 1956 -> 1934 us. Lattice 440/440; the year / missing /
+numerai53-example guards md5-identical. Vs master (quick check, 2 pairs, no JIT, first call unchanged): numerai53bench
+1.0164, NaN-Numerai 1.0086, covtype 1.0368, higgs 1.0213, score 1.0207; with linear trees excluded (the committed gate):
+numerai53bench 1.0150, NaN-Numerai 1.0090, higgs 1.0370, covtype 1.0367 (re-run alone after a disturbed batch, both arms
+inflated). Other shapes, key off / on /
+off / on in one process, md5-identical: poisson bagged 0.7 1.0136, 100k x 600 NaN floats `feature_fraction` 0.3
+1.0067, 400k x 120 four-value integers 1.0038, weighted binary 1.0008, bagged 5-class multiclass 1.0000, huber depth
+10 0.9987 (4 pairs x 300 rounds). A second same-binary A/B of the final build (one stock run of NaN-Numerai and of
+covtype disturbed: 3.909 and 4.478 ms; clean runs only): numerai53bench 3.319 / 3.320 -> 3.309 / 3.303 (1.0041), higgs
+1.708 / 1.706 -> 1.708 / 1.698 (1.0023), NaN-Numerai 3.505 -> 3.513 / 3.516, covtype 3.668 -> 3.688 / 3.687: the gain is
+the Numerai and higgs shapes' (0.2-0.9%), the others are within their noise; covtype, 3 more pairs: 3.586 / 3.574 /
+3.584 -> 3.578 / 3.569 / 3.596 (1.0001).
+
+On master 065ac1eb with `pdl_level_chain`, same binary, key off vs on, 2 pairs, md5-identical (ms per round): the
+fewbin regression shape (2.96M x 131, four values, 1023 leaves, bagged 0.5) 1.492 / 1.498 -> 1.458 / 1.460
+(**1.0246**), the year-like bagged shape (2.49M x 104 floats, 1023 leaves, bagged 0.5) 1.959 / 1.959 -> 1.927 / 1.927
+(**1.0165**), higgs 1.709 / 1.710 -> 1.691 / 1.700 (1.0080), covtype 1.0032, numerai53bench 1.0035, NaN-Numerai
+1.0027: the gain is largest where the round is short and the rows many (the map's stores were a larger share).
+
 ## Multi-GPU: level-batched NCCL all-reduce
 
 The classic data-parallel path all-reduces one leaf histogram per split

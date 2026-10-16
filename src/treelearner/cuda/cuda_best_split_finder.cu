@@ -19,6 +19,8 @@
 
 #include <Falcata/cuda/cuda_algorithms.hpp>
 
+#include "cuda_pdl_launch.hpp"
+
 namespace Falcata {
 
 // Match CPU's Common::RoundInt(x) = static_cast<int>(x + 0.5f) (round half up) for
@@ -4756,6 +4758,7 @@ __global__ void FindBestSplitsForLevelKernel(
   CUDASplitInfo* cuda_best_split_info,
   const bool use_desc_counts,
   const CUDAHybridGraphLoopStateOpt gstate) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   // graphs A2: the graph-frozen grid is a pow2 bucket of the live pair count;
   // blocks beyond the live range exit before any read (stale descriptors)
   if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
@@ -5434,6 +5437,7 @@ __global__ void SyncBestSplitForLevelUsedTasksKernel(
   const double min_sum_hessian_in_leaf,
   const bool gate_on_desc_counts,
   CUDASplitInfo* leaf_best_split_mirror) {
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the find kernel's slots are complete and visible
   constexpr int kReplayWarps = NUM_TASKS_PER_SYNC_BLOCK / WARPSIZE;
   __shared__ double shared_gain_buffer[kReplayWarps];
   __shared__ bool shared_found_buffer[kReplayWarps];
@@ -6314,6 +6318,7 @@ __global__ void __launch_bounds__(128) FindBestSplitsDiscretizedForLevelWarpKern
   const bool compact_survivors,
   const bool prune_sure,
   CUDASplitInfo* cuda_best_split_info) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   // find_compact_survivors (wide units only): each warp's survivor list, at most 256 prefix values (8 bytes each at
   // most) and their positions (one byte each)
   constexpr int kCompactBytesPerWarp = 256 * 8 + 256;
@@ -6656,13 +6661,10 @@ void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
 #else
     const bool sync_copy_batched = false;  // the integer-key reduction assumes 32-lane warps
 #endif
-    if (sync_copy_batched) {
-      SyncBestSplitForLevelUsedTasksKernel<true><<<used_grid_dim, kSyncUsedTasksThreads, 0, cuda_streams_[0]>>>(
-        SyncBestSplitForLevelUsedTasksKernel_ARGS);
-    } else {
-      SyncBestSplitForLevelUsedTasksKernel<false><<<used_grid_dim, kSyncUsedTasksThreads, 0, cuda_streams_[0]>>>(
-        SyncBestSplitForLevelUsedTasksKernel_ARGS);
-    }
+    // cuda_plan key pdl_level_chain: a programmatic dependent of the find kernel launched just before on this stream
+    LaunchLevelChainKernel(PdlLevelChainEnabled(),
+      sync_copy_batched ? SyncBestSplitForLevelUsedTasksKernel<true> : SyncBestSplitForLevelUsedTasksKernel<false>,
+      used_grid_dim, dim3(kSyncUsedTasksThreads), 0, cuda_streams_[0], SyncBestSplitForLevelUsedTasksKernel_ARGS);
     #undef SyncBestSplitForLevelUsedTasksKernel_ARGS
     return;
   }

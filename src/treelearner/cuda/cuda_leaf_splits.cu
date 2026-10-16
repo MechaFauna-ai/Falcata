@@ -14,6 +14,8 @@
 #include <Falcata/cuda/cuda_rocm_interop.h>
 #include <Falcata/falcata_plan.h>
 
+#include "cuda_pdl_launch.hpp"
+
 namespace Falcata {
 
 template <bool USE_INDICES>
@@ -130,6 +132,7 @@ __global__ void CUDAInitValuesChunkWarpKernel(const int16_t* cuda_gradients_and_
   const data_size_t num_data, const data_size_t* cuda_bagging_data_indices, const int num_chunks,
   double* cuda_sum_of_gradients, double* cuda_sum_of_hessians, int64_t* cuda_sum_of_hessians_hessians,
   const score_t* grad_scale_pointer, const score_t* hess_scale_pointer) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel of the chain may get resident
   const int chunk = static_cast<int>((blockIdx.x * blockDim.x + threadIdx.x) / WARPSIZE);
   if (chunk >= num_chunks) {
     return;
@@ -175,6 +178,8 @@ __global__ void CUDAInitValuesKernel4(
   const data_size_t* cuda_data_indices_in_leaf,
   hist_t* cuda_hist_in_leaf,
   CUDALeafSplitsStruct* cuda_struct) {
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the kernel before it on the stream is complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel of the chain may get resident
   __shared__ double shared_mem_buffer[WARPSIZE];
   double thread_sum_of_gradients = 0.0f;
   double thread_sum_of_hessians = 0.0f;
@@ -229,6 +234,7 @@ __global__ void CUDAInitValuesKernel4(
 }
 
 __global__ void InitValuesEmptyKernel(CUDALeafSplitsStruct* cuda_struct) {
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the kernel before it on the stream is complete and visible
   cuda_struct->leaf_index = -1;
   cuda_struct->sum_of_gradients = 0.0f;
   cuda_struct->sum_of_hessians = 0.0f;
@@ -372,7 +378,9 @@ __global__ void CUDAInitSetValuesKernel(
 }
 
 void CUDALeafSplits::LaunchInitValuesEmptyKernel() {
-  InitValuesEmptyKernel<<<1, 1>>>(cuda_struct_.RawData());
+  // cuda_plan key pdl_level_chain: a programmatic dependent of the kernel before it (the other leaf's value init)
+  LaunchLevelChainKernel(PdlLevelChainEnabled(), InitValuesEmptyKernel, dim3(1), dim3(1), 0, nullptr,
+                         cuda_struct_.RawData());
 }
 
 void CUDALeafSplits::LaunchInitValuesKernel(
@@ -481,7 +489,9 @@ void CUDALeafSplits::LaunchInitValuesKernel(
       cuda_sum_of_hessians_buffer_.RawData(), cuda_sum_of_gradients_hessians_buffer_.RawData(), num_used_indices,
       cuda_data_indices_in_leaf, cuda_hist_in_leaf, cuda_struct_.RawData());
   } else {
-    CUDAInitValuesKernel4<<<1, NUM_THREADS_PER_BLOCK_LEAF_SPLITS>>>(
+    // cuda_plan key pdl_level_chain: a programmatic dependent of the per-chunk sums launched just before
+    LaunchLevelChainKernel(PdlLevelChainEnabled(), CUDAInitValuesKernel4, dim3(1), dim3(NUM_THREADS_PER_BLOCK_LEAF_SPLITS),
+      0, nullptr,
       lambda_l1, lambda_l2, max_delta_step,
       num_blocks_init_from_gradients_,
       cuda_sum_of_gradients_buffer_.RawData(),
