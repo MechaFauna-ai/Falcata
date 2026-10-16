@@ -3719,6 +3719,8 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
   std::vector<const void*> key;
   key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(num_levels)));
   key.push_back(static_cast<const void*>(tree->hybrid_graph_batch_splits()));
+  key.push_back(static_cast<const void*>(cuda_hybrid_pair_descs_.RawDataReadOnly()));
+  key.push_back(static_cast<const void*>(hybrid_pair_slots_.RawDataReadOnly()));
   cuda_histogram_constructor_->DeviceLevelGraphKey(&key);
   cuda_best_split_finder_->DeviceLevelGraphKey(&key);
   cuda_data_partition_->DeviceLevelGraphKey(&key);
@@ -5258,6 +5260,13 @@ void CUDASingleGPUTreeLearner::ResetTrainingData(
     cuda_gradients_.Resize(static_cast<size_t>(num_data_) * grad_planes);
     cuda_hessians_.Resize(static_cast<size_t>(num_data_) * grad_planes);
   }
+  if (cuda_gradient_discretizer_ != nullptr) {
+    // Row buffers, reduction geometry and error-feedback residuals belong to the old dataset. Keep the Philox
+    // tree counter, but initialize new rows with no residual history.
+    const int iteration = cuda_gradient_discretizer_->iteration();
+    cuda_gradient_discretizer_->Init(num_data_, config_->num_leaves, train_data_->num_features(), train_data_);
+    cuda_gradient_discretizer_->SetIteration(iteration);
+  }
   // training data changed: the predrawn column sample and any prefilled
   // compact view belong to the old data / re-seeded sampler
   next_tree_col_sample_ready_ = false;
@@ -5295,6 +5304,14 @@ void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
     leaf_data_start_.resize(config_->num_leaves, 0);
     leaf_sum_gradients_.resize(config_->num_leaves, 0.0f);
     leaf_sum_hessians_.resize(config_->num_leaves, 0.0f);
+    if (cuda_gradient_discretizer_ != nullptr) {
+      // Host bookkeeping of histogram widths is leaf-indexed as well. A budget increase must not index the old
+      // vectors; reinitialize only the base metadata, retaining the device residuals and stochastic tree counter.
+      cuda_gradient_discretizer_->GradientDiscretizer::Init(
+        num_data_, config_->num_leaves, train_data_->num_features(), train_data_);
+      cuda_leaf_gradient_stat_buffer_.Resize(config_->num_leaves);
+      cuda_leaf_hessian_stat_buffer_.Resize(config_->num_leaves);
+    }
   }
   cuda_histogram_constructor_->ResetConfig(config);
   cuda_best_split_finder_->ResetConfig(config, cuda_histogram_constructor_->cuda_hist());

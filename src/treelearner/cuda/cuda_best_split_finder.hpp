@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -457,6 +458,14 @@ class CUDABestSplitFinder {
   /*! \brief cuda_plan key device_level_graph: the pointers and per-tree task layout a captured level search bakes in */
   void DeviceLevelGraphKey(std::vector<const void*>* key) const {
     HybridGraphKeyPointers(key);
+    // A host continuation can grow these slabs after the prefix was captured.
+    key->push_back(static_cast<const void*>(cuda_best_split_info_.RawDataReadOnly()));
+    key->push_back(static_cast<const void*>(cuda_cat_threshold_feature_.RawDataReadOnly()));
+    key->push_back(static_cast<const void*>(cuda_cat_threshold_real_feature_.RawDataReadOnly()));
+    // GOSS changes the ridge after its unbagged warmup; kernel arguments are captured by value.
+    uint64_t ridge_bits = 0;
+    std::memcpy(&ridge_bits, &hessian_ridge_quanta_, sizeof(ridge_bits));
+    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(ridge_bits)));
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(num_used_tasks_)));
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(warp_find_order_used_ ? 1 : 0)));
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(warp_find_num_narrow_used_)));

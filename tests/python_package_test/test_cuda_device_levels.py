@@ -115,7 +115,8 @@ def test_device_levels_is_bit_identical_cuda(objective, leaves, depth, quant, ex
 def test_device_levels_wide_and_goss_cuda(quant):
     # more columns than one construct partition holds, and GOSS's bagged subset
     X, y = _data(20011, 700, "binary", 31, few_bin_cols=300, nan_frac=0.0)
-    _same(_params("binary", 255, 8, quant, data_sample_strategy="goss", top_rate=0.2, other_rate=0.1), X, y, 8)
+    # Cross GOSS's ten-round unbagged warmup: the hessian ridge captured by the finder changes afterwards.
+    _same(_params("binary", 255, 8, quant, data_sample_strategy="goss", top_rate=0.2, other_rate=0.1), X, y, 18)
 
 
 @_REQUIRES_CUDA
@@ -322,3 +323,13 @@ def test_device_levels_shallow_large_budget_cuda():
     # The new finder and bit-change scratch allocations must depend on the shallow prefix, not this budget.
     X, y = _data(12000, 64, "binary", 73)
     _same(_params("binary", 32767, 3, "fixedpoint"), X, y, 4)
+
+
+@_REQUIRES_CUDA
+def test_device_levels_deep_host_continuation_cuda():
+    # A complete prefix reaches its 512-pair cap, then host levels grow the finder/descriptor allocations.
+    # The next tree must recapture every pointer that moved rather than replaying the old allocation.
+    rows = np.arange(32768, dtype=np.uint32)
+    X = ((rows[:, None] >> np.arange(13, dtype=np.uint32)) & 1).astype(np.float32)
+    y = (X @ np.arange(1, 14, dtype=np.float32)).astype(np.float32)
+    _same(_params("regression", 4095, 12, "fixedpoint", min_data_in_leaf=2, quant_bins=16), X, y, 4)

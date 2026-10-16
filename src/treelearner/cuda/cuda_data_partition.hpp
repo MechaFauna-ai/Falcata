@@ -194,6 +194,7 @@ class CUDADataPartition: public NCCLInfo {
   void DeviceLevelGraphKey(std::vector<const void*>* key) const {
     key->push_back(static_cast<const void*>(cuda_data_indices_.RawDataReadOnly()));
     key->push_back(static_cast<const void*>(cuda_out_data_indices_in_leaf_.RawDataReadOnly()));
+    key->push_back(static_cast<const void*>(cuda_apply_descs_.RawDataReadOnly()));
   }
   /*! \brief cuda_plan key device_level_graph: the host half of a replayed graph's levels (one swap per level) */
   void SwapIndexBuffers(const int times) {
