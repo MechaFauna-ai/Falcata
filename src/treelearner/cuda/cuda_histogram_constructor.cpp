@@ -2499,6 +2499,13 @@ std::unique_ptr<CUDACountHistCodes> BuildCountHistCodes(const score_t* gradients
   out->hessian = static_cast<double>(h0);
   out->wide = static_cast<unsigned __int128>(max_t) * n >= (static_cast<unsigned __int128>(1) << 32);
   out->identity = identity && !out->wide;
+  if (out->wide && m <= 6) {
+    // per-value row counts in one word: 64 / m bits each; a tile of at most 2^bits - 1 rows, at most 65535 tiles
+    const int bits = 64 / m;
+    if (bits >= 30 || static_cast<uint64_t>(n) <= 65535ull * ((uint64_t{1} << bits) - 1)) {
+      out->field_bits = bits;
+    }
+  }
   // every value is reproduced exactly by the affine form (a check of the arithmetic above)
   for (int r = 0; r < m; ++r) {
     const double v = out->grad_base + out->grad_unit * static_cast<double>(table[r]);
@@ -2516,7 +2523,7 @@ std::unique_ptr<CUDACountHistCodes> BuildCountHistCodes(const score_t* gradients
   if (FalcataDebug().diag) {
     fprintf(stderr, "[count-hist-diag] codes for gradients %p: %d values, base %.17g unit %.17g hessian %.9g, %s%s\n",
             static_cast<const void*>(gradients), m, out->grad_base, out->grad_unit, out->hessian,
-            out->wide ? "wide" : "packed", out->identity ? " identity" : "");
+            out->field_bits > 0 ? "per-value counts" : (out->wide ? "wide" : "packed"), out->identity ? " identity" : "");
   }
   return out;
 }

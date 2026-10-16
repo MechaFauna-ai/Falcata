@@ -249,8 +249,11 @@ struct CUDACountHistCodes {
   int num_values = 0;
   /*! \brief the codes are their own addends (values[j] == j): no table read */
   bool identity = false;
-  /*! \brief 64-bit code sums and 32-bit counts per bin; else one 64-bit word S << 32 | n */
+  /*! \brief 64-bit code sums and 32-bit counts per bin in the scratch; else one 64-bit word S << 32 | n */
   bool wide = false;
+  /*! \brief wide with at most 6 values: the shared table counts the rows per value in fields of this many bits of
+   *  one 64-bit word (0: not used) */
+  int field_bits = 0;
 };
 
 /*!
