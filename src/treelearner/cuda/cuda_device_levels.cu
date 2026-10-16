@@ -93,27 +93,6 @@ __device__ int DeviceLevelBlockMax(const int val, int* s_warp, int* s_out) {
   return *s_out;
 }
 
-/*! \brief in-block bitonic sort of int keys (ascending) with an int payload, padded to p (pad key INT_MAX) */
-__device__ void DeviceLevelSortAsc(int* keys, int* payload, const int p) {
-  const int i = static_cast<int>(threadIdx.x);
-  for (int size = 2; size <= p; size <<= 1) {
-    for (int stride = size >> 1; stride > 0; stride >>= 1) {
-      __syncthreads();
-      if (i < p) {
-        const int j = i ^ stride;
-        if (j > i && j < p) {
-          const bool ascending = (i & size) == 0;
-          if (ascending ? keys[i] > keys[j] : keys[i] < keys[j]) {
-            const int tk = keys[i]; keys[i] = keys[j]; keys[j] = tk;
-            const int tp = payload[i]; payload[i] = payload[j]; payload[j] = tp;
-          }
-        }
-      }
-    }
-  }
-  __syncthreads();
-}
-
 /*! \brief the quantized histogram bit width of a leaf of n rows: GradientDiscretizer::SetNumBitsInHistogramBin */
 __device__ __forceinline__ uint8_t DeviceLevelHistBits(const data_size_t n, const int num_grad_quant_bins) {
   const uint64_t max_stat_per_bin = static_cast<uint64_t>(n) * static_cast<uint64_t>(num_grad_quant_bins);
@@ -151,7 +130,6 @@ __global__ void DeviceLevelResetKernel(const CUDADeviceLevelConfig cfg, const in
 __global__ void DeviceLevelSelectKernel(const CUDADeviceLevelConfig cfg, const int level) {
   __shared__ int s_leaves[kSelectMaxLeaves];
   __shared__ int s_rkey[kSelectMaxLeaves];
-  __shared__ int s_rpay[kSelectMaxLeaves];
   __shared__ int s_warp[32];
   __shared__ int s_total;
   PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the level sync's leaf entries are complete and visible
@@ -288,49 +266,42 @@ __global__ void DeviceLevelSelectKernel(const CUDADeviceLevelConfig cfg, const i
     cfg.apply_descs[tid].block_offset_start = slot_start;
     cfg.apply_descs[tid].flat_block_start = flat_start;
   }
-  // ---- terminal-region gaps of [0, root_num_data) (SplitLevelBatched; every gap copied) ----
-  int p = 1;
-  while (p < n) {
-    p <<= 1;
+  // ---- terminal-region gaps: the windows of the leaves this level does not split. The leaves' windows partition
+  // [0, root rows), so they cover what SplitLevelBatched's gaps between the sorted split regions cover; one
+  // descriptor per such leaf (adjacent windows are not merged: the same rows, copied once each) ----
+  for (int leaf = tid; leaf < cur_leaves; leaf += nt) {
+    s_rkey[leaf] = 0;
   }
-  if (tid < p) {
-    if (tid < n) {
-      s_rkey[tid] = static_cast<int>(cfg.leaf_data_start[s_leaves[tid]]);
-      s_rpay[tid] = tid;
-    } else {
-      s_rkey[tid] = 2147483647;
-      s_rpay[tid] = -1;
+  __syncthreads();
+  if (tid < n) {
+    s_rkey[s_leaves[tid]] = 1;  // split this level
+  }
+  __syncthreads();
+  int my_gaps = 0;
+  int my_gap_flat = 0;
+  for (int leaf = chunk_begin; leaf < chunk_end; ++leaf) {
+    const data_size_t num = cfg.leaf_num_data[leaf];
+    if (s_rkey[leaf] == 0 && num > 0) {
+      ++my_gaps;
+      my_gap_flat += (num + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
     }
   }
-  DeviceLevelSortAsc(s_rkey, s_rpay, p);
-  int my_gap = 0;
-  data_size_t gap_start = 0;
-  data_size_t gap_num = 0;
-  if (tid <= n) {
-    const data_size_t region_start = tid < n ? static_cast<data_size_t>(s_rkey[tid]) : st->root_num_data;
-    data_size_t prev_end = 0;
-    if (tid > 0) {
-      prev_end = static_cast<data_size_t>(s_rkey[tid - 1]) + cfg.leaf_num_data[s_leaves[s_rpay[tid - 1]]];
-    }
-    if (region_start > prev_end) {
-      my_gap = 1;
-      gap_start = prev_end;
-      gap_num = region_start - prev_end;
-    }
-  }
-  const int gap_pos = DeviceLevelBlockScan(my_gap, s_warp, &s_total);
+  int gap_pos = DeviceLevelBlockScan(my_gaps, s_warp, &s_total);
   const int num_gaps = s_total;
-  const int my_gap_flat = my_gap ?
-    (gap_num + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION : 0;
-  const int gap_flat_start = DeviceLevelBlockScan(my_gap_flat, s_warp, &s_total);
+  int gap_flat_pos = DeviceLevelBlockScan(my_gap_flat, s_warp, &s_total);
   const int gap_flat_blocks = s_total;
-  if (my_gap) {
-    CUDAHybridApplyDescriptor& g = cfg.apply_descs[n + gap_pos];
-    memset(&g, 0, sizeof(CUDAHybridApplyDescriptor));
-    g.leaf_data_start = gap_start;
-    g.num_data_in_leaf = gap_num;
-    g.num_blocks = (gap_num + cfg.gap_block_dim - 1) / cfg.gap_block_dim;
-    g.flat_block_start = total_flat_blocks + gap_flat_start;
+  for (int leaf = chunk_begin; leaf < chunk_end; ++leaf) {
+    const data_size_t num = cfg.leaf_num_data[leaf];
+    if (s_rkey[leaf] == 0 && num > 0) {
+      CUDAHybridApplyDescriptor& g = cfg.apply_descs[n + gap_pos];
+      memset(&g, 0, sizeof(CUDAHybridApplyDescriptor));
+      g.leaf_data_start = cfg.leaf_data_start[leaf];
+      g.num_data_in_leaf = num;
+      g.num_blocks = (num + cfg.gap_block_dim - 1) / cfg.gap_block_dim;
+      g.flat_block_start = total_flat_blocks + gap_flat_pos;
+      ++gap_pos;
+      gap_flat_pos += (num + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
+    }
   }
   if (tid == 0) {
     st->live_splits = n;
