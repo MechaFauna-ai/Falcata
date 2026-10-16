@@ -1610,6 +1610,7 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   full_view_.Clear();
   colmajor_direct_ = cuda_row_data_->dense_4bit_columns_only();
   InitCountConstruct();
+  InitNonquantFixed();
 
   // one int32 region of num_total_bin_ entries per histogram pipeline (the pairs
   // of a level run concurrently on different pipeline streams and must not share
@@ -2338,6 +2339,7 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   // the tree learner chooses the regime for the new data (ChooseViewRegime)
   colmajor_direct_ = cuda_row_data_->dense_4bit_columns_only();
   InitCountConstruct();
+  InitNonquantFixed();
 }
 
 void CUDAHistogramConstructor::ResetConfig(const Config* config) {
@@ -2351,6 +2353,39 @@ void CUDAHistogramConstructor::ResetConfig(const Config* config) {
   cuda_hist_.SetValue(0);
   num_dirty_leaves_ = -1;
   // (colmajor_direct: the tree learner re-chooses the regime when feature_fraction changed)
+}
+
+void CUDAHistogramConstructor::InitNonquantFixed() {
+  nq_fixed_smem_bytes_ = 0;
+  nq_fixed_smem_set_.clear();
+  nq_fixed_supported_ = true;
+  if (use_quantized_grad_ || !FalcataPlan::Get().nonquant_deterministic) {
+    return;
+  }
+  const std::vector<uint32_t>& offsets = cuda_row_data_->host_partition_hist_offsets();
+  uint32_t max_bins = 1;
+  for (size_t p = 1; p < offsets.size(); ++p) {
+    max_bins = std::max(max_bins, offsets[p] - offsets[p - 1]);
+  }
+  constexpr size_t kStaticSharedBytes = 1024;  // the batched kernel's own static shared memory (cuobjdump)
+  const size_t need = static_cast<size_t>(max_bins) * 2 * sizeof(nq_fixed_t) + kStaticSharedBytes;
+  int shared_limit = 0;
+  const int device = gpu_device_id_ < 0 ? 0 : gpu_device_id_;
+  if (cudaDeviceGetAttribute(&shared_limit, cudaDevAttrMaxSharedMemoryPerBlockOptin, device) != cudaSuccess) {
+    shared_limit = 48 * 1024;
+  }
+  nq_fixed_supported_ = need <= static_cast<size_t>(shared_limit);
+  if (!nq_fixed_supported_) {
+    static bool warned = false;
+    if (!warned) {
+      warned = true;
+      Log::Warning("nonquant_deterministic: the fixed-point histogram construct needs %zu bytes of shared memory per "
+                   "block (widest partition %u bins), this GPU gives %d: the graph level loop takes the deterministic "
+                   "construct instead (graph_det), and levels it cannot serve (compact column views, levels wider than "
+                   "its slot slab) keep the float atomics, so models may vary between runs on this dataset",
+                   need, max_bins, shared_limit);
+    }
+  }
 }
 
 // ---- cuda_plan key forest_count_hist (docs/design/forest-count-histograms.md) ----

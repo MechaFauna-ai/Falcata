@@ -698,11 +698,11 @@ void Config::CheckParamConflict(const std::unordered_map<std::string, std::strin
                    quant_incompatible_request);
     } else if (deterministic && !quant_mode_chosen_by_user &&
                ResolvedQuantMode() == QuantMode::kNone) {
-      // quantized CUDA training IS deterministic (bit-identical across runs,
-      // machines and GPU models); only the non-quantized float-atomic path
-      // jitters. deterministic=true is an explicit opt-in to execution
-      // changes for reproducibility, so map it to the near-lossless
-      // deterministic mode instead of warning uselessly. The tree learner
+      // quantized CUDA training is deterministic across runs, machines and
+      // GPU models; non-quantized training is run-to-run deterministic by
+      // default too (cuda_plan key nonquant_deterministic) but not across GPU
+      // models. deterministic=true is an explicit opt-in to execution changes
+      // for reproducibility, so map it to the near-lossless quantized mode. The tree learner
       // auto-raises the bin count to the finest safe resolution.
       Log::Info("deterministic=true with device_type=cuda: using "
                 "quant_mode=fixedpoint (near-lossless, bit-reproducible across "

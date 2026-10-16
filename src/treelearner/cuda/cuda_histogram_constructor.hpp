@@ -550,7 +550,7 @@ class CUDAHistogramConstructor {
 
   /*! \brief the batched dense construct accumulates in 64-bit fixed point (nonquant_deterministic, scalar trees;
    *  the levels the deterministic batched construct does not take) */
-  bool NonquantFixedActive() const { return NonquantDet() && num_hist_planes_ == 1; }
+  bool NonquantFixedActive() const { return NonquantDet() && num_hist_planes_ == 1 && nq_fixed_supported_; }
   /*! \brief threads per block of the batched non-quantized construct: 2 x 504 under the fixed-point accumulator,
    *  whose 64-bit table (up to 96 KB) leaves room for one block per SM where the float table fits two */
   int BatchedConstructThreads() const {
@@ -1018,6 +1018,12 @@ class CUDAHistogramConstructor {
   size_t CountSharedBytes(bool wide) const;
   /*! \brief decide count_supported_ for the current data (end of Init / ResetTrainingData) */
   void InitCountConstruct();
+
+  /*! \brief nonquant_deterministic: whether this device gives a block the fixed-point table's shared memory (the
+   *  widest partition's bins x 16 bytes + the kernel's static 1 KB, against the opt-in per-block limit: 99 KB on
+   *  sm_86/89/120, 163-227 KB on sm_80/90/100, 64 KB on sm_75); warns once when it does not. Resets the per-kernel
+   *  attribute cache (Init / ResetTrainingData). */
+  void InitNonquantFixed();
 
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   /*! \brief captures the deterministic construct + merge kernels as two graph
@@ -1493,6 +1499,12 @@ class CUDAHistogramConstructor {
   // set while the batched construct launches its fixed-point instantiation: the launch sites read the scaled
   // gradients and pass the fixed table's dynamic shared memory
   bool nq_fixed_launch_ = false;
+  // set by the batched launcher when the fixed-point kernel (not a deterministic or count arm) built the level: the
+  // only case whose words the convert may rewrite
+  bool nq_fixed_kernel_launched_ = false;
+  // the device gives a block the fixed-point table (InitNonquantFixed); otherwise the deterministic construct serves
+  // the graph loop (graph_det) and the levels it cannot take keep the float atomics
+  bool nq_fixed_supported_ = true;
   // dynamic shared bytes of the fixed-point table (the widest partition's items x 8) and the kernels whose
   // max-dynamic-shared attribute is already raised to it
   size_t nq_fixed_smem_bytes_ = 0;

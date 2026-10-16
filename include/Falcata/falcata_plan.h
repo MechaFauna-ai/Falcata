@@ -66,21 +66,27 @@ struct FalcataPlan {
   // graph level loop also for quantized training (opt-in; less measured)
   bool graph_quant = false;         // key: graph_quant
   // deterministic construct+merge nodes inside the graph loop (non-quant):
-  // bit-identical to the host det loop (graph_loop:off), so opting in buys
-  // run-to-run md5 identity AND the graph's launch-overhead win. Off by
-  // default: the det merge costs ~4x on shallow non-quant shapes
-  // (covtype-shallow-class), and the default trades that determinism for
-  // speed like the fp32 opt-ins do.
+  // bit-identical to the host det loop (graph_loop:off). Off by default: the
+  // det merge costs ~4x on shallow non-quant shapes (covtype-shallow-class);
+  // since nonquant_deterministic the default graph loop is deterministic
+  // anyway (its fixed-point construct + convert nodes), so this key now only
+  // selects the double-slot kernels inside the graph (and is implied where the
+  // device has no room for the fixed-point table).
   bool graph_det = false;           // key: graph_det
   // non-quantized training (quant_mode=none) deterministic by default: the batched level construct accumulates in
   // 64-bit fixed point wherever it used float atomics (the graph level loop, compact column views, levels wider than
   // the deterministic slot slab): each row's gradient and hessian, scaled by a per-tree power of two (exact), are
-  // rounded once to integers and summed with integer atomics, which commute, then converted in place to hist_t
-  // (per-row rounding about max|g| * num_data * 2^-63, finer than the gradients' own float32 rounding). The per-leaf
-  // and host batched deterministic constructs keep running where they ran (their models are unchanged), and
-  // cuda_precision=fp32 keeps its fp32 gain math on hist_t histograms. The same seed then trains the same model on
-  // every run. Off = the float-atomic kernels (the only mode whose models vary run to run). Quantized training
-  // never reads the key (its integer histograms are deterministic already).
+  // rounded once to integers and summed with integer atomics, which commute, then converted in place to hist_t.
+  // Integer sums make the histogram the same on every run; a row is rounded by at most 2^-(S+1) (about
+  // max|g| * num_data * 2^-63), which is below the row's own float32 rounding only for values within about
+  // 2^(40 - lg num_data) of the largest (smaller ones keep fewer bits; below max * num_data * 2^-64 they vanish).
+  // Where both sums are exact the histogram equals the double-slot deterministic construct's (empirical, not
+  // guaranteed: the measured default models equal the graph_det:on ones on the lattice and article shapes, not on
+  // wide-range poisson / tweedie / binary shapes). The per-leaf and host batched deterministic constructs and the
+  // forest count construct keep running where they ran; cuda_precision=fp32 keeps its fp32 gain math on hist_t
+  // histograms. A device without shared memory for the fixed-point table (InitNonquantFixed) takes graph_det
+  // instead. Off = the float-atomic kernels. Not covered: linear trees, ranking objectives' gradients, multi-plane
+  // vector-leaf trees, multi-GPU. Quantized training never reads the key.
   bool nonquant_deterministic = true;  // key: nonquant_deterministic
   // per-tree compact column view for quantized construct at any
   // 0 < feature_fraction < 1 (win scales with the excluded fraction:

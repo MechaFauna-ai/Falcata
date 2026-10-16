@@ -2361,18 +2361,26 @@ rounds once to an integer; the shared table holds 64-bit words, each add two nat
 word's returned old value gives that add's exact carry into the high word; a 64-bit shared `atomicAdd` compiles to
 a compare-and-swap loop), the flush is a 64-bit integer global atomic, and one kernel per level (a pair-on-y node in
 the graph loop) rewrites the words in place as `hist_t` times 2^-S. Integer adds commute, so the histogram is the
-same however the atomics land. Values that are multiples of 2^-S (within 2^(38 - lg_n) of the largest, every row of
-every shape measured) are summed exactly, so the histogram is the exact sum the deterministic double-slot kernels
-compute: the default models equal the `graph_det:on` / `graph_loop:off` deterministic models (the lattice's
-`dense/nonquant` and `graph/nonquant` md5s equal `dense/nonquant-det` and `graph/nonquant-det`). Smaller values are
-off by at most 2^-(S+1), about max * num_data * 2^-63 (2^-39 of the largest at 2^24 rows), below their own float32
-rounding; the float shared partial sums of the atomic path rounded at every add. The 64-bit table is twice the float
+same however the atomics land. A value within about 2^(38 - lg_n) of the largest is a multiple of 2^-S and is summed
+exactly; any other is off by at most 2^-(S+1), about max * num_data * 2^-63 (2^-39 of the largest at 2^24 rows):
+below its own float32 rounding within about 2^(40 - lg_n) of the largest, fewer bits further down, nothing below
+max * num_data * 2^-64 (the float shared partial sums of the atomic path rounded at every add). Where every row is
+exact and the double-slot deterministic kernels' fp64 sums are exact too, the two histograms are equal: on the
+lattice and article shapes the default models equal the `graph_det:on` / `graph_loop:off` deterministic models
+(`dense/nonquant` and `graph/nonquant` md5s equal `dense/nonquant-det` and `graph/nonquant-det`); that is an
+observation, not a guarantee (a review's poisson, tweedie and binary shapes at 200k rows gave other md5s than
+`graph_det:on`, with metrics equal to six digits). The 64-bit table is twice the float
 one (up to 96 KB of dynamic shared memory, one block per SM where the float table fits two), so the fixed-point
-construct runs 1008-thread blocks. The per-leaf and host batched deterministic constructs run where they ran (their
+construct runs 1008-thread blocks under a launch bound of 1008 (the compiler keeps its instantiations within 64
+registers; 45-64 on sm_120; the float instantiations' code is unchanged). A device whose opt-in shared memory per
+block cannot hold the widest partition's table plus the kernel's 1 KB (sm_75's 64 KB with partitions over ~4000
+bins) does not run it: the graph loop takes the double-slot deterministic construct (`graph_det`) and the levels that
+one cannot take keep the float atomics, with a one-time warning. The per-leaf and host batched deterministic constructs run where they ran (their
 models are unchanged). `cuda_precision=fp32` keeps its fp32 gain math on `hist_t` histograms; its fp32 histogram
-layout runs only with the key off. `nonquant_deterministic:off` restores the float atomics: the only CUDA mode
-whose models vary from run to run. Not covered: linear trees (their per-leaf least-squares sums use double
-atomics), ranking objectives' gradients (shared float atomics), vector-leaf trees (unchanged routing), multi-GPU.
+layout runs only with the key off. `nonquant_deterministic:off` restores the float atomics. Not covered, models can
+still vary from run to run: linear trees (their per-leaf least-squares sums use
+double atomics), ranking objectives' gradients (shared float atomics), multi-plane vector-leaf trees (unchanged
+routing), multi-GPU.
 
 Cost, same binary, key off vs on, 2 interleaved pairs, the article's non-quantized shapes (benchmarks/bench.py's
 speed-cell params, 32 threads, max_bin 255; train s = `lgb.train`, ms/round = median over rounds 100..):
@@ -2393,17 +2401,19 @@ speed-cell params, 32 threads, max_bin 255; train s = `lgb.train`, ms/round = me
 | airline/deep | 500 | 128.035/132.283 | 133.787/133.786 | 216.796 | 217.759 | 3.8 | 3.7 | **1.028** | 1.004 | 1 md5 c0312132 (off: 2 md5s) |
 | numerai/numerai | 2000 | 54.517/54.578 | 55.337/55.225 | 27.376 | 27.187 | 36.7 | 36.2 | **1.013** | 0.993 | 1 md5 d0aa2a89 (off: 2 md5s) |
 
-Geometric mean 1.010. The cost is under 4% everywhere but higgs deep (1.084 in train s, 1.158 per steady round:
-its smaller leaves on deep levels pay the 64-bit table's zero and flush and the convert pass; 1023 leaves of 28
-255-bin features), and the native 32-bit adds make covtype deep 4.3% faster than the float atomics. Before the native
+Geometric mean 1.010. The cost is under 4% everywhere but higgs deep (1.084 in train s, 1.158 per steady round;
+the same warps per SM as the float path, but as one 1008-thread block, so a block's zero and flush phases no longer
+overlap another block's accumulation, plus the 64-bit flush atomics and the per-level convert; the levers left are
+splitting a partition's columns so the table fits 48 KB, which restores two blocks per SM, and folding the convert
+into fix/subtract), and the native 32-bit adds make covtype deep 4.3% faster than the float atomics. Before the native
 adds and the wider blocks (one 504-thread block per SM, compare-and-swap adds) the same construct cost up to 1.38x
 (higgs and epsilon shallow). Quantized cells, key off vs on, same binary, 2 pairs: numerai53bench 3.314 -> 3.315 ms
 per round, higgs 1.702 -> 1.700, md5-identical (the key is read only under non-quantized training). Lattice: 437 of
 440 cells md5-identical to master, `dense/nonquant`, `dense/fp32`, `graph/nonquant` fingerprinted, a metric-only
 `dense/nonquant-atomic` cell keeps the off path covered. `tests/python_package_test/test_cuda_nonquant_deterministic.py`
-trains eleven shapes three times each (graph regression, binary and multiclass, compact view, bagging, sparse input,
-a leaf-wise tree, fp32, a wide shape on the host loop whose deep levels outgrow the slab, monotone and interaction
-constraints): one model per shape; and three quantized shapes key on vs off: md5-identical.
+trains thirteen shapes three times each (graph regression, binary and multiclass, compact view, bagging, sparse input,
+a leaf-wise tree, fp32, a wide shape on the host loop whose deep levels outgrow the slab, two random forests,
+monotone and interaction constraints): one model per shape; and three quantized shapes key on vs off: md5-identical.
 
 ## Multi-GPU: level-batched NCCL all-reduce
 
