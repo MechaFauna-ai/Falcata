@@ -8,6 +8,9 @@ SETUP_CONDA=${SETUP_CONDA:-"true"}
 
 ARCH=$(uname -m)
 
+# shellcheck source=.ci/retry.sh
+source "$(dirname "${BASH_SOURCE[0]}")/retry.sh"
+
 
 if [[ $OS_NAME == "macos" ]]; then
     # Check https://github.com/actions/runner-images/tree/main/images/macos for available
@@ -43,7 +46,7 @@ else  # Linux
             curl
     fi
     CMAKE_VERSION="3.30.0"
-    curl -O -L \
+    retry curl -f -O -L \
         "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-${ARCH}.sh" \
     || exit 1
     sudo mkdir /opt/cmake || exit 1
@@ -147,14 +150,14 @@ fi
 
 if [[ "${TASK}" != "cpp-tests" ]] && [[ "${TASK}" != "r-package" ]] && [[ "${TASK}" != "swig" ]]; then
     if [[ $SETUP_CONDA != "false" ]]; then
-        curl \
-            -sL \
+        retry curl \
+            -fsSL \
             -o miniforge.sh \
             "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-${ARCH}.sh"
         sh miniforge.sh -b -p "${CONDA}"
     fi
     conda config --set always_yes yes --set changeps1 no
-    conda update -q -y conda
+    retry conda update -q -y conda
 
     # print output of 'conda info', to help in submitting bug reports
     echo "conda info:"

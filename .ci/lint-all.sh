@@ -2,11 +2,14 @@
 
 set -e -E -u -o pipefail
 
-pwsh -command "Install-Module -Name PSScriptAnalyzer -Scope CurrentUser -SkipPublisherCheck"
+# shellcheck source=.ci/retry.sh
+source "$(dirname "${BASH_SOURCE[0]}")/retry.sh"
+
+retry pwsh -command "Install-Module -Name PSScriptAnalyzer -Scope CurrentUser -SkipPublisherCheck"
 echo "Linting PowerShell code"
 pwsh -file ./.ci/lint-powershell.ps1 || exit 1
 
-conda create -q -y -n test-env \
+retry conda create -q -y -n test-env \
     "python=3.14[build=*_cp*]" \
     'pre-commit>=3.8.0' \
     'r-lintr>=3.3.0'
