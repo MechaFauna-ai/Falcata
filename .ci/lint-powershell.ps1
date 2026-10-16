@@ -81,7 +81,27 @@ $files = @(
         ForEach-Object { $_.FullName }
 )
 
+# Invoke-ScriptAnalyzer itself sometimes crashes (non-deterministically) with
+# "Object reference not set to an instance of an object", a NullReferenceException
+# inside the analyzer rather than a lint finding. Retry only that crash; lint
+# findings still end the script immediately through -EnableExit.
+$maxAttempts = 3
 foreach ($file in $files) {
     Write-Output "linting '$file'"
-    Invoke-ScriptAnalyzer -Path $file -EnableExit -Settings $settings
+    for ($attempt = 1; ; $attempt++) {
+        try {
+            Invoke-ScriptAnalyzer -Path $file -EnableExit -Settings $settings
+            break
+        } catch {
+            $isAnalyzerCrash = (
+                ($_.Exception.GetBaseException() -is [System.NullReferenceException]) -or
+                ($_.Exception.Message -like 'Object reference not set to an instance of an object*')
+            )
+            if ((-not $isAnalyzerCrash) -or ($attempt -ge $maxAttempts)) {
+                throw
+            }
+            Write-Output "Invoke-ScriptAnalyzer crashed on attempt $attempt/$maxAttempts, retrying: $($_.Exception.Message)"
+            Start-Sleep -Seconds 5
+        }
+    }
 }
