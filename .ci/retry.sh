@@ -16,14 +16,16 @@ retry() {
     local delay_seconds=25
     local attempt=1
     while true; do
-        if "$@"; then
+        local exit_code=0
+        "$@" || exit_code=$?
+        if [[ ${exit_code} -eq 0 ]]; then
             return 0
         fi
         if [[ ${attempt} -ge ${max_attempts} ]]; then
-            echo "[retry] '$*' failed on attempt ${attempt}/${max_attempts}, giving up" >&2
-            return 1
+            echo "[retry] '$*' failed with exit code ${exit_code} on attempt ${attempt}/${max_attempts}, giving up" >&2
+            return "${exit_code}"
         fi
-        echo "[retry] '$*' failed on attempt ${attempt}/${max_attempts}, retrying in ${delay_seconds}s" >&2
+        echo "[retry] '$*' failed with exit code ${exit_code} on attempt ${attempt}/${max_attempts}, retrying in ${delay_seconds}s" >&2
         sleep "${delay_seconds}"
         attempt=$((attempt + 1))
     done
