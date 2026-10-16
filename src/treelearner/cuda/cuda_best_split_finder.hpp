@@ -66,6 +66,7 @@ struct SplitFindTask {
 
 
 struct CUDADeviceLevelState;
+struct CUDADeviceLevelConfig;
 
 class CUDABestSplitFinder {
  public:
@@ -439,6 +440,10 @@ class CUDABestSplitFinder {
   /*! \brief cuda_plan key device_levels: the device level state the level find and sync launches read while the
    *  learner enqueues a device-driven level's search (nullptr otherwise) */
   void SetDeviceLevelState(const CUDADeviceLevelState* dls) { device_level_state_ = dls; }
+  /*! \brief cuda_plan key device_levels: the next level's select runs in the last block of the level sync launched
+   *  while this is set (the used-task sync only; LastSyncRanSelect tells whether it did) */
+  void SetDeviceLevelSelect(const CUDADeviceLevelConfig* cfg) { device_level_select_cfg_ = cfg; }
+  bool LastSyncRanSelect() const { return last_sync_ran_select_; }
   /*! \brief cuda_plan key device_level_graph: the pointers and per-tree task layout a captured level search bakes in */
   void DeviceLevelGraphKey(std::vector<const void*>* key) const {
     HybridGraphKeyPointers(key);
@@ -661,6 +666,9 @@ class CUDABestSplitFinder {
   bool leaf_mirror_requested_ = false;
   /*! \brief cuda_plan key device_levels: see SetDeviceLevelState */
   const CUDADeviceLevelState* device_level_state_ = nullptr;
+  /*! \brief cuda_plan key device_levels: see SetDeviceLevelSelect */
+  const CUDADeviceLevelConfig* device_level_select_cfg_ = nullptr;
+  bool last_sync_ran_select_ = false;
   bool leaf_mirror_written_ = false;
   int max_num_bin_in_feature_;
   std::vector<uint32_t> feature_hist_offsets_;

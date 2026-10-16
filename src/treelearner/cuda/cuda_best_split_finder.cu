@@ -9,6 +9,7 @@
 
 #include "cuda_best_split_finder.hpp"
 #include "cuda_device_levels.hpp"
+#include "cuda_device_levels.cuh"
 
 #include <Falcata/cuda/cuda_rocm_interop.h>
 
@@ -5426,7 +5427,7 @@ __device__ __forceinline__ void MirrorLeafBestSplitEntry(const CUDASplitInfo* en
 }
 
 template <bool BATCHED>
-__global__ void SyncBestSplitForLevelUsedTasksKernel(
+__device__ __forceinline__ void SyncBestSplitForLevelUsedTasksBody(
   const CUDAHybridPairDescriptor* pair_descs,
   CUDASplitInfo* cuda_leaf_best_split_info,
   const SplitFindTask* tasks,
@@ -5440,12 +5441,7 @@ __global__ void SyncBestSplitForLevelUsedTasksKernel(
   const data_size_t min_data_in_leaf,
   const double min_sum_hessian_in_leaf,
   const bool gate_on_desc_counts,
-  CUDASplitInfo* leaf_best_split_mirror,
-  const CUDADeviceLevelState* dls) {
-  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the find kernel's slots are complete and visible
-  if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
-    return;  // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
-  }
+  CUDASplitInfo* leaf_best_split_mirror) {
   constexpr int kReplayWarps = NUM_TASKS_PER_SYNC_BLOCK / WARPSIZE;
   __shared__ double shared_gain_buffer[kReplayWarps];
   __shared__ bool shared_found_buffer[kReplayWarps];
@@ -5683,6 +5679,51 @@ __global__ void SyncBestSplitForLevelUsedTasksKernel(
     }
   }
   MirrorLeafBestSplitEntry(cuda_split_info, mirror_entry);
+}
+
+template <bool BATCHED>
+__global__ void SyncBestSplitForLevelUsedTasksKernel(
+  const CUDAHybridPairDescriptor* pair_descs,
+  CUDASplitInfo* cuda_leaf_best_split_info,
+  const SplitFindTask* tasks,
+  const int8_t* is_feature_used_bytree_arg,
+  const int* used_task_indices_arg,
+  const int num_used_tasks_arg,
+  const int8_t* const* node_masks,
+  const int* node_tasks,
+  const CUDASplitInfo* cuda_best_split_info,
+  const int num_tasks,
+  const data_size_t min_data_in_leaf,
+  const double min_sum_hessian_in_leaf,
+  const bool gate_on_desc_counts,
+  CUDASplitInfo* leaf_best_split_mirror,
+  const CUDADeviceLevelState* dls,
+  const CUDADeviceLevelConfig* select_cfg) {
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the find kernel's slots are complete and visible
+  if (DeviceLevelBeyondLivePairs(dls, blockIdx.y)) {
+    return;  // cuda_plan key device_levels: a worst-case launch's pair past the level's live pairs
+  }
+  SyncBestSplitForLevelUsedTasksBody<BATCHED>(pair_descs, cuda_leaf_best_split_info, tasks, is_feature_used_bytree_arg, used_task_indices_arg, num_used_tasks_arg, node_masks, node_tasks, cuda_best_split_info, num_tasks, min_data_in_leaf, min_sum_hessian_in_leaf, gate_on_desc_counts, leaf_best_split_mirror);
+  if (select_cfg != nullptr) {
+    // cuda_plan key device_levels: the last block of the level's live pairs to write its leaf entry runs the next
+    // level's select (DeviceLevelSelectBlock) on every leaf's entry; each block's writes are fenced before it counts
+    __shared__ int s_last;
+    __threadfence();
+    __syncthreads();
+    if (threadIdx.x == 0) {
+      const unsigned int expected = 2u * static_cast<unsigned int>(dls->live_pairs);
+      CUDADeviceLevelState* st = select_cfg->state;
+      s_last = atomicAdd(&st->sync_blocks_done, 1u) + 1u == expected ? 1 : 0;
+    }
+    __syncthreads();
+    if (s_last != 0) {
+      __threadfence();
+      DeviceLevelSelectBlock(*select_cfg, dls->levels_applied);
+      if (threadIdx.x == 0) {
+        select_cfg->state->sync_blocks_done = 0;
+      }
+    }
+  }
 }
 
 void CUDABestSplitFinder::LaunchFindBestSplitsForLevelKernel(
@@ -6668,7 +6709,7 @@ void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
       used_list ? cuda_used_task_indices_.RawDataReadOnly() : nullptr, used_list ? num_used_tasks_ : num_tasks_, \
       LevelNodeMaskTable(nullptr), LevelNodeTaskLists(nullptr), \
       cuda_best_split_info_.RawData(), num_tasks_, min_data_in_leaf_, min_sum_hessian_in_leaf_, gate_on_desc_counts, \
-      leaf_mirror, device_level_state_
+      leaf_mirror, device_level_state_, device_level_select_cfg_
 #if !defined(__HIP_PLATFORM_AMD__)
     const bool sync_copy_batched = FalcataPlan::Get().sync_copy_batched;
 #else
@@ -6679,8 +6720,10 @@ void CUDABestSplitFinder::LaunchSyncBestSplitForLevelKernel(
       sync_copy_batched ? SyncBestSplitForLevelUsedTasksKernel<true> : SyncBestSplitForLevelUsedTasksKernel<false>,
       used_grid_dim, dim3(kSyncUsedTasksThreads), 0, cuda_streams_[0], SyncBestSplitForLevelUsedTasksKernel_ARGS);
     #undef SyncBestSplitForLevelUsedTasksKernel_ARGS
+    last_sync_ran_select_ = device_level_select_cfg_ != nullptr;
     return;
   }
+  last_sync_ran_select_ = false;
   dim3 grid_dim(2, num_pairs, num_blocks_per_leaf);
 #if !defined(__HIP_PLATFORM_AMD__)
   const bool sync_copy_batched = FalcataPlan::Get().sync_copy_batched;

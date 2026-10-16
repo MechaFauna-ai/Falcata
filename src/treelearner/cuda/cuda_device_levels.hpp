@@ -46,10 +46,12 @@ struct CUDAHybridGraphFeatureSource;
 
 /*! \brief most pairs of one device level (the select / pairs kernels' block covers 2 * this) */
 constexpr int kDeviceLevelMaxPairs = 512;
-/*! \brief journal layout (ints): [0] applied levels, [1] total splits, [2] error flags, [3 + L] splits of level L,
- *  then per split in applied order {left leaf, inner feature} at kDeviceLevelJournalHeader */
+/*! \brief journal layout (ints): [0] applied levels, [1] total splits, [2] error flags, [3, 5) reserved,
+ *  [kDeviceLevelJournalLevels + L] splits of level L, then per split in applied order {left leaf, inner feature} at
+ *  kDeviceLevelJournalHeader */
 constexpr int kDeviceLevelMaxLevels = 16;
-constexpr int kDeviceLevelJournalHeader = 3 + kDeviceLevelMaxLevels;
+constexpr int kDeviceLevelJournalLevels = 5;
+constexpr int kDeviceLevelJournalHeader = kDeviceLevelJournalLevels + kDeviceLevelMaxLevels;
 
 /*! \brief device-side counts of the level in flight, written by the select and pairs kernels and read by the
  *  worst-case launches (nullptr everywhere on the host-launched path) */
@@ -71,6 +73,8 @@ struct CUDADeviceLevelState {
   int done;
   /*! \brief rows of the tree's root (the in-bag rows), from the partition's leaf 0 at the reset */
   data_size_t root_num_data;
+  /*! \brief blocks of the level sync that wrote their leaf entry (the last one runs the next level's select) */
+  unsigned int sync_blocks_done;
   // ---- written by DeviceLevelPairsKernel (the children's search) ----
   /*! \brief pairs of the search in flight (== the applied level's splits) */
   int live_pairs;

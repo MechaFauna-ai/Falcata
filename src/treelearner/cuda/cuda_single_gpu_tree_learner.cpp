@@ -3642,14 +3642,19 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
   cuda_best_split_finder_->SetDeviceLevelState(dls);
   const score_t* grad_scale = cuda_gradient_discretizer_->grad_scale_ptr();
   const score_t* hess_scale = cuda_gradient_discretizer_->hess_scale_ptr();
+  // the level's select ran in the last block of the previous level's sync (the root level's: a launch of its own)
+  bool select_ran = false;
+  const CUDADeviceLevelConfig* cfg_device = cuda_device_level_config_.RawDataReadOnly();
   for (int level = 0; level < num_levels; ++level) {
     const int max_splits = 1 << level;
     // the level's host decisions (after its search on this stream), then the apply and the tree record behind them
-    LaunchDeviceLevelSelect(cfg, level, max_splits, find_stream);
+    if (!select_ran) {
+      LaunchDeviceLevelSelect(cfg, level, max_splits, find_stream);
+    }
     CUDASUCCESS_OR_FATAL(cudaEventRecord(device_level_select_event_, find_stream));
     CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(tree_stream, device_level_select_event_, 0));
     // (the apply's last block writes the children's descriptors and block map: DeviceLevelPairsBlock)
-    cuda_data_partition_->LaunchDeviceLevelApply(max_splits, dls, cuda_device_level_config_.RawDataReadOnly());
+    cuda_data_partition_->LaunchDeviceLevelApply(max_splits, dls, cfg_device);
     tree->LaunchSplitBatchKernelDevice(max_splits, &dls->live_splits);
     CUDASUCCESS_OR_FATAL(cudaEventRecord(tree_record_done_event_, tree_stream));
     // the children's search behind the apply
@@ -3657,8 +3662,11 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
       cuda_hybrid_pair_descs_.RawDataReadOnly(), max_splits, /*max_num_data_in_smaller_leaf=*/0,
       /*any_pair_needs_bit_change_copy=*/true);
     cuda_best_split_finder_->WaitOnCatSlabConsumers(nullptr, tree_record_done_event_);
+    cuda_best_split_finder_->SetDeviceLevelSelect(level + 1 < num_levels ? cfg_device : nullptr);
     cuda_best_split_finder_->FindBestSplitsForLevel(
       cuda_hybrid_pair_descs_.RawDataReadOnly(), max_splits, grad_scale, hess_scale);
+    select_ran = cuda_best_split_finder_->LastSyncRanSelect();
+    cuda_best_split_finder_->SetDeviceLevelSelect(nullptr);
   }
   cuda_histogram_constructor_->SetDeviceLevelState(nullptr);
   cuda_best_split_finder_->SetDeviceLevelState(nullptr);
@@ -3809,7 +3817,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   int cursor = 0;
   pairs->clear();
   for (int level = 0; level < levels_applied; ++level) {
-    const int level_splits = journal[3 + level];
+    const int level_splits = journal[kDeviceLevelJournalLevels + level];
     CHECK_GE(level_splits, 1);
     device_level_applied_.clear();
     for (int k = 0; k < level_splits; ++k) {
