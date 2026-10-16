@@ -184,20 +184,32 @@ import json, sys
 import numpy as np
 import falcata as flc
 cfg = json.loads(sys.argv[1])
-rng = np.random.default_rng(7)
-X = rng.standard_normal((20000, 12)).astype(np.float32)
-X[:, :3] = np.round(X[:, :3])
-z = X[:, 0] + 0.3 * rng.standard_normal(20000)
 kind = cfg.pop("_labels")
+# label kinds with exact counts: 256 / 257 values in equal numbers (the regression gradients are then 256 / 257
+# half-integers or integers), and 0 / 0.5 / 1 whose mean is 0.5 + 2.5e-5 (one gradient value ~2.5e-5: the exactness
+# bound fails at 20000 rows)
+rows = {"values256": 256 * 78, "values257": 257 * 77}.get(kind, 20000)
+rng = np.random.default_rng(7)
+X = rng.standard_normal((rows, 12)).astype(np.float32)
+X[:, :3] = np.round(X[:, :3])
+z = X[:, 0] + 0.3 * rng.standard_normal(rows)
 if kind == "binary":
     y = (z > 0).astype(np.float32)
 elif kind == "lattice":
     y = (np.digitize(z, [-1.0, 0.0, 1.0]) * 0.25).astype(np.float32)
+elif kind == "tenths5":
+    y = (np.digitize(z, [-1.0, -0.3, 0.3, 1.0]) * 0.1).astype(np.float32)
+elif kind == "tenths7":
+    y = (np.digitize(z, [-1.5, -1.0, -0.3, 0.3, 1.0, 1.5]) * 0.1).astype(np.float32)
 elif kind == "multiclass":
     y = np.digitize(z, [-1.0, 0.0, 1.0]).astype(np.float32)
+elif kind in ("values256", "values257"):
+    y = rng.permutation(np.arange(rows) % int(kind[-3:])).astype(np.float32)
+elif kind == "boundfail":
+    y = rng.permutation(np.concatenate([np.zeros(6999), np.full(6001, 0.5), np.ones(7000)])).astype(np.float32)
 else:
     y = z.astype(np.float32)
-w = rng.uniform(0.5, 2.0, 20000).astype(np.float32) if cfg.pop("_weights", False) else None
+w = rng.uniform(0.5, 2.0, rows).astype(np.float32) if cfg.pop("_weights", False) else None
 ds = flc.Dataset(X, label=y, weight=w, params={"max_bin": 63, "verbose": -1})
 flc.train(cfg, ds, num_boost_round=4)
 """
@@ -251,8 +263,27 @@ def _small(objective, **extra):
         (_small("binary"), "binary", True, "deterministic construct: weights"),
         # continuous labels: thousands of gradient values
         (_small("regression"), "continuous", False, "deterministic construct: more than 256 gradient values"),
+        # the 256 / 257 boundary
+        (_small("regression"), "values256", False, "count construct"),
+        (_small("regression"), "values257", False, "deterministic construct: more than 256 gradient values"),
+        # one gradient value of ~2.5e-5 next to +-0.5: 2 max|M| n >= 2^53
+        (_small("regression"), "boundfail", False, "deterministic construct: exactness bound"),
+        # label weights scale the hessian per class: not constant
+        (_small("binary", is_unbalance=True), "binary", False, "deterministic construct: hessian not constant"),
     ],
-    ids=["binary", "multiclassova", "multiclass", "regression", "huber", "weights", "continuous"],
+    ids=[
+        "binary",
+        "multiclassova",
+        "multiclass",
+        "regression",
+        "huber",
+        "weights",
+        "continuous",
+        "values256",
+        "values257",
+        "boundfail",
+        "unbalanced",
+    ],
 )
 def test_count_hist_engagement(params, labels, weights, expected):
     lines = _diag(params, labels=labels, weights=weights)
@@ -287,3 +318,145 @@ def test_count_hist_non_qualifying_keeps_the_old_path(objective, labels, weights
     ref = _train(params, OFF, X, y, 4, weight=w)
     got = _train(params, ON, X, y, 4, weight=w)
     assert _md5(got) == _md5(ref)
+
+
+@pytest.mark.parametrize(
+    ("labels", "layout"),
+    [("binary", "packed"), ("values256", "packed"), ("tenths5", "per-value counts"), ("tenths7", "wide")],
+)
+def test_count_hist_layouts(labels, layout):
+    # the code layout the values call for (one 64-bit word for small code sums; per-value row counts for 3-6 values
+    # whose code sums do not fit 32 bits; a 64-bit sum and a 32-bit count otherwise) ...
+    lines = _diag(_small("regression"), labels=labels)
+    codes = [line for line in lines if " codes for gradients " in line]
+    assert codes, lines
+    assert all(line.rstrip().endswith(layout) or (layout + " ") in line for line in codes), lines
+    assert any(line == "[count-hist-diag] count construct" for line in lines), lines
+
+
+@pytest.mark.parametrize("labels", ["tenths5", "tenths7"])
+def test_count_hist_layouts_same_model(labels):
+    # ... and the same model as the key off in every layout
+    rng = np.random.default_rng(5)
+    X = rng.standard_normal((30011, 16)).astype(np.float32)
+    X[:, :4] = np.round(X[:, :4] * 2)
+    z = X[:, 0] - 0.5 * X[:, 1] + 0.3 * rng.standard_normal(len(X))
+    cuts = [-1.0, -0.3, 0.3, 1.0] if labels == "tenths5" else [-1.5, -1.0, -0.3, 0.3, 1.0, 1.5]
+    y = (np.digitize(z, cuts) * 0.1).astype(np.float32)
+    params = _params("regression", "selective")
+    ref = _train(params, OFF, X, y, 5)
+    got = _train(params, ON, X, y, 5)
+    assert _md5(got) == _md5(ref)
+
+
+def test_count_hist_default_plan():
+    # the default plan (graph loop allowed: the forest slots never take it)
+    X, y = _data("binary")
+    params = _params("binary", "selective")
+    ref = _train(params, "auto,forest_count_hist:off", X, y, 6)
+    got = _train(params, "auto", X, y, 6)
+    assert _md5(got) == _md5(ref)
+
+
+def test_count_hist_reset_rebuilds_codes():
+    # a parameter reset every round clears the codes cache (the learners' ResetConfig); every tree after it builds the
+    # codes again and the model is the key-off one
+    X, y = _data("multiclass")
+    params = _params("multiclass", "std")
+    models = []
+    for plan in (OFF, ON):
+        ds = flc.Dataset(
+            X, label=y, params={"max_bin": 63, "verbose": -1, "feature_pre_filter": False}, free_raw_data=False
+        )
+        b = flc.train(
+            {**params, "cuda_plan": plan},
+            ds,
+            num_boost_round=5,
+            callbacks=[flc.reset_parameter(min_data_in_leaf=lambda i: 20 + (i % 2))],
+        )
+        models.append(_md5(b))
+    assert models[0] == models[1]
+
+
+def test_count_hist_level_beyond_det_pairs():
+    # 300 features x 255 bins at depth 12: levels with more pairs than the deterministic slot slab holds rows of this
+    # wide histogram (key off: the float atomic kernel there); the count construct serves them in chunks of the
+    # scratch's rows, run to run the same, and gives the trees of the per-leaf deterministic construct (hybrid:off, key
+    # off)
+    rng = np.random.default_rng(9)
+    X = rng.standard_normal((100000, 300)).astype(np.float32)
+    z = X[:, 0] - 0.5 * X[:, 1] + np.sin(X[:, 4]) + 0.2 * X[:, 5:25].sum(1) + 0.5 * rng.standard_normal(len(X))
+    y = (z > 0).astype(np.float32)
+    params = _params("binary", "depth", max_depth=12, max_bin=255, feature_fraction_bynode=0.1)
+    ds = flc.Dataset(X, label=y, params={"max_bin": 255, "verbose": -1, "min_data_in_leaf": 1}, free_raw_data=False)
+    got = flc.train({**params, "cuda_plan": ON}, ds, num_boost_round=2)
+    again = flc.train({**params, "cuda_plan": ON}, ds, num_boost_round=2)
+    ref = flc.train({**params, "cuda_plan": OFF + ",hybrid:off"}, ds, num_boost_round=2)
+    assert _md5(again) == _md5(got)
+    # wide levels: about 1000 pairs at depth 11 (the slot slab holds fewer rows of this 76.5k-bin histogram)
+    assert max(t["num_leaves"] for t in got.dump_model()["tree_info"]) > 1500
+    np.testing.assert_array_equal(got.predict(X[:5000]), ref.predict(X[:5000]))
+
+
+_OOM_CHILD = """
+import hashlib, json, sys
+import numpy as np
+import falcata as flc
+rng = np.random.default_rng(3)
+X = rng.standard_normal((20000, 16)).astype(np.float32)
+y = (X[:, 0] + 0.3 * rng.standard_normal(20000) > 0).astype(np.float32)
+params = json.loads(sys.argv[1])
+ds = flc.Dataset(X, label=y, params={"max_bin": 63, "verbose": -1})
+b = flc.train(params, ds, num_boost_round=24)
+model = b.model_to_string()
+out, skip = [], False
+for line in model.splitlines():
+    if line.startswith("parameters:"):
+        skip = True
+    if not skip:
+        out.append(line)
+    if line.startswith("end of parameters"):
+        skip = False
+print("MD5", hashlib.md5("\\n".join(out).encode()).hexdigest())
+"""
+
+
+def _oom_child(params, inject):
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    if inject is not None:
+        env["FALCATA_TEST_FOREST_OOM_GROUP"] = str(inject)
+    res = subprocess.run(
+        [sys.executable, "-c", _OOM_CHILD, json.dumps(params)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=900,
+        check=False,
+    )
+    assert res.returncode == 0, res.stderr[-3000:]
+    md5 = [line.split()[1] for line in res.stdout.splitlines() if line.startswith("MD5 ")]
+    return md5[0], res.stdout + res.stderr
+
+
+@pytest.mark.parametrize("quant_mode", ["none", "stochastic"])
+def test_forest_group_out_of_memory_retried(quant_mode):
+    # a group that fails for device memory is grown again on one round's slots (the others freed), with a warning:
+    # the same forest as an undisturbed run (the trees do not depend on the group size)
+    params = {
+        "boosting": "rf",
+        "device_type": "cuda",
+        "objective": "binary",
+        "num_leaves": 63,
+        "bagging_fraction": 0.632,
+        "bagging_freq": 1,
+        "feature_fraction_bynode": 0.5,
+        "quant_mode": quant_mode,
+        "metric": "None",
+        "seed": 3,
+        "verbose": 0,
+        "cuda_plan": "auto,forest_group:4",
+    }
+    want, _ = _oom_child(params, None)
+    got, log = _oom_child(params, 1)
+    assert got == want
+    assert "ran out of device memory" in log, log[-3000:]
