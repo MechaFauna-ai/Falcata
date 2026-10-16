@@ -3687,6 +3687,10 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
       // the host halves of the captured enqueue: the index buffers swap once per level
       cuda_data_partition_->SwapIndexBuffers(num_levels);
       ++device_level_graph_hits_;
+      if (FalcataDebug().diag && device_level_graph_hits_ + device_level_graph_misses_ == 64) {
+        fprintf(stderr, "[hybrid-diag] device_level_graph: %d hits, %d misses in the first 64 trees (%d cached)\n",
+                device_level_graph_hits_, device_level_graph_misses_, static_cast<int>(device_level_graphs_.size()));
+      }
       return true;
     }
   }

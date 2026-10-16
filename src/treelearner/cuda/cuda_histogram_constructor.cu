@@ -7348,6 +7348,17 @@ void CUDAHistogramConstructor::DeviceLevelConstructShape(CUDADeviceLevelConstruc
   shape->whole_row_joint = whole_rows ? static_cast<uint32_t>(compact_pair_joint_total_) : 0u;
 }
 
+bool CUDAHistogramConstructor::DeviceLevelGraphCapturable() {
+  if (!nibble_pending_) {
+    return true;
+  }
+  // a pending nibble view is materialized by its first reader: only the code-view constructs, which read the code
+  // view itself, launch nothing else
+  CUDADeviceLevelConstructShape shape;
+  DeviceLevelConstructShape(&shape);
+  return shape.pair_mode == 1 && shape.kernel_kind >= 2;
+}
+
 void CUDAHistogramConstructor::LaunchDeviceLevelPairJoint(const CUDAHybridPairDescriptor* pair_descs) {
   // cuda_plan key device_levels: a device level's pair-joint construct (the pair_hist branch of
   // LaunchConstructHistogramBatchedKernelInner0 with the device's block map, grid y and rows floor)

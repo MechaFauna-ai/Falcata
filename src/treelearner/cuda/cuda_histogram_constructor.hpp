@@ -629,7 +629,7 @@ class CUDAHistogramConstructor {
   }
   /*! \brief cuda_plan key device_level_graph: a level search of this tree launches nothing but its kernels (no
    *  pending rewrite of the compact view, which the first nibble-view reader of a tree launches once) */
-  bool DeviceLevelGraphCapturable() const { return !nibble_pending_; }
+  bool DeviceLevelGraphCapturable();
   /*! \brief cuda_plan key device_levels: the construct shape this tree's multi-pair levels take (the dense kernel or
    *  the pair-joint family, LaunchConstructHistogramBatchedKernelInner0's tree-constant decisions) */
   void DeviceLevelConstructShape(CUDADeviceLevelConstructShape* shape);
