@@ -2032,7 +2032,10 @@ reset, early stopping) rewind the counters and the sampler. Group size (`cuda_pl
 auto starts with one round (its class trees in parallel) and doubles while a size's time per tree (the mean of two
 steady-state groups) drops below 0.85 of the previous size's, up to 32 trees; a doubling that gains less is kept if it
 gained at all, else the size goes back. It is capped by `num_iterations` and by device memory (a slot's measured
-footprint, its Init plus its first tree, beside an eighth of the device). Fixedpoint error feedback (a
+footprint, its Init plus its first tree, beside a reserve of max(1 GiB, an eighth of the device, twice a slot's
+first-tree bytes)); a group that leaves less than the reserve free halves the next group and frees the slots beyond it,
+and a group that runs out of device memory is grown again once on one round's slots, with a warning (the trees do not
+depend on the group size; `FALCATA_TEST_FOREST_OOM_GROUP` injects that failure for a test). Fixedpoint error feedback (a
 residual per class carried from tree to tree) groups one round. Sequential as before: multi-GPU, the host objective,
 GOSS, `bagging_freq` > 1, balanced or by-query bagging, linear trees, forced splits, vector leaves, CEGB, per-node draws
 from the shared stream, `compact_prefill`. The slots never take the graph loop (another thread's legacy-stream work
@@ -2049,7 +2052,10 @@ packed-bit buffers, the level finder's per-task output, the quantized bit-change
 every few trees: each growth is an allocation, a copy, a free and a device synchronize, which stalls every slot (nsys
 with API backtraces, covtype-rf-deep at 7 slots, 10 rounds: 164 partition and 125 finder growths). The trainer sizes
 them for any level when it makes a slot (`PresizeLevelBuffers`: the graph loop's worst case for the partition, levels
-of num_leaves / 2 + 2 pairs for the rest, each up to 256 MiB); sequential training presizes nothing. And the
+of num_leaves / 2 + 2 pairs for the rest (2^(max_depth - 1) + 2 under max_depth), each up to an eighth of the device:
+it was 256 MiB, which left numerai's ~2 GiB level output growing during training, each growth holding the old block
+beside the new; with the faster trees of 10u, six numerai slots growing together peaked at 31.9 GiB of 32 and one
+bench run ran out of memory, presized the peak is 25.6 GiB); sequential training presizes nothing. And the
 construct streams' persisting-L2 window is set only when the gradient buffer changes (it was set at every tree with
 the same value; under 28 threads each of those attribute calls took 0.5 ms of driver time).
 
@@ -2242,6 +2248,90 @@ fewbin regression shape (2.96M x 131, four values, 1023 leaves, bagged 0.5) 1.49
 (**1.0246**), the year-like bagged shape (2.49M x 104 floats, 1023 leaves, bagged 0.5) 1.959 / 1.959 -> 1.927 / 1.927
 (**1.0165**), higgs 1.709 / 1.710 -> 1.691 / 1.700 (1.0080), covtype 1.0032, numerai53bench 1.0035, NaN-Numerai
 1.0027: the gain is largest where the round is short and the rows many (the map's stores were a larger share).
+
+## 10u. A random forest's histograms from counts (`forest_count_hist`)
+
+**Before.** A non-quantized forest (`boosting=rf`, `quant_mode=none`) builds its histograms with the deterministic fp64
+construct whenever the learner engages it (dense data; for a level batch
+`CUDAConstructHistogramDenseGMDeterministicBatchedKernel`): every (pair, partition, row tile) block owns `dy` slot rows
+of doubles in global memory, zeroes them,
+and every (row, column) does a read-modify-write of two doubles there; a second kernel sums the slot rows in a fixed
+order into the leaf histogram. On the depth-12 forests this kernel was 92.5% (higgs, 3.2M x 28) and 79% (numerai,
+400k x 3555) of the kernel time (nsys over 12 trees on master 065ac1eb: 77 and 72 ms per tree). Design note:
+`docs/design/forest-count-histograms.md`.
+
+**`forest_count_hist` (default on).** A forest's gradients are computed once from the init score and, per class
+tree, take few values with one hessian value (binary and per-class trees: two; regression: one per label value). On
+the first tree of a gradient array the learner reads it back once and builds one-byte row codes into a table of at
+most 256 values, written as `base + unit * t` with integer `t` (all values as integer multiples of one power of two
+`2^L`, `unit` = their gcd step). Where the deterministic construct would run (per leaf, compact view included, and
+the level batch, also beyond its slot slab's pair cap and on the compact view, where the key-off batch takes the
+float atomic kernel), the count construct runs instead: each (pair, partition, row tile) block counts in shared
+memory, with integer atomics, per bin the rows `n` and their code sum `S` (one 64-bit word `S << 32 | n` for two
+values; for 3-6 values one row count per value in 64/m-bit fields of one word, a tile then has fewer rows than a
+field holds; otherwise a 64-bit sum and a 32-bit count), adds its nonzero bins to the pair's integer scratch row (the
+deterministic construct's slot slab, unused meanwhile), and a convert kernel stores each bin as `(base * n + unit *
+S, hessian * n)` and zeroes the scratch it read. At most 128 column lanes per block (a lane takes several columns of
+a wide partition, more rows in flight); tiles of at least 8 (row, column) adds per partition bin, up to about 32
+blocks per SM. The codes are kept for the training (a cache per gradient array shared with the forest slots, cleared
+by a reset of the training data or the config).
+
+**Exact, so the same model.** The codes are built only when every hessian is the same finite positive float, at most
+256 gradient values, `num_data < 2^29`, and `2 * max|M| * num_data < 2^53` for the values' integers `M` in units of
+`2^L`. Then every partial sum of the deterministic construct is an exact double (its histogram is the true sum), and
+`base * n`, `unit * S` and their sum are exact too: the stored pairs are the same bits, and the fix, subtraction,
+finder, leaf sums and outputs downstream run unchanged on them. The model is md5-identical to the key-off model
+wherever the key-off learner runs the deterministic construct (every depth-12 forest and every forest cell). Where it
+does not, it runs the float atomic construct, whose shared-memory float sums round: the compact view's level batch, and
+levels with more pairs than the deterministic slot slab holds (1024 on numerai and higgs, so depth 16 and unlimited
+forests' levels from depth 12 on). There the count construct gives the exact sums and the model is deterministic but
+not the key-off model: numerai d16, 4 trees, key off vs on, first differing node at depth 13-16, Pearson 0.1352 ->
+0.1349 (d16), 0.1357 -> 0.1356 (d-1 m5), 0.1377 -> 0.1376 (d-1); higgs and covtype metrics unchanged to 4 digits.
+The three forest datasets
+pass with room: higgs `2B` about 2^48, covtype's rarest class about 2^51, numerai's five values about 2^52 (`L` = -34,
+from `s0 - 0.5` = -2.5e-4). A tree that does not qualify keeps the deterministic construct: other objectives (the gate
+names binary, multiclass, multiclassova and regression), the host objective, GOSS, weights, quantized gradients (their
+own integer pipeline), multi-GPU, vector leaves, the graph loop, sparse or large-bin data, fp32 histograms, and data
+that fail the check (`FALCATA_DEBUG=diag` prints `[count-hist-diag]` with the reason). gbdt never takes it.
+
+Also: `RF::Boosting` fills the init score columns (the gradients' input, and the residual base the renewing
+objectives keep) on the device instead of filling a host column and uploading it. Same doubles.
+
+Measured (relaxed gpuq jobs, one RTX 5090, desktop on; stock = master 4641c9f0, candidate on 307b16e1 whose src and
+include equal 4641c9f0's). The forest cells (`cells_e2e`, 2 pairs, warmup 10, T = first call + mean ms per round x 99;
+kernel-evo `runs/forest/stage3/cells_*`):
+
+| cell | stock mean ms/round | candidate | T ratio vs stock | T ratio key off -> on | md5 stock = candidate |
+|---|---:|---:|---:|---:|---|
+| higgs-rf-deep (binary, depth 12, quant none) | 63.1 | 4.8 | 10.35 | 10.24 | 9a0569a9 = 9a0569a9 |
+| numerai-rf-deep (regression, 5 label values, depth 12, quant none) | 87.8 | 31.7 | 2.59 | 2.59 | 3c1507e5 = 3c1507e5 |
+| covtype-rf-std (7 classes, 255 leaves, depth 8, quant none) | 17.7 | 4.1 | 3.52 | 3.38 | dfa4ae7b = dfa4ae7b |
+| covtype-rf-deep (quant stochastic: not engaged) | 28.1 | 27.2 | 1.03 | 1.00 | 160a5c43 = 160a5c43 |
+
+The gbdt cells (numerai53bench-deep-stoch, higgs-deep-stoch, covtype-deep-fixed: T ratio 0.999, 0.999, 0.999,
+md5-identical) do not take the key. The forest benchmark (kernel-evo `falcata/prof/forest_bench.py`, 100 trees,
+medians of 3, `runs/forest/stage3/bench_compare.md`), fit seconds stock -> candidate for the quant-none rows:
+
+| config | covtype | higgs | numerai |
+|---|---|---|---|
+| d12, min_data 1 | 2.66 -> 1.02 (2.6x) | 6.56 -> 0.66 (9.9x) | 9.48 -> 4.22 (2.2x) |
+| d16 | 4.00 -> 1.53 (2.6x) | 7.22 -> 1.21 (6.0x) | 14.35 -> 7.11 (2.0x) |
+| depth -1 (4095 leaves) | 8.25 -> 3.39 (2.4x) | 7.26 -> 1.24 (5.9x) | 15.66 -> 7.92 (2.0x) |
+| depth -1, max_bin 127 | 6.20 -> 2.78 (2.2x) | 6.85 -> 0.95 (7.2x) | 15.68 -> 8.06 (1.9x) |
+| depth -1, min_data 5 | 6.50 -> 3.00 (2.2x) | 7.28 -> 1.23 (5.9x) | 15.05 -> 7.34 (2.1x) |
+| 511 leaves | 4.10 -> 1.75 (2.3x) | 5.66 -> 0.37 (15.3x) | 8.01 -> 2.64 (3.0x) |
+
+The quantized rows and gbdt_ref are unchanged (0.99-1.01x). After the change numerai's count construct is 12 ms of ~21 ms of kernel time per
+tree (wide partitions of 504 4-bit columns with five bins each: the shared atomics contend), higgs' 2 ms of 5.
+`tests/python_package_test/test_cuda_forest_count_hist.py`: key off vs on md5 and predictions for every qualifying
+objective (binary balanced and imbalanced, multiclass, multiclassova, regression with five label values and with 0/1
+labels) on selective, depth-limited and standard shapes with bagging and bynode < 1; bynode = 1, sequential
+(`forest_batched:off`), a group size, max_bin 255; run-to-run determinism; the compact view (deterministic, close to
+the key off); engagement and the reasons it does not engage (huber, weights, continuous labels; key off, quantized,
+gbdt), with the model unchanged where it does not; the three code layouts and their models, the 256/257-value
+boundary, the exactness bound, a non-constant hessian, the default plan, a parameter reset rebuilding the codes,
+levels wider than the slot slab (the per-leaf deterministic trees), and a forest group out of device memory grown again
+(same md5).
 
 ## Multi-GPU: level-batched NCCL all-reduce
 

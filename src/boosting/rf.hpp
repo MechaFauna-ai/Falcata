@@ -117,6 +117,26 @@ class RF : public GBDT {
       init_scores_[cur_tree_id] = BoostFromAverage(cur_tree_id, false);
     }
     size_t total_size = static_cast<size_t>(num_data_) * num_tree_per_iteration_;
+    #ifdef USE_CUDA
+    // cuda_plan key rf_device_objective: the objective's kernel computes the gradients into device memory, where
+    // they stay for every tree; the init score column is kept on the device only for the objectives that renew leaf
+    // outputs (their residual base, see TrainOneIter). The columns are filled on the device, one constant per class
+    // (no host column, no upload; the same doubles)
+    cuda_init_score_.Clear();
+    if (boosting_on_gpu_) {
+      CUDAVector<double> gradient_scores;
+      CUDAVector<double>& cuda_scores = objective_function_->IsRenewTreeOutput() ? cuda_init_score_ : gradient_scores;
+      cuda_scores.Resize(total_size);
+      for (int j = 0; j < num_tree_per_iteration_; ++j) {
+        LaunchFillDoubleKernel(cuda_scores.RawData() + static_cast<size_t>(j) * num_data_, init_scores_[j],
+                               static_cast<size_t>(num_data_));
+      }
+      SynchronizeCUDADevice(__FILE__, __LINE__);  // as the synchronous upload did: the columns before any stream reads
+      objective_function_->GetGradients(cuda_scores.RawData(), gradients_pointer_, hessians_pointer_);
+      SynchronizeCUDADevice(__FILE__, __LINE__);
+      return;
+    }
+    #endif  // USE_CUDA
     std::vector<double> tmp_scores(total_size, 0.0f);
     #pragma omp parallel for num_threads(OMP_NUM_THREADS()) schedule(static)
     for (int j = 0; j < num_tree_per_iteration_; ++j) {
@@ -125,22 +145,6 @@ class RF : public GBDT {
         tmp_scores[offset + i] = init_scores_[j];
       }
     }
-    #ifdef USE_CUDA
-    // cuda_plan key rf_device_objective: the objective's kernel computes the gradients into device memory, where
-    // they stay for every tree; the init score column is kept on the device only for the objectives that renew leaf
-    // outputs (their residual base, see TrainOneIter)
-    cuda_init_score_.Clear();
-    if (boosting_on_gpu_) {
-      CUDAVector<double> cuda_scores;
-      cuda_scores.InitFromHostVector(tmp_scores);
-      objective_function_->GetGradients(cuda_scores.RawData(), gradients_pointer_, hessians_pointer_);
-      SynchronizeCUDADevice(__FILE__, __LINE__);
-      if (objective_function_->IsRenewTreeOutput()) {
-        cuda_init_score_.InitFromHostVector(tmp_scores);
-      }
-      return;
-    }
-    #endif  // USE_CUDA
     objective_function_->
       GetGradients(tmp_scores.data(), gradients_.data(), hessians_.data());
   }
@@ -579,6 +583,15 @@ class RF : public GBDT {
       forest_trainer_.reset(new CUDAForestTrainer(config_.get(), train_data_, is_constant_hessian_, boosting_on_gpu_,
                                                   tree_learner_.get()));
     }
+    if (forest_trainer_->memory_low() && per_round > 0) {
+      // the last group left the device below the trainer's reserve: half the rounds per group, and the slots beyond
+      // them freed (the model does not depend on the group size)
+      const int fewer = std::max(1, std::min(rounds, forest_trainer_->num_slots() / per_round) / 2);
+      forest_trainer_->DropSlots(fewer * per_round);
+      forest_auto_rounds_ = fewer;
+      forest_auto_settled_ = true;
+      rounds = std::min(rounds, fewer);
+    }
     const int slots = per_round == 0 ? 1 : forest_trainer_->EnsureSlots(rounds * per_round);
     if (slots < per_round) {
       return false;
@@ -626,10 +639,26 @@ class RF : public GBDT {
     const auto group_start = std::chrono::steady_clock::now();
     try {
       forest_trainer_->Train(jobs, &trees);
-    } catch (...) {
+    } catch (const std::exception& error) {
       // no round of a failed group may be popped (its trees are missing): drop them and rewind the counters and the
       // sampler, so a caller that catches the error and trains on gets the sequential trees
       ResetForest(true);
+      // a group that ran out of device memory with more slots than one round needs is grown again once, on one
+      // round's slots (the others freed): the trees do not depend on the group size
+      if (!forest_oom_retried_ && per_round > 0 && forest_trainer_->num_slots() > per_round &&
+          std::string(error.what()).find("out of memory") != std::string::npos) {
+        forest_oom_retried_ = true;
+        Log::Warning("rf: a group of %d trees ran out of device memory; growing %d tree(s) per group from here on",
+                     static_cast<int>(jobs.size()), per_round);
+        SynchronizeCUDADevice(__FILE__, __LINE__);
+        forest_trainer_->DropSlots(per_round);
+        forest_auto_rounds_ = 1;
+        forest_auto_settled_ = true;
+        return GrowForestGroup();
+      }
+      throw;
+    } catch (...) {
+      ResetForest(true);  // as above: no round of the failed group is popped
       throw;
     }
     const double group_ms =
@@ -713,6 +742,8 @@ class RF : public GBDT {
   int forest_auto_last_rounds_ = 0;
   double forest_auto_last_ms_ = 0.0;
   bool forest_auto_settled_ = false;
+  /*! \brief whether a group was already grown again after running out of device memory (once per training) */
+  bool forest_oom_retried_ = false;
   /*! \brief the current size's steady-state groups so far and their summed time per tree */
   int forest_auto_size_groups_ = 0;
   double forest_auto_size_ms_ = 0.0;

@@ -15,6 +15,9 @@
 
 namespace Falcata {
 
+/*! \brief out[0, n) = val on the device (legacy default stream): a forest's init score column (RF::Boosting) */
+void LaunchFillDoubleKernel(double* out, double val, size_t n);
+
 class CUDAScoreUpdater: public ScoreUpdater {
  public:
   CUDAScoreUpdater(const Dataset* data, int num_tree_per_iteration, const bool boosting_on_cuda);

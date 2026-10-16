@@ -694,6 +694,17 @@ struct FalcataPlan {
   // trees of one round). Off: one tree after another (stage-1 behaviour), also without the conditions (bagging or
   // no sampling, no GOSS, linear trees, forced splits, CEGB, multi-GPU, vector leaves, compact_prefill).
   bool forest_batched = true;  // key: forest_batched
+  // random forest (boosting=rf, objective binary, multiclass, multiclassova or regression, the device objective, no
+  // GOSS, no weights, one GPU, not quantized): the forest's gradients are constant per class and take few values, so
+  // where the non-quantized learner runs the deterministic fp64 construct (per-row-group slot rows of doubles in
+  // global memory, merged in a fixed order) it runs a count construct instead: one byte per row codes the row's
+  // gradient value (built once per class from the gradient array), shared-memory integer atomics count per bin the
+  // rows n and their code sum S, and a convert kernel stores the fp64 pair (base * n + unit * S, hessian * n). A
+  // check when the codes are built (at most 256 values, constant hessian, 2 max|M| n < 2^53 in the values' common
+  // power-of-two unit) makes every product and sum exact, so the histogram is bit-identical to the deterministic
+  // construct's and so is the model (docs/design/forest-count-histograms.md). Off, or a tree that fails the
+  // conditions: the deterministic construct as before.
+  bool forest_count_hist = true;  // key: forest_count_hist
   // selective growth's recycled histogram slots (CUDAHistogramConstructor::ZeroHistSlots, after a level's collapse):
   // one slot-list copy and one zeroing kernel on the legacy default stream instead of one memset per slot (a deep
   // tree of thousands of leaves recycles thousands of slots; each memset is an API call). Same zeros: bit-identical.
@@ -1027,6 +1038,7 @@ struct FalcataPlan {
     if (key == "rf_lazy_train_score") return &rf_lazy_train_score;
     if (key == "level_bynode_masks") return &level_bynode_masks;
     if (key == "forest_batched") return &forest_batched;
+    if (key == "forest_count_hist") return &forest_count_hist;
     if (key == "zero_slots_kernel") return &zero_slots_kernel;
     if (key == "root_sums_warp") return &root_sums_warp;
     if (key == "minmax_warp") return &minmax_warp;
