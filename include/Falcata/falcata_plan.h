@@ -72,6 +72,16 @@ struct FalcataPlan {
   // (covtype-shallow-class), and the default trades that determinism for
   // speed like the fp32 opt-ins do.
   bool graph_det = false;           // key: graph_det
+  // non-quantized training (quant_mode=none) deterministic by default: the batched level construct accumulates in
+  // 64-bit fixed point wherever it used float atomics (the graph level loop, compact column views, levels wider than
+  // the deterministic slot slab): each row's gradient and hessian, scaled by a per-tree power of two (exact), are
+  // rounded once to integers and summed with integer atomics, which commute, then converted in place to hist_t
+  // (per-row rounding about max|g| * num_data * 2^-63, finer than the gradients' own float32 rounding). The per-leaf
+  // and host batched deterministic constructs keep running where they ran (their models are unchanged), and
+  // cuda_precision=fp32 keeps its fp32 gain math on hist_t histograms. The same seed then trains the same model on
+  // every run. Off = the float-atomic kernels (the only mode whose models vary run to run). Quantized training
+  // never reads the key (its integer histograms are deterministic already).
+  bool nonquant_deterministic = true;  // key: nonquant_deterministic
   // per-tree compact column view for quantized construct at any
   // 0 < feature_fraction < 1 (win scales with the excluded fraction:
   // ~3.4x at ff=0.1, ~1.1x at ff=0.6)
@@ -946,6 +956,7 @@ struct FalcataPlan {
     if (key == "graph_loop") return &graph_loop;
     if (key == "graph_quant") return &graph_quant;
     if (key == "graph_det") return &graph_det;
+    if (key == "nonquant_deterministic") return &nonquant_deterministic;
     if (key == "compact_quant") return &compact_quant;
     if (key == "row_batch") return &row_batch;
     if (key == "fused_root_hist") return &fused_root_hist;

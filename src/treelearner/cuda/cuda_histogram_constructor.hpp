@@ -51,6 +51,14 @@ __device__ __forceinline__ size_t PackedPartitionRows(const int* offsets, const 
 }
 }  // namespace Falcata
 #define NUM_THREADS_PER_BLOCK (504)
+
+namespace Falcata {
+/*! \brief cuda_plan key nonquant_deterministic: the accumulator of the batched non-quantized construct. Each row's
+ *  gradient and hessian, pre-scaled by a power of two (exact), are rounded once to 64-bit integers; integer sums do
+ *  not depend on the order the atomics land in, so the histogram is the same on every run. Two's complement in an
+ *  unsigned word (the atomics' type); read back as int64. */
+typedef atomic_add_long_t nq_fixed_t;
+}  // namespace Falcata
 #define NUM_FEATURE_PER_THREAD_GROUP (28)
 #define SUBTRACT_BLOCK_SIZE (1024)
 #define FIX_HISTOGRAM_SHARED_MEM_SIZE (1024)
@@ -534,6 +542,23 @@ class CUDAHistogramConstructor {
   /*! \brief kill-switch of the small-leaf construct path
    *  (cuda_plan=auto,small_leaf_construct:off restores the shared-memory
    *  batched kernels for every level) */
+  /*! \brief cuda_plan key nonquant_deterministic under non-quantized training: every construct takes the
+   *  deterministic kernels (never true under quantized training) */
+  bool NonquantDet() const {
+    return !use_quantized_grad_ && FalcataPlan::Get().nonquant_deterministic;
+  }
+
+  /*! \brief the batched dense construct accumulates in 64-bit fixed point (nonquant_deterministic, scalar trees;
+   *  the levels the deterministic batched construct does not take) */
+  bool NonquantFixedActive() const { return NonquantDet() && num_hist_planes_ == 1; }
+  /*! \brief the gradient sources of a batched non-quantized construct launch: the 2^S-scaled copies under a
+   *  fixed-point launch, the tree's gradients otherwise */
+  const score_t* NqConstructGrad() const { return nq_fixed_launch_ ? nq_scaled_grad_.RawDataReadOnly() : cuda_gradients_; }
+  const score_t* NqConstructHess() const { return nq_fixed_launch_ ? nq_scaled_hess_.RawDataReadOnly() : cuda_hessians_; }
+  const float2* NqConstructGH() const {
+    return nq_fixed_launch_ ? nq_scaled_gh_.RawDataReadOnly() : cuda_gradients_hessians_.RawDataReadOnly();
+  }
+
   static bool SmallLeafConstructEnabled() {
     return FalcataPlan::Get().small_leaf_construct;
   }
@@ -929,6 +954,18 @@ class CUDAHistogramConstructor {
     const int num_pairs,
     const data_size_t max_num_data_in_smaller_leaf,
     const data_size_t* level_smaller_num_data);
+
+  /*! \brief nonquant_deterministic: converts the level's fixed-point smaller-leaf histograms (int64 words written by
+   *  the fixed-point batched construct) in place to hist_t, under the construct's own per-pair gates (blockIdx.y =
+   *  pair; gstate: the graph loop's live-pair guard, nullptr on the host path). Returns the grid's x extent. */
+  int LaunchConvertFixedHistBatched(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    CUDAHybridGraphLoopStateOpt gstate);
+
+  /*! \brief dynamic shared bytes for a batched construct launch: the fixed-point table's under a fixed-point launch
+   *  (raising the kernel's max-dynamic-shared attribute once), else 0 (static tables) */
+  size_t NqFixedSmem(const void* kernel);
 
   /*! \brief whether the batched non-quantized construct of a num_pairs-wide
    *  level takes the deterministic dense construct+merge instead of the atomic
@@ -1449,6 +1486,22 @@ class CUDAHistogramConstructor {
   /*! \brief per-tree interleaved (gradient, hessian) pairs (see GHInterleaveEnabled);
    *  filled by BeforeTrain, consumed by the non-quantized dense construct kernels */
   CUDAVector<float2> cuda_gradients_hessians_;
+  // nonquant_deterministic (fixed-point batched construct): the tree's gradients and hessians times 2^S_g / 2^S_h
+  // (exact power-of-two scalings chosen from the tree's max |g|, max |h| and num_data so no sum can overflow 63
+  // bits), separate or as the interleaved pairs; the 1/2^S pair the convert kernel multiplies by; the max |g|, |h|
+  // bit patterns (order-free atomicMax)
+  CUDAVector<score_t> nq_scaled_grad_;
+  CUDAVector<score_t> nq_scaled_hess_;
+  CUDAVector<float2> nq_scaled_gh_;
+  CUDAVector<double> nq_inv_scale_;
+  CUDAVector<uint32_t> nq_absmax_bits_;
+  // set while the batched construct launches its fixed-point instantiation: the launch sites read the scaled
+  // gradients and pass the fixed table's dynamic shared memory
+  bool nq_fixed_launch_ = false;
+  // dynamic shared bytes of the fixed-point table (the widest partition's items x 8) and the kernels whose
+  // max-dynamic-shared attribute is already raised to it
+  size_t nq_fixed_smem_bytes_ = 0;
+  std::vector<const void*> nq_fixed_smem_set_;
   /*! \brief whether cuda_gradients_hessians_ holds this tree's gradients */
   bool gh_interleave_valid_ = false;
 

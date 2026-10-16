@@ -159,6 +159,10 @@ void LaunchInterleaveGradHessKernel(
   float2* gradients_hessians,
   data_size_t num_data);
 
+void LaunchNonquantFixedScale(const score_t* gradients, const score_t* hessians, const data_size_t n,
+                              uint32_t* absmax_bits, score_t* scaled_grad, score_t* scaled_hess, float2* scaled_gh,
+                              double* inv_scale);
+
 void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score_t* hessians) {
   cuda_gradients_ = gradients;
   cuda_hessians_ = hessians;
@@ -201,6 +205,26 @@ void CUDAHistogramConstructor::BeforeTrain(const score_t* gradients, const score
     LaunchInterleaveGradHessKernel(gradients, hessians,
                                    cuda_gradients_hessians_.RawData(), num_data_);
     gh_interleave_valid_ = true;
+  }
+  // cuda_plan key nonquant_deterministic: the fixed-point batched construct reads this tree's gradients and hessians
+  // scaled by powers of two (interleaved like the pairs above when those are on); same legacy-stream ordering
+  if (!use_quantized_grad_ && NonquantFixedActive() && gradients != nullptr && hessians != nullptr) {
+    if (nq_inv_scale_.Size() < 2) {
+      nq_inv_scale_.Resize(2);
+      nq_absmax_bits_.Resize(2);
+    }
+    if (gh_interleave_valid_) {
+      if (nq_scaled_gh_.Size() < static_cast<size_t>(num_data_)) {
+        nq_scaled_gh_.Resize(static_cast<size_t>(num_data_));
+      }
+    } else if (nq_scaled_grad_.Size() < static_cast<size_t>(num_data_)) {
+      nq_scaled_grad_.Resize(static_cast<size_t>(num_data_));
+      nq_scaled_hess_.Resize(static_cast<size_t>(num_data_));
+    }
+    LaunchNonquantFixedScale(gradients, hessians, num_data_, nq_absmax_bits_.RawData(),
+                             gh_interleave_valid_ ? nullptr : nq_scaled_grad_.RawData(),
+                             gh_interleave_valid_ ? nullptr : nq_scaled_hess_.RawData(),
+                             gh_interleave_valid_ ? nq_scaled_gh_.RawData() : nullptr, nq_inv_scale_.RawData());
   }
   // async memset on the legacy default stream: the construct kernels on the
   // (blocking) histogram streams implicitly order after it, so no device sync
@@ -1503,9 +1527,11 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
   // fp32-pair global histograms: dense shared-memory non-quantized layout only
   // (sparse / large-bin construct kernels and the categorical find path stay
   // hist_t and are excluded)
+  // (not under cuda_plan key nonquant_deterministic: the deterministic and fixed-point constructs store hist_t; the
+  // fp32 gain math of cuda_precision=fp32 stays)
   hist_fp32_ = FalcataFP32HistRequested() && !use_quantized_grad_ && !gpu_use_dp_ &&
     !cuda_row_data_->is_sparse() && cuda_row_data_->NumLargeBinPartition() == 0 &&
-    !has_categorical_feature_;
+    !has_categorical_feature_ && !NonquantDet();
   if (FalcataFP32HistRequested() && !use_quantized_grad_) {
     Log::Debug("CUDAHistogramConstructor: fp32 histogram mode %s", hist_fp32_ ? "engaged" : "unsupported for this dataset, using fp64");
   }
@@ -2303,9 +2329,11 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
     det_dense_tile_cap_ = 0;
   }
 
+  // (not under cuda_plan key nonquant_deterministic: the deterministic and fixed-point constructs store hist_t; the
+  // fp32 gain math of cuda_precision=fp32 stays)
   hist_fp32_ = FalcataFP32HistRequested() && !use_quantized_grad_ && !gpu_use_dp_ &&
     !cuda_row_data_->is_sparse() && cuda_row_data_->NumLargeBinPartition() == 0 &&
-    !has_categorical_feature_;
+    !has_categorical_feature_ && !NonquantDet();
 
   cuda_need_fix_histogram_features_.InitFromHostVector(need_fix_histogram_features_);
   cuda_need_fix_histogram_features_num_bin_aligned_.InitFromHostVector(need_fix_histogram_features_num_bin_aligend_);

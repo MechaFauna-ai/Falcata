@@ -60,11 +60,17 @@
    "metric_name": "rmse"
   },
   "dense/fp32": {
+   "md5": "6033c1495a6e43ad0095790ce13d3088",
    "metric": 1.585247,
    "metric_name": "rmse"
   },
   "dense/nonquant": {
-   "metric": 1.594167,
+   "md5": "5d5153509c6aef803586d7740377f5ec",
+   "metric": 1.593959,
+   "metric_name": "rmse"
+  },
+  "dense/nonquant-atomic": {
+   "metric": 1.594082,
    "metric_name": "rmse"
   },
   "dense/nonquant-det": {
@@ -178,7 +184,8 @@
    "metric_name": "mlogloss"
   },
   "graph/nonquant": {
-   "metric": 0.605169,
+   "md5": "69bdc16fd0e2c827be57e9395fb7426d",
+   "metric": 0.608904,
    "metric_name": "mlogloss"
   },
   "graph/nonquant-det": {
