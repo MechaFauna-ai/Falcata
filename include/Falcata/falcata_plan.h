@@ -905,6 +905,9 @@ struct FalcataPlan {
   // back once after level K, the host replays its bookkeeping and the classic loop continues. Same descriptors,
   // same kernels' sums: bit-identical.
   bool device_levels = false;       // key: device_levels
+  // device_levels' launches as one CUDA graph per tree (captured on the first tree of a pointer key, replayed on the
+  // next ones; trees whose keys keep changing fall back to the plain enqueue): the same launches, bit-identical
+  bool device_level_graph = false;  // key: device_level_graph
   // prefill the next tree's compact column view on a side stream during the
   // current tree's training (bit-identical). Default OFF: measured no wall
   // win -- steady-state training is 97% device-busy and the ~41 synchronous
@@ -1064,6 +1067,7 @@ struct FalcataPlan {
     if (key == "wide_partitions") return &wide_partitions;
     if (key == "dense_wide_hist") return &dense_wide_hist;
     if (key == "device_levels") return &device_levels;
+    if (key == "device_level_graph") return &device_level_graph;
     return nullptr;
   }
 

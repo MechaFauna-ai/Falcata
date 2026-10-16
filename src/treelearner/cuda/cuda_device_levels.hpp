@@ -69,6 +69,8 @@ struct CUDADeviceLevelState {
   /*! \brief levels applied so far; set to stop once a level has no splittable leaf */
   int levels_applied;
   int done;
+  /*! \brief rows of the tree's root (the in-bag rows), from the partition's leaf 0 at the reset */
+  data_size_t root_num_data;
   // ---- written by DeviceLevelPairsKernel (the children's search) ----
   /*! \brief pairs of the search in flight (== the applied level's splits) */
   int live_pairs;
@@ -129,7 +131,6 @@ struct CUDADeviceLevelConfig {
   const CUDAHybridGraphFeatureSource* feature_source;
   const double* real_thresholds;
   int* journal;
-  data_size_t root_num_data;
   int max_depth;
   /*! \brief threads of the host's gap copy blocks (the gap descriptors' num_blocks unit) */
   int gap_block_dim;

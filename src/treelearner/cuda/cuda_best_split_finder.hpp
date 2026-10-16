@@ -439,6 +439,15 @@ class CUDABestSplitFinder {
   /*! \brief cuda_plan key device_levels: the device level state the level find and sync launches read while the
    *  learner enqueues a device-driven level's search (nullptr otherwise) */
   void SetDeviceLevelState(const CUDADeviceLevelState* dls) { device_level_state_ = dls; }
+  /*! \brief cuda_plan key device_level_graph: the pointers and per-tree task layout a captured level search bakes in */
+  void DeviceLevelGraphKey(std::vector<const void*>* key) const {
+    HybridGraphKeyPointers(key);
+    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(num_used_tasks_)));
+    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(warp_find_order_used_ ? 1 : 0)));
+    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(warp_find_num_narrow_used_)));
+    key->push_back(static_cast<const void*>(cuda_warp_find_order_.RawDataReadOnly()));
+    key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(warp_find_split_block_cap_)));
+  }
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
   // Device pointer to a leaf's cached best split, for passing to CUDATree::Split.

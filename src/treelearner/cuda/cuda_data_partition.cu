@@ -2686,7 +2686,8 @@ void CUDADataPartition::LaunchDeviceLevelApply(const int max_splits, const CUDAD
   // the level's worst case: its splits partition at most the whole root window, so their chunks number at most
   // ceil(rows / 1024) + max_splits, a split's blocks at most ceil(rows / 1024), and the gaps (at most one per split
   // and one after the last) at most the same chunks again
-  const data_size_t root_chunks = (root_num_data() + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) /
+  // (the full row count, not the tree's in-bag rows: the grids stay the same from tree to tree)
+  const data_size_t root_chunks = (num_data_ + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) /
     SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;
   const int max_num_blocks = static_cast<int>(root_chunks);
   const int flat_bound = static_cast<int>(root_chunks) + max_splits;

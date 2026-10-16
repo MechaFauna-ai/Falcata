@@ -358,6 +358,17 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // readback, the host bookkeeping replayed; host_leaf_best_splits_ then hold the last search's result and *pairs
   // the last level's pairs, as after the host loop's own readback. Returns the splits applied.
   int TrainDeviceLevels(CUDATree* tree, const int num_levels, std::vector<HybridPendingPair>* pairs);
+  // the device levels' launches and stream edges (capturable: nothing on the legacy stream, nothing read back)
+  void EnqueueDeviceLevels(CUDATree* tree, const CUDADeviceLevelConfig& cfg, const int num_levels);
+  // cuda_plan key device_level_graph: launch the levels as a cached graph (captured on a key's first tree); false
+  // when this tree cannot use one (the caller enqueues the levels)
+  bool LaunchDeviceLevelGraph(CUDATree* tree, const CUDADeviceLevelConfig& cfg, const int num_levels);
+  struct DeviceLevelGraph {
+    std::vector<const void*> key;
+    cudaGraph_t graph = nullptr;
+    cudaGraphExec_t exec = nullptr;
+    ~DeviceLevelGraph();
+  };
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
   // ---- selective (grow-then-prune) hybrid growth: exact leaf-wise equivalence
@@ -770,6 +781,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::vector<int> device_level_batch_info_;
   std::vector<int> device_level_batch_slice_;
   std::vector<HybridAppliedSplit> device_level_applied_;
+  std::vector<std::unique_ptr<DeviceLevelGraph>> device_level_graphs_;
+  bool device_level_graph_disabled_ = false;
+  int device_level_graph_hits_ = 0;
+  int device_level_graph_misses_ = 0;
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   std::vector<SelectiveApplied> sel_applied_;
   std::vector<SelectiveFrontier> sel_frontier_;

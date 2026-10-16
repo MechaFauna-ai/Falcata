@@ -188,6 +188,17 @@ class CUDADataPartition: public NCCLInfo {
   }
 
   CUDAHybridApplyDescriptor* device_level_apply_descs() { return cuda_apply_descs_.RawData(); }
+  /*! \brief cuda_plan key device_level_graph: the pointers a captured device level apply bakes in */
+  void DeviceLevelGraphKey(std::vector<const void*>* key) const {
+    key->push_back(static_cast<const void*>(cuda_data_indices_.RawDataReadOnly()));
+    key->push_back(static_cast<const void*>(cuda_out_data_indices_in_leaf_.RawDataReadOnly()));
+  }
+  /*! \brief cuda_plan key device_level_graph: the host half of a replayed graph's levels (one swap per level) */
+  void SwapIndexBuffers(const int times) {
+    for (int i = 0; i < times; ++i) {
+      cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);
+    }
+  }
   /*! \brief threads of the gap copy's blocks, the unit of a gap descriptor's num_blocks */
   static int DeviceLevelGapBlockDim() { return GapCopyBlockDim(); }
 

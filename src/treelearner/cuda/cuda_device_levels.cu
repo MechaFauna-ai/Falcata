@@ -23,6 +23,7 @@
 #include "cuda_histogram_constructor.hpp"
 #include "cuda_hybrid_graph.hpp"
 #include "cuda_leaf_splits.hpp"
+#include "cuda_pdl_launch.hpp"
 
 namespace Falcata {
 
@@ -130,6 +131,7 @@ __global__ void DeviceLevelResetKernel(const CUDADeviceLevelConfig cfg, const in
     st->gap_flat_blocks = 0;
     st->split_info_base = 0;
     st->num_leaves = num_leaves;
+    st->root_num_data = cfg.leaf_num_data[0];
     st->levels_applied = 0;
     st->done = 0;
     st->live_pairs = 0;
@@ -152,6 +154,7 @@ __global__ void DeviceLevelSelectKernel(const CUDADeviceLevelConfig cfg, const i
   __shared__ int s_rpay[kSelectMaxLeaves];
   __shared__ int s_warp[32];
   __shared__ int s_total;
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the level sync's leaf entries are complete and visible
   CUDADeviceLevelState* st = cfg.state;
   if (st->done) {
     return;
@@ -304,7 +307,7 @@ __global__ void DeviceLevelSelectKernel(const CUDADeviceLevelConfig cfg, const i
   data_size_t gap_start = 0;
   data_size_t gap_num = 0;
   if (tid <= n) {
-    const data_size_t region_start = tid < n ? static_cast<data_size_t>(s_rkey[tid]) : cfg.root_num_data;
+    const data_size_t region_start = tid < n ? static_cast<data_size_t>(s_rkey[tid]) : st->root_num_data;
     data_size_t prev_end = 0;
     if (tid > 0) {
       prev_end = static_cast<data_size_t>(s_rkey[tid - 1]) + cfg.leaf_num_data[s_leaves[s_rpay[tid - 1]]];
@@ -350,6 +353,7 @@ __global__ void DeviceLevelPairsKernel(const CUDADeviceLevelConfig cfg, const in
   __shared__ int s_warp[32];
   __shared__ int s_total;
   __shared__ int s_max;
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the apply's counts and child structs are complete and visible
   CUDADeviceLevelState* st = cfg.state;
   const int tid = static_cast<int>(threadIdx.x);
   const int n = st->done ? 0 : st->live_splits;
@@ -511,12 +515,16 @@ void LaunchDeviceLevelReset(const CUDADeviceLevelConfig& config, const int num_l
 
 void LaunchDeviceLevelSelect(const CUDADeviceLevelConfig& config, const int level, const int max_splits,
                              cudaStream_t stream) {
-  DeviceLevelSelectKernel<<<1, DeviceLevelThreads(max_splits), 0, stream>>>(config, level);
+  // cuda_plan key pdl_level_chain: a programmatic dependent of the level sync launched just before on this stream
+  LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelSelectKernel, dim3(1), dim3(DeviceLevelThreads(max_splits)),
+                         0, stream, config, level);
 }
 
 void LaunchDeviceLevelPairs(const CUDADeviceLevelConfig& config, const int level, const int max_splits,
                             cudaStream_t stream) {
-  DeviceLevelPairsKernel<<<1, DeviceLevelThreads(max_splits), 0, stream>>>(config, level);
+  // cuda_plan key pdl_level_chain: a programmatic dependent of the apply's partition kernel launched just before
+  LaunchLevelChainKernel(PdlLevelChainEnabled(), DeviceLevelPairsKernel, dim3(1), dim3(DeviceLevelThreads(max_splits)),
+                         0, stream, config, level);
 }
 
 }  // namespace Falcata
