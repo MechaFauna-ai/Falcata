@@ -421,6 +421,13 @@ class CUDADataPartition: public NCCLInfo {
   /*! \brief the stream the batched apply kernels run on (graphs L1 captures
    *  the body on it) */
   cudaStream_t apply_stream() const { return cuda_streams_[0]; }
+  /*! \brief cuda_plan key device_levels: run the apply stream's launches on \p stream (the device levels' one
+   *  stream) until restored; returns the stream it replaces */
+  cudaStream_t ExchangeApplyStream(cudaStream_t stream) {
+    cudaStream_t old = cuda_streams_[0];
+    cuda_streams_[0] = stream;
+    return old;
+  }
 
  private:
   void CalcBlockDim(const data_size_t num_data_in_leaf);

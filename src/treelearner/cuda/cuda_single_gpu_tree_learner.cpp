@@ -3627,9 +3627,12 @@ bool CUDASingleGPUTreeLearner::SetupDeviceLevels() {
 
 void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADeviceLevelConfig& cfg,
                                                    const int num_levels) {
+  // one stream for the levels' chain (select, apply, pairs, construct, fix/subtract, find, sync): every launch
+  // depends on the one before it, and a cross-stream hand-off costs a few microseconds per edge; the tree record
+  // stays on the tree stream beside it
   cudaStream_t find_stream = cuda_best_split_finder_->find_stream();
-  cudaStream_t apply_stream = cuda_data_partition_->apply_stream();
-  cudaStream_t hist_stream = cuda_histogram_constructor_->hist_stream();
+  cudaStream_t apply_stream_saved = cuda_data_partition_->ExchangeApplyStream(find_stream);
+  cudaStream_t hist_stream_saved = cuda_histogram_constructor_->ExchangeHistStream(find_stream);
   cudaStream_t tree_stream = tree->tree_stream();
   CUDADeviceLevelState* dls = cfg.state;
   // ordered after the root level's search (its sync kernel ran on the find stream)
@@ -3643,15 +3646,12 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
     // the level's host decisions (after its search on this stream), then the apply and the tree record behind them
     LaunchDeviceLevelSelect(cfg, level, max_splits, find_stream);
     CUDASUCCESS_OR_FATAL(cudaEventRecord(device_level_select_event_, find_stream));
-    CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(apply_stream, device_level_select_event_, 0));
     CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(tree_stream, device_level_select_event_, 0));
     cuda_data_partition_->LaunchDeviceLevelApply(max_splits, dls);
     tree->LaunchSplitBatchKernelDevice(max_splits, &dls->live_splits);
     CUDASUCCESS_OR_FATAL(cudaEventRecord(tree_record_done_event_, tree_stream));
     // the children's descriptors and block map, then their search behind the apply
-    LaunchDeviceLevelPairs(cfg, level, max_splits, apply_stream);
-    CUDASUCCESS_OR_FATAL(cudaEventRecord(device_level_apply_event_, apply_stream));
-    CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(hist_stream, device_level_apply_event_, 0));
+    LaunchDeviceLevelPairs(cfg, level, max_splits, find_stream);
     cuda_histogram_constructor_->ConstructHistogramsForLevel(
       cuda_hybrid_pair_descs_.RawDataReadOnly(), max_splits, /*max_num_data_in_smaller_leaf=*/0,
       /*any_pair_needs_bit_change_copy=*/true);
@@ -3661,6 +3661,8 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
   }
   cuda_histogram_constructor_->SetDeviceLevelState(nullptr);
   cuda_best_split_finder_->SetDeviceLevelState(nullptr);
+  cuda_data_partition_->ExchangeApplyStream(apply_stream_saved);
+  cuda_histogram_constructor_->ExchangeHistStream(hist_stream_saved);
 }
 
 bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDADeviceLevelConfig& cfg,

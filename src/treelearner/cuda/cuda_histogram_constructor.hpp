@@ -322,6 +322,13 @@ class CUDAHistogramConstructor {
    *  learner uploads the per-level pair descriptors asynchronously on this
    *  stream so the copy is ordered before the construct kernel that reads them */
   cudaStream_t hist_stream() const { return cuda_stream_; }
+  /*! \brief cuda_plan key device_levels: run the histogram stream's launches on \p stream (the device levels' one
+   *  stream) until restored; returns the stream it replaces */
+  cudaStream_t ExchangeHistStream(cudaStream_t stream) {
+    cudaStream_t old = cuda_stream_;
+    cuda_stream_ = stream;
+    return old;
+  }
 
   /*! \brief whether the batched per-level construct/fix/subtract path supports the
    *  current data layout (dense, shared-memory histograms). The compact column
