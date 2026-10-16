@@ -9,8 +9,8 @@ check when the codes are built (constant hessian, at most 256 values, the exactn
 docs/design/forest-count-histograms.md) makes the stored pair the exact sum the deterministic construct's fixed-order
 double merge produces, so the histograms, the splits and the model are the same: md5-identical to the key-off model
 wherever the key-off learner runs the deterministic construct. Where it runs the float atomic construct instead (the
-compact column view of feature_fraction < 1; levels with more pairs than the deterministic slot slab holds, which the
-shapes here do not reach) its sums round and its model need not be run-to-run stable; the count construct's are exact
+compact column view of feature_fraction < 1; levels with more pairs than the deterministic slot slab holds,
+test_count_hist_level_beyond_det_pairs) its sums round and its model need not be run-to-run stable; the count construct's are exact
 and deterministic, and its predictions agree with the key-off ones to rounding.
 """
 

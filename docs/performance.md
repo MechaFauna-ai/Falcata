@@ -2032,7 +2032,10 @@ reset, early stopping) rewind the counters and the sampler. Group size (`cuda_pl
 auto starts with one round (its class trees in parallel) and doubles while a size's time per tree (the mean of two
 steady-state groups) drops below 0.85 of the previous size's, up to 32 trees; a doubling that gains less is kept if it
 gained at all, else the size goes back. It is capped by `num_iterations` and by device memory (a slot's measured
-footprint, its Init plus its first tree, beside an eighth of the device). Fixedpoint error feedback (a
+footprint, its Init plus its first tree, beside a reserve of max(1 GiB, an eighth of the device, twice a slot's
+first-tree bytes)); a group that leaves less than the reserve free halves the next group and frees the slots beyond it,
+and a group that runs out of device memory is grown again once on one round's slots, with a warning (the trees do not
+depend on the group size; `FALCATA_TEST_FOREST_OOM_GROUP` injects that failure for a test). Fixedpoint error feedback (a
 residual per class carried from tree to tree) groups one round. Sequential as before: multi-GPU, the host objective,
 GOSS, `bagging_freq` > 1, balanced or by-query bagging, linear trees, forced splits, vector leaves, CEGB, per-node draws
 from the shared stream, `compact_prefill`. The slots never take the graph loop (another thread's legacy-stream work
@@ -2049,7 +2052,10 @@ packed-bit buffers, the level finder's per-task output, the quantized bit-change
 every few trees: each growth is an allocation, a copy, a free and a device synchronize, which stalls every slot (nsys
 with API backtraces, covtype-rf-deep at 7 slots, 10 rounds: 164 partition and 125 finder growths). The trainer sizes
 them for any level when it makes a slot (`PresizeLevelBuffers`: the graph loop's worst case for the partition, levels
-of num_leaves / 2 + 2 pairs for the rest, each up to 256 MiB); sequential training presizes nothing. And the
+of num_leaves / 2 + 2 pairs for the rest (2^(max_depth - 1) + 2 under max_depth), each up to an eighth of the device:
+it was 256 MiB, which left numerai's ~2 GiB level output growing during training, each growth holding the old block
+beside the new; with the faster trees of 10u, six numerai slots growing together peaked at 31.9 GiB of 32 and one
+bench run ran out of memory, presized the peak is 25.6 GiB); sequential training presizes nothing. And the
 construct streams' persisting-L2 window is set only when the gradient buffer changes (it was set at every tree with
 the same value; under 28 threads each of those attribute calls took 0.5 ms of driver time).
 
@@ -2322,7 +2328,10 @@ objective (binary balanced and imbalanced, multiclass, multiclassova, regression
 labels) on selective, depth-limited and standard shapes with bagging and bynode < 1; bynode = 1, sequential
 (`forest_batched:off`), a group size, max_bin 255; run-to-run determinism; the compact view (deterministic, close to
 the key off); engagement and the reasons it does not engage (huber, weights, continuous labels; key off, quantized,
-gbdt), with the model unchanged where it does not.
+gbdt), with the model unchanged where it does not; the three code layouts and their models, the 256/257-value
+boundary, the exactness bound, a non-constant hessian, the default plan, a parameter reset rebuilding the codes,
+levels wider than the slot slab (the per-leaf deterministic trees), and a forest group out of device memory grown again
+(same md5).
 
 ## Multi-GPU: level-batched NCCL all-reduce
 
