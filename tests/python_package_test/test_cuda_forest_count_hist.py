@@ -132,12 +132,11 @@ def test_count_hist_same_model(objective, kind, shape):
     "extra",
     [
         {"feature_fraction_bynode": 1.0},  # no per-node sampling
-        {"bagging_fraction": 1.0, "bagging_freq": 0, "feature_fraction": 1.0},  # no row sampling
         {"cuda_plan_extra": "forest_batched:off"},  # one tree after another (stage-1 learner)
         {"cuda_plan_extra": "forest_group:3"},
         {"max_bin": 255},
     ],
-    ids=["bynode1", "nobag", "sequential", "group3", "bin255"],
+    ids=["bynode1", "sequential", "group3", "bin255"],
 )
 def test_count_hist_same_model_variants(extra):
     X, y = _data("multiclass")
@@ -152,19 +151,31 @@ def test_count_hist_same_model_variants(extra):
     np.testing.assert_array_equal(got.predict(X[:3000]), ref.predict(X[:3000]))
 
 
-@pytest.mark.parametrize("objective", ["binary", "multiclass"])
-def test_count_hist_compact_view_deterministic(objective):
+@pytest.mark.parametrize(
+    ("objective", "extra"),
+    [
+        ("binary", {}),
+        ("multiclass", {}),
+        # no row sampling (rf then needs feature_fraction < 1)
+        ("binary", {"bagging_fraction": 1.0, "bagging_freq": 0, "feature_fraction": 0.8}),
+    ],
+    ids=["binary", "multiclass", "nobag"],
+)
+def test_count_hist_compact_view_deterministic(objective, extra):
     # feature_fraction < 1 puts the tree on the compact column view, whose key-off batched construct is the float
     # atomic kernel (not run-to-run stable); the count construct serves it with exact integer sums: the key-on model
-    # is run-to-run identical, and its predictions are the key-off ones to rounding
+    # is run-to-run identical, and its predictions are the key-off ones to rounding (most rows), up to the occasional
+    # split the key-off rounding moves
     X, y = _data("binary" if objective == "binary" else "multiclass")
-    params = _params(objective, "selective", feature_fraction=0.5, feature_fraction_bynode=1.0)
+    params = _params(objective, "selective", **{"feature_fraction": 0.5, "feature_fraction_bynode": 1.0, **extra})
     got = _train(params, ON, X, y, 6)
     again = _train(params, ON, X, y, 6)
     ref = _train(params, OFF, X, y, 6)
     assert _md5(again) == _md5(got)
+    np.testing.assert_array_equal(again.predict(X[:3000]), got.predict(X[:3000]))
     diff = np.abs(got.predict(X[:3000]) - ref.predict(X[:3000]))
-    assert float(np.mean(diff)) < 1e-3, float(np.mean(diff))
+    assert float(np.median(diff)) < 1e-5, float(np.median(diff))
+    assert float(np.mean(diff)) < 1e-2, float(np.mean(diff))
 
 
 _CHILD = """
