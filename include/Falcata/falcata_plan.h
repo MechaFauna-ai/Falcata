@@ -907,7 +907,8 @@ struct FalcataPlan {
   // Otherwise the standard table and partitions. The histogram's layout, bins and integer sums are the same:
   // bit-identical.
   bool dense_wide_hist = true;      // key: dense_wide_hist
-  // quantized two-sync level prefix: the first K = floor(log2(num_leaves)) levels (capped by max_depth), where the
+  // quantized two-sync level prefix: K = min(floor(log2(num_leaves)), max_depth - 1, 10), with no depth cap when
+  // max_depth is unlimited. Only eligible depth-limited host flows use this prefix. Where the
   // leaf budget cannot bind, run device-driven: the host enqueues every level's apply and children's search without
   // reading anything back. The level sync's last block selects the splittable leaves and writes the next level's
   // apply descriptors and tree record; the apply's offset aggregate writes the children's search descriptors (the
@@ -916,8 +917,8 @@ struct FalcataPlan {
   // back once after level K, the host replays its bookkeeping and the classic loop continues. Same descriptors,
   // same kernels' sums: bit-identical.
   bool device_levels = true;        // key: device_levels
-  // device_levels' launches as one CUDA graph per tree (captured on the first tree of a pointer key, replayed on the
-  // next ones; trees whose keys keep changing fall back to the plain enqueue): the same launches, bit-identical
+  // device_levels' launches as one cached CUDA graph for the prefix (root work and the host tail remain). Trees
+  // whose keys keep changing use the host loop after the cache-miss budget: the same model, bit-identical.
   bool device_level_graph = true;   // key: device_level_graph
   // prefill the next tree's compact column view on a side stream during the
   // current tree's training (bit-identical). Default OFF: measured no wall

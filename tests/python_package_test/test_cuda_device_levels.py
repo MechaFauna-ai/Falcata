@@ -333,3 +333,19 @@ def test_device_levels_deep_host_continuation_cuda():
     X = ((rows[:, None] >> np.arange(13, dtype=np.uint32)) & 1).astype(np.float32)
     y = (X @ np.arange(1, 14, dtype=np.float32)).astype(np.float32)
     _same(_params("regression", 4095, 12, "fixedpoint", min_data_in_leaf=2, quant_bins=16), X, y, 4)
+
+
+@_REQUIRES_CUDA
+def test_device_levels_sampled_codecs_cuda():
+    rng = np.random.default_rng(74)
+    # Per-tree samples can change the compact decoder even when the allocation and padded row size are reused.
+    # Ten sampled columns fit in four bytes under either radix5 or radix6; selecting the last column changes codec.
+    X = np.column_stack([rng.integers(0, bins, size=20011) for bins in [5] * 99 + [6]]).astype(np.float32)
+    y = X[:, :8].sum(axis=1) + rng.standard_normal(len(X))
+    _same(
+        _params("regression", 255, 8, "fixedpoint", feature_fraction=0.1, max_bin=15),
+        X,
+        y,
+        40,
+        base_plan="auto,pack_radix5:on,pack_radix6:on",
+    )

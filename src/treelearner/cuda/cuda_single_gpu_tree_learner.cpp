@@ -3721,6 +3721,8 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
   key.push_back(static_cast<const void*>(tree->hybrid_graph_batch_splits()));
   key.push_back(static_cast<const void*>(cuda_hybrid_pair_descs_.RawDataReadOnly()));
   key.push_back(static_cast<const void*>(hybrid_pair_slots_.RawDataReadOnly()));
+  // Sampled compact views may select a different decoder while retaining the same allocation and padded shape.
+  key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(cuda_histogram_constructor_->compact_codec())));
   cuda_histogram_constructor_->DeviceLevelGraphKey(&key);
   cuda_best_split_finder_->DeviceLevelGraphKey(&key);
   cuda_data_partition_->DeviceLevelGraphKey(&key);
