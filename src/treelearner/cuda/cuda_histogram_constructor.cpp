@@ -20,6 +20,7 @@
 #include <memory>
 #include <numeric>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -2532,14 +2533,17 @@ std::unique_ptr<CUDACountHistCodes> BuildCountHistCodes(const score_t* gradients
 const CUDACountHistCodes* CUDACountHistCache::Get(const score_t* gradients, const score_t* hessians,
                                                   const data_size_t num_data, std::string* why) {
   std::lock_guard<std::mutex> lock(mutex_);
-  auto it = entries_.find(gradients);
-  if (it == entries_.end() || it->second.hessians != hessians || it->second.num_data != num_data) {
-    Entry& entry = entries_[gradients];
-    entry.hessians = hessians;
-    entry.num_data = num_data;
-    entry.why.clear();
+  const auto key = std::make_tuple(gradients, hessians, num_data);
+  auto it = entries_.find(key);
+  if (it == entries_.end()) {
+    Entry& entry = entries_[key];
     entry.codes = BuildCountHistCodes(gradients, hessians, num_data, &entry.why);
-    it = entries_.find(gradients);
+    if (entry.codes == nullptr && FalcataDebug().diag) {
+      // once per gradient array (a class tree of a multiclass forest can fail while the others qualify)
+      fprintf(stderr, "[count-hist-diag] gradients %p: deterministic construct: %s\n",
+              static_cast<const void*>(gradients), entry.why.c_str());
+    }
+    it = entries_.find(key);
   }
   if (why != nullptr) {
     *why = it->second.why;

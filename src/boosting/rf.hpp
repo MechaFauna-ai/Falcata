@@ -583,6 +583,15 @@ class RF : public GBDT {
       forest_trainer_.reset(new CUDAForestTrainer(config_.get(), train_data_, is_constant_hessian_, boosting_on_gpu_,
                                                   tree_learner_.get()));
     }
+    if (forest_trainer_->memory_low() && per_round > 0) {
+      // the last group left the device below the trainer's reserve: half the rounds per group, and the slots beyond
+      // them freed (the model does not depend on the group size)
+      const int fewer = std::max(1, std::min(rounds, forest_trainer_->num_slots() / per_round) / 2);
+      forest_trainer_->DropSlots(fewer * per_round);
+      forest_auto_rounds_ = fewer;
+      forest_auto_settled_ = true;
+      rounds = std::min(rounds, fewer);
+    }
     const int slots = per_round == 0 ? 1 : forest_trainer_->EnsureSlots(rounds * per_round);
     if (slots < per_round) {
       return false;
@@ -630,10 +639,23 @@ class RF : public GBDT {
     const auto group_start = std::chrono::steady_clock::now();
     try {
       forest_trainer_->Train(jobs, &trees);
-    } catch (...) {
+    } catch (const std::exception& error) {
       // no round of a failed group may be popped (its trees are missing): drop them and rewind the counters and the
       // sampler, so a caller that catches the error and trains on gets the sequential trees
       ResetForest(true);
+      // a group that ran out of device memory with more slots than one round needs is grown again once, on one
+      // round's slots (the others freed): the trees do not depend on the group size
+      if (!forest_oom_retried_ && per_round > 0 && forest_trainer_->num_slots() > per_round &&
+          std::string(error.what()).find("out of memory") != std::string::npos) {
+        forest_oom_retried_ = true;
+        Log::Warning("rf: a group of %d trees ran out of device memory; growing %d tree(s) per group from here on",
+                     static_cast<int>(jobs.size()), per_round);
+        SynchronizeCUDADevice(__FILE__, __LINE__);
+        forest_trainer_->DropSlots(per_round);
+        forest_auto_rounds_ = 1;
+        forest_auto_settled_ = true;
+        return GrowForestGroup();
+      }
       throw;
     }
     const double group_ms =
@@ -717,6 +739,8 @@ class RF : public GBDT {
   int forest_auto_last_rounds_ = 0;
   double forest_auto_last_ms_ = 0.0;
   bool forest_auto_settled_ = false;
+  /*! \brief whether a group was already grown again after running out of device memory (once per training) */
+  bool forest_oom_retried_ = false;
   /*! \brief the current size's steady-state groups so far and their summed time per tree */
   int forest_auto_size_groups_ = 0;
   double forest_auto_size_ms_ = 0.0;

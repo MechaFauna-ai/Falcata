@@ -4905,8 +4905,14 @@ void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
 }
 
 void CUDASingleGPUTreeLearner::PresizeLevelBuffers() {
-  constexpr size_t kMaxPresizeBytes = size_t{256} << 20;
-  const int max_pairs = config_->num_leaves / 2 + 2;
+  size_t free_bytes = 0, total_bytes = 0;
+  CUDASUCCESS_OR_FATAL(cudaMemGetInfo(&free_bytes, &total_bytes));
+  const size_t kMaxPresizeBytes = std::max<size_t>(size_t{256} << 20, total_bytes / 8);
+  int max_pairs = config_->num_leaves / 2 + 2;
+  if (config_->max_depth > 0 && config_->max_depth < 30) {
+    // a level of a depth-limited tree has at most 2^(max_depth - 1) pairs
+    max_pairs = std::min(max_pairs, (1 << (config_->max_depth - 1)) + 2);
+  }
   cuda_data_partition_->PresizeLevelBuffers();
   cuda_best_split_finder_->PresizeLevelOutput(max_pairs, kMaxPresizeBytes);
   if (config_->use_quantized_grad) {

@@ -21,6 +21,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <Falcata/cuda/cuda_row_data.hpp>
@@ -272,12 +273,12 @@ class CUDACountHistCache {
  private:
   struct Entry {
     std::unique_ptr<CUDACountHistCodes> codes;
-    const score_t* hessians = nullptr;
-    data_size_t num_data = 0;
     std::string why;
   };
   std::mutex mutex_;
-  std::map<const score_t*, Entry> entries_;
+  /*! \brief by (gradients, hessians, num_data): an entry is never replaced while the cache lives (another slot may
+   *  be reading its codes) */
+  std::map<std::tuple<const score_t*, const score_t*, data_size_t>, Entry> entries_;
 };
 
 class CUDAHistogramConstructor {

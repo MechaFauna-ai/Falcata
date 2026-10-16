@@ -85,8 +85,11 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
     forest_private_column_view_ = private_column_view;
     forest_row_data_source_ = row_data_source;
   }
-  /*! \brief The level buffers that grow with the widest level seen, sized now for any level (each up to 256 MiB):
-   *  a growth during training is a device synchronize, which stalls every forest slot */
+  /*! \brief The level buffers that grow with the widest level seen, sized now for any level the tree shape allows
+   *  (num_leaves / 2 + 2 pairs, fewer under max_depth), each up to an eighth of the device: a growth during training
+   *  is a device synchronize, which stalls every forest slot, and holds the old block beside the new one (a forest's
+   *  slots growing together took the device to its limit: numerai's level output is ~2 GiB per slot). Presized, the
+   *  buffers count in the slot's Init footprint (CUDAForestTrainer::EnsureSlots) */
   void PresizeLevelBuffers();
   /*! \brief The booster learner leaves forest mode (its trainer is gone): graph loop and compact prefill as before */
   void LeaveForest() {

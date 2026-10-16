@@ -2596,6 +2596,11 @@ __device__ __forceinline__ void ConstructHistogramDenseCountInner(
     return;  // block-uniform
   }
   const data_size_t tile_rows = (leaf_rows + tiles - 1) / tiles;
+  if (MODE == 3 && tile_rows >= (static_cast<data_size_t>(1) << field_bits)) {
+    // the launcher sized the grid so that no tile holds more rows than a field counts (a host bound on the leaf
+    // sizes): a violation would carry one value's count into the next, so stop loudly instead
+    __trap();
+  }
   const data_size_t row_begin = static_cast<data_size_t>(blockIdx.y) * tile_rows;
   const data_size_t row_end = min(leaf_rows, row_begin + tile_rows);
   const int partition_column_start = feature_partition_column_index_offsets[blockIdx.x];
