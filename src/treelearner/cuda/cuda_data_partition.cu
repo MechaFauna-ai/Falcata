@@ -18,6 +18,8 @@
 #include <algorithm>
 #include <vector>
 
+#include "cuda_pdl_launch.hpp"
+
 namespace Falcata {
 
 // A column stored two rows per byte (kNibbleColumnBitType). Indexing it looks
@@ -39,6 +41,8 @@ struct NibbleColumnReader {
 
 __global__ void FillDataIndicesBeforeTrainKernel(const data_size_t num_data,
   data_size_t* data_indices, int* cuda_data_index_to_leaf_index) {
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the kernel before it on the stream is complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel of the chain may get resident
   const unsigned int data_index = threadIdx.x + blockIdx.x * blockDim.x;
   if (data_index < num_data) {
     data_indices[data_index] = data_index;
@@ -50,6 +54,8 @@ __global__ void FillDataIndexToLeafIndexKernel(
   const data_size_t num_data,
   const data_size_t* data_indices,
   int* data_index_to_leaf_index) {
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the kernel before it on the stream is complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel of the chain may get resident
   const data_size_t data_index = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
   if (data_index < num_data) {
     data_index_to_leaf_index[data_indices[data_index]] = 0;
@@ -61,7 +67,10 @@ void CUDADataPartition::LaunchFillDataIndicesBeforeTrain() {
   level_shared_gaps_valid_ = false;  // cuda_plan key gap_copy_once: writes outside the batched level apply
   const data_size_t num_data_in_root = root_num_data();
   const int num_blocks = (num_data_in_root + FILL_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / FILL_INDICES_BLOCK_SIZE_DATA_PARTITION;
-  FillDataIndicesBeforeTrainKernel<<<num_blocks, FILL_INDICES_BLOCK_SIZE_DATA_PARTITION>>>(num_data_in_root, cuda_data_indices_.RawData(), cuda_data_index_to_leaf_index_.RawData());
+  // cuda_plan key pdl_level_chain: a programmatic dependent of the kernel before it (the previous tree's score update)
+  LaunchLevelChainKernel(PdlLevelChainEnabled(), FillDataIndicesBeforeTrainKernel, dim3(num_blocks),
+    dim3(FILL_INDICES_BLOCK_SIZE_DATA_PARTITION), 0, nullptr, num_data_in_root, cuda_data_indices_.RawData(),
+    cuda_data_index_to_leaf_index_.RawData());
 }
 
 // cuda_plan key tree_meta_batch: the tree start's leaf window init in one kernel, the bytes the three memsets, the
@@ -70,6 +79,8 @@ __global__ void BeforeTrainLeafInitKernel(data_size_t* leaf_num_data, data_size_
                                           data_size_t* leaf_data_end, const int num_leaves,
                                           const data_size_t* root_count_device, const data_size_t root_count_host,
                                           hist_t** hist_pool, hist_t* hist) {
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the kernel before it on the stream is complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel of the chain may get resident
   const data_size_t root_count = root_count_device != nullptr ? *root_count_device : root_count_host;
   for (int i = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x); i < num_leaves;
        i += static_cast<int>(gridDim.x * blockDim.x)) {
@@ -84,7 +95,8 @@ __global__ void BeforeTrainLeafInitKernel(data_size_t* leaf_num_data, data_size_
 
 void CUDADataPartition::LaunchBeforeTrainLeafInit() {
   const int num_blocks = std::max(1, std::min(64, (num_leaves_ + 255) / 256));
-  BeforeTrainLeafInitKernel<<<num_blocks, 256>>>(
+  // cuda_plan key pdl_level_chain: a programmatic dependent of the kernel before it (the index fill)
+  LaunchLevelChainKernel(PdlLevelChainEnabled(), BeforeTrainLeafInitKernel, dim3(num_blocks), dim3(256), 0, nullptr,
     cuda_leaf_num_data_.RawData(), cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), num_leaves_,
     use_bagging_ ? nullptr : cuda_num_data_.RawDataReadOnly(), num_used_indices_, cuda_hist_pool_.RawData(),
     cuda_hist_);
@@ -93,7 +105,11 @@ void CUDADataPartition::LaunchBeforeTrainLeafInit() {
 void CUDADataPartition::LaunchFillDataIndexToLeafIndex() {
   const data_size_t num_data_in_root = root_num_data();
   const int num_blocks = (num_data_in_root + FILL_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / FILL_INDICES_BLOCK_SIZE_DATA_PARTITION;
-  FillDataIndexToLeafIndexKernel<<<num_blocks, FILL_INDICES_BLOCK_SIZE_DATA_PARTITION>>>(num_data_in_root, cuda_data_indices_.RawData(), cuda_data_index_to_leaf_index_.RawData());
+  // cuda_plan key pdl_level_chain: a programmatic dependent of the kernel before it (the bagged subset's scatter or
+  // the gradients)
+  LaunchLevelChainKernel(PdlLevelChainEnabled(), FillDataIndexToLeafIndexKernel, dim3(num_blocks),
+    dim3(FILL_INDICES_BLOCK_SIZE_DATA_PARTITION), 0, nullptr, num_data_in_root, cuda_data_indices_.RawData(),
+    cuda_data_index_to_leaf_index_.RawData());
 }
 
 __device__ __forceinline__ void PrepareOffsetAt(const unsigned int block_x,
@@ -1532,6 +1548,7 @@ __global__ void HybridGenBitVectorUpdateLeafIndexBatchKernel(
   const CUDAHybridGraphLoopStateOpt gstate,
   const int num_split_descs,
   const int total_flat_blocks) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   __shared__ uint16_t shared_mem_buffer[WARPSIZE];
   (void)cuda_data_index_to_leaf_index;
   if (total_flat_blocks > 0) {
@@ -1578,6 +1595,7 @@ __global__ void __launch_bounds__(SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS
   data_size_t* block_to_right_offset_buffer,
   const int num_split_descs,
   const int total_flat_blocks) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   constexpr int kBlock = SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS;
   __shared__ uint16_t shared_mem_buffer[WARPSIZE];
   for (int flat = static_cast<int>(blockIdx.x); flat < total_flat_blocks; flat += static_cast<int>(gridDim.x)) {
@@ -1729,6 +1747,8 @@ __global__ void __launch_bounds__(AGGREGATE_BLOCK_SIZE_DATA_PARTITION) HybridAgg
   data_size_t* cuda_leaf_num_data,
   data_size_t* level_smaller_counts,
   int* split_info_mirror_base) {
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the gen-bit pass's block counts are complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   __shared__ uint64_t shared_mem_buffer[WARPSIZE];
   __shared__ uint32_t totals[1];
   const CUDAHybridApplyDescriptor& d = descs[blockIdx.x];
@@ -2341,6 +2361,7 @@ __device__ __forceinline__ void HybridSplitInnerFusedBatchBody(FALCATA_SPLIT_INN
 template <int ROWS, bool USE_NCCL_REDUCE, bool USE_GRAD_DISCRETIZED>
 __global__ void __launch_bounds__(SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION) HybridSplitInnerFusedBatchKernel(
   FALCATA_SPLIT_INNER_FUSED_PARAMS) {
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the aggregate's offsets are complete and visible
   __shared__ uint16_t shared_warp_scan[WARPSIZE];
   HybridSplitInnerFusedBatchBody<ROWS, USE_NCCL_REDUCE, USE_GRAD_DISCRETIZED>(FALCATA_SPLIT_INNER_FUSED_ARGS,
                                                                               shared_warp_scan);
@@ -2358,6 +2379,7 @@ template <int ROWS, bool USE_NCCL_REDUCE, bool USE_GRAD_DISCRETIZED>
 __global__ void __launch_bounds__(SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS)
 HybridSplitInnerFusedBatchRowsKernel(
   FALCATA_SPLIT_INNER_FUSED_PARAMS) {
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the aggregate's offsets are complete and visible
   __shared__ uint16_t shared_warp_scan[WARPSIZE];
   HybridSplitInnerFusedBatchBody<ROWS, USE_NCCL_REDUCE, USE_GRAD_DISCRETIZED,
                                  SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / ROWS>(FALCATA_SPLIT_INNER_FUSED_ARGS,
@@ -2410,6 +2432,8 @@ void LaunchHybridSplitInnerFusedBatchKernel(
   hist_t* cuda_hist, hist_t** cuda_hist_pool, double* cuda_leaf_output, int* cuda_split_info_buffer_base,
   int* split_info_mirror_base) {
   auto* kernel = HybridSplitInnerFusedBatchKernel<ROWS, USE_NCCL_REDUCE, USE_GRAD_DISCRETIZED>;
+  // cuda_plan key pdl_level_chain: a programmatic dependent of the offset aggregate launched just before
+  const bool pdl = PdlLevelChainEnabled();
   if constexpr (ROWS > 1) {
     // cuda_plan key apply_inner_rows: the apply_row_batch launch at twice its rows per thread
     constexpr int kWideRows = 2 * ROWS;
@@ -2418,11 +2442,11 @@ void LaunchHybridSplitInnerFusedBatchKernel(
     // the wide build's compile-time block size must be the launch's
     if (FalcataPlan::Get().apply_inner_rows && wide_block == SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION / kWideRows &&
         ApplyRowsTakes(wide, wide_block, kWideRows, kernel, block, ROWS)) {
-      wide<<<grid, wide_block, 0, stream>>>(FALCATA_SPLIT_INNER_FUSED_ARGS);
+      LaunchLevelChainKernel(pdl, wide, dim3(grid), dim3(wide_block), 0, stream, FALCATA_SPLIT_INNER_FUSED_ARGS);
       return;
     }
   }
-  kernel<<<grid, block, 0, stream>>>(FALCATA_SPLIT_INNER_FUSED_ARGS);
+  LaunchLevelChainKernel(pdl, kernel, dim3(grid), dim3(block), 0, stream, FALCATA_SPLIT_INNER_FUSED_ARGS);
 }
 #undef FALCATA_SPLIT_INNER_FUSED_ARGS
 #undef FALCATA_SPLIT_INNER_FUSED_PARAMS
@@ -2535,7 +2559,8 @@ void CUDADataPartition::LaunchSplitLevelBatchedKernels(const int num_splits, con
       std::max<int64_t>(WARPSIZE, (needed + WARPSIZE - 1) / WARPSIZE * WARPSIZE)));
     const auto kernel = short_runs ? HybridAggregateBlockOffsetLoadFirstKernel<kAggregatePerThreadShort> :
                                      HybridAggregateBlockOffsetLoadFirstKernel<kAggregatePerThread>;
-    kernel<<<num_splits, threads, 0, cuda_streams_[0]>>>(
+    // cuda_plan key pdl_level_chain: a programmatic dependent of the gen-bit kernel launched just before
+    LaunchLevelChainKernel(PdlLevelChainEnabled(), kernel, dim3(num_splits), dim3(threads), 0, cuda_streams_[0],
       descs, cuda_block_data_to_left_offset_.RawData(), cuda_block_data_to_right_offset_.RawData(),
       cuda_leaf_data_start_.RawData(), cuda_leaf_data_end_.RawData(), cuda_leaf_num_data_.RawData(),
       cuda_level_smaller_counts_.RawData(), aggregate_mirror);
@@ -2882,6 +2907,8 @@ __global__ void AddPredictionToScoreKernel(
   const data_size_t* data_indices_in_leaf,
   const double* leaf_value, double* cuda_scores,
   const int* cuda_data_index_to_leaf_index, const data_size_t num_data) {
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the kernel before it on the stream is complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel of the chain may get resident
   const unsigned int threadIdx_x = threadIdx.x;
   const unsigned int blockIdx_x = blockIdx.x;
   const unsigned int blockDim_x = blockDim.x;
@@ -2928,13 +2955,11 @@ void CUDADataPartition::LaunchAddPredictionToScoreKernel(const double* leaf_valu
   global_timer.Start("CUDADataPartition::AddPredictionToScoreKernel");
   const data_size_t num_data_in_root = root_num_data();
   const int num_blocks = (num_data_in_root + FILL_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / FILL_INDICES_BLOCK_SIZE_DATA_PARTITION;
-  if (use_bagging_) {
-    AddPredictionToScoreKernel<true><<<num_blocks, FILL_INDICES_BLOCK_SIZE_DATA_PARTITION>>>(
-      cuda_data_indices_.RawData(), leaf_value, cuda_scores, cuda_data_index_to_leaf_index_.RawData(), num_data_in_root);
-  } else {
-    AddPredictionToScoreKernel<false><<<num_blocks, FILL_INDICES_BLOCK_SIZE_DATA_PARTITION>>>(
-      cuda_data_indices_.RawData(), leaf_value, cuda_scores, cuda_data_index_to_leaf_index_.RawData(), num_data_in_root);
-  }
+  // cuda_plan key pdl_level_chain: a programmatic dependent of the kernel before it (the leaf value shrinkage)
+  LaunchLevelChainKernel(PdlLevelChainEnabled(),
+    use_bagging_ ? AddPredictionToScoreKernel<true> : AddPredictionToScoreKernel<false>, dim3(num_blocks),
+    dim3(FILL_INDICES_BLOCK_SIZE_DATA_PARTITION), 0, nullptr,
+    cuda_data_indices_.RawData(), leaf_value, cuda_scores, cuda_data_index_to_leaf_index_.RawData(), num_data_in_root);
   // cuda_plan key async_tree_start: the score's consumers (the next gradients, any host copy) are stream-ordered
   // behind this default-stream kernel, so the host need not wait for it
   if (!AsyncTreeStart()) {

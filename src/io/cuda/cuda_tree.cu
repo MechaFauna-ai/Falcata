@@ -13,6 +13,8 @@
 
 #include <vector>
 
+#include "../../treelearner/cuda/cuda_pdl_launch.hpp"
+
 namespace Falcata {
 
 // Decision-type bit helpers, used only by the kernels below. They stay in this
@@ -434,6 +436,7 @@ void CUDATree::LaunchSplitCategoricalKernel(const int leaf_index,
 }
 
 __global__ void ShrinkageKernel(const double rate, double* cuda_leaf_value, const int num_leaves) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel of the chain may get resident
   const int leaf_index = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
   if (leaf_index < num_leaves) {
     cuda_leaf_value[leaf_index] *= rate;

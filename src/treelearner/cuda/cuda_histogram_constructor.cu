@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "cuda_meta_batch.hpp"
+#include "cuda_pdl_launch.hpp"
 
 namespace Falcata {
 
@@ -3038,6 +3039,7 @@ __global__ void CUDAConstructDiscretizedHistogramDenseBatchedKernel(
   const data_size_t host_min_rows_per_thread,
   const bool level_row_blocks,
   const DenseBlockPrefix block_prefix) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   // packed grad<<16|hess slots. SHARED_HIST_SIZE counts the 16-bit slots of the
   // budget shared with the non-quantized kernels, so the int32 array holds half
   // as many entries in the same bytes, at the alignment its atomics require.
@@ -3728,6 +3730,7 @@ __device__ __forceinline__ void ConstructDiscretizedHistogramPairJointCode5WordI
 template <bool ALL_ROWS, int BATCH, bool CODE5 = false, bool WORDS = false, bool FLAT = false, bool EPILOGUE_FLAT = false,
           int CODE_BITS = 5>  // NOLINT(whitespace/indent_namespace)
 __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_PARAMS) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   extern __shared__ int32_t shared_joint[];
   // cuda_plan key pair_block_map: the pair and block row this block stands for (see BlockPrefix)
   unsigned int pair_index = blockIdx.z;
@@ -4271,6 +4274,7 @@ __global__ void CUDAConstructDiscretizedHistogramDenseSmallLeafBatchedKernel(
   const int8_t* is_feature_used_bytree,
   const data_size_t min_data_in_leaf,
   const double min_sum_hessian_in_leaf) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.z;
   if (!desc->construct_valid) {
     return;
@@ -5499,6 +5503,7 @@ __global__ void CopyChangedNumBitHistogramBatchedKernel(
   hist_t* num_bit_change_buffer,
   const uint8_t* bin_used,
   const CUDAHybridGraphLoopStateOpt gstate) {
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the subtract's change buffer is complete and visible
   // graphs A2 idle-block guard (pow2-frozen grid; see the find kernel)
   if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
     return;
@@ -5743,6 +5748,8 @@ __global__ void FixSubtractDiscretizedMaskedBatchedKernel(
   const uint8_t* bin_used,
   const int8_t* feature_used,
   const CUDAHybridGraphLoopStateOpt gstate) {
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the construct's histograms are complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next level-chain kernel may get resident
   // graphs A2 idle-block guard (pow2-frozen grid; see the find kernel)
   if (HybridGraphBeyondLiveSplits(gstate, blockIdx.y)) {
     return;
@@ -5918,6 +5925,7 @@ __global__ void __launch_bounds__(512) FixSubtractUsedFeaturesBatchedKernel(
   const int num_total_bin,
   const CUDAHybridPairDescriptor* pair_descs,
   hist_t* num_bit_change_buffer) {
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the construct's histograms are complete and visible
   const CUDAHybridPairDescriptor* desc = pair_descs + blockIdx.x;
   const CUDALeafSplitsStruct* smaller = desc->smaller_struct;
   const CUDALeafSplitsStruct* larger = desc->larger_struct;
@@ -7153,7 +7161,10 @@ void CUDAHistogramConstructor::LaunchFixSubtractDiscretizedMaskedKernel(
   const int num_pairs,
   const CUDAHybridGraphLoopStateOpt gstate) {
   dim3 grid_dim(FixSubtractMaskedGridX(), num_pairs);
-  FixSubtractDiscretizedMaskedBatchedKernel<<<grid_dim, fix_subtract_masked_block_, 0, cuda_stream_>>>(
+  // cuda_plan key pdl_level_chain: a programmatic dependent of the construct launched just before on this stream
+  // (host launches only: a graph capture keeps the ordinary node)
+  LaunchLevelChainKernel(gstate == nullptr && PdlLevelChainEnabled(), FixSubtractDiscretizedMaskedBatchedKernel,
+    grid_dim, dim3(fix_subtract_masked_block_), 0, cuda_stream_,
     num_total_bin_,
     FixSubtractMaskedSubtractBlocks(),
     cuda_feature_num_bins_.RawData(),
@@ -7460,7 +7471,9 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
         FalcataPlan::Get().fix_subtract_fused) {
       // cuda_plan key fix_subtract_fused: fix + subtract of the sampled features, one block per pair
       const int threads = std::max(32, (num_used_feature_info_ + 31) / 32 * 32);  // <= 512 (host gate)
-      FixSubtractUsedFeaturesBatchedKernel<<<num_pairs, threads, 0, cuda_stream_>>>(
+      // cuda_plan key pdl_level_chain: a programmatic dependent of the construct launched just before
+      LaunchLevelChainKernel(PdlLevelChainEnabled(), FixSubtractUsedFeaturesBatchedKernel, dim3(num_pairs),
+        dim3(threads), 0, cuda_stream_,
         cuda_used_feature_info_.RawDataReadOnly(),
         num_used_feature_info_,
         num_total_bin_,
@@ -7492,7 +7505,9 @@ void CUDAHistogramConstructor::LaunchSubtractHistogramBatchedKernel(
     // graph capture always includes the copy node (the device-derived per-pair
     // bit widths gate it); the host path launches it only on bit-change levels
     if ((any_pair_needs_bit_change_copy && !fused_fix_subtract) || gstate != nullptr) {
-      CopyChangedNumBitHistogramBatchedKernel<<<subtract_grid, SUBTRACT_BLOCK_SIZE, 0, cuda_stream_>>>(
+      // cuda_plan key pdl_level_chain: a programmatic dependent of the subtract launched just before (host launches)
+      LaunchLevelChainKernel(gstate == nullptr && PdlLevelChainEnabled(), CopyChangedNumBitHistogramBatchedKernel,
+        subtract_grid, dim3(SUBTRACT_BLOCK_SIZE), 0, cuda_stream_,
         num_total_bin_,
         pair_descs,
         hist_buffer_for_num_bit_change_.RawData(),

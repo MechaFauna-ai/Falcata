@@ -10,6 +10,8 @@
 
 #include "cuda_binary_objective.hpp"
 
+#include "../../treelearner/cuda/cuda_pdl_launch.hpp"
+
 #include <Falcata/cuda/cuda_rocm_interop.h>
 #include <Falcata/falcata_plan.h>
 
@@ -326,6 +328,7 @@ __global__ void GetGradientsKernel_BinaryLogloss(const double* cuda_scores, cons
   const double* cuda_label_weights, const label_t* cuda_weights,
   const double sigmoid, const data_size_t num_data,
   score_t* cuda_out_gradients, score_t* cuda_out_hessians, const bool lean) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel (index fill, bagging count) may get resident
   const data_size_t data_index = static_cast<data_size_t>(blockDim.x * blockIdx.x + threadIdx.x);
   if (data_index < num_data) {
     const label_t cuda_label = static_cast<int>(cuda_labels[data_index]);

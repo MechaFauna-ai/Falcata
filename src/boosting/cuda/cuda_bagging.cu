@@ -10,6 +10,8 @@
 #include <Falcata/cuda/cuda_utils.hu>
 #include <Falcata/falcata_plan.h>
 
+#include "../../treelearner/cuda/cuda_pdl_launch.hpp"
+
 namespace Falcata {
 
 // Philox4x32-10, identical to the stochastic-rounding generator in
@@ -99,9 +101,13 @@ __device__ __forceinline__ bool BagKeep(const data_size_t i, const float bagging
 
 __global__ void BaggingBlockCountKernel(const data_size_t num_data, const float bagging_fraction, const int iter,
                                         const uint32_t seed, data_size_t* block_counts) {
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel of the chain may get resident
   const data_size_t i = static_cast<data_size_t>(threadIdx.x + blockIdx.x * blockDim.x);
   const bool keep = i < num_data && BagKeep(i, bagging_fraction, iter, seed);
   const int count = __syncthreads_count(keep);
+  // cuda_plan key pdl_level_chain: the draw above reads no memory, so it runs while the kernel before it on the stream
+  // drains; the store below waits for that kernel's completion and memory (the same store as an ordinary launch)
+  PdlWaitForProducer();
   if (threadIdx.x == 0) {
     block_counts[blockIdx.x] = static_cast<data_size_t>(count);
   }
@@ -109,6 +115,8 @@ __global__ void BaggingBlockCountKernel(const data_size_t num_data, const float 
 
 // one block: block_counts[b] -> exclusive base of block b, in place; block_counts[num_blocks] = the bag count
 __global__ void BaggingBlockBaseKernel(const int num_blocks, data_size_t* block_counts) {
+  PdlWaitForProducer();  // cuda_plan key pdl_level_chain: the kernel before it on the stream is complete and visible
+  PdlLaunchDependents();  // cuda_plan key pdl_level_chain: the next kernel of the chain may get resident
   __shared__ data_size_t warp_sums[kBagFusedBlock / 32];
   __shared__ data_size_t carry;
   if (threadIdx.x == 0) {
@@ -167,6 +175,10 @@ __global__ void BaggingBlockScatterKernel(const data_size_t num_data, const floa
   __syncthreads();
   data_size_t warp_base = 0;
   for (int w = 0; w < warp; ++w) warp_base += warp_counts[w];
+  // cuda_plan key pdl_level_chain: the draw and the block's own counts above touch no global memory, so they run
+  // while the block base kernel before it drains; the base read and the scatter's stores wait for its completion and
+  // memory (the same reads and stores as an ordinary launch)
+  PdlWaitForProducer();
   // the inclusive kept count through row i, as the global scan's prefix[i]
   const data_size_t kept_through_i = block_bases[blockIdx.x] + warp_base +
     static_cast<data_size_t>(__popc(ballot & (0xffffffffu >> (31 - lane))));
@@ -196,12 +208,16 @@ data_size_t CUDABaggingSample(const data_size_t num_data,
       block_buffer->Resize(static_cast<size_t>(fused_blocks) + 1);
     }
     data_size_t* block_counts = block_buffer->RawData();
-    BaggingBlockCountKernel<<<fused_blocks, kBagFusedBlock>>>(num_data, static_cast<float>(bagging_fraction), iter,
-                                                              static_cast<uint32_t>(seed), block_counts);
-    BaggingBlockBaseKernel<<<1, kBagFusedBlock>>>(fused_blocks, block_counts);
-    BaggingBlockScatterKernel<<<fused_blocks, kBagFusedBlock>>>(num_data, static_cast<float>(bagging_fraction), iter,
-                                                                static_cast<uint32_t>(seed), block_counts,
-                                                                out_indices);
+    // cuda_plan key pdl_level_chain: the count (after the gradients), the base and the scatter as programmatic
+    // dependents of the kernel before each
+    const bool pdl = PdlLevelChainEnabled();
+    LaunchLevelChainKernel(pdl, BaggingBlockCountKernel, dim3(fused_blocks), dim3(kBagFusedBlock), 0, nullptr, num_data,
+                           static_cast<float>(bagging_fraction), iter, static_cast<uint32_t>(seed), block_counts);
+    LaunchLevelChainKernel(pdl, BaggingBlockBaseKernel, dim3(1), dim3(kBagFusedBlock), 0, nullptr, fused_blocks,
+                           block_counts);
+    LaunchLevelChainKernel(pdl, BaggingBlockScatterKernel, dim3(fused_blocks), dim3(kBagFusedBlock), 0, nullptr,
+                           num_data, static_cast<float>(bagging_fraction), iter, static_cast<uint32_t>(seed),
+                           block_counts, out_indices);
     data_size_t fused_bag_cnt = 0;
     CopyFromCUDADeviceToHost<data_size_t>(&fused_bag_cnt, block_counts + fused_blocks, 1, __FILE__, __LINE__);
     return fused_bag_cnt;
