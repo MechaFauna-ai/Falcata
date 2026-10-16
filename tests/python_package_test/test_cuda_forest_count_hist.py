@@ -8,9 +8,10 @@ atomics count per bin the rows and their code sum, and a convert kernel stores t
 check when the codes are built (constant hessian, at most 256 values, the exactness bound of
 docs/design/forest-count-histograms.md) makes the stored pair the exact sum the deterministic construct's fixed-order
 double merge produces, so the histograms, the splits and the model are the same: md5-identical to the key-off model
-wherever the key-off model is itself run-to-run stable (the deterministic construct). Where the key-off learner uses
-the float atomic construct (the compact column view of feature_fraction < 1) its model is not run-to-run stable;
-the count construct is (exact integer sums), and its predictions agree with the key-off ones to rounding.
+wherever the key-off learner runs the deterministic construct. Where it runs the float atomic construct instead (the
+compact column view of feature_fraction < 1; levels with more pairs than the deterministic slot slab holds, which the
+shapes here do not reach) its sums round and its model need not be run-to-run stable; the count construct's are exact
+and deterministic, and its predictions agree with the key-off ones to rounding.
 """
 
 import hashlib

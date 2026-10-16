@@ -55,14 +55,21 @@ the codes (one byte per row) and the table go to the device and are kept for the
 gradient pointer, shared with the forest slots, cleared when the training data, config or learner is reset).
 
 **The construct.** Where the learner would launch the deterministic construct (per leaf, compact view included, or
-batched per level), it launches the count construct instead: one block per (pair, partition, row tile) accumulates,
-in shared memory with integer atomics, per bin the row count `n` and the code sum `S = Σ t_j` of its rows, and adds
-its nonzero bins to a per-pair global integer scratch (integer atomics: any order, same sums). Two layouts:
-`packed` (one 64-bit word `S << 32 | n`, one atomic per (row, column); used when `max t · num_data < 2^32`: binary and
-multiclass have `t ∈ {0, 1}`) and `wide` (64-bit `S`, 32-bit `n`; numerai's table spans 2^33). A convert kernel then
+batched per level), it launches the count construct instead (the batched one also takes the levels the slot slab's
+pair cap would hand to the float atomic kernel, and the compact view, whose batch the key-off learner leaves to the
+float atomics): one block per (pair, partition, row tile) accumulates, in shared memory with integer atomics, per bin
+the row count `n` and the code sum `S = Σ t_j` of its rows, and adds its nonzero bins to a per-pair global integer
+scratch (integer atomics: any order, same sums). Three layouts: `packed` (one 64-bit word `S << 32 | n`, one atomic
+per (row, column); used when `max t · num_data < 2^32`: binary and per-class trees have `t ∈ {0, 1}`), `per-value
+counts` (3-6 values whose code sums do not fit 32 bits, numerai's five: one row count per value in a 64/m-bit field of
+one word, still one atomic per (row, column); a tile then holds fewer rows than a field, and the flush turns the
+fields into `S` and `n`), and `wide` (otherwise: a 64-bit `S` and a 32-bit `n`, two atomics). A convert kernel then
 writes each bin of the pair's leaf histogram as the fp64 pair the deterministic construct would have written,
 `G = a·n + b·S` and `H = h·n`, and zeroes the scratch it read (so the next level starts from zero without a memset).
-The per-row read is one code byte instead of two floats.
+The per-row read is one code byte instead of two floats. A block has at most 128 column lanes (a lane takes several
+columns of a wide partition: numerai's 504-column partitions run 8 rows in flight instead of 2) and a tile at least 8
+(row, column) adds per bin of its partition (its flush is one pass over the partition's table), up to about 32 blocks
+per SM per launch.
 
 **Everything downstream is unchanged.** The leaf histogram is the same fp64 (grad, hess) pair array, so the fix of the
 most-frequent bin, the parent − child subtraction, the level finder, the leaf sums and the leaf outputs run the code
@@ -87,7 +94,11 @@ Let `B = max_j |M_j| · num_data` (an upper bound, in units of `u`, of any parti
 
 So the count construct is an exact re-evaluation of the same sums: every histogram bit equal, every gain, tie-break,
 split, count and leaf value equal, and the model is md5-identical to the key-off model (not "the same gain ordering
-up to ties": the same gains). On the three forest datasets the bound holds with room: higgs (`v` ≈ ±0.5, `L` = −26,
+up to ties": the same gains) wherever the key-off learner runs the deterministic construct. It does not everywhere:
+the compact view's level batch and levels with more pairs than the slot slab holds (1024 pairs on numerai and higgs:
+depth-16 and unlimited forests from depth 12 on) run the float atomic kernel, whose shared-memory float sums round.
+The count construct takes those too (exact and deterministic), so there the model differs from the key-off model by
+what the rounding changed (measured: numerai d16, first differing node at depth 13-16; holdout Pearson within 0.0003). On the three forest datasets the bound holds with room: higgs (`v` ≈ ±0.5, `L` = −26,
 2.0M bagged rows) needs 2B ≈ 2^48; covtype's rarest class (`p` ≈ 0.005, `L` ≈ −31, 294k rows) ≈ 2^51; numerai's five
 values (`L` = −34 from `s0 − 0.5` ≈ −2.5e-4) ≈ 2^52. Rows of data outside the bound (a gradient value much smaller
 than the largest, many rows) keep the deterministic construct, which is then not exact either.
@@ -112,11 +123,13 @@ forest runs the stage-2 construct.
 
 ## 6. Memory and launches
 
-Codes: one byte per row per trained class (higgs 3.2 MB; covtype 7 × 465k = 3.3 MB). Scratch: one row of
-`num_total_bin` words per pair, reused per level, sized for the level's pairs up to 64 MiB (higgs packed 57 KB per
-pair: ~1170 pairs per chunk; numerai wide ~213 KB: ~300 pairs per chunk; a level with more pairs runs in chunks), plus
-one row per histogram pipeline for the per-leaf construct. The det slot slab (`kDetDenseSlotBudget`, 96 MiB per
-learner) stays allocated (the fallback). Launches per level: construct + convert (as construct + merge before).
+Codes: one byte per row per trained class (higgs 3.2 MB; covtype 7 × 465k = 3.3 MB), plus a table of at most 256
+words. Scratch: the deterministic construct's slot slab (`cuda_det_dense_slots_`, up to 4 × 96 MiB per learner, which
+the count construct replaces while it runs), as rows of `num_total_bin` words per pair (12 B per bin in the per-value
+and wide layouts: their 32-bit counts follow the row's sums); a level with more pairs than the slab holds rows runs in
+chunks. The slab is zeroed (one memset) before the first count launch after any deterministic construct wrote it; the
+per-leaf construct uses one row per histogram pipeline. No new device allocation per learner. Launches per level:
+construct + convert (as construct + merge before).
 
 ## 7. The init-score column (plan: "drop the per-tree init-score column handling rf does not need")
 
@@ -134,3 +147,14 @@ Same values, same gradients.
   stage.
 - Other objectives with few gradient values and a constant hessian (L1, quantile, huber at a constant score,
   cross-entropy): the gate lists the objectives the plan names; the check itself is objective-agnostic.
+
+## 9. Measured (relaxed gpuq jobs, one RTX 5090; stock = master 4641c9f0)
+
+- Kernel time per tree after the change (nsys, 12 trees): higgs d12 5 ms (the count construct 2.0 ms of it, was 77 ms);
+  numerai d12 about 21 ms (the count construct 12 ms, was 72 ms: 504-column partitions of five-bin columns contend on
+  the shared atomics). 30 rounds, ms per round, key off -> on: higgs d12 63.7 -> 5.4, numerai d12 94.4 -> 37.4,
+  covtype d12 29.4 -> 12.6, covtype-rf-std 18.9 -> 5.6, covtype d-1 quant none 76.3 -> 27.7.
+- The forest cells (cells_e2e, 2 pairs, T from the mean ms per round): higgs-rf-deep 10.35x vs stock, numerai-rf-deep
+  2.59x, covtype-rf-std 3.52x, covtype-rf-deep (quantized, not engaged) 1.03x; md5 stock = candidate on all four.
+- The benchmark (100 trees, medians of 3): quant-none rows 1.9-3.0x on covtype and numerai, 5.9-15.3x on higgs; see
+  docs/performance.md 10u.
