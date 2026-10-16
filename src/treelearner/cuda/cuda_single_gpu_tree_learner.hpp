@@ -769,6 +769,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   bool device_levels_ready_ = false;
   bool device_levels_disabled_ = false;
   CUDAVector<CUDADeviceLevelState> cuda_device_level_state_;
+  // the select / pairs kernels' inputs in device memory (the apply's pairs block reads them there), uploaded per tree
+  CUDAVector<CUDADeviceLevelConfig> cuda_device_level_config_;
+  CUDADeviceLevelConfig host_device_level_config_;
   CUDAVector<int> cuda_device_level_journal_;
   int* pinned_device_level_journal_ = nullptr;
   size_t device_level_journal_size_ = 0;

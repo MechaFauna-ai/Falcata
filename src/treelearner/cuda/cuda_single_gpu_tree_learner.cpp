@@ -3590,6 +3590,7 @@ bool CUDASingleGPUTreeLearner::SetupDeviceLevels() {
   cuda_device_level_real_thresholds_.InitFromHostVector(real_thresholds);
   cuda_device_level_feature_source_.Resize(static_cast<size_t>(train_data_->num_features()));
   cuda_device_level_state_.Resize(1);
+  cuda_device_level_config_.Resize(1);
   device_level_journal_size_ = static_cast<size_t>(kDeviceLevelJournalHeader) +
     2 * static_cast<size_t>(config_->num_leaves) + 4;
   cuda_device_level_journal_.Resize(device_level_journal_size_);
@@ -3647,11 +3648,11 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
     LaunchDeviceLevelSelect(cfg, level, max_splits, find_stream);
     CUDASUCCESS_OR_FATAL(cudaEventRecord(device_level_select_event_, find_stream));
     CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(tree_stream, device_level_select_event_, 0));
-    cuda_data_partition_->LaunchDeviceLevelApply(max_splits, dls);
+    // (the apply's last block writes the children's descriptors and block map: DeviceLevelPairsBlock)
+    cuda_data_partition_->LaunchDeviceLevelApply(max_splits, dls, cuda_device_level_config_.RawDataReadOnly());
     tree->LaunchSplitBatchKernelDevice(max_splits, &dls->live_splits);
     CUDASUCCESS_OR_FATAL(cudaEventRecord(tree_record_done_event_, tree_stream));
-    // the children's descriptors and block map, then their search behind the apply
-    LaunchDeviceLevelPairs(cfg, level, max_splits, find_stream);
+    // the children's search behind the apply
     cuda_histogram_constructor_->ConstructHistogramsForLevel(
       cuda_hybrid_pair_descs_.RawDataReadOnly(), max_splits, /*max_num_data_in_smaller_leaf=*/0,
       /*any_pair_needs_bit_change_copy=*/true);
@@ -3740,7 +3741,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
     cuda_device_level_feature_source_.RawData(), host_device_level_feature_source_.data(),
     host_device_level_feature_source_.size(), find_stream, __FILE__, __LINE__);
   CUDADeviceLevelState* dls = cuda_device_level_state_.RawData();
-  CUDADeviceLevelConfig cfg;
+  CUDADeviceLevelConfig& cfg = host_device_level_config_;
   std::memset(&cfg, 0, sizeof(cfg));
   cfg.state = dls;
   cfg.leaf_best_split_info = cuda_best_split_finder_->leaf_best_split_info_ptr(0);
@@ -3768,6 +3769,10 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   cuda_histogram_constructor_->DeviceLevelConstructShape(&cfg.shape);
   cfg.level_row_blocks = (cfg.shape.pair_mode == 0 ? FalcataPlan::Get().dense_level_row_blocks :
                           FalcataPlan::Get().level_row_blocks) ? 1 : 0;
+  // the apply's pairs block reads the config from device memory (stream-ordered before the levels; the host copy
+  // stays alive in the learner)
+  CopyFromHostToCUDADeviceAsync<CUDADeviceLevelConfig>(cuda_device_level_config_.RawData(), &cfg, 1, find_stream,
+                                                       __FILE__, __LINE__);
   // cuda_plan key device_level_graph: the levels' launches as one cached CUDA graph (captured on the first tree of a
   // pointer key, replayed on the next ones); otherwise enqueued as they are
   bool launched = false;

@@ -59,6 +59,7 @@ struct CUDAHybridApplySplitInput {
  *  [leaf_data_start, +num_data_in_leaf) window (mirroring the main index array
  *  layout), the block offset buffers use [block_offset_start, +num_blocks+1). */
 struct CUDADeviceLevelState;
+struct CUDADeviceLevelConfig;
 
 struct CUDAHybridApplyDescriptor {
   const void* column_data;
@@ -175,7 +176,8 @@ class CUDADataPartition: public NCCLInfo {
   /*! \brief cuda_plan key device_levels: the apply of one device-driven level of at most max_splits splits: the
    *  SplitLevelBatched kernels at the level's worst-case grids, reading the descriptors and live counts the select
    *  kernel wrote (DeviceLevelSelectKernel); the index buffers swap as after every host level */
-  void LaunchDeviceLevelApply(const int max_splits, const CUDADeviceLevelState* dls);
+  void LaunchDeviceLevelApply(const int max_splits, const CUDADeviceLevelState* dls,
+                              const CUDADeviceLevelConfig* dl_cfg = nullptr);
 
   /*! \brief cuda_plan key device_levels: after the device levels' readback: levels_applied of levels_enqueued
    *  enqueued levels applied total_splits splits (the host swapped the index buffers once per enqueued level) */
@@ -478,7 +480,8 @@ class CUDADataPartition: public NCCLInfo {
                                       const int gap_flat_blocks,
                                       const bool write_leaf_map,
                                       const bool map_only,
-                                      const CUDADeviceLevelState* dls = nullptr);
+                                      const CUDADeviceLevelState* dls = nullptr,
+                                      const CUDADeviceLevelConfig* dl_cfg = nullptr);
   /*! \brief the batched level's split-inner (index partition into the out buffer) and gap copy launches */
   void LaunchLevelSplitInnerKernel(const int num_splits, const int total_flat_blocks, const bool write_leaf_map,
                                    const bool map_only);
