@@ -10,6 +10,10 @@ counts (padding slots), several feature partitions, and more byte slots than
 one tile holds (which keeps the per-cell kernel). Only the deterministic
 (quantized) modes are compared: fp64 histograms use float atomics and differ in
 the last bits run to run even with the same plan.
+
+Force view_mode:compact for kernel coverage: auto's view-pair rule can choose
+the masked full view and bypass compact fill entirely. Default dispatch is
+checked separately, including model identity against the forced compact view.
 """
 
 import os
@@ -38,6 +42,8 @@ BASE = {
     "verbosity": -1,
     "seed": 3,
 }
+
+COMPACT = "auto,view_mode:compact"
 
 
 def _train(rows, feats, params, seed):
@@ -72,33 +78,39 @@ SHAPES = [
 @pytest.mark.parametrize(("rows", "feats", "feature_fraction"), SHAPES)
 def test_tiled_fill_is_bit_identical_cuda(rows, feats, feature_fraction, colmajor, quant):
     params = {"feature_fraction": feature_fraction, **quant}
-    tiled = _train(rows, feats, {**params, "cuda_plan": f"auto,colmajor_fill:{colmajor}"}, seed=rows + feats)
-    per_cell = _train(
-        rows, feats, {**params, "cuda_plan": f"auto,colmajor_fill:{colmajor},tiled_fill:off"}, seed=rows + feats
-    )
+    plan = f"{COMPACT},colmajor_fill:{colmajor}"
+    tiled = _train(rows, feats, {**params, "cuda_plan": plan}, seed=rows + feats)
+    per_cell = _train(rows, feats, {**params, "cuda_plan": f"{plan},tiled_fill:off"}, seed=rows + feats)
     assert tiled == per_cell
 
 
 _PROBE = """
+import hashlib
 import sys
 sys.path.insert(0, {here!r})
 from test_compact_fill import _train
-_train({rows}, {feats}, {{"feature_fraction": {ff}, "quant_mode": "stochastic", "verbosity": 1}}, seed=0)
+model = _train({rows}, {feats}, {params!r}, seed=0)
+print("MODEL_SHA256=" + hashlib.sha256(model.encode()).hexdigest())
 """
 
 
-def _fill_kernels(rows, feats, feature_fraction):
-    """(kernel, slots, partitions) of every compact fill after the first tree's, from the FALCATA_DEBUG=diag log.
-
-    The first tree's fill always reads the row-major matrix: colmajor_fill makes its copy before the second tree."""
-    code = _PROBE.format(here=os.path.dirname(os.path.abspath(__file__)), rows=rows, feats=feats, ff=feature_fraction)
+def _probe(rows, feats, feature_fraction, plan, quant="stochastic"):
+    params = {"feature_fraction": feature_fraction, "quant_mode": quant, "verbosity": 1, "cuda_plan": plan}
+    code = _PROBE.format(here=os.path.dirname(os.path.abspath(__file__)), rows=rows, feats=feats, params=params)
     env = {**os.environ, "FALCATA_DEBUG": "diag"}
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, check=True).stdout
+    return subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, env=env, check=True, timeout=120
+    ).stdout
+
+
+def _fill_kernels(out):
+    """(kernel, slots, partitions) of every compact fill in the diagnostic log."""
     found = re.findall(r"compact fill: (\S+) 4-bit kernel, (\d+) byte slots in (\d+) partitions", out)
-    return [(k, int(s), int(p)) for k, s, p in found][1:]
+    return [(k, int(s), int(p)) for k, s, p in found]
 
 
 @_REQUIRES_CUDA
+@pytest.mark.parametrize("colmajor", ["on", "off"])
 @pytest.mark.parametrize(
     ("rows", "feats", "feature_fraction", "kernel", "multi_partition"),
     [
@@ -108,9 +120,33 @@ def _fill_kernels(rows, feats, feature_fraction):
         (30_000, 1200, 0.5, "per-cell", True),
     ],
 )
-def test_shapes_reach_the_intended_fill_kernel_cuda(rows, feats, feature_fraction, kernel, multi_partition):
+def test_shapes_reach_the_intended_fill_kernel_cuda(rows, feats, feature_fraction, kernel, multi_partition, colmajor):
     """The bit-identity sweep only means something if its shapes take the path they are named for."""
-    fills = _fill_kernels(rows, feats, feature_fraction)
-    assert fills, "no compact fill was logged"
-    assert all(k == kernel for k, _, _ in fills), fills
-    assert all((p > 1) == multi_partition for _, _, p in fills), fills
+    plan = f"{COMPACT},colmajor_fill:{colmajor}"
+    for extra, expected in [("", kernel if colmajor == "on" else "per-cell"), (",tiled_fill:off", "per-cell")]:
+        out = _probe(rows, feats, feature_fraction, plan + extra)
+        # A legacy column-major copy is ready from tree two; the direct store is ready at tree one.
+        fills = _fill_kernels(out)[1:]
+        assert len(fills) == 11, out
+        assert all(k == expected for k, _, _ in fills), fills
+        assert all((p > 1) == multi_partition for _, _, p in fills), fills
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("quant", ["stochastic", "fixedpoint"])
+def test_default_over_gate_uses_mask_without_changing_model_cuda(quant):
+    """The static view rule bypasses compact fill at this shape; forcing it must preserve the model."""
+    default = _probe(30_000, 1200, 0.5, "auto", quant)
+    compact = _probe(30_000, 1200, 0.5, COMPACT, quant)
+    assert default.count("colmajor_direct: mask regime") == 1, default
+    assert "colmajor_direct: compact regime" not in default, default
+    assert not _fill_kernels(default), default
+    assert compact.count("colmajor_direct: compact regime") == 1, compact
+    assert "colmajor_direct: mask regime" not in compact, compact
+    fills = _fill_kernels(compact)
+    assert len(fills) == 12, compact
+    assert all(k == "per-cell" and s > 256 and p > 1 for k, s, p in fills), fills
+    default_hashes = re.findall(r"^MODEL_SHA256=([0-9a-f]{64})$", default, re.M)
+    compact_hashes = re.findall(r"^MODEL_SHA256=([0-9a-f]{64})$", compact, re.M)
+    assert len(default_hashes) == len(compact_hashes) == 1, (default, compact)
+    assert default_hashes == compact_hashes
