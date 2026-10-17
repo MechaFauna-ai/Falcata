@@ -2700,7 +2700,7 @@ Implementation `d3f6812b5c35ddd195c53d6d652774ad02dc7f9f`, CUDA library SHA256
 RTX 5090; these ratios include the first training call in the 30,000-round estimate and compare the same library
 with the prefix disabled versus enabled with graph caching. The pair range is descriptive, not a confidence interval.
 
-| GBDT cell | Prefix off/on | Graph plain/cached | Current master/on | Key pair range | 30k s, load+construct+startup |
+| GBDT cell | Prefix off/on | Graph plain/cached | Current master/on | Key pair range | 30k s, training diagnostic |
 |---|---:|---:|---:|---:|---:|
 | numerai53bench-deep-stoch | 0.9957x | 1.0498x | 0.9970x | 0.9900–1.0014x | 99.75 |
 | numerai53bench-nan-deep-stoch | 1.0023x | 1.0197x | 1.0016x | 0.9946–1.0101x | 106.03 |
@@ -2719,8 +2719,9 @@ with the prefix disabled versus enabled with graph caching. The pair range is de
 | covtype-rf-std | 1.0048x | 0.9822x | 1.0012–1.0085x |
 
 
-Ratios above use the first training call plus scaled steady training; the 30k-second column additionally includes
-data loading and Dataset construction. It excludes Python import and model serialization. These are extrapolations
+Ratios above use the first training call plus scaled steady training. The 30k-second diagnostic column uses the
+whole measured training call plus extrapolated remaining rounds. Both exclude data loading, Dataset construction,
+Python import and model serialization. These are extrapolations
 from the measured 500-round cells (1,000 for covtype), not 30,000-round runs. The 100-round forest estimates use
 steady means because slot-group callbacks bunch up. All 128 measured runs have matching models across comparisons
 and the expected full tree counts. Current master is clean `bdb7297d`, frozen library SHA256
