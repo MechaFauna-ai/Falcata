@@ -446,7 +446,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // Enqueue the root level's batched search of the single-sync flow (descriptor
   // with device-derived gating, exact host-known construct grid). Shared by the
   // exact-fit one-sync prefix and the selective one-sync loop.
-  void EnqueueRootLevelSearchOneSync();
+  void EnqueueRootLevelSearchOneSync(bool reuse_fused_root = false);
   // Reset the per-tree selective growth state.
   void SelectiveReset();
   // Collect the new frontier candidates from the given child leaves (children of
@@ -776,6 +776,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::vector<int> hybrid_graph_batch_info_;
   std::vector<HybridAppliedSplit> hybrid_graph_applied_scratch_;
   // ---- cuda_plan key device_levels state ----
+  bool device_tree_completed_ = false;
   bool device_levels_logged_ = false;
   bool device_levels_fallback_logged_ = false;
   bool device_levels_ready_ = false;

@@ -2678,6 +2678,27 @@ it produces is the quantized classic loop's to the bit
 quantized training as ground truth in
 `test_vector_leaf_cuda_quantized_selective_duplicated_target_matches_scalar`).
 
+## Experimental complete bounded device trees (`device_tree`)
+
+`cuda_plan=auto,device_tree:on` (default OFF) requests the complete quantized device controller for scalar,
+numerical single-GPU trees with positive `max_depth <= 10` and `2^max_depth <= num_leaves`. The key supplies
+its own growth even with `device_levels:off`; unsupported kernels, constraints and data retain the existing
+host flow and report the fallback under `FALCATA_DEBUG=diag`. No training parameters or split rules change.
+
+After the root search, device selectors and apply kernels handle every level, including early exhaustion and
+the final depth. The final apply skips its child histogram/search. One end-of-growth fence reads the journal
+and split bookkeeping; the host then restores its tree mirrors and leaf statistics without a host growth tail.
+Root initialization/search, stump root-output recovery, host bookkeeping, final leaf-map/score updates and tree
+transfer remain outside this interval. This key does not claim an entirely synchronization-free training call.
+
+`device_level_graph:on` caches this complete sequence. For whole-row code-word constructs, cache identity uses
+the resolved launch and row-grouping shape instead of preliminary per-partition maxima that are not kernel
+arguments. True kernel arguments, codec, sampled metadata buffers, task layouts and index-buffer parity remain
+keyed; other constructs retain the conservative maxima. The complete controller retains its bounded 32-entry
+cache across layout misses, without the prefix's nine-miss disable policy. Noncapturable layouts use direct
+device enqueues with the same single growth readback. Diagnostics report completed levels/splits and cache
+hits/misses on every tree. Performance validation is pending.
+
 ## 10v. A bounded device-driven quantized prefix (`device_levels`, `device_level_graph`)
 
 Eligible quantized, numerical, scalar, single-GPU two-sync depth-limited trees enqueue

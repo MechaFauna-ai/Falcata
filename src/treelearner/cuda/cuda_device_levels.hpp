@@ -141,6 +141,8 @@ struct CUDADeviceLevelConfig {
   const double* real_thresholds;
   int* journal;
   int max_depth;
+  /*! \brief complete depth-bounded tree: the final apply needs no child histogram/search */
+  int whole_tree;
   /*! \brief threads of the host's gap copy blocks (the gap descriptors' num_blocks unit) */
   int gap_block_dim;
   // children's search gates (EnqueueLevelBestSplitSearch)
