@@ -3767,6 +3767,8 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
   std::vector<const void*> key;
   key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(num_levels)));
   key.push_back(static_cast<const void*>(tree->hybrid_graph_batch_splits()));
+  key.push_back(static_cast<const void*>(cfg.root_struct));
+  key.push_back(static_cast<const void*>(cfg.tree_leaf_value));
   key.push_back(static_cast<const void*>(cuda_hybrid_pair_descs_.RawDataReadOnly()));
   key.push_back(static_cast<const void*>(hybrid_pair_slots_.RawDataReadOnly()));
   // Sampled compact views may select a different decoder while retaining the same allocation and padded shape.
@@ -3863,6 +3865,8 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   std::memset(&cfg, 0, sizeof(cfg));
   cfg.state = dls;
   cfg.leaf_best_split_info = cuda_best_split_finder_->leaf_best_split_info_ptr(0);
+  cfg.root_struct = cuda_smaller_leaf_splits_->GetCUDAStruct();
+  cfg.tree_leaf_value = tree->cuda_leaf_value_ref();
   cfg.leaf_num_data = cuda_data_partition_->cuda_leaf_num_data();
   cfg.leaf_data_start = cuda_data_partition_->cuda_leaf_data_start();
   cfg.tree_batch_splits = tree->hybrid_graph_batch_splits();

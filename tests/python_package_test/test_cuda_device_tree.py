@@ -50,6 +50,14 @@ def _case(name):
         y = X[:, :8].sum(axis=1) + rng.standard_normal(len(X))
         if name in {"layouts", "reuse"}:
             rounds = 70 if name == "reuse" else 40
+        elif name in {"root_offset", "root_regularized"}:
+            # Disabling the initial average leaves a large, deterministic nonzero root output. A split records
+            # that output as internal_value[0], even though its child leaf outputs still train correctly if lost.
+            y = (32 + X[:, :8].sum(axis=1)).astype(np.float32)
+            params.update(boost_from_average=False, quant_mode="fixedpoint")
+            if name == "root_regularized":
+                params.update(lambda_l1=0.7, lambda_l2=3.0, max_delta_step=2.5)
+            rounds = 3
         elif name == "stump":
             params["min_gain_to_split"] = 1e12
             rounds = 1
@@ -79,6 +87,7 @@ def _probe(name, base_plan, graph):
     models = []
     counts = []
     depths = []
+    roots = []
     for suffix in [",device_tree:off", ",device_tree:on,device_level_graph:" + graph]:
         p = {**params, "cuda_plan": base_plan + ",device_levels:off" + suffix}
         ds = flc.Dataset(X, label=y, params=p)
@@ -93,6 +102,7 @@ def _probe(name, base_plan, graph):
         models.append("\n".join(line for line in booster.model_to_string().splitlines() if "cuda_plan" not in line))
         info = booster.dump_model()["tree_info"]
         counts.append([t["num_leaves"] for t in info])
+        roots.append([t["tree_structure"].get("internal_value", 0.0) for t in info])
 
         def depth(node):
             return (
@@ -102,9 +112,13 @@ def _probe(name, base_plan, graph):
             )
 
         depths.append([depth(t["tree_structure"]) for t in info])
+    if name in {"root_offset", "root_regularized"}:
+        assert all(count > 1 for count in counts[0])
+        assert all(abs(value) > 1e-6 for value in roots[0]), "host root must be nonzero to discriminate this regression"
+        print(json.dumps({"host_roots": roots[0], "device_roots": roots[1]}), flush=True)
     assert models[0] == models[1], "host/device model bytes differ"
     assert counts[0] == counts[1]
-    print(json.dumps({"counts": counts[1], "depths": depths[1], "rounds": rounds}))
+    print(json.dumps({"counts": counts[1], "depths": depths[1], "roots": roots[1], "rounds": rounds}))
 
 
 def _run(name, graph="on", base_plan="auto"):
@@ -177,5 +191,15 @@ def test_device_tree_unsupported_cuda(case):
 @pytest.mark.parametrize("plan", ["auto,fused_root_hist:off", "auto,pdl_level_chain:off", "auto,skip_empty_tail:off"])
 def test_device_tree_dependencies_cuda(plan):
     data, diag = _run("fivebin", base_plan=plan)
+    assert diag.count("device_tree: complete") == data["rounds"]
+    assert "device_tree: host fallback" not in diag
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("graph", ["off", "on"])
+@pytest.mark.parametrize("case", ["root_offset", "root_regularized"])
+def test_device_tree_root_output_cuda(case, graph):
+    data, diag = _run(case, graph)
+    assert all(abs(value) > 1e-6 for value in data["roots"])
     assert diag.count("device_tree: complete") == data["rounds"]
     assert "device_tree: host fallback" not in diag
