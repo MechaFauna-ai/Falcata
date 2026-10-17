@@ -1,8 +1,10 @@
 """Saved dataset parameters must survive the sparse gate's two training paths."""
 
 import importlib.util
+import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -12,7 +14,8 @@ import falcata as lgb
 GATE_PATH = Path(__file__).resolve().parents[1] / "gates" / "sparse_column_view.py"
 SPEC = importlib.util.spec_from_file_location("sparse_column_view_gate", GATE_PATH)
 gate = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(gate)
+with patch.object(sys, "path", [str(GATE_PATH.parent), *sys.path]):
+    SPEC.loader.exec_module(gate)
 
 
 @pytest.mark.parametrize(

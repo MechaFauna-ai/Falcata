@@ -32,6 +32,8 @@ import sys
 import time
 from pathlib import Path
 
+from saved_dataset import check_loaded_h60, frozen_h60
+
 CACHE = Path(os.environ.get("FALCATA_BENCH_CACHE", "bench-cache"))
 
 LOCKS = {
@@ -220,28 +222,25 @@ def run_numerai():
     return "numerai", md5, f"train={t:.2f}s"
 
 
-NUMERAI_V53_DATASET = Path(os.environ.get("FALCATA_NUMERAI_V53", "numerai-v53.dataset"))
-
-
 def run_numerai_treecount():
     """Full-scale fixedpoint tree-emission gate (nightly; needs ~20GB free VRAM).
 
     Encodes the 2026-07 production bug: quant_mode=fixedpoint on the real v5.3
-    dataset (6.8M x 3555, max_bin=5, h60 hyperparameters) stopped emitting
+    dataset (6.8M x 3555, historically max_bin=5, h60 hyperparameters) stopped emitting
     trees after ~44 of 40000 and produced a near-constant model. The trigger is
     scale/data-dependent -- probes up to 550k rows with identical
     hyperparameters do NOT reproduce it, so only this full-scale cell catches
-    the class. Detectors: exact tree count + non-collapsed late-tree leaves.
+    the class. The explicitly pinned recovery snapshot uses its saved bin
+    metadata (including max_bin=255), without a claim of replaying that exact
+    historical trigger. The four model hash locks use their original cache.
+    Detectors: exact tree count + non-collapsed late-tree leaves.
     """
-    import numpy as np
-
     import falcata as lgb
 
-    if not NUMERAI_V53_DATASET.exists():
-        return "numerai-treecount", "SKIP", f"dataset missing: {NUMERAI_V53_DATASET}"
-    parquet = NUMERAI_V53_DATASET.with_suffix(".parquet")
-    if not parquet.exists():
-        return "numerai-treecount", "SKIP", f"parquet (for labels) missing: {parquet}"
+    try:
+        frozen = frozen_h60()
+    except (OSError, ValueError, KeyError) as exc:
+        return "numerai-treecount", "FAIL", f"frozen h60 input: {exc}"
     rounds = 200
     p = {
         "objective": "regression",
@@ -259,14 +258,12 @@ def run_numerai_treecount():
         "metric": "None",
         "num_threads": 16,
     }
-    ds = lgb.Dataset(str(NUMERAI_V53_DATASET), params=p)
-    # the binary dataset is label-less by design (production swaps labels per
-    # target via set_label); train the h60 benchmark target
-    import pyarrow.parquet as pq
-
-    y = pq.read_table(parquet, columns=["target_ender_60"]).column(0).to_numpy()
+    p.update(frozen["params"])
+    print(f"h60 manifest={frozen['manifest']['id']} sha256={frozen['manifest_sha256']} saved_bins={frozen['params']}")
+    ds = lgb.Dataset(str(frozen["path"]), params=p)
     ds.construct()
-    ds.set_label(np.nan_to_num(y.astype(np.float64), nan=0.5))
+    check_loaded_h60(ds, frozen)
+    ds.set_label(frozen["y"])
     t0 = time.time()
     bst = lgb.train(p, ds, num_boost_round=rounds)
     t = time.time() - t0
