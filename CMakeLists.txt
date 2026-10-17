@@ -80,7 +80,8 @@ if(USE_CCACHE AND NOT MSVC)
       # nvcc folds the working directory into internal symbol names, which ccache does not
       # hash without -g; a per-build-directory namespace keeps cached objects byte-identical.
       foreach(lang C CXX CUDA)
-        if(NOT DEFINED CMAKE_${lang}_COMPILER_LAUNCHER)
+        # CUDA is enabled after this point, so CMake has not yet applied its environment launcher.
+        if(NOT DEFINED CMAKE_${lang}_COMPILER_LAUNCHER AND NOT DEFINED ENV{CMAKE_${lang}_COMPILER_LAUNCHER})
           set(CMAKE_${lang}_COMPILER_LAUNCHER "${CCACHE_PROGRAM};namespace=${CMAKE_BINARY_DIR}")
         endif()
       endforeach()
