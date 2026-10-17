@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-GATES = Path(__file__).resolve().parent
+GATES = Path(__file__).resolve().parents[1] / "gates"
 
 
 @pytest.fixture
@@ -246,6 +246,8 @@ def test_no_implicit_standalone_bypass(perf, queue, files, monkeypatch):
 @pytest.fixture
 def nightly(tmp_path):
     """Run the real shell orchestration with CPU stubs for every GPU command."""
+    if os.name != "posix":
+        pytest.skip("native nightly shell fixtures require POSIX")
     repo, home, bin_dir = tmp_path / "repo", tmp_path / "home", tmp_path / "bin"
     (repo / "tests/gates").mkdir(parents=True)
     (repo / ".gates-venv/bin").mkdir(parents=True)
