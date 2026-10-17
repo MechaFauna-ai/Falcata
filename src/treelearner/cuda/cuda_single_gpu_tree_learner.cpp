@@ -3834,7 +3834,7 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
   CUDASUCCESS_OR_FATAL(cudaGraphInstantiate(&graph->exec, graph->graph, 0));
   CUDASUCCESS_OR_FATAL(cudaGraphUpload(graph->exec, find_stream));
   CUDASUCCESS_OR_FATAL(cudaGraphLaunch(graph->exec, find_stream));
-  const size_t cache_limit = 32;
+  const size_t cache_limit = cfg.whole_tree ? 256 : 32;
   if (device_level_graphs_.size() >= cache_limit) {
     device_level_graphs_.erase(device_level_graphs_.begin());
   }

@@ -2695,9 +2695,10 @@ transfer remain outside this interval. This key does not claim an entirely synch
 `device_level_graph:on` caches this complete sequence. For whole-row code-word constructs, cache identity uses
 the resolved launch and row-grouping shape instead of preliminary per-partition maxima that are not kernel
 arguments. True kernel arguments, codec, sampled metadata buffers, task layouts and index-buffer parity remain
-keyed; other constructs retain the conservative maxima. The complete controller retains its bounded 32-entry
-cache across layout misses, without the prefix's nine-miss disable policy. Noncapturable layouts use direct
-device enqueues with the same single growth readback. Diagnostics report completed levels/splits and cache
+keyed; other constructs retain the conservative maxima. The complete controller retains its bounded 256-entry
+cache across layout misses, without the prefix's nine-miss disable policy. The ordinary prefix retains its
+32-entry limit. Noncapturable layouts use direct device enqueues with the same single growth readback.
+Diagnostics report completed levels/splits and cache
 hits/misses on every tree. Performance validation is pending.
 
 ## 10v. A bounded device-driven quantized prefix (`device_levels`, `device_level_graph`)
