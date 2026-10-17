@@ -2,6 +2,7 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 from sklearn.datasets import load_svmlight_file
 
 import falcata as lgb
@@ -37,14 +38,25 @@ class FileLoader:
     def load_cpp_result(self, result_file="LightGBM_predict_result.txt"):
         return np.loadtxt(str(self.directory / result_file))
 
-    def train_predict_check(self, lgb_train, X_test, X_test_fn, sk_pred):
+    def train_predict_check(self, lgb_train, X_test, X_test_fn, sk_pred, sk_booster=None):
         params = dict(self.params)
         params["force_row_wise"] = True
         gbm = lgb.train(params, lgb_train)
         y_pred = gbm.predict(X_test)
         cpp_pred = gbm.predict(X_test_fn)
         np.testing.assert_allclose(y_pred, cpp_pred)
-        np.testing.assert_allclose(y_pred, sk_pred)
+        if sk_booster is None:
+            np.testing.assert_allclose(y_pred, sk_pred)
+        else:
+            # CUDA linear fits can differ between runs: their Gram sums use
+            # floating-point atomics. Compare prediction APIs on the same fit.
+            np.testing.assert_allclose(sk_booster.predict(X_test), sk_pred)
+            np.testing.assert_allclose(sk_booster.predict(X_test_fn), sk_pred)
+            # The first tree has constant leaves, before linear fitting starts,
+            # so retain independent-fit training consistency for that tree.
+            np.testing.assert_allclose(
+                gbm.predict(X_test, num_iteration=1), sk_booster.predict(X_test, num_iteration=1)
+            )
 
     def file_load_check(self, lgb_train, name):
         lgb_train_f = lgb.Dataset(self.path(name), params=self.params).construct()
@@ -77,8 +89,11 @@ def test_binary():
     fd.file_load_check(lgb_train, ".train")
 
 
-def test_binary_linear():
+@pytest.mark.parametrize("device_type", ["auto", "cpu"])
+def test_binary_linear(device_type):
     fd = FileLoader(EXAMPLES_DIR / "binary_classification", "binary", "train_linear.conf")
+    if device_type == "cpu":
+        fd.params["device_type"] = "cpu"
     X_train, y_train, _ = fd.load_dataset(".train")
     X_test, _, X_test_fn = fd.load_dataset(".test")
     weight_train = fd.load_field(".train.weight")
@@ -86,7 +101,11 @@ def test_binary_linear():
     gbm = lgb.FalcataClassifier(**fd.params)
     gbm.fit(X_train, y_train, sample_weight=weight_train)
     sk_pred = gbm.predict_proba(X_test)[:, 1]
-    fd.train_predict_check(lgb_train, X_test, X_test_fn, sk_pred)
+    # Retain independent-fit equivalence on CPU. Auto also exercises CUDA on
+    # GPU hosts, where linear fitting is explicitly exempt from determinism.
+    fd.train_predict_check(
+        lgb_train, X_test, X_test_fn, sk_pred, sk_booster=gbm.booster_ if device_type == "auto" else None
+    )
     fd.file_load_check(lgb_train, ".train")
 
 
