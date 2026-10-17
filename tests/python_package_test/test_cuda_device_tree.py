@@ -59,7 +59,7 @@ def _case(name):
                 # Opposite-sign children still improve gain when the large positive root is clipped. A purely
                 # positive offset with every output clipped to the same value would produce a stump instead.
                 y = (32 + 64 * (X[:, 0] - 2) + X[:, 1:8].sum(axis=1)).astype(np.float32)
-                params.update(feature_fraction=1.0, lambda_l1=0.7, lambda_l2=3.0, max_delta_step=2.5)
+                params.update(feature_fraction=1.0, lambda_l1=0.0, lambda_l2=3.0, max_delta_step=2.5)
             rounds = 3
         elif name == "stump":
             params["min_gain_to_split"] = 1e12
@@ -74,6 +74,8 @@ def _case(name):
             params.update(num_leaves=4096, max_depth=12)
         elif name == "bynode":
             params["feature_fraction_bynode"] = 0.5
+        elif name == "l1":
+            params["lambda_l1"] = 0.7
         elif name == "nonquant":
             params["quant_mode"] = "none"
         elif name == "shallow":
@@ -183,7 +185,7 @@ def test_device_tree_complete_cuda(case, graph):
 
 
 @_REQUIRES_CUDA
-@pytest.mark.parametrize("case", ["binding", "unbounded", "too_deep", "bynode", "nonquant", "two_leaf"])
+@pytest.mark.parametrize("case", ["binding", "unbounded", "too_deep", "bynode", "nonquant", "two_leaf", "l1"])
 def test_device_tree_unsupported_cuda(case):
     _, diag = _run(case)
     assert "device_tree: host fallback" in diag
