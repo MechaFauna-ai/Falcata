@@ -40,6 +40,14 @@ option(INSTALL_HEADERS "Install headers to CMAKE_INSTALL_PREFIX (e.g. '/usr/loca
 option(__BUILD_FOR_PYTHON "Set to ON if building lib_falcata for use with the Python-package" OFF)
 option(__BUILD_FOR_R "Set to ON if building lib_falcata for use with the R-package" OFF)
 option(__INTEGRATE_OPENCL "Set to ON if building Falcata with the OpenCL ICD Loader and its dependencies included" OFF)
+# The Python- and R-package builds configure a fresh temporary directory each time,
+# so a cache would never be hit there.
+if(__BUILD_FOR_PYTHON OR __BUILD_FOR_R)
+  set(FLC_USE_CCACHE_DEFAULT OFF)
+else()
+  set(FLC_USE_CCACHE_DEFAULT ON)
+endif()
+option(USE_CCACHE "Compile through ccache (4.8 or newer) when it is found" ${FLC_USE_CCACHE_DEFAULT})
 
 # If using Visual Studio generators, always target v10.x of the Windows SDK.
 # Doing this avoids lookups that could fall back to very old versions, e.g. by finding
@@ -55,6 +63,31 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake/modules")
+
+#-- ccache
+if(USE_CCACHE AND NOT MSVC)
+  find_program(CCACHE_PROGRAM ccache)
+  if(CCACHE_PROGRAM)
+    execute_process(
+      COMMAND "${CCACHE_PROGRAM}" --version
+      OUTPUT_VARIABLE FLC_CCACHE_VERSION_OUTPUT
+      ERROR_QUIET
+    )
+    string(REGEX MATCH "[0-9]+\\.[0-9]+(\\.[0-9]+)?" FLC_CCACHE_VERSION "${FLC_CCACHE_VERSION_OUTPUT}")
+    if(FLC_CCACHE_VERSION VERSION_LESS 4.8)
+      message(STATUS "Not using ccache ${FLC_CCACHE_VERSION} (${CCACHE_PROGRAM}): 4.8 or newer is required")
+    else()
+      # nvcc folds the working directory into internal symbol names, which ccache does not
+      # hash without -g; a per-build-directory namespace keeps cached objects byte-identical.
+      foreach(lang C CXX CUDA)
+        if(NOT DEFINED CMAKE_${lang}_COMPILER_LAUNCHER)
+          set(CMAKE_${lang}_COMPILER_LAUNCHER "${CCACHE_PROGRAM};namespace=${CMAKE_BINARY_DIR}")
+        endif()
+      endforeach()
+      message(STATUS "Using ccache ${FLC_CCACHE_VERSION}: ${CCACHE_PROGRAM}")
+    endif()
+  endif()
+endif()
 
 #-- Sanitizer
 if(USE_SANITIZER)
