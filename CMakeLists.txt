@@ -684,9 +684,20 @@ set(
       src/treelearner/cuda/cuda_leaf_splits.cpp
       src/treelearner/cuda/cuda_single_gpu_tree_learner.cpp
       src/treelearner/cuda/cuda_best_split_finder.cu
+      src/treelearner/cuda/cuda_best_split_finder_leaf_no_rand_no_l1_no_smoothing.cu
+      src/treelearner/cuda/cuda_best_split_finder_leaf_no_rand_no_l1_smoothing.cu
+      src/treelearner/cuda/cuda_best_split_finder_leaf_no_rand_l1_no_smoothing.cu
+      src/treelearner/cuda/cuda_best_split_finder_leaf_no_rand_l1_smoothing.cu
+      src/treelearner/cuda/cuda_best_split_finder_leaf_rand_no_l1_no_smoothing.cu
+      src/treelearner/cuda/cuda_best_split_finder_leaf_rand_no_l1_smoothing.cu
+      src/treelearner/cuda/cuda_best_split_finder_leaf_rand_l1_no_smoothing.cu
+      src/treelearner/cuda/cuda_best_split_finder_leaf_rand_l1_smoothing.cu
       src/treelearner/cuda/cuda_data_partition.cu
       src/treelearner/cuda/cuda_gradient_discretizer.cu
       src/treelearner/cuda/cuda_histogram_constructor.cu
+      src/treelearner/cuda/cuda_histogram_constructor_bin8.cu
+      src/treelearner/cuda/cuda_histogram_constructor_bin16.cu
+      src/treelearner/cuda/cuda_histogram_constructor_bin32.cu
       src/treelearner/cuda/cuda_hybrid_graph.cu
       src/treelearner/cuda/cuda_device_levels.cu
       src/treelearner/cuda/cuda_leaf_splits.cu
