@@ -51,6 +51,14 @@ __device__ __forceinline__ size_t PackedPartitionRows(const int* offsets, const 
 }
 }  // namespace Falcata
 #define NUM_THREADS_PER_BLOCK (504)
+
+namespace Falcata {
+/*! \brief cuda_plan key nonquant_deterministic: the accumulator of the batched non-quantized construct. Each row's
+ *  gradient and hessian, pre-scaled by a power of two (exact), are rounded once to 64-bit integers; integer sums do
+ *  not depend on the order the atomics land in, so the histogram is the same on every run. Two's complement in an
+ *  unsigned word (the atomics' type); read back as int64. */
+typedef atomic_add_long_t nq_fixed_t;
+}  // namespace Falcata
 #define NUM_FEATURE_PER_THREAD_GROUP (28)
 #define SUBTRACT_BLOCK_SIZE (1024)
 #define FIX_HISTOGRAM_SHARED_MEM_SIZE (1024)
@@ -368,7 +376,7 @@ class CUDAHistogramConstructor {
    *  supported through the same batched dense kernel fed with the compact
    *  pointers/dims; cuda_plan=auto,batch_wide:off restores the per-pair fallback for it. */
   bool SupportsBatchedLevel() const {
-    return cuda_row_data_ != nullptr &&
+    return !NonquantClassicFallback() && cuda_row_data_ != nullptr &&
            !cuda_row_data_->is_sparse() &&
            cuda_row_data_->NumLargeBinPartition() == 0 &&
            (!use_compact_view_ ||
@@ -534,6 +542,23 @@ class CUDAHistogramConstructor {
   /*! \brief kill-switch of the small-leaf construct path
    *  (cuda_plan=auto,small_leaf_construct:off restores the shared-memory
    *  batched kernels for every level) */
+  /*! \brief cuda_plan key nonquant_deterministic under non-quantized training: every construct takes the
+   *  deterministic kernels (never true under quantized training) */
+  bool NonquantDet() const {
+    return !use_quantized_grad_ && FalcataPlan::Get().nonquant_deterministic;
+  }
+
+  // A scalar nonquantized run must never drop to float atomics when its fixed table cannot fit.
+  bool NonquantClassicFallback() const { return NonquantDet() && num_hist_planes_ == 1 && !nq_fixed_supported_; }
+  /*! \brief the batched dense construct accumulates in 64-bit fixed point (nonquant_deterministic, scalar trees;
+   *  the levels the deterministic batched construct does not take) */
+  bool NonquantFixedActive() const { return NonquantDet() && num_hist_planes_ == 1 && nq_fixed_supported_; }
+  /*! \brief threads per block of the batched non-quantized construct: 2 x 504 under the fixed-point accumulator,
+   *  whose 64-bit table (up to 96 KB) leaves room for one block per SM where the float table fits two */
+  int BatchedConstructThreads() const {
+    return !use_quantized_grad_ && NonquantFixedActive() ? 2 * NUM_THREADS_PER_BLOCK : NUM_THREADS_PER_BLOCK;
+  }
+
   static bool SmallLeafConstructEnabled() {
     return FalcataPlan::Get().small_leaf_construct;
   }
@@ -930,6 +955,18 @@ class CUDAHistogramConstructor {
     const data_size_t max_num_data_in_smaller_leaf,
     const data_size_t* level_smaller_num_data);
 
+  /*! \brief nonquant_deterministic: converts the level's fixed-point smaller-leaf histograms (int64 words written by
+   *  the fixed-point batched construct) in place to hist_t, under the construct's own per-pair gates (blockIdx.y =
+   *  pair; gstate: the graph loop's live-pair guard, nullptr on the host path). Returns the grid's x extent. */
+  int LaunchConvertFixedHistBatched(
+    const CUDAHybridPairDescriptor* pair_descs,
+    const int num_pairs,
+    CUDAHybridGraphLoopStateOpt gstate);
+
+  /*! \brief dynamic shared bytes for a batched construct launch: the fixed-point table's under a fixed-point launch
+   *  (raising the kernel's max-dynamic-shared attribute once), else 0 (static tables) */
+  size_t NqFixedSmem(const void* kernel);
+
   /*! \brief whether the batched non-quantized construct of a num_pairs-wide
    *  level takes the deterministic dense construct+merge instead of the atomic
    *  kernel (shape gates mirror the per-leaf det arm; graph capture and levels
@@ -983,6 +1020,12 @@ class CUDAHistogramConstructor {
   size_t CountSharedBytes(bool wide) const;
   /*! \brief decide count_supported_ for the current data (end of Init / ResetTrainingData) */
   void InitCountConstruct();
+
+  /*! \brief nonquant_deterministic: whether this device gives a block the fixed-point table's shared memory (the
+   *  widest partition's bins x 16 bytes + the kernel's static 1 KB, against the opt-in per-block limit: 99 KB on
+   *  sm_86/89/120, 163-227 KB on sm_80/90/100, 64 KB on sm_75); warns once when it does not. Resets the per-kernel
+   *  attribute cache (Init / ResetTrainingData). */
+  void InitNonquantFixed();
 
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   /*! \brief captures the deterministic construct + merge kernels as two graph
@@ -1449,6 +1492,25 @@ class CUDAHistogramConstructor {
   /*! \brief per-tree interleaved (gradient, hessian) pairs (see GHInterleaveEnabled);
    *  filled by BeforeTrain, consumed by the non-quantized dense construct kernels */
   CUDAVector<float2> cuda_gradients_hessians_;
+  // nonquant_deterministic: the tree's integer power-of-two exponents S_g, S_h (read by the construct), their
+  // inverse powers of two (double, read by the convert) and the max |g|, |h| bit patterns they come
+  // from (order-free atomicMax)
+  CUDAVector<int> nq_scale_;
+  CUDAVector<double> nq_inv_scale_;
+  CUDAVector<uint32_t> nq_absmax_bits_;
+  // set while the batched construct launches its fixed-point instantiation: the kernel applies the exponents,
+  // and the launch sites pass the fixed table's dynamic shared memory
+  bool nq_fixed_launch_ = false;
+  // set by the batched launcher when the fixed-point kernel (not a deterministic or count arm) built the level: the
+  // only case whose words the convert may rewrite
+  bool nq_fixed_kernel_launched_ = false;
+  // the device gives a block the fixed-point table (InitNonquantFixed); otherwise scalar nonquantized training
+  // uses the deterministic classic loop for every layout (NonquantClassicFallback)
+  bool nq_fixed_supported_ = true;
+  // dynamic shared bytes of the fixed-point table (the widest partition's items x 8) and the kernels whose
+  // max-dynamic-shared attribute is already raised to it
+  size_t nq_fixed_smem_bytes_ = 0;
+  std::vector<const void*> nq_fixed_smem_set_;
   /*! \brief whether cuda_gradients_hessians_ holds this tree's gradients */
   bool gh_interleave_valid_ = false;
 

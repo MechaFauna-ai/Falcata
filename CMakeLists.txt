@@ -974,6 +974,7 @@ if(BUILD_CPP_TEST)
   add_executable(testfalcata ${CPP_TEST_SOURCES})
   target_link_libraries(testfalcata PRIVATE falcata_objs falcata_capi_objs nanoarrow_static GTest::GTest)
   if(USE_CUDA)
+    target_sources(testfalcata PRIVATE tests/cpp_tests/test_cuda_nonquant_fixed.cu)
     set_target_properties(
       testfalcata
       PROPERTIES

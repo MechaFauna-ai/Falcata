@@ -312,33 +312,13 @@ def check_spec(spec):
             f"saturation stop: cuda emitted {a['trees'] // (spec['num_class'] or 1)}/{spec['rounds']} iterations"
         )
     # Determinism rerun. Quantized training is bit-deterministic everywhere
-    # (integer atomics); non-quantized training is bit-deterministic on every
-    # shape the deterministic float constructs cover. The graph loop CAN run
-    # det construct+merge nodes bit-identical to the host loop, but only as
-    # the cuda_plan=auto,graph_det:on opt-in (the det merge costs ~4x on
-    # shallow shapes, so the default graph stays atomic for speed; lattice
-    # cells graph/nonquant-det + graph/flip-graph_loop-det pin the opt-in). A
-    # non-quant spec is therefore md5-checked when its shape cannot take the
-    # graph loop: the plan disables it (or the whole hybrid flow), or the
-    # spec is not depth-limited (the hybrid prefix requires
-    # 2^max_depth <= num_leaves + 1).
-    md5_checked = spec["quant_mode"] != "none"
-    if not md5_checked:
-        plan = spec.get("cuda_plan", "")
-        depth_limited = spec.get("max_depth", -1) > 0 and (2 ** spec["max_depth"] <= spec["num_leaves"] + 1)
-        # A feature wider than one block forces the global-memory finder, and
-        # the tree learner disables the whole hybrid family (and the fp32
-        # histogram layout) on that path. A wide spec therefore runs the
-        # classic loop over the deterministic per-leaf constructs whatever the
-        # plan string asks for, so it is bit-stable and md5-checkable.
-        hybrid_off = spec.get("max_bin", 255) > 256 or "hybrid:off" in plan
-        graph_possible = depth_limited and not hybrid_off and "graph_loop:off" not in plan
-        # BATCHED-level constructs keep the atomic kernel for compact views
-        # (feature sampling), and the SELECTIVE flow batches levels even on
-        # non-depth-limited shapes -- a sampled spec is only bit-stable with
-        # the whole hybrid family off (per-leaf compact det).
-        compact_hole = spec.get("feature_fraction", 1.0) < 1.0 and not hybrid_off
-        md5_checked = not graph_possible and not compact_hole
+    # (integer atomics); non-quantized training too since the cuda_plan key
+    # nonquant_deterministic (default on: the float-atomic batched levels
+    # accumulate in 64-bit fixed point, the rest were deterministic already).
+    # Every spec is md5-checked except one that turns the key off. (Linear
+    # trees, ranking objectives and multi-plane vector-leaf trees stay
+    # nondeterministic; the fuzzer draws none of them.)
+    md5_checked = spec["quant_mode"] != "none" or "nonquant_deterministic:off" not in spec.get("cuda_plan", "")
     if md5_checked:
         b = run(spec, "cuda")
         if "error" in b:
