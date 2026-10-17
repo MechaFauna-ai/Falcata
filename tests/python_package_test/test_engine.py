@@ -4984,7 +4984,7 @@ def test_verbosity_is_respected_when_using_custom_objective(capsys):
     assert "[Falcata] [Warning] Unknown parameter: nonsense" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("verbosity_param", lgb.basic._ConfigAliases.get("verbosity"))
+@pytest.mark.parametrize("verbosity_param", sorted(lgb.basic._ConfigAliases.get("verbosity")))
 @pytest.mark.parametrize("verbosity", [-1, 0])
 def test_verbosity_can_suppress_alias_warnings(capsys, verbosity_param, verbosity):
     X, y = make_synthetic_regression()
