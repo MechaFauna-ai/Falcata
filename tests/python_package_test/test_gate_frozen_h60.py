@@ -111,6 +111,9 @@ def fake_lgb(frozen, trees=200, late_value=0.001):
         def num_feature(self):
             return 3
 
+        def get_init_score(self):
+            return None
+
         def get_label(self):
             return y.copy()
 
@@ -148,3 +151,20 @@ def test_h60_uses_same_saved_bins_and_frozen_label_in_all_repeats(frozen, monkey
     assert len(calls) == 6
     assert all(p["max_bin"] == 255 for p in calls)
     assert bench.CELLS[-1][2]["max_bin"] == 5
+
+
+@pytest.mark.parametrize("suffix", [".bin", ".init", ".bin.init"])
+def test_frozen_input_rejects_implicit_native_companions(frozen, suffix):
+    manifest, _, _, _ = frozen
+    companion = Path(manifest["dataset"]["path"] + suffix)
+    companion.write_text("unmanifested native input")
+    with pytest.raises(ValueError, match="unmanifested.*companion"):
+        saved.frozen_h60()
+
+
+def test_loaded_initial_scores_are_rejected_even_when_labels_match(frozen):
+    lgb, _ = fake_lgb(frozen)
+    ds = lgb.Dataset(frozen[0]["dataset"]["path"], params={})
+    ds.get_init_score = lambda: np.zeros(4)
+    with pytest.raises(ValueError, match="initial scores"):
+        saved.check_loaded_h60(ds, saved.frozen_h60())

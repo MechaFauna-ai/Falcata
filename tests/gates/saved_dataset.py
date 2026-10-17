@@ -66,6 +66,15 @@ def binary_dataset_shape(path):
     return struct.unpack_from("=i", prefix, 48)[0], struct.unpack_from("=i", prefix, 64)[0]
 
 
+def reject_implicit_companions(path):
+    # CheckCanLoadFromBin prefers <path>.bin; LoadInitialScore also consumes
+    # <loaded-path>.init. Neither is part of the frozen content manifest.
+    for suffix in (".bin", ".init", ".bin.init"):
+        companion = Path(str(path) + suffix)
+        if companion.exists() or companion.is_symlink():
+            raise ValueError(f"unmanifested native companion: {companion}")
+
+
 def frozen_h60():
     """Fail closed without a reviewed manifest; never discover a latest round."""
     import numpy as np
@@ -80,6 +89,7 @@ def frozen_h60():
         raise ValueError("h60 manifest schema or target differs")
     if manifest["rows"] < MIN_H60_ROWS or manifest["features"] != H60_FEATURES:
         raise ValueError("h60 manifest is not the full-scale regression shape")
+    reject_implicit_companions(manifest["dataset"]["path"])
     path = checked_file(manifest["dataset"])
     labels = checked_file(manifest["labels"])
     if binary_dataset_shape(path) != (manifest["rows"], manifest["features"]):
@@ -107,6 +117,9 @@ def check_loaded_h60(ds, frozen):
     import numpy as np
 
     manifest = frozen["manifest"]
+    reject_implicit_companions(frozen["path"])
+    if ds.get_init_score() is not None:
+        raise ValueError("loaded h60 dataset has unmanifested initial scores")
     if (ds.num_data(), ds.num_feature()) != (manifest["rows"], manifest["features"]):
         raise ValueError("loaded h60 dataset shape differs")
     if not np.array_equal(ds.get_label(), frozen["y"]):
