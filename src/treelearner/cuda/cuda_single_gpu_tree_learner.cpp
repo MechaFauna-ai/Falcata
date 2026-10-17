@@ -3727,7 +3727,7 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
   cuda_best_split_finder_->SetDeviceLevelState(dls);
   const score_t* grad_scale = cuda_gradient_discretizer_->grad_scale_ptr();
   const score_t* hess_scale = cuda_gradient_discretizer_->hess_scale_ptr();
-  // the level's select ran in the last block of the previous level's sync (the root level's: a launch of its own)
+  // The prefix can select in the previous sync's last block; whole trees select in a standalone launch.
   bool select_ran = false;
   const CUDADeviceLevelConfig* cfg_device = cuda_device_level_config_.RawDataReadOnly();
   for (int level = 0; level < num_levels; ++level) {
@@ -3753,7 +3753,7 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
       cuda_hybrid_pair_descs_.RawDataReadOnly(), max_splits, /*max_num_data_in_smaller_leaf=*/0,
       /*any_pair_needs_bit_change_copy=*/true);
     cuda_best_split_finder_->WaitOnCatSlabConsumers(nullptr, tree_record_done_event_);
-    cuda_best_split_finder_->SetDeviceLevelSelect(level + 1 < num_levels ? cfg_device : nullptr);
+    cuda_best_split_finder_->SetDeviceLevelSelect(!cfg.whole_tree && level + 1 < num_levels ? cfg_device : nullptr);
     cuda_best_split_finder_->FindBestSplitsForLevel(
       cuda_hybrid_pair_descs_.RawDataReadOnly(), max_splits, grad_scale, hess_scale);
     select_ran = cuda_best_split_finder_->LastSyncRanSelect();

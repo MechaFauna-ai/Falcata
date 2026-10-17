@@ -2707,6 +2707,9 @@ flushes, occupancy selection and exact graph keys are unchanged. Other device-pr
 retain their existing physical grids. This does not establish a performance gain on other configurations.
 Device pair-joint kernels whose virtual map fits the physical grid process one virtual row per worker directly;
 larger maps retain the claim loop. Both routes use the same per-row body and device geometry.
+The complete controller runs each level's selector in its own kernel after the leaf-best sync; the ordinary
+prefix retains its fused selector. Both call the same device selection routine before apply, without an
+intermediate host readback. The extra launches and removed sync coordination still need actual timing.
 
 ## 10v. A bounded device-driven quantized prefix (`device_levels`, `device_level_graph`)
 
