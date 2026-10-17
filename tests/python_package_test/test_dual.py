@@ -52,7 +52,7 @@ def _engine_predictor_only(monkeypatch):
     monkeypatch.setenv("FALCATA_FIL", "0")
 
 
-def _get_init_score(device_type, objective, alpha, X, y):
+def _get_init_score(device_type, objective, alpha, X, y, weight=None):
     """Train a 1-tree model and read 'Start training from score' from the log."""
     params = {
         "objective": objective,
@@ -67,7 +67,7 @@ def _get_init_score(device_type, objective, alpha, X, y):
         "seed": 0,
         "device_type": device_type,
     }
-    ds = lgb.Dataset(X, label=y, params={"verbose": -1})
+    ds = lgb.Dataset(X, label=y, weight=weight, params={"verbose": -1})
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
         lgb.train(params, ds, num_boost_round=1)
@@ -96,6 +96,26 @@ def test_cuda_init_score_matches_cpu(objective, alpha, n):
     cpu = _get_init_score("cpu", objective, alpha, X, y)
     cuda = _get_init_score("cuda", objective, alpha, X, y)
     assert cuda == pytest.approx(cpu, abs=1e-6), f"{objective} alpha={alpha} n={n}: cpu={cpu} cuda={cuda}"
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("n", [4, 1025, 3079])
+@pytest.mark.parametrize("weight_kind", ["uneven", "zeros", "fractional"])
+@pytest.mark.parametrize(("objective", "alpha"), [("regression_l1", 0.5), ("quantile", 0.3), ("quantile", 0.7)])
+def test_cuda_weighted_init_score_matches_cpu(objective, alpha, weight_kind, n):
+    """Weighted global percentiles must ignore allocation history and scan all blocks."""
+    X = np.zeros((n, 1))
+    # Permute distinct labels so the prefix scan must follow sorted indices.
+    y = np.random.default_rng(123).permutation(np.arange(2, n + 2)).astype(np.float64)
+    weight = (np.arange(n) % 4 + 1).astype(np.float64)
+    if weight_kind == "zeros":
+        weight[np.arange(n) % 3 == 0] = 0.0
+    elif weight_kind == "fractional":
+        weight *= 0.0625
+    cpu = _get_init_score("cpu", objective, alpha, X, y, weight)
+    for _ in range(2):
+        cuda = _get_init_score("cuda", objective, alpha, X, y, weight)
+        assert cuda == pytest.approx(cpu, abs=1e-6), (objective, alpha, n, weight_kind, cpu, cuda)
 
 
 _REQUIRES_CUDA = pytest.mark.skipif(
