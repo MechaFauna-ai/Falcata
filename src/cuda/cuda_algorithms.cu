@@ -213,6 +213,11 @@ __global__ void GlobalInclusiveArgPrefixSumKernel(
   if (threadIdx.x == blockDim.x - 1) {
     block_buffer[blockIdx.x + 1] = value;
   }
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    // Block totals start at element 1; element 0 is the first block's base.
+    // Scratch is reused/uninitialized by callers, so establish it every call.
+    block_buffer[0] = 0;
+  }
 }
 
 template <typename T>
@@ -225,9 +230,12 @@ __global__ void GlobalInclusivePrefixSumReduceBlockKernel(T* block_buffer, data_
   for (data_size_t block_index = thread_start_block_index; block_index < thread_end_block_index; ++block_index) {
     thread_sum += block_buffer[block_index];
   }
-  ShufflePrefixSumExclusive<T>(thread_sum, shared_buffer);
+  thread_sum = ShufflePrefixSumExclusive<T>(thread_sum, shared_buffer);
   for (data_size_t block_index = thread_start_block_index; block_index < thread_end_block_index; ++block_index) {
-    block_buffer[block_index] += thread_sum;
+    // Scan within each thread's chunk as well as across threads. A chunk has
+    // multiple totals when the input spans at least blockDim.x blocks.
+    thread_sum += block_buffer[block_index];
+    block_buffer[block_index] = thread_sum;
   }
 }
 
