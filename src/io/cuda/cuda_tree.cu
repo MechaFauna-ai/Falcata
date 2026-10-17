@@ -283,6 +283,30 @@ void CUDATree::CaptureHybridGraphSplitBatchKernel(cudaStream_t stream,
     graph_live_split_count);
 }
 
+void CUDATree::LaunchSplitBatchKernelDevice(const int max_splits, const int* live_split_count) {
+  // cuda_plan key device_levels: the level's worst-case grid on the tree stream; the select kernel wrote the batch
+  // splits (hybrid_graph_batch_splits()) and the live count, blocks past it exit
+  SplitBatchKernel<<<max_splits, 32, 0, cuda_stream_>>>(
+    cuda_batch_splits_.RawDataReadOnly(),
+    cuda_leaf_parent_.RawData(),
+    cuda_leaf_depth_.RawData(),
+    cuda_left_child_.RawData(),
+    cuda_right_child_.RawData(),
+    cuda_split_feature_inner_.RawData(),
+    cuda_split_feature_.RawData(),
+    cuda_split_gain_.RawData(),
+    cuda_internal_weight_.RawData(),
+    cuda_internal_value_.RawData(),
+    cuda_internal_count_.RawData(),
+    cuda_leaf_weight_.RawData(),
+    cuda_leaf_value_.RawData(),
+    cuda_leaf_count_.RawData(),
+    cuda_decision_type_.RawData(),
+    cuda_threshold_in_bin_.RawData(),
+    cuda_threshold_.RawData(),
+    live_split_count);
+}
+
 void CUDATree::LaunchSplitBatchKernel(const int num_splits) {
   SplitBatchKernel<<<num_splits, 32, 0, cuda_stream_>>>(
     cuda_batch_splits_.RawDataReadOnly(),

@@ -239,6 +239,19 @@ __host__ __device__ inline int HybridBatchedConstructGridDimYQuant(
   return grid_dim_y;
 }
 
+// cuda_plan key dense_level_row_blocks: the rows-per-thread floor of a level's leaves in the quantized dense batched
+// construct. A thin leaf gets the largest leaf's rows per thread (so it fills a few whole blocks instead of a few rows
+// in every block row, each block zeroing and flushing a whole table) but no more than the grid formula's own
+// rows-per-thread target (min_rows_per_thread > 0; batch_construct_min_rows_per_thread), so the large leaves of a
+// shallow level keep their spread. Never above the largest leaf's rows per thread, which the overflow guard bounds.
+__host__ __device__ inline data_size_t DenseLevelRowsPerThreadFloor(const data_size_t max_num_data, const int64_t dim_y,
+                                                                    const int min_rows_per_thread) {
+  const data_size_t largest = static_cast<data_size_t>((static_cast<int64_t>(max_num_data) + dim_y - 1) / dim_y);
+  return min_rows_per_thread > 0 && largest > min_rows_per_thread ? min_rows_per_thread : largest;
+}
+
+struct CUDADeviceLevelState;
+struct CUDADeviceLevelConstructShape;
 /*!
  * \brief cuda_plan key forest_count_hist: the per-row integer codes of one constant gradient array of a random forest
  *        (docs/design/forest-count-histograms.md). Every hessian equals hessian, and row i's gradient is exactly
@@ -369,6 +382,13 @@ class CUDAHistogramConstructor {
    *  learner uploads the per-level pair descriptors asynchronously on this
    *  stream so the copy is ordered before the construct kernel that reads them */
   cudaStream_t hist_stream() const { return cuda_stream_; }
+  /*! \brief cuda_plan key device_levels: run the histogram stream's launches on \p stream (the device levels' one
+   *  stream) until restored; returns the stream it replaces */
+  cudaStream_t ExchangeHistStream(cudaStream_t stream) {
+    cudaStream_t old = cuda_stream_;
+    cuda_stream_ = stream;
+    return old;
+  }
 
   /*! \brief whether the batched per-level construct/fix/subtract path supports the
    *  current data layout (dense, shared-memory histograms). The compact column
@@ -666,6 +686,53 @@ class CUDAHistogramConstructor {
   void ResetTrainingData(const Dataset* train_data, TrainingShareStates* share_states);
 
   void ResetConfig(const Config* config);
+
+  /*! \brief cuda_plan key device_levels: the device level state the batched construct, fix/subtract and copy
+   *  launches read while the learner enqueues a device-driven level (nullptr otherwise) */
+  void SetDeviceLevelState(const CUDADeviceLevelState* dls) { device_level_state_ = dls; }
+  /*! \brief cuda_plan key device_levels: whether this tree's multi-pair level constructs take the dense batched
+   *  kernel (the one with the device block map), not the pair-joint family */
+  bool DeviceLevelConstructSupported();
+  /*! \brief cuda_plan key device_levels: the dense batched construct's block y for this tree (as launched) */
+  int DeviceLevelConstructBlockDimY();
+  /*! \brief cuda_plan key device_level_graph: the pointers and per-tree shape a captured level search bakes in */
+  void DeviceLevelGraphKey(std::vector<const void*>* key) const {
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+    HybridGraphKeyPointers(key);
+    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(HybridGraphCompactShapeKey())));
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(code5_valid_ ? 1 : 0)));
+    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(use_compact_view_ ? 1 : 0)));
+    // the per-tree layout values the construct and fix/subtract launches pass by value
+    for (const int v : {num_compact_columns_, compact_pair_joint_max_, compact_pair_joint_total_, compact_row_bytes_,
+                        code5_row_words_, code5_bits_, compact_row_interleave_ ? 1 : 0, num_used_feature_info_,
+                        used_feature_info_ok_ ? 1 : 0, any_feature_unused_bytree_ ? 1 : 0,
+                        nibble_pending_ ? 1 : 0}) {
+      key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(v)));
+    }
+  }
+  /*! \brief cuda_plan key device_level_graph: a level search of this tree launches nothing but its kernels (no
+   *  pending rewrite of the compact view, which the first nibble-view reader of a tree launches once) */
+  bool DeviceLevelGraphCapturable();
+  /*! \brief cuda_plan key device_levels: the construct shape this tree's multi-pair levels take (the dense kernel or
+   *  the pair-joint family, LaunchConstructHistogramBatchedKernelInner0's tree-constant decisions) */
+  void DeviceLevelConstructShape(CUDADeviceLevelConstructShape* shape);
+  /*! \brief cuda_plan key device_levels: a device level's pair-joint construct launch (see DeviceLevelConstructShape) */
+  void LaunchDeviceLevelPairJoint(const CUDAHybridPairDescriptor* pair_descs);
+  int DeviceLevelConstructMinGridDimY() const { return min_grid_dim_y_; }
+  int DeviceLevelNumGradQuantBins() const { return use_quantized_grad_ ? num_grad_quant_bins_ : 0; }
+  /*! \brief cuda_plan key device_levels: block rows (times the grid's x) a device level's construct launches */
+  static int DeviceLevelConstructTargetBlocks();
+  /*! \brief cuda_plan key device_levels: the bit-change scratch for a level of max_pairs pairs */
+  void EnsureDeviceLevelCapacity(const int max_pairs) {
+    if (!use_quantized_grad_) {
+      return;
+    }
+    const size_t needed = static_cast<size_t>(max_pairs) * static_cast<size_t>(num_total_bin_);
+    if (hist_buffer_for_num_bit_change_.Size() < needed) {
+      hist_buffer_for_num_bit_change_.Resize(needed);
+    }
+  }
 
   void SetDetBatchedAllowed(bool allowed) { det_batched_allowed_ = allowed; }
 
@@ -1173,6 +1240,8 @@ class CUDAHistogramConstructor {
    *  CaptureHybridGraphSearchKernels); nullptr on every host launch, so the
    *  host path keeps its exact-grid arithmetic bit-for-bit */
   CUDAHybridGraphLoopStateOpt hybrid_graph_capture_gstate_ = nullptr;
+  /*! \brief cuda_plan key device_levels: see SetDeviceLevelState */
+  const CUDADeviceLevelState* device_level_state_ = nullptr;
 
 
   // CUDA memory, held by this object
@@ -1278,12 +1347,12 @@ class CUDAHistogramConstructor {
     }
   }
 
-  // ========================================================================
+  // =================================================================
   // Compact-view buffers: when feature_fraction < 1.0, build a contiguous
   // bin matrix containing only the sampled columns. Used by the histogram
   // kernel as a drop-in replacement when use_compact_view_ == true.
   // Single-partition layout: compact[row * num_compact_cols + i].
-  // ========================================================================
+  // =================================================================
   /*! \brief uint8 bin matrix containing only used columns (per-partition compact layout).
    *  Double-buffered: while tree N trains using current, we async-fill next for tree N+1.
    *  cuda_stream_ waits on prefetch_event_[current] before starting histograms. */

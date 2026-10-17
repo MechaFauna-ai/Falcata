@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -64,6 +65,9 @@ struct SplitFindTask {
   double penalty;
 };
 
+
+struct CUDADeviceLevelState;
+struct CUDADeviceLevelConfig;
 
 class CUDABestSplitFinder {
  public:
@@ -443,6 +447,34 @@ class CUDABestSplitFinder {
   }
 
   cudaStream_t find_stream() const { return cuda_streams_[0]; }
+
+  /*! \brief cuda_plan key device_levels: the device level state the level find and sync launches read while the
+   *  learner enqueues a device-driven level's search (nullptr otherwise) */
+  void SetDeviceLevelState(const CUDADeviceLevelState* dls) { device_level_state_ = dls; }
+  /*! \brief cuda_plan key device_levels: the next level's select runs in the last block of the level sync launched
+   *  while this is set (the used-task sync only; LastSyncRanSelect tells whether it did) */
+  void SetDeviceLevelSelect(const CUDADeviceLevelConfig* cfg) { device_level_select_cfg_ = cfg; }
+  bool LastSyncRanSelect() const { return last_sync_ran_select_; }
+  /*! \brief cuda_plan key device_level_graph: the pointers and per-tree task layout a captured level search bakes in */
+  void DeviceLevelGraphKey(std::vector<const void*>* key) const {
+    HybridGraphKeyPointers(key);
+    // A host continuation can grow these slabs after the prefix was captured.
+    key->push_back(static_cast<const void*>(cuda_best_split_info_.RawDataReadOnly()));
+    key->push_back(static_cast<const void*>(cuda_cat_threshold_feature_.RawDataReadOnly()));
+    key->push_back(static_cast<const void*>(cuda_cat_threshold_real_feature_.RawDataReadOnly()));
+    // GOSS changes the ridge after its unbagged warmup; kernel arguments are captured by value.
+    uint64_t ridge_bits = 0;
+    std::memcpy(&ridge_bits, &hessian_ridge_quanta_, sizeof(ridge_bits));
+    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(ridge_bits)));
+    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(num_used_tasks_)));
+    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(warp_find_order_used_ ? 1 : 0)));
+    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(warp_find_num_narrow_used_)));
+    key->push_back(static_cast<const void*>(cuda_warp_find_order_.RawDataReadOnly()));
+    key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(warp_find_split_block_cap_)));
+    key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(warp_find_order_pad_)));
+    key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(warp_find_narrow_mixed_direction_ ? 1 : 0)));
+    key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(level_node_max_tasks_)));
+  }
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
   // Device pointer to a leaf's cached best split, for passing to CUDATree::Split.
@@ -654,6 +686,11 @@ class CUDABestSplitFinder {
   void EnsurePinnedLeafBestSplitCapacity(const int num_leaves) const;
   /*! \brief cuda_plan key readback_fused: mirror requested for the next level sync kernel / written by the last */
   bool leaf_mirror_requested_ = false;
+  /*! \brief cuda_plan key device_levels: see SetDeviceLevelState */
+  const CUDADeviceLevelState* device_level_state_ = nullptr;
+  /*! \brief cuda_plan key device_levels: see SetDeviceLevelSelect */
+  const CUDADeviceLevelConfig* device_level_select_cfg_ = nullptr;
+  bool last_sync_ran_select_ = false;
   bool leaf_mirror_written_ = false;
   int max_num_bin_in_feature_;
   std::vector<uint32_t> feature_hist_offsets_;

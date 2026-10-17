@@ -18,6 +18,7 @@
 #include "cuda_histogram_constructor.hpp"
 #include "cuda_data_partition.hpp"
 #include "cuda_best_split_finder.hpp"
+#include "cuda_device_levels.hpp"
 
 #include "cuda_gradient_discretizer.hpp"
 #include "../serial_tree_learner.h"
@@ -355,6 +356,29 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // -1 when no instance is available (caller falls back to the host loop).
   int TrainLevelWisePrefixGraph(CUDATree* tree);
   void ReleaseHybridGraphs();
+  // ---- cuda_plan key device_levels (cuda_device_levels.hpp) ----
+  // How many of the classic quantized prefix's first levels run device-driven for this tree: the levels L with
+  // 2^(L + 1) <= num_leaves (the budget cannot bind) and L + 1 < max_depth (the children are searched), when every
+  // kernel of the flow has a device-count variant; 0 = the host loop as before
+  int DeviceLevelsToRun(bool batched_level_kernels, bool batched_level_apply);
+  void LogDeviceLevelsFallback(const char* reason);
+  // one-time buffers and static tables of the device levels; false disables them
+  bool SetupDeviceLevels(const int num_levels);
+  // after the root level's search is enqueued: num_levels device-driven levels (apply + children's search), one
+  // readback, the host bookkeeping replayed; host_leaf_best_splits_ then hold the last search's result and *pairs
+  // the last level's pairs, as after the host loop's own readback. Returns the splits applied.
+  int TrainDeviceLevels(CUDATree* tree, const int num_levels, std::vector<HybridPendingPair>* pairs);
+  // the device levels' launches and stream edges (capturable: nothing on the legacy stream, nothing read back)
+  void EnqueueDeviceLevels(CUDATree* tree, const CUDADeviceLevelConfig& cfg, const int num_levels);
+  // cuda_plan key device_level_graph: launch the levels as a cached graph (captured on a key's first tree); false
+  // when this tree cannot use one (the caller enqueues the levels)
+  bool LaunchDeviceLevelGraph(CUDATree* tree, const CUDADeviceLevelConfig& cfg, const int num_levels);
+  struct DeviceLevelGraph {
+    std::vector<const void*> key;
+    cudaGraph_t graph = nullptr;
+    cudaGraphExec_t exec = nullptr;
+    ~DeviceLevelGraph();
+  };
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
   // ---- selective (grow-then-prune) hybrid growth: exact leaf-wise equivalence
@@ -751,6 +775,30 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::vector<int> hybrid_graph_splittable_scratch_;
   std::vector<int> hybrid_graph_batch_info_;
   std::vector<HybridAppliedSplit> hybrid_graph_applied_scratch_;
+  // ---- cuda_plan key device_levels state ----
+  bool device_levels_logged_ = false;
+  bool device_levels_fallback_logged_ = false;
+  bool device_levels_ready_ = false;
+  bool device_levels_disabled_ = false;
+  CUDAVector<CUDADeviceLevelState> cuda_device_level_state_;
+  // the select / pairs kernels' inputs in device memory (the apply's pairs block reads them there), uploaded per tree
+  CUDAVector<CUDADeviceLevelConfig> cuda_device_level_config_;
+  CUDADeviceLevelConfig host_device_level_config_;
+  CUDAVector<int> cuda_device_level_journal_;
+  int* pinned_device_level_journal_ = nullptr;
+  size_t device_level_journal_size_ = 0;
+  CUDAVector<CUDAHybridGraphFeatureMeta> cuda_device_level_feature_meta_;
+  CUDAVector<CUDAHybridGraphFeatureSource> cuda_device_level_feature_source_;
+  CUDAVector<double> cuda_device_level_real_thresholds_;
+  std::vector<CUDAHybridGraphFeatureSource> host_device_level_feature_source_;
+  cudaEvent_t device_level_select_event_ = nullptr;
+  std::vector<int> device_level_batch_info_;
+  std::vector<int> device_level_batch_slice_;
+  std::vector<HybridAppliedSplit> device_level_applied_;
+  std::vector<std::unique_ptr<DeviceLevelGraph>> device_level_graphs_;
+  bool device_level_graph_disabled_ = false;
+  int device_level_graph_hits_ = 0;
+  int device_level_graph_misses_ = 0;
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   std::vector<SelectiveApplied> sel_applied_;
   std::vector<SelectiveFrontier> sel_frontier_;

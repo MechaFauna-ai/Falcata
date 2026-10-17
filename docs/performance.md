@@ -2677,3 +2677,79 @@ it produces is the quantized classic loop's to the bit
 (`test_vector_leaf_cuda_quantized_selective_matches_classic`, with scalar
 quantized training as ground truth in
 `test_vector_leaf_cuda_quantized_selective_duplicated_target_matches_scalar`).
+
+## 10v. A bounded device-driven quantized prefix (`device_levels`, `device_level_graph`)
+
+Eligible quantized, numerical, scalar, single-GPU two-sync depth-limited trees enqueue
+`K = min(floor(log2(num_leaves)), max_depth - 1, 10)` levels without a host readback between those levels
+(`K < 2` keeps the host path). A device selector reproduces the host's ascending-leaf split order and strict
+smaller-child rule; worst-case launches guard on device counts. One prefix-boundary readback replays the journal
+and resumes host growth. Root work, the remaining host levels/tail, score updates, metrics and final tree transfer
+remain. This is a prefix optimization; it does not build an arbitrary whole tree without host synchronization.
+
+`device_level_graph` caches the prefix launches. Cache identity includes resizable buffers, task/layout values,
+packing codec and GOSS's changing ridge. Repeated cache misses switch subsequent trees to the host path. Both
+modes exclude forest slots and legacy single-stream diagnostics. Unsupported kernels, nonquantized training,
+node masks, categorical/vector leaves, constraints, forced splits and selective growth keep their host flows.
+Configuration/data resets invalidate captures and static tables; quantizer row and leaf-budget storage is also
+refreshed, retaining its stochastic tree counter. Empty histogram work returns before claiming rows, and stopped
+levels initialize their claim counters.
+
+Implementation `d3f6812b5c35ddd195c53d6d652774ad02dc7f9f`, CUDA library SHA256
+`afed591fbb25ddf96fb7f28ae37a29ede76e6ac06cb27066c850cec0a0573953`. Two interleaved **relaxed** pairs on
+RTX 5090; these ratios include the first training call in the 30,000-round estimate and compare the same library
+with the prefix disabled versus enabled with graph caching. The pair range is descriptive, not a confidence interval.
+
+| GBDT cell | Prefix off/on | Graph plain/cached | Current master/on | Key pair range | 30k s, training diagnostic |
+|---|---:|---:|---:|---:|---:|
+| numerai53bench-deep-stoch | 0.9957x | 1.0498x | 0.9970x | 0.9900–1.0014x | 99.75 |
+| numerai53bench-nan-deep-stoch | 1.0023x | 1.0197x | 1.0016x | 0.9946–1.0101x | 106.03 |
+| covtype-deep-fixed | 1.0476x | 1.0562x | 1.0447x | 1.0466–1.0487x | 104.01 |
+| higgs-deep-stoch | 1.0210x | 1.0224x | 1.0194x | 1.0206–1.0214x | 50.22 |
+| hidden1 | 1.0445x | 1.0143x | 1.0436x | 1.0437–1.0454x | 42.35 |
+| hidden2 | 0.9863x | 1.0128x | 0.9861x | 0.9858–0.9869x | 89.17 |
+| hidden3 | 1.0029x | 1.0058x | 1.0029x | 1.0027–1.0031x | 148.11 |
+| hidden4 | 0.9836x | 1.0134x | 0.9845x | 0.9818–0.9854x | 59.30 |
+
+| Forest cell (100-round estimate) | Prefix off/on | Current master/on | Key pair range |
+|---|---:|---:|---:|
+| covtype-rf-deep | 1.0004x | 0.9940x | 0.9897–1.0112x |
+| higgs-rf-deep | 1.0168x | 0.9930x | 1.0142–1.0194x |
+| numerai-rf-deep | 0.9966x | 0.9962x | 0.9895–1.0038x |
+| covtype-rf-std | 1.0048x | 0.9822x | 1.0012–1.0085x |
+
+
+Ratios above use the first training call plus scaled steady training. The 30k-second diagnostic column uses the
+whole measured training call plus extrapolated remaining rounds. Both exclude data loading, Dataset construction,
+Python import and model serialization. These are extrapolations
+from the measured 500-round cells (1,000 for covtype), not 30,000-round runs. The 100-round forest estimates use
+steady means because slot-group callbacks bunch up. All 128 measured runs have matching models across comparisons
+and the expected full tree counts. Current master is clean `bdb7297d`, frozen library SHA256
+`9cc43aecd7be8861b0fbf3c85eb0bdbfbe1be03fcd98e74eae6a7829c61d5f2b`.
+
+GBDT geometric means are 1.0102x versus key off, 1.0242x versus plain enqueue, and 1.0097x versus current master.
+Covtype, higgs and hidden #1 improve; hidden #2 and #4 regress by about 1–2%. The Numerai pair ranges straddle
+parity. Forest geometric means are 1.0046x versus key off and 0.9913x versus master. Those unsupported-flow
+controls establish no forest benefit; the small stock regression remains reported. This feature is not a uniform
+speedup, and every result here is relaxed.
+
+A current-source covtype trace (40 multiclass rounds) selects the same middle tree window in both arms. It has
+21 synchronization calls with the key off (12 device, 9 event) and 3 with it on (2 device, 1 stream), plus one
+prefix graph launch. Across the middle half of tree windows, median time with no recorded GPU kernel/copy/memset
+activity falls from 35.80% to 17.09%. This is a traced GPU-activity gap, not a pure host-idle measurement or the
+paired speed ratio; profiling changes overhead. The prefix has 83 graph kernels in the selected on window, with
+root/tail work still outside it. A freshly compiled empty-loop probe at K=10,L=1 measures 10.96 us/tree for an
+unrolled graph and 38.16 us/tree for WHILE (3.816 us/iteration, including reset/launch/body). This toy does not
+measure the training loop.
+
+Correctness at this implementation: 60 prefix tests plus 275 other CUDA tests, 141 basic and 181 engine tests
+(the six example-file cases were rerun after restoring snapshot fixtures), 327 CPU Python tests, 54 C++ tests,
+two 440-cell lattice checks and three current-master guards. Both lattice comparisons have 437/440 raw MD5
+matches; only `dense/nonquant`, `dense/fp32` and `graph/nonquant` differ, and their metric gates pass. No fingerprints
+were updated. Regression probes distinguish the old zero-pair counters, GOSS warmup capture and sampled-codec
+capture defects; full-source hidden-shape repetitions retain matching models and tree counts.
+
+The poisoned reset/pairs probe passes initcheck with zero errors. Full-application stump initcheck is not clean:
+unused bulk tree/readback bytes are reported, and an instrumented graph run did not finish within its timeout.
+Historical unknown-source model mismatches and illegal accesses are not proven to have the same cause or to be
+resolved by these fixes. The current results apply to the exact source/library above.

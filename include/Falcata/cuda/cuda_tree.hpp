@@ -138,6 +138,10 @@ class CUDATree : public Tree {
   void CaptureHybridGraphSplitBatchKernel(cudaStream_t stream,
                                           const int* graph_live_split_count);
 
+  /*! \brief cuda_plan key device_levels: the batch-split kernel of a device-driven level, at its worst-case grid
+   *  (max_splits blocks) on the tree stream; blocks past *live_split_count exit */
+  void LaunchSplitBatchKernelDevice(const int max_splits, const int* live_split_count);
+
   /*! \brief pooled device buffer of the batched split descriptors (written by
    *  the graphs L1 device controller; stable across pooled trees) */
   CUDATreeBatchSplit* hybrid_graph_batch_splits() { return cuda_batch_splits_.RawData(); }

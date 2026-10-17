@@ -925,6 +925,19 @@ struct FalcataPlan {
   // Otherwise the standard table and partitions. The histogram's layout, bins and integer sums are the same:
   // bit-identical.
   bool dense_wide_hist = true;      // key: dense_wide_hist
+  // quantized two-sync level prefix: K = min(floor(log2(num_leaves)), max_depth - 1, 10), with no depth cap when
+  // max_depth is unlimited. Only eligible depth-limited host flows use this prefix. Where the
+  // leaf budget cannot bind, run device-driven: the host enqueues every level's apply and children's search without
+  // reading anything back. The level sync's last block selects the splittable leaves and writes the next level's
+  // apply descriptors and tree record; the apply's offset aggregate writes the children's search descriptors (the
+  // host's exact counts, sums, validity gates and bit widths); launches are sized for the worst case of their level
+  // and blocks past the device's live counts exit. The split records, split infos and leaf best splits are read
+  // back once after level K, the host replays its bookkeeping and the classic loop continues. Same descriptors,
+  // same kernels' sums: bit-identical.
+  bool device_levels = true;        // key: device_levels
+  // device_levels' launches as one cached CUDA graph for the prefix (root work and the host tail remain). Trees
+  // whose keys keep changing use the host loop after the cache-miss budget: the same model, bit-identical.
+  bool device_level_graph = true;   // key: device_level_graph
   // prefill the next tree's compact column view on a side stream during the
   // current tree's training (bit-identical). Default OFF: measured no wall
   // win -- steady-state training is 97% device-busy and the ~41 synchronous
@@ -1085,6 +1098,8 @@ struct FalcataPlan {
     if (key == "shape_memo") return &shape_memo;
     if (key == "wide_partitions") return &wide_partitions;
     if (key == "dense_wide_hist") return &dense_wide_hist;
+    if (key == "device_levels") return &device_levels;
+    if (key == "device_level_graph") return &device_level_graph;
     return nullptr;
   }
 
