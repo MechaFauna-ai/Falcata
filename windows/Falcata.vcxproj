@@ -344,6 +344,7 @@
     <ClCompile Include="..\src\main.cpp" />
     <ClCompile Include="..\src\treelearner\data_parallel_tree_learner.cpp" />
     <ClCompile Include="..\src\treelearner\feature_histogram.cpp" />
+    <ClCompile Include="..\src\treelearner\feature_histogram_numerical.cpp" />
     <ClCompile Include="..\src\treelearner\feature_parallel_tree_learner.cpp" />
     <ClCompile Include="..\src\treelearner\linear_tree_learner.cpp" />
     <ClCompile Include="..\src\treelearner\serial_tree_learner.cpp" />
