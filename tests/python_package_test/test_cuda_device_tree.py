@@ -244,7 +244,8 @@ def test_device_tree_reset_auto_budget_cuda(graph):
 # Draft V9 coverage: publish/consume markers prove byte reuse; exact models and live training scores guard it.
 def _end_readback_probe(graph, gate):
     X, y, params, _ = _case("root_offset")
-    params.update(feature_fraction=1.0)
+    # The same Dataset survives min-leaf resets in both directions; retain every feature during construction.
+    params.update(feature_fraction=1.0, feature_pre_filter=False)
     # First stump, growth, shrink, another stump, growth after stale staging, capacity growth, graph reuse,
     # early positive exhaustion and a final stump. Repeating an identical stage deliberately avoids a reset.
     stages = [
@@ -310,8 +311,9 @@ def test_device_tree_end_readback_cuda(graph, gate):
         env=dict(os.environ, FALCATA_DEBUG="diag"),
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
+    assert result.returncode == 0, result.stdout + "\nSTDERR:\n" + result.stderr
     data = json.loads(result.stdout.splitlines()[-1])
     diag = result.stderr
     events = re.findall(
