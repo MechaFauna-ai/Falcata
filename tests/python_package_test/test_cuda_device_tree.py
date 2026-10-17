@@ -66,8 +66,10 @@ def _case(name):
         elif name == "nonquant":
             params["quant_mode"] = "none"
         elif name == "shallow":
+            params.update(num_leaves=4, max_depth=1)
+        elif name == "two_leaf":
             params.update(num_leaves=2, max_depth=1)
-        elif name != "fivebin":
+        elif name not in {"fivebin", "reset"}:
             raise ValueError(name)
     return X, y, params, rounds
 
@@ -79,7 +81,15 @@ def _probe(name, base_plan, graph):
     depths = []
     for suffix in [",device_tree:off", ",device_tree:on,device_level_graph:" + graph]:
         p = {**params, "cuda_plan": base_plan + ",device_levels:off" + suffix}
-        booster = flc.train(p, flc.Dataset(X, label=y, params=p), num_boost_round=rounds)
+        ds = flc.Dataset(X, label=y, params=p)
+        if name == "reset":
+            booster = flc.Booster(p, train_set=ds)
+            for bound in [1, 10, 3, 10]:
+                booster.reset_parameter({"max_depth": bound})
+                for _ in range(3):
+                    booster.update()
+        else:
+            booster = flc.train(p, ds, num_boost_round=rounds)
         models.append("\n".join(line for line in booster.model_to_string().splitlines() if "cuda_plan" not in line))
         info = booster.dump_model()["tree_info"]
         counts.append([t["num_leaves"] for t in info])
@@ -111,7 +121,7 @@ def _run(name, graph="on", base_plan="auto"):
 
 @_REQUIRES_CUDA
 @pytest.mark.parametrize("graph", ["off", "on"])
-@pytest.mark.parametrize("case", ["fivebin", "full", "early", "stump", "shallow", "layouts", "reuse"])
+@pytest.mark.parametrize("case", ["fivebin", "full", "early", "stump", "shallow", "layouts", "reuse", "reset"])
 def test_device_tree_complete_cuda(case, graph):
     data, diag = _run(case, graph)
     events = re.findall(
@@ -126,6 +136,9 @@ def test_device_tree_complete_cuda(case, graph):
         assert data["counts"] == [1024] * data["rounds"]
         assert data["depths"] == [10] * data["rounds"]
         assert all(int(e[1]) == 10 for e in events)
+    elif case == "reset":
+        assert [int(e[0]) for e in events] == [1] * 3 + [10] * 3 + [3] * 3 + [10] * 3
+        assert all(depth <= int(e[0]) for e, depth in zip(events, data["depths"], strict=True))
     elif case == "early":
         assert all(0 < int(e[1]) < 10 for e in events)
     elif case == "stump":
@@ -153,7 +166,7 @@ def test_device_tree_complete_cuda(case, graph):
 
 
 @_REQUIRES_CUDA
-@pytest.mark.parametrize("case", ["binding", "unbounded", "too_deep", "bynode", "nonquant"])
+@pytest.mark.parametrize("case", ["binding", "unbounded", "too_deep", "bynode", "nonquant", "two_leaf"])
 def test_device_tree_unsupported_cuda(case):
     _, diag = _run(case)
     assert "device_tree: host fallback" in diag
