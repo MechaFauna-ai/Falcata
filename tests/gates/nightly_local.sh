@@ -7,9 +7,12 @@
 # host. Cron inverts the direction -- this machine pulls the repo and runs the
 # gates itself, so there is no inbound execution path at all.
 #
-# Normally enqueued by gpuq rather than run directly, so it waits for the GPU
-# behind whatever else is queued (see the crontab entry for falcata-nightly).
-# Running it by hand works too -- it falls back to gpu_guard.py per step.
+# Must run inside a strict gpuq job (submit --exclusive, bounded timeout).
+# The scheduler is the sole idle/contention authority; no per-step idle guard.
+# Direct execution without daemon-provided job/context is rejected.
+# FALCATA_PERF_BASELINE may select staged history, published by the parent only
+# after daemon completion confirms the strict job stayed clean.
+# FALCATA_PERF_SEED_RUNS=1(default)..3 explicitly repeats bench+perf only.
 #
 # Logs: ~/.cache/falcata-gates/nightly-YYYY-MM-DD.log (30 kept)
 # Exit: 0 all gates passed, non-zero otherwise (the log names the failed step).
@@ -42,7 +45,23 @@ fail() { log "FAIL: $*"; FAILED_STEPS="$FAILED_STEPS
 exec 2>>"$LOG"
 log "=== nightly gates start ($(git -C "$REPO" rev-parse --short HEAD 2>/dev/null))"
 
-cd "$REPO" || fail "repo not found at $REPO"
+# A readable daemon log is required even when empty. Never create it here or
+# infer cleanliness from timing, desktop processes, or a missing file.
+if [[ ! "${GPUQ_JOB_ID:-}" =~ ^[1-9][0-9]*$ ]] || [ -z "${GPUQ_CONTENTION_LOG:-}" ]; then
+  abort "strict gpuq context required: GPUQ_JOB_ID and GPUQ_CONTENTION_LOG"
+fi
+if [ ! -f "$GPUQ_CONTENTION_LOG" ] || [ ! -r "$GPUQ_CONTENTION_LOG" ] || ! cat "$GPUQ_CONTENTION_LOG" >/dev/null; then
+  abort "strict gpuq contention log is missing or unreadable: $GPUQ_CONTENTION_LOG"
+fi
+PERF_SEED_RUNS="${FALCATA_PERF_SEED_RUNS:-1}"
+case "$PERF_SEED_RUNS" in
+  1|2|3) ;;
+  *) abort "FALCATA_PERF_SEED_RUNS must be 1, 2 or 3" ;;
+esac
+PERF_BASELINE="${FALCATA_PERF_BASELINE:-$LOGDIR/bench_baseline.json}"
+log "policy=strict-gpuq job=$GPUQ_JOB_ID contention_log=$GPUQ_CONTENTION_LOG baseline=$PERF_BASELINE seed_runs=$PERF_SEED_RUNS warn=4% fail=8% repeat=2"
+
+cd "$REPO" || abort "repo not found at $REPO"
 
 # Only test what is pushed: a dirty tree means a human is mid-edit, and a
 # nightly verdict on uncommitted work is not reproducible.
@@ -68,68 +87,67 @@ if [ -n "${GPUQ_JOB_ID:-}" ] && command -v gpuq >/dev/null 2>&1; then
   gpuq token "$(git rev-parse HEAD)" || true
 fi
 
-step() {  # step <name> <gpu_free_mb|-> <command...>
-  local name="$1" need="$2"; shift 2
-  # Under gpuq the scheduler already holds the GPU for us; the per-step guard
-  # would only be waiting on ourselves. Keep it for direct manual runs.
-  if [ "$need" != "-" ] && [ -z "${GPUQ_JOB_ID:-}" ]; then
-    if ! python3 tests/gates/gpu_guard.py --require-free-mb "$need" --max-util 10 --timeout-min 120 >>"$LOG" 2>&1; then
-      fail "$name (GPU never freed up)"
-      return 0
-    fi
-  fi
+step() {  # step <name> <command...>
+  local name="$1"; shift
   log "-> $name"
-  "$@" >>"$LOG" 2>&1 || fail "$name"
+  "$@" >>"$LOG" 2>&1 || { fail "$name"; return 1; }
 }
 
 log "-> build CUDA wheel"
 bash tests/gates/ci_build.sh >>"$LOG" 2>&1 || abort "build CUDA wheel"
-step "lattice (FALCATA_VERIFY=1)"  12000 env FALCATA_VERIFY=1 "$VENV" tests/gates/lattice.py --check
-step "selective equivalence"       -     "$VENV" tests/gates/selective_equivalence.py --seeds 32 --rounds 30
-step "fuzz (45 min, corpus first)" -     "$VENV" tests/gates/fuzz.py --minutes 45
-step "validation scoring"          -     "$VENV" tests/gates/valid_metric.py
-step "FALB python plumbing"        -     "$VENV" tests/gates/falb_python.py
+step "lattice (FALCATA_VERIFY=1)" env FALCATA_VERIFY=1 "$VENV" tests/gates/lattice.py --check
+step "selective equivalence" "$VENV" tests/gates/selective_equivalence.py --seeds 32 --rounds 30
+step "fuzz (45 min, corpus first)" "$VENV" tests/gates/fuzz.py --minutes 45
+step "validation scoring" "$VENV" tests/gates/valid_metric.py
+step "FALB python plumbing" "$VENV" tests/gates/falb_python.py
 # No FALCATA_LIB here: the gate resolves the shared object the venv's freshly
 # installed falcata loads, which is the artifact ci_build.sh above produced.
-step "FALB binary roundtrip"       -     "$VENV" tests/gates/falb_roundtrip.py
-step "FALB frozen-fixture compat"  -     "$VENV" tests/gates/falb_compat.py
-step "FALB writer-byte golden"     -     "$VENV" tests/gates/falb_golden.py
-step "FALB parser fuzz"            -     "$VENV" tests/gates/falb_fuzz.py --seconds 120
+step "FALB binary roundtrip" "$VENV" tests/gates/falb_roundtrip.py
+step "FALB frozen-fixture compat" "$VENV" tests/gates/falb_compat.py
+step "FALB writer-byte golden" "$VENV" tests/gates/falb_golden.py
+step "FALB parser fuzz" "$VENV" tests/gates/falb_fuzz.py --seconds 120
 # The Python suite on CUDA. GH CI runs the same tests on CPU; hosted runners
 # have no GPU, so this is the only place the CUDA half executes. --forked keeps
 # failures independent: a CUDA context error is sticky, and in one process a
 # single bug turns into a cascade that hides everything after it.
-step "python suite (CUDA)"         -     env TASK=cuda "$VENV" -m pytest tests/python_package_test tests/c_api_test \
+step "python suite (CUDA)" env TASK=cuda "$VENV" -m pytest tests/python_package_test tests/c_api_test \
   -q --forked --timeout=900 -p no:cacheprovider
 # The C++ (GoogleTest) suite and the distributed CLI tests, against a CUDA
 # build. GH CI runs both on a CPU build; this is the shipped configuration, and
 # the only place the test binary's CUDA device link is exercised at all.
-step "cpp + distributed (CUDA)"    -     env FALCATA_GATES_PYTHON="$VENV" bash tests/gates/cpp_suite.sh
-step "import parity: xgboost"      -     "$VENV" tests/gates/import_xgboost.py
-step "import parity: catboost"     -     "$VENV" tests/gates/import_catboost.py
-step "fixedpoint tree-emission"    20000 "$VENV" tests/gates/canonical.py numerai-treecount
-step "canonical md5 locks"         -     "$VENV" tests/gates/canonical.py all
+step "cpp + distributed (CUDA)" env FALCATA_GATES_PYTHON="$VENV" bash tests/gates/cpp_suite.sh
+step "import parity: xgboost" "$VENV" tests/gates/import_xgboost.py
+step "import parity: catboost" "$VENV" tests/gates/import_catboost.py
+step "fixedpoint tree-emission" "$VENV" tests/gates/canonical.py numerai-treecount
+step "canonical md5 locks" "$VENV" tests/gates/canonical.py all
 # Runs against every binary dataset this machine has, because the defect it
 # guards (a sampled column served from the wrong bin encoding) only appears on
 # data carrying sparse-encoded columns -- no synthetic shape reproduces it.
 # --require-sparse-dataset: this box always has a numerai round on disk; if
 # none is found the throughput assertion silently degrades to synthetic-only,
 # which is exactly the blind spot that let the 21358be8 regression ship.
-step "sparse column view"          20000 "$VENV" tests/gates/sparse_column_view.py --require-sparse-dataset
+step "sparse column view" "$VENV" tests/gates/sparse_column_view.py --require-sparse-dataset
 # Nibble-packed device columns: a broken nibble read collapses signal rather
 # than moving a digit, so the contracts are prediction-level (see the gate's
 # docstring on why an md5 assertion would be noise here).
-step "nibble packed columns"       20000 "$VENV" tests/gates/nibble_validate.py
+step "nibble packed columns" "$VENV" tests/gates/nibble_validate.py
 # Stale-candidate resurrection class (best-split sync reductions): trains in
 # the budget-limited tiny-gain regime and asserts leaf_weight == leaf_count,
 # no sub-floor leaves, bit-exact text AND falb-binary round trips, and exact
 # per-leaf occupancy when the training matrix is routed through the
 # serialized model. This is the CUDA fixedpoint production path.
-step "leaf integrity + round trip" 8000  "$VENV" tests/gates/leaf_integrity.py
-step "bench tier"                  12000 "$VENV" tests/gates/bench_tier.py --out tests/gates/bench_results.json
-step "perf gate"                   -     "$VENV" tests/gates/perf_gate.py \
-  --results tests/gates/bench_results.json \
-  --baseline-file "$LOGDIR/bench_baseline.json" --warn-pct 4 --fail-pct 8 --record
+step "leaf integrity + round trip" "$VENV" tests/gates/leaf_integrity.py
+# Explicit recovery bootstrap only; every pass measures the bench independently.
+# A failed bench must not let stale results seed history. The parent owns staged
+# history publication after the whole strict job finishes without contention.
+for ((perf_pass=1; perf_pass<=PERF_SEED_RUNS; perf_pass++)); do
+  log "perf history pass $perf_pass/$PERF_SEED_RUNS"
+  if step "bench tier" "$VENV" tests/gates/bench_tier.py --out tests/gates/bench_results.json; then
+    step "perf gate" "$VENV" tests/gates/perf_gate.py --gpuq-strict \
+      --results tests/gates/bench_results.json \
+      --baseline-file "$PERF_BASELINE" --warn-pct 4 --fail-pct 8 --record
+  fi
+done
 
 if [ -n "$FAILED_STEPS" ]; then
   log "=== GATES FAILED:$FAILED_STEPS"
