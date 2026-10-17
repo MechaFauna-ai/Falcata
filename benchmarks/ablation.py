@@ -44,6 +44,7 @@ ALL_KEYS = {
     "batch_apply": True,
     "graph_loop": True,
     "graph_quant": False,
+    "nonquant_deterministic": True,
     "compact_quant": True,
     "fast_rowdata": True,
     "dense_rowdata": True,

@@ -290,7 +290,7 @@ Core Parameters
 
 -  ``deterministic`` :raw-html:`<a id="deterministic" title="Permalink to this parameter" href="#deterministic">&#x1F517;&#xFE0E;</a>`, default = ``false``, type = bool
 
-   -  on ``device_type=cuda``, setting this to ``true`` selects near-lossless deterministic quantized training (``quant_mode=fixedpoint`` at the finest safe ``quant_bins`` for the dataset): the same seed then trains the bit-identical model across runs, host machines and GPU models, at quality equal to full-precision training. Set ``quant_mode`` explicitly to override
+   -  on ``device_type=cuda``, training is run-to-run deterministic by default: quantized training sums integer histograms, and non-quantized training (``quant_mode=none``) builds its histograms with deterministic kernels (``cuda_plan`` key ``nonquant_deterministic``, on by default; ``nonquant_deterministic:off`` restores the float-atomic kernels). Exceptions, whose models can still vary from run to run: ``nonquant_deterministic:off``, linear trees (``linear_tree``), ranking objectives (their gradients use float atomics), multi-target vector-leaf trees without quantization, multi-GPU training. What this parameter adds on ``cuda``: when ``quant_mode`` is not set and would resolve to ``none``, ``true`` selects near-lossless quantized training (``quant_mode=fixedpoint`` at the finest safe ``quant_bins`` for the dataset), whose models are also bit-identical across host machines and GPU models, at quality equal to full-precision training; set ``quant_mode`` explicitly to override (``quant_mode=none`` stays non-quantized and run-to-run deterministic)
 
    -  on ``cpu``, setting this to ``true`` should ensure the stable results when using the same data and the same parameters (and different ``num_threads``)
 
@@ -787,7 +787,7 @@ Learning Control Parameters
 
    -  ``auto``: resolves to ``stochastic`` if ``use_quantized_grad=true``, otherwise ``none``
 
-   -  ``none``: full-precision (fp64) gradient/hessian accumulation
+   -  ``none``: non-quantized gradients/hessians; on CUDA, deterministic fixed-point histogram accumulation with fp64 storage, or ordered fp64 kernels (see `performance <./performance.md>`__ for precision bounds and fallbacks)
 
    -  ``stochastic``: Falcata-native quantized training (same as ``use_quantized_grad=true``): stochastic rounding into ``quant_bins`` bins; aggressive speed end of the trade-off
 
@@ -1475,7 +1475,7 @@ GPU Parameters
 
    -  ``fp64``: double-precision accumulation (bit-stable reference)
 
-   -  ``fp32``: single-precision histogram atomics and gain math; measurably faster on high-bin workloads at <=0.1pp quality cost, results are non-deterministic across runs
+   -  ``fp32``: single-precision split-gain math; with the ``cuda_plan`` key ``nonquant_deterministic:off`` also single-precision histogram atomics (measurably faster on high-bin workloads at <=0.1pp quality cost, results non-deterministic across runs); by default the histograms stay fp64 and deterministic
 
    -  **Note**: can be used only in CUDA implementation (``device_type="cuda"``)
 

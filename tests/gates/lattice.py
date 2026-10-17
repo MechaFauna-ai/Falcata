@@ -269,15 +269,15 @@ def build_cells():
     )
     cell("tinygrad/fixedpoint", "tinygrad", {"quant_mode": "fixedpoint"}, rounds=150)
 
-    # --- nondeterministic tiers: validity + metric floor only --------------- #
-    # non-quant float-atomic path and the fp32 opt-in (cuda_precision) --
-    # exactly the paths md5 cannot cover.
+    # --- non-quant default plan: deterministic since cuda_plan key nonquant_deterministic (default on) --- #
+    # the levels the float atomics used to build (graph loop, compact views, levels wider than the det slab)
+    # accumulate in 64-bit fixed point; the fp32 opt-in (cuda_precision) keeps its fp32 gain math on hist_t
+    # histograms. Fingerprinted since 2026-10-16 (they were metric-only before).
     cell(
         "dense/nonquant",
         "dense",
         {"quant_mode": "none"},
         rounds=50,
-        fingerprint=False,
         perf=True,
     )
     cell(
@@ -285,8 +285,17 @@ def build_cells():
         "dense",
         {"quant_mode": "none", "cuda_precision": "fp32"},
         rounds=50,
-        fingerprint=False,
         perf=True,
+    )
+    # --- nondeterministic tier: validity + metric floor only ---------------- #
+    # nonquant_deterministic:off keeps the float-atomic kernels: the only mode
+    # whose models vary run to run, exactly the path md5 cannot cover.
+    cell(
+        "dense/nonquant-atomic",
+        "dense",
+        {"quant_mode": "none", "cuda_plan": "auto,nonquant_deterministic:off"},
+        rounds=50,
+        fingerprint=False,
     )
     # Non-quant DETERMINISTIC cells: on these shapes every construct runs the
     # deterministic kernels (per-leaf, batched-level, compact view, sparse
@@ -306,14 +315,15 @@ def build_cells():
         "categorical/nonquant-det", "categorical", {"quant_mode": "none", "cuda_plan": "auto,graph_loop:off"}, rounds=50
     )
     # graph_det:on -- the captured det construct+merge nodes inside the graph
-    # loop (opt-in; the DEFAULT graph plan keeps the atomic construct for
-    # speed). graph/nonquant-det replaces the old unfingerprinted
-    # graph/nonquant cell; imbalanced is the shape whose atomic/det mix raced
-    # in the 2026-08-19 lattice, so its graph-det model is pinned too.
+    # loop (opt-in; the DEFAULT graph plan captures the fixed-point construct
+    # and its convert node instead, nonquant_deterministic). imbalanced is the
+    # shape whose atomic/det mix raced in the 2026-08-19 lattice, so its
+    # graph-det model is pinned too.
     cell("graph/nonquant-det", "graph", {"quant_mode": "none", "cuda_plan": "auto,graph_det:on"}, rounds=50)
     cell("imbalanced/nonquant-det", "imbalanced", {"quant_mode": "none", "cuda_plan": "auto,graph_det:on"}, rounds=50)
-    # the DEFAULT plan stays atomic in the graph: metric-only coverage
-    cell("graph/nonquant", "graph", {"quant_mode": "none"}, rounds=50, fingerprint=False)
+    # the DEFAULT plan in the graph: the fixed-point construct + convert nodes (fingerprinted since
+    # nonquant_deterministic)
+    cell("graph/nonquant", "graph", {"quant_mode": "none"}, rounds=50)
     # ... and the graph det loop must be BIT-IDENTICAL to the host det loop:
     # the controller replays the host loop's decisions and the det
     # construct+merge is row-grouping invariant, so swapping graph_det:on for
