@@ -27,6 +27,7 @@
 #include <Falcata/cuda/cuda_row_data.hpp>
 #include <Falcata/cuda/pack_codecs.hpp>
 
+#include "cuda_device_levels.hpp"
 #include "cuda_leaf_splits.hpp"
 #include "cuda_hybrid_graph.hpp"
 
@@ -689,26 +690,51 @@ class CUDAHistogramConstructor {
 
   /*! \brief cuda_plan key device_levels: the device level state the batched construct, fix/subtract and copy
    *  launches read while the learner enqueues a device-driven level (nullptr otherwise) */
-  void SetDeviceLevelState(const CUDADeviceLevelState* dls) { device_level_state_ = dls; }
+  void SetDeviceLevelState(const CUDADeviceLevelState* dls, const bool whole_tree = false) {
+    device_level_state_ = dls;
+    device_level_whole_tree_ = dls != nullptr && whole_tree;
+  }
   /*! \brief cuda_plan key device_levels: whether this tree's multi-pair level constructs take the dense batched
    *  kernel (the one with the device block map), not the pair-joint family */
   bool DeviceLevelConstructSupported();
   /*! \brief cuda_plan key device_levels: the dense batched construct's block y for this tree (as launched) */
   int DeviceLevelConstructBlockDimY();
   /*! \brief cuda_plan key device_level_graph: the pointers and per-tree shape a captured level search bakes in */
-  void DeviceLevelGraphKey(std::vector<const void*>* key) const {
+  void DeviceLevelGraphKey(std::vector<const void*>* key,
+                           const CUDADeviceLevelConstructShape* shape = nullptr) const {
+    // Whole-row code-word device constructs launch exclusively through LaunchDeviceLevelPairJoint. Their actual
+    // block/grid/shared-memory/row-grouping shape replaces the preliminary per-partition maxima: neither maximum
+    // is passed to that kernel, fix/subtract, or the finder. All true kernel args and buffer identities stay keyed.
+    const bool whole_code_words = shape != nullptr && shape->pair_mode == 1 && shape->kernel_kind == 4 &&
+      shape->whole_row_partitions > 0;
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
     HybridGraphKeyPointers(key);
-    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(HybridGraphCompactShapeKey())));
+    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(
+      whole_code_words ? 0 : HybridGraphCompactShapeKey())));
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(code5_valid_ ? 1 : 0)));
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(use_compact_view_ ? 1 : 0)));
     // the per-tree layout values the construct and fix/subtract launches pass by value
-    for (const int v : {num_compact_columns_, compact_pair_joint_max_, compact_pair_joint_total_, compact_row_bytes_,
+    for (const int v : {num_compact_columns_, whole_code_words ? 0 : compact_pair_joint_max_,
+                        compact_pair_joint_total_, compact_row_bytes_,
                         code5_row_words_, code5_bits_, compact_row_interleave_ ? 1 : 0, num_used_feature_info_,
                         used_feature_info_ok_ ? 1 : 0, any_feature_unused_bytree_ ? 1 : 0,
                         nibble_pending_ ? 1 : 0}) {
       key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(v)));
+    }
+    key->push_back(static_cast<const void*>(cuda_used_feature_info_.RawDataReadOnly()));
+    if (shape != nullptr) {
+      if (FalcataDebug().diag) {
+        fprintf(stderr, "[hybrid-diag] device_tree: layout partcols=%d partjoint=%d construct=%d\n",
+                max_num_compact_cols_per_partition_, compact_pair_joint_max_, shape->kernel_kind);
+      }
+      for (const int v : {shape->pair_mode, shape->kernel_kind, shape->block_y, shape->grid_x, shape->block_x,
+                          shape->smem_bytes, shape->slot, shape->slot_device_slots, shape->slot_min_rows,
+                          shape->slot_max_rows, shape->per_pair_min_grid, shape->per_pair_min_rows,
+                          shape->whole_row_partitions, static_cast<int>(shape->whole_row_joint),
+                          shape->code5_flat, shape->code5_epilogue_flat}) {
+        key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(v)));
+      }
     }
   }
   /*! \brief cuda_plan key device_level_graph: a level search of this tree launches nothing but its kernels (no
@@ -1242,6 +1268,7 @@ class CUDAHistogramConstructor {
   CUDAHybridGraphLoopStateOpt hybrid_graph_capture_gstate_ = nullptr;
   /*! \brief cuda_plan key device_levels: see SetDeviceLevelState */
   const CUDADeviceLevelState* device_level_state_ = nullptr;
+  bool device_level_whole_tree_ = false;
 
 
   // CUDA memory, held by this object

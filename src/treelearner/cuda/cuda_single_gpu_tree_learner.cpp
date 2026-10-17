@@ -775,6 +775,9 @@ void CUDASingleGPUTreeLearner::BeforeTrain() {
   leaf_data_start_[0] = 0;
   smaller_leaf_index_ = 0;
   larger_leaf_index_ = -1;
+  // Only leaf 0 is active now. Its count/start and quantized bit width were reset above; its sums retain
+  // the existing root_sums_deferred_ contract. Old nonroot entries stay dead until an ordinary split writes them.
+  whole_host_leaf_cache_stale_ = false;
 
   if (use_monotone_constraints_) {
     std::fill(leaf_constraint_min_.begin(), leaf_constraint_min_.end(),
@@ -1389,6 +1392,7 @@ void CUDASingleGPUTreeLearner::EnqueuePairBestSplitSearch(const CUDATree* tree,
     const CUDALeafSplitsStruct* smaller_struct, const CUDALeafSplitsStruct* larger_struct,
     const int smaller_leaf_index, const int larger_leaf_index, const bool synchronize,
     const int pipeline, const int parent_leaf_index_arg) {
+  CHECK(!whole_host_leaf_cache_stale_);
   cuda_histogram_constructor_->SetActivePipeline(pipeline);
   cuda_best_split_finder_->SetActiveHistPipeline(pipeline);
   global_timer.Start("CUDASingleGPUTreeLearner::ConstructHistogramForLeaf");
@@ -1825,6 +1829,7 @@ void CUDASingleGPUTreeLearner::RecordTreeRecordDone(const CUDATree* tree) {
 void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
     const std::vector<HybridPendingPair>& pairs,
     CUDALeafSplitsStruct* vec_plane_slab) {
+  CHECK(!whole_host_leaf_cache_stale_);
   const int num_pairs = static_cast<int>(pairs.size());
   if (num_pairs <= 0) {
     // nothing to search, but an in-flight apply is still consumed here (a non-final level always yields pairs today,
@@ -2037,6 +2042,7 @@ void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearch(const CUDATree* tree,
 
 void CUDASingleGPUTreeLearner::EnqueueLevelBestSplitSearchSpeculative(const CUDATree* tree,
     const std::vector<HybridAppliedSplit>& applied, cudaEvent_t tree_record_done) {
+  CHECK(!whole_host_leaf_cache_stale_);
   const int num_pairs = static_cast<int>(applied.size());
   if (num_pairs <= 0) {
     return;
@@ -2253,6 +2259,7 @@ bool CUDASingleGPUTreeLearner::ArbitrateLevelBudget(const CUDATree* tree,
 void CUDASingleGPUTreeLearner::ApplyLevelBatched(CUDATree* tree,
     const std::vector<int>& splittable, std::vector<HybridAppliedSplit>* applied,
     const bool final_level) {
+  CHECK(!whole_host_leaf_cache_stale_);
   // one launch per kernel family for the whole level: batched tree-structure
   // update (CUDATree::SplitBatch) + batched partition (SplitLevelBatched);
   // right children take consecutive leaf indices exactly as the per-split
@@ -2608,6 +2615,7 @@ void CUDASingleGPUTreeLearner::FinishLevelBookkeeping(
     const std::vector<int>& batch_info,
     std::vector<HybridPendingPair>* next_pairs,
     int* num_splits) {
+  CHECK(!whole_host_leaf_cache_stale_);
   for (size_t k = 0; k < applied.size(); ++k) {
     const HybridAppliedSplit& a = applied[k];
     const int* info = batch_info.data() + 18 * k;
@@ -2755,7 +2763,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   // not needed inside the graph. Any fallback (env off, unsupported driver,
   // capture failure, no usable feature) reverts to the classic (two-sync)
   // host loop below, bit-for-bit the previous behavior.
-  if (config_->use_quantized_grad && use_hybrid_one_sync_ &&
+  if (!FalcataPlan::Get().device_tree && config_->use_quantized_grad && use_hybrid_one_sync_ &&
       use_batched_level_kernels && use_batched_level_apply &&
       HybridGraphPrefixUsable()) {
     // the quantized graph prefix reads the host root sums like the classic flow: a no-op unless BeforeTrain
@@ -2767,9 +2775,20 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
     }
   }
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
-  // the classic flow needs the host root sums up front (root descriptor
-  // validity); a no-op unless BeforeTrain optimistically deferred the readback
+  // The complete device path evaluates root validity from the device root struct. Keep root sums deferred there;
+  // the classic host flow still needs them for its root descriptor. Capacity setup precedes all root enqueues.
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+  const int device_levels = DeviceLevelsToRun(use_batched_level_kernels, use_batched_level_apply);
+  if (device_levels > 0 && !device_levels_ready_ && !SetupDeviceLevels(device_levels)) {
+    device_levels_disabled_ = true;
+  }
+  const bool whole_device_tree = FalcataPlan::Get().device_tree && device_levels > 0 && device_levels_ready_;
+  if (!whole_device_tree) {
+    EnsureRootSumsReadBack(tree);
+  }
+#else
   EnsureRootSumsReadBack(tree);
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   // the root "pair" lives in the fixed pair structs, initialized by BeforeTrain
   std::vector<HybridPendingPair> pairs;
   pairs.push_back({smaller_leaf_index_, larger_leaf_index_, /*parent=*/-1,
@@ -2795,10 +2814,6 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   // after the root's search; their one readback leaves the host where its own readback of the next level would
   bool search_read_back = false;
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-  const int device_levels = DeviceLevelsToRun(use_batched_level_kernels, use_batched_level_apply);
-  if (device_levels > 0 && !device_levels_ready_ && !SetupDeviceLevels(device_levels)) {
-    device_levels_disabled_ = true;
-  }
   if (device_levels > 0 && device_levels_ready_) {
     if (FalcataDebug().diag) {
       if (!device_levels_logged_) {
@@ -2806,9 +2821,16 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
         fprintf(stderr, "[hybrid-diag] device_levels: %d device-driven levels per tree\n", device_levels);
       }
     }
-    EnqueueLevelBestSplitSearch(tree, pairs, vec_plane_slab);  // the root level, as the loop's first iteration
+    if (whole_device_tree) {
+      EnqueueRootLevelSearchOneSync(/*reuse_fused_root=*/true);
+    } else {
+      EnqueueLevelBestSplitSearch(tree, pairs, vec_plane_slab);
+    }
     num_splits = TrainDeviceLevels(tree, device_levels, &pairs);
     search_read_back = true;
+    if (device_tree_completed_) {
+      return num_splits;
+    }
   }
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   while (true) {
@@ -2933,7 +2955,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   return num_splits;
 }
 
-void CUDASingleGPUTreeLearner::EnqueueRootLevelSearchOneSync() {
+void CUDASingleGPUTreeLearner::EnqueueRootLevelSearchOneSync(const bool reuse_fused_root) {
   // Root level of the single-sync flow: device-derived gating like every later
   // level, so the root-sum readback of InitValues stays deferred and the
   // level-0 search enqueue overlaps the per-tree histogram-buffer zeroing. The
@@ -2974,9 +2996,14 @@ void CUDASingleGPUTreeLearner::EnqueueRootLevelSearchOneSync() {
     level_search_leaves_.assign(1, 0);
     UploadLevelNodeMasks(level_search_leaves_);
   }
+  // The complete quantized path can consume the fill's root histogram just like the classic host root. Besides
+  // avoiding a redundant construct, this preserves the code view that the device levels will capture/read.
+  const bool use_fused_root = reuse_fused_root && config_->use_quantized_grad && leaf_num_data_[0] == num_data_ &&
+    cuda_histogram_constructor_->ConsumeFusedRootHist(desc.smaller_num_bits <= 16);
   cuda_histogram_constructor_->ConstructHistogramsForLevel(
     cuda_hybrid_pair_descs_.RawDataReadOnly(), 1, leaf_num_data_[0],
-    /*any_pair_needs_bit_change_copy=*/false);
+    /*any_pair_needs_bit_change_copy=*/false, /*level_smaller_num_data=*/nullptr,
+    /*defer_subtract=*/false, use_fused_root);
   cuda_best_split_finder_->WaitOnCatSlabConsumers(cat_consumed_default_event_, cat_consumed_tree_event_);
   cuda_best_split_finder_->FindBestSplitsForLevel(
     cuda_hybrid_pair_descs_.RawDataReadOnly(), 1,
@@ -3557,7 +3584,8 @@ void CUDASingleGPUTreeLearner::ReleaseHybridGraphs() {
 void CUDASingleGPUTreeLearner::LogDeviceLevelsFallback(const char* reason) {
   if (FalcataDebug().diag && !device_levels_fallback_logged_) {
     device_levels_fallback_logged_ = true;
-    fprintf(stderr, "[hybrid-diag] device_levels: host fallback (%s)\n", reason);
+    fprintf(stderr, "[hybrid-diag] %s: host fallback (%s)\n",
+            FalcataPlan::Get().device_tree ? "device_tree" : "device_levels", reason);
   }
 }
 
@@ -3565,7 +3593,7 @@ void CUDASingleGPUTreeLearner::LogDeviceLevelsFallback(const char* reason) {
 
 int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels, const bool batched_level_apply) {
   const FalcataPlan& plan = FalcataPlan::Get();
-  if (!plan.device_levels || device_levels_disabled_) {
+  if ((!plan.device_levels && !plan.device_tree) || device_levels_disabled_) {
     return 0;
   }
   // Slot workers use thread-local stream ownership. Neither capture nor the plain device enqueue is supported here.
@@ -3574,7 +3602,7 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
     return 0;
   }
   // When sampled layouts keep missing the graph cache, use the existing host loop on subsequent trees.
-  if (plan.device_level_graph && device_level_graph_disabled_) {
+  if (!plan.device_tree && plan.device_level_graph && device_level_graph_disabled_) {
     LogDeviceLevelsFallback("changing graph layouts");
     return 0;
   }
@@ -3590,6 +3618,16 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
       cuda_best_split_finder_->num_used_tasks() == 0) {
     LogDeviceLevelsFallback("unsupported prefix kernels or configuration");
     return 0;
+  }
+  if (plan.device_tree) {
+    // No budget arbitration/pruning is needed: every valid leaf can split through the depth bound. The last
+    // level fits the select block and apply buffers; all unsupported shapes retain the ordinary host path.
+    const int depth = config_->max_depth;
+    if (depth < 1 || depth > 10 || (1LL << depth) > config_->num_leaves) {
+      LogDeviceLevelsFallback("depth bound or leaf budget");
+      return 0;
+    }
+    return depth;
   }
   // levels L with 2^(L + 1) <= num_leaves and L + 1 < max_depth: every valid leaf splits and every child is searched
   int levels = 0;
@@ -3693,11 +3731,11 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
   CUDADeviceLevelState* dls = cfg.state;
   // ordered after the root level's search (its sync kernel ran on the find stream)
   LaunchDeviceLevelReset(cfg, 1, find_stream);
-  cuda_histogram_constructor_->SetDeviceLevelState(dls);
+  cuda_histogram_constructor_->SetDeviceLevelState(dls, cfg.whole_tree != 0);
   cuda_best_split_finder_->SetDeviceLevelState(dls);
   const score_t* grad_scale = cuda_gradient_discretizer_->grad_scale_ptr();
   const score_t* hess_scale = cuda_gradient_discretizer_->hess_scale_ptr();
-  // the level's select ran in the last block of the previous level's sync (the root level's: a launch of its own)
+  // The prefix can select in the previous sync's last block; whole trees select in a standalone launch.
   bool select_ran = false;
   const CUDADeviceLevelConfig* cfg_device = cuda_device_level_config_.RawDataReadOnly();
   for (int level = 0; level < num_levels; ++level) {
@@ -3712,12 +3750,18 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
     cuda_data_partition_->LaunchDeviceLevelApply(max_splits, dls, cfg_device);
     tree->LaunchSplitBatchKernelDevice(max_splits, &dls->live_splits);
     CUDASUCCESS_OR_FATAL(cudaEventRecord(tree_record_done_event_, tree_stream));
+    if (cfg.whole_tree && level + 1 == num_levels) {
+      // The apply has produced the final partition and tree records. No final child histogram or best-split
+      // search can affect a depth-bounded tree. Join the record stream before the single end-of-tree journal.
+      CUDASUCCESS_OR_FATAL(cudaStreamWaitEvent(find_stream, tree_record_done_event_, 0));
+      break;
+    }
     // the children's search behind the apply
     cuda_histogram_constructor_->ConstructHistogramsForLevel(
       cuda_hybrid_pair_descs_.RawDataReadOnly(), max_splits, /*max_num_data_in_smaller_leaf=*/0,
       /*any_pair_needs_bit_change_copy=*/true);
     cuda_best_split_finder_->WaitOnCatSlabConsumers(nullptr, tree_record_done_event_);
-    cuda_best_split_finder_->SetDeviceLevelSelect(level + 1 < num_levels ? cfg_device : nullptr);
+    cuda_best_split_finder_->SetDeviceLevelSelect(!cfg.whole_tree && level + 1 < num_levels ? cfg_device : nullptr);
     cuda_best_split_finder_->FindBestSplitsForLevel(
       cuda_hybrid_pair_descs_.RawDataReadOnly(), max_splits, grad_scale, hess_scale);
     select_ran = cuda_best_split_finder_->LastSyncRanSelect();
@@ -3731,11 +3775,13 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
   std::vector<const void*> key;
   key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(num_levels)));
   key.push_back(static_cast<const void*>(tree->hybrid_graph_batch_splits()));
+  key.push_back(static_cast<const void*>(cfg.root_struct));
+  key.push_back(static_cast<const void*>(cfg.tree_leaf_value));
   key.push_back(static_cast<const void*>(cuda_hybrid_pair_descs_.RawDataReadOnly()));
   key.push_back(static_cast<const void*>(hybrid_pair_slots_.RawDataReadOnly()));
   // Sampled compact views may select a different decoder while retaining the same allocation and padded shape.
   key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(cuda_histogram_constructor_->compact_codec())));
-  cuda_histogram_constructor_->DeviceLevelGraphKey(&key);
+  cuda_histogram_constructor_->DeviceLevelGraphKey(&key, cfg.whole_tree ? &cfg.shape : nullptr);
   cuda_best_split_finder_->DeviceLevelGraphKey(&key);
   cuda_data_partition_->DeviceLevelGraphKey(&key);
   if (!cuda_histogram_constructor_->DeviceLevelGraphCapturable()) {
@@ -3758,9 +3804,18 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
       return true;
     }
   }
+  // Diagnostic-only evidence of which exact launch-key fields changed; never printed during timings.
+  if (FalcataDebug().diag && cfg.whole_tree && !device_level_graphs_.empty()) {
+    const auto& previous = device_level_graphs_.back()->key;
+    for (size_t i = 0; i < std::min(key.size(), previous.size()); ++i) {
+      if (key[i] != previous[i]) {
+        fprintf(stderr, "[hybrid-diag] device_tree: graph key[%zu] %p -> %p\n", i, previous[i], key[i]);
+      }
+    }
+  }
   // a new key: capture this tree's enqueue (its host halves run now; the graph runs right after)
   ++device_level_graph_misses_;
-  if (device_level_graph_misses_ > 8 && device_level_graph_misses_ > device_level_graph_hits_) {
+  if (!cfg.whole_tree && device_level_graph_misses_ > 8 && device_level_graph_misses_ > device_level_graph_hits_) {
     // per-tree keys keep changing (e.g. a sampled feature set every tree): the plain enqueue from here on
     device_level_graph_disabled_ = true;
     if (FalcataDebug().diag) {
@@ -3787,7 +3842,7 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
   CUDASUCCESS_OR_FATAL(cudaGraphInstantiate(&graph->exec, graph->graph, 0));
   CUDASUCCESS_OR_FATAL(cudaGraphUpload(graph->exec, find_stream));
   CUDASUCCESS_OR_FATAL(cudaGraphLaunch(graph->exec, find_stream));
-  const size_t cache_limit = 32;
+  const size_t cache_limit = cfg.whole_tree ? 256 : 32;
   if (device_level_graphs_.size() >= cache_limit) {
     device_level_graphs_.erase(device_level_graphs_.begin());
   }
@@ -3818,6 +3873,8 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   std::memset(&cfg, 0, sizeof(cfg));
   cfg.state = dls;
   cfg.leaf_best_split_info = cuda_best_split_finder_->leaf_best_split_info_ptr(0);
+  cfg.root_struct = cuda_smaller_leaf_splits_->GetCUDAStruct();
+  cfg.tree_leaf_value = tree->cuda_leaf_value_ref();
   cfg.leaf_num_data = cuda_data_partition_->cuda_leaf_num_data();
   cfg.leaf_data_start = cuda_data_partition_->cuda_leaf_data_start();
   cfg.tree_batch_splits = tree->hybrid_graph_batch_splits();
@@ -3829,6 +3886,27 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   cfg.real_thresholds = cuda_device_level_real_thresholds_.RawDataReadOnly();
   cfg.journal = cuda_device_level_journal_.RawData();
   cfg.max_depth = config_->max_depth;
+  cfg.whole_tree = FalcataPlan::Get().device_tree ? 1 : 0;
+  // No current-tree host tail exists for a completed whole tree. Plain unweighted L2 never renews its
+  // outputs, and its next BeforeTrain rebuilds root counts/start/bits before any host search. All other
+  // modes retain full child statistics; GPU split-info storage/production and full journal replay stay intact.
+  bool skip_host_cache = cfg.whole_tree && config_->boosting == "gbdt" && config_->objective == "regression" &&
+    boosting_on_cuda_ && share_state_->is_constant_hessian && train_data_->metadata().weights() == nullptr &&
+    config_->use_quantized_grad && vec_num_targets_ <= 1 && !has_categorical_feature_ &&
+    nccl_communicator_ == nullptr && fp_merge_state_ == nullptr && !forest_slot_ &&
+    config_->data_sample_strategy == "bagging" && config_->bagging_freq == 0 &&
+    config_->bagging_fraction == 1.0 && config_->pos_bagging_fraction == 1.0 &&
+    config_->neg_bagging_fraction == 1.0 && !config_->bagging_by_query && !cuda_data_partition_->use_bagging() &&
+    !config_->quant_train_renew_leaf && !config_->linear_tree && !select_features_by_node_ &&
+    config_->interaction_constraints_vector.empty() && config_->monotone_constraints.empty() &&
+    !use_monotone_constraints_ && config_->monotone_penalty == 0.0 && config_->feature_contri.empty() &&
+    config_->cegb_penalty_split == 0.0 && config_->cegb_penalty_feature_lazy.empty() &&
+    config_->cegb_penalty_feature_coupled.empty() && config_->forcedsplits_filename.empty() &&
+    (forced_split_json_ == nullptr || forced_split_json_->is_null()) &&
+    !FalcataDebug().any_growth_hook() && !FalcataDebug().dump;
+#ifdef DEBUG
+  skip_host_cache = false;  // CheckSplitValid consumes the host statistics/windows.
+#endif  // DEBUG
   cfg.gap_block_dim = CUDADataPartition::DeviceLevelGapBlockDim();
   cfg.min_data_in_leaf = static_cast<data_size_t>(config_->min_data_in_leaf);
   cfg.min_sum_hessian_in_leaf = config_->min_sum_hessian_in_leaf;
@@ -3846,6 +3924,23 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   // stays alive in the learner)
   CopyFromHostToCUDADeviceAsync<CUDADeviceLevelConfig>(cuda_device_level_config_.RawData(), &cfg, 1, find_stream,
                                                        __FILE__, __LINE__);
+  // Reserve the whole tree's final slab and maximum count prefix before growth can be in flight. These bytes
+  // are copied outside capture; the pooled slab is stable through ToHost, and the growth fence covers the DMA.
+  size_t end_slab_bytes = 0;
+  size_t end_counts_offset = 0;
+  bool prefetch_tree_end = false;
+  const FalcataPlan& end_plan = FalcataPlan::Get();
+  if (cfg.whole_tree && end_plan.final_readback_first && end_plan.readback_kernel && AsyncTreeStart() &&
+      nccl_communicator_ == nullptr && vec_num_targets_ <= 1 && !config_->linear_tree &&
+      !(config_->use_quantized_grad && config_->quant_train_renew_leaf)) {
+    end_slab_bytes = CUDATree::PooledDeviceBufferSize(config_->num_leaves);
+    end_counts_offset = (end_slab_bytes + 255) / 256 * 256;
+    const size_t max_count_bytes = static_cast<size_t>(config_->num_leaves) * sizeof(data_size_t);
+    if (cuda_tree_pool_buffer_.Size() >= end_slab_bytes &&
+        tree->cuda_threshold() == reinterpret_cast<const double*>(cuda_tree_pool_buffer_.RawDataReadOnly())) {
+      prefetch_tree_end = EnsureReadbackStaging(end_counts_offset + max_count_bytes);
+    }
+  }
   // cuda_plan key device_level_graph: the levels' launches as one cached CUDA graph (captured on the first tree of a
   // pointer key, replayed on the next ones); otherwise enqueued as they are
   bool launched = false;
@@ -3855,14 +3950,26 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   if (!launched) {
     EnqueueDeviceLevels(tree, cfg, num_levels);
   }
-  // ---- the one readback: journal, the split-info slab of every applied split, every leaf's best split (the last
-  // search waited for every apply through its events, the tree records through tree_record_done_event_) ----
+  if (prefetch_tree_end) {
+    // The whole enqueue joins its final tree-record stream. Use the PINNED HOST pointer, not its mapped alias.
+    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(readback_staging_, tree->cuda_threshold(), end_slab_bytes,
+                                         cudaMemcpyDeviceToHost, find_stream));
+    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(static_cast<uint8_t*>(readback_staging_) + end_counts_offset,
+      cuda_data_partition_->cuda_leaf_num_data(), static_cast<size_t>(config_->num_leaves) * sizeof(data_size_t),
+      cudaMemcpyDeviceToHost, find_stream));
+  }
+  // ---- the one growth readback: journal and applied split infos; the prefix also reads leaf-best entries.
+  // Whole-tree slab/count copies, when requested, are covered by this same fence. ----
   const int max_total_splits = (1 << num_levels) - 1;
   CopyFromCUDADeviceToHostAsync<int>(pinned_device_level_journal_, cuda_device_level_journal_.RawData(),
     static_cast<size_t>(kDeviceLevelJournalHeader) + 2 * static_cast<size_t>(max_total_splits), find_stream,
     __FILE__, __LINE__);
-  cuda_data_partition_->PrefetchSplitBatchAsync(max_total_splits, find_stream);
-  cuda_best_split_finder_->PrefetchLeafBestSplitsAsync(max_total_splits + 1, find_stream);
+  if (!skip_host_cache) {
+    cuda_data_partition_->PrefetchSplitBatchAsync(max_total_splits, find_stream);
+  }
+  if (!cfg.whole_tree) {
+    cuda_best_split_finder_->PrefetchLeafBestSplitsAsync(max_total_splits + 1, find_stream);
+  }
   CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(find_stream));
   const int* journal = pinned_device_level_journal_;
   if (journal[2] != 0) {
@@ -3875,7 +3982,9 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   CHECK_GE(total_splits, 0);
   CHECK_LE(total_splits, max_total_splits);
   cuda_data_partition_->FinishDeviceLevels(num_levels, levels_applied, total_splits);
-  cuda_data_partition_->ReadPrefetchedSplitBatch(total_splits, &device_level_batch_info_);
+  if (!skip_host_cache) {
+    cuda_data_partition_->ReadPrefetchedSplitBatch(total_splits, &device_level_batch_info_);
+  }
   // ---- the host bookkeeping of every applied level, in level order (ApplyLevelBatched's tree mirrors,
   // FinishLevelBookkeeping's leaf arrays, bit widths and pairs) ----
   int num_splits = 0;
@@ -3884,24 +3993,66 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   for (int level = 0; level < levels_applied; ++level) {
     const int level_splits = journal[kDeviceLevelJournalLevels + level];
     CHECK_GE(level_splits, 1);
-    device_level_applied_.clear();
+    CHECK_LE(cursor + level_splits, total_splits);
+    if (cfg.whole_tree && level + 1 == num_levels) {
+      prefix_final_leaves_before_ = tree->num_leaves();
+    }
+    if (!skip_host_cache) {
+      device_level_applied_.clear();
+    }
     for (int k = 0; k < level_splits; ++k) {
       const int left_leaf = journal[kDeviceLevelJournalHeader + 2 * (cursor + k)];
       const int inner_feature = journal[kDeviceLevelJournalHeader + 2 * (cursor + k) + 1];
       const int right_leaf = tree->num_leaves();
       tree->ReplaySplitHostMirrors(left_leaf, train_data_->RealFeatureIndex(inner_feature));
-      device_level_applied_.push_back({left_leaf, right_leaf, hybrid_pair_slots_.RawData() + 2 * k,
-                                       hybrid_pair_slots_.RawData() + 2 * k + 1});
+      if (!skip_host_cache) {
+        device_level_applied_.push_back({left_leaf, right_leaf, hybrid_pair_slots_.RawData() + 2 * k,
+                                         hybrid_pair_slots_.RawData() + 2 * k + 1});
+      }
     }
-    device_level_batch_slice_.assign(device_level_batch_info_.begin() + 18 * static_cast<size_t>(cursor),
-                                     device_level_batch_info_.begin() + 18 * static_cast<size_t>(cursor + level_splits));
-    pairs->clear();
-    FinishLevelBookkeeping(device_level_applied_, device_level_batch_slice_, pairs, &num_splits);
+    if (!skip_host_cache) {
+      device_level_batch_slice_.assign(device_level_batch_info_.begin() + 18 * static_cast<size_t>(cursor),
+                                       device_level_batch_info_.begin() + 18 * static_cast<size_t>(cursor + level_splits));
+      pairs->clear();
+      FinishLevelBookkeeping(device_level_applied_, device_level_batch_slice_, pairs, &num_splits);
+    }
     cursor += level_splits;
   }
   CHECK_EQ(cursor, total_splits);
-  // the last search's result, as the host loop's own readback leaves it
-  cuda_best_split_finder_->ReadPrefetchedLeafBestSplits(tree->num_leaves(), &host_leaf_best_splits_);
+  CHECK_EQ(tree->num_leaves(), total_splits + 1);
+  if (skip_host_cache) {
+    num_splits = total_splits;
+    whole_host_leaf_cache_stale_ = total_splits > 0;
+  }
+  if (cfg.whole_tree) {
+    device_tree_completed_ = true;
+    prefix_completes_tree_ = true;
+    if (prefetch_tree_end && total_splits > 0) {
+      CHECK_EQ(tree->num_leaves(), total_splits + 1);
+      prefetched_tree_num_leaves_ = tree->num_leaves();
+      prefetched_tree_counts_ = true;
+    }
+    if (num_splits == 0) {
+      // The root output survives only for a stump. Read its original root struct before tree-end consumers.
+      EnsureRootSumsReadBack(tree);
+    }
+    if (FalcataDebug().diag) {
+      fprintf(stderr, "[hybrid-diag] device_tree_host_cache: skipped=%d split_info_bytes=%zu stale=%d\n",
+              skip_host_cache ? 1 : 0,
+              skip_host_cache ? size_t{0} : 18 * sizeof(int) * static_cast<size_t>(max_total_splits),
+              whole_host_leaf_cache_stale_ ? 1 : 0);
+      // Separate line: preserve the existing completion marker and its frozen measurement parsers verbatim.
+      fprintf(stderr, "[hybrid-diag] device_tree_end_readback: queued=%d ready=%d leaves=%d counts=%d\n",
+              prefetch_tree_end ? 1 : 0, prefetched_tree_num_leaves_ > 0 ? 1 : 0, tree->num_leaves(),
+              prefetched_tree_counts_ ? 1 : 0);
+      fprintf(stderr, "[hybrid-diag] device_tree: complete depth=%d applied_levels=%d splits=%d "
+              "growth_readbacks=1 host_tail=0 graph=%d hits=%d misses=%d\n", num_levels, levels_applied,
+              total_splits, launched ? 1 : 0, device_level_graph_hits_, device_level_graph_misses_);
+    }
+  } else {
+    // the last search's result, as the host loop's own readback leaves it
+    cuda_best_split_finder_->ReadPrefetchedLeafBestSplits(tree->num_leaves(), &host_leaf_best_splits_);
+  }
   global_timer.Stop("CUDASingleGPUTreeLearner::TrainDeviceLevels");
   return num_splits;
 }
@@ -4496,6 +4647,7 @@ void CUDASingleGPUTreeLearner::SelectiveFinalize(CUDATree* tree) {
 }
 
 void CUDASingleGPUTreeLearner::TrainSelective(CUDATree* tree) {
+  CHECK(!whole_host_leaf_cache_stale_);
   global_timer.Start("CUDASingleGPUTreeLearner::TrainSelective");
   selective_active_ = true;
   SelectiveReset();
@@ -4559,6 +4711,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   }
   hybrid_map_early_pending_ = false;  // cuda_plan key final_readback_first: due only within the tree that set it
   prefetched_tree_num_leaves_ = 0;
+  prefetched_tree_counts_ = false;
   // linear trees need per-leaf branch features to know which features each leaf's
   // linear model uses (mirrors the CPU LinearTreeLearner using new Tree(.., true, true)).
   const bool track_branch_features = !(config_->interaction_constraints_vector.empty()) || config_->linear_tree;
@@ -4605,6 +4758,9 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   }
   prefix_completes_tree_ = false;
   prefix_final_leaves_before_ = -1;
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+  device_tree_completed_ = false;
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   if (FalcataDebug().diag && select_features_by_node_) {
     // per-node masks: which draws and which flow (once per process; tests/python_package_test/test_cuda_bynode_level.py)
     static bool bynode_diag_logged = false;
@@ -4617,7 +4773,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     }
   }
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-  if (FalcataDebug().diag && FalcataPlan::Get().device_levels) {
+  if (FalcataDebug().diag && (FalcataPlan::Get().device_levels || FalcataPlan::Get().device_tree)) {
     if (!config_->use_quantized_grad) {
       LogDeviceLevelsFallback("nonquantized training");
     } else if (num_splits_done != 0 || !HybridGrowthUsable()) {
@@ -4646,8 +4802,12 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   // cuda_plan key skip_empty_tail: after a level prefix that ended on a complete final level the tail's search can
   // only find every cached candidate invalid; report the stop it would report without running it. Only with the
   // batched apply, which invalidates the final level's children (the per-split apply of batch_apply:off does not)
-  const bool tail_known_empty = FalcataPlan::Get().skip_empty_tail && batched_apply_ran && use_hybrid_batch_apply_ &&
-    prefix_completes_tree_;
+  const bool tail_known_empty =
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+    device_tree_completed_ ||
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+    (FalcataPlan::Get().skip_empty_tail && batched_apply_ran && use_hybrid_batch_apply_ && prefix_completes_tree_);
+  CHECK(!whole_host_leaf_cache_stale_ || tail_known_empty);
   if (tail_known_empty && !selective_handled && num_splits_done < config_->num_leaves - 1) {
     Log::Warning("No further splits with positive gain, training stopped with %d leaves.", (num_splits_done + 1));
   }
@@ -4828,6 +4988,12 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     const size_t count_bytes = static_cast<size_t>(tree->num_leaves()) * sizeof(data_size_t);
     // cuda_plan key final_readback_first: both already copied with the final level's readback (PrefetchTreeReadback)
     const bool slab_prefetched = prefetched_tree_num_leaves_ > 0 && prefetched_tree_num_leaves_ == tree->num_leaves();
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+    if (FalcataDebug().diag && device_tree_completed_) {
+      fprintf(stderr, "[hybrid-diag] device_tree_end_readback: consume slab=%d counts=%d leaves=%d\n",
+              slab_prefetched ? 1 : 0, slab_prefetched && prefetched_tree_counts_ ? 1 : 0, tree->num_leaves());
+    }
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
     if (slab_prefetched) {
       if (prefetched_tree_counts_) {
         prefetched_counts_offset = counts_offset;
@@ -4885,6 +5051,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   hybrid_map_early_written_ = false;
   hybrid_map_early_pending_ = false;
   prefetched_tree_num_leaves_ = 0;
+  prefetched_tree_counts_ = false;
   if (config_->use_quantized_grad && config_->quant_train_renew_leaf &&
       nccl_communicator_ != nullptr) {
     static bool warned_renew = false;
@@ -4958,6 +5125,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
 int CUDASingleGPUTreeLearner::ApplySplit(CUDATree* tree, const CUDASplitInfo* best_split_info, const int leaf_index,
                                          CUDALeafSplitsStruct* smaller_slot, CUDALeafSplitsStruct* larger_slot,
                                          int deferred_slot) {
+  CHECK(!whole_host_leaf_cache_stale_);
   // classic per-split path: needs the plain per-column view (only the batched
   // apply kernels understand the packed compact source)
   EnsureClassicColumnView();
@@ -5394,6 +5562,7 @@ void CUDASingleGPUTreeLearner::RenewTreeOutput(Tree* tree, const ObjectiveFuncti
       cuda_tree->SyncLeafOutputFromCUDAToHost();
     } else {
       const data_size_t* bag_mapper = nullptr;
+      CHECK(!whole_host_leaf_cache_stale_);
       if (total_num_data != num_data_) {
         CHECK_EQ(bag_cnt, num_data_);
         bag_mapper = bag_indices;
@@ -5553,6 +5722,7 @@ void CUDASingleGPUTreeLearner::AbortedTreeReset() {
   sel_last_peak_ = 0;
   hybrid_map_early_pending_ = false;
   prefetched_tree_num_leaves_ = 0;
+  prefetched_tree_counts_ = false;
 }
 
 void CUDASingleGPUTreeLearner::MaybeInjectTreeFailure(const int num_leaves) {
@@ -5704,6 +5874,7 @@ void CUDASingleGPUTreeLearner::SelectFeatureByNode(const Tree* tree, const int s
 void CUDASingleGPUTreeLearner::CheckSplitValid(
   const int left_leaf,
   const int right_leaf) {
+  CHECK(!whole_host_leaf_cache_stale_);
   std::vector<data_size_t> left_data_indices(leaf_num_data_[left_leaf]);
   std::vector<data_size_t> right_data_indices(leaf_num_data_[right_leaf]);
   CopyFromCUDADeviceToHost<data_size_t>(left_data_indices.data(),

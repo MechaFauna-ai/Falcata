@@ -2678,6 +2678,57 @@ it produces is the quantized classic loop's to the bit
 quantized training as ground truth in
 `test_vector_leaf_cuda_quantized_selective_duplicated_target_matches_scalar`).
 
+## Experimental complete bounded device trees (`device_tree`)
+
+`cuda_plan=auto,device_tree:on` (default OFF) requests the complete quantized device controller for scalar,
+numerical single-GPU trees with positive `max_depth <= 10` and `2^max_depth <= num_leaves`. The key supplies
+its own growth even with `device_levels:off`; unsupported kernels, constraints and data retain the existing
+host flow and report the fallback under `FALCATA_DEBUG=diag`. No training parameters or split rules change.
+
+After the root search, the existing device reset copies the initialized fixed root struct's output into tree
+leaf 0 before the record stream can save it as the root internal value. Device selectors and apply kernels then
+handle every level, including early exhaustion and the final depth. The final apply skips its child histogram/search. One end-of-growth fence reads the journal
+and split bookkeeping; the host then restores its tree mirrors without a host growth tail.
+Root initialization/search, stump root-output recovery, host bookkeeping, final leaf-map/score updates and tree
+transfer remain outside this interval. This key does not claim an entirely synchronization-free training call.
+
+`device_level_graph:on` caches this complete sequence. For whole-row code-word constructs, cache identity uses
+the resolved launch and row-grouping shape instead of preliminary per-partition maxima that are not kernel
+arguments. True kernel arguments, codec, sampled metadata buffers, task layouts and index-buffer parity remain
+keyed; other constructs retain the conservative maxima. The complete controller retains its bounded 256-entry
+cache across layout misses, without the prefix's nine-miss disable policy. The ordinary prefix retains its
+32-entry limit. Noncapturable layouts use direct device enqueues with the same single growth readback.
+Diagnostics report completed levels/splits and cache
+hits/misses on every tree. Performance validation is pending.
+
+For the complete controller's slotted whole-row code-word construct, the physical worker grid is bounded by
+the resolved resident block slots. Workers still cover every virtual block row; row grouping, shared-memory
+flushes, occupancy selection and exact graph keys are unchanged. Other device-prefix and host constructs
+retain their existing physical grids. This does not establish a performance gain on other configurations.
+Device pair-joint kernels whose virtual map fits the physical grid process one virtual row per worker directly;
+larger maps retain the claim loop. Both routes use the same per-row body and device geometry.
+The complete controller runs each level's selector in its own kernel after the leaf-best sync; the ordinary
+prefix retains its fused selector. Both call the same device selection routine before apply, without an
+intermediate host readback. The extra launches and removed sync coordination still need actual timing.
+With `final_readback_first`, mapped readback staging and asynchronous tree start enabled, the complete controller
+can queue the final pooled slab and maximum exact-count prefix on the find stream before its growth fence.
+Capacity is reserved before growth, and the existing tree-end copy consumes only the synchronized actual prefix.
+Stumps recover the root and use the original copy path; leaf renewal, linear and distributed flows retain their
+existing paths. This changes transfer placement, with no graph-key, growth, map or split-rule change. Performance
+validation is pending. Separate `device_tree_end_readback` diagnostics report readiness and consumption.
+
+For plain, unweighted canonical L2 (`objective=regression`, `boosting=gbdt`), the complete controller can
+omit the split-info transfer and host child-statistic/bit-width bookkeeping. It retains the full journal,
+per-split tree-mirror replay, exact leaf count, final-depth dirty-slot accounting and the growth fence.
+Bagging/GOSS, renewal, weights, constraints, linear/vector/distributed trees and debug consumers retain
+the existing bookkeeping. GPU split-info production, final count/slab transfers, mapping and score updates
+are unchanged. A separate `device_tree_host_cache` diagnostic reports the selected route and transfer size.
+After an eligible positive tree, learner host count/start/gradient/hessian and discretizer child/node-bit
+caches are stale and must not feed host growth or CPU renewal. Checked consumers enforce that contract.
+The next `BeforeTrain` refreshes the sole active root (including its bit width); subsequent ordinary splits
+write every newly active child's statistics before use. Root-sum deferral and stump recovery keep their
+existing rules. Refit uses device partition/stat buffers. This bounded experiment still needs actual timing.
+
 ## 10v. A bounded device-driven quantized prefix (`device_levels`, `device_level_graph`)
 
 Eligible quantized, numerical, scalar, single-GPU two-sync depth-limited trees enqueue
