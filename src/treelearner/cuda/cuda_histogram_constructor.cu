@@ -4248,6 +4248,24 @@ __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_
       return;
     }
     const data_size_t level_min_rows = dls->construct_min_rows;
+    const auto process_block_row = [&](const int vb) {
+      const int pair = DeviceLevelBlockPair(dls, vb);
+      PairJointBatchedBlock<ALL_ROWS, BATCH, CODE5, WORDS, FLAT, EPILOGUE_FLAT, CODE_BITS>(
+        pair_descs, cuda_gradients_and_hessians, data, column_meta, num_compact_columns, column_hist_offsets_full,
+        feature_partition_column_index_offsets, packed_partition_byte_offsets, num_data, min_data_in_leaf,
+        min_sum_hessian_in_leaf, per_pair_min_grid_dim_y, min_rows_per_thread, saturation_floor_total,
+        num_grad_quant_bins, whole_row_partitions, whole_row_joint, level_min_rows, block_prefix, dls, shared_joint,
+        static_cast<unsigned int>(pair), vb - dls->construct_block_start[pair], dls->construct_grid_y,
+        dls->live_pairs);
+    };
+    if (total <= static_cast<int>(gridDim.y)) {
+      // Uniform within each CTA: one virtual block row, with no claim or shared-table reuse barrier.
+      const int vb = static_cast<int>(blockIdx.y);
+      if (vb < total) {
+        process_block_row(vb);
+      }
+      return;
+    }
     __shared__ int s_block_row;
     // the map's block rows are claimed one at a time (their row counts differ: a static stride balances worse), one
     // counter per launch column (every column of a block row is its own block)
@@ -4263,14 +4281,7 @@ __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_
       if (vb >= total) {
         break;
       }
-      const int pair = DeviceLevelBlockPair(dls, vb);
-      PairJointBatchedBlock<ALL_ROWS, BATCH, CODE5, WORDS, FLAT, EPILOGUE_FLAT, CODE_BITS>(
-        pair_descs, cuda_gradients_and_hessians, data, column_meta, num_compact_columns, column_hist_offsets_full,
-        feature_partition_column_index_offsets, packed_partition_byte_offsets, num_data, min_data_in_leaf,
-        min_sum_hessian_in_leaf, per_pair_min_grid_dim_y, min_rows_per_thread, saturation_floor_total,
-        num_grad_quant_bins, whole_row_partitions, whole_row_joint, level_min_rows, block_prefix, dls, shared_joint,
-        static_cast<unsigned int>(pair), vb - dls->construct_block_start[pair], dls->construct_grid_y,
-        dls->live_pairs);
+      process_block_row(vb);
       __syncthreads();  // the next mapped block row reuses the joint tables (and s_block_row)
     }
     return;

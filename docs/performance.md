@@ -2702,9 +2702,11 @@ Diagnostics report completed levels/splits and cache
 hits/misses on every tree. Performance validation is pending.
 
 For the complete controller's slotted whole-row code-word construct, the physical worker grid is bounded by
-the resolved resident block slots. Workers still claim every virtual block row; row grouping, shared-memory
+the resolved resident block slots. Workers still cover every virtual block row; row grouping, shared-memory
 flushes, occupancy selection and exact graph keys are unchanged. Other device-prefix and host constructs
 retain their existing physical grids. This does not establish a performance gain on other configurations.
+Device pair-joint kernels whose virtual map fits the physical grid process one virtual row per worker directly;
+larger maps retain the claim loop. Both routes use the same per-row body and device geometry.
 
 ## 10v. A bounded device-driven quantized prefix (`device_levels`, `device_level_graph`)
 
