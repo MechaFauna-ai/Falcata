@@ -42,6 +42,7 @@ Usage:
 import argparse
 import os
 import re
+import struct
 import sys
 import time
 from pathlib import Path
@@ -116,10 +117,48 @@ def check(name, booster, min_data_in_leaf):
     return ok
 
 
+def binary_dataset_params(path):
+    """Read immutable bin settings from the native 64-bit binary header.
+
+    Dataset::SerializeHeader writes 8-byte-aligned scalar fields after an
+    aligned token and a native size_t header length. Dataset.get_params()
+    only reflects caller-supplied arguments, so it cannot discover these
+    settings before a binary has been successfully loaded. Read this bounded
+    prefix rather than guessing from a filename or optional JSON sidecar.
+    """
+    token = b"______LightGBM_Binary_File_Token______\n"
+    aligned_token_size = (len(token) + 7) // 8 * 8
+    header_start = aligned_token_size + struct.calcsize("N")
+    scalar_size = 10 * 8
+    if struct.calcsize("N") != 8:
+        raise ValueError("binary dataset gate requires the native 64-bit header layout")
+    with open(path, "rb") as file:
+        prefix = file.read(header_start + scalar_size)
+    if prefix[: len(token)] != token:
+        raise ValueError(f"{path}: not a binary dataset (missing binary token)")
+    if len(prefix) != header_start + scalar_size:
+        raise ValueError(f"{path}: truncated binary dataset header")
+    header_size = struct.unpack_from("N", prefix, aligned_token_size)[0]
+    if not scalar_size <= header_size <= Path(path).stat().st_size - header_start:
+        raise ValueError(f"{path}: invalid binary dataset header size")
+    params = {
+        name: struct.unpack_from("=i", prefix, header_start + index * 8)[0]
+        for index, name in ((4, "max_bin"), (5, "bin_construct_sample_cnt"), (6, "min_data_in_bin"))
+    }
+    for index, name in ((7, "use_missing"), (8, "zero_as_missing")):
+        value = prefix[header_start + index * 8]
+        if value not in (0, 1):
+            raise ValueError(f"{path}: invalid {name} in binary dataset header")
+        params[name] = bool(value)
+    return params
+
+
 def run_dataset(path, lgb):
     """Train on an existing binary dataset. Its label may be a placeholder, so
     a target is supplied here; the invariants do not depend on which one."""
-    params = dict(PARAMS)
+    saved_params = binary_dataset_params(path)
+    print(f"{Path(path).name}: saved bin parameters {saved_params}")
+    params = {**PARAMS, **saved_params}
     ds = lgb.Dataset(str(path), params=params)
     ds.construct()
     num_data = ds.num_data()
@@ -162,7 +201,7 @@ def timed_train(params, ds, lgb):
 
 
 def check_packed_read_speedup(path, ds, lgb):
-    params = dict(SPEED_PARAMS)
+    params = {**SPEED_PARAMS, **ds.get_params()}
     packed = timed_train(params, ds, lgb)
     gather = timed_train({**params, "cuda_plan": "auto,split_packed_read:off"}, ds, lgb)
     ratio = packed / gather
