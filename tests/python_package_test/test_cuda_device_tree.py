@@ -82,7 +82,7 @@ def _case(name):
             params.update(num_leaves=4, max_depth=1)
         elif name == "two_leaf":
             params.update(num_leaves=2, max_depth=1)
-        elif name not in {"fivebin", "reset"}:
+        elif name not in {"fivebin", "reset", "reset_auto_budget"}:
             raise ValueError(name)
     return X, y, params, rounds
 
@@ -93,17 +93,28 @@ def _probe(name, base_plan, graph):
     counts = []
     depths = []
     roots = []
+    reset_budgets = []
     for suffix in [",device_tree:off", ",device_tree:on,device_level_graph:" + graph]:
         p = {**params, "cuda_plan": base_plan + ",device_levels:off" + suffix}
         ds = flc.Dataset(X, label=y, params=p)
-        if name == "reset":
+        budgets = []
+        if name in {"reset", "reset_auto_budget"}:
             booster = flc.Booster(p, train_set=ds)
             for bound in [1, 10, 3, 10]:
-                booster.reset_parameter({"max_depth": bound})
+                reset_params = {"max_depth": bound}
+                if name == "reset":
+                    # Config::Set auto-reduces num_leaves when omitted at a shallow depth. Preserve the explicit
+                    # budget so this case actually exercises complete-controller capacity/cache depth resets.
+                    reset_params["num_leaves"] = p["num_leaves"]
+                booster.reset_parameter(reset_params)
                 for _ in range(3):
                     booster.update()
+                native_budget = re.search(r"^\[num_leaves: (\d+)\]$", booster.model_to_string(), re.MULTILINE)
+                assert native_budget is not None
+                budgets.append(int(native_budget.group(1)))
         else:
             booster = flc.train(p, ds, num_boost_round=rounds)
+        reset_budgets.append(budgets)
         models.append("\n".join(line for line in booster.model_to_string().splitlines() if "cuda_plan" not in line))
         info = booster.dump_model()["tree_info"]
         counts.append([t["num_leaves"] for t in info])
@@ -123,7 +134,12 @@ def _probe(name, base_plan, graph):
         print(json.dumps({"host_roots": roots[0], "device_roots": roots[1]}), flush=True)
     assert models[0] == models[1], "host/device model bytes differ"
     assert counts[0] == counts[1]
-    print(json.dumps({"counts": counts[1], "depths": depths[1], "roots": roots[1], "rounds": rounds}))
+    assert reset_budgets[0] == reset_budgets[1]
+    print(
+        json.dumps(
+            {"counts": counts[1], "depths": depths[1], "roots": roots[1], "rounds": rounds, "budgets": reset_budgets[1]}
+        )
+    )
 
 
 def _run(name, graph="on", base_plan="auto"):
@@ -156,6 +172,7 @@ def test_device_tree_complete_cuda(case, graph):
         assert data["depths"] == [10] * data["rounds"]
         assert all(int(e[1]) == 10 for e in events)
     elif case == "reset":
+        assert data["budgets"] == [1024] * 4
         assert [int(e[0]) for e in events] == [1] * 3 + [10] * 3 + [3] * 3 + [10] * 3
         assert all(depth <= int(e[0]) for e, depth in zip(events, data["depths"], strict=True))
     elif case == "early":
@@ -208,3 +225,17 @@ def test_device_tree_root_output_cuda(case, graph):
     assert all(abs(value) > 1e-6 for value in data["roots"])
     assert diag.count("device_tree: complete") == data["rounds"]
     assert "device_tree: host fallback" not in diag
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("graph", ["off", "on"])
+def test_device_tree_reset_auto_budget_cuda(graph):
+    # A depth-only reset to one automatically reduces the native leaf budget to two. Later depth-only resets do
+    # not raise it again: this is the documented Config::Set adjustment, and two-leaf trees use host growth.
+    data, diag = _run("reset_auto_budget", graph)
+    assert data["budgets"] == [2] * 4
+    assert len(data["counts"]) == data["rounds"] == 12
+    assert all(count <= 2 for count in data["counts"])
+    assert all(depth <= 1 for depth in data["depths"])
+    assert "device_tree: host fallback" in diag
+    assert "device_tree: complete" not in diag
