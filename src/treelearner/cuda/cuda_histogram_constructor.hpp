@@ -690,7 +690,10 @@ class CUDAHistogramConstructor {
 
   /*! \brief cuda_plan key device_levels: the device level state the batched construct, fix/subtract and copy
    *  launches read while the learner enqueues a device-driven level (nullptr otherwise) */
-  void SetDeviceLevelState(const CUDADeviceLevelState* dls) { device_level_state_ = dls; }
+  void SetDeviceLevelState(const CUDADeviceLevelState* dls, const bool whole_tree = false) {
+    device_level_state_ = dls;
+    device_level_whole_tree_ = dls != nullptr && whole_tree;
+  }
   /*! \brief cuda_plan key device_levels: whether this tree's multi-pair level constructs take the dense batched
    *  kernel (the one with the device block map), not the pair-joint family */
   bool DeviceLevelConstructSupported();
@@ -1265,6 +1268,7 @@ class CUDAHistogramConstructor {
   CUDAHybridGraphLoopStateOpt hybrid_graph_capture_gstate_ = nullptr;
   /*! \brief cuda_plan key device_levels: see SetDeviceLevelState */
   const CUDADeviceLevelState* device_level_state_ = nullptr;
+  bool device_level_whole_tree_ = false;
 
 
   // CUDA memory, held by this object

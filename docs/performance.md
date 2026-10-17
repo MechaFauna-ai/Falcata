@@ -2701,6 +2701,11 @@ cache across layout misses, without the prefix's nine-miss disable policy. The o
 Diagnostics report completed levels/splits and cache
 hits/misses on every tree. Performance validation is pending.
 
+For the complete controller's slotted whole-row code-word construct, the physical worker grid is bounded by
+the resolved resident block slots. Workers still claim every virtual block row; row grouping, shared-memory
+flushes, occupancy selection and exact graph keys are unchanged. Other device-prefix and host constructs
+retain their existing physical grids. This does not establish a performance gain on other configurations.
+
 ## 10v. A bounded device-driven quantized prefix (`device_levels`, `device_level_graph`)
 
 Eligible quantized, numerical, scalar, single-GPU two-sync depth-limited trees enqueue

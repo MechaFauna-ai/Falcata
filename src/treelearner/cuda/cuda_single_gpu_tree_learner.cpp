@@ -3723,7 +3723,7 @@ void CUDASingleGPUTreeLearner::EnqueueDeviceLevels(CUDATree* tree, const CUDADev
   CUDADeviceLevelState* dls = cfg.state;
   // ordered after the root level's search (its sync kernel ran on the find stream)
   LaunchDeviceLevelReset(cfg, 1, find_stream);
-  cuda_histogram_constructor_->SetDeviceLevelState(dls);
+  cuda_histogram_constructor_->SetDeviceLevelState(dls, cfg.whole_tree != 0);
   cuda_best_split_finder_->SetDeviceLevelState(dls);
   const score_t* grad_scale = cuda_gradient_discretizer_->grad_scale_ptr();
   const score_t* hess_scale = cuda_gradient_discretizer_->hess_scale_ptr();
