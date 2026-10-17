@@ -347,3 +347,119 @@ def test_device_tree_end_readback_cuda(graph, gate):
         assert all(int(event[3]) == 0 for event in events)
     else:
         assert int(events[6][4]) > 0, "identical consecutive geometry did not reuse its captured graph"
+
+
+def _host_cache_probe(graph, scenario):
+    X, y, params, _ = _case("root_offset")
+    params.update(feature_fraction=1.0, feature_pre_filter=False, quant_bins=64)
+    if scenario == "transition":
+        params["quant_mode"] = "stochastic"
+    weight = None
+    if scenario == "weighted":
+        weight = np.linspace(0.5, 1.5, len(y))
+    elif scenario == "renewal":
+        params["quant_train_renew_leaf"] = True
+    # A real host tree between complete device trees must rebuild all current child caches from its new root.
+    stages = [("on", 1024, 10, 20, 0.0), ("off", 1024, 10, 20, 0.0), ("on", 1024, 10, 20, 0.0)]
+    if scenario == "transition":
+        stages += [
+            ("on", 100, 10, 20, 0.0),  # Budget binding: actual controller fallback, then return to whole growth.
+            ("on", 1024, 10, 20, 0.0),
+            ("on", 1024, 10, 5000, 0.0),  # Early positive exhaustion.
+            ("on", 1024, 10, 20, 1e12),  # Stump after stale child caches.
+            ("on", 1024, 10, 20, 0.0),
+        ]
+    snapshots = []
+    for candidate in [False, True]:
+        p = {**params, "cuda_plan": "auto,device_levels:off,device_tree:off,device_level_graph:" + graph}
+        booster = flc.Booster(p, train_set=flc.Dataset(X, label=y, weight=weight, params=p))
+        arm = []
+
+        def snapshot(current):
+            live = []
+
+            def capture(preds, _):
+                live.append(preds.copy())
+                return "capture", 0.0, False
+
+            current.eval_train(feval=capture)
+            assert len(live) == 1
+            prediction = current.predict(X, raw_score=True, use_fil=False, num_threads=32)
+            np.testing.assert_allclose(live[0], prediction, rtol=0.0, atol=1e-12)
+            model = "\n".join(line for line in current.model_to_string().splitlines() if "cuda_plan" not in line)
+            return model, live[0]
+
+        for controller, leaves, depth, minleaf, gain in stages:
+            booster.reset_parameter(
+                {
+                    "cuda_plan": "auto,device_levels:off,device_tree:"
+                    + (controller if candidate else "off")
+                    + ",device_level_graph:"
+                    + graph,
+                    "num_leaves": leaves,
+                    "max_depth": depth,
+                    "min_data_in_leaf": minleaf,
+                    "min_gain_to_split": gain,
+                }
+            )
+            booster.update()
+            arm.append(snapshot(booster))
+        if scenario == "refit":
+            fitted = booster.refit(
+                X,
+                y + 0.25 * X[:, 0],
+                decay_rate=0.4,
+                reference=booster.train_set,
+                dataset_params={"feature_pre_filter": False},
+                use_fil=False,
+                num_threads=32,
+            )
+            arm.append(snapshot(fitted))
+            assert arm[-1][0] != arm[-2][0], "refit must change the trained model"
+            # Continue the original learner after its eligible whole tree and the separate refit operation.
+            booster.update()
+            arm.append(snapshot(booster))
+        snapshots.append(arm)
+    for off, on in zip(*snapshots, strict=True):
+        assert off[0] == on[0], "host/device model bytes differ across cache history or refit"
+        np.testing.assert_array_equal(off[1], on[1])
+    print(json.dumps({"scenario": scenario, "stages": len(stages), "snapshots": len(snapshots[0])}))
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("graph", ["off", "on"])
+@pytest.mark.parametrize("scenario", ["transition", "weighted", "renewal", "refit"])
+def test_device_tree_host_cache_cuda(graph, scenario):
+    code = "import runpy,sys; runpy.run_path(sys.argv[1])['_host_cache_probe'](*sys.argv[2:])"
+    result = subprocess.run(
+        [sys.executable, "-c", code, __file__, graph, scenario],
+        env=dict(os.environ, FALCATA_DEBUG="diag"),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + "\nSTDERR:\n" + result.stderr
+    data = json.loads(result.stdout.splitlines()[-1])
+    diag = result.stderr
+    events = re.findall(
+        r"device_tree: complete depth=(\d+) applied_levels=(\d+) splits=(\d+) "
+        r"growth_readbacks=1 host_tail=0 graph=(\d+) hits=(\d+) misses=(\d+)",
+        diag,
+    )
+    caches = re.findall(r"device_tree_host_cache: skipped=(\d+) split_info_bytes=(\d+) stale=(\d+)", diag)
+    expected = 6 if scenario == "transition" else 3 if scenario == "refit" else 2
+    assert len(events) == len(caches) == expected, diag
+    assert ("device_tree: host fallback" in diag) == (scenario == "transition"), diag
+    skip = scenario not in {"weighted", "renewal"}
+    for event, cache in zip(events, caches, strict=True):
+        splits = int(event[2])
+        assert tuple(map(int, cache)) == (int(skip), 0 if skip else 18 * 4 * 1023, int(skip and splits > 0))
+    if scenario == "transition":
+        assert int(events[3][1]) < 10, "early fixture did not exhaust below final depth"
+        assert int(events[3][2]) > 0, "early fixture must split"
+        assert int(events[4][2]) == 0, "stump history did not engage"
+        assert int(events[5][2]) > 0, "growth after stump did not engage"
+    if scenario == "refit":
+        assert data["snapshots"] == data["stages"] + 2
+    if graph == "off":
+        assert all(int(event[3]) == 0 for event in events)

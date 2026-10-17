@@ -863,6 +863,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::vector<data_size_t> leaf_data_start_;
   std::vector<double> leaf_sum_gradients_;
   std::vector<double> leaf_sum_hessians_;
+  // A completed, narrowly gated whole tree may omit host child statistics and discretizer bit updates.
+  // These caches then cannot feed host growth/CPU renewal. BeforeTrain rebuilds the active root before
+  // clearing this flag; subsequent ordinary splits populate every newly active child before it is read.
+  bool whole_host_leaf_cache_stale_ = false;
   // host-side per-leaf monotone constraints (basic method). [-DBL_MAX, +DBL_MAX]
   // means unconstrained. Empty/unused when monotone_constraints is not set.
   std::vector<double> leaf_constraint_min_;

@@ -2688,7 +2688,7 @@ host flow and report the fallback under `FALCATA_DEBUG=diag`. No training parame
 After the root search, the existing device reset copies the initialized fixed root struct's output into tree
 leaf 0 before the record stream can save it as the root internal value. Device selectors and apply kernels then
 handle every level, including early exhaustion and the final depth. The final apply skips its child histogram/search. One end-of-growth fence reads the journal
-and split bookkeeping; the host then restores its tree mirrors and leaf statistics without a host growth tail.
+and split bookkeeping; the host then restores its tree mirrors without a host growth tail.
 Root initialization/search, stump root-output recovery, host bookkeeping, final leaf-map/score updates and tree
 transfer remain outside this interval. This key does not claim an entirely synchronization-free training call.
 
@@ -2716,6 +2716,18 @@ Capacity is reserved before growth, and the existing tree-end copy consumes only
 Stumps recover the root and use the original copy path; leaf renewal, linear and distributed flows retain their
 existing paths. This changes transfer placement, with no graph-key, growth, map or split-rule change. Performance
 validation is pending. Separate `device_tree_end_readback` diagnostics report readiness and consumption.
+
+For plain, unweighted canonical L2 (`objective=regression`, `boosting=gbdt`), the complete controller can
+omit the split-info transfer and host child-statistic/bit-width bookkeeping. It retains the full journal,
+per-split tree-mirror replay, exact leaf count, final-depth dirty-slot accounting and the growth fence.
+Bagging/GOSS, renewal, weights, constraints, linear/vector/distributed trees and debug consumers retain
+the existing bookkeeping. GPU split-info production, final count/slab transfers, mapping and score updates
+are unchanged. A separate `device_tree_host_cache` diagnostic reports the selected route and transfer size.
+After an eligible positive tree, learner host count/start/gradient/hessian and discretizer child/node-bit
+caches are stale and must not feed host growth or CPU renewal. Checked consumers enforce that contract.
+The next `BeforeTrain` refreshes the sole active root (including its bit width); subsequent ordinary splits
+write every newly active child's statistics before use. Root-sum deferral and stump recovery keep their
+existing rules. Refit uses device partition/stat buffers. This bounded experiment still needs actual timing.
 
 ## 10v. A bounded device-driven quantized prefix (`device_levels`, `device_level_graph`)
 
