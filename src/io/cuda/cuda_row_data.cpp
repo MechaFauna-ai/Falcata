@@ -430,6 +430,12 @@ int CUDARowData::DivideCUDAFeatureGroupsWithCap(const Dataset* train_data,
 
       // if one column has too many bins, use a separate partition for that column
       if (num_bin_in_dense_group > max_num_bin_per_partition) {
+        if (column_index > feature_partition_column_index_offsets_.back()) {
+          feature_partition_column_index_offsets_.emplace_back(column_index);
+          partition_hist_offsets_.emplace_back(column_feature_hist_start);
+          small_bin_partitions_.emplace_back(num_feature_partitions_);
+          ++num_feature_partitions_;
+        }
         feature_partition_column_index_offsets_.emplace_back(column_index + 1);
         start_hist_offset = column_feature_hist_end;
         partition_hist_offsets_.emplace_back(start_hist_offset);
@@ -470,6 +476,12 @@ int CUDARowData::DivideCUDAFeatureGroupsWithCap(const Dataset* train_data,
 
         // if one column has too many bins, use a separate partition for that column
         if (num_bin_in_dense_group > max_num_bin_per_partition) {
+          if (column_index > feature_partition_column_index_offsets_.back()) {
+            feature_partition_column_index_offsets_.emplace_back(column_index);
+            partition_hist_offsets_.emplace_back(column_feature_hist_start);
+            small_bin_partitions_.emplace_back(num_feature_partitions_);
+            ++num_feature_partitions_;
+          }
           feature_partition_column_index_offsets_.emplace_back(column_index + 1);
           start_hist_offset = column_feature_hist_end;
           partition_hist_offsets_.emplace_back(start_hist_offset);
