@@ -360,18 +360,26 @@ def _host_cache_probe(graph, scenario):
     elif scenario == "renewal":
         params["quant_train_renew_leaf"] = True
     # A real host tree between complete device trees must rebuild all current child caches from its new root.
-    stages = [("on", 1024, 10, 20, 0.0), ("off", 1024, 10, 20, 0.0), ("on", 1024, 10, 20, 0.0)]
+    # cuda_plan is resolved at learner Init, not reset_parameter. Keep each arm's controller fixed, and use
+    # depth 11 at the same leaf budget to require genuine host growth between two eligible depth-10 trees.
+    stages = [(1024, 10, 20, 0.0), (1024, 11, 20, 0.0), (1024, 10, 20, 0.0)]
     if scenario == "transition":
         stages += [
-            ("on", 100, 10, 20, 0.0),  # Budget binding: actual controller fallback, then return to whole growth.
-            ("on", 1024, 10, 20, 0.0),
-            ("on", 1024, 10, 5000, 0.0),  # Early positive exhaustion.
-            ("on", 1024, 10, 20, 1e12),  # Stump after stale child caches.
-            ("on", 1024, 10, 20, 0.0),
+            (100, 10, 20, 0.0),  # A separate budget-binding fallback, then return to whole growth.
+            (1024, 10, 20, 0.0),
+            (1024, 10, 5000, 0.0),  # Early positive exhaustion.
+            (1024, 10, 20, 1e12),  # Stump after stale child caches.
+            (1024, 10, 20, 0.0),
         ]
     snapshots = []
     for candidate in [False, True]:
-        p = {**params, "cuda_plan": "auto,device_levels:off,device_tree:off,device_level_graph:" + graph}
+        p = {
+            **params,
+            "cuda_plan": "auto,device_levels:off,device_tree:"
+            + ("on" if candidate else "off")
+            + ",device_level_graph:"
+            + graph,
+        }
         booster = flc.Booster(p, train_set=flc.Dataset(X, label=y, weight=weight, params=p))
         arm = []
 
@@ -389,13 +397,9 @@ def _host_cache_probe(graph, scenario):
             model = "\n".join(line for line in current.model_to_string().splitlines() if "cuda_plan" not in line)
             return model, live[0]
 
-        for controller, leaves, depth, minleaf, gain in stages:
+        for leaves, depth, minleaf, gain in stages:
             booster.reset_parameter(
                 {
-                    "cuda_plan": "auto,device_levels:off,device_tree:"
-                    + (controller if candidate else "off")
-                    + ",device_level_graph:"
-                    + graph,
                     "num_leaves": leaves,
                     "max_depth": depth,
                     "min_data_in_leaf": minleaf,
@@ -449,7 +453,7 @@ def test_device_tree_host_cache_cuda(graph, scenario):
     caches = re.findall(r"device_tree_host_cache: skipped=(\d+) split_info_bytes=(\d+) stale=(\d+)", diag)
     expected = 6 if scenario == "transition" else 3 if scenario == "refit" else 2
     assert len(events) == len(caches) == expected, diag
-    assert ("device_tree: host fallback" in diag) == (scenario == "transition"), diag
+    assert "device_tree: host fallback" in diag
     skip = scenario not in {"weighted", "renewal"}
     for event, cache in zip(events, caches, strict=True):
         splits = int(event[2])
