@@ -56,7 +56,10 @@ def _case(name):
             y = (32 + X[:, :8].sum(axis=1)).astype(np.float32)
             params.update(boost_from_average=False, quant_mode="fixedpoint")
             if name == "root_regularized":
-                params.update(lambda_l1=0.7, lambda_l2=3.0, max_delta_step=2.5)
+                # Opposite-sign children still improve gain when the large positive root is clipped. A purely
+                # positive offset with every output clipped to the same value would produce a stump instead.
+                y = (32 + 64 * (X[:, 0] - 2) + X[:, 1:8].sum(axis=1)).astype(np.float32)
+                params.update(feature_fraction=1.0, lambda_l1=0.7, lambda_l2=3.0, max_delta_step=2.5)
             rounds = 3
         elif name == "stump":
             params["min_gain_to_split"] = 1e12
