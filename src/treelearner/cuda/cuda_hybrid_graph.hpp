@@ -38,7 +38,7 @@
 #define FALCATA_HYBRID_GRAPH_SUPPORTED 1
 #endif  // CUDART_VERSION >= 12040
 
-#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+// Shared metadata below is needed even when graph support is unavailable.
 
 #include <Falcata/cuda/cuda_utils.hu>
 
@@ -86,7 +86,7 @@ struct CUDAHybridGraphFeatureSource {
   uint8_t bit_type;  // 4 == packed compact source
   uint8_t padding_[2];
 };
-
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
 /*! \brief roles of the WHILE-body kernel nodes the controller resizes.
  *  graphs A2: every dynamic extent below is frozen at its power-of-two bucket
  *  (NextPow2), so the SetGridDim device graph update fires only on bucket
@@ -258,11 +258,11 @@ void CaptureHybridGraphControllerKernel(cudaStream_t stream,
                                         CUDAHybridGraphLoopState* state,
                                         int body_index);
 
-}  // namespace Falcata
+
 
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
 
-namespace Falcata {
+// Graph-independent launch helpers share the metadata namespace.
 
 /*! \brief optional graph loop-state parameter of the batched apply kernels:
  *  nullptr on every host-launched path (bit-for-bit the previous behavior),
