@@ -2710,6 +2710,12 @@ larger maps retain the claim loop. Both routes use the same per-row body and dev
 The complete controller runs each level's selector in its own kernel after the leaf-best sync; the ordinary
 prefix retains its fused selector. Both call the same device selection routine before apply, without an
 intermediate host readback. The extra launches and removed sync coordination still need actual timing.
+With `final_readback_first`, mapped readback staging and asynchronous tree start enabled, the complete controller
+can queue the final pooled slab and maximum exact-count prefix on the find stream before its growth fence.
+Capacity is reserved before growth, and the existing tree-end copy consumes only the synchronized actual prefix.
+Stumps recover the root and use the original copy path; leaf renewal, linear and distributed flows retain their
+existing paths. This changes transfer placement, with no graph-key, growth, map or split-rule change. Performance
+validation is pending. Separate `device_tree_end_readback` diagnostics report readiness and consumption.
 
 ## 10v. A bounded device-driven quantized prefix (`device_levels`, `device_level_graph`)
 

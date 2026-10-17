@@ -3896,6 +3896,23 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   // stays alive in the learner)
   CopyFromHostToCUDADeviceAsync<CUDADeviceLevelConfig>(cuda_device_level_config_.RawData(), &cfg, 1, find_stream,
                                                        __FILE__, __LINE__);
+  // Reserve the whole tree's final slab and maximum count prefix before growth can be in flight. These bytes
+  // are copied outside capture; the pooled slab is stable through ToHost, and the growth fence covers the DMA.
+  size_t end_slab_bytes = 0;
+  size_t end_counts_offset = 0;
+  bool prefetch_tree_end = false;
+  const FalcataPlan& end_plan = FalcataPlan::Get();
+  if (cfg.whole_tree && end_plan.final_readback_first && end_plan.readback_kernel && AsyncTreeStart() &&
+      nccl_communicator_ == nullptr && vec_num_targets_ <= 1 && !config_->linear_tree &&
+      !(config_->use_quantized_grad && config_->quant_train_renew_leaf)) {
+    end_slab_bytes = CUDATree::PooledDeviceBufferSize(config_->num_leaves);
+    end_counts_offset = (end_slab_bytes + 255) / 256 * 256;
+    const size_t max_count_bytes = static_cast<size_t>(config_->num_leaves) * sizeof(data_size_t);
+    if (cuda_tree_pool_buffer_.Size() >= end_slab_bytes &&
+        tree->cuda_threshold() == reinterpret_cast<const double*>(cuda_tree_pool_buffer_.RawDataReadOnly())) {
+      prefetch_tree_end = EnsureReadbackStaging(end_counts_offset + max_count_bytes);
+    }
+  }
   // cuda_plan key device_level_graph: the levels' launches as one cached CUDA graph (captured on the first tree of a
   // pointer key, replayed on the next ones); otherwise enqueued as they are
   bool launched = false;
@@ -3905,8 +3922,16 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   if (!launched) {
     EnqueueDeviceLevels(tree, cfg, num_levels);
   }
-  // ---- the one readback: journal, the split-info slab of every applied split, every leaf's best split (the last
-  // search waited for every apply through its events, the tree records through tree_record_done_event_) ----
+  if (prefetch_tree_end) {
+    // The whole enqueue joins its final tree-record stream. Use the PINNED HOST pointer, not its mapped alias.
+    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(readback_staging_, tree->cuda_threshold(), end_slab_bytes,
+                                         cudaMemcpyDeviceToHost, find_stream));
+    CUDASUCCESS_OR_FATAL(cudaMemcpyAsync(static_cast<uint8_t*>(readback_staging_) + end_counts_offset,
+      cuda_data_partition_->cuda_leaf_num_data(), static_cast<size_t>(config_->num_leaves) * sizeof(data_size_t),
+      cudaMemcpyDeviceToHost, find_stream));
+  }
+  // ---- the one growth readback: journal and applied split infos; the prefix also reads leaf-best entries.
+  // Whole-tree slab/count copies, when requested, are covered by this same fence. ----
   const int max_total_splits = (1 << num_levels) - 1;
   CopyFromCUDADeviceToHostAsync<int>(pinned_device_level_journal_, cuda_device_level_journal_.RawData(),
     static_cast<size_t>(kDeviceLevelJournalHeader) + 2 * static_cast<size_t>(max_total_splits), find_stream,
@@ -3958,11 +3983,20 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   if (cfg.whole_tree) {
     device_tree_completed_ = true;
     prefix_completes_tree_ = true;
+    if (prefetch_tree_end && total_splits > 0) {
+      CHECK_EQ(tree->num_leaves(), total_splits + 1);
+      prefetched_tree_num_leaves_ = tree->num_leaves();
+      prefetched_tree_counts_ = true;
+    }
     if (num_splits == 0) {
       // The root output survives only for a stump. Read its original root struct before tree-end consumers.
       EnsureRootSumsReadBack(tree);
     }
     if (FalcataDebug().diag) {
+      // Separate line: preserve the existing completion marker and its frozen measurement parsers verbatim.
+      fprintf(stderr, "[hybrid-diag] device_tree_end_readback: queued=%d ready=%d leaves=%d counts=%d\n",
+              prefetch_tree_end ? 1 : 0, prefetched_tree_num_leaves_ > 0 ? 1 : 0, tree->num_leaves(),
+              prefetched_tree_counts_ ? 1 : 0);
       fprintf(stderr, "[hybrid-diag] device_tree: complete depth=%d applied_levels=%d splits=%d "
               "growth_readbacks=1 host_tail=0 graph=%d hits=%d misses=%d\n", num_levels, levels_applied,
               total_splits, launched ? 1 : 0, device_level_graph_hits_, device_level_graph_misses_);
@@ -4628,6 +4662,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   }
   hybrid_map_early_pending_ = false;  // cuda_plan key final_readback_first: due only within the tree that set it
   prefetched_tree_num_leaves_ = 0;
+  prefetched_tree_counts_ = false;
   // linear trees need per-leaf branch features to know which features each leaf's
   // linear model uses (mirrors the CPU LinearTreeLearner using new Tree(.., true, true)).
   const bool track_branch_features = !(config_->interaction_constraints_vector.empty()) || config_->linear_tree;
@@ -4903,6 +4938,12 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     const size_t count_bytes = static_cast<size_t>(tree->num_leaves()) * sizeof(data_size_t);
     // cuda_plan key final_readback_first: both already copied with the final level's readback (PrefetchTreeReadback)
     const bool slab_prefetched = prefetched_tree_num_leaves_ > 0 && prefetched_tree_num_leaves_ == tree->num_leaves();
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+    if (FalcataDebug().diag && device_tree_completed_) {
+      fprintf(stderr, "[hybrid-diag] device_tree_end_readback: consume slab=%d counts=%d leaves=%d\n",
+              slab_prefetched ? 1 : 0, slab_prefetched && prefetched_tree_counts_ ? 1 : 0, tree->num_leaves());
+    }
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
     if (slab_prefetched) {
       if (prefetched_tree_counts_) {
         prefetched_counts_offset = counts_offset;
@@ -4960,6 +5001,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   hybrid_map_early_written_ = false;
   hybrid_map_early_pending_ = false;
   prefetched_tree_num_leaves_ = 0;
+  prefetched_tree_counts_ = false;
   if (config_->use_quantized_grad && config_->quant_train_renew_leaf &&
       nccl_communicator_ != nullptr) {
     static bool warned_renew = false;
@@ -5628,6 +5670,7 @@ void CUDASingleGPUTreeLearner::AbortedTreeReset() {
   sel_last_peak_ = 0;
   hybrid_map_early_pending_ = false;
   prefetched_tree_num_leaves_ = 0;
+  prefetched_tree_counts_ = false;
 }
 
 void CUDASingleGPUTreeLearner::MaybeInjectTreeFailure(const int num_leaves) {

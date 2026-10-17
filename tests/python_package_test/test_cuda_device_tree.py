@@ -239,3 +239,109 @@ def test_device_tree_reset_auto_budget_cuda(graph):
     assert all(depth <= 1 for depth in data["depths"])
     assert "device_tree: host fallback" in diag
     assert "device_tree: complete" not in diag
+
+
+# Draft V9 coverage: publish/consume markers prove byte reuse; exact models and live training scores guard it.
+def _end_readback_probe(graph, gate):
+    X, y, params, _ = _case("root_offset")
+    params.update(feature_fraction=1.0)
+    # First stump, growth, shrink, another stump, growth after stale staging, capacity growth, graph reuse,
+    # early positive exhaustion and a final stump. Repeating an identical stage deliberately avoids a reset.
+    stages = [
+        (8, 3, 1e12, 20),
+        (1024, 10, 0.0, 20),
+        (4, 1, 0.0, 20),
+        (4, 1, 1e12, 20),
+        (16, 3, 0.0, 20),
+        (2048, 10, 0.0, 20),
+        (2048, 10, 0.0, 20),
+        (2048, 10, 0.0, 5000),
+        (2048, 10, 1e12, 20),
+    ]
+    snapshots = []
+    for controller in ["off", "on"]:
+        first_leaves, first_depth, first_gain, first_minleaf = stages[0]
+        p = {
+            **params,
+            "num_leaves": first_leaves,
+            "max_depth": first_depth,
+            "min_gain_to_split": first_gain,
+            "min_data_in_leaf": first_minleaf,
+            "cuda_plan": "auto,device_levels:off,device_tree:" + controller + ",device_level_graph:" + graph + gate,
+        }
+        booster = flc.Booster(p, train_set=flc.Dataset(X, label=y, params=p))
+        previous = stages[0]
+        arm = []
+        for stage in stages:
+            leaves, depth, gain, minleaf = stage
+            if stage != previous:
+                booster.reset_parameter(
+                    {"num_leaves": leaves, "max_depth": depth, "min_gain_to_split": gain, "min_data_in_leaf": minleaf}
+                )
+            previous = stage
+            empty = booster.update()
+            live_scores = []
+
+            def capture_scores(preds, _, scores=live_scores):
+                scores.append(preds.copy())
+                return "score_capture", 0.0, False
+
+            booster.eval_train(feval=capture_scores)
+            assert len(live_scores) == 1
+            # Explicit regular CPU prediction; FIL's optional fp32 routing is irrelevant to score-cache parity.
+            prediction = booster.predict(X, raw_score=True, use_fil=False, num_threads=32)
+            np.testing.assert_allclose(live_scores[0], prediction, rtol=0.0, atol=1e-12)
+            model = "\n".join(line for line in booster.model_to_string().splitlines() if "cuda_plan" not in line)
+            arm.append((empty, model, live_scores[0]))
+        snapshots.append(arm)
+    for off, on in zip(*snapshots, strict=True):
+        assert off[:2] == on[:2], "model bytes or empty-tree result differ"
+        np.testing.assert_array_equal(off[2], on[2])
+    print(json.dumps({"stages": len(stages)}))
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("graph", ["off", "on"])
+@pytest.mark.parametrize("gate", ["", ",final_readback_first:off", ",readback_kernel:off", ",async_tree_start:off"])
+def test_device_tree_end_readback_cuda(graph, gate):
+    code = "import runpy,sys; runpy.run_path(sys.argv[1])['_end_readback_probe'](*sys.argv[2:])"
+    result = subprocess.run(
+        [sys.executable, "-c", code, __file__, graph, gate],
+        env=dict(os.environ, FALCATA_DEBUG="diag"),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    data = json.loads(result.stdout.splitlines()[-1])
+    diag = result.stderr
+    events = re.findall(
+        r"device_tree: complete depth=(\d+) applied_levels=(\d+) splits=(\d+) "
+        r"growth_readbacks=1 host_tail=0 graph=(\d+) hits=(\d+) misses=(\d+)",
+        diag,
+    )
+    staged = re.findall(r"device_tree_end_readback: queued=(\d+) ready=(\d+) leaves=(\d+) counts=(\d+)", diag)
+    consumed = re.findall(r"device_tree_end_readback: consume slab=(\d+) counts=(\d+) leaves=(\d+)", diag)
+    assert len(events) == len(staged) == data["stages"] == 9, diag
+    assert "device_tree: host fallback" not in diag
+    assert [int(event[2]) == 0 for event in events] == [True, False, False, True, False, False, False, False, True]
+    assert int(events[7][1]) < 10, "early-exhaustion fixture did not stop below the depth bound"
+    enabled = not gate
+    nonstumps = []
+    for event, row in zip(events, staged, strict=True):
+        queued, ready, leaves, counts = map(int, row)
+        splits = int(event[2])
+        assert leaves == splits + 1
+        assert queued == int(enabled)
+        assert ready == counts == int(enabled and splits > 0)
+        if splits > 0:
+            nonstumps.append(leaves)
+    if gate == ",async_tree_start:off":
+        assert not consumed
+    else:
+        assert len(consumed) == len(nonstumps)
+        for row, leaves in zip(consumed, nonstumps, strict=True):
+            assert tuple(map(int, row)) == (int(enabled), int(enabled), leaves)
+    if graph == "off":
+        assert all(int(event[3]) == 0 for event in events)
+    else:
+        assert int(events[6][4]) > 0, "identical consecutive geometry did not reuse its captured graph"
