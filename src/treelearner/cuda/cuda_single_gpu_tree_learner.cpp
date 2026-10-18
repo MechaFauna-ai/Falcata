@@ -2842,6 +2842,12 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
       }
     }
     if (whole_device_tree) {
+      // Prepare required descendant nibbles before the root completion event: their fill stays on the original
+      // histogram stream, while device levels exchange that stream for the find stream. Fused root scratch is
+      // independent; descendants that can read the code view keep it.
+      if (!cuda_histogram_constructor_->DeviceLevelGraphCapturable()) {
+        cuda_histogram_constructor_->EnsureNibbleView();
+      }
       EnqueueRootLevelSearchOneSync(/*reuse_fused_root=*/true);
     } else {
       EnqueueLevelBestSplitSearch(tree, pairs, vec_plane_slab);
