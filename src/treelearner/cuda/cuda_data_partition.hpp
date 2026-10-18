@@ -318,13 +318,6 @@ class CUDADataPartition: public NCCLInfo {
    *  caller guarantees the device is otherwise idle (post-readback). */
   void CollapseLeafWindows(const std::vector<CUDACollapseWindow>& windows);
 
-  /*! \brief Selective grow-then-prune finalize: remap the data-index-to-leaf-
-   *  index entries of all rows of this tree (via the main index array, which
-   *  covers exactly root_num_data() rows) through leaf_map (hybrid leaf index ->
-   *  final classic leaf index). Async on the default stream; the caller
-   *  synchronizes. */
-  void RemapDataIndexToLeafIndex(const std::vector<int>& leaf_map);
-
   /*! \brief one tree-end pass writing the row -> leaf map from the final
    *  leaf windows; replaces the per-level map scatter of the batched apply */
   void MaterializeHybridLeafMap(const int num_leaves);
@@ -848,9 +841,6 @@ class CUDADataPartition: public NCCLInfo {
    *  subtree windows and host staging (see CollapseLeafWindows) */
   CUDAVector<CUDACollapseWindow> cuda_collapse_windows_;
   std::vector<CUDACollapseWindow> host_collapse_windows_;
-  /*! \brief selective grow-then-prune: device copy of the hybrid-to-final leaf
-   *  index map (see RemapDataIndexToLeafIndex) */
-  CUDAVector<int> cuda_leaf_index_remap_;
 
   // split tree structure algorithm related
   /*! \brief buffer to store split information, prepared to be copied to cpu */

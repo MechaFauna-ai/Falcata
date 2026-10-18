@@ -3460,23 +3460,6 @@ void CUDABestSplitFinder::LaunchInvalidateLeafBestSplitKernel(const int left_lea
   InvalidateLeafBestSplitKernel<<<1, 1>>>(left_leaf_index, right_leaf_index, cuda_leaf_best_split_info_.RawData());
 }
 
-__device__ void ReduceBestSplit(bool* found, double* gain, uint32_t* shared_read_index,
-  uint32_t num_features_aligned) {
-  const uint32_t threadIdx_x = threadIdx.x;
-  for (unsigned int s = 1; s < num_features_aligned; s <<= 1) {
-    if (threadIdx_x % (2 * s) == 0 && (threadIdx_x + s) < num_features_aligned) {
-      const uint32_t pos_to_compare = threadIdx_x + s;
-      if ((!found[threadIdx_x] && found[pos_to_compare]) ||
-        (found[threadIdx_x] && found[pos_to_compare] && gain[threadIdx_x] < gain[pos_to_compare])) {
-        found[threadIdx_x] = found[pos_to_compare];
-        gain[threadIdx_x] = gain[pos_to_compare];
-        shared_read_index[threadIdx_x] = shared_read_index[pos_to_compare];
-      }
-    }
-    __syncthreads();
-  }
-}
-
 __global__ void SyncBestSplitForLeafKernel(const int smaller_leaf_index, const int larger_leaf_index,
   CUDASplitInfo* cuda_leaf_best_split_info,
   // input parameters

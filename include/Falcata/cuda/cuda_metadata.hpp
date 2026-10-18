@@ -42,8 +42,6 @@ class CUDAMetadata {
 
   const data_size_t* cuda_query_boundaries() const { return cuda_query_boundaries_.RawData(); }
 
-  const label_t* cuda_query_weights() const { return cuda_query_weights_.RawData(); }
-
  private:
   CUDAVector<label_t> cuda_label_;
   CUDAVector<label_t> cuda_weights_;

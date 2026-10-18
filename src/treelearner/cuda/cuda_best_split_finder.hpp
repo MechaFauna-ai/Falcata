@@ -306,7 +306,6 @@ class CUDABestSplitFinder {
    *  interaction constraints): SupportsBatchedLevel no longer refuses select_features_by_node, and every level find
    *  reads the per-leaf row table of the last CommitLevelNodeMasks */
   void EnableLevelNodeMasks(const bool enable) { level_node_masks_ = enable && select_features_by_node_; }
-  bool level_node_masks() const { return level_node_masks_; }
   /*! \brief host rows (num_features bytes each) for num_rows searched leaves of the next level, in the pinned
    *  staging buffer; waits for the previous level's upload of it first */
   int8_t* LevelNodeMaskRows(const int num_rows);

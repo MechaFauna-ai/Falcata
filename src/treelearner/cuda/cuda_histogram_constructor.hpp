@@ -326,11 +326,6 @@ class CUDAHistogramConstructor {
 
   void Init(const Dataset* train_data, TrainingShareStates* share_state);
 
-  /*! \brief Event recorded on cuda_stream_ after the smaller-leaf histogram is
-   *  constructed. The best split finder waits on it (cudaStreamWaitEvent) before
-   *  reading the smaller-leaf histogram, replacing a per-split device sync. */
-  cudaEvent_t construct_done_event() const { return construct_done_events_[0]; }
-
   /*! \brief per-tree bin-used mask (host copy) and whether sampling is active.
    *  The NCCL path uses these to all-reduce ONLY the bins this tree's
    *  feature_fraction sample can read: the rest are dead storage, and at
@@ -347,10 +342,6 @@ class CUDAHistogramConstructor {
   cudaStream_t current_stream() const { return pipeline_streams_[active_pipeline_]; }
   const cudaEvent_t* construct_done_events() const { return construct_done_events_; }
   const cudaEvent_t* subtract_done_events() const { return subtract_done_events_; }
-  /*! \brief Event recorded on cuda_stream_ after the larger-leaf histogram is
-   *  produced by subtraction. The best split finder waits on it before reading
-   *  the larger-leaf histogram. */
-  cudaEvent_t subtract_done_event() const { return subtract_done_events_[0]; }
 
   void ZeroHistForLeaf(int leaf_index);
 
@@ -701,8 +692,6 @@ class CUDAHistogramConstructor {
   /*! \brief cuda_plan key device_levels: whether this tree's multi-pair level constructs take the dense batched
    *  kernel (the one with the device block map), not the pair-joint family */
   bool DeviceLevelConstructSupported();
-  /*! \brief cuda_plan key device_levels: the dense batched construct's block y for this tree (as launched) */
-  int DeviceLevelConstructBlockDimY();
   /*! \brief cuda_plan key device_level_graph: the pointers and per-tree shape a captured level search bakes in */
   void DeviceLevelGraphKey(std::vector<const void*>* key,
                            const CUDADeviceLevelConstructShape* shape = nullptr) const {
@@ -792,8 +781,6 @@ class CUDAHistogramConstructor {
     CHECK_GE(planes, 1);
     num_hist_planes_ = planes;
   }
-
-  int num_hist_planes() const { return num_hist_planes_; }
 
   /*! \brief vector-leaf mode: point the construct kernels at one target's
    *  gradient/hessian slices (pointer swap only; BeforeTrain remains the
@@ -929,7 +916,6 @@ class CUDAHistogramConstructor {
       count_scratch_dirty_ = true;  // this tree may run the deterministic construct in the slot slab
     }
   }
-  bool count_construct_active() const { return count_codes_ != nullptr; }
   /*! \brief the count scratch must be zeroed before its next use (an aborted tree may have left sums in it) */
   void MarkCountScratchDirty() { count_scratch_dirty_ = true; }
 

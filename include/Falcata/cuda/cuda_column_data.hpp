@@ -142,14 +142,6 @@ class CUDAColumnData {
 
   const uint32_t* cuda_feature_default_bin() const { return cuda_feature_default_bin_.RawData(); }
 
-  const uint8_t* cuda_feature_missing_is_zero() const { return cuda_feature_missing_is_zero_.RawData(); }
-
-  const uint8_t* cuda_feature_missing_is_na() const { return cuda_feature_missing_is_na_.RawData(); }
-
-  const uint8_t* cuda_feature_mfb_is_zero() const { return cuda_feature_mfb_is_zero_.RawData(); }
-
-  const uint8_t* cuda_feature_mfb_is_na() const { return cuda_feature_mfb_is_na_.RawData(); }
-
   const int* cuda_feature_to_column() const { return cuda_feature_to_column_.RawData(); }
 
   const uint8_t* cuda_column_bit_type() const { return cuda_column_bit_type_.RawData(); }

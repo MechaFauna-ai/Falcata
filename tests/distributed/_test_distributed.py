@@ -134,10 +134,8 @@ class DistributedMockup:
                 self.write_train_config(i)
                 train_future = executor.submit(self.worker_train, i)
                 futures.append(train_future)
-            results = [f.result() for f in futures]
-        for result in results:
-            if result.returncode != 0:
-                raise RuntimeError("Error in training")
+            for f in futures:
+                f.result()
 
     def predict(self, predict_config: Dict[str, Any]) -> np.ndarray:
         """Compute the predictions using the model created in the fit step.

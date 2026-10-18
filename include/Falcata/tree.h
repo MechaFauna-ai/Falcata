@@ -214,10 +214,6 @@ class Tree {
 
   inline double split_gain(int split_idx) const { return split_gain_[split_idx]; }
 
-  inline double internal_value(int node_idx) const {
-    return internal_value_[node_idx];
-  }
-
   inline bool IsNumericalSplit(int node_idx) const {
     return !GetDecisionType(decision_type_[node_idx], kCategoricalMask);
   }

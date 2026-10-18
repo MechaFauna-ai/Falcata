@@ -130,16 +130,6 @@ class ChunkedArray {
     }
 
     /**
-     * Returns the pointer to the raw chunks data, but cast to void**.
-     * This is so ``FLC_DatasetCreateFromMats`` accepts it.
-     *
-     * @return void** pointer to raw data.
-     */
-    void **data_as_void() noexcept {
-        return reinterpret_cast<void**>(_chunks.data());
-    }
-
-    /**
      * Coalesces (copies chunked data) to a contiguous array of the same type.
      * It assumes that ``other`` has enough space to receive that data.
      *

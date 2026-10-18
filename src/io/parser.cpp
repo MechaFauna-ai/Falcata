@@ -135,7 +135,6 @@ int GetNumColFromLIBSVMFile(const char* filename, bool header) {
   if (!reader->Init()) {
     Log::Fatal("Data file %s doesn't exist.", filename);
   }
-  std::vector<std::string> ret;
   std::string cur_line;
   const size_t buffer_size = 1024 * 1024;
   auto buffer = std::vector<char>(buffer_size);

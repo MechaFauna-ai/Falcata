@@ -730,7 +730,6 @@ void CUDADataPartition::LaunchGenDataToLeftBitVectorCategoricalKernel(
   const uint32_t min_bin = is_single_feature_in_column ? 1 : cuda_column_data_->feature_min_bin(split_feature_index);
   const uint32_t max_bin = cuda_column_data_->feature_max_bin(split_feature_index);
   const uint32_t most_freq_bin = cuda_column_data_->feature_most_freq_bin(split_feature_index);
-  const uint32_t default_bin = cuda_column_data_->feature_default_bin(split_feature_index);
   const void* column_data_pointer = cuda_column_data_->GetColumnData(column_index);
   const int8_t mfb_offset = static_cast<int8_t>(most_freq_bin == 0);
   std::vector<uint32_t> host_bitset(bitset_len, 0);
@@ -1332,57 +1331,6 @@ __device__ __forceinline__ uint16_t HybridGenBitVectorDecision(
     }
   }
 }
-
-// runtime-branch replica of UpdateDataIndexToLeafIndexKernel's templated decision
-__device__ __forceinline__ int HybridUpdateLeafIndexDecision(
-  const CUDAHybridApplyDescriptor& d, const uint32_t bin) {
-  if (d.cat_bitset_len > 0) {
-    // categorical: mirror UpdateDataIndexToLeafIndexKernel_Categorical exactly
-    if ((d.use_min_bin && (bin < d.min_bin || bin > d.max_bin)) ||
-        (!d.use_min_bin && bin == 0)) {
-      return d.default_leaf_index;
-    }
-    return CUDAFindInBitset(d.cat_bitset, d.cat_bitset_len,
-                            bin - d.min_bin + static_cast<uint32_t>(d.cat_mfb_offset)) ?
-        d.left_leaf_index : d.right_leaf_index;
-  }
-  if (!d.min_is_max) {
-    if ((d.missing_is_zero && !d.mfb_is_zero && bin == d.t_zero_bin) ||
-      (d.missing_is_na && !d.mfb_is_na && bin == d.max_bin)) {
-      return d.missing_default_leaf_index;
-    } else if ((d.use_min_bin && (bin < d.min_bin || bin > d.max_bin)) ||
-               (!d.use_min_bin && bin == 0)) {
-      if ((d.missing_is_na && d.mfb_is_na) || (d.missing_is_zero && d.mfb_is_zero)) {
-        return d.missing_default_leaf_index;
-      } else {
-        return d.default_leaf_index;
-      }
-    } else if (bin > d.th) {
-      return d.right_leaf_index;
-    } else {
-      return d.left_leaf_index;
-    }
-  } else {
-    if (d.missing_is_zero && !d.mfb_is_zero && bin == d.t_zero_bin) {
-      return d.missing_default_leaf_index;
-    } else if (bin != d.max_bin) {
-      if ((d.missing_is_na && d.mfb_is_na) || (d.missing_is_zero && d.mfb_is_zero)) {
-        return d.missing_default_leaf_index;
-      } else {
-        return d.default_leaf_index;
-      }
-    } else {
-      if (d.missing_is_na && !d.mfb_is_na) {
-        return d.missing_default_leaf_index;
-      } else if (d.max_bin_to_left) {
-        return d.left_leaf_index;
-      } else {
-        return d.right_leaf_index;
-      }
-    }
-  }
-}
-
 
 // One block per categorical split of the level: build the split's INNER
 // bitset in its arena region from the finder's cat thresholds, then patch the
@@ -2256,38 +2204,6 @@ void CUDADataPartition::CollapseLeafWindows(const std::vector<CUDACollapseWindow
   const dim3 grid(static_cast<unsigned int>(max_blocks), static_cast<unsigned int>(num_windows));
   CollapseLeafWindowsKernel<<<grid, SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION, 0, cuda_streams_[0]>>>(
     cuda_collapse_windows_.RawDataReadOnly(), cuda_data_indices_.RawData(),
-    cuda_data_index_to_leaf_index_.RawData());
-}
-
-// selective grow-then-prune finalize: map every used row's leaf index from the
-// hybrid numbering to the final classic numbering (pruned leaves map to their
-// surviving ancestor's final leaf)
-__global__ void RemapDataIndexToLeafIndexKernel(
-  const data_size_t num_data,
-  const data_size_t* cuda_data_indices,
-  const int* leaf_map,
-  int* cuda_data_index_to_leaf_index) {
-  const data_size_t i = static_cast<data_size_t>(blockIdx.x * blockDim.x + threadIdx.x);
-  if (i < num_data) {
-    const data_size_t data_index = cuda_data_indices[i];
-    cuda_data_index_to_leaf_index[data_index] = leaf_map[cuda_data_index_to_leaf_index[data_index]];
-  }
-}
-
-void CUDADataPartition::RemapDataIndexToLeafIndex(const std::vector<int>& leaf_map) {
-  const data_size_t num_data_in_root = root_num_data();
-  if (num_data_in_root <= 0 || leaf_map.empty()) {
-    return;
-  }
-  if (cuda_leaf_index_remap_.Size() < leaf_map.size()) {
-    cuda_leaf_index_remap_.Resize(std::max(leaf_map.size(), static_cast<size_t>(num_leaves_)));
-  }
-  CopyFromHostToCUDADevice<int>(cuda_leaf_index_remap_.RawData(), leaf_map.data(),
-    leaf_map.size(), __FILE__, __LINE__);
-  const int num_blocks = (num_data_in_root + FILL_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) /
-    FILL_INDICES_BLOCK_SIZE_DATA_PARTITION;
-  RemapDataIndexToLeafIndexKernel<<<num_blocks, FILL_INDICES_BLOCK_SIZE_DATA_PARTITION>>>(
-    num_data_in_root, cuda_data_indices_.RawData(), cuda_leaf_index_remap_.RawDataReadOnly(),
     cuda_data_index_to_leaf_index_.RawData());
 }
 
