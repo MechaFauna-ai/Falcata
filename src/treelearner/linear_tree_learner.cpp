@@ -20,6 +20,24 @@ void LinearTreeLearner<TREE_LEARNER_TYPE>::Init(const Dataset* train_data, bool 
 }
 
 template <typename TREE_LEARNER_TYPE>
+void LinearTreeLearner<TREE_LEARNER_TYPE>::ResetConfig(const Config* config) {
+  TREE_LEARNER_TYPE::ResetConfig(config);
+  // The base reset resizes its leaf storage, but not the linear-fit workspaces.
+  // Keep existing capacity on shrink and leave parameter-only resets untouched.
+  if (config->num_leaves > static_cast<int>(XTHX_.size()) ||
+      OMP_NUM_THREADS() > static_cast<int>(XTHX_by_thread_.size())) {
+    InitLinear(this->train_data_, std::max(config->num_leaves, static_cast<int>(XTHX_.size())));
+  }
+}
+
+template <typename TREE_LEARNER_TYPE>
+void LinearTreeLearner<TREE_LEARNER_TYPE>::ResetTrainingData(const Dataset* train_data, bool is_constant_hessian) {
+  TREE_LEARNER_TYPE::ResetTrainingData(train_data, is_constant_hessian);
+  // Row counts and missing-value flags belong to the current raw dataset.
+  InitLinear(train_data, std::max(this->config_->num_leaves, static_cast<int>(XTHX_.size())));
+}
+
+template <typename TREE_LEARNER_TYPE>
 void LinearTreeLearner<TREE_LEARNER_TYPE>::InitLinear(const Dataset* train_data, const int max_leaves) {
   leaf_map_ = std::vector<int>(train_data->num_data(), -1);
   contains_nan_ = std::vector<int8_t>(train_data->num_features(), 0);
@@ -366,6 +384,8 @@ void LinearTreeLearner<TREE_LEARNER_TYPE>::CalculateLinear(Tree* tree, bool is_r
 
 template void LinearTreeLearner<SerialTreeLearner>::Init(const Dataset* train_data, bool is_constant_hessian);
 template void LinearTreeLearner<SerialTreeLearner>::InitLinear(const Dataset* train_data, const int max_leaves);
+template void LinearTreeLearner<SerialTreeLearner>::ResetConfig(const Config* config);
+template void LinearTreeLearner<SerialTreeLearner>::ResetTrainingData(const Dataset* train_data, bool is_constant_hessian);
 template Tree* LinearTreeLearner<SerialTreeLearner>::Train(const score_t* gradients, const score_t *hessians, bool is_first_tree);
 template Tree* LinearTreeLearner<SerialTreeLearner>::FitByExistingTree(const Tree* old_tree, const score_t* gradients, const score_t *hessians) const;
 template Tree* LinearTreeLearner<SerialTreeLearner>::FitByExistingTree(const Tree* old_tree, const std::vector<int>& leaf_pred,
@@ -373,6 +393,8 @@ template Tree* LinearTreeLearner<SerialTreeLearner>::FitByExistingTree(const Tre
 
 template void LinearTreeLearner<GPUTreeLearner>::Init(const Dataset* train_data, bool is_constant_hessian);
 template void LinearTreeLearner<GPUTreeLearner>::InitLinear(const Dataset* train_data, const int max_leaves);
+template void LinearTreeLearner<GPUTreeLearner>::ResetConfig(const Config* config);
+template void LinearTreeLearner<GPUTreeLearner>::ResetTrainingData(const Dataset* train_data, bool is_constant_hessian);
 template Tree* LinearTreeLearner<GPUTreeLearner>::Train(const score_t* gradients, const score_t *hessians, bool is_first_tree);
 template Tree* LinearTreeLearner<GPUTreeLearner>::FitByExistingTree(const Tree* old_tree, const score_t* gradients, const score_t *hessians) const;
 template Tree* LinearTreeLearner<GPUTreeLearner>::FitByExistingTree(const Tree* old_tree, const std::vector<int>& leaf_pred,
