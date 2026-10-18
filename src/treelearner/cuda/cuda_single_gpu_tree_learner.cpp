@@ -3594,11 +3594,14 @@ void CUDASingleGPUTreeLearner::ReleaseHybridGraphs() {
   hybrid_graph_statics_ready_ = false;
   // ResetConfig / ResetTrainingData can replace every pointer and static feature table captured by the prefix.
   device_level_graphs_.clear();
+  device_level_graph_admission_.Clear();
   device_levels_ready_ = false;
   device_levels_disabled_ = false;
-  device_level_graph_disabled_ = false;
   device_level_graph_hits_ = 0;
   device_level_graph_misses_ = 0;
+  device_level_graph_admission_skips_ = 0;
+  device_level_graph_capture_attempts_ = 0;
+  device_level_graph_captures_ = 0;
 }
 
 void CUDASingleGPUTreeLearner::LogDeviceLevelsFallback(const char* reason) {
@@ -3619,11 +3622,6 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
   // Slot workers use thread-local stream ownership. Neither capture nor the plain device enqueue is supported here.
   if (forest_slot_ || cuda_best_split_finder_->find_stream() == cudaStreamLegacy) {
     LogDeviceLevelsFallback(forest_slot_ ? "forest slot" : "legacy single stream");
-    return 0;
-  }
-  // When sampled layouts keep missing the graph cache, use the existing host loop on subsequent trees.
-  if (!plan.device_tree && plan.device_level_graph && device_level_graph_disabled_) {
-    LogDeviceLevelsFallback("changing graph layouts");
     return 0;
   }
   // the flow this replaces: the classic quantized prefix with both batched phases, single GPU, scalar leaves, no
@@ -3837,8 +3835,11 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
       cuda_data_partition_->SwapIndexBuffers(num_levels);
       ++device_level_graph_hits_;
       if (FalcataDebug().diag && device_level_graph_hits_ + device_level_graph_misses_ == 64) {
-        fprintf(stderr, "[hybrid-diag] device_level_graph: %d hits, %d misses in the first 64 trees (%d cached)\n",
-                device_level_graph_hits_, device_level_graph_misses_, static_cast<int>(device_level_graphs_.size()));
+        fprintf(stderr, "[hybrid-diag] device_level_graph: hits=%d misses=%d admission_skips=%d "
+                "capture_attempts=%d captures=%d cached=%d\n",
+                device_level_graph_hits_, device_level_graph_misses_, device_level_graph_admission_skips_,
+                device_level_graph_capture_attempts_, device_level_graph_captures_,
+                static_cast<int>(device_level_graphs_.size()));
       }
       return true;
     }
@@ -3852,19 +3853,23 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
       }
     }
   }
-  // a new key: capture this tree's enqueue (its host halves run now; the graph runs right after)
+  // Keep the full key and existing hit path. A miss is not necessarily a capture: low-reuse layouts enqueue the
+  // SAME device controller below the caller's !launched branch, before any capture/stream swap has begun here.
   ++device_level_graph_misses_;
-  if (!cfg.whole_tree && device_level_graph_misses_ > 8 && device_level_graph_misses_ > device_level_graph_hits_) {
-    // per-tree keys keep changing (e.g. a sampled feature set every tree): the plain enqueue from here on
-    device_level_graph_disabled_ = true;
+  const size_t cache_limit = cfg.whole_tree ? 256 : 32;
+  if (!device_level_graph_admission_.Observe(key, cache_limit)) {
+    ++device_level_graph_admission_skips_;
     if (FalcataDebug().diag) {
-      fprintf(stderr, "[hybrid-diag] device_level_graph: %d misses, %d hits: graphs off\n",
-              device_level_graph_misses_, device_level_graph_hits_);
+      fprintf(stderr, "[hybrid-diag] device_level_graph: admission-skip plain-device-enqueue "
+              "hits=%d misses=%d admission_skips=%d capture_attempts=%d captures=%d history=%zu\n",
+              device_level_graph_hits_, device_level_graph_misses_, device_level_graph_admission_skips_,
+              device_level_graph_capture_attempts_, device_level_graph_captures_, device_level_graph_admission_.size());
     }
     return false;
   }
   std::unique_ptr<DeviceLevelGraph> graph(new DeviceLevelGraph());
   graph->key = key;
+  ++device_level_graph_capture_attempts_;
   CUDASUCCESS_OR_FATAL(cudaStreamBeginCapture(find_stream, cudaStreamCaptureModeThreadLocal));
   try {
     EnqueueDeviceLevels(tree, cfg, num_levels, inline_all_map, final_map_only);
@@ -3929,13 +3934,19 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
     CHECK_EQ(clears, 1);
   }
   CUDASUCCESS_OR_FATAL(cudaGraphInstantiate(&graph->exec, graph->graph, 0));
+  ++device_level_graph_captures_;  // actual successful instantiations, not misses/admission skips
   CUDASUCCESS_OR_FATAL(cudaGraphUpload(graph->exec, find_stream));
   CUDASUCCESS_OR_FATAL(cudaGraphLaunch(graph->exec, find_stream));
-  const size_t cache_limit = cfg.whole_tree ? 256 : 32;
   if (device_level_graphs_.size() >= cache_limit) {
     device_level_graphs_.erase(device_level_graphs_.begin());
   }
   device_level_graphs_.push_back(std::move(graph));
+  if (FalcataDebug().diag) {
+    fprintf(stderr, "[hybrid-diag] device_level_graph: capture plain-key-promoted "
+            "hits=%d misses=%d admission_skips=%d capture_attempts=%d captures=%d cached=%zu\n",
+            device_level_graph_hits_, device_level_graph_misses_, device_level_graph_admission_skips_,
+            device_level_graph_capture_attempts_, device_level_graph_captures_, device_level_graphs_.size());
+  }
   return true;
 }
 
@@ -4038,10 +4049,10 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   // No intermediate readback, new DMA/kernel, plan key or speculative host readiness is introduced.
   const bool final_map_only = inline_all_map && prefetch_tree_end && end_plan.final_map_only &&
     end_plan.skip_empty_tail;
-  // cuda_plan key device_level_graph: the levels' launches as one cached CUDA graph (captured on the first tree of a
-  // pointer key, replayed on the next ones); otherwise enqueued as they are
+  // cuda_plan key device_level_graph: reuse a graph for repeated full keys; other trees enqueue the same device
+  // controller directly, including when admission has not seen enough reuse to pay for a capture.
   bool launched = false;
-  if (FalcataPlan::Get().device_level_graph && !forest_slot_ && !device_level_graph_disabled_) {
+  if (FalcataPlan::Get().device_level_graph && !forest_slot_) {
     launched = LaunchDeviceLevelGraph(tree, cfg, num_levels, inline_all_map, final_map_only);
   }
   if (!launched) {
@@ -4238,6 +4249,9 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
       fprintf(stderr, "[hybrid-diag] device_tree: complete depth=%d applied_levels=%d splits=%d "
               "growth_readbacks=1 host_tail=0 graph=%d hits=%d misses=%d\n", num_levels, levels_applied,
               total_splits, launched ? 1 : 0, device_level_graph_hits_, device_level_graph_misses_);
+      fprintf(stderr, "[hybrid-diag] device_level_graph: totals hits=%d misses=%d admission_skips=%d "
+              "capture_attempts=%d captures=%d\n", device_level_graph_hits_, device_level_graph_misses_,
+              device_level_graph_admission_skips_, device_level_graph_capture_attempts_, device_level_graph_captures_);
     }
   } else {
     // the last search's result, as the host loop's own readback leaves it

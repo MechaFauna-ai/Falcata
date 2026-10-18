@@ -1003,6 +1003,7 @@ if(BUILD_CPP_TEST)
       tests/cpp_tests/test_byte_buffer.cpp
       tests/cpp_tests/test_chunked_array.cpp
       tests/cpp_tests/test_common.cpp
+      tests/cpp_tests/test_cuda_device_level_graph_admission.cpp
       tests/cpp_tests/test_dataset_subset.cpp
       tests/cpp_tests/test_leaf_splits.cpp
       tests/cpp_tests/test_main.cpp
