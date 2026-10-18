@@ -3313,18 +3313,22 @@ __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_
       return;
     }
     const data_size_t level_min_rows = dls->construct_min_rows;
+    const bool direct = total <= static_cast<int>(gridDim.y);
     __shared__ int s_block_row;
-    // the map's block rows are claimed one at a time (their row counts differ: a static stride balances worse), one
-    // counter per launch column (every column of a block row is its own block)
+    // One processing callsite for both modes. The direct mode never claims or waits on a reuse barrier;
+    // overflow retains the original initial/next claim and both CTA barriers in their original order.
     int* claim = gridDim.x <= kDeviceLevelClaimColumns ?
       const_cast<CUDADeviceLevelState*>(dls)->construct_next_block + blockIdx.x : nullptr;
     for (int k = 0;; ++k) {
-      if (threadIdx.x == 0 && threadIdx.y == 0) {
-        s_block_row = claim != nullptr ? atomicAdd(claim, 1) :
-          static_cast<int>(blockIdx.y) + k * static_cast<int>(gridDim.y);
+      int vb = static_cast<int>(blockIdx.y);
+      if (!direct) {
+        if (threadIdx.x == 0 && threadIdx.y == 0) {
+          s_block_row = claim != nullptr ? atomicAdd(claim, 1) :
+            static_cast<int>(blockIdx.y) + k * static_cast<int>(gridDim.y);
+        }
+        __syncthreads();
+        vb = s_block_row;
       }
-      __syncthreads();
-      const int vb = s_block_row;
       if (vb >= total) {
         break;
       }
@@ -3336,6 +3340,9 @@ __device__ __forceinline__ void PairJointBatchedBody(FALCATA_PAIR_JOINT_BATCHED_
         num_grad_quant_bins, whole_row_partitions, whole_row_joint, level_min_rows, block_prefix, dls, shared_joint,
         static_cast<unsigned int>(pair), vb - dls->construct_block_start[pair], dls->construct_grid_y,
         dls->live_pairs);
+      if (direct) {
+        break;
+      }
       __syncthreads();  // the next mapped block row reuses the joint tables (and s_block_row)
     }
     return;

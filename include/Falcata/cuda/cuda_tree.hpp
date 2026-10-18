@@ -13,6 +13,7 @@
 #include <Falcata/tree.h>
 
 #include <functional>
+#include <type_traits>
 #include <vector>
 
 #include <Falcata/cuda/cuda_column_data.hpp>
@@ -37,6 +38,61 @@ struct CUDATreeBatchSplit {
   int missing_type;
   const CUDASplitInfo* split_info;
 };
+
+/*! \brief One definition of the pooled slab's offsets and ToHost's active prefixes.
+ *  Constructed on the host and passed as trivially copyable kernel arguments; no actual
+ *  leaf count is baked into it. Descriptor bytes and full-L strides are unchanged. */
+struct CUDATreePooledLayout {
+  enum Field {
+    kThreshold, kInternalWeight, kInternalValue, kLeafValue, kLeafWeight,
+    kLeftChild, kRightChild, kSplitFeatureInner, kSplitFeature, kLeafDepth,
+    kLeafParent, kThresholdInBin, kLeafCount, kInternalCount, kSplitGain,
+    kDecisionType, kNumFields
+  };
+  struct Prefix {
+    size_t offset;
+    size_t element_bytes;
+    bool leaf_entries;  // N entries; false means N-1, exactly as current ToHost reads
+  };
+  Prefix fields[kNumFields];
+  size_t batch_splits_offset;
+  size_t batch_splits_count;
+  size_t slab_bytes;
+
+  explicit CUDATreePooledLayout(const int max_leaves) {
+    static_assert(sizeof(double) == 8 && sizeof(int) == 4 && sizeof(uint32_t) == 4 &&
+                  sizeof(data_size_t) == 4 && sizeof(float) == 4 && sizeof(int8_t) == 1,
+                  "Preserve the existing pooled CUDA slab ABI");
+    const size_t L = static_cast<size_t>(max_leaves);
+    size_t cursor = 0;
+    const auto take = [&](Field field, size_t element_bytes, bool leaf_entries) {
+      fields[field] = {cursor, element_bytes, leaf_entries};
+      cursor += element_bytes * L;
+    };
+    take(kThreshold, sizeof(double), false);
+    take(kInternalWeight, sizeof(double), false);
+    take(kInternalValue, sizeof(double), false);
+    take(kLeafValue, sizeof(double), true);
+    take(kLeafWeight, sizeof(double), true);
+    batch_splits_offset = cursor;
+    batch_splits_count = L / 2 + 2;
+    cursor += sizeof(CUDATreeBatchSplit) * batch_splits_count;
+    take(kLeftChild, sizeof(int), false);
+    take(kRightChild, sizeof(int), false);
+    take(kSplitFeatureInner, sizeof(int), false);
+    take(kSplitFeature, sizeof(int), false);
+    take(kLeafDepth, sizeof(int), true);
+    take(kLeafParent, sizeof(int), false);  // existing ToHost reads I, not N
+    take(kThresholdInBin, sizeof(uint32_t), false);
+    take(kLeafCount, sizeof(data_size_t), true);
+    take(kInternalCount, sizeof(data_size_t), false);
+    take(kSplitGain, sizeof(float), false);
+    take(kDecisionType, sizeof(int8_t), false);
+    slab_bytes = (cursor + 7) / 8 * 8;
+  }
+};
+static_assert(std::is_trivially_copyable<CUDATreePooledLayout>::value,
+              "The readback layout must be safe to pass as kernel arguments");
 
 /*! \brief One split of a host-side tree rebuild (RebuildFromHostSplits): all the
  *  values SplitKernel would read from the device CUDASplitInfo, captured on the
@@ -96,12 +152,7 @@ class CUDATree : public Tree {
   /*! \brief bytes needed by the pooled per-tree device arrays (16 arrays of
    *  max_leaves entries + the batched split descriptors), 8-byte aligned */
   static size_t PooledDeviceBufferSize(const int max_leaves) {
-    const size_t L = static_cast<size_t>(max_leaves);
-    const size_t num_batch_splits = L / 2 + 2;
-    return 5 * sizeof(double) * L +                       // threshold, internal_weight/value, leaf_value/weight
-           sizeof(CUDATreeBatchSplit) * num_batch_splits +  // batched split descriptors (8-byte aligned)
-           10 * 4 * L +                                    // int / uint32_t / data_size_t / float arrays
-           ((sizeof(int8_t) * L + 7) / 8) * 8;             // decision_type, padded
+    return CUDATreePooledLayout(max_leaves).slab_bytes;
   }
 
   explicit CUDATree(const Tree* host_tree);
@@ -252,7 +303,9 @@ class CUDATree : public Tree {
    *  read back and before the host-side scatter and the device release: GPU work that reads none of the tree's
    *  arrays can be queued there and run while the host finishes the copy. slab_in_staging (cuda_plan key
    *  final_readback_first): the staging buffer already holds this pooled tree's final slab (LaunchSlabReadback,
-   *  followed by a synchronize of the default stream), so no copy is issued. */
+   *  followed by its producer-stream synchronization), so no copy is issued. A whole
+   *  active-prefix readback provides every field prefix read here at the same
+   *  full-L offsets; unused slab bytes need not be initialized. */
   void ToHost(void* readback_staging_host = nullptr, void* readback_staging_device = nullptr,
               size_t readback_staging_bytes = 0,
               const std::function<void()>& after_device_copy = std::function<void()>(),
@@ -263,6 +316,16 @@ class CUDATree : public Tree {
    *  readback_staging_bytes bytes) on the default stream; false, with nothing launched, if the tree is not pooled
    *  or the buffer is too small */
   bool LaunchSlabReadback(void* readback_staging_device, size_t readback_staging_bytes) const;
+
+  /*! \brief Whole-tree end only: one ordinary kernel on stream, outside growth capture,
+   *  copies ToHost's active field prefixes at the original full-L staging offsets,
+   *  plus exact counts after the aligned full slab. Actual N comes from the device
+   *  journal (total splits + 1); invalid bounds/flags and stumps copy nothing.
+   *  Caller retains the existing growth fence/validation and never publishes stump
+   *  readiness. False means nothing launched; caller must use its original DMA. */
+  bool LaunchActiveSlabReadback(void* readback_staging_device, size_t readback_staging_bytes,
+                               const data_size_t* exact_counts, const int* device_journal,
+                               int max_total_splits, cudaStream_t stream) const;
 
   void SyncLeafOutputFromHostToCUDA();
 
