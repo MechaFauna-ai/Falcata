@@ -193,7 +193,8 @@ __global__ void CUDAInitValuesKernel4(
   __syncthreads();
   const double sum_of_hessians = ShuffleReduceSum<double>(thread_sum_of_hessians, shared_mem_buffer, blockDim.x);
   __syncthreads();
-  const double sum_of_gradients_hessians = ShuffleReduceSum<int64_t>(
+  // Keep packed lanes integer: a double roundtrip can discard low hessian bits once |sum| exceeds 2^53.
+  const int64_t sum_of_gradients_hessians = ShuffleReduceSum<int64_t>(
     thread_sum_of_gradients_hessians,
     reinterpret_cast<int64_t*>(shared_mem_buffer),
     blockDim.x);
