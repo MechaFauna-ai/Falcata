@@ -149,45 +149,6 @@ void LaunchRowToColCompactKernel(
   }
 }
 
-__global__ void CUDATransposeColMajorToRowMajorKernel(
-    const uint8_t* __restrict__ staging,        // col-major: [c * num_data + r]
-    uint8_t* __restrict__ compact_data,         // row-major-in-partition
-    const int* __restrict__ partition_for_compact,
-    const int* __restrict__ compact_partition_column_offsets,
-    const data_size_t num_data,
-    const int total_compact_cols) {
-  const int compact_col = blockIdx.x * blockDim.x + threadIdx.x;
-  const data_size_t row = blockIdx.y * blockDim.y + threadIdx.y;
-  if (compact_col >= total_compact_cols) return;
-  if (row >= num_data) return;
-
-  const int p = partition_for_compact[compact_col];
-  const int p_compact_start = compact_partition_column_offsets[p];
-  const int compact_col_in_p = compact_col - p_compact_start;
-  const int compact_stride_p = compact_partition_column_offsets[p + 1] - p_compact_start;
-  const size_t compact_part_byte_offset = static_cast<size_t>(p_compact_start) * static_cast<size_t>(num_data);
-
-  const uint8_t val = staging[static_cast<size_t>(compact_col) * static_cast<size_t>(num_data) + row];
-  compact_data[compact_part_byte_offset + static_cast<size_t>(row) * static_cast<size_t>(compact_stride_p) + compact_col_in_p] = val;
-}
-
-void LaunchTransposeColMajorToRowMajor(
-    cudaStream_t stream,
-    const uint8_t* staging,
-    uint8_t* compact_data,
-    const int* partition_for_compact,
-    const int* compact_partition_column_offsets,
-    data_size_t num_data,
-    int total_compact_cols) {
-  const int TX = 8;
-  const int TY = 128;  // grid_y under 65535 for 8M rows
-  dim3 block_dim(TX, TY);
-  dim3 grid_dim((total_compact_cols + TX - 1) / TX, (num_data + TY - 1) / TY);
-  CUDATransposeColMajorToRowMajorKernel<<<grid_dim, block_dim, 0, stream>>>(
-      staging, compact_data, partition_for_compact, compact_partition_column_offsets,
-      num_data, total_compact_cols);
-}
-
 __global__ void InterleaveGradHessKernel(
   const score_t* __restrict__ gradients,
   const score_t* __restrict__ hessians,

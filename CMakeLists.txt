@@ -1024,6 +1024,7 @@ if(BUILD_CPP_TEST)
       testfalcata
       PRIVATE
         tests/cpp_tests/test_cuda_algorithms.cu
+        tests/cpp_tests/test_cuda_metadata.cu
         tests/cpp_tests/test_cuda_device_level_budget.cu
         tests/cpp_tests/test_cuda_nonquant_fixed.cu
     )

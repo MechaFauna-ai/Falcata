@@ -255,16 +255,20 @@ class BaggingSampleStrategy : public SampleStrategy {
   }
 
  private:
-  data_size_t BaggingHelper(data_size_t start, data_size_t cnt, data_size_t* buffer) {
+  template <bool BALANCED>
+  data_size_t BaggingPartition(data_size_t start, data_size_t cnt, data_size_t* buffer) {
     if (cnt <= 0) {
       return 0;
     }
+    const auto* labels = BALANCED ? train_data_->metadata().label() : nullptr;
     data_size_t cur_left_cnt = 0;
     data_size_t cur_right_pos = cnt;
-    // random bagging, minimal unit is one record
     for (data_size_t i = 0; i < cnt; ++i) {
-      auto cur_idx = start + i;
-      if (bagging_rands_[cur_idx / bagging_rand_block_].NextFloat() < config_->bagging_fraction) {
+      const auto cur_idx = start + i;
+      const double fraction = BALANCED ?
+        (labels[cur_idx] > 0 ? config_->pos_bagging_fraction : config_->neg_bagging_fraction) :
+        config_->bagging_fraction;
+      if (bagging_rands_[cur_idx / bagging_rand_block_].NextFloat() < fraction) {
         buffer[cur_left_cnt++] = cur_idx;
       } else {
         buffer[--cur_right_pos] = cur_idx;
@@ -273,32 +277,12 @@ class BaggingSampleStrategy : public SampleStrategy {
     return cur_left_cnt;
   }
 
+  data_size_t BaggingHelper(data_size_t start, data_size_t cnt, data_size_t* buffer) {
+    return BaggingPartition<false>(start, cnt, buffer);
+  }
+
   data_size_t BalancedBaggingHelper(data_size_t start, data_size_t cnt, data_size_t* buffer) {
-    if (cnt <= 0) {
-      return 0;
-    }
-    auto label_ptr = train_data_->metadata().label();
-    data_size_t cur_left_cnt = 0;
-    data_size_t cur_right_pos = cnt;
-    // random bagging, minimal unit is one record
-    for (data_size_t i = 0; i < cnt; ++i) {
-      auto cur_idx = start + i;
-      bool is_pos = label_ptr[start + i] > 0;
-      bool is_in_bag = false;
-      if (is_pos) {
-        is_in_bag = bagging_rands_[cur_idx / bagging_rand_block_].NextFloat() <
-                    config_->pos_bagging_fraction;
-      } else {
-        is_in_bag = bagging_rands_[cur_idx / bagging_rand_block_].NextFloat() <
-                    config_->neg_bagging_fraction;
-      }
-      if (is_in_bag) {
-        buffer[cur_left_cnt++] = cur_idx;
-      } else {
-        buffer[--cur_right_pos] = cur_idx;
-      }
-    }
-    return cur_left_cnt;
+    return BaggingPartition<true>(start, cnt, buffer);
   }
 
   /*! \brief whether need restart bagging in continued training */

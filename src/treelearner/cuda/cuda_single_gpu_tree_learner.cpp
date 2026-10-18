@@ -407,11 +407,10 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
                NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, config_->max_bin,
                NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER);
   }
-  // Wire the histogram constructor's completion events into the best split finder so
-  // per-leaf FindBestSplits kernels are ordered after histogram construction/subtraction
+  // Wire the histogram subtraction completion events into the best split finder so
+  // per-leaf FindBestSplits kernels are ordered after histogram subtraction
   // via cudaStreamWaitEvent instead of per-split device syncs.
   cuda_best_split_finder_->SetHistogramEvents(
-    cuda_histogram_constructor_->construct_done_events(),
     cuda_histogram_constructor_->subtract_done_events());
   SyncHistFP32();
   cuda_best_split_finder_->SetCEGB(config_->cegb_penalty_feature_coupled,
@@ -457,7 +456,6 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     vec_root_sum_hessians_.resize(vec_num_targets_, 0.0);
   }
 
-  leaf_stat_buffer_size_ = 0;
   num_cat_threshold_ = 0;
 
   if (config_->use_quantized_grad) {
@@ -897,9 +895,6 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   sig = sig * 1099511628211ULL ^
         static_cast<uint64_t>(reinterpret_cast<uintptr_t>(
             cuda_histogram_constructor_->compact_data_device()));
-  sig = sig * 1099511628211ULL ^
-        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(
-            cuda_histogram_constructor_->compact_col_major_device()));
   // ... the row data itself (ResetTrainingData replaces it, and the matrix a view may point into) and colmajor_direct's
   // full view (released and refilled at another address when trees stop and resume needing it, or on a regime change)
   sig = sig * 1099511628211ULL ^ static_cast<uint64_t>(reinterpret_cast<uintptr_t>(row_data));
@@ -968,23 +963,11 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
     cuda_histogram_constructor_->compact_codec() == PackCodecId::kNibble4 &&
     cuda_histogram_constructor_->compact_src_cols() == compact_column_to_orig_;
   column_view_reads_full_view_ = !compact_src;
-  if (compact_src && cuda_histogram_constructor_->CompactColMajorFilled()) {
-    // the histogram constructor's compact fill already produced the column-major
-    // view as a fused second output (same slot order, verified above): point the
-    // column data at it directly, no gather kernel at all
-    col_data->SetCompactColumnView(orig_column_to_compact_slot_,
-                                   const_cast<uint8_t*>(cuda_histogram_constructor_->compact_col_major_device()),
-                                   static_cast<size_t>(num_data));
-    compact_col_signature_ = sig;
-    col_view_generation_seen_ = col_data->column_view_generation();
-    return;
-  }
   // the gather (and the packed split view, and the out-of-bag pass that traverses it) reads every column in the
   // row-major layout unless the compact matrix serves: the row data's matrix, or colmajor_direct's full view
   const uint8_t* gather_src = compact_src ? cuda_histogram_constructor_->compact_data_device() :
     cuda_histogram_constructor_->EnsureFullView("a split view the compact matrix cannot serve");
   if (gather_src == nullptr) {
-    // the host-mapped layout (the only one without a device pointer here) is column-major and unsupported
     Log::Fatal("BuildCompactColumnView: the row-major bin matrix has no device pointer");
   }
   const bool gather_src_is_4bit = compact_src ?

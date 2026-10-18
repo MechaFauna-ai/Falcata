@@ -118,23 +118,6 @@ void LaunchRowToColCompactKernel(
     data_size_t num_data,
     bool src_is_4bit);
 
-__global__ void CUDATransposeColMajorToRowMajorKernel(
-    const uint8_t* __restrict__ staging,        // col-major: [c * num_data + r]
-    uint8_t* __restrict__ compact_data,         // row-major-in-partition
-    const int* __restrict__ partition_for_compact,
-    const int* __restrict__ compact_partition_column_offsets,
-    const data_size_t num_data,
-    const int total_compact_cols);
-
-void LaunchTransposeColMajorToRowMajor(
-    cudaStream_t stream,
-    const uint8_t* staging,
-    uint8_t* compact_data,
-    const int* partition_for_compact,
-    const int* compact_partition_column_offsets,
-    data_size_t num_data,
-    int total_compact_cols);
-
 __global__ void InterleaveGradHessKernel(
   const score_t* __restrict__ gradients,
   const score_t* __restrict__ hessians,
