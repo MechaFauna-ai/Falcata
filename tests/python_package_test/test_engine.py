@@ -611,6 +611,35 @@ def test_rank_xendcg_cuda_singleton_query_does_not_clobber_next_query(rng):
 
 
 @pytest.mark.skipif(getenv("TASK", "") != "cuda", reason="CUDA-only regression test")
+@pytest.mark.parametrize("huge_first", [True, False])
+def test_cuda_feature_with_more_bins_than_shared_histogram_matches_cpu(huge_first):
+    # A column with more bins than a shared-memory histogram partition holds
+    # (6144) gets a partition of its own. The columns placed before it must not
+    # be merged into that partition, or their bins overlap the large column's.
+    rng = np.random.default_rng(0)
+    n = 20_000
+    small_a = rng.integers(0, 8, n).astype(np.float64)
+    small_b = rng.integers(0, 8, n).astype(np.float64)
+    huge = rng.standard_normal(n)
+    y = (small_a == 3) * 2.0 + (small_b == 5) * 1.0 + huge + 0.1 * rng.standard_normal(n)
+    X = np.column_stack([huge, small_a, small_b] if huge_first else [small_a, small_b, huge])
+    params = {
+        "objective": "regression",
+        "num_leaves": 15,
+        "min_data_in_leaf": 20,
+        "max_bin": 9000,
+        "quant_mode": "none",
+        "verbose": -1,
+    }
+    preds = {}
+    for device in ["cpu", "cuda"]:
+        ds = lgb.Dataset(X, y, params={"max_bin": params["max_bin"], "verbose": -1})
+        bst = lgb.train({**params, "device_type": device}, ds, num_boost_round=10)
+        preds[device] = bst.predict(X)
+    np.testing.assert_allclose(preds["cuda"], preds["cpu"], rtol=0, atol=1e-6)
+
+
+@pytest.mark.skipif(getenv("TASK", "") != "cuda", reason="CUDA-only regression test")
 @pytest.mark.parametrize("query_size", [65536, 66560])
 def test_rank_xendcg_cuda_query_of_65536_items_or_more_matches_cpu(query_size):
     # rank_xendcg has no per-query row cap (lambdarank stops at 10000), so one

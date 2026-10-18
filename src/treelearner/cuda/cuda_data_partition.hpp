@@ -124,6 +124,10 @@ struct CUDACollapseWindow {
 };
 
 class CUDADataPartition: public NCCLInfo {
+#ifdef FALCATA_WHOLE_MAP_ONLY_FAULT_TEST
+  friend struct WholeMapOnlyFaultPeer;
+#endif
+
  public:
   CUDADataPartition(
     const Dataset* train_data,
@@ -145,6 +149,7 @@ class CUDADataPartition: public NCCLInfo {
    *  the worst case of any level (as the graph loop does), so they never grow during training: a growth is a device
    *  synchronize, which stalls every forest slot */
   void PresizeLevelBuffers() {
+    EnsureLevelPartitioned();  // saved direction/offset buffers must survive until repair
     const data_size_t worst_slots =
       num_data_ / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION + 2 * num_leaves_ + 2;
     if (cuda_block_to_left_offset_.Size() < HybridBitWordUnitsWorstCase()) {
@@ -177,7 +182,8 @@ class CUDADataPartition: public NCCLInfo {
    *  SplitLevelBatched kernels at the level's worst-case grids, reading the descriptors and live counts the select
    *  kernel wrote (DeviceLevelSelectKernel); the index buffers swap as after every host level */
   void LaunchDeviceLevelApply(const int max_splits, const CUDADeviceLevelState* dls,
-                              const CUDADeviceLevelConfig* dl_cfg = nullptr);
+                              const CUDADeviceLevelConfig* dl_cfg = nullptr, const bool write_leaf_map = false,
+                              const bool dl_map_only = false, const bool whole_joint_grid_bound = false);
 
   /*! \brief cuda_plan key device_levels: after the device levels' readback: levels_applied of levels_enqueued
    *  enqueued levels applied total_splits splits (the host swapped the index buffers once per enqueued level) */
@@ -187,6 +193,28 @@ class CUDADataPartition: public NCCLInfo {
       cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);
     }
     level_shared_gaps_valid_ = false;  // cuda_plan key gap_copy_once: the device levels copied every gap
+  }
+
+  /*! \brief ONLY after a validated positive static-final DL completion and FinishDeviceLevels: one final
+   *  apply wrote the complete map but deferred index stores. Own the four repair counts AND creation gap width, undo that apply's host
+   *  role swap, and retain its descriptors/bits/offsets until Ensure or a full assignment/root replacement. */
+  void DeferDeviceLevelPartition(const int splits, const int gaps, const int max_gap_blocks,
+                                 const int total_flat_blocks, const int gap_block_dim) {
+    CHECK(!level_partition_pending_);
+    CHECK_GT(splits, 0);
+    CHECK_GE(gaps, 0);
+    CHECK_GE(max_gap_blocks, 0);
+    CHECK_GT(total_flat_blocks, 0);
+    CHECK(gap_block_dim == 256 || gap_block_dim == SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION);
+    pending_num_splits_ = splits;
+    pending_num_gaps_ = gaps;
+    pending_max_gap_blocks_ = max_gap_blocks;
+    pending_total_flat_blocks_ = total_flat_blocks;
+    pending_gap_block_dim_ = gap_block_dim;  // creation-time cfg unit, never a later process-global plan
+    pending_device_level_role_undo_ = true;  // ONLY this validated DL receipt has the extra role undo
+    cuda_data_indices_.Swap(&cuda_out_data_indices_in_leaf_);
+    level_partition_pending_ = true;
+    level_shared_gaps_valid_ = false;
   }
 
   CUDAHybridApplyDescriptor* device_level_apply_descs() { return cuda_apply_descs_.RawData(); }
@@ -482,11 +510,13 @@ class CUDADataPartition: public NCCLInfo {
                                       const bool write_leaf_map,
                                       const bool map_only,
                                       const CUDADeviceLevelState* dls = nullptr,
-                                      const CUDADeviceLevelConfig* dl_cfg = nullptr);
+                                      const CUDADeviceLevelConfig* dl_cfg = nullptr,
+                                      const bool dl_map_only = false, const bool whole_joint_grid_bound = false);
   /*! \brief the batched level's split-inner (index partition into the out buffer) and gap copy launches */
   void LaunchLevelSplitInnerKernel(const int num_splits, const int total_flat_blocks, const bool write_leaf_map,
                                    const bool map_only);
-  void LaunchLevelGapCopyKernel(const int num_splits, const int num_gaps, const int max_gap_blocks);
+  void LaunchLevelGapCopyKernel(const int num_splits, const int num_gaps, const int max_gap_blocks,
+                               const int saved_block_dim = 0);
 
   void GenDataToLeftBitVector(
     const data_size_t num_data_in_leaf,
@@ -792,12 +822,15 @@ class CUDADataPartition: public NCCLInfo {
   /*! \brief cuda_plan key final_map_only: the last batched level ran map-only; its partition (split-inner, gap
    *  copy, swap) is run by EnsureLevelPartitioned if a reader of its windows turns up before they are rewritten */
   bool level_partition_pending_ = false;
+  /*! \brief Only a validated deferred DL final level needs an extra role correction when discarded. */
+  bool pending_device_level_role_undo_ = false;
   /*! \brief cuda_plan key leaf_map_no_zero: see SetLeafMapZeroDead */
   bool leaf_map_zero_dead_ = false;
   int pending_num_splits_ = 0;
   int pending_num_gaps_ = 0;
   int pending_max_gap_blocks_ = 0;
   int pending_total_flat_blocks_ = 0;
+  int pending_gap_block_dim_ = 0;  // >0 for DL receipts; 0 preserves the existing host/default launch route
   /*! \brief threads per block of the host-launched gap copy (cuda_plan key leaf_map_small_blocks) */
   static int GapCopyBlockDim() {
     return FalcataPlan::Get().leaf_map_small_blocks ? 256 : SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION;

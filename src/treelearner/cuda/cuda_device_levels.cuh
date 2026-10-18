@@ -274,6 +274,7 @@ __device__ __forceinline__ void DeviceLevelSelectBlock(const CUDADeviceLevelConf
     if (((s_split_bits[leaf >> 5] >> (leaf & 31)) & 1u) == 0 && num > 0) {
       CUDAHybridApplyDescriptor& g = cfg.apply_descs[n + gap_pos];
       memset(&g, 0, sizeof(CUDAHybridApplyDescriptor));
+      g.left_leaf_index = leaf;  // the final whole apply also maps this terminal leaf
       g.leaf_data_start = cfg.leaf_data_start[leaf];
       g.num_data_in_leaf = num;
       g.num_blocks = (num + cfg.gap_block_dim - 1) / cfg.gap_block_dim;
@@ -308,7 +309,10 @@ __device__ __forceinline__ void DeviceLevelPairsBlock(const CUDADeviceLevelConfi
   CUDADeviceLevelState* st = cfg.state;
   const int tid = static_cast<int>(threadIdx.x);
   const int nt = static_cast<int>(blockDim.x);
-  const int n = st->done ? 0 : st->live_splits;
+  // A complete tree's final apply has no child search. Its partition/child statistics are already written by
+  // the apply; leave the live split count intact for the tree record, and omit unused search descriptors/layout.
+  const bool final_depth = cfg.whole_tree && level + 1 >= cfg.max_depth;
+  const int n = st->done || final_depth ? 0 : st->live_splits;
   if (n == 0) {
     for (int c = tid; c < kDeviceLevelClaimColumns; c += nt) {
       st->construct_next_block[c] = 0;
