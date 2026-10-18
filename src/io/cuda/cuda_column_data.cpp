@@ -89,6 +89,7 @@ void CUDAColumnData::Init(const int num_columns,
   feature_missing_is_na_ = feature_missing_is_na;
   feature_mfb_is_zero_ = feature_mfb_is_zero;
   feature_mfb_is_na_ = feature_mfb_is_na;
+  InitMissingFlagSnapshots();
   // Decide whether to skip the per-column GPU allocation. With a 32 GB GPU and
   // a 17 GB row matrix on top, we can't afford another 17 GB of per-column data.
   // Skip when total size would exceed 8 GB; the caller (tree learner) will provide
@@ -205,6 +206,7 @@ void CUDAColumnData::InitViewOf(const CUDAColumnData* source) {
   feature_missing_is_na_ = source->feature_missing_is_na_;
   feature_mfb_is_zero_ = source->feature_mfb_is_zero_;
   feature_mfb_is_na_ = source->feature_mfb_is_na_;
+  InitMissingFlagSnapshots();
   feature_to_column_ = source->feature_to_column_;
   init_skipped_per_column_alloc_ = source->init_skipped_per_column_alloc_;
   if (init_skipped_per_column_alloc_) {
@@ -240,6 +242,7 @@ void CUDAColumnData::CopySubrow(
   feature_missing_is_na_ = full_set->feature_missing_is_na_;
   feature_mfb_is_zero_ = full_set->feature_mfb_is_zero_;
   feature_mfb_is_na_ = full_set->feature_mfb_is_na_;
+  InitMissingFlagSnapshots();
   feature_to_column_ = full_set->feature_to_column_;
   // Propagate the Tier-2 skip flag from the full set. When the full set's
   // per-column GPU buffers were skipped (e.g. >8GB total — Init() decides),
@@ -463,6 +466,13 @@ void CUDAColumnData::ResizeWhenCopySubrow(const data_size_t num_used_indices) {
   cuda_data_by_column_.InitFromHostVector(GetDataByColumnPointers(data_by_column_));
 }
 
+void CUDAColumnData::InitMissingFlagSnapshots() {
+  cuda_feature_missing_is_zero_.Set(feature_missing_is_zero_.data(), feature_missing_is_zero_.size(), gpu_device_id_);
+  cuda_feature_missing_is_na_.Set(feature_missing_is_na_.data(), feature_missing_is_na_.size(), gpu_device_id_);
+  cuda_feature_mfb_is_zero_.Set(feature_mfb_is_zero_.data(), feature_mfb_is_zero_.size(), gpu_device_id_);
+  cuda_feature_mfb_is_na_.Set(feature_mfb_is_na_.data(), feature_mfb_is_na_.size(), gpu_device_id_);
+}
+
 void CUDAColumnData::InitColumnMetaInfo() {
   cuda_column_bit_type_.InitFromHostVector(column_bit_type_);
   cuda_feature_max_bin_.InitFromHostVector(feature_max_bin_);
@@ -470,10 +480,6 @@ void CUDAColumnData::InitColumnMetaInfo() {
   cuda_feature_offset_.InitFromHostVector(feature_offset_);
   cuda_feature_most_freq_bin_.InitFromHostVector(feature_most_freq_bin_);
   cuda_feature_default_bin_.InitFromHostVector(feature_default_bin_);
-  cuda_feature_missing_is_zero_.InitFromHostVector(feature_missing_is_zero_);
-  cuda_feature_missing_is_na_.InitFromHostVector(feature_missing_is_na_);
-  cuda_feature_mfb_is_zero_.InitFromHostVector(feature_mfb_is_zero_);
-  cuda_feature_mfb_is_na_.InitFromHostVector(feature_mfb_is_na_);
   cuda_feature_to_column_.InitFromHostVector(feature_to_column_);
 }
 

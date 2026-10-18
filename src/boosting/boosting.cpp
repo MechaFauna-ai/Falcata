@@ -84,36 +84,12 @@ Boosting* Boosting::CreateBoosting(const std::string& type, const char* filename
   } else {
     std::unique_ptr<Boosting> ret;
     if (GetBoostingTypeFromModelFile(filename) == std::string("tree")) {
-      if (type == std::string("gbdt")) {
-        #ifdef USE_CUDA
-        if (device_type == std::string("cuda") && num_gpu > 1) {
-        #ifdef USE_NCCL
-          if (NcclShim::Available()) {
-            ret.reset(new NCCLGBDT<GBDT>());
-          } else {
-            Log::Warning(
-                "num_gpu > 1 needs the NCCL library, and libnccl.so.2 was not "
-                "found -- install it with: pip install nvidia-nccl-cu12. "
-                "Falling back to a single GPU.");
-            ret.reset(new GBDT());
-          }
-        #else
-          Log::Warning("num_gpu > 1 requires NCCL, which was not compiled in (USE_NCCL=OFF). Falling back to a single GPU.");
-          ret.reset(new GBDT());
-        #endif  // USE_NCCL
-        } else {
-        #endif  // USE_CUDA
-          ret.reset(new GBDT());
-        #ifdef USE_CUDA
-        }
-        #endif  // USE_CUDA
-      } else if (type == std::string("dart")) {
-        ret.reset(new DART());
-      } else if (type == std::string("goss")) {
-        ret.reset(new GBDT());
-      } else if (type == std::string("rf")) {
-        ret.reset(new RF());
-      } else {
+      #ifdef USE_CUDA
+      ret.reset(CreateBoosting(type, nullptr, device_type, num_gpu));
+      #else
+      ret.reset(CreateBoosting(type, nullptr, "", 1));
+      #endif  // USE_CUDA
+      if (ret == nullptr) {
         Log::Fatal("Unknown boosting type %s", type.c_str());
       }
       LoadFileToBoosting(ret.get(), filename);

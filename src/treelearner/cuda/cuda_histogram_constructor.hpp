@@ -326,11 +326,6 @@ class CUDAHistogramConstructor {
 
   void Init(const Dataset* train_data, TrainingShareStates* share_state);
 
-  /*! \brief Event recorded on cuda_stream_ after the smaller-leaf histogram is
-   *  constructed. The best split finder waits on it (cudaStreamWaitEvent) before
-   *  reading the smaller-leaf histogram, replacing a per-split device sync. */
-  cudaEvent_t construct_done_event() const { return construct_done_events_[0]; }
-
   /*! \brief per-tree bin-used mask (host copy) and whether sampling is active.
    *  The NCCL path uses these to all-reduce ONLY the bins this tree's
    *  feature_fraction sample can read: the rest are dead storage, and at
@@ -347,11 +342,6 @@ class CUDAHistogramConstructor {
   cudaStream_t current_stream() const { return pipeline_streams_[active_pipeline_]; }
   const cudaEvent_t* construct_done_events() const { return construct_done_events_; }
   const cudaEvent_t* subtract_done_events() const { return subtract_done_events_; }
-  /*! \brief Event recorded on cuda_stream_ after the larger-leaf histogram is
-   *  produced by subtraction. The best split finder waits on it before reading
-   *  the larger-leaf histogram. */
-  cudaEvent_t subtract_done_event() const { return subtract_done_events_[0]; }
-
   void ZeroHistForLeaf(int leaf_index);
 
   /*! \brief Selective grow-then-prune: zero the histogram slots freed by
@@ -428,15 +418,10 @@ class CUDAHistogramConstructor {
   /*! \brief cuda_plan key pair_code5: when this tree's fused fill wrote only the code view, write the live nibble
    *  view now (the plain tiled fill from the code fill's own byte-slot tables, on the fill's stream); no-op otherwise */
   void EnsureNibbleView();
-  /*! \brief whether this tree's compact build also produced the column-major
-   *  view (compact_col_major_device()[slot * num_data + row]); the tree learner
-   *  then uses it directly instead of gathering its own copy */
-  bool CompactColMajorFilled() const { return compact_col_major_filled_; }
   /*! \brief the column-major nibble store (colmajor_direct's compact regime, or colmajor_fill's copy): column c
    *  is the two-rows-per-byte run at byte c * colmajor_pad() / 2; null when absent (the mask regime, or no copy) */
   const uint8_t* colmajor_bin() const { return colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : nullptr; }
   size_t colmajor_pad() const { return colmajor_pad_; }
-  const uint8_t* compact_col_major_device() const { return compact_staging_col_major_.RawDataReadOnly(); }
 
   /*! \brief colmajor_fill: whether this row data can take the column-major copy (plan key on, 4-bit packed rows
    *  resident on the device) and does not have it yet. The tree learner decides when to try. */
@@ -793,8 +778,6 @@ class CUDAHistogramConstructor {
     num_hist_planes_ = planes;
   }
 
-  int num_hist_planes() const { return num_hist_planes_; }
-
   /*! \brief vector-leaf mode: point the construct kernels at one target's
    *  gradient/hessian slices (pointer swap only; BeforeTrain remains the
    *  per-tree entry point and receives plane 0).
@@ -929,11 +912,12 @@ class CUDAHistogramConstructor {
       count_scratch_dirty_ = true;  // this tree may run the deterministic construct in the slot slab
     }
   }
-  bool count_construct_active() const { return count_codes_ != nullptr; }
   /*! \brief the count scratch must be zeroed before its next use (an aborted tree may have left sums in it) */
   void MarkCountScratchDirty() { count_scratch_dirty_ = true; }
 
  private:
+  void InitDeterministicDenseScratch();
+
   void InitFeatureMetaInfo(const Dataset* train_data, const std::vector<uint32_t>& feature_hist_offsets);
 
   /*! \brief (re)build cuda_fix_mfb_mask_ from the need-fix feature metadata */
@@ -1245,10 +1229,6 @@ class CUDAHistogramConstructor {
   cudaEvent_t construct_done_events_[kNumHistPipelines];
   cudaEvent_t subtract_done_events_[kNumHistPipelines];
   int active_pipeline_ = 0;
-  /*! \brief recorded on cuda_stream_ after smaller-leaf histogram construction */
-  cudaEvent_t construct_done_event_ = nullptr;
-  /*! \brief recorded on cuda_stream_ after larger-leaf histogram subtraction */
-  cudaEvent_t subtract_done_event_ = nullptr;
   /*! \brief indices of feature whose histograms need to be fixed */
   std::vector<int> need_fix_histogram_features_;
   /*! \brief aligned number of bins of the features whose histograms need to be fixed */
@@ -1546,9 +1526,6 @@ class CUDAHistogramConstructor {
   CUDAVector<int> cuda_bs_src_stride_nib_;
   CUDAVector<size_t> cuda_bs_dst_byte_;
   CUDAVector<int> cuda_bs_dst_stride_;
-  /*! \brief whether compact_staging_col_major_ holds this tree's column-major
-   *  compact view (fused second output of the compact fill) */
-  bool compact_col_major_filled_ = false;
   /*! \brief column_hist_offsets for compact view (length num_compact_columns+1);
    *  on the nibble view followed by the pair-joint layout (see BuildCompactView) */
   CUDAVector<uint32_t> compact_column_hist_offsets_;
@@ -1568,21 +1545,6 @@ class CUDAHistogramConstructor {
   CUDAVector<int> cuda_slot_src_stride_;
   CUDAVector<size_t> cuda_slot_dst_byte_;
   CUDAVector<int> cuda_slot_dst_stride_;
-  /*! \brief Maps compact column index -> source byte offset in cuda_data_uint8_t_
-   *  for row 0. To get source for row r at compact col c:
-   *    src = source_offsets_[c] + r * source_strides_[c]
-   *  (stride differs per partition; same for all cols in same partition). */
-  CUDAVector<size_t> compact_source_offsets_;
-  CUDAVector<int> compact_source_strides_;
-  /*! \brief Pinned host staging buffer for compact data (used when source bin matrix
-   *  is host-mapped — host-side gather + bulk cudaMemcpy is ~10× faster than the
-   *  GPU fill kernel reading strided bytes via PCIe). Allocated via cudaMallocHost. */
-  uint8_t* compact_data_host_ = nullptr;
-  size_t compact_data_host_size_ = 0;
-  /*! \brief GPU staging buffer for column-major transfer from host. Per-tree: cudaMemcpy
-   *  each used column contiguously into this buffer, then transpose-kernel into
-   *  compact_data_uint8_t_ which is row-major-in-partition (matches histogram kernel).  */
-  CUDAVector<uint8_t> compact_staging_col_major_;
   /*! \brief indices of feature whose histograms need to be fixed */
   CUDAVector<int> cuda_need_fix_histogram_features_;
   /*! \brief aligned number of bins of the features whose histograms need to be fixed */

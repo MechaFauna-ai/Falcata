@@ -894,24 +894,17 @@ __global__ void AggregateBlockOffsetKernel1(
 // name (added by the USE_NCCL cmake option) would be preprocessor-substituted
 // into the parameter, breaking compilation on NCCL-enabled builds.
 template <bool USE_NCCL_REDUCE, bool USE_GRAD_DISCRETIZED>
-__global__ void SplitTreeStructureKernel(const int left_leaf_index,
-  const int right_leaf_index,
-  data_size_t* block_to_left_offset_buffer,
-  data_size_t* block_to_right_offset_buffer, data_size_t* cuda_leaf_data_start,
-  data_size_t* cuda_leaf_data_end, data_size_t* cuda_leaf_num_data, const data_size_t* cuda_data_indices,
-  const data_size_t* cuda_data_indices_main,
-  const bool point_structs_at_main,
-  const CUDASplitInfo* best_split_info,
-  // for leaf splits information update
-  CUDALeafSplitsStruct* smaller_leaf_splits,
-  CUDALeafSplitsStruct* larger_leaf_splits,
-  const int num_total_bin,
-  hist_t* cuda_hist, hist_t** cuda_hist_pool,
-  double* cuda_leaf_output,
-  int* cuda_split_info_buffer) {
+__device__ __forceinline__ void WriteSplitTreeStructure(
+  const unsigned int global_thread_index,
+  const int left_leaf_index, const int right_leaf_index,
+  data_size_t* cuda_leaf_data_start, data_size_t* cuda_leaf_num_data,
+  const data_size_t* cuda_data_indices, const data_size_t* cuda_data_indices_main,
+  const bool point_structs_at_main, const CUDASplitInfo* best_split_info,
+  CUDALeafSplitsStruct* smaller_leaf_splits, CUDALeafSplitsStruct* larger_leaf_splits,
+  const int num_total_bin, hist_t* cuda_hist, hist_t** cuda_hist_pool,
+  double* cuda_leaf_output, int* cuda_split_info_buffer) {
   const unsigned int to_left_total_cnt = cuda_leaf_num_data[left_leaf_index];
   double* cuda_split_info_buffer_for_hessians = reinterpret_cast<double*>(cuda_split_info_buffer + 8);
-  const unsigned int global_thread_index = blockIdx.x * blockDim.x + threadIdx.x;
   if (global_thread_index == 0) {
     cuda_leaf_output[left_leaf_index] = best_split_info->left_value;
   } else if (global_thread_index == 1) {
@@ -1062,6 +1055,29 @@ __global__ void SplitTreeStructureKernel(const int left_leaf_index,
       cuda_split_info_buffer[7] = left_leaf_index;
     }
   }
+}
+
+template <bool USE_NCCL_REDUCE, bool USE_GRAD_DISCRETIZED>
+__global__ void SplitTreeStructureKernel(const int left_leaf_index,
+  const int right_leaf_index,
+  data_size_t* block_to_left_offset_buffer,
+  data_size_t* block_to_right_offset_buffer, data_size_t* cuda_leaf_data_start,
+  data_size_t* cuda_leaf_data_end, data_size_t* cuda_leaf_num_data, const data_size_t* cuda_data_indices,
+  const data_size_t* cuda_data_indices_main,
+  const bool point_structs_at_main,
+  const CUDASplitInfo* best_split_info,
+  // for leaf splits information update
+  CUDALeafSplitsStruct* smaller_leaf_splits,
+  CUDALeafSplitsStruct* larger_leaf_splits,
+  const int num_total_bin,
+  hist_t* cuda_hist, hist_t** cuda_hist_pool,
+  double* cuda_leaf_output,
+  int* cuda_split_info_buffer) {
+  WriteSplitTreeStructure<USE_NCCL_REDUCE, USE_GRAD_DISCRETIZED>(
+    blockIdx.x * blockDim.x + threadIdx.x, left_leaf_index, right_leaf_index,
+    cuda_leaf_data_start, cuda_leaf_num_data, cuda_data_indices, cuda_data_indices_main,
+    point_structs_at_main, best_split_info, smaller_leaf_splits, larger_leaf_splits,
+    num_total_bin, cuda_hist, cuda_hist_pool, cuda_leaf_output, cuda_split_info_buffer);
 }
 
 __global__ void SplitInnerKernel(const int left_leaf_index, const int right_leaf_index,
@@ -1332,57 +1348,6 @@ __device__ __forceinline__ uint16_t HybridGenBitVectorDecision(
     }
   }
 }
-
-// runtime-branch replica of UpdateDataIndexToLeafIndexKernel's templated decision
-__device__ __forceinline__ int HybridUpdateLeafIndexDecision(
-  const CUDAHybridApplyDescriptor& d, const uint32_t bin) {
-  if (d.cat_bitset_len > 0) {
-    // categorical: mirror UpdateDataIndexToLeafIndexKernel_Categorical exactly
-    if ((d.use_min_bin && (bin < d.min_bin || bin > d.max_bin)) ||
-        (!d.use_min_bin && bin == 0)) {
-      return d.default_leaf_index;
-    }
-    return CUDAFindInBitset(d.cat_bitset, d.cat_bitset_len,
-                            bin - d.min_bin + static_cast<uint32_t>(d.cat_mfb_offset)) ?
-        d.left_leaf_index : d.right_leaf_index;
-  }
-  if (!d.min_is_max) {
-    if ((d.missing_is_zero && !d.mfb_is_zero && bin == d.t_zero_bin) ||
-      (d.missing_is_na && !d.mfb_is_na && bin == d.max_bin)) {
-      return d.missing_default_leaf_index;
-    } else if ((d.use_min_bin && (bin < d.min_bin || bin > d.max_bin)) ||
-               (!d.use_min_bin && bin == 0)) {
-      if ((d.missing_is_na && d.mfb_is_na) || (d.missing_is_zero && d.mfb_is_zero)) {
-        return d.missing_default_leaf_index;
-      } else {
-        return d.default_leaf_index;
-      }
-    } else if (bin > d.th) {
-      return d.right_leaf_index;
-    } else {
-      return d.left_leaf_index;
-    }
-  } else {
-    if (d.missing_is_zero && !d.mfb_is_zero && bin == d.t_zero_bin) {
-      return d.missing_default_leaf_index;
-    } else if (bin != d.max_bin) {
-      if ((d.missing_is_na && d.mfb_is_na) || (d.missing_is_zero && d.mfb_is_zero)) {
-        return d.missing_default_leaf_index;
-      } else {
-        return d.default_leaf_index;
-      }
-    } else {
-      if (d.missing_is_na && !d.mfb_is_na) {
-        return d.missing_default_leaf_index;
-      } else if (d.max_bin_to_left) {
-        return d.left_leaf_index;
-      } else {
-        return d.right_leaf_index;
-      }
-    }
-  }
-}
-
 
 // One block per categorical split of the level: build the split's INNER
 // bitset in its arena region from the finder's cat thresholds, then patch the
@@ -2014,13 +1979,8 @@ __global__ void HybridSplitInnerBatchKernel(
     shared_warp_scan);
 }
 
-// replica of SplitTreeStructureKernel<false, USE_GRAD_DISCRETIZED> with
-// point_structs_at_main fixed to true (batched apply always points the child
-// structs' data_indices_in_leaf at the main index array); one 32-thread block
-// per split, threadIdx.x playing the original global thread index.
-// USE_NCCL_REDUCE mirrors SplitTreeStructureKernel: slots 16/17 carry the
-// GLOBAL child counts and the smaller/larger role assignment reads the
-// global counts from the split info, so every rank makes the same choice.
+// Batched apply always points child structs at the main index array. Each
+// split uses one warp, retaining the ordinary kernel's lane-to-field mapping.
 // the per-split body of HybridSplitTreeStructureBatchKernel (global_thread_index in [0, 32)); also run by warp 0
 // of the split's struct block in HybridSplitInnerFusedBatchKernel (cuda_plan key apply_struct_fused)
 template <bool USE_NCCL_REDUCE, bool USE_GRAD_DISCRETIZED>
@@ -2035,143 +1995,11 @@ __device__ __forceinline__ void HybridSplitTreeStructureSplit(
   double* cuda_leaf_output,
   int* cuda_split_info_buffer,
   int* split_info_mirror) {
-  const int left_leaf_index = d.left_leaf_index;
-  const int right_leaf_index = d.right_leaf_index;
-  const CUDASplitInfo* best_split_info = d.best_split_info;
-  CUDALeafSplitsStruct* smaller_leaf_splits = d.smaller_leaf_splits;
-  CUDALeafSplitsStruct* larger_leaf_splits = d.larger_leaf_splits;
-  const unsigned int to_left_total_cnt = cuda_leaf_num_data[left_leaf_index];
-  double* cuda_split_info_buffer_for_hessians = reinterpret_cast<double*>(cuda_split_info_buffer + 8);
-  if (global_thread_index == 0) {
-    cuda_leaf_output[left_leaf_index] = best_split_info->left_value;
-  } else if (global_thread_index == 1) {
-    cuda_leaf_output[right_leaf_index] = best_split_info->right_value;
-  } else if (global_thread_index == 2) {
-    cuda_split_info_buffer[0] = left_leaf_index;
-  } else if (global_thread_index == 3) {
-    cuda_split_info_buffer[1] = cuda_leaf_num_data[left_leaf_index];
-  } else if (global_thread_index == 4) {
-    cuda_split_info_buffer[2] = cuda_leaf_data_start[left_leaf_index];
-  } else if (global_thread_index == 5) {
-    cuda_split_info_buffer[3] = right_leaf_index;
-  } else if (global_thread_index == 6) {
-    cuda_split_info_buffer[4] = cuda_leaf_num_data[right_leaf_index];
-  } else if (global_thread_index == 7) {
-    cuda_split_info_buffer[5] = cuda_leaf_data_start[right_leaf_index];
-  } else if (global_thread_index == 8) {
-    cuda_split_info_buffer_for_hessians[0] = best_split_info->left_sum_hessians;
-    cuda_split_info_buffer_for_hessians[2] = best_split_info->left_sum_gradients;
-  } else if (global_thread_index == 9) {
-    cuda_split_info_buffer_for_hessians[1] = best_split_info->right_sum_hessians;
-    cuda_split_info_buffer_for_hessians[3] = best_split_info->right_sum_gradients;
-  } else if (global_thread_index == 10 && USE_NCCL_REDUCE) {
-    // GLOBAL child counts for the host's global_num_data_in_leaf_ (identical
-    // on every rank: derived from the all-reduced histograms). Same contract
-    // as SplitTreeStructureKernel slots 16/17.
-    cuda_split_info_buffer[16] = best_split_info->left_count;
-    cuda_split_info_buffer[17] = best_split_info->right_count;
-  }
-
-  // Under NCCL the smaller/larger role must be the same on every rank -- the
-  // level all-reduce pairs up smaller-leaf histograms BY ROLE across ranks --
-  // so the choice reads the global counts from the split info; local
-  // partition counts can order differently per rank on skewed leaves.
-  const bool left_is_smaller = USE_NCCL_REDUCE ?
-    best_split_info->left_count < best_split_info->right_count :
-    cuda_leaf_num_data[left_leaf_index] < cuda_leaf_num_data[right_leaf_index];
-
-  if (left_is_smaller) {
-    if (global_thread_index == 0) {
-      hist_t* parent_hist_ptr = cuda_hist_pool[left_leaf_index];
-      cuda_hist_pool[right_leaf_index] = parent_hist_ptr;
-      cuda_hist_pool[left_leaf_index] = cuda_hist + 2 * right_leaf_index * num_total_bin;
-      smaller_leaf_splits->hist_in_leaf = cuda_hist_pool[left_leaf_index];
-      larger_leaf_splits->hist_in_leaf = cuda_hist_pool[right_leaf_index];
-    } else if (global_thread_index == 1) {
-      smaller_leaf_splits->sum_of_gradients = best_split_info->left_sum_gradients;
-      if (USE_GRAD_DISCRETIZED) {
-        smaller_leaf_splits->sum_of_gradients_hessians = best_split_info->left_sum_of_gradients_hessians;
-      }
-    } else if (global_thread_index == 2) {
-      smaller_leaf_splits->sum_of_hessians = best_split_info->left_sum_hessians;
-    } else if (global_thread_index == 3) {
-      smaller_leaf_splits->num_data_in_leaf = to_left_total_cnt;
-    } else if (global_thread_index == 4) {
-      smaller_leaf_splits->gain = best_split_info->left_gain;
-    } else if (global_thread_index == 5) {
-      smaller_leaf_splits->leaf_value = best_split_info->left_value;
-    } else if (global_thread_index == 6) {
-      smaller_leaf_splits->data_indices_in_leaf = cuda_data_indices_main + cuda_leaf_data_start[left_leaf_index];
-    } else if (global_thread_index == 7) {
-      larger_leaf_splits->leaf_index = right_leaf_index;
-    } else if (global_thread_index == 8) {
-      larger_leaf_splits->sum_of_gradients = best_split_info->right_sum_gradients;
-      if (USE_GRAD_DISCRETIZED) {
-        larger_leaf_splits->sum_of_gradients_hessians = best_split_info->right_sum_of_gradients_hessians;
-      }
-    } else if (global_thread_index == 9) {
-      larger_leaf_splits->sum_of_hessians = best_split_info->right_sum_hessians;
-    } else if (global_thread_index == 10) {
-      larger_leaf_splits->num_data_in_leaf = cuda_leaf_num_data[right_leaf_index];
-    } else if (global_thread_index == 11) {
-      larger_leaf_splits->gain = best_split_info->right_gain;
-    } else if (global_thread_index == 12) {
-      larger_leaf_splits->leaf_value = best_split_info->right_value;
-    } else if (global_thread_index == 13) {
-      larger_leaf_splits->data_indices_in_leaf = cuda_data_indices_main + cuda_leaf_data_start[right_leaf_index];
-    } else if (global_thread_index == 14) {
-      cuda_split_info_buffer[6] = left_leaf_index;
-    } else if (global_thread_index == 15) {
-      cuda_split_info_buffer[7] = right_leaf_index;
-    } else if (global_thread_index == 16) {
-      smaller_leaf_splits->leaf_index = left_leaf_index;
-    }
-  } else {
-    if (global_thread_index == 0) {
-      larger_leaf_splits->leaf_index = left_leaf_index;
-    } else if (global_thread_index == 1) {
-      larger_leaf_splits->sum_of_gradients = best_split_info->left_sum_gradients;
-      if (USE_GRAD_DISCRETIZED) {
-        larger_leaf_splits->sum_of_gradients_hessians = best_split_info->left_sum_of_gradients_hessians;
-      }
-    } else if (global_thread_index == 2) {
-      larger_leaf_splits->sum_of_hessians = best_split_info->left_sum_hessians;
-    } else if (global_thread_index == 3) {
-      larger_leaf_splits->num_data_in_leaf = to_left_total_cnt;
-    } else if (global_thread_index == 4) {
-      larger_leaf_splits->gain = best_split_info->left_gain;
-    } else if (global_thread_index == 5) {
-      larger_leaf_splits->leaf_value = best_split_info->left_value;
-    } else if (global_thread_index == 6) {
-      larger_leaf_splits->data_indices_in_leaf = cuda_data_indices_main + cuda_leaf_data_start[left_leaf_index];
-    } else if (global_thread_index == 7) {
-      smaller_leaf_splits->leaf_index = right_leaf_index;
-    } else if (global_thread_index == 8) {
-      smaller_leaf_splits->sum_of_gradients = best_split_info->right_sum_gradients;
-      if (USE_GRAD_DISCRETIZED) {
-        smaller_leaf_splits->sum_of_gradients_hessians = best_split_info->right_sum_of_gradients_hessians;
-      }
-    } else if (global_thread_index == 9) {
-      smaller_leaf_splits->sum_of_hessians = best_split_info->right_sum_hessians;
-    } else if (global_thread_index == 10) {
-      smaller_leaf_splits->num_data_in_leaf = cuda_leaf_num_data[right_leaf_index];
-    } else if (global_thread_index == 11) {
-      smaller_leaf_splits->gain = best_split_info->right_gain;
-    } else if (global_thread_index == 12) {
-      smaller_leaf_splits->leaf_value = best_split_info->right_value;
-    } else if (global_thread_index == 13) {
-      smaller_leaf_splits->data_indices_in_leaf = cuda_data_indices_main + cuda_leaf_data_start[right_leaf_index];
-    } else if (global_thread_index == 14) {
-      cuda_hist_pool[right_leaf_index] = cuda_hist + 2 * right_leaf_index * num_total_bin;
-      smaller_leaf_splits->hist_in_leaf = cuda_hist_pool[right_leaf_index];
-    } else if (global_thread_index == 15) {
-      larger_leaf_splits->hist_in_leaf = cuda_hist_pool[left_leaf_index];
-    } else if (global_thread_index == 16) {
-      cuda_split_info_buffer[6] = right_leaf_index;
-    } else if (global_thread_index == 17) {
-      cuda_split_info_buffer[7] = left_leaf_index;
-    }
-  }
+  WriteSplitTreeStructure<USE_NCCL_REDUCE, USE_GRAD_DISCRETIZED>(
+    global_thread_index, d.left_leaf_index, d.right_leaf_index,
+    cuda_leaf_data_start, cuda_leaf_num_data, cuda_data_indices_main, cuda_data_indices_main,
+    true, d.best_split_info, d.smaller_leaf_splits, d.larger_leaf_splits,
+    num_total_bin, cuda_hist, cuda_hist_pool, cuda_leaf_output, cuda_split_info_buffer);
   if (split_info_mirror != nullptr) {
     // cuda_plan key readback_fused: the split's 18 ints, written above by lanes of this warp, into the mapped host
     // staging FinishSplitBatch reads (all 32 lanes run this body; the warp barrier orders their stores)

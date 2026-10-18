@@ -97,12 +97,6 @@ CUDAHistogramConstructor::~CUDAHistogramConstructor() {
   if (prefill_pinned_ != nullptr) {
     gpuAssert(cudaFreeHost(prefill_pinned_), __FILE__, __LINE__);
   }
-  if (construct_done_event_ != nullptr) {
-    gpuAssert(cudaEventDestroy(construct_done_event_), __FILE__, __LINE__);
-  }
-  if (subtract_done_event_ != nullptr) {
-    gpuAssert(cudaEventDestroy(subtract_done_event_), __FILE__, __LINE__);
-  }
 }
 
 void CUDAHistogramConstructor::InitFeatureMetaInfo(const Dataset* train_data, const std::vector<uint32_t>& feature_hist_offsets) {
@@ -364,15 +358,6 @@ void CUDAHistogramConstructor::SetFeatureUsedBytree(const std::vector<int8_t>& i
   }
 }
 
-void LaunchTransposeColMajorToRowMajor(
-    cudaStream_t stream,
-    const uint8_t* staging,
-    uint8_t* compact_data,
-    const int* partition_for_compact,
-    const int* compact_partition_column_offsets,
-    data_size_t num_data,
-    int total_compact_cols);
-
 // Implemented in cuda_histogram_constructor.cu — does the kernel launch.
 void LaunchFillCompactDataKernel(
   cudaStream_t stream,
@@ -545,7 +530,7 @@ bool CUDAHistogramConstructor::ScanCompactLayout(
   // 4-bit mode: when the row matrix is packed, the compact matrix is packed the
   // same way (per-partition packed row width = ceil(used_columns / 2) bytes,
   // column j of a partition in byte (j >> 1), nibble (j & 1)).
-  layout->is_4bit = cuda_row_data_->is_4bit_packed() && !cuda_row_data_->is_data_host_mapped();
+  layout->is_4bit = cuda_row_data_->is_4bit_packed();
 
   // Experimental packing codecs (pack_radix5/pack_radix6/pack_bit3 plan keys):
   // a denser-than-nibble layout is eligible when the source is the 4-bit row
@@ -609,7 +594,6 @@ bool CUDAHistogramConstructor::ScanCompactLayout(
 
 bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_feature_used_bytree) {
   use_compact_view_ = false;
-  compact_col_major_filled_ = false;
   fused_root_ready_ = false;
   code5_valid_ = false;
   nibble_pending_ = false;
@@ -685,8 +669,7 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
   // Allocate / resize compact buffers.
   const size_t compact_data_bytes = layout.data_bytes;
   if (compact_data_uint8_t_.Size() < compact_data_bytes) {
-    // Discard: both fill paths below (LaunchCompactFill, and the host-mapped
-    // staging transpose) rewrite every byte for the CURRENT layout, so Resize's
+    // Discard: LaunchCompactFill rewrites every byte for the CURRENT layout, so Resize's
     // preserve-copy would carry over a previous layout that is about to be
     // overwritten — while holding both blocks. This is the allocation that
     // OOM-ed the rev-3 sweep's judge stage.
@@ -706,13 +689,8 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
   }
 
   // Upload metadata.
-  // We need cuda copies of:
-  //   compact_part_col_offsets (P+1 ints)
-  //   src_part_col_offsets     (P+1 ints) -- already on device, but we have host
-  //   src_part_stride_h        (P ints)
-  //   src_local_col_for_compact_h (total_compact ints)
-  //   partition_for_compact_h     (total_compact ints)
-  //   compact_col_hist_offsets_h  (total_compact uint32)
+  // The fill's per-slot source/destination tables are uploaded by LaunchCompactFill;
+  // the construct kernels also need the compact partition and histogram offsets.
 
   if (compact_feature_partition_column_index_offsets_.Size() < compact_part_col_offsets.size()) {
     compact_feature_partition_column_index_offsets_.Resize(compact_part_col_offsets.size());
@@ -798,78 +776,7 @@ bool CUDAHistogramConstructor::BuildCompactView(const std::vector<int8_t>& is_fe
   UploadTreeStartMeta(compact_partition_hist_offsets_.RawData(), src_part_hist_offsets.data(),
                       src_part_hist_offsets.size());
 
-  // When the source is host-pinned (zero-copy), the GPU fill kernel does
-  // ~1-byte strided PCIe loads which are extremely inefficient (~1 GB/s effective).
-  // For host-mapped sources, do a host-side OpenMP gather into pinned compact_data_host_,
-  // then a single bulk cudaMemcpy. Empirically this is ~10× faster than the GPU fill kernel.
-  //
-  // For GPU-resident sources (small datasets that fit in VRAM), the original
-  // GPU fill kernel is fastest.
-  // Per-tree fill: when source is host (column-major), do one cudaMemcpy per sampled column.
-  // Each is a contiguous num_data byte transfer at ~20 GB/s → ~85 ms for f=0.1 / 6.7M rows.
-  if (cuda_row_data_->is_data_host_mapped()) {
-    FlushTreeStartMetaBatch();  // cuda_plan key tree_meta_batch: the staging transpose reads the layout above
-    const uint8_t* src_col_major = cuda_row_data_->host_partitioned_data_uint8_t();
-    // Compact GPU layout: row-major-in-partition (matches histogram kernel expectation).
-    // For each compact col c in partition p, we need to write num_data bytes to
-    // compact_data_uint8_t_ at strided positions (compact_stride_p apart per row).
-    // To get a contiguous bulk transfer, we instead make compact GPU layout COLUMN-MAJOR
-    // within partition: [r] = compact_data[part_offset + col_in_p * num_data + r].
-    // The histogram kernel access pattern (`data_ptr[r * num_columns_in_partition + threadIdx.x]`)
-    // becomes incorrect for column-major; we emit a separate column-major-aware
-    // launcher branch.
-
-    // Lazily allocate scratch buffers only used by this host-mapped path.
-    CUDAVector<int> d_partition_for_compact(partition_for_compact_h.size());
-    CopyFromHostToCUDADevice<int>(d_partition_for_compact.RawData(),
-                                  partition_for_compact_h.data(),
-                                  partition_for_compact_h.size(), __FILE__, __LINE__);
-    // Multi-stream direct cudaMemcpyAsync per column.
-    if (compact_staging_col_major_.Size() < compact_data_bytes) {
-      // Discard: the per-column memcpys below write every sampled column, and
-      // compact_data_bytes is sized for exactly those columns.
-      compact_staging_col_major_.ResizeDiscard(compact_data_bytes);
-    }
-    static const int N_STREAMS = 4;
-    static cudaStream_t copy_streams[N_STREAMS] = {nullptr};
-    static cudaEvent_t copy_done[N_STREAMS] = {nullptr};
-    // once per process, whichever learner gets here first (forest slots train on several threads)
-    static std::once_flag streams_init;
-    std::call_once(streams_init, []() {
-      for (int i = 0; i < N_STREAMS; ++i) {
-        cudaStreamCreate(&copy_streams[i]);
-        cudaEventCreate(&copy_done[i]);
-      }
-    });
-    for (int compact_col = 0; compact_col < total_compact; ++compact_col) {
-      const int p = partition_for_compact_h[compact_col];
-      const int src_local = src_local_col_for_compact_h[compact_col];
-      const int src_p_start = src_part_col_offsets[p];
-      const size_t src_byte_offset = (static_cast<size_t>(src_p_start) + static_cast<size_t>(src_local)) * static_cast<size_t>(num_data);
-      const size_t staging_byte_offset = static_cast<size_t>(compact_col) * static_cast<size_t>(num_data);
-      cudaMemcpyAsync(compact_staging_col_major_.RawData() + staging_byte_offset,
-                      src_col_major + src_byte_offset,
-                      num_data,
-                      cudaMemcpyHostToDevice,
-                      copy_streams[compact_col % N_STREAMS]);
-    }
-    for (int i = 0; i < N_STREAMS; ++i) {
-      cudaEventRecord(copy_done[i], copy_streams[i]);
-      cudaStreamWaitEvent(cuda_stream_, copy_done[i], 0);
-    }
-    // GPU transpose staging (col-major) → compact_data (row-major-in-partition).
-    LaunchTransposeColMajorToRowMajor(
-        cuda_stream_,
-        compact_staging_col_major_.RawData(),
-        compact_data_uint8_t_.RawData(),
-        d_partition_for_compact.RawData(),
-        compact_feature_partition_column_index_offsets_.RawData(),
-        num_data,
-        total_compact);
-    CUDASUCCESS_OR_FATAL(cudaStreamSynchronize(cuda_stream_));
-    // compact_data is now row-major-in-partition
-    compact_col_major_filled_ = true;  // the col-major staging holds the same slots
-  } else if (prefill_valid_ && prefill_bitmap_ == is_feature_used_bytree) {
+  if (prefill_valid_ && prefill_bitmap_ == is_feature_used_bytree) {
     // The prefill already produced exactly these bytes into the alt buffer
     // during the previous tree's training (event-synced above): swap it in
     // and skip the fill entirely.
@@ -1456,7 +1363,7 @@ void CUDAHistogramConstructor::PrefillNextCompactView(
   // Any previous prefill was consumed or invalidated by BuildCompactView.
   prefill_valid_ = false;
   if (!FalcataPlan::Get().compact_prefill) return;
-  if (cuda_row_data_ == nullptr || cuda_row_data_->is_data_host_mapped()) return;
+  if (cuda_row_data_ == nullptr) return;
   CompactLayout layout;
   if (!ScanCompactLayout(is_feature_used_bytree, &layout)) return;
   if (compact_data_uint8_t_alt_.Size() < layout.data_bytes) {
@@ -1474,6 +1381,31 @@ void CUDAHistogramConstructor::InvalidateCompactPrefill() {
   if (prefill_valid_) {
     CUDASUCCESS_OR_FATAL(cudaEventSynchronize(fill_done_event_alt_));
     prefill_valid_ = false;
+  }
+}
+
+// Slots span the full histogram; each pipeline owns a disjoint scratch region.
+void CUDAHistogramConstructor::InitDeterministicDenseScratch() {
+  const std::vector<uint32_t>& dense_part_offsets = cuda_row_data_->host_partition_hist_offsets();
+  const uint32_t dense_stride = dense_part_offsets.empty() ? 0u : (dense_part_offsets.back() << 1);
+  det_dense_slot_stride_ = dense_stride;
+  if (!use_quantized_grad_ && dense_stride > 0) {
+    const size_t per_row = static_cast<size_t>(dense_stride) * sizeof(hist_t);
+    det_dense_dy_ = std::max(1, std::min<int>(kDetDenseDyCap,
+        static_cast<int>(kDetDenseSlotBudget / (static_cast<size_t>(kDetTileCap) * per_row))));
+    // The dy formula floors at 1; ultra-wide strides then need the TILE
+    // count to yield instead, or the slab exceeds the budget kDetTileCap-fold.
+    det_dense_tile_cap_ = std::max(1, std::min<int>(kDetTileCap,
+        static_cast<int>(kDetDenseSlotBudget / (static_cast<size_t>(det_dense_dy_) * per_row))));
+    // One region per histogram pipeline: pipelined pair-constructs run on
+    // different pipeline streams, so a shared region would let one
+    // construct's slot rows overwrite another's before its merge reads them
+    // (same failure mode the sparse tile partials needed per-pipeline
+    // regions for). Worst case 4x the slot budget.
+    cuda_det_dense_slots_.Resize(static_cast<size_t>(kNumHistPipelines) * det_dense_tile_cap_ * det_dense_dy_ * dense_stride);
+  } else {
+    det_dense_dy_ = 0;
+    det_dense_tile_cap_ = 0;
   }
 }
 
@@ -1500,26 +1432,7 @@ void CUDAHistogramConstructor::Init(const Dataset* train_data, TrainingShareStat
     cuda_row_data_->Init(train_data, share_state);
   }
 
-  // Deterministic dense-construct scratch (same as ResetTrainingData; both
-  // entry points size it because either can be the only one a flow calls).
-  // Slot rows span the FULL histogram (positions are global per partition,
-  // so partitions own disjoint ranges of each row).
-  const std::vector<uint32_t>& dense_part_offsets = cuda_row_data_->host_partition_hist_offsets();
-  const uint32_t dense_stride = dense_part_offsets.empty() ? 0u : (dense_part_offsets.back() << 1);
-  det_dense_slot_stride_ = dense_stride;
-  if (!use_quantized_grad_ && dense_stride > 0) {
-    const size_t per_row = static_cast<size_t>(dense_stride) * sizeof(hist_t);
-    det_dense_dy_ = std::max(1, std::min<int>(kDetDenseDyCap,
-        static_cast<int>(kDetDenseSlotBudget / (static_cast<size_t>(kDetTileCap) * per_row))));
-    // The dy formula floors at 1; ultra-wide strides then need the TILE
-    // count to yield instead, or the slab exceeds the budget kDetTileCap-fold.
-    det_dense_tile_cap_ = std::max(1, std::min<int>(kDetTileCap,
-        static_cast<int>(kDetDenseSlotBudget / (static_cast<size_t>(det_dense_dy_) * per_row))));
-    cuda_det_dense_slots_.Resize(static_cast<size_t>(kNumHistPipelines) * det_dense_tile_cap_ * det_dense_dy_ * dense_stride);
-  } else {
-    det_dense_dy_ = 0;
-    det_dense_tile_cap_ = 0;
-  }
+  InitDeterministicDenseScratch();
 
   // fp32-pair global histograms: dense shared-memory non-quantized layout only
   // (sparse / large-bin construct kernels and the categorical find path stay
@@ -1960,7 +1873,7 @@ void CUDAHistogramConstructor::ReleaseUnusedFullView() {
 
 bool CUDAHistogramConstructor::ColMajorFillApplicable() const {
   return FalcataPlan::Get().colmajor_fill && cuda_row_data_ != nullptr && cuda_row_data_->is_4bit_packed() &&
-         !cuda_row_data_->is_data_host_mapped() && colmajor_pad_ == 0 && !colmajor_direct_;
+         colmajor_pad_ == 0 && !colmajor_direct_;
 }
 
 // The column-major copy duplicates the 4-bit row matrix (one nibble per value) so the per-tree compact fill reads
@@ -2300,32 +2213,7 @@ void CUDAHistogramConstructor::ResetTrainingData(const Dataset* train_data, Trai
   cuda_row_data_->RequestDense4BitColumnsOnly(FalcataPlan::Get().colmajor_fill && FalcataPlan::Get().colmajor_direct);
   cuda_row_data_->Init(train_data, share_states);
 
-  // Deterministic dense-construct scratch: sized from the widest partition's
-  // item count once the row data exists. Non-quantized only; quantized
-  // training keeps its order-invariant integer atomics.
-  // Slot rows span the FULL histogram (positions are global per partition,
-  // so partitions own disjoint ranges of each row).
-  const std::vector<uint32_t>& dense_part_offsets = cuda_row_data_->host_partition_hist_offsets();
-  const uint32_t dense_stride = dense_part_offsets.empty() ? 0u : (dense_part_offsets.back() << 1);
-  det_dense_slot_stride_ = dense_stride;
-  if (!use_quantized_grad_ && dense_stride > 0) {
-    const size_t per_row = static_cast<size_t>(dense_stride) * sizeof(hist_t);
-    det_dense_dy_ = std::max(1, std::min<int>(kDetDenseDyCap,
-        static_cast<int>(kDetDenseSlotBudget / (static_cast<size_t>(kDetTileCap) * per_row))));
-    // The dy formula floors at 1; ultra-wide strides then need the TILE
-    // count to yield instead, or the slab exceeds the budget kDetTileCap-fold.
-    det_dense_tile_cap_ = std::max(1, std::min<int>(kDetTileCap,
-        static_cast<int>(kDetDenseSlotBudget / (static_cast<size_t>(det_dense_dy_) * per_row))));
-    // One region per histogram pipeline: pipelined pair-constructs run on
-    // different pipeline streams, so a shared region would let one
-    // construct's slot rows overwrite another's before its merge reads them
-    // (same failure mode the sparse tile partials needed per-pipeline
-    // regions for). Worst case 4x the slot budget.
-    cuda_det_dense_slots_.Resize(static_cast<size_t>(kNumHistPipelines) * det_dense_tile_cap_ * det_dense_dy_ * dense_stride);
-  } else {
-    det_dense_dy_ = 0;
-    det_dense_tile_cap_ = 0;
-  }
+  InitDeterministicDenseScratch();
 
   // (not under cuda_plan key nonquant_deterministic: the deterministic and fixed-point constructs store hist_t; the
   // fp32 gain math of cuda_precision=fp32 stays)
