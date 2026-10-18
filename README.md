@@ -132,11 +132,12 @@ the source distribution vendors every dependency, so no `git clone` and no
 submodule dance.
 
 The build detects the GPU(s) in the machine and **compiles only for those**
-(15–20 minutes on typical hardware). When no GPU is visible at build time —
-docker build stages, CPU-only CI — it instead targets every architecture the
-toolkit supports (sm_60 upward on CUDA 11/12, sm_75 upward on CUDA 13+, plus
-PTX for the newest so future cards still run), which takes several times
-longer. To build for a card other than the one present, or to pick one
+(the library compiles in about 50 s on a 24-thread desktop). When no GPU is
+visible at build time — docker build stages, CPU-only CI — it instead targets
+every architecture the toolkit supports (sm_60 upward on CUDA 11/12, sm_75
+upward on CUDA 13+, plus PTX for the newest so future cards still run), which
+takes about four times as long (about 3.5 minutes on the same machine with
+CUDA 13). To build for a card other than the one present, or to pick one
 explicitly:
 
 ```bash
@@ -174,6 +175,12 @@ cd Falcata
 git submodule update --init --recursive
 sh build-python.sh install --cuda
 ```
+
+Development builds, like `pip install`, compile only for the GPU(s) that
+`nvidia-smi` reports. Set `CUDAARCHS` for `build-python.sh`, or
+`-DCMAKE_CUDA_ARCHITECTURES` for `cmake`, to choose explicitly. Release wheels
+are built by `tools/build-release-wheel.sh` for a fixed list of architectures
+(override with `FALCATA_WHEEL_ARCHS`), whatever GPU the build machine has.
 
 **Windows.** CUDA builds and runs on Windows too (single-GPU). Use the Ninja
 generator from an *x64 Native Tools Command Prompt for VS* (so `nvcc` finds
