@@ -1,0 +1,214 @@
+/*!
+ * Copyright (c) 2026 Falcata contributors. All rights reserved.
+ * Licensed under the MIT License. See LICENSE file in the project root for license information.
+ */
+#include <cuda_runtime.h>
+#include <Falcata/cuda/cuda_utils.hu>
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <vector>
+
+#include <Falcata/cuda/cuda_tree.hpp>
+
+#include "../../src/treelearner/cuda/cuda_data_partition.hpp"
+#include "../../src/treelearner/cuda/cuda_device_levels.hpp"
+#include "../../src/treelearner/cuda/cuda_hybrid_graph.hpp"
+#include "../../src/treelearner/cuda/cuda_leaf_splits.hpp"
+
+namespace {
+template <typename T>
+class DeviceBuffer {
+ public:
+  explicit DeviceBuffer(size_t size) {
+    EXPECT_EQ(cudaMalloc(&data_, size * sizeof(T)), cudaSuccess);
+  }
+  ~DeviceBuffer() { EXPECT_EQ(cudaFree(data_), cudaSuccess); }
+  T* data() { return data_; }
+ private:
+  T* data_ = nullptr;
+};
+
+// Exercise the library's actual selector, descriptors and journal. The oracle is the host's stable_sort contract,
+// not another CUDA implementation. The final pairs launch deliberately has no child-search descriptor storage.
+void CheckSelection(const std::vector<double>& gains, const std::vector<bool>& valid, const int budget,
+                    const bool final_depth = true) {
+  using Falcata::CUDADeviceLevelConfig;
+  using Falcata::CUDADeviceLevelState;
+  using Falcata::CUDAHybridApplyDescriptor;
+  using Falcata::CUDAHybridGraphFeatureMeta;
+  using Falcata::CUDAHybridGraphFeatureSource;
+  using Falcata::CUDALeafSplitsStruct;
+  using Falcata::CUDASplitInfo;
+  using Falcata::CUDATreeBatchSplit;
+  using Falcata::data_size_t;
+  using Falcata::kDeviceLevelJournalHeader;
+  using Falcata::kDeviceLevelJournalLevels;
+  using Falcata::LaunchDeviceLevelPairs;
+  using Falcata::LaunchDeviceLevelSelect;
+  const int leaves = static_cast<int>(gains.size());
+  ASSERT_EQ(valid.size(), gains.size());
+  int level = 0;
+  while ((1 << level) < leaves) ++level;
+  const int cursor = leaves - 1;
+  DeviceBuffer<CUDASplitInfo> best(leaves);
+  DeviceBuffer<data_size_t> counts(leaves), starts(leaves);
+  DeviceBuffer<CUDADeviceLevelState> device_state(1);
+  DeviceBuffer<CUDATreeBatchSplit> batch(leaves);
+  DeviceBuffer<CUDAHybridApplyDescriptor> descs(2 * leaves);
+  DeviceBuffer<CUDALeafSplitsStruct> slots(2 * leaves);
+  DeviceBuffer<CUDAHybridGraphFeatureMeta> device_meta(1);
+  DeviceBuffer<CUDAHybridGraphFeatureSource> device_source(1);
+  DeviceBuffer<double> thresholds(1);
+  DeviceBuffer<int> device_journal(kDeviceLevelJournalHeader + 4 * leaves);
+  std::vector<CUDASplitInfo> splits(leaves);
+  std::vector<data_size_t> host_counts(leaves), host_starts(leaves);
+  std::vector<int> expected;
+  int next_start = 0;
+  for (int leaf = 0; leaf < leaves; ++leaf) {
+    auto& s = splits[leaf];
+    s.is_valid = valid[leaf];
+    s.leaf_index = leaf;
+    s.gain = gains[leaf];
+    s.inner_feature_index = 0;
+    s.threshold = 0;
+    s.default_left = false;
+    s.left_sum_gradients = s.right_sum_gradients = 0.0;
+    s.left_sum_hessians = s.right_sum_hessians = 1.0;
+    s.left_sum_of_gradients_hessians = s.right_sum_of_gradients_hessians = 1;
+    s.left_count = s.right_count = 1;
+    s.left_gain = s.right_gain = 0.0;
+    s.left_value = s.right_value = 0.0;
+    host_counts[leaf] = 2 + leaf % 3;
+    host_starts[leaf] = next_start;
+    next_start += host_counts[leaf];
+    if (valid[leaf]) expected.push_back(leaf);
+  }
+  const bool binding = static_cast<int>(expected.size()) > budget - leaves;
+  const bool rejected = binding && !final_depth;
+  if (binding) {
+    std::stable_sort(expected.begin(), expected.end(), [&](int a, int b) { return gains[a] > gains[b]; });
+    expected.resize(rejected ? 0 : static_cast<size_t>(budget - leaves));
+  }
+  ASSERT_EQ(cudaMemcpy(best.data(), splits.data(), leaves * sizeof(CUDASplitInfo), cudaMemcpyHostToDevice), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(counts.data(), host_counts.data(), leaves * sizeof(data_size_t), cudaMemcpyHostToDevice), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(starts.data(), host_starts.data(), leaves * sizeof(data_size_t), cudaMemcpyHostToDevice), cudaSuccess);
+  CUDADeviceLevelState state{};
+  state.num_leaves = leaves;
+  state.split_info_base = cursor;
+  state.levels_applied = level;
+  ASSERT_EQ(cudaMemcpy(device_state.data(), &state, sizeof(state), cudaMemcpyHostToDevice), cudaSuccess);
+  CUDAHybridGraphFeatureMeta meta{};
+  meta.real_feature_index = 3;
+  meta.max_bin = 1;
+  meta.most_freq_bin = 1;
+  CUDAHybridGraphFeatureSource source{};
+  source.bit_type = 8;
+  const double threshold = 0.5;
+  ASSERT_EQ(cudaMemcpy(device_meta.data(), &meta, sizeof(meta), cudaMemcpyHostToDevice), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(device_source.data(), &source, sizeof(source), cudaMemcpyHostToDevice), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(thresholds.data(), &threshold, sizeof(threshold), cudaMemcpyHostToDevice), cudaSuccess);
+  std::vector<int> journal(kDeviceLevelJournalHeader + 4 * leaves, 0);
+  journal[0] = level;
+  journal[1] = cursor;
+  ASSERT_EQ(cudaMemcpy(device_journal.data(), journal.data(), journal.size() * sizeof(int), cudaMemcpyHostToDevice), cudaSuccess);
+  CUDADeviceLevelConfig cfg{};
+  cfg.state = device_state.data();
+  cfg.leaf_best_split_info = best.data();
+  cfg.leaf_num_data = counts.data();
+  cfg.leaf_data_start = starts.data();
+  cfg.tree_batch_splits = batch.data();
+  cfg.apply_descs = descs.data();
+  cfg.pair_slots = slots.data();
+  cfg.feature_meta = device_meta.data();
+  cfg.feature_source = device_source.data();
+  cfg.real_thresholds = thresholds.data();
+  cfg.journal = device_journal.data();
+  cfg.max_depth = level + (final_depth ? 1 : 2);
+  cfg.num_leaves_budget = budget;
+  cfg.whole_tree = 1;
+  cfg.gap_block_dim = 1024;
+  LaunchDeviceLevelSelect(cfg, level, leaves, nullptr);
+  ASSERT_EQ(cudaGetLastError(), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(&state, device_state.data(), sizeof(state), cudaMemcpyDeviceToHost), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(journal.data(), device_journal.data(), journal.size() * sizeof(int), cudaMemcpyDeviceToHost), cudaSuccess);
+  ASSERT_EQ(journal[2], rejected ? 1 : 0);
+  ASSERT_EQ(state.live_splits, static_cast<int>(expected.size()));
+  if (expected.empty()) {
+    EXPECT_EQ(state.done, 1);
+    EXPECT_EQ(state.num_leaves, leaves);
+    EXPECT_EQ(state.total_flat_blocks, 0);
+    EXPECT_EQ(state.num_gaps, 0);
+    EXPECT_EQ(journal[0], level);
+    EXPECT_EQ(journal[1], cursor);
+    return;
+  }
+  ASSERT_EQ(state.done, 0);
+  EXPECT_EQ(state.num_leaves, leaves);
+  EXPECT_EQ(state.split_info_base, cursor);
+  EXPECT_EQ(journal[0], level + 1);
+  EXPECT_EQ(journal[1], cursor + static_cast<int>(expected.size()));
+  EXPECT_EQ(journal[kDeviceLevelJournalLevels + level], static_cast<int>(expected.size()));
+  std::vector<CUDATreeBatchSplit> actual_batch(expected.size());
+  std::vector<CUDAHybridApplyDescriptor> actual_descs(leaves);
+  ASSERT_EQ(cudaMemcpy(actual_batch.data(), batch.data(), actual_batch.size() * sizeof(CUDATreeBatchSplit), cudaMemcpyDeviceToHost), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(actual_descs.data(), descs.data(), actual_descs.size() * sizeof(CUDAHybridApplyDescriptor), cudaMemcpyDeviceToHost), cudaSuccess);
+  std::vector<bool> selected(leaves, false);
+  for (size_t k = 0; k < expected.size(); ++k) {
+    SCOPED_TRACE(::testing::Message() << "k=" << k);
+    const int leaf = expected[k];
+    selected[leaf] = true;
+    EXPECT_EQ(actual_batch[k].leaf_index, leaf);
+    EXPECT_EQ(actual_batch[k].num_leaves_at_split, leaves + static_cast<int>(k));
+    EXPECT_EQ(actual_batch[k].split_info, best.data() + leaf);
+    EXPECT_EQ(actual_descs[k].left_leaf_index, leaf);
+    EXPECT_EQ(actual_descs[k].right_leaf_index, leaves + static_cast<int>(k));
+    EXPECT_EQ(actual_descs[k].leaf_data_start, host_starts[leaf]);
+    EXPECT_EQ(journal[kDeviceLevelJournalHeader + 2 * (cursor + k)], leaf);
+    EXPECT_EQ(journal[kDeviceLevelJournalHeader + 2 * (cursor + k) + 1], 0);
+  }
+  int gap = 0;
+  for (int leaf = 0; leaf < leaves; ++leaf) {
+    if (selected[leaf]) continue;
+    const auto& d = actual_descs[expected.size() + gap++];
+    EXPECT_EQ(d.left_leaf_index, leaf);
+    EXPECT_EQ(d.leaf_data_start, host_starts[leaf]);
+    EXPECT_EQ(d.num_data_in_leaf, host_counts[leaf]);
+  }
+  EXPECT_EQ(state.num_gaps, gap);
+  if (!final_depth) return;
+  // No child search at the final depth, while live_splits remains available to the tree record.
+  LaunchDeviceLevelPairs(cfg, level, leaves, nullptr);
+  ASSERT_EQ(cudaGetLastError(), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(&state, device_state.data(), sizeof(state), cudaMemcpyDeviceToHost), cudaSuccess);
+  EXPECT_EQ(state.live_splits, static_cast<int>(expected.size()));
+  EXPECT_EQ(state.live_pairs, 0);
+  EXPECT_EQ(state.construct_total_blocks, 0);
+}
+}  // namespace
+
+TEST(CUDADeviceLevelBudget, EqualGainFinalCapsKeepLowerLeafTiesAndRightChildOrder) {
+  // Original 255/depth8 and1023/depth10 final frontiers, including the full512-candidate block.
+  for (const int leaves : {128, 512}) {
+    SCOPED_TRACE(::testing::Message() << "leaves=" << leaves);
+    CheckSelection(std::vector<double>(leaves, 7.0), std::vector<bool>(leaves, true), 2 * leaves - 1);
+  }
+}
+
+TEST(CUDADeviceLevelBudget, FinalTopKAppliesInGainOrderAndPreservesTerminalGaps) {
+  CheckSelection({2, 8, 4, 8, 1, 4, 8, 4}, std::vector<bool>(8, true), 11);
+  // Seven candidates exercise padding in the cooperative sort, with ties at the cutoff.
+  CheckSelection({2, 8, 4, 8, 1, 4, 8, 4}, {true, true, true, true, false, true, true, true}, 13);
+}
+
+TEST(CUDADeviceLevelBudget, NonbindingLevelsKeepAscendingOrderWithInvalidCandidates) {
+  CheckSelection({2, 8, 4, 8, 1, 4, 8, 4}, std::vector<bool>(8, true), 16);
+  CheckSelection({2, 8, 4, 8, 1, 4, 8, 4}, std::vector<bool>(8, true), 16, false);
+  CheckSelection({2, 8, 4, 8, 1, 4, 8, 4}, {true, true, false, true, false, true, false, true}, 15);
+}
+
+TEST(CUDADeviceLevelBudget, EmptyExhaustedAndNonfinalBindingStopWithoutApply) {
+  CheckSelection(std::vector<double>(8, 7.0), std::vector<bool>(8, false), 15);
+  CheckSelection(std::vector<double>(8, 7.0), std::vector<bool>(8, true), 8);
+  CheckSelection(std::vector<double>(8, 7.0), std::vector<bool>(8, true), 11, false);
+}

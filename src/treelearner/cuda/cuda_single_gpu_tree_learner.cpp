@@ -3640,10 +3640,10 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
     return 0;
   }
   if (plan.device_tree) {
-    // No budget arbitration/pruning is needed: every valid leaf can split through the depth bound. The last
-    // level fits the select block and apply buffers; all unsupported shapes retain the ordinary host path.
+    // Match HybridGrowthUsable's depth-limited regime: only the final depth-capped level can bind, and the device
+    // select applies its top-K candidates in the host arbitration order. Earlier levels still split leaf-ascending.
     const int depth = config_->max_depth;
-    if (depth < 1 || depth > 10 || (1LL << depth) > config_->num_leaves) {
+    if (depth < 1 || depth > 10 || (1LL << depth) > static_cast<int64_t>(config_->num_leaves) + 1) {
       LogDeviceLevelsFallback("depth bound or leaf budget");
       return 0;
     }
@@ -3820,6 +3820,8 @@ bool CUDASingleGPUTreeLearner::LaunchDeviceLevelGraph(CUDATree* tree, const CUDA
     key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(final_map_only)));
     // Select captures cfg BY VALUE; keep descriptor units identical to the new host receipt after a plan change.
     key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(cfg.gap_block_dim)));
+    // The select kernel captures this value too, including when reset/reuse retains the same allocations.
+    key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(cfg.num_leaves_budget)));
   }
   if (!cuda_histogram_constructor_->DeviceLevelGraphCapturable()) {
     return false;  // the construct would rewrite this tree's compact view first (a per-tree state, not a launch)
@@ -3973,6 +3975,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   cfg.real_thresholds = cuda_device_level_real_thresholds_.RawDataReadOnly();
   cfg.journal = cuda_device_level_journal_.RawData();
   cfg.max_depth = config_->max_depth;
+  cfg.num_leaves_budget = config_->num_leaves;
   cfg.whole_tree = FalcataPlan::Get().device_tree ? 1 : 0;
   // No current-tree host tail exists for a completed whole tree. Plain unweighted L2 never renews its
   // outputs, and its next BeforeTrain rebuilds root counts/start/bits before any host search. All other
@@ -4044,7 +4047,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   if (!launched) {
     EnqueueDeviceLevels(tree, cfg, num_levels, inline_all_map, final_map_only);
   }
-  const int max_total_splits = (1 << num_levels) - 1;
+  const int max_total_splits = std::min((1 << num_levels) - 1, config_->num_leaves - 1);
   bool active_prefix_readback = false;
   if (prefetch_tree_end) {
     // Same canonical whole/full-root subset; keep every V9 staging/producer/fence guard.

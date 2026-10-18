@@ -144,6 +144,8 @@ struct CUDADeviceLevelConfig {
   const double* real_thresholds;
   int* journal;
   int max_depth;
+  /*! \brief total leaf budget; whole trees arbitrate a binding final level on the device */
+  int num_leaves_budget;
   /*! \brief complete depth-bounded tree: the final apply needs no child histogram/search */
   int whole_tree;
   /*! \brief threads of the host's gap copy blocks (the gap descriptors' num_blocks unit) */
