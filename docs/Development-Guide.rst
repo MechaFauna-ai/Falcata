@@ -82,6 +82,17 @@ C++ unit tests are located in the ``./tests/cpp_tests`` folder and written with 
 To run tests locally first refer to the `Installation Guide <./Installation-Guide.rst#build-c-unit-tests>`__ for how to build tests and then simply run compiled executable file.
 It is highly recommended to build tests with `sanitizers <./Installation-Guide.rst#sanitizers>`__.
 
+Python tests are located in ``./tests/python_package_test`` and ``./tests/c_api_test``. The CUDA tests among them skip unless ``TASK=cuda`` is set.
+With `pytest-xdist <https://pytest-xdist.readthedocs.io/>`__ installed, the CUDA suite can run in several processes that share one GPU:
+
+.. code:: sh
+
+  TASK=cuda python -m pytest ./tests/python_package_test ./tests/c_api_test -n 4 --dist worksteal
+
+On an RTX 5090 with 24 CPU cores (WSL2), the full CUDA suite took 18 minutes serially and 9 minutes with ``-n 4``.
+More workers did not help (10 minutes with ``-n 3``, 9 with ``-n 5``): the processes take turns on the GPU, and most tests spend their time in small CUDA calls, which get slower when several processes share the device.
+Host memory use peaked at about 24, 27 and 28 GB with ``-n 3``, ``-n 4`` and ``-n 5``, because some tests build multi-GB datasets, in subprocesses too.
+
 High Level Language Package
 ---------------------------
 
