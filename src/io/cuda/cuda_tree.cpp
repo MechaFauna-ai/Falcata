@@ -81,27 +81,28 @@ void CUDATree::InitCUDAMemory(uint8_t* pooled_device_buffer) {
     // except the three first-element memsets below).
     pooled_ = true;
     const size_t L = static_cast<size_t>(max_leaves_);
-    uint8_t* ptr = pooled_device_buffer;
-    const auto take = [&ptr](size_t bytes) { uint8_t* p = ptr; ptr += bytes; return p; };
-    cuda_threshold_.SetView(reinterpret_cast<double*>(take(sizeof(double) * L)), L);
-    cuda_internal_weight_.SetView(reinterpret_cast<double*>(take(sizeof(double) * L)), L);
-    cuda_internal_value_.SetView(reinterpret_cast<double*>(take(sizeof(double) * L)), L);
-    cuda_leaf_value_.SetView(reinterpret_cast<double*>(take(sizeof(double) * L)), L);
-    cuda_leaf_weight_.SetView(reinterpret_cast<double*>(take(sizeof(double) * L)), L);
-    const size_t num_batch_splits = L / 2 + 2;
+    const CUDATreePooledLayout layout(max_leaves_);
+    const auto address = [&](CUDATreePooledLayout::Field field) {
+      return pooled_device_buffer + layout.fields[field].offset;
+    };
+    cuda_threshold_.SetView(reinterpret_cast<double*>(address(CUDATreePooledLayout::kThreshold)), L);
+    cuda_internal_weight_.SetView(reinterpret_cast<double*>(address(CUDATreePooledLayout::kInternalWeight)), L);
+    cuda_internal_value_.SetView(reinterpret_cast<double*>(address(CUDATreePooledLayout::kInternalValue)), L);
+    cuda_leaf_value_.SetView(reinterpret_cast<double*>(address(CUDATreePooledLayout::kLeafValue)), L);
+    cuda_leaf_weight_.SetView(reinterpret_cast<double*>(address(CUDATreePooledLayout::kLeafWeight)), L);
     cuda_batch_splits_.SetView(reinterpret_cast<CUDATreeBatchSplit*>(
-      take(sizeof(CUDATreeBatchSplit) * num_batch_splits)), num_batch_splits);
-    cuda_left_child_.SetView(reinterpret_cast<int*>(take(sizeof(int) * L)), L);
-    cuda_right_child_.SetView(reinterpret_cast<int*>(take(sizeof(int) * L)), L);
-    cuda_split_feature_inner_.SetView(reinterpret_cast<int*>(take(sizeof(int) * L)), L);
-    cuda_split_feature_.SetView(reinterpret_cast<int*>(take(sizeof(int) * L)), L);
-    cuda_leaf_depth_.SetView(reinterpret_cast<int*>(take(sizeof(int) * L)), L);
-    cuda_leaf_parent_.SetView(reinterpret_cast<int*>(take(sizeof(int) * L)), L);
-    cuda_threshold_in_bin_.SetView(reinterpret_cast<uint32_t*>(take(sizeof(uint32_t) * L)), L);
-    cuda_leaf_count_.SetView(reinterpret_cast<data_size_t*>(take(sizeof(data_size_t) * L)), L);
-    cuda_internal_count_.SetView(reinterpret_cast<data_size_t*>(take(sizeof(data_size_t) * L)), L);
-    cuda_split_gain_.SetView(reinterpret_cast<float*>(take(sizeof(float) * L)), L);
-    cuda_decision_type_.SetView(reinterpret_cast<int8_t*>(take(sizeof(int8_t) * L)), L);
+      pooled_device_buffer + layout.batch_splits_offset), layout.batch_splits_count);
+    cuda_left_child_.SetView(reinterpret_cast<int*>(address(CUDATreePooledLayout::kLeftChild)), L);
+    cuda_right_child_.SetView(reinterpret_cast<int*>(address(CUDATreePooledLayout::kRightChild)), L);
+    cuda_split_feature_inner_.SetView(reinterpret_cast<int*>(address(CUDATreePooledLayout::kSplitFeatureInner)), L);
+    cuda_split_feature_.SetView(reinterpret_cast<int*>(address(CUDATreePooledLayout::kSplitFeature)), L);
+    cuda_leaf_depth_.SetView(reinterpret_cast<int*>(address(CUDATreePooledLayout::kLeafDepth)), L);
+    cuda_leaf_parent_.SetView(reinterpret_cast<int*>(address(CUDATreePooledLayout::kLeafParent)), L);
+    cuda_threshold_in_bin_.SetView(reinterpret_cast<uint32_t*>(address(CUDATreePooledLayout::kThresholdInBin)), L);
+    cuda_leaf_count_.SetView(reinterpret_cast<data_size_t*>(address(CUDATreePooledLayout::kLeafCount)), L);
+    cuda_internal_count_.SetView(reinterpret_cast<data_size_t*>(address(CUDATreePooledLayout::kInternalCount)), L);
+    cuda_split_gain_.SetView(reinterpret_cast<float*>(address(CUDATreePooledLayout::kSplitGain)), L);
+    cuda_decision_type_.SetView(reinterpret_cast<int8_t*>(address(CUDATreePooledLayout::kDecisionType)), L);
   } else {
     cuda_left_child_.Resize(static_cast<size_t>(max_leaves_));
     cuda_right_child_.Resize(static_cast<size_t>(max_leaves_));
@@ -326,8 +327,8 @@ void CUDATree::ToHost(void* readback_staging_host, void* readback_staging_device
     // all per-tree arrays live in one contiguous slab: ONE D2H copy replaces the
     // 16 individual synchronous copies below (each pays a full launch+sync
     // round trip). The scatter into the host vectors is plain host memcpy.
-    const size_t L = static_cast<size_t>(max_leaves_);
-    const size_t slab_bytes = PooledDeviceBufferSize(max_leaves_);
+    const CUDATreePooledLayout layout(max_leaves_);
+    const size_t slab_bytes = layout.slab_bytes;
     std::vector<uint8_t> staging;
     // cuda_threshold_ is the first view carved from the slab (see InitCUDAMemory)
     const uint8_t* slab = reinterpret_cast<const uint8_t*>(cuda_threshold_.RawData());
@@ -346,31 +347,29 @@ void CUDATree::ToHost(void* readback_staging_host, void* readback_staging_device
       p = staging.data();
     }
     if (after_device_copy) after_device_copy();
-    const auto scatter = [&p](void* dst, const size_t bytes, const size_t stride) {
-      if (bytes > 0) std::memcpy(dst, p, bytes);
-      p += stride;
+    // Preserve all existing reads, including leaf_parent I, through the same layout as the producer.
+    const size_t n_internal = num_leaves_size > 1 ? num_leaves_size - 1 : 0;
+    const auto scatter = [&](CUDATreePooledLayout::Field field, void* dst) {
+      const auto& prefix = layout.fields[field];
+      const size_t entries = prefix.leaf_entries ? num_leaves_size : n_internal;
+      if (entries > 0) std::memcpy(dst, p + prefix.offset, entries * prefix.element_bytes);
     };
-    // num_leaves_ >= 1 always, but the compiler cannot prove it: the guarded
-    // count keeps num_leaves_size - 1 from wrapping in size_t arithmetic
-    // (the manylinux gcc rejects the unguarded memcpy sizes under -Werror).
-    const size_t n_int = num_leaves_size > 1 ? num_leaves_size - 1 : 0;
-    scatter(threshold_.data(), n_int * sizeof(double), L * sizeof(double));
-    scatter(internal_weight_.data(), n_int * sizeof(double), L * sizeof(double));
-    scatter(internal_value_.data(), n_int * sizeof(double), L * sizeof(double));
-    scatter(leaf_value_.data(), num_leaves_size * sizeof(double), L * sizeof(double));
-    scatter(leaf_weight_.data(), num_leaves_size * sizeof(double), L * sizeof(double));
-    p += sizeof(CUDATreeBatchSplit) * (L / 2 + 2);  // skip the batched split descriptors
-    scatter(left_child_.data(), n_int * sizeof(int), L * sizeof(int));
-    scatter(right_child_.data(), n_int * sizeof(int), L * sizeof(int));
-    scatter(split_feature_inner_.data(), n_int * sizeof(int), L * sizeof(int));
-    scatter(split_feature_.data(), n_int * sizeof(int), L * sizeof(int));
-    scatter(leaf_depth_.data(), num_leaves_size * sizeof(int), L * sizeof(int));
-    scatter(leaf_parent_.data(), n_int * sizeof(int), L * sizeof(int));
-    scatter(threshold_in_bin_.data(), n_int * sizeof(uint32_t), L * sizeof(uint32_t));
-    scatter(leaf_count_.data(), num_leaves_size * sizeof(data_size_t), L * sizeof(data_size_t));
-    scatter(internal_count_.data(), n_int * sizeof(data_size_t), L * sizeof(data_size_t));
-    scatter(split_gain_.data(), n_int * sizeof(float), L * sizeof(float));
-    scatter(decision_type_.data(), n_int * sizeof(int8_t), L * sizeof(int8_t));
+    scatter(CUDATreePooledLayout::kThreshold, threshold_.data());
+    scatter(CUDATreePooledLayout::kInternalWeight, internal_weight_.data());
+    scatter(CUDATreePooledLayout::kInternalValue, internal_value_.data());
+    scatter(CUDATreePooledLayout::kLeafValue, leaf_value_.data());
+    scatter(CUDATreePooledLayout::kLeafWeight, leaf_weight_.data());
+    scatter(CUDATreePooledLayout::kLeftChild, left_child_.data());
+    scatter(CUDATreePooledLayout::kRightChild, right_child_.data());
+    scatter(CUDATreePooledLayout::kSplitFeatureInner, split_feature_inner_.data());
+    scatter(CUDATreePooledLayout::kSplitFeature, split_feature_.data());
+    scatter(CUDATreePooledLayout::kLeafDepth, leaf_depth_.data());
+    scatter(CUDATreePooledLayout::kLeafParent, leaf_parent_.data());
+    scatter(CUDATreePooledLayout::kThresholdInBin, threshold_in_bin_.data());
+    scatter(CUDATreePooledLayout::kLeafCount, leaf_count_.data());
+    scatter(CUDATreePooledLayout::kInternalCount, internal_count_.data());
+    scatter(CUDATreePooledLayout::kSplitGain, split_gain_.data());
+    scatter(CUDATreePooledLayout::kDecisionType, decision_type_.data());
   } else {
   CopyFromCUDADeviceToHost<int>(left_child_.data(), cuda_left_child_.RawData(), num_leaves_size - 1, __FILE__, __LINE__);
   CopyFromCUDADeviceToHost<int>(right_child_.data(), cuda_right_child_.RawData(), num_leaves_size - 1, __FILE__, __LINE__);

@@ -2260,7 +2260,13 @@ void CUDAHistogramConstructor::LaunchDeviceLevelPairJoint(const CUDAHybridPairDe
   DiagConstructKernel(sh.kernel_kind == 4 ? "pair_code5_words (device levels)" : "pair_hist (device levels)");
   const uint8_t* data = sh.kernel_kind >= 2 ? compact_data_uint8_t_.RawDataReadOnly() : NibbleViewData();
   const int grid_x = std::max(1, sh.grid_x);
-  const int grid_y = std::max(1, std::min(65535, (DeviceLevelConstructTargetBlocks() + grid_x - 1) / grid_x));
+  int grid_y = std::max(1, std::min(65535, (DeviceLevelConstructTargetBlocks() + grid_x - 1) / grid_x));
+  if (device_level_whole_tree_ && sh.kernel_kind == 4 && sh.whole_row_partitions > 0 && grid_x == 1 &&
+      sh.slot != 0 && sh.slot_device_slots > 0) {
+    // Workers claim virtual block rows until exhausted; row grouping and flushes use the device map, not grid_y.
+    // The slotted whole-tree code-word path needs no more physical workers than its known resident capacity.
+    grid_y = std::min(grid_y, sh.slot_device_slots);
+  }
   kernel<<<dim3(grid_x, grid_y, 1), dim3(sh.block_x, sh.block_y), static_cast<size_t>(sh.smem_bytes), cuda_stream_>>>(
     pair_descs,
     reinterpret_cast<const int32_t*>(cuda_gradients_),
