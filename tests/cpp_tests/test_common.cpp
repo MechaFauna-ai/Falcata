@@ -249,12 +249,13 @@ TEST(CUDAControllerPolicy, UnrelatedOverridesDoNotForceControllerDefaults) {
 }
 
 namespace {
-Falcata::CUDAControllerFacts ControllerV1Facts() {
+Falcata::CUDAControllerFacts ControllerV2Facts() {
   Falcata::CUDAControllerFacts facts;
   facts.num_rows = 200000;
   facts.num_features = 104;
   facts.sampled_features = 104;
   facts.max_feature_bins = 256;
+  facts.num_bins = 104 * 256;
   facts.metadata_known = true;
   facts.num_leaves = 1024;
   facts.max_depth = 10;
@@ -274,18 +275,18 @@ Falcata::CUDAControllerFacts ControllerV1Facts() {
 
 TEST(CUDAControllerPolicy, WholeCoverageWidthAndCapacityBoundaries) {
   using Route = Falcata::CUDAControllerRoute;
-  auto facts = ControllerV1Facts();
+  auto facts = ControllerV2Facts();
   auto resolve = [&]() { return Falcata::ResolveCUDAController({}, facts).resolved; };
   EXPECT_EQ(resolve(), Route::kWhole);
   facts.num_rows = 99999;
   EXPECT_EQ(resolve(), Route::kHost);
   facts.num_rows = 100000;
   EXPECT_EQ(resolve(), Route::kWhole);
-  facts.num_features = facts.sampled_features = 128;
+  facts.num_features = facts.sampled_features = 256;
   EXPECT_EQ(resolve(), Route::kWhole);
-  facts.num_features = facts.sampled_features = 129;
+  facts.num_features = facts.sampled_features = 257;
   EXPECT_EQ(resolve(), Route::kHost);
-  facts = ControllerV1Facts();
+  facts = ControllerV2Facts();
   facts.min_data_in_leaf = 100;
   facts.num_rows = 102399;
   EXPECT_EQ(resolve(), Route::kHost);
@@ -306,8 +307,9 @@ TEST(CUDAControllerPolicy, WholeCoverageWidthAndCapacityBoundaries) {
 
 TEST(CUDAControllerPolicy, FinalSingleLeafBudgetBindingRequiresNativeEligibility) {
   using Route = Falcata::CUDAControllerRoute;
-  auto facts = ControllerV1Facts();
+  auto facts = ControllerV2Facts();
   facts.num_features = facts.sampled_features = 53;
+  facts.num_bins = 53 * 256;
   facts.native_prefix_eligible = false;  // isolate the whole boundary from independent prefix regions
   const auto explicit_off = ControllerRequestFromSpec("auto,device_tree:off,device_levels:off");
   const auto explicit_whole = ControllerRequestFromSpec("auto,device_tree:on,device_levels:off");
@@ -341,12 +343,13 @@ TEST(CUDAControllerPolicy, FinalSingleLeafBudgetBindingRequiresNativeEligibility
 
 TEST(CUDAControllerPolicy, SeparatePrefixRegionsAndNativeEligibility) {
   using Route = Falcata::CUDAControllerRoute;
-  auto facts = ControllerV1Facts();
+  auto facts = ControllerV2Facts();
   facts.num_leaves = 1023;
   facts.native_whole_eligible = false;  // test prefix predicates independently of the newly admitted whole boundary
   auto resolve = [&]() { return Falcata::ResolveCUDAController({}, facts).resolved; };
   facts.num_features = facts.sampled_features = 64;
-  EXPECT_EQ(resolve(), Route::kPrefix);
+  facts.num_bins = 64 * 256;
+  EXPECT_EQ(resolve(), Route::kHost);  // dense prefix is outside the automatic regions
   facts.num_features = facts.sampled_features = 65;
   EXPECT_EQ(resolve(), Route::kHost);
   facts.num_features = 256;
@@ -355,10 +358,12 @@ TEST(CUDAControllerPolicy, SeparatePrefixRegionsAndNativeEligibility) {
   facts.bagging_freq = 1;
   facts.bagging_fraction = 0.5;
   facts.max_feature_bins = 4;
+  facts.num_bins = 1024;
   EXPECT_EQ(resolve(), Route::kPrefix);
   facts.num_features = 258;
   facts.sampled_features = 129;
   EXPECT_EQ(resolve(), Route::kHost);
+  facts.num_features = 256;
   facts.sampled_features = 128;
   facts.max_feature_bins = 5;
   EXPECT_EQ(resolve(), Route::kHost);
@@ -371,8 +376,10 @@ TEST(CUDAControllerPolicy, SeparatePrefixRegionsAndNativeEligibility) {
   facts.bagging_fraction = 0.5;
   facts.native_prefix_eligible = false;
   EXPECT_EQ(resolve(), Route::kHost);
-  facts = ControllerV1Facts();
+  facts = ControllerV2Facts();
   facts.num_features = facts.sampled_features = 28;
+  facts.max_feature_bins = 4;
+  facts.num_bins = 112;
   facts.native_whole_eligible = false;
   EXPECT_EQ(resolve(), Route::kPrefix);
   facts.native_prefix_eligible = false;
@@ -381,17 +388,18 @@ TEST(CUDAControllerPolicy, SeparatePrefixRegionsAndNativeEligibility) {
 
 TEST(CUDAControllerPolicy, MissingMetadataAndHardwareScopeAreIndependentOfBinHistogram) {
   using Route = Falcata::CUDAControllerRoute;
-  auto facts = ControllerV1Facts();
+  auto facts = ControllerV2Facts();
   auto resolve = [&]() { return Falcata::ResolveCUDAController({}, facts).resolved; };
   facts.max_feature_bins = 257;
   EXPECT_EQ(resolve(), Route::kHost);
-  facts.max_feature_bins = 4;
+  facts.max_feature_bins = 9;
+  facts.num_bins = 104 * 9;
   EXPECT_EQ(resolve(), Route::kWhole);
   facts.missing_feature_count = 1;  // same bins, a valid feature has None -> NaN or Zero mode
   EXPECT_EQ(resolve(), Route::kHost);
   facts.metadata_known = false;
   EXPECT_EQ(resolve(), Route::kHost);
-  facts = ControllerV1Facts();
+  facts = ControllerV2Facts();
   facts.device_sm_count = 169;
   EXPECT_EQ(resolve(), Route::kHost);
   facts.device_sm_count = 170;
@@ -410,16 +418,16 @@ TEST(CUDAControllerPolicy, MissingMetadataAndHardwareScopeAreIndependentOfBinHis
 
 TEST(CUDAControllerPolicy, UnqualifiedGraphAndModifiersUseHostButDoNotOverrideExplicitIntent) {
   using Route = Falcata::CUDAControllerRoute;
-  auto facts = ControllerV1Facts();
+  auto facts = ControllerV2Facts();
   facts.graph_cache_enabled = false;
   auto decision = Falcata::ResolveCUDAController({}, facts);
   EXPECT_EQ(decision.resolved, Route::kHost);
-  EXPECT_STREQ(decision.reason, "v1_graph_disabled");
+  EXPECT_STREQ(decision.reason, "v2_graph_disabled");
   facts.graph_cache_enabled = true;
   facts.performance_modifiers_supported = false;
   decision = Falcata::ResolveCUDAController({}, facts);
   EXPECT_EQ(decision.resolved, Route::kHost);
-  EXPECT_STREQ(decision.reason, "v1_unqualified_modifiers");
+  EXPECT_STREQ(decision.reason, "v2_unqualified_modifiers");
   // Explicit intent bypasses performance admission on any hardware, including
   // when metadata is unavailable. Actual execution still uses native gates.
   facts.device_major = 8;
@@ -430,9 +438,70 @@ TEST(CUDAControllerPolicy, UnqualifiedGraphAndModifiersUseHostButDoNotOverrideEx
             Route::kPrefix);
   EXPECT_EQ(Falcata::ResolveCUDAController(ControllerRequestFromSpec("auto,device_tree:on,device_levels:off"), facts).resolved,
             Route::kWhole);
-  facts = ControllerV1Facts();
+  facts = ControllerV2Facts();
   facts.metadata_known = false;
   decision = Falcata::ResolveCUDAController({}, facts);
   EXPECT_EQ(decision.resolved, Route::kHost);
   EXPECT_STREQ(decision.reason, "unavailable_metadata");
+}
+
+TEST(CUDAControllerPolicy, LowBinWholeFootprintWidthAndMissingBoundaries) {
+  using Route = Falcata::CUDAControllerRoute;
+  auto facts = ControllerV2Facts();
+  facts.num_features = 2048;
+  facts.sampled_features = 512;
+  facts.feature_fraction = 0.25;
+  facts.max_feature_bins = 8;
+  facts.num_bins = 8192;
+  facts.min_data_in_leaf = 10000;  // capacity proxy=20, far below 1024; low-bin region is independent
+  auto resolve = [&]() { return Falcata::ResolveCUDAController({}, facts); };
+  EXPECT_EQ(resolve().resolved, Route::kWhole);
+  EXPECT_STREQ(resolve().reason, "v2_whole_lowbin");
+  facts.missing_feature_count = 1;
+  EXPECT_EQ(resolve().resolved, Route::kWhole);
+  facts.sampled_features = 513;
+  facts.feature_fraction = 513.0 / facts.num_features;
+  EXPECT_EQ(resolve().resolved, Route::kHost);
+  facts.sampled_features = 512;
+  facts.feature_fraction = 0.25;
+  facts.num_bins = 8193;
+  EXPECT_EQ(resolve().resolved, Route::kHost);
+  facts.num_bins = 8192;
+  facts.max_feature_bins = 9;
+  EXPECT_EQ(resolve().resolved, Route::kHost);
+  facts.missing_feature_count = 0;
+  facts.sampled_features = 256;
+  facts.feature_fraction = 0.125;
+  EXPECT_EQ(resolve().resolved, Route::kHost);  // dense whole still needs the capacity proxy
+  facts.min_data_in_leaf = 20;
+  EXPECT_EQ(resolve().resolved, Route::kWhole);
+  EXPECT_STREQ(resolve().reason, "v2_whole_dense");
+  facts.missing_feature_count = 1;
+  EXPECT_EQ(resolve().resolved, Route::kHost);  // missing is excluded outside low-bin whole
+  facts.max_feature_bins = 8;
+  EXPECT_EQ(resolve().resolved, Route::kWhole);
+  facts.num_bins = 0;
+  EXPECT_EQ(resolve().resolved, Route::kHost);
+  EXPECT_STREQ(resolve().reason, "unavailable_metadata");
+  facts.num_bins = 8192;
+  facts.native_whole_eligible = false;
+  EXPECT_EQ(resolve().resolved, Route::kHost);
+}
+
+TEST(CUDAControllerPolicy, TotalHistogramFootprintCannotBeReplacedBySampledWidth) {
+  using Route = Falcata::CUDAControllerRoute;
+  auto facts = ControllerV2Facts();
+  facts.num_features = 3555;
+  facts.sampled_features = 356;
+  facts.feature_fraction = 0.1;
+  facts.max_feature_bins = 6;
+  facts.num_bins = 15000;
+  facts.min_data_in_leaf = 10000;
+  EXPECT_EQ(Falcata::ResolveCUDAController({}, facts).resolved, Route::kHost);
+  facts.missing_feature_count = 1;
+  EXPECT_EQ(Falcata::ResolveCUDAController({}, facts).resolved, Route::kHost);
+  // Same sampled width, different total footprint: this is the falsifiable
+  // metadata distinction, independent of feature names, labels or timing probes.
+  facts.num_bins = 8192;
+  EXPECT_EQ(Falcata::ResolveCUDAController({}, facts).resolved, Route::kWhole);
 }

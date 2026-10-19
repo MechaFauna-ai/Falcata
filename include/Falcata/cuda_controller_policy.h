@@ -77,48 +77,51 @@ inline CUDAControllerDecision ResolveCUDAController(const CUDAControllerRequest&
     return {route, route, "explicit_controller_overrides"};
   }
   using Route = CUDAControllerRoute;
-  // Derivation-only v1 hypotheses, awaiting independent performance validation.
+  // Static metadata estimates for controller scheduling; growth semantics are unchanged.
   // Resource identity of the measured desktop GPU, without device-name matching.
   if (facts.device_major != 12 || facts.device_minor != 0 || facts.device_sm_count != 170 ||
       facts.device_memory_bus_bits != 512) {
     return {Route::kAuto, Route::kHost, "unqualified_hardware"};
   }
   if (!facts.metadata_known || facts.num_rows <= 0 || facts.num_features <= 0 ||
-      facts.sampled_features <= 0 || facts.sampled_features > facts.num_features || facts.max_feature_bins <= 0) {
+      facts.sampled_features <= 0 || facts.sampled_features > facts.num_features ||
+      facts.max_feature_bins <= 0 || facts.num_bins <= 0) {
     return {Route::kAuto, Route::kHost, "unavailable_metadata"};
   }
   if (!facts.quantized) {
     return {Route::kAuto, Route::kLegacy, "legacy_scope"};
   }
   if (!facts.scope_supported) return {Route::kAuto, Route::kLegacy, "legacy_scope"};
-  if (!facts.graph_cache_enabled) return {Route::kAuto, Route::kHost, "v1_graph_disabled"};
-  if (!facts.performance_modifiers_supported) return {Route::kAuto, Route::kHost, "v1_unqualified_modifiers"};
-  if (facts.num_rows < 100000) return {Route::kAuto, Route::kHost, "v1_min_rows"};
-  if (facts.max_feature_bins > 256) return {Route::kAuto, Route::kHost, "v1_bin_envelope"};
-  if (facts.missing_feature_count > 0) return {Route::kAuto, Route::kHost, "v1_missing_mode"};
+  if (!facts.graph_cache_enabled) return {Route::kAuto, Route::kHost, "v2_graph_disabled"};
+  if (!facts.performance_modifiers_supported) return {Route::kAuto, Route::kHost, "v2_unqualified_modifiers"};
+  if (facts.num_rows < 100000) return {Route::kAuto, Route::kHost, "v2_min_rows"};
+  if (facts.max_feature_bins > 256) return {Route::kAuto, Route::kHost, "v2_bin_envelope"};
 
   const double active_bag = facts.bagging_freq > 0 ? facts.bagging_fraction : 1.0;
   const double leaf_capacity = std::floor(static_cast<double>(facts.num_rows) * active_bag /
                                           std::max(1, facts.min_data_in_leaf));
-  // Include the native final single-leaf budget bind. The n=2 derivation
-  // replay motivates this boundary; it does not qualify performance.
+  // Both whole hypotheses retain the native final single-leaf budget boundary.
+  // Low-bin histogram footprint, rather than the row/min-leaf capacity proxy,
+  // bounds the low-bin region. Missing modes are admitted only in that region.
   if (facts.native_whole_eligible && facts.max_depth >= 1 && facts.max_depth <= 10) {
     const int64_t depth_leaves = int64_t{1} << facts.max_depth;
-    if (static_cast<int64_t>(facts.num_leaves) + 1 >= depth_leaves &&
-        facts.sampled_features <= 128 && leaf_capacity >= depth_leaves) {
-      return {Route::kAuto, Route::kWhole, "v1_whole"};
+    if (static_cast<int64_t>(facts.num_leaves) + 1 >= depth_leaves) {
+      if (facts.max_feature_bins <= 8 && facts.num_bins <= 8192 && facts.sampled_features <= 512) {
+        return {Route::kAuto, Route::kWhole, "v2_whole_lowbin"};
+      }
+      if (facts.missing_feature_count == 0 && facts.sampled_features <= 256 && leaf_capacity >= depth_leaves) {
+        return {Route::kAuto, Route::kWhole, "v2_whole_dense"};
+      }
     }
   }
+  if (facts.missing_feature_count > 0) return {Route::kAuto, Route::kHost, "v2_missing_mode"};
   if (facts.native_prefix_eligible) {
-    if (facts.sampled_features <= 64 && facts.feature_fraction == 1.0 && active_bag == 1.0) {
-      return {Route::kAuto, Route::kPrefix, "v1_prefix_dense"};
-    }
     if (facts.sampled_features <= 128 && facts.max_feature_bins <= 4 &&
         facts.feature_fraction >= 0.5 && active_bag >= 0.5) {
-      return {Route::kAuto, Route::kPrefix, "v1_prefix_smallbin"};
+      return {Route::kAuto, Route::kPrefix, "v2_prefix_smallbin"};
     }
   }
-  return {Route::kAuto, Route::kHost, "v1_no_region"};
+  return {Route::kAuto, Route::kHost, "v2_no_region"};
 }
 
 }  // namespace Falcata

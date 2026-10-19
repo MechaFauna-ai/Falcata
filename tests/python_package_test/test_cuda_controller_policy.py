@@ -85,20 +85,35 @@ def _reset_probe():
 
 
 def _auto_probe(mode):
-    # 132 supplied columns, 130 valid features. Full width misses v1's width
-    # regions, while the sampler's existing half-width count is exactly 65.
+    # Dense fixture: 260 supplied columns, 258 valid features, half-width U=129.
+    # Missing low-bin fixtures separately exercise admission without the capacity proxy.
     rng = np.random.default_rng(193)
-    valid_features = 130 if mode in {"", "nan", "zero"} else 28
+    dense = mode in {"", "nan_dense", "zero_dense", "retired_dense_prefix"}
+    if dense:
+        valid_features = 64 if mode == "retired_dense_prefix" else 258
+    elif mode in {"nan", "zero"}:
+        valid_features = 130
+    elif mode == "prefix":
+        valid_features = 96
+    else:
+        valid_features = 28
+    values = 9 if dense else 4
     x = np.empty((102400, valid_features + 2), dtype=np.float32)
-    x[:, :valid_features] = rng.integers(0, 4, size=(len(x), valid_features), dtype=np.int8)
+    x[:, :valid_features] = rng.integers(0, values, size=(len(x), valid_features), dtype=np.int8)
     x[:, valid_features:] = 1
     y = (x[:, 0] + 2 * x[:, 1] - x[:, 2]).astype(np.float32)
-    if mode == "nan":
+    if mode in {"nan", "nan_dense"}:
         x[::16, valid_features - 1] = np.nan
     _, _, params = _data()
     params.update(max_depth=8, num_leaves=256, feature_fraction=0.5 if mode else 1.0, feature_pre_filter=True)
-    if mode == "zero":
+    if mode in {"zero", "zero_dense"}:
         params["zero_as_missing"] = True
+    if mode in {"nan", "zero"}:
+        params["min_data_in_leaf"] = 10000  # capacity proxy=10 < 256; low-bin whole must not require it
+    if mode in {"prefix", "retired_dense_prefix"}:
+        params.update(max_depth=11, num_leaves=2048)
+    if mode == "retired_dense_prefix":
+        params["feature_fraction"] = 1.0
     modifiers = {
         "l1": {"lambda_l1": 0.1},
         "l2": {"lambda_l2": 1.0},
@@ -213,7 +228,7 @@ def test_auto_controller_valid_sample_count_and_resets_cuda():
     diag = _run("_auto_probe", "")
     decisions = re.findall(r"controller: requested=auto resolved=(\w+) reason=(\w+) phase=(\w+)([^\n]*)", diag)
     assert decisions, diag
-    assert "features=130 sampled=130" in decisions[0][3]
+    assert "features=258 sampled=258" in decisions[0][3]
     assert all("missing_features=0" in decision[3] for decision in decisions)
     if decisions[0][1] == "unqualified_hardware":
         assert all(decision[0] == "host" for decision in decisions)
@@ -221,26 +236,32 @@ def test_auto_controller_valid_sample_count_and_resets_cuda():
         assert "device_tree: complete" not in diag
     else:
         assert [decision[0] for decision in decisions] == ["host", "whole", "whole", "host", "whole", "host", "whole"]
-        assert "features=130 sampled=65" in decisions[1][3]
-        assert decisions[2][1] == "v1_whole"  # D=8,L=255 admits the native final single-leaf budget bind
-        assert decisions[5][1:3] == ("v1_min_rows", "reset_data")
+        assert "features=258 sampled=129" in decisions[1][3]
+        assert decisions[2][1] == "v2_whole_dense"  # D=8,L=255 admits the native final single-leaf budget bind
+        assert decisions[5][1:3] == ("v2_min_rows", "reset_data")
         assert "rows=8192" in decisions[5][3]
-        assert decisions[6][1:3] == ("v1_whole", "reset_data")
+        assert decisions[6][1:3] == ("v2_whole_dense", "reset_data")
         assert diag.count("device_tree: complete") == 4
         assert "device_levels: 7 device-driven levels per tree" not in diag
 
 
 @_REQUIRES_CUDA
-@pytest.mark.parametrize("missing_mode", ["nan", "zero"])
+@pytest.mark.parametrize("missing_mode", ["nan", "zero", "nan_dense", "zero_dense"])
 def test_auto_controller_uses_all_valid_missing_metadata_cuda(missing_mode):
     diag = _run("_auto_probe", missing_mode)
     decision = re.search(r"controller: requested=auto resolved=(\w+) reason=(\w+)[^\n]*missing_features=(\d+)", diag)
     assert decision is not None, diag
     assert int(decision[3]) > 0
-    assert decision[1] == "host"
-    assert decision[2] in {"v1_missing_mode", "unqualified_hardware"}
-    assert "device-driven levels per tree" not in diag
-    assert "device_tree: complete" not in diag
+    if decision[2] == "unqualified_hardware":
+        assert decision[1] == "host"
+        assert "device_tree: complete" not in diag
+    elif missing_mode in {"nan", "zero"}:
+        assert (decision[1], decision[2]) == ("whole", "v2_whole_lowbin")
+        assert diag.count("device_tree: complete") == 1
+    else:
+        assert (decision[1], decision[2]) == ("host", "v2_missing_mode")
+        assert "device-driven levels per tree" not in diag
+        assert "device_tree: complete" not in diag
 
 
 @_REQUIRES_CUDA
@@ -253,7 +274,25 @@ def test_auto_controller_declines_unqualified_modifiers_cuda(modifier):
     decision = re.search(r"controller: requested=auto resolved=(\w+) reason=(\w+)", diag)
     assert decision is not None, diag
     assert decision[1] == "host"
-    expected = "v1_graph_disabled" if modifier == "graph_off" else "v1_unqualified_modifiers"
+    expected = "v2_graph_disabled" if modifier == "graph_off" else "v2_unqualified_modifiers"
     assert decision[2] in {expected, "unqualified_hardware"}
     assert "device-driven levels per tree" not in diag
+    assert "device_tree: complete" not in diag
+
+
+@_REQUIRES_CUDA
+@pytest.mark.parametrize("mode", ["prefix", "retired_dense_prefix"])
+def test_auto_controller_retains_only_smallbin_prefix_cuda(mode):
+    diag = _run("_auto_probe", mode)
+    decision = re.search(r"controller: requested=auto resolved=(\w+) reason=(\w+)", diag)
+    assert decision is not None, diag
+    if decision[2] == "unqualified_hardware":
+        assert decision[1] == "host"
+        assert "device-driven levels per tree" not in diag
+    elif mode == "prefix":
+        assert (decision[1], decision[2]) == ("prefix", "v2_prefix_smallbin")
+        assert "device_levels: 10 device-driven levels per tree" in diag
+    else:
+        assert (decision[1], decision[2]) == ("host", "v2_no_region")
+        assert "device-driven levels per tree" not in diag
     assert "device_tree: complete" not in diag

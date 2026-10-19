@@ -2678,7 +2678,7 @@ it produces is the quantized classic loop's to the bit
 quantized training as ground truth in
 `test_vector_leaf_cuda_quantized_selective_duplicated_target_matches_scalar`).
 
-## Automatic controller v1 (unqualified hypothesis)
+## Automatic static controller selection
 
 Controller requests are resolved per CUDA learner, independently of the process-global kernel plan.
 Initialization and configuration/data resets resolve again from configuration, cached GPU properties and
@@ -2695,7 +2695,7 @@ existing engagement and fallback diagnostics. Resolution expresses controller in
 configuration and graph-cache checks still decide whether it executes. Resets invalidate cached graphs and
 refresh controller diagnostics.
 
-The v1 hypothesis admits the measured hardware resource identity only: compute capability 12.0, 170 SMs and
+The static selector admits the hardware resource identity: compute capability 12.0, 170 SMs and
 a 512-bit memory bus. Unknown hardware or unavailable metadata selects host control. On admitted hardware,
 nonquantized, forest, distributed, categorical/vector, constrained and other unsupported training scopes retain
 their existing routing (`legacy`) and correctness guards. Other CUDA optimizations remain enabled.
@@ -2706,27 +2706,30 @@ admission also requires L1/L2, path smoothing, minimum split gain and resolved o
 `min_sum_hessian_in_leaf=0.001`; average initialization enabled; and default imbalance weighting and sigmoid.
 Nondefault modifiers select host control. Array presence is checked through metadata pointers, without scans.
 
-The remaining performance envelope is `N >= 100000`, every valid feature having at most 256 bins and
-`missing_type=None`. Missing modes are counted across **all** valid BinMappers, including `Zero` mode.
-`U` is the existing column sampler's selected count over valid features, with no additional random draw.
-Let `b=bagging_fraction` when `bagging_freq>0`, otherwise `b=1`:
+The remaining performance envelope requires `N >= 100000` and every valid feature having at most 256 bins.
+Missing modes are counted across **all** valid BinMappers, including `Zero` mode, and admitted only in the
+low-bin whole region below. `U` is the existing column sampler's selected count over valid features, with no
+additional random draw. `H` is the cached total histogram-bin span (`feature_hist_offsets.back()`), covering
+all valid features, rather than just the sampled columns; unavailable `H` selects host control.
+Let `b=bagging_fraction` when `bagging_freq>0`, otherwise `b=1`, and `C=floor(N*b/max(1,min_data_in_leaf))`:
 
-| Order | Controller hypothesis, subject to native eligibility |
+| Order | Controller estimate, subject to native eligibility |
 |---|---|
-| 1 | Whole if native whole is eligible, `int64(L)+1 >= 2^D`, `U <= 128` and `floor(N*b/max(1,min_data_in_leaf)) >= 2^D`. |
-| 2 | Otherwise prefix if `U <= 64`, `feature_fraction=1`, `b=1`; or `U <= 128`, all valid bins `<=4`, `feature_fraction>=0.5`, `b>=0.5`. |
-| 3 | Otherwise host. |
+| 1 | Low-bin whole if native whole is eligible, `int64(L)+1 >= 2^D`, valid `Bmax<=8`, `H<=8192`, `U<=512`. Missing modes are allowed; `C` is not required. |
+| 2 | Otherwise dense whole if native whole is eligible, `int64(L)+1 >= 2^D`, no missing modes, `U<=256`, `C>=2^D`. |
+| 3 | Otherwise prefix if native prefix is eligible, no missing modes, `U<=128`, valid `Bmax<=4`, `feature_fraction>=0.5`, `b>=0.5`. |
+| 4 | Otherwise host. |
 
-The 64/128 widths and sampling cutoffs remain coarse derivation hypotheses. The 14-case, actual-500-round
-derivation replay records whole engagement and identical complete models for the original 1023-leaf Covtype
-and Higgs cases, motivating the pre-holdout revision from `L >= 2^D` to the native `L+1 >= 2^D` boundary.
-Its two alternating blocks are descriptive, not performance qualification. All other predicates and retained
-negative results are unchanged; this revision awaits parent checks and separate holdout validation.
+The low-bin footprint cap bounds histogram state independently of the row/min-leaf capacity proxy; a wide
+layout can exceed that cap even with a small sampled width. Missing modes are admitted only in this bounded
+low-bin whole region. Dense prefix is outside the automatic regions. These conservative metadata estimates
+describe controller overhead, and workload-specific speed can vary. Native depth 1..10, the final single-leaf
+budget boundary and fallback checks remain authoritative.
 
 ## Experimental complete bounded device trees (`device_tree`)
 
 `cuda_plan=auto,device_tree:on` explicitly requests the complete quantized device controller for scalar,
-numerical single-GPU trees with positive `max_depth <= 10` and `2^max_depth <= num_leaves + 1`. Auto v1 uses
+numerical single-GPU trees with positive `max_depth <= 10` and `2^max_depth <= num_leaves + 1`. Automatic selection uses
 the same final single-leaf budget boundary, subject to its other performance predicates. The key supplies
 its own growth even with `device_levels:off`; unsupported kernels, constraints and data retain the existing
 host flow and report the fallback under `FALCATA_DEBUG=diag`. No training parameters or split rules change.
