@@ -11,10 +11,11 @@ and checks each one for:
      and stopped early -- which truncates WHOLE iterations only;
   2. CUDA determinism (quant modes): the identical spec trained twice must be
      bit-identical;
-  3. CPU quality reference (tolerant): the same data and model shape trained
-     full-precision on device_type=cpu must reach a held-out metric within
-     tolerance of the CUDA model (trees are not required to be identical; a
-     large metric gap means one side built garbage).
+  3. CPU quality reference (tolerant): the CUDA held-out metric must not fall
+     behind a full-precision CPU model on the same data and model shape beyond
+     tolerance, subject to the existing low-bin and bagging confirmation
+     policies. Trees need not be identical; these policies do not establish
+     the cause of a quality gap.
 
 Every failing spec prints a self-contained JSON repro. Promote it into
 fuzz_corpus.json (a list of spec objects) and it reruns first on every future
@@ -139,6 +140,29 @@ import hashlib, json, sys
 import numpy as np
 import falcata as lgb
 
+
+def binary_roc_auc(labels, predictions):
+    '''Empirical ROC AUC: tied positive/negative pairs receive half credit.'''
+    labels, predictions = np.asarray(labels), np.asarray(predictions, dtype=float)
+    if labels.ndim != 1 or predictions.ndim != 1 or labels.shape != predictions.shape:
+        raise ValueError("binary ROC AUC needs equal-length one-dimensional inputs")
+    if not np.all((labels == 0) | (labels == 1)):
+        raise ValueError("binary ROC AUC requires labels 0 and 1")
+    pos = labels == 1
+    positives, negatives = int(pos.sum()), int((~pos).sum())
+    if positives == 0 or negatives == 0:
+        raise ValueError("binary ROC AUC is undefined without both classes")
+    if not np.all(np.isfinite(predictions)):
+        raise ValueError("binary ROC AUC requires finite predictions")
+    order = np.argsort(predictions)
+    sorted_predictions = predictions[order]
+    starts = np.r_[0, np.flatnonzero(sorted_predictions[1:] != sorted_predictions[:-1]) + 1]
+    ends = np.r_[starts[1:], len(predictions)]
+    ranks = np.empty(len(predictions))
+    ranks[order] = np.repeat((starts + ends - 1) / 2.0, ends - starts)
+    return float((ranks[pos].sum() - positives * (positives - 1) / 2) / (positives * negatives))
+
+
 spec = json.loads(sys.argv[1])
 device = sys.argv[2]
 
@@ -201,6 +225,8 @@ if device == "cpu":
     p["deterministic"] = True
 if spec.get("bagging_freq"):
     p["bagging_freq"] = spec["bagging_freq"]
+if "bagging_seed" in spec:
+    p["bagging_seed"] = spec["bagging_seed"]
 if spec["objective"] == "multiclass":
     p["num_class"] = spec["num_class"]
 
@@ -209,6 +235,19 @@ ds = lgb.Dataset(X[:k], label=y[:k], params=p,
                  categorical_feature=cat_features if cat_features else "auto")
 bst = lgb.train(p, ds, num_boost_round=spec["rounds"])
 model_str = bst.model_to_string()
+# Read effective seeds from the trained model, including defaults derived by
+# the engine from seed=42. Do not override the original bagging seed to guess it.
+effective_seeds = {}
+for line in model_str.split("\nparameters:", 1)[1].splitlines():
+    if line.startswith("[") and line.endswith("]") and ": " in line:
+        key, value = line[1:-1].split(": ", 1)
+        if key == "seed" or key.endswith("_seed"):
+            effective_seeds[key] = int(value)
+assert {"seed", "bagging_seed", "data_random_seed", "feature_fraction_seed"} <= effective_seeds.keys(), (
+    "model is missing effective seed parameters")
+assert effective_seeds["seed"] == p["seed"], "effective global seed differs"
+if "bagging_seed" in spec:
+    assert effective_seeds["bagging_seed"] == spec["bagging_seed"], "effective bagging_seed differs"
 # Emission contract. Boosting stops early when no candidate anywhere clears
 # the split requirements (saturated data: few features, few bins) and
 # truncates the model by WHOLE iterations; every suppressed round would have
@@ -240,9 +279,7 @@ yt = y[k:]
 if spec["objective"] == "regression":
     metric = float(np.sqrt(np.mean((pred - yt) ** 2))); higher = False
 elif spec["objective"] == "binary":
-    order = np.argsort(pred); ranks = np.empty(len(pred)); ranks[order] = np.arange(len(pred))
-    pos = yt == 1
-    metric = float((ranks[pos].sum() - pos.sum() * (pos.sum() - 1) / 2) / max(1, pos.sum() * (~pos).sum()))
+    metric = binary_roc_auc(yt, pred)
     higher = True
 else:
     eps = 1e-12
@@ -250,8 +287,21 @@ else:
 tree_str = model_str.split("\nparameters:")[0]
 print("OUT " + json.dumps({"md5": hashlib.md5(tree_str.encode()).hexdigest(),
                            "metric": metric, "higher_better": higher,
+                           "data_seed": spec["data_seed"], "train_rows": k,
+                           "effective_seeds": effective_seeds,
                            "trees": got, "stopped_early": stopped_early}))
 """
+
+
+class UnresolvedCUDATimeout(RuntimeError):
+    """Stop this invocation when a CUDA worker times out; completion is unresolved."""
+
+    def __init__(self, spec, timeout):
+        super().__init__(f"CUDA worker timed out after {timeout}s; native completion unresolved")
+        self.worker_spec = dict(spec)
+        self.spec = dict(spec)
+        self.failures = []
+        self.known = []
 
 
 def run(spec, device, timeout=300):
@@ -259,14 +309,19 @@ def run(spec, device, timeout=300):
     # legitimate near-zero models (whole-iteration early stops) to constant
     # and fails the std(pred) > 0 assert on a healthy model.
     env = dict(os.environ, FALCATA_FIL="0")
-    proc = subprocess.run(
-        [sys.executable, "-c", _WORKER_SOURCE, json.dumps(spec), device],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-        env=env,
-    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _WORKER_SOURCE, json.dumps(spec), device],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        if device == "cuda":
+            raise UnresolvedCUDATimeout(spec, timeout) from exc
+        return {"error": f"{device} worker timed out after {timeout}s"}
     if proc.returncode != 0:
         return {"error": proc.stderr.strip()[-800:] or f"exit {proc.returncode}"}
     for line in proc.stdout.splitlines():
@@ -301,10 +356,23 @@ def is_lowbin_quant_bias(spec):
 
 
 def check_spec(spec):
-    """Returns (failures, known_issues) for this spec."""
+    """Return (failures, notes); an unresolved CUDA timeout aborts the invocation."""
     fails = []
     known = []
-    a = run(spec, "cuda")
+
+    def cuda_run(worker_spec, phase, not_run, quality_failure=None):
+        try:
+            return run(worker_spec, "cuda")
+        except UnresolvedCUDATimeout as exc:
+            exc.spec = dict(spec)  # preserve the original repro, including during confirmations
+            exc.failures = list(fails)
+            if quality_failure is not None:
+                exc.failures.append(quality_failure)
+            exc.failures.append(f"UNRESOLVED_CUDA_TIMEOUT: {phase}: {exc}")
+            exc.known = known + [f"not-run confirmations: {not_run}; all later specs not run"]
+            raise
+
+    a = cuda_run(spec, "original CUDA run", "both pairs; remaining original workers not run")
     if "error" in a:
         return [f"cuda run failed: {a['error']}"], known
     if a.get("stopped_early"):
@@ -320,7 +388,7 @@ def check_spec(spec):
     # nondeterministic; the fuzzer draws none of them.)
     md5_checked = spec["quant_mode"] != "none" or "nonquant_deterministic:off" not in spec.get("cuda_plan", "")
     if md5_checked:
-        b = run(spec, "cuda")
+        b = cuda_run(spec, "CUDA determinism rerun", "both pairs; CPU reference not run")
         if "error" in b:
             fails.append(f"cuda rerun failed: {b['error']}")
         elif a["md5"] != b["md5"]:
@@ -338,24 +406,64 @@ def check_spec(spec):
         ref, cur = c["metric"], a["metric"]
         tol = abs(ref) * CPU_METRIC_TOLERANCE + 1e-9
         worse = cur < ref - tol if a["higher_better"] else cur > ref + tol
-        if worse and spec.get("bagging_fraction", 1.0) < 1.0:
-            # the two arms draw DIFFERENT bags by design (device Philox vs
-            # host RNG), so a single-run gap can be sampler variance rather
-            # than a defect: re-draw twice and fail only if cuda loses every
-            # round (a systematic bug does; bag luck does not)
+        if worse and spec.get("bagging_fraction", 1.0) < 1.0 and spec.get("bagging_freq", 0) > 0:
+            # Different CPU/CUDA samplers can make quality sensitive to the
+            # bagging seed. Hold data, split and every other seed fixed. The
+            # existing strict rule clears ONLY the quality gap when BOTH new
+            # pairs run cleanly and BOTH meet the same tolerance. This neither
+            # proves sampler variance nor rules out a native quality defect.
             confirm = 0
-            for retry_seed in (spec["data_seed"] ^ 0x5EED, spec["data_seed"] ^ 0xBA66):
-                s2 = dict(spec, data_seed=retry_seed)
-                a2, c2 = run(s2, "cuda"), run(s2, "cpu", timeout=900)
-                if "error" in a2 or "error" in c2:
-                    confirm += 1  # a retry that cannot run does not exonerate
-                    continue
-                r2, u2 = c2["metric"], a2["metric"]
-                t2 = abs(r2) * CPU_METRIC_TOLERANCE + 1e-9
-                confirm += (u2 < r2 - t2) if a2["higher_better"] else (u2 > r2 + t2)
+            seeds = a.get("effective_seeds", {})
+
+            def same_seed_evidence(result, expected):
+                return (
+                    result.get("effective_seeds") == expected
+                    and result.get("data_seed") == spec["data_seed"]
+                    and result.get("train_rows") == int(spec["n"] * 0.8)
+                )
+
+            if "bagging_seed" not in seeds or not all(same_seed_evidence(r, seeds) for r in (a, c)):
+                fails.append(
+                    "bagging confirmation unavailable: original effective seed/data split evidence missing or inconsistent"
+                )
+                confirm += 1
+            else:
+                for pair, retry_seed in enumerate((seeds["bagging_seed"] ^ 0x5EED, seeds["bagging_seed"] ^ 0xBA66), 1):
+                    s2 = dict(spec, bagging_seed=retry_seed)
+                    pending = f"pair {pair} CPU" + ("; pair 2 CUDA/CPU" if pair == 1 else "")
+                    a2 = cuda_run(
+                        s2,
+                        f"confirmation pair {pair} bagging_seed={retry_seed}",
+                        pending,
+                        quality_failure=f"cuda metric {cur:.6f} much worse than cpu {ref:.6f} (confirmations incomplete)",
+                    )
+                    c2 = run(s2, "cpu", timeout=900)
+                    expected_seeds = dict(seeds, bagging_seed=retry_seed)
+                    clean = True
+                    for device, result in (("cuda", a2), ("cpu", c2)):
+                        if "error" in result:
+                            fails.append(
+                                f"bagging confirmation bagging_seed={retry_seed} {device} failed: {result['error']}"
+                            )
+                            clean = False
+                        elif not same_seed_evidence(result, expected_seeds):
+                            fails.append(
+                                f"bagging confirmation bagging_seed={retry_seed} {device}: "
+                                f"effective seed/data split evidence differs: {result}"
+                            )
+                            clean = False
+                    if not clean:
+                        confirm += 1  # child errors never exonerate, even in low-bin modes
+                        continue
+                    r2, u2 = c2["metric"], a2["metric"]
+                    t2 = abs(r2) * CPU_METRIC_TOLERANCE + 1e-9
+                    confirm += (u2 < r2 - t2) if a2["higher_better"] else (u2 > r2 + t2)
             if confirm == 0:
                 known.append(
-                    f"bagged single-run variance: cuda {cur:.6f} vs cpu {ref:.6f}, 2/2 reseeded runs within tolerance"
+                    f"bagging-seed confirmations: cuda {cur:.6f} vs cpu {ref:.6f}; "
+                    f"2/2 fixed-data pairs within tolerance (original bagging_seed={seeds['bagging_seed']}, "
+                    f"confirmation seeds={seeds['bagging_seed'] ^ 0x5EED},{seeds['bagging_seed'] ^ 0xBA66}); "
+                    "quality gap cleared by gate policy, cause unresolved"
                 )
                 worse = False
         if worse and is_lowbin_quant_bias(spec):
@@ -387,11 +495,20 @@ def main():
     import numpy as np
 
     if args.spec:
-        fails, known = check_spec(json.loads(args.spec))
+        spec = json.loads(args.spec)
+        stopped = False
+        try:
+            fails, known = check_spec(spec)
+        except UnresolvedCUDATimeout as exc:
+            fails, known = exc.failures, exc.known
+            stopped = True
         for k in known:
             print(f"KNOWN {k}")
         for f in fails:
             print(f"FAIL {f}")
+        if stopped:
+            print(f"repro: python tests/gates/fuzz.py --spec '{json.dumps(spec)}'")
+            print("STOP: unresolved CUDA timeout; no further native workers or specs run")
         return 1 if fails else 0
 
     seed = args.seed if args.seed is not None else int(datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d"))
@@ -404,22 +521,33 @@ def main():
     deadline = time.monotonic() + args.minutes * 60
     tried = 0
 
-    for i, spec in enumerate(corpus):
-        fails, known = check_spec(spec)
-        tried += 1
-        num_known += len(known)
-        for f in fails:
-            failures.append((f"corpus[{i}]", f, spec))
+    try:
+        for i, spec in enumerate(corpus):
+            name = f"corpus[{i}]"
+            fails, known = check_spec(spec)
+            tried += 1
+            num_known += len(known)
+            for f in fails:
+                failures.append((name, f, spec))
 
-    while time.monotonic() < deadline:
-        spec = sample_spec(rng)
-        fails, known = check_spec(spec)
+        while time.monotonic() < deadline:
+            spec = sample_spec(rng)
+            name = f"seed{seed}#{tried + 1}"
+            fails, known = check_spec(spec)
+            tried += 1
+            num_known += len(known)
+            for f in fails:
+                failures.append((name, f, spec))
+    except UnresolvedCUDATimeout as exc:
         tried += 1
-        num_known += len(known)
-        for f in fails:
-            failures.append((f"seed{seed}#{tried}", f, spec))
+        num_known += len(exc.known)
+        for note in exc.known:
+            print(f"KNOWN {note}")
+        for failure in exc.failures:
+            failures.append((name, failure, exc.spec))
+        print("STOP: unresolved CUDA timeout; no further native workers or specs run")
 
-    print(f"fuzz: {tried} specs tried, {len(failures)} failure(s), {num_known} known variance note(s)")
+    print(f"fuzz: {tried} specs tried, {len(failures)} failure(s), {num_known} policy note(s)")
     for name, f, spec in failures:
         print(f"\nFAIL [{name}] {f}\nrepro: python tests/gates/fuzz.py --spec '{json.dumps(spec)}'")
     return 1 if failures else 0
