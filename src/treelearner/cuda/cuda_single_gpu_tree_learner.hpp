@@ -19,6 +19,7 @@
 #include "cuda_data_partition.hpp"
 #include "cuda_best_split_finder.hpp"
 #include "cuda_device_levels.hpp"
+#include "cuda_device_level_graph_admission.hpp"
 
 #include "cuda_gradient_discretizer.hpp"
 #include "../serial_tree_learner.h"
@@ -375,8 +376,8 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // the device levels' launches and stream edges (capturable: nothing on the legacy stream, nothing read back)
   void EnqueueDeviceLevels(CUDATree* tree, const CUDADeviceLevelConfig& cfg, const int num_levels,
                            const bool inline_all_map, const bool final_map_only);
-  // cuda_plan key device_level_graph: launch the levels as a cached graph (captured on a key's first tree); false
-  // when this tree cannot use one (the caller enqueues the levels)
+  // cuda_plan key device_level_graph: replay a cached graph, or capture after repeated full-key misses; false
+  // when this tree uses plain device enqueue (including admission skips, with no host-growth fallback).
   bool LaunchDeviceLevelGraph(CUDATree* tree, const CUDADeviceLevelConfig& cfg, const int num_levels,
                               const bool inline_all_map, const bool final_map_only);
   struct DeviceLevelGraph {
@@ -800,9 +801,12 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::vector<int> device_level_batch_slice_;
   std::vector<HybridAppliedSplit> device_level_applied_;
   std::vector<std::unique_ptr<DeviceLevelGraph>> device_level_graphs_;
-  bool device_level_graph_disabled_ = false;
+  CUDADeviceLevelGraphAdmission device_level_graph_admission_;
   int device_level_graph_hits_ = 0;
   int device_level_graph_misses_ = 0;
+  int device_level_graph_admission_skips_ = 0;
+  int device_level_graph_capture_attempts_ = 0;
+  int device_level_graph_captures_ = 0;
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
   std::vector<SelectiveApplied> sel_applied_;
   std::vector<SelectiveFrontier> sel_frontier_;
