@@ -97,22 +97,12 @@ class DataParallelTreeLearner: public TREELEARNER_T {
   std::vector<comm_size_t> block_start_;
   /*! \brief Block size for reduce scatter */
   std::vector<comm_size_t> block_len_;
-  /*! \brief Block start index for reduce scatter with int16 histograms */
-  std::vector<comm_size_t> block_start_int16_;
-  /*! \brief Block size for reduce scatter with int16 histograms */
-  std::vector<comm_size_t> block_len_int16_;
   /*! \brief Write positions for feature histograms */
   std::vector<comm_size_t> buffer_write_start_pos_;
   /*! \brief Read positions for local feature histograms */
   std::vector<comm_size_t> buffer_read_start_pos_;
-  /*! \brief Write positions for feature histograms with int16 histograms*/
-  std::vector<comm_size_t> buffer_write_start_pos_int16_;
-  /*! \brief Read positions for local feature histograms with int16 histograms */
-  std::vector<comm_size_t> buffer_read_start_pos_int16_;
   /*! \brief Size for reduce scatter */
   comm_size_t reduce_scatter_size_;
-  /*! \brief Size for reduce scatter with int16 histogram*/
-  comm_size_t reduce_scatter_size_int16_;
   /*! \brief Store global number of data in leaves  */
   std::vector<data_size_t> global_data_count_in_leaf_;
 };
