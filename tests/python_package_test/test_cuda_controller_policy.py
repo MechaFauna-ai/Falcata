@@ -96,7 +96,7 @@ def _auto_probe(mode):
     if mode == "nan":
         x[::16, valid_features - 1] = np.nan
     _, _, params = _data()
-    params.update(max_depth=8, num_leaves=256, feature_fraction=0.5 if mode else 1.0)
+    params.update(max_depth=8, num_leaves=256, feature_fraction=0.5 if mode else 1.0, feature_pre_filter=True)
     if mode == "zero":
         params["zero_as_missing"] = True
     modifiers = {
