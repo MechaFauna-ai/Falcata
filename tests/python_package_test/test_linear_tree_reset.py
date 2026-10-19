@@ -48,10 +48,12 @@ def _assert_equal(actual, expected, x):
     # Includes every split, leaf constant, linear coefficient and feature list.
     assert actual.dump_model() == expected.dump_model()
     assert actual.model_to_string() == expected.model_to_string()
-    predictions = actual.predict(x)
+    # Prediction shares process-wide thread state with subsequent updates.
+    # Keep ordinary comparisons on each booster's configured training threads.
+    predictions = actual.predict(x, num_threads=actual.params["num_threads"])
     assert np.isfinite(predictions).all()
     assert np.ptp(predictions) > 0
-    np.testing.assert_array_equal(predictions, expected.predict(x))
+    np.testing.assert_array_equal(predictions, expected.predict(x, num_threads=expected.params["num_threads"]))
 
 
 @pytest.mark.parametrize("sample_features", [False, True])
@@ -181,8 +183,9 @@ def test_linear_reset_training_data():
         x_new, y_new = _data(nrows, missing=missing)
         x_new = x_new.astype(np.float32)
         y_new += 3 * np.nan_to_num(x_new[:, 2])
-        target = lgb.Dataset(x_new, y_new, reference=original, free_raw_data=False)
-        oracle_data = lgb.Dataset(x_new, y_new, reference=original, free_raw_data=False)
+        # Reference Dataset parameters omit num_threads; bind construction too.
+        target = lgb.Dataset(x_new, y_new, params=params, reference=original, free_raw_data=False)
+        oracle_data = lgb.Dataset(x_new, y_new, params=params, reference=original, free_raw_data=False)
         datasets.append(target)
         # A fresh learner on the new raw data cannot inherit stale row maps or
         # missing flags; continue the complete previous model, with no sampling.
@@ -198,9 +201,9 @@ def test_linear_reset_training_data():
         # train() records num_iterations; compare the entire serialized model
         # before that parameter metadata, as well as the full dump above.
         assert model.model_to_string().split("parameters:")[0] == oracle.model_to_string().split("parameters:")[0]
-        prediction = model.predict(x_new)
+        prediction = model.predict(x_new, num_threads=model.params["num_threads"])
         assert np.isfinite(prediction).all()
-        np.testing.assert_array_equal(prediction, oracle.predict(x_new))
+        np.testing.assert_array_equal(prediction, oracle.predict(x_new, num_threads=oracle.params["num_threads"]))
     assert any(
         2 in node["leaf_features"]
         for tree in model.dump_model()["tree_info"]
