@@ -4477,13 +4477,15 @@ class Booster:
                 raise TypeError(f"Training data should be Dataset instance, met {type(train_set).__name__}")
             if train_set._predictor is not self.__init_predictor:
                 raise FalcataError("Replace training data failed, you should use same predictor for these data")
-            self.train_set = train_set
             _safe_call(
                 _LIB.FLC_BoosterResetTrainingData(
                     self._handle,
-                    self.train_set.construct()._handle,
+                    train_set.construct()._handle,
                 )
             )
+            # The native reset checks alignment against the previous Dataset.
+            # Keep its Python owner alive and commit bookkeeping only on success.
+            self.train_set = train_set
             self.__inner_predict_buffer[0] = None
             self.train_set_version = self.train_set.version
         produced_empty_tree = ctypes.c_int(0)
