@@ -304,19 +304,37 @@ TEST(CUDAControllerPolicy, WholeCoverageWidthAndCapacityBoundaries) {
   EXPECT_EQ(resolve(), Route::kWhole);
 }
 
-TEST(CUDAControllerPolicy, FinalSingleLeafBudgetBindingIsExplicitOnlyForWhole) {
+TEST(CUDAControllerPolicy, FinalSingleLeafBudgetBindingRequiresNativeEligibility) {
   using Route = Falcata::CUDAControllerRoute;
   auto facts = ControllerV1Facts();
   facts.num_features = facts.sampled_features = 53;
+  facts.native_prefix_eligible = false;  // isolate the whole boundary from independent prefix regions
+  const auto explicit_off = ControllerRequestFromSpec("auto,device_tree:off,device_levels:off");
+  const auto explicit_whole = ControllerRequestFromSpec("auto,device_tree:on,device_levels:off");
   for (const int depth : {8, 10}) {
     facts.max_depth = depth;
-    facts.num_leaves = (1 << depth) - 1;
-    // Current native whole supports this budget, but v1 has no qualified whole
-    // performance evidence for it. The independent prefix region still applies.
-    EXPECT_EQ(Falcata::ResolveCUDAController({}, facts).resolved, Route::kPrefix);
-    EXPECT_EQ(Falcata::ResolveCUDAController(ControllerRequestFromSpec("auto,device_tree:on"), facts).resolved,
-              Route::kWhole);
-    ++facts.num_leaves;
+    const int depth_leaves = 1 << depth;
+    // D=8,L=255 and D=10,L=1023 admit the native final single-leaf bind.
+    facts.num_leaves = depth_leaves - 1;
+    facts.native_whole_eligible = true;
+    EXPECT_EQ(Falcata::ResolveCUDAController({}, facts).resolved, Route::kWhole);
+    facts.native_whole_eligible = false;
+    EXPECT_EQ(Falcata::ResolveCUDAController({}, facts).resolved, Route::kHost);
+    // D=8,L=254 and D=10,L=1022 stay outside the budget predicate even
+    // if a caller incorrectly supplies native eligibility; the guard is independent.
+    facts.num_leaves = depth_leaves - 2;
+    facts.native_whole_eligible = true;
+    EXPECT_EQ(Falcata::ResolveCUDAController({}, facts).resolved, Route::kHost);
+    facts.native_whole_eligible = false;
+    EXPECT_EQ(Falcata::ResolveCUDAController({}, facts).resolved, Route::kHost);
+    for (const int leaves : {depth_leaves - 2, depth_leaves - 1, depth_leaves}) {
+      facts.num_leaves = leaves;
+      facts.native_whole_eligible = true;
+      EXPECT_EQ(Falcata::ResolveCUDAController(explicit_off, facts).resolved, Route::kHost);
+      // Explicit intent is preserved; actual execution still checks native eligibility.
+      EXPECT_EQ(Falcata::ResolveCUDAController(explicit_whole, facts).resolved, Route::kWhole);
+    }
+    facts.num_leaves = depth_leaves;
     EXPECT_EQ(Falcata::ResolveCUDAController({}, facts).resolved, Route::kWhole);
   }
 }
@@ -325,6 +343,7 @@ TEST(CUDAControllerPolicy, SeparatePrefixRegionsAndNativeEligibility) {
   using Route = Falcata::CUDAControllerRoute;
   auto facts = ControllerV1Facts();
   facts.num_leaves = 1023;
+  facts.native_whole_eligible = false;  // test prefix predicates independently of the newly admitted whole boundary
   auto resolve = [&]() { return Falcata::ResolveCUDAController({}, facts).resolved; };
   facts.num_features = facts.sampled_features = 64;
   EXPECT_EQ(resolve(), Route::kPrefix);

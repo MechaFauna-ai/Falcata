@@ -220,14 +220,14 @@ def test_auto_controller_valid_sample_count_and_resets_cuda():
         assert "device-driven levels per tree" not in diag
         assert "device_tree: complete" not in diag
     else:
-        assert [decision[0] for decision in decisions] == ["host", "whole", "prefix", "host", "whole", "host", "whole"]
+        assert [decision[0] for decision in decisions] == ["host", "whole", "whole", "host", "whole", "host", "whole"]
         assert "features=130 sampled=65" in decisions[1][3]
-        assert decisions[2][1] == "v1_prefix_smallbin"  # native whole allows L=255; auto deliberately declines it
+        assert decisions[2][1] == "v1_whole"  # D=8,L=255 admits the native final single-leaf budget bind
         assert decisions[5][1:3] == ("v1_min_rows", "reset_data")
         assert "rows=8192" in decisions[5][3]
         assert decisions[6][1:3] == ("v1_whole", "reset_data")
-        assert diag.count("device_tree: complete") == 3
-        assert "device_levels: 7 device-driven levels per tree" in diag
+        assert diag.count("device_tree: complete") == 4
+        assert "device_levels: 7 device-driven levels per tree" not in diag
 
 
 @_REQUIRES_CUDA

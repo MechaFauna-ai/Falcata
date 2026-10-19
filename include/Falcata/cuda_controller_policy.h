@@ -100,11 +100,12 @@ inline CUDAControllerDecision ResolveCUDAController(const CUDAControllerRequest&
   const double active_bag = facts.bagging_freq > 0 ? facts.bagging_fraction : 1.0;
   const double leaf_capacity = std::floor(static_cast<double>(facts.num_rows) * active_bag /
                                           std::max(1, facts.min_data_in_leaf));
-  // Native whole permits a final single-leaf budget bind. V1 intentionally
-  // requires the full 2^D budget, independently of that correctness eligibility.
+  // Include the native final single-leaf budget bind. The n=2 derivation
+  // replay motivates this boundary; it does not qualify performance.
   if (facts.native_whole_eligible && facts.max_depth >= 1 && facts.max_depth <= 10) {
     const int64_t depth_leaves = int64_t{1} << facts.max_depth;
-    if (facts.num_leaves >= depth_leaves && facts.sampled_features <= 128 && leaf_capacity >= depth_leaves) {
+    if (static_cast<int64_t>(facts.num_leaves) + 1 >= depth_leaves &&
+        facts.sampled_features <= 128 && leaf_capacity >= depth_leaves) {
       return {Route::kAuto, Route::kWhole, "v1_whole"};
     }
   }

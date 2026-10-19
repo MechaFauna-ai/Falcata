@@ -2713,19 +2713,21 @@ Let `b=bagging_fraction` when `bagging_freq>0`, otherwise `b=1`:
 
 | Order | Controller hypothesis, subject to native eligibility |
 |---|---|
-| 1 | Whole if `L >= 2^D`, `U <= 128` and `floor(N*b/max(1,min_data_in_leaf)) >= 2^D`. |
+| 1 | Whole if native whole is eligible, `int64(L)+1 >= 2^D`, `U <= 128` and `floor(N*b/max(1,min_data_in_leaf)) >= 2^D`. |
 | 2 | Otherwise prefix if `U <= 64`, `feature_fraction=1`, `b=1`; or `U <= 128`, all valid bins `<=4`, `feature_fraction>=0.5`, `b>=0.5`. |
 | 3 | Otherwise host. |
 
-The 64/128 widths and sampling cutoffs are coarse derivation hypotheses. This authored v1 has not been built,
-tested or performance-qualified; it awaits parent hooks/builds, complete-model/engagement checks and separate
-derivation/holdout validation. Historical measurements below do not qualify this source.
+The 64/128 widths and sampling cutoffs remain coarse derivation hypotheses. The 14-case, actual-500-round
+derivation replay records whole engagement and identical complete models for the original 1023-leaf Covtype
+and Higgs cases, motivating the pre-holdout revision from `L >= 2^D` to the native `L+1 >= 2^D` boundary.
+Its two alternating blocks are descriptive, not performance qualification. All other predicates and retained
+negative results are unchanged; this revision awaits parent checks and separate holdout validation.
 
 ## Experimental complete bounded device trees (`device_tree`)
 
 `cuda_plan=auto,device_tree:on` explicitly requests the complete quantized device controller for scalar,
-numerical single-GPU trees with positive `max_depth <= 10` and `2^max_depth <= num_leaves + 1`. Auto v1
-deliberately requires `num_leaves >= 2^max_depth`; the explicit key allows a final single-leaf budget bind. The key supplies
+numerical single-GPU trees with positive `max_depth <= 10` and `2^max_depth <= num_leaves + 1`. Auto v1 uses
+the same final single-leaf budget boundary, subject to its other performance predicates. The key supplies
 its own growth even with `device_levels:off`; unsupported kernels, constraints and data retain the existing
 host flow and report the fallback under `FALCATA_DEBUG=diag`. No training parameters or split rules change.
 
