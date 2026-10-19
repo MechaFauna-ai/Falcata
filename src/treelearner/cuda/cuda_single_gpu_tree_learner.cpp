@@ -271,16 +271,31 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     Log::Info("quant_mode=fixedpoint: non-stochastic quant with %d bins", effective_quant_bins_);
   }
   construct_saturation_floor_ = 0;
+  // Static controller inputs: no device queries are added to the per-tree path.
+  // A failed query leaves unknown hardware, which automatic selection declines.
+  controller_device_major_ = 0;
+  controller_device_minor_ = 0;
+  controller_device_sm_count_ = 0;
+  controller_device_memory_bus_bits_ = 0;
+  const int controller_device_id = gpu_device_id_ < 0 ? 0 : gpu_device_id_;
+  cudaDeviceProp controller_properties{};
+  if (cudaGetDeviceProperties(&controller_properties, controller_device_id) == cudaSuccess) {
+    controller_device_major_ = controller_properties.major;
+    controller_device_minor_ = controller_properties.minor;
+    controller_device_memory_bus_bits_ = controller_properties.memoryBusWidth;
+  }
+  const cudaError_t controller_sm_status = cudaDeviceGetAttribute(
+      &controller_device_sm_count_, cudaDevAttrMultiProcessorCount, controller_device_id);
+  if (controller_sm_status != cudaSuccess) controller_device_sm_count_ = 0;
   if (config_->use_quantized_grad) {
     // the batched quantized construct's saturation floor (FalcataPlan::batch_construct_saturation_floor): 160 was
     // tuned on the RTX 5090's 170 SMs and scales with the device's SM count, clamped to [10, 5120] -- the seed rule
     // of the runtime tuner removed 2026-10-15, now static. A 170-SM device keeps 160. The quantized small-leaf
     // threshold keeps its compile-time 1024. Both are schedule-only: any value trains the same model. Set again at
     // every tree (Train), as the tuner did: a Dataset constructed after this Init re-resolves the plan.
-    int sm_count = 0;
-    if (cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, gpu_device_id_ < 0 ? 0 : gpu_device_id_) ==
-          cudaSuccess && sm_count > 0) {
-      construct_saturation_floor_ = std::max(10, std::min(5120, static_cast<int>(160.0 * sm_count / 170.0 + 0.5)));
+    if (controller_sm_status == cudaSuccess && controller_device_sm_count_ > 0) {
+      construct_saturation_floor_ = std::max(10, std::min(5120,
+          static_cast<int>(160.0 * controller_device_sm_count_ / 170.0 + 0.5)));
       FalcataPlan::Mutable().batch_construct_saturation_floor = construct_saturation_floor_;
     }
   }
@@ -496,6 +511,94 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
   // colmajor_direct: the bin matrix has no row-major copy yet; its view is chosen now that the split finder, the
   // data partition and the histograms are allocated, so free memory already accounts for them
   InitViewRegime("train()");
+  ResolveController("init", true);
+}
+
+void CUDASingleGPUTreeLearner::ResolveController(const char* why, bool data_changed) {
+  const FalcataPlan requested = FalcataPlan::FromConfig(*config_);
+  CUDAControllerRequest request;
+  request.device_levels = requested.device_levels;
+  request.device_tree = requested.device_tree;
+  request.device_levels_explicit = requested.device_levels_explicit;
+  request.device_tree_explicit = requested.device_tree_explicit;
+  controller_graph_enabled_ = requested.device_level_graph;
+  CUDAControllerFacts facts;
+  facts.num_rows = num_data_;
+  facts.num_features = train_data_->num_features();
+  // SetTrainingData / SetConfig already drew any required sample. Its size is
+  // the sampler's actual rounded count over valid features; no new RNG draw.
+  facts.sampled_features = col_sampler_.need_reset_bytree() ?
+      static_cast<int>(col_sampler_.used_feature_indices().size()) : facts.num_features;
+  if (data_changed) {
+    const auto& offsets = share_state_->feature_hist_offsets();
+    controller_num_bins_ = offsets.empty() ? 0 : offsets.back();
+    controller_max_feature_bins_ = 0;
+    controller_missing_feature_count_ = 0;
+    controller_all_numerical_ = true;
+    for (int feature = 0; feature < facts.num_features; ++feature) {
+      const BinMapper* mapper = train_data_->FeatureBinMapper(feature);
+      controller_max_feature_bins_ = std::max(controller_max_feature_bins_, mapper->num_bin());
+      controller_missing_feature_count_ += mapper->missing_type() != MissingType::None;
+      controller_all_numerical_ = controller_all_numerical_ && mapper->bin_type() == BinType::NumericalBin;
+    }
+  }
+  facts.num_bins = controller_num_bins_;
+  facts.max_feature_bins = controller_max_feature_bins_;
+  facts.missing_feature_count = controller_missing_feature_count_;
+  facts.metadata_known = facts.num_features > 0 && facts.max_feature_bins > 0;
+  facts.num_leaves = config_->num_leaves;
+  facts.max_depth = config_->max_depth;
+  facts.min_data_in_leaf = config_->min_data_in_leaf;
+  facts.feature_fraction = config_->feature_fraction;
+  facts.bagging_fraction = config_->bagging_fraction;
+  facts.bagging_freq = config_->bagging_freq;
+  facts.quantized = config_->use_quantized_grad;
+  facts.graph_cache_enabled = controller_graph_enabled_;
+  // Performance admission is separate from native compatibility. Presence of
+  // an external array is conservative even if its entries happen to be neutral;
+  // deciding that would require a forbidden row scan.
+  const Metadata& metadata = train_data_->metadata();
+  facts.performance_modifiers_supported =
+      (config_->objective == "regression" || config_->objective == "binary" || config_->objective == "multiclass") &&
+      metadata.weights() == nullptr && metadata.init_score() == nullptr &&
+      config_->lambda_l1 == 0.0 && config_->lambda_l2 == 0.0 && config_->min_gain_to_split == 0.0 &&
+      config_->path_smooth == 0.0 && config_->min_sum_hessian_in_leaf == 1e-3 && config_->max_delta_step == 0.0 &&
+      config_->boost_from_average && !config_->is_unbalance && config_->scale_pos_weight == 1.0 && config_->sigmoid == 1.0;
+  facts.device_major = controller_device_major_;
+  facts.device_minor = controller_device_minor_;
+  facts.device_sm_count = controller_device_sm_count_;
+  facts.device_memory_bus_bits = controller_device_memory_bus_bits_;
+#ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
+  // Resolve against the existing native gates. The per-tree check still runs
+  // with the actual layout/tasks, and remains authoritative for engagement.
+  const bool batched_kernels = use_hybrid_batch_kernels_ &&
+      cuda_histogram_constructor_->SupportsBatchedLevel() && cuda_best_split_finder_->SupportsBatchedLevel();
+  const bool native_common = DeviceControllerUnsupportedReason(batched_kernels, use_hybrid_batch_apply_, false) == nullptr;
+  facts.scope_supported = config_->boosting == "gbdt" && config_->data_sample_strategy == "bagging" &&
+      !forest_slot_ && nccl_communicator_ == nullptr && fp_merge_state_ == nullptr &&
+      !config_->bagging_by_query && config_->pos_bagging_fraction == 1.0 && config_->neg_bagging_fraction == 1.0 &&
+      config_->tree_mode == "scalar" && !config_->linear_tree && controller_all_numerical_ &&
+      config_->feature_fraction_bynode == 1.0 && config_->interaction_constraints_vector.empty() &&
+      config_->monotone_constraints.empty() && config_->forcedsplits_filename.empty() &&
+      !CostEfficientGradientBoosting::IsEnable(config_) && !FalcataDebug().aggressive &&
+      !FalcataDebug().any_growth_hook() && !FalcataDebug().dump;
+  const bool native_prefix_flow = facts.scope_supported && HybridGrowthUsable() && !UseSelectiveGrowth() && native_common;
+  facts.native_prefix_eligible = native_prefix_flow && DeviceControllerLevelCount(false) > 0;
+  facts.native_whole_eligible = native_prefix_flow && DeviceControllerLevelCount(true) > 0;
+#endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+  controller_decision_ = ResolveCUDAController(request, facts);
+  if (FalcataDebug().diag) {
+    fprintf(stderr, "[hybrid-diag] controller: requested=%s resolved=%s reason=%s phase=%s "
+            "levels_explicit=%d tree_explicit=%d rows=%" PRId64 " features=%d sampled=%d bins=%" PRId64 " max_bins=%d "
+            "missing_features=%d sm=%d.%d sms=%d memory_bus_bits=%d modifiers_supported=%d graph_requested=%d\n",
+            controller_decision_.requested == CUDAControllerRoute::kAuto ? "auto" : "explicit",
+            CUDAControllerRouteName(controller_decision_.resolved),
+            controller_decision_.reason, why, request.device_levels_explicit, request.device_tree_explicit,
+            facts.num_rows, facts.num_features, facts.sampled_features,
+            facts.num_bins, facts.max_feature_bins, facts.missing_feature_count,
+            facts.device_major, facts.device_minor, facts.device_sm_count, facts.device_memory_bus_bits,
+            facts.performance_modifiers_supported, facts.graph_cache_enabled);
+  }
 }
 
 // colmajor_direct: what training can still allocate once the regime's view exists, the compact regime's memory
@@ -2766,7 +2869,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   // not needed inside the graph. Any fallback (env off, unsupported driver,
   // capture failure, no usable feature) reverts to the classic (two-sync)
   // host loop below, bit-for-bit the previous behavior.
-  if (!FalcataPlan::Get().device_tree && config_->use_quantized_grad && use_hybrid_one_sync_ &&
+  if (!WholeDeviceTreeRequested() && config_->use_quantized_grad && use_hybrid_one_sync_ &&
       use_batched_level_kernels && use_batched_level_apply &&
       HybridGraphPrefixUsable()) {
     // the quantized graph prefix reads the host root sums like the classic flow: a no-op unless BeforeTrain
@@ -2785,7 +2888,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
   if (device_levels > 0 && !device_levels_ready_ && !SetupDeviceLevels(device_levels)) {
     device_levels_disabled_ = true;
   }
-  const bool whole_device_tree = FalcataPlan::Get().device_tree && device_levels > 0 && device_levels_ready_;
+  const bool whole_device_tree = WholeDeviceTreeRequested() && device_levels > 0 && device_levels_ready_;
   if (!whole_device_tree) {
     EnsureRootSumsReadBack(tree);
   }
@@ -3588,21 +3691,22 @@ void CUDASingleGPUTreeLearner::ReleaseHybridGraphs() {
   device_level_graph_disabled_ = false;
   device_level_graph_hits_ = 0;
   device_level_graph_misses_ = 0;
+  device_levels_logged_ = false;
+  device_levels_fallback_logged_ = false;
 }
 
 void CUDASingleGPUTreeLearner::LogDeviceLevelsFallback(const char* reason) {
   if (FalcataDebug().diag && !device_levels_fallback_logged_) {
     device_levels_fallback_logged_ = true;
     fprintf(stderr, "[hybrid-diag] %s: host fallback (%s)\n",
-            FalcataPlan::Get().device_tree ? "device_tree" : "device_levels", reason);
+            WholeDeviceTreeRequested() ? "device_tree" : "device_levels", reason);
   }
 }
 
 // ---- cuda_plan key device_levels (see cuda_device_levels.hpp) ----
 
 int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels, const bool batched_level_apply) {
-  const FalcataPlan& plan = FalcataPlan::Get();
-  if ((!plan.device_levels && !plan.device_tree) || device_levels_disabled_) {
+  if ((!DevicePrefixRequested() && !WholeDeviceTreeRequested()) || device_levels_disabled_) {
     return 0;
   }
   // Slot workers use thread-local stream ownership. Neither capture nor the plain device enqueue is supported here.
@@ -3611,9 +3715,25 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
     return 0;
   }
   // When sampled layouts keep missing the graph cache, use the existing host loop on subsequent trees.
-  if (!plan.device_tree && plan.device_level_graph && device_level_graph_disabled_) {
+  if (!WholeDeviceTreeRequested() && controller_graph_enabled_ && device_level_graph_disabled_) {
     LogDeviceLevelsFallback("changing graph layouts");
     return 0;
+  }
+  const char* unsupported = DeviceControllerUnsupportedReason(batched_level_kernels, batched_level_apply, true);
+  if (unsupported != nullptr) {
+    LogDeviceLevelsFallback(unsupported);
+    return 0;
+  }
+  const int levels = DeviceControllerLevelCount(WholeDeviceTreeRequested());
+  if (WholeDeviceTreeRequested() && levels == 0) LogDeviceLevelsFallback("depth bound or leaf budget");
+  return levels;
+}
+
+const char* CUDASingleGPUTreeLearner::DeviceControllerUnsupportedReason(
+    const bool batched_level_kernels, const bool batched_level_apply, const bool require_active_tasks) const {
+  const FalcataPlan& plan = FalcataPlan::Get();
+  if (forest_slot_ || cuda_best_split_finder_->find_stream() == cudaStreamLegacy) {
+    return forest_slot_ ? "forest slot" : "legacy single stream";
   }
   // the flow this replaces: the classic quantized prefix with both batched phases, single GPU, scalar leaves, no
   // per-node masks (drawn on the host per level), no categorical splits (their bitsets are built through host
@@ -3624,16 +3744,18 @@ int CUDASingleGPUTreeLearner::DeviceLevelsToRun(const bool batched_level_kernels
       FalcataDebug().any_growth_hook() || FalcataDebug().dump || !batched_level_kernels || !batched_level_apply ||
       !plan.apply_struct_fused || !plan.gap_copy_fused ||
       !cuda_histogram_constructor_->DeviceLevelConstructSupported() ||
-      cuda_best_split_finder_->num_used_tasks() == 0) {
-    LogDeviceLevelsFallback("unsupported prefix kernels or configuration");
-    return 0;
+      (require_active_tasks && cuda_best_split_finder_->num_used_tasks() == 0)) {
+    return "unsupported prefix kernels or configuration";
   }
-  if (plan.device_tree) {
+  return nullptr;
+}
+
+int CUDASingleGPUTreeLearner::DeviceControllerLevelCount(const bool whole_tree) const {
+  if (whole_tree) {
     // Match HybridGrowthUsable's depth-limited regime: only the final depth-capped level can bind, and the device
     // select applies its top-K candidates in the host arbitration order. Earlier levels still split leaf-ascending.
     const int depth = config_->max_depth;
     if (depth < 1 || depth > 10 || (1LL << depth) > static_cast<int64_t>(config_->num_leaves) + 1) {
-      LogDeviceLevelsFallback("depth bound or leaf budget");
       return 0;
     }
     return depth;
@@ -3965,7 +4087,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   cfg.journal = cuda_device_level_journal_.RawData();
   cfg.max_depth = config_->max_depth;
   cfg.num_leaves_budget = config_->num_leaves;
-  cfg.whole_tree = FalcataPlan::Get().device_tree ? 1 : 0;
+  cfg.whole_tree = WholeDeviceTreeRequested() ? 1 : 0;
   // No current-tree host tail exists for a completed whole tree. Plain unweighted L2 never renews its
   // outputs, and its next BeforeTrain rebuilds root counts/start/bits before any host search. All other
   // modes retain full child statistics; GPU split-info storage/production and full journal replay stay intact.
@@ -4030,7 +4152,7 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
   // cuda_plan key device_level_graph: the levels' launches as one cached CUDA graph (captured on the first tree of a
   // pointer key, replayed on the next ones); otherwise enqueued as they are
   bool launched = false;
-  if (FalcataPlan::Get().device_level_graph && !forest_slot_ && !device_level_graph_disabled_) {
+  if (controller_graph_enabled_ && !forest_slot_ && !device_level_graph_disabled_) {
     launched = LaunchDeviceLevelGraph(tree, cfg, num_levels, inline_all_map, final_map_only);
   }
   if (!launched) {
@@ -4975,7 +5097,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     }
   }
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
-  if (FalcataDebug().diag && (FalcataPlan::Get().device_levels || FalcataPlan::Get().device_tree)) {
+  if (FalcataDebug().diag && (DevicePrefixRequested() || WholeDeviceTreeRequested())) {
     if (!config_->use_quantized_grad) {
       LogDeviceLevelsFallback("nonquantized training");
     } else if (num_splits_done != 0 || !HybridGrowthUsable()) {
@@ -5687,6 +5809,7 @@ void CUDASingleGPUTreeLearner::ResetTrainingData(
   colmajor_fill_trees_seen_ = 0;
   // colmajor_direct: the old data's view is gone; choose a regime for the new data and build its view
   InitViewRegime("update(train_set=...)");
+  ResolveController("reset_data", true);
 }
 
 void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
@@ -5739,6 +5862,7 @@ void CUDASingleGPUTreeLearner::ResetConfig(const Config* config) {
   if (cuda_histogram_constructor_->colmajor_direct() && config_->feature_fraction != view_decided_ff_) {
     InitViewRegime("a feature_fraction change");
   }
+  ResolveController("reset_config");
 }
 
 void CUDASingleGPUTreeLearner::PresizeLevelBuffers() {

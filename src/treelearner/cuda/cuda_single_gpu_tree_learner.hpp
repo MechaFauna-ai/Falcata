@@ -13,6 +13,8 @@
 
 #ifdef USE_CUDA
 
+#include <Falcata/cuda_controller_policy.h>
+
 #include "cuda_leaf_splits.hpp"
 #include "cuda_feature_parallel.hpp"
 #include "cuda_histogram_constructor.hpp"
@@ -365,6 +367,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // 2^(L + 1) <= num_leaves (the budget cannot bind) and L + 1 < max_depth (the children are searched), when every
   // kernel of the flow has a device-count variant; 0 = the host loop as before
   int DeviceLevelsToRun(bool batched_level_kernels, bool batched_level_apply);
+  const char* DeviceControllerUnsupportedReason(bool batched_level_kernels, bool batched_level_apply,
+                                               bool require_active_tasks) const;
+  int DeviceControllerLevelCount(bool whole_tree) const;
   void LogDeviceLevelsFallback(const char* reason);
   // one-time buffers and static tables of the device levels; false disables them
   bool SetupDeviceLevels(const int num_levels);
@@ -692,6 +697,25 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
    *  clamped to [10, 5120]; 0 = the plan's value), see Init */
   int construct_saturation_floor_ = 0;
   int effective_quant_bins_ = 0;
+
+  // Controller intent is local even when Dataset construction re-resolves the
+  // process-global plan. Recompute on either kind of learner reset.
+  void ResolveController(const char* why, bool data_changed = false);
+  bool DevicePrefixRequested() const {
+    return controller_decision_.resolved == CUDAControllerRoute::kPrefix ||
+           controller_decision_.resolved == CUDAControllerRoute::kLegacy;
+  }
+  bool WholeDeviceTreeRequested() const { return controller_decision_.resolved == CUDAControllerRoute::kWhole; }
+  CUDAControllerDecision controller_decision_;
+  bool controller_graph_enabled_ = true;
+  int64_t controller_num_bins_ = 0;
+  int controller_max_feature_bins_ = 0;
+  int controller_missing_feature_count_ = 0;
+  bool controller_all_numerical_ = false;
+  int controller_device_major_ = 0;
+  int controller_device_minor_ = 0;
+  int controller_device_sm_count_ = 0;
+  int controller_device_memory_bus_bits_ = 0;
 
   // CUDA components for tree training
 

@@ -2678,10 +2678,54 @@ it produces is the quantized classic loop's to the bit
 quantized training as ground truth in
 `test_vector_leaf_cuda_quantized_selective_duplicated_target_matches_scalar`).
 
+## Automatic controller v1 (unqualified hypothesis)
+
+Controller requests are resolved per CUDA learner, independently of the process-global kernel plan.
+Initialization and configuration/data resets resolve again from configuration, cached GPU properties and
+host-side Dataset metadata. Bin metadata is refreshed only at initialization or a data reset; no row scans,
+copies, timers, trial trees or compilation are introduced into per-tree routing.
+
+An explicit `device_levels` or `device_tree` key retains the legacy boolean pair, including when unrelated
+overrides are present: `device_tree:on,device_levels:off` requests whole growth; `device_tree:off` alone retains
+the prefix default; `device_levels:off` alone requests host growth. Each key's last occurrence wins, independent
+of the other key's order. Boolean aliases `1`/`0` and `true`/`false` retain the same meaning.
+
+`FALCATA_DEBUG=diag` reports `controller: requested=auto|explicit resolved=host|prefix|whole|legacy reason=... phase=...` separately from the
+existing engagement and fallback diagnostics. Resolution expresses controller intent; existing kernel,
+configuration and graph-cache checks still decide whether it executes. Resets invalidate cached graphs and
+refresh controller diagnostics.
+
+The v1 hypothesis admits the measured hardware resource identity only: compute capability 12.0, 170 SMs and
+a 512-bit memory bus. Unknown hardware or unavailable metadata selects host control. On admitted hardware,
+nonquantized, forest, distributed, categorical/vector, constrained and other unsupported training scopes retain
+their existing routing (`legacy`) and correctness guards. Other CUDA optimizations remain enabled.
+
+Within ordinary quantized numerical scalar GBDT, automatic device controllers require graph caching enabled,
+no supplied weight or initial-score arrays, and objective `regression`, `binary` or `multiclass`. Performance
+admission also requires L1/L2, path smoothing, minimum split gain and resolved output clipping all zero;
+`min_sum_hessian_in_leaf=0.001`; average initialization enabled; and default imbalance weighting and sigmoid.
+Nondefault modifiers select host control. Array presence is checked through metadata pointers, without scans.
+
+The remaining performance envelope is `N >= 100000`, every valid feature having at most 256 bins and
+`missing_type=None`. Missing modes are counted across **all** valid BinMappers, including `Zero` mode.
+`U` is the existing column sampler's selected count over valid features, with no additional random draw.
+Let `b=bagging_fraction` when `bagging_freq>0`, otherwise `b=1`:
+
+| Order | Controller hypothesis, subject to native eligibility |
+|---|---|
+| 1 | Whole if `L >= 2^D`, `U <= 128` and `floor(N*b/max(1,min_data_in_leaf)) >= 2^D`. |
+| 2 | Otherwise prefix if `U <= 64`, `feature_fraction=1`, `b=1`; or `U <= 128`, all valid bins `<=4`, `feature_fraction>=0.5`, `b>=0.5`. |
+| 3 | Otherwise host. |
+
+The 64/128 widths and sampling cutoffs are coarse derivation hypotheses. This authored v1 has not been built,
+tested or performance-qualified; it awaits parent hooks/builds, complete-model/engagement checks and separate
+derivation/holdout validation. Historical measurements below do not qualify this source.
+
 ## Experimental complete bounded device trees (`device_tree`)
 
-`cuda_plan=auto,device_tree:on` (default OFF) requests the complete quantized device controller for scalar,
-numerical single-GPU trees with positive `max_depth <= 10` and `2^max_depth <= num_leaves`. The key supplies
+`cuda_plan=auto,device_tree:on` explicitly requests the complete quantized device controller for scalar,
+numerical single-GPU trees with positive `max_depth <= 10` and `2^max_depth <= num_leaves + 1`. Auto v1
+deliberately requires `num_leaves >= 2^max_depth`; the explicit key allows a final single-leaf budget bind. The key supplies
 its own growth even with `device_levels:off`; unsupported kernels, constraints and data retain the existing
 host flow and report the fallback under `FALCATA_DEBUG=diag`. No training parameters or split rules change.
 
