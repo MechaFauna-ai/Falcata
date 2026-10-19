@@ -73,9 +73,11 @@ void LinearTreeLearner<TREE_LEARNER_TYPE>::InitLinear(const Dataset* train_data,
     XTHX_.push_back(std::vector<double>((max_num_feat + 1) * (max_num_feat + 2) / 2 + 8, 0));
     XTg_.push_back(std::vector<double>(max_num_feat + 9, 0.0));
   }
+  // Prediction can temporarily lower the process-wide thread count. Retain
+  // every previously allocated thread when refreshing data or leaf capacity.
+  const int max_threads = std::max(OMP_NUM_THREADS(), static_cast<int>(XTHX_by_thread_.size()));
   XTHX_by_thread_.clear();
   XTg_by_thread_.clear();
-  int max_threads = OMP_NUM_THREADS();
   for (int i = 0; i < max_threads; ++i) {
     XTHX_by_thread_.push_back(XTHX_);
     XTg_by_thread_.push_back(XTg_);

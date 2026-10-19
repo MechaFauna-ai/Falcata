@@ -105,6 +105,44 @@ def test_linear_reset_grows_feature_and_thread_workspaces():
     )
 
 
+@pytest.mark.parametrize("reset_kind", ["data", "leaves"])
+@pytest.mark.parametrize("nrows", [192, 1536])
+def test_linear_reset_retains_prediction_thread_capacity(nrows, reset_kind):
+    rows = np.arange(nrows)
+    x = np.column_stack((rows % 31 / 31.0, rows % 7 * 0.2))
+    y = (2 * x[:, 0] + 3 * x[:, 1]).astype(np.float32)
+    small, control, original = _pair(x, y, _params(num_threads=4))
+    datasets = [original]
+    for _ in range(3):
+        for model in (small, control):
+            assert not model.update()
+        _assert_equal(small, control, x)
+    for reset_index, low_threads in enumerate((1, 2, 1)):
+        count = 6 + 3 * reset_index
+        if reset_kind == "data":
+            target = lgb.Dataset(x.copy(), y.copy(), reference=original, free_raw_data=False).construct()
+            datasets.append(target)
+            assert small.params["num_threads"] == 4
+        else:
+            for model in (small, control):
+                # Reinitialize leaf storage at the lower effective thread count.
+                model.reset_parameter({"num_leaves": count, "num_threads": low_threads})
+        for model in (small, control):
+            model.predict(x, num_threads=low_threads)
+            # The control keeps the identical original data and has enough leaf
+            # capacity to avoid InitLinear on both the base and revised builds.
+            train_set = target if reset_kind == "data" and model is small else None
+            assert not model.update(train_set=train_set)
+        _assert_equal(small, control, x)
+        for model in (small, control):
+            # Restore the earlier allocation's thread count without ResetConfig.
+            model.predict(x, num_threads=4)
+            assert not model.update()
+        assert small.current_iteration() == 5 + 2 * reset_index
+        _assert_equal(small, control, x)
+        assert small.dump_model()["tree_info"][-1]["num_leaves"] == (count if reset_kind == "leaves" else 5)
+
+
 def _leaves(node):
     if "leaf_index" in node:
         yield node
