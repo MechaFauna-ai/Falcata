@@ -39,6 +39,7 @@ from pathlib import Path
 GATES_DIR = Path(__file__).resolve().parent
 CORPUS_FILE = GATES_DIR / "fuzz_corpus.json"
 CPU_METRIC_TOLERANCE = 0.10  # relative; cpu-vs-cuda held-out metric gap
+UNRESOLVED_CUDA_TIMEOUT_EXIT = 125  # nightly_local.sh must stop subsequent gates
 
 
 def sample_spec(rng):
@@ -509,6 +510,7 @@ def main():
         if stopped:
             print(f"repro: python tests/gates/fuzz.py --spec '{json.dumps(spec)}'")
             print("STOP: unresolved CUDA timeout; no further native workers or specs run")
+            return UNRESOLVED_CUDA_TIMEOUT_EXIT
         return 1 if fails else 0
 
     seed = args.seed if args.seed is not None else int(datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d"))
@@ -520,6 +522,7 @@ def main():
     num_known = 0
     deadline = time.monotonic() + args.minutes * 60
     tried = 0
+    stopped = False
 
     try:
         for i, spec in enumerate(corpus):
@@ -539,6 +542,7 @@ def main():
             for f in fails:
                 failures.append((name, f, spec))
     except UnresolvedCUDATimeout as exc:
+        stopped = True
         tried += 1
         num_known += len(exc.known)
         for note in exc.known:
@@ -550,6 +554,8 @@ def main():
     print(f"fuzz: {tried} specs tried, {len(failures)} failure(s), {num_known} policy note(s)")
     for name, f, spec in failures:
         print(f"\nFAIL [{name}] {f}\nrepro: python tests/gates/fuzz.py --spec '{json.dumps(spec)}'")
+    if stopped:
+        return UNRESOLVED_CUDA_TIMEOUT_EXIT
     return 1 if failures else 0
 
 

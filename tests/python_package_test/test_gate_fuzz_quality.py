@@ -5,6 +5,7 @@ import copy
 import importlib.util
 import itertools
 import json
+import os
 import subprocess
 import sys
 import types
@@ -342,7 +343,7 @@ def test_main_single_spec_cuda_timeout_is_named_failure_with_original_repro(fuzz
     script = WorkerScript(fuzz, monkeypatch, spec, faults={index: "timeout"})
     script.expected = script.expected[: index + 1]
     monkeypatch.setattr(sys, "argv", ["fuzz.py", "--spec", json.dumps(spec)])
-    assert fuzz.main() == 1
+    assert fuzz.main() == 125
     assert script.calls == script.expected
     output = capsys.readouterr().out
     assert "FAIL UNRESOLVED_CUDA_TIMEOUT" in output
@@ -382,7 +383,7 @@ def test_main_corpus_cuda_timeout_preserves_prior_failure_and_stops_all_later_sp
     monkeypatch.setattr(fuzz.subprocess, "run", transport)
     monkeypatch.setattr(fuzz, "sample_spec", forbidden_sample)
     monkeypatch.setattr(sys, "argv", ["fuzz.py", "--seed", "123", "--minutes", "1"])
-    assert fuzz.main() == 1
+    assert fuzz.main() == 125
     assert first.calls == first.expected
     assert stopping.calls == stopping.expected
     assert len(all_calls) == 3 + index + 1
@@ -410,12 +411,34 @@ def test_main_sampled_cuda_timeout_stops_sampling_and_workers(fuzz, monkeypatch,
 
     monkeypatch.setattr(fuzz, "sample_spec", sample)
     monkeypatch.setattr(sys, "argv", ["fuzz.py", "--seed", "123", "--minutes", "1"])
-    assert fuzz.main() == 1
+    assert fuzz.main() == 125
     assert len(samples) == 1
     assert script.calls == script.expected
     output = capsys.readouterr().out
     assert "1 specs tried" in output
     assert "FAIL [seed123#1] UNRESOLVED_CUDA_TIMEOUT" in output
+
+
+@pytest.mark.parametrize("single_spec", [True, False])
+@pytest.mark.parametrize(("metric", "status"), [(0.6, 1), (1.0, 0)])
+def test_main_ordinary_quality_and_success_statuses_unchanged(
+    fuzz, monkeypatch, capsys, tmp_path, spec, single_spec, metric, status
+):
+    spec["bagging_freq"] = 0
+    script = WorkerScript(fuzz, monkeypatch, spec, pairs=None, initial=metric)
+    if single_spec:
+        argv = ["fuzz.py", "--spec", json.dumps(spec)]
+    else:
+        corpus = tmp_path / "corpus.json"
+        corpus.write_text(json.dumps([spec]))
+        monkeypatch.setattr(fuzz, "CORPUS_FILE", corpus)
+        argv = ["fuzz.py", "--seed", "123", "--minutes", "0"]
+    monkeypatch.setattr(sys, "argv", argv)
+    assert fuzz.main() == status
+    assert script.calls == script.expected
+    output = capsys.readouterr().out
+    assert "UNRESOLVED_CUDA_TIMEOUT" not in output
+    assert "STOP:" not in output
 
 
 @pytest.mark.parametrize("index", [3, 4, 5, 6])
@@ -593,3 +616,119 @@ def test_worker_rejects_ignored_explicit_bag_seed(fuzz, monkeypatch, capsys, spe
     spec["bagging_seed"] = 733
     with pytest.raises(AssertionError, match="effective bagging_seed differs"):
         embedded_worker(fuzz, monkeypatch, capsys, spec, device, seed_drift=True)
+
+
+@pytest.fixture
+def nightly_shell(tmp_path):
+    """Real nightly shell, isolated temp paths and CPU stubs for every native command."""
+    if os.name != "posix":
+        pytest.skip("nightly shell fixture requires POSIX")
+    repo, fake_home, bin_dir = tmp_path / "repo", tmp_path / "home", tmp_path / "bin"
+    gates = repo / "tests" / "gates"
+    gates.mkdir(parents=True)
+    (repo / ".gates-venv" / "bin").mkdir(parents=True)
+    fake_home.mkdir()
+    bin_dir.mkdir()
+    calls_file = tmp_path / "calls.jsonl"
+    calls_file.write_text("")
+    contention = tmp_path / "contention.log"
+    contention.write_text("")
+    stub = f"""#!{sys.executable}
+import json, os, pathlib, sys
+name = pathlib.Path(sys.argv[0]).name
+args = sys.argv[1:]
+with open(os.environ["NIGHTLY_TEST_CALLS"], "a") as output:
+    output.write(json.dumps([name, *args]) + "\\n")
+if name == "git" and "rev-parse" in args:
+    print("01234567")
+if name == "python" and args and args[0] == "tests/gates/fuzz.py":
+    sys.exit(int(os.environ["NIGHTLY_TEST_FUZZ_STATUS"]))
+sys.exit(0)
+"""
+    for path in (bin_dir / "git", bin_dir / "gpuq", repo / ".gates-venv" / "bin" / "python"):
+        path.write_text(stub)
+        path.chmod(0o755)
+    build_stub = r"""#!/bin/bash
+printf '%s\n' '["ci_build"]' >> "$NIGHTLY_TEST_CALLS"
+"""
+    (gates / "ci_build.sh").write_text(build_stub)
+    (gates / "cpp_suite.sh").write_text(build_stub.replace("ci_build", "cpp_suite"))
+    nightly = Path(__file__).resolve().parents[1] / "gates" / "nightly_local.sh"
+    env = {
+        **os.environ,
+        "HOME": str(fake_home),
+        "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
+        "FALCATA_REPO": str(repo),
+        "GPUQ_JOB_ID": "1234",
+        "GPUQ_CONTENTION_LOG": str(contention),
+        "FALCATA_PERF_SEED_RUNS": "1",
+        "FALCATA_PERF_BASELINE": str(tmp_path / "baseline.json"),
+        "NIGHTLY_TEST_CALLS": str(calls_file),
+    }
+
+    def run(fuzz_status):
+        proc = subprocess.run(
+            ["/bin/bash", str(nightly)],
+            cwd=repo,
+            env={**env, "NIGHTLY_TEST_FUZZ_STATUS": str(fuzz_status)},
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        calls = [json.loads(line) for line in calls_file.read_text().splitlines()]
+        log_dir = fake_home / ".cache" / "falcata-gates"
+        logs = list(log_dir.glob("nightly-*.log"))
+        assert len(logs) == 1
+        return proc, calls, logs[0].read_text(), (log_dir / "last-status").read_text()
+
+    return run
+
+
+@pytest.mark.parametrize("fuzz_status", [125, 1])
+def test_nightly_shell_stops_reserved_timeout_but_continues_quality_failure(nightly_shell, fuzz_status):
+    proc, calls, log, status = nightly_shell(fuzz_status)
+    workloads = [
+        call[1] if call[0] == "python" else call[0] for call in calls if call[0] in ("python", "ci_build", "cpp_suite")
+    ]
+    before_stop = [
+        "ci_build",
+        "tests/gates/lattice.py",
+        "tests/gates/selective_equivalence.py",
+        "tests/gates/fuzz.py",
+    ]
+    assert proc.returncode == fuzz_status, log + proc.stderr
+    assert any(call[0] == "git" for call in calls)
+    assert any(call[0] == "gpuq" for call in calls)
+    assert "=== ALL GATES PASSED" not in log
+    if fuzz_status == 125:
+        assert workloads == before_stop
+        assert calls[-1] == ["python", "tests/gates/fuzz.py", "--minutes", "45"]
+        assert status.startswith("UNRESOLVED_CUDA_TIMEOUT (exit 125)")
+        assert "fuzz (45 min, corpus first)" in status
+        assert "ABORT: unresolved CUDA timeout; remaining nightly gates not run" in log
+        assert "-> validation scoring" not in log
+    else:
+        assert workloads == before_stop + [
+            "tests/gates/valid_metric.py",
+            "tests/gates/falb_python.py",
+            "tests/gates/falb_roundtrip.py",
+            "tests/gates/falb_compat.py",
+            "tests/gates/falb_golden.py",
+            "tests/gates/falb_fuzz.py",
+            "-m",  # pytest is handled by the same fake venv Python
+            "cpp_suite",
+            "tests/gates/import_xgboost.py",
+            "tests/gates/import_catboost.py",
+            "tests/gates/canonical.py",
+            "tests/gates/canonical.py",
+            "tests/gates/sparse_column_view.py",
+            "tests/gates/nibble_validate.py",
+            "tests/gates/leaf_integrity.py",
+            "tests/gates/bench_tier.py",
+            "tests/gates/perf_gate.py",
+        ]
+        assert status.startswith("FAILED ")
+        assert "fuzz (45 min, corpus first)" in status
+        assert "UNRESOLVED_CUDA_TIMEOUT" not in log
+        assert "=== GATES FAILED:" in log
