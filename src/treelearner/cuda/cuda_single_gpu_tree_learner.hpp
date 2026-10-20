@@ -726,6 +726,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
    *  budget does not bind and every child sits at max_depth; set by the level prefix when it ended on such a level */
   bool level_completes_tree_ = false;
   bool prefix_completes_tree_ = false;
+  /*! \brief cuda_plan key device_tree: the whole tree applied no split and its classic root search (the host level
+   *  flows' first leaf-wise tail search) found one; Train's tail continues from that cached search */
+  bool device_tree_root_tail_ = false;
   /*! \brief cuda_plan key dirty_final_slots: the tree's leaf count before the final level that completed the level
    *  prefix (prefix_completes_tree_), -1 otherwise */
   int prefix_final_leaves_before_ = -1;
