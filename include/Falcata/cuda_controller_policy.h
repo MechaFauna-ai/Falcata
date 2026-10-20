@@ -73,7 +73,20 @@ inline CUDAControllerRoute LearnedCUDAControllerCandidate(const CUDAControllerFa
 }  // namespace Falcata
 
 // Supplied only by the pinned generic exporter; no handwritten substitute.
+// Its defensive int32 guards are redundant for these native field types.
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wtautological-constant-out-of-range-compare"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wtype-limits"
+#endif
 #include <Falcata/cuda_controller_learned.h>  // NOLINT(build/include_order)
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 namespace Falcata {
 

@@ -4,7 +4,19 @@
  */
 // Generated-header-first entry order, linked with policy-first test_common.cpp.
 #include <gtest/gtest.h>
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wtautological-constant-out-of-range-compare"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wtype-limits"
+#endif
 #include <Falcata/cuda_controller_learned.h>
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 #include <Falcata/cuda_controller_policy.h>
 
 #include <cstdint>
