@@ -1,10 +1,44 @@
 # coding: utf-8
 import logging
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 import falcata as lgb
+
+
+@pytest.fixture(autouse=True)
+def restore_registered_logger():
+    previous = (lgb.basic._LOGGER, lgb.basic._INFO_METHOD_NAME, lgb.basic._WARNING_METHOD_NAME)
+    yield
+    lgb.register_logger(*previous)
+
+
+def test_registered_loggers_do_not_leak_into_later_tests():
+    # A logger left registered here would receive the warning test_engine.py expects from warnings.warn.
+    here = Path(__file__).parent
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            f"{here / 'test_utilities.py'}::test_register_logger",
+            f"{here / 'test_utilities.py'}::test_register_custom_logger",
+            f"{here / 'test_engine.py'}::test_string_serialized_params_retrieval",
+        ],
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout[-3000:]
 
 
 def test_register_logger(tmp_path):
