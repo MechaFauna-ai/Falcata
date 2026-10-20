@@ -227,7 +227,31 @@ endif()
 
 if(USE_CUDA)
     set(CMAKE_CUDA_HOST_COMPILER "${CMAKE_CXX_COMPILER}")
+    # The first enable_language(CUDA) caches nvcc's default target as
+    # CMAKE_CUDA_ARCHITECTURES when the user gave none. Keep that default only as
+    # a normal variable (try_compile needs one) and an empty cache entry, so a
+    # later -DCMAKE_CUDA_ARCHITECTURES is recognised as the user's choice even when
+    # it equals the default. Build dirs configured before FALCATA_CUDA_ARCHS_TRACKED
+    # existed hold that default ("52" or "75") in the cache.
+    file(GLOB _falcata_cuda_determined "${CMAKE_BINARY_DIR}/CMakeFiles/*/CMakeCUDACompiler.cmake")
+    if("${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "" AND "$ENV{CUDAARCHS}" STREQUAL "")
+        set(_falcata_cuda_archs_injected TRUE)
+    elseif(NOT DEFINED CACHE{FALCATA_CUDA_ARCHS_TRACKED} AND _falcata_cuda_determined
+            AND CMAKE_CUDA_ARCHITECTURES MATCHES "^(52|75)$")
+        set(_falcata_cuda_archs_injected TRUE)
+    endif()
     enable_language(CUDA)
+    if(_falcata_cuda_archs_injected)
+        set(FALCATA_USER_CUDA_ARCHS "")
+        if(NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "")
+            set(FALCATA_CUDA_DEFAULT_ARCHS "${CMAKE_CUDA_ARCHITECTURES}" CACHE INTERNAL "")
+        endif()
+        set(CMAKE_CUDA_ARCHITECTURES "" CACHE STRING "CUDA architectures" FORCE)
+        set(CMAKE_CUDA_ARCHITECTURES "${FALCATA_CUDA_DEFAULT_ARCHS}")
+    else()
+        set(FALCATA_USER_CUDA_ARCHS "${CMAKE_CUDA_ARCHITECTURES}")
+    endif()
+    set(FALCATA_CUDA_ARCHS_TRACKED ON CACHE INTERNAL "")
     set(USE_OPENMP ON CACHE BOOL "CUDA requires OpenMP" FORCE)
 endif()
 
@@ -329,10 +353,6 @@ if(USE_CUDA)
     # https://en.wikipedia.org/wiki/CUDA#GPUs_supported
     # CUDA 13.0 removed offline-compilation support for Maxwell (sm_50/52/53), Pascal (sm_60/61/62)
     # and Volta (sm_70/72). sm_75 (Turing) is the lowest still-supported architecture.
-    # NOTE: when the user passes nothing, CMake itself injects nvcc's default
-    # target ("52") into CMAKE_CUDA_ARCHITECTURES at language enablement -- an
-    # arch our code does not even support. Treat that auto-injected value as
-    # "not set" so the every-supported-arch fallback below actually runs.
     # Detect the GPUs actually present so a plain `pip install falcata` builds
     # only for them (minutes instead of the better part of an hour). The
     # every-supported-arch build below remains the fallback when no GPU is
@@ -405,13 +425,8 @@ if(USE_CUDA)
         endif()
     endif()
 
-    # "52" is what CMake injects as nvcc's default target on CUDA <= 12;
-    # nvcc 13 raised that injected default to "75". Both mean "the user
-    # passed nothing", so both must yield to GPU detection below.
-    if(DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL ""
-            AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "52"
-            AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "75")
-        set(CUDA_ARCHS "${CMAKE_CUDA_ARCHITECTURES}")
+    if(NOT "${FALCATA_USER_CUDA_ARCHS}" STREQUAL "")
+        set(CUDA_ARCHS "${FALCATA_USER_CUDA_ARCHS}")
     elseif(NOT "${FALCATA_DETECTED_ARCHS}" STREQUAL "")
         # real code for each detected GPU + PTX of the newest for forward compat
         set(CUDA_ARCHS ${FALCATA_DETECTED_ARCHS})
