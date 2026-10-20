@@ -2837,7 +2837,7 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
     }
     num_splits = TrainDeviceLevels(tree, device_levels, &pairs);
     search_read_back = true;
-    if (device_tree_completed_) {
+    if (device_tree_completed_ || device_tree_root_tail_) {
       return num_splits;
     }
   }
@@ -4188,16 +4188,29 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
     whole_host_leaf_cache_stale_ = total_splits > 0;
   }
   if (cfg.whole_tree) {
-    device_tree_completed_ = true;
-    prefix_completes_tree_ = true;
+    if (num_splits == 0) {
+      // The root output survives only for a stump. Read its original root struct before tree-end consumers.
+      EnsureRootSumsReadBack(tree);
+      // A level root search without a valid split is not final in the host level flows: their leaf-wise tail first
+      // searches the root again with the classic per-leaf search (e.g. on a sampled compact layout whose batched
+      // root histogram misses the sampled features). Run that same single search here. A valid split hands the tree
+      // to Train's tail with this search cached; otherwise the stump is the host flows' result as well.
+      EnqueuePairBestSplitSearch(tree, cuda_smaller_leaf_splits_->GetCUDAStruct(),
+                                 cuda_larger_leaf_splits_->GetCUDAStruct(), smaller_leaf_index_, larger_leaf_index_,
+                                 /*synchronize=*/true);
+      // FindBestFromAllSplitsKernel's root criterion; that kernel consumes the leaf it picks, so the tail runs it
+      SynchronizeCUDADevice(__FILE__, __LINE__);
+      CUDASplitInfo root_split;
+      CopyFromCUDADeviceToHost<CUDASplitInfo>(&root_split, cuda_best_split_finder_->leaf_best_split_info_ptr(0), 1,
+                                              __FILE__, __LINE__);
+      device_tree_root_tail_ = root_split.is_valid && root_split.gain > 0.0;
+    }
+    device_tree_completed_ = !device_tree_root_tail_;
+    prefix_completes_tree_ = !device_tree_root_tail_;
     if (prefetch_tree_end && total_splits > 0) {
       CHECK_EQ(tree->num_leaves(), total_splits + 1);
       prefetched_tree_num_leaves_ = tree->num_leaves();
       prefetched_tree_counts_ = true;
-    }
-    if (num_splits == 0) {
-      // The root output survives only for a stump. Read its original root struct before tree-end consumers.
-      EnsureRootSumsReadBack(tree);
     }
 #ifdef FALCATA_WHOLE_MAP_ONLY_FAULT_TEST
     if (all_map_complete) {
@@ -4225,8 +4238,9 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
               prefetch_tree_end ? 1 : 0, prefetched_tree_num_leaves_ > 0 ? 1 : 0, tree->num_leaves(),
               prefetched_tree_counts_ ? 1 : 0);
       fprintf(stderr, "[hybrid-diag] device_tree: complete depth=%d applied_levels=%d splits=%d "
-              "growth_readbacks=1 host_tail=0 graph=%d hits=%d misses=%d\n", num_levels, levels_applied,
-              total_splits, launched ? 1 : 0, device_level_graph_hits_, device_level_graph_misses_);
+              "growth_readbacks=1 host_tail=%d graph=%d hits=%d misses=%d\n", num_levels, levels_applied,
+              total_splits, device_tree_root_tail_ ? 1 : 0, launched ? 1 : 0, device_level_graph_hits_,
+              device_level_graph_misses_);
     }
   } else {
     // the last search's result, as the host loop's own readback leaves it
@@ -4940,6 +4954,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   }
   prefix_completes_tree_ = false;
   prefix_final_leaves_before_ = -1;
+  device_tree_root_tail_ = false;
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   device_tree_completed_ = false;
 #ifdef FALCATA_WHOLE_MAP_ONLY_FAULT_TEST
@@ -4980,8 +4995,8 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
       global_timer.Stop("CUDASingleGPUTreeLearner::TrainLevelWisePrefix");
       batched_apply_ran = num_splits_done > 0;
       // every current leaf already has a cached best-split candidate; the first
-      // tail iteration must not redo the pair search
-      pair_search_cached = num_splits_done > 0;
+      // tail iteration must not redo the pair search (nor the whole tree's classic root search)
+      pair_search_cached = num_splits_done > 0 || device_tree_root_tail_;
     }
   }
   // cuda_plan key skip_empty_tail: after a level prefix that ended on a complete final level the tail's search can
