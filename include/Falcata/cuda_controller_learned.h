@@ -1,5 +1,5 @@
 // Generated candidate only; existing overrides/native/support/hardware gates remain outside.
-// model_sha256=33eceaeae7a242febfe450aca655a0d993b4934d6c02a17841fa4204b2e0bd28
+// model_sha256=bb6c23f7df3f5b1ae4031fb86f41e33ae9da36a7b5d2dc59b98d90d910735ea9
 #pragma once
 #include <cmath>
 #include <Falcata/cuda_controller_policy.h>
@@ -40,34 +40,10 @@ inline CUDAControllerRoute LearnedCUDAControllerCandidate(const CUDAControllerFa
   if (facts.bagging_freq < -2147483648LL || facts.bagging_freq >= 2147483648LL) return CUDAControllerRoute::kHost;
   const double v11 = static_cast<double>(facts.bagging_freq);
   if (!std::isfinite(v11)) return CUDAControllerRoute::kHost;
-  if (v4 <= 4.5) {
-    if (v6 <= 1279.5) {
-      return CUDAControllerRoute::kWhole;
-    } else {
-      return CUDAControllerRoute::kPrefix;
-    }
+  if (v6 <= 1536.0) {
+    return CUDAControllerRoute::kWhole;
   } else {
-    if (v4 <= 6.5) {
-      if (v0 <= 244001.5) {
-        return CUDAControllerRoute::kWhole;
-      } else {
-        return CUDAControllerRoute::kHost;
-      }
-    } else {
-      if (v8 <= 32.5) {
-        if (v1 <= 48.0) {
-          return CUDAControllerRoute::kWhole;
-        } else {
-          return CUDAControllerRoute::kHost;
-        }
-      } else {
-        if (v3 <= 57344.0) {
-          return CUDAControllerRoute::kWhole;
-        } else {
-          return CUDAControllerRoute::kHost;
-        }
-      }
-    }
+    return CUDAControllerRoute::kPrefix;
   }
 }
 }  // namespace Falcata

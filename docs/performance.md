@@ -2708,12 +2708,19 @@ Nondefault modifiers select host control. Array presence is checked through meta
 
 The remaining route candidate comes from `LearnedCUDAControllerCandidate(facts)`, an offline trained tree
 installed verbatim in `include/Falcata/cuda_controller_learned.h`. Its model SHA is
-`33eceaeae7a242febfe450aca655a0d993b4934d6c02a17841fa4204b2e0bd28`; the generic export is pinned as
-`cfc232d8f9acdfc6daea13946eda3c64a243ffe0983c7b32fef4dd9c04071798`. Training used 44 declared workloads
+`bb6c23f7df3f5b1ae4031fb86f41e33ae9da36a7b5d2dc59b98d90d910735ea9`; the generic export is pinned as
+`6f69b572612c55bef0b974a461cc5e2f5c02f3682499d3f69e3cde776331bea9`. Training used 44 declared workloads
 on source `c4fe61855140e02f07abcc0d032c5394fb900570` / native
 `174f0e9dc01f3e52af80553841bb4014b9bdb2a009af0416ee2e7b163076a529`. Those are training identities;
 they do not qualify a later integrated native library or establish default/performance acceptance.
-Inference loads no model file and performs no online fitting or benchmarking.
+The constrained fit used schema2 training specification
+`348b6835d2d2b218f189fc10306e3086ae3eb3fa3d8d83df4634aa2178051456` and learner
+`206a614132c2f4c90ff163fbe087a54d505934075a8c5c1bbfa6fdbc04c4b553`, selecting depth1 with minimum
+two training families per leaf. Training-only admissible-route labels supplement the original costs;
+they are absent from the unchanged schema1 runtime model. Full-fit label violations were zero, while
+cross-validation warnings and limited PREFIX cost-opportunity coverage remain. Neither result establishes
+native readiness or performance acceptance. Inference loads no model file and performs no online fitting
+or benchmarking.
 
 The raw inputs retain their existing meanings:
 

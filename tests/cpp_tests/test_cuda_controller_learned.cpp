@@ -37,6 +37,19 @@ Falcata::CUDAControllerFacts NumericFacts() {
 }
 }  // namespace
 
+TEST(CUDAControllerLearned, ConstrainedModelLeafBudgetBoundaryGolden) {
+  // Model bb6c23f7: artifact-specific goldens, independent of the generic
+  // wrapper/native-capability matrix in test_common.cpp. These assert the raw
+  // candidate only; they do not establish native eligibility or engagement.
+  auto facts = NumericFacts();
+  for (const int leaves : {1535, 1536}) {
+    facts.num_leaves = leaves;
+    EXPECT_EQ(Falcata::LearnedCUDAControllerCandidate(facts), Falcata::CUDAControllerRoute::kWhole);
+  }
+  facts.num_leaves = 1537;
+  EXPECT_EQ(Falcata::LearnedCUDAControllerCandidate(facts), Falcata::CUDAControllerRoute::kPrefix);
+}
+
 TEST(CUDAControllerLearned, GeneratedFirstInclusionAndUnknownMetadata) {
   auto facts = NumericFacts();
   facts.metadata_known = false;
