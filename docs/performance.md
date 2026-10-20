@@ -1,18 +1,10 @@
 # What makes Falcata fast — and how we know
 
-**Latest paired representation measurement, 2026-10-10:** on frozen Numerai
-build 1230, the standard stochastic recipe trains 30,000 trees at **193 trees/s
-with a distinct missing state**, versus **266 trees/s with five numeric states**
-(155.721 vs 112.702 s). Standard six-state warmups retain compact views and
-pair-joint histograms. The current 16,384-leaf FP32 recipe instead crosses a
-memory-admission threshold and reaches **10.29 vs 88.21 trees/s** in 2,000-round
-probes. All 27 records passed on an otherwise idle GPU, with no recorded contention. This is a paired
-representation benchmark, separate from the historical launch snapshot below;
-five-era sanity is not equal-quality or deployment evidence.
-[Measured results and diagnosis](2026-10-10_numerai-six-state-throughput.md).
-For accumulated improvements since launch, see the
-[proposed 1.1 article](blog/falcata-1.1.md) and its
-[complete benchmark companion](blog/falcata-1.1/benchmarks.md).
+**Falcata 1.1 (release candidate, 2026-10-20):** the [1.1 article](blog/falcata-1.1.md)
+and its [benchmark companion](blog/falcata-1.1/benchmarks.md) compare the release
+candidate with the 12 October master `a65d34e8` and with the launch archive below.
+The 2026-10-10 [five- versus six-state Numerai measurement](2026-10-10_numerai-six-state-throughput.md)
+predates the mixed-radix pair-code view (§10g) and is dated history.
 
 **2.4× faster than XGBoost. 14× faster than LightGBM. 4.7× faster than
 CatBoost.** All libraries training on the same GPU via CUDA; geometric mean
@@ -154,9 +146,11 @@ sweep above. Large steps can be reduced and more rounds may be needed; this
 bounded update does not guarantee monotonically decreasing loss. It changes
 non-quantized classification models and can change split ties even when the cap is inactive.
 
-The October 12 [broader stability report](blog/falcata-1.1/stability.md) extends
-this single-seed check to 132 guarded CPU/FP64 CUDA configurations plus eight
-additional CPU tiny-leaf seed cases, all 500 rounds. Four uncapped controls
+The [broader stability report](blog/falcata-1.1/stability.md) extends this
+single-seed check to 66 guarded CPU configurations plus eight tiny-leaf seed cases
+(12 October, all 500 rounds) and 66 FP64 CUDA configurations, rerun on the 1.1
+release candidate because the deterministic non-quantized construct (§10v) and the
+bundled-column sampling fix change those models. Uncapped controls
 reproduce runaway margins. The sweep also exposed two separate CPU empty-child
 assertions; PR #93 fixes them by checking the actual partition before committing
 a split. Per-case native hashes distinguish the original sweep, fix reruns and

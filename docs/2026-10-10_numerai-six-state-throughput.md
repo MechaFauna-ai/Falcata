@@ -1,5 +1,10 @@
 # Numerai training throughput with five values and a missing state
 
+> **Dated report, 10 October 2026.** It predates the mixed-radix six-bit pair-code
+> view ([#109](https://github.com/MechaFauna-ai/Falcata/pull/109)), which lets
+> six-state trees take a code-word view again. Release-candidate numbers for the same
+> recipes are in the [1.1 benchmark companion](blog/falcata-1.1/benchmarks.md#five-values-versus-five-values-plus-missing).
+
 Falcata trained the six-state Numerai deep benchmark at **192.65 trees/s**:
 30,000 accepted trees in **155.721 s**, versus **266.19 trees/s** and
 **112.702 s** with the original five numeric states. The sixth state increased

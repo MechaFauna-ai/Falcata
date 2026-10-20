@@ -1,22 +1,24 @@
 # Falcata 1.1 article: measurements and release scope
 
-Editorial companion, updated 12 October 2026. The [article](../falcata-1.1.md) keeps the
+Editorial companion, updated 20 October 2026. The [article](../falcata-1.1.md) keeps the
 main narrative short; this file keeps the comparisons and limits inspectable.
-The proposed 1.1 release has not been published. These measurements span the
-launch snapshot and subsequent 1.0.x development. Merged scope is pinned to
-[`a65d34e8`](https://github.com/MechaFauna-ai/Falcata/commit/a65d34e80a7c337342fba6886d0a1cbd69eda079).
-The unmerged [PR #71](https://github.com/MechaFauna-ai/Falcata/pull/71) prototype
-remains a separate historical experiment, excluded from that scope.
+Version 1.1 is a release candidate, `{{NUM:rc_commit}}`, not yet published.
+`{{NUM:…}}` marks a number still to be measured on that candidate; the
+[checklist](../NUMBERS.md) names the run behind each one. *Interim* numbers were
+measured on `4641c9f0` (16 October) or on a pull request's own build. Dated numbers
+keep their original build and date.
 
 ## Which comparisons the article makes
 
 | Comparison | Before | After | Interpretation |
 | --- | --- | --- | --- |
-| Launch → October quantized | August launch benchmark, labelled 1.0.0; covtype forensics identify the pre-tag artifact `724e9358` | October 8 `b4da8135`, or October 9 `d0bb8c47` where a matching strict control exists | Dated workload snapshots, not a controlled tagged-v1.0.0 → tagged-v1.1 experiment |
-| Non-quantized prototype | October `09b6be97` | October 9 `d0bb8c47` | Historical PR #71 experiment, unmerged; predates the automatic classification constraint |
-| Classification stability | Unbounded controls and automatic-limit master `aa5f00e7` | Per-case builds through final PR #93 `08c37d95`, merged as `a65d34e8` | 140 guarded 500-round configurations; quality and stability evidence, no timing comparison |
-| Mechanism experiments | Each documented preceding development build, or a same-binary key OFF | The corresponding key/package ON | Local effects with their own shapes and timing windows; do not multiply them into a release claim |
-| Other frameworks | August benchmark versions and configurations | No new competitor measurement | Archived reference bars, not claims about current engine releases |
+| Controlled release comparison | [`a65d34e8`](https://github.com/MechaFauna-ai/Falcata/commit/a65d34e80a7c337342fba6886d0a1cbd69eda079), 12 October master (unreleased, 217 commits after the v1.0.5 tag) | Release candidate `{{NUM:rc_commit}}` | Same machine and session, two interleaved fresh-process pairs per workload and mode; model MD5 per run |
+| Headline Numerai deep | `a65d34e8` | Release candidate | Three strict draws per arm at 30,000 rounds |
+| Launch → release candidate | August launch benchmark, labelled 1.0.0; covtype forensics identify the pre-tag artifact `724e9358` | Release candidate | Dated archive against a new measurement; not a controlled tagged-v1.0.0 → v1.1 experiment |
+| Classification stability | Unbounded controls | CPU: per-case builds through PR #93 (`08c37d95`, merged as `a65d34e8`); FP64 CUDA: release candidate | Quality and stability evidence, no timing comparison |
+| Mechanism experiments | Each documented preceding development build, or a same-binary key OFF | The corresponding key or package ON | Local effects with their own shapes and timing windows; **do not multiply them** into a release claim |
+| Interim measurements | `a65d34e8`, or a key OFF | `4641c9f0`, or the key ON on a pull request's build | Context only; replaced by release-candidate numbers where a placeholder exists |
+| Other frameworks | August benchmark versions and configurations | No new competitor measurement | **August archive**: reference bars, not claims about current engine releases |
 
 Every chart measures training, excluding construction, prediction and evaluation.
 The benchmark convention retains each engine's own default L2 penalty, so engines
@@ -27,144 +29,106 @@ The launch snapshot is recovered from
 [the original committed raw file](https://github.com/MechaFauna-ai/Falcata/blob/8c28184f25564f786d9ef042a6af4acdd680bdc3/docs/perf-plots/data/runs.jsonl).
 The currently checked-in performance snapshot replaces covtype's Falcata rows
 after the Hessian-ridge correction; it must not be treated as an untouched launch
-file. Covtype forensics establish a pre-tag launch artifact; individual appended
-launch records do not pin their binaries. They cannot certify an exact
-[v1.0.0-tag runtime](https://github.com/MechaFauna-ai/Falcata/releases/tag/v1.0.0).
+file. Individual appended launch records do not pin their binaries.
 
 ## Framework figure
 
+<!-- REGENERATE: framework-comparison.{png,svg} and framework-comparison-data.json from the release-candidate matrix -->
 ![Training time with dated framework baselines](framework-comparison.png)
 
 The [compact chart data](framework-comparison-data.json) and
 [generator](plot_framework_comparison.py) retain exact values and provenance.
-The [complete matrix](benchmark-matrix.json) includes all fifteen workloads,
-three Falcata modes, archived competitors, compact raw endpoint identities,
-quality intervals, failures and source hashes. The
-[full forty-five-row mode table](appendix-table.md) shows every Falcata workload
-and mode in a readable form, including missing and failed endpoints. The
-[full framework table](framework-table.md) shows all fifteen workloads alongside
-the archived competitor timings and quality ranges, including optional
-loss-guide and quantized-LightGBM variants.
+The [complete matrix](benchmark-matrix.json) holds all fifteen workloads, three
+Falcata modes, the archived competitors, raw endpoint identities, quality
+intervals, failures and source hashes. The [mode table](appendix-table.md) lists
+every Falcata workload and mode for `a65d34e8` and the release candidate; the
+[framework table](framework-table.md) sets the release candidate beside the
+August competitor archive.
 
-**Numerai deep:** 5,463,797 training rows × 3,555 features; 30,000 requested rounds,
-learning rate 0.001, depth 10, 1,024 leaves, feature fraction 0.1,
-`min_data_in_leaf=10000`, `max_bin=255`, seed 42 and 32 CPU threads.
-Stochastic quantization resolves to four gradient bins. The October 8 time is
-110.798968 seconds, one complete timed draw, on runtime
-[`b4da8135`](https://github.com/MechaFauna-ai/Falcata/commit/b4da81352d5f9528699af9ea46a05ebbbeb091f3).
-The run completed on an otherwise idle GPU, with no recorded contention.
-The contemporaneous library
-MD5 `58897acd3df952c1989b8e354ed09a17` matches the retained installed binary.
-No plan overrides were supplied; `pair_code5_epilogue` was OFF. Both launch and
-October deep inputs were float32. The old harness omits an accepted-tree counter,
-so its recipe certifies requested rounds rather than a newly audited tree count.
-Archived CORR is 0.0238513. Total cell time including CPU prediction was about
-709.7 seconds; 110.8 seconds is not an end-to-end inference claim.
+**Numerai deep:** 5,463,797 training rows × 3,555 features (native int8); 30,000
+requested rounds, learning rate 0.001, depth 10, 1,024 leaves, feature fraction 0.1,
+`min_data_in_leaf=10000`, `max_bin=255`, seed 42 and 32 CPU threads. Stochastic
+quantization resolves to four gradient bins. Release candidate:
+{{NUM:numerai_deep_30k_rc_s}} s, median of three strict draws; `a65d34e8`:
+{{NUM:numerai_deep_30k_a65_s}} s; holdout CORR {{NUM:q_numerai_numerai_deep_stoch_rc}}.
+The launch archive's 742.8 s used float32 input. Interim: `4641c9f0` took 108.5 s
+against 114.4 s for `a65d34e8` (two relaxed pairs, 16 October, identical models).
 
 **Numerai example:** same training shape, 2,000 rounds, learning rate 0.01,
-32 leaves, depth 5 and feature fraction 0.1. October 9 selected stochastic
-median: 5.615935 seconds; CORR 0.0194266. Three timed draws on an otherwise
-idle GPU, with no recorded contention. The new input is int8; the historical input was float32.
+32 leaves, depth 5 and feature fraction 0.1. Release candidate
+{{NUM:ab_numerai_numerai_stoch_rc_s}} s against {{NUM:ab_numerai_numerai_stoch_a65_s}} s;
+CORR {{NUM:q_numerai_numerai_stoch_rc}}. Launch archive: 31.0 s (float32 input).
 
 **Epsilon deep:** 400,000 training rows × 2,000 features, 500 rounds,
-learning rate 0.1, 1,023 leaves and depth 10. Selected stochastic median:
-11.220135 seconds, AUC 0.9424295; three timed draws on an otherwise idle GPU,
-with no recorded contention. Both snapshots use float32. Archived competitor AUCs
+learning rate 0.1, 1,023 leaves and depth 10. Release candidate
+{{NUM:ab_epsilon_deep_stoch_rc_s}} s against {{NUM:ab_epsilon_deep_stoch_a65_s}} s;
+AUC {{NUM:q_epsilon_deep_stoch_rc}}. Launch archive: 39.3 s. Archived competitor AUCs
 differ, particularly CatBoost's 0.9507561. Do not describe these bars as an
 equal-quality result.
 
-The selected runtime is
-[`d0bb8c47`](https://github.com/MechaFauna-ai/Falcata/commit/d0bb8c47789e062acbf6b770918a0589a74ae9b2),
-library SHA256
-`e67a7ad314a75cec7414ecdcfaa05895040191f50c86c960c432bce919d0a90c`.
-Its strict source records are retained in the
-[dated timing evidence](https://github.com/MechaFauna-ai/Falcata/blob/523ed775ad2eec9eeca147c4815c39a8f9400f70/docs/2026-10-09_noquant-timings/strict-timing-evidence.json).
+The release-candidate library SHA256 is `{{NUM:rc_library_sha256}}`. Across all
+quantized workloads and both quantized modes, {{NUM:ab_quant_md5_identical}}
+comparisons produced the same model on both builds; geometric-mean speedups are
+{{NUM:ab_geomean_stoch}}× (stochastic) and {{NUM:ab_geomean_fixed}}× (fixed point).
+Interim, `a65d34e8` → `4641c9f0` on 16 October: 1.13× and 1.16×, ranging 1.01–1.37×
+per workload, every quantized model identical.
 
-October 8's other quantized cells describe that actual build, not silently the
-later selected runtime. In particular, binary fixedpoint rows precede the
-variable-Hessian ridge and cannot establish final-build quality. The replacement
-covtype rows identify their post-ridge build explicitly. Constant-Hessian
-unweighted regression does not take that ridge. The complete matrix preserves
-these distinctions instead of selecting the fastest record from each build.
+Historical Numerai scores retain their original benchmark evaluation; the cache's
+target label is unidentified, so these are reproduction metrics, not target
+selection or a production release. Published evidence normalizes machine-specific
+paths; original-source SHA256 values still identify the unmodified source bytes.
 
-Historical Numerai scores retain their original benchmark evaluation. The fresh
-October 9 quality records use `NumeraiEvaluator(cpu)`. Their cache's label identity
-is unidentified; these are reproduction metrics, not target selection,
-prequential evidence or a production release.
+## Non-quantized training
 
-Published evidence normalizes machine-specific paths to portable source identifiers
-or repository paths. Original-source SHA256 values still identify the unmodified
-source bytes; a normalized excerpt is not byte-identical to its source. The matrix
-hash in derived chart/appendix data identifies the published matrix itself.
+Since [#122](https://github.com/MechaFauna-ai/Falcata/pull/122), non-quantized CUDA
+training builds its level histograms with a 64-bit fixed-point accumulator and is
+run-to-run deterministic by default (`nonquant_deterministic`). On the article's
+thirteen non-quantized workloads, key off versus on on the same binary cost
+0.957–1.084× in training time, geometric mean 1.010 (*interim*, 16 October; Higgs deep
+1.084, covtype deep 0.957). Against `a65d34e8`, whose non-quantized models differed
+from run to run, the release candidate measures {{NUM:ab_geomean_none}}× by
+geometric mean and produced one model per workload in
+{{NUM:ab_none_rc_deterministic}} workloads. Numerai deep and leaf-limited are not run
+in non-quantized mode (20–45 minutes per run).
 
-## Historical non-quantized prototype measurements
+The October non-quantized figures of the earlier draft came from the unmerged
+[PR #71](https://github.com/MechaFauna-ai/Falcata/pull/71) prototype, before the
+automatic classification limit and before #122. They are not part of 1.1 and are
+removed from this companion; the
+[immutable report](https://github.com/MechaFauna-ai/Falcata/blob/523ed775ad2eec9eeca147c4815c39a8f9400f70/docs/2026-10-09_noquant-timings.md)
+keeps them. On the same shapes, `a65d34e8`'s non-quantized training was 1.04–2.1×
+slower than those prototype bars (16 October). Porting the prototype's scan
+speedups onto the deterministic construct is future work. The uncapped FP64 fraud
+failures and the separately labelled `max_delta_step=1` follow-up stay in the
+[dated diagnosis](https://github.com/MechaFauna-ai/Falcata/blob/523ed775ad2eec9eeca147c4815c39a8f9400f70/docs/2026-10-09_fraud-followup.md).
 
-These October 9 timings belong to the unmerged PR #71 prototype. They are retained
-with their original quality records and do not describe the current classification
-default. The automatic positive raw cap used by the new classification policy
-disables PR #71's unbounded split-gain pruning shortcut. Fresh integration and
-controlled timings are needed before claiming these gains for that combination.
-
-| Workload | October baseline | Selected FP64 | Less time | Timed draws per build |
-| --- | ---: | ---: | ---: | ---: |
-| Year deep | 3.50 s | 2.74 s | 21.8% | 3 |
-| Epsilon deep | 57.77 s | 46.64 s | 19.3% | 3 |
-| Higgs deep | 15.93 s | 9.66 s | 39.4% | 3 |
-| Numerai example | 54.81 s | 53.81 s | 1.8% | 3 |
-| Numerai deep | 1372.53 s | 1236.51 s | 9.9% | 1 |
-
-![Additional October FP64 gains](fp64-training-time.png)
-
-Exact medians, source identities and quality ranges are in the
-[source data](training-time-data.json), generated by
-[plot_training_time.py](plot_training_time.py). The deep pair's CORR moves from
-0.0238562 to 0.0238004; one pair does not establish repeatability or equivalent
-quality. Year/Epsilon ranges overlap; Higgs includes a lower-scoring draw.
-Historical covtype and uncapped fraud remain outside headline speed claims because of
-unstable/failed models. Parallel FP64 scans can alter addition order; eligible
-deterministic routes retain their CPU-order scans. FP64 remains default; FP32 and
-conditional `auto` are opt-in.
-
-The completed overnight scope was 35 jobs: 33 done, two retained fraud failures,
-zero pending and zero recorded contention. It covered 196 unique endpoints after
-25 reused records. All configurations, learning curves and exclusions remain in
-the [immutable report](https://github.com/MechaFauna-ai/Falcata/blob/523ed775ad2eec9eeca147c4815c39a8f9400f70/docs/2026-10-09_noquant-timings.md).
-
-Fraud's follow-up distinguishes model instability from scoring representation:
-tiny Hessians permitted huge finite leaf updates; probabilities saturated while
-raw-margin ranks retained information. CPU raw-margin AUC matched native AUC,
-and CPU probabilities matched cached probabilities. With explicit
-`max_delta_step=1`, all ten new strict endpoints passed, all built 500 trees,
-and AUC was around 0.979. This is a changed, separately labelled configuration;
-it does not replace the uncapped failures. See the
-[diagnosis and rerun](https://github.com/MechaFauna-ai/Falcata/blob/523ed775ad2eec9eeca147c4815c39a8f9400f70/docs/2026-10-09_fraud-followup.md).
-
-## Current classification stability and split correctness
+## Classification stability and split correctness
 
 Merged [PR #91](https://github.com/MechaFauna-ai/Falcata/pull/91) adds the automatic
 classification step policy; [PR #93](https://github.com/MechaFauna-ai/Falcata/pull/93)
-fixes the separate actual empty-child partition failure exposed by broad coverage.
-The [stability report](stability.md) and [portable evidence](stability-data.json)
-record 132 guarded full-data configurations plus eight extra CPU tiny-leaf seed
-runs, all 500 rounds, and four reproduced uncapped controls. The final candidate
-also passed 1,195 CPU/C API CI tests and 39 focused CPU/CUDA regressions. This
-updates the older single-seed diagnosis without replacing historical timing rows.
+fixes the separate empty-child partition failure exposed by broad coverage. The
+[stability report](stability.md) and [portable evidence](stability-data.json) keep
+the CPU half as measured on 12 October (66 guarded configurations plus eight extra
+tiny-leaf seed runs, all 500 rounds) and the FP64 CUDA half as rerun on the
+release candidate ({{NUM:stability_cuda_guarded_pass}} of 66), because #122 and
+[#154](https://github.com/MechaFauna-ai/Falcata/pull/154) change non-quantized CUDA
+models on these recipes.
 
 [PR #90](https://github.com/MechaFauna-ai/Falcata/pull/90) separately corrects
-benchmark accounting for stopped/saturated runs. Older harness records lacking
-accepted-tree counts retain that limitation; the new accounting cannot certify
-those counts retroactively. [PR #92](https://github.com/MechaFauna-ai/Falcata/pull/92)
-restores CI dependency downloads using a verified mirror of the same pinned Eigen
-source. All five triggered master workflows passed after the PR #93 merge.
+benchmark accounting for stopped or saturated runs. Older harness records lacking
+accepted-tree counts retain that limitation.
 
 ## Mechanism measurements
 
 These have different local baselines. Profile timings describe kernels; ablations
-describe a complete measured round. Leave-one-out effects interact.
+describe a complete measured round. Leave-one-out effects interact. Rows below the
+rule were measured after `a65d34e8`, each on its own pull request's build.
 
 | Change | Recorded effect | Scope and limitation |
 | --- | --- | --- |
-| Direct column-major lifetime | 25.0 → 13.7 GiB above idle; first round 2.49 → 0.64 s | Full 6.79M-row, 3,555-feature shape, feature fraction 0.1; live probe can briefly use more memory |
+| Change | Recorded effect | Scope and limitation |
+| --- | --- | --- |
+| Direct column-major lifetime | 25.0 → 13.7 GiB above idle; first round 2.49 → 0.64 s | Full 6.79M-row, 3,555-feature shape, feature fraction 0.1 |
 | Wide fast paths engaged | Deep 29.6 → 18.3 ms; example 17.0 → 9.0 ms | 300-round interleaved probes on the full 6.79M-row shape; identical models |
 | Pair-joint histogram | Turning it OFF adds 3.85 ms/round, 45.6% | Same-build leave-one-out, four pairs; this does not mean 45.6% less elapsed time |
 | Root histogram during compact fill | OFF adds 0.83 ms/round, 9.9% | Same branch/four pairs; interacts with pair-joint construction |
@@ -182,14 +146,35 @@ describe a complete measured round. Leave-one-out effects interact.
 | Forced quantized graphs | ON slower in all seven rerun cases | Same selected binary, matching timed fingerprints; remains opt-in |
 
 The [performance notes](../../performance.md) contain the experiments and guards.
+| **Since `a65d34e8`** | | |
+| Mixed-radix six-bit pair view (`pair_code_radix`, #109) | NaN-Numerai 4.23 → 3.61 ms/round, 1.172× | Same binary, key off/on, two pairs, 15 October; identical models; other cells do not take the view |
+| Register-coefficient wide pack (`pair_code_wide_regs`, #109) | NaN-Numerai 1.059×; fill 1.462 → 1.224 ms per tree | Same binary, two pairs; Nsight fill time |
+| Static view rule (`view_pair_rule`, #112/#114) | Compact view 30–50% faster where the pair-joint construct serves it, 20–70% slower where not | Calibration sweep, forced compact versus mask; the rule matched the removed probe at every measured point |
+| Tuner removal (#114) | 0.998–1.002× on three cells | Default plan, three pairs; identical models |
+| Dense row-wise bin for sparse-ish data (`dense_rowdata`, #101) | Few-bin hidden shape 12.32 → 1.46 ms/round | *Interim*: `a65d34e8` versus `4641c9f0`, two relaxed pairs; includes later changes |
+| Deterministic non-quantized construct (#122) | Cost 0.957–1.084×, geometric mean 1.010 | Thirteen article shapes, same binary, key off/on |
+| Device prefix (`device_levels`, #123) | 0.985–1.051× per cell; host sync calls 21 → 3 in one covtype tree | Two relaxed pairs, eight GBDT cells; forests use the host fallback |
+| Whole device tree (`device_tree`, #130, opt-in) | Median 1.0037× [1.0027, 1.0053] | Numerai 30,000 rounds, 12 alternating pairs |
+| Forest count histograms (`forest_count_hist`, #121) | Forest cells 2.59–10.35×; 100-tree non-quantized fits 2.0–15.3× | Non-quantized forests only; against `4641c9f0`; relaxed |
+| Per-node masks in level flows (`level_bynode_masks`, #113) | Forest cells 3.6–18.7× | Against master `c8019697`, 15 October; per-node masks change models by design |
+| Random forest on the device (#103) | Higgs rf 10.70 → 2.02 ms/round; covtype 13.92 → 4.16 | ABBA, two runs per arm; identical models |
+
+The [performance notes](../../performance.md) contain the experiments and guards.
 The [mechanism generator](plot_mechanisms.py) reproduces both diagrams. Their
 arrows describe dependencies, not measured durations; required host reads still
 synchronize.
 
 ## Other changes since the original release
 
-Hybrid level batching, compact views, FIL, FALB, GPU-native ingestion, runtime
-construct JIT, the tuner/wisdom stack and level-batched NCCL were already present
+Hybrid level batching, compact views, FIL, FALB, GPU-native ingestion and
+level-batched NCCL were already present in v1.0.0; their original ablations should
+not be marketed as newly added gains. The runtime construct JIT and the tuner/wisdom
+stack were also present in v1.0.0 and are removed in 1.1
+([#110](https://github.com/MechaFauna-ai/Falcata/pull/110),
+[#114](https://github.com/MechaFauna-ai/Falcata/pull/114)).
+
+| Family | Since-launch additions | Implementation |
+| --- | --- | --- |
 in v1.0.0. Their original ablations should not be marketed as newly added gains.
 
 | Family | Since-launch additions | Implementation |
@@ -203,61 +188,57 @@ in v1.0.0. Their original ablations should not be marketed as newly added gains.
 | Prediction | FIL bounded slabs and large-input indexing repairs | [Slab scoring](https://github.com/MechaFauna-ai/Falcata/commit/f88b34ad996c2b1f9cf35cd7472909e5f766941a) |
 | Distribution | Automatic CUDA selection, toolkit/wheel repairs, lazy CUDA-driver/NCCL loading, CUDA 13 support; 1.0.5 wheel 99.1 → 71.3 MB | [Lazy driver](https://github.com/MechaFauna-ai/Falcata/commit/ea8301a509cb45f87bdf45f8b28b9fa3589833df), [1.0.5 notes](https://github.com/MechaFauna-ai/Falcata/releases/tag/v1.0.5) |
 
+| Random forests (1.1) | Device objective and lazy score, per-node masks in level flows, trees grown together, count histograms | [#103](https://github.com/MechaFauna-ai/Falcata/pull/103), [#113](https://github.com/MechaFauna-ai/Falcata/pull/113), [#115](https://github.com/MechaFauna-ai/Falcata/pull/115), [#116](https://github.com/MechaFauna-ai/Falcata/pull/116), [#121](https://github.com/MechaFauna-ai/Falcata/pull/121) |
+| Determinism (1.1) | Non-quantized CUDA training deterministic by default | [#122](https://github.com/MechaFauna-ai/Falcata/pull/122) |
+| Host round trips (1.1) | Device-driven level prefix; opt-in whole device tree | [#123](https://github.com/MechaFauna-ai/Falcata/pull/123), [#130](https://github.com/MechaFauna-ai/Falcata/pull/130) |
+| Removals (1.1) | Construct JIT and `libnvrtc`; runtime tuner, view probe and wisdom file; host quantized training | [#110](https://github.com/MechaFauna-ai/Falcata/pull/110), [#114](https://github.com/MechaFauna-ai/Falcata/pull/114), [#148](https://github.com/MechaFauna-ai/Falcata/pull/148) |
+
 ## Five values versus five values plus missing
 
-The historical headline benchmark retains the original imputed values. This
-separate paired comparison uses the Numerai pipeline's exact conversion:
-features constant at 2 over a complete source era become native int8 -1, then
-real NaN for CPU prediction. Ordinary twos and zeros stay numeric. Build 1230
-was frozen because the historical full build 1226 source is no longer available.
-Both arms have the same 5,502,748 training rows, 3,555 features and named Ender20
-target. These times must not be compared as a release speedup against the old cache.
+This paired comparison uses the Numerai pipeline's exact conversion: features
+constant at 2 over a complete source era become native int8 -1 (missing), then real
+NaN for CPU prediction. Ordinary twos and zeros stay numeric. Both arms use frozen
+build 1230: 5,502,748 training rows, 3,555 features and the named Ender20 target.
+These times must not be compared as a release speedup against the old cache.
+
+**Release candidate** (six-state driver, same recipes as on 10 October):
 
 | Recipe | Trees per draw | Five-state trees/s | Six-state trees/s | Six/five training time |
 | --- | ---: | ---: | ---: | ---: |
-| Standard stochastic, FP64 | 2,000; median of 3 | 246.28 | 180.36 | 1.365× |
-| Standard fixed point, FP64 | 2,000; median of 3 | 211.77 | 174.99 | 1.210× |
-| Current recipe, fixed point, explicit FP32 | 2,000; median of 3 | 88.21 | 10.29 | 8.576× |
-| Standard stochastic, FP64 | 30,000; one pair | 266.19 | 192.65 | 1.382× |
+| Standard stochastic, FP64 | 2,000; median of 3 | {{NUM:sixstate_std_stoch_2k_five_trees_s}} | {{NUM:sixstate_std_stoch_2k_six_trees_s}} | {{NUM:sixstate_std_stoch_2k_six_over_five_time}} |
+| Standard fixed point, FP64 | 2,000; median of 3 | {{NUM:sixstate_std_fixed_2k_five_trees_s}} | {{NUM:sixstate_std_fixed_2k_six_trees_s}} | {{NUM:sixstate_std_fixed_2k_six_over_five_time}} |
+| 16,384-leaf recipe, fixed point, explicit FP32 | 2,000; median of 3 | {{NUM:sixstate_16k_fp32_2k_five_trees_s}} | {{NUM:sixstate_16k_fp32_2k_six_trees_s}} | {{NUM:sixstate_16k_fp32_2k_six_over_five_time}} |
+| Standard stochastic, FP64 | 30,000; one pair | {{NUM:sixstate_std_stoch_30k_five_trees_s}} | {{NUM:sixstate_std_stoch_30k_six_trees_s}} | {{NUM:sixstate_std_stoch_30k_six_over_five_time}} |
 
+<!-- REGENERATE: six-state-throughput.{png,svg} via plot_six_state.py from the new six-state-data.json -->
 ![Measured five-state and six-state training throughput](six-state-throughput.png)
 
-The full six-state run accepted all 30,000 trees in **155.721 s**, versus
-**112.702 s** with five states: 38.2% more training time. Construction, CPU
-prediction and canonical metric evaluation are measured separately. All 27
-frozen records completed on an otherwise idle GPU with no recorded contention; failed,
-pending, blocked and contended/excluded counts are zero. The prerequisite gate
-established exact trees/bin metadata/prediction parity for native int8 sentinel,
-float16 NaN and float32 NaN.
+**Dated, 10 October, before #109:** 246.28 / 180.36, 211.77 / 174.99, 88.21 / 10.29
+and 266.19 / 192.65 trees/s for the same four rows. Six-by-six pairs need 36 joint
+cells, beyond the five-bit view's 32; the standard six-state warmups took the code
+view in 0 of 200 trees, against 191 of 200 with five states. The 16,384-leaf recipe
+additionally crossed a memory-admission threshold: its six-state compact view no
+longer fit and the planner fell back to a full-width masked view with `row_batch`
+histograms.
 
-The standard six-state warmups retain compact sampled columns, tiled fill,
-pair-joint histograms and FP64 warp split finding. Six-by-six pairs need 36
-joint cells, beyond the five-bit view's 32-cell limit; six-by-five needs 30.
-The five-state standard warmups engage code5 in 191/200 trees, versus 0/200
-with missing values. Warmup observations do not trace every timed launch.
+[#109](https://github.com/MechaFauna-ai/Falcata/pull/109) packs six joint cells per
+32-bit word in mixed radix, so six-bin trees take a code view again. Interim, on the
+benchmark cells' NaN-Numerai shape (Numerai 53 benchmark split, 500 rounds):
+198.8 → 284.0 trees/s from `a65d34e8` to `4641c9f0`, identical models. On the
+release candidate, the standard six-state warmups take the code view in
+{{NUM:sixstate_std_six_code_view_trees}} trees; the 16,384-leaf six-state arm takes
+the {{NUM:sixstate_16k_view_six}} view. #109 does not change the memory-admission
+rule, so the 16,384-leaf result is reported as measured, not as a fix.
 
-The current recipe's much larger penalty has a different explanation. Its
-16,384-leaf declared capacity raises the future-allocation reserve from 10,701
-to 15,922 MiB when missing-routing tasks are added. Diagnostic logs show the
-six-state compact view no longer fits; the planner falls back to a full-width
-masked view and `row_batch` histogram construction. The five-state arm uses
-compact `pair_hist`. Neither recipe arm engages code5. This observed branch
-change strongly explains the cliff, but no new ablation assigns its exact share
-of the slowdown or demonstrates a fix. The 2,000-round probes do not predict
-the recipe's full 15,000-round training time.
-
-Canonical `NumeraiEvaluator(cpu)` metrics use only complete held-out eras
-1226–1230 as finite/nonconstant sanity checks. The models differ across arms;
-these scores establish neither equal quality nor a production or prequential
-selection verdict. FP64 remains the library default.
-
-[Dated report](../../2026-10-10_numerai-six-state-throughput.md),
-[compact endpoint evidence](six-state-data.json), and
-[portable chart generator](plot_six_state.py) preserve all draws, actual bin
-counts, parameters, fingerprints, separate timings and the source-linked
-memory diagnosis.
+The [dated report](../../2026-10-10_numerai-six-state-throughput.md),
+[endpoint evidence](six-state-data.json) and [chart generator](plot_six_state.py)
+preserve every draw, bin count, parameter, fingerprint and the memory diagnosis.
 
 ## Kernel evolution history
+
+This history is a frozen **9 October** export. Later search nights (open1–open3 and
+the controller generations) and the pull requests from #94 on are not included;
+regenerating it is optional for the release.
 
 The [offline lineage explorer](lineage-explorer.html) is a reader view of the
 search history behind the article. Download the HTML file and open it in a
