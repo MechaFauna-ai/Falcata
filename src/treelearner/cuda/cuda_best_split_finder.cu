@@ -44,34 +44,37 @@ extern template void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLeaf
 extern template void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelInner2<true, true, true>(LaunchFindBestSplitsForLeafKernel_PARAMS);
 extern template void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLeafKernelInner2<true, true, true>(LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS);
 
-void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernel(LaunchFindBestSplitsForLeafKernel_PARAMS) {
-  if (!is_smaller_leaf_valid && !is_larger_leaf_valid) {
-    return;
-  }
-  if (!extra_trees_) {
-    LaunchFindBestSplitsForLeafKernelInner0<false>(LaunchFindBestSplitsForLeafKernel_ARGS);
-  } else {
-    LaunchFindBestSplitsForLeafKernelInner0<true>(LaunchFindBestSplitsForLeafKernel_ARGS);
-  }
+// Both histogram representations select the same eight instantiated variants.
+#define DEFINE_LEAF_SPLIT_DISPATCH(NAME, PARAMS, ARGS) \
+void CUDABestSplitFinder::NAME(PARAMS) { \
+  if (!is_smaller_leaf_valid && !is_larger_leaf_valid) { \
+    return; \
+  } \
+  if (!extra_trees_) { \
+    NAME##Inner0<false>(ARGS); \
+  } else { \
+    NAME##Inner0<true>(ARGS); \
+  } \
+} \
+template <bool USE_RAND> \
+void CUDABestSplitFinder::NAME##Inner0(PARAMS) { \
+  if (lambda_l1_ <= 0.0f) { \
+    NAME##Inner1<USE_RAND, false>(ARGS); \
+  } else { \
+    NAME##Inner1<USE_RAND, true>(ARGS); \
+  } \
+} \
+template <bool USE_RAND, bool USE_L1> \
+void CUDABestSplitFinder::NAME##Inner1(PARAMS) { \
+  if (!use_smoothing_) { \
+    NAME##Inner2<USE_RAND, USE_L1, false>(ARGS); \
+  } else { \
+    NAME##Inner2<USE_RAND, USE_L1, true>(ARGS); \
+  } \
 }
 
-template <bool USE_RAND>
-void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelInner0(LaunchFindBestSplitsForLeafKernel_PARAMS) {
-  if (lambda_l1_ <= 0.0f) {
-    LaunchFindBestSplitsForLeafKernelInner1<USE_RAND, false>(LaunchFindBestSplitsForLeafKernel_ARGS);
-  } else {
-    LaunchFindBestSplitsForLeafKernelInner1<USE_RAND, true>(LaunchFindBestSplitsForLeafKernel_ARGS);
-  }
-}
-
-template <bool USE_RAND, bool USE_L1>
-void CUDABestSplitFinder::LaunchFindBestSplitsForLeafKernelInner1(LaunchFindBestSplitsForLeafKernel_PARAMS) {
-  if (!use_smoothing_) {
-    LaunchFindBestSplitsForLeafKernelInner2<USE_RAND, USE_L1, false>(LaunchFindBestSplitsForLeafKernel_ARGS);
-  } else {
-    LaunchFindBestSplitsForLeafKernelInner2<USE_RAND, USE_L1, true>(LaunchFindBestSplitsForLeafKernel_ARGS);
-  }
-}
+DEFINE_LEAF_SPLIT_DISPATCH(LaunchFindBestSplitsForLeafKernel,
+  LaunchFindBestSplitsForLeafKernel_PARAMS, LaunchFindBestSplitsForLeafKernel_ARGS)
 
 #undef LaunchFindBestSplitsForLeafKernel_PARAMS
 #undef FindBestSplitsForLeafKernel_ARGS
@@ -1274,34 +1277,10 @@ void CUDABestSplitFinder::LaunchAssignVecPayloadKernel(
 }
 
 
-void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLeafKernel(LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS) {
-  if (!is_smaller_leaf_valid && !is_larger_leaf_valid) {
-    return;
-  }
-  if (!extra_trees_) {
-    LaunchFindBestSplitsDiscretizedForLeafKernelInner0<false>(LaunchFindBestSplitsDiscretizedForLeafKernel_ARGS);
-  } else {
-    LaunchFindBestSplitsDiscretizedForLeafKernelInner0<true>(LaunchFindBestSplitsDiscretizedForLeafKernel_ARGS);
-  }
-}
+DEFINE_LEAF_SPLIT_DISPATCH(LaunchFindBestSplitsDiscretizedForLeafKernel,
+  LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS, LaunchFindBestSplitsDiscretizedForLeafKernel_ARGS)
 
-template <bool USE_RAND>
-void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLeafKernelInner0(LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS) {
-  if (lambda_l1_ <= 0.0f) {
-    LaunchFindBestSplitsDiscretizedForLeafKernelInner1<USE_RAND, false>(LaunchFindBestSplitsDiscretizedForLeafKernel_ARGS);
-  } else {
-    LaunchFindBestSplitsDiscretizedForLeafKernelInner1<USE_RAND, true>(LaunchFindBestSplitsDiscretizedForLeafKernel_ARGS);
-  }
-}
-
-template <bool USE_RAND, bool USE_L1>
-void CUDABestSplitFinder::LaunchFindBestSplitsDiscretizedForLeafKernelInner1(LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS) {
-  if (!use_smoothing_) {
-    LaunchFindBestSplitsDiscretizedForLeafKernelInner2<USE_RAND, USE_L1, false>(LaunchFindBestSplitsDiscretizedForLeafKernel_ARGS);
-  } else {
-    LaunchFindBestSplitsDiscretizedForLeafKernelInner2<USE_RAND, USE_L1, true>(LaunchFindBestSplitsDiscretizedForLeafKernel_ARGS);
-  }
-}
+#undef DEFINE_LEAF_SPLIT_DISPATCH
 
 #undef LaunchFindBestSplitsDiscretizedForLeafKernel_PARAMS
 #undef LaunchFindBestSplitsDiscretizedForLeafKernel_ARGS

@@ -585,9 +585,6 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   CUDAVector<uint8_t> compact_column_buffer_;
   std::vector<int> compact_column_to_orig_;        // [slot] -> original column index
   std::vector<int> orig_column_to_compact_slot_;   // [col] -> slot, or -1
-  CUDAVector<int> cuda_compact_slot_for_col_;      // GPU copy of orig_column_to_compact_slot_
-  CUDAVector<int> cuda_src_part_col_offsets_;
-  CUDAVector<int> cuda_src_part_stride_;
   // Per-slot precomputed metadata for the new (slot, row)-launched transpose:
   CUDAVector<size_t> cuda_slot_p_byte_;
   CUDAVector<int> cuda_slot_p_stride_;
@@ -729,6 +726,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
    *  budget does not bind and every child sits at max_depth; set by the level prefix when it ended on such a level */
   bool level_completes_tree_ = false;
   bool prefix_completes_tree_ = false;
+  /*! \brief cuda_plan key device_tree: the whole tree applied no split and its classic root search (the host level
+   *  flows' first leaf-wise tail search) found one; Train's tail continues from that cached search */
+  bool device_tree_root_tail_ = false;
   /*! \brief cuda_plan key dirty_final_slots: the tree's leaf count before the final level that completed the level
    *  prefix (prefix_completes_tree_), -1 otherwise */
   int prefix_final_leaves_before_ = -1;
@@ -913,7 +913,6 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
 
   mutable CUDAVector<double> cuda_leaf_gradient_stat_buffer_;
   mutable CUDAVector<double> cuda_leaf_hessian_stat_buffer_;
-  mutable data_size_t leaf_stat_buffer_size_;
   mutable data_size_t refit_num_data_;
   uint32_t* cuda_bitset_;
   size_t cuda_bitset_len_;
@@ -998,11 +997,6 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   CUDAVector<double> cuda_linear_xthx_;
   CUDAVector<double> cuda_linear_xtg_;
   CUDAVector<int> cuda_linear_nonzero_;
-  CUDAVector<int> cuda_linear_leaf_num_feat_;
-  CUDAVector<int> cuda_linear_leaf_feat_offset_;
-  CUDAVector<int> cuda_linear_leaf_feat_col_;
-  CUDAVector<int> cuda_linear_leaf_xthx_offset_;
-  CUDAVector<int> cuda_linear_leaf_xtg_offset_;
   // device copies of the fitted per-leaf linear model, used by the score kernel.
   // Rebuilt from the (post-shrinkage) tree at score time, so mutable/const-built.
   mutable CUDAVector<double> cuda_linear_leaf_const_;

@@ -9,14 +9,15 @@
 
 #ifdef USE_CUDA
 
-#include <Falcata/config.h>
-#include <Falcata/cuda/cuda_utils.hu>
 #include <Falcata/bin.h>
+#include <Falcata/config.h>
 #include <Falcata/utils/openmp_wrapper.h>
 
-#include <memory>
 #include <cstdint>
+#include <memory>
 #include <vector>
+
+#include <Falcata/cuda/cuda_lazy_vector.hpp>
 
 namespace Falcata {
 
@@ -141,6 +142,15 @@ class CUDAColumnData {
   const uint32_t* cuda_feature_most_freq_bin() const { return cuda_feature_most_freq_bin_.RawData(); }
 
   const uint32_t* cuda_feature_default_bin() const { return cuda_feature_default_bin_.RawData(); }
+
+  // Lazy owned snapshots; stable until metadata replacement or destruction.
+  const uint8_t* cuda_feature_missing_is_zero() const { return cuda_feature_missing_is_zero_.Get(); }
+
+  const uint8_t* cuda_feature_missing_is_na() const { return cuda_feature_missing_is_na_.Get(); }
+
+  const uint8_t* cuda_feature_mfb_is_zero() const { return cuda_feature_mfb_is_zero_.Get(); }
+
+  const uint8_t* cuda_feature_mfb_is_na() const { return cuda_feature_mfb_is_na_.Get(); }
 
   const int* cuda_feature_to_column() const { return cuda_feature_to_column_.RawData(); }
 
@@ -268,6 +278,7 @@ class CUDAColumnData {
   void LaunchCopySubrowKernel(uint8_t* const* in_cuda_data_by_column);
 
   void InitColumnMetaInfo();
+  void InitMissingFlagSnapshots();
 
   void ResizeWhenCopySubrow(const data_size_t num_used_indices);
 
@@ -352,10 +363,10 @@ class CUDAColumnData {
   CUDAVector<uint32_t> cuda_feature_offset_;
   CUDAVector<uint32_t> cuda_feature_most_freq_bin_;
   CUDAVector<uint32_t> cuda_feature_default_bin_;
-  CUDAVector<uint8_t> cuda_feature_missing_is_zero_;
-  CUDAVector<uint8_t> cuda_feature_missing_is_na_;
-  CUDAVector<uint8_t> cuda_feature_mfb_is_zero_;
-  CUDAVector<uint8_t> cuda_feature_mfb_is_na_;
+  CUDALazyVector<uint8_t> cuda_feature_missing_is_zero_;
+  CUDALazyVector<uint8_t> cuda_feature_missing_is_na_;
+  CUDALazyVector<uint8_t> cuda_feature_mfb_is_zero_;
+  CUDALazyVector<uint8_t> cuda_feature_mfb_is_na_;
   CUDAVector<int> cuda_feature_to_column_;
 
   // used when bagging with subset

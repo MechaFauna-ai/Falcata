@@ -407,11 +407,10 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
                NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER, config_->max_bin,
                NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER);
   }
-  // Wire the histogram constructor's completion events into the best split finder so
-  // per-leaf FindBestSplits kernels are ordered after histogram construction/subtraction
+  // Wire the histogram subtraction completion events into the best split finder so
+  // per-leaf FindBestSplits kernels are ordered after histogram subtraction
   // via cudaStreamWaitEvent instead of per-split device syncs.
   cuda_best_split_finder_->SetHistogramEvents(
-    cuda_histogram_constructor_->construct_done_events(),
     cuda_histogram_constructor_->subtract_done_events());
   SyncHistFP32();
   cuda_best_split_finder_->SetCEGB(config_->cegb_penalty_feature_coupled,
@@ -457,7 +456,6 @@ void CUDASingleGPUTreeLearner::Init(const Dataset* train_data, bool is_constant_
     vec_root_sum_hessians_.resize(vec_num_targets_, 0.0);
   }
 
-  leaf_stat_buffer_size_ = 0;
   num_cat_threshold_ = 0;
 
   if (config_->use_quantized_grad) {
@@ -897,9 +895,6 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
   sig = sig * 1099511628211ULL ^
         static_cast<uint64_t>(reinterpret_cast<uintptr_t>(
             cuda_histogram_constructor_->compact_data_device()));
-  sig = sig * 1099511628211ULL ^
-        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(
-            cuda_histogram_constructor_->compact_col_major_device()));
   // ... the row data itself (ResetTrainingData replaces it, and the matrix a view may point into) and colmajor_direct's
   // full view (released and refilled at another address when trees stop and resume needing it, or on a regime change)
   sig = sig * 1099511628211ULL ^ static_cast<uint64_t>(reinterpret_cast<uintptr_t>(row_data));
@@ -968,23 +963,11 @@ void CUDASingleGPUTreeLearner::BuildCompactColumnView() {
     cuda_histogram_constructor_->compact_codec() == PackCodecId::kNibble4 &&
     cuda_histogram_constructor_->compact_src_cols() == compact_column_to_orig_;
   column_view_reads_full_view_ = !compact_src;
-  if (compact_src && cuda_histogram_constructor_->CompactColMajorFilled()) {
-    // the histogram constructor's compact fill already produced the column-major
-    // view as a fused second output (same slot order, verified above): point the
-    // column data at it directly, no gather kernel at all
-    col_data->SetCompactColumnView(orig_column_to_compact_slot_,
-                                   const_cast<uint8_t*>(cuda_histogram_constructor_->compact_col_major_device()),
-                                   static_cast<size_t>(num_data));
-    compact_col_signature_ = sig;
-    col_view_generation_seen_ = col_data->column_view_generation();
-    return;
-  }
   // the gather (and the packed split view, and the out-of-bag pass that traverses it) reads every column in the
   // row-major layout unless the compact matrix serves: the row data's matrix, or colmajor_direct's full view
   const uint8_t* gather_src = compact_src ? cuda_histogram_constructor_->compact_data_device() :
     cuda_histogram_constructor_->EnsureFullView("a split view the compact matrix cannot serve");
   if (gather_src == nullptr) {
-    // the host-mapped layout (the only one without a device pointer here) is column-major and unsupported
     Log::Fatal("BuildCompactColumnView: the row-major bin matrix has no device pointer");
   }
   const bool gather_src_is_4bit = compact_src ?
@@ -2842,13 +2825,19 @@ int CUDASingleGPUTreeLearner::TrainLevelWisePrefix(CUDATree* tree) {
       }
     }
     if (whole_device_tree) {
+      // Prepare required descendant nibbles before the root completion event: their fill stays on the original
+      // histogram stream, while device levels exchange that stream for the find stream. Fused root scratch is
+      // independent; descendants that can read the code view keep it.
+      if (!cuda_histogram_constructor_->DeviceLevelGraphCapturable()) {
+        cuda_histogram_constructor_->EnsureNibbleView();
+      }
       EnqueueRootLevelSearchOneSync(/*reuse_fused_root=*/true);
     } else {
       EnqueueLevelBestSplitSearch(tree, pairs, vec_plane_slab);
     }
     num_splits = TrainDeviceLevels(tree, device_levels, &pairs);
     search_read_back = true;
-    if (device_tree_completed_) {
+    if (device_tree_completed_ || device_tree_root_tail_) {
       return num_splits;
     }
   }
@@ -4199,16 +4188,31 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
     whole_host_leaf_cache_stale_ = total_splits > 0;
   }
   if (cfg.whole_tree) {
-    device_tree_completed_ = true;
-    prefix_completes_tree_ = true;
+    if (num_splits == 0) {
+      // The root output survives only for a stump. Read its original root struct before tree-end consumers.
+      EnsureRootSumsReadBack(tree);
+      // A level root search without a valid split is not final in the host level flows: their leaf-wise tail first
+      // searches the root again with the classic per-leaf search (e.g. on a sampled compact layout whose batched
+      // root histogram misses the sampled features). Run that same single search here. A valid split hands the tree
+      // to Train's tail with this search cached; otherwise the stump is the host flows' result as well. Its classic
+      // construct accumulates into an assumed-zero slot: clear the batched root histogram first, as Train's tail does.
+      cuda_histogram_constructor_->ZeroHistSlots({0});
+      EnqueuePairBestSplitSearch(tree, cuda_smaller_leaf_splits_->GetCUDAStruct(),
+                                 cuda_larger_leaf_splits_->GetCUDAStruct(), smaller_leaf_index_, larger_leaf_index_,
+                                 /*synchronize=*/true);
+      // FindBestFromAllSplitsKernel's root criterion; that kernel consumes the leaf it picks, so the tail runs it
+      SynchronizeCUDADevice(__FILE__, __LINE__);
+      CUDASplitInfo root_split;
+      CopyFromCUDADeviceToHost<CUDASplitInfo>(&root_split, cuda_best_split_finder_->leaf_best_split_info_ptr(0), 1,
+                                              __FILE__, __LINE__);
+      device_tree_root_tail_ = root_split.is_valid && root_split.gain > 0.0;
+    }
+    device_tree_completed_ = !device_tree_root_tail_;
+    prefix_completes_tree_ = !device_tree_root_tail_;
     if (prefetch_tree_end && total_splits > 0) {
       CHECK_EQ(tree->num_leaves(), total_splits + 1);
       prefetched_tree_num_leaves_ = tree->num_leaves();
       prefetched_tree_counts_ = true;
-    }
-    if (num_splits == 0) {
-      // The root output survives only for a stump. Read its original root struct before tree-end consumers.
-      EnsureRootSumsReadBack(tree);
     }
 #ifdef FALCATA_WHOLE_MAP_ONLY_FAULT_TEST
     if (all_map_complete) {
@@ -4236,8 +4240,9 @@ int CUDASingleGPUTreeLearner::TrainDeviceLevels(CUDATree* tree, const int num_le
               prefetch_tree_end ? 1 : 0, prefetched_tree_num_leaves_ > 0 ? 1 : 0, tree->num_leaves(),
               prefetched_tree_counts_ ? 1 : 0);
       fprintf(stderr, "[hybrid-diag] device_tree: complete depth=%d applied_levels=%d splits=%d "
-              "growth_readbacks=1 host_tail=0 graph=%d hits=%d misses=%d\n", num_levels, levels_applied,
-              total_splits, launched ? 1 : 0, device_level_graph_hits_, device_level_graph_misses_);
+              "growth_readbacks=1 host_tail=%d graph=%d hits=%d misses=%d\n", num_levels, levels_applied,
+              total_splits, device_tree_root_tail_ ? 1 : 0, launched ? 1 : 0, device_level_graph_hits_,
+              device_level_graph_misses_);
     }
   } else {
     // the last search's result, as the host loop's own readback leaves it
@@ -4951,6 +4956,7 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   }
   prefix_completes_tree_ = false;
   prefix_final_leaves_before_ = -1;
+  device_tree_root_tail_ = false;
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
   device_tree_completed_ = false;
 #ifdef FALCATA_WHOLE_MAP_ONLY_FAULT_TEST
@@ -4979,6 +4985,9 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
     }
   }
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
+  // a level prefix without a split leaves its batched root histogram in leaf 0's slot, which the tail's classic
+  // root construct would accumulate onto
+  bool level_root_hist_built = false;
   if (num_splits_done == 0 && HybridGrowthUsable()) {
     if (UseSelectiveGrowth()) {
       // budget-limited exact grow-then-prune: builds the COMPLETE tree
@@ -4989,10 +4998,11 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
       global_timer.Start("CUDASingleGPUTreeLearner::TrainLevelWisePrefix");
       num_splits_done = TrainLevelWisePrefix(tree.get());
       global_timer.Stop("CUDASingleGPUTreeLearner::TrainLevelWisePrefix");
+      level_root_hist_built = num_splits_done == 0;
       batched_apply_ran = num_splits_done > 0;
       // every current leaf already has a cached best-split candidate; the first
-      // tail iteration must not redo the pair search
-      pair_search_cached = num_splits_done > 0;
+      // tail iteration must not redo the pair search (nor the whole tree's classic root search)
+      pair_search_cached = num_splits_done > 0 || device_tree_root_tail_;
     }
   }
   // cuda_plan key skip_empty_tail: after a level prefix that ended on a complete final level the tail's search can
@@ -5009,6 +5019,10 @@ Tree* CUDASingleGPUTreeLearner::Train(const score_t* gradients,
   }
   for (int i = num_splits_done; !selective_handled && !tail_known_empty && i < config_->num_leaves - 1; ++i) {
     if (!pair_search_cached) {
+      if (i == 0 && level_root_hist_built) {
+        // the classic root construct accumulates into an assumed-zero slot: clear the batched root histogram
+        cuda_histogram_constructor_->ZeroHistSlots({0});
+      }
       if (fp_merge_state_ != nullptr) {
         // The leaf-wise tail's fresh per-pair searches are not winner-merged
         // across ranks. The prefix covers the whole tree for depth-limited

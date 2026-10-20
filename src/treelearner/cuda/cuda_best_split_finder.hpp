@@ -86,12 +86,11 @@ class CUDABestSplitFinder {
 
   void InitCUDAFeatureMetaInfo();
 
-  /*! \brief Provide the histogram constructor's completion events so the per-leaf
-   *  FindBestSplits kernels can be ordered after histogram construction/subtraction
+  /*! \brief Provide the histogram subtraction completion events so the per-leaf
+   *  FindBestSplits kernels can be ordered after histogram subtraction
    *  via cudaStreamWaitEvent instead of a per-split device sync. Called once after
    *  both objects are initialized. */
-  void SetHistogramEvents(const cudaEvent_t* construct_done_events, const cudaEvent_t* subtract_done_events) {
-    hist_construct_done_events_ = construct_done_events;
+  void SetHistogramEvents(const cudaEvent_t* subtract_done_events) {
     hist_subtract_done_events_ = subtract_done_events;
   }
 
@@ -714,9 +713,8 @@ class CUDABestSplitFinder {
   double path_smooth_;
   double max_delta_step_;
   std::vector<cudaStream_t> cuda_streams_;
-  /*! \brief histogram constructor completion events (not owned); used to order the
-   *  per-leaf FindBestSplits kernels after histogram construction/subtraction. */
-  const cudaEvent_t* hist_construct_done_events_ = nullptr;
+  /*! \brief histogram subtraction completion events (not owned); used to order
+   *  the per-leaf FindBestSplits kernels after histogram subtraction. */
   const cudaEvent_t* hist_subtract_done_events_ = nullptr;
   int active_hist_pipeline_ = 0;
   // for best split find tasks

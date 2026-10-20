@@ -1667,7 +1667,7 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner(
     // shared_value_buffer held the sort keys; the sort is done with it, so both
     // passes below reuse it to publish their prefix-hessian scan.
 
-    if (USE_RAND) {
+    if (USE_RAND && threadIdx_x == 0) {
       rand_threshold = 0;
       const int max_threshold = max(min(max_num_cat, used_bin) - 1, 0);
       if (max_threshold > 0) {
@@ -2850,7 +2850,7 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
     // prefix-hessian scan the group check needs is already materialised in
     // hist_hess_buffer_ptr, so each thread can replay it directly.
     const int num_cat_thresholds = min(used_bin, max_num_cat);
-    if (USE_RAND) {
+    if (USE_RAND && threadIdx_x == 0) {
       rand_threshold = 0;
       const int max_threshold = max(min(max_num_cat, used_bin) - 1, 0);
       if (max_threshold > 0) {

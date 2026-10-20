@@ -110,10 +110,15 @@ class TreeLearner {
 
   /*!
   * \brief Create object of tree learner
+  * CPU and OpenCL backends require config->use_quantized_grad == false.
+  * Config::Set rejects CPU quantization and disables it for OpenCL. Callers
+  * constructing Config directly must also respect this constraint at creation
+  * and on subsequent configuration changes; the selected device_type controls
+  * the backend, independently of config->device_type.
   * \param learner_type Type of tree learner
-  * \param device_type Type of tree learner
-  * \param booster_type Type of boosting
+  * \param device_type Training backend
   * \param config config of tree
+  * \param boosting_on_cuda Whether boosting runs on CUDA
   */
   static TreeLearner* CreateTreeLearner(const std::string& learner_type,
                                         const std::string& device_type,

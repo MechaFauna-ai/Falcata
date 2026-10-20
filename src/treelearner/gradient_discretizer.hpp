@@ -22,10 +22,9 @@ namespace Falcata {
 
 class GradientDiscretizer {
  public:
-  GradientDiscretizer(int num_grad_quant_bins, int num_trees, int random_seed, bool is_constant_hessian, const bool stochastic_rounding) {
+  GradientDiscretizer(int num_grad_quant_bins, int /*num_trees*/, int random_seed, bool is_constant_hessian, const bool stochastic_rounding) {
     num_grad_quant_bins_ = num_grad_quant_bins;
     iter_ = 0;
-    num_trees_ = num_trees;
     random_seed_ = random_seed;
     is_constant_hessian_ = is_constant_hessian;
     stochastic_rounding_ = stochastic_rounding;
@@ -93,7 +92,6 @@ class GradientDiscretizer {
  protected:
   int num_grad_quant_bins_;
   int iter_;
-  int num_trees_;
   int random_seed_;
   bool stochastic_rounding_;
 

@@ -12,12 +12,9 @@
 
 namespace Falcata {
 
-CUDAMetadata::CUDAMetadata(const int gpu_device_id) {
-  if (gpu_device_id >= 0) {
-    SetCUDADevice(gpu_device_id, __FILE__, __LINE__);
-  } else {
-    SetCUDADevice(0, __FILE__, __LINE__);
-  }
+CUDAMetadata::CUDAMetadata(const int gpu_device_id)
+  : gpu_device_id_(gpu_device_id >= 0 ? gpu_device_id : 0) {
+  SetCUDADevice(gpu_device_id_, __FILE__, __LINE__);
 }
 
 CUDAMetadata::~CUDAMetadata() {}
@@ -26,7 +23,7 @@ void CUDAMetadata::Init(const std::vector<label_t>& label,
                         const std::vector<label_t>& weight,
                         const std::vector<data_size_t>& query_boundaries,
                         const std::vector<label_t>& query_weights,
-                        const std::vector<double>& init_score) {
+                        const std::vector<double>& /*init_score*/) {
   if (label.size() == 0) {
     cuda_label_.Clear();
   } else {
@@ -42,16 +39,7 @@ void CUDAMetadata::Init(const std::vector<label_t>& label,
   } else {
     cuda_query_boundaries_.InitFromHostVector(query_boundaries);
   }
-  if (query_weights.size() == 0) {
-    cuda_query_weights_.Clear();
-  } else {
-    cuda_query_weights_.InitFromHostVector(query_weights);
-  }
-  if (init_score.size() == 0) {
-    cuda_init_score_.Clear();
-  } else {
-    cuda_init_score_.InitFromHostVector(init_score);
-  }
+  cuda_query_weights_.Set(query_weights.data(), query_weights.size(), gpu_device_id_);
   SynchronizeCUDADevice(__FILE__, __LINE__);
 }
 
@@ -64,15 +52,17 @@ void CUDAMetadata::SetWeights(const label_t* weights, data_size_t len) {
 }
 
 void CUDAMetadata::SetQuery(const data_size_t* query_boundaries, const label_t* query_weights, data_size_t num_queries) {
-  cuda_query_boundaries_.InitFromHostMemory(query_boundaries, static_cast<size_t>(num_queries) + 1);
-  if (query_weights != nullptr) {
-    cuda_query_weights_.InitFromHostMemory(query_weights, static_cast<size_t>(num_queries));
+  if (num_queries == 0 && query_boundaries == nullptr) {
+    cuda_query_boundaries_.Clear();
+  } else {
+    cuda_query_boundaries_.InitFromHostMemory(query_boundaries, static_cast<size_t>(num_queries) + 1);
   }
+  // A null weight pointer clears a previous weighted ranking snapshot.
+  cuda_query_weights_.Set(query_weights, query_weights != nullptr ? static_cast<size_t>(num_queries) : 0,
+                          gpu_device_id_);
 }
 
-void CUDAMetadata::SetInitScore(const double* init_score, data_size_t len) {
-  cuda_init_score_.InitFromHostMemory(init_score, len);
-}
+void CUDAMetadata::SetInitScore(const double* /*init_score*/, data_size_t /*len*/) {}
 
 }  // namespace Falcata
 

@@ -118,23 +118,6 @@ void LaunchRowToColCompactKernel(
     data_size_t num_data,
     bool src_is_4bit);
 
-__global__ void CUDATransposeColMajorToRowMajorKernel(
-    const uint8_t* __restrict__ staging,        // col-major: [c * num_data + r]
-    uint8_t* __restrict__ compact_data,         // row-major-in-partition
-    const int* __restrict__ partition_for_compact,
-    const int* __restrict__ compact_partition_column_offsets,
-    const data_size_t num_data,
-    const int total_compact_cols);
-
-void LaunchTransposeColMajorToRowMajor(
-    cudaStream_t stream,
-    const uint8_t* staging,
-    uint8_t* compact_data,
-    const int* partition_for_compact,
-    const int* compact_partition_column_offsets,
-    data_size_t num_data,
-    int total_compact_cols);
-
 __global__ void InterleaveGradHessKernel(
   const score_t* __restrict__ gradients,
   const score_t* __restrict__ hessians,
@@ -4345,7 +4328,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
             cuda_row_data_->cuda_partition_hist_offsets(),
             cuda_row_data_->cuda_feature_partition_column_index_offsets(),
             cuda_row_data_->cuda_packed_partition_byte_offsets(),
-            cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr,
+            column_used_bytree_device(),
             num_data_,
             hist_fp32_);
         } else {
@@ -4357,7 +4340,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramKernelInner2(
             cuda_row_data_->cuda_partition_hist_offsets(),
             cuda_row_data_->cuda_feature_partition_column_index_offsets(),
             nullptr,
-            cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr,
+            column_used_bytree_device(),
             num_data_,
             hist_fp32_);
         }
@@ -5298,7 +5281,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         hybrid_graph_capture_gstate_ == nullptr && dense_dls == nullptr &&
         max_num_data_in_smaller_leaf <= small_leaf_rows && !(use_compact_view_ && code5_valid_)) {
       const int8_t* feat_used =
-        any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr;
+        any_feature_unused_bytree_ ? column_used_bytree_device() : nullptr;
       if (use_compact_view_) {
 #define FALCATA_LAUNCH_SMALL_LEAF_QUANT(PACKT, DATA, COLOFF, PARTOFF, BYTEOFF, FUSED) \
         CUDAConstructDiscretizedHistogramDenseSmallLeafBatchedKernel<BIN_TYPE, PACKT><<<grid_dim, block_dim, 0, cuda_stream_>>>( \
@@ -5682,7 +5665,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         cuda_row_data_->cuda_feature_partition_column_index_offsets(),
         cuda_row_data_->cuda_packed_partition_byte_offsets(),
         num_data_,
-        any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
+        any_feature_unused_bytree_ ? column_used_bytree_device() : nullptr,
         any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
         static_cast<data_size_t>(min_data_in_leaf_),
         min_sum_hessian_in_leaf_,
@@ -5704,7 +5687,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
         cuda_row_data_->cuda_feature_partition_column_index_offsets(),
         nullptr,
         num_data_,
-        any_feature_unused_bytree_ ? cuda_is_feature_used_bytree_.RawDataReadOnly() : nullptr,
+        any_feature_unused_bytree_ ? column_used_bytree_device() : nullptr,
         any_feature_unused_bytree_ ? cuda_bin_used_bytree_.RawDataReadOnly() : nullptr,
         static_cast<data_size_t>(min_data_in_leaf_),
         min_sum_hessian_in_leaf_,
@@ -5851,7 +5834,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       cuda_row_data_->cuda_partition_hist_offsets(),
       cuda_row_data_->cuda_feature_partition_column_index_offsets(),
       cuda_row_data_->cuda_packed_partition_byte_offsets(),
-      cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr,
+      column_used_bytree_device(),
       num_data_,
       static_cast<data_size_t>(min_data_in_leaf_),
       min_sum_hessian_in_leaf_,
@@ -5876,7 +5859,7 @@ void CUDAHistogramConstructor::LaunchConstructHistogramBatchedKernelInner0(
       cuda_row_data_->cuda_partition_hist_offsets(),
       cuda_row_data_->cuda_feature_partition_column_index_offsets(),
       nullptr,
-      cuda_is_feature_used_bytree_.Size() > 0 ? cuda_is_feature_used_bytree_.RawData() : nullptr,
+      column_used_bytree_device(),
       num_data_,
       static_cast<data_size_t>(min_data_in_leaf_),
       min_sum_hessian_in_leaf_,
