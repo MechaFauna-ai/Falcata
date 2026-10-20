@@ -253,7 +253,6 @@ class NCCLTopology {
   std::vector<int> gpu_list_;
   data_size_t global_num_data_;
 
-  ncclUniqueId nccl_unique_id_;
   std::vector<int> node_rank_offset_;
   std::vector<int> nccl_gpu_rank_;
   std::vector<ncclComm_t> nccl_communicators_;

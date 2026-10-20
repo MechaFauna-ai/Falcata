@@ -99,8 +99,9 @@ class CUDARowData {
   const std::vector<uint32_t>& host_column_hist_offsets() const { return column_hist_offsets_; }
   const std::vector<uint32_t>& host_partition_hist_offsets() const { return partition_hist_offsets_; }
   data_size_t num_data() const { return num_data_; }
-  bool is_data_host_mapped() const { return cuda_data_is_host_mapped_; }
-  const uint8_t* host_partitioned_data_uint8_t() const { return host_partitioned_data_uint8_t_.data(); }
+  // Compatibility accessors: row data has no host-mapped representation.
+  bool is_data_host_mapped() const { return false; }
+  const uint8_t* host_partitioned_data_uint8_t() const { return nullptr; }
 
   // --- colmajor_direct: the Dataset's 4-bit columns are the source of the device copy; no row-major matrix ---
   /*! \brief Ask Init to leave the 4-bit packed row-major matrix off the device when the Dataset's columns can
@@ -227,10 +228,6 @@ class CUDARowData {
   int num_feature_partitions_;
   /*! \brief used when bagging with subset, number of used indices */
   data_size_t num_used_indices_;
-  /*! \brief used when bagging with subset, number of total elements */
-  uint64_t num_total_elements_;
-  /*! \brief used when bagging with column subset, the size of maximum number of feature partitions */
-  int cur_num_feature_partition_buffer_size_;
   /*! \brief CUDA device ID */
   int gpu_device_id_;
   /*! \brief index of partitions with large bins that its histogram cannot fit into shared memory, each large bin partition contains a single column */
@@ -243,13 +240,6 @@ class CUDARowData {
   int quant_hist_slots_ = 0;
   /*! \brief whether to use double precision in histograms per block */
   bool gpu_use_dp_;
-  /*! \brief When true, cuda_data_uint8_t_ is a host-pinned, device-mapped pointer
-   *  (allocated via cudaHostRegister, freed via cudaHostUnregister). This is the
-   *  "host-mapped" zero-copy fallback used when the bin matrix is too large to
-   *  fit on the GPU alongside CUDAColumnData. */
-  bool cuda_data_is_host_mapped_ = false;
-  /*! \brief Backing storage for the host-pinned bin matrix when host-mapping is used. */
-  std::vector<uint8_t> host_partitioned_data_uint8_t_;
   /*! \brief colmajor_direct: Init may leave the 4-bit row-major matrix off the device */
   bool request_columns_only_ = false;
   /*! \brief the 4-bit row-major matrix is not on the device (see dense_4bit_columns_only()) */
@@ -286,12 +276,6 @@ class CUDARowData {
   CUDAVector<uint32_t> cuda_column_hist_offsets_;
   /*! \brief hisotgram offset of each partition */
   CUDAVector<uint32_t> cuda_partition_hist_offsets_;
-  /*! \brief block buffer when calculating prefix sum */
-  CUDAVector<uint16_t> cuda_block_buffer_uint16_t_;
-  /*! \brief block buffer when calculating prefix sum */
-  CUDAVector<uint32_t> cuda_block_buffer_uint32_t_;
-  /*! \brief block buffer when calculating prefix sum */
-  CUDAVector<uint64_t> cuda_block_buffer_uint64_t_;
 };
 
 }  // namespace Falcata

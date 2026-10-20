@@ -86,12 +86,11 @@ class CUDABestSplitFinder {
 
   void InitCUDAFeatureMetaInfo();
 
-  /*! \brief Provide the histogram constructor's completion events so the per-leaf
-   *  FindBestSplits kernels can be ordered after histogram construction/subtraction
+  /*! \brief Provide the histogram subtraction completion events so the per-leaf
+   *  FindBestSplits kernels can be ordered after histogram subtraction
    *  via cudaStreamWaitEvent instead of a per-split device sync. Called once after
    *  both objects are initialized. */
-  void SetHistogramEvents(const cudaEvent_t* construct_done_events, const cudaEvent_t* subtract_done_events) {
-    hist_construct_done_events_ = construct_done_events;
+  void SetHistogramEvents(const cudaEvent_t* subtract_done_events) {
     hist_subtract_done_events_ = subtract_done_events;
   }
 
@@ -306,7 +305,6 @@ class CUDABestSplitFinder {
    *  interaction constraints): SupportsBatchedLevel no longer refuses select_features_by_node, and every level find
    *  reads the per-leaf row table of the last CommitLevelNodeMasks */
   void EnableLevelNodeMasks(const bool enable) { level_node_masks_ = enable && select_features_by_node_; }
-  bool level_node_masks() const { return level_node_masks_; }
   /*! \brief host rows (num_features bytes each) for num_rows searched leaves of the next level, in the pinned
    *  staging buffer; waits for the previous level's upload of it first */
   int8_t* LevelNodeMaskRows(const int num_rows);
@@ -715,9 +713,8 @@ class CUDABestSplitFinder {
   double path_smooth_;
   double max_delta_step_;
   std::vector<cudaStream_t> cuda_streams_;
-  /*! \brief histogram constructor completion events (not owned); used to order the
-   *  per-leaf FindBestSplits kernels after histogram construction/subtraction. */
-  const cudaEvent_t* hist_construct_done_events_ = nullptr;
+  /*! \brief histogram subtraction completion events (not owned); used to order
+   *  the per-leaf FindBestSplits kernels after histogram subtraction. */
   const cudaEvent_t* hist_subtract_done_events_ = nullptr;
   int active_hist_pipeline_ = 0;
   // for best split find tasks

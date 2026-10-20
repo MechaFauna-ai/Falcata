@@ -27,6 +27,7 @@
 #include <Falcata/cuda/cuda_row_data.hpp>
 #include <Falcata/cuda/pack_codecs.hpp>
 
+#include "cuda_device_levels.hpp"
 #include "cuda_leaf_splits.hpp"
 #include "cuda_hybrid_graph.hpp"
 
@@ -303,6 +304,10 @@ class CUDACountHistCache {
 };
 
 class CUDAHistogramConstructor {
+#ifdef FALCATA_WHOLE_MAP_ONLY_FAULT_TEST
+  friend struct WholeMapOnlyFaultPeer;
+#endif
+
  public:
   CUDAHistogramConstructor(
     const Dataset* train_data,
@@ -321,11 +326,6 @@ class CUDAHistogramConstructor {
 
   void Init(const Dataset* train_data, TrainingShareStates* share_state);
 
-  /*! \brief Event recorded on cuda_stream_ after the smaller-leaf histogram is
-   *  constructed. The best split finder waits on it (cudaStreamWaitEvent) before
-   *  reading the smaller-leaf histogram, replacing a per-split device sync. */
-  cudaEvent_t construct_done_event() const { return construct_done_events_[0]; }
-
   /*! \brief per-tree bin-used mask (host copy) and whether sampling is active.
    *  The NCCL path uses these to all-reduce ONLY the bins this tree's
    *  feature_fraction sample can read: the rest are dead storage, and at
@@ -342,11 +342,6 @@ class CUDAHistogramConstructor {
   cudaStream_t current_stream() const { return pipeline_streams_[active_pipeline_]; }
   const cudaEvent_t* construct_done_events() const { return construct_done_events_; }
   const cudaEvent_t* subtract_done_events() const { return subtract_done_events_; }
-  /*! \brief Event recorded on cuda_stream_ after the larger-leaf histogram is
-   *  produced by subtraction. The best split finder waits on it before reading
-   *  the larger-leaf histogram. */
-  cudaEvent_t subtract_done_event() const { return subtract_done_events_[0]; }
-
   void ZeroHistForLeaf(int leaf_index);
 
   /*! \brief Selective grow-then-prune: zero the histogram slots freed by
@@ -423,15 +418,10 @@ class CUDAHistogramConstructor {
   /*! \brief cuda_plan key pair_code5: when this tree's fused fill wrote only the code view, write the live nibble
    *  view now (the plain tiled fill from the code fill's own byte-slot tables, on the fill's stream); no-op otherwise */
   void EnsureNibbleView();
-  /*! \brief whether this tree's compact build also produced the column-major
-   *  view (compact_col_major_device()[slot * num_data + row]); the tree learner
-   *  then uses it directly instead of gathering its own copy */
-  bool CompactColMajorFilled() const { return compact_col_major_filled_; }
   /*! \brief the column-major nibble store (colmajor_direct's compact regime, or colmajor_fill's copy): column c
    *  is the two-rows-per-byte run at byte c * colmajor_pad() / 2; null when absent (the mask regime, or no copy) */
   const uint8_t* colmajor_bin() const { return colmajor_pad_ > 0 ? colmajor_bin_.RawDataReadOnly() : nullptr; }
   size_t colmajor_pad() const { return colmajor_pad_; }
-  const uint8_t* compact_col_major_device() const { return compact_staging_col_major_.RawDataReadOnly(); }
 
   /*! \brief colmajor_fill: whether this row data can take the column-major copy (plan key on, 4-bit packed rows
    *  resident on the device) and does not have it yet. The tree learner decides when to try. */
@@ -666,6 +656,7 @@ class CUDAHistogramConstructor {
     key->push_back(static_cast<const void*>(cuda_hessians_));
     key->push_back(static_cast<const void*>(cuda_gradients_hessians_.RawDataReadOnly()));
     key->push_back(static_cast<const void*>(cuda_is_feature_used_bytree_.RawDataReadOnly()));
+    key->push_back(static_cast<const void*>(cuda_is_column_used_bytree_.RawDataReadOnly()));
     key->push_back(any_feature_unused_bytree_ ? this : nullptr);
     // quantized subtract scratch, baked into the captured subtract/copy params
     // (presized by EnsureHybridGraphBitChangeCapacity; defensive)
@@ -689,26 +680,51 @@ class CUDAHistogramConstructor {
 
   /*! \brief cuda_plan key device_levels: the device level state the batched construct, fix/subtract and copy
    *  launches read while the learner enqueues a device-driven level (nullptr otherwise) */
-  void SetDeviceLevelState(const CUDADeviceLevelState* dls) { device_level_state_ = dls; }
+  void SetDeviceLevelState(const CUDADeviceLevelState* dls, const bool whole_tree = false) {
+    device_level_state_ = dls;
+    device_level_whole_tree_ = dls != nullptr && whole_tree;
+  }
   /*! \brief cuda_plan key device_levels: whether this tree's multi-pair level constructs take the dense batched
    *  kernel (the one with the device block map), not the pair-joint family */
   bool DeviceLevelConstructSupported();
   /*! \brief cuda_plan key device_levels: the dense batched construct's block y for this tree (as launched) */
   int DeviceLevelConstructBlockDimY();
   /*! \brief cuda_plan key device_level_graph: the pointers and per-tree shape a captured level search bakes in */
-  void DeviceLevelGraphKey(std::vector<const void*>* key) const {
+  void DeviceLevelGraphKey(std::vector<const void*>* key,
+                           const CUDADeviceLevelConstructShape* shape = nullptr) const {
+    // Whole-row code-word device constructs launch exclusively through LaunchDeviceLevelPairJoint. Their actual
+    // block/grid/shared-memory/row-grouping shape replaces the preliminary per-partition maxima: neither maximum
+    // is passed to that kernel, fix/subtract, or the finder. All true kernel args and buffer identities stay keyed.
+    const bool whole_code_words = shape != nullptr && shape->pair_mode == 1 && shape->kernel_kind == 4 &&
+      shape->whole_row_partitions > 0;
 #ifdef FALCATA_HYBRID_GRAPH_SUPPORTED
     HybridGraphKeyPointers(key);
-    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(HybridGraphCompactShapeKey())));
+    key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(
+      whole_code_words ? 0 : HybridGraphCompactShapeKey())));
 #endif  // FALCATA_HYBRID_GRAPH_SUPPORTED
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(code5_valid_ ? 1 : 0)));
     key->push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(use_compact_view_ ? 1 : 0)));
     // the per-tree layout values the construct and fix/subtract launches pass by value
-    for (const int v : {num_compact_columns_, compact_pair_joint_max_, compact_pair_joint_total_, compact_row_bytes_,
+    for (const int v : {num_compact_columns_, whole_code_words ? 0 : compact_pair_joint_max_,
+                        compact_pair_joint_total_, compact_row_bytes_,
                         code5_row_words_, code5_bits_, compact_row_interleave_ ? 1 : 0, num_used_feature_info_,
                         used_feature_info_ok_ ? 1 : 0, any_feature_unused_bytree_ ? 1 : 0,
                         nibble_pending_ ? 1 : 0}) {
       key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(v)));
+    }
+    key->push_back(static_cast<const void*>(cuda_used_feature_info_.RawDataReadOnly()));
+    if (shape != nullptr) {
+      if (FalcataDebug().diag) {
+        fprintf(stderr, "[hybrid-diag] device_tree: layout partcols=%d partjoint=%d construct=%d\n",
+                max_num_compact_cols_per_partition_, compact_pair_joint_max_, shape->kernel_kind);
+      }
+      for (const int v : {shape->pair_mode, shape->kernel_kind, shape->block_y, shape->grid_x, shape->block_x,
+                          shape->smem_bytes, shape->slot, shape->slot_device_slots, shape->slot_min_rows,
+                          shape->slot_max_rows, shape->per_pair_min_grid, shape->per_pair_min_rows,
+                          shape->whole_row_partitions, static_cast<int>(shape->whole_row_joint),
+                          shape->code5_flat, shape->code5_epilogue_flat}) {
+        key->push_back(reinterpret_cast<const void*>(static_cast<intptr_t>(v)));
+      }
     }
   }
   /*! \brief cuda_plan key device_level_graph: a level search of this tree launches nothing but its kernels (no
@@ -762,8 +778,6 @@ class CUDAHistogramConstructor {
     CHECK_GE(planes, 1);
     num_hist_planes_ = planes;
   }
-
-  int num_hist_planes() const { return num_hist_planes_; }
 
   /*! \brief vector-leaf mode: point the construct kernels at one target's
    *  gradient/hessian slices (pointer swap only; BeforeTrain remains the
@@ -899,11 +913,12 @@ class CUDAHistogramConstructor {
       count_scratch_dirty_ = true;  // this tree may run the deterministic construct in the slot slab
     }
   }
-  bool count_construct_active() const { return count_codes_ != nullptr; }
   /*! \brief the count scratch must be zeroed before its next use (an aborted tree may have left sums in it) */
   void MarkCountScratchDirty() { count_scratch_dirty_ = true; }
 
  private:
+  void InitDeterministicDenseScratch();
+
   void InitFeatureMetaInfo(const Dataset* train_data, const std::vector<uint32_t>& feature_hist_offsets);
 
   /*! \brief (re)build cuda_fix_mfb_mask_ from the need-fix feature metadata */
@@ -1215,10 +1230,6 @@ class CUDAHistogramConstructor {
   cudaEvent_t construct_done_events_[kNumHistPipelines];
   cudaEvent_t subtract_done_events_[kNumHistPipelines];
   int active_pipeline_ = 0;
-  /*! \brief recorded on cuda_stream_ after smaller-leaf histogram construction */
-  cudaEvent_t construct_done_event_ = nullptr;
-  /*! \brief recorded on cuda_stream_ after larger-leaf histogram subtraction */
-  cudaEvent_t subtract_done_event_ = nullptr;
   /*! \brief indices of feature whose histograms need to be fixed */
   std::vector<int> need_fix_histogram_features_;
   /*! \brief aligned number of bins of the features whose histograms need to be fixed */
@@ -1242,6 +1253,7 @@ class CUDAHistogramConstructor {
   CUDAHybridGraphLoopStateOpt hybrid_graph_capture_gstate_ = nullptr;
   /*! \brief cuda_plan key device_levels: see SetDeviceLevelState */
   const CUDADeviceLevelState* device_level_state_ = nullptr;
+  bool device_level_whole_tree_ = false;
 
 
   // CUDA memory, held by this object
@@ -1300,9 +1312,22 @@ class CUDAHistogramConstructor {
   uint32_t count_max_partition_bins_ = 0;
   bool count_scratch_dirty_ = true;
   int count_num_sms_ = 0;
-  /*! \brief Per-tree feature mask (1 = feature in this tree's sample, 0 = skip).
-   *  Indexed by column_index (== inner_feature_index for dense single-feature groups). */
+  /*! \brief Per-tree feature mask (1 = feature in this tree's sample, 0 = skip), indexed by inner_feature_index
+   *  (the fix/subtract kernels' need-fix features). */
   CUDAVector<int8_t> cuda_is_feature_used_bytree_;
+  /*! \brief The same sample per bin-matrix COLUMN (1 = some feature of the column is sampled), indexed by
+   *  column_index: what the construct kernels skip by. A column is a feature group (an EFB bundle of several
+   *  features) or a multi-val group's feature, so column_index != inner_feature_index on bundled data. */
+  CUDAVector<int8_t> cuda_is_column_used_bytree_;
+  std::vector<int8_t> host_column_used_bytree_;
+  /*! \brief inner_feature_index -> bin-matrix column (CUDARowData's numbering) */
+  std::vector<int> feature_to_column_;
+  /*! \brief the construct kernels' per-column mask, nullptr before the first tree */
+  const int8_t* column_used_bytree_device() const {
+    return cuda_is_column_used_bytree_.Size() > 0 ? cuda_is_column_used_bytree_.RawDataReadOnly() : nullptr;
+  }
+  /*! \brief column_mask[c] = 1 iff some sampled feature lives in column c */
+  void ColumnsUsedByFeatures(const std::vector<int8_t>& feature_mask, std::vector<int8_t>* column_mask) const;
   /*! \brief effective row-grouping extent of the speculative batched construct
    *  launch (see LaunchComputeBatchedConstructDimYKernel) */
   CUDAVector<int> cuda_hybrid_construct_dim_y_;
@@ -1515,9 +1540,6 @@ class CUDAHistogramConstructor {
   CUDAVector<int> cuda_bs_src_stride_nib_;
   CUDAVector<size_t> cuda_bs_dst_byte_;
   CUDAVector<int> cuda_bs_dst_stride_;
-  /*! \brief whether compact_staging_col_major_ holds this tree's column-major
-   *  compact view (fused second output of the compact fill) */
-  bool compact_col_major_filled_ = false;
   /*! \brief column_hist_offsets for compact view (length num_compact_columns+1);
    *  on the nibble view followed by the pair-joint layout (see BuildCompactView) */
   CUDAVector<uint32_t> compact_column_hist_offsets_;
@@ -1537,21 +1559,6 @@ class CUDAHistogramConstructor {
   CUDAVector<int> cuda_slot_src_stride_;
   CUDAVector<size_t> cuda_slot_dst_byte_;
   CUDAVector<int> cuda_slot_dst_stride_;
-  /*! \brief Maps compact column index -> source byte offset in cuda_data_uint8_t_
-   *  for row 0. To get source for row r at compact col c:
-   *    src = source_offsets_[c] + r * source_strides_[c]
-   *  (stride differs per partition; same for all cols in same partition). */
-  CUDAVector<size_t> compact_source_offsets_;
-  CUDAVector<int> compact_source_strides_;
-  /*! \brief Pinned host staging buffer for compact data (used when source bin matrix
-   *  is host-mapped — host-side gather + bulk cudaMemcpy is ~10× faster than the
-   *  GPU fill kernel reading strided bytes via PCIe). Allocated via cudaMallocHost. */
-  uint8_t* compact_data_host_ = nullptr;
-  size_t compact_data_host_size_ = 0;
-  /*! \brief GPU staging buffer for column-major transfer from host. Per-tree: cudaMemcpy
-   *  each used column contiguously into this buffer, then transpose-kernel into
-   *  compact_data_uint8_t_ which is row-major-in-partition (matches histogram kernel).  */
-  CUDAVector<uint8_t> compact_staging_col_major_;
   /*! \brief indices of feature whose histograms need to be fixed */
   CUDAVector<int> cuda_need_fix_histogram_features_;
   /*! \brief aligned number of bins of the features whose histograms need to be fixed */

@@ -112,8 +112,6 @@ class NCCLGBDTComponent: public NCCLInfo {
 
   data_size_t data_start_index() const { return data_start_index_; }
 
-  data_size_t data_end_index() const { return data_end_index_; }
-
   Tree* new_tree() { return new_tree_.get(); }
 
   Tree* release_new_tree() { return new_tree_.release(); }

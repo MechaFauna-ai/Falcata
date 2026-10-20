@@ -33,6 +33,11 @@ namespace {
 __global__ void DeviceLevelResetKernel(const CUDADeviceLevelConfig cfg, const int num_leaves) {
   CUDADeviceLevelState* st = cfg.state;
   if (threadIdx.x == 0) {
+    if (cfg.whole_tree) {
+      // Root search has consumed the initialized fixed root struct on this stream. Preserve its exact output
+      // before the first tree record saves leaf 0 as internal_value[0]. The select event orders the record stream.
+      cfg.tree_leaf_value[0] = cfg.root_struct->leaf_value;
+    }
     st->live_splits = 0;
     st->total_flat_blocks = 0;
     st->num_gaps = 0;

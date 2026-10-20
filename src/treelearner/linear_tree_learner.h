@@ -26,6 +26,10 @@ class LinearTreeLearner: public TREE_LEARNER_TYPE {
 
   void InitLinear(const Dataset* train_data, const int max_leaves) override;
 
+  void ResetConfig(const Config* config) override;
+
+  void ResetTrainingData(const Dataset* train_data, bool is_constant_hessian) override;
+
   Tree* Train(const score_t* gradients, const score_t *hessians, bool is_first_tree) override;
 
   /*! \brief Create array mapping dataset to leaf index, used for linear trees */

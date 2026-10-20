@@ -935,6 +935,10 @@ struct FalcataPlan {
   // back once after level K, the host replays its bookkeeping and the classic loop continues. Same descriptors,
   // same kernels' sums: bit-identical.
   bool device_levels = true;        // key: device_levels
+  // Experimental complete depth-bounded quantized tree: 2^max_depth <= num_leaves, depth <= 10. Includes the
+  // final apply without its unnecessary child search; one growth journal readback and no host growth tail.
+  // A changing sampled layout can disable graph caching, but never the device controller itself.
+  bool device_tree = false;         // key: device_tree
   // device_levels' launches as one cached CUDA graph for the prefix (root work and the host tail remain). Trees
   // whose keys keep changing use the host loop after the cache-miss budget: the same model, bit-identical.
   bool device_level_graph = true;   // key: device_level_graph
@@ -1099,6 +1103,7 @@ struct FalcataPlan {
     if (key == "wide_partitions") return &wide_partitions;
     if (key == "dense_wide_hist") return &dense_wide_hist;
     if (key == "device_levels") return &device_levels;
+    if (key == "device_tree") return &device_tree;
     if (key == "device_level_graph") return &device_level_graph;
     return nullptr;
   }

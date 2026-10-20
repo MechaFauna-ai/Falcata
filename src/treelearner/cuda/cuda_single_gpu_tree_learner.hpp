@@ -28,6 +28,10 @@ namespace Falcata {
 #define CUDA_SINGLE_GPU_TREE_LEARNER_BLOCK_SIZE (1024)
 
 class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
+#ifdef FALCATA_WHOLE_MAP_ONLY_FAULT_TEST
+  friend struct WholeMapOnlyFaultPeer;
+#endif
+
  public:
   explicit CUDASingleGPUTreeLearner(const Config* config, const bool boosting_on_cuda);
 
@@ -369,10 +373,12 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // the last level's pairs, as after the host loop's own readback. Returns the splits applied.
   int TrainDeviceLevels(CUDATree* tree, const int num_levels, std::vector<HybridPendingPair>* pairs);
   // the device levels' launches and stream edges (capturable: nothing on the legacy stream, nothing read back)
-  void EnqueueDeviceLevels(CUDATree* tree, const CUDADeviceLevelConfig& cfg, const int num_levels);
+  void EnqueueDeviceLevels(CUDATree* tree, const CUDADeviceLevelConfig& cfg, const int num_levels,
+                           const bool inline_all_map, const bool final_map_only);
   // cuda_plan key device_level_graph: launch the levels as a cached graph (captured on a key's first tree); false
   // when this tree cannot use one (the caller enqueues the levels)
-  bool LaunchDeviceLevelGraph(CUDATree* tree, const CUDADeviceLevelConfig& cfg, const int num_levels);
+  bool LaunchDeviceLevelGraph(CUDATree* tree, const CUDADeviceLevelConfig& cfg, const int num_levels,
+                              const bool inline_all_map, const bool final_map_only);
   struct DeviceLevelGraph {
     std::vector<const void*> key;
     cudaGraph_t graph = nullptr;
@@ -446,7 +452,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   // Enqueue the root level's batched search of the single-sync flow (descriptor
   // with device-derived gating, exact host-known construct grid). Shared by the
   // exact-fit one-sync prefix and the selective one-sync loop.
-  void EnqueueRootLevelSearchOneSync();
+  void EnqueueRootLevelSearchOneSync(bool reuse_fused_root = false);
   // Reset the per-tree selective growth state.
   void SelectiveReset();
   // Collect the new frontier candidates from the given child leaves (children of
@@ -579,9 +585,6 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   CUDAVector<uint8_t> compact_column_buffer_;
   std::vector<int> compact_column_to_orig_;        // [slot] -> original column index
   std::vector<int> orig_column_to_compact_slot_;   // [col] -> slot, or -1
-  CUDAVector<int> cuda_compact_slot_for_col_;      // GPU copy of orig_column_to_compact_slot_
-  CUDAVector<int> cuda_src_part_col_offsets_;
-  CUDAVector<int> cuda_src_part_stride_;
   // Per-slot precomputed metadata for the new (slot, row)-launched transpose:
   CUDAVector<size_t> cuda_slot_p_byte_;
   CUDAVector<int> cuda_slot_p_stride_;
@@ -723,6 +726,9 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
    *  budget does not bind and every child sits at max_depth; set by the level prefix when it ended on such a level */
   bool level_completes_tree_ = false;
   bool prefix_completes_tree_ = false;
+  /*! \brief cuda_plan key device_tree: the whole tree applied no split and its classic root search (the host level
+   *  flows' first leaf-wise tail search) found one; Train's tail continues from that cached search */
+  bool device_tree_root_tail_ = false;
   /*! \brief cuda_plan key dirty_final_slots: the tree's leaf count before the final level that completed the level
    *  prefix (prefix_completes_tree_), -1 otherwise */
   int prefix_final_leaves_before_ = -1;
@@ -776,6 +782,7 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::vector<int> hybrid_graph_batch_info_;
   std::vector<HybridAppliedSplit> hybrid_graph_applied_scratch_;
   // ---- cuda_plan key device_levels state ----
+  bool device_tree_completed_ = false;
   bool device_levels_logged_ = false;
   bool device_levels_fallback_logged_ = false;
   bool device_levels_ready_ = false;
@@ -862,6 +869,10 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   std::vector<data_size_t> leaf_data_start_;
   std::vector<double> leaf_sum_gradients_;
   std::vector<double> leaf_sum_hessians_;
+  // A completed, narrowly gated whole tree may omit host child statistics and discretizer bit updates.
+  // These caches then cannot feed host growth/CPU renewal. BeforeTrain rebuilds the active root before
+  // clearing this flag; subsequent ordinary splits populate every newly active child before it is read.
+  bool whole_host_leaf_cache_stale_ = false;
   // host-side per-leaf monotone constraints (basic method). [-DBL_MAX, +DBL_MAX]
   // means unconstrained. Empty/unused when monotone_constraints is not set.
   std::vector<double> leaf_constraint_min_;
@@ -902,7 +913,6 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
 
   mutable CUDAVector<double> cuda_leaf_gradient_stat_buffer_;
   mutable CUDAVector<double> cuda_leaf_hessian_stat_buffer_;
-  mutable data_size_t leaf_stat_buffer_size_;
   mutable data_size_t refit_num_data_;
   uint32_t* cuda_bitset_;
   size_t cuda_bitset_len_;
@@ -987,11 +997,6 @@ class CUDASingleGPUTreeLearner: public SerialTreeLearner, public NCCLInfo {
   CUDAVector<double> cuda_linear_xthx_;
   CUDAVector<double> cuda_linear_xtg_;
   CUDAVector<int> cuda_linear_nonzero_;
-  CUDAVector<int> cuda_linear_leaf_num_feat_;
-  CUDAVector<int> cuda_linear_leaf_feat_offset_;
-  CUDAVector<int> cuda_linear_leaf_feat_col_;
-  CUDAVector<int> cuda_linear_leaf_xthx_offset_;
-  CUDAVector<int> cuda_linear_leaf_xtg_offset_;
   // device copies of the fitted per-leaf linear model, used by the score kernel.
   // Rebuilt from the (post-shrinkage) tree at score time, so mutable/const-built.
   mutable CUDAVector<double> cuda_linear_leaf_const_;

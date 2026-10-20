@@ -130,6 +130,9 @@ struct CUDADeviceLevelConstructShape {
 struct CUDADeviceLevelConfig {
   CUDADeviceLevelState* state;
   const CUDASplitInfo* leaf_best_split_info;
+  /*! \brief fixed root statistics and pooled tree output; complete trees seed root output before the first split */
+  const CUDALeafSplitsStruct* root_struct;
+  double* tree_leaf_value;
   const data_size_t* leaf_num_data;
   const data_size_t* leaf_data_start;
   CUDATreeBatchSplit* tree_batch_splits;
@@ -141,6 +144,10 @@ struct CUDADeviceLevelConfig {
   const double* real_thresholds;
   int* journal;
   int max_depth;
+  /*! \brief total leaf budget; whole trees arbitrate a binding final level on the device */
+  int num_leaves_budget;
+  /*! \brief complete depth-bounded tree: the final apply needs no child histogram/search */
+  int whole_tree;
   /*! \brief threads of the host's gap copy blocks (the gap descriptors' num_blocks unit) */
   int gap_block_dim;
   // children's search gates (EnqueueLevelBestSplitSearch)

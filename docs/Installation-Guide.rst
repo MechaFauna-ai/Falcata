@@ -111,6 +111,10 @@ Users who want to perform benchmarking can make Falcata output time costs for di
 Compiler warnings are treated as errors by default (``-Werror`` for gcc/Clang, plus nvcc's ``-Werror all-warnings`` on CUDA builds; the R-package build is always exempt).
 If an unfamiliar compiler version rejects code Falcata's supported compilers accept, you can add ``-DUSE_WERROR=OFF`` to CMake flags.
 
+If `ccache <https://ccache.dev/>`__ 4.8 or newer is on ``PATH``, CMake builds compile C, C++ and CUDA sources through it (not with MSVC, and not for the Python- or R-package builds), so rebuilding sources that were compiled before in the same build directory is served from the cache.
+The output is identical to a build without ccache.
+You can add ``-DUSE_CCACHE=OFF`` to CMake flags to disable this, and a ``CMAKE_<LANG>_COMPILER_LAUNCHER`` you set yourself is always kept.
+
 It is possible to build Falcata in debug mode.
 In this mode all compiler optimizations are disabled and Falcata performs more checks internally.
 To enable debug mode you can add ``-DUSE_DEBUG=ON`` to CMake flags or choose ``Debug_*`` configuration (e.g. ``Debug_DLL``, ``Debug_mpi``) in Visual Studio depending on how you are building Falcata.

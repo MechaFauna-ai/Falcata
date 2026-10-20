@@ -17,6 +17,65 @@
 
 namespace Falcata {
 
+namespace {
+
+// Copy one byte range without overread/overstore. Source/destination offsets can
+// be only 4/8-byte aligned for odd L. Align a shared head when possible, then use
+// int4 body + exact byte tails; otherwise use the safe byte path for the range.
+__device__ void CopyActiveReadbackRange(const uint8_t* src, uint8_t* dst, const size_t bytes) {
+  const size_t lane = static_cast<size_t>(threadIdx.x);
+  const bool same_alignment = ((reinterpret_cast<uintptr_t>(src) ^ reinterpret_cast<uintptr_t>(dst)) & 15u) == 0;
+  const size_t alignment_head = same_alignment ? ((16 - (reinterpret_cast<uintptr_t>(src) & 15u)) & 15u) : bytes;
+  const size_t head = alignment_head < bytes ? alignment_head : bytes;
+  const size_t num16 = same_alignment ? (bytes - head) / 16 : 0;
+  const size_t tail_start = head + num16 * 16;
+  for (size_t i = lane; i < head; i += blockDim.x) dst[i] = src[i];
+  for (size_t i = lane; i < num16; i += blockDim.x) {
+    reinterpret_cast<int4*>(dst + head)[i] = reinterpret_cast<const int4*>(src + head)[i];
+  }
+  for (size_t i = tail_start + lane; i < bytes; i += blockDim.x) dst[i] = src[i];
+}
+
+__global__ void WholeActiveReadbackKernel(const uint8_t* slab, uint8_t* staging,
+    const CUDATreePooledLayout layout, const int max_leaves, const data_size_t* exact_counts,
+    const int* journal, const int max_total_splits, const size_t counts_offset) {
+  // Existing controller journal protocol: [1]=total applied splits, [2]=error flags.
+  // This ordinary launch follows the final apply AND tree-record join. No PDL trigger.
+  const int splits = journal[1];
+  if (journal[2] != 0 || splits <= 0 || splits > max_total_splits || splits >= max_leaves) return;
+  const size_t n = static_cast<size_t>(splits) + 1;
+  const int field = static_cast<int>(blockIdx.x);
+  if (field < CUDATreePooledLayout::kNumFields) {
+    const auto prefix = layout.fields[field];
+    const size_t entries = prefix.leaf_entries ? n : n - 1;
+    CopyActiveReadbackRange(slab + prefix.offset, staging + prefix.offset, entries * prefix.element_bytes);
+  } else {
+    CopyActiveReadbackRange(reinterpret_cast<const uint8_t*>(exact_counts), staging + counts_offset,
+                            n * sizeof(data_size_t));
+  }
+}
+
+}  // namespace
+
+bool CUDATree::LaunchActiveSlabReadback(void* readback_staging_device, size_t readback_staging_bytes,
+    const data_size_t* exact_counts, const int* device_journal, int max_total_splits, cudaStream_t stream) const {
+  if (!pooled_ || leaf_value_dim_ != 1 || max_leaves_ <= 1 || readback_staging_device == nullptr ||
+      exact_counts == nullptr || device_journal == nullptr || max_total_splits <= 0 ||
+      max_total_splits >= max_leaves_) return false;
+  const CUDATreePooledLayout layout(max_leaves_);
+  const size_t counts_offset = (layout.slab_bytes + 255) / 256 * 256;
+  if (counts_offset > readback_staging_bytes ||
+      static_cast<size_t>(max_leaves_) * sizeof(data_size_t) > readback_staging_bytes - counts_offset) return false;
+  // One fixed small grid: one CTA for each real ToHost field and one for counts.
+  // Grid-stride copies handle arbitrary L/N; no inactive tail or descriptor stores.
+  WholeActiveReadbackKernel<<<CUDATreePooledLayout::kNumFields + 1, 256, 0, stream>>>(
+    reinterpret_cast<const uint8_t*>(cuda_threshold_.RawDataReadOnly()),
+    static_cast<uint8_t*>(readback_staging_device), layout, max_leaves_, exact_counts,
+    device_journal, max_total_splits, counts_offset);
+  CUDASUCCESS_OR_FATAL(cudaGetLastError());
+  return true;
+}
+
 // Decision-type bit helpers, used only by the kernels below. They stay in this
 // translation unit: a __device__ function called across TUs would need
 // relocatable device code, which the build deliberately does not use.

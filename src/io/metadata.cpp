@@ -385,12 +385,6 @@ void Metadata::SetInitScoresFromIterator(It first, It last) {
     init_score_[i] = Common::AvoidInf(first[i]);
   }
   init_score_load_from_file_ = false;
-
-  #ifdef USE_CUDA
-  if (cuda_metadata_ != nullptr) {
-    cuda_metadata_->SetInitScore(init_score_.data(), init_score_.size());
-  }
-  #endif  // USE_CUDA
 }
 
 void Metadata::SetInitScore(const double* init_score, data_size_t len) {
